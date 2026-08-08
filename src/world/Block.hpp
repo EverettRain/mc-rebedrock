@@ -109,6 +109,13 @@ enum class Block : std::uint8_t {
     WheatCrops,
     Carrots,
     Potatoes,
+    // The decorative stone variants added to round out the stone family: each
+    // polished stone is the 2x2-crafted version of its parent, and smooth stone
+    // is smelted from stone in the furnace (no crafting recipe, like 1.16.1).
+    PolishedGranite,
+    PolishedDiorite,
+    PolishedAndesite,
+    SmoothStone,
     Count,
 };
 
@@ -798,6 +805,21 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
             .noCollision()
             .noDrops()
             .support(BlockSupport::Farmland),
+        // Decorative stone variants. Each polished stone matches its parent's
+        // hardness; smooth stone is the furnace product of stone. The texture
+        // layers 242-245 occupy four of newContentTextures' placeholder slots.
+        BlockProperties::of(Block::PolishedGranite, "polished_granite", "Polished Granite")
+            .texture(242.0F)
+            .strength(1.5F, 6.0F),
+        BlockProperties::of(Block::PolishedDiorite, "polished_diorite", "Polished Diorite")
+            .texture(243.0F)
+            .strength(1.5F, 6.0F),
+        BlockProperties::of(Block::PolishedAndesite, "polished_andesite", "Polished Andesite")
+            .texture(244.0F)
+            .strength(1.5F, 6.0F),
+        BlockProperties::of(Block::SmoothStone, "smooth_stone", "Smooth Stone")
+            .texture(245.0F)
+            .strength(2.0F, 6.0F),
     };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {

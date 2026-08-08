@@ -191,6 +191,37 @@ int main() {
     assert(!dispatcher.execute("/tp notanentity").success);
     assert(!dispatcher.execute("/tp 1 2 3 bad 0").success);
 
+    // /spawnpoint — executable with no arguments (use the player's own block),
+    // and the optional position shares /tp's coordinate parser.
+    std::optional<mc::gameplay::command::Position3> spawnPosition;
+    bool spawnpointSelf = false;
+    const auto recordSpawn = [&](const CommandContext& context) {
+        spawnPosition = context.find<mc::gameplay::command::Position3>("pos");
+        // An entity-id destination is not a spawn position (the renderer's
+        // handler rejects it the same way).
+        if (context.find<std::string>("pos").has_value()) {
+            return CommandResult{false, "Usage: /spawnpoint [<x> <y> <z>]"};
+        }
+        spawnpointSelf = !spawnPosition.has_value();
+        return CommandResult{true, "ok"};
+    };
+    dispatcher.literal("spawnpoint")
+        .executes(recordSpawn)
+        .argument("pos", kTeleportDestinationArgument)
+        .executes(recordSpawn);
+    assert(dispatcher.execute("/spawnpoint").success);
+    assert(spawnpointSelf);
+    assert(dispatcher.execute("/spawnpoint 100 65 100").success);
+    assert(!spawnpointSelf);
+    assert(spawnPosition.has_value());
+    assert(spawnPosition->x == 100 && spawnPosition->y == 65 && spawnPosition->z == 100);
+    assert(dispatcher.execute("/spawnpoint ~ 70 ~").success);
+    assert(spawnPosition->relativeX && !spawnPosition->relativeY && spawnPosition->relativeZ);
+    assert(spawnPosition->y == 70);
+    // Missing coordinates are rejected; an entity id is not a spawn position.
+    assert(!dispatcher.execute("/spawnpoint 1 2").success);
+    assert(!dispatcher.execute("/spawnpoint pig").success);
+
     // /kill kills the player by default; /kill <target> accepts the player
     // keyword or a registered entity id.
     bool killedSelf = false;
@@ -288,7 +319,7 @@ int main() {
             replacementCalled = true;
             return CommandResult{true, ""};
         });
-    assert(dispatcher.commandCount() == 9U); // gamemode, time, give, gamerule, tp, kill, speed, echo, roll
+    assert(dispatcher.commandCount() == 10U); // gamemode, time, give, gamerule, tp, kill, spawnpoint, speed, echo, roll
     assert(dispatcher.execute("/gamemode creative").success);
     assert(replacementCalled);
 

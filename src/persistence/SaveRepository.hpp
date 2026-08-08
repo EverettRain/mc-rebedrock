@@ -28,6 +28,14 @@ struct SaveGame final {
     float playerX = 0.0F;
     float playerY = 0.0F;
     float playerZ = 0.0F;
+    // The player's personal spawn point, set by /spawnpoint the way 1.16.1 keeps
+    // SpawnX/Y/Z on the player. Death respawns here before falling back to the
+    // world spawn. Format 10 serialises it into its own self-describing block.
+    bool hasSpawnPoint = false;
+    float spawnX = 0.0F;
+    float spawnY = 0.0F;
+    float spawnZ = 0.0F;
+    float spawnYaw = 0.0F;
     double gameTimeSeconds = 0.0;
     gameplay::GameMode gameMode = gameplay::GameMode::Creative;
     gameplay::Difficulty difficulty = gameplay::Difficulty::Normal;

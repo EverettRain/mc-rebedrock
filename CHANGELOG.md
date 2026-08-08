@@ -7,9 +7,47 @@ simple versioned history while it is in beta.
 
 ### Added
 
+- Decorative stone variants round out the stone family: polished granite,
+  polished diorite and polished andesite craft from a 2x2 block of their parent
+  stone (four of the polished product), and smooth stone smelts from stone in
+  the furnace — the same shapes and recipes as 1.16.1. All four register into
+  the Building Blocks creative tab and save palettes.
+- `/spawnpoint [<x> <y> <z>]` sets a personal respawn point the way 1.16.1's
+  SpawnPointCommand does: with no position the command uses your current block,
+  `~` axes resolve relative to you, and death respawns there before falling
+  back to the world spawn. The result persists with the save (format 10).
+- Iron buckets now fill and pour: an empty bucket scoops a still-water source
+  into a full water bucket in survival, and a water bucket empties back into
+  the empty bucket when poured. Creative never consumes a bucket nor drains a
+  source, exactly as the user asked.
+- Dropped items gained simple block collision (they land, lean on walls and
+  never pass through), drift toward the player with a visible magnet pickup
+  animation before being collected, and identical items within the same cell
+  merge into a single group (capped at the stack size) so a pile of drops
+  renders as one icon.
+
 ### Changed
 
+- Eating now plays the chewing loop through the meal: the `generic.eat` sound
+  fires every fourth tick once the eat is past its first seven ticks, with the
+  final burst and burp on completion — matching LivingEntity's consumption
+  effects instead of a single sound when the meal starts.
+- Inventory block thumbnails use vanilla 1.16.1's plain per-face luminance
+  (up 1.0, west 0.6, east 0.8) with no colour bias, plus a per-corner ambient
+  occlusion gradient so the cube edges read slightly darker than the faces.
+
 ### Fixed
+
+- The backpack preview figure now turns with the cursor look through its bone
+  hierarchy (head and arms as children of the body), so the whole body rotates
+  rigidly around its pivots instead of every part spinning around its own
+  centre.
+- Shift-clicking a crafting result crafts exactly once and quick-moves the
+  result into the main grid before the hotbar, merging into existing stacks
+  before empty slots — the quick-move pass now merges first, then fills.
+- Dark oak trees spread a proper vanilla canopy: the 2x2 trunk leans near the
+  top under a four-layer crown whose widest layer is 8x8, with 1-in-3 branch
+  columns carrying their own small foliage nodes.
 
 ## ReBedrock beta3
 

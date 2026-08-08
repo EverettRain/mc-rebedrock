@@ -294,7 +294,13 @@ bool growTree(
         return true;
     }
     case TreeKind::DarkOak: {
-        // DarkOakTrunkPlacer(6, 2, 1): a 2x2 trunk under a wide flat canopy.
+        // DarkOakTrunkPlacer(6, 2, 1) + DarkOakFoliagePlacer(0, 0, 0, 0): a 2x2
+        // trunk whose upper run leans up to two cells, a four-layer canopy whose
+        // widest layer is 8x8 (radius 4) with an optional 2x2 cap, and 1-in-3
+        // branch columns off the outer ring, each with a small foliage node.
+        // Footprints are eccentric squares (offsets -radius+1..radius, centred
+        // between the trunk's two corners), corner-trimmed into an octagon,
+        // exactly like vanilla's generateSquare over -baseHeight..baseHeight+1.
         const int height = 6 + random.nextInt(3);
         if (baseY + height + 3 >= kWorldHeight) return false;
         for (int cornerX = 0; cornerX < 2; ++cornerX) {
@@ -304,25 +310,70 @@ bool growTree(
                 }
             }
         }
+        // The trunk leans from `leanAt` upward: `lean` cells in one horizontal
+        // direction, matching DarkOakTrunkPlacer's `i = height - nextInt(4)` and
+        // `j = 2 - nextInt(3)`.
+        const int leanAt = height - random.nextInt(4);
+        int lean = 2 - random.nextInt(3);
+        int leanX = 0;
+        int leanZ = 0;
+        if (lean > 0) {
+            switch (random.nextInt(4)) {
+            case 0: leanX = 1; break;
+            case 1: leanX = -1; break;
+            case 2: leanZ = 1; break;
+            default: leanZ = -1; break;
+            }
+        }
+        int tipX = worldX;
+        int tipZ = worldZ;
         for (int y = 0; y < height; ++y) {
+            if (y >= leanAt && lean > 0) {
+                tipX += leanX;
+                tipZ += leanZ;
+                --lean;
+            }
             for (int cornerX = 0; cornerX < 2; ++cornerX) {
                 for (int cornerZ = 0; cornerZ < 2; ++cornerZ) {
-                    placeLog(writer, worldX + cornerX, baseY + y, worldZ + cornerZ, log);
+                    placeLog(writer, tipX + cornerX, baseY + y, tipZ + cornerZ, log);
                 }
             }
         }
-        for (int layer = 0; layer <= 1; ++layer) {
-            const int radius = layer == 0 ? 3 : 2;
+        const int canopyY = baseY + height;
+        const auto placeFoliageLayer = [&](int cx, int cz, int radius, int yOffset,
+                                           bool trimCorners) {
             for (int offsetX = -radius + 1; offsetX <= radius; ++offsetX) {
                 for (int offsetZ = -radius + 1; offsetZ <= radius; ++offsetZ) {
-                    if (std::abs(offsetX * 2 - 1) + std::abs(offsetZ * 2 - 1) > radius * 2 + 1) {
+                    if (trimCorners &&
+                        (offsetX == -radius + 1 || offsetX == radius) &&
+                        (offsetZ == -radius + 1 || offsetZ == radius)) {
                         continue;
                     }
-                    if (writer.block(worldX + offsetX, baseY + height - 1 + layer,
-                                     worldZ + offsetZ) == Block::Air) {
-                        writer.setBlock(worldX + offsetX, baseY + height - 1 + layer,
-                                        worldZ + offsetZ, leaves);
+                    if (writer.block(cx + offsetX, canopyY + yOffset, cz + offsetZ) == Block::Air) {
+                        writer.setBlock(cx + offsetX, canopyY + yOffset, cz + offsetZ, leaves);
                     }
+                }
+            }
+        };
+        // The main canopy hangs off the leaned trunk tip: 6x6 under the crown,
+        // 8x8 at the crown, 6x6 above, and a 50% 2x2 cap on top.
+        placeFoliageLayer(tipX, tipZ, 3, -1, true);
+        placeFoliageLayer(tipX, tipZ, 4, 0, true);
+        placeFoliageLayer(tipX, tipZ, 3, 1, true);
+        if (random.nextBoolean()) {
+            placeFoliageLayer(tipX, tipZ, 1, 2, false);
+        }
+        // The outer ring around the trunk base grows 1-in-3 branch columns that
+        // descend below the canopy, each topped by its own small foliage node.
+        for (int q = -1; q <= 2; ++q) {
+            for (int r = -1; r <= 2; ++r) {
+                if ((q < 0 || q > 1 || r < 0 || r > 1) && random.nextInt(3) <= 0) {
+                    const int reach = 2 + random.nextInt(3);
+                    for (int step = 0; step < reach; ++step) {
+                        placeLog(writer, tipX + q, canopyY - step - 1, tipZ + r, log);
+                    }
+                    placeFoliageLayer(tipX + q, tipZ + r, 2, -1, true);
+                    placeFoliageLayer(tipX + q, tipZ + r, 1, 0, false);
                 }
             }
         }

@@ -1,4 +1,5 @@
 #include "gameplay/GameSession.hpp"
+#include "gameplay/ItemPlacement.hpp"
 
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"
@@ -26,6 +27,7 @@ struct TestHost final : mc::gameplay::SimulationHost {
     int furnaceChanges = 0;
     int eatingStarted = 0;
     int eatingCancelled = 0;
+    int eatSounds = 0;
 
     void submitWorldEdit(int, int, int, mc::world::Block, std::uint8_t,
                          std::optional<mc::world::BlockOrientation>) override {
@@ -34,6 +36,7 @@ struct TestHost final : mc::gameplay::SimulationHost {
     void previewBlockEdit(int, int, int) override {}
     void playBlockBreak(mc::world::Block, glm::vec3) override { ++blockBreaks; }
     void playItemPickup(glm::vec3) override { ++itemPickups; }
+    void playEat(glm::vec3) override { ++eatSounds; }
     void playPlayerHurt(glm::vec3) override {}
     void playPlayerFall(glm::vec3, float) override {}
     void playBurp(glm::vec3) override {}
@@ -100,6 +103,8 @@ int main() {
     TestHost eatHost;
     gameplay::GameSession eater;
     eater.setGameMode(gameplay::GameMode::Creative);
+    // The meal must be in hand when it finishes, or the final burst is skipped.
+    eater.inventory().mutableSlot(0) = {world::Block::Air, 1U, &gameplay::items::Apple};
     eater.beginEating(&gameplay::items::Apple, eatHost);
     assert(eatHost.eatingStarted == 1);
     world::World eatWorld;
@@ -110,7 +115,67 @@ int main() {
     // The meal ran to completion and cancelled itself.
     assert(!eater.eating());
     assert(eatHost.eatingCancelled == 1);
+    // The chew loop played through the meal: six chew ticks (remaining 24..4,
+    // every fourth tick) plus the final burst = seven generic.eat sounds, then
+    // the burp.
+    assert(eatHost.eatSounds == 7);
 
-    std::cout << "game_session: player landing, block drops, death pipeline, eating OK\n";
+    // --- Buckets: the item resolves collect/pour, and replaceSelected swaps hands. ---
+    {
+        world::World bucketWorld;
+        buildFloor(bucketWorld);
+        constexpr int waterX = 3;
+        constexpr int waterY = 1;
+        constexpr int waterZ = 3;
+        bucketWorld.setBlock(waterX, waterY, waterZ, world::Block::Water);
+        bucketWorld.setFluidLevel(waterX, waterY, waterZ, 0U);
+
+        gameplay::GameSession bucketSession;
+        // Empty bucket on a still water source resolves to CollectWater.
+        const world::PlacementContext onWater{
+            {waterX, waterY, waterZ}, {waterX, waterY, waterZ}};
+        const auto collect =
+            gameplay::itemUseOn(&gameplay::items::Bucket, bucketWorld, onWater);
+        assert(collect.action == gameplay::ItemUseAction::CollectWater);
+        // A water bucket on a replaceable cell resolves to PlaceWater.
+        const world::PlacementContext ontoAir{
+            {waterX, waterY, waterZ + 2}, {waterX, waterY, waterZ + 3}};
+        const auto pour =
+            gameplay::itemUseOn(&gameplay::items::WaterBucket, bucketWorld, ontoAir);
+        assert(pour.action == gameplay::ItemUseAction::PlaceWater);
+        // Non-water blocks never collect, and a solid cell never pours.
+        const world::PlacementContext onStone{{waterX, 0, waterZ}, {waterX, 0, waterZ}};
+        const auto noCollect =
+            gameplay::itemUseOn(&gameplay::items::Bucket, bucketWorld, onStone);
+        assert(noCollect.action == gameplay::ItemUseAction::Nothing);
+
+        // replaceSelected swaps the selected hotbar slot in place, the way the
+        // survival collect/pour branches turn bucket into water bucket and back.
+        auto& inventory = bucketSession.inventory();
+        inventory.mutableSlot(0) = {world::Block::Air, 1U, &gameplay::items::Bucket};
+        inventory.replaceSelected({world::Block::Air, 1U, &gameplay::items::WaterBucket});
+        assert(inventory.selectedStack().item == &gameplay::items::WaterBucket);
+        inventory.replaceSelected({world::Block::Air, 1U, &gameplay::items::Bucket});
+        assert(inventory.selectedStack().item == &gameplay::items::Bucket);
+    }
+
+    // --- Respawn prefers the /spawnpoint result before the world spawn. ---
+    {
+        gameplay::GameSession respawner;
+        respawner.worldSpawnPosition() = {10.0F, 64.0F, 10.0F};
+        respawner.playerSpawnPosition() = {99.0F, 65.0F, 99.0F};
+        respawner.hasPlayerSpawn() = true;
+        respawner.respawn();
+        const auto personal = respawner.player().position();
+        assert(personal.x == 99.0F && personal.y == 65.0F && personal.z == 99.0F);
+        // Without a personal spawn point, death falls back to the world spawn.
+        respawner.hasPlayerSpawn() = false;
+        respawner.player().setPosition({1.0F, 1.0F, 1.0F});
+        respawner.respawn();
+        const auto fallback = respawner.player().position();
+        assert(fallback.x == 10.0F && fallback.y == 64.0F && fallback.z == 10.0F);
+    }
+
+    std::cout << "game_session: player landing, block drops, death pipeline, eating, buckets, spawnpoint OK\n";
     return 0;
 }

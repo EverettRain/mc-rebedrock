@@ -67,6 +67,12 @@ int main() {
     save.playerX = -12.5F;
     save.playerY = 64.0F;
     save.playerZ = 7.25F;
+    // The /spawnpoint result rides in its own format-10 block.
+    save.hasSpawnPoint = true;
+    save.spawnX = -30.5F;
+    save.spawnY = 66.0F;
+    save.spawnZ = 12.0F;
+    save.spawnYaw = 0.0F;
     save.gameTimeSeconds = 42.5;
     save.gameMode = gameplay::GameMode::Survival;
     save.difficulty = gameplay::Difficulty::Hard;
@@ -100,6 +106,8 @@ int main() {
     assert(loaded.summary.displayName == "TestWorld");
     assert(loaded.summary.seed == 0x12345678ULL);
     assert(loaded.hasPlayerPosition && loaded.playerX == -12.5F);
+    assert(loaded.hasSpawnPoint && loaded.spawnX == -30.5F && loaded.spawnY == 66.0F &&
+           loaded.spawnZ == 12.0F);
     assert(loaded.gameMode == gameplay::GameMode::Survival);
     assert(loaded.difficulty == gameplay::Difficulty::Hard);
     assert(loaded.gameRules.get<std::int32_t>(gameplay::GameRuleId::RandomTickSpeed) == 7);
@@ -267,11 +275,14 @@ int main() {
         const auto migrated = repository.load(v8Identifier);
         assert(migrated.difficulty == gameplay::Difficulty::Hard);
         assert(migrated.gameRules.get<std::int32_t>(gameplay::GameRuleId::RandomTickSpeed) == 7);
-        // Saving the migrated world rewrites it as format 9, where the value
-        // lives in the GameRules block.
+        // A pre-format-10 save has no spawn point block; the field stays unset.
+        assert(!migrated.hasSpawnPoint);
+        // Saving the migrated world rewrites it as format 10, where the value
+        // lives in the GameRules block and the absent spawn point is preserved.
         repository.save(migrated);
         const auto roundTrip = repository.load(v8Identifier);
         assert(roundTrip.gameRules.get<std::int32_t>(gameplay::GameRuleId::RandomTickSpeed) == 7);
+        assert(!roundTrip.hasSpawnPoint);
         std::filesystem::remove_all(v8Directory);
     }
 

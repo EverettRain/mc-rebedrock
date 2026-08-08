@@ -155,6 +155,11 @@ class Inventory final {
     void clearCursorStack() { cursorStack_ = {}; }
     [[nodiscard]] ItemStack takeCursorStack(bool wholeStack = true);
     [[nodiscard]] ItemStack takeSelected(bool wholeStack);
+    // ItemUsage#method_30012's stack swap: replaces the selected hotbar slot with
+    // a new stack in place — an empty bucket becomes a water bucket, a water
+    // bucket reverts to an empty one. The cursor and every other slot are
+    // untouched.
+    void replaceSelected(ItemStack stack);
     bool consumeSelected(std::uint8_t count = 1U);
     // ItemStack#damage: spends durability on the selected stack and reports
     // whether the tool broke, which is when the caller plays the break sound.

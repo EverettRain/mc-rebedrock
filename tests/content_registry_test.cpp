@@ -23,9 +23,26 @@ int main() {
     // A block that exists but was never given a creative category stays unlisted.
     assert(registry.block("rebedrock:water") == nullptr);
 
+    // The decorative stone variants are registered and reachable by the vanilla
+    // alias and the bare name as well.
+    assert(registry.block("rebedrock:polished_granite") != nullptr);
+    assert(registry.block("rebedrock:polished_diorite") != nullptr);
+    assert(registry.block("rebedrock:polished_andesite") != nullptr);
+    assert(registry.block("rebedrock:smooth_stone") != nullptr);
+    assert(registry.block("minecraft:polished_diorite") ==
+           registry.block("rebedrock:polished_diorite"));
+    assert(registry.block("polished_diorite") == registry.block("rebedrock:polished_diorite"));
+
     const auto functional = registry.catalog(CreativeCategory::Functional);
     assert(std::ranges::any_of(functional, [](const ItemStack& stack) {
         return stack.block == world::Block::Chest;
+    }));
+    const auto building = registry.catalog(CreativeCategory::BuildingBlocks);
+    assert(std::ranges::any_of(building, [](const ItemStack& stack) {
+        return stack.block == world::Block::PolishedDiorite;
+    }));
+    assert(std::ranges::any_of(building, [](const ItemStack& stack) {
+        return stack.block == world::Block::SmoothStone;
     }));
     const auto food = registry.catalog(CreativeCategory::Food);
     assert(std::ranges::any_of(food, [](const ItemStack& stack) {

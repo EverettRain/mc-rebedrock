@@ -852,13 +852,18 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
         loadBlockTexture("dark_oak_log.png"),
         loadBlockTexture("dark_oak_log_top.png"),
         loadBlockTexture("dark_oak_planks.png"),
+        // The decorative stone variants fill four of the placeholder slots
+        // (layers 242-245), so the surrounding block layer numbers stay put.
+        loadBlockTexture("polished_granite.png"),
+        loadBlockTexture("polished_diorite.png"),
+        loadBlockTexture("polished_andesite.png"),
+        loadBlockTexture("smooth_stone.png"),
         itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
         itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
         itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
         itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
         itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
-        itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
-        itemLayerPlaceholder, itemLayerPlaceholder,
+        itemLayerPlaceholder,
     };
     // The leaves the biome trees need. Vanilla colours spruce and birch leaves
     // with the fixed FoliageColors constants and everything else with the biome
@@ -1427,6 +1432,32 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 return gameplay::CommandResult{
                     true, "Killed " + std::to_string(killed) + "x " + *target};
             });
+        // /spawnpoint [<pos>]: sets the player's personal spawn point, the way
+        // 1.16.1's SpawnPointCommand calls ServerPlayerEntity#setSpawnPoint.
+        // Without a position the command uses the player's own block position;
+        // with one, `~` axes resolve relative to the player. Death then respawns
+        // here. 1.16.1 carries no angle, so neither does the command.
+        commandDispatcher.literal("spawnpoint")
+            .executes([this](const gameplay::command::CommandContext&) {
+                return applySpawnPoint(std::nullopt);
+            })
+            .argument("pos", gameplay::command::kTeleportDestinationArgument)
+            .executes([this](const gameplay::command::CommandContext& context) {
+                const auto position = context.find<gameplay::command::Position3>("pos");
+                if (!position.has_value()) {
+                    return gameplay::CommandResult{false, "Usage: /spawnpoint [<x> <y> <z>]"};
+                }
+                const glm::vec3 base = gameSession.player().position();
+                const glm::vec3 target{
+                    position->relativeX ? base.x + static_cast<float>(position->x)
+                                        : static_cast<float>(position->x),
+                    position->relativeY ? base.y + static_cast<float>(position->y)
+                                        : static_cast<float>(position->y),
+                    position->relativeZ ? base.z + static_cast<float>(position->z)
+                                        : static_cast<float>(position->z),
+                };
+                return applySpawnPoint(target);
+            });
     }
 
     ~Impl() { shutdown(); }
@@ -1438,6 +1469,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         audioSystem.playBlockBreak(block, position);
     }
     void playItemPickup(glm::vec3 position) override { audioSystem.playItemPickup(position); }
+    void playEat(glm::vec3 position) override { audioSystem.playEat(position); }
     void playPlayerHurt(glm::vec3 position) override { audioSystem.playPlayerHurt(position); }
     void playPlayerFall(glm::vec3 position, float damage) override {
         audioSystem.playPlayerFall(position, damage);
@@ -1478,8 +1510,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
     void onFurnaceStateChanged() override { updateFurnaceLitState(); }
     void onEatingStarted() override {
+        // The held-item Eat animation starts the meal; the generic.eat sound is
+        // the chew loop GameSession::tickEating drives, not a one-shot here.
         heldItemAnimation.trigger(animation::ModelAction::Eat);
-        audioSystem.playEat(gameSession.player().position());
     }
     void onEatingCancelled() override { heldItemAnimation.trigger(animation::ModelAction::None); }
 
@@ -2505,6 +2538,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         gameSession.worldSpawnPosition() = initialFeet;
         gameSession.physicsPreviousPosition() = initialFeet;
         gameSession.physicsCurrentPosition() = initialFeet;
+        // The /spawnpoint result, if the save carried one; death respawns there.
+        gameSession.hasPlayerSpawn() = currentSave->hasSpawnPoint;
+        gameSession.playerSpawnPosition() =
+            glm::vec3{currentSave->spawnX, currentSave->spawnY, currentSave->spawnZ};
+        gameSession.playerSpawnYaw() = currentSave->spawnYaw;
         camera.setPosition(gameSession.player().eyePosition());
         spawnPositionInitialized = currentSave->hasPlayerPosition;
         worldEpoch = chunkStreamer.resetWorld(currentSave->summary.seed, currentSave->edits);
@@ -2559,6 +2597,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         currentSave->gameTimeSeconds = gameSession.gameTimeSeconds();
         currentSave->gameMode = gameSession.gameMode();
         currentSave->gameRules = gameSession.gameRules();
+        // The /spawnpoint result rides along like the player's own position.
+        currentSave->hasSpawnPoint = gameSession.hasPlayerSpawn();
+        const auto spawnPosition = gameSession.playerSpawnPosition();
+        currentSave->spawnX = spawnPosition.x;
+        currentSave->spawnY = spawnPosition.y;
+        currentSave->spawnZ = spawnPosition.z;
+        currentSave->spawnYaw = gameSession.playerSpawnYaw();
         // Difficulty already lives on the save; the button below mutates it in
         // place and world.dat serialises it.
         currentSave->inventory = gameSession.inventory().slots();
@@ -2742,6 +2787,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             chatInputText.replace(suggestion.start, chatInputText.size() - suggestion.start,
                                   suggestion.text);
         }
+    }
+
+    // /spawnpoint's shared effect: record the player's personal spawn point and
+    // persist it with the save. `position` absent means "the player's current
+    // block position". The stored angle is always 0 because 1.16.1 respawns
+    // facing due north; the field exists for the save format's future.
+    gameplay::CommandResult applySpawnPoint(const std::optional<glm::vec3>& position) {
+        const glm::vec3 spawn = position.value_or(gameSession.player().position());
+        gameSession.hasPlayerSpawn() = true;
+        gameSession.playerSpawnPosition() = spawn;
+        gameSession.playerSpawnYaw() = 0.0F;
+        saveCurrentWorld();
+        return gameplay::CommandResult{
+            true, "Set the spawn point to " + std::to_string(static_cast<int>(spawn.x)) + " " +
+                      std::to_string(static_cast<int>(spawn.y)) + " " +
+                      std::to_string(static_cast<int>(spawn.z))};
     }
 
     // The two /tp forms share destination resolution: a Position3 resolves
@@ -5068,6 +5129,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                           placement);
                 switch (use.action) {
                 case gameplay::ItemUseAction::CollectWater: {
+                    // BucketItem#use + ItemUsage#method_30012: only survival
+                    // actually scoops. Creative never drains the source, so the
+                    // empty bucket stays empty and the water stays put.
+                    if (gameSession.gameMode() != gameplay::GameMode::Survival) {
+                        break;
+                    }
                     const auto block = targetedBlock->block;
                     if (interactionWorld.setBlock(block.x, block.y, block.z,
                                                   world::Block::Air)) {
@@ -5083,6 +5150,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                          static_cast<float>(block.y) + 0.7F,
                                                          static_cast<float>(block.z) + 0.5F});
                         heldItemAnimation.trigger(animation::ModelAction::Use);
+                        // The empty bucket becomes a full water bucket in hand.
+                        gameSession.inventory().replaceSelected(
+                            {world::Block::Air, 1U, &gameplay::items::WaterBucket});
                     }
                     break;
                 }
@@ -5104,6 +5174,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                          static_cast<float>(block.y) + 1.0F,
                                                          static_cast<float>(block.z) + 0.5F});
                         heldItemAnimation.trigger(animation::ModelAction::Use);
+                        // BucketItem#getEmptiedStack: survival reverts the full
+                        // bucket to an empty one; creative keeps pouring without
+                        // spending it.
+                        if (gameSession.gameMode() == gameplay::GameMode::Survival) {
+                            gameSession.inventory().replaceSelected(
+                                {world::Block::Air, 1U, &gameplay::items::Bucket});
+                        }
                     }
                     break;
                 }
@@ -8277,34 +8354,61 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, heldItemPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipelineLayout,
                                 0, 1, &descriptorSet, 0, nullptr);
-        const auto cuboid = [&](glm::vec3 offset, glm::vec3 dimensions, float layer, float yaw,
-                                float pitch) {
+        // The preview now renders through the same skeletal pose as the world
+        // player (drawWorldPlayer): each bone's cube is drawn from
+        // modelRoot * boneWorld * cubeRotation * T(centre), so the bone
+        // hierarchy — head and arms as children of the body — composes, and the
+        // whole figure turns rigidly with the cursor look instead of every part
+        // spinning around its own centre. `origin` is in the camera's view
+        // space, so the matrix cuboid is the matrixViewModel mode (data.x=6)
+        // that projects through camera.projection without a second view pass.
+        const auto& previewModel = playerModelAnimator.model();
+        const auto& skeletonPose = playerModelAnimator.skeletonPose();
+        // The geometry's feet sit at model y=0 while the previous hardcoded
+        // layout anchored them 16 units below `origin`; shift the model root so
+        // the figure lands in the same well.
+        const glm::mat4 modelRoot =
+            glm::translate(glm::mat4{1.0F}, origin) *
+            glm::scale(glm::mat4{1.0F}, glm::vec3{modelUnit}) *
+            glm::translate(glm::mat4{1.0F}, glm::vec3{0.0F, -16.0F, 0.0F});
+        const auto layerForBone = [](std::string_view name) -> float {
+            if (name == "head") return kPlayerHeadFirstLayer;
+            if (name == "body") return kPlayerBodyFirstLayer;
+            if (name == "rightArm") return kPlayerRightArmFirstLayer;
+            if (name == "leftArm") return kPlayerLeftArmFirstLayer;
+            if (name == "rightLeg") return kPlayerRightLegFirstLayer;
+            if (name == "leftLeg") return kPlayerLeftLegFirstLayer;
+            return -1.0F;
+        };
+        const auto pushPreviewCuboid = [&](const glm::mat4& cubeWorld, glm::vec3 dimensions,
+                                           float layer) {
             const ItemPush push{
-                {origin.x + offset.x * modelUnit, origin.y + offset.y * modelUnit,
-                 origin.z + offset.z * modelUnit, 1.0F},
-                {layer, layer, layer, yaw},
-                {4.0F, pitch, 0.0F, 0.0F},
-                {dimensions.x * modelUnit, dimensions.y * modelUnit, dimensions.z * modelUnit,
-                 0.0F},
+                {0.0F, 0.0F, 0.0F, 1.0F},
+                {layer, 0.0F, 0.0F, 1.0F},
+                {6.0F, 0.0F, 0.0F, 1.0F},
+                {dimensions.x, dimensions.y, dimensions.z, 0.0F},
+                cubeWorld,
             };
             vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                sizeof(push), &push);
-            vkCmdDraw(commandBuffer, 36U, 1U, 0U, 0U);
+            vkCmdDraw(commandBuffer, 36U, 1, 0, 0);
         };
-        // Classic 8:12:12 Steve proportions. Each body part is one cuboid;
-        // the previous stacked-cube approximation repeated and stretched the
-        // skin across gameSession.inventory() slots when a limb rotated.
-        cuboid({0.0F, 12.0F, 0.0F}, {8.0F, 8.0F, 8.0F}, kPlayerHeadFirstLayer,
-               pose.bodyYaw + pose.headYaw, pose.headPitch);
-        cuboid({0.0F, 2.0F, 0.0F}, {8.0F, 12.0F, 4.0F}, kPlayerBodyFirstLayer, pose.bodyYaw, 0.0F);
-        cuboid({-6.0F, 2.0F, 0.0F}, {4.0F, 12.0F, 4.0F}, kPlayerRightArmFirstLayer, pose.bodyYaw,
-               pose.rightArmPitch);
-        cuboid({6.0F, 2.0F, 0.0F}, {4.0F, 12.0F, 4.0F}, kPlayerLeftArmFirstLayer, pose.bodyYaw,
-               pose.leftArmPitch);
-        cuboid({-2.0F, -10.0F, 0.0F}, {4.0F, 12.0F, 4.0F}, kPlayerRightLegFirstLayer, pose.bodyYaw,
-               pose.rightLegPitch);
-        cuboid({2.0F, -10.0F, 0.0F}, {4.0F, 12.0F, 4.0F}, kPlayerLeftLegFirstLayer, pose.bodyYaw,
-               pose.leftLegPitch);
+        for (std::size_t index = 0; index < previewModel.boneCount(); ++index) {
+            const auto& bone = previewModel.bones()[index];
+            const float layer = layerForBone(bone.name);
+            if (layer < 0.0F) {
+                continue;
+            }
+            const glm::mat4 boneWorld = skeletonPose.worldMatrix(static_cast<int>(index));
+            for (const auto& cube : bone.cubes) {
+                const glm::mat4 cubeRotation =
+                    cube.hasRotation ? animation::rotationAboutPivot(cube.rotation, cube.pivot)
+                                     : glm::mat4{1.0F};
+                const glm::mat4 cubeWorld = modelRoot * boneWorld * cubeRotation *
+                                            glm::translate(glm::mat4{1.0F}, cube.center());
+                pushPreviewCuboid(cubeWorld, cube.renderSize(), layer);
+            }
+        }
         const VkRect2D fullScissor{{0, 0}, swapchainExtent};
         vkCmdSetScissor(commandBuffer, 0, 1, &fullScissor);
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipeline);

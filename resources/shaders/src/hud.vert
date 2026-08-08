@@ -9,7 +9,8 @@ layout(push_constant) uniform HudPush {
 
 layout(location = 0) out vec2 fragmentUv;
 layout(location = 1) flat out float fragmentTextureLayer;
-layout(location = 2) flat out vec3 fragmentLight;
+// Per-vertex so the block icon's corner AO can shade the face with a gradient.
+layout(location = 2) out vec3 fragmentLight;
 
 const vec2 corners[6] = vec2[](
     vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
@@ -46,13 +47,17 @@ void main() {
             : (gl_VertexIndex < 12
                 ? hud.data.z
                 : (hud.data.x > 4.1 ? hud.data.w : hud.data.z));
-        // Match the two-light GUI setup used by Minecraft's item renderer:
-        // a bright overhead key, a cool dark left face and a warm right fill.
-        fragmentLight = gl_VertexIndex < 6
-            ? vec3(1.02, 1.02, 1.00)
-            : (gl_VertexIndex < 12
-                ? vec3(0.58, 0.61, 0.66)
-                : vec3(0.80, 0.77, 0.70));
+        // Direction#getLuminance per face, applied as a plain scalar the way
+        // vanilla 1.16.1's block item render does: up 1.0, west 0.6, east 0.8
+        // (no colour bias). A per-corner AO term darkens the silhouette edges
+        // against the face centres so the cube reads rounded, like the smooth
+        // lighting on vanilla item models.
+        float faceLuminance = gl_VertexIndex < 6
+            ? 1.0
+            : (gl_VertexIndex < 12 ? 0.6 : 0.8);
+        float cornerFactor = length(corner - vec2(0.5, 0.45));
+        float ao = 1.0 - 0.13 * smoothstep(0.20, 0.50, cornerFactor);
+        fragmentLight = vec3(faceLuminance * ao);
         return;
     }
     vec2 corner = corners[gl_VertexIndex];

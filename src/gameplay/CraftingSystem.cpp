@@ -87,6 +87,20 @@ namespace {
          {block(world::Block::Stone), block(world::Block::Stone),
           block(world::Block::Stone), block(world::Block::Stone)},
          {world::Block::StoneBricks, 4U, blockItemFor(world::Block::StoneBricks)}},
+        // The polished stone variants: a 2x2 block of the parent stone, four of
+        // the polished product — vanilla's ["SS","SS"] shaped recipe.
+        {"minecraft:polished_granite", 2, 2, false, false,
+         {block(world::Block::Granite), block(world::Block::Granite),
+          block(world::Block::Granite), block(world::Block::Granite)},
+         {world::Block::PolishedGranite, 4U, blockItemFor(world::Block::PolishedGranite)}},
+        {"minecraft:polished_diorite", 2, 2, false, false,
+         {block(world::Block::Diorite), block(world::Block::Diorite),
+          block(world::Block::Diorite), block(world::Block::Diorite)},
+         {world::Block::PolishedDiorite, 4U, blockItemFor(world::Block::PolishedDiorite)}},
+        {"minecraft:polished_andesite", 2, 2, false, false,
+         {block(world::Block::Andesite), block(world::Block::Andesite),
+          block(world::Block::Andesite), block(world::Block::Andesite)},
+         {world::Block::PolishedAndesite, 4U, blockItemFor(world::Block::PolishedAndesite)}},
         {"minecraft:furnace", 3, 3, false, false,
          {block(world::Block::Cobblestone), block(world::Block::Cobblestone),
           block(world::Block::Cobblestone), block(world::Block::Cobblestone), {},
@@ -212,6 +226,10 @@ namespace {
          {world::Block::Air, 1U, &items::GoldIngot}, 200, 1.0F},
         {"minecraft:stone_from_smelting", block(world::Block::Cobblestone),
          {world::Block::Stone, 1U, blockItemFor(world::Block::Stone)}, 200, 0.1F},
+        // Smooth stone has no crafting recipe in 1.16.1; it is smelted from
+        // stone like the other smooth variants.
+        {"minecraft:smooth_stone", block(world::Block::Stone),
+         {world::Block::SmoothStone, 1U, blockItemFor(world::Block::SmoothStone)}, 200, 0.1F},
         {"minecraft:glass_from_sand", block(world::Block::Sand),
          {world::Block::Glass, 1U, blockItemFor(world::Block::Glass)}, 200, 0.1F},
         {"minecraft:glass_from_red_sand", block(world::Block::RedSand),

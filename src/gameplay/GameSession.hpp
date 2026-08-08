@@ -45,6 +45,9 @@ struct SimulationHost {
     // Audio playbacks the fixed-tick loop drives.
     virtual void playBlockBreak(world::Block block, glm::vec3 position) = 0;
     virtual void playItemPickup(glm::vec3 position) = 0;
+    // The chewing loop of an ongoing meal: LivingEntity#spawnConsumptionEffects
+    // plays the generic.eat sound every fourth tick of the eat.
+    virtual void playEat(glm::vec3 position) = 0;
     virtual void playPlayerHurt(glm::vec3 position) = 0;
     virtual void playPlayerFall(glm::vec3 position, float damage) = 0;
     virtual void playBurp(glm::vec3 position) = 0;
@@ -147,6 +150,15 @@ class GameSession final {
     [[nodiscard]] std::uint32_t lootRandomState() const { return lootRandomState_; }
     [[nodiscard]] glm::vec3& worldSpawnPosition() { return worldSpawnPosition_; }
     [[nodiscard]] const glm::vec3& worldSpawnPosition() const { return worldSpawnPosition_; }
+    // The player's personal spawn point (ServerPlayerEntity#spawnPointPosition):
+    // /spawnpoint sets it, death respawns there before the world spawn, and it
+    // is persisted with the save.
+    [[nodiscard]] glm::vec3& playerSpawnPosition() { return playerSpawnPosition_; }
+    [[nodiscard]] const glm::vec3& playerSpawnPosition() const { return playerSpawnPosition_; }
+    [[nodiscard]] float& playerSpawnYaw() { return playerSpawnYaw_; }
+    [[nodiscard]] float playerSpawnYaw() const { return playerSpawnYaw_; }
+    [[nodiscard]] bool& hasPlayerSpawn() { return hasPlayerSpawn_; }
+    [[nodiscard]] bool hasPlayerSpawn() const { return hasPlayerSpawn_; }
     [[nodiscard]] glm::vec3& physicsPreviousPosition() { return physicsPreviousPosition_; }
     [[nodiscard]] const glm::vec3& physicsPreviousPosition() const { return physicsPreviousPosition_; }
     [[nodiscard]] glm::vec3& physicsCurrentPosition() { return physicsCurrentPosition_; }
@@ -190,6 +202,9 @@ class GameSession final {
     gameplay::ChestSystem chestSystem_;
 
     glm::vec3 worldSpawnPosition_{24.0F, 76.38F, 24.0F};
+    glm::vec3 playerSpawnPosition_{24.0F, 76.38F, 24.0F};
+    float playerSpawnYaw_ = 0.0F;
+    bool hasPlayerSpawn_ = false;
     glm::vec3 physicsPreviousPosition_;
     glm::vec3 physicsCurrentPosition_;
     float footstepDistance_ = 0.0F;

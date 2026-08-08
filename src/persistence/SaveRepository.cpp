@@ -18,7 +18,7 @@ namespace {
 constexpr std::array<std::uint8_t, 8> kMagic{'M', 'C', 'R', 'B', 'S', 'A', 'V', 'E'};
 // Format 8 moved `randomTickSpeed` into a fixed header field; format 9 replaces
 // that with a sparse, self-describing GameRules block after the chests section.
-constexpr std::uint32_t kFormatVersion = 9U;
+constexpr std::uint32_t kFormatVersion = 10U;
 constexpr std::uint32_t kOldestSupportedFormatVersion = 1U;
 constexpr std::uint64_t kMaximumEdits = 16U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumChests = 1024U * 1024U;
@@ -385,6 +385,59 @@ void readGameRulesBlock(std::span<const std::uint8_t> payload, std::size_t& curs
     }
 }
 
+// The /spawnpoint result rides in its own sparse, self-describing block, the
+// same shape as the game rules block: a tag, a size, a version, then the fixed
+// fields. A build that does not know the block skips the whole region.
+constexpr std::uint32_t kSpawnPointBlockTag =
+    'S' | ('P' << 8) | ('W' << 16) | ('N' << 24);
+constexpr std::uint16_t kSpawnPointBlockVersion = 1U;
+
+void appendSpawnPointBlock(std::vector<std::uint8_t>& bytes, const SaveGame& game) {
+    const std::size_t blockStart = bytes.size();
+    appendInteger(bytes, kSpawnPointBlockTag);
+    appendInteger(bytes, 0U);  // blockSizeBytes, patched after the fields
+    appendInteger(bytes, kSpawnPointBlockVersion);
+    appendInteger(bytes, static_cast<std::uint8_t>(game.hasSpawnPoint ? 1U : 0U));
+    appendFloat(bytes, game.spawnX);
+    appendFloat(bytes, game.spawnY);
+    appendFloat(bytes, game.spawnZ);
+    appendFloat(bytes, game.spawnYaw);
+    const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
+    for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
+        bytes[blockStart + 4U + offset] =
+            static_cast<std::uint8_t>(blockSize >> (offset * 8U));
+    }
+}
+
+void readSpawnPointBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                         SaveGame& game) {
+    const std::size_t blockStart = cursor;
+    if (blockStart + 12U > payload.size()) {
+        throw std::runtime_error("world.dat spawn point block is truncated");
+    }
+    const auto tag = readInteger<std::uint32_t>(payload, cursor);
+    if (tag != kSpawnPointBlockTag) {
+        throw std::runtime_error("world.dat has an invalid spawn point block");
+    }
+    const auto blockSize = readInteger<std::uint32_t>(payload, cursor);
+    if (blockSize < 15U || static_cast<std::size_t>(blockSize) > payload.size() - blockStart) {
+        throw std::runtime_error("world.dat spawn point block is malformed");
+    }
+    const auto blockVersion = readInteger<std::uint16_t>(payload, cursor);
+    if (blockVersion > kSpawnPointBlockVersion) {
+        cursor = blockStart + blockSize;
+        return;
+    }
+    game.hasSpawnPoint = readInteger<std::uint8_t>(payload, cursor) != 0U;
+    game.spawnX = readFloat(payload, cursor);
+    game.spawnY = readFloat(payload, cursor);
+    game.spawnZ = readFloat(payload, cursor);
+    game.spawnYaw = readFloat(payload, cursor);
+    if (cursor != blockStart + blockSize) {
+        throw std::runtime_error("world.dat spawn point block has trailing data");
+    }
+}
+
 } // namespace
 
 SaveRepository::SaveRepository(std::filesystem::path root) : root_(std::move(root)) {}
@@ -530,6 +583,7 @@ void SaveRepository::save(SaveGame game) const {
         }
     }
     appendGameRulesBlock(bytes, game.gameRules);
+    appendSpawnPointBlock(bytes, game);
     appendInteger(bytes, checksum(bytes));
     const auto directory = root_ / game.summary.identifier;
     replaceFile(directory / "world.dat", bytes);
@@ -737,6 +791,9 @@ SaveGame SaveRepository::load(const std::string& identifier) const {
     }
     if (formatVersion >= 9U) {
         readGameRulesBlock(payload, cursor, game.gameRules);
+    }
+    if (formatVersion >= 10U) {
+        readSpawnPointBlock(payload, cursor, game);
     }
     if (cursor != payload.size()) throw std::runtime_error("world.dat has trailing data");
     return game;

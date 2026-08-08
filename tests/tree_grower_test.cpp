@@ -3,7 +3,9 @@
 #include "world/Chunk.hpp"
 #include "world/ChunkSection.hpp"
 
+#include <array>
 #include <cassert>
+#include <numeric>
 #include <vector>
 
 using namespace mc;
@@ -62,6 +64,47 @@ int main() {
             assert(block.block == world::Block::OakLeaves);
             assert(block.worldX >= 16);
         }
+    }
+
+    // A dark oak grows a 2x2 leaning trunk under a wide multi-layer canopy: far
+    // more leaves than the old two-layer crown, spread across several layers.
+    {
+        world::Chunk darkChunk;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                darkChunk.setBlock(x, 0, z, world::Block::Grass);
+            }
+        }
+        std::vector<world::gen::TreeBorderBlock> darkBorder;
+        world::gen::ChunkTreeWriter writer{darkChunk, 0, 0, darkBorder};
+        world::gen::JavaRandom random{2026U};
+        world::gen::TreeChoice darkOak{
+            world::gen::TreeKind::DarkOak, world::Block::DarkOakLog, world::Block::DarkOakLeaves, 1.0F};
+        assert(world::gen::growTree(writer, random, darkOak, 8, 0, 8));
+        int logs = 0;
+        std::array<int, 14> leavesPerLayer{};
+        for (int y = 1; y <= 14; ++y) {
+            for (int x = 0; x < 16; ++x) {
+                for (int z = 0; z < 16; ++z) {
+                    if (darkChunk.block(x, y, z) == world::Block::DarkOakLog) ++logs;
+                    if (darkChunk.block(x, y, z) == world::Block::DarkOakLeaves) {
+                        ++leavesPerLayer[static_cast<std::size_t>(y - 1)];
+                    }
+                }
+            }
+        }
+        // The 2x2 trunk runs 6..8 blocks tall (24+ logs) plus branch columns.
+        assert(logs >= 24);
+        const int leaves =
+            std::accumulate(leavesPerLayer.begin(), leavesPerLayer.end(), 0);
+        // The four-layer canopy (6x6/8x8/6x6 + branches) spreads well beyond the
+        // old two-layer crown's ~40 leaves.
+        assert(leaves >= 90);
+        int layersWithLeaves = 0;
+        for (const int count : leavesPerLayer) {
+            if (count > 0) ++layersWithLeaves;
+        }
+        assert(layersWithLeaves >= 3);
     }
 
     return 0;

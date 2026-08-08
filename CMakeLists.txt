@@ -750,12 +750,35 @@ if(BUILD_TESTING)
     )
     add_test(NAME game_session COMMAND mc_rebedrock_game_session_test)
 
+    add_executable(mc_rebedrock_crafting_system_test
+        tests/crafting_system_test.cpp
+        src/gameplay/CraftingSystem.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/Inventory.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+    )
+    target_include_directories(mc_rebedrock_crafting_system_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME crafting_system COMMAND mc_rebedrock_crafting_system_test)
 
-    
-    
-    
-    
-    
+    add_executable(mc_rebedrock_item_entity_test
+        tests/item_entity_test.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/Inventory.cpp
+        src/gameplay/ItemEntitySystem.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/World.cpp
+    )
+    target_include_directories(mc_rebedrock_item_entity_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME item_entity COMMAND mc_rebedrock_item_entity_test)
+
     add_executable(mc_rebedrock_world_simulation_test
         tests/world_simulation_test.cpp
         src/gameplay/WorldSimulation.cpp

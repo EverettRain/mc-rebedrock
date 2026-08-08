@@ -28,30 +28,118 @@ std::size_t ItemEntitySystem::tick(
     glm::vec3 playerPosition,
     Inventory& inventory) {
     std::size_t pickedUpStacks = 0U;
+    // A dropped item occupies a small 0.25³ box, the same as vanilla
+    // ItemEntity's hitbox. Collision is resolved per axis against the block
+    // grid, so an item lands on floors, leans on walls and never passes
+    // through one.
+    constexpr float kHalfExtent = 0.125F;
+    const auto collidesAt = [&](glm::vec3 centre) {
+        const glm::vec3 minimum = centre - glm::vec3{kHalfExtent};
+        const glm::vec3 maximum = centre + glm::vec3{kHalfExtent};
+        const int minX = static_cast<int>(std::floor(minimum.x + 1e-4F));
+        const int maxX = static_cast<int>(std::floor(maximum.x - 1e-4F));
+        const int minY = static_cast<int>(std::floor(minimum.y + 1e-4F));
+        const int maxY = static_cast<int>(std::floor(maximum.y - 1e-4F));
+        const int minZ = static_cast<int>(std::floor(minimum.z + 1e-4F));
+        const int maxZ = static_cast<int>(std::floor(maximum.z - 1e-4F));
+        for (int y = minY; y <= maxY; ++y) {
+            if (y < 0 || y >= world::kWorldHeight) continue;
+            for (int z = minZ; z <= maxZ; ++z) {
+                for (int x = minX; x <= maxX; ++x) {
+                    if (world::hasCollision(world.block(x, y, z))) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    };
+    // Whether the inventory has any slot that could take the stack, so a full
+    // backpack does not magnet an item forever (vanilla's empty-slot gate).
+    const auto hasRoomFor = [&](const ItemStack& stack) {
+        if (stack.empty()) {
+            return false;
+        }
+        const auto maximum = itemMaximumStackSize(stack);
+        for (std::size_t index = 0; index < Inventory::kSlotCount; ++index) {
+            const auto& slot = inventory.slot(index);
+            if (slot.empty() || (sameItem(slot, stack) && slot.count < maximum)) {
+                return true;
+            }
+        }
+        return false;
+    };
+
     for (auto& entity : entities_) {
         entity.previousPosition = entity.position;
         ++entity.ageTicks;
         entity.velocity.y -= 0.04F;
         entity.velocity *= 0.98F;
-        glm::vec3 next = entity.position + entity.velocity;
-        const int blockX = static_cast<int>(std::floor(next.x));
-        const int blockZ = static_cast<int>(std::floor(next.z));
-        const int belowY = static_cast<int>(std::floor(next.y - 0.13F));
-        if (world::hasCollision(world.block(blockX, belowY, blockZ)) &&
-            entity.velocity.y <= 0.0F) {
-            next.y = static_cast<float>(belowY + 1) + 0.13F;
-            entity.velocity.y = 0.0F;
-            entity.velocity.x *= 0.70F;
-            entity.velocity.z *= 0.70F;
+
+        // Player magnet: within reach the item drifts toward the player instead
+        // of popping into the backpack at the edge of the pickup radius — the
+        // visible fly-to-player animation. The speed is capped so the drift
+        // reads, and a full inventory stops the pull.
+        if (entity.ageTicks >= 10U) {
+            const glm::vec3 toPlayer = playerPosition - entity.position;
+            const float distance = glm::length(toPlayer);
+            if (distance <= 1.5F && distance > 1e-3F && hasRoomFor(entity.stack)) {
+                entity.velocity += glm::normalize(toPlayer) * 0.05F;
+                const float speed = glm::length(entity.velocity);
+                constexpr float kMagnetMaxSpeed = 0.18F;
+                if (speed > kMagnetMaxSpeed) {
+                    entity.velocity *= kMagnetMaxSpeed / speed;
+                }
+            }
         }
-        if (world::isFluid(world.block(blockX, belowY, blockZ))) {
+
+        // ItemEntity#applyBuoyancy: water slows and lifts the drop.
+        const auto foot = entity.position - glm::vec3{0.0F, 0.2F, 0.0F};
+        if (world::isFluid(world.block(
+                static_cast<int>(std::floor(entity.position.x)),
+                static_cast<int>(std::floor(foot.y)),
+                static_cast<int>(std::floor(entity.position.z))))) {
             entity.velocity *= 0.80F;
             entity.velocity.y += 0.03F;
         }
-        entity.position = next;
 
+        // Entity#move: resolve Y first, then the horizontal axes, so an item
+        // lands flush on a floor and slides along a wall instead of piling in.
+        // When a move would collide, bisect toward the contact so even a fast
+        // drop ends resting exactly on the surface (the mobs' moveWithCollisions
+        // walks the same way).
+        const auto moveAxis = [&](int axis, float amount) {
+            if (std::abs(amount) < 1e-4F) {
+                return;
+            }
+            glm::vec3 candidate = entity.position;
+            candidate[axis] += amount;
+            if (!collidesAt(candidate)) {
+                entity.position = candidate;
+                return;
+            }
+            float safe = 0.0F;
+            float blocked = 1.0F;
+            for (int iteration = 0; iteration < 12; ++iteration) {
+                const float middle = (safe + blocked) * 0.5F;
+                candidate = entity.position;
+                candidate[axis] += amount * middle;
+                if (collidesAt(candidate)) {
+                    blocked = middle;
+                } else {
+                    safe = middle;
+                }
+            }
+            entity.position[axis] += amount * safe;
+            entity.velocity[axis] = 0.0F;
+        };
+        moveAxis(1, entity.velocity.y);
+        moveAxis(0, entity.velocity.x);
+        moveAxis(2, entity.velocity.z);
+
+        // The item is collected once it actually reaches the player.
         if (entity.ageTicks >= 10U &&
-            glm::distance(entity.position, playerPosition) <= 1.5F) {
+            glm::distance(entity.position, playerPosition) <= 0.4F) {
             const auto previousCount = entity.stack.count;
             inventory.add(entity.stack);
             if (entity.stack.count != previousCount) {
@@ -59,6 +147,37 @@ std::size_t ItemEntitySystem::tick(
             }
         }
     }
+
+    // Merge nearby stacks of the same item into a single group (vanilla
+    // ItemEntity#tryMerge, capped at the stack size): a ground full of the same
+    // drop renders as one icon instead of one entity per item.
+    for (std::size_t index = 0; index < entities_.size(); ++index) {
+        auto& group = entities_[index];
+        if (group.stack.empty()) {
+            continue;
+        }
+        const auto maximum = itemMaximumStackSize(group.stack);
+        for (std::size_t other = index + 1; other < entities_.size(); ++other) {
+            auto& target = entities_[other];
+            if (target.stack.empty() || !sameItem(group.stack, target.stack) ||
+                group.stack.count >= maximum) {
+                continue;
+            }
+            if (std::abs(group.position.x - target.position.x) > 0.5F ||
+                std::abs(group.position.y - target.position.y) > 0.5F ||
+                std::abs(group.position.z - target.position.z) > 0.5F) {
+                continue;
+            }
+            const auto moved = std::min(
+                target.stack.count, static_cast<std::uint8_t>(maximum - group.stack.count));
+            group.stack.count = static_cast<std::uint8_t>(group.stack.count + moved);
+            target.stack.count = static_cast<std::uint8_t>(target.stack.count - moved);
+            if (target.stack.count == 0U) {
+                target.stack = {};
+            }
+        }
+    }
+
     std::erase_if(entities_, [](const ItemEntity& entity) {
         return entity.stack.empty() || entity.ageTicks > 6'000U || entity.position.y < -8.0F;
     });

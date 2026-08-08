@@ -125,10 +125,14 @@ void GameSession::killPlayer(SimulationHost& host) {
 }
 
 void GameSession::respawn() {
+    // PlayerManager#respawnPlayer prefers the player's personal spawn point and
+    // only falls back to the world spawn when none was set. 1.16.1 also respawns
+    // facing due north (yaw 0) regardless of the spawn point's stored angle.
     vitals_.reset();
-    player_.setPosition(worldSpawnPosition_);
-    physicsPreviousPosition_ = worldSpawnPosition_;
-    physicsCurrentPosition_ = worldSpawnPosition_;
+    const glm::vec3 spawn = hasPlayerSpawn_ ? playerSpawnPosition_ : worldSpawnPosition_;
+    player_.setPosition(spawn);
+    physicsPreviousPosition_ = spawn;
+    physicsCurrentPosition_ = spawn;
 }
 
 void GameSession::beginEating(const Item* kind, SimulationHost& host) {
@@ -205,6 +209,13 @@ void GameSession::tickEating(SimulationHost& host) {
         return;
     }
     ++eatTicks_;
+    // LivingEntity#shouldSpawnConsumptionEffects: once the eat is past its
+    // first seven ticks, the chew sound (generic.eat) fires every fourth tick.
+    // `remaining > 0` keeps the final tick's burst below from double-firing.
+    const int remaining = kEatTicks - eatTicks_;
+    if (remaining > 0 && remaining % 4 == 0 && remaining <= kEatTicks - 7) {
+        host.playEat(player_.position());
+    }
     if (eatTicks_ < kEatTicks) {
         return;
     }
@@ -220,6 +231,8 @@ void GameSession::tickEating(SimulationHost& host) {
         vitals_.eat(food.foodLevel, food.saturationModifier);
         static_cast<void>(inventory_.consumeSelected());
     }
+    // consumeItem's burst eat sound, then PlayerEntity.eatFood's burp.
+    host.playEat(player_.position());
     host.playBurp(player_.position());
     cancelEating(host);
 }

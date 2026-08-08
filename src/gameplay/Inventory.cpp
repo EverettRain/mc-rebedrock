@@ -122,35 +122,40 @@ void Inventory::quickMoveInto(ItemStack& source) {
         return;
     }
     const auto maximum = itemMaximumStackSize(source);
-    // QUICK_MOVE fills the main grid before the hotbar, merging into existing
-    // stacks first and empty slots second, and leaves whatever does not fit in
-    // `source`.
+    // QUICK_MOVE fills the main grid before the hotbar, and within each region
+    // merges into existing stacks before empty slots — ScreenHandler#insertItem
+    // walks the range once for matching stacks and once for the first empty
+    // slot. Whatever still does not fit stays in `source`.
     const auto merge = [&](ItemStack& target) {
-        if (source.empty()) {
+        if (source.empty() || target.empty() || !sameItem(target, source) ||
+            target.count >= maximum) {
             return;
         }
-        if (!target.empty()) {
-            if (!sameItem(target, source) || target.count >= maximum) {
-                return;
-            }
-            const auto moved = std::min(
-                source.count, static_cast<std::uint8_t>(maximum - target.count));
-            target.count = static_cast<std::uint8_t>(target.count + moved);
-            source.count = static_cast<std::uint8_t>(source.count - moved);
-            if (source.count == 0U) {
-                source = {};
-            }
+        const auto moved = std::min(
+            source.count, static_cast<std::uint8_t>(maximum - target.count));
+        target.count = static_cast<std::uint8_t>(target.count + moved);
+        source.count = static_cast<std::uint8_t>(source.count - moved);
+        if (source.count == 0U) {
+            source = {};
+        }
+    };
+    const auto fill = [&](ItemStack& target) {
+        if (source.empty() || !target.empty()) {
             return;
         }
         target = source;
         source = {};
     };
-    for (std::size_t index = kHotbarSize; index < kSlotCount && !source.empty(); ++index) {
-        merge(slots_[index]);
-    }
-    for (std::size_t index = 0; index < kHotbarSize && !source.empty(); ++index) {
-        merge(slots_[index]);
-    }
+    const auto scan = [&](const auto& apply, std::size_t first, std::size_t last) {
+        for (std::size_t index = first; index < last && !source.empty(); ++index) {
+            apply(slots_[index]);
+        }
+    };
+    // First pass merges into existing stacks; second pass fills empty slots.
+    scan(merge, kHotbarSize, kSlotCount);
+    scan(merge, 0, kHotbarSize);
+    scan(fill, kHotbarSize, kSlotCount);
+    scan(fill, 0, kHotbarSize);
 }
 
 ItemStack& Inventory::mutableSlot(std::size_t index) {
@@ -398,6 +403,10 @@ void Inventory::stowCursorStack() {
             return;
         }
     }
+}
+
+void Inventory::replaceSelected(ItemStack stack) {
+    slots_[selectedHotbarSlot_] = stack;
 }
 
 ItemStack Inventory::takeSelected(bool wholeStack) {

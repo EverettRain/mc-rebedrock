@@ -83,7 +83,10 @@ const ContentRegistry& contentRegistry() {
             world::Block::Gravel, world::Block::Sandstone, world::Block::QuartzBlock,
             world::Block::Obsidian, world::Block::Clay, world::Block::SnowBlock,
             world::Block::Netherrack, world::Block::Granite, world::Block::Diorite,
-            world::Block::Andesite, world::Block::CoarseDirt, world::Block::Podzol,
+            world::Block::Andesite, world::Block::PolishedGranite,
+            world::Block::PolishedDiorite, world::Block::PolishedAndesite,
+            world::Block::SmoothStone,
+            world::Block::CoarseDirt, world::Block::Podzol,
             world::Block::RedSand, world::Block::WhiteWool, world::Block::RedWool,
             world::Block::BlackWool, world::Block::Bedrock,
         };
