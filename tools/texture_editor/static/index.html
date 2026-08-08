@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mc-rebedrock · 实体纹理配置编辑器</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+  <h1>mc-rebedrock · 实体纹理配置编辑器</h1>
+  <div class="header-actions">
+    <label>模型
+      <select id="model-select" title="resources/animation/*.geo.json"></select>
+    </label>
+    <span id="self-check" class="badge" title="前端 box-UV 映射与服务器参考实现的一致性检查">—</span>
+    <button id="save-btn" disabled title="写入 resources/animation/<模型>.geo.json 并镜像到 build*/game/resources">保存到项目</button>
+    <button id="download-btn" title="导出与保存内容完全一致的 geo.json，不写入项目">导出 geo.json</button>
+    <a id="download-link" href="#" download="model.geo.json" hidden></a>
+  </div>
+  <div id="status" class="status"></div>
+</header>
+
+<main>
+  <section id="controls" class="panel">
+    <h2>纹理信息</h2>
+    <dl class="kv">
+      <dt>几何文件</dt><dd id="info-geo">—</dd>
+      <dt>纹理文件</dt><dd id="info-texture">—</dd>
+      <dt>PNG 实际尺寸</dt><dd id="info-png">—</dd>
+      <dt>声明尺寸 (UV 坐标系)</dt><dd id="info-declared">—</dd>
+    </dl>
+    <div id="notes" class="notes"></div>
+
+    <h2>纹理分块 (png 分块)</h2>
+    <p class="hint">游戏按“声明尺寸”把贴图切成 box-UV 网格：着色器用 texture_width/height
+      归一化 UV，再按 PNG 的真实像素采样。声明尺寸是坐标系，PNG 是它的整数倍放大即可对齐。</p>
+    <div class="row">
+      <label>宽
+        <input id="tex-width" type="number" min="1" step="1" value="64">
+      </label>
+      <label>高
+        <input id="tex-height" type="number" min="1" step="1" value="32">
+      </label>
+    </div>
+
+    <h2>选中 cube</h2>
+    <dl class="kv">
+      <dt>骨骼 / 序号</dt><dd id="sel-bone">—</dd>
+      <dt>origin / size</dt><dd id="sel-geometry">—</dd>
+    </dl>
+    <div class="row">
+      <label>uv.u (网起点 x)
+        <input id="sel-uv-u" type="number" step="1">
+      </label>
+      <label>uv.v (网起点 y)
+        <input id="sel-uv-v" type="number" step="1">
+      </label>
+    </div>
+    <label class="checkbox"><input id="sel-mirror" type="checkbox"> 水平镜像 (mirror)</label>
+    <div class="row">
+      <label>UV 框归属面（标签）
+        <select id="sel-face-as">
+          <option value="front">F · front</option>
+          <option value="back">B · back</option>
+          <option value="east">E · east</option>
+          <option value="west">W · west</option>
+          <option value="up">U · up</option>
+          <option value="down">D · down</option>
+        </select>
+      </label>
+      <label>旋转 180°
+        <input id="sel-face-rot" type="checkbox">
+      </label>
+    </div>
+    <p class="hint">点击网格上某个 UV 框后：改“归属面”即重贴该框给另一个几何面（例如把 B Body 改成 F Body——身体的正面改采样原背面矩形）；勾选“旋转 180°”让该框倒置采样。此扩展会写入 geo.json 的 cube.faces，当前预览生效。</p>
+    <p class="hint">在中网格子上拖动某个面，会整体平移该 cube 的 box-UV 网（改的是该 cube 的 uv 起点，与游戏 boxUvFaceRect 一致）。←→↑↓ 微调 1 texel，Shift 为 4。
+      uv 不会被夹到贴图范围内：实体采样器是 REPEAT，越界的网会绕回另一侧，预览与游戏一样照实呈现（网格里以虚线标出）。</p>
+  </section>
+
+  <section id="net" class="panel panel-grow">
+    <h2>Box-UV 网格 <span class="dim" id="net-dims">—</span></h2>
+    <div class="canvas-scroll" id="net-scroll">
+      <canvas id="net-canvas"></canvas>
+    </div>
+  </section>
+
+  <section id="preview" class="panel">
+    <h2>3D 预览 <span class="dim">（与游戏映射一致）</span></h2>
+    <div class="preview-wrap">
+      <canvas id="preview-canvas"></canvas>
+      <div class="preview-tools">
+        <label class="checkbox"><input id="show-net" type="checkbox" checked> 网格线</label>
+        <div class="views">
+          <button data-view="front">前</button>
+          <button data-view="back">后</button>
+          <button data-view="left">左</button>
+          <button data-view="right">右</button>
+          <button data-view="top">顶</button>
+          <button data-view="3q">3/4</button>
+        </div>
+      </div>
+    </div>
+    <p class="hint">拖拽旋转视角，滚轮缩放。</p>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

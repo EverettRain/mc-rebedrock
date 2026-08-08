@@ -1,0 +1,62 @@
+{
+  "format_version": "1.8.0",
+  "animations": {
+    "animation.player.walk": {
+      "loop": true,
+      "animation_length": 1.0,
+      "bones": {
+        "rightLeg": { "rotation": ["math.cos(query.anim_time * 360) * 40 * variable.walk_amount", 0, 0] },
+        "leftLeg":  { "rotation": ["math.cos(query.anim_time * 360 + 180) * 40 * variable.walk_amount", 0, 0] },
+        "rightArm": { "rotation": ["math.cos(query.anim_time * 360 + 180) * 40 * variable.walk_amount", 0, 0] },
+        "leftArm":  { "rotation": ["math.cos(query.anim_time * 360) * 40 * variable.walk_amount", 0, 0] }
+      }
+    },
+    "animation.player.idle": {
+      "loop": true,
+      "animation_length": 3.0,
+      "bones": {
+        "rightArm": { "rotation": [0, 0, "math.cos(query.anim_time * 120) * 2 + 3"] },
+        "leftArm":  { "rotation": [0, 0, "math.cos(query.anim_time * 120) * -2 - 3"] },
+        "body":     { "position": [0, "math.cos(query.anim_time * 120) * 0.1", 0] }
+      }
+    },
+    "animation.player.look": {
+      "loop": true,
+      "animation_length": 1.0,
+      "bones": {
+        // The body turns with the look at half the head's amplitude
+        // (body_look_amount = 0.5 in the inventory preview, 0 for the world
+        // player), matching vanilla EntityRenderer#drawEntity's bodyYaw = f*20
+        // vs yaw = f*40. The head is a child of the body, so the animator
+        // composes the two rotations and the preview pose just reads them.
+        "body": { "rotation": [0, "variable.look_yaw * variable.body_look_amount", 0] },
+        "head": { "rotation": ["variable.look_pitch", "variable.look_yaw", 0] }
+      }
+    },
+    "animation.player.sneak": {
+      "loop": true,
+      "animation_length": 1.0,
+      "bones": {
+        // The torso must hinge at the waist (0,12,0), not its neck pivot
+        // (0,24,0): position = (I - R_x(28)) * (waist - pivot) keeps the body's
+        // base seated on the (root-level, planted) legs instead of swinging it
+        // ~5.6 units forward and detaching the upper body.
+        "body": { "rotation": [28, 0, 0], "position": [0, -1.405, 5.634] },
+        "head": { "rotation": [-16, 0, 0] }
+      }
+    },
+    "animation.player.attack": {
+      "loop": false,
+      "animation_length": 0.3,
+      "bones": {
+        "rightArm": {
+          "rotation": {
+            "0.0": [0, 0, 0],
+            "0.1": [-80, 0, -20],
+            "0.3": [0, 0, 0]
+          }
+        }
+      }
+    }
+  }
+}

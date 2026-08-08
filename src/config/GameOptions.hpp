@@ -1,0 +1,49 @@
+#pragma once
+
+#include "world/WorldConstants.hpp"
+
+#include <filesystem>
+#include <string>
+
+namespace mc::config {
+
+struct GameOptions final {
+    std::string version = "ReBedrock beta2";
+    int windowWidth = 960;
+    int windowHeight = 720;
+    int guiScale = 0;
+    int viewDistance = 4;
+    int frameRateLimit = 120;
+    int anisotropy = 8;
+    float masterVolume = 0.8F;
+    bool antiAliasing = true;
+    bool viewBobbing = true;
+    // Bedrock-style auto-jump: walking forward into a one-block rise jumps
+    // automatically. Off by default, matching Java 1.16.1 (which has no
+    // auto-jump at all).
+    bool autoJump = false;
+    // Smooth lighting is a tri-state quality: Off keeps the flat light values,
+    // Standard is the binary-AO algorithm, High is the vanilla 1.16.1 AO. The
+    // mesh is baked at the active quality (the packed vertex carries one AO
+    // set), so changing it remeshes the world.
+    mc::world::SmoothLightingQuality smoothLightingQuality =
+        mc::world::SmoothLightingQuality::Standard;
+    bool dynamicLight = false;
+    // Present at the monitor's refresh rate (FIFO) instead of MAILBOX's
+    // drop-on-demand presentation; zero CPU cost and no tearing, at the price
+    // of never exceeding the display rate.
+    bool vsync = false;
+    // Interface language code, matching a vanilla lang file name (en_us, zh_cn).
+    std::string language = "en_us";
+    // Vanilla's "Force Unicode Font": draws Latin text from the unicode pages
+    // too, which keeps mixed Latin/CJK lines visually consistent.
+    bool forceUnicodeFont = false;
+
+    [[nodiscard]] static GameOptions load(const std::filesystem::path& path);
+    void save(const std::filesystem::path& path) const;
+    void sanitize();
+
+    [[nodiscard]] bool operator==(const GameOptions&) const = default;
+};
+
+} // namespace mc::config

@@ -1,0 +1,46 @@
+{
+  "format_version": "1.8.0",
+  "animations": {
+    "animation.held_item.break": {
+      "loop": false,
+      "animation_length": 0.3,
+      "bones": {
+        "item": {
+          "position": {"0.0": [0, 0, 0], "0.15": [-0.11, -0.18, 0.05], "0.3": [0, 0, 0]},
+          "rotation": {"0.0": [0, 0, 0], "0.15": [0, -54.4296, 0], "0.3": [0, 0, 0]},
+          "scale":    {"0.0": [1, 1, 1], "0.15": [0.94, 0.94, 0.94], "0.3": [1, 1, 1]}
+        }
+      }
+    },
+    "animation.held_item.use": {
+      "loop": false,
+      "animation_length": 0.3,
+      "bones": {
+        "item": {
+          "position": {"0.0": [0, 0, 0], "0.15": [-0.04, -0.11, -0.03], "0.3": [0, 0, 0]},
+          "rotation": {"0.0": [0, 0, 0], "0.15": [0, -21.7714, 0], "0.3": [0, 0, 0]},
+          "scale":    {"0.0": [1, 1, 1], "0.15": [0.97, 0.97, 0.97], "0.3": [1, 1, 1]}
+        }
+      }
+    },
+    "animation.held_item.eat": {
+      "loop": false,
+      "animation_length": 1.6,
+      "bones": {
+        "item": {
+          "position": [
+            "(1 - math.pow(1 - q.anim_time / 1.6, 27)) * 0.6",
+            "(1 - math.pow(1 - q.anim_time / 1.6, 27)) * -0.5 + (1 - q.anim_time / 1.6 < 0.8 ? math.abs(math.cos((32 - q.anim_time * 20) * 45)) * 0.1 : 0)",
+            0
+          ],
+          "rotation": [
+            "(1 - math.pow(1 - q.anim_time / 1.6, 27)) * 30",
+            "(1 - math.pow(1 - q.anim_time / 1.6, 27)) * 90",
+            "(1 - math.pow(1 - q.anim_time / 1.6, 27)) * 10"
+          ],
+          "scale": [1, 1, 1]
+        }
+      }
+    }
+  }
+}

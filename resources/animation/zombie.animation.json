@@ -1,0 +1,29 @@
+{
+  "format_version": "1.8.0",
+  "animations": {
+    "animation.zombie.walk": {
+      "loop": true,
+      "animation_length": 1.0,
+      "bones": {
+        "rightLeg": { "rotation": ["math.cos(query.anim_time * 360) * 40 * variable.walk_amount", 0, 0] },
+        "leftLeg":  { "rotation": ["math.cos(query.anim_time * 360 + 180) * 40 * variable.walk_amount", 0, 0] }
+      }
+    },
+    "animation.zombie.idle": {
+      "loop": true,
+      "animation_length": 3.0,
+      "bones": {
+        "head": { "rotation": ["math.cos(query.anim_time * 90) * 3", "math.sin(query.anim_time * 60) * 5", 0] },
+        "body": { "rotation": ["math.sin(query.anim_time * 90) * 1", 0, 0] },
+        // Vanilla zombies hold their arms locked straight out front (90 degrees
+        // from the hanging rest, i.e. fully horizontal) and never swing them.
+        // The pose lives in the idle/rest clip ONLY: the renderer blends walk +
+        // idle every frame and the Animator *adds* each layer's rotation, so a
+        // pose in both clips would double (90+90 = a straight-up surrender). The
+        // walk clip leaves the arms untouched; it just swings the legs.
+        "rightArm": { "rotation": [90, 0, 0] },
+        "leftArm":  { "rotation": [90, 0, 0] }
+      }
+    }
+  }
+}

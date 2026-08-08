@@ -1,0 +1,115 @@
+:root {
+  --bg: #1a1c22;
+  --panel: #21242b;
+  --panel-2: #262a32;
+  --line: #353a45;
+  --text: #d7dbe3;
+  --dim: #8b93a3;
+  --accent: #5a96e6;
+  --ok: #50c878;
+  --warn: #e6be50;
+  --bad: #e0605a;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+header h1 { font-size: 16px; margin: 0; }
+.header-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.badge {
+  font-size: 12px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--dim);
+  white-space: nowrap;
+}
+.badge.ok { color: #0d1f14; background: var(--ok); border-color: var(--ok); }
+.badge.warn { color: #241d05; background: var(--warn); border-color: var(--warn); }
+.badge.bad { color: #2a0a08; background: var(--bad); border-color: var(--bad); }
+
+button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #081120; font-weight: 600; }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+
+.status { flex-basis: 100%; font-size: 12px; color: var(--dim); min-height: 16px; }
+.status.ok { color: var(--ok); }
+.status.bad { color: var(--bad); }
+
+main {
+  display: grid;
+  grid-template-columns: 300px 1fr 460px;
+  gap: 12px;
+  padding: 12px;
+  height: calc(100vh - 64px);
+}
+@media (max-width: 1200px) {
+  main { grid-template-columns: 280px 1fr; grid-template-rows: auto 1fr; }
+  #preview { grid-column: 1 / -1; }
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  overflow: auto;
+  min-height: 0;
+}
+.panel-grow { display: flex; flex-direction: column; }
+.panel h2 { font-size: 13px; margin: 0 0 8px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.4px; }
+.panel h2:not(:first-child) { margin-top: 18px; }
+.dim { color: var(--dim); font-weight: normal; text-transform: none; letter-spacing: 0; }
+
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0 0 8px; font-size: 12px; }
+.kv dt { color: var(--dim); }
+.kv dd { margin: 0; word-break: break-all; font-family: ui-monospace, Menlo, monospace; }
+
+.hint { font-size: 12px; color: var(--dim); margin: 6px 0; }
+.notes { font-size: 12px; }
+.notes .note { margin: 4px 0; padding: 6px 8px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--warn); color: var(--warn); }
+
+.row { display: flex; gap: 10px; margin: 6px 0; }
+.row label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--dim); flex: 1; }
+.row input, .row select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 13px; }
+input[type="number"] { width: 100%; }
+.checkbox { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 8px 0; }
+.checkbox input { accent-color: var(--accent); }
+
+select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+
+.canvas-scroll { overflow: auto; flex: 1; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+#net-canvas { display: block; image-rendering: pixelated; }
+
+.preview-wrap { position: relative; }
+#preview-canvas { width: 100%; display: block; image-rendering: pixelated; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+.preview-tools { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
+.views { display: flex; gap: 4px; }
+.views button { padding: 2px 8px; font-size: 12px; }

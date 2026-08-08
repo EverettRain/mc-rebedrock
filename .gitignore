@@ -1,0 +1,58 @@
+# ── Mojang 版权资源 ─────────────────────────────────────────────
+# 从本地 Minecraft 缓存提取的 vanilla 资源，不入库
+resources/vanilla/
+
+# ── 运行时用户数据 ──────────────────────────────────────────────
+# 首次运行生成的选项/日志（<config>/options.properties、rebedrock.log）
+# 用 / 锚定根目录：resources/config/ 里的默认配置仍保留追踪
+/config/
+/saves/
+*.log
+
+# ── 本地开发文档 ────────────────────────────────────────────────
+# 面向本地/agent 的详细文档（原 README 全量内容），不入库
+AGENT.md
+# 设计/实现报告等本地文档
+docs/
+
+# ── Python 工具链 ──────────────────────────────────────────────
+tools/.preview-venv/
+tools/preview-out/
+__pycache__/
+*.pyc
+*.pyo
+
+# ── 构建产物 ───────────────────────────────────────────────────
+.gradle/
+build/
+.cache/
+cmake-build-*/
+compile_commands.json
+# 备份文件
+*.bak
+# 编译产物兜底（正常只出现在 build/ 内）
+*.spv
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.exe
+*.pdb
+
+# ── IDE / 编辑器 ───────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── 操作系统 ───────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+Thumbs.db
+Desktop.ini
+
+# ── vendored 依赖 ──────────────────────────────────────────────
+# vendor/stb-src 是 nothings/stb 的完整克隆；忽略其内嵌 .git，
+# 否则 git 会把整个目录当 gitlink（子模块引用），克隆后无法构建
+vendor/stb-src/.git/
