@@ -7,6 +7,14 @@ simple versioned history while it is in beta.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## ReBedrock beta3
+
+### Added
+
 - A "High" smooth-lighting tier (`lighting.smooth=high`), implementing the
   vanilla 1.16.1 per-block ambient occlusion: full opaque cubes darken corners
   to 0.2, a corner whose diagonal is enclosed probes two cells up in the face
@@ -71,6 +79,38 @@ simple versioned history while it is in beta.
   0–2 leather, and has its own spawn egg. The spawn-area demo herd is now 2 pigs
   + 2 cows, and a raw beef item (with a vanilla `item/beef.png` icon) joins the
   food catalogue.
+- A crop-farming system, following 1.16.1's blocks, loot and crafting. Four new
+  blocks — farmland (tilled with a hoe), and the wheat, carrots and potatoes
+  crops — plus wheat seeds, wheat, carrot and potato items. A hoe right-clicks
+  dirt, grass and podzol into farmland (coarse dirt back into plain dirt, the
+  vanilla HOE_LOOKUP map) and wears one durability point per till. Seeds,
+  carrot and potato plant on farmland; the crops grow on the random tick, need
+  light 9 in the block above, and grow up to three times faster ringed by moist
+  farmland (1.16.1's getAvailableMoisture and the 25/moisture growth odds), so
+  `/gamerule randomTickSpeed` scales the rate like every other random tick.
+  Mature wheat drops wheat plus a binomial roll of seeds, carrots and potatoes
+  drop their produce, and an unripe crop returns a seed; tall grass drops wheat
+  seeds 1/8 of the time. Three wheat in a row craft bread. Breaking farmland
+  yields dirt and pops any crop standing on it, with the crop's loot rolled
+  from the age it had reached.
+- Farmland moisture, per 1.16.1's FarmlandBlock: water within four blocks
+  hydrates the soil (the moisture jumps to 7 and the top texture wets), and dry
+  farmland dries one level at a time, reverting to plain dirt once it reaches
+  zero and nothing is planted on it.
+- Farmland trampling (FarmlandBlock#onLandedUpon): landing on tilled soil with
+  more than half a block of fall has a chance — `nextFloat() < fallDistance -
+  0.5`, so a one-block fall breaks it half the time — to turn the farmland back
+  to dirt and pop the crop above it. The fall distance is tracked per player
+  the way Entity#fallDistance is; walking never tramples.
+- Dropped items are 3D. Non-block items (tools, materials, food) drop as the
+  held item's single-layer slab model — the icon as a thin 3D card with
+  extruded edges — spinning about Y, instead of a flat camera-facing sprite,
+  the way 1.16.1's ItemEntityRenderer draws the same ItemRenderer model in
+  GROUND transform. Block items keep their miniature cube.
+- Crops select like their stage: the raycast box grows from 2/16 (a sprout) to
+  a full block as the crop ages (1.16.1's CropBlock.SHAPES), and the selection
+  outline follows it, so you aim at the plant rather than the empty air above
+  it.
 
 ### Changed
 
@@ -97,6 +137,13 @@ simple versioned history while it is in beta.
   question marks: the font's unicode pages are built from the language screen's
   display names as well as the active language, so the CJK glyphs stay loaded
   even while a pure-ASCII language is in use.
+- Farmland is no longer a full block: its mesh, collision box and selection box
+  are the vanilla 15/16 shape, so the player stands a sixteenth lower on it and
+  the soil reads as the tilled field it is.
+- Crops render as the vanilla `crop` blockstate model — four orthogonal thin
+  planes at the quarter offsets (x=4/16, x=12/16, z=4/16 and z=12/16), with the
+  plant's base sinking to the farmland surface — instead of the two diagonal
+  planes of a `cross`.
 
 ### Fixed
 
@@ -229,6 +276,34 @@ simple versioned history while it is in beta.
   on macOS, so a 120fps cap paced the loop at ~100fps — every frame overshot by
   the OS wake latency. The limiter sleeps most of the budget and busy-waits the
   final two milliseconds, so 120 now means 120.
+- Blocks next to the shortened farmland keep their side faces. Face culling
+  treated farmland as a full opaque cube, so a neighbour's face toward it was
+  dropped and the exposed 1/16 sliver above the farmland's top showed a
+  see-through gap; a truncated neighbour no longer culls the face against it.
+- The cow's model now matches the 1.16.1 `CowEntityModel`. It was built from the
+  pig's torso (10×16×8 at box-UV 28,8), so the body came out too short and
+  narrow and its net sampled the wrong region of `cow.png`. The torso is now the
+  cow's own 12×18×10 at UV 18,4; the head is the vanilla 8×8×6 sitting at world
+  y 16..24 (it used to be an 8×8×8 sunk below the body top); the horns and the
+  udder the Java model adds as children of the head and torso are present; and
+  the legs use the vanilla ±4 pivots with the front pair at z −6. The fix also
+  includes the same horn/udder bones in the compiled-in built-in model, so the
+  creature stays correct when the resource files are missing.
+- The cow and pig no longer wear their belly texture on their backs. The
+  body's box-UV faces were mapped for a non-flipped renderer, but 1.16.1 draws
+  the same torso in a Y-flipped frame, so the face that landed on the back
+  sampled the belly rect — on the cow that put the udder's pink patch at the
+  body's front-top ("back of the neck") — and the belly sampled the back rect.
+  The `front↔back` / `up↔down` face overrides now re-route the rects so the back
+  reads the back texture and the belly the belly texture, exactly like vanilla;
+  the pig and the cow share the fix, in the resources and the built-in models.
+- The pig walks with the vanilla gait instead of its legs half a stride behind.
+  The pig's walk clip swung every leg 180° out of phase with
+  `QuadrupedEntityModel#setAngles`, at a 30° swing and one leg cycle per block —
+  the pig appeared to shuffle its legs as if the whole set was rotated about the
+  body. The clip now matches the cow's: the 0.6662 leg frequency, the 1.4 rad
+  (80.2°) swing and the vanilla diagonal pairing, one leg cycle per 1.5 blocks
+  travelled.
 
 ## ReBedrock beta2
 

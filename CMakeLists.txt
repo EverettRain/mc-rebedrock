@@ -208,7 +208,9 @@ add_executable(mc_rebedrock
     src/gameplay/entities/PigEntity.cpp
     src/gameplay/entities/CowEntity.cpp
     src/gameplay/entities/ZombieEntity.cpp
+    src/gameplay/entities/SpeciesRenderData.cpp
     src/gameplay/GameRules.cpp
+    src/gameplay/GameSession.cpp
     src/gameplay/Inventory.cpp
     src/gameplay/ItemEntitySystem.cpp
     src/gameplay/ItemPlacement.cpp
@@ -714,7 +716,41 @@ if(BUILD_TESTING)
     )
     add_test(NAME entity_registry COMMAND mc_rebedrock_entity_registry_test)
 
-    
+    add_executable(mc_rebedrock_game_session_test
+        tests/game_session_test.cpp
+        src/gameplay/ChestSystem.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/CraftingSystem.cpp
+        src/gameplay/EntitySystem.cpp
+        src/gameplay/GameRules.cpp
+        src/gameplay/GameSession.cpp
+        src/gameplay/Inventory.cpp
+        src/gameplay/ItemEntitySystem.cpp
+        src/gameplay/ItemPlacement.cpp
+        src/gameplay/MiningSystem.cpp
+        src/gameplay/PlayerController.cpp
+        src/gameplay/PlayerVitals.cpp
+        src/gameplay/WorldSimulation.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/world/BlockPlacement.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/World.cpp
+        src/world/gen/TreeGrower.cpp
+    )
+    target_include_directories(mc_rebedrock_game_session_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME game_session COMMAND mc_rebedrock_game_session_test)
+
+
     
     
     

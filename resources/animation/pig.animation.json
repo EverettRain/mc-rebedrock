@@ -3,12 +3,12 @@
   "animations": {
     "animation.pig.walk": {
       "loop": true,
-      "animation_length": 1.0,
+      "animation_length": 1.5,
       "bones": {
-        "legFrontRight": { "rotation": ["math.cos(query.anim_time * 360) * 30 * variable.walk_amount", 0, 0] },
-        "legFrontLeft":  { "rotation": ["math.cos(query.anim_time * 360 + 180) * 30 * variable.walk_amount", 0, 0] },
-        "legBackRight":  { "rotation": ["math.cos(query.anim_time * 360 + 180) * 30 * variable.walk_amount", 0, 0] },
-        "legBackLeft":   { "rotation": ["math.cos(query.anim_time * 360) * 30 * variable.walk_amount", 0, 0] }
+        "legFrontRight": { "rotation": ["math.cos(query.anim_time * 360 * 0.6662 + 180) * 80.2 * variable.walk_amount", 0, 0] },
+        "legFrontLeft":  { "rotation": ["math.cos(query.anim_time * 360 * 0.6662) * 80.2 * variable.walk_amount", 0, 0] },
+        "legBackRight":  { "rotation": ["math.cos(query.anim_time * 360 * 0.6662) * 80.2 * variable.walk_amount", 0, 0] },
+        "legBackLeft":   { "rotation": ["math.cos(query.anim_time * 360 * 0.6662 + 180) * 80.2 * variable.walk_amount", 0, 0] }
       }
     },
     "animation.pig.idle": {

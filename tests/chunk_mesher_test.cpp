@@ -55,6 +55,15 @@ int main() {
     assert(farmlandMesh.vertices.size() == 44U);
     assert(farmlandMesh.indices.size() == 66U);
 
+    // A crop renders as the vanilla crop.json grid: four orthogonal planes at
+    // the quarter offsets (x=4/16, x=12/16, z=4/16, z=12/16), each double-sided
+    // — 16 vertices, 48 indices, unlike the two diagonal planes of a `cross`.
+    mc::world::Chunk cropChunk;
+    cropChunk.setBlock(1, 1, 1, mc::world::Block::WheatCrops);
+    const auto cropMesh = mc::world::ChunkMesher::build(cropChunk);
+    assert(cropMesh.vertices.size() == 16U);
+    assert(cropMesh.indices.size() == 48U);
+
     mc::world::Chunk sectionBoundary;
     sectionBoundary.setBlock(1, 15, 1, mc::world::Block::Stone);
     sectionBoundary.setBlock(1, 16, 1, mc::world::Block::Stone);

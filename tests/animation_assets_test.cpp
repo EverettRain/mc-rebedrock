@@ -73,13 +73,15 @@ int main() {
     assert(std::abs(mob.evaluate().bone(static_cast<std::size_t>(frontRight)).rotation.x + 30.0F) <
            1e-3F);
 
-    // Cow: the 1.16.1 QuadrupedEntityModel port. Six bones like the quadruped,
-    // and the walk clip swings the legs at the vanilla setAngles cadence
-    // (0.6662 frequency, 1.4 rad = 80.2 degrees amplitude) with the front-right
-    // anti-phase to the front-left — the same diagonal gait 1.16.1 applies.
+    // Cow: the 1.16.1 CowEntityModel port. Nine bones — the quadruped's six,
+    // plus the udder and the two horns the cow model adds as children of the
+    // torso and head — and the walk clip swings the legs at the vanilla
+    // setAngles cadence (0.6662 frequency, 1.4 rad = 80.2 degrees amplitude)
+    // with the front-right anti-phase to the front-left — the same diagonal
+    // gait 1.16.1 applies.
     const AnimatedModel cow = loadAnimatedModel(
         kDir / "cow.geo.json", {kDir / "cow.animation.json"});
-    assert(cow.model.boneCount() == 6U);
+    assert(cow.model.boneCount() == 9U);
     assert(cow.animations.find("animation.cow.walk") != nullptr);
     assert(cow.animations.find("animation.cow.idle") != nullptr);
     Animator cowMob;

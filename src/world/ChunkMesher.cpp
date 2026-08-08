@@ -718,6 +718,45 @@ void appendCrossedPlant(
     appendPlantQuad(mesh, layer, shiftedSecond, x, y, z, lighting, sectionOrigin);
 }
 
+// The vanilla `crop` blockstate model (crop.json): four orthogonal thin planes
+// at the quarter offsets x=4/16, x=12/16, z=4/16 and z=12/16, rather than the
+// two diagonal planes of a `cross`. Each plane is double-sided, so a crop reads
+// as a solid "+" grid from any angle instead of a thin X. The planes span y
+// -1/16 to 15/16 like the vanilla model, so the plant's base sinks to the
+// farmland surface below the crop cell instead of floating a sixteenth up.
+template <typename Sampler>
+void appendCropPlant(
+    render::MeshData& mesh,
+    float layer,
+    int x,
+    int y,
+    int z,
+    const Sampler& lighting,
+    const glm::vec3& sectionOrigin) {
+    constexpr float kPlaneBottom = -0.0625F;
+    constexpr float kPlaneTop = 0.9375F;
+    constexpr std::array<glm::vec3, 4> planeXLow{{
+        {0.25F, kPlaneBottom, 0.0F}, {0.25F, kPlaneBottom, 1.0F},
+        {0.25F, kPlaneTop, 1.0F}, {0.25F, kPlaneTop, 0.0F},
+    }};
+    constexpr std::array<glm::vec3, 4> planeXHigh{{
+        {0.75F, kPlaneBottom, 0.0F}, {0.75F, kPlaneBottom, 1.0F},
+        {0.75F, kPlaneTop, 1.0F}, {0.75F, kPlaneTop, 0.0F},
+    }};
+    constexpr std::array<glm::vec3, 4> planeZLow{{
+        {0.0F, kPlaneBottom, 0.25F}, {1.0F, kPlaneBottom, 0.25F},
+        {1.0F, kPlaneTop, 0.25F}, {0.0F, kPlaneTop, 0.25F},
+    }};
+    constexpr std::array<glm::vec3, 4> planeZHigh{{
+        {0.0F, kPlaneBottom, 0.75F}, {1.0F, kPlaneBottom, 0.75F},
+        {1.0F, kPlaneTop, 0.75F}, {0.0F, kPlaneTop, 0.75F},
+    }};
+    appendPlantQuad(mesh, layer, planeXLow, x, y, z, lighting, sectionOrigin);
+    appendPlantQuad(mesh, layer, planeXHigh, x, y, z, lighting, sectionOrigin);
+    appendPlantQuad(mesh, layer, planeZLow, x, y, z, lighting, sectionOrigin);
+    appendPlantQuad(mesh, layer, planeZHigh, x, y, z, lighting, sectionOrigin);
+}
+
 void appendTorchQuad(
     render::MeshData& mesh,
     const std::array<glm::vec3, 4>& positions,
@@ -876,12 +915,13 @@ bool buildSectionImpl(
                 if (definition.model == BlockModel::Crop) {
                     // CropsBlock: the stage texture comes from the age stored in
                     // the orientation byte (wheat one per age, carrots/potatoes
-                    // four shared stages), never a fixed layer.
+                    // four shared stages), never a fixed layer. The mesh is the
+                    // vanilla crop.json grid of four orthogonal planes.
                     const int age = world::cropAge(
                         chunk->orientation(localX, worldY, localZ));
-                    appendCrossedPlant(
-                        targetMesh, current, worldX, worldY, worldZ, lighting, sectionOrigin,
-                        world::cropTextureLayer(current, age));
+                    appendCropPlant(
+                        targetMesh, world::cropTextureLayer(current, age),
+                        worldX, worldY, worldZ, lighting, sectionOrigin);
                     continue;
                 }
                 if (definition.model == BlockModel::Torch) {
