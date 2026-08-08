@@ -62,6 +62,10 @@ struct TreeChoice final {
     Block leaves = Block::OakLeaves;
     // Relative weight inside the biome's RandomFeature selector.
     float weight = 1.0F;
+    // How deep a standing-water column this tree tolerates (TreeFeatureConfig
+    // maxWaterDepth). Swamp trees grow in one block of shallow water; dry-land
+    // trees accept none.
+    int maxWaterDepth = 0;
 };
 
 // Java's Biome plus the two ConfiguredFeature slots the generator reads.

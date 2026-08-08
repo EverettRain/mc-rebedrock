@@ -365,15 +365,38 @@ void Features::generateVegetation(
     // Decorator.COUNT_EXTRA: a fixed number of trees plus one more now and then.
     random.setDecoratorSeed(populationSeed, 0, 9);
     if (!definition.trees.empty()) {
+        // The deepest water any of the biome's trees tolerates: the swamp's
+        // maxWaterDepth(1) lets its oaks grow through a single standing-water
+        // block, while every other biome accepts none.
+        int maxWaterDepth = 0;
+        for (const auto& choice : definition.trees) {
+            maxWaterDepth = std::max(maxWaterDepth, choice.maxWaterDepth);
+        }
         int treeCount = definition.treeCount;
         if (random.nextFloat() < definition.extraTreeChance) {
             treeCount += definition.extraTreeCount;
         }
         for (int tree = 0; tree < treeCount; ++tree) {
-            const int localX = random.nextInt(16);
-            const int localZ = random.nextInt(16);
-            const int groundY = surfaceHeight(chunk, localX, localZ);
-            if (groundY <= kSeaLevel - 1 || groundY < 0) {
+            // A random cell often lands in open water in the flooded swamp, so
+            // retry a few times to find a column shallow enough to root in —
+            // vanilla's swamp is nearly all plantable, this compensates for the
+            // drowned patches without changing the per-chunk tree count.
+            int localX = 0;
+            int localZ = 0;
+            int groundY = -1;
+            for (int attempt = 0; attempt < 8; ++attempt) {
+                const int candidateX = random.nextInt(16);
+                const int candidateZ = random.nextInt(16);
+                const int candidateY = surfaceHeight(chunk, candidateX, candidateZ);
+                if (candidateY >= kSeaLevel - maxWaterDepth && candidateY >= 0 &&
+                    isSoilForPlants(chunk.block(candidateX, candidateY, candidateZ))) {
+                    localX = candidateX;
+                    localZ = candidateZ;
+                    groundY = candidateY;
+                    break;
+                }
+            }
+            if (groundY < 0) {
                 continue;
             }
             // RandomFeature picks by weight; the list is already normalised.

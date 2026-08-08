@@ -52,6 +52,12 @@ simple versioned history while it is in beta.
   top under a four-layer crown whose widest layer is 8x8, with 1-in-3 branch
   columns carrying their own small foliage nodes. The crown hangs off the trunk
   top log, not a layer above it.
+- The swamp biome is flooded the way 1.16.1's is: its terrain sits at or below
+  sea level so standing water covers most of it, the underwater floor is dirt
+  (not gravel), and its oaks — which keep the vanilla radius-3 canopy — root
+  through a single block of shallow water instead of marching across dry land.
+  Tree placement retries a few cells when the first lands in open water, so the
+  swamp's per-chunk tree count still comes through despite the drowned patches.
 - A dead mob drops its loot in every game mode — the creative gate that
   silently swallowed the drops is gone, matching vanilla's death-time loot roll.
 - A new world can no longer deadlock on "Creating terrain": the spawn search

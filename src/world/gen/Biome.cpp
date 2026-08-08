@@ -52,7 +52,9 @@ constexpr std::array<TreeChoice, 2> kDarkForestTrees{{
 }};
 
 constexpr std::array<TreeChoice, 1> kSwampTrees{{
-    {TreeKind::SwampOak, Block::OakLog, Block::OakLeaves, 1.0F},
+    // Vanilla's SWAMP_TREE has maxWaterDepth(1): the oak grows through a single
+    // block of standing water, which is what lets the flooded swamp carry trees.
+    {TreeKind::SwampOak, Block::OakLog, Block::OakLeaves, 1.0F, 1},
 }};
 
 // depth/scale are Biome.Builder's values for the vanilla biome of the same name;
@@ -80,7 +82,12 @@ const std::array<BiomeDefinition, static_cast<std::size_t>(Biome::Count)> kBiome
      50, 0.1F, 1, kJungleTrees, 12, 4},
     {Biome::DarkForest, "dark_forest", 0.1F, 0.2F, 0.7F, Block::Grass, Block::Dirt,
      Block::Gravel, 10, 0.1F, 1, kDarkForestTrees, 2, 2},
-    {Biome::Swamp, "swamp", -0.2F, 0.1F, 0.8F, Block::Grass, Block::Dirt, Block::Gravel,
+    // Vanilla's swamp is a flat wetland that sits at or just below sea level so
+    // standing water covers most of it; the depth keeps it flooded while the
+    // low scale keeps it flat.
+    // Vanilla's swamp floor stays dirt under the standing water, so its trees
+    // can root in the shallows as well as on the dry patches.
+    {Biome::Swamp, "swamp", -0.25F, 0.1F, 0.8F, Block::Grass, Block::Dirt, Block::Dirt,
      2, 0.1F, 1, kSwampTrees, 5, 1},
     {Biome::Mountains, "mountains", 1.0F, 0.5F, 0.2F, Block::Grass, Block::Dirt, Block::Gravel,
      0, 0.1F, 1, kMountainTrees, 2, 1},
