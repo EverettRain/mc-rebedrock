@@ -113,50 +113,43 @@ constexpr std::uint32_t kWaterAnimationFrameCount = 32;
     }
     return world::SmoothLightingQuality::Standard;
 }
-// The hand-ordered block/entity/effect atlas keeps its 292 layers (the slots
-// items used to occupy are now transparent placeholders so block layer numbers
-// stay put); the crop/farmland block textures end the base atlas; one layer per
-// registered item is then appended from the registry.
-constexpr std::uint32_t kBaseTextureLayerCount = 292;
-// Lava's animated texture follows water's: a still strip on the top face and a
-// flow strip on the sides. The frames live at the very end of the atlas, after
-// the item icons, so every existing layer reference stays where it was.
+// The block/entity/effect atlas opens with a fixed special section (the
+// animated water/lava frames, the player-skin cuboids, the chest parts, the
+// destroy stages, the sun and the moon phases), in a deterministic order so the
+// mesher and the sky shader can keep constexpr bases for them. After it come
+// the block textures, resolved by name from the block registry at startup (no
+// placeholders — every layer is a real texture), then one layer per registered
+// item. The total is computed at runtime from the built atlas.
 constexpr std::uint32_t kLavaStillFrameCount = 20;
 constexpr std::uint32_t kLavaFlowFrameCount = 16;
-constexpr std::uint32_t kLavaFrameCount = kLavaStillFrameCount + kLavaFlowFrameCount;
-constexpr std::uint32_t kLavaStillLayer =
-    kBaseTextureLayerCount +
-    static_cast<std::uint32_t>(gameplay::kItemRegistry.size() +
-                               gameplay::kSpawnEggItems.size());
-constexpr std::uint32_t kLavaFlowLayer = kLavaStillLayer + kLavaStillFrameCount;
-constexpr std::uint32_t kTextureLayerCount =
-    kBaseTextureLayerCount +
-    static_cast<std::uint32_t>(gameplay::kItemRegistry.size() +
-                               gameplay::kSpawnEggItems.size()) +
-    kLavaFrameCount;
-// The base layers are duplicated as floats in world::Block.hpp and the fragment
-// shader; these asserts fail loudly if the item count ever moves them.
-static_assert(kLavaStillLayer == 346, "Lava still layer must match Block.hpp and the shader");
-static_assert(kLavaFlowLayer == 366, "Lava flow layer must match Block.hpp and the shader");
-constexpr float kPlayerHeadFirstLayer = 139.0F;
-constexpr float kPlayerBodyFirstLayer = 145.0F;
-constexpr float kPlayerRightArmFirstLayer = 151.0F;
-constexpr float kPlayerLeftArmFirstLayer = 157.0F;
-constexpr float kPlayerRightLegFirstLayer = 163.0F;
-constexpr float kPlayerLeftLegFirstLayer = 169.0F;
-constexpr float kDestroyStageFirstLayer = 176.0F;
-constexpr float kChestBaseFirstLayer = 186.0F;
-constexpr float kChestLidFirstLayer = 192.0F;
-constexpr float kChestItemTopLayer = 220.0F;
-constexpr float kChestItemFrontLayer = 221.0F;
-constexpr float kChestItemSideLayer = 222.0F;
-constexpr float kFurnaceFrontLayer = 223.0F;
-// The burning furnace's front face (furnace_front_on.png) lives in the first
-// removed-item placeholder layer, layer 211; only the mesher needs it.
-// Eight vanilla moon_phases.png tiles (4x2 grid) occupy the final layers so the
-// sky shader can pick layer kMoonPhaseFirstLayer + moonPhase. The sun stays at
-// its historical layer 137. Keep these two in sync with sky.frag.
-constexpr float kMoonPhaseFirstLayer = 224.0F;
+constexpr std::uint32_t kWaterStillLayer = 0U;
+constexpr std::uint32_t kWaterFlowLayer = 32U;
+constexpr std::uint32_t kLavaStillLayer = 64U;
+constexpr std::uint32_t kLavaFlowLayer = 84U;
+// The first block-texture layer: everything before it is the fixed special
+// section (water 0-63, lava 64-99, player skin 100-135, destroy 136-145,
+// chest parts 146-163, chest item faces 164-166, furnace 167-168, moon 169-176,
+// sun 177).
+constexpr std::uint32_t kFirstBlockTextureLayer = 178U;
+constexpr float kPlayerHeadFirstLayer = 100.0F;
+constexpr float kPlayerBodyFirstLayer = 106.0F;
+constexpr float kPlayerRightArmFirstLayer = 112.0F;
+constexpr float kPlayerLeftArmFirstLayer = 118.0F;
+constexpr float kPlayerRightLegFirstLayer = 124.0F;
+constexpr float kPlayerLeftLegFirstLayer = 130.0F;
+constexpr float kDestroyStageFirstLayer = 136.0F;
+constexpr float kChestBaseFirstLayer = 146.0F;
+constexpr float kChestLidFirstLayer = 152.0F;
+constexpr float kChestItemTopLayer = 164.0F;
+constexpr float kChestItemFrontLayer = 165.0F;
+constexpr float kChestItemSideLayer = 166.0F;
+constexpr float kFurnaceFrontLayer = 167.0F;
+// The burning furnace's front face (furnace_front_on.png) is the fixed layer
+// right after the unlit front; only the mesher needs it.
+// Eight vanilla moon_phases.png tiles (4x2 grid) fill the fixed layers 169-176
+// so the sky shader can pick layer kMoonPhaseFirstLayer + moonPhase; the sun is
+// layer 177. Keep these in sync with sky.frag.
+constexpr float kMoonPhaseFirstLayer = 169.0F;
 // Two-phase world entry: a world opens with a small chunk area around the gameSession.player()
 // (vanilla enters with a small initial area and streams the view distance in
 // during play), so a large render distance does not block the load screen on the
@@ -682,78 +675,10 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
     auto side = assets::ImageData::loadRgba(root / "grass_block_side.png");
     const auto overlay = assets::ImageData::loadRgba(root / "grass_block_side_overlay.png");
     const auto dirt = assets::ImageData::loadRgba(root / "dirt.png");
-    const auto stone = assets::ImageData::loadRgba(root / "stone.png");
-    const auto bedrock = assets::ImageData::loadRgba(root / "bedrock.png");
-    const auto sand = assets::ImageData::loadRgba(root / "sand.png");
-    const auto cobblestone = assets::ImageData::loadRgba(root / "cobblestone.png");
-    const auto oakPlanks = assets::ImageData::loadRgba(root / "oak_planks.png");
-    const auto oakLog = assets::ImageData::loadRgba(root / "oak_log.png");
-    const auto oakLogTop = assets::ImageData::loadRgba(root / "oak_log_top.png");
-    const auto bricks = assets::ImageData::loadRgba(root / "bricks.png");
-    const auto glass = assets::ImageData::loadRgba(root / "glass.png");
-    const auto coalOre = assets::ImageData::loadRgba(root / "coal_ore.png");
-    const auto ironOre = assets::ImageData::loadRgba(root / "iron_ore.png");
-    const auto goldOre = assets::ImageData::loadRgba(root / "gold_ore.png");
-    const auto diamondOre = assets::ImageData::loadRgba(root / "diamond_ore.png");
     auto grassPlant = assets::ImageData::loadRgba(root / "grass.png");
-    const auto dandelion = assets::ImageData::loadRgba(root / "dandelion.png");
-    const auto oakSapling = assets::ImageData::loadRgba(root / "oak_sapling.png");
     auto oakLeaves = assets::ImageData::loadRgba(root / "oak_leaves.png");
-    // Item icons no longer live in this hand-ordered block atlas; they are
-    // appended from the item registry at the end of this function. The slots
-    // items used to occupy stay as transparent placeholders so the block layer
-    // numbers in world::Block.hpp keep pointing at the same layers.
-    assets::ImageData itemLayerPlaceholder;
-    itemLayerPlaceholder.width = top.width;
-    itemLayerPlaceholder.height = top.height;
-    itemLayerPlaceholder.rgba.assign(top.rgba.size(), std::uint8_t{0});
-    const auto& bucket = itemLayerPlaceholder;
-    const auto& waterBucket = itemLayerPlaceholder;
-    const std::array extraTextures{
-        assets::ImageData::loadRgba(root / "gravel.png"),
-        assets::ImageData::loadRgba(root / "spruce_planks.png"),
-        assets::ImageData::loadRgba(root / "birch_planks.png"),
-        assets::ImageData::loadRgba(root / "spruce_log.png"),
-        assets::ImageData::loadRgba(root / "spruce_log_top.png"),
-        assets::ImageData::loadRgba(root / "birch_log.png"),
-        assets::ImageData::loadRgba(root / "birch_log_top.png"),
-        assets::ImageData::loadRgba(root / "bookshelf.png"),
-        assets::ImageData::loadRgba(root / "crafting_table_top.png"),
-        assets::ImageData::loadRgba(root / "crafting_table_side.png"),
-        assets::ImageData::loadRgba(root / "furnace_top.png"),
-        assets::ImageData::loadRgba(root / "furnace_side.png"),
-        assets::ImageData::loadRgba(root / "obsidian.png"),
-        assets::ImageData::loadRgba(root / "clay.png"),
-        assets::ImageData::loadRgba(root / "snow.png"),
-        assets::ImageData::loadRgba(root / "netherrack.png"),
-        assets::ImageData::loadRgba(root / "glowstone.png"),
-        assets::ImageData::loadRgba(root / "white_wool.png"),
-        assets::ImageData::loadRgba(root / "red_wool.png"),
-        assets::ImageData::loadRgba(root / "black_wool.png"),
-        assets::ImageData::loadRgba(root / "stone_bricks.png"),
-        assets::ImageData::loadRgba(root / "mossy_cobblestone.png"),
-        assets::ImageData::loadRgba(root / "sandstone_top.png"),
-        assets::ImageData::loadRgba(root / "sandstone.png"),
-        assets::ImageData::loadRgba(root / "sandstone_bottom.png"),
-        assets::ImageData::loadRgba(root / "pumpkin_top.png"),
-        assets::ImageData::loadRgba(root / "pumpkin_side.png"),
-        assets::ImageData::loadRgba(root / "melon_top.png"),
-        assets::ImageData::loadRgba(root / "melon_side.png"),
-        assets::ImageData::loadRgba(root / "tnt_top.png"),
-        assets::ImageData::loadRgba(root / "tnt_side.png"),
-        assets::ImageData::loadRgba(root / "tnt_bottom.png"),
-        itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
-        itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
-        itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
-        itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
-        assets::ImageData::loadRgba(root / "granite.png"),
-        assets::ImageData::loadRgba(root / "diorite.png"),
-        assets::ImageData::loadRgba(root / "andesite.png"),
-        assets::ImageData::loadRgba(root / "coarse_dirt.png"),
-        assets::ImageData::loadRgba(root / "podzol_top.png"),
-        assets::ImageData::loadRgba(root / "podzol_side.png"),
-        assets::ImageData::loadRgba(root / "red_sand.png"),
-    };
+    // The animated and entity frames that fill the fixed special section. Item
+    // icons no longer live here; they append after the block textures.
     auto waterStillFrames =
         animatedSquareFrames(assets::ImageData::loadRgba(root / "water_still.png"), top.width);
     auto waterFlowFrames =
@@ -764,8 +689,6 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
         animatedSquareFrames(assets::ImageData::loadRgba(root / "lava_flow.png"), top.width);
     auto sunFrames = animatedSquareFrames(
         assets::ImageData::loadRgba(root.parent_path() / "environment" / "sun.png"), top.width);
-    // Split moon_phases.png (a 4x2 grid) into eight square phase tiles resized to
-    // the block layer size. Vanilla phase p maps to column p%4, row p/4.
     const auto moonPhasesImage =
         assets::ImageData::loadRgba(root.parent_path() / "environment" / "moon_phases.png");
     std::array<assets::ImageData, 8> moonPhaseTiles;
@@ -777,7 +700,6 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
             row * moonPhasesImage.height / 2, moonPhasesImage.width / 4,
             moonPhasesImage.height / 2, top.width);
     }
-    const auto torch = assets::ImageData::loadRgba(root / "torch.png");
     const auto playerSkin =
         assets::ImageData::loadRgba(root.parent_path() / "entity" / "steve.png");
     const std::array playerParts{
@@ -788,30 +710,16 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
         playerSkinCuboidFaces(playerSkin, 0, 16, 4, 12, 4, top.width),
         playerSkinCuboidFaces(playerSkin, 16, 48, 4, 12, 4, top.width),
     };
-    const auto& goldPickaxe = itemLayerPlaceholder;
     const auto chestTexture =
         assets::ImageData::loadRgba(root.parent_path() / "entity" / "chest" / "normal.png");
     const auto furnaceFront = assets::ImageData::loadRgba(root / "furnace_front.png");
-    // The lit front fills the first of the removed-item placeholder layers
-    // (211), so it needs no renumbering of the block layers around it.
     const auto furnaceFrontOn = assets::ImageData::loadRgba(root / "furnace_front_on.png");
     auto chestParts = std::array{
         playerSkinCuboidFaces(chestTexture, 0, 19, 14, 10, 14, top.width),
         playerSkinCuboidFaces(chestTexture, 0, 0, 14, 5, 14, top.width),
         playerSkinCuboidFaces(chestTexture, 0, 0, 2, 4, 1, top.width),
     };
-    // The chest atlas lays the lid's top/bottom (the two faces parallel to XZ)
-    // out in the opposite order from a gameSession.player()-skin box, so the smooth top and the
-    // rim-carrying underside were swapped. Exchange the lid's +Y/-Y faces
-    // (indices 2/3) to seat them the right way up. (If the base interior looks
-    // wrong when a chest is open, apply the same swap to chestParts[0].)
     std::swap(chestParts[1][2], chestParts[1][3]);
-    // The original renderer models the latch as a third cuboid. For this
-    // renderer it is baked into the moving lid's front face, avoiding the
-    // oversized white cuboid while keeping the official texture pixels.
-    // The latch spans the lid/base seam. Keep it in the two authored chest
-    // faces rather than drawing a detached white cuboid: its upper half moves
-    // with the lid, while its lower half remains on the base.
     const auto latchUpper = resizedRegion(chestTexture, 1, 1, 2, 2, top.width);
     const auto latchLower = resizedRegion(chestTexture, 1, 3, 2, 2, top.width);
     overlayScaled(chestParts[1][4], latchUpper, 7, 10, 2, 6);
@@ -821,60 +729,22 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
         stackedChestFace(chestParts[1][4], chestParts[0][4]),
         stackedChestFace(chestParts[1][0], chestParts[0][0]),
     };
-    const std::array registeredTextures{
-        assets::ImageData::loadRgba(root / "lapis_ore.png"),
-        assets::ImageData::loadRgba(root / "redstone_ore.png"),
-        assets::ImageData::loadRgba(root / "emerald_ore.png"),
-        assets::ImageData::loadRgba(root / "mossy_stone_bricks.png"),
-        assets::ImageData::loadRgba(root / "chiseled_stone_bricks.png"),
-        assets::ImageData::loadRgba(root / "quartz_block_top.png"),
-        assets::ImageData::loadRgba(root / "quartz_block_side.png"),
-        // The first placeholder slot (layer 211) hosts the lit furnace front.
-        furnaceFrontOn,
-        itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
-        itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
-        itemLayerPlaceholder, itemLayerPlaceholder,
-    };
-    // Content added after the spawn-egg layer: the three remaining wood sets
-    // (jungle, acacia, dark oak) and the twenty tools that complete the tool
-    // rack. Layer indices follow the insertion order below, so they must match
-    // the texture()/textureLayer() floats in world::Block.hpp and Item.hpp.
-    const auto loadBlockTexture = [&root](const char* name) {
-        return assets::ImageData::loadRgba(root / name);
-    };
-    const std::array newContentTextures{
-        loadBlockTexture("jungle_log.png"),
-        loadBlockTexture("jungle_log_top.png"),
-        loadBlockTexture("jungle_planks.png"),
-        loadBlockTexture("acacia_log.png"),
-        loadBlockTexture("acacia_log_top.png"),
-        loadBlockTexture("acacia_planks.png"),
-        loadBlockTexture("dark_oak_log.png"),
-        loadBlockTexture("dark_oak_log_top.png"),
-        loadBlockTexture("dark_oak_planks.png"),
-        // The decorative stone variants fill four of the placeholder slots
-        // (layers 242-245), so the surrounding block layer numbers stay put.
-        loadBlockTexture("polished_granite.png"),
-        loadBlockTexture("polished_diorite.png"),
-        loadBlockTexture("polished_andesite.png"),
-        loadBlockTexture("smooth_stone.png"),
-        itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
-        itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
-        itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
-        itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
-        itemLayerPlaceholder, itemLayerPlaceholder, itemLayerPlaceholder,
-        itemLayerPlaceholder,
-    };
-    // The leaves the biome trees need. Vanilla colours spruce and birch leaves
-    // with the fixed FoliageColors constants and everything else with the biome
-    // foliage colour, which is the same tint the oak leaves already use.
+    std::array<assets::ImageData, 10> destroyStages;
+    for (std::size_t stage = 0; stage < destroyStages.size(); ++stage) {
+        destroyStages[stage] =
+            assets::ImageData::loadRgba(root / ("destroy_stage_" + std::to_string(stage) + ".png"));
+    }
+    // The biome leaves and their tints (spruce/birch fixed, the rest the biome
+    // foliage colour), the same set the tree shapes grow.
     constexpr std::array<float, 3> foliageTint{0.49F, 0.74F, 0.32F};
     constexpr std::array<float, 3> spruceTint{0x61 / 255.0F, 0x99 / 255.0F, 0x61 / 255.0F};
     constexpr std::array<float, 3> birchTint{0x80 / 255.0F, 0xA7 / 255.0F, 0x55 / 255.0F};
     std::array<assets::ImageData, 5> biomeLeafTextures{
-        loadBlockTexture("spruce_leaves.png"), loadBlockTexture("birch_leaves.png"),
-        loadBlockTexture("jungle_leaves.png"), loadBlockTexture("acacia_leaves.png"),
-        loadBlockTexture("dark_oak_leaves.png"),
+        assets::ImageData::loadRgba(root / "spruce_leaves.png"),
+        assets::ImageData::loadRgba(root / "birch_leaves.png"),
+        assets::ImageData::loadRgba(root / "jungle_leaves.png"),
+        assets::ImageData::loadRgba(root / "acacia_leaves.png"),
+        assets::ImageData::loadRgba(root / "dark_oak_leaves.png"),
     };
     const std::array<std::array<float, 3>, 5> biomeLeafTints{
         spruceTint, birchTint, foliageTint, foliageTint, foliageTint};
@@ -887,42 +757,6 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
             }
         }
     }
-    // Saplings are drawn straight from the vanilla sprites, which already carry
-    // their own colour.
-    const std::array<assets::ImageData, 5> biomeSaplingTextures{
-        loadBlockTexture("spruce_sapling.png"), loadBlockTexture("birch_sapling.png"),
-        loadBlockTexture("jungle_sapling.png"), loadBlockTexture("acacia_sapling.png"),
-        loadBlockTexture("dark_oak_sapling.png"),
-    };
-    // Placeholders for the raw/cooked porkchop slots; the real icons are among
-    // the item textures appended from the registry below.
-    const std::array<assets::ImageData, 2> porkchopTextures{
-        itemLayerPlaceholder, itemLayerPlaceholder,
-    };
-    // The crop stage and farmland textures end the base block atlas, in the
-    // exact order of the world::k...Layer constants in Block.hpp. The mesher
-    // looks the stage layer up from the crop's age, so this order is the glue
-    // between the atlas and the block registry.
-    const std::array<assets::ImageData, 18> cropBlockTextures{
-        loadBlockTexture("wheat_stage0.png"), loadBlockTexture("wheat_stage1.png"),
-        loadBlockTexture("wheat_stage2.png"), loadBlockTexture("wheat_stage3.png"),
-        loadBlockTexture("wheat_stage4.png"), loadBlockTexture("wheat_stage5.png"),
-        loadBlockTexture("wheat_stage6.png"), loadBlockTexture("wheat_stage7.png"),
-        loadBlockTexture("carrots_stage0.png"), loadBlockTexture("carrots_stage1.png"),
-        loadBlockTexture("carrots_stage2.png"), loadBlockTexture("carrots_stage3.png"),
-        loadBlockTexture("potatoes_stage0.png"), loadBlockTexture("potatoes_stage1.png"),
-        loadBlockTexture("potatoes_stage2.png"), loadBlockTexture("potatoes_stage3.png"),
-        loadBlockTexture("farmland.png"), loadBlockTexture("farmland_moist.png"),
-    };
-    std::array<assets::ImageData, 10> destroyStages;
-    for (std::size_t stage = 0; stage < destroyStages.size(); ++stage) {
-        destroyStages[stage] =
-            assets::ImageData::loadRgba(root / ("destroy_stage_" + std::to_string(stage) + ".png"));
-    }
-    // The spawn egg's real icon is built by buildSpawnEggIcon and appended
-    // with the other item textures below; this slot is a transparent placeholder
-    // that keeps the legacy fixed-layout block texture layer numbers stable.
-    const auto& pigSpawnEgg = itemLayerPlaceholder;
     if (waterStillFrames.size() != kWaterAnimationFrameCount ||
         waterFlowFrames.size() != kWaterAnimationFrameCount) {
         throw std::runtime_error("Minecraft water textures must contain 32 animation frames");
@@ -934,97 +768,33 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
     if (sunFrames.size() != 1U) {
         throw std::runtime_error("Minecraft sun texture must contain one square frame");
     }
-    requireSameSize(top, side);
-    requireSameSize(top, overlay);
-    requireSameSize(top, dirt);
-    requireSameSize(top, stone);
-    requireSameSize(top, bedrock);
-    requireSameSize(top, sand);
-    requireSameSize(top, cobblestone);
-    requireSameSize(top, oakPlanks);
-    requireSameSize(top, oakLog);
-    requireSameSize(top, oakLogTop);
-    requireSameSize(top, bricks);
-    requireSameSize(top, glass);
-    requireSameSize(top, coalOre);
-    requireSameSize(top, ironOre);
-    requireSameSize(top, goldOre);
-    requireSameSize(top, diamondOre);
-    requireSameSize(top, grassPlant);
-    requireSameSize(top, dandelion);
-    requireSameSize(top, oakSapling);
-    requireSameSize(top, oakLeaves);
-    requireSameSize(top, bucket);
-    requireSameSize(top, waterBucket);
-    for (const auto& texture : extraTextures) {
-        requireSameSize(top, texture);
-    }
-    requireSameSize(top, sunFrames.front());
-    requireSameSize(top, torch);
-    for (const auto& part : playerParts) {
-        for (const auto& face : part)
-            requireSameSize(top, face);
-    }
-    requireSameSize(top, goldPickaxe);
-    requireSameSize(top, pigSpawnEgg);
-    requireSameSize(top, furnaceFront);
-    for (const auto& part : chestParts) {
-        for (const auto& face : part)
-            requireSameSize(top, face);
-    }
-    for (const auto& texture : registeredTextures)
-        requireSameSize(top, texture);
-    for (const auto& texture : newContentTextures)
-        requireSameSize(top, texture);
-    for (const auto& texture : biomeLeafTextures)
-        requireSameSize(top, texture);
-    for (const auto& texture : biomeSaplingTextures)
-        requireSameSize(top, texture);
-    for (const auto& texture : porkchopTextures)
-        requireSameSize(top, texture);
-    for (const auto& texture : cropBlockTextures)
-        requireSameSize(top, texture);
-    for (const auto& stage : destroyStages)
-        requireSameSize(top, stage);
-    for (const auto& frame : waterStillFrames) {
-        requireSameSize(top, frame);
-    }
-    for (const auto& frame : waterFlowFrames) {
-        requireSameSize(top, frame);
-    }
-    for (const auto& frame : lavaStillFrames) {
-        requireSameSize(top, frame);
-    }
-    for (const auto& frame : lavaFlowFrames) {
-        requireSameSize(top, frame);
-    }
-
-    constexpr std::array<float, 3> tint{0.49F, 0.74F, 0.32F};
-    for (std::size_t index = 0; index < top.rgba.size(); index += 4U) {
-        top.rgba[index] = tintedChannel(top.rgba[index], tint[0]);
-        top.rgba[index + 1U] = tintedChannel(top.rgba[index + 1U], tint[1]);
-        top.rgba[index + 2U] = tintedChannel(top.rgba[index + 2U], tint[2]);
-
+    // Tint the foliage and grass the vanilla colours before they enter the atlas.
+    const auto tintInPlace = [](assets::ImageData& image, const std::array<float, 3>& tint) {
+        for (std::size_t index = 0; index + 3U < image.rgba.size(); index += 4U) {
+            for (std::size_t channel = 0; channel < 3U; ++channel) {
+                image.rgba[index + channel] =
+                    tintedChannel(image.rgba[index + channel], tint[channel]);
+            }
+        }
+    };
+    tintInPlace(top, foliageTint);
+    for (std::size_t index = 0; index + 3U < side.rgba.size(); index += 4U) {
         const float alpha = static_cast<float>(overlay.rgba[index + 3U]) / 255.0F;
         for (std::size_t channel = 0; channel < 3U; ++channel) {
-            const auto overlayColor = tintedChannel(overlay.rgba[index + channel], tint[channel]);
+            const auto overlayColor = tintedChannel(overlay.rgba[index + channel], foliageTint[channel]);
             const float blended = static_cast<float>(side.rgba[index + channel]) * (1.0F - alpha) +
                                   static_cast<float>(overlayColor) * alpha;
             side.rgba[index + channel] = static_cast<std::uint8_t>(
                 std::clamp(static_cast<int>(std::lround(blended)), 0, 255));
         }
         side.rgba[index + 3U] = 255U;
-        for (std::size_t channel = 0; channel < 3U; ++channel) {
-            grassPlant.rgba[index + channel] =
-                tintedChannel(grassPlant.rgba[index + channel], tint[channel]);
-            oakLeaves.rgba[index + channel] =
-                tintedChannel(oakLeaves.rgba[index + channel], tint[channel]);
-        }
     }
-    constexpr std::array<float, 3> waterTint{0.25F, 0.48F, 0.92F};
+    tintInPlace(grassPlant, foliageTint);
+    tintInPlace(oakLeaves, foliageTint);
     const auto tintWaterFrames = [&](std::vector<assets::ImageData>& frames) {
+        constexpr std::array<float, 3> waterTint{0.25F, 0.48F, 0.92F};
         for (auto& frame : frames) {
-            for (std::size_t index = 0; index < frame.rgba.size(); index += 4U) {
+            for (std::size_t index = 0; index + 3U < frame.rgba.size(); index += 4U) {
                 for (std::size_t channel = 0; channel < 3U; ++channel) {
                     frame.rgba[index + channel] =
                         tintedChannel(frame.rgba[index + channel], waterTint[channel]);
@@ -1036,89 +806,148 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
     tintWaterFrames(waterStillFrames);
     tintWaterFrames(waterFlowFrames);
 
+    // ---- Fixed special section, in a deterministic order ----
+    std::vector<assets::ImageData> layers;
+    const auto append = [&](const assets::ImageData& image) {
+        requireSameSize(top, image);
+        layers.push_back(image);
+    };
+    for (const auto& frame : waterStillFrames) append(frame);  // 0..31
+    for (const auto& frame : waterFlowFrames) append(frame);   // 32..63
+    for (const auto& frame : lavaStillFrames) append(frame);   // 64..83
+    for (const auto& frame : lavaFlowFrames) append(frame);    // 84..99
+    for (const auto& part : playerParts) {
+        for (const auto& face : part) append(face);            // 100..135
+    }
+    for (const auto& stage : destroyStages) append(stage);     // 136..145
+    for (const auto& part : chestParts) {
+        for (const auto& face : part) append(face);            // 146..163
+    }
+    for (const auto& texture : chestItemTextures) append(texture);  // 164..166
+    append(furnaceFront);                                       // 167
+    append(furnaceFrontOn);                                     // 168
+    for (const auto& tile : moonPhaseTiles) append(tile);       // 169..176
+    append(sunFrames.front());                                  // 177
+
+    // ---- Dynamic block textures, name-driven from the block registry ----
+    // Baked composites register by name so every block that reuses them finds
+    // the same layer (grass_block_side, dirt, the tinted leaves, ...).
+    if (layers.size() != kFirstBlockTextureLayer) {
+        throw std::runtime_error("Fixed texture section does not match kFirstBlockTextureLayer");
+    }
+    std::unordered_map<std::string, float> layerByName;
+    const auto assign = [&](const char* name) -> float {
+        const auto existing = layerByName.find(name);
+        if (existing != layerByName.end()) {
+            return existing->second;
+        }
+        // The crop stages are a contiguous run from their stage-0 layer, so the
+        // mesher can read stage0 + age.
+        const std::string_view view{name};
+        auto stageFor = [&](std::string_view prefix, int count) -> float {
+            if (!view.starts_with(prefix)) {
+                return -1.0F;
+            }
+            const float first = static_cast<float>(layers.size());
+            for (int stage = 0; stage < count; ++stage) {
+                const std::string file{prefix};
+                const std::string image = file.substr(0, file.size() - 1) + std::to_string(stage);
+                assets::ImageData pixels = assets::ImageData::loadRgba(root / (image + ".png"));
+                requireSameSize(top, pixels);
+                layers.push_back(std::move(pixels));
+            }
+            return first;
+        };
+        if (const float wheat = stageFor("wheat_stage0", 8); wheat >= 0.0F) {
+            layerByName.emplace(name, wheat);
+            return wheat;
+        }
+        if (const float carrot = stageFor("carrots_stage0", 4); carrot >= 0.0F) {
+            layerByName.emplace(name, carrot);
+            return carrot;
+        }
+        if (const float potato = stageFor("potatoes_stage0", 4); potato >= 0.0F) {
+            layerByName.emplace(name, potato);
+            return potato;
+        }
+        // Farmland's moist variant sits right after its dry face.
+        if (view == "farmland") {
+            const float first = static_cast<float>(layers.size());
+            for (const char* file : {"farmland", "farmland_moist"}) {
+                assets::ImageData pixels = assets::ImageData::loadRgba(root / (std::string(file) + ".png"));
+                requireSameSize(top, pixels);
+                layers.push_back(std::move(pixels));
+            }
+            layerByName.emplace(name, first);
+            return first;
+        }
+        assets::ImageData pixels = assets::ImageData::loadRgba(root / (std::string(name) + ".png"));
+        requireSameSize(top, pixels);
+        const float index = static_cast<float>(layers.size());
+        layers.push_back(std::move(pixels));
+        layerByName.emplace(name, index);
+        return index;
+    };
+    // The baked composites register first so reuses share their layer.
+    layerByName.emplace("grass_block_top", static_cast<float>(layers.size()));
+    layers.push_back(top);
+    layerByName.emplace("grass_block_side", static_cast<float>(layers.size()));
+    layers.push_back(side);
+    layerByName.emplace("dirt", static_cast<float>(layers.size()));
+    layers.push_back(dirt);
+    layerByName.emplace("grass", static_cast<float>(layers.size()));
+    layers.push_back(grassPlant);
+    layerByName.emplace("oak_leaves", static_cast<float>(layers.size()));
+    layers.push_back(oakLeaves);
+    const std::array<const char*, 5> biomeLeafNames{
+        "spruce_leaves", "birch_leaves", "jungle_leaves", "acacia_leaves", "dark_oak_leaves"};
+    for (std::size_t leaf = 0; leaf < biomeLeafNames.size(); ++leaf) {
+        layerByName.emplace(biomeLeafNames[leaf], static_cast<float>(layers.size()));
+        layers.push_back(biomeLeafTextures[leaf]);
+    }
+
+    for (const auto& definition : world::kBlockRegistry) {
+        const auto block = definition.block;
+        if (block == world::Block::Air) {
+            continue;
+        }
+        if (block == world::Block::Water) {
+            world::setBlockTextureLayers(
+                block, {static_cast<float>(kWaterStillLayer),
+                        static_cast<float>(kWaterFlowLayer),
+                        static_cast<float>(kWaterFlowLayer)});
+            continue;
+        }
+        if (block == world::Block::Lava) {
+            world::setBlockTextureLayers(
+                block, {static_cast<float>(kLavaStillLayer),
+                        static_cast<float>(kLavaFlowLayer),
+                        static_cast<float>(kLavaFlowLayer)});
+            continue;
+        }
+        if (block == world::Block::Chest) {
+            // The dropped chest item draws the baked chest-item faces.
+            world::setBlockTextureLayers(
+                block, {static_cast<float>(kChestItemTopLayer),
+                        static_cast<float>(kChestItemSideLayer),
+                        static_cast<float>(kChestItemSideLayer)});
+            continue;
+        }
+        world::BlockTextureLayers resolved;
+        resolved.top = assign(definition.textures.top);
+        resolved.side = assign(definition.textures.side);
+        resolved.bottom = assign(definition.textures.bottom);
+        world::setBlockTextureLayers(block, resolved);
+    }
+
     TextureArrayPixels output;
     output.width = static_cast<std::uint32_t>(top.width);
     output.height = static_cast<std::uint32_t>(top.height);
-    output.rgba.reserve(top.rgba.size() * kTextureLayerCount);
-    output.rgba.insert(output.rgba.end(), top.rgba.begin(), top.rgba.end());
-    output.rgba.insert(output.rgba.end(), side.rgba.begin(), side.rgba.end());
-    output.rgba.insert(output.rgba.end(), dirt.rgba.begin(), dirt.rgba.end());
-    output.rgba.insert(output.rgba.end(), stone.rgba.begin(), stone.rgba.end());
-    output.rgba.insert(output.rgba.end(), bedrock.rgba.begin(), bedrock.rgba.end());
-    output.rgba.insert(output.rgba.end(), sand.rgba.begin(), sand.rgba.end());
-    output.rgba.insert(output.rgba.end(), cobblestone.rgba.begin(), cobblestone.rgba.end());
-    output.rgba.insert(output.rgba.end(), oakPlanks.rgba.begin(), oakPlanks.rgba.end());
-    output.rgba.insert(output.rgba.end(), oakLog.rgba.begin(), oakLog.rgba.end());
-    output.rgba.insert(output.rgba.end(), oakLogTop.rgba.begin(), oakLogTop.rgba.end());
-    output.rgba.insert(output.rgba.end(), bricks.rgba.begin(), bricks.rgba.end());
-    output.rgba.insert(output.rgba.end(), glass.rgba.begin(), glass.rgba.end());
-    output.rgba.insert(output.rgba.end(), coalOre.rgba.begin(), coalOre.rgba.end());
-    output.rgba.insert(output.rgba.end(), ironOre.rgba.begin(), ironOre.rgba.end());
-    output.rgba.insert(output.rgba.end(), goldOre.rgba.begin(), goldOre.rgba.end());
-    output.rgba.insert(output.rgba.end(), diamondOre.rgba.begin(), diamondOre.rgba.end());
-    output.rgba.insert(output.rgba.end(), grassPlant.rgba.begin(), grassPlant.rgba.end());
-    output.rgba.insert(output.rgba.end(), dandelion.rgba.begin(), dandelion.rgba.end());
-    output.rgba.insert(output.rgba.end(), oakSapling.rgba.begin(), oakSapling.rgba.end());
-    output.rgba.insert(output.rgba.end(), oakLeaves.rgba.begin(), oakLeaves.rgba.end());
-    for (const auto& frame : waterStillFrames) {
-        output.rgba.insert(output.rgba.end(), frame.rgba.begin(), frame.rgba.end());
+    for (const auto& layer : layers) {
+        output.rgba.insert(output.rgba.end(), layer.rgba.begin(), layer.rgba.end());
     }
-    for (const auto& frame : waterFlowFrames) {
-        output.rgba.insert(output.rgba.end(), frame.rgba.begin(), frame.rgba.end());
-    }
-    output.rgba.insert(output.rgba.end(), bucket.rgba.begin(), bucket.rgba.end());
-    output.rgba.insert(output.rgba.end(), waterBucket.rgba.begin(), waterBucket.rgba.end());
-    for (const auto& texture : extraTextures) {
-        output.rgba.insert(output.rgba.end(), texture.rgba.begin(), texture.rgba.end());
-    }
-    output.rgba.insert(output.rgba.end(), sunFrames.front().rgba.begin(),
-                       sunFrames.front().rgba.end());
-    output.rgba.insert(output.rgba.end(), torch.rgba.begin(), torch.rgba.end());
-    for (const auto& part : playerParts) {
-        for (const auto& face : part) {
-            output.rgba.insert(output.rgba.end(), face.rgba.begin(), face.rgba.end());
-        }
-    }
-    output.rgba.insert(output.rgba.end(), goldPickaxe.rgba.begin(), goldPickaxe.rgba.end());
-    for (const auto& stage : destroyStages) {
-        output.rgba.insert(output.rgba.end(), stage.rgba.begin(), stage.rgba.end());
-    }
-    for (const auto& part : chestParts) {
-        for (const auto& face : part) {
-            output.rgba.insert(output.rgba.end(), face.rgba.begin(), face.rgba.end());
-        }
-    }
-    for (const auto& texture : registeredTextures) {
-        output.rgba.insert(output.rgba.end(), texture.rgba.begin(), texture.rgba.end());
-    }
-    for (const auto& texture : chestItemTextures) {
-        output.rgba.insert(output.rgba.end(), texture.rgba.begin(), texture.rgba.end());
-    }
-    output.rgba.insert(output.rgba.end(), furnaceFront.rgba.begin(), furnaceFront.rgba.end());
-    for (const auto& tile : moonPhaseTiles) {
-        output.rgba.insert(output.rgba.end(), tile.rgba.begin(), tile.rgba.end());
-    }
-    output.rgba.insert(output.rgba.end(), pigSpawnEgg.rgba.begin(), pigSpawnEgg.rgba.end());
-    for (const auto& texture : newContentTextures) {
-        output.rgba.insert(output.rgba.end(), texture.rgba.begin(), texture.rgba.end());
-    }
-    for (const auto& texture : biomeLeafTextures) {
-        output.rgba.insert(output.rgba.end(), texture.rgba.begin(), texture.rgba.end());
-    }
-    for (const auto& texture : biomeSaplingTextures) {
-        output.rgba.insert(output.rgba.end(), texture.rgba.begin(), texture.rgba.end());
-    }
-    for (const auto& texture : porkchopTextures) {
-        output.rgba.insert(output.rgba.end(), texture.rgba.begin(), texture.rgba.end());
-    }
-    for (const auto& texture : cropBlockTextures) {
-        output.rgba.insert(output.rgba.end(), texture.rgba.begin(), texture.rgba.end());
-    }
+    const std::uint32_t baseLayerCount = static_cast<std::uint32_t>(layers.size());
     // Item icons: one appended layer per registered item, in registry order.
-    // Each item's texture and the layer it lands on are both driven by its
-    // registration, so gameplay::itemTextureLayer can resolve it at runtime.
-    // Spawn eggs are listed separately (their constructors need entity headers
-    // that sit above Item.hpp), so we iterate both arrays.
     const auto itemDir = root.parent_path() / "item";
     std::uint32_t itemIndex = 0U;
     const auto appendItemIcon = [&](const gameplay::Item* item) {
@@ -1132,22 +961,15 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
         requireSameSize(top, icon);
         output.rgba.insert(output.rgba.end(), icon.rgba.begin(), icon.rgba.end());
         gameplay::setItemTextureLayer(
-            item, static_cast<float>(kBaseTextureLayerCount + itemIndex));
+            item, static_cast<float>(baseLayerCount + itemIndex));
         ++itemIndex;
     };
     for (const gameplay::Item* item : gameplay::kItemRegistry)
         appendItemIcon(item);
     for (const gameplay::Item* item : gameplay::kSpawnEggItems)
         appendItemIcon(item);
-    // Lava's animation frames end the atlas, after every item icon, so the base
-    // layout and the item layers keep their fixed numbers. The first still frame
-    // lands on kLavaStillLayer and the first flow frame on kLavaFlowLayer.
-    for (const auto& frame : lavaStillFrames) {
-        output.rgba.insert(output.rgba.end(), frame.rgba.begin(), frame.rgba.end());
-    }
-    for (const auto& frame : lavaFlowFrames) {
-        output.rgba.insert(output.rgba.end(), frame.rgba.begin(), frame.rgba.end());
-    }
+    // Lava's animation frames live in the fixed section (64..99); nothing trails
+    // the item icons, so the whole atlas is exactly the layers above.
     return output;
 }
 
@@ -5585,26 +5407,30 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void createTextureArray() {
         const auto pixels = loadGrassBlockTextures(blockTextureRoot);
         const auto byteSize = static_cast<VkDeviceSize>(pixels.rgba.size());
+        // The atlas layer count is whatever the name-driven build produced
+        // (fixed special section + block textures + item icons), so it is
+        // derived from the bytes rather than a compile-time constant.
+        const auto layerSize =
+            static_cast<VkDeviceSize>(pixels.width) * static_cast<VkDeviceSize>(pixels.height) * 4U;
+        if (byteSize % layerSize != 0U) {
+            throw std::runtime_error("Block texture array data is not whole layers");
+        }
+        const std::uint32_t layerCount =
+            static_cast<std::uint32_t>(byteSize / layerSize);
         auto staging = createBuffer(byteSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
         std::memcpy(staging.mapped, pixels.rgba.data(), pixels.rgba.size());
         checkVk(vmaFlushAllocation(allocator, staging.allocation, 0, VK_WHOLE_SIZE),
                 "vmaFlushAllocation(texture staging)");
         textureImage =
-            createImage(pixels.width, pixels.height, kTextureLayerCount, VK_FORMAT_R8G8B8A8_SRGB,
+            createImage(pixels.width, pixels.height, layerCount, VK_FORMAT_R8G8B8A8_SRGB,
                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-        transitionTextureImage(textureImage, kTextureLayerCount, VK_IMAGE_LAYOUT_UNDEFINED,
+        transitionTextureImage(textureImage, layerCount, VK_IMAGE_LAYOUT_UNDEFINED,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                                VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                                VK_PIPELINE_STAGE_TRANSFER_BIT);
 
-        const auto layerSize =
-            static_cast<VkDeviceSize>(pixels.width) * static_cast<VkDeviceSize>(pixels.height) * 4U;
-        if (byteSize != layerSize * kTextureLayerCount) {
-            throw std::runtime_error(
-                "Block texture array data does not match kTextureLayerCount");
-        }
-        std::array<VkBufferImageCopy, kTextureLayerCount> regions{};
-        for (std::uint32_t layer = 0; layer < kTextureLayerCount; ++layer) {
+        std::vector<VkBufferImageCopy> regions(layerCount);
+        for (std::uint32_t layer = 0; layer < layerCount; ++layer) {
             regions[layer].bufferOffset = layerSize * layer;
             regions[layer].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             regions[layer].imageSubresource.mipLevel = 0;
@@ -5618,7 +5444,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                static_cast<std::uint32_t>(regions.size()), regions.data());
         endSingleUseCommands(commandBuffer);
         transitionTextureImage(
-            textureImage, kTextureLayerCount, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            textureImage, layerCount, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
             VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
@@ -5631,13 +5457,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
         viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.layerCount = kTextureLayerCount;
+        viewInfo.subresourceRange.layerCount = layerCount;
         checkVk(vkCreateImageView(device, &viewInfo, nullptr, &textureView),
                 "vkCreateImageView(texture)");
 
         createTextureSampler();
         std::cout << "Loaded block texture array: " << pixels.width << 'x' << pixels.height << " x "
-                  << kTextureLayerCount << '\n';
+                  << layerCount << '\n';
     }
 
     // Loads every shipped species' model + skin into a dedicated 2D-array

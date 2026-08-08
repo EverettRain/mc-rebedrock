@@ -58,6 +58,14 @@ simple versioned history while it is in beta.
   through a single block of shallow water instead of marching across dry land.
   Tree placement retries a few cells when the first lands in open water, so the
   swamp's per-chunk tree count still comes through despite the drowned patches.
+- The block texture atlas is now built by name from the block registry, the way
+  1.16.1 registers sprites by ResourceLocation: each block's faces name their
+  textures ("granite", "grass_block_side", ...), the renderer loads and dedupes
+  them once at startup, and every block's resolved atlas layers land in a flat
+  per-block table the mesher and GUI read with a plain array index. The
+  transparent itemLayerPlaceholder slots that used to pin hand-ordered layer
+  numbers are gone — the atlas has no empty layers, and adding a block is a
+  single `.texture("name")` line with no risk of a runtime layer-count crash.
 - A dead mob drops its loot in every game mode — the creative gate that
   silently swallowed the drops is gone, matching vanilla's death-time loot roll.
 - A new world can no longer deadlock on "Creating terrain": the spawn search

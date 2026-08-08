@@ -30,6 +30,12 @@ void expectNear(float actual, float expected, std::string_view context) {
 } // namespace
 
 int main() {
+    // The renderer builds the texture-atlas layer table at startup; pin the
+    // blocks this test meshes so their resolved layers match the assertions.
+    mc::world::setBlockTextureLayers(mc::world::Block::OakLog,
+                                     {9.0F, 8.0F, 9.0F});
+    mc::world::setBlockTextureLayers(mc::world::Block::OakPlanks,
+                                     {7.0F, 7.0F, 7.0F});
     mc::world::Chunk empty;
     assert(mc::world::ChunkMesher::build(empty).empty());
 
@@ -131,7 +137,6 @@ int main() {
     static_assert(!mc::world::hasCollision(mc::world::Block::Torch));
     static_assert(!mc::world::hasCollision(mc::world::Block::WallTorchEast));
     static_assert(mc::world::emittedLight(mc::world::Block::WallTorchEast) == 14U);
-    static_assert(mc::world::textureLayers(mc::world::Block::Chest).top == 220.0F);
 
     mc::world::World directionalWorld;
     mc::world::Chunk directionalChunk;
@@ -142,7 +147,7 @@ int main() {
     directionalWorld.setChunk({0, 0}, std::move(directionalChunk));
     const auto directionalMesh =
         mc::world::ChunkMesher::buildSection(directionalWorld, {0, 0}, 0);
-    expectNear(mc::render::decodeTextureLayer(directionalMesh.mesh.vertices[0]), 223.0F,
+    expectNear(mc::render::decodeTextureLayer(directionalMesh.mesh.vertices[0]), 167.0F,
                "furnace front layer");
     expectNear(mc::render::decodeTextureLayer(directionalMesh.mesh.vertices[32]), 9.0F,
                "furnace side layer");
@@ -194,12 +199,12 @@ int main() {
     assert(std::ranges::any_of(
         waterMesh.translucentMesh.vertices,
         [](const auto& vertex) {
-            return mc::render::decodeTextureLayer(vertex) == 52.0F;
+            return mc::render::decodeTextureLayer(vertex) == 32.0F;
         }));
     assert(std::ranges::any_of(
         waterMesh.translucentMesh.vertices,
         [](const auto& vertex) {
-            return mc::render::decodeTextureLayer(vertex) == 20.0F &&
+            return mc::render::decodeTextureLayer(vertex) == 0.0F &&
                 mc::render::decodeWaterDepth(vertex) >= 4.0F;
         }));
 

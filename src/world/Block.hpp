@@ -180,33 +180,23 @@ enum class ContainerType : std::uint8_t {
     Chest,
 };
 
-// The texture-array layers for the crop and farmland blocks, appended to the end
-// of the base block atlas in VulkanRenderer.cpp. The order here is the insertion
-// order there; these named constants are what both the block registry and the
-// mesher read, so the hand-ordered atlas and the blocks can never disagree.
-inline constexpr float kWheatStage0Layer = 274.0F;
-inline constexpr float kWheatStage1Layer = 275.0F;
-inline constexpr float kWheatStage2Layer = 276.0F;
-inline constexpr float kWheatStage3Layer = 277.0F;
-inline constexpr float kWheatStage4Layer = 278.0F;
-inline constexpr float kWheatStage5Layer = 279.0F;
-inline constexpr float kWheatStage6Layer = 280.0F;
-inline constexpr float kWheatStage7Layer = 281.0F;
-inline constexpr float kCarrotStage0Layer = 282.0F;
-inline constexpr float kCarrotStage1Layer = 283.0F;
-inline constexpr float kCarrotStage2Layer = 284.0F;
-inline constexpr float kCarrotStage3Layer = 285.0F;
-inline constexpr float kPotatoStage0Layer = 286.0F;
-inline constexpr float kPotatoStage1Layer = 287.0F;
-inline constexpr float kPotatoStage2Layer = 288.0F;
-inline constexpr float kPotatoStage3Layer = 289.0F;
-inline constexpr float kFarmlandLayer = 290.0F;
-inline constexpr float kFarmlandMoistLayer = 291.0F;
-
+// The resolved atlas layer for each face of a block, filled by the renderer's
+// name-driven atlas build (see textureLayers/setBlockTextureLayers below).
 struct BlockTextureLayers final {
     float top = 0.0F;
     float side = 0.0F;
     float bottom = 0.0F;
+};
+
+// The block's textures by vanilla file name ("granite", "grass_block_top",
+// "dirt"), mirroring how 1.16.1 blocks reference sprites by ResourceLocation.
+// The renderer resolves the names into atlas layer indices once at startup and
+// writes the per-block layers into kBlockTextureLayers; the mesher and the GUI
+// read those precomputed floats, so the hot paths never touch a string.
+struct BlockTextureNames final {
+    const char* top = nullptr;
+    const char* side = nullptr;
+    const char* bottom = nullptr;
 };
 
 // Everything the engine knows about one block. Instances are produced by
@@ -222,7 +212,7 @@ struct BlockDefinition final {
     // Fallback English name. Localized text comes from the translation key the
     // identifiers below produce; this is what shows when a key is missing.
     const char* displayName = "";
-    BlockTextureLayers textures{};
+    BlockTextureNames textures{};
     float hardness = 0.0F;
     float blastResistance = 0.0F;
     std::uint8_t maximumStackSize = 64U;
@@ -289,10 +279,11 @@ class BlockProperties final {
         return copy;
     }
 
-    [[nodiscard]] constexpr BlockProperties texture(float all) const {
+    [[nodiscard]] constexpr BlockProperties texture(const char* all) const {
         return texture(all, all, all);
     }
-    [[nodiscard]] constexpr BlockProperties texture(float top, float side, float bottom) const {
+    [[nodiscard]] constexpr BlockProperties texture(
+        const char* top, const char* side, const char* bottom) const {
         BlockProperties copy = *this;
         copy.definition_.textures = {top, side, bottom};
         return copy;
@@ -440,55 +431,55 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
             .replaceable()
             .noDrops(),
         BlockProperties::of(Block::Grass, "grass_block", "Grass Block")
-            .texture(0.0F, 1.0F, 2.0F)
+.texture("grass_block_top", "grass_block_side", "dirt")
             .strength(0.6F)
             .soil(),
         BlockProperties::of(Block::Dirt, "dirt", "Dirt")
-            .texture(2.0F)
+.texture("dirt")
             .strength(0.5F)
             .soil(),
         BlockProperties::of(Block::Stone, "stone", "Stone")
-            .texture(3.0F)
+.texture("stone")
             .strength(1.5F, 6.0F),
         BlockProperties::of(Block::Cobblestone, "cobblestone", "Cobblestone")
-            .texture(6.0F)
+.texture("cobblestone")
             .strength(2.0F, 6.0F),
         BlockProperties::of(Block::OakPlanks, "oak_planks", "Oak Planks")
-            .texture(7.0F)
+.texture("oak_planks")
             .strength(2.0F, 3.0F),
         BlockProperties::of(Block::OakLog, "oak_log", "Oak Log")
-            .texture(9.0F, 8.0F, 9.0F)
+.texture("oak_log_top", "oak_log", "oak_log_top")
             .strength(2.0F)
             .pillar(),
         BlockProperties::of(Block::Bricks, "bricks", "Bricks")
-            .texture(10.0F)
+.texture("bricks")
             .strength(2.0F, 6.0F),
         BlockProperties::of(Block::Bedrock, "bedrock", "Bedrock")
-            .texture(4.0F)
+.texture("bedrock")
             .unbreakable(3'600'000.0F),
         BlockProperties::of(Block::Sand, "sand", "Sand")
-            .texture(5.0F)
+.texture("sand")
             .strength(0.5F)
             .gravity(),
         BlockProperties::of(Block::Glass, "glass", "Glass")
-            .texture(11.0F)
+.texture("glass")
             .strength(0.3F)
             .renderLayer(BlockRenderLayer::Translucent),
         BlockProperties::of(Block::CoalOre, "coal_ore", "Coal Ore")
-            .texture(12.0F)
+.texture("coal_ore")
             .strength(3.0F),
         BlockProperties::of(Block::IronOre, "iron_ore", "Iron Ore")
-            .texture(13.0F)
+.texture("iron_ore")
             .strength(3.0F),
         BlockProperties::of(Block::GoldOre, "gold_ore", "Gold Ore")
-            .texture(14.0F)
+.texture("gold_ore")
             .strength(3.0F),
         BlockProperties::of(Block::DiamondOre, "diamond_ore", "Diamond Ore")
-            .texture(15.0F)
+.texture("diamond_ore")
             .strength(3.0F),
         // Material.REPLACEABLE_PLANT: placing a block inside tall grass replaces it.
         BlockProperties::of(Block::GrassPlant, "grass", "Grass")
-            .texture(16.0F)
+.texture("grass")
             .instantBreak()
             .cross()
             .offsetType(BlockOffsetType::XZ)
@@ -496,21 +487,21 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
             .noDrops()
             .support(BlockSupport::Soil),
         BlockProperties::of(Block::Dandelion, "dandelion", "Dandelion")
-            .texture(17.0F)
+.texture("dandelion")
             .instantBreak()
             .cross()
             .offsetType(BlockOffsetType::XZ)
             .support(BlockSupport::Soil),
         BlockProperties::of(Block::OakSapling, "oak_sapling", "Oak Sapling")
-            .texture(18.0F)
+.texture("oak_sapling")
             .instantBreak()
             .cross()
             .support(BlockSupport::Soil),
         BlockProperties::of(Block::OakLeaves, "oak_leaves", "Oak Leaves")
-            .texture(19.0F)
+.texture("oak_leaves")
             .leaves(),
         BlockProperties::of(Block::Water, "water", "Water")
-            .texture(20.0F, 52.0F, 52.0F)
+.texture("water_still", "water_flow", "water_flow")
             .strength(100.0F)
             .renderLayer(BlockRenderLayer::Translucent)
             .noCollision()
@@ -518,32 +509,32 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
             .noDrops()
             .lightFilter(1U),
         BlockProperties::of(Block::Gravel, "gravel", "Gravel")
-            .texture(86.0F)
+.texture("gravel")
             .strength(0.6F)
             .gravity(),
         BlockProperties::of(Block::SprucePlanks, "spruce_planks", "Spruce Planks")
-            .texture(87.0F)
+.texture("spruce_planks")
             .strength(2.0F, 3.0F),
         BlockProperties::of(Block::BirchPlanks, "birch_planks", "Birch Planks")
-            .texture(88.0F)
+.texture("birch_planks")
             .strength(2.0F, 3.0F),
         BlockProperties::of(Block::SpruceLog, "spruce_log", "Spruce Log")
-            .texture(90.0F, 89.0F, 90.0F)
+.texture("spruce_log_top", "spruce_log", "spruce_log_top")
             .strength(2.0F)
             .pillar(),
         BlockProperties::of(Block::BirchLog, "birch_log", "Birch Log")
-            .texture(92.0F, 91.0F, 92.0F)
+.texture("birch_log_top", "birch_log", "birch_log_top")
             .strength(2.0F)
             .pillar(),
         BlockProperties::of(Block::Bookshelf, "bookshelf", "Bookshelf")
-            .texture(7.0F, 93.0F, 7.0F)
+.texture("oak_planks", "bookshelf", "oak_planks")
             .strength(1.5F),
         BlockProperties::of(Block::CraftingTable, "crafting_table", "Crafting Table")
-            .texture(94.0F, 95.0F, 7.0F)
+.texture("crafting_table_top", "crafting_table_side", "oak_planks")
             .strength(2.5F)
             .container(ContainerType::CraftingTable),
         BlockProperties::of(Block::Furnace, "furnace", "Furnace")
-            .texture(96.0F, 97.0F, 96.0F)
+.texture("furnace_top", "furnace_side", "furnace_top")
             .strength(3.5F)
             .horizontalFacing()
             .container(ContainerType::Furnace),
@@ -552,73 +543,73 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // interaction. Light 13 is LitFurnaceBlock's level.
         BlockProperties::of(Block::LitFurnace, "lit_furnace", "Furnace")
             .vanillaAlias("furnace")
-            .texture(96.0F, 97.0F, 96.0F)
+.texture("furnace_top", "furnace_side", "furnace_top")
             .strength(3.5F)
             .light(13U)
             .horizontalFacing()
             .container(ContainerType::Furnace),
         BlockProperties::of(Block::Obsidian, "obsidian", "Obsidian")
-            .texture(98.0F)
+.texture("obsidian")
             .strength(50.0F, 1'200.0F),
         BlockProperties::of(Block::Clay, "clay", "Clay")
-            .texture(99.0F)
+.texture("clay")
             .strength(0.6F),
         BlockProperties::of(Block::SnowBlock, "snow_block", "Snow Block")
-            .texture(100.0F)
+.texture("snow")
             .strength(0.2F),
         BlockProperties::of(Block::Netherrack, "netherrack", "Netherrack")
-            .texture(101.0F)
+.texture("netherrack")
             .strength(0.4F),
         BlockProperties::of(Block::Glowstone, "glowstone", "Glowstone")
-            .texture(102.0F)
+.texture("glowstone")
             .strength(0.3F)
             .light(15U),
         BlockProperties::of(Block::WhiteWool, "white_wool", "White Wool")
-            .texture(103.0F)
+.texture("white_wool")
             .strength(0.8F),
         BlockProperties::of(Block::RedWool, "red_wool", "Red Wool")
-            .texture(104.0F)
+.texture("red_wool")
             .strength(0.8F),
         BlockProperties::of(Block::BlackWool, "black_wool", "Black Wool")
-            .texture(105.0F)
+.texture("black_wool")
             .strength(0.8F),
         BlockProperties::of(Block::StoneBricks, "stone_bricks", "Stone Bricks")
-            .texture(106.0F)
+.texture("stone_bricks")
             .strength(1.5F, 6.0F),
         BlockProperties::of(Block::MossyCobblestone, "mossy_cobblestone", "Mossy Cobblestone")
-            .texture(107.0F)
+.texture("mossy_cobblestone")
             .strength(2.0F, 6.0F),
         BlockProperties::of(Block::Sandstone, "sandstone", "Sandstone")
-            .texture(108.0F, 109.0F, 110.0F)
+.texture("sandstone_top", "sandstone", "sandstone_bottom")
             .strength(0.8F),
         BlockProperties::of(Block::Pumpkin, "pumpkin", "Pumpkin")
-            .texture(111.0F, 112.0F, 111.0F)
+.texture("pumpkin_top", "pumpkin_side", "pumpkin_top")
             .strength(1.0F),
         BlockProperties::of(Block::Melon, "melon", "Melon")
-            .texture(113.0F, 114.0F, 113.0F)
+.texture("melon_top", "melon_side", "melon_top")
             .strength(1.0F),
         BlockProperties::of(Block::Tnt, "tnt", "TNT")
-            .texture(115.0F, 116.0F, 117.0F)
+.texture("tnt_top", "tnt_side", "tnt_bottom")
             .instantBreak(),
         BlockProperties::of(Block::Granite, "granite", "Granite")
-            .texture(130.0F)
+.texture("granite")
             .strength(1.5F, 6.0F),
         BlockProperties::of(Block::Diorite, "diorite", "Diorite")
-            .texture(131.0F)
+.texture("diorite")
             .strength(1.5F, 6.0F),
         BlockProperties::of(Block::Andesite, "andesite", "Andesite")
-            .texture(132.0F)
+.texture("andesite")
             .strength(1.5F, 6.0F),
         BlockProperties::of(Block::CoarseDirt, "coarse_dirt", "Coarse Dirt")
-            .texture(133.0F)
+.texture("coarse_dirt")
             .strength(0.5F)
             .soil(),
         BlockProperties::of(Block::Podzol, "podzol", "Podzol")
-            .texture(134.0F, 135.0F, 2.0F)
+.texture("podzol_top", "podzol_side", "dirt")
             .strength(0.5F)
             .soil(),
         BlockProperties::of(Block::RedSand, "red_sand", "Red Sand")
-            .texture(136.0F)
+.texture("red_sand")
             .strength(0.5F)
             .gravity(),
         // Carved cells below y=11 become lava (CaveCarver#carveAtPoint). Rendered
@@ -627,13 +618,13 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // the sides the animated flow strip (16 frames from layer 364), laid out
         // at the end of the atlas in VulkanRenderer.cpp.
         BlockProperties::of(Block::Lava, "lava", "Lava")
-            .texture(344.0F, 364.0F, 364.0F)
+.texture("lava_still", "lava_flow", "lava_flow")
             .strength(100.0F)
             .noDrops()
             .light(15U)
             .lightFilter(1U),
         BlockProperties::of(Block::Torch, "torch", "Torch")
-            .texture(138.0F)
+.texture("torch")
             .instantBreak()
             .renderLayer(BlockRenderLayer::Cutout)
             .model(BlockModel::Torch)
@@ -643,7 +634,7 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
             .torch(),
         BlockProperties::of(Block::WallTorchNorth, "wall_torch_north", "Wall Torch")
             .vanillaAlias("wall_torch")
-            .texture(138.0F)
+.texture("torch")
             .instantBreak()
             .renderLayer(BlockRenderLayer::Cutout)
             .model(BlockModel::Torch)
@@ -653,7 +644,7 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
             .torch(),
         BlockProperties::of(Block::WallTorchEast, "wall_torch_east", "Wall Torch")
             .vanillaAlias("wall_torch")
-            .texture(138.0F)
+.texture("torch")
             .instantBreak()
             .renderLayer(BlockRenderLayer::Cutout)
             .model(BlockModel::Torch)
@@ -663,7 +654,7 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
             .torch(),
         BlockProperties::of(Block::WallTorchSouth, "wall_torch_south", "Wall Torch")
             .vanillaAlias("wall_torch")
-            .texture(138.0F)
+.texture("torch")
             .instantBreak()
             .renderLayer(BlockRenderLayer::Cutout)
             .model(BlockModel::Torch)
@@ -673,7 +664,7 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
             .torch(),
         BlockProperties::of(Block::WallTorchWest, "wall_torch_west", "Wall Torch")
             .vanillaAlias("wall_torch")
-            .texture(138.0F)
+.texture("torch")
             .instantBreak()
             .renderLayer(BlockRenderLayer::Cutout)
             .model(BlockModel::Torch)
@@ -682,89 +673,89 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
             .support(BlockSupport::Wall)
             .torch(),
         BlockProperties::of(Block::Chest, "chest", "Chest")
-            .texture(220.0F, 222.0F, 222.0F)
+.texture("chest", "chest", "chest")
             .strength(2.5F)
             .renderLayer(BlockRenderLayer::Cutout)
             .model(BlockModel::Chest)
             .horizontalFacing()
             .container(ContainerType::Chest),
         BlockProperties::of(Block::LapisOre, "lapis_ore", "Lapis Lazuli Ore")
-            .texture(204.0F)
+.texture("lapis_ore")
             .strength(3.0F),
         BlockProperties::of(Block::RedstoneOre, "redstone_ore", "Redstone Ore")
-            .texture(205.0F)
+.texture("redstone_ore")
             .strength(3.0F),
         BlockProperties::of(Block::EmeraldOre, "emerald_ore", "Emerald Ore")
-            .texture(206.0F)
+.texture("emerald_ore")
             .strength(3.0F),
         BlockProperties::of(Block::MossyStoneBricks, "mossy_stone_bricks", "Mossy Stone Bricks")
-            .texture(207.0F)
+.texture("mossy_stone_bricks")
             .strength(1.5F, 6.0F),
         BlockProperties::of(Block::ChiseledStoneBricks, "chiseled_stone_bricks",
                             "Chiseled Stone Bricks")
-            .texture(208.0F)
+.texture("chiseled_stone_bricks")
             .strength(1.5F, 6.0F),
         BlockProperties::of(Block::QuartzBlock, "quartz_block", "Block of Quartz")
-            .texture(209.0F, 210.0F, 209.0F)
+.texture("quartz_block_top", "quartz_block_side", "quartz_block_top")
             .strength(0.8F),
         BlockProperties::of(Block::JungleLog, "jungle_log", "Jungle Log")
-            .texture(234.0F, 233.0F, 234.0F)
+.texture("jungle_log_top", "jungle_log", "jungle_log_top")
             .strength(2.0F)
             .pillar(),
         BlockProperties::of(Block::JunglePlanks, "jungle_planks", "Jungle Planks")
-            .texture(235.0F)
+.texture("jungle_planks")
             .strength(2.0F, 3.0F),
         BlockProperties::of(Block::AcaciaLog, "acacia_log", "Acacia Log")
-            .texture(237.0F, 236.0F, 237.0F)
+.texture("acacia_log_top", "acacia_log", "acacia_log_top")
             .strength(2.0F)
             .pillar(),
         BlockProperties::of(Block::AcaciaPlanks, "acacia_planks", "Acacia Planks")
-            .texture(238.0F)
+.texture("acacia_planks")
             .strength(2.0F, 3.0F),
         BlockProperties::of(Block::DarkOakLog, "dark_oak_log", "Dark Oak Log")
-            .texture(240.0F, 239.0F, 240.0F)
+.texture("dark_oak_log_top", "dark_oak_log", "dark_oak_log_top")
             .strength(2.0F)
             .pillar(),
         BlockProperties::of(Block::DarkOakPlanks, "dark_oak_planks", "Dark Oak Planks")
-            .texture(241.0F)
+.texture("dark_oak_planks")
             .strength(2.0F, 3.0F),
         BlockProperties::of(Block::SpruceLeaves, "spruce_leaves", "Spruce Leaves")
-            .texture(262.0F)
+.texture("spruce_leaves")
             .leaves(),
         BlockProperties::of(Block::BirchLeaves, "birch_leaves", "Birch Leaves")
-            .texture(263.0F)
+.texture("birch_leaves")
             .leaves(),
         BlockProperties::of(Block::JungleLeaves, "jungle_leaves", "Jungle Leaves")
-            .texture(264.0F)
+.texture("jungle_leaves")
             .leaves(),
         BlockProperties::of(Block::AcaciaLeaves, "acacia_leaves", "Acacia Leaves")
-            .texture(265.0F)
+.texture("acacia_leaves")
             .leaves(),
         BlockProperties::of(Block::DarkOakLeaves, "dark_oak_leaves", "Dark Oak Leaves")
-            .texture(266.0F)
+.texture("dark_oak_leaves")
             .leaves(),
         BlockProperties::of(Block::SpruceSapling, "spruce_sapling", "Spruce Sapling")
-            .texture(267.0F)
+.texture("spruce_sapling")
             .instantBreak()
             .cross()
             .support(BlockSupport::Soil),
         BlockProperties::of(Block::BirchSapling, "birch_sapling", "Birch Sapling")
-            .texture(268.0F)
+.texture("birch_sapling")
             .instantBreak()
             .cross()
             .support(BlockSupport::Soil),
         BlockProperties::of(Block::JungleSapling, "jungle_sapling", "Jungle Sapling")
-            .texture(269.0F)
+.texture("jungle_sapling")
             .instantBreak()
             .cross()
             .support(BlockSupport::Soil),
         BlockProperties::of(Block::AcaciaSapling, "acacia_sapling", "Acacia Sapling")
-            .texture(270.0F)
+.texture("acacia_sapling")
             .instantBreak()
             .cross()
             .support(BlockSupport::Soil),
         BlockProperties::of(Block::DarkOakSapling, "dark_oak_sapling", "Dark Oak Sapling")
-            .texture(271.0F)
+.texture("dark_oak_sapling")
             .instantBreak()
             .cross()
             .support(BlockSupport::Soil),
@@ -774,7 +765,7 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // yields dirt (see minedDrops), never farmland itself. Its solid box is
         // 15/16 tall, the vanilla FarmlandBlock.SHAPE.
         BlockProperties::of(Block::Farmland, "farmland", "Farmland")
-            .texture(kFarmlandLayer, 2.0F, 2.0F)
+            .texture("farmland", "dirt", "dirt")
             .strength(0.6F)
             .height(15.0F / 16.0F),
         // CropBlock: wheat/carrot/potato share the crossed-plant render, with the
@@ -782,7 +773,7 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // need farmland below, have no collision of their own, and never drop
         // themselves — minedDrops rolls the species' loot table from the age.
         BlockProperties::of(Block::WheatCrops, "wheat", "Wheat")
-            .texture(kWheatStage0Layer)
+.texture("wheat_stage0")
             .instantBreak()
             .renderLayer(BlockRenderLayer::Cutout)
             .model(BlockModel::Crop)
@@ -790,7 +781,7 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
             .noDrops()
             .support(BlockSupport::Farmland),
         BlockProperties::of(Block::Carrots, "carrots", "Carrots")
-            .texture(kCarrotStage0Layer)
+.texture("carrots_stage0")
             .instantBreak()
             .renderLayer(BlockRenderLayer::Cutout)
             .model(BlockModel::Crop)
@@ -798,7 +789,7 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
             .noDrops()
             .support(BlockSupport::Farmland),
         BlockProperties::of(Block::Potatoes, "potatoes", "Potatoes")
-            .texture(kPotatoStage0Layer)
+.texture("potatoes_stage0")
             .instantBreak()
             .renderLayer(BlockRenderLayer::Cutout)
             .model(BlockModel::Crop)
@@ -809,16 +800,16 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // hardness; smooth stone is the furnace product of stone. The texture
         // layers 242-245 occupy four of newContentTextures' placeholder slots.
         BlockProperties::of(Block::PolishedGranite, "polished_granite", "Polished Granite")
-            .texture(242.0F)
+.texture("polished_granite")
             .strength(1.5F, 6.0F),
         BlockProperties::of(Block::PolishedDiorite, "polished_diorite", "Polished Diorite")
-            .texture(243.0F)
+.texture("polished_diorite")
             .strength(1.5F, 6.0F),
         BlockProperties::of(Block::PolishedAndesite, "polished_andesite", "Polished Andesite")
-            .texture(244.0F)
+.texture("polished_andesite")
             .strength(1.5F, 6.0F),
         BlockProperties::of(Block::SmoothStone, "smooth_stone", "Smooth Stone")
-            .texture(245.0F)
+.texture("smooth_stone")
             .strength(2.0F, 6.0F),
     };
 
@@ -1037,18 +1028,17 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
     return 3;
 }
 
-// The texture-array layer the mesher paints a crop with at the given age.
-[[nodiscard]] constexpr float cropTextureLayer(Block block, int age) {
-    const int stage = cropStageIndex(block, age);
+// The crop's stage-0 texture name the registry stores (wheat_stage0, ...).
+[[nodiscard]] constexpr const char* cropStage0Name(Block block) {
     switch (block) {
     case Block::WheatCrops:
-        return kWheatStage0Layer + static_cast<float>(stage);
+        return "wheat_stage0";
     case Block::Carrots:
-        return kCarrotStage0Layer + static_cast<float>(stage);
+        return "carrots_stage0";
     case Block::Potatoes:
-        return kPotatoStage0Layer + static_cast<float>(stage);
+        return "potatoes_stage0";
     default:
-        return 0.0F;
+        return nullptr;
     }
 }
 
@@ -1141,8 +1131,30 @@ inline constexpr float kFarmlandModelHeight = 15.0F / 16.0F;
     return isRenderable(block) && !isFluid(block);
 }
 
-[[nodiscard]] constexpr BlockTextureLayers textureLayers(Block block) {
-    return blockDefinition(block).textures;
+// The resolved atlas layer for each face of a block. `kBlockTextureLayers` is
+// filled once by the renderer's atlas builder from the block registry's texture
+// names; reading it here keeps the mesher's per-vertex path a plain array
+// index — the name resolution happens once at startup, not per face. The
+// C++17 inline variable shares one instance across translation units without a
+// dedicated source file.
+inline std::array<BlockTextureLayers, static_cast<std::size_t>(Block::Count)>
+    kBlockTextureLayers{};
+
+[[nodiscard]] inline const BlockTextureLayers& textureLayers(Block block) {
+    const auto index = static_cast<std::size_t>(block);
+    return kBlockTextureLayers[index < kBlockTextureLayers.size() ? index : 0U];
+}
+
+// The renderer registers a block's resolved top/side/bottom atlas layers here.
+inline void setBlockTextureLayers(Block block, BlockTextureLayers layers) {
+    kBlockTextureLayers[static_cast<std::size_t>(block)] = layers;
+}
+
+// The crop's stage textures are laid out contiguously from its stage-0 layer,
+// so the mesher reads stage0 + age.
+[[nodiscard]] inline float cropTextureLayer(Block block, int age) {
+    const int stage = cropStageIndex(block, age);
+    return textureLayers(block).top + static_cast<float>(stage);
 }
 
 [[nodiscard]] constexpr const char* blockName(Block block) {

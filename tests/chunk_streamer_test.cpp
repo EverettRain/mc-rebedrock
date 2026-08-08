@@ -163,6 +163,11 @@ int main() {
     // changed. The crop is the only block in its (high, terrain-free) section,
     // so the cutout mesh holds just its own stage texture.
     {
+        // The headless worker meshes with the registry-built atlas layers, which
+        // the renderer fills at startup; pin a stage base here so the crop's
+        // stage0 + age resolves deterministically in the test.
+        mc::world::setBlockTextureLayers(mc::world::Block::WheatCrops,
+                                         {274.0F, 274.0F, 274.0F});
         mc::world::ChunkStreamer cropStreamer{0x5EEDULL, 0, 0};
         cropStreamer.request({0, 0});
         assert(waitForBatch(cropStreamer).has_value());
@@ -170,11 +175,12 @@ int main() {
                               mc::world::cropOrientation(0));
         auto planted = waitForBatch(cropStreamer);
         assert(planted.has_value());
+        const auto stage0Layer = static_cast<std::uint16_t>(
+            mc::world::cropTextureLayer(mc::world::Block::WheatCrops, 0));
         bool sawStage0 = false;
         for (const auto& update : planted->sectionUpdates) {
             for (const auto& vertex : update.mesh.cutoutMesh.vertices) {
-                if (vertex.textureLayer ==
-                    static_cast<std::uint16_t>(mc::world::kWheatStage0Layer)) {
+                if (vertex.textureLayer == stage0Layer) {
                     sawStage0 = true;
                 }
             }
@@ -186,11 +192,12 @@ int main() {
                               mc::world::cropOrientation(5));
         auto grown = waitForBatch(cropStreamer);
         assert(grown.has_value());
+        const auto stage5Layer = static_cast<std::uint16_t>(
+            mc::world::cropTextureLayer(mc::world::Block::WheatCrops, 5));
         bool sawStage5 = false;
         for (const auto& update : grown->sectionUpdates) {
             for (const auto& vertex : update.mesh.cutoutMesh.vertices) {
-                if (vertex.textureLayer ==
-                    static_cast<std::uint16_t>(mc::world::kWheatStage5Layer)) {
+                if (vertex.textureLayer == stage5Layer) {
                     sawStage5 = true;
                 }
             }

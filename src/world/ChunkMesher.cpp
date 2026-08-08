@@ -35,10 +35,13 @@ constexpr std::array<FaceDefinition, 6> kFaces{{
 }};
 
 constexpr std::array<glm::vec2, 4> kUvs{{{0, 1}, {1, 1}, {1, 0}, {0, 0}}};
-constexpr float kWaterStillLayer = 20.0F;
-constexpr float kWaterFlowLayer = 52.0F;
-constexpr float kFurnaceFrontLayer = 223.0F;
-constexpr float kFurnaceFrontOnLayer = 211.0F;
+// Fixed layers of the atlas's special section: water still 0-31 / flow 32-63,
+// furnace front 167 and the lit front 168. The block-texture layers after them
+// are resolved at startup from the registry (world::textureLayers).
+constexpr float kWaterStillLayer = 0.0F;
+constexpr float kWaterFlowLayer = 32.0F;
+constexpr float kFurnaceFrontLayer = 167.0F;
+constexpr float kFurnaceFrontOnLayer = 168.0F;
 
 [[nodiscard]] constexpr bool faceMatchesOrientation(Face face, BlockOrientation orientation) {
     switch (orientation) {
@@ -281,8 +284,9 @@ constexpr float kFurnaceFrontOnLayer = 211.0F;
     if (block == Block::Farmland && face == Face::PositiveY &&
         farmlandMoisture(orientation) == 7) {
         // FarmlandBlock.MOISTURE: the wet texture appears only at moisture 7,
-        // exactly like the 1.16.1 blockstate (every lower level is dry).
-        return kFarmlandMoistLayer;
+        // exactly like the 1.16.1 blockstate (every lower level is dry). The
+        // moist face sits right after the dry one in the registry-built atlas.
+        return textureLayers(Block::Farmland).top + 1.0F;
     }
     if (face == Face::PositiveY) {
         return layers.top;
