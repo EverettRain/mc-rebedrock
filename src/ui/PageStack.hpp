@@ -19,6 +19,7 @@ enum class PageId {
     VideoSettings,
     Controls,
     Language,
+    Experimental,
 };
 
 class PageStack final {

@@ -38,6 +38,15 @@ struct GameOptions final {
     // Vanilla's "Force Unicode Font": draws Latin text from the unicode pages
     // too, which keeps mixed Latin/CJK lines visually consistent.
     bool forceUnicodeFont = false;
+    // Experimental Content (实验性内容) submenu — test-only render features.
+    // rainMode selects the rain draw path: 0 = 贴图雨 (texture sheets),
+    // 1 = 粒子雨 (per-particle legacy draws), 2 = 异步粒子雨 (instanced SSBO).
+    int rainMode = 2;
+    // Toggles the sun-space shadow depth pre-pass. Off by default: the pre-pass
+    // is pure infrastructure until the terrain actually samples the shadow map
+    // (the roadmap's P2), and re-rendering every opaque section each frame is
+    // wasted GPU load that can push heavy frames toward a device lost.
+    bool sunShadows = false;
 
     [[nodiscard]] static GameOptions load(const std::filesystem::path& path);
     void save(const std::filesystem::path& path) const;

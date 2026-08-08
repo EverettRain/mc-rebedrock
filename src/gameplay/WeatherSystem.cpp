@@ -36,6 +36,11 @@ constexpr int kClearToRainSpan = 168'000;
 
 } // namespace
 
+void WeatherSystem::forceRainGradient(float gradient) {
+    raining_ = gradient >= kRainingThreshold;
+    rainGradient_ = rainGradientPrev_ = std::clamp(gradient, 0.0F, 1.0F);
+}
+
 void WeatherSystem::setWeather(int clearDuration, int rainDuration, bool raining,
                                bool thundering) {
     clearWeatherTime_ = clearDuration;

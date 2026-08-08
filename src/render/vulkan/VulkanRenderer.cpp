@@ -1,4 +1,7 @@
 #include "render/vulkan/VulkanRenderer.hpp"
+#include "render/vulkan/VulkanResources.hpp"
+#include "render/vulkan/GpuSceneBuffer.hpp"
+#include "render/vulkan/OffscreenTarget.hpp"
 
 #include "animation/AnimationAssets.hpp"
 #include "animation/DisplayEntityAnimation.hpp"
@@ -32,6 +35,7 @@
 #include "persistence/SaveRepository.hpp"
 #include "render/Frustum.hpp"
 #include "render/ParticleSystem.hpp"
+#include "render/RainSystem.hpp"
 #include "render/PerspectiveCamera.hpp"
 #include "render/StreamingBudget.hpp"
 #include "ui/BitmapFontMetrics.hpp"
@@ -58,6 +62,7 @@
 #include <vk_mem_alloc.h>
 
 #include <glm/ext/matrix_transform.hpp>
+#include <glm/ext/matrix_clip_space.hpp>
 #include <glm/geometric.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
@@ -268,6 +273,9 @@ enum class MenuButton : std::uint8_t {
     Language,
     ForceUnicodeFont,
     Difficulty,
+    Experimental,
+    RainMode,
+    SunShadows,
     SaveQuit,
 };
 
@@ -308,19 +316,6 @@ constexpr bool kRequestValidation = true;
 #else
 constexpr bool kRequestValidation = false;
 #endif
-
-template <typename Structure> [[nodiscard]] Structure vkStructure(VkStructureType type) {
-    Structure structure{};
-    structure.sType = type;
-    return structure;
-}
-
-void checkVk(VkResult result, const char* operation) {
-    if (result != VK_SUCCESS) {
-        throw std::runtime_error(std::string(operation) + " failed with VkResult " +
-                                 std::to_string(result));
-    }
-}
 
 VKAPI_ATTR VkBool32 VKAPI_CALL
 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT,
@@ -388,6 +383,25 @@ struct ItemPush final {
 
 static_assert(sizeof(ItemPush) <= 128U, "Item push constants must fit Vulkan's guaranteed minimum");
 
+// Push constants for the sun-space shadow pre-pass: the light view-projection
+// and the per-section origin, packed under Vulkan's 128-byte guarantee.
+struct ShadowPush final {
+    alignas(16) glm::mat4 lightViewProj;
+    alignas(16) glm::vec4 sectionOrigin;
+};
+static_assert(sizeof(ShadowPush) <= 128U, "Shadow push constants must fit Vulkan's guaranteed minimum");
+
+// The three rain render paths (MC_REBEDROCK_RAIN_MODE). All consume the same
+// CPU-simulated drops; only the draw strategy differs, so the particle-async
+// performance claim can be tested against a cheap texture baseline and the
+// legacy per-particle draw path.
+enum class RainMode { Texture, Particles, Async };
+
+struct RainSheetPush final {
+    glm::vec4 positionSize;      // xyz centre, w sheet size
+    glm::vec4 timeOpacityLayer;  // x scroll time, y opacity, z atlas layer
+};
+
 struct QueueFamilyIndices final {
     std::optional<std::uint32_t> graphics;
     std::optional<std::uint32_t> present;
@@ -399,15 +413,6 @@ struct SwapchainSupport final {
     VkSurfaceCapabilitiesKHR capabilities{};
     std::vector<VkSurfaceFormatKHR> formats;
     std::vector<VkPresentModeKHR> presentModes;
-};
-
-struct AllocatedBuffer final {
-    VkBuffer buffer = VK_NULL_HANDLE;
-    VmaAllocation allocation = VK_NULL_HANDLE;
-    void* mapped = nullptr;
-    // 0 = not pooled (destroy on release); otherwise 1 + index into
-    // kStreamBufferClassSizes for the stream-mesh pools.
-    std::uint8_t pooledSizeClass = 0;
 };
 
 struct GpuMeshLayer final {
@@ -434,18 +439,6 @@ struct BufferCopyJob final {
     VkBuffer destination = VK_NULL_HANDLE;
     VkDeviceSize size = 0;
 };
-
-struct AllocatedImage final {
-    VkImage image = VK_NULL_HANDLE;
-    VmaAllocation allocation = VK_NULL_HANDLE;
-};
-
-struct DepthTarget final {
-    AllocatedImage image;
-    VkImageView view = VK_NULL_HANDLE;
-};
-
-using ColorTarget = DepthTarget;
 
 struct FrameContext final {
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
@@ -998,11 +991,22 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
         layerByName.emplace(std::string("leaves:terrain:") + leafNames[leaf], layer);
         world::gen::setTerrainLeafLayer(leafBlocks[leaf], layer);
     }
-    // Baked per-biome grass SIDE (dirt + the biome green strip); the top and
-    // plant are tinted in the fragment shader instead.
-    const auto buildBiomeGrassSide = [&](std::string_view suffix, std::uint32_t color) {
+    // Baked per-biome grass family: the top/side/plant are tinted with the
+    // biome's grass colour at atlas build time, so the rendered colour never
+    // depends on per-vertex data reaching the fragment shader.
+    const auto buildBiomeGrass = [&](std::string_view suffix, std::uint32_t color) {
+        auto biomeTop = grassTopRaw;
         auto biomeSide = grassSideBase;
+        auto biomePlant = grassPlantRaw;
         const auto tint = colorTint(color);
+        for (std::size_t index = 0; index + 3U < biomeTop.rgba.size(); index += 4U) {
+            for (std::size_t channel = 0; channel < 3U; ++channel) {
+                biomeTop.rgba[index + channel] =
+                    tintedChannel(biomeTop.rgba[index + channel], tint[channel]);
+                biomePlant.rgba[index + channel] =
+                    tintedChannel(biomePlant.rgba[index + channel], tint[channel]);
+            }
+        }
         for (std::size_t index = 0; index + 3U < biomeSide.rgba.size(); index += 4U) {
             const float alpha = static_cast<float>(grassOverlay.rgba[index + 3U]) / 255.0F;
             for (std::size_t channel = 0; channel < 3U; ++channel) {
@@ -1017,10 +1021,32 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
             biomeSide.rgba[index + 3U] = 255U;
         }
         const std::string prefix{suffix};
+        const float topLayer = static_cast<float>(layers.size());
+        layers.push_back(biomeTop);
+        layerByName.emplace("grass_block_top:" + prefix, topLayer);
         const float sideLayer = static_cast<float>(layers.size());
         layers.push_back(biomeSide);
         layerByName.emplace("grass_block_side:" + prefix, sideLayer);
-        return sideLayer;
+        const float plantLayer = static_cast<float>(layers.size());
+        layers.push_back(biomePlant);
+        layerByName.emplace("grass:" + prefix, plantLayer);
+        return world::BlockTextureLayers{topLayer, sideLayer, plantLayer};
+    };
+    // Baked per-biome foliage layer for the oak family.
+    const auto buildLeafLayer = [&](std::string_view suffix, const assets::ImageData& texture,
+                                    std::uint32_t color) {
+        auto pixels = texture;
+        const auto tint = colorTint(color);
+        for (std::size_t index = 0; index + 3U < pixels.rgba.size(); index += 4U) {
+            for (std::size_t channel = 0; channel < 3U; ++channel) {
+                pixels.rgba[index + channel] =
+                    tintedChannel(pixels.rgba[index + channel], tint[channel]);
+            }
+        }
+        const float layer = static_cast<float>(layers.size());
+        layers.push_back(pixels);
+        layerByName.emplace(std::string("leaves:") + std::string{suffix}, layer);
+        return layer;
     };
     for (int biomeIndex = 0; biomeIndex < static_cast<int>(world::gen::Biome::Count); ++biomeIndex) {
         const auto biome = static_cast<world::gen::Biome>(biomeIndex);
@@ -1031,20 +1057,36 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
             // DarkForestBiome#getGrassColorAt darkens the colormap colour.
             grassColor = ((grassColor & 0xFEFEFEU) + 0x28340AU) >> 1U;
         }
+        std::uint32_t foliageColor =
+            colormapColor(foliageColormap, definition.temperature, definition.downfall);
+        if (biome == world::gen::Biome::Swamp) {
+            // SwampBiome#getFoliageColor is the fixed 0x6A7039.
+            foliageColor = 0x6A7039U;
+        }
         if (biome == world::gen::Biome::Swamp) {
             // SwampBiome#getGrassColorAt picks 0x6A7039 or 0x4C763C by noise;
             // the mesher chooses the per-block tone from FOLIAGE_NOISE.
-            const float lightSide = buildBiomeGrassSide("swamp", 0x6A7039U);
-            const float darkSide = buildBiomeGrassSide("swamp_dark", 0x4C763CU);
-            const world::BlockTextureLayers light{terrainGrassTop, lightSide, terrainGrassPlant};
-            const world::BlockTextureLayers dark{terrainGrassTop, darkSide, terrainGrassPlant};
-            world::gen::setBiomeGrassLayers(biome, light);
-            world::gen::setSwampDarkGrassLayers(dark);
+            world::gen::setBiomeGrassLayers(biome, buildBiomeGrass("swamp", 0x6A7039U));
+            world::gen::setSwampDarkGrassLayers(buildBiomeGrass("swamp_dark", 0x4C763CU));
         } else {
-            const float side = buildBiomeGrassSide(definition.identifier, grassColor);
             world::gen::setBiomeGrassLayers(
-                biome, {terrainGrassTop, side, terrainGrassPlant});
+                biome, buildBiomeGrass(definition.identifier, grassColor));
         }
+        // Baked per-biome oak-family foliage; spruce/birch keep the fixed terrain
+        // layers built above.
+        const std::string prefix{definition.identifier};
+        world::gen::setBiomeFoliageLayer(
+            biome, world::Block::OakLeaves,
+            buildLeafLayer(prefix + ":oak", leavesRaw, foliageColor));
+        world::gen::setBiomeFoliageLayer(
+            biome, world::Block::JungleLeaves,
+            buildLeafLayer(prefix + ":jungle", biomeLeafTexturesRaw[2], foliageColor));
+        world::gen::setBiomeFoliageLayer(
+            biome, world::Block::AcaciaLeaves,
+            buildLeafLayer(prefix + ":acacia", biomeLeafTexturesRaw[3], foliageColor));
+        world::gen::setBiomeFoliageLayer(
+            biome, world::Block::DarkOakLeaves,
+            buildLeafLayer(prefix + ":dark_oak", biomeLeafTexturesRaw[4], foliageColor));
     }
 
     for (const auto& definition : world::kBlockRegistry) {
@@ -1613,6 +1655,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     renderer->menuSystem.pageStack.pop();
                     renderer->pressedMenuButton = MenuButton::None;
                     renderer->menuSystem.viewDistanceSliderDragging = false;
+                } else if (page == ui::PageId::Experimental) {
+                    renderer->menuSystem.pageStack.pop();
+                    renderer->pressedMenuButton = MenuButton::None;
                 } else if (page == ui::PageId::Options) {
                     renderer->menuSystem.pageStack.pop();
                     renderer->menuSystem.optionsOpen = false;
@@ -1784,6 +1829,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pickPhysicalDevice();
         createLogicalDevice();
         createAllocator();
+        resources_ = VulkanResources{physicalDevice, device, allocator};
         createCommandPool();
         createDescriptorSetLayout();
         createTextureArray();
@@ -1796,12 +1842,138 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         createEntityTextureArray();
         createUniformBuffers();
         createDescriptorPoolAndSets();
+        createSceneDescriptorResources();
+        createShadowResources();
         createOcclusionQueryResources();
         createSwapchainResources();
         createCommandBuffers();
         createSyncObjects();
         refreshSaveList();
         if (testScene.has_value()) initializeTestScene();
+        // MC_REBEDROCK_RAIN_MODE=texture|particles|async selects the rain draw
+        // path; MC_REBEDROCK_RAIN_COUNT overrides the drop target count.
+        // The options menu is the canonical control (实验性内容 submenu); the
+        // env vars remain dev/perf-harness overrides for smoke runs.
+        if (const char* modeValue = std::getenv("MC_REBEDROCK_RAIN_MODE")) {
+            const std::string_view mode{modeValue};
+            if (mode == "texture") {
+                rainMode_ = RainMode::Texture;
+            } else if (mode == "particles") {
+                rainMode_ = RainMode::Particles;
+            } else {
+                rainMode_ = RainMode::Async;
+            }
+        } else {
+            rainMode_ = static_cast<RainMode>(std::clamp(options.rainMode, 0, 2));
+        }
+        if (const char* countValue = std::getenv("MC_REBEDROCK_RAIN_COUNT")) {
+            rainCountOverride_ = std::strtoul(countValue, nullptr, 10);
+        }
+        shadowDisabled = !options.sunShadows || std::getenv("MC_REBEDROCK_SHADOW_DISABLE") != nullptr;
+    }
+
+    // The target rain-drop count for the selected mode: few large sheets for
+    // 贴图雨, a few hundred per-particle draws for 粒子雨, and thousands in one
+    // instanced draw for 异步粒子雨. MC_REBEDROCK_RAIN_COUNT overrides all.
+    [[nodiscard]] std::size_t rainTargetCount() const {
+        if (rainCountOverride_ > 0U) {
+            return rainCountOverride_;
+        }
+        switch (rainMode_) {
+            case RainMode::Texture: return 24U;
+            case RainMode::Particles: return 800U;
+            case RainMode::Async: return 4000U;
+        }
+        return 0U;
+    }
+
+    void createRainSheetPipeline() {
+        const auto vertexCode = readSpirv(shaderRoot / "rain_sheet.vert.spv");
+        const auto fragmentCode = readSpirv(shaderRoot / "rain_sheet.frag.spv");
+        const auto vertexModule = createShaderModule(vertexCode);
+        const auto fragmentModule = createShaderModule(fragmentCode);
+        auto vertexStage = vkStructure<VkPipelineShaderStageCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
+        vertexStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertexStage.module = vertexModule;
+        vertexStage.pName = "main";
+        auto fragmentStage = vertexStage;
+        fragmentStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragmentStage.module = fragmentModule;
+        const std::array stages{vertexStage, fragmentStage};
+        auto vertexInput = vkStructure<VkPipelineVertexInputStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO);
+        auto inputAssembly = vkStructure<VkPipelineInputAssemblyStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO);
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        auto viewportState = vkStructure<VkPipelineViewportStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO);
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+        auto rasterization = vkStructure<VkPipelineRasterizationStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO);
+        rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterization.cullMode = VK_CULL_MODE_NONE;
+        rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterization.lineWidth = 1.0F;
+        auto multisampling = vkStructure<VkPipelineMultisampleStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO);
+        multisampling.rasterizationSamples = renderSampleCount();
+        auto depthStencil = vkStructure<VkPipelineDepthStencilStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO);
+        depthStencil.depthTestEnable = VK_TRUE;
+        depthStencil.depthWriteEnable = VK_TRUE;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+        VkPipelineColorBlendAttachmentState colorAttachment{};
+        colorAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorAttachment.blendEnable = VK_TRUE;
+        colorAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        colorAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        colorAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        auto blending = vkStructure<VkPipelineColorBlendStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO);
+        blending.attachmentCount = 1;
+        blending.pAttachments = &colorAttachment;
+        const std::array dynamicStates{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        auto dynamic = vkStructure<VkPipelineDynamicStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO);
+        dynamic.dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size());
+        dynamic.pDynamicStates = dynamicStates.data();
+        VkPushConstantRange push{};
+        push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        push.offset = 0;
+        push.size = sizeof(RainSheetPush);
+        auto layoutInfo =
+            vkStructure<VkPipelineLayoutCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
+        layoutInfo.setLayoutCount = 1;
+        layoutInfo.pSetLayouts = &descriptorSetLayout;
+        layoutInfo.pushConstantRangeCount = 1;
+        layoutInfo.pPushConstantRanges = &push;
+        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &rainSheetPipelineLayout),
+                "vkCreatePipelineLayout(rain sheet)");
+        auto pipelineInfo = vkStructure<VkGraphicsPipelineCreateInfo>(
+            VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO);
+        pipelineInfo.stageCount = static_cast<std::uint32_t>(stages.size());
+        pipelineInfo.pStages = stages.data();
+        pipelineInfo.pVertexInputState = &vertexInput;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterization;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &blending;
+        pipelineInfo.pDynamicState = &dynamic;
+        pipelineInfo.layout = rainSheetPipelineLayout;
+        pipelineInfo.renderPass = renderPass;
+        checkVk(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                          &rainSheetPipeline),
+                "vkCreateGraphicsPipelines(rain sheet)");
+        vkDestroyShaderModule(device, vertexModule, nullptr);
+        vkDestroyShaderModule(device, fragmentModule, nullptr);
     }
 
     void initializeTestScene() {
@@ -2002,6 +2174,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 heldItemAnimation.update(deltaSeconds);
                 updateVignetteDarkness(deltaSeconds);
                 particleSystem.update(deltaSeconds, interactionWorld);
+                // Rain: CPU-simulated drops driven by the weather system's
+                // smoothed gradient. All three render modes consume the same
+                // drops; only the draw strategy differs.
+                rainSystem.update(deltaSeconds, camera.position(),
+                                  gameSession.weatherSystem().rainGradient(), rainTargetCount());
+                rainTime_ += deltaSeconds;
                 physicsAccumulator = std::min(physicsAccumulator + deltaSeconds, 0.25F);
                 bool fluidUpdatePhaseConsumed = false;
                 while (physicsAccumulator >= gameplay::PlayerController::kTickSeconds) {
@@ -2036,7 +2214,27 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             // Stress mode turns the camera each frame, churning the occlusion
             // queries as sections stream in and out of the frustum.
             if (stressFrames > 0U) {
-                camera.rotate(2.0F, 0.0F);
+                // Yaw spin + a slow pitch-down so the view sweeps toward the
+                // ground like a flying player glancing around, and an expanding
+                // outward spiral that keeps the streaming window loading fresh
+                // chunks the whole run.
+                camera.rotate(2.0F, -0.05F);
+                const std::size_t stressClock =
+                    std::getenv("MC_REBEDROCK_LOAD_SAVE") != nullptr ? renderedFrames
+                                                                     : smokeGameplayFrames;
+                const float flightAngle = static_cast<float>(stressClock) * 0.06F;
+                const float radius = 40.0F + static_cast<float>(stressClock) * 0.4F;
+                const glm::vec3 stressPos{
+                    std::cos(flightAngle) * radius,
+                    120.0F + std::sin(static_cast<float>(stressClock) * 0.012F) * 80.0F,
+                    std::sin(flightAngle) * radius,
+                };
+                camera.setPosition(stressPos);
+                // DR repro: fly the player along the spiral so chunk streaming
+                // follows the movement like real play (the real save is loaded
+                // in creative, so no fall damage).
+                gameSession.player().setPosition(
+                    stressPos - glm::vec3{0.0F, gameSession.player().eyeHeight(), 0.0F});
             }
             // GameRenderer#getFov: the base FOV times the gameSession.player()'s movement
             // multiplier, interpolated across the physics tick the same way the
@@ -2079,6 +2277,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     // Busy-wait the tail for precise pacing.
                 }
             }
+            // DR repro hook: MC_REBEDROCK_LOAD_SAVE auto-loads the first real save
+            // (bypassing the menu) and then stress-files via the stress camera.
+            if (std::getenv("MC_REBEDROCK_LOAD_SAVE") != nullptr && !loadSaveStarted) {
+                loadSaveStarted = true;
+                const auto summaries = saveRepository.list();
+                if (summaries.empty()) {
+                    throw std::runtime_error("MC_REBEDROCK_LOAD_SAVE: no saves found");
+                }
+                startWorld(saveRepository.load(summaries.front().identifier));
+            }
             if (smokeTest && !smokeWorldStarted && renderedFrames == 2U) {
                 if (menuSystem.pageStack.current() != ui::PageId::Title) {
                     throw std::runtime_error("Smoke test did not start at title page");
@@ -2090,6 +2298,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             } else if (smokeTest && !smokeWorldStarted && renderedFrames == 4U) {
                 if (menuSystem.pageStack.current() != ui::PageId::VideoSettings) {
                     throw std::runtime_error("Smoke test did not open video settings");
+                }
+                menuSystem.pageStack.pop();
+                // The 实验性内容 sub-page must open as a menu page (not fall
+                // through to the terrain-loading screen) with its three options.
+                menuSystem.pageStack.push(ui::PageId::Experimental);
+                if (menuSystem.pageStack.current() != ui::PageId::Experimental ||
+                    menuButtonCount() != 3U) {
+                    throw std::runtime_error("Smoke test experimental content page failed");
                 }
                 menuSystem.pageStack.pop();
                 menuSystem.optionsOpen = false;
@@ -2152,6 +2368,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 }
             } else if (smokeTest && smokeGameplayFrames == 58U) {
                 setInventoryOpen(true);
+            } else if (smokeTest && smokeGameplayFrames == 60U) {
+                // Deterministically exercise the instanced particle path: a
+                // block-break burst next to the player produces hundreds of
+                // particles in a single vkCmdDraw.
+                const glm::vec3 spawn = gameSession.player().position();
+                particleSystem.spawnBlockBreak(
+                    {static_cast<int>(std::floor(spawn.x)),
+                     static_cast<int>(std::floor(spawn.y)) - 2,
+                     static_cast<int>(std::floor(spawn.z))},
+                    world::Block::Dirt);
             } else if (smokeTest && smokeGameplayFrames == 62U) {
                 setInventoryOpen(false);
             } else if (smokeTest && smokeGameplayFrames == 66U) {
@@ -2242,6 +2468,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     throw std::runtime_error("Smoke test apple stack missing in survival");
                 }
                 useButtonHeld = true;
+            } else if (smokeTest && smokeGameplayFrames == 410U) {
+                // Snap the weather to full rain instantly (test helper, not
+                // chat) so the smoke exercises the rain path at full intensity
+                // regardless of frame rate; the three render modes compare
+                // identical drop counts.
+                gameSession.weatherSystem().forceRainGradient(1.0F);
             } else if (smokeTest && smokeGameplayFrames == 700U) {
                 useButtonHeld = false;
                 if (gameSession.inventory().selectedStack().count >= smokeAppleCount) {
@@ -2265,6 +2497,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 returnToTitle(false);
             }
             if (smokeTest && smokeReturnedToTitle && renderedFrames >= smokeReturnFrame + 4U) {
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            }
+            // DR repro: the LOAD_SAVE run ends after stressFrames rendered frames.
+            if (std::getenv("MC_REBEDROCK_LOAD_SAVE") != nullptr && stressFrames > 0U &&
+                renderedFrames >= smokeFrameLimit) {
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
             }
         }
@@ -3105,12 +3342,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (currentSave.has_value()) {
                 constexpr std::array buttons{
                     MenuButton::MasterVolume, MenuButton::Difficulty, MenuButton::Controls,
-                    MenuButton::VideoSettings, MenuButton::Language, MenuButton::Done};
+                    MenuButton::VideoSettings, MenuButton::Language, MenuButton::Experimental,
+                    MenuButton::Done};
                 return buttons.at(index);
             }
             constexpr std::array buttons{
                 MenuButton::MasterVolume, MenuButton::Controls, MenuButton::VideoSettings,
-                MenuButton::Language, MenuButton::Done};
+                MenuButton::Language, MenuButton::Experimental, MenuButton::Done};
+            return buttons.at(index);
+        }
+        case ui::PageId::Experimental: {
+            constexpr std::array buttons{MenuButton::RainMode, MenuButton::SunShadows,
+                                         MenuButton::Back};
             return buttons.at(index);
         }
         case ui::PageId::Language: {
@@ -3158,7 +3401,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             return 2U;
         case ui::PageId::Options:
             // One fewer button without a world open (no Difficulty entry).
-            return currentSave.has_value() ? 6U : 5U;
+            return currentSave.has_value() ? 7U : 6U;
+        case ui::PageId::Experimental:
+            return 3U;
         case ui::PageId::VideoSettings:
             return 10U;
         case ui::PageId::Controls:
@@ -3553,6 +3798,19 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     gameplay::nextDifficulty(currentSave->difficulty);
                 gameSession.vitals().setDifficulty(currentSave->difficulty);
             }
+            break;
+        case MenuButton::Experimental:
+            menuSystem.pageStack.push(ui::PageId::Experimental);
+            break;
+        case MenuButton::RainMode:
+            options.rainMode = (options.rainMode + 1) % 3;
+            rainMode_ = static_cast<RainMode>(options.rainMode);
+            persistOptions();
+            break;
+        case MenuButton::SunShadows:
+            options.sunShadows = !options.sunShadows;
+            shadowDisabled = !options.sunShadows;
+            persistOptions();
             break;
         case MenuButton::Language:
             refreshLanguageNames();
@@ -4178,12 +4436,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (panoramaSampler != VK_NULL_HANDLE) {
                 vkDestroySampler(device, panoramaSampler, nullptr);
             }
+            if (biomeGrassView != VK_NULL_HANDLE) {
+                vkDestroyImageView(device, biomeGrassView, nullptr);
+            }
+            if (biomeFoliageView != VK_NULL_HANDLE) {
+                vkDestroyImageView(device, biomeFoliageView, nullptr);
+            }
+            if (biomeSampler != VK_NULL_HANDLE) {
+                vkDestroySampler(device, biomeSampler, nullptr);
+            }
             if (allocator != VK_NULL_HANDLE) {
                 destroyImage(textureImage);
                 destroyImage(fontTextureImage);
                 destroyImage(guiTextureImage);
                 destroyImage(entityTextureImage);
                 destroyImage(panoramaTextureImage);
+                destroyImage(biomeGrassImage);
+                destroyImage(biomeFoliageImage);
                 for (auto& [position, mesh] : gpuMeshes) {
                     static_cast<void>(position);
                     destroyBuffer(mesh.indexBuffer);
@@ -4212,6 +4481,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     frame.retiredBuffers.clear();
                     destroyBuffer(frame.uniformBuffer);
                 }
+                gpuSceneBuffer.destroy();
+                shadowTarget.destroy();
             }
             for (auto& frame : frames) {
                 if (frame.imageAvailable != VK_NULL_HANDLE) {
@@ -4223,6 +4494,30 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
             if (descriptorSetLayout != VK_NULL_HANDLE) {
                 vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+            }
+            if (sceneDescriptorSetLayout != VK_NULL_HANDLE) {
+                vkDestroyDescriptorSetLayout(device, sceneDescriptorSetLayout, nullptr);
+            }
+            if (sceneDescriptorPool != VK_NULL_HANDLE) {
+                vkDestroyDescriptorPool(device, sceneDescriptorPool, nullptr);
+            }
+            if (shadowDebugSetLayout != VK_NULL_HANDLE) {
+                vkDestroyDescriptorSetLayout(device, shadowDebugSetLayout, nullptr);
+            }
+            if (shadowDebugPool != VK_NULL_HANDLE) {
+                vkDestroyDescriptorPool(device, shadowDebugPool, nullptr);
+            }
+            if (shadowDebugSampler != VK_NULL_HANDLE) {
+                vkDestroySampler(device, shadowDebugSampler, nullptr);
+            }
+            if (shadowDebugPipelineLayout != VK_NULL_HANDLE) {
+                vkDestroyPipelineLayout(device, shadowDebugPipelineLayout, nullptr);
+            }
+            if (shadowPipeline != VK_NULL_HANDLE) {
+                vkDestroyPipeline(device, shadowPipeline, nullptr);
+            }
+            if (shadowPipelineLayout != VK_NULL_HANDLE) {
+                vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
             }
             if (occlusionQueryPool != VK_NULL_HANDLE) {
                 vkDestroyQueryPool(device, occlusionQueryPool, nullptr);
@@ -4544,24 +4839,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     [[nodiscard]] AllocatedBuffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                                                bool hostVisible) const {
-        auto bufferInfo = vkStructure<VkBufferCreateInfo>(VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO);
-        bufferInfo.size = size;
-        bufferInfo.usage = usage;
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VmaAllocationCreateInfo allocationInfo{};
-        allocationInfo.usage =
-            hostVisible ? VMA_MEMORY_USAGE_AUTO : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-        if (hostVisible) {
-            allocationInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                                   VMA_ALLOCATION_CREATE_MAPPED_BIT;
-        }
-        AllocatedBuffer result;
-        VmaAllocationInfo resultInfo{};
-        checkVk(vmaCreateBuffer(allocator, &bufferInfo, &allocationInfo, &result.buffer,
-                                &result.allocation, &resultInfo),
-                "vmaCreateBuffer");
-        result.mapped = resultInfo.pMappedData;
-        return result;
+        return resources_.createBuffer(size, usage, hostVisible);
     }
 
     [[nodiscard]] AllocatedImage createImage(std::uint32_t width, std::uint32_t height,
@@ -4569,39 +4847,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                              VkImageUsageFlags usage,
                                              VkSampleCountFlagBits samples =
                                                  VK_SAMPLE_COUNT_1_BIT) const {
-        auto imageInfo = vkStructure<VkImageCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
-        imageInfo.imageType = VK_IMAGE_TYPE_2D;
-        imageInfo.extent = {width, height, 1};
-        imageInfo.mipLevels = 1;
-        imageInfo.arrayLayers = layers;
-        imageInfo.format = format;
-        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imageInfo.usage = usage;
-        imageInfo.samples = samples;
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VmaAllocationCreateInfo allocationInfo{};
-        allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-        AllocatedImage result;
-        checkVk(vmaCreateImage(allocator, &imageInfo, &allocationInfo, &result.image,
-                               &result.allocation, nullptr),
-                "vmaCreateImage");
-        return result;
+        return resources_.createImage(width, height, layers, format, usage, samples);
     }
 
-    void destroyBuffer(AllocatedBuffer& buffer) const noexcept {
-        if (buffer.buffer != VK_NULL_HANDLE) {
-            vmaDestroyBuffer(allocator, buffer.buffer, buffer.allocation);
-            buffer = {};
-        }
-    }
+    void destroyBuffer(AllocatedBuffer& buffer) const noexcept { resources_.destroyBuffer(buffer); }
 
-    void destroyImage(AllocatedImage& image) const noexcept {
-        if (image.image != VK_NULL_HANDLE) {
-            vmaDestroyImage(allocator, image.image, image.allocation);
-            image = {};
-        }
-    }
+    void destroyImage(AllocatedImage& image) const noexcept { resources_.destroyImage(image); }
 
     void createCommandPool() {
         auto info =
@@ -6456,6 +6707,503 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
+    // The scene descriptor set (set 1) holds the per-frame storage buffer the
+    // instanced particle pipeline reads. A separate layout keeps the shared
+    // camera/texture set 0 untouched: none of the existing pipelines bind more
+    // than one set, and the storage-buffer stage flags can grow to COMPUTE later
+    // without disturbing them.
+    void createSceneDescriptorResources() {
+        constexpr std::size_t kSceneBufferBytes = 256U * 1024U;  // ~5,461 ParticleRecords
+        gpuSceneBuffer.init({&resources_, kFramesInFlight, kSceneBufferBytes});
+
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding = 0;
+        binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        binding.descriptorCount = 1;
+        binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        auto layoutInfo = vkStructure<VkDescriptorSetLayoutCreateInfo>(
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
+        layoutInfo.bindingCount = 1;
+        layoutInfo.pBindings = &binding;
+        checkVk(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &sceneDescriptorSetLayout),
+                "vkCreateDescriptorSetLayout(scene)");
+
+        const VkDescriptorPoolSize poolSize{
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, static_cast<std::uint32_t>(kFramesInFlight)};
+        auto poolInfo = vkStructure<VkDescriptorPoolCreateInfo>(
+            VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
+        poolInfo.maxSets = static_cast<std::uint32_t>(kFramesInFlight);
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        checkVk(vkCreateDescriptorPool(device, &poolInfo, nullptr, &sceneDescriptorPool),
+                "vkCreateDescriptorPool(scene)");
+
+        const std::array<VkDescriptorSetLayout, kFramesInFlight> layouts{sceneDescriptorSetLayout,
+                                                                         sceneDescriptorSetLayout};
+        auto allocateInfo = vkStructure<VkDescriptorSetAllocateInfo>(
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO);
+        allocateInfo.descriptorPool = sceneDescriptorPool;
+        allocateInfo.descriptorSetCount = static_cast<std::uint32_t>(layouts.size());
+        allocateInfo.pSetLayouts = layouts.data();
+        checkVk(vkAllocateDescriptorSets(device, &allocateInfo, sceneDescriptorSets.data()),
+                "vkAllocateDescriptorSets(scene)");
+        for (std::size_t index = 0; index < kFramesInFlight; ++index) {
+            VkDescriptorBufferInfo bufferInfo{};
+            bufferInfo.buffer = gpuSceneBuffer.frame(index).buffer;
+            bufferInfo.range = VK_WHOLE_SIZE;
+            auto write = vkStructure<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
+            write.dstSet = sceneDescriptorSets[index];
+            write.dstBinding = 0;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write.pBufferInfo = &bufferInfo;
+            vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        }
+    }
+
+    // The instanced particle pipeline reads per-particle records from the scene
+    // storage buffer (set 1) and expands the camera-facing quad in the vertex
+    // shader, replacing the old per-particle vkCmdDraw with a single draw. Empty
+    // vertex input: all particle data arrives through the SSBO + gl_InstanceIndex.
+    void createParticlePipeline() {
+        const auto vertexCode = readSpirv(shaderRoot / "particle_instanced.vert.spv");
+        const auto fragmentCode = readSpirv(shaderRoot / "particle_instanced.frag.spv");
+        const auto vertexModule = createShaderModule(vertexCode);
+        const auto fragmentModule = createShaderModule(fragmentCode);
+        auto vertexStage = vkStructure<VkPipelineShaderStageCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
+        vertexStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertexStage.module = vertexModule;
+        vertexStage.pName = "main";
+        auto fragmentStage = vertexStage;
+        fragmentStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragmentStage.module = fragmentModule;
+        const std::array stages{vertexStage, fragmentStage};
+
+        auto vertexInput = vkStructure<VkPipelineVertexInputStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO);
+        auto inputAssembly = vkStructure<VkPipelineInputAssemblyStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO);
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        auto viewportState = vkStructure<VkPipelineViewportStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO);
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+        auto rasterization = vkStructure<VkPipelineRasterizationStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO);
+        rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+        // Camera-facing billboards have no meaningful back face.
+        rasterization.cullMode = VK_CULL_MODE_NONE;
+        rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterization.lineWidth = 1.0F;
+        auto multisampling = vkStructure<VkPipelineMultisampleStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO);
+        multisampling.rasterizationSamples = renderSampleCount();
+        auto depthStencil = vkStructure<VkPipelineDepthStencilStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO);
+        depthStencil.depthTestEnable = VK_TRUE;
+        depthStencil.depthWriteEnable = VK_TRUE;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+        VkPipelineColorBlendAttachmentState colorAttachment{};
+        colorAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorAttachment.blendEnable = VK_TRUE;
+        colorAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        colorAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        colorAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        auto blending = vkStructure<VkPipelineColorBlendStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO);
+        blending.attachmentCount = 1;
+        blending.pAttachments = &colorAttachment;
+        const std::array dynamicStates{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        auto dynamic = vkStructure<VkPipelineDynamicStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO);
+        dynamic.dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size());
+        dynamic.pDynamicStates = dynamicStates.data();
+
+        const std::array setLayouts{descriptorSetLayout, sceneDescriptorSetLayout};
+        auto layoutInfo =
+            vkStructure<VkPipelineLayoutCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
+        layoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
+        layoutInfo.pSetLayouts = setLayouts.data();
+        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &particlePipelineLayout),
+                "vkCreatePipelineLayout(particle)");
+
+        auto pipelineInfo = vkStructure<VkGraphicsPipelineCreateInfo>(
+            VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO);
+        pipelineInfo.stageCount = static_cast<std::uint32_t>(stages.size());
+        pipelineInfo.pStages = stages.data();
+        pipelineInfo.pVertexInputState = &vertexInput;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterization;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &blending;
+        pipelineInfo.pDynamicState = &dynamic;
+        pipelineInfo.layout = particlePipelineLayout;
+        pipelineInfo.renderPass = renderPass;
+        checkVk(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                          &particlePipeline),
+                "vkCreateGraphicsPipelines(particle)");
+        vkDestroyShaderModule(device, vertexModule, nullptr);
+        vkDestroyShaderModule(device, fragmentModule, nullptr);
+    }
+
+    // The sun-space shadow pre-pass renders in-frustum terrain into an offscreen
+    // depth map (Step B's offscreen/multi-pass validation). The pass needs no
+    // descriptor sets: 80 bytes of push constants (light view-projection +
+    // section origin) plus the same VoxelVertex buffers as the main pass. The
+    // target, pipeline and layout are all swapchain-independent, created once.
+    void createShadowResources() {
+        shadowTarget.init({&resources_, device, 2048U, 2048U});
+
+        VkPushConstantRange push{};
+        push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        push.offset = 0;
+        push.size = sizeof(ShadowPush);
+        auto layoutInfo =
+            vkStructure<VkPipelineLayoutCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
+        layoutInfo.setLayoutCount = 0;
+        layoutInfo.pushConstantRangeCount = 1;
+        layoutInfo.pPushConstantRanges = &push;
+        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &shadowPipelineLayout),
+                "vkCreatePipelineLayout(shadow)");
+
+        const auto vertexCode = readSpirv(shaderRoot / "shadow.vert.spv");
+        const auto fragmentCode = readSpirv(shaderRoot / "shadow.frag.spv");
+        const auto vertexModule = createShaderModule(vertexCode);
+        const auto fragmentModule = createShaderModule(fragmentCode);
+        auto vertexStage = vkStructure<VkPipelineShaderStageCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
+        vertexStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertexStage.module = vertexModule;
+        vertexStage.pName = "main";
+        auto fragmentStage = vertexStage;
+        fragmentStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragmentStage.module = fragmentModule;
+        const std::array stages{vertexStage, fragmentStage};
+
+        VkVertexInputBindingDescription binding{0, sizeof(VoxelVertex),
+                                                VK_VERTEX_INPUT_RATE_VERTEX};
+        const std::array<VkVertexInputAttributeDescription, 5> attributes{{
+            {0, 0, VK_FORMAT_R16G16_UINT, offsetof(VoxelVertex, positionX)},
+            {1, 0, VK_FORMAT_R16G16_UINT, offsetof(VoxelVertex, positionZ)},
+            {2, 0, VK_FORMAT_R16G16_UINT, offsetof(VoxelVertex, uvX)},
+            {3, 0, VK_FORMAT_R32_UINT, offsetof(VoxelVertex, textureLayer)},
+            {4, 0, VK_FORMAT_R8G8B8A8_UINT, offsetof(VoxelVertex, skyLight)},
+        }};
+        auto vertexInput = vkStructure<VkPipelineVertexInputStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO);
+        vertexInput.vertexBindingDescriptionCount = 1;
+        vertexInput.pVertexBindingDescriptions = &binding;
+        vertexInput.vertexAttributeDescriptionCount =
+            static_cast<std::uint32_t>(attributes.size());
+        vertexInput.pVertexAttributeDescriptions = attributes.data();
+        auto inputAssembly = vkStructure<VkPipelineInputAssemblyStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO);
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        auto viewportState = vkStructure<VkPipelineViewportStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO);
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+        auto rasterization = vkStructure<VkPipelineRasterizationStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO);
+        rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterization.cullMode = VK_CULL_MODE_BACK_BIT;
+        rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterization.lineWidth = 1.0F;
+        auto multisampling = vkStructure<VkPipelineMultisampleStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO);
+        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        auto depthStencil = vkStructure<VkPipelineDepthStencilStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO);
+        depthStencil.depthTestEnable = VK_TRUE;
+        depthStencil.depthWriteEnable = VK_TRUE;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+        // No color attachment: the depth-only pass needs no blend state.
+        auto blending = vkStructure<VkPipelineColorBlendStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO);
+        blending.attachmentCount = 0;
+        const std::array dynamicStates{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        auto dynamic = vkStructure<VkPipelineDynamicStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO);
+        dynamic.dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size());
+        dynamic.pDynamicStates = dynamicStates.data();
+
+        auto pipelineInfo = vkStructure<VkGraphicsPipelineCreateInfo>(
+            VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO);
+        pipelineInfo.stageCount = static_cast<std::uint32_t>(stages.size());
+        pipelineInfo.pStages = stages.data();
+        pipelineInfo.pVertexInputState = &vertexInput;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterization;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &blending;
+        pipelineInfo.pDynamicState = &dynamic;
+        pipelineInfo.layout = shadowPipelineLayout;
+        pipelineInfo.renderPass = shadowTarget.renderPass();
+        checkVk(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                          &shadowPipeline),
+                "vkCreateGraphicsPipelines(shadow)");
+        vkDestroyShaderModule(device, vertexModule, nullptr);
+        vkDestroyShaderModule(device, fragmentModule, nullptr);
+
+        createShadowDebugResources();
+    }
+
+    // The shadow-map debug overlay samples the offscreen depth texture in a
+    // corner quad, so the pre-pass's output is visible during development. The
+    // set layout, sampler, descriptor set and pipeline layout are created once;
+    // only the pipeline is swapchain-bound (it renders into the main pass with
+    // the current MSAA sample count).
+    void createShadowDebugResources() {
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding = 0;
+        binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        binding.descriptorCount = 1;
+        binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        auto layoutInfo = vkStructure<VkDescriptorSetLayoutCreateInfo>(
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
+        layoutInfo.bindingCount = 1;
+        layoutInfo.pBindings = &binding;
+        checkVk(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &shadowDebugSetLayout),
+                "vkCreateDescriptorSetLayout(shadow debug)");
+        const VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+        auto poolInfo = vkStructure<VkDescriptorPoolCreateInfo>(
+            VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
+        poolInfo.maxSets = 1;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        checkVk(vkCreateDescriptorPool(device, &poolInfo, nullptr, &shadowDebugPool),
+                "vkCreateDescriptorPool(shadow debug)");
+        auto allocateInfo = vkStructure<VkDescriptorSetAllocateInfo>(
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO);
+        allocateInfo.descriptorPool = shadowDebugPool;
+        allocateInfo.descriptorSetCount = 1;
+        allocateInfo.pSetLayouts = &shadowDebugSetLayout;
+        checkVk(vkAllocateDescriptorSets(device, &allocateInfo, &shadowDebugSet),
+                "vkAllocateDescriptorSets(shadow debug)");
+        VkSamplerCreateInfo samplerInfo{};
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samplerInfo.magFilter = VK_FILTER_NEAREST;
+        samplerInfo.minFilter = VK_FILTER_NEAREST;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        checkVk(vkCreateSampler(device, &samplerInfo, nullptr, &shadowDebugSampler),
+                "vkCreateSampler(shadow debug)");
+        VkDescriptorImageInfo imageInfo{};
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.imageView = shadowTarget.view();
+        imageInfo.sampler = shadowDebugSampler;
+        auto write = vkStructure<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
+        write.dstSet = shadowDebugSet;
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &imageInfo;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        VkPushConstantRange push{};
+        push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        push.offset = 0;
+        push.size = sizeof(glm::vec4);
+        auto pushInfo = vkStructure<VkPipelineLayoutCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
+        pushInfo.setLayoutCount = 1;
+        pushInfo.pSetLayouts = &shadowDebugSetLayout;
+        pushInfo.pushConstantRangeCount = 1;
+        pushInfo.pPushConstantRanges = &push;
+        checkVk(vkCreatePipelineLayout(device, &pushInfo, nullptr, &shadowDebugPipelineLayout),
+                "vkCreatePipelineLayout(shadow debug)");
+    }
+
+    void createShadowDebugPipeline() {
+        const auto vertexCode = readSpirv(shaderRoot / "shadow_debug.vert.spv");
+        const auto fragmentCode = readSpirv(shaderRoot / "shadow_debug.frag.spv");
+        const auto vertexModule = createShaderModule(vertexCode);
+        const auto fragmentModule = createShaderModule(fragmentCode);
+        auto vertexStage = vkStructure<VkPipelineShaderStageCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
+        vertexStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertexStage.module = vertexModule;
+        vertexStage.pName = "main";
+        auto fragmentStage = vertexStage;
+        fragmentStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragmentStage.module = fragmentModule;
+        const std::array stages{vertexStage, fragmentStage};
+        auto vertexInput = vkStructure<VkPipelineVertexInputStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO);
+        auto inputAssembly = vkStructure<VkPipelineInputAssemblyStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO);
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        auto viewportState = vkStructure<VkPipelineViewportStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO);
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+        auto rasterization = vkStructure<VkPipelineRasterizationStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO);
+        rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterization.cullMode = VK_CULL_MODE_NONE;
+        rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterization.lineWidth = 1.0F;
+        auto multisampling = vkStructure<VkPipelineMultisampleStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO);
+        multisampling.rasterizationSamples = renderSampleCount();
+        auto depthStencil = vkStructure<VkPipelineDepthStencilStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO);
+        depthStencil.depthTestEnable = VK_FALSE;
+        depthStencil.depthWriteEnable = VK_FALSE;
+        VkPipelineColorBlendAttachmentState colorAttachment{};
+        colorAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorAttachment.blendEnable = VK_TRUE;
+        colorAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        colorAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        colorAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        auto blending = vkStructure<VkPipelineColorBlendStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO);
+        blending.attachmentCount = 1;
+        blending.pAttachments = &colorAttachment;
+        const std::array dynamicStates{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        auto dynamic = vkStructure<VkPipelineDynamicStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO);
+        dynamic.dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size());
+        dynamic.pDynamicStates = dynamicStates.data();
+        auto pipelineInfo = vkStructure<VkGraphicsPipelineCreateInfo>(
+            VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO);
+        pipelineInfo.stageCount = static_cast<std::uint32_t>(stages.size());
+        pipelineInfo.pStages = stages.data();
+        pipelineInfo.pVertexInputState = &vertexInput;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterization;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &blending;
+        pipelineInfo.pDynamicState = &dynamic;
+        pipelineInfo.layout = shadowDebugPipelineLayout;
+        pipelineInfo.renderPass = renderPass;
+        checkVk(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                          &shadowDebugPipeline),
+                "vkCreateGraphicsPipelines(shadow debug)");
+        vkDestroyShaderModule(device, vertexModule, nullptr);
+        vkDestroyShaderModule(device, fragmentModule, nullptr);
+    }
+
+    // Records the sun-space depth pre-pass ahead of the main render pass: cull
+    // the loaded sections against the light frustum, draw each caster's opaque
+    // layer with the shadow pipeline, then transition the depth image to
+    // shader-readable for the main pass (and the debug overlay) to sample.
+    void recordShadowPass(FrameContext& frame) {
+        if (shadowDisabled) {
+            return;
+        }
+        const auto daylight = world::DayNightCycle::state(gameSession.gameTimeSeconds());
+        const glm::vec3 sun = glm::normalize(daylight.sunDirection);
+        const glm::vec3 eye = camera.position();
+        const glm::mat4 lightView = glm::lookAt(eye + sun * 96.0F, eye - sun * 96.0F,
+                                                glm::vec3{0.0F, 1.0F, 0.0F});
+        const glm::mat4 lightProj = glm::ortho(-64.0F, 64.0F, -64.0F, 64.0F, 0.1F, 320.0F);
+        shadowLightViewProj = lightProj * lightView;
+        const Frustum lightFrustum(shadowLightViewProj);
+        std::vector<const GpuMesh*> casters;
+        casters.reserve(gpuMeshes.size());
+        for (const auto& [position, mesh] : gpuMeshes) {
+            static_cast<void>(position);
+            if (lightFrustum.intersects(mesh.bounds)) {
+                casters.push_back(&mesh);
+            }
+        }
+        // Cap the pre-pass's draw load: when the eye flies high or the light
+        // frustum spans a dense area the caster list can grow to thousands,
+        // re-rendering all of them every frame is exactly the kind of heavy GPU
+        // frame that can push the device toward a lost. Keep the nearest 512.
+        constexpr std::size_t kMaxShadowCasters = 512;
+        if (casters.size() > kMaxShadowCasters) {
+            std::ranges::sort(casters, [&eye](const GpuMesh* first, const GpuMesh* second) {
+                const glm::vec3 firstDelta =
+                    (first->bounds.minimum + first->bounds.maximum) * 0.5F - eye;
+                const glm::vec3 secondDelta =
+                    (second->bounds.minimum + second->bounds.maximum) * 0.5F - eye;
+                return glm::dot(firstDelta, firstDelta) < glm::dot(secondDelta, secondDelta);
+            });
+            casters.resize(kMaxShadowCasters);
+        }
+        // Always begin and end the pass (even with zero casters) so the depth
+        // image's layout ends every frame in SHADER_READ_ONLY_OPTIMAL — the
+        // debug overlay samples it unconditionally, and a frame that skipped the
+        // transition would leave it in UNDEFINED and trip the validation layers.
+        VkClearValue clear{};
+        clear.depthStencil = {1.0F, 0};
+        auto passInfo =
+            vkStructure<VkRenderPassBeginInfo>(VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
+        passInfo.renderPass = shadowTarget.renderPass();
+        passInfo.framebuffer = shadowTarget.framebuffer();
+        passInfo.renderArea.extent = {shadowTarget.width(), shadowTarget.height()};
+        passInfo.clearValueCount = 1;
+        passInfo.pClearValues = &clear;
+        vkCmdBeginRenderPass(frame.commandBuffer, &passInfo, VK_SUBPASS_CONTENTS_INLINE);
+        VkViewport viewport{};
+        viewport.width = static_cast<float>(shadowTarget.width());
+        viewport.height = static_cast<float>(shadowTarget.height());
+        viewport.maxDepth = 1.0F;
+        vkCmdSetViewport(frame.commandBuffer, 0, 1, &viewport);
+        VkRect2D scissor{{0, 0}, {shadowTarget.width(), shadowTarget.height()}};
+        vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
+        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
+        for (const auto* mesh : casters) {
+            if (mesh->opaque.indexCount == 0U) {
+                continue;
+            }
+            const ShadowPush push{shadowLightViewProj, glm::vec4{mesh->sectionOrigin, 1.0F}};
+            vkCmdPushConstants(frame.commandBuffer, shadowPipelineLayout,
+                               VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
+            vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &mesh->vertexBuffer.buffer,
+                                   &mesh->opaque.vertexOffset);
+            vkCmdBindIndexBuffer(frame.commandBuffer, mesh->indexBuffer.buffer,
+                                 mesh->opaque.indexOffset, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(frame.commandBuffer, mesh->opaque.indexCount, 1, 0, 0, 0);
+        }
+        vkCmdEndRenderPass(frame.commandBuffer);
+        shadowTarget.transitionToShaderRead(frame.commandBuffer);
+        static bool reported = false;
+        if (!reported && !casters.empty()) {
+            reported = true;
+            std::cout << "[shadow] pre-pass " << casters.size() << " casters\n";
+        }
+    }
+
+    // Debug-only overlay (MC_REBEDROCK_SHADOW_DEBUG=1): samples the shadow depth
+    // texture into a top-right corner quad so the pre-pass's output is visible.
+    void drawShadowDebugOverlay(VkCommandBuffer commandBuffer) const {
+        if (!shadowDebugOverlay || shadowDisabled) {
+            return;
+        }
+        const float width = static_cast<float>(swapchainExtent.width);
+        const float height = static_cast<float>(swapchainExtent.height);
+        constexpr float kSize = 256.0F;
+        const glm::vec4 rect{
+            1.0F - 2.0F * kSize / width, 1.0F - 2.0F * kSize / height,
+            2.0F * kSize / width, 2.0F * kSize / height,
+        };
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowDebugPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                shadowDebugPipelineLayout, 0, 1, &shadowDebugSet, 0, nullptr);
+        vkCmdPushConstants(commandBuffer, shadowDebugPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+                           sizeof(rect), &rect);
+        vkCmdDraw(commandBuffer, 6U, 1, 0, 0);
+    }
+
     [[nodiscard]] VkSurfaceFormatKHR
     chooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) const {
         for (const auto& format : formats) {
@@ -6542,16 +7290,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     [[nodiscard]] VkImageView createImageView(VkImage image, VkFormat format,
                                               VkImageAspectFlags aspect) const {
-        auto info = vkStructure<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
-        info.image = image;
-        info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        info.format = format;
-        info.subresourceRange.aspectMask = aspect;
-        info.subresourceRange.levelCount = 1;
-        info.subresourceRange.layerCount = 1;
-        VkImageView view = VK_NULL_HANDLE;
-        checkVk(vkCreateImageView(device, &info, nullptr, &view), "vkCreateImageView");
-        return view;
+        return resources_.createImageView(image, format, aspect);
     }
 
     void createSwapchainImageViews() {
@@ -6562,22 +7301,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    [[nodiscard]] VkFormat chooseDepthFormat() const {
-        constexpr std::array candidates{VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT,
-                                        VK_FORMAT_D24_UNORM_S8_UINT};
-        for (const auto format : candidates) {
-            VkFormatProperties properties{};
-            vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &properties);
-            if ((properties.optimalTilingFeatures &
-                 VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0U) {
-                return format;
-            }
-        }
-        throw std::runtime_error("No supported Vulkan depth format was found");
-    }
+    [[nodiscard]] VkFormat chooseDepthFormat() const { return resources_.chooseDepthFormat(); }
 
     [[nodiscard]] bool depthFormatHasStencil(VkFormat format) const {
-        return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
+        return VulkanResources::depthFormatHasStencil(format);
     }
 
     [[nodiscard]] VkSampleCountFlagBits renderSampleCount() const {
@@ -7186,6 +7913,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         createRenderPass();
         createGraphicsPipeline();
         createOcclusionQueryPipeline();
+        createParticlePipeline();
+        createShadowDebugPipeline();
+        createRainSheetPipeline();
         createFramebuffers();
     }
 
@@ -7245,6 +7975,26 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (heldItemPipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device, heldItemPipeline, nullptr);
             heldItemPipeline = VK_NULL_HANDLE;
+        }
+        if (particlePipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, particlePipeline, nullptr);
+            particlePipeline = VK_NULL_HANDLE;
+        }
+        if (particlePipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, particlePipelineLayout, nullptr);
+            particlePipelineLayout = VK_NULL_HANDLE;
+        }
+        if (shadowDebugPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, shadowDebugPipeline, nullptr);
+            shadowDebugPipeline = VK_NULL_HANDLE;
+        }
+        if (rainSheetPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, rainSheetPipeline, nullptr);
+            rainSheetPipeline = VK_NULL_HANDLE;
+        }
+        if (rainSheetPipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, rainSheetPipelineLayout, nullptr);
+            rainSheetPipelineLayout = VK_NULL_HANDLE;
         }
         if (pipelineLayout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
@@ -7908,6 +8658,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
+    [[nodiscard]] std::string rainModeLabel(int mode) const {
+        switch (mode) {
+            case 0: return translated("options.rainMode.texture", "贴图雨");
+            case 1: return translated("options.rainMode.particles", "粒子雨");
+            default: return translated("options.rainMode.async", "异步粒子雨");
+        }
+    }
+
     [[nodiscard]] std::string menuButtonLabel(MenuButton button) const {
         // Every label carries its English text as the fallback, so a language
         // without the vanilla key still reads correctly.
@@ -7999,6 +8757,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                        gameplay::difficultyName(currentSave.has_value()
                                                     ? currentSave->difficulty
                                                     : gameplay::Difficulty::Normal));
+        case MenuButton::Experimental:
+            return translated("menu.experimental", "实验性内容") + "...";
+        case MenuButton::RainMode:
+            return translated("options.rainMode", "雨模式") + ": " + rainModeLabel(options.rainMode);
+        case MenuButton::SunShadows:
+            return translated("options.sunShadows", "太阳阴影") + ": " + toggle(options.sunShadows);
         case MenuButton::Language:
             return translated("options.language", "Language") + "...";
         case MenuButton::ForceUnicodeFont:
@@ -8471,12 +9235,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const float scale = layout.scale();
         const std::string title = menuSystem.pageStack.current() == ui::PageId::Options
             ? translated("options.title", "Options")
-            : (menuSystem.pageStack.current() == ui::PageId::VideoSettings
+            : (menuSystem.pageStack.current() == ui::PageId::Experimental
+                   ? translated("menu.experimental", "实验性内容")
+                   : (menuSystem.pageStack.current() == ui::PageId::VideoSettings
                    ? translated("options.videoTitle", "Video Settings")
                    : (menuSystem.pageStack.current() == ui::PageId::Controls
                           ? translated("controls.title", "Controls")
                           : (deathScreen ? translated("deathScreen.title", "You Died!")
-                                         : translated("menu.game", "Game Menu"))));
+                                         : translated("menu.game", "Game Menu")))));
         const std::size_t buttonCount = menuButtonCount();
         const auto firstButton =
             frontendButtonRect(layout, menuSystem.pageStack.current(), 0, buttonCount);
@@ -9019,7 +9785,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
 
         if (page == ui::PageId::Options || page == ui::PageId::VideoSettings ||
-            page == ui::PageId::Controls || page == ui::PageId::Language) {
+            page == ui::PageId::Controls || page == ui::PageId::Language ||
+            page == ui::PageId::Experimental) {
             if (!worldSessionActive) {
                 drawGuiSprite(commandBuffer,
                               {0.0F, 0.0F, static_cast<float>(swapchainExtent.width),
@@ -9332,27 +10099,162 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // Particles are their own pass because vanilla draws them after the
     // translucent terrain layer, unlike the entities above, which belong to the
     // entity stage that runs before it.
-    void drawParticles(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
-        if (particleSystem.particles().empty()) {
+    std::size_t drawParticles(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) {
+        const auto& particles = particleSystem.particles();
+        if (particles.empty()) {
+            return 0U;
+        }
+        // MC_REBEDROCK_LEGACY_PARTICLES keeps the old per-particle push-constant
+        // draw so the instanced path can be compared directly.
+        if (legacyParticles) {
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline);
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    itemPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+            for (const auto& particle : particles) {
+                const ItemPush push{
+                    {particle.position.x, particle.position.y, particle.position.z, particle.size},
+                    {particle.textureLayer, 0.0F, 0.0F, particle.opacity},
+                    {-1.0F, particle.uvOrigin.x, particle.uvOrigin.y, particle.uvScale},
+                    {0.0F, 0.0F, 0.0F, packedSceneLight(particle.position)},
+                };
+                vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+                                   sizeof(push), &push);
+                vkCmdDraw(commandBuffer, 6U, 1, 0, 0);
+            }
+            return 0U;
+        }
+        const std::size_t capacity = gpuSceneBuffer.capacityBytes() / sizeof(ParticleRecord);
+        const std::size_t count = std::min(particles.size(), capacity);
+        if (count == 0U) {
+            return 0U;
+        }
+        std::vector<ParticleRecord> records;
+        records.reserve(count);
+        for (const auto& particle : particles) {
+            if (records.size() == count) {
+                break;
+            }
+            records.push_back(ParticleRecord{
+                {particle.position.x, particle.position.y, particle.position.z, particle.size},
+                {particle.uvOrigin.x, particle.uvOrigin.y, particle.uvScale, particle.opacity},
+                {particle.textureLayer, packedSceneLight(particle.position), 0.0F, 0.0F},
+            });
+        }
+        // Write the records into this frame's storage-buffer slot and flush. The
+        // per-frame fence waited at the top of drawFrame orders these host writes
+        // against the prior submission's read of the same slot, so no barrier is
+        // needed; vmaFlushAllocation covers non-coherent heaps (a no-op on
+        // unified Apple memory).
+        auto& buffer = gpuSceneBuffer.frame(currentFrame);
+        const std::size_t bytes = records.size() * sizeof(ParticleRecord);
+        std::memcpy(buffer.mapped, records.data(), bytes);
+        checkVk(vmaFlushAllocation(allocator, buffer.allocation, 0, bytes),
+                "vmaFlushAllocation(particle scene buffer)");
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, particlePipeline);
+        const std::array<VkDescriptorSet, 2> sets{descriptorSet, sceneDescriptorSets[currentFrame]};
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                particlePipelineLayout, 0, 2, sets.data(), 0, nullptr);
+        vkCmdDraw(commandBuffer, 6U, static_cast<std::uint32_t>(records.size()), 0, 0);
+        static bool reported = false;
+        if (!reported) {
+            reported = true;
+            std::cout << "[particles] instanced 1 draw for " << records.size()
+                      << " records (legacy = " << particles.size() << " draws)\n";
+        }
+        return records.size();
+    }
+
+    // Draws the weather rain through one of three paths sharing the same
+    // CPU-simulated drops, so the particle-async claim can be measured against
+    // a cheap texture baseline and the legacy per-particle path:
+    //   texture   -> a few large scrolled water quads (rain_sheet pipeline)
+    //   particles -> the old per-particle item-pipeline billboards
+    //   async     -> one instanced draw from the scene storage buffer, with
+    //                baseInstance pointing past the block-dust records
+    void drawRain(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
+                  std::size_t baseRecordCount) {
+        const auto& drops = rainSystem.drops();
+        if (drops.empty()) {
             return;
         }
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipelineLayout,
-                                0, 1, &descriptorSet, 0, nullptr);
-        for (const auto& particle : particleSystem.particles()) {
-            // Vanilla block dust carries a lightmap sample at the particle's
-            // position (Particle#getColorMultiplier), so it dims in caves and
-            // picks up torchlight exactly like the block it came from. The
-            // packedSceneLight is sampled per particle per frame.
-            const ItemPush push{
-                {particle.position.x, particle.position.y, particle.position.z, particle.size},
-                {particle.textureLayer, 0.0F, 0.0F, particle.opacity},
-                {-1.0F, particle.uvOrigin.x, particle.uvOrigin.y, particle.uvScale},
-                {0.0F, 0.0F, 0.0F, packedSceneLight(particle.position)},
-            };
-            vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
-                               sizeof(push), &push);
-            vkCmdDraw(commandBuffer, 6U, 1, 0, 0);
+        static bool reported = false;
+        if (rainMode_ == RainMode::Texture) {
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, rainSheetPipeline);
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    rainSheetPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+            for (const auto& drop : drops) {
+                const RainSheetPush push{
+                    {drop.position.x, drop.position.y, drop.position.z, drop.size * 30.0F},
+                    {rainTime_, 0.30F, static_cast<float>(kWaterStillLayer), 0.0F},
+                };
+                vkCmdPushConstants(commandBuffer, rainSheetPipelineLayout,
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                   sizeof(push), &push);
+                vkCmdDraw(commandBuffer, 6U, 1, 0, 0);
+            }
+            if (!reported && drops.size() >= rainTargetCount() * 9U / 10U) {
+                reported = true;
+                std::cout << "[rain] mode=texture sheets=" << drops.size()
+                          << " draws=" << drops.size() << "\n";
+            }
+            return;
+        }
+        if (rainMode_ == RainMode::Particles) {
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline);
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    itemPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+            for (const auto& drop : drops) {
+                const ItemPush push{
+                    {drop.position.x, drop.position.y, drop.position.z, drop.size},
+                    {static_cast<float>(kWaterStillLayer), 0.0F, 0.0F, 0.6F},
+                    {-1.0F, 0.0F, 0.0F, 1.0F},
+                    {0.0F, 0.0F, 0.0F, packedSceneLight(drop.position)},
+                };
+                vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+                                   sizeof(push), &push);
+                vkCmdDraw(commandBuffer, 6U, 1, 0, 0);
+            }
+            if (!reported && drops.size() >= rainTargetCount() * 9U / 10U) {
+                reported = true;
+                std::cout << "[rain] mode=particles drops=" << drops.size()
+                          << " draws=" << drops.size() << "\n";
+            }
+            return;
+        }
+        // Async: append the rain records after the block-dust records in the
+        // same scene buffer and draw once with baseInstance past them.
+        const std::size_t capacity = gpuSceneBuffer.capacityBytes() / sizeof(ParticleRecord);
+        const std::size_t count = std::min(drops.size(), capacity - baseRecordCount);
+        if (count == 0U) {
+            return;
+        }
+        std::vector<ParticleRecord> records;
+        records.reserve(count);
+        for (const auto& drop : drops) {
+            if (records.size() == count) {
+                break;
+            }
+            records.push_back(ParticleRecord{
+                {drop.position.x, drop.position.y, drop.position.z, drop.size},
+                {0.0F, 0.0F, 1.0F, 0.6F},
+                {static_cast<float>(kWaterStillLayer), packedSceneLight(drop.position), 0.0F, 0.0F},
+            });
+        }
+        auto& buffer = gpuSceneBuffer.frame(currentFrame);
+        const std::size_t baseOffset = baseRecordCount * sizeof(ParticleRecord);
+        const std::size_t bytes = records.size() * sizeof(ParticleRecord);
+        std::memcpy(static_cast<char*>(buffer.mapped) + baseOffset, records.data(), bytes);
+        checkVk(vmaFlushAllocation(allocator, buffer.allocation, baseOffset, bytes),
+                "vmaFlushAllocation(rain scene buffer)");
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, particlePipeline);
+        const std::array<VkDescriptorSet, 2> sets{descriptorSet, sceneDescriptorSets[currentFrame]};
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                particlePipelineLayout, 0, 2, sets.data(), 0, nullptr);
+        vkCmdDraw(commandBuffer, 6U, static_cast<std::uint32_t>(records.size()), 0,
+                  static_cast<std::uint32_t>(baseRecordCount));
+        if (!reported && records.size() >= rainTargetCount() * 9U / 10U) {
+            reported = true;
+            std::cout << "[rain] mode=async drops=" << records.size() << " draws=1\n";
         }
     }
 
@@ -9818,6 +10720,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         passInfo.renderArea.extent = swapchainExtent;
         passInfo.clearValueCount = static_cast<std::uint32_t>(clears.size());
         passInfo.pClearValues = clears.data();
+        // The sun-space shadow pre-pass writes an offscreen depth map that the
+        // main pass (and the debug overlay) samples; it must run after the mesh
+        // uploads above and before the main render pass.
+        recordShadowPass(frame);
         vkCmdBeginRenderPass(frame.commandBuffer, &passInfo, VK_SUBPASS_CONTENTS_INLINE);
         VkViewport viewport{};
         viewport.width = static_cast<float>(swapchainExtent.width);
@@ -10057,7 +10963,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         // Particles stay behind the translucent terrain pass, which is where
         // vanilla draws them too.
-        drawParticles(frame.commandBuffer, frame.descriptorSet);
+        const std::size_t particleRecordCount =
+            drawParticles(frame.commandBuffer, frame.descriptorSet);
+        drawRain(frame.commandBuffer, frame.descriptorSet, particleRecordCount);
         drawMiningProgress(frame.commandBuffer, frame.descriptorSet);
         if (!inventoryOpen && !paused && !chatOpen && targetedBlock.has_value()) {
             const world::Block targeted = interactionWorld.block(
@@ -10087,6 +10995,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // bars, crosshair, held-item name) and any open screens on top of it are
         // drawn by drawHud, in the 1.16.1 layer order.
         drawHud(frame.commandBuffer, frame.descriptorSet);
+        drawShadowDebugOverlay(frame.commandBuffer);
         vkCmdEndRenderPass(frame.commandBuffer);
         checkVk(vkEndCommandBuffer(frame.commandBuffer), "vkEndCommandBuffer");
         return visibleCount;
@@ -10347,6 +11256,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     bool inventoryOpen = false;
     bool spawnPositionInitialized = false;
     bool worldReady = false;
+    // DR repro hook: MC_REBEDROCK_LOAD_SAVE auto-loads the first real save.
+    bool loadSaveStarted = false;
     bool creativeScrollbarDragging = false;
     // SlotActionType.QUICK_CRAFT drag state: the button held and the storage of
     // every slot the cursor swept over. A drag starts when a press leaves a
@@ -10425,12 +11336,38 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     VkSampleCountFlagBits maximumMsaaSamples = VK_SAMPLE_COUNT_1_BIT;
     VkDevice device = VK_NULL_HANDLE;
     VmaAllocator allocator = VK_NULL_HANDLE;
+    VulkanResources resources_;
     QueueFamilyIndices queueFamilies;
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     VkQueue presentQueue = VK_NULL_HANDLE;
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSetLayout sceneDescriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool sceneDescriptorPool = VK_NULL_HANDLE;
+    std::array<VkDescriptorSet, kFramesInFlight> sceneDescriptorSets{};
+    GpuSceneBuffer gpuSceneBuffer;
+    VkPipeline particlePipeline = VK_NULL_HANDLE;
+    VkPipelineLayout particlePipelineLayout = VK_NULL_HANDLE;
+    bool legacyParticles = std::getenv("MC_REBEDROCK_LEGACY_PARTICLES") != nullptr;
+    OffscreenTarget shadowTarget;
+    VkPipelineLayout shadowPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline shadowPipeline = VK_NULL_HANDLE;
+    VkDescriptorSetLayout shadowDebugSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool shadowDebugPool = VK_NULL_HANDLE;
+    VkDescriptorSet shadowDebugSet = VK_NULL_HANDLE;
+    VkSampler shadowDebugSampler = VK_NULL_HANDLE;
+    VkPipelineLayout shadowDebugPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline shadowDebugPipeline = VK_NULL_HANDLE;
+    glm::mat4 shadowLightViewProj{1.0F};
+    bool shadowDisabled = std::getenv("MC_REBEDROCK_SHADOW_DISABLE") != nullptr;
+    bool shadowDebugOverlay = std::getenv("MC_REBEDROCK_SHADOW_DEBUG") != nullptr;
+    render::RainSystem rainSystem;
+    RainMode rainMode_ = RainMode::Async;
+    std::size_t rainCountOverride_ = 0U;
+    float rainTime_ = 0.0F;
+    VkPipeline rainSheetPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout rainSheetPipelineLayout = VK_NULL_HANDLE;
     AllocatedImage textureImage;
     VkImageView textureView = VK_NULL_HANDLE;
     AllocatedImage fontTextureImage;

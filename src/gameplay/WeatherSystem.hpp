@@ -53,6 +53,12 @@ class WeatherSystem final {
     // result is not persisted (vanilla does not persist its Random either).
     void seedRandom(std::uint32_t seed);
 
+    // Test/perf harness helper: snaps the smoothed rain gradient (and the
+    // raining flag) to a target in [0, 1] immediately, bypassing the 0.01/tick
+    // ramp. Lets a smoke run exercise full-intensity rain without waiting the
+    // five-second fade-in.
+    void forceRainGradient(float gradient);
+
     [[nodiscard]] WeatherState state() const;
 
     // Gradient-derived accessors, mirroring World#isRaining / #isThundering.

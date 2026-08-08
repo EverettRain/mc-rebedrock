@@ -35,8 +35,45 @@ simple versioned history while it is in beta.
   merge into a single group (capped at the stack size) so a pile of drops
   renders as one icon. Once resting they brake at the floor's slipperiness, so
   a thrown drop does not slide half a biome.
+- The Options menu gains an "实验性内容" (Experimental Content) sub-page holding
+  the rain-render-mode selector (贴图雨 / 粒子雨 / 异步粒子雨) and the sun-shadow
+  toggle, both persisted to the options file. The environment variables
+  `MC_REBEDROCK_RAIN_MODE` / `MC_REBEDROCK_RAIN_COUNT` remain as headless-test
+  overrides.
+- Block-dust and rain particles render through a GPU instanced path: each
+  particle's compact record is written into a per-frame storage buffer and the
+  vertex shader expands the camera-facing billboard, so an N-particle burst is
+  one `vkCmdDraw` instead of one per particle (a 64-particle block break drops
+  from 64 draws to 1).
+- Rain is drawn through three switchable paths that share the same
+  CPU-simulated drops driven by the weather system's smoothed gradient —
+  贴图雨 (a few large scrolled water-sheet quads), 粒子雨 (the legacy
+  per-particle billboards) and 异步粒子雨 (thousands of drops in a single
+  instanced draw from the storage buffer) — so the three strategies are
+  directly comparable.
+- A sun-space shadow depth pre-pass renders the in-frustum opaque terrain into
+  an offscreen depth map ahead of the main pass, behind the
+  `experimental.sunShadows` option (off by default). The map is infrastructure
+  for a future shadow pass and is currently visible only through a debug
+  overlay (`MC_REBEDROCK_SHADOW_DEBUG=1`).
 
 ### Changed
+
+- Grass and oak-leaf colours are baked into their atlas layers at build time
+  per biome (the swamp's dark tone included) instead of being tinted per-vertex
+  in the fragment shader, so the biome lookup no longer rides the vertex pad
+  byte; spruce and birch leaves keep their fixed tinted layers.
+- The sun-shadow pre-pass is off by default and caps its caster list at the
+  nearest 512: it re-renders every opaque section each frame, and during
+  chunk-streaming bursts that was the heaviest new GPU load.
+
+### Fixed
+
+- Opening "实验性内容" in the options menu no longer falls through to the
+  terrain-loading screen — the page was missing from the menu draw dispatch, so
+  it rendered the loading backdrop instead of its three option buttons.
+- The new render pipelines destroy their shader modules after creation, closing
+  an eight-object device leak the validation layers reported at shutdown.
 
 - Eating now plays the chewing loop through the meal: the `generic.eat` sound
   fires every fourth tick once the eat is past its first seven ticks, with the

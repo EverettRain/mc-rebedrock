@@ -64,6 +64,7 @@ void GameOptions::sanitize() {
     else if (anisotropy <= 8) anisotropy = 8;
     else anisotropy = 16;
     masterVolume = std::clamp(masterVolume, 0.0F, 1.0F);
+    rainMode = std::clamp(rainMode, 0, 2);
     if (language.empty() ||
         language.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos) {
         language = "en_us";
@@ -128,6 +129,10 @@ GameOptions GameOptions::load(const std::filesystem::path& path) {
             }
         } else if (key == "text.forceUnicodeFont") {
             options.forceUnicodeFont = value == "true" || value == "1" || value == "on";
+        } else if (key == "experimental.rainMode") {
+            static_cast<void>(parseNumber(value, options.rainMode));
+        } else if (key == "experimental.sunShadows") {
+            options.sunShadows = value == "true" || value == "1" || value == "on";
         }
     }
     options.sanitize();
@@ -163,7 +168,9 @@ void GameOptions::save(const std::filesystem::path& path) const {
            << "lighting.dynamic=" << (sanitized.dynamicLight ? "true" : "false") << '\n'
            << "render.vsync=" << (sanitized.vsync ? "true" : "false") << '\n'
            << "text.language=" << sanitized.language << '\n'
-           << "text.forceUnicodeFont=" << (sanitized.forceUnicodeFont ? "true" : "false") << '\n';
+           << "text.forceUnicodeFont=" << (sanitized.forceUnicodeFont ? "true" : "false") << '\n'
+           << "experimental.rainMode=" << sanitized.rainMode << '\n'
+           << "experimental.sunShadows=" << (sanitized.sunShadows ? "true" : "false") << '\n';
 }
 
 } // namespace mc::config

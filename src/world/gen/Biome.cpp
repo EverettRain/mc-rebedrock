@@ -117,6 +117,7 @@ namespace {
 std::array<world::BlockTextureLayers, static_cast<std::size_t>(Biome::Count)>
     kBiomeGrassLayers{};
 world::BlockTextureLayers kSwampDarkGrassLayers{};
+std::unordered_map<std::uint64_t, float> kBiomeFoliageLayers{};
 float kTerrainGrassTopLayer = 0.0F;
 float kTerrainGrassPlantLayer = 0.0F;
 std::unordered_map<world::Block, float> kTerrainLeafLayers{};
@@ -137,6 +138,18 @@ const world::BlockTextureLayers& swampDarkGrassLayers() {
 
 void setSwampDarkGrassLayers(world::BlockTextureLayers layers) {
     kSwampDarkGrassLayers = layers;
+}
+
+float biomeFoliageLayer(Biome biome, world::Block leaves) {
+    const auto biomeIndex = static_cast<std::size_t>(biome);
+    const auto found = kBiomeFoliageLayers.find(
+        biomeIndex * 64U + static_cast<std::uint32_t>(leaves));
+    return found != kBiomeFoliageLayers.end() ? found->second : 0.0F;
+}
+
+void setBiomeFoliageLayer(Biome biome, world::Block leaves, float layer) {
+    kBiomeFoliageLayers[static_cast<std::size_t>(biome) * 64U +
+                        static_cast<std::uint32_t>(leaves)] = layer;
 }
 
 float terrainGrassTopLayer() {

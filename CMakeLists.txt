@@ -222,9 +222,13 @@ add_executable(mc_rebedrock
     src/persistence/SaveRepository.cpp
     src/render/Frustum.cpp
     src/render/ParticleSystem.cpp
+    src/render/RainSystem.cpp
     src/render/PerspectiveCamera.cpp
     src/render/TestScene.cpp
     src/render/vulkan/VulkanRenderer.cpp
+    src/render/vulkan/VulkanResources.cpp
+    src/render/vulkan/GpuSceneBuffer.cpp
+    src/render/vulkan/OffscreenTarget.cpp
     src/ui/HudLayout.cpp
     src/ui/BitmapFontMetrics.cpp
     src/ui/Language.cpp
@@ -424,6 +428,14 @@ if(MC_REBEDROCK_STAGE_RUNTIME AND GLSLC_EXECUTABLE)
         item_entity.frag
         occlusion_query.vert
         occlusion_query.frag
+        particle_instanced.vert
+        particle_instanced.frag
+        shadow.vert
+        shadow.frag
+        shadow_debug.vert
+        shadow_debug.frag
+        rain_sheet.vert
+        rain_sheet.frag
     )
     set(MC_REBEDROCK_SHADER_OUTPUTS)
 

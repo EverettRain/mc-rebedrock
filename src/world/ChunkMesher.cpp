@@ -370,24 +370,31 @@ class BiomeTintCache final {
                                  int x, int y, int z) {
     auto layers = textureLayers(block);
     if (block == Block::Grass) {
-        // The grass top is the UNTINTED terrain texture, coloured by the
-        // fragment shader's biome-colour lookup (mask 1); the side keeps its
-        // baked per-biome layer so the dirt stays dirt; the bottom is dirt.
+        // The grass family's BAKED per-biome layers: the top/plant/side are
+        // tinted with the biome's colour at build time, so the colour never
+        // depends on per-vertex data reaching the fragment shader.
         const auto biome = dominantBiome(world, x, z);
         const auto& biomeLayers = (biome == gen::Biome::Swamp && swampDarkTone(x, z))
             ? gen::swampDarkGrassLayers()
             : gen::biomeGrassLayers(biome);
         if (biomeLayers.top != 0.0F) {
-            const float terrainTop = gen::terrainGrassTopLayer();
-            layers.top = terrainTop != 0.0F ? terrainTop : biomeLayers.top;
+            layers.top = biomeLayers.top;
             layers.side = biomeLayers.side;
         }
     } else if (isLeaves(block)) {
-        // Oak-family leaves use the untinted terrain layer (coloured by the
-        // fragment shader, mask 2); spruce/birch keep their fixed tinted layer.
-        const float terrain = gen::terrainLeafLayer(block);
-        if (terrain != 0.0F) {
-            layers.top = layers.side = layers.bottom = terrain;
+        // Oak-family leaves use the baked per-biome foliage layer; spruce/birch
+        // keep their fixed tinted terrain layer.
+        if (block != Block::SpruceLeaves && block != Block::BirchLeaves) {
+            const float foliage =
+                gen::biomeFoliageLayer(dominantBiome(world, x, z), block);
+            if (foliage != 0.0F) {
+                layers.top = layers.side = layers.bottom = foliage;
+            }
+        } else {
+            const float terrain = gen::terrainLeafLayer(block);
+            if (terrain != 0.0F) {
+                layers.top = layers.side = layers.bottom = terrain;
+            }
         }
     }
     const auto orientation = world.orientation(x, y, z);
@@ -627,12 +634,9 @@ void appendFace(
         // their fixed tones, everything else is untouched). The mask rides the
         // vertex pad byte, which shares an attribute with the normal index that
         // is proven to round-trip.
-        const std::uint8_t biomeMask =
-            (block == Block::Grass && face.face == Face::PositiveY) ? 1U
-            : (isLeaves(block) && block != Block::SpruceLeaves &&
-               block != Block::BirchLeaves)
-                ? 2U
-                : 0U;
+        // The per-vertex biome mask is disabled: grass/leaf colours are baked
+        // into their atlas layers, so the fragment shader's lookup is unused.
+        const std::uint8_t biomeMask = 0U;
         const int cornerX = x + static_cast<int>(std::lround(positionCorner.x));
         const int cornerZ = z + static_cast<int>(std::lround(positionCorner.z));
         const auto tint = tints.tint(block, face.face, cornerX, cornerZ);
@@ -869,11 +873,8 @@ void appendCrossedPlant(
     // keep white. The thin crossed quads span the block, so one tint per block
     // reads the same as per corner.
     const auto tint = tints.tint(block, Face::PositiveY, x, z);
-    const std::uint8_t biomeMask = (block == Block::GrassPlant) ? 1U : 0U;
-    appendPlantQuad(mesh, layer, shiftedFirst, x, y, z, lighting, sectionOrigin, tint,
-                    biomeMask);
-    appendPlantQuad(mesh, layer, shiftedSecond, x, y, z, lighting, sectionOrigin, tint,
-                    biomeMask);
+    appendPlantQuad(mesh, layer, shiftedFirst, x, y, z, lighting, sectionOrigin, tint);
+    appendPlantQuad(mesh, layer, shiftedSecond, x, y, z, lighting, sectionOrigin, tint);
 }
 
 // The vanilla `crop` blockstate model (crop.json): four orthogonal thin planes

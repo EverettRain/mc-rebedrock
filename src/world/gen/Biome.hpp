@@ -108,11 +108,13 @@ void setBiomeGrassLayers(Biome biome, world::BlockTextureLayers layers);
 [[nodiscard]] const world::BlockTextureLayers& swampDarkGrassLayers();
 void setSwampDarkGrassLayers(world::BlockTextureLayers layers);
 
-// The untinted terrain grass/leaf atlas layers: the mesher textures grass tops,
-// plants and oak-family leaves with these and the fragment shader multiplies
-// the sampled biome colour on top, so the boundary blends as a smooth gradient.
-// Spruce/birch leaves keep their pre-tinted fixed tones, so their terrain layer
-// is the tinted one.
+// The baked per-biome foliage atlas layer for a leaf block: the untinted leaf
+// texture tinted with the biome's foliage colour at build time, so the terrain
+// colour never depends on per-vertex data reaching the fragment shader. Spruce
+// and birch keep fixed tones via terrainLeafLayer.
+[[nodiscard]] float biomeFoliageLayer(Biome biome, world::Block leaves);
+void setBiomeFoliageLayer(Biome biome, world::Block leaves, float layer);
+// The untinted terrain grass/leaf atlas layers, kept as fallbacks.
 [[nodiscard]] float terrainGrassTopLayer();
 [[nodiscard]] float terrainGrassPlantLayer();
 [[nodiscard]] float terrainLeafLayer(world::Block leaves);
