@@ -4677,9 +4677,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             pendingSectionUpdates.insert_or_assign(update.position, std::move(update));
         }
         peakPendingSectionCount = std::max(peakPendingSectionCount, pendingSectionUpdates.size());
-        std::cout << "Chunk stream center: " << batch.center.x << "," << batch.center.z
-                  << " | CPU chunks: " << batch.loadedChunkCount
-                  << " | queued sections: " << pendingSectionUpdates.size() << '\n';
+        // std::cout << "Chunk stream center: " << batch.center.x << "," << batch.center.z
+        //           << " | CPU chunks: " << batch.loadedChunkCount
+        //           << " | queued sections: " << pendingSectionUpdates.size() << '\n';
         ++completedStreamBatchCount;
         if (!spawnPositionInitialized) {
             initializeSpawnPosition();
@@ -5129,12 +5129,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                           placement);
                 switch (use.action) {
                 case gameplay::ItemUseAction::CollectWater: {
-                    // BucketItem#use + ItemUsage#method_30012: only survival
-                    // actually scoops. Creative never drains the source, so the
-                    // empty bucket stays empty and the water stays put.
-                    if (gameSession.gameMode() != gameplay::GameMode::Survival) {
-                        break;
-                    }
+                    // BucketItem#use + ItemUsage#method_30012: both modes scoop a
+                    // still source into a full bucket. Creative keeps the bucket
+                    // forever (the swap below never spends it); survival spends
+                    // the empty bucket by turning it into the full one.
                     const auto block = targetedBlock->block;
                     if (interactionWorld.setBlock(block.x, block.y, block.z,
                                                   world::Block::Air)) {

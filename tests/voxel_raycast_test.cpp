@@ -10,6 +10,9 @@ int main() {
     chunk.setBlock(7, 2, 1, mc::world::Block::Glass);
     chunk.setBlock(9, 3, 1, mc::world::Block::Water);
     chunk.setBlock(10, 3, 1, mc::world::Block::Dandelion);
+    // A flowing-water cell (level 3) behind which a stone block waits.
+    chunk.setBlock(12, 3, 1, mc::world::Block::Water);
+    chunk.setBlock(13, 3, 1, mc::world::Block::Stone);
     chunk.setBlock(4, 2, 6, mc::world::Block::Torch);
     chunk.setBlock(7, 2, 6, mc::world::Block::Stone);
     // A young wheat crop (raycast backdrop behind it) and a farmland strip.
@@ -18,6 +21,7 @@ int main() {
     chunk.setBlock(14, 3, 8, mc::world::Block::Farmland);
     chunk.setBlock(15, 3, 8, mc::world::Block::Stone);
     world.setChunk({0, 0}, std::move(chunk));
+    world.setFluidLevel(12, 3, 1, 3U);
     world.setOrientation(14, 5, 14, mc::world::cropOrientation(0));
     world.setOrientation(14, 3, 8, mc::world::farmlandOrientation(0));
 
@@ -56,6 +60,12 @@ int main() {
         world, {8.5F, 3.5F, 1.5F}, {1.0F, 0.0F, 0.0F}, 4.0F, true);
     assert(bucketHitsWater.has_value());
     assert(bucketHitsWater->block == (glm::ivec3{9, 3, 1}));
+    // A bucket ray stops only at a still source: the flowing cell at (12,3,1)
+    // is walked past, so the stone behind it is reachable.
+    const auto bucketWalksFlowingWater = mc::world::raycastVoxels(
+        world, {11.5F, 3.5F, 1.5F}, {1.0F, 0.0F, 0.0F}, 3.0F, true);
+    assert(bucketWalksFlowingWater.has_value());
+    assert(bucketWalksFlowingWater->block == (glm::ivec3{13, 3, 1}));
 
     const auto hitsTorchMesh = mc::world::raycastVoxels(
         world, {0.5F, 2.4F, 6.5F}, {1.0F, 0.0F, 0.0F}, 8.0F);

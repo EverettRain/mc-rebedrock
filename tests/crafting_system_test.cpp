@@ -20,34 +20,46 @@ int main() {
         return ItemStack{world::Block::Torch, count, blockItemFor(world::Block::Torch)};
     };
 
-    // Scenario 1: a single shift-click crafts exactly once, not the whole grid.
+    // Scenario 1: one shift-click crafts the whole batch — the single matching
+    // window holds two torch sets (2 coal above 2 stick), so the click produces
+    // eight torches, matching vanilla's QUICK_MOVE loop that keeps crafting
+    // while the result can find a home.
     {
         Inventory inventory;
         CraftingSystem crafting;
-        // One matching window whose ingredients carry enough for a second craft,
-        // so a batch implementation would leave the grid empty after one click.
         crafting.playerGridSlot(0) = {world::Block::Air, 2U, &items::Coal};
         crafting.playerGridSlot(2) = {world::Block::Air, 2U, &items::Stick};
         assert(!crafting.playerOutput().empty());
 
         assert(crafting.craftPlayer(inventory, true));
 
-        // One craft produced 4 torches into the main grid (slot 9), not the
-        // hotbar (slots 0..8 stay empty).
-        assert(inventory.slot(9U) == torchStack(4U));
+        // Both sets were consumed and all eight torches reached the main grid
+        // (slot 9); the hotbar stays empty.
+        assert(inventory.slot(9U) == torchStack(8U));
         assert(inventory.slot(0U).empty());
+        assert(crafting.playerOutput().empty());
+    }
 
-        // Only one coal + one stick were spent; the second set is still in the
-        // grid, proving the click did not batch-craft both sets.
+    // Scenario 1b: the batch stops when the inventory can no longer take the
+    // result, leaving that batch's ingredients unconsumed. Slot 35 holds 60
+    // torches, so the first result fills it to 64 and the second has no home.
+    {
+        Inventory inventory;
+        CraftingSystem crafting;
+        for (std::size_t index = 0U; index <= 34U; ++index) {
+            inventory.mutableSlot(index) = {world::Block::Air, 1U, &items::Wheat};
+        }
+        inventory.mutableSlot(35U) = torchStack(60U);
+        crafting.playerGridSlot(0) = {world::Block::Air, 2U, &items::Coal};
+        crafting.playerGridSlot(2) = {world::Block::Air, 2U, &items::Stick};
+        assert(crafting.craftPlayer(inventory, true));
+        // The first batch filled the pre-existing stack to its 64 cap.
+        assert(inventory.slot(35U) == torchStack(64U));
+        // Only one set was spent; the second stays in the grid.
         assert(crafting.playerSlot(0).item == &items::Coal);
         assert(crafting.playerSlot(0).count == 1U);
         assert(crafting.playerSlot(2).item == &items::Stick);
         assert(crafting.playerSlot(2).count == 1U);
-
-        // The next shift-click spends the final set.
-        assert(crafting.craftPlayer(inventory, true));
-        assert(inventory.slot(9U) == torchStack(8U));
-        assert(crafting.playerOutput().empty());
     }
 
     // Scenario 2: the result merges into an existing stack in the main grid

@@ -339,7 +339,10 @@ bool growTree(
                 }
             }
         }
-        const int canopyY = baseY + height;
+        // The canopy hangs off the trunk's top log (baseY+height-1), exactly
+        // where DarkOakTrunkPlacer's tree node sits, so the leaves do not ride
+        // a layer above the vanilla crown.
+        const int canopyY = baseY + height - 1;
         const auto placeFoliageLayer = [&](int cx, int cz, int radius, int yOffset,
                                            bool trimCorners) {
             for (int offsetX = -radius + 1; offsetX <= radius; ++offsetX) {

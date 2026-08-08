@@ -75,6 +75,13 @@ std::size_t ItemEntitySystem::tick(
         ++entity.ageTicks;
         entity.velocity.y -= 0.04F;
         entity.velocity *= 0.98F;
+        // ItemEntity#tick: a drop resting on the floor decelerates at the
+        // surface's slipperiness (0.6 for most blocks) rather than the 0.98
+        // air drag, so it does not keep sliding far after it lands.
+        if (collidesAt(entity.position - glm::vec3{0.0F, 0.02F, 0.0F})) {
+            entity.velocity.x *= 0.6F * 0.98F;
+            entity.velocity.z *= 0.6F * 0.98F;
+        }
 
         // Player magnet: within reach the item drifts toward the player instead
         // of popping into the backpack at the edge of the pickup radius — the

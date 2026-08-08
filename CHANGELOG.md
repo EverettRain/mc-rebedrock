@@ -17,14 +17,16 @@ simple versioned history while it is in beta.
   `~` axes resolve relative to you, and death respawns there before falling
   back to the world spawn. The result persists with the save (format 10).
 - Iron buckets now fill and pour: an empty bucket scoops a still-water source
-  into a full water bucket in survival, and a water bucket empties back into
-  the empty bucket when poured. Creative never consumes a bucket nor drains a
-  source, exactly as the user asked.
+  into a full water bucket, and a water bucket empties back into the empty
+  bucket when poured. Creative keeps the bucket for ever — it never spends the
+  empty one nor the full one — and its bucket ray stops only at a still source,
+  so flowing water is walked past and the block behind it stays breakable.
 - Dropped items gained simple block collision (they land, lean on walls and
   never pass through), drift toward the player with a visible magnet pickup
   animation before being collected, and identical items within the same cell
   merge into a single group (capped at the stack size) so a pile of drops
-  renders as one icon.
+  renders as one icon. Once resting they brake at the floor's slipperiness, so
+  a thrown drop does not slide half a biome.
 
 ### Changed
 
@@ -42,12 +44,16 @@ simple versioned history while it is in beta.
   hierarchy (head and arms as children of the body), so the whole body rotates
   rigidly around its pivots instead of every part spinning around its own
   centre.
-- Shift-clicking a crafting result crafts exactly once and quick-moves the
-  result into the main grid before the hotbar, merging into existing stacks
-  before empty slots — the quick-move pass now merges first, then fills.
+- Shift-clicking a crafting result quick-moves the whole batch into the main
+  grid before the hotbar, merging into existing stacks before empty slots —
+  the quick-move pass now merges first then fills, and the click keeps crafting
+  while the ingredients last and the result finds a home.
 - Dark oak trees spread a proper vanilla canopy: the 2x2 trunk leans near the
   top under a four-layer crown whose widest layer is 8x8, with 1-in-3 branch
-  columns carrying their own small foliage nodes.
+  columns carrying their own small foliage nodes. The crown hangs off the trunk
+  top log, not a layer above it.
+- A dead mob drops its loot in every game mode — the creative gate that
+  silently swallowed the drops is gone, matching vanilla's death-time loot roll.
 
 ## ReBedrock beta3
 

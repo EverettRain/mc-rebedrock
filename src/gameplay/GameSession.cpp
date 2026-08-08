@@ -305,10 +305,9 @@ void GameSession::consumeEntityEvents(SimulationHost& host) {
         }
     }
     worldEntities_.clearPendingSounds();
+    // A dead mob drops its loot whatever the player's game mode is — vanilla's
+    // LivingEntity loot is rolled at death, never gated on the killer's mode.
     for (const auto& [position, drops] : worldEntities_.pendingDrops()) {
-        if (gameMode_ != GameMode::Survival) {
-            continue;
-        }
         std::size_t dropIndex = 0U;
         for (const auto& stack : drops.view()) {
             const float angle = static_cast<float>(dropIndex) * 2.39996323F;

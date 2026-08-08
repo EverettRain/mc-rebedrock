@@ -528,17 +528,20 @@ bool CraftingSystem::craftInto(Inventory& inventory, bool shiftHeld,
         consumeRecipe(grid);
         return true;
     }
-    // Shift-click on the result: QUICK_MOVE the whole output into the player
-    // inventory (main grid then hotbar). If the inventory is full, fall back to
-    // the cursor so the crafted item is never silently lost; only when the
-    // result finds a home is the recipe consumed, so a full inventory cannot
-    // waste the ingredients.
-    ItemStack remainder = result;
-    inventory.quickMoveInto(remainder);
-    if (!remainder.empty() && !inventory.mergeIntoCursor(remainder)) {
-        return false;
+    // Shift-click is QUICK_MOVE on the result slot. ScreenHandler#method_30010
+    // loops `transferSlot` while the result keeps producing the same item, so
+    // one shift-click crafts as many as the ingredients and the player
+    // inventory allow. The loop stops the moment a result cannot find a home,
+    // leaving that batch's ingredients unconsumed — a full inventory never
+    // wastes them.
+    while (!recipeOutput(grid).empty()) {
+        ItemStack remainder = recipeOutput(grid);
+        inventory.quickMoveInto(remainder);
+        if (!remainder.empty()) {
+            break;
+        }
+        consumeRecipe(grid);
     }
-    consumeRecipe(grid);
     return true;
 }
 

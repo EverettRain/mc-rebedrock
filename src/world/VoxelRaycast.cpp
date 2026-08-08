@@ -167,7 +167,11 @@ std::optional<VoxelRaycastHit> raycastVoxels(
     float distance = 0.0F;
     while (distance <= maximumDistance) {
         const Block current = world.block(cell.x, cell.y, cell.z);
-        if (isSelectable(current) || (includeFluids && isFluid(current))) {
+        // A bucket ray stops only at a still-water source (BucketItem's
+        // SOURCE_ONLY); flowing water is walked past, so a block behind it
+        // stays reachable.
+        if (isSelectable(current) ||
+            (includeFluids && isFluid(current) && world.fluidLevel(cell.x, cell.y, cell.z) == 0U)) {
             // Sub-block shapes (torch, crop, farmland) are tested against their
             // actual box; a full-cell block is hit the moment the ray enters.
             const auto shape = blockInteractionShape(world, cell, current);
