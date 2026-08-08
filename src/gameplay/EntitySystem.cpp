@@ -302,6 +302,9 @@ bool EntitySystem::hurt(std::size_t index, float amount, glm::vec3 knockbackOrig
     entity.wanderTimer = 40U;
 
     pendingSounds_.emplace_back(entity.position, outcome.died);
+    if (outcome.died) {
+        die(entity);
+    }
     return true;
 }
 
@@ -317,8 +320,21 @@ bool EntitySystem::kill(std::size_t index) {
         // The shared pipeline never plays a sound; raise the death one here,
         // the way a fatal hurt() reports it through pendingSounds_.
         pendingSounds_.emplace_back(entity.position, true);
+        die(entity);
     }
     return outcome.landed;
+}
+
+bool EntitySystem::die(SimpleEntity& entity) {
+    // LivingEntity#onDeath: the beginDeath guard mirrors the `dead` field that
+    // keeps onDeath from running twice; loot leaves on this same tick, not when
+    // the corpse's twenty-tick animation completes.
+    if (!beginDeath(entity.damage)) {
+        return false;
+    }
+    pendingDrops_.emplace_back(entity.position + glm::vec3{0.0F, 0.25F, 0.0F},
+                               entity.kind().rollLoot(lootRandomState_));
+    return true;
 }
 
 EntityTickResult EntitySystem::tick(
@@ -345,13 +361,10 @@ EntityTickResult EntitySystem::tick(
         }
 
         if (entity.damage.dead()) {
-            // LivingEntity#updatePostDeath: the body tips over for twenty ticks
-            // and drops its loot on the tick it disappears.
-            if (advanceDeath(entity.damage)) {
-                pendingDrops_.emplace_back(
-                    entity.position + glm::vec3{0.0F, 0.25F, 0.0F},
-                    entity.kind().rollLoot(lootRandomState_));
-            }
+            // LivingEntity#updatePostDeath: the corpse tips over for twenty
+            // ticks and is then removed; its loot already left on the tick
+            // health crossed zero (see die()).
+            static_cast<void>(advanceDeath(entity.damage));
             entity.velocity.x = 0.0F;
             entity.velocity.z = 0.0F;
         } else if (entity.wanderTimer == 0U) {
@@ -413,6 +426,9 @@ EntityTickResult EntitySystem::tick(
                     applyDamage(entity.damage, DamageSource::Fall, damage);
                 if (outcome.landed) {
                     pendingSounds_.emplace_back(entity.position, outcome.died);
+                    if (outcome.died) {
+                        die(entity);
+                    }
                 }
             }
             entity.fallDistance = 0.0F;

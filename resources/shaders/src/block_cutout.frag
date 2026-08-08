@@ -10,6 +10,7 @@ layout(location = 6) in vec3 fragmentWorldPosition;
 layout(location = 7) in float fragmentBlockLight;
 layout(location = 8) flat in float fragmentFlatSkyLight;
 layout(location = 9) flat in float fragmentFlatBlockLight;
+layout(location = 10) flat in uint fragmentBiomeMask;
 layout(location = 0) out vec4 outColor;
 
 layout(binding = 0) uniform CameraUniform {
@@ -26,6 +27,9 @@ layout(binding = 0) uniform CameraUniform {
 } camera;
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
+// The 1.16.1 biome colour lookup textures (see grass_block.frag).
+layout(binding = 6) uniform sampler2D biomeGrassColors;
+layout(binding = 7) uniform sampler2D biomeFoliageColors;
 
 float lightBrightness(float normalizedLevel) {
     float darkness = 1.0 - clamp(normalizedLevel, 0.0, 1.0);
@@ -72,7 +76,13 @@ void main() {
             ? clamp(fragmentAmbientOcclusion, 0.2, 1.0)
             : mix(0.72, 1.0, smoothstep(0.0, 1.0, fragmentAmbientOcclusion)))
         : 1.0;
-    vec3 litColor = texel.rgb * illumination * ao;
+    vec3 biomeTint = vec3(1.0);
+    if (fragmentBiomeMask == 1u) {
+        biomeTint = texture(biomeGrassColors, (fragmentWorldPosition.xz + 1024.0) / 2048.0).rgb;
+    } else if (fragmentBiomeMask == 2u) {
+        biomeTint = texture(biomeFoliageColors, (fragmentWorldPosition.xz + 1024.0) / 2048.0).rgb;
+    }
+    vec3 litColor = texel.rgb * biomeTint * illumination * ao;
     bool cameraUnderwater = camera.renderSettings.y > 0.5;
     float fog;
     vec3 fogColor;

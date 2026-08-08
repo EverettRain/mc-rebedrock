@@ -63,6 +63,88 @@ constexpr int kOreOriginRadius = 1;
 
 [[nodiscard]] int floorToInt(double value) { return static_cast<int>(std::floor(value)); }
 
+// How close the two dominant surface materials must be before the seam is
+// dithered into a soft blend band instead of one hard line. With bilinear
+// weights this translates to a transition roughly 1-2 blocks wide.
+constexpr float kDitherThreshold = 0.30F;
+
+// A deterministic unit hash of a world position, for the boundary dither and
+// anything else that needs a stable per-block random. Unlike the chunk-seeded
+// surface random, the same world cell always rolls the same value.
+[[nodiscard]] float positionHashUnit(int x, int z) {
+    std::uint32_t state = static_cast<std::uint32_t>(x) * 0x9E3779B9U ^
+                          static_cast<std::uint32_t>(z) * 0x85EBCA77U;
+    state ^= state >> 16U;
+    state *= 0x7FEB352DU;
+    state ^= state >> 15U;
+    state *= 0x846CA68BU;
+    state ^= state >> 16U;
+    return static_cast<float>(state >> 8U) / static_cast<float>(1U << 24);
+}
+
+// The biome map is a 1:4 grid, so a plain per-column lookup switches the
+// surface material on hard four-block steps at biome boundaries; over a long
+// sand/grass edge that reads as a staircase of right angles. Pick the surface
+// material that dominates the column's four surrounding biome cells, weighted
+// bilinearly by where the column sits inside its 1:4 cell — cells that share a
+// surface block pool their weight (a grass biome next to another grass biome
+// stays grass; only a true material edge like grass↔sand blends). The material
+// is still one block, but the line it switches along follows the interpolated
+// boundary instead of the 4x4 grid, so the seam runs smooth and organic.
+[[nodiscard]] int smoothingWinner(
+    const std::array<const BiomeDefinition*, 4>& cells,
+    const std::array<float, 4>& weights,
+    int worldX,
+    int worldZ) {
+    float bestWeight = -1.0F;
+    int best = 0;
+    float secondWeight = -1.0F;
+    int second = 0;
+    for (int index = 0; index < 4; ++index) {
+        // Process each distinct surface block once: a group's later cells carry
+        // the same aggregated weight, and the runner-up must be a *different*
+        // material for the dither below to blend grass↔sand rather than two
+        // cells of the same grass.
+        bool alreadyCounted = false;
+        for (int prior = 0; prior < index; ++prior) {
+            if (cells[static_cast<std::size_t>(prior)]->surface ==
+                cells[static_cast<std::size_t>(index)]->surface) {
+                alreadyCounted = true;
+                break;
+            }
+        }
+        if (alreadyCounted) {
+            continue;
+        }
+        float weight = 0.0F;
+        for (int other = 0; other < 4; ++other) {
+            if (cells[static_cast<std::size_t>(other)]->surface ==
+                cells[static_cast<std::size_t>(index)]->surface) {
+                weight += weights[static_cast<std::size_t>(other)];
+            }
+        }
+        if (weight > bestWeight) {
+            secondWeight = bestWeight;
+            second = best;
+            bestWeight = weight;
+            best = index;
+        } else if (weight > secondWeight) {
+            secondWeight = weight;
+            second = index;
+        }
+    }
+    // Boundary dither: within the narrow band where the two dominant materials
+    // trade dominance, pick stochastically so the seam is a soft 1-2 block
+    // blend instead of a single hard line. The per-position hash makes the
+    // choice stable across chunk re-meshes and world reloads.
+    if (secondWeight > 0.0F && bestWeight - secondWeight < kDitherThreshold) {
+        if (positionHashUnit(worldX, worldZ) >= bestWeight) {
+            return second;
+        }
+    }
+    return best;
+}
+
 } // namespace
 
 Features::Features(std::uint64_t seed, const BiomeSource& biomeSource,
@@ -87,12 +169,52 @@ void Features::buildSurface(Chunk& chunk, int chunkX, int chunkZ) const {
     JavaRandom random;
     random.setTerrainSeed(chunkX, chunkZ);
 
+    // A column blends its own 1:4 biome cell with the east/north neighbours,
+    // so the whole chunk touches a 5x5-cell window. Sample it once (fewer
+    // biome queries than the old per-column lookup) and let smoothingWinner
+    // anti-alias the surface material across biome boundaries.
+    const int baseCellX = chunkX * 4;
+    const int baseCellZ = chunkZ * 4;
+    std::array<const BiomeDefinition*, 25> cellDefinitions{};
+    for (int cellZ = 0; cellZ < 5; ++cellZ) {
+        for (int cellX = 0; cellX < 5; ++cellX) {
+            const Biome biome =
+                biomeSource_->biomeForNoiseGeneration(baseCellX + cellX, baseCellZ + cellZ);
+            cellDefinitions[static_cast<std::size_t>(cellZ * 5 + cellX)] =
+                &biomeDefinition(biome);
+        }
+    }
+
     for (int localZ = 0; localZ < 16; ++localZ) {
         for (int localX = 0; localX < 16; ++localX) {
             const int worldX = chunkX * 16 + localX;
             const int worldZ = chunkZ * 16 + localZ;
-            const auto& definition =
-                biomeDefinition(biomeSource_->biomeAtBlock(worldX, worldZ));
+            const int cellX = worldX >> 2;
+            const int cellZ = worldZ >> 2;
+            const int windowX = cellX - baseCellX;   // 0..3
+            const int windowZ = cellZ - baseCellZ;   // 0..3
+            // The raw 1:4 biome of the column's own cell, for the grass tint:
+            // 1.16.1's grass colour follows the biome map (sharp), while the
+            // surface material above is the smoothed vote.
+            chunk.setColumnBiome(localX, localZ,
+                                 cellDefinitions[static_cast<std::size_t>(windowZ * 5 + windowX)]
+                                     ->biome);
+            const float fractionalX = static_cast<float>(worldX - cellX * 4) * 0.25F;
+            const float fractionalZ = static_cast<float>(worldZ - cellZ * 4) * 0.25F;
+            const std::array<const BiomeDefinition*, 4> blended{{
+                cellDefinitions[static_cast<std::size_t>(windowZ * 5 + windowX)],
+                cellDefinitions[static_cast<std::size_t>(windowZ * 5 + windowX + 1)],
+                cellDefinitions[static_cast<std::size_t>((windowZ + 1) * 5 + windowX)],
+                cellDefinitions[static_cast<std::size_t>((windowZ + 1) * 5 + windowX + 1)],
+            }};
+            const std::array<float, 4> weights{{
+                (1.0F - fractionalX) * (1.0F - fractionalZ),
+                fractionalX * (1.0F - fractionalZ),
+                (1.0F - fractionalX) * fractionalZ,
+                fractionalX * fractionalZ,
+            }};
+            const auto& definition = *blended[static_cast<std::size_t>(
+                smoothingWinner(blended, weights, worldX, worldZ))];
             // SurfaceChunkGenerator#buildSurface samples the simplex surface
             // noise at 1/16 per block and scales by 0.55 * 15; the 0.55 is the
             // NoiseSampler interface's attenuation for the 2D simplex.
@@ -127,7 +249,16 @@ void Features::buildSurface(Chunk& chunk, int chunkX, int chunkZ) const {
                     }
                     remaining = depth;
                     if (y >= kSeaLevel - 1) {
-                        chunk.setBlock(localX, y, localZ, top);
+                        // A column whose top solid block sits under water (the
+                        // cell above is water — normally the y=62 shallow pond
+                        // bed) gets the filler material, not grass: a grass
+                        // block submerged by generation would otherwise churn
+                        // through the random-tick grass-to-dirt conversion for
+                        // no player-visible gain. The deep floor below uses the
+                        // dedicated underwater material instead.
+                        const bool submerged =
+                            chunk.block(localX, y + 1, localZ) == Block::Water;
+                        chunk.setBlock(localX, y, localZ, submerged ? filler : top);
                     } else if (y < kSeaLevel - 7 - depth) {
                         top = Block::Air;
                         filler = Block::Stone;

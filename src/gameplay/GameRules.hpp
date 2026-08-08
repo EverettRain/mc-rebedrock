@@ -34,6 +34,7 @@ using GameRuleValueData = std::variant<bool, std::int32_t>;
 // subscript plus a `std::get` — no map, no virtual call.
 enum class GameRuleId : std::uint8_t {
     DoDaylightCycle,
+    DoWeatherCycle,
     KeepInventory,
     RandomTickSpeed,
     Count,  // must stay last; the values array is sized by it
@@ -54,9 +55,10 @@ struct GameRuleDefinition final {
 // The registry table: one row per rule. Adding a rule = one enumerator in
 // `GameRuleId` plus one row here; every other surface (command, save, default)
 // derives from this table. Validated at compile time below.
-inline constexpr std::array<GameRuleDefinition, 3> kGameRuleDefinitions{{
+inline constexpr std::array<GameRuleDefinition, 4> kGameRuleDefinitions{{
     //     name                 type              default  min  max  category
     {"doDaylightCycle",        GameRuleType::Boolean, true, 0, 0, "updates"},
+    {"doWeatherCycle",         GameRuleType::Boolean, true, 0, 0, "updates"},
     {"keepInventory",          GameRuleType::Boolean, false, 0, 0, "players"},
     {"randomTickSpeed",        GameRuleType::Int,     std::int32_t{3}, 0, 1000, "updates"},
 }};

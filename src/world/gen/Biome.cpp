@@ -1,5 +1,7 @@
 #include "world/gen/Biome.hpp"
 
+#include <unordered_map>
+
 namespace mc::world::gen {
 namespace {
 
@@ -58,45 +60,47 @@ constexpr std::array<TreeChoice, 1> kSwampTrees{{
 }};
 
 // depth/scale are Biome.Builder's values for the vanilla biome of the same name;
-// the tree counts are its Decorator.COUNT_EXTRA arguments.
+// the tree counts are its Decorator.COUNT_EXTRA arguments. temperature and
+// downfall are the vanilla Biome.Builder values, which index the grass/foliage
+// colour maps (the surface-family pick only reads the temperature).
 const std::array<BiomeDefinition, static_cast<std::size_t>(Biome::Count)> kBiomeRegistry{{
-    {Biome::Ocean, "ocean", -1.0F, 0.1F, 0.5F, Block::Gravel, Block::Gravel, Block::Gravel,
+    {Biome::Ocean, "ocean", -1.0F, 0.1F, 0.5F, 0.5F, Block::Gravel, Block::Gravel, Block::Gravel,
      0, 0.0F, 1, {}, 0, 0},
-    {Biome::Beach, "beach", 0.0F, 0.025F, 0.8F, Block::Sand, Block::Sand, Block::Sand,
+    {Biome::Beach, "beach", 0.0F, 0.025F, 0.8F, 0.4F, Block::Sand, Block::Sand, Block::Sand,
      0, 0.0F, 1, {}, 0, 0},
-    {Biome::Plains, "plains", 0.125F, 0.05F, 0.8F, Block::Grass, Block::Dirt, Block::Gravel,
+    {Biome::Plains, "plains", 0.125F, 0.05F, 0.8F, 0.4F, Block::Grass, Block::Dirt, Block::Gravel,
      0, 0.05F, 1, kPlainsTrees, 6, 4},
-    {Biome::Forest, "forest", 0.1F, 0.2F, 0.7F, Block::Grass, Block::Dirt, Block::Gravel,
+    {Biome::Forest, "forest", 0.1F, 0.2F, 0.7F, 0.8F, Block::Grass, Block::Dirt, Block::Gravel,
      10, 0.1F, 1, kForestTrees, 2, 2},
-    {Biome::BirchForest, "birch_forest", 0.1F, 0.2F, 0.6F, Block::Grass, Block::Dirt,
+    {Biome::BirchForest, "birch_forest", 0.1F, 0.2F, 0.6F, 0.6F, Block::Grass, Block::Dirt,
      Block::Gravel, 10, 0.1F, 1, kBirchForestTrees, 2, 1},
-    {Biome::Taiga, "taiga", 0.2F, 0.2F, 0.25F, Block::Grass, Block::Dirt, Block::Gravel,
+    {Biome::Taiga, "taiga", 0.2F, 0.2F, 0.25F, 0.8F, Block::Grass, Block::Dirt, Block::Gravel,
      10, 0.1F, 1, kTaigaTrees, 1, 1},
-    {Biome::SnowyTundra, "snowy_tundra", 0.125F, 0.05F, 0.0F, Block::SnowBlock, Block::Dirt,
+    {Biome::SnowyTundra, "snowy_tundra", 0.125F, 0.05F, 0.0F, 0.5F, Block::SnowBlock, Block::Dirt,
      Block::Gravel, 0, 0.1F, 1, kSnowyTrees, 0, 0},
-    {Biome::Desert, "desert", 0.125F, 0.05F, 2.0F, Block::Sand, Block::Sand, Block::Gravel,
+    {Biome::Desert, "desert", 0.125F, 0.05F, 2.0F, 0.0F, Block::Sand, Block::Sand, Block::Gravel,
      0, 0.0F, 1, {}, 0, 0},
-    {Biome::Savanna, "savanna", 0.125F, 0.05F, 1.2F, Block::Grass, Block::Dirt, Block::Gravel,
+    {Biome::Savanna, "savanna", 0.125F, 0.05F, 1.2F, 0.0F, Block::Grass, Block::Dirt, Block::Gravel,
      1, 0.1F, 1, kSavannaTrees, 8, 2},
-    {Biome::Jungle, "jungle", 0.1F, 0.2F, 0.95F, Block::Grass, Block::Dirt, Block::Gravel,
+    {Biome::Jungle, "jungle", 0.1F, 0.2F, 0.95F, 0.9F, Block::Grass, Block::Dirt, Block::Gravel,
      50, 0.1F, 1, kJungleTrees, 12, 4},
-    {Biome::DarkForest, "dark_forest", 0.1F, 0.2F, 0.7F, Block::Grass, Block::Dirt,
+    {Biome::DarkForest, "dark_forest", 0.1F, 0.2F, 0.7F, 0.8F, Block::Grass, Block::Dirt,
      Block::Gravel, 10, 0.1F, 1, kDarkForestTrees, 2, 2},
     // Vanilla's swamp is a flat wetland that sits at or just below sea level so
     // standing water covers most of it; the depth keeps it flooded while the
     // low scale keeps it flat.
     // Vanilla's swamp floor stays dirt under the standing water, so its trees
     // can root in the shallows as well as on the dry patches.
-    {Biome::Swamp, "swamp", -0.25F, 0.1F, 0.8F, Block::Grass, Block::Dirt, Block::Dirt,
+    {Biome::Swamp, "swamp", -0.25F, 0.1F, 0.8F, 0.9F, Block::Grass, Block::Dirt, Block::Dirt,
      2, 0.1F, 1, kSwampTrees, 5, 1},
-    {Biome::Mountains, "mountains", 1.0F, 0.5F, 0.2F, Block::Grass, Block::Dirt, Block::Gravel,
+    {Biome::Mountains, "mountains", 1.0F, 0.5F, 0.2F, 0.3F, Block::Grass, Block::Dirt, Block::Gravel,
      0, 0.1F, 1, kMountainTrees, 2, 1},
     // River: a shallow water channel a couple of blocks below sea level.
-    {Biome::River, "river", -0.5F, 0.0F, 0.5F, Block::Sand, Block::Gravel, Block::Gravel,
+    {Biome::River, "river", -0.5F, 0.0F, 0.5F, 0.5F, Block::Sand, Block::Gravel, Block::Gravel,
      0, 0.0F, 1, {}, 0, 0},
     // Deep ocean: the basins far from shore, whose floor sits well below the
     // shallow-ocean floor.
-    {Biome::DeepOcean, "deep_ocean", -1.8F, 0.1F, 0.5F, Block::Gravel, Block::Gravel, Block::Gravel,
+    {Biome::DeepOcean, "deep_ocean", -1.8F, 0.1F, 0.5F, 0.5F, Block::Gravel, Block::Gravel, Block::Gravel,
      0, 0.0F, 1, {}, 0, 0},
 }};
 
@@ -105,6 +109,56 @@ const std::array<BiomeDefinition, static_cast<std::size_t>(Biome::Count)> kBiome
 const BiomeDefinition& biomeDefinition(Biome biome) {
     const auto index = static_cast<std::size_t>(biome);
     return kBiomeRegistry[index < kBiomeRegistry.size() ? index : 0U];
+}
+
+namespace {
+// Per-biome grass atlas layers, filled at atlas build time. Defaults are empty;
+// the mesher only uses them once the renderer has tinted and registered them.
+std::array<world::BlockTextureLayers, static_cast<std::size_t>(Biome::Count)>
+    kBiomeGrassLayers{};
+world::BlockTextureLayers kSwampDarkGrassLayers{};
+float kTerrainGrassTopLayer = 0.0F;
+float kTerrainGrassPlantLayer = 0.0F;
+std::unordered_map<world::Block, float> kTerrainLeafLayers{};
+} // namespace
+
+const world::BlockTextureLayers& biomeGrassLayers(Biome biome) {
+    const auto index = static_cast<std::size_t>(biome);
+    return kBiomeGrassLayers[index < kBiomeGrassLayers.size() ? index : 0U];
+}
+
+void setBiomeGrassLayers(Biome biome, world::BlockTextureLayers layers) {
+    kBiomeGrassLayers[static_cast<std::size_t>(biome)] = layers;
+}
+
+const world::BlockTextureLayers& swampDarkGrassLayers() {
+    return kSwampDarkGrassLayers;
+}
+
+void setSwampDarkGrassLayers(world::BlockTextureLayers layers) {
+    kSwampDarkGrassLayers = layers;
+}
+
+float terrainGrassTopLayer() {
+    return kTerrainGrassTopLayer;
+}
+
+float terrainGrassPlantLayer() {
+    return kTerrainGrassPlantLayer;
+}
+
+float terrainLeafLayer(world::Block leaves) {
+    const auto found = kTerrainLeafLayers.find(leaves);
+    return found != kTerrainLeafLayers.end() ? found->second : 0.0F;
+}
+
+void setTerrainGrassLayers(float top, float plant) {
+    kTerrainGrassTopLayer = top;
+    kTerrainGrassPlantLayer = plant;
+}
+
+void setTerrainLeafLayer(world::Block leaves, float layer) {
+    kTerrainLeafLayers[leaves] = layer;
 }
 
 } // namespace mc::world::gen

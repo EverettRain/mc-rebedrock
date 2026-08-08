@@ -12,6 +12,10 @@ layout(binding = 0) uniform CameraUniform {
     vec4 sunDirection;
     vec4 horizonFog;
     vec4 renderSettings;
+    vec4 pointLights[8];
+    vec4 lightColors[8];
+    vec4 lightingSettings;
+    vec4 celestialLayers; // x = sun atlas layer, y = first moon-phase atlas layer
 } camera;
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
@@ -19,10 +23,8 @@ layout(binding = 1) uniform sampler2DArray blockTextures;
 const vec3 dayZenithColor = vec3(0.20, 0.46, 0.82);
 const vec3 nightZenithColor = vec3(0.004, 0.008, 0.030);
 
-// Layer 137 is 1.16.1 environment/sun.png; layers 224..231 are the eight
-// moon_phases.png tiles. Keep in sync with kMoonPhaseFirstLayer in the renderer.
-const float sunLayer = 137.0;
-const float moonFirstLayer = 224.0;
+// The sun and moon layer indices are derived at startup with the atlas layout
+// and arrive through the uniform; never hardcode them here.
 
 // Project a celestial direction to screen NDC and return its sprite colour
 // (texel.rgb premultiplied by alpha, i.e. vanilla SRC_ALPHA/ONE additive), or
@@ -69,12 +71,12 @@ void main() {
     vec3 sunDirection = normalize(camera.sunDirection.xyz);
 
     // Sun: bright during the day and matching the historical 0.145 half-height.
-    sky += celestialSprite(sunDirection, sunLayer, 0.145) * (0.35 + daylight) * 1.05;
+    sky += celestialSprite(sunDirection, camera.celestialLayers.x, 0.145) * (0.35 + daylight) * 1.05;
 
     // Moon: opposite the sun (vanilla draws it at -y=100), ~2/3 the sun size and
     // driven bright at night. The phase selects one of the eight tiles.
     float night = 1.0 - daylight;
-    float moonLayer = moonFirstLayer + moonPhaseFromTime(camera.horizonFog.w);
+    float moonLayer = camera.celestialLayers.y + moonPhaseFromTime(camera.horizonFog.w);
     sky += celestialSprite(-sunDirection, moonLayer, 0.097) * (0.15 + night * 0.9);
 
     // Warm sun glow halo across the sky.

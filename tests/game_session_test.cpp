@@ -159,6 +159,20 @@ int main() {
         assert(inventory.selectedStack().item == &gameplay::items::Bucket);
     }
 
+    // --- The unified die() raises the death screen exactly once per death. ---
+    {
+        TestHost onceHost;
+        gameplay::GameSession dying;
+        dying.setGameMode(gameplay::GameMode::Survival);
+        assert(dying.hurtPlayer(gameplay::DamageSource::Fall, 1000.0F, onceHost));
+        assert(onceHost.playerDied);
+        // A second lethal source in the same tick is swallowed by the dead()
+        // guard, and die() refuses to re-claim the already-claimed death.
+        assert(!dying.hurtPlayer(gameplay::DamageSource::Drown, 1000.0F, onceHost));
+        assert(!dying.die(gameplay::DamageSource::Drown, onceHost));
+        assert(onceHost.playerDied);
+    }
+
     // --- Respawn prefers the /spawnpoint result before the world spawn. ---
     {
         gameplay::GameSession respawner;
@@ -174,6 +188,28 @@ int main() {
         respawner.respawn();
         const auto fallback = respawner.player().position();
         assert(fallback.x == 10.0F && fallback.y == 64.0F && fallback.z == 10.0F);
+    }
+
+    // --- Respawn clears the dying body's state, not just the position. ---
+    {
+        gameplay::GameSession respawner;
+        respawner.worldSpawnPosition() = {5.0F, 64.0F, 5.0F};
+        respawner.hasPlayerSpawn() = false;
+        respawner.player().setPosition({1.0F, 1.0F, 1.0F});
+        // The death momentum, fall height and a drained vitals bar all carry
+        // into respawn unless the new body is reset.
+        respawner.player().applyExternalPush({5.0F, 3.0F, 5.0F});
+        respawner.vitals().restore(1.0F, 0, 0.0F, 0);
+        respawner.respawn();
+        const auto feet = respawner.player().position();
+        assert(feet.x == 5.0F && feet.y == 64.0F && feet.z == 5.0F);
+        assert(respawner.player().velocity() == glm::vec3{0.0F});
+        assert(respawner.player().fallDistance() == 0.0F);
+        assert(!respawner.player().flying());
+        assert(!respawner.player().sneaking());
+        assert(respawner.vitals().health() == gameplay::PlayerVitals::kMaximumHealth);
+        assert(respawner.vitals().foodLevel() == gameplay::PlayerVitals::kMaximumFood);
+        assert(!respawner.vitals().dead());
     }
 
     std::cout << "game_session: player landing, block drops, death pipeline, eating, buckets, spawnpoint OK\n";

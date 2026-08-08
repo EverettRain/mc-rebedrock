@@ -124,6 +124,21 @@ void PlayerController::setPosition(glm::vec3 feetPosition) {
     strideDistance_ = previousStrideDistance_ = 0.0F;
 }
 
+void PlayerController::resetForRespawn(glm::vec3 feetPosition) {
+    setPosition(feetPosition);
+    // The fields setPosition leaves alone are exactly the ones a dying body
+    // carries: a sprinting flight player respawns grounded, not flying, not
+    // sneaking and not mid-water. The first tick re-derives inWater_ from the
+    // block under the feet, so forcing it off here is safe.
+    flying_ = false;
+    sprinting_ = false;
+    sneaking_ = false;
+    inWater_ = false;
+    jumpedThisTick_ = false;
+    flightToggleWindowTicks_ = 0;
+    sprintDoubleTapWindowTicks_ = 0;
+}
+
 glm::vec3 PlayerController::eyePosition() const {
     return position_ + glm::vec3{0.0F, eyeHeight(), 0.0F};
 }

@@ -64,6 +64,16 @@ Block World::block(int worldX, int y, int worldZ) const {
     return owner->block(localX, y, localZ);
 }
 
+gen::Biome World::biomeAt(int worldX, int worldZ) const {
+    const int chunkX = floorDiv(worldX, kChunkWidth);
+    const int chunkZ = floorDiv(worldZ, kChunkDepth);
+    const Chunk* owner = chunk({chunkX, chunkZ});
+    if (owner == nullptr) {
+        return gen::Biome::Plains;
+    }
+    return owner->columnBiome(worldX - chunkX * kChunkWidth, worldZ - chunkZ * kChunkDepth);
+}
+
 bool World::setBlock(int worldX, int y, int worldZ, Block value) {
     if (y < 0 || y >= kWorldHeight) {
         return false;

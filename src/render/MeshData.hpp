@@ -36,9 +36,17 @@ struct VoxelVertex final {
     std::uint8_t blockLight;
     std::uint8_t flatSkyLight;
     std::uint8_t flatBlockLight;
+    // Per-vertex biome colour tint (1.16.1 BiomeColors): grass tops/plants and
+    // foliage multiply their texture by this, so a biome boundary reads as a
+    // smooth colour gradient instead of a hard switch. White (255,255,255)
+    // means no tint.
+    std::uint8_t tintR;
+    std::uint8_t tintG;
+    std::uint8_t tintB;
+    std::uint8_t tintPad;
 };
 
-static_assert(sizeof(VoxelVertex) == 20);
+static_assert(sizeof(VoxelVertex) == 24);
 
 inline constexpr float kLocalWindowBase = -0.5F;
 inline constexpr float kLocalWindowSize = 17.0F;
@@ -91,7 +99,11 @@ inline constexpr std::array<glm::vec3, 14> kVertexNormals{{
     float sky,
     float block,
     float flatSky,
-    float flatBlock) {
+    float flatBlock,
+    std::uint8_t tintR = 255U,
+    std::uint8_t tintG = 255U,
+    std::uint8_t tintB = 255U,
+    std::uint8_t biomeMask = 0U) {
     const auto quantizePosition = [](float value) {
         return static_cast<std::uint16_t>(std::clamp(
             static_cast<long>(std::lround((value - kLocalWindowBase) / kLocalScale)), 0L,
@@ -110,7 +122,7 @@ inline constexpr std::array<glm::vec3, 14> kVertexNormals{{
         quantizePosition(localPosition.y),
         quantizePosition(localPosition.z),
         nearestNormalIndex(normal),
-        0U,
+        biomeMask,
         quantizeUv(uv.x),
         quantizeUv(uv.y),
         static_cast<std::uint16_t>(std::lround(textureLayer)),
@@ -121,6 +133,10 @@ inline constexpr std::array<glm::vec3, 14> kVertexNormals{{
         quantizeUnit(block),
         quantizeUnit(flatSky),
         quantizeUnit(flatBlock),
+        tintR,
+        tintG,
+        tintB,
+        255U,
     };
 }
 

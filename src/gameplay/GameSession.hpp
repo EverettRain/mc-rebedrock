@@ -12,6 +12,7 @@
 #include "gameplay/MiningSystem.hpp"
 #include "gameplay/PlayerController.hpp"
 #include "gameplay/PlayerVitals.hpp"
+#include "gameplay/WeatherSystem.hpp"
 #include "gameplay/WorldSimulation.hpp"
 #include "world/Block.hpp"
 
@@ -97,8 +98,16 @@ class GameSession final {
     // 1.16.1 entity.kill(): OutOfWorld damage at infinite magnitude.
     void killPlayer(SimulationHost& host);
     [[nodiscard]] bool hurtPlayer(DamageSource source, float amount, SimulationHost& host);
-    // Restores a respawning player to full health/food at the world spawn. The
-    // renderer repositions the camera and re-centres streaming after this.
+    // PlayerEntity#onDeath: the one-time death event shared by every lethal
+    // source. The beginDeath guard guarantees the death screen fires once even
+    // if two sources kill the player in the same tick; the inventory scatter
+    // runs through the host's onPlayerDied → onPlayerDeath. Returns false if
+    // death was already claimed.
+    bool die(DamageSource source, SimulationHost& host);
+    // ServerPlayerEntity#respawn: restores a respawning player to full health
+    // and food at the personal (or world) spawn point, and clears the death
+    // momentum/flying/sneaking state so the new body starts clean. The renderer
+    // repositions the camera and re-centres streaming after this.
     void respawn();
     void beginEating(const Item* kind, SimulationHost& host);
     void cancelEating(SimulationHost& host);
@@ -143,6 +152,8 @@ class GameSession final {
     [[nodiscard]] const EntitySystem& worldEntities() const { return worldEntities_; }
     [[nodiscard]] ChestSystem& chestSystem() { return chestSystem_; }
     [[nodiscard]] const ChestSystem& chestSystem() const { return chestSystem_; }
+    [[nodiscard]] WeatherSystem& weatherSystem() { return weatherSystem_; }
+    [[nodiscard]] const WeatherSystem& weatherSystem() const { return weatherSystem_; }
 
     [[nodiscard]] double& gameTimeSeconds() { return gameTimeSeconds_; }
     [[nodiscard]] double gameTimeSeconds() const { return gameTimeSeconds_; }
@@ -200,6 +211,7 @@ class GameSession final {
     gameplay::ItemEntitySystem itemEntities_;
     gameplay::EntitySystem worldEntities_;
     gameplay::ChestSystem chestSystem_;
+    gameplay::WeatherSystem weatherSystem_;
 
     glm::vec3 worldSpawnPosition_{24.0F, 76.38F, 24.0F};
     glm::vec3 playerSpawnPosition_{24.0F, 76.38F, 24.0F};

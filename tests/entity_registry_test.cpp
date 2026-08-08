@@ -90,5 +90,27 @@ int main() {
     assert(pigCount == 1U);
     assert(zombieCount == 0U);
 
+    // --- A killed creature drops its loot on the death tick, not after the
+    // twenty-tick corpse animation (LivingEntity#onDeath drops immediately). ---
+    {
+        mc::gameplay::EntitySystem killers;
+        killers.spawn({7.0F, 1.0F, 7.0F}, mc::gameplay::entities::PigEntity::type(), 4U);
+        assert(killers.pendingDrops().empty());
+        // A fatal hit rolls the pig's porkchops straight into pendingDrops_
+        // inside hurt(), with no tick() advancing the animation.
+        assert(killers.hurt(0U, 100.0F, {7.0F, 1.0F, 7.0F}));
+        assert(!killers.pendingDrops().empty());
+        killers.clearPendingDrops();
+        // Running the corpse animation to completion removes the body without
+        // rolling the loot a second time.
+        for (int tick = 0; tick < 25; ++tick) {
+            static_cast<void>(killers.tick(
+                world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
+                mc::gameplay::Difficulty::Normal));
+        }
+        assert(killers.entities().empty());
+        assert(killers.pendingDrops().empty());
+    }
+
     return 0;
 }

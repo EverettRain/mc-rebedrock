@@ -99,6 +99,10 @@ int main() {
     // couple of hundred cells over this survey, whereas the surface pass's
     // "underwater" branch paves every buried cave floor with it (thousands).
     long caveFloorGravel = 0;
+    // A generation-time grass bed with water directly above it: the surface
+    // pass must place a non-grass filler there, or the pond floor churns
+    // through the random-tick grass-to-dirt conversion for no gain.
+    long grassUnderWater = 0;
     int lowestSurface = kWorldHeight;
     int highestSurface = 0;
     // A 12x12 survey keeps the cave-fraction and ore-count assertions stable:
@@ -116,6 +120,13 @@ int main() {
                     assert(height > 0);
                     lowestSurface = std::min(lowestSurface, height);
                     highestSurface = std::max(highestSurface, height);
+                    // surfaceHeight stops at the first solid block, so a
+                    // submerged bed reads as "water right above the top solid".
+                    if (height + 1 < kWorldHeight &&
+                        chunk.block(x, height + 1, z) == Block::Water &&
+                        chunk.block(x, height, z) == Block::Grass) {
+                        ++grassUnderWater;
+                    }
                     for (int y = 0; y < kWorldHeight; ++y) {
                         const auto block = chunk.block(x, y, z);
                         ++blocks[block];
@@ -151,6 +162,10 @@ int main() {
     // without that gate it paves every buried cave floor with a uniform gravel
     // sheet and this count runs to the thousands, not the ~150 ore-blob cells.
     assert(caveFloorGravel < 1500);
+
+    // Shallow water must not sit on a grass bed left over from generation: the
+    // surface pass gives submerged tops the filler material instead.
+    assert(grassUnderWater == 0);
 
     // Every ore in DefaultBiomeFeatures#addDefaultOres shows up, and the
     // per-chunk counts stay within a factor of two of the vanilla averages

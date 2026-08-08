@@ -4,7 +4,17 @@
 
 namespace mc::world {
 
-Chunk::Chunk() = default;
+Chunk::Chunk() {
+    columnBiomes_.fill(gen::Biome::Plains);
+}
+
+gen::Biome Chunk::columnBiome(int localX, int localZ) const {
+    return columnBiomes_[static_cast<std::size_t>(localZ * kChunkWidth + localX)];
+}
+
+void Chunk::setColumnBiome(int localX, int localZ, gen::Biome biome) {
+    columnBiomes_[static_cast<std::size_t>(localZ * kChunkWidth + localX)] = biome;
+}
 
 Block Chunk::block(int x, int y, int z) const {
     if (x < 0 || x >= kChunkWidth || y < 0 || y >= kWorldHeight ||

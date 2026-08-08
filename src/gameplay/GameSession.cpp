@@ -20,6 +20,10 @@ constexpr float kInfiniteDamage = std::numeric_limits<float>::infinity();
 GameSession::GameSession() : player_({24.0F, 78.0F - PlayerController::kEyeHeight, 24.0F}) {}
 
 void GameSession::tick(world::World& world, SimulationHost& host) {
+    // ServerWorld.tick runs its weather section first, before the world and
+    // entities; the auto-cycle is gated on the doWeatherCycle gamerule the same
+    // way doDaylightCycle gates the day in the renderer.
+    weatherSystem_.tick(gameRules_.get<bool>(GameRuleId::DoWeatherCycle));
     playerInput_.jumpPressed = jumpPressed_;
     physicsPreviousPosition_ = physicsCurrentPosition_;
     player_.tick(world, playerInput_);
@@ -115,7 +119,7 @@ bool GameSession::hurtPlayer(DamageSource source, float amount, SimulationHost& 
     }
     host.playPlayerHurt(player_.position());
     if (vitals_.dead()) {
-        host.onPlayerDied();
+        die(source, host);
     }
     return true;
 }
@@ -124,13 +128,25 @@ void GameSession::killPlayer(SimulationHost& host) {
     (void)hurtPlayer(DamageSource::OutOfWorld, kInfiniteDamage, host);
 }
 
+bool GameSession::die(DamageSource source, SimulationHost& host) {
+    // PlayerEntity#onDeath: the shared beginDeath guard is the `dead` field
+    // that keeps onDeath from firing twice, so a tick that both falls and
+    // drowns raises the death screen exactly once.
+    static_cast<void>(source);
+    if (!beginDeath(vitals_.damage())) {
+        return false;
+    }
+    host.onPlayerDied();
+    return true;
+}
+
 void GameSession::respawn() {
     // PlayerManager#respawnPlayer prefers the player's personal spawn point and
     // only falls back to the world spawn when none was set. 1.16.1 also respawns
     // facing due north (yaw 0) regardless of the spawn point's stored angle.
     vitals_.reset();
     const glm::vec3 spawn = hasPlayerSpawn_ ? playerSpawnPosition_ : worldSpawnPosition_;
-    player_.setPosition(spawn);
+    player_.resetForRespawn(spawn);
     physicsPreviousPosition_ = spawn;
     physicsCurrentPosition_ = spawn;
 }
@@ -264,7 +280,7 @@ void GameSession::tickPlayerVitals(SimulationHost& host, const world::World& wor
         }
     }
     if (result.died) {
-        host.onPlayerDied();
+        die(result.cause, host);
     }
 }
 

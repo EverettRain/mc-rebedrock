@@ -2,12 +2,15 @@
 
 #include "world/WorldConstants.hpp"
 #include "world/WorldLighting.hpp"
+#include "world/gen/JavaRandom.hpp"
+#include "world/gen/NoiseSampler.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <glm/geometric.hpp>
+#include <unordered_map>
 
 namespace mc::world {
 namespace {
@@ -126,6 +129,26 @@ constexpr float kFurnaceFrontOnLayer = 168.0F;
     return static_cast<float>(8U - level) / 9.0F;
 }
 
+[[nodiscard]] int floorDiv(int value, int divisor) {
+    int quotient = value / divisor;
+    const int remainder = value % divisor;
+    if (remainder < 0) {
+        --quotient;
+    }
+    return quotient;
+}
+
+// Whether the cell at worldX/worldZ lies inside a chunk the streamer has loaded.
+// The water surface corners, flow direction and optical depth all sample one
+// cell past a section border; a neighbour chunk that has not streamed in yet
+// reads as Air, which would dip the whole row of surface corners along the seam
+// and render it as a line of same-direction flowing water. Such a sample is
+// treated as part of the current water body instead (the border section is
+// remeshed once the neighbour arrives).
+[[nodiscard]] bool waterSampleLoaded(const World& world, int worldX, int worldZ) {
+    return world.hasChunk({floorDiv(worldX, kChunkWidth), floorDiv(worldZ, kChunkDepth)});
+}
+
 [[nodiscard]] float waterColumnDepth(
     const World& world,
     int x,
@@ -155,6 +178,13 @@ constexpr float kFurnaceFrontOnLayer = 168.0F;
         for (int dx = cornerX - 1; dx <= cornerX; ++dx) {
             const int sampleX = x + dx;
             const int sampleZ = z + dz;
+            if (!waterSampleLoaded(world, sampleX, sampleZ)) {
+                // Unstreamed neighbour chunk: reuse this cell's own depth so the
+                // optical tint does not step at the chunk seam.
+                total += waterColumnDepth(world, x, y, z);
+                samples += 1.0F;
+                continue;
+            }
             if (!isFluid(world.block(sampleX, y, sampleZ))) {
                 continue;
             }
@@ -196,7 +226,14 @@ constexpr float kFurnaceFrontOnLayer = 168.0F;
         for (int dx = cornerX - 1; dx <= cornerX; ++dx) {
             const int sampleX = x + dx;
             const int sampleZ = z + dz;
-            const float height = waterCellHeight(world, sampleX, y, sampleZ);
+            const float height = waterSampleLoaded(world, sampleX, sampleZ)
+                ? waterCellHeight(world, sampleX, y, sampleZ)
+                // A neighbour chunk that has not streamed in yet reads as Air
+                // and would push this corner to zero, breaking the water
+                // surface into a straight crack along the chunk seam. Sample
+                // the current cell instead so the surface stays flat until the
+                // border is remeshed with real data.
+                : waterCellHeight(world, x, y, z);
             if (height < 0.0F) {
                 // FluidRenderer counts non-solid empty neighbors as a zero-
                 // height sample. Skipping them kept edge corners artificially
@@ -225,6 +262,12 @@ constexpr float kFurnaceFrontOnLayer = 168.0F;
     int z) {
     const float center = waterCellHeight(world, x, y, z);
     const auto heightOrCenter = [&](int sampleX, int sampleZ) {
+        if (!waterSampleLoaded(world, sampleX, sampleZ)) {
+            // An unstreamed neighbour chunk reads as Air and would point the
+            // flow straight at the gap; keep the whole border row flat until
+            // the section is remeshed with the real neighbour.
+            return center;
+        }
         const float value = waterCellHeight(world, sampleX, y, sampleZ);
         if (value >= 0.0F) {
             return value;
@@ -268,9 +311,85 @@ constexpr float kFurnaceFrontOnLayer = 168.0F;
             (1.0F - centerPull) * sourceToArrayScale;
 }
 
+// SwampBiome's grass mottle, seeded exactly like 1.16.1's FOLIAGE_NOISE: a
+// swamp block whose noise drops below -0.1 uses the darker tone.
+[[nodiscard]] bool swampDarkTone(int x, int z) {
+    static const gen::SimplexNoiseSampler sampler = [] {
+        gen::JavaRandom random{1234ULL};
+        return gen::SimplexNoiseSampler{random};
+    }();
+    return sampler.sample(static_cast<double>(x) * 0.0225,
+                          static_cast<double>(z) * 0.0225) < -0.1;
+}
+
+// The biome whose grass/foliage colour dominates at a block position, chosen
+// bilinearly over the four surrounding 1:4 cells. The terrain grass and foliage
+// pick their BAKED atlas layer from this biome, so the colour boundary follows
+// the same smooth line the surface-material pass uses — no per-vertex tint is
+// involved, so the rendered colour cannot wash out into the raw grey texture.
+[[nodiscard]] gen::Biome dominantBiome(const World& world, int x, int z) {
+    const int cellX = floorDiv(x, 4);
+    const int cellZ = floorDiv(z, 4);
+    const float fractionalX = static_cast<float>(x - cellX * 4) * 0.25F;
+    const float fractionalZ = static_cast<float>(z - cellZ * 4) * 0.25F;
+    const std::array<gen::Biome, 4> cells{{
+        world.biomeAt(cellX * 4 + 2, cellZ * 4 + 2),
+        world.biomeAt((cellX + 1) * 4 + 2, cellZ * 4 + 2),
+        world.biomeAt(cellX * 4 + 2, (cellZ + 1) * 4 + 2),
+        world.biomeAt((cellX + 1) * 4 + 2, (cellZ + 1) * 4 + 2),
+    }};
+    const std::array<float, 4> weights{{
+        (1.0F - fractionalX) * (1.0F - fractionalZ),
+        fractionalX * (1.0F - fractionalZ),
+        (1.0F - fractionalX) * fractionalZ,
+        fractionalX * fractionalZ,
+    }};
+    int best = 0;
+    for (int index = 1; index < 4; ++index) {
+        if (weights[static_cast<std::size_t>(index)] >
+            weights[static_cast<std::size_t>(best)]) {
+            best = index;
+        }
+    }
+    return cells[static_cast<std::size_t>(best)];
+}
+
+// The per-vertex biome tint is disabled: grass and foliage colours are baked
+// into their atlas layers at build time, so every vertex tint is white. The
+// class stays as the parameter appendFace and appendCrossedPlant carry.
+class BiomeTintCache final {
+  public:
+    explicit BiomeTintCache(const World&) {}
+
+    [[nodiscard]] std::array<std::uint8_t, 3> tint(Block, Face, int, int) {
+        return {255U, 255U, 255U};
+    }
+};
+
 [[nodiscard]] float textureLayer(const World& world, Block block, Face face,
                                  int x, int y, int z) {
-    const auto layers = textureLayers(block);
+    auto layers = textureLayers(block);
+    if (block == Block::Grass) {
+        // The grass top is the UNTINTED terrain texture, coloured by the
+        // fragment shader's biome-colour lookup (mask 1); the side keeps its
+        // baked per-biome layer so the dirt stays dirt; the bottom is dirt.
+        const auto biome = dominantBiome(world, x, z);
+        const auto& biomeLayers = (biome == gen::Biome::Swamp && swampDarkTone(x, z))
+            ? gen::swampDarkGrassLayers()
+            : gen::biomeGrassLayers(biome);
+        if (biomeLayers.top != 0.0F) {
+            const float terrainTop = gen::terrainGrassTopLayer();
+            layers.top = terrainTop != 0.0F ? terrainTop : biomeLayers.top;
+            layers.side = biomeLayers.side;
+        }
+    } else if (isLeaves(block)) {
+        // Oak-family leaves use the untinted terrain layer (coloured by the
+        // fragment shader, mask 2); spruce/birch keep their fixed tinted layer.
+        const float terrain = gen::terrainLeafLayer(block);
+        if (terrain != 0.0F) {
+            layers.top = layers.side = layers.bottom = terrain;
+        }
+    }
     const auto orientation = world.orientation(x, y, z);
     if (block == Block::Furnace && faceMatchesOrientation(face, orientation)) {
         return kFurnaceFrontLayer;
@@ -469,6 +588,7 @@ void appendFace(
     const Sampler& lighting,
     SmoothLightingQuality quality,
     const glm::vec3& sectionOrigin,
+    BiomeTintCache& tints,
     bool doubleSided = false) {
     const auto firstVertex = static_cast<std::uint32_t>(mesh.vertices.size());
     const glm::vec3 origin{
@@ -501,6 +621,21 @@ void appendFace(
         if (modelHeight < 1.0F) {
             positionCorner.y *= modelHeight;
         }
+        // Which biome-colour lookup the fragment shader should apply: 1 for the
+        // grass top/plant (grass colour map), 2 for oak-family leaves (foliage
+        // colour map), 0 otherwise (the side keeps its baked layer, spruce/birch
+        // their fixed tones, everything else is untouched). The mask rides the
+        // vertex pad byte, which shares an attribute with the normal index that
+        // is proven to round-trip.
+        const std::uint8_t biomeMask =
+            (block == Block::Grass && face.face == Face::PositiveY) ? 1U
+            : (isLeaves(block) && block != Block::SpruceLeaves &&
+               block != Block::BirchLeaves)
+                ? 2U
+                : 0U;
+        const int cornerX = x + static_cast<int>(std::lround(positionCorner.x));
+        const int cornerZ = z + static_cast<int>(std::lround(positionCorner.z));
+        const auto tint = tints.tint(block, face.face, cornerX, cornerZ);
         mesh.vertices.push_back(packVertex(
             (origin + positionCorner) - sectionOrigin,
             face.normal,
@@ -511,7 +646,11 @@ void appendFace(
             smoothLight.sky,
             smoothLight.block,
             flatSky,
-            flatBlock));
+            flatBlock,
+            tint[0],
+            tint[1],
+            tint[2],
+            biomeMask));
     }
     constexpr std::array<std::uint32_t, 6> kDefaultIndices{0, 1, 2, 2, 3, 0};
     constexpr std::array<std::uint32_t, 6> kFlippedIndices{0, 1, 3, 1, 2, 3};
@@ -657,7 +796,9 @@ void appendPlantQuad(
     int y,
     int z,
     const Sampler& lighting,
-    const glm::vec3& sectionOrigin) {
+    const glm::vec3& sectionOrigin,
+    const std::array<std::uint8_t, 3>& tint = {255U, 255U, 255U},
+    std::uint8_t biomeMask = 0U) {
     const auto firstVertex = static_cast<std::uint32_t>(mesh.vertices.size());
     const glm::vec3 origin{
         static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
@@ -675,7 +816,11 @@ void appendPlantQuad(
             sky,
             blockLight,
             sky,
-            blockLight));
+            blockLight,
+            tint[0],
+            tint[1],
+            tint[2],
+            biomeMask));
     }
     // Cross models must remain visible from both directions after enabling
     // Java-style back-face culling for the shared cutout render layer.
@@ -691,13 +836,15 @@ void appendPlantQuad(
 template <typename Sampler>
 void appendCrossedPlant(
     render::MeshData& mesh,
+    const World& world,
     Block block,
     int x,
     int y,
     int z,
     const Sampler& lighting,
     const glm::vec3& sectionOrigin,
-    float layer) {
+    float layer,
+    BiomeTintCache& tints) {
     // OffsetType.None pins the plant to its block centre; XZ/XYZ shift the two
     // crossed quads by the vanilla per-position jitter below. `layer` is the
     // texture-array layer of the plant — a fixed layer for flowers and grass,
@@ -718,8 +865,15 @@ void appendCrossedPlant(
     std::array<glm::vec3, 4> shiftedSecond = second;
     for (auto& corner : shiftedFirst) corner += offset;
     for (auto& corner : shiftedSecond) corner += offset;
-    appendPlantQuad(mesh, layer, shiftedFirst, x, y, z, lighting, sectionOrigin);
-    appendPlantQuad(mesh, layer, shiftedSecond, x, y, z, lighting, sectionOrigin);
+    // Tall grass follows the biome grass tint; flowers and other cross plants
+    // keep white. The thin crossed quads span the block, so one tint per block
+    // reads the same as per corner.
+    const auto tint = tints.tint(block, Face::PositiveY, x, z);
+    const std::uint8_t biomeMask = (block == Block::GrassPlant) ? 1U : 0U;
+    appendPlantQuad(mesh, layer, shiftedFirst, x, y, z, lighting, sectionOrigin, tint,
+                    biomeMask);
+    appendPlantQuad(mesh, layer, shiftedSecond, x, y, z, lighting, sectionOrigin, tint,
+                    biomeMask);
 }
 
 // The vanilla `crop` blockstate model (crop.json): four orthogonal thin planes
@@ -876,6 +1030,8 @@ bool buildSectionImpl(
         result.bounds = {};
         return false;
     }
+    // Per-corner biome colour cache, scoped to this section build.
+    BiomeTintCache tints{world};
 
     const int originX = position.x * kChunkWidth;
     const int originY = sectionY * kSectionSize;
@@ -911,9 +1067,22 @@ bool buildSectionImpl(
                            ? result.cutoutMesh
                            : result.mesh);
                 if (definition.model == BlockModel::Cross) {
+                    // Tall grass uses the dominant biome's baked plant layer;
+                    // flowers keep their own texture.
+                    float plantLayer = static_cast<float>(textureLayers(current).side);
+                    if (current == Block::GrassPlant) {
+                        const auto biome = dominantBiome(world, worldX, worldZ);
+                        const auto& biomeLayers =
+                            (biome == gen::Biome::Swamp && swampDarkTone(worldX, worldZ))
+                                ? gen::swampDarkGrassLayers()
+                                : gen::biomeGrassLayers(biome);
+                        if (biomeLayers.top != 0.0F) {
+                            plantLayer = biomeLayers.bottom;
+                        }
+                    }
                     appendCrossedPlant(
-                        targetMesh, current, worldX, worldY, worldZ, lighting, sectionOrigin,
-                        static_cast<float>(textureLayers(current).side));
+                        targetMesh, world, current, worldX, worldY, worldZ, lighting,
+                        sectionOrigin, plantLayer, tints);
                     continue;
                 }
                 if (definition.model == BlockModel::Crop) {
@@ -945,6 +1114,16 @@ bool buildSectionImpl(
                     // model vertices; no per-frame texture rotation is used.
                     const auto face = orientedModelFace(
                         current, orientation, modelFace);
+                    // A fluid face pointing into a chunk that has not streamed
+                    // in yet is culled: the neighbouring water body is assumed
+                    // to continue, so the border does not render a fake
+                    // waterfall from the surface to the seabed along the chunk
+                    // seam. The border section is remeshed once the neighbour
+                    // arrives, when real data decides the face.
+                    if (isFluid(current) &&
+                        !waterSampleLoaded(world, worldX + face.dx, worldZ + face.dz)) {
+                        continue;
+                    }
                     // Face visibility and the leaves internal-sheet check read
                     // the neighbour through the sampler (O(1) on the production
                     // path) instead of a World hash lookup per face.
@@ -960,7 +1139,7 @@ bool buildSectionImpl(
                         } else {
                             appendFace(
                                 targetMesh, world, current, face, worldX, worldY, worldZ,
-                                lighting, quality, sectionOrigin,
+                                lighting, quality, sectionOrigin, tints,
                                 isLeaves(current) &&
                                     lighting.blockType(
                                         worldX + face.dx,

@@ -48,6 +48,11 @@ class PlayerController final {
 
     void tick(const world::World& world, const PlayerInput& input);
     void setPosition(glm::vec3 feetPosition);
+    // ServerPlayerEntity#respawn: drops the new body onto the respawn point with
+    // every transient state cleared — momentum, flight/sprint/sneak, fall
+    // distance, jump cooldowns and the FOV multiplier — so nothing from the
+    // death is carried across.
+    void resetForRespawn(glm::vec3 feetPosition);
     // Entity#addVelocity, for shoves that come from outside the player's own
     // input — currently the creatures they walk into.
     void applyExternalPush(glm::vec3 velocity) { velocity_ += velocity; }

@@ -5,6 +5,7 @@
 #include "gameplay/GameRules.hpp"
 #include "gameplay/Inventory.hpp"
 #include "gameplay/PlayerVitals.hpp"
+#include "gameplay/WeatherSystem.hpp"
 #include "world/PersistentBlockEdit.hpp"
 
 #include <array>
@@ -50,6 +51,10 @@ struct SaveGame final {
     std::array<gameplay::ItemStack, gameplay::Inventory::kSlotCount> inventory{};
     std::vector<world::PersistentBlockEdit> edits;
     std::vector<gameplay::ChestBlockEntity> chests;
+    // The weather timers and flags, the way 1.16.1 keeps them in level.dat;
+    // format 11 serialises them into their own self-describing block. A fresh
+    // world defaults to a clear spell.
+    gameplay::WeatherState weather;
 };
 
 class SaveRepository final {

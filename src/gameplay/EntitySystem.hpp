@@ -154,6 +154,12 @@ class EntitySystem final {
     [[nodiscard]] const std::vector<SimpleEntity>& entities() const { return entities_; }
 
   private:
+    // LivingEntity#onDeath: the one-time death event. Claims the death through
+    // the shared beginDeath guard and rolls the creature's loot into
+    // pendingDrops_ on the same tick health crossed zero — vanilla drops at
+    // death, not when the corpse is removed twenty ticks later. Returns false
+    // if death was already claimed.
+    bool die(SimpleEntity& entity);
     void moveWithCollisions(const world::World& world, SimpleEntity& entity, glm::vec3 distance);
     [[nodiscard]] static bool boxIntersectsWorld(
         const world::World& world,

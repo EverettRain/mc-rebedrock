@@ -78,6 +78,9 @@ struct BiomeDefinition final {
     float scale = 0.05F;
     // Only used to pick between the snow, sand and grass surface families.
     float temperature = 0.8F;
+    // Biome.Builder#downfall (1.16.1), which together with the temperature
+    // indexes the vanilla grass/foliage colour maps.
+    float downfall = 0.4F;
     // SurfaceConfig: what the top block and the few below it become.
     Block surface = Block::Grass;
     Block filler = Block::Dirt;
@@ -94,6 +97,27 @@ struct BiomeDefinition final {
 };
 
 [[nodiscard]] const BiomeDefinition& biomeDefinition(Biome biome);
+
+// The grass-family atlas layers (top / side / plant) tinted with this biome's
+// vanilla grass colour (BiomeColors.getGrassColor through the grass colour map,
+// plus the swamp/dark-forest overrides). The renderer fills the table at atlas
+// build time; the mesher reads it for grass blocks. Swamp returns the lighter
+// tone; swampDarkGrassLayers() carries the darker per-block noise tone.
+[[nodiscard]] const world::BlockTextureLayers& biomeGrassLayers(Biome biome);
+void setBiomeGrassLayers(Biome biome, world::BlockTextureLayers layers);
+[[nodiscard]] const world::BlockTextureLayers& swampDarkGrassLayers();
+void setSwampDarkGrassLayers(world::BlockTextureLayers layers);
+
+// The untinted terrain grass/leaf atlas layers: the mesher textures grass tops,
+// plants and oak-family leaves with these and the fragment shader multiplies
+// the sampled biome colour on top, so the boundary blends as a smooth gradient.
+// Spruce/birch leaves keep their pre-tinted fixed tones, so their terrain layer
+// is the tinted one.
+[[nodiscard]] float terrainGrassTopLayer();
+[[nodiscard]] float terrainGrassPlantLayer();
+[[nodiscard]] float terrainLeafLayer(world::Block leaves);
+void setTerrainGrassLayers(float top, float plant);
+void setTerrainLeafLayer(world::Block leaves, float layer);
 
 // The log/leaves pair a sapling of this block would grow, so the loot tables and
 // the tree features agree on what belongs to which wood set.

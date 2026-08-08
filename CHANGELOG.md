@@ -7,6 +7,14 @@ simple versioned history while it is in beta.
 
 ### Added
 
+- The weather system works the way 1.16.1's does: `/weather clear` and
+  `/weather rain` (each with an optional `[<duration>]` in seconds, defaulting
+  to a 6000-tick spell) install a clear or rain spell that the doWeatherCycle
+  auto-cycle takes over once it expires, and the rain intensity fades in and out
+  at 0.01 per tick the way World's smoothed gradient does. The state persists
+  with the save (format 11), `doWeatherCycle` gates the cycle like the other
+  game rules, and the rain gradient is exposed to the renderer for a future
+  particle-rain pass — no rain is drawn yet.
 - Decorative stone variants round out the stone family: polished granite,
   polished diorite and polished andesite craft from a 2x2 block of their parent
   stone (four of the polished product), and smooth stone smelts from stone in
@@ -74,6 +82,66 @@ simple versioned history while it is in beta.
   same seed. It now falls back to the highest solid surface so the world always
   loads, and the spawn region is marked as never-unloading vanilla spawn
   chunks, so the player's home base stays loaded for the whole session.
+- A creature's loot drops on the tick it dies, not after the twenty-tick corpse
+  animation: every death path — melee, /kill and fall damage — now funnels
+  through a single onDeath guard (the shared `beginDeath` latch) that rolls the
+  loot table at the death moment, matching LivingEntity#onDeath instead of
+  dropping when the body disappears.
+- Player death and respawn run through the same one-shot onDeath guard: a tick
+  that kills through two sources at once raises the death screen once, and
+  respawning resets the whole body — momentum, flight/sprint/sneak state, fall
+  distance, jump cooldowns and the FOV multiplier — onto the personal (or
+  world) spawn point facing the spawn's stored angle, so nothing from the death
+  is carried into the new life.
+- Large bodies of water no longer show the chunk-seam artifacts of a neighbour
+  chunk that has not streamed in yet: the surface corners, flow direction and
+  optical depth sample the missing neighbour as the current water body instead
+  of a gap of air (so the sheet stays flat instead of cracking into a straight
+  row of same-direction flowing water), and a fluid face pointing into the
+  missing chunk is culled (so the ocean does not render a waterfall-like
+  vertical cut from the surface to the seabed). Both heal automatically when
+  the border is remeshed with real data.
+- Generation no longer leaves grass under shallow water: a column whose top
+  solid block sits under water (normally the one-block-deep pond bed) gets the
+  biome's filler material instead of a grass block, so a new pond does not
+  spend random ticks converting its bed to dirt for no player-visible gain.
+- The sun and moon no longer sample the wrong atlas layers: the sky shader
+  picked hardcoded indices from the pre-name-driven atlas (sun 137, moon 224),
+  so after the atlas was rebuilt the sun showed a destroy-stage frame and the
+  moon a mossy-cobblestone block. The renderer now passes the derived sun and
+  moon-first-phase layers through the camera uniform, and the shader reads them
+  there — the two can no longer drift when the atlas layout changes.
+- Biome surface boundaries no longer switch on hard four-block steps: the
+  surface material is chosen by a bilinear vote over the column's surrounding
+  biome cells (cells sharing a surface block pool their weight), so the
+  sand/grass seam follows a smooth interpolated line instead of a staircase of
+  right angles. The terrain height was already blended across biome boundaries;
+  the material now matches it. In the narrow band where two materials trade
+  dominance the seam is dithered with a per-position hash, so a long boundary
+  reads as a soft 1-2 block blend instead of one hard line.
+- Grass blocks, tall grass and foliage take the 1.16.1 per-biome colour: each
+  biome's grass and foliage colour comes from the vanilla grass/foliage colour
+  maps (indexed by the biome's temperature and downfall, with the dark-forest
+  grass darkening, the swamp's fixed 0x6A7039 foliage and its noise-mottled
+  0x6A7039/0x4C763C grass tones, and the fixed spruce/birch leaf colours), so
+  plains are bright green, desert olive, taiga blue-green and so on. The biome
+  is stored per column at generation; the grass side keeps its baked per-biome
+  dirt + green strip and spruce/birch their fixed tones, while the grass tops,
+  plants and oak-family leaves take their colour from the fragment lookup below.
+- The grass and foliage colour blends across biome boundaries as a smooth
+  per-pixel gradient, the way 1.16.1's BiomeColors does but robust: the renderer
+  generates two biome-colour lookup textures from the world seed and the vanilla
+  grass/foliage colour maps (512 texels at four blocks each, covering the spawn
+  region), and the terrain fragment shader samples them with linear filtering —
+  so the GPU hardware-interpolates the colour between adjacent biome cells and
+  the boundary cannot wash out into the raw grey texture. The mesher stamps a
+  per-vertex mask (which biome map to apply) in the vertex pad byte: grass
+  tops/plants sample the grass map, oak/jungle/acacia/dark-oak leaves the
+  foliage map, and everything else is untouched. The grass side keeps its baked
+  per-biome layer so the dirt under a cliff stays dirt, and spruce/birch leaves
+  their fixed 1.16.1 tones. The lookup textures regenerate when a world loads
+  (per seed); grass tops and oak-family leaves now use the untinted base
+  textures and take their colour from the fragment lookup.
 
 ## ReBedrock beta3
 

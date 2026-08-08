@@ -17,8 +17,9 @@ namespace {
 
 constexpr std::array<std::uint8_t, 8> kMagic{'M', 'C', 'R', 'B', 'S', 'A', 'V', 'E'};
 // Format 8 moved `randomTickSpeed` into a fixed header field; format 9 replaces
-// that with a sparse, self-describing GameRules block after the chests section.
-constexpr std::uint32_t kFormatVersion = 10U;
+// that with a sparse, self-describing GameRules block after the chests section;
+// format 10 appends the /spawnpoint block; format 11 appends the weather block.
+constexpr std::uint32_t kFormatVersion = 11U;
 constexpr std::uint32_t kOldestSupportedFormatVersion = 1U;
 constexpr std::uint64_t kMaximumEdits = 16U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumChests = 1024U * 1024U;
@@ -438,6 +439,60 @@ void readSpawnPointBlock(std::span<const std::uint8_t> payload, std::size_t& cur
     }
 }
 
+// The weather state rides in its own sparse, self-describing block (format 11),
+// the same shape as the game rules and spawn point blocks: a tag, a size, a
+// version, then the fixed fields. LevelProperties persists the same five
+// fields; the smoothed rain/thunder gradients are transient and never saved.
+constexpr std::uint32_t kWeatherBlockTag =
+    'W' | ('E' << 8) | ('A' << 16) | ('T' << 24);
+constexpr std::uint16_t kWeatherBlockVersion = 1U;
+
+void appendWeatherBlock(std::vector<std::uint8_t>& bytes, const SaveGame& game) {
+    const std::size_t blockStart = bytes.size();
+    appendInteger(bytes, kWeatherBlockTag);
+    appendInteger(bytes, 0U);  // blockSizeBytes, patched after the fields
+    appendInteger(bytes, kWeatherBlockVersion);
+    appendInteger(bytes, static_cast<std::uint8_t>(game.weather.raining ? 1U : 0U));
+    appendInteger(bytes, static_cast<std::uint8_t>(game.weather.thundering ? 1U : 0U));
+    appendInteger(bytes, game.weather.rainTime);
+    appendInteger(bytes, game.weather.thunderTime);
+    appendInteger(bytes, game.weather.clearWeatherTime);
+    const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
+    for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
+        bytes[blockStart + 4U + offset] =
+            static_cast<std::uint8_t>(blockSize >> (offset * 8U));
+    }
+}
+
+void readWeatherBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                      SaveGame& game) {
+    const std::size_t blockStart = cursor;
+    if (blockStart + 12U > payload.size()) {
+        throw std::runtime_error("world.dat weather block is truncated");
+    }
+    const auto tag = readInteger<std::uint32_t>(payload, cursor);
+    if (tag != kWeatherBlockTag) {
+        throw std::runtime_error("world.dat has an invalid weather block");
+    }
+    const auto blockSize = readInteger<std::uint32_t>(payload, cursor);
+    if (blockSize < 24U || static_cast<std::size_t>(blockSize) > payload.size() - blockStart) {
+        throw std::runtime_error("world.dat weather block is malformed");
+    }
+    const auto blockVersion = readInteger<std::uint16_t>(payload, cursor);
+    if (blockVersion > kWeatherBlockVersion) {
+        cursor = blockStart + blockSize;
+        return;
+    }
+    game.weather.raining = readInteger<std::uint8_t>(payload, cursor) != 0U;
+    game.weather.thundering = readInteger<std::uint8_t>(payload, cursor) != 0U;
+    game.weather.rainTime = readInteger<std::int32_t>(payload, cursor);
+    game.weather.thunderTime = readInteger<std::int32_t>(payload, cursor);
+    game.weather.clearWeatherTime = readInteger<std::int32_t>(payload, cursor);
+    if (cursor != blockStart + blockSize) {
+        throw std::runtime_error("world.dat weather block has trailing data");
+    }
+}
+
 } // namespace
 
 SaveRepository::SaveRepository(std::filesystem::path root) : root_(std::move(root)) {}
@@ -584,6 +639,7 @@ void SaveRepository::save(SaveGame game) const {
     }
     appendGameRulesBlock(bytes, game.gameRules);
     appendSpawnPointBlock(bytes, game);
+    appendWeatherBlock(bytes, game);
     appendInteger(bytes, checksum(bytes));
     const auto directory = root_ / game.summary.identifier;
     replaceFile(directory / "world.dat", bytes);
@@ -794,6 +850,9 @@ SaveGame SaveRepository::load(const std::string& identifier) const {
     }
     if (formatVersion >= 10U) {
         readSpawnPointBlock(payload, cursor, game);
+    }
+    if (formatVersion >= 11U) {
+        readWeatherBlock(payload, cursor, game);
     }
     if (cursor != payload.size()) throw std::runtime_error("world.dat has trailing data");
     return game;

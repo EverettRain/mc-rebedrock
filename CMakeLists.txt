@@ -217,6 +217,7 @@ add_executable(mc_rebedrock
     src/gameplay/MiningSystem.cpp
     src/gameplay/PlayerController.cpp
     src/gameplay/PlayerVitals.cpp
+    src/gameplay/WeatherSystem.cpp
     src/gameplay/WorldSimulation.cpp
     src/persistence/SaveRepository.cpp
     src/render/Frustum.cpp
@@ -584,6 +585,8 @@ if(BUILD_TESTING)
         src/world/ChunkMesher.cpp
         src/world/WorldLighting.cpp
         src/world/World.cpp
+        src/world/gen/Biome.cpp
+        src/world/gen/NoiseSampler.cpp
     )
     target_include_directories(mc_rebedrock_vertex_lighting_test PRIVATE
         src
@@ -730,6 +733,7 @@ if(BUILD_TESTING)
         src/gameplay/MiningSystem.cpp
         src/gameplay/PlayerController.cpp
         src/gameplay/PlayerVitals.cpp
+        src/gameplay/WeatherSystem.cpp
         src/gameplay/WorldSimulation.cpp
         src/gameplay/entities/EntityType.cpp
         src/gameplay/entities/EntityRegistry.cpp
@@ -749,6 +753,16 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME game_session COMMAND mc_rebedrock_game_session_test)
+
+    add_executable(mc_rebedrock_weather_system_test
+        tests/weather_system_test.cpp
+        src/gameplay/WeatherSystem.cpp
+    )
+    target_include_directories(mc_rebedrock_weather_system_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME weather_system COMMAND mc_rebedrock_weather_system_test)
 
     add_executable(mc_rebedrock_crafting_system_test
         tests/crafting_system_test.cpp

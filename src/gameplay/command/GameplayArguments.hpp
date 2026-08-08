@@ -291,5 +291,10 @@ inline const GiveItemArgument kGiveItemArgument;
 inline const TableArgument<GameRuleTable> kGameRuleArgument;
 inline const TeleportDestinationArgument kTeleportDestinationArgument;
 inline const EntityTargetArgument kEntityTargetArgument;
+// `/weather clear|rain [<duration>]`: the duration (seconds) is bounded by the
+// same 0..1000000 1.16.1's WeatherCommand hands IntegerArgumentType; the
+// handler converts it to ticks at 20 per second. A bound is required so a
+// seconds value that would overflow when doubled is rejected at parse time.
+inline const IntArgument kWeatherDurationArgument{0, 1'000'000};
 
 } // namespace mc::gameplay::command

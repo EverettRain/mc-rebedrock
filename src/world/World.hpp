@@ -42,6 +42,9 @@ class World final {
     bool setDirectSkyLight(int worldX, int y, int worldZ, std::uint8_t value);
     [[nodiscard]] std::vector<ChunkPosition> positions() const;
     [[nodiscard]] std::size_t chunkCount() const { return chunks_.size(); }
+    // The generation biome of the column, used to tint grass-family blocks; an
+    // unloaded chunk reads as plains.
+    [[nodiscard]] gen::Biome biomeAt(int worldX, int worldZ) const;
 
   private:
     std::unordered_map<ChunkPosition, Chunk, ChunkPositionHash> chunks_;

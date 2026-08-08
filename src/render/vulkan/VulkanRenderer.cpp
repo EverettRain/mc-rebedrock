@@ -50,6 +50,8 @@
 #include "world/VoxelRaycast.hpp"
 #include "world/WorldConstants.hpp"
 #include "world/WorldLightEngine.hpp"
+#include "world/gen/Biome.hpp"
+#include "world/gen/LayeredBiomeSource.hpp"
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -147,9 +149,11 @@ constexpr float kFurnaceFrontLayer = 167.0F;
 // The burning furnace's front face (furnace_front_on.png) is the fixed layer
 // right after the unlit front; only the mesher needs it.
 // Eight vanilla moon_phases.png tiles (4x2 grid) fill the fixed layers 169-176
-// so the sky shader can pick layer kMoonPhaseFirstLayer + moonPhase; the sun is
-// layer 177. Keep these in sync with sky.frag.
+// and sun.png sits at 177. The sky shader reads them through the
+// CameraUniform.celestialLayers uniform (which the renderer fills from these
+// bases), so the two never drift when the atlas layout changes.
 constexpr float kMoonPhaseFirstLayer = 169.0F;
+constexpr float kSunLayer = 177.0F;
 // Two-phase world entry: a world opens with a small chunk area around the gameSession.player()
 // (vanilla enters with a small initial area and streams the view distance in
 // during play), so a large render distance does not block the load screen on the
@@ -351,6 +355,11 @@ struct CameraUniform final {
     alignas(16) std::array<glm::vec4, 8> pointLights{};
     alignas(16) std::array<glm::vec4, 8> lightColors{};
     alignas(16) glm::vec4 lightingSettings{0.0F};
+    // x = the sun's atlas layer, y = the first moon-phase atlas layer. The
+    // fixed special section's layout is derived at startup, so the sky shader
+    // reads the real layers from the uniform instead of hardcoding stale
+    // numbers that drift when the atlas changes.
+    alignas(16) glm::vec4 celestialLayers{0.0F};
 };
 
 struct HudPush final {
@@ -748,6 +757,9 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
     };
     const std::array<std::array<float, 3>, 5> biomeLeafTints{
         spruceTint, birchTint, foliageTint, foliageTint, foliageTint};
+    // Untinted leaf bases for the terrain (per-block biome tint happens per
+    // vertex in the mesher), while the tinted ones above stay for items/GUI.
+    const auto biomeLeafTexturesRaw = biomeLeafTextures;
     for (std::size_t leaf = 0; leaf < biomeLeafTextures.size(); ++leaf) {
         auto& pixels = biomeLeafTextures[leaf].rgba;
         for (std::size_t index = 0; index + 3U < pixels.size(); index += 4U) {
@@ -768,6 +780,12 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
     if (sunFrames.size() != 1U) {
         throw std::runtime_error("Minecraft sun texture must contain one square frame");
     }
+    // Untinted grass family, kept for the per-biome colour variants below.
+    const auto grassTopRaw = top;
+    const auto grassSideBase = side;
+    const auto grassOverlay = overlay;
+    const auto grassPlantRaw = grassPlant;
+    const auto leavesRaw = oakLeaves;
     // Tint the foliage and grass the vanilla colours before they enter the atlas.
     const auto tintInPlace = [](assets::ImageData& image, const std::array<float, 3>& tint) {
         for (std::size_t index = 0; index + 3U < image.rgba.size(); index += 4U) {
@@ -904,6 +922,129 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
     for (std::size_t leaf = 0; leaf < biomeLeafNames.size(); ++leaf) {
         layerByName.emplace(biomeLeafNames[leaf], static_cast<float>(layers.size()));
         layers.push_back(biomeLeafTextures[leaf]);
+    }
+
+    // ---- Per-biome grass/foliage colours (1.16.1 BiomeColors) ----
+    // The vanilla grass and foliage colour maps are 256x256 lookups indexed by
+    // temperature and rainfall. Each biome's grass and foliage colour comes
+    // from its own map; the mesher blends them bilinearly per block (the way
+    // 1.16.1's BlockView.getColor does) so a biome boundary reads as a smooth
+    // colour gradient instead of a hard switch. Swamp and dark forest carry
+    // their 1.16.1 overrides below.
+    const auto loadColormap = [&](const char* name) {
+        return assets::ImageData::loadRgba(root.parent_path() / "colormap" / name);
+    };
+    const auto grassColormap = loadColormap("grass.png");
+    const auto foliageColormap = loadColormap("foliage.png");
+    const auto colormapColor = [](const assets::ImageData& colormap, float temperature,
+                                  float downfall) -> std::uint32_t {
+        const float clampedTemperature = std::clamp(temperature, 0.0F, 1.0F);
+        const float humidity = std::clamp(downfall, 0.0F, 1.0F) * clampedTemperature;
+        const int xIndex = static_cast<int>((1.0 - clampedTemperature) * 255.0);
+        const int yIndex = static_cast<int>((1.0 - humidity) * 255.0);
+        const std::size_t pixel = static_cast<std::size_t>(yIndex * 256 + xIndex) * 4U;
+        if (pixel + 3U >= colormap.rgba.size()) {
+            return 0x00FF00U;
+        }
+        return (static_cast<std::uint32_t>(colormap.rgba[pixel]) << 16U) |
+               (static_cast<std::uint32_t>(colormap.rgba[pixel + 1U]) << 8U) |
+               static_cast<std::uint32_t>(colormap.rgba[pixel + 2U]);
+    };
+    const auto colorTint = [](std::uint32_t color) -> std::array<float, 3> {
+        return {
+            static_cast<float>((color >> 16U) & 0xFFU) / 255.0F,
+            static_cast<float>((color >> 8U) & 0xFFU) / 255.0F,
+            static_cast<float>(color & 0xFFU) / 255.0F,
+        };
+    };
+    // The terrain grass family and oak-family leaves render the UNTINTED
+    // textures and take their colour from the fragment shader's biome-colour
+    // lookup (a linear-filtered texture sample, so the biome boundary blends as
+    // a smooth per-pixel gradient). The grass SIDE keeps its baked per-biome
+    // layer so the dirt under a cliff stays dirt, and spruce/birch leaves keep
+    // their fixed 1.16.1 tones.
+    const float terrainGrassTop = static_cast<float>(layers.size());
+    layers.push_back(grassTopRaw);
+    layerByName.emplace("grass_block_top:terrain", terrainGrassTop);
+    const float terrainGrassPlant = static_cast<float>(layers.size());
+    layers.push_back(grassPlantRaw);
+    layerByName.emplace("grass:terrain", terrainGrassPlant);
+    world::gen::setTerrainGrassLayers(terrainGrassTop, terrainGrassPlant);
+    const std::array<world::Block, 6> leafBlocks{
+        world::Block::OakLeaves, world::Block::SpruceLeaves, world::Block::BirchLeaves,
+        world::Block::JungleLeaves, world::Block::AcaciaLeaves, world::Block::DarkOakLeaves,
+    };
+    const std::array<const assets::ImageData*, 6> leafTextures{
+        &leavesRaw, &biomeLeafTexturesRaw[0], &biomeLeafTexturesRaw[1],
+        &biomeLeafTexturesRaw[2], &biomeLeafTexturesRaw[3], &biomeLeafTexturesRaw[4],
+    };
+    const std::array<const char*, 6> leafNames{
+        "oak", "spruce", "birch", "jungle", "acacia", "dark_oak"};
+    const std::array<std::uint32_t, 6> leafFixedTints{
+        0U, 0x619961U, 0x80A755U, 0U, 0U, 0U};
+    for (std::size_t leaf = 0; leaf < leafBlocks.size(); ++leaf) {
+        auto pixels = *leafTextures[leaf];
+        if (leafFixedTints[leaf] != 0U) {
+            const auto tint = colorTint(leafFixedTints[leaf]);
+            for (std::size_t index = 0; index + 3U < pixels.rgba.size(); index += 4U) {
+                for (std::size_t channel = 0; channel < 3U; ++channel) {
+                    pixels.rgba[index + channel] =
+                        tintedChannel(pixels.rgba[index + channel], tint[channel]);
+                }
+            }
+        }
+        const float layer = static_cast<float>(layers.size());
+        layers.push_back(pixels);
+        layerByName.emplace(std::string("leaves:terrain:") + leafNames[leaf], layer);
+        world::gen::setTerrainLeafLayer(leafBlocks[leaf], layer);
+    }
+    // Baked per-biome grass SIDE (dirt + the biome green strip); the top and
+    // plant are tinted in the fragment shader instead.
+    const auto buildBiomeGrassSide = [&](std::string_view suffix, std::uint32_t color) {
+        auto biomeSide = grassSideBase;
+        const auto tint = colorTint(color);
+        for (std::size_t index = 0; index + 3U < biomeSide.rgba.size(); index += 4U) {
+            const float alpha = static_cast<float>(grassOverlay.rgba[index + 3U]) / 255.0F;
+            for (std::size_t channel = 0; channel < 3U; ++channel) {
+                const auto overlayColor =
+                    tintedChannel(grassOverlay.rgba[index + channel], tint[channel]);
+                const float blended =
+                    static_cast<float>(grassSideBase.rgba[index + channel]) * (1.0F - alpha) +
+                    static_cast<float>(overlayColor) * alpha;
+                biomeSide.rgba[index + channel] = static_cast<std::uint8_t>(
+                    std::clamp(static_cast<int>(std::lround(blended)), 0, 255));
+            }
+            biomeSide.rgba[index + 3U] = 255U;
+        }
+        const std::string prefix{suffix};
+        const float sideLayer = static_cast<float>(layers.size());
+        layers.push_back(biomeSide);
+        layerByName.emplace("grass_block_side:" + prefix, sideLayer);
+        return sideLayer;
+    };
+    for (int biomeIndex = 0; biomeIndex < static_cast<int>(world::gen::Biome::Count); ++biomeIndex) {
+        const auto biome = static_cast<world::gen::Biome>(biomeIndex);
+        const auto& definition = world::gen::biomeDefinition(biome);
+        std::uint32_t grassColor =
+            colormapColor(grassColormap, definition.temperature, definition.downfall);
+        if (biome == world::gen::Biome::DarkForest) {
+            // DarkForestBiome#getGrassColorAt darkens the colormap colour.
+            grassColor = ((grassColor & 0xFEFEFEU) + 0x28340AU) >> 1U;
+        }
+        if (biome == world::gen::Biome::Swamp) {
+            // SwampBiome#getGrassColorAt picks 0x6A7039 or 0x4C763C by noise;
+            // the mesher chooses the per-block tone from FOLIAGE_NOISE.
+            const float lightSide = buildBiomeGrassSide("swamp", 0x6A7039U);
+            const float darkSide = buildBiomeGrassSide("swamp_dark", 0x4C763CU);
+            const world::BlockTextureLayers light{terrainGrassTop, lightSide, terrainGrassPlant};
+            const world::BlockTextureLayers dark{terrainGrassTop, darkSide, terrainGrassPlant};
+            world::gen::setBiomeGrassLayers(biome, light);
+            world::gen::setSwampDarkGrassLayers(dark);
+        } else {
+            const float side = buildBiomeGrassSide(definition.identifier, grassColor);
+            world::gen::setBiomeGrassLayers(
+                biome, {terrainGrassTop, side, terrainGrassPlant});
+        }
     }
 
     for (const auto& definition : world::kBlockRegistry) {
@@ -1280,6 +1421,48 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 };
                 return applySpawnPoint(target);
             });
+        // /weather clear|rain [<duration>] sets the world's weather the way
+        // 1.16.1's WeatherCommand does: no-arg applies a 6000-tick spell (five
+        // minutes), a duration argument is seconds converted to ticks at 20 per
+        // second. clear sets setWeather(ticks, 0, false, false), rain sets
+        // setWeather(0, ticks, true, false); once a spell expires the
+        // doWeatherCycle-driven auto-cycle takes over. The `duration` node sits
+        // under the literal the way WeatherCommand nests it, so both forms
+        // execute from the one tree.
+        const auto setClearWeather = [this](int ticks) {
+            gameSession.weatherSystem().setWeather(ticks, 0, false, false);
+            return gameplay::CommandResult{true, "Cleared the weather"};
+        };
+        const auto setRainWeather = [this](int ticks) {
+            gameSession.weatherSystem().setWeather(0, ticks, true, false);
+            return gameplay::CommandResult{true, "It started raining"};
+        };
+        commandDispatcher.literal("weather")
+            .then("clear")
+            .executes([setClearWeather](const gameplay::command::CommandContext&) {
+                return setClearWeather(6000);
+            })
+            .argument("duration", gameplay::command::kWeatherDurationArgument)
+            .executes([setClearWeather](const gameplay::command::CommandContext& context) {
+                const auto seconds = context.find<std::int64_t>("duration");
+                return seconds.has_value()
+                    ? setClearWeather(static_cast<int>(*seconds * 20))
+                    : gameplay::CommandResult{false, "Usage: /weather clear [<duration>]"};
+            });
+        // Registration is idempotent, so a second literal("weather") walk adds
+        // the sibling `rain` branch under the same root node.
+        commandDispatcher.literal("weather")
+            .then("rain")
+            .executes([setRainWeather](const gameplay::command::CommandContext&) {
+                return setRainWeather(6000);
+            })
+            .argument("duration", gameplay::command::kWeatherDurationArgument)
+            .executes([setRainWeather](const gameplay::command::CommandContext& context) {
+                const auto seconds = context.find<std::int64_t>("duration");
+                return seconds.has_value()
+                    ? setRainWeather(static_cast<int>(*seconds * 20))
+                    : gameplay::CommandResult{false, "Usage: /weather rain [<duration>]"};
+            });
     }
 
     ~Impl() { shutdown(); }
@@ -1604,6 +1787,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         createCommandPool();
         createDescriptorSetLayout();
         createTextureArray();
+        createBiomeTextureResources();
         loadLanguage();
         createFontTexture();
         createGuiTexture();
@@ -2346,6 +2530,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         gameSession.worldSimulation().setRandomTickSpeed(
             gameSession.gameRules().get<std::int32_t>(gameplay::GameRuleId::RandomTickSpeed));
         gameSession.gameTimeSeconds() = currentSave->gameTimeSeconds;
+        // The weather travels with the save too; restore() also fades the
+        // gradients straight to their flags (World#initWeatherGradients), so a
+        // world saved mid-rain reopens raining instead of fading up.
+        gameSession.weatherSystem().restore(currentSave->weather);
         const glm::vec3 initialFeet =
             currentSave->hasPlayerPosition
                 ? glm::vec3{currentSave->playerX, currentSave->playerY, currentSave->playerZ}
@@ -2371,8 +2559,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         chunkStreamer.protectChunks(
             world::chunkPositionFromWorld(initialFeet.x, initialFeet.z), kSpawnChunkRadius);
         worldEpoch = chunkStreamer.resetWorld(currentSave->summary.seed, currentSave->edits);
+        updateBiomeColorTextures(currentSave->summary.seed);
         gameSession.lootRandomState() = static_cast<std::uint32_t>(currentSave->summary.seed) ^
             static_cast<std::uint32_t>(currentSave->summary.seed >> 32U) ^ 0x9E3779B9U;
+        // The weather auto-cycle's RNG is seeded from the world the same way the
+        // loot RNG is; the timers themselves come from the save above.
+        gameSession.weatherSystem().seedRandom(
+            static_cast<std::uint32_t>(currentSave->summary.seed) ^
+            static_cast<std::uint32_t>(currentSave->summary.seed >> 32U) ^ 0x57E4F10AU);
         // Two-phase load: ask for a small area around the gameSession.player() first so the
         // world opens quickly, then widen to the full render distance once the
         // load screen clears (see the worldReady block) and let the rest stream
@@ -2420,6 +2614,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         currentSave->playerY = position.y;
         currentSave->playerZ = position.z;
         currentSave->gameTimeSeconds = gameSession.gameTimeSeconds();
+        // The weather timers and flags ride along like game time; the gradients
+        // are recomputed from them on load.
+        currentSave->weather = gameSession.weatherSystem().state();
         currentSave->gameMode = gameSession.gameMode();
         currentSave->gameRules = gameSession.gameRules();
         // The /spawnpoint result rides along like the player's own position.
@@ -2527,6 +2724,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void respawnPlayer() {
         gameSession.respawn();
         camera.setPosition(gameSession.player().eyePosition());
+        // PlayerManager#respawnPlayer snaps the new body to the spawn's stored
+        // angle (vanilla yaw 0) instead of carrying the death look over. The
+        // /tp conversion applies here: vanilla yaw 0 faces +Z.
+        camera.setRotation(gameSession.playerSpawnYaw() + 90.0F, 0.0F);
         chunkStreamer.request(
             world::chunkPositionFromWorld(gameSession.worldSpawnPosition().x, gameSession.worldSpawnPosition().z));
         setPaused(false);
@@ -5986,6 +6187,122 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 "vkCreateSampler(panorama)");
     }
 
+    void createBiomeTextureResources() {
+        const std::uint32_t size = static_cast<std::uint32_t>(kBiomeTextureSize);
+        biomeGrassImage = createImage(size, size, 1, VK_FORMAT_R8G8B8A8_SRGB,
+                                      VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                          VK_IMAGE_USAGE_SAMPLED_BIT);
+        biomeFoliageImage = createImage(size, size, 1, VK_FORMAT_R8G8B8A8_SRGB,
+                                        VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                            VK_IMAGE_USAGE_SAMPLED_BIT);
+        auto samplerInfo = vkStructure<VkSamplerCreateInfo>(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
+        // Linear filtering turns the per-cell biome colours into a smooth,
+        // hardware-interpolated per-pixel gradient across biome boundaries.
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.maxLod = 0.0F;
+        checkVk(vkCreateSampler(device, &samplerInfo, nullptr, &biomeSampler),
+                "vkCreateSampler(biome)");
+        biomeGrassView = createImageView(biomeGrassImage.image, VK_FORMAT_R8G8B8A8_SRGB,
+                                         VK_IMAGE_ASPECT_COLOR_BIT);
+        biomeFoliageView = createImageView(biomeFoliageImage.image, VK_FORMAT_R8G8B8A8_SRGB,
+                                           VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+
+    // Regenerates the biome colour lookup textures for a world seed: each texel
+    // holds the grass/foliage colour (from the vanilla colour maps, with the
+    // swamp/dark-forest overrides) of the biome at that 4-block cell. The
+    // fragment shader samples them with linear filtering, so adjacent cells
+    // blend into a per-pixel gradient — the GPU-side stand-in for 1.16.1's
+    // per-vertex BiomeColors.
+    void updateBiomeColorTextures(std::uint64_t seed) {
+        constexpr int size = kBiomeTextureSize;
+        constexpr int span = kBiomeTextureBlockSpan;
+        constexpr int halfBlocks = size * span / 2;
+        const auto grassColormap =
+            assets::ImageData::loadRgba(blockTextureRoot.parent_path() / "colormap" / "grass.png");
+        const auto foliageColormap =
+            assets::ImageData::loadRgba(blockTextureRoot.parent_path() / "colormap" / "foliage.png");
+        const auto colorAt = [](const assets::ImageData& colormap, float temperature,
+                                float downfall) -> std::uint32_t {
+            const float clampedTemperature = std::clamp(temperature, 0.0F, 1.0F);
+            const float humidity = std::clamp(downfall, 0.0F, 1.0F) * clampedTemperature;
+            const int xIndex = static_cast<int>((1.0 - clampedTemperature) * 255.0);
+            const int yIndex = static_cast<int>((1.0 - humidity) * 255.0);
+            const std::size_t pixel = static_cast<std::size_t>(yIndex * 256 + xIndex) * 4U;
+            if (pixel + 3U >= colormap.rgba.size()) {
+                return 0x00FF00U;
+            }
+            return (static_cast<std::uint32_t>(colormap.rgba[pixel]) << 16U) |
+                   (static_cast<std::uint32_t>(colormap.rgba[pixel + 1U]) << 8U) |
+                   static_cast<std::uint32_t>(colormap.rgba[pixel + 2U]);
+        };
+        world::gen::LayeredBiomeSource biomes{seed};
+        std::vector<std::uint8_t> grassPixels;
+        std::vector<std::uint8_t> foliagePixels;
+        grassPixels.reserve(static_cast<std::size_t>(size) * size * 4U);
+        foliagePixels.reserve(static_cast<std::size_t>(size) * size * 4U);
+        for (int texelZ = 0; texelZ < size; ++texelZ) {
+            for (int texelX = 0; texelX < size; ++texelX) {
+                const int worldX = texelX * span - halfBlocks;
+                const int worldZ = texelZ * span - halfBlocks;
+                const auto biome = biomes.sample(worldX >> 2, worldZ >> 2);
+                const auto& definition = world::gen::biomeDefinition(biome);
+                std::uint32_t grassColor =
+                    colorAt(grassColormap, definition.temperature, definition.downfall);
+                if (biome == world::gen::Biome::DarkForest) {
+                    grassColor = ((grassColor & 0xFEFEFEU) + 0x28340AU) >> 1U;
+                }
+                std::uint32_t foliageColor =
+                    colorAt(foliageColormap, definition.temperature, definition.downfall);
+                if (biome == world::gen::Biome::Swamp) {
+                    foliageColor = 0x6A7039U;
+                }
+                for (int channel = 2; channel >= 0; --channel) {
+                    grassPixels.push_back(static_cast<std::uint8_t>(
+                        (grassColor >> (channel * 8U)) & 0xFFU));
+                    foliagePixels.push_back(static_cast<std::uint8_t>(
+                        (foliageColor >> (channel * 8U)) & 0xFFU));
+                }
+                grassPixels.push_back(255U);
+                foliagePixels.push_back(255U);
+            }
+        }
+        const auto upload = [&](AllocatedImage& image, const std::vector<std::uint8_t>& pixels) {
+            const VkDeviceSize byteSize = pixels.size();
+            auto staging = createBuffer(byteSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+            std::memcpy(staging.mapped, pixels.data(), static_cast<std::size_t>(byteSize));
+            checkVk(vmaFlushAllocation(allocator, staging.allocation, 0, VK_WHOLE_SIZE),
+                    "vmaFlushAllocation(biome texture)");
+            transitionTextureImage(image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                                   VK_ACCESS_TRANSFER_WRITE_BIT,
+                                   VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+            VkBufferImageCopy region{};
+            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.layerCount = 1;
+            region.imageExtent = {static_cast<std::uint32_t>(size),
+                                  static_cast<std::uint32_t>(size), 1};
+            const auto commandBuffer = beginSingleUseCommands();
+            vkCmdCopyBufferToImage(commandBuffer, staging.buffer, image.image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            endSingleUseCommands(commandBuffer);
+            transitionTextureImage(
+                image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+            destroyBuffer(staging);
+        };
+        upload(biomeGrassImage, grassPixels);
+        upload(biomeFoliageImage, foliagePixels);
+    }
+
     void createDescriptorSetLayout() {
         VkDescriptorSetLayoutBinding uniformBinding{};
         uniformBinding.binding = 0;
@@ -6005,9 +6322,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         entitySamplerBinding.binding = 4;
         VkDescriptorSetLayoutBinding panoramaSamplerBinding = samplerBinding;
         panoramaSamplerBinding.binding = 5;
+        VkDescriptorSetLayoutBinding biomeGrassSamplerBinding = samplerBinding;
+        biomeGrassSamplerBinding.binding = 6;
+        VkDescriptorSetLayoutBinding biomeFoliageSamplerBinding = samplerBinding;
+        biomeFoliageSamplerBinding.binding = 7;
         const std::array bindings{uniformBinding, samplerBinding, fontSamplerBinding,
                                   guiSamplerBinding, entitySamplerBinding,
-                                  panoramaSamplerBinding};
+                                  panoramaSamplerBinding, biomeGrassSamplerBinding,
+                                  biomeFoliageSamplerBinding};
         auto info = vkStructure<VkDescriptorSetLayoutCreateInfo>(
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
         info.bindingCount = static_cast<std::uint32_t>(bindings.size());
@@ -6027,7 +6349,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const std::array<VkDescriptorPoolSize, 2> poolSizes{{
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, static_cast<std::uint32_t>(kFramesInFlight)},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-             static_cast<std::uint32_t>(kFramesInFlight * 5U)},
+             static_cast<std::uint32_t>(kFramesInFlight * 7U)},
         }};
         auto poolInfo =
             vkStructure<VkDescriptorPoolCreateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
@@ -6072,7 +6394,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             panoramaImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             panoramaImageInfo.imageView = panoramaTextureView;
             panoramaImageInfo.sampler = panoramaSampler;
-            std::array<VkWriteDescriptorSet, 6> writes{};
+            VkDescriptorImageInfo biomeGrassImageInfo{};
+            biomeGrassImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            biomeGrassImageInfo.imageView = biomeGrassView;
+            biomeGrassImageInfo.sampler = biomeSampler;
+            VkDescriptorImageInfo biomeFoliageImageInfo{};
+            biomeFoliageImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            biomeFoliageImageInfo.imageView = biomeFoliageView;
+            biomeFoliageImageInfo.sampler = biomeSampler;
+            std::array<VkWriteDescriptorSet, 8> writes{};
             writes[0] = vkStructure<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
             writes[0].dstSet = sets[index];
             writes[0].dstBinding = 0;
@@ -6109,6 +6439,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             writes[5].descriptorCount = 1;
             writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             writes[5].pImageInfo = &panoramaImageInfo;
+            writes[6] = vkStructure<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
+            writes[6].dstSet = sets[index];
+            writes[6].dstBinding = 6;
+            writes[6].descriptorCount = 1;
+            writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[6].pImageInfo = &biomeGrassImageInfo;
+            writes[7] = vkStructure<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
+            writes[7].dstSet = sets[index];
+            writes[7].dstBinding = 7;
+            writes[7].descriptorCount = 1;
+            writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[7].pImageInfo = &biomeFoliageImageInfo;
             vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(),
                                    0, nullptr);
         }
@@ -6370,7 +6712,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
         VkVertexInputBindingDescription binding{0, sizeof(VoxelVertex),
                                                 VK_VERTEX_INPUT_RATE_VERTEX};
-        // PackedVoxelVertex: five 4-byte-aligned integer attributes.
+        // PackedVoxelVertex: five 4-byte-aligned integer attributes. The pad
+        // byte inside location 1 carries the fragment's biome mask (which
+        // biome-colour lookup to apply); the 24-byte vertex keeps spare tint
+        // bytes after the lights that are simply not consumed.
         const std::array<VkVertexInputAttributeDescription, 5> attributes{{
             {0, 0, VK_FORMAT_R16G16_UINT, offsetof(VoxelVertex, positionX)},
             {1, 0, VK_FORMAT_R16G16_UINT, offsetof(VoxelVertex, positionZ)},
@@ -7130,6 +7475,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // blocks) after the old hard distance cap was removed.
         uniform.renderSettings =
             glm::vec4{renderDistanceBlocks(), cameraSubmergedInWater() ? 1.0F : 0.0F, 0.08F, 24.0F};
+        // The sky shader picks the sun sprite and the moon phase tiles from the
+        // atlas; the layers come from the derived special-section bases rather
+        // than hardcoded numbers so an atlas change cannot silently re-point
+        // them at a block texture.
+        uniform.celestialLayers = glm::vec4{kSunLayer, kMoonPhaseFirstLayer, 0.0F, 0.0F};
         std::size_t lightCount = 0U;
         const auto& heldStack = activeInventory().selectedStack();
         const bool holdingTorch = gameplay::emitsHeldLight(heldStack);
@@ -10097,6 +10447,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     AllocatedImage panoramaTextureImage;
     VkImageView panoramaTextureView = VK_NULL_HANDLE;
     VkSampler panoramaSampler = VK_NULL_HANDLE;
+    // The 1.16.1 biome colour lookup textures (grass + foliage), sampled by the
+    // terrain fragment shader with a linear sampler so biome boundaries blend as
+    // a smooth per-pixel gradient — the GPU-side equivalent of Java's per-vertex
+    // BiomeColors, but robust because the colour comes from a texture fetch
+    // rather than a per-vertex attribute. Generated from the world seed and the
+    // vanilla colour maps when a world loads; the pixel data is regenerated per
+    // seed, the images/sampler are created once.
+    AllocatedImage biomeGrassImage;
+    VkImageView biomeGrassView = VK_NULL_HANDLE;
+    AllocatedImage biomeFoliageImage;
+    VkImageView biomeFoliageView = VK_NULL_HANDLE;
+    VkSampler biomeSampler = VK_NULL_HANDLE;
+    // Blocks per texel of the biome colour textures (the 1:4 biome map).
+    static constexpr int kBiomeTextureBlockSpan = 4;
+    // Texels per side; kBiomeTextureBlockSpan * kBiomeTextureSize blocks covered.
+    static constexpr int kBiomeTextureSize = 512;
     ui::BitmapFontMetrics fontMetrics;
     // ascii.png metrics plus the legacy unicode pages, and the translation
     // table the interface reads its strings from.

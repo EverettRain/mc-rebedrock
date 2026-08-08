@@ -22,7 +22,7 @@ layout(push_constant) uniform TerrainPush {
 } terrain;
 
 layout(location = 0) in uvec2 inPosXY;  // positionX, positionY
-layout(location = 1) in uvec2 inZNorm;  // positionZ, normalIndex | (pad << 8)
+layout(location = 1) in uvec2 inZNorm;  // positionZ, normalIndex | (biomeMask << 8)
 layout(location = 2) in uvec2 inUv;     // uvX, uvY
 layout(location = 3) in uint inLayerAO; // textureLayer | (AO << 16) | (waterDepth << 24)
 layout(location = 4) in uvec4 inLights; // sky, block, flatSky, flatBlock
@@ -37,6 +37,7 @@ layout(location = 6) out vec3 fragmentWorldPosition;
 layout(location = 7) out float fragmentBlockLight;
 layout(location = 8) flat out float fragmentFlatSkyLight;
 layout(location = 9) flat out float fragmentFlatBlockLight;
+layout(location = 10) flat out uint fragmentBiomeMask;
 
 const float kLocalScale = 17.0 / 65535.0;
 const float kUvScale = 2.0 / 65535.0;
@@ -74,4 +75,5 @@ void main() {
     fragmentBlockLight = float(inLights.y) / 255.0;
     fragmentFlatSkyLight = float(inLights.z) / 255.0;
     fragmentFlatBlockLight = float(inLights.w) / 255.0;
+    fragmentBiomeMask = (inZNorm.y >> 8) & 0xFFu;
 }

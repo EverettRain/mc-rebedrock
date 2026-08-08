@@ -44,6 +44,10 @@ class PlayerVitals final {
     [[nodiscard]] int airTicks() const { return airTicks_; }
     [[nodiscard]] float fallDistance() const { return fallDistance_; }
     [[nodiscard]] bool dead() const { return damage_.dead(); }
+    // The shared damage state, so GameSession can run the unified onDeath guard
+    // (beginDeath) once across the player's death paths.
+    [[nodiscard]] DamageState& damage() { return damage_; }
+    [[nodiscard]] const DamageState& damage() const { return damage_; }
     [[nodiscard]] int invulnerableTicks() const { return damage_.invulnerableTicks; }
     // Ticks since the last hit, used to drive the HUD's damage flash.
     [[nodiscard]] int ticksSinceDamage() const { return ticksSinceDamage_; }

@@ -208,6 +208,60 @@ int main() {
                 mc::render::decodeWaterDepth(vertex) >= 4.0F;
         }));
 
+    // A water body reaching a chunk border stays flat while the neighbour chunk
+    // has not streamed in yet: a missing neighbour must not dip the border
+    // corners into a straight crack (and the whole row onto the flowing
+    // texture), the exact "long straight crack / same-direction flowing water"
+    // symptom in large lakes.
+    {
+        mc::world::World borderWorld;
+        mc::world::Chunk borderChunk;
+        // A 6x8 level-0 pool whose east column (x=15) touches the +x border
+        // (x=16) of chunk (0,0); chunk (1,0) is deliberately absent. Interior
+        // cells have every z-neighbour filled, so only the missing chunk can
+        // influence their border corners.
+        for (int z = 4; z <= 11; ++z) {
+            for (int x = 10; x <= 15; ++x) {
+                borderChunk.setBlock(x, 1, z, mc::world::Block::Water);
+                borderChunk.setFluidLevel(x, 1, z, 0U);
+            }
+        }
+        borderWorld.setChunk({0, 0}, std::move(borderChunk));
+        const auto borderMesh =
+            mc::world::ChunkMesher::buildSection(borderWorld, {0, 0}, 0);
+        // Every vertex on the seam (x=16, inside the missing chunk) at surface
+        // height — the border column's top corners and the side-face tops that
+        // share them — must sit at the flat 8/9 height. Without the fix they
+        // sample Air and collapse to ~1.81, cracking the row.
+        int seamSurfaceVertices = 0;
+        for (const auto& vertex : borderMesh.translucentMesh.vertices) {
+            const auto position = worldPos(vertex);
+            if (position.x < 15.9F || position.x > 16.1F ||
+                position.z < 6.0F - 1e-3F || position.z > 9.0F + 1e-3F ||
+                position.y <= 1.5F) {
+                continue;
+            }
+            ++seamSurfaceVertices;
+            expectNear(position.y, 1.0F + 8.0F / 9.0F, "border water surface");
+        }
+        // The four border cells (x=15, z=6..9) contribute their x=16 top and
+        // side-top corners here; far more than a couple, so the check is not
+        // vacuous.
+        assert(seamSurfaceVertices >= 6);
+        // The border cells must NOT render their +X side faces toward the
+        // missing chunk: that would draw the waterfall-like vertical cut from
+        // the surface to the seabed along the seam. No translucent vertex on
+        // the missing-chunk side may carry a horizontal face normal.
+        for (const auto& vertex : borderMesh.translucentMesh.vertices) {
+            const auto position = worldPos(vertex);
+            const auto normal = mc::render::decodeNormal(vertex);
+            if (position.x < 15.9F || position.x > 16.1F) {
+                continue;
+            }
+            assert(std::abs(normal.x) < 0.5F);
+        }
+    }
+
     mc::world::World negativeWorld;
     mc::world::Chunk negativeChunk;
     negativeChunk.setBlock(15, 3, 15, mc::world::Block::Sand);
