@@ -111,6 +111,24 @@ int main() {
     assert(expanded.has_value());
     assert(expanded->loadedChunkCount == 9U);
 
+    // Vanilla spawn chunks: a protected region survives a move of the load
+    // centre. Protect {0,0} (already loaded at radius 1) and move far away.
+    streamer.protectChunks({0, 0}, 0);
+    assert(streamer.protectedRadius() == 0);
+    streamer.protectChunks({0, 0}, 1);
+    assert(streamer.protectedRadius() == 1);
+    streamer.request({6, 6});
+    auto movedAway = waitForBatch(streamer);
+    assert(movedAway.has_value());
+    // The protected chunk is still served after the move: the batch contains a
+    // non-removal chunk update for {0,0} (or a remesh), never a removal of it.
+    const auto centreUpdate = std::ranges::find_if(
+        movedAway->chunkUpdates, [](const mc::world::ChunkDataUpdate& update) {
+            return update.position == mc::world::ChunkPosition{0, 0};
+        });
+    assert(centreUpdate == movedAway->chunkUpdates.end() ||
+           !centreUpdate->remove);
+
     // requestSync force-loads a specific chunk on demand: the vanilla-style
     // anti-void fallback (ServerChunkManager#getChunk with create=true) used
     // when the player reaches the streaming boundary. The chunk lies far

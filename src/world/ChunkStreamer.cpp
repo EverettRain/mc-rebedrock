@@ -342,6 +342,12 @@ void ChunkStreamer::setRadii(int loadRadius, int unloadRadius) {
     wakeWorker_.notify_one();
 }
 
+void ChunkStreamer::protectChunks(ChunkPosition center, int radius) {
+    protectedChunkX_.store(center.x, std::memory_order_relaxed);
+    protectedChunkZ_.store(center.z, std::memory_order_relaxed);
+    protectedRadius_.store(radius, std::memory_order_relaxed);
+}
+
 std::uint64_t ChunkStreamer::resetWorld(std::uint64_t seed,
                                         std::vector<PersistentBlockEdit> edits) {
     std::uint64_t epoch = 0U;
@@ -779,10 +785,18 @@ void ChunkStreamer::updateWorld(
     // batch: a lone removal batch would briefly leave the player standing in a
     // void while the leading-edge chunks still stream in.
     std::vector<ChunkPosition> unloading;
+    // Vanilla spawn chunks never unload: a chunk inside the protected region is
+    // kept regardless of how far the player wanders (ServerChunkManager keeps
+    // them loaded while the server runs).
+    const int protectedRadius = protectedRadius_.load(std::memory_order_relaxed);
+    const int protectedX = protectedChunkX_.load(std::memory_order_relaxed);
+    const int protectedZ = protectedChunkZ_.load(std::memory_order_relaxed);
     for (const auto position : world.positions()) {
         if (stopping_.load(std::memory_order_relaxed))
             return;
-        if (outsideRadius(position, center, unloadRadius)) {
+        const bool protectedChunk = protectedRadius > 0 &&
+            outsideRadius(position, {protectedX, protectedZ}, protectedRadius) == false;
+        if (outsideRadius(position, center, unloadRadius) && !protectedChunk) {
             unloading.push_back(position);
         }
     }

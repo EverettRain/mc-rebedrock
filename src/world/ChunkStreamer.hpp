@@ -73,6 +73,11 @@ class ChunkStreamer final {
     void stop();
     void request(ChunkPosition center);
     void setRadii(int loadRadius, int unloadRadius);
+    // Marks a region that must never stream out, the way vanilla 1.16.1 keeps
+    // its spawn chunks loaded: every chunk within `radius` of `center` is
+    // skipped by the unload pass. The world spawn registers itself here once it
+    // is known, so the player's home base never despawns under them.
+    void protectChunks(ChunkPosition center, int radius);
     [[nodiscard]] std::uint64_t resetWorld(
         std::uint64_t seed,
         std::vector<PersistentBlockEdit> edits = {});
@@ -103,6 +108,9 @@ class ChunkStreamer final {
     }
     [[nodiscard]] int unloadRadius() const {
         return unloadRadius_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] int protectedRadius() const {
+        return protectedRadius_.load(std::memory_order_relaxed);
     }
     // The smooth-lighting quality new meshes are baked with. Changing it on the
     // worker only affects meshes built after the call; the render thread drives
@@ -182,6 +190,11 @@ class ChunkStreamer final {
     std::uint64_t seed_;
     std::atomic<int> loadRadius_;
     std::atomic<int> unloadRadius_;
+    // The never-unload spawn region (vanilla spawn chunks). `protectedRadius_`
+    // of 0 disables it; the position is only meaningful while enabled.
+    std::atomic<int> protectedChunkX_{0};
+    std::atomic<int> protectedChunkZ_{0};
+    std::atomic<int> protectedRadius_{0};
     std::mutex mutex_;
     std::condition_variable wakeWorker_;
     // Signalled by publish() so requestSync waiters can observe a delivered

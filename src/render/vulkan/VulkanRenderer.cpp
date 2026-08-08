@@ -2545,6 +2545,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         gameSession.playerSpawnYaw() = currentSave->spawnYaw;
         camera.setPosition(gameSession.player().eyePosition());
         spawnPositionInitialized = currentSave->hasPlayerPosition;
+        // Keep the loaded spawn's chunks loaded for the session, vanilla-style.
+        chunkStreamer.protectChunks(
+            world::chunkPositionFromWorld(initialFeet.x, initialFeet.z), kSpawnChunkRadius);
         worldEpoch = chunkStreamer.resetWorld(currentSave->summary.seed, currentSave->edits);
         gameSession.lootRandomState() = static_cast<std::uint32_t>(currentSave->summary.seed) ^
             static_cast<std::uint32_t>(currentSave->summary.seed >> 32U) ^ 0x9E3779B9U;
@@ -4770,8 +4773,31 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 }
             }
         }
-        if (!best.has_value())
-            return;
+        if (!best.has_value()) {
+            // The strict scan found nothing — a large sea or a fully covered
+            // area around the preferred centre. Vanilla's getSpawnPos never
+            // gives up, and neither may we: a world whose spawn search returns
+            // without a position leaves spawnPositionInitialized false and the
+            // loading screen forever, on this run and on every reload of the
+            // same seed. Fall back to the highest solid surface at the centre
+            // (a seabed is fine — the player can swim up), and if even that
+            // fails, to the default feet. Only once the centre chunk is loaded,
+            // so the fallback reads real terrain instead of empty air.
+            if (!interactionWorld.hasChunk(
+                    world::chunkPositionFromWorld(24.0F, 24.0F))) {
+                return;
+            }
+            for (int y = world::kWorldHeight - 3; y >= 1; --y) {
+                const auto ground = interactionWorld.block(24, y, 24);
+                if (world::hasCollision(ground) || world::isFluid(ground)) {
+                    best = glm::ivec3{24, y + 1, 24};
+                    break;
+                }
+            }
+            if (!best.has_value()) {
+                best = glm::ivec3{24, 1, 24};
+            }
+        }
         const glm::vec3 feet{static_cast<float>(best->x) + 0.5F,
                              static_cast<float>(best->y) + 0.001F,
                              static_cast<float>(best->z) + 0.5F};
@@ -4781,6 +4807,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         gameSession.physicsCurrentPosition() = feet;
         camera.setPosition(gameSession.player().eyePosition());
         spawnPositionInitialized = true;
+        // Vanilla keeps its spawn chunks loaded for the server's lifetime; mark
+        // the world spawn's chunk neighbourhood so it never streams out under
+        // the player (ServerChunkManager#updateChunks).
+        chunkStreamer.protectChunks(
+            world::chunkPositionFromWorld(feet.x, feet.z), kSpawnChunkRadius);
         std::cout << "Spawn position: " << feet.x << "," << feet.y << "," << feet.z << '\n';
     }
 

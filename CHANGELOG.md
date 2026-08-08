@@ -54,6 +54,12 @@ simple versioned history while it is in beta.
   top log, not a layer above it.
 - A dead mob drops its loot in every game mode — the creative gate that
   silently swallowed the drops is gone, matching vanilla's death-time loot roll.
+- A new world can no longer deadlock on "Creating terrain": the spawn search
+  that found no valid column (a large sea around the preferred centre) used to
+  leave the loading screen forever, on the first run and every reload of the
+  same seed. It now falls back to the highest solid surface so the world always
+  loads, and the spawn region is marked as never-unloading vanilla spawn
+  chunks, so the player's home base stays loaded for the whole session.
 
 ## ReBedrock beta3
 
