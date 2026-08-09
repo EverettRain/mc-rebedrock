@@ -29,6 +29,7 @@ int main() {
         assert(weather.state().clearWeatherTime == 0);
         assert(weather.state().rainTime == 0);
         assert(nearlyEqual(weather.rainGradient(), 0.0F));
+        assert(nearlyEqual(weather.visualSkyLightFactorAt(1.0F), 1.0F));
     }
 
     // --- /weather clear N: a forced clear spell that expires into the auto-cycle. ---
@@ -104,6 +105,19 @@ int main() {
         assert(nearlyEqual(weather.rainGradientAt(0.0F), 0.0F));  // prev
         assert(nearlyEqual(weather.rainGradientAt(1.0F), 0.01F)); // current
         assert(nearlyEqual(weather.rainGradientAt(0.5F), 0.005F));
+        assert(nearlyEqual(weather.visualSkyLightFactorAt(0.0F), 1.0F));
+        assert(nearlyEqual(weather.visualSkyLightFactorAt(1.0F),
+                           1.0F - 0.01F * 5.0F / 16.0F));
+    }
+
+    // Rain and thunder independently reduce the rendered sky contribution;
+    // neither operation changes the persistent weather or world light shape.
+    {
+        WeatherSystem weather;
+        weather.forceRainGradient(1.0F);
+        weather.forceThunderGradient(1.0F);
+        assert(nearlyEqual(weather.visualSkyLightFactorAt(1.0F),
+                           (11.0F / 16.0F) * (11.0F / 16.0F)));
     }
 
     // --- The gradient decays after a rain spell ends. ---
@@ -150,6 +164,7 @@ int main() {
         assert(weather.state().raining);
         assert(nearlyEqual(weather.rainGradient(), 1.0F));  // initWeatherGradients
         assert(weather.isRaining());
+        assert(nearlyEqual(weather.visualSkyLightFactorAt(1.0F), 11.0F / 16.0F));
     }
 
     // --- state() round-trips setWeather through the save shape. ---

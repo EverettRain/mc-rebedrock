@@ -98,6 +98,12 @@ int main() {
     chest.items[0] = {world::Block::Chest, 1U};
     chest.items[8] = {world::Block::Air, 3U, &gameplay::items::Book};
     save.chests.push_back(chest);
+    // Format 12's ENTITY block: creatures travel by species name and come back
+    // with their pose and state intact.
+    save.entities = {
+        {"pig", 10.0F, 64.0F, 8.0F, 0.5F, 0.0F, 0.0F, 0.0F, 10.0F, 0, 120U, 0x1234U},
+        {"zombie", 20.0F, 64.0F, -5.0F, 1.2F, 0.1F, 0.0F, 0.0F, 20.0F, 40, 5U, 0xABCDU},
+    };
     repository.save(save);
     const auto listed = repository.list();
     assert(listed.size() == 1U);
@@ -118,6 +124,18 @@ int main() {
     assert(loaded.chests.size() == 1U);
     assert(loaded.chests.front().position == chest.position);
     assert(loaded.chests.front().items == chest.items);
+    // The ENTITY block round-trips the herd, species resolved by name later.
+    assert(loaded.entities.size() == 2U);
+    assert(loaded.entities[0].species == "pig");
+    assert(loaded.entities[0].x == 10.0F && loaded.entities[0].y == 64.0F &&
+           loaded.entities[0].z == 8.0F);
+    assert(loaded.entities[0].yaw == 0.5F);
+    assert(loaded.entities[0].health == 10.0F);
+    assert(loaded.entities[0].ageTicks == 120U);
+    assert(loaded.entities[0].rngState == 0x1234U);
+    assert(loaded.entities[1].species == "zombie");
+    assert(loaded.entities[1].angerTicks == 40);
+    assert(loaded.entities[1].rngState == 0xABCDU);
 
     // Blocks travel as namespaced identifiers now, so the world.dat payload
     // literally contains them and a renumbered enum cannot silently reinterpret

@@ -7,19 +7,27 @@ set(vanilla_target "${GAME_ROOT}/resources/vanilla/1.16.1")
 file(MAKE_DIRECTORY "${vanilla_target}")
 file(COPY "${vanilla_source}/textures" DESTINATION "${vanilla_target}")
 
-set(sound_target "${vanilla_target}/audio/minecraft/sounds")
-file(MAKE_DIRECTORY "${sound_target}")
-foreach(sound_group dig step liquid random damage)
-    file(COPY "${vanilla_source}/audio/minecraft/sounds/${sound_group}"
-         DESTINATION "${sound_target}")
-endforeach()
-# The pig is the only mob whose sounds are wired up (PigEntity's hurt and death
-# clips), so stage just its folder instead of the whole ~24 MB mob group.
-if(EXISTS "${vanilla_source}/audio/minecraft/sounds/mob/pig")
-    file(MAKE_DIRECTORY "${sound_target}/mob")
-    file(COPY "${vanilla_source}/audio/minecraft/sounds/mob/pig"
-         DESTINATION "${sound_target}/mob")
-endif()
+# Every sound asset ships — the block families, the whole mob set (pig, cow,
+# zombie and anything wired up later), weather/rain, ambient, entity, records,
+# UI. Staging a subset repeatedly fell behind the wired-up sounds and spammed
+# "Missing sound asset" at runtime, so copy the whole tree instead of
+# cherry-picking groups. The 155 MB music catalogue is the exception: only the
+# two classic C418 tracks — Sweden (music/game/calm1) and the main-menu theme
+# (music/menu/menu1) — are staged, since no music player exists yet and the
+# rest is dead weight.
+file(COPY "${vanilla_source}/audio/minecraft/sounds"
+     DESTINATION "${vanilla_target}/audio/minecraft"
+     PATTERN "music" EXCLUDE)
+# file(COPY) adds and overwrites but never removes stale destinations, so an
+# earlier full-tree staging may have left the whole music catalogue behind —
+# drop it explicitly, then stage only the two kept tracks.
+file(REMOVE_RECURSE "${vanilla_target}/audio/minecraft/sounds/music")
+file(MAKE_DIRECTORY "${vanilla_target}/audio/minecraft/sounds/music/game")
+file(MAKE_DIRECTORY "${vanilla_target}/audio/minecraft/sounds/music/menu")
+file(COPY "${vanilla_source}/audio/minecraft/sounds/music/game/calm1.ogg"
+     DESTINATION "${vanilla_target}/audio/minecraft/sounds/music/game")
+file(COPY "${vanilla_source}/audio/minecraft/sounds/music/menu/menu1.ogg"
+     DESTINATION "${vanilla_target}/audio/minecraft/sounds/music/menu")
 
 # glyph_sizes.bin drives the legacy unicode font used by the CJK languages.
 if(EXISTS "${vanilla_source}/fonts")

@@ -19,7 +19,7 @@ constexpr std::array<std::uint8_t, 8> kMagic{'M', 'C', 'R', 'B', 'S', 'A', 'V', 
 // Format 8 moved `randomTickSpeed` into a fixed header field; format 9 replaces
 // that with a sparse, self-describing GameRules block after the chests section;
 // format 10 appends the /spawnpoint block; format 11 appends the weather block.
-constexpr std::uint32_t kFormatVersion = 11U;
+constexpr std::uint32_t kFormatVersion = 12U;
 constexpr std::uint32_t kOldestSupportedFormatVersion = 1U;
 constexpr std::uint64_t kMaximumEdits = 16U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumChests = 1024U * 1024U;
@@ -493,6 +493,147 @@ void readWeatherBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
     }
 }
 
+// The ENTITY block is the self-describing region format 12 appends after the
+// weather block, mirroring the GameRules framing:
+//
+//   u32 blockTag          // 'E','N','T','Y'
+//   u32 blockSizeBytes    // whole block length incl. this field
+//   u16 blockVersion      // 1
+//   u16 speciesCount
+//   species[]: u16 nameLen + name   // the registered id path, e.g. "pig"
+//   u32 entityCount
+//   entities[]:
+//     u16 speciesIndex
+//     f32 x, y, z
+//     f32 yaw
+//     f32 vx, vy, vz
+//     f32 health
+//     i32 angerTicks
+//     u32 ageTicks
+//     u32 rngState
+//     u8  flags           // reserved
+//
+// Species are palette-encoded the same way blocks/items are, so a species that
+// is removed in a future build skips cleanly on load (the unknown name becomes
+// an unknown palette entry) instead of renumbering every record.
+constexpr std::uint32_t kEntityBlockTag =
+    'E' | ('N' << 8) | ('T' << 16) | ('Y' << 24);
+constexpr std::uint16_t kEntityBlockVersion = 1U;
+
+void appendEntityBlock(std::vector<std::uint8_t>& bytes,
+                       const std::vector<PersistentEntity>& entities) {
+    const std::size_t blockStart = bytes.size();
+    appendInteger(bytes, kEntityBlockTag);
+    appendInteger(bytes, 0U);  // blockSizeBytes, patched after the records
+    appendInteger(bytes, kEntityBlockVersion);
+    // Species palette: gather the names in first-use order.
+    std::vector<std::string> speciesPalette;
+    std::unordered_map<std::string, std::uint16_t> speciesIndices;
+    const auto indexOf = [&](const std::string& name) {
+        const auto existing = speciesIndices.find(name);
+        if (existing != speciesIndices.end()) {
+            return existing->second;
+        }
+        const auto index = static_cast<std::uint16_t>(speciesPalette.size());
+        speciesPalette.push_back(name);
+        speciesIndices.emplace(name, index);
+        return index;
+    };
+    for (const auto& entity : entities) {
+        static_cast<void>(indexOf(entity.species));
+    }
+    appendInteger(bytes, static_cast<std::uint16_t>(speciesPalette.size()));
+    for (const auto& name : speciesPalette) {
+        appendString(bytes, name);
+    }
+    appendInteger(bytes, static_cast<std::uint32_t>(entities.size()));
+    for (const auto& entity : entities) {
+        appendInteger(bytes, indexOf(entity.species));
+        appendFloat(bytes, entity.x);
+        appendFloat(bytes, entity.y);
+        appendFloat(bytes, entity.z);
+        appendFloat(bytes, entity.yaw);
+        appendFloat(bytes, entity.vx);
+        appendFloat(bytes, entity.vy);
+        appendFloat(bytes, entity.vz);
+        appendFloat(bytes, entity.health);
+        appendInteger(bytes, entity.angerTicks);
+        appendInteger(bytes, entity.ageTicks);
+        appendInteger(bytes, entity.rngState);
+        appendInteger(bytes, static_cast<std::uint8_t>(0U));  // flags, reserved
+    }
+    const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
+    for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
+        bytes[blockStart + 4U + offset] =
+            static_cast<std::uint8_t>(blockSize >> (offset * 8U));
+    }
+}
+
+void readEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                     std::vector<PersistentEntity>& entities) {
+    const std::size_t blockStart = cursor;
+    if (blockStart + 12U > payload.size()) {
+        throw std::runtime_error("world.dat entity block is truncated");
+    }
+    const auto tag = readInteger<std::uint32_t>(payload, cursor);
+    if (tag != kEntityBlockTag) {
+        throw std::runtime_error("world.dat has an invalid entity block");
+    }
+    const auto blockSize = readInteger<std::uint32_t>(payload, cursor);
+    if (blockSize < 12U || static_cast<std::size_t>(blockSize) > payload.size() - blockStart) {
+        throw std::runtime_error("world.dat entity block is malformed");
+    }
+    const auto blockVersion = readInteger<std::uint16_t>(payload, cursor);
+    if (blockVersion > kEntityBlockVersion) {
+        // A future build's record layout is unknowable; skip the whole region.
+        cursor = blockStart + blockSize;
+        return;
+    }
+    const std::size_t blockEnd = blockStart + blockSize;
+    const auto speciesCount = readInteger<std::uint16_t>(payload, cursor);
+    if (blockEnd - cursor < static_cast<std::size_t>(speciesCount) * 2U) {
+        throw std::runtime_error("world.dat entity block species list is truncated");
+    }
+    std::vector<std::string> species;
+    species.reserve(speciesCount);
+    for (std::uint16_t index = 0; index < speciesCount; ++index) {
+        species.push_back(readString(payload, cursor));
+    }
+    const auto entityCount = readInteger<std::uint32_t>(payload, cursor);
+    entities.reserve(static_cast<std::size_t>(entityCount));
+    for (std::uint32_t index = 0; index < entityCount; ++index) {
+        if (cursor >= blockEnd) {
+            throw std::runtime_error("world.dat entity block is truncated");
+        }
+        const auto speciesIndex = readInteger<std::uint16_t>(payload, cursor);
+        if (speciesIndex >= species.size()) {
+            throw std::runtime_error("world.dat entity block references an unknown species");
+        }
+        PersistentEntity entity;
+        entity.species = species[speciesIndex];
+        entity.x = readFloat(payload, cursor);
+        entity.y = readFloat(payload, cursor);
+        entity.z = readFloat(payload, cursor);
+        entity.yaw = readFloat(payload, cursor);
+        entity.vx = readFloat(payload, cursor);
+        entity.vy = readFloat(payload, cursor);
+        entity.vz = readFloat(payload, cursor);
+        entity.health = readFloat(payload, cursor);
+        entity.angerTicks = readInteger<std::int32_t>(payload, cursor);
+        entity.ageTicks = readInteger<std::uint32_t>(payload, cursor);
+        entity.rngState = readInteger<std::uint32_t>(payload, cursor);
+        static_cast<void>(readInteger<std::uint8_t>(payload, cursor));  // flags, reserved
+        // A creature saved outside the world is a corrupt record.
+        if (!(entity.y >= -64.0F && entity.y <= 384.0F)) {
+            throw std::runtime_error("world.dat entity block has an invalid position");
+        }
+        entities.push_back(std::move(entity));
+    }
+    if (cursor != blockEnd) {
+        throw std::runtime_error("world.dat entity block has trailing data");
+    }
+}
+
 } // namespace
 
 SaveRepository::SaveRepository(std::filesystem::path root) : root_(std::move(root)) {}
@@ -640,6 +781,7 @@ void SaveRepository::save(SaveGame game) const {
     appendGameRulesBlock(bytes, game.gameRules);
     appendSpawnPointBlock(bytes, game);
     appendWeatherBlock(bytes, game);
+    appendEntityBlock(bytes, game.entities);
     appendInteger(bytes, checksum(bytes));
     const auto directory = root_ / game.summary.identifier;
     replaceFile(directory / "world.dat", bytes);
@@ -853,6 +995,9 @@ SaveGame SaveRepository::load(const std::string& identifier) const {
     }
     if (formatVersion >= 11U) {
         readWeatherBlock(payload, cursor, game);
+    }
+    if (formatVersion >= 12U) {
+        readEntityBlock(payload, cursor, game.entities);
     }
     if (cursor != payload.size()) throw std::runtime_error("world.dat has trailing data");
     return game;

@@ -4,32 +4,34 @@
 
 namespace mc::gameplay::entities {
 
-// Two full turns in radians: the shared wander-heading scale every category AI
-// below rolls a fresh direction on. One definition here instead of one per
-// species.
-inline constexpr float kTwoPi = 6.28318530718F;
-
 // AnimalAi — the shared AI base for MobCategory::Creature species (vanilla
-// Animal). A passive land animal grazes: after a longish pause it either keeps
-// standing in place (one time in four) or ambles off on a fresh random heading,
-// the WanderAroundFarGoal cadence the pig already uses. Species subclass this
-// for anything extra (breeding, fleeing); wandering is already the animal's
-// default. Category-neutral behaviour like anger lives on NeutralAi instead.
+// Animal). Each spawn receives independent Swim, EscapeDanger,
+// WanderAroundFar, LookAtPlayer and LookAround goal instances. Species subclass
+// this profile to insert mating/temptation/follow-parent goals later without
+// changing the shared selector or navigation runtime.
 class AnimalAi : public EntityAi {
   public:
-    // MobEntity#initGoals's animal grazing cadence, shared by every CREATURE.
-    void chooseWanderIntent(SimpleEntity& self, std::uint32_t& rng) const override;
+    explicit AnimalAi(float escapeSpeedMultiplier = 1.25F, float wanderSpeedMultiplier = 1.0F,
+                      int passiveGoalPriorityOffset = 0)
+        : escapeSpeedMultiplier_(escapeSpeedMultiplier),
+          wanderSpeedMultiplier_(wanderSpeedMultiplier),
+          passiveGoalPriorityOffset_(passiveGoalPriorityOffset) {}
+
+    void configureBrain(MobBrain& brain) const override;
+
+  private:
+    float escapeSpeedMultiplier_ = 1.25F;
+    float wanderSpeedMultiplier_ = 1.0F;
+    int passiveGoalPriorityOffset_ = 0;
 };
 
-// MonsterAi — the shared AI base for MobCategory::Monster species (vanilla
-// Monster). A hostile mob shambles almost constantly, pausing far less than a
-// grazing animal. Target/attack goals wait on player-targeting AI; until then a
-// monster is honestly just a persistent wanderer. Species subclass this for
-// their own combat goals once targeting exists.
+// MonsterAi — the shared idle AI base for MobCategory::Monster species
+// (vanilla Monster). It supplies the low-priority wander/look fallback; concrete
+// monsters subclass it and install their own target and combat goals, as the
+// zombie does for player acquisition and melee.
 class MonsterAi : public EntityAi {
   public:
-    // The persistent hostile shambling shared by every MONSTER.
-    void chooseWanderIntent(SimpleEntity& self, std::uint32_t& rng) const override;
+    void configureBrain(MobBrain& brain) const override;
 };
 
 // AmbientAi — placeholder for MobCategory::Ambient (vanilla Ambient: bats).

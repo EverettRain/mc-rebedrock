@@ -62,6 +62,11 @@ EntityType::Builder& EntityType::Builder::renderer(const EntityRenderDescriptor&
     return *this;
 }
 
+EntityType::Builder& EntityType::Builder::sounds(const audio::MobSoundProfile& profile) {
+    draft_.soundProfile_ = profile;
+    return *this;
+}
+
 EntityType::Builder& EntityType::Builder::vanillaName(std::string_view path) {
     draft_.vanillaId_ = core::Identifier{core::kVanillaNamespace, path};
     return *this;

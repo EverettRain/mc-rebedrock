@@ -25,6 +25,9 @@ layout(binding = 0) uniform CameraUniform {
     vec4 pointLights[8];
     vec4 lightColors[8];
     vec4 lightingSettings;
+    vec4 celestialLayers;
+    vec4 weatherSettings;
+    mat4 lightViewProj;
 } camera;
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
@@ -34,10 +37,20 @@ layout(binding = 1) uniform sampler2DArray blockTextures;
 // origin; the UV mapping must match kBiomeTextureSize/BlockSpan in the renderer.
 layout(binding = 6) uniform sampler2D biomeGrassColors;
 layout(binding = 7) uniform sampler2D biomeFoliageColors;
+// The sun shadow depth map written by the pre-pass (binding 8). lightingSettings.w
+// is 1.0 only when the pre-pass ran this frame, so the sample is skipped when
+// the shadow feature is off.
+layout(binding = 8) uniform sampler2D shadowDepth;
 
 float lightBrightness(float normalizedLevel) {
     float darkness = 1.0 - clamp(normalizedLevel, 0.0, 1.0);
     return normalizedLevel / (darkness * 3.0 + 1.0);
+}
+
+vec3 weatherFogColor(vec3 color) {
+    color.rg *= 1.0 - camera.weatherSettings.x * 0.50;
+    color.b *= 1.0 - camera.weatherSettings.x * 0.40;
+    return color * (1.0 - camera.weatherSettings.y * 0.50);
 }
 
 void main() {
@@ -59,6 +72,23 @@ void main() {
     vec3 sunDirection = normalize(camera.sunDirection.xyz);
     vec3 normal = normalize(fragmentNormal);
     float diffuse = max(dot(normal, sunDirection), 0.0);
+    // Sun shadow: project the fragment into the light space the pre-pass wrote
+    // the depth map with, and darken the sun term where a closer surface blocks
+    // it. The comparison uses a small depth bias to avoid self-shadow acne, and
+    // falls back to fully lit outside the map's bounds.
+    float shadowFactor = 1.0;
+    if (camera.lightingSettings.w > 0.5) {
+        vec4 lightPosition = camera.lightViewProj * vec4(fragmentWorldPosition, 1.0);
+        vec3 projected = lightPosition.xyz / lightPosition.w;
+        vec3 shadowUv = projected * 0.5 + 0.5;
+        if (shadowUv.x >= 0.0 && shadowUv.x <= 1.0 && shadowUv.y >= 0.0 && shadowUv.y <= 1.0 &&
+            shadowUv.z <= 1.0) {
+            float closestDepth = texture(shadowDepth, shadowUv.xy).r;
+            if (shadowUv.z - 0.002 > closestDepth) {
+                shadowFactor = 0.35;
+            }
+        }
+    }
     float upward = max(normal.y, 0.0);
     float downward = max(-normal.y, 0.0);
     float side = 1.0 - abs(normal.y);
@@ -68,7 +98,11 @@ void main() {
     bool highLighting = camera.lightingSettings.z > 0.5;
     float skyLevel = smoothLighting ? fragmentSkyLight : fragmentFlatSkyLight;
     float blockLevel = smoothLighting ? fragmentBlockLight : fragmentFlatBlockLight;
-    float skyBrightness = lightBrightness(skyLevel) * camera.sunDirection.w;
+    // Weather reduces only the visual contribution sampled from sky light. The
+    // skyLevel itself remains the mesh/world value, so gameplay light checks do
+    // not change and block light can still win the max() below.
+    float skyBrightness = lightBrightness(skyLevel) * camera.sunDirection.w *
+        camera.weatherSettings.z;
     float blockBrightness = lightBrightness(blockLevel);
     // Vanilla tints the sky light by the time of day — cool blue moonlight at
     // night, warm sunlight by day. That is why desert sand reads pale at night
@@ -76,7 +110,7 @@ void main() {
     vec3 skyTint = mix(vec3(0.50, 0.62, 0.95), vec3(1.0, 0.97, 0.90),
                        camera.sunDirection.w);
     vec3 skyIllumination = skyTint *
-        (faceShade * (0.72 + diffuse * 0.28) * skyBrightness);
+        (faceShade * (0.72 + diffuse * shadowFactor * 0.28) * skyBrightness);
     vec3 blockIllumination = vec3(1.0, 0.72, 0.38) * blockBrightness * 0.92;
     vec3 illumination = max(skyIllumination, blockIllumination);
     for (int lightIndex = 0; lightIndex < int(camera.lightingSettings.x); ++lightIndex) {
@@ -150,7 +184,7 @@ void main() {
     } else {
         float fogEnd = max(camera.renderSettings.x, 16.0);
         fog = smoothstep(fogEnd * 0.75, fogEnd, fragmentCameraDistance);
-        fogColor = camera.horizonFog.rgb;
+        fogColor = weatherFogColor(camera.horizonFog.rgb);
     }
     outColor = vec4(mix(litColor, fogColor, clamp(fog, 0.0, 1.0)), outputAlpha);
 }

@@ -9,12 +9,13 @@
 namespace mc::gameplay::entities {
 namespace {
 
-// CowAi inherits the animal grazing cadence from AnimalAi (WanderAroundFarGoal);
-// nothing species-specific to add yet — 1.16.1's EscapeDangerGoal (flee on
-// damage), AnimalMateGoal and TemptGoal land here when breeding/fleeing ship.
-// The single shared instance carries no state; everything mutable lives on the
-// SimpleEntity it steers.
+// CowAi installs AnimalAi's per-entity Swim/EscapeDanger/Wander/Look goals with
+// the vanilla 2.0 escape multiplier. AnimalMateGoal and TemptGoal remain future
+// additions. The shared profile carries no mutable runtime state.
 class CowAi final : public AnimalAi {
+  public:
+    // CowEntity uses priorities 5/6/7 for wander/look/look-around in 1.16.1.
+    CowAi() : AnimalAi(2.0F, 1.0F, 0) {}
 };
 
 const CowAi kCowAi;
@@ -46,6 +47,20 @@ constexpr EntityRenderDescriptor kCowRender{
     /*scale=*/1.0F,
 };
 
+// CowEntity's sound hooks (1.16.1): ambient mob/cow/say1-4, hurt mob/cow/hurt1-3,
+// and — because the sounds.json maps entity.cow.death to the same three hurt
+// clips — death reuses the hurt base. Steps are mob/cow/step1-4. CowEntity
+// overrides getSoundVolume to 0.4, so every clip plays at that level.
+constexpr audio::MobSoundProfile kCowSounds{
+    /*root=*/"mob/cow",
+    /*ambientBase=*/"say", /*ambientVariations=*/4,
+    /*hurtBase=*/"hurt",   /*hurtVariations=*/3,
+    /*deathBase=*/"hurt",  /*deathVariations=*/3,
+    /*stepBase=*/"step",   /*stepVariations=*/4,
+    /*volume=*/0.4F,
+    /*stepVolume=*/0.15F,
+};
+
 } // namespace
 
 const EntityType& CowEntity::type() {
@@ -60,6 +75,7 @@ const EntityType& CowEntity::type() {
                                  .spawnEgg(0xF3C9A3U, 0xFFFFFFU)
                                  .loot(&rollCowLoot)
                                  .renderer(kCowRender)
+                                 .sounds(kCowSounds)
                                  .vanillaName("cow")
                                  .build("cow");
     // File it in the registry exactly once, passing the static's stable address.

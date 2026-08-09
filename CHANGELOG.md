@@ -7,6 +7,11 @@ simple versioned history while it is in beta.
 
 ### Added
 
+- Rain and thunderstorms now overcast the live skybox like 1.16.1: the sky and
+  horizon darken, celestial sprites fade behind the clouds, and the rendered
+  sky-light contribution falls smoothly with the weather gradient. Logical
+  sky/block light levels stay unchanged, so gameplay checks and torch light are
+  unaffected.
 - The weather system works the way 1.16.1's does: `/weather clear` and
   `/weather rain` (each with an optional `[<duration>]` in seconds, defaulting
   to a 6000-tick spell) install a clear or rain spell that the doWeatherCycle
@@ -56,6 +61,100 @@ simple versioned history while it is in beta.
   `experimental.sunShadows` option (off by default). The map is infrastructure
   for a future shadow pass and is currently visible only through a debug
   overlay (`MC_REBEDROCK_SHADOW_DEBUG=1`).
+- Each creature plays the 1.16.1 sound set its species declares, the way the
+  Java entity classes override getAmbientSound / getHurtSound / getDeathSound /
+  playStepSound: pigs grunt on their `mob/pig/say` clips and die with a single
+  `death`, cows moo at 0.4 volume and reuse their hurt clips for death, and
+  zombies groan, grunt and step through their `mob/zombie` set. Idle sounds
+  fire on the vanilla baseTick scheduler (roughly every four seconds, reset by
+  a landed hit), footsteps once per block walked, and every clip carries the
+  species' volume with the ±0.2 randomised pitch.
+- Rain has a voice: while the rain gradient is above zero the client fires a
+  short `weather/rain` clip at the surface the drops are hitting, on the
+  per-frame cadence of WorldRenderer#tickRainSplashing. The volume follows the
+  smoothed rain gradient (a drizzle is faint, a full storm loud) and the
+  thunder gradient boosts it so 雷雨天 rains harder than plain rain, and when
+  the drops land on a roof over the player the muffled `rain-above` clip plays
+  instead — vanilla's quiet indoor rain.
+- The 实验性内容 page gains a 粒子效果 (particle-effect) level selector:
+  低 / 中 / 高 / 疯狂 at 0.5x / 1x / 2x / 3x of the current density, cycling
+  like the other options and persisted as `experimental.particleLevel`. The
+  level scales the rain-drop budget and the particle system's live cap and
+  per-event spawn counts (block dust, splashes). Plain rain and thundering rain
+  are both raised to 1.5x their pre-bump baseline, and the per-frame particle
+  storage buffer grows to 3 MiB so the 疯狂 level's 36,000-drop thunderstorm
+  renders in a single instanced draw without clamping.
+- `MC_REBEDROCK_PARTICLE_LEVEL=0..3` overrides the level headlessly, the same
+  way the rain env vars override the menu.
+- The rain field is wider and taller and its collision is cached instead of
+  per-drop-per-frame: the box reaches ±24 blocks (was ±16) and drops spawn up
+  to ~32 blocks above the camera, so tall roofs stop the rain and splashes
+  appear out where the field used to be empty. The first drop to enter a column
+  probes that column's topmost surface once and caches it; every drop after
+  just falls to the cached surface and splashes there. A drop that wind drifts
+  sideways into a wall splashes on the wall's side: the first drop to cross a
+  wall face caches the face's outward direction, and every later drop reaching
+  the same face bounces its droplets back off the wall in that fixed fan.
+  Spawn heights are randomised across the window, so the field reads as a
+  continuous fall instead of a synchronized sheet, and the splash droplets are
+  bigger and live longer so they read at a distance. The wind heading now holds
+  for 10-20 seconds and then eases to a new direction, instead of rotating
+  constantly and spinning the whole field. A 45,000-drop crazy thunderstorm
+  drops from 45,000 world lookups a frame to a handful of probes plus cheap
+  cache reads, and a unit test pins the behaviour (nothing falls through a roof
+  slab, splashes only on real surfaces, wall splashes appear under wind and
+  spray back off the wall). The 实验性内容 page gains a 雨碰撞缓存 toggle
+  (persisted as `experimental.rainCollisionCache`, overridable with
+  `MC_REBEDROCK_RAIN_COLLISION_CACHE=0`): on by default, it uses the cached
+  collision; turning it off reverts to the direct per-drop world probe for
+  machines with headroom.
+
+- Creatures carry a stable identity that survives the vector compactions a tick
+  can cause: raycasts, hurt/kill and commands address a creature by its
+  `uint64` id instead of a vector index that went stale the next tick, `byId`
+  resolves in O(1), and the id space resets when a world reloads. Nearby
+  queries are sped up by a chunk-section spatial hash over the herd: pushing
+  tests only the sections a creature and its neighbours occupy, a raycast walks
+  the sections it passes through, and the item magnet looks up the player's
+  surrounding buckets — the O(n²) herd sweep and the O(n) scans become
+  O(neighbours).
+- Simulation distance (1.16.1's tick-distance gate): creatures farther than the
+  configured radius from the player are frozen each tick — no AI, movement,
+  gravity or timers — while staying rendered and targetable, and
+  distant-despawning categories (MONSTER/AMBIENT/WATER_CREATURE) past the
+  128-block despawn range are silently removed after forty ticks the way
+  MobEntity#checkDespawn does; animals persist.
+- A Simulation Distance slider on the Video Settings page, on the same row as
+  Render Distance, counting in chunks (2–12) and persisted as
+  `render.simulationDistance` — it sizes the frozen-entity radius independently
+  of the render distance.
+- Natural spawning (1.16.1's NaturalSpawner): every second the spawner probes
+  positions inside the simulation radius, checks the ground and the light rule,
+  samples the biome's spawn table by weight and spawns a group — respecting
+  each category's spawn cap scaled to the simulated area, never inside the
+  24-block ring around the player, and counting only the nearby population so a
+  new area repopulates as you walk on. The day/night sky brightness decides the
+  category: open ground is creature territory by day and goes dark at night, so
+  MONSTERs spawn on the surface at night as well as in caves. Peaceful worlds
+  never host natural hostiles.
+- Creatures persist with the save (world.dat format 12): the live herd is
+  serialised into a self-describing `ENTITY` block — a species palette plus each
+  creature's position, yaw, velocity, health, anger/age timers and wander rng —
+  and restored by species on load, so a world reopens with its animals where
+  you left them. The forced four-creature debug herd at spawn is gone, replaced
+  by natural spawning.
+- Land mobs navigate (1.16.1): a per-creature brain plans a path around
+  obstacles to its target, an escape goal flees a recent attacker (for the
+  reachable distance, falling back to a shorter route on a plateau), and a swim
+  goal keeps water creatures afloat; a stable actor reference lets goals keep
+  following the same attacker across the tick boundary.
+- Hostile creatures attack the player: AI emits melee-attack events each tick,
+  and the session applies them to the player scaled by difficulty through the
+  shared hurt pipeline, so a zombie that reaches you lands damage instead of
+  milling around.
+- Mobs' pending sound events carry their event type (hurt / death / ambient /
+  step) so the host plays each species' own clip, and the base tick schedules
+  the idle sound on the vanilla ambient counter and footsteps per block walked.
 
 ### Changed
 
@@ -66,14 +165,37 @@ simple versioned history while it is in beta.
 - The sun-shadow pre-pass is off by default and caps its caster list at the
   nearest 512: it re-renders every opaque section each frame, and during
   chunk-streaming bursts that was the heaviest new GPU load.
+- The sun-space shadow depth map is now applied to the terrain: the
+  `grass_block.frag` and `block_cutout.frag` surface shaders sample the pre-pass
+  depth (descriptor binding 8) through `lightViewProj` carried in the camera
+  uniform, so opaque terrain casts a sun shadow on itself while the
+  `experimental.sunShadows` option is on — the pre-pass is no longer visible
+  only through the debug overlay.
 
 ### Fixed
 
+- Switching a running world to Peaceful now updates the session difficulty as
+  well as player vitals, so existing zombies disappear on the next game tick
+  and the natural spawner stops creating new monsters.
 - Opening "实验性内容" in the options menu no longer falls through to the
   terrain-loading screen — the page was missing from the menu draw dispatch, so
   it rendered the loading backdrop instead of its three option buttons.
+- Rain splash droplets landing on a water surface rest on it like any solid
+  block: the particle collision now treats a fluid cell as a landing surface, so
+  the droplets stop at the water's top face instead of sinking below it under
+  gravity.
+- A falling drop whose respawn found every nearby column under a tall roof no
+  longer spawns at the camera point: the fallback still randomises the position
+  in the field, so a fully-covered player no longer sees a solid water column
+  of fallback drops pouring down in one spot.
 - The new render pipelines destroy their shader modules after creation, closing
   an eight-object device leak the validation layers reported at shutdown.
+- The whole vanilla sound tree is staged into the build instead of a
+  five-group subset (block families plus pig only): every mob species' clips,
+  weather/rain and the ambient/entity/record/UI assets now ship, so the
+  "Missing sound asset" spam from the newly wired cow/zombie and rain sounds
+  is gone. The 155 MB music catalogue trims to the two classic C418 tracks
+  (Sweden and the main-menu theme).
 
 - Eating now plays the chewing loop through the meal: the `generic.eat` sound
   fires every fourth tick once the eat is past its first seven ticks, with the
@@ -179,6 +301,11 @@ simple versioned history while it is in beta.
   their fixed 1.16.1 tones. The lookup textures regenerate when a world loads
   (per seed); grass tops and oak-family leaves now use the untinted base
   textures and take their colour from the fragment lookup.
+- A torch rendered as a mostly transparent, cracked texture: the mesher
+  hardcoded the torch's atlas layer (a stale fixed-section index) instead of
+  the layer the name-driven atlas assigned to the "torch" sprite, so the quad
+  sampled an unrelated transparent tile. The torch and its four wall variants
+  now read their resolved texture layer like every other block.
 
 ## ReBedrock beta3
 

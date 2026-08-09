@@ -30,6 +30,8 @@ layout(binding = 0) uniform CameraUniform {
     vec4 pointLights[8];
     vec4 lightColors[8];
     vec4 lightingSettings;
+    vec4 celestialLayers;
+    vec4 weatherSettings;
 } camera;
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
@@ -41,6 +43,12 @@ layout(binding = 4) uniform sampler2DArray entityTextures;
 float lightBrightness(float normalizedLevel) {
     float darkness = 1.0 - clamp(normalizedLevel, 0.0, 1.0);
     return normalizedLevel / (darkness * 3.0 + 1.0);
+}
+
+vec3 weatherFogColor(vec3 color) {
+    color.rg *= 1.0 - camera.weatherSettings.x * 0.50;
+    color.b *= 1.0 - camera.weatherSettings.x * 0.40;
+    return color * (1.0 - camera.weatherSettings.y * 0.50);
 }
 
 void main() {
@@ -79,7 +87,8 @@ void main() {
         // terrain shader so a creature or held block reads as part of the scene.
         vec3 skyTint = mix(vec3(0.50, 0.62, 0.95), vec3(1.0, 0.97, 0.90),
                            camera.sunDirection.w);
-        float skyBrightness = lightBrightness(fragmentSceneLight.x) * camera.sunDirection.w;
+        float skyBrightness = lightBrightness(fragmentSceneLight.x) * camera.sunDirection.w *
+            camera.weatherSettings.z;
         float blockBrightness = lightBrightness(fragmentSceneLight.y);
         vec3 illumination = max(skyTint * vec3(skyBrightness),
                                 vec3(1.0, 0.72, 0.38) * blockBrightness * 0.92);
@@ -114,7 +123,8 @@ void main() {
         // the chunks around it do instead of standing out as a hard silhouette.
         float fogEnd = max(camera.renderSettings.x, 16.0);
         float fog = smoothstep(fogEnd * 0.75, fogEnd, fragmentCameraDistance);
-        texel.rgb = mix(texel.rgb, camera.horizonFog.rgb, clamp(fog, 0.0, 1.0));
+        texel.rgb = mix(texel.rgb, weatherFogColor(camera.horizonFog.rgb),
+                        clamp(fog, 0.0, 1.0));
     }
     outColor = texel;
 }

@@ -13,6 +13,10 @@ struct GameOptions final {
     int windowHeight = 720;
     int guiScale = 0;
     int viewDistance = 4;
+    // Simulation distance in chunks: creatures farther than this from the player
+    // are frozen each tick but stay rendered. Kept as its own setting (vanilla's
+    // Simulation Distance), independent of the render distance.
+    int simulationDistance = 4;
     int frameRateLimit = 120;
     int anisotropy = 8;
     float masterVolume = 0.8F;
@@ -47,6 +51,15 @@ struct GameOptions final {
     // (the roadmap's P2), and re-rendering every opaque section each frame is
     // wasted GPU load that can push heavy frames toward a device lost.
     bool sunShadows = false;
+    // Particle-effect density (粒子效果): 0 = 低 (Low, 0.5x), 1 = 中 (Medium,
+    // 1.0x, the default), 2 = 高 (High, 2x), 3 = 疯狂 (Crazy, 3x). Scales the
+    // rain-drop budget and the particle system's live cap and spawn counts.
+    int particleLevel = 1;
+    // Rain collision caching (碰撞缓存): on by default — the first drop to enter
+    // a column probes its surface and the rest fall to the cached value, so a
+    // huge storm costs near-zero world lookups. Turning it off reverts to the
+    // direct per-drop-per-frame probe for machines with headroom.
+    bool rainCollisionCache = true;
 
     [[nodiscard]] static GameOptions load(const std::filesystem::path& path);
     void save(const std::filesystem::path& path) const;

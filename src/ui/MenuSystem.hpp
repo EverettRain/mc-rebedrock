@@ -69,6 +69,7 @@ class MenuSystem final {
     std::size_t languageListFirstIndex = 0U;
     bool optionsOpen = false;
     bool viewDistanceSliderDragging = false;
+    bool simulationDistanceSliderDragging = false;
     bool masterVolumeSliderDragging = false;
     int guiScaleSetting = 0;
     std::size_t resolutionIndex = 0;

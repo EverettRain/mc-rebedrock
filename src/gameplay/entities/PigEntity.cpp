@@ -9,11 +9,13 @@
 namespace mc::gameplay::entities {
 namespace {
 
-// PigAi inherits the animal grazing cadence from AnimalAi (WanderAroundFarGoal);
-// nothing species-specific to add yet — breeding and fleeing land here when they
-// ship. The single shared instance carries no state; everything mutable lives on
-// the SimpleEntity it steers.
+// PigAi installs AnimalAi's per-entity Swim/EscapeDanger/Wander/Look goals with
+// the vanilla 1.25 escape multiplier. Breeding, temptation and following parents
+// remain future goals. The shared profile carries no mutable runtime state.
 class PigAi final : public AnimalAi {
+  public:
+    // PigEntity uses priorities 6/7/8 for wander/look/look-around in 1.16.1.
+    PigAi() : AnimalAi(1.25F, 1.0F, 1) {}
 };
 
 const PigAi kPigAi;
@@ -40,6 +42,19 @@ constexpr EntityRenderDescriptor kPigRender{
     /*scale=*/1.0F,
 };
 
+// PigEntity's sound hooks (1.16.1): ambient mob/pig/say1-3, and hurt reuses the
+// same three say clips (PigEntity has no distinct hurt sound), death is the
+// single mob/pig/death.ogg, steps mob/pig/step1-5. Default getSoundVolume 1.0.
+constexpr audio::MobSoundProfile kPigSounds{
+    /*root=*/"mob/pig",
+    /*ambientBase=*/"say",   /*ambientVariations=*/3,
+    /*hurtBase=*/"say",      /*hurtVariations=*/3,
+    /*deathBase=*/"death",   /*deathVariations=*/1,
+    /*stepBase=*/"step",     /*stepVariations=*/5,
+    /*volume=*/1.0F,
+    /*stepVolume=*/0.15F,
+};
+
 } // namespace
 
 const EntityType& PigEntity::type() {
@@ -54,6 +69,7 @@ const EntityType& PigEntity::type() {
                                  .spawnEgg(0xF0A5A5U, 0xDB635EU)
                                  .loot(&rollPigLoot)
                                  .renderer(kPigRender)
+                                 .sounds(kPigSounds)
                                  .vanillaName("pig")
                                  .build("pig");
     // File it in the registry exactly once, passing the static's stable address.

@@ -1,9 +1,12 @@
 #pragma once
 
+#include "gameplay/EntitySection.hpp"
 #include "gameplay/Inventory.hpp"
 
 #include <glm/vec3.hpp>
 
+#include <cstddef>
+#include <unordered_map>
 #include <vector>
 
 namespace mc::world {
@@ -34,6 +37,10 @@ class ItemEntitySystem final {
   private:
     std::vector<ItemEntity> entities_;
     float nextVisualPhase_ = 0.0F;
+    // Chunk-section spatial hash over the drops, rebuilt at the end of each
+    // tick, so the player magnet queries only the sections around the player
+    // instead of sweeping every item. Holds indices into entities_.
+    std::unordered_map<EntitySection, std::vector<std::size_t>, EntitySectionHash> sections_;
 };
 
 } // namespace mc::gameplay

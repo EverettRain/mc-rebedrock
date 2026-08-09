@@ -1,5 +1,6 @@
 #pragma once
 
+#include "audio/MobSoundProfile.hpp"
 #include "core/Identifier.hpp"
 #include "gameplay/Inventory.hpp"
 
@@ -18,6 +19,8 @@ struct SimpleEntity;
 
 namespace mc::gameplay::entities {
 
+class MobBrain;
+
 // SpawnGroup / MobCategory (1.16.1): what a creature counts as for spawn caps,
 // despawn behaviour and which creative tab its egg lands in. Replaces the old
 // implicit "everything is a pig" assumption with an explicit classification.
@@ -33,7 +36,7 @@ enum class MobCategory : std::uint8_t {
 // despawn/peaceful passes read once they exist. Registration picks a category
 // (CREATURE, MONSTER, …) and everything below is derived from it, so a species
 // never restates its own spawn law. Only the peaceful rule is wired up today;
-// the rest are reserved for the spawner (see README "生物注册与刷怪分类").
+// the rest are reserved for the spawner (see AGENT.md "生物注册与刷怪分类").
 struct MobCategoryTraits final {
     // SpawnGroup#getCapacity: the per-player soft cap the natural spawner stops
     // at. Reserved — nothing spawns naturally yet.
@@ -145,14 +148,17 @@ struct EntityDrops final {
     return static_cast<float>(nextRandom(state) >> 8) / static_cast<float>(1U << 24);
 }
 
-// The AI hook, standing in for MobEntity#initGoals and its GoalSelector. A
-// species subclasses this once and the single instance is shared by every
-// creature of that type (goals are stateless; the mutable state lives on the
-// SimpleEntity). This is how behaviour is dispatched — through the type's own
-// object — instead of a switch on a species id.
+// The immutable AI profile for a species. The profile itself is shared, but it
+// configures a distinct MobBrain (and therefore distinct stateful Goal objects)
+// for every spawned creature. This mirrors MobEntity#initGoals without sharing
+// EscapeDangerGoal/MeleeAttackGoal runtime state between mobs.
 class EntityAi {
   public:
     virtual ~EntityAi() = default;
+
+    // MobEntity#initGoals: install this species' prioritized target and action
+    // goals into a newly created per-entity brain.
+    virtual void configureBrain(MobBrain& brain) const = 0;
 
     // Fires once when a creature spawns, the moment MobEntity#initGoals runs.
     virtual void onSpawn(SimpleEntity& self, std::uint32_t& rng) const {
@@ -160,18 +166,12 @@ class EntityAi {
         static_cast<void>(rng);
     }
 
-    // GoalSelector#tick: called every simulation tick, after physics intent is
-    // gathered. Default does nothing; most passive mobs only need the wander
-    // decision below.
+    // A species-level tick hook for behavior outside the Goal selectors. It is
+    // called before the per-entity MobBrain every simulation tick.
     virtual void tick(SimpleEntity& self, std::uint32_t& rng) const {
         static_cast<void>(self);
         static_cast<void>(rng);
     }
-
-    // WanderAroundGoal#canStart / #start: fired when a creature's wander timer
-    // expires so it re-picks a heading, pauses, and schedules the next decision.
-    // Required — a mob with no wander behaviour is a definition error.
-    virtual void chooseWanderIntent(SimpleEntity& self, std::uint32_t& rng) const = 0;
 
     // LivingEntity#damage → Angerable#setTarget: fired when the creature takes a
     // hit, the hook a neutral species overrides to turn on its attacker. Default
@@ -206,6 +206,12 @@ class EntityType final {
     [[nodiscard]] const EntityRenderDescriptor& render() const { return render_; }
     [[nodiscard]] const EntityAi& ai() const { return *ai_; }
 
+    // The species' sound set (1.16.1 MobEntity getAmbientSound/getHurtSound/
+    // getDeathSound/playStepSound). Empty for a species that registered none.
+    [[nodiscard]] const audio::MobSoundProfile& soundProfile() const {
+        return soundProfile_;
+    }
+
     // The runtime index the registry hands out, stable for one run. Stands in
     // for Registry#getRawId, letting the simulation and renderer key per-type
     // caches by a small integer.
@@ -228,6 +234,7 @@ class EntityType final {
     SpawnEggColors spawnEgg_{};
     bool hasSpawnEgg_ = false;
     EntityRenderDescriptor render_{};
+    audio::MobSoundProfile soundProfile_{};
     const EntityAi* ai_ = nullptr;
     LootRoll loot_ = nullptr;
     std::uint16_t networkId_ = 0U;
@@ -257,6 +264,9 @@ class EntityType::Builder final {
     Builder& spawnEgg(std::uint32_t primary, std::uint32_t secondary);
     Builder& loot(LootRoll roll);
     Builder& renderer(const EntityRenderDescriptor& descriptor);
+    // The species' sound set; without it the creature is silent. Each species
+    // states its own clips the way its Java class overrides the sound hooks.
+    Builder& sounds(const audio::MobSoundProfile& profile);
     // The `minecraft:` alias so 1.16.1 assets and translation keys still resolve.
     Builder& vanillaName(std::string_view path);
 

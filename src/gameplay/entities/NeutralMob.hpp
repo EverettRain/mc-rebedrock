@@ -13,10 +13,9 @@ namespace mc::gameplay::entities {
 // still a MONSTER. So it lives on the AI, not the category.
 //
 // This is the framework only — no built-in creature is neutral yet. A concrete
-// neutral species would subclass NeutralAi, keep chooseWanderIntent for its calm
-// roaming, and (once target/attack goals exist) act on the anger timer the base
-// maintains. The anger state itself is the `angerTicks` field on SimpleEntity,
-// which EntitySystem already counts down each tick.
+// neutral species would subclass NeutralAi, configure its calm/hostile goals,
+// and act on the anger timer the base maintains. The anger state itself is the
+// `angerTicks` field on SimpleEntity, which EntitySystem counts down each tick.
 class NeutralAi : public EntityAi {
   public:
     // Angerable#chooseRandomAngerTime: a provoked mob stays angry 20–39 seconds
@@ -28,8 +27,8 @@ class NeutralAi : public EntityAi {
     // SimpleEntity::angry() to switch from wandering to chasing.
     void onAttacked(SimpleEntity& self, std::uint32_t& rng) const override;
 
-    // chooseWanderIntent stays pure virtual: a neutral species still has to say
-    // how it roams while calm, exactly like any other creature.
+    // configureBrain stays pure virtual: a neutral species still has to install
+    // its calm and provoked goals, exactly like any other creature.
 };
 
 } // namespace mc::gameplay::entities

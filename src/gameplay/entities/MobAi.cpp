@@ -1,30 +1,29 @@
 #include "gameplay/entities/MobAi.hpp"
 
-#include "gameplay/EntitySystem.hpp"
+#include "gameplay/entities/MobBrain.hpp"
+
+#include <memory>
 
 namespace mc::gameplay::entities {
 
-void AnimalAi::chooseWanderIntent(SimpleEntity& self, std::uint32_t& rng) const {
-    // Schedule the next decision two to five seconds out, then either graze in
-    // place (one time in four) or amble off on a fresh random heading.
-    self.wanderTimer = 40U + (nextRandom(rng) % 60U);
-    if (randomUnit(rng) < 0.25F) {
-        self.moving = false;
-    } else {
-        self.moving = true;
-        self.yaw = randomUnit(rng) * kTwoPi;
-    }
+void AnimalAi::configureBrain(MobBrain& brain) const {
+    // CowEntity/PigEntity 1.16.1 common land-animal core. Mating, temptation
+    // and following parents can be inserted at priorities 2..4 later without
+    // changing the selector or navigation contract.
+    brain.goals().add(0, std::make_unique<SwimGoal>());
+    brain.goals().add(1, std::make_unique<EscapeDangerGoal>(escapeSpeedMultiplier_));
+    brain.goals().add(5 + passiveGoalPriorityOffset_,
+                      std::make_unique<WanderAroundFarGoal>(wanderSpeedMultiplier_));
+    brain.goals().add(6 + passiveGoalPriorityOffset_, std::make_unique<LookAtPlayerGoal>(6.0F));
+    brain.goals().add(7 + passiveGoalPriorityOffset_, std::make_unique<LookAroundGoal>());
 }
 
-void MonsterAi::chooseWanderIntent(SimpleEntity& self, std::uint32_t& rng) const {
-    // Only a rare pause; a monster keeps drifting toward wherever it faces.
-    self.wanderTimer = 30U + (nextRandom(rng) % 40U);
-    if (randomUnit(rng) < 0.10F) {
-        self.moving = false;
-    } else {
-        self.moving = true;
-        self.yaw = randomUnit(rng) * kTwoPi;
-    }
+void MonsterAi::configureBrain(MobBrain& brain) const {
+    // Shared idle fallback for hostile species. Concrete monsters install their
+    // own target and combat goals above these lower-priority actions.
+    brain.goals().add(7, std::make_unique<WanderAroundFarGoal>(1.0F));
+    brain.goals().add(8, std::make_unique<LookAtPlayerGoal>(8.0F));
+    brain.goals().add(8, std::make_unique<LookAroundGoal>());
 }
 
 } // namespace mc::gameplay::entities

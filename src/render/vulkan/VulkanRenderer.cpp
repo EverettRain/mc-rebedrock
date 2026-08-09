@@ -244,6 +244,7 @@ enum class MenuButton : std::uint8_t {
     Resolution,
     GuiScale,
     ViewDistance,
+    SimulationDistance,
     MasterVolume,
     VideoSettings,
     Controls,
@@ -275,7 +276,9 @@ enum class MenuButton : std::uint8_t {
     Difficulty,
     Experimental,
     RainMode,
+    ParticleLevel,
     SunShadows,
+    RainCollisionCache,
     SaveQuit,
 };
 
@@ -355,6 +358,15 @@ struct CameraUniform final {
     // reads the real layers from the uniform instead of hardcoding stale
     // numbers that drift when the atlas changes.
     alignas(16) glm::vec4 celestialLayers{0.0F};
+    // x/y = frame-interpolated rain/thunder gradients, z = the vanilla visual
+    // sky-light multiplier, w = celestial visibility (1 - rain). These are
+    // presentation-only: the world and mesh light levels remain untouched.
+    alignas(16) glm::vec4 weatherSettings{0.0F};
+    // The sun-space view-projection the shadow pre-pass writes the depth map
+    // with; the terrain shader projects each fragment into it to sample the map.
+    // One frame behind the pre-pass's own matrix, which is the standard shadow
+    // map lag.
+    alignas(16) glm::mat4 lightViewProj{1.0F};
 };
 
 struct HudPush final {
@@ -1219,6 +1231,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                      : glm::vec3{8.0F, 61.0F, 8.0F}),
                  65.0F) {
         viewDistanceChunks = chunkStreamer.loadRadius();
+        simulationDistanceChunks = std::clamp(options.simulationDistance, 2, 12);
+        gameSession.setSimulationRadius(static_cast<float>(simulationDistanceChunks) *
+                                        static_cast<float>(world::kChunkWidth));
         menuSystem.guiScaleSetting = options.guiScale;
         const auto resolution =
             std::ranges::find_if(ui::kDisplayResolutions, [this](const ui::DisplayResolution& candidate) {
@@ -1421,12 +1436,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     return gameplay::CommandResult{true, "Killed the player"};
                 }
                 std::size_t killed = 0U;
-                for (std::size_t index = 0; index < gameSession.worldEntities().entities().size(); ++index) {
-                    const auto& entity = gameSession.worldEntities().entities()[index];
+                for (const auto& entity : gameSession.worldEntities().entities()) {
                     if (entity.type != nullptr &&
                         (entity.type->id().matches(*target) ||
                          entity.type->vanillaId().matches(*target))) {
-                        gameSession.worldEntities().kill(index);
+                        gameSession.worldEntities().kill(entity.id);
                         ++killed;
                     }
                 }
@@ -1505,6 +1519,26 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     ? setRainWeather(static_cast<int>(*seconds * 20))
                     : gameplay::CommandResult{false, "Usage: /weather rain [<duration>]"};
             });
+        // /weather thunder [<duration>] installs a storm (rain + thunder the way
+        // WeatherCommand's thunder branch does): setWeather(0, ticks, true, true)
+        // with the same duration handling as the clear/rain branches. No
+        // lightning or thunder sound yet — that is the next step.
+        const auto setThunderWeather = [this](int ticks) {
+            gameSession.weatherSystem().setWeather(0, ticks, true, true);
+            return gameplay::CommandResult{true, "It started thundering"};
+        };
+        commandDispatcher.literal("weather")
+            .then("thunder")
+            .executes([setThunderWeather](const gameplay::command::CommandContext&) {
+                return setThunderWeather(6000);
+            })
+            .argument("duration", gameplay::command::kWeatherDurationArgument)
+            .executes([setThunderWeather](const gameplay::command::CommandContext& context) {
+                const auto seconds = context.find<std::int64_t>("duration");
+                return seconds.has_value()
+                    ? setThunderWeather(static_cast<int>(*seconds * 20))
+                    : gameplay::CommandResult{false, "Usage: /weather thunder [<duration>]"};
+            });
     }
 
     ~Impl() { shutdown(); }
@@ -1522,8 +1556,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         audioSystem.playPlayerFall(position, damage);
     }
     void playBurp(glm::vec3 position) override { audioSystem.playBurp(position); }
-    void playCreatureHurt(glm::vec3 position) override { audioSystem.playPigHurt(position); }
-    void playCreatureDeath(glm::vec3 position) override { audioSystem.playPigDeath(position); }
+    void playCreatureHurt(const gameplay::entities::EntityType& type, glm::vec3 position) override {
+        audioSystem.playCreatureHurt(type.soundProfile(), position);
+    }
+    void playCreatureDeath(const gameplay::entities::EntityType& type, glm::vec3 position) override {
+        audioSystem.playCreatureDeath(type.soundProfile(), position);
+    }
+    void playCreatureAmbient(const gameplay::entities::EntityType& type, glm::vec3 position) override {
+        audioSystem.playCreatureAmbient(type.soundProfile(), position);
+    }
+    void playCreatureStep(const gameplay::entities::EntityType& type, glm::vec3 position) override {
+        audioSystem.playCreatureStep(type.soundProfile(), position);
+    }
     void playFootstep(world::Block ground, glm::vec3 position, float volume) override {
         audioSystem.playFootstep(ground, position, volume);
     }
@@ -1655,6 +1699,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     renderer->menuSystem.pageStack.pop();
                     renderer->pressedMenuButton = MenuButton::None;
                     renderer->menuSystem.viewDistanceSliderDragging = false;
+                    renderer->menuSystem.simulationDistanceSliderDragging = false;
                 } else if (page == ui::PageId::Experimental) {
                     renderer->menuSystem.pageStack.pop();
                     renderer->pressedMenuButton = MenuButton::None;
@@ -1663,6 +1708,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     renderer->menuSystem.optionsOpen = false;
                     renderer->pressedMenuButton = MenuButton::None;
                     renderer->menuSystem.viewDistanceSliderDragging = false;
+                    renderer->menuSystem.simulationDistanceSliderDragging = false;
                     renderer->menuSystem.masterVolumeSliderDragging = false;
                 } else if (page == ui::PageId::Pause) {
                     renderer->setPaused(false);
@@ -1799,9 +1845,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 return;
             }
             if (renderer->paused &&
-                (renderer->menuSystem.viewDistanceSliderDragging || renderer->menuSystem.masterVolumeSliderDragging)) {
+                (renderer->menuSystem.viewDistanceSliderDragging ||
+                 renderer->menuSystem.simulationDistanceSliderDragging ||
+                 renderer->menuSystem.masterVolumeSliderDragging)) {
                 if (renderer->menuSystem.viewDistanceSliderDragging) {
                     renderer->updateViewDistanceFromCursor();
+                } else if (renderer->menuSystem.simulationDistanceSliderDragging) {
+                    renderer->updateSimulationDistanceFromCursor();
                 } else {
                     renderer->updateMasterVolumeFromCursor();
                 }
@@ -1869,6 +1919,24 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (const char* countValue = std::getenv("MC_REBEDROCK_RAIN_COUNT")) {
             rainCountOverride_ = std::strtoul(countValue, nullptr, 10);
         }
+        // MC_REBEDROCK_PARTICLE_LEVEL=0..3 selects the 粒子效果 level the same
+        // way the rain env vars override the menu; the menu is canonical.
+        if (const char* levelValue = std::getenv("MC_REBEDROCK_PARTICLE_LEVEL")) {
+            options.particleLevel =
+                std::clamp(static_cast<int>(std::strtol(levelValue, nullptr, 10)), 0, 3);
+        }
+        applyParticleLevel();
+        // MC_REBEDROCK_RAIN_COLLISION_CACHE=0 forces the direct per-drop
+        // collision path headlessly; the menu option is the canonical control.
+        rainSystem.setCollisionCache(options.rainCollisionCache);
+        if (const char* cacheValue = std::getenv("MC_REBEDROCK_RAIN_COLLISION_CACHE")) {
+            rainSystem.setCollisionCache(std::strcmp(cacheValue, "0") != 0);
+        }
+        // The smoke test always exercises the sun-shadow path so the pre-pass
+        // and the terrain sampling are validated on every run.
+        if (std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr) {
+            options.sunShadows = true;
+        }
         shadowDisabled = !options.sunShadows || std::getenv("MC_REBEDROCK_SHADOW_DISABLE") != nullptr;
     }
 
@@ -1876,15 +1944,123 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 贴图雨, a few hundred per-particle draws for 粒子雨, and thousands in one
     // instanced draw for 异步粒子雨. MC_REBEDROCK_RAIN_COUNT overrides all.
     [[nodiscard]] std::size_t rainTargetCount() const {
+        // A thunderstorm drenches the world: the rain volume scales with the
+        // thunder gradient up to double the plain-rain count, and the async
+        // path's capacity is what makes thousands of extra drops free to draw.
+        const float thunderBoost = 1.0F + gameSession.weatherSystem().thunderGradient();
+        // The user-facing rain bump (plain and thunder rain both 1.5x of the
+        // pre-bump baseline) rides the 粒子效果 level: 中 (1x) yields the 1.5x
+        // budget, 高 doubles it, 疯狂 triples it, 低 halves it.
+        const float rainScale = 1.5F * particleLevelMultiplier(options.particleLevel);
+        std::size_t base = 0U;
         if (rainCountOverride_ > 0U) {
-            return rainCountOverride_;
+            base = rainCountOverride_;
+        } else {
+            switch (rainMode_) {
+                // The wider rain box (±24 blocks) needs a denser population to
+                // read as rain across the whole field, so the bases rise a
+                // quarter over the old ±16-box values.
+                case RainMode::Texture: base = 30U; break;
+                case RainMode::Particles: base = 1000U; break;
+                case RainMode::Async: base = 5000U; break;
+            }
         }
-        switch (rainMode_) {
-            case RainMode::Texture: return 24U;
-            case RainMode::Particles: return 800U;
-            case RainMode::Async: return 4000U;
+        return static_cast<std::size_t>(static_cast<float>(base) * rainScale * thunderBoost);
+    }
+
+    // The topmost full-collision surface in a column (vanilla's MOTION_BLOCKING
+    // top position), restricted to a y window around the camera so the rain
+    // search and the roof probe never walk the whole 256-block column. Returns
+    // the resting position of a drop on that surface, or nothing when the window
+    // holds no collision. The scan walks top-down and stops at the first hit,
+    // which is the surface the rain drops land on.
+    [[nodiscard]] static std::optional<glm::vec3> weatherSurface(
+        const world::World& world, int blockX, int blockZ, int lowestY, int highestY) {
+        const int top = std::min(highestY, world::kWorldHeight - 1);
+        const int bottom = std::max(lowestY, 0);
+        for (int y = top; y >= bottom; --y) {
+            if (world::hasCollision(world.block(blockX, y, blockZ))) {
+                return glm::vec3{static_cast<float>(blockX) + 0.5F,
+                                 static_cast<float>(y + 1),
+                                 static_cast<float>(blockZ) + 0.5F};
+            }
         }
-        return 0U;
+        return std::nullopt;
+    }
+
+    // WorldRenderer#tickRainSplashing's sound half, ported (1.16.1). While it
+    // rains the client fires a short weather.rain clip every frame or two at
+    // the surface the drops hit, so the storm is audible around the camera.
+    // When that surface is a roof above the camera — the player under cover —
+    // the muffled weather.rain.above clip (0.1 volume, 0.5 pitch) takes over:
+    // vanilla's "indoor" rain. Volume follows the smoothed rain gradient, so a
+    // drizzling sky stays faint and a full storm gets loud, and the thunder
+    // gradient boosts it another half again so 雷雨天 rains harder than plain
+    // rain (1.16.1 leaves the clip at a flat 0.2; the ramp is the adaptation
+    // the gradient-volume ask calls for).
+    void updateWeatherSound(world::World& world) {
+        const float rainGradient = gameSession.weatherSystem().rainGradient();
+        if (rainGradient <= 0.0F) {
+            return;
+        }
+        const glm::ivec3 cameraBlock{
+            static_cast<int>(std::floor(camera.position().x)),
+            static_cast<int>(std::floor(camera.position().y)),
+            static_cast<int>(std::floor(camera.position().z))};
+        // Vanilla samples up to ten random columns in a ±10 radius and keeps the
+        // last surface no more than +10 blocks above the camera — exactly where
+        // a roof-above case lives — so the window hugs the camera the same way.
+        std::optional<glm::vec3> surface;
+        for (int sample = 0; sample < 10; ++sample) {
+            weatherSoundRng_ = weatherSoundRng_ * 1664525U + 1013904223U;
+            const int dx = static_cast<int>(weatherSoundRng_ % 21U) - 10;
+            weatherSoundRng_ = weatherSoundRng_ * 1664525U + 1013904223U;
+            const int dz = static_cast<int>(weatherSoundRng_ % 21U) - 10;
+            const auto candidate = weatherSurface(world, cameraBlock.x + dx, cameraBlock.z + dz,
+                                                  cameraBlock.y - 12, cameraBlock.y + 12);
+            if (candidate.has_value() &&
+                candidate->y <= static_cast<float>(cameraBlock.y + 11)) {
+                surface = candidate;
+            }
+        }
+        if (!surface.has_value()) {
+            return;
+        }
+        // Vanilla gates the clip on random.nextInt(3) < field_20793++: the
+        // counter starts at zero (never fires), then the gate opens 1-in-3,
+        // 2-in-3 and finally every frame until a clip resets it — a clip roughly
+        // every one to two frames.
+        weatherSoundRng_ = weatherSoundRng_ * 1664525U + 1013904223U;
+        if (static_cast<int>(weatherSoundRng_ % 3U) >= weatherSoundCadence_++) {
+            return;
+        }
+        weatherSoundCadence_ = 0;
+        // Under cover: the camera's own column has a collision above it and the
+        // found surface is that roof, so the drops are landing overhead — play
+        // the muffled rain-above clip at the roof.
+        const bool underRoof =
+            weatherSurface(world, cameraBlock.x, cameraBlock.z, cameraBlock.y + 1,
+                           cameraBlock.y + 12)
+                .has_value();
+        const bool rainAbove = surface->y > static_cast<float>(cameraBlock.y + 1);
+        const float volumeScale =
+            rainGradient * (1.0F + 0.5F * gameSession.weatherSystem().thunderGradient());
+        const bool underCover = rainAbove && underRoof;
+        if (underCover) {
+            audioSystem.playWeatherRainAbove(*surface, 0.1F * volumeScale);
+        } else {
+            audioSystem.playWeatherRain(*surface, 0.2F * volumeScale);
+        }
+        // One-time diagnostic: proves the weather-sound loop reaches the audio
+        // system at the gradient-scaled volume, and which clip the roof rule
+        // picked for the first clip of the storm.
+        static bool weatherSoundReported = false;
+        if (!weatherSoundReported) {
+            weatherSoundReported = true;
+            std::cout << "[weather-sound] first rain clip volume="
+                      << (underCover ? 0.1F : 0.2F) * volumeScale
+                      << (underCover ? " (muffled under roof)" : "") << '\n';
+        }
     }
 
     void createRainSheetPipeline() {
@@ -2176,9 +2352,69 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 particleSystem.update(deltaSeconds, interactionWorld);
                 // Rain: CPU-simulated drops driven by the weather system's
                 // smoothed gradient. All three render modes consume the same
-                // drops; only the draw strategy differs.
+                // drops; only the draw strategy differs. The drops collide with
+                // the world (splash on water surfaces and solid ground) and drift
+                // downwind — a per-drop world lookup, pure CPU and identical for
+                // every mode.
+                const float thunderGradient = gameSession.weatherSystem().thunderGradient();
+                // The wind holds a heading for 10-20 s, then veers to a new
+                // one over a couple of seconds — an occasional, slow shift
+                // instead of the old constant rotation that kept the whole rain
+                // field spinning and never let it settle on a slant.
+                constexpr float kTwoPi = 6.28318530718F;
+                if (windShiftTimer_ <= 0.0F) {
+                    weatherSoundRng_ = weatherSoundRng_ * 1664525U + 1013904223U;
+                    windTargetAngle_ =
+                        static_cast<float>(weatherSoundRng_ >> 8) / 16777216.0F * kTwoPi;
+                    weatherSoundRng_ = weatherSoundRng_ * 1664525U + 1013904223U;
+                    windShiftTimer_ = 10.0F +
+                        static_cast<float>(weatherSoundRng_ >> 8) / 16777216.0F * 10.0F;
+                }
+                windShiftTimer_ -= deltaSeconds;
+                const float windTurn = wrapAngle(windTargetAngle_ - rainWindAngle_);
+                rainWindAngle_ += windTurn * std::min(1.0F, deltaSeconds * 0.8F);
+                const float windSpeed = 1.5F + thunderGradient * 4.5F;
+                const glm::vec2 wind{std::cos(rainWindAngle_) * windSpeed,
+                                     std::sin(rainWindAngle_) * windSpeed};
                 rainSystem.update(deltaSeconds, camera.position(),
-                                  gameSession.weatherSystem().rainGradient(), rainTargetCount());
+                                  gameSession.weatherSystem().rainGradient(), rainTargetCount(),
+                                  interactionWorld, wind);
+                for (const auto& splash : rainSystem.splashes()) {
+                    particleSystem.spawnRainSplash(splash.position, splash.direction);
+                }
+                // tickRainSplashing also drives the rain *sound*: a weather.rain
+                // clip at the surface the drops hit, muffled when the player is
+                // under a roof, all scaled by the smoothed rain gradient.
+                updateWeatherSound(interactionWorld);
+                static bool stormReported = false;
+                if (!stormReported && gameSession.weatherSystem().isThundering() &&
+                    rainSystem.drops().size() > 5000U) {
+                    stormReported = true;
+                    std::cout << "[thunder] storm drops=" << rainSystem.drops().size()
+                              << " wind=" << windSpeed << "\n";
+                }
+                static bool splashReported = false;
+                if (!splashReported && rainSystem.splashes().size() >= 20U) {
+                    splashReported = true;
+                    std::cout << "[rain] splash=" << rainSystem.splashes().size()
+                              << " particles=" << particleSystem.particles().size() << "\n";
+                }
+                // One-time diagnostic: the per-frame world-lookup count the
+                // column surface cache reduced collision to (the old code did
+                // one world lookup per drop per frame — 22,500 at the crazy
+                // storm). Sampled once the population is full AND the cache is
+                // warm (a warm frame makes far fewer world lookups than it has
+                // drops), so the number is the steady state, not the first
+                // frames' probe warmup.
+                static bool collisionReported = false;
+                if (!collisionReported &&
+                    rainSystem.drops().size() >= rainTargetCount() * 9U / 10U &&
+                    rainSystem.lastUpdateLookups() < rainSystem.drops().size() / 4U) {
+                    collisionReported = true;
+                    std::cout << "[rain] collision lookups/frame="
+                              << rainSystem.lastUpdateLookups() << " drops="
+                              << rainSystem.drops().size() << "\n";
+                }
                 rainTime_ += deltaSeconds;
                 physicsAccumulator = std::min(physicsAccumulator + deltaSeconds, 0.25F);
                 bool fluidUpdatePhaseConsumed = false;
@@ -2301,10 +2537,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 }
                 menuSystem.pageStack.pop();
                 // The 实验性内容 sub-page must open as a menu page (not fall
-                // through to the terrain-loading screen) with its three options.
+                // through to the terrain-loading screen) with its five options.
                 menuSystem.pageStack.push(ui::PageId::Experimental);
                 if (menuSystem.pageStack.current() != ui::PageId::Experimental ||
-                    menuButtonCount() != 3U) {
+                    menuButtonCount() != 5U) {
                     throw std::runtime_error("Smoke test experimental content page failed");
                 }
                 menuSystem.pageStack.pop();
@@ -2474,6 +2710,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // regardless of frame rate; the three render modes compare
                 // identical drop counts.
                 gameSession.weatherSystem().forceRainGradient(1.0F);
+            } else if (smokeTest && smokeGameplayFrames == 420U) {
+                // Escalate to a full storm so the smoke also exercises the
+                // thunder-boosted rain volume and cross-wind.
+                gameSession.weatherSystem().forceThunderGradient(1.0F);
             } else if (smokeTest && smokeGameplayFrames == 700U) {
                 useButtonHeld = false;
                 if (gameSession.inventory().selectedStack().count >= smokeAppleCount) {
@@ -2745,6 +2985,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     void startWorld(persistence::SaveGame save) {
         clearRenderedWorld();
+        // A new world starts a fresh chat: commands and their results from the
+        // previous session must not leak into the bottom-left of the next map.
+        chatHistory.clear();
         lastSessionPeakPendingSectionCount = 0U;
         currentSave = std::move(save);
         savedEditIndices.reserve(currentSave->edits.size());
@@ -2755,9 +2998,21 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         gameSession.inventory().restore(currentSave->inventory, currentSave->selectedHotbarSlot);
         gameSession.chestSystem().restore(currentSave->chests);
+        // Restore the herd a saved world carried, resolving species by their
+        // registered id so a species this build no longer knows is skipped
+        // instead of failing to open the world.
+        for (const auto& record : currentSave->entities) {
+            const auto* type = gameplay::entities::entityTypeRegistry().byId(record.species);
+            if (type == nullptr) {
+                continue;
+            }
+            gameSession.worldEntities().restore(
+                {record.x, record.y, record.z}, *type, record.yaw,
+                {record.vx, record.vy, record.vz}, record.health, record.angerTicks,
+                record.ageTicks, record.rngState);
+        }
         gameSession.gameMode() = currentSave->gameMode;
         // The world owns its difficulty, the way level.dat does in vanilla.
-        gameSession.vitals().setDifficulty(currentSave->difficulty);
         gameSession.setDifficulty(currentSave->difficulty);
         // Game rules travel with the world too. The copy from the loaded save
         // carries a null change handler, so it is re-attached and the one rule
@@ -2797,6 +3052,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             world::chunkPositionFromWorld(initialFeet.x, initialFeet.z), kSpawnChunkRadius);
         worldEpoch = chunkStreamer.resetWorld(currentSave->summary.seed, currentSave->edits);
         updateBiomeColorTextures(currentSave->summary.seed);
+        // Natural spawning reads the biome map from the same seed that drives
+        // the terrain, so spawns follow the biome being generated.
+        gameSession.setWorldSeed(currentSave->summary.seed);
         gameSession.lootRandomState() = static_cast<std::uint32_t>(currentSave->summary.seed) ^
             static_cast<std::uint32_t>(currentSave->summary.seed >> 32U) ^ 0x9E3779B9U;
         // The weather auto-cycle's RNG is seeded from the world the same way the
@@ -2872,6 +3130,30 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         currentSave->playerSaturation = gameSession.vitals().saturation();
         currentSave->playerAirTicks = gameSession.vitals().airTicks();
         currentSave->chests.assign(gameSession.chestSystem().entities().begin(), gameSession.chestSystem().entities().end());
+        // The live creatures ride along like the chests: a world saved mid-session
+        // reopens with its herd where it was. Species are stored by their
+        // registered id path and resolved through the registry on load.
+        currentSave->entities.clear();
+        currentSave->entities.reserve(gameSession.worldEntities().entities().size());
+        for (const auto& entity : gameSession.worldEntities().entities()) {
+            if (entity.type == nullptr) {
+                continue;
+            }
+            persistence::PersistentEntity record;
+            record.species = std::string{entity.type->id().path};
+            record.x = entity.position.x;
+            record.y = entity.position.y;
+            record.z = entity.position.z;
+            record.yaw = entity.yaw;
+            record.vx = entity.velocity.x;
+            record.vy = entity.velocity.y;
+            record.vz = entity.velocity.z;
+            record.health = entity.damage.health;
+            record.angerTicks = entity.angerTicks;
+            record.ageTicks = entity.ageTicks;
+            record.rngState = entity.rngState;
+            currentSave->entities.push_back(std::move(record));
+        }
         try {
             saveRepository.save(*currentSave);
             menuSystem.saveStatus = "World saved";
@@ -3107,11 +3389,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (withRotation) {
             return gameplay::CommandResult{false, "A rotation can only follow a position"};
         }
-        const auto index = entityIndexById(*entityId);
-        if (!index.has_value()) {
+        const auto foundEntityId = entityIdById(*entityId);
+        if (!foundEntityId.has_value()) {
             return gameplay::CommandResult{false, "No entity found: " + *entityId};
         }
-        teleportPlayerTo(gameSession.worldEntities().entities()[*index].position);
+        const auto* creature = gameSession.worldEntities().byId(*foundEntityId);
+        if (creature == nullptr) {
+            return gameplay::CommandResult{false, "No entity found: " + *entityId};
+        }
+        teleportPlayerTo(creature->position);
         return gameplay::CommandResult{true, "Teleported to the " + *entityId};
     }
 
@@ -3134,15 +3420,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                            static_cast<float>(-rotation.pitch));
     }
 
-    // The first spawned creature whose registered id (either namespace) matches.
-    [[nodiscard]] std::optional<std::size_t> entityIndexById(std::string_view id) const {
-        for (std::size_t index = 0; index < gameSession.worldEntities().entities().size(); ++index) {
-            const auto& entity = gameSession.worldEntities().entities()[index];
+    // The first spawned creature whose registered id (either namespace) matches,
+    // as its stable entity id.
+    [[nodiscard]] std::optional<std::uint64_t> entityIdById(std::string_view id) const {
+        for (const auto& entity : gameSession.worldEntities().entities()) {
             if (entity.type == nullptr) {
                 continue;
             }
             if (entity.type->id().matches(id) || entity.type->vanillaId().matches(id)) {
-                return index;
+                return entity.id;
             }
         }
         return std::nullopt;
@@ -3279,6 +3565,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             menuSystem.pageStack.reset(ui::PageId::Game);
         pressedMenuButton = MenuButton::None;
         menuSystem.viewDistanceSliderDragging = false;
+        menuSystem.simulationDistanceSliderDragging = false;
         menuSystem.masterVolumeSliderDragging = false;
         firstMouseSample = true;
         gameSession.input() = {};
@@ -3352,7 +3639,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             return buttons.at(index);
         }
         case ui::PageId::Experimental: {
-            constexpr std::array buttons{MenuButton::RainMode, MenuButton::SunShadows,
+            constexpr std::array buttons{MenuButton::RainMode, MenuButton::ParticleLevel,
+                                         MenuButton::SunShadows, MenuButton::RainCollisionCache,
                                          MenuButton::Back};
             return buttons.at(index);
         }
@@ -3363,9 +3651,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::VideoSettings: {
             constexpr std::array buttons{
                 MenuButton::Resolution, MenuButton::GuiScale, MenuButton::ViewDistance,
-                MenuButton::FrameRateLimit, MenuButton::AntiAliasing, MenuButton::Anisotropy,
-                MenuButton::SmoothLighting, MenuButton::DynamicLight, MenuButton::Vsync,
-                MenuButton::Done};
+                MenuButton::SimulationDistance, MenuButton::FrameRateLimit,
+                MenuButton::AntiAliasing, MenuButton::Anisotropy, MenuButton::SmoothLighting,
+                MenuButton::DynamicLight, MenuButton::Vsync, MenuButton::Done};
             return buttons.at(index);
         }
         case ui::PageId::Controls: {
@@ -3403,9 +3691,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             // One fewer button without a world open (no Difficulty entry).
             return currentSave.has_value() ? 7U : 6U;
         case ui::PageId::Experimental:
-            return 3U;
+            return 5U;
         case ui::PageId::VideoSettings:
-            return 10U;
+            return 11U;
         case ui::PageId::Controls:
             return 3U;
         case ui::PageId::Language:
@@ -3574,6 +3862,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (pressedMenuButton == MenuButton::ViewDistance) {
             menuSystem.viewDistanceSliderDragging = true;
             updateViewDistanceFromCursor();
+        } else if (pressedMenuButton == MenuButton::SimulationDistance) {
+            menuSystem.simulationDistanceSliderDragging = true;
+            updateSimulationDistanceFromCursor();
         } else if (pressedMenuButton == MenuButton::MasterVolume) {
             menuSystem.masterVolumeSliderDragging = true;
             updateMasterVolumeFromCursor();
@@ -3609,7 +3900,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const auto cursor = currentFramebufferCursor();
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
                                    static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting};
-        const auto slider = frontendButtonRect(layout, menuSystem.pageStack.current(), 2U, 10U);
+        const auto slider = frontendButtonRect(layout, menuSystem.pageStack.current(), 2U,
+                                               menuButtonCount());
         const float inset = 4.0F * layout.scale();
         const float travel = std::max(slider.width - inset * 2.0F, 1.0F);
         const float normalized = std::clamp((cursor.x - slider.x - inset) / travel, 0.0F, 1.0F);
@@ -3620,6 +3912,31 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         viewDistanceChunks = requested;
         chunkStreamer.setRadii(viewDistanceChunks, viewDistanceChunks);
+    }
+
+    // Vanilla's Simulation Distance slider: the frozen-entity radius, in chunks,
+    // applied to the session's tick gate so it stays independent of the render
+    // distance. Range 2..12 chunks, the same units the view-distance slider uses.
+    void updateSimulationDistanceFromCursor() {
+        if (!menuSystem.optionsOpen) {
+            return;
+        }
+        const auto cursor = currentFramebufferCursor();
+        const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
+                                   static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting};
+        const auto slider = frontendButtonRect(layout, menuSystem.pageStack.current(), 3U,
+                                               menuButtonCount());
+        const float inset = 4.0F * layout.scale();
+        const float travel = std::max(slider.width - inset * 2.0F, 1.0F);
+        const float normalized = std::clamp((cursor.x - slider.x - inset) / travel, 0.0F, 1.0F);
+        const int requested =
+            std::clamp(2 + static_cast<int>(std::lround(normalized * 10.0F)), 2, 12);
+        if (requested == simulationDistanceChunks) {
+            return;
+        }
+        simulationDistanceChunks = requested;
+        gameSession.setSimulationRadius(static_cast<float>(simulationDistanceChunks) *
+                                        static_cast<float>(world::kChunkWidth));
     }
 
     void updateMasterVolumeFromCursor() {
@@ -3642,6 +3959,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         options.windowHeight = resolution.height;
         options.guiScale = menuSystem.guiScaleSetting;
         options.viewDistance = std::clamp(viewDistanceChunks, 2, 36);
+        options.simulationDistance = std::clamp(simulationDistanceChunks, 2, 12);
         try {
             options.save(optionsPath);
         } catch (const std::exception& exception) {
@@ -3691,6 +4009,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             releasedButton == pressedMenuButton ? releasedButton : MenuButton::None;
         pressedMenuButton = MenuButton::None;
         menuSystem.viewDistanceSliderDragging = false;
+        menuSystem.simulationDistanceSliderDragging = false;
         menuSystem.masterVolumeSliderDragging = false;
         // A button that actually fired (pressed and released over the same spot)
         // clicks; the two sliders are drags and keep their own feedback.
@@ -3796,7 +4115,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (currentSave.has_value()) {
                 currentSave->difficulty =
                     gameplay::nextDifficulty(currentSave->difficulty);
-                gameSession.vitals().setDifficulty(currentSave->difficulty);
+                gameSession.setDifficulty(currentSave->difficulty);
             }
             break;
         case MenuButton::Experimental:
@@ -3807,9 +4126,19 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             rainMode_ = static_cast<RainMode>(options.rainMode);
             persistOptions();
             break;
+        case MenuButton::ParticleLevel:
+            options.particleLevel = (options.particleLevel + 1) % 4;
+            applyParticleLevel();
+            persistOptions();
+            break;
         case MenuButton::SunShadows:
             options.sunShadows = !options.sunShadows;
             shadowDisabled = !options.sunShadows;
+            persistOptions();
+            break;
+        case MenuButton::RainCollisionCache:
+            options.rainCollisionCache = !options.rainCollisionCache;
+            rainSystem.setCollisionCache(options.rainCollisionCache);
             persistOptions();
             break;
         case MenuButton::Language:
@@ -4079,16 +4408,56 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             now - lastClickTime < 0.25;
         lastClickedSlot = clickedSlot;
         lastClickTime = now;
-        if (gameSession.gameMode() == gameplay::GameMode::Creative ||
-            gameSession.inventory().cursorStack().empty()) {
+        if (gameSession.inventory().cursorStack().empty() ||
+            immediateCreativeControlUnderCursor()) {
             dispatchInventoryClick(button, shiftHeld);
             cancelNextInventoryRelease = true;
             inventoryDragActive = false;
+            inventoryDragSlots.clear();
             return;
         }
         inventoryDragActive = true;
         inventoryDragButton = button;
         inventoryDragSlots.clear();
+    }
+
+    // Creative catalogue cells and controls act on the press itself: a catalogue
+    // click creates/adjusts the cursor stack, tabs switch immediately, the delete
+    // slot clears immediately, and the scrollbar starts its own drag. Real item
+    // slots are deliberately excluded so QUICK_CRAFT and PICKUP_ALL use the same
+    // state machine in both game modes and in creative-opened containers.
+    [[nodiscard]] bool immediateCreativeControlUnderCursor() const {
+        if (gameSession.gameMode() != gameplay::GameMode::Creative ||
+            containerScreen != ContainerScreen::PlayerInventory) {
+            return false;
+        }
+        int framebufferWidth = 0;
+        int framebufferHeight = 0;
+        glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+        if (framebufferWidth <= 0 || framebufferHeight <= 0) {
+            return false;
+        }
+        const ui::HudLayout layout{static_cast<float>(framebufferWidth),
+                                   static_cast<float>(framebufferHeight),
+                                   menuSystem.guiScaleSetting};
+        const auto cursor = currentFramebufferCursor();
+        for (std::size_t tabIndex = 0; tabIndex < kCreativeTabCount; ++tabIndex) {
+            if (layout.creativeTab(tabIndex).contains(cursor.x, cursor.y)) {
+                return true;
+            }
+        }
+        if (menuSystem.creativeTab == ui::CreativeTab::Inventory) {
+            return layout.creativeDeleteSlot().contains(cursor.x, cursor.y);
+        }
+        if (layout.creativeScrollbarTrack().contains(cursor.x, cursor.y)) {
+            return true;
+        }
+        for (std::size_t index = 0; index < ui::HudLayout::kCreativeVisibleSlots; ++index) {
+            if (layout.creativeSlot(index).contains(cursor.x, cursor.y)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // The exact storage of the slot under the mouse, for double-click tracking.
@@ -4198,15 +4567,24 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 }
             }
         }
-        const bool containerOpen = containerScreen != ContainerScreen::PlayerInventory;
-        if (containerOpen || containerScreen == ContainerScreen::PlayerInventory) {
-            for (std::size_t index = 0; index < gameplay::Inventory::kSlotCount; ++index) {
-                const auto slot = containerScreen == ContainerScreen::Chest
-                                      ? layout.chestInventorySlot(index)
+        const bool creativePlayerScreen =
+            containerScreen == ContainerScreen::PlayerInventory &&
+            gameSession.gameMode() == gameplay::GameMode::Creative;
+        for (std::size_t index = 0; index < gameplay::Inventory::kSlotCount; ++index) {
+            if (creativePlayerScreen &&
+                menuSystem.creativeTab != ui::CreativeTab::Inventory &&
+                index >= gameplay::Inventory::kHotbarSize) {
+                continue;
+            }
+            const auto slot = containerScreen == ContainerScreen::Chest
+                                  ? layout.chestInventorySlot(index)
+                                  : creativePlayerScreen
+                                      ? (menuSystem.creativeTab == ui::CreativeTab::Inventory
+                                             ? layout.creativeInventorySlot(index)
+                                             : layout.creativeHotbarSlot(index))
                                       : layout.inventorySlot(index);
-                if (slot.contains(cursor.x, cursor.y)) {
-                    return &gameSession.inventory().mutableSlot(index);
-                }
+            if (slot.contains(cursor.x, cursor.y)) {
+                return &gameSession.inventory().mutableSlot(index);
             }
         }
         return nullptr;
@@ -4251,10 +4629,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 }
             }
         }
+        const bool creativePlayerScreen =
+            containerScreen == ContainerScreen::PlayerInventory &&
+            gameSession.gameMode() == gameplay::GameMode::Creative;
         for (std::size_t index = 0; index < gameplay::Inventory::kSlotCount; ++index) {
+            if (creativePlayerScreen &&
+                menuSystem.creativeTab != ui::CreativeTab::Inventory &&
+                index >= gameplay::Inventory::kHotbarSize) {
+                continue;
+            }
             const auto rect = containerScreen == ContainerScreen::Chest
                                   ? layout.chestInventorySlot(index)
-                                  : layout.inventorySlot(index);
+                                  : creativePlayerScreen
+                                      ? (menuSystem.creativeTab == ui::CreativeTab::Inventory
+                                             ? layout.creativeInventorySlot(index)
+                                             : layout.creativeHotbarSlot(index))
+                                      : layout.inventorySlot(index);
             if (&gameSession.inventory().slot(index) == slot) {
                 return rect;
             }
@@ -5191,7 +5581,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             gameplay::toolAttributes(gameplay::toolType(weapon), gameplay::toolTier(weapon));
         const float damage =
             gameplay::toolType(weapon) == gameplay::ToolType::None ? 1.0F : attributes.attackDamage;
-        if (gameSession.worldEntities().hurt(hit->index, damage, camera.position())) {
+        if (gameSession.worldEntities().hurt(hit->entityId, damage, camera.position())) {
             if (gameSession.gameMode() == gameplay::GameMode::Survival) {
                 // Player#attack adds a flat 0.1 exhaustion per landed hit.
                 gameSession.vitals().addExhaustion(0.1F);
@@ -6577,10 +6967,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         biomeGrassSamplerBinding.binding = 6;
         VkDescriptorSetLayoutBinding biomeFoliageSamplerBinding = samplerBinding;
         biomeFoliageSamplerBinding.binding = 7;
+        // The sun shadow depth map, sampled by the terrain fragment shader. A
+        // separate binding so only grass_block.frag (and future lit passes) see
+        // it; the other pipelines just leave it unwritten-safe.
+        VkDescriptorSetLayoutBinding shadowSamplerBinding{};
+        shadowSamplerBinding.binding = 8;
+        shadowSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        shadowSamplerBinding.descriptorCount = 1;
+        shadowSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         const std::array bindings{uniformBinding, samplerBinding, fontSamplerBinding,
                                   guiSamplerBinding, entitySamplerBinding,
                                   panoramaSamplerBinding, biomeGrassSamplerBinding,
-                                  biomeFoliageSamplerBinding};
+                                  biomeFoliageSamplerBinding, shadowSamplerBinding};
         auto info = vkStructure<VkDescriptorSetLayoutCreateInfo>(
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
         info.bindingCount = static_cast<std::uint32_t>(bindings.size());
@@ -6600,7 +6998,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const std::array<VkDescriptorPoolSize, 2> poolSizes{{
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, static_cast<std::uint32_t>(kFramesInFlight)},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-             static_cast<std::uint32_t>(kFramesInFlight * 7U)},
+             static_cast<std::uint32_t>(kFramesInFlight * 8U)},
         }};
         auto poolInfo =
             vkStructure<VkDescriptorPoolCreateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
@@ -6713,7 +7111,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // than one set, and the storage-buffer stage flags can grow to COMPUTE later
     // without disturbing them.
     void createSceneDescriptorResources() {
-        constexpr std::size_t kSceneBufferBytes = 256U * 1024U;  // ~5,461 ParticleRecords
+        // 3 MiB holds ~65,536 ParticleRecords: the 疯狂 particle level's
+        // thundering rain (4000 x1.5 x3 x2 = 36,000 drops) plus the 9,000-particle
+        // block-dust/splash budget all fit in one per-frame buffer.
+        constexpr std::size_t kSceneBufferBytes = 3U * 1024U * 1024U;
         gpuSceneBuffer.init({&resources_, kFramesInFlight, kSceneBufferBytes});
 
         VkDescriptorSetLayoutBinding binding{};
@@ -6955,6 +7356,24 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         vkDestroyShaderModule(device, fragmentModule, nullptr);
 
         createShadowDebugResources();
+
+        // Point every frame's set 0 at the shadow depth map (binding 8) so the
+        // terrain shader can sample it. The image view and sampler exist now;
+        // the map's contents are rewritten by the pre-pass each frame, which the
+        // descriptor's SHADER_READ_ONLY layout already matches.
+        for (std::size_t index = 0; index < kFramesInFlight; ++index) {
+            VkDescriptorImageInfo shadowImageInfo{};
+            shadowImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            shadowImageInfo.imageView = shadowTarget.view();
+            shadowImageInfo.sampler = shadowDebugSampler;
+            auto write = vkStructure<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
+            write.dstSet = frames[index].descriptorSet;
+            write.dstBinding = 8;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &shadowImageInfo;
+            vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        }
     }
 
     // The shadow-map debug overlay samples the offscreen depth texture in a
@@ -7104,7 +7523,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // the loaded sections against the light frustum, draw each caster's opaque
     // layer with the shadow pipeline, then transition the depth image to
     // shader-readable for the main pass (and the debug overlay) to sample.
-    void recordShadowPass(FrameContext& frame) {
+    // Recomputes the sun-space view-projection the shadow pre-pass writes and
+    // the terrain shader samples with. Called once per frame BEFORE updateUniform
+    // (which copies it into the UBO), so the matrix the shader projects with and
+    // the matrix the pre-pass renders the depth map with are the same frame's —
+    // no camera-movement lag between the two.
+    void updateShadowMatrix() {
         if (shadowDisabled) {
             return;
         }
@@ -7115,6 +7539,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                 glm::vec3{0.0F, 1.0F, 0.0F});
         const glm::mat4 lightProj = glm::ortho(-64.0F, 64.0F, -64.0F, 64.0F, 0.1F, 320.0F);
         shadowLightViewProj = lightProj * lightView;
+    }
+
+    void recordShadowPass(FrameContext& frame) {
+        if (shadowDisabled) {
+            return;
+        }
+        const glm::vec3 eye = camera.position();
         const Frustum lightFrustum(shadowLightViewProj);
         std::vector<const GpuMesh*> casters;
         casters.reserve(gpuMeshes.size());
@@ -8230,6 +8661,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // than hardcoded numbers so an atlas change cannot silently re-point
         // them at a block texture.
         uniform.celestialLayers = glm::vec4{kSunLayer, kMoonPhaseFirstLayer, 0.0F, 0.0F};
+        const auto& weather = gameSession.weatherSystem();
+        const float rainGradient = weather.rainGradientAt(renderInterpolationAlpha);
+        const float thunderGradient = weather.thunderGradientAt(renderInterpolationAlpha);
+        uniform.weatherSettings = glm::vec4{
+            rainGradient,
+            thunderGradient,
+            weather.visualSkyLightFactorAt(renderInterpolationAlpha),
+            1.0F - rainGradient,
+        };
         std::size_t lightCount = 0U;
         const auto& heldStack = activeInventory().selectedStack();
         const bool holdingTorch = gameplay::emitsHeldLight(heldStack);
@@ -8244,6 +8684,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         uniform.lightingSettings.z = currentMeshQuality == world::SmoothLightingQuality::High
             ? 1.0F
             : 0.0F;
+        // lightingSettings.w is the sun-shadow switch: 1.0 when the pre-pass ran
+        // this frame, so the terrain shader only samples the map when it is live.
+        uniform.lightingSettings.w = shadowDisabled ? 0.0F : 1.0F;
+        uniform.lightViewProj = shadowLightViewProj;
         std::memcpy(frame.uniformBuffer.mapped, &uniform, sizeof(uniform));
         checkVk(vmaFlushAllocation(allocator, frame.uniformBuffer.allocation, 0, sizeof(uniform)),
                 "vmaFlushAllocation(camera uniform)");
@@ -8666,6 +9110,32 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
+    // The particle-level multiplier (粒子效果): 低 0.5x / 中 1.0x (the default) /
+    // 高 2x / 疯狂 3x. Scales the rain-drop budget and the particle system.
+    [[nodiscard]] static float particleLevelMultiplier(int level) {
+        switch (level) {
+            case 0: return 0.5F;
+            case 2: return 2.0F;
+            case 3: return 3.0F;
+            default: return 1.0F;
+        }
+    }
+
+    [[nodiscard]] std::string particleLevelLabel(int level) const {
+        switch (level) {
+            case 0: return translated("options.particleLevel.low", "低") + " (0.5x)";
+            case 2: return translated("options.particleLevel.high", "高") + " (2x)";
+            case 3: return translated("options.particleLevel.crazy", "疯狂") + " (3x)";
+            default: return translated("options.particleLevel.medium", "中") + " (1x)";
+        }
+    }
+
+    // Applies the option to the live particle system (the spawn-count and
+    // live-cap scaling); the rain budget reads options.particleLevel directly.
+    void applyParticleLevel() {
+        particleSystem.setLevelScale(particleLevelMultiplier(options.particleLevel));
+    }
+
     [[nodiscard]] std::string menuButtonLabel(MenuButton button) const {
         // Every label carries its English text as the fallback, so a language
         // without the vanilla key still reads correctly.
@@ -8703,6 +9173,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             return translated("options.renderDistance", "Render Distance") + ": " +
                    formatTemplate(translated("options.chunks", "%s chunks"),
                                   std::to_string(viewDistanceChunks));
+        case MenuButton::SimulationDistance:
+            return translated("options.simulationDistance", "Simulation Distance") + ": " +
+                   formatTemplate(translated("options.chunks", "%s chunks"),
+                                  std::to_string(simulationDistanceChunks));
         case MenuButton::MasterVolume:
             return translated("soundCategory.master", "Master Volume") + ": " +
                    std::to_string(static_cast<int>(std::lround(options.masterVolume * 100.0F))) +
@@ -8761,8 +9235,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             return translated("menu.experimental", "实验性内容") + "...";
         case MenuButton::RainMode:
             return translated("options.rainMode", "雨模式") + ": " + rainModeLabel(options.rainMode);
+        case MenuButton::ParticleLevel:
+            return translated("options.particleLevel", "粒子效果") + ": " +
+                   particleLevelLabel(options.particleLevel);
         case MenuButton::SunShadows:
             return translated("options.sunShadows", "太阳阴影") + ": " + toggle(options.sunShadows);
+        case MenuButton::RainCollisionCache:
+            return translated("options.rainCollisionCache", "雨碰撞缓存") + ": " +
+                   toggle(options.rainCollisionCache);
         case MenuButton::Language:
             return translated("options.language", "Language") + "...";
         case MenuButton::ForceUnicodeFont:
@@ -9258,12 +9738,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 frontendButtonRect(layout, menuSystem.pageStack.current(), index, buttonCount);
             const auto state = ui::buttonVisualState(rectangle, cursor.x, cursor.y, true,
                                                      pressedMenuButton == button);
-            if (button == MenuButton::ViewDistance || button == MenuButton::MasterVolume) {
+            if (button == MenuButton::ViewDistance || button == MenuButton::SimulationDistance ||
+                button == MenuButton::MasterVolume) {
+                const float value = button == MenuButton::ViewDistance
+                    ? static_cast<float>(viewDistanceChunks - 2) / 34.0F
+                    : (button == MenuButton::SimulationDistance
+                           ? static_cast<float>(simulationDistanceChunks - 2) / 10.0F
+                           : options.masterVolume);
                 drawMinecraftSlider(commandBuffer, rectangle, menuButtonLabel(button), state,
-                                    button == MenuButton::ViewDistance
-                                        ? static_cast<float>(viewDistanceChunks - 2) / 34.0F
-                                        : options.masterVolume,
-                                    scale);
+                                    value, scale);
             } else {
                 drawMinecraftButton(commandBuffer, rectangle, menuButtonLabel(button), state,
                                     scale);
@@ -9568,6 +10051,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                             slot.contains(cursor.x, cursor.y), true);
             }
         }
+
+        // Real creative inventory/hotbar slots share QUICK_CRAFT with survival;
+        // show the same prospective per-slot counts before the button is released.
+        drawDragPreview(commandBuffer, layout);
 
         if (hoveredStack.has_value()) {
             const std::string label = itemDisplayName(*hoveredStack);
@@ -11092,28 +11579,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             // distance fills in progressively during play, the way vanilla
             // streams chunks past its initial entry area.
             chunkStreamer.setRadii(viewDistanceChunks, viewDistanceChunks);
-            // Seed a small herd near spawn to exercise the box-UV entity path.
-            // They drop onto whatever terrain is beneath them on the first ticks.
-            // Two pigs and two cows, so the second CREATURE species' model,
-            // 1.16.1 gait and drops are exercised on load too.
-            if (entityModelReady(&gameplay::entities::PigEntity::type()) &&
-                entityModelReady(&gameplay::entities::CowEntity::type()) &&
-                gameSession.worldEntities().entities().empty()) {
-                const glm::vec3 origin = gameSession.player().position();
-                for (int i = 0; i < 2; ++i) {
-                    const glm::vec3 offset{static_cast<float>(2 + i * 2), 6.0F,
-                                           static_cast<float>(2 - i * 2)};
-                    gameSession.worldEntities().spawn(origin + offset, gameplay::entities::PigEntity::type(),
-                                        0xA53F9021U + static_cast<std::uint32_t>(i));
-                }
-                for (int i = 0; i < 2; ++i) {
-                    const glm::vec3 offset{static_cast<float>(3 + i * 2), 6.0F,
-                                           static_cast<float>(-2 - i * 2)};
-                    gameSession.worldEntities().spawn(origin + offset, gameplay::entities::CowEntity::type(),
-                                        0xC0FFEE11U + static_cast<std::uint32_t>(i));
-                }
-            }
         }
+        updateShadowMatrix();
         updateUniform(frame);
         checkVk(vkResetFences(device, 1, &frame.inFlight), "vkResetFences");
         checkVk(vkResetCommandBuffer(frame.commandBuffer, 0), "vkResetCommandBuffer");
@@ -11286,6 +11753,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     float vignetteDarkness_ = 1.0F;
     unsigned int suppressedOpeningChatCodepoint = 0U;
     int viewDistanceChunks = 4;
+    // Vanilla's Simulation Distance: how many chunks around the player stay
+    // simulated (entities beyond it are frozen but rendered). In chunks, so it
+    // reads like the view-distance slider next to it.
+    int simulationDistanceChunks = 4;
     ContainerScreen containerScreen = ContainerScreen::PlayerInventory;
     MenuButton pressedMenuButton = MenuButton::None;
     std::optional<world::VoxelRaycastHit> targetedBlock;
@@ -11366,6 +11837,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     RainMode rainMode_ = RainMode::Async;
     std::size_t rainCountOverride_ = 0U;
     float rainTime_ = 0.0F;
+    // The wind heading and its occasional shift: `rainWindAngle_` eases toward
+    // `windTargetAngle_`, and `windShiftTimer_` counts down to the next veer.
+    float rainWindAngle_ = 0.0F;
+    float windTargetAngle_ = 0.0F;
+    float windShiftTimer_ = 0.0F;
+    // The weather-sound scheduler, ported from WorldRenderer#tickRainSplashing's
+    // sound half: `weatherSoundCadence_` is vanilla's field_20793, the gate
+    // counter that makes the rain clip fire every frame or two, and the LCG
+    // feeds the column and gate rolls without touching the audio system's own
+    // random state.
+    int weatherSoundCadence_ = 0;
+    std::uint32_t weatherSoundRng_ = 0x5EED11U;
     VkPipeline rainSheetPipeline = VK_NULL_HANDLE;
     VkPipelineLayout rainSheetPipelineLayout = VK_NULL_HANDLE;
     AllocatedImage textureImage;

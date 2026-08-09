@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <limits>
 #include <utility>
 
@@ -16,6 +17,13 @@ namespace {
 
 constexpr float kGravity = 0.04F;      // matches the item-entity fall rate
 constexpr float kGroundOffset = 0.001F;
+// MobEntity#getMinAmbientSoundDelay: the base-class idle-sound interval. None
+// of the built-in species overrides it, so every mob resets its ambient
+// scheduler to -80 after an idle sound and it climbs one per tick from there.
+constexpr int kMinAmbientSoundDelay = 80;
+// The horizontal travel between playStepSound calls, roughly one block per
+// footfall the way Entity#checkBlockCollision triggers steps on block edges.
+constexpr float kMobStepStride = 1.0F;
 constexpr float kTwoPi = 6.28318530718F;
 constexpr float kDespawnBelowY = -64.0F;
 constexpr float kCollisionEpsilon = 0.0001F;
@@ -106,6 +114,70 @@ constexpr float kKnockbackStrength = 0.4F;
     return entry;
 }
 
+// Visits every 16-block section the segment [origin, origin + unit*reach]
+// passes through, in ray order, via a standard 3D DDA grid walk. `visit` runs
+// once per section. Reach is a few blocks here, so the traversal touches only a
+// handful of sections — the linear raycast becomes a per-bucket probe.
+template <typename Visit>
+void walkRaySections(glm::vec3 origin, glm::vec3 unit, float reach, Visit&& visit) {
+    constexpr float kInfinity = std::numeric_limits<float>::max();
+    constexpr float kSize = static_cast<float>(world::kSectionSize);
+    const auto cellOf = [](float value) {
+        return static_cast<int>(std::floor(value / kSize));
+    };
+    int x = cellOf(origin.x);
+    int y = cellOf(origin.y);
+    int z = cellOf(origin.z);
+    visit(EntitySection{x, y, z});
+    if (reach <= 0.0F) {
+        return;
+    }
+    const auto step = [](float dir) { return dir > 0.0F ? 1 : (dir < 0.0F ? -1 : 0); };
+    const int sx = step(unit.x);
+    const int sy = step(unit.y);
+    const int sz = step(unit.z);
+    // t (ray parameter, 0..reach) at which each axis crosses into the next cell.
+    const auto boundaryT = [&](float originValue, float dirValue, int cell, int s) {
+        if (s == 0) {
+            return kInfinity;
+        }
+        const float edge =
+            s > 0 ? static_cast<float>(cell + 1) * kSize : static_cast<float>(cell) * kSize;
+        return (edge - originValue) / dirValue;
+    };
+    const auto cellT = [](float dir) {
+        return std::abs(dir) < 1e-12F ? kInfinity : kSize / std::abs(dir);
+    };
+    float tMaxX = boundaryT(origin.x, unit.x, x, sx);
+    float tMaxY = boundaryT(origin.y, unit.y, y, sy);
+    float tMaxZ = boundaryT(origin.z, unit.z, z, sz);
+    const float tDeltaX = cellT(unit.x);
+    const float tDeltaY = cellT(unit.y);
+    const float tDeltaZ = cellT(unit.z);
+    for (int iteration = 0; iteration < 256; ++iteration) {
+        if (tMaxX < tMaxY && tMaxX < tMaxZ) {
+            if (tMaxX > reach) {
+                break;
+            }
+            x += sx;
+            tMaxX += tDeltaX;
+        } else if (tMaxY < tMaxZ) {
+            if (tMaxY > reach) {
+                break;
+            }
+            y += sy;
+            tMaxY += tDeltaY;
+        } else {
+            if (tMaxZ > reach) {
+                break;
+            }
+            z += sz;
+            tMaxZ += tDeltaZ;
+        }
+        visit(EntitySection{x, y, z});
+    }
+}
+
 } // namespace
 
 bool EntitySystem::boxIntersectsWorld(
@@ -192,13 +264,12 @@ void EntitySystem::moveWithCollisions(
         // the shallow step.
         constexpr float kLiftCandidates[] = {kStepHeight, 1.0F};
         for (const float lift : kLiftCandidates) {
-            SimpleEntity stepped = entity;
-            stepped.position = beforeHorizontal;
-            stepped.position.y += lift;
-            if (collidesAt(stepped.position)) {
+            glm::vec3 steppedPosition = beforeHorizontal;
+            steppedPosition.y += lift;
+            if (collidesAt(steppedPosition)) {
                 continue;
             }
-            glm::vec3 target = stepped.position;
+            glm::vec3 target = steppedPosition;
             target.x += distance.x;
             target.z += distance.z;
             if (collidesAt(target)) {
@@ -219,6 +290,7 @@ void EntitySystem::moveWithCollisions(
 void EntitySystem::spawn(glm::vec3 position, const entities::EntityType& type, std::uint32_t seed) {
     SimpleEntity entity;
     entity.type = &type;
+    entity.id = nextEntityId_++;
     entity.position = position;
     entity.previousPosition = position;
     entity.damage.health = entity.damage.maxHealth = type.attributes().maxHealth;
@@ -226,9 +298,46 @@ void EntitySystem::spawn(glm::vec3 position, const entities::EntityType& type, s
         seed != 0U ? seed : (0x9E3779B9U ^ (static_cast<std::uint32_t>(entities_.size()) + 1U));
     entity.yaw = randomUnit(entity.rngState) * kTwoPi;
     entity.previousYaw = entity.yaw;
+    entity.lookYaw = entity.yaw;
     // MobEntity#initGoals runs once at spawn.
+    type.ai().configureBrain(entity.brain);
     type.ai().onSpawn(entity, entity.rngState);
-    entities_.push_back(entity);
+    entities_.push_back(std::move(entity));
+    // Register the stable id and drop the creature into its section bucket so
+    // between-tick raycasts and the next tick's push see it immediately.
+    const std::size_t index = entities_.size() - 1U;
+    idToIndex_[entities_[index].id] = index;
+    sections_[entitySectionOf(position)].push_back(index);
+}
+
+std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityType& type,
+                                    float yaw, glm::vec3 velocity, float health,
+                                    int angerTicks, unsigned int ageTicks,
+                                    std::uint32_t rngState) {
+    SimpleEntity entity;
+    entity.type = &type;
+    entity.id = nextEntityId_++;
+    entity.position = position;
+    entity.previousPosition = position;
+    entity.velocity = velocity;
+    entity.yaw = yaw;
+    entity.previousYaw = yaw;
+    entity.lookYaw = yaw;
+    entity.ageTicks = ageTicks;
+    entity.angerTicks = angerTicks;
+    entity.rngState = rngState;
+    // The species owns the max; the save's health is the current value, clamped
+    // so a corrupt record cannot restore a creature over its cap.
+    entity.damage.maxHealth = type.attributes().maxHealth;
+    entity.damage.health = std::min(health, entity.damage.maxHealth);
+    // MobEntity#initGoals runs once at spawn, exactly like a fresh spawn.
+    type.ai().configureBrain(entity.brain);
+    type.ai().onSpawn(entity, entity.rngState);
+    entities_.push_back(std::move(entity));
+    const std::size_t index = entities_.size() - 1U;
+    idToIndex_[entities_[index].id] = index;
+    sections_[entitySectionOf(position)].push_back(index);
+    return entities_[index].id;
 }
 
 std::optional<EntityRayHit> EntitySystem::raycast(
@@ -241,39 +350,60 @@ std::optional<EntityRayHit> EntitySystem::raycast(
     }
     const glm::vec3 unit = direction / std::sqrt(lengthSquared);
     std::optional<EntityRayHit> nearest;
-    for (std::size_t index = 0; index < entities_.size(); ++index) {
-        const auto& entity = entities_[index];
-        // Skip only creatures that are no longer in the world (despawned or
-        // finished their death animation). A body mid-death still has its
-        // collision box and keeps blocking the ray, exactly like vanilla's
-        // still-present (but dying) entity stays pickable until removed —
-        // otherwise a one-hit kill in creative would let the dig reach the
-        // block behind the corpse. Whether the creature can take damage is a
-        // separate question, answered by hurt().
-        if (entity.damage.deathTicks >= kDeathTicks || entity.position.y < kDespawnBelowY) {
-            continue;
+    // Walk only the sections the ray passes through and test the creatures
+    // bucketed there, instead of scanning the whole herd.
+    const auto testSection = [&](EntitySection section) {
+        const auto found = sections_.find(section);
+        if (found == sections_.end()) {
+            return;
         }
         // Vanilla inflates the target box slightly (Entity#getTargetingMargin is
         // zero for a pig, but the pick box still grows by 0.3 on each side).
         constexpr float margin = 0.3F;
-        const auto hit = rayBoxDistance(
-            origin, unit, entity.boundingBoxMinimum() - glm::vec3{margin},
-            entity.boundingBoxMaximum() + glm::vec3{margin});
-        if (!hit.has_value() || *hit > reach) {
-            continue;
+        for (const std::size_t index : found->second) {
+            const auto& entity = entities_[index];
+            // Skip only creatures that are no longer in the world (despawned or
+            // finished their death animation). A body mid-death still has its
+            // collision box and keeps blocking the ray, exactly like vanilla's
+            // still-present (but dying) entity stays pickable until removed —
+            // otherwise a one-hit kill in creative would let the dig reach the
+            // block behind the corpse. Whether the creature can take damage is a
+            // separate question, answered by hurt().
+            if (entity.damage.deathTicks >= kDeathTicks || entity.position.y < kDespawnBelowY) {
+                continue;
+            }
+            const auto hit = rayBoxDistance(
+                origin, unit, entity.boundingBoxMinimum() - glm::vec3{margin},
+                entity.boundingBoxMaximum() + glm::vec3{margin});
+            if (!hit.has_value() || *hit > reach) {
+                continue;
+            }
+            if (!nearest.has_value() || *hit < nearest->distance) {
+                nearest = EntityRayHit{entity.id, *hit};
+            }
         }
-        if (!nearest.has_value() || *hit < nearest->distance) {
-            nearest = EntityRayHit{index, *hit};
-        }
-    }
+    };
+    walkRaySections(origin, unit, reach, testSection);
     return nearest;
 }
 
-bool EntitySystem::hurt(std::size_t index, float amount, glm::vec3 knockbackOrigin) {
-    if (index >= entities_.size()) {
+SimpleEntity* EntitySystem::byId(std::uint64_t id) {
+    const auto found = idToIndex_.find(id);
+    return found == idToIndex_.end() ? nullptr : &entities_[found->second];
+}
+
+const SimpleEntity* EntitySystem::byId(std::uint64_t id) const {
+    const auto found = idToIndex_.find(id);
+    return found == idToIndex_.end() ? nullptr : &entities_[found->second];
+}
+
+bool EntitySystem::hurt(std::uint64_t entityId, float amount, glm::vec3 knockbackOrigin,
+                        ActorReference attacker) {
+    const auto found = idToIndex_.find(entityId);
+    if (found == idToIndex_.end()) {
         return false;
     }
-    auto& entity = entities_[index];
+    auto& entity = entities_[found->second];
     // The guards and the invulnerability window live in the shared pipeline, so
     // the player and every mob resolve a hit the same way.
     const DamageOutcome outcome =
@@ -281,6 +411,10 @@ bool EntitySystem::hurt(std::size_t index, float amount, glm::vec3 knockbackOrig
     if (!outcome.landed) {
         return false;
     }
+    entity.lastAttacker = attacker;
+    entity.lastAttackerPosition = knockbackOrigin;
+    entity.recentAttackerTicks = 100;
+    ++entity.lastHurtSequence;
     // Angerable#setTarget: a neutral species turns on its attacker here; passive
     // and hostile mobs override nothing and ignore this.
     entity.kind().ai().onAttacked(entity, entity.rngState);
@@ -296,33 +430,53 @@ bool EntitySystem::hurt(std::size_t index, float amount, glm::vec3 knockbackOrig
     }
     entity.velocity.y = entity.velocity.y * 0.5F + 0.4F;
     entity.velocity.y = std::min(entity.velocity.y, 0.4F);
-    // A hit creature bolts: re-pick a heading away from the attacker.
-    entity.moving = true;
-    entity.yaw = std::atan2(away.x, away.z);
-    entity.wanderTimer = 40U;
-
-    pendingSounds_.emplace_back(entity.position, outcome.died);
+    // playHurtSound's resetSoundDelay: a landed hit pushes the next idle sound
+    // back, so a mob being mauled stops its ambient chatter mid-fight.
+    entity.ambientSoundChance = -kMinAmbientSoundDelay;
+    pendingSounds_.push_back({entity.position,
+                              outcome.died ? MobSoundEvent::Death : MobSoundEvent::Hurt,
+                              entity.type});
     if (outcome.died) {
         die(entity);
     }
     return true;
 }
 
-bool EntitySystem::kill(std::size_t index) {
-    if (index >= entities_.size()) {
+bool EntitySystem::kill(std::uint64_t entityId) {
+    const auto found = idToIndex_.find(entityId);
+    if (found == idToIndex_.end()) {
         return false;
     }
-    auto& entity = entities_[index];
+    auto& entity = entities_[found->second];
     // Entity#kill / LivingEntity#kill: OutOfWorld damage at infinite magnitude,
     // the same path /kill routes a player through.
     const DamageOutcome outcome = mc::gameplay::kill(entity.damage);
     if (outcome.died) {
         // The shared pipeline never plays a sound; raise the death one here,
         // the way a fatal hurt() reports it through pendingSounds_.
-        pendingSounds_.emplace_back(entity.position, true);
+        pendingSounds_.push_back({entity.position, MobSoundEvent::Death, entity.type});
         die(entity);
     }
     return outcome.landed;
+}
+
+void EntitySystem::clear() {
+    entities_.clear();
+    idToIndex_.clear();
+    sections_.clear();
+    nextEntityId_ = 1U;
+    gameTick_ = 0U;
+}
+
+void EntitySystem::rebuildSpatialIndex() {
+    idToIndex_.clear();
+    sections_.clear();
+    idToIndex_.reserve(entities_.size());
+    for (std::size_t index = 0; index < entities_.size(); ++index) {
+        const auto& entity = entities_[index];
+        idToIndex_[entity.id] = index;
+        sections_[entitySectionOf(entity.position)].push_back(index);
+    }
 }
 
 bool EntitySystem::die(SimpleEntity& entity) {
@@ -342,12 +496,45 @@ EntityTickResult EntitySystem::tick(
     glm::vec3 pusher,
     float pusherWidth,
     float pusherHeight,
-    Difficulty difficulty) {
+    Difficulty difficulty,
+    bool playerAlive,
+    bool playerCreative,
+    float simulationRadius) {
     EntityTickResult result;
+    ++gameTick_;
+    const bool playerPresent = pusher.y > -900.0F;
+    // ServerWorld's tick distance: a creature beyond the radius is frozen this
+    // tick (dormant but rendered). No radius means nothing is gated.
+    const float radiusSquared = playerPresent && simulationRadius > 0.0F
+        ? simulationRadius * simulationRadius
+        : std::numeric_limits<float>::max();
+    const auto isFrozen = [&](const SimpleEntity& entity) {
+        if (!playerPresent) {
+            return false;
+        }
+        const float dx = entity.position.x - pusher.x;
+        const float dz = entity.position.z - pusher.z;
+        return dx * dx + dz * dz > radiusSquared;
+    };
+    MobAiContext aiContext{
+        world,
+        std::span<const SimpleEntity>{entities_},
+        PlayerAiView{pusher, playerPresent, playerAlive, playerCreative, pusherWidth, pusherHeight},
+        gameTick_};
     for (auto& entity : entities_) {
         entity.previousPosition = entity.position;
         entity.previousYaw = entity.yaw;
         entity.previousWalkDistance = entity.walkDistance;
+        if (isFrozen(entity)) {
+            // Frozen but mid-death: the corpse still completes its animation so
+            // it is eventually removed; everything else stays dormant.
+            if (entity.damage.dead()) {
+                static_cast<void>(advanceDeath(entity.damage));
+                entity.velocity.x = 0.0F;
+                entity.velocity.z = 0.0F;
+            }
+            continue;
+        }
         ++entity.ageTicks;
         if (entity.damage.invulnerableTicks > 0) {
             --entity.damage.invulnerableTicks;
@@ -359,22 +546,41 @@ EntityTickResult EntitySystem::tick(
         if (entity.angerTicks > 0) {
             --entity.angerTicks;
         }
+        if (entity.recentAttackerTicks > 0) {
+            --entity.recentAttackerTicks;
+        }
+        if (entity.wanderTimer > 0U) {
+            --entity.wanderTimer;
+        }
+        entity.movementSpeedMultiplier = 1.0F;
+
+        // MobEntity#baseTick's ambient scheduler: every tick it rolls
+        // nextInt(1000) against a counter that climbs one per tick and snaps
+        // back to -getMinAmbientSoundDelay() (80) after an idle sound, so a
+        // species barks roughly every four seconds. The roll is strictly less
+        // than the pre-increment counter, so a freshly reset (negative) counter
+        // can never fire — exactly like vanilla's nextInt(1000) < counter++.
+        if (!entity.damage.dead() &&
+            static_cast<int>(nextRandom(entity.rngState) % 1000U) <
+                entity.ambientSoundChance++) {
+            entity.ambientSoundChance = -kMinAmbientSoundDelay;
+            pendingSounds_.push_back({entity.position, MobSoundEvent::Ambient, entity.type});
+        }
 
         if (entity.damage.dead()) {
             // LivingEntity#updatePostDeath: the corpse tips over for twenty
             // ticks and is then removed; its loot already left on the tick
             // health crossed zero (see die()).
             static_cast<void>(advanceDeath(entity.damage));
+            entity.brain.stop(entity, aiContext);
             entity.velocity.x = 0.0F;
             entity.velocity.z = 0.0F;
-        } else if (entity.wanderTimer == 0U) {
-            // Every so often the species' AI re-picks a heading or pauses and
-            // schedules the next decision (WanderAroundGoal). The behaviour is
-            // read from the entity type, not branched on here.
-            entity.kind().ai().chooseWanderIntent(entity, entity.rngState);
-        }
-        if (entity.wanderTimer > 0U) {
-            --entity.wanderTimer;
+        } else {
+            entity.kind().ai().tick(entity, entity.rngState);
+            entity.brain.tick(entity, aiContext);
+            if (const auto attack = entity.brain.takeAttackRequest()) {
+                result.mobAttacks.push_back({entity.id, attack->target, attack->amount});
+            }
         }
 
         // Horizontal intent comes from the wander heading, plus whatever
@@ -383,7 +589,8 @@ EntityTickResult EntitySystem::tick(
         // end-of-tick drag, so a creature that just left the ground still pays
         // the ground value on that tick.
         const bool groundedBeforeMovement = entity.onGround;
-        const float wanderSpeed = entity.kind().attributes().movementSpeed;
+        const float wanderSpeed = entity.kind().attributes().movementSpeed *
+                                  entity.movementSpeedMultiplier;
         if (!entity.dead() && entity.moving && groundedBeforeMovement) {
             const float acceleration = wanderSpeed / kAccelerationToStepRatio;
             entity.velocity.x += std::sin(entity.yaw) * acceleration;
@@ -403,7 +610,21 @@ EntityTickResult EntitySystem::tick(
         // Accumulate horizontal travel so the walk clip advances with real motion.
         const float dx = entity.position.x - entity.previousPosition.x;
         const float dz = entity.position.z - entity.previousPosition.z;
-        entity.walkDistance += std::sqrt(dx * dx + dz * dz);
+        const float stepDelta = std::sqrt(dx * dx + dz * dz);
+        entity.walkDistance += stepDelta;
+
+        // MobEntity#playStepSound: while a creature actually walks it steps once
+        // per block of horizontal travel at its step volume (0.15). Airborne or
+        // dead bodies accumulate nothing, so a knocked-back mob does not scuffle.
+        if (!entity.damage.dead() && entity.onGround && stepDelta > 0.0F) {
+            entity.stepAccumulator += stepDelta;
+            if (entity.stepAccumulator >= kMobStepStride) {
+                entity.stepAccumulator = std::fmod(entity.stepAccumulator, kMobStepStride);
+                pendingSounds_.push_back({entity.position, MobSoundEvent::Step, entity.type});
+            }
+        } else {
+            entity.stepAccumulator = 0.0F;
+        }
 
         // Entity#fall / #checkFallDistance, shared by every creature (the
         // player runs its own in PlayerVitals). The distance falls is
@@ -425,7 +646,11 @@ EntityTickResult EntitySystem::tick(
                 const DamageOutcome outcome =
                     applyDamage(entity.damage, DamageSource::Fall, damage);
                 if (outcome.landed) {
-                    pendingSounds_.emplace_back(entity.position, outcome.died);
+                    entity.ambientSoundChance = -kMinAmbientSoundDelay;
+                    pendingSounds_.push_back(
+                        {entity.position,
+                         outcome.died ? MobSoundEvent::Death : MobSoundEvent::Hurt,
+                         entity.type});
                     if (outcome.died) {
                         die(entity);
                     }
@@ -440,37 +665,85 @@ EntityTickResult EntitySystem::tick(
         }
     }
 
-    // Entity#pushAwayFrom, applied between every pair and against the player.
-    // Both sides take the shove, which is what keeps a herd from stacking into
-    // one column and lets the player nudge a pig out of a doorway.
-    for (std::size_t first = 0; first < entities_.size(); ++first) {
-        if (entities_[first].dead()) {
-            continue;
-        }
-        for (std::size_t second = first + 1; second < entities_.size(); ++second) {
-            if (entities_[second].dead()) {
+    // Every creature has moved; the section buckets now hold stale positions,
+    // so rebuild them before the spatial queries below. Two creatures can only
+    // collide when they share a section or sit in neighbours, so the O(n²) full
+    // pair sweep reduces to a per-neighbourhood probe.
+    rebuildSpatialIndex();
+    std::size_t testedPairs = 0U;
+    for (const auto& [section, indices] : sections_) {
+        for (const std::size_t first : indices) {
+            auto& firstEntity = entities_[first];
+            if (firstEntity.dead() || isFrozen(firstEntity)) {
                 continue;
             }
-            if (!boxesOverlap(entities_[first].boundingBoxMinimum(),
-                              entities_[first].boundingBoxMaximum(),
-                              entities_[second].boundingBoxMinimum(),
-                              entities_[second].boundingBoxMaximum())) {
-                continue;
+            // Every unordered pair is processed once, from the smaller index's
+            // side (the index order is a total order over this tick's buckets),
+            // so the symmetric shove is applied exactly once.
+            for (int dx = -1; dx <= 1; ++dx) {
+                for (int dy = -1; dy <= 1; ++dy) {
+                    for (int dz = -1; dz <= 1; ++dz) {
+                        const auto neighbor = sections_.find(
+                            EntitySection{section.chunkX + dx, section.sectionY + dy,
+                                          section.chunkZ + dz});
+                        if (neighbor == sections_.end()) {
+                            continue;
+                        }
+                        for (const std::size_t second : neighbor->second) {
+                            if (second <= first) {
+                                continue;
+                            }
+                            auto& secondEntity = entities_[second];
+                            if (secondEntity.dead() || isFrozen(secondEntity)) {
+                                continue;
+                            }
+                            ++testedPairs;
+                            if (!boxesOverlap(firstEntity.boundingBoxMinimum(),
+                                              firstEntity.boundingBoxMaximum(),
+                                              secondEntity.boundingBoxMinimum(),
+                                              secondEntity.boundingBoxMaximum())) {
+                                continue;
+                            }
+                            const glm::vec3 push =
+                                pushBetween(firstEntity.position, secondEntity.position);
+                            firstEntity.velocity -= push;
+                            secondEntity.velocity += push;
+                        }
+                    }
+                }
             }
-            const glm::vec3 push =
-                pushBetween(entities_[first].position, entities_[second].position);
-            entities_[first].velocity -= push;
-            entities_[second].velocity += push;
         }
-        const float pusherHalf = pusherWidth * 0.5F;
-        if (boxesOverlap(entities_[first].boundingBoxMinimum(),
-                         entities_[first].boundingBoxMaximum(),
-                         {pusher.x - pusherHalf, pusher.y, pusher.z - pusherHalf},
-                         {pusher.x + pusherHalf, pusher.y + pusherHeight,
-                          pusher.z + pusherHalf})) {
-            const glm::vec3 push = pushBetween(entities_[first].position, pusher);
-            entities_[first].velocity -= push;
-            result.playerPush += push;
+    }
+
+    // The player's share, resolved through the pusher's section neighbourhood
+    // rather than a sweep of every creature.
+    const EntitySection pusherSection = entitySectionOf(pusher);
+    const float pusherHalf = pusherWidth * 0.5F;
+    for (int dx = -1; dx <= 1; ++dx) {
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dz = -1; dz <= 1; ++dz) {
+                const auto neighbor = sections_.find(
+                    EntitySection{pusherSection.chunkX + dx, pusherSection.sectionY + dy,
+                                  pusherSection.chunkZ + dz});
+                if (neighbor == sections_.end()) {
+                    continue;
+                }
+                for (const std::size_t index : neighbor->second) {
+                    auto& entity = entities_[index];
+                    if (entity.dead() || isFrozen(entity)) {
+                        continue;
+                    }
+                    if (boxesOverlap(entity.boundingBoxMinimum(),
+                                     entity.boundingBoxMaximum(),
+                                     {pusher.x - pusherHalf, pusher.y, pusher.z - pusherHalf},
+                                     {pusher.x + pusherHalf, pusher.y + pusherHeight,
+                                      pusher.z + pusherHalf})) {
+                        const glm::vec3 push = pushBetween(entity.position, pusher);
+                        entity.velocity -= push;
+                        result.playerPush += push;
+                    }
+                }
+            }
         }
     }
 
@@ -478,14 +751,50 @@ EntityTickResult EntitySystem::tick(
     // disallowed there (the hostile MONSTER category) the same tick, silently and
     // without loot — the category decides, not a per-species check.
     const bool peaceful = difficulty == Difficulty::Peaceful;
-    std::erase_if(entities_, [peaceful](const SimpleEntity& entity) {
+    // MobEntity#checkDespawn's despawn-range half: a distant-despawning category
+    // (MONSTER/AMBIENT/WATER_CREATURE) that has spent the last 40 ticks past 128
+    // blocks is silently removed; CREATURE (animals) stay forever. The 128-block
+    // range is vanilla's fixed despawn distance, independent of the simulation
+    // radius.
+    constexpr int kDespawnThreshold = 40;
+    for (auto& entity : entities_) {
+        if (!playerPresent ||
+            !entities::mobCategoryTraits(entity.kind().category()).despawnsWhenDistant ||
+            entity.position.y < kDespawnBelowY) {
+            continue;
+        }
+        const float dx = entity.position.x - pusher.x;
+        const float dz = entity.position.z - pusher.z;
+        if (dx * dx + dz * dz > 128.0F * 128.0F) {
+            ++entity.despawnTicks;
+        } else {
+            entity.despawnTicks = 0;
+        }
+    }
+    std::erase_if(entities_, [&, peaceful](const SimpleEntity& entity) {
         if (entity.position.y < kDespawnBelowY || entity.damage.deathTicks >= kDeathTicks) {
             return true;
         }
-        return peaceful &&
-               entities::mobCategoryTraits(entity.kind().category()).disallowedInPeaceful;
+        if (peaceful &&
+            entities::mobCategoryTraits(entity.kind().category()).disallowedInPeaceful) {
+            return true;
+        }
+        return playerPresent && entity.despawnTicks >= kDespawnThreshold;
     });
+    // The compaction shifted indices, so bring both indexes back in line for
+    // the between-tick raycasts, hurts and the next tick.
+    rebuildSpatialIndex();
     result.liveCount = entities_.size();
+
+    // One-time diagnostic: confirms the spatial hash turned the O(n²) push into
+    // O(neighbours). At herd scale candidates stay far below the live² the old
+    // full sweep would have tested; it never fires in normal gameplay.
+    static bool s_pushDiagnosticPrinted = false;
+    if (!s_pushDiagnosticPrinted && result.liveCount >= 64U) {
+        s_pushDiagnosticPrinted = true;
+        std::cerr << "[entity] push candidates=" << testedPairs << " live=" << result.liveCount
+                  << '\n';
+    }
     return result;
 }
 

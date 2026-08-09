@@ -57,6 +57,7 @@ void GameOptions::sanitize() {
     windowHeight = std::clamp(windowHeight, 480, 4320);
     guiScale = std::clamp(guiScale, 0, 12);
     viewDistance = std::clamp(viewDistance, 2, 36);
+    simulationDistance = std::clamp(simulationDistance, 2, 12);
     if (frameRateLimit != 0) frameRateLimit = std::clamp(frameRateLimit, 30, 260);
     if (anisotropy <= 1) anisotropy = 1;
     else if (anisotropy <= 2) anisotropy = 2;
@@ -65,6 +66,7 @@ void GameOptions::sanitize() {
     else anisotropy = 16;
     masterVolume = std::clamp(masterVolume, 0.0F, 1.0F);
     rainMode = std::clamp(rainMode, 0, 2);
+    particleLevel = std::clamp(particleLevel, 0, 3);
     if (language.empty() ||
         language.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos) {
         language = "en_us";
@@ -105,6 +107,8 @@ GameOptions GameOptions::load(const std::filesystem::path& path) {
             static_cast<void>(parseNumber(value, options.guiScale));
         } else if (key == "render.distance") {
             static_cast<void>(parseNumber(value, options.viewDistance));
+        } else if (key == "render.simulationDistance") {
+            static_cast<void>(parseNumber(value, options.simulationDistance));
         } else if (key == "render.fpsLimit") {
             static_cast<void>(parseNumber(value, options.frameRateLimit));
         } else if (key == "render.anisotropy") {
@@ -133,6 +137,10 @@ GameOptions GameOptions::load(const std::filesystem::path& path) {
             static_cast<void>(parseNumber(value, options.rainMode));
         } else if (key == "experimental.sunShadows") {
             options.sunShadows = value == "true" || value == "1" || value == "on";
+        } else if (key == "experimental.particleLevel") {
+            static_cast<void>(parseNumber(value, options.particleLevel));
+        } else if (key == "experimental.rainCollisionCache") {
+            options.rainCollisionCache = value == "true" || value == "1" || value == "on";
         }
     }
     options.sanitize();
@@ -158,6 +166,7 @@ void GameOptions::save(const std::filesystem::path& path) const {
            << "window.height=" << sanitized.windowHeight << '\n'
            << "gui.scale=" << sanitized.guiScale << '\n'
            << "render.distance=" << sanitized.viewDistance << '\n'
+           << "render.simulationDistance=" << sanitized.simulationDistance << '\n'
            << "render.fpsLimit=" << sanitized.frameRateLimit << '\n'
            << "render.anisotropy=" << sanitized.anisotropy << '\n'
            << "render.antiAliasing=" << (sanitized.antiAliasing ? "true" : "false") << '\n'
@@ -170,7 +179,10 @@ void GameOptions::save(const std::filesystem::path& path) const {
            << "text.language=" << sanitized.language << '\n'
            << "text.forceUnicodeFont=" << (sanitized.forceUnicodeFont ? "true" : "false") << '\n'
            << "experimental.rainMode=" << sanitized.rainMode << '\n'
-           << "experimental.sunShadows=" << (sanitized.sunShadows ? "true" : "false") << '\n';
+           << "experimental.sunShadows=" << (sanitized.sunShadows ? "true" : "false") << '\n'
+           << "experimental.particleLevel=" << sanitized.particleLevel << '\n'
+           << "experimental.rainCollisionCache="
+           << (sanitized.rainCollisionCache ? "true" : "false") << '\n';
 }
 
 } // namespace mc::config

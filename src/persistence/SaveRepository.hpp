@@ -23,6 +23,26 @@ struct SaveSummary final {
     std::int64_t lastPlayedUnixSeconds = 0;
 };
 
+// One live creature persisted with the world (format 12's ENTITY block): the
+// species by its registered id path, the pose/physics the renderer interpolates
+// between, and the fields a fresh spawn would not reproduce. Only creatures
+// inside the loaded region are saved; the simulation never touches anything
+// beyond the simulation radius anyway.
+struct PersistentEntity final {
+    std::string species;   // e.g. "pig" — resolved through the entity registry
+    float x = 0.0F;
+    float y = 0.0F;
+    float z = 0.0F;
+    float yaw = 0.0F;
+    float vx = 0.0F;
+    float vy = 0.0F;
+    float vz = 0.0F;
+    float health = 0.0F;
+    std::int32_t angerTicks = 0;
+    std::uint32_t ageTicks = 0U;
+    std::uint32_t rngState = 0U;
+};
+
 struct SaveGame final {
     SaveSummary summary;
     bool hasPlayerPosition = false;
@@ -55,6 +75,9 @@ struct SaveGame final {
     // format 11 serialises them into their own self-describing block. A fresh
     // world defaults to a clear spell.
     gameplay::WeatherState weather;
+    // The live creatures at save time, serialised into their own self-describing
+    // block by format 12 so a world reopens with its herd.
+    std::vector<PersistentEntity> entities;
 };
 
 class SaveRepository final {

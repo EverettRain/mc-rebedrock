@@ -41,6 +41,11 @@ void WeatherSystem::forceRainGradient(float gradient) {
     rainGradient_ = rainGradientPrev_ = std::clamp(gradient, 0.0F, 1.0F);
 }
 
+void WeatherSystem::forceThunderGradient(float gradient) {
+    thundering_ = gradient >= kThunderingThreshold;
+    thunderGradient_ = thunderGradientPrev_ = std::clamp(gradient, 0.0F, 1.0F);
+}
+
 void WeatherSystem::setWeather(int clearDuration, int rainDuration, bool raining,
                                bool thundering) {
     clearWeatherTime_ = clearDuration;
@@ -149,6 +154,16 @@ float WeatherSystem::rainGradientAt(float delta) const {
 
 float WeatherSystem::thunderGradientAt(float delta) const {
     return thunderGradientPrev_ + (thunderGradient_ - thunderGradientPrev_) * delta;
+}
+
+float WeatherSystem::visualSkyLightFactorAt(float delta) const {
+    constexpr float kWeatherSkyReduction = 5.0F / 16.0F;
+    const float interpolation = std::clamp(delta, 0.0F, 1.0F);
+    const float rainFactor =
+        1.0F - std::clamp(rainGradientAt(interpolation), 0.0F, 1.0F) * kWeatherSkyReduction;
+    const float thunderFactor =
+        1.0F - std::clamp(thunderGradientAt(interpolation), 0.0F, 1.0F) * kWeatherSkyReduction;
+    return rainFactor * thunderFactor;
 }
 
 } // namespace mc::gameplay

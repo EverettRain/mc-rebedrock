@@ -10,6 +10,7 @@
 #include "gameplay/Inventory.hpp"
 #include "gameplay/ItemEntitySystem.hpp"
 #include "gameplay/MiningSystem.hpp"
+#include "gameplay/NaturalSpawner.hpp"
 #include "gameplay/PlayerController.hpp"
 #include "gameplay/PlayerVitals.hpp"
 #include "gameplay/WeatherSystem.hpp"
@@ -52,8 +53,12 @@ struct SimulationHost {
     virtual void playPlayerHurt(glm::vec3 position) = 0;
     virtual void playPlayerFall(glm::vec3 position, float damage) = 0;
     virtual void playBurp(glm::vec3 position) = 0;
-    virtual void playCreatureHurt(glm::vec3 position) = 0;
-    virtual void playCreatureDeath(glm::vec3 position) = 0;
+    // A creature sound event. `type` is the species that owns the clip, so the
+    // host plays the right hurt/death/ambient/step sound per species.
+    virtual void playCreatureHurt(const entities::EntityType& type, glm::vec3 position) = 0;
+    virtual void playCreatureDeath(const entities::EntityType& type, glm::vec3 position) = 0;
+    virtual void playCreatureAmbient(const entities::EntityType& type, glm::vec3 position) = 0;
+    virtual void playCreatureStep(const entities::EntityType& type, glm::vec3 position) = 0;
     virtual void playFootstep(world::Block ground, glm::vec3 position, float volume) = 0;
     virtual void playSplash(glm::vec3 position, float volume) = 0;
 
@@ -94,7 +99,20 @@ class GameSession final {
     // ---- Actions (the interactive layer calls these) ----
     void setGameMode(GameMode mode);
     // Per-save difficulty, driven by the level.dat value the renderer loads.
-    void setDifficulty(Difficulty difficulty) { difficulty_ = difficulty; }
+    // PlayerVitals owns hunger/damage scaling while GameSession passes the same
+    // value to mob despawning and natural spawning, so update both together.
+    void setDifficulty(Difficulty difficulty) {
+        difficulty_ = difficulty;
+        vitals_.setDifficulty(difficulty);
+    }
+    // Simulation distance (blocks, horizontal): creatures beyond it are frozen
+    // every tick but stay rendered and targetable. Default 64 (4 chunks) keeps
+    // the simulated herd close to the player; 0 disables the gate.
+    void setSimulationRadius(float blocks) { simulationRadiusBlocks_ = blocks; }
+    [[nodiscard]] float simulationRadius() const { return simulationRadiusBlocks_; }
+    // The world seed drives the spawner's biome map; a new save or /reload
+    // rebuilds it so natural spawns follow the terrain being generated.
+    void setWorldSeed(std::uint64_t seed) { naturalSpawner_.setSeed(seed); }
     // 1.16.1 entity.kill(): OutOfWorld damage at infinite magnitude.
     void killPlayer(SimulationHost& host);
     [[nodiscard]] bool hurtPlayer(DamageSource source, float amount, SimulationHost& host);
@@ -206,10 +224,13 @@ class GameSession final {
     gameplay::CraftingSystem craftingSystem_;
     gameplay::GameMode gameMode_ = gameplay::GameMode::Creative;
     gameplay::Difficulty difficulty_ = gameplay::Difficulty::Normal;
+    // ServerWorld#tickChunks simulation distance, in blocks (horizontal).
+    float simulationRadiusBlocks_ = 64.0F;
     gameplay::WorldSimulation worldSimulation_;
     gameplay::GameRules gameRules_;
     gameplay::ItemEntitySystem itemEntities_;
     gameplay::EntitySystem worldEntities_;
+    gameplay::NaturalSpawner naturalSpawner_{0U};
     gameplay::ChestSystem chestSystem_;
     gameplay::WeatherSystem weatherSystem_;
 

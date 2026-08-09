@@ -1,5 +1,7 @@
 #include "gameplay/GameSession.hpp"
 #include "gameplay/ItemPlacement.hpp"
+#include "gameplay/entities/PigEntity.hpp"
+#include "gameplay/entities/ZombieEntity.hpp"
 
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"
@@ -9,6 +11,8 @@
 #include <cmath>
 #include <iostream>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 // Exercises GameSession as a headless simulation unit: the fixed-tick loop
@@ -17,6 +21,15 @@
 // — this is what the renderer's old inline tick could never be tested as.
 
 namespace {
+
+void require(bool condition, const char* expression, int line) {
+    if (!condition) {
+        throw std::runtime_error{"game_session_test line " + std::to_string(line) +
+                                 " failed: " + expression};
+    }
+}
+
+#define REQUIRE(expression) require(static_cast<bool>(expression), #expression, __LINE__)
 
 struct TestHost final : mc::gameplay::SimulationHost {
     int worldEdits = 0;
@@ -28,6 +41,7 @@ struct TestHost final : mc::gameplay::SimulationHost {
     int eatingStarted = 0;
     int eatingCancelled = 0;
     int eatSounds = 0;
+    int playerHurts = 0;
 
     void submitWorldEdit(int, int, int, mc::world::Block, std::uint8_t,
                          std::optional<mc::world::BlockOrientation>) override {
@@ -37,11 +51,13 @@ struct TestHost final : mc::gameplay::SimulationHost {
     void playBlockBreak(mc::world::Block, glm::vec3) override { ++blockBreaks; }
     void playItemPickup(glm::vec3) override { ++itemPickups; }
     void playEat(glm::vec3) override { ++eatSounds; }
-    void playPlayerHurt(glm::vec3) override {}
+    void playPlayerHurt(glm::vec3) override { ++playerHurts; }
     void playPlayerFall(glm::vec3, float) override {}
     void playBurp(glm::vec3) override {}
-    void playCreatureHurt(glm::vec3) override {}
-    void playCreatureDeath(glm::vec3) override {}
+    void playCreatureHurt(const mc::gameplay::entities::EntityType&, glm::vec3) override {}
+    void playCreatureDeath(const mc::gameplay::entities::EntityType&, glm::vec3) override {}
+    void playCreatureAmbient(const mc::gameplay::entities::EntityType&, glm::vec3) override {}
+    void playCreatureStep(const mc::gameplay::entities::EntityType&, glm::vec3) override {}
     void playFootstep(mc::world::Block, glm::vec3, float) override { ++footsteps; }
     void playSplash(glm::vec3, float) override {}
     void spawnBlockBreakParticles(glm::ivec3, mc::world::Block) override {}
@@ -83,6 +99,51 @@ int main() {
     // Feet rest on the stone's top surface (y = 1), not embedded in it.
     assert(std::abs(session.player().position().y - 1.0F) < 0.05F);
     assert(session.physicsCurrentPosition().y == session.player().position().y);
+
+    // MobBrain attacks cross the EntitySystem event boundary and enter the
+    // same player damage/death pipeline as every other source. REQUIRE remains
+    // active under NDEBUG, so Release genuinely executes this integration.
+    {
+        gameplay::GameSession meleeSession;
+        meleeSession.setGameMode(gameplay::GameMode::Survival);
+        meleeSession.setDifficulty(gameplay::Difficulty::Normal);
+        meleeSession.player().setPosition({8.5F, 1.001F, 8.5F});
+        meleeSession.physicsPreviousPosition() = meleeSession.player().position();
+        meleeSession.physicsCurrentPosition() = meleeSession.player().position();
+        meleeSession.worldEntities().spawn(
+            {7.5F, 1.001F, 8.5F}, gameplay::entities::ZombieEntity::type(), 51U);
+        TestHost meleeHost;
+        for (int tick = 0; tick < 120 && meleeHost.playerHurts == 0; ++tick) {
+            meleeSession.tick(world, meleeHost);
+        }
+        REQUIRE(meleeHost.playerHurts == 1);
+        REQUIRE(std::abs(meleeSession.vitals().health() - 17.0F) < 0.001F);
+        REQUIRE(meleeSession.vitals().damage().lastSource == gameplay::DamageSource::EntityAttack);
+    }
+
+    // The in-world difficulty control goes through GameSession::setDifficulty.
+    // Switching an already-running world to Peaceful must feed EntitySystem on
+    // the next tick: hostile MONSTERs vanish silently while passive creatures
+    // remain, and NaturalSpawner sees Peaceful in that same tick.
+    {
+        gameplay::GameSession peacefulSession;
+        peacefulSession.player().setPosition({8.5F, 1.001F, 8.5F});
+        peacefulSession.physicsPreviousPosition() = peacefulSession.player().position();
+        peacefulSession.physicsCurrentPosition() = peacefulSession.player().position();
+        peacefulSession.worldEntities().spawn(
+            {7.5F, 1.001F, 8.5F}, gameplay::entities::ZombieEntity::type(), 61U);
+        peacefulSession.worldEntities().spawn(
+            {9.5F, 1.001F, 8.5F}, gameplay::entities::PigEntity::type(), 62U);
+        const std::uint64_t zombieId = peacefulSession.worldEntities().entities()[0].id;
+        const std::uint64_t pigId = peacefulSession.worldEntities().entities()[1].id;
+
+        peacefulSession.setDifficulty(gameplay::Difficulty::Peaceful);
+        TestHost peacefulHost;
+        peacefulSession.tick(world, peacefulHost);
+
+        REQUIRE(peacefulSession.worldEntities().byId(zombieId) == nullptr);
+        REQUIRE(peacefulSession.worldEntities().byId(pigId) != nullptr);
+    }
 
     // --- A broken block scatters its loot as item entities. ---
     // Dirt always drops itself even with an empty hand; stone would need a

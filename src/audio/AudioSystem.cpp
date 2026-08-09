@@ -140,6 +140,29 @@ class AudioSystem::Impl final {
              position, volume, pitch);
     }
 
+    // One clip of a species' sound set. A variation count of one plays the bare
+    // `<root>/<base>.ogg` (vanilla death clips have no `1` suffix); more than
+    // one rolls `<root>/<base><n>.ogg`, the way the ambient/hurt steps roll
+    // their variations.
+    void playMobClip(const MobSoundProfile& profile, std::string_view base, int variations,
+                     const glm::vec3& position, float volume, float pitch) {
+        if (variations <= 0) {
+            return;
+        }
+        std::string fileName{base};
+        if (variations > 1) {
+            fileName += std::to_string(nextVariation(variations));
+        }
+        fileName += ".ogg";
+        play(soundRoot / profile.root / fileName, position, volume, pitch);
+    }
+
+    // LivingEntity#getSoundPitch: (nextFloat() - nextFloat()) * 0.2 + 1.0, the
+    // ±0.2 pitch roll every mob clip except footsteps uses.
+    [[nodiscard]] float nextPitch() {
+        return (randomUnit() - randomUnit()) * 0.2F + 1.0F;
+    }
+
     void play(const std::filesystem::path& path, const glm::vec3& position, float volume,
               float pitch) {
         if (!initialized || masterVolume <= 0.0F) {
@@ -178,6 +201,12 @@ class AudioSystem::Impl final {
     [[nodiscard]] int nextVariation(int count) {
         randomState = randomState * 1664525U + 1013904223U;
         return static_cast<int>(randomState % static_cast<std::uint32_t>(count)) + 1;
+    }
+
+    // A value in [0, 1) from the top 24 bits (an LCG's low bits are weak).
+    [[nodiscard]] float randomUnit() {
+        randomState = randomState * 1664525U + 1013904223U;
+        return static_cast<float>(randomState >> 8) / static_cast<float>(1U << 24);
     }
 
     std::filesystem::path soundRoot;
@@ -285,15 +314,39 @@ void AudioSystem::playItemBreak(const glm::vec3& position) {
                          0.9F);
 }
 
-void AudioSystem::playPigHurt(const glm::vec3& position) {
-    implementation->play(implementation->soundRoot / "mob" / "pig" /
-                             ("say" + std::to_string(implementation->nextVariation(3)) + ".ogg"),
-                         position, 1.0F, 1.0F);
+void AudioSystem::playCreatureHurt(const MobSoundProfile& profile, const glm::vec3& position) {
+    implementation->playMobClip(profile, profile.hurtBase, profile.hurtVariations, position,
+                                profile.volume, implementation->nextPitch());
 }
 
-void AudioSystem::playPigDeath(const glm::vec3& position) {
-    implementation->play(implementation->soundRoot / "mob" / "pig" / "death.ogg", position, 1.0F,
-                         1.0F);
+void AudioSystem::playCreatureDeath(const MobSoundProfile& profile, const glm::vec3& position) {
+    implementation->playMobClip(profile, profile.deathBase, profile.deathVariations, position,
+                                profile.volume, implementation->nextPitch());
+}
+
+void AudioSystem::playCreatureAmbient(const MobSoundProfile& profile, const glm::vec3& position) {
+    implementation->playMobClip(profile, profile.ambientBase, profile.ambientVariations, position,
+                                profile.volume, implementation->nextPitch());
+}
+
+void AudioSystem::playCreatureStep(const MobSoundProfile& profile, const glm::vec3& position) {
+    implementation->playMobClip(profile, profile.stepBase, profile.stepVariations, position,
+                                profile.stepVolume, 1.0F);
+}
+
+void AudioSystem::playWeatherRain(const glm::vec3& position, float volume) {
+    // SoundEvents.WEATHER_RAIN: weather/rain1-8.
+    implementation->play(implementation->soundRoot / "ambient" / "weather" /
+                             ("rain" + std::to_string(implementation->nextVariation(8)) + ".ogg"),
+                         position, volume, 1.0F);
+}
+
+void AudioSystem::playWeatherRainAbove(const glm::vec3& position, float volume) {
+    // SoundEvents.WEATHER_RAIN_ABOVE: the first four rain clips, played muffled
+    // (0.5 pitch) when the drops land on a roof over the listener.
+    implementation->play(implementation->soundRoot / "ambient" / "weather" /
+                             ("rain" + std::to_string(implementation->nextVariation(4)) + ".ogg"),
+                         position, volume, 0.5F);
 }
 
 } // namespace mc::audio

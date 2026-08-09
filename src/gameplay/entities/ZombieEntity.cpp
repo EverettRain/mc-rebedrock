@@ -3,17 +3,24 @@
 #include "gameplay/EntitySystem.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/MobAi.hpp"
+#include "gameplay/entities/MobBrain.hpp"
 
 #include <cstdint>
+#include <memory>
 
 namespace mc::gameplay::entities {
 namespace {
 
-// ZombieAi inherits the monster shambling cadence from MonsterAi. Target/attack
-// goals land here once player-targeting AI exists; until then a hostile mob is
-// honestly just a persistent wanderer. The single shared instance carries no
-// state; everything mutable lives on the SimpleEntity it steers.
+// ZombieEntity#initCustomGoals (1.16.1): melee at action priority 2 and living
+// non-creative players at target priority 2. MonsterAi contributes the lower
+// priority wander/look fallback; every mutable cooldown/path lives in MobBrain.
 class ZombieAi final : public MonsterAi {
+  public:
+    void configureBrain(MobBrain& brain) const override {
+        MonsterAi::configureBrain(brain);
+        brain.goals().add(2, std::make_unique<MeleeAttackGoal>(1.0F));
+        brain.targets().add(2, std::make_unique<ActiveTargetPlayerGoal>());
+    }
 };
 
 const ZombieAi kZombieAi;
@@ -33,6 +40,19 @@ constexpr EntityRenderDescriptor kZombieRender{
     /*scale=*/1.0F,
 };
 
+// ZombieEntity's sound hooks (1.16.1): ambient mob/zombie/say1-3, hurt
+// mob/zombie/hurt1-2, the single mob/zombie/death.ogg, steps mob/zombie/step1-5.
+// Default getSoundVolume 1.0.
+constexpr audio::MobSoundProfile kZombieSounds{
+    /*root=*/"mob/zombie",
+    /*ambientBase=*/"say",   /*ambientVariations=*/3,
+    /*hurtBase=*/"hurt",     /*hurtVariations=*/2,
+    /*deathBase=*/"death",   /*deathVariations=*/1,
+    /*stepBase=*/"step",     /*stepVariations=*/5,
+    /*volume=*/1.0F,
+    /*stepVolume=*/0.15F,
+};
+
 } // namespace
 
 const EntityType& ZombieEntity::type() {
@@ -50,6 +70,7 @@ const EntityType& ZombieEntity::type() {
                                  .knockbackResistance(0.0F)
                                  .spawnEgg(0x00AFAFU, 0x799C65U)
                                  .renderer(kZombieRender)
+                                 .sounds(kZombieSounds)
                                  .vanillaName("zombie")
                                  .build("zombie");
     static const bool registered = [] {

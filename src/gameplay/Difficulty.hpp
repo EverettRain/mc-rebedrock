@@ -6,10 +6,9 @@
 
 namespace mc::gameplay {
 
-// Java's net.minecraft.world.Difficulty. Monsters are not part of this build
-// yet, so what the setting reaches today is the survival damage model: how far
-// starvation is allowed to go, whether the world regenerates the player for
-// free, and the multiplier that difficulty-scaled damage sources carry.
+// Java's net.minecraft.world.Difficulty. It drives the survival damage model,
+// peaceful hostile removal and the multiplier that difficulty-scaled damage
+// sources carry.
 enum class Difficulty : std::uint8_t {
     Peaceful,
     Easy,
@@ -75,8 +74,7 @@ inline constexpr std::uint8_t kDifficultyCount = 4U;
 }
 
 // LivingEntity#applyDamage, for the sources DamageSource#isScaledWithDifficulty
-// marks. Nothing in this build produces one yet — mobs are the usual source —
-// but the rule belongs with the rest of the difficulty model.
+// marks. Hostile mob melee attacks enter the player pipeline through this rule.
 [[nodiscard]] constexpr float scaledDamage(Difficulty difficulty, float amount) {
     switch (difficulty) {
     case Difficulty::Peaceful: return 0.0F;

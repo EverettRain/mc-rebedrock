@@ -2,8 +2,10 @@
 
 #include "gameplay/Damage.hpp"
 #include "gameplay/Difficulty.hpp"
+#include "gameplay/EntitySection.hpp"
 #include "gameplay/Inventory.hpp"
 #include "gameplay/entities/EntityType.hpp"
+#include "gameplay/entities/MobBrain.hpp"
 
 #include <glm/vec3.hpp>
 
@@ -11,6 +13,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -25,18 +28,22 @@ namespace mc::gameplay {
 // not in this struct: the simulation reads them through `type` so one code path
 // drives every registered creature with no species switch. What stays here is
 // the mutable per-instance state a LivingEntity needs: pose, the hurt/death
-// bookkeeping, and the previous/current pairs the renderer interpolates between.
-// Everything heavier — pathfinding, breeding — is still deliberately absent.
+// bookkeeping, per-entity MobBrain, and the previous/current pairs the renderer
+// interpolates between. Breeding remains deliberately absent; basic land
+// pathfinding and prioritized goals live in entities/MobBrain.hpp.
 struct SimpleEntity final {
     // The registered species this creature is an instance of; never null once
     // spawned. Behaviour is dispatched through it (attributes, AI, loot, render).
     const entities::EntityType* type = nullptr;
+    // Stable for this run even when EntitySystem compacts its vector.
+    std::uint64_t id = 0U;
 
     glm::vec3 position{0.0F};
     glm::vec3 previousPosition{0.0F};
     glm::vec3 velocity{0.0F};
     float yaw = 0.0F;                  // facing in radians (0 faces +Z)
     float previousYaw = 0.0F;          // last tick's yaw, for render interpolation
+    float lookYaw = 0.0F;              // independent LOOK-control intent
     float walkDistance = 0.0F;         // accumulated horizontal travel; drives the walk cycle
     float previousWalkDistance = 0.0F; // last tick's walkDistance, for interpolation
     // Entity#fallDistance: how far the body has fallen since it last touched
@@ -44,9 +51,28 @@ struct SimpleEntity final {
     float fallDistance = 0.0F;
     bool onGround = false;
     bool moving = false;
+    float movementSpeedMultiplier = 1.0F;
     unsigned int ageTicks = 0U;
     unsigned int wanderTimer = 0U;
     std::uint32_t rngState = 0U;
+
+    // LivingEntity#getAttacker plus a monotonically increasing hit sequence.
+    // EscapeDangerGoal consumes every landed hit once while the stable actor
+    // reference lets later revenge/target goals keep following the attacker.
+    ActorReference lastAttacker{};
+    glm::vec3 lastAttackerPosition{0.0F};
+    int recentAttackerTicks = 0;
+    std::uint64_t lastHurtSequence = 0U;
+
+    // MobEntity#ambientSoundChance: the idle-sound scheduler's counter. Each
+    // tick baseTick rolls nextInt(1000) against it while it climbs; a roll that
+    // lands plays the ambient clip and snaps the counter back to
+    // -getMinAmbientSoundDelay() (80), so a species barks roughly every four
+    // seconds. Hurt resets it the way playHurtSound's resetSoundDelay does.
+    int ambientSoundChance = 0;
+    // Horizontal travel accumulated toward the next playStepSound. Footsteps
+    // fire once per block of real walking and reset on the ground.
+    float stepAccumulator = 0.0F;
 
     // The shared damage state: health, the hurt/invulnerability/death timers and
     // the last hit. PlayerVitals drives the same fields through Damage.hpp, so
@@ -55,6 +81,13 @@ struct SimpleEntity final {
     // Angerable#angerTime: ticks a neutral mob stays hostile after being hit.
     // Zero for passive and plain hostile mobs; driven by NeutralMob.hpp.
     int angerTicks = 0;
+    // MobEntity#checkDespawn's despawn-range counter: ticks spent past 128
+    // blocks for a distant-despawning category (MONSTER/AMBIENT/WATER_CREATURE).
+    // Once it crosses the threshold the creature is silently removed.
+    int despawnTicks = 0;
+
+    // Stateful Goal instances and the current navigation path are per entity.
+    entities::MobBrain brain;
 
     [[nodiscard]] bool dead() const { return damage.dead(); }
     // Angerable#hasAngerTime: whether a neutral mob is currently provoked.
@@ -75,11 +108,31 @@ struct SimpleEntity final {
     }
 };
 
-// What a ray found: which creature it hit and how far along the ray. The index
-// is only valid until the next tick, which may remove dead creatures.
+// What a ray found: which creature it hit and how far along the ray. The id is
+// stable across ticks — unlike a vector index, which is only valid until the
+// next tick removes or reorders a creature — so the caller can hand it straight
+// to hurt()/kill().
 struct EntityRayHit final {
-    std::size_t index = 0U;
+    std::uint64_t entityId = 0U;
     float distance = 0.0F;
+};
+
+// The four sound hooks a 1.16.1 LivingEntity raises. The caller plays the
+// matching clip for the creature's species (see entities::EntityType::soundProfile).
+enum class MobSoundEvent : std::uint8_t {
+    Hurt,
+    Death,
+    Ambient,
+    Step,
+};
+
+// One creature sound queued for the caller: where it happened, which event, and
+// the species that owns the clip. `type` points at the registered EntityType
+// (static storage), so it outlives the queue and never needs ref-counting.
+struct PendingMobSound final {
+    glm::vec3 position{0.0F};
+    MobSoundEvent event = MobSoundEvent::Hurt;
+    const entities::EntityType* type = nullptr;
 };
 
 // EntityDrops (a creature's death loot) now lives on the entity type; see
@@ -90,9 +143,18 @@ using entities::EntityDrops;
 // What one tick left behind for the caller to act on: creatures that finished
 // dying (with their loot), and the push the herd applied to the player.
 struct EntityTickResult final {
+    struct MobAttack final {
+        std::uint64_t attackerId = 0U;
+        ActorReference target{};
+        float amount = 0.0F;
+    };
+
     std::size_t liveCount = 0U;
     // Entity#pushAwayFrom moves both parties; this is the player's share.
     glm::vec3 playerPush{0.0F};
+    // AI emits attacks as simulation events; GameSession owns applying player
+    // damage, difficulty scaling, hurt audio and death handling.
+    std::vector<MobAttack> mobAttacks;
 };
 
 class EntitySystem final {
@@ -107,18 +169,33 @@ class EntitySystem final {
     // which registered types (static storage) always do.
     void spawn(glm::vec3 position, const entities::EntityType& type, std::uint32_t seed = 0U);
 
-    // Advances every creature one 20 TPS tick against the world: gravity, box
-    // collision, a simple wander, mutual pushing and the hurt/death timers.
+    // Restores a creature from a save record: spawns it and overwrites the pose
+    // and fields a fresh spawn would not reproduce (velocity, health, yaw, the
+    // wander rng and the timers), so a loaded world reopens with its herd where
+    // it left off. Returns the stable id the restored creature holds.
+    std::uint64_t restore(glm::vec3 position, const entities::EntityType& type, float yaw,
+                          glm::vec3 velocity, float health, int angerTicks,
+                          unsigned int ageTicks, std::uint32_t rngState);
+
+    // Advances every creature one 20 TPS tick against the world: target/action
+    // selectors, land navigation, gravity, collision, pushing and damage timers.
     // `pusher`/`pusherWidth`/`pusherHeight` describe the player, so the herd and
     // the player shove each other apart the way vanilla entities do. `difficulty`
     // drives the peaceful pass: on Peaceful, MONSTER-category mobs are removed
     // the same tick, matching MobEntity#checkDespawn's isDisallowedInPeaceful.
+    // `simulationRadius` (blocks, horizontal) freezes creatures farther than that
+    // from the pusher — no AI, movement, gravity or timers — while keeping them
+    // rendered and targetable, the way ServerWorld's tick distance keeps far mobs
+    // alive but dormant. 0 disables the gate (headless tests).
     EntityTickResult tick(
         const world::World& world,
         glm::vec3 pusher = glm::vec3{0.0F, -1000.0F, 0.0F},
         float pusherWidth = 0.6F,
         float pusherHeight = 1.8F,
-        Difficulty difficulty = Difficulty::Normal);
+        Difficulty difficulty = Difficulty::Normal,
+        bool playerAlive = true,
+        bool playerCreative = false,
+        float simulationRadius = 0.0F);
 
     // ProjectileUtil#getEntityCollision: the nearest creature whose box the ray
     // enters within `reach`. Dead creatures are not targetable.
@@ -129,12 +206,13 @@ class EntitySystem final {
 
     // LivingEntity#hurt plus the attacker's knockback. Returns true when the hit
     // landed rather than being swallowed by the invulnerability window.
-    bool hurt(std::size_t index, float amount, glm::vec3 knockbackOrigin);
+    bool hurt(std::uint64_t entityId, float amount, glm::vec3 knockbackOrigin,
+              ActorReference attacker = ActorReference::player());
 
     // Entity#kill / LivingEntity#kill: OutOfWorld damage at infinite magnitude,
     // the same path /kill routes a player through. Returns true when the
     // creature was killed by this call.
-    bool kill(std::size_t index);
+    bool kill(std::uint64_t entityId);
 
     // The loot a creature that just finished dying leaves behind. Drained by
     // the caller after tick(); the same creature never reports twice.
@@ -143,15 +221,23 @@ class EntitySystem final {
     }
     void clearPendingDrops() { pendingDrops_.clear(); }
 
-    // Creatures that were hit or died this tick, so the caller can play the
-    // vanilla sound for them. Drained the same way as the drops.
-    [[nodiscard]] std::span<const std::pair<glm::vec3, bool>> pendingSounds() const {
+    // Sound events creatures raised this tick, so the caller can play the right
+    // clip for the right species. Drained the same way as the drops.
+    [[nodiscard]] std::span<const PendingMobSound> pendingSounds() const {
         return pendingSounds_;
     }
     void clearPendingSounds() { pendingSounds_.clear(); }
 
-    void clear() { entities_.clear(); }
+    // Wipes every creature and the id/spatial indexes, and restarts the id
+    // allocator — the world-reset path (a new save or /reload). Any id held by
+    // the caller before this is invalid afterwards, exactly as indices were.
+    void clear();
     [[nodiscard]] const std::vector<SimpleEntity>& entities() const { return entities_; }
+    // The creature with the given stable id, or null once it has despawned.
+    // Stable across vector compactions, so commands and brains can hold an id
+    // past the tick boundary.
+    [[nodiscard]] SimpleEntity* byId(std::uint64_t id);
+    [[nodiscard]] const SimpleEntity* byId(std::uint64_t id) const;
 
   private:
     // LivingEntity#onDeath: the one-time death event. Claims the death through
@@ -165,12 +251,24 @@ class EntitySystem final {
         const world::World& world,
         glm::vec3 minimum,
         glm::vec3 maximum);
+    // Rebuilds idToIndex_ and sections_ from entities_ as it currently stands.
+    // O(n); called after each tick's movement and after its despawn pass — the
+    // only moments either map can drift from the vector.
+    void rebuildSpatialIndex();
 
     std::vector<SimpleEntity> entities_;
+    // Stable id → current index. Kept in sync by rebuildSpatialIndex so a
+    // survived id always resolves to the live element after a compaction.
+    std::unordered_map<std::uint64_t, std::size_t> idToIndex_;
+    // Chunk-section spatial hash: section → indices into entities_ at their
+    // current positions. Turns the O(n²) pushing sweep and O(n) raycast into
+    // O(neighbours) queries.
+    std::unordered_map<EntitySection, std::vector<std::size_t>, EntitySectionHash> sections_;
     std::vector<std::pair<glm::vec3, EntityDrops>> pendingDrops_;
-    // (position, died) for each sound the caller still has to play.
-    std::vector<std::pair<glm::vec3, bool>> pendingSounds_;
+    std::vector<PendingMobSound> pendingSounds_;
     std::uint32_t lootRandomState_ = 0x1F123BB5U;
+    std::uint64_t nextEntityId_ = 1U;
+    std::uint64_t gameTick_ = 0U;
 };
 
 } // namespace mc::gameplay

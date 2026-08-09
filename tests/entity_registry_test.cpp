@@ -12,6 +12,7 @@
 #include <glm/vec3.hpp>
 
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <utility>
 
@@ -54,6 +55,28 @@ int main() {
     assert(sawBeef);
     assert(sawLeather);
 
+    // --- Each species registers its own sound set (1.16.1 MobEntity hooks). ---
+    // Cow: getSoundVolume 0.4 (CowEntity overrides it), ambient mob/cow/say1-4,
+    // and death reuses the same three hurt clips (sounds.json maps
+    // entity.cow.death to the hurt clips). Pig has no distinct hurt sound —
+    // entity.pig.hurt points back at say1-3 — and a single death.ogg. Zombie
+    // hurts are hurt1-2 with five step clips.
+    const auto cowSounds = cow->soundProfile();
+    assert(cowSounds.root == "mob/cow");
+    assert(cowSounds.volume == 0.4F);
+    assert(cowSounds.stepVolume == 0.15F);
+    assert(cowSounds.ambientVariations == 4);
+    assert(cowSounds.hurtVariations == 3 && cowSounds.deathVariations == 3);
+    assert(cowSounds.deathBase == cowSounds.hurtBase);
+    const auto* pig = registry.byId("minecraft:pig");
+    const auto* zombie = registry.byId("minecraft:zombie");
+    assert(pig != nullptr && zombie != nullptr);
+    assert(pig->soundProfile().hurtBase == "say");
+    assert(pig->soundProfile().deathVariations == 1);
+    assert(zombie->soundProfile().ambientVariations == 3);
+    assert(zombie->soundProfile().hurtVariations == 2);
+    assert(zombie->soundProfile().stepVariations == 5);
+
     // Peaceful pass (MobEntity#checkDespawn): a flat stone floor, one pig, one
     // cow and one zombie. Ticking once on Peaceful keeps the two CREATURE
     // species and silently removes the MONSTER — the category decides, so the
@@ -66,6 +89,25 @@ int main() {
     }
     mc::world::World world;
     world.setChunk({0, 0}, std::move(chunk));
+
+    // --- MobEntity#baseTick's ambient scheduler fires the idle sound roughly
+    // every four seconds: the counter climbs one per tick and the roll gate
+    // almost surely opens within a couple of hundred ticks. ---
+    {
+        mc::gameplay::EntitySystem barker;
+        barker.spawn({8.0F, 1.0F, 8.0F}, mc::gameplay::entities::PigEntity::type(), 99U);
+        bool heardAmbient = false;
+        for (int tick = 0; tick < 200 && !heardAmbient; ++tick) {
+            static_cast<void>(barker.tick(
+                world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
+                mc::gameplay::Difficulty::Normal));
+            for (const auto& sound : barker.pendingSounds()) {
+                heardAmbient = heardAmbient || sound.event == mc::gameplay::MobSoundEvent::Ambient;
+            }
+            barker.clearPendingSounds();
+        }
+        assert(heardAmbient);
+    }
 
     mc::gameplay::EntitySystem entities;
     entities.spawn({8.0F, 1.0F, 8.0F}, mc::gameplay::entities::PigEntity::type(), 1U);
@@ -97,8 +139,10 @@ int main() {
         killers.spawn({7.0F, 1.0F, 7.0F}, mc::gameplay::entities::PigEntity::type(), 4U);
         assert(killers.pendingDrops().empty());
         // A fatal hit rolls the pig's porkchops straight into pendingDrops_
-        // inside hurt(), with no tick() advancing the animation.
-        assert(killers.hurt(0U, 100.0F, {7.0F, 1.0F, 7.0F}));
+        // inside hurt(), with no tick() advancing the animation. hurt() takes
+        // the stable id, not the vector index.
+        const std::uint64_t pigId = killers.entities().front().id;
+        assert(killers.hurt(pigId, 100.0F, {7.0F, 1.0F, 7.0F}));
         assert(!killers.pendingDrops().empty());
         killers.clearPendingDrops();
         // Running the corpse animation to completion removes the body without
@@ -110,6 +154,36 @@ int main() {
         }
         assert(killers.entities().empty());
         assert(killers.pendingDrops().empty());
+    }
+
+    // --- Simulation distance: a creature past the radius is frozen but a
+    // within-radius one keeps simulating, and a far MONSTER fades via
+    // MobEntity#checkDespawn's despawn-range pass. ---
+    {
+        mc::gameplay::EntitySystem simulation;
+        // Within the 16-block radius: gravity pulls it from y=10 to the floor.
+        simulation.spawn({8.0F, 10.0F, 8.0F}, mc::gameplay::entities::PigEntity::type(), 51U);
+        // 32 blocks out (dx = 32 > 16): frozen — stays exactly where it spawned.
+        simulation.spawn({40.0F, 10.0F, 8.0F}, mc::gameplay::entities::PigEntity::type(), 52U);
+        // 192 blocks out and a MONSTER: despawns when distant, independently of
+        // the simulation radius.
+        simulation.spawn({200.0F, 1.0F, 200.0F}, mc::gameplay::entities::ZombieEntity::type(),
+                         53U);
+        const std::uint64_t nearId = simulation.entities()[0].id;
+        const std::uint64_t farId = simulation.entities()[1].id;
+        const std::uint64_t monsterId = simulation.entities()[2].id;
+        const glm::vec3 player{8.0F, 1.0F, 8.0F};
+        for (int tick = 0; tick < 200; ++tick) {
+            static_cast<void>(simulation.tick(
+                world, player, 0.6F, 1.8F, mc::gameplay::Difficulty::Normal, true, false, 16.0F));
+        }
+        // The near pig fell and landed; the far pig never moved a pixel.
+        assert(simulation.byId(nearId) != nullptr);
+        assert(simulation.byId(nearId)->position.y < 5.0F);
+        assert(simulation.byId(farId) != nullptr);
+        assert(std::abs(simulation.byId(farId)->position.y - 10.0F) < 0.01F);
+        // The far zombie was removed by the despawn-range pass.
+        assert(simulation.byId(monsterId) == nullptr);
     }
 
     return 0;

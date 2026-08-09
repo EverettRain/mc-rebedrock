@@ -1,5 +1,6 @@
 #include "gameplay/GameSession.hpp"
 
+#include "world/DayNightCycle.hpp"
 #include "world/World.hpp"
 
 #include <glm/geometric.hpp>
@@ -100,8 +101,22 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // walking into the player nudges them. Difficulty is per-save (level.dat).
     const auto entityTick = worldEntities_.tick(
         world, player_.position(), PlayerController::kWidth, PlayerController::kHeight,
-        difficulty_);
+        difficulty_, !vitals_.dead(), gameMode_ == GameMode::Creative,
+        simulationRadiusBlocks_);
     player_.applyExternalPush(entityTick.playerPush);
+    for (const auto& attack : entityTick.mobAttacks) {
+        if (attack.target == ActorReference::player()) {
+            static_cast<void>(hurtPlayer(
+                DamageSource::EntityAttack, scaledDamage(difficulty_, attack.amount), host));
+        }
+    }
+    // NaturalSpawner: creatures and monsters settle inside the simulation
+    // radius, respecting each category's spawnCap and the biome's spawn table.
+    // The day/night sky brightness is passed so open ground actually goes dark
+    // at night and MONSTERs spawn on the surface, not just in caves.
+    naturalSpawner_.tick(
+        world, worldEntities_, player_.position(), simulationRadiusBlocks_, difficulty_,
+        world::DayNightCycle::state(gameTimeSeconds_).skyBrightness);
     consumeEntityEvents(host);
     physicsCurrentPosition_ = player_.position();
     jumpPressed_ = false;
@@ -313,11 +328,23 @@ void GameSession::updateMovementAudio(SimulationHost& host, const world::World& 
 }
 
 void GameSession::consumeEntityEvents(SimulationHost& host) {
-    for (const auto& [position, died] : worldEntities_.pendingSounds()) {
-        if (died) {
-            host.playCreatureDeath(position);
-        } else {
-            host.playCreatureHurt(position);
+    for (const auto& sound : worldEntities_.pendingSounds()) {
+        // The species rides along so the host plays the right clip for the
+        // right creature — a cow's hurt is not a zombie's hurt.
+        const auto& type = *sound.type;
+        switch (sound.event) {
+        case MobSoundEvent::Hurt:
+            host.playCreatureHurt(type, sound.position);
+            break;
+        case MobSoundEvent::Death:
+            host.playCreatureDeath(type, sound.position);
+            break;
+        case MobSoundEvent::Ambient:
+            host.playCreatureAmbient(type, sound.position);
+            break;
+        case MobSoundEvent::Step:
+            host.playCreatureStep(type, sound.position);
+            break;
         }
     }
     worldEntities_.clearPendingSounds();

@@ -205,6 +205,7 @@ add_executable(mc_rebedrock
     src/gameplay/entities/EntityRegistry.cpp
     src/gameplay/entities/NeutralMob.cpp
     src/gameplay/entities/MobAi.cpp
+    src/gameplay/entities/MobBrain.cpp
     src/gameplay/entities/PigEntity.cpp
     src/gameplay/entities/CowEntity.cpp
     src/gameplay/entities/ZombieEntity.cpp
@@ -215,6 +216,7 @@ add_executable(mc_rebedrock
     src/gameplay/ItemEntitySystem.cpp
     src/gameplay/ItemPlacement.cpp
     src/gameplay/MiningSystem.cpp
+    src/gameplay/NaturalSpawner.cpp
     src/gameplay/PlayerController.cpp
     src/gameplay/PlayerVitals.cpp
     src/gameplay/WeatherSystem.cpp
@@ -685,9 +687,13 @@ if(BUILD_TESTING)
         src/gameplay/entities/EntityRegistry.cpp
         src/gameplay/entities/NeutralMob.cpp
         src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
         src/gameplay/entities/PigEntity.cpp
         src/gameplay/entities/CowEntity.cpp
         src/gameplay/entities/ZombieEntity.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/World.cpp
     )
     target_include_directories(mc_rebedrock_command_dispatcher_test PRIVATE
         src
@@ -701,9 +707,13 @@ if(BUILD_TESTING)
         src/gameplay/entities/EntityRegistry.cpp
         src/gameplay/entities/NeutralMob.cpp
         src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
         src/gameplay/entities/PigEntity.cpp
         src/gameplay/entities/CowEntity.cpp
         src/gameplay/entities/ZombieEntity.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/World.cpp
     )
     target_include_directories(mc_rebedrock_command_suggestions_test PRIVATE
         src
@@ -717,6 +727,7 @@ if(BUILD_TESTING)
         src/gameplay/entities/EntityRegistry.cpp
         src/gameplay/entities/NeutralMob.cpp
         src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
         src/gameplay/entities/PigEntity.cpp
         src/gameplay/entities/CowEntity.cpp
         src/gameplay/entities/ZombieEntity.cpp
@@ -731,6 +742,48 @@ if(BUILD_TESTING)
     )
     add_test(NAME entity_registry COMMAND mc_rebedrock_entity_registry_test)
 
+    add_executable(mc_rebedrock_mob_brain_test
+        tests/mob_brain_test.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/gameplay/EntitySystem.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/World.cpp
+    )
+    target_include_directories(mc_rebedrock_mob_brain_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME mob_brain COMMAND mc_rebedrock_mob_brain_test)
+
+    add_executable(mc_rebedrock_mob_ai_benchmark
+        tests/mob_ai_benchmark.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/gameplay/EntitySystem.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/World.cpp
+    )
+    target_include_directories(mc_rebedrock_mob_ai_benchmark PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME mob_ai_benchmark COMMAND mc_rebedrock_mob_ai_benchmark)
+
     add_executable(mc_rebedrock_game_session_test
         tests/game_session_test.cpp
         src/gameplay/ChestSystem.cpp
@@ -743,6 +796,7 @@ if(BUILD_TESTING)
         src/gameplay/ItemEntitySystem.cpp
         src/gameplay/ItemPlacement.cpp
         src/gameplay/MiningSystem.cpp
+        src/gameplay/NaturalSpawner.cpp
         src/gameplay/PlayerController.cpp
         src/gameplay/PlayerVitals.cpp
         src/gameplay/WeatherSystem.cpp
@@ -751,13 +805,19 @@ if(BUILD_TESTING)
         src/gameplay/entities/EntityRegistry.cpp
         src/gameplay/entities/NeutralMob.cpp
         src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
         src/gameplay/entities/PigEntity.cpp
         src/gameplay/entities/CowEntity.cpp
         src/gameplay/entities/ZombieEntity.cpp
         src/world/BlockPlacement.cpp
         src/world/Chunk.cpp
         src/world/ChunkSection.cpp
+        src/world/DayNightCycle.cpp
         src/world/World.cpp
+        src/world/gen/Biome.cpp
+        src/world/gen/BiomeSource.cpp
+        src/world/gen/LayeredBiomeSource.cpp
+        src/world/gen/NoiseSampler.cpp
         src/world/gen/TreeGrower.cpp
     )
     target_include_directories(mc_rebedrock_game_session_test PRIVATE
@@ -765,6 +825,35 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME game_session COMMAND mc_rebedrock_game_session_test)
+
+    add_executable(mc_rebedrock_natural_spawn_test
+        tests/natural_spawn_test.cpp
+        src/gameplay/EntitySystem.cpp
+        src/gameplay/NaturalSpawner.cpp
+        src/gameplay/WorldSimulation.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/world/BlockPlacement.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/World.cpp
+        src/world/gen/Biome.cpp
+        src/world/gen/BiomeSource.cpp
+        src/world/gen/LayeredBiomeSource.cpp
+        src/world/gen/NoiseSampler.cpp
+        src/world/gen/TreeGrower.cpp
+    )
+    target_include_directories(mc_rebedrock_natural_spawn_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME natural_spawn COMMAND mc_rebedrock_natural_spawn_test)
 
     add_executable(mc_rebedrock_weather_system_test
         tests/weather_system_test.cpp
@@ -963,6 +1052,17 @@ if(BUILD_TESTING)
         src "${glm_SOURCE_DIR}")
     add_test(NAME particle_system COMMAND mc_rebedrock_particle_system_test)
 
+    add_executable(mc_rebedrock_rain_system_test
+        tests/rain_system_test.cpp
+        src/render/RainSystem.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/World.cpp
+    )
+    target_include_directories(mc_rebedrock_rain_system_test PRIVATE
+        src "${glm_SOURCE_DIR}")
+    add_test(NAME rain_system COMMAND mc_rebedrock_rain_system_test)
+
     
     add_executable(mc_rebedrock_save_repository_test
         tests/save_repository_test.cpp
@@ -996,11 +1096,19 @@ if(BUILD_TESTING)
 install(TARGETS mc_rebedrock RUNTIME DESTINATION bin)
 install(DIRECTORY resources/vanilla/1.16.1/textures
     DESTINATION resources/vanilla/1.16.1)
-foreach(sound_group dig step liquid random damage)
-    install(DIRECTORY
-        "resources/vanilla/1.16.1/audio/minecraft/sounds/${sound_group}"
-        DESTINATION "resources/vanilla/1.16.1/audio/minecraft/sounds")
-endforeach()
+# Every sound asset ships (see StageRuntime.cmake): block families, the whole
+# mob set, weather, ambient, entity, records and UI. A subset kept leaving
+# wired-up clips unstaged, so install the whole tree — except the 155 MB music
+# catalogue, which trims to the two classic C418 tracks below.
+install(DIRECTORY resources/vanilla/1.16.1/audio/minecraft/sounds
+    DESTINATION resources/vanilla/1.16.1/audio/minecraft
+    PATTERN "music" EXCLUDE)
+install(FILES
+    resources/vanilla/1.16.1/audio/minecraft/sounds/music/game/calm1.ogg
+    DESTINATION resources/vanilla/1.16.1/audio/minecraft/sounds/music/game)
+install(FILES
+    resources/vanilla/1.16.1/audio/minecraft/sounds/music/menu/menu1.ogg
+    DESTINATION resources/vanilla/1.16.1/audio/minecraft/sounds/music/menu)
 install(DIRECTORY resources/vanilla/1.16.1/fonts
     DESTINATION resources/vanilla/1.16.1)
 foreach(language_code en_us zh_cn)

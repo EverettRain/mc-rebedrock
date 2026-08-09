@@ -921,13 +921,14 @@ void appendTorchQuad(
     const std::array<glm::vec3, 4>& positions,
     const glm::vec3& normal,
     const std::array<glm::vec2, 4>& uvs,
+    float textureLayer,
     float skyLight,
     float blockLight,
     const glm::vec3& sectionOrigin) {
     const auto firstVertex = static_cast<std::uint32_t>(mesh.vertices.size());
     for (std::size_t corner = 0; corner < positions.size(); ++corner) {
         mesh.vertices.push_back(packVertex(
-            positions[corner] - sectionOrigin, normal, uvs[corner], 138.0F, 1.0F, 0.0F,
+            positions[corner] - sectionOrigin, normal, uvs[corner], textureLayer, 1.0F, 0.0F,
             skyLight, blockLight, skyLight, blockLight));
     }
     constexpr std::array<std::uint32_t, 6> indices{0, 1, 2, 2, 3, 0};
@@ -941,6 +942,7 @@ void appendTorchModel(
     int x,
     int y,
     int z,
+    float textureLayer,
     const Sampler& lighting,
     const glm::vec3& sectionOrigin) {
     glm::vec3 facing{0.0F};
@@ -985,21 +987,21 @@ void appendTorchModel(
     }};
     appendTorchQuad(
         mesh, {bottom[0], bottom[1], bottom[2], bottom[3]}, -up, bottomUvs,
-        skyLight, blockLight, sectionOrigin);
+        textureLayer, skyLight, blockLight, sectionOrigin);
     appendTorchQuad(mesh, {top[0], top[3], top[2], top[1]}, up, topUvs,
-                    skyLight, blockLight, sectionOrigin);
+                    textureLayer, skyLight, blockLight, sectionOrigin);
     appendTorchQuad(
         mesh, {bottom[0], top[0], top[1], bottom[1]}, -forward, sideUvs,
-        skyLight, blockLight, sectionOrigin);
+        textureLayer, skyLight, blockLight, sectionOrigin);
     appendTorchQuad(
         mesh, {bottom[1], top[1], top[2], bottom[2]}, right, sideUvs,
-        skyLight, blockLight, sectionOrigin);
+        textureLayer, skyLight, blockLight, sectionOrigin);
     appendTorchQuad(
         mesh, {bottom[2], top[2], top[3], bottom[3]}, forward, sideUvs,
-        skyLight, blockLight, sectionOrigin);
+        textureLayer, skyLight, blockLight, sectionOrigin);
     appendTorchQuad(
         mesh, {bottom[3], top[3], top[0], bottom[0]}, -right, sideUvs,
-        skyLight, blockLight, sectionOrigin);
+        textureLayer, skyLight, blockLight, sectionOrigin);
 }
 
 void appendMesh(render::MeshData& destination, const render::MeshData& source) {
@@ -1099,8 +1101,12 @@ bool buildSectionImpl(
                     continue;
                 }
                 if (definition.model == BlockModel::Torch) {
+                    // The torch's face texture (all four wall variants share the
+                    // single "torch" sprite) resolves to its atlas layer at
+                    // startup, like every other block — never a baked-in number.
                     appendTorchModel(
-                        targetMesh, current, worldX, worldY, worldZ, lighting, sectionOrigin);
+                        targetMesh, current, worldX, worldY, worldZ,
+                        textureLayers(current).side, lighting, sectionOrigin);
                     continue;
                 }
                 if (definition.model == BlockModel::Chest) {

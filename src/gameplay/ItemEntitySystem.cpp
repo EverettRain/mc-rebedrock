@@ -19,6 +19,7 @@ void ItemEntitySystem::spawn(
         constexpr float fullTurn = 6.28318531F;
         entities_.push_back({
             position, position, initialVelocity, stack, 0, nextVisualPhase_});
+        sections_[entitySectionOf(position)].push_back(entities_.size() - 1U);
         nextVisualPhase_ = std::fmod(nextVisualPhase_ + goldenAngle, fullTurn);
     }
 }
@@ -70,6 +71,44 @@ std::size_t ItemEntitySystem::tick(
         return false;
     };
 
+    // Player magnet, resolved through the spatial hash: only drops in the
+    // player's section neighbourhood can sit within the 1.5-block reach, so
+    // query those buckets instead of sweeping every drop. It runs before the
+    // movement loop against the previous tick's positions; the loop adds one
+    // to ageTicks, so the pre-increment gate of 9 matches the inline check's
+    // age >= 10.
+    {
+        const EntitySection playerSection = entitySectionOf(playerPosition);
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dz = -1; dz <= 1; ++dz) {
+                    const auto neighbor = sections_.find(EntitySection{
+                        playerSection.chunkX + dx, playerSection.sectionY + dy,
+                        playerSection.chunkZ + dz});
+                    if (neighbor == sections_.end()) {
+                        continue;
+                    }
+                    for (const std::size_t index : neighbor->second) {
+                        auto& entity = entities_[index];
+                        if (entity.stack.empty() || entity.ageTicks < 9U) {
+                            continue;
+                        }
+                        const glm::vec3 toPlayer = playerPosition - entity.position;
+                        const float distance = glm::length(toPlayer);
+                        if (distance <= 1.5F && distance > 1e-3F && hasRoomFor(entity.stack)) {
+                            entity.velocity += glm::normalize(toPlayer) * 0.05F;
+                            const float speed = glm::length(entity.velocity);
+                            constexpr float kMagnetMaxSpeed = 0.18F;
+                            if (speed > kMagnetMaxSpeed) {
+                                entity.velocity *= kMagnetMaxSpeed / speed;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     for (auto& entity : entities_) {
         entity.previousPosition = entity.position;
         ++entity.ageTicks;
@@ -83,22 +122,8 @@ std::size_t ItemEntitySystem::tick(
             entity.velocity.z *= 0.6F * 0.98F;
         }
 
-        // Player magnet: within reach the item drifts toward the player instead
-        // of popping into the backpack at the edge of the pickup radius — the
-        // visible fly-to-player animation. The speed is capped so the drift
-        // reads, and a full inventory stops the pull.
-        if (entity.ageTicks >= 10U) {
-            const glm::vec3 toPlayer = playerPosition - entity.position;
-            const float distance = glm::length(toPlayer);
-            if (distance <= 1.5F && distance > 1e-3F && hasRoomFor(entity.stack)) {
-                entity.velocity += glm::normalize(toPlayer) * 0.05F;
-                const float speed = glm::length(entity.velocity);
-                constexpr float kMagnetMaxSpeed = 0.18F;
-                if (speed > kMagnetMaxSpeed) {
-                    entity.velocity *= kMagnetMaxSpeed / speed;
-                }
-            }
-        }
+        // The player magnet ran in the bucket pass above; only the physics that
+        // every drop must perform stays here.
 
         // ItemEntity#applyBuoyancy: water slows and lifts the drop.
         const auto foot = entity.position - glm::vec3{0.0F, 0.2F, 0.0F};
@@ -188,6 +213,12 @@ std::size_t ItemEntitySystem::tick(
     std::erase_if(entities_, [](const ItemEntity& entity) {
         return entity.stack.empty() || entity.ageTicks > 6'000U || entity.position.y < -8.0F;
     });
+    // Rebuild the hash so the next tick's magnet and any cross-tick query see
+    // only the surviving drops at their current positions and indices.
+    sections_.clear();
+    for (std::size_t index = 0; index < entities_.size(); ++index) {
+        sections_[entitySectionOf(entities_[index].position)].push_back(index);
+    }
     return pickedUpStacks;
 }
 

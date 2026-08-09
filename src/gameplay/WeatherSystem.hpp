@@ -59,6 +59,11 @@ class WeatherSystem final {
     // five-second fade-in.
     void forceRainGradient(float gradient);
 
+    // The thunder side of forceRainGradient: snaps the thunder gradient (and the
+    // thundering flag) so a smoke run can exercise the storm's heavier rain and
+    // wind without waiting for the ramp.
+    void forceThunderGradient(float gradient);
+
     [[nodiscard]] WeatherState state() const;
 
     // Gradient-derived accessors, mirroring World#isRaining / #isThundering.
@@ -76,6 +81,13 @@ class WeatherSystem final {
     [[nodiscard]] float rainGradientAt(float delta) const;
     [[nodiscard]] float thunderGradient() const { return thunderGradient_; }
     [[nodiscard]] float thunderGradientAt(float delta) const;
+
+    // ClientWorld#getSkyBrightness applies weather after sampling the logical
+    // sky-light level: rain and thunder each remove at most 5/16 of the visual
+    // sky contribution. Keeping this as a render multiplier means /weather can
+    // make the scene overcast without changing World::skyLight() or mob-spawn
+    // light checks.
+    [[nodiscard]] float visualSkyLightFactorAt(float delta) const;
 
   private:
     // LevelProperties mirrors — the five fields setWeather and the auto-cycle
