@@ -65,6 +65,8 @@ int main() {
         }
     }
     mc::render::ParticleSystem onWater;
+    onWater.spawnRainImpact({14.0F, 1.0F, 14.0F}, true);
+    assert(onWater.particles().size() == 1U);
     onWater.spawnRainSplash({14.0F, 2.5F, 14.0F});
     for (int step = 0; step < 8; ++step) {
         onWater.update(0.08F, world);
@@ -72,5 +74,40 @@ int main() {
             assert(particle.position.y >= 1.0F);
         }
     }
+
+    // Ambient weather owns at most 75% of the shared pool, leaving room for
+    // interaction feedback even during continuous rain.
+    mc::render::ParticleSystem weatherOnly;
+    assert(weatherOnly.particleLimit() == 8000U);
+    assert(weatherOnly.weatherParticleLimit() == 6000U);
+    for (int index = 0; index < 8000; ++index) {
+        weatherOnly.spawnRainImpact({0.0F, 2.0F, 0.0F}, false);
+    }
+    assert(weatherOnly.weatherParticleCount() == weatherOnly.weatherParticleLimit());
+    assert(weatherOnly.particles().size() == weatherOnly.weatherParticleLimit());
+
+    // If gameplay already occupies the reserved quarter and weather fills the
+    // remaining global capacity, a new full-block break evicts 64 oldest
+    // weather records and still emits all 64 dust pieces.
+    mc::render::ParticleSystem priority;
+    for (int event = 0; event < 32; ++event) {
+        priority.spawnBlockBreak({event, 2, 4}, mc::world::Block::Grass);
+    }
+    while (priority.particles().size() < priority.particleLimit()) {
+        priority.spawnRainImpact({0.0F, 2.0F, 0.0F}, false);
+    }
+    const std::size_t weatherBeforeBreak = priority.weatherParticleCount();
+    priority.spawnBlockBreak({20, 2, 4}, mc::world::Block::Grass);
+    assert(priority.particles().size() == priority.particleLimit());
+    assert(priority.weatherParticleCount() + 64U == weatherBeforeBreak);
+
+    // Landing splashes retain their own density multiplier: 疯狂 produces
+    // twelve droplets per sampled landing rather than flattening back to four.
+    mc::render::ParticleSystem crazyWeather;
+    crazyWeather.setLevelScale(3.0F);
+    assert(crazyWeather.particleLimit() == 24000U);
+    assert(crazyWeather.weatherParticleLimit() == 18000U);
+    crazyWeather.spawnRainSplash({0.0F, 2.0F, 0.0F});
+    assert(crazyWeather.particles().size() == 12U);
     return 0;
 }

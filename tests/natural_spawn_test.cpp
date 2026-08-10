@@ -110,6 +110,12 @@ int main() {
     assert(monsters <= 17U + 4U);
     // 1.16.1 keeps the ring around the player clear.
     assert(countInsideRing(entities, player) == 0U);
+    // Every group member was validated with its complete species AABB, not just
+    // the first member's feet cell.
+    for (const auto& entity : entities.entities()) {
+        assert(mc::gameplay::EntitySystem::canOccupy(
+            world, entity.position, entity.dimensions()));
+    }
 
     // Peaceful worlds never host natural hostiles, so the same dark surface
     // stays empty.

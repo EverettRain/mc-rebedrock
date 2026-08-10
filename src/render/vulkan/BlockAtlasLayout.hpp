@@ -1,0 +1,55 @@
+#pragma once
+
+// The fixed layer layout of the block/entity/effect texture array, shared by
+// the texture baker (TextureManager, which places each source image on its
+// layer) and the renderer's draw passes and sky shader (which sample those
+// layers). Keeping the bases in one header means the two sides can never drift
+// when the atlas layout changes.
+
+#include <cstddef>
+#include <cstdint>
+
+namespace mc::render {
+
+// The animated water/lava frame counts baked into the special section.
+inline constexpr std::uint32_t kWaterAnimationFrameCount = 32;
+inline constexpr std::uint32_t kLavaStillFrameCount = 20;
+inline constexpr std::uint32_t kLavaFlowFrameCount = 16;
+
+// The block/entity/effect atlas opens with a fixed special section (the
+// animated water/lava frames, the player-skin cuboids, the chest parts, the
+// destroy stages, the sun and the moon phases), in a deterministic order so the
+// mesher and the sky shader can keep constexpr bases for them. After it come the
+// block textures, resolved by name from the block registry at startup (no
+// placeholders — every layer is a real texture), then one layer per registered
+// item. The total is computed at runtime from the built atlas.
+inline constexpr std::uint32_t kWaterStillLayer = 0U;
+inline constexpr std::uint32_t kWaterFlowLayer = 32U;
+inline constexpr std::uint32_t kLavaStillLayer = 64U;
+inline constexpr std::uint32_t kLavaFlowLayer = 84U;
+// The first block-texture layer: everything before it is the fixed special
+// section (water 0-63, lava 64-99, player skin 100-135, destroy 136-145, chest
+// parts 146-163, chest item faces 164-166, furnace 167-168, moon 169-176,
+// sun 177).
+inline constexpr std::uint32_t kFirstBlockTextureLayer = 178U;
+inline constexpr float kPlayerHeadFirstLayer = 100.0F;
+inline constexpr float kPlayerBodyFirstLayer = 106.0F;
+inline constexpr float kPlayerRightArmFirstLayer = 112.0F;
+inline constexpr float kPlayerLeftArmFirstLayer = 118.0F;
+inline constexpr float kPlayerRightLegFirstLayer = 124.0F;
+inline constexpr float kPlayerLeftLegFirstLayer = 130.0F;
+inline constexpr float kDestroyStageFirstLayer = 136.0F;
+inline constexpr float kChestBaseFirstLayer = 146.0F;
+inline constexpr float kChestLidFirstLayer = 152.0F;
+inline constexpr float kChestItemTopLayer = 164.0F;
+inline constexpr float kChestItemFrontLayer = 165.0F;
+inline constexpr float kChestItemSideLayer = 166.0F;
+inline constexpr float kFurnaceFrontLayer = 167.0F;
+// Eight vanilla moon_phases.png tiles (4x2 grid) fill the fixed layers 169-176
+// and sun.png sits at 177. The sky shader reads them through the
+// CameraUniform.celestialLayers uniform (which the renderer fills from these
+// bases), so the two never drift when the atlas layout changes.
+inline constexpr float kMoonPhaseFirstLayer = 169.0F;
+inline constexpr float kSunLayer = 177.0F;
+
+} // namespace mc::render

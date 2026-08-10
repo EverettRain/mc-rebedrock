@@ -108,4 +108,53 @@ VkFormat VulkanResources::chooseDepthFormat() const {
     throw std::runtime_error("No supported Vulkan depth format was found");
 }
 
+VkCommandBuffer VulkanResources::beginSingleUseCommands() const {
+    auto allocateInfo =
+        vkStructure<VkCommandBufferAllocateInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
+    allocateInfo.commandPool = commandPool_;
+    allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocateInfo.commandBufferCount = 1;
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    checkVk(vkAllocateCommandBuffers(device_, &allocateInfo, &commandBuffer),
+            "vkAllocateCommandBuffers");
+    auto beginInfo =
+        vkStructure<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    checkVk(vkBeginCommandBuffer(commandBuffer, &beginInfo), "vkBeginCommandBuffer");
+    return commandBuffer;
+}
+
+void VulkanResources::endSingleUseCommands(VkCommandBuffer commandBuffer) const {
+    checkVk(vkEndCommandBuffer(commandBuffer), "vkEndCommandBuffer");
+    auto submitInfo = vkStructure<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    checkVk(vkQueueSubmit(graphicsQueue_, 1, &submitInfo, VK_NULL_HANDLE), "vkQueueSubmit");
+    checkVk(vkQueueWaitIdle(graphicsQueue_), "vkQueueWaitIdle");
+    vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
+}
+
+void VulkanResources::transitionTextureImage(const AllocatedImage& image, std::uint32_t layerCount,
+                                             VkImageLayout oldLayout, VkImageLayout newLayout,
+                                             VkAccessFlags sourceAccess,
+                                             VkAccessFlags destinationAccess,
+                                             VkPipelineStageFlags sourceStage,
+                                             VkPipelineStageFlags destinationStage) const {
+    const auto commandBuffer = beginSingleUseCommands();
+    auto barrier = vkStructure<VkImageMemoryBarrier>(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image.image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.layerCount = layerCount;
+    barrier.srcAccessMask = sourceAccess;
+    barrier.dstAccessMask = destinationAccess;
+    vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1,
+                         &barrier);
+    endSingleUseCommands(commandBuffer);
+}
+
 } // namespace mc::render

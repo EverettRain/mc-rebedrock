@@ -229,9 +229,12 @@ add_executable(mc_rebedrock
     src/render/TestScene.cpp
     src/render/vulkan/VulkanRenderer.cpp
     src/render/vulkan/VulkanResources.cpp
+    src/render/vulkan/TextureManager.cpp
+    src/render/vulkan/BlockAtlasBaker.cpp
     src/render/vulkan/GpuSceneBuffer.cpp
     src/render/vulkan/OffscreenTarget.cpp
     src/ui/HudLayout.cpp
+    src/ui/MenuGeometry.cpp
     src/ui/BitmapFontMetrics.cpp
     src/ui/Language.cpp
     src/ui/TextFont.cpp

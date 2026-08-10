@@ -14,10 +14,10 @@ class World;
 
 namespace mc::render {
 
-// A falling rain drop, CPU-simulated. The three render modes (贴图雨 texture
-// sheets, 粒子雨 legacy per-particle draws, 异步粒子雨 instanced SSBO draws)
-// consume the SAME drops so the paths can be compared with identical
-// simulation: only the draw strategy differs.
+// A falling rain drop, CPU-simulated. 粒子雨 and 异步粒子雨 consume these same
+// drops so their draw backends remain directly comparable. 贴图雨 follows the
+// vanilla column renderer instead; the drops still drive its impact splashes
+// and weather audio, but are not turned into giant billboards.
 struct RainDrop final {
     glm::vec3 position{0.0F};
     float size = 0.03F;
@@ -48,14 +48,17 @@ struct RainSplash final {
     glm::vec3 position{0.0F};
     bool onWater = false;
     glm::vec2 direction{0.0F};
+    // tickRainSplashing's sampled RAIN particle is one original-style upward
+    // droplet; simulated drop landings use the existing multi-droplet spray.
+    bool sampledImpact = false;
 };
 
 // Advances the rain for one frame. Collision is NOT per drop per frame: only
 // the first drop to enter a column probes the world (scanning the column for
 // its topmost surface, then caching it); every drop after that just falls to
-// the cached surface and splashes there. That turns the 36,000-drop crazy
-// storm from 36,000 world lookups a frame into a handful of probes plus cheap
-// cache reads, which is what lets the field span a much bigger box (taller and
+// the cached surface and splashes there. That turns a large storm from
+// thousands of world lookups a frame into a handful of probes plus cheap cache
+// reads, which is what lets the field span a much bigger box (taller and
 // wider) so tall roofs stop passing rain through and splashes appear farther
 // out. The cache refreshes on a short staleness window and clears when it
 // outgrows its cap, so edits to the world and a moving camera re-probe.
@@ -66,6 +69,13 @@ class RainSystem final {
     // ones that reach their column's surface, respawning them at the top.
     void update(float deltaSeconds, const glm::vec3& cameraPosition, float intensity,
                 std::size_t targetCount, const world::World& world, const glm::vec2& wind);
+
+    // WorldRenderer#tickRainSplashing's visual half for texture rain. At 20 TPS
+    // it samples nearby MOTION_BLOCKING columns and appends one impact event at
+    // the exact solid collision top or fluid surface. This is independent of
+    // the texture mode's deliberately small simulated-drop population.
+    void emitTextureImpacts(float deltaSeconds, const glm::vec3& cameraPosition,
+                            float intensity, const world::World& world);
 
     // Selects the collision strategy. With the cache on (default) the first
     // drop to enter a column probes its surface and the rest fall to the cached
@@ -83,6 +93,15 @@ class RainSystem final {
     // old per-drop-per-frame cost into a handful of probes.
     [[nodiscard]] std::size_t lastUpdateLookups() const { return lastUpdateLookups_; }
 
+    // Returns the top of the first precipitation-blocking surface in a column,
+    // using the same bounded cache as falling drops. The vanilla-style texture
+    // renderer uses this like MOTION_BLOCKING heightmap data: its vertical rain
+    // strip starts at this height, keeping rain above roofs instead of drawing
+    // the strip through the room below. -1 means no surface was found within
+    // the probe span below `ceiling`.
+    [[nodiscard]] float precipitationSurfaceY(const world::World& world, int blockX, int blockZ,
+                                              float ceiling);
+
   private:
     // One cached column surface: the top Y of the topmost collision/fluid block
     // at-or-below the spawn ceiling, whether it is water, and when it was probed.
@@ -95,8 +114,8 @@ class RainSystem final {
     // The cached surface for a column, probing (and caching) on a miss or when
     // the entry has gone stale. The probe scans down from the ceiling — the top
     // of the spawn window — so it finds roofs and treetops, not just the ground.
-    [[nodiscard]] ColumnSurface columnSurface(
-        const world::World& world, int blockX, int blockZ, float ceiling);
+    [[nodiscard]] ColumnSurface columnSurface(const world::World& world, int blockX, int blockZ,
+                                              float ceiling);
 
     // Picks a fresh column in the box around the camera, places the drop above
     // that column's surface (so it always falls a little way and lands, never
@@ -122,6 +141,8 @@ class RainSystem final {
     std::unordered_map<std::uint64_t, glm::vec2> wallCache_;
     std::uint32_t randomState_ = 0x5EED41U;
     float timeSeconds_ = 0.0F;
+    float textureImpactAccumulator_ = 0.0F;
+    std::uint64_t textureImpactTick_ = 0U;
     std::size_t lastUpdateLookups_ = 0U;
     bool useCollisionCache_ = true;
 };

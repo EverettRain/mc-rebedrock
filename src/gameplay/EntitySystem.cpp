@@ -15,7 +15,11 @@
 namespace mc::gameplay {
 namespace {
 
-constexpr float kGravity = 0.04F;      // matches the item-entity fall rate
+// LivingEntity travel uses twice the gravity of an item entity, then applies
+// vertical air drag after moving. Reusing the item's 0.04 made hit mobs float
+// for almost twice as long as the player/vanilla trajectory.
+constexpr float kGravity = 0.08F;
+constexpr float kVerticalAirDrag = 0.98F;
 constexpr float kGroundOffset = 0.001F;
 // MobEntity#getMinAmbientSoundDelay: the base-class idle-sound interval. None
 // of the built-in species overrides it, so every mob resets its ambient
@@ -205,6 +209,33 @@ bool EntitySystem::boxIntersectsWorld(
     return false;
 }
 
+bool EntitySystem::canOccupy(
+    const world::World& world,
+    glm::vec3 position,
+    entities::EntityDimensions dimensions) {
+    const float half = dimensions.width * 0.5F;
+    return !boxIntersectsWorld(
+        world,
+        {position.x - half, position.y, position.z - half},
+        {position.x + half, position.y + dimensions.height, position.z + half});
+}
+
+bool EntitySystem::intersectsBlock(int x, int y, int z) const {
+    const glm::vec3 blockMinimum{
+        static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
+    const glm::vec3 blockMaximum = blockMinimum + glm::vec3{1.0F};
+    for (const auto& entity : entities_) {
+        if (entity.damage.deathTicks >= kDeathTicks || entity.position.y < kDespawnBelowY) {
+            continue;
+        }
+        if (boxesOverlap(entity.boundingBoxMinimum(), entity.boundingBoxMaximum(),
+                         blockMinimum, blockMaximum)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void EntitySystem::moveWithCollisions(
     const world::World& world,
     SimpleEntity& entity,
@@ -217,6 +248,64 @@ void EntitySystem::moveWithCollisions(
             {feet.x - half, feet.y, feet.z - half},
             {feet.x + half, feet.y + box.height, feet.z + half});
     };
+    // A spawn, restored save, or block placed around a creature can leave the
+    // starting box already intersecting terrain. The axis solver below assumes
+    // its zero-distance endpoint is safe, so recover to the closest free face
+    // first; otherwise every small AI move bisects back to the same trapped
+    // position forever.
+    if (collidesAt(entity.position)) {
+        const glm::vec3 minimum = entity.boundingBoxMinimum();
+        const glm::vec3 maximum = entity.boundingBoxMaximum();
+        const int minX = floorToInt(minimum.x + kCollisionEpsilon);
+        const int maxX = floorToInt(maximum.x - kCollisionEpsilon);
+        const int minY = floorToInt(minimum.y + kCollisionEpsilon);
+        const int maxY = floorToInt(maximum.y - kCollisionEpsilon);
+        const int minZ = floorToInt(minimum.z + kCollisionEpsilon);
+        const int maxZ = floorToInt(maximum.z - kCollisionEpsilon);
+        std::optional<glm::vec3> nearestFree;
+        float nearestDistanceSquared = std::numeric_limits<float>::max();
+        constexpr float separation = kCollisionEpsilon * 2.0F;
+        const auto consider = [&](glm::vec3 candidate) {
+            if (collidesAt(candidate)) {
+                return;
+            }
+            const glm::vec3 offset = candidate - entity.position;
+            const float distanceSquared = glm::dot(offset, offset);
+            if (distanceSquared < nearestDistanceSquared) {
+                nearestDistanceSquared = distanceSquared;
+                nearestFree = candidate;
+            }
+        };
+        for (int y = minY; y <= maxY; ++y) {
+            if (y < 0 || y >= world::kWorldHeight) {
+                continue;
+            }
+            for (int z = minZ; z <= maxZ; ++z) {
+                for (int x = minX; x <= maxX; ++x) {
+                    if (!world::hasCollision(world.block(x, y, z))) {
+                        continue;
+                    }
+                    glm::vec3 candidate = entity.position;
+                    candidate.x = static_cast<float>(x) - half - separation;
+                    consider(candidate);
+                    candidate.x = static_cast<float>(x + 1) + half + separation;
+                    consider(candidate);
+                    candidate = entity.position;
+                    candidate.z = static_cast<float>(z) - half - separation;
+                    consider(candidate);
+                    candidate.z = static_cast<float>(z + 1) + half + separation;
+                    consider(candidate);
+                    candidate = entity.position;
+                    candidate.y = static_cast<float>(y + 1) + separation;
+                    consider(candidate);
+                }
+            }
+        }
+        if (nearestFree.has_value()) {
+            entity.position = *nearestFree;
+            entity.previousPosition = entity.position;
+        }
+    }
     // Vanilla resolves Y first, then the horizontal axes, and bisects toward the
     // contact so a creature ends up flush against the surface it hit.
     const auto moveAxis = [&](int axis, float amount) {
@@ -350,36 +439,46 @@ std::optional<EntityRayHit> EntitySystem::raycast(
     }
     const glm::vec3 unit = direction / std::sqrt(lengthSquared);
     std::optional<EntityRayHit> nearest;
-    // Walk only the sections the ray passes through and test the creatures
-    // bucketed there, instead of scanning the whole herd.
+    std::vector<std::uint8_t> tested(entities_.size(), 0U);
+    // An entity is indexed by its feet/centre section, but its AABB can cross a
+    // section face. Probe the immediate neighbours of every ray section so a
+    // ray through (for example) a cow's upper body in section Y+1 still sees
+    // the cow whose feet are bucketed in section Y. `tested` keeps an entity
+    // spanning several visited neighbourhoods from being evaluated repeatedly.
     const auto testSection = [&](EntitySection section) {
-        const auto found = sections_.find(section);
-        if (found == sections_.end()) {
-            return;
-        }
-        // Vanilla inflates the target box slightly (Entity#getTargetingMargin is
-        // zero for a pig, but the pick box still grows by 0.3 on each side).
-        constexpr float margin = 0.3F;
-        for (const std::size_t index : found->second) {
-            const auto& entity = entities_[index];
-            // Skip only creatures that are no longer in the world (despawned or
-            // finished their death animation). A body mid-death still has its
-            // collision box and keeps blocking the ray, exactly like vanilla's
-            // still-present (but dying) entity stays pickable until removed —
-            // otherwise a one-hit kill in creative would let the dig reach the
-            // block behind the corpse. Whether the creature can take damage is a
-            // separate question, answered by hurt().
-            if (entity.damage.deathTicks >= kDeathTicks || entity.position.y < kDespawnBelowY) {
-                continue;
-            }
-            const auto hit = rayBoxDistance(
-                origin, unit, entity.boundingBoxMinimum() - glm::vec3{margin},
-                entity.boundingBoxMaximum() + glm::vec3{margin});
-            if (!hit.has_value() || *hit > reach) {
-                continue;
-            }
-            if (!nearest.has_value() || *hit < nearest->distance) {
-                nearest = EntityRayHit{entity.id, *hit};
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dz = -1; dz <= 1; ++dz) {
+                    const auto found = sections_.find(
+                        EntitySection{section.chunkX + dx, section.sectionY + dy,
+                                      section.chunkZ + dz});
+                    if (found == sections_.end()) {
+                        continue;
+                    }
+                    for (const std::size_t index : found->second) {
+                        if (index >= entities_.size() || tested[index] != 0U) {
+                            continue;
+                        }
+                        tested[index] = 1U;
+                        const auto& entity = entities_[index];
+                        // Skip only creatures that are no longer in the world
+                        // (despawned or finished their death animation). A body
+                        // mid-death remains pickable until removal.
+                        if (entity.damage.deathTicks >= kDeathTicks ||
+                            entity.position.y < kDespawnBelowY) {
+                            continue;
+                        }
+                        const auto hit = rayBoxDistance(
+                            origin, unit, entity.boundingBoxMinimum(),
+                            entity.boundingBoxMaximum());
+                        if (!hit.has_value() || *hit > reach) {
+                            continue;
+                        }
+                        if (!nearest.has_value() || *hit < nearest->distance) {
+                            nearest = EntityRayHit{entity.id, *hit};
+                        }
+                    }
+                }
             }
         }
     };
@@ -428,8 +527,13 @@ bool EntitySystem::hurt(std::uint64_t entityId, float amount, glm::vec3 knockbac
         entity.velocity.x = entity.velocity.x * 0.5F + away.x * inverse;
         entity.velocity.z = entity.velocity.z * 0.5F + away.z * inverse;
     }
-    entity.velocity.y = entity.velocity.y * 0.5F + 0.4F;
-    entity.velocity.y = std::min(entity.velocity.y, 0.4F);
+    // Vanilla only supplies the vertical lift while the target is grounded.
+    // An accepted follow-up hit in mid-air still refreshes horizontal
+    // knockback, but cannot reset the target to another full jump arc.
+    if (entity.onGround) {
+        entity.velocity.y = std::min(entity.velocity.y * 0.5F + kKnockbackStrength,
+                                     kKnockbackStrength);
+    }
     // playHurtSound's resetSoundDelay: a landed hit pushes the next idle sound
     // back, so a mob being mauled stops its ambient chatter mid-fight.
     entity.ambientSoundChance = -kMinAmbientSoundDelay;
@@ -596,12 +700,12 @@ EntityTickResult EntitySystem::tick(
             entity.velocity.x += std::sin(entity.yaw) * acceleration;
             entity.velocity.z += std::cos(entity.yaw) * acceleration;
         }
-        entity.velocity.y -= kGravity;
-
+        // LivingEntity#travel moves with the current velocity first. Gravity
+        // and vertical drag prepare the velocity for the next tick; applying
+        // gravity before movement shortens the first step but, together with
+        // the old item gravity, greatly lengthened the whole knockback arc.
         moveWithCollisions(world, entity, entity.velocity);
-        if (entity.onGround) {
-            entity.velocity.y = 0.0F;
-        }
+        entity.velocity.y = (entity.velocity.y - kGravity) * kVerticalAirDrag;
         const float drag =
             groundedBeforeMovement ? kHorizontalDrag * kGroundSlipperiness : kHorizontalDrag;
         entity.velocity.x *= drag;

@@ -12,6 +12,7 @@ resources/vanilla/
 # ── 本地开发文档 ────────────────────────────────────────────────
 # 面向本地/agent 的详细文档（原 README 全量内容），不入库
 AGENT.md
+CLAUDE.md
 # 设计/实现报告等本地文档
 docs/
 
@@ -28,6 +29,8 @@ build/
 .cache/
 cmake-build-*/
 compile_commands.json
+-d=/
+net/
 # 备份文件
 *.bak
 # 编译产物兜底（正常只出现在 build/ 内）

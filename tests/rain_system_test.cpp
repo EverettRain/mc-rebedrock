@@ -51,13 +51,19 @@ int main() {
     }
     assert(rain.drops().size() == 1500U);
 
+    // The texture renderer consumes the same cached MOTION_BLOCKING result to
+    // clamp its vertical strips: the central column starts on the roof, while
+    // a column outside the slab starts on the floor.
+    assert(rain.precipitationSurfaceY(world, 8, 8, camera.y + 32.0F) == 7.0F);
+    assert(rain.precipitationSurfaceY(world, 20, 8, camera.y + 32.0F) == 1.0F);
+
     // The roof fix: a drop over the roof slab (blockX/Z in 4..12) never falls
     // below it — the cached surface is the roof top, so drops land on y=7
     // instead of passing through into the chamber at y<6. Drops outside the
     // slab land on the floor at y=1 and never dig under it.
     for (const auto& drop : rain.drops()) {
-        if (drop.position.x >= 4.0F && drop.position.x < 13.0F &&
-            drop.position.z >= 4.0F && drop.position.z < 13.0F) {
+        if (drop.position.x >= 4.0F && drop.position.x < 13.0F && drop.position.z >= 4.0F &&
+            drop.position.z < 13.0F) {
             assert(drop.position.y >= 6.0F);
         } else {
             assert(drop.position.y >= 1.0F);
@@ -69,6 +75,28 @@ int main() {
     for (const auto& splash : rain.splashes()) {
         assert(splash.position.y == 7.0F || splash.position.y == 1.0F);
     }
+
+    // Texture rain follows WorldRenderer#tickRainSplashing instead of waiting
+    // for its small sound/drop population to land. Give the left side a water
+    // surface at y=1 and the right side solid ground at y=1; one full-rain tick
+    // must sample visible impacts on both kinds of surface.
+    for (int z = -2; z <= 18; ++z) {
+        for (int x = -2; x <= 18; ++x) {
+            world.setBlock(x, 1, z, x <= 3 ? mc::world::Block::Water
+                                           : mc::world::Block::Stone);
+        }
+    }
+    mc::render::RainSystem textureRain;
+    textureRain.emitTextureImpacts(1.0F / 20.0F, camera, 1.0F, world);
+    bool sawWaterImpact = false;
+    bool sawGroundImpact = false;
+    for (const auto& impact : textureRain.splashes()) {
+        assert(impact.sampledImpact);
+        sawWaterImpact = sawWaterImpact || impact.onWater;
+        sawGroundImpact = sawGroundImpact || !impact.onWater;
+    }
+    assert(sawWaterImpact);
+    assert(sawGroundImpact);
 
     // The wider field: with the ±24 box, drops reach beyond the old ±16 so the
     // rain (and its splashes) read at a distance.
@@ -122,8 +150,8 @@ int main() {
     for (int frame = 0; frame < 240; ++frame) {
         wallRain.update(1.0F / 60.0F, wallCamera, 1.0F, 1500U, wallWorld, wallWind);
         for (const auto& splash : wallRain.splashes()) {
-            if (std::abs(splash.position.x - 11.0F) < 1.0F &&
-                splash.position.y > 1.0F && splash.position.y <= 26.0F) {
+            if (std::abs(splash.position.x - 11.0F) < 1.0F && splash.position.y > 1.0F &&
+                splash.position.y <= 26.0F) {
                 sawWallSplash = true;
                 // The wind blows +x into the wall, so the cached wall-face
                 // direction must spray the droplets back toward -x.

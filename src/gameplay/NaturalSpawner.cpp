@@ -207,12 +207,17 @@ void NaturalSpawner::spawnOnce(const world::World& world, EntitySystem& entities
         entry.minGroup + static_cast<int>(
             randomUnit(randomState_) * static_cast<float>(entry.maxGroup - entry.minGroup + 1));
     // Spawn the group side by side so overlapping boxes push apart instead of
-    // stacking into one column.
+    // stacking into one column. Validate every member's complete species AABB:
+    // later members extend into neighbouring cells and tall mobs need headroom,
+    // neither of which the single feet-cell probe above can establish.
     for (int index = 0; index < groupSize; ++index) {
-        entities.spawn({static_cast<float>(spawnX) + 0.5F + static_cast<float>(index) * 0.4F,
-                        static_cast<float>(spawnY) + 0.05F,
-                        static_cast<float>(spawnZ) + 0.5F},
-                       entry.type);
+        const glm::vec3 position{
+            static_cast<float>(spawnX) + 0.5F + static_cast<float>(index) * 0.4F,
+            static_cast<float>(spawnY) + 0.05F,
+            static_cast<float>(spawnZ) + 0.5F};
+        if (EntitySystem::canOccupy(world, position, entry.type.dimensions())) {
+            entities.spawn(position, entry.type);
+        }
     }
 }
 

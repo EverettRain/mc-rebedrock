@@ -45,6 +45,45 @@ constexpr std::size_t kSurfaceCacheLimit = 4096U;
 // entry per height a drop crossed it at, so a long wall can accumulate).
 constexpr std::size_t kWallCacheLimit = 2048U;
 
+// java.util.Random, used here because WorldRenderer seeds tickRainSplashing
+// from the weather tick. Keeping its 48-bit sequence preserves the original's
+// stable impact distribution without coupling it to simulated-drop RNG state.
+class VanillaRandom final {
+public:
+    explicit VanillaRandom(std::uint64_t seed)
+        : state_((seed ^ kMultiplier) & kMask) {}
+
+    [[nodiscard]] int nextInt(int bound) {
+        const std::uint32_t bits = nextBits(31);
+        const std::uint32_t unsignedBound = static_cast<std::uint32_t>(bound);
+        std::uint32_t value = bits % unsignedBound;
+        std::uint32_t candidate = bits;
+        while (static_cast<std::uint64_t>(candidate - value) + unsignedBound - 1U >=
+               (1ULL << 31U)) {
+            candidate = nextBits(31);
+            value = candidate % unsignedBound;
+        }
+        return static_cast<int>(value);
+    }
+
+    [[nodiscard]] double nextDouble() {
+        const std::uint64_t high = nextBits(26);
+        const std::uint64_t low = nextBits(27);
+        return static_cast<double>((high << 27U) + low) / 9007199254740992.0;
+    }
+
+private:
+    [[nodiscard]] std::uint32_t nextBits(int bits) {
+        state_ = (state_ * kMultiplier + kAddend) & kMask;
+        return static_cast<std::uint32_t>(state_ >> (48 - bits));
+    }
+
+    static constexpr std::uint64_t kMultiplier = 0x5DEECE66DULL;
+    static constexpr std::uint64_t kAddend = 0xBULL;
+    static constexpr std::uint64_t kMask = (1ULL << 48U) - 1ULL;
+    std::uint64_t state_ = 0U;
+};
+
 } // namespace
 
 float RainSystem::randomUnit() {
@@ -72,8 +111,8 @@ std::uint64_t RainSystem::wallKey(int blockX, int blockZ, int blockY) {
            (static_cast<std::uint64_t>(blockY) << 48);
 }
 
-RainSystem::ColumnSurface RainSystem::columnSurface(
-    const world::World& world, int blockX, int blockZ, float ceiling) {
+RainSystem::ColumnSurface RainSystem::columnSurface(const world::World& world, int blockX,
+                                                    int blockZ, float ceiling) {
     const std::uint64_t key = columnKey(blockX, blockZ);
     const auto found = surfaceCache_.find(key);
     if (found != surfaceCache_.end() &&
@@ -102,8 +141,69 @@ RainSystem::ColumnSurface RainSystem::columnSurface(
     return surface;
 }
 
-void RainSystem::respawnDrop(
-    RainDrop& drop, const glm::vec3& cameraPosition, const world::World& world) {
+float RainSystem::precipitationSurfaceY(const world::World& world, int blockX, int blockZ,
+                                        float ceiling) {
+    return columnSurface(world, blockX, blockZ, ceiling).surfaceY;
+}
+
+void RainSystem::emitTextureImpacts(float deltaSeconds, const glm::vec3& cameraPosition,
+                                    float intensity, const world::World& world) {
+    constexpr float kWeatherTickSeconds = 1.0F / 20.0F;
+    textureImpactAccumulator_ += std::max(deltaSeconds, 0.0F);
+    const glm::ivec3 cameraBlock{
+        static_cast<int>(std::floor(cameraPosition.x)),
+        static_cast<int>(std::floor(cameraPosition.y)),
+        static_cast<int>(std::floor(cameraPosition.z)),
+    };
+    while (textureImpactAccumulator_ >= kWeatherTickSeconds) {
+        textureImpactAccumulator_ -= kWeatherTickSeconds;
+        ++textureImpactTick_;
+        const float gradient = std::clamp(intensity, 0.0F, 1.0F);
+        const int sampleCount = static_cast<int>(100.0F * gradient * gradient);
+        VanillaRandom random{textureImpactTick_ * 312987231ULL};
+        for (int sample = 0; sample < sampleCount; ++sample) {
+            const int blockX = cameraBlock.x + random.nextInt(21) - 10;
+            const int blockZ = cameraBlock.z + random.nextInt(21) - 10;
+            // A +32 probe finds a roof above the accepted +10 impact window;
+            // that column is then rejected instead of incorrectly splashing on
+            // an indoor floor beneath the roof.
+            const ColumnSurface surface =
+                columnSurface(world, blockX, blockZ, cameraPosition.y + kSpawnMax);
+            if (surface.surfaceY <= 1.0F ||
+                surface.surfaceY > static_cast<float>(cameraBlock.y + 11) ||
+                surface.surfaceY < static_cast<float>(cameraBlock.y - 9)) {
+                continue;
+            }
+            const int blockY = static_cast<int>(std::floor(surface.surfaceY)) - 1;
+            const float localX = static_cast<float>(random.nextDouble());
+            const float localZ = static_cast<float>(random.nextDouble());
+            const world::Block block = world.block(blockX, blockY, blockZ);
+            float localSurfaceHeight = 1.0F;
+            if (surface.water) {
+                const std::uint8_t level = world.fluidLevel(blockX, blockY, blockZ);
+                localSurfaceHeight = level >= 8U
+                    ? 1.0F
+                    : static_cast<float>(8U - level) / 9.0F;
+            } else if (world::isFarmland(block)) {
+                localSurfaceHeight = world::kFarmlandModelHeight;
+            } else if (block == world::Block::Chest) {
+                // The vanilla chest collision box is 14/16 blocks high.
+                localSurfaceHeight = 14.0F / 16.0F;
+            }
+            splashes_.push_back(RainSplash{
+                {static_cast<float>(blockX) + localX,
+                 static_cast<float>(blockY) + localSurfaceHeight,
+                 static_cast<float>(blockZ) + localZ},
+                surface.water,
+                {0.0F, 0.0F},
+                true,
+            });
+        }
+    }
+}
+
+void RainSystem::respawnDrop(RainDrop& drop, const glm::vec3& cameraPosition,
+                             const world::World& world) {
     const float ceiling = cameraPosition.y + kSpawnMax;
     // Pick a column whose surface the drop can spawn above. A column covered by
     // a roof higher than the spawn window would materialise the drop indoors,
@@ -124,17 +224,16 @@ void RainSystem::respawnDrop(
             // Spawn anywhere between just above the surface and the window top,
             // spread at random so the field reads as continuous rain instead of
             // a synchronized sheet.
-            const float lowerBound = std::max(cameraPosition.y + kSpawnMin,
-                                              surface.surfaceY + kDropClearance);
+            const float lowerBound =
+                std::max(cameraPosition.y + kSpawnMin, surface.surfaceY + kDropClearance);
             drop.targetSurface = surface.surfaceY;
             drop.position = {x, lowerBound + randomUnit() * (ceiling - lowerBound), z};
         } else {
             // Nothing found in the probe span (deep void): free fall until the
             // drop respawns below the camera.
             drop.targetSurface = -1.0F;
-            drop.position = {x, cameraPosition.y + kSpawnMin +
-                                    randomUnit() * (kSpawnMax - kSpawnMin),
-                             z};
+            drop.position = {
+                x, cameraPosition.y + kSpawnMin + randomUnit() * (kSpawnMax - kSpawnMin), z};
         }
         drop.size = 0.03F + randomUnit() * 0.02F;
         // Each drop carries its own slight wind offset so the slant reads as a
@@ -168,14 +267,13 @@ void RainSystem::respawnDropFree(RainDrop& drop, const glm::vec3& cameraPosition
 }
 
 void RainSystem::update(float deltaSeconds, const glm::vec3& cameraPosition, float intensity,
-                        std::size_t targetCount, const world::World& world,
-                        const glm::vec2& wind) {
+                        std::size_t targetCount, const world::World& world, const glm::vec2& wind) {
     timeSeconds_ += deltaSeconds;
     lastUpdateLookups_ = 0U;
-    const std::size_t desired = intensity <= 0.02F
-        ? 0U
-        : static_cast<std::size_t>(static_cast<float>(targetCount) *
-                                   std::min(intensity, 1.0F));
+    const std::size_t desired =
+        intensity <= 0.02F
+            ? 0U
+            : static_cast<std::size_t>(static_cast<float>(targetCount) * std::min(intensity, 1.0F));
     while (drops_.size() < desired) {
         RainDrop drop;
         respawnDrop(drop, cameraPosition, world);
@@ -204,17 +302,15 @@ void RainSystem::update(float deltaSeconds, const glm::vec3& cameraPosition, flo
             const bool water = world::isFluid(block);
             if (water || world::hasCollision(block)) {
                 // A solid hit sprays back off the wall; a water hit is radial.
-                const glm::vec2 drift{wind.x + drop.windJitter.x,
-                                      wind.y + drop.windJitter.y};
-                const float driftLength =
-                    std::sqrt(drift.x * drift.x + drift.y * drift.y);
-                const glm::vec2 away = (!water && driftLength > 1e-6F)
-                    ? -drift / driftLength
-                    : glm::vec2{0.0F};
+                const glm::vec2 drift{wind.x + drop.windJitter.x, wind.y + drop.windJitter.y};
+                const float driftLength = std::sqrt(drift.x * drift.x + drift.y * drift.y);
+                const glm::vec2 away =
+                    (!water && driftLength > 1e-6F) ? -drift / driftLength : glm::vec2{0.0F};
                 if (water || randomUnit() < 0.25F) {
                     splashes_.push_back(RainSplash{
                         {drop.position.x, static_cast<float>(blockY) + 1.0F, drop.position.z},
-                        water, away});
+                        water,
+                        away});
                 }
                 respawnDropFree(drop, cameraPosition);
             } else if (drop.position.y < cameraPosition.y - 4.0F) {
@@ -222,100 +318,102 @@ void RainSystem::update(float deltaSeconds, const glm::vec3& cameraPosition, flo
             }
         }
     } else {
-    // Cached collision: the first drop to enter a column probes its surface
-    // once; the rest fall to the cached value with a cheap float compare, plus
-    // a cache re-read when wind drifts a drop into a new column.
-    const float ceiling = cameraPosition.y + kSpawnMax;
-    for (auto& drop : drops_) {
-        // Cross-wind: the whole field drifts downwind while each drop keeps its
-        // own jitter, so the rain falls at an angle instead of straight down.
-        drop.position.x += (wind.x + drop.windJitter.x) * deltaSeconds;
-        drop.position.z += (wind.y + drop.windJitter.y) * deltaSeconds;
-        drop.position.y -= fall;
-        const int blockX = static_cast<int>(std::floor(drop.position.x));
-        const int blockY = static_cast<int>(std::floor(drop.position.y));
-        const int blockZ = static_cast<int>(std::floor(drop.position.z));
-        if (blockX != drop.columnX || blockZ != drop.columnZ) {
-            drop.columnX = blockX;
-            drop.columnZ = blockZ;
-            // Wind drift carries the drop sideways as it falls, so it can meet
-            // a wall at its own height. The wall-face direction is cached the
-            // first time a drop crosses a face; a later drop reaching the same
-            // face splashes in that same fixed direction with a cache read
-            // instead of re-probing the world.
-            const std::uint64_t wall = wallKey(blockX, blockZ, blockY);
-            const auto cachedWall = wallCache_.find(wall);
-            if (cachedWall != wallCache_.end()) {
-                if (randomUnit() < 0.25F) {
-                    splashes_.push_back(RainSplash{
-                        {drop.position.x, static_cast<float>(blockY) + 1.0F, drop.position.z},
-                        false, cachedWall->second});
-                }
-                respawnDrop(drop, cameraPosition, world);
-                continue;
-            }
-            const world::Block current = world.block(blockX, blockY, blockZ);
-            if (world::hasCollision(current) || world::isFluid(current)) {
-                const bool water = world::isFluid(current);
-                if (water) {
-                    // A drop drifting into water splashes radially on the
-                    // surface, like any other water landing.
-                    splashes_.push_back(RainSplash{
-                        {drop.position.x, static_cast<float>(blockY) + 1.0F, drop.position.z},
-                        true, glm::vec2{0.0F}});
-                } else {
-                    // The direction away from the wall is opposite the drift
-                    // that carried the drop into it, so the droplets bounce
-                    // back out; cache it for the drops that follow.
-                    const glm::vec2 drift{wind.x + drop.windJitter.x,
-                                          wind.y + drop.windJitter.y};
-                    const float driftLength =
-                        std::sqrt(drift.x * drift.x + drift.y * drift.y);
-                    const glm::vec2 away = driftLength > 1e-6F
-                        ? -drift / driftLength
-                        : glm::vec2{-1.0F, 0.0F};
-                    wallCache_[wall] = away;
-                    if (wallCache_.size() > kWallCacheLimit) {
-                        wallCache_.clear();
-                    }
+        // Cached collision: the first drop to enter a column probes its surface
+        // once; the rest fall to the cached value with a cheap float compare, plus
+        // a cache re-read when wind drifts a drop into a new column.
+        const float ceiling = cameraPosition.y + kSpawnMax;
+        for (auto& drop : drops_) {
+            // Cross-wind: the whole field drifts downwind while each drop keeps its
+            // own jitter, so the rain falls at an angle instead of straight down.
+            drop.position.x += (wind.x + drop.windJitter.x) * deltaSeconds;
+            drop.position.z += (wind.y + drop.windJitter.y) * deltaSeconds;
+            drop.position.y -= fall;
+            const int blockX = static_cast<int>(std::floor(drop.position.x));
+            const int blockY = static_cast<int>(std::floor(drop.position.y));
+            const int blockZ = static_cast<int>(std::floor(drop.position.z));
+            if (blockX != drop.columnX || blockZ != drop.columnZ) {
+                drop.columnX = blockX;
+                drop.columnZ = blockZ;
+                // Wind drift carries the drop sideways as it falls, so it can meet
+                // a wall at its own height. The wall-face direction is cached the
+                // first time a drop crosses a face; a later drop reaching the same
+                // face splashes in that same fixed direction with a cache read
+                // instead of re-probing the world.
+                const std::uint64_t wall = wallKey(blockX, blockZ, blockY);
+                const auto cachedWall = wallCache_.find(wall);
+                if (cachedWall != wallCache_.end()) {
                     if (randomUnit() < 0.25F) {
                         splashes_.push_back(RainSplash{
-                            {drop.position.x, static_cast<float>(blockY) + 1.0F,
-                             drop.position.z},
-                            false, away});
+                            {drop.position.x, static_cast<float>(blockY) + 1.0F, drop.position.z},
+                            false,
+                            cachedWall->second});
                     }
+                    respawnDrop(drop, cameraPosition, world);
+                    continue;
+                }
+                const world::Block current = world.block(blockX, blockY, blockZ);
+                if (world::hasCollision(current) || world::isFluid(current)) {
+                    const bool water = world::isFluid(current);
+                    if (water) {
+                        // A drop drifting into water splashes radially on the
+                        // surface, like any other water landing.
+                        splashes_.push_back(RainSplash{
+                            {drop.position.x, static_cast<float>(blockY) + 1.0F, drop.position.z},
+                            true,
+                            glm::vec2{0.0F}});
+                    } else {
+                        // The direction away from the wall is opposite the drift
+                        // that carried the drop into it, so the droplets bounce
+                        // back out; cache it for the drops that follow.
+                        const glm::vec2 drift{wind.x + drop.windJitter.x,
+                                              wind.y + drop.windJitter.y};
+                        const float driftLength = std::sqrt(drift.x * drift.x + drift.y * drift.y);
+                        const glm::vec2 away =
+                            driftLength > 1e-6F ? -drift / driftLength : glm::vec2{-1.0F, 0.0F};
+                        wallCache_[wall] = away;
+                        if (wallCache_.size() > kWallCacheLimit) {
+                            wallCache_.clear();
+                        }
+                        if (randomUnit() < 0.25F) {
+                            splashes_.push_back(
+                                RainSplash{{drop.position.x, static_cast<float>(blockY) + 1.0F,
+                                            drop.position.z},
+                                           false,
+                                           away});
+                        }
+                    }
+                    respawnDrop(drop, cameraPosition, world);
+                    continue;
+                }
+                // Re-fetch the new column's surface (a cache read after the first
+                // drop there probed it). A drop that drifted under a newly-overhead
+                // roof is indoors now — respawn it quietly, the way vanilla rain
+                // particles die when they enter cover.
+                const ColumnSurface surface = columnSurface(world, blockX, blockZ, ceiling);
+                if (surface.surfaceY >= 0.0F && surface.surfaceY > drop.position.y) {
+                    respawnDrop(drop, cameraPosition, world);
+                    continue;
+                }
+                drop.targetSurface = surface.surfaceY;
+                drop.surfaceWater = surface.water;
+            }
+            if (drop.targetSurface >= 0.0F && drop.position.y <= drop.targetSurface) {
+                // 1.16.1's RainParticle dies on the surface it is headed for; the
+                // splash is emitted at the block's top face. Only a random fraction
+                // of ground landings emit a visible splash so the continuous rain
+                // never floods the particle list; water, the more visible surface,
+                // splashes every time.
+                if (drop.surfaceWater || randomUnit() < 0.25F) {
+                    splashes_.push_back(
+                        RainSplash{{drop.position.x, drop.targetSurface, drop.position.z},
+                                   drop.surfaceWater,
+                                   glm::vec2{0.0F}});
                 }
                 respawnDrop(drop, cameraPosition, world);
-                continue;
-            }
-            // Re-fetch the new column's surface (a cache read after the first
-            // drop there probed it). A drop that drifted under a newly-overhead
-            // roof is indoors now — respawn it quietly, the way vanilla rain
-            // particles die when they enter cover.
-            const ColumnSurface surface = columnSurface(world, blockX, blockZ, ceiling);
-            if (surface.surfaceY >= 0.0F && surface.surfaceY > drop.position.y) {
+            } else if (drop.position.y < cameraPosition.y - 4.0F) {
                 respawnDrop(drop, cameraPosition, world);
-                continue;
             }
-            drop.targetSurface = surface.surfaceY;
-            drop.surfaceWater = surface.water;
         }
-        if (drop.targetSurface >= 0.0F && drop.position.y <= drop.targetSurface) {
-            // 1.16.1's RainParticle dies on the surface it is headed for; the
-            // splash is emitted at the block's top face. Only a random fraction
-            // of ground landings emit a visible splash so the continuous rain
-            // never floods the particle list; water, the more visible surface,
-            // splashes every time.
-            if (drop.surfaceWater || randomUnit() < 0.25F) {
-                splashes_.push_back(RainSplash{
-                    {drop.position.x, drop.targetSurface, drop.position.z},
-                    drop.surfaceWater, glm::vec2{0.0F}});
-            }
-            respawnDrop(drop, cameraPosition, world);
-        } else if (drop.position.y < cameraPosition.y - 4.0F) {
-            respawnDrop(drop, cameraPosition, world);
-        }
-    }
     }
 }
 

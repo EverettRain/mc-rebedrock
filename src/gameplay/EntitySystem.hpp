@@ -197,12 +197,26 @@ class EntitySystem final {
         bool playerCreative = false,
         float simulationRadius = 0.0F);
 
-    // ProjectileUtil#getEntityCollision: the nearest creature whose box the ray
-    // enters within `reach`. Dead creatures are not targetable.
+    // GameRenderer's crosshair pick: the nearest creature whose targeting box
+    // the ray enters within `reach`. Ordinary 1.16.1 living entities have a
+    // zero targeting margin, so this is their exact physical bounding box.
     [[nodiscard]] std::optional<EntityRayHit> raycast(
         glm::vec3 origin,
         glm::vec3 direction,
         float reach = kAttackReach) const;
+
+    // Whether a creature with these dimensions can stand at `position` without
+    // intersecting a solid block. Spawn systems use the complete AABB rather
+    // than checking only the feet cell, so a mob cannot be born in a wall or
+    // under a ceiling.
+    [[nodiscard]] static bool canOccupy(
+        const world::World& world,
+        glm::vec3 position,
+        entities::EntityDimensions dimensions);
+
+    // Whether a still-present creature overlaps this full block cell. Block
+    // placement uses it alongside the player's overlap check.
+    [[nodiscard]] bool intersectsBlock(int x, int y, int z) const;
 
     // LivingEntity#hurt plus the attacker's knockback. Returns true when the hit
     // landed rather than being swallowed by the invulnerability window.

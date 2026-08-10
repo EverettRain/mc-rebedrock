@@ -1,9 +1,9 @@
 #version 450
 
-// 贴图雨 (texture rain): a few large camera-facing translucent quads sampling
-// the water layer with a scrolling UV, so they read as falling rain bands.
-// Push constants carry the sheet centre/size, scroll time, opacity and layer —
-// no per-sheet descriptor state beyond the shared camera/texture set 0.
+// Vanilla 1.16.1 precipitation column. Each draw is one block-wide vertical
+// strip whose horizontal tangent faces the camera radially. The original
+// 64x256 environment/rain.png repeats every four blocks and scrolls downward;
+// it is not a water tile stretched over a camera-facing square.
 
 layout(binding = 0) uniform CameraUniform {
     mat4 model;
@@ -15,30 +15,46 @@ layout(binding = 0) uniform CameraUniform {
     vec4 renderSettings;
 } camera;
 
-layout(push_constant) uniform RainSheetPush {
-    vec4 positionSize;
-    vec4 timeOpacityLayer;
-} sheet;
+struct RainColumn {
+    vec4 positionBottomWidth;
+    vec4 topOpacityPhaseLight;
+    vec4 tangent;
+};
+
+layout(std430, set = 1, binding = 0) readonly buffer RainColumns {
+    RainColumn records[];
+} columns;
 
 layout(location = 0) out vec2 fragmentUv;
 layout(location = 1) flat out float fragmentOpacity;
-layout(location = 2) flat out float fragmentLayer;
-layout(location = 3) flat out float fragmentTime;
+layout(location = 2) flat out vec2 fragmentSceneLight;
 
+// x is the signed half-width and y selects the bottom/top of the column.
 const vec2 corners[6] = vec2[](
-    vec2(-0.5, -0.5), vec2(0.5, -0.5), vec2(0.5, 0.5),
-    vec2(-0.5, -0.5), vec2(0.5, 0.5), vec2(-0.5, 0.5)
+    vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
+    vec2(-1.0, 0.0), vec2(1.0, 1.0), vec2(-1.0, 1.0)
 );
 
+vec2 decodeSceneLight(float packedLight) {
+    float value = max(packedLight - 1.0, 0.0);
+    return vec2(mod(value, 16.0), floor(value / 16.0)) / 15.0;
+}
+
 void main() {
+    RainColumn sheet = columns.records[gl_InstanceIndex];
     vec2 corner = corners[gl_VertexIndex];
-    vec3 cameraRight = vec3(camera.view[0][0], camera.view[1][0], camera.view[2][0]);
-    vec3 cameraUp = vec3(camera.view[0][1], camera.view[1][1], camera.view[2][1]);
-    vec3 world = sheet.positionSize.xyz +
-        (cameraRight * corner.x + cameraUp * corner.y) * sheet.positionSize.w;
+    vec2 horizontal = sheet.tangent.xy * corner.x * sheet.positionBottomWidth.w;
+    float worldY = mix(sheet.positionBottomWidth.y, sheet.topOpacityPhaseLight.x, corner.y);
+    vec3 world = vec3(sheet.positionBottomWidth.x + horizontal.x,
+                      worldY,
+                      sheet.positionBottomWidth.z + horizontal.y);
     gl_Position = camera.projection * camera.view * vec4(world, 1.0);
-    fragmentUv = corner + vec2(0.5);
-    fragmentOpacity = sheet.timeOpacityLayer.y;
-    fragmentLayer = sheet.timeOpacityLayer.z;
-    fragmentTime = sheet.timeOpacityLayer.x;
+    // The original top vertices use bottomY*0.25 and the bottom vertices use
+    // topY*0.25. Preserve that V orientation before applying its negative
+    // per-column tick scroll.
+    float mirroredY = sheet.positionBottomWidth.y + sheet.topOpacityPhaseLight.x - worldY;
+    fragmentUv = vec2(corner.x * 0.5 + 0.5,
+                      mirroredY * 0.25 + sheet.topOpacityPhaseLight.z);
+    fragmentOpacity = sheet.topOpacityPhaseLight.y;
+    fragmentSceneLight = decodeSceneLight(sheet.topOpacityPhaseLight.w);
 }

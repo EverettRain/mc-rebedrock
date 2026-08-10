@@ -50,12 +50,15 @@ simple versioned history while it is in beta.
   vertex shader expands the camera-facing billboard, so an N-particle burst is
   one `vkCmdDraw` instead of one per particle (a 64-particle block break drops
   from 64 draws to 1).
-- Rain is drawn through three switchable paths that share the same
-  CPU-simulated drops driven by the weather system's smoothed gradient —
-  贴图雨 (a few large scrolled water-sheet quads), 粒子雨 (the legacy
-  per-particle billboards) and 异步粒子雨 (thousands of drops in a single
-  instanced draw from the storage buffer) — so the three strategies are
-  directly comparable.
+- Rain is drawn through three switchable paths. 贴图雨 follows 1.16.1's
+  precipitation-column renderer: native-aspect `environment/rain.png`, stable
+  world-column orientation and scroll phase, heightmap-like roof clipping,
+  distance/rain-gradient alpha and scene light, batched into one instanced draw.
+  Its 20 TPS `tickRainSplashing` pass independently samples nearby solid and
+  fluid surfaces, placing compact impact particles on ground collision tops and
+  the actual rendered water level instead of waiting for texture cards to land.
+  粒子雨 and 异步粒子雨 share the same CPU-simulated drops so their legacy
+  per-particle and storage-buffer backends remain directly comparable.
 - A sun-space shadow depth pre-pass renders the in-frustum opaque terrain into
   an offscreen depth map ahead of the main pass, behind the
   `experimental.sunShadows` option (off by default). The map is infrastructure
@@ -158,6 +161,16 @@ simple versioned history while it is in beta.
 
 ### Changed
 
+- The Vulkan client has been split into focused rendering components without
+  changing its external behaviour: device/bootstrap helpers, texture and block
+  atlas ownership, HUD drawing, world drawing, shared render records and menu
+  geometry now live outside `VulkanRenderer.cpp`. This removes several thousand
+  lines from the central implementation and gives later runtime/gameplay
+  separation explicit rendering boundaries.
+- Ambient weather may now occupy at most 75% of the scaled particle pool. Block
+  breaking and bucket splashes retain a reserved quarter and evict the oldest
+  weather particles when necessary, so interaction feedback remains visible in
+  dense rain; the medium pool grows to 8,000 live particles.
 - Grass and oak-leaf colours are baked into their atlas layers at build time
   per biome (the swamp's dark tone included) instead of being tinted per-vertex
   in the fragment shader, so the biome lookup no longer rides the vertex pad
@@ -174,6 +187,21 @@ simple versioned history while it is in beta.
 
 ### Fixed
 
+- Creature picking now tests the exact living-entity bounding box and probes
+  neighbouring spatial sections, so aiming just beside a mob reaches the block
+  behind it while tall or boundary-straddling mobs remain selectable.
+- Natural spawning now validates every group member's complete species AABB,
+  block placement refuses cells occupied by a creature, and restored or legacy
+  creatures already embedded in terrain recover to the nearest free face.
+- Hit creatures no longer hang in the air: living mobs use 0.08 gravity and
+  0.98 vertical drag after movement, and an airborne follow-up hit no longer
+  restarts the full upward knockback arc.
+- The async rain backend no longer benchmarks five times as many drops as the
+  ordinary particle backend. Both now use the same particle-level budget, and
+  the instanced path reuses one host-side staging allocation and combines the
+  particle/rain copy and cache flush, removing the Windows-heavy per-frame
+  allocation and second flush. Thunderstorms target 6,000 / 12,000 / 18,000
+  drops at medium / high / crazy on both backends.
 - Switching a running world to Peaceful now updates the session difficulty as
   well as player vitals, so existing zombies disappear on the next game tick
   and the natural spawner stops creating new monsters.

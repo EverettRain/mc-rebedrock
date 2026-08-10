@@ -15,6 +15,11 @@ class World;
 
 namespace mc::render {
 
+enum class ParticleCategory : std::uint8_t {
+    Gameplay,
+    Weather,
+};
+
 struct BlockParticle final {
     glm::vec3 position{0.0F};
     glm::vec3 velocity{0.0F};
@@ -25,6 +30,7 @@ struct BlockParticle final {
     float ageSeconds = 0.0F;
     float lifetimeSeconds = 0.8F;
     float opacity = 1.0F;
+    ParticleCategory category = ParticleCategory::Gameplay;
 };
 
 class ParticleSystem final {
@@ -36,6 +42,10 @@ public:
 
     void spawnBlockBreak(const glm::ivec3& blockPosition, world::Block block);
     void spawnWaterSplash(const glm::vec3& position);
+    // One 1.16.1 RainSplashParticle at a sampled solid/fluid impact point.
+    // Water impacts are slightly broader so they remain legible on the moving
+    // water texture; ground impacts keep the original compact sprite.
+    void spawnRainImpact(const glm::vec3& position, bool onWater);
     // A rain drop landing on a water surface or solid ground: a short-lived
     // outward splash like 1.16.1's SplashParticle, kept small so the continuous
     // rain never floods the particle list. A non-zero `direction` (a wall's
@@ -47,6 +57,9 @@ public:
     [[nodiscard]] const std::vector<BlockParticle>& particles() const {
         return particles_;
     }
+    [[nodiscard]] std::size_t particleLimit() const { return particleLimit_; }
+    [[nodiscard]] std::size_t weatherParticleCount() const { return weatherParticleCount_; }
+    [[nodiscard]] std::size_t weatherParticleLimit() const { return weatherParticleLimit_; }
 
 private:
     // The number of particles one event spawns at the current density: the
@@ -56,11 +69,20 @@ private:
 
     [[nodiscard]] float randomUnit();
 
+    // Gameplay feedback has priority over ambient weather. Weather may use at
+    // most 75% of the pool; if gameplay already occupies the reserve and the
+    // pool is full, a new interaction evicts the oldest weather records in one
+    // linear pass before it starts spawning.
+    void reserveGameplayCapacity(std::size_t requested);
+    [[nodiscard]] bool weatherCapacityAvailable() const;
+
     std::vector<BlockParticle> particles_;
     std::uint32_t randomState_ = 0x50415254U;
-    // Live-particle ceiling at the current density; default 3000, scaled by
+    // Live-particle ceiling at the current density; default 8000, scaled by
     // setLevelScale. Every spawn path skips once the list is full.
-    std::size_t particleLimit_ = 3000U;
+    std::size_t particleLimit_ = 8000U;
+    std::size_t weatherParticleLimit_ = 6000U;
+    std::size_t weatherParticleCount_ = 0U;
     float levelScale_ = 1.0F;
 };
 

@@ -9,8 +9,9 @@
 
 namespace mc::render {
 
-// Per-instance record for GPU particle draws. The layout must match the std430
-// buffer in particle_instanced.vert. Three 16-byte vec4s: the seven payload
+// Per-instance record for GPU scene sprites/strips. The layout matches the
+// std430 buffers in particle_instanced.vert and rain_sheet.vert. Three 16-byte
+// vec4s hold the particle payload
 // floats (position3, size, uvOrigin2, uvScale, opacity, textureLayer, packed
 // light) padded to std430's vec4 alignment — the AsyncParticles raw-record
 // pattern, where the CPU writes one compact record per particle and the vertex

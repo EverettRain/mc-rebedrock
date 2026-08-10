@@ -61,8 +61,11 @@ using ColorTarget = DepthTarget;
 class VulkanResources final {
   public:
     VulkanResources() = default;
-    VulkanResources(VkPhysicalDevice physicalDevice, VkDevice device, VmaAllocator allocator)
-        : physicalDevice_(physicalDevice), device_(device), allocator_(allocator) {}
+    VulkanResources(VkPhysicalDevice physicalDevice, VkDevice device, VmaAllocator allocator,
+                    VkCommandPool commandPool = VK_NULL_HANDLE,
+                    VkQueue graphicsQueue = VK_NULL_HANDLE)
+        : physicalDevice_(physicalDevice), device_(device), allocator_(allocator),
+          commandPool_(commandPool), graphicsQueue_(graphicsQueue) {}
 
     [[nodiscard]] AllocatedBuffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                                                bool hostVisible) const;
@@ -76,6 +79,20 @@ class VulkanResources final {
 
     [[nodiscard]] VkImageView createImageView(VkImage image, VkFormat format,
                                               VkImageAspectFlags aspect) const;
+
+    // One-shot command submission on the graphics queue, used by the staging
+    // uploads and layout transitions below. Needs the command pool and graphics
+    // queue, so it is only available when the resources were built with them.
+    [[nodiscard]] VkCommandBuffer beginSingleUseCommands() const;
+    void endSingleUseCommands(VkCommandBuffer commandBuffer) const;
+
+    // Full-subresource image layout transition wrapped in a single-use command
+    // buffer; the caller supplies the access masks and pipeline stages.
+    void transitionTextureImage(const AllocatedImage& image, std::uint32_t layerCount,
+                                VkImageLayout oldLayout, VkImageLayout newLayout,
+                                VkAccessFlags sourceAccess, VkAccessFlags destinationAccess,
+                                VkPipelineStageFlags sourceStage,
+                                VkPipelineStageFlags destinationStage) const;
 
     [[nodiscard]] VkFormat chooseDepthFormat() const;
 
@@ -92,6 +109,8 @@ class VulkanResources final {
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
     VmaAllocator allocator_ = VK_NULL_HANDLE;
+    VkCommandPool commandPool_ = VK_NULL_HANDLE;
+    VkQueue graphicsQueue_ = VK_NULL_HANDLE;
 };
 
 } // namespace mc::render

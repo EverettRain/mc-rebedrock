@@ -40,10 +40,60 @@ float ParticleSystem::randomUnit() {
 
 void ParticleSystem::setLevelScale(float scale) {
     levelScale_ = std::max(scale, 0.1F);
-    // The 3000-particle ceiling rides the density knob: 高 doubles the budget,
-    // 疯狂 triples it, 低 halves it. Long rain plus heavy mining then scales
-    // the same way the spawn counts do.
-    particleLimit_ = static_cast<std::size_t>(3000U * levelScale_);
+    // The total ceiling rides the density knob, while ambient weather owns at
+    // most 75%. The remaining quarter is a hard reserve for mining, buckets
+    // and other immediate gameplay feedback.
+    particleLimit_ = static_cast<std::size_t>(8000U * levelScale_);
+    weatherParticleLimit_ = particleLimit_ * 3U / 4U;
+
+    const std::size_t totalExcess = particles_.size() > particleLimit_
+        ? particles_.size() - particleLimit_
+        : 0U;
+    const std::size_t weatherExcess = weatherParticleCount_ > weatherParticleLimit_
+        ? weatherParticleCount_ - weatherParticleLimit_
+        : 0U;
+    std::size_t weatherToRemove = std::min(
+        weatherParticleCount_, std::max(totalExcess, weatherExcess));
+    std::erase_if(particles_, [&](const BlockParticle& particle) {
+        if (weatherToRemove == 0U || particle.category != ParticleCategory::Weather) {
+            return false;
+        }
+        --weatherToRemove;
+        --weatherParticleCount_;
+        return true;
+    });
+    if (particles_.size() > particleLimit_) {
+        const std::size_t remainingExcess = particles_.size() - particleLimit_;
+        for (std::size_t index = 0; index < remainingExcess; ++index) {
+            if (particles_[index].category == ParticleCategory::Weather) {
+                --weatherParticleCount_;
+            }
+        }
+        particles_.erase(particles_.begin(), particles_.begin() +
+            static_cast<std::ptrdiff_t>(remainingExcess));
+    }
+}
+
+void ParticleSystem::reserveGameplayCapacity(std::size_t requested) {
+    const std::size_t available = particleLimit_ > particles_.size()
+        ? particleLimit_ - particles_.size()
+        : 0U;
+    std::size_t weatherToRemove = std::min(
+        requested > available ? requested - available : 0U,
+        weatherParticleCount_);
+    std::erase_if(particles_, [&](const BlockParticle& particle) {
+        if (weatherToRemove == 0U || particle.category != ParticleCategory::Weather) {
+            return false;
+        }
+        --weatherToRemove;
+        --weatherParticleCount_;
+        return true;
+    });
+}
+
+bool ParticleSystem::weatherCapacityAvailable() const {
+    return particles_.size() < particleLimit_ &&
+           weatherParticleCount_ < weatherParticleLimit_;
 }
 
 int ParticleSystem::scaledCount(int base) {
@@ -60,9 +110,6 @@ int ParticleSystem::scaledCount(int base) {
 void ParticleSystem::spawnBlockBreak(
     const glm::ivec3& blockPosition,
     world::Block block) {
-    if (particles_.size() >= particleLimit_) {
-        return;
-    }
     const float layer = world::textureLayers(block).side;
     const auto counts = breakPieceCount(block);
     // The 粒子效果 density knob: above 1.0 every cell spawns `copies` jittered
@@ -72,6 +119,8 @@ void ParticleSystem::spawnBlockBreak(
     const int copiesPerCell =
         levelScale_ >= 1.0F ? static_cast<int>(levelScale_) : 1;
     const float retainProbability = std::min(levelScale_, 1.0F);
+    reserveGameplayCapacity(
+        static_cast<std::size_t>(counts.x * counts.y * counts.z * copiesPerCell));
     for (int y = 0; y < counts.y; ++y) {
         for (int z = 0; z < counts.z; ++z) {
             for (int x = 0; x < counts.x; ++x) {
@@ -82,6 +131,9 @@ void ParticleSystem::spawnBlockBreak(
                     continue;
                 }
                 for (int copy = 0; copy < copiesPerCell; ++copy) {
+                    if (particles_.size() >= particleLimit_) {
+                        return;
+                    }
                     // Each dust particle starts at its cell centre and flies
                     // away from the block centre (vanilla's direction is the
                     // cell offset minus half a block); the extra copies share
@@ -136,11 +188,13 @@ void ParticleSystem::spawnBlockBreak(
 }
 
 void ParticleSystem::spawnWaterSplash(const glm::vec3& position) {
-    if (particles_.size() >= particleLimit_) {
-        return;
-    }
     constexpr float kFullTurn = 6.28318530718F;
-    for (int index = 0; index < scaledCount(10); ++index) {
+    const int count = scaledCount(10);
+    reserveGameplayCapacity(static_cast<std::size_t>(count));
+    for (int index = 0; index < count; ++index) {
+        if (particles_.size() >= particleLimit_) {
+            return;
+        }
         const float angle = randomUnit() * kFullTurn;
         const float speed = 0.25F + randomUnit() * 0.55F;
         particles_.push_back({
@@ -159,13 +213,35 @@ void ParticleSystem::spawnWaterSplash(const glm::vec3& position) {
     }
 }
 
-void ParticleSystem::spawnRainSplash(const glm::vec3& position, const glm::vec2& direction) {
-    // Bound the live particle count so a long rain plus heavy mining cannot
-    // grow the CPU simulation unboundedly; new splashes are skipped once full.
-    // The ceiling rides the 粒子效果 level via particleLimit_.
-    if (particles_.size() >= particleLimit_) {
-        return;
+void ParticleSystem::spawnRainImpact(const glm::vec3& position, bool onWater) {
+    // RainSplashParticle starts with no horizontal motion, an upward velocity
+    // of 0.1..0.3 blocks/tick, and lives for 8/(random*0.8+0.2) ticks. Convert
+    // those values to this particle system's seconds/blocks-per-second units.
+    // Keep the per-impact density multiplier: higher particle levels increase
+    // both the rain columns and the visible surface response.
+    for (int index = 0; index < scaledCount(1); ++index) {
+        if (!weatherCapacityAvailable()) {
+            return;
+        }
+        const float lifetime = (8.0F / (0.2F + randomUnit() * 0.8F)) / 20.0F;
+        const float surfaceScale = onWater ? 1.15F : 1.0F;
+        particles_.push_back({
+            position,
+            {0.0F, 2.0F + randomUnit() * 4.0F, 0.0F},
+            world::textureLayers(world::Block::Water).side,
+            {randomUnit() * 0.5F, randomUnit() * 0.5F},
+            0.25F,
+            (0.075F + randomUnit() * 0.025F) * surfaceScale,
+            0.0F,
+            lifetime,
+            0.82F,
+            ParticleCategory::Weather,
+        });
+        ++weatherParticleCount_;
     }
+}
+
+void ParticleSystem::spawnRainSplash(const glm::vec3& position, const glm::vec2& direction) {
     // Fewer, shorter-lived particles than the bucket's burst: a rain drop
     // landing pushes a handful of droplets outward and upward that fade fast.
     // Sized and timed a bit larger than a block-dust puff so the splash reads
@@ -176,7 +252,12 @@ void ParticleSystem::spawnRainSplash(const glm::vec3& position, const glm::vec2&
     constexpr float kHalfTurn = 3.14159265359F;
     const bool directional = direction.x * direction.x + direction.y * direction.y > 0.25F;
     const float baseAngle = directional ? std::atan2(direction.y, direction.x) : 0.0F;
+    // Preserve the landing-splash density multiplier in addition to the rain
+    // population multiplier; the enlarged weather budget absorbs the peak.
     for (int index = 0; index < scaledCount(4); ++index) {
+        if (!weatherCapacityAvailable()) {
+            return;
+        }
         const float angle = directional
             ? baseAngle - kHalfTurn * 0.5F + randomUnit() * kHalfTurn
             : randomUnit() * kFullTurn;
@@ -194,7 +275,9 @@ void ParticleSystem::spawnRainSplash(const glm::vec3& position, const glm::vec2&
             0.0F,
             0.50F + randomUnit() * 0.25F,
             0.7F,
+            ParticleCategory::Weather,
         });
+        ++weatherParticleCount_;
     }
 }
 
@@ -234,8 +317,14 @@ void ParticleSystem::update(float deltaSeconds, const world::World& world) {
             particle.ageSeconds / particle.lifetimeSeconds;
         particle.opacity = std::clamp(remaining * 1.5F, 0.0F, 1.0F);
     }
-    std::erase_if(particles_, [](const BlockParticle& particle) {
-        return particle.ageSeconds >= particle.lifetimeSeconds;
+    std::erase_if(particles_, [&](const BlockParticle& particle) {
+        if (particle.ageSeconds < particle.lifetimeSeconds) {
+            return false;
+        }
+        if (particle.category == ParticleCategory::Weather) {
+            --weatherParticleCount_;
+        }
+        return true;
     });
 }
 

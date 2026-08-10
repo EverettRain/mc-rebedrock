@@ -77,6 +77,38 @@ int main() {
     assert(zombie->soundProfile().hurtVariations == 2);
     assert(zombie->soundProfile().stepVariations == 5);
 
+    // GameRenderer's crosshair pick uses the exact living-entity box in 1.16.1.
+    // The projectile-only 0.3 expansion must not make a ray 0.25 blocks outside
+    // a pig's side select it and hide a block behind it.
+    {
+        mc::gameplay::EntitySystem targets;
+        targets.spawn({0.0F, 0.0F, 3.0F}, mc::gameplay::entities::PigEntity::type(), 91U);
+        const auto direct = targets.raycast({0.0F, 0.45F, 0.0F}, {0.0F, 0.0F, 1.0F}, 5.0F);
+        assert(direct.has_value());
+        assert(std::abs(direct->distance - 2.55F) < 0.0001F);
+        const auto outside =
+            targets.raycast({0.70F, 0.45F, 0.0F}, {0.0F, 0.0F, 1.0F}, 5.0F);
+        assert(!outside.has_value());
+
+        // Spatial buckets use the feet position. A cow standing just below a
+        // 16-block section boundary extends its upper body into the section
+        // above; aiming there must still find the entity bucketed below.
+        targets.clear();
+        targets.spawn({0.0F, 15.0F, 3.0F}, mc::gameplay::entities::CowEntity::type(), 92U);
+        const auto upperBody =
+            targets.raycast({0.0F, 16.20F, 0.0F}, {0.0F, 0.0F, 1.0F}, 5.0F);
+        assert(upperBody.has_value());
+        assert(std::abs(upperBody->distance - 2.55F) < 0.0001F);
+
+        // The same rule applies at horizontal section faces: the ray may enter
+        // the portion of the AABB in X+1 while the entity centre remains in X.
+        targets.clear();
+        targets.spawn({15.8F, 0.0F, 3.0F}, mc::gameplay::entities::PigEntity::type(), 93U);
+        const auto acrossHorizontalBoundary =
+            targets.raycast({16.10F, 0.45F, 0.0F}, {0.0F, 0.0F, 1.0F}, 5.0F);
+        assert(acrossHorizontalBoundary.has_value());
+    }
+
     // Peaceful pass (MobEntity#checkDespawn): a flat stone floor, one pig, one
     // cow and one zombie. Ticking once on Peaceful keeps the two CREATURE
     // species and silently removes the MONSTER — the category decides, so the
@@ -89,6 +121,45 @@ int main() {
     }
     mc::world::World world;
     world.setChunk({0, 0}, std::move(chunk));
+
+    // Full-AABB occupancy and block-placement overlap checks reject a wall cell,
+    // and a legacy/restored creature already inside one is moved to the nearest
+    // free face on its next collision tick instead of remaining trapped forever.
+    {
+        mc::world::Chunk collisionChunk;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                collisionChunk.setBlock(x, 0, z, mc::world::Block::Stone);
+            }
+        }
+        collisionChunk.setBlock(8, 1, 8, mc::world::Block::Stone);
+        collisionChunk.setBlock(4, 2, 4, mc::world::Block::Stone);
+        mc::world::World collisionWorld;
+        collisionWorld.setChunk({0, 0}, std::move(collisionChunk));
+
+        const auto& pigType = mc::gameplay::entities::PigEntity::type();
+        const auto& cowType = mc::gameplay::entities::CowEntity::type();
+        const glm::vec3 lowCeilingPosition{4.5F, 1.001F, 4.5F};
+        assert(mc::gameplay::EntitySystem::canOccupy(
+            collisionWorld, lowCeilingPosition, pigType.dimensions()));
+        assert(!mc::gameplay::EntitySystem::canOccupy(
+            collisionWorld, lowCeilingPosition, cowType.dimensions()));
+        const glm::vec3 trappedPosition{8.5F, 1.001F, 8.5F};
+        assert(!mc::gameplay::EntitySystem::canOccupy(
+            collisionWorld, trappedPosition, pigType.dimensions()));
+
+        mc::gameplay::EntitySystem trapped;
+        trapped.spawn(trappedPosition, pigType, 92U);
+        assert(trapped.intersectsBlock(8, 1, 8));
+        assert(!trapped.intersectsBlock(10, 1, 8));
+        static_cast<void>(trapped.tick(
+            collisionWorld, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
+            mc::gameplay::Difficulty::Normal));
+        const auto& recovered = trapped.entities().front();
+        assert(mc::gameplay::EntitySystem::canOccupy(
+            collisionWorld, recovered.position, recovered.dimensions()));
+        assert(!trapped.intersectsBlock(8, 1, 8));
+    }
 
     // --- MobEntity#baseTick's ambient scheduler fires the idle sound roughly
     // every four seconds: the counter climbs one per tick and the roll gate
@@ -131,6 +202,52 @@ int main() {
     assert(cowCount == 1U);
     assert(pigCount == 1U);
     assert(zombieCount == 0U);
+
+    // --- LivingEntity knockback arc: a grounded hit gets the vanilla 0.4
+    // lift, 0.08 gravity and 0.98 vertical drag. It peaks quickly and lands in
+    // roughly half a second; a follow-up hit while airborne must not restart
+    // the vertical arc. ---
+    {
+        mc::gameplay::EntitySystem knockback;
+        knockback.spawn({8.0F, 1.001F, 8.0F}, mc::gameplay::entities::PigEntity::type(), 31U);
+        const std::uint64_t pigId = knockback.entities().front().id;
+        // Settle once so takeKnockback sees the same grounded state as a mob
+        // standing in a running world.
+        for (int tick = 0; tick < 2; ++tick) {
+            static_cast<void>(knockback.tick(
+                world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
+                mc::gameplay::Difficulty::Normal));
+        }
+        assert(knockback.byId(pigId)->onGround);
+        assert(knockback.hurt(pigId, 1.0F, {7.0F, 1.001F, 8.0F}));
+
+        static_cast<void>(knockback.tick(
+            world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
+            mc::gameplay::Difficulty::Normal));
+        const float airborneVelocity = knockback.byId(pigId)->velocity.y;
+        assert(!knockback.byId(pigId)->onGround);
+        // Stronger damage passes the invulnerability-window guard, but because
+        // the target is airborne it must not receive another +0.4 lift.
+        assert(knockback.hurt(pigId, 2.0F, {7.0F, 1.001F, 8.0F}));
+        assert(std::abs(knockback.byId(pigId)->velocity.y - airborneVelocity) < 0.0001F);
+
+        float peakY = knockback.byId(pigId)->position.y;
+        int landingTick = 0;
+        for (int tick = 2; tick <= 20; ++tick) {
+            static_cast<void>(knockback.tick(
+                world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
+                mc::gameplay::Difficulty::Normal));
+            const auto* pig = knockback.byId(pigId);
+            peakY = std::max(peakY, pig->position.y);
+            if (pig->onGround) {
+                landingTick = tick;
+                break;
+            }
+        }
+        assert(peakY < 2.30F);      // under 1.3 blocks above its feet
+        assert(landingTick > 0);
+        assert(landingTick <= 12);  // at most 0.6 seconds at 20 TPS
+    }
 
     // --- A killed creature drops its loot on the death tick, not after the
     // twenty-tick corpse animation (LivingEntity#onDeath drops immediately). ---
