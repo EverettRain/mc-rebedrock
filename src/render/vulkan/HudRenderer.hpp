@@ -39,8 +39,8 @@
 
 #include <unordered_map>
 
-#include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
+#include <vulkan/vulkan.h>
 
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
@@ -67,69 +67,98 @@
 #include <vector>
 namespace mc::render {
 class HudRenderer final {
- public:
-  struct Bindings final {
-    ui::MenuSystem& menuSystem;
-    ui::UiFrameData& uiFrameData_;
-    gameplay::GameSession& gameSession;
-    ui::TextFont& textFont;
-    ui::BitmapFontMetrics& fontMetrics;
-    ui::Language& language;
-    world::World& interactionWorld;
-    GLFWwindow*& window;
-    config::GameOptions& options;
-    PerspectiveCamera& camera;
-    VkExtent2D& swapchainExtent;
-    VkPipeline& hudPipeline;
-    VkPipelineLayout& hudPipelineLayout;
-    VkPipeline& vignettePipeline;
-    VkPipeline& crosshairPipeline;
-    VkPipeline& panoramaPipeline;
-    VkPipelineLayout& panoramaPipelineLayout;
-    VkPipeline& heldItemPipeline;
-    VkPipelineLayout& itemPipelineLayout;
-    bool& inventoryOpen;
-    ContainerScreen& containerScreen;
-    std::optional<gameplay::ChestPosition>& activeChest;
-    bool& debugOverlayOpen;
-    bool& inventoryDragActive;
-    std::vector<gameplay::ItemStack*>& inventoryDragSlots;
-    bool& chatOpen;
-    ui::ChatHistory& chatHistory;
-    std::string& chatInputText;
-    std::vector<gameplay::command::Suggestion>& chatSuggestions_;
-    std::size_t& chatSuggestionIndex_;
-    std::optional<persistence::SaveGame>& currentSave;
-    int& displayedFps;
-    animation::PlayerModelAnimator& playerModelAnimator;
-    MenuButton& pressedMenuButton;
-    bool& spawnPositionInitialized;
-    bool& worldReady;
-    bool& worldSessionActive;
-    int& simulationDistanceChunks;
-    int& viewDistanceChunks;
-    std::size_t& peakPendingSectionCount;
-    const std::unordered_map<world::SectionPosition, world::SectionMeshUpdate, world::SectionPositionHash>& pendingSectionUpdates;
-    const std::optional<TestSceneOptions>& testScene;
-    bool& paused;
-    double& uiTimeSeconds;
-    std::function<bool()> cameraSubmergedInWater;
-    std::function<void(VkCommandBuffer, VkDescriptorSet)> drawHeldItem;
-    std::function<VkDescriptorSet()> currentFrameDescriptorSet;
-    std::function<std::span<const gameplay::ItemStack>()> activeCreativeCatalog;
-    std::function<float()> creativeScrollPosition;
-    std::function<std::size_t()> creativeMaximumScrollRow;
-    std::function<std::vector<std::uint8_t>()> dragPlacementCounts;
-    std::function<float()> cameraFarPlane;
-    std::function<std::optional<ui::UiRect>(const ui::HudLayout&, const gameplay::ItemStack*)> dragSlotRectangle;
-  };
+  public:
+    struct Bindings final {
+        ui::MenuSystem& menuSystem;
+        ui::UiFrameData& uiFrameData_;
+        gameplay::GameSession& gameSession;
+        ui::TextFont& textFont;
+        ui::BitmapFontMetrics& fontMetrics;
+        ui::Language& language;
+        world::World& interactionWorld;
+        GLFWwindow*& window;
+        config::GameOptions& options;
+        PerspectiveCamera& camera;
+        VkExtent2D& swapchainExtent;
+        VkPipeline& hudPipeline;
+        VkPipelineLayout& hudPipelineLayout;
+        VkPipeline& vignettePipeline;
+        VkPipeline& crosshairPipeline;
+        VkPipeline& panoramaPipeline;
+        VkPipelineLayout& panoramaPipelineLayout;
+        VkPipeline& heldItemPipeline;
+        VkPipelineLayout& itemPipelineLayout;
+        bool& inventoryOpen;
+        ContainerScreen& containerScreen;
+        std::optional<gameplay::ChestPosition>& activeChest;
+        std::optional<glm::ivec3>& activeFurnacePosition;
+        bool& debugOverlayOpen;
+        bool& inventoryDragActive;
+        std::vector<gameplay::ItemStack*>& inventoryDragSlots;
+        bool& chatOpen;
+        ui::ChatHistory& chatHistory;
+        std::string& chatInputText;
+        std::vector<gameplay::command::Suggestion>& chatSuggestions_;
+        std::size_t& chatSuggestionIndex_;
+        std::optional<persistence::SaveGame>& currentSave;
+        int& displayedFps;
+        animation::PlayerModelAnimator& playerModelAnimator;
+        MenuButton& pressedMenuButton;
+        bool& spawnPositionInitialized;
+        bool& worldReady;
+        bool& worldSessionActive;
+        int& simulationDistanceChunks;
+        int& viewDistanceChunks;
+        std::size_t& peakPendingSectionCount;
+        const std::unordered_map<world::SectionPosition, world::SectionMeshUpdate,
+                                 world::SectionPositionHash>& pendingSectionUpdates;
+        const std::optional<TestSceneOptions>& testScene;
+        bool& paused;
+        double& uiTimeSeconds;
+        std::function<bool()> cameraSubmergedInWater;
+        std::function<void(VkCommandBuffer, VkDescriptorSet)> drawHeldItem;
+        std::function<VkDescriptorSet()> currentFrameDescriptorSet;
+        std::function<std::span<const gameplay::ItemStack>()> activeCreativeCatalog;
+        std::function<float()> creativeScrollPosition;
+        std::function<std::size_t()> creativeMaximumScrollRow;
+        std::function<std::vector<std::uint8_t>()> dragPlacementCounts;
+        std::function<float()> cameraFarPlane;
+        std::function<std::optional<ui::UiRect>(const ui::HudLayout&, const gameplay::ItemStack*)>
+            dragSlotRectangle;
+    };
 
-  explicit HudRenderer(const Bindings& b)
-      : menuSystem(b.menuSystem), uiFrameData_(b.uiFrameData_), gameSession(b.gameSession), textFont(b.textFont), fontMetrics(b.fontMetrics), language(b.language), interactionWorld(b.interactionWorld), window(b.window), options(b.options), camera(b.camera), swapchainExtent(b.swapchainExtent), hudPipeline(b.hudPipeline), hudPipelineLayout(b.hudPipelineLayout), vignettePipeline(b.vignettePipeline), crosshairPipeline(b.crosshairPipeline), panoramaPipeline(b.panoramaPipeline), panoramaPipelineLayout(b.panoramaPipelineLayout), heldItemPipeline(b.heldItemPipeline), itemPipelineLayout(b.itemPipelineLayout), inventoryOpen(b.inventoryOpen), containerScreen(b.containerScreen), activeChest(b.activeChest), debugOverlayOpen(b.debugOverlayOpen), inventoryDragActive(b.inventoryDragActive), inventoryDragSlots(b.inventoryDragSlots), chatOpen(b.chatOpen), chatHistory(b.chatHistory), chatInputText(b.chatInputText), chatSuggestions_(b.chatSuggestions_), chatSuggestionIndex_(b.chatSuggestionIndex_), currentSave(b.currentSave), displayedFps(b.displayedFps), playerModelAnimator(b.playerModelAnimator), pressedMenuButton(b.pressedMenuButton), spawnPositionInitialized(b.spawnPositionInitialized), worldReady(b.worldReady), worldSessionActive(b.worldSessionActive), simulationDistanceChunks(b.simulationDistanceChunks), viewDistanceChunks(b.viewDistanceChunks), peakPendingSectionCount(b.peakPendingSectionCount), pendingSectionUpdates(b.pendingSectionUpdates), testScene(b.testScene), paused(b.paused), uiTimeSeconds(b.uiTimeSeconds), cameraSubmergedInWater(b.cameraSubmergedInWater), drawHeldItem(b.drawHeldItem), currentFrameDescriptorSet(b.currentFrameDescriptorSet), activeCreativeCatalog(b.activeCreativeCatalog), creativeScrollPosition(b.creativeScrollPosition), creativeMaximumScrollRow(b.creativeMaximumScrollRow), dragPlacementCounts(b.dragPlacementCounts), cameraFarPlane(b.cameraFarPlane), dragSlotRectangle(b.dragSlotRectangle) {}
+    explicit HudRenderer(const Bindings& b)
+        : menuSystem(b.menuSystem), uiFrameData_(b.uiFrameData_), gameSession(b.gameSession),
+          textFont(b.textFont), fontMetrics(b.fontMetrics), language(b.language),
+          interactionWorld(b.interactionWorld), window(b.window), options(b.options),
+          camera(b.camera), swapchainExtent(b.swapchainExtent), hudPipeline(b.hudPipeline),
+          hudPipelineLayout(b.hudPipelineLayout), vignettePipeline(b.vignettePipeline),
+          crosshairPipeline(b.crosshairPipeline), panoramaPipeline(b.panoramaPipeline),
+          panoramaPipelineLayout(b.panoramaPipelineLayout), heldItemPipeline(b.heldItemPipeline),
+          itemPipelineLayout(b.itemPipelineLayout), inventoryOpen(b.inventoryOpen),
+          containerScreen(b.containerScreen), activeChest(b.activeChest),
+          activeFurnacePosition(b.activeFurnacePosition), debugOverlayOpen(b.debugOverlayOpen),
+          inventoryDragActive(b.inventoryDragActive), inventoryDragSlots(b.inventoryDragSlots),
+          chatOpen(b.chatOpen), chatHistory(b.chatHistory), chatInputText(b.chatInputText),
+          chatSuggestions_(b.chatSuggestions_), chatSuggestionIndex_(b.chatSuggestionIndex_),
+          currentSave(b.currentSave), displayedFps(b.displayedFps),
+          playerModelAnimator(b.playerModelAnimator), pressedMenuButton(b.pressedMenuButton),
+          spawnPositionInitialized(b.spawnPositionInitialized), worldReady(b.worldReady),
+          worldSessionActive(b.worldSessionActive),
+          simulationDistanceChunks(b.simulationDistanceChunks),
+          viewDistanceChunks(b.viewDistanceChunks),
+          peakPendingSectionCount(b.peakPendingSectionCount),
+          pendingSectionUpdates(b.pendingSectionUpdates), testScene(b.testScene), paused(b.paused),
+          uiTimeSeconds(b.uiTimeSeconds), cameraSubmergedInWater(b.cameraSubmergedInWater),
+          drawHeldItem(b.drawHeldItem), currentFrameDescriptorSet(b.currentFrameDescriptorSet),
+          activeCreativeCatalog(b.activeCreativeCatalog),
+          creativeScrollPosition(b.creativeScrollPosition),
+          creativeMaximumScrollRow(b.creativeMaximumScrollRow),
+          dragPlacementCounts(b.dragPlacementCounts), cameraFarPlane(b.cameraFarPlane),
+          dragSlotRectangle(b.dragSlotRectangle) {}
 
-  HudRenderer(const HudRenderer&) = delete;
-  HudRenderer& operator=(const HudRenderer&) = delete;
-
+    HudRenderer(const HudRenderer&) = delete;
+    HudRenderer& operator=(const HudRenderer&) = delete;
 
     // ---- helpers duplicated from the renderer core (pure reads over the bound
     // references), so the moved draw code resolves them without reaching back
@@ -271,7 +300,6 @@ class HudRenderer final {
         }
     }
 
-
     void drawDragPreview(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         if (!inventoryDragActive || gameSession.inventory().cursorStack().empty()) {
             return;
@@ -291,7 +319,6 @@ class HudRenderer final {
                         rect->y + 9.0F * textScale, textScale, {1.0F, 1.0F, 1.0F, 1.0F});
         }
     }
-
 
     void drawHudQuad(VkCommandBuffer commandBuffer, const ui::UiRect& rectangle,
                      const glm::vec4& color, float textureLayer = 0.0F, bool textured = false,
@@ -465,10 +492,7 @@ class HudRenderer final {
     void drawMinecraftSlider(VkCommandBuffer commandBuffer, const ui::UiRect& rectangle,
                              std::string_view label, ui::ButtonVisualState state, float value,
                              float scale) const {
-        // SliderWidget#getYImage always returns zero: Java therefore uses the
-        // dark y=46 row for the track and overlays only the movable knob from
-        // the normal/hover rows.
-        constexpr float sourceY = 46.0F;
+        constexpr float sourceY = 106.0F;
         const ui::UiRect snapped{std::floor(rectangle.x), std::floor(rectangle.y),
                                  std::floor(rectangle.width + 0.5F),
                                  std::floor(rectangle.height + 0.5F)};
@@ -483,7 +507,7 @@ class HudRenderer final {
                       0.0F, {200.0F - sourceHalfWidth, sourceY, sourceHalfWidth, 20.0F}, tint);
         const float clampedValue = std::clamp(value, 0.0F, 1.0F);
         const float knobX = snapped.x + clampedValue * std::max(snapped.width - 8.0F * scale, 0.0F);
-        const float knobSourceY = state == ui::ButtonVisualState::Normal ? 66.0F : 86.0F;
+        const float knobSourceY = state == ui::ButtonVisualState::Normal ? 146.0F : 166.0F;
         drawGuiSprite(commandBuffer, {knobX, snapped.y, 4.0F * scale, snapped.height}, 0.0F,
                       {0.0F, knobSourceY, 4.0F, 20.0F});
         drawGuiSprite(commandBuffer,
@@ -518,8 +542,8 @@ class HudRenderer final {
                 metrics.uvHeight,
             };
             const ui::UiRect glyph{
-                cursorX,
-                y,
+                cursorX + metrics.offsetX * scale,
+                y + metrics.offsetY * scale,
                 metrics.pixelWidth * scale,
                 metrics.pixelHeight * scale,
             };
@@ -849,14 +873,15 @@ class HudRenderer final {
                     {1.0F, 1.0F, 1.0F, 1.0F});
     }
 
-    // 1.16.1's CubeMap background: an 85-degree perspective view from inside
-    // the panorama cube. The camera slowly turns — a full 360° yaw over
+    // 26.1's menu background starts with an 85-degree perspective view from
+    // inside the panorama cube. The camera slowly turns — a full 360° yaw over
     // kCycleSeconds so every one of the six faces gets a long turn in front of
     // the view, a gentle pitch sweep dips down to panorama_4 and up to
     // panorama_5, and a faint vanilla-style sine sway keeps it from feeling
     // mechanical. The dark quad afterwards keeps the white title and the menu
     // buttons readable over the scene.
-    void drawTitleCarousel(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
+    void drawTitleCarousel(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
+                           bool blurred, float guiScale) const {
         // One full 360° yaw turn every five minutes, so each of the four side
         // faces stays centred for well over a minute. The pitch sweeps once per
         // turn and the vanilla-style sway rate matches the slower pace.
@@ -873,7 +898,9 @@ class HudRenderer final {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, panoramaPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 panoramaPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
-        const PanoramaPush push{{yaw, pitch, tanHalfFov, aspect}};
+        constexpr float kMenuBlurRadius = 5.0F;
+        const PanoramaPush push{{yaw, pitch, tanHalfFov, aspect},
+                                {blurred ? kMenuBlurRadius : 0.0F, 0.0F, 0.0F, 0.0F}};
         vkCmdPushConstants(commandBuffer, panoramaPipelineLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(push), &push);
@@ -881,29 +908,28 @@ class HudRenderer final {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipelineLayout,
                                 0, 1, &descriptorSet, 0, nullptr);
-        drawHudQuad(commandBuffer,
-                    {0.0F, 0.0F, static_cast<float>(swapchainExtent.width),
-                     static_cast<float>(swapchainExtent.height)},
-                    {0.0F, 0.0F, 0.0F, 0.30F});
+        const ui::UiRect fullScreen{0.0F, 0.0F, static_cast<float>(swapchainExtent.width),
+                                    static_cast<float>(swapchainExtent.height)};
+        if (blurred) {
+            // Screen.extractMenuBackground follows the blur in 26.1. Keep this
+            // as the real pack-provided texture instead of baking its current
+            // translucent-black pixels into code.
+            drawGuiSprite(commandBuffer, fullScreen, 9.0F,
+                          ui::tiledBackgroundSource(fullScreen.width, fullScreen.height, guiScale));
+        } else {
+            drawHudQuad(commandBuffer, fullScreen, {0.0F, 0.0F, 0.0F, 0.30F});
+        }
     }
 
     void drawFrontend(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
                       VkDescriptorSet descriptorSet) const {
-        if (menuSystem.pageStack.current() == ui::PageId::Title) {
-            drawTitleCarousel(commandBuffer, descriptorSet);
-        } else {
-            drawGuiSprite(commandBuffer,
-                          {0.0F, 0.0F, static_cast<float>(swapchainExtent.width),
-                           static_cast<float>(swapchainExtent.height)},
-                          9.0F,
-                          ui::tiledBackgroundSource(static_cast<float>(swapchainExtent.width),
-                                                    static_cast<float>(swapchainExtent.height),
-                                                    layout.scale()),
-                          kMenuBackgroundTint);
-        }
+        const auto page = menuSystem.pageStack.current();
+        // Like 26.1 Screen.extractBackground(): every no-world screen keeps the
+        // rotating panorama alive. Secondary screens blur only that background;
+        // their text, buttons and list rows are emitted afterwards and stay sharp.
+        drawTitleCarousel(commandBuffer, descriptorSet, page != ui::PageId::Title, layout.scale());
         const float scale = layout.scale();
         const auto cursor = currentFramebufferCursor();
-        const auto page = menuSystem.pageStack.current();
         const std::string title = frontendTitle(page);
         drawHudText(commandBuffer, title,
                     (static_cast<float>(swapchainExtent.width) -
@@ -921,17 +947,15 @@ class HudRenderer final {
             const std::size_t remaining =
                 menuSystem.saveSummaries.size() - std::min(first, menuSystem.saveSummaries.size());
             const std::size_t visible = std::min(remaining, visibleRows);
-            // 1.16.1's AbstractSelectionList darkens the list area with
-            // options_background tiled under a solid (32,32,32) tint — half the
-            // menu dirt's (64,64,64) — so the save rows sit on a deep,
-            // near-black panel that still reads as the dirt texture.
+            // The 26.1 list background is independently pack-overridable from
+            // the surrounding menu background.
             const auto firstRow = worldListRow(0, layout);
             const float listBandHeight =
                 static_cast<float>(visibleRows) * 22.0F * scale + 8.0F * scale;
             drawGuiSprite(commandBuffer,
                           {0.0F, firstRow.y - 4.0F * scale,
                            static_cast<float>(swapchainExtent.width), listBandHeight},
-                          9.0F,
+                          kMenuListBackgroundGuiLayer,
                           ui::tiledBackgroundSource(static_cast<float>(swapchainExtent.width),
                                                     listBandHeight, scale),
                           {32.0F / 255.0F, 32.0F / 255.0F, 32.0F / 255.0F, 1.0F});
@@ -1066,7 +1090,7 @@ class HudRenderer final {
     void drawExperienceBar(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         const float scale = layout.scale();
         const auto bar = layout.experienceBar();
-        // Background (icons.png 0,64) then the green fill (icons.png 0,69).
+        // 26.1's named experience-bar background, then its green progress sprite.
         drawGuiSprite(commandBuffer, bar, 1.0F, {0.0F, 64.0F, 182.0F, 5.0F});
         constexpr float kPlaceholderExperienceProgress = 0.5F;
         if (kPlaceholderExperienceProgress > 0.0F) {
@@ -1084,7 +1108,8 @@ class HudRenderer final {
     // dimmed by the same daylight factor the sky shader uses, so the dark
     // corners also appear at night and in caves.
     void updateVignetteDarkness(float deltaSeconds) {
-        const auto daylight = world::DayNightCycle::state(gameSession.gameTimeSeconds());
+        const auto daylight =
+            world::DayNightCycle::stateAtTick(static_cast<double>(gameSession.dayTimeTicks()));
         const float daylightFactor =
             std::clamp((daylight.skyBrightness - 0.08F) / 0.92F, 0.0F, 1.0F);
         const glm::vec3 eye = gameSession.player().eyePosition();
@@ -1118,10 +1143,8 @@ class HudRenderer final {
                     {0.65F, 0.0F, 0.0F, 0.32F * fade});
     }
 
-    // 1.16.1's LanguageScreen: a "Language" title, a black scrollable list of
-    // the available languages (each shown in its own language), the Force
-    // Unicode Font toggle and the Done button. Clicking a row switches the
-    // language at once, exactly like the vanilla LanguageSelectionList.
+    // 26.1-style language screen: rows update a draft selection and Done
+    // commits one asynchronous resource reload.
     void drawLanguageScreen(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         const auto cursor = currentFramebufferCursor();
         const float scale = layout.scale();
@@ -1129,10 +1152,9 @@ class HudRenderer final {
         drawHudText(commandBuffer, title,
                     (static_cast<float>(swapchainExtent.width) - hudTextWidth(title, scale)) * 0.5F,
                     14.0F * scale, scale, {1.0F, 1.0F, 1.0F, 1.0F});
-        // The centred dark list box, styled like the save-selection screen's
-        // list band: the dirt tile darkened to a near-black panel.
+        // The centred dark list box uses 26.1's independently replaceable list background.
         const auto box = languageListBox(layout);
-        drawGuiSprite(commandBuffer, box, 9.0F,
+        drawGuiSprite(commandBuffer, box, kMenuListBackgroundGuiLayer,
                       ui::tiledBackgroundSource(box.width, box.height, scale),
                       {32.0F / 255.0F, 32.0F / 255.0F, 32.0F / 255.0F, 1.0F});
         const std::size_t visible = languageVisibleRowCount();
@@ -1146,7 +1168,8 @@ class HudRenderer final {
                 break;
             }
             const auto rectangle = languageRow(row, layout);
-            const bool selected = menuSystem.languageCodes[index] == options.language;
+            const bool selected =
+                menuSystem.languageCodes[index] == menuSystem.pendingLanguageCode;
             const bool hovered = rectangle.contains(cursor.x, cursor.y);
             if (selected || hovered) {
                 drawHudQuad(commandBuffer, rectangle,
@@ -1174,9 +1197,10 @@ class HudRenderer final {
                              static_cast<float>(menuSystem.languageCodes.size()),
                          8.0F * scale);
             const float travel = std::max(trackHeight - thumbHeight, 1.0F);
-            const float thumbY =
-                trackTop +
-                (maximumFirst > 0 ? static_cast<float>(first) / maximumFirst : 0.0F) * travel;
+            const float thumbY = trackTop + (maximumFirst > 0 ? static_cast<float>(first) /
+                                                                    static_cast<float>(maximumFirst)
+                                                              : 0.0F) *
+                                                travel;
             drawHudQuad(commandBuffer,
                         {box.x + box.width - 7.0F * scale, thumbY, 4.0F * scale, thumbHeight},
                         {0.55F, 0.55F, 0.55F, 0.95F});
@@ -1419,15 +1443,22 @@ class HudRenderer final {
             drawHudSlot(commandBuffer, layout.tableCraftingOutput(),
                         gameSession.craftingSystem().tableOutput(), false, false, true);
         } else {
+            const gameplay::FurnacePosition furnace =
+                activeFurnacePosition.has_value()
+                    ? gameplay::FurnacePosition{activeFurnacePosition->x, activeFurnacePosition->y,
+                                                activeFurnacePosition->z}
+                    : gameplay::FurnacePosition{};
+            const auto* entity = gameSession.furnaceSystem().find(furnace);
+            const gameplay::ItemStack empty{};
             drawHudSlot(commandBuffer, layout.furnaceInputSlot(),
-                        gameSession.craftingSystem().furnaceInput(), false, false, true);
+                        entity != nullptr ? entity->input : empty, false, false, true);
             drawHudSlot(commandBuffer, layout.furnaceFuelSlot(),
-                        gameSession.craftingSystem().furnaceFuel(), false, false, true);
+                        entity != nullptr ? entity->fuel : empty, false, false, true);
             drawHudSlot(commandBuffer, layout.furnaceOutputSlot(),
-                        gameSession.craftingSystem().furnaceOutput(), false, false, true);
+                        entity != nullptr ? entity->output : empty, false, false, true);
             const float scale = layout.scale();
             const float fuel =
-                std::clamp(gameSession.craftingSystem().furnaceFuelProgress(), 0.0F, 1.0F);
+                std::clamp(gameSession.furnaceSystem().fuelProgress(furnace), 0.0F, 1.0F);
             if (fuel > 0.0F) {
                 const float height = std::ceil(13.0F * fuel);
                 drawGuiSprite(commandBuffer,
@@ -1436,7 +1467,7 @@ class HudRenderer final {
                               8.0F, {176.0F, 13.0F - height, 14.0F, height});
             }
             const float progress =
-                std::clamp(gameSession.craftingSystem().furnaceProgress(), 0.0F, 1.0F);
+                std::clamp(gameSession.furnaceSystem().cookProgress(furnace), 0.0F, 1.0F);
             if (progress > 0.0F) {
                 const float width = std::ceil(24.0F * progress);
                 drawGuiSprite(commandBuffer,
@@ -1478,7 +1509,8 @@ class HudRenderer final {
             if (!selected) {
                 const bool bottomTab = tabIndex >= firstBottomTab;
                 drawGuiSprite(commandBuffer, layout.creativeTab(tabIndex), 4.0F,
-                              {bottomTab ? 140.0F : static_cast<float>(tabIndex) * 28.0F,
+                              {bottomTab ? static_cast<float>(tabIndex - firstBottomTab) * 28.0F
+                                         : static_cast<float>(tabIndex) * 28.0F,
                                bottomTab ? 64.0F : 0.0F, 28.0F, 32.0F});
             }
         }
@@ -1491,7 +1523,9 @@ class HudRenderer final {
 
         const bool selectedBottomTab = selectedTabIndex >= firstBottomTab;
         drawGuiSprite(commandBuffer, layout.creativeTab(selectedTabIndex), 4.0F,
-                      {selectedBottomTab ? 140.0F : static_cast<float>(selectedTabIndex) * 28.0F,
+                      {selectedBottomTab
+                           ? static_cast<float>(selectedTabIndex - firstBottomTab) * 28.0F
+                           : static_cast<float>(selectedTabIndex) * 28.0F,
                        selectedBottomTab ? 96.0F : 32.0F, 28.0F, 32.0F});
         const std::array<gameplay::ItemStack, kCreativeTabCount> tabIcons{{
             {world::Block::Bricks, 1U},
@@ -1612,7 +1646,7 @@ class HudRenderer final {
                                   : static_cast<float>(swapchainExtent.height) - 28.0F * scale;
         const auto messages = chatHistory.messages();
         for (auto message = messages.rbegin(); message != messages.rend(); ++message) {
-            if (!chatOpen && gameSession.gameTimeSeconds() >= message->createdAt + 5.0) {
+            if (!chatOpen && uiTimeSeconds >= message->createdAt + 5.0) {
                 continue;
             }
             if (messageY < 2.0F * scale) {
@@ -1637,7 +1671,7 @@ class HudRenderer final {
         // the typed text.
         const ui::UiRect input = layout.chatInput();
         drawHudQuad(commandBuffer, input, {0.0F, 0.0F, 0.0F, 0.72F});
-        const bool cursorVisible = static_cast<int>(gameSession.gameTimeSeconds() * 2.0) % 2 == 0;
+        const bool cursorVisible = static_cast<int>(uiTimeSeconds * 2.0) % 2 == 0;
         const std::string visibleText = chatInputText + (cursorVisible ? "_" : "");
         drawHudText(commandBuffer, visibleText, input.x + 2.0F * scale, input.y + 2.0F * scale,
                     scale, {1.0F, 1.0F, 1.0F, 1.0F}, false);
@@ -1724,9 +1758,9 @@ class HudRenderer final {
                 if (selectionChanged) {
                     selectedNameSlot_ = selectedSlot;
                     selectedNameStack_ = selectedStack;
-                    selectedNameShownAt_ = gameSession.gameTimeSeconds();
+                    selectedNameShownAt_ = uiTimeSeconds;
                 }
-                const double elapsed = gameSession.gameTimeSeconds() - selectedNameShownAt_;
+                const double elapsed = uiTimeSeconds - selectedNameShownAt_;
                 float alpha = 0.0F;
                 if (elapsed < 2.0) {
                     // Full brightness for the first 1.5 s, then a half-second
@@ -1791,14 +1825,7 @@ class HudRenderer final {
             page == ui::PageId::Controls || page == ui::PageId::Language ||
             page == ui::PageId::Experimental) {
             if (!worldSessionActive) {
-                drawGuiSprite(commandBuffer,
-                              {0.0F, 0.0F, static_cast<float>(swapchainExtent.width),
-                               static_cast<float>(swapchainExtent.height)},
-                              9.0F,
-                              ui::tiledBackgroundSource(static_cast<float>(swapchainExtent.width),
-                                                        static_cast<float>(swapchainExtent.height),
-                                                        layout.scale()),
-                              kMenuBackgroundTint);
+                drawTitleCarousel(commandBuffer, descriptorSet, true, layout.scale());
             }
             if (page == ui::PageId::Language) {
                 drawLanguageScreen(commandBuffer, layout);
@@ -1809,14 +1836,7 @@ class HudRenderer final {
         }
 
         if (!worldReady) {
-            drawGuiSprite(commandBuffer,
-                          {0.0F, 0.0F, static_cast<float>(swapchainExtent.width),
-                           static_cast<float>(swapchainExtent.height)},
-                          9.0F,
-                          ui::tiledBackgroundSource(static_cast<float>(swapchainExtent.width),
-                                                    static_cast<float>(swapchainExtent.height),
-                                                    layout.scale()),
-                          kMenuBackgroundTint);
+            drawTitleCarousel(commandBuffer, descriptorSet, true, layout.scale());
             const float scale = layout.scale();
             const float progress = peakPendingSectionCount == 0U
                                        ? 0.0F
@@ -1975,70 +1995,71 @@ class HudRenderer final {
         drawChatOverlay(commandBuffer, layout);
     }
 
+    // ---- bound references to renderer-core state ----
+    ui::MenuSystem& menuSystem;
+    ui::UiFrameData& uiFrameData_;
+    gameplay::GameSession& gameSession;
+    ui::TextFont& textFont;
+    ui::BitmapFontMetrics& fontMetrics;
+    ui::Language& language;
+    world::World& interactionWorld;
+    GLFWwindow*& window;
+    config::GameOptions& options;
+    PerspectiveCamera& camera;
+    VkExtent2D& swapchainExtent;
+    VkPipeline& hudPipeline;
+    VkPipelineLayout& hudPipelineLayout;
+    VkPipeline& vignettePipeline;
+    VkPipeline& crosshairPipeline;
+    VkPipeline& panoramaPipeline;
+    VkPipelineLayout& panoramaPipelineLayout;
+    VkPipeline& heldItemPipeline;
+    VkPipelineLayout& itemPipelineLayout;
+    bool& inventoryOpen;
+    ContainerScreen& containerScreen;
+    std::optional<gameplay::ChestPosition>& activeChest;
+    std::optional<glm::ivec3>& activeFurnacePosition;
+    bool& debugOverlayOpen;
+    bool& inventoryDragActive;
+    std::vector<gameplay::ItemStack*>& inventoryDragSlots;
+    bool& chatOpen;
+    ui::ChatHistory& chatHistory;
+    std::string& chatInputText;
+    std::vector<gameplay::command::Suggestion>& chatSuggestions_;
+    std::size_t& chatSuggestionIndex_;
+    std::optional<persistence::SaveGame>& currentSave;
+    int& displayedFps;
+    animation::PlayerModelAnimator& playerModelAnimator;
+    MenuButton& pressedMenuButton;
+    bool& spawnPositionInitialized;
+    bool& worldReady;
+    bool& worldSessionActive;
+    int& simulationDistanceChunks;
+    int& viewDistanceChunks;
+    std::size_t& peakPendingSectionCount;
+    const std::unordered_map<world::SectionPosition, world::SectionMeshUpdate,
+                             world::SectionPositionHash>& pendingSectionUpdates;
+    const std::optional<TestSceneOptions>& testScene;
+    bool& paused;
+    double& uiTimeSeconds;
 
+    // ---- world-render / per-frame couplings (bound to Impl lambdas) ----
+    std::function<bool()> cameraSubmergedInWater;
+    std::function<void(VkCommandBuffer, VkDescriptorSet)> drawHeldItem;
+    std::function<VkDescriptorSet()> currentFrameDescriptorSet;
+    std::function<std::span<const gameplay::ItemStack>()> activeCreativeCatalog;
+    std::function<float()> creativeScrollPosition;
+    std::function<std::size_t()> creativeMaximumScrollRow;
+    std::function<std::vector<std::uint8_t>()> dragPlacementCounts;
+    std::function<float()> cameraFarPlane;
+    std::function<std::optional<ui::UiRect>(const ui::HudLayout&, const gameplay::ItemStack*)>
+        dragSlotRectangle;
 
-  // ---- bound references to renderer-core state ----
-  ui::MenuSystem& menuSystem;
-  ui::UiFrameData& uiFrameData_;
-  gameplay::GameSession& gameSession;
-  ui::TextFont& textFont;
-  ui::BitmapFontMetrics& fontMetrics;
-  ui::Language& language;
-  world::World& interactionWorld;
-  GLFWwindow*& window;
-  config::GameOptions& options;
-  PerspectiveCamera& camera;
-  VkExtent2D& swapchainExtent;
-  VkPipeline& hudPipeline;
-  VkPipelineLayout& hudPipelineLayout;
-  VkPipeline& vignettePipeline;
-  VkPipeline& crosshairPipeline;
-  VkPipeline& panoramaPipeline;
-  VkPipelineLayout& panoramaPipelineLayout;
-  VkPipeline& heldItemPipeline;
-  VkPipelineLayout& itemPipelineLayout;
-  bool& inventoryOpen;
-  ContainerScreen& containerScreen;
-  std::optional<gameplay::ChestPosition>& activeChest;
-  bool& debugOverlayOpen;
-  bool& inventoryDragActive;
-  std::vector<gameplay::ItemStack*>& inventoryDragSlots;
-  bool& chatOpen;
-  ui::ChatHistory& chatHistory;
-  std::string& chatInputText;
-  std::vector<gameplay::command::Suggestion>& chatSuggestions_;
-  std::size_t& chatSuggestionIndex_;
-  std::optional<persistence::SaveGame>& currentSave;
-  int& displayedFps;
-  animation::PlayerModelAnimator& playerModelAnimator;
-  MenuButton& pressedMenuButton;
-  bool& spawnPositionInitialized;
-  bool& worldReady;
-  bool& worldSessionActive;
-  int& simulationDistanceChunks;
-  int& viewDistanceChunks;
-  std::size_t& peakPendingSectionCount;
-  const std::unordered_map<world::SectionPosition, world::SectionMeshUpdate, world::SectionPositionHash>& pendingSectionUpdates;
-  const std::optional<TestSceneOptions>& testScene;
-  bool& paused;
-  double& uiTimeSeconds;
-
-  // ---- world-render / per-frame couplings (bound to Impl lambdas) ----
-  std::function<bool()> cameraSubmergedInWater;
-  std::function<void(VkCommandBuffer, VkDescriptorSet)> drawHeldItem;
-  std::function<VkDescriptorSet()> currentFrameDescriptorSet;
-  std::function<std::span<const gameplay::ItemStack>()> activeCreativeCatalog;
-  std::function<float()> creativeScrollPosition;
-  std::function<std::size_t()> creativeMaximumScrollRow;
-  std::function<std::vector<std::uint8_t>()> dragPlacementCounts;
-  std::function<float()> cameraFarPlane;
-  std::function<std::optional<ui::UiRect>(const ui::HudLayout&, const gameplay::ItemStack*)> dragSlotRectangle;
-
-  // ---- owned UI animation / selection state ----
-  float vignetteDarkness_ = 1.0F;
-  mutable std::size_t selectedNameSlot_ = static_cast<std::size_t>(-1);
-  mutable gameplay::ItemStack selectedNameStack_;
-  mutable double selectedNameShownAt_ = -1.0;
+    // ---- owned UI animation / selection state ----
+    float vignetteDarkness_ = 1.0F;
+    mutable std::size_t selectedNameSlot_ = static_cast<std::size_t>(-1);
+    mutable gameplay::ItemStack selectedNameStack_;
+    mutable double selectedNameShownAt_ = -1.0;
 };
 
 } // namespace mc::render

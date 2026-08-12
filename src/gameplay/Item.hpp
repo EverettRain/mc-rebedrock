@@ -331,7 +331,7 @@ class LeavesBlockItem : public BlockItem {
 // its registry entry.
 [[nodiscard]] inline const BlockItem* blockItemFor(world::Block block) {
     static const StandingAndWallBlockItem torch{world::Block::Torch,
-                                                world::Block::WallTorchNorth};
+                                                world::Block::WallTorch};
     if (block == world::Block::Torch) return &torch;
     if (!world::isValidBlock(block)) return nullptr;
     if (world::isLeaves(block)) {

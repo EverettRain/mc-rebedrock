@@ -18,12 +18,27 @@ namespace {
 constexpr float kInfiniteDamage = std::numeric_limits<float>::infinity();
 } // namespace
 
-GameSession::GameSession() : player_({24.0F, 78.0F - PlayerController::kEyeHeight, 24.0F}) {}
+GameSession::GameSession() : player_({24.0F, 78.0F - PlayerController::kEyeHeight, 24.0F}) {
+    // A fresh world opens at morning, the same tick the old single clock seeded
+    // itself with.
+    clocks_.setTotalTicks(world::ClockId::Overworld,
+                          static_cast<std::uint64_t>(world::DayNightCycle::kNewWorldTick));
+}
 
 void GameSession::tick(world::World& world, SimulationHost& host) {
+    // The server tick is unconditional: no gamerule, command or pause reaches
+    // it, so everything timed against it (mining, cooldowns, scheduled work)
+    // keeps running even when the sun is frozen.
+    ++serverTick_;
+    // doDaylightCycle now means exactly "pause the overworld clock" rather than
+    // "stop the one clock everything shares" — 26.1 gates ServerClockManager
+    // the same way, with a per-clock paused flag under a global rule.
+    clocks_.setPaused(world::ClockId::Overworld,
+                      !gameRules_.get<bool>(GameRuleId::DoDaylightCycle));
+    clocks_.tick();
     // ServerWorld.tick runs its weather section first, before the world and
     // entities; the auto-cycle is gated on the doWeatherCycle gamerule the same
-    // way doDaylightCycle gates the day in the renderer.
+    // way doDaylightCycle gates the day.
     weatherSystem_.tick(gameRules_.get<bool>(GameRuleId::DoWeatherCycle));
     playerInput_.jumpPressed = jumpPressed_;
     physicsPreviousPosition_ = physicsCurrentPosition_;
@@ -89,9 +104,10 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
         }
     }
     fluidUpdatePhaseConsumed = true;
-    craftingSystem_.tickFurnace();
-    // A burning furnace swaps its block to the lit state so the front face and
-    // the block light follow the fuel burn.
+    // Every placed furnace smelts on its own now, screen open or not, so a lit
+    // furnace left behind keeps cooking. onFurnaceStateChanged swaps each one's
+    // block to its lit state so the front face and block light follow the burn.
+    furnaceSystem_.tick();
     host.onFurnaceStateChanged();
     chestSystem_.tick();
     if (itemEntities_.tick(world, player_.position(), inventory_) > 0U) {
@@ -116,7 +132,7 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // at night and MONSTERs spawn on the surface, not just in caves.
     naturalSpawner_.tick(
         world, worldEntities_, player_.position(), simulationRadiusBlocks_, difficulty_,
-        world::DayNightCycle::state(gameTimeSeconds_).skyBrightness);
+        world::DayNightCycle::stateAtTick(static_cast<double>(dayTimeTicks())).skyBrightness);
     consumeEntityEvents(host);
     physicsCurrentPosition_ = player_.position();
     jumpPressed_ = false;

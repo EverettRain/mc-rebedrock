@@ -3,6 +3,7 @@
 #include "render/vulkan/BlockAtlasLayout.hpp"
 
 #include "assets/ImageData.hpp"
+#include "assets/TextureAnimation.hpp"
 #include "gameplay/Item.hpp"
 #include "gameplay/SpawnEggItems.hpp"
 #include "gameplay/entities/EntityType.hpp"
@@ -14,8 +15,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -56,6 +60,45 @@ void requireSameSize(const assets::ImageData& first, const assets::ImageData& ot
         frames.push_back(std::move(frame));
     }
     return frames;
+}
+
+// Fits an animated texture's source frames to the fixed number of atlas layers
+// reserved for it. The atlas layout and the animation shader are hardwired to a
+// frame count (32 water, 20/16 lava), so a pack whose texture has a different
+// count — or an explicit `.mcmeta` `frames` order — is reconciled here rather
+// than crashing: the frames are reordered per the metadata, then cycled or
+// truncated to fill exactly the reserved layers. (The `.mcmeta` frametime is
+// parsed but not yet applied; the shader's animation rate is still fixed, which
+// is a separate atlas/shader change.)
+[[nodiscard]] std::vector<assets::ImageData>
+fitAnimationFrames(std::vector<assets::ImageData> source,
+                   const std::optional<assets::TextureAnimation>& animation,
+                   std::uint32_t reserved, std::string_view name) {
+    std::vector<assets::ImageData> ordered;
+    if (animation.has_value() && !animation->frames.empty()) {
+        for (const auto& frame : animation->frames) {
+            if (frame.index >= 0 && static_cast<std::size_t>(frame.index) < source.size()) {
+                ordered.push_back(source[static_cast<std::size_t>(frame.index)]);
+            }
+        }
+    }
+    if (ordered.empty()) {
+        ordered = std::move(source);
+    }
+    if (ordered.empty()) {
+        throw std::runtime_error("Animated texture " + std::string{name} + " has no frames");
+    }
+    if (ordered.size() != reserved) {
+        std::cerr << "[texture-animation] " << name << " provides " << ordered.size()
+                  << " frame(s); the atlas reserves " << reserved
+                  << " — cycling/truncating to fit.\n";
+    }
+    std::vector<assets::ImageData> fitted;
+    fitted.reserve(reserved);
+    for (std::uint32_t index = 0; index < reserved; ++index) {
+        fitted.push_back(ordered[index % ordered.size()]);
+    }
+    return fitted;
 }
 
 [[nodiscard]] assets::ImageData resizedRegion(const assets::ImageData& image, int sourceX,
@@ -149,82 +192,51 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
     return static_cast<std::uint8_t>(std::clamp(value, 0, 255));
 }
 
-// Spawn-egg icon (1.16.1): `spawn_egg.png` paints only part of the egg's
-// silhouette while `spawn_egg_overlay.png` supplies the spots that fill the
-// rest; the two are tinted with the species' SpawnEggColors and blended by the
-// overlay's alpha into one 16×16 layer. Pixels survive whenever EITHER texture
-// is opaque: skipping every pixel with a transparent base would drop the spots
-// (they sit on transparent base pixels) and leave only the shell colour.
-[[nodiscard]] assets::ImageData buildSpawnEggIcon(const std::filesystem::path& itemDir,
-                                                  gameplay::entities::SpawnEggColors eggColors) {
-    assets::ImageData egg = assets::ImageData::loadRgba(itemDir / "spawn_egg.png");
-    const auto eggOverlay = assets::ImageData::loadRgba(itemDir / "spawn_egg_overlay.png");
-    requireSameSize(egg, eggOverlay);
-    const auto unpack = [](std::uint32_t rgb) {
-        return std::array<int, 3>{static_cast<int>((rgb >> 16) & 0xFFU),
-                                  static_cast<int>((rgb >> 8) & 0xFFU),
-                                  static_cast<int>(rgb & 0xFFU)};
+} // namespace
+
+TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
+    // Every block texture is resolved by name through the provider, so a layered
+    // pack overrides them one file at a time (an imported pack can replace just
+    // dirt without shipping every other block).
+    const auto blockTex = [&](std::string_view name) {
+        return assets::ImageData::loadRgbaOrMissing(
+            resources.locate(assets::textures("block/" + std::string{name} + ".png")));
     };
-    const std::array<int, 3> primary = unpack(eggColors.primary);
-    const std::array<int, 3> secondary = unpack(eggColors.secondary);
-    for (std::size_t p = 0; p + 3U < egg.rgba.size(); p += 4U) {
-        const float baseAlpha = static_cast<float>(egg.rgba[p + 3U]) / 255.0F;
-        const float overlayAlpha = static_cast<float>(eggOverlay.rgba[p + 3U]) / 255.0F;
-        if (baseAlpha == 0.0F && overlayAlpha == 0.0F) {
-            continue; // outside the egg shape entirely
-        }
-        std::array<std::uint8_t, 3> baseColor{};
-        for (std::size_t c = 0; c < 3U; ++c) {
-            if (baseAlpha > 0.0F) {
-                baseColor[c] = static_cast<std::uint8_t>(egg.rgba[p + c] * primary[c] / 255);
-            }
-        }
-        // Spot-only pixels would inherit the transparent base's alpha and
-        // vanish, so the output is opaque wherever either source has ink.
-        egg.rgba[p + 3U] = 255U;
-        for (std::size_t c = 0; c < 3U; ++c) {
-            const float spot = static_cast<float>(eggOverlay.rgba[p + c] * secondary[c] / 255);
-            const float base = static_cast<float>(baseColor[c]);
-            egg.rgba[p + c] =
-                static_cast<std::uint8_t>(spot * overlayAlpha + base * (1.0F - overlayAlpha));
-        }
-    }
-    return egg;
-}
-
-}  // namespace
-
-TextureArrayPixels bakeBlockAtlas(const std::filesystem::path& root) {
-    auto top = assets::ImageData::loadRgba(root / "grass_block_top.png");
-    auto side = assets::ImageData::loadRgba(root / "grass_block_side.png");
-    const auto overlay = assets::ImageData::loadRgba(root / "grass_block_side_overlay.png");
-    const auto dirt = assets::ImageData::loadRgba(root / "dirt.png");
-    auto grassPlant = assets::ImageData::loadRgba(root / "grass.png");
-    auto oakLeaves = assets::ImageData::loadRgba(root / "oak_leaves.png");
+    auto top = blockTex("grass_block_top");
+    auto side = blockTex("grass_block_side");
+    const auto overlay = blockTex("grass_block_side_overlay");
+    const auto dirt = blockTex("dirt");
+    auto grassPlant = blockTex("short_grass");
+    auto oakLeaves = blockTex("oak_leaves");
     // The animated and entity frames that fill the fixed special section. Item
-    // icons no longer live here; they append after the block textures.
-    auto waterStillFrames =
-        animatedSquareFrames(assets::ImageData::loadRgba(root / "water_still.png"), top.width);
-    auto waterFlowFrames =
-        animatedSquareFrames(assets::ImageData::loadRgba(root / "water_flow.png"), top.width);
-    auto lavaStillFrames =
-        animatedSquareFrames(assets::ImageData::loadRgba(root / "lava_still.png"), top.width);
-    auto lavaFlowFrames =
-        animatedSquareFrames(assets::ImageData::loadRgba(root / "lava_flow.png"), top.width);
-    auto sunFrames = animatedSquareFrames(
-        assets::ImageData::loadRgba(root.parent_path() / "environment" / "sun.png"), top.width);
-    const auto moonPhasesImage =
-        assets::ImageData::loadRgba(root.parent_path() / "environment" / "moon_phases.png");
-    std::array<assets::ImageData, 8> moonPhaseTiles;
-    for (int phase = 0; phase < 8; ++phase) {
-        const int column = phase % 4;
-        const int row = phase / 4;
-        moonPhaseTiles[static_cast<std::size_t>(phase)] = resizedRegion(
-            moonPhasesImage, column * moonPhasesImage.width / 4, row * moonPhasesImage.height / 2,
-            moonPhasesImage.width / 4, moonPhasesImage.height / 2, top.width);
+    // icons no longer live here; they append after the block textures. Each is
+    // fitted to the layers the atlas reserves for it, honouring the texture's
+    // `.mcmeta` frame order and never crashing on an off-count pack.
+    const auto animatedFrames = [&](std::string_view name, std::uint32_t reserved) {
+        const auto location = assets::textures("block/" + std::string{name} + ".png");
+        return fitAnimationFrames(animatedSquareFrames(blockTex(name), top.width),
+                                  assets::TextureAnimation::load(resources, location), reserved,
+                                  name);
+    };
+    auto waterStillFrames = animatedFrames("water_still", kWaterAnimationFrameCount);
+    auto waterFlowFrames = animatedFrames("water_flow", kWaterAnimationFrameCount);
+    auto lavaStillFrames = animatedFrames("lava_still", kLavaStillFrameCount);
+    auto lavaFlowFrames = animatedFrames("lava_flow", kLavaFlowFrameCount);
+    auto sunFrames = animatedSquareFrames(assets::ImageData::loadRgba(resources.locate(
+                                              assets::textures("environment/celestial/sun.png"))),
+                                          top.width);
+    constexpr std::array<std::string_view, 8> kMoonPhaseNames{
+        "full_moon", "waning_gibbous",  "third_quarter", "waning_crescent",
+        "new_moon",  "waxing_crescent", "first_quarter", "waxing_gibbous",
+    };
+    std::array<assets::ImageData, kMoonPhaseNames.size()> moonPhaseTiles;
+    for (std::size_t phase = 0; phase < kMoonPhaseNames.size(); ++phase) {
+        const auto moon = assets::ImageData::loadRgba(resources.locate(assets::textures(
+            "environment/celestial/moon/" + std::string{kMoonPhaseNames[phase]} + ".png")));
+        moonPhaseTiles[phase] = resizedRegion(moon, 0, 0, moon.width, moon.height, top.width);
     }
-    const auto playerSkin =
-        assets::ImageData::loadRgba(root.parent_path() / "entity" / "steve.png");
+    const auto playerSkin = assets::ImageData::loadRgba(
+        resources.locate(assets::textures("entity/player/wide/steve.png")));
     const std::array playerParts{
         playerSkinCuboidFaces(playerSkin, 0, 0, 8, 8, 8, top.width),
         playerSkinCuboidFaces(playerSkin, 16, 16, 8, 12, 4, top.width),
@@ -234,9 +246,9 @@ TextureArrayPixels bakeBlockAtlas(const std::filesystem::path& root) {
         playerSkinCuboidFaces(playerSkin, 16, 48, 4, 12, 4, top.width),
     };
     const auto chestTexture =
-        assets::ImageData::loadRgba(root.parent_path() / "entity" / "chest" / "normal.png");
-    const auto furnaceFront = assets::ImageData::loadRgba(root / "furnace_front.png");
-    const auto furnaceFrontOn = assets::ImageData::loadRgba(root / "furnace_front_on.png");
+        assets::ImageData::loadRgba(resources.locate(assets::textures("entity/chest/normal.png")));
+    const auto furnaceFront = blockTex("furnace_front");
+    const auto furnaceFrontOn = blockTex("furnace_front_on");
     auto chestParts = std::array{
         playerSkinCuboidFaces(chestTexture, 0, 19, 14, 10, 14, top.width),
         playerSkinCuboidFaces(chestTexture, 0, 0, 14, 5, 14, top.width),
@@ -254,8 +266,7 @@ TextureArrayPixels bakeBlockAtlas(const std::filesystem::path& root) {
     };
     std::array<assets::ImageData, 10> destroyStages;
     for (std::size_t stage = 0; stage < destroyStages.size(); ++stage) {
-        destroyStages[stage] =
-            assets::ImageData::loadRgba(root / ("destroy_stage_" + std::to_string(stage) + ".png"));
+        destroyStages[stage] = blockTex("destroy_stage_" + std::to_string(stage));
     }
     // The biome leaves and their tints (spruce/birch fixed, the rest the biome
     // foliage colour), the same set the tree shapes grow.
@@ -263,11 +274,8 @@ TextureArrayPixels bakeBlockAtlas(const std::filesystem::path& root) {
     constexpr std::array<float, 3> spruceTint{0x61 / 255.0F, 0x99 / 255.0F, 0x61 / 255.0F};
     constexpr std::array<float, 3> birchTint{0x80 / 255.0F, 0xA7 / 255.0F, 0x55 / 255.0F};
     std::array<assets::ImageData, 5> biomeLeafTextures{
-        assets::ImageData::loadRgba(root / "spruce_leaves.png"),
-        assets::ImageData::loadRgba(root / "birch_leaves.png"),
-        assets::ImageData::loadRgba(root / "jungle_leaves.png"),
-        assets::ImageData::loadRgba(root / "acacia_leaves.png"),
-        assets::ImageData::loadRgba(root / "dark_oak_leaves.png"),
+        blockTex("spruce_leaves"), blockTex("birch_leaves"),    blockTex("jungle_leaves"),
+        blockTex("acacia_leaves"), blockTex("dark_oak_leaves"),
     };
     const std::array<std::array<float, 3>, 5> biomeLeafTints{spruceTint, birchTint, foliageTint,
                                                              foliageTint, foliageTint};
@@ -283,16 +291,11 @@ TextureArrayPixels bakeBlockAtlas(const std::filesystem::path& root) {
             }
         }
     }
-    if (waterStillFrames.size() != kWaterAnimationFrameCount ||
-        waterFlowFrames.size() != kWaterAnimationFrameCount) {
-        throw std::runtime_error("Minecraft water textures must contain 32 animation frames");
-    }
-    if (lavaStillFrames.size() != kLavaStillFrameCount ||
-        lavaFlowFrames.size() != kLavaFlowFrameCount) {
-        throw std::runtime_error("Minecraft lava textures must contain 20/16 animation frames");
-    }
-    if (sunFrames.size() != 1U) {
-        throw std::runtime_error("Minecraft sun texture must contain one square frame");
+    // water/lava frame counts are now reconciled by fitAnimationFrames above, so
+    // an off-count pack no longer aborts the bake. The sun is a single still
+    // frame; more than one means the wrong texture, which is still a hard error.
+    if (sunFrames.empty()) {
+        throw std::runtime_error("Minecraft sun texture must contain at least one square frame");
     }
     // Untinted grass family, kept for the per-biome colour variants below.
     const auto grassTopRaw = top;
@@ -394,7 +397,7 @@ TextureArrayPixels bakeBlockAtlas(const std::filesystem::path& root) {
             for (int stage = 0; stage < count; ++stage) {
                 const std::string file{prefix};
                 const std::string image = file.substr(0, file.size() - 1) + std::to_string(stage);
-                assets::ImageData pixels = assets::ImageData::loadRgba(root / (image + ".png"));
+                assets::ImageData pixels = blockTex(image);
                 requireSameSize(top, pixels);
                 layers.push_back(std::move(pixels));
             }
@@ -416,15 +419,14 @@ TextureArrayPixels bakeBlockAtlas(const std::filesystem::path& root) {
         if (view == "farmland") {
             const float first = static_cast<float>(layers.size());
             for (const char* file : {"farmland", "farmland_moist"}) {
-                assets::ImageData pixels =
-                    assets::ImageData::loadRgba(root / (std::string(file) + ".png"));
+                assets::ImageData pixels = blockTex(file);
                 requireSameSize(top, pixels);
                 layers.push_back(std::move(pixels));
             }
             layerByName.emplace(name, first);
             return first;
         }
-        assets::ImageData pixels = assets::ImageData::loadRgba(root / (std::string(name) + ".png"));
+        assets::ImageData pixels = blockTex(name);
         requireSameSize(top, pixels);
         const float index = static_cast<float>(layers.size());
         layers.push_back(std::move(pixels));
@@ -438,7 +440,7 @@ TextureArrayPixels bakeBlockAtlas(const std::filesystem::path& root) {
     layers.push_back(side);
     layerByName.emplace("dirt", static_cast<float>(layers.size()));
     layers.push_back(dirt);
-    layerByName.emplace("grass", static_cast<float>(layers.size()));
+    layerByName.emplace("short_grass", static_cast<float>(layers.size()));
     layers.push_back(grassPlant);
     layerByName.emplace("oak_leaves", static_cast<float>(layers.size()));
     layers.push_back(oakLeaves);
@@ -457,7 +459,8 @@ TextureArrayPixels bakeBlockAtlas(const std::filesystem::path& root) {
     // colour gradient instead of a hard switch. Swamp and dark forest carry
     // their 1.16.1 overrides below.
     const auto loadColormap = [&](const char* name) {
-        return assets::ImageData::loadRgba(root.parent_path() / "colormap" / name);
+        return assets::ImageData::loadRgba(
+            resources.locate(assets::textures(std::string{"colormap/"} + name)));
     };
     const auto grassColormap = loadColormap("grass.png");
     const auto foliageColormap = loadColormap("foliage.png");
@@ -663,15 +666,15 @@ TextureArrayPixels bakeBlockAtlas(const std::filesystem::path& root) {
     }
     const std::uint32_t baseLayerCount = static_cast<std::uint32_t>(layers.size());
     // Item icons: one appended layer per registered item, in registry order.
-    const auto itemDir = root.parent_path() / "item";
+    // Each resolves through the provider so a pack overrides item art per file.
     std::uint32_t itemIndex = 0U;
     const auto appendItemIcon = [&](const gameplay::Item* item) {
         assets::ImageData icon;
-        if (const auto* spawnEgg = gameplay::asSpawnEgg(item)) {
-            icon = buildSpawnEggIcon(itemDir, spawnEgg->entityType().spawnEgg());
-        } else {
-            icon = assets::ImageData::loadRgba(itemDir / (std::string{item->textureName} + ".png"));
-        }
+        // 26.1 ships one final sprite per spawn egg just like every other item;
+        // the legacy shared shell/overlay tint composite no longer exists.
+        icon = assets::ImageData::loadRgbaOrMissing(
+            resources.locate(assets::textures("item/" + std::string{item->textureName} + ".png")),
+            top.width, top.height);
         requireSameSize(top, icon);
         output.rgba.insert(output.rgba.end(), icon.rgba.begin(), icon.rgba.end());
         gameplay::setItemTextureLayer(item, static_cast<float>(baseLayerCount + itemIndex));

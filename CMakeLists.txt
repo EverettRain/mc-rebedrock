@@ -4,7 +4,8 @@ project(
     mc_rebedrock
     VERSION 0.1.0
     DESCRIPTION "A Vulkan-based voxel sandbox"
-    LANGUAGES CXX
+    # C is needed for the vendored miniz (zip reading); everything else is C++.
+    LANGUAGES CXX C
 )
 
 include(CTest)
@@ -195,9 +196,17 @@ endif()
 add_executable(mc_rebedrock
     src/main.cpp
     src/assets/ImageData.cpp
+    src/assets/FontProviders.cpp
+    src/assets/PackMetadata.cpp
+    src/assets/ResourceProvider.cpp
+    src/assets/SoundRegistry.cpp
+    src/assets/TextureAnimation.cpp
+    src/assets/ZipResourcePack.cpp
+    vendor/miniz/miniz.c
     src/config/GameOptions.cpp
     src/core/Application.cpp
     src/gameplay/ChestSystem.cpp
+    src/gameplay/FurnaceSystem.cpp
     src/gameplay/ContentRegistry.cpp
     src/gameplay/CraftingSystem.cpp
     src/gameplay/EntitySystem.cpp
@@ -246,6 +255,7 @@ add_executable(mc_rebedrock
     src/world/ChunkStreamer.cpp
     src/world/ChunkMesher.cpp
     src/world/DayNightCycle.cpp
+    src/world/WorldClock.cpp
     src/world/WorldLighting.cpp
     src/world/WorldLightEngine.cpp
     src/world/SurfaceGenerator.cpp
@@ -259,6 +269,7 @@ add_executable(mc_rebedrock
     src/world/gen/TreeGrower.cpp
     src/world/VoxelRaycast.cpp
     src/world/World.cpp
+    src/world/WorldMutationService.cpp
 )
 
 set(
@@ -286,6 +297,7 @@ target_include_directories(mc_rebedrock PRIVATE
     "${glm_SOURCE_DIR}"
     "${stb_SOURCE_DIR}"
     "${vma_SOURCE_DIR}/include"
+    vendor/miniz
 )
 target_link_libraries(mc_rebedrock PRIVATE
     Vulkan::Vulkan
@@ -331,8 +343,6 @@ if(MC_REBEDROCK_STAGE_RUNTIME)
             "${CMAKE_CURRENT_SOURCE_DIR}/cmake/StageRuntime.cmake"
             "${CMAKE_CURRENT_SOURCE_DIR}/resources/default-options.properties"
             "${CMAKE_CURRENT_SOURCE_DIR}/CHANGELOG.md"
-            "${CMAKE_CURRENT_SOURCE_DIR}/resources/vanilla/1.16.1/localization/minecraft/en_us.json"
-            "${CMAKE_CURRENT_SOURCE_DIR}/resources/vanilla/1.16.1/localization/minecraft/zh_cn.json"
             ${MC_REBEDROCK_ANIMATION_ASSETS}
         COMMENT "Staging MC Rebedrock runtime resources"
         VERBATIM
@@ -790,6 +800,7 @@ if(BUILD_TESTING)
     add_executable(mc_rebedrock_game_session_test
         tests/game_session_test.cpp
         src/gameplay/ChestSystem.cpp
+        src/gameplay/FurnaceSystem.cpp
         src/gameplay/ContentRegistry.cpp
         src/gameplay/CraftingSystem.cpp
         src/gameplay/EntitySystem.cpp
@@ -816,6 +827,7 @@ if(BUILD_TESTING)
         src/world/Chunk.cpp
         src/world/ChunkSection.cpp
         src/world/DayNightCycle.cpp
+        src/world/WorldClock.cpp
         src/world/World.cpp
         src/world/gen/Biome.cpp
         src/world/gen/BiomeSource.cpp
@@ -881,6 +893,155 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME crafting_system COMMAND mc_rebedrock_crafting_system_test)
+
+    add_executable(mc_rebedrock_furnace_system_test
+        tests/furnace_system_test.cpp
+        src/gameplay/FurnaceSystem.cpp
+        src/gameplay/CraftingSystem.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/Inventory.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+    )
+    target_include_directories(mc_rebedrock_furnace_system_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME furnace_system COMMAND mc_rebedrock_furnace_system_test)
+
+    add_executable(mc_rebedrock_resource_provider_test
+        tests/resource_provider_test.cpp
+        src/assets/PackMetadata.cpp
+        src/assets/ResourceProvider.cpp
+        src/core/Json.cpp
+    )
+    target_include_directories(mc_rebedrock_resource_provider_test PRIVATE src)
+    add_test(NAME resource_provider COMMAND mc_rebedrock_resource_provider_test)
+
+    add_executable(mc_rebedrock_pack_metadata_test
+        tests/pack_metadata_test.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
+    )
+    target_include_directories(mc_rebedrock_pack_metadata_test PRIVATE src)
+    add_test(NAME pack_metadata COMMAND mc_rebedrock_pack_metadata_test)
+
+    add_executable(mc_rebedrock_texture_animation_test
+        tests/texture_animation_test.cpp
+        src/assets/TextureAnimation.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
+    )
+    target_include_directories(mc_rebedrock_texture_animation_test PRIVATE src)
+    add_test(NAME texture_animation COMMAND mc_rebedrock_texture_animation_test)
+
+    add_executable(mc_rebedrock_image_data_test
+        tests/image_data_test.cpp
+        src/assets/ImageData.cpp
+        src/assets/StbImageImplementation.cpp
+    )
+    target_include_directories(mc_rebedrock_image_data_test PRIVATE src "${stb_SOURCE_DIR}")
+    add_test(NAME image_data COMMAND mc_rebedrock_image_data_test)
+
+    add_executable(mc_rebedrock_sound_registry_test
+        tests/sound_registry_test.cpp
+        src/assets/PackMetadata.cpp
+        src/assets/SoundRegistry.cpp
+        src/assets/ResourceProvider.cpp
+        src/core/Json.cpp
+    )
+    target_include_directories(mc_rebedrock_sound_registry_test PRIVATE src)
+    add_test(NAME sound_registry COMMAND mc_rebedrock_sound_registry_test)
+
+    add_executable(mc_rebedrock_language_provider_test
+        tests/language_provider_test.cpp
+        src/ui/Language.cpp
+        src/ui/TextFont.cpp
+        src/ui/BitmapFontMetrics.cpp
+        src/assets/PackMetadata.cpp
+        src/assets/ResourceProvider.cpp
+        src/core/Json.cpp
+    )
+    target_include_directories(mc_rebedrock_language_provider_test PRIVATE src)
+    add_test(NAME language_provider COMMAND mc_rebedrock_language_provider_test)
+
+    add_executable(mc_rebedrock_font_providers_test
+        tests/font_providers_test.cpp
+        src/assets/FontProviders.cpp
+        src/assets/PackMetadata.cpp
+        src/assets/ResourceProvider.cpp
+        src/core/Json.cpp
+        src/ui/BitmapFontMetrics.cpp
+        src/ui/TextFont.cpp
+    )
+    target_include_directories(mc_rebedrock_font_providers_test PRIVATE src)
+    add_test(NAME font_providers COMMAND mc_rebedrock_font_providers_test)
+
+    add_executable(mc_rebedrock_zip_resource_pack_test
+        tests/zip_resource_pack_test.cpp
+        src/assets/PackMetadata.cpp
+        src/assets/ZipResourcePack.cpp
+        src/assets/ResourceProvider.cpp
+        src/core/Json.cpp
+        vendor/miniz/miniz.c
+    )
+    target_include_directories(mc_rebedrock_zip_resource_pack_test PRIVATE src vendor/miniz)
+    add_test(NAME zip_resource_pack COMMAND mc_rebedrock_zip_resource_pack_test)
+
+    add_executable(mc_rebedrock_mining_system_test
+        tests/mining_system_test.cpp
+        src/gameplay/MiningSystem.cpp
+        src/gameplay/ItemPlacement.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/Inventory.cpp
+        src/gameplay/WorldSimulation.cpp
+        src/world/BlockPlacement.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/World.cpp
+        src/world/gen/TreeGrower.cpp
+    )
+    target_include_directories(mc_rebedrock_mining_system_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME mining_system COMMAND mc_rebedrock_mining_system_test)
+
+    add_executable(mc_rebedrock_block_state_test
+        tests/block_state_test.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/World.cpp
+    )
+    target_include_directories(mc_rebedrock_block_state_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME block_state COMMAND mc_rebedrock_block_state_test)
+
+    add_executable(mc_rebedrock_world_mutation_service_test
+        tests/world_mutation_service_test.cpp
+        src/world/WorldMutationService.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/World.cpp
+    )
+    target_include_directories(mc_rebedrock_world_mutation_service_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME world_mutation_service COMMAND mc_rebedrock_world_mutation_service_test)
+
+    add_executable(mc_rebedrock_chunk_section_test
+        tests/chunk_section_test.cpp
+        src/world/ChunkSection.cpp
+    )
+    target_include_directories(mc_rebedrock_chunk_section_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME chunk_section COMMAND mc_rebedrock_chunk_section_test)
 
     add_executable(mc_rebedrock_item_entity_test
         tests/item_entity_test.cpp
@@ -995,6 +1156,10 @@ if(BUILD_TESTING)
 
     add_executable(mc_rebedrock_audio_system_test
         tests/audio_system_test.cpp
+        src/assets/PackMetadata.cpp
+        src/assets/SoundRegistry.cpp
+        src/assets/ResourceProvider.cpp
+        src/core/Json.cpp
     )
     target_link_libraries(mc_rebedrock_audio_system_test PRIVATE mc_rebedrock_audio)
     add_test(NAME audio_system COMMAND mc_rebedrock_audio_system_test)
@@ -1075,8 +1240,13 @@ if(BUILD_TESTING)
         src/gameplay/GameRules.cpp
         src/gameplay/Inventory.cpp
         src/gameplay/PlayerVitals.cpp
+        src/world/DayNightCycle.cpp
+        src/world/WorldClock.cpp
     )
-    target_include_directories(mc_rebedrock_save_repository_test PRIVATE src)
+    target_include_directories(mc_rebedrock_save_repository_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
     add_test(NAME save_repository COMMAND mc_rebedrock_save_repository_test)
 
     add_executable(mc_rebedrock_game_rules_registry_test
@@ -1097,31 +1267,14 @@ if(BUILD_TESTING)
     endif()
 
 install(TARGETS mc_rebedrock RUNTIME DESTINATION bin)
-install(DIRECTORY resources/vanilla/1.16.1/textures
-    DESTINATION resources/vanilla/1.16.1)
-# Every sound asset ships (see StageRuntime.cmake): block families, the whole
-# mob set, weather, ambient, entity, records and UI. A subset kept leaving
-# wired-up clips unstaged, so install the whole tree — except the 155 MB music
-# catalogue, which trims to the two classic C418 tracks below.
-install(DIRECTORY resources/vanilla/1.16.1/audio/minecraft/sounds
-    DESTINATION resources/vanilla/1.16.1/audio/minecraft
-    PATTERN "music" EXCLUDE)
-install(FILES
-    resources/vanilla/1.16.1/audio/minecraft/sounds/music/game/calm1.ogg
-    DESTINATION resources/vanilla/1.16.1/audio/minecraft/sounds/music/game)
-install(FILES
-    resources/vanilla/1.16.1/audio/minecraft/sounds/music/menu/menu1.ogg
-    DESTINATION resources/vanilla/1.16.1/audio/minecraft/sounds/music/menu)
-install(DIRECTORY resources/vanilla/1.16.1/fonts
-    DESTINATION resources/vanilla/1.16.1)
-foreach(language_code en_us zh_cn)
-    install(FILES
-        "resources/vanilla/1.16.1/localization/minecraft/${language_code}.json"
-        DESTINATION "resources/vanilla/1.16.1/localization/minecraft")
-endforeach()
+# No Mojang assets are installed: textures, sounds, fonts and translations come
+# from a standard resource pack the user supplies in resourcepacks/. Only
+# ReBedrock's own authored assets ship.
 install(DIRECTORY "${MC_REBEDROCK_SHADER_OUTPUT_DIR}/"
     DESTINATION resources/shaders)
 install(DIRECTORY resources/animation
+    DESTINATION resources)
+install(DIRECTORY resources/entity
     DESTINATION resources)
 install(FILES resources/default-options.properties
     DESTINATION config

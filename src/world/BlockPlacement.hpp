@@ -1,6 +1,7 @@
 #pragma once
 
 #include "world/Block.hpp"
+#include "world/BlockState.hpp"
 
 #include <glm/vec3.hpp>
 
@@ -31,18 +32,25 @@ struct PlacementContext final {
 };
 
 // BlockBehaviour#canSurvive: whether the block has the support it requires.
-[[nodiscard]] bool canBlockSurvive(const World& world, glm::ivec3 position, Block block);
+// `facing` is only read by wall-mounted blocks, whose support sits behind their
+// FACING state; everything else ignores it. It has no default on purpose — a
+// wall torch checked against the wrong wall survives nothing, or survives
+// everything, and a defaulted argument would hide that at every call site.
+[[nodiscard]] bool canBlockSurvive(const World& world, glm::ivec3 position, Block block,
+                                   BlockOrientation facing);
 
 // StandingAndWallBlockItem#getPlacementState: the torch item's own policy. The
 // wall variant wins on a side face, then the floor variant, then any other wall
 // that happens to be available; nullopt when none can survive there.
-[[nodiscard]] std::optional<Block> standingAndWallPlacement(
+[[nodiscard]] std::optional<BlockState> standingAndWallPlacement(
     const World& world,
     const PlacementContext& context);
 
-// BlockItem#getPlacementState: resolves the block variant that will actually be
-// placed, or nullopt when no variant can survive there.
-[[nodiscard]] std::optional<Block> placementBlock(
+// BlockItem#getPlacementState: resolves the state that will actually be placed,
+// or nullopt when nothing can survive there. It returns a whole state rather
+// than a block because a wall torch's facing is decided here, by which wall it
+// found, and cannot be recovered afterwards from the block alone.
+[[nodiscard]] std::optional<BlockState> placementBlock(
     const World& world,
     Block selected,
     const PlacementContext& context);

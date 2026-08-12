@@ -1,5 +1,8 @@
 #include "persistence/SaveRepository.hpp"
 
+#include "world/DayNightCycle.hpp"
+#include "world/WorldClock.hpp"
+
 #include <array>
 #include <bit>
 #include <cassert>
@@ -85,7 +88,10 @@ int main() {
     save.inventory[4] = {world::Block::Air, 1U, &gameplay::items::IronPickaxe, 137U};
     save.selectedHotbarSlot = inventory.selectedHotbarSlot();
     save.edits = {
-        {-1, 63, 2, world::Block::Furnace, 0U, world::BlockOrientation::East},
+        // A burning furnace is the same block with LIT set; format 14 carries
+        // the flag, so a world saved mid-smelt reopens still alight instead of
+        // silently going cold.
+        {-1, 63, 2, world::Block::Furnace, 0U, world::BlockOrientation::East, true},
         {4, 62, -8, world::Block::Water, 3U, world::BlockOrientation::North},
         // Farmland carries its moisture (0-7) in the per-cell orientation byte
         // (farmlandMoisture), so the saved state can exceed the six enumerated
@@ -98,6 +104,19 @@ int main() {
     chest.items[0] = {world::Block::Chest, 1U};
     chest.items[8] = {world::Block::Air, 3U, &gameplay::items::Book};
     save.chests.push_back(chest);
+    // Format 15's furnace block entities: each furnace's three slots and its
+    // burn/cook counters travel with the world, so a furnace reopens holding
+    // what it held and resumes the smelt it was partway through.
+    gameplay::FurnaceBlockEntity furnace;
+    furnace.position = {8, 65, -6};
+    furnace.input = {world::Block::IronOre, 2U, gameplay::blockItemFor(world::Block::IronOre)};
+    furnace.fuel = {world::Block::Air, 1U, &gameplay::items::Coal};
+    furnace.output = {world::Block::Air, 3U, &gameplay::items::IronIngot};
+    furnace.burnTicks = 640;
+    furnace.initialBurnTicks = 1600;
+    furnace.cookTicks = 75;
+    furnace.cookDurationTicks = 200;
+    save.furnaces.push_back(furnace);
     // Format 12's ENTITY block: creatures travel by species name and come back
     // with their pose and state intact.
     save.entities = {
@@ -121,9 +140,29 @@ int main() {
     assert(loaded.inventory == save.inventory);
     assert(loaded.inventory[4].damage == 137U);
     assert(loaded.edits == save.edits);
+    assert(loaded.edits[0].lit);
+    // The palette names the block, not the state: `lit_furnace` is gone.
+    {
+        std::ifstream data{root / save.summary.identifier / "world.dat", std::ios::binary};
+        const std::string bytes{std::istreambuf_iterator<char>{data},
+                                std::istreambuf_iterator<char>{}};
+        assert(bytes.find("lit_furnace") == std::string::npos);
+    }
     assert(loaded.chests.size() == 1U);
     assert(loaded.chests.front().position == chest.position);
     assert(loaded.chests.front().items == chest.items);
+    // The furnace block entity survives the round trip whole: contents and the
+    // burn/cook counters that let it resume its smelt.
+    assert(loaded.furnaces.size() == 1U);
+    {
+        const auto& reloaded = loaded.furnaces.front();
+        assert(reloaded.position == furnace.position);
+        assert(reloaded.input.block == world::Block::IronOre && reloaded.input.count == 2U);
+        assert(reloaded.fuel.item == &gameplay::items::Coal);
+        assert(reloaded.output.item == &gameplay::items::IronIngot && reloaded.output.count == 3U);
+        assert(reloaded.burnTicks == 640 && reloaded.initialBurnTicks == 1600);
+        assert(reloaded.cookTicks == 75 && reloaded.cookDurationTicks == 200);
+    }
     // The ENTITY block round-trips the herd, species resolved by name later.
     assert(loaded.entities.size() == 2U);
     assert(loaded.entities[0].species == "pig");
@@ -184,7 +223,10 @@ int main() {
         writer.floating(1.0F);
         writer.floating(64.0F);
         writer.floating(2.0F);
-        writer.doubleValue(0.0);
+        // 300 s of world time, so the format-13 backfill has something to
+        // convert: the server tick from the elapsed seconds, the sun from the
+        // same day-cycle conversion every read site used to redo by hand.
+        writer.doubleValue(300.0);
         writer.integer<std::uint8_t>(static_cast<std::uint8_t>(gameplay::GameMode::Survival));
         writer.integer<std::uint8_t>(0U);
         writer.floating(gameplay::PlayerVitals::kMaximumHealth);
@@ -230,11 +272,47 @@ int main() {
         const auto legacy = repository.load(legacyIdentifier);
         assert(legacy.edits.size() == 2U);
         assert(legacy.edits[0].block == world::Block::Stone);
-        assert(legacy.edits[1].block == world::Block::WallTorchNorth);
+        // Ordinal 49 was `wall_torch_north`, which is no longer a block of its
+        // own: format 14 turns it back into the one wall torch plus a facing.
+        // Losing that mapping would silently rotate every wall torch in an old
+        // world to the default north face.
+        assert(legacy.edits[1].block == world::Block::WallTorch);
+        assert(legacy.edits[1].orientation == world::BlockOrientation::North);
+        assert(!legacy.edits[1].lit);
         assert(legacy.inventory[0] ==
                (gameplay::ItemStack{world::Block::Air, 1U, &gameplay::items::DiamondPickaxe}));
         assert(legacy.gameMode == gameplay::GameMode::Survival);
+        // Format 13 split the single gameTimeSeconds into a world tick and the
+        // named clocks; a save older than that seeds both from it rather than
+        // reopening at tick zero.
+        assert(legacy.serverTick == 6'000U);  // 300 s x 20 TPS
+        assert(legacy.clocks[static_cast<std::size_t>(world::ClockId::Overworld)].totalTicks ==
+               static_cast<std::uint64_t>(world::DayNightCycle::worldTick(300.0)));
         std::filesystem::remove_all(legacyDirectory);
+    }
+
+    // The clock block round-trips: a world saved with the sun frozen partway
+    // through the night reopens with the sun exactly there and still frozen,
+    // while the world tick continues from where it stopped. Before format 13
+    // both lived in one double and the pause state was not saved at all.
+    {
+        auto clocked = repository.create("Clocked", 4321U);
+        clocked.serverTick = 123'456U;
+        auto& overworld = clocked.clocks[static_cast<std::size_t>(world::ClockId::Overworld)];
+        overworld.totalTicks = 17'250U;
+        overworld.partialTick = 0.25F;
+        overworld.rate = 0.5F;
+        overworld.paused = true;
+        repository.save(clocked);
+
+        const auto reloaded = repository.load(clocked.summary.identifier);
+        assert(reloaded.serverTick == 123'456U);
+        const auto& restored =
+            reloaded.clocks[static_cast<std::size_t>(world::ClockId::Overworld)];
+        assert(restored.totalTicks == 17'250U);
+        assert(restored.partialTick == 0.25F);
+        assert(restored.rate == 0.5F);
+        assert(restored.paused);
     }
 
     // A format-8 world.dat still carries randomTickSpeed at a fixed header

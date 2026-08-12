@@ -1,5 +1,6 @@
 #pragma once
 
+#include "world/BlockState.hpp"
 #include "world/Chunk.hpp"
 
 #include <cstddef>
@@ -30,6 +31,13 @@ class World final {
     [[nodiscard]] Chunk* chunk(ChunkPosition position);
     [[nodiscard]] Block block(int worldX, int y, int worldZ) const;
     bool setBlock(int worldX, int y, int worldZ, Block value);
+    // The whole cell as one value. These are the accessors WorldMutationService
+    // and the block behaviour callbacks will be written against, so the three
+    // separate arrays behind them can be collapsed (T0.4) without touching a
+    // caller. They compose and decompose the existing storage for now — the
+    // behaviour is identical to reading the three fields by hand.
+    [[nodiscard]] BlockState state(int worldX, int y, int worldZ) const;
+    bool setState(int worldX, int y, int worldZ, BlockState value);
     [[nodiscard]] BlockOrientation orientation(int worldX, int y, int worldZ) const;
     bool setOrientation(int worldX, int y, int worldZ, BlockOrientation value);
     [[nodiscard]] std::uint8_t fluidLevel(int worldX, int y, int worldZ) const;

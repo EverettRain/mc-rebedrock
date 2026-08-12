@@ -5,6 +5,7 @@
 #include "gameplay/Damage.hpp"
 #include "gameplay/Difficulty.hpp"
 #include "gameplay/EntitySystem.hpp"
+#include "gameplay/FurnaceSystem.hpp"
 #include "gameplay/GameMode.hpp"
 #include "gameplay/GameRules.hpp"
 #include "gameplay/Inventory.hpp"
@@ -16,6 +17,7 @@
 #include "gameplay/WeatherSystem.hpp"
 #include "gameplay/WorldSimulation.hpp"
 #include "world/Block.hpp"
+#include "world/WorldClock.hpp"
 
 #include <glm/vec3.hpp>
 
@@ -37,8 +39,7 @@ struct SimulationHost {
     // A block the simulation changed (fluid, leaf decay, crop growth...). The
     // simulation has already written it to the gameplay world; the host queues
     // the mesh/light rebuild and persists the edit.
-    virtual void submitWorldEdit(int x, int y, int z, world::Block block,
-                                 std::uint8_t fluidLevel,
+    virtual void submitWorldEdit(int x, int y, int z, world::Block block, std::uint8_t fluidLevel,
                                  std::optional<world::BlockOrientation> orientation) = 0;
     // Rebuilds the light preview for one changed block, so the edit renders
     // with correct light instead of stale stored values.
@@ -51,7 +52,7 @@ struct SimulationHost {
     // plays the generic.eat sound every fourth tick of the eat.
     virtual void playEat(glm::vec3 position) = 0;
     virtual void playPlayerHurt(glm::vec3 position) = 0;
-    virtual void playPlayerFall(glm::vec3 position, float damage) = 0;
+    virtual void playPlayerFall(glm::vec3 position, bool heavy) = 0;
     virtual void playBurp(glm::vec3 position) = 0;
     // A creature sound event. `type` is the species that owns the clip, so the
     // host plays the right hurt/death/ambient/step sound per species.
@@ -133,10 +134,9 @@ class GameSession final {
     // which is when the renderer plays the break sound.
     [[nodiscard]] bool damageHeldTool(ToolUse use, float blockHardness);
     // Rolls and scatters the loot a broken block drops (mined or simulated).
-    void spawnBlockDrops(glm::ivec3 position, world::Block block,
-                         const ItemStack& tool,
-                         world::BlockOrientation droppedOrientation =
-                             world::BlockOrientation::North);
+    void
+    spawnBlockDrops(glm::ivec3 position, world::Block block, const ItemStack& tool,
+                    world::BlockOrientation droppedOrientation = world::BlockOrientation::North);
     // The gameplay half of death: scatter the inventory (unless keepInventory)
     // and reset the player's stacks. The host raises the death screen first.
     void onPlayerDeath();
@@ -170,11 +170,31 @@ class GameSession final {
     [[nodiscard]] const EntitySystem& worldEntities() const { return worldEntities_; }
     [[nodiscard]] ChestSystem& chestSystem() { return chestSystem_; }
     [[nodiscard]] const ChestSystem& chestSystem() const { return chestSystem_; }
+    [[nodiscard]] FurnaceSystem& furnaceSystem() { return furnaceSystem_; }
+    [[nodiscard]] const FurnaceSystem& furnaceSystem() const { return furnaceSystem_; }
     [[nodiscard]] WeatherSystem& weatherSystem() { return weatherSystem_; }
     [[nodiscard]] const WeatherSystem& weatherSystem() const { return weatherSystem_; }
 
-    [[nodiscard]] double& gameTimeSeconds() { return gameTimeSeconds_; }
-    [[nodiscard]] double gameTimeSeconds() const { return gameTimeSeconds_; }
+    // The time sources that replaced the single frame-driven gameTimeSeconds this
+    // class used to hold.
+    //
+    // serverTick is the world's own clock: it advances once per tick() and is
+    // reachable by no gamerule, no command and no pause, which is exactly what
+    // mining progress, use cooldowns and every other gameplay timer want. The
+    // named clocks (ClockId::Overworld and whatever dimensions follow) carry
+    // the sun instead, and only they answer to doDaylightCycle.
+    //
+    // Frame-local time — chat expiry, the cursor blink, animation
+    // interpolation — belongs to the renderer, not here: those advance with
+    // real frames even when the simulation is paused.
+    [[nodiscard]] std::uint64_t serverTick() const { return serverTick_; }
+    void setServerTick(std::uint64_t value) { serverTick_ = value; }
+    [[nodiscard]] world::ClockManager& clocks() { return clocks_; }
+    [[nodiscard]] const world::ClockManager& clocks() const { return clocks_; }
+    // Shorthand for the sun's clock, which is what almost every caller wants.
+    [[nodiscard]] std::uint64_t dayTimeTicks() const {
+        return clocks_.totalTicks(world::ClockId::Overworld);
+    }
     [[nodiscard]] std::uint32_t& lootRandomState() { return lootRandomState_; }
     [[nodiscard]] std::uint32_t lootRandomState() const { return lootRandomState_; }
     [[nodiscard]] glm::vec3& worldSpawnPosition() { return worldSpawnPosition_; }
@@ -189,9 +209,13 @@ class GameSession final {
     [[nodiscard]] bool& hasPlayerSpawn() { return hasPlayerSpawn_; }
     [[nodiscard]] bool hasPlayerSpawn() const { return hasPlayerSpawn_; }
     [[nodiscard]] glm::vec3& physicsPreviousPosition() { return physicsPreviousPosition_; }
-    [[nodiscard]] const glm::vec3& physicsPreviousPosition() const { return physicsPreviousPosition_; }
+    [[nodiscard]] const glm::vec3& physicsPreviousPosition() const {
+        return physicsPreviousPosition_;
+    }
     [[nodiscard]] glm::vec3& physicsCurrentPosition() { return physicsCurrentPosition_; }
-    [[nodiscard]] const glm::vec3& physicsCurrentPosition() const { return physicsCurrentPosition_; }
+    [[nodiscard]] const glm::vec3& physicsCurrentPosition() const {
+        return physicsCurrentPosition_;
+    }
     [[nodiscard]] bool& eating() { return eating_; }
     [[nodiscard]] bool eating() const { return eating_; }
     [[nodiscard]] const Item*& eatingKind() { return eatingKind_; }
@@ -212,8 +236,7 @@ class GameSession final {
     void tickPlayerVitals(SimulationHost& host, const world::World& world,
                           const glm::vec3& previousPosition, bool jumped);
     void updateMovementAudio(SimulationHost& host, const world::World& world,
-                             const glm::vec3& previousPosition,
-                             const glm::vec3& currentPosition);
+                             const glm::vec3& previousPosition, const glm::vec3& currentPosition);
     void consumeEntityEvents(SimulationHost& host);
     [[nodiscard]] bool submergedInWater(const world::World& world, glm::vec3 position) const;
 
@@ -232,6 +255,7 @@ class GameSession final {
     gameplay::EntitySystem worldEntities_;
     gameplay::NaturalSpawner naturalSpawner_{0U};
     gameplay::ChestSystem chestSystem_;
+    gameplay::FurnaceSystem furnaceSystem_;
     gameplay::WeatherSystem weatherSystem_;
 
     glm::vec3 worldSpawnPosition_{24.0F, 76.38F, 24.0F};
@@ -244,7 +268,8 @@ class GameSession final {
     bool previousInWater_ = false;
     bool jumpPressed_ = false;
     bool forwardPressed_ = false;
-    double gameTimeSeconds_ = 0.0;
+    std::uint64_t serverTick_ = 0U;
+    world::ClockManager clocks_;
     std::uint32_t lootRandomState_ = 0x9E3779B9U;
 
     bool eating_ = false;

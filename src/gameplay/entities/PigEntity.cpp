@@ -35,22 +35,19 @@ EntityDrops rollPigLoot(std::uint32_t& rng) {
 constexpr EntityRenderDescriptor kPigRender{
     /*geometryPath=*/"animation/pig.geo.json",
     /*animationPath=*/"animation/pig.animation.json",
-    /*texturePath=*/"entity/pig/pig.png",
+    /*texturePath=*/"entity/pig/pig_temperate.png",
     /*geometryId=*/"geometry.pig",
     /*walkAnimation=*/"animation.pig.walk",
     /*idleAnimation=*/"animation.pig.idle",
     /*scale=*/1.0F,
 };
 
-// PigEntity's sound hooks (1.16.1): ambient mob/pig/say1-3, and hurt reuses the
-// same three say clips (PigEntity has no distinct hurt sound), death is the
-// single mob/pig/death.ogg, steps mob/pig/step1-5. Default getSoundVolume 1.0.
+// Physical clips and variations are selected by the active packs' sounds.json.
 constexpr audio::MobSoundProfile kPigSounds{
-    /*root=*/"mob/pig",
-    /*ambientBase=*/"say",   /*ambientVariations=*/3,
-    /*hurtBase=*/"say",      /*hurtVariations=*/3,
-    /*deathBase=*/"death",   /*deathVariations=*/1,
-    /*stepBase=*/"step",     /*stepVariations=*/5,
+    /*ambientEvent=*/"entity.pig.ambient",
+    /*hurtEvent=*/"entity.pig.hurt",
+    /*deathEvent=*/"entity.pig.death",
+    /*stepEvent=*/"entity.pig.step",
     /*volume=*/1.0F,
     /*stepVolume=*/0.15F,
 };

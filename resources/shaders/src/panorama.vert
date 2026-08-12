@@ -2,6 +2,7 @@
 
 layout(push_constant) uniform PanoramaPush {
     vec4 rotationFov; // x = yaw, y = pitch (radians), z = tan(fov/2), w = aspect
+    vec4 blur;        // x = background blur radius in framebuffer pixels
 } pano;
 
 layout(location = 0) out vec3 viewRay;

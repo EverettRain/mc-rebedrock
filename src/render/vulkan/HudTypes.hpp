@@ -20,10 +20,10 @@ namespace mc::render {
 // gradient.
 inline constexpr float kVignetteGuiLayer = 11.0F;
 inline constexpr float kScreenDimGuiLayer = 12.0F;
+inline constexpr float kMenuListBackgroundGuiLayer = 13.0F;
 // The 1.16.1 title screen ships six panorama faces that form the world behind
 // the logo; the title carousel cycles them as slides.
 inline constexpr std::size_t kPanoramaFaces = 6U;
-inline constexpr glm::vec4 kMenuBackgroundTint{0.25F, 0.25F, 0.25F, 1.0F};
 // Six category tabs on the top row, plus Spawn Eggs and Inventory on the bottom.
 inline constexpr std::size_t kCreativeTabCount = 8U;
 
@@ -88,10 +88,11 @@ struct HudPush final {
 };
 
 // Title-screen panorama cube: x = yaw, y = pitch (radians), z = tan(fov/2),
-// w = aspect ratio. The vertex shader builds the 85-degree view rays from it
-// and the fragment shader ray-marches the cube faces.
+// w = aspect ratio. blur.x is the background-only blur radius in framebuffer
+// pixels (26.1 defaults to 5); the remaining values are reserved.
 struct PanoramaPush final {
     glm::vec4 rotationFov;
+    glm::vec4 blur;
 };
 
 struct ItemPush final {

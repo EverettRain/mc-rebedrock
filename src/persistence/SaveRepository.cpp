@@ -1,5 +1,7 @@
 #include "persistence/SaveRepository.hpp"
 
+#include "world/DayNightCycle.hpp"
+
 #include <algorithm>
 #include <bit>
 #include <chrono>
@@ -18,8 +20,12 @@ namespace {
 constexpr std::array<std::uint8_t, 8> kMagic{'M', 'C', 'R', 'B', 'S', 'A', 'V', 'E'};
 // Format 8 moved `randomTickSpeed` into a fixed header field; format 9 replaces
 // that with a sparse, self-describing GameRules block after the chests section;
-// format 10 appends the /spawnpoint block; format 11 appends the weather block.
-constexpr std::uint32_t kFormatVersion = 12U;
+// format 10 appends the /spawnpoint block; format 11 appends the weather block;
+// format 12 appends the entity block; format 13 appends the clock block, which
+// splits the single gameTimeSeconds into a server tick and the named clocks;
+// format 14 gives each block edit a LIT flag, after the burning furnace and the
+// four wall torches stopped being blocks of their own and became states.
+constexpr std::uint32_t kFormatVersion = 15U;
 constexpr std::uint32_t kOldestSupportedFormatVersion = 1U;
 constexpr std::uint64_t kMaximumEdits = 16U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumChests = 1024U * 1024U;
@@ -48,6 +54,39 @@ constexpr std::array<std::string_view, 60> kLegacyBlockOrder{
     "wall_torch_west", "chest", "lapis_ore", "redstone_ore", "emerald_ore",
     "mossy_stone_bricks", "chiseled_stone_bricks", "quartz_block",
 };
+
+// Identifiers that used to name a block and now name one of its states. A save
+// written before format 14 refers to them, so resolving a palette entry has to
+// hand back both the block it became and the state it carried; the per-edit
+// fields cannot express it, because the old format had nowhere to put it.
+struct LegacyStateOverride final {
+    world::Block block = world::Block::Air;
+    std::optional<world::BlockOrientation> orientation{};
+    bool lit = false;
+};
+
+[[nodiscard]] std::optional<LegacyStateOverride> legacyStateIdentifier(std::string_view text) {
+    const auto bare = [&](std::string_view name) {
+        return text == name || text == "rebedrock:" + std::string{name} ||
+               text == "minecraft:" + std::string{name};
+    };
+    if (bare("lit_furnace")) {
+        return LegacyStateOverride{world::Block::Furnace, std::nullopt, true};
+    }
+    if (bare("wall_torch_north")) {
+        return LegacyStateOverride{world::Block::WallTorch, world::BlockOrientation::North, false};
+    }
+    if (bare("wall_torch_east")) {
+        return LegacyStateOverride{world::Block::WallTorch, world::BlockOrientation::East, false};
+    }
+    if (bare("wall_torch_south")) {
+        return LegacyStateOverride{world::Block::WallTorch, world::BlockOrientation::South, false};
+    }
+    if (bare("wall_torch_west")) {
+        return LegacyStateOverride{world::Block::WallTorch, world::BlockOrientation::West, false};
+    }
+    return std::nullopt;
+}
 
 [[nodiscard]] world::Block legacyBlockFromOrdinal(std::uint8_t ordinal) {
     if (ordinal >= kLegacyBlockOrder.size()) {
@@ -634,6 +673,90 @@ void readEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
     }
 }
 
+// The CLOCK block is the self-describing region format 13 appends after the
+// entity block, mirroring the GameRules framing:
+//
+//   u32 blockTag          // 'C','L','O','K'
+//   u32 blockSizeBytes    // whole block length incl. this field
+//   u16 blockVersion      // 1
+//   u64 serverTick        // the world's own tick, reachable by no gamerule
+//   u16 clockCount
+//   clocks[]:
+//     u64 totalTicks
+//     f32 partialTick
+//     f32 rate
+//     u8  paused
+//
+// Clocks are written positionally rather than by name: ClockId is a fixed enum
+// (26.1's WORLD_CLOCK registry has no data-driven entries either), and a build
+// that grows the enum reads the clocks it recognises and defaults the rest,
+// while an older build skips the whole block on version.
+constexpr std::uint32_t kClockBlockTag =
+    'C' | ('L' << 8) | ('O' << 16) | ('K' << 24);
+constexpr std::uint16_t kClockBlockVersion = 1U;
+
+void appendClockBlock(std::vector<std::uint8_t>& bytes, const SaveGame& game) {
+    const std::size_t blockStart = bytes.size();
+    appendInteger(bytes, kClockBlockTag);
+    appendInteger(bytes, 0U);  // blockSizeBytes, patched after the fields
+    appendInteger(bytes, kClockBlockVersion);
+    appendInteger(bytes, game.serverTick);
+    appendInteger(bytes, static_cast<std::uint16_t>(game.clocks.size()));
+    for (const auto& clock : game.clocks) {
+        appendInteger(bytes, clock.totalTicks);
+        appendFloat(bytes, clock.partialTick);
+        appendFloat(bytes, clock.rate);
+        appendInteger(bytes, static_cast<std::uint8_t>(clock.paused ? 1U : 0U));
+    }
+    const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
+    for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
+        bytes[blockStart + 4U + offset] =
+            static_cast<std::uint8_t>(blockSize >> (offset * 8U));
+    }
+}
+
+void readClockBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                    SaveGame& game) {
+    const std::size_t blockStart = cursor;
+    if (blockStart + 12U > payload.size()) {
+        throw std::runtime_error("world.dat clock block is truncated");
+    }
+    const auto tag = readInteger<std::uint32_t>(payload, cursor);
+    if (tag != kClockBlockTag) {
+        throw std::runtime_error("world.dat has an invalid clock block");
+    }
+    const auto blockSize = readInteger<std::uint32_t>(payload, cursor);
+    if (blockSize < 12U || static_cast<std::size_t>(blockSize) > payload.size() - blockStart) {
+        throw std::runtime_error("world.dat clock block is malformed");
+    }
+    const auto blockVersion = readInteger<std::uint16_t>(payload, cursor);
+    if (blockVersion > kClockBlockVersion) {
+        cursor = blockStart + blockSize;
+        return;
+    }
+    const std::size_t blockEnd = blockStart + blockSize;
+    game.serverTick = readInteger<std::uint64_t>(payload, cursor);
+    const auto clockCount = readInteger<std::uint16_t>(payload, cursor);
+    for (std::uint16_t index = 0; index < clockCount; ++index) {
+        if (blockEnd - cursor < 17U) {
+            throw std::runtime_error("world.dat clock block is truncated");
+        }
+        world::ClockState clock;
+        clock.totalTicks = readInteger<std::uint64_t>(payload, cursor);
+        clock.partialTick = readFloat(payload, cursor);
+        clock.rate = readFloat(payload, cursor);
+        clock.paused = readInteger<std::uint8_t>(payload, cursor) != 0U;
+        // A save written by a build with more clocks than this one knows about
+        // keeps its extra entries on disk but drops them here.
+        if (index < game.clocks.size()) {
+            game.clocks[index] = clock;
+        }
+    }
+    if (cursor != blockEnd) {
+        throw std::runtime_error("world.dat clock block has trailing data");
+    }
+}
+
 } // namespace
 
 SaveRepository::SaveRepository(std::filesystem::path root) : root_(std::move(root)) {}
@@ -732,18 +855,19 @@ void SaveRepository::save(SaveGame game) const {
             static_cast<void>(itemPalette.indexOf(stack.item));
         }
     }
+    for (const auto& furnace : game.furnaces) {
+        for (const auto* stack : {&furnace.input, &furnace.fuel, &furnace.output}) {
+            static_cast<void>(blockPalette.indexOf(stack->block));
+            static_cast<void>(itemPalette.indexOf(stack->item));
+        }
+    }
     if (blockPalette.entries().size() > kMaximumPaletteEntries ||
         itemPalette.entries().size() > kMaximumPaletteEntries) {
         throw std::runtime_error("Save references more content than a palette can hold");
     }
     appendInteger(bytes, static_cast<std::uint16_t>(blockPalette.entries().size()));
     for (const auto block : blockPalette.entries()) {
-        // The lit furnace is a transient state (its burn is not saved), so it
-        // persists as the plain furnace and reloads unlit.
-        const auto& definition = block == world::Block::LitFurnace
-            ? world::blockDefinition(world::Block::Furnace)
-            : world::blockDefinition(block);
-        appendString(bytes, definition.identifier.toString());
+        appendString(bytes, world::blockDefinition(block).identifier.toString());
     }
     appendInteger(bytes, static_cast<std::uint16_t>(itemPalette.entries().size()));
     for (const auto* item : itemPalette.entries()) {
@@ -765,6 +889,7 @@ void SaveRepository::save(SaveGame game) const {
         appendInteger(bytes, blockPalette.indexOf(edit.block));
         appendInteger(bytes, edit.fluidLevel);
         appendInteger(bytes, static_cast<std::uint8_t>(edit.orientation));
+        appendInteger(bytes, static_cast<std::uint8_t>(edit.lit ? 1U : 0U));
     }
     appendInteger(bytes, static_cast<std::uint64_t>(game.chests.size()));
     for (const auto& chest : game.chests) {
@@ -782,6 +907,25 @@ void SaveRepository::save(SaveGame game) const {
     appendSpawnPointBlock(bytes, game);
     appendWeatherBlock(bytes, game);
     appendEntityBlock(bytes, game.entities);
+    appendClockBlock(bytes, game);
+    // Furnace block entities: position, three palette-indexed slots and the
+    // burn/cook counters, so a furnace resumes its smelt exactly where it left.
+    appendInteger(bytes, static_cast<std::uint64_t>(game.furnaces.size()));
+    for (const auto& furnace : game.furnaces) {
+        appendInteger(bytes, static_cast<std::int32_t>(furnace.position.x));
+        appendInteger(bytes, static_cast<std::int32_t>(furnace.position.y));
+        appendInteger(bytes, static_cast<std::int32_t>(furnace.position.z));
+        for (const auto* stack : {&furnace.input, &furnace.fuel, &furnace.output}) {
+            appendInteger(bytes, blockPalette.indexOf(stack->block));
+            appendInteger(bytes, stack->count);
+            appendInteger(bytes, itemPalette.indexOf(stack->item));
+            appendInteger(bytes, stack->damage);
+        }
+        appendInteger(bytes, static_cast<std::int32_t>(furnace.burnTicks));
+        appendInteger(bytes, static_cast<std::int32_t>(furnace.initialBurnTicks));
+        appendInteger(bytes, static_cast<std::int32_t>(furnace.cookTicks));
+        appendInteger(bytes, static_cast<std::int32_t>(furnace.cookDurationTicks));
+    }
     appendInteger(bytes, checksum(bytes));
     const auto directory = root_ / game.summary.identifier;
     replaceFile(directory / "world.dat", bytes);
@@ -899,10 +1043,18 @@ SaveGame SaveRepository::load(const std::string& identifier) const {
         return entries;
     };
     std::vector<world::Block> blockPalette;
+    // Parallel to blockPalette: what state a palette entry carried back when it
+    // was a block of its own. Empty for every entry a current save writes.
+    std::vector<std::optional<LegacyStateOverride>> blockPaletteStates;
     std::vector<const gameplay::Item*> itemPalette;
     if (palettedBlocks) {
         blockPalette = readPalette(
-            [](std::string_view text) { return world::blockFromIdentifier(text); },
+            [&](std::string_view text) -> std::optional<world::Block> {
+                const auto legacy = legacyStateIdentifier(text);
+                blockPaletteStates.push_back(legacy);
+                if (legacy.has_value()) return legacy->block;
+                return world::blockFromIdentifier(text);
+            },
             world::Block::Air);
     }
     if (palettedItems) {
@@ -916,13 +1068,25 @@ SaveGame SaveRepository::load(const std::string& identifier) const {
             },
             static_cast<const gameplay::Item*>(nullptr));
     }
+    // The palette entry an edit last resolved, so the edit loop can pick up a
+    // legacy state override without re-reading the index.
+    std::optional<LegacyStateOverride> lastBlockState;
     const auto readBlock = [&](std::size_t& readCursor) {
+        lastBlockState.reset();
         if (!palettedBlocks) {
-            return legacyBlockFromOrdinal(readInteger<std::uint8_t>(payload, readCursor));
+            const auto ordinal = readInteger<std::uint8_t>(payload, readCursor);
+            if (ordinal < kLegacyBlockOrder.size()) {
+                // Formats 1-4 wrote ordinals against a frozen name table, and
+                // that table still names lit_furnace and the four wall torches.
+                lastBlockState = legacyStateIdentifier(kLegacyBlockOrder[ordinal]);
+                if (lastBlockState.has_value()) return lastBlockState->block;
+            }
+            return legacyBlockFromOrdinal(ordinal);
         }
         const auto index = readInteger<std::uint16_t>(payload, readCursor);
         if (index >= blockPalette.size())
             throw std::runtime_error("world.dat references a block outside the palette");
+        if (index < blockPaletteStates.size()) lastBlockState = blockPaletteStates[index];
         return blockPalette[index];
     };
     const auto readItem = [&](std::size_t& readCursor) {
@@ -967,6 +1131,16 @@ SaveGame SaveRepository::load(const std::string& identifier) const {
         if (edit.y < 0 || edit.y >= 256 || edit.fluidLevel > 8U || orientation > 7U)
             throw std::runtime_error("world.dat contains an invalid block edit");
         edit.orientation = static_cast<world::BlockOrientation>(orientation);
+        if (formatVersion >= 14U) {
+            edit.lit = readInteger<std::uint8_t>(payload, cursor) != 0U;
+        }
+        // A pre-14 save spelled these states as blocks; the palette resolution
+        // kept what they meant, and it wins over the fields the old format had
+        // no way to fill.
+        if (const auto& legacy = lastBlockState; legacy.has_value()) {
+            if (legacy->orientation.has_value()) edit.orientation = *legacy->orientation;
+            edit.lit = edit.lit || legacy->lit;
+        }
         game.edits.push_back(edit);
     }
     if (formatVersion >= 2U) {
@@ -998,6 +1172,41 @@ SaveGame SaveRepository::load(const std::string& identifier) const {
     }
     if (formatVersion >= 12U) {
         readEntityBlock(payload, cursor, game.entities);
+    }
+    if (formatVersion >= 13U) {
+        readClockBlock(payload, cursor, game);
+    } else {
+        // Before format 13 one gameTimeSeconds carried the world tick, the sun
+        // and every gameplay timer at once, and it only advanced while
+        // doDaylightCycle was on. Both replacements are seeded from it: the
+        // server tick from the elapsed seconds, the sun from the same day-cycle
+        // conversion the renderer used to do at every read site.
+        game.serverTick = static_cast<std::uint64_t>(
+            game.gameTimeSeconds * world::DayNightCycle::kTicksPerSecond);
+        game.clocks[static_cast<std::size_t>(world::ClockId::Overworld)].totalTicks =
+            static_cast<std::uint64_t>(world::DayNightCycle::worldTick(game.gameTimeSeconds));
+    }
+    if (formatVersion >= 15U) {
+        const auto furnaceCount = readInteger<std::uint64_t>(payload, cursor);
+        if (furnaceCount > kMaximumChests)
+            throw std::runtime_error("world.dat furnace count is unreasonable");
+        game.furnaces.reserve(static_cast<std::size_t>(furnaceCount));
+        for (std::uint64_t index = 0; index < furnaceCount; ++index) {
+            gameplay::FurnaceBlockEntity furnace;
+            furnace.position.x = readInteger<std::int32_t>(payload, cursor);
+            furnace.position.y = readInteger<std::int32_t>(payload, cursor);
+            furnace.position.z = readInteger<std::int32_t>(payload, cursor);
+            if (furnace.position.y < 0 || furnace.position.y >= 256)
+                throw std::runtime_error("world.dat contains an invalid furnace position");
+            readStack(furnace.input);
+            readStack(furnace.fuel);
+            readStack(furnace.output);
+            furnace.burnTicks = readInteger<std::int32_t>(payload, cursor);
+            furnace.initialBurnTicks = readInteger<std::int32_t>(payload, cursor);
+            furnace.cookTicks = readInteger<std::int32_t>(payload, cursor);
+            furnace.cookDurationTicks = readInteger<std::int32_t>(payload, cursor);
+            game.furnaces.push_back(std::move(furnace));
+        }
     }
     if (cursor != payload.size()) throw std::runtime_error("world.dat has trailing data");
     return game;

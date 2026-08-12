@@ -70,7 +70,8 @@ ChunkLightSampler::ChunkLightSampler(const World& world,
             std::uint8_t directSky = kMaximumLightLevel;
             for (int y = maximumY; y >= minimumY_; --y) {
                 const std::size_t cell = index(x, y, z);
-                const Block value = world_.block(x, y, z);
+                const auto state = world_.state(x, y, z);
+                const Block value = state.block();
                 opaque_[cell] = mc::world::isOpaque(value) ? 1U : 0U;
                 const std::uint8_t opacity = skyLightOpacity(value);
                 if (opacity >= directSky) {
@@ -79,7 +80,7 @@ ChunkLightSampler::ChunkLightSampler(const World& world,
                     directSky = static_cast<std::uint8_t>(directSky - opacity);
                 }
                 skyLevels_[cell] = opaque_[cell] == 0U ? directSky : 0U;
-                blockLevels_[cell] = emittedLight(value);
+                blockLevels_[cell] = state.emittedLight();
             }
         }
     }
@@ -164,7 +165,7 @@ VoxelLightLevel ChunkLightSampler::level(int x, int y, int z) const {
             return {kMaximumLightLevel, 0U};
         return {
             static_cast<std::uint8_t>(!mc::world::isOpaque(world_.block(x, y, z)) ? kMaximumLightLevel : 0),
-            emittedLight(world_.block(x, y, z)),
+            world_.state(x, y, z).emittedLight(),
         };
     }
     const std::size_t cell = index(x, y, z);

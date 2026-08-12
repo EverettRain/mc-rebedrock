@@ -1,6 +1,6 @@
 # MC Rebedrock
 
-基于 C++20 与 Vulkan 的自研体素沙盒项目，玩法与渲染对齐 Minecraft Java 1.16.1 的数据与行为。
+基于 C++20 与 Vulkan 的自研体素沙盒项目，玩法与渲染对齐 Minecraft Java 26.1 的数据与行为。
 macOS ARM64 通过 MoltenVK 映射到 Metal，Windows x64 使用原生 Vulkan 驱动。
 
 ## 特性
@@ -8,7 +8,7 @@ macOS ARM64 通过 MoltenVK 映射到 Metal，Windows x64 使用原生 Vulkan �
 - **世界**：确定性种子地形生成、24000 Tick 昼夜循环、增量光照传播、水体流动与沙子下落模拟
 - **玩法**：20 TPS 玩家物理与体素碰撞、生存/创造双模式、生命/饥饿/氧气、死亡与重生
 - **交互**：挖掘/放置、背包与快捷栏、2×2 与 3×3 合成、熔炉烧炼、箱子、掉落物
-- **生物**：猪 / 牛 / 僵尸，box-UV 蒙皮动画渲染，1.16.1 数据驱动的注册与 AI 框架
+- **生物**：猪 / 牛 / 僵尸，box-UV 蒙皮动画渲染，26.1 数据驱动的注册与 AI 框架
 - **命令**：Brigadier 风格命令树（`/gamemode` `/time` `/give` `/gamerule` `/tp` `/kill`），游戏内 Tab 补全
 - **界面**：原版风格 HUD、背包、暂停/选项/存档页面，简体中文与英文双语
 - **存档**：自定义多世界存档格式（含校验和），不与 Java 版 NBT 世界互通
@@ -49,7 +49,7 @@ Mojang 版权保护，无法随仓库分发，已由 `.gitignore` 排除——�
 python3 tools/extract_vanilla_resources.py 1.16.1
 ```
 
-前置要求：工作区同级存在 `mc-1.16.1-java` 项目，且已执行过 `./gradlew downloadAssets`
+前置要求：工作区同级存在 `mc-26.1-java` 项目，且已执行过 `./gradlew downloadAssets`
 （工具读取其 `.gradle/loom-cache` 中的合并 JAR 与资产索引）。产物写入
 `resources/vanilla/1.16.1/`，包含 textures、audio、fonts、localization、models、
 blockstates、shaders 等全部分类（约 370MB）。

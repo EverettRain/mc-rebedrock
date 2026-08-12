@@ -1,9 +1,9 @@
 #pragma once
 
+#include "assets/ResourceProvider.hpp"
 #include "audio/MobSoundProfile.hpp"
 #include "world/Block.hpp"
 
-#include <filesystem>
 #include <glm/vec3.hpp>
 #include <memory>
 
@@ -53,10 +53,7 @@ enum class BlockSoundFamily {
     case Pumpkin:
     case Melon:
     case Torch:
-    case WallTorchNorth:
-    case WallTorchEast:
-    case WallTorchSouth:
-    case WallTorchWest:
+    case WallTorch:
         return BlockSoundFamily::Wood;
     case Sand:
     case RedSand:
@@ -78,7 +75,7 @@ enum class BlockSoundFamily {
 
 class AudioSystem final {
   public:
-    explicit AudioSystem(std::filesystem::path soundRoot, float masterVolume = 1.0F);
+    explicit AudioSystem(const assets::ResourceProvider& provider, float masterVolume = 1.0F);
     ~AudioSystem();
 
     AudioSystem(const AudioSystem&) = delete;
@@ -107,19 +104,18 @@ class AudioSystem final {
     // `entity.item.break`, played when a tool runs out of durability.
     void playItemBreak(const glm::vec3& position);
 
-    // ---- Per-species mob sounds (1.16.1 LivingEntity sound hooks) ----
-    // Each plays the species' clip for that event at its getSoundVolume with
-    // the vanilla ±0.2 randomised pitch. A profile with no clip for an event
+    // ---- Per-species mob sound events ----
+    // Each resolves the species event through sounds.json and applies its
+    // getSoundVolume with the vanilla pitch roll. A profile with no event
     // stays silent, so species without an ambient sound are not forced to bark.
     void playCreatureHurt(const MobSoundProfile& profile, const glm::vec3& position);
     void playCreatureDeath(const MobSoundProfile& profile, const glm::vec3& position);
     void playCreatureAmbient(const MobSoundProfile& profile, const glm::vec3& position);
-    // playStepSound: every 1.16.1 mob steps at 0.15 volume (profile.stepVolume),
-    // fixed pitch 1.0 — the only one of the four that skips the pitch roll.
+    // Steps use profile.stepVolume and fixed pitch 1.0.
     void playCreatureStep(const MobSoundProfile& profile, const glm::vec3& position);
 
-    // ---- Weather (1.16.1 WorldRenderer#tickRainSplashing) ----
-    // WEATHER_RAIN / WEATHER_RAIN_ABOVE: the per-frame rain clip played at the
+    // ---- Weather ----
+    // weather.rain / weather.rain.above: the per-frame rain clip played at the
     // surface the drops hit, and its muffled under-roof variant. `volume` is the
     // caller's gradient-scaled value — 0.2 base for rain, 0.1 for rain-above.
     void playWeatherRain(const glm::vec3& position, float volume);

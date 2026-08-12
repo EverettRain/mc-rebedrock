@@ -88,6 +88,12 @@ class ChunkStreamer final {
         Block value,
         std::uint8_t fluidLevel = 0U,
         std::optional<BlockOrientation> orientation = std::nullopt);
+    // The whole state in one edit. The overload above builds one of these from
+    // a block and its two loose fields; anything with a state that neither can
+    // carry — a furnace's LIT — has to come through here, or the edit arrives
+    // as a different state than the one the world already holds and the light
+    // update is skipped as a no-op.
+    void setState(int worldX, int y, int worldZ, BlockState value);
     // Mesh-data reuse pool access for the worker and render threads.
     [[nodiscard]] render::RenderMeshData acquireMeshData() const;
     void releaseMeshData(render::RenderMeshData&& mesh) const;
@@ -135,9 +141,7 @@ class ChunkStreamer final {
         int worldX = 0;
         int y = 0;
         int worldZ = 0;
-        Block value = Block::Air;
-        std::uint8_t fluidLevel = 0U;
-        BlockOrientation orientation = BlockOrientation::North;
+        BlockState state{};
     };
 
     struct WorldReset final {

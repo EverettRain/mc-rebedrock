@@ -1,14 +1,14 @@
 #include "render/vulkan/VulkanRenderer.hpp"
-#include "render/vulkan/GpuSceneBuffer.hpp"
 #include "render/vulkan/BlockAtlasLayout.hpp"
+#include "render/vulkan/GpuSceneBuffer.hpp"
 #include "render/vulkan/HudRenderer.hpp"
-#include "render/vulkan/WorldRenderer.hpp"
 #include "render/vulkan/HudTypes.hpp"
-#include "render/vulkan/WorldRenderTypes.hpp"
 #include "render/vulkan/OffscreenTarget.hpp"
-#include "render/vulkan/VulkanDevice.hpp"
 #include "render/vulkan/TextureManager.hpp"
+#include "render/vulkan/VulkanDevice.hpp"
 #include "render/vulkan/VulkanResources.hpp"
+#include "render/vulkan/WorldRenderTypes.hpp"
+#include "render/vulkan/WorldRenderer.hpp"
 
 #include "animation/AnimationAssets.hpp"
 #include "animation/DisplayEntityAnimation.hpp"
@@ -163,7 +163,6 @@ constexpr int kSpawnChunkRadius = 4;
 // kMaxStreamBufferPoolBytes now in WorldRenderTypes.hpp.
 // Vertex and index buffers share one pool (a buffer may carry both usage bits).
 // kStreamBufferDeviceUsage now in WorldRenderTypes.hpp.
-// kMenuBackgroundTint now lives in render/vulkan/HudTypes.hpp.
 
 struct PersistentEditPosition final {
     int x;
@@ -207,8 +206,6 @@ struct PersistentEditPositionHash final {
     return CameraPerspective::FirstPerson;
 }
 
-
-
 struct CameraUniform final {
     alignas(16) glm::mat4 model{1.0F};
     alignas(16) glm::mat4 view{1.0F};
@@ -244,7 +241,6 @@ struct CameraUniform final {
 // OcclusionQueryPushConstants now live in render/vulkan/WorldRenderTypes.hpp
 // (shared with the WorldRenderer extraction).
 
-
 [[nodiscard]] std::vector<std::uint32_t> readSpirv(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::ate | std::ios::binary);
     if (!file) {
@@ -264,19 +260,19 @@ struct CameraUniform final {
     return code;
 }
 
-
-
 } // namespace
 
 struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     Impl(std::filesystem::path shaderDirectory, std::filesystem::path textureDirectory,
-         std::filesystem::path soundDirectory, world::ChunkStreamer& streamer,
+         const assets::ResourceProvider& provider, world::ChunkStreamer& streamer,
          config::GameOptions initialOptions, std::filesystem::path initialOptionsPath,
          std::filesystem::path saveRoot, std::optional<TestSceneOptions> initialTestScene)
         : shaderRoot(std::move(shaderDirectory)), blockTextureRoot(std::move(textureDirectory)),
-          optionsPath(std::move(initialOptionsPath)), saveRepository(std::move(saveRoot)),
-          options(std::move(initialOptions)), testScene(initialTestScene),
-          audioSystem(std::move(soundDirectory), options.masterVolume), chunkStreamer(streamer),
+          resourceProvider(&provider), languageLoader(provider),
+          optionsPath(std::move(initialOptionsPath)),
+          saveRepository(std::move(saveRoot)), options(std::move(initialOptions)),
+          testScene(initialTestScene), audioSystem(provider, options.masterVolume),
+          chunkStreamer(streamer),
           camera(initialTestScene.has_value() && initialTestScene->occlusionScene
                      ? glm::vec3{8.0F, 60.0F, -8.0F}
                      : (initialTestScene.has_value() ? glm::vec3{10.7F, 66.2F, 12.1F}
@@ -308,17 +304,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         registerGameCommands();
 
         // Let the held-item and gameSession.player()-preview animators pick up any authored
-        // clips shipped under resources/animation. blockTextureRoot points at
-        // resources/vanilla/1.16.1/textures/minecraft/block, so its fifth parent
-        // is the resource root. Both animators keep their built-in clips if the
-        // files are absent, so this is best-effort and never fatal.
+        // clips shipped under resources/animation. Both animators keep their
+        // built-in clips if the files are absent, so this is best-effort and
+        // never fatal.
         try {
-            const auto animationRoot = blockTextureRoot.parent_path()
-                                           .parent_path()
-                                           .parent_path()
-                                           .parent_path()
-                                           .parent_path() /
-                                       "animation";
+            const auto animationRoot = resourceProvider->resourceRoot() / "animation";
             heldItemAnimation.load(animationRoot);
             playerModelAnimator.load(animationRoot);
             // The gameSession.inventory()/creative preview turns its whole body toward the
@@ -354,11 +344,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     return gameplay::CommandResult{
                         false, "Usage: /time set <day|noon|night|midnight|ticks>"};
                 }
-                double elapsedTicks = *ticks - world::DayNightCycle::kNewWorldTick;
-                if (elapsedTicks < 0.0)
-                    elapsedTicks += world::DayNightCycle::kTicksPerDay;
-                gameSession.gameTimeSeconds() =
-                    elapsedTicks / world::DayNightCycle::kTicksPerSecond;
+                // Set the sun's clock, not the frame timer: /time moves the
+                // time-of-day while keeping the day count (and thus the moon
+                // phase). The target is a time-of-day in [0,24000); it is folded
+                // into the current day so the calendar does not jump back to day
+                // zero.
+                const auto perDay = static_cast<std::uint64_t>(world::DayNightCycle::kTicksPerDay);
+                const auto target = static_cast<std::uint64_t>(std::llround(*ticks)) % perDay;
+                auto& clocks = gameSession.clocks();
+                const std::uint64_t current = clocks.totalTicks(world::ClockId::Overworld);
+                clocks.setTotalTicks(world::ClockId::Overworld,
+                                     current - (current % perDay) + target);
                 return gameplay::CommandResult{true, "Set the time to " +
                                                          std::to_string(static_cast<int>(*ticks))};
             });
@@ -604,8 +600,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void playItemPickup(glm::vec3 position) override { audioSystem.playItemPickup(position); }
     void playEat(glm::vec3 position) override { audioSystem.playEat(position); }
     void playPlayerHurt(glm::vec3 position) override { audioSystem.playPlayerHurt(position); }
-    void playPlayerFall(glm::vec3 position, float damage) override {
-        audioSystem.playPlayerFall(position, damage);
+    void playPlayerFall(glm::vec3 position, bool heavy) override {
+        audioSystem.playPlayerFall(position, heavy);
     }
     void playBurp(glm::vec3 position) override { audioSystem.playBurp(position); }
     void playCreatureHurt(const gameplay::entities::EntityType& type, glm::vec3 position) override {
@@ -754,6 +750,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     renderer->menuSystem.viewDistanceSliderDragging = false;
                     renderer->menuSystem.simulationDistanceSliderDragging = false;
                 } else if (page == ui::PageId::Experimental) {
+                    renderer->menuSystem.pageStack.pop();
+                    renderer->pressedMenuButton = MenuButton::None;
+                } else if (page == ui::PageId::Language) {
+                    // Escape cancels the draft row selection. Only Done starts
+                    // the asynchronous language reload.
+                    renderer->menuSystem.pendingLanguageCode = renderer->options.language;
                     renderer->menuSystem.pageStack.pop();
                     renderer->pressedMenuButton = MenuButton::None;
                 } else if (page == ui::PageId::Options) {
@@ -944,8 +946,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         commandPool = vulkanDevice_.commandPool;
         validationEnabled = vulkanDevice_.validationEnabled;
         resources_ = VulkanResources{physicalDevice, device, allocator, commandPool, graphicsQueue};
-        textures_ = TextureManager{&resources_,      device, allocator, blockTextureRoot,
-                                   samplerAnisotropySupported, maximumSamplerAnisotropy};
+        textures_ = TextureManager{&resources_,
+                                   device,
+                                   allocator,
+                                   blockTextureRoot,
+                                   resourceProvider,
+                                   samplerAnisotropySupported,
+                                   maximumSamplerAnisotropy};
         createDescriptorSetLayout();
         textures_.createTextureArray(options.anisotropy);
         textures_.createRainTexture();
@@ -1271,7 +1278,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             worldReady = true;
             paused = true;
             menuSystem.pageStack.reset(ui::PageId::Game);
-            gameSession.gameTimeSeconds() = 0.0;
+            gameSession.clocks().setTotalTicks(
+                world::ClockId::Overworld,
+                static_cast<std::uint64_t>(world::DayNightCycle::kNewWorldTick));
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
             std::cout << "Test scene: occlusion (platform + buried cave)\n";
             return;
@@ -1306,9 +1315,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         worldReady = true;
         paused = true;
         menuSystem.pageStack.reset(ui::PageId::Game);
-        gameSession.gameTimeSeconds() = static_cast<double>(testScene->stage) *
-                                        (world::DayNightCycle::kTicksPerDay / 10.0) /
-                                        world::DayNightCycle::kTicksPerSecond;
+        gameSession.clocks().setTotalTicks(
+            world::ClockId::Overworld,
+            static_cast<std::uint64_t>(static_cast<double>(testScene->stage) *
+                                       (world::DayNightCycle::kTicksPerDay / 10.0)));
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
         std::cout << "Test scene: "
                   << world::blockDefinition(testScene->block).identifier.toString() << " stage "
@@ -1339,6 +1349,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         float physicsAccumulator = 0.0F;
         while (glfwWindowShouldClose(window) == GLFW_FALSE) {
             glfwPollEvents();
+            pollLanguageLoad();
             const auto currentFrameTime = std::chrono::steady_clock::now();
             const float deltaSeconds = std::min(
                 std::chrono::duration<float>(currentFrameTime - previousFrameTime).count(), 0.1F);
@@ -1411,9 +1422,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             worldPlayerAnimator.update(deltaSeconds, playerWalking,
                                        gameSession.player().sneaking());
             if (!paused && worldReady) {
-                if (gameSession.gameRules().get<bool>(gameplay::GameRuleId::DoDaylightCycle)) {
-                    gameSession.gameTimeSeconds() += static_cast<double>(deltaSeconds);
-                }
+                // The sun no longer rides real frames: the Overworld clock advances
+                // inside the fixed sim tick (gated there by doDaylightCycle), so all
+                // that is left here is the frame-local animation clock.
+                renderTimeSeconds += static_cast<double>(deltaSeconds);
                 heldItemAnimation.update(deltaSeconds);
                 hud_.updateVignetteDarkness(deltaSeconds);
                 particleSystem.update(deltaSeconds, interactionWorld);
@@ -1445,9 +1457,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                   gameSession.weatherSystem().rainGradient(), rainTargetCount(),
                                   interactionWorld, wind);
                 if (rainMode_ == RainMode::Texture) {
-                    rainSystem.emitTextureImpacts(
-                        deltaSeconds, camera.position(),
-                        gameSession.weatherSystem().rainGradient(), interactionWorld);
+                    rainSystem.emitTextureImpacts(deltaSeconds, camera.position(),
+                                                  gameSession.weatherSystem().rainGradient(),
+                                                  interactionWorld);
                 }
                 for (const auto& splash : rainSystem.splashes()) {
                     if (splash.sampledImpact) {
@@ -1738,7 +1750,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             } else if (smokeTest && smokeGameplayFrames == 88U) {
                 submitChatInput();
             } else if (smokeTest && smokeGameplayFrames == 90U) {
-                const auto tick = world::DayNightCycle::worldTick(gameSession.gameTimeSeconds());
+                const auto perDay = static_cast<std::uint64_t>(world::DayNightCycle::kTicksPerDay);
+                const auto tick = static_cast<double>(gameSession.dayTimeTicks() % perDay);
                 if (std::abs(tick - 18000.0) > 4.0) {
                     throw std::runtime_error("Smoke test failed to set world time");
                 }
@@ -2026,6 +2039,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         activeFurnacePosition.reset();
         gameSession.craftingSystem() = {};
         gameSession.chestSystem() = {};
+        gameSession.furnaceSystem() = {};
         activeChest.reset();
         savedEditIndices.clear();
         completedStreamBatchCount = 0U;
@@ -2063,6 +2077,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         gameSession.inventory().restore(currentSave->inventory, currentSave->selectedHotbarSlot);
         gameSession.chestSystem().restore(currentSave->chests);
+        gameSession.furnaceSystem().restore(currentSave->furnaces);
         // Restore the herd a saved world carried, resolving species by their
         // registered id so a species this build no longer knows is skipped
         // instead of failing to open the world.
@@ -2086,7 +2101,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         attachGameRuleHandlers();
         gameSession.worldSimulation().setRandomTickSpeed(
             gameSession.gameRules().get<std::int32_t>(gameplay::GameRuleId::RandomTickSpeed));
-        gameSession.gameTimeSeconds() = currentSave->gameTimeSeconds;
+        // The world tick and the named clocks restore separately, so a save made
+        // with the sun frozen reopens with the sun still where it was and the
+        // world tick exactly where it left off. A pre-format-13 save has both
+        // backfilled from the legacy gameTimeSeconds by the loader.
+        gameSession.setServerTick(currentSave->serverTick);
+        for (std::size_t index = 0; index < world::kClockCount; ++index) {
+            gameSession.clocks().setState(static_cast<world::ClockId>(index),
+                                          currentSave->clocks[index]);
+        }
         // The weather travels with the save too; restore() also fades the
         // gradients straight to their flags (World#initWeatherGradients), so a
         // world saved mid-rain reopens raining instead of fading up.
@@ -2174,7 +2197,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         currentSave->playerX = position.x;
         currentSave->playerY = position.y;
         currentSave->playerZ = position.z;
-        currentSave->gameTimeSeconds = gameSession.gameTimeSeconds();
+        // gameTimeSeconds is a legacy field now that the server tick and clocks
+        // carry the time; keep it filled with the elapsed-seconds equivalent of
+        // the world tick so a downgrade to a pre-format-13 reader still sees a sane
+        // time of day.
+        currentSave->gameTimeSeconds =
+            static_cast<double>(gameSession.serverTick()) / world::DayNightCycle::kTicksPerSecond;
+        currentSave->serverTick = gameSession.serverTick();
+        for (std::size_t index = 0; index < world::kClockCount; ++index) {
+            currentSave->clocks[index] =
+                gameSession.clocks().state(static_cast<world::ClockId>(index));
+        }
         // The weather timers and flags ride along like game time; the gradients
         // are recomputed from them on load.
         currentSave->weather = gameSession.weatherSystem().state();
@@ -2197,6 +2230,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         currentSave->playerAirTicks = gameSession.vitals().airTicks();
         currentSave->chests.assign(gameSession.chestSystem().entities().begin(),
                                    gameSession.chestSystem().entities().end());
+        currentSave->furnaces.assign(gameSession.furnaceSystem().entities().begin(),
+                                     gameSession.furnaceSystem().entities().end());
         // The live creatures ride along like the chests: a world saved mid-session
         // reopens with its herd where it was. Species are stored by their
         // registered id path and resolved through the registry on load.
@@ -2302,9 +2337,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         breakButtonHeld = false;
         useButtonHeld = false;
         miningTarget.reset();
-        lastMiningSoundAt = -1.0;
-        nextCreativeBreakSeconds = 0.0;
-        nextUseSeconds = 0.0;
+        lastMiningSoundTick = -1;
+        nextCreativeBreakTick = 0U;
+        nextUseTick = 0U;
     }
 
     void respawnPlayer() {
@@ -2367,9 +2402,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         if (chatInputText.front() == '/') {
             const auto result = commandDispatcher.execute(chatInputText);
-            chatHistory.push(result.message, result.success, gameSession.gameTimeSeconds());
+            chatHistory.push(result.message, result.success, uiTimeSeconds);
         } else {
-            chatHistory.push("<Player> " + chatInputText, true, gameSession.gameTimeSeconds());
+            chatHistory.push("<Player> " + chatInputText, true, uiTimeSeconds);
         }
         chatInputText.clear();
         setChatOpen(false);
@@ -2588,26 +2623,40 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // the shared furnace state burns. The swap is transient: it updates the
     // render world and the worker but is not recorded as a save edit, so a
     // reload opens with plain unlit furnaces (furnace contents are not saved).
+    // The furnace the screen is bound to, as the key FurnaceSystem wants. A
+    // furnace screen is only open with a position set, but a default (0,0,0)
+    // key still resolves to "no furnace" rather than misbehaving if it is not.
+    [[nodiscard]] gameplay::FurnacePosition activeFurnace() const {
+        return activeFurnacePosition.has_value()
+                   ? gameplay::FurnacePosition{activeFurnacePosition->x, activeFurnacePosition->y,
+                                               activeFurnacePosition->z}
+                   : gameplay::FurnacePosition{};
+    }
+
     void updateFurnaceLitState() {
-        if (!activeFurnacePosition.has_value()) {
-            return;
+        // Every furnace block entity carries its own burn, and each one smelts
+        // whether or not its screen is open, so the lit state is synced per
+        // furnace rather than only for the one the player is looking at. The
+        // early-out on an unchanged LIT keeps this to a world write only on the
+        // ticks a furnace actually ignites or dies.
+        for (const auto& furnace : gameSession.furnaceSystem().entities()) {
+            const auto& position = furnace.position;
+            const auto current = interactionWorld.state(position.x, position.y, position.z);
+            if (current.block() != world::Block::Furnace) {
+                continue; // the furnace was mined or replaced out from under its entity
+            }
+            if (current.lit() == furnace.burning()) {
+                continue;
+            }
+            // Lighting a furnace is a state change on the same block, so the cell
+            // keeps its facing and its block entity (and thus its smelt). setState,
+            // not setBlock: LIT is exactly what the loose block/fluid/orientation
+            // triple cannot carry.
+            const auto desired = current.withLit(furnace.burning());
+            interactionWorld.setState(position.x, position.y, position.z, desired);
+            chunkStreamer.setState(position.x, position.y, position.z, desired);
+            previewBlockEdit(position.x, position.y, position.z);
         }
-        const auto position = *activeFurnacePosition;
-        const world::Block current = interactionWorld.block(position.x, position.y, position.z);
-        if (current != world::Block::Furnace && current != world::Block::LitFurnace) {
-            return; // the furnace was mined or replaced
-        }
-        const world::Block desired = gameSession.craftingSystem().furnaceFuelProgress() > 0.0F
-                                         ? world::Block::LitFurnace
-                                         : world::Block::Furnace;
-        if (current == desired) {
-            return;
-        }
-        const auto orientation = interactionWorld.orientation(position.x, position.y, position.z);
-        interactionWorld.setBlock(position.x, position.y, position.z, desired);
-        interactionWorld.setOrientation(position.x, position.y, position.z, orientation);
-        chunkStreamer.setBlock(position.x, position.y, position.z, desired, 0U, orientation);
-        previewBlockEdit(position.x, position.y, position.z);
     }
 
     void openChest(gameplay::ChestPosition position) {
@@ -2768,8 +2817,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             menuSystem.masterVolumeSliderDragging = true;
             updateMasterVolumeFromCursor();
         }
-        // Clicking a language row in the language screen selects it at once,
-        // like 1.16.1's LanguageSelectionList.
+        // 26.1 keeps a draft selection while the screen is open. Done commits
+        // it through one resource reload, so browsing several rows does not
+        // repeatedly parse translations and rebuild fonts.
         if (menuSystem.pageStack.current() == ui::PageId::Language) {
             const auto cursor = currentFramebufferCursor();
             const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
@@ -2786,7 +2836,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     break;
                 }
                 if (languageRow(row, layout).contains(cursor.x, cursor.y)) {
-                    selectLanguage(menuSystem.languageCodes[index]);
+                    menuSystem.pendingLanguageCode = menuSystem.languageCodes[index];
                     playUiClick();
                     break;
                 }
@@ -3047,7 +3097,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             persistOptions();
             break;
         case MenuButton::Language:
-            refreshLanguageNames();
+            menuSystem.pendingLanguageCode = options.language;
+            menuSystem.languageStatus.clear();
             menuSystem.pageStack.push(ui::PageId::Language);
             break;
         case MenuButton::ForceUnicodeFont:
@@ -3057,6 +3108,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             persistOptions();
             break;
         case MenuButton::Done:
+            if (menuSystem.pageStack.current() == ui::PageId::Language) {
+                beginLanguageLoad(menuSystem.pendingLanguageCode);
+            }
             menuSystem.pageStack.pop();
             menuSystem.optionsOpen = menuSystem.pageStack.current() == ui::PageId::Options;
             break;
@@ -3181,17 +3235,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
         } else if (containerScreen == ContainerScreen::Furnace) {
             if (layout.furnaceInputSlot().contains(framebufferCursor.x, framebufferCursor.y)) {
-                gameSession.craftingSystem().clickFurnaceInput(gameSession.inventory(), button,
-                                                               shiftHeld);
+                gameSession.furnaceSystem().clickInput(activeFurnace(), gameSession.inventory(),
+                                                       button, shiftHeld);
                 return;
             }
             if (layout.furnaceFuelSlot().contains(framebufferCursor.x, framebufferCursor.y)) {
-                gameSession.craftingSystem().clickFurnaceFuel(gameSession.inventory(), button,
-                                                              shiftHeld);
+                gameSession.furnaceSystem().clickFuel(activeFurnace(), gameSession.inventory(),
+                                                      button, shiftHeld);
                 return;
             }
             if (layout.furnaceOutputSlot().contains(framebufferCursor.x, framebufferCursor.y)) {
-                gameSession.craftingSystem().clickFurnaceOutput(gameSession.inventory(), shiftHeld);
+                gameSession.furnaceSystem().clickOutput(activeFurnace(), gameSession.inventory(),
+                                                        shiftHeld);
                 return;
             }
         } else if (gameSession.gameMode() == gameplay::GameMode::Survival) {
@@ -3415,8 +3470,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 slots.push_back(&gameSession.craftingSystem().tableGridSlot(index));
             }
         } else if (containerScreen == ContainerScreen::Furnace) {
-            slots.push_back(&gameSession.craftingSystem().furnaceInputRef());
-            slots.push_back(&gameSession.craftingSystem().furnaceFuelRef());
+            if (auto* furnace = gameSession.furnaceSystem().find(activeFurnace());
+                furnace != nullptr) {
+                slots.push_back(&furnace->input);
+                slots.push_back(&furnace->fuel);
+            }
         } else if (gameSession.gameMode() == gameplay::GameMode::Survival) {
             for (std::size_t index = 0; index < 4U; ++index) {
                 slots.push_back(&gameSession.craftingSystem().playerGridSlot(index));
@@ -3442,7 +3500,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             static_cast<void>(gameSession.craftingSystem().moveTableInto(stack));
             break;
         case ContainerScreen::Furnace:
-            static_cast<void>(gameSession.craftingSystem().moveFurnaceInto(stack));
+            static_cast<void>(gameSession.furnaceSystem().moveInto(activeFurnace(), stack));
             break;
         case ContainerScreen::PlayerInventory:
             break;
@@ -3471,11 +3529,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 }
             }
         } else if (containerScreen == ContainerScreen::Furnace) {
-            if (layout.furnaceInputSlot().contains(cursor.x, cursor.y)) {
-                return &gameSession.craftingSystem().furnaceInputRef();
-            }
-            if (layout.furnaceFuelSlot().contains(cursor.x, cursor.y)) {
-                return &gameSession.craftingSystem().furnaceFuelRef();
+            if (auto* furnace = gameSession.furnaceSystem().find(activeFurnace());
+                furnace != nullptr) {
+                if (layout.furnaceInputSlot().contains(cursor.x, cursor.y)) {
+                    return &furnace->input;
+                }
+                if (layout.furnaceFuelSlot().contains(cursor.x, cursor.y)) {
+                    return &furnace->fuel;
+                }
             }
             // The result slot never accepts items, so it is not a drag target.
         } else if (gameSession.gameMode() == gameplay::GameMode::Survival) {
@@ -3532,11 +3593,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 }
             }
         } else if (containerScreen == ContainerScreen::Furnace) {
-            if (&gameSession.craftingSystem().furnaceInput() == slot) {
-                return layout.furnaceInputSlot();
-            }
-            if (&gameSession.craftingSystem().furnaceFuel() == slot) {
-                return layout.furnaceFuelSlot();
+            if (const auto* furnace = gameSession.furnaceSystem().find(activeFurnace());
+                furnace != nullptr) {
+                if (&furnace->input == slot) {
+                    return layout.furnaceInputSlot();
+                }
+                if (&furnace->fuel == slot) {
+                    return layout.furnaceFuelSlot();
+                }
             }
         } else if (gameSession.gameMode() == gameplay::GameMode::Survival) {
             for (std::size_t index = 0; index < 4U; ++index) {
@@ -3790,7 +3854,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-
     [[nodiscard]] AllocatedBuffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                                                bool hostVisible) const {
         return resources_.createBuffer(size, usage, hostVisible);
@@ -3806,7 +3869,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void destroyBuffer(AllocatedBuffer& buffer) const noexcept { resources_.destroyBuffer(buffer); }
 
     void destroyImage(AllocatedImage& image) const noexcept { resources_.destroyImage(image); }
-
 
     // Forwarders to VulkanResources, which owns the command pool + graphics
     // queue these need; the call sites here and in the texture cluster stay
@@ -4046,14 +4108,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // second spatial query here could disagree with the target that already
         // suppressed block mining, allowing one click to hurt an entity and
         // continue into the floor behind it.
-        const bool struckEntity =
-            breakBlockRequested && creatureIsNearest && creatureHit.has_value() &&
-            creatureHit->distance <= gameplay::EntitySystem::kAttackReach &&
-            attackTargetedEntity(*creatureHit);
+        const bool struckEntity = breakBlockRequested && creatureIsNearest &&
+                                  creatureHit.has_value() &&
+                                  creatureHit->distance <= gameplay::EntitySystem::kAttackReach &&
+                                  attackTargetedEntity(*creatureHit);
         if (struckEntity) {
             breakBlockRequested = false;
             miningTarget.reset();
-            lastMiningSoundAt = -1.0;
+            lastMiningSoundTick = -1;
         }
         bool performBreak = false;
         if (!struckEntity && targetedBlock.has_value()) {
@@ -4065,39 +4127,43 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
             if (gameSession.gameMode() == gameplay::GameMode::Creative) {
                 // Creative keeps destroying while held, one block per destroyDelay.
-                performBreak =
-                    attackActive && gameSession.gameTimeSeconds() >= nextCreativeBreakSeconds;
+                performBreak = attackActive && gameSession.serverTick() >= nextCreativeBreakTick;
             } else if (breakButtonHeld) {
                 if (!miningTarget.has_value() || *miningTarget != targetedBlock->block) {
                     miningTarget = targetedBlock->block;
-                    miningStartedAt = gameSession.gameTimeSeconds();
-                    lastMiningSoundAt = -1.0;
+                    miningStartedTick = gameSession.serverTick();
+                    lastMiningSoundTick = -1;
                 }
-                // Minecraft#continueAttack evaluates the accumulated damage on the
-                // same tick the dig starts, so a zero-hardness block is already gone
-                // before any destroy stage can be drawn.
+                // Minecraft#continueAttack accumulates destroy progress per tick,
+                // so the dig lands after a whole number of ticks and a zero-hardness
+                // block is gone on the very tick it starts.
                 const auto blockPosition = targetedBlock->block;
                 const auto target =
                     interactionWorld.block(blockPosition.x, blockPosition.y, blockPosition.z);
                 const float duration =
                     gameplay::miningSeconds(target, selectedStack, gameSession.player().inWater(),
                                             !gameSession.player().onGround());
-                performBreak = gameSession.gameTimeSeconds() - miningStartedAt >= duration;
+                const auto durationTicks = static_cast<std::uint64_t>(std::ceil(
+                    static_cast<double>(duration) * world::DayNightCycle::kTicksPerSecond));
+                performBreak = gameSession.serverTick() - miningStartedTick >= durationTicks;
+                // The hit sound repeats every four ticks (0.2 s), the same cadence
+                // as the frame timer used, now counted in ticks.
                 if (!performBreak && miningTarget.has_value() &&
-                    (lastMiningSoundAt < 0.0 ||
-                     gameSession.gameTimeSeconds() - lastMiningSoundAt >= 0.20)) {
+                    (lastMiningSoundTick < 0 ||
+                     static_cast<std::int64_t>(gameSession.serverTick()) - lastMiningSoundTick >=
+                         4)) {
                     const auto position = *miningTarget;
                     const auto target = interactionWorld.block(position.x, position.y, position.z);
                     audioSystem.playBlockHit(target, glm::vec3{position} + glm::vec3{0.5F});
-                    lastMiningSoundAt = gameSession.gameTimeSeconds();
+                    lastMiningSoundTick = static_cast<std::int64_t>(gameSession.serverTick());
                 }
             } else if (gameSession.gameMode() == gameplay::GameMode::Survival) {
                 miningTarget.reset();
-                lastMiningSoundAt = -1.0;
+                lastMiningSoundTick = -1;
             }
         } else if (!struckEntity) {
             miningTarget.reset();
-            lastMiningSoundAt = -1.0;
+            lastMiningSoundTick = -1;
             if (breakBlockRequested) {
                 // A click that hits nothing still swings, exactly like vanilla.
                 heldItemAnimation.trigger(animation::ModelAction::Break);
@@ -4136,6 +4202,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                             }
                         }
                     }
+                } else if (brokenBlock == world::Block::Furnace) {
+                    // A broken furnace scatters its three slots, exactly as a
+                    // chest scatters its inventory.
+                    const auto removed =
+                        gameSession.furnaceSystem().remove({block.x, block.y, block.z});
+                    if (removed.has_value()) {
+                        std::size_t dropIndex = 0U;
+                        for (const auto& stack : {removed->input, removed->fuel, removed->output}) {
+                            if (!stack.empty()) {
+                                const float angle = static_cast<float>(dropIndex) * 2.39996323F;
+                                gameSession.itemEntities().spawn(
+                                    glm::vec3{block} + glm::vec3{0.5F, 0.65F, 0.5F}, stack,
+                                    {std::cos(angle) * 0.08F, 0.12F, std::sin(angle) * 0.08F});
+                                ++dropIndex;
+                            }
+                        }
+                    }
                 }
                 if (gameSession.gameMode() == gameplay::GameMode::Survival) {
                     // Player#destroyBlock adds a flat exhaustion per broken block.
@@ -4148,17 +4231,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     }
                 }
                 miningTarget.reset();
-                miningStartedAt = gameSession.gameTimeSeconds();
-                lastMiningSoundAt = -1.0;
-                nextCreativeBreakSeconds =
-                    gameSession.gameTimeSeconds() + 5.0 * gameplay::PlayerController::kTickSeconds;
+                miningStartedTick = gameSession.serverTick();
+                lastMiningSoundTick = -1;
+                nextCreativeBreakTick = gameSession.serverTick() + 5U;
             }
         }
         const bool performUse =
-            useActive && gameSession.gameTimeSeconds() >= nextUseSeconds && !gameSession.eating();
+            useActive && gameSession.serverTick() >= nextUseTick && !gameSession.eating();
         if (performUse) {
-            nextUseSeconds =
-                gameSession.gameTimeSeconds() + 4.0 * gameplay::PlayerController::kTickSeconds;
+            nextUseTick = gameSession.serverTick() + 4U;
         }
         if (performUse && targetedBlock.has_value()) {
             const auto interactedBlock = interactionWorld.block(
@@ -4177,6 +4258,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 break;
             case world::ContainerType::Furnace:
                 activeFurnacePosition = targetedBlock->block;
+                // A furnace placed before block entities existed (or loaded from
+                // an older save) has no entity yet; opening it is where we notice
+                // and back-fill one so it can hold items and smelt.
+                static_cast<void>(gameSession.furnaceSystem().findOrCreate(
+                    {targetedBlock->block.x, targetedBlock->block.y, targetedBlock->block.z}));
                 openContainer(ContainerScreen::Furnace);
                 break;
             case world::ContainerType::Chest:
@@ -4258,13 +4344,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     if (const auto* spawnEgg = gameplay::asSpawnEgg(selectedStack.item)) {
                         const auto& eggType = spawnEgg->entityType();
                         const auto block = placeTarget;
-                        const glm::vec3 spawnPosition{
-                            static_cast<float>(block.x) + 0.5F,
-                            static_cast<float>(block.y) + 0.02F,
-                            static_cast<float>(block.z) + 0.5F};
+                        const glm::vec3 spawnPosition{static_cast<float>(block.x) + 0.5F,
+                                                      static_cast<float>(block.y) + 0.02F,
+                                                      static_cast<float>(block.z) + 0.5F};
                         if (entityModelReady(&eggType) &&
-                            gameplay::EntitySystem::canOccupy(
-                                interactionWorld, spawnPosition, eggType.dimensions())) {
+                            gameplay::EntitySystem::canOccupy(interactionWorld, spawnPosition,
+                                                              eggType.dimensions())) {
                             gameSession.worldEntities().spawn(spawnPosition, eggType);
                             heldItemAnimation.trigger(animation::ModelAction::Use);
                             if (gameSession.gameMode() == gameplay::GameMode::Survival) {
@@ -4281,8 +4366,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     if (world::isRenderable(placedBlock) && world::isReplaceable(existingBlock) &&
                         (!world::hasCollision(placedBlock) ||
                          (!gameSession.player().intersectsBlock(block.x, block.y, block.z) &&
-                          !gameSession.worldEntities().intersectsBlock(
-                              block.x, block.y, block.z))) &&
+                          !gameSession.worldEntities().intersectsBlock(block.x, block.y,
+                                                                       block.z))) &&
                         interactionWorld.setBlock(block.x, block.y, block.z, placedBlock)) {
                         interactionWorld.setOrientation(block.x, block.y, block.z, use.orientation);
                         submitWorldEdit(block.x, block.y, block.z, placedBlock, 0U,
@@ -4298,6 +4383,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                         if (placedBlock == world::Block::Chest) {
                             static_cast<void>(
                                 gameSession.chestSystem().place({block.x, block.y, block.z}));
+                        } else if (placedBlock == world::Block::Furnace) {
+                            // Give the furnace its block entity immediately so it
+                            // smelts even before its screen is first opened.
+                            static_cast<void>(
+                                gameSession.furnaceSystem().place({block.x, block.y, block.z}));
                         }
                         if (gameSession.gameMode() == gameplay::GameMode::Survival) {
                             static_cast<void>(gameSession.inventory().consumeSelected());
@@ -4374,30 +4464,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         createDescriptorPoolAndSets();
     }
 
-
-
-    // The unicode pages the active language actually needs, plus page 0 so
-    // forced-unicode Latin text has glyphs to draw. The language screen lists
-    // every available language in its own script (简体中文 beside English), so
-    // those display names keep their glyph pages in the font too, or they would
-    // render as "?" whenever the active language is pure ASCII.
+    // Keep the complete BMP unihex set resident. 26.1 chooses and bakes glyphs
+    // lazily; this renderer uses page-array layers, so preloading the bounded
+    // 256-page equivalent gives the same language-switch property: switching
+    // never reparses unifont.zip, waits for the device, or rebuilds descriptor
+    // sets. Empty pages are omitted by TextureManager.
     [[nodiscard]] std::set<int> requiredUnicodePages() const {
         if (language.empty() && !options.forceUnicodeFont) {
             return {};
         }
-        auto pages = language.requiredUnicodePages();
-        pages.insert(0);
-        for (const auto& name : menuSystem.languageDisplayNames) {
-            for (const char32_t codepoint : ui::decodeUtf8(name)) {
-                if (codepoint <= 0xFFFF) {
-                    pages.insert(static_cast<int>(codepoint >> 8U));
-                }
-            }
+        std::set<int> pages;
+        for (int page = 0; page < 256; ++page) {
+            pages.insert(page);
         }
         return pages;
     }
 
-    // Rebuilds the font array after a language or force-unicode change.
+    // Rebuilds the font array only when the force-unicode provider changes.
     void recreateFontTexture() {
         checkVk(vkDeviceWaitIdle(device), "vkDeviceWaitIdle(font)");
         if (descriptorPool != VK_NULL_HANDLE) {
@@ -4408,7 +4491,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                       options.forceUnicodeFont);
         createDescriptorPoolAndSets();
     }
-
 
     void createDescriptorSetLayout() {
         VkDescriptorSetLayoutBinding uniformBinding{};
@@ -5484,7 +5566,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pipelineInfo.layout = hudPipelineLayout;
         pipelineInfo.pStages = hudStages.data();
 
-        // Minecraft 1.16.1 draws icons.png's 15x15 crosshair with an
+        // Minecraft 26.1 draws the 15x15 hud/crosshair sprite with an
         // inversion blend so it remains visible over both bright and dark
         // terrain. This is intentionally a separate blend-state pipeline.
         colorAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
@@ -6012,18 +6094,26 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                          static_cast<float>(swapchainExtent.height),
                                                      cameraFarPlane());
         uniform.cameraPosition = glm::vec4{renderEye.position, 1.0F};
-        const auto daylight = world::DayNightCycle::state(gameSession.gameTimeSeconds());
+        // The sun and moon read the Overworld clock, not the frame timer: the
+        // sky advances with the world's ticks and freezes exactly when the clock
+        // does (doDaylightCycle off, or the game paused), instead of drifting on
+        // real frames. The 20 Hz tick is coarse enough only for fast-moving
+        // things; the sun barely moves per tick, so no sub-tick interpolation is
+        // needed here.
+        const auto dayTick = static_cast<double>(gameSession.dayTimeTicks());
+        const auto daylight = world::DayNightCycle::stateAtTick(dayTick);
         uniform.sunDirection = glm::vec4{daylight.sunDirection, daylight.skyBrightness};
         // horizonFog.w drives the water/lava animation frames and the moon phase.
         // Both only depend on the time within the lunar cycle (8 days): the
         // shaders multiply it by 10 and mod again, so an unwrapped float loses
         // precision past ~19 days and the animation frames start jumping. Wrapping
-        // here keeps the same phase DayNightCycle derives from the double, and 8
-        // days is a whole number of both day lengths.
+        // here (in the seconds unit the shader expects) keeps the same phase the
+        // old frame timer produced, and 8 days is a whole number of day lengths.
         constexpr double kLunarCycleSeconds = 8.0 * world::DayNightCycle::kSecondsPerDay;
-        uniform.horizonFog = glm::vec4{
-            daylight.horizonColor,
-            static_cast<float>(std::fmod(gameSession.gameTimeSeconds(), kLunarCycleSeconds))};
+        const double dayTimeSeconds = dayTick / world::DayNightCycle::kTicksPerSecond;
+        uniform.horizonFog =
+            glm::vec4{daylight.horizonColor,
+                      static_cast<float>(std::fmod(dayTimeSeconds, kLunarCycleSeconds))};
         // renderSettings.z is the underwater EXP2 fog density. Vanilla uses 0.05;
         // a slightly denser 0.08 restores the murkier look (near-full fog by ~22
         // blocks) after the old hard distance cap was removed.
@@ -6077,66 +6167,90 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // Block names still localize through vanilla's translation keys; item names
     // come straight from the English/Chinese strings each item was registered
     // with, picked by the active language.
-    [[nodiscard]] std::filesystem::path localizationRoot() const {
-        return blockTextureRoot.parent_path().parent_path().parent_path() / "localization" /
-               "minecraft";
-    }
-
-    // Builds the language screen's display names: each language's own
-    // `language.name` and `language.region`, the way 1.16.1's
-    // LanguageDefinition#getLocalizedString renders the list entries.
-    void refreshLanguageNames() {
+    // 26.1's LanguageManager builds this catalog exclusively from pack.mcmeta.
+    // No translation JSON is opened here, regardless of how many languages a
+    // pack contains.
+    void loadLanguageCatalog() {
+        const auto started = std::chrono::steady_clock::now();
+        const auto catalog = ui::availableLanguages(*resourceProvider);
+        menuSystem.languageCodes.clear();
         menuSystem.languageDisplayNames.clear();
-        menuSystem.languageDisplayNames.reserve(menuSystem.languageCodes.size());
-        for (const auto& code : menuSystem.languageCodes) {
-            std::string name = code;
-            try {
-                const auto file = ui::Language::fromFile(localizationRoot() / (code + ".json"));
-                name = std::string{file.translate("language.name", code)};
-                const auto region = file.translate("language.region", "");
-                if (!region.empty()) {
-                    name += " (" + std::string{region} + ")";
-                }
-            } catch (const std::exception&) {
-                // A missing file keeps the bare code as its own name.
-            }
-            menuSystem.languageDisplayNames.push_back(std::move(name));
+        menuSystem.languageCodes.reserve(catalog.size());
+        menuSystem.languageDisplayNames.reserve(catalog.size());
+        for (const auto& entry : catalog) {
+            menuSystem.languageCodes.push_back(entry.code);
+            menuSystem.languageDisplayNames.push_back(entry.displayName());
         }
         menuSystem.languageListFirstIndex = 0U;
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started);
+        std::cout << "Loaded language catalog: " << catalog.size() << " entries in "
+                  << elapsed.count() << " ms\n";
     }
 
     void loadLanguage() {
-        const auto root = localizationRoot();
-        menuSystem.languageCodes = ui::availableLanguageCodes(root);
-        language = {};
-        if (options.language == ui::kDefaultLanguageCode) {
-            language.setCode(options.language);
-        } else {
-            try {
-                language = ui::Language::fromFile(root / (options.language + ".json"));
-                std::cout << "Loaded language " << options.language << ": " << language.size()
-                          << " entries\n";
-            } catch (const std::exception& exception) {
-                std::cout << "Language " << options.language
-                          << " unavailable, falling back to en_us: " << exception.what() << '\n';
-                options.language = ui::kDefaultLanguageCode;
-                language = {};
-            }
+        loadLanguageCatalog();
+        if (std::ranges::find(menuSystem.languageCodes, options.language) ==
+            menuSystem.languageCodes.end()) {
+            options.language = ui::kDefaultLanguageCode;
+        }
+        try {
+            language = ui::Language::fromProvider(*resourceProvider, options.language);
+            std::cout << "Loaded language " << options.language << ": " << language.size()
+                      << " entries\n";
+        } catch (const std::exception& exception) {
+            std::cout << "Language " << options.language
+                      << " unavailable, falling back to en_us: " << exception.what() << '\n';
+            options.language = ui::kDefaultLanguageCode;
+            language = ui::Language::fromProvider(*resourceProvider, options.language);
         }
         textFont.setForceUnicode(options.forceUnicodeFont);
-        // The language screen's display names are needed for the font pages too,
-        // so build them now (not only when the screen opens).
-        refreshLanguageNames();
+        menuSystem.pendingLanguageCode = options.language;
     }
 
-    void selectLanguage(const std::string& code) {
-        if (options.language == code) {
+    void beginLanguageLoad(const std::string& code) {
+        if (languageLoader.busy()) {
+            queuedLanguageCode = code;
+            menuSystem.languageStatus = "Language reload queued";
             return;
         }
-        options.language = code;
-        loadLanguage();
-        recreateFontTexture();
-        persistOptions();
+        if (options.language == code) {
+            menuSystem.languageStatus.clear();
+            return;
+        }
+        menuSystem.languageStatus = "Loading language...";
+        if (!languageLoader.start(code)) {
+            menuSystem.languageStatus = "Unable to start language reload";
+        } else {
+            languageLoadStarted = std::chrono::steady_clock::now();
+        }
+    }
+
+    void pollLanguageLoad() {
+        auto prepared = languageLoader.poll();
+        if (!prepared.has_value()) {
+            return;
+        }
+        if (prepared->error.empty()) {
+            language = std::move(prepared->language);
+            options.language = std::move(prepared->code);
+            menuSystem.pendingLanguageCode = options.language;
+            menuSystem.languageStatus.clear();
+            persistOptions();
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - languageLoadStarted);
+            std::cout << "Loaded language " << options.language << ": " << language.size()
+                      << " entries in " << elapsed.count() << " ms\n";
+        } else {
+            menuSystem.languageStatus = "Language load failed: " + prepared->error;
+            menuSystem.pendingLanguageCode = options.language;
+            std::cerr << menuSystem.languageStatus << '\n';
+        }
+        if (!queuedLanguageCode.empty()) {
+            std::string queued = std::move(queuedLanguageCode);
+            queuedLanguageCode.clear();
+            beginLanguageLoad(queued);
+        }
     }
 
     // ItemRenderer#renderGuiItemOverlay's damage bar: a black 13x2 strip along
@@ -6275,6 +6389,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     std::filesystem::path shaderRoot;
     std::filesystem::path blockTextureRoot;
+    const assets::ResourceProvider* resourceProvider = nullptr;
+    ui::AsyncLanguageLoader languageLoader;
+    std::chrono::steady_clock::time_point languageLoadStarted{};
     std::filesystem::path optionsPath;
     persistence::SaveRepository saveRepository;
     config::GameOptions options;
@@ -6416,15 +6533,25 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     mutable std::size_t selectedNameSlot_ = static_cast<std::size_t>(-1);
     mutable gameplay::ItemStack selectedNameStack_;
     mutable double selectedNameShownAt_ = -1.0;
+    // Menus, the cursor blink and chat expiry run on wall time and must keep
+    // running while the simulation is paused or the sun is frozen.
     double uiTimeSeconds = 0.0;
-    double miningStartedAt = 0.0;
-    double lastMiningSoundAt = -1.0;
+    // Animation interpolation. Separate from uiTimeSeconds because it stops
+    // with the world: a paused game should not keep swinging arms. Both are
+    // frame-local and neither is persisted.
+    double renderTimeSeconds = 0.0;
+    // Mining and use timing now runs on the server tick, not the frame timer, so
+    // a dig lands after the same number of ticks regardless of framerate, the way
+    // Minecraft's continueAttack accumulates destroy progress per tick. The crack
+    // overlay stays smooth by interpolating with renderInterpolationAlpha.
+    std::uint64_t miningStartedTick = 0U;
+    std::int64_t lastMiningSoundTick = -1; // -1 until the first hit sound this dig
     // Level#random's stand-in for loot rolls. Re-seeded from the world seed on
     // load so a given world replays its drops rather than the same fixed run.
     // MultiPlayerGameMode#destroyDelay (5 ticks) and Minecraft#rightClickDelay
-    // (4 ticks): the earliest world times a held button may act again.
-    double nextCreativeBreakSeconds = 0.0;
-    double nextUseSeconds = 0.0;
+    // (4 ticks): the earliest server ticks a held button may act again.
+    std::uint64_t nextCreativeBreakTick = 0U;
+    std::uint64_t nextUseTick = 0U;
     // Eating state: right-click on food starts the vanilla 32-tick (1.6 s) eat,
     // during which the held item is raised to the mouth; the meal lands when the
     // timer expires. Release the button or swap items to cancel.
@@ -6515,9 +6642,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // table the interface reads its strings from.
     ui::TextFont textFont;
     ui::Language language;
-    // The language screen's entries: each language's name in its own language,
-    // e.g. "English (United States)" / "简体中文 (中国)", plus the list's scroll
-    // offset. Built lazily when the screen opens.
+    std::string queuedLanguageCode;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     std::vector<VkImage> swapchainImages;
     std::vector<VkImageView> swapchainImageViews;
@@ -6629,6 +6754,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .inventoryOpen = inventoryOpen,
             .containerScreen = containerScreen,
             .activeChest = activeChest,
+            .activeFurnacePosition = activeFurnacePosition,
             .debugOverlayOpen = debugOverlayOpen,
             .inventoryDragActive = inventoryDragActive,
             .inventoryDragSlots = inventoryDragSlots,
@@ -6652,14 +6778,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .paused = paused,
             .uiTimeSeconds = uiTimeSeconds,
             .cameraSubmergedInWater = [this] { return cameraSubmergedInWater(); },
-            .drawHeldItem = [this](VkCommandBuffer c, VkDescriptorSet d) { world_.drawHeldItem(c, d); },
+            .drawHeldItem = [this](VkCommandBuffer c,
+                                   VkDescriptorSet d) { world_.drawHeldItem(c, d); },
             .currentFrameDescriptorSet = [this] { return frames[currentFrame].descriptorSet; },
             .activeCreativeCatalog = [this] { return activeCreativeCatalog(); },
             .creativeScrollPosition = [this] { return creativeScrollPosition(); },
             .creativeMaximumScrollRow = [this] { return creativeMaximumScrollRow(); },
             .dragPlacementCounts = [this] { return dragPlacementCounts(); },
             .cameraFarPlane = [this] { return cameraFarPlane(); },
-            .dragSlotRectangle = [this](const ui::HudLayout& l, const gameplay::ItemStack* s) { return dragSlotRectangle(l, s); },
+            .dragSlotRectangle =
+                [this](const ui::HudLayout& l, const gameplay::ItemStack* s) {
+                    return dragSlotRectangle(l, s);
+                },
         };
     }
 
@@ -6708,7 +6838,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .chatOpen = chatOpen,
             .targetedBlock = targetedBlock,
             .miningTarget = miningTarget,
-            .miningStartedAt = miningStartedAt,
+            .miningStartedTick = miningStartedTick,
+            .renderTimeSeconds = renderTimeSeconds,
             .renderInterpolationAlpha = renderInterpolationAlpha,
             .window = window,
             .instance = instance,
@@ -6787,7 +6918,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .renderDistanceBlocks = [this] { return renderDistanceBlocks(); },
             .spawnDroppedStack = [this](gameplay::ItemStack s) { spawnDroppedStack(std::move(s)); },
             .initializeSpawnPosition = [this] { initializeSpawnPosition(); },
-            .submitWorldEditFn = [this](int x, int y, int z, world::Block b, std::uint8_t f, std::optional<world::BlockOrientation> o) { submitWorldEdit(x, y, z, b, f, o); },
+            .submitWorldEditFn =
+                [this](int x, int y, int z, world::Block b, std::uint8_t f,
+                       std::optional<world::BlockOrientation> o) {
+                    submitWorldEdit(x, y, z, b, f, o);
+                },
         };
     }
 
@@ -6797,12 +6932,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
 VulkanRenderer::VulkanRenderer(std::filesystem::path shaderRoot,
                                std::filesystem::path blockTextureRoot,
-                               std::filesystem::path soundRoot, world::ChunkStreamer& chunkStreamer,
-                               config::GameOptions options, std::filesystem::path optionsPath,
-                               std::filesystem::path saveRoot,
+                               const assets::ResourceProvider& resourceProvider,
+                               world::ChunkStreamer& chunkStreamer, config::GameOptions options,
+                               std::filesystem::path optionsPath, std::filesystem::path saveRoot,
                                std::optional<TestSceneOptions> testScene)
     : impl_(std::make_unique<Impl>(std::move(shaderRoot), std::move(blockTextureRoot),
-                                   std::move(soundRoot), chunkStreamer, std::move(options),
+                                   resourceProvider, chunkStreamer, std::move(options),
                                    std::move(optionsPath), std::move(saveRoot), testScene)) {
     impl_->initialize();
 }

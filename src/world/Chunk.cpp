@@ -34,6 +34,24 @@ void Chunk::setBlock(int x, int y, int z, Block value) {
         .setBlock(x, y % kSectionSize, z, value);
 }
 
+BlockState Chunk::state(int x, int y, int z) const {
+    if (x < 0 || x >= kChunkWidth || y < 0 || y >= kWorldHeight ||
+        z < 0 || z >= kChunkDepth) {
+        return BlockState{};
+    }
+    return sections_[static_cast<std::size_t>(y / kSectionSize)]
+        .state(x, y % kSectionSize, z);
+}
+
+void Chunk::setState(int x, int y, int z, BlockState value) {
+    if (x < 0 || x >= kChunkWidth || y < 0 || y >= kWorldHeight ||
+        z < 0 || z >= kChunkDepth) {
+        throw std::out_of_range("Chunk state coordinate is outside 16x256x16 bounds");
+    }
+    sections_[static_cast<std::size_t>(y / kSectionSize)]
+        .setState(x, y % kSectionSize, z, value);
+}
+
 BlockOrientation Chunk::orientation(int x, int y, int z) const {
     if (x < 0 || x >= kChunkWidth || y < 0 || y >= kWorldHeight ||
         z < 0 || z >= kChunkDepth) {

@@ -80,11 +80,12 @@ std::uint16_t toolDurabilityCost(
 
 HarvestRequirement harvestRequirement(world::Block block) {
     switch (block) {
-    // Vanilla stone, cobblestone, the stone bricks, granite/diorite/andesite and
-    // coal ore all call requiresCorrectToolForDrops, so a pickaxe is needed to
-    // keep their loot. Sandstone, bricks, quartz, netherrack and furnaces do not
-    // carry that property: they drop for any hand, with the pickaxe only digging
-    // them faster (see isPickaxeBlock below).
+    // The stone family and coal ore call requiresCorrectToolForDrops, so a
+    // pickaxe is needed to keep their loot; none of them are in needs_stone_tool,
+    // so the wooden tier is enough. Sandstone, bricks, quartz, netherrack and
+    // furnaces still drop for any hand here, with the pickaxe only digging them
+    // faster (see isPickaxeBlock below) — 26.1 marks those five
+    // requiresCorrectToolForDrops as well, which B2' picks up with the tag data.
     case world::Block::Stone:
     case world::Block::Cobblestone:
     case world::Block::MossyCobblestone:
@@ -94,6 +95,10 @@ HarvestRequirement harvestRequirement(world::Block block) {
     case world::Block::Granite:
     case world::Block::Diorite:
     case world::Block::Andesite:
+    case world::Block::PolishedGranite:
+    case world::Block::PolishedDiorite:
+    case world::Block::PolishedAndesite:
+    case world::Block::SmoothStone:
     case world::Block::CoalOre:
         return {ToolType::Pickaxe, ToolTier::Wood};
     case world::Block::IronOre:
@@ -117,9 +122,10 @@ HarvestRequirement harvestRequirement(world::Block block) {
 // The tool roles that mine a given block faster. Each list mirrors the vanilla
 // mineable tag: pickaxe → the stone/ore family, shovel → dirt/sand/gravel, hoe →
 // leaves, axe → wood. This is a separate concern from harvestRequirement above,
-// which only gates the blocks vanilla marks requiresCorrectToolForDrops: a
-// pickaxe is still the fast tool for sandstone, bricks, quartz, netherrack and
-// furnaces even though a bare hand keeps their loot, exactly like 1.16.1.
+// which only gates the blocks marked requiresCorrectToolForDrops: a pickaxe is
+// still the fast tool for sandstone, bricks, quartz, netherrack and furnaces
+// even where a bare hand keeps their loot. The lit furnace shares the plain
+// furnace's entry, the way its blockstate shares one block in vanilla.
 [[nodiscard]] bool isPickaxeBlock(world::Block block) {
     using enum world::Block;
     switch (block) {
@@ -132,6 +138,10 @@ HarvestRequirement harvestRequirement(world::Block block) {
     case Granite:
     case Diorite:
     case Andesite:
+    case PolishedGranite:
+    case PolishedDiorite:
+    case PolishedAndesite:
+    case SmoothStone:
     case Sandstone:
     case Bricks:
     case QuartzBlock:
@@ -278,16 +288,10 @@ MinedDrops minedDrops(world::Block block, const ItemStack& tool, std::uint32_t& 
     case world::Block::Bookshelf:
         drops.add({world::Block::Air, 3U, &items::Book});
         break;
-    case world::Block::WallTorchNorth:
-    case world::Block::WallTorchEast:
-    case world::Block::WallTorchSouth:
-    case world::Block::WallTorchWest:
+    case world::Block::WallTorch:
+        // Whatever it was leaning on, a wall torch comes back as the standing
+        // one: the facing is a state, and the item has no facing at all.
         drops.add({world::Block::Torch, 1U, blockItemFor(world::Block::Torch)});
-        break;
-    case world::Block::LitFurnace:
-        // A burning furnace yields the plain furnace item (1.16.1's lit state
-        // has no item of its own).
-        drops.add({world::Block::Furnace, 1U, blockItemFor(world::Block::Furnace)});
         break;
 
     // Chance-based tables.

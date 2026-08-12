@@ -1,6 +1,7 @@
 #pragma once
 
 #include "world/Block.hpp"
+#include "world/BlockState.hpp"
 #include "world/NibbleArray.hpp"
 #include "world/WorldConstants.hpp"
 
@@ -13,6 +14,11 @@ namespace mc::world {
 class ChunkSection final {
   public:
     ChunkSection();
+
+    // The whole cell in one read. The three accessors below decode from this
+    // and stay for the callers that only want one field.
+    [[nodiscard]] BlockState state(int x, int y, int z) const;
+    void setState(int x, int y, int z, BlockState value);
 
     [[nodiscard]] Block block(int x, int y, int z) const;
     void setBlock(int x, int y, int z, Block value);
@@ -28,6 +34,17 @@ class ChunkSection final {
     bool setBlockLight(int x, int y, int z, std::uint8_t value);
     bool setDirectSkyLight(int x, int y, int z, std::uint8_t value);
 
+    // Heap bytes the state storage holds right now (palette + packed indices,
+    // excluding the light arrays). Zero for an all-air section. Exposed so a
+    // test can pin the memory contract: an empty section costs nothing and a
+    // terrain section stays a fraction of the flat 8 KB array it replaced.
+    [[nodiscard]] std::size_t stateHeapBytes() const;
+    // The distinct states this section currently interns and how many bits each
+    // cell's index takes. Diagnostics for the same test — a uniform section is
+    // 0 bits with no packed data at all.
+    [[nodiscard]] std::size_t paletteSize() const { return palette_.size(); }
+    [[nodiscard]] std::uint8_t bitsPerEntry() const { return bitsPerEntry_; }
+
   private:
     static constexpr std::size_t kBlockCount =
         static_cast<std::size_t>(kSectionSize) *
@@ -35,11 +52,36 @@ class ChunkSection final {
         static_cast<std::size_t>(kSectionSize);
 
     [[nodiscard]] static std::size_t index(int x, int y, int z);
-    // Empty sections dominate a surface-only world.  Keeping these arrays
-    // lazy avoids reserving 128 KiB for every Chunk before it contains data.
-    std::vector<Block> blocks_;
-    std::vector<std::uint8_t> orientations_;
-    std::vector<std::uint8_t> fluidLevels_;
+    [[nodiscard]] static bool inBounds(int x, int y, int z);
+
+    // PalettedContainer, the layout vanilla stores a section in. A section holds
+    // far fewer distinct states than its 4096 cells, so instead of one 16-bit
+    // interned id per cell (the flat array this replaced — 8 KB the moment a
+    // single non-air block landed, even for a section that is one stone and the
+    // rest air), each cell stores a small index into a per-section palette of
+    // the states actually present, bit-packed to just enough bits to name them.
+    //
+    //  - An all-air section is uniform: bitsPerEntry_ == 0, no palette, no
+    //    packed data, zero heap. Surface worlds are mostly these.
+    //  - The first non-air write expands to a multi-state section whose palette
+    //    starts { air, <that state> }; bitsPerEntry_ grows (1,2,4,5,...) only as
+    //    new distinct states appear. Ordinary terrain settles around 4 bits, so
+    //    the 4096 indices pack into ~2 KB rather than 8 KB.
+    //
+    // The packing is SimpleBitStorage: each 64-bit word holds 64/bits indices
+    // with no entry straddling a word boundary, so a read is one shift-and-mask.
+    // The palette only grows — a removed state may linger unreferenced, which
+    // costs a couple of bytes and saves scanning 4096 cells on every break.
+    [[nodiscard]] std::uint16_t readIndex(std::size_t cell) const;
+    void writeIndex(std::size_t cell, std::uint16_t paletteIndex);
+    [[nodiscard]] std::uint16_t internState(std::uint16_t rawId);
+    void growBits(std::uint8_t newBits);
+    [[nodiscard]] static std::uint8_t bitsFor(std::size_t paletteSize);
+    [[nodiscard]] static std::size_t longsFor(std::uint8_t bits);
+
+    std::vector<std::uint16_t> palette_;
+    std::vector<std::uint64_t> data_;
+    std::uint8_t bitsPerEntry_ = 0U;
     NibbleArray skyLight_;
     NibbleArray blockLight_;
     NibbleArray directSkyLight_;

@@ -35,28 +35,24 @@ EntityDrops rollCowLoot(std::uint32_t& rng) {
 
 // The cow's box-UV model, its skin, and the bedrock identifiers the JSON
 // declares. Literals have static storage, so the descriptor's string_views stay
-// valid for the life of the program. The skin path resolves through the same
-// vanilla-jar fallback the pig's does (…/textures/minecraft/entity/cow/cow.png).
+// valid for the life of the program. Java 26.1 splits the old cow skin into
+// biome variants; the plains/default variant is the temperate texture.
 constexpr EntityRenderDescriptor kCowRender{
     /*geometryPath=*/"animation/cow.geo.json",
     /*animationPath=*/"animation/cow.animation.json",
-    /*texturePath=*/"entity/cow/cow.png",
+    /*texturePath=*/"entity/cow/cow_temperate.png",
     /*geometryId=*/"geometry.cow",
     /*walkAnimation=*/"animation.cow.walk",
     /*idleAnimation=*/"animation.cow.idle",
     /*scale=*/1.0F,
 };
 
-// CowEntity's sound hooks (1.16.1): ambient mob/cow/say1-4, hurt mob/cow/hurt1-3,
-// and — because the sounds.json maps entity.cow.death to the same three hurt
-// clips — death reuses the hurt base. Steps are mob/cow/step1-4. CowEntity
-// overrides getSoundVolume to 0.4, so every clip plays at that level.
+// Physical clips and variations are selected by the active packs' sounds.json.
 constexpr audio::MobSoundProfile kCowSounds{
-    /*root=*/"mob/cow",
-    /*ambientBase=*/"say", /*ambientVariations=*/4,
-    /*hurtBase=*/"hurt",   /*hurtVariations=*/3,
-    /*deathBase=*/"hurt",  /*deathVariations=*/3,
-    /*stepBase=*/"step",   /*stepVariations=*/4,
+    /*ambientEvent=*/"entity.cow.ambient",
+    /*hurtEvent=*/"entity.cow.hurt",
+    /*deathEvent=*/"entity.cow.death",
+    /*stepEvent=*/"entity.cow.step",
     /*volume=*/0.4F,
     /*stepVolume=*/0.15F,
 };

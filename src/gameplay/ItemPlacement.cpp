@@ -10,15 +10,18 @@ namespace {
 // ReBedrock stores the flag in the block's own orientation state, so the item
 // resolves the orientation a placed leaves block should carry. Every other block
 // defers to the block-property rules (log axis, facing back at the player).
+// The context is no longer read: placementBlock resolved the facing already.
 [[nodiscard]] world::BlockOrientation itemPlacementOrientation(
     const ItemStack& stack,
-    world::Block placed,
-    const world::PlacementContext& context) {
-    if (world::isLeaves(placed) &&
+    world::BlockState placed) {
+    if (world::isLeaves(placed.block()) &&
         (asLeavesBlockItem(stack.item) != nullptr || stack.item == nullptr)) {
         return world::kPersistentLeavesState;
     }
-    return world::placementOrientation(placed, context);
+    // The placement already resolved a facing for anything that has one — a
+    // wall torch's comes from the wall it found, which cannot be recomputed
+    // from the block alone — so the state's own orientation stands.
+    return placed.orientation();
 }
 
 // BlockItem#useOn → place: resolves the placed block state and its orientation,
@@ -35,8 +38,8 @@ namespace {
     }
     ItemUseResult result;
     result.action = ItemUseAction::PlaceBlock;
-    result.block = *placed;
-    result.orientation = itemPlacementOrientation(stack, *placed, context);
+    result.block = placed->block();
+    result.orientation = itemPlacementOrientation(stack, *placed);
     return result;
 }
 
@@ -124,7 +127,7 @@ namespace {
 
 } // namespace
 
-std::optional<world::Block> itemPlacementBlock(
+std::optional<world::BlockState> itemPlacementBlock(
     const world::World& world,
     const ItemStack& stack,
     const world::PlacementContext& context) {

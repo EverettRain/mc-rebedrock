@@ -13,12 +13,13 @@
 
 #include "render/vulkan/VulkanResources.hpp"
 
+#include "assets/ResourceProvider.hpp"
 #include "gameplay/entities/SpeciesRenderData.hpp"
 #include "ui/BitmapFontMetrics.hpp"
 #include "ui/TextFont.hpp"
 
-#include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
+#include <vulkan/vulkan.h>
 
 #include <cstdint>
 #include <filesystem>
@@ -32,10 +33,11 @@ class TextureManager final {
   public:
     TextureManager() = default;
     TextureManager(const VulkanResources* resources, VkDevice device, VmaAllocator allocator,
-                   std::filesystem::path blockTextureRoot, bool anisotropySupported,
+                   std::filesystem::path blockTextureRoot,
+                   const assets::ResourceProvider* resourceProvider, bool anisotropySupported,
                    float maxAnisotropy)
         : resources_(resources), device_(device), allocator_(allocator),
-          blockTextureRoot_(std::move(blockTextureRoot)),
+          blockTextureRoot_(std::move(blockTextureRoot)), resourceProvider_(resourceProvider),
           anisotropySupported_(anisotropySupported), maxAnisotropy_(maxAnisotropy) {}
 
     // Bakes the block/entity/effect array (via BlockAtlasBaker), uploads it, and
@@ -57,15 +59,15 @@ class TextureManager final {
     // Builds the entity skin array and fills `speciesModels` (owned by the
     // renderer because the world pass reads it) from the gameplay entity
     // registry.
-    void createEntityTextureArray(
-        std::vector<gameplay::entities::SpeciesRenderModel>& speciesModels);
+    void
+    createEntityTextureArray(std::vector<gameplay::entities::SpeciesRenderModel>& speciesModels);
     // Builds the font array. `fontMetrics`/`textFont` stay renderer-owned (the
-    // HUD text pass reads them) and are filled here; `requiredPages` is computed
-    // by the renderer from the active language and passed in.
+    // HUD text pass reads them) and are filled here. The renderer passes the
+    // persistent BMP page set so changing language does not rebuild this array.
     void createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::TextFont& textFont,
                            const std::set<int>& requiredPages, bool forceUnicode);
-    // Releases the old font array and rebuilds it (language / force-unicode
-    // change). The renderer still orchestrates the descriptor-pool teardown.
+    // Releases the old font array and rebuilds it for a force-unicode provider
+    // change. The renderer still orchestrates the descriptor-pool teardown.
     void recreateFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::TextFont& textFont,
                              const std::set<int>& requiredPages, bool forceUnicode);
 
@@ -105,12 +107,11 @@ class TextureManager final {
     VkSampler textureSampler = VK_NULL_HANDLE;
 
   private:
-    [[nodiscard]] std::vector<std::uint8_t> loadGlyphSizes() const;
-
     const VulkanResources* resources_ = nullptr;
     VkDevice device_ = VK_NULL_HANDLE;
     VmaAllocator allocator_ = VK_NULL_HANDLE;
     std::filesystem::path blockTextureRoot_;
+    const assets::ResourceProvider* resourceProvider_ = nullptr;
     bool anisotropySupported_ = false;
     float maxAnisotropy_ = 1.0F;
 };

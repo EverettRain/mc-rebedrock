@@ -43,10 +43,6 @@ enum class Block : std::uint8_t {
     Bookshelf,
     CraftingTable,
     Furnace,
-    // The burning furnace: LitFurnaceBlock in 1.16.1, the same block with the
-    // lit front face and a 13 light level. Not a separate item — breaking it
-    // yields the unlit furnace.
-    LitFurnace,
     Obsidian,
     Clay,
     SnowBlock,
@@ -69,10 +65,7 @@ enum class Block : std::uint8_t {
     RedSand,
     Lava,
     Torch,
-    WallTorchNorth,
-    WallTorchEast,
-    WallTorchSouth,
-    WallTorchWest,
+    WallTorch,
     Chest,
     LapisOre,
     RedstoneOre,
@@ -239,6 +232,12 @@ struct BlockDefinition final {
     bool pillar = false;
     // Reads a horizontal FACING property (furnaces, chests).
     bool horizontalFacing = false;
+    // Carries a LIT property, the way AbstractFurnaceBlock does: the same block
+    // whether or not it is burning, with the lit front face and the light level
+    // coming from the state rather than from a second block. `litLight` is what
+    // it emits while lit; unlit it emits `light` like anything else.
+    bool lit = false;
+    std::uint8_t litLight = 0U;
     // The container screen this block opens on right-click, None otherwise.
     ContainerType container = ContainerType::None;
     bool torch = false;
@@ -253,8 +252,8 @@ class BlockProperties final {
   public:
     // Registers a block that mirrors vanilla: `path` names both the
     // `rebedrock:` registry key and the `minecraft:` alias behind it.
-    [[nodiscard]] static constexpr BlockProperties of(
-        Block block, std::string_view path, const char* displayName) {
+    [[nodiscard]] static constexpr BlockProperties of(Block block, std::string_view path,
+                                                      const char* displayName) {
         BlockProperties properties;
         properties.definition_.block = block;
         properties.definition_.identifier = {kNamespace, path};
@@ -282,8 +281,8 @@ class BlockProperties final {
     [[nodiscard]] constexpr BlockProperties texture(const char* all) const {
         return texture(all, all, all);
     }
-    [[nodiscard]] constexpr BlockProperties texture(
-        const char* top, const char* side, const char* bottom) const {
+    [[nodiscard]] constexpr BlockProperties texture(const char* top, const char* side,
+                                                    const char* bottom) const {
         BlockProperties copy = *this;
         copy.definition_.textures = {top, side, bottom};
         return copy;
@@ -387,6 +386,14 @@ class BlockProperties final {
         copy.definition_.horizontalFacing = true;
         return copy;
     }
+    // AbstractFurnaceBlock's LIT: one block, two states, and the light level
+    // the burning one emits.
+    [[nodiscard]] constexpr BlockProperties lit(std::uint8_t litLightLevel) const {
+        BlockProperties copy = *this;
+        copy.definition_.lit = true;
+        copy.definition_.litLight = litLightLevel;
+        return copy;
+    }
     // Right-clicking opens this container screen (BlockBehaviour#onBlockUse).
     [[nodiscard]] constexpr BlockProperties container(ContainerType type) const {
         BlockProperties copy = *this;
@@ -422,396 +429,342 @@ class BlockProperties final {
 // a single chained statement. Adding a block is: add the enum value, add the
 // line here, done — every table that used to need a parallel switch reads the
 // properties below instead.
-inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Count)>
-    kBlockRegistry{
-        BlockProperties::of(Block::Air, "air", "Air")
-            .stackSize(0U)
-            .renderLayer(BlockRenderLayer::Translucent)
-            .noCollision()
-            .replaceable()
-            .noDrops(),
-        BlockProperties::of(Block::Grass, "grass_block", "Grass Block")
-.texture("grass_block_top", "grass_block_side", "dirt")
-            .strength(0.6F)
-            .soil(),
-        BlockProperties::of(Block::Dirt, "dirt", "Dirt")
-.texture("dirt")
-            .strength(0.5F)
-            .soil(),
-        BlockProperties::of(Block::Stone, "stone", "Stone")
-.texture("stone")
-            .strength(1.5F, 6.0F),
-        BlockProperties::of(Block::Cobblestone, "cobblestone", "Cobblestone")
-.texture("cobblestone")
-            .strength(2.0F, 6.0F),
-        BlockProperties::of(Block::OakPlanks, "oak_planks", "Oak Planks")
-.texture("oak_planks")
-            .strength(2.0F, 3.0F),
-        BlockProperties::of(Block::OakLog, "oak_log", "Oak Log")
-.texture("oak_log_top", "oak_log", "oak_log_top")
-            .strength(2.0F)
-            .pillar(),
-        BlockProperties::of(Block::Bricks, "bricks", "Bricks")
-.texture("bricks")
-            .strength(2.0F, 6.0F),
-        BlockProperties::of(Block::Bedrock, "bedrock", "Bedrock")
-.texture("bedrock")
-            .unbreakable(3'600'000.0F),
-        BlockProperties::of(Block::Sand, "sand", "Sand")
-.texture("sand")
-            .strength(0.5F)
-            .gravity(),
-        BlockProperties::of(Block::Glass, "glass", "Glass")
-.texture("glass")
-            .strength(0.3F)
-            .renderLayer(BlockRenderLayer::Translucent),
-        BlockProperties::of(Block::CoalOre, "coal_ore", "Coal Ore")
-.texture("coal_ore")
-            .strength(3.0F),
-        BlockProperties::of(Block::IronOre, "iron_ore", "Iron Ore")
-.texture("iron_ore")
-            .strength(3.0F),
-        BlockProperties::of(Block::GoldOre, "gold_ore", "Gold Ore")
-.texture("gold_ore")
-            .strength(3.0F),
-        BlockProperties::of(Block::DiamondOre, "diamond_ore", "Diamond Ore")
-.texture("diamond_ore")
-            .strength(3.0F),
-        // Material.REPLACEABLE_PLANT: placing a block inside tall grass replaces it.
-        BlockProperties::of(Block::GrassPlant, "grass", "Grass")
-.texture("grass")
-            .instantBreak()
-            .cross()
-            .offsetType(BlockOffsetType::XZ)
-            .replaceable()
-            .noDrops()
-            .support(BlockSupport::Soil),
-        BlockProperties::of(Block::Dandelion, "dandelion", "Dandelion")
-.texture("dandelion")
-            .instantBreak()
-            .cross()
-            .offsetType(BlockOffsetType::XZ)
-            .support(BlockSupport::Soil),
-        BlockProperties::of(Block::OakSapling, "oak_sapling", "Oak Sapling")
-.texture("oak_sapling")
-            .instantBreak()
-            .cross()
-            .support(BlockSupport::Soil),
-        BlockProperties::of(Block::OakLeaves, "oak_leaves", "Oak Leaves")
-.texture("oak_leaves")
-            .leaves(),
-        BlockProperties::of(Block::Water, "water", "Water")
-.texture("water_still", "water_flow", "water_flow")
-            .strength(100.0F)
-            .renderLayer(BlockRenderLayer::Translucent)
-            .noCollision()
-            .replaceable()
-            .noDrops()
-            .lightFilter(1U),
-        BlockProperties::of(Block::Gravel, "gravel", "Gravel")
-.texture("gravel")
-            .strength(0.6F)
-            .gravity(),
-        BlockProperties::of(Block::SprucePlanks, "spruce_planks", "Spruce Planks")
-.texture("spruce_planks")
-            .strength(2.0F, 3.0F),
-        BlockProperties::of(Block::BirchPlanks, "birch_planks", "Birch Planks")
-.texture("birch_planks")
-            .strength(2.0F, 3.0F),
-        BlockProperties::of(Block::SpruceLog, "spruce_log", "Spruce Log")
-.texture("spruce_log_top", "spruce_log", "spruce_log_top")
-            .strength(2.0F)
-            .pillar(),
-        BlockProperties::of(Block::BirchLog, "birch_log", "Birch Log")
-.texture("birch_log_top", "birch_log", "birch_log_top")
-            .strength(2.0F)
-            .pillar(),
-        BlockProperties::of(Block::Bookshelf, "bookshelf", "Bookshelf")
-.texture("oak_planks", "bookshelf", "oak_planks")
-            .strength(1.5F),
-        BlockProperties::of(Block::CraftingTable, "crafting_table", "Crafting Table")
-.texture("crafting_table_top", "crafting_table_side", "oak_planks")
-            .strength(2.5F)
-            .container(ContainerType::CraftingTable),
-        BlockProperties::of(Block::Furnace, "furnace", "Furnace")
-.texture("furnace_top", "furnace_side", "furnace_top")
-            .strength(3.5F)
-            .horizontalFacing()
-            .container(ContainerType::Furnace),
-        // The lit front is picked by the mesher (kFurnaceFrontOnLayer); the
-        // registry entry keeps the same top/side/back faces and the furnace's
-        // interaction. Light 13 is LitFurnaceBlock's level.
-        BlockProperties::of(Block::LitFurnace, "lit_furnace", "Furnace")
-            .vanillaAlias("furnace")
-.texture("furnace_top", "furnace_side", "furnace_top")
-            .strength(3.5F)
-            .light(13U)
-            .horizontalFacing()
-            .container(ContainerType::Furnace),
-        BlockProperties::of(Block::Obsidian, "obsidian", "Obsidian")
-.texture("obsidian")
-            .strength(50.0F, 1'200.0F),
-        BlockProperties::of(Block::Clay, "clay", "Clay")
-.texture("clay")
-            .strength(0.6F),
-        BlockProperties::of(Block::SnowBlock, "snow_block", "Snow Block")
-.texture("snow")
-            .strength(0.2F),
-        BlockProperties::of(Block::Netherrack, "netherrack", "Netherrack")
-.texture("netherrack")
-            .strength(0.4F),
-        BlockProperties::of(Block::Glowstone, "glowstone", "Glowstone")
-.texture("glowstone")
-            .strength(0.3F)
-            .light(15U),
-        BlockProperties::of(Block::WhiteWool, "white_wool", "White Wool")
-.texture("white_wool")
-            .strength(0.8F),
-        BlockProperties::of(Block::RedWool, "red_wool", "Red Wool")
-.texture("red_wool")
-            .strength(0.8F),
-        BlockProperties::of(Block::BlackWool, "black_wool", "Black Wool")
-.texture("black_wool")
-            .strength(0.8F),
-        BlockProperties::of(Block::StoneBricks, "stone_bricks", "Stone Bricks")
-.texture("stone_bricks")
-            .strength(1.5F, 6.0F),
-        BlockProperties::of(Block::MossyCobblestone, "mossy_cobblestone", "Mossy Cobblestone")
-.texture("mossy_cobblestone")
-            .strength(2.0F, 6.0F),
-        BlockProperties::of(Block::Sandstone, "sandstone", "Sandstone")
-.texture("sandstone_top", "sandstone", "sandstone_bottom")
-            .strength(0.8F),
-        BlockProperties::of(Block::Pumpkin, "pumpkin", "Pumpkin")
-.texture("pumpkin_top", "pumpkin_side", "pumpkin_top")
-            .strength(1.0F),
-        BlockProperties::of(Block::Melon, "melon", "Melon")
-.texture("melon_top", "melon_side", "melon_top")
-            .strength(1.0F),
-        BlockProperties::of(Block::Tnt, "tnt", "TNT")
-.texture("tnt_top", "tnt_side", "tnt_bottom")
-            .instantBreak(),
-        BlockProperties::of(Block::Granite, "granite", "Granite")
-.texture("granite")
-            .strength(1.5F, 6.0F),
-        BlockProperties::of(Block::Diorite, "diorite", "Diorite")
-.texture("diorite")
-            .strength(1.5F, 6.0F),
-        BlockProperties::of(Block::Andesite, "andesite", "Andesite")
-.texture("andesite")
-            .strength(1.5F, 6.0F),
-        BlockProperties::of(Block::CoarseDirt, "coarse_dirt", "Coarse Dirt")
-.texture("coarse_dirt")
-            .strength(0.5F)
-            .soil(),
-        BlockProperties::of(Block::Podzol, "podzol", "Podzol")
-.texture("podzol_top", "podzol_side", "dirt")
-            .strength(0.5F)
-            .soil(),
-        BlockProperties::of(Block::RedSand, "red_sand", "Red Sand")
-.texture("red_sand")
-            .strength(0.5F)
-            .gravity(),
-        // Carved cells below y=11 become lava (CaveCarver#carveAtPoint). Rendered
-        // as a solid self-lit cube for now; it carries no fluid simulation. The
-        // top face uses the animated still strip (20 frames from layer 344) and
-        // the sides the animated flow strip (16 frames from layer 364), laid out
-        // at the end of the atlas in VulkanRenderer.cpp.
-        BlockProperties::of(Block::Lava, "lava", "Lava")
-.texture("lava_still", "lava_flow", "lava_flow")
-            .strength(100.0F)
-            .noDrops()
-            .light(15U)
-            .lightFilter(1U),
-        BlockProperties::of(Block::Torch, "torch", "Torch")
-.texture("torch")
-            .instantBreak()
-            .renderLayer(BlockRenderLayer::Cutout)
-            .model(BlockModel::Torch)
-            .noCollision()
-            .light(14U)
-            .support(BlockSupport::Ground)
-            .torch(),
-        BlockProperties::of(Block::WallTorchNorth, "wall_torch_north", "Wall Torch")
-            .vanillaAlias("wall_torch")
-.texture("torch")
-            .instantBreak()
-            .renderLayer(BlockRenderLayer::Cutout)
-            .model(BlockModel::Torch)
-            .noCollision()
-            .light(14U)
-            .support(BlockSupport::Wall)
-            .torch(),
-        BlockProperties::of(Block::WallTorchEast, "wall_torch_east", "Wall Torch")
-            .vanillaAlias("wall_torch")
-.texture("torch")
-            .instantBreak()
-            .renderLayer(BlockRenderLayer::Cutout)
-            .model(BlockModel::Torch)
-            .noCollision()
-            .light(14U)
-            .support(BlockSupport::Wall)
-            .torch(),
-        BlockProperties::of(Block::WallTorchSouth, "wall_torch_south", "Wall Torch")
-            .vanillaAlias("wall_torch")
-.texture("torch")
-            .instantBreak()
-            .renderLayer(BlockRenderLayer::Cutout)
-            .model(BlockModel::Torch)
-            .noCollision()
-            .light(14U)
-            .support(BlockSupport::Wall)
-            .torch(),
-        BlockProperties::of(Block::WallTorchWest, "wall_torch_west", "Wall Torch")
-            .vanillaAlias("wall_torch")
-.texture("torch")
-            .instantBreak()
-            .renderLayer(BlockRenderLayer::Cutout)
-            .model(BlockModel::Torch)
-            .noCollision()
-            .light(14U)
-            .support(BlockSupport::Wall)
-            .torch(),
-        BlockProperties::of(Block::Chest, "chest", "Chest")
-.texture("chest", "chest", "chest")
-            .strength(2.5F)
-            .renderLayer(BlockRenderLayer::Cutout)
-            .model(BlockModel::Chest)
-            .horizontalFacing()
-            .container(ContainerType::Chest),
-        BlockProperties::of(Block::LapisOre, "lapis_ore", "Lapis Lazuli Ore")
-.texture("lapis_ore")
-            .strength(3.0F),
-        BlockProperties::of(Block::RedstoneOre, "redstone_ore", "Redstone Ore")
-.texture("redstone_ore")
-            .strength(3.0F),
-        BlockProperties::of(Block::EmeraldOre, "emerald_ore", "Emerald Ore")
-.texture("emerald_ore")
-            .strength(3.0F),
-        BlockProperties::of(Block::MossyStoneBricks, "mossy_stone_bricks", "Mossy Stone Bricks")
-.texture("mossy_stone_bricks")
-            .strength(1.5F, 6.0F),
-        BlockProperties::of(Block::ChiseledStoneBricks, "chiseled_stone_bricks",
-                            "Chiseled Stone Bricks")
-.texture("chiseled_stone_bricks")
-            .strength(1.5F, 6.0F),
-        BlockProperties::of(Block::QuartzBlock, "quartz_block", "Block of Quartz")
-.texture("quartz_block_top", "quartz_block_side", "quartz_block_top")
-            .strength(0.8F),
-        BlockProperties::of(Block::JungleLog, "jungle_log", "Jungle Log")
-.texture("jungle_log_top", "jungle_log", "jungle_log_top")
-            .strength(2.0F)
-            .pillar(),
-        BlockProperties::of(Block::JunglePlanks, "jungle_planks", "Jungle Planks")
-.texture("jungle_planks")
-            .strength(2.0F, 3.0F),
-        BlockProperties::of(Block::AcaciaLog, "acacia_log", "Acacia Log")
-.texture("acacia_log_top", "acacia_log", "acacia_log_top")
-            .strength(2.0F)
-            .pillar(),
-        BlockProperties::of(Block::AcaciaPlanks, "acacia_planks", "Acacia Planks")
-.texture("acacia_planks")
-            .strength(2.0F, 3.0F),
-        BlockProperties::of(Block::DarkOakLog, "dark_oak_log", "Dark Oak Log")
-.texture("dark_oak_log_top", "dark_oak_log", "dark_oak_log_top")
-            .strength(2.0F)
-            .pillar(),
-        BlockProperties::of(Block::DarkOakPlanks, "dark_oak_planks", "Dark Oak Planks")
-.texture("dark_oak_planks")
-            .strength(2.0F, 3.0F),
-        BlockProperties::of(Block::SpruceLeaves, "spruce_leaves", "Spruce Leaves")
-.texture("spruce_leaves")
-            .leaves(),
-        BlockProperties::of(Block::BirchLeaves, "birch_leaves", "Birch Leaves")
-.texture("birch_leaves")
-            .leaves(),
-        BlockProperties::of(Block::JungleLeaves, "jungle_leaves", "Jungle Leaves")
-.texture("jungle_leaves")
-            .leaves(),
-        BlockProperties::of(Block::AcaciaLeaves, "acacia_leaves", "Acacia Leaves")
-.texture("acacia_leaves")
-            .leaves(),
-        BlockProperties::of(Block::DarkOakLeaves, "dark_oak_leaves", "Dark Oak Leaves")
-.texture("dark_oak_leaves")
-            .leaves(),
-        BlockProperties::of(Block::SpruceSapling, "spruce_sapling", "Spruce Sapling")
-.texture("spruce_sapling")
-            .instantBreak()
-            .cross()
-            .support(BlockSupport::Soil),
-        BlockProperties::of(Block::BirchSapling, "birch_sapling", "Birch Sapling")
-.texture("birch_sapling")
-            .instantBreak()
-            .cross()
-            .support(BlockSupport::Soil),
-        BlockProperties::of(Block::JungleSapling, "jungle_sapling", "Jungle Sapling")
-.texture("jungle_sapling")
-            .instantBreak()
-            .cross()
-            .support(BlockSupport::Soil),
-        BlockProperties::of(Block::AcaciaSapling, "acacia_sapling", "Acacia Sapling")
-.texture("acacia_sapling")
-            .instantBreak()
-            .cross()
-            .support(BlockSupport::Soil),
-        BlockProperties::of(Block::DarkOakSapling, "dark_oak_sapling", "Dark Oak Sapling")
-.texture("dark_oak_sapling")
-            .instantBreak()
-            .cross()
-            .support(BlockSupport::Soil),
-        // FarmlandBlock: the tilled soil a hoe makes. The top face swaps between
-        // the dry and moist textures once the orientation's moisture passes 0;
-        // the sides are plain dirt, matching the vanilla model. Breaking it
-        // yields dirt (see minedDrops), never farmland itself. Its solid box is
-        // 15/16 tall, the vanilla FarmlandBlock.SHAPE.
-        BlockProperties::of(Block::Farmland, "farmland", "Farmland")
-            .texture("farmland", "dirt", "dirt")
-            .strength(0.6F)
-            .height(15.0F / 16.0F),
-        // CropBlock: wheat/carrot/potato share the crossed-plant render, with the
-        // stage texture driven by the age stored in the orientation byte. They
-        // need farmland below, have no collision of their own, and never drop
-        // themselves — minedDrops rolls the species' loot table from the age.
-        BlockProperties::of(Block::WheatCrops, "wheat", "Wheat")
-.texture("wheat_stage0")
-            .instantBreak()
-            .renderLayer(BlockRenderLayer::Cutout)
-            .model(BlockModel::Crop)
-            .noCollision()
-            .noDrops()
-            .support(BlockSupport::Farmland),
-        BlockProperties::of(Block::Carrots, "carrots", "Carrots")
-.texture("carrots_stage0")
-            .instantBreak()
-            .renderLayer(BlockRenderLayer::Cutout)
-            .model(BlockModel::Crop)
-            .noCollision()
-            .noDrops()
-            .support(BlockSupport::Farmland),
-        BlockProperties::of(Block::Potatoes, "potatoes", "Potatoes")
-.texture("potatoes_stage0")
-            .instantBreak()
-            .renderLayer(BlockRenderLayer::Cutout)
-            .model(BlockModel::Crop)
-            .noCollision()
-            .noDrops()
-            .support(BlockSupport::Farmland),
-        // Decorative stone variants. Each polished stone matches its parent's
-        // hardness; smooth stone is the furnace product of stone. The texture
-        // layers 242-245 occupy four of newContentTextures' placeholder slots.
-        BlockProperties::of(Block::PolishedGranite, "polished_granite", "Polished Granite")
-.texture("polished_granite")
-            .strength(1.5F, 6.0F),
-        BlockProperties::of(Block::PolishedDiorite, "polished_diorite", "Polished Diorite")
-.texture("polished_diorite")
-            .strength(1.5F, 6.0F),
-        BlockProperties::of(Block::PolishedAndesite, "polished_andesite", "Polished Andesite")
-.texture("polished_andesite")
-            .strength(1.5F, 6.0F),
-        BlockProperties::of(Block::SmoothStone, "smooth_stone", "Smooth Stone")
-.texture("smooth_stone")
-            .strength(2.0F, 6.0F),
-    };
+inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Count)> kBlockRegistry{
+    BlockProperties::of(Block::Air, "air", "Air")
+        .stackSize(0U)
+        .renderLayer(BlockRenderLayer::Translucent)
+        .noCollision()
+        .replaceable()
+        .noDrops(),
+    BlockProperties::of(Block::Grass, "grass_block", "Grass Block")
+        .texture("grass_block_top", "grass_block_side", "dirt")
+        .strength(0.6F)
+        .soil(),
+    BlockProperties::of(Block::Dirt, "dirt", "Dirt").texture("dirt").strength(0.5F).soil(),
+    BlockProperties::of(Block::Stone, "stone", "Stone").texture("stone").strength(1.5F, 6.0F),
+    BlockProperties::of(Block::Cobblestone, "cobblestone", "Cobblestone")
+        .texture("cobblestone")
+        .strength(2.0F, 6.0F),
+    BlockProperties::of(Block::OakPlanks, "oak_planks", "Oak Planks")
+        .texture("oak_planks")
+        .strength(2.0F, 3.0F),
+    BlockProperties::of(Block::OakLog, "oak_log", "Oak Log")
+        .texture("oak_log_top", "oak_log", "oak_log_top")
+        .strength(2.0F)
+        .pillar(),
+    BlockProperties::of(Block::Bricks, "bricks", "Bricks").texture("bricks").strength(2.0F, 6.0F),
+    BlockProperties::of(Block::Bedrock, "bedrock", "Bedrock")
+        .texture("bedrock")
+        .unbreakable(3'600'000.0F),
+    BlockProperties::of(Block::Sand, "sand", "Sand").texture("sand").strength(0.5F).gravity(),
+    BlockProperties::of(Block::Glass, "glass", "Glass")
+        .texture("glass")
+        .strength(0.3F)
+        .renderLayer(BlockRenderLayer::Translucent),
+    BlockProperties::of(Block::CoalOre, "coal_ore", "Coal Ore").texture("coal_ore").strength(3.0F),
+    BlockProperties::of(Block::IronOre, "iron_ore", "Iron Ore").texture("iron_ore").strength(3.0F),
+    BlockProperties::of(Block::GoldOre, "gold_ore", "Gold Ore").texture("gold_ore").strength(3.0F),
+    BlockProperties::of(Block::DiamondOre, "diamond_ore", "Diamond Ore")
+        .texture("diamond_ore")
+        .strength(3.0F),
+    // Material.REPLACEABLE_PLANT: placing a block inside tall grass replaces it.
+    BlockProperties::of(Block::GrassPlant, "short_grass", "Short Grass")
+        .texture("short_grass")
+        .instantBreak()
+        .cross()
+        .offsetType(BlockOffsetType::XZ)
+        .replaceable()
+        .noDrops()
+        .support(BlockSupport::Soil),
+    BlockProperties::of(Block::Dandelion, "dandelion", "Dandelion")
+        .texture("dandelion")
+        .instantBreak()
+        .cross()
+        .offsetType(BlockOffsetType::XZ)
+        .support(BlockSupport::Soil),
+    BlockProperties::of(Block::OakSapling, "oak_sapling", "Oak Sapling")
+        .texture("oak_sapling")
+        .instantBreak()
+        .cross()
+        .support(BlockSupport::Soil),
+    BlockProperties::of(Block::OakLeaves, "oak_leaves", "Oak Leaves")
+        .texture("oak_leaves")
+        .leaves(),
+    BlockProperties::of(Block::Water, "water", "Water")
+        .texture("water_still", "water_flow", "water_flow")
+        .strength(100.0F)
+        .renderLayer(BlockRenderLayer::Translucent)
+        .noCollision()
+        .replaceable()
+        .noDrops()
+        .lightFilter(1U),
+    BlockProperties::of(Block::Gravel, "gravel", "Gravel")
+        .texture("gravel")
+        .strength(0.6F)
+        .gravity(),
+    BlockProperties::of(Block::SprucePlanks, "spruce_planks", "Spruce Planks")
+        .texture("spruce_planks")
+        .strength(2.0F, 3.0F),
+    BlockProperties::of(Block::BirchPlanks, "birch_planks", "Birch Planks")
+        .texture("birch_planks")
+        .strength(2.0F, 3.0F),
+    BlockProperties::of(Block::SpruceLog, "spruce_log", "Spruce Log")
+        .texture("spruce_log_top", "spruce_log", "spruce_log_top")
+        .strength(2.0F)
+        .pillar(),
+    BlockProperties::of(Block::BirchLog, "birch_log", "Birch Log")
+        .texture("birch_log_top", "birch_log", "birch_log_top")
+        .strength(2.0F)
+        .pillar(),
+    BlockProperties::of(Block::Bookshelf, "bookshelf", "Bookshelf")
+        .texture("oak_planks", "bookshelf", "oak_planks")
+        .strength(1.5F),
+    BlockProperties::of(Block::CraftingTable, "crafting_table", "Crafting Table")
+        .texture("crafting_table_top", "crafting_table_side", "oak_planks")
+        .strength(2.5F)
+        .container(ContainerType::CraftingTable),
+    // One furnace, lit or not: AbstractFurnaceBlock's LIT is a state, so a
+    // burning furnace is the same block and keeps its block entity (and its
+    // smelt) across the swap. The lit front is picked by the mesher
+    // (kFurnaceFrontOnLayer); light 13 is what the burning state emits.
+    BlockProperties::of(Block::Furnace, "furnace", "Furnace")
+        .texture("furnace_top", "furnace_side", "furnace_top")
+        .strength(3.5F)
+        .horizontalFacing()
+        .lit(13U)
+        .container(ContainerType::Furnace),
+    BlockProperties::of(Block::Obsidian, "obsidian", "Obsidian")
+        .texture("obsidian")
+        .strength(50.0F, 1'200.0F),
+    BlockProperties::of(Block::Clay, "clay", "Clay").texture("clay").strength(0.6F),
+    BlockProperties::of(Block::SnowBlock, "snow_block", "Snow Block")
+        .texture("snow")
+        .strength(0.2F),
+    BlockProperties::of(Block::Netherrack, "netherrack", "Netherrack")
+        .texture("netherrack")
+        .strength(0.4F),
+    BlockProperties::of(Block::Glowstone, "glowstone", "Glowstone")
+        .texture("glowstone")
+        .strength(0.3F)
+        .light(15U),
+    BlockProperties::of(Block::WhiteWool, "white_wool", "White Wool")
+        .texture("white_wool")
+        .strength(0.8F),
+    BlockProperties::of(Block::RedWool, "red_wool", "Red Wool").texture("red_wool").strength(0.8F),
+    BlockProperties::of(Block::BlackWool, "black_wool", "Black Wool")
+        .texture("black_wool")
+        .strength(0.8F),
+    BlockProperties::of(Block::StoneBricks, "stone_bricks", "Stone Bricks")
+        .texture("stone_bricks")
+        .strength(1.5F, 6.0F),
+    BlockProperties::of(Block::MossyCobblestone, "mossy_cobblestone", "Mossy Cobblestone")
+        .texture("mossy_cobblestone")
+        .strength(2.0F, 6.0F),
+    BlockProperties::of(Block::Sandstone, "sandstone", "Sandstone")
+        .texture("sandstone_top", "sandstone", "sandstone_bottom")
+        .strength(0.8F),
+    BlockProperties::of(Block::Pumpkin, "pumpkin", "Pumpkin")
+        .texture("pumpkin_top", "pumpkin_side", "pumpkin_top")
+        .strength(1.0F),
+    BlockProperties::of(Block::Melon, "melon", "Melon")
+        .texture("melon_top", "melon_side", "melon_top")
+        .strength(1.0F),
+    BlockProperties::of(Block::Tnt, "tnt", "TNT")
+        .texture("tnt_top", "tnt_side", "tnt_bottom")
+        .instantBreak(),
+    BlockProperties::of(Block::Granite, "granite", "Granite")
+        .texture("granite")
+        .strength(1.5F, 6.0F),
+    BlockProperties::of(Block::Diorite, "diorite", "Diorite")
+        .texture("diorite")
+        .strength(1.5F, 6.0F),
+    BlockProperties::of(Block::Andesite, "andesite", "Andesite")
+        .texture("andesite")
+        .strength(1.5F, 6.0F),
+    BlockProperties::of(Block::CoarseDirt, "coarse_dirt", "Coarse Dirt")
+        .texture("coarse_dirt")
+        .strength(0.5F)
+        .soil(),
+    BlockProperties::of(Block::Podzol, "podzol", "Podzol")
+        .texture("podzol_top", "podzol_side", "dirt")
+        .strength(0.5F)
+        .soil(),
+    BlockProperties::of(Block::RedSand, "red_sand", "Red Sand")
+        .texture("red_sand")
+        .strength(0.5F)
+        .gravity(),
+    // Carved cells below y=11 become lava (CaveCarver#carveAtPoint). Rendered
+    // as a solid self-lit cube for now; it carries no fluid simulation. The
+    // top face uses the animated still strip (20 frames from layer 344) and
+    // the sides the animated flow strip (16 frames from layer 364), laid out
+    // at the end of the atlas in VulkanRenderer.cpp.
+    BlockProperties::of(Block::Lava, "lava", "Lava")
+        .texture("lava_still", "lava_flow", "lava_flow")
+        .strength(100.0F)
+        .noDrops()
+        .light(15U)
+        .lightFilter(1U),
+    BlockProperties::of(Block::Torch, "torch", "Torch")
+        .texture("torch")
+        .instantBreak()
+        .renderLayer(BlockRenderLayer::Cutout)
+        .model(BlockModel::Torch)
+        .noCollision()
+        .light(14U)
+        .support(BlockSupport::Ground)
+        .torch(),
+    // WallTorchBlock's FACING is a state, not four blocks.
+    BlockProperties::of(Block::WallTorch, "wall_torch", "Wall Torch")
+        .vanillaAlias("wall_torch")
+        .texture("torch")
+        .instantBreak()
+        .renderLayer(BlockRenderLayer::Cutout)
+        .model(BlockModel::Torch)
+        .noCollision()
+        .light(14U)
+        .support(BlockSupport::Wall)
+        .horizontalFacing()
+        .torch(),
+    BlockProperties::of(Block::Chest, "chest", "Chest")
+        .texture("chest", "chest", "chest")
+        .strength(2.5F)
+        .renderLayer(BlockRenderLayer::Cutout)
+        .model(BlockModel::Chest)
+        .horizontalFacing()
+        .container(ContainerType::Chest),
+    BlockProperties::of(Block::LapisOre, "lapis_ore", "Lapis Lazuli Ore")
+        .texture("lapis_ore")
+        .strength(3.0F),
+    BlockProperties::of(Block::RedstoneOre, "redstone_ore", "Redstone Ore")
+        .texture("redstone_ore")
+        .strength(3.0F),
+    BlockProperties::of(Block::EmeraldOre, "emerald_ore", "Emerald Ore")
+        .texture("emerald_ore")
+        .strength(3.0F),
+    BlockProperties::of(Block::MossyStoneBricks, "mossy_stone_bricks", "Mossy Stone Bricks")
+        .texture("mossy_stone_bricks")
+        .strength(1.5F, 6.0F),
+    BlockProperties::of(Block::ChiseledStoneBricks, "chiseled_stone_bricks",
+                        "Chiseled Stone Bricks")
+        .texture("chiseled_stone_bricks")
+        .strength(1.5F, 6.0F),
+    BlockProperties::of(Block::QuartzBlock, "quartz_block", "Block of Quartz")
+        .texture("quartz_block_top", "quartz_block_side", "quartz_block_top")
+        .strength(0.8F),
+    BlockProperties::of(Block::JungleLog, "jungle_log", "Jungle Log")
+        .texture("jungle_log_top", "jungle_log", "jungle_log_top")
+        .strength(2.0F)
+        .pillar(),
+    BlockProperties::of(Block::JunglePlanks, "jungle_planks", "Jungle Planks")
+        .texture("jungle_planks")
+        .strength(2.0F, 3.0F),
+    BlockProperties::of(Block::AcaciaLog, "acacia_log", "Acacia Log")
+        .texture("acacia_log_top", "acacia_log", "acacia_log_top")
+        .strength(2.0F)
+        .pillar(),
+    BlockProperties::of(Block::AcaciaPlanks, "acacia_planks", "Acacia Planks")
+        .texture("acacia_planks")
+        .strength(2.0F, 3.0F),
+    BlockProperties::of(Block::DarkOakLog, "dark_oak_log", "Dark Oak Log")
+        .texture("dark_oak_log_top", "dark_oak_log", "dark_oak_log_top")
+        .strength(2.0F)
+        .pillar(),
+    BlockProperties::of(Block::DarkOakPlanks, "dark_oak_planks", "Dark Oak Planks")
+        .texture("dark_oak_planks")
+        .strength(2.0F, 3.0F),
+    BlockProperties::of(Block::SpruceLeaves, "spruce_leaves", "Spruce Leaves")
+        .texture("spruce_leaves")
+        .leaves(),
+    BlockProperties::of(Block::BirchLeaves, "birch_leaves", "Birch Leaves")
+        .texture("birch_leaves")
+        .leaves(),
+    BlockProperties::of(Block::JungleLeaves, "jungle_leaves", "Jungle Leaves")
+        .texture("jungle_leaves")
+        .leaves(),
+    BlockProperties::of(Block::AcaciaLeaves, "acacia_leaves", "Acacia Leaves")
+        .texture("acacia_leaves")
+        .leaves(),
+    BlockProperties::of(Block::DarkOakLeaves, "dark_oak_leaves", "Dark Oak Leaves")
+        .texture("dark_oak_leaves")
+        .leaves(),
+    BlockProperties::of(Block::SpruceSapling, "spruce_sapling", "Spruce Sapling")
+        .texture("spruce_sapling")
+        .instantBreak()
+        .cross()
+        .support(BlockSupport::Soil),
+    BlockProperties::of(Block::BirchSapling, "birch_sapling", "Birch Sapling")
+        .texture("birch_sapling")
+        .instantBreak()
+        .cross()
+        .support(BlockSupport::Soil),
+    BlockProperties::of(Block::JungleSapling, "jungle_sapling", "Jungle Sapling")
+        .texture("jungle_sapling")
+        .instantBreak()
+        .cross()
+        .support(BlockSupport::Soil),
+    BlockProperties::of(Block::AcaciaSapling, "acacia_sapling", "Acacia Sapling")
+        .texture("acacia_sapling")
+        .instantBreak()
+        .cross()
+        .support(BlockSupport::Soil),
+    BlockProperties::of(Block::DarkOakSapling, "dark_oak_sapling", "Dark Oak Sapling")
+        .texture("dark_oak_sapling")
+        .instantBreak()
+        .cross()
+        .support(BlockSupport::Soil),
+    // FarmlandBlock: the tilled soil a hoe makes. The top face swaps between
+    // the dry and moist textures once the orientation's moisture passes 0;
+    // the sides are plain dirt, matching the vanilla model. Breaking it
+    // yields dirt (see minedDrops), never farmland itself. Its solid box is
+    // 15/16 tall, the vanilla FarmlandBlock.SHAPE.
+    BlockProperties::of(Block::Farmland, "farmland", "Farmland")
+        .texture("farmland", "dirt", "dirt")
+        .strength(0.6F)
+        .height(15.0F / 16.0F),
+    // CropBlock: wheat/carrot/potato share the crossed-plant render, with the
+    // stage texture driven by the age stored in the orientation byte. They
+    // need farmland below, have no collision of their own, and never drop
+    // themselves — minedDrops rolls the species' loot table from the age.
+    BlockProperties::of(Block::WheatCrops, "wheat", "Wheat")
+        .texture("wheat_stage0")
+        .instantBreak()
+        .renderLayer(BlockRenderLayer::Cutout)
+        .model(BlockModel::Crop)
+        .noCollision()
+        .noDrops()
+        .support(BlockSupport::Farmland),
+    BlockProperties::of(Block::Carrots, "carrots", "Carrots")
+        .texture("carrots_stage0")
+        .instantBreak()
+        .renderLayer(BlockRenderLayer::Cutout)
+        .model(BlockModel::Crop)
+        .noCollision()
+        .noDrops()
+        .support(BlockSupport::Farmland),
+    BlockProperties::of(Block::Potatoes, "potatoes", "Potatoes")
+        .texture("potatoes_stage0")
+        .instantBreak()
+        .renderLayer(BlockRenderLayer::Cutout)
+        .model(BlockModel::Crop)
+        .noCollision()
+        .noDrops()
+        .support(BlockSupport::Farmland),
+    // Decorative stone variants. Each polished stone matches its parent's
+    // hardness; smooth stone is the furnace product of stone. The texture
+    // layers 242-245 occupy four of newContentTextures' placeholder slots.
+    BlockProperties::of(Block::PolishedGranite, "polished_granite", "Polished Granite")
+        .texture("polished_granite")
+        .strength(1.5F, 6.0F),
+    BlockProperties::of(Block::PolishedDiorite, "polished_diorite", "Polished Diorite")
+        .texture("polished_diorite")
+        .strength(1.5F, 6.0F),
+    BlockProperties::of(Block::PolishedAndesite, "polished_andesite", "Polished Andesite")
+        .texture("polished_andesite")
+        .strength(1.5F, 6.0F),
+    BlockProperties::of(Block::SmoothStone, "smooth_stone", "Smooth Stone")
+        .texture("smooth_stone")
+        .strength(2.0F, 6.0F),
+};
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {
     return static_cast<std::uint8_t>(block) < static_cast<std::uint8_t>(Block::Count);
@@ -827,12 +780,14 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
 constexpr bool blockRegistryIsWellFormed() {
     for (std::size_t index = 0; index < kBlockRegistry.size(); ++index) {
         const auto& definition = kBlockRegistry[index];
-        if (static_cast<std::size_t>(definition.block) != index) return false;
+        if (static_cast<std::size_t>(definition.block) != index)
+            return false;
         if (definition.identifier.space != kNamespace || definition.identifier.path.empty()) {
             return false;
         }
         for (std::size_t other = 0; other < index; ++other) {
-            if (kBlockRegistry[other].identifier == definition.identifier) return false;
+            if (kBlockRegistry[other].identifier == definition.identifier)
+                return false;
         }
     }
     return true;
@@ -844,10 +799,12 @@ static_assert(blockRegistryIsWellFormed(),
 // alias `minecraft:stone`, and the bare `stone`.
 [[nodiscard]] constexpr std::optional<Block> blockFromIdentifier(std::string_view text) {
     for (const auto& definition : kBlockRegistry) {
-        if (definition.identifier.matches(text)) return definition.block;
+        if (definition.identifier.matches(text))
+            return definition.block;
     }
     for (const auto& definition : kBlockRegistry) {
-        if (definition.vanilla.matches(text)) return definition.block;
+        if (definition.vanilla.matches(text))
+            return definition.block;
     }
     return std::nullopt;
 }
@@ -866,12 +823,12 @@ static_assert(blockRegistryIsWellFormed(),
 }
 
 [[nodiscard]] constexpr bool isOpaque(Block block) {
-    return isRenderable(block) &&
-           blockDefinition(block).renderLayer == BlockRenderLayer::Opaque;
+    return isRenderable(block) && blockDefinition(block).renderLayer == BlockRenderLayer::Opaque;
 }
 
 [[nodiscard]] constexpr std::uint8_t skyLightOpacity(Block block) {
-    if (isOpaque(block)) return 15U;
+    if (isOpaque(block))
+        return 15U;
     return blockDefinition(block).lightFilter;
 }
 
@@ -883,22 +840,23 @@ static_assert(blockRegistryIsWellFormed(),
 // `canSpread` fail (3 > 2) and the grass revert to dirt on its next random
 // tick — the vanilla 1.16.1 behaviour this project mirrors.
 [[nodiscard]] constexpr int opacity(Block block) {
-    if (isOpaque(block)) return 15;
-    if (block == Block::Water || block == Block::Lava) return 3;
+    if (isOpaque(block))
+        return 15;
+    if (block == Block::Water || block == Block::Lava)
+        return 3;
     return 0;
 }
 
-[[nodiscard]] constexpr bool hasCollision(Block block) {
-    return blockDefinition(block).collision;
-}
+[[nodiscard]] constexpr bool hasCollision(Block block) { return blockDefinition(block).collision; }
 
+// The light a block emits in its *default* state. Blocks whose emission depends
+// on a state — a furnace only glows while it burns — must be asked through
+// BlockState::emittedLight() instead; this returns their unlit level.
 [[nodiscard]] constexpr std::uint8_t emittedLight(Block block) {
     return blockDefinition(block).light;
 }
 
-[[nodiscard]] constexpr bool isTorch(Block block) {
-    return blockDefinition(block).torch;
-}
+[[nodiscard]] constexpr bool isTorch(Block block) { return blockDefinition(block).torch; }
 
 // Wall torches sit flush against their wall, the way 1.16.1's WallTorchBlock
 // AABB runs all the way to the block face (a north-facing torch spans z 11..16
@@ -906,13 +864,9 @@ static_assert(blockRegistryIsWellFormed(),
 // wall; the mesh and the selection box share it so clicking matches the look.
 inline constexpr float kWallTorchInset = 0.5F;
 
-[[nodiscard]] constexpr bool isLog(Block block) {
-    return blockDefinition(block).pillar;
-}
+[[nodiscard]] constexpr bool isLog(Block block) { return blockDefinition(block).pillar; }
 
-[[nodiscard]] constexpr bool isLeaves(Block block) {
-    return blockDefinition(block).leaves;
-}
+[[nodiscard]] constexpr bool isLeaves(Block block) { return blockDefinition(block).leaves; }
 
 // Java's LeavesBlock.PERSISTENT. Leaves carry no facing, so the per-block state
 // byte that a pillar uses for its axis records this property instead: leaves a
@@ -931,12 +885,18 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
 // The sapling a wood set's leaves roll on their loot table.
 [[nodiscard]] constexpr Block saplingForLeaves(Block leaves) {
     switch (leaves) {
-    case Block::SpruceLeaves: return Block::SpruceSapling;
-    case Block::BirchLeaves: return Block::BirchSapling;
-    case Block::JungleLeaves: return Block::JungleSapling;
-    case Block::AcaciaLeaves: return Block::AcaciaSapling;
-    case Block::DarkOakLeaves: return Block::DarkOakSapling;
-    default: return Block::OakSapling;
+    case Block::SpruceLeaves:
+        return Block::SpruceSapling;
+    case Block::BirchLeaves:
+        return Block::BirchSapling;
+    case Block::JungleLeaves:
+        return Block::JungleSapling;
+    case Block::AcaciaLeaves:
+        return Block::AcaciaSapling;
+    case Block::DarkOakLeaves:
+        return Block::DarkOakSapling;
+    default:
+        return Block::OakSapling;
     }
 }
 
@@ -944,9 +904,7 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
     return blockDefinition(block).replaceable;
 }
 
-[[nodiscard]] constexpr bool isFluid(Block block) {
-    return block == Block::Water;
-}
+[[nodiscard]] constexpr bool isFluid(Block block) { return block == Block::Water; }
 
 // Whether the block fills its whole 1x1x1 cell. Cross plants, torches, chests
 // and fluids are the "incomplete" blocks: they neither occlude a neighbour face
@@ -968,16 +926,14 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
 // glass and glowstone are cube-shaped but their vanilla materials are not
 // opaque, so they must not darken corners.
 [[nodiscard]] constexpr bool aoOccludes(Block block) {
-    return isFullCube(block) && !isLeaves(block) && isOpaque(block) &&
-           block != Block::Glowstone;
+    return isFullCube(block) && !isLeaves(block) && isOpaque(block) && block != Block::Glowstone;
 }
 
 // Flowing water washes away decoration blocks that do not block motion. Crops
 // are no-collision too, but vanilla's crops survive water (their material is
 // not REPLACEABLE_PLANT), so they are carved out of the fluid-destroyed set.
 [[nodiscard]] constexpr bool isCrop(Block block) {
-    return block == Block::WheatCrops || block == Block::Carrots ||
-        block == Block::Potatoes;
+    return block == Block::WheatCrops || block == Block::Carrots || block == Block::Potatoes;
 }
 [[nodiscard]] constexpr bool isDestroyedByFluid(Block block) {
     return isRenderable(block) && !isFluid(block) && !isCrop(block) &&
@@ -989,13 +945,9 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
 }
 
 // BushBlock#mayPlaceOn in Java 1.16.1.
-[[nodiscard]] constexpr bool isSoil(Block block) {
-    return blockDefinition(block).soil;
-}
+[[nodiscard]] constexpr bool isSoil(Block block) { return blockDefinition(block).soil; }
 
-[[nodiscard]] constexpr bool isFarmland(Block block) {
-    return block == Block::Farmland;
-}
+[[nodiscard]] constexpr bool isFarmland(Block block) { return block == Block::Farmland; }
 
 // Crops and farmland reuse the per-cell orientation byte as their state slot,
 // the same way leaves record their persistent flag in it. A crop stores its age
@@ -1022,9 +974,12 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
     if (block == Block::WheatCrops) {
         return age < 0 ? 0 : (age > 7 ? 7 : age);
     }
-    if (age <= 1) return 0;
-    if (age <= 3) return 1;
-    if (age <= 6) return 2;
+    if (age <= 1)
+        return 0;
+    if (age <= 3)
+        return 1;
+    if (age <= 6)
+        return 2;
     return 3;
 }
 
@@ -1089,40 +1044,11 @@ inline constexpr float kFarmlandModelHeight = 15.0F / 16.0F;
 }
 
 // The direction a wall torch leans toward, matching the vanilla wall_torch
-// facing property. The wall that carries it is on the opposite side.
-[[nodiscard]] constexpr BlockOrientation wallTorchFacing(Block block) {
-    switch (block) {
-    case Block::WallTorchNorth:
-        return BlockOrientation::North;
-    case Block::WallTorchEast:
-        return BlockOrientation::East;
-    case Block::WallTorchSouth:
-        return BlockOrientation::South;
-    case Block::WallTorchWest:
-        return BlockOrientation::West;
-    default:
-        return BlockOrientation::Up;
-    }
-}
-
-[[nodiscard]] constexpr BlockOrientation wallTorchSupportSide(Block block) {
-    return oppositeOrientation(wallTorchFacing(block));
-}
-
-// The wall torch leaning toward the given horizontal direction.
-[[nodiscard]] constexpr Block wallTorchWithFacing(BlockOrientation facing) {
-    switch (facing) {
-    case BlockOrientation::North:
-        return Block::WallTorchNorth;
-    case BlockOrientation::East:
-        return Block::WallTorchEast;
-    case BlockOrientation::South:
-        return Block::WallTorchSouth;
-    case BlockOrientation::West:
-        return Block::WallTorchWest;
-    default:
-        return Block::Torch;
-    }
+// FACING property. Now that the four wall torches are one block, the facing is
+// the cell's state rather than its identity, so these take the orientation.
+// The wall that carries the torch is on the opposite side.
+[[nodiscard]] constexpr BlockOrientation wallTorchSupportSide(BlockOrientation facing) {
+    return oppositeOrientation(facing);
 }
 
 [[nodiscard]] constexpr bool isSelectable(Block block) {
@@ -1137,8 +1063,7 @@ inline constexpr float kFarmlandModelHeight = 15.0F / 16.0F;
 // index — the name resolution happens once at startup, not per face. The
 // C++17 inline variable shares one instance across translation units without a
 // dedicated source file.
-inline std::array<BlockTextureLayers, static_cast<std::size_t>(Block::Count)>
-    kBlockTextureLayers{};
+inline std::array<BlockTextureLayers, static_cast<std::size_t>(Block::Count)> kBlockTextureLayers{};
 
 [[nodiscard]] inline const BlockTextureLayers& textureLayers(Block block) {
     const auto index = static_cast<std::size_t>(block);

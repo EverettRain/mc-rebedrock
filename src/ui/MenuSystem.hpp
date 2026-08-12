@@ -66,6 +66,10 @@ class MenuSystem final {
     std::string saveStatus;
     std::vector<std::string> languageCodes{std::string{kDefaultLanguageCode}};
     std::vector<std::string> languageDisplayNames;
+    // A row click changes only this draft selection. As in 26.1, the expensive
+    // resource reload is committed by Done, not once per click while browsing.
+    std::string pendingLanguageCode{kDefaultLanguageCode};
+    std::string languageStatus;
     std::size_t languageListFirstIndex = 0U;
     bool optionsOpen = false;
     bool viewDistanceSliderDragging = false;

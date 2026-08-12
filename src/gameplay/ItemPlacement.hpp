@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gameplay/Inventory.hpp"
+#include "world/BlockState.hpp"
 #include "world/BlockPlacement.hpp"
 
 #include <optional>
@@ -12,7 +13,7 @@ namespace mc::gameplay {
 // the wall/standing torch variants, a plain BlockItem places its own block, and
 // a legacy block stack (null item) places the stack's block. Returns nullopt
 // when nothing can survive at the placement position.
-[[nodiscard]] std::optional<world::Block> itemPlacementBlock(
+[[nodiscard]] std::optional<world::BlockState> itemPlacementBlock(
     const world::World& world,
     const ItemStack& stack,
     const world::PlacementContext& context);

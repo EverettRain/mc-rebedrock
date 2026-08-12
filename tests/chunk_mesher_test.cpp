@@ -118,7 +118,7 @@ int main() {
     mc::world::World torchWorld;
     mc::world::Chunk torchChunk;
     torchChunk.setBlock(1, 1, 1, mc::world::Block::Torch);
-    torchChunk.setBlock(3, 1, 1, mc::world::Block::WallTorchEast);
+    torchChunk.setBlock(3, 1, 1, mc::world::Block::WallTorch);
     torchWorld.setChunk({0, 0}, std::move(torchChunk));
     const auto torchMesh =
         mc::world::ChunkMesher::buildSection(torchWorld, {0, 0}, 0);
@@ -135,8 +135,8 @@ int main() {
     expectNear(mc::render::decodeUv(firstTorchSide[11]).x, 9.0F * torchPixel, "torch uv.x 11");
     expectNear(mc::render::decodeUv(firstTorchSide[11]).y, 1.0F, "torch uv.y 11");
     static_assert(!mc::world::hasCollision(mc::world::Block::Torch));
-    static_assert(!mc::world::hasCollision(mc::world::Block::WallTorchEast));
-    static_assert(mc::world::emittedLight(mc::world::Block::WallTorchEast) == 14U);
+    static_assert(!mc::world::hasCollision(mc::world::Block::WallTorch));
+    static_assert(mc::world::emittedLight(mc::world::Block::WallTorch) == 14U);
 
     mc::world::World directionalWorld;
     mc::world::Chunk directionalChunk;

@@ -397,12 +397,11 @@ class BiomeTintCache final {
             }
         }
     }
-    const auto orientation = world.orientation(x, y, z);
+    const auto state = world.state(x, y, z);
+    const auto orientation = state.orientation();
     if (block == Block::Furnace && faceMatchesOrientation(face, orientation)) {
-        return kFurnaceFrontLayer;
-    }
-    if (block == Block::LitFurnace && faceMatchesOrientation(face, orientation)) {
-        return kFurnaceFrontOnLayer;
+        // One furnace block, two fronts: the lit face comes from the state.
+        return state.lit() ? kFurnaceFrontOnLayer : kFurnaceFrontLayer;
     }
     if (isLog(block)) {
         return faceSharesAxis(face, orientation) ? layers.top : layers.side;
@@ -611,7 +610,10 @@ void appendFace(
         x + face.dx, y + face.dy, z + face.dz);
     const float flatSky = static_cast<float>(outsideLight.sky) /
         static_cast<float>(ChunkLightSampler::kMaximumLightLevel);
-    const float flatBlock = emittedLight(block) > 0U
+    // Self-lit faces are decided by the cell's state: an unlit furnace is not
+    // a light source even though a lit one is.
+    const bool selfLit = world.state(x, y, z).emittedLight() > 0U;
+    const float flatBlock = selfLit
         ? 1.0F
         : static_cast<float>(outsideLight.block) /
               static_cast<float>(ChunkLightSampler::kMaximumLightLevel);
@@ -623,7 +625,7 @@ void appendFace(
             lighting, quality, face, face.corners[corner], x, y, z);
         auto smoothLight = vertexLight(
             lighting, quality, face, face.corners[corner], x, y, z, outsideLight);
-        if (emittedLight(block) > 0U) smoothLight.block = 1.0F;
+        if (selfLit) smoothLight.block = 1.0F;
         glm::vec3 positionCorner = face.corners[corner];
         if (modelHeight < 1.0F) {
             positionCorner.y *= modelHeight;
@@ -939,18 +941,22 @@ template <typename Sampler>
 void appendTorchModel(
     render::MeshData& mesh,
     Block block,
+    BlockOrientation orientation,
     int x,
     int y,
     int z,
     float textureLayer,
     const Sampler& lighting,
     const glm::vec3& sectionOrigin) {
+    // A wall torch's lean is its FACING state now, not four separate blocks.
     glm::vec3 facing{0.0F};
-    if (block == Block::WallTorchNorth) facing.z = -1.0F;
-    if (block == Block::WallTorchEast) facing.x = 1.0F;
-    if (block == Block::WallTorchSouth) facing.z = 1.0F;
-    if (block == Block::WallTorchWest) facing.x = -1.0F;
-    const bool wall = block != Block::Torch;
+    const bool wall = block == Block::WallTorch;
+    if (wall) {
+        if (orientation == BlockOrientation::North) facing.z = -1.0F;
+        if (orientation == BlockOrientation::East) facing.x = 1.0F;
+        if (orientation == BlockOrientation::South) facing.z = 1.0F;
+        if (orientation == BlockOrientation::West) facing.x = -1.0F;
+    }
     const float skyLight = lighting.sky(x, y, z);
     const float blockLight = static_cast<float>(emittedLight(block)) / 15.0F;
     const glm::vec3 origin{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
@@ -1101,11 +1107,12 @@ bool buildSectionImpl(
                     continue;
                 }
                 if (definition.model == BlockModel::Torch) {
-                    // The torch's face texture (all four wall variants share the
+                    // The torch's face texture (every wall facing shares the
                     // single "torch" sprite) resolves to its atlas layer at
                     // startup, like every other block — never a baked-in number.
                     appendTorchModel(
-                        targetMesh, current, worldX, worldY, worldZ,
+                        targetMesh, current, chunk->orientation(localX, worldY, localZ),
+                        worldX, worldY, worldZ,
                         textureLayers(current).side, lighting, sectionOrigin);
                     continue;
                 }
@@ -1246,7 +1253,7 @@ VoxelLightLevel MeshLightingSnapshot::level(int x, int y, int z) const {
                 !mc::world::isOpaque(world_.block(x, y, z))
                     ? ChunkLightSampler::kMaximumLightLevel
                     : 0U),
-            emittedLight(world_.block(x, y, z)),
+            world_.state(x, y, z).emittedLight(),
         };
     }
     const std::size_t cell = index(x, y, z);

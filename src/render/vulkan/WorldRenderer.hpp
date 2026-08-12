@@ -110,7 +110,8 @@ class WorldRenderer final {
     bool& chatOpen;
     std::optional<world::VoxelRaycastHit>& targetedBlock;
     std::optional<glm::ivec3>& miningTarget;
-    double& miningStartedAt;
+    std::uint64_t& miningStartedTick;
+    double& renderTimeSeconds;
     float& renderInterpolationAlpha;
     GLFWwindow*& window;
     VkInstance& instance;
@@ -193,7 +194,7 @@ class WorldRenderer final {
   };
 
   explicit WorldRenderer(const Bindings& b)
-      : testScene(b.testScene), chunkStreamer(b.chunkStreamer), interactionWorld(b.interactionWorld), gpuMeshes(b.gpuMeshes), deviceBufferPool_(b.deviceBufferPool_), stagingBufferPool_(b.stagingBufferPool_), occlusionQueryPool(b.occlusionQueryPool), occlusionQueryPipeline(b.occlusionQueryPipeline), occlusionQueryLayout(b.occlusionQueryLayout), occlusionBoxVertexBuffer(b.occlusionBoxVertexBuffer), occlusionBoxIndexBuffer(b.occlusionBoxIndexBuffer), pendingSectionOrder(b.pendingSectionOrder), currentMeshQuality(b.currentMeshQuality), targetMeshQuality(b.targetMeshQuality), qualityRemeshPending(b.qualityRemeshPending), gameSession(b.gameSession), uiFrameData_(b.uiFrameData_), camera(b.camera), speciesModels(b.speciesModels), heldItemAnimation(b.heldItemAnimation), worldPlayerAnimator(b.worldPlayerAnimator), chestLidAnimation(b.chestLidAnimation), itemDisplayAnimation(b.itemDisplayAnimation), cameraPerspective(b.cameraPerspective), worldBodyYaw(b.worldBodyYaw), particleSystem(b.particleSystem), breakButtonHeld(b.breakButtonHeld), inventoryOpen(b.inventoryOpen), spawnPositionInitialized(b.spawnPositionInitialized), worldReady(b.worldReady), paused(b.paused), dropRequested(b.dropRequested), dropWholeStack(b.dropWholeStack), chatOpen(b.chatOpen), targetedBlock(b.targetedBlock), miningTarget(b.miningTarget), miningStartedAt(b.miningStartedAt), renderInterpolationAlpha(b.renderInterpolationAlpha), window(b.window), instance(b.instance), surface(b.surface), device(b.device), allocator(b.allocator), resources_(b.resources_), textures_(b.textures_), sceneDescriptorSets(b.sceneDescriptorSets), gpuSceneBuffer(b.gpuSceneBuffer), particlePipeline(b.particlePipeline), particlePipelineLayout(b.particlePipelineLayout), legacyParticles(b.legacyParticles), shadowTarget(b.shadowTarget), shadowPipelineLayout(b.shadowPipelineLayout), shadowPipeline(b.shadowPipeline), shadowDebugSet(b.shadowDebugSet), shadowDebugPipelineLayout(b.shadowDebugPipelineLayout), shadowDebugPipeline(b.shadowDebugPipeline), shadowLightViewProj(b.shadowLightViewProj), shadowDisabled(b.shadowDisabled), shadowDebugOverlay(b.shadowDebugOverlay), rainSystem(b.rainSystem), sceneParticleRecords_(b.sceneParticleRecords_), rainMode_(b.rainMode_), rainTime_(b.rainTime_), rainSheetPipeline(b.rainSheetPipeline), rainSheetPipelineLayout(b.rainSheetPipelineLayout), language(b.language), swapchainExtent(b.swapchainExtent), renderPass(b.renderPass), pipelineLayout(b.pipelineLayout), graphicsPipeline(b.graphicsPipeline), translucentPipeline(b.translucentPipeline), cutoutPipeline(b.cutoutPipeline), skyPipeline(b.skyPipeline), outlinePipelineLayout(b.outlinePipelineLayout), outlinePipeline(b.outlinePipeline), itemPipelineLayout(b.itemPipelineLayout), itemPipeline(b.itemPipeline), itemShadowPipeline(b.itemShadowPipeline), heldItemPipeline(b.heldItemPipeline), framebuffers(b.framebuffers), frames(b.frames), currentFrame(b.currentFrame), occlusionDisabled(b.occlusionDisabled), hasLastRenderEye(b.hasLastRenderEye), lastRenderEye(b.lastRenderEye), occlusionValidityInitialized(b.occlusionValidityInitialized), occlusionRotationAccumulatorDegrees(b.occlusionRotationAccumulatorDegrees), occlusionTranslationAccumulator(b.occlusionTranslationAccumulator), peakPendingSectionCount(b.peakPendingSectionCount), smoothedFrameSeconds_(b.smoothedFrameSeconds_), streamingUploadBudget_(b.streamingUploadBudget_), occlusionStates(b.occlusionStates), occlusionMissCount(b.occlusionMissCount), pendingSectionUpdates(b.pendingSectionUpdates), latestSectionRevisions(b.latestSectionRevisions), worldEpoch(b.worldEpoch), loadedCpuChunkCount(b.loadedCpuChunkCount), completedBlockEditCount(b.completedBlockEditCount), completedStreamBatchCount(b.completedStreamBatchCount), lastVisibleMeshCount(b.lastVisibleMeshCount), worldSessionActive(b.worldSessionActive), hasLastStreamingForward(b.hasLastStreamingForward), lastStreamingForward(b.lastStreamingForward), uploadedSectionsThisFrame(b.uploadedSectionsThisFrame), uploadedBytesThisFrame(b.uploadedBytesThisFrame), totalUploadedBytes(b.totalUploadedBytes), hud_(b.hud_), rainTargetCount(b.rainTargetCount), renderViewMatrix(b.renderViewMatrix), viewBobbingMatrix(b.viewBobbingMatrix), renderEyeState(b.renderEyeState), cameraFarPlane(b.cameraFarPlane), renderDistanceBlocks(b.renderDistanceBlocks), spawnDroppedStack(b.spawnDroppedStack), initializeSpawnPosition(b.initializeSpawnPosition), submitWorldEditFn(b.submitWorldEditFn) {}
+      : testScene(b.testScene), chunkStreamer(b.chunkStreamer), interactionWorld(b.interactionWorld), gpuMeshes(b.gpuMeshes), deviceBufferPool_(b.deviceBufferPool_), stagingBufferPool_(b.stagingBufferPool_), occlusionQueryPool(b.occlusionQueryPool), occlusionQueryPipeline(b.occlusionQueryPipeline), occlusionQueryLayout(b.occlusionQueryLayout), occlusionBoxVertexBuffer(b.occlusionBoxVertexBuffer), occlusionBoxIndexBuffer(b.occlusionBoxIndexBuffer), pendingSectionOrder(b.pendingSectionOrder), currentMeshQuality(b.currentMeshQuality), targetMeshQuality(b.targetMeshQuality), qualityRemeshPending(b.qualityRemeshPending), gameSession(b.gameSession), uiFrameData_(b.uiFrameData_), camera(b.camera), speciesModels(b.speciesModels), heldItemAnimation(b.heldItemAnimation), worldPlayerAnimator(b.worldPlayerAnimator), chestLidAnimation(b.chestLidAnimation), itemDisplayAnimation(b.itemDisplayAnimation), cameraPerspective(b.cameraPerspective), worldBodyYaw(b.worldBodyYaw), particleSystem(b.particleSystem), breakButtonHeld(b.breakButtonHeld), inventoryOpen(b.inventoryOpen), spawnPositionInitialized(b.spawnPositionInitialized), worldReady(b.worldReady), paused(b.paused), dropRequested(b.dropRequested), dropWholeStack(b.dropWholeStack), chatOpen(b.chatOpen), targetedBlock(b.targetedBlock), miningTarget(b.miningTarget), miningStartedTick(b.miningStartedTick), renderTimeSeconds(b.renderTimeSeconds), renderInterpolationAlpha(b.renderInterpolationAlpha), window(b.window), instance(b.instance), surface(b.surface), device(b.device), allocator(b.allocator), resources_(b.resources_), textures_(b.textures_), sceneDescriptorSets(b.sceneDescriptorSets), gpuSceneBuffer(b.gpuSceneBuffer), particlePipeline(b.particlePipeline), particlePipelineLayout(b.particlePipelineLayout), legacyParticles(b.legacyParticles), shadowTarget(b.shadowTarget), shadowPipelineLayout(b.shadowPipelineLayout), shadowPipeline(b.shadowPipeline), shadowDebugSet(b.shadowDebugSet), shadowDebugPipelineLayout(b.shadowDebugPipelineLayout), shadowDebugPipeline(b.shadowDebugPipeline), shadowLightViewProj(b.shadowLightViewProj), shadowDisabled(b.shadowDisabled), shadowDebugOverlay(b.shadowDebugOverlay), rainSystem(b.rainSystem), sceneParticleRecords_(b.sceneParticleRecords_), rainMode_(b.rainMode_), rainTime_(b.rainTime_), rainSheetPipeline(b.rainSheetPipeline), rainSheetPipelineLayout(b.rainSheetPipelineLayout), language(b.language), swapchainExtent(b.swapchainExtent), renderPass(b.renderPass), pipelineLayout(b.pipelineLayout), graphicsPipeline(b.graphicsPipeline), translucentPipeline(b.translucentPipeline), cutoutPipeline(b.cutoutPipeline), skyPipeline(b.skyPipeline), outlinePipelineLayout(b.outlinePipelineLayout), outlinePipeline(b.outlinePipeline), itemPipelineLayout(b.itemPipelineLayout), itemPipeline(b.itemPipeline), itemShadowPipeline(b.itemShadowPipeline), heldItemPipeline(b.heldItemPipeline), framebuffers(b.framebuffers), frames(b.frames), currentFrame(b.currentFrame), occlusionDisabled(b.occlusionDisabled), hasLastRenderEye(b.hasLastRenderEye), lastRenderEye(b.lastRenderEye), occlusionValidityInitialized(b.occlusionValidityInitialized), occlusionRotationAccumulatorDegrees(b.occlusionRotationAccumulatorDegrees), occlusionTranslationAccumulator(b.occlusionTranslationAccumulator), peakPendingSectionCount(b.peakPendingSectionCount), smoothedFrameSeconds_(b.smoothedFrameSeconds_), streamingUploadBudget_(b.streamingUploadBudget_), occlusionStates(b.occlusionStates), occlusionMissCount(b.occlusionMissCount), pendingSectionUpdates(b.pendingSectionUpdates), latestSectionRevisions(b.latestSectionRevisions), worldEpoch(b.worldEpoch), loadedCpuChunkCount(b.loadedCpuChunkCount), completedBlockEditCount(b.completedBlockEditCount), completedStreamBatchCount(b.completedStreamBatchCount), lastVisibleMeshCount(b.lastVisibleMeshCount), worldSessionActive(b.worldSessionActive), hasLastStreamingForward(b.hasLastStreamingForward), lastStreamingForward(b.lastStreamingForward), uploadedSectionsThisFrame(b.uploadedSectionsThisFrame), uploadedBytesThisFrame(b.uploadedBytesThisFrame), totalUploadedBytes(b.totalUploadedBytes), hud_(b.hud_), rainTargetCount(b.rainTargetCount), renderViewMatrix(b.renderViewMatrix), viewBobbingMatrix(b.viewBobbingMatrix), renderEyeState(b.renderEyeState), cameraFarPlane(b.cameraFarPlane), renderDistanceBlocks(b.renderDistanceBlocks), spawnDroppedStack(b.spawnDroppedStack), initializeSpawnPosition(b.initializeSpawnPosition), submitWorldEditFn(b.submitWorldEditFn) {}
 
   WorldRenderer(const WorldRenderer&) = delete;
   WorldRenderer& operator=(const WorldRenderer&) = delete;
@@ -653,7 +654,8 @@ class WorldRenderer final {
         if (shadowDisabled) {
             return;
         }
-        const auto daylight = world::DayNightCycle::state(gameSession.gameTimeSeconds());
+        const auto daylight = world::DayNightCycle::stateAtTick(
+            static_cast<double>(gameSession.dayTimeTicks()));
         const glm::vec3 sun = glm::normalize(daylight.sunDirection);
         const glm::vec3 eye = camera.position();
         const glm::mat4 lightView =
@@ -1433,9 +1435,11 @@ class WorldRenderer final {
                 animator.addLayer(*walk, walk->localTime(walkDistance), 1.0F);
             }
             if (idle != nullptr) {
+                // The idle sway is a frame animation, so it runs on renderTime —
+                // it keeps breathing regardless of the daylight gamerule and stops
+                // only when the game is paused.
                 animator.addLayer(
-                    *idle, idle->localTime(static_cast<float>(gameSession.gameTimeSeconds())),
-                    1.0F);
+                    *idle, idle->localTime(static_cast<float>(renderTimeSeconds)), 1.0F);
             }
             const animation::SkeletonPose pose = animator.evaluate();
 
@@ -1511,9 +1515,15 @@ class WorldRenderer final {
                                                        !gameSession.player().onGround());
         if (!std::isfinite(duration) || duration <= 0.0F)
             return;
-        const float progress = std::clamp(
-            static_cast<float>((gameSession.gameTimeSeconds() - miningStartedAt) / duration), 0.0F,
-            0.999F);
+        // The dig lands on a tick boundary, but the crack overlay is drawn every
+        // frame: interpolate the elapsed ticks with the frame alpha so the stages
+        // advance smoothly instead of stepping at 20 Hz.
+        const auto durationTicks =
+            static_cast<float>(duration) * static_cast<float>(world::DayNightCycle::kTicksPerSecond);
+        const float elapsedTicks =
+            static_cast<float>(gameSession.serverTick() - miningStartedTick) +
+            renderInterpolationAlpha;
+        const float progress = std::clamp(elapsedTicks / durationTicks, 0.0F, 0.999F);
         // ClientPlayerInteractionManager reports (progress * 10) - 1, so the first
         // tenth of the dig carries no crack overlay at all.
         const int stage = std::clamp(static_cast<int>(progress * 10.0F) - 1, -1, 9);
@@ -1999,7 +2009,8 @@ class WorldRenderer final {
   bool& chatOpen;
   std::optional<world::VoxelRaycastHit>& targetedBlock;
   std::optional<glm::ivec3>& miningTarget;
-  double& miningStartedAt;
+  std::uint64_t& miningStartedTick;
+  double& renderTimeSeconds;
   float& renderInterpolationAlpha;
   GLFWwindow*& window;
   VkInstance& instance;

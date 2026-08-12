@@ -114,7 +114,7 @@ struct SpawnEggColors final {
 struct EntityRenderDescriptor final {
     std::string_view geometryPath{};  // "animation/pig.geo.json"
     std::string_view animationPath{}; // "animation/pig.animation.json"
-    std::string_view texturePath{};   // "entity/pig/pig.png"
+    std::string_view texturePath{};   // "entity/pig/pig_temperate.png"
     std::string_view geometryId{};    // "geometry.pig"
     std::string_view walkAnimation{}; // "animation.pig.walk"
     std::string_view idleAnimation{}; // "animation.pig.idle"
@@ -130,9 +130,7 @@ struct EntityDrops final {
     std::size_t count = 0U;
 
     void add(const ItemStack& stack);
-    [[nodiscard]] std::span<const ItemStack> view() const {
-        return {entries.data(), count};
-    }
+    [[nodiscard]] std::span<const ItemStack> view() const { return {entries.data(), count}; }
 };
 
 // The shared deterministic LCG (Numerical Recipes constants). Exposed here so a
@@ -208,9 +206,7 @@ class EntityType final {
 
     // The species' sound set (1.16.1 MobEntity getAmbientSound/getHurtSound/
     // getDeathSound/playStepSound). Empty for a species that registered none.
-    [[nodiscard]] const audio::MobSoundProfile& soundProfile() const {
-        return soundProfile_;
-    }
+    [[nodiscard]] const audio::MobSoundProfile& soundProfile() const { return soundProfile_; }
 
     // The runtime index the registry hands out, stable for one run. Stands in
     // for Registry#getRawId, letting the simulation and renderer key per-type

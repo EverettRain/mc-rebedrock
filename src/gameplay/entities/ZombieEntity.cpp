@@ -40,15 +40,12 @@ constexpr EntityRenderDescriptor kZombieRender{
     /*scale=*/1.0F,
 };
 
-// ZombieEntity's sound hooks (1.16.1): ambient mob/zombie/say1-3, hurt
-// mob/zombie/hurt1-2, the single mob/zombie/death.ogg, steps mob/zombie/step1-5.
-// Default getSoundVolume 1.0.
+// Physical clips and variations are selected by the active packs' sounds.json.
 constexpr audio::MobSoundProfile kZombieSounds{
-    /*root=*/"mob/zombie",
-    /*ambientBase=*/"say",   /*ambientVariations=*/3,
-    /*hurtBase=*/"hurt",     /*hurtVariations=*/2,
-    /*deathBase=*/"death",   /*deathVariations=*/1,
-    /*stepBase=*/"step",     /*stepVariations=*/5,
+    /*ambientEvent=*/"entity.zombie.ambient",
+    /*hurtEvent=*/"entity.zombie.hurt",
+    /*deathEvent=*/"entity.zombie.death",
+    /*stepEvent=*/"entity.zombie.step",
     /*volume=*/1.0F,
     /*stepVolume=*/0.15F,
 };

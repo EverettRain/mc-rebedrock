@@ -5,7 +5,9 @@
 
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"
+#include "world/DayNightCycle.hpp"
 #include "world/World.hpp"
+#include "world/WorldClock.hpp"
 
 #include <cassert>
 #include <cmath>
@@ -52,7 +54,7 @@ struct TestHost final : mc::gameplay::SimulationHost {
     void playItemPickup(glm::vec3) override { ++itemPickups; }
     void playEat(glm::vec3) override { ++eatSounds; }
     void playPlayerHurt(glm::vec3) override { ++playerHurts; }
-    void playPlayerFall(glm::vec3, float) override {}
+    void playPlayerFall(glm::vec3, bool) override {}
     void playBurp(glm::vec3) override {}
     void playCreatureHurt(const mc::gameplay::entities::EntityType&, glm::vec3) override {}
     void playCreatureDeath(const mc::gameplay::entities::EntityType&, glm::vec3) override {}
@@ -110,8 +112,8 @@ int main() {
         meleeSession.player().setPosition({8.5F, 1.001F, 8.5F});
         meleeSession.physicsPreviousPosition() = meleeSession.player().position();
         meleeSession.physicsCurrentPosition() = meleeSession.player().position();
-        meleeSession.worldEntities().spawn(
-            {7.5F, 1.001F, 8.5F}, gameplay::entities::ZombieEntity::type(), 51U);
+        meleeSession.worldEntities().spawn({7.5F, 1.001F, 8.5F},
+                                           gameplay::entities::ZombieEntity::type(), 51U);
         TestHost meleeHost;
         for (int tick = 0; tick < 120 && meleeHost.playerHurts == 0; ++tick) {
             meleeSession.tick(world, meleeHost);
@@ -130,10 +132,10 @@ int main() {
         peacefulSession.player().setPosition({8.5F, 1.001F, 8.5F});
         peacefulSession.physicsPreviousPosition() = peacefulSession.player().position();
         peacefulSession.physicsCurrentPosition() = peacefulSession.player().position();
-        peacefulSession.worldEntities().spawn(
-            {7.5F, 1.001F, 8.5F}, gameplay::entities::ZombieEntity::type(), 61U);
-        peacefulSession.worldEntities().spawn(
-            {9.5F, 1.001F, 8.5F}, gameplay::entities::PigEntity::type(), 62U);
+        peacefulSession.worldEntities().spawn({7.5F, 1.001F, 8.5F},
+                                              gameplay::entities::ZombieEntity::type(), 61U);
+        peacefulSession.worldEntities().spawn({9.5F, 1.001F, 8.5F},
+                                              gameplay::entities::PigEntity::type(), 62U);
         const std::uint64_t zombieId = peacefulSession.worldEntities().entities()[0].id;
         const std::uint64_t pigId = peacefulSession.worldEntities().entities()[1].id;
 
@@ -193,21 +195,17 @@ int main() {
 
         gameplay::GameSession bucketSession;
         // Empty bucket on a still water source resolves to CollectWater.
-        const world::PlacementContext onWater{
-            {waterX, waterY, waterZ}, {waterX, waterY, waterZ}};
-        const auto collect =
-            gameplay::itemUseOn(&gameplay::items::Bucket, bucketWorld, onWater);
+        const world::PlacementContext onWater{{waterX, waterY, waterZ}, {waterX, waterY, waterZ}};
+        const auto collect = gameplay::itemUseOn(&gameplay::items::Bucket, bucketWorld, onWater);
         assert(collect.action == gameplay::ItemUseAction::CollectWater);
         // A water bucket on a replaceable cell resolves to PlaceWater.
-        const world::PlacementContext ontoAir{
-            {waterX, waterY, waterZ + 2}, {waterX, waterY, waterZ + 3}};
-        const auto pour =
-            gameplay::itemUseOn(&gameplay::items::WaterBucket, bucketWorld, ontoAir);
+        const world::PlacementContext ontoAir{{waterX, waterY, waterZ + 2},
+                                              {waterX, waterY, waterZ + 3}};
+        const auto pour = gameplay::itemUseOn(&gameplay::items::WaterBucket, bucketWorld, ontoAir);
         assert(pour.action == gameplay::ItemUseAction::PlaceWater);
         // Non-water blocks never collect, and a solid cell never pours.
         const world::PlacementContext onStone{{waterX, 0, waterZ}, {waterX, 0, waterZ}};
-        const auto noCollect =
-            gameplay::itemUseOn(&gameplay::items::Bucket, bucketWorld, onStone);
+        const auto noCollect = gameplay::itemUseOn(&gameplay::items::Bucket, bucketWorld, onStone);
         assert(noCollect.action == gameplay::ItemUseAction::Nothing);
 
         // replaceSelected swaps the selected hotbar slot in place, the way the
@@ -273,6 +271,77 @@ int main() {
         assert(!respawner.vitals().dead());
     }
 
-    std::cout << "game_session: player landing, block drops, death pipeline, eating, buckets, spawnpoint OK\n";
+    // --- The clocks are separate from the world tick. ---
+    // The bug this pins: one gameTimeSeconds used to carry the sun, mining
+    // progress, use cooldowns, chat expiry and the cursor blink at once, and it
+    // only advanced while doDaylightCycle was on. Turning the sun off therefore
+    // froze mining and stranded every cooldown. serverTick answers to nothing.
+    {
+        gameplay::GameSession clockSession;
+        const auto startDay = clockSession.dayTimeTicks();
+        REQUIRE(clockSession.serverTick() == 0U);
+        // A fresh world opens at morning, not at tick zero.
+        REQUIRE(startDay == static_cast<std::uint64_t>(world::DayNightCycle::kNewWorldTick));
+
+        static_cast<void>(
+            clockSession.gameRules().set(gameplay::GameRuleId::DoDaylightCycle, false));
+        for (int tick = 0; tick < 40; ++tick) {
+            clockSession.tick(world, host);
+        }
+        REQUIRE(clockSession.serverTick() == 40U);
+        REQUIRE(clockSession.dayTimeTicks() == startDay);
+
+        // Turning the sun back on resumes it from where it stopped, while the
+        // world tick simply carries on.
+        static_cast<void>(
+            clockSession.gameRules().set(gameplay::GameRuleId::DoDaylightCycle, true));
+        for (int tick = 0; tick < 25; ++tick) {
+            clockSession.tick(world, host);
+        }
+        REQUIRE(clockSession.serverTick() == 65U);
+        REQUIRE(clockSession.dayTimeTicks() == startDay + 25U);
+    }
+
+    // A clock's rate scales only that clock. Half speed halves the sun and
+    // leaves the world tick alone; the partial tick carries the remainder so
+    // no time is lost to rounding.
+    {
+        gameplay::GameSession rateSession;
+        const auto startDay = rateSession.dayTimeTicks();
+        rateSession.clocks().setRate(world::ClockId::Overworld, 0.5F);
+        for (int tick = 0; tick < 10; ++tick) {
+            rateSession.tick(world, host);
+        }
+        REQUIRE(rateSession.serverTick() == 10U);
+        REQUIRE(rateSession.dayTimeTicks() == startDay + 5U);
+    }
+
+    // `/time set day|noon|night|midnight` moves forward to the next occurrence
+    // and can never wind a clock backwards — winding back is what used to
+    // strand the use cooldown in the future and freeze right-click entirely.
+    {
+        gameplay::GameSession markerSession;
+        auto& clocks = markerSession.clocks();
+        clocks.setTotalTicks(world::ClockId::Overworld, 18'000U); // midnight
+        clocks.moveToTimeMarker(world::ClockId::Overworld, world::ClockTimeMarker::Day);
+        // Morning is 1000, already behind midnight, so it resolves into the
+        // next day rather than back to 1000.
+        REQUIRE(markerSession.dayTimeTicks() == 25'000U);
+        REQUIRE(markerSession.dayTimeTicks() % 24'000U == 1'000U);
+
+        // A marker that sits exactly on the current tick advances a whole day
+        // rather than standing still.
+        clocks.setTotalTicks(world::ClockId::Overworld, 6'000U);
+        clocks.moveToTimeMarker(world::ClockId::Overworld, world::ClockTimeMarker::Noon);
+        REQUIRE(markerSession.dayTimeTicks() == 30'000U);
+
+        // /time add never drives a clock below zero.
+        clocks.setTotalTicks(world::ClockId::Overworld, 100U);
+        clocks.addTicks(world::ClockId::Overworld, -500);
+        REQUIRE(markerSession.dayTimeTicks() == 0U);
+    }
+
+    std::cout << "game_session: player landing, block drops, death pipeline, eating, buckets, "
+                 "spawnpoint, clocks OK\n";
     return 0;
 }

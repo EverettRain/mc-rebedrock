@@ -75,11 +75,14 @@ std::uint8_t WorldLightEngine::level(const World& world, Channel channel,
 
 std::uint8_t WorldLightEngine::desiredLevel(const World& world, Channel channel,
                                             const Node& node) {
-    const Block value = world.block(node.x, node.y, node.z);
+    const auto state = world.state(node.x, node.y, node.z);
+    const Block value = state.block();
     const bool opaque = isOpaque(value);
+    // Emission is a property of the state, not the block: a lit furnace is the
+    // same block as a cold one and only the lit state glows.
     std::uint8_t desired = channel == Channel::Sky
                                ? (opaque ? 0U : world.directSkyLight(node.x, node.y, node.z))
-                               : emittedLight(value);
+                               : state.emittedLight();
     if (opaque) return desired;
     for (const auto& offset : kNeighbors) {
         const int neighborX = node.x + offset[0];
@@ -201,7 +204,9 @@ void WorldLightEngine::initializeChunks(World& world,
                         const std::uint8_t sky = isOpaque(value) ? 0U : direct;
                         chunk->setDirectSkyLight(localX, y, localZ, sky);
                         chunk->setSkyLight(localX, y, localZ, sky);
-                        const std::uint8_t emitted = emittedLight(value);
+                        const std::uint8_t emitted =
+                            chunk->section(y / kSectionSize).state(localX, y % kSectionSize, localZ)
+                                .emittedLight();
                         chunk->setBlockLight(localX, y, localZ, emitted);
                         // Do not enqueue the enormous uniform open-sky volume.
                         // Only light boundaries can improve another cell: the

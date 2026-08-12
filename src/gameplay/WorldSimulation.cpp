@@ -409,7 +409,7 @@ void WorldSimulation::randomTickGrass(
             continue;
         }
         if (!world::canBlockSurvive(world, {target.x, target.y, target.z},
-                                    world::Block::Grass)) {
+                                    world::Block::Grass, world::BlockOrientation::North)) {
             continue;
         }
         reserveConversionAndApply(world, target, world::Block::Grass, changes);
@@ -732,8 +732,11 @@ void WorldSimulation::breakUnsupportedBlocks(
         pendingSupportChecks_.pop_front();
         queuedSupportChecks_.erase(position);
         const auto block = world.block(position.x, position.y, position.z);
+        // A wall torch hangs off the wall behind its FACING, so the support
+        // check needs the cell's state, not just its block.
         if (world::blockSupport(block) == world::BlockSupport::None ||
-            world::canBlockSurvive(world, {position.x, position.y, position.z}, block)) {
+            world::canBlockSurvive(world, {position.x, position.y, position.z}, block,
+                                   world.orientation(position.x, position.y, position.z))) {
             continue;
         }
         // Crops do not drop themselves (blockDefinition.dropsItem is false), so

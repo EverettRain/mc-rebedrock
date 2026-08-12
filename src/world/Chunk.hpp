@@ -17,6 +17,12 @@ class Chunk final {
 
     [[nodiscard]] Block block(int x, int y, int z) const;
     void setBlock(int x, int y, int z, Block value);
+    // The whole interned state in one read/write. block()/orientation()/
+    // fluidLevel() each decode one axis and drop the rest, so a caller that
+    // needs every axis — LIT above all, which no per-axis accessor carries —
+    // must go through these, not through a decompose/recompose round trip.
+    [[nodiscard]] BlockState state(int x, int y, int z) const;
+    void setState(int x, int y, int z, BlockState value);
     [[nodiscard]] BlockOrientation orientation(int x, int y, int z) const;
     void setOrientation(int x, int y, int z, BlockOrientation value);
     [[nodiscard]] std::uint8_t fluidLevel(int x, int y, int z) const;

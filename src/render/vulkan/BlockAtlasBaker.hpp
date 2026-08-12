@@ -7,6 +7,8 @@
 // renderer's texture layer stays a leaf that only depends on VulkanResources —
 // all the gameplay/world content coupling lives here instead.
 
+#include "assets/ResourceProvider.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <vector>
@@ -21,6 +23,6 @@ struct TextureArrayPixels final {
     std::vector<std::uint8_t> rgba;
 };
 
-[[nodiscard]] TextureArrayPixels bakeBlockAtlas(const std::filesystem::path& root);
+[[nodiscard]] TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources);
 
 } // namespace mc::render

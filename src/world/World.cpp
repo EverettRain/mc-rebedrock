@@ -92,6 +92,40 @@ bool World::setBlock(int worldX, int y, int worldZ, Block value) {
     return true;
 }
 
+BlockState World::state(int worldX, int y, int worldZ) const {
+    // One read of the interned state, not three per-axis decodes recomposed:
+    // block()/orientation()/fluidLevel() each drop the axes they do not carry,
+    // and none of them carries LIT, so composing them here silently unlit every
+    // furnace. Out-of-world and unloaded columns read as air, as block() does.
+    if (y < 0 || y >= kWorldHeight) {
+        return BlockState{};
+    }
+    const int chunkX = floorDiv(worldX, kChunkWidth);
+    const int chunkZ = floorDiv(worldZ, kChunkDepth);
+    const Chunk* owner = chunk({chunkX, chunkZ});
+    if (owner == nullptr) {
+        return BlockState{};
+    }
+    return owner->state(worldX - chunkX * kChunkWidth, y, worldZ - chunkZ * kChunkDepth);
+}
+
+bool World::setState(int worldX, int y, int worldZ, BlockState value) {
+    // The whole state in one write. Going through setBlock() first would reset
+    // the cell to the block's default state and lose LIT, which setOrientation/
+    // setFluidLevel cannot write back — a lit furnace would land unlit.
+    if (y < 0 || y >= kWorldHeight) {
+        return false;
+    }
+    const int chunkX = floorDiv(worldX, kChunkWidth);
+    const int chunkZ = floorDiv(worldZ, kChunkDepth);
+    Chunk* owner = chunk({chunkX, chunkZ});
+    if (owner == nullptr) {
+        return false;
+    }
+    owner->setState(worldX - chunkX * kChunkWidth, y, worldZ - chunkZ * kChunkDepth, value);
+    return true;
+}
+
 BlockOrientation World::orientation(int worldX, int y, int worldZ) const {
     if (y < 0 || y >= kWorldHeight) return BlockOrientation::North;
     const int chunkX = floorDiv(worldX, kChunkWidth);

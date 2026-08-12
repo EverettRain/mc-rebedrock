@@ -338,7 +338,8 @@ int main() {
     mc::gameplay::WorldSimulation supportSimulation;
     supportWorld.setBlock(3, 1, 3, mc::world::Block::Stone);
     supportWorld.setBlock(3, 2, 3, mc::world::Block::Torch);
-    supportWorld.setBlock(4, 2, 3, mc::world::Block::WallTorchEast);
+    supportWorld.setBlock(4, 2, 3, mc::world::Block::WallTorch);
+    supportWorld.setOrientation(4, 2, 3, mc::world::BlockOrientation::East);
     supportWorld.setBlock(3, 1, 5, mc::world::Block::Grass);
     supportWorld.setBlock(3, 2, 5, mc::world::Block::Dandelion);
 
@@ -350,7 +351,7 @@ int main() {
     std::size_t torchDrops = 0U;
     for (const auto& change : supportChanges) {
         if (change.dropped == mc::world::Block::Torch ||
-            change.dropped == mc::world::Block::WallTorchEast) {
+            change.dropped == mc::world::Block::WallTorch) {
             ++torchDrops;
         }
     }

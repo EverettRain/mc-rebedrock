@@ -77,14 +77,17 @@ BlockOrientation horizontalFacing(glm::vec3 lookDirection) {
     return lookDirection.z >= 0.0F ? BlockOrientation::South : BlockOrientation::North;
 }
 
-bool canBlockSurvive(const World& world, glm::ivec3 position, Block block) {
+bool canBlockSurvive(const World& world, glm::ivec3 position, Block block,
+                     BlockOrientation facing) {
     switch (blockSupport(block)) {
     case BlockSupport::None:
         return true;
     case BlockSupport::Ground:
         return isFaceSturdy(world.block(position.x, position.y - 1, position.z));
     case BlockSupport::Wall: {
-        const auto support = position + orientationOffset(wallTorchSupportSide(block));
+        // A wall block's support is behind its FACING, which is state rather
+        // than identity now, so the caller supplies it.
+        const auto support = position + orientationOffset(wallTorchSupportSide(facing));
         return isFaceSturdy(world.block(support.x, support.y, support.z));
     }
     case BlockSupport::Soil:
@@ -96,7 +99,7 @@ bool canBlockSurvive(const World& world, glm::ivec3 position, Block block) {
     return true;
 }
 
-std::optional<Block> standingAndWallPlacement(
+std::optional<BlockState> standingAndWallPlacement(
     const World& world,
     const PlacementContext& context) {
     // StandingAndWallBlockItem#getPlacementState: the wall variant wins on a
@@ -106,13 +109,14 @@ std::optional<Block> standingAndWallPlacement(
         // The clicked block's own wall first, exactly as Java's
         // getNearestLookingDirections starts at the clicked side, so the torch
         // leans off the wall the player aimed at.
-        const auto wall = wallTorchWithFacing(context.clickedFace);
-        if (canBlockSurvive(world, context.placePosition, wall)) {
-            return wall;
+        if (canBlockSurvive(world, context.placePosition, Block::WallTorch,
+                            context.clickedFace)) {
+            return BlockState{Block::WallTorch, context.clickedFace};
         }
     }
-    if (canBlockSurvive(world, context.placePosition, Block::Torch)) {
-        return Block::Torch;
+    if (canBlockSurvive(world, context.placePosition, Block::Torch,
+                        BlockOrientation::North)) {
+        return BlockState{Block::Torch};
     }
     // A torch placed at an angle — or onto a non-sturdy block — falls back to
     // the remaining walls nearest to where the player is looking, so it leans
@@ -124,33 +128,28 @@ std::optional<Block> standingAndWallPlacement(
         if (isHorizontal(context.clickedFace) && facing == context.clickedFace) {
             continue;
         }
-        const auto wall = wallTorchWithFacing(facing);
-        if (canBlockSurvive(world, context.placePosition, wall)) {
-            return wall;
+        if (canBlockSurvive(world, context.placePosition, Block::WallTorch, facing)) {
+            return BlockState{Block::WallTorch, facing};
         }
     }
     return std::nullopt;
 }
 
-std::optional<Block> placementBlock(
+std::optional<BlockState> placementBlock(
     const World& world,
     Block selected,
     const PlacementContext& context) {
     if (!isRenderable(selected)) {
         return std::nullopt;
     }
-    // The burning furnace is a transient block state, not an item: vanilla has
-    // no lit_furnace item to hold or place.
-    if (selected == Block::LitFurnace) {
-        return std::nullopt;
-    }
     if (selected == Block::Torch) {
         return standingAndWallPlacement(world, context);
     }
-    if (!canBlockSurvive(world, context.placePosition, selected)) {
+    if (!canBlockSurvive(world, context.placePosition, selected,
+                         placementOrientation(selected, context))) {
         return std::nullopt;
     }
-    return selected;
+    return BlockState{selected, placementOrientation(selected, context)};
 }
 
 BlockOrientation placementOrientation(Block placed, const PlacementContext& context) {

@@ -55,27 +55,26 @@ int main() {
     assert(sawBeef);
     assert(sawLeather);
 
-    // --- Each species registers its own sound set (1.16.1 MobEntity hooks). ---
-    // Cow: getSoundVolume 0.4 (CowEntity overrides it), ambient mob/cow/say1-4,
-    // and death reuses the same three hurt clips (sounds.json maps
-    // entity.cow.death to the hurt clips). Pig has no distinct hurt sound —
-    // entity.pig.hurt points back at say1-3 — and a single death.ogg. Zombie
-    // hurts are hurt1-2 with five step clips.
+    // --- Each species registers 26.1 event IDs, never physical clip paths. ---
+    // Candidate files and variation counts belong exclusively to sounds.json.
     const auto cowSounds = cow->soundProfile();
-    assert(cowSounds.root == "mob/cow");
     assert(cowSounds.volume == 0.4F);
     assert(cowSounds.stepVolume == 0.15F);
-    assert(cowSounds.ambientVariations == 4);
-    assert(cowSounds.hurtVariations == 3 && cowSounds.deathVariations == 3);
-    assert(cowSounds.deathBase == cowSounds.hurtBase);
+    assert(cowSounds.ambientEvent == "entity.cow.ambient");
+    assert(cowSounds.hurtEvent == "entity.cow.hurt");
+    assert(cowSounds.deathEvent == "entity.cow.death");
+    assert(cowSounds.stepEvent == "entity.cow.step");
     const auto* pig = registry.byId("minecraft:pig");
     const auto* zombie = registry.byId("minecraft:zombie");
     assert(pig != nullptr && zombie != nullptr);
-    assert(pig->soundProfile().hurtBase == "say");
-    assert(pig->soundProfile().deathVariations == 1);
-    assert(zombie->soundProfile().ambientVariations == 3);
-    assert(zombie->soundProfile().hurtVariations == 2);
-    assert(zombie->soundProfile().stepVariations == 5);
+    assert(cow->render().texturePath == "entity/cow/cow_temperate.png");
+    assert(pig->render().texturePath == "entity/pig/pig_temperate.png");
+    assert(zombie->render().texturePath == "entity/zombie/zombie.png");
+    assert(pig->soundProfile().hurtEvent == "entity.pig.hurt");
+    assert(pig->soundProfile().deathEvent == "entity.pig.death");
+    assert(zombie->soundProfile().ambientEvent == "entity.zombie.ambient");
+    assert(zombie->soundProfile().hurtEvent == "entity.zombie.hurt");
+    assert(zombie->soundProfile().stepEvent == "entity.zombie.step");
 
     // GameRenderer's crosshair pick uses the exact living-entity box in 1.16.1.
     // The projectile-only 0.3 expansion must not make a ray 0.25 blocks outside
@@ -86,8 +85,7 @@ int main() {
         const auto direct = targets.raycast({0.0F, 0.45F, 0.0F}, {0.0F, 0.0F, 1.0F}, 5.0F);
         assert(direct.has_value());
         assert(std::abs(direct->distance - 2.55F) < 0.0001F);
-        const auto outside =
-            targets.raycast({0.70F, 0.45F, 0.0F}, {0.0F, 0.0F, 1.0F}, 5.0F);
+        const auto outside = targets.raycast({0.70F, 0.45F, 0.0F}, {0.0F, 0.0F, 1.0F}, 5.0F);
         assert(!outside.has_value());
 
         // Spatial buckets use the feet position. A cow standing just below a
@@ -95,8 +93,7 @@ int main() {
         // above; aiming there must still find the entity bucketed below.
         targets.clear();
         targets.spawn({0.0F, 15.0F, 3.0F}, mc::gameplay::entities::CowEntity::type(), 92U);
-        const auto upperBody =
-            targets.raycast({0.0F, 16.20F, 0.0F}, {0.0F, 0.0F, 1.0F}, 5.0F);
+        const auto upperBody = targets.raycast({0.0F, 16.20F, 0.0F}, {0.0F, 0.0F, 1.0F}, 5.0F);
         assert(upperBody.has_value());
         assert(std::abs(upperBody->distance - 2.55F) < 0.0001F);
 
@@ -140,24 +137,23 @@ int main() {
         const auto& pigType = mc::gameplay::entities::PigEntity::type();
         const auto& cowType = mc::gameplay::entities::CowEntity::type();
         const glm::vec3 lowCeilingPosition{4.5F, 1.001F, 4.5F};
-        assert(mc::gameplay::EntitySystem::canOccupy(
-            collisionWorld, lowCeilingPosition, pigType.dimensions()));
-        assert(!mc::gameplay::EntitySystem::canOccupy(
-            collisionWorld, lowCeilingPosition, cowType.dimensions()));
+        assert(mc::gameplay::EntitySystem::canOccupy(collisionWorld, lowCeilingPosition,
+                                                     pigType.dimensions()));
+        assert(!mc::gameplay::EntitySystem::canOccupy(collisionWorld, lowCeilingPosition,
+                                                      cowType.dimensions()));
         const glm::vec3 trappedPosition{8.5F, 1.001F, 8.5F};
-        assert(!mc::gameplay::EntitySystem::canOccupy(
-            collisionWorld, trappedPosition, pigType.dimensions()));
+        assert(!mc::gameplay::EntitySystem::canOccupy(collisionWorld, trappedPosition,
+                                                      pigType.dimensions()));
 
         mc::gameplay::EntitySystem trapped;
         trapped.spawn(trappedPosition, pigType, 92U);
         assert(trapped.intersectsBlock(8, 1, 8));
         assert(!trapped.intersectsBlock(10, 1, 8));
-        static_cast<void>(trapped.tick(
-            collisionWorld, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
-            mc::gameplay::Difficulty::Normal));
+        static_cast<void>(trapped.tick(collisionWorld, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
+                                       mc::gameplay::Difficulty::Normal));
         const auto& recovered = trapped.entities().front();
-        assert(mc::gameplay::EntitySystem::canOccupy(
-            collisionWorld, recovered.position, recovered.dimensions()));
+        assert(mc::gameplay::EntitySystem::canOccupy(collisionWorld, recovered.position,
+                                                     recovered.dimensions()));
         assert(!trapped.intersectsBlock(8, 1, 8));
     }
 
@@ -169,9 +165,8 @@ int main() {
         barker.spawn({8.0F, 1.0F, 8.0F}, mc::gameplay::entities::PigEntity::type(), 99U);
         bool heardAmbient = false;
         for (int tick = 0; tick < 200 && !heardAmbient; ++tick) {
-            static_cast<void>(barker.tick(
-                world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
-                mc::gameplay::Difficulty::Normal));
+            static_cast<void>(barker.tick(world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
+                                          mc::gameplay::Difficulty::Normal));
             for (const auto& sound : barker.pendingSounds()) {
                 heardAmbient = heardAmbient || sound.event == mc::gameplay::MobSoundEvent::Ambient;
             }
@@ -214,16 +209,14 @@ int main() {
         // Settle once so takeKnockback sees the same grounded state as a mob
         // standing in a running world.
         for (int tick = 0; tick < 2; ++tick) {
-            static_cast<void>(knockback.tick(
-                world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
-                mc::gameplay::Difficulty::Normal));
+            static_cast<void>(knockback.tick(world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
+                                             mc::gameplay::Difficulty::Normal));
         }
         assert(knockback.byId(pigId)->onGround);
         assert(knockback.hurt(pigId, 1.0F, {7.0F, 1.001F, 8.0F}));
 
-        static_cast<void>(knockback.tick(
-            world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
-            mc::gameplay::Difficulty::Normal));
+        static_cast<void>(knockback.tick(world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
+                                         mc::gameplay::Difficulty::Normal));
         const float airborneVelocity = knockback.byId(pigId)->velocity.y;
         assert(!knockback.byId(pigId)->onGround);
         // Stronger damage passes the invulnerability-window guard, but because
@@ -234,9 +227,8 @@ int main() {
         float peakY = knockback.byId(pigId)->position.y;
         int landingTick = 0;
         for (int tick = 2; tick <= 20; ++tick) {
-            static_cast<void>(knockback.tick(
-                world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
-                mc::gameplay::Difficulty::Normal));
+            static_cast<void>(knockback.tick(world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
+                                             mc::gameplay::Difficulty::Normal));
             const auto* pig = knockback.byId(pigId);
             peakY = std::max(peakY, pig->position.y);
             if (pig->onGround) {
@@ -244,9 +236,9 @@ int main() {
                 break;
             }
         }
-        assert(peakY < 2.30F);      // under 1.3 blocks above its feet
+        assert(peakY < 2.30F); // under 1.3 blocks above its feet
         assert(landingTick > 0);
-        assert(landingTick <= 12);  // at most 0.6 seconds at 20 TPS
+        assert(landingTick <= 12); // at most 0.6 seconds at 20 TPS
     }
 
     // --- A killed creature drops its loot on the death tick, not after the
@@ -265,9 +257,8 @@ int main() {
         // Running the corpse animation to completion removes the body without
         // rolling the loot a second time.
         for (int tick = 0; tick < 25; ++tick) {
-            static_cast<void>(killers.tick(
-                world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
-                mc::gameplay::Difficulty::Normal));
+            static_cast<void>(killers.tick(world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
+                                           mc::gameplay::Difficulty::Normal));
         }
         assert(killers.entities().empty());
         assert(killers.pendingDrops().empty());
@@ -284,8 +275,7 @@ int main() {
         simulation.spawn({40.0F, 10.0F, 8.0F}, mc::gameplay::entities::PigEntity::type(), 52U);
         // 192 blocks out and a MONSTER: despawns when distant, independently of
         // the simulation radius.
-        simulation.spawn({200.0F, 1.0F, 200.0F}, mc::gameplay::entities::ZombieEntity::type(),
-                         53U);
+        simulation.spawn({200.0F, 1.0F, 200.0F}, mc::gameplay::entities::ZombieEntity::type(), 53U);
         const std::uint64_t nearId = simulation.entities()[0].id;
         const std::uint64_t farId = simulation.entities()[1].id;
         const std::uint64_t monsterId = simulation.entities()[2].id;

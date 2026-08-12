@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <span>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace mc::ui {
@@ -26,14 +27,15 @@ struct FontGlyph final {
     // Size and advance in GUI pixels, before the GUI scale is applied.
     float pixelWidth = 0.0F;
     float pixelHeight = 0.0F;
+    float offsetX = 0.0F;
+    float offsetY = 0.0F;
     float advance = 4.0F;
     bool visible = false;
 };
 
-// The Java 1.16.1 font stack: the 128x128 ascii.png sheet for Latin text plus
-// the legacy unicode pages (unicode_page_XX.png driven by glyph_sizes.bin) for
-// everything else. Turning on forceUnicode routes ASCII through the unicode
-// pages too, which is how vanilla renders CJK languages consistently.
+// The Java 26.1 provider stack: bitmap sheets supply their declared codepoints,
+// space providers supply advances, and unihex providers populate BMP pages from
+// embedded .hex archives. Turning on forceUnicode selects font/uniform.json.
 class TextFont final {
   public:
     static constexpr std::size_t kUnicodePageCount = 256U;
@@ -43,13 +45,23 @@ class TextFont final {
     static constexpr float kUnicodeOversample = 2.0F;
 
     void setAsciiMetrics(BitmapFontMetrics metrics) { ascii_ = metrics; }
-    // glyph_sizes.bin: one byte per BMP codepoint, high nibble is the first
-    // used column and low nibble the last.
+    // Compact unihex bounds: high nibble is the first used column and low
+    // nibble the last.
     void setUnicodeSizes(std::vector<std::uint8_t> sizes);
     // Assigns the texture array layer a page was uploaded to. Pages that were
     // never uploaded keep their -1 and fall back to the ASCII sheet.
     void setUnicodePageLayer(int page, int layer);
     void clearUnicodePages();
+    void clearBitmapGlyphs() { bitmapGlyphs_.clear(); }
+    // Providers are visited in font JSON order. The first provider offering a
+    // codepoint wins, matching FontSet's provider precedence.
+    void addBitmapGlyph(char32_t codepoint, FontGlyph glyph) {
+        bitmapGlyphs_.try_emplace(codepoint, glyph);
+    }
+    void clearSpaceAdvances() { spaceAdvances_.clear(); }
+    void setSpaceAdvance(char32_t codepoint, float advance) {
+        spaceAdvances_.insert_or_assign(codepoint, advance);
+    }
     void setForceUnicode(bool force) { forceUnicode_ = force; }
 
     [[nodiscard]] bool forceUnicode() const { return forceUnicode_; }
@@ -69,6 +81,8 @@ class TextFont final {
     BitmapFontMetrics ascii_;
     std::vector<std::uint8_t> sizes_;
     std::array<int, kUnicodePageCount> pageLayers_{};
+    std::unordered_map<char32_t, FontGlyph> bitmapGlyphs_;
+    std::unordered_map<char32_t, float> spaceAdvances_;
     bool forceUnicode_ = false;
     bool pageLayersInitialized_ = false;
 };

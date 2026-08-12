@@ -7,12 +7,101 @@ simple versioned history while it is in beta.
 
 ### Added
 
-- Rain and thunderstorms now overcast the live skybox like 1.16.1: the sky and
+- Standard Java resource packs can now supply the game at runtime. ReBedrock
+  discovers both directories and `.zip` files under `resourcepacks/`, layers
+  them in deterministic filename order with the last pack winning per file,
+  and lazily extracts zip entries into `.packcache` only when an asset is used.
+  Pack metadata supplies the language catalog, and directory packs apply
+  declaration-ordered `overlays.entries` whose format range includes 26.1's
+  format 84. Namespaced resource locations now resolve textures, sounds, fonts
+  and translations through one shared provider instead of hard-coded
+  installation paths.
+- Sound playback is driven by the active packs' `sounds.json` registries.
+  Layered definitions honour append/`replace`, weighted candidates, per-entry
+  volume and pitch, and recursive event references; blocks, the player,
+  weather and every creature now request sound-event ids rather than guessing
+  physical OGG filenames and variation counts.
+- The 26.1 font provider stack is supported: `bitmap`, `space`, recursive
+  `reference` and `unihex` providers (including filters and size overrides) are
+  loaded from `font/*.json`. Languages are discovered from `pack.mcmeta`, built
+  by layering `en_us`, the selected locale and `deprecated.json`, and prepared
+  asynchronously after the Language screen's Done button is pressed so the
+  visible interface stays responsive during a switch.
+- Furnaces are real per-position block entities. Every placed furnace owns its
+  input, fuel, output and burn/cook counters, keeps smelting while its screen is
+  closed, spills its three slots when broken, and persists the contents and
+  progress in world save format 15 so several furnaces no longer share one
+  transient global inventory.
+- World time is split into an unconditional server tick and independently
+  pausable/rate-controlled named clocks. The overworld clock drives the sun,
+  moon and natural-spawn lighting while simulation timers use the server tick;
+  both are preserved by save format 13, with older saves migrated from their
+  former `gameTimeSeconds` value.
+- A central world-mutation service and 26.1-style mutation flags/cause records
+  provide one ordered path for block-entity lifecycle, drops, neighbour
+  notification and section invalidation. The service derives relighting and
+  remeshing from the actual state change so callers cannot accidentally omit
+  them.
+
+### Changed
+
+- ReBedrock no longer stages or installs Mojang textures, sounds, fonts or
+  translations. A standard resource pack containing `pack.mcmeta` and
+  `assets/` is now required at startup; when none is present the client creates
+  `resourcepacks/`, prints its full location and exits with a bilingual
+  diagnostic instead of launching without usable assets.
+- Rendering and menus consume the 26.1 asset layout: named HUD/widget and
+  furnace sprites, 16-pixel menu and list tiles, eight individual moon-phase
+  textures, final spawn-egg icons, and the temperate cow/pig skins. Secondary
+  menu screens retain the rotating panorama behind a five-pixel background
+  blur while their controls remain sharp, and each asset remains independently
+  replaceable by a pack.
+- Blocks now use interned `BlockState` ids, separating a block's identity from
+  its properties. A burning furnace is the furnace's `LIT` state and all four
+  wall torches are one wall-torch block with a `FACING` state; format 14 saves
+  these properties and migrates the old `lit_furnace` and directional
+  wall-torch identifiers without losing light, facing or furnace progress.
+- Chunk sections store their states in a per-section palette with bit-packed
+  indices. All-air sections allocate no state heap, ordinary terrain uses only
+  enough bits for the states it contains, and whole-state reads now carry
+  orientation, fluid level and furnace light consistently through streaming,
+  meshing, raycasts and lighting.
+- Project documentation, entity data, resource paths and vanilla-behaviour
+  references now target Java 26.1 rather than Java 1.16.1.
+
+### Fixed
+
+- Disabling `doDaylightCycle` no longer freezes mining, held-use delays or
+  other gameplay timers, and `/time` changes no longer strand interaction
+  cooldowns. Chat expiry, cursor blinking, held-name fades and idle animation
+  use frame time, so presentation continues independently of the sun clock and
+  pauses only with the relevant screen or game state.
+- Furnace ignition and burnout now change a state on the same block instead of
+  replacing it with another block, preserving the block entity and its smelt.
+  State-aware relighting, meshing and persistence also keep the lit face and
+  level-13 glow correct for furnaces that are closed or reloaded.
+- Missing or damaged pack textures now produce the visible magenta-and-black
+  missing-texture marker with a diagnostic instead of aborting texture-atlas
+  creation; partial packs can therefore fall back cleanly through the active
+  provider stack.
+- Animated water and lava textures now read the explicit frame order from their
+  `.png.mcmeta` sidecars and cycle or truncate non-standard frame counts to the
+  atlas space available. Packs whose animation strips differ from vanilla no
+  longer abort startup; frame timing and interpolation metadata are parsed for
+  the future shader-timing path while the current playback rate stays fixed.
+- The two bottom creative tabs now sample their own 26.1 tab sprites instead of
+  both reusing the same fixed atlas slice.
+
+## ReBedrock beta4
+
+### Added
+
+- Rain and thunderstorms now overcast the live skybox like 26.1: the sky and
   horizon darken, celestial sprites fade behind the clouds, and the rendered
   sky-light contribution falls smoothly with the weather gradient. Logical
   sky/block light levels stay unchanged, so gameplay checks and torch light are
   unaffected.
-- The weather system works the way 1.16.1's does: `/weather clear` and
+- The weather system works the way 26.1's does: `/weather clear` and
   `/weather rain` (each with an optional `[<duration>]` in seconds, defaulting
   to a 6000-tick spell) install a clear or rain spell that the doWeatherCycle
   auto-cycle takes over once it expires, and the rain intensity fades in and out
@@ -23,9 +112,9 @@ simple versioned history while it is in beta.
 - Decorative stone variants round out the stone family: polished granite,
   polished diorite and polished andesite craft from a 2x2 block of their parent
   stone (four of the polished product), and smooth stone smelts from stone in
-  the furnace — the same shapes and recipes as 1.16.1. All four register into
+  the furnace — the same shapes and recipes as 26.1. All four register into
   the Building Blocks creative tab and save palettes.
-- `/spawnpoint [<x> <y> <z>]` sets a personal respawn point the way 1.16.1's
+- `/spawnpoint [<x> <y> <z>]` sets a personal respawn point the way 26.1's
   SpawnPointCommand does: with no position the command uses your current block,
   `~` axes resolve relative to you, and death respawns there before falling
   back to the world spawn. The result persists with the save (format 10).
@@ -50,7 +139,7 @@ simple versioned history while it is in beta.
   vertex shader expands the camera-facing billboard, so an N-particle burst is
   one `vkCmdDraw` instead of one per particle (a 64-particle block break drops
   from 64 draws to 1).
-- Rain is drawn through three switchable paths. 贴图雨 follows 1.16.1's
+- Rain is drawn through three switchable paths. 贴图雨 follows 26.1's
   precipitation-column renderer: native-aspect `environment/rain.png`, stable
   world-column orientation and scroll phase, heightmap-like roof clipping,
   distance/rain-gradient alpha and scene light, batched into one instanced draw.
@@ -64,7 +153,7 @@ simple versioned history while it is in beta.
   `experimental.sunShadows` option (off by default). The map is infrastructure
   for a future shadow pass and is currently visible only through a debug
   overlay (`MC_REBEDROCK_SHADOW_DEBUG=1`).
-- Each creature plays the 1.16.1 sound set its species declares, the way the
+- Each creature plays the 26.1 sound set its species declares, the way the
   Java entity classes override getAmbientSound / getHurtSound / getDeathSound /
   playStepSound: pigs grunt on their `mob/pig/say` clips and die with a single
   `death`, cows moo at 0.4 volume and reuse their hurt clips for death, and
@@ -121,7 +210,7 @@ simple versioned history while it is in beta.
   the sections it passes through, and the item magnet looks up the player's
   surrounding buckets — the O(n²) herd sweep and the O(n) scans become
   O(neighbours).
-- Simulation distance (1.16.1's tick-distance gate): creatures farther than the
+- Simulation distance (26.1's tick-distance gate): creatures farther than the
   configured radius from the player are frozen each tick — no AI, movement,
   gravity or timers — while staying rendered and targetable, and
   distant-despawning categories (MONSTER/AMBIENT/WATER_CREATURE) past the
@@ -131,7 +220,7 @@ simple versioned history while it is in beta.
   Render Distance, counting in chunks (2–12) and persisted as
   `render.simulationDistance` — it sizes the frozen-entity radius independently
   of the render distance.
-- Natural spawning (1.16.1's NaturalSpawner): every second the spawner probes
+- Natural spawning (26.1's NaturalSpawner): every second the spawner probes
   positions inside the simulation radius, checks the ground and the light rule,
   samples the biome's spawn table by weight and spawns a group — respecting
   each category's spawn cap scaled to the simulated area, never inside the
@@ -146,7 +235,7 @@ simple versioned history while it is in beta.
   and restored by species on load, so a world reopens with its animals where
   you left them. The forced four-creature debug herd at spawn is gone, replaced
   by natural spawning.
-- Land mobs navigate (1.16.1): a per-creature brain plans a path around
+- Land mobs navigate (26.1): a per-creature brain plans a path around
   obstacles to its target, an escape goal flees a recent attacker (for the
   reachable distance, falling back to a shorter route on a plateau), and a swim
   goal keeps water creatures afloat; a stable actor reference lets goals keep
@@ -229,11 +318,9 @@ simple versioned history while it is in beta.
   fires every fourth tick once the eat is past its first seven ticks, with the
   final burst and burp on completion — matching LivingEntity's consumption
   effects instead of a single sound when the meal starts.
-- Inventory block thumbnails use vanilla 1.16.1's plain per-face luminance
+- Inventory block thumbnails use vanilla 26.1's plain per-face luminance
   (up 1.0, west 0.6, east 0.8) with no colour bias, plus a per-corner ambient
   occlusion gradient so the cube edges read slightly darker than the faces.
-
-### Fixed
 
 - The backpack preview figure now turns with the cursor look through its bone
   hierarchy (head and arms as children of the body), so the whole body rotates
@@ -247,14 +334,14 @@ simple versioned history while it is in beta.
   top under a four-layer crown whose widest layer is 8x8, with 1-in-3 branch
   columns carrying their own small foliage nodes. The crown hangs off the trunk
   top log, not a layer above it.
-- The swamp biome is flooded the way 1.16.1's is: its terrain sits at or below
+- The swamp biome is flooded the way 26.1's is: its terrain sits at or below
   sea level so standing water covers most of it, the underwater floor is dirt
   (not gravel), and its oaks — which keep the vanilla radius-3 canopy — root
   through a single block of shallow water instead of marching across dry land.
   Tree placement retries a few cells when the first lands in open water, so the
   swamp's per-chunk tree count still comes through despite the drowned patches.
 - The block texture atlas is now built by name from the block registry, the way
-  1.16.1 registers sprites by ResourceLocation: each block's faces name their
+  26.1 registers sprites by ResourceLocation: each block's faces name their
   textures ("granite", "grass_block_side", ...), the renderer loads and dedupes
   them once at startup, and every block's resolved atlas layers land in a flat
   per-block table the mesher and GUI read with a plain array index. The
@@ -306,7 +393,7 @@ simple versioned history while it is in beta.
   the material now matches it. In the narrow band where two materials trade
   dominance the seam is dithered with a per-position hash, so a long boundary
   reads as a soft 1-2 block blend instead of one hard line.
-- Grass blocks, tall grass and foliage take the 1.16.1 per-biome colour: each
+- Grass blocks, tall grass and foliage take the 26.1 per-biome colour: each
   biome's grass and foliage colour comes from the vanilla grass/foliage colour
   maps (indexed by the biome's temperature and downfall, with the dark-forest
   grass darkening, the swamp's fixed 0x6A7039 foliage and its noise-mottled
@@ -316,7 +403,7 @@ simple versioned history while it is in beta.
   dirt + green strip and spruce/birch their fixed tones, while the grass tops,
   plants and oak-family leaves take their colour from the fragment lookup below.
 - The grass and foliage colour blends across biome boundaries as a smooth
-  per-pixel gradient, the way 1.16.1's BiomeColors does but robust: the renderer
+  per-pixel gradient, the way 26.1's BiomeColors does but robust: the renderer
   generates two biome-colour lookup textures from the world seed and the vanilla
   grass/foliage colour maps (512 texels at four blocks each, covering the spawn
   region), and the terrain fragment shader samples them with linear filtering —
@@ -326,7 +413,7 @@ simple versioned history while it is in beta.
   tops/plants sample the grass map, oak/jungle/acacia/dark-oak leaves the
   foliage map, and everything else is untouched. The grass side keeps its baked
   per-biome layer so the dirt under a cliff stays dirt, and spruce/birch leaves
-  their fixed 1.16.1 tones. The lookup textures regenerate when a world loads
+  their fixed 26.1 tones. The lookup textures regenerate when a world loads
   (per seed); grass tops and oak-family leaves now use the untinted base
   textures and take their colour from the fragment lookup.
 - A torch rendered as a mostly transparent, cracked texture: the mesher
@@ -340,7 +427,7 @@ simple versioned history while it is in beta.
 ### Added
 
 - A "High" smooth-lighting tier (`lighting.smooth=high`), implementing the
-  vanilla 1.16.1 per-block ambient occlusion: full opaque cubes darken corners
+  vanilla 26.1 per-block ambient occlusion: full opaque cubes darken corners
   to 0.2, a corner whose diagonal is enclosed probes two cells up in the face
   normal (the overhang), and the corner averages the two in-plane sides, the
   selected corner and the block across the face. Stronger contact shadows and
@@ -356,7 +443,7 @@ simple versioned history while it is in beta.
   notification all derive from it — adding a rule no longer touches the save
   format, the command handler or the renderer. `randomTickSpeed` is joined by
   `doDaylightCycle` (freezes the day/night cycle while `/time set` still works,
-  like 1.16.1) and `keepInventory` (keeps the inventory through death).
+  like 26.1) and `keepInventory` (keeps the inventory through death).
   `/gamerule <rule>` now queries the current value, and rule names accept
   `minecraft:` prefixes and any case.
 - Game rules are persisted as a sparse, self-describing block in `world.dat`
@@ -364,7 +451,7 @@ simple versioned history while it is in beta.
   entry carries its name/type/length/value, and the block has its own version
   and size so an older build skips what it cannot read. A format-8 save's
   `randomTickSpeed` header field is migrated into the block on load.
-- Java 1.16.1's random-tick simulation. Every game tick, `randomTickSpeed`
+- Java 26.1's random-tick simulation. Every game tick, `randomTickSpeed`
   random blocks are drawn per loaded non-empty 16×16×16 section (3 by default,
   matching vanilla) and blocks with a random tick react: a grass block spreads
   to plain dirt in light and reverts to dirt when covered by water or left
@@ -382,7 +469,7 @@ simple versioned history while it is in beta.
   inventory/container slots, creative tabs and the delete slot stay silent,
   and the view-distance and master-volume sliders keep their own drag
   feedback.
-- Basic 1.16.1 mouse gestures in the inventory and containers. Shift-click
+- Basic 26.1 mouse gestures in the inventory and containers. Shift-click
   (SlotActionType.QUICK_MOVE) moves a stack between a chest/crafting/furnace
   slot and the player inventory in either direction — a furnace routes a
   smeltable item to its input and anything burnable to its fuel slot. And
@@ -391,33 +478,33 @@ simple versioned history while it is in beta.
   out as evenly as possible, a right-drag drops a single item into each slot.
   Double-clicking a slot (SlotActionType.PICKUP_ALL) gathers every matching
   stack in the screen into the cursor, the quick way to tidy scattered items.
-- A burning furnace now shows it: the front face switches to 1.16.1's
+- A burning furnace now shows it: the front face switches to 26.1's
   `furnace_front_on` texture and the block glows with the lit furnace's level-13
   light while fuel burns, then reverts when the fire goes out. The lit state is
   transient — it is not saved, and breaking a burning furnace drops the plain
   furnace item.
-- A cow species, ported from 1.16.1 `CowEntity` and `QuadrupedEntityModel`: the
+- A cow species, ported from 26.1 `CowEntity` and `QuadrupedEntityModel`: the
   second CREATURE species, reusing the animal AI with no shared-code changes. It
-  binds the vanilla `entity/cow/cow.png` skin, runs a 1.16.1-style gait (0.6662
+  binds the vanilla `entity/cow/cow.png` skin, runs a 26.1-style gait (0.6662
   leg frequency, 1.4 rad swing, diagonal leg pairing), drops 1–3 raw beef and
   0–2 leather, and has its own spawn egg. The spawn-area demo herd is now 2 pigs
   + 2 cows, and a raw beef item (with a vanilla `item/beef.png` icon) joins the
   food catalogue.
-- A crop-farming system, following 1.16.1's blocks, loot and crafting. Four new
+- A crop-farming system, following 26.1's blocks, loot and crafting. Four new
   blocks — farmland (tilled with a hoe), and the wheat, carrots and potatoes
   crops — plus wheat seeds, wheat, carrot and potato items. A hoe right-clicks
   dirt, grass and podzol into farmland (coarse dirt back into plain dirt, the
   vanilla HOE_LOOKUP map) and wears one durability point per till. Seeds,
   carrot and potato plant on farmland; the crops grow on the random tick, need
   light 9 in the block above, and grow up to three times faster ringed by moist
-  farmland (1.16.1's getAvailableMoisture and the 25/moisture growth odds), so
+  farmland (26.1's getAvailableMoisture and the 25/moisture growth odds), so
   `/gamerule randomTickSpeed` scales the rate like every other random tick.
   Mature wheat drops wheat plus a binomial roll of seeds, carrots and potatoes
   drop their produce, and an unripe crop returns a seed; tall grass drops wheat
   seeds 1/8 of the time. Three wheat in a row craft bread. Breaking farmland
   yields dirt and pops any crop standing on it, with the crop's loot rolled
   from the age it had reached.
-- Farmland moisture, per 1.16.1's FarmlandBlock: water within four blocks
+- Farmland moisture, per 26.1's FarmlandBlock: water within four blocks
   hydrates the soil (the moisture jumps to 7 and the top texture wets), and dry
   farmland dries one level at a time, reverting to plain dirt once it reaches
   zero and nothing is planted on it.
@@ -429,10 +516,10 @@ simple versioned history while it is in beta.
 - Dropped items are 3D. Non-block items (tools, materials, food) drop as the
   held item's single-layer slab model — the icon as a thin 3D card with
   extruded edges — spinning about Y, instead of a flat camera-facing sprite,
-  the way 1.16.1's ItemEntityRenderer draws the same ItemRenderer model in
+  the way 26.1's ItemEntityRenderer draws the same ItemRenderer model in
   GROUND transform. Block items keep their miniature cube.
 - Crops select like their stage: the raycast box grows from 2/16 (a sprout) to
-  a full block as the crop ages (1.16.1's CropBlock.SHAPES), and the selection
+  a full block as the crop ages (26.1's CropBlock.SHAPES), and the selection
   outline follows it, so you aim at the plant rather than the empty air above
   it.
 
@@ -450,7 +537,7 @@ simple versioned history while it is in beta.
   lays its settings out in two centred columns with the "Done" button on its
   own centred row beneath, so the ten-entry page stays centred on screen and
   the bottom button is no longer dropped off the render queue.
-- A dedicated Language page, following 1.16.1's LanguageScreen: a dark
+- A dedicated Language page, following 26.1's LanguageScreen: a dark
   scrollable list that spans the canvas left-to-right like the save-selection
   screen's list rows, each language shown in its own script, with the Force
   Unicode Font toggle and the Done button. The language and Force Unicode
@@ -490,13 +577,13 @@ simple versioned history while it is in beta.
   The player movement only resolved each axis in turn and never re-attempted a
   wall-blocked horizontal move from a step up, so hugging a block's edge and
   trying to move onto the diagonally-placed block got stuck and slid off. The
-  horizontal move now mirrors 1.16.1's `adjustMovementForCollisions`: the
+  horizontal move now mirrors 26.1's `adjustMovementForCollisions`: the
   dominant axis resolves first, and a blocked grounded move is retried from
   vanilla's 0.6 step. The player never lifts a full block on their own — the
   0.6 step only clears stairs and partial blocks — so a one-block rise still
   needs a jump.
 - The first pass at that step let the player climb a full block by walking,
-  which is not how a Java 1.16.1 player moves; it was removed again. In its
+  which is not how a Java 26.1 player moves; it was removed again. In its
   place a Bedrock-style auto-jump is available: with Auto-Jump on in Controls,
   walking forward into a one-block rise jumps automatically (it never fires
   against a two-high wall or a missing headroom). It is off by default, keeping
@@ -506,7 +593,7 @@ simple versioned history while it is in beta.
   box — a large share of trees came out clipped. The generation writer now
   holds those blocks back and the streamer applies them to the neighbouring
   chunk when it is published, so the crown is finished across the seam. The
-  oak/birch foliage was rebuilt to 1.16.1's actual `BlobFoliagePlacer`: the
+  oak/birch foliage was rebuilt to 26.1's actual `BlobFoliagePlacer`: the
   ball hangs three rows off the trunk top (the foliage height, not the full
   trunk length) with the radius widening by one every two rows — the earlier
   pass stretched the ball down the whole trunk into an oversized pyramid.
@@ -551,14 +638,14 @@ simple versioned history while it is in beta.
   runtime staging only shipped the dig/step/liquid/random/damage sound groups;
   the pig's folder is now staged too.
 - Clicking an inventory or container slot to pick up or move an item played the
-  button click sound. In 1.16.1 only `AbstractButtonWidget` buttons click;
+  button click sound. In 26.1 only `AbstractButtonWidget` buttons click;
   slots, the creative tabs and the delete slot are silent, so the click now
   fires only for the menu buttons.
 - Sand and gravel stopped falling. A chunk-load pass that scheduled fall checks
   for freshly generated gravity blocks queued *every* sand cell in the chunk,
   and a desert chunk holds thousands of supported ones; with the shared queue
   draining 64 per tick, the genuinely floating blocks were buried behind a
-  backlog that never drained. The pass is gone entirely: as in 1.16.1,
+  backlog that never drained. The pass is gone entirely: as in 26.1,
   generation writes blocks without ever calling `FallingBlock#onBlockAdded`, so
   floating sand the surface pass leaves behind hangs in place until a neighbour
   change activates it — and costs no simulation time while the player is
@@ -604,7 +691,7 @@ simple versioned history while it is in beta.
   treated farmland as a full opaque cube, so a neighbour's face toward it was
   dropped and the exposed 1/16 sliver above the farmland's top showed a
   see-through gap; a truncated neighbour no longer culls the face against it.
-- The cow's model now matches the 1.16.1 `CowEntityModel`. It was built from the
+- The cow's model now matches the 26.1 `CowEntityModel`. It was built from the
   pig's torso (10×16×8 at box-UV 28,8), so the body came out too short and
   narrow and its net sampled the wrong region of `cow.png`. The torso is now the
   cow's own 12×18×10 at UV 18,4; the head is the vanilla 8×8×6 sitting at world
@@ -614,7 +701,7 @@ simple versioned history while it is in beta.
   includes the same horn/udder bones in the compiled-in built-in model, so the
   creature stays correct when the resource files are missing.
 - The cow and pig no longer wear their belly texture on their backs. The
-  body's box-UV faces were mapped for a non-flipped renderer, but 1.16.1 draws
+  body's box-UV faces were mapped for a non-flipped renderer, but 26.1 draws
   the same torso in a Y-flipped frame, so the face that landed on the back
   sampled the belly rect — on the cow that put the udder's pink patch at the
   body's front-top ("back of the neck") — and the belly sampled the back rect.
@@ -633,7 +720,7 @@ simple versioned history while it is in beta.
 
 ### Added
 
-- A title-screen panorama that follows 1.16.1's `CubeMap` renderer: the six
+- A title-screen panorama that follows 26.1's `CubeMap` renderer: the six
   panorama faces (`panorama_0` … `panorama_5`) form a unit cube viewed from
   inside at the vanilla 85° field of view, so the wide-angle perspective gives
   each face its natural distortion and parallax. The camera turns slowly — a
@@ -662,7 +749,7 @@ simple versioned history while it is in beta.
   `unicode_page_XX.png` pages), uploaded as a font texture array that only holds
   the pages the active language needs.
 - Full survival and creative gameplay. Survival players have health, hunger,
-  saturation and exhaustion following Java 1.16.1: sprinting and jumping burn
+  saturation and exhaustion following Java 26.1: sprinting and jumping burn
   food, a full food bar regenerates health, an empty one starves, falls past
   three blocks hurt, and staying underwater drowns once the air supply runs out.
   Death drops the inventory, shows the "You Died!" screen and offers Respawn or
@@ -682,7 +769,7 @@ simple versioned history while it is in beta.
   the tables. A compile-time check rejects a table that is out of enum order,
   misses an entry or repeats an identifier.
 - Namespaced identifiers. Blocks and items are keyed by `rebedrock:oak_planks`
-  and `rebedrock:book`, with the `minecraft:` name kept as an alias so 1.16.1
+  and `rebedrock:book`, with the `minecraft:` name kept as an alias so 26.1
   translations and assets still resolve; lookups accept the registry key, the
   alias or the bare name. States that share one vanilla name, such as the four
   wall torches, now have distinct registry keys of their own.
@@ -706,7 +793,7 @@ simple versioned history while it is in beta.
   so the stick, crafting table and chest recipes accept any mixture.
 - The full tool rack. Swords, axes, shovels and hoes in all five materials
   (wooden, stone, iron, golden, diamond) join the existing pickaxes, each
-  carrying its Java 1.16.1 harvest level, mining speed, attack damage/speed and
+  carrying its Java 26.1 harvest level, mining speed, attack damage/speed and
   durability in a tool table. Axes are the right tool for wood, shovels for
   dirt, sand and gravel, and hoes for leaves, all craftable through their
   vanilla recipes.
@@ -715,10 +802,10 @@ simple versioned history while it is in beta.
   and spills whatever the inventory cannot hold onto the ground at the player's
   feet.
 - Eating. Apple and bread restore hunger and saturation (4 food / 2.4 and
-  5 food / 6.0, following Java 1.16.1 FoodStats) after the vanilla 32-tick use
+  5 food / 6.0, following Java 26.1 FoodStats) after the vanilla 32-tick use
   duration, with a first-person eating animation that raises the held item
   toward the mouth and the vanilla eating and burp sounds.
-- Creature fall damage follows 1.16.1: a mob that falls more than three blocks
+- Creature fall damage follows 26.1: a mob that falls more than three blocks
   takes `ceil(fallDistance - 3)` health on landing (`LivingEntity#computeFallDamage`)
   through the same invulnerability window as a hit, with water cancelling a fall.
   The rule lives in the shared `EntitySystem` tick — the simulation layer every
@@ -732,7 +819,7 @@ simple versioned history while it is in beta.
 
 ### Changed
 
-- A world now opens with two-phase loading the way 1.16.1 enters a world with a
+- A world now opens with two-phase loading the way 26.1 enters a world with a
   small initial area and streams the rest: the load screen waits only for a
   small chunk area around the player, then the full render distance fills in
   progressively during play instead of blocking entry on the whole
@@ -745,7 +832,7 @@ simple versioned history while it is in beta.
   distance loads in wall-clock time closer to the chunk count divided by the
   cores. Meshing already ran in parallel; generation was the serial bottleneck.
 - Blocks are registered and wielded as their own `BlockItem` Item subclasses the
-  way 1.16.1's `Items` registry holds `Items.STONE` for `Blocks.STONE`: every
+  way 26.1's `Items` registry holds `Items.STONE` for `Blocks.STONE`: every
   block has a plain `BlockItem`, and the torch is the `StandingAndWallBlockItem`
   that carries its standing and wall variants. Block identifiers resolve as
   items too, so `/give` and the save palette treat a block like vanilla does.
@@ -754,14 +841,14 @@ simple versioned history while it is in beta.
   places its block — instead of a hardcoded block switch. A block stack still
   keeps its block as its identity, so old saves, mined drops and crafted stacks
   all behave unchanged.
-- Right-clicking now routes through 1.16.1's `Item#useOn`: the held item
+- Right-clicking now routes through 26.1's `Item#useOn`: the held item
   resolves the outcome by its own class (a block item places, a spawn egg
   spawns, the buckets collect or pour water), and the interaction loop applies
   the world-edit and audio side effects from the answer instead of comparing the
   item in a chain of `if`s. The container a clicked block opens — crafting
   table, furnace or chest — is read off the block's own registry entry
   (`container`), so no screen in the interaction loop names a block.
-- Leaves are wielded as their own `LeavesBlockItem` like 1.16.1, the class that
+- Leaves are wielded as their own `LeavesBlockItem` like 26.1, the class that
   marks hand-placed leaves PERSISTENT so they never decay. The flag is stored in
   the block's orientation state, which the item resolves at placement; the
   block-property `placementOrientation` no longer special-cases leaves.
@@ -770,16 +857,16 @@ simple versioned history while it is in beta.
   GUI scale — every tile is `32 × guiScale` pixels — instead of a fixed 64
   pixels. At GUI scales above 2 the tiles were visibly too small and dense.
 - Every menu screen shares the one optimized dirt backdrop, and the singleplayer
-  save rows sit on 1.16.1's dark list panel: `options_background` tiled under a
+  save rows sit on 26.1's dark list panel: `options_background` tiled under a
   solid (32,32,32) tint, half the menu dirt's (64,64,64), so the list reads as a
   deep near-black band of dirt. The flat dark overlay over the title-screen
   options is gone, so that screen shows the plain optimized dirt.
 - The dirt and any other tinted GUI sprite are tinted in sRGB space, the way
-  1.16.1 multiplies the raw texel by the vertex colour. The sRGB swapchain had
+  26.1 multiplies the raw texel by the vertex colour. The sRGB swapchain had
   been tinting in linear space, which left every dark tint noticeably brighter
   than vanilla — most visibly the menu dirt.
 - New worlds start with an empty inventory instead of a pre-filled one.
-- Wood-type blocks follow 1.16.1's mineable/axe tag: logs, planks, bookshelves,
+- Wood-type blocks follow 26.1's mineable/axe tag: logs, planks, bookshelves,
   crafting tables, chests, pumpkins and melons drop for any hand, and an axe only
   mines them faster. Vanilla wood never requires a correct tool, so survival's
   punch-a-tree-to-craft-an-axe loop works.
@@ -796,12 +883,12 @@ simple versioned history while it is in beta.
   vanilla marks requiresCorrectToolForDrops (stone, cobblestone, stone bricks,
   granite/diorite/andesite, coal ore) needs a pickaxe to drop its loot. Sandstone,
   bricks, quartz, netherrack and furnaces drop for a bare hand — the pickaxe just
-  mines them faster, exactly like 1.16.1.
+  mines them faster, exactly like 26.1.
 
 - Holding the attack button in creative keeps breaking blocks, and holding the
   use button keeps placing them, on the vanilla 5- and 4-tick delays instead of
   needing one click per block.
-- Block-break particles now match 1.16.1. A full cube sheds the vanilla
+- Block-break particles now match 26.1. A full cube sheds the vanilla
   4×4×4 = 64 dust pieces (fewer for the torch and cross-plant outline shapes),
   at the vanilla velocities, 0.8-blocks-per-second gravity, per-tick drag and
   4–40-tick lifetimes, with a random texture sub-tile per particle. Each one
@@ -809,7 +896,7 @@ simple versioned history while it is in beta.
   and lights up next to a torch exactly like the block it came from instead of
   staying full-bright everywhere.
 - Difficulty moved into each world save. It lives in the world's level data the
-  way 1.16.1 keeps it in `level.dat` and is no longer a global options entry;
+  way 26.1 keeps it in `level.dat` and is no longer a global options entry;
   a new world starts on Normal, the difficulty button only appears on the
   in-world options page, and it edits the open world's setting in place.
 
@@ -818,11 +905,11 @@ simple versioned history while it is in beta.
 - A wall torch floated off its wall in two ways. First, placed at an angle —
   onto a replaceable plant or a non-sturdy block — it could attach to a wall
   behind the placement cell and lean back toward the player; the fallback wall
-  search now walks toward the wall the player is looking at (1.16.1's
+  search now walks toward the wall the player is looking at (26.1's
   `getNearestLookingDirections`) instead of a fixed north/south/west/east sweep.
   Second, the model's root was inset 0.38 of a cell from the wall face, leaving
   a two-pixel gap that read as floating; the root now sits flush against the
-  wall, matching the 1.16.1 `WallTorchBlock` AABB that runs to the block face
+  wall, matching the 26.1 `WallTorchBlock` AABB that runs to the block face
   (the shared `kWallTorchInset` drives both the mesh and the selection box).
 - The title panorama's wide-angle distortion was concentrated in one corner
   instead of radiating from the centre. The cube's view ray was normalised per
@@ -869,7 +956,7 @@ simple versioned history while it is in beta.
   `DiffuseLighting` over the lightmap. Any block entity added later gets the same
   treatment by passing its sample to the shared world-cuboid draw.
 
-- The first-person eating animation followed 1.16.1's
+- The first-person eating animation followed 26.1's
   `HeldItemRenderer#applyEatOrDrinkTransformation` in name only. Its offsets were
   applied *inside* the item's own space — after the resting hand's -45° swing
   rotation, the first-person display transform and its 0.68 scale — so instead of
@@ -881,7 +968,7 @@ simple versioned history while it is in beta.
   clip also holds its last frame instead of looping, so the food no longer snapped
   back down to the hand when the render clock ran ahead of the 32-tick meal.
 - Eating in creative mode consumed the food: a creative player holding right-click
-  spent a stack the way a survival one would. Java 1.16.1 creative players run the
+  spent a stack the way a survival one would. Java 26.1 creative players run the
   full meal without gaining hunger or spending the item, so the finished meal now
   skips both the hunger restore and the consumption in creative, while survival
   still eats as before.

@@ -1,5 +1,7 @@
 #include "audio/AudioSystem.hpp"
 
+#include "assets/SoundRegistry.hpp"
+
 #include <miniaudio.h>
 
 #include <algorithm>
@@ -10,6 +12,8 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -43,34 +47,23 @@ const char* blockSoundFamilyName(BlockSoundFamily family) {
     case BlockSoundFamily::Gravel:
         return "gravel";
     case BlockSoundFamily::Cloth:
-        return "cloth";
+        // 26.1's event family is block.wool.*, even though the legacy OGG
+        // filenames selected by sounds.json are still step/cloth*.ogg.
+        return "wool";
     case BlockSoundFamily::Glass:
         return "glass";
     }
     return "stone";
 }
 
-// The step sound directories are uneven in 1.16.1: stone, grass and wood have
-// six clips each, sand five, and gravel and cloth four. Every dig family has
-// four. Rolling a variation past the real count logs a missing asset on every
-// play, which is exactly the sand6 spam seen when walking on sand.
-[[nodiscard]] int stepVariationCount(BlockSoundFamily family) {
-    switch (family) {
-    case BlockSoundFamily::Sand:
-        return 5;
-    case BlockSoundFamily::Gravel:
-        return 4;
-    case BlockSoundFamily::Cloth:
-        return 4;
-    default:
-        return 6;
-    }
+[[nodiscard]] std::string blockEvent(BlockSoundFamily family, std::string_view action) {
+    return "block." + std::string{blockSoundFamilyName(family)} + "." + std::string{action};
 }
 
 class AudioSystem::Impl final {
   public:
-    Impl(std::filesystem::path initialSoundRoot, float initialMasterVolume)
-        : soundRoot(std::move(initialSoundRoot)),
+    Impl(const assets::ResourceProvider& resourceProvider, float initialMasterVolume)
+        : provider(&resourceProvider), registry(assets::SoundRegistry::load(resourceProvider)),
           masterVolume(std::clamp(initialMasterVolume, 0.0F, 1.0F)) {
         ma_engine_config engineConfig = ma_engine_config_init();
         engineConfig.listenerCount = 1;
@@ -133,34 +126,30 @@ class AudioSystem::Impl final {
         });
     }
 
-    void playFamily(const char* directory, BlockSoundFamily family, int variations,
-                    const glm::vec3& position, float volume, float pitch) {
-        const auto name = std::string{blockSoundFamilyName(family)};
-        play(soundRoot / directory / (name + std::to_string(nextVariation(variations)) + ".ogg"),
-             position, volume, pitch);
-    }
-
-    // One clip of a species' sound set. A variation count of one plays the bare
-    // `<root>/<base>.ogg` (vanilla death clips have no `1` suffix); more than
-    // one rolls `<root>/<base><n>.ogg`, the way the ambient/hurt steps roll
-    // their variations.
-    void playMobClip(const MobSoundProfile& profile, std::string_view base, int variations,
-                     const glm::vec3& position, float volume, float pitch) {
-        if (variations <= 0) {
+    void playEvent(std::string_view event, const glm::vec3& position, float volume, float pitch) {
+        if (event.empty()) {
             return;
         }
-        std::string fileName{base};
-        if (variations > 1) {
-            fileName += std::to_string(nextVariation(variations));
+        const assets::SoundEntry* entry = registry.pick(event, randomState);
+        if (entry == nullptr) {
+            if (warnedMissingEvents.emplace(event).second) {
+                std::cerr << "Missing sound event: " << event << '\n';
+            }
+            return;
         }
-        fileName += ".ogg";
-        play(soundRoot / profile.root / fileName, position, volume, pitch);
+        play(resolveSound(entry->name), position, volume * entry->volume, pitch * entry->pitch);
     }
 
     // LivingEntity#getSoundPitch: (nextFloat() - nextFloat()) * 0.2 + 1.0, the
     // ±0.2 pitch roll every mob clip except footsteps uses.
-    [[nodiscard]] float nextPitch() {
-        return (randomUnit() - randomUnit()) * 0.2F + 1.0F;
+    [[nodiscard]] float nextPitch() { return (randomUnit() - randomUnit()) * 0.2F + 1.0F; }
+
+    // sounds.json names omit the extension and may carry a namespace. Resolve
+    // the selected physical file through the layered provider, preserving
+    // per-file overlay semantics after event selection.
+    [[nodiscard]] std::filesystem::path resolveSound(std::string_view name) const {
+        const auto parsed = assets::ResourceLocation::parse(name);
+        return provider->locate(assets::sounds(parsed.path + ".ogg", parsed.space));
     }
 
     void play(const std::filesystem::path& path, const glm::vec3& position, float volume,
@@ -198,27 +187,24 @@ class AudioSystem::Impl final {
         activeSounds.push_back(std::move(active));
     }
 
-    [[nodiscard]] int nextVariation(int count) {
-        randomState = randomState * 1664525U + 1013904223U;
-        return static_cast<int>(randomState % static_cast<std::uint32_t>(count)) + 1;
-    }
-
     // A value in [0, 1) from the top 24 bits (an LCG's low bits are weak).
     [[nodiscard]] float randomUnit() {
         randomState = randomState * 1664525U + 1013904223U;
         return static_cast<float>(randomState >> 8) / static_cast<float>(1U << 24);
     }
 
-    std::filesystem::path soundRoot;
+    const assets::ResourceProvider* provider = nullptr;
+    assets::SoundRegistry registry;
     float masterVolume = 1.0F;
     ma_engine engine{};
     bool initialized = false;
     std::uint32_t randomState = 0x4D43564BU;
+    std::unordered_set<std::string> warnedMissingEvents;
     std::vector<std::unique_ptr<ActiveSound>> activeSounds;
 };
 
-AudioSystem::AudioSystem(std::filesystem::path soundRoot, float masterVolume)
-    : implementation(std::make_unique<Impl>(std::move(soundRoot), masterVolume)) {}
+AudioSystem::AudioSystem(const assets::ResourceProvider& provider, float masterVolume)
+    : implementation(std::make_unique<Impl>(provider, masterVolume)) {}
 
 AudioSystem::~AudioSystem() = default;
 
@@ -234,119 +220,83 @@ void AudioSystem::updateListener(const glm::vec3& position, const glm::vec3& dir
 void AudioSystem::update() { implementation->update(); }
 
 void AudioSystem::playBlockBreak(world::Block block, const glm::vec3& position) {
-    const auto family = blockSoundFamily(block);
-    if (family == BlockSoundFamily::Glass) {
-        implementation->playFamily("random", family, 3, position, 1.0F, 1.0F);
-        return;
-    }
-    implementation->playFamily("dig", family, 4, position, 1.0F, 0.8F);
+    implementation->playEvent(blockEvent(blockSoundFamily(block), "break"), position, 1.0F, 0.8F);
 }
 
 void AudioSystem::playBlockHit(world::Block block, const glm::vec3& position) {
     // WorldRenderer.playEvent uses the block sound at roughly one quarter
     // volume for the four-tick mining cadence.
-    const auto family = blockSoundFamily(block) == BlockSoundFamily::Glass
-                            ? BlockSoundFamily::Stone
-                            : blockSoundFamily(block);
-    implementation->playFamily("dig", family, 4, position, 0.25F, 0.5F);
+    implementation->playEvent(blockEvent(blockSoundFamily(block), "hit"), position, 0.25F, 0.5F);
 }
 
 void AudioSystem::playBlockPlace(world::Block block, const glm::vec3& position) {
-    const auto family = blockSoundFamily(block) == BlockSoundFamily::Glass
-                            ? BlockSoundFamily::Stone
-                            : blockSoundFamily(block);
-    implementation->playFamily("dig", family, 4, position, 0.8F, 0.8F);
+    implementation->playEvent(blockEvent(blockSoundFamily(block), "place"), position, 0.8F, 0.8F);
 }
 
 void AudioSystem::playButtonClick(const glm::vec3& position) {
-    // SoundEvents.UI_BUTTON_CLICK, which this 1.16.1 build's sounds.json maps to
-    // random/click_stereo, played the way AbstractButtonWidget#playDownSound
-    // does: volume 1.0, pitch 1.0, master category.
-    implementation->play(implementation->soundRoot / "random" / "click_stereo.ogg", position,
-                         1.0F, 1.0F);
+    implementation->playEvent("ui.button.click", position, 1.0F, 1.0F);
 }
 
 void AudioSystem::playFootstep(world::Block block, const glm::vec3& position, float volume) {
-    const auto family = blockSoundFamily(block) == BlockSoundFamily::Glass
-                            ? BlockSoundFamily::Stone
-                            : blockSoundFamily(block);
-    implementation->playFamily("step", family, stepVariationCount(family), position, volume,
-                               1.0F);
+    implementation->playEvent(blockEvent(blockSoundFamily(block), "step"), position, volume, 1.0F);
 }
 
 void AudioSystem::playItemPickup(const glm::vec3& position) {
-    implementation->play(implementation->soundRoot / "random" / "pop.ogg", position, 0.25F, 1.8F);
+    implementation->playEvent("entity.item.pickup", position, 0.25F, 1.8F);
 }
 
 void AudioSystem::playSplash(const glm::vec3& position, float volume) {
-    implementation->play(implementation->soundRoot / "liquid" /
-                             (implementation->nextVariation(2) == 1 ? "splash.ogg" : "splash2.ogg"),
-                         position, volume, 1.0F);
+    implementation->playEvent("entity.player.splash", position, volume, 1.0F);
 }
 
 void AudioSystem::playPlayerHurt(const glm::vec3& position) {
-    implementation->play(implementation->soundRoot / "damage" /
-                             ("hit" + std::to_string(implementation->nextVariation(3)) + ".ogg"),
-                         position, 0.7F, 1.0F);
+    implementation->playEvent("entity.player.hurt", position, 0.7F, 1.0F);
 }
 
 void AudioSystem::playPlayerFall(const glm::vec3& position, bool heavy) {
-    implementation->play(implementation->soundRoot / "damage" /
-                             (heavy ? "fallbig.ogg" : "fallsmall.ogg"),
-                         position, 0.7F, 1.0F);
+    implementation->playEvent(heavy ? "entity.player.big_fall" : "entity.player.small_fall",
+                              position, 0.7F, 1.0F);
 }
 
 void AudioSystem::playEat(const glm::vec3& position) {
     // The three eating variants the way SoundEvents.ENTITY_GENERIC_EAT does.
-    implementation->play(implementation->soundRoot / "random" /
-                             ("eat" + std::to_string(implementation->nextVariation(3)) + ".ogg"),
-                         position, 1.0F, 1.0F);
+    implementation->playEvent("entity.generic.eat", position, 1.0F, 1.0F);
 }
 
 void AudioSystem::playBurp(const glm::vec3& position) {
-    implementation->play(implementation->soundRoot / "random" / "burp.ogg", position, 1.0F,
-                         1.0F);
+    implementation->playEvent("entity.player.burp", position, 1.0F, 1.0F);
 }
 
 void AudioSystem::playItemBreak(const glm::vec3& position) {
     // ENTITY_ITEM_BREAK: volume 0.8, and vanilla spreads the pitch a little.
-    implementation->play(implementation->soundRoot / "random" / "break.ogg", position, 0.8F,
-                         0.9F);
+    implementation->playEvent("entity.item.break", position, 0.8F, 0.9F);
 }
 
 void AudioSystem::playCreatureHurt(const MobSoundProfile& profile, const glm::vec3& position) {
-    implementation->playMobClip(profile, profile.hurtBase, profile.hurtVariations, position,
-                                profile.volume, implementation->nextPitch());
+    implementation->playEvent(profile.hurtEvent, position, profile.volume,
+                              implementation->nextPitch());
 }
 
 void AudioSystem::playCreatureDeath(const MobSoundProfile& profile, const glm::vec3& position) {
-    implementation->playMobClip(profile, profile.deathBase, profile.deathVariations, position,
-                                profile.volume, implementation->nextPitch());
+    implementation->playEvent(profile.deathEvent, position, profile.volume,
+                              implementation->nextPitch());
 }
 
 void AudioSystem::playCreatureAmbient(const MobSoundProfile& profile, const glm::vec3& position) {
-    implementation->playMobClip(profile, profile.ambientBase, profile.ambientVariations, position,
-                                profile.volume, implementation->nextPitch());
+    implementation->playEvent(profile.ambientEvent, position, profile.volume,
+                              implementation->nextPitch());
 }
 
 void AudioSystem::playCreatureStep(const MobSoundProfile& profile, const glm::vec3& position) {
-    implementation->playMobClip(profile, profile.stepBase, profile.stepVariations, position,
-                                profile.stepVolume, 1.0F);
+    implementation->playEvent(profile.stepEvent, position, profile.stepVolume, 1.0F);
 }
 
 void AudioSystem::playWeatherRain(const glm::vec3& position, float volume) {
-    // SoundEvents.WEATHER_RAIN: weather/rain1-8.
-    implementation->play(implementation->soundRoot / "ambient" / "weather" /
-                             ("rain" + std::to_string(implementation->nextVariation(8)) + ".ogg"),
-                         position, volume, 1.0F);
+    implementation->playEvent("weather.rain", position, volume, 1.0F);
 }
 
 void AudioSystem::playWeatherRainAbove(const glm::vec3& position, float volume) {
-    // SoundEvents.WEATHER_RAIN_ABOVE: the first four rain clips, played muffled
-    // (0.5 pitch) when the drops land on a roof over the listener.
-    implementation->play(implementation->soundRoot / "ambient" / "weather" /
-                             ("rain" + std::to_string(implementation->nextVariation(4)) + ".ogg"),
-                         position, volume, 0.5F);
+    implementation->playEvent("weather.rain.above", position, volume, 1.0F);
 }
 
 } // namespace mc::audio

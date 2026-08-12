@@ -17,5 +17,7 @@ int main() {
     assert(blockSoundFamily(Block::Glass) == BlockSoundFamily::Glass);
     assert(std::string_view{mc::audio::blockSoundFamilyName(BlockSoundFamily::Glass)} == "glass");
     assert(std::string_view{mc::audio::blockSoundFamilyName(BlockSoundFamily::Wood)} == "wood");
+    // The gameplay family remains Cloth, but 26.1 names the event block.wool.*.
+    assert(std::string_view{mc::audio::blockSoundFamilyName(BlockSoundFamily::Cloth)} == "wool");
     return 0;
 }

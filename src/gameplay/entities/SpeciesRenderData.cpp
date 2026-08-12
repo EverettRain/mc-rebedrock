@@ -1,6 +1,7 @@
 #include "gameplay/entities/SpeciesRenderData.hpp"
 
 #include "assets/ImageData.hpp"
+#include "assets/ResourceProvider.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 
 #include <algorithm>
@@ -201,8 +202,8 @@ std::vector<SpeciesRenderModel> buildSpeciesModels(const std::filesystem::path& 
                 species.model.animations = animation::AnimationLibrary::parse(builtin->animation);
                 species.loaded = species.model.model.boneCount() > 0U;
             } catch (const std::exception& exception) {
-                std::cerr << "Built-in " << type->id().path << " model failed to parse: "
-                          << exception.what() << '\n';
+                std::cerr << "Built-in " << type->id().path
+                          << " model failed to parse: " << exception.what() << '\n';
                 species.loaded = false;
             }
         }
@@ -238,7 +239,7 @@ glm::vec2 entityTextureSize(const animation::SkeletalModel& model, const glm::ve
 }
 
 std::vector<std::uint8_t> buildSpeciesSkin(const std::filesystem::path& resourceRoot,
-                                           const std::filesystem::path& vanillaTexturesRoot,
+                                           const assets::ResourceProvider& resources,
                                            const animation::SkeletalModel& model,
                                            std::string_view texturePath,
                                            const glm::vec2& fallbackSize) {
@@ -256,15 +257,12 @@ std::vector<std::uint8_t> buildSpeciesSkin(const std::filesystem::path& resource
                 const std::uint32_t copyH = std::min(height, imageHeight);
                 for (std::uint32_t y = 0; y < copyH; ++y) {
                     for (std::uint32_t x = 0; x < copyW; ++x) {
-                        const std::size_t src =
-                            (static_cast<std::size_t>(y) * imageWidth + x) * 4U;
-                        const std::size_t dst =
-                            (static_cast<std::size_t>(y) * width + x) * 4U;
+                        const std::size_t src = (static_cast<std::size_t>(y) * imageWidth + x) * 4U;
+                        const std::size_t dst = (static_cast<std::size_t>(y) * width + x) * 4U;
                         std::memcpy(&rgba[dst], &image.rgba[src], 4U);
                     }
                 }
-                std::cout << "Loaded " << texturePath << " skin " << copyW << 'x' << copyH
-                          << '\n';
+                std::cout << "Loaded " << texturePath << " skin " << copyW << 'x' << copyH << '\n';
                 return true;
             }
         } catch (const std::exception&) {
@@ -272,10 +270,11 @@ std::vector<std::uint8_t> buildSpeciesSkin(const std::filesystem::path& resource
         }
         return false;
     };
-    if (loadInto(resourceRoot / "entity" / std::string{texturePath})) {
+    const auto vanillaSkin = assets::textures(std::string{texturePath});
+    if (resources.exists(vanillaSkin) && loadInto(resources.locate(vanillaSkin))) {
         return rgba;
     }
-    if (loadInto(vanillaTexturesRoot / std::string{texturePath})) {
+    if (loadInto(resourceRoot / std::string{texturePath})) {
         return rgba;
     }
     // Procedural fallback: the atlas *is* the declared box-UV space, so
@@ -283,8 +282,7 @@ std::vector<std::uint8_t> buildSpeciesSkin(const std::filesystem::path& resource
     // the model still reads without the .png, through the very same
     // mapping. Nets that escape the declaration are clipped, which is
     // exactly what a real skin would show (the sampler repeats).
-    const auto fillRect = [&](const animation::BoxUvRect& rect,
-                              std::array<std::uint8_t, 3> base,
+    const auto fillRect = [&](const animation::BoxUvRect& rect, std::array<std::uint8_t, 3> base,
                               std::array<std::uint8_t, 3> border) {
         const int x0 = static_cast<int>(std::lround(rect.origin.x));
         const int y0 = static_cast<int>(std::lround(rect.origin.y));

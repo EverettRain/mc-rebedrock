@@ -45,8 +45,8 @@ inline constexpr float kChestItemTopLayer = 164.0F;
 inline constexpr float kChestItemFrontLayer = 165.0F;
 inline constexpr float kChestItemSideLayer = 166.0F;
 inline constexpr float kFurnaceFrontLayer = 167.0F;
-// Eight vanilla moon_phases.png tiles (4x2 grid) fill the fixed layers 169-176
-// and sun.png sits at 177. The sky shader reads them through the
+// Eight 26.1 environment/celestial/moon/<phase>.png sprites fill fixed layers
+// 169-176 and environment/celestial/sun.png sits at 177. The sky shader reads them through the
 // CameraUniform.celestialLayers uniform (which the renderer fills from these
 // bases), so the two never drift when the atlas layout changes.
 inline constexpr float kMoonPhaseFirstLayer = 169.0F;

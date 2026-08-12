@@ -32,13 +32,17 @@ struct BoxRaycastHit final {
     glm::ivec3 normal{};
 };
 
-[[nodiscard]] SelectionBox torchSelectionBox(Block block) {
+// A wall torch's lean is its FACING state now, so the box needs the cell's
+// orientation rather than just its block.
+[[nodiscard]] SelectionBox torchSelectionBox(Block block, BlockOrientation orientation) {
     glm::vec3 facing{0.0F};
-    if (block == Block::WallTorchNorth) facing.z = -1.0F;
-    if (block == Block::WallTorchEast) facing.x = 1.0F;
-    if (block == Block::WallTorchSouth) facing.z = 1.0F;
-    if (block == Block::WallTorchWest) facing.x = -1.0F;
-    const bool wall = block != Block::Torch;
+    const bool wall = block == Block::WallTorch;
+    if (wall) {
+        if (orientation == BlockOrientation::North) facing.z = -1.0F;
+        if (orientation == BlockOrientation::East) facing.x = 1.0F;
+        if (orientation == BlockOrientation::South) facing.z = 1.0F;
+        if (orientation == BlockOrientation::West) facing.x = -1.0F;
+    }
     const glm::vec3 base = wall
         ? glm::vec3{0.5F, 0.18F, 0.5F} - facing * kWallTorchInset
         : glm::vec3{0.5F, 0.0F, 0.5F};
@@ -77,7 +81,7 @@ struct BoxRaycastHit final {
 [[nodiscard]] std::optional<SelectionBox> blockInteractionShape(
     const World& world, glm::ivec3 cell, Block block) {
     if (isTorch(block)) {
-        return torchSelectionBox(block);
+        return torchSelectionBox(block, world.orientation(cell.x, cell.y, cell.z));
     }
     if (isCrop(block)) {
         const int age = cropAge(world.orientation(cell.x, cell.y, cell.z));
@@ -228,7 +232,8 @@ BlockBounds blockSelectionBounds(
                                cropAge(world.orientation(position.x, position.y, position.z))),
                      1.0F}};
         case BlockModel::Torch: {
-            const SelectionBox box = torchSelectionBox(block);
+            const SelectionBox box = torchSelectionBox(
+                block, world.orientation(position.x, position.y, position.z));
             return {box.minimum, box.maximum};
         }
         case BlockModel::Chest:

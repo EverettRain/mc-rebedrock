@@ -314,15 +314,15 @@ template <std::size_t Size>
     return nullptr;
 }
 
-[[nodiscard]] const FurnaceRecipe* matchedFurnaceRecipe(const ItemStack& input) {
+} // namespace
+
+const FurnaceRecipe* matchedFurnaceRecipe(const ItemStack& input) {
     const auto& recipes = furnaceRecipeStorage();
     const auto recipe = std::ranges::find_if(recipes, [&input](const FurnaceRecipe& candidate) {
         return ingredientMatches(candidate.input, input);
     });
     return recipe == recipes.end() ? nullptr : &*recipe;
 }
-
-} // namespace
 
 std::span<const CraftingRecipe> craftingRecipes() {
     return craftingRecipeStorage();
@@ -402,38 +402,6 @@ void CraftingSystem::clickTableSlot(
     inventory.clickExternalSlot(tableGrid_[index], button);
 }
 
-void CraftingSystem::clickFurnaceInput(
-    Inventory& inventory, InventoryMouseButton button, bool shiftHeld) {
-    if (shiftHeld) {
-        inventory.quickMoveInto(furnaceInput_);
-        return;
-    }
-    inventory.clickExternalSlot(furnaceInput_, button);
-}
-void CraftingSystem::clickFurnaceFuel(
-    Inventory& inventory, InventoryMouseButton button, bool shiftHeld) {
-    if (shiftHeld) {
-        inventory.quickMoveInto(furnaceFuel_);
-        return;
-    }
-    inventory.clickExternalSlot(furnaceFuel_, button);
-}
-void CraftingSystem::clickFurnaceOutput(Inventory& inventory, bool shiftHeld) {
-    if (furnaceOutput_.empty()) {
-        return;
-    }
-    // Plain click takes the smelted result onto the cursor; Shift-click is
-    // QUICK_MOVE and routes it into the player inventory (main grid first, then
-    // the hotbar), exactly like vanilla's furnace result slot.
-    if (shiftHeld) {
-        inventory.quickMoveInto(furnaceOutput_);
-        return;
-    }
-    if (inventory.mergeIntoCursor(furnaceOutput_)) {
-        furnaceOutput_ = {};
-    }
-}
-
 namespace {
 
 template <std::size_t Size>
@@ -469,35 +437,6 @@ bool CraftingSystem::movePlayerInto(ItemStack& stack) {
 
 bool CraftingSystem::moveTableInto(ItemStack& stack) {
     return moveIntoGrid(tableGrid_, stack);
-}
-
-bool CraftingSystem::moveFurnaceInto(ItemStack& stack) {
-    if (stack.empty()) return true;
-    // QUICK_MOVE routes a smeltable item to the input slot and a burnable one
-    // to the fuel slot, merging into a partial stack just like a click would.
-    ItemStack* target = nullptr;
-    if (matchedFurnaceRecipe(stack) != nullptr) {
-        target = &furnaceInput_;
-    } else if (fuelBurnTicks(stack) > 0) {
-        target = &furnaceFuel_;
-    }
-    if (target == nullptr) return false;
-    if (target->empty()) {
-        *target = stack;
-        stack = {};
-        return true;
-    }
-    if (sameItem(*target, stack) && target->count < itemMaximumStackSize(stack)) {
-        const auto moved = std::min(
-            stack.count, static_cast<std::uint8_t>(itemMaximumStackSize(stack) - target->count));
-        target->count = static_cast<std::uint8_t>(target->count + moved);
-        stack.count = static_cast<std::uint8_t>(stack.count - moved);
-        if (stack.count == 0U) {
-            stack = {};
-            return true;
-        }
-    }
-    return false;
 }
 
 template <std::size_t Size>
@@ -551,56 +490,6 @@ bool CraftingSystem::craftPlayer(Inventory& inventory, bool shiftHeld) {
 
 bool CraftingSystem::craftTable(Inventory& inventory, bool shiftHeld) {
     return craftInto(inventory, shiftHeld, tableGrid_);
-}
-
-float CraftingSystem::furnaceProgress() const {
-    return cookDurationTicks_ > 0
-        ? std::clamp(
-              static_cast<float>(cookTicks_) /
-                  static_cast<float>(cookDurationTicks_),
-              0.0F,
-              1.0F)
-        : 0.0F;
-}
-float CraftingSystem::furnaceFuelProgress() const {
-    return initialBurnTicks_ > 0
-        ? static_cast<float>(burnTicks_) / static_cast<float>(initialBurnTicks_)
-        : 0.0F;
-}
-
-void CraftingSystem::tickFurnace() {
-    const auto* recipe = matchedFurnaceRecipe(furnaceInput_);
-    if (recipe == nullptr || recipe->identifier != activeFurnaceRecipe_) {
-        cookTicks_ = 0;
-        activeFurnaceRecipe_ = recipe != nullptr ? recipe->identifier : std::string_view{};
-        cookDurationTicks_ = recipe != nullptr ? recipe->cookTicks : 200;
-    }
-    const ItemStack result = recipe != nullptr ? recipe->output : ItemStack{};
-    const bool outputAccepts = recipe != nullptr &&
-        (furnaceOutput_.empty() ||
-         (sameItem(furnaceOutput_, result) && furnaceOutput_.count <
-              itemMaximumStackSize(furnaceOutput_)));
-    const int availableFuelTicks = fuelBurnTicks(furnaceFuel_);
-    if (burnTicks_ <= 0 && outputAccepts && availableFuelTicks > 0) {
-        --furnaceFuel_.count;
-        if (furnaceFuel_.count == 0U) furnaceFuel_ = {};
-        burnTicks_ = availableFuelTicks;
-        initialBurnTicks_ = availableFuelTicks;
-    }
-    const bool burning = burnTicks_ > 0;
-    if (burning && outputAccepts) {
-        ++cookTicks_;
-        if (cookTicks_ >= cookDurationTicks_) {
-            cookTicks_ = 0;
-            --furnaceInput_.count;
-            if (furnaceInput_.count == 0U) furnaceInput_ = {};
-            if (furnaceOutput_.empty()) furnaceOutput_ = result;
-            else ++furnaceOutput_.count;
-        }
-    } else {
-        cookTicks_ = 0;
-    }
-    if (burnTicks_ > 0) --burnTicks_;
 }
 
 void CraftingSystem::stowAll(Inventory& inventory) {

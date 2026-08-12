@@ -9,15 +9,9 @@ bool UiRect::contains(float pointX, float pointY) const {
     return pointX >= x && pointX < x + width && pointY >= y && pointY < y + height;
 }
 
-UiPoint windowToFramebuffer(
-    double cursorX,
-    double cursorY,
-    int windowWidth,
-    int windowHeight,
-    int framebufferWidth,
-    int framebufferHeight) {
-    if (windowWidth <= 0 || windowHeight <= 0 ||
-        framebufferWidth <= 0 || framebufferHeight <= 0) {
+UiPoint windowToFramebuffer(double cursorX, double cursorY, int windowWidth, int windowHeight,
+                            int framebufferWidth, int framebufferHeight) {
+    if (windowWidth <= 0 || windowHeight <= 0 || framebufferWidth <= 0 || framebufferHeight <= 0) {
         return {};
     }
     return {
@@ -28,10 +22,7 @@ UiPoint windowToFramebuffer(
     };
 }
 
-UiRect framebufferToClip(
-    const UiRect& rectangle,
-    float framebufferWidth,
-    float framebufferHeight) {
+UiRect framebufferToClip(const UiRect& rectangle, float framebufferWidth, float framebufferHeight) {
     if (framebufferWidth <= 0.0F || framebufferHeight <= 0.0F) {
         return {};
     }
@@ -45,13 +36,9 @@ UiRect framebufferToClip(
     };
 }
 
-UiRect tiledBackgroundSource(
-    float framebufferWidth,
-    float framebufferHeight,
-    float guiScale) {
-    // The generated dirt atlas contains 32 px tiles. Sampling 1/guiScale of the
-    // atlas maps one tile onto 32 * guiScale framebuffer pixels — the vanilla
-    // 32-pixel options_background tile scaled by the current GUI scale — while
+UiRect tiledBackgroundSource(float framebufferWidth, float framebufferHeight, float guiScale) {
+    // The generated 26.1 menu atlas contains 16 px tiles. Sampling 1/guiScale
+    // maps one tile onto 16 * guiScale framebuffer pixels while
     // keeping the pattern square and independent of the window aspect ratio.
     const float sourceScale = 1.0F / std::max(guiScale, 1.0F);
     return {
@@ -62,16 +49,12 @@ UiRect tiledBackgroundSource(
     };
 }
 
-int HudLayout::calculateGuiScale(
-    int framebufferWidth,
-    int framebufferHeight,
-    int requestedScale) {
+int HudLayout::calculateGuiScale(int framebufferWidth, int framebufferHeight, int requestedScale) {
     const int safeWidth = std::max(framebufferWidth, 1);
     const int safeHeight = std::max(framebufferHeight, 1);
     const int requested = std::max(requestedScale, 0);
     int scale = 1;
-    while ((requested == 0 || scale < requested) &&
-           safeWidth / (scale + 1) >= 320 &&
+    while ((requested == 0 || scale < requested) && safeWidth / (scale + 1) >= 320 &&
            safeHeight / (scale + 1) >= 240) {
         ++scale;
     }
@@ -79,10 +62,9 @@ int HudLayout::calculateGuiScale(
 }
 
 HudLayout::HudLayout(float width, float height, int requestedScale)
-    : width_(width),
-      height_(height),
-      scale_(static_cast<float>(calculateGuiScale(
-          static_cast<int>(width), static_cast<int>(height), requestedScale))) {}
+    : width_(width), height_(height),
+      scale_(static_cast<float>(
+          calculateGuiScale(static_cast<int>(width), static_cast<int>(height), requestedScale))) {}
 
 UiRect HudLayout::hotbarSlot(std::size_t index) const {
     if (index >= kHotbarSlots) {
@@ -134,8 +116,7 @@ UiRect HudLayout::experienceBar() const {
 UiRect HudLayout::inventoryPanel() const {
     const float panelWidth = 176.0F * scale_;
     const float panelHeight = 166.0F * scale_;
-    return {(width_ - panelWidth) * 0.5F, (height_ - panelHeight) * 0.5F,
-            panelWidth, panelHeight};
+    return {(width_ - panelWidth) * 0.5F, (height_ - panelHeight) * 0.5F, panelWidth, panelHeight};
 }
 
 UiRect HudLayout::inventorySlot(std::size_t index) const {
@@ -145,9 +126,7 @@ UiRect HudLayout::inventorySlot(std::size_t index) const {
     const auto panel = inventoryPanel();
     const std::size_t row = index < 9 ? 0U : (index - 9U) / 9U;
     const std::size_t column = index < 9 ? index : (index - 9U) % 9U;
-    const float top = index < 9
-        ? 142.0F
-        : 84.0F + static_cast<float>(row) * 18.0F;
+    const float top = index < 9 ? 142.0F : 84.0F + static_cast<float>(row) * 18.0F;
     return {
         panel.x + (8.0F + static_cast<float>(column) * 18.0F) * scale_,
         panel.y + top * scale_,
@@ -157,12 +136,12 @@ UiRect HudLayout::inventorySlot(std::size_t index) const {
 }
 
 UiRect HudLayout::chestSlot(std::size_t index) const {
-    if (index >= 27U) throw std::out_of_range("chest slot index is outside 0..26");
+    if (index >= 27U)
+        throw std::out_of_range("chest slot index is outside 0..26");
     const auto panel = inventoryPanel();
-    return {
-        panel.x + (8.0F + static_cast<float>(index % 9U) * 18.0F) * scale_,
-        panel.y + (18.0F + static_cast<float>(index / 9U) * 18.0F) * scale_,
-        16.0F * scale_, 16.0F * scale_};
+    return {panel.x + (8.0F + static_cast<float>(index % 9U) * 18.0F) * scale_,
+            panel.y + (18.0F + static_cast<float>(index / 9U) * 18.0F) * scale_, 16.0F * scale_,
+            16.0F * scale_};
 }
 
 UiRect HudLayout::chestInventorySlot(std::size_t index) const {
@@ -172,26 +151,23 @@ UiRect HudLayout::chestInventorySlot(std::size_t index) const {
     const auto panel = inventoryPanel();
     const std::size_t row = index < 9U ? 0U : (index - 9U) / 9U;
     const std::size_t column = index < 9U ? index : (index - 9U) % 9U;
-    const float top = index < 9U
-        ? 143.0F
-        : 85.0F + static_cast<float>(row) * 18.0F;
-    return {
-        panel.x + (8.0F + static_cast<float>(column) * 18.0F) * scale_,
-        panel.y + top * scale_, 16.0F * scale_, 16.0F * scale_};
+    const float top = index < 9U ? 143.0F : 85.0F + static_cast<float>(row) * 18.0F;
+    return {panel.x + (8.0F + static_cast<float>(column) * 18.0F) * scale_, panel.y + top * scale_,
+            16.0F * scale_, 16.0F * scale_};
 }
 
 UiRect HudLayout::playerCraftingSlot(std::size_t index) const {
-    if (index >= 4U) throw std::out_of_range("player crafting slot index");
+    if (index >= 4U)
+        throw std::out_of_range("player crafting slot index");
     const auto panel = inventoryPanel();
     return {panel.x + (98.0F + static_cast<float>(index % 2U) * 18.0F) * scale_,
-            panel.y + (18.0F + static_cast<float>(index / 2U) * 18.0F) * scale_,
-            16.0F * scale_, 16.0F * scale_};
+            panel.y + (18.0F + static_cast<float>(index / 2U) * 18.0F) * scale_, 16.0F * scale_,
+            16.0F * scale_};
 }
 
 UiRect HudLayout::playerCraftingOutput() const {
     const auto panel = inventoryPanel();
-    return {panel.x + 154.0F * scale_, panel.y + 28.0F * scale_,
-            16.0F * scale_, 16.0F * scale_};
+    return {panel.x + 154.0F * scale_, panel.y + 28.0F * scale_, 16.0F * scale_, 16.0F * scale_};
 }
 
 PlayerPreviewLayout HudLayout::playerPreview(bool creative) const {
@@ -203,8 +179,7 @@ PlayerPreviewLayout HudLayout::playerPreview(bool creative) const {
         return {
             {panel.x + 88.0F * scale_, panel.y + 45.0F * scale_},
             {panel.x + 88.0F * scale_, panel.y + 15.0F * scale_},
-            {panel.x + 72.0F * scale_, panel.y + 7.0F * scale_,
-             34.0F * scale_, 39.0F * scale_},
+            {panel.x + 72.0F * scale_, panel.y + 7.0F * scale_, 34.0F * scale_, 39.0F * scale_},
             20.0F,
         };
     }
@@ -212,47 +187,42 @@ PlayerPreviewLayout HudLayout::playerPreview(bool creative) const {
     return {
         {panel.x + 51.0F * scale_, panel.y + 75.0F * scale_},
         {panel.x + 51.0F * scale_, panel.y + 25.0F * scale_},
-        {panel.x + 26.0F * scale_, panel.y + 8.0F * scale_,
-         49.0F * scale_, 70.0F * scale_},
+        {panel.x + 26.0F * scale_, panel.y + 8.0F * scale_, 49.0F * scale_, 70.0F * scale_},
         30.0F,
     };
 }
 
 UiRect HudLayout::tableCraftingSlot(std::size_t index) const {
-    if (index >= 9U) throw std::out_of_range("table crafting slot index");
+    if (index >= 9U)
+        throw std::out_of_range("table crafting slot index");
     const auto panel = inventoryPanel();
     return {panel.x + (30.0F + static_cast<float>(index % 3U) * 18.0F) * scale_,
-            panel.y + (17.0F + static_cast<float>(index / 3U) * 18.0F) * scale_,
-            16.0F * scale_, 16.0F * scale_};
+            panel.y + (17.0F + static_cast<float>(index / 3U) * 18.0F) * scale_, 16.0F * scale_,
+            16.0F * scale_};
 }
 
 UiRect HudLayout::tableCraftingOutput() const {
     const auto panel = inventoryPanel();
-    return {panel.x + 124.0F * scale_, panel.y + 35.0F * scale_,
-            16.0F * scale_, 16.0F * scale_};
+    return {panel.x + 124.0F * scale_, panel.y + 35.0F * scale_, 16.0F * scale_, 16.0F * scale_};
 }
 
 UiRect HudLayout::furnaceInputSlot() const {
     const auto panel = inventoryPanel();
-    return {panel.x + 56.0F * scale_, panel.y + 17.0F * scale_,
-            16.0F * scale_, 16.0F * scale_};
+    return {panel.x + 56.0F * scale_, panel.y + 17.0F * scale_, 16.0F * scale_, 16.0F * scale_};
 }
 UiRect HudLayout::furnaceFuelSlot() const {
     const auto panel = inventoryPanel();
-    return {panel.x + 56.0F * scale_, panel.y + 53.0F * scale_,
-            16.0F * scale_, 16.0F * scale_};
+    return {panel.x + 56.0F * scale_, panel.y + 53.0F * scale_, 16.0F * scale_, 16.0F * scale_};
 }
 UiRect HudLayout::furnaceOutputSlot() const {
     const auto panel = inventoryPanel();
-    return {panel.x + 116.0F * scale_, panel.y + 35.0F * scale_,
-            16.0F * scale_, 16.0F * scale_};
+    return {panel.x + 116.0F * scale_, panel.y + 35.0F * scale_, 16.0F * scale_, 16.0F * scale_};
 }
 
 UiRect HudLayout::creativePanel() const {
     const float panelWidth = 195.0F * scale_;
     const float panelHeight = 136.0F * scale_;
-    return {(width_ - panelWidth) * 0.5F, (height_ - panelHeight) * 0.5F,
-            panelWidth, panelHeight};
+    return {(width_ - panelWidth) * 0.5F, (height_ - panelHeight) * 0.5F, panelWidth, panelHeight};
 }
 
 UiRect HudLayout::creativeSlot(std::size_t index) const {
@@ -373,9 +343,7 @@ UiRect HudLayout::chatInput() const {
     };
 }
 
-UiRect HudLayout::menuButton(
-    std::size_t index,
-    std::size_t buttonCount) const {
+UiRect HudLayout::menuButton(std::size_t index, std::size_t buttonCount) const {
     if (buttonCount == 0U || buttonCount > kMaximumMenuButtons || index >= buttonCount) {
         throw std::out_of_range("menu button index or count is invalid");
     }
@@ -392,10 +360,8 @@ UiRect HudLayout::menuButton(
     };
 }
 
-UiRect HudLayout::bottomMenuButton(
-    std::size_t index,
-    std::size_t buttonCount,
-    std::size_t columnCount) const {
+UiRect HudLayout::bottomMenuButton(std::size_t index, std::size_t buttonCount,
+                                   std::size_t columnCount) const {
     if (buttonCount == 0U || buttonCount > kMaximumMenuButtons || index >= buttonCount ||
         columnCount == 0U || columnCount > buttonCount) {
         throw std::out_of_range("menu button index or count is invalid");
@@ -403,7 +369,7 @@ UiRect HudLayout::bottomMenuButton(
     constexpr float buttonWidth = 200.0F;
     constexpr float buttonHeight = 20.0F;
     constexpr float buttonStep = 24.0F;
-    constexpr float buttonGap = 4.0F;  // gap between adjacent buttons, like the vertical step
+    constexpr float buttonGap = 4.0F;     // gap between adjacent buttons, like the vertical step
     constexpr float bottomMargin = 16.0F; // canvas bottom to last button's bottom
     constexpr float screenMargin = 16.0F; // min gap from the button block to the screen edge
     const std::size_t rows = (buttonCount + columnCount - 1U) / columnCount;
@@ -413,14 +379,12 @@ UiRect HudLayout::bottomMenuButton(
     // centred as one unit, matching 1.16.1's adjacent button rows rather than
     // spreading the columns across their own screen halves. The width clamps
     // so a narrow canvas never pushes the block past the edges.
-    const float maxScaledWidth =
-        (width_ - 2.0F * screenMargin * scale_ -
-         static_cast<float>(columnCount - 1U) * buttonGap * scale_) /
-        static_cast<float>(columnCount);
+    const float maxScaledWidth = (width_ - 2.0F * screenMargin * scale_ -
+                                  static_cast<float>(columnCount - 1U) * buttonGap * scale_) /
+                                 static_cast<float>(columnCount);
     const float scaledWidth = std::min(buttonWidth * scale_, maxScaledWidth);
-    const float blockWidth =
-        static_cast<float>(columnCount) * scaledWidth +
-        static_cast<float>(columnCount - 1U) * buttonGap * scale_;
+    const float blockWidth = static_cast<float>(columnCount) * scaledWidth +
+                             static_cast<float>(columnCount - 1U) * buttonGap * scale_;
     const float blockX = (width_ - blockWidth) * 0.5F;
     const float blockBottom = height_ - bottomMargin * scale_;
     const float blockTop =
@@ -433,9 +397,7 @@ UiRect HudLayout::bottomMenuButton(
     };
 }
 
-UiRect HudLayout::videoSettingsButton(
-    std::size_t index,
-    std::size_t buttonCount) const {
+UiRect HudLayout::videoSettingsButton(std::size_t index, std::size_t buttonCount) const {
     if (buttonCount == 0U || buttonCount > kMaximumMenuButtons || index >= buttonCount) {
         throw std::out_of_range("menu button index or count is invalid");
     }
@@ -451,8 +413,7 @@ UiRect HudLayout::videoSettingsButton(
     const std::size_t totalRows = rows + 1U;
     // Vertically centre the whole block the way menuButton does (the first row
     // sits the same half-block above centre the single column would place).
-    const float blockTop =
-        height_ * 0.5F - static_cast<float>(totalRows) * 12.0F * scale_;
+    const float blockTop = height_ * 0.5F - static_cast<float>(totalRows) * 12.0F * scale_;
     const float maxScaledWidth =
         (width_ - 2.0F * screenMargin * scale_ - buttonGap * scale_) * 0.5F;
     const float scaledWidth = std::min(buttonWidth * scale_, maxScaledWidth);

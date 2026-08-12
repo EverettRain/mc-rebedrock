@@ -119,11 +119,15 @@ int main(int argc, char** argv) {
             const auto gameRoot = executable.parent_path().parent_path();
             const auto stagedResources = gameRoot / "resources";
             const auto stagedShaders = stagedResources / "shaders";
-            std::error_code resourceError;
+            // The game ships no Mojang assets, so a staged runtime is recognised
+            // by ReBedrock's own resources — the compiled shaders and the staging
+            // marker — never by a bundled vanilla tree. Minecraft content comes
+            // from a resource pack the player supplies at runtime.
             std::error_code shaderError;
-            if (std::filesystem::is_directory(
-                    stagedResources / "vanilla" / "1.16.1", resourceError) &&
-                std::filesystem::is_directory(stagedShaders, shaderError)) {
+            std::error_code markerError;
+            if (std::filesystem::is_directory(stagedShaders, shaderError) &&
+                std::filesystem::exists(stagedResources / ".runtime-assets-ready",
+                                        markerError)) {
                 resourceRoot = stagedResources;
                 shaderRoot = stagedShaders;
                 configRoot = gameRoot / "config";

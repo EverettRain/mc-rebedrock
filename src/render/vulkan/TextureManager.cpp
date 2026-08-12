@@ -3,20 +3,23 @@
 #include "render/vulkan/BlockAtlasBaker.hpp"
 
 #include "animation/SkeletalModel.hpp"
+#include "assets/FontProviders.hpp"
 #include "assets/ImageData.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "world/gen/Biome.hpp"
 #include "world/gen/LayeredBiomeSource.hpp"
 
 #include <glm/glm.hpp>
+#include <miniz.h>
 
 #include <algorithm>
 #include <array>
+#include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <exception>
 #include <fstream>
-#include <iomanip>
 #include <iostream>
 #include <ranges>
 #include <set>
@@ -52,6 +55,225 @@ constexpr std::size_t kPanoramaFaces = 6U;
     return atlas;
 }
 
+[[nodiscard]] assets::ImageData emptyRgbaAtlas(int width = 256, int height = 256) {
+    assets::ImageData atlas;
+    atlas.width = width;
+    atlas.height = height;
+    atlas.rgba.resize(static_cast<std::size_t>(width * height * 4));
+    return atlas;
+}
+
+void blit(assets::ImageData& destination, const assets::ImageData& source, int destinationX,
+          int destinationY) {
+    for (int sourceY = 0; sourceY < source.height; ++sourceY) {
+        const int targetY = destinationY + sourceY;
+        if (targetY < 0 || targetY >= destination.height) {
+            continue;
+        }
+        for (int sourceX = 0; sourceX < source.width; ++sourceX) {
+            const int targetX = destinationX + sourceX;
+            if (targetX < 0 || targetX >= destination.width) {
+                continue;
+            }
+            const auto sourceOffset =
+                static_cast<std::size_t>((sourceY * source.width + sourceX) * 4);
+            const auto targetOffset =
+                static_cast<std::size_t>((targetY * destination.width + targetX) * 4);
+            std::copy_n(source.rgba.begin() + static_cast<std::ptrdiff_t>(sourceOffset), 4,
+                        destination.rgba.begin() + static_cast<std::ptrdiff_t>(targetOffset));
+        }
+    }
+}
+
+struct UnihexPages final {
+    std::vector<std::uint8_t> sizes = std::vector<std::uint8_t>(0x10000U);
+    std::array<std::vector<std::uint8_t>, 256> alpha;
+    std::vector<bool> seen = std::vector<bool>(0x10000U);
+};
+
+struct BitmapProviderLayer final {
+    std::vector<std::uint8_t> alpha;
+    std::vector<std::pair<char32_t, ui::FontGlyph>> glyphs;
+};
+
+[[nodiscard]] std::vector<std::uint8_t> alphaAtlas256(const assets::ImageData& image) {
+    constexpr int kSize = 256;
+    std::vector<std::uint8_t> alpha(static_cast<std::size_t>(kSize * kSize));
+    for (int y = 0; y < kSize; ++y) {
+        const int sourceY = std::min(y * image.height / kSize, image.height - 1);
+        for (int x = 0; x < kSize; ++x) {
+            const int sourceX = std::min(x * image.width / kSize, image.width - 1);
+            alpha[static_cast<std::size_t>(y * kSize + x)] =
+                image.rgba[static_cast<std::size_t>((sourceY * image.width + sourceX) * 4 + 3)];
+        }
+    }
+    return alpha;
+}
+
+[[nodiscard]] BitmapProviderLayer
+loadBitmapProvider(const assets::ResourceProvider& resources,
+                   const assets::FontProviderDefinition& definition) {
+    BitmapProviderLayer result;
+    const auto image = assets::ImageData::loadRgbaOrMissing(resources.locate(definition.file));
+    const std::size_t rowCount = definition.chars.size();
+    std::size_t columnCount = 0U;
+    for (const auto& row : definition.chars) {
+        columnCount = std::max(columnCount, row.size());
+    }
+    if (rowCount == 0U || columnCount == 0U || image.width % static_cast<int>(columnCount) != 0 ||
+        image.height % static_cast<int>(rowCount) != 0) {
+        throw std::runtime_error("Bitmap font grid does not match " + definition.file.toString());
+    }
+    result.alpha = alphaAtlas256(image);
+    const int cellWidth = image.width / static_cast<int>(columnCount);
+    const int cellHeight = image.height / static_cast<int>(rowCount);
+    const float oversample =
+        static_cast<float>(cellHeight) / static_cast<float>(std::max(definition.height, 1));
+    for (std::size_t row = 0U; row < rowCount; ++row) {
+        for (std::size_t column = 0U; column < definition.chars[row].size(); ++column) {
+            const char32_t codepoint = definition.chars[row][column];
+            if (codepoint == U'\0') {
+                continue;
+            }
+            const int cellX = static_cast<int>(column) * cellWidth;
+            const int cellY = static_cast<int>(row) * cellHeight;
+            int left = cellWidth;
+            int right = -1;
+            for (int y = 0; y < cellHeight; ++y) {
+                for (int x = 0; x < cellWidth; ++x) {
+                    const auto alphaIndex =
+                        static_cast<std::size_t>(((cellY + y) * image.width + cellX + x) * 4 + 3);
+                    if (image.rgba[alphaIndex] != 0U) {
+                        left = std::min(left, x);
+                        right = std::max(right, x);
+                    }
+                }
+            }
+            if (right >= left) {
+                ui::FontGlyph glyph;
+                const float sourceWidth = static_cast<float>(right - left + 1);
+                glyph.u = static_cast<float>(cellX + left) / static_cast<float>(image.width);
+                glyph.v = static_cast<float>(cellY) / static_cast<float>(image.height);
+                glyph.uvWidth = sourceWidth / static_cast<float>(image.width);
+                glyph.uvHeight = static_cast<float>(cellHeight) / static_cast<float>(image.height);
+                glyph.pixelWidth = sourceWidth / oversample;
+                glyph.pixelHeight = static_cast<float>(definition.height);
+                glyph.offsetY = 7.0F - static_cast<float>(definition.ascent);
+                glyph.advance = std::ceil(glyph.pixelWidth) + 1.0F;
+                glyph.visible = true;
+                result.glyphs.emplace_back(codepoint, glyph);
+            }
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] int hexDigit(char value) {
+    if (value >= '0' && value <= '9') {
+        return value - '0';
+    }
+    if (value >= 'A' && value <= 'F') {
+        return value - 'A' + 10;
+    }
+    if (value >= 'a' && value <= 'f') {
+        return value - 'a' + 10;
+    }
+    return -1;
+}
+
+void readUnihexArchive(const std::filesystem::path& archive,
+                       const assets::FontProviderDefinition& definition,
+                       const std::set<int>& requiredPages, UnihexPages& output) {
+    mz_zip_archive zip{};
+    if (mz_zip_reader_init_file(&zip, archive.string().c_str(), 0) == MZ_FALSE) {
+        throw std::runtime_error("Unable to open unihex archive: " + archive.string());
+    }
+    const auto closeZip = [&] { mz_zip_reader_end(&zip); };
+    try {
+        const mz_uint fileCount = mz_zip_reader_get_num_files(&zip);
+        for (mz_uint fileIndex = 0; fileIndex < fileCount; ++fileIndex) {
+            mz_zip_archive_file_stat stat;
+            if (mz_zip_reader_file_stat(&zip, fileIndex, &stat) == MZ_FALSE ||
+                !std::string_view{stat.m_filename}.ends_with(".hex")) {
+                continue;
+            }
+            size_t extractedSize = 0U;
+            void* extracted = mz_zip_reader_extract_to_heap(&zip, fileIndex, &extractedSize, 0);
+            if (extracted == nullptr) {
+                continue;
+            }
+            const std::string_view contents{static_cast<const char*>(extracted), extractedSize};
+            std::size_t lineStart = 0U;
+            while (lineStart < contents.size()) {
+                const auto lineEnd = contents.find('\n', lineStart);
+                const std::string_view line = contents.substr(
+                    lineStart, lineEnd == std::string_view::npos ? contents.size() - lineStart
+                                                                 : lineEnd - lineStart);
+                lineStart = lineEnd == std::string_view::npos ? contents.size() : lineEnd + 1U;
+                const auto colon = line.find(':');
+                if (colon == std::string_view::npos) {
+                    continue;
+                }
+                std::uint32_t codepoint = 0U;
+                const auto parsed =
+                    std::from_chars(line.data(), line.data() + colon, codepoint, 16);
+                const std::string_view bitmap = line.substr(colon + 1U);
+                if (parsed.ec != std::errc{} || codepoint > 0xFFFFU ||
+                    !requiredPages.contains(static_cast<int>(codepoint >> 8U)) ||
+                    output.seen[codepoint] ||
+                    (bitmap.size() != 32U && bitmap.size() != 64U && bitmap.size() != 96U &&
+                     bitmap.size() != 128U)) {
+                    continue;
+                }
+                const int sourceWidth = static_cast<int>(bitmap.size() / 4U);
+                if (sourceWidth > 16) {
+                    continue;
+                }
+                int left = sourceWidth;
+                int right = -1;
+                const int rowDigits = sourceWidth / 4;
+                const int page = static_cast<int>(codepoint >> 8U);
+                if (output.alpha[static_cast<std::size_t>(page)].empty()) {
+                    output.alpha[static_cast<std::size_t>(page)].resize(256U * 256U);
+                }
+                auto& pagePixels = output.alpha[static_cast<std::size_t>(page)];
+                const int cellX = static_cast<int>(codepoint & 0x0FU) * 16;
+                const int cellY = static_cast<int>((codepoint >> 4U) & 0x0FU) * 16;
+                for (int y = 0; y < 16; ++y) {
+                    for (int x = 0; x < sourceWidth; ++x) {
+                        const int digit =
+                            hexDigit(bitmap[static_cast<std::size_t>(y * rowDigits + x / 4)]);
+                        if (digit < 0 || (digit & (1 << (3 - x % 4))) == 0) {
+                            continue;
+                        }
+                        left = std::min(left, x);
+                        right = std::max(right, x);
+                        pagePixels[static_cast<std::size_t>((cellY + y) * 256 + cellX + x)] = 0xFFU;
+                    }
+                }
+                for (const auto& sizeOverride : definition.sizeOverrides) {
+                    if (codepoint >= sizeOverride.from && codepoint <= sizeOverride.to) {
+                        left = sizeOverride.left;
+                        right = sizeOverride.right;
+                        break;
+                    }
+                }
+                if (right >= left) {
+                    left = std::clamp(left, 0, 15);
+                    right = std::clamp(right, left, 15);
+                    output.sizes[codepoint] = static_cast<std::uint8_t>((left << 4) | right);
+                }
+                output.seen[codepoint] = true;
+            }
+            mz_free(extracted);
+        }
+        closeZip();
+    } catch (...) {
+        closeZip();
+        throw;
+    }
+}
+
 [[nodiscard]] assets::ImageData singleChestGui(const assets::ImageData& generic) {
     assets::ImageData result = generic;
     std::ranges::fill(result.rgba, 0U);
@@ -75,7 +297,7 @@ constexpr std::size_t kPanoramaFaces = 6U;
 } // namespace
 
 void TextureManager::createTextureArray(int anisotropy) {
-    const auto pixels = bakeBlockAtlas(blockTextureRoot_);
+    const auto pixels = bakeBlockAtlas(*resourceProvider_);
     const auto byteSize = static_cast<VkDeviceSize>(pixels.rgba.size());
     // The atlas layer count is whatever the name-driven build produced (fixed
     // special section + block textures + item icons), so it is derived from the
@@ -93,11 +315,10 @@ void TextureManager::createTextureArray(int anisotropy) {
     textureImage =
         resources_->createImage(pixels.width, pixels.height, layerCount, VK_FORMAT_R8G8B8A8_SRGB,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    resources_->transitionTextureImage(textureImage, layerCount, VK_IMAGE_LAYOUT_UNDEFINED,
-                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
-                                       VK_ACCESS_TRANSFER_WRITE_BIT,
-                                       VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                       VK_PIPELINE_STAGE_TRANSFER_BIT);
+    resources_->transitionTextureImage(
+        textureImage, layerCount, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT);
 
     std::vector<VkBufferImageCopy> regions(layerCount);
     for (std::uint32_t layer = 0; layer < layerCount; ++layer) {
@@ -143,8 +364,7 @@ void TextureManager::createTextureSampler(int anisotropy) {
     samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.anisotropyEnable =
-        anisotropySupported_ && anisotropy > 1 ? VK_TRUE : VK_FALSE;
+    samplerInfo.anisotropyEnable = anisotropySupported_ && anisotropy > 1 ? VK_TRUE : VK_FALSE;
     samplerInfo.maxAnisotropy = samplerInfo.anisotropyEnable == VK_TRUE
                                     ? std::min(static_cast<float>(anisotropy), maxAnisotropy_)
                                     : 1.0F;
@@ -165,8 +385,8 @@ void TextureManager::recreateTextureSampler(int anisotropy) {
 // would crush four vertical texels into one and turn its fine rain streaks back
 // into the broad water cards this renderer used previously.
 void TextureManager::createRainTexture() {
-    const auto pixels = assets::ImageData::loadRgba(blockTextureRoot_.parent_path() /
-                                                    "environment" / "rain.png");
+    const auto pixels = assets::ImageData::loadRgba(
+        resourceProvider_->locate(assets::textures("environment/rain.png")));
     const auto width = static_cast<std::uint32_t>(pixels.width);
     const auto height = static_cast<std::uint32_t>(pixels.height);
     const VkDeviceSize byteSize = static_cast<VkDeviceSize>(pixels.rgba.size());
@@ -178,11 +398,10 @@ void TextureManager::createRainTexture() {
     rainTextureImage =
         resources_->createImage(width, height, 1U, VK_FORMAT_R8G8B8A8_SRGB,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    resources_->transitionTextureImage(rainTextureImage, 1U, VK_IMAGE_LAYOUT_UNDEFINED,
-                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
-                                       VK_ACCESS_TRANSFER_WRITE_BIT,
-                                       VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                       VK_PIPELINE_STAGE_TRANSFER_BIT);
+    resources_->transitionTextureImage(
+        rainTextureImage, 1U, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+        VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkBufferImageCopy region{};
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1U;
@@ -203,13 +422,74 @@ void TextureManager::createRainTexture() {
 }
 
 void TextureManager::createGuiTexture() {
-    const auto guiRoot = blockTextureRoot_.parent_path() / "gui";
-    const auto underwater = repeatTileToAtlas(
-        assets::ImageData::loadRgba(guiRoot.parent_path() / "misc" / "underwater.png"), 256, 256, 4);
-    const auto loadingDirt = repeatTileToAtlas(
-        assets::ImageData::loadRgba(guiRoot / "options_background.png"), 256, 256, 8);
-    const auto chestGui =
-        singleChestGui(assets::ImageData::loadRgba(guiRoot / "container" / "generic_54.png"));
+    // 26.1 exposes HUD and widget art as named gui/sprites files. Pack the small
+    // set this renderer uses into compatibility layers at startup; draw code
+    // retains compact pixel rectangles while every source remains independently
+    // overrideable by its standard resource-pack name.
+    const auto tex = [&](std::string_view sub) {
+        return assets::ImageData::loadRgbaOrMissing(
+            resourceProvider_->locate(assets::textures(sub)));
+    };
+    const auto guiTex = [&](std::string_view sub) { return tex("gui/" + std::string{sub}); };
+    const auto sprite = [&](std::string_view name) {
+        return guiTex("sprites/" + std::string{name} + ".png");
+    };
+
+    auto widgets = emptyRgbaAtlas();
+    blit(widgets, sprite("hud/hotbar"), 0, 0);
+    blit(widgets, sprite("hud/hotbar_selection"), 0, 22);
+    blit(widgets, sprite("widget/button_disabled"), 0, 46);
+    blit(widgets, sprite("widget/button"), 0, 66);
+    blit(widgets, sprite("widget/button_highlighted"), 0, 86);
+    blit(widgets, sprite("widget/slider"), 0, 106);
+    blit(widgets, sprite("widget/slider_highlighted"), 0, 126);
+    const auto sliderHandle = sprite("widget/slider_handle");
+    const auto sliderHandleHighlighted = sprite("widget/slider_handle_highlighted");
+    blit(widgets, sliderHandle, 0, 146);
+    blit(widgets, sliderHandle, 192, 146);
+    blit(widgets, sliderHandleHighlighted, 0, 166);
+    blit(widgets, sliderHandleHighlighted, 192, 166);
+
+    auto hud = emptyRgbaAtlas();
+    blit(hud, sprite("hud/crosshair"), 0, 0);
+    blit(hud, sprite("hud/heart/container"), 16, 0);
+    blit(hud, sprite("hud/heart/container_blinking"), 25, 0);
+    blit(hud, sprite("hud/heart/full"), 52, 0);
+    blit(hud, sprite("hud/heart/half"), 61, 0);
+    blit(hud, sprite("hud/air"), 16, 18);
+    blit(hud, sprite("hud/air_empty"), 25, 18);
+    blit(hud, sprite("hud/food_empty"), 16, 27);
+    blit(hud, sprite("hud/food_full"), 52, 27);
+    blit(hud, sprite("hud/food_half"), 61, 27);
+    blit(hud, sprite("hud/experience_bar_background"), 0, 64);
+    blit(hud, sprite("hud/experience_bar_progress"), 0, 69);
+
+    auto tabs = emptyRgbaAtlas();
+    for (int tab = 0; tab < 6; ++tab) {
+        const std::string suffix = std::to_string(tab + 1);
+        blit(tabs, sprite("container/creative_inventory/tab_top_unselected_" + suffix),
+             tab * 28 + 1, 0);
+        blit(tabs, sprite("container/creative_inventory/tab_top_selected_" + suffix), tab * 28 + 1,
+             32);
+    }
+    for (int tab = 0; tab < 2; ++tab) {
+        const std::string suffix = std::to_string(tab + 6);
+        blit(tabs, sprite("container/creative_inventory/tab_bottom_unselected_" + suffix),
+             tab * 28 + 1, 64);
+        blit(tabs, sprite("container/creative_inventory/tab_bottom_selected_" + suffix),
+             tab * 28 + 1, 96);
+    }
+    blit(tabs, sprite("container/creative_inventory/scroller"), 232, 0);
+    blit(tabs, sprite("container/creative_inventory/scroller_disabled"), 244, 0);
+
+    const auto underwater = repeatTileToAtlas(tex("misc/underwater.png"), 256, 256, 4);
+    const auto menuBackground = repeatTileToAtlas(guiTex("menu_background.png"), 256, 256, 16);
+    const auto menuListBackground =
+        repeatTileToAtlas(guiTex("menu_list_background.png"), 256, 256, 16);
+    const auto chestGui = singleChestGui(guiTex("container/generic_54.png"));
+    auto furnaceGui = guiTex("container/furnace.png");
+    blit(furnaceGui, sprite("container/furnace/lit_progress"), 176, 0);
+    blit(furnaceGui, sprite("container/furnace/burn_progress"), 176, 14);
     // 1.16.1's Screen.renderBackground paints a vertical gradient from
     // rgba(0x10,0x10,0x10,0xC0) at the top to rgba(0x10,0x10,0x10,0xD0) at the
     // bottom over every in-game screen. Bake that into a 256x256 layer so each
@@ -230,22 +510,22 @@ void TextureManager::createGuiTexture() {
         }
     }
     const std::array images{
-        assets::ImageData::loadRgba(guiRoot / "widgets.png"),
-        assets::ImageData::loadRgba(guiRoot / "icons.png"),
-        assets::ImageData::loadRgba(guiRoot / "container" / "inventory.png"),
-        assets::ImageData::loadRgba(guiRoot / "container" / "creative_inventory" / "tab_items.png"),
-        assets::ImageData::loadRgba(guiRoot / "container" / "creative_inventory" / "tabs.png"),
-        assets::ImageData::loadRgba(guiRoot / "container" / "creative_inventory" /
-                                    "tab_inventory.png"),
+        widgets,
+        hud,
+        guiTex("container/inventory.png"),
+        guiTex("container/creative_inventory/tab_items.png"),
+        tabs,
+        guiTex("container/creative_inventory/tab_inventory.png"),
         underwater,
-        assets::ImageData::loadRgba(guiRoot / "container" / "crafting_table.png"),
-        assets::ImageData::loadRgba(guiRoot / "container" / "furnace.png"),
-        loadingDirt,
+        guiTex("container/crafting_table.png"),
+        furnaceGui,
+        menuBackground,
         chestGui,
-        assets::ImageData::loadRgba(guiRoot.parent_path() / "misc" / "vignette.png"),
+        tex("misc/vignette.png"),
         screenDimGradient,
+        menuListBackground,
     };
-    constexpr std::uint32_t kGuiLayerCount = 13U;
+    constexpr std::uint32_t kGuiLayerCount = 14U;
     const int width = images.front().width;
     const int height = images.front().height;
     for (const auto& image : images) {
@@ -267,11 +547,10 @@ void TextureManager::createGuiTexture() {
     guiTextureImage = resources_->createImage(
         static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), kGuiLayerCount,
         VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    resources_->transitionTextureImage(guiTextureImage, kGuiLayerCount, VK_IMAGE_LAYOUT_UNDEFINED,
-                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
-                                       VK_ACCESS_TRANSFER_WRITE_BIT,
-                                       VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                       VK_PIPELINE_STAGE_TRANSFER_BIT);
+    resources_->transitionTextureImage(
+        guiTextureImage, kGuiLayerCount, VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
 
     std::array<VkBufferImageCopy, kGuiLayerCount> regions{};
     for (std::uint32_t layer = 0; layer < kGuiLayerCount; ++layer) {
@@ -314,12 +593,13 @@ void TextureManager::createGuiTexture() {
 // own array at native resolution instead of a layer in the 256px GUI array. One
 // layer per 1.16.1 panorama face.
 void TextureManager::createPanoramaTexture() {
-    const auto guiRoot = blockTextureRoot_.parent_path() / "gui";
-    const auto backgroundRoot = guiRoot / "title" / "background";
     std::array<assets::ImageData, kPanoramaFaces> faces{};
     for (std::size_t index = 0; index < kPanoramaFaces; ++index) {
-        faces[index] = assets::ImageData::loadRgba(backgroundRoot /
-                                                   ("panorama_" + std::to_string(index) + ".png"));
+        // Resolved per file so a pack overriding some panorama faces (or none)
+        // still falls back to the bundled ones rather than the whole title/
+        // background folder being shadowed by the pack.
+        faces[index] = assets::ImageData::loadRgbaOrMissing(resourceProvider_->locate(
+            assets::textures("gui/title/background/panorama_" + std::to_string(index) + ".png")));
     }
     const int width = faces.front().width;
     const int height = faces.front().height;
@@ -431,10 +711,10 @@ void TextureManager::updateBiomeColorTextures(std::uint64_t seed) {
     constexpr int size = kBiomeTextureSize;
     constexpr int span = kBiomeTextureBlockSpan;
     constexpr int halfBlocks = size * span / 2;
-    const auto grassColormap =
-        assets::ImageData::loadRgba(blockTextureRoot_.parent_path() / "colormap" / "grass.png");
-    const auto foliageColormap =
-        assets::ImageData::loadRgba(blockTextureRoot_.parent_path() / "colormap" / "foliage.png");
+    const auto grassColormap = assets::ImageData::loadRgba(
+        resourceProvider_->locate(assets::textures("colormap/grass.png")));
+    const auto foliageColormap = assets::ImageData::loadRgba(
+        resourceProvider_->locate(assets::textures("colormap/foliage.png")));
     const auto colorAt = [](const assets::ImageData& colormap, float temperature,
                             float downfall) -> std::uint32_t {
         const float clampedTemperature = std::clamp(temperature, 0.0F, 1.0F);
@@ -471,10 +751,9 @@ void TextureManager::updateBiomeColorTextures(std::uint64_t seed) {
                 foliageColor = 0x6A7039U;
             }
             for (int channel = 2; channel >= 0; --channel) {
-                grassPixels.push_back(
-                    static_cast<std::uint8_t>((grassColor >> (channel * 8U)) & 0xFFU));
-                foliagePixels.push_back(
-                    static_cast<std::uint8_t>((foliageColor >> (channel * 8U)) & 0xFFU));
+                const auto shift = static_cast<std::uint32_t>(channel) * 8U;
+                grassPixels.push_back(static_cast<std::uint8_t>((grassColor >> shift) & 0xFFU));
+                foliagePixels.push_back(static_cast<std::uint8_t>((foliageColor >> shift) & 0xFFU));
             }
             grassPixels.push_back(255U);
             foliagePixels.push_back(255U);
@@ -486,11 +765,10 @@ void TextureManager::updateBiomeColorTextures(std::uint64_t seed) {
         std::memcpy(staging.mapped, pixels.data(), static_cast<std::size_t>(byteSize));
         checkVk(vmaFlushAllocation(allocator_, staging.allocation, 0, VK_WHOLE_SIZE),
                 "vmaFlushAllocation(biome texture)");
-        resources_->transitionTextureImage(image, 1, VK_IMAGE_LAYOUT_UNDEFINED,
-                                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
-                                           VK_ACCESS_TRANSFER_WRITE_BIT,
-                                           VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                           VK_PIPELINE_STAGE_TRANSFER_BIT);
+        resources_->transitionTextureImage(
+            image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT);
         VkBufferImageCopy region{};
         region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         region.imageSubresource.layerCount = 1;
@@ -518,8 +796,7 @@ void TextureManager::updateBiomeColorTextures(std::uint64_t seed) {
 // shader samples with.
 void TextureManager::createEntityTextureArray(
     std::vector<gameplay::entities::SpeciesRenderModel>& speciesModels) {
-    const auto resourceRoot =
-        blockTextureRoot_.parent_path().parent_path().parent_path().parent_path().parent_path();
+    const auto resourceRoot = resourceProvider_->resourceRoot();
     speciesModels = gameplay::entities::buildSpeciesModels(
         resourceRoot, gameplay::entities::entityTypeRegistry());
 
@@ -548,7 +825,7 @@ void TextureManager::createEntityTextureArray(
             continue;
         }
         const auto skin = gameplay::entities::buildSpeciesSkin(
-            resourceRoot, blockTextureRoot_.parent_path(), species.model.model,
+            resourceRoot, *resourceProvider_, species.model.model,
             species.type->render().texturePath,
             {static_cast<float>(atlasWidth), static_cast<float>(atlasHeight)});
         const glm::vec2 declared = declaredSize(species.model.model);
@@ -575,11 +852,10 @@ void TextureManager::createEntityTextureArray(
     entityTextureImage =
         resources_->createImage(atlasWidth, atlasHeight, layerCount, VK_FORMAT_R8G8B8A8_SRGB,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    resources_->transitionTextureImage(entityTextureImage, layerCount, VK_IMAGE_LAYOUT_UNDEFINED,
-                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
-                                       VK_ACCESS_TRANSFER_WRITE_BIT,
-                                       VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                       VK_PIPELINE_STAGE_TRANSFER_BIT);
+    resources_->transitionTextureImage(
+        entityTextureImage, layerCount, VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
     std::vector<VkBufferImageCopy> regions(layerCount);
     for (std::uint32_t layer = 0; layer < layerCount; ++layer) {
         regions[layer].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -613,34 +889,41 @@ void TextureManager::createEntityTextureArray(
               << layerCount << '\n';
 }
 
-std::vector<std::uint8_t> TextureManager::loadGlyphSizes() const {
-    const auto path = blockTextureRoot_.parent_path().parent_path().parent_path() / "fonts" /
-                      "minecraft" / "glyph_sizes.bin";
-    std::ifstream input{path, std::ios::binary};
-    if (!input) {
-        std::cout << "No glyph_sizes.bin at " << path << "; unicode text is unavailable\n";
-        return {};
-    }
-    std::vector<std::uint8_t> sizes(0x10000U);
-    input.read(reinterpret_cast<char*>(sizes.data()), static_cast<std::streamsize>(sizes.size()));
-    if (input.gcount() != static_cast<std::streamsize>(sizes.size())) {
-        std::cout << "glyph_sizes.bin is truncated; unicode text is unavailable\n";
-        return {};
-    }
-    return sizes;
-}
-
-// The font lives in one 256x256 R8 texture array: layer 0 is ascii.png upscaled
-// so every layer shares a size, and each following layer is one legacy unicode
-// page the active language needs (requiredPages, computed by the renderer).
+// The font lives in one 256x256 R8 texture array. Layer 0 is the bitmap ASCII
+// provider, followed by any additional bitmap providers and then pages
+// rasterized from 26.1's unihex zip.
 void TextureManager::createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::TextFont& textFont,
                                        const std::set<int>& requiredPages, bool forceUnicode) {
-    const auto fontRoot = blockTextureRoot_.parent_path() / "font";
-    const auto ascii = assets::ImageData::loadRgba(fontRoot / "ascii.png");
+    // Font pages resolve per file so an incomplete pack falls back to the
+    // bundled ascii sheet and unicode pages rather than losing them to a
+    // shadowed font/ folder.
+    const auto ascii = assets::ImageData::loadRgbaOrMissing(
+        resourceProvider_->locate(assets::textures("font/ascii.png")));
     fontMetrics = ui::BitmapFontMetrics::fromRgba(ascii.rgba, ascii.width, ascii.height);
     textFont.setAsciiMetrics(fontMetrics);
     textFont.clearUnicodePages();
+    textFont.clearBitmapGlyphs();
+    textFont.clearSpaceAdvances();
     textFont.setForceUnicode(forceUnicode);
+
+    const auto providers = assets::loadFontProviders(
+        *resourceProvider_, forceUnicode ? "minecraft:uniform" : "minecraft:default", forceUnicode,
+        false);
+    UnihexPages unihex;
+    std::vector<BitmapProviderLayer> bitmapLayers;
+    for (const auto& provider : providers) {
+        if (provider.kind == assets::FontProviderKind::Space) {
+            for (const auto& [codepoint, advance] : provider.advances) {
+                textFont.setSpaceAdvance(codepoint, advance);
+            }
+        } else if (provider.kind == assets::FontProviderKind::Bitmap &&
+                   provider.file != assets::textures("font/ascii.png")) {
+            bitmapLayers.push_back(loadBitmapProvider(*resourceProvider_, provider));
+        } else if (provider.kind == assets::FontProviderKind::Unihex) {
+            readUnihexArchive(resourceProvider_->locate(provider.file), provider, requiredPages,
+                              unihex);
+        }
+    }
 
     constexpr std::uint32_t kFontPageSize = 256U;
     constexpr std::size_t kFontLayerBytes = static_cast<std::size_t>(kFontPageSize) * kFontPageSize;
@@ -650,48 +933,38 @@ void TextureManager::createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::T
     // and its on-screen pixels identical.
     for (std::uint32_t y = 0; y < kFontPageSize; ++y) {
         for (std::uint32_t x = 0; x < kFontPageSize; ++x) {
-            const auto sourceX = std::min(x * static_cast<std::uint32_t>(ascii.width) / kFontPageSize,
-                                          static_cast<std::uint32_t>(ascii.width) - 1U);
+            const auto sourceX =
+                std::min(x * static_cast<std::uint32_t>(ascii.width) / kFontPageSize,
+                         static_cast<std::uint32_t>(ascii.width) - 1U);
             const auto sourceY =
                 std::min(y * static_cast<std::uint32_t>(ascii.height) / kFontPageSize,
                          static_cast<std::uint32_t>(ascii.height) - 1U);
-            pixels[y * kFontPageSize + x] =
-                ascii.rgba[(static_cast<std::size_t>(sourceY) *
-                                static_cast<std::size_t>(ascii.width) +
-                            sourceX) *
-                               4U +
-                           3U];
+            pixels[y * kFontPageSize + x] = ascii.rgba[(static_cast<std::size_t>(sourceY) *
+                                                            static_cast<std::size_t>(ascii.width) +
+                                                        sourceX) *
+                                                           4U +
+                                                       3U];
         }
     }
 
-    // glyph_sizes.bin gives the used column range of every BMP codepoint;
-    // without it the unicode pages are skipped entirely.
-    textFont.setUnicodeSizes(loadGlyphSizes());
+    textFont.setUnicodeSizes(std::move(unihex.sizes));
     std::uint32_t layerCount = 1U;
-    for (const int page : textFont.hasUnicodePages() ? requiredPages : std::set<int>{}) {
-        std::ostringstream name;
-        name << "unicode_page_" << std::hex << std::setfill('0') << std::setw(2) << page << ".png";
-        const auto path = fontRoot / name.str();
-        std::error_code error;
-        if (!std::filesystem::is_regular_file(path, error)) {
+    for (auto& bitmap : bitmapLayers) {
+        for (auto& [codepoint, glyph] : bitmap.glyphs) {
+            glyph.layer = static_cast<float>(layerCount);
+            textFont.addBitmapGlyph(codepoint, glyph);
+        }
+        pixels.insert(pixels.end(), bitmap.alpha.begin(), bitmap.alpha.end());
+        ++layerCount;
+    }
+    for (const int page : requiredPages) {
+        if (page < 0 || page >= 256 || unihex.alpha[static_cast<std::size_t>(page)].empty()) {
             continue;
         }
-        try {
-            const auto image = assets::ImageData::loadRgba(path);
-            if (image.width != static_cast<int>(kFontPageSize) ||
-                image.height != static_cast<int>(kFontPageSize)) {
-                continue;
-            }
-            const std::size_t offset = pixels.size();
-            pixels.resize(offset + kFontLayerBytes);
-            for (std::size_t index = 0; index < kFontLayerBytes; ++index) {
-                pixels[offset + index] = image.rgba[index * 4U + 3U];
-            }
-            textFont.setUnicodePageLayer(page, static_cast<int>(layerCount));
-            ++layerCount;
-        } catch (const std::exception&) {
-            // A missing or damaged page just falls back to the ASCII sheet.
-        }
+        const auto& pagePixels = unihex.alpha[static_cast<std::size_t>(page)];
+        pixels.insert(pixels.end(), pagePixels.begin(), pagePixels.end());
+        textFont.setUnicodePageLayer(page, static_cast<int>(layerCount));
+        ++layerCount;
     }
 
     const auto byteSize = static_cast<VkDeviceSize>(pixels.size());
@@ -702,11 +975,10 @@ void TextureManager::createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::T
     fontTextureImage =
         resources_->createImage(kFontPageSize, kFontPageSize, layerCount, VK_FORMAT_R8_UNORM,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    resources_->transitionTextureImage(fontTextureImage, layerCount, VK_IMAGE_LAYOUT_UNDEFINED,
-                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
-                                       VK_ACCESS_TRANSFER_WRITE_BIT,
-                                       VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                       VK_PIPELINE_STAGE_TRANSFER_BIT);
+    resources_->transitionTextureImage(
+        fontTextureImage, layerCount, VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
 
     std::vector<VkBufferImageCopy> regions(layerCount);
     for (std::uint32_t layer = 0; layer < layerCount; ++layer) {
@@ -721,12 +993,11 @@ void TextureManager::createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::T
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            static_cast<std::uint32_t>(regions.size()), regions.data());
     resources_->endSingleUseCommands(commandBuffer);
-    resources_->transitionTextureImage(fontTextureImage, layerCount,
-                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                       VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-                                       VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    resources_->transitionTextureImage(
+        fontTextureImage, layerCount, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     resources_->destroyBuffer(staging);
 
     auto viewInfo = vkStructure<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
@@ -739,7 +1010,9 @@ void TextureManager::createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::T
     checkVk(vkCreateImageView(device_, &viewInfo, nullptr, &fontTextureView),
             "vkCreateImageView(font)");
     std::cout << "Loaded Minecraft font array: " << kFontPageSize << 'x' << kFontPageSize << " x "
-              << layerCount << " (ascii + " << (layerCount - 1U) << " unicode pages)\n";
+              << layerCount << " (" << (1U + bitmapLayers.size()) << " bitmap layers + "
+              << (layerCount - 1U - static_cast<std::uint32_t>(bitmapLayers.size()))
+              << " unihex pages)\n";
 }
 
 void TextureManager::recreateFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::TextFont& textFont,

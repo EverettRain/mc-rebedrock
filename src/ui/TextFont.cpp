@@ -86,8 +86,7 @@ bool TextFont::useUnicodeFor(char32_t codepoint) const {
     if (sizes_.size() < 0x10000U || codepoint > 0xFFFF) {
         return false;
     }
-    if (!pageLayersInitialized_ ||
-        pageLayers_[static_cast<std::size_t>(codepoint >> 8U)] < 0) {
+    if (!pageLayersInitialized_ || pageLayers_[static_cast<std::size_t>(codepoint >> 8U)] < 0) {
         return false;
     }
     // ASCII keeps its crisp 128x128 sheet unless the player forces unicode.
@@ -142,12 +141,19 @@ FontGlyph TextFont::unicodeGlyph(char32_t codepoint) const {
 }
 
 FontGlyph TextFont::glyph(char32_t codepoint) const {
-    // FontSet#getGlyphInfo special-cases the space so the unicode page's "SP"
-    // control picture never shows up in forced-unicode text.
+    if (const auto advance = spaceAdvances_.find(codepoint); advance != spaceAdvances_.end()) {
+        FontGlyph result;
+        result.advance = advance->second;
+        return result;
+    }
+    // Keep the vanilla default even if a malformed definition omitted space.
     if (codepoint == U' ') {
-        FontGlyph space;
-        space.advance = kSpaceAdvance;
-        return space;
+        FontGlyph result;
+        result.advance = kSpaceAdvance;
+        return result;
+    }
+    if (const auto bitmap = bitmapGlyphs_.find(codepoint); bitmap != bitmapGlyphs_.end()) {
+        return bitmap->second;
     }
     if (useUnicodeFor(codepoint)) {
         return unicodeGlyph(codepoint);

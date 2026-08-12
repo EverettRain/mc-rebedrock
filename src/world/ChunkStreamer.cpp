@@ -367,11 +367,14 @@ std::uint64_t ChunkStreamer::resetWorld(std::uint64_t seed,
 void ChunkStreamer::setBlock(int worldX, int y, int worldZ, Block value,
                              std::uint8_t fluidLevel,
                              std::optional<BlockOrientation> orientation) {
+    setState(worldX, y, worldZ,
+             BlockState{value, orientation.value_or(defaultOrientation(value)), fluidLevel});
+}
+
+void ChunkStreamer::setState(int worldX, int y, int worldZ, BlockState value) {
     {
         std::scoped_lock lock{mutex_};
-        pendingBlockEdits_.push_back(
-            {worldX, y, worldZ, value, fluidLevel,
-             orientation.value_or(defaultOrientation(value))});
+        pendingBlockEdits_.push_back({worldX, y, worldZ, value});
     }
     wakeWorker_.notify_one();
 }
@@ -447,8 +450,10 @@ void ChunkStreamer::workerLoop() {
         bool editsApplied = false;
         if (!edits.empty() && world.chunkCount() != 0U) {
             for (const auto& edit : edits) {
-                const PersistentBlockEdit saved{edit.worldX, edit.y, edit.worldZ, edit.value,
-                                                edit.fluidLevel, edit.orientation};
+                const PersistentBlockEdit saved{edit.worldX,          edit.y,
+                                                edit.worldZ,         edit.state.block(),
+                                                edit.state.fluidLevel(),
+                                                edit.state.orientation(), edit.state.lit()};
                 const EditPosition position{edit.worldX, edit.y, edit.worldZ};
                 const auto found = persistentEditIndices.find(position);
                 if (found == persistentEditIndices.end()) {
@@ -505,8 +510,10 @@ void ChunkStreamer::workerLoop() {
         }
         if (!edits.empty() && !editsApplied) {
             for (const auto& edit : edits) {
-                const PersistentBlockEdit saved{edit.worldX, edit.y, edit.worldZ, edit.value,
-                                                edit.fluidLevel, edit.orientation};
+                const PersistentBlockEdit saved{edit.worldX,          edit.y,
+                                                edit.worldZ,         edit.state.block(),
+                                                edit.state.fluidLevel(),
+                                                edit.state.orientation(), edit.state.lit()};
                 const EditPosition position{edit.worldX, edit.y, edit.worldZ};
                 const auto found = persistentEditIndices.find(position);
                 if (found == persistentEditIndices.end()) {
@@ -1003,13 +1010,9 @@ ChunkStreamBatch ChunkStreamer::applyBlockEdits(World& world,
         if (edit.y < 0 || edit.y >= kWorldHeight) {
             continue;
         }
-        const auto previous = world.block(edit.worldX, edit.y, edit.worldZ);
-        if (!world.setBlock(edit.worldX, edit.y, edit.worldZ, edit.value)) {
+        const auto previous = world.state(edit.worldX, edit.y, edit.worldZ);
+        if (!world.setState(edit.worldX, edit.y, edit.worldZ, edit.state)) {
             continue;
-        }
-        world.setOrientation(edit.worldX, edit.y, edit.worldZ, edit.orientation);
-        if (isFluid(edit.value)) {
-            world.setFluidLevel(edit.worldX, edit.y, edit.worldZ, edit.fluidLevel);
         }
         ++batch.appliedBlockEditCount;
         // Geometry and vertex AO sample one voxel beyond a section boundary.
@@ -1033,8 +1036,11 @@ ChunkStreamBatch ChunkStreamer::applyBlockEdits(World& world,
         // light changes (a grown tree) seconds behind their meshes. The edit's
         // own section is already marked for remesh above, so only the light
         // channels need this treatment, and only when they can actually differ.
-        if (skyLightOpacity(previous) != skyLightOpacity(edit.value) ||
-            emittedLight(previous) != emittedLight(edit.value)) {
+        // Emission is compared state-to-state: a furnace igniting keeps its
+        // block and only changes its LIT, so comparing blocks would call it a
+        // no-op and leave the cell dark.
+        if (skyLightOpacity(previous.block()) != skyLightOpacity(edit.state.block()) ||
+            previous.emittedLight() != edit.state.emittedLight()) {
             lightEngine.updateBlock(world, edit.worldX, edit.y, edit.worldZ);
         }
     }

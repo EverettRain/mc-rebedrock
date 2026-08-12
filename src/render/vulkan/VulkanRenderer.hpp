@@ -1,5 +1,6 @@
 #pragma once
 
+#include "assets/ResourceProvider.hpp"
 #include "config/GameOptions.hpp"
 #include "render/MeshData.hpp"
 #include "render/TestScene.hpp"
@@ -18,7 +19,7 @@ class VulkanRenderer final {
     VulkanRenderer(
         std::filesystem::path shaderRoot,
         std::filesystem::path blockTextureRoot,
-        std::filesystem::path soundRoot,
+        const assets::ResourceProvider& resourceProvider,
         world::ChunkStreamer& chunkStreamer,
         config::GameOptions options,
         std::filesystem::path optionsPath,

@@ -2,11 +2,13 @@
 
 #include "gameplay/GameMode.hpp"
 #include "gameplay/ChestSystem.hpp"
+#include "gameplay/FurnaceSystem.hpp"
 #include "gameplay/GameRules.hpp"
 #include "gameplay/Inventory.hpp"
 #include "gameplay/PlayerVitals.hpp"
 #include "gameplay/WeatherSystem.hpp"
 #include "world/PersistentBlockEdit.hpp"
+#include "world/WorldClock.hpp"
 
 #include <array>
 #include <cstdint>
@@ -71,6 +73,12 @@ struct SaveGame final {
     std::array<gameplay::ItemStack, gameplay::Inventory::kSlotCount> inventory{};
     std::vector<world::PersistentBlockEdit> edits;
     std::vector<gameplay::ChestBlockEntity> chests;
+    // The furnace block entities at save time — their three slots and burn/cook
+    // counters — serialised into their own self-describing block by format 15.
+    // Before that, furnaces were a single global inventory that no save carried,
+    // so an older world simply loads with no furnaces and back-fills one the
+    // first time each furnace block is opened.
+    std::vector<gameplay::FurnaceBlockEntity> furnaces;
     // The weather timers and flags, the way 1.16.1 keeps them in level.dat;
     // format 11 serialises them into their own self-describing block. A fresh
     // world defaults to a clear spell.
@@ -78,6 +86,12 @@ struct SaveGame final {
     // The live creatures at save time, serialised into their own self-describing
     // block by format 12 so a world reopens with its herd.
     std::vector<PersistentEntity> entities;
+    // The world's own tick count and every named clock, split apart by format 13
+    // so the sun can be frozen without freezing gameplay timing. Loading an
+    // older save backfills both from gameTimeSeconds above, which used to carry
+    // all of it at once.
+    std::uint64_t serverTick = 0U;
+    std::array<world::ClockState, world::kClockCount> clocks{};
 };
 
 class SaveRepository final {
