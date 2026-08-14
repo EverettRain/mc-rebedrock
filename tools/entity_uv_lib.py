@@ -13,6 +13,12 @@ software rasterizer that needs numpy/Pillow lives in ``entity_uv_render.py``.
 
 Run ``python3 tools/entity_uv_lib.py`` to self-test against the exact values
 pinned by tests/box_uv_test.cpp.
+
+LOCAL RESEARCH TOOL ONLY. Its ``--texture`` resolution can point at a locally
+extracted vanilla tree, and nothing it produces may be committed to
+``resources/`` or shipped: ReBedrock distributes no Mojang-derived art, and
+entity skins come from the player's resource pack (see
+docs/wait-for-opus/resourcepack-distribution-cleanup.md).
 """
 import json
 import math

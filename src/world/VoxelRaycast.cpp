@@ -76,7 +76,7 @@ struct BoxRaycastHit final {
 
 // The selection box a block's raycast tests against, or nullopt for a block
 // whose whole cell is selectable (the common cube and cross-plant cases). A
-// crop reads its stage from the orientation state and shrinks to that height;
+// crop reads its stage from its AGE property and shrinks to that height;
 // farmland is the vanilla 15/16 box. Torches keep their dedicated shape.
 [[nodiscard]] std::optional<SelectionBox> blockInteractionShape(
     const World& world, glm::ivec3 cell, Block block) {
@@ -84,7 +84,7 @@ struct BoxRaycastHit final {
         return torchSelectionBox(block, world.orientation(cell.x, cell.y, cell.z));
     }
     if (isCrop(block)) {
-        const int age = cropAge(world.orientation(cell.x, cell.y, cell.z));
+        const int age = world.state(cell.x, cell.y, cell.z).age();
         return SelectionBox{{0.0F, 0.0F, 0.0F}, {1.0F, cropSelectionHeight(age), 1.0F}};
     }
     if (isFarmland(block)) {
@@ -225,11 +225,12 @@ BlockBounds blockSelectionBounds(
             // Plants: a slim upright box, roughly the cross's footprint.
             return {{0.1F, 0.0F, 0.1F}, {0.9F, 0.8F, 0.9F}};
         case BlockModel::Crop:
-            // CropsBlock.SHAPES: the box grows with the age stored in the
-            // orientation state, from 2/16 to a full block.
+            // CropBlock.SHAPES: the box grows with the block's AGE property,
+            // from 2/16 to a full block.
             return {{0.0F, 0.0F, 0.0F},
-                    {1.0F, cropSelectionHeight(
-                               cropAge(world.orientation(position.x, position.y, position.z))),
+                    {1.0F,
+                     cropSelectionHeight(
+                         world.state(position.x, position.y, position.z).age()),
                      1.0F}};
         case BlockModel::Torch: {
             const SelectionBox box = torchSelectionBox(

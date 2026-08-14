@@ -103,6 +103,8 @@ GameOptions GameOptions::load(const std::filesystem::path& path) {
             static_cast<void>(parseNumber(value, options.windowWidth));
         } else if (key == "window.height") {
             static_cast<void>(parseNumber(value, options.windowHeight));
+        } else if (key == "window.maximized") {
+            options.windowMaximized = value == "true" || value == "1" || value == "on";
         } else if (key == "gui.scale") {
             static_cast<void>(parseNumber(value, options.guiScale));
         } else if (key == "render.distance") {
@@ -164,6 +166,7 @@ void GameOptions::save(const std::filesystem::path& path) const {
            << "game.version=" << sanitized.version << '\n'
            << "window.width=" << sanitized.windowWidth << '\n'
            << "window.height=" << sanitized.windowHeight << '\n'
+           << "window.maximized=" << (sanitized.windowMaximized ? "true" : "false") << '\n'
            << "gui.scale=" << sanitized.guiScale << '\n'
            << "render.distance=" << sanitized.viewDistance << '\n'
            << "render.simulationDistance=" << sanitized.simulationDistance << '\n'

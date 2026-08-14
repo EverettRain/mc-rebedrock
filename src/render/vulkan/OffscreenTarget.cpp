@@ -84,6 +84,29 @@ void OffscreenTarget::destroy() {
     format_ = VK_FORMAT_UNDEFINED;
 }
 
+void OffscreenTarget::initializeAsShaderRead() const {
+    if (image_.image == VK_NULL_HANDLE || resources_ == nullptr) {
+        return;
+    }
+    const auto commandBuffer = resources_->beginSingleUseCommands();
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image_.image;
+    barrier.subresourceRange.aspectMask = aspect_;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                         &barrier);
+    resources_->endSingleUseCommands(commandBuffer);
+}
+
 void OffscreenTarget::transitionToShaderRead(VkCommandBuffer commandBuffer) const {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;

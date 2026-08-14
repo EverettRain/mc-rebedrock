@@ -14,6 +14,7 @@ layout(location = 8) flat in vec2 fragmentSceneLight;
 layout(location = 9) in vec3 fragmentWorldPosition;
 // OverlayTexture's hurt row, 1.0 while a creature is inside its hurtTime.
 layout(location = 10) flat in float fragmentHurtFlash;
+layout(location = 11) flat in float fragmentFallingBlock;
 layout(location = 0) out vec4 outColor;
 
 // The full camera block: the tail (point lights, lighting settings) is the same
@@ -32,11 +33,17 @@ layout(binding = 0) uniform CameraUniform {
     vec4 lightingSettings;
     vec4 celestialLayers;
     vec4 weatherSettings;
+    vec4 fluidAnimationLayers;
+    vec4 fluidAnimationFrameCounts;
+    vec4 fluidAnimationFrameTimes;
+    vec4 fluidAnimationSettings;
+    mat4 lightViewProj;
 } camera;
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
 // Dedicated entity/creature skins, box-UV mapped (one layer per species).
 layout(binding = 4) uniform sampler2DArray entityTextures;
+layout(binding = 8) uniform sampler2D shadowDepth;
 
 // Vanilla's light curve, identical to grass_block.frag: level 15 is full
 // brightness and the falloff steepens toward darkness.
@@ -71,10 +78,33 @@ void main() {
     // term that depends only on the face normal, times the lightmap sample taken
     // once for the whole entity. Billboards keep the face term at 1.0.
     float faceShade = 1.0;
+    float terrainSunFactor = 1.0;
     if (fragmentIsCube > 0.5) {
-        vec3 fixedLightDirection = normalize(vec3(-0.45, 0.85, 0.30));
-        float diffuse = max(dot(normalize(fragmentNormal), fixedLightDirection), 0.0);
-        faceShade = 0.42 + diffuse * 0.58;
+        vec3 normal = normalize(fragmentNormal);
+        if (fragmentFallingBlock > 0.5) {
+            float upward = max(normal.y, 0.0);
+            float downward = max(-normal.y, 0.0);
+            float side = 1.0 - abs(normal.y);
+            faceShade = upward + downward * 0.50 + side * mix(0.68, 0.80, abs(normal.z));
+            float shadowFactor = 1.0;
+            if (camera.lightingSettings.w > 0.5) {
+                vec4 lightPosition = camera.lightViewProj * vec4(fragmentWorldPosition, 1.0);
+                vec3 shadowUv = lightPosition.xyz / lightPosition.w * 0.5 + 0.5;
+                if (shadowUv.x >= 0.0 && shadowUv.x <= 1.0 &&
+                    shadowUv.y >= 0.0 && shadowUv.y <= 1.0 && shadowUv.z <= 1.0) {
+                    float closestDepth = texture(shadowDepth, shadowUv.xy).r;
+                    if (shadowUv.z - 0.002 > closestDepth) {
+                        shadowFactor = 0.35;
+                    }
+                }
+            }
+            float diffuse = max(dot(normal, normalize(camera.sunDirection.xyz)), 0.0);
+            terrainSunFactor = 0.72 + diffuse * shadowFactor * 0.28;
+        } else {
+            vec3 fixedLightDirection = normalize(vec3(-0.45, 0.85, 0.30));
+            float diffuse = max(dot(normal, fixedLightDirection), 0.0);
+            faceShade = 0.42 + diffuse * 0.58;
+        }
     }
     if (fragmentSceneLight.x < 0.0) {
         texel.rgb *= faceShade;
@@ -90,7 +120,11 @@ void main() {
         float skyBrightness = lightBrightness(fragmentSceneLight.x) * camera.sunDirection.w *
             camera.weatherSettings.z;
         float blockBrightness = lightBrightness(fragmentSceneLight.y);
-        vec3 illumination = max(skyTint * vec3(skyBrightness),
+        vec3 skyIllumination = skyTint * vec3(skyBrightness);
+        if (fragmentFallingBlock > 0.5) {
+            skyIllumination *= faceShade * terrainSunFactor;
+        }
+        vec3 illumination = max(skyIllumination,
                                 vec3(1.0, 0.72, 0.38) * blockBrightness * 0.92);
         for (int lightIndex = 0; lightIndex < int(camera.lightingSettings.x); ++lightIndex) {
             vec3 delta = camera.pointLights[lightIndex].xyz - fragmentWorldPosition;
@@ -100,7 +134,7 @@ void main() {
                 camera.lightColors[lightIndex].a;
         }
         illumination = clamp(illumination, vec3(0.035), vec3(1.25));
-        texel.rgb *= faceShade * illumination;
+        texel.rgb *= fragmentFallingBlock > 0.5 ? illumination : faceShade * illumination;
     }
     // OverlayTexture's hurt row is opaque red at alpha 178/255, applied over
     // the lit colour exactly like vanilla's overlay combiner.

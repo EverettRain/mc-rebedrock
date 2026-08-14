@@ -24,7 +24,7 @@ struct VitalsInput final {
 
 struct VitalsTickResult final {
     float damageTaken = 0.0F;
-    DamageSource cause = DamageSource::None;
+    DamageType cause = DamageType::None;
     bool died = false;
 };
 
@@ -61,7 +61,10 @@ class PlayerVitals final {
     // FoodStats#eat: restores hunger and saturation from a finished meal.
     void eat(int food, float saturationModifier);
     void heal(float amount);
-    bool hurt(float amount, DamageSource cause);
+    // `causedByLivingNonPlayer` is DamageScaling::WhenCausedByLivingNonPlayer's
+    // condition: a mob swung it, so a harder world swings harder. False for the
+    // world hurting the player — falling, drowning, starving, the void.
+    bool hurt(float amount, DamageType cause, bool causedByLivingNonPlayer = false);
     // Restores a respawning player to full health and food.
     void reset();
     void restore(float health, int foodLevel, float saturation, int airTicks);

@@ -1,0 +1,15 @@
+{
+  "options.rebedrock.antiAliasing": "抗锯齿",
+  "options.rebedrock.dynamicLights": "动态光源",
+  "options.rebedrock.particleLevel.crazy": "疯狂（3倍）",
+  "options.rebedrock.particleLevel.high": "高（2倍）",
+  "options.rebedrock.particleLevel.low": "低（0.5倍）",
+  "options.rebedrock.particleLevel.medium": "中（1倍）",
+  "options.rebedrock.rainCollisionCache": "雨滴碰撞缓存",
+  "options.rebedrock.rainMode": "雨效果模式",
+  "options.rebedrock.rainMode.async": "异步粒子雨",
+  "options.rebedrock.rainMode.particles": "粒子雨",
+  "options.rebedrock.rainMode.texture": "贴图雨",
+  "options.rebedrock.resolution.windowed": "窗口化",
+  "options.rebedrock.sunShadows": "太阳阴影"
+}

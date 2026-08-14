@@ -3,9 +3,11 @@
 #include "world/DayNightCycle.hpp"
 #include "world/WorldClock.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cassert>
+#include <cmath>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -91,13 +93,18 @@ int main() {
         // A burning furnace is the same block with LIT set; format 14 carries
         // the flag, so a world saved mid-smelt reopens still alight instead of
         // silently going cold.
-        {-1, 63, 2, world::Block::Furnace, 0U, world::BlockOrientation::East, true},
-        {4, 62, -8, world::Block::Water, 3U, world::BlockOrientation::North},
-        // Farmland carries its moisture (0-7) in the per-cell orientation byte
-        // (farmlandMoisture), so the saved state can exceed the six enumerated
-        // BlockOrientation facings. Regression: a save with well-watered
-        // farmland used to fail to load as an "invalid block edit".
-        {5, 62, -8, world::Block::Farmland, 0U, static_cast<world::BlockOrientation>(7)},
+        {-1, 63, 2,
+         world::BlockState{world::Block::Furnace, world::BlockOrientation::East}.withLit(true)},
+        {4, 62, -8, world::BlockState{world::Block::Water}.withFluidLevel(3U)},
+        // Farmland's moisture is a property of its own now, but the case it
+        // guards is the same one: a well-watered farmland used to be a value the
+        // orientation byte could not legally hold, and the save refused to load
+        // as an "invalid block edit".
+        {5, 62, -8, world::BlockState{world::Block::Farmland}.withMoisture(7)},
+        // A crop's age likewise, and a hand-placed leaf's PERSISTENT flag: three
+        // properties that all used to be the same overloaded byte.
+        {6, 62, -8, world::BlockState{world::Block::WheatCrops}.withAge(5)},
+        {7, 62, -8, world::BlockState{world::Block::OakLeaves}.withPersistent(true)},
     };
     gameplay::ChestBlockEntity chest;
     chest.position = {8, 65, -4};
@@ -140,7 +147,13 @@ int main() {
     assert(loaded.inventory == save.inventory);
     assert(loaded.inventory[4].damage == 137U);
     assert(loaded.edits == save.edits);
-    assert(loaded.edits[0].lit);
+    assert(loaded.edits[0].state.lit());
+    // Every property survives the round trip by name, not by column.
+    assert(loaded.edits[0].state.orientation() == world::BlockOrientation::East);
+    assert(loaded.edits[1].state.fluidLevel() == 3U);
+    assert(loaded.edits[2].state.moisture() == 7);
+    assert(loaded.edits[3].state.age() == 5);
+    assert(loaded.edits[4].state.persistent());
     // The palette names the block, not the state: `lit_furnace` is gone.
     {
         std::ifstream data{root / save.summary.identifier / "world.dat", std::ios::binary};
@@ -271,14 +284,14 @@ int main() {
         }
         const auto legacy = repository.load(legacyIdentifier);
         assert(legacy.edits.size() == 2U);
-        assert(legacy.edits[0].block == world::Block::Stone);
+        assert(legacy.edits[0].state.block() == world::Block::Stone);
         // Ordinal 49 was `wall_torch_north`, which is no longer a block of its
         // own: format 14 turns it back into the one wall torch plus a facing.
         // Losing that mapping would silently rotate every wall torch in an old
         // world to the default north face.
-        assert(legacy.edits[1].block == world::Block::WallTorch);
-        assert(legacy.edits[1].orientation == world::BlockOrientation::North);
-        assert(!legacy.edits[1].lit);
+        assert(legacy.edits[1].state.block() == world::Block::WallTorch);
+        assert(legacy.edits[1].state.orientation() == world::BlockOrientation::North);
+        assert(!legacy.edits[1].state.lit());
         assert(legacy.inventory[0] ==
                (gameplay::ItemStack{world::Block::Air, 1U, &gameplay::items::DiamondPickaxe}));
         assert(legacy.gameMode == gameplay::GameMode::Survival);
@@ -411,5 +424,410 @@ int main() {
     }
     assert(rejectedCorruption);
     std::filesystem::remove_all(root);
+    // --- Format 16: dropped items and blocks mid-fall survive a round trip.
+    // Before it both simply vanished on reload — everything thrown or mined but
+    // not yet picked up, and any block caught partway through a collapse. ---
+    {
+        auto game = repository.create("Drops", 7ULL);
+
+        persistence::PersistentItemDrop stoneDrop;
+        stoneDrop.x = 12.5F;
+        stoneDrop.y = 65.0F;
+        stoneDrop.z = -3.25F;
+        stoneDrop.vx = 0.05F;
+        stoneDrop.vy = -0.2F;
+        stoneDrop.vz = -0.05F;
+        stoneDrop.stack = {world::Block::Stone, 7U};
+        stoneDrop.ageTicks = 1234U;
+        game.itemDrops.push_back(stoneDrop);
+
+        // An item-backed stack too: the block and item palettes are separate.
+        persistence::PersistentItemDrop diamondDrop;
+        diamondDrop.x = 1.0F;
+        diamondDrop.y = 70.0F;
+        diamondDrop.z = 1.0F;
+        diamondDrop.stack = {world::Block::Air, 3U, &gameplay::items::Diamond};
+        diamondDrop.ageTicks = 5U;
+        game.itemDrops.push_back(diamondDrop);
+
+        persistence::PersistentFallingBlock sand;
+        sand.x = 4.5F;
+        sand.y = 80.5F;
+        sand.z = 4.5F;
+        sand.verticalVelocity = -0.42F;
+        sand.block = world::Block::Sand;
+        game.fallingBlocks.push_back(sand);
+
+        repository.save(game);
+        const auto loaded = repository.load(game.summary.identifier);
+        assert(loaded.itemDrops.size() == 2U);
+        assert(loaded.itemDrops[0].stack.block == world::Block::Stone);
+        assert(loaded.itemDrops[0].stack.count == 7U);
+        // The age matters: it drives both the despawn timer and the pickup delay.
+        assert(loaded.itemDrops[0].ageTicks == 1234U);
+        assert(std::fabs(loaded.itemDrops[0].x - 12.5F) < 1e-4F);
+        assert(std::fabs(loaded.itemDrops[0].vy + 0.2F) < 1e-4F);
+        assert(loaded.itemDrops[1].stack.item == &gameplay::items::Diamond);
+        assert(loaded.itemDrops[1].stack.count == 3U);
+
+        assert(loaded.fallingBlocks.size() == 1U);
+        assert(loaded.fallingBlocks[0].block == world::Block::Sand);
+        assert(std::fabs(loaded.fallingBlocks[0].verticalVelocity + 0.42F) < 1e-4F);
+        assert(std::fabs(loaded.fallingBlocks[0].y - 80.5F) < 1e-4F);
+    }
+
+    // --- A world with nothing dropped still round-trips: the block is written
+    // empty rather than omitted, so the reader's cursor stays in step. ---
+    {
+        auto game = repository.create("NoDrops", 8ULL);
+        repository.save(game);
+        const auto loaded = repository.load(game.summary.identifier);
+        assert(loaded.itemDrops.empty());
+        assert(loaded.fallingBlocks.empty());
+    }
+
+    // --- Format 17: the edits are grouped by the chunk that owns them, and the
+    // coordinates inside a group are chunk-local. Negative coordinates are where
+    // that goes wrong: -1 belongs to chunk -1 at local 15, and a truncating
+    // division would put it in chunk 0 at local -1. ---
+    {
+        auto game = repository.create("ChunkGrouped", 21ULL);
+        const std::array<std::pair<std::int32_t, std::int32_t>, 7> positions{{
+            {0, 0}, {15, 15}, {16, 0}, {-1, -1}, {-16, -17}, {-33, 40}, {1000, -1000},
+        }};
+        for (const auto& [x, z] : positions) {
+            world::PersistentBlockEdit edit;
+            edit.x = x;
+            edit.y = 70;
+            edit.z = z;
+            edit.state = world::BlockState{world::Block::Stone};
+            game.edits.push_back(edit);
+        }
+        // Two edits on the same cell: the later one is the cell's final state, so
+        // the grouping sort has to be stable or the world reloads wrong.
+        world::PersistentBlockEdit first;
+        first.x = 5;
+        first.y = 71;
+        first.z = 5;
+        first.state = world::BlockState{world::Block::Dirt};
+        game.edits.push_back(first);
+        auto second = first;
+        second.state = world::BlockState{world::Block::Cobblestone};
+        game.edits.push_back(second);
+        // A state-carrying edit, so the state palette is exercised rather than
+        // just the block one: a lit furnace facing west. The old packed byte
+        // spent four bits on the fluid level, three on the orientation and one
+        // on lit, and had nothing left; this goes through named properties.
+        world::PersistentBlockEdit stateful;
+        stateful.x = -20;
+        stateful.y = 64;
+        stateful.z = 7;
+        stateful.state =
+            world::BlockState{world::Block::Furnace, world::BlockOrientation::West}.withLit(true);
+        game.edits.push_back(stateful);
+        // And a deep-water edit, whose level 8 no longer shares a byte with
+        // anything.
+        world::PersistentBlockEdit deep;
+        deep.x = -21;
+        deep.y = 64;
+        deep.z = 7;
+        deep.state = world::BlockState{world::Block::Water}.withFluidLevel(8U);
+        game.edits.push_back(deep);
+        repository.save(game);
+        const auto loaded = repository.load(game.summary.identifier);
+        assert(loaded.edits.size() == game.edits.size());
+        // The order changes — the edits come back grouped — so compare as sets of
+        // positions, then check the two that carry meaning.
+        for (const auto& original : game.edits) {
+            const auto found = std::ranges::find_if(
+                loaded.edits, [&](const world::PersistentBlockEdit& candidate) {
+                    return candidate.x == original.x && candidate.y == original.y &&
+                           candidate.z == original.z && candidate.state == original.state;
+                });
+            assert(found != loaded.edits.end());
+        }
+        const auto* winner = static_cast<const world::PersistentBlockEdit*>(nullptr);
+        for (const auto& edit : loaded.edits) {
+            if (edit.x == 5 && edit.y == 71 && edit.z == 5) {
+                winner = &edit;
+            }
+        }
+        assert(winner != nullptr && winner->state.block() == world::Block::Cobblestone);
+        const auto reloadedState = std::ranges::find_if(
+            loaded.edits,
+            [](const world::PersistentBlockEdit& edit) { return edit.x == -20; });
+        assert(reloadedState != loaded.edits.end());
+        assert(reloadedState->state.lit());
+        assert(reloadedState->state.orientation() == world::BlockOrientation::West);
+        const auto reloadedDeep = std::ranges::find_if(
+            loaded.edits,
+            [](const world::PersistentBlockEdit& edit) { return edit.x == -21; });
+        assert(reloadedDeep != loaded.edits.end());
+        assert(reloadedDeep->state.fluidLevel() == 8U);
+    }
+
+    // --- The packing is the point of the grouping: a thousand edits in one
+    // chunk must cost about five bytes each, not the nineteen format 16 spent on
+    // three absolute coordinates plus four loose bytes. Format 18's state
+    // palette took the sixth byte back as well: a thousand stone edits name one
+    // state once instead of repeating a block index and a packed byte. ---
+    {
+        auto game = repository.create("EditDensity", 22ULL);
+        for (int index = 0; index < 1000; ++index) {
+            world::PersistentBlockEdit edit;
+            edit.x = index % 16;
+            edit.y = 64 + (index / 256);
+            edit.z = (index / 16) % 16;
+            edit.state = world::BlockState{world::Block::Stone};
+            game.edits.push_back(edit);
+        }
+        repository.save(game);
+        const auto path = repository.root() / game.summary.identifier / "world.dat";
+        const auto size = std::filesystem::file_size(path);
+        // Five bytes a record plus the fixed blocks; format 16's 17-byte records
+        // could not have fitted this under 17'000 bytes for the edits alone.
+        assert(size < 7'000U);
+        assert(repository.load(game.summary.identifier).edits.size() == 1000U);
+    }
+
+    // --- Container slots travel sparsely: only the occupied ones are written,
+    // each behind its index. A chest holding one item costs a handful of bytes
+    // rather than 27 dense stack records. ---
+    {
+        auto game = repository.create("SparseChest", 23ULL);
+        gameplay::ChestBlockEntity chest;
+        chest.position = {4, 65, 4};
+        chest.items[26] = {world::Block::Air, 5U, &gameplay::items::Diamond, 0U};
+        game.chests.push_back(chest);
+        repository.save(game);
+        const auto loaded = repository.load(game.summary.identifier);
+        assert(loaded.chests.size() == 1U);
+        assert(loaded.chests.front().items[26].item == &gameplay::items::Diamond);
+        assert(loaded.chests.front().items[26].count == 5U);
+        assert(loaded.chests.front().items[0].empty());
+        const auto size = std::filesystem::file_size(
+            repository.root() / game.summary.identifier / "world.dat");
+        // A dense chest alone would be 27 x 7 bytes; the whole file stays under
+        // that plus the fixed blocks.
+        assert(size < 1'200U);
+    }
+
+    // --- Forward compatibility: a block written by a build this one has never
+    // met is skipped by its own size, and everything around it still loads. That
+    // is the whole reason the reader dispatches on the tag instead of counting
+    // offsets from the start of the file. ---
+    {
+        auto game = repository.create("UnknownOwner", 24ULL);
+        game.playerHealth = 12.5F;
+        game.hasPlayerPosition = true;
+        game.playerX = 3.5F;
+        repository.save(game);
+        const auto path = repository.root() / game.summary.identifier / "world.dat";
+        std::vector<std::uint8_t> bytes;
+        {
+            std::ifstream input{path, std::ios::binary | std::ios::ate};
+            assert(input);
+            bytes.resize(static_cast<std::size_t>(input.tellg()));
+            input.seekg(0);
+            input.read(reinterpret_cast<char*>(bytes.data()),
+                       static_cast<std::streamsize>(bytes.size()));
+        }
+        // Drop the trailing checksum, append a block nothing knows, re-checksum.
+        bytes.resize(bytes.size() - sizeof(std::uint64_t));
+        LegacyWriter writer;
+        writer.bytes = std::move(bytes);
+        writer.integer<std::uint32_t>('Z' | ('Z' << 8) | ('Z' << 16) | ('Z' << 24));
+        writer.integer<std::uint32_t>(10U + 5U);  // header + five body bytes
+        writer.integer<std::uint16_t>(1U);
+        for (int index = 0; index < 5; ++index) {
+            writer.bytes.push_back(0xABU);
+        }
+        writer.finish();
+        {
+            std::ofstream output{path, std::ios::binary | std::ios::trunc};
+            output.write(reinterpret_cast<const char*>(writer.bytes.data()),
+                         static_cast<std::streamsize>(writer.bytes.size()));
+        }
+        const auto loaded = repository.load(game.summary.identifier);
+        assert(loaded.playerHealth == 12.5F);
+        assert(loaded.hasPlayerPosition && loaded.playerX == 3.5F);
+    }
+
+    // --- Nothing is positional any more: a payload carrying only the world block
+    // loads, and every owner that said nothing keeps its default. Under format 16
+    // a missing section desynchronised everything after it. ---
+    {
+        auto game = repository.create("SparseOwners", 25ULL);
+        repository.save(game);
+        LegacyWriter writer;
+        writer.magic();
+        writer.integer<std::uint32_t>(17U);
+        writer.integer<std::uint64_t>(25ULL);
+        writer.integer<std::uint16_t>(1U);  // block palette: air only
+        writer.stringValue("rebedrock:air");
+        writer.integer<std::uint16_t>(1U);  // item palette: the block sentinel
+        writer.stringValue("");
+        writer.integer<std::uint32_t>('W' | ('R' << 8) | ('L' << 16) | ('D' << 24));
+        writer.integer<std::uint32_t>(10U + 2U);
+        writer.integer<std::uint16_t>(1U);
+        writer.integer<std::uint8_t>(static_cast<std::uint8_t>(gameplay::GameMode::Survival));
+        writer.integer<std::uint8_t>(static_cast<std::uint8_t>(gameplay::Difficulty::Hard));
+        writer.finish();
+        {
+            std::ofstream output{
+                repository.root() / game.summary.identifier / "world.dat",
+                std::ios::binary | std::ios::trunc};
+            output.write(reinterpret_cast<const char*>(writer.bytes.data()),
+                         static_cast<std::streamsize>(writer.bytes.size()));
+        }
+        const auto loaded = repository.load(game.summary.identifier);
+        assert(loaded.gameMode == gameplay::GameMode::Survival);
+        assert(loaded.difficulty == gameplay::Difficulty::Hard);
+        assert(loaded.edits.empty());
+        assert(loaded.chests.empty());
+        assert(!loaded.hasPlayerPosition);
+        assert(loaded.playerHealth == gameplay::PlayerVitals::kMaximumHealth);
+    }
+
+    // --- Format 17 -> 18: the overloaded orientation byte migrates into named
+    // properties. This is the upgrade path every existing world takes, and the
+    // one place where getting it wrong is silent: a crop whose age was read as a
+    // facing comes back as a seedling, a well-watered field comes back dry, and
+    // hand-placed leaves start decaying. ---
+    {
+        auto game = repository.create("StateMigration", 26ULL);
+        repository.save(game);
+        LegacyWriter writer;
+        writer.magic();
+        writer.integer<std::uint32_t>(17U);
+        writer.integer<std::uint64_t>(26ULL);
+        // Block palette: air, wheat, farmland, oak leaves, furnace.
+        writer.integer<std::uint16_t>(5U);
+        writer.stringValue("rebedrock:air");
+        writer.stringValue("rebedrock:wheat");
+        writer.stringValue("rebedrock:farmland");
+        writer.stringValue("rebedrock:oak_leaves");
+        writer.stringValue("rebedrock:furnace");
+        writer.integer<std::uint16_t>(1U);  // item palette: the block sentinel
+        writer.stringValue("");
+
+        // One CHNK block at version 1: four edits in chunk (0, 0), each six
+        // bytes, with the state packed as fluid | orientation << 4 | lit << 7.
+        writer.integer<std::uint32_t>('C' | ('H' << 8) | ('N' << 16) | ('K' << 24));
+        // The size field covers the whole frame, header included: 10 bytes of
+        // tag/size/version, then the block's own payload.
+        writer.integer<std::uint32_t>(10U + 4U + 4U + 12U + 4U * 6U);
+        writer.integer<std::uint16_t>(1U);  // CHNK version 1
+        writer.integer<std::uint32_t>(1U);  // one chunk
+        writer.integer<std::uint32_t>(4U);  // four edits in total
+        writer.integer<std::int32_t>(0);
+        writer.integer<std::int32_t>(0);
+        writer.integer<std::uint32_t>(4U);
+        const auto legacyEdit = [&](std::uint8_t packedXZ, std::int16_t y,
+                                    std::uint16_t blockIndex, std::uint8_t packedState) {
+            writer.integer<std::uint8_t>(packedXZ);
+            writer.integer<std::int16_t>(y);
+            writer.integer<std::uint16_t>(blockIndex);
+            writer.integer<std::uint8_t>(packedState);
+        };
+        // Wheat with the age 5 that used to live in the orientation nibble.
+        legacyEdit(0x00U, 64, 1U, static_cast<std::uint8_t>(5U << 4U));
+        // Farmland at moisture 7, the value that could not be a legal facing.
+        legacyEdit(0x01U, 64, 2U, static_cast<std::uint8_t>(7U << 4U));
+        // Leaves flagged persistent by the magic East orientation, ordinal 1.
+        legacyEdit(0x02U, 64, 3U, static_cast<std::uint8_t>(1U << 4U));
+        // A lit furnace facing west (ordinal 3), the top bit plus a real facing.
+        legacyEdit(0x03U, 64, 4U, static_cast<std::uint8_t>((3U << 4U) | 0x80U));
+        writer.finish();
+        {
+            std::ofstream output{
+                repository.root() / game.summary.identifier / "world.dat",
+                std::ios::binary | std::ios::trunc};
+            output.write(reinterpret_cast<const char*>(writer.bytes.data()),
+                         static_cast<std::streamsize>(writer.bytes.size()));
+        }
+        const auto loaded = repository.load(game.summary.identifier);
+        assert(loaded.edits.size() == 4U);
+        assert(loaded.edits[0].state.block() == world::Block::WheatCrops);
+        assert(loaded.edits[0].state.age() == 5);
+        assert(loaded.edits[1].state.block() == world::Block::Farmland);
+        assert(loaded.edits[1].state.moisture() == 7);
+        assert(loaded.edits[2].state.block() == world::Block::OakLeaves);
+        assert(loaded.edits[2].state.persistent());
+        assert(loaded.edits[3].state.block() == world::Block::Furnace);
+        assert(loaded.edits[3].state.lit());
+        assert(loaded.edits[3].state.orientation() == world::BlockOrientation::West);
+        // And a crop's age must not have been mistaken for a facing on the way
+        // in: wheat has no facing at all.
+        assert(loaded.edits[0].state.orientation() == world::BlockOrientation::North);
+
+        // Saving it again writes format 18, and the properties survive that too.
+        auto migrated = loaded;
+        repository.save(migrated);
+        const auto reloaded = repository.load(game.summary.identifier);
+        assert(reloaded.edits.size() == 4U);
+        for (const auto& original : loaded.edits) {
+            const auto found = std::ranges::find_if(
+                reloaded.edits, [&](const world::PersistentBlockEdit& candidate) {
+                    return candidate.x == original.x && candidate.y == original.y &&
+                           candidate.z == original.z;
+                });
+            assert(found != reloaded.edits.end());
+            assert(found->state == original.state);
+        }
+    }
+
+    // --- A property this build has never heard of is skipped, not fatal. That is
+    // the forward half of writing names instead of columns: a world saved by a
+    // build that knows about stairs still opens here, minus the stair shape. ---
+    {
+        auto game = repository.create("UnknownProperty", 27ULL);
+        repository.save(game);
+        LegacyWriter writer;
+        writer.magic();
+        writer.integer<std::uint32_t>(18U);
+        writer.integer<std::uint64_t>(27ULL);
+        writer.integer<std::uint16_t>(2U);
+        writer.stringValue("rebedrock:air");
+        writer.stringValue("rebedrock:wheat");
+        writer.integer<std::uint16_t>(1U);
+        writer.stringValue("");
+        writer.integer<std::uint32_t>('C' | ('H' << 8) | ('N' << 16) | ('K' << 24));
+        // chunkCount + total + palette(count, entry) + chunk header + one record
+        // count, then one entry: block index, property count, and two
+        // length-prefixed names each followed by a value byte.
+        const std::uint32_t paletteBytes = 2U + (2U + 1U + (2U + 3U + 1U) + (2U + 5U + 1U));
+        writer.integer<std::uint32_t>(10U + 4U + 4U + paletteBytes + 12U + 5U);
+        writer.integer<std::uint16_t>(2U);  // CHNK version 2
+        writer.integer<std::uint32_t>(1U);
+        writer.integer<std::uint32_t>(1U);
+        writer.integer<std::uint16_t>(1U);  // one palette entry
+        writer.integer<std::uint16_t>(1U);  // block index: wheat
+        writer.integer<std::uint8_t>(2U);   // two properties
+        writer.stringValue("age");
+        writer.integer<std::uint8_t>(6U);
+        writer.stringValue("shape");  // no such property in this build
+        writer.integer<std::uint8_t>(3U);
+        writer.integer<std::int32_t>(0);
+        writer.integer<std::int32_t>(0);
+        writer.integer<std::uint32_t>(1U);
+        writer.integer<std::uint8_t>(0x00U);
+        writer.integer<std::int16_t>(70);
+        writer.integer<std::uint16_t>(0U);
+        writer.finish();
+        {
+            std::ofstream output{
+                repository.root() / game.summary.identifier / "world.dat",
+                std::ios::binary | std::ios::trunc};
+            output.write(reinterpret_cast<const char*>(writer.bytes.data()),
+                         static_cast<std::streamsize>(writer.bytes.size()));
+        }
+        const auto loaded = repository.load(game.summary.identifier);
+        assert(loaded.edits.size() == 1U);
+        assert(loaded.edits[0].state.block() == world::Block::WheatCrops);
+        // The property it does know still arrived.
+        assert(loaded.edits[0].state.age() == 6);
+    }
+
     return 0;
 }

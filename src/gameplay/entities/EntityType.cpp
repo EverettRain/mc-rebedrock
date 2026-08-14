@@ -16,6 +16,11 @@ EntityType::Builder EntityType::Builder::create(MobCategory category, const Enti
     return builder;
 }
 
+EntityType::Builder& EntityType::Builder::spawnPlacement(SpawnPlacement placement) {
+    draft_.spawnPlacement_ = placement;
+    return *this;
+}
+
 EntityType::Builder& EntityType::Builder::sized(float width, float height) {
     draft_.dimensions_ = {width, height};
     return *this;

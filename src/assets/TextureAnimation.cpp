@@ -3,8 +3,6 @@
 #include "assets/ResourceProvider.hpp"
 #include "core/Json.hpp"
 
-#include <fstream>
-#include <sstream>
 
 namespace mc::assets {
 
@@ -50,13 +48,13 @@ std::optional<TextureAnimation> TextureAnimation::load(const ResourceProvider& r
     if (!resources.exists(mcmetaLocation)) {
         return std::nullopt;
     }
-    std::ifstream input{resources.locate(mcmetaLocation), std::ios::binary};
-    if (!input) {
+    // Read as bytes, not through a path: a zipped pack serves the sidecar
+    // straight out of the archive instead of extracting it to disk first.
+    const auto bytes = resources.readBytes(mcmetaLocation);
+    if (bytes.empty()) {
         return std::nullopt;
     }
-    std::ostringstream contents;
-    contents << input.rdbuf();
-    return parse(contents.str());
+    return parse(std::string_view{reinterpret_cast<const char*>(bytes.data()), bytes.size()});
 }
 
 } // namespace mc::assets

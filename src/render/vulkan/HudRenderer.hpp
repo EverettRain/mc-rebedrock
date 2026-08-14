@@ -4,6 +4,7 @@
 // renderer core through reference members (bound once in Bindings) plus a few
 // std::function hooks for world-render couplings; the draw bodies are unchanged.
 // Header-only inline, mirroring VulkanDevice.
+#include "render/vulkan/GuiSpriteAtlas.hpp"
 #include "render/vulkan/HudTypes.hpp"
 
 #include "animation/PlayerModelAnimator.hpp"
@@ -25,6 +26,7 @@
 #include "ui/BitmapFontMetrics.hpp"
 #include "ui/ButtonControl.hpp"
 #include "ui/ChatHistory.hpp"
+#include "ui/GuiNineSlice.hpp"
 #include "ui/HudLayout.hpp"
 #include "ui/Language.hpp"
 #include "ui/MenuGeometry.hpp"
@@ -113,6 +115,9 @@ class HudRenderer final {
         const std::unordered_map<world::SectionPosition, world::SectionMeshUpdate,
                                  world::SectionPositionHash>& pendingSectionUpdates;
         const std::optional<TestSceneOptions>& testScene;
+        // Atlas rectangles + 26.1 gui.scaling for the stretchable widgets,
+        // filled by TextureManager::createGuiTexture().
+        const GuiWidgetSpriteTable& guiWidgetSprites;
         bool& paused;
         double& uiTimeSeconds;
         std::function<bool()> cameraSubmergedInWater;
@@ -148,7 +153,8 @@ class HudRenderer final {
           simulationDistanceChunks(b.simulationDistanceChunks),
           viewDistanceChunks(b.viewDistanceChunks),
           peakPendingSectionCount(b.peakPendingSectionCount),
-          pendingSectionUpdates(b.pendingSectionUpdates), testScene(b.testScene), paused(b.paused),
+          pendingSectionUpdates(b.pendingSectionUpdates), testScene(b.testScene),
+          guiWidgetSprites(b.guiWidgetSprites), paused(b.paused),
           uiTimeSeconds(b.uiTimeSeconds), cameraSubmergedInWater(b.cameraSubmergedInWater),
           drawHeldItem(b.drawHeldItem), currentFrameDescriptorSet(b.currentFrameDescriptorSet),
           activeCreativeCatalog(b.activeCreativeCatalog),
@@ -389,6 +395,22 @@ class HudRenderer final {
                     false, true);
     }
 
+    // Draws a widget sprite into `destination` honouring its 26.1 gui.scaling.
+    // `scale` is the GUI scale — framebuffer pixels per GUI pixel — which is
+    // what turns the sprite's declared pixel borders into destination lengths,
+    // so a 3px button frame stays 3 GUI pixels at any button width instead of
+    // smearing with the rest of the bitmap. The slicing itself lives in
+    // ui::forEachGuiSpriteQuad, which is Vulkan-free and unit-tested.
+    void drawScaledGuiSprite(VkCommandBuffer commandBuffer, const ui::UiRect& destination,
+                             float layer, const GuiAtlasSprite& sprite, float scale,
+                             const glm::vec4& tint = {1.0F, 1.0F, 1.0F, 1.0F}) const {
+        ui::forEachGuiSpriteQuad(destination, sprite.region, sprite.scaling, scale,
+                                 [&](const ui::GuiSpriteQuad& quad) {
+                                     drawGuiSprite(commandBuffer, quad.destination, layer,
+                                                   quad.source, tint);
+                                 });
+    }
+
     void drawMinecraftCrosshair(VkCommandBuffer commandBuffer, const ui::UiRect& rectangle) const {
         constexpr float atlasSize = 256.0F;
         const auto clipRectangle =
@@ -460,22 +482,22 @@ class HudRenderer final {
         const ui::UiRect snapped{std::floor(rectangle.x), std::floor(rectangle.y),
                                  std::floor(rectangle.width + 0.5F),
                                  std::floor(rectangle.height + 0.5F)};
-        const float sourceY = state == ui::ButtonVisualState::Disabled
-                                  ? 46.0F
-                                  : (state == ui::ButtonVisualState::Normal ? 66.0F : 86.0F);
-        const float halfWidth = snapped.width * 0.5F;
-        const float sourceHalfWidth = std::min(100.0F, halfWidth / scale);
+        const GuiWidgetSprite face =
+            state == ui::ButtonVisualState::Disabled
+                ? GuiWidgetSprite::ButtonDisabled
+                : (state == ui::ButtonVisualState::Normal ? GuiWidgetSprite::Button
+                                                          : GuiWidgetSprite::ButtonHighlighted);
         // Pressed darkens the caller's tint instead of hard-coding grey, so the
         // red delete button keeps a coherent colour in every state.
         const glm::vec4 buttonTint =
             state == ui::ButtonVisualState::Pressed
                 ? glm::vec4{tint.r * 0.78F, tint.g * 0.78F, tint.b * 0.78F, 1.0F}
                 : tint;
-        drawGuiSprite(commandBuffer, {snapped.x, snapped.y, halfWidth, snapped.height}, 0.0F,
-                      {0.0F, sourceY, sourceHalfWidth, 20.0F}, buttonTint);
-        drawGuiSprite(commandBuffer, {snapped.x + halfWidth, snapped.y, halfWidth, snapped.height},
-                      0.0F, {200.0F - sourceHalfWidth, sourceY, sourceHalfWidth, 20.0F},
-                      buttonTint);
+        // Nine-sliced: the frame keeps its declared pixel width whatever the
+        // layout does to the button, so a two-column settings page no longer
+        // stretches a 200px bitmap into a soft-edged rectangle.
+        drawScaledGuiSprite(commandBuffer, snapped, 0.0F,
+                            guiWidgetSprite(guiWidgetSprites, face), scale, buttonTint);
         const glm::vec4 textColor = state == ui::ButtonVisualState::Disabled
                                         ? glm::vec4{0.63F, 0.63F, 0.63F, 1.0F}
                                         : (state == ui::ButtonVisualState::Hovered ||
@@ -492,27 +514,26 @@ class HudRenderer final {
     void drawMinecraftSlider(VkCommandBuffer commandBuffer, const ui::UiRect& rectangle,
                              std::string_view label, ui::ButtonVisualState state, float value,
                              float scale) const {
-        constexpr float sourceY = 106.0F;
         const ui::UiRect snapped{std::floor(rectangle.x), std::floor(rectangle.y),
                                  std::floor(rectangle.width + 0.5F),
                                  std::floor(rectangle.height + 0.5F)};
-        const float halfWidth = snapped.width * 0.5F;
-        const float sourceHalfWidth = std::min(100.0F, halfWidth / scale);
         const glm::vec4 tint = state == ui::ButtonVisualState::Pressed
                                    ? glm::vec4{0.78F, 0.78F, 0.78F, 1.0F}
                                    : glm::vec4{1.0F};
-        drawGuiSprite(commandBuffer, {snapped.x, snapped.y, halfWidth, snapped.height}, 0.0F,
-                      {0.0F, sourceY, sourceHalfWidth, 20.0F}, tint);
-        drawGuiSprite(commandBuffer, {snapped.x + halfWidth, snapped.y, halfWidth, snapped.height},
-                      0.0F, {200.0F - sourceHalfWidth, sourceY, sourceHalfWidth, 20.0F}, tint);
+        // The track is nine-sliced like a button; the handle is drawn at its
+        // native 8x20, where nine-slicing is the identity, so it keeps landing
+        // exactly on its own art.
+        drawScaledGuiSprite(commandBuffer, snapped, 0.0F,
+                            guiWidgetSprite(guiWidgetSprites, GuiWidgetSprite::Slider), scale,
+                            tint);
         const float clampedValue = std::clamp(value, 0.0F, 1.0F);
         const float knobX = snapped.x + clampedValue * std::max(snapped.width - 8.0F * scale, 0.0F);
-        const float knobSourceY = state == ui::ButtonVisualState::Normal ? 146.0F : 166.0F;
-        drawGuiSprite(commandBuffer, {knobX, snapped.y, 4.0F * scale, snapped.height}, 0.0F,
-                      {0.0F, knobSourceY, 4.0F, 20.0F});
-        drawGuiSprite(commandBuffer,
-                      {knobX + 4.0F * scale, snapped.y, 4.0F * scale, snapped.height}, 0.0F,
-                      {196.0F, knobSourceY, 4.0F, 20.0F});
+        const auto& knob = guiWidgetSprite(guiWidgetSprites,
+                                           state == ui::ButtonVisualState::Normal
+                                               ? GuiWidgetSprite::SliderHandle
+                                               : GuiWidgetSprite::SliderHandleHighlighted);
+        drawScaledGuiSprite(commandBuffer, {knobX, snapped.y, 8.0F * scale, snapped.height}, 0.0F,
+                            knob, scale);
         const glm::vec4 textColor = state == ui::ButtonVisualState::Disabled
                                         ? glm::vec4{0.63F, 0.63F, 0.63F, 1.0F}
                                         : (state == ui::ButtonVisualState::Hovered ||
@@ -563,19 +584,11 @@ class HudRenderer final {
         }
     }
 
-    // The active translation, falling back to the English text baked into the
-    // call site when the language file has no entry.
-
-    [[nodiscard]] std::string itemDisplayName(const gameplay::ItemStack& stack) const {
-        if (gameplay::isBlockStack(stack)) {
-            const auto& definition = world::blockDefinition(stack.block);
-            const auto& source = world::translationIdentifier(stack.block);
-            return std::string{translate(ui::translationKey("block", source.space, source.path),
-                                         definition.displayName)};
-        }
-        const bool chinese = language.code().rfind("zh", 0) == 0;
-        const char* name = chinese && stack.item->zh[0] != '\0' ? stack.item->zh : stack.item->en;
-        return std::string{name};
+    [[nodiscard]] std::string_view itemDisplayName(const gameplay::ItemStack& stack) const {
+        const gameplay::DescriptionId descriptionId = gameplay::itemDescriptionId(stack);
+        if (descriptionId.empty()) return {};
+        return language.translate(descriptionId.prefix(), descriptionId.source.space,
+                                  descriptionId.source.path, descriptionId.source.path);
     }
 
     // blockTextureRoot is <vanilla>/1.16.1/textures/minecraft/block; the
@@ -647,11 +660,11 @@ class HudRenderer final {
     [[nodiscard]] std::string rainModeLabel(int mode) const {
         switch (mode) {
         case 0:
-            return translated("options.rainMode.texture", "贴图雨");
+            return translated("options.rebedrock.rainMode.texture", "Texture Rain");
         case 1:
-            return translated("options.rainMode.particles", "粒子雨");
+            return translated("options.rebedrock.rainMode.particles", "Particle Rain");
         default:
-            return translated("options.rainMode.async", "异步粒子雨");
+            return translated("options.rebedrock.rainMode.async", "Asynchronous Particle Rain");
         }
     }
 
@@ -661,13 +674,13 @@ class HudRenderer final {
     [[nodiscard]] std::string particleLevelLabel(int level) const {
         switch (level) {
         case 0:
-            return translated("options.particleLevel.low", "低") + " (0.5x)";
+            return translated("options.rebedrock.particleLevel.low", "Low (0.5x)");
         case 2:
-            return translated("options.particleLevel.high", "高") + " (2x)";
+            return translated("options.rebedrock.particleLevel.high", "High (2x)");
         case 3:
-            return translated("options.particleLevel.crazy", "疯狂") + " (3x)";
+            return translated("options.rebedrock.particleLevel.crazy", "Crazy (3x)");
         default:
-            return translated("options.particleLevel.medium", "中") + " (1x)";
+            return translated("options.rebedrock.particleLevel.medium", "Medium (1x)");
         }
     }
 
@@ -679,6 +692,17 @@ class HudRenderer final {
         // without the vanilla key still reads correctly.
         const auto toggle = [this](bool value) {
             return translated(value ? "options.on" : "options.off", value ? "ON" : "OFF");
+        };
+        const auto optionValue = [this](std::string name, std::string value) {
+            const std::array<std::string_view, 2> arguments{name, value};
+            return ui::formatTranslation(
+                translated("options.generic_value", "%s: %s"), arguments);
+        };
+        const auto percentValue = [this](std::string name, int value) {
+            const std::string number = std::to_string(value);
+            const std::array<std::string_view, 2> arguments{name, number};
+            return ui::formatTranslation(
+                translated("options.percent_value", "%s: %s%%"), arguments);
         };
         switch (button) {
         case MenuButton::Resume:
@@ -694,96 +718,108 @@ class HudRenderer final {
             int windowWidth = 0;
             int windowHeight = 0;
             glfwGetWindowSize(window, &windowWidth, &windowHeight);
+            std::string value = std::to_string(windowWidth) + "x" + std::to_string(windowHeight);
             if (windowWidth == resolution.width && windowHeight == resolution.height) {
-                return translated("options.fullscreen.resolution", "Resolution") + ": " +
-                       std::to_string(resolution.width) + "x" + std::to_string(resolution.height);
+                return optionValue(
+                    translated("options.fullscreen.resolution", "Fullscreen Resolution"), value);
             }
-            return translated("options.fullscreen.resolution", "Resolution") + ": " +
-                   std::to_string(windowWidth) + "x" + std::to_string(windowHeight) + " " +
-                   translated("options.resolution.windowed", "(windowed)");
+            value += " (" +
+                     translated("options.rebedrock.resolution.windowed", "windowed") + ")";
+            return optionValue(
+                translated("options.fullscreen.resolution", "Fullscreen Resolution"), value);
         }
         case MenuButton::GuiScale:
-            return translated("options.guiScale", "GUI Scale") + ": " +
-                   (menuSystem.guiScaleSetting == 0 ? translated("options.guiScale.auto", "Auto")
-                                                    : std::to_string(menuSystem.guiScaleSetting));
+            return optionValue(
+                translated("options.guiScale", "GUI Scale"),
+                menuSystem.guiScaleSetting == 0 ? translated("options.guiScale.auto", "Auto")
+                                                : std::to_string(menuSystem.guiScaleSetting));
         case MenuButton::ViewDistance:
-            return translated("options.renderDistance", "Render Distance") + ": " +
-                   formatTemplate(translated("options.chunks", "%s chunks"),
-                                  std::to_string(viewDistanceChunks));
+            return optionValue(
+                translated("options.renderDistance", "Render Distance"),
+                formatTemplate(translated("options.chunks", "%s chunks"),
+                               std::to_string(viewDistanceChunks)));
         case MenuButton::SimulationDistance:
-            return translated("options.simulationDistance", "Simulation Distance") + ": " +
-                   formatTemplate(translated("options.chunks", "%s chunks"),
-                                  std::to_string(simulationDistanceChunks));
+            return optionValue(
+                translated("options.simulationDistance", "Simulation Distance"),
+                formatTemplate(translated("options.chunks", "%s chunks"),
+                               std::to_string(simulationDistanceChunks)));
         case MenuButton::MasterVolume:
-            return translated("soundCategory.master", "Master Volume") + ": " +
-                   std::to_string(static_cast<int>(std::lround(options.masterVolume * 100.0F))) +
-                   "%";
+            return percentValue(
+                translated("soundCategory.master", "Master Volume"),
+                static_cast<int>(std::lround(options.masterVolume * 100.0F)));
         case MenuButton::VideoSettings:
-            return translated("options.videoTitle", "Video Settings") + "...";
+            return translated("options.video", "Video Settings...");
         case MenuButton::Controls:
-            return translated("options.controls", "Controls") + "...";
+            return translated("options.controls", "Controls...");
         case MenuButton::AutoJump:
-            return translated("options.autoJump", "Auto-Jump") + ": " + toggle(options.autoJump);
+            return optionValue(translated("options.autoJump", "Auto-Jump"),
+                               toggle(options.autoJump));
         case MenuButton::FrameRateLimit:
-            return translated("options.framerateLimit", "Max Framerate") + ": " +
-                   (options.frameRateLimit == 0
-                        ? translated("options.framerateLimit.max", "Unlimited")
-                        : formatTemplate(translated("options.framerate", "%s fps"),
-                                         std::to_string(options.frameRateLimit)));
+            return optionValue(
+                translated("options.framerateLimit", "Max Framerate"),
+                options.frameRateLimit == 0
+                    ? translated("options.framerateLimit.max", "Unlimited")
+                    : formatTemplate(translated("options.framerate", "%s fps"),
+                                     std::to_string(options.frameRateLimit)));
         case MenuButton::AntiAliasing:
-            return translated("options.antiAliasing", "Anti-Aliasing") + ": " +
-                   toggle(options.antiAliasing);
+            return optionValue(
+                translated("options.rebedrock.antiAliasing", "Anti-Aliasing"),
+                toggle(options.antiAliasing));
         case MenuButton::Anisotropy:
-            return translated("options.anisotropicFiltering", "Anisotropic Filtering") + ": " +
-                   std::to_string(options.anisotropy) + "x";
+            return optionValue(translated("options.maxAnisotropy", "Anisotropic Filtering"),
+                               std::to_string(options.anisotropy) + "x");
         case MenuButton::ViewBobbing:
-            return translated("options.viewBobbing", "View Bobbing") + ": " +
-                   toggle(options.viewBobbing);
+            return optionValue(translated("options.viewBobbing", "View Bobbing"),
+                               toggle(options.viewBobbing));
         case MenuButton::SmoothLighting:
             switch (options.smoothLightingQuality) {
             case world::SmoothLightingQuality::Off:
-                return translated("options.ao", "Smooth Lighting") + ": " +
-                       translated("options.ao.off", "OFF");
+                return optionValue(translated("options.ao", "Smooth Lighting"),
+                                   translated("options.ao.off", "OFF"));
             case world::SmoothLightingQuality::High:
-                return translated("options.ao", "Smooth Lighting") + ": " +
-                       translated("options.ao.max", "Maximum");
+                return optionValue(translated("options.ao", "Smooth Lighting"),
+                                   translated("options.ao.max", "Maximum"));
             case world::SmoothLightingQuality::Standard:
-                return translated("options.ao", "Smooth Lighting") + ": " +
-                       translated("options.ao.min", "Minimum");
+                return optionValue(translated("options.ao", "Smooth Lighting"),
+                                   translated("options.ao.min", "Minimum"));
             }
             return {};
         case MenuButton::DynamicLight:
-            return translated("options.dynamicLights", "Dynamic Lighting") + ": " +
-                   toggle(options.dynamicLight);
+            return optionValue(
+                translated("options.rebedrock.dynamicLights", "Dynamic Lighting"),
+                toggle(options.dynamicLight));
         case MenuButton::Vsync:
-            return translated("options.vsync", "Use VSync") + ": " + toggle(options.vsync);
+            return optionValue(translated("options.vsync", "VSync"), toggle(options.vsync));
         case MenuButton::Difficulty:
             // Only present on the in-world options page, where a save is open.
-            return translated("options.difficulty", "Difficulty") + ": " +
-                   translated(gameplay::difficultyTranslationKey(
-                                  currentSave.has_value() ? currentSave->difficulty
-                                                          : gameplay::Difficulty::Normal),
-                              gameplay::difficultyName(currentSave.has_value()
-                                                           ? currentSave->difficulty
-                                                           : gameplay::Difficulty::Normal));
+            return optionValue(
+                translated("options.difficulty", "Difficulty"),
+                translated(gameplay::difficultyTranslationKey(
+                               currentSave.has_value() ? currentSave->difficulty
+                                                       : gameplay::Difficulty::Normal),
+                           gameplay::difficultyName(currentSave.has_value()
+                                                        ? currentSave->difficulty
+                                                        : gameplay::Difficulty::Normal)));
         case MenuButton::Experimental:
-            return translated("menu.experimental", "实验性内容") + "...";
+            return translated("selectWorld.experimental", "Experimental") + "...";
         case MenuButton::RainMode:
-            return translated("options.rainMode", "雨模式") + ": " +
-                   rainModeLabel(options.rainMode);
+            return optionValue(translated("options.rebedrock.rainMode", "Rain Mode"),
+                               rainModeLabel(options.rainMode));
         case MenuButton::ParticleLevel:
-            return translated("options.particleLevel", "粒子效果") + ": " +
-                   particleLevelLabel(options.particleLevel);
+            return optionValue(translated("options.particles", "Particles"),
+                               particleLevelLabel(options.particleLevel));
         case MenuButton::SunShadows:
-            return translated("options.sunShadows", "太阳阴影") + ": " + toggle(options.sunShadows);
+            return optionValue(translated("options.rebedrock.sunShadows", "Sun Shadows"),
+                               toggle(options.sunShadows));
         case MenuButton::RainCollisionCache:
-            return translated("options.rainCollisionCache", "雨碰撞缓存") + ": " +
-                   toggle(options.rainCollisionCache);
+            return optionValue(
+                translated("options.rebedrock.rainCollisionCache", "Rain Collision Cache"),
+                toggle(options.rainCollisionCache));
         case MenuButton::Language:
-            return translated("options.language", "Language") + "...";
+            return translated("options.language", "Language...");
         case MenuButton::ForceUnicodeFont:
-            return translated("options.forceUnicodeFont", "Force Unicode Font") + ": " +
-                   toggle(options.forceUnicodeFont);
+            return optionValue(translated("options.forceUnicodeFont", "Force Unicode Font"),
+                               toggle(options.forceUnicodeFont));
         case MenuButton::Done:
             return translated("gui.done", "Done");
         case MenuButton::Singleplayer:
@@ -809,8 +845,8 @@ class HudRenderer final {
         case MenuButton::CreateConfirm:
             return translated("selectWorld.create", "Create World");
         case MenuButton::CreateGameMode:
-            return translated("selectWorld.gameMode", "Game Mode") + ": " +
-                   gameModeLabel(menuSystem.createWorldGameMode);
+            return optionValue(translated("selectWorld.gameMode", "Game Mode"),
+                               gameModeLabel(menuSystem.createWorldGameMode));
         case MenuButton::SaveQuit:
             return translated("menu.returnToMenu", "Save and Quit to Title");
         case MenuButton::Respawn:
@@ -829,13 +865,10 @@ class HudRenderer final {
                    : translated("selectWorld.gameMode.creative", "creative");
     }
 
-    // Replaces the single "%s" placeholder vanilla language files use.
+    // Formats the single-argument vanilla strings used outside option fields.
     [[nodiscard]] static std::string formatTemplate(std::string text, std::string_view value) {
-        const auto placeholder = text.find("%s");
-        if (placeholder == std::string::npos) {
-            return text + " " + std::string{value};
-        }
-        return text.replace(placeholder, 2U, value);
+        const std::array<std::string_view, 1> arguments{value};
+        return ui::formatTranslation(text, arguments);
     }
 
     // Frontend screen titles. The edit page shows the selected world's name,
@@ -1148,7 +1181,7 @@ class HudRenderer final {
     void drawLanguageScreen(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         const auto cursor = currentFramebufferCursor();
         const float scale = layout.scale();
-        const std::string title = translated("options.language", "Language");
+        const std::string title = translated("options.language.title", "Language");
         drawHudText(commandBuffer, title,
                     (static_cast<float>(swapchainExtent.width) - hudTextWidth(title, scale)) * 0.5F,
                     14.0F * scale, scale, {1.0F, 1.0F, 1.0F, 1.0F});
@@ -1190,19 +1223,10 @@ class HudRenderer final {
         // A scrollbar thumb on the box's right edge when the list overflows,
         // mirroring the vanilla EntryListWidget's grey track.
         if (menuSystem.languageCodes.size() > visible) {
-            const float trackTop = box.y + 2.0F * scale;
-            const float trackHeight = box.height - 4.0F * scale;
-            const float thumbHeight =
-                std::max(trackHeight * static_cast<float>(visible) /
-                             static_cast<float>(menuSystem.languageCodes.size()),
-                         8.0F * scale);
-            const float travel = std::max(trackHeight - thumbHeight, 1.0F);
-            const float thumbY = trackTop + (maximumFirst > 0 ? static_cast<float>(first) /
-                                                                    static_cast<float>(maximumFirst)
-                                                              : 0.0F) *
-                                                travel;
-            drawHudQuad(commandBuffer,
-                        {box.x + box.width - 7.0F * scale, thumbY, 4.0F * scale, thumbHeight},
+            const auto thumb = ui::languageScrollbarThumb(
+                layout, static_cast<float>(swapchainExtent.width),
+                menuSystem.languageCodes.size(), visible, first);
+            drawHudQuad(commandBuffer, thumb,
                         {0.55F, 0.55F, 0.55F, 0.95F});
         }
         // The grey warning line between the list and the buttons, as vanilla
@@ -1249,7 +1273,7 @@ class HudRenderer final {
             menuSystem.pageStack.current() == ui::PageId::Options
                 ? translated("options.title", "Options")
                 : (menuSystem.pageStack.current() == ui::PageId::Experimental
-                       ? translated("menu.experimental", "实验性内容")
+                       ? translated("selectWorld.experimental", "Experimental")
                        : (menuSystem.pageStack.current() == ui::PageId::VideoSettings
                               ? translated("options.videoTitle", "Video Settings")
                               : (menuSystem.pageStack.current() == ui::PageId::Controls
@@ -1608,7 +1632,7 @@ class HudRenderer final {
         drawDragPreview(commandBuffer, layout);
 
         if (hoveredStack.has_value()) {
-            const std::string label = itemDisplayName(*hoveredStack);
+            const std::string_view label = itemDisplayName(*hoveredStack);
             const ui::UiRect tooltip{
                 cursor.x + 12.0F * scale,
                 cursor.y + 12.0F * scale,
@@ -1682,8 +1706,12 @@ class HudRenderer final {
             const auto& suggestion = chatSuggestions_[row];
             const float rowY = input.y - (static_cast<float>(row) + 1.0F) * 11.0F * scale;
             const bool selected = row == chatSuggestionIndex_;
-            const std::string label =
-                suggestion.text + (suggestion.hint.empty() ? "" : " — " + suggestion.hint);
+            std::string localizedHint = suggestion.hint;
+            if (localizedHint.starts_with("item.") || localizedHint.starts_with("block.")) {
+                localizedHint = translated(localizedHint, localizedHint);
+            }
+            const std::string label = suggestion.text +
+                (localizedHint.empty() ? "" : " — " + localizedHint);
             drawHudQuad(
                 commandBuffer,
                 {2.0F * scale, rowY, hudTextWidth(label, scale) + 4.0F * scale, 11.0F * scale},
@@ -1719,6 +1747,13 @@ class HudRenderer final {
         drawHeldItem(commandBuffer, descriptorSet);
         drawUnderwaterOverlay(commandBuffer, descriptorSet);
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipeline);
+        // drawHeldItem binds set 0 through itemPipelineLayout (128-byte vertex
+        // push range). Switching back to the HUD pipeline is not enough: its
+        // 64-byte vertex+fragment layout is incompatible, so the damage quad's
+        // first draw must re-bind the shared set through hudPipelineLayout.
+        // The underwater overlay does this itself, but it is conditional.
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipelineLayout,
+                                0, 1, &descriptorSet, 0, nullptr);
 
         drawDamageOverlay(commandBuffer);
         drawVignette(commandBuffer, descriptorSet);
@@ -1768,7 +1803,7 @@ class HudRenderer final {
                     alpha = elapsed <= 1.5 ? 1.0F : static_cast<float>((2.0 - elapsed) / 0.5);
                 }
                 if (alpha > 0.0F) {
-                    const std::string selectedName = itemDisplayName(selectedStack);
+                    const std::string_view selectedName = itemDisplayName(selectedStack);
                     drawHudText(commandBuffer, selectedName,
                                 (static_cast<float>(swapchainExtent.width) -
                                  hudTextWidth(selectedName, textScale)) *
@@ -1915,8 +1950,8 @@ class HudRenderer final {
             }
             if (hoveredSlot.has_value() && !gameSession.inventory().slot(*hoveredSlot).empty()) {
                 const auto& hoveredStack = gameSession.inventory().slot(*hoveredSlot);
-                const std::string label =
-                    itemDisplayName(hoveredStack) + " x" + std::to_string(hoveredStack.count);
+                std::string label{itemDisplayName(hoveredStack)};
+                label += " x" + std::to_string(hoveredStack.count);
                 const float labelWidth = hudTextWidth(label, textScale) + 8.0F * textScale;
                 const ui::UiRect tooltip{
                     cursorX + 12.0F * textScale,
@@ -2040,6 +2075,7 @@ class HudRenderer final {
     const std::unordered_map<world::SectionPosition, world::SectionMeshUpdate,
                              world::SectionPositionHash>& pendingSectionUpdates;
     const std::optional<TestSceneOptions>& testScene;
+    const GuiWidgetSpriteTable& guiWidgetSprites;
     bool& paused;
     double& uiTimeSeconds;
 

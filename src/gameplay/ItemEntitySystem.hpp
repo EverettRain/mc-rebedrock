@@ -27,6 +27,10 @@ struct ItemEntity final {
 class ItemEntitySystem final {
   public:
     void spawn(glm::vec3 position, ItemStack stack, glm::vec3 initialVelocity = {});
+    // Reinstates a drop from a save, keeping the age it had — spawn() would
+    // reset it, and the age drives both the despawn timer and the pickup delay.
+    void restore(glm::vec3 position, ItemStack stack, glm::vec3 velocity,
+                 unsigned int ageTicks);
     [[nodiscard]] std::size_t tick(
         const world::World& world,
         glm::vec3 playerPosition,

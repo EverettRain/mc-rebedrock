@@ -13,15 +13,25 @@ if(EXISTS "${SOURCE_ROOT}/animation")
     file(COPY "${SOURCE_ROOT}/animation" DESTINATION "${GAME_ROOT}/resources")
 endif()
 
-# Project-authored entity skins (the converted box-UV zombie skin) override the
-# vanilla textures they were converted from, so they ship with the game too.
-if(EXISTS "${SOURCE_ROOT}/entity")
-    file(COPY "${SOURCE_ROOT}/entity" DESTINATION "${GAME_ROOT}/resources")
+# Entity skins are NOT staged. The only file that ever lived under
+# resources/entity was converted from Mojang's zombie skin, so shipping it
+# contradicted the no-vanilla-assets rule above. Entity textures now come from
+# the standard pack (minecraft:textures/entity/...), or from the procedural
+# placeholder buildSpeciesSkin paints. A stale tree from an older staging is
+# removed so an upgraded install stops carrying it too.
+file(REMOVE_RECURSE "${GAME_ROOT}/resources/entity")
+
+# Project-owned UI translations use their own namespace. Vanilla's language
+# files still come exclusively from the required standard resource pack.
+if(EXISTS "${SOURCE_ROOT}/lang")
+    file(COPY "${SOURCE_ROOT}/lang" DESTINATION "${GAME_ROOT}/resources")
 endif()
 
 file(MAKE_DIRECTORY "${GAME_ROOT}/config")
 file(MAKE_DIRECTORY "${GAME_ROOT}/saves")
 file(COPY_FILE "${SOURCE_ROOT}/../CHANGELOG.md" "${GAME_ROOT}/CHANGELOG.md")
+file(COPY_FILE "${SOURCE_ROOT}/../CHANGELOG_EN.md" "${GAME_ROOT}/CHANGELOG_EN.md")
+file(COPY_FILE "${SOURCE_ROOT}/../CHANGELOG_CH.md" "${GAME_ROOT}/CHANGELOG_CH.md")
 if(NOT EXISTS "${GAME_ROOT}/config/options.properties")
     file(COPY_FILE
         "${DEFAULT_OPTIONS}"

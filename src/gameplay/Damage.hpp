@@ -1,23 +1,12 @@
 #pragma once
 
+#include "gameplay/DamageType.hpp"
+
 #include <algorithm>
 #include <cstdint>
 #include <limits>
 
 namespace mc::gameplay {
-
-// Unified damage source, mirroring the roles of 1.16.1's DamageSource. Replaces
-// the player-only DamageCause: Void becomes OutOfWorld, and None is kept as the
-// "nothing happened this tick" sentinel shared with VitalsTickResult.
-enum class DamageSource : std::uint8_t {
-    None,         // no damage this tick / an applyDamage() guard
-    Generic,      // GENERIC: untyped damage (poison, command fallback, ...)
-    EntityAttack, // a melee hit from another creature
-    Fall,
-    Drown,
-    Starve,
-    OutOfWorld,   // void damage and the /kill source (OUT_OF_WORLD)
-};
 
 // The shared "living thing" damage state, mirroring the server-side fields a
 // LivingEntity carries. Both SimpleEntity and PlayerVitals embed one so the
@@ -29,7 +18,7 @@ struct DamageState {
     int invulnerableTicks = 0;  // LivingEntity#timeUntilRegen
     int deathTicks = 0;         // LivingEntity#deathTime (death animation)
     float lastDamage = 0.0F;    // LivingEntity#lastDamageTaken
-    DamageSource lastSource = DamageSource::Generic;
+    DamageType lastSource = DamageType::Generic;
     bool dying = false;         // onDeath already fired; guards a second death
 
     [[nodiscard]] bool dead() const { return health <= 0.0F; }
@@ -47,37 +36,102 @@ inline constexpr int kDeathTicks = 20;
 struct DamageOutcome final {
     bool landed = false;  // the hit applied (not swallowed by the window)
     bool died = false;    // health crossed zero on this hit
+    // The hunger the hit costs its victim, straight off the damage type. The
+    // damage state has no hunger of its own, so the owner that does — the
+    // player's vitals — adds it. This used to be a flat 0.1 the vitals applied
+    // to every source alike, which meant drowning and starving drained hunger
+    // that vanilla never charges for.
+    float exhaustion = 0.0F;
+    // What actually landed after scaling, for callers that report or animate it.
+    float appliedDamage = 0.0F;
 };
 
-// LivingEntity#applyDamage core: guards + the invulnerability window + the
-// health subtraction. Knockback and per-owner side effects (anger, flee, loot,
-// death screens) stay with the caller; this is pure damage-state math.
-inline DamageOutcome applyDamage(DamageState& state, DamageSource source, float amount) {
-    if (state.dead() || source == DamageSource::None || amount <= 0.0F) {
+// Everything one hit is. 26.1's DamageType is the type plus who caused it and
+// from where; the parts that change the arithmetic here are the type, the
+// difficulty, and whether a living non-player swung it.
+struct DamageContext final {
+    DamageType type = DamageType::Generic;
+    float amount = 0.0F;
+    Difficulty difficulty = Difficulty::Normal;
+    // DamageScaling::WhenCausedByLivingNonPlayer's condition. False for the
+    // world hurting you: falling, drowning, starving, the void.
+    bool causedByLivingNonPlayer = false;
+};
+
+// LivingEntity#hurt, as the fixed pipeline it is in vanilla rather than a
+// subtraction with the difficulty already folded in by whoever called it:
+//
+//   guards -> invulnerability window -> difficulty scaling -> armor/toughness
+//   -> effects/enchantments -> absorption -> shield -> health -> exhaustion
+//   -> death
+//
+// Four of those stages have no content in this game yet (there is no armor, no
+// status effect, no absorption and no shield), and they are named here rather
+// than implemented so the order is already right when they arrive — inserting a
+// stage into a named sequence is a different job from rediscovering where it
+// went. The tags each stage would consult (BypassesArmor, BypassesEffects,
+// BypassesResistance, BypassesShield) already exist and are already set.
+inline DamageOutcome applyDamage(DamageState& state, const DamageContext& context) {
+    // --- guards ---
+    if (state.dead() || context.type == DamageType::None || context.amount <= 0.0F) {
         return {};
     }
+
+    // --- invulnerability window ---
     // Inside the first half of the window a second hit only lands if it beats
-    // the one still running, and then only for the difference.
-    float applied = amount;
-    if (state.invulnerableTicks > kInvulnerableWindowTicks / 2) {
+    // the one still running, and then only for the difference. The comparison
+    // is against the *unscaled* amount, the way vanilla does it: scaling
+    // happens in applyDamage, after this check in LivingEntity#hurt.
+    float amount = context.amount;
+    const bool bypassesWindow =
+        hasDamageTag(context.type, DamageTag::BypassesInvulnerability) ||
+        hasDamageTag(context.type, DamageTag::BypassesCooldown);
+    if (!bypassesWindow && state.invulnerableTicks > kInvulnerableWindowTicks / 2) {
         if (amount <= state.lastDamage) {
             return {};
         }
-        applied = amount - state.lastDamage;
+        amount -= state.lastDamage;
     }
-    state.lastDamage = amount;
+    state.lastDamage = context.amount;
     state.invulnerableTicks = kInvulnerableWindowTicks;
+
+    // --- difficulty scaling ---
+    float applied = scaleDamageForDifficulty(context.type, amount, context.difficulty,
+                                             context.causedByLivingNonPlayer);
+    // --- armor / toughness ---      (no armor yet; BypassesArmor is already set)
+    // --- status effects / enchantments ---  (BypassesEffects / BypassesResistance)
+    // --- absorption ---
+    // --- shield ---                 (BypassesShield)
+    if (applied <= 0.0F) {
+        return {};
+    }
+
+    // --- health ---
     state.hurtTicks = kHurtTicks;
-    state.lastSource = source;
+    state.lastSource = context.type;
     state.health = std::max(state.health - applied, 0.0F);
-    return DamageOutcome{true, state.dead()};
+
+    DamageOutcome outcome;
+    outcome.landed = true;
+    outcome.died = state.dead();
+    // --- exhaustion ---
+    outcome.exhaustion = damageTypeData(context.type).exhaustion;
+    outcome.appliedDamage = applied;
+    return outcome;
 }
 
-// Entity#kill / LivingEntity#kill: OutOfWorld damage at infinite magnitude, so
-// the hit always cuts through the invulnerability window and kills outright.
-// One call serves the player and every mob; an already-dead target is a no-op.
+// The short form for the many callers that have no difficulty and no attacker:
+// the world hurting something.
+inline DamageOutcome applyDamage(DamageState& state, DamageType type, float amount) {
+    return applyDamage(state, DamageContext{type, amount});
+}
+
+// Entity#kill / LivingEntity#kill: out-of-world damage at infinite magnitude.
+// The type carries BYPASSES_INVULNERABILITY, so the hit cuts through a window
+// that a moment-ago hit left running instead of relying on the magnitude to
+// out-compare it.
 inline DamageOutcome kill(DamageState& state) {
-    return applyDamage(state, DamageSource::OutOfWorld,
+    return applyDamage(state, DamageType::OutOfWorld,
                        std::numeric_limits<float>::infinity());
 }
 

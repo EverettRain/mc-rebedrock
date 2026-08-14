@@ -14,7 +14,7 @@ namespace {
 // additions. The shared profile carries no mutable runtime state.
 class CowAi final : public AnimalAi {
   public:
-    // CowEntity uses priorities 5/6/7 for wander/look/look-around in 1.16.1.
+    // AbstractCow uses priorities 5/6/7 for wander/look/look-around in 26.1.
     CowAi() : AnimalAi(2.0F, 1.0F, 0) {}
 };
 
@@ -60,13 +60,12 @@ constexpr audio::MobSoundProfile kCowSounds{
 } // namespace
 
 const EntityType& CowEntity::type() {
-    // CowEntity.createCowAttributes() (1.16.1): 10 health, GENERIC_MOVEMENT_SPEED
-    // 0.2 (folded to this engine's blocks-per-tick wander the same way the pig's
-    // 0.25 becomes 0.05). Box 0.9 x 1.4. Spawn-egg tint 0xF3C9A3 / 0xFFFFFF.
+    // AbstractCow.createAttributes() (26.1): 10 health, MOVEMENT_SPEED 0.2.
+    // Box 0.9 x 1.4. Spawn-egg tint 0xF3C9A3 / 0xFFFFFF.
     static EntityType type = EntityType::Builder::create(MobCategory::Creature, kCowAi)
                                  .sized(0.9F, 1.4F)
                                  .health(10.0F)
-                                 .movementSpeed(0.04F)
+                                 .movementSpeed(0.20F)
                                  .followRange(16.0F)
                                  .spawnEgg(0xF3C9A3U, 0xFFFFFFU)
                                  .loot(&rollCowLoot)

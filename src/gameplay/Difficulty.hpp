@@ -73,7 +73,7 @@ inline constexpr std::uint8_t kDifficultyCount = 4U;
     return difficulty == Difficulty::Peaceful;
 }
 
-// LivingEntity#applyDamage, for the sources DamageSource#isScaledWithDifficulty
+// LivingEntity#applyDamage, for the sources DamageType#isScaledWithDifficulty
 // marks. Hostile mob melee attacks enter the player pipeline through this rule.
 [[nodiscard]] constexpr float scaledDamage(Difficulty difficulty, float amount) {
     switch (difficulty) {

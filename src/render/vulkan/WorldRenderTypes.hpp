@@ -30,11 +30,26 @@ namespace mc::render {
 constexpr std::size_t kFramesInFlight = 2;
 
 // Occlusion queries gate a section's opaque draw behind the depth the closer
-// terrain wrote earlier in the same frame; each in-flight frame owns a
-// contiguous slot range read back after its fence.
+// terrain wrote earlier in the same frame. Each in-flight frame owns a
+// separate query pool: MoltenVK backs one pool with one Metal visibility-result
+// buffer, so per-frame pools remove cross-frame reset/readback traffic from the
+// same query object. Active precise queries are disabled by default on macOS
+// because current MoltenVK can still lose the device under sustained load; the
+// pools remain available for native Vulkan and explicit macOS diagnostics.
 inline constexpr std::size_t kOcclusionQueriesPerFrame = 2048;
-inline constexpr std::size_t kOcclusionQueryPoolSize = kOcclusionQueriesPerFrame * kFramesInFlight;
+inline constexpr std::size_t kOcclusionQueryPoolSize = kOcclusionQueriesPerFrame;
 inline constexpr std::uint32_t kOcclusionHysteresisFrames = 2;
+static_assert(kOcclusionQueryPoolSize * sizeof(std::uint64_t) <= 16U * 1024U);
+#if defined(__APPLE__)
+// The renderer consumes only zero/non-zero visibility. MoltenVK's Boolean mode
+// provides exactly that contract, so diagnostics do not request unused precise
+// counts. Boolean mode still reproduces the current MoltenVK device loss; this
+// flag is semantic cleanup, not the macOS stability workaround.
+inline constexpr VkQueryControlFlags kOcclusionQueryControlFlags = 0U;
+#else
+inline constexpr VkQueryControlFlags kOcclusionQueryControlFlags =
+    VK_QUERY_CONTROL_PRECISE_BIT;
+#endif
 
 // Stream-mesh buffers are pooled by power-of-two size class and reused across
 // section uploads instead of created/destroyed per mesh.

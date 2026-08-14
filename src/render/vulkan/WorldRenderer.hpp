@@ -22,6 +22,7 @@
 #include "config/GameOptions.hpp"
 #include "gameplay/ChestSystem.hpp"
 #include "gameplay/GameSession.hpp"
+#include "gameplay/GameplayMutationSink.hpp"
 #include "gameplay/Inventory.hpp"
 #include "gameplay/ItemEntitySystem.hpp"
 #include "gameplay/MiningSystem.hpp"
@@ -39,6 +40,7 @@
 #include "ui/UiFrameData.hpp"
 #include "world/ChunkMesher.hpp"
 #include "world/ChunkStreamer.hpp"
+#include "world/WorldLock.hpp"
 #include "world/DayNightCycle.hpp"
 #include "world/World.hpp"
 #include "world/VoxelRaycast.hpp"
@@ -77,10 +79,11 @@ class WorldRenderer final {
     std::optional<TestSceneOptions>& testScene;
     world::ChunkStreamer& chunkStreamer;
     world::World& interactionWorld;
+    world::WorldLightEngine& interactionLightEngine;
     std::unordered_map<world::SectionPosition, GpuMesh, world::SectionPositionHash>& gpuMeshes;
     StreamBufferPool& deviceBufferPool_;
     StreamBufferPool& stagingBufferPool_;
-    VkQueryPool& occlusionQueryPool;
+    std::array<VkQueryPool, kFramesInFlight>& occlusionQueryPools;
     VkPipeline& occlusionQueryPipeline;
     VkPipelineLayout& occlusionQueryLayout;
     AllocatedBuffer& occlusionBoxVertexBuffer;
@@ -90,6 +93,8 @@ class WorldRenderer final {
     world::SmoothLightingQuality& targetMeshQuality;
     std::unordered_set<world::SectionPosition, world::SectionPositionHash>& qualityRemeshPending;
     gameplay::GameSession& gameSession;
+    gameplay::SimulationHost& simulationHost;
+    world::WorldLock& worldLock;
     ui::UiFrameData& uiFrameData_;
     PerspectiveCamera& camera;
     std::vector<gameplay::entities::SpeciesRenderModel>& speciesModels;
@@ -191,10 +196,75 @@ class WorldRenderer final {
     std::function<void(gameplay::ItemStack)> spawnDroppedStack;
     std::function<void()> initializeSpawnPosition;
     std::function<void(int, int, int, world::Block, std::uint8_t, std::optional<world::BlockOrientation>)> submitWorldEditFn;
+    std::function<bool(int, int, int)> hasPersistentEditFn;
   };
 
   explicit WorldRenderer(const Bindings& b)
-      : testScene(b.testScene), chunkStreamer(b.chunkStreamer), interactionWorld(b.interactionWorld), gpuMeshes(b.gpuMeshes), deviceBufferPool_(b.deviceBufferPool_), stagingBufferPool_(b.stagingBufferPool_), occlusionQueryPool(b.occlusionQueryPool), occlusionQueryPipeline(b.occlusionQueryPipeline), occlusionQueryLayout(b.occlusionQueryLayout), occlusionBoxVertexBuffer(b.occlusionBoxVertexBuffer), occlusionBoxIndexBuffer(b.occlusionBoxIndexBuffer), pendingSectionOrder(b.pendingSectionOrder), currentMeshQuality(b.currentMeshQuality), targetMeshQuality(b.targetMeshQuality), qualityRemeshPending(b.qualityRemeshPending), gameSession(b.gameSession), uiFrameData_(b.uiFrameData_), camera(b.camera), speciesModels(b.speciesModels), heldItemAnimation(b.heldItemAnimation), worldPlayerAnimator(b.worldPlayerAnimator), chestLidAnimation(b.chestLidAnimation), itemDisplayAnimation(b.itemDisplayAnimation), cameraPerspective(b.cameraPerspective), worldBodyYaw(b.worldBodyYaw), particleSystem(b.particleSystem), breakButtonHeld(b.breakButtonHeld), inventoryOpen(b.inventoryOpen), spawnPositionInitialized(b.spawnPositionInitialized), worldReady(b.worldReady), paused(b.paused), dropRequested(b.dropRequested), dropWholeStack(b.dropWholeStack), chatOpen(b.chatOpen), targetedBlock(b.targetedBlock), miningTarget(b.miningTarget), miningStartedTick(b.miningStartedTick), renderTimeSeconds(b.renderTimeSeconds), renderInterpolationAlpha(b.renderInterpolationAlpha), window(b.window), instance(b.instance), surface(b.surface), device(b.device), allocator(b.allocator), resources_(b.resources_), textures_(b.textures_), sceneDescriptorSets(b.sceneDescriptorSets), gpuSceneBuffer(b.gpuSceneBuffer), particlePipeline(b.particlePipeline), particlePipelineLayout(b.particlePipelineLayout), legacyParticles(b.legacyParticles), shadowTarget(b.shadowTarget), shadowPipelineLayout(b.shadowPipelineLayout), shadowPipeline(b.shadowPipeline), shadowDebugSet(b.shadowDebugSet), shadowDebugPipelineLayout(b.shadowDebugPipelineLayout), shadowDebugPipeline(b.shadowDebugPipeline), shadowLightViewProj(b.shadowLightViewProj), shadowDisabled(b.shadowDisabled), shadowDebugOverlay(b.shadowDebugOverlay), rainSystem(b.rainSystem), sceneParticleRecords_(b.sceneParticleRecords_), rainMode_(b.rainMode_), rainTime_(b.rainTime_), rainSheetPipeline(b.rainSheetPipeline), rainSheetPipelineLayout(b.rainSheetPipelineLayout), language(b.language), swapchainExtent(b.swapchainExtent), renderPass(b.renderPass), pipelineLayout(b.pipelineLayout), graphicsPipeline(b.graphicsPipeline), translucentPipeline(b.translucentPipeline), cutoutPipeline(b.cutoutPipeline), skyPipeline(b.skyPipeline), outlinePipelineLayout(b.outlinePipelineLayout), outlinePipeline(b.outlinePipeline), itemPipelineLayout(b.itemPipelineLayout), itemPipeline(b.itemPipeline), itemShadowPipeline(b.itemShadowPipeline), heldItemPipeline(b.heldItemPipeline), framebuffers(b.framebuffers), frames(b.frames), currentFrame(b.currentFrame), occlusionDisabled(b.occlusionDisabled), hasLastRenderEye(b.hasLastRenderEye), lastRenderEye(b.lastRenderEye), occlusionValidityInitialized(b.occlusionValidityInitialized), occlusionRotationAccumulatorDegrees(b.occlusionRotationAccumulatorDegrees), occlusionTranslationAccumulator(b.occlusionTranslationAccumulator), peakPendingSectionCount(b.peakPendingSectionCount), smoothedFrameSeconds_(b.smoothedFrameSeconds_), streamingUploadBudget_(b.streamingUploadBudget_), occlusionStates(b.occlusionStates), occlusionMissCount(b.occlusionMissCount), pendingSectionUpdates(b.pendingSectionUpdates), latestSectionRevisions(b.latestSectionRevisions), worldEpoch(b.worldEpoch), loadedCpuChunkCount(b.loadedCpuChunkCount), completedBlockEditCount(b.completedBlockEditCount), completedStreamBatchCount(b.completedStreamBatchCount), lastVisibleMeshCount(b.lastVisibleMeshCount), worldSessionActive(b.worldSessionActive), hasLastStreamingForward(b.hasLastStreamingForward), lastStreamingForward(b.lastStreamingForward), uploadedSectionsThisFrame(b.uploadedSectionsThisFrame), uploadedBytesThisFrame(b.uploadedBytesThisFrame), totalUploadedBytes(b.totalUploadedBytes), hud_(b.hud_), rainTargetCount(b.rainTargetCount), renderViewMatrix(b.renderViewMatrix), viewBobbingMatrix(b.viewBobbingMatrix), renderEyeState(b.renderEyeState), cameraFarPlane(b.cameraFarPlane), renderDistanceBlocks(b.renderDistanceBlocks), spawnDroppedStack(b.spawnDroppedStack), initializeSpawnPosition(b.initializeSpawnPosition), submitWorldEditFn(b.submitWorldEditFn) {}
+      : testScene(b.testScene), chunkStreamer(b.chunkStreamer),
+        interactionWorld(b.interactionWorld), interactionLightEngine(b.interactionLightEngine),
+        gpuMeshes(b.gpuMeshes), deviceBufferPool_(b.deviceBufferPool_),
+        stagingBufferPool_(b.stagingBufferPool_), occlusionQueryPools(b.occlusionQueryPools),
+        occlusionQueryPipeline(b.occlusionQueryPipeline),
+        occlusionQueryLayout(b.occlusionQueryLayout),
+        occlusionBoxVertexBuffer(b.occlusionBoxVertexBuffer),
+        occlusionBoxIndexBuffer(b.occlusionBoxIndexBuffer),
+        pendingSectionOrder(b.pendingSectionOrder), currentMeshQuality(b.currentMeshQuality),
+        targetMeshQuality(b.targetMeshQuality), qualityRemeshPending(b.qualityRemeshPending),
+        gameSession(b.gameSession), simulationHost(b.simulationHost), worldLock(b.worldLock), uiFrameData_(b.uiFrameData_),
+        camera(b.camera), speciesModels(b.speciesModels), heldItemAnimation(b.heldItemAnimation),
+        worldPlayerAnimator(b.worldPlayerAnimator), chestLidAnimation(b.chestLidAnimation),
+        itemDisplayAnimation(b.itemDisplayAnimation), cameraPerspective(b.cameraPerspective),
+        worldBodyYaw(b.worldBodyYaw), particleSystem(b.particleSystem),
+        breakButtonHeld(b.breakButtonHeld), inventoryOpen(b.inventoryOpen),
+        spawnPositionInitialized(b.spawnPositionInitialized), worldReady(b.worldReady),
+        paused(b.paused), dropRequested(b.dropRequested), dropWholeStack(b.dropWholeStack),
+        chatOpen(b.chatOpen), targetedBlock(b.targetedBlock), miningTarget(b.miningTarget),
+        miningStartedTick(b.miningStartedTick), renderTimeSeconds(b.renderTimeSeconds),
+        renderInterpolationAlpha(b.renderInterpolationAlpha), window(b.window),
+        instance(b.instance), surface(b.surface), device(b.device), allocator(b.allocator),
+        resources_(b.resources_), textures_(b.textures_),
+        sceneDescriptorSets(b.sceneDescriptorSets), gpuSceneBuffer(b.gpuSceneBuffer),
+        particlePipeline(b.particlePipeline), particlePipelineLayout(b.particlePipelineLayout),
+        legacyParticles(b.legacyParticles), shadowTarget(b.shadowTarget),
+        shadowPipelineLayout(b.shadowPipelineLayout), shadowPipeline(b.shadowPipeline),
+        shadowDebugSet(b.shadowDebugSet), shadowDebugPipelineLayout(b.shadowDebugPipelineLayout),
+        shadowDebugPipeline(b.shadowDebugPipeline), shadowLightViewProj(b.shadowLightViewProj),
+        shadowDisabled(b.shadowDisabled), shadowDebugOverlay(b.shadowDebugOverlay),
+        rainSystem(b.rainSystem), sceneParticleRecords_(b.sceneParticleRecords_),
+        rainMode_(b.rainMode_), rainTime_(b.rainTime_), rainSheetPipeline(b.rainSheetPipeline),
+        rainSheetPipelineLayout(b.rainSheetPipelineLayout), language(b.language),
+        swapchainExtent(b.swapchainExtent), renderPass(b.renderPass),
+        pipelineLayout(b.pipelineLayout), graphicsPipeline(b.graphicsPipeline),
+        translucentPipeline(b.translucentPipeline), cutoutPipeline(b.cutoutPipeline),
+        skyPipeline(b.skyPipeline), outlinePipelineLayout(b.outlinePipelineLayout),
+        outlinePipeline(b.outlinePipeline), itemPipelineLayout(b.itemPipelineLayout),
+        itemPipeline(b.itemPipeline), itemShadowPipeline(b.itemShadowPipeline),
+        heldItemPipeline(b.heldItemPipeline), framebuffers(b.framebuffers), frames(b.frames),
+        currentFrame(b.currentFrame), occlusionDisabled(b.occlusionDisabled),
+        hasLastRenderEye(b.hasLastRenderEye), lastRenderEye(b.lastRenderEye),
+        occlusionValidityInitialized(b.occlusionValidityInitialized),
+        occlusionRotationAccumulatorDegrees(b.occlusionRotationAccumulatorDegrees),
+        occlusionTranslationAccumulator(b.occlusionTranslationAccumulator),
+        peakPendingSectionCount(b.peakPendingSectionCount),
+        smoothedFrameSeconds_(b.smoothedFrameSeconds_),
+        streamingUploadBudget_(b.streamingUploadBudget_), occlusionStates(b.occlusionStates),
+        occlusionMissCount(b.occlusionMissCount), pendingSectionUpdates(b.pendingSectionUpdates),
+        latestSectionRevisions(b.latestSectionRevisions), worldEpoch(b.worldEpoch),
+        loadedCpuChunkCount(b.loadedCpuChunkCount),
+        completedBlockEditCount(b.completedBlockEditCount),
+        completedStreamBatchCount(b.completedStreamBatchCount),
+        lastVisibleMeshCount(b.lastVisibleMeshCount), worldSessionActive(b.worldSessionActive),
+        hasLastStreamingForward(b.hasLastStreamingForward),
+        lastStreamingForward(b.lastStreamingForward),
+        uploadedSectionsThisFrame(b.uploadedSectionsThisFrame),
+        uploadedBytesThisFrame(b.uploadedBytesThisFrame),
+        totalUploadedBytes(b.totalUploadedBytes), hud_(b.hud_), rainTargetCount(b.rainTargetCount),
+        renderViewMatrix(b.renderViewMatrix), viewBobbingMatrix(b.viewBobbingMatrix),
+        renderEyeState(b.renderEyeState), cameraFarPlane(b.cameraFarPlane),
+        renderDistanceBlocks(b.renderDistanceBlocks), spawnDroppedStack(b.spawnDroppedStack),
+        initializeSpawnPosition(b.initializeSpawnPosition), submitWorldEditFn(b.submitWorldEditFn),
+        hasPersistentEditFn(b.hasPersistentEditFn) {
+  }
 
   WorldRenderer(const WorldRenderer&) = delete;
   WorldRenderer& operator=(const WorldRenderer&) = delete;
@@ -221,6 +291,8 @@ class WorldRenderer final {
 
     void remeshSectionImmediate(world::SectionPosition position,
                                 const world::ChunkLightSampler& lighting) {
+        // Reads the world to build geometry. Called from inside a section
+        // already, so it does not take one of its own — see the callers.
         world::SectionMeshUpdate update;
         update.position = position;
         update.mesh = chunkStreamer.acquireMeshData();
@@ -242,6 +314,11 @@ class WorldRenderer final {
     void queueStreamBatch(world::ChunkStreamBatch batch) {
         if (batch.worldEpoch != worldEpoch)
             return;
+        // The streamer's batch swaps whole chunks in and out and rewrites cells,
+        // so it takes the world's write section like a tick does. This is the
+        // third writer the plan names, alongside the simulation and the
+        // interaction pass.
+        const auto batchWrite = worldLock.write();
         loadedCpuChunkCount = batch.loadedChunkCount;
         completedBlockEditCount += batch.appliedBlockEditCount;
         const bool generatedOrUnloadedChunks = batch.appliedBlockEditCount == 0U;
@@ -257,6 +334,24 @@ class WorldRenderer final {
                 // edit batches contribute meshes but never overwrite state.
                 interactionWorld.setChunk(update.position, std::move(update.chunk));
             }
+        }
+        // Generation can extend a tree crown into a neighbour that was already
+        // loaded. Its mesh and its blocks must cross the thread boundary
+        // together or rendering, collision and raycasts observe two different
+        // worlds. Apply only against the state the worker saw, preserving a
+        // newer local gameplay edit at the same cell.
+        for (const auto& update : batch.stateUpdates) {
+            if (interactionWorld.state(update.worldX, update.y, update.worldZ) ==
+                    update.expected &&
+                !hasPersistentEditFn(update.worldX, update.y, update.worldZ)) {
+                static_cast<void>(interactionWorld.setState(
+                    update.worldX, update.y, update.worldZ, update.state));
+                interactionLightEngine.updateBlock(
+                    interactionWorld, update.worldX, update.y, update.worldZ);
+            }
+        }
+        if (!batch.stateUpdates.empty()) {
+            static_cast<void>(interactionLightEngine.takeDirtySections());
         }
         for (auto& update : batch.sectionUpdates) {
             const auto latest = latestSectionRevisions.find(update.position);
@@ -319,17 +414,21 @@ class WorldRenderer final {
             camera.setPosition(gameSession.player().eyePosition());
         }
         if (completedStreamBatchCount == 2U && std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr) {
-            interactionWorld.setBlock(52, 70, -4, world::Block::Glass);
-            interactionWorld.setBlock(54, 72, -4, world::Block::Sand);
-            interactionWorld.setBlock(50, 70, -4, world::Block::Water);
-            interactionWorld.setFluidLevel(50, 70, -4, 0U);
-            submitWorldEdit(52, 70, -4, world::Block::Glass);
-            submitWorldEdit(54, 72, -4, world::Block::Sand);
-            submitWorldEdit(50, 70, -4, world::Block::Water, 0U);
-        }
-        if (completedStreamBatchCount == 3U && std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr) {
-            gameSession.worldSimulation().notifyPlaced({54, 72, -4}, world::Block::Sand);
-            gameSession.worldSimulation().notifyPlaced({50, 70, -4}, world::Block::Water);
+            // Through the service like every other edit, so the smoke test
+            // exercises the same path the game does (the sand it drops is what
+            // proves the neighbour notification arrived).
+            gameplay::GameplayMutationSink sink{interactionWorld, gameSession};
+            const auto place = [&](int x, int y, int z, world::Block block) {
+                static_cast<void>(gameSession.worldMutations().setBlock(
+                    interactionWorld, {x, y, z}, world::BlockState{block},
+                    world::MutationFlags::All, world::MutationCause::Command, sink));
+            };
+            place(52, 70, -4, world::Block::Glass);
+            place(54, 72, -4, world::Block::Sand);
+            place(50, 70, -4, world::Block::Water);
+            // The submitWorldEdit / notifyPlaced calls that used to follow are
+            // the sink's job now: the service dirties the section and wakes the
+            // neighbours for all three cells.
         }
         lastVisibleMeshCount = std::numeric_limits<std::size_t>::max();
     }
@@ -763,15 +862,18 @@ class WorldRenderer final {
     }
 
     void drawItemEntities(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
-        if (gameSession.itemEntities().entities().empty() &&
-            gameSession.worldSimulation().fallingBlocks().empty()) {
+        // Both read from the per-tick snapshot, for the same reason creatures
+        // do: the live vectors belong to the simulation.
+        const auto& snapshotItems = gameSession.entitySnapshot().items();
+        const auto& snapshotFallingBlocks = gameSession.entitySnapshot().fallingBlocks();
+        if (snapshotItems.empty() && snapshotFallingBlocks.empty()) {
             return;
         }
-        if (!gameSession.itemEntities().entities().empty()) {
+        if (!snapshotItems.empty()) {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemShadowPipeline);
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     itemPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
-            for (const auto& entity : gameSession.itemEntities().entities()) {
+            for (const auto& entity : snapshotItems) {
                 const glm::vec3 renderedPosition =
                     entity.previousPosition +
                     (entity.position - entity.previousPosition) * renderInterpolationAlpha;
@@ -814,7 +916,7 @@ class WorldRenderer final {
         // (gl_Position = projection * viewModelTransform), so dropped items get
         // the same view the world is drawn with — view bobbing included.
         const glm::mat4 cameraView = viewBobbingMatrix() * renderViewMatrix();
-        for (const auto& entity : gameSession.itemEntities().entities()) {
+        for (const auto& entity : snapshotItems) {
             const glm::vec3 renderedPosition =
                 entity.previousPosition +
                 (entity.position - entity.previousPosition) * renderInterpolationAlpha;
@@ -872,7 +974,7 @@ class WorldRenderer final {
                 vkCmdDraw(commandBuffer, kGeneratedItemVertexCount, 1, 0, 0);
             }
         }
-        for (const auto& entity : gameSession.worldSimulation().fallingBlocks()) {
+        for (const auto& entity : snapshotFallingBlocks) {
             const glm::vec3 renderedPosition =
                 entity.previousPosition +
                 (entity.position - entity.previousPosition) * renderInterpolationAlpha;
@@ -882,7 +984,9 @@ class WorldRenderer final {
             const ItemPush push{
                 {renderedPosition.x, renderedPosition.y, renderedPosition.z, 1.0F},
                 {layers.top, layers.side, layers.bottom, 0.0F},
-                {1.0F, 0.0F, 0.0F, 0.0F},
+                // data.w selects terrain-equivalent falling-block lighting in
+                // item_entity.frag; ordinary dropped block items leave it zero.
+                {1.0F, 0.0F, 0.0F, 2.0F},
                 {0.0F, 0.0F, 0.0F, packedSceneLight(renderedPosition)},
             };
             vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
@@ -1379,7 +1483,11 @@ class WorldRenderer final {
     // dropped items. The first real consumer of the box-UV entity pipeline.
 
     void drawWorldEntities(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
-        if (!worldReady || gameSession.worldEntities().entities().empty()) {
+        // Drawn from the per-tick snapshot, never from the live entity vector:
+        // once the simulation runs on its own thread that vector is being
+        // reordered and resized while this pass walks it.
+        const auto& snapshotEntities = gameSession.entitySnapshot().entities();
+        if (!worldReady || snapshotEntities.empty()) {
             return;
         }
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline);
@@ -1392,7 +1500,7 @@ class WorldRenderer final {
         // faces +Z.
         constexpr float kEntityFacingOffset = kPi;
 
-        for (const auto& entity : gameSession.worldEntities().entities()) {
+        for (const auto& entity : snapshotEntities) {
             // Each creature renders through its own species' model, animations
             // and texture layer; an entity whose species failed to load is
             // skipped rather than drawn as the wrong creature.
@@ -1446,8 +1554,8 @@ class WorldRenderer final {
             // LivingEntityRenderer#getLyingAngle: a dying body tips ninety
             // degrees over the twenty ticks of deathTime, easing as it lands.
             float deathRoll = 0.0F;
-            if (entity.damage.deathTicks > 0) {
-                const float progress = std::min((static_cast<float>(entity.damage.deathTicks) +
+            if (entity.deathTicks > 0) {
+                const float progress = std::min((static_cast<float>(entity.deathTicks) +
                                                  renderInterpolationAlpha - 1.0F) /
                                                     20.0F * 1.6F,
                                                 1.0F);
@@ -1456,7 +1564,7 @@ class WorldRenderer final {
             // LivingEntityRenderer#getOverlay: the hurt row is on for every tick
             // of hurtTime, and stays on for the whole death animation.
             const float hurtFlash =
-                entity.damage.hurtTicks > 0 || entity.damage.deathTicks > 0 ? 1.0F : 0.0F;
+                entity.hurtTicks > 0 || entity.deathTicks > 0 ? 1.0F : 0.0F;
             const glm::mat4 modelRoot =
                 glm::translate(glm::mat4{1.0F}, position) *
                 glm::rotate(glm::mat4{1.0F}, yaw + kEntityFacingOffset,
@@ -1621,13 +1729,13 @@ class WorldRenderer final {
                                  VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1, &barrier, 0, nullptr, 0,
                                  nullptr);
         }
-        if (occlusionQueryPool != VK_NULL_HANDLE) {
+        const VkQueryPool frameQueryPool = occlusionQueryPools[currentFrame];
+        if (frameQueryPool != VK_NULL_HANDLE) {
             // Clear this frame's slot range before it is reused. Results for
             // the previous submission were already read back this drawFrame.
-            vkCmdResetQueryPool(
-                frame.commandBuffer, occlusionQueryPool,
-                static_cast<std::uint32_t>(currentFrame * kOcclusionQueriesPerFrame),
-                static_cast<std::uint32_t>(kOcclusionQueriesPerFrame));
+            // Each frame owns its pool, so its slots always start at zero.
+            vkCmdResetQueryPool(frame.commandBuffer, frameQueryPool, 0U,
+                                static_cast<std::uint32_t>(kOcclusionQueriesPerFrame));
         }
         std::array<VkClearValue, 2> clears{};
         clears[0].color = {{0.055F, 0.080F, 0.110F, 1.0F}};
@@ -1752,8 +1860,6 @@ class WorldRenderer final {
 
         frame.occlusionQueryCount = 0U;
         frame.occlusionQuerySections.clear();
-        const std::uint32_t queryFirstSlot =
-            static_cast<std::uint32_t>(currentFrame * kOcclusionQueriesPerFrame);
         std::size_t visibleCount = 0;
         std::vector<const GpuMesh*> visibleCutoutMeshes;
         std::vector<const GpuMesh*> visibleTranslucentMeshes;
@@ -1771,7 +1877,7 @@ class WorldRenderer final {
             // Every in-frustum section is re-queried, so a hidden cave becomes
             // visible the instant it is looked at and a visible one is dropped
             // the moment it hides. The result gates the draw two frames later.
-            if (!occlusionDisabled && occlusionQueryPool != VK_NULL_HANDLE && withinQueryBudget) {
+            if (!occlusionDisabled && frameQueryPool != VK_NULL_HANDLE && withinQueryBudget) {
                 vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                   occlusionQueryPipeline);
                 vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1788,11 +1894,11 @@ class WorldRenderer final {
                 };
                 vkCmdPushConstants(frame.commandBuffer, occlusionQueryLayout,
                                    VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
-                const std::uint32_t slot = queryFirstSlot + frame.occlusionQueryCount;
-                vkCmdBeginQuery(frame.commandBuffer, occlusionQueryPool, slot,
-                                VK_QUERY_CONTROL_PRECISE_BIT);
+                const std::uint32_t slot = frame.occlusionQueryCount;
+                vkCmdBeginQuery(frame.commandBuffer, frameQueryPool, slot,
+                                kOcclusionQueryControlFlags);
                 vkCmdDrawIndexed(frame.commandBuffer, 36, 1, 0, 0, 0);
-                vkCmdEndQuery(frame.commandBuffer, occlusionQueryPool, slot);
+                vkCmdEndQuery(frame.commandBuffer, frameQueryPool, slot);
                 frame.occlusionQuerySections.push_back(entry.position);
                 ++frame.occlusionQueryCount;
             }
@@ -1923,7 +2029,8 @@ class WorldRenderer final {
     // per-section draw gate exactly two frames old.
 
     void readBackOcclusionQueries() {
-        if (occlusionQueryPool == VK_NULL_HANDLE) {
+        const VkQueryPool frameQueryPool = occlusionQueryPools[currentFrame];
+        if (frameQueryPool == VK_NULL_HANDLE) {
             return;
         }
         auto& frame = frames[currentFrame];
@@ -1931,15 +2038,13 @@ class WorldRenderer final {
         if (count == 0U) {
             return;
         }
-        const std::uint32_t firstSlot =
-            static_cast<std::uint32_t>(currentFrame * kOcclusionQueriesPerFrame);
         frame.occlusionQueryResults.resize(count);
         // The frame's fence was just waited, so every query here is already
         // complete; WAIT_BIT therefore never blocks, but it makes the host read
         // explicitly synchronize with the Metal visibility result buffer instead
         // of relying on MoltenVK's deferred accumulation having finished.
         const VkResult result = vkGetQueryPoolResults(
-            device, occlusionQueryPool, firstSlot, count, count * sizeof(std::uint64_t),
+            device, frameQueryPool, 0U, count, count * sizeof(std::uint64_t),
             frame.occlusionQueryResults.data(), sizeof(std::uint64_t),
             VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
         if (result != VK_SUCCESS) {
@@ -1976,10 +2081,11 @@ class WorldRenderer final {
   std::optional<TestSceneOptions>& testScene;
   world::ChunkStreamer& chunkStreamer;
   world::World& interactionWorld;
+  world::WorldLightEngine& interactionLightEngine;
   std::unordered_map<world::SectionPosition, GpuMesh, world::SectionPositionHash>& gpuMeshes;
   StreamBufferPool& deviceBufferPool_;
   StreamBufferPool& stagingBufferPool_;
-  VkQueryPool& occlusionQueryPool;
+  std::array<VkQueryPool, kFramesInFlight>& occlusionQueryPools;
   VkPipeline& occlusionQueryPipeline;
   VkPipelineLayout& occlusionQueryLayout;
   AllocatedBuffer& occlusionBoxVertexBuffer;
@@ -1989,6 +2095,8 @@ class WorldRenderer final {
   world::SmoothLightingQuality& targetMeshQuality;
   std::unordered_set<world::SectionPosition, world::SectionPositionHash>& qualityRemeshPending;
   gameplay::GameSession& gameSession;
+  gameplay::SimulationHost& simulationHost;
+  world::WorldLock& worldLock;
   ui::UiFrameData& uiFrameData_;
   PerspectiveCamera& camera;
   std::vector<gameplay::entities::SpeciesRenderModel>& speciesModels;
@@ -2092,6 +2200,7 @@ class WorldRenderer final {
   std::function<void(gameplay::ItemStack)> spawnDroppedStack;
   std::function<void()> initializeSpawnPosition;
   std::function<void(int, int, int, world::Block, std::uint8_t, std::optional<world::BlockOrientation>)> submitWorldEditFn;
+  std::function<bool(int, int, int)> hasPersistentEditFn;
 };
 
 } // namespace mc::render

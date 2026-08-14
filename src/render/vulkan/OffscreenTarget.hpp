@@ -35,6 +35,18 @@ class OffscreenTarget final {
     // so the main pass can sample the depth map after the shadow pass.
     void transitionToShaderRead(VkCommandBuffer commandBuffer) const;
 
+    // Puts a freshly created target straight into SHADER_READ_ONLY_OPTIMAL,
+    // from UNDEFINED, on its own one-shot submit.
+    //
+    // Every frame's descriptor set points at this image and declares that
+    // layout, and the shaders that sample it do so unconditionally as far as
+    // Vulkan is concerned — a runtime `if` does not make a statically used
+    // descriptor optional. So the layout has to hold even when nothing ever
+    // renders into the target, which is exactly what happens with the sun
+    // shadows switched off: the pre-pass returns early and the transition it
+    // would have done never runs.
+    void initializeAsShaderRead() const;
+
   private:
     const VulkanResources* resources_ = nullptr;
     VkDevice device_ = VK_NULL_HANDLE;

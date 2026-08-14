@@ -11,6 +11,7 @@
 // writes the shared speciesModels list read by the world pass, and the font
 // array is coupled to the active language. Those are follow-on extractions.
 
+#include "render/vulkan/GuiSpriteAtlas.hpp"
 #include "render/vulkan/VulkanResources.hpp"
 
 #include "assets/ResourceProvider.hpp"
@@ -21,6 +22,7 @@
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <set>
@@ -33,11 +35,10 @@ class TextureManager final {
   public:
     TextureManager() = default;
     TextureManager(const VulkanResources* resources, VkDevice device, VmaAllocator allocator,
-                   std::filesystem::path blockTextureRoot,
                    const assets::ResourceProvider* resourceProvider, bool anisotropySupported,
                    float maxAnisotropy)
         : resources_(resources), device_(device), allocator_(allocator),
-          blockTextureRoot_(std::move(blockTextureRoot)), resourceProvider_(resourceProvider),
+          resourceProvider_(resourceProvider),
           anisotropySupported_(anisotropySupported), maxAnisotropy_(maxAnisotropy) {}
 
     // Bakes the block/entity/effect array (via BlockAtlasBaker), uploads it, and
@@ -88,6 +89,9 @@ class TextureManager final {
     VkImageView rainTextureView = VK_NULL_HANDLE;
     AllocatedImage guiTextureImage;
     VkImageView guiTextureView = VK_NULL_HANDLE;
+    // Filled by createGuiTexture() for the widgets the front-end stretches; the
+    // HUD binds a reference to this and nine-slices from it.
+    GuiWidgetSpriteTable guiWidgetSprites{};
     AllocatedImage panoramaTextureImage;
     VkImageView panoramaTextureView = VK_NULL_HANDLE;
     VkSampler panoramaSampler = VK_NULL_HANDLE;
@@ -105,12 +109,12 @@ class TextureManager final {
     AllocatedImage textureImage;
     VkImageView textureView = VK_NULL_HANDLE;
     VkSampler textureSampler = VK_NULL_HANDLE;
+    std::array<float, 4> fluidAnimationFrameTimes{1.0F, 1.0F, 1.0F, 1.0F};
 
   private:
     const VulkanResources* resources_ = nullptr;
     VkDevice device_ = VK_NULL_HANDLE;
     VmaAllocator allocator_ = VK_NULL_HANDLE;
-    std::filesystem::path blockTextureRoot_;
     const assets::ResourceProvider* resourceProvider_ = nullptr;
     bool anisotropySupported_ = false;
     float maxAnisotropy_ = 1.0F;

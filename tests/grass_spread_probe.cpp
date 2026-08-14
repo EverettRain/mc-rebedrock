@@ -72,9 +72,9 @@ int main() {
     std::size_t peak = 0U;
     for (int tick = 0; tick < 2000; ++tick) {
         for (const auto& change : simulation.tick(world)) {
-            if (change.block == mc::world::Block::Grass) {
+            if (change.state.block() == mc::world::Block::Grass) {
                 ++spread;
-            } else if (change.block == mc::world::Block::Dirt) {
+            } else if (change.state.block() == mc::world::Block::Dirt) {
                 ++died;
             }
         }

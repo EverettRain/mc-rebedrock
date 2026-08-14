@@ -69,7 +69,10 @@ class BlockTable final {
     template <typename F>
     void forEach(F&& visitor) const {
         for (const auto& definition : world::kBlockRegistry) {
-            visitor(TableEntry{definition.identifier.toString(), definition.displayName});
+            const Item* item = blockItemFor(definition.block);
+            if (item == nullptr) continue;
+            const std::string descriptionId = encodeDescriptionId(item->descriptionId());
+            visitor(TableEntry{definition.identifier.toString(), descriptionId});
         }
     }
 
@@ -88,7 +91,8 @@ class ItemTable final {
     void forEach(F&& visitor) const {
         const auto visitItem = [&](const Item* item) {
             if (item == nullptr) return;
-            visitor(TableEntry{item->identifier.toString(), item->en});
+            const std::string descriptionId = encodeDescriptionId(item->descriptionId());
+            visitor(TableEntry{item->identifier.toString(), descriptionId});
         };
         for (const Item* item : kItemRegistry) {
             visitItem(item);
@@ -97,7 +101,10 @@ class ItemTable final {
             visitItem(item);
         }
         for (const auto& definition : world::kBlockRegistry) {
-            visitor(TableEntry{definition.identifier.toString(), definition.displayName});
+            const Item* item = blockItemFor(definition.block);
+            if (item == nullptr) continue;
+            const std::string descriptionId = encodeDescriptionId(item->descriptionId());
+            visitor(TableEntry{definition.identifier.toString(), descriptionId});
         }
     }
 

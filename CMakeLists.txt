@@ -197,6 +197,7 @@ add_executable(mc_rebedrock
     src/main.cpp
     src/assets/ImageData.cpp
     src/assets/FontProviders.cpp
+    src/assets/GuiSpriteScaling.cpp
     src/assets/PackMetadata.cpp
     src/assets/ResourceProvider.cpp
     src/assets/SoundRegistry.cpp
@@ -205,11 +206,15 @@ add_executable(mc_rebedrock
     vendor/miniz/miniz.c
     src/config/GameOptions.cpp
     src/core/Application.cpp
+    src/gameplay/BlockTags.cpp
     src/gameplay/ChestSystem.cpp
     src/gameplay/FurnaceSystem.cpp
     src/gameplay/ContentRegistry.cpp
     src/gameplay/CraftingSystem.cpp
     src/gameplay/EntitySystem.cpp
+    src/gameplay/EntityRenderSnapshot.cpp
+    src/gameplay/GameplayMutationSink.cpp
+    src/gameplay/SimulationHostBridge.cpp
     src/gameplay/entities/EntityType.cpp
     src/gameplay/entities/EntityRegistry.cpp
     src/gameplay/entities/NeutralMob.cpp
@@ -221,15 +226,19 @@ add_executable(mc_rebedrock
     src/gameplay/entities/SpeciesRenderData.cpp
     src/gameplay/GameRules.cpp
     src/gameplay/GameSession.cpp
+    src/gameplay/ScreenHandler.cpp
     src/gameplay/Inventory.cpp
     src/gameplay/ItemEntitySystem.cpp
     src/gameplay/ItemPlacement.cpp
     src/gameplay/MiningSystem.cpp
     src/gameplay/NaturalSpawner.cpp
+    src/gameplay/MobSpawnSettings.cpp
+    src/core/Json.cpp
     src/gameplay/PlayerController.cpp
     src/gameplay/PlayerVitals.cpp
     src/gameplay/WeatherSystem.cpp
     src/gameplay/WorldSimulation.cpp
+    src/gameplay/ChunkTickScheduler.cpp
     src/persistence/SaveRepository.cpp
     src/render/Frustum.cpp
     src/render/ParticleSystem.cpp
@@ -332,6 +341,8 @@ if(MC_REBEDROCK_STAGE_RUNTIME)
     # re-staged) on an incremental build without needing a manual reconfigure.
     file(GLOB MC_REBEDROCK_ANIMATION_ASSETS CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/animation/*.json")
+    file(GLOB MC_REBEDROCK_LANGUAGE_ASSETS CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/lang/rebedrock/*.json")
     add_custom_command(
         OUTPUT "${MC_REBEDROCK_RUNTIME_STAMP}"
         COMMAND "${CMAKE_COMMAND}"
@@ -343,7 +354,10 @@ if(MC_REBEDROCK_STAGE_RUNTIME)
             "${CMAKE_CURRENT_SOURCE_DIR}/cmake/StageRuntime.cmake"
             "${CMAKE_CURRENT_SOURCE_DIR}/resources/default-options.properties"
             "${CMAKE_CURRENT_SOURCE_DIR}/CHANGELOG.md"
+            "${CMAKE_CURRENT_SOURCE_DIR}/CHANGELOG_EN.md"
+            "${CMAKE_CURRENT_SOURCE_DIR}/CHANGELOG_CH.md"
             ${MC_REBEDROCK_ANIMATION_ASSETS}
+            ${MC_REBEDROCK_LANGUAGE_ASSETS}
         COMMENT "Staging MC Rebedrock runtime resources"
         VERBATIM
     )
@@ -745,6 +759,7 @@ if(BUILD_TESTING)
         src/gameplay/entities/CowEntity.cpp
         src/gameplay/entities/ZombieEntity.cpp
         src/gameplay/EntitySystem.cpp
+        src/gameplay/EntityRenderSnapshot.cpp
         src/world/Chunk.cpp
         src/world/ChunkSection.cpp
         src/world/World.cpp
@@ -766,6 +781,7 @@ if(BUILD_TESTING)
         src/gameplay/entities/CowEntity.cpp
         src/gameplay/entities/ZombieEntity.cpp
         src/gameplay/EntitySystem.cpp
+        src/gameplay/EntityRenderSnapshot.cpp
         src/world/Chunk.cpp
         src/world/ChunkSection.cpp
         src/world/World.cpp
@@ -787,6 +803,7 @@ if(BUILD_TESTING)
         src/gameplay/entities/CowEntity.cpp
         src/gameplay/entities/ZombieEntity.cpp
         src/gameplay/EntitySystem.cpp
+        src/gameplay/EntityRenderSnapshot.cpp
         src/world/Chunk.cpp
         src/world/ChunkSection.cpp
         src/world/World.cpp
@@ -804,17 +821,30 @@ if(BUILD_TESTING)
         src/gameplay/ContentRegistry.cpp
         src/gameplay/CraftingSystem.cpp
         src/gameplay/EntitySystem.cpp
+        src/gameplay/EntityRenderSnapshot.cpp
         src/gameplay/GameRules.cpp
         src/gameplay/GameSession.cpp
+        src/gameplay/ScreenHandler.cpp
+        src/ui/HudLayout.cpp
+        src/gameplay/GameplayMutationSink.cpp
+        src/gameplay/SimulationHostBridge.cpp
         src/gameplay/Inventory.cpp
         src/gameplay/ItemEntitySystem.cpp
         src/gameplay/ItemPlacement.cpp
         src/gameplay/MiningSystem.cpp
+        src/gameplay/BlockTags.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
         src/gameplay/NaturalSpawner.cpp
+        src/gameplay/MobSpawnSettings.cpp
+        src/core/Json.cpp
         src/gameplay/PlayerController.cpp
         src/gameplay/PlayerVitals.cpp
         src/gameplay/WeatherSystem.cpp
         src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
         src/gameplay/entities/EntityType.cpp
         src/gameplay/entities/EntityRegistry.cpp
         src/gameplay/entities/NeutralMob.cpp
@@ -841,11 +871,278 @@ if(BUILD_TESTING)
     )
     add_test(NAME game_session COMMAND mc_rebedrock_game_session_test)
 
+    add_executable(mc_rebedrock_mob_spawn_settings_test
+        tests/mob_spawn_settings_test.cpp
+        src/gameplay/MobSpawnSettings.cpp
+        src/core/Json.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
+        src/world/World.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+    )
+    target_include_directories(mc_rebedrock_mob_spawn_settings_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME mob_spawn_settings COMMAND mc_rebedrock_mob_spawn_settings_test)
+
+    add_executable(mc_rebedrock_damage_pipeline_test
+        tests/damage_pipeline_test.cpp
+        src/gameplay/PlayerVitals.cpp
+    )
+    target_include_directories(mc_rebedrock_damage_pipeline_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME damage_pipeline COMMAND mc_rebedrock_damage_pipeline_test)
+
+    add_executable(mc_rebedrock_screen_handler_test
+        tests/screen_handler_test.cpp
+        src/gameplay/ChestSystem.cpp
+        src/gameplay/FurnaceSystem.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/CraftingSystem.cpp
+        src/gameplay/EntitySystem.cpp
+        src/gameplay/EntityRenderSnapshot.cpp
+        src/gameplay/GameRules.cpp
+        src/gameplay/GameSession.cpp
+        src/gameplay/ScreenHandler.cpp
+        src/ui/HudLayout.cpp
+        src/gameplay/GameplayMutationSink.cpp
+        src/gameplay/SimulationHostBridge.cpp
+        src/gameplay/Inventory.cpp
+        src/gameplay/ItemEntitySystem.cpp
+        src/gameplay/ItemPlacement.cpp
+        src/gameplay/MiningSystem.cpp
+        src/gameplay/BlockTags.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
+        src/gameplay/NaturalSpawner.cpp
+        src/gameplay/MobSpawnSettings.cpp
+        src/core/Json.cpp
+        src/gameplay/PlayerController.cpp
+        src/gameplay/PlayerVitals.cpp
+        src/gameplay/WeatherSystem.cpp
+        src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/world/BlockPlacement.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/DayNightCycle.cpp
+        src/world/WorldClock.cpp
+        src/world/World.cpp
+        src/world/gen/Biome.cpp
+        src/world/gen/BiomeSource.cpp
+        src/world/gen/LayeredBiomeSource.cpp
+        src/world/gen/NoiseSampler.cpp
+        src/world/gen/TreeGrower.cpp
+    )
+    target_include_directories(mc_rebedrock_screen_handler_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME screen_handler COMMAND mc_rebedrock_screen_handler_test)
+
+    add_executable(mc_rebedrock_mutation_flow_test
+        tests/mutation_flow_test.cpp
+        src/gameplay/ChestSystem.cpp
+        src/gameplay/FurnaceSystem.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/CraftingSystem.cpp
+        src/gameplay/EntitySystem.cpp
+        src/gameplay/EntityRenderSnapshot.cpp
+        src/gameplay/GameRules.cpp
+        src/gameplay/GameSession.cpp
+        src/gameplay/ScreenHandler.cpp
+        src/ui/HudLayout.cpp
+        src/gameplay/GameplayMutationSink.cpp
+        src/gameplay/SimulationHostBridge.cpp
+        src/gameplay/Inventory.cpp
+        src/gameplay/ItemEntitySystem.cpp
+        src/gameplay/ItemPlacement.cpp
+        src/gameplay/MiningSystem.cpp
+        src/gameplay/BlockTags.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
+        src/gameplay/NaturalSpawner.cpp
+        src/gameplay/MobSpawnSettings.cpp
+        src/core/Json.cpp
+        src/gameplay/PlayerController.cpp
+        src/gameplay/PlayerVitals.cpp
+        src/gameplay/WeatherSystem.cpp
+        src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/world/BlockPlacement.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/DayNightCycle.cpp
+        src/world/WorldClock.cpp
+        src/world/World.cpp
+        src/world/gen/Biome.cpp
+        src/world/gen/BiomeSource.cpp
+        src/world/gen/LayeredBiomeSource.cpp
+        src/world/gen/NoiseSampler.cpp
+        src/world/gen/TreeGrower.cpp
+    )
+    target_include_directories(mc_rebedrock_mutation_flow_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME mutation_flow COMMAND mc_rebedrock_mutation_flow_test)
+
+    add_executable(mc_rebedrock_game_events_test
+        tests/game_events_test.cpp
+        src/gameplay/ChestSystem.cpp
+        src/gameplay/FurnaceSystem.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/CraftingSystem.cpp
+        src/gameplay/EntitySystem.cpp
+        src/gameplay/EntityRenderSnapshot.cpp
+        src/gameplay/GameRules.cpp
+        src/gameplay/GameSession.cpp
+        src/gameplay/ScreenHandler.cpp
+        src/ui/HudLayout.cpp
+        src/gameplay/GameplayMutationSink.cpp
+        src/gameplay/SimulationHostBridge.cpp
+        src/gameplay/Inventory.cpp
+        src/gameplay/ItemEntitySystem.cpp
+        src/gameplay/ItemPlacement.cpp
+        src/gameplay/MiningSystem.cpp
+        src/gameplay/BlockTags.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
+        src/gameplay/NaturalSpawner.cpp
+        src/gameplay/MobSpawnSettings.cpp
+        src/core/Json.cpp
+        src/gameplay/PlayerController.cpp
+        src/gameplay/PlayerVitals.cpp
+        src/gameplay/WeatherSystem.cpp
+        src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/world/BlockPlacement.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/DayNightCycle.cpp
+        src/world/WorldClock.cpp
+        src/world/World.cpp
+        src/world/gen/Biome.cpp
+        src/world/gen/BiomeSource.cpp
+        src/world/gen/LayeredBiomeSource.cpp
+        src/world/gen/NoiseSampler.cpp
+        src/world/gen/TreeGrower.cpp
+    )
+    target_include_directories(mc_rebedrock_game_events_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME game_events COMMAND mc_rebedrock_game_events_test)
+
+    add_executable(mc_rebedrock_entity_render_snapshot_test
+        tests/entity_render_snapshot_test.cpp
+        src/gameplay/ChestSystem.cpp
+        src/gameplay/FurnaceSystem.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/CraftingSystem.cpp
+        src/gameplay/EntitySystem.cpp
+        src/gameplay/EntityRenderSnapshot.cpp
+        src/gameplay/GameRules.cpp
+        src/gameplay/GameSession.cpp
+        src/gameplay/ScreenHandler.cpp
+        src/ui/HudLayout.cpp
+        src/gameplay/GameplayMutationSink.cpp
+        src/gameplay/SimulationHostBridge.cpp
+        src/gameplay/Inventory.cpp
+        src/gameplay/ItemEntitySystem.cpp
+        src/gameplay/ItemPlacement.cpp
+        src/gameplay/MiningSystem.cpp
+        src/gameplay/BlockTags.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
+        src/gameplay/NaturalSpawner.cpp
+        src/gameplay/MobSpawnSettings.cpp
+        src/core/Json.cpp
+        src/gameplay/PlayerController.cpp
+        src/gameplay/PlayerVitals.cpp
+        src/gameplay/WeatherSystem.cpp
+        src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/world/BlockPlacement.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/DayNightCycle.cpp
+        src/world/WorldClock.cpp
+        src/world/World.cpp
+        src/world/gen/Biome.cpp
+        src/world/gen/BiomeSource.cpp
+        src/world/gen/LayeredBiomeSource.cpp
+        src/world/gen/NoiseSampler.cpp
+        src/world/gen/TreeGrower.cpp
+    )
+    target_include_directories(mc_rebedrock_entity_render_snapshot_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME entity_render_snapshot COMMAND mc_rebedrock_entity_render_snapshot_test)
+
     add_executable(mc_rebedrock_natural_spawn_test
         tests/natural_spawn_test.cpp
         src/gameplay/EntitySystem.cpp
+        src/gameplay/EntityRenderSnapshot.cpp
         src/gameplay/NaturalSpawner.cpp
+        src/gameplay/MobSpawnSettings.cpp
+        src/core/Json.cpp
         src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
         src/gameplay/entities/EntityType.cpp
         src/gameplay/entities/EntityRegistry.cpp
         src/gameplay/entities/NeutralMob.cpp
@@ -869,6 +1166,40 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME natural_spawn COMMAND mc_rebedrock_natural_spawn_test)
+
+    add_executable(mc_rebedrock_spawn_placement_test
+        tests/spawn_placement_test.cpp
+        src/gameplay/EntitySystem.cpp
+        src/gameplay/EntityRenderSnapshot.cpp
+        src/gameplay/NaturalSpawner.cpp
+        src/gameplay/MobSpawnSettings.cpp
+        src/core/Json.cpp
+        src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/world/BlockPlacement.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/World.cpp
+        src/world/gen/Biome.cpp
+        src/world/gen/BiomeSource.cpp
+        src/world/gen/LayeredBiomeSource.cpp
+        src/world/gen/NoiseSampler.cpp
+        src/world/gen/TreeGrower.cpp
+    )
+    target_include_directories(mc_rebedrock_spawn_placement_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME spawn_placement COMMAND mc_rebedrock_spawn_placement_test)
 
     add_executable(mc_rebedrock_weather_system_test
         tests/weather_system_test.cpp
@@ -926,6 +1257,76 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_pack_metadata_test PRIVATE src)
     add_test(NAME pack_metadata COMMAND mc_rebedrock_pack_metadata_test)
 
+    add_executable(mc_rebedrock_gui_nine_slice_test
+        tests/gui_nine_slice_test.cpp
+        src/assets/GuiSpriteScaling.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/ui/HudLayout.cpp
+        src/core/Json.cpp
+    )
+    target_include_directories(mc_rebedrock_gui_nine_slice_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_gui_nine_slice_test PRIVATE glm::glm)
+    add_test(NAME gui_nine_slice COMMAND mc_rebedrock_gui_nine_slice_test)
+
+    add_executable(mc_rebedrock_simulation_driver_test
+        tests/simulation_driver_test.cpp
+        src/gameplay/PlayerController.cpp
+        src/world/World.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+    )
+    target_include_directories(mc_rebedrock_simulation_driver_test PRIVATE src "${glm_SOURCE_DIR}")
+    target_link_libraries(mc_rebedrock_simulation_driver_test PRIVATE Threads::Threads)
+    add_test(NAME simulation_driver COMMAND mc_rebedrock_simulation_driver_test)
+
+    add_executable(mc_rebedrock_world_lock_test
+        tests/world_lock_test.cpp
+        src/world/World.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+    )
+    target_include_directories(mc_rebedrock_world_lock_test PRIVATE src "${glm_SOURCE_DIR}")
+    find_package(Threads REQUIRED)
+    target_link_libraries(mc_rebedrock_world_lock_test PRIVATE Threads::Threads)
+    add_test(NAME world_lock COMMAND mc_rebedrock_world_lock_test)
+
+    add_executable(mc_rebedrock_chunk_tick_scheduler_test
+        tests/chunk_tick_scheduler_test.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+    )
+    target_include_directories(mc_rebedrock_chunk_tick_scheduler_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME chunk_tick_scheduler COMMAND mc_rebedrock_chunk_tick_scheduler_test)
+
+    add_executable(mc_rebedrock_block_tags_test
+        tests/block_tags_test.cpp
+        src/gameplay/BlockTags.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
+    )
+    target_include_directories(mc_rebedrock_block_tags_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME block_tags COMMAND mc_rebedrock_block_tags_test)
+
+    add_executable(mc_rebedrock_gui_sprite_scaling_test
+        tests/gui_sprite_scaling_test.cpp
+        src/assets/GuiSpriteScaling.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
+    )
+    target_include_directories(mc_rebedrock_gui_sprite_scaling_test PRIVATE src)
+    add_test(NAME gui_sprite_scaling COMMAND mc_rebedrock_gui_sprite_scaling_test)
+
+    add_executable(mc_rebedrock_menu_geometry_test
+        tests/menu_geometry_test.cpp
+        src/ui/MenuGeometry.cpp
+        src/ui/HudLayout.cpp
+    )
+    target_include_directories(mc_rebedrock_menu_geometry_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_menu_geometry_test PRIVATE glm::glm)
+    add_test(NAME menu_geometry COMMAND mc_rebedrock_menu_geometry_test)
+
     add_executable(mc_rebedrock_texture_animation_test
         tests/texture_animation_test.cpp
         src/assets/TextureAnimation.cpp
@@ -935,6 +1336,33 @@ if(BUILD_TESTING)
     )
     target_include_directories(mc_rebedrock_texture_animation_test PRIVATE src)
     add_test(NAME texture_animation COMMAND mc_rebedrock_texture_animation_test)
+
+    add_executable(mc_rebedrock_species_skin_test
+        tests/species_skin_test.cpp
+        src/gameplay/entities/SpeciesRenderData.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/assets/ImageData.cpp
+        src/assets/PackMetadata.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/StbImageImplementation.cpp
+        src/world/World.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+    )
+    target_include_directories(mc_rebedrock_species_skin_test PRIVATE
+        src
+        "${stb_SOURCE_DIR}"
+        "${glm_SOURCE_DIR}"
+    )
+    target_link_libraries(mc_rebedrock_species_skin_test PRIVATE mc_rebedrock_animation)
+    add_test(NAME species_skin COMMAND mc_rebedrock_species_skin_test)
 
     add_executable(mc_rebedrock_image_data_test
         tests/image_data_test.cpp
@@ -992,10 +1420,16 @@ if(BUILD_TESTING)
     add_executable(mc_rebedrock_mining_system_test
         tests/mining_system_test.cpp
         src/gameplay/MiningSystem.cpp
+        src/gameplay/BlockTags.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
         src/gameplay/ItemPlacement.cpp
         src/gameplay/ContentRegistry.cpp
         src/gameplay/Inventory.cpp
         src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
         src/world/BlockPlacement.cpp
         src/world/Chunk.cpp
         src/world/ChunkSection.cpp
@@ -1058,9 +1492,23 @@ if(BUILD_TESTING)
     )
     add_test(NAME item_entity COMMAND mc_rebedrock_item_entity_test)
 
+    add_executable(mc_rebedrock_environment_snapshot_test
+        tests/environment_snapshot_test.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/World.cpp
+    )
+    target_include_directories(mc_rebedrock_environment_snapshot_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME environment_snapshot COMMAND mc_rebedrock_environment_snapshot_test)
+
     add_executable(mc_rebedrock_world_simulation_test
         tests/world_simulation_test.cpp
         src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
         src/world/BlockPlacement.cpp
         src/world/Chunk.cpp
         src/world/ChunkSection.cpp
@@ -1101,6 +1549,8 @@ if(BUILD_TESTING)
     add_executable(mc_rebedrock_random_tick_benchmark
         tests/random_tick_benchmark.cpp
         src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
         src/world/BlockPlacement.cpp
         src/world/Chunk.cpp
         src/world/ChunkSection.cpp
@@ -1116,6 +1566,8 @@ if(BUILD_TESTING)
     add_executable(mc_rebedrock_grass_spread_probe
         tests/grass_spread_probe.cpp
         src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
         src/world/BlockPlacement.cpp
         src/world/Chunk.cpp
         src/world/ChunkSection.cpp
@@ -1273,8 +1725,6 @@ install(TARGETS mc_rebedrock RUNTIME DESTINATION bin)
 install(DIRECTORY "${MC_REBEDROCK_SHADER_OUTPUT_DIR}/"
     DESTINATION resources/shaders)
 install(DIRECTORY resources/animation
-    DESTINATION resources)
-install(DIRECTORY resources/entity
     DESTINATION resources)
 install(FILES resources/default-options.properties
     DESTINATION config

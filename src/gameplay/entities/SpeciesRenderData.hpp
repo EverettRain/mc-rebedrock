@@ -45,13 +45,18 @@ buildSpeciesModels(const std::filesystem::path& resourceRoot, const EntityTypeRe
 [[nodiscard]] glm::vec2 entityTextureSize(const animation::SkeletalModel& model,
                                           const glm::vec2& fallbackSize);
 
-// Loads a species' skin at its model's declared texture size. It first resolves
-// the standard textures/<path> ResourceLocation through the active pack stack,
-// preserving per-file overlay priority. Project-owned entity art under
-// resources/entity/<path> remains a fallback, followed by a procedural texture
-// painted through the same boxUvFaceRect mapping.
-[[nodiscard]] std::vector<std::uint8_t> buildSpeciesSkin(const std::filesystem::path& resourceRoot,
-                                                         const assets::ResourceProvider& resources,
+// Loads a species' skin at its model's declared texture size, resolving the
+// standard textures/<path> ResourceLocation through the active pack stack so
+// per-file overlay priority is preserved.
+//
+// There are exactly two sources, and deliberately so: the pack, or a procedural
+// texture painted through the same boxUvFaceRect mapping. There used to be a
+// third — a bundled PNG under resources/entity/<path> — but the only file that
+// ever lived there was converted from Mojang's zombie skin, which made every
+// release carry derived vanilla art while claiming to ship none. A missing skin
+// must degrade to the generated placeholder, never to something the project has
+// no right to redistribute.
+[[nodiscard]] std::vector<std::uint8_t> buildSpeciesSkin(const assets::ResourceProvider& resources,
                                                          const animation::SkeletalModel& model,
                                                          std::string_view texturePath,
                                                          const glm::vec2& fallbackSize);

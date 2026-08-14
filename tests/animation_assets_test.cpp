@@ -73,17 +73,27 @@ int main() {
     assert(std::abs(mob.evaluate().bone(static_cast<std::size_t>(frontRight)).rotation.x + 30.0F) <
            1e-3F);
 
-    // Cow: the 1.16.1 CowEntityModel port. Nine bones — the quadruped's six,
-    // plus the udder and the two horns the cow model adds as children of the
-    // torso and head — and the walk clip swings the legs at the vanilla
-    // setAngles cadence (0.6662 frequency, 1.4 rad = 80.2 degrees amplitude)
-    // with the front-right anti-phase to the front-left — the same diagonal
-    // gait 1.16.1 applies.
+    // Cow: the Java 26.1 normal adult CowModel port. Its 64x64 skin has a
+    // separate muzzle below the old 64x32 region, while the horns and udder are
+    // cubes on the head and body model parts. The walk clip swings the legs at
+    // the vanilla cadence with the front-right anti-phase to the front-left.
     const AnimatedModel cow = loadAnimatedModel(
         kDir / "cow.geo.json", {kDir / "cow.animation.json"});
-    assert(cow.model.boneCount() == 9U);
+    assert(cow.model.textureWidth() == 64);
+    assert(cow.model.textureHeight() == 64);
+    assert(cow.model.boneCount() == 6U);
     assert(cow.animations.find("animation.cow.walk") != nullptr);
     assert(cow.animations.find("animation.cow.idle") != nullptr);
+    const int cowHead = cow.model.findBone("head");
+    const int cowBody = cow.model.findBone("body");
+    assert(cowHead >= 0 && cowBody >= 0);
+    const auto& cowHeadCubes = cow.model.bones()[static_cast<std::size_t>(cowHead)].cubes;
+    const auto& cowBodyCubes = cow.model.bones()[static_cast<std::size_t>(cowBody)].cubes;
+    assert(cowHeadCubes.size() == 4U);
+    assert(cowBodyCubes.size() == 2U);
+    assert(glm::length(cowHeadCubes[1].origin - glm::vec3{-3.0F, 16.0F, -15.0F}) < 1e-3F);
+    assert(glm::length(cowHeadCubes[1].size - glm::vec3{6.0F, 3.0F, 1.0F}) < 1e-3F);
+    assert(glm::length(cowHeadCubes[1].uv - glm::vec2{1.0F, 33.0F}) < 1e-3F);
     Animator cowMob;
     cowMob.setModel(&cow.model);
     cowMob.context().setVariable("walk_amount", 1.0F);
@@ -94,11 +104,17 @@ int main() {
     const int cowBackRight = cow.model.findBone("legBackRight");
     const int cowBackLeft = cow.model.findBone("legBackLeft");
     assert(cowFrontRight >= 0 && cowFrontLeft >= 0 && cowBackRight >= 0 && cowBackLeft >= 0);
+    assert(std::abs(cow.model.bones()[static_cast<std::size_t>(cowFrontRight)].pivot.z + 5.0F) <
+           1e-3F);
+    assert(!cow.model.bones()[static_cast<std::size_t>(cowFrontRight)].cubes[0].mirror);
+    assert(cow.model.bones()[static_cast<std::size_t>(cowFrontLeft)].cubes[0].mirror);
+    assert(!cow.model.bones()[static_cast<std::size_t>(cowBackRight)].cubes[0].mirror);
+    assert(cow.model.bones()[static_cast<std::size_t>(cowBackLeft)].cubes[0].mirror);
     const SkeletonPose cowPose = cowMob.evaluate();
     // At t = 0.5: cos(0.5 * 360 * 0.6662) = cos(119.916 deg) = -0.4986, so the
     // front-left and back-right legs swing back ~40 degrees while the opposite
     // diagonal (+180) swings forward ~40 degrees. The two diagonal pairs move
-    // together exactly as 1.16.1's setAngles pairs them.
+    // together exactly as 26.1's QuadrupedModel pairs them.
     assert(std::abs(cowPose.bone(static_cast<std::size_t>(cowFrontRight)).rotation.x - 40.0F) <
            0.1F);
     assert(std::abs(cowPose.bone(static_cast<std::size_t>(cowFrontLeft)).rotation.x + 40.0F) <

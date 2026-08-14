@@ -42,6 +42,10 @@ layout(location = 9) out vec3 fragmentWorldPosition;
 // OverlayTexture's hurt row: 1.0 while a creature is inside its hurtTime, 0.0
 // otherwise. Only the box-UV entity path ever raises it.
 layout(location = 10) flat out float fragmentHurtFlash;
+// Falling blocks use terrain-equivalent face lighting and shadows rather than
+// the generic dropped-item light. Kept as a mode bit so ordinary item cubes and
+// articulated entity cuboids retain their existing presentation.
+layout(location = 11) flat out float fragmentFallingBlock;
 
 const vec2 corners[6] = vec2[](
     vec2(-0.5, -0.5), vec2(0.5, -0.5), vec2(0.5, 0.5),
@@ -71,6 +75,7 @@ vec2 decodeSceneLight(float packedLight) {
 void main() {
     fragmentEntityTexture = 0.0;
     fragmentHurtFlash = 0.0;
+    fragmentFallingBlock = 0.0;
     fragmentSceneLight = decodeSceneLight(item.dimensions.w);
     fragmentWorldPosition = vec3(0.0);
     if (item.data.x > 6.5 && item.data.x < 7.5) {
@@ -346,6 +351,8 @@ void main() {
                         : item.textureLayersRotation.y)));
         }
         fragmentNormal = normal;
+        fragmentFallingBlock =
+            item.data.x > 0.5 && item.data.x < 1.5 && item.data.w > 1.5 ? 1.0 : 0.0;
         fragmentIsCube = 1.0;
         fragmentShadowOpacity = 0.0;
         fragmentOpacity = 1.0;

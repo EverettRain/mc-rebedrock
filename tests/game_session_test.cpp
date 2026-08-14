@@ -9,8 +9,13 @@
 #include "world/World.hpp"
 #include "world/WorldClock.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
+
+#include <glm/geometric.hpp>
+#include <glm/vec2.hpp>
+#include <glm/vec3.hpp>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
@@ -38,6 +43,7 @@ struct TestHost final : mc::gameplay::SimulationHost {
     int blockBreaks = 0;
     int itemPickups = 0;
     int footsteps = 0;
+    int previewEdits = 0;
     bool playerDied = false;
     int furnaceChanges = 0;
     int eatingStarted = 0;
@@ -49,7 +55,8 @@ struct TestHost final : mc::gameplay::SimulationHost {
                          std::optional<mc::world::BlockOrientation>) override {
         ++worldEdits;
     }
-    void previewBlockEdit(int, int, int) override {}
+    void submitWorldStateEdit(int, int, int, mc::world::BlockState) override { ++worldEdits; }
+    void previewBlockEdit(int, int, int) override { ++previewEdits; }
     void playBlockBreak(mc::world::Block, glm::vec3) override { ++blockBreaks; }
     void playItemPickup(glm::vec3) override { ++itemPickups; }
     void playEat(glm::vec3) override { ++eatSounds; }
@@ -102,6 +109,42 @@ int main() {
     assert(std::abs(session.player().position().y - 1.0F) < 0.05F);
     assert(session.physicsCurrentPosition().y == session.player().position().y);
 
+    // Entity#move adds horizontalDistance * 0.6 to its step accumulator and
+    // emits once per integer crossing. This catches the old 0.85-block stride,
+    // which made an ordinary walk play almost twice as many footsteps.
+    {
+        world::World walkingWorld;
+        buildFloor(walkingWorld);
+        gameplay::GameSession walker;
+        walker.setGameMode(gameplay::GameMode::Creative);
+        walker.player().setPosition({8.5F, 1.001F, 12.5F});
+        walker.physicsPreviousPosition() = walker.player().position();
+        walker.physicsCurrentPosition() = walker.player().position();
+        walker.input().forward = 1.0F;
+        walker.input().lookDirection = {0.0F, 0.0F, -1.0F};
+        // input() is the main thread's staging copy; the simulation reads what
+        // commitInput() publishes. Without this the walker simply stands still
+        // — and because `expected` is derived from the distance actually
+        // travelled, the assertion below would still pass while testing
+        // nothing at all.
+        walker.commitInput();
+        TestHost walkingHost;
+        const glm::vec3 start = walker.player().position();
+        for (int tick = 0; tick < 32; ++tick) {
+            walker.tick(walkingWorld, walkingHost);
+        }
+        const glm::vec2 travelled{
+            walker.player().position().x - start.x,
+            walker.player().position().z - start.z,
+        };
+        // So pin that it moved, and that the step count is a real number.
+        REQUIRE(glm::length(travelled) > 1.0F);
+        const int expected = static_cast<int>(std::floor(glm::length(travelled) * 0.6F));
+        REQUIRE(expected > 0);
+        walker.drainEvents();
+        REQUIRE(walkingHost.footsteps == expected);
+    }
+
     // MobBrain attacks cross the EntitySystem event boundary and enter the
     // same player damage/death pipeline as every other source. REQUIRE remains
     // active under NDEBUG, so Release genuinely executes this integration.
@@ -115,12 +158,16 @@ int main() {
         meleeSession.worldEntities().spawn({7.5F, 1.001F, 8.5F},
                                            gameplay::entities::ZombieEntity::type(), 51U);
         TestHost meleeHost;
+        // The loop's exit condition reads the host, so each iteration has to
+        // drain: events now queue until drained, and a stale count would run
+        // the loop to completion and over-accumulate.
         for (int tick = 0; tick < 120 && meleeHost.playerHurts == 0; ++tick) {
             meleeSession.tick(world, meleeHost);
+            meleeSession.drainEvents();
         }
         REQUIRE(meleeHost.playerHurts == 1);
         REQUIRE(std::abs(meleeSession.vitals().health() - 17.0F) < 0.001F);
-        REQUIRE(meleeSession.vitals().damage().lastSource == gameplay::DamageSource::EntityAttack);
+        REQUIRE(meleeSession.vitals().damage().lastSource == gameplay::DamageType::EntityAttack);
     }
 
     // The in-world difficulty control goes through GameSession::setDifficulty.
@@ -152,12 +199,63 @@ int main() {
     // pickaxe, so dirt keeps the drop path deterministic.
     world.setBlock(9, 1, 9, world::Block::Dirt);
     const std::size_t dropsBefore = session.itemEntities().entities().size();
-    session.spawnBlockDrops({9, 1, 9}, world::Block::Dirt, gameplay::ItemStack{});
+    session.spawnBlockDrops({9, 1, 9}, world::BlockState{world::Block::Dirt},
+                            gameplay::ItemStack{});
     assert(session.itemEntities().entities().size() > dropsBefore);
+
+    // A falling block performs two render-critical handoffs: static mesh to
+    // entity at takeoff, then entity back to static mesh on landing. Both edits
+    // must request the renderer's immediate preview path.
+    {
+        world::World fallingWorld;
+        buildFloor(fallingWorld);
+        // Fourteen blocks above a one-layer floor is the first exact discrete
+        // fall that the old endpoint-only collision check skipped completely.
+        fallingWorld.setBlock(4, 14, 4, world::Block::Sand);
+        gameplay::GameSession fallingSession;
+        fallingSession.worldSimulation().notifyPlaced({4, 14, 4}, world::Block::Sand);
+        TestHost fallingHost;
+        for (int tick = 0; tick < 80; ++tick) {
+            fallingSession.tick(fallingWorld, fallingHost);
+        }
+        REQUIRE(fallingWorld.block(4, 1, 4) == world::Block::Sand);
+        fallingSession.drainEvents();
+        REQUIRE(fallingHost.previewEdits == 2);
+    }
+
+    // A non-colliding but non-replaceable state at the landing cell prevents
+    // placement. The falling block must become an item without deleting that
+    // state or submitting a fake world edit/break effect for it.
+    {
+        world::World occupiedWorld;
+        world::Chunk occupiedChunk;
+        occupiedChunk.setBlock(4, 0, 4, world::Block::Farmland);
+        occupiedChunk.setBlock(4, 1, 4, world::Block::WheatCrops);
+        occupiedChunk.setBlock(4, 14, 4, world::Block::Sand);
+        occupiedWorld.setChunk({0, 0}, std::move(occupiedChunk));
+        gameplay::GameSession occupiedSession;
+        occupiedSession.setGameMode(gameplay::GameMode::Creative);
+        occupiedSession.player().setPosition({12.5F, 2.0F, 12.5F});
+        occupiedSession.worldSimulation().notifyPlaced({4, 14, 4}, world::Block::Sand);
+        TestHost occupiedHost;
+        for (int tick = 0; tick < 80; ++tick) {
+            occupiedSession.tick(occupiedWorld, occupiedHost);
+        }
+        REQUIRE(occupiedWorld.block(4, 1, 4) == world::Block::WheatCrops);
+        REQUIRE(std::ranges::any_of(
+            occupiedSession.itemEntities().entities(), [](const gameplay::ItemEntity& entity) {
+                return entity.stack.block == world::Block::Sand;
+            }));
+        occupiedSession.drainEvents();
+        REQUIRE(occupiedHost.blockBreaks == 0);
+        occupiedSession.drainEvents();
+        REQUIRE(occupiedHost.previewEdits == 1);
+    }
 
     // --- The kill pipeline raises the death host callback. ---
     TestHost deathHost;
-    assert(session.hurtPlayer(gameplay::DamageSource::OutOfWorld, 1000.0F, deathHost));
+    assert(session.hurtPlayer(gameplay::DamageType::OutOfWorld, 1000.0F, deathHost));
+    session.drainEvents();
     assert(deathHost.playerDied);
 
     // --- Eating a meal completes through tickEating inside the tick. ---
@@ -169,6 +267,7 @@ int main() {
     // The meal must be in hand when it finishes, or the final burst is skipped.
     eater.inventory().mutableSlot(0) = {world::Block::Air, 1U, &gameplay::items::Apple};
     eater.beginEating(&gameplay::items::Apple, eatHost);
+    eater.drainEvents();
     assert(eatHost.eatingStarted == 1);
     world::World eatWorld;
     buildFloor(eatWorld);
@@ -177,10 +276,12 @@ int main() {
     }
     // The meal ran to completion and cancelled itself.
     assert(!eater.eating());
+    eater.drainEvents();
     assert(eatHost.eatingCancelled == 1);
     // The chew loop played through the meal: six chew ticks (remaining 24..4,
     // every fourth tick) plus the final burst = seven generic.eat sounds, then
     // the burp.
+    eater.drainEvents();
     assert(eatHost.eatSounds == 7);
 
     // --- Buckets: the item resolves collect/pour, and replaceSelected swaps hands. ---
@@ -203,6 +304,15 @@ int main() {
                                               {waterX, waterY, waterZ + 3}};
         const auto pour = gameplay::itemUseOn(&gameplay::items::WaterBucket, bucketWorld, ontoAir);
         assert(pour.action == gameplay::ItemUseAction::PlaceWater);
+        const auto pourLava = gameplay::itemUseOn(
+            &gameplay::items::LavaBucket, bucketWorld, ontoAir);
+        assert(pourLava.action == gameplay::ItemUseAction::PlaceLava);
+        bucketWorld.setBlock(waterX + 2, waterY, waterZ, world::Block::Lava);
+        const world::PlacementContext onLava{{waterX + 2, waterY, waterZ},
+                                             {waterX + 2, waterY, waterZ}};
+        const auto collectLava = gameplay::itemUseOn(
+            &gameplay::items::Bucket, bucketWorld, onLava);
+        assert(collectLava.action == gameplay::ItemUseAction::CollectLava);
         // Non-water blocks never collect, and a solid cell never pours.
         const world::PlacementContext onStone{{waterX, 0, waterZ}, {waterX, 0, waterZ}};
         const auto noCollect = gameplay::itemUseOn(&gameplay::items::Bucket, bucketWorld, onStone);
@@ -223,12 +333,14 @@ int main() {
         TestHost onceHost;
         gameplay::GameSession dying;
         dying.setGameMode(gameplay::GameMode::Survival);
-        assert(dying.hurtPlayer(gameplay::DamageSource::Fall, 1000.0F, onceHost));
+        assert(dying.hurtPlayer(gameplay::DamageType::Fall, 1000.0F, onceHost));
+        dying.drainEvents();
         assert(onceHost.playerDied);
         // A second lethal source in the same tick is swallowed by the dead()
         // guard, and die() refuses to re-claim the already-claimed death.
-        assert(!dying.hurtPlayer(gameplay::DamageSource::Drown, 1000.0F, onceHost));
-        assert(!dying.die(gameplay::DamageSource::Drown, onceHost));
+        assert(!dying.hurtPlayer(gameplay::DamageType::Drown, 1000.0F, onceHost));
+        assert(!dying.die(gameplay::DamageType::Drown, onceHost));
+        dying.drainEvents();
         assert(onceHost.playerDied);
     }
 

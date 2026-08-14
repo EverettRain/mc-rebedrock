@@ -26,19 +26,16 @@ int main() {
         assert(state.orientation() == fallback);
     }
 
-    // The families that actually use the state slot must have room for the
-    // whole range their writers produce: crop age and farmland moisture reach
-    // 7, the log axis is stored as Up (index 4), leaves flag persistence as
-    // East (index 1), and a horizontal facing reaches West (index 3).
+    // Every family that declares a property must have room for the whole range
+    // its writers produce: crop age and farmland moisture reach 7, the log axis
+    // is a full six directions, leaves carry PERSISTENT, and a horizontal
+    // facing reaches West.
     {
-        assert((BlockState{Block::WheatCrops, cropOrientation(7)}.orientation() ==
-                cropOrientation(7)));
-        assert((BlockState{Block::Farmland, farmlandOrientation(7)}.orientation() ==
-                farmlandOrientation(7)));
+        assert(BlockState{Block::WheatCrops}.withAge(7).age() == 7);
+        assert(BlockState{Block::Farmland}.withMoisture(7).moisture() == 7);
         assert((BlockState{Block::OakLog, BlockOrientation::Up}.orientation() ==
                 BlockOrientation::Up));
-        assert((BlockState{Block::OakLeaves, kPersistentLeavesState}.orientation() ==
-                kPersistentLeavesState));
+        assert(BlockState{Block::OakLeaves}.withPersistent(true).persistent());
         assert((BlockState{Block::Furnace, BlockOrientation::West}.orientation() ==
                 BlockOrientation::West));
     }
@@ -168,12 +165,12 @@ int main() {
             BlockState{Block::Furnace, BlockOrientation::South},
             BlockState{Block::Furnace, BlockOrientation::East}.withLit(true),
             BlockState{Block::Furnace, BlockOrientation::West}.withLit(true),
-            BlockState{Block::WheatCrops, cropOrientation(0)},
-            BlockState{Block::WheatCrops, cropOrientation(3)},
-            BlockState{Block::WheatCrops, cropOrientation(7)},
-            BlockState{Block::Farmland, farmlandOrientation(7)},
+            BlockState{Block::WheatCrops},
+            BlockState{Block::WheatCrops}.withAge(3),
+            BlockState{Block::WheatCrops}.withAge(7),
+            BlockState{Block::Farmland}.withMoisture(7),
             BlockState{Block::OakLog, BlockOrientation::Up},
-            BlockState{Block::OakLeaves, kPersistentLeavesState},
+            BlockState{Block::OakLeaves}.withPersistent(true),
             BlockState{Block::Sand},
             BlockState{Block::Gravel},
             BlockState{Block::Cobblestone},

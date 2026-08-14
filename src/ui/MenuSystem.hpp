@@ -71,6 +71,7 @@ class MenuSystem final {
     std::string pendingLanguageCode{kDefaultLanguageCode};
     std::string languageStatus;
     std::size_t languageListFirstIndex = 0U;
+    bool languageScrollbarDragging = false;
     bool optionsOpen = false;
     bool viewDistanceSliderDragging = false;
     bool simulationDistanceSliderDragging = false;

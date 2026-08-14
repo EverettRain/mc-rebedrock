@@ -8,35 +8,21 @@
 namespace mc::gameplay {
 
 FurnaceBlockEntity* FurnaceSystem::find(FurnacePosition position) {
-    const auto found = std::ranges::find(entities_, position, &FurnaceBlockEntity::position);
-    return found == entities_.end() ? nullptr : &*found;
+    return entities_.find(position);
 }
 
 const FurnaceBlockEntity* FurnaceSystem::find(FurnacePosition position) const {
-    const auto found = std::ranges::find(entities_, position, &FurnaceBlockEntity::position);
-    return found == entities_.end() ? nullptr : &*found;
+    return entities_.find(position);
 }
 
-bool FurnaceSystem::place(FurnacePosition position) {
-    if (find(position) != nullptr) return false;
-    entities_.push_back({position});
-    return true;
-}
+bool FurnaceSystem::place(FurnacePosition position) { return entities_.place(position); }
 
 FurnaceBlockEntity& FurnaceSystem::findOrCreate(FurnacePosition position) {
-    if (auto* existing = find(position); existing != nullptr) {
-        return *existing;
-    }
-    entities_.push_back({position});
-    return entities_.back();
+    return entities_.findOrCreate(position);
 }
 
 std::optional<FurnaceBlockEntity> FurnaceSystem::remove(FurnacePosition position) {
-    const auto found = std::ranges::find(entities_, position, &FurnaceBlockEntity::position);
-    if (found == entities_.end()) return std::nullopt;
-    FurnaceBlockEntity removed = *found;
-    entities_.erase(found);
-    return removed;
+    return entities_.remove(position);
 }
 
 void FurnaceSystem::tickOne(FurnaceBlockEntity& furnace) {
@@ -78,7 +64,7 @@ void FurnaceSystem::tickOne(FurnaceBlockEntity& furnace) {
 }
 
 void FurnaceSystem::tick() {
-    for (auto& furnace : entities_) {
+    for (auto& furnace : entities_.mutableEntities()) {
         tickOne(furnace);
     }
 }
@@ -165,11 +151,11 @@ float FurnaceSystem::fuelProgress(FurnacePosition position) const {
 }
 
 void FurnaceSystem::restore(std::vector<FurnaceBlockEntity> entities) {
-    entities_ = std::move(entities);
+    entities_.restore(std::move(entities));
     // A saved furnace stored its cook progress but not the string_view recipe
     // cache (which points into static data). Re-point it from the input so the
     // first tick after load sees the same recipe and resumes rather than resets.
-    for (auto& furnace : entities_) {
+    for (auto& furnace : entities_.mutableEntities()) {
         const auto* recipe = matchedFurnaceRecipe(furnace.input);
         furnace.activeRecipe = recipe != nullptr ? recipe->identifier : std::string_view{};
     }

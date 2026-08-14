@@ -122,11 +122,7 @@ struct GenerationResult final {
                 for (const auto* edit : request.edits) {
                     const int localX = edit->x - request.position.x * kChunkWidth;
                     const int localZ = edit->z - request.position.z * kChunkDepth;
-                    chunk.setBlock(localX, edit->y, localZ, edit->block);
-                    chunk.setOrientation(localX, edit->y, localZ, edit->orientation);
-                    if (isFluid(edit->block)) {
-                        chunk.setFluidLevel(localX, edit->y, localZ, edit->fluidLevel);
-                    }
+                    chunk.setState(localX, edit->y, localZ, edit->state);
                 }
                 results[requestIndex] = {
                     request.position, std::move(chunk), std::move(borderBlocks)};
@@ -250,6 +246,13 @@ buildChunkMeshesParallel(const World& world, std::span<const ChunkMeshRequest> r
 std::size_t SectionPositionHash::operator()(const SectionPosition& position) const noexcept {
     std::size_t seed = ChunkPositionHash{}({position.chunkX, position.chunkZ});
     seed ^= std::hash<int>{}(position.sectionY) + 0x9e3779b9U + (seed << 6U) + (seed >> 2U);
+    return seed;
+}
+
+std::size_t BlockEditPositionHash::operator()(const BlockEditPosition& position) const noexcept {
+    std::size_t seed = std::hash<int>{}(position.x);
+    seed ^= std::hash<int>{}(position.y) + 0x9e3779b9U + (seed << 6U) + (seed >> 2U);
+    seed ^= std::hash<int>{}(position.z) + 0x9e3779b9U + (seed << 6U) + (seed >> 2U);
     return seed;
 }
 
@@ -430,6 +433,7 @@ void ChunkStreamer::workerLoop() {
         if (reset.has_value()) {
             world = World{};
             static_cast<void>(lightEngine.takeDirtySections());
+            pendingBorderBlocks_.clear();
             currentCenter = {};
             seed_ = reset->seed;
             currentEpoch = reset->epoch;
@@ -450,10 +454,7 @@ void ChunkStreamer::workerLoop() {
         bool editsApplied = false;
         if (!edits.empty() && world.chunkCount() != 0U) {
             for (const auto& edit : edits) {
-                const PersistentBlockEdit saved{edit.worldX,          edit.y,
-                                                edit.worldZ,         edit.state.block(),
-                                                edit.state.fluidLevel(),
-                                                edit.state.orientation(), edit.state.lit()};
+                const PersistentBlockEdit saved{edit.worldX, edit.y, edit.worldZ, edit.state};
                 const EditPosition position{edit.worldX, edit.y, edit.worldZ};
                 const auto found = persistentEditIndices.find(position);
                 if (found == persistentEditIndices.end()) {
@@ -510,10 +511,7 @@ void ChunkStreamer::workerLoop() {
         }
         if (!edits.empty() && !editsApplied) {
             for (const auto& edit : edits) {
-                const PersistentBlockEdit saved{edit.worldX,          edit.y,
-                                                edit.worldZ,         edit.state.block(),
-                                                edit.state.fluidLevel(),
-                                                edit.state.orientation(), edit.state.lit()};
+                const PersistentBlockEdit saved{edit.worldX, edit.y, edit.worldZ, edit.state};
                 const EditPosition position{edit.worldX, edit.y, edit.worldZ};
                 const auto found = persistentEditIndices.find(position);
                 if (found == persistentEditIndices.end()) {
@@ -624,6 +622,8 @@ void ChunkStreamer::processSyncRequests(
     // Index the persistent edits once so a generated chunk can re-apply them.
     std::unordered_map<ChunkPosition, std::vector<const PersistentBlockEdit*>, ChunkPositionHash>
         editsByChunk;
+    std::unordered_set<BlockEditPosition, BlockEditPositionHash> persistentPositions;
+    persistentPositions.reserve(persistentEdits.size());
     for (const auto& edit : persistentEdits) {
         if (edit.y < 0 || edit.y >= kWorldHeight) {
             continue;
@@ -633,6 +633,7 @@ void ChunkStreamer::processSyncRequests(
                          floorDiv(edit.z, kChunkDepth),
                      }]
             .push_back(&edit);
+        persistentPositions.insert({edit.x, edit.y, edit.z});
     }
     const SurfaceGenerator generator{seed_};
     for (const auto position : pending) {
@@ -646,28 +647,28 @@ void ChunkStreamer::processSyncRequests(
         }
         std::vector<gen::TreeBorderBlock> borderBlocks;
         Chunk chunk = generator.generate(position.x, position.z, borderBlocks);
+        rememberBorderBlocks(borderBlocks);
         const auto chunkEdits = editsByChunk.find(position);
         if (chunkEdits != editsByChunk.end()) {
             for (const auto* edit : chunkEdits->second) {
                 const int localX = edit->x - position.x * kChunkWidth;
                 const int localZ = edit->z - position.z * kChunkDepth;
-                chunk.setBlock(localX, edit->y, localZ, edit->block);
-                chunk.setOrientation(localX, edit->y, localZ, edit->orientation);
-                if (isFluid(edit->block)) {
-                    chunk.setFluidLevel(localX, edit->y, localZ, edit->fluidLevel);
-                }
+                chunk.setState(localX, edit->y, localZ, edit->state);
             }
         }
         world.setChunk(position, std::move(chunk));
         // A tree an already-generated neighbour planted across this border lands
         // here, and this chunk's own border crowns spill into whatever is loaded.
         const std::unordered_set<ChunkPosition, ChunkPositionHash> syncChunk{position};
+        std::vector<BlockStateDelta> borderStateUpdates;
         const auto pending = pendingBorderBlocks_.find(position);
         if (pending != pendingBorderBlocks_.end()) {
-            applyBorderBlocks(world, lightEngine, pending->second, syncChunk);
-            pendingBorderBlocks_.erase(pending);
+            applyBorderBlocks(world, lightEngine, pending->second, syncChunk,
+                              persistentPositions,
+                              &borderStateUpdates);
         }
-        applyBorderBlocks(world, lightEngine, borderBlocks, syncChunk);
+        applyBorderBlocks(world, lightEngine, borderBlocks, syncChunk, persistentPositions,
+                          &borderStateUpdates);
         const ChunkPosition positions[]{position};
         lightEngine.initializeChunks(world, positions);
 
@@ -698,6 +699,7 @@ void ChunkStreamer::processSyncRequests(
         // immediately and the mesh uploads jump ahead of distant chunks.
         batch.highPriority = true;
         batch.chunkUpdates.push_back({position, *world.chunk(position), false});
+        batch.stateUpdates = std::move(borderStateUpdates);
         batch.sectionUpdates = std::move(meshUpdates);
         for (auto& update : batch.sectionUpdates) {
             if (update.revision == 0U) {
@@ -709,20 +711,48 @@ void ChunkStreamer::processSyncRequests(
     }
 }
 
+void ChunkStreamer::rememberBorderBlocks(std::span<const gen::TreeBorderBlock> blocks) {
+    for (const auto& block : blocks) {
+        const ChunkPosition target{
+            floorDiv(block.worldX, kChunkWidth),
+            floorDiv(block.worldZ, kChunkDepth),
+        };
+        auto& remembered = pendingBorderBlocks_[target];
+        const auto existing = std::ranges::find_if(
+            remembered, [&block](const gen::TreeBorderBlock& candidate) {
+                return candidate.worldX == block.worldX && candidate.y == block.y &&
+                       candidate.worldZ == block.worldZ;
+            });
+        if (existing == remembered.end()) {
+            remembered.push_back(block);
+        } else {
+            *existing = block;
+        }
+    }
+}
+
 void ChunkStreamer::applyBorderBlocks(
     World& world,
     WorldLightEngine& lightEngine,
     std::vector<gen::TreeBorderBlock>& blocks,
-    const std::unordered_set<ChunkPosition, ChunkPositionHash>& batchChunks) {
+    const std::unordered_set<ChunkPosition, ChunkPositionHash>& batchChunks,
+    const std::unordered_set<BlockEditPosition, BlockEditPositionHash>& persistentPositions,
+    std::vector<BlockStateDelta>* stateUpdates) {
     for (auto& block : blocks) {
+        // Saved/runtime edits are authoritative over deterministic generation,
+        // including an explicit Air left by a broken leaf. Without this guard a
+        // replayed cross-border crown resurrected those leaves after reload.
+        if (persistentPositions.contains({block.worldX, block.y, block.worldZ})) {
+            continue;
+        }
         const ChunkPosition target{
             floorDiv(block.worldX, kChunkWidth),
             floorDiv(block.worldZ, kChunkDepth),
         };
         Chunk* chunk = world.chunk(target);
         if (chunk == nullptr) {
-            // The crown's other half is still ungenerated; hold it until then.
-            pendingBorderBlocks_[target].push_back(block);
+            // The crown is already retained by rememberBorderBlocks and will
+            // be replayed whenever this target chunk is generated.
             continue;
         }
         const int localX = block.worldX - target.x * kChunkWidth;
@@ -732,8 +762,16 @@ void ChunkStreamer::applyBorderBlocks(
         if (!gen::treeReplaceable(chunk->block(localX, block.y, localZ))) {
             continue;
         }
-        chunk->setBlock(localX, block.y, localZ, block.block);
-        chunk->setOrientation(localX, block.y, localZ, block.orientation);
+        const BlockState previous = chunk->state(localX, block.y, localZ);
+        const BlockState next{block.block, block.orientation};
+        if (previous == next) {
+            continue;
+        }
+        chunk->setState(localX, block.y, localZ, next);
+        if (!batchChunks.contains(target) && stateUpdates != nullptr) {
+            stateUpdates->push_back(
+                {block.worldX, block.y, block.worldZ, previous, next});
+        }
         // Chunks in the batch are light-initialized by the caller right after
         // this pass; already-present neighbours need the targeted relight here.
         if (!batchChunks.contains(target)) {
@@ -753,6 +791,8 @@ void ChunkStreamer::updateWorld(
     std::unordered_map<ChunkPosition, std::vector<const PersistentBlockEdit*>, ChunkPositionHash>
         editsByChunk;
     editsByChunk.reserve(persistentEdits.size());
+    std::unordered_set<BlockEditPosition, BlockEditPositionHash> persistentPositions;
+    persistentPositions.reserve(persistentEdits.size());
     for (const auto& edit : persistentEdits) {
         if (edit.y < 0 || edit.y >= kWorldHeight)
             continue;
@@ -761,6 +801,7 @@ void ChunkStreamer::updateWorld(
                          floorDiv(edit.z, kChunkDepth),
                      }]
             .push_back(&edit);
+        persistentPositions.insert({edit.x, edit.y, edit.z});
     }
 
     const int loadRadius = loadRadius_.load(std::memory_order_relaxed);
@@ -866,6 +907,9 @@ void ChunkStreamer::updateWorld(
             });
         }
         auto generated = generateChunksParallel(generators, requests, stopping_);
+        for (const auto& result : generated) {
+            rememberBorderBlocks(result.borderBlocks);
+        }
 
         // Chunks that became dirty for this batch: the newly generated ones and
         // every already-present neighbour whose border now faces real terrain.
@@ -873,6 +917,7 @@ void ChunkStreamer::updateWorld(
         dirty.reserve(count * 9U);
         const std::unordered_set<ChunkPosition, ChunkPositionHash> batchChunks{
             batchPositions.begin(), batchPositions.end()};
+        std::vector<BlockStateDelta> borderStateUpdates;
         for (auto& result : generated) {
             if (stopping_.load(std::memory_order_relaxed))
                 return;
@@ -883,8 +928,9 @@ void ChunkStreamer::updateWorld(
             // crossed the border before the chunk existed) now land in place.
             const auto pending = pendingBorderBlocks_.find(position);
             if (pending != pendingBorderBlocks_.end()) {
-                applyBorderBlocks(world, lightEngine, pending->second, batchChunks);
-                pendingBorderBlocks_.erase(pending);
+                applyBorderBlocks(world, lightEngine, pending->second, batchChunks,
+                                  persistentPositions,
+                                  &borderStateUpdates);
             }
             for (const auto neighborOffset : kNeighborChunks) {
                 const ChunkPosition neighbor{
@@ -897,7 +943,9 @@ void ChunkStreamer::updateWorld(
         // Finish this batch's own border crowns in the neighbours now present;
         // blocks whose target chunk is still missing wait in pendingBorderBlocks_.
         for (auto& result : generated) {
-            applyBorderBlocks(world, lightEngine, result.borderBlocks, batchChunks);
+            applyBorderBlocks(world, lightEngine, result.borderBlocks, batchChunks,
+                              persistentPositions,
+                              &borderStateUpdates);
         }
 
         lightEngine.initializeChunks(world, batchPositions);
@@ -924,6 +972,7 @@ void ChunkStreamer::updateWorld(
         for (const auto position : batchPositions) {
             batch.chunkUpdates.push_back({position, *world.chunk(position), false});
         }
+        batch.stateUpdates = std::move(borderStateUpdates);
 
         // Remesh the dirty set, nearest first; after the sort duplicate border
         // hits are adjacent and collapse before meshing.

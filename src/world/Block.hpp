@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Identifier.hpp"
+#include "world/StateSchema.hpp"
 
 #include <array>
 #include <cstdint>
@@ -90,14 +91,13 @@ enum class Block : std::uint8_t {
     AcaciaSapling,
     DarkOakSapling,
     // FarmlandBlock: the tilled soil a hoe produces. A single block carries a
-    // moisture value 0-7 in its orientation state (vanilla's FarmlandBlock.MOISTURE),
-    // which the top face texture and the crop growth rate both read. Not soil():
+    // MOISTURE property 0-7 (vanilla's FarmlandBlock.MOISTURE), which the top
+    // face texture and the crop growth rate both read. Not soil():
     // grass cannot spread into it and saplings will not grow on it, exactly like
     // the Java block that only accepts crops.
     Farmland,
-    // CropBlock: wheat, carrots and potatoes, one block per species. Each stores
-    // its age 0-7 in the orientation state (vanilla's CropsBlock.AGE), the same
-    // slot leaves use for their persistent flag. The mesher picks the stage
+    // CropBlock: wheat, carrots and potatoes, one block per species. Each carries
+    // an AGE property 0-7 (vanilla's CropBlock.AGE). The mesher picks the stage
     // texture from the age, and the random tick advances it.
     WheatCrops,
     Carrots,
@@ -242,8 +242,14 @@ struct BlockDefinition final {
     ContainerType container = ContainerType::None;
     bool torch = false;
     // A LeavesBlock: decays when no log is left within six blocks of it, unless
-    // a player placed it. See leavesArePersistent below.
+    // a player placed it. See BlockState::persistent().
     bool leaves = false;
+    // Java's `createBlockStateDefinition`: which properties this block's states
+    // are the cartesian product of. Declared through the builder below — the
+    // flags above that imply a property (pillar, horizontalFacing, lit, leaves)
+    // add it themselves, so a block cannot own a facing flag and forget the
+    // axis that stores the facing.
+    StateSchema states{};
 };
 
 // Java's Block.Properties: one chained expression declares a block completely,
@@ -376,15 +382,30 @@ class BlockProperties final {
         copy.definition_.gravity = true;
         return copy;
     }
+    // Java's `Block#createBlockStateDefinition`: declare one property of this
+    // block's state. The states are the cartesian product of everything
+    // declared here, so a block with facing(4) and lit(2) has eight.
+    //
+    // Most blocks never call this directly — the flag methods below declare
+    // their own property, exactly as vanilla's block subclasses do. Reach for
+    // it when a property has no flag of its own (a crop's age, water's level).
+    [[nodiscard]] constexpr BlockProperties state(StateProperty property,
+                                                  std::uint8_t valueCount) const {
+        BlockProperties copy = *this;
+        copy.definition_.states.add(property, valueCount);
+        return copy;
+    }
+    // RotatedPillarBlock: takes the axis of the face it was placed against, so
+    // its facing axis is the full six directions rather than the horizontal four.
     [[nodiscard]] constexpr BlockProperties pillar() const {
         BlockProperties copy = *this;
         copy.definition_.pillar = true;
-        return copy;
+        return copy.state(StateProperty::Facing, 6U);
     }
     [[nodiscard]] constexpr BlockProperties horizontalFacing() const {
         BlockProperties copy = *this;
         copy.definition_.horizontalFacing = true;
-        return copy;
+        return copy.state(StateProperty::Facing, 4U);
     }
     // AbstractFurnaceBlock's LIT: one block, two states, and the light level
     // the burning one emits.
@@ -392,7 +413,7 @@ class BlockProperties final {
         BlockProperties copy = *this;
         copy.definition_.lit = true;
         copy.definition_.litLight = litLightLevel;
-        return copy;
+        return copy.state(StateProperty::Lit, 2U);
     }
     // Right-clicking opens this container screen (BlockBehaviour#onBlockUse).
     [[nodiscard]] constexpr BlockProperties container(ContainerType type) const {
@@ -405,11 +426,15 @@ class BlockProperties final {
         copy.definition_.torch = true;
         return copy;
     }
-    // A LeavesBlock: cutout, one level of light filtering, and subject to decay.
+    // A LeavesBlock: cutout, one level of light filtering, subject to decay, and
+    // carrying the PERSISTENT flag that exempts player-placed leaves from it.
     [[nodiscard]] constexpr BlockProperties leaves() const {
         BlockProperties copy = *this;
         copy.definition_.leaves = true;
-        return copy.strength(0.2F).renderLayer(BlockRenderLayer::Cutout).lightFilter(1U);
+        return copy.strength(0.2F)
+            .renderLayer(BlockRenderLayer::Cutout)
+            .lightFilter(1U)
+            .state(StateProperty::Persistent, 2U);
     }
 
     // The shorthands vanilla blocks reach for again and again.
@@ -497,7 +522,10 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .noCollision()
         .replaceable()
         .noDrops()
-        .lightFilter(1U),
+        .lightFilter(1U)
+        // LiquidBlock.LEVEL: 0 is a source, 1-7 are flowing depths and 8 is
+        // falling water.
+        .state(StateProperty::FluidLevel, 9U),
     BlockProperties::of(Block::Gravel, "gravel", "Gravel")
         .texture("gravel")
         .strength(0.6F)
@@ -595,9 +623,9 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .gravity(),
     // Carved cells below y=11 become lava (CaveCarver#carveAtPoint). Rendered
     // as a solid self-lit cube for now; it carries no fluid simulation. The
-    // top face uses the animated still strip (20 frames from layer 344) and
-    // the sides the animated flow strip (16 frames from layer 364), laid out
-    // at the end of the atlas in VulkanRenderer.cpp.
+    // top face uses the animated still strip and the sides the animated flow
+    // strip. Their bases/counts come from BlockAtlasLayout.hpp so resource-pack
+    // animation data cannot drift away from shader literals.
     BlockProperties::of(Block::Lava, "lava", "Lava")
         .texture("lava_still", "lava_flow", "lava_flow")
         .strength(100.0F)
@@ -720,11 +748,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     BlockProperties::of(Block::Farmland, "farmland", "Farmland")
         .texture("farmland", "dirt", "dirt")
         .strength(0.6F)
-        .height(15.0F / 16.0F),
+        .height(15.0F / 16.0F)
+        .state(StateProperty::Moisture, 8U),
     // CropBlock: wheat/carrot/potato share the crossed-plant render, with the
-    // stage texture driven by the age stored in the orientation byte. They
-    // need farmland below, have no collision of their own, and never drop
-    // themselves — minedDrops rolls the species' loot table from the age.
+    // stage texture driven by their AGE property. They need farmland below,
+    // have no collision of their own, and never drop themselves — minedDrops
+    // rolls the species' loot table from the age.
     BlockProperties::of(Block::WheatCrops, "wheat", "Wheat")
         .texture("wheat_stage0")
         .instantBreak()
@@ -732,7 +761,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .model(BlockModel::Crop)
         .noCollision()
         .noDrops()
-        .support(BlockSupport::Farmland),
+        .support(BlockSupport::Farmland)
+        .state(StateProperty::Age, 8U),
     BlockProperties::of(Block::Carrots, "carrots", "Carrots")
         .texture("carrots_stage0")
         .instantBreak()
@@ -740,7 +770,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .model(BlockModel::Crop)
         .noCollision()
         .noDrops()
-        .support(BlockSupport::Farmland),
+        .support(BlockSupport::Farmland)
+        .state(StateProperty::Age, 8U),
     BlockProperties::of(Block::Potatoes, "potatoes", "Potatoes")
         .texture("potatoes_stage0")
         .instantBreak()
@@ -748,7 +779,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .model(BlockModel::Crop)
         .noCollision()
         .noDrops()
-        .support(BlockSupport::Farmland),
+        .support(BlockSupport::Farmland)
+        .state(StateProperty::Age, 8U),
     // Decorative stone variants. Each polished stone matches its parent's
     // hardness; smooth stone is the furnace product of stone. The texture
     // layers 242-245 occupy four of newContentTextures' placeholder slots.
@@ -868,15 +900,11 @@ inline constexpr float kWallTorchInset = 0.5F;
 
 [[nodiscard]] constexpr bool isLeaves(Block block) { return blockDefinition(block).leaves; }
 
-// Java's LeavesBlock.PERSISTENT. Leaves carry no facing, so the per-block state
-// byte that a pillar uses for its axis records this property instead: leaves a
-// player placed stay put, leaves that grew with a tree decay once the trunk
-// that fed them is gone.
-inline constexpr BlockOrientation kPersistentLeavesState = BlockOrientation::East;
-
-[[nodiscard]] constexpr bool leavesArePersistent(BlockOrientation state) {
-    return state == kPersistentLeavesState;
-}
+// Java's LeavesBlock.PERSISTENT is a declared property of every leaves block
+// (see the registry entries): leaves a player placed stay put, leaves that grew
+// with a tree decay once the trunk that fed them is gone. Read it through
+// `BlockState::persistent()`; it used to be a magic value in the orientation
+// byte, which is the overloading the state schema exists to end.
 
 // LeavesBlock.DISTANCE only reaches 7, so leaves further than six steps through
 // other leaves from any log are the ones that decay.
@@ -920,6 +948,15 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
     return isFullCube(block) && blockDefinition(block).collision && !isLeaves(block);
 }
 
+// The surface a walking land entity may use as ground. This is deliberately a
+// gameplay/navigation property rather than an alias for hasCollision(): leaves
+// have a collision shape, but vanilla's MOTION_BLOCKING_NO_LEAVES heightmap and
+// land path-node classification do not promote a canopy into ordinary ground.
+// Keep partial collision blocks (notably farmland) usable by mobs.
+[[nodiscard]] constexpr bool isLandEntitySupport(Block block) {
+    return blockDefinition(block).collision && !isLeaves(block);
+}
+
 // Whether the block darkens a smooth-lighting AO corner (vanilla 1.16.1
 // AbstractBlock#getAmbientOcclusionLightLevel: a full cube whose material is
 // opaque returns 0.2, everything else 1.0). isFullCube alone is wrong: leaves,
@@ -949,23 +986,16 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
 
 [[nodiscard]] constexpr bool isFarmland(Block block) { return block == Block::Farmland; }
 
-// Crops and farmland reuse the per-cell orientation byte as their state slot,
-// the same way leaves record their persistent flag in it. A crop stores its age
-// 0-7 (vanilla's CropsBlock.AGE) and farmland its moisture 0-7 (FarmlandBlock.
-// MOISTURE). Age 0 aliases the North orientation, so a freshly placed crop and
-// freshly tilled farmland read as state 0 without an explicit write.
-[[nodiscard]] constexpr int cropAge(BlockOrientation state) {
-    return static_cast<int>(state) & 0x7;
-}
-[[nodiscard]] constexpr BlockOrientation cropOrientation(int age) {
-    return static_cast<BlockOrientation>(age < 0 ? 0 : (age > 7 ? 7 : age));
-}
-[[nodiscard]] constexpr int farmlandMoisture(BlockOrientation state) {
-    return static_cast<int>(state) & 0x7;
-}
-[[nodiscard]] constexpr BlockOrientation farmlandOrientation(int moisture) {
-    return static_cast<BlockOrientation>(moisture < 0 ? 0 : (moisture > 7 ? 7 : moisture));
-}
+// A crop's age (vanilla's CropBlock.AGE) and farmland's moisture
+// (FarmlandBlock.MOISTURE) are declared properties of those blocks, read
+// through `BlockState::age()` / `BlockState::moisture()`. Both default to 0, so
+// a freshly placed crop and freshly tilled farmland are each their block's
+// default state and need no explicit write.
+//
+// They used to be `cropAge(BlockOrientation)` / `farmlandOrientation(int)`:
+// values 0-7 stuffed into a six-value direction enum and masked back out with
+// `& 0x7`. Those functions are gone rather than deprecated, so nothing can
+// reach the old encoding by accident.
 
 // The stage-texture index for a crop age. Wheat has one texture per age; the
 // carrots/potatoes blockstate maps their eight ages onto four stage textures

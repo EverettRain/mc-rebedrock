@@ -3,6 +3,8 @@
 #include <cassert>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <string>
 
 int main() {
     const auto root = std::filesystem::temp_directory_path() / "mc_rebedrock_game_options_test";
@@ -17,10 +19,12 @@ int main() {
     assert(defaults.antiAliasing);
     assert(defaults.anisotropy == 8);
     assert(defaults.viewBobbing);
+    assert(!defaults.windowMaximized);
     assert(defaults.version == "ReBedrock beta2");
 
     defaults.windowWidth = 1600;
     defaults.windowHeight = 900;
+    defaults.windowMaximized = true;
     defaults.guiScale = 3;
     defaults.viewDistance = 12;
     defaults.masterVolume = 0.35F;
@@ -30,6 +34,12 @@ int main() {
     defaults.save(path);
     const auto loaded = mc::config::GameOptions::load(path);
     assert(loaded == defaults);
+    {
+        std::ifstream saved{path};
+        const std::string contents{std::istreambuf_iterator<char>{saved},
+                                   std::istreambuf_iterator<char>{}};
+        assert(contents.find("window.maximized=true") != std::string::npos);
+    }
 
     {
         std::ofstream output{path, std::ios::trunc};
@@ -46,6 +56,7 @@ int main() {
     assert(sanitized.frameRateLimit == 260);
     assert(sanitized.anisotropy == 8);
     assert(sanitized.masterVolume == 1.0F);
+    assert(!sanitized.windowMaximized);
     assert(sanitized.version == "ReBedrock beta2");
     // Difficulty is per-save (world.dat), not a game option: a legacy
     // game.difficulty line in options.properties is ignored entirely.

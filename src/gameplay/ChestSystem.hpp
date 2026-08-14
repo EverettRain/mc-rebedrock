@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gameplay/BlockEntityStore.hpp"
 #include "gameplay/Inventory.hpp"
 
 #include <array>
@@ -50,11 +51,11 @@ class ChestSystem final {
     void restore(std::vector<ChestBlockEntity> entities);
 
     [[nodiscard]] std::span<const ChestBlockEntity> entities() const {
-        return entities_;
+        return entities_.entities();
     }
 
   private:
-    std::vector<ChestBlockEntity> entities_;
+    BlockEntityStore<ChestPosition, ChestBlockEntity> entities_;
 };
 
 } // namespace mc::gameplay

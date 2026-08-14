@@ -27,6 +27,10 @@ layout(binding = 0) uniform CameraUniform {
     vec4 lightingSettings;
     vec4 celestialLayers;
     vec4 weatherSettings;
+    vec4 fluidAnimationLayers;
+    vec4 fluidAnimationFrameCounts;
+    vec4 fluidAnimationFrameTimes;
+    vec4 fluidAnimationSettings;
     mat4 lightViewProj;
 } camera;
 
@@ -56,17 +60,14 @@ vec3 weatherFogColor(vec3 color) {
 void main() {
     vec2 animatedUv = fragmentUv;
     float animatedLayer = fragmentTextureLayer;
-    float animationFrame = floor(mod(camera.horizonFog.w * 10.0, 32.0));
-    if (abs(fragmentTextureLayer - 20.0) < 0.1) {
-        animatedLayer += animationFrame;
-    } else if (abs(fragmentTextureLayer - 52.0) < 0.1) {
-        animatedLayer += animationFrame;
-    } else if (abs(fragmentTextureLayer - 344.0) < 0.1) {
-        // Lava still: 20 frames starting at layer 344.
-        animatedLayer += floor(mod(camera.horizonFog.w * 10.0, 20.0));
-    } else if (abs(fragmentTextureLayer - 364.0) < 0.1) {
-        // Lava flow: 16 frames starting at layer 364.
-        animatedLayer += floor(mod(camera.horizonFog.w * 10.0, 16.0));
+    for (int animation = 0; animation < 4; ++animation) {
+        float baseLayer = camera.fluidAnimationLayers[animation];
+        if (abs(fragmentTextureLayer - baseLayer) < 0.1) {
+            float frameCount = max(camera.fluidAnimationFrameCounts[animation], 1.0);
+            float frameTime = max(camera.fluidAnimationFrameTimes[animation], 1.0);
+            animatedLayer += floor(mod(camera.fluidAnimationSettings.x / frameTime, frameCount));
+            break;
+        }
     }
     vec4 texel = texture(blockTextures, vec3(animatedUv, animatedLayer));
     vec3 sunDirection = normalize(camera.sunDirection.xyz);
@@ -122,8 +123,8 @@ void main() {
     }
     illumination = clamp(illumination, vec3(0.02), vec3(1.25));
     bool cameraUnderwater = camera.renderSettings.y > 0.5;
-    bool waterSurface = abs(fragmentTextureLayer - 20.0) < 0.1 ||
-        abs(fragmentTextureLayer - 52.0) < 0.1;
+    bool waterSurface = abs(fragmentTextureLayer - camera.fluidAnimationLayers.x) < 0.1 ||
+        abs(fragmentTextureLayer - camera.fluidAnimationLayers.y) < 0.1;
     float ambientOcclusion = waterSurface
         ? 1.0
         : (smoothLighting

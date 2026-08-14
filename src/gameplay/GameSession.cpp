@@ -1,5 +1,7 @@
 #include "gameplay/GameSession.hpp"
 
+#include "gameplay/GameplayMutationSink.hpp"
+
 #include "world/DayNightCycle.hpp"
 #include "world/World.hpp"
 
@@ -25,7 +27,13 @@ GameSession::GameSession() : player_({24.0F, 78.0F - PlayerController::kEyeHeigh
                           static_cast<std::uint64_t>(world::DayNightCycle::kNewWorldTick));
 }
 
+// Every public entry that takes a SimulationHost binds it before doing
+// anything, because the events raised inside must reach *that* host — the
+// per-call host argument is the contract these methods have always had. Once
+// P3 Step 3 replaces the bridge with a queue there is only ever one consumer,
+// and the parameter can go away entirely.
 void GameSession::tick(world::World& world, SimulationHost& host) {
+    hostBridge_.setHost(&host);
     // The server tick is unconditional: no gamerule, command or pause reaches
     // it, so everything timed against it (mining, cooldowns, scheduled work)
     // keeps running even when the sun is frozen.
@@ -40,7 +48,26 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // entities; the auto-cycle is gated on the doWeatherCycle gamerule the same
     // way doDaylightCycle gates the day.
     weatherSystem_.tick(gameRules_.get<bool>(GameRuleId::DoWeatherCycle));
-    playerInput_.jumpPressed = jumpPressed_;
+    // Level#updateSkyBrightness, right after the clock and the weather that
+    // feed it and before anything reads light. Resolved once here and handed
+    // down as a POD: growth, spreading and spawning all read the same fields
+    // for the same tick instead of each deriving its own idea of how dark it
+    // is. 26.1 does the same thing through EnvironmentAttributes, with
+    // invalidateTickCache standing where this single call does.
+    environment_ = EnvironmentSnapshot::resolve(static_cast<double>(dayTimeTicks()),
+                                                weatherSystem_.rainGradient(),
+                                                weatherSystem_.thunderGradient());
+    worldSimulation_.setEnvironment(environment_);
+    // Take the published input once, at the top of the tick, so the whole tick
+    // sees one consistent keyboard state rather than whatever the main thread
+    // happened to be writing partway through.
+    {
+        const std::lock_guard<std::mutex> guard{inputMutex_};
+        playerInput_ = sharedInput_;
+        playerInput_.jumpPressed = jumpPressed_;
+        jumpPressed_ = false;
+        forwardPressed_ = false;
+    }
     physicsPreviousPosition_ = physicsCurrentPosition_;
     player_.tick(world, playerInput_);
     // FarmlandBlock#onLandedUpon: on a landing, the player's fall distance
@@ -59,48 +86,67 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
         const float roll =
             static_cast<float>(lootRandomState_ >> 8) / static_cast<float>(1U << 24);
         if (world::isFarmland(soil) && roll < player_.fallDistance() - 0.5F) {
-            world.setBlock(trampleX, trampleY, trampleZ, world::Block::Dirt);
-            host.submitWorldEdit(trampleX, trampleY, trampleZ, world::Block::Dirt, 0U, std::nullopt);
-            host.previewBlockEdit(trampleX, trampleY, trampleZ);
-            host.playBlockBreak(
-                soil, {static_cast<float>(trampleX) + 0.5F, static_cast<float>(trampleY) + 0.5F,
-                       static_cast<float>(trampleZ) + 0.5F});
-            host.spawnBlockBreakParticles({trampleX, trampleY, trampleZ}, soil);
+            // Trampling farmland is an ordinary world edit, so it goes through
+            // the service: the section is dirtied and the neighbours (a crop
+            // standing on the soil) are told, which the hand-written version
+            // never did.
+            GameplayMutationSink sink{world, *this};
+            static_cast<void>(worldMutations_.setBlock(
+                world, {trampleX, trampleY, trampleZ}, world::BlockState{world::Block::Dirt},
+                world::MutationFlags::All, world::MutationCause::Gravity, sink));
+            events_.publish(SoundEvent{SoundEventKind::BlockBreak,
+                                      {static_cast<float>(trampleX) + 0.5F,
+                                       static_cast<float>(trampleY) + 0.5F,
+                                       static_cast<float>(trampleZ) + 0.5F},
+                                      soil});
+            events_.publish(
+                ParticleEvent{ParticleEventKind::BlockBreak, {trampleX, trampleY, trampleZ}, soil});
             // The crop above loses its farmland and pops.
             worldSimulation_.notifyNeighborChanged(world, {trampleX, trampleY, trampleZ});
         }
     }
-    updateMovementAudio(host, world, physicsPreviousPosition_, player_.position());
+    updateMovementAudio(world, physicsPreviousPosition_, player_.position());
     tickPlayerVitals(host, world, physicsPreviousPosition_, player_.jumpedThisTick());
     tickEating(host);
     // The fluid phase runs once per accumulator drain; the renderer never lets
     // more than one batch of overdue water updates stack up across frames.
     bool fluidUpdatePhaseConsumed = false;
     for (const auto& change : worldSimulation_.tick(world, !fluidUpdatePhaseConsumed)) {
-        host.submitWorldEdit(change.position.x, change.position.y, change.position.z,
-                             change.block, change.fluidLevel, change.orientation);
+        // A simulated break previews too (it used to do so further down, just
+        // before its sound), so the edit's immediacy is decided once, here.
+        const bool simulatedBreak =
+            change.dropped.block() != world::Block::Air && change.worldChanged;
+        if (change.worldChanged) {
+            events_.publish(WorldEditEvent{
+                change.position.x, change.position.y, change.position.z, change.state,
+                change.immediateRenderUpdate || simulatedBreak});
+        }
         // A simulated break — an attached block that lost its support, a
         // decoration a fluid washed away, or a leaf that decayed — is a real
         // block break: vanilla plays the break sound, throws the break particles
         // and rolls the loot table through World#breakBlock(pos, true), which is
-        // game-mode independent (a wall torch drops in creative too). The column
-        // under the break has to be relit or the removed block's light stays
-        // behind. Fluid spread changes carry dropped == Air, so the thousand-cell
-        // flows never pay for this pass.
-        if (change.dropped != world::Block::Air) {
-            host.previewBlockEdit(change.position.x, change.position.y, change.position.z);
-            host.playBlockBreak(
-                change.dropped,
-                {static_cast<float>(change.position.x) + 0.5F,
-                 static_cast<float>(change.position.y) + 0.5F,
-                 static_cast<float>(change.position.z) + 0.5F});
-            host.spawnBlockBreakParticles(
-                {change.position.x, change.position.y, change.position.z}, change.dropped);
+        // game-mode independent (a wall torch drops in creative too). A falling
+        // block that could not be placed also rolls its item here, but carries
+        // worldChanged == false so it produces no fake break effects or edit.
+        // Fluid spread changes carry dropped == Air, so the thousand-cell flows
+        // never pay for this pass.
+        if (change.dropped.block() != world::Block::Air) {
+            if (change.worldChanged) {
+                events_.publish(SoundEvent{SoundEventKind::BlockBreak,
+                                          {static_cast<float>(change.position.x) + 0.5F,
+                                           static_cast<float>(change.position.y) + 0.5F,
+                                           static_cast<float>(change.position.z) + 0.5F},
+                                          change.dropped.block()});
+                events_.publish(ParticleEvent{
+                    ParticleEventKind::BlockBreak,
+                    {change.position.x, change.position.y, change.position.z},
+                    change.dropped.block()});
+            }
             // Nobody swung a tool at these, so they roll the same loot table an
-            // empty hand would. The dropped block's captured orientation lets a
-            // popped crop roll its loot from the age it had reached.
+            // empty hand would. The dropped *state* travels, so a popped crop
+            // rolls its loot from the age it had reached.
             spawnBlockDrops({change.position.x, change.position.y, change.position.z},
-                            change.dropped, ItemStack{}, change.droppedOrientation);
+                            change.dropped, ItemStack{});
         }
     }
     fluidUpdatePhaseConsumed = true;
@@ -111,7 +157,7 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     host.onFurnaceStateChanged();
     chestSystem_.tick();
     if (itemEntities_.tick(world, player_.position(), inventory_) > 0U) {
-        host.playItemPickup(player_.position());
+        events_.publish(SoundEvent{SoundEventKind::ItemPickup, player_.position()});
     }
     // The herd pushes back: Entity#pushAwayFrom moves both parties, so a pig
     // walking into the player nudges them. Difficulty is per-save (level.dat).
@@ -122,33 +168,70 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     player_.applyExternalPush(entityTick.playerPush);
     for (const auto& attack : entityTick.mobAttacks) {
         if (attack.target == ActorReference::player()) {
-            static_cast<void>(hurtPlayer(
-                DamageSource::EntityAttack, scaledDamage(difficulty_, attack.amount), host));
+            // The raw swing. The difficulty scaling is the damage type's own
+            // rule now (DamageScaling::WhenCausedByLivingNonPlayer), applied
+            // inside the pipeline against the unscaled amount the way
+            // LivingEntity#hurt does — the call site used to apply it here,
+            // which put it on the wrong side of the invulnerability window.
+            static_cast<void>(
+                hurtPlayer(DamageType::EntityAttack, attack.amount, host, true));
         }
     }
     // NaturalSpawner: creatures and monsters settle inside the simulation
     // radius, respecting each category's spawnCap and the biome's spawn table.
-    // The day/night sky brightness is passed so open ground actually goes dark
-    // at night and MONSTERs spawn on the surface, not just in caves.
-    naturalSpawner_.tick(
-        world, worldEntities_, player_.position(), simulationRadiusBlocks_, difficulty_,
-        world::DayNightCycle::stateAtTick(static_cast<double>(dayTimeTicks())).skyBrightness);
-    consumeEntityEvents(host);
+    // It reads the tick's ambient darkness off the same snapshot the growth
+    // checks use, so "dark enough for a monster" and "too dark for grass to
+    // spread" can no longer disagree about the time of day.
+    naturalSpawner_.tick(world, worldEntities_, player_.position(), simulationRadiusBlocks_,
+                         difficulty_, environment_);
+    consumeEntityEvents();
     physicsCurrentPosition_ = player_.position();
+    // Last, once every system has settled: what the renderer will draw from
+    // until the next tick replaces it.
+    entitySnapshot_.capture(worldEntities_.entities(), itemEntities_.entities(),
+                            worldSimulation_.fallingBlocks());
+}
+
+void GameSession::commitInput() {
+    const std::lock_guard<std::mutex> guard{inputMutex_};
+    sharedInput_ = stagedInput_;
+}
+
+void GameSession::setJumpPressed() {
+    const std::lock_guard<std::mutex> guard{inputMutex_};
+    jumpPressed_ = true;
+}
+
+void GameSession::setForwardPressed() {
+    const std::lock_guard<std::mutex> guard{inputMutex_};
+    forwardPressed_ = true;
+}
+
+bool GameSession::forwardPressed() const {
+    const std::lock_guard<std::mutex> guard{inputMutex_};
+    return forwardPressed_;
+}
+
+void GameSession::clearInputEdges() {
+    const std::lock_guard<std::mutex> guard{inputMutex_};
     jumpPressed_ = false;
     forwardPressed_ = false;
 }
 
 void GameSession::setGameMode(GameMode mode) {
     gameMode_ = mode;
-    playerInput_.flightAllowed = mode == GameMode::Creative;
+    stagedInput_.flightAllowed = mode == GameMode::Creative;
+    const std::lock_guard<std::mutex> guard{inputMutex_};
+    sharedInput_.flightAllowed = stagedInput_.flightAllowed;
 }
 
-bool GameSession::hurtPlayer(DamageSource source, float amount, SimulationHost& host) {
-    if (!vitals_.hurt(amount, source)) {
+bool GameSession::hurtPlayer(DamageType source, float amount, SimulationHost& host,
+                             bool causedByLivingNonPlayer) {
+    hostBridge_.setHost(&host);
+    if (!vitals_.hurt(amount, source, causedByLivingNonPlayer)) {
         return false;
     }
-    host.playPlayerHurt(player_.position());
+    events_.publish(SoundEvent{SoundEventKind::PlayerHurt, player_.position()});
     if (vitals_.dead()) {
         die(source, host);
     }
@@ -156,10 +239,12 @@ bool GameSession::hurtPlayer(DamageSource source, float amount, SimulationHost& 
 }
 
 void GameSession::killPlayer(SimulationHost& host) {
-    (void)hurtPlayer(DamageSource::OutOfWorld, kInfiniteDamage, host);
+    hostBridge_.setHost(&host);
+    (void)hurtPlayer(DamageType::OutOfWorld, kInfiniteDamage, host);
 }
 
-bool GameSession::die(DamageSource source, SimulationHost& host) {
+bool GameSession::die(DamageType source, SimulationHost& host) {
+    hostBridge_.setHost(&host);
     // PlayerEntity#onDeath: the shared beginDeath guard is the `dead` field
     // that keeps onDeath from firing twice, so a tick that both falls and
     // drowns raises the death screen exactly once.
@@ -167,7 +252,7 @@ bool GameSession::die(DamageSource source, SimulationHost& host) {
     if (!beginDeath(vitals_.damage())) {
         return false;
     }
-    host.onPlayerDied();
+    events_.publish(PlayerDiedEvent{});
     return true;
 }
 
@@ -183,6 +268,7 @@ void GameSession::respawn() {
 }
 
 void GameSession::beginEating(const Item* kind, SimulationHost& host) {
+    hostBridge_.setHost(&host);
     eating_ = true;
     eatingKind_ = kind;
     eatTicks_ = 0;
@@ -190,6 +276,7 @@ void GameSession::beginEating(const Item* kind, SimulationHost& host) {
 }
 
 void GameSession::cancelEating(SimulationHost& host) {
+    hostBridge_.setHost(&host);
     if (!eating_) {
         return;
     }
@@ -204,13 +291,12 @@ bool GameSession::damageHeldTool(ToolUse use, float blockHardness) {
     return cost > 0 && inventory_.damageSelected(cost);
 }
 
-void GameSession::spawnBlockDrops(glm::ivec3 position, world::Block block,
-                                  const ItemStack& tool,
-                                  world::BlockOrientation droppedOrientation) {
-    // Crops store their age in the orientation byte; pass it down so the loot
-    // table rolls against the stage the crop had grown to.
+void GameSession::spawnBlockDrops(glm::ivec3 position, world::BlockState removed,
+                                  const ItemStack& tool) {
+    // The whole state arrives, so the loot table can roll against the stage a
+    // crop had grown to rather than against the bare block.
     const auto drops =
-        minedDrops(block, tool, lootRandomState_, world::cropAge(droppedOrientation));
+        minedDrops(removed.block(), tool, lootRandomState_, removed.age());
     std::size_t dropIndex = 0U;
     for (const auto& stack : drops.view()) {
         const float angle = static_cast<float>(dropIndex) * 2.39996323F;
@@ -261,7 +347,7 @@ void GameSession::tickEating(SimulationHost& host) {
     // `remaining > 0` keeps the final tick's burst below from double-firing.
     const int remaining = kEatTicks - eatTicks_;
     if (remaining > 0 && remaining % 4 == 0 && remaining <= kEatTicks - 7) {
-        host.playEat(player_.position());
+        events_.publish(SoundEvent{SoundEventKind::Eat, player_.position()});
     }
     if (eatTicks_ < kEatTicks) {
         return;
@@ -279,8 +365,8 @@ void GameSession::tickEating(SimulationHost& host) {
         static_cast<void>(inventory_.consumeSelected());
     }
     // consumeItem's burst eat sound, then PlayerEntity.eatFood's burp.
-    host.playEat(player_.position());
-    host.playBurp(player_.position());
+    events_.publish(SoundEvent{SoundEventKind::Eat, player_.position()});
+    events_.publish(SoundEvent{SoundEventKind::Burp, player_.position()});
     cancelEating(host);
 }
 
@@ -304,10 +390,12 @@ void GameSession::tickPlayerVitals(SimulationHost& host, const world::World& wor
     input.feetY = player_.position().y;
     const auto result = vitals_.tick(input);
     if (result.damageTaken > 0.0F) {
-        if (result.cause == DamageSource::Fall) {
-            host.playPlayerFall(player_.position(), result.damageTaken > 4.0F);
+        if (result.cause == DamageType::Fall) {
+            events_.publish(SoundEvent{SoundEventKind::PlayerFall, player_.position(),
+                                      world::Block::Air, nullptr, 1.0F,
+                                      result.damageTaken > 4.0F});
         } else {
-            host.playPlayerHurt(player_.position());
+            events_.publish(SoundEvent{SoundEventKind::PlayerHurt, player_.position()});
         }
     }
     if (result.died) {
@@ -315,11 +403,12 @@ void GameSession::tickPlayerVitals(SimulationHost& host, const world::World& wor
     }
 }
 
-void GameSession::updateMovementAudio(SimulationHost& host, const world::World& world,
+void GameSession::updateMovementAudio(const world::World& world,
                                       const glm::vec3& previousPosition,
                                       const glm::vec3& currentPosition) {
     if (!previousInWater_ && player_.inWater()) {
-        host.playSplash(currentPosition, 0.65F);
+        events_.publish(
+            SoundEvent{SoundEventKind::Splash, currentPosition, world::Block::Air, nullptr, 0.65F});
     }
     previousInWater_ = player_.inWater();
     const glm::vec2 movement{currentPosition.x - previousPosition.x,
@@ -327,39 +416,48 @@ void GameSession::updateMovementAudio(SimulationHost& host, const world::World& 
     if (!player_.onGround() || glm::length(movement) < 0.0001F) {
         return;
     }
-    footstepDistance_ += glm::length(movement);
-    const float stride = player_.sneaking() ? 1.25F : 0.85F;
-    if (footstepDistance_ < stride) {
+    // Entity#move accumulates 0.6 units of step distance per block travelled
+    // and plays a sound whenever that accumulator crosses the next integer.
+    // Keeping the multiplier here (rather than inventing separate walk/sprint
+    // strides) makes sprint cadence rise naturally with its real movement
+    // speed while a normal walk stays at the 1.16.1 rhythm.
+    footstepDistance_ += glm::length(movement) * 0.6F;
+    constexpr float kStepSoundDistance = 1.0F;
+    if (footstepDistance_ < kStepSoundDistance) {
         return;
     }
-    footstepDistance_ = std::fmod(footstepDistance_, stride);
+    footstepDistance_ = std::fmod(footstepDistance_, kStepSoundDistance);
     const int blockX = static_cast<int>(std::floor(currentPosition.x));
     const int blockY = static_cast<int>(std::floor(currentPosition.y - 0.05F));
     const int blockZ = static_cast<int>(std::floor(currentPosition.z));
     const auto groundBlock = world.block(blockX, blockY, blockZ);
     if (world::isRenderable(groundBlock)) {
-        host.playFootstep(groundBlock, currentPosition,
-                          player_.sneaking() ? 0.18F : 0.5F);
+        events_.publish(SoundEvent{SoundEventKind::Footstep, currentPosition, groundBlock,
+                                  nullptr, player_.sneaking() ? 0.18F : 0.5F});
     }
 }
 
-void GameSession::consumeEntityEvents(SimulationHost& host) {
+void GameSession::consumeEntityEvents() {
     for (const auto& sound : worldEntities_.pendingSounds()) {
         // The species rides along so the host plays the right clip for the
         // right creature — a cow's hurt is not a zombie's hurt.
         const auto& type = *sound.type;
         switch (sound.event) {
         case MobSoundEvent::Hurt:
-            host.playCreatureHurt(type, sound.position);
+            events_.publish(SoundEvent{SoundEventKind::CreatureHurt, sound.position,
+                                      world::Block::Air, &type});
             break;
         case MobSoundEvent::Death:
-            host.playCreatureDeath(type, sound.position);
+            events_.publish(SoundEvent{SoundEventKind::CreatureDeath, sound.position,
+                                      world::Block::Air, &type});
             break;
         case MobSoundEvent::Ambient:
-            host.playCreatureAmbient(type, sound.position);
+            events_.publish(SoundEvent{SoundEventKind::CreatureAmbient, sound.position,
+                                      world::Block::Air, &type});
             break;
         case MobSoundEvent::Step:
-            host.playCreatureStep(type, sound.position);
+            events_.publish(SoundEvent{SoundEventKind::CreatureStep, sound.position,
+                                      world::Block::Air, &type});
             break;
         }
     }

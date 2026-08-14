@@ -77,11 +77,16 @@ struct ItemStack final {
         : stack.item->maximumStackSize;
 }
 
-// The English display name, used for the HUD and command echoes. The renderer
-// picks Chinese vs English by the active language (see stackDisplayName).
-[[nodiscard]] constexpr const char* itemName(const ItemStack& stack) {
-    if (isBlockStack(stack)) return world::blockName(stack.block);
-    return stack.item == nullptr ? "" : stack.item->en;
+// The stable language-resource key for a stack. Legacy block stacks without an
+// Item pointer are normalized through the registered BlockItem first.
+[[nodiscard]] inline DescriptionId itemDescriptionId(const ItemStack& stack) {
+    if (stack.item != nullptr) return stack.item->descriptionId();
+    if (isBlockStack(stack)) {
+        if (const Item* item = blockItemFor(stack.block); item != nullptr) {
+            return item->descriptionId();
+        }
+    }
+    return DescriptionId{};
 }
 
 [[nodiscard]] inline float itemTextureLayer(const ItemStack& stack) {

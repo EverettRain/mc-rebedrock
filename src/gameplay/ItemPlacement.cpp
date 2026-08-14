@@ -7,25 +7,21 @@ namespace mc::gameplay {
 namespace {
 
 // LeavesBlockItem#place: hand-placed leaves are PERSISTENT so they never decay.
-// ReBedrock stores the flag in the block's own orientation state, so the item
-// resolves the orientation a placed leaves block should carry. Every other block
-// defers to the block-property rules (log axis, facing back at the player).
-// The context is no longer read: placementBlock resolved the facing already.
-[[nodiscard]] world::BlockOrientation itemPlacementOrientation(
+// Everything else keeps the state the placement rules resolved — a wall torch's
+// facing comes from the wall it found and cannot be recomputed from the block
+// alone. The context is not read: placementBlock resolved the facing already.
+[[nodiscard]] world::BlockState itemPlacementState(
     const ItemStack& stack,
     world::BlockState placed) {
     if (world::isLeaves(placed.block()) &&
         (asLeavesBlockItem(stack.item) != nullptr || stack.item == nullptr)) {
-        return world::kPersistentLeavesState;
+        return placed.withPersistent(true);
     }
-    // The placement already resolved a facing for anything that has one — a
-    // wall torch's comes from the wall it found, which cannot be recomputed
-    // from the block alone — so the state's own orientation stands.
-    return placed.orientation();
+    return placed;
 }
 
-// BlockItem#useOn → place: resolves the placed block state and its orientation,
-// or Nothing when nothing can survive there.
+// BlockItem#useOn → place: resolves the state to place, or Nothing when nothing
+// can survive there.
 [[nodiscard]] ItemUseResult placeBlockResult(
     const Item* item,
     world::Block block,
@@ -36,11 +32,7 @@ namespace {
     if (!placed.has_value()) {
         return {};
     }
-    ItemUseResult result;
-    result.action = ItemUseAction::PlaceBlock;
-    result.block = placed->block();
-    result.orientation = itemPlacementOrientation(stack, *placed);
-    return result;
+    return {ItemUseAction::PlaceBlock, itemPlacementState(stack, *placed)};
 }
 
 [[nodiscard]] ItemUseResult blockItemUseOn(
@@ -64,8 +56,12 @@ namespace {
 
 [[nodiscard]] ItemUseResult bucketCollectUseOn(
     const Item*, world::World& world, const world::PlacementContext& context) {
-    // BucketItem#useOn on a water source: only a still water block is collectable.
+    // BucketItem#useOn: water must be a still source; the current lava
+    // implementation has source blocks only, so every lava cell is collectable.
     const auto source = context.clickedBlock;
+    if (world.block(source.x, source.y, source.z) == world::Block::Lava) {
+        return {ItemUseAction::CollectLava};
+    }
     return isCollectableWaterSource(world, {source.x, source.y, source.z})
         ? ItemUseResult{ItemUseAction::CollectWater}
         : ItemUseResult{};
@@ -79,6 +75,15 @@ namespace {
     const auto existing = world.block(target.x, target.y, target.z);
     return (world::isReplaceable(existing) || world::isDestroyedByFluid(existing))
         ? ItemUseResult{ItemUseAction::PlaceWater}
+        : ItemUseResult{};
+}
+
+[[nodiscard]] ItemUseResult lavaBucketPlaceUseOn(
+    const Item*, world::World& world, const world::PlacementContext& context) {
+    const auto target = context.placePosition;
+    const auto existing = world.block(target.x, target.y, target.z);
+    return (world::isReplaceable(existing) || world::isDestroyedByFluid(existing))
+        ? ItemUseResult{ItemUseAction::PlaceLava}
         : ItemUseResult{};
 }
 
@@ -98,8 +103,9 @@ namespace {
         !world::isFarmland(world.block(below.x, below.y, below.z))) {
         return {};
     }
-    // A freshly planted crop starts at age 0.
-    return {ItemUseAction::PlaceBlock, crop, world::cropOrientation(0)};
+    // A freshly planted crop starts at age 0, which is the block's default
+    // state — the age property needs no explicit write.
+    return {ItemUseAction::PlaceBlock, world::BlockState{crop}};
 }
 
 // HoeItem#useOn → setTilledAndGetDrop: the clicked dirt-family block converts in
@@ -122,7 +128,7 @@ namespace {
     default:
         return {};
     }
-    return {ItemUseAction::TilGround, tilled, world::BlockOrientation::North};
+    return {ItemUseAction::TilGround, world::BlockState{tilled}};
 }
 
 } // namespace
@@ -167,6 +173,9 @@ ItemUseResult itemUseOn(
     }
     if (item == &items::WaterBucket) {
         return bucketPlaceUseOn(item, world, context);
+    }
+    if (item == &items::LavaBucket) {
+        return lavaBucketPlaceUseOn(item, world, context);
     }
     // The seed items (SeedsItem subclasses): wheat seeds, carrot and potato plant
     // their crop on the farmland under the placement cell.

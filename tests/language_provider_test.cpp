@@ -2,6 +2,7 @@
 #include "ui/Language.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <filesystem>
@@ -77,6 +78,9 @@ int main() {
     const auto langFile = [&](std::string_view pack, std::string_view name) {
         return temporary / pack / "assets" / "minecraft" / "lang" / name;
     };
+    const auto projectLangFile = [&](std::string_view pack, std::string_view name) {
+        return temporary / pack / "assets" / "rebedrock" / "lang" / name;
+    };
 
     write(temporary / "base" / "pack.mcmeta",
           R"({"pack":{"pack_format":1},"language":{"en_us":{"name":"English","region":"United States","bidirectional":false}}})");
@@ -86,10 +90,16 @@ int main() {
           R"({"pack":{"pack_format":1},"language":{"zh_cn":{"name":"中文","region":"中国大陆","bidirectional":false},"zz_test":{"name":"Metadata only","region":"Invalid JSON below","bidirectional":false}}})");
 
     write(langFile("base", "en_us.json"),
-          R"({"base.only":"English fallback","shared":"base","old.key":"Moved"})");
+          R"({"base.only":"English fallback","shared":"base","old.key":"Moved","item.minecraft.apple":"Apple","block.minecraft.stone":"Stone"})");
     write(langFile("low", "en_us.json"), R"({"shared":"low"})");
     write(langFile("low", "zh_cn.json"), R"({"shared":"低"})");
     write(langFile("high", "zh_cn.json"), R"({"shared":"高"})");
+    write(langFile("base", "fr_fr.json"), R"({"shared":"français"})");
+    write(projectLangFile("base", "en_us.json"),
+          R"({"options.rebedrock.test":"Project English","project.layer":"base"})");
+    write(projectLangFile("low", "zh_cn.json"),
+          R"({"options.rebedrock.test":"项目中文","project.layer":"low"})");
+    write(projectLangFile("high", "zh_cn.json"), R"({"project.layer":"high"})");
     // Catalog construction must not touch this declared language file. Before
     // the pack.mcmeta catalog path this made the language menu parse every
     // translation and fail (or freeze on real packs with 144 large files).
@@ -142,8 +152,31 @@ int main() {
     const auto language = ui::Language::fromProvider(provider, "zh_cn");
     assert(language.translate("base.only", "missing") == "English fallback");
     assert(language.translate("shared", "missing") == "高");
+    // 26.1 loads all namespaces for en_us and the selected locale. ReBedrock's
+    // English layer is therefore the fallback for custom fields, selected
+    // project translations overlay it, and ordinary pack priority still wins.
+    assert(language.translate("options.rebedrock.test", "missing") == "项目中文");
+    assert(language.translate("project.layer", "missing") == "high");
     assert(!language.contains("old.key"));
     assert(language.translate("new.key", "missing") == "Moved");
+    // Structured description-id lookup hashes the three string views as though
+    // they were one JSON key, without allocating a concatenated key per call.
+    assert(language.translate("item", "minecraft", "apple", "missing") == "Apple");
+    assert(language.translate("block", "minecraft", "stone", "missing") == "Stone");
+    assert(language.translate("item", "rebedrock", "missing", "fallback") == "fallback");
+
+    // A vanilla locale for which ReBedrock has no authored file remains fully
+    // usable: vanilla fields use that locale and only project-specific fields
+    // fall back to the project English layer.
+    const auto french = ui::Language::fromProvider(provider, "fr_fr");
+    assert(french.translate("shared", "missing") == "français");
+    assert(french.translate("options.rebedrock.test", "missing") == "Project English");
+
+    const std::array<std::string_view, 2> optionArguments{"界面尺寸", "自动"};
+    assert(ui::formatTranslation("%s：%s", optionArguments) == "界面尺寸：自动");
+    const std::array<std::string_view, 2> reorderedArguments{"first", "second"};
+    assert(ui::formatTranslation("%2$s / %1$s / 100%%", reorderedArguments) ==
+           "second / first / 100%");
 
     fs::remove_all(temporary, cleanup);
     return 0;

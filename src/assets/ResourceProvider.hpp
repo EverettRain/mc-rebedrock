@@ -3,6 +3,7 @@
 #include "assets/PackMetadata.hpp"
 #include "assets/ResourceLocation.hpp"
 
+#include <cstddef>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -28,6 +29,26 @@ class ResourceProvider {
     [[nodiscard]] virtual std::filesystem::path locate(const ResourceLocation& location) const = 0;
 
     [[nodiscard]] virtual bool exists(const ResourceLocation& location) const = 0;
+
+    // The resource's bytes, or empty when it cannot be read.
+    //
+    // This is the form consumers should use. `locate` hands back an OS path,
+    // which a zip entry does not have — the zip provider satisfies it by
+    // extracting to a cache directory, so every asset a session touches ends up
+    // copied onto disk under `.packcache`. Reading bytes lets that provider
+    // decode straight out of the archive, the way Java's FilePackResources
+    // serves a ZipEntry through an InputStream. `locate` stays for the one
+    // consumer that genuinely needs a path (a third-party API that only takes
+    // filenames).
+    [[nodiscard]] virtual std::vector<std::byte> readBytes(const ResourceLocation& location) const;
+
+    // Every physical definition's bytes, lowest priority first — the merged
+    // counterpart of locateAll, and what stack-merged resources (sounds.json,
+    // language tables, tags) must use. Going through locateAll instead forces a
+    // zip provider to materialise a path, which is exactly what readBytes
+    // exists to avoid.
+    [[nodiscard]] virtual std::vector<std::vector<std::byte>>
+    readAllBytes(const ResourceLocation& location) const;
 
     // Every physical definition of a logical resource, ordered from lowest to
     // highest priority. Most resources use locate() because the top file wins;
@@ -127,6 +148,11 @@ class LayeredResourceProvider final : public ResourceProvider {
     [[nodiscard]] bool exists(const ResourceLocation& location) const override;
     [[nodiscard]] std::vector<std::filesystem::path>
     locateAll(const ResourceLocation& location) const override;
+    // Both overridden: the base implementations reach for locate(), and a
+    // layered stack over a zip would extract every file it was asked to read.
+    [[nodiscard]] std::vector<std::byte> readBytes(const ResourceLocation& location) const override;
+    [[nodiscard]] std::vector<std::vector<std::byte>>
+    readAllBytes(const ResourceLocation& location) const override;
     [[nodiscard]] std::vector<ResourceLocation> list(std::string_view space,
                                                      std::string_view pathPrefix) const override;
     [[nodiscard]] std::vector<PackLanguage> languages() const override;

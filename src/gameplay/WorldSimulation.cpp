@@ -78,6 +78,14 @@ constexpr std::array<SimulationPosition, 26> kLeafFloodNeighbors = makeLeafFlood
     return nextRandom(state) % bound;
 }
 
+[[nodiscard]] int floorDiv(int value, int divisor) {
+    int quotient = value / divisor;
+    if (value % divisor < 0) {
+        --quotient;
+    }
+    return quotient;
+}
+
 // How long a block waits for a random tick that fires with the given per-tick
 // probability. Drawing the wait up front costs one sample per leaf instead of
 // one coin flip per leaf per tick, and produces the same distribution.
@@ -87,6 +95,12 @@ constexpr std::array<SimulationPosition, 26> kLeafFloodNeighbors = makeLeafFlood
     const double delay = std::log(uniform) / std::log(1.0 - chancePerTick);
     return static_cast<std::uint64_t>(delay) + 1U;
 }
+
+// The simulation's own sink. Its writes report their consequences through the
+// BlockChange stream the host already drains, so nothing is dispatched here —
+// what the service is used for is the single, shared decision about *whether*
+// a cell changed, and the block-entity rule that rides on it.
+class RecordingMutationSink final : public world::MutationSink {};
 
 } // namespace
 
@@ -98,37 +112,37 @@ bool isCollectableWaterSource(
         world.fluidLevel(position.x, position.y, position.z) == 0U;
 }
 
-std::size_t SimulationPositionHash::operator()(const SimulationPosition& position) const noexcept {
-    std::size_t seed = std::hash<int>{}(position.x);
-    seed ^= std::hash<int>{}(position.y) + 0x9e3779b9U + (seed << 6U) + (seed >> 2U);
-    seed ^= std::hash<int>{}(position.z) + 0x9e3779b9U + (seed << 6U) + (seed >> 2U);
-    return seed;
-}
-
 void WorldSimulation::queueSand(SimulationPosition position) {
     if (position.y > 0 && position.y < world::kWorldHeight) {
-        activeSand_.push_back(position);
+        // Two properties of the flat deque this replaced, both expressed as the
+        // due tick rather than as a flag:
+        //   * No de-duplication — the same cell could be queued twice and each
+        //     entry was re-checked against the world when it fired.
+        //   * Due *next* tick, so a block that starts falling does not cascade
+        //     its whole column within one tick. The old loop got this from
+        //     computing its batch size before iterating; support checks, which
+        //     are due immediately, deliberately do cascade.
+        static_cast<void>(
+            ticks_.schedule(TickTask::FallingBlock, position, tickCount_ + 1U, true));
     }
 }
 
 void WorldSimulation::queueWater(SimulationPosition position, std::uint8_t level) {
     static_cast<void>(level);
-    if (position.y < 0 || position.y >= world::kWorldHeight ||
-        !queuedWater_.insert(position).second) {
+    if (position.y < 0 || position.y >= world::kWorldHeight) {
         return;
     }
     // WaterFluid#getTickRate is five game ticks in Java 1.16.1. Store the
     // deadline per position instead of releasing the whole queue on one
     // global modulo tick.
-    activeWater_.push_back({position, tickCount_ + 5U});
+    static_cast<void>(ticks_.schedule(TickTask::Fluid, position, tickCount_ + 5U));
 }
 
 void WorldSimulation::queueSupportCheck(SimulationPosition position) {
-    if (position.y < 0 || position.y >= world::kWorldHeight ||
-        !queuedSupportChecks_.insert(position).second) {
+    if (position.y < 0 || position.y >= world::kWorldHeight) {
         return;
     }
-    pendingSupportChecks_.push_back(position);
+    static_cast<void>(ticks_.schedule(TickTask::SupportCheck, position, tickCount_));
 }
 
 void WorldSimulation::queueNeighborSupportChecks(SimulationPosition position) {
@@ -138,8 +152,8 @@ void WorldSimulation::queueNeighborSupportChecks(SimulationPosition position) {
 }
 
 void WorldSimulation::queueLeafDecay(SimulationPosition position) {
-    if (position.y < 0 || position.y >= world::kWorldHeight ||
-        !queuedLeafDecays_.insert(position).second || randomTickSpeed_ <= 0) {
+    if (position.y < 0 || position.y >= world::kWorldHeight || randomTickSpeed_ <= 0 ||
+        ticks_.contains(TickTask::LeafDecay, position)) {
         return;
     }
     // LeavesBlock decays on a random tick, so the wait scales with the
@@ -147,8 +161,9 @@ void WorldSimulation::queueLeafDecay(SimulationPosition position) {
     // does (a speed of 3 keeps the original 3/4096 pacing).
     const double chancePerTick =
         kLeafDecayChancePerTick * static_cast<double>(randomTickSpeed_) / 3.0;
-    pendingLeafDecays_.push_back(
-        {position, tickCount_ + randomTickDelay(leafRandomState_, chancePerTick)});
+    static_cast<void>(ticks_.schedule(
+        TickTask::LeafDecay, position,
+        tickCount_ + randomTickDelay(leafRandomState_, chancePerTick)));
 }
 
 void WorldSimulation::queueLeafDecayChecks(
@@ -230,33 +245,23 @@ LeafSupport WorldSimulation::leafSupport(
 }
 
 void WorldSimulation::decayLeaves(world::World& world, std::vector<BlockChange>& changes) {
-    for (std::size_t index = 0; index < pendingLeafDecays_.size();) {
-        const auto scheduled = pendingLeafDecays_[index];
-        if (scheduled.dueTick > tickCount_) {
-            ++index;
-            continue;
-        }
-        // A high randomTickSpeed shortens every leaf's decay delay, so a big
-        // canopy can have hundreds of due checks in one tick — each a flood
-        // fill. Stop once this tick's budget is spent; the rest stay queued and
-        // are processed over the next ticks.
-        if (leafDecayChecksThisTick_ >= kMaximumLeafDecayChecksPerTick) {
-            break;
-        }
-        ++leafDecayChecksThisTick_;
-        pendingLeafDecays_[index] = pendingLeafDecays_.back();
-        pendingLeafDecays_.pop_back();
-        queuedLeafDecays_.erase(scheduled.position);
-
-        const auto position = scheduled.position;
-        const auto block = world.block(position.x, position.y, position.z);
-        if (!world::isLeaves(block) ||
-            world::leavesArePersistent(world.orientation(position.x, position.y, position.z))) {
-            continue;
+    // A high randomTickSpeed shortens every leaf's decay delay, so a big canopy
+    // can have hundreds of due checks in one tick — each a flood fill. The
+    // budget is the drain cap; the rest stay queued for later ticks.
+    const std::size_t budget =
+        kMaximumLeafDecayChecksPerTick > leafDecayChecksThisTick_
+            ? kMaximumLeafDecayChecksPerTick - leafDecayChecksThisTick_
+            : 0U;
+    leafDecayChecksThisTick_ += ticks_.drainDue(
+        TickTask::LeafDecay, tickCount_, budget, [&](SimulationPosition position) {
+        const auto state = world.state(position.x, position.y, position.z);
+        const auto block = state.block();
+        if (!world::isLeaves(block) || state.persistent()) {
+            return;
         }
         const auto support = leafSupport(world, position);
         if (support == LeafSupport::Supported) {
-            continue;
+            return;
         }
         if (support == LeafSupport::Undecided) {
             // The search ran out of loaded world before it could find a trunk.
@@ -266,14 +271,14 @@ void WorldSimulation::decayLeaves(world::World& world, std::vector<BlockChange>&
             // the streaming frontier hanging for good, so put it back with a
             // fresh draw and ask again later.
             queueLeafDecay(position);
-            continue;
+            return;
         }
         const std::size_t changeCount = changes.size();
         setSimulatedBlock(world, position, world::Block::Air, changes);
         if (changes.size() > changeCount) {
             // Decayed leaves roll their loot table exactly like a mined block,
             // which is what dropStacks does before removeBlock in vanilla.
-            changes.back().dropped = block;
+            changes.back().dropped = state;
         }
         wakeWaterNeighbors(world, position);
         queueNeighborSupportChecks(position);
@@ -283,15 +288,23 @@ void WorldSimulation::decayLeaves(world::World& world, std::vector<BlockChange>&
                 queueLeafDecay(neighbor);
             }
         }
-    }
+    });
 }
 
-int WorldSimulation::lightAt(const world::World& world, SimulationPosition position) {
-    // Java's getLightLevel(pos, 0): the brighter of the two channels. The
-    // stored values are static full-sun sky light, which 1.16.1's growth and
-    // spread checks read without any skylightSubtracted adjustment.
-    return std::max(static_cast<int>(world.skyLight(position.x, position.y, position.z)),
-                    static_cast<int>(world.blockLight(position.x, position.y, position.z)));
+int WorldSimulation::rawBrightnessAt(const world::World& world, SimulationPosition position) {
+    // getRawBrightness(pos, 0): the sky channel as stored, no darkening. Crops
+    // grow by this reading, so a field keeps filling out after dusk.
+    return environment::rawBrightness(world, position.x, position.y, position.z);
+}
+
+int WorldSimulation::localBrightnessAt(
+    const world::World& world,
+    SimulationPosition position) const {
+    // getMaxLocalRawBrightness(pos): the same reading minus the tick's ambient
+    // darkness. Spreading and sapling growth use this one and therefore stop at
+    // night, which is the behaviour the single shared reading used to lose.
+    return environment::maxLocalRawBrightness(world, position.x, position.y, position.z,
+                                              environment_);
 }
 
 void WorldSimulation::randomTicks(world::World& world, std::vector<BlockChange>& changes) {
@@ -322,15 +335,40 @@ void WorldSimulation::randomTicks(world::World& world, std::vector<BlockChange>&
                     static_cast<int>(nextBounded(randomTickState_, world::kSectionSize));
                 const int localZ =
                     static_cast<int>(nextBounded(randomTickState_, world::kChunkDepth));
+                // isRandomlyTicking first: at a high randomTickSpeed almost
+                // every draw lands on air or stone, and rejecting those with one
+                // array read rather than a call is what keeps the table at least
+                // as fast as the switch it replaces.
+                const auto drawn = section.block(localX, localY, localZ);
+                if (!isRandomlyTicking(drawn)) {
+                    continue;
+                }
                 const SimulationPosition position{
                     chunkPosition.x * world::kChunkWidth + localX,
                     sectionY * world::kSectionSize + localY,
                     chunkPosition.z * world::kChunkDepth + localZ,
                 };
-                randomTickBlock(world, position, section.block(localX, localY, localZ), changes);
+                randomTickBlock(world, position, drawn, changes);
             }
         }
     }
+}
+
+void WorldSimulation::randomTickGrassEntry(const RandomTickContext& context) {
+    context.simulation.randomTickGrass(context.world, context.position, context.changes);
+}
+
+void WorldSimulation::randomTickSaplingEntry(const RandomTickContext& context) {
+    context.simulation.randomTickSapling(context.world, context.position, context.changes);
+}
+
+void WorldSimulation::randomTickCropEntry(const RandomTickContext& context) {
+    context.simulation.randomTickCrop(context.world, context.position,
+                                      context.changes);
+}
+
+void WorldSimulation::randomTickFarmlandEntry(const RandomTickContext& context) {
+    context.simulation.randomTickFarmland(context.world, context.position, context.changes);
 }
 
 void WorldSimulation::randomTickBlock(
@@ -338,29 +376,11 @@ void WorldSimulation::randomTickBlock(
     SimulationPosition position,
     world::Block block,
     std::vector<BlockChange>& changes) {
-    switch (block) {
-    case world::Block::Grass:
-        randomTickGrass(world, position, changes);
-        break;
-    case world::Block::OakSapling:
-    case world::Block::SpruceSapling:
-    case world::Block::BirchSapling:
-    case world::Block::JungleSapling:
-    case world::Block::AcaciaSapling:
-    case world::Block::DarkOakSapling:
-        randomTickSapling(world, position, changes);
-        break;
-    case world::Block::WheatCrops:
-    case world::Block::Carrots:
-    case world::Block::Potatoes:
-        randomTickCrop(world, position, block, changes);
-        break;
-    case world::Block::Farmland:
-        randomTickFarmland(world, position, changes);
-        break;
-    default:
-        break;
+    const auto index = static_cast<std::size_t>(block);
+    if (index >= kRandomTickTable.size() || kRandomTickTable[index] == nullptr) {
+        return;
     }
+    kRandomTickTable[index](RandomTickContext{world, position, block, changes, *this});
 }
 
 void WorldSimulation::randomTickGrass(
@@ -373,11 +393,15 @@ void WorldSimulation::randomTickGrass(
     // nor leave it darker than 4.
     const SimulationPosition above{position.x, position.y + 1, position.z};
     const auto aboveBlock = world.block(above.x, above.y, above.z);
-    if (world::opacity(aboveBlock) > 2 || lightAt(world, above) < 4) {
+    // canStayAlive and the spread gate both read getMaxLocalRawBrightness, so
+    // both follow the sun. The thresholds are picked around that: open ground
+    // at midnight reads exactly 4 (sky 15 minus an ambient darkness of 11), so
+    // grass survives the night but stops spreading through it.
+    if (world::opacity(aboveBlock) > 2 || localBrightnessAt(world, above) < 4) {
         reserveConversionAndApply(world, position, world::Block::Dirt, changes);
         return;
     }
-    if (lightAt(world, above) < 9) {
+    if (localBrightnessAt(world, above) < 9) {
         return;
     }
     // SpreadableBlock#randomTick: up to four probes over a 3x3x5 volume reach
@@ -405,7 +429,7 @@ void WorldSimulation::randomTickGrass(
         const SimulationPosition targetAbove{target.x, target.y + 1, target.z};
         if (targetAbove.y >= world::kWorldHeight ||
             world::opacity(world.block(targetAbove.x, targetAbove.y, targetAbove.z)) > 2 ||
-            lightAt(world, targetAbove) < 4) {
+            localBrightnessAt(world, targetAbove) < 4) {
             continue;
         }
         if (!world::canBlockSurvive(world, {target.x, target.y, target.z},
@@ -433,10 +457,11 @@ void WorldSimulation::randomTickSapling(
     SimulationPosition position,
     std::vector<BlockChange>& changes) {
     static_cast<void>(changes);
-    // SaplingBlock#randomTick: needs light 9 above the sapling and rolls 1/7
-    // before growing.
+    // SaplingBlock#randomTick: needs getMaxLocalRawBrightness 9 above the
+    // sapling and rolls 1/7 before growing. The reading follows the sun, so
+    // saplings sit through the night instead of sprouting in the dark.
     const SimulationPosition above{position.x, position.y + 1, position.z};
-    if (lightAt(world, above) < 9) {
+    if (localBrightnessAt(world, above) < 9) {
         return;
     }
     if (nextBounded(randomTickState_, 7U) != 0U) {
@@ -464,8 +489,7 @@ float WorldSimulation::availableMoisture(
             float contribution = 0.0F;
             if (world::isFarmland(world.block(sampleX, below.y, sampleZ))) {
                 contribution = 1.0F;
-                if (world::farmlandMoisture(
-                        world.orientation(sampleX, below.y, sampleZ)) > 0) {
+                if (world.state(sampleX, below.y, sampleZ).moisture() > 0) {
                     contribution = 3.0F;
                 }
             }
@@ -508,15 +532,17 @@ bool WorldSimulation::cropOnTop(
 void WorldSimulation::randomTickCrop(
     world::World& world,
     SimulationPosition position,
-    world::Block block,
     std::vector<BlockChange>& changes) {
-    // CropsBlock#randomTick: the crop needs light 9 in the block above it, then
-    // rolls a growth whose odds the surrounding farmland improves.
-    const SimulationPosition above{position.x, position.y + 1, position.z};
-    if (above.y >= world::kWorldHeight || lightAt(world, above) < 9) {
+    // CropBlock#randomTick: `getRawBrightness(pos, 0) >= 9` — the crop's own
+    // cell, and deliberately without the day's darkening, which is why a wheat
+    // field keeps growing overnight. This used to read the cell above with the
+    // shared light helper; a crop is transparent so the two readings usually
+    // agree, but under an overhang they do not.
+    if (rawBrightnessAt(world, position) < 9) {
         return;
     }
-    const int age = world::cropAge(world.orientation(position.x, position.y, position.z));
+    const auto cropState = world.state(position.x, position.y, position.z);
+    const int age = cropState.age();
     if (age >= 7) {
         return;
     }
@@ -530,32 +556,33 @@ void WorldSimulation::randomTickCrop(
     if (!reserveCropStateWrite()) {
         return;
     }
-    const int newAge = age + 1;
-    world.setOrientation(position.x, position.y, position.z, world::cropOrientation(newAge));
-    changes.push_back({position, block, 0U, world::Block::Air,
-                       world::cropOrientation(newAge), world::BlockOrientation::North});
+    const auto grown = cropState.withAge(age + 1);
+    world.setState(position.x, position.y, position.z, grown);
+    changes.push_back({position, grown});
 }
 
 void WorldSimulation::randomTickFarmland(
     world::World& world,
     SimulationPosition position,
     std::vector<BlockChange>& changes) {
-    // FarmlandBlock#randomTick: water within four blocks hydrates the soil (the
-    // moisture jumps straight to 7, vanilla never raises it gradually); without
-    // water it dries one level, and at moisture 0 with nothing planted on it the
-    // farmland reverts to plain dirt.
-    const int moisture = world::farmlandMoisture(world.orientation(position.x, position.y, position.z));
-    if (!farmlandNearWater(world, position)) {
+    // FarmlandBlock#randomTick: water within four blocks *or rain falling on
+    // it* hydrates the soil (the moisture jumps straight to 7, vanilla never
+    // raises it gradually); without either it dries one level, and at moisture 0
+    // with nothing planted on it the farmland reverts to plain dirt.
+    const auto farmlandState = world.state(position.x, position.y, position.z);
+    const int moisture = farmlandState.moisture();
+    const SimulationPosition aboveFarmland{position.x, position.y + 1, position.z};
+    const bool hydrated = farmlandNearWater(world, position) ||
+                          isRainingAt(world, aboveFarmland.x, aboveFarmland.y, aboveFarmland.z,
+                                      environment_);
+    if (!hydrated) {
         if (moisture > 0) {
             if (!reserveCropStateWrite()) {
                 return;
             }
-            const int newMoisture = moisture - 1;
-            world.setOrientation(
-                position.x, position.y, position.z, world::farmlandOrientation(newMoisture));
-            changes.push_back({position, world::Block::Farmland, 0U, world::Block::Air,
-                               world::farmlandOrientation(newMoisture),
-                               world::BlockOrientation::North});
+            const auto dried = farmlandState.withMoisture(moisture - 1);
+            world.setState(position.x, position.y, position.z, dried);
+            changes.push_back({position, dried});
         } else if (!cropOnTop(world, position)) {
             // FarmlandBlock reverts only when nothing stands on it, exactly like
             // the vanilla hasCrops guard.
@@ -570,50 +597,40 @@ void WorldSimulation::randomTickFarmland(
         if (!reserveCropStateWrite()) {
             return;
         }
-        world.setOrientation(position.x, position.y, position.z, world::farmlandOrientation(7));
-        changes.push_back({position, world::Block::Farmland, 0U, world::Block::Air,
-                           world::farmlandOrientation(7), world::BlockOrientation::North});
+        const auto hydratedState = farmlandState.withMoisture(7);
+        world.setState(position.x, position.y, position.z, hydratedState);
+        changes.push_back({position, hydratedState});
     }
 }
 
 void WorldSimulation::queueTreeGrowth(SimulationPosition position) {
     if (position.y < 0 || position.y >= world::kWorldHeight ||
-        !queuedTreeGrowths_.insert(position).second) {
+        ticks_.contains(TickTask::TreeGrowth, position)) {
         return;
     }
     // Due next tick; growTrees drains the queue at the per-tick cap from there.
-    pendingTreeGrowths_.push_back({position, tickCount_ + 1U});
+    static_cast<void>(ticks_.schedule(TickTask::TreeGrowth, position, tickCount_ + 1U));
 }
 
 void WorldSimulation::growTrees(world::World& world, std::vector<BlockChange>& changes) {
-    for (std::size_t index = 0; index < pendingTreeGrowths_.size();) {
-        const auto scheduled = pendingTreeGrowths_[index];
-        if (scheduled.dueTick > tickCount_) {
-            ++index;
-            continue;
-        }
-        if (lastTreeGrowthsProcessed_ >= kMaximumTreeGrowthsPerTick) {
-            // Leave the rest for the next tick instead of growing a whole
-            // forest in one frame.
-            ++index;
-            continue;
-        }
-        pendingTreeGrowths_[index] = pendingTreeGrowths_.back();
-        pendingTreeGrowths_.pop_back();
-        queuedTreeGrowths_.erase(scheduled.position);
-
-        const auto position = scheduled.position;
+    // The per-tick cap is the drain budget now; the rest waits for a later tick
+    // instead of growing a whole forest in one frame.
+    ticks_.drainDue(TickTask::TreeGrowth, tickCount_, kMaximumTreeGrowthsPerTick,
+                    [&](SimulationPosition position) {
         const auto block = world.block(position.x, position.y, position.z);
         if (!world::gen::isSapling(block)) {
-            continue;
+            return;
         }
         const SimulationPosition above{position.x, position.y + 1, position.z};
-        if (lightAt(world, above) < 9) {
-            continue;
+        // Re-checked against the sapling's own gate: a growth queued before dusk
+        // and drained after it is dropped, and the sapling — still a sapling —
+        // gets queued again by a later random tick once it is light enough.
+        if (localBrightnessAt(world, above) < 9) {
+            return;
         }
         ++lastTreeGrowthsProcessed_;
         growTreeAt(world, position, block, changes);
-    }
+    });
 }
 
 void WorldSimulation::growTreeAt(
@@ -632,7 +649,15 @@ void WorldSimulation::growTreeAt(
     // probe all precede the first write), so if growth fails the sapling is put
     // back and the worker never sees it move — no drop, no break, exactly like
     // SaplingBlock#generate keeps the sapling when the tree cannot fit.
-    world.setBlock(position.x, position.y, position.z, world::Block::Air);
+    // Deliberately not through setSimulatedBlock: this clear must stay
+    // invisible outside the world, so a failed growth can put the sapling back
+    // without the worker ever seeing it move (no flicker, no drop). The write
+    // still goes through the service, so it is the same write everything else
+    // makes — it just emits no BlockChange.
+    RecordingMutationSink saplingSink;
+    static_cast<void>(mutations_.setBlock(world, {position.x, position.y, position.z},
+                                          world::BlockState{}, world::MutationFlags::KnownShape,
+                                          world::MutationCause::RandomTick, saplingSink));
 
     const auto choice = world::gen::treeChoiceForSapling(sapling);
     // Deterministic per position: the same sapling always grows the same tree.
@@ -643,20 +668,29 @@ void WorldSimulation::growTreeAt(
 
     class GrowthTreeWriter final : public world::gen::TreeWriter {
       public:
-        GrowthTreeWriter(world::World& world, std::vector<BlockChange>& changes)
-            : world_(world), changes_(changes) {}
+        GrowthTreeWriter(world::World& world, std::vector<BlockChange>& changes,
+                         world::WorldMutationService& mutations)
+            : world_(world), changes_(changes), mutations_(mutations) {}
 
         [[nodiscard]] world::Block block(int x, int y, int z) const override {
             return world_.block(x, y, z);
         }
         bool setBlock(int x, int y, int z, world::Block value) override {
-            if (y < 0 || y >= world::kWorldHeight || world_.block(x, y, z) == value) {
+            if (y < 0 || y >= world::kWorldHeight) {
                 return false;
             }
-            if (!world_.setBlock(x, y, z, value)) {
+            // A grown tree is a world edit like any other, so its trunk and
+            // canopy go through the service too — that is what destroys the
+            // block entity of anything the crown grows over.
+            RecordingMutationSink sink;
+            if (!mutations_.setBlock(world_, {x, y, z}, world::BlockState{value},
+                                     world::MutationFlags::KnownShape,
+                                     world::MutationCause::RandomTick, sink)
+                     .changed) {
                 return false;
             }
-            changes_.push_back({SimulationPosition{x, y, z}, value, 0U, world::Block::Air});
+            changes_.push_back({SimulationPosition{x, y, z}, world::BlockState{value},
+                                world::BlockState{}, false});
             return true;
         }
         bool setOrientation(int x, int y, int z, world::BlockOrientation value) override {
@@ -666,13 +700,16 @@ void WorldSimulation::growTreeAt(
       private:
         world::World& world_;
         std::vector<BlockChange>& changes_;
+        world::WorldMutationService& mutations_;
     };
 
-    GrowthTreeWriter writer{world, changes};
+    GrowthTreeWriter writer{world, changes, mutations_};
     const bool grew =
         world::gen::growTree(writer, rng, choice, position.x, position.y - 1, position.z);
     if (!grew) {
-        world.setBlock(position.x, position.y, position.z, sapling);
+        static_cast<void>(mutations_.setBlock(
+            world, {position.x, position.y, position.z}, world::BlockState{sapling},
+            world::MutationFlags::KnownShape, world::MutationCause::RandomTick, saplingSink));
         return;
     }
     // Tree generation writes cells without neighbour notifications, so the
@@ -725,35 +762,29 @@ void WorldSimulation::breakUnsupportedBlocks(
     // Java's neighbourChanged pass: an attached block that lost its support pops
     // off immediately, and popping it off can strand the next one along.
     constexpr std::size_t kMaximumSupportChecks = 512;
-    for (std::size_t processed = 0U;
-         processed < kMaximumSupportChecks && !pendingSupportChecks_.empty();
-         ++processed) {
-        const auto position = pendingSupportChecks_.front();
-        pendingSupportChecks_.pop_front();
-        queuedSupportChecks_.erase(position);
+    ticks_.drainDue(TickTask::SupportCheck, tickCount_, kMaximumSupportChecks,
+                    [&](SimulationPosition position) {
         const auto block = world.block(position.x, position.y, position.z);
         // A wall torch hangs off the wall behind its FACING, so the support
         // check needs the cell's state, not just its block.
         if (world::blockSupport(block) == world::BlockSupport::None ||
             world::canBlockSurvive(world, {position.x, position.y, position.z}, block,
                                    world.orientation(position.x, position.y, position.z))) {
-            continue;
+            return;
         }
         // Crops do not drop themselves (blockDefinition.dropsItem is false), so
         // their loot has to be requested explicitly, like decayLeaves does for a
-        // canopy. The age is captured before the cell is cleared so the rolled
-        // table reflects the stage the crop had reached.
-        const auto previousOrientation =
-            world.orientation(position.x, position.y, position.z);
+        // canopy. The whole state is captured before the cell is cleared so the
+        // rolled table reflects the stage the crop had reached.
+        const auto previousState = world.state(position.x, position.y, position.z);
         const std::size_t changeCount = changes.size();
         setSimulatedBlock(world, position, world::Block::Air, changes);
         if (changes.size() > changeCount && world::isCrop(block)) {
-            changes.back().dropped = block;
-            changes.back().droppedOrientation = previousOrientation;
+            changes.back().dropped = previousState;
         }
         wakeWaterNeighbors(world, position);
         queueNeighborSupportChecks(position);
-    }
+    });
 }
 
 std::optional<std::uint8_t> WorldSimulation::updatedWaterLevel(
@@ -848,37 +879,47 @@ int WorldSimulation::distanceToDownwardFlow(
     return best;
 }
 
-void WorldSimulation::setSimulatedBlock(
+bool WorldSimulation::setSimulatedBlock(
     world::World& world,
     SimulationPosition position,
     world::Block block,
     std::vector<BlockChange>& changes,
-    std::uint8_t fluidLevel) {
+    std::uint8_t fluidLevel,
+    bool immediateRenderUpdate) {
     if (world.block(position.x, position.y, position.z) == block &&
         (!world::isFluid(block) ||
          world.fluidLevel(position.x, position.y, position.z) == fluidLevel)) {
-        return;
+        return false;
     }
-    const auto previous = world.block(position.x, position.y, position.z);
-    const auto previousOrientation =
-        world.orientation(position.x, position.y, position.z);
-    if (world.setBlock(position.x, position.y, position.z, block)) {
-        if (world::isFluid(block)) {
-            world.setFluidLevel(position.x, position.y, position.z, fluidLevel);
-        }
+    const auto previousState = world.state(position.x, position.y, position.z);
+    const auto previous = previousState.block();
+    // The write itself goes through the mutation service, so a simulated edit
+    // decides "did this actually change?" by exactly the rule a player edit
+    // does. The consequences still travel as BlockChange rather than through
+    // the service's sink: the simulation hands its changes to the host, which
+    // is what queues the mesh, the light and the drops for the whole tick's
+    // batch. Neighbour reactions are the simulation's own queues, already
+    // driven by the callers of this function, so the service is told not to
+    // fire them a second time.
+    RecordingMutationSink sink;
+    const auto result = mutations_.setBlock(
+        world, {position.x, position.y, position.z},
+        world::BlockState{block, world::defaultOrientation(block), fluidLevel},
+        world::MutationFlags::KnownShape, world::MutationCause::ScheduledTick, sink);
+    if (result.changed) {
         // Decoration blocks that a fluid washes away, or that lost their
         // support, leave an item behind exactly like a mined block does. The
-        // dropped block keeps the orientation it was broken at, so a crop that
-        // pops rolls its loot from the age it had grown to.
+        // whole previous state drops, so a crop that pops rolls its loot from
+        // the age it had grown to.
         const bool dropsPrevious = previous != block &&
             world::isDestroyedByFluid(previous) &&
             world::blockDefinition(previous).dropsItem;
-        changes.push_back({position, block, fluidLevel,
-                           dropsPrevious ? previous : world::Block::Air,
-                           std::nullopt,
-                           dropsPrevious ? previousOrientation
-                                         : world::BlockOrientation::North});
+        changes.push_back({position,
+                           world::BlockState{block, world::defaultOrientation(block), fluidLevel},
+                           dropsPrevious ? previousState : world::BlockState{},
+                           immediateRenderUpdate});
     }
+    return result.changed;
 }
 
 std::vector<BlockChange> WorldSimulation::tick(
@@ -896,20 +937,18 @@ std::vector<BlockChange> WorldSimulation::tick(
     randomTicks(world, changes);
     growTrees(world, changes);
     constexpr std::size_t kMaximumSandUpdates = 64;
-    const std::size_t sandUpdates = std::min(activeSand_.size(), kMaximumSandUpdates);
-    for (std::size_t index = 0; index < sandUpdates; ++index) {
-        const auto position = activeSand_.front();
-        activeSand_.pop_front();
+    ticks_.drainDue(TickTask::FallingBlock, tickCount_, kMaximumSandUpdates,
+                    [&](SimulationPosition position) {
         const auto fallingBlock = world.block(position.x, position.y, position.z);
         if (!world::isAffectedByGravity(fallingBlock) || position.y <= 0) {
-            continue;
+            return;
         }
         const SimulationPosition below{position.x, position.y - 1, position.z};
         const auto belowBlock = world.block(below.x, below.y, below.z);
         if (!world::isReplaceable(belowBlock)) {
-            continue;
+            return;
         }
-        setSimulatedBlock(world, position, world::Block::Air, changes);
+        setSimulatedBlock(world, position, world::Block::Air, changes, 0U, true);
         // FallingBlockEntity removes the block before the entity starts moving.
         // Fluid ticks are event-driven, so water above/alongside that newly empty
         // cell must be woken just like it is after a player mines a block.
@@ -939,21 +978,56 @@ std::vector<BlockChange> WorldSimulation::tick(
             fallingBlock,
             false,
         });
-    }
+    });
 
     for (auto& entity : fallingBlocks_) {
         entity.previousPosition = entity.position;
-        entity.verticalVelocity = std::max(entity.verticalVelocity - 0.04F, -3.92F);
-        const float nextY = entity.position.y + entity.verticalVelocity;
         const int blockX = static_cast<int>(std::floor(entity.position.x));
         const int blockZ = static_cast<int>(std::floor(entity.position.z));
-        const int belowY = static_cast<int>(std::floor(nextY - 0.5F));
-        if (belowY >= 0 &&
-            world::hasCollision(world.block(blockX, belowY, blockZ)) &&
-            nextY - 0.5F <= static_cast<float>(belowY + 1)) {
-            const SimulationPosition landing{blockX, belowY + 1, blockZ};
-            if (world::isReplaceable(world.block(landing.x, landing.y, landing.z))) {
-                setSimulatedBlock(world, landing, entity.block, changes);
+        const world::ChunkPosition owner{
+            floorDiv(blockX, world::kChunkWidth),
+            floorDiv(blockZ, world::kChunkDepth),
+        };
+        // World::block deliberately reads an unloaded chunk as air. Treating
+        // that sentinel as physics would let an in-flight entity fall out of
+        // the world and be discarded while its column is merely streamed out.
+        if (!world.hasChunk(owner)) {
+            continue;
+        }
+
+        entity.verticalVelocity = std::max(entity.verticalVelocity - 0.04F, -3.92F);
+        const float nextY = entity.position.y + entity.verticalVelocity;
+        const float previousBottom = entity.position.y - 0.5F;
+        const float nextBottom = nextY - 0.5F;
+
+        // Sweep the whole vertical segment travelled this tick. Sampling only
+        // floor(nextBottom) tunnels through a one-block surface once gravity
+        // accelerates the entity beyond one block per tick. Starting one tiny
+        // epsilon below the old bottom also treats an exact contact with a block
+        // top as a collision instead of sampling the air cell above it.
+        constexpr float kContactEpsilon = 1.0e-4F;
+        const int highestCandidate = std::min(
+            world::kWorldHeight - 1,
+            static_cast<int>(std::floor(previousBottom - kContactEpsilon)));
+        const int lowestCandidate = std::max(0, static_cast<int>(std::floor(nextBottom)));
+        std::optional<int> collisionY;
+        for (int candidateY = highestCandidate; candidateY >= lowestCandidate; --candidateY) {
+            if (!world::hasCollision(world.block(blockX, candidateY, blockZ))) {
+                continue;
+            }
+            const float collisionTop = static_cast<float>(candidateY + 1);
+            if (previousBottom + kContactEpsilon >= collisionTop &&
+                nextBottom <= collisionTop + kContactEpsilon) {
+                collisionY = candidateY;
+                break;
+            }
+        }
+
+        if (collisionY.has_value()) {
+            const SimulationPosition landing{blockX, *collisionY + 1, blockZ};
+            const auto landingBlock = world.block(landing.x, landing.y, landing.z);
+            if (world::isReplaceable(landingBlock) &&
+                setSimulatedBlock(world, landing, entity.block, changes, 0U, true)) {
                 wakeWaterNeighbors(world, landing);
                 // The placed block notifies its neighbours (World#setBlockState
                 // updateNeighbors), scheduling the sand that now sits above it.
@@ -964,8 +1038,22 @@ std::vector<BlockChange> WorldSimulation::tick(
                         queueSand(neighbor);
                     }
                 }
+                entity.removed = true;
+            } else if (!world::isReplaceable(landingBlock)) {
+                // Vanilla turns a falling block into an item when its landing
+                // state cannot be placed. This is an entity event, not a world
+                // edit: the occupied landing cell remains untouched.
+                changes.push_back({landing, world::BlockState{landingBlock},
+                                   world::BlockState{entity.block}, false, false});
+                entity.removed = true;
+            } else {
+                // A replaceable target that failed to mutate can only be a
+                // transient storage failure. Keep the entity resting on the
+                // collision plane and retry instead of deleting it.
+                entity.position.y = static_cast<float>(*collisionY) + 1.5F;
+                entity.previousPosition = entity.position;
+                entity.verticalVelocity = 0.0F;
             }
-            entity.removed = true;
             continue;
         }
         entity.position.y = nextY;
@@ -980,16 +1068,12 @@ std::vector<BlockChange> WorldSimulation::tick(
     if (!processFluidUpdates) {
         return changes;
     }
-    while (lastWaterUpdatesProcessed_ < kMaximumWaterUpdatesPerPhase &&
-           !activeWater_.empty() &&
-           activeWater_.front().dueTick <= tickCount_) {
-        const auto position = activeWater_.front().position;
-        activeWater_.pop_front();
-        queuedWater_.erase(position);
-        ++lastWaterUpdatesProcessed_;
+    lastWaterUpdatesProcessed_ += ticks_.drainDue(
+        TickTask::Fluid, tickCount_, kMaximumWaterUpdatesPerPhase - lastWaterUpdatesProcessed_,
+        [&](SimulationPosition position) {
         if (world.block(position.x, position.y, position.z) !=
             world::Block::Water) {
-            continue;
+            return;
         }
         std::uint8_t currentLevel =
             world.fluidLevel(position.x, position.y, position.z);
@@ -998,7 +1082,7 @@ std::vector<BlockChange> WorldSimulation::tick(
             if (!updated.has_value()) {
                 setSimulatedBlock(world, position, world::Block::Air, changes);
                 wakeWaterNeighbors(world, position);
-                continue;
+                return;
             }
             if (*updated != currentLevel) {
                 setSimulatedBlock(
@@ -1030,16 +1114,16 @@ std::vector<BlockChange> WorldSimulation::tick(
         const bool connectedToWaterBelow =
             world::isFluid(world.block(below.x, below.y, below.z));
         if (currentLevel != 0U && (flowedDown || connectedToWaterBelow)) {
-            continue;
+            return;
         }
         if (currentLevel == 0U && flowedDown && adjacentSources < 3U) {
-            continue;
+            return;
         }
         const std::uint8_t horizontalLevel = currentLevel == kFallingWaterLevel
             ? 1U
             : static_cast<std::uint8_t>(currentLevel + 1U);
         if (horizontalLevel > kMaximumHorizontalWaterLevel) {
-            continue;
+            return;
         }
         struct SpreadCandidate final {
             SimulationPosition position;
@@ -1106,7 +1190,7 @@ std::vector<BlockChange> WorldSimulation::tick(
             queueWater(candidate.position, candidate.level);
             wakeWaterNeighbors(world, candidate.position);
         }
-    }
+    });
     return changes;
 }
 

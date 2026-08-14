@@ -24,6 +24,19 @@ void ItemEntitySystem::spawn(
     }
 }
 
+void ItemEntitySystem::restore(glm::vec3 position, ItemStack stack, glm::vec3 velocity,
+                               unsigned int ageTicks) {
+    if (stack.empty()) {
+        return;
+    }
+    constexpr float goldenAngle = 2.39996323F;
+    constexpr float fullTurn = 6.28318531F;
+    entities_.push_back({position, position, velocity, std::move(stack), ageTicks,
+                         nextVisualPhase_});
+    sections_[entitySectionOf(position)].push_back(entities_.size() - 1U);
+    nextVisualPhase_ = std::fmod(nextVisualPhase_ + goldenAngle, fullTurn);
+}
+
 std::size_t ItemEntitySystem::tick(
     const world::World& world,
     glm::vec3 playerPosition,

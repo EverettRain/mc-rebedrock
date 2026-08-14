@@ -5,28 +5,16 @@
 
 namespace mc::gameplay {
 
-ChestBlockEntity* ChestSystem::find(ChestPosition position) {
-    const auto found = std::ranges::find(entities_, position, &ChestBlockEntity::position);
-    return found == entities_.end() ? nullptr : &*found;
-}
+ChestBlockEntity* ChestSystem::find(ChestPosition position) { return entities_.find(position); }
 
 const ChestBlockEntity* ChestSystem::find(ChestPosition position) const {
-    const auto found = std::ranges::find(entities_, position, &ChestBlockEntity::position);
-    return found == entities_.end() ? nullptr : &*found;
+    return entities_.find(position);
 }
 
-bool ChestSystem::place(ChestPosition position) {
-    if (find(position) != nullptr) return false;
-    entities_.push_back({position});
-    return true;
-}
+bool ChestSystem::place(ChestPosition position) { return entities_.place(position); }
 
 std::optional<ChestBlockEntity> ChestSystem::remove(ChestPosition position) {
-    const auto found = std::ranges::find(entities_, position, &ChestBlockEntity::position);
-    if (found == entities_.end()) return std::nullopt;
-    ChestBlockEntity removed = *found;
-    entities_.erase(found);
-    return removed;
+    return entities_.remove(position);
 }
 
 bool ChestSystem::open(ChestPosition position) {
@@ -41,12 +29,12 @@ void ChestSystem::close(ChestPosition position) {
 }
 
 void ChestSystem::closeAll() {
-    for (auto& chest : entities_) chest.open = false;
+    for (auto& chest : entities_.mutableEntities()) chest.open = false;
 }
 
 void ChestSystem::tick() {
     constexpr float kLidStep = 0.1F;
-    for (auto& chest : entities_) {
+    for (auto& chest : entities_.mutableEntities()) {
         chest.previousLidAngle = chest.lidAngle;
         const float target = chest.open ? 1.0F : 0.0F;
         if (chest.lidAngle < target) {
@@ -105,12 +93,14 @@ bool ChestSystem::moveInto(ChestPosition position, ItemStack& stack) {
 }
 
 void ChestSystem::restore(std::vector<ChestBlockEntity> entities) {
+    // A restored chest starts shut: the lid angle is animation state, not
+    // something a save should be able to load half-open.
     for (auto& chest : entities) {
         chest.previousLidAngle = 0.0F;
         chest.lidAngle = 0.0F;
         chest.open = false;
     }
-    entities_ = std::move(entities);
+    entities_.restore(std::move(entities));
 }
 
 } // namespace mc::gameplay

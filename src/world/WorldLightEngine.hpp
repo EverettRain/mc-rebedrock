@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <unordered_set>
 #include <vector>
@@ -50,9 +51,33 @@ class WorldLightEngine final {
         [[nodiscard]] std::size_t operator()(const Node& node) const noexcept;
     };
 
+    using PackedNode = std::uint64_t;
+
+    // Open-addressed membership set used only for nodes currently in the FIFO.
+    // It retains all allocations between propagations and stores no per-node
+    // heap objects, unlike std::unordered_set<Node>.
+    class QueuedNodeSet final {
+      public:
+        [[nodiscard]] bool insert(PackedNode node);
+        void erase(PackedNode node);
+        void clear();
+
+      private:
+        void rehash(std::size_t capacity);
+        [[nodiscard]] std::size_t findSlot(PackedNode node) const;
+
+        std::vector<PackedNode> slots_;
+        std::vector<std::uint8_t> states_; // 0 empty, 1 occupied, 2 tombstone
+        std::vector<std::size_t> touchedSlots_;
+        std::size_t size_ = 0U;
+        std::size_t tombstones_ = 0U;
+    };
+
     enum class Channel { Sky, Block };
 
     [[nodiscard]] bool cancelled() const;
+    [[nodiscard]] static PackedNode packNode(const Node& node);
+    [[nodiscard]] static Node unpackNode(PackedNode node);
     [[nodiscard]] static bool loaded(const World& world, int x, int y, int z);
     [[nodiscard]] static std::uint8_t level(const World& world, Channel channel,
                                             int x, int y, int z);
@@ -69,6 +94,10 @@ class WorldLightEngine final {
 
     const std::atomic<bool>* cancellation_ = nullptr;
     std::unordered_set<LightSectionPosition, LightSectionPositionHash> dirtySections_;
+    std::vector<PackedNode> settleQueue_;
+    QueuedNodeSet queuedNodes_;
+    std::vector<Node> skySeeds_;
+    std::vector<Node> blockSeeds_;
     std::size_t lastPropagationVisitCount_ = 0U;
 };
 

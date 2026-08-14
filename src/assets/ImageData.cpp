@@ -1,5 +1,7 @@
 #include "assets/ImageData.hpp"
 
+#include "assets/ResourceProvider.hpp"
+
 #include <stb_image.h>
 
 #include <iostream>
@@ -7,6 +9,49 @@
 #include <string>
 
 namespace mc::assets {
+
+ImageData ImageData::decodeRgba(std::span<const std::byte> bytes) {
+    int sourceChannels = 0;
+    int imageWidth = 0;
+    int imageHeight = 0;
+    auto* pixels = stbi_load_from_memory(reinterpret_cast<const stbi_uc*>(bytes.data()),
+                                         static_cast<int>(bytes.size()), &imageWidth, &imageHeight,
+                                         &sourceChannels, STBI_rgb_alpha);
+    if (pixels == nullptr) {
+        const char* reason = stbi_failure_reason();
+        throw std::runtime_error(std::string{"Unable to decode image: "} +
+                                 (reason != nullptr ? reason : "unknown stb_image error"));
+    }
+    const auto byteCount =
+        static_cast<std::size_t>(imageWidth) * static_cast<std::size_t>(imageHeight) * 4U;
+    ImageData image;
+    image.width = imageWidth;
+    image.height = imageHeight;
+    image.rgba.assign(pixels, pixels + byteCount);
+    stbi_image_free(pixels);
+    return image;
+}
+
+ImageData ImageData::loadRgba(const ResourceProvider& resources,
+                              const ResourceLocation& location) {
+    const auto bytes = resources.readBytes(location);
+    if (bytes.empty()) {
+        throw std::runtime_error("Unable to read image " + location.toString());
+    }
+    return decodeRgba(bytes);
+}
+
+ImageData ImageData::loadRgbaOrMissing(const ResourceProvider& resources,
+                                       const ResourceLocation& location, int fallbackWidth,
+                                       int fallbackHeight) {
+    try {
+        return loadRgba(resources, location);
+    } catch (const std::exception&) {
+        // Same contract as the path form: a pack missing one file shows the
+        // magenta placeholder rather than taking the whole load down.
+        return missingTexture(fallbackWidth, fallbackHeight);
+    }
+}
 
 ImageData ImageData::loadRgba(const std::filesystem::path& path) {
     int sourceChannels = 0;

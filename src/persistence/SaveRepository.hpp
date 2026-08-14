@@ -45,6 +45,30 @@ struct PersistentEntity final {
     std::uint32_t rngState = 0U;
 };
 
+// A dropped item awaiting pickup. Position and velocity are the whole physical
+// state; `ageTicks` matters because it drives both the despawn timer and the
+// pickup delay.
+struct PersistentItemDrop final {
+    float x = 0.0F;
+    float y = 0.0F;
+    float z = 0.0F;
+    float vx = 0.0F;
+    float vy = 0.0F;
+    float vz = 0.0F;
+    gameplay::ItemStack stack;
+    std::uint32_t ageTicks = 0U;
+};
+
+// A block partway through falling. It exists in neither the chunk nor the drop
+// list while airborne, so without this a save taken mid-collapse loses it.
+struct PersistentFallingBlock final {
+    float x = 0.0F;
+    float y = 0.0F;
+    float z = 0.0F;
+    float verticalVelocity = 0.0F;
+    world::Block block = world::Block::Sand;
+};
+
 struct SaveGame final {
     SaveSummary summary;
     bool hasPlayerPosition = false;
@@ -86,6 +110,12 @@ struct SaveGame final {
     // The live creatures at save time, serialised into their own self-describing
     // block by format 12 so a world reopens with its herd.
     std::vector<PersistentEntity> entities;
+    // Dropped items and blocks mid-fall. Format 16 gives them their own block:
+    // before it, everything a player had thrown or mined but not yet picked up
+    // simply vanished on reload, and a sand column caught mid-collapse came back
+    // as a hole with its blocks nowhere.
+    std::vector<PersistentItemDrop> itemDrops;
+    std::vector<PersistentFallingBlock> fallingBlocks;
     // The world's own tick count and every named clock, split apart by format 13
     // so the sun can be frozen without freezing gameplay timing. Loading an
     // older save backfills both from gameTimeSeconds above, which used to carry

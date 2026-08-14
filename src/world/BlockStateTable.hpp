@@ -1,6 +1,7 @@
 #pragma once
 
 #include "world/Block.hpp"
+#include "world/StateSchema.hpp"
 
 #include <array>
 #include <cstddef>
@@ -9,7 +10,7 @@
 namespace mc::world {
 
 // The interned block-state table: every state every block can be in, numbered
-// once, so a cell is a single id rather than three parallel bytes.
+// once, so a cell is a single id rather than several parallel bytes.
 //
 // Vanilla builds this in StateDefinition as the cartesian product of a block's
 // properties and interns the results; the same shape is built here at compile
@@ -22,64 +23,27 @@ namespace mc::world {
 //      shape(5) x waterlogged(2) = 80, doors need 32, fences 16 — none of them
 //      fit. The escape hatch the project had already reached for is to spend a
 //      Block enum member per state instead, which is what the four wall torches
-//      and the lit furnace are; that trades a 3-bit ceiling for an 8-bit one
-//      (86 of 256 members spent so far) and breaks block identity on the way,
-//      see (2). A per-block id range has neither ceiling.
-//   2. Block identity separate from state. `Block::LitFurnace` is a burning
+//      and the lit furnace were; that trades a 3-bit ceiling for an 8-bit one
+//      and breaks block identity on the way, see (2). A per-block id range has
+//      neither ceiling.
+//   2. Block identity separate from state. `Block::LitFurnace` was a burning
 //      furnace's *state*, not a different block, but nothing in the type system
-//      says so — so a WorldMutationService comparing old and new blocks would
+//      said so — so a WorldMutationService comparing old and new blocks would
 //      destroy and rebuild the furnace's block entity on every burn swap,
-//      losing the smelt. Once `lit` is a value in the furnace's own id range,
-//      BlockState::isSameBlock answers correctly with no special case.
+//      losing the smelt. Now that `lit` is a value in the furnace's own id
+//      range, BlockState::isSameBlock answers correctly with no special case.
 //   3. Storage. Three arrays per section (blocks, orientations, fluid levels =
-//      12 KB) collapse into one u16 array (8 KB), and the mesher reads one
-//      array in order instead of three in step.
+//      12 KB) collapse into one u16 array, and the mesher reads one array in
+//      order instead of three in step.
 //
-// Only (1) and (2) are delivered by this header; the section collapse is a
-// separate step, because it moves the save format with it.
-//
-// `slot` below is the existing per-cell state byte, unchanged in meaning: a
-// facing for furnaces and chests, an axis for logs, an age 0-7 for crops, a
-// moisture 0-7 for farmland, a persistence flag for leaves. Giving each block
-// only the range it uses is what makes the table small; naming the properties
-// inside that range is a readability step that belongs with BlockBehavior.
+// The axes themselves come from each block's `StateSchema` (see
+// StateSchema.hpp). This file only does arithmetic over that list: it does not
+// know what a crop or a furnace is, which is what lets a fourth property be
+// added without touching it.
 
-// How many values of the state slot a block can be in.
-[[nodiscard]] constexpr std::uint16_t blockStateSlotCount(const BlockDefinition& definition) {
-    if (isCrop(definition.block) || definition.block == Block::Farmland) {
-        return 8U;  // CropBlock.AGE / FarmlandBlock.MOISTURE
-    }
-    if (definition.leaves) {
-        return 2U;  // LeavesBlock.PERSISTENT
-    }
-    if (definition.pillar) {
-        return 6U;  // RotatedPillarBlock.AXIS, stored as a facing
-    }
-    if (definition.horizontalFacing) {
-        return 4U;  // HorizontalDirectionalBlock.FACING
-    }
-    return 1U;
-}
-
-// How many fluid levels a block can carry. Only the fluids themselves do;
-// waterlogging would widen this to every block that admits it.
-[[nodiscard]] constexpr std::uint16_t blockFluidLevelCount(const BlockDefinition& definition) {
-    return isFluid(definition.block) ? 9U : 1U;
-}
-
-// AbstractFurnaceBlock.LIT: two states, or one for everything that never burns.
-[[nodiscard]] constexpr std::uint16_t blockLitCount(const BlockDefinition& definition) {
-    return definition.lit ? 2U : 1U;
-}
-
-// A state is one point in the product of the axes a block declares. Three axes
-// is where this stops being worth hand-rolling: a general property list (the
-// shape vanilla's StateDefinition has) is the natural home for the fourth, and
-// belongs with the block behaviour work.
+// How many states a block has: the product of its declared properties.
 [[nodiscard]] constexpr std::uint16_t blockStateCount(const BlockDefinition& definition) {
-    return static_cast<std::uint16_t>(blockStateSlotCount(definition) *
-                                      blockFluidLevelCount(definition) *
-                                      blockLitCount(definition));
+    return definition.states.stateCount();
 }
 
 inline constexpr std::size_t kBlockKindCount = static_cast<std::size_t>(Block::Count);
@@ -101,82 +65,126 @@ inline constexpr std::uint32_t kBlockStateCount = kBlockStateRangeStarts[kBlockK
 
 // The whole point of interning is that ids stay inside a u16. If a future
 // content drop ever pushes past this, the id type widens — it does not silently
-// wrap.
+// wrap. Stairs and doors are what will move this number; the assertion is the
+// tripwire, not a claim that the budget is comfortable.
 static_assert(kBlockStateCount <= 65536U,
               "the interned block-state table must fit in a std::uint16_t id");
 
-// Resolves a block plus its slot and fluid level to the interned id. Values
-// outside the block's declared range fall back to that block's default state,
-// the same way ChunkSection::setBlock already resets the slot when a cell's
-// block changes — an invalid combination has never been representable, and now
-// it is not numberable either.
-[[nodiscard]] constexpr std::uint16_t blockStateId(Block block, BlockOrientation orientation,
-                                                   std::uint8_t fluidLevel, bool lit = false) {
-    const auto kind = isValidBlock(block) ? static_cast<std::size_t>(block) : 0U;
-    const auto& definition = kBlockRegistry[kind];
-    const std::uint16_t slotCount = blockStateSlotCount(definition);
-    const std::uint16_t fluidCount = blockFluidLevelCount(definition);
-    const std::uint16_t litCount = blockLitCount(definition);
-    std::uint16_t slot = static_cast<std::uint16_t>(orientation);
-    if (slot >= slotCount) slot = 0U;
-    std::uint16_t fluid = fluidLevel;
-    if (fluid >= fluidCount) fluid = 0U;
-    const std::uint16_t litIndex = (lit && litCount > 1U) ? 1U : 0U;
-    return static_cast<std::uint16_t>(kBlockStateRangeStarts[kind] +
-                                      (slot * fluidCount + fluid) * litCount + litIndex);
-}
+// Hot-path metadata, indexed directly by the raw state id. Java stores these
+// values on every BlockStateBase instance and precomputes its cache; C++ keeps
+// the cell itself at two bytes and moves the immutable metadata to one compact
+// constexpr structure-of-arrays table. Reading a property is a bounds check
+// plus two indexed loads, never a division and never a search.
+//
+// `values` is one row per property, so an absent property reads back as 0 for
+// every state of a block that does not declare it — which is why every
+// property's zero has to be its sensible default (north, age 0, unlit, dry).
+struct BlockStateMetadataTable final {
+    std::array<Block, kBlockStateCount> blocks{};
+    std::array<std::array<std::uint8_t, kBlockStateCount>, kStatePropertyCount> values{};
+    std::array<std::uint8_t, kBlockStateCount> emittedLights{};
+};
 
-// The inverse: which block owns an id. A binary search over the range starts
-// would also work; the linear walk is constexpr-friendly and this is only
-// reached from the accessors below, which the compiler folds at every constant
-// call site.
-[[nodiscard]] constexpr std::size_t blockKindOfState(std::uint16_t id) {
-    std::size_t low = 0U;
-    std::size_t high = kBlockKindCount - 1U;
-    while (low < high) {
-        const std::size_t middle = (low + high + 1U) / 2U;
-        if (kBlockStateRangeStarts[middle] <= id) {
-            low = middle;
-        } else {
-            high = middle - 1U;
+[[nodiscard]] constexpr BlockStateMetadataTable buildBlockStateMetadata() {
+    BlockStateMetadataTable result{};
+    for (std::size_t kind = 0; kind < kBlockKindCount; ++kind) {
+        const auto& definition = kBlockRegistry[kind];
+        const auto& schema = definition.states;
+        for (std::uint16_t id = kBlockStateRangeStarts[kind];
+             id < kBlockStateRangeStarts[kind + 1U]; ++id) {
+            const auto offset =
+                static_cast<std::uint16_t>(id - kBlockStateRangeStarts[kind]);
+            result.blocks[id] = static_cast<Block>(kind);
+            for (std::size_t axisIndex = 0; axisIndex < schema.size(); ++axisIndex) {
+                const auto axis = schema.axis(axisIndex);
+                const auto digit = static_cast<std::uint8_t>(
+                    (offset / schema.stride(axisIndex)) % axis.valueCount);
+                result.values[static_cast<std::size_t>(axis.property)][id] = digit;
+            }
+            const bool isLit =
+                result.values[static_cast<std::size_t>(StateProperty::Lit)][id] != 0U;
+            result.emittedLights[id] = isLit ? definition.litLight : definition.light;
         }
     }
-    return low;
+    return result;
+}
+
+inline constexpr auto kBlockStateMetadata = buildBlockStateMetadata();
+
+[[nodiscard]] constexpr std::uint16_t validatedBlockStateId(std::uint16_t id) {
+    return id < kBlockStateCount ? id : 0U;
+}
+
+// A block's default state: every property at value 0. This is what placing a
+// block with nothing further to say produces.
+[[nodiscard]] constexpr std::uint16_t defaultBlockStateId(Block block) {
+    const auto kind = isValidBlock(block) ? static_cast<std::size_t>(block) : 0U;
+    return kBlockStateRangeStarts[kind];
+}
+
+// One property's value, straight out of the cache.
+[[nodiscard]] constexpr std::uint8_t stateValueOf(std::uint16_t id, StateProperty property) {
+    return kBlockStateMetadata
+        .values[static_cast<std::size_t>(property)][validatedBlockStateId(id)];
+}
+
+// The same state with one property changed.
+//
+// A property the block does not declare is not an error and not representable:
+// the id comes back unchanged, the way an invalid combination has never been
+// numberable. A value outside the property's range falls back to 0 for the same
+// reason — this mirrors what ChunkSection::setBlock already did when a cell's
+// block changed under its state.
+[[nodiscard]] constexpr std::uint16_t withStateValue(std::uint16_t id, StateProperty property,
+                                                     std::uint8_t value) {
+    const auto validId = validatedBlockStateId(id);
+    const auto kind = static_cast<std::size_t>(kBlockStateMetadata.blocks[validId]);
+    const auto& schema = kBlockRegistry[kind].states;
+    const auto stride = schema.strideOf(property);
+    if (stride == 0U) {
+        return validId; // the block has no such property
+    }
+    const auto count = schema.valueCount(property);
+    const std::uint8_t next = value < count ? value : 0U;
+    const auto current = stateValueOf(validId, property);
+    return static_cast<std::uint16_t>(validId + (next - current) * stride);
 }
 
 [[nodiscard]] constexpr Block blockOfState(std::uint16_t id) {
-    return static_cast<Block>(blockKindOfState(id));
+    return kBlockStateMetadata.blocks[validatedBlockStateId(id)];
 }
 
 [[nodiscard]] constexpr BlockOrientation orientationOfState(std::uint16_t id) {
-    const auto kind = blockKindOfState(id);
-    const auto& definition = kBlockRegistry[kind];
-    const std::uint16_t offset = static_cast<std::uint16_t>(id - kBlockStateRangeStarts[kind]);
-    return static_cast<BlockOrientation>(
-        offset / (blockFluidLevelCount(definition) * blockLitCount(definition)));
+    return static_cast<BlockOrientation>(stateValueOf(id, StateProperty::Facing));
 }
 
 [[nodiscard]] constexpr std::uint8_t fluidLevelOfState(std::uint16_t id) {
-    const auto kind = blockKindOfState(id);
-    const auto& definition = kBlockRegistry[kind];
-    const std::uint16_t offset = static_cast<std::uint16_t>(id - kBlockStateRangeStarts[kind]);
-    return static_cast<std::uint8_t>((offset / blockLitCount(definition)) %
-                                     blockFluidLevelCount(definition));
+    return stateValueOf(id, StateProperty::FluidLevel);
 }
 
 [[nodiscard]] constexpr bool litOfState(std::uint16_t id) {
-    const auto kind = blockKindOfState(id);
-    const std::uint16_t offset = static_cast<std::uint16_t>(id - kBlockStateRangeStarts[kind]);
-    return offset % blockLitCount(kBlockRegistry[kind]) != 0U;
+    return stateValueOf(id, StateProperty::Lit) != 0U;
 }
 
-// The light a state emits. This is why `lit` had to become a state rather than
-// a second block: the light engine reads it per cell, and a furnace's 13 only
-// applies while it is burning.
+// The light a state emits. This is why `lit` had to become a property rather
+// than a second block: the light engine reads it per cell, and a furnace's 13
+// only applies while it is burning.
 [[nodiscard]] constexpr std::uint8_t emittedLightOfState(std::uint16_t id) {
-    const auto kind = blockKindOfState(id);
-    const auto& definition = kBlockRegistry[kind];
-    return litOfState(id) ? definition.litLight : definition.light;
+    return kBlockStateMetadata.emittedLights[validatedBlockStateId(id)];
+}
+
+// Resolves a block plus the three properties the old three-axis table had to
+// the interned id. Kept because facing, fluid level and lit are the properties
+// most placement paths actually name; anything else goes through
+// `BlockState::with(StateProperty, value)`.
+[[nodiscard]] constexpr std::uint16_t blockStateId(Block block,
+                                                   BlockOrientation orientation,
+                                                   std::uint8_t fluidLevel, bool lit = false) {
+    auto id = defaultBlockStateId(block);
+    id = withStateValue(id, StateProperty::Facing, static_cast<std::uint8_t>(orientation));
+    id = withStateValue(id, StateProperty::FluidLevel, fluidLevel);
+    id = withStateValue(id, StateProperty::Lit, lit ? 1U : 0U);
+    return id;
 }
 
 } // namespace mc::world

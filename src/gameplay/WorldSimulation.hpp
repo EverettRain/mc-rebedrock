@@ -1,9 +1,15 @@
 #pragma once
 
+#include "gameplay/ChunkTickScheduler.hpp"
+#include "gameplay/EnvironmentSnapshot.hpp"
+#include "gameplay/SimulationPosition.hpp"
 #include "world/Block.hpp"
+#include "world/BlockState.hpp"
+#include "world/WorldMutationService.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <deque>
 #include <optional>
 #include <unordered_set>
@@ -20,32 +26,28 @@ namespace mc::gameplay {
 inline constexpr std::uint8_t kMaximumHorizontalWaterLevel = 7U;
 inline constexpr std::uint8_t kFallingWaterLevel = 8U;
 
-struct SimulationPosition final {
-    int x = 0;
-    int y = 0;
-    int z = 0;
-
-    [[nodiscard]] bool operator==(const SimulationPosition&) const = default;
-};
-
-struct SimulationPositionHash final {
-    [[nodiscard]] std::size_t operator()(const SimulationPosition& position) const noexcept;
-};
 
 struct BlockChange final {
     SimulationPosition position;
-    world::Block block = world::Block::Air;
-    std::uint8_t fluidLevel = 0U;
-    // The block that was removed and should drop as an item, if any. Set when
-    // an attached block loses its support or a fluid washes it away.
-    world::Block dropped = world::Block::Air;
-    // The orientation a state-carrying block should land on: a crop's new age,
-    // farmland's new moisture. Nullopt for an ordinary block swap, which takes
-    // the block's default orientation.
-    std::optional<world::BlockOrientation> orientation;
-    // The orientation of the dropped block, so a crop that pops keeps the age
-    // it was broken at when its loot table rolls.
-    world::BlockOrientation droppedOrientation = world::BlockOrientation::North;
+    // The state the cell should end up in. One value rather than the block,
+    // fluid level and optional orientation this used to carry: that trio could
+    // not name a crop's new age except by smuggling it through the direction
+    // enum, which is the overloading the state schema removed.
+    world::BlockState state{};
+    // The state that should drop as an item, air for none. Usually the state
+    // removed by the edit; a failed falling-block landing carries the entity's
+    // block here while worldChanged remains false. A popped crop keeps the age
+    // it was broken at, so its loot table rolls against the right stage.
+    world::BlockState dropped{};
+    // Gravity entities hand geometry from a chunk mesh to a moving draw and
+    // back again. Those two boundary edits must rebuild the render mesh in the
+    // same frame or the old cube overlaps the entity (and the landing leaves a
+    // temporary hole) while the background streamer catches up.
+    bool immediateRenderUpdate = false;
+    // False for an entity-only drop event. A falling block that cannot occupy
+    // its landing cell must turn into an item without submitting a fictitious
+    // edit for the block already stored in that cell.
+    bool worldChanged = true;
 };
 
 // What a leaf's support search concluded. A search that walked into a chunk the
@@ -71,6 +73,54 @@ struct FallingBlockEntity final {
 
 class WorldSimulation final {
   public:
+    // Everything one randomly-ticked block needs. Passed by reference so the
+    // dispatch stays a single indirect call with one argument, whatever the
+    // behaviour ends up needing.
+    struct RandomTickContext final {
+        world::World& world;
+        SimulationPosition position;
+        world::Block block;
+        std::vector<BlockChange>& changes;
+        WorldSimulation& simulation;
+    };
+    using RandomTickFn = void (*)(const RandomTickContext&);
+
+    // The table's entries. Plain function pointers, but members of
+    // WorldSimulation so they can still reach its private state through the
+    // context.
+    static void randomTickGrassEntry(const RandomTickContext& context);
+    static void randomTickSaplingEntry(const RandomTickContext& context);
+    static void randomTickCropEntry(const RandomTickContext& context);
+    static void randomTickFarmlandEntry(const RandomTickContext& context);
+
+    // The behaviour table, indexed by block: a null entry means the block has no
+    // random tick. This replaces the switch this used to be — 26.1 dispatches
+    // through BlockBehaviour rather than a case list.
+    //
+    // It is constexpr and lives in the header on purpose. At randomTickSpeed 100
+    // the draw loop runs tens of thousands of times per tick and virtually every
+    // draw lands on air or stone, so the reject has to inline to one indexed
+    // load. An out-of-line table costs a call plus a static-init guard on that
+    // path, which measured ~4% slower than the switch — inside the plan's 5%
+    // gate, but paying anything here for no reason is the wrong trade.
+    static constexpr std::array<RandomTickFn, static_cast<std::size_t>(world::Block::Count)>
+        kRandomTickTable = [] {
+            std::array<RandomTickFn, static_cast<std::size_t>(world::Block::Count)> entries{};
+            entries[static_cast<std::size_t>(world::Block::Grass)] = &randomTickGrassEntry;
+            for (const auto sapling :
+                 {world::Block::OakSapling, world::Block::SpruceSapling, world::Block::BirchSapling,
+                  world::Block::JungleSapling, world::Block::AcaciaSapling,
+                  world::Block::DarkOakSapling}) {
+                entries[static_cast<std::size_t>(sapling)] = &randomTickSaplingEntry;
+            }
+            for (const auto crop :
+                 {world::Block::WheatCrops, world::Block::Carrots, world::Block::Potatoes}) {
+                entries[static_cast<std::size_t>(crop)] = &randomTickCropEntry;
+            }
+            entries[static_cast<std::size_t>(world::Block::Farmland)] = &randomTickFarmlandEntry;
+            return entries;
+        }();
+
     static constexpr std::size_t kMaximumWaterUpdatesPerPhase = 16U;
     // How many saplings may grow into trees in one game tick. Growing a tree
     // writes a couple of hundred blocks through the change pipeline on the
@@ -107,32 +157,62 @@ class WorldSimulation final {
 
     void notifyPlaced(SimulationPosition position, world::Block block);
     void notifyNeighborChanged(const world::World& world, SimulationPosition position);
+    // Whether a block has a random tick at all — the draw loop's pre-filter, and
+    // the cheapest possible statement of "does this block do anything on a
+    // random tick". Public because it is a property of the block set, and a
+    // block silently leaving it has no other symptom than grass quietly no
+    // longer spreading.
+    [[nodiscard]] static constexpr bool isRandomlyTicking(world::Block block) {
+        const auto index = static_cast<std::size_t>(block);
+        return index < kRandomTickTable.size() && kRandomTickTable[index] != nullptr;
+    }
+
     [[nodiscard]] std::vector<BlockChange> tick(
         world::World& world,
         bool processFluidUpdates = true);
     [[nodiscard]] const std::vector<FallingBlockEntity>& fallingBlocks() const {
         return fallingBlocks_;
     }
+    // Puts a block back mid-fall from a save. Without it a world saved during a
+    // collapse reloads with the column's blocks nowhere at all: they are in
+    // neither the chunk nor the drop list while airborne.
+    void restoreFallingBlock(glm::vec3 position, world::Block block, float verticalVelocity) {
+        fallingBlocks_.push_back({position, position, verticalVelocity, block, false});
+    }
     [[nodiscard]] std::size_t pendingWaterUpdateCount() const {
-        return activeWater_.size();
+        return ticks_.pending(TickTask::Fluid);
     }
     [[nodiscard]] std::size_t lastWaterUpdatesProcessed() const {
         return lastWaterUpdatesProcessed_;
     }
     [[nodiscard]] std::size_t pendingLeafDecayCount() const {
-        return queuedLeafDecays_.size();
+        return ticks_.pending(TickTask::LeafDecay);
     }
     // The `/gamerule randomTickSpeed` value: how many random blocks per
     // 16x16x16 section are drawn every game tick. Vanilla's default is 3; 0
     // disables random ticks (and with them grass spread, sapling growth and
     // leaf decay).
+    // Drops every tick scheduled inside a chunk the world no longer holds.
+    // With the flat queues an entry outlived its chunk and later fired against
+    // cells that were not loaded; per-chunk storage is what makes forgetting
+    // them a single erase.
+    void forgetChunk(int chunkX, int chunkZ) { ticks_.forgetChunk(chunkX, chunkZ); }
+    [[nodiscard]] const ChunkTickScheduler& scheduledTicks() const { return ticks_; }
+
     void setRandomTickSpeed(int speed) { randomTickSpeed_ = speed; }
     [[nodiscard]] int randomTickSpeed() const { return randomTickSpeed_; }
+
+    // The environment the current tick runs under, resolved once by the session
+    // and handed down. Growth and spreading read fields off it rather than
+    // asking a clock or the weather what is going on — 26.1 routes the same
+    // facts through EnvironmentAttributes for the same reason.
+    void setEnvironment(const EnvironmentSnapshot& environment) { environment_ = environment; }
+    [[nodiscard]] const EnvironmentSnapshot& environment() const { return environment_; }
     [[nodiscard]] std::size_t lastTreeGrowthsProcessed() const {
         return lastTreeGrowthsProcessed_;
     }
     [[nodiscard]] std::size_t pendingTreeGrowthCount() const {
-        return queuedTreeGrowths_.size();
+        return ticks_.pending(TickTask::TreeGrowth);
     }
     [[nodiscard]] std::size_t lastRandomTickConversions() const {
         return randomTickConversionsThisTick_;
@@ -159,6 +239,8 @@ class WorldSimulation final {
     void randomTicks(world::World& world, std::vector<BlockChange>& changes);
     void randomTickBlock(world::World& world, SimulationPosition position,
                          world::Block block, std::vector<BlockChange>& changes);
+
+
     void randomTickGrass(world::World& world, SimulationPosition position,
                          std::vector<BlockChange>& changes);
     // Applies one grass/spreadable conversion, unless this tick's conversion
@@ -167,10 +249,10 @@ class WorldSimulation final {
                                    world::Block block, std::vector<BlockChange>& changes);
     void randomTickSapling(world::World& world, SimulationPosition position,
                            std::vector<BlockChange>& changes);
-    // CropsBlock#randomTick: grows one age when the block above is lit enough
-    // and the moisture-weighted growth roll passes. The new age is written to
-    // the crop's orientation state and emitted as an orientation BlockChange.
-    void randomTickCrop(world::World& world, SimulationPosition position, world::Block block,
+    // CropBlock#randomTick: grows one age when the block above is lit enough
+    // and the moisture-weighted growth roll passes. The grown state is written
+    // to the world and emitted as a BlockChange.
+    void randomTickCrop(world::World& world, SimulationPosition position,
                         std::vector<BlockChange>& changes);
     // FarmlandBlock#randomTick: near water the moisture jumps to 7, otherwise it
     // dries one level, reverting to dirt at 0 once no crop stands on it.
@@ -198,11 +280,14 @@ class WorldSimulation final {
     void growTrees(world::World& world, std::vector<BlockChange>& changes);
     void growTreeAt(world::World& world, SimulationPosition position,
                     world::Block sapling, std::vector<BlockChange>& changes);
-    // Combined light level, Java's getLightLevel(pos, 0): max of the sky and
-    // block channels. The stored arrays hold static full-sun values, which is
-    // exactly what 1.16.1's growth and spread checks read (skylightSubtracted
-    // is never applied to them).
-    [[nodiscard]] static int lightAt(const world::World& world, SimulationPosition position);
+    // getRawBrightness(pos, 0) and getMaxLocalRawBrightness(pos): the two
+    // readings vanilla actually distinguishes. These used to be one shared
+    // `lightAt` that never subtracted anything, which is why growth and
+    // spreading behaved identically at noon and at midnight.
+    [[nodiscard]] static int rawBrightnessAt(
+        const world::World& world, SimulationPosition position);
+    [[nodiscard]] int localBrightnessAt(
+        const world::World& world, SimulationPosition position) const;
     void wakeWaterNeighbors(const world::World& world, SimulationPosition position);
     [[nodiscard]] std::optional<std::uint8_t> updatedWaterLevel(
         const world::World& world,
@@ -218,46 +303,27 @@ class WorldSimulation final {
         SimulationPosition origin,
         SimulationPosition previous,
         int depth) const;
-    void setSimulatedBlock(
+    bool setSimulatedBlock(
         world::World& world,
         SimulationPosition position,
         world::Block block,
         std::vector<BlockChange>& changes,
-        std::uint8_t fluidLevel = 0U);
+        std::uint8_t fluidLevel = 0U,
+        bool immediateRenderUpdate = false);
 
-    std::deque<SimulationPosition> activeSand_;
-    struct ScheduledWaterUpdate final {
-        SimulationPosition position;
-        std::uint64_t dueTick = 0U;
-    };
+    // Every simulated block write goes through this, so the "did the cell
+    // actually change?" rule is the one the player's edits use.
+    world::WorldMutationService mutations_;
 
-    std::deque<ScheduledWaterUpdate> activeWater_;
-    std::unordered_set<SimulationPosition, SimulationPositionHash> queuedWater_;
-    std::deque<SimulationPosition> pendingSupportChecks_;
-    std::unordered_set<SimulationPosition, SimulationPositionHash> queuedSupportChecks_;
-    // Each unsupported leaf waits out its own draw from the random-tick
-    // distribution, so a canopy dissolves in scattered pieces rather than
-    // vanishing in one frame.
-    struct ScheduledLeafDecay final {
-        SimulationPosition position;
-        std::uint64_t dueTick = 0U;
-    };
-
-    std::vector<ScheduledLeafDecay> pendingLeafDecays_;
-    std::unordered_set<SimulationPosition, SimulationPositionHash> queuedLeafDecays_;
+    // The five flat queues this replaced — falling sand, fluid, support checks,
+    // leaf decay, tree growth — were the same `{position, dueTick}` + dedupe-set
+    // shape five times over. Keyed by chunk they can be dropped when the chunk
+    // unloads and saved with it; the drain order is unchanged (see the header).
+    ChunkTickScheduler ticks_;
+    EnvironmentSnapshot environment_{};
     std::uint32_t leafRandomState_ = 0x2545F491U;
     int randomTickSpeed_ = 3;
     std::uint32_t randomTickState_ = 0x2F6E2B1DU;
-    // Saplings that rolled a growth wait out the per-tick cap here, in the
-    // same due-tick shape leaf decay uses, so a whole batch that matures in
-    // one tick spreads over the following ones instead of stalling a frame.
-    struct ScheduledTreeGrowth final {
-        SimulationPosition position;
-        std::uint64_t dueTick = 0U;
-    };
-
-    std::vector<ScheduledTreeGrowth> pendingTreeGrowths_;
-    std::unordered_set<SimulationPosition, SimulationPositionHash> queuedTreeGrowths_;
     std::size_t lastTreeGrowthsProcessed_ = 0U;
     std::size_t randomTickConversionsThisTick_ = 0U;
     std::size_t leafDecayChecksThisTick_ = 0U;

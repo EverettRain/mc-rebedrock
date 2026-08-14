@@ -1,6 +1,9 @@
 #include "persistence/SaveRepository.hpp"
 
+#include "persistence/SaveStream.hpp"
+
 #include "world/DayNightCycle.hpp"
+#include "world/WorldConstants.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -25,17 +28,31 @@ constexpr std::array<std::uint8_t, 8> kMagic{'M', 'C', 'R', 'B', 'S', 'A', 'V', 
 // splits the single gameTimeSeconds into a server tick and the named clocks;
 // format 14 gives each block edit a LIT flag, after the burning furnace and the
 // four wall torches stopped being blocks of their own and became states.
-constexpr std::uint32_t kFormatVersion = 15U;
+// Format 17 stops writing sections at fixed offsets. Everything is a
+// self-describing block now, the reader dispatches on the tag, and adding a
+// state owner needs neither a format bump nor a positional read.
+constexpr std::uint32_t kFormatVersion = 18U;
+constexpr std::uint32_t kFirstOwnerDrivenFormatVersion = 17U;
 constexpr std::uint32_t kOldestSupportedFormatVersion = 1U;
 constexpr std::uint64_t kMaximumEdits = 16U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumChests = 1024U * 1024U;
 // Format 5 stopped writing raw enum ordinals and started writing a palette of
 // namespaced identifiers, so blocks may be added, removed or reordered freely.
 // Format 6 gave items the same treatment.
+// Format 18 stopped writing a cell as a block plus three loose fields and
+// started writing a palette of *states*: a block identifier plus named
+// properties. That is what lets a block gain a fourth property without the file
+// layout gaining a column.
+constexpr std::uint32_t kFirstStatePaletteFormatVersion = 18U;
 constexpr std::uint32_t kFirstBlockPaletteFormatVersion = 5U;
 constexpr std::uint32_t kFirstItemPaletteFormatVersion = 6U;
 constexpr std::uint32_t kMaximumPaletteEntries = 65535U;
-constexpr std::size_t kMaximumIdentifierLength = 256U;
+// What one edit costs on disk in each CHNK layout, plus a slack allowance for
+// the header, the palettes and the small blocks. Used to size the write buffer
+// up front and to reject a truncated block before reserving from a lying count.
+constexpr std::size_t kEditRecordBytes = 5U;         // CHNK version 2
+constexpr std::size_t kLegacyEditRecordBytes = 6U;   // CHNK version 1
+constexpr std::size_t kReservedPrologueBytes = 8192U;
 
 // The block order formats 1 through 4 wrote ordinals against. It is frozen
 // history: never reorder or remove a line, only append if an old save could
@@ -115,32 +132,42 @@ constexpr std::array<std::string_view, 27> kLegacyItemOrder{
     return gameplay::itemFromIdentifier(kLegacyItemOrder[ordinal]);
 }
 
-// Collects the registry entries a save actually mentions and hands out palette
-// indices. `Empty` is always index 0, so an index a reader cannot resolve still
-// means "nothing here".
-template <typename Value, Value Empty>
-class RegistryPalette final {
-  public:
-    [[nodiscard]] std::uint16_t indexOf(Value value) {
-        const auto existing = indices_.find(value);
-        if (existing != indices_.end()) return existing->second;
-        const auto index = static_cast<std::uint16_t>(entries_.size());
-        entries_.push_back(value);
-        indices_.emplace(value, index);
-        return index;
+// Formats 1-17 stored a cell as a block plus three loose fields, and the
+// orientation byte was overloaded: a crop's age, farmland's moisture and the
+// leaves persistence flag all rode in it, masked back out with `& 0x7`. This
+// turns that encoding into a state.
+//
+// Frozen history, exactly like the ordinal tables above: it describes what old
+// files contain. It must not be "kept in sync" with the current schema — if a
+// crop's age range ever changes, this function still decodes the old range.
+[[nodiscard]] world::BlockState legacyBlockState(world::Block block, std::uint8_t orientation,
+                                                 std::uint8_t fluidLevel, bool lit) {
+    auto state = world::BlockState{block};
+    if (world::isCrop(block)) {
+        state = state.withAge(orientation & 0x7);
+    } else if (world::isFarmland(block)) {
+        state = state.withMoisture(orientation & 0x7);
+    } else if (world::isLeaves(block)) {
+        // kPersistentLeavesState was BlockOrientation::East, ordinal 1.
+        state = state.withPersistent(orientation == 1U);
+    } else {
+        state = state.with(world::StateProperty::Facing, orientation);
     }
+    return state.withFluidLevel(fluidLevel).withLit(lit);
+}
 
-    [[nodiscard]] std::span<const Value> entries() const { return entries_; }
-
-  private:
-    std::vector<Value> entries_{Empty};
-    std::unordered_map<Value, std::uint16_t> indices_{{Empty, 0U}};
-};
-
-using BlockPalette = RegistryPalette<world::Block, world::Block::Air>;
+// Blocks are a dense uint8 enum, so the palette indexes an array instead of
+// hashing: one load per stack rather than a hash and a bucket walk.
+using BlockPalette = DensePalette<world::Block, world::Block::Air, 256U>;
+// States are keyed by their raw interned id, which is compact but *not* stable
+// across builds — so the id is only ever the palette's key, never the thing
+// written. Each entry goes to disk as a block identifier plus its named
+// property values. Air's default state is id 0, which is the palette's empty
+// sentinel and therefore index 0, exactly like the block palette's air.
+using StatePalette = HashPalette<std::uint16_t, 0U>;
 // Items are keyed by their registered instance; nullptr is the block sentinel
 // and, as always, palette index 0.
-using ItemPalette = RegistryPalette<const gameplay::Item*, nullptr>;
+using ItemPalette = HashPalette<const gameplay::Item*, nullptr>;
 
 [[nodiscard]] std::int64_t nowUnixSeconds() {
     return std::chrono::duration_cast<std::chrono::seconds>(
@@ -169,57 +196,8 @@ using ItemPalette = RegistryPalette<const gameplay::Item*, nullptr>;
     return values;
 }
 
-template <typename Integer>
-void appendInteger(std::vector<std::uint8_t>& bytes, Integer value) {
-    using Unsigned = std::make_unsigned_t<Integer>;
-    const Unsigned converted = static_cast<Unsigned>(value);
-    for (std::size_t index = 0; index < sizeof(Integer); ++index) {
-        bytes.push_back(static_cast<std::uint8_t>(converted >> (index * 8U)));
-    }
-}
-
-template <typename Integer>
-[[nodiscard]] Integer readInteger(
-    std::span<const std::uint8_t> bytes, std::size_t& cursor) {
-    if (cursor + sizeof(Integer) > bytes.size()) {
-        throw std::runtime_error("Save data ended unexpectedly");
-    }
-    using Unsigned = std::make_unsigned_t<Integer>;
-    Unsigned value = 0;
-    for (std::size_t index = 0; index < sizeof(Integer); ++index) {
-        value |= static_cast<Unsigned>(bytes[cursor++]) << (index * 8U);
-    }
-    return static_cast<Integer>(value);
-}
-
-void appendString(std::vector<std::uint8_t>& bytes, std::string_view text) {
-    appendInteger(bytes, static_cast<std::uint16_t>(text.size()));
-    bytes.insert(bytes.end(), text.begin(), text.end());
-}
-
-[[nodiscard]] std::string readString(std::span<const std::uint8_t> bytes, std::size_t& cursor) {
-    const auto length = readInteger<std::uint16_t>(bytes, cursor);
-    if (length > kMaximumIdentifierLength || cursor + length > bytes.size()) {
-        throw std::runtime_error("Save data contains an oversized string");
-    }
-    std::string text(reinterpret_cast<const char*>(bytes.data() + cursor), length);
-    cursor += length;
-    return text;
-}
-
-void appendFloat(std::vector<std::uint8_t>& bytes, float value) {
-    appendInteger(bytes, std::bit_cast<std::uint32_t>(value));
-}
-void appendDouble(std::vector<std::uint8_t>& bytes, double value) {
-    appendInteger(bytes, std::bit_cast<std::uint64_t>(value));
-}
-[[nodiscard]] float readFloat(std::span<const std::uint8_t> bytes, std::size_t& cursor) {
-    return std::bit_cast<float>(readInteger<std::uint32_t>(bytes, cursor));
-}
-[[nodiscard]] double readDouble(std::span<const std::uint8_t> bytes, std::size_t& cursor) {
-    return std::bit_cast<double>(readInteger<std::uint64_t>(bytes, cursor));
-}
-
+// FNV-1a over everything before the trailing checksum field: a torn or edited
+// world.dat is rejected rather than half-loaded.
 [[nodiscard]] std::uint64_t checksum(std::span<const std::uint8_t> bytes) {
     std::uint64_t hash = 1469598103934665603ULL;
     for (const auto byte : bytes) {
@@ -673,6 +651,177 @@ void readEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
     }
 }
 
+// The DROP block is the self-describing region format 16 appends, carrying the
+// two entity kinds that had no home in the save: dropped items and blocks
+// mid-fall.
+//
+//   u32 blockTag          // 'D','R','O','P'
+//   u32 blockSizeBytes    // whole block length incl. this field
+//   u16 blockVersion
+//   u16 itemPaletteCount, [string]*   // "" is the block-only sentinel
+//   u16 blockPaletteCount, [string]*
+//   u32 dropCount
+//   drops[]:  u16 itemIndex, u16 blockIndex, u8 count,
+//             f32 x, y, z, f32 vx, vy, vz, u32 ageTicks
+//   u32 fallingCount
+//   falling[]: u16 blockIndex, f32 x, y, z, f32 verticalVelocity
+//
+// Both palettes are local to the block, the way the entity block keeps its own
+// species list: an item or block dropped from a future build skips cleanly
+// instead of renumbering anything.
+constexpr std::uint32_t kDropBlockTag =
+    'D' | ('R' << 8) | ('O' << 16) | ('P' << 24);
+constexpr std::uint16_t kDropBlockVersion = 1U;
+
+void appendDropBlock(std::vector<std::uint8_t>& bytes,
+                     const std::vector<PersistentItemDrop>& drops,
+                     const std::vector<PersistentFallingBlock>& falling) {
+    const std::size_t blockStart = bytes.size();
+    appendInteger(bytes, kDropBlockTag);
+    appendInteger(bytes, 0U);  // blockSizeBytes, patched below
+    appendInteger(bytes, kDropBlockVersion);
+
+    ItemPalette itemPalette;
+    BlockPalette blockPalette;
+    for (const auto& drop : drops) {
+        static_cast<void>(itemPalette.indexOf(drop.stack.item));
+        static_cast<void>(blockPalette.indexOf(drop.stack.block));
+    }
+    for (const auto& entity : falling) {
+        static_cast<void>(blockPalette.indexOf(entity.block));
+    }
+    appendInteger(bytes, static_cast<std::uint16_t>(itemPalette.entries().size()));
+    for (const auto* item : itemPalette.entries()) {
+        appendString(bytes, item == nullptr ? std::string{} : item->identifier.toString());
+    }
+    appendInteger(bytes, static_cast<std::uint16_t>(blockPalette.entries().size()));
+    for (const auto block : blockPalette.entries()) {
+        appendString(bytes, world::blockDefinition(block).identifier.toString());
+    }
+
+    appendInteger(bytes, static_cast<std::uint32_t>(drops.size()));
+    for (const auto& drop : drops) {
+        appendInteger(bytes, itemPalette.indexOf(drop.stack.item));
+        appendInteger(bytes, blockPalette.indexOf(drop.stack.block));
+        appendInteger(bytes, drop.stack.count);
+        appendFloat(bytes, drop.x);
+        appendFloat(bytes, drop.y);
+        appendFloat(bytes, drop.z);
+        appendFloat(bytes, drop.vx);
+        appendFloat(bytes, drop.vy);
+        appendFloat(bytes, drop.vz);
+        appendInteger(bytes, drop.ageTicks);
+    }
+    appendInteger(bytes, static_cast<std::uint32_t>(falling.size()));
+    for (const auto& entity : falling) {
+        appendInteger(bytes, blockPalette.indexOf(entity.block));
+        appendFloat(bytes, entity.x);
+        appendFloat(bytes, entity.y);
+        appendFloat(bytes, entity.z);
+        appendFloat(bytes, entity.verticalVelocity);
+    }
+    const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
+    for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
+        bytes[blockStart + 4U + offset] =
+            static_cast<std::uint8_t>(blockSize >> (offset * 8U));
+    }
+}
+
+void readDropBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                   std::vector<PersistentItemDrop>& drops,
+                   std::vector<PersistentFallingBlock>& falling) {
+    const std::size_t blockStart = cursor;
+    if (blockStart + 12U > payload.size()) {
+        throw std::runtime_error("world.dat drop block is truncated");
+    }
+    const auto tag = readInteger<std::uint32_t>(payload, cursor);
+    if (tag != kDropBlockTag) {
+        throw std::runtime_error("world.dat has an invalid drop block");
+    }
+    const auto blockSize = readInteger<std::uint32_t>(payload, cursor);
+    if (blockSize < 12U || static_cast<std::size_t>(blockSize) > payload.size() - blockStart) {
+        throw std::runtime_error("world.dat drop block is malformed");
+    }
+    const auto blockVersion = readInteger<std::uint16_t>(payload, cursor);
+    if (blockVersion > kDropBlockVersion) {
+        cursor = blockStart + blockSize;
+        return;
+    }
+    const std::size_t blockEnd = blockStart + blockSize;
+
+    const auto itemCount = readInteger<std::uint16_t>(payload, cursor);
+    std::vector<const gameplay::Item*> items;
+    items.reserve(itemCount);
+    for (std::uint16_t index = 0; index < itemCount; ++index) {
+        const auto name = readString(payload, cursor);
+        items.push_back(name.empty() ? nullptr : gameplay::itemFromIdentifier(name));
+    }
+    const auto blockCount = readInteger<std::uint16_t>(payload, cursor);
+    std::vector<world::Block> blocks;
+    blocks.reserve(blockCount);
+    for (std::uint16_t index = 0; index < blockCount; ++index) {
+        const auto name = readString(payload, cursor);
+        blocks.push_back(world::blockFromIdentifier(name).value_or(world::Block::Air));
+    }
+
+    const auto dropCount = readInteger<std::uint32_t>(payload, cursor);
+    drops.reserve(static_cast<std::size_t>(dropCount));
+    for (std::uint32_t index = 0; index < dropCount; ++index) {
+        if (cursor >= blockEnd) {
+            throw std::runtime_error("world.dat drop block is truncated");
+        }
+        const auto itemIndex = readInteger<std::uint16_t>(payload, cursor);
+        const auto blockIndex = readInteger<std::uint16_t>(payload, cursor);
+        if (itemIndex >= items.size() || blockIndex >= blocks.size()) {
+            throw std::runtime_error("world.dat drop block references an unknown palette entry");
+        }
+        PersistentItemDrop drop;
+        drop.stack.item = items[itemIndex];
+        drop.stack.block = blocks[blockIndex];
+        drop.stack.count = readInteger<std::uint8_t>(payload, cursor);
+        drop.x = readFloat(payload, cursor);
+        drop.y = readFloat(payload, cursor);
+        drop.z = readFloat(payload, cursor);
+        drop.vx = readFloat(payload, cursor);
+        drop.vy = readFloat(payload, cursor);
+        drop.vz = readFloat(payload, cursor);
+        drop.ageTicks = readInteger<std::uint32_t>(payload, cursor);
+        if (!(drop.y >= -64.0F && drop.y <= 384.0F)) {
+            throw std::runtime_error("world.dat drop block has an invalid position");
+        }
+        // An empty stack would come back as an invisible, unpickable entity.
+        if (!drop.stack.empty()) {
+            drops.push_back(drop);
+        }
+    }
+    const auto fallingCount = readInteger<std::uint32_t>(payload, cursor);
+    falling.reserve(static_cast<std::size_t>(fallingCount));
+    for (std::uint32_t index = 0; index < fallingCount; ++index) {
+        if (cursor >= blockEnd) {
+            throw std::runtime_error("world.dat drop block is truncated");
+        }
+        const auto blockIndex = readInteger<std::uint16_t>(payload, cursor);
+        if (blockIndex >= blocks.size()) {
+            throw std::runtime_error("world.dat drop block references an unknown palette entry");
+        }
+        PersistentFallingBlock entity;
+        entity.block = blocks[blockIndex];
+        entity.x = readFloat(payload, cursor);
+        entity.y = readFloat(payload, cursor);
+        entity.z = readFloat(payload, cursor);
+        entity.verticalVelocity = readFloat(payload, cursor);
+        if (!(entity.y >= -64.0F && entity.y <= 384.0F)) {
+            throw std::runtime_error("world.dat drop block has an invalid position");
+        }
+        if (entity.block != world::Block::Air) {
+            falling.push_back(entity);
+        }
+    }
+    if (cursor != blockEnd) {
+        throw std::runtime_error("world.dat drop block has trailing data");
+    }
+}
+
 // The CLOCK block is the self-describing region format 13 appends after the
 // entity block, mirroring the GameRules framing:
 //
@@ -757,6 +906,592 @@ void readClockBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
     }
 }
 
+// --- Format 17: the owner-driven blocks -------------------------------------
+//
+// Everything a format-16 save wrote at a fixed header offset — the player, the
+// block edits, the chests, the furnaces — now lives in a block of its own, and
+// the reader dispatches on the tag instead of counting bytes from the start of
+// the file. What that buys: a new state owner is one table entry rather than a
+// field, a positional read and a format bump; blocks may be written in any
+// order; and a block this build does not recognise is skipped by its own size
+// instead of desynchronising everything after it.
+
+// What a writer needs: the game and the two palettes every record indexes into.
+struct SaveWriteContext final {
+    const SaveGame& game;
+    BlockPalette& blocks;
+    ItemPalette& items;
+};
+
+// What a reader needs. `stacks` resolves a palette-indexed stack; the legacy
+// loader has its own version of that, which is why it is a callback rather than
+// a direct palette lookup.
+struct SaveReadContext final {
+    SaveGame& game;
+    std::span<const world::Block> blocks;
+    std::span<const gameplay::Item* const> items;
+};
+
+[[nodiscard]] world::Block resolveBlock(const SaveReadContext& context, std::uint16_t index) {
+    if (index >= context.blocks.size()) {
+        throw std::runtime_error("world.dat references a block outside the palette");
+    }
+    return context.blocks[index];
+}
+
+[[nodiscard]] const gameplay::Item* resolveItem(
+    const SaveReadContext& context,
+    std::uint16_t index) {
+    if (index >= context.items.size()) {
+        throw std::runtime_error("world.dat references an item outside the palette");
+    }
+    return context.items[index];
+}
+
+void appendStack(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context,
+                 const gameplay::ItemStack& stack) {
+    appendInteger(bytes, context.blocks.indexOf(stack.block));
+    appendInteger(bytes, stack.count);
+    appendInteger(bytes, context.items.indexOf(stack.item));
+    appendInteger(bytes, stack.damage);
+}
+
+void readStackRecord(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                     const SaveReadContext& context, gameplay::ItemStack& stack) {
+    stack.block = resolveBlock(context, readInteger<std::uint16_t>(payload, cursor));
+    stack.count = readInteger<std::uint8_t>(payload, cursor);
+    stack.item = resolveItem(context, readInteger<std::uint16_t>(payload, cursor));
+    stack.damage = readInteger<std::uint16_t>(payload, cursor);
+    if (stack.damage > gameplay::itemMaximumDamage(stack)) {
+        throw std::runtime_error("world.dat contains an over-damaged item");
+    }
+}
+
+// A slot array written sparsely: only the occupied slots travel, each behind its
+// own index. A chest holding three items costs 25 bytes instead of the 189 a
+// dense array of 27 stacks would, and the common case in a played world is a
+// chest that is mostly air.
+template <typename Slots>
+void appendSlots(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context,
+                 const Slots& slots) {
+    std::uint16_t used = 0U;
+    for (const auto& stack : slots) {
+        if (!stack.empty()) {
+            ++used;
+        }
+    }
+    appendInteger(bytes, used);
+    for (std::size_t index = 0; index < slots.size(); ++index) {
+        if (slots[index].empty()) {
+            continue;
+        }
+        appendInteger(bytes, static_cast<std::uint16_t>(index));
+        appendStack(bytes, context, slots[index]);
+    }
+}
+
+template <typename Slots>
+void readSlots(std::span<const std::uint8_t> payload, std::size_t& cursor,
+               const SaveReadContext& context, Slots& slots) {
+    slots = Slots{};
+    const auto used = readInteger<std::uint16_t>(payload, cursor);
+    if (used > slots.size()) {
+        throw std::runtime_error("world.dat container holds more slots than it has");
+    }
+    for (std::uint16_t entry = 0; entry < used; ++entry) {
+        const auto index = readInteger<std::uint16_t>(payload, cursor);
+        if (index >= slots.size()) {
+            throw std::runtime_error("world.dat container references a slot it has not got");
+        }
+        readStackRecord(payload, cursor, context, slots[index]);
+    }
+}
+
+// The world's own settings: what a second player joining would share, as
+// opposed to anything the player carries.
+constexpr std::uint32_t kWorldBlockTag = blockTag("WRLD");
+constexpr std::uint16_t kWorldBlockVersion = 1U;
+
+void appendWorldBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    const SaveBlockWriter block{bytes, kWorldBlockTag, kWorldBlockVersion};
+    appendInteger(bytes, static_cast<std::uint8_t>(context.game.gameMode));
+    appendInteger(bytes, static_cast<std::uint8_t>(context.game.difficulty));
+}
+
+void readWorldBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                    const SaveBlockHeader& header, SaveReadContext& context) {
+    const auto mode = readInteger<std::uint8_t>(payload, cursor);
+    if (mode > static_cast<std::uint8_t>(gameplay::GameMode::Creative)) {
+        throw std::runtime_error("world.dat contains an invalid game mode");
+    }
+    context.game.gameMode = static_cast<gameplay::GameMode>(mode);
+    const auto difficulty = readInteger<std::uint8_t>(payload, cursor);
+    if (difficulty >= gameplay::kDifficultyCount) {
+        throw std::runtime_error("world.dat contains an invalid difficulty");
+    }
+    context.game.difficulty = static_cast<gameplay::Difficulty>(difficulty);
+    cursor = header.end;
+}
+
+// The player: where they stand, what state their body is in, and what they
+// carry. The spawn point stays in its own SPWN block, which predates this one.
+constexpr std::uint32_t kPlayerBlockTag = blockTag("PLYR");
+constexpr std::uint16_t kPlayerBlockVersion = 1U;
+
+void appendPlayerBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    const auto& game = context.game;
+    const SaveBlockWriter block{bytes, kPlayerBlockTag, kPlayerBlockVersion};
+    appendInteger(bytes, static_cast<std::uint8_t>(game.hasPlayerPosition ? 1U : 0U));
+    appendFloat(bytes, game.playerX);
+    appendFloat(bytes, game.playerY);
+    appendFloat(bytes, game.playerZ);
+    appendInteger(bytes, static_cast<std::uint8_t>(game.selectedHotbarSlot));
+    appendFloat(bytes, game.playerHealth);
+    appendInteger(bytes, game.playerFoodLevel);
+    appendFloat(bytes, game.playerSaturation);
+    appendInteger(bytes, game.playerAirTicks);
+    appendSlots(bytes, context, game.inventory);
+}
+
+void readPlayerBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                     const SaveBlockHeader& header, SaveReadContext& context) {
+    auto& game = context.game;
+    game.hasPlayerPosition = readInteger<std::uint8_t>(payload, cursor) != 0U;
+    game.playerX = readFloat(payload, cursor);
+    game.playerY = readFloat(payload, cursor);
+    game.playerZ = readFloat(payload, cursor);
+    game.selectedHotbarSlot = readInteger<std::uint8_t>(payload, cursor);
+    if (game.selectedHotbarSlot >= gameplay::Inventory::kHotbarSize) {
+        throw std::runtime_error("world.dat contains an invalid hotbar slot");
+    }
+    game.playerHealth = readFloat(payload, cursor);
+    game.playerFoodLevel = readInteger<std::int32_t>(payload, cursor);
+    game.playerSaturation = readFloat(payload, cursor);
+    game.playerAirTicks = readInteger<std::int32_t>(payload, cursor);
+    if (!(game.playerHealth >= 0.0F &&
+          game.playerHealth <= gameplay::PlayerVitals::kMaximumHealth) ||
+        game.playerFoodLevel < 0 ||
+        game.playerFoodLevel > gameplay::PlayerVitals::kMaximumFood ||
+        !(game.playerSaturation >= 0.0F &&
+          game.playerSaturation <= gameplay::PlayerVitals::kMaximumFood) ||
+        game.playerAirTicks < -20 ||
+        game.playerAirTicks > gameplay::PlayerVitals::kMaximumAirTicks) {
+        throw std::runtime_error("world.dat contains invalid player vitals");
+    }
+    readSlots(payload, cursor, context, game.inventory);
+    cursor = header.end;
+}
+
+// The block edits, grouped by the chunk that owns them.
+//
+// Format 16 wrote three absolute i32 coordinates plus a palette index and
+// three loose bytes per edit: 17 bytes each, and the edit list is by far the
+// largest thing in a played world's save. Grouping by chunk lets the two
+// horizontal coordinates collapse into one packed byte — the 0-15 offsets
+// inside the chunk — and the fluid level, orientation and lit flag pack into
+// one more. Six bytes, measured at 6.33 including the per-chunk headers: a
+// 63% cut on the section that dominates both file size and load time.
+//
+// Version 2 replaces the block index and that packed byte with one index into
+// a state palette local to this block. Two things come out of it:
+//
+//   - The packed byte was full. Four bits of fluid level, three of orientation
+//     and one of lit is the whole byte, so the *next* property a block gained
+//     had nowhere to go — and the three bits of orientation were already being
+//     shared with a crop's age.
+//   - The record shrinks to five bytes, because a played world has tens of
+//     distinct states and millions of edits. The property names are written
+//     once each in the palette, not once per edit.
+//
+// This is also what "the chunk owns its edits" means concretely: the grouping
+// is the on-disk shape a per-chunk region file would want, so the day chunks
+// get their own files this block splits along lines that already exist.
+constexpr std::uint32_t kChunkBlockTag = blockTag("CHNK");
+constexpr std::uint16_t kChunkBlockVersion = 2U;
+
+// One state palette entry: the block's identifier index plus every property the
+// block declares, by name. Names rather than digits is the whole point — a
+// reader skips a property it has never heard of and defaults one it was not
+// told about, so neither adding nor removing a property breaks a world.
+void appendStatePaletteEntry(std::vector<std::uint8_t>& bytes, BlockPalette& blocks,
+                             world::BlockState state) {
+    appendInteger(bytes, blocks.indexOf(state.block()));
+    const auto& schema =
+        world::kBlockRegistry[static_cast<std::size_t>(state.block())].states;
+    appendInteger(bytes, static_cast<std::uint8_t>(schema.size()));
+    for (std::size_t index = 0; index < schema.size(); ++index) {
+        const auto property = schema.axis(index).property;
+        appendString(bytes, world::statePropertyName(property));
+        appendInteger(bytes, state.value(property));
+    }
+}
+
+[[nodiscard]] world::BlockState readStatePaletteEntry(std::span<const std::uint8_t> payload,
+                                                      std::size_t& cursor,
+                                                      const SaveReadContext& context) {
+    auto state = world::BlockState{resolveBlock(context, readInteger<std::uint16_t>(payload, cursor))};
+    const auto propertyCount = readInteger<std::uint8_t>(payload, cursor);
+    for (std::uint8_t index = 0; index < propertyCount; ++index) {
+        const auto name = readString(payload, cursor);
+        const auto value = readInteger<std::uint8_t>(payload, cursor);
+        const auto property = world::statePropertyFromName(name);
+        if (property == world::StateProperty::Count) {
+            continue;  // a property this build has no notion of
+        }
+        // A value past the property's range clamps to the default rather than
+        // refusing the world: the block may have narrowed the property since.
+        state = state.with(property, value);
+    }
+    return state;
+}
+
+[[nodiscard]] constexpr std::int32_t chunkOf(std::int32_t coordinate, std::int32_t span) {
+    // Floor division: -1 belongs to chunk -1, not chunk 0.
+    return coordinate >= 0 ? coordinate / span : -(((-coordinate) + span - 1) / span);
+}
+
+[[nodiscard]] constexpr std::uint8_t localOf(std::int32_t coordinate, std::int32_t span) {
+    const auto remainder = coordinate - chunkOf(coordinate, span) * span;
+    return static_cast<std::uint8_t>(remainder);
+}
+
+void appendChunkBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    const auto& edits = context.game.edits;
+    const SaveBlockWriter block{bytes, kChunkBlockTag, kChunkBlockVersion};
+
+    // The grouping key is computed once per edit and sorted alongside its index,
+    // rather than recomputed inside the comparator: a comparator that derives the
+    // key does two floor divisions per comparison, which is n log n of them
+    // instead of n. The index is part of the sort key, so equal chunks keep their
+    // original order without the temporary buffer a stable_sort allocates — and
+    // that order matters, because two edits on the same cell mean the later one
+    // is the cell's final state.
+    struct KeyedEdit final {
+        std::uint64_t key;
+        std::uint32_t index;
+    };
+    std::vector<KeyedEdit> order;
+    order.reserve(edits.size());
+    for (std::uint32_t index = 0; index < edits.size(); ++index) {
+        const auto& edit = edits[index];
+        const auto chunkX = chunkOf(edit.x, world::kChunkWidth);
+        const auto chunkZ = chunkOf(edit.z, world::kChunkDepth);
+        // Biased into unsigned so negative chunk coordinates sort below positive
+        // ones instead of above them.
+        const auto biasedX = static_cast<std::uint64_t>(
+            static_cast<std::int64_t>(chunkX) + (std::int64_t{1} << 31));
+        const auto biasedZ = static_cast<std::uint64_t>(
+            static_cast<std::int64_t>(chunkZ) + (std::int64_t{1} << 31));
+        order.push_back({(biasedX << 32U) | biasedZ, index});
+    }
+    std::sort(order.begin(), order.end(), [](const KeyedEdit& left, const KeyedEdit& right) {
+        return left.key != right.key ? left.key < right.key : left.index < right.index;
+    });
+
+    const std::size_t countOffset = bytes.size();
+    appendInteger(bytes, static_cast<std::uint32_t>(0U));  // chunkCount, patched below
+    // The total up front so the reader allocates the edit vector once. Reserving
+    // per chunk instead is quadratic: a world spread over four thousand chunks
+    // reallocates and copies the whole list four thousand times, which measured
+    // as a 6x slower load than the write it mirrors.
+    appendInteger(bytes, static_cast<std::uint32_t>(edits.size()));
+
+    // The state palette, gathered in the sorted order the records below will
+    // reference it in, and written before them.
+    StatePalette states;
+    for (const auto& entry : order) {
+        static_cast<void>(states.indexOf(edits[entry.index].state.rawId()));
+    }
+    appendInteger(bytes, static_cast<std::uint16_t>(states.entries().size()));
+    for (const auto rawId : states.entries()) {
+        appendStatePaletteEntry(bytes, context.blocks, world::BlockState::fromRawId(rawId));
+    }
+    std::uint32_t chunkCount = 0U;
+    std::size_t position = 0U;
+    while (position < order.size()) {
+        const auto key = order[position].key;
+        std::size_t run = position;
+        while (run < order.size() && order[run].key == key) {
+            ++run;
+        }
+        const auto& first = edits[order[position].index];
+        appendInteger(bytes, chunkOf(first.x, world::kChunkWidth));
+        appendInteger(bytes, chunkOf(first.z, world::kChunkDepth));
+        appendInteger(bytes, static_cast<std::uint32_t>(run - position));
+        for (std::size_t index = position; index < run; ++index) {
+            const auto& edit = edits[order[index].index];
+            const auto packedXZ = static_cast<std::uint8_t>(
+                localOf(edit.x, world::kChunkWidth) |
+                (localOf(edit.z, world::kChunkDepth) << 4U));
+            appendInteger(bytes, packedXZ);
+            // i16 rather than the u8 a 256-block world needs, so the block
+            // survives milestone 5 raising the world to -64..319 without a
+            // second format migration.
+            appendInteger(bytes, static_cast<std::int16_t>(edit.y));
+            appendInteger(bytes, states.indexOf(edit.state.rawId()));
+        }
+        ++chunkCount;
+        position = run;
+    }
+    for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
+        bytes[countOffset + offset] = static_cast<std::uint8_t>(chunkCount >> (offset * 8U));
+    }
+}
+
+void readChunkBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                    const SaveBlockHeader& header, SaveReadContext& context) {
+    auto& edits = context.game.edits;
+    const auto chunkCount = readInteger<std::uint32_t>(payload, cursor);
+    const auto totalEdits = readInteger<std::uint32_t>(payload, cursor);
+    if (totalEdits > kMaximumEdits) {
+        throw std::runtime_error("world.dat edit count is unreasonable");
+    }
+    // One allocation for the whole list; the per-chunk counts below are checked
+    // against the block's own length, so a lying total cannot overrun anything.
+    edits.reserve(edits.size() + totalEdits);
+    // Version 2 names every distinct state once, up front; version 1 spelled a
+    // block index and a packed byte into every record.
+    std::vector<world::BlockState> statePalette;
+    if (header.version >= 2U) {
+        const auto paletteCount = readInteger<std::uint16_t>(payload, cursor);
+        statePalette.reserve(paletteCount);
+        for (std::uint16_t index = 0; index < paletteCount; ++index) {
+            statePalette.push_back(readStatePaletteEntry(payload, cursor, context));
+        }
+        if (statePalette.empty()) {
+            throw std::runtime_error("world.dat has an empty state palette");
+        }
+    }
+    const std::size_t recordBytes =
+        header.version >= 2U ? kEditRecordBytes : kLegacyEditRecordBytes;
+    for (std::uint32_t index = 0; index < chunkCount; ++index) {
+        const auto chunkX = readInteger<std::int32_t>(payload, cursor);
+        const auto chunkZ = readInteger<std::int32_t>(payload, cursor);
+        const auto editCount = readInteger<std::uint32_t>(payload, cursor);
+        if (edits.size() + editCount > kMaximumEdits) {
+            throw std::runtime_error("world.dat edit count is unreasonable");
+        }
+        // Checked before reserving so a corrupt count cannot ask for an
+        // enormous allocation.
+        if (static_cast<std::uint64_t>(editCount) * recordBytes > header.end - cursor) {
+            throw std::runtime_error("world.dat chunk block is truncated");
+        }
+        for (std::uint32_t entry = 0; entry < editCount; ++entry) {
+            const auto packedXZ = readInteger<std::uint8_t>(payload, cursor);
+            world::PersistentBlockEdit edit;
+            edit.x = chunkX * world::kChunkWidth + static_cast<std::int32_t>(packedXZ & 0x0FU);
+            edit.z = chunkZ * world::kChunkDepth +
+                     static_cast<std::int32_t>((packedXZ >> 4U) & 0x0FU);
+            edit.y = readInteger<std::int16_t>(payload, cursor);
+            if (header.version >= 2U) {
+                const auto stateIndex = readInteger<std::uint16_t>(payload, cursor);
+                if (stateIndex >= statePalette.size()) {
+                    throw std::runtime_error(
+                        "world.dat edit references an unknown state palette entry");
+                }
+                edit.state = statePalette[stateIndex];
+            } else {
+                const auto block =
+                    resolveBlock(context, readInteger<std::uint16_t>(payload, cursor));
+                const auto packedState = readInteger<std::uint8_t>(payload, cursor);
+                const auto fluidLevel = static_cast<std::uint8_t>(packedState & 0x0FU);
+                if (fluidLevel > 8U) {
+                    throw std::runtime_error("world.dat contains an invalid block edit");
+                }
+                // Crops and farmland reused the orientation slot for their
+                // state, so the full 0-7 range was legitimate there.
+                edit.state = legacyBlockState(
+                    block, static_cast<std::uint8_t>((packedState >> 4U) & 0x07U), fluidLevel,
+                    (packedState & 0x80U) != 0U);
+            }
+            if (edit.y < 0 || edit.y >= world::kWorldHeight) {
+                throw std::runtime_error("world.dat contains an invalid block edit");
+            }
+            edits.push_back(edit);
+        }
+    }
+    cursor = header.end;
+}
+
+// The block entities. One section per type, each with its own size and version,
+// so a build that has never heard of a type skips that section and keeps the
+// rest — the same forward compatibility the outer block frame gives, one level
+// down. BlockEntityStore already unified chests and furnaces in memory; this is
+// the same unification on disk.
+constexpr std::uint32_t kBlockEntityBlockTag = blockTag("BENT");
+constexpr std::uint16_t kBlockEntityBlockVersion = 1U;
+constexpr std::uint32_t kChestSectionTag = blockTag("CHST");
+constexpr std::uint32_t kFurnaceSectionTag = blockTag("FURN");
+constexpr std::uint16_t kChestSectionVersion = 1U;
+constexpr std::uint16_t kFurnaceSectionVersion = 1U;
+
+void appendBlockEntityBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    const auto& game = context.game;
+    const SaveBlockWriter block{bytes, kBlockEntityBlockTag, kBlockEntityBlockVersion};
+    appendInteger(bytes, static_cast<std::uint16_t>(2U));  // section count
+    {
+        const SaveBlockWriter chests{bytes, kChestSectionTag, kChestSectionVersion};
+        appendInteger(bytes, static_cast<std::uint32_t>(game.chests.size()));
+        for (const auto& chest : game.chests) {
+            appendInteger(bytes, static_cast<std::int32_t>(chest.position.x));
+            appendInteger(bytes, static_cast<std::int32_t>(chest.position.y));
+            appendInteger(bytes, static_cast<std::int32_t>(chest.position.z));
+            appendSlots(bytes, context, chest.items);
+        }
+    }
+    {
+        const SaveBlockWriter furnaces{bytes, kFurnaceSectionTag, kFurnaceSectionVersion};
+        appendInteger(bytes, static_cast<std::uint32_t>(game.furnaces.size()));
+        for (const auto& furnace : game.furnaces) {
+            appendInteger(bytes, static_cast<std::int32_t>(furnace.position.x));
+            appendInteger(bytes, static_cast<std::int32_t>(furnace.position.y));
+            appendInteger(bytes, static_cast<std::int32_t>(furnace.position.z));
+            appendStack(bytes, context, furnace.input);
+            appendStack(bytes, context, furnace.fuel);
+            appendStack(bytes, context, furnace.output);
+            appendInteger(bytes, static_cast<std::int32_t>(furnace.burnTicks));
+            appendInteger(bytes, static_cast<std::int32_t>(furnace.initialBurnTicks));
+            appendInteger(bytes, static_cast<std::int32_t>(furnace.cookTicks));
+            appendInteger(bytes, static_cast<std::int32_t>(furnace.cookDurationTicks));
+        }
+    }
+}
+
+void readBlockEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                          const SaveBlockHeader& header, SaveReadContext& context) {
+    auto& game = context.game;
+    const auto sectionCount = readInteger<std::uint16_t>(payload, cursor);
+    for (std::uint16_t index = 0; index < sectionCount; ++index) {
+        const auto section = readBlockHeader(payload, cursor, "block entity section");
+        if (section.end > header.end) {
+            throw std::runtime_error("world.dat block entity section overruns its block");
+        }
+        if (section.tag == kChestSectionTag && section.version <= kChestSectionVersion) {
+            const auto count = readInteger<std::uint32_t>(payload, cursor);
+            if (count > kMaximumChests) {
+                throw std::runtime_error("world.dat chest count is unreasonable");
+            }
+            game.chests.reserve(count);
+            for (std::uint32_t entry = 0; entry < count; ++entry) {
+                gameplay::ChestBlockEntity chest;
+                chest.position.x = readInteger<std::int32_t>(payload, cursor);
+                chest.position.y = readInteger<std::int32_t>(payload, cursor);
+                chest.position.z = readInteger<std::int32_t>(payload, cursor);
+                if (chest.position.y < 0 || chest.position.y >= world::kWorldHeight) {
+                    throw std::runtime_error("world.dat contains an invalid chest position");
+                }
+                readSlots(payload, cursor, context, chest.items);
+                game.chests.push_back(std::move(chest));
+            }
+        } else if (section.tag == kFurnaceSectionTag &&
+                   section.version <= kFurnaceSectionVersion) {
+            const auto count = readInteger<std::uint32_t>(payload, cursor);
+            if (count > kMaximumChests) {
+                throw std::runtime_error("world.dat furnace count is unreasonable");
+            }
+            game.furnaces.reserve(count);
+            for (std::uint32_t entry = 0; entry < count; ++entry) {
+                gameplay::FurnaceBlockEntity furnace;
+                furnace.position.x = readInteger<std::int32_t>(payload, cursor);
+                furnace.position.y = readInteger<std::int32_t>(payload, cursor);
+                furnace.position.z = readInteger<std::int32_t>(payload, cursor);
+                if (furnace.position.y < 0 || furnace.position.y >= world::kWorldHeight) {
+                    throw std::runtime_error("world.dat contains an invalid furnace position");
+                }
+                readStackRecord(payload, cursor, context, furnace.input);
+                readStackRecord(payload, cursor, context, furnace.fuel);
+                readStackRecord(payload, cursor, context, furnace.output);
+                furnace.burnTicks = readInteger<std::int32_t>(payload, cursor);
+                furnace.initialBurnTicks = readInteger<std::int32_t>(payload, cursor);
+                furnace.cookTicks = readInteger<std::int32_t>(payload, cursor);
+                furnace.cookDurationTicks = readInteger<std::int32_t>(payload, cursor);
+                game.furnaces.push_back(std::move(furnace));
+            }
+        }
+        // Unknown type, or one written by a newer build: skip the whole section.
+        cursor = section.end;
+    }
+    cursor = header.end;
+}
+
+// The registry. Adding a state owner is one line here plus its two functions —
+// no format bump, no positional read, nothing for the other owners to notice.
+using SaveBlockWriteFn = void (*)(std::vector<std::uint8_t>&, const SaveWriteContext&);
+using SaveBlockReadFn = void (*)(std::span<const std::uint8_t>, std::size_t&,
+                                 const SaveBlockHeader&, SaveReadContext&);
+
+struct SaveBlockOwner final {
+    std::uint32_t tag;
+    std::uint16_t version;
+    SaveBlockWriteFn write;
+    SaveBlockReadFn read;
+};
+
+// The pre-17 blocks kept their own framing, so they are adapted here rather than
+// rewritten: the wrappers hand the reader the block start it still expects.
+void writeGameRulesOwner(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    appendGameRulesBlock(bytes, context.game.gameRules);
+}
+void readGameRulesOwner(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                        const SaveBlockHeader& header, SaveReadContext& context) {
+    cursor = header.bodyStart - kBlockHeaderBytes;
+    readGameRulesBlock(payload, cursor, context.game.gameRules);
+}
+void writeSpawnPointOwner(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    appendSpawnPointBlock(bytes, context.game);
+}
+void readSpawnPointOwner(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                         const SaveBlockHeader& header, SaveReadContext& context) {
+    cursor = header.bodyStart - kBlockHeaderBytes;
+    readSpawnPointBlock(payload, cursor, context.game);
+}
+void writeWeatherOwner(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    appendWeatherBlock(bytes, context.game);
+}
+void readWeatherOwner(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                      const SaveBlockHeader& header, SaveReadContext& context) {
+    cursor = header.bodyStart - kBlockHeaderBytes;
+    readWeatherBlock(payload, cursor, context.game);
+}
+void writeEntityOwner(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    appendEntityBlock(bytes, context.game.entities);
+}
+void readEntityOwner(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                     const SaveBlockHeader& header, SaveReadContext& context) {
+    cursor = header.bodyStart - kBlockHeaderBytes;
+    readEntityBlock(payload, cursor, context.game.entities);
+}
+void writeClockOwner(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    appendClockBlock(bytes, context.game);
+}
+void readClockOwner(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                    const SaveBlockHeader& header, SaveReadContext& context) {
+    cursor = header.bodyStart - kBlockHeaderBytes;
+    readClockBlock(payload, cursor, context.game);
+}
+void writeDropOwner(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    appendDropBlock(bytes, context.game.itemDrops, context.game.fallingBlocks);
+}
+void readDropOwner(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                   const SaveBlockHeader& header, SaveReadContext& context) {
+    cursor = header.bodyStart - kBlockHeaderBytes;
+    readDropBlock(payload, cursor, context.game.itemDrops, context.game.fallingBlocks);
+}
+
+constexpr std::array<SaveBlockOwner, 10> kSaveBlockOwners{{
+    {kWorldBlockTag, kWorldBlockVersion, &appendWorldBlock, &readWorldBlock},
+    {kPlayerBlockTag, kPlayerBlockVersion, &appendPlayerBlock, &readPlayerBlock},
+    {kChunkBlockTag, kChunkBlockVersion, &appendChunkBlock, &readChunkBlock},
+    {kBlockEntityBlockTag, kBlockEntityBlockVersion, &appendBlockEntityBlock,
+     &readBlockEntityBlock},
+    {kGameRulesBlockTag, kGameRulesBlockVersion, &writeGameRulesOwner, &readGameRulesOwner},
+    {kSpawnPointBlockTag, kSpawnPointBlockVersion, &writeSpawnPointOwner, &readSpawnPointOwner},
+    {kWeatherBlockTag, kWeatherBlockVersion, &writeWeatherOwner, &readWeatherOwner},
+    {kEntityBlockTag, kEntityBlockVersion, &writeEntityOwner, &readEntityOwner},
+    {kClockBlockTag, kClockBlockVersion, &writeClockOwner, &readClockOwner},
+    {kDropBlockTag, kDropBlockVersion, &writeDropOwner, &readDropOwner},
+}};
+
 } // namespace
 
 SaveRepository::SaveRepository(std::filesystem::path root) : root_(std::move(root)) {}
@@ -824,42 +1559,39 @@ void SaveRepository::save(SaveGame game) const {
     game.summary.displayName = sanitizeDisplayName(std::move(game.summary.displayName));
     game.summary.lastPlayedUnixSeconds = nowUnixSeconds();
     std::vector<std::uint8_t> bytes{kMagic.begin(), kMagic.end()};
+    // One allocation for the whole file instead of the twenty-odd doublings a
+    // multi-megabyte edit list would otherwise walk through, each of them
+    // copying everything written so far. The estimate only has to be close: the
+    // edit list dominates and its record size is fixed.
+    bytes.reserve(kReservedPrologueBytes + game.edits.size() * kEditRecordBytes +
+                  game.chests.size() * 64U + game.furnaces.size() * 64U +
+                  game.entities.size() * 48U + game.itemDrops.size() * 40U);
     appendInteger(bytes, kFormatVersion);
     appendInteger(bytes, game.summary.seed);
-    appendInteger(bytes, static_cast<std::uint8_t>(game.hasPlayerPosition ? 1U : 0U));
-    appendFloat(bytes, game.playerX);
-    appendFloat(bytes, game.playerY);
-    appendFloat(bytes, game.playerZ);
-    appendDouble(bytes, game.gameTimeSeconds);
-    appendInteger(bytes, static_cast<std::uint8_t>(game.gameMode));
-    appendInteger(bytes, static_cast<std::uint8_t>(game.selectedHotbarSlot));
-    appendInteger(bytes, static_cast<std::uint8_t>(game.difficulty));
-    appendFloat(bytes, game.playerHealth);
-    appendInteger(bytes, game.playerFoodLevel);
-    appendFloat(bytes, game.playerSaturation);
-    appendInteger(bytes, game.playerAirTicks);
-    // Everything past this point refers to blocks and items by palette index, so
-    // both palettes are gathered first and written ahead of their first use.
+
+    // Both palettes are gathered first and written ahead of every block, because
+    // every record past this point names its content by palette index.
     BlockPalette blockPalette;
     ItemPalette itemPalette;
-    for (const auto& stack : game.inventory) {
+    const auto gatherStack = [&](const gameplay::ItemStack& stack) {
         static_cast<void>(blockPalette.indexOf(stack.block));
         static_cast<void>(itemPalette.indexOf(stack.item));
+    };
+    for (const auto& stack : game.inventory) {
+        gatherStack(stack);
     }
     for (const auto& edit : game.edits) {
-        static_cast<void>(blockPalette.indexOf(edit.block));
+        static_cast<void>(blockPalette.indexOf(edit.state.block()));
     }
     for (const auto& chest : game.chests) {
         for (const auto& stack : chest.items) {
-            static_cast<void>(blockPalette.indexOf(stack.block));
-            static_cast<void>(itemPalette.indexOf(stack.item));
+            gatherStack(stack);
         }
     }
     for (const auto& furnace : game.furnaces) {
-        for (const auto* stack : {&furnace.input, &furnace.fuel, &furnace.output}) {
-            static_cast<void>(blockPalette.indexOf(stack->block));
-            static_cast<void>(itemPalette.indexOf(stack->item));
-        }
+        gatherStack(furnace.input);
+        gatherStack(furnace.fuel);
+        gatherStack(furnace.output);
     }
     if (blockPalette.entries().size() > kMaximumPaletteEntries ||
         itemPalette.entries().size() > kMaximumPaletteEntries) {
@@ -875,56 +1607,12 @@ void SaveRepository::save(SaveGame game) const {
         // back to nullptr on load.
         appendString(bytes, item == nullptr ? std::string{} : item->identifier.toString());
     }
-    for (const auto& stack : game.inventory) {
-        appendInteger(bytes, blockPalette.indexOf(stack.block));
-        appendInteger(bytes, stack.count);
-        appendInteger(bytes, itemPalette.indexOf(stack.item));
-        appendInteger(bytes, stack.damage);
-    }
-    appendInteger(bytes, static_cast<std::uint64_t>(game.edits.size()));
-    for (const auto& edit : game.edits) {
-        appendInteger(bytes, static_cast<std::int32_t>(edit.x));
-        appendInteger(bytes, static_cast<std::int32_t>(edit.y));
-        appendInteger(bytes, static_cast<std::int32_t>(edit.z));
-        appendInteger(bytes, blockPalette.indexOf(edit.block));
-        appendInteger(bytes, edit.fluidLevel);
-        appendInteger(bytes, static_cast<std::uint8_t>(edit.orientation));
-        appendInteger(bytes, static_cast<std::uint8_t>(edit.lit ? 1U : 0U));
-    }
-    appendInteger(bytes, static_cast<std::uint64_t>(game.chests.size()));
-    for (const auto& chest : game.chests) {
-        appendInteger(bytes, static_cast<std::int32_t>(chest.position.x));
-        appendInteger(bytes, static_cast<std::int32_t>(chest.position.y));
-        appendInteger(bytes, static_cast<std::int32_t>(chest.position.z));
-        for (const auto& stack : chest.items) {
-            appendInteger(bytes, blockPalette.indexOf(stack.block));
-            appendInteger(bytes, stack.count);
-            appendInteger(bytes, itemPalette.indexOf(stack.item));
-            appendInteger(bytes, stack.damage);
-        }
-    }
-    appendGameRulesBlock(bytes, game.gameRules);
-    appendSpawnPointBlock(bytes, game);
-    appendWeatherBlock(bytes, game);
-    appendEntityBlock(bytes, game.entities);
-    appendClockBlock(bytes, game);
-    // Furnace block entities: position, three palette-indexed slots and the
-    // burn/cook counters, so a furnace resumes its smelt exactly where it left.
-    appendInteger(bytes, static_cast<std::uint64_t>(game.furnaces.size()));
-    for (const auto& furnace : game.furnaces) {
-        appendInteger(bytes, static_cast<std::int32_t>(furnace.position.x));
-        appendInteger(bytes, static_cast<std::int32_t>(furnace.position.y));
-        appendInteger(bytes, static_cast<std::int32_t>(furnace.position.z));
-        for (const auto* stack : {&furnace.input, &furnace.fuel, &furnace.output}) {
-            appendInteger(bytes, blockPalette.indexOf(stack->block));
-            appendInteger(bytes, stack->count);
-            appendInteger(bytes, itemPalette.indexOf(stack->item));
-            appendInteger(bytes, stack->damage);
-        }
-        appendInteger(bytes, static_cast<std::int32_t>(furnace.burnTicks));
-        appendInteger(bytes, static_cast<std::int32_t>(furnace.initialBurnTicks));
-        appendInteger(bytes, static_cast<std::int32_t>(furnace.cookTicks));
-        appendInteger(bytes, static_cast<std::int32_t>(furnace.cookDurationTicks));
+
+    // Every owner writes its own block. The order here is the order on disk, but
+    // nothing depends on it: the reader dispatches on the tag.
+    const SaveWriteContext context{game, blockPalette, itemPalette};
+    for (const auto& owner : kSaveBlockOwners) {
+        owner.write(bytes, context);
     }
     appendInteger(bytes, checksum(bytes));
     const auto directory = root_ / game.summary.identifier;
@@ -952,34 +1640,14 @@ void SaveRepository::remove(const std::string& identifier) const {
     if (error) throw std::runtime_error("Unable to delete save: " + error.message());
 }
 
-SaveGame SaveRepository::load(const std::string& identifier) const {
-    if (!safeIdentifier(identifier)) throw std::invalid_argument("Unsafe save identifier");
-    const auto directory = root_ / identifier;
-    SaveGame game;
-    game.summary = summaryFromProperties(directory / "level.properties", identifier);
-    std::ifstream input{directory / "world.dat", std::ios::binary | std::ios::ate};
-    if (!input) throw std::runtime_error("Unable to open world.dat");
-    const auto length = input.tellg();
-    if (length < static_cast<std::streamoff>(kMagic.size() + sizeof(std::uint64_t)))
-        throw std::runtime_error("world.dat is truncated");
-    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(length));
-    input.seekg(0);
-    input.read(reinterpret_cast<char*>(bytes.data()), length);
-    if (!input) throw std::runtime_error("Unable to read world.dat");
-    if (!std::equal(kMagic.begin(), kMagic.end(), bytes.begin()))
-        throw std::runtime_error("world.dat has an invalid header");
-    std::size_t checksumCursor = bytes.size() - sizeof(std::uint64_t);
-    std::size_t checksumReadCursor = checksumCursor;
-    const auto storedChecksum = readInteger<std::uint64_t>(bytes, checksumReadCursor);
-    if (checksum(std::span<const std::uint8_t>{bytes}.first(checksumCursor)) != storedChecksum)
-        throw std::runtime_error("world.dat checksum mismatch");
-    const std::span<const std::uint8_t> payload{bytes.data(), checksumCursor};
-    std::size_t cursor = kMagic.size();
-    const auto formatVersion = readInteger<std::uint32_t>(payload, cursor);
-    if (formatVersion < kOldestSupportedFormatVersion ||
-        formatVersion > kFormatVersion)
-        throw std::runtime_error("Unsupported world.dat version");
-    game.summary.seed = readInteger<std::uint64_t>(payload, cursor);
+namespace {
+
+// Formats 1 through 16, where every section sat at a fixed offset and each new
+// one was gated on a version number. Kept byte-for-byte so old worlds still
+// open; nothing new is ever added here, because format 17 onwards is the block
+// registry above.
+void loadLegacy(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                std::uint32_t formatVersion, SaveGame& game) {
     game.hasPlayerPosition = readInteger<std::uint8_t>(payload, cursor) != 0U;
     game.playerX = readFloat(payload, cursor);
     game.playerY = readFloat(payload, cursor);
@@ -1118,29 +1786,31 @@ SaveGame SaveRepository::load(const std::string& identifier) const {
         edit.x = readInteger<std::int32_t>(payload, cursor);
         edit.y = readInteger<std::int32_t>(payload, cursor);
         edit.z = readInteger<std::int32_t>(payload, cursor);
-        edit.block = readBlock(cursor);
-        edit.fluidLevel = readInteger<std::uint8_t>(payload, cursor);
-        const auto orientation = formatVersion >= 3U
+        const auto block = readBlock(cursor);
+        const auto fluidLevel = readInteger<std::uint8_t>(payload, cursor);
+        auto orientation = formatVersion >= 3U
             ? readInteger<std::uint8_t>(payload, cursor)
-            : static_cast<std::uint8_t>(world::defaultOrientation(edit.block));
-        // Crops and farmland reuse the per-cell orientation byte as their state
-        // slot — cropAge/farmlandMoisture mask the low three bits — so the byte
-        // legitimately holds 6-7 for a mature crop or well-watered farmland, well
-        // past the six enumerated BlockOrientation facings. Accept the full
-        // 0-7 state range; anything above it is still a corrupt save.
-        if (edit.y < 0 || edit.y >= 256 || edit.fluidLevel > 8U || orientation > 7U)
+            : static_cast<std::uint8_t>(world::defaultOrientation(block));
+        // Crops and farmland reused the per-cell orientation byte as their state
+        // slot, masking the low three bits, so the byte legitimately holds 6-7
+        // for a mature crop or well-watered farmland — well past the six
+        // enumerated facings. Accept the full 0-7 range; above it is corrupt.
+        if (edit.y < 0 || edit.y >= 256 || fluidLevel > 8U || orientation > 7U)
             throw std::runtime_error("world.dat contains an invalid block edit");
-        edit.orientation = static_cast<world::BlockOrientation>(orientation);
+        bool lit = false;
         if (formatVersion >= 14U) {
-            edit.lit = readInteger<std::uint8_t>(payload, cursor) != 0U;
+            lit = readInteger<std::uint8_t>(payload, cursor) != 0U;
         }
         // A pre-14 save spelled these states as blocks; the palette resolution
         // kept what they meant, and it wins over the fields the old format had
         // no way to fill.
         if (const auto& legacy = lastBlockState; legacy.has_value()) {
-            if (legacy->orientation.has_value()) edit.orientation = *legacy->orientation;
-            edit.lit = edit.lit || legacy->lit;
+            if (legacy->orientation.has_value()) {
+                orientation = static_cast<std::uint8_t>(*legacy->orientation);
+            }
+            lit = lit || legacy->lit;
         }
+        edit.state = legacyBlockState(block, orientation, fluidLevel, lit);
         game.edits.push_back(edit);
     }
     if (formatVersion >= 2U) {
@@ -1208,8 +1878,101 @@ SaveGame SaveRepository::load(const std::string& identifier) const {
             game.furnaces.push_back(std::move(furnace));
         }
     }
+    if (formatVersion >= 16U) {
+        readDropBlock(payload, cursor, game.itemDrops, game.fallingBlocks);
+    }
     if (cursor != payload.size()) throw std::runtime_error("world.dat has trailing data");
+}
+
+// Format 17 onwards: a flat sequence of self-describing blocks in any order.
+// An owner this build does not know is skipped by its own size, so a save from
+// a newer build still opens with everything this one understands.
+void loadOwnerBlocks(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                     SaveGame& game) {
+    const auto readPalette = [&](auto resolve, auto fallback) {
+        using Value = decltype(fallback);
+        std::vector<Value> entries;
+        const auto size = readInteger<std::uint16_t>(payload, cursor);
+        if (size == 0U) throw std::runtime_error("world.dat has an empty palette");
+        entries.reserve(size);
+        for (std::uint16_t index = 0; index < size; ++index) {
+            entries.push_back(resolve(readString(payload, cursor)).value_or(fallback));
+        }
+        return entries;
+    };
+    const auto blockPalette = readPalette(
+        [](std::string_view text) { return world::blockFromIdentifier(text); },
+        world::Block::Air);
+    const auto itemPalette = readPalette(
+        [](std::string_view text) -> std::optional<const gameplay::Item*> {
+            const auto* item = gameplay::itemFromIdentifier(text);
+            return item == nullptr ? std::nullopt
+                                   : std::optional<const gameplay::Item*>{item};
+        },
+        static_cast<const gameplay::Item*>(nullptr));
+    SaveReadContext context{game, blockPalette, itemPalette};
+    while (cursor < payload.size()) {
+        std::size_t peek = cursor;
+        const auto header = readBlockHeader(payload, peek, "save");
+        const auto* owner = std::ranges::find_if(
+            kSaveBlockOwners,
+            [&](const SaveBlockOwner& candidate) { return candidate.tag == header.tag; });
+        if (owner == kSaveBlockOwners.end() || header.version > owner->version) {
+            // An unknown owner, or one whose layout a newer build changed: its
+            // size is the whole point of the frame.
+            cursor = header.end;
+            continue;
+        }
+        cursor = peek;
+        owner->read(payload, cursor, header, context);
+        if (cursor != header.end) {
+            throw std::runtime_error("world.dat block reader did not consume its block");
+        }
+    }
+}
+
+} // namespace
+
+SaveGame SaveRepository::load(const std::string& identifier) const {
+    if (!safeIdentifier(identifier)) throw std::invalid_argument("Unsafe save identifier");
+    const auto directory = root_ / identifier;
+    SaveGame game;
+    game.summary = summaryFromProperties(directory / "level.properties", identifier);
+    std::ifstream input{directory / "world.dat", std::ios::binary | std::ios::ate};
+    if (!input) throw std::runtime_error("Unable to open world.dat");
+    const auto length = input.tellg();
+    if (length < static_cast<std::streamoff>(kMagic.size() + sizeof(std::uint64_t)))
+        throw std::runtime_error("world.dat is truncated");
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(length));
+    input.seekg(0);
+    input.read(reinterpret_cast<char*>(bytes.data()), length);
+    if (!input) throw std::runtime_error("Unable to read world.dat");
+    if (!std::equal(kMagic.begin(), kMagic.end(), bytes.begin()))
+        throw std::runtime_error("world.dat has an invalid header");
+    std::size_t checksumCursor = bytes.size() - sizeof(std::uint64_t);
+    std::size_t checksumReadCursor = checksumCursor;
+    const auto storedChecksum = readInteger<std::uint64_t>(bytes, checksumReadCursor);
+    if (checksum(std::span<const std::uint8_t>{bytes}.first(checksumCursor)) != storedChecksum)
+        throw std::runtime_error("world.dat checksum mismatch");
+    const std::span<const std::uint8_t> payload{bytes.data(), checksumCursor};
+    std::size_t cursor = kMagic.size();
+    const auto formatVersion = readInteger<std::uint32_t>(payload, cursor);
+    if (formatVersion < kOldestSupportedFormatVersion ||
+        formatVersion > kFormatVersion)
+        throw std::runtime_error("Unsupported world.dat version");
+    game.summary.seed = readInteger<std::uint64_t>(payload, cursor);
+    if (formatVersion >= kFirstOwnerDrivenFormatVersion) {
+        loadOwnerBlocks(payload, cursor, game);
+        // gameTimeSeconds stopped being persisted with format 17 — the server
+        // tick and the named clocks carry the time now — but the field is still
+        // read in a couple of places, so it is derived rather than left at zero.
+        game.gameTimeSeconds =
+            static_cast<double>(game.serverTick) / world::DayNightCycle::kTicksPerSecond;
+    } else {
+        loadLegacy(payload, cursor, formatVersion, game);
+    }
     return game;
 }
+
 
 } // namespace mc::persistence

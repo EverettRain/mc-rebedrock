@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gameplay/BlockEntityStore.hpp"
 #include "gameplay/Inventory.hpp"
 
 #include <cstdint>
@@ -69,12 +70,14 @@ class FurnaceSystem final {
     [[nodiscard]] float fuelProgress(FurnacePosition position) const;
 
     void restore(std::vector<FurnaceBlockEntity> entities);
-    [[nodiscard]] std::span<const FurnaceBlockEntity> entities() const { return entities_; }
+    [[nodiscard]] std::span<const FurnaceBlockEntity> entities() const {
+        return entities_.entities();
+    }
 
   private:
     static void tickOne(FurnaceBlockEntity& furnace);
 
-    std::vector<FurnaceBlockEntity> entities_;
+    BlockEntityStore<FurnacePosition, FurnaceBlockEntity> entities_;
 };
 
 } // namespace mc::gameplay

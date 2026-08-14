@@ -53,15 +53,14 @@ constexpr audio::MobSoundProfile kZombieSounds{
 } // namespace
 
 const EntityType& ZombieEntity::type() {
-    // ZombieEntity.createZombieAttributes() (1.16.1): 20 health, follow range 35,
-    // GENERIC_MOVEMENT_SPEED 0.23 (folded to this engine's blocks-per-tick wander
-    // the same way the pig's 0.25 becomes 0.05), attack damage 3. Box 0.6 x 1.95.
+    // Zombie.createAttributes() (26.1): 20 health, follow range 35,
+    // MOVEMENT_SPEED 0.23, attack damage 3. Box 0.6 x 1.95.
     // Spawn-egg tint 0x00AFAF / 0x799C65. No loot roll: its rotten-flesh drop
     // needs an item this build does not have yet, so the table is left empty.
     static EntityType type = EntityType::Builder::create(MobCategory::Monster, kZombieAi)
                                  .sized(0.6F, 1.95F)
                                  .health(20.0F)
-                                 .movementSpeed(0.046F)
+                                 .movementSpeed(0.23F)
                                  .attackDamage(3.0F)
                                  .followRange(35.0F)
                                  .knockbackResistance(0.0F)

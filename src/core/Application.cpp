@@ -2,6 +2,9 @@
 
 #include "assets/PackMetadata.hpp"
 #include "assets/ResourceProvider.hpp"
+#include "gameplay/BlockTags.hpp"
+#include "gameplay/MobSpawnSettings.hpp"
+#include "gameplay/entities/EntityRegistry.hpp"
 #include "assets/ZipResourcePack.hpp"
 #include "config/GameOptions.hpp"
 #include "render/vulkan/VulkanRenderer.hpp"
@@ -120,8 +123,23 @@ int Application::run() {
     std::sort(found.begin(), found.end(),
               [](const PackEntry& a, const PackEntry& b) { return a.path < b.path; });
 
-    // Zip packs extract on demand into a per-pack cache under the game root.
+    // Nothing in the game asks a provider for a filesystem path any more —
+    // textures, fonts, sounds, tags and biome data all read bytes — so a zip
+    // pack is consumed entirely from memory and this cache stays empty. The
+    // path is still handed to the provider because `locate()` remains its
+    // documented fallback, but a build that populates it has regressed.
+    //
+    // Older builds did extract here, so a stale cache is swept once at startup
+    // rather than left to sit at a few hundred megabytes forever.
     const auto packCacheRoot = configRoot_.parent_path() / ".packcache";
+    if (std::filesystem::exists(packCacheRoot)) {
+        std::error_code cleanup;
+        std::filesystem::remove_all(packCacheRoot, cleanup);
+        if (!cleanup) {
+            std::cout << "Removed the legacy resource-pack extraction cache at "
+                      << packCacheRoot.string() << "\n";
+        }
+    }
     // A deque so pushing more providers (a pack's overlays) never invalidates the
     // pointers already handed to `enabled`.
     std::deque<assets::StandardPackResourceProvider> directoryPacks;
@@ -195,9 +213,24 @@ int Application::run() {
     std::vector<const assets::ResourceProvider*> overlays{enabled.rbegin(), enabled.rend()};
     const assets::LayeredResourceProvider resources{bundled, overlays};
 
+    // Block tags come from the `data/` half of the pack stack, the same way
+    // textures come from `assets/`. An ordinary resource pack ships no `data/`
+    // at all, so this usually keeps the compiled-in 26.1 defaults; a full data
+    // pack overrides them per tag.
+    // The species registry has to exist before anything that names species is
+    // built. The biome spawn tables below resolve pig/cow/zombie through it, and
+    // the renderer's own call comes later — so loading them first produced
+    // tables with nothing in them and a world that never spawned a mob.
+    // Registration is idempotent, so the renderer's call stays harmless.
+    gameplay::entities::registerBuiltinEntities();
+    gameplay::blockTags().load(resources);
+    // The biome spawn tables come from the same `data/` half, and follow the
+    // same rule: an ordinary resource pack ships no `data/`, so this usually
+    // keeps the compiled-in 26.1 numbers rather than leaving the world empty.
+    gameplay::biomeSpawnTables().load(resources);
+
     render::VulkanRenderer renderer{
         shaderRoot_,
-        resources.locate(assets::textures("block")),
         resources,
         chunkStreamer,
         options,

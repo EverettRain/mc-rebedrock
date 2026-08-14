@@ -60,14 +60,12 @@ namespace {
 
 [[nodiscard]] core::Json readJson(const ResourceProvider& resources,
                                   const ResourceLocation& location) {
-    const auto file = resources.locate(location);
-    std::ifstream input{file, std::ios::binary};
-    if (!input) {
+    const auto bytes = resources.readBytes(location);
+    if (bytes.empty()) {
         throw std::runtime_error("Unable to open font definition " + location.toString());
     }
-    std::ostringstream buffer;
-    buffer << input.rdbuf();
-    return core::Json::parse(buffer.str());
+    return core::Json::parse(
+        std::string_view{reinterpret_cast<const char*>(bytes.data()), bytes.size()});
 }
 
 void loadRecursive(const ResourceProvider& resources, const ResourceLocation& definition,

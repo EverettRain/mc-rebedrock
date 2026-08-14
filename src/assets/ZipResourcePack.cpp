@@ -62,6 +62,22 @@ struct ZipResourcePackProvider::Impl {
     // Extracts one archive entry to its mirror path under the cache root the
     // first time it is asked for, then returns that path. A failed extraction
     // returns an empty path so the caller treats the entry as absent.
+    // Reads an entry straight into memory. This is what lets a zipped pack be
+    // consumed without writing anything to disk — the whole reason `.packcache`
+    // existed was that the only interface was a path.
+    [[nodiscard]] std::vector<std::byte> read(const std::string& entry) {
+        const std::scoped_lock lock{archiveMutex};
+        std::size_t size = 0U;
+        void* const raw = mz_zip_reader_extract_file_to_heap(&zip, entry.c_str(), &size, 0);
+        if (raw == nullptr) {
+            return {};
+        }
+        const auto* const first = static_cast<const std::byte*>(raw);
+        std::vector<std::byte> bytes{first, first + size};
+        mz_free(raw);
+        return bytes;
+    }
+
     [[nodiscard]] std::filesystem::path extract(const std::string& entry) {
         const std::scoped_lock lock{archiveMutex};
         const std::filesystem::path destination = cacheRoot / entry;
@@ -81,8 +97,11 @@ struct ZipResourcePackProvider::Impl {
 namespace {
 
 [[nodiscard]] std::string entryName(const ResourceLocation& location) {
-    // Standard pack layout, as the directory provider uses too: assets/<ns>/<path>.
-    return "assets/" + location.space + "/" + location.path;
+    // Standard pack layout, as the directory provider uses too:
+    // <assets|data>/<ns>/<path>. The data half was added with PackType and has
+    // to be honoured here as well, or a zipped data pack resolves nothing.
+    const char* const root = location.type == PackType::ServerData ? "data/" : "assets/";
+    return root + location.space + "/" + location.path;
 }
 
 } // namespace
@@ -113,6 +132,17 @@ std::filesystem::path ZipResourcePackProvider::locate(const ResourceLocation& lo
         return impl_->cacheRoot / entry;
     }
     return impl_->extract(entry);
+}
+
+std::vector<std::byte> ZipResourcePackProvider::readBytes(const ResourceLocation& location) const {
+    if (!impl_->opened) {
+        return {};
+    }
+    const std::string entry = entryName(location);
+    if (!impl_->entries.contains(entry)) {
+        return {};
+    }
+    return impl_->read(entry);
 }
 
 std::vector<ResourceLocation> ZipResourcePackProvider::list(std::string_view space,

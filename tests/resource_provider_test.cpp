@@ -49,6 +49,8 @@ int main() {
     // --- Translations live under `localization/…`. ---
     assert(provider.locate(lang("en_us.json")) ==
            vanilla / "localization" / "minecraft" / "en_us.json");
+    assert(provider.locate(lang("en_us.json", "rebedrock")) ==
+           root / "lang" / "rebedrock" / "en_us.json");
 
     // --- The glyph-width table is the lone tenant of the top-level `fonts/`. ---
     assert(provider.locate(font("glyph_sizes.bin")) ==

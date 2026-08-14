@@ -114,7 +114,7 @@ struct BitmapProviderLayer final {
 loadBitmapProvider(const assets::ResourceProvider& resources,
                    const assets::FontProviderDefinition& definition) {
     BitmapProviderLayer result;
-    const auto image = assets::ImageData::loadRgbaOrMissing(resources.locate(definition.file));
+    const auto image = assets::ImageData::loadRgbaOrMissing(resources, definition.file);
     const std::size_t rowCount = definition.chars.size();
     std::size_t columnCount = 0U;
     for (const auto& row : definition.chars) {
@@ -181,12 +181,15 @@ loadBitmapProvider(const assets::ResourceProvider& resources,
     return -1;
 }
 
-void readUnihexArchive(const std::filesystem::path& archive,
+// The unihex font ships as a zip *inside* the pack, so this reads the archive's
+// bytes and opens miniz over memory — a zipped pack would otherwise have to
+// extract the whole font archive to disk just to be opened again.
+void readUnihexArchive(std::span<const std::byte> archiveBytes,
                        const assets::FontProviderDefinition& definition,
                        const std::set<int>& requiredPages, UnihexPages& output) {
     mz_zip_archive zip{};
-    if (mz_zip_reader_init_file(&zip, archive.string().c_str(), 0) == MZ_FALSE) {
-        throw std::runtime_error("Unable to open unihex archive: " + archive.string());
+    if (mz_zip_reader_init_mem(&zip, archiveBytes.data(), archiveBytes.size(), 0) == MZ_FALSE) {
+        throw std::runtime_error("Unable to open unihex archive: " + definition.file.toString());
     }
     const auto closeZip = [&] { mz_zip_reader_end(&zip); };
     try {
@@ -298,6 +301,7 @@ void readUnihexArchive(const std::filesystem::path& archive,
 
 void TextureManager::createTextureArray(int anisotropy) {
     const auto pixels = bakeBlockAtlas(*resourceProvider_);
+    fluidAnimationFrameTimes = pixels.fluidAnimationFrameTimes;
     const auto byteSize = static_cast<VkDeviceSize>(pixels.rgba.size());
     // The atlas layer count is whatever the name-driven build produced (fixed
     // special section + block textures + item icons), so it is derived from the
@@ -385,8 +389,7 @@ void TextureManager::recreateTextureSampler(int anisotropy) {
 // would crush four vertical texels into one and turn its fine rain streaks back
 // into the broad water cards this renderer used previously.
 void TextureManager::createRainTexture() {
-    const auto pixels = assets::ImageData::loadRgba(
-        resourceProvider_->locate(assets::textures("environment/rain.png")));
+    const auto pixels = assets::ImageData::loadRgba(*resourceProvider_, assets::textures("environment/rain.png"));
     const auto width = static_cast<std::uint32_t>(pixels.width);
     const auto height = static_cast<std::uint32_t>(pixels.height);
     const VkDeviceSize byteSize = static_cast<VkDeviceSize>(pixels.rgba.size());
@@ -427,8 +430,7 @@ void TextureManager::createGuiTexture() {
     // retains compact pixel rectangles while every source remains independently
     // overrideable by its standard resource-pack name.
     const auto tex = [&](std::string_view sub) {
-        return assets::ImageData::loadRgbaOrMissing(
-            resourceProvider_->locate(assets::textures(sub)));
+        return assets::ImageData::loadRgbaOrMissing(*resourceProvider_, assets::textures(sub));
     };
     const auto guiTex = [&](std::string_view sub) { return tex("gui/" + std::string{sub}); };
     const auto sprite = [&](std::string_view name) {
@@ -436,19 +438,42 @@ void TextureManager::createGuiTexture() {
     };
 
     auto widgets = emptyRgbaAtlas();
+    // Buttons and slider tracks are the elements drawn at runtime-decided
+    // sizes, so their 26.1 `gui.scaling` sidecar has to survive the trip into
+    // the atlas: record where each landed alongside its parsed metadata and the
+    // HUD can nine-slice it instead of stretching the whole bitmap. A sprite
+    // whose sidecar is absent or unreadable keeps the plain-stretch default,
+    // which is exactly the behaviour these draws had before.
+    const auto blitWidget = [&](GuiWidgetSprite id, std::string_view name, int x, int y) {
+        const std::string path = "gui/sprites/" + std::string{name} + ".png";
+        const auto image = tex(path);
+        blit(widgets, image, x, y);
+        auto scaling =
+            assets::GuiSpriteScaling::load(*resourceProvider_, assets::textures(path));
+        // A sidecar may omit the reference size; the art's own size is then what
+        // the borders are measured against.
+        if (scaling.width <= 0) {
+            scaling.width = image.width;
+        }
+        if (scaling.height <= 0) {
+            scaling.height = image.height;
+        }
+        guiWidgetSprites[static_cast<std::size_t>(id)] = GuiAtlasSprite{
+            ui::UiRect{static_cast<float>(x), static_cast<float>(y),
+                       static_cast<float>(image.width), static_cast<float>(image.height)},
+            scaling,
+        };
+    };
     blit(widgets, sprite("hud/hotbar"), 0, 0);
     blit(widgets, sprite("hud/hotbar_selection"), 0, 22);
-    blit(widgets, sprite("widget/button_disabled"), 0, 46);
-    blit(widgets, sprite("widget/button"), 0, 66);
-    blit(widgets, sprite("widget/button_highlighted"), 0, 86);
-    blit(widgets, sprite("widget/slider"), 0, 106);
+    blitWidget(GuiWidgetSprite::ButtonDisabled, "widget/button_disabled", 0, 46);
+    blitWidget(GuiWidgetSprite::Button, "widget/button", 0, 66);
+    blitWidget(GuiWidgetSprite::ButtonHighlighted, "widget/button_highlighted", 0, 86);
+    blitWidget(GuiWidgetSprite::Slider, "widget/slider", 0, 106);
     blit(widgets, sprite("widget/slider_highlighted"), 0, 126);
-    const auto sliderHandle = sprite("widget/slider_handle");
-    const auto sliderHandleHighlighted = sprite("widget/slider_handle_highlighted");
-    blit(widgets, sliderHandle, 0, 146);
-    blit(widgets, sliderHandle, 192, 146);
-    blit(widgets, sliderHandleHighlighted, 0, 166);
-    blit(widgets, sliderHandleHighlighted, 192, 166);
+    blitWidget(GuiWidgetSprite::SliderHandle, "widget/slider_handle", 0, 146);
+    blitWidget(GuiWidgetSprite::SliderHandleHighlighted, "widget/slider_handle_highlighted", 0,
+               166);
 
     auto hud = emptyRgbaAtlas();
     blit(hud, sprite("hud/crosshair"), 0, 0);
@@ -598,8 +623,8 @@ void TextureManager::createPanoramaTexture() {
         // Resolved per file so a pack overriding some panorama faces (or none)
         // still falls back to the bundled ones rather than the whole title/
         // background folder being shadowed by the pack.
-        faces[index] = assets::ImageData::loadRgbaOrMissing(resourceProvider_->locate(
-            assets::textures("gui/title/background/panorama_" + std::to_string(index) + ".png")));
+        faces[index] = assets::ImageData::loadRgbaOrMissing(*resourceProvider_,
+            assets::textures("gui/title/background/panorama_" + std::to_string(index) + ".png"));
     }
     const int width = faces.front().width;
     const int height = faces.front().height;
@@ -711,10 +736,8 @@ void TextureManager::updateBiomeColorTextures(std::uint64_t seed) {
     constexpr int size = kBiomeTextureSize;
     constexpr int span = kBiomeTextureBlockSpan;
     constexpr int halfBlocks = size * span / 2;
-    const auto grassColormap = assets::ImageData::loadRgba(
-        resourceProvider_->locate(assets::textures("colormap/grass.png")));
-    const auto foliageColormap = assets::ImageData::loadRgba(
-        resourceProvider_->locate(assets::textures("colormap/foliage.png")));
+    const auto grassColormap = assets::ImageData::loadRgba(*resourceProvider_, assets::textures("colormap/grass.png"));
+    const auto foliageColormap = assets::ImageData::loadRgba(*resourceProvider_, assets::textures("colormap/foliage.png"));
     const auto colorAt = [](const assets::ImageData& colormap, float temperature,
                             float downfall) -> std::uint32_t {
         const float clampedTemperature = std::clamp(temperature, 0.0F, 1.0F);
@@ -825,8 +848,7 @@ void TextureManager::createEntityTextureArray(
             continue;
         }
         const auto skin = gameplay::entities::buildSpeciesSkin(
-            resourceRoot, *resourceProvider_, species.model.model,
-            species.type->render().texturePath,
+            *resourceProvider_, species.model.model, species.type->render().texturePath,
             {static_cast<float>(atlasWidth), static_cast<float>(atlasHeight)});
         const glm::vec2 declared = declaredSize(species.model.model);
         const std::uint32_t skinWidth = static_cast<std::uint32_t>(declared.x);
@@ -897,8 +919,7 @@ void TextureManager::createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::T
     // Font pages resolve per file so an incomplete pack falls back to the
     // bundled ascii sheet and unicode pages rather than losing them to a
     // shadowed font/ folder.
-    const auto ascii = assets::ImageData::loadRgbaOrMissing(
-        resourceProvider_->locate(assets::textures("font/ascii.png")));
+    const auto ascii = assets::ImageData::loadRgbaOrMissing(*resourceProvider_, assets::textures("font/ascii.png"));
     fontMetrics = ui::BitmapFontMetrics::fromRgba(ascii.rgba, ascii.width, ascii.height);
     textFont.setAsciiMetrics(fontMetrics);
     textFont.clearUnicodePages();
@@ -920,8 +941,8 @@ void TextureManager::createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::T
                    provider.file != assets::textures("font/ascii.png")) {
             bitmapLayers.push_back(loadBitmapProvider(*resourceProvider_, provider));
         } else if (provider.kind == assets::FontProviderKind::Unihex) {
-            readUnihexArchive(resourceProvider_->locate(provider.file), provider, requiredPages,
-                              unihex);
+            readUnihexArchive(resourceProvider_->readBytes(provider.file), provider,
+                              requiredPages, unihex);
         }
     }
 

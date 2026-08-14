@@ -30,12 +30,38 @@ int main() {
         assert(water.block() == Block::Water);
         assert(water.fluidLevel() == 8U);
 
-        // The state slot's full 0-7 range is what crops and farmland store in
-        // it (cropAge / farmlandMoisture), not just the six facings.
-        for (int slot = 0; slot <= 7; ++slot) {
-            const BlockState crop{Block::WheatCrops, static_cast<BlockOrientation>(slot), 0U};
-            assert(cropAge(crop.orientation()) == slot);
+        // A crop's age is its own property with its own range, not a value
+        // smuggled through the six-value direction enum. Asking a crop for a
+        // facing gets north whatever its age, which is the whole point.
+        for (int age = 0; age <= 7; ++age) {
+            const auto crop = BlockState{Block::WheatCrops}.withAge(age);
+            assert(crop.age() == age);
+            assert(crop.orientation() == BlockOrientation::North);
+            assert(crop.has(StateProperty::Age));
+            assert(!crop.has(StateProperty::Facing));
         }
+        // Farmland's moisture likewise, and neither block's property leaks into
+        // the other's.
+        for (int moisture = 0; moisture <= 7; ++moisture) {
+            const auto tilled = BlockState{Block::Farmland}.withMoisture(moisture);
+            assert(tilled.moisture() == moisture);
+            assert(tilled.age() == 0);
+        }
+        // Leaves carry PERSISTENT, and a hand-placed leaf says so without
+        // borrowing a direction to mean it.
+        assert(BlockState{Block::OakLeaves}.withPersistent(true).persistent());
+        assert(!BlockState{Block::OakLeaves}.persistent());
+        assert(BlockState{Block::OakLeaves}.withPersistent(true).orientation() ==
+               BlockOrientation::North);
+        // Age and moisture saturate rather than wrapping: they are counters that
+        // growth code increments, and one past the end must not reset the crop
+        // to a seedling.
+        assert(BlockState{Block::WheatCrops}.withAge(99).age() == 7);
+        assert(BlockState{Block::WheatCrops}.withAge(-1).age() == 0);
+        // A property the block does not declare reads as zero and writing it
+        // changes nothing, so no caller has to check first.
+        assert(BlockState{Block::Stone}.withAge(5).age() == 0);
+        assert(BlockState{Block::Stone}.withAge(5) == BlockState{Block::Stone});
     }
 
     // --- Value semantics: equality compares the whole state, not the block. ---
@@ -121,6 +147,9 @@ int main() {
     {
         const BlockState state{Block::Farmland, static_cast<BlockOrientation>(7), 0U};
         assert(BlockState::fromRawId(state.rawId()) == state);
+        // Corrupt/out-of-version ids fail closed to air instead of indexing
+        // outside the compiled metadata table.
+        assert(BlockState::fromRawId(UINT16_MAX).block() == Block::Air);
     }
 
     // --- The interned table numbers every state exactly once. ---
@@ -134,30 +163,36 @@ int main() {
         std::uint32_t counted = 0U;
         for (std::size_t kind = 0; kind < kBlockKindCount; ++kind) {
             const auto block = static_cast<Block>(kind);
-            const auto& definition = kBlockRegistry[kind];
-            for (std::uint16_t slot = 0; slot < blockStateSlotCount(definition); ++slot) {
-                for (std::uint16_t fluid = 0; fluid < blockFluidLevelCount(definition); ++fluid) {
-                    for (std::uint16_t lit = 0; lit < blockLitCount(definition); ++lit) {
-                        const BlockState state{block, static_cast<BlockOrientation>(slot),
-                                               static_cast<std::uint8_t>(fluid), lit != 0U};
-                        const auto id = state.rawId();
-                        assert(id < kBlockStateCount);
-                        assert(!seen[id]);  // no two states share an id
-                        seen[id] = true;
-                        ++counted;
-                        // And the id decodes back to exactly what built it.
-                        assert(state.block() == block);
-                        assert(static_cast<std::uint16_t>(state.orientation()) == slot);
-                        assert(state.fluidLevel() == fluid);
-                        assert(state.lit() == (lit != 0U));
-                    }
+            const auto& schema = kBlockRegistry[kind].states;
+            // The walk is driven by the block's declared schema rather than by
+            // a fixed nest of loops over three known axes. That is what makes it
+            // survive a fourth property: the previous version enumerated slot x
+            // fluid x lit by hand, and an axis the table numbered but the walk
+            // did not enumerate is exactly how two states end up sharing an id.
+            for (std::uint16_t index = 0; index < schema.stateCount(); ++index) {
+                auto state = BlockState{block};
+                for (std::size_t axisIndex = 0; axisIndex < schema.size(); ++axisIndex) {
+                    const auto axis = schema.axis(axisIndex);
+                    const auto digit = static_cast<std::uint8_t>(
+                        (index / schema.stride(axisIndex)) % axis.valueCount);
+                    state = state.with(axis.property, digit);
+                }
+                const auto id = state.rawId();
+                assert(id < kBlockStateCount);
+                assert(!seen[id]);  // no two states share an id
+                seen[id] = true;
+                ++counted;
+                // And the id decodes back to exactly what built it.
+                assert(state.block() == block);
+                for (std::size_t axisIndex = 0; axisIndex < schema.size(); ++axisIndex) {
+                    const auto axis = schema.axis(axisIndex);
+                    const auto digit = static_cast<std::uint8_t>(
+                        (index / schema.stride(axisIndex)) % axis.valueCount);
+                    assert(state.value(axis.property) == digit);
                 }
             }
         }
-        // Every id in the table is reachable: no gaps, no overrun. This is what
-        // caught the lit axis being added to the table but not to this walk —
-        // an axis the table numbers and nothing enumerates is exactly how two
-        // states end up sharing an id later.
+        // Every id in the table is reachable: no gaps, no overrun.
         assert(counted == kBlockStateCount);
     }
 

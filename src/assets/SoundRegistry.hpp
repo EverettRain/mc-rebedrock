@@ -1,11 +1,35 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace mc::assets {
+
+using SoundEventId = std::uint32_t;
+inline constexpr SoundEventId kInvalidSoundEventId = std::numeric_limits<SoundEventId>::max();
+
+struct TransparentStringHash final {
+    using is_transparent = void;
+
+    [[nodiscard]] std::size_t operator()(std::string_view value) const noexcept {
+        return std::hash<std::string_view>{}(value);
+    }
+    [[nodiscard]] std::size_t operator()(const std::string& value) const noexcept {
+        return (*this)(std::string_view{value});
+    }
+};
+
+struct TransparentStringEqual final {
+    using is_transparent = void;
+
+    [[nodiscard]] bool operator()(std::string_view left, std::string_view right) const noexcept {
+        return left == right;
+    }
+};
 
 class ResourceProvider;
 
@@ -21,6 +45,10 @@ struct SoundEntry final {
     bool stream = false;  // decode on the fly (music) rather than fully in memory
     bool isEvent = false; // name references another event, not a file
 
+    // Compiled once after pack merging. Runtime selection follows an integer
+    // edge instead of looking the referenced event up by string on every play.
+    SoundEventId referencedEvent = kInvalidSoundEventId;
+
     [[nodiscard]] bool operator==(const SoundEntry&) const = default;
 };
 
@@ -30,6 +58,10 @@ struct SoundEvent final {
     std::string id;
     std::vector<SoundEntry> sounds;
     std::string subtitle;
+
+    // Sum of candidate weights, compiled once after merging rather than for
+    // every footstep or ambient sound.
+    int totalWeight = 0;
 
     [[nodiscard]] bool operator==(const SoundEvent&) const = default;
 };
@@ -66,6 +98,7 @@ class SoundRegistry final {
     void merge(const std::vector<ParsedEvent>& packEvents);
 
     [[nodiscard]] const SoundEvent* find(std::string_view id) const;
+    [[nodiscard]] SoundEventId idOf(std::string_view id) const;
     [[nodiscard]] std::size_t size() const { return events_.size(); }
     [[nodiscard]] const std::vector<SoundEvent>& events() const { return events_; }
 
@@ -73,13 +106,17 @@ class SoundRegistry final {
     // reference to the event it names. `randomState` is advanced so repeated
     // plays vary. Returns nullptr if the event is unknown or resolves to nothing.
     [[nodiscard]] const SoundEntry* pick(std::string_view id, std::uint32_t& randomState) const;
+    [[nodiscard]] const SoundEntry* pick(SoundEventId id, std::uint32_t& randomState) const;
 
   private:
-    [[nodiscard]] const SoundEntry* pick(std::string_view id, std::uint32_t& randomState,
-                                         std::vector<std::string_view>& chain) const;
+    [[nodiscard]] const SoundEntry* pick(SoundEventId id, std::uint32_t& randomState,
+                                         SoundEventId* chain, std::size_t depth) const;
     [[nodiscard]] SoundEvent* findMutable(std::string_view id);
+    void compile();
 
     std::vector<SoundEvent> events_;
+    std::unordered_map<std::string, SoundEventId, TransparentStringHash, TransparentStringEqual>
+        eventIds_;
 };
 
 } // namespace mc::assets

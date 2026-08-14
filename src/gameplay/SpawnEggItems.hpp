@@ -12,16 +12,13 @@ namespace mc::gameplay::items {
 // the constructor stores the EntityType supplier so the renderer can tint the
 // icon and the interaction system can spawn the right creature.
 inline constexpr SpawnEggItem PigSpawnEgg{
-    "pig_spawn_egg", "Pig Spawn Egg", "猪刷怪蛋",
-    &entities::PigEntity::type};
+    "pig_spawn_egg", &entities::PigEntity::type};
 
 inline constexpr SpawnEggItem ZombieSpawnEgg{
-    "zombie_spawn_egg", "Zombie Spawn Egg", "僵尸刷怪蛋",
-    &entities::ZombieEntity::type};
+    "zombie_spawn_egg", &entities::ZombieEntity::type};
 
 inline constexpr SpawnEggItem CowSpawnEgg{
-    "cow_spawn_egg", "Cow Spawn Egg", "牛刷怪蛋",
-    &entities::CowEntity::type};
+    "cow_spawn_egg", &entities::CowEntity::type};
 
 } // namespace mc::gameplay::items
 

@@ -117,6 +117,7 @@ int main() {
     REQUIRE(escapingCow != nullptr && calmCow != nullptr);
     REQUIRE(escapingCow->lastAttacker == ActorReference::player());
     REQUIRE(escapingCow->brain.goals().isRunning("escape_danger"));
+    REQUIRE(escapingCow->movementSpeedMultiplier == 2.0F);
     REQUIRE(!calmCow->brain.goals().isRunning("escape_danger"));
     REQUIRE(escapingCow->brain.navigation().destination().has_value());
     REQUIRE(escapingCow->brain.navigation().destination()->x < beforeEscape.x);
@@ -128,6 +129,43 @@ int main() {
     REQUIRE(escapingCow != nullptr);
     REQUIRE(horizontalDistance(escapingCow->position, attacker) >
             horizontalDistance(beforeEscape, attacker));
+
+    // Registered speeds remain the real 26.1 attributes, but the local
+    // locomotion integrator converts them to its historical movement scale at
+    // one shared boundary. A normal 0.2 cow must therefore stay in the normal
+    // walking range, while a 2.0 panic modifier remains visibly faster rather
+    // than making both modes five times too fast.
+    static const NoGoalAi speedProbeAi;
+    static const auto speedProbeType =
+        mc::gameplay::entities::EntityType::Builder::create(
+            mc::gameplay::entities::MobCategory::Creature, speedProbeAi)
+            .sized(0.9F, 1.4F)
+            .movementSpeed(0.2F)
+            .build("speed_probe");
+    EntitySystem normalSpeedEntities;
+    EntitySystem panicSpeedEntities;
+    normalSpeedEntities.spawn({2.5F, 1.001F, 4.5F}, speedProbeType, 101U);
+    panicSpeedEntities.spawn({2.5F, 1.001F, 6.5F}, speedProbeType, 102U);
+    auto* normalSpeedEntity = normalSpeedEntities.byId(normalSpeedEntities.entities()[0].id);
+    auto* panicSpeedEntity = panicSpeedEntities.byId(panicSpeedEntities.entities()[0].id);
+    REQUIRE(normalSpeedEntity != nullptr && panicSpeedEntity != nullptr);
+    const glm::vec3 normalStart = normalSpeedEntities.entities()[0].position;
+    const glm::vec3 panicStart = panicSpeedEntities.entities()[0].position;
+    REQUIRE(normalSpeedEntity->brain.navigation().startMovingTo(
+        world, *normalSpeedEntity, {25.5F, 1.001F, 4.5F}, 1.0F));
+    REQUIRE(panicSpeedEntity->brain.navigation().startMovingTo(
+        world, *panicSpeedEntity, {25.5F, 1.001F, 6.5F}, 2.0F));
+    for (int tick = 0; tick < 20; ++tick) {
+        static_cast<void>(normalSpeedEntities.tick(world));
+        static_cast<void>(panicSpeedEntities.tick(world));
+    }
+    const float normalTravel =
+        horizontalDistance(normalSpeedEntities.entities()[0].position, normalStart);
+    const float panicTravel =
+        horizontalDistance(panicSpeedEntities.entities()[0].position, panicStart);
+    REQUIRE(normalTravel > 0.4F && normalTravel < 1.0F);
+    REQUIRE(panicTravel > normalTravel * 1.7F);
+    REQUIRE(panicTravel < normalTravel * 2.2F);
 
     // Hostiles no longer inherit the old global "every hit bolts" shortcut.
     const std::uint64_t zombieId = entities.entities()[3].id;
@@ -292,6 +330,14 @@ int main() {
     }
     mc::gameplay::entities::GroundNodeEvaluator defaultEvaluator;
     REQUIRE(!defaultEvaluator.isStandable(corridorWorld, wideEntity, {5, 1, 5}));
+
+    // Collision alone does not make a land node: leaf crowns use a collision
+    // shape for entities and raycasts, but are excluded from ordinary land
+    // navigation just like MOTION_BLOCKING_NO_LEAVES excludes them from the
+    // natural-spawn surface.
+    auto leafWorld = makeFlatWorld();
+    REQUIRE(leafWorld.setBlock(5, 1, 5, mc::world::Block::OakLeaves));
+    REQUIRE(!defaultEvaluator.isStandable(leafWorld, *diagonalCow, {5, 2, 5}));
 
     // Terrain policy is injectable independently from A* and path following.
     // A future door/hazard evaluator can reject or penalise cells this way.

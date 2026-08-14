@@ -265,10 +265,10 @@ class EntitySystem final {
         const world::World& world,
         glm::vec3 minimum,
         glm::vec3 maximum);
-    // Rebuilds idToIndex_ and sections_ from entities_ as it currently stands.
-    // O(n); called after each tick's movement and after its despawn pass — the
-    // only moments either map can drift from the vector.
+    // Rebuilds indexes after the entity vector was compacted. Ordinary movement
+    // updates only entities that crossed a section boundary.
     void rebuildSpatialIndex();
+    void updateSectionMembership(std::size_t index);
 
     std::vector<SimpleEntity> entities_;
     // Stable id → current index. Kept in sync by rebuildSpatialIndex so a
@@ -278,6 +278,9 @@ class EntitySystem final {
     // current positions. Turns the O(n²) pushing sweep and O(n) raycast into
     // O(neighbours) queries.
     std::unordered_map<EntitySection, std::vector<std::size_t>, EntitySectionHash> sections_;
+    // The bucket currently containing each vector slot. Parallel to entities_
+    // so crossing checks are a pair of integer comparisons.
+    std::vector<EntitySection> entitySections_;
     std::vector<std::pair<glm::vec3, EntityDrops>> pendingDrops_;
     std::vector<PendingMobSound> pendingSounds_;
     std::uint32_t lootRandomState_ = 0x1F123BB5U;

@@ -12,7 +12,6 @@ constexpr float kSprintExhaustionPerBlock = 0.1F;
 constexpr float kSwimExhaustionPerBlock = 0.01F;
 constexpr float kJumpExhaustion = 0.05F;
 constexpr float kSprintJumpExhaustion = 0.2F;
-constexpr float kDamageExhaustion = 0.1F;
 constexpr float kRegenerationExhaustion = 6.0F;
 constexpr float kVoidHeight = -64.0F;
 constexpr float kVoidDamage = 4.0F;
@@ -45,15 +44,22 @@ void PlayerVitals::heal(float amount) {
     damage_.health = std::min(damage_.health + amount, damage_.maxHealth);
 }
 
-bool PlayerVitals::hurt(float amount, DamageSource cause) {
-    // Guards and the invulnerability window live in the shared pipeline, so the
-    // player and every mob resolve a hit the same way.
-    const DamageOutcome outcome = applyDamage(damage_, cause, amount);
+bool PlayerVitals::hurt(float amount, DamageType cause, bool causedByLivingNonPlayer) {
+    // Guards, the invulnerability window and the difficulty scaling all live in
+    // the shared pipeline, so the player and every mob resolve a hit the same
+    // way — and the difficulty is applied once, here, rather than by whichever
+    // caller remembered to.
+    const DamageOutcome outcome =
+        applyDamage(damage_, DamageContext{cause, amount, difficulty_, causedByLivingNonPlayer});
     if (!outcome.landed) {
         return false;
     }
     ticksSinceDamage_ = 0;
-    addExhaustion(kDamageExhaustion);
+    // The hunger a hit costs is the damage type's own exhaustion. This was a
+    // flat 0.1 charged for every source, so drowning and starving drained
+    // hunger that vanilla charges nothing for — and starvation, which damages
+    // *because* hunger ran out, was feeding itself.
+    addExhaustion(outcome.exhaustion);
     return true;
 }
 
@@ -117,9 +123,9 @@ void PlayerVitals::tickFood(VitalsTickResult& result) {
             // contribution here: easy stops at five hearts, normal at half a
             // heart, hard carries on to the end.
             if (damage_.health > starvationHealthFloor(difficulty_) &&
-                hurt(1.0F, DamageSource::Starve)) {
+                hurt(1.0F, DamageType::Starve)) {
                 result.damageTaken = 1.0F;
-                result.cause = DamageSource::Starve;
+                result.cause = DamageType::Starve;
             }
             foodTimer_ = 0;
         }
@@ -162,9 +168,9 @@ VitalsTickResult PlayerVitals::tick(const VitalsInput& input) {
     } else if (input.onGround) {
         const float damage = std::ceil(fallDistance_ - kSafeFallDistance);
         fallDistance_ = 0.0F;
-        if (damage > 0.0F && hurt(damage, DamageSource::Fall)) {
+        if (damage > 0.0F && hurt(damage, DamageType::Fall)) {
             result.damageTaken = damage;
-            result.cause = DamageSource::Fall;
+            result.cause = DamageType::Fall;
         }
     } else if (input.verticalDistance < 0.0F) {
         fallDistance_ -= input.verticalDistance;
@@ -175,9 +181,9 @@ VitalsTickResult PlayerVitals::tick(const VitalsInput& input) {
         --airTicks_;
         if (airTicks_ <= kDrownDamageAirTicks) {
             airTicks_ = 0;
-            if (hurt(kDrownDamage, DamageSource::Drown)) {
+            if (hurt(kDrownDamage, DamageType::Drown)) {
                 result.damageTaken = kDrownDamage;
-                result.cause = DamageSource::Drown;
+                result.cause = DamageType::Drown;
             }
         }
     } else if (airTicks_ < kMaximumAirTicks) {
@@ -185,9 +191,9 @@ VitalsTickResult PlayerVitals::tick(const VitalsInput& input) {
     }
 
     if (input.feetY < kVoidHeight) {
-        if (hurt(kVoidDamage, DamageSource::OutOfWorld)) {
+        if (hurt(kVoidDamage, DamageType::OutOfWorld)) {
             result.damageTaken = kVoidDamage;
-            result.cause = DamageSource::OutOfWorld;
+            result.cause = DamageType::OutOfWorld;
         }
     }
 

@@ -12,6 +12,55 @@
 
 namespace mc::ui {
 
+namespace {
+
+constexpr std::size_t kFnvOffset = sizeof(std::size_t) == 8U
+    ? static_cast<std::size_t>(1469598103934665603ULL)
+    : static_cast<std::size_t>(2166136261U);
+constexpr std::size_t kFnvPrime = sizeof(std::size_t) == 8U
+    ? static_cast<std::size_t>(1099511628211ULL)
+    : static_cast<std::size_t>(16777619U);
+
+void hashAppend(std::size_t& hash, std::string_view text) noexcept {
+    for (const char character : text) {
+        hash ^= static_cast<std::size_t>(static_cast<unsigned char>(character));
+        hash *= kFnvPrime;
+    }
+}
+
+} // namespace
+
+std::size_t TranslationKeyHash::operator()(std::string_view key) const noexcept {
+    std::size_t hash = kFnvOffset;
+    hashAppend(hash, key);
+    return hash;
+}
+
+std::size_t TranslationKeyHash::operator()(const TranslationKeyView& key) const noexcept {
+    std::size_t hash = kFnvOffset;
+    hashAppend(hash, key.prefix);
+    hashAppend(hash, ".");
+    hashAppend(hash, key.space);
+    hashAppend(hash, ".");
+    hashAppend(hash, key.path);
+    return hash;
+}
+
+bool TranslationKeyEqual::operator()(const std::string& left,
+                                     const TranslationKeyView& right) const noexcept {
+    const std::size_t expectedSize =
+        right.prefix.size() + right.space.size() + right.path.size() + 2U;
+    if (left.size() != expectedSize || !std::string_view{left}.starts_with(right.prefix)) {
+        return false;
+    }
+    std::size_t offset = right.prefix.size();
+    if (left[offset++] != '.') return false;
+    if (std::string_view{left}.substr(offset, right.space.size()) != right.space) return false;
+    offset += right.space.size();
+    if (left[offset++] != '.') return false;
+    return std::string_view{left}.substr(offset) == right.path;
+}
+
 std::string LanguageInfo::displayName() const {
     if (region.empty()) {
         return name.empty() ? code : name;
@@ -62,19 +111,14 @@ std::vector<std::string> availableLanguageCodes(const std::filesystem::path& loc
     return codes;
 }
 
-Language Language::fromFile(const std::filesystem::path& file) {
-    std::ifstream input{file, std::ios::binary};
-    if (!input) {
-        throw std::runtime_error("Unable to open language file " + file.string());
-    }
-    std::ostringstream buffer;
-    buffer << input.rdbuf();
-    const auto document = core::Json::parse(buffer.str());
+Language Language::fromJsonText(std::string_view text) {
+    const auto document = core::Json::parse(text);
     if (!document.isObject()) {
-        throw std::runtime_error("Language file is not a JSON object: " + file.string());
+        throw std::runtime_error("Language file is not a JSON object");
     }
     Language language;
-    language.code_ = file.stem().string();
+    // The code is set by the caller; a merged layer has no filename to take it
+    // from, which is the one thing the path form gave for free.
     language.entries_.reserve(document.asObject().size());
     for (const auto& [key, value] : document.asObject()) {
         if (value.isString()) {
@@ -84,38 +128,67 @@ Language Language::fromFile(const std::filesystem::path& file) {
     return language;
 }
 
+Language Language::fromFile(const std::filesystem::path& file) {
+    std::ifstream input{file, std::ios::binary};
+    if (!input) {
+        throw std::runtime_error("Unable to open language file " + file.string());
+    }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    Language language = fromJsonText(buffer.str());
+    language.code_ = file.stem().string();
+    return language;
+}
+
 Language Language::fromProvider(const assets::ResourceProvider& provider, std::string_view code) {
     Language language;
     language.code_ = std::string{code};
     const auto mergeStack = [&](const assets::ResourceLocation& location) {
-        for (const auto& file : provider.locateAll(location)) {
-            const Language layer = fromFile(file);
+        for (const auto& bytes : provider.readAllBytes(location)) {
+            const Language layer = fromJsonText(
+                std::string_view{reinterpret_cast<const char*>(bytes.data()), bytes.size()});
             for (const auto& [key, value] : layer.entries_) {
                 language.entries_.insert_or_assign(key, value);
             }
         }
     };
     // Vanilla always builds en_us first, then overlays the selected language.
-    if (provider.locateAll(assets::lang("en_us.json")).empty()) {
+    // exists(), not locateAll(): asking for the paths makes a zipped pack
+    // extract every language file just to answer "is it there?".
+    if (!provider.exists(assets::lang("en_us.json"))) {
         throw std::runtime_error("The resource stack has no lang/en_us.json");
     }
     mergeStack(assets::lang("en_us.json"));
     if (code != kDefaultLanguageCode) {
-        if (provider.locateAll(assets::lang(std::string{code} + ".json")).empty()) {
+        if (!provider.exists(assets::lang(std::string{code} + ".json"))) {
             throw std::runtime_error("The resource stack has no lang/" + std::string{code} +
                                      ".json");
         }
         mergeStack(assets::lang(std::string{code} + ".json"));
     }
 
+    // ClientLanguage loads translations for every resource namespace. Project
+    // options therefore live under `rebedrock`, layered after vanilla so they
+    // can reuse the same selected locale without modifying Mojang's lang file.
+    // Only English is required; a locale without a project translation keeps
+    // the English project strings while all vanilla keys remain localized.
+    const auto mergeProjectLanguage = [&](std::string_view languageCode) {
+        const auto location = assets::lang(std::string{languageCode} + ".json", "rebedrock");
+        if (provider.exists(location)) {
+            mergeStack(location);
+        }
+    };
+    mergeProjectLanguage(kDefaultLanguageCode);
+    if (code != kDefaultLanguageCode) {
+        mergeProjectLanguage(code);
+    }
+
     // 26.1 applies deprecated.json after loading: removed keys disappear and
     // renamed keys move to their current IDs.
-    for (const auto& file :
-         provider.locateAll(assets::ResourceLocation{"minecraft", "lang/deprecated.json"})) {
-        std::ifstream input{file, std::ios::binary};
-        std::ostringstream buffer;
-        buffer << input.rdbuf();
-        const auto document = core::Json::parse(buffer.str());
+    for (const auto& bytes : provider.readAllBytes(
+             assets::ResourceLocation{"minecraft", "lang/deprecated.json"})) {
+        const auto document = core::Json::parse(
+            std::string_view{reinterpret_cast<const char*>(bytes.data()), bytes.size()});
         const auto& removed = document["removed"];
         if (removed.isArray()) {
             for (std::size_t index = 0; index < removed.size(); ++index) {
@@ -143,14 +216,71 @@ Language Language::fromProvider(const assets::ResourceProvider& provider, std::s
 }
 
 std::string_view Language::translate(std::string_view key, std::string_view fallback) const {
-    const auto found = entries_.find(std::string{key});
+    const auto found = entries_.find(key);
     if (found == entries_.end() || found->second.empty()) {
         return fallback;
     }
     return found->second;
 }
 
-bool Language::contains(std::string_view key) const { return entries_.contains(std::string{key}); }
+std::string_view Language::translate(std::string_view prefix, std::string_view space,
+                                     std::string_view path, std::string_view fallback) const {
+    const auto found = entries_.find(TranslationKeyView{prefix, space, path});
+    if (found == entries_.end() || found->second.empty()) {
+        return fallback;
+    }
+    return found->second;
+}
+
+bool Language::contains(std::string_view key) const { return entries_.contains(key); }
+
+std::string formatTranslation(std::string_view pattern,
+                              std::span<const std::string_view> arguments) {
+    std::string output;
+    output.reserve(pattern.size() + arguments.size() * 8U);
+    std::size_t automaticIndex = 0U;
+    for (std::size_t index = 0U; index < pattern.size();) {
+        if (pattern[index] != '%') {
+            output.push_back(pattern[index++]);
+            continue;
+        }
+        if (index + 1U < pattern.size() && pattern[index + 1U] == '%') {
+            output.push_back('%');
+            index += 2U;
+            continue;
+        }
+
+        std::size_t argumentIndex = automaticIndex;
+        std::size_t tokenEnd = index + 1U;
+        std::size_t numeric = 0U;
+        bool numbered = false;
+        while (tokenEnd < pattern.size() && pattern[tokenEnd] >= '0' &&
+               pattern[tokenEnd] <= '9') {
+            numbered = true;
+            numeric = numeric * 10U + static_cast<std::size_t>(pattern[tokenEnd] - '0');
+            ++tokenEnd;
+        }
+        if (numbered && tokenEnd < pattern.size() && pattern[tokenEnd] == '$') {
+            ++tokenEnd;
+            argumentIndex = numeric == 0U ? arguments.size() : numeric - 1U;
+        } else if (numbered) {
+            output.push_back(pattern[index++]);
+            continue;
+        }
+        if (tokenEnd < pattern.size() && pattern[tokenEnd] == 's') {
+            if (argumentIndex < arguments.size()) {
+                output.append(arguments[argumentIndex]);
+            }
+            if (!numbered) {
+                ++automaticIndex;
+            }
+            index = tokenEnd + 1U;
+            continue;
+        }
+        output.push_back(pattern[index++]);
+    }
+    return output;
+}
 
 std::set<int> Language::requiredUnicodePages() const {
     std::set<int> pages;

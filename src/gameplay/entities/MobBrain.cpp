@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <queue>
@@ -28,16 +29,26 @@ namespace {
 
 } // namespace
 
+const SimpleEntity* MobAiContext::entityById(std::uint64_t id) const {
+    if (entityIndex_ != nullptr) {
+        const auto found = entityIndex_->find(id);
+        if (found == entityIndex_->end() || found->second >= entities_.size()) return nullptr;
+        const SimpleEntity& entity = entities_[found->second];
+        return entity.id == id ? &entity : nullptr;
+    }
+    // Standalone goal tests do not own an EntitySystem index. Preserve their
+    // lightweight context while the production path above remains O(1).
+    const auto found = std::ranges::find(entities_, id, &SimpleEntity::id);
+    return found == entities_.end() ? nullptr : &*found;
+}
+
 std::optional<glm::vec3> MobAiContext::actorPosition(ActorReference actor) const {
     if (actor.kind == ActorReference::Kind::Player) {
         return player_.present ? std::optional<glm::vec3>{player_.position} : std::nullopt;
     }
     if (actor.kind == ActorReference::Kind::Entity) {
-        for (const auto& entity : entities_) {
-            if (entity.id == actor.entityId && !entity.dead()) {
-                return entity.position;
-            }
-        }
+        const SimpleEntity* entity = entityById(actor.entityId);
+        if (entity != nullptr && !entity->dead()) return entity->position;
     }
     return std::nullopt;
 }
@@ -49,12 +60,9 @@ bool MobAiContext::canSee(const SimpleEntity& observer, ActorReference actor) co
     }
     float targetHeight = player_.height;
     if (actor.kind == ActorReference::Kind::Entity) {
-        for (const auto& entity : entities_) {
-            if (entity.id == actor.entityId) {
-                targetHeight = entity.dimensions().height;
-                break;
-            }
-        }
+        const SimpleEntity* entity = entityById(actor.entityId);
+        if (entity == nullptr || entity->dead()) return false;
+        targetHeight = entity->dimensions().height;
     }
     const glm::vec3 origin =
         observer.position + glm::vec3{0.0F, observer.dimensions().height * 0.85F, 0.0F};
@@ -113,7 +121,8 @@ namespace {
 
     for (int z = minimumZ; z <= maximumZ; ++z) {
         for (int x = minimumX; x <= maximumX; ++x) {
-            if (!chunkLoaded(world, x, z) || !world::hasCollision(world.block(x, feet.y - 1, z))) {
+            if (!chunkLoaded(world, x, z) ||
+                !world::isLandEntitySupport(world.block(x, feet.y - 1, z))) {
                 return false;
             }
             for (int offset = 0; offset < bodyCells; ++offset) {
@@ -127,28 +136,32 @@ namespace {
     return true;
 }
 
-struct PathNode final {
-    int x = 0;
-    int y = 0;
-    int z = 0;
-
-    [[nodiscard]] bool operator==(const PathNode&) const = default;
-};
-
-struct PathNodeHash final {
-    [[nodiscard]] std::size_t operator()(const PathNode& node) const noexcept {
-        std::size_t value = std::hash<int>{}(node.x);
-        value ^= std::hash<int>{}(node.y) + 0x9E3779B9U + (value << 6U) + (value >> 2U);
-        value ^= std::hash<int>{}(node.z) + 0x9E3779B9U + (value << 6U) + (value >> 2U);
-        return value;
-    }
-};
-
-[[nodiscard]] float heuristic(PathNode from, PathNode to) {
+[[nodiscard]] float heuristic(glm::ivec3 from, glm::ivec3 to) {
     const float x = static_cast<float>(from.x - to.x);
     const float y = static_cast<float>(from.y - to.y);
     const float z = static_cast<float>(from.z - to.z);
     return std::sqrt(x * x + y * y + z * z);
+}
+
+[[nodiscard]] bool sameNode(glm::ivec3 left, glm::ivec3 right) {
+    return left.x == right.x && left.y == right.y && left.z == right.z;
+}
+
+[[nodiscard]] std::uint64_t packPathNode(glm::ivec3 node) {
+    constexpr std::uint64_t coordinateMask = (1ULL << 26U) - 1ULL;
+    return ((static_cast<std::uint64_t>(static_cast<std::uint32_t>(node.x)) & coordinateMask)
+            << 38U) |
+           ((static_cast<std::uint64_t>(static_cast<std::uint32_t>(node.z)) & coordinateMask)
+            << 12U) |
+           (static_cast<std::uint64_t>(node.y) & 0xFFFULL);
+}
+
+[[nodiscard]] std::uint64_t mixPathKey(std::uint64_t value) {
+    value ^= value >> 30U;
+    value *= 0xbf58476d1ce4e5b9ULL;
+    value ^= value >> 27U;
+    value *= 0x94d049bb133111ebULL;
+    return value ^ (value >> 31U);
 }
 
 [[nodiscard]] bool touchingWater(const world::World& world, const SimpleEntity& self) {
@@ -234,39 +247,95 @@ std::optional<GroundNodeEvaluation> GroundNodeEvaluator::successor(const world::
     return std::nullopt;
 }
 
+GroundPathFinder::GroundPathFinder(std::size_t maximumExpandedNodes)
+    : maximumExpandedNodes_(maximumExpandedNodes) {
+    records_.reserve(maximumExpandedNodes_ * 2U);
+    openHeap_.reserve(maximumExpandedNodes_ * 2U);
+    rebuildRecordIndex(std::bit_ceil(std::max<std::size_t>(64U, maximumExpandedNodes_ * 4U)));
+}
+
+void GroundPathFinder::beginSearch() const {
+    records_.clear();
+    openHeap_.clear();
+    ++searchGeneration_;
+    if (searchGeneration_ == 0U) {
+        std::fill(recordGenerations_.begin(), recordGenerations_.end(), 0U);
+        searchGeneration_ = 1U;
+    }
+}
+
+void GroundPathFinder::rebuildRecordIndex(std::size_t capacity) const {
+    capacity = std::bit_ceil(std::max<std::size_t>(64U, capacity));
+    recordKeys_.assign(capacity, 0U);
+    recordValues_.assign(capacity, 0U);
+    recordGenerations_.assign(capacity, 0U);
+    if (records_.empty()) return;
+    const std::size_t mask = capacity - 1U;
+    for (std::size_t index = 0; index < records_.size(); ++index) {
+        const std::uint64_t key = packPathNode(records_[index].position);
+        std::size_t slot = static_cast<std::size_t>(mixPathKey(key)) & mask;
+        while (recordGenerations_[slot] == searchGeneration_) slot = (slot + 1U) & mask;
+        recordKeys_[slot] = key;
+        recordValues_[slot] = static_cast<std::uint32_t>(index);
+        recordGenerations_[slot] = searchGeneration_;
+    }
+}
+
+std::uint32_t GroundPathFinder::findRecord(glm::ivec3 position) const {
+    const std::uint64_t key = packPathNode(position);
+    const std::size_t mask = recordKeys_.size() - 1U;
+    std::size_t slot = static_cast<std::size_t>(mixPathKey(key)) & mask;
+    while (recordGenerations_[slot] == searchGeneration_) {
+        if (recordKeys_[slot] == key) return recordValues_[slot];
+        slot = (slot + 1U) & mask;
+    }
+    return std::numeric_limits<std::uint32_t>::max();
+}
+
+std::uint32_t GroundPathFinder::recordFor(glm::ivec3 position) const {
+    if (const std::uint32_t existing = findRecord(position);
+        existing != std::numeric_limits<std::uint32_t>::max()) {
+        return existing;
+    }
+    if ((records_.size() + 1U) * 10U >= recordKeys_.size() * 7U) {
+        rebuildRecordIndex(recordKeys_.size() * 2U);
+    }
+    const std::uint32_t index = static_cast<std::uint32_t>(records_.size());
+    records_.push_back({position, {}, std::numeric_limits<float>::infinity(), false, false});
+    const std::uint64_t key = packPathNode(position);
+    const std::size_t mask = recordKeys_.size() - 1U;
+    std::size_t slot = static_cast<std::size_t>(mixPathKey(key)) & mask;
+    while (recordGenerations_[slot] == searchGeneration_) slot = (slot + 1U) & mask;
+    recordKeys_[slot] = key;
+    recordValues_[slot] = index;
+    recordGenerations_[slot] = searchGeneration_;
+    return index;
+}
+
 GroundPathSearchResult GroundPathFinder::find(const world::World& world, const SimpleEntity& self,
                                               const GroundNodeEvaluator& evaluator,
                                               glm::ivec3 requestedTarget) const {
     GroundPathSearchResult result;
+    beginSearch();
     const auto startCell = evaluator.standableNear(world, self, feetCellAt(self.position), 2);
     const auto targetCell = evaluator.standableNear(world, self, requestedTarget);
     if (!startCell.has_value() || !targetCell.has_value()) {
         return result;
     }
 
-    const PathNode start{startCell->position.x, startCell->position.y, startCell->position.z};
-    const PathNode target{targetCell->position.x, targetCell->position.y, targetCell->position.z};
-    if (start == target) {
+    const glm::ivec3 start = startCell->position;
+    const glm::ivec3 target = targetCell->position;
+    if (sameNode(start, target)) {
         result.stats.reachedTarget = true;
         return result;
     }
 
-    struct QueueEntry final {
-        float score = 0.0F;
-        PathNode node;
-        [[nodiscard]] bool operator<(const QueueEntry& other) const { return score > other.score; }
+    constexpr auto heapCompare = [](const HeapEntry& left, const HeapEntry& right) {
+        return left.score > right.score;
     };
-    struct Record final {
-        float cost = std::numeric_limits<float>::infinity();
-        PathNode parent{};
-        bool hasParent = false;
-        bool closed = false;
-    };
-
-    std::priority_queue<QueueEntry> open;
-    std::unordered_map<PathNode, Record, PathNodeHash> records;
-    records[start].cost = 0.0F;
-    open.push({heuristic(start, target), start});
+    const std::uint32_t startRecord = recordFor(start);
+    records_[startRecord].cost = 0.0F;
+    openHeap_.push_back({heuristic(start, target), startRecord});
 
     constexpr std::array<glm::ivec2, 8> kDirections{{
         {1, 0},
@@ -279,22 +348,24 @@ GroundPathSearchResult GroundPathFinder::find(const world::World& world, const S
         {-1, -1},
     }};
 
-    while (!open.empty() && result.stats.expandedNodes < maximumExpandedNodes_) {
-        const PathNode current = open.top().node;
-        open.pop();
-        auto& currentRecord = records[current];
+    while (!openHeap_.empty() && result.stats.expandedNodes < maximumExpandedNodes_) {
+        std::pop_heap(openHeap_.begin(), openHeap_.end(), heapCompare);
+        const std::uint32_t currentIndex = openHeap_.back().record;
+        openHeap_.pop_back();
+        auto& currentRecord = records_[currentIndex];
         if (currentRecord.closed) {
             continue;
         }
+        const glm::ivec3 current = currentRecord.position;
         currentRecord.closed = true;
         const float currentCost = currentRecord.cost;
         ++result.stats.expandedNodes;
-        if (current == target) {
+        if (sameNode(current, target)) {
             result.stats.reachedTarget = true;
             break;
         }
 
-        const glm::ivec3 currentPosition{current.x, current.y, current.z};
+        const glm::ivec3 currentPosition = current;
         for (const glm::ivec2 direction : kDirections) {
             ++result.stats.evaluatedSuccessors;
             const auto next = evaluator.successor(world, self, currentPosition, direction);
@@ -317,8 +388,9 @@ GroundPathSearchResult GroundPathFinder::find(const world::World& world, const S
                 }
             }
 
-            const PathNode neighbor{next->position.x, next->position.y, next->position.z};
-            auto& neighborRecord = records[neighbor];
+            const glm::ivec3 neighbor = next->position;
+            const std::uint32_t neighborIndex = recordFor(neighbor);
+            auto& neighborRecord = records_[neighborIndex];
             if (neighborRecord.closed) {
                 continue;
             }
@@ -330,23 +402,25 @@ GroundPathSearchResult GroundPathFinder::find(const world::World& world, const S
             neighborRecord.cost = newCost;
             neighborRecord.parent = current;
             neighborRecord.hasParent = true;
-            open.push({newCost + heuristic(neighbor, target), neighbor});
+            openHeap_.push_back({newCost + heuristic(neighbor, target), neighborIndex});
+            std::push_heap(openHeap_.begin(), openHeap_.end(), heapCompare);
         }
     }
 
     if (!result.stats.reachedTarget) {
         return result;
     }
-    PathNode current = target;
-    while (!(current == start)) {
-        result.nodes.push_back({current.x, current.y, current.z});
-        const auto foundRecord = records.find(current);
-        if (foundRecord == records.end() || !foundRecord->second.hasParent) {
+    glm::ivec3 current = target;
+    while (!sameNode(current, start)) {
+        result.nodes.push_back(current);
+        const std::uint32_t record = findRecord(current);
+        if (record == std::numeric_limits<std::uint32_t>::max() ||
+            !records_[record].hasParent) {
             result.nodes.clear();
             result.stats.reachedTarget = false;
             return result;
         }
-        current = foundRecord->second.parent;
+        current = records_[record].parent;
     }
     std::reverse(result.nodes.begin(), result.nodes.end());
     return result;

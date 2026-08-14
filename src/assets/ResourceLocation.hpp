@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -11,9 +12,19 @@ namespace mc::assets {
 // never a physical on-disk path. A ResourceProvider is what turns one of these
 // into bytes or a file — the standard pack layout and this project's current
 // `resources/vanilla/1.16.1/…` layout are two providers over the same names.
+// Which half of a pack a resource lives in. 26.1 packs carry client assets
+// under `assets/` and server data (tags, loot tables, recipes) under `data/`,
+// and they are two different roots for the same namespaced path. Defaulting to
+// the client half keeps every existing location literal working unchanged.
+enum class PackType : std::uint8_t {
+    ClientResources,
+    ServerData,
+};
+
 struct ResourceLocation final {
     std::string space{"minecraft"};
     std::string path;
+    PackType type = PackType::ClientResources;
 
     [[nodiscard]] bool operator==(const ResourceLocation&) const = default;
 
@@ -26,13 +37,14 @@ struct ResourceLocation final {
 
     // Parses `space:path`; a bare `path` defaults to the `minecraft` namespace,
     // matching how vanilla resolves an unqualified reference.
-    [[nodiscard]] static ResourceLocation parse(std::string_view text) {
+    [[nodiscard]] static ResourceLocation parse(std::string_view text,
+                                                PackType type = PackType::ClientResources) {
         const auto separator = text.find(':');
         if (separator == std::string_view::npos) {
-            return ResourceLocation{"minecraft", std::string{text}};
+            return ResourceLocation{"minecraft", std::string{text}, type};
         }
         return ResourceLocation{std::string{text.substr(0, separator)},
-                                std::string{text.substr(separator + 1U)}};
+                                std::string{text.substr(separator + 1U)}, type};
     }
 };
 
@@ -57,6 +69,15 @@ struct ResourceLocation final {
 [[nodiscard]] inline ResourceLocation font(std::string_view subpath,
                                            std::string_view space = "minecraft") {
     return ResourceLocation{std::string{space}, "font/" + std::string{subpath}};
+}
+
+// Server data: tags, loot tables, recipes. `subpath` is the content path below
+// `data/<namespace>/`, e.g. `tags/block/mineable/pickaxe.json`. Data resources
+// layer per file through the same provider stack the client half uses, so a
+// pack can override one tag without shadowing the rest.
+[[nodiscard]] inline ResourceLocation data(std::string_view subpath,
+                                           std::string_view space = "minecraft") {
+    return ResourceLocation{std::string{space}, std::string{subpath}, PackType::ServerData};
 }
 
 } // namespace mc::assets

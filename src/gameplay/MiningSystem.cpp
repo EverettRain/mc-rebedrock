@@ -1,8 +1,10 @@
 #include "gameplay/MiningSystem.hpp"
 
+#include "gameplay/BlockTags.hpp"
 #include "gameplay/ItemPlacement.hpp"
 
 #include <limits>
+#include <optional>
 
 namespace mc::gameplay {
 namespace {
@@ -78,135 +80,36 @@ std::uint16_t toolDurabilityCost(
     return sword ? 2U : 1U;
 }
 
+// Which tool a block wants, straight off the `mineable/*` tags.
+[[nodiscard]] std::optional<ToolType> mineableTool(world::Block block) {
+    const auto& tags = blockTags();
+    if (tags.has(block, BlockTag::MineableWithPickaxe)) return ToolType::Pickaxe;
+    if (tags.has(block, BlockTag::MineableWithAxe)) return ToolType::Axe;
+    if (tags.has(block, BlockTag::MineableWithShovel)) return ToolType::Shovel;
+    if (tags.has(block, BlockTag::MineableWithHoe)) return ToolType::Hoe;
+    return std::nullopt;
+}
+
 HarvestRequirement harvestRequirement(world::Block block) {
-    switch (block) {
-    // The stone family and coal ore call requiresCorrectToolForDrops, so a
-    // pickaxe is needed to keep their loot; none of them are in needs_stone_tool,
-    // so the wooden tier is enough. Sandstone, bricks, quartz, netherrack and
-    // furnaces still drop for any hand here, with the pickaxe only digging them
-    // faster (see isPickaxeBlock below) — 26.1 marks those five
-    // requiresCorrectToolForDrops as well, which B2' picks up with the tag data.
-    case world::Block::Stone:
-    case world::Block::Cobblestone:
-    case world::Block::MossyCobblestone:
-    case world::Block::StoneBricks:
-    case world::Block::MossyStoneBricks:
-    case world::Block::ChiseledStoneBricks:
-    case world::Block::Granite:
-    case world::Block::Diorite:
-    case world::Block::Andesite:
-    case world::Block::PolishedGranite:
-    case world::Block::PolishedDiorite:
-    case world::Block::PolishedAndesite:
-    case world::Block::SmoothStone:
-    case world::Block::CoalOre:
-        return {ToolType::Pickaxe, ToolTier::Wood};
-    case world::Block::IronOre:
-    case world::Block::LapisOre:
-        return {ToolType::Pickaxe, ToolTier::Stone};
-    case world::Block::GoldOre:
-    case world::Block::DiamondOre:
-    case world::Block::EmeraldOre:
-    case world::Block::RedstoneOre:
-        return {ToolType::Pickaxe, ToolTier::Iron};
-    case world::Block::Obsidian:
-        return {ToolType::Pickaxe, ToolTier::Diamond};
-    default:
-        // Wood (the mineable/axe tag), dirt, gravel, wool, glass, plants: no tool
-        // requirement whatsoever. Unlike stone and ore, vanilla wood never calls
-        // requiresCorrectToolForDrops, so a bare hand still keeps the block.
+    // 26.1 splits this across two independent tag families, and so does this.
+    //
+    // `mineable/*` says which tool digs the block faster. `needs_*_tool` says
+    // which tier keeps its drop. The gate itself — BlockBehaviour's
+    // requiresCorrectToolForDrops — is neither: in vanilla it is a block
+    // property, expressed in the loot table's `match_tool` condition. Until
+    // B2''s loot half reads those tables, `mineable/pickaxe` stands in for it,
+    // which is exact for the current block set: every pickaxe-mineable block
+    // here is one vanilla marks requiresCorrectToolForDrops, and no axe-,
+    // shovel- or hoe-mineable one is. Wood, dirt and leaves therefore keep
+    // dropping for a bare hand, as they must.
+    const auto& tags = blockTags();
+    if (!tags.has(block, BlockTag::MineableWithPickaxe)) {
         return {};
     }
-}
-
-// The tool roles that mine a given block faster. Each list mirrors the vanilla
-// mineable tag: pickaxe → the stone/ore family, shovel → dirt/sand/gravel, hoe →
-// leaves, axe → wood. This is a separate concern from harvestRequirement above,
-// which only gates the blocks marked requiresCorrectToolForDrops: a pickaxe is
-// still the fast tool for sandstone, bricks, quartz, netherrack and furnaces
-// even where a bare hand keeps their loot. The lit furnace shares the plain
-// furnace's entry, the way its blockstate shares one block in vanilla.
-[[nodiscard]] bool isPickaxeBlock(world::Block block) {
-    using enum world::Block;
-    switch (block) {
-    case Stone:
-    case Cobblestone:
-    case MossyCobblestone:
-    case StoneBricks:
-    case MossyStoneBricks:
-    case ChiseledStoneBricks:
-    case Granite:
-    case Diorite:
-    case Andesite:
-    case PolishedGranite:
-    case PolishedDiorite:
-    case PolishedAndesite:
-    case SmoothStone:
-    case Sandstone:
-    case Bricks:
-    case QuartzBlock:
-    case Netherrack:
-    case Furnace:
-    case CoalOre:
-    case IronOre:
-    case LapisOre:
-    case GoldOre:
-    case DiamondOre:
-    case EmeraldOre:
-    case RedstoneOre:
-    case Obsidian:
-        return true;
-    default:
-        return false;
-    }
-}
-
-[[nodiscard]] bool isAxeBlock(world::Block block) {
-    using enum world::Block;
-    switch (block) {
-    case OakLog:
-    case SpruceLog:
-    case BirchLog:
-    case JungleLog:
-    case AcaciaLog:
-    case DarkOakLog:
-    case OakPlanks:
-    case SprucePlanks:
-    case BirchPlanks:
-    case JunglePlanks:
-    case AcaciaPlanks:
-    case DarkOakPlanks:
-    case Bookshelf:
-    case CraftingTable:
-    case Chest:
-    case Pumpkin:
-    case Melon:
-        return true;
-    default:
-        return false;
-    }
-}
-
-[[nodiscard]] bool isShovelBlock(world::Block block) {
-    using enum world::Block;
-    switch (block) {
-    case Grass:
-    case Dirt:
-    case CoarseDirt:
-    case Podzol:
-    case Sand:
-    case RedSand:
-    case Gravel:
-    case Clay:
-    case SnowBlock:
-        return true;
-    default:
-        return false;
-    }
-}
-
-[[nodiscard]] bool isHoeBlock(world::Block block) {
-    return world::isLeaves(block);
+    if (tags.has(block, BlockTag::NeedsDiamondTool)) return {ToolType::Pickaxe, ToolTier::Diamond};
+    if (tags.has(block, BlockTag::NeedsIronTool)) return {ToolType::Pickaxe, ToolTier::Iron};
+    if (tags.has(block, BlockTag::NeedsStoneTool)) return {ToolType::Pickaxe, ToolTier::Stone};
+    return {ToolType::Pickaxe, ToolTier::Wood};
 }
 
 bool canHarvestBlock(world::Block block, const ItemStack& tool) {
@@ -225,23 +128,12 @@ float miningSeconds(
     // accumulates any progress: the block simply cannot be mined.
     if (hardness < 0.0F) return std::numeric_limits<float>::infinity();
     float speed = 1.0F;
-    // A tool only pays off on the blocks it is the right tool for.
+    // A tool only pays off on the blocks its own `mineable` tag lists — one bit
+    // test instead of the four case lists this replaces.
     const auto& attributes = toolAttributes(toolType(tool), toolTier(tool));
-    switch (toolType(tool)) {
-    case ToolType::Pickaxe:
-        if (isPickaxeBlock(block)) speed = attributes.miningSpeed;
-        break;
-    case ToolType::Axe:
-        if (isAxeBlock(block)) speed = attributes.miningSpeed;
-        break;
-    case ToolType::Shovel:
-        if (isShovelBlock(block)) speed = attributes.miningSpeed;
-        break;
-    case ToolType::Hoe:
-        if (isHoeBlock(block)) speed = attributes.miningSpeed;
-        break;
-    default:
-        break;
+    if (const auto wanted = mineableTool(block);
+        wanted.has_value() && *wanted == toolType(tool)) {
+        speed = attributes.miningSpeed;
     }
     if (underwater) speed /= 5.0F;
     if (airborne) speed /= 5.0F;

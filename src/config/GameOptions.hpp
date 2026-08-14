@@ -11,6 +11,10 @@ struct GameOptions final {
     std::string version = "ReBedrock beta2";
     int windowWidth = 960;
     int windowHeight = 720;
+    // The windowed restore size above remains meaningful while maximized: GLFW
+    // uses it when the window is restored, while this flag recreates the native
+    // maximized state on the next launch.
+    bool windowMaximized = false;
     int guiScale = 0;
     int viewDistance = 4;
     // Simulation distance in chunks: creatures farther than this from the player

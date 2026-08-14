@@ -14,7 +14,7 @@ namespace {
 // remain future goals. The shared profile carries no mutable runtime state.
 class PigAi final : public AnimalAi {
   public:
-    // PigEntity uses priorities 6/7/8 for wander/look/look-around in 1.16.1.
+    // Pig uses priorities 6/7/8 for wander/look/look-around in 26.1.
     PigAi() : AnimalAi(1.25F, 1.0F, 1) {}
 };
 
@@ -55,13 +55,13 @@ constexpr audio::MobSoundProfile kPigSounds{
 } // namespace
 
 const EntityType& PigEntity::type() {
-    // PigEntity: 0.9 x 0.9 box, ten health, GENERIC_MOVEMENT_SPEED 0.25 folded
-    // into the walking tier's blocks-per-tick, vanilla egg colours 0xF0A5A5 /
+    // Pig (26.1): 0.9 x 0.9 box, ten health, MOVEMENT_SPEED 0.25,
+    // vanilla egg colours 0xF0A5A5 /
     // 0xDB635E. Built once; its address is stable for the run.
     static EntityType type = EntityType::Builder::create(MobCategory::Creature, kPigAi)
                                  .sized(0.9F, 0.9F)
                                  .health(10.0F)
-                                 .movementSpeed(0.05F)
+                                 .movementSpeed(0.25F)
                                  .followRange(16.0F)
                                  .spawnEgg(0xF0A5A5U, 0xDB635EU)
                                  .loot(&rollPigLoot)

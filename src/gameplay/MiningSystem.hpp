@@ -63,8 +63,8 @@ struct MinedDrops final {
 // stand-in for Level#random) and is advanced by every chance-based entry, so
 // the same state sequence always produces the same drops. Pass an empty stack
 // as `tool` for a break nobody swung at, such as a torch losing its wall.
-// `age` is the crop's age 0-7 (read from the block's orientation state before
-// the crop was removed), which the crop loot tables roll against.
+// `age` is the crop's AGE property, 0-7, read off the state before the crop was
+// removed; the crop loot tables roll against it.
 [[nodiscard]] MinedDrops minedDrops(
     world::Block block, const ItemStack& tool, std::uint32_t& randomState, int age = 0);
 

@@ -1,0 +1,15 @@
+{
+  "options.rebedrock.antiAliasing": "Anti-Aliasing",
+  "options.rebedrock.dynamicLights": "Dynamic Lighting",
+  "options.rebedrock.particleLevel.crazy": "Crazy (3x)",
+  "options.rebedrock.particleLevel.high": "High (2x)",
+  "options.rebedrock.particleLevel.low": "Low (0.5x)",
+  "options.rebedrock.particleLevel.medium": "Medium (1x)",
+  "options.rebedrock.rainCollisionCache": "Rain Collision Cache",
+  "options.rebedrock.rainMode": "Rain Mode",
+  "options.rebedrock.rainMode.async": "Asynchronous Particle Rain",
+  "options.rebedrock.rainMode.particles": "Particle Rain",
+  "options.rebedrock.rainMode.texture": "Texture Rain",
+  "options.rebedrock.resolution.windowed": "windowed",
+  "options.rebedrock.sunShadows": "Sun Shadows"
+}

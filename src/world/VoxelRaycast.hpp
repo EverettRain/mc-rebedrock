@@ -19,7 +19,7 @@ struct VoxelRaycastHit final {
 // used to size the selection outline so sub-block shapes (torch, plants, chest,
 // the 15/16 farmland box and a crop's per-stage box) no longer show a
 // full-cube marker. The world and cell are read so a crop's outline follows the
-// age stored in its orientation state.
+// age its AGE property carries.
 struct BlockBounds final {
     glm::vec3 minimum{0.0F};
     glm::vec3 maximum{1.0F};

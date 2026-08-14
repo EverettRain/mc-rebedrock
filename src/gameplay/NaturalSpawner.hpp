@@ -1,6 +1,8 @@
 #pragma once
 
 #include "gameplay/Difficulty.hpp"
+#include "gameplay/EnvironmentSnapshot.hpp"
+#include "gameplay/MobSpawnSettings.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/EntityType.hpp"
 #include "world/gen/Biome.hpp"
@@ -21,58 +23,63 @@ namespace mc::gameplay {
 
 class EntitySystem;
 
-// One species in a biome's spawn table: the creature, its weight in the
-// biome's weighted pick, and the group size the spawner samples. Lives in
-// gameplay (not world::gen) so it can name entities::EntityType without
-// inverting the world → gameplay dependency; biomeDefinition stays data-only.
-struct SpawnEntry final {
-    const entities::EntityType& type;
-    float weight = 1.0F;
-    int minGroup = 1;
-    int maxGroup = 1;
-};
-
-// The per-biome spawn settings a NaturalSpawner reads: the passive (CREATURE)
-// and hostile (MONSTER) tables, mirroring 1.16.1's SpawnSettings.
-struct BiomeSpawnTable final {
-    std::vector<SpawnEntry> creatures;
-    std::vector<SpawnEntry> monsters;
-};
-
-// NaturalSpawner (1.16.1's NaturalSpawner): every spawn interval it picks
-// positions inside the simulation radius, checks the ground and the light rule
-// (MONSTER in darkness, CREATURE in daylight), samples the biome's table by
-// weight and spawns a group — stopping at each category's spawnCap. Unstreamed
-// terrain reads as Air on both sides of the surface check, so it is skipped
-// rather than spawning creatures into chunks that have not arrived yet.
+// NaturalSpawner (26.1's `world/level/NaturalSpawner`): every spawn interval it
+// runs the spawn rule chain once per naturally-spawning category, over columns
+// picked at random inside the simulation radius.
+//
+// The position sample is vanilla's `getRandomPosWithin`: a random column, then
+// a random *height* inside it, which the placement type then judges. It used to
+// scan down to the first standing surface, so the only cell a column could ever
+// offer was its roof — nothing spawned in a cave or under water, at all.
+// A column whose chunk has not streamed in yet is skipped rather than spawned
+// into.
 class NaturalSpawner final {
   public:
     explicit NaturalSpawner(std::uint64_t seed);
 
-    // Advances one 20 TPS tick. Every kIntervalTicks a batch of attempts runs.
-    // `skyBrightness` is the day/night factor (DayNightCycle::state: 1 = day,
-    // ~0 = night): the stored sky light is static full sun, so it is scaled by
-    // this so open ground actually goes dark at night and MONSTERs spawn there.
+    // Advances one 20 TPS tick, sampling a few columns per category the way
+    // vanilla's spawner runs every tick. It used to bank a second's worth of
+    // attempts into one tick; the samples are cheap individually but the biome
+    // query that opens the chain is not, so a batch is a hitch.
+    //
+    // The environment carries the tick's ambient darkness, which is what turns
+    // the stored static full-sun sky light into the reading vanilla's spawn
+    // check makes — open ground goes dark at night and MONSTERs settle on the
+    // surface. It used to be a float day/night factor multiplied into the sky
+    // light, a render curve standing in for a gameplay one.
     void tick(const world::World& world, EntitySystem& entities, glm::vec3 center,
-              float radius, Difficulty difficulty, float skyBrightness = 1.0F);
+              float radius, Difficulty difficulty,
+              const EnvironmentSnapshot& environment = EnvironmentSnapshot{});
 
     // Rebuilds the biome source for a new world seed (a new save or /reload).
     void setSeed(std::uint64_t seed);
 
-    [[nodiscard]] const BiomeSpawnTable& table(world::gen::Biome biome) const {
-        return tables_[static_cast<std::size_t>(biome)];
+    // Overlays the biome tables from a pack's `data/minecraft/worldgen/biome/…`.
+    // Without this the built-in 26.1 numbers stand, which is the usual case:
+    // an ordinary resource pack carries no `data/` at all.
+    void loadSpawnData(const assets::ResourceProvider& resources) { tables_.load(resources); }
+
+    [[nodiscard]] const MobSpawnSettings& table(world::gen::Biome biome) const {
+        return tables_.settings(biome);
     }
 
+    // The tables themselves, for a caller that installs its own — a test that
+    // wants a known species in every biome, or a future /reload.
+    [[nodiscard]] BiomeSpawnTables& spawnTables() { return tables_; }
+
   private:
-    void buildSpawnTables();
+    // One pass of the rule chain for one category, against one freshly sampled
+    // column. Vanilla's `spawnCategoryForChunk` is the same unit of work: a
+    // category and a random position, then every rule in order.
     void spawnOnce(const world::World& world, EntitySystem& entities, glm::vec3 center,
-                   float radius, Difficulty difficulty, float skyBrightness);
-    [[nodiscard]] const SpawnEntry& pickWeighted(const std::vector<SpawnEntry>& entries);
+                   float radius, Difficulty difficulty,
+                   const EnvironmentSnapshot& environment,
+                   entities::MobCategory category);
+    [[nodiscard]] const SpawnerData& pickWeighted(const std::vector<SpawnerData>& entries);
 
     std::unique_ptr<world::gen::BiomeSource> biomes_;
-    std::array<BiomeSpawnTable, static_cast<std::size_t>(world::gen::Biome::Count)> tables_;
+    BiomeSpawnTables tables_;
     std::uint32_t randomState_ = 0x9E3779B9U;
-    unsigned int tickCounter_ = 0U;
 };
 
 } // namespace mc::gameplay

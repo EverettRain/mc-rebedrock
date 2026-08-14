@@ -6,6 +6,7 @@
 
 #include <cassert>
 #include <cstdlib>
+#include <iterator>
 #include <utility>
 
 int main() {
@@ -35,6 +36,53 @@ int main() {
     assert(world.block(4, 5, 4) == mc::world::Block::Air);
     assert(world.block(4, 6, 4) == mc::world::Block::Air);
     assert(world.block(4, 7, 4) == mc::world::Block::Air);
+
+    // Sweep every Y layer crossed during a fast tick. These heights exercise
+    // different sub-block phases; the old endpoint sample missed the one-layer
+    // floor for several of them and discarded the entity below the world.
+    for (const int startingY : {14, 21, 25, 31, 39, 49, 63, 95, 127, 191, 255}) {
+        mc::world::Chunk highChunk;
+        highChunk.setBlock(4, 0, 4, mc::world::Block::Stone);
+        highChunk.setBlock(4, startingY, 4, mc::world::Block::Sand);
+        mc::world::World highWorld;
+        highWorld.setChunk({0, 0}, std::move(highChunk));
+        mc::gameplay::WorldSimulation highSimulation;
+        highSimulation.notifyPlaced({4, startingY, 4}, mc::world::Block::Sand);
+        for (int tick = 0; tick < 180; ++tick) {
+            static_cast<void>(highSimulation.tick(highWorld));
+        }
+        assert(highWorld.block(4, 1, 4) == mc::world::Block::Sand);
+        assert(highSimulation.fallingBlocks().empty());
+    }
+
+    // An unloaded owner chunk is unknown, not air. Freeze an in-flight block
+    // until its column returns, then let it finish the same fall.
+    mc::world::Chunk streamedChunk;
+    streamedChunk.setBlock(4, 0, 4, mc::world::Block::Stone);
+    streamedChunk.setBlock(4, 14, 4, mc::world::Block::Sand);
+    mc::world::World streamedWorld;
+    streamedWorld.setChunk({0, 0}, std::move(streamedChunk));
+    mc::gameplay::WorldSimulation streamedSimulation;
+    streamedSimulation.notifyPlaced({4, 14, 4}, mc::world::Block::Sand);
+    static_cast<void>(streamedSimulation.tick(streamedWorld));
+    assert(streamedSimulation.fallingBlocks().size() == 1U);
+    const auto pausedPosition = streamedSimulation.fallingBlocks().front().position;
+    const float pausedVelocity = streamedSimulation.fallingBlocks().front().verticalVelocity;
+    assert(streamedWorld.removeChunk({0, 0}));
+    for (int tick = 0; tick < 20; ++tick) {
+        static_cast<void>(streamedSimulation.tick(streamedWorld));
+    }
+    assert(streamedSimulation.fallingBlocks().size() == 1U);
+    assert(streamedSimulation.fallingBlocks().front().position == pausedPosition);
+    assert(streamedSimulation.fallingBlocks().front().verticalVelocity == pausedVelocity);
+    mc::world::Chunk reloadedChunk;
+    reloadedChunk.setBlock(4, 0, 4, mc::world::Block::Stone);
+    streamedWorld.setChunk({0, 0}, std::move(reloadedChunk));
+    for (int tick = 0; tick < 100; ++tick) {
+        static_cast<void>(streamedSimulation.tick(streamedWorld));
+    }
+    assert(streamedWorld.block(4, 1, 4) == mc::world::Block::Sand);
+    assert(streamedSimulation.fallingBlocks().empty());
 
     world.setBlock(10, 5, 10, mc::world::Block::Gravel);
     world.setBlock(12, 5, 10, mc::world::Block::RedSand);
@@ -350,8 +398,8 @@ int main() {
     assert(supportWorld.block(4, 2, 3) == mc::world::Block::Air);
     std::size_t torchDrops = 0U;
     for (const auto& change : supportChanges) {
-        if (change.dropped == mc::world::Block::Torch ||
-            change.dropped == mc::world::Block::WallTorch) {
+        if (change.dropped.block() == mc::world::Block::Torch ||
+            change.dropped.block() == mc::world::Block::WallTorch) {
             ++torchDrops;
         }
     }
@@ -363,7 +411,7 @@ int main() {
     const auto flowerChanges = supportSimulation.tick(supportWorld);
     assert(supportWorld.block(3, 2, 5) == mc::world::Block::Air);
     assert(flowerChanges.size() == 1U);
-    assert(flowerChanges.front().dropped == mc::world::Block::Dandelion);
+    assert(flowerChanges.front().dropped.block() == mc::world::Block::Dandelion);
 
     // A block with no support requirement is never disturbed.
     supportWorld.setBlock(8, 4, 8, mc::world::Block::Stone);
@@ -404,8 +452,8 @@ int main() {
 
     // One leaf a player placed out of reach of any log keeps its PERSISTENT
     // flag and survives alongside the canopy that is about to go.
-    treeWorld.setBlock(2, 3, 2, mc::world::Block::OakLeaves);
-    treeWorld.setOrientation(2, 3, 2, mc::world::kPersistentLeavesState);
+    treeWorld.setState(2, 3, 2,
+                       mc::world::BlockState{mc::world::Block::OakLeaves}.withPersistent(true));
     treeSimulation.notifyNeighborChanged(treeWorld, {2, 3, 2});
 
     // Cut the trunk out and the canopy dissolves, dropping its loot as it goes.
@@ -417,9 +465,9 @@ int main() {
     std::size_t decayDrops = 0U;
     for (int tick = 0; tick < 20000 && decayed < leafCount; ++tick) {
         for (const auto& change : treeSimulation.tick(treeWorld)) {
-            assert(change.block == mc::world::Block::Air);
+            assert(change.state.block() == mc::world::Block::Air);
             ++decayed;
-            if (change.dropped == mc::world::Block::OakLeaves) {
+            if (change.dropped.block() == mc::world::Block::OakLeaves) {
                 ++decayDrops;
             }
         }
@@ -481,6 +529,41 @@ int main() {
     assert(spreadWorld.block(9, 2, 8) == mc::world::Block::Grass);
     // The source grass survives the whole run (open air, full light above).
     assert(spreadWorld.block(8, 2, 8) == mc::world::Block::Grass);
+
+    // The same field at night. getMaxLocalRawBrightness subtracts the ambient
+    // darkness, so the open surface reads 4: enough for the grass to stay alive,
+    // one short of the 9 it needs to spread. Before the environment snapshot the
+    // simulation read the stored full-sun value at every hour and a field spread
+    // through the night exactly as fast as through noon.
+    mc::world::Chunk nightChunk;
+    for (int z = 0; z < 16; ++z) {
+        for (int x = 0; x < 16; ++x) {
+            nightChunk.setBlock(x, 0, z, mc::world::Block::Stone);
+            nightChunk.setBlock(x, 1, z, mc::world::Block::Dirt);
+        }
+    }
+    nightChunk.setBlock(8, 2, 8, mc::world::Block::Grass);
+    nightChunk.setBlock(9, 2, 8, mc::world::Block::Dirt);
+    nightChunk.setBlock(4, 2, 4, mc::world::Block::OakSapling);
+    mc::world::World nightWorld;
+    nightWorld.setChunk({0, 0}, std::move(nightChunk));
+    mc::gameplay::WorldSimulation nightSimulation;
+    nightSimulation.setRandomTickSpeed(1000);
+    nightSimulation.setEnvironment(
+        mc::gameplay::EnvironmentSnapshot::resolve(18000.0, 0.0F, 0.0F));
+    for (int z = 0; z < 16; ++z) {
+        for (int x = 0; x < 16; ++x) {
+            nightWorld.setSkyLight(x, 3, z, 15U);
+        }
+    }
+    for (int tick = 0; tick < 600; ++tick) {
+        static_cast<void>(nightSimulation.tick(nightWorld));
+    }
+    assert(nightWorld.block(9, 2, 8) == mc::world::Block::Dirt);
+    assert(nightWorld.block(8, 2, 8) == mc::world::Block::Grass);
+    // SaplingBlock#randomTick reads the same darkened value, so a sapling waits
+    // for morning instead of sprouting in the dark.
+    assert(nightWorld.block(4, 2, 4) == mc::world::Block::OakSapling);
 
     // Grass must not spread into the dirt layer under itself: the probes reach
     // one below the surface, and without a light check on the target that dirt
@@ -598,9 +681,10 @@ int main() {
 
     // --- Crop farming ---
 
-    // Crops grow on farmland when the block above is lit enough, advancing the
-    // age stored in their orientation state until it reaches 7. randomTickSpeed 0
-    // freezes them, exactly like every other random-tick behaviour.
+    // Crops grow when their own cell is lit enough — CropBlock#randomTick reads
+    // getRawBrightness(pos, 0), not the cell above — advancing the age stored in
+    // their orientation state until it reaches 7. randomTickSpeed 0 freezes
+    // them, exactly like every other random-tick behaviour.
     {
         mc::world::Chunk farmChunk;
         for (int z = 0; z < 16; ++z) {
@@ -616,14 +700,14 @@ int main() {
         farmWorld.setChunk({0, 0}, std::move(farmChunk));
         mc::gameplay::WorldSimulation farmSimulation;
         farmSimulation.setRandomTickSpeed(1000);
-        farmWorld.setSkyLight(4, 3, 4, 15U);
-        farmWorld.setSkyLight(5, 3, 5, 15U);
+        farmWorld.setSkyLight(4, 2, 4, 15U);
+        farmWorld.setSkyLight(5, 2, 5, 15U);
         for (int tick = 0; tick < 5000; ++tick) {
             static_cast<void>(farmSimulation.tick(farmWorld));
         }
-        assert(mc::world::cropAge(farmWorld.orientation(4, 2, 4)) == 7);
-        assert(mc::world::cropAge(farmWorld.orientation(5, 2, 5)) == 7);
-        // A crop with no light above never grows.
+        assert(farmWorld.state(4, 2, 4).age() == 7);
+        assert(farmWorld.state(5, 2, 5).age() == 7);
+        // A crop in the dark never grows.
         mc::world::Chunk darkChunk;
         for (int z = 0; z < 16; ++z) {
             for (int x = 0; x < 16; ++x) {
@@ -639,7 +723,7 @@ int main() {
         for (int tick = 0; tick < 2000; ++tick) {
             static_cast<void>(darkSimulation.tick(darkWorld));
         }
-        assert(mc::world::cropAge(darkWorld.orientation(4, 2, 4)) == 0);
+        assert(darkWorld.state(4, 2, 4).age() == 0);
     }
 
     // Farmland moisture: water within four blocks hydrates the soil (jumping
@@ -665,11 +749,11 @@ int main() {
             static_cast<void>(farmSimulation.tick(farmWorld));
         }
         assert(mc::world::isFarmland(farmWorld.block(4, 1, 4)));
-        assert(mc::world::farmlandMoisture(farmWorld.orientation(4, 1, 4)) == 7);
+        assert(farmWorld.state(4, 1, 4).moisture() == 7);
         assert(farmWorld.block(12, 1, 12) == mc::world::Block::Dirt);
         // A crop on top keeps the dry farmland from reverting.
         assert(mc::world::isFarmland(farmWorld.block(2, 1, 12)));
-        assert(mc::world::farmlandMoisture(farmWorld.orientation(2, 1, 12)) == 0);
+        assert(farmWorld.state(2, 1, 12).moisture() == 0);
     }
 
     // A crop pops off the moment its farmland is removed, and the dropped state
@@ -693,20 +777,58 @@ int main() {
         for (int tick = 0; tick < 5000; ++tick) {
             static_cast<void>(cropSimulation.tick(cropWorld));
         }
-        const int maturedAge = mc::world::cropAge(cropWorld.orientation(4, 2, 4));
+        const int maturedAge = cropWorld.state(4, 2, 4).age();
         cropWorld.setBlock(4, 1, 4, mc::world::Block::Air);
         cropSimulation.notifyNeighborChanged(cropWorld, {4, 1, 4});
         bool poppedWithAge = false;
         for (int tick = 0; tick < 5; ++tick) {
             for (const auto& change : cropSimulation.tick(cropWorld)) {
-                if (change.dropped == mc::world::Block::WheatCrops) {
-                    assert(mc::world::cropAge(change.droppedOrientation) == maturedAge);
+                if (change.dropped.block() == mc::world::Block::WheatCrops) {
+                    assert(change.dropped.age() == maturedAge);
                     poppedWithAge = true;
                 }
             }
         }
         assert(cropWorld.block(4, 2, 4) == mc::world::Block::Air);
         assert(poppedWithAge);
+    }
+
+    // --- B1': the random-tick switch is now a table, and the draw loop rejects
+    // a block with isRandomlyTicking before entering any call. The table and
+    // the pre-filter are the same data, so they cannot drift — but the *set*
+    // still can, and a block silently dropping out of it stops grass spreading
+    // or crops growing with no other symptom. ---
+    {
+        using mc::world::Block;
+        const Block ticking[] = {
+            Block::Grass,         Block::Farmland,      Block::WheatCrops,
+            Block::Carrots,       Block::Potatoes,      Block::OakSapling,
+            Block::SpruceSapling, Block::BirchSapling,  Block::JungleSapling,
+            Block::AcaciaSapling, Block::DarkOakSapling,
+        };
+        for (const auto block : ticking) {
+            assert(mc::gameplay::WorldSimulation::isRandomlyTicking(block));
+        }
+        // The overwhelming majority must be rejected: this is the pre-filter's
+        // whole purpose, and a table that answered true for stone would put the
+        // simulation back to a call per draw.
+        const Block inert[] = {
+            Block::Air,   Block::Stone,     Block::Dirt,   Block::Cobblestone,
+            Block::Sand,  Block::OakLog,    Block::Water,  Block::OakLeaves,
+            Block::Chest, Block::Furnace,
+        };
+        for (const auto block : inert) {
+            assert(!mc::gameplay::WorldSimulation::isRandomlyTicking(block));
+        }
+        // Every entry the table holds must also pass the pre-filter, and vice
+        // versa — they are one array, and this pins that they stay one.
+        std::size_t tickingCount = 0U;
+        for (std::size_t index = 0; index < static_cast<std::size_t>(Block::Count); ++index) {
+            if (mc::gameplay::WorldSimulation::isRandomlyTicking(static_cast<Block>(index))) {
+                ++tickingCount;
+            }
+        }
+        assert(tickingCount == std::size(ticking));
     }
 
     return 0;

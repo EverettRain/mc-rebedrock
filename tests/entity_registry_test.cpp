@@ -28,15 +28,14 @@ int main() {
     assert(registry.byId("rebedrock:cow") == cow);
     assert(cow->vanillaId().path == "cow");
 
-    // 1.16.1 CowEntity.createCowAttributes(): CREATURE category, 0.9 x 1.4 box,
-    // 10 health, GENERIC_MOVEMENT_SPEED 0.2 folded to the engine's 0.04
-    // blocks-per-tick wander (the same fold that turns the pig's 0.25 into 0.05).
+    // 26.1 AbstractCow.createAttributes(): CREATURE category, 0.9 x 1.4 box,
+    // 10 health and the unscaled MOVEMENT_SPEED attribute 0.2.
     assert(cow->category() == mc::gameplay::entities::MobCategory::Creature);
     const auto dimensions = cow->dimensions();
     assert(dimensions.width == 0.9F);
     assert(dimensions.height == 1.4F);
     assert(cow->attributes().maxHealth == 10.0F);
-    assert(cow->attributes().movementSpeed == 0.04F);
+    assert(cow->attributes().movementSpeed == 0.20F);
     const auto egg = cow->spawnEgg();
     assert(egg.primary == 0xF3C9A3U);
     assert(egg.secondary == 0xFFFFFFU);

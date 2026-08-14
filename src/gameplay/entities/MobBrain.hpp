@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace mc::world {
@@ -56,6 +57,11 @@ class MobAiContext final {
     MobAiContext(const world::World& world, std::span<const SimpleEntity> entities,
                  PlayerAiView player, std::uint64_t gameTick)
         : world_(world), entities_(entities), player_(player), gameTick_(gameTick) {}
+    MobAiContext(const world::World& world, std::span<const SimpleEntity> entities,
+                 const std::unordered_map<std::uint64_t, std::size_t>& entityIndex,
+                 PlayerAiView player, std::uint64_t gameTick)
+        : world_(world), entities_(entities), entityIndex_(&entityIndex), player_(player),
+          gameTick_(gameTick) {}
 
     [[nodiscard]] const world::World& world() const { return world_; }
     [[nodiscard]] const PlayerAiView& player() const { return player_; }
@@ -64,8 +70,11 @@ class MobAiContext final {
     [[nodiscard]] bool canSee(const SimpleEntity& observer, ActorReference actor) const;
 
   private:
+    [[nodiscard]] const SimpleEntity* entityById(std::uint64_t id) const;
+
     const world::World& world_;
     std::span<const SimpleEntity> entities_;
+    const std::unordered_map<std::uint64_t, std::size_t>* entityIndex_ = nullptr;
     PlayerAiView player_;
     std::uint64_t gameTick_ = 0U;
 };
@@ -190,15 +199,40 @@ struct GroundPathSearchResult final {
 // only when both adjacent cardinal cells are traversable without climbing.
 class GroundPathFinder final {
   public:
-    explicit GroundPathFinder(std::size_t maximumExpandedNodes = 1024U)
-        : maximumExpandedNodes_(maximumExpandedNodes) {}
+    explicit GroundPathFinder(std::size_t maximumExpandedNodes = 1024U);
 
     [[nodiscard]] GroundPathSearchResult find(const world::World& world, const SimpleEntity& self,
                                               const GroundNodeEvaluator& evaluator,
                                               glm::ivec3 requestedTarget) const;
 
   private:
+    struct SearchRecord final {
+        glm::ivec3 position{0};
+        glm::ivec3 parent{0};
+        float cost = 0.0F;
+        bool hasParent = false;
+        bool closed = false;
+    };
+    struct HeapEntry final {
+        float score = 0.0F;
+        std::uint32_t record = 0U;
+    };
+
+    void beginSearch() const;
+    [[nodiscard]] std::uint32_t findRecord(glm::ivec3 position) const;
+    [[nodiscard]] std::uint32_t recordFor(glm::ivec3 position) const;
+    void rebuildRecordIndex(std::size_t capacity) const;
+
     std::size_t maximumExpandedNodes_ = 1024U;
+    // Per-navigation A* scratch. Capacity survives searches, nodes live in
+    // contiguous arrays, and the packed-coordinate index uses generations to
+    // clear logically without touching or freeing the whole table.
+    mutable std::vector<SearchRecord> records_;
+    mutable std::vector<HeapEntry> openHeap_;
+    mutable std::vector<std::uint64_t> recordKeys_;
+    mutable std::vector<std::uint32_t> recordValues_;
+    mutable std::vector<std::uint32_t> recordGenerations_;
+    mutable std::uint32_t searchGeneration_ = 0U;
 };
 
 // Ordinary land navigation: selects a path with GroundPathFinder, then emits

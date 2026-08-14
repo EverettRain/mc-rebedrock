@@ -575,17 +575,6 @@ void Features::generateVegetation(
             chunk.setBlock(x, y + 1, z, Block::Dandelion);
         }
     }
-    // A rare sapling, so the wood set a biome grows is visible on the ground too.
-    random.setDecoratorSeed(populationSeed, 3, 9);
-    if (!definition.trees.empty() && random.nextInt(6) == 0) {
-        const int x = random.nextInt(16);
-        const int z = random.nextInt(16);
-        const int y = surfaceHeight(chunk, x, z);
-        if (y >= 0 && y + 1 < kWorldHeight && isSoilForPlants(chunk.block(x, y, z)) &&
-            chunk.block(x, y + 1, z) == Block::Air) {
-            chunk.setBlock(x, y + 1, z, saplingForLeaves(definition.trees.front().leaves));
-        }
-    }
 }
 
 } // namespace mc::world::gen

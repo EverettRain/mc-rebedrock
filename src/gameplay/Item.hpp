@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -82,15 +83,47 @@ enum class BlockItemKind : std::uint8_t {
     Leaves,
 };
 
+// C++ representation of Java's textual description id. Keeping the three
+// components separate makes the registry constexpr and lets Language perform a
+// heterogeneous hash lookup without constructing `item.minecraft.apple` on
+// every draw. Text encoding remains available for cold paths such as command
+// suggestions and diagnostics.
+enum class DescriptionType : std::uint8_t {
+    Item,
+    Block,
+};
+
+struct DescriptionId final {
+    DescriptionType type = DescriptionType::Item;
+    Identifier source{};
+
+    [[nodiscard]] constexpr bool empty() const { return source.empty(); }
+    [[nodiscard]] constexpr std::string_view prefix() const {
+        return type == DescriptionType::Block ? "block" : "item";
+    }
+};
+
+[[nodiscard]] inline std::string encodeDescriptionId(const DescriptionId& id) {
+    if (id.empty()) return {};
+    std::string result{id.prefix()};
+    result.reserve(result.size() + id.source.space.size() + id.source.path.size() + 2U);
+    result.push_back('.');
+    result.append(id.source.space);
+    result.push_back('.');
+    result.append(id.source.path);
+    return result;
+}
+
 // ItemUseAction, ItemUseResult and the useOn function type arrive through
 // ItemUse.hpp above; world::World and world::PlacementContext are only passed
 // by reference there.
 
 // One registered item, declared as a single chained expression. An Item instance
-// owns everything the four registration behaviours need: its identity (register),
-// its creative category (creative inventory), its texture/model resource, and its
-// English/Chinese names (language). Instances live as named constexpr globals in
-// namespace `items` below, and a stack refers to one by pointer.
+// owns everything the registration behaviours need: its identity, creative
+// category, texture/model resource and the stable source of its description id.
+// Localized display text belongs to language resources, never to this registry.
+// Instances live as named constexpr globals in namespace `items` below, and a
+// stack refers to one by pointer.
 class Item {
   public:
     constexpr Item() = default;
@@ -104,15 +137,6 @@ class Item {
         item.vanillaAlias = {kVanillaNamespace, path};
         item.textureName = path;
         return item;
-    }
-
-    // (4) Language: English and Chinese display names, written straight into the
-    // registration (no external json lookup).
-    [[nodiscard]] constexpr Item names(const char* english, const char* chinese) const {
-        Item copy = *this;
-        copy.en = english;
-        copy.zh = chinese;
-        return copy;
     }
 
     // (3) Resource: overrides the texture base name when it differs from the
@@ -180,14 +204,25 @@ class Item {
         return copy;
     }
 
+    // Item#getDescriptionId, following Java's registry-derived convention.
+    // Vanilla-backed content deliberately uses its minecraft alias so an item
+    // registered internally as rebedrock:apple resolves item.minecraft.apple.
+    // Original content instead remains in the rebedrock language namespace.
+    [[nodiscard]] constexpr Identifier translationIdentifier() const {
+        return vanillaAlias.empty() ? identifier : vanillaAlias;
+    }
+    [[nodiscard]] constexpr DescriptionId descriptionId() const {
+        return {descriptionType, translationIdentifier()};
+    }
+
     // The registry key, always in this project's namespace.
     Identifier identifier{};
     // The vanilla id this one aliases (empty for original content), accepted by
     // give commands and identifier lookups.
     Identifier vanillaAlias{};
-    // English / Chinese display names.
-    const char* en = "";
-    const char* zh = "";
+    // Java BlockItem delegates its description id to the block; all other
+    // items use the ordinary item prefix.
+    DescriptionType descriptionType = DescriptionType::Item;
     // Base name of the item/<name>.png sprite (unused when composited).
     std::string_view textureName{};
     TextureBuild textureBuild = TextureBuild::Simple;
@@ -215,16 +250,11 @@ class SpawnEggItem : public Item {
   public:
     using EntitySupplier = const entities::EntityType& (*)();
 
-    constexpr SpawnEggItem(std::string_view path,
-                           const char* enName,
-                           const char* zhName,
-                           EntitySupplier supplier)
+    constexpr SpawnEggItem(std::string_view path, EntitySupplier supplier)
         : entitySupplier_(supplier) {
         identifier = {kNamespace, path};
         vanillaAlias = {kVanillaNamespace, path};
         textureName = path;
-        en = enName;
-        zh = zhName;
         creativeCategory = CreativeCategory::SpawnEggs;
         textureBuild = TextureBuild::SpawnEggComposite;
     }
@@ -261,7 +291,7 @@ class BlockItem : public Item {
         vanillaAlias = definition.vanilla;
         textureName = definition.identifier.path;
         maximumStackSize = definition.maximumStackSize;
-        en = definition.displayName;
+        descriptionType = DescriptionType::Block;
         blockItemKind = BlockItemKind::Plain;
     }
 
@@ -305,9 +335,9 @@ class StandingAndWallBlockItem : public BlockItem {
 }
 
 // LeavesBlockItem (1.16.1): the block item leaves are wielded as. Its placement
-// marks the leaves persistent so hand-placed leaves never decay; the flag is
-// stored in the block's own orientation state, so the class carries the
-// behaviour while world::kPersistentLeavesState records it.
+// marks the leaves persistent so hand-placed leaves never decay; the flag is the
+// block's own PERSISTENT property, so the class carries the behaviour and
+// BlockState::withPersistent records it.
 class LeavesBlockItem : public BlockItem {
   public:
     constexpr LeavesBlockItem() = default;
@@ -367,77 +397,73 @@ inline std::vector<const Item*>& extraItemRegistry() {
 }
 
 // The named item instances. Each is a complete registration: identity, creative
-// tab, texture resource, and English/Chinese names, all in one chained
-// declaration. Code refers to an item by taking its address, e.g. &items::Diamond.
+// tab and texture resource. Its localized name is resolved from the derived
+// description id. Code refers to one by address, e.g. &items::Diamond.
 namespace items {
 
 // Materials
 inline constexpr Item Bucket =
-    Item::of("bucket").names("Bucket", "桶").category(CreativeCategory::Materials).stackSize(16U);
+    Item::of("bucket").category(CreativeCategory::Materials).stackSize(16U);
 inline constexpr Item WaterBucket = Item::of("water_bucket")
-                                        .names("Water Bucket", "水桶")
                                         .category(CreativeCategory::Materials)
                                         .single();
+inline constexpr Item LavaBucket = Item::of("lava_bucket")
+                                       .category(CreativeCategory::Materials)
+                                       .single();
 inline constexpr Item Coal =
-    Item::of("coal").names("Coal", "煤炭").category(CreativeCategory::Materials);
+    Item::of("coal").category(CreativeCategory::Materials);
 inline constexpr Item IronIngot =
-    Item::of("iron_ingot").names("Iron Ingot", "铁锭").category(CreativeCategory::Materials);
+    Item::of("iron_ingot").category(CreativeCategory::Materials);
 inline constexpr Item GoldIngot =
-    Item::of("gold_ingot").names("Gold Ingot", "金锭").category(CreativeCategory::Materials);
+    Item::of("gold_ingot").category(CreativeCategory::Materials);
 inline constexpr Item Diamond =
-    Item::of("diamond").names("Diamond", "钻石").category(CreativeCategory::Materials);
+    Item::of("diamond").category(CreativeCategory::Materials);
 inline constexpr Item Emerald =
-    Item::of("emerald").names("Emerald", "绿宝石").category(CreativeCategory::Materials);
+    Item::of("emerald").category(CreativeCategory::Materials);
 inline constexpr Item Stick =
-    Item::of("stick").names("Stick", "木棍").category(CreativeCategory::Materials);
+    Item::of("stick").category(CreativeCategory::Materials);
 inline constexpr Item Flint =
-    Item::of("flint").names("Flint", "燧石").category(CreativeCategory::Materials);
+    Item::of("flint").category(CreativeCategory::Materials);
 inline constexpr Item Feather =
-    Item::of("feather").names("Feather", "羽毛").category(CreativeCategory::Materials);
+    Item::of("feather").category(CreativeCategory::Materials);
 inline constexpr Item String =
-    Item::of("string").names("String", "线").category(CreativeCategory::Materials);
+    Item::of("string").category(CreativeCategory::Materials);
 inline constexpr Item Leather =
-    Item::of("leather").names("Leather", "皮革").category(CreativeCategory::Materials);
+    Item::of("leather").category(CreativeCategory::Materials);
 inline constexpr Item Sugar =
-    Item::of("sugar").names("Sugar", "糖").category(CreativeCategory::Materials);
+    Item::of("sugar").category(CreativeCategory::Materials);
 inline constexpr Item Egg =
-    Item::of("egg").names("Egg", "鸡蛋").category(CreativeCategory::Materials).stackSize(16U);
+    Item::of("egg").category(CreativeCategory::Materials).stackSize(16U);
 inline constexpr Item Bone =
-    Item::of("bone").names("Bone", "骨头").category(CreativeCategory::Materials);
+    Item::of("bone").category(CreativeCategory::Materials);
 inline constexpr Item Paper =
-    Item::of("paper").names("Paper", "纸").category(CreativeCategory::Materials);
+    Item::of("paper").category(CreativeCategory::Materials);
 inline constexpr Item Book =
-    Item::of("book").names("Book", "书").category(CreativeCategory::Materials);
+    Item::of("book").category(CreativeCategory::Materials);
 // WheatSeedsItem: right-clicking farmland plants the wheat crop. The behaviour
 // is dispatched by item identity in itemUseOn (ItemPlacement.cpp), the way the
 // buckets are, so the constexpr registrations stay free of function pointers.
 inline constexpr Item WheatSeeds = Item::of("wheat_seeds")
-                                       .names("Wheat Seeds", "小麦种子")
                                        .category(CreativeCategory::Materials);
 inline constexpr Item Wheat =
-    Item::of("wheat").names("Wheat", "小麦").category(CreativeCategory::Materials);
+    Item::of("wheat").category(CreativeCategory::Materials);
 
 // Food
 inline constexpr Item Apple = Item::of("apple")
-                                  .names("Apple", "苹果")
                                   .category(CreativeCategory::Food)
                                   .food({4, 0.3F});
 inline constexpr Item Bread = Item::of("bread")
-                                  .names("Bread", "面包")
                                   .category(CreativeCategory::Food)
                                   .food({5, 0.6F});
 inline constexpr Item Porkchop = Item::of("porkchop")
-                                     .names("Raw Porkchop", "生猪排")
                                      .category(CreativeCategory::Food)
                                      .food({3, 0.3F});
 inline constexpr Item CookedPorkchop = Item::of("cooked_porkchop")
-                                           .names("Cooked Porkchop", "熟猪排")
                                            .category(CreativeCategory::Food)
                                            .food({8, 0.8F});
 // Raw beef: the cow's meat drop. Vanilla food value 3 hunger / 0.3 saturation,
 // identical to raw porkchop.
 inline constexpr Item Beef = Item::of("beef")
-                                 .names("Raw Beef", "生牛肉")
                                  .category(CreativeCategory::Food)
                                  .food({3, 0.3F});
 // Carrot and potato are both food (1.16.1 FoodComponent) and the seed of their
@@ -445,87 +471,70 @@ inline constexpr Item Beef = Item::of("beef")
 // items whose useOn is a SeedsItem subclass. Planting is dispatched by item
 // identity in itemUseOn; right-clicking empty ground still eats them.
 inline constexpr Item Carrot = Item::of("carrot")
-                                   .names("Carrot", "胡萝卜")
                                    .category(CreativeCategory::Food)
                                    .food({3, 0.6F});
 inline constexpr Item Potato = Item::of("potato")
-                                   .names("Potato", "土豆")
                                    .category(CreativeCategory::Food)
                                    .food({1, 0.3F});
 
 // Tools: pickaxes, axes, shovels, hoes, swords, each single-stacking.
 inline constexpr Item WoodenPickaxe = Item::of("wooden_pickaxe")
-                                          .names("Wooden Pickaxe", "木镐")
                                           .category(CreativeCategory::Tools)
                                           .single()
                                           .tool(ToolType::Pickaxe, ToolTier::Wood);
 inline constexpr Item StonePickaxe = Item::of("stone_pickaxe")
-                                         .names("Stone Pickaxe", "石镐")
                                          .category(CreativeCategory::Tools)
                                          .single()
                                          .tool(ToolType::Pickaxe, ToolTier::Stone);
 inline constexpr Item IronPickaxe = Item::of("iron_pickaxe")
-                                        .names("Iron Pickaxe", "铁镐")
                                         .category(CreativeCategory::Tools)
                                         .single()
                                         .tool(ToolType::Pickaxe, ToolTier::Iron);
 inline constexpr Item DiamondPickaxe = Item::of("diamond_pickaxe")
-                                           .names("Diamond Pickaxe", "钻石镐")
                                            .category(CreativeCategory::Tools)
                                            .single()
                                            .tool(ToolType::Pickaxe, ToolTier::Diamond);
 inline constexpr Item GoldPickaxe = Item::of("golden_pickaxe")
-                                        .names("Golden Pickaxe", "金镐")
                                         .category(CreativeCategory::Tools)
                                         .single()
                                         .tool(ToolType::Pickaxe, ToolTier::Gold);
 inline constexpr Item WoodenAxe = Item::of("wooden_axe")
-                                      .names("Wooden Axe", "木斧")
                                       .category(CreativeCategory::Tools)
                                       .single()
                                       .tool(ToolType::Axe, ToolTier::Wood);
 inline constexpr Item StoneAxe = Item::of("stone_axe")
-                                     .names("Stone Axe", "石斧")
                                      .category(CreativeCategory::Tools)
                                      .single()
                                      .tool(ToolType::Axe, ToolTier::Stone);
 inline constexpr Item IronAxe = Item::of("iron_axe")
-                                    .names("Iron Axe", "铁斧")
                                     .category(CreativeCategory::Tools)
                                     .single()
                                     .tool(ToolType::Axe, ToolTier::Iron);
 inline constexpr Item DiamondAxe = Item::of("diamond_axe")
-                                       .names("Diamond Axe", "钻石斧")
                                        .category(CreativeCategory::Tools)
                                        .single()
                                        .tool(ToolType::Axe, ToolTier::Diamond);
 inline constexpr Item GoldAxe = Item::of("golden_axe")
-                                    .names("Golden Axe", "金斧")
                                     .category(CreativeCategory::Tools)
                                     .single()
                                     .tool(ToolType::Axe, ToolTier::Gold);
 inline constexpr Item WoodenShovel = Item::of("wooden_shovel")
-                                         .names("Wooden Shovel", "木锹")
                                          .category(CreativeCategory::Tools)
                                          .single()
                                          .tool(ToolType::Shovel, ToolTier::Wood);
 inline constexpr Item StoneShovel = Item::of("stone_shovel")
-                                        .names("Stone Shovel", "石锹")
                                         .category(CreativeCategory::Tools)
                                         .single()
                                         .tool(ToolType::Shovel, ToolTier::Stone);
 inline constexpr Item IronShovel = Item::of("iron_shovel")
-                                       .names("Iron Shovel", "铁锹")
                                        .category(CreativeCategory::Tools)
                                        .single()
                                        .tool(ToolType::Shovel, ToolTier::Iron);
 inline constexpr Item DiamondShovel = Item::of("diamond_shovel")
-                                          .names("Diamond Shovel", "钻石锹")
                                           .category(CreativeCategory::Tools)
                                           .single()
                                           .tool(ToolType::Shovel, ToolTier::Diamond);
 inline constexpr Item GoldShovel = Item::of("golden_shovel")
-                                       .names("Golden Shovel", "金锹")
                                        .category(CreativeCategory::Tools)
                                        .single()
                                        .tool(ToolType::Shovel, ToolTier::Gold);
@@ -534,52 +543,42 @@ inline constexpr Item GoldShovel = Item::of("golden_shovel")
 // itemUseOn (ItemPlacement.cpp); the tool role and tier only set the
 // mining-speed table here.
 inline constexpr Item WoodenHoe = Item::of("wooden_hoe")
-                                      .names("Wooden Hoe", "木锄")
                                       .category(CreativeCategory::Tools)
                                       .single()
                                       .tool(ToolType::Hoe, ToolTier::Wood);
 inline constexpr Item StoneHoe = Item::of("stone_hoe")
-                                     .names("Stone Hoe", "石锄")
                                      .category(CreativeCategory::Tools)
                                      .single()
                                      .tool(ToolType::Hoe, ToolTier::Stone);
 inline constexpr Item IronHoe = Item::of("iron_hoe")
-                                    .names("Iron Hoe", "铁锄")
                                     .category(CreativeCategory::Tools)
                                     .single()
                                     .tool(ToolType::Hoe, ToolTier::Iron);
 inline constexpr Item DiamondHoe = Item::of("diamond_hoe")
-                                       .names("Diamond Hoe", "钻石锄")
                                        .category(CreativeCategory::Tools)
                                        .single()
                                        .tool(ToolType::Hoe, ToolTier::Diamond);
 inline constexpr Item GoldHoe = Item::of("golden_hoe")
-                                    .names("Golden Hoe", "金锄")
                                     .category(CreativeCategory::Tools)
                                     .single()
                                     .tool(ToolType::Hoe, ToolTier::Gold);
 inline constexpr Item WoodenSword = Item::of("wooden_sword")
-                                        .names("Wooden Sword", "木剑")
                                         .category(CreativeCategory::Tools)
                                         .single()
                                         .tool(ToolType::Sword, ToolTier::Wood);
 inline constexpr Item StoneSword = Item::of("stone_sword")
-                                       .names("Stone Sword", "石剑")
                                        .category(CreativeCategory::Tools)
                                        .single()
                                        .tool(ToolType::Sword, ToolTier::Stone);
 inline constexpr Item IronSword = Item::of("iron_sword")
-                                      .names("Iron Sword", "铁剑")
                                       .category(CreativeCategory::Tools)
                                       .single()
                                       .tool(ToolType::Sword, ToolTier::Iron);
 inline constexpr Item DiamondSword = Item::of("diamond_sword")
-                                         .names("Diamond Sword", "钻石剑")
                                          .category(CreativeCategory::Tools)
                                          .single()
                                          .tool(ToolType::Sword, ToolTier::Diamond);
 inline constexpr Item GoldSword = Item::of("golden_sword")
-                                      .names("Golden Sword", "金剑")
                                       .category(CreativeCategory::Tools)
                                       .single()
                                       .tool(ToolType::Sword, ToolTier::Gold);
@@ -594,8 +593,9 @@ inline constexpr Item GoldSword = Item::of("golden_sword")
 // their constructors need entity headers that sit above us in the include graph.
 // The order sets both the creative-catalog order within each tab and the item
 // texture-array layout the renderer appends. Grouped materials / food / tools.
-inline constexpr std::array<const Item*, 51> kItemRegistry{
-    &items::Bucket,     &items::WaterBucket, &items::Coal,       &items::IronIngot,
+inline constexpr std::array<const Item*, 52> kItemRegistry{
+    &items::Bucket,     &items::WaterBucket, &items::LavaBucket, &items::Coal,
+    &items::IronIngot,
     &items::GoldIngot,  &items::Diamond,     &items::Emerald,    &items::Stick,
     &items::Flint,      &items::Feather,     &items::String,     &items::Leather,
     &items::Sugar,      &items::Egg,         &items::Bone,       &items::Paper,
@@ -628,7 +628,7 @@ constexpr bool itemRegistryIsWellFormed() {
     return true;
 }
 static_assert(itemRegistryIsWellFormed(),
-              "kItemRegistry entries must be namespaced, named, and uniquely identified");
+              "kItemRegistry entries must be namespaced and uniquely identified");
 
 // Resolves a registry key to its item. Accepts `rebedrock:book`, the vanilla
 // alias `minecraft:book`, and the bare `book`. Returns nullptr when unknown.

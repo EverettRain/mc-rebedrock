@@ -59,6 +59,34 @@ int main() {
     engine.updateBlock(world, 4, 120, 4);
     assert(world.skyLight(4, 119, 4) == 15U);
 
+    // Java 26.1 does not attenuate unobstructed vertical skylight by depth. A
+    // sealed stone shaft is dark, but opening its roof to the sky makes every
+    // cell in the column level 15, even far below the surface. This guards
+    // against adding an artificial depth fog/light rule to address reports
+    // made while digging a shaft that is still open above.
+    mc::world::World shaftWorld;
+    mc::world::Chunk shaftChunk;
+    for (int y = 20; y <= 30; ++y) {
+        for (int z = 8; z <= 12; ++z) {
+            for (int x = 8; x <= 12; ++x) {
+                shaftChunk.setBlock(x, y, z, mc::world::Block::Stone);
+            }
+        }
+    }
+    for (int y = 21; y < 30; ++y) {
+        shaftChunk.setBlock(10, y, 10, mc::world::Block::Air);
+    }
+    shaftWorld.setChunk({0, 0}, std::move(shaftChunk));
+    mc::world::WorldLightEngine shaftEngine;
+    const std::array shaftPosition{mc::world::ChunkPosition{0, 0}};
+    shaftEngine.initializeChunks(
+        shaftWorld, std::span<const mc::world::ChunkPosition>{shaftPosition});
+    assert(shaftWorld.skyLight(10, 21, 10) == 0U);
+    shaftWorld.setBlock(10, 30, 10, mc::world::Block::Air);
+    shaftEngine.updateBlock(shaftWorld, 10, 30, 10);
+    assert(shaftWorld.directSkyLight(10, 21, 10) == 15U);
+    assert(shaftWorld.skyLight(10, 21, 10) == 15U);
+
     // Leaves attenuate direct sky by one level but remain light-propagating.
     world.setBlock(6, 120, 6, mc::world::Block::OakLeaves);
     engine.updateBlock(world, 6, 120, 6);

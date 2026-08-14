@@ -23,9 +23,12 @@ int main() {
     // in every furnace. Keyed block entities cannot do that.
     {
         FurnaceSystem furnaces;
-        assert(furnaces.place({0, 64, 0}));
-        assert(furnaces.place({5, 64, 0}));
-        assert(!furnaces.place({0, 64, 0})); // already there
+        const bool placedFirst = furnaces.place({0, 64, 0});
+        const bool placedSecond = furnaces.place({5, 64, 0});
+        const bool placedDuplicate = furnaces.place({0, 64, 0});
+        assert(placedFirst);
+        assert(placedSecond);
+        assert(!placedDuplicate); // already there
 
         furnaces.find({0, 64, 0})->fuel = coal();
         assert(furnaces.find({0, 64, 0})->fuel.count == 1U);
@@ -35,7 +38,8 @@ int main() {
     // --- A furnace smelts its input, consuming fuel and time. ---
     {
         FurnaceSystem furnaces;
-        assert(furnaces.place({0, 64, 0}));
+        const bool placed = furnaces.place({0, 64, 0});
+        assert(placed);
         auto& furnace = *furnaces.find({0, 64, 0});
         furnace.input = ironOre();
         furnace.fuel = coal();
@@ -65,7 +69,8 @@ int main() {
     // --- An idle furnace never lights and never consumes fuel. ---
     {
         FurnaceSystem furnaces;
-        assert(furnaces.place({0, 64, 0}));
+        const bool placed = furnaces.place({0, 64, 0});
+        assert(placed);
         auto& furnace = *furnaces.find({0, 64, 0});
         furnace.fuel = coal(); // fuel but nothing to smelt
         furnaces.tick();
@@ -76,7 +81,8 @@ int main() {
     // --- remove() hands back the contents a broken furnace scatters. ---
     {
         FurnaceSystem furnaces;
-        assert(furnaces.place({2, 64, 2}));
+        const bool placed = furnaces.place({2, 64, 2});
+        assert(placed);
         furnaces.find({2, 64, 2})->input = ironOre();
         furnaces.find({2, 64, 2})->fuel = coal();
         const auto removed = furnaces.remove({2, 64, 2});
@@ -94,7 +100,8 @@ int main() {
     // silently undoing minutes of smelting on every save/load.
     {
         FurnaceSystem live;
-        assert(live.place({0, 64, 0}));
+        const bool placed = live.place({0, 64, 0});
+        assert(placed);
         auto& furnace = *live.find({0, 64, 0});
         furnace.input = ironOre();
         furnace.fuel = coal();

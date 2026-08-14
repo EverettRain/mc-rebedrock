@@ -32,14 +32,12 @@ enum class MobCategory : std::uint8_t {
     Misc,          // projectiles, item frames — never gets a spawn egg
 };
 
-// SpawnGroup's per-category constants, the rules a natural spawner and the
-// despawn/peaceful passes read once they exist. Registration picks a category
+// SpawnGroup's per-category constants, read by NaturalSpawner and the
+// despawn/peaceful passes. Registration picks a category
 // (CREATURE, MONSTER, …) and everything below is derived from it, so a species
-// never restates its own spawn law. Only the peaceful rule is wired up today;
-// the rest are reserved for the spawner (see AGENT.md "生物注册与刷怪分类").
+// never restates its own spawn law.
 struct MobCategoryTraits final {
-    // SpawnGroup#getCapacity: the per-player soft cap the natural spawner stops
-    // at. Reserved — nothing spawns naturally yet.
+    // SpawnGroup#getCapacity: the per-player soft cap the natural spawner stops at.
     int spawnCap = 0;
     // HostileEntity#isDisallowedInPeaceful: removed the instant the world is set
     // to Peaceful. True for MONSTER only, matching vanilla.
@@ -48,10 +46,9 @@ struct MobCategoryTraits final {
     // Passive animals (CREATURE) persist; hostiles and ambients do not.
     bool despawnsWhenDistant = false;
     // The spawner's light rule: MONSTER spawns in darkness, the rest in daylight.
-    // Reserved for the spawner.
     bool spawnsInDarkness = false;
     // Whether the category participates in natural spawning at all (MISC never
-    // does). Reserved for the spawner.
+    // does).
     bool naturalSpawn = false;
 };
 
@@ -79,6 +76,19 @@ struct MobCategoryTraits final {
     return {};
 }
 
+// SpawnPlacementTypes (26.1 `world/entity/SpawnPlacementTypes.java`): the kind
+// of cell a species may be born in. Vanilla makes each one a lambda behind a
+// SpawnPlacementType interface; here it is a plain enum that a free function
+// switches on (`gameplay/SpawnPlacements.hpp`) — a virtual dispatch that exists
+// to produce one bool is a cost with nothing to show for it, and the set is
+// closed in vanilla too.
+enum class SpawnPlacement : std::uint8_t {
+    OnGround,       // ON_GROUND: a valid floor below, two clear cells to stand in
+    InWater,        // IN_WATER: the cell is water — squid, fish, dolphins
+    InLava,         // IN_LAVA: striders
+    NoRestrictions, // NO_RESTRICTIONS: wherever the rest of the chain allows
+};
+
 // EntityType.EntityDimensions: the axis-aligned collision box. Square in X/Z
 // like every vanilla mob, so a single width describes both horizontal axes.
 struct EntityDimensions final {
@@ -91,7 +101,7 @@ struct EntityDimensions final {
 // GENERIC_* attributes a MobEntity.createMobAttributes() chain configures.
 struct EntityAttributes final {
     float maxHealth = 10.0F;          // GENERIC_MAX_HEALTH
-    float movementSpeed = 0.05F;      // GENERIC_MOVEMENT_SPEED, blocks/tick wandering
+    float movementSpeed = 0.25F;      // MOVEMENT_SPEED attribute; converted by locomotion
     float attackDamage = 0.0F;        // GENERIC_ATTACK_DAMAGE, zero for passive mobs
     float followRange = 16.0F;        // GENERIC_FOLLOW_RANGE
     float knockbackResistance = 0.0F; // GENERIC_KNOCKBACK_RESISTANCE, in [0, 1]
@@ -197,6 +207,10 @@ class EntityType final {
     [[nodiscard]] const core::Identifier& id() const { return id_; }
     [[nodiscard]] const core::Identifier& vanillaId() const { return vanillaId_; }
     [[nodiscard]] MobCategory category() const { return category_; }
+    // SpawnPlacements.getPlacementType: which cell the natural spawner may put
+    // this species in. Land animals and hostiles are ON_GROUND, which is why
+    // that is the default a species need not restate.
+    [[nodiscard]] SpawnPlacement spawnPlacement() const { return spawnPlacement_; }
     [[nodiscard]] EntityDimensions dimensions() const { return dimensions_; }
     [[nodiscard]] const EntityAttributes& attributes() const { return attributes_; }
     [[nodiscard]] SpawnEggColors spawnEgg() const { return spawnEgg_; }
@@ -225,6 +239,7 @@ class EntityType final {
     core::Identifier id_{};
     core::Identifier vanillaId_{};
     MobCategory category_ = MobCategory::Creature;
+    SpawnPlacement spawnPlacement_ = SpawnPlacement::OnGround;
     EntityDimensions dimensions_{};
     EntityAttributes attributes_{};
     SpawnEggColors spawnEgg_{};
@@ -240,7 +255,7 @@ class EntityType final {
 // its type declaratively, e.g.
 //
 //   EntityType::Builder::create(MobCategory::Creature, kPigAi)
-//       .sized(0.9F, 0.9F).health(10.0F).movementSpeed(0.05F)
+//       .sized(0.9F, 0.9F).health(10.0F).movementSpeed(0.25F)
 //       .spawnEgg(0xF0A5A5U, 0xDB635EU).loot(&rollPigLoot)
 //       .renderer(kPigRender).vanillaName("pig").build("pig");
 //
@@ -251,6 +266,9 @@ class EntityType::Builder final {
   public:
     [[nodiscard]] static Builder create(MobCategory category, const EntityAi& ai);
 
+    // SpawnPlacements.register: only a species that is *not* born standing on
+    // the ground states this, exactly as vanilla only registers the exceptions.
+    Builder& spawnPlacement(SpawnPlacement placement);
     Builder& sized(float width, float height);
     Builder& health(float maxHealth);
     Builder& movementSpeed(float speed);

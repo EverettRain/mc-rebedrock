@@ -406,8 +406,7 @@ class BiomeTintCache final {
     if (isLog(block)) {
         return faceSharesAxis(face, orientation) ? layers.top : layers.side;
     }
-    if (block == Block::Farmland && face == Face::PositiveY &&
-        farmlandMoisture(orientation) == 7) {
+    if (block == Block::Farmland && face == Face::PositiveY && state.moisture() == 7) {
         // FarmlandBlock.MOISTURE: the wet texture appears only at moisture 7,
         // exactly like the 1.16.1 blockstate (every lower level is dry). The
         // moist face sits right after the dry one in the registry-built atlas.
@@ -1095,12 +1094,11 @@ bool buildSectionImpl(
                     continue;
                 }
                 if (definition.model == BlockModel::Crop) {
-                    // CropsBlock: the stage texture comes from the age stored in
-                    // the orientation byte (wheat one per age, carrots/potatoes
-                    // four shared stages), never a fixed layer. The mesh is the
-                    // vanilla crop.json grid of four orthogonal planes.
-                    const int age = world::cropAge(
-                        chunk->orientation(localX, worldY, localZ));
+                    // CropBlock: the stage texture comes from the block's AGE
+                    // property (wheat one per age, carrots/potatoes four shared
+                    // stages), never a fixed layer. The mesh is the vanilla
+                    // crop.json grid of four orthogonal planes.
+                    const int age = chunk->state(localX, worldY, localZ).age();
                     appendCropPlant(
                         targetMesh, world::cropTextureLayer(current, age),
                         worldX, worldY, worldZ, lighting, sectionOrigin);

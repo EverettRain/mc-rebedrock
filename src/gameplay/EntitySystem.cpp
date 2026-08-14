@@ -37,9 +37,16 @@ constexpr float kHorizontalDrag = 0.91F;
 // Block#getSlipperiness for ordinary ground, the same value LivingEntity#travel
 // folds into the drag while a creature is standing on something.
 constexpr float kGroundSlipperiness = 0.6F;
+// This locomotion integrator historically expressed ordinary mob travel as
+// one fifth of Java's MOVEMENT_SPEED attribute. Keep registered attributes in
+// their canonical 26.1 form, but convert at this single integration boundary;
+// otherwise every species becomes five times too fast. Goal modifiers are
+// applied after the conversion, so PanicGoal still produces its intended
+// acceleration over the normal walking speed.
+constexpr float kMovementAttributeToInternalSpeed = 0.2F;
 // Under the grounded drag (0.91 * 0.6) a repeated acceleration settles at 2.2
-// times itself per tick, so a species' blocks-per-tick wander speed divides down
-// into the acceleration that actually produces it.
+// times itself per tick, so the converted target speed divides down into the
+// acceleration that produces it at steady state.
 constexpr float kAccelerationToStepRatio = 2.2026F;
 // LivingEntity#takeKnockback with the default 0.4 strength. The hurt,
 // invulnerability and death windows now live in Damage.hpp, shared with the
@@ -396,7 +403,9 @@ void EntitySystem::spawn(glm::vec3 position, const entities::EntityType& type, s
     // between-tick raycasts and the next tick's push see it immediately.
     const std::size_t index = entities_.size() - 1U;
     idToIndex_[entities_[index].id] = index;
-    sections_[entitySectionOf(position)].push_back(index);
+    const EntitySection section = entitySectionOf(position);
+    entitySections_.push_back(section);
+    sections_[section].push_back(index);
 }
 
 std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityType& type,
@@ -425,7 +434,9 @@ std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityTy
     entities_.push_back(std::move(entity));
     const std::size_t index = entities_.size() - 1U;
     idToIndex_[entities_[index].id] = index;
-    sections_[entitySectionOf(position)].push_back(index);
+    const EntitySection section = entitySectionOf(position);
+    entitySections_.push_back(section);
+    sections_[section].push_back(index);
     return entities_[index].id;
 }
 
@@ -506,7 +517,7 @@ bool EntitySystem::hurt(std::uint64_t entityId, float amount, glm::vec3 knockbac
     // The guards and the invulnerability window live in the shared pipeline, so
     // the player and every mob resolve a hit the same way.
     const DamageOutcome outcome =
-        applyDamage(entity.damage, DamageSource::EntityAttack, amount);
+        applyDamage(entity.damage, DamageType::EntityAttack, amount);
     if (!outcome.landed) {
         return false;
     }
@@ -566,6 +577,7 @@ bool EntitySystem::kill(std::uint64_t entityId) {
 
 void EntitySystem::clear() {
     entities_.clear();
+    entitySections_.clear();
     idToIndex_.clear();
     sections_.clear();
     nextEntityId_ = 1U;
@@ -576,11 +588,33 @@ void EntitySystem::rebuildSpatialIndex() {
     idToIndex_.clear();
     sections_.clear();
     idToIndex_.reserve(entities_.size());
+    entitySections_.clear();
+    entitySections_.reserve(entities_.size());
     for (std::size_t index = 0; index < entities_.size(); ++index) {
         const auto& entity = entities_[index];
         idToIndex_[entity.id] = index;
-        sections_[entitySectionOf(entity.position)].push_back(index);
+        const EntitySection section = entitySectionOf(entity.position);
+        entitySections_.push_back(section);
+        sections_[section].push_back(index);
     }
+}
+
+void EntitySystem::updateSectionMembership(std::size_t index) {
+    const EntitySection next = entitySectionOf(entities_[index].position);
+    const EntitySection previous = entitySections_[index];
+    if (next == previous) return;
+    auto previousBucket = sections_.find(previous);
+    if (previousBucket != sections_.end()) {
+        auto& indices = previousBucket->second;
+        const auto found = std::ranges::find(indices, index);
+        if (found != indices.end()) {
+            *found = indices.back();
+            indices.pop_back();
+        }
+        if (indices.empty()) sections_.erase(previousBucket);
+    }
+    sections_[next].push_back(index);
+    entitySections_[index] = next;
 }
 
 bool EntitySystem::die(SimpleEntity& entity) {
@@ -623,6 +657,7 @@ EntityTickResult EntitySystem::tick(
     MobAiContext aiContext{
         world,
         std::span<const SimpleEntity>{entities_},
+        idToIndex_,
         PlayerAiView{pusher, playerPresent, playerAlive, playerCreative, pusherWidth, pusherHeight},
         gameTick_};
     for (auto& entity : entities_) {
@@ -694,6 +729,7 @@ EntityTickResult EntitySystem::tick(
         // the ground value on that tick.
         const bool groundedBeforeMovement = entity.onGround;
         const float wanderSpeed = entity.kind().attributes().movementSpeed *
+                                  kMovementAttributeToInternalSpeed *
                                   entity.movementSpeedMultiplier;
         if (!entity.dead() && entity.moving && groundedBeforeMovement) {
             const float acceleration = wanderSpeed / kAccelerationToStepRatio;
@@ -748,7 +784,7 @@ EntityTickResult EntitySystem::tick(
             if (entity.fallDistance > 0.0F) {
                 const float damage = std::ceil(entity.fallDistance - 3.0F);
                 const DamageOutcome outcome =
-                    applyDamage(entity.damage, DamageSource::Fall, damage);
+                    applyDamage(entity.damage, DamageType::Fall, damage);
                 if (outcome.landed) {
                     entity.ambientSoundChance = -kMinAmbientSoundDelay;
                     pendingSounds_.push_back(
@@ -769,11 +805,12 @@ EntityTickResult EntitySystem::tick(
         }
     }
 
-    // Every creature has moved; the section buckets now hold stale positions,
-    // so rebuild them before the spatial queries below. Two creatures can only
-    // collide when they share a section or sit in neighbours, so the O(n²) full
-    // pair sweep reduces to a per-neighbourhood probe.
-    rebuildSpatialIndex();
+    // Maintain persistent buckets like vanilla's EntitySectionStorage. Most
+    // creatures remain in the same 16-block section, so the common case is only
+    // one integer section comparison and performs no container mutation.
+    for (std::size_t index = 0; index < entities_.size(); ++index) {
+        updateSectionMembership(index);
+    }
     std::size_t testedPairs = 0U;
     for (const auto& [section, indices] : sections_) {
         for (const std::size_t first : indices) {
@@ -875,6 +912,7 @@ EntityTickResult EntitySystem::tick(
             entity.despawnTicks = 0;
         }
     }
+    const std::size_t sizeBeforeRemoval = entities_.size();
     std::erase_if(entities_, [&, peaceful](const SimpleEntity& entity) {
         if (entity.position.y < kDespawnBelowY || entity.damage.deathTicks >= kDeathTicks) {
             return true;
@@ -885,9 +923,9 @@ EntityTickResult EntitySystem::tick(
         }
         return playerPresent && entity.despawnTicks >= kDespawnThreshold;
     });
-    // The compaction shifted indices, so bring both indexes back in line for
-    // the between-tick raycasts, hurts and the next tick.
-    rebuildSpatialIndex();
+    // Compaction shifts vector slots, so rebuild only when something was
+    // actually removed. A normal tick now performs no global index rebuild.
+    if (entities_.size() != sizeBeforeRemoval) rebuildSpatialIndex();
     result.liveCount = entities_.size();
 
     // One-time diagnostic: confirms the spatial hash turned the O(n²) push into

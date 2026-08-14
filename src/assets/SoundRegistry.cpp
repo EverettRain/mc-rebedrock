@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <fstream>
+#include <array>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 
 namespace mc::assets {
@@ -37,18 +39,15 @@ namespace {
 SoundRegistry SoundRegistry::load(const ResourceProvider& provider, std::string_view space) {
     SoundRegistry registry;
     const ResourceLocation location{std::string{space}, "sounds.json"};
-    for (const auto& path : provider.locateAll(location)) {
-        std::ifstream input(path, std::ios::binary);
-        if (!input) {
-            throw std::runtime_error("Unable to open sounds.json: " + path.string());
-        }
-        const std::string contents{std::istreambuf_iterator<char>{input},
-                                   std::istreambuf_iterator<char>{}};
+    // Bytes, not paths: sounds.json is a merged resource, and going through
+    // locateAll would make a zipped pack extract every pack's copy to disk.
+    for (const auto& bytes : provider.readAllBytes(location)) {
+        const std::string contents{reinterpret_cast<const char*>(bytes.data()), bytes.size()};
         try {
             registry.merge(parseWithReplace(contents));
         } catch (const std::exception& exception) {
-            throw std::runtime_error("Unable to parse sounds.json " + path.string() + ": " +
-                                     exception.what());
+            throw std::runtime_error(std::string{"Unable to parse sounds.json for "} +
+                                     location.toString() + ": " + exception.what());
         }
     }
     return registry;
@@ -88,13 +87,18 @@ std::vector<SoundEvent> SoundRegistry::parse(std::string_view soundsJson) {
 }
 
 SoundEvent* SoundRegistry::findMutable(std::string_view id) {
-    const auto found = std::ranges::find(events_, id, &SoundEvent::id);
-    return found == events_.end() ? nullptr : &*found;
+    const auto found = eventIds_.find(id);
+    return found == eventIds_.end() ? nullptr : &events_[found->second];
 }
 
 const SoundEvent* SoundRegistry::find(std::string_view id) const {
-    const auto found = std::ranges::find(events_, id, &SoundEvent::id);
-    return found == events_.end() ? nullptr : &*found;
+    const SoundEventId eventId = idOf(id);
+    return eventId == kInvalidSoundEventId ? nullptr : &events_[eventId];
+}
+
+SoundEventId SoundRegistry::idOf(std::string_view id) const {
+    const auto found = eventIds_.find(id);
+    return found == eventIds_.end() ? kInvalidSoundEventId : found->second;
 }
 
 void SoundRegistry::merge(const std::vector<ParsedEvent>& packEvents) {
@@ -103,6 +107,8 @@ void SoundRegistry::merge(const std::vector<ParsedEvent>& packEvents) {
         if (existing == nullptr) {
             // A new event: replace or append is moot, it lands whole.
             events_.push_back(parsed.event);
+            eventIds_.emplace(events_.back().id,
+                              static_cast<SoundEventId>(events_.size() - 1U));
             continue;
         }
         if (parsed.replace) {
@@ -117,27 +123,44 @@ void SoundRegistry::merge(const std::vector<ParsedEvent>& packEvents) {
             existing->subtitle = parsed.event.subtitle;
         }
     }
+    compile();
+}
+
+void SoundRegistry::compile() {
+    // Rebuild defensively because SoundRegistry is movable and pack merging can
+    // append enough events to relocate the backing vector. The map stores only
+    // stable integer indices, never vector pointers.
+    eventIds_.clear();
+    eventIds_.reserve(events_.size());
+    for (std::size_t index = 0; index < events_.size(); ++index) {
+        eventIds_.emplace(events_[index].id, static_cast<SoundEventId>(index));
+    }
+    for (auto& event : events_) {
+        event.totalWeight = 0;
+        for (auto& entry : event.sounds) {
+            event.totalWeight += entry.weight;
+            entry.referencedEvent = entry.isEvent ? idOf(entry.name) : kInvalidSoundEventId;
+        }
+    }
 }
 
 const SoundEntry* SoundRegistry::pick(std::string_view id, std::uint32_t& randomState) const {
-    std::vector<std::string_view> chain;
-    return pick(id, randomState, chain);
+    return pick(idOf(id), randomState);
 }
 
-const SoundEntry* SoundRegistry::pick(std::string_view id, std::uint32_t& randomState,
-                                      std::vector<std::string_view>& chain) const {
-    if (std::ranges::find(chain, id) != chain.end()) {
+const SoundEntry* SoundRegistry::pick(SoundEventId id, std::uint32_t& randomState) const {
+    std::array<SoundEventId, 32> chain{};
+    return pick(id, randomState, chain.data(), 0U);
+}
+
+const SoundEntry* SoundRegistry::pick(SoundEventId id, std::uint32_t& randomState,
+                                      SoundEventId* chain, std::size_t depth) const {
+    if (id == kInvalidSoundEventId || id >= events_.size() || depth >= 32U ||
+        std::find(chain, chain + depth, id) != chain + depth) {
         return nullptr;
     }
-    const SoundEvent* event = find(id);
-    if (event == nullptr || event->sounds.empty()) {
-        return nullptr;
-    }
-    int totalWeight = 0;
-    for (const auto& entry : event->sounds) {
-        totalWeight += entry.weight;
-    }
-    if (totalWeight <= 0) {
+    const SoundEvent& event = events_[id];
+    if (event.sounds.empty() || event.totalWeight <= 0) {
         return nullptr;
     }
     // xorshift, the same cheap generator the loot rolls use, so a sound event
@@ -145,9 +168,9 @@ const SoundEntry* SoundRegistry::pick(std::string_view id, std::uint32_t& random
     randomState ^= randomState << 13U;
     randomState ^= randomState >> 17U;
     randomState ^= randomState << 5U;
-    int roll = static_cast<int>(randomState % static_cast<std::uint32_t>(totalWeight));
+    int roll = static_cast<int>(randomState % static_cast<std::uint32_t>(event.totalWeight));
     const SoundEntry* chosen = nullptr;
-    for (const auto& entry : event->sounds) {
+    for (const auto& entry : event.sounds) {
         roll -= entry.weight;
         if (roll < 0) {
             chosen = &entry;
@@ -158,13 +181,8 @@ const SoundEntry* SoundRegistry::pick(std::string_view id, std::uint32_t& random
         return nullptr;
     }
     if (chosen->isEvent) {
-        // `type: event` may form an arbitrary chain. Track every visited event
-        // so malformed A -> B -> A references fail closed instead of recursing
-        // forever.
-        chain.push_back(id);
-        const SoundEntry* resolved = pick(chosen->name, randomState, chain);
-        chain.pop_back();
-        return resolved;
+        chain[depth] = id;
+        return pick(chosen->referencedEvent, randomState, chain, depth + 1U);
     }
     return chosen;
 }

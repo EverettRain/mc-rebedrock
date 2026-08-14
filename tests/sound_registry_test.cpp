@@ -74,6 +74,10 @@ int main() {
             "entity.generic.hurt": {"sounds": ["hurt1", {"name": "hurt2", "weight": 100}]},
             "entity.player.hurt": {"sounds": [{"name": "entity.generic.hurt", "type": "event"}]}
         })"));
+        const SoundEventId genericHurt = registry.idOf("entity.generic.hurt");
+        assert(genericHurt != kInvalidSoundEventId);
+        assert(registry.idOf("no.such.event") == kInvalidSoundEventId);
+        assert(registry.find("entity.generic.hurt")->totalWeight == 101);
 
         // With weights 1:100, a spread of seeds lands on hurt2 the vast majority
         // of the time; assert it is at least reachable and both are valid picks.
@@ -86,6 +90,11 @@ int main() {
             sawHeavy = sawHeavy || picked->name == "hurt2";
         }
         assert(sawHeavy); // the weight-100 candidate must show up
+
+        // The compiled integer id takes the same selection path without a
+        // runtime string lookup or weight summation.
+        const auto* viaId = registry.pick(genericHurt, state);
+        assert(viaId != nullptr && (viaId->name == "hurt1" || viaId->name == "hurt2"));
 
         // The player hurt event references the generic one, so pick resolves
         // through to a real file rather than returning the event entry.

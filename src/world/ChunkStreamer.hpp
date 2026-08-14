@@ -34,6 +34,18 @@ struct SectionPositionHash final {
     [[nodiscard]] std::size_t operator()(const SectionPosition& position) const noexcept;
 };
 
+struct BlockEditPosition final {
+    int x = 0;
+    int y = 0;
+    int z = 0;
+
+    [[nodiscard]] bool operator==(const BlockEditPosition&) const = default;
+};
+
+struct BlockEditPositionHash final {
+    [[nodiscard]] std::size_t operator()(const BlockEditPosition& position) const noexcept;
+};
+
 struct SectionMeshUpdate final {
     SectionPosition position;
     render::RenderMeshData mesh;
@@ -48,12 +60,25 @@ struct ChunkDataUpdate final {
     bool remove = false;
 };
 
+// A generation-side state change to an already loaded chunk. Cross-chunk tree
+// crowns are the first producer. `expected` makes delivery a compare-and-swap:
+// a player/simulation edit made after generation started remains authoritative
+// instead of being rewound by a late generation batch.
+struct BlockStateDelta final {
+    int worldX = 0;
+    int y = 0;
+    int worldZ = 0;
+    BlockState expected{};
+    BlockState state{};
+};
+
 struct ChunkStreamBatch final {
     std::uint64_t worldEpoch = 0U;
     ChunkPosition center;
     std::size_t loadedChunkCount = 0;
     std::size_t appliedBlockEditCount = 0;
     std::vector<ChunkDataUpdate> chunkUpdates;
+    std::vector<BlockStateDelta> stateUpdates;
     std::vector<SectionMeshUpdate> sectionUpdates;
     bool highPriority = false;
 };
@@ -173,7 +198,10 @@ class ChunkStreamer final {
         World& world,
         WorldLightEngine& lightEngine,
         std::vector<gen::TreeBorderBlock>& blocks,
-        const std::unordered_set<ChunkPosition, ChunkPositionHash>& batchChunks);
+        const std::unordered_set<ChunkPosition, ChunkPositionHash>& batchChunks,
+        const std::unordered_set<BlockEditPosition, BlockEditPositionHash>& persistentPositions,
+        std::vector<BlockStateDelta>* stateUpdates = nullptr);
+    void rememberBorderBlocks(std::span<const gen::TreeBorderBlock> blocks);
     void remeshAll(World& world, ChunkPosition center, std::uint64_t epoch);
     // Generates any chunk positions the render thread is synchronously waiting
     // on (requestSync), ahead of the normal batch loop.
@@ -213,9 +241,10 @@ class ChunkStreamer final {
     // Positions the render thread is blocking on via requestSync; the worker
     // generates these ahead of its normal batches. Guarded by mutex_.
     std::unordered_set<ChunkPosition, ChunkPositionHash> syncPending_;
-    // Tree crown blocks whose target chunk is not generated yet; they are
-    // applied the moment that chunk is published. Only touched by the worker
-    // thread, so it needs no lock of its own.
+    // Tree crown blocks indexed by their target chunk. Entries remain after an
+    // application: if the target unloads and regenerates while the source tree
+    // stays loaded, the same crown must be reconstructed instead of becoming
+    // clipped. Only touched by the worker thread, so it needs no lock.
     std::unordered_map<ChunkPosition, std::vector<gen::TreeBorderBlock>, ChunkPositionHash>
         pendingBorderBlocks_;
     // Bounded pool of RenderMeshData the worker and render thread hand back and

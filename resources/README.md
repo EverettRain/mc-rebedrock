@@ -1,9 +1,13 @@
 # Runtime resources
 
 - `shaders/src`: project-owned GLSL 450 source files.
-- `config`: project-owned runtime configuration.
-- `ui`: project-owned UI resources.
-- `vanilla/1.16.1`: locally extracted Minecraft resources; ignored by Git.
+- `animation`: project-owned entity geometry and animation data.
+- `lang/rebedrock`: project-owned option translations layered after the active
+  vanilla language. Resource packs may extend the same namespace.
+- `default-options.properties`: the default runtime configuration.
+- `config` and `ui`: reserved project-owned resource roots.
 
-The project references the source resource tree during development. Generated SPIR-V files are
-written below the active CMake build directory.
+Mojang assets are not stored or staged here. At runtime the player supplies a
+standard Java 26.1 resource pack under the game directory's `resourcepacks/`.
+CMake stages only ReBedrock-owned resources and writes generated SPIR-V files
+below the active build directory.

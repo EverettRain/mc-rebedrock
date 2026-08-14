@@ -2,6 +2,7 @@
 
 #include "assets/ResourceProvider.hpp"
 
+#include <cstddef>
 #include <filesystem>
 #include <memory>
 
@@ -31,6 +32,7 @@ class ZipResourcePackProvider final : public ResourceProvider {
 
     [[nodiscard]] std::filesystem::path locate(const ResourceLocation& location) const override;
     [[nodiscard]] bool exists(const ResourceLocation& location) const override;
+    [[nodiscard]] std::vector<std::byte> readBytes(const ResourceLocation& location) const override;
     [[nodiscard]] std::vector<ResourceLocation> list(std::string_view space,
                                                      std::string_view pathPrefix) const override;
     [[nodiscard]] std::vector<PackLanguage> languages() const override;

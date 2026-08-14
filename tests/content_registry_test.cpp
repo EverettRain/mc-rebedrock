@@ -17,7 +17,18 @@ int main() {
     assert(registry.item("rebedrock:book") != nullptr);
     assert(registry.item("minecraft:book") == registry.item("rebedrock:book"));
     assert(registry.item("rebedrock:diamond_pickaxe") != nullptr);
+    assert(registry.item("rebedrock:lava_bucket") != nullptr);
+    assert(registry.item("minecraft:lava_bucket") == registry.item("rebedrock:lava_bucket"));
     assert(registry.item("minecraft:golden_pickaxe") == registry.item("rebedrock:golden_pickaxe"));
+    // Description ids are derived from registry identities, not baked English
+    // or Chinese names. Vanilla aliases use minecraft keys; original content
+    // stays in the project's language namespace.
+    assert(encodeDescriptionId(items::Apple.descriptionId()) == "item.minecraft.apple");
+    const auto customItem = Item::of("test_widget").custom();
+    assert(encodeDescriptionId(customItem.descriptionId()) == "item.rebedrock.test_widget");
+    const Item* stoneItem = blockItemFor(world::Block::Stone);
+    assert(stoneItem != nullptr);
+    assert(encodeDescriptionId(stoneItem->descriptionId()) == "block.minecraft.stone");
     assert(registry.block("rebedrock:not_registered") == nullptr);
     assert(registry.item("rebedrock:not_registered") == nullptr);
     // A block that exists but was never given a creative category stays unlisted.
@@ -47,6 +58,10 @@ int main() {
     const auto food = registry.catalog(CreativeCategory::Food);
     assert(std::ranges::any_of(food, [](const ItemStack& stack) {
         return stack.item == &items::Apple;
+    }));
+    const auto materials = registry.catalog(CreativeCategory::Materials);
+    assert(std::ranges::any_of(materials, [](const ItemStack& stack) {
+        return stack.item == &items::LavaBucket;
     }));
 
     ContentRegistry isolated;

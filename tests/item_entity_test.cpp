@@ -53,7 +53,7 @@ int main() {
         // The player stands far away so the item is not magnet-picked up.
         const glm::vec3 farPlayer{14.0F, 1.0F, 14.0F};
         for (int tick = 0; tick < 200; ++tick) {
-            items.tick(world, farPlayer, inventory);
+            static_cast<void>(items.tick(world, farPlayer, inventory));
             if (!items.entities().empty() &&
                 items.entities().front().velocity.y == 0.0F &&
                 items.entities().front().position.y < 2.0F) {
@@ -75,7 +75,7 @@ int main() {
         Inventory inventory;
         const glm::vec3 farPlayer{14.0F, 1.0F, 14.0F};
         for (int tick = 0; tick < 200; ++tick) {
-            items.tick(world, farPlayer, inventory);
+            static_cast<void>(items.tick(world, farPlayer, inventory));
         }
         assert(!items.entities().empty());
         // The box's west edge (centre - 0.125) stays on the wall's east face (2).
@@ -92,7 +92,7 @@ int main() {
         Inventory inventory;
         const glm::vec3 farPlayer{14.0F, 1.0F, 14.0F};
         for (int tick = 0; tick < 40; ++tick) {
-            items.tick(world, farPlayer, inventory);
+            static_cast<void>(items.tick(world, farPlayer, inventory));
         }
         // After settling, the pair is a single entity carrying the combined stack.
         const auto& entities = items.entities();
@@ -109,7 +109,7 @@ int main() {
         Inventory inventory;
         const glm::vec3 player{3.0F, 1.0F, 3.0F};
         for (int tick = 0; tick < 300; ++tick) {
-            items.tick(world, player, inventory);
+            static_cast<void>(items.tick(world, player, inventory));
             if (items.entities().empty()) {
                 break;
             }

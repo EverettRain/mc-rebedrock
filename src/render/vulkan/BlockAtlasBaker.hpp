@@ -9,6 +9,7 @@
 
 #include "assets/ResourceProvider.hpp"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <vector>
@@ -21,6 +22,9 @@ struct TextureArrayPixels final {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<std::uint8_t> rgba;
+    // water still/flow, lava still/flow: ticks spent on each frame, read from
+    // each texture's .mcmeta and forwarded to the terrain shader.
+    std::array<float, 4> fluidAnimationFrameTimes{1.0F, 1.0F, 1.0F, 1.0F};
 };
 
 [[nodiscard]] TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources);

@@ -188,6 +188,15 @@ int main() {
     // The surface builder ran: the ground is grass over dirt, not raw stone.
     assert(blocks[Block::Grass] > 0);
     assert(blocks[Block::Dirt] > 0);
+    // Saplings are player-grown/loot content, not an overworld vegetation
+    // decorator in 26.1. A generator-side showcase sapling used to leak them
+    // into otherwise vanilla terrain.
+    assert(blocks[Block::OakSapling] == 0);
+    assert(blocks[Block::SpruceSapling] == 0);
+    assert(blocks[Block::BirchSapling] == 0);
+    assert(blocks[Block::JungleSapling] == 0);
+    assert(blocks[Block::AcaciaSapling] == 0);
+    assert(blocks[Block::DarkOakSapling] == 0);
 
     // Biomes drive the wood set, and oceans are a continent apart, so this scan
     // has to span far more ground than the survey above. It has to turn up at

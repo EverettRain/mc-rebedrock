@@ -7,6 +7,8 @@
 // translation units; moving them into mc::render here lets both sides refer
 // to the same definitions without drift.
 
+#include "gameplay/ScreenHandler.hpp"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -73,12 +75,9 @@ enum class MenuButton : std::uint8_t {
     SaveQuit,
 };
 
-enum class ContainerScreen : std::uint8_t {
-    PlayerInventory,
-    CraftingTable,
-    Furnace,
-    Chest,
-};
+// Which screen is open is a gameplay fact — the slot routing keys off it — so
+// the enum lives with the ScreenHandler and the renderer just names it.
+using ContainerScreen = gameplay::ContainerScreen;
 
 struct HudPush final {
     glm::vec4 rect;

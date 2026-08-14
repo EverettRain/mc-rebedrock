@@ -33,6 +33,17 @@ namespace mc::ui {
                                  float framebufferWidth);
 [[nodiscard]] std::size_t languageVisibleRowCount(float framebufferWidth, float framebufferHeight,
                                                   int guiScale);
+// Scrollbar geometry and cursor-to-row mapping shared by drawing and input.
+// The hit track is wider than the four-pixel thumb, matching vanilla's usable
+// list-widget gutter while keeping the visual narrow.
+[[nodiscard]] UiRect languageScrollbarTrack(const HudLayout& layout, float framebufferWidth);
+[[nodiscard]] UiRect languageScrollbarThumb(const HudLayout& layout, float framebufferWidth,
+                                             std::size_t itemCount,
+                                             std::size_t visibleRows,
+                                             std::size_t firstIndex);
+[[nodiscard]] std::size_t languageScrollIndexFromCursor(
+    const HudLayout& layout, float framebufferWidth, std::size_t itemCount,
+    std::size_t visibleRows, float cursorY);
 
 // Shared button geometry across the front-end pages: bottom-anchored for the
 // save/edit/delete/language pages, two-column for video settings, centred menu

@@ -18,7 +18,6 @@ class VulkanRenderer final {
   public:
     VulkanRenderer(
         std::filesystem::path shaderRoot,
-        std::filesystem::path blockTextureRoot,
         const assets::ResourceProvider& resourceProvider,
         world::ChunkStreamer& chunkStreamer,
         config::GameOptions options,

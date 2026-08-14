@@ -19,6 +19,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstring>
+#include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -56,7 +57,21 @@ debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessa
     const char* prefix = severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT
                              ? "Vulkan validation error"
                              : "Vulkan validation";
-    std::cerr << prefix << ": " << callbackData->pMessage << '\n';
+    const char* messageId = callbackData->pMessageIdName != nullptr
+                                ? callbackData->pMessageIdName
+                                : "unknown VUID";
+    std::cerr << prefix << " [" << messageId << "]: " << callbackData->pMessage << '\n';
+    // A smoke run is also the permanent Vulkan-validity gate. Validation
+    // callbacks cannot throw across the C ABI, so terminate after flushing the
+    // complete VUID/handle message. The explicit switch lets an interactive or
+    // focused repro opt into the same fail-fast behaviour.
+    if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT &&
+        (std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr ||
+         std::getenv("MC_REBEDROCK_FATAL_VALIDATION") != nullptr)) {
+        std::cerr << "Fatal Vulkan validation error; aborting validation-gated run.\n"
+                  << std::flush;
+        std::abort();
+    }
     return VK_FALSE;
 }
 
@@ -370,10 +385,14 @@ class VulkanDevice final {
         }
         VkPhysicalDeviceFeatures features{};
         features.samplerAnisotropy = samplerAnisotropySupported ? VK_TRUE : VK_FALSE;
-        // MoltenVK's approximate occlusion queries return a bogus count of ~1,
-        // which culls every visible section; precise queries report the real
-        // sample count, so the occlusion test can tell visible from buried.
+        // The renderer normally needs only zero/non-zero visibility. Native
+        // Vulkan keeps precise counts for its diagnostic scene; Apple uses
+        // Boolean visibility when the normally-disabled MoltenVK path is forced.
+#if defined(__APPLE__)
+        features.occlusionQueryPrecise = VK_FALSE;
+#else
         features.occlusionQueryPrecise = VK_TRUE;
+#endif
         auto createInfo = vkStructure<VkDeviceCreateInfo>(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
         createInfo.queueCreateInfoCount = static_cast<std::uint32_t>(queueInfos.size());
         createInfo.pQueueCreateInfos = queueInfos.data();

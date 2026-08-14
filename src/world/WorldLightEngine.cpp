@@ -6,8 +6,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cstdint>
-#include <deque>
 #include <iterator>
 #include <thread>
 
@@ -55,6 +55,103 @@ std::size_t WorldLightEngine::NodeHash::operator()(const Node& node) const noexc
     std::size_t seed = std::hash<int>{}(node.x);
     seed = mix(seed, node.y);
     return mix(seed, node.z);
+}
+
+namespace {
+
+[[nodiscard]] std::uint64_t mixPacked(std::uint64_t value) {
+    value ^= value >> 30U;
+    value *= 0xbf58476d1ce4e5b9ULL;
+    value ^= value >> 27U;
+    value *= 0x94d049bb133111ebULL;
+    return value ^ (value >> 31U);
+}
+
+} // namespace
+
+std::size_t WorldLightEngine::QueuedNodeSet::findSlot(PackedNode node) const {
+    const std::size_t mask = slots_.size() - 1U;
+    std::size_t slot = static_cast<std::size_t>(mixPacked(node)) & mask;
+    while (states_[slot] != 0U && !(states_[slot] == 1U && slots_[slot] == node)) {
+        slot = (slot + 1U) & mask;
+    }
+    return slot;
+}
+
+void WorldLightEngine::QueuedNodeSet::rehash(std::size_t capacity) {
+    capacity = std::max<std::size_t>(1024U, std::bit_ceil(capacity));
+    std::vector<PackedNode> oldSlots = std::move(slots_);
+    std::vector<std::uint8_t> oldStates = std::move(states_);
+    slots_.assign(capacity, 0U);
+    states_.assign(capacity, 0U);
+    touchedSlots_.clear();
+    touchedSlots_.reserve(capacity / 2U);
+    size_ = 0U;
+    tombstones_ = 0U;
+    for (std::size_t index = 0; index < oldSlots.size(); ++index) {
+        if (oldStates[index] == 1U) {
+            static_cast<void>(insert(oldSlots[index]));
+        }
+    }
+}
+
+bool WorldLightEngine::QueuedNodeSet::insert(PackedNode node) {
+    if (slots_.empty() || (size_ + tombstones_ + 1U) * 10U >= slots_.size() * 7U) {
+        rehash(slots_.empty() ? 1024U : slots_.size() * 2U);
+    }
+    const std::size_t mask = slots_.size() - 1U;
+    std::size_t slot = static_cast<std::size_t>(mixPacked(node)) & mask;
+    std::size_t firstTombstone = slots_.size();
+    while (states_[slot] != 0U) {
+        if (states_[slot] == 1U && slots_[slot] == node) return false;
+        if (states_[slot] == 2U && firstTombstone == slots_.size()) firstTombstone = slot;
+        slot = (slot + 1U) & mask;
+    }
+    if (firstTombstone != slots_.size()) {
+        slot = firstTombstone;
+        --tombstones_;
+    }
+    if (states_[slot] == 0U) touchedSlots_.push_back(slot);
+    slots_[slot] = node;
+    states_[slot] = 1U;
+    ++size_;
+    return true;
+}
+
+void WorldLightEngine::QueuedNodeSet::erase(PackedNode node) {
+    if (slots_.empty()) return;
+    const std::size_t slot = findSlot(node);
+    if (states_[slot] != 1U) return;
+    states_[slot] = 2U;
+    --size_;
+    ++tombstones_;
+}
+
+void WorldLightEngine::QueuedNodeSet::clear() {
+    for (const std::size_t slot : touchedSlots_) states_[slot] = 0U;
+    touchedSlots_.clear();
+    size_ = 0U;
+    tombstones_ = 0U;
+}
+
+WorldLightEngine::PackedNode WorldLightEngine::packNode(const Node& node) {
+    constexpr std::uint64_t coordinateMask = (1ULL << 27U) - 1ULL;
+    return ((static_cast<std::uint64_t>(static_cast<std::uint32_t>(node.x)) & coordinateMask)
+            << 36U) |
+           ((static_cast<std::uint64_t>(static_cast<std::uint32_t>(node.z)) & coordinateMask)
+            << 9U) |
+           static_cast<std::uint64_t>(node.y & 0x1FF);
+}
+
+WorldLightEngine::Node WorldLightEngine::unpackNode(PackedNode node) {
+    constexpr std::uint32_t coordinateMask = (1U << 27U) - 1U;
+    const auto signExtend = [](std::uint32_t value) {
+        constexpr std::uint32_t sign = 1U << 26U;
+        return static_cast<int>((value ^ sign) - sign);
+    };
+    return {signExtend(static_cast<std::uint32_t>(node >> 36U) & coordinateMask),
+            static_cast<int>(node & 0x1FFU),
+            signExtend(static_cast<std::uint32_t>(node >> 9U) & coordinateMask)};
 }
 
 bool WorldLightEngine::cancelled() const {
@@ -273,17 +370,19 @@ void WorldLightEngine::initializeChunks(World& world,
 
 void WorldLightEngine::settle(World& world, Channel channel,
                               std::span<const Node> seeds) {
-    std::deque<Node> queue;
-    std::unordered_set<Node, NodeHash> queued;
-    const auto enqueue = [&world, &queue, &queued](const Node& node) {
-        if (loaded(world, node.x, node.y, node.z) && queued.insert(node).second)
-            queue.push_back(node);
+    settleQueue_.clear();
+    queuedNodes_.clear();
+    const auto enqueue = [this, &world](const Node& node) {
+        const PackedNode packed = packNode(node);
+        if (loaded(world, node.x, node.y, node.z) && queuedNodes_.insert(packed))
+            settleQueue_.push_back(packed);
     };
     for (const Node seed : seeds) enqueue(seed);
-    while (!queue.empty() && !cancelled()) {
-        const Node node = queue.front();
-        queue.pop_front();
-        queued.erase(node);
+    std::size_t cursor = 0U;
+    while (cursor < settleQueue_.size() && !cancelled()) {
+        const PackedNode packed = settleQueue_[cursor++];
+        const Node node = unpackNode(packed);
+        queuedNodes_.erase(packed);
         ++lastPropagationVisitCount_;
         const std::uint8_t previous = level(world, channel, node.x, node.y, node.z);
         const std::uint8_t desired = desiredLevel(world, channel, node);
@@ -299,37 +398,38 @@ void WorldLightEngine::settle(World& world, Channel channel,
 void WorldLightEngine::updateBlock(World& world, int worldX, int y, int worldZ) {
     if (!loaded(world, worldX, y, worldZ)) return;
     lastPropagationVisitCount_ = 0U;
-    std::vector<Node> skySeeds;
-    recomputeSkyColumn(world, worldX, worldZ, skySeeds);
+    skySeeds_.clear();
+    blockSeeds_.clear();
+    recomputeSkyColumn(world, worldX, worldZ, skySeeds_);
     const Node edited{worldX, y, worldZ};
-    skySeeds.push_back(edited);
-    std::vector<Node> blockSeeds{edited};
+    skySeeds_.push_back(edited);
+    blockSeeds_.push_back(edited);
     for (const auto& offset : kNeighbors) {
         const Node neighbor{worldX + offset[0], y + offset[1], worldZ + offset[2]};
-        skySeeds.push_back(neighbor);
-        blockSeeds.push_back(neighbor);
+        skySeeds_.push_back(neighbor);
+        blockSeeds_.push_back(neighbor);
     }
     markDirty(edited);
-    settle(world, Channel::Sky, skySeeds);
-    settle(world, Channel::Block, blockSeeds);
+    settle(world, Channel::Sky, skySeeds_);
+    settle(world, Channel::Block, blockSeeds_);
 }
 
 void WorldLightEngine::updateAfterChunkRemoval(World& world, ChunkPosition removed) {
     lastPropagationVisitCount_ = 0U;
-    std::vector<Node> seeds;
+    skySeeds_.clear();
     const int originX = removed.x * kChunkWidth;
     const int originZ = removed.z * kChunkDepth;
-    seeds.reserve(static_cast<std::size_t>(kWorldHeight * kChunkWidth * 4));
+    skySeeds_.reserve(static_cast<std::size_t>(kWorldHeight * kChunkWidth * 4));
     for (int y = 0; y < kWorldHeight; ++y) {
         for (int offset = 0; offset < kChunkWidth; ++offset) {
-            seeds.push_back({originX - 1, y, originZ + offset});
-            seeds.push_back({originX + kChunkWidth, y, originZ + offset});
-            seeds.push_back({originX + offset, y, originZ - 1});
-            seeds.push_back({originX + offset, y, originZ + kChunkDepth});
+            skySeeds_.push_back({originX - 1, y, originZ + offset});
+            skySeeds_.push_back({originX + kChunkWidth, y, originZ + offset});
+            skySeeds_.push_back({originX + offset, y, originZ - 1});
+            skySeeds_.push_back({originX + offset, y, originZ + kChunkDepth});
         }
     }
-    settle(world, Channel::Sky, seeds);
-    settle(world, Channel::Block, seeds);
+    settle(world, Channel::Sky, skySeeds_);
+    settle(world, Channel::Block, skySeeds_);
 }
 
 std::vector<LightSectionPosition> WorldLightEngine::takeDirtySections() {

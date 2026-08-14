@@ -67,38 +67,31 @@ constexpr const char* kBuiltinPigAnimation = R"({
 
 // Built-in cow model and clips, compiled in for the same reason the pig's are:
 // the species renders even when resources/animation/cow.*.json are not staged.
-// Keep these in sync with those files. The geometry is the vanilla 1.16.1
-// CowEntityModel/QuadrupedEntityModel(12) ported to box-UV (64x32): the torso is
-// the cow's own 12x18x10 (UV 18,4, not the pig's 10x16x8), laid flat through a
-// [90,0,0] bone rotation. The body's face overrides (front<->back, up<->down,
-// like the pig's) are load-bearing, not cosmetic: this engine renders models
-// Y-up with no flip, while vanilla renders the same torso in a Y-flipped frame,
-// so the box-UV face that ends up on the cow's back here is the rect vanilla
-// draws on its belly. Re-routing front<->back (and up<->down, whose cap naming
-// is also opposite the vanilla Cuboid's) reproduces the vanilla texture layout.
-// Horns and udders are the cow's extra parts. The head (8x8x6, UV 0,0) sits on
-// top at world y 16..24 like the vanilla model.
+// Keep these in sync with those files. This is Java 26.1's normal adult
+// CowModel ported to the engine's Y-up box-UV geometry: the 64x64 skin includes
+// a separate 6x3x1 muzzle at UV 1,33, the horns and udder share their vanilla
+// head/body parts, the front legs sit at z -5, and the left legs mirror the
+// right-leg UV net. The torso face overrides remain load-bearing because Java
+// draws the rotated body in a Y-flipped frame while this renderer does not.
 constexpr const char* kBuiltinCowGeometry = R"({
   "format_version": "1.12.0",
   "minecraft:geometry": [
-    { "description": {"identifier": "geometry.cow", "texture_width": 64, "texture_height": 32},
+    { "description": {"identifier": "geometry.cow", "texture_width": 64, "texture_height": 64},
       "bones": [
         {"name": "body", "pivot": [0,19,2], "rotation": [90,0,0],
          "cubes": [{"origin": [-6,9,-1], "size": [12,18,10], "uv": [18,4],
                     "faces": {"front": {"as": "back"}, "back": {"as": "front"},
-                              "up": {"as": "down"}, "down": {"as": "up", "rotate": 180}}}]},
-        {"name": "udder", "parent": "body", "pivot": [0,19,2],
-         "cubes": [{"origin": [-2,21,9], "size": [4,6,1], "uv": [52,0]}]},
+                              "up": {"as": "down"}, "down": {"as": "up", "rotate": 180}}},
+                   {"origin": [-2,21,9], "size": [4,6,1], "uv": [52,0]}]},
         {"name": "head", "pivot": [0,20,-8],
-         "cubes": [{"origin": [-4,16,-14], "size": [8,8,6], "uv": [0,0]}]},
-        {"name": "hornLeft", "parent": "head", "pivot": [-4.5,24,-11.5],
-         "cubes": [{"origin": [-5,22,-12], "size": [1,3,1], "uv": [22,0]}]},
-        {"name": "hornRight", "parent": "head", "pivot": [4.5,24,-11.5],
-         "cubes": [{"origin": [4,22,-12], "size": [1,3,1], "uv": [22,0]}]},
-        {"name": "legFrontRight", "pivot": [-4,12,-6], "cubes": [{"origin": [-6,0,-8], "size": [4,12,4], "uv": [0,16]}]},
-        {"name": "legFrontLeft",  "pivot": [4,12,-6],  "cubes": [{"origin": [2,0,-8],  "size": [4,12,4], "uv": [0,16]}]},
+         "cubes": [{"origin": [-4,16,-14], "size": [8,8,6], "uv": [0,0]},
+                   {"origin": [-3,16,-15], "size": [6,3,1], "uv": [1,33]},
+                   {"origin": [-5,22,-13], "size": [1,3,1], "uv": [22,0]},
+                   {"origin": [4,22,-13], "size": [1,3,1], "uv": [22,0]}]},
+        {"name": "legFrontRight", "pivot": [-4,12,-5], "cubes": [{"origin": [-6,0,-7], "size": [4,12,4], "uv": [0,16]}]},
+        {"name": "legFrontLeft",  "pivot": [4,12,-5],  "cubes": [{"origin": [2,0,-7],  "size": [4,12,4], "uv": [0,16], "mirror": true}]},
         {"name": "legBackRight",  "pivot": [-4,12,7],  "cubes": [{"origin": [-6,0,5],  "size": [4,12,4], "uv": [0,16]}]},
-        {"name": "legBackLeft",   "pivot": [4,12,7],   "cubes": [{"origin": [2,0,5],   "size": [4,12,4], "uv": [0,16]}]}
+        {"name": "legBackLeft",   "pivot": [4,12,7],   "cubes": [{"origin": [2,0,5],   "size": [4,12,4], "uv": [0,16], "mirror": true}]}
       ]
     }
   ]
@@ -238,8 +231,7 @@ glm::vec2 entityTextureSize(const animation::SkeletalModel& model, const glm::ve
     return glm::max(fallbackSize, glm::vec2{1.0F});
 }
 
-std::vector<std::uint8_t> buildSpeciesSkin(const std::filesystem::path& resourceRoot,
-                                           const assets::ResourceProvider& resources,
+std::vector<std::uint8_t> buildSpeciesSkin(const assets::ResourceProvider& resources,
                                            const animation::SkeletalModel& model,
                                            std::string_view texturePath,
                                            const glm::vec2& fallbackSize) {
@@ -247,9 +239,9 @@ std::vector<std::uint8_t> buildSpeciesSkin(const std::filesystem::path& resource
     const std::uint32_t width = std::max(1U, static_cast<std::uint32_t>(declared.x));
     const std::uint32_t height = std::max(1U, static_cast<std::uint32_t>(declared.y));
     std::vector<std::uint8_t> rgba(static_cast<std::size_t>(width) * height * 4U, 0U);
-    const auto loadInto = [&](const std::filesystem::path& path) -> bool {
+    const auto loadInto = [&](const assets::ResourceLocation& source) -> bool {
         try {
-            auto image = assets::ImageData::loadRgba(path);
+            auto image = assets::ImageData::loadRgba(resources, source);
             if (image.width > 0 && image.height > 0) {
                 const auto imageWidth = static_cast<std::uint32_t>(image.width);
                 const auto imageHeight = static_cast<std::uint32_t>(image.height);
@@ -270,11 +262,8 @@ std::vector<std::uint8_t> buildSpeciesSkin(const std::filesystem::path& resource
         }
         return false;
     };
-    const auto vanillaSkin = assets::textures(std::string{texturePath});
-    if (resources.exists(vanillaSkin) && loadInto(resources.locate(vanillaSkin))) {
-        return rgba;
-    }
-    if (loadInto(resourceRoot / std::string{texturePath})) {
+    const auto packSkin = assets::textures(std::string{texturePath});
+    if (resources.exists(packSkin) && loadInto(packSkin)) {
         return rgba;
     }
     // Procedural fallback: the atlas *is* the declared box-UV space, so

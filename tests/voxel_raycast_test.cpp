@@ -22,8 +22,11 @@ int main() {
     chunk.setBlock(15, 3, 8, mc::world::Block::Stone);
     world.setChunk({0, 0}, std::move(chunk));
     world.setFluidLevel(12, 3, 1, 3U);
-    world.setOrientation(14, 5, 14, mc::world::cropOrientation(0));
-    world.setOrientation(14, 3, 8, mc::world::farmlandOrientation(0));
+    // Age 0 and moisture 0 are each block's default state, so both cells are
+    // already right; naming them keeps the fixture explicit about the stage the
+    // raycast shapes below are measured against.
+    world.setState(14, 5, 14, mc::world::BlockState{mc::world::Block::WheatCrops}.withAge(0));
+    world.setState(14, 3, 8, mc::world::BlockState{mc::world::Block::Farmland}.withMoisture(0));
 
     const auto positiveX = mc::world::raycastVoxels(
         world, {0.5F, 4.5F, 4.5F}, {1.0F, 0.0F, 0.0F}, 8.0F);
@@ -97,7 +100,7 @@ int main() {
     assert(hitsYoungWheat.has_value());
     assert(hitsYoungWheat->block == (glm::ivec3{14, 5, 14}));
     // Mature wheat is a full block: the same high ray now hits it.
-    world.setOrientation(14, 5, 14, mc::world::cropOrientation(7));
+    world.setState(14, 5, 14, mc::world::BlockState{mc::world::Block::WheatCrops}.withAge(7));
     const auto hitsMatureWheat = mc::world::raycastVoxels(
         world, {12.5F, 5.2F, 14.5F}, {1.0F, 0.0F, 0.0F}, 6.0F);
     assert(hitsMatureWheat.has_value());

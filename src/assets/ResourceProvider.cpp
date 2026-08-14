@@ -31,6 +31,33 @@ ResourceProvider::locateAll(const ResourceLocation& location) const {
     return {locate(location)};
 }
 
+std::vector<std::byte> ResourceProvider::readBytes(const ResourceLocation& location) const {
+    // The default satisfies it through the filesystem, which is exactly right
+    // for the directory-backed providers. Only the zip provider overrides it.
+    const auto path = locate(location);
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (error) {
+        return {};
+    }
+    std::ifstream input{path, std::ios::binary};
+    if (!input) {
+        return {};
+    }
+    std::vector<std::byte> bytes(static_cast<std::size_t>(size));
+    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    bytes.resize(static_cast<std::size_t>(input.gcount()));
+    return bytes;
+}
+
+std::vector<std::vector<std::byte>>
+ResourceProvider::readAllBytes(const ResourceLocation& location) const {
+    if (!exists(location)) {
+        return {};
+    }
+    return {readBytes(location)};
+}
+
 std::vector<ResourceLocation> ResourceProvider::list(std::string_view, std::string_view) const {
     return {};
 }
@@ -42,6 +69,13 @@ DirectoryResourceProvider::DirectoryResourceProvider(std::filesystem::path resou
     : resourceRoot_(std::move(resourceRoot)), vanillaVersion_(std::move(vanillaVersion)) {}
 
 std::filesystem::path DirectoryResourceProvider::locate(const ResourceLocation& location) const {
+    // The bundled tree carries no server data: tags, loot tables and recipes
+    // come from the 26.1 data pack the player supplies, exactly like textures
+    // and sounds do. An empty path reads as "this provider cannot place it",
+    // and the layered stack falls through to a pack that can.
+    if (location.type == PackType::ServerData) {
+        return {};
+    }
     const std::string_view category = firstSegment(location.path);
     const std::string rest{afterFirstSegment(location.path)};
     const auto vanilla = vanillaRoot();
@@ -58,6 +92,13 @@ std::filesystem::path DirectoryResourceProvider::locate(const ResourceLocation& 
         return vanilla / "audio" / location.space / "sounds" / rest;
     }
     if (category == "lang") {
+        // ReBedrock-authored translations are project resources, not Mojang
+        // assets. Keep them in their own namespace so a standard pack can
+        // override/add `assets/rebedrock/lang/<code>.json` exactly like 26.1's
+        // resource manager merges every namespace for the active language.
+        if (location.space == "rebedrock") {
+            return resourceRoot_ / "lang" / "rebedrock" / rest;
+        }
         // Translation tables live under `localization/minecraft/…`.
         return vanilla / "localization" / location.space / rest;
     }
@@ -93,8 +134,10 @@ StandardPackResourceProvider::StandardPackResourceProvider(std::filesystem::path
 }
 
 std::filesystem::path StandardPackResourceProvider::locate(const ResourceLocation& location) const {
-    // The whole mapping: `<packRoot>/assets/<namespace>/<content path>`.
-    return packRoot_ / "assets" / location.space / location.path;
+    // The whole mapping: `<packRoot>/<assets|data>/<namespace>/<content path>`.
+    const char* const root =
+        location.type == PackType::ServerData ? "data" : "assets";
+    return packRoot_ / root / location.space / location.path;
 }
 
 bool StandardPackResourceProvider::exists(const ResourceLocation& location) const {
@@ -157,6 +200,35 @@ LayeredResourceProvider::locateAll(const ResourceLocation& location) const {
         }
         auto files = (*overlay)->locateAll(location);
         result.insert(result.end(), files.begin(), files.end());
+    }
+    return result;
+}
+
+std::vector<std::byte> LayeredResourceProvider::readBytes(const ResourceLocation& location) const {
+    // Highest priority first, exactly like locate(): the first overlay that has
+    // the resource wins. Without this override the base implementation would
+    // route through locate(), and a zip in the stack would extract the file to
+    // disk on every read — which is the whole thing readBytes removes.
+    for (const auto* overlay : overlays_) {
+        if (overlay != nullptr && overlay->exists(location)) {
+            return overlay->readBytes(location);
+        }
+    }
+    return base_->readBytes(location);
+}
+
+std::vector<std::vector<std::byte>>
+LayeredResourceProvider::readAllBytes(const ResourceLocation& location) const {
+    // Lowest to highest, mirroring locateAll: merged resources are applied in
+    // pack order and the highest pack is applied last.
+    std::vector<std::vector<std::byte>> result = base_->readAllBytes(location);
+    for (auto overlay = overlays_.rbegin(); overlay != overlays_.rend(); ++overlay) {
+        if (*overlay == nullptr) {
+            continue;
+        }
+        auto bytes = (*overlay)->readAllBytes(location);
+        result.insert(result.end(), std::make_move_iterator(bytes.begin()),
+                      std::make_move_iterator(bytes.end()));
     }
     return result;
 }

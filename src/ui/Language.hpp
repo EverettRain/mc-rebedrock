@@ -5,6 +5,7 @@
 #include <future>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -15,6 +16,40 @@ class ResourceProvider;
 }
 
 namespace mc::ui {
+
+// Non-owning composite lookup used by description ids. `entries_` still owns
+// ordinary JSON keys as strings; its transparent hash/equality can compare this
+// three-part view directly, avoiding a temporary concatenated std::string.
+struct TranslationKeyView final {
+    std::string_view prefix;
+    std::string_view space;
+    std::string_view path;
+};
+
+struct TranslationKeyHash final {
+    using is_transparent = void;
+
+    [[nodiscard]] std::size_t operator()(std::string_view key) const noexcept;
+    [[nodiscard]] std::size_t operator()(const std::string& key) const noexcept {
+        return (*this)(std::string_view{key});
+    }
+    [[nodiscard]] std::size_t operator()(const TranslationKeyView& key) const noexcept;
+};
+
+struct TranslationKeyEqual final {
+    using is_transparent = void;
+
+    [[nodiscard]] bool operator()(std::string_view left,
+                                  std::string_view right) const noexcept {
+        return left == right;
+    }
+    [[nodiscard]] bool operator()(const std::string& left,
+                                  const TranslationKeyView& right) const noexcept;
+    [[nodiscard]] bool operator()(const TranslationKeyView& left,
+                                  const std::string& right) const noexcept {
+        return (*this)(right, left);
+    }
+};
 
 // The language codes the game ships translations for. en_us is the built-in
 // fallback and never needs a file on disk.
@@ -49,6 +84,9 @@ class Language final {
     // Parses a vanilla <code>.json language file. Throws on unreadable or
     // malformed input so the caller can fall back to English.
     [[nodiscard]] static Language fromFile(const std::filesystem::path& file);
+    // Parses language JSON already in memory. The merged path uses this so a
+    // zipped pack never has to materialise its language files on disk.
+    [[nodiscard]] static Language fromJsonText(std::string_view text);
     [[nodiscard]] static Language fromProvider(const assets::ResourceProvider& provider,
                                                std::string_view code);
 
@@ -61,6 +99,9 @@ class Language final {
     // missing. The fallback keeps English text visible for the handful of
     // strings vanilla has no key for.
     [[nodiscard]] std::string_view translate(std::string_view key, std::string_view fallback) const;
+    [[nodiscard]] std::string_view translate(std::string_view prefix, std::string_view space,
+                                             std::string_view path,
+                                             std::string_view fallback) const;
     [[nodiscard]] bool contains(std::string_view key) const;
 
     // The 256-glyph unicode font pages every translated string needs, so the
@@ -69,8 +110,15 @@ class Language final {
 
   private:
     std::string code_ = kDefaultLanguageCode;
-    std::unordered_map<std::string, std::string> entries_;
+    std::unordered_map<std::string, std::string, TranslationKeyHash, TranslationKeyEqual> entries_;
 };
+
+// Formats the `%s` / `%1$s` placeholders used by Java language JSON. `%%`
+// becomes one literal percent sign. Keeping this independent from rendering
+// lets option labels use `options.generic_value` and `options.percent_value`
+// instead of hard-coding English punctuation/order around translated pieces.
+[[nodiscard]] std::string formatTranslation(
+    std::string_view pattern, std::span<const std::string_view> arguments);
 
 struct LanguageLoadResult final {
     std::string code;

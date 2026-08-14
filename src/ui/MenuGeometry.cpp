@@ -1,6 +1,7 @@
 #include "ui/MenuGeometry.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace mc::ui {
 
@@ -92,10 +93,17 @@ UiRect languageRow(std::size_t index, const HudLayout& layout, float framebuffer
     const float scale = layout.scale();
     const auto box = languageListBox(layout, framebufferWidth);
     constexpr float kRowStep = 22.0F;
+    // LanguageSelectionList keeps its background full-width, but vanilla's
+    // entry selection rectangle is a centred 270 logical pixels. Treating the
+    // whole background strip as the entry made hover/selection run from edge
+    // to edge and also turned empty side gutters into click targets.
+    constexpr float kVanillaRowWidth = 270.0F;
+    const float rowWidth = std::min(kVanillaRowWidth * scale,
+                                    std::max(box.width - 32.0F * scale, 1.0F));
     return {
-        box.x + 2.0F * scale,
+        box.x + (box.width - rowWidth) * 0.5F,
         box.y + static_cast<float>(index) * kRowStep * scale,
-        box.width - 4.0F * scale,
+        rowWidth,
         20.0F * scale,
     };
 }
@@ -107,6 +115,54 @@ std::size_t languageVisibleRowCount(float framebufferWidth, float framebufferHei
     const float rows = std::max(languageListBox(layout, framebufferWidth).height / (kRowStep * scale),
                                 1.0F);
     return static_cast<std::size_t>(rows);
+}
+
+UiRect languageScrollbarTrack(const HudLayout& layout, float framebufferWidth) {
+    const float scale = layout.scale();
+    const auto box = languageListBox(layout, framebufferWidth);
+    // Vanilla places the scrollbar just outside the centred language entries,
+    // not against the full-width background edge. The visual thumb is centred
+    // 144 logical pixels to the right of screen centre.
+    const float desiredCenter = box.x + box.width * 0.5F + 144.0F * scale;
+    const float center = std::clamp(desiredCenter, box.x + 5.0F * scale,
+                                    box.x + box.width - 5.0F * scale);
+    return {center - 5.0F * scale, box.y + 2.0F * scale,
+            10.0F * scale, std::max(box.height - 4.0F * scale, 1.0F)};
+}
+
+UiRect languageScrollbarThumb(const HudLayout& layout, float framebufferWidth,
+                              std::size_t itemCount, std::size_t visibleRows,
+                              std::size_t firstIndex) {
+    const float scale = layout.scale();
+    const auto track = languageScrollbarTrack(layout, framebufferWidth);
+    if (itemCount <= visibleRows || itemCount == 0U) {
+        return {track.x + 3.0F * scale, track.y, 4.0F * scale, track.height};
+    }
+    const std::size_t maximumFirst = itemCount - visibleRows;
+    const float thumbHeight = std::max(
+        track.height * static_cast<float>(visibleRows) / static_cast<float>(itemCount),
+        8.0F * scale);
+    const float travel = std::max(track.height - thumbHeight, 1.0F);
+    const float normalized = static_cast<float>(std::min(firstIndex, maximumFirst)) /
+                             static_cast<float>(maximumFirst);
+    return {track.x + 3.0F * scale, track.y + normalized * travel,
+            4.0F * scale, thumbHeight};
+}
+
+std::size_t languageScrollIndexFromCursor(const HudLayout& layout, float framebufferWidth,
+                                          std::size_t itemCount, std::size_t visibleRows,
+                                          float cursorY) {
+    if (itemCount <= visibleRows) {
+        return 0U;
+    }
+    const std::size_t maximumFirst = itemCount - visibleRows;
+    const auto track = languageScrollbarTrack(layout, framebufferWidth);
+    const auto thumb = languageScrollbarThumb(layout, framebufferWidth, itemCount, visibleRows, 0U);
+    const float travel = std::max(track.height - thumb.height, 1.0F);
+    const float normalized =
+        std::clamp((cursorY - track.y - thumb.height * 0.5F) / travel, 0.0F, 1.0F);
+    return static_cast<std::size_t>(
+        std::lround(normalized * static_cast<float>(maximumFirst)));
 }
 
 UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t index,

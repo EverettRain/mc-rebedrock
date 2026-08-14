@@ -4,9 +4,11 @@
 #include "gameplay/CraftingSystem.hpp"
 #include "gameplay/Damage.hpp"
 #include "gameplay/Difficulty.hpp"
+#include "gameplay/EntityRenderSnapshot.hpp"
 #include "gameplay/EntitySystem.hpp"
 #include "gameplay/FurnaceSystem.hpp"
 #include "gameplay/GameMode.hpp"
+#include "gameplay/GameEvents.hpp"
 #include "gameplay/GameRules.hpp"
 #include "gameplay/Inventory.hpp"
 #include "gameplay/ItemEntitySystem.hpp"
@@ -14,14 +16,18 @@
 #include "gameplay/NaturalSpawner.hpp"
 #include "gameplay/PlayerController.hpp"
 #include "gameplay/PlayerVitals.hpp"
+#include "gameplay/SimulationHostBridge.hpp"
 #include "gameplay/WeatherSystem.hpp"
 #include "gameplay/WorldSimulation.hpp"
 #include "world/Block.hpp"
+#include "world/BlockState.hpp"
+#include "world/WorldMutationService.hpp"
 #include "world/WorldClock.hpp"
 
 #include <glm/vec3.hpp>
 
 #include <cstdint>
+#include <mutex>
 
 namespace mc::world {
 class World;
@@ -41,6 +47,12 @@ struct SimulationHost {
     // the mesh/light rebuild and persists the edit.
     virtual void submitWorldEdit(int x, int y, int z, world::Block block, std::uint8_t fluidLevel,
                                  std::optional<world::BlockOrientation> orientation) = 0;
+    // The same edit, carrying the whole block state. The triple above cannot
+    // express a furnace's LIT, so an edit that only lights or extinguishes one
+    // would arrive at the render streamer as an unlit furnace. Every mutation
+    // routed through WorldMutationService uses this form; submitWorldEdit stays
+    // for the simulation's BlockChange stream, which is still triple-shaped.
+    virtual void submitWorldStateEdit(int x, int y, int z, world::BlockState state) = 0;
     // Rebuilds the light preview for one changed block, so the edit renders
     // with correct light instead of stale stored values.
     virtual void previewBlockEdit(int worldX, int y, int worldZ) = 0;
@@ -116,13 +128,16 @@ class GameSession final {
     void setWorldSeed(std::uint64_t seed) { naturalSpawner_.setSeed(seed); }
     // 1.16.1 entity.kill(): OutOfWorld damage at infinite magnitude.
     void killPlayer(SimulationHost& host);
-    [[nodiscard]] bool hurtPlayer(DamageSource source, float amount, SimulationHost& host);
+    // `causedByLivingNonPlayer` gates the damage type's difficulty scaling: a
+    // mob's swing scales with difficulty, the world's does not.
+    [[nodiscard]] bool hurtPlayer(DamageType source, float amount, SimulationHost& host,
+                                  bool causedByLivingNonPlayer = false);
     // PlayerEntity#onDeath: the one-time death event shared by every lethal
     // source. The beginDeath guard guarantees the death screen fires once even
     // if two sources kill the player in the same tick; the inventory scatter
     // runs through the host's onPlayerDied → onPlayerDeath. Returns false if
     // death was already claimed.
-    bool die(DamageSource source, SimulationHost& host);
+    bool die(DamageType source, SimulationHost& host);
     // ServerPlayerEntity#respawn: restores a respawning player to full health
     // and food at the personal (or world) spawn point, and clears the death
     // momentum/flying/sneaking state so the new body starts clean. The renderer
@@ -134,16 +149,19 @@ class GameSession final {
     // which is when the renderer plays the break sound.
     [[nodiscard]] bool damageHeldTool(ToolUse use, float blockHardness);
     // Rolls and scatters the loot a broken block drops (mined or simulated).
-    void
-    spawnBlockDrops(glm::ivec3 position, world::Block block, const ItemStack& tool,
-                    world::BlockOrientation droppedOrientation = world::BlockOrientation::North);
+    // Takes the removed *state*, not just its block: a crop's loot depends on
+    // the age it had reached.
+    void spawnBlockDrops(glm::ivec3 position, world::BlockState removed, const ItemStack& tool);
     // The gameplay half of death: scatter the inventory (unless keepInventory)
     // and reset the player's stacks. The host raises the death screen first.
     void onPlayerDeath();
     // The interactive layer's per-frame input edges.
-    void setJumpPressed() { jumpPressed_ = true; }
-    void setForwardPressed() { forwardPressed_ = true; }
-    void clearInputEdges() { jumpPressed_ = forwardPressed_ = false; }
+    // Key *edges*, set by the main thread's key callback between frames. They
+    // ride along with commitInput() rather than being read directly by the
+    // tick, for the same reason the rest of the input does.
+    void setJumpPressed();
+    void setForwardPressed();
+    void clearInputEdges();
 
     // ---- Render accessors (inline so hot render paths pay nothing) ----
     // Mutable references: the interactive layer stays in the renderer for now
@@ -151,7 +169,15 @@ class GameSession final {
     // own code uses the private fields directly.
     [[nodiscard]] PlayerController& player() { return player_; }
     [[nodiscard]] const PlayerController& player() const { return player_; }
-    [[nodiscard]] PlayerInput& input() { return playerInput_; }
+    // The input the *main thread* writes each frame. It is staged, not live:
+    // the simulation reads its own copy, published by commitInput() under the
+    // mutex. Once the tick runs on its own thread this is what stops a
+    // half-written keyboard state from being read mid-tick.
+    [[nodiscard]] PlayerInput& input() { return stagedInput_; }
+    [[nodiscard]] const PlayerInput& input() const { return stagedInput_; }
+    // Publishes the staged input to the simulation. Called once a frame by the
+    // renderer, after the keyboard has been sampled.
+    void commitInput();
     [[nodiscard]] PlayerVitals& vitals() { return vitals_; }
     [[nodiscard]] const PlayerVitals& vitals() const { return vitals_; }
     [[nodiscard]] Inventory& inventory() { return inventory_; }
@@ -162,6 +188,29 @@ class GameSession final {
     [[nodiscard]] GameMode gameMode() const { return gameMode_; }
     [[nodiscard]] GameRules& gameRules() { return gameRules_; }
     [[nodiscard]] const GameRules& gameRules() const { return gameRules_; }
+    // Where the simulation publishes its four event classes. Subscribers do the
+    // reacting; the built-in SimulationHostBridge below is one of them, so the
+    // existing host keeps working unchanged.
+    [[nodiscard]] GameEventBus& events() { return events_; }
+    [[nodiscard]] const GameEventBus& events() const { return events_; }
+    // Binds the host that events forward to, for emissions that happen outside
+    // tick() — the renderer's interaction path publishes world edits through the
+    // mutation sink. tick() binds it too, so a headless caller need not.
+    void setEventHost(SimulationHost& host) { hostBridge_.setHost(&host); }
+    // Runs everything the simulation queued since the last call. The renderer
+    // does this once a frame, after the tick and the interaction pass and
+    // before drawing, so an edit made this frame is applied before it is drawn.
+    std::size_t drainEvents() { return hostBridge_.drain(); }
+    // What the renderer draws creatures from. Rebuilt at the end of every tick,
+    // so the draw pass never walks the live entity vector — which the tick is
+    // free to reorder, compact and resize.
+    [[nodiscard]] const EntityRenderSnapshot& entitySnapshot() const { return entitySnapshot_; }
+    [[nodiscard]] std::size_t pendingEvents() const { return hostBridge_.pending(); }
+
+    // The one path block changes take. Exposed so a caller that already holds
+    // the session (the renderer's interaction loop) edits through the same
+    // service the session's own systems do.
+    [[nodiscard]] world::WorldMutationService& worldMutations() { return worldMutations_; }
     [[nodiscard]] WorldSimulation& worldSimulation() { return worldSimulation_; }
     [[nodiscard]] const WorldSimulation& worldSimulation() const { return worldSimulation_; }
     [[nodiscard]] ItemEntitySystem& itemEntities() { return itemEntities_; }
@@ -174,6 +223,9 @@ class GameSession final {
     [[nodiscard]] const FurnaceSystem& furnaceSystem() const { return furnaceSystem_; }
     [[nodiscard]] WeatherSystem& weatherSystem() { return weatherSystem_; }
     [[nodiscard]] const WeatherSystem& weatherSystem() const { return weatherSystem_; }
+    // The environment resolved for the tick in progress. Anything that needs to
+    // know how dark it is should read this rather than sampling the clock.
+    [[nodiscard]] const EnvironmentSnapshot& environment() const { return environment_; }
 
     // The time sources that replaced the single frame-driven gameTimeSeconds this
     // class used to hold.
@@ -226,22 +278,27 @@ class GameSession final {
     [[nodiscard]] float footstepDistance() const { return footstepDistance_; }
     [[nodiscard]] bool& previousInWater() { return previousInWater_; }
     [[nodiscard]] bool previousInWater() const { return previousInWater_; }
-    // The input-edge flags, written by the interactive layer and consumed by
-    // the fixed-tick simulation.
-    [[nodiscard]] bool& jumpPressed() { return jumpPressed_; }
-    [[nodiscard]] bool& forwardPressed() { return forwardPressed_; }
+    // The forward double-tap edge is sampled while staging input; access stays
+    // under the same mutex used by the tick that consumes it.
+    [[nodiscard]] bool forwardPressed() const;
 
   private:
     void tickEating(SimulationHost& host);
     void tickPlayerVitals(SimulationHost& host, const world::World& world,
                           const glm::vec3& previousPosition, bool jumped);
-    void updateMovementAudio(SimulationHost& host, const world::World& world,
+    void updateMovementAudio(const world::World& world,
                              const glm::vec3& previousPosition, const glm::vec3& currentPosition);
-    void consumeEntityEvents(SimulationHost& host);
+    void consumeEntityEvents();
     [[nodiscard]] bool submergedInWater(const world::World& world, glm::vec3 position) const;
 
     gameplay::PlayerController player_;
+    // Three copies on purpose: `stagedInput_` is main-thread-only, `sharedInput_`
+    // is the hand-off under `inputMutex_`, and `playerInput_` is the
+    // simulation's own, refreshed at the top of each tick.
+    gameplay::PlayerInput stagedInput_;
+    gameplay::PlayerInput sharedInput_;
     gameplay::PlayerInput playerInput_;
+    mutable std::mutex inputMutex_;
     gameplay::PlayerVitals vitals_;
     gameplay::Inventory inventory_;
     gameplay::CraftingSystem craftingSystem_;
@@ -249,6 +306,11 @@ class GameSession final {
     gameplay::Difficulty difficulty_ = gameplay::Difficulty::Normal;
     // ServerWorld#tickChunks simulation distance, in blocks (horizontal).
     float simulationRadiusBlocks_ = 64.0F;
+    // Declared before the bridge: the bridge subscribes to it on construction.
+    EntityRenderSnapshot entitySnapshot_;
+    GameEventBus events_;
+    SimulationHostBridge hostBridge_{events_};
+    world::WorldMutationService worldMutations_;
     gameplay::WorldSimulation worldSimulation_;
     gameplay::GameRules gameRules_;
     gameplay::ItemEntitySystem itemEntities_;
@@ -257,6 +319,8 @@ class GameSession final {
     gameplay::ChestSystem chestSystem_;
     gameplay::FurnaceSystem furnaceSystem_;
     gameplay::WeatherSystem weatherSystem_;
+    // Resolved at the top of every tick from the clock and the weather above.
+    EnvironmentSnapshot environment_{};
 
     glm::vec3 worldSpawnPosition_{24.0F, 76.38F, 24.0F};
     glm::vec3 playerSpawnPosition_{24.0F, 76.38F, 24.0F};
