@@ -109,10 +109,8 @@ class ScreenHandler final {
         const std::vector<SlotView>& slots,
         const ItemStack* storage);
 
-    // Applies a click to a slot. Returns false for the one case the caller has
-    // to handle itself: a player-inventory slot shift-clicked with no container
-    // open, which vanilla routes to the crafting grid rather than anywhere this
-    // class owns.
+    // Applies a click to a slot, including QUICK_MOVE between the main inventory
+    // and hotbar, into an open container, or out of a creative-category hotbar.
     static void click(
         GameSession& session,
         const ScreenContext& context,
@@ -121,9 +119,8 @@ class ScreenHandler final {
         bool shiftHeld);
 
     // QUICK_MOVE out of a player slot into whatever container is open. The
-    // container decides where the stack lands; with no container open this is a
-    // no-op, exactly like vanilla shift-clicking in the survival inventory with
-    // nothing to move to.
+    // container decides where the stack lands. Player-inventory screens use
+    // Inventory::clickSlot instead and never enter this helper.
     static void quickMoveToContainer(
         GameSession& session,
         const ScreenContext& context,

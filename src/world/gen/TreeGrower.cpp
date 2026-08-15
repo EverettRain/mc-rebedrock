@@ -18,8 +18,7 @@ constexpr float kPi = 3.14159265358979323846F;
 
 void placeLog(TreeWriter& writer, int x, int y, int z, Block log) {
     if (treeReplaceable(writer.block(x, y, z))) {
-        writer.setBlock(x, y, z, log);
-        writer.setOrientation(x, y, z, BlockOrientation::Up);
+        writer.setState(x, y, z, BlockState{log, BlockOrientation::Up});
     }
 }
 
@@ -134,30 +133,15 @@ Block ChunkTreeWriter::block(int x, int y, int z) const {
     return chunk_.block(x - chunkX_ * kChunkWidth, y, z - chunkZ_ * kChunkDepth);
 }
 
-bool ChunkTreeWriter::setBlock(int x, int y, int z, Block value) {
+bool ChunkTreeWriter::setState(int x, int y, int z, BlockState value) {
     if (!inBounds(x, y, z)) {
         // The crown crosses the chunk border: hold the block back so the
         // streamer can apply it to the neighbouring chunk once it is published.
-        // The orientation arrives on the following setOrientation call, which
-        // patches the matching entry below.
-        borderBlocks_.push_back({x, y, z, value, BlockOrientation::North});
+        // The complete state travels with it, including a branch log's axis.
+        borderBlocks_.push_back({x, y, z, value});
         return false;
     }
-    chunk_.setBlock(x - chunkX_ * kChunkWidth, y, z - chunkZ_ * kChunkDepth, value);
-    return true;
-}
-
-bool ChunkTreeWriter::setOrientation(int x, int y, int z, BlockOrientation value) {
-    if (!inBounds(x, y, z)) {
-        for (auto& block : borderBlocks_) {
-            if (block.worldX == x && block.y == y && block.worldZ == z) {
-                block.orientation = value;
-                break;
-            }
-        }
-        return false;
-    }
-    chunk_.setOrientation(x - chunkX_ * kChunkWidth, y, z - chunkZ_ * kChunkDepth, value);
+    chunk_.setState(x - chunkX_ * kChunkWidth, y, z - chunkZ_ * kChunkDepth, value);
     return true;
 }
 

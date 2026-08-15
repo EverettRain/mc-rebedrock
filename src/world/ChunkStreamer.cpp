@@ -763,7 +763,7 @@ void ChunkStreamer::applyBorderBlocks(
             continue;
         }
         const BlockState previous = chunk->state(localX, block.y, localZ);
-        const BlockState next{block.block, block.orientation};
+        const BlockState next = block.state;
         if (previous == next) {
             continue;
         }

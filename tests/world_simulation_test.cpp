@@ -619,13 +619,31 @@ int main() {
         }
     }
     bool grew = false;
+    std::vector<mc::gameplay::BlockChange> saplingGrowthChanges;
     for (int tick = 0; tick < 1000 && !grew; ++tick) {
-        static_cast<void>(saplingSimulation.tick(saplingWorld));
+        auto changes = saplingSimulation.tick(saplingWorld);
         grew = saplingWorld.block(8, 2, 8) == mc::world::Block::OakLog;
+        if (grew) {
+            saplingGrowthChanges = std::move(changes);
+        }
     }
     assert(grew);
     // Oak trunks are 4-7 blocks tall, so the cell above the base is always log.
     assert(saplingWorld.block(8, 3, 8) == mc::world::Block::OakLog);
+    assert(saplingWorld.orientation(8, 2, 8) == mc::world::BlockOrientation::Up);
+    assert(saplingWorld.orientation(8, 3, 8) == mc::world::BlockOrientation::Up);
+    bool publishedVerticalTrunk = false;
+    for (const auto& change : saplingGrowthChanges) {
+        if (change.state.block() != mc::world::Block::OakLog) {
+            continue;
+        }
+        // Runtime growth must publish the same complete state that it stored.
+        // Previously the worker received a horizontal default and never saw
+        // the separate orientation patch made only in the simulation world.
+        assert(change.state.orientation() == mc::world::BlockOrientation::Up);
+        publishedVerticalTrunk = true;
+    }
+    assert(publishedVerticalTrunk);
     std::size_t saplingLeaves = 0U;
     for (int z = 6; z <= 10; ++z) {
         for (int x = 6; x <= 10; ++x) {

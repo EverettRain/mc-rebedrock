@@ -161,7 +161,23 @@ void ScreenHandler::click(
         break;
     case SlotKind::PlayerInventory:
         if (shiftHeld) {
-            quickMoveToContainer(session, context, session.inventory().mutableSlot(slot.index));
+            if (context.screen == ContainerScreen::PlayerInventory) {
+                if (context.gameMode == GameMode::Creative &&
+                    !context.creativeInventoryTab) {
+                    // In an item-category tab the only real player slots are
+                    // the hotbar. QUICK_MOVE sends that stack into the creative
+                    // catalogue, whose backing storage is infinite: the local
+                    // stack is therefore deleted, matching vanilla.
+                    session.inventory().mutableSlot(slot.index) = {};
+                } else {
+                    // With no external container, QUICK_MOVE swaps regions of
+                    // the player's own inventory: hotbar -> main, main -> hotbar.
+                    session.inventory().clickSlot(slot.index, button, true);
+                }
+            } else {
+                quickMoveToContainer(
+                    session, context, session.inventory().mutableSlot(slot.index));
+            }
         } else {
             session.inventory().clickSlot(slot.index, button, false);
         }

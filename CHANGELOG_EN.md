@@ -34,6 +34,13 @@ simple versioned history while it is in beta.
 
 ### Fixed
 
+- Sapling-grown logs are now written and published atomically as complete block
+  states, so trunks no longer render their end grain sideways after an
+  orientation-only follow-up update was lost. Cross-chunk tree blocks retain
+  their complete state as well.
+- Shift-click once again quick-moves full stacks between the hotbar and main
+  inventory. In a creative item-category tab, shift-clicking a hotbar stack
+  returns it to the catalogue by clearing that slot.
 - Hostile mobs are no longer restricted to nighttime surface spawns while dark
   caves remain empty, and torch-lit caves stay spawn-proof. Pigs and cows also
   no longer appear with equal odds in deserts, oceans or other biomes outside

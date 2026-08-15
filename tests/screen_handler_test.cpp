@@ -222,9 +222,9 @@ void testClickRouting() {
     REQUIRE(session.chestSystem().find(position)->items[0].empty());
 }
 
-// Shift-clicking a player slot with no container open must not silently drop
-// the stack: with nowhere to move it, it stays where it is.
-void testQuickMoveWithoutContainer() {
+// With no external container, QUICK_MOVE still has two regions to transfer
+// between: the nine-slot hotbar and the 27-slot main inventory.
+void testPlayerInventoryQuickMove() {
     gameplay::GameSession session;
     session.setGameMode(gameplay::GameMode::Survival);
     const auto layout = makeLayout();
@@ -235,15 +235,51 @@ void testQuickMoveWithoutContainer() {
                                           true};
     session.inventory().mutableSlot(3) = {world::Block::Dirt, 5U};
     const auto slots = gameplay::ScreenHandler::buildSlots(session, context, layout);
-    const auto* player = std::ranges::find_if(
-        slots, [](const gameplay::SlotView& slot) {
-            return slot.kind == gameplay::SlotKind::PlayerInventory && slot.index == 3U;
-        }).base();
-    REQUIRE(player != slots.data() + slots.size());
-    gameplay::ScreenHandler::click(session, context, *player,
+    const auto findPlayerSlot = [&](std::uint16_t index) {
+        const auto found = std::ranges::find_if(
+            slots, [index](const gameplay::SlotView& slot) {
+                return slot.kind == gameplay::SlotKind::PlayerInventory && slot.index == index;
+            });
+        return found == slots.end() ? nullptr : &*found;
+    };
+    const auto* hotbar = findPlayerSlot(3U);
+    REQUIRE(hotbar != nullptr);
+    gameplay::ScreenHandler::click(session, context, *hotbar,
                                    gameplay::InventoryMouseButton::Left, true);
-    REQUIRE(session.inventory().slot(3).block == world::Block::Dirt);
-    REQUIRE(session.inventory().slot(3).count == 5U);
+    REQUIRE(session.inventory().slot(3).empty());
+    REQUIRE(session.inventory().slot(gameplay::Inventory::kHotbarSize).block ==
+            world::Block::Dirt);
+
+    const auto* main = findPlayerSlot(
+        static_cast<std::uint16_t>(gameplay::Inventory::kHotbarSize));
+    REQUIRE(main != nullptr);
+    gameplay::ScreenHandler::click(session, context, *main,
+                                   gameplay::InventoryMouseButton::Left, true);
+    REQUIRE(session.inventory().slot(gameplay::Inventory::kHotbarSize).empty());
+    REQUIRE(session.inventory().slot(0).block == world::Block::Dirt);
+}
+
+// Under a creative item category only the hotbar is backed by player storage.
+// QUICK_MOVE returns its stack to the infinite catalogue, so the slot clears.
+void testCreativeCatalogQuickDiscard() {
+    gameplay::GameSession session;
+    session.setGameMode(gameplay::GameMode::Creative);
+    const auto layout = makeLayout();
+    const gameplay::ScreenContext context{gameplay::ContainerScreen::PlayerInventory,
+                                          std::nullopt,
+                                          {},
+                                          gameplay::GameMode::Creative,
+                                          false};
+    session.inventory().mutableSlot(4) = {world::Block::Stone, 64U};
+    const auto slots = gameplay::ScreenHandler::buildSlots(session, context, layout);
+    const auto found = std::ranges::find_if(
+        slots, [](const gameplay::SlotView& slot) {
+            return slot.kind == gameplay::SlotKind::PlayerInventory && slot.index == 4U;
+        });
+    REQUIRE(found != slots.end());
+    gameplay::ScreenHandler::click(session, context, *found,
+                                   gameplay::InventoryMouseButton::Left, true);
+    REQUIRE(session.inventory().slot(4).empty());
 }
 
 } // namespace
@@ -255,6 +291,7 @@ int main() {
     testFurnaceScreen();
     testLookups();
     testClickRouting();
-    testQuickMoveWithoutContainer();
+    testPlayerInventoryQuickMove();
+    testCreativeCatalogQuickDiscard();
     return 0;
 }

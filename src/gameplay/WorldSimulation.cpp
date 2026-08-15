@@ -675,7 +675,7 @@ void WorldSimulation::growTreeAt(
         [[nodiscard]] world::Block block(int x, int y, int z) const override {
             return world_.block(x, y, z);
         }
-        bool setBlock(int x, int y, int z, world::Block value) override {
+        bool setState(int x, int y, int z, world::BlockState value) override {
             if (y < 0 || y >= world::kWorldHeight) {
                 return false;
             }
@@ -683,18 +683,15 @@ void WorldSimulation::growTreeAt(
             // canopy go through the service too — that is what destroys the
             // block entity of anything the crown grows over.
             RecordingMutationSink sink;
-            if (!mutations_.setBlock(world_, {x, y, z}, world::BlockState{value},
+            if (!mutations_.setBlock(world_, {x, y, z}, value,
                                      world::MutationFlags::KnownShape,
                                      world::MutationCause::RandomTick, sink)
                      .changed) {
                 return false;
             }
-            changes_.push_back({SimulationPosition{x, y, z}, world::BlockState{value},
-                                world::BlockState{}, false});
+            changes_.push_back(
+                {SimulationPosition{x, y, z}, value, world::BlockState{}, false});
             return true;
-        }
-        bool setOrientation(int x, int y, int z, world::BlockOrientation value) override {
-            return world_.setOrientation(x, y, z, value);
         }
 
       private:

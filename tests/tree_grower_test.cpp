@@ -44,6 +44,9 @@ int main() {
         }
         assert(logs >= 4);
         assert(leaves >= 40);
+        for (int y = 1; y <= 4; ++y) {
+            assert(chunk.orientation(8, y, 8) == world::BlockOrientation::Up);
+        }
     }
 
     // A tree hugging the +X border records its spilled crown instead of
@@ -61,7 +64,7 @@ int main() {
         assert(world::gen::growTree(writer, random, oak, 15, 0, 8));
         assert(!border.empty());
         for (const auto& block : border) {
-            assert(block.block == world::Block::OakLeaves);
+            assert(block.state.block() == world::Block::OakLeaves);
             assert(block.worldX >= 16);
         }
     }
@@ -109,4 +112,3 @@ int main() {
 
     return 0;
 }
-

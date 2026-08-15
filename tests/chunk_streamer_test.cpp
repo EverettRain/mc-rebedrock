@@ -258,7 +258,7 @@ int main() {
             });
         assert(delivered != sourceBatch->stateUpdates.end());
         assert(delivered->expected == candidate->expected);
-        assert(delivered->state.block() == candidate->block.block);
+        assert(delivered->state == candidate->block.state);
 
         // An explicit Air edit at the same position is authoritative. This is
         // the real broken-leaf case: a late/replayed crown must not resurrect

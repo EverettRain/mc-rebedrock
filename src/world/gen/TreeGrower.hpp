@@ -4,6 +4,7 @@
 #include "world/gen/JavaRandom.hpp"
 
 #include "world/Chunk.hpp"
+#include "world/BlockState.hpp"
 
 namespace mc::world::gen {
 
@@ -17,8 +18,14 @@ class TreeWriter {
   public:
     virtual ~TreeWriter() = default;
     [[nodiscard]] virtual Block block(int x, int y, int z) const = 0;
-    virtual bool setBlock(int x, int y, int z, Block value) = 0;
-    virtual bool setOrientation(int x, int y, int z, BlockOrientation value) = 0;
+    virtual bool setState(int x, int y, int z, BlockState value) = 0;
+
+    // Non-directional placements still use the block's declared default state.
+    // Pillars are placed with an explicit axis by placeLog below, so a tree
+    // never publishes a transient horizontal log and patches it afterwards.
+    bool setBlock(int x, int y, int z, Block value) {
+        return setState(x, y, z, BlockState{value, defaultOrientation(value)});
+    }
 };
 
 // A tree block that fell outside the chunk being generated: it belongs to a
@@ -29,8 +36,7 @@ struct TreeBorderBlock final {
     int worldX = 0;
     int y = 0;
     int worldZ = 0;
-    Block block = Block::Air;
-    BlockOrientation orientation = BlockOrientation::North;
+    BlockState state{};
 };
 
 // Writes into one chunk. World coordinates are translated back to chunk-local
@@ -44,8 +50,7 @@ class ChunkTreeWriter final : public TreeWriter {
         : chunk_(chunk), chunkX_(chunkX), chunkZ_(chunkZ), borderBlocks_(borderBlocks) {}
 
     [[nodiscard]] Block block(int x, int y, int z) const override;
-    bool setBlock(int x, int y, int z, Block value) override;
-    bool setOrientation(int x, int y, int z, BlockOrientation value) override;
+    bool setState(int x, int y, int z, BlockState value) override;
 
   private:
     [[nodiscard]] bool inBounds(int x, int y, int z) const;
