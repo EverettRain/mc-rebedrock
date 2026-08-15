@@ -78,14 +78,14 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
     const bool plantable =
         latestUse_.has_value() && aimsAtPlantableFarmland(world, *latestUse_, selectedStack);
     if (using_ && foodInHand && !targetedContainer && !plantable && !session.eating()) {
-        session.beginEating(selectedStack.item, host);
+        session.beginEating(kPrimaryPlayerId, selectedStack.item, host);
     } else if (session.eating() &&
                (!using_ || !foodInHand || selectedStack.item != session.eatingKind() ||
                 targetedContainer)) {
-        session.cancelEating(host);
+        session.cancelEating(kPrimaryPlayerId, host);
     }
     if (destroying_ && session.eating()) {
-        session.cancelEating(host);
+        session.cancelEating(kPrimaryPlayerId, host);
     }
 
     // The continuous dig, once per tick while the attack is held.
@@ -120,13 +120,13 @@ void PlayerInteraction::handleDestroyCommand(GameSession& session, world::World&
             if (session.worldEntities().hurt(action.entityId, damage, eye)) {
                 if (session.gameMode() == GameMode::Survival) {
                     session.vitals().addExhaustion(0.1F);
-                    if (session.damageHeldTool(ToolUse::AttackEntity, 0.0F)) {
+                    if (session.damageHeldTool(kPrimaryPlayerId, ToolUse::AttackEntity, 0.0F)) {
                         host.playItemBreak(eye);
                     }
                 }
             }
             if (session.eating()) {
-                session.cancelEating(host);
+                session.cancelEating(kPrimaryPlayerId, host);
             }
             return;
         }
@@ -142,7 +142,7 @@ void PlayerInteraction::handleDestroyCommand(GameSession& session, world::World&
         }
         session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Break, 6U);
         if (session.eating()) {
-            session.cancelEating(host);
+            session.cancelEating(kPrimaryPlayerId, host);
         }
         return;
     case PlayerAction::Kind::AbortDestroy:
@@ -215,7 +215,7 @@ void PlayerInteraction::applyBreak(GameSession& session, world::World& world,
         if (survival) {
             // Player#destroyBlock adds a flat exhaustion per broken block.
             session.vitals().addExhaustion(0.005F);
-            if (session.damageHeldTool(ToolUse::BreakBlock,
+            if (session.damageHeldTool(kPrimaryPlayerId, ToolUse::BreakBlock,
                                        world::blockDefinition(brokenBlock).hardness)) {
                 host.playItemBreak(session.player().eyePosition());
             }
@@ -395,7 +395,7 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
                 host.playBlockPlace(tilled, glm::vec3{block} + glm::vec3{0.5F});
                 session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
                 if (session.gameMode() == GameMode::Survival) {
-                    if (session.damageHeldTool(ToolUse::Till,
+                    if (session.damageHeldTool(kPrimaryPlayerId, ToolUse::Till,
                                                world::blockDefinition(existing).hardness)) {
                         host.playItemBreak(session.player().eyePosition());
                     }

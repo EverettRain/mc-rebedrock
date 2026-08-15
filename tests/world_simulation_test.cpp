@@ -565,6 +565,54 @@ int main() {
     // for morning instead of sprouting in the dark.
     assert(nightWorld.block(4, 2, 4) == mc::world::Block::OakSapling);
 
+    // A leaves-filtered surface is one level dimmer than open sky. At midnight
+    // its stored sky 14 minus ambient darkness 11 reads 3: below the spreading
+    // threshold, but not a reason for existing grass to die. The old survival
+    // check incorrectly used that local brightness and spent a conversion on
+    // grass -> dirt at night; morning then spent another growing it back.
+    mc::world::Chunk canopyChunk;
+    for (int z = 0; z < 16; ++z) {
+        for (int x = 0; x < 16; ++x) {
+            canopyChunk.setBlock(x, 0, z, mc::world::Block::Stone);
+            canopyChunk.setBlock(x, 1, z, mc::world::Block::Dirt);
+            canopyChunk.setState(
+                x, 4, z,
+                mc::world::BlockState{mc::world::Block::OakLeaves}.withPersistent(true));
+        }
+    }
+    canopyChunk.setBlock(8, 2, 8, mc::world::Block::Grass);
+    canopyChunk.setBlock(9, 2, 8, mc::world::Block::Dirt);
+    mc::world::World canopyWorld;
+    canopyWorld.setChunk({0, 0}, std::move(canopyChunk));
+    for (int z = 0; z < 16; ++z) {
+        for (int x = 0; x < 16; ++x) {
+            canopyWorld.setSkyLight(x, 3, z, 14U);
+        }
+    }
+    mc::gameplay::WorldSimulation canopySimulation;
+    canopySimulation.setRandomTickSpeed(1000);
+    canopySimulation.setEnvironment(
+        mc::gameplay::EnvironmentSnapshot::resolve(18000.0, 0.0F, 0.0F));
+    std::size_t nightCanopyConversions = 0U;
+    for (int tick = 0; tick < 600; ++tick) {
+        static_cast<void>(canopySimulation.tick(canopyWorld));
+        nightCanopyConversions += canopySimulation.lastRandomTickConversions();
+    }
+    assert(canopyWorld.block(8, 2, 8) == mc::world::Block::Grass);
+    assert(canopyWorld.block(9, 2, 8) == mc::world::Block::Dirt);
+    assert(nightCanopyConversions == 0U);
+
+    // The same stored sky is bright enough by day, so the distinction is
+    // survival versus propagation: the source remains unchanged while nearby
+    // surface dirt may now green over.
+    canopySimulation.setEnvironment(
+        mc::gameplay::EnvironmentSnapshot::resolve(6000.0, 0.0F, 0.0F));
+    for (int tick = 0; tick < 600; ++tick) {
+        static_cast<void>(canopySimulation.tick(canopyWorld));
+    }
+    assert(canopyWorld.block(8, 2, 8) == mc::world::Block::Grass);
+    assert(canopyWorld.block(9, 2, 8) == mc::world::Block::Grass);
+
     // Grass must not spread into the dirt layer under itself: the probes reach
     // one below the surface, and without a light check on the target that dirt
     // converts to grass, dies for being covered, and repeats forever — a churn

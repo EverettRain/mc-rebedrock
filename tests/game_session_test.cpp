@@ -108,6 +108,11 @@ int main() {
     // Feet rest on the stone's top surface (y = 1), not embedded in it.
     assert(std::abs(session.player().position().y - 1.0F) < 0.05F);
     assert(session.physicsCurrentPosition().y == session.player().position().y);
+    // Render consumers receive the same settled collision state and tick from
+    // the published player snapshot rather than reading the live controller.
+    assert(session.playerTickSnapshot().onGround);
+    assert(!session.playerTickSnapshot().inWater);
+    assert(session.playerTickSnapshot().serverTick == session.serverTick());
 
     // Entity#move adds horizontalDistance * 0.6 to its step accumulator and
     // emits once per integer crossing. This catches the old 0.85-block stride,
@@ -254,7 +259,7 @@ int main() {
 
     // --- The kill pipeline raises the death host callback. ---
     TestHost deathHost;
-    assert(session.hurtPlayer(gameplay::DamageType::OutOfWorld, 1000.0F, deathHost));
+    assert(session.hurtPlayer(gameplay::kPrimaryPlayerId, gameplay::DamageType::OutOfWorld, 1000.0F, deathHost));
     session.drainEvents();
     assert(deathHost.playerDied);
 
@@ -340,13 +345,13 @@ int main() {
         TestHost onceHost;
         gameplay::GameSession dying;
         dying.setGameMode(gameplay::GameMode::Survival);
-        assert(dying.hurtPlayer(gameplay::DamageType::Fall, 1000.0F, onceHost));
+        assert(dying.hurtPlayer(gameplay::kPrimaryPlayerId, gameplay::DamageType::Fall, 1000.0F, onceHost));
         dying.drainEvents();
         assert(onceHost.playerDied);
         // A second lethal source in the same tick is swallowed by the dead()
         // guard, and die() refuses to re-claim the already-claimed death.
-        assert(!dying.hurtPlayer(gameplay::DamageType::Drown, 1000.0F, onceHost));
-        assert(!dying.die(gameplay::DamageType::Drown, onceHost));
+        assert(!dying.hurtPlayer(gameplay::kPrimaryPlayerId, gameplay::DamageType::Drown, 1000.0F, onceHost));
+        assert(!dying.die(gameplay::kPrimaryPlayerId, gameplay::DamageType::Drown, onceHost));
         dying.drainEvents();
         assert(onceHost.playerDied);
     }
@@ -357,13 +362,13 @@ int main() {
         respawner.worldSpawnPosition() = {10.0F, 64.0F, 10.0F};
         respawner.playerSpawnPosition() = {99.0F, 65.0F, 99.0F};
         respawner.hasPlayerSpawn() = true;
-        respawner.respawn();
+        respawner.respawn(gameplay::kPrimaryPlayerId);
         const auto personal = respawner.player().position();
         assert(personal.x == 99.0F && personal.y == 65.0F && personal.z == 99.0F);
         // Without a personal spawn point, death falls back to the world spawn.
         respawner.hasPlayerSpawn() = false;
         respawner.player().setPosition({1.0F, 1.0F, 1.0F});
-        respawner.respawn();
+        respawner.respawn(gameplay::kPrimaryPlayerId);
         const auto fallback = respawner.player().position();
         assert(fallback.x == 10.0F && fallback.y == 64.0F && fallback.z == 10.0F);
     }
@@ -378,7 +383,7 @@ int main() {
         // into respawn unless the new body is reset.
         respawner.player().applyExternalPush({5.0F, 3.0F, 5.0F});
         respawner.vitals().restore(1.0F, 0, 0.0F, 0);
-        respawner.respawn();
+        respawner.respawn(gameplay::kPrimaryPlayerId);
         const auto feet = respawner.player().position();
         assert(feet.x == 5.0F && feet.y == 64.0F && feet.z == 5.0F);
         assert(respawner.player().velocity() == glm::vec3{0.0F});

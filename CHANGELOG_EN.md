@@ -23,7 +23,10 @@ simple versioned history while it is in beta.
 - Player controllers, inventories, vitals, crafting, game modes, input and
   action timelines now live in authoritative `ServerPlayer` records indexed by
   stable `PlayerId`s. The local player uses the same container, establishing a
-  concrete data boundary for adding more connected clients later.
+  concrete data boundary for adding more connected clients later. Player-scoped
+  damage, death, respawn, eating, tool durability and death drops now execute by
+  `PlayerId`, with two-player isolation coverage ensuring one player's changes
+  do not affect another.
 - Natural spawning now uses 26.1-style weighted tables split by biome and mob
   category, with built-in vanilla weights and group sizes for pigs, cows and
   zombies. Packs may override an individual biome through
@@ -47,9 +50,15 @@ simple versioned history while it is in beta.
   motion stays aligned with the interaction decision.
 - Player rendering now consumes an atomically published `PlayerTickSnapshot`
   each gameplay tick and uses the current frame's partial tick to interpolate
-  position, stride, speed, swings and item use without reading live player
-  objects during simulation. Consecutive swings carry action sequences so a
-  restart snaps to its own beginning instead of visibly replaying backwards.
+  position, stride, speed, field of view, swings and item use. The HUD,
+  third-person model and mining overlay obtain vitals, mode, held item, water
+  and grounded state from that same snapshot instead of reading player objects
+  during simulation. Consecutive swings carry action sequences so a restart
+  snaps to its own beginning instead of visibly replaying backwards.
+- An atomically published `WorldSnapshot` now supplies the client with time,
+  named clocks, weather gradients, relevant game rules and chest-lid state each
+  tick. Sky, shadow, precipitation and chest rendering no longer read those
+  live gameplay systems directly.
 - Natural spawning now spreads simulation-radius-scaled column samples across
   categories every tick and chooses species with integer weights, replacing a
   burst of three surface scans once per second. Block light continues to
@@ -79,6 +88,9 @@ simple versioned history while it is in beta.
   caves remain empty, and torch-lit caves stay spawn-proof. Pigs and cows also
   no longer appear with equal odds in deserts, oceans or other biomes outside
   their 26.1 spawn tables.
+- Sky light filtered through leaves no longer makes grass below revert to dirt
+  at night. Grass survival now depends only on physical shielding above it,
+  while spreading to nearby dirt remains gated by the current brightness.
 
 ## ReBedrock beta5
 

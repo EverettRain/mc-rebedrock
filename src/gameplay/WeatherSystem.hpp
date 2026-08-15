@@ -81,6 +81,11 @@ class WeatherSystem final {
     [[nodiscard]] float rainGradientAt(float delta) const;
     [[nodiscard]] float thunderGradient() const { return thunderGradient_; }
     [[nodiscard]] float thunderGradientAt(float delta) const;
+    // The tick boundary endpoints behind rainGradientAt()/thunderGradientAt(),
+    // so a snapshot can reproduce the frame interpolation without the live
+    // system.
+    [[nodiscard]] float previousRainGradient() const { return rainGradientPrev_; }
+    [[nodiscard]] float previousThunderGradient() const { return thunderGradientPrev_; }
 
     // ClientWorld#getSkyBrightness applies weather after sampling the logical
     // sky-light level: rain and thunder each remove at most 5/16 of the visual

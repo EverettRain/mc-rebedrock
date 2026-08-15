@@ -469,7 +469,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         // The gameplay half — scatter the inventory unless keepInventory — runs
         // after the inventory closes, so the crafting grid has already stowed.
-        gameSession.onPlayerDeath();
+        gameSession.onPlayerDeath(gameplay::kPrimaryPlayerId);
         simulationActive.store(false, std::memory_order_release);
         paused = true;
         menuSystem.pageStack.reset(ui::PageId::Death);
@@ -894,7 +894,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // A thunderstorm drenches the world: the rain volume scales with the
         // thunder gradient up to double the plain-rain count, and the async
         // path's capacity is what makes thousands of extra drops free to draw.
-        const float thunderBoost = 1.0F + gameSession.weatherSystem().thunderGradient();
+        const float thunderBoost = 1.0F + gameSession.worldSnapshot().thunderGradient;
         // The user-facing rain bump (plain and thunder rain both 1.5x of the
         // pre-bump baseline) rides the 粒子效果 level: 中 (1x) yields the 1.5x
         // budget, 高 doubles it, 疯狂 triples it, 低 halves it.
@@ -947,7 +947,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // rain (1.16.1 leaves the clip at a flat 0.2; the ramp is the adaptation
     // the gradient-volume ask calls for).
     void updateWeatherSound(world::World& world) {
-        const float rainGradient = gameSession.weatherSystem().rainGradient();
+        const float rainGradient = gameSession.worldSnapshot().rainGradient;
         if (rainGradient <= 0.0F) {
             return;
         }
@@ -989,7 +989,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                    .has_value();
         const bool rainAbove = surface->y > static_cast<float>(cameraBlock.y + 1);
         const float volumeScale =
-            rainGradient * (1.0F + 0.5F * gameSession.weatherSystem().thunderGradient());
+            rainGradient * (1.0F + 0.5F * gameSession.worldSnapshot().thunderGradient);
         const bool underCover = rainAbove && underRoof;
         if (underCover) {
             audioSystem.playWeatherRainAbove(*surface, 0.1F * volumeScale);
@@ -1274,10 +1274,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                         (cursor.x - preview.lookOrigin.x) / (40.0F * animationLayout.scale()),
                         (cursor.y - preview.lookOrigin.y) / (40.0F * animationLayout.scale()));
                 }
-                const glm::vec2 horizontalVelocity{gameSession.player().velocity().x,
-                                                   gameSession.player().velocity().z};
-                playerWalking = glm::length(horizontalVelocity) > 0.02F;
-                playerSneaking = gameSession.player().sneaking();
+                // The animator's gait inputs come from the per-tick player
+                // snapshot, not live gameplay objects.
+                const auto playerSnap = [&] {
+                    const auto snapshotRead = worldLock.read();
+                    return gameSession.playerTickSnapshot();
+                }();
+                playerWalking = playerSnap.speed > 0.02F;
+                playerSneaking = playerSnap.sneaking;
             }
             playerModelAnimator.update(deltaSeconds, playerWalking);
             // Head leads, body follows: the head turns freely up to a limit, and
@@ -1356,7 +1360,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // landing splashes/audio in every mode. Particle and async also
                 // render these exact drops; texture mode independently draws the
                 // vanilla precipitation-column field.
-                const float thunderGradient = gameSession.weatherSystem().thunderGradient();
+                const float thunderGradient = gameSession.worldSnapshot().thunderGradient;
                 // The wind holds a heading for 10-20 s, then veers to a new
                 // one over a couple of seconds — an occasional, slow shift
                 // instead of the old constant rotation that kept the whole rain
@@ -1377,11 +1381,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 const glm::vec2 wind{std::cos(rainWindAngle_) * windSpeed,
                                      std::sin(rainWindAngle_) * windSpeed};
                 rainSystem.update(deltaSeconds, camera.position(),
-                                  gameSession.weatherSystem().rainGradient(), rainTargetCount(),
+                                  gameSession.worldSnapshot().rainGradient, rainTargetCount(),
                                   interactionWorld, wind);
                 if (rainMode_ == RainMode::Texture) {
                     rainSystem.emitTextureImpacts(deltaSeconds, camera.position(),
-                                                  gameSession.weatherSystem().rainGradient(),
+                                                  gameSession.worldSnapshot().rainGradient,
                                                   interactionWorld);
                 }
                 for (const auto& splash : rainSystem.splashes()) {
@@ -1396,7 +1400,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // under a roof, all scaled by the smoothed rain gradient.
                     updateWeatherSound(interactionWorld);
                 static bool stormReported = false;
-                if (!stormReported && gameSession.weatherSystem().isThundering() &&
+                if (!stormReported && gameSession.worldSnapshot().thundering &&
                     rainSystem.drops().size() > 5000U) {
                     stormReported = true;
                     std::cout << "[thunder] storm drops=" << rainSystem.drops().size()
@@ -1450,23 +1454,26 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             float fovMultiplier = 1.0F;
             {
                 const auto stateRead = worldLock.read();
-                renderedFeetPosition =
-                    gameSession.physicsPreviousPosition() +
-                    (gameSession.physicsCurrentPosition() - gameSession.physicsPreviousPosition()) *
-                        physicsAlpha;
-                // Capture the HUD snapshot from the settled session state.
-                uiFrameData_.health = gameSession.vitals().health();
-                uiFrameData_.foodLevel = gameSession.vitals().foodLevel();
-                uiFrameData_.airTicks = gameSession.vitals().airTicks();
-                uiFrameData_.ticksSinceDamage = gameSession.vitals().ticksSinceDamage();
-                uiFrameData_.gameMode = gameSession.gameMode();
-                uiFrameData_.eating = gameSession.eating();
-                uiFrameData_.selectedStack = gameSession.inventory().selectedStack();
-                uiFrameData_.selectedHotbarSlot = gameSession.inventory().selectedHotbarSlot();
-                playerEyeHeight = gameSession.player().eyeHeight();
-                fovMultiplier = gameSession.player().previousFieldOfViewMultiplier() +
-                                (gameSession.player().fieldOfViewMultiplier() -
-                                 gameSession.player().previousFieldOfViewMultiplier()) *
+                const auto& playerSnap = gameSession.playerTickSnapshot();
+                renderedFeetPosition = playerSnap.physicsPrevious +
+                                       (playerSnap.physicsCurrent - playerSnap.physicsPrevious) *
+                                           physicsAlpha;
+                // Capture the HUD snapshot from the per-tick player snapshot
+                // (published under the sim's write lock), not live gameplay.
+                uiFrameData_.health = playerSnap.health;
+                uiFrameData_.foodLevel = playerSnap.foodLevel;
+                uiFrameData_.airTicks = playerSnap.airTicks;
+                uiFrameData_.ticksSinceDamage = playerSnap.ticksSinceDamage;
+                uiFrameData_.gameMode = playerSnap.gameMode;
+                uiFrameData_.eating = playerSnap.eating;
+                uiFrameData_.selectedStack = playerSnap.heldStack;
+                uiFrameData_.selectedHotbarSlot = playerSnap.selectedHotbarSlot;
+                playerEyeHeight =
+                    playerSnap.sneaking ? gameplay::PlayerController::kSneakingEyeHeight
+                                        : gameplay::PlayerController::kEyeHeight;
+                fovMultiplier = playerSnap.previousFieldOfViewMultiplier +
+                                (playerSnap.fieldOfViewMultiplier -
+                                 playerSnap.previousFieldOfViewMultiplier) *
                                     physicsAlpha;
             }
             camera.setPosition(renderedFeetPosition + glm::vec3{0.0F, playerEyeHeight, 0.0F});
@@ -1668,7 +1675,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             } else if (smokeTest && smokeGameplayFrames == 56U) {
                 // The /gamemode survival command lands on the next server tick.
                 smokeWaitActive = true;
-                smokeWaitDeadline = smokeGameplayFrames + 6U;
+                smokeWaitDeadline = smokeGameplayFrames + 40U;
                 smokeWaitLabel = "enter survival mode";
                 smokeWaitCondition = [&] {
                     const auto smokeRead = worldLock.read();
@@ -1719,7 +1726,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             } else if (smokeTest && smokeGameplayFrames == 72U) {
                 // The /gamemode command lands on the next server tick.
                 smokeWaitActive = true;
-                smokeWaitDeadline = smokeGameplayFrames + 6U;
+                smokeWaitDeadline = smokeGameplayFrames + 40U;
                 smokeWaitLabel = "return to creative mode";
                 smokeWaitCondition = [&] {
                     const auto smokeRead = worldLock.read();
@@ -1735,7 +1742,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // Catalog index 0 is the first registered building block (grass).
                 // The /give command lands on the next server tick.
                 smokeWaitActive = true;
-                smokeWaitDeadline = smokeGameplayFrames + 6U;
+                smokeWaitDeadline = smokeGameplayFrames + 40U;
                 smokeWaitLabel = "/give by catalog index";
                 smokeWaitCondition = [&] {
                     const auto smokeRead = worldLock.read();
@@ -1751,7 +1758,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 submitChatInput();
             } else if (smokeTest && smokeGameplayFrames == 84U) {
                 smokeWaitActive = true;
-                smokeWaitDeadline = smokeGameplayFrames + 6U;
+                smokeWaitDeadline = smokeGameplayFrames + 40U;
                 smokeWaitLabel = "/give by identifier";
                 smokeWaitCondition = [&] {
                     const auto smokeRead = worldLock.read();
@@ -1767,13 +1774,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 submitChatInput();
             } else if (smokeTest && smokeGameplayFrames == 90U) {
                 smokeWaitActive = true;
-                smokeWaitDeadline = smokeGameplayFrames + 6U;
+                smokeWaitDeadline = smokeGameplayFrames + 40U;
                 smokeWaitLabel = "set world time";
                 smokeWaitCondition = [&] {
                     const auto smokeRead = worldLock.read();
                     const auto perDay =
                         static_cast<std::uint64_t>(world::DayNightCycle::kTicksPerDay);
-                    const auto tick = static_cast<double>(gameSession.dayTimeTicks() % perDay);
+                    const auto tick = std::fmod(gameSession.worldSnapshot().dayTimeTicks, static_cast<double>(perDay));
                     return std::abs(tick - 18000.0) <= 4.0;
                 };
             } else if (smokeTest && smokeGameplayFrames == 92U) {
@@ -1810,7 +1817,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             } else if (smokeTest && smokeGameplayFrames == 406U) {
                 // The /gamemode survival command lands on the next server tick.
                 smokeWaitActive = true;
-                smokeWaitDeadline = smokeGameplayFrames + 6U;
+                smokeWaitDeadline = smokeGameplayFrames + 40U;
                 smokeWaitLabel = "return to survival mode";
                 smokeWaitCondition = [&] {
                     const auto smokeRead = worldLock.read();
@@ -1853,7 +1860,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             } else if (smokeTest && smokeGameplayFrames == 706U) {
                 // The /tp command lands on the next server tick.
                 smokeWaitActive = true;
-                smokeWaitDeadline = smokeGameplayFrames + 6U;
+                smokeWaitDeadline = smokeGameplayFrames + 40U;
                 smokeWaitLabel = "/tp teleport";
                 smokeWaitCondition = [&] {
                     const auto smokeRead = worldLock.read();
@@ -2273,7 +2280,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void respawnPlayer() {
-        gameSession.respawn();
+        gameSession.respawn(gameplay::kPrimaryPlayerId);
         camera.setPosition(gameSession.player().eyePosition());
         // PlayerManager#respawnPlayer snaps the new body to the spawn's stored
         // angle (vanilla yaw 0) instead of carrying the death look over. The
@@ -5597,13 +5604,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     [[nodiscard]] glm::mat4 viewBobbingMatrix() const {
-        if (!options.viewBobbing || gameSession.player().flying())
+        const auto& playerSnap = gameSession.playerTickSnapshot();
+        if (!options.viewBobbing || playerSnap.flying)
             return glm::mat4{1.0F};
         const float alpha = renderInterpolationAlpha;
-        const float phase = -std::lerp(gameSession.player().previousHorizontalSpeed(),
-                                       gameSession.player().horizontalSpeed(), alpha);
-        const float stride = std::lerp(gameSession.player().previousStrideDistance(),
-                                       gameSession.player().strideDistance(), alpha);
+        const float phase = -std::lerp(playerSnap.previousSpeed, playerSnap.speed, alpha);
+        const float stride = std::lerp(playerSnap.previousStride, playerSnap.stride, alpha);
         constexpr float pi = 3.14159265358979323846F;
         glm::mat4 transform{1.0F};
         transform = glm::translate(transform, {std::sin(phase * pi) * stride * 0.5F,
@@ -5675,7 +5681,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // real frames. The 20 Hz tick is coarse enough only for fast-moving
         // things; the sun barely moves per tick, so no sub-tick interpolation is
         // needed here.
-        const auto dayTick = static_cast<double>(gameSession.dayTimeTicks());
+        const auto dayTick = gameSession.worldSnapshot().dayTimeTicks;
         const auto daylight = world::DayNightCycle::stateAtTick(dayTick);
         uniform.sunDirection = glm::vec4{daylight.sunDirection, daylight.skyBrightness};
         // horizonFog.w drives only the moon phase. Fluid animation uses the
@@ -5697,15 +5703,21 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // than hardcoded numbers so an atlas change cannot silently re-point
         // them at a block texture.
         uniform.celestialLayers = glm::vec4{kSunLayer, kMoonPhaseFirstLayer, 0.0F, 0.0F};
-        const auto& weather = gameSession.weatherSystem();
-        const float rainGradient = weather.rainGradientAt(renderInterpolationAlpha);
-        const float thunderGradient = weather.thunderGradientAt(renderInterpolationAlpha);
-        uniform.weatherSettings = glm::vec4{
-            rainGradient,
-            thunderGradient,
-            weather.visualSkyLightFactorAt(renderInterpolationAlpha),
-            1.0F - rainGradient,
-        };
+        // The sky's weather read comes from the per-tick snapshot, reproducing
+        // the frame interpolation the live system's rainGradientAt(alpha) gave.
+        const auto& weather = gameSession.worldSnapshot();
+        const float alpha = renderInterpolationAlpha;
+        const float rainGradient = weather.previousRainGradient +
+                                   (weather.rainGradient - weather.previousRainGradient) * alpha;
+        const float thunderGradient = weather.previousThunderGradient +
+                                      (weather.thunderGradient - weather.previousThunderGradient) *
+                                          alpha;
+        constexpr float kWeatherSkyReduction = 5.0F / 16.0F;
+        const float skyFactor =
+            (1.0F - std::clamp(rainGradient, 0.0F, 1.0F) * kWeatherSkyReduction) *
+            (1.0F - std::clamp(thunderGradient, 0.0F, 1.0F) * kWeatherSkyReduction);
+        uniform.weatherSettings =
+            glm::vec4{rainGradient, thunderGradient, skyFactor, 1.0F - rainGradient};
         uniform.fluidAnimationLayers = glm::vec4{
             static_cast<float>(kWaterStillLayer), static_cast<float>(kWaterFlowLayer),
             static_cast<float>(kLavaStillLayer), static_cast<float>(kLavaFlowLayer)};
@@ -5718,7 +5730,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             textures_.fluidAnimationFrameTimes[0], textures_.fluidAnimationFrameTimes[1],
             textures_.fluidAnimationFrameTimes[2], textures_.fluidAnimationFrameTimes[3]};
         uniform.fluidAnimationSettings.x =
-            static_cast<float>(gameSession.serverTick()) + renderInterpolationAlpha;
+            static_cast<float>(gameSession.worldSnapshot().serverTick) + renderInterpolationAlpha;
         std::size_t lightCount = 0U;
         const auto& heldStack = activeInventory().selectedStack();
         const bool holdingTorch = gameplay::emitsHeldLight(heldStack);
@@ -5927,12 +5939,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         checkVk(vkResetFences(device, 1, &frame.inFlight), "vkResetFences");
         checkVk(vkResetCommandBuffer(frame.commandBuffer, 0), "vkResetCommandBuffer");
         const std::size_t visibleCount = world_.recordCommandBuffer(frame, imageIndex);
+        const auto& titleSnap = gameSession.playerTickSnapshot();
         const std::string movementMode =
-            gameSession.player().flying()
-                ? (gameSession.player().sprinting() ? "FLY SPRINT" : "FLY")
-                : (gameSession.player().sprinting() ? "SPRINT" : "WALK");
+            titleSnap.flying ? (titleSnap.sprinting ? "FLY SPRINT" : "FLY")
+                             : (titleSnap.sprinting ? "SPRINT" : "WALK");
         const std::string playerMode =
-            std::string{gameplay::gameModeName(gameSession.gameMode())} + " " + movementMode;
+            std::string{gameplay::gameModeName(titleSnap.gameMode)} + " " + movementMode;
         const gameplay::ItemStack selectedItem = activeInventory().selectedStack();
         if (visibleCount != lastVisibleMeshCount || gpuMeshes.size() != lastGpuMeshCount ||
             pendingSectionUpdates.size() != lastPendingSectionCount ||

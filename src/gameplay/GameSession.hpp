@@ -24,6 +24,7 @@
 #include "gameplay/SimulationHostBridge.hpp"
 #include "gameplay/WeatherSystem.hpp"
 #include "gameplay/WorldSimulation.hpp"
+#include "gameplay/WorldSnapshot.hpp"
 #include "world/Block.hpp"
 #include "world/BlockState.hpp"
 #include "world/WorldMutationService.hpp"
@@ -151,6 +152,9 @@ class GameSession final {
     [[nodiscard]] const PlayerTickSnapshot& playerTickSnapshot() const {
         return playerTickSnapshot_;
     }
+    // The render-visible world state, published once per tick under the world
+    // write lock (weather, time of day, clocks, rules).
+    [[nodiscard]] const WorldSnapshot& worldSnapshot() const { return worldSnapshot_; }
 
     // The render thread enqueues input intents here; GameSession::tick drains
     // them into PlayerInteraction, which applies them once per tick.
@@ -176,34 +180,34 @@ class GameSession final {
     // rebuilds it so natural spawns follow the terrain being generated.
     void setWorldSeed(std::uint64_t seed) { naturalSpawner_.setSeed(seed); }
     // 1.16.1 entity.kill(): OutOfWorld damage at infinite magnitude.
-    void killPlayer(SimulationHost& host);
+    void killPlayer(PlayerId playerId, SimulationHost& host);
     // `causedByLivingNonPlayer` gates the damage type's difficulty scaling: a
     // mob's swing scales with difficulty, the world's does not.
-    [[nodiscard]] bool hurtPlayer(DamageType source, float amount, SimulationHost& host,
-                                  bool causedByLivingNonPlayer = false);
+    [[nodiscard]] bool hurtPlayer(PlayerId playerId, DamageType source, float amount,
+                                  SimulationHost& host, bool causedByLivingNonPlayer = false);
     // PlayerEntity#onDeath: the one-time death event shared by every lethal
     // source. The beginDeath guard guarantees the death screen fires once even
     // if two sources kill the player in the same tick; the inventory scatter
     // runs through the host's onPlayerDied → onPlayerDeath. Returns false if
     // death was already claimed.
-    bool die(DamageType source, SimulationHost& host);
+    bool die(PlayerId playerId, DamageType source, SimulationHost& host);
     // ServerPlayerEntity#respawn: restores a respawning player to full health
     // and food at the personal (or world) spawn point, and clears the death
     // momentum/flying/sneaking state so the new body starts clean. The renderer
     // repositions the camera and re-centres streaming after this.
-    void respawn();
-    void beginEating(const Item* kind, SimulationHost& host);
-    void cancelEating(SimulationHost& host);
+    void respawn(PlayerId playerId);
+    void beginEating(PlayerId playerId, const Item* kind, SimulationHost& host);
+    void cancelEating(PlayerId playerId, SimulationHost& host);
     // ItemStack#damage on the selected stack; returns true when the tool broke,
     // which is when the renderer plays the break sound.
-    [[nodiscard]] bool damageHeldTool(ToolUse use, float blockHardness);
+    [[nodiscard]] bool damageHeldTool(PlayerId playerId, ToolUse use, float blockHardness);
     // Rolls and scatters the loot a broken block drops (mined or simulated).
     // Takes the removed *state*, not just its block: a crop's loot depends on
     // the age it had reached.
     void spawnBlockDrops(glm::ivec3 position, world::BlockState removed, const ItemStack& tool);
     // The gameplay half of death: scatter the inventory (unless keepInventory)
     // and reset the player's stacks. The host raises the death screen first.
-    void onPlayerDeath();
+    void onPlayerDeath(PlayerId playerId);
     // The interactive layer's per-frame input edges.
     // Key *edges*, set by the main thread's key callback between frames. They
     // ride along with commitInput() rather than being read directly by the
@@ -219,6 +223,12 @@ class GameSession final {
     [[nodiscard]] ServerPlayer& primaryPlayer() { return players_.at(kPrimaryPlayerId); }
     [[nodiscard]] const ServerPlayer& primaryPlayer() const {
         return players_.at(kPrimaryPlayerId);
+    }
+    // Every connected player's authoritative state. N2's multi-player uses this;
+    // today it holds the single local player (kPrimaryPlayerId).
+    [[nodiscard]] std::unordered_map<PlayerId, ServerPlayer>& players() { return players_; }
+    [[nodiscard]] const std::unordered_map<PlayerId, ServerPlayer>& players() const {
+        return players_;
     }
 
     // ---- Render accessors (inline so hot render paths pay nothing) ----
@@ -385,6 +395,8 @@ class GameSession final {
     // The per-tick player snapshot, captured at the end of tick() under the
     // caller's world write lock and read by the render thread each frame.
     PlayerTickSnapshot playerTickSnapshot_;
+    // The render-visible world state, captured alongside the player snapshot.
+    WorldSnapshot worldSnapshot_;
 };
 
 } // namespace mc::gameplay

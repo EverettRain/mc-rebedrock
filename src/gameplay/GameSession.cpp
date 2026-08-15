@@ -182,7 +182,7 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
             // LivingEntity#hurt does — the call site used to apply it here,
             // which put it on the wrong side of the invulnerability window.
             static_cast<void>(
-                hurtPlayer(DamageType::EntityAttack, attack.amount, host, true));
+                hurtPlayer(kPrimaryPlayerId, DamageType::EntityAttack, attack.amount, host, true));
         }
     }
     // NaturalSpawner: creatures and monsters settle inside the simulation
@@ -214,7 +214,43 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     playerTickSnapshot_.sneaking = primaryPlayer().controller.sneaking();
     playerTickSnapshot_.flying = primaryPlayer().controller.flying();
     playerTickSnapshot_.sprinting = primaryPlayer().controller.sprinting();
+    playerTickSnapshot_.inWater = primaryPlayer().controller.inWater();
+    playerTickSnapshot_.onGround = primaryPlayer().controller.onGround();
+    playerTickSnapshot_.previousFieldOfViewMultiplier =
+        primaryPlayer().controller.previousFieldOfViewMultiplier();
+    playerTickSnapshot_.fieldOfViewMultiplier =
+        primaryPlayer().controller.fieldOfViewMultiplier();
     playerTickSnapshot_.heldStack = primaryPlayer().inventory.selectedStack();
+    playerTickSnapshot_.health = primaryPlayer().vitals.health();
+    playerTickSnapshot_.foodLevel = primaryPlayer().vitals.foodLevel();
+    playerTickSnapshot_.airTicks = primaryPlayer().vitals.airTicks();
+    playerTickSnapshot_.ticksSinceDamage = primaryPlayer().vitals.ticksSinceDamage();
+    playerTickSnapshot_.gameMode = primaryPlayer().gameMode;
+    playerTickSnapshot_.eating = primaryPlayer().eating;
+    playerTickSnapshot_.selectedHotbarSlot = primaryPlayer().inventory.selectedHotbarSlot();
+    // The render-visible world state, captured under the same lock.
+    worldSnapshot_.serverTick = serverTick_;
+    worldSnapshot_.previousRainGradient = weatherSystem_.previousRainGradient();
+    worldSnapshot_.rainGradient = weatherSystem_.rainGradient();
+    worldSnapshot_.previousThunderGradient = weatherSystem_.previousThunderGradient();
+    worldSnapshot_.thunderGradient = weatherSystem_.thunderGradient();
+    // The gradient-derived flags, matching what the renderer's rain/sky reads.
+    worldSnapshot_.raining = weatherSystem_.isRaining();
+    worldSnapshot_.thundering = weatherSystem_.isThundering();
+    worldSnapshot_.dayTimeTicks = static_cast<double>(dayTimeTicks());
+    for (std::size_t index = 0; index < world::kClockCount; ++index) {
+        worldSnapshot_.clocks[index] = clocks_.state(static_cast<world::ClockId>(index));
+    }
+    worldSnapshot_.doDaylightCycle = gameRules_.get<bool>(GameRuleId::DoDaylightCycle);
+    worldSnapshot_.doWeatherCycle = gameRules_.get<bool>(GameRuleId::DoWeatherCycle);
+    // The chest lid render state, so the world renderer draws lids from the
+    // snapshot instead of the live chest system.
+    worldSnapshot_.chests.clear();
+    worldSnapshot_.chests.reserve(chestSystem_.entities().size());
+    for (const auto& chest : chestSystem_.entities()) {
+        worldSnapshot_.chests.push_back(
+            {chest.position, chest.previousLidAngle, chest.lidAngle});
+    }
     // Last, once every system has settled: what the renderer will draw from
     // until the next tick replaces it.
     entitySnapshot_.capture(worldEntities_.entities(), itemEntities_.entities(),
@@ -254,74 +290,80 @@ void GameSession::setGameMode(GameMode mode) {
     primaryPlayer().sharedInput.flightAllowed = primaryPlayer().stagedInput.flightAllowed;
 }
 
-bool GameSession::hurtPlayer(DamageType source, float amount, SimulationHost& host,
-                             bool causedByLivingNonPlayer) {
+bool GameSession::hurtPlayer(PlayerId playerId, DamageType source, float amount,
+                             SimulationHost& host, bool causedByLivingNonPlayer) {
     hostBridge_.setHost(&host);
-    if (!primaryPlayer().vitals.hurt(amount, source, causedByLivingNonPlayer)) {
+    auto& player = players_.at(playerId);
+    if (!player.vitals.hurt(amount, source, causedByLivingNonPlayer)) {
         return false;
     }
-    events_.publish(SoundEvent{SoundEventKind::PlayerHurt, primaryPlayer().controller.position()});
-    if (primaryPlayer().vitals.dead()) {
-        die(source, host);
+    events_.publish(SoundEvent{SoundEventKind::PlayerHurt, player.controller.position()});
+    if (player.vitals.dead()) {
+        die(playerId, source, host);
     }
     return true;
 }
 
-void GameSession::killPlayer(SimulationHost& host) {
+void GameSession::killPlayer(PlayerId playerId, SimulationHost& host) {
     hostBridge_.setHost(&host);
-    (void)hurtPlayer(DamageType::OutOfWorld, kInfiniteDamage, host);
+    (void)hurtPlayer(playerId, DamageType::OutOfWorld, kInfiniteDamage, host);
 }
 
-bool GameSession::die(DamageType source, SimulationHost& host) {
+bool GameSession::die(PlayerId playerId, DamageType source, SimulationHost& host) {
     hostBridge_.setHost(&host);
+    auto& player = players_.at(playerId);
     // PlayerEntity#onDeath: the shared beginDeath guard is the `dead` field
     // that keeps onDeath from firing twice, so a tick that both falls and
     // drowns raises the death screen exactly once.
     static_cast<void>(source);
-    if (!beginDeath(primaryPlayer().vitals.damage())) {
+    if (!beginDeath(player.vitals.damage())) {
         return false;
     }
     events_.publish(PlayerDiedEvent{});
     return true;
 }
 
-void GameSession::respawn() {
+void GameSession::respawn(PlayerId playerId) {
     // PlayerManager#respawnPlayer prefers the player's personal spawn point and
     // only falls back to the world spawn when none was set. 1.16.1 also respawns
     // facing due north (yaw 0) regardless of the spawn point's stored angle.
-    primaryPlayer().vitals.reset();
-    const glm::vec3 spawn = primaryPlayer().hasSpawn ? primaryPlayer().spawnPosition : worldSpawnPosition_;
-    primaryPlayer().controller.resetForRespawn(spawn);
-    primaryPlayer().physicsPrevious = spawn;
-    primaryPlayer().physicsCurrent = spawn;
+    auto& player = players_.at(playerId);
+    player.vitals.reset();
+    const glm::vec3 spawn = player.hasSpawn ? player.spawnPosition : worldSpawnPosition_;
+    player.controller.resetForRespawn(spawn);
+    player.physicsPrevious = spawn;
+    player.physicsCurrent = spawn;
 }
 
-void GameSession::beginEating(const Item* kind, SimulationHost& host) {
+void GameSession::beginEating(PlayerId playerId, const Item* kind, SimulationHost& host) {
     hostBridge_.setHost(&host);
-    primaryPlayer().eating = true;
-    primaryPlayer().eatingKind = kind;
-    primaryPlayer().eatTicks = 0;
+    auto& player = players_.at(playerId);
+    player.eating = true;
+    player.eatingKind = kind;
+    player.eatTicks = 0;
     // The meal is just UseAnimation::Eat on the shared item-use timeline; the
     // renderer reads the countdown from playerActions(), not a private eat state.
-    primaryPlayer().actions.startUsing(InteractionHand::Main, UseAnimation::Eat, kEatTicks);
+    player.actions.startUsing(InteractionHand::Main, UseAnimation::Eat, kEatTicks);
     host.onEatingStarted();
 }
 
-void GameSession::cancelEating(SimulationHost& host) {
+void GameSession::cancelEating(PlayerId playerId, SimulationHost& host) {
     hostBridge_.setHost(&host);
-    if (!primaryPlayer().eating) {
+    auto& player = players_.at(playerId);
+    if (!player.eating) {
         return;
     }
-    primaryPlayer().eating = false;
-    primaryPlayer().eatingKind = nullptr;
-    primaryPlayer().eatTicks = 0;
-    primaryPlayer().actions.stopUsing();
+    player.eating = false;
+    player.eatingKind = nullptr;
+    player.eatTicks = 0;
+    player.actions.stopUsing();
     host.onEatingCancelled();
 }
 
-bool GameSession::damageHeldTool(ToolUse use, float blockHardness) {
-    const auto cost = toolDurabilityCost(primaryPlayer().inventory.selectedStack(), use, blockHardness);
-    return cost > 0 && primaryPlayer().inventory.damageSelected(cost);
+bool GameSession::damageHeldTool(PlayerId playerId, ToolUse use, float blockHardness) {
+    auto& player = players_.at(playerId);
+    const auto cost = toolDurabilityCost(player.inventory.selectedStack(), use, blockHardness);
+    return cost > 0 && player.inventory.damageSelected(cost);
 }
 
 void GameSession::spawnBlockDrops(glm::ivec3 position, world::BlockState removed,
@@ -341,13 +383,14 @@ void GameSession::spawnBlockDrops(glm::ivec3 position, world::BlockState removed
     }
 }
 
-void GameSession::onPlayerDeath() {
+void GameSession::onPlayerDeath(PlayerId playerId) {
     // Vanilla scatters the whole inventory at the death position unless the
     // keepInventory gamerule keeps it on the respawned player.
     if (gameRules_.get<bool>(GameRuleId::KeepInventory)) {
         return;
     }
-    const glm::vec3 dropOrigin = primaryPlayer().controller.position() + glm::vec3{0.0F, 0.9F, 0.0F};
+    auto& player = players_.at(playerId);
+    const glm::vec3 dropOrigin = player.controller.position() + glm::vec3{0.0F, 0.9F, 0.0F};
     std::size_t dropIndex = 0U;
     const auto scatter = [&](const ItemStack& stack) {
         const float angle = static_cast<float>(dropIndex++) * 2.39996323F;
@@ -356,18 +399,18 @@ void GameSession::onPlayerDeath() {
     };
     // The cursor stack drops first; then the crafting grid stows into the
     // inventory and its contents scatter with everything else.
-    if (!primaryPlayer().inventory.cursorStack().empty()) {
-        scatter(primaryPlayer().inventory.takeCursorStack());
+    if (!player.inventory.cursorStack().empty()) {
+        scatter(player.inventory.takeCursorStack());
     }
-    primaryPlayer().crafting.stowAll(primaryPlayer().inventory);
+    player.crafting.stowAll(player.inventory);
     for (std::size_t index = 0; index < Inventory::kSlotCount; ++index) {
-        const auto stack = primaryPlayer().inventory.slot(index);
+        const auto stack = player.inventory.slot(index);
         if (stack.empty()) {
             continue;
         }
         scatter(stack);
     }
-    primaryPlayer().inventory.restore({}, primaryPlayer().inventory.selectedHotbarSlot());
+    player.inventory.restore({}, player.inventory.selectedHotbarSlot());
 }
 
 void GameSession::tickEating(SimulationHost& host) {
@@ -387,7 +430,7 @@ void GameSession::tickEating(SimulationHost& host) {
     }
     // The meal lands only if the same food is still in hand.
     if (primaryPlayer().inventory.selectedStack().item != primaryPlayer().eatingKind) {
-        cancelEating(host);
+        cancelEating(kPrimaryPlayerId, host);
         return;
     }
     // Creative players run the full meal but neither gain hunger nor spend the
@@ -400,7 +443,7 @@ void GameSession::tickEating(SimulationHost& host) {
     // consumeItem's burst eat sound, then PlayerEntity.eatFood's burp.
     events_.publish(SoundEvent{SoundEventKind::Eat, primaryPlayer().controller.position()});
     events_.publish(SoundEvent{SoundEventKind::Burp, primaryPlayer().controller.position()});
-    cancelEating(host);
+    cancelEating(kPrimaryPlayerId, host);
 }
 
 void GameSession::tickPlayerVitals(SimulationHost& host, const world::World& world,
@@ -432,7 +475,7 @@ void GameSession::tickPlayerVitals(SimulationHost& host, const world::World& wor
         }
     }
     if (result.died) {
-        die(result.cause, host);
+        die(kPrimaryPlayerId, result.cause, host);
     }
 }
 

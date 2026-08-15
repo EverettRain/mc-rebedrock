@@ -397,7 +397,7 @@ void GameRuntime::registerAuthoritativeCommands() {
         });
     commandDispatcher_.literal("kill")
         .executes([this](const gameplay::command::CommandContext&) {
-            gameSession_.killPlayer(host_);
+            gameSession_.killPlayer(gameplay::kPrimaryPlayerId, host_);
             return gameplay::CommandResult{true, "Killed the player"};
         })
         .argument("target", gameplay::command::kEntityTargetArgument)
@@ -407,7 +407,7 @@ void GameRuntime::registerAuthoritativeCommands() {
                 return gameplay::CommandResult{false, "Usage: /kill [<entity>]"};
             }
             if (*target == "player") {
-                gameSession_.killPlayer(host_);
+                gameSession_.killPlayer(gameplay::kPrimaryPlayerId, host_);
                 return gameplay::CommandResult{true, "Killed the player"};
             }
             std::size_t killed = 0U;

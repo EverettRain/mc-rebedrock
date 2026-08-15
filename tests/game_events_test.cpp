@@ -201,7 +201,7 @@ int main() {
         Recorder recorder;
         recorder.attach(session.events());
         session.setGameMode(gameplay::GameMode::Survival);
-        REQUIRE(session.hurtPlayer(gameplay::DamageType::OutOfWorld, 1000.0F, host));
+        REQUIRE(session.hurtPlayer(gameplay::kPrimaryPlayerId, gameplay::DamageType::OutOfWorld, 1000.0F, host));
         REQUIRE(recorder.deaths == 1);
         session.drainEvents();
         REQUIRE(host.died);

@@ -443,9 +443,10 @@ class WorldRenderer final {
         // keep the chunks in front of the gameSession.player() generated; this is the client-side
         // equivalent. The lead is capped so the gameSession.player()'s own chunk stays inside
         // the unload radius.
+        const auto& playerSnap = gameSession.playerTickSnapshot();
         const glm::vec2 velocity{
-            gameSession.physicsCurrentPosition().x - gameSession.physicsPreviousPosition().x,
-            gameSession.physicsCurrentPosition().z - gameSession.physicsPreviousPosition().z,
+            playerSnap.physicsCurrent.x - playerSnap.physicsPrevious.x,
+            playerSnap.physicsCurrent.z - playerSnap.physicsPrevious.z,
         };
         glm::vec3 requestPosition = position;
         // A gameSession.player() turning (rather than moving) reveals area in the direction
@@ -751,7 +752,7 @@ class WorldRenderer final {
             return;
         }
         const auto daylight = world::DayNightCycle::stateAtTick(
-            static_cast<double>(gameSession.dayTimeTicks()));
+            gameSession.worldSnapshot().dayTimeTicks);
         const glm::vec3 sun = glm::normalize(daylight.sunDirection);
         const glm::vec3 eye = camera.position();
         const glm::mat4 lightView =
@@ -1082,7 +1083,7 @@ class WorldRenderer final {
         const auto& drops = rainSystem.drops();
         static bool reported = false;
         if (rainMode_ == RainMode::Texture) {
-            const float rainGradient = gameSession.weatherSystem().rainGradient();
+            const float rainGradient = gameSession.worldSnapshot().rainGradient;
             if (rainGradient <= 0.02F) {
                 return;
             }
@@ -1293,7 +1294,8 @@ class WorldRenderer final {
 
 
     void drawChestEntities(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
-        if (gameSession.chestSystem().entities().empty())
+        const auto& chests = gameSession.worldSnapshot().chests;
+        if (chests.empty())
             return;
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipelineLayout,
@@ -1302,7 +1304,7 @@ class WorldRenderer final {
                                          float textureLayer, float packedLight) {
             pushWorldCuboid(commandBuffer, worldMatrix, dimensions, textureLayer, packedLight);
         };
-        for (const auto& chest : gameSession.chestSystem().entities()) {
+        for (const auto& chest : chests) {
             const glm::vec3 origin{static_cast<float>(chest.position.x),
                                    static_cast<float>(chest.position.y),
                                    static_cast<float>(chest.position.z)};
@@ -1368,7 +1370,11 @@ class WorldRenderer final {
 
         // The camera sits at the interpolated eye; anchor the model at the feet.
         const glm::vec3 feet =
-            camera.position() - glm::vec3{0.0F, gameSession.player().eyeHeight(), 0.0F};
+            camera.position() -
+            glm::vec3{0.0F, gameSession.playerTickSnapshot().sneaking
+                          ? gameplay::PlayerController::kSneakingEyeHeight
+                          : gameplay::PlayerController::kEyeHeight,
+                      0.0F};
         // The body faces the lagged body yaw (the head turns relative to it via
         // the animator). If the model renders facing backwards, change
         // kFacingOffset to 3.14159265F.
@@ -1618,9 +1624,10 @@ class WorldRenderer final {
         }
         const auto block = digSnapshot.target;
         const auto target = interactionWorld.block(block.x, block.y, block.z);
+        const auto& playerSnapshot = gameSession.playerTickSnapshot();
         const float duration = gameplay::miningSeconds(target, uiFrameData_.selectedStack,
-                                                       gameSession.player().inWater(),
-                                                       !gameSession.player().onGround());
+                                                       playerSnapshot.inWater,
+                                                       !playerSnapshot.onGround);
         if (!std::isfinite(duration) || duration <= 0.0F)
             return;
         // The dig lands on a tick boundary, but the crack overlay is drawn every
@@ -1629,7 +1636,7 @@ class WorldRenderer final {
         const auto durationTicks =
             static_cast<float>(duration) * static_cast<float>(world::DayNightCycle::kTicksPerSecond);
         const float elapsedTicks =
-            static_cast<float>(gameSession.serverTick() - digSnapshot.startedTick) +
+            static_cast<float>(playerSnapshot.serverTick - digSnapshot.startedTick) +
             renderInterpolationAlpha;
         const float progress = std::clamp(elapsedTicks / durationTicks, 0.0F, 0.999F);
         // ClientPlayerInteractionManager reports (progress * 10) - 1, so the first

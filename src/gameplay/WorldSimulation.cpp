@@ -387,20 +387,20 @@ void WorldSimulation::randomTickGrass(
     world::World& world,
     SimulationPosition position,
     std::vector<BlockChange>& changes) {
-    // SpreadableBlock#canSpread: a snow layer keeps the grass alive; otherwise
-    // the block above must neither shield the cell (opacity > 2 — which water
-    // does through the material check, so grass reverts to dirt under water)
-    // nor leave it darker than 4.
+    // SpreadableBlock#canSurvive is independent of the time of day: it asks how
+    // much the block above physically shields this face (water reports 3 and a
+    // full block 15), not how dark the sky currently looks. Using the local
+    // brightness here made leaves-filtered sky light fall from 14 to 3 at
+    // midnight and turned perfectly healthy grass into dirt until sunrise.
     const SimulationPosition above{position.x, position.y + 1, position.z};
     const auto aboveBlock = world.block(above.x, above.y, above.z);
-    // canStayAlive and the spread gate both read getMaxLocalRawBrightness, so
-    // both follow the sun. The thresholds are picked around that: open ground
-    // at midnight reads exactly 4 (sky 15 minus an ambient darkness of 11), so
-    // grass survives the night but stops spreading through it.
-    if (world::opacity(aboveBlock) > 2 || localBrightnessAt(world, above) < 4) {
+    if (world::opacity(aboveBlock) > 2) {
         reserveConversionAndApply(world, position, world::Block::Dirt, changes);
         return;
     }
+    // Only propagation follows the sun. Open ground reads 4 at midnight (and
+    // leaves-filtered ground can read 3), both below the vanilla spread gate of
+    // 9 without affecting the source grass's survival.
     if (localBrightnessAt(world, above) < 9) {
         return;
     }
@@ -423,13 +423,11 @@ void WorldSimulation::randomTickGrass(
         // check the spread would flip the dirt layer under the grass to grass,
         // which then dies for being covered — a constant churn of conversions
         // that drowns real spread and eats the per-tick budget. The target must
-        // be able to hold grass itself: an uncovered, lit cell above it, the
-        // same canSpread condition that keeps grass alive (vanilla's
-        // SpreadableBlock#canSurvive checks the target's own light).
+        // be able to hold grass itself, but that survival check is physical
+        // opacity/fluid state rather than the current day/night brightness.
         const SimulationPosition targetAbove{target.x, target.y + 1, target.z};
         if (targetAbove.y >= world::kWorldHeight ||
-            world::opacity(world.block(targetAbove.x, targetAbove.y, targetAbove.z)) > 2 ||
-            localBrightnessAt(world, targetAbove) < 4) {
+            world::opacity(world.block(targetAbove.x, targetAbove.y, targetAbove.z)) > 2) {
             continue;
         }
         if (!world::canBlockSurvive(world, {target.x, target.y, target.z},
