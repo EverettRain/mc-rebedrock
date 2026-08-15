@@ -226,6 +226,7 @@ add_executable(mc_rebedrock
     src/gameplay/entities/SpeciesRenderData.cpp
     src/gameplay/GameRules.cpp
     src/gameplay/GameSession.cpp
+    src/gameplay/PlayerInteraction.cpp
     src/gameplay/ScreenHandler.cpp
     src/gameplay/Inventory.cpp
     src/gameplay/ItemEntitySystem.cpp
@@ -251,6 +252,8 @@ add_executable(mc_rebedrock
     src/render/vulkan/BlockAtlasBaker.cpp
     src/render/vulkan/GpuSceneBuffer.cpp
     src/render/vulkan/OffscreenTarget.cpp
+    src/runtime/GameRuntime.cpp
+    src/gameplay/PlayerActionState.cpp
     src/ui/HudLayout.cpp
     src/ui/MenuGeometry.cpp
     src/ui/BitmapFontMetrics.cpp
@@ -824,6 +827,8 @@ if(BUILD_TESTING)
         src/gameplay/EntityRenderSnapshot.cpp
         src/gameplay/GameRules.cpp
         src/gameplay/GameSession.cpp
+        src/gameplay/PlayerInteraction.cpp
+        src/gameplay/PlayerActionState.cpp
         src/gameplay/ScreenHandler.cpp
         src/ui/HudLayout.cpp
         src/gameplay/GameplayMutationSink.cpp
@@ -870,6 +875,139 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME game_session COMMAND mc_rebedrock_game_session_test)
+    add_executable(mc_rebedrock_player_interaction_test
+        tests/player_interaction_test.cpp
+        src/gameplay/ChestSystem.cpp
+        src/gameplay/FurnaceSystem.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/CraftingSystem.cpp
+        src/gameplay/EntitySystem.cpp
+        src/gameplay/EntityRenderSnapshot.cpp
+        src/gameplay/GameRules.cpp
+        src/gameplay/GameSession.cpp
+        src/gameplay/PlayerInteraction.cpp
+        src/gameplay/PlayerActionState.cpp
+        src/gameplay/ScreenHandler.cpp
+        src/ui/HudLayout.cpp
+        src/gameplay/GameplayMutationSink.cpp
+        src/gameplay/SimulationHostBridge.cpp
+        src/gameplay/Inventory.cpp
+        src/gameplay/ItemEntitySystem.cpp
+        src/gameplay/ItemPlacement.cpp
+        src/gameplay/MiningSystem.cpp
+        src/gameplay/BlockTags.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
+        src/gameplay/NaturalSpawner.cpp
+        src/gameplay/MobSpawnSettings.cpp
+        src/core/Json.cpp
+        src/gameplay/PlayerController.cpp
+        src/gameplay/PlayerVitals.cpp
+        src/gameplay/WeatherSystem.cpp
+        src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/world/BlockPlacement.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/DayNightCycle.cpp
+        src/world/WorldClock.cpp
+        src/world/World.cpp
+        src/world/gen/Biome.cpp
+        src/world/gen/BiomeSource.cpp
+        src/world/gen/LayeredBiomeSource.cpp
+        src/world/gen/NoiseSampler.cpp
+        src/world/gen/TreeGrower.cpp
+    )
+    target_include_directories(mc_rebedrock_player_interaction_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME player_interaction COMMAND mc_rebedrock_player_interaction_test)
+
+    add_executable(mc_rebedrock_game_runtime_test
+        tests/game_runtime_test.cpp
+        src/runtime/GameRuntime.cpp
+        src/persistence/SaveRepository.cpp
+        src/gameplay/ChestSystem.cpp
+        src/gameplay/FurnaceSystem.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/CraftingSystem.cpp
+        src/gameplay/EntitySystem.cpp
+        src/gameplay/EntityRenderSnapshot.cpp
+        src/gameplay/GameRules.cpp
+        src/gameplay/GameSession.cpp
+        src/gameplay/PlayerInteraction.cpp
+        src/gameplay/PlayerActionState.cpp
+        src/gameplay/ScreenHandler.cpp
+        src/ui/HudLayout.cpp
+        src/gameplay/GameplayMutationSink.cpp
+        src/gameplay/SimulationHostBridge.cpp
+        src/gameplay/Inventory.cpp
+        src/gameplay/ItemEntitySystem.cpp
+        src/gameplay/ItemPlacement.cpp
+        src/gameplay/MiningSystem.cpp
+        src/gameplay/BlockTags.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
+        src/gameplay/NaturalSpawner.cpp
+        src/gameplay/MobSpawnSettings.cpp
+        src/gameplay/PlayerController.cpp
+        src/gameplay/PlayerVitals.cpp
+        src/gameplay/WeatherSystem.cpp
+        src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/world/BlockPlacement.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/ChunkStreamer.cpp
+        src/world/ChunkMesher.cpp
+        src/world/WorldLighting.cpp
+        src/world/WorldLightEngine.cpp
+        src/world/SurfaceGenerator.cpp
+        src/world/gen/Biome.cpp
+        src/world/gen/BiomeSource.cpp
+        src/world/gen/LayeredBiomeSource.cpp
+        src/world/gen/Carver.cpp
+        src/world/gen/Features.cpp
+        src/world/gen/NoiseChunkGenerator.cpp
+        src/world/gen/NoiseSampler.cpp
+        src/world/gen/TreeGrower.cpp
+        src/world/World.cpp
+        src/world/DayNightCycle.cpp
+        src/world/WorldClock.cpp
+    )
+    target_include_directories(mc_rebedrock_game_runtime_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME game_runtime COMMAND mc_rebedrock_game_runtime_test)
+
+    add_executable(mc_rebedrock_player_action_state_test
+        tests/player_action_state_test.cpp
+        src/gameplay/PlayerActionState.cpp
+    )
+    target_include_directories(mc_rebedrock_player_action_state_test PRIVATE src)
+    add_test(NAME player_action_state COMMAND mc_rebedrock_player_action_state_test)
 
     add_executable(mc_rebedrock_mob_spawn_settings_test
         tests/mob_spawn_settings_test.cpp
@@ -915,6 +1053,8 @@ if(BUILD_TESTING)
         src/gameplay/EntityRenderSnapshot.cpp
         src/gameplay/GameRules.cpp
         src/gameplay/GameSession.cpp
+        src/gameplay/PlayerInteraction.cpp
+        src/gameplay/PlayerActionState.cpp
         src/gameplay/ScreenHandler.cpp
         src/ui/HudLayout.cpp
         src/gameplay/GameplayMutationSink.cpp
@@ -972,6 +1112,8 @@ if(BUILD_TESTING)
         src/gameplay/EntityRenderSnapshot.cpp
         src/gameplay/GameRules.cpp
         src/gameplay/GameSession.cpp
+        src/gameplay/PlayerInteraction.cpp
+        src/gameplay/PlayerActionState.cpp
         src/gameplay/ScreenHandler.cpp
         src/ui/HudLayout.cpp
         src/gameplay/GameplayMutationSink.cpp
@@ -1029,6 +1171,8 @@ if(BUILD_TESTING)
         src/gameplay/EntityRenderSnapshot.cpp
         src/gameplay/GameRules.cpp
         src/gameplay/GameSession.cpp
+        src/gameplay/PlayerInteraction.cpp
+        src/gameplay/PlayerActionState.cpp
         src/gameplay/ScreenHandler.cpp
         src/ui/HudLayout.cpp
         src/gameplay/GameplayMutationSink.cpp
@@ -1086,6 +1230,8 @@ if(BUILD_TESTING)
         src/gameplay/EntityRenderSnapshot.cpp
         src/gameplay/GameRules.cpp
         src/gameplay/GameSession.cpp
+        src/gameplay/PlayerInteraction.cpp
+        src/gameplay/PlayerActionState.cpp
         src/gameplay/ScreenHandler.cpp
         src/ui/HudLayout.cpp
         src/gameplay/GameplayMutationSink.cpp
@@ -1700,6 +1846,26 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME save_repository COMMAND mc_rebedrock_save_repository_test)
+
+    # V0 diagnostic: migration_diag <world-dir> loads a real old-format world,
+    # saves it (rewriting to format 18) and reloads to prove the migration lost
+    # nothing. Not registered with add_test because it needs a world path argument;
+    # it exists so a developer can verify the migration on any real save.
+    add_executable(mc_rebedrock_migration_diag
+        tests/migration_diag.cpp
+        src/persistence/SaveRepository.cpp
+        src/gameplay/ChestSystem.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/GameRules.cpp
+        src/gameplay/Inventory.cpp
+        src/gameplay/PlayerVitals.cpp
+        src/world/DayNightCycle.cpp
+        src/world/WorldClock.cpp
+    )
+    target_include_directories(mc_rebedrock_migration_diag PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
 
     add_executable(mc_rebedrock_game_rules_registry_test
         tests/game_rules_registry_test.cpp

@@ -38,6 +38,9 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // it, so everything timed against it (mining, cooldowns, scheduled work)
     // keeps running even when the sun is frozen.
     ++serverTick_;
+    // The action timeline (swing arc, ongoing use) advances once per tick, so
+    // an action consumes the same ticks at any frame rate.
+    playerActions_.tick();
     // doDaylightCycle now means exactly "pause the overworld clock" rather than
     // "stop the one clock everything shares" — 26.1 gates ServerClockManager
     // the same way, with a per-clock paused flag under a global rule.
@@ -185,6 +188,11 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     naturalSpawner_.tick(world, worldEntities_, player_.position(), simulationRadiusBlocks_,
                          difficulty_, environment_);
     consumeEntityEvents();
+    // The authoritative interaction: consume the render thread's queued commands
+    // and apply the dig/use decisions once per tick, after every other system
+    // has settled (the old renderer applied them per frame between ticks, which
+    // is the same ordering — the edits land on the next tick's processing).
+    playerInteraction_.tick(*this, world, host, commandQueue_.drain());
     physicsCurrentPosition_ = player_.position();
     // Last, once every system has settled: what the renderer will draw from
     // until the next tick replaces it.
@@ -272,6 +280,9 @@ void GameSession::beginEating(const Item* kind, SimulationHost& host) {
     eating_ = true;
     eatingKind_ = kind;
     eatTicks_ = 0;
+    // The meal is just UseAnimation::Eat on the shared item-use timeline; the
+    // renderer reads the countdown from playerActions(), not a private eat state.
+    playerActions_.startUsing(InteractionHand::Main, UseAnimation::Eat, kEatTicks);
     host.onEatingStarted();
 }
 
@@ -283,6 +294,7 @@ void GameSession::cancelEating(SimulationHost& host) {
     eating_ = false;
     eatingKind_ = nullptr;
     eatTicks_ = 0;
+    playerActions_.stopUsing();
     host.onEatingCancelled();
 }
 

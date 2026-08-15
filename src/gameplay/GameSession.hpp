@@ -14,8 +14,11 @@
 #include "gameplay/ItemEntitySystem.hpp"
 #include "gameplay/MiningSystem.hpp"
 #include "gameplay/NaturalSpawner.hpp"
+#include "gameplay/PlayerActionState.hpp"
 #include "gameplay/PlayerController.hpp"
+#include "gameplay/PlayerInteraction.hpp"
 #include "gameplay/PlayerVitals.hpp"
+#include "gameplay/ScreenHandler.hpp"
 #include "gameplay/SimulationHostBridge.hpp"
 #include "gameplay/WeatherSystem.hpp"
 #include "gameplay/WorldSimulation.hpp"
@@ -28,6 +31,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <optional>
 
 namespace mc::world {
 class World;
@@ -87,6 +91,29 @@ struct SimulationHost {
     // The held-item Eat animation and its cancels.
     virtual void onEatingStarted() = 0;
     virtual void onEatingCancelled() = 0;
+
+    // The interaction side effects gameplay drives but a headless run does not
+    // need, so these default to no-ops and only the renderer overrides them.
+    // A block being dug makes its periodic hit sound.
+    virtual void playBlockHit(world::Block block, glm::vec3 position) {
+        static_cast<void>(block);
+        static_cast<void>(position);
+    }
+    // A placed block makes its placement sound.
+    virtual void playBlockPlace(world::Block block, glm::vec3 position) {
+        static_cast<void>(block);
+        static_cast<void>(position);
+    }
+    // A tool broke from use; the item-break sound plays.
+    virtual void playItemBreak(glm::vec3 position) { static_cast<void>(position); }
+    // A bucket scooped water; the splash particles play.
+    virtual void spawnWaterSplash(glm::vec3 position) { static_cast<void>(position); }
+    // A container the interaction decided to open (a crafting table, furnace or
+    // chest). The host raises the matching UI; `position` is the container cell.
+    virtual void onOpenContainer(ContainerScreen screen, std::optional<glm::ivec3> position) {
+        static_cast<void>(screen);
+        static_cast<void>(position);
+    }
 };
 
 // Owns every gameplay system the 20 TPS simulation drives and the fixed-tick
@@ -108,6 +135,19 @@ class GameSession final {
     // world the systems simulate into; `host` receives the render-side
     // reactions. Caller repeats it as many times as its accumulator allows.
     void tick(world::World& world, SimulationHost& host);
+
+    // The tick-owned action timeline: the swing arc and the ongoing item use.
+    // Advanced once per tick inside tick(); the interaction layer drives it with
+    // the semantic actions (swingHand / startUsing / stopUsing), and renderers
+    // read the state as a snapshot.
+    [[nodiscard]] PlayerActionState& playerActions() { return playerActions_; }
+    [[nodiscard]] const PlayerActionState& playerActions() const { return playerActions_; }
+
+    // The render thread enqueues input intents here; GameSession::tick drains
+    // them into PlayerInteraction, which applies them once per tick.
+    void enqueueCommand(GameCommand command) { commandQueue_.enqueue(std::move(command)); }
+    // The current dig (for the renderer's crack overlay).
+    [[nodiscard]] const PlayerInteraction& interaction() const { return playerInteraction_; }
 
     // ---- Actions (the interactive layer calls these) ----
     void setGameMode(GameMode mode);
@@ -335,6 +375,11 @@ class GameSession final {
     std::uint64_t serverTick_ = 0U;
     world::ClockManager clocks_;
     std::uint32_t lootRandomState_ = 0x9E3779B9U;
+    // The swing/use timeline, advanced once per tick alongside serverTick_.
+    PlayerActionState playerActions_;
+    // The authoritative interaction, run at the end of each tick.
+    PlayerInteraction playerInteraction_;
+    GameCommandQueue commandQueue_;
 
     bool eating_ = false;
     const Item* eatingKind_ = nullptr;

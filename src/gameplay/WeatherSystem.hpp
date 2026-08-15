@@ -31,7 +31,7 @@ class WeatherSystem final {
     // ServerWorld#setWeather: installs the four timers/flags at once. /weather
     // calls it with the same arguments WeatherCommand uses — clear is
     // setWeather(duration, 0, false, false), rain is setWeather(0, duration,
-    // true, false).
+    // true, false), and thunder is setWeather(0, duration, true, true).
     void setWeather(int clearDuration, int rainDuration, bool raining, bool thundering);
 
     // ServerWorld.tick's weather section: the auto-cycle (gated on the

@@ -117,5 +117,45 @@ int main() {
     assert(falling.onGround());
     assert(falling.fallDistance() == 0.0F);
 
+    // Creative flight uses 26.1's seven-tick double-tap window. One press plus
+    // a held key never toggles flight; a real second press inside the window
+    // does, while a press after the seventh tick starts a fresh window.
+    mc::gameplay::PlayerInput creativeJump;
+    creativeJump.flightAllowed = true;
+    creativeJump.sprintAllowed = true;
+    creativeJump.jumpHeld = true;
+    creativeJump.jumpPressed = true;
+
+    mc::gameplay::PlayerController doubleTap({6.5F, 1.0F, 6.5F});
+    for (int tick = 0; tick < 2; ++tick) {
+        doubleTap.tick(world, idle);
+    }
+    doubleTap.tick(world, creativeJump);
+    assert(!doubleTap.flying());
+    creativeJump.jumpHeld = false;
+    creativeJump.jumpPressed = false;
+    doubleTap.tick(world, creativeJump);
+    creativeJump.jumpHeld = true;
+    creativeJump.jumpPressed = true;
+    doubleTap.tick(world, creativeJump);
+    assert(doubleTap.flying());
+
+    mc::gameplay::PlayerController expiredTap({4.5F, 1.0F, 4.5F});
+    for (int tick = 0; tick < 2; ++tick) {
+        expiredTap.tick(world, idle);
+    }
+    expiredTap.tick(world, creativeJump);
+    assert(!expiredTap.flying());
+    creativeJump.jumpHeld = false;
+    creativeJump.jumpPressed = false;
+    for (int tick = 0;
+         tick < mc::gameplay::PlayerController::kCreativeFlightToggleWindowTicks; ++tick) {
+        expiredTap.tick(world, creativeJump);
+    }
+    creativeJump.jumpHeld = true;
+    creativeJump.jumpPressed = true;
+    expiredTap.tick(world, creativeJump);
+    assert(!expiredTap.flying());
+
     return 0;
 }

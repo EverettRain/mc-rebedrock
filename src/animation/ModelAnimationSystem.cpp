@@ -202,63 +202,16 @@ const AnimationClip* ModelAnimationSystem::clipFor(ModelAction action) const {
     return nullptr;
 }
 
-void ModelAnimationSystem::trigger(ModelAction action) {
-    if (action == ModelAction::None) {
-        action_ = ModelAction::None;
-        elapsedSeconds_ = 0.0F;
-        pose_ = {};
-        return;
-    }
-    // LivingEntity#swing: repeating the same action mid-swing only restarts the
-    // arc once it is past halfway. Calling this every frame while the player
-    // keeps mining or placing therefore produces the vanilla swing rhythm
-    // instead of freezing the arm at the start of the clip.
-    if (action_ == action) {
-        if (held(action)) {
-            return; // one meal, one clock — never restart it mid-bite
-        }
-        const AnimationClip* clip = clipFor(action);
-        const float length = clip == nullptr ? 0.0F : clip->length();
-        if (length > 0.0F && elapsedSeconds_ < length * 0.5F) {
-            return;
-        }
-    }
+void ModelAnimationSystem::setAction(ModelAction action, float progress) {
     action_ = action;
-    elapsedSeconds_ = 0.0F;
-    pose_ = {};
-}
-
-void ModelAnimationSystem::update(float deltaSeconds) {
-    if (action_ == ModelAction::None) {
-        return;
-    }
-    const AnimationClip* clip = clipFor(action_);
-    if (clip == nullptr || clip->length() <= 0.0F) {
-        action_ = ModelAction::None;
+    if (action == ModelAction::None) {
         pose_ = {};
         return;
     }
-    elapsedSeconds_ += std::max(deltaSeconds, 0.0F);
-    if (elapsedSeconds_ >= clip->length()) {
-        if (held(action_)) {
-            // Eating ends when gameplay says so, never when the clip runs out.
-            // The clip clock advances every frame while the meal advances every
-            // tick, so the clip reaches 1.6 s first; holding the last frame keeps
-            // the food at the mouth instead of dropping it back to the hand for
-            // the frames before `cancelEating` arrives.
-            elapsedSeconds_ = clip->length();
-        } else if (clip->loops()) {
-            elapsedSeconds_ = std::fmod(elapsedSeconds_, clip->length());
-        } else {
-            action_ = ModelAction::None;
-            pose_ = {};
-            return;
-        }
-    }
-    sample();
+    sample(std::clamp(progress, 0.0F, 1.0F));
 }
 
-void ModelAnimationSystem::sample() {
+void ModelAnimationSystem::sample(float progress) {
     const AnimationClip* clip = clipFor(action_);
     if (clip == nullptr) {
         pose_ = {};
@@ -269,14 +222,14 @@ void ModelAnimationSystem::sample() {
         pose_ = {};
         return;
     }
-    const float local = clip->localTime(elapsedSeconds_);
+    const float local = clip->localTime(progress * clip->length());
     MolangContext context;
     context.setQuery("anim_time", local);
 
     pose_.translation = item->position.sample(local, context, glm::vec3{0.0F});
     pose_.rotationDegrees = item->rotation.sample(local, context, glm::vec3{0.0F});
     pose_.scale = item->scale.sample(local, context, glm::vec3{1.0F}).x;
-    pose_.swingProgress = clip->length() > 0.0F ? local / clip->length() : 0.0F;
+    pose_.swingProgress = progress;
 }
 
 } // namespace mc::animation

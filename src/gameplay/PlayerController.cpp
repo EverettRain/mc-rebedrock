@@ -32,11 +32,11 @@ constexpr float kFlightVerticalDrag = 0.6F;
 // 0.6^3 is 0.216, so the walking tier's acceleration is the attribute itself.
 constexpr float kWalkAcceleration = PlayerController::kWalkSpeed;
 constexpr float kAirAcceleration = 0.02F;
-constexpr float kFlyAcceleration = 0.05F;
+constexpr float kFlyAcceleration = PlayerController::kCreativeFlyingSpeed;
 constexpr float kSprintGroundMultiplier = PlayerController::kSprintSpeedMultiplier;
 constexpr float kSprintFlightMultiplier = 2.0F;
 constexpr float kSneakingSpeedMultiplier = 0.3F;
-constexpr float kFlightVerticalAcceleration = 0.15F;
+constexpr float kFlightVerticalAcceleration = PlayerController::kCreativeFlyingSpeed * 3.0F;
 constexpr float kMaximumCollisionStep = 0.45F;
 constexpr float kInputScale = 0.98F;
 // Entity#maxUpStep's base value, shared with the creature step-up: the body
@@ -375,7 +375,7 @@ void PlayerController::tick(const world::World& world, const PlayerInput& input)
                 onGround_ = false;
             }
         } else {
-            flightToggleWindowTicks_ = 7;
+            flightToggleWindowTicks_ = kCreativeFlightToggleWindowTicks;
         }
     }
     sneaking_ = input.sneakHeld && !flying_;

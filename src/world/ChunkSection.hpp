@@ -39,6 +39,9 @@ class ChunkSection final {
     // test can pin the memory contract: an empty section costs nothing and a
     // terrain section stays a fraction of the flat 8 KB array it replaced.
     [[nodiscard]] std::size_t stateHeapBytes() const;
+    // Heap bytes the three light nibble arrays hold right now. A uniform array
+    // keeps no backing allocation, so an all-uniform section costs nothing.
+    [[nodiscard]] std::size_t lightHeapBytes() const;
     // The distinct states this section currently interns and how many bits each
     // cell's index takes. Diagnostics for the same test — a uniform section is
     // 0 bits with no packed data at all.

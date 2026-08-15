@@ -43,6 +43,7 @@
 #include "gameplay/entities/SpeciesRenderData.hpp"
 #include "persistence/SaveRepository.hpp"
 #include "render/Frustum.hpp"
+#include "runtime/GameRuntime.hpp"
 #include "render/ParticleSystem.hpp"
 #include "render/PerspectiveCamera.hpp"
 #include "render/RainSystem.hpp"
@@ -297,9 +298,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         : shaderRoot(std::move(shaderDirectory)),
           resourceProvider(&provider), languageLoader(provider),
           optionsPath(std::move(initialOptionsPath)),
-          saveRepository(std::move(saveRoot)), options(std::move(initialOptions)),
+          runtime(*this, streamer, std::move(saveRoot)),
+          saveRepository(runtime.saveRepository()),
+          chunkStreamer(runtime.chunkStreamer()),
+          interactionWorld(runtime.world()),
+          gameSession(runtime.gameSession()),
+          simulationDriver(runtime.simulationDriver()),
+          simulationActive(runtime.simulationActive()),
+          worldLock(runtime.lock()),
+          currentSave(runtime.currentSaveSlot()),
+          worldEpoch(runtime.worldEpoch()),
+          options(std::move(initialOptions)),
           testScene(initialTestScene), audioSystem(provider, options.masterVolume),
-          chunkStreamer(streamer),
           camera(initialTestScene.has_value() && initialTestScene->occlusionScene
                      ? glm::vec3{8.0F, 60.0F, -8.0F}
                      : (initialTestScene.has_value() ? glm::vec3{10.7F, 66.2F, 12.1F}
@@ -351,141 +361,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void registerGameCommands() {
-        commandDispatcher.literal("gamemode")
-            .argument("mode", gameplay::command::kGameModeArgument)
-            .executes([this](const gameplay::command::CommandContext& context) {
-                const auto mode = context.find<gameplay::GameMode>("mode");
-                if (!mode.has_value()) {
-                    return gameplay::CommandResult{false, "Usage: /gamemode <survival|creative>"};
-                }
-                setGameMode(*mode);
-                return gameplay::CommandResult{
-                    true, "Set own game mode to " + std::string{gameplay::gameModeName(*mode)}};
-            });
-        commandDispatcher.literal("time")
-            .then("set")
-            .argument("time", gameplay::command::kTimeArgument)
-            .executes([this](const gameplay::command::CommandContext& context) {
-                const auto ticks = context.find<double>("time");
-                if (!ticks.has_value()) {
-                    return gameplay::CommandResult{
-                        false, "Usage: /time set <day|noon|night|midnight|ticks>"};
-                }
-                // Set the sun's clock, not the frame timer: /time moves the
-                // time-of-day while keeping the day count (and thus the moon
-                // phase). The target is a time-of-day in [0,24000); it is folded
-                // into the current day so the calendar does not jump back to day
-                // zero.
-                const auto perDay = static_cast<std::uint64_t>(world::DayNightCycle::kTicksPerDay);
-                const auto target = static_cast<std::uint64_t>(std::llround(*ticks)) % perDay;
-                auto& clocks = gameSession.clocks();
-                const std::uint64_t current = clocks.totalTicks(world::ClockId::Overworld);
-                clocks.setTotalTicks(world::ClockId::Overworld,
-                                     current - (current % perDay) + target);
-                return gameplay::CommandResult{true, "Set the time to " +
-                                                         std::to_string(static_cast<int>(*ticks))};
-            });
-        commandDispatcher.literal("give")
-            .argument("item", gameplay::command::kGiveItemArgument)
-            .argument("count", gameplay::command::kIntArgument)
-            .executes([this](const gameplay::command::CommandContext& context) {
-                const auto itemToken = context.find<std::string>("item");
-                const auto count = context.find<std::int64_t>("count");
-                if (!itemToken.has_value() || !count.has_value()) {
-                    return gameplay::CommandResult{false, "Usage: /give <item|index> [count]"};
-                }
-                // GiveItemArgument guarantees the token is a catalog index or a
-                // known item/block identifier. A bare number is an index into the
-                // creative catalog; anything else is a block or item identifier
-                // (the `rebedrock:` key, the vanilla alias, or the bare path).
-                const bool numeric = std::all_of(itemToken->begin(), itemToken->end(),
-                                                 [](char c) { return c >= '0' && c <= '9'; });
-                gameplay::ItemStack requested;
-                std::string identifier;
-                if (numeric) {
-                    std::size_t index = 0;
-                    for (const char c : *itemToken) {
-                        index = index * 10U + static_cast<std::size_t>(c - '0');
-                    }
-                    const auto catalog = gameplay::contentRegistry().allCatalog();
-                    if (index >= catalog.size()) {
-                        return gameplay::CommandResult{
-                            false, "Catalog index out of range (0.." +
-                                       std::to_string(catalog.size() - 1U) + ")"};
-                    }
-                    requested = catalog[index];
-                    if (gameplay::isBlockStack(requested)) {
-                        identifier = world::blockDefinition(requested.block).identifier.toString();
-                    } else if (requested.item != nullptr) {
-                        identifier = requested.item->identifier.toString();
-                    }
-                } else if (const auto block = world::blockFromIdentifier(*itemToken);
-                           block.has_value()) {
-                    requested = {*block, 1U, gameplay::blockItemFor(*block)};
-                    identifier = world::blockDefinition(*block).identifier.toString();
-                } else if (const auto* item = gameplay::itemFromIdentifier(*itemToken);
-                           item != nullptr) {
-                    requested = {world::Block::Air, 1U, item};
-                    identifier = item->identifier.toString();
-                }
-                if (*count <= 0) {
-                    return gameplay::CommandResult{false, "Count must be positive"};
-                }
-                requested.count = static_cast<std::uint8_t>(std::min<std::int64_t>(*count, 255));
-                // Hand over as many whole stacks as needed; anything that will
-                // not fit spills onto the ground at the gameSession.player()'s feet.
-                const auto maximum = gameplay::itemMaximumStackSize(requested);
-                std::size_t given = 0;
-                while (!requested.empty()) {
-                    gameplay::ItemStack stack = requested;
-                    stack.count = std::min(requested.count, maximum);
-                    // add() consumes what it places, so remember the amount
-                    // handed to it for the success tally.
-                    const std::uint8_t intended = stack.count;
-                    if (gameSession.inventory().add(stack)) {
-                        given += intended;
-                    } else {
-                        gameSession.itemEntities().spawn(gameSession.player().position(), stack,
-                                                         {0.0F, 0.2F, 0.0F});
-                    }
-                    requested.count = static_cast<std::uint8_t>(requested.count - intended);
-                }
-                return gameplay::CommandResult{true,
-                                               "Gave " + std::to_string(given) + "x " + identifier};
-            });
+        // Every built-in species is registered up front, so entity-target
+        // commands resolve from the very first world (idempotent).
+        gameplay::entities::registerBuiltinEntities();
         // The change handler survives world switches; loading a save re-attaches
         // it because copying the save's GameRules brings a null handler along.
         attachGameRuleHandlers();
-        // gamerule keeps GameRules as its rule engine; the tree only supplies the
-        // validated rule name and the raw value string it parses. The rule node
-        // is both executable (the query form) and parent of the optional value,
-        // which is how the `[<value>]` trailing argument is expressed.
-        commandDispatcher.literal("gamerule")
-            .argument("rule", gameplay::command::kGameRuleArgument)
-            .executes([this](const gameplay::command::CommandContext& context) {
-                const auto rule = context.find<std::string>("rule");
-                if (!rule.has_value()) {
-                    return gameplay::CommandResult{false, "Usage: /gamerule <rule> [<value>]"};
-                }
-                return gameSession.gameRules().query(*rule);
-            })
-            .argument("value", gameplay::command::kStringArgument)
-            .executes([this](const gameplay::command::CommandContext& context) {
-                const auto rule = context.find<std::string>("rule");
-                const auto value = context.find<std::string>("value");
-                if (!rule.has_value() || !value.has_value()) {
-                    return gameplay::CommandResult{false, "Usage: /gamerule <rule> [<value>]"};
-                }
-                return gameSession.gameRules().setFromCommand(*rule, *value);
-            });
-        // Every built-in species is registered up front (the registry is normally
-        // populated lazily on first spawn), so entity-target commands resolve from
-        // the very first world.
-        gameplay::entities::registerBuiltinEntities();
-        // /tp <x> <y> <z> [<yaw> <pitch>] teleports the gameSession.player() to a position
-        // (relative `~` axes allowed); /tp <entity> teleports onto a creature.
-        // The destination node is both executable (the position and entity forms
-        // without rotation) and parent of the optional rotation argument.
+        // /tp is registered here rather than in the runtime because its rotation
+        // sets the camera (the player's look is camera-owned until N2's player
+        // state), which only the renderer has. The authoritative commands
+        // (gamemode, time, give, gamerule, kill, spawnpoint, weather) live on the
+        // runtime's dispatcher so a headless server runs them too.
+        auto& commandDispatcher = runtime.commandDispatcher();
         commandDispatcher.literal("tp")
             .argument("destination", gameplay::command::kTeleportDestinationArgument)
             .executes([this](const gameplay::command::CommandContext& context) {
@@ -495,129 +382,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .executes([this](const gameplay::command::CommandContext& context) {
                 return teleportWithContext(context, true);
             });
-        // /kill kills the gameSession.player(); /kill <entity> kills every spawned creature of
-        // a registered species, the way 1.16.1's KillCommand targets a selector.
-        // Both sides route through the shared kill() pipeline — OutOfWorld damage
-        // at infinite magnitude — exactly like vanilla KillCommand's entity.kill().
-        commandDispatcher.literal("kill")
-            .executes([this](const gameplay::command::CommandContext&) {
-                gameSession.killPlayer(*this);
-                return gameplay::CommandResult{true, "Killed the player"};
-            })
-            .argument("target", gameplay::command::kEntityTargetArgument)
-            .executes([this](const gameplay::command::CommandContext& context) {
-                const auto target = context.find<std::string>("target");
-                if (!target.has_value()) {
-                    return gameplay::CommandResult{false, "Usage: /kill [<entity>]"};
-                }
-                if (*target == "player") {
-                    gameSession.killPlayer(*this);
-                    return gameplay::CommandResult{true, "Killed the player"};
-                }
-                std::size_t killed = 0U;
-                for (const auto& entity : gameSession.worldEntities().entities()) {
-                    if (entity.type != nullptr && (entity.type->id().matches(*target) ||
-                                                   entity.type->vanillaId().matches(*target))) {
-                        gameSession.worldEntities().kill(entity.id);
-                        ++killed;
-                    }
-                }
-                if (killed == 0U) {
-                    return gameplay::CommandResult{false,
-                                                   "No entities of that species are spawned"};
-                }
-                return gameplay::CommandResult{true,
-                                               "Killed " + std::to_string(killed) + "x " + *target};
-            });
-        // /spawnpoint [<pos>]: sets the player's personal spawn point, the way
-        // 1.16.1's SpawnPointCommand calls ServerPlayerEntity#setSpawnPoint.
-        // Without a position the command uses the player's own block position;
-        // with one, `~` axes resolve relative to the player. Death then respawns
-        // here. 1.16.1 carries no angle, so neither does the command.
-        commandDispatcher.literal("spawnpoint")
-            .executes([this](const gameplay::command::CommandContext&) {
-                return applySpawnPoint(std::nullopt);
-            })
-            .argument("pos", gameplay::command::kTeleportDestinationArgument)
-            .executes([this](const gameplay::command::CommandContext& context) {
-                const auto position = context.find<gameplay::command::Position3>("pos");
-                if (!position.has_value()) {
-                    return gameplay::CommandResult{false, "Usage: /spawnpoint [<x> <y> <z>]"};
-                }
-                const glm::vec3 base = gameSession.player().position();
-                const glm::vec3 target{
-                    position->relativeX ? base.x + static_cast<float>(position->x)
-                                        : static_cast<float>(position->x),
-                    position->relativeY ? base.y + static_cast<float>(position->y)
-                                        : static_cast<float>(position->y),
-                    position->relativeZ ? base.z + static_cast<float>(position->z)
-                                        : static_cast<float>(position->z),
-                };
-                return applySpawnPoint(target);
-            });
-        // /weather clear|rain [<duration>] sets the world's weather the way
-        // 1.16.1's WeatherCommand does: no-arg applies a 6000-tick spell (five
-        // minutes), a duration argument is seconds converted to ticks at 20 per
-        // second. clear sets setWeather(ticks, 0, false, false), rain sets
-        // setWeather(0, ticks, true, false); once a spell expires the
-        // doWeatherCycle-driven auto-cycle takes over. The `duration` node sits
-        // under the literal the way WeatherCommand nests it, so both forms
-        // execute from the one tree.
-        const auto setClearWeather = [this](int ticks) {
-            gameSession.weatherSystem().setWeather(ticks, 0, false, false);
-            return gameplay::CommandResult{true, "Cleared the weather"};
-        };
-        const auto setRainWeather = [this](int ticks) {
-            gameSession.weatherSystem().setWeather(0, ticks, true, false);
-            return gameplay::CommandResult{true, "It started raining"};
-        };
-        commandDispatcher.literal("weather")
-            .then("clear")
-            .executes([setClearWeather](const gameplay::command::CommandContext&) {
-                return setClearWeather(6000);
-            })
-            .argument("duration", gameplay::command::kWeatherDurationArgument)
-            .executes([setClearWeather](const gameplay::command::CommandContext& context) {
-                const auto seconds = context.find<std::int64_t>("duration");
-                return seconds.has_value()
-                           ? setClearWeather(static_cast<int>(*seconds * 20))
-                           : gameplay::CommandResult{false, "Usage: /weather clear [<duration>]"};
-            });
-        // Registration is idempotent, so a second literal("weather") walk adds
-        // the sibling `rain` branch under the same root node.
-        commandDispatcher.literal("weather")
-            .then("rain")
-            .executes([setRainWeather](const gameplay::command::CommandContext&) {
-                return setRainWeather(6000);
-            })
-            .argument("duration", gameplay::command::kWeatherDurationArgument)
-            .executes([setRainWeather](const gameplay::command::CommandContext& context) {
-                const auto seconds = context.find<std::int64_t>("duration");
-                return seconds.has_value()
-                           ? setRainWeather(static_cast<int>(*seconds * 20))
-                           : gameplay::CommandResult{false, "Usage: /weather rain [<duration>]"};
-            });
-        // /weather thunder [<duration>] installs a storm (rain + thunder the way
-        // WeatherCommand's thunder branch does): setWeather(0, ticks, true, true)
-        // with the same duration handling as the clear/rain branches. No
-        // lightning or thunder sound yet — that is the next step.
-        const auto setThunderWeather = [this](int ticks) {
-            gameSession.weatherSystem().setWeather(0, ticks, true, true);
-            return gameplay::CommandResult{true, "It started thundering"};
-        };
-        commandDispatcher.literal("weather")
-            .then("thunder")
-            .executes([setThunderWeather](const gameplay::command::CommandContext&) {
-                return setThunderWeather(6000);
-            })
-            .argument("duration", gameplay::command::kWeatherDurationArgument)
-            .executes([setThunderWeather](const gameplay::command::CommandContext& context) {
-                const auto seconds = context.find<std::int64_t>("duration");
-                return seconds.has_value()
-                           ? setThunderWeather(static_cast<int>(*seconds * 20))
-                           : gameplay::CommandResult{false, "Usage: /weather thunder [<duration>]"};
-            });
     }
+
 
     ~Impl() { shutdown(); }
 
@@ -657,6 +423,40 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void spawnBlockBreakParticles(glm::ivec3 position, world::Block block) override {
         particleSystem.spawnBlockBreak(position, block);
     }
+    // The interaction side effects the gameplay controller drives: these are the
+    // host's render-side half of the moved updateBlockInteraction.
+    void playBlockHit(world::Block block, glm::vec3 position) override {
+        audioSystem.playBlockHit(block, position);
+    }
+    void playBlockPlace(world::Block block, glm::vec3 position) override {
+        audioSystem.playBlockPlace(block, position);
+    }
+    void playItemBreak(glm::vec3 position) override {
+        audioSystem.playItemBreak(position);
+    }
+    void spawnWaterSplash(glm::vec3 position) override {
+        particleSystem.spawnWaterSplash(position);
+    }
+    void onOpenContainer(ContainerScreen screen, std::optional<glm::ivec3> position) override {
+        switch (screen) {
+        case ContainerScreen::CraftingTable:
+            openContainer(ContainerScreen::CraftingTable);
+            break;
+        case ContainerScreen::Furnace:
+            if (position.has_value()) {
+                activeFurnacePosition = *position;
+            }
+            openContainer(ContainerScreen::Furnace);
+            break;
+        case ContainerScreen::Chest:
+            if (position.has_value()) {
+                openChest(gameplay::ChestPosition{position->x, position->y, position->z});
+            }
+            break;
+        default:
+            break;
+        }
+    }
     void onPlayerDied() override {
         std::cout << "Player died\n";
         if (inventoryOpen) {
@@ -682,11 +482,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
     void onFurnaceStateChanged() override { updateFurnaceLitState(); }
     void onEatingStarted() override {
-        // The held-item Eat animation starts the meal; the generic.eat sound is
-        // the chew loop GameSession::tickEating drives, not a one-shot here.
-        heldItemAnimation.trigger(animation::ModelAction::Eat);
+        // The meal lives on the item-use timeline now; beginEating already called
+        // playerActions().startUsing, and this frame's bridge samples it. The
+        // generic.eat sound is the chew loop GameSession::tickEating drives.
     }
-    void onEatingCancelled() override { heldItemAnimation.trigger(animation::ModelAction::None); }
+    void onEatingCancelled() override {}
 
     void initialize() {
         if (glfwInit() != GLFW_TRUE) {
@@ -921,16 +721,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     return;
                 }
                 if (button == GLFW_MOUSE_BUTTON_LEFT) {
-                    renderer->breakButtonHeld = action != GLFW_RELEASE;
+                    // The destroy lifecycle is a command: Start on press (with
+                    // the aimed target), Abort on release. The server ticks it.
                     if (action == GLFW_PRESS) {
-                        renderer->breakBlockRequested = true;
+                        renderer->destroyButtonHeld = true;
+                        renderer->enqueueDestroyStart();
                     } else if (action == GLFW_RELEASE) {
-                        renderer->miningTarget.reset();
+                        renderer->destroyButtonHeld = false;
+                        renderer->lastDestroyAimBlock.reset();
+                        renderer->enqueueDestroyAbort();
                     }
                 } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-                    renderer->useButtonHeld = action != GLFW_RELEASE;
+                    // The use lifecycle: UseItemOn on press (with the target),
+                    // UseItemStop on release so a held meal/repeat ends.
                     if (action == GLFW_PRESS) {
-                        renderer->placeBlockRequested = true;
+                        renderer->enqueueUseStart();
+                    } else if (action == GLFW_RELEASE) {
+                        renderer->enqueueUseStop();
                     }
                 }
             });
@@ -1409,6 +1216,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         std::size_t smokeReturnFrame = 0;
         bool smokeWorldStarted = false;
         bool smokeReturnedToTitle = false;
+        // A chat-command effect check that is waiting for the command's server
+        // tick to land (commands process on the next tick, up to ~50 ms after
+        // submit, so a same-frame check would be racy).
+        bool smokeWaitActive = false;
+        std::size_t smokeWaitDeadline = 0U;
+        std::function<bool()> smokeWaitCondition;
+        std::function<void()> smokeWaitAction;
+        std::string smokeWaitLabel;
         // The apple count before the smoke test holds right-click to eat, used
         // to verify the meal actually consumed one.
         std::uint8_t smokeAppleCount = 0U;
@@ -1500,7 +1315,32 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // inside the fixed sim tick (gated there by doDaylightCycle), so all
                 // that is left here is the frame-local animation clock.
                 renderTimeSeconds += static_cast<double>(deltaSeconds);
-                heldItemAnimation.update(deltaSeconds);
+                // The held-item pose is sampled from the tick-owned action
+                // timeline, so the swing/use progress is FPS-independent: gameplay
+                // advances PlayerActionState once per tick, and this frame picks
+                // the clip and normalised progress from it.
+                {
+                    const auto& playerActions = gameSession.playerActions();
+                    if (playerActions.use.active) {
+                        const float useProgress = playerActions.use.durationTicks > 0U
+                                                     ? 1.0F -
+                                                           static_cast<float>(
+                                                               playerActions.use.remainingTicks) /
+                                                               static_cast<float>(
+                                                                   playerActions.use.durationTicks)
+                                                     : 1.0F;
+                        heldItemAnimation.setAction(animation::ModelAction::Eat,
+                                                    std::clamp(useProgress, 0.0F, 1.0F));
+                    } else if (playerActions.swing.active) {
+                        heldItemAnimation.setAction(
+                            playerActions.swing.animation == gameplay::SwingAnimation::Use
+                                ? animation::ModelAction::Use
+                                : animation::ModelAction::Break,
+                            playerActions.swing.progress);
+                    } else {
+                        heldItemAnimation.setAction(animation::ModelAction::None, 0.0F);
+                    }
+                }
                 // One read section covers every world sample this frame's
                 // effects make: particles, rain collision and the weather
                 // ambience all raycast into the world.
@@ -1588,10 +1428,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     // because it is the only way to bisect a threading problem
                     // against known-good behaviour.
                     static_cast<void>(
-                        simulationDriver.advance(deltaSeconds, [this] { runOneTick(); }));
+                        simulationDriver.advance(deltaSeconds, [this] { runtime.tick(); }));
                 }
             } else if (!simulationDriver.threaded()) {
                 simulationDriver.reset();
+            }
+            // A chat command the player submitted was executed on the runtime's
+            // dispatcher inside the tick; append its result to the history once
+            // it lands.
+            if (const auto chatResult = runtime.takeChatResult(); chatResult.has_value()) {
+                chatHistory.push(chatResult->message, chatResult->success, uiTimeSeconds);
             }
             const float physicsAlpha = simulationDriver.interpolationAlpha();
             renderInterpolationAlpha = physicsAlpha;
@@ -1662,11 +1508,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (worldSessionActive)
                 world_.processChunkStreaming();
             {
-                // The interaction pass both reads (the ray, the targeted block)
-                // and writes (break, place, bucket), so it takes the write
-                // section as a unit rather than interleaving.
-                const auto interactionWrite = worldLock.write();
-                updateBlockInteraction();
+                // The authoritative interaction now runs inside the simulation
+                // tick (which owns the world's write section); this frame only
+                // raycasts the aim target the input handlers package into
+                // commands, plus the separate Q-key drop.
+                const auto targetRead = worldLock.read();
+                updateInteractionTarget();
+            }
+            {
+                const auto dropWrite = worldLock.write();
                 world_.updateItemDrop();
             }
             // P3 Step 3: the simulation's side effects run here, on the main
@@ -1757,6 +1607,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (smokeTest && worldReady && !smokeReturnedToTitle) {
                 ++smokeGameplayFrames;
             }
+            // A chat-command effect may still be landing (commands process on the
+            // next server tick, up to ~50 ms after submit). Check it in parallel
+            // with the scripted steps, so the step sequence keeps its frame
+            // schedule while each check polls for its effect.
+            if (smokeTest && smokeWaitActive) {
+                if (smokeWaitCondition()) {
+                    smokeWaitActive = false;
+                    if (smokeWaitAction) {
+                        auto action = std::move(smokeWaitAction);
+                        smokeWaitAction = nullptr;
+                        action();
+                    }
+                } else if (smokeGameplayFrames >= smokeWaitDeadline) {
+                    throw std::runtime_error("Smoke test timed out: " + smokeWaitLabel);
+                }
+            }
             if (smokeTest && smokeGameplayFrames == 16U) {
                 setInventoryOpen(true);
             } else if (smokeTest && smokeGameplayFrames == 20U) {
@@ -1796,10 +1662,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             } else if (smokeTest && smokeGameplayFrames == 54U) {
                 submitChatInput();
             } else if (smokeTest && smokeGameplayFrames == 56U) {
-                const auto smokeRead = worldLock.read();
-                if (gameSession.gameMode() != gameplay::GameMode::Survival) {
-                    throw std::runtime_error("Smoke test failed to enter survival mode");
-                }
+                // The /gamemode survival command lands on the next server tick.
+                smokeWaitActive = true;
+                smokeWaitDeadline = smokeGameplayFrames + 6U;
+                smokeWaitLabel = "enter survival mode";
+                smokeWaitCondition = [&] {
+                    const auto smokeRead = worldLock.read();
+                    return gameSession.gameMode() == gameplay::GameMode::Survival;
+                };
                 if (gameSession.inventory().slot(0).item != &gameplay::items::Diamond) {
                     throw std::runtime_error(
                         "Smoke test lost the shared inventory during mode switch");
@@ -1843,13 +1713,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             } else if (smokeTest && smokeGameplayFrames == 70U) {
                 submitChatInput();
             } else if (smokeTest && smokeGameplayFrames == 72U) {
-                const auto smokeRead = worldLock.read();
-                if (gameSession.gameMode() != gameplay::GameMode::Creative) {
-                    throw std::runtime_error("Smoke test failed to return to creative mode");
-                }
-                if (gameSession.inventory().slot(0).item != &gameplay::items::Diamond) {
-                    throw std::runtime_error("Smoke test lost the shared inventory state");
-                }
+                // The /gamemode command lands on the next server tick.
+                smokeWaitActive = true;
+                smokeWaitDeadline = smokeGameplayFrames + 6U;
+                smokeWaitLabel = "return to creative mode";
+                smokeWaitCondition = [&] {
+                    const auto smokeRead = worldLock.read();
+                    return gameSession.gameMode() == gameplay::GameMode::Creative &&
+                           gameSession.inventory().slot(0).item == &gameplay::items::Diamond;
+                };
             } else if (smokeTest && smokeGameplayFrames == 74U) {
                 setChatOpen(true);
                 chatInputText = "/give 0 1";
@@ -1857,40 +1729,49 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 submitChatInput();
             } else if (smokeTest && smokeGameplayFrames == 78U) {
                 // Catalog index 0 is the first registered building block (grass).
-                const auto smokeRead = worldLock.read();
-                const bool foundGrass = std::ranges::any_of(
-                    gameSession.inventory().slots(), [](const gameplay::ItemStack& stack) {
-                        return stack.block == world::Block::Grass && stack.count >= 1U;
-                    });
-                if (!foundGrass) {
-                    throw std::runtime_error("Smoke test failed to /give by catalog index");
-                }
+                // The /give command lands on the next server tick.
+                smokeWaitActive = true;
+                smokeWaitDeadline = smokeGameplayFrames + 6U;
+                smokeWaitLabel = "/give by catalog index";
+                smokeWaitCondition = [&] {
+                    const auto smokeRead = worldLock.read();
+                    return std::ranges::any_of(
+                        gameSession.inventory().slots(), [](const gameplay::ItemStack& stack) {
+                            return stack.block == world::Block::Grass && stack.count >= 1U;
+                        });
+                };
             } else if (smokeTest && smokeGameplayFrames == 80U) {
                 setChatOpen(true);
                 chatInputText = "/give minecraft:acacia_planks 3";
             } else if (smokeTest && smokeGameplayFrames == 82U) {
                 submitChatInput();
             } else if (smokeTest && smokeGameplayFrames == 84U) {
-                const auto smokeRead = worldLock.read();
-                const bool foundAcacia = std::ranges::any_of(
-                    gameSession.inventory().slots(), [](const gameplay::ItemStack& stack) {
-                        return stack.block == world::Block::AcaciaPlanks && stack.count >= 3U;
-                    });
-                if (!foundAcacia) {
-                    throw std::runtime_error("Smoke test failed to /give by identifier");
-                }
+                smokeWaitActive = true;
+                smokeWaitDeadline = smokeGameplayFrames + 6U;
+                smokeWaitLabel = "/give by identifier";
+                smokeWaitCondition = [&] {
+                    const auto smokeRead = worldLock.read();
+                    return std::ranges::any_of(
+                        gameSession.inventory().slots(), [](const gameplay::ItemStack& stack) {
+                            return stack.block == world::Block::AcaciaPlanks && stack.count >= 3U;
+                        });
+                };
             } else if (smokeTest && smokeGameplayFrames == 86U) {
                 setChatOpen(true);
                 chatInputText = "/time set midnight";
             } else if (smokeTest && smokeGameplayFrames == 88U) {
                 submitChatInput();
             } else if (smokeTest && smokeGameplayFrames == 90U) {
-                const auto smokeRead = worldLock.read();
-                const auto perDay = static_cast<std::uint64_t>(world::DayNightCycle::kTicksPerDay);
-                const auto tick = static_cast<double>(gameSession.dayTimeTicks() % perDay);
-                if (std::abs(tick - 18000.0) > 4.0) {
-                    throw std::runtime_error("Smoke test failed to set world time");
-                }
+                smokeWaitActive = true;
+                smokeWaitDeadline = smokeGameplayFrames + 6U;
+                smokeWaitLabel = "set world time";
+                smokeWaitCondition = [&] {
+                    const auto smokeRead = worldLock.read();
+                    const auto perDay =
+                        static_cast<std::uint64_t>(world::DayNightCycle::kTicksPerDay);
+                    const auto tick = static_cast<double>(gameSession.dayTimeTicks() % perDay);
+                    return std::abs(tick - 18000.0) <= 4.0;
+                };
             } else if (smokeTest && smokeGameplayFrames == 92U) {
                 setInventoryOpen(true);
             } else if (smokeTest && smokeGameplayFrames == 94U) {
@@ -1910,9 +1791,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     throw std::runtime_error("Smoke test apple stack missing");
                 }
                 // In creative the meal must not spend the food (Java 1.16.1).
-                useButtonHeld = true;
+                enqueueUseStart();
             } else if (smokeTest && smokeGameplayFrames == 400U) {
-                useButtonHeld = false;
+                enqueueUseStop();
                 const auto smokeRead = worldLock.read();
                 if (gameSession.inventory().selectedStack().count != smokeAppleCount) {
                     throw std::runtime_error("Smoke test creative eating consumed food");
@@ -1923,17 +1804,25 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             } else if (smokeTest && smokeGameplayFrames == 404U) {
                 submitChatInput();
             } else if (smokeTest && smokeGameplayFrames == 406U) {
-                const auto smokeWrite = worldLock.write();
-                if (gameSession.gameMode() != gameplay::GameMode::Survival) {
-                    throw std::runtime_error("Smoke test failed to return to survival mode");
-                }
-                // The apple survived creative gameSession.eating(); survival should spend it.
-                gameSession.inventory().selectHotbar(8U);
-                smokeAppleCount = gameSession.inventory().selectedStack().count;
-                if (smokeAppleCount == 0U) {
-                    throw std::runtime_error("Smoke test apple stack missing in survival");
-                }
-                useButtonHeld = true;
+                // The /gamemode survival command lands on the next server tick.
+                smokeWaitActive = true;
+                smokeWaitDeadline = smokeGameplayFrames + 6U;
+                smokeWaitLabel = "return to survival mode";
+                smokeWaitCondition = [&] {
+                    const auto smokeRead = worldLock.read();
+                    return gameSession.gameMode() == gameplay::GameMode::Survival;
+                };
+                // Once the mode lands, arm the meal: the apple survived creative
+                // eating, survival should spend it.
+                smokeWaitAction = [&] {
+                    const auto smokeWrite = worldLock.write();
+                    gameSession.inventory().selectHotbar(8U);
+                    smokeAppleCount = gameSession.inventory().selectedStack().count;
+                    if (smokeAppleCount == 0U) {
+                        throw std::runtime_error("Smoke test apple stack missing in survival");
+                    }
+                    enqueueUseStart();
+                };
             } else if (smokeTest && smokeGameplayFrames == 410U) {
                 // Snap the weather to full rain instantly (test helper, not
                 // chat) so the smoke exercises the rain path at full intensity
@@ -1947,7 +1836,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 const auto smokeWrite = worldLock.write();
                 gameSession.weatherSystem().forceThunderGradient(1.0F);
             } else if (smokeTest && smokeGameplayFrames == 700U) {
-                useButtonHeld = false;
+                enqueueUseStop();
                 const auto smokeRead = worldLock.read();
                 if (gameSession.inventory().selectedStack().count >= smokeAppleCount) {
                     throw std::runtime_error("Smoke test survival eating did not consume an apple");
@@ -1958,10 +1847,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             } else if (smokeTest && smokeGameplayFrames == 704U) {
                 submitChatInput();
             } else if (smokeTest && smokeGameplayFrames == 706U) {
-                const auto smokeRead = worldLock.read();
-                if (gameSession.player().position().y < 150.0F) {
-                    throw std::runtime_error("Smoke test /tp did not teleport the player");
-                }
+                // The /tp command lands on the next server tick.
+                smokeWaitActive = true;
+                smokeWaitDeadline = smokeGameplayFrames + 6U;
+                smokeWaitLabel = "/tp teleport";
+                smokeWaitCondition = [&] {
+                    const auto smokeRead = worldLock.read();
+                    return gameSession.player().position().y >= 150.0F;
+                };
             }
             if (smokeTest && !smokeReturnedToTitle && smokeGameplayFrames >= smokeFrameLimit &&
                 completedStreamBatchCount >= 2U && completedBlockEditCount >= 1U &&
@@ -2239,107 +2132,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // previous session must not leak into the bottom-left of the next map.
         chatHistory.clear();
         lastSessionPeakPendingSectionCount = 0U;
-        currentSave = std::move(save);
+        // The authoritative restore — the session state, the chunk streamer and
+        // the seeds — lives in the runtime so a headless server loads the same
+        // world. The renderer's presentation (camera, textures, menus) follows.
+        runtime.loadWorld(std::move(save), viewDistanceChunks);
         savedEditIndices.reserve(currentSave->edits.size());
         for (std::size_t index = 0; index < currentSave->edits.size(); ++index) {
             const auto& edit = currentSave->edits[index];
             savedEditIndices.insert_or_assign(PersistentEditPosition{edit.x, edit.y, edit.z},
                                               index);
         }
-        gameSession.inventory().restore(currentSave->inventory, currentSave->selectedHotbarSlot);
-        gameSession.chestSystem().restore(currentSave->chests);
-        gameSession.furnaceSystem().restore(currentSave->furnaces);
-        // Restore the herd a saved world carried, resolving species by their
-        // registered id so a species this build no longer knows is skipped
-        // instead of failing to open the world.
-        for (const auto& record : currentSave->entities) {
-            const auto* type = gameplay::entities::entityTypeRegistry().byId(record.species);
-            if (type == nullptr) {
-                continue;
-            }
-            gameSession.worldEntities().restore({record.x, record.y, record.z}, *type, record.yaw,
-                                                {record.vx, record.vy, record.vz}, record.health,
-                                                record.angerTicks, record.ageTicks,
-                                                record.rngState);
-        }
-        // Format 16: dropped items and blocks mid-fall. Before it, everything a
-        // player had thrown or mined but not picked up vanished on reload.
-        for (const auto& drop : currentSave->itemDrops) {
-            gameSession.itemEntities().restore({drop.x, drop.y, drop.z}, drop.stack,
-                                               {drop.vx, drop.vy, drop.vz}, drop.ageTicks);
-        }
-        for (const auto& falling : currentSave->fallingBlocks) {
-            gameSession.worldSimulation().restoreFallingBlock(
-                {falling.x, falling.y, falling.z}, falling.block, falling.verticalVelocity);
-        }
-        gameSession.gameMode() = currentSave->gameMode;
-        // The world owns its difficulty, the way level.dat does in vanilla.
-        gameSession.setDifficulty(currentSave->difficulty);
         // Game rules travel with the world too. The copy from the loaded save
         // carries a null change handler, so it is re-attached and the one rule
         // with a runtime mirror is applied.
-        gameSession.gameRules() = currentSave->gameRules;
         attachGameRuleHandlers();
-        gameSession.worldSimulation().setRandomTickSpeed(
-            gameSession.gameRules().get<std::int32_t>(gameplay::GameRuleId::RandomTickSpeed));
-        // The world tick and the named clocks restore separately, so a save made
-        // with the sun frozen reopens with the sun still where it was and the
-        // world tick exactly where it left off. A pre-format-13 save has both
-        // backfilled from the legacy gameTimeSeconds by the loader.
-        gameSession.setServerTick(currentSave->serverTick);
-        for (std::size_t index = 0; index < world::kClockCount; ++index) {
-            gameSession.clocks().setState(static_cast<world::ClockId>(index),
-                                          currentSave->clocks[index]);
-        }
-        // The weather travels with the save too; restore() also fades the
-        // gradients straight to their flags (World#initWeatherGradients), so a
-        // world saved mid-rain reopens raining instead of fading up.
-        gameSession.weatherSystem().restore(currentSave->weather);
-        const glm::vec3 initialFeet =
-            currentSave->hasPlayerPosition
-                ? glm::vec3{currentSave->playerX, currentSave->playerY, currentSave->playerZ}
-                : glm::vec3{24.0F, 76.38F, 24.0F};
-        gameSession.player() = gameplay::PlayerController{initialFeet};
-        gameSession.vitals().restore(currentSave->playerHealth, currentSave->playerFoodLevel,
-                                     currentSave->playerSaturation, currentSave->playerAirTicks);
-        // A world saved with an empty health bar reopens with a live gameSession.player().
-        if (gameSession.vitals().dead()) {
-            gameSession.vitals().reset();
-        }
-        gameSession.worldSpawnPosition() = initialFeet;
-        gameSession.physicsPreviousPosition() = initialFeet;
-        gameSession.physicsCurrentPosition() = initialFeet;
-        // The /spawnpoint result, if the save carried one; death respawns there.
-        gameSession.hasPlayerSpawn() = currentSave->hasSpawnPoint;
-        gameSession.playerSpawnPosition() =
-            glm::vec3{currentSave->spawnX, currentSave->spawnY, currentSave->spawnZ};
-        gameSession.playerSpawnYaw() = currentSave->spawnYaw;
         camera.setPosition(gameSession.player().eyePosition());
         spawnPositionInitialized = currentSave->hasPlayerPosition;
-        // Keep the loaded spawn's chunks loaded for the session, vanilla-style.
-        chunkStreamer.protectChunks(world::chunkPositionFromWorld(initialFeet.x, initialFeet.z),
-                                    kSpawnChunkRadius);
-        worldEpoch = chunkStreamer.resetWorld(currentSave->summary.seed, currentSave->edits);
         textures_.updateBiomeColorTextures(currentSave->summary.seed);
-        // Natural spawning reads the biome map from the same seed that drives
-        // the terrain, so spawns follow the biome being generated.
-        gameSession.setWorldSeed(currentSave->summary.seed);
-        gameSession.lootRandomState() =
-            static_cast<std::uint32_t>(currentSave->summary.seed) ^
-            static_cast<std::uint32_t>(currentSave->summary.seed >> 32U) ^ 0x9E3779B9U;
-        // The weather auto-cycle's RNG is seeded from the world the same way the
-        // loot RNG is; the timers themselves come from the save above.
-        gameSession.weatherSystem().seedRandom(
-            static_cast<std::uint32_t>(currentSave->summary.seed) ^
-            static_cast<std::uint32_t>(currentSave->summary.seed >> 32U) ^ 0x57E4F10AU);
-        // Two-phase load: ask for a small area around the gameSession.player() first so the
-        // world opens quickly, then widen to the full render distance once the
-        // load screen clears (see the worldReady block) and let the rest stream
-        // in during play. The unload radius stays at the full view distance so
-        // nothing wrongly evicts while the area is still small.
-        const int spawnRadius = std::min(viewDistanceChunks, kSpawnChunkRadius);
-        chunkStreamer.setRadii(spawnRadius, viewDistanceChunks);
-        chunkStreamer.request(world::chunkPositionFromWorld(initialFeet.x, initialFeet.z));
         worldSessionActive = true;
         paused = true;
         menuSystem.optionsOpen = false;
@@ -2352,15 +2161,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         try {
             const auto seed = static_cast<std::uint64_t>(
                 std::chrono::high_resolution_clock::now().time_since_epoch().count());
-            auto save = saveRepository.create(menuSystem.createWorldName, seed);
-            save.gameMode = menuSystem.createWorldGameMode;
-            // A new world starts on Normal difficulty, exactly like vanilla;
-            // each world then owns the setting from here on.
-            save.difficulty = gameplay::Difficulty::Normal;
-            gameplay::Inventory initialInventory;
-            save.inventory = initialInventory.slots();
-            save.selectedHotbarSlot = initialInventory.selectedHotbarSlot();
-            saveRepository.save(save);
+            auto save = runtime.createWorld(menuSystem.createWorldName, seed,
+                                            menuSystem.createWorldGameMode);
             refreshSaveList();
             startWorld(std::move(save));
         } catch (const std::exception& exception) {
@@ -2371,101 +2173,21 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // Saving reads the world and the live entity list, so it needs a section.
     // Split in two because /setworldspawn saves from *inside* the command write
     // section and the mutex is not recursive: callers already holding a section
-    // use the Locked form, everyone else uses this one.
+    // use the Locked form, everyone else uses this one. The save itself is built
+    // and persisted by the runtime; this wrapper only adds the presentation.
     void saveCurrentWorld() {
         const auto saveRead = worldLock.read();
         saveCurrentWorldLocked();
     }
 
     void saveCurrentWorldLocked() {
-        if (!currentSave.has_value() || currentSave->summary.identifier.empty()) {
-            menuSystem.saveStatus = "World saving is disabled for this session";
-            return;
-        }
-        currentSave->hasPlayerPosition = true;
-        const auto position = gameSession.player().position();
-        currentSave->playerX = position.x;
-        currentSave->playerY = position.y;
-        currentSave->playerZ = position.z;
-        // gameTimeSeconds is a legacy field now that the server tick and clocks
-        // carry the time; keep it filled with the elapsed-seconds equivalent of
-        // the world tick so a downgrade to a pre-format-13 reader still sees a sane
-        // time of day.
-        currentSave->gameTimeSeconds =
-            static_cast<double>(gameSession.serverTick()) / world::DayNightCycle::kTicksPerSecond;
-        currentSave->serverTick = gameSession.serverTick();
-        for (std::size_t index = 0; index < world::kClockCount; ++index) {
-            currentSave->clocks[index] =
-                gameSession.clocks().state(static_cast<world::ClockId>(index));
-        }
-        // The weather timers and flags ride along like game time; the gradients
-        // are recomputed from them on load.
-        currentSave->weather = gameSession.weatherSystem().state();
-        currentSave->gameMode = gameSession.gameMode();
-        currentSave->gameRules = gameSession.gameRules();
-        // The /spawnpoint result rides along like the player's own position.
-        currentSave->hasSpawnPoint = gameSession.hasPlayerSpawn();
-        const auto spawnPosition = gameSession.playerSpawnPosition();
-        currentSave->spawnX = spawnPosition.x;
-        currentSave->spawnY = spawnPosition.y;
-        currentSave->spawnZ = spawnPosition.z;
-        currentSave->spawnYaw = gameSession.playerSpawnYaw();
-        // Difficulty already lives on the save; the button below mutates it in
-        // place and world.dat serialises it.
-        currentSave->inventory = gameSession.inventory().slots();
-        currentSave->selectedHotbarSlot = gameSession.inventory().selectedHotbarSlot();
-        currentSave->playerHealth = gameSession.vitals().health();
-        currentSave->playerFoodLevel = gameSession.vitals().foodLevel();
-        currentSave->playerSaturation = gameSession.vitals().saturation();
-        currentSave->playerAirTicks = gameSession.vitals().airTicks();
-        currentSave->chests.assign(gameSession.chestSystem().entities().begin(),
-                                   gameSession.chestSystem().entities().end());
-        currentSave->furnaces.assign(gameSession.furnaceSystem().entities().begin(),
-                                     gameSession.furnaceSystem().entities().end());
-        // The live creatures ride along like the chests: a world saved mid-session
-        // reopens with its herd where it was. Species are stored by their
-        // registered id path and resolved through the registry on load.
-        currentSave->entities.clear();
-        currentSave->entities.reserve(gameSession.worldEntities().entities().size());
-        for (const auto& entity : gameSession.worldEntities().entities()) {
-            if (entity.type == nullptr) {
-                continue;
-            }
-            persistence::PersistentEntity record;
-            record.species = std::string{entity.type->id().path};
-            record.x = entity.position.x;
-            record.y = entity.position.y;
-            record.z = entity.position.z;
-            record.yaw = entity.yaw;
-            record.vx = entity.velocity.x;
-            record.vy = entity.velocity.y;
-            record.vz = entity.velocity.z;
-            record.health = entity.damage.health;
-            record.angerTicks = entity.angerTicks;
-            record.ageTicks = entity.ageTicks;
-            record.rngState = entity.rngState;
-            currentSave->entities.push_back(std::move(record));
-        }
-        currentSave->itemDrops.clear();
-        currentSave->itemDrops.reserve(gameSession.itemEntities().entities().size());
-        for (const auto& drop : gameSession.itemEntities().entities()) {
-            currentSave->itemDrops.push_back({drop.position.x, drop.position.y, drop.position.z,
-                                              drop.velocity.x, drop.velocity.y, drop.velocity.z,
-                                              drop.stack, drop.ageTicks});
-        }
-        currentSave->fallingBlocks.clear();
-        for (const auto& falling : gameSession.worldSimulation().fallingBlocks()) {
-            // A landed entity is already back in the chunk; saving it would
-            // duplicate the block on reload.
-            if (falling.removed) {
-                continue;
-            }
-            currentSave->fallingBlocks.push_back({falling.position.x, falling.position.y,
-                                                  falling.position.z, falling.verticalVelocity,
-                                                  falling.block});
-        }
         try {
-            saveRepository.save(*currentSave);
+            // The save is built and persisted by the runtime; false means there
+            // is no save open, matching the old disabled-for-this-session path.
+            if (!runtime.saveLocked()) {
+                menuSystem.saveStatus = "World saving is disabled for this session";
+                return;
+            }
             menuSystem.saveStatus = "World saved";
             refreshSaveList();
         } catch (const std::exception& exception) {
@@ -2486,8 +2208,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         chatOpen = false;
         lastSessionPeakPendingSectionCount = peakPendingSectionCount;
         clearRenderedWorld();
-        worldEpoch = chunkStreamer.resetWorld(0U);
-        currentSave.reset();
+        runtime.unloadWorld();
         menuSystem.pageStack.reset(ui::PageId::Title);
         refreshSaveList();
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
@@ -2506,11 +2227,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         gameSession.input().strafe = (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ? 1.0F : 0.0F) -
                                      (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ? 1.0F : 0.0F);
         gameSession.input().lookDirection = camera.direction();
+        // The GLFW key callback is the sole producer of the jump edge. Sampling
+        // the same transition here as well could publish one physical press on
+        // two adjacent simulation ticks, making creative flight toggle from a
+        // single jump. The held state remains frame-sampled for normal jumping.
         const bool jumpKeyDown = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
-        if (jumpKeyDown && !previousJumpKeyDown) {
-            gameSession.setJumpPressed();
-        }
-        previousJumpKeyDown = jumpKeyDown;
         gameSession.input().jumpHeld = jumpKeyDown;
         gameSession.input().descendHeld = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
         gameSession.input().sneakHeld = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
@@ -2537,17 +2258,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // infinite magnitude, the same path /kill <entity> routes a creature through.
 
     // The mouse callback returns early while a screen is up, so a release that
-    // happens behind one never reaches the held flags. Every transition into a
-    // screen therefore has to drop them itself.
+    // happens behind one never reaches the commands. Every transition into a
+    // screen therefore has to end the dig/use explicitly — the interaction state
+    // lives in gameplay now, so the abort/stop edges are queued for it.
     void releaseInteractionButtons() {
-        breakBlockRequested = false;
-        placeBlockRequested = false;
-        breakButtonHeld = false;
-        useButtonHeld = false;
-        miningTarget.reset();
-        lastMiningSoundTick = -1;
-        nextCreativeBreakTick = 0U;
-        nextUseTick = 0U;
+        destroyButtonHeld = false;
+        lastDestroyAimBlock.reset();
+        enqueueDestroyAbort();
+        enqueueUseStop();
     }
 
     void respawnPlayer() {
@@ -2609,12 +2327,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             return;
         }
         if (chatInputText.front() == '/') {
-            // Commands both read and write the world and the entity list
-            // (/kill, /tp, /setworldspawn), so the whole dispatch is one write
-            // section — the same treatment the interaction pass gets.
-            const auto commandWrite = worldLock.write();
-            const auto result = commandDispatcher.execute(chatInputText);
-            chatHistory.push(result.message, result.success, uiTimeSeconds);
+            // The command runs server-side on the runtime's dispatcher inside
+            // the next tick (it owns the world write section); the result is
+            // read back in the frame loop and appended to the history.
+            runtime.enqueueChat(chatInputText);
         } else {
             chatHistory.push("<Player> " + chatInputText, true, uiTimeSeconds);
         }
@@ -2625,7 +2341,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // Recomputes the completion list for the token under the (end-of-input)
     // cursor. Called whenever the input changes; Tab cycles without recomputing.
     void refreshChatSuggestions() {
-        chatSuggestions_ = commandDispatcher.suggestions(chatInputText, chatInputText.size());
+        chatSuggestions_ =
+            runtime.commandDispatcher().suggestions(chatInputText, chatInputText.size());
         chatSuggestionIndex_ = 0;
     }
 
@@ -3901,7 +3618,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void shutdown() noexcept {
         // Before anything the tick touches is torn down. jthread would join on
         // destruction anyway, but that happens after the Vulkan teardown below.
-        simulationDriver.stop();
+        runtime.stopSimulation();
         if (window != nullptr) {
             captureWindowPlacement();
             persistOptions();
@@ -4152,47 +3869,107 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // Minecraft#doAttack: one swing, and if the ray reaches a creature before it
     // reaches a block, that creature takes the hit instead. Returns true when a
     // creature was struck, so the caller skips the mining path for this click.
-    [[nodiscard]] bool attackTargetedEntity(const gameplay::EntityRayHit& hit) {
-        heldItemAnimation.trigger(animation::ModelAction::Break);
-        // Player#getAttackDamage: one point bare-handed, otherwise the tool's
-        // own attack damage. The cooldown-based sweep multiplier is not modelled.
-        // Creative deals the same damage as survival — no instant kill; only the
-        // durability and exhaustion side effects stay survival-only, matching
-        // vanilla's creative mode.
-        const auto& weapon = activeInventory().selectedStack();
-        const auto attributes =
-            gameplay::toolAttributes(gameplay::toolType(weapon), gameplay::toolTier(weapon));
-        const float damage =
-            gameplay::toolType(weapon) == gameplay::ToolType::None ? 1.0F : attributes.attackDamage;
-        if (gameSession.worldEntities().hurt(hit.entityId, damage, camera.position())) {
-            if (gameSession.gameMode() == gameplay::GameMode::Survival) {
-                // Player#attack adds a flat 0.1 exhaustion per landed hit.
-                gameSession.vitals().addExhaustion(0.1F);
-                if (gameSession.damageHeldTool(gameplay::ToolUse::AttackEntity, 0.0F)) {
-                    audioSystem.playItemBreak(camera.position());
-                }
-            }
+    // The render thread's half of the interaction: package the aim target into
+    // value-type commands for the gameplay controller (which runs inside the
+    // server tick). Nothing here mutates the world.
+    void enqueueInteractionCommand(gameplay::GameCommand command) {
+        // The abort/stop edges are always safe and always wanted (a release
+        // behind a screen must end the dig/use); the start edges are guarded by
+        // the caller so a press during a pause or a menu never queues stale.
+        if (worldSessionActive) {
+            gameSession.enqueueCommand(std::move(command));
         }
-        return true;
     }
 
-    // Drains what the last entity tick produced: the hurt and death sounds, and
-    // the loot a finished death left on the ground.
-
-    void updateBlockInteraction() {
-        if (!worldSessionActive || !worldReady) {
-            targetedBlock.reset();
-            breakBlockRequested = false;
-            placeBlockRequested = false;
+    // Minecraft#doAttack, packaged: press carries the aimed creature or block,
+    // release ends the dig. The server decides and ticks it.
+    void enqueueDestroyStart() {
+        if (!(worldReady && !paused && !inventoryOpen && !chatOpen)) {
             return;
         }
-        // Minecraft#startAttack fires once per click and Minecraft#continueAttack
-        // runs every tick the button stays down, so an ongoing dig keeps swinging
-        // whether or not the block ever breaks.
-        const bool attackActive = breakButtonHeld || breakBlockRequested;
-        // Minecraft#handleKeybinds gates the use action on rightClickDelay rather
-        // than on the click edge, so holding the button repeats it every 4 ticks.
-        const bool useActive = useButtonHeld || placeBlockRequested;
+        gameplay::PlayerAction action;
+        action.kind = gameplay::PlayerAction::Kind::StartDestroy;
+        if (creatureHit.has_value()) {
+            action.entity = true;
+            action.entityId = creatureHit->entityId;
+            lastDestroyAimBlock.reset();
+        } else if (targetedBlock.has_value()) {
+            action.block = targetedBlock->block;
+            lastDestroyAimBlock = targetedBlock->block;
+        } else {
+            lastDestroyAimBlock.reset();
+        }
+        enqueueInteractionCommand(std::move(action));
+    }
+    void enqueueDestroyAbort() {
+        gameplay::PlayerAction action;
+        action.kind = gameplay::PlayerAction::Kind::AbortDestroy;
+        enqueueInteractionCommand(std::move(action));
+    }
+
+    // A held attack follows the live ray target. The press starts the first
+    // block; after it disappears (or the player looks elsewhere), the next
+    // frame sends one new StartDestroy for the newly reached cell. Without this
+    // hand-off the gameplay controller kept digging the first cell's Air state,
+    // so even instant blocks such as grass required another click.
+    void refreshHeldDestroyTarget() {
+        if (!destroyButtonHeld || paused || inventoryOpen || chatOpen || !worldReady) {
+            return;
+        }
+        const std::optional<glm::ivec3> aimedBlock =
+            creatureHit.has_value() || !targetedBlock.has_value()
+                ? std::nullopt
+                : std::optional<glm::ivec3>{targetedBlock->block};
+        if (aimedBlock == lastDestroyAimBlock) {
+            return;
+        }
+        if (aimedBlock.has_value()) {
+            gameplay::PlayerAction action;
+            action.kind = gameplay::PlayerAction::Kind::StartDestroy;
+            action.block = *aimedBlock;
+            enqueueInteractionCommand(std::move(action));
+        } else {
+            gameplay::PlayerAction action;
+            action.kind = gameplay::PlayerAction::Kind::StopDestroy;
+            enqueueInteractionCommand(std::move(action));
+        }
+        lastDestroyAimBlock = aimedBlock;
+    }
+
+    // Minecraft#startUseItem, packaged: the right-click carries the block target
+    // (or none for an air use), and the release ends a held use.
+    void enqueueUseStart() {
+        if (!(worldReady && !paused && !inventoryOpen && !chatOpen)) {
+            return;
+        }
+        if (targetedBlock.has_value()) {
+            gameplay::UseItemOn use;
+            use.block = targetedBlock->block;
+            use.adjacent = targetedBlock->adjacent;
+            use.face = world::orientationFromOffset(targetedBlock->adjacent -
+                                                    targetedBlock->block);
+            use.hitPosition = glm::vec3{targetedBlock->block} + glm::vec3{0.5F};
+            use.lookDirection = camera.direction();
+            enqueueInteractionCommand(std::move(use));
+        } else {
+            gameplay::UseItem use;
+            enqueueInteractionCommand(std::move(use));
+        }
+    }
+    void enqueueUseStop() {
+        gameplay::UseItemStop stop;
+        enqueueInteractionCommand(std::move(stop));
+    }
+
+    // The per-frame aim target, a pure read: raycast the world and the creature
+    // herd from the camera. The interaction controller receives the result
+    // through the commands; the draw pass reads it for the selection outline.
+    void updateInteractionTarget() {
+        if (!worldSessionActive || !worldReady) {
+            targetedBlock.reset();
+            creatureHit.reset();
+            return;
+        }
         const auto& selectedStack = activeInventory().selectedStack();
         const bool collectingWater = selectedStack.item == &gameplay::items::Bucket;
         const float blockReach =
@@ -4200,431 +3977,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         targetedBlock = world::raycastVoxels(interactionWorld, camera.position(),
                                              camera.direction(), blockReach, collectingWater);
         // A creature's collision box blocks the ray exactly like a block's shape
-        // (vanilla's HitResult is the nearest of block-or-entity): looking past a
-        // mob never reveals — let alone digs or places through — the block behind
-        // it. Same reach as the block pick, so a mob just inside the pick range
-        // still shields its backdrop. Runs every frame, not just on the click
-        // edge, so a held dig cannot keep carving through a creature.
-        const auto creatureHit =
-            gameSession.worldEntities().raycast(camera.position(), camera.direction(), blockReach);
-        const bool creatureIsNearest =
-            creatureHit.has_value() &&
-            (!targetedBlock.has_value() || creatureHit->distance < targetedBlock->distance);
-        if (creatureIsNearest) {
+        // (vanilla's HitResult is the nearest of block-or-entity).
+        const auto hit = gameSession.worldEntities().raycast(camera.position(),
+                                                             camera.direction(), blockReach);
+        creatureHit = (hit.has_value() &&
+                       (!targetedBlock.has_value() || hit->distance < targetedBlock->distance))
+                          ? hit
+                          : std::nullopt;
+        if (creatureHit.has_value()) {
             targetedBlock.reset();
         }
-        // A container the click would open wins over a meal; otherwise holding
-        // food starts (or keeps) the vanilla 32-tick eat, independently of the
-        // 4-tick rightClickDelay. Attacking during a meal cancels it.
-        const bool targetedContainer = targetedBlock.has_value() && [&] {
-            const auto block = interactionWorld.block(
-                targetedBlock->block.x, targetedBlock->block.y, targetedBlock->block.z);
-            return block == world::Block::CraftingTable || block == world::Block::Furnace ||
-                   block == world::Block::Chest;
-        }();
-        // Carrot and potato are both food and seed. Right-clicking farmland with
-        // one plants the crop; the plant wins over gameSession.eating(), exactly like vanilla's
-        // item useOn running before the food use. The target cell below the
-        // placement position is the same farmland check the seed's useOn runs.
-        const bool aimsAtPlantableFarmland = [&] {
-            if (!targetedBlock.has_value()) {
-                return false;
-            }
-            const auto* held = selectedStack.item;
-            if (held == nullptr || gameplay::cropForSeedItem(held) == world::Block::Air) {
-                return false;
-            }
-            const auto interacted = interactionWorld.block(
-                targetedBlock->block.x, targetedBlock->block.y, targetedBlock->block.z);
-            const glm::ivec3 placeTarget =
-                world::isReplaceable(interacted) ? targetedBlock->block : targetedBlock->adjacent;
-            const glm::ivec3 below{placeTarget.x, placeTarget.y - 1, placeTarget.z};
-            return world::isFarmland(interactionWorld.block(below.x, below.y, below.z));
-        }();
-        const bool foodInHand = gameplay::isFood(selectedStack.item);
-        if (useActive && foodInHand && !targetedContainer && !aimsAtPlantableFarmland &&
-            !gameSession.eating()) {
-            gameSession.beginEating(selectedStack.item, *this);
-        } else if (gameSession.eating() &&
-                   (!useActive || !foodInHand || selectedStack.item != gameSession.eatingKind() ||
-                    targetedContainer)) {
-            gameSession.cancelEating(*this);
-        }
-        if (attackActive && gameSession.eating()) {
-            gameSession.cancelEating(*this);
-        }
-        // Minecraft#doAttack picks the creature over the block when the ray
-        // reaches it first, and an attack is a click edge, not a hold. Hitting a
-        // creature cancels the dig for this frame but leaves the use action to
-        // its own branch below.
-        // Reuse the exact entity/block winner computed above. Re-running a
-        // second spatial query here could disagree with the target that already
-        // suppressed block mining, allowing one click to hurt an entity and
-        // continue into the floor behind it.
-        const bool struckEntity = breakBlockRequested && creatureIsNearest &&
-                                  creatureHit.has_value() &&
-                                  creatureHit->distance <= gameplay::EntitySystem::kAttackReach &&
-                                  attackTargetedEntity(*creatureHit);
-        if (struckEntity) {
-            breakBlockRequested = false;
-            miningTarget.reset();
-            lastMiningSoundTick = -1;
-        }
-        bool performBreak = false;
-        if (!struckEntity && targetedBlock.has_value()) {
-            if (attackActive) {
-                // The swing is driven by the attack itself, not by the block
-                // finally giving way; LivingEntity#swing only restarts the arc
-                // once it is past halfway, which yields the vanilla cadence.
-                heldItemAnimation.trigger(animation::ModelAction::Break);
-            }
-            if (gameSession.gameMode() == gameplay::GameMode::Creative) {
-                // Creative keeps destroying while held, one block per destroyDelay.
-                performBreak = attackActive && gameSession.serverTick() >= nextCreativeBreakTick;
-            } else if (breakButtonHeld) {
-                if (!miningTarget.has_value() || *miningTarget != targetedBlock->block) {
-                    miningTarget = targetedBlock->block;
-                    miningStartedTick = gameSession.serverTick();
-                    lastMiningSoundTick = -1;
-                }
-                // Minecraft#continueAttack accumulates destroy progress per tick,
-                // so the dig lands after a whole number of ticks and a zero-hardness
-                // block is gone on the very tick it starts.
-                const auto blockPosition = targetedBlock->block;
-                const auto target =
-                    interactionWorld.block(blockPosition.x, blockPosition.y, blockPosition.z);
-                const float duration =
-                    gameplay::miningSeconds(target, selectedStack, gameSession.player().inWater(),
-                                            !gameSession.player().onGround());
-                const auto durationTicks = static_cast<std::uint64_t>(std::ceil(
-                    static_cast<double>(duration) * world::DayNightCycle::kTicksPerSecond));
-                performBreak = gameSession.serverTick() - miningStartedTick >= durationTicks;
-                // The hit sound repeats every four ticks (0.2 s), the same cadence
-                // as the frame timer used, now counted in ticks.
-                if (!performBreak && miningTarget.has_value() &&
-                    (lastMiningSoundTick < 0 ||
-                     static_cast<std::int64_t>(gameSession.serverTick()) - lastMiningSoundTick >=
-                         4)) {
-                    const auto position = *miningTarget;
-                    const auto target = interactionWorld.block(position.x, position.y, position.z);
-                    audioSystem.playBlockHit(target, glm::vec3{position} + glm::vec3{0.5F});
-                    lastMiningSoundTick = static_cast<std::int64_t>(gameSession.serverTick());
-                }
-            } else if (gameSession.gameMode() == gameplay::GameMode::Survival) {
-                miningTarget.reset();
-                lastMiningSoundTick = -1;
-            }
-        } else if (!struckEntity) {
-            miningTarget.reset();
-            lastMiningSoundTick = -1;
-            if (breakBlockRequested) {
-                // A click that hits nothing still swings, exactly like vanilla.
-                heldItemAnimation.trigger(animation::ModelAction::Break);
-            }
-        }
-        if (performBreak && targetedBlock.has_value()) {
-            const auto block = targetedBlock->block;
-            const auto brokenBlock = interactionWorld.block(block.x, block.y, block.z);
-            // The service hands the pre-write state to onDropsRequested, so a
-            // crop's loot table still rolls against the stage it had grown to
-            // without this call site having to read and carry the age.
-            const bool survival = gameSession.gameMode() == gameplay::GameMode::Survival;
-            // Creative breaks nothing loose: the drop is vetoed with the flag
-            // rather than by skipping the service, so the two modes still take
-            // the identical mutation path.
-            const world::MutationFlags breakFlags =
-                survival ? world::MutationFlags::All
-                         : (world::MutationFlags::All | world::MutationFlags::SuppressDrops);
-            gameplay::GameplayMutationSink sink{interactionWorld, gameSession};
-            sink.setDropTool(selectedStack);
-            if (!world::isFluid(brokenBlock) &&
-                (gameSession.gameMode() == gameplay::GameMode::Creative ||
-                 world::blockDefinition(brokenBlock).hardness >= 0.0F) &&
-                worldMutations
-                    .setBlock(interactionWorld, {block.x, block.y, block.z}, world::BlockState{},
-                              breakFlags, world::MutationCause::PlayerBreak, sink)
-                    .changed) {
-                audioSystem.playBlockBreak(brokenBlock, {static_cast<float>(block.x) + 0.5F,
-                                                         static_cast<float>(block.y) + 0.5F,
-                                                         static_cast<float>(block.z) + 0.5F});
-                particleSystem.spawnBlockBreak({block.x, block.y, block.z}, brokenBlock);
-                if (survival) {
-                    // Player#destroyBlock adds a flat exhaustion per broken block.
-                    gameSession.vitals().addExhaustion(0.005F);
-                    if (gameSession.damageHeldTool(gameplay::ToolUse::BreakBlock,
-                                                   world::blockDefinition(brokenBlock).hardness)) {
-                        audioSystem.playItemBreak(camera.position());
-                    }
-                }
-                miningTarget.reset();
-                miningStartedTick = gameSession.serverTick();
-                lastMiningSoundTick = -1;
-                nextCreativeBreakTick = gameSession.serverTick() + 5U;
-            }
-        }
-        const bool performUse =
-            useActive && gameSession.serverTick() >= nextUseTick && !gameSession.eating();
-        if (performUse) {
-            nextUseTick = gameSession.serverTick() + 4U;
-        }
-        if (performUse && targetedBlock.has_value()) {
-            const auto interactedBlock = interactionWorld.block(
-                targetedBlock->block.x, targetedBlock->block.y, targetedBlock->block.z);
-            // BlockPlaceContext#getClickedPos: clicking a replaceable block such
-            // as tall grass builds into that cell instead of next to it.
-            const glm::ivec3 placeTarget = world::isReplaceable(interactedBlock)
-                                               ? targetedBlock->block
-                                               : targetedBlock->adjacent;
-            // ServerPlayerGameMode#useItemOn:
-            //   suppressUsingBlock = isSecondaryUseActive() && haveSomethingInOurHands
-            // Sneaking with an item in hand means "build against this block",
-            // not "open it" — which is the only way to place a block on a chest
-            // or a furnace. Without it the container switch below consumes the
-            // click unconditionally and the block can never be placed there.
-            // Creative keeps its stack whatever the item does with it. 26.1
-            // centralises this in the game mode (save the count, run the item,
-            // restore it) rather than making every item ask whether it may
-            // modify the world; doing it here fixes the empty bucket and every
-            // future item at once. The whole stack is saved, not just the count,
-            // because an item may replace itself (the bucket does).
-            const bool infiniteMaterials = gameplay::restoresHeldStack(gameSession.gameMode());
-            const auto preservedStack = gameSession.inventory().selectedStack();
-            // The ordering rule itself lives in gameplay: sneaking with an item
-            // in hand builds against the block, an untouched container opens,
-            // and anything else is the held item's business.
-            const auto decision = gameplay::decideBlockInteraction(
-                world::blockDefinition(interactedBlock).container,
-                gameSession.player().sneaking(), !selectedStack.empty());
-            switch (decision.interaction) {
-            case gameplay::BlockInteraction::OpenCraftingTable:
-                openContainer(ContainerScreen::CraftingTable);
-                break;
-            case gameplay::BlockInteraction::OpenFurnace:
-                activeFurnacePosition = targetedBlock->block;
-                // A furnace placed before block entities existed (or loaded from
-                // an older save) has no entity yet; opening it is where we notice
-                // and back-fill one so it can hold items and smelt.
-                static_cast<void>(gameSession.furnaceSystem().findOrCreate(
-                    {targetedBlock->block.x, targetedBlock->block.y, targetedBlock->block.z}));
-                openContainer(ContainerScreen::Furnace);
-                break;
-            case gameplay::BlockInteraction::OpenChest:
-                openChest({targetedBlock->block.x, targetedBlock->block.y, targetedBlock->block.z});
-                break;
-            case gameplay::BlockInteraction::UseItem: {
-                // Item#useOn: the held item decides what right-clicking does,
-                // resolved by its own class instead of a switch in this loop.
-                // The item answers with the outcome; the side effects (world
-                // edit, audio, animation) are applied below.
-                const world::PlacementContext placement{
-                    targetedBlock->block,
-                    placeTarget,
-                    world::orientationFromOffset(targetedBlock->adjacent - targetedBlock->block),
-                    camera.direction(),
-                };
-                const gameplay::ItemUseResult use =
-                    selectedStack.item != nullptr
-                        ? gameplay::itemUseOn(selectedStack.item, interactionWorld, placement)
-                        : gameplay::legacyBlockStackUseOn(selectedStack, interactionWorld,
-                                                          placement);
-                switch (use.action) {
-                case gameplay::ItemUseAction::CollectWater: {
-                    // BucketItem#use + ItemUsage#method_30012: both modes scoop a
-                    // still source into a full bucket. Creative keeps the bucket
-                    // forever (the swap below never spends it); survival spends
-                    // the empty bucket by turning it into the full one.
-                    const auto block = targetedBlock->block;
-                    gameplay::GameplayMutationSink sink{interactionWorld, gameSession};
-                    if (worldMutations
-                            .setBlock(interactionWorld, {block.x, block.y, block.z},
-                                      world::BlockState{}, world::MutationFlags::All,
-                                      world::MutationCause::Fluid, sink)
-                            .changed) {
-                        audioSystem.playSplash({static_cast<float>(block.x) + 0.5F,
-                                                static_cast<float>(block.y) + 0.5F,
-                                                static_cast<float>(block.z) + 0.5F},
-                                               0.5F);
-                        particleSystem.spawnWaterSplash({static_cast<float>(block.x) + 0.5F,
-                                                         static_cast<float>(block.y) + 0.7F,
-                                                         static_cast<float>(block.z) + 0.5F});
-                        heldItemAnimation.trigger(animation::ModelAction::Use);
-                        // The empty bucket becomes a full water bucket in hand.
-                        gameSession.inventory().replaceSelected(
-                            {world::Block::Air, 1U, &gameplay::items::WaterBucket});
-                    }
-                    break;
-                }
-                case gameplay::ItemUseAction::PlaceWater: {
-                    const auto block = placeTarget;
-                    gameplay::GameplayMutationSink sink{interactionWorld, gameSession};
-                    if (worldMutations
-                            .setBlock(interactionWorld, {block.x, block.y, block.z},
-                                      world::BlockState{world::Block::Water,
-                                                        world::defaultOrientation(
-                                                            world::Block::Water),
-                                                        0U},
-                                      world::MutationFlags::All, world::MutationCause::Fluid, sink)
-                            .changed) {
-                        audioSystem.playSplash({static_cast<float>(block.x) + 0.5F,
-                                                static_cast<float>(block.y) + 0.5F,
-                                                static_cast<float>(block.z) + 0.5F});
-                        particleSystem.spawnWaterSplash({static_cast<float>(block.x) + 0.5F,
-                                                         static_cast<float>(block.y) + 1.0F,
-                                                         static_cast<float>(block.z) + 0.5F});
-                        heldItemAnimation.trigger(animation::ModelAction::Use);
-                        // BucketItem#getEmptiedStack: survival reverts the full
-                        // bucket to an empty one; creative keeps pouring without
-                        // spending it.
-                        if (gameSession.gameMode() == gameplay::GameMode::Survival) {
-                            gameSession.inventory().replaceSelected(
-                                {world::Block::Air, 1U, &gameplay::items::Bucket});
-                        }
-                    }
-                    break;
-                }
-                case gameplay::ItemUseAction::CollectLava: {
-                    const auto block = targetedBlock->block;
-                    gameplay::GameplayMutationSink sink{interactionWorld, gameSession};
-                    if (interactionWorld.block(block.x, block.y, block.z) == world::Block::Lava &&
-                        worldMutations
-                            .setBlock(interactionWorld, {block.x, block.y, block.z},
-                                      world::BlockState{}, world::MutationFlags::All,
-                                      world::MutationCause::Fluid, sink)
-                            .changed) {
-                        audioSystem.playBlockBreak(
-                            world::Block::Lava,
-                            {static_cast<float>(block.x) + 0.5F,
-                             static_cast<float>(block.y) + 0.5F,
-                             static_cast<float>(block.z) + 0.5F});
-                        heldItemAnimation.trigger(animation::ModelAction::Use);
-                        gameSession.inventory().replaceSelected(
-                            {world::Block::Air, 1U, &gameplay::items::LavaBucket});
-                    }
-                    break;
-                }
-                case gameplay::ItemUseAction::PlaceLava: {
-                    const auto block = placeTarget;
-                    gameplay::GameplayMutationSink sink{interactionWorld, gameSession};
-                    if (worldMutations
-                            .setBlock(interactionWorld, {block.x, block.y, block.z},
-                                      world::BlockState{world::Block::Lava},
-                                      world::MutationFlags::All, world::MutationCause::Fluid, sink)
-                            .changed) {
-                        audioSystem.playBlockPlace(
-                            world::Block::Lava,
-                            {static_cast<float>(block.x) + 0.5F,
-                             static_cast<float>(block.y) + 0.5F,
-                             static_cast<float>(block.z) + 0.5F});
-                        heldItemAnimation.trigger(animation::ModelAction::Use);
-                        if (gameSession.gameMode() == gameplay::GameMode::Survival) {
-                            gameSession.inventory().replaceSelected(
-                                {world::Block::Air, 1U, &gameplay::items::Bucket});
-                        }
-                    }
-                    break;
-                }
-                case gameplay::ItemUseAction::SpawnEntity: {
-                    // The egg dispatches to its species' EntityType through the
-                    // stored supplier; only spawn once that species' model is
-                    // loaded so the creature does not appear as a missing mesh.
-                    if (const auto* spawnEgg = gameplay::asSpawnEgg(selectedStack.item)) {
-                        const auto& eggType = spawnEgg->entityType();
-                        const auto block = placeTarget;
-                        const glm::vec3 spawnPosition{static_cast<float>(block.x) + 0.5F,
-                                                      static_cast<float>(block.y) + 0.02F,
-                                                      static_cast<float>(block.z) + 0.5F};
-                        // Deliberately not gated on entityModelReady: whether a
-                        // species' mesh has finished loading is a render
-                        // concern, and letting it veto the spawn made the egg
-                        // silently do nothing for the first seconds of a world.
-                        // A creature whose model is not ready yet simply is not
-                        // drawn until it is.
-                        if (gameplay::EntitySystem::canOccupy(interactionWorld, spawnPosition,
-                                                              eggType.dimensions())) {
-                            gameSession.worldEntities().spawn(spawnPosition, eggType);
-                            heldItemAnimation.trigger(animation::ModelAction::Use);
-                            if (gameSession.gameMode() == gameplay::GameMode::Survival) {
-                                static_cast<void>(gameSession.inventory().consumeSelected());
-                            }
-                        }
-                    }
-                    break;
-                }
-                case gameplay::ItemUseAction::PlaceBlock: {
-                    const auto block = placeTarget;
-                    const auto existingBlock = interactionWorld.block(block.x, block.y, block.z);
-                    const world::Block placedBlock = use.state.block();
-                    gameplay::GameplayMutationSink sink{interactionWorld, gameSession};
-                    if (world::isRenderable(placedBlock) && world::isReplaceable(existingBlock) &&
-                        (!world::hasCollision(placedBlock) ||
-                         (!gameSession.player().intersectsBlock(block.x, block.y, block.z) &&
-                          !gameSession.worldEntities().intersectsBlock(block.x, block.y,
-                                                                       block.z))) &&
-                        worldMutations
-                            .setBlock(interactionWorld, {block.x, block.y, block.z},
-                                      use.state,
-                                      world::MutationFlags::All,
-                                      world::MutationCause::PlayerPlace, sink)
-                            .changed) {
-                        // The chest's and furnace's block entities are created by
-                        // the sink's onBlockEntityReplaced now, so placing one is
-                        // no longer a special case this call site has to know.
-                        audioSystem.playBlockPlace(placedBlock,
-                                                   {static_cast<float>(block.x) + 0.5F,
-                                                    static_cast<float>(block.y) + 0.5F,
-                                                    static_cast<float>(block.z) + 0.5F});
-                        heldItemAnimation.trigger(animation::ModelAction::Use);
-                        if (gameSession.gameMode() == gameplay::GameMode::Survival) {
-                            static_cast<void>(gameSession.inventory().consumeSelected());
-                        }
-                    }
-                    break;
-                }
-                case gameplay::ItemUseAction::TilGround: {
-                    // HoeItem#useOn converts the clicked block in place (dirt and
-                    // grass become farmland, coarse dirt becomes dirt again). The
-                    // tool is not consumed; in survival it pays one durability.
-                    const auto block = targetedBlock->block;
-                    const auto existing = interactionWorld.block(block.x, block.y, block.z);
-                    const world::Block tilled = use.state.block();
-                    gameplay::GameplayMutationSink sink{interactionWorld, gameSession};
-                    if (world::isRenderable(tilled) && existing != tilled &&
-                        worldMutations
-                            .setBlock(interactionWorld, {block.x, block.y, block.z},
-                                      use.state,
-                                      world::MutationFlags::All,
-                                      world::MutationCause::PlayerPlace, sink)
-                            .changed) {
-                        audioSystem.playBlockPlace(tilled, {static_cast<float>(block.x) + 0.5F,
-                                                            static_cast<float>(block.y) + 0.5F,
-                                                            static_cast<float>(block.z) + 0.5F});
-                        heldItemAnimation.trigger(animation::ModelAction::Use);
-                        if (gameSession.gameMode() == gameplay::GameMode::Survival) {
-                            if (gameSession.damageHeldTool(
-                                    gameplay::ToolUse::Till,
-                                    world::blockDefinition(existing).hardness)) {
-                                audioSystem.playItemBreak(camera.position());
-                            }
-                        }
-                    }
-                    break;
-                }
-                default:
-                    break;
-                }
-                break;
-            }
-            }
-            // The centralised creative protection: whatever the item did to the
-            // held stack — spent it, swapped an empty bucket for a full one — is
-            // undone here rather than in each item. This is the one place 26.1
-            // puts it, and the reason the empty bucket stopped being replaced.
-            if (infiniteMaterials) {
-                gameSession.inventory().replaceSelected(preservedStack);
-            }
-        }
-        breakBlockRequested = false;
-        placeBlockRequested = false;
+        refreshHeldDestroyTarget();
     }
 
     void spawnDroppedStack(gameplay::ItemStack stack) {
@@ -6501,28 +5864,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // its entity's body actually is: a ground-anchored entity has to sample half
     // a block up, because the feet sample rounds into the solid block underneath
     // and reads as pitch black.
-    // One simulation tick, with the world held for writing. Nothing inside
-    // re-enters the renderer — the tick publishes events rather than calling
-    // back (Step 3) — so this cannot deadlock against a nested section.
-    void runOneTick() {
-        const auto tickWrite = worldLock.write();
-        gameSession.tick(interactionWorld, *this);
-    }
-
-    // Starts the simulation thread, unless MC_REBEDROCK_SYNC_TICK asks for the
-    // old synchronous loop. Everything the render thread needs from the tick now
-    // crosses a boundary built for it: the event queue (Step 3), the world's
-    // reader/writer sections (Step 4) and the per-tick render snapshot (Step 5).
+    // Starts the simulation thread (unless MC_REBEDROCK_SYNC_TICK asks for the
+    // synchronous loop) and owns the tick/world-lock discipline; the runtime
+    // holds the driver, the world lock and the simulationActive gate.
     void startSimulationThread() {
-        if (std::getenv("MC_REBEDROCK_SYNC_TICK") != nullptr) {
-            std::cout << "[sim] MC_REBEDROCK_SYNC_TICK set: ticking on the render thread\n";
-            return;
-        }
-        simulationDriver.start([this] { runOneTick(); },
-                               [this] {
-                                   return simulationActive.load(std::memory_order_acquire);
-                               });
-        std::cout << "[sim] simulation thread started (20 TPS)\n";
+        runtime.startSimulation();
     }
 
     void drawFrame() {
@@ -6642,12 +5988,25 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     ui::AsyncLanguageLoader languageLoader;
     std::chrono::steady_clock::time_point languageLoadStarted{};
     std::filesystem::path optionsPath;
-    persistence::SaveRepository saveRepository;
+    // The authoritative runtime owns the world, the save repository, the game
+    // session, the simulation driver and the world lock. The references below
+    // are convenience aliases so the many call sites keep reading them by their
+    // familiar names; the objects themselves live in the runtime, which is what
+    // a dedicated server links. Declaration order matters: the runtime is built
+    // first and the aliases point into it.
+    runtime::GameRuntime runtime;
+    persistence::SaveRepository& saveRepository;
+    world::ChunkStreamer& chunkStreamer;
+    world::World& interactionWorld;
+    gameplay::GameSession& gameSession;
+    gameplay::SimulationDriver& simulationDriver;
+    std::atomic_bool& simulationActive;
+    world::WorldLock& worldLock;
+    std::optional<persistence::SaveGame>& currentSave;
+    std::uint64_t& worldEpoch;
     config::GameOptions options;
     std::optional<TestSceneOptions> testScene;
     audio::AudioSystem audioSystem;
-    world::ChunkStreamer& chunkStreamer;
-    world::World interactionWorld;
     // Mirrors the worker's incremental lighting on the render thread so instant
     // edit previews are built with correct light instead of stale stored values.
     world::WorldLightEngine interactionLightEngine;
@@ -6679,7 +6038,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     world::SmoothLightingQuality currentMeshQuality = world::SmoothLightingQuality::Standard;
     world::SmoothLightingQuality targetMeshQuality = world::SmoothLightingQuality::Standard;
     std::unordered_set<world::SectionPosition, world::SectionPositionHash> qualityRemeshPending;
-    gameplay::GameSession gameSession;
     ui::MenuSystem menuSystem;
     // The HUD-facing gameplay state, captured once per frame so the draw
     // passes read a consistent snapshot instead of live gameplay objects.
@@ -6689,7 +6047,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // the gameSession.player()'s movement FOV multiplier, so the base has to be kept aside.
     float baseFieldOfViewDegrees = 65.0F;
     // Health, hunger and environmental damage. Only ticked in survival.
-    gameplay::command::CommandDispatcher commandDispatcher;
     // The world's game rules, owned here and mirrored into the systems that
     // consume them; persisted as a sparse self-describing block in world.dat.
     // Minimal free-roaming creatures and the pig skeleton they render with.
@@ -6720,11 +6077,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     std::chrono::steady_clock::time_point windowPlacementChangedAt{};
     bool validationEnabled = false;
     bool firstMouseSample = true;
-    bool breakBlockRequested = false;
-    bool breakButtonHeld = false;
-    bool placeBlockRequested = false;
-    bool useButtonHeld = false;
-    bool previousJumpKeyDown = false;
+    bool destroyButtonHeld = false;
+    std::optional<glm::ivec3> lastDestroyAimBlock;
     bool inventoryOpen = false;
     bool spawnPositionInitialized = false;
     bool worldReady = false;
@@ -6769,7 +6123,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // The furnace block the gameSession.player() last opened; while the shared furnace state
     // is burning, that block swaps to the lit state (texture + light).
     std::optional<glm::ivec3> activeFurnacePosition;
-    std::optional<glm::ivec3> miningTarget;
+    // The aim ray's nearest creature, computed with the block target each frame;
+    // the input handlers package it into the destroy command.
+    std::optional<gameplay::EntityRayHit> creatureHit;
     std::string chatInputText;
     ui::ChatHistory chatHistory;
     // Tab completion state for the open chat line: the candidates for the token
@@ -6791,18 +6147,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // with the world: a paused game should not keep swinging arms. Both are
     // frame-local and neither is persisted.
     double renderTimeSeconds = 0.0;
-    // Mining and use timing now runs on the server tick, not the frame timer, so
-    // a dig lands after the same number of ticks regardless of framerate, the way
-    // Minecraft's continueAttack accumulates destroy progress per tick. The crack
-    // overlay stays smooth by interpolating with renderInterpolationAlpha.
-    std::uint64_t miningStartedTick = 0U;
-    std::int64_t lastMiningSoundTick = -1; // -1 until the first hit sound this dig
-    // Level#random's stand-in for loot rolls. Re-seeded from the world seed on
-    // load so a given world replays its drops rather than the same fixed run.
-    // MultiPlayerGameMode#destroyDelay (5 ticks) and Minecraft#rightClickDelay
-    // (4 ticks): the earliest server ticks a held button may act again.
-    std::uint64_t nextCreativeBreakTick = 0U;
-    std::uint64_t nextUseTick = 0U;
     // Eating state: right-click on food starts the vanilla 32-tick (1.6 s) eat,
     // during which the held item is raised to the mouth; the meal lands when the
     // timer expires. Release the button or swap items to cancel.
@@ -6829,16 +6173,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // Owns the rain/GUI/panorama/biome texture resources (see TextureManager);
     // block/entity/font arrays still live here as flat members for now.
     TextureManager textures_;
-    // P3 Step 1: the fixed-step accumulator, lifted out of run(). Still driven
-    // synchronously from the render loop — Step 2 is what hands it a thread.
-    gameplay::SimulationDriver simulationDriver;
-    // The simulation thread must not read the renderer-owned paused/worldReady
-    // flags directly. The main thread publishes their combined state here.
-    std::atomic_bool simulationActive{false};
-    // P3 Step 4: guards `interactionWorld`. One read section per frame, one
-    // write section per tick. Held by the render thread today because the
-    // simulation still runs on it; the sections are what let Step 2 move it off.
-    world::WorldLock worldLock;
     // The single path every block change this renderer makes flows through, so
     // the block-entity, neighbour, section and drop consequences are dispatched
     // from one place instead of being re-assembled at each call site.
@@ -6983,13 +6317,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     std::size_t lastPendingSectionCount = std::numeric_limits<std::size_t>::max();
     std::string lastPlayerMode;
     gameplay::ItemStack lastSelectedItem{};
-    std::optional<persistence::SaveGame> currentSave;
     std::unordered_map<PersistentEditPosition, std::size_t, PersistentEditPositionHash>
         savedEditIndices;
     // The save being edited, captured when Edit is pressed so the edit/delete
     // flow keeps working even if the list refreshes in between.
     bool worldSessionActive = false;
-    std::uint64_t worldEpoch = 0U;
 
     // Wires the extracted HudRenderer to this Impl's state: reference fields
     // bind directly to members (so resize-recreated pipelines and input-mutated
@@ -7097,7 +6429,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .cameraPerspective = cameraPerspective,
             .worldBodyYaw = worldBodyYaw,
             .particleSystem = particleSystem,
-            .breakButtonHeld = breakButtonHeld,
             .inventoryOpen = inventoryOpen,
             .spawnPositionInitialized = spawnPositionInitialized,
             .worldReady = worldReady,
@@ -7106,8 +6437,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .dropWholeStack = dropWholeStack,
             .chatOpen = chatOpen,
             .targetedBlock = targetedBlock,
-            .miningTarget = miningTarget,
-            .miningStartedTick = miningStartedTick,
             .renderTimeSeconds = renderTimeSeconds,
             .renderInterpolationAlpha = renderInterpolationAlpha,
             .window = window,

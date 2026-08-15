@@ -9,6 +9,17 @@ simple versioned history while it is in beta.
 
 ### Added
 
+- A renderer-independent authoritative `GameRuntime` now owns the world, save
+  repository, game session, simulation thread, world lock and server command
+  tree. World creation/loading/saving/unloading and the 20 TPS tick no longer
+  live in the Vulkan client; headless tests can run the complete game chain and
+  measure resident server chunk-state/light memory, establishing a concrete
+  boundary for the future client/server process split.
+- Player input gained a thread-safe semantic command queue. Breaking, attacks,
+  block/item use, hotbar changes, slot clicks and chat enter as ordered
+  `GameCommand`s and are applied by `PlayerInteraction` during the authoritative
+  tick. `PlayerActionState` supplies the tick-owned swing and held-use timeline,
+  leaving the renderer to consume its snapshot.
 - Natural spawning now uses 26.1-style weighted tables split by biome and mob
   category, with built-in vanilla weights and group sizes for pigs, cows and
   zombies. Packs may override an individual biome through
@@ -22,6 +33,14 @@ simple versioned history while it is in beta.
 
 ### Changed
 
+- The Vulkan client now composes `GameRuntime` and delegates world lifecycle,
+  persistence, simulation and authoritative commands to it, removing the
+  corresponding client-owned implementations. The client retains window/input
+  sampling, menus, audio and GPU presentation responsibilities.
+- First-person break, place and eat animations no longer keep a render-frame
+  clock. They sample gameplay's tick-owned action progress as a pure input, so
+  the same operation consumes the same ticks at every frame rate and its visible
+  motion stays aligned with the interaction decision.
 - Natural spawning now spreads simulation-radius-scaled column samples across
   categories every tick and chooses species with integer weights, replacing a
   burst of three surface scans once per second. Block light continues to
@@ -31,6 +50,12 @@ simple versioned history while it is in beta.
   Java 26.1 resource-pack requirement, dual-platform build/test workflow,
   runtime layout, project structure and known boundaries. Obsolete 1.16.1
   extraction and bundled-resource instructions were removed.
+- Save format 18 migration is now verified against real played worlds saved in
+  formats 10, 14 and 15: each opens, converts to the current format on its next
+  save, and reloads with the player's position, inventory, block edits, weather,
+  clocks and entities intact. A `migration_diag` helper repeats that load →
+  save → reload round trip on a copy of any world directory, so the conversion
+  can be re-checked on any real save.
 
 ### Fixed
 

@@ -260,20 +260,27 @@ int main() {
 
     // --- Eating a meal completes through tickEating inside the tick. ---
     // A creative player runs the full meal without spending food; the eating
-    // animation lifecycle still fires on the host.
+    // animation lifecycle still fires on the host. The meal is driven through
+    // the interaction now: holding the use button (a UseItem command) starts it,
+    // and it stays held until the meal finishes itself.
     TestHost eatHost;
     gameplay::GameSession eater;
     eater.setGameMode(gameplay::GameMode::Creative);
     // The meal must be in hand when it finishes, or the final burst is skipped.
     eater.inventory().mutableSlot(0) = {world::Block::Air, 1U, &gameplay::items::Apple};
-    eater.beginEating(&gameplay::items::Apple, eatHost);
-    eater.drainEvents();
-    assert(eatHost.eatingStarted == 1);
+    eater.inventory().selectHotbar(0);
+    eater.enqueueCommand(gameplay::UseItem{});
     world::World eatWorld;
     buildFloor(eatWorld);
-    for (int tick = 0; tick < gameplay::GameSession::kEatTicks + 1; ++tick) {
+    // Hold use through the meal. It lands on the last tick; the release command
+    // arrives in that same tick so the held use does not start a second meal.
+    for (int tick = 0; tick < gameplay::GameSession::kEatTicks; ++tick) {
         eater.tick(eatWorld, eatHost);
     }
+    eater.enqueueCommand(gameplay::UseItemStop{});
+    eater.tick(eatWorld, eatHost);
+    eater.drainEvents();
+    assert(eatHost.eatingStarted == 1);
     // The meal ran to completion and cancelled itself.
     assert(!eater.eating());
     eater.drainEvents();

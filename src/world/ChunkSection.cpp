@@ -135,6 +135,13 @@ std::size_t ChunkSection::stateHeapBytes() const {
            data_.capacity() * sizeof(std::uint64_t);
 }
 
+std::size_t ChunkSection::lightHeapBytes() const {
+    const auto nibbleBytes = [](const NibbleArray& array) {
+        return array.uniform() ? std::size_t{0U} : NibbleArray::kByteCount;
+    };
+    return nibbleBytes(skyLight_) + nibbleBytes(blockLight_) + nibbleBytes(directSkyLight_);
+}
+
 Block ChunkSection::block(int x, int y, int z) const {
     return state(x, y, z).block();
 }

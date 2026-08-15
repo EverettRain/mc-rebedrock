@@ -41,6 +41,10 @@ class PlayerController final {
     // top of it. Both the acceleration and the FOV multiplier read them.
     static constexpr float kWalkSpeed = 0.1F;
     static constexpr float kSprintSpeedMultiplier = 1.3F;
+    // 26.1 Abilities.DEFAULT_FLYING_SPEED and LocalPlayer.jumpTriggerTime.
+    // Vertical creative movement adds flyingSpeed * 3 each tick.
+    static constexpr float kCreativeFlyingSpeed = 0.05F;
+    static constexpr int kCreativeFlightToggleWindowTicks = 7;
     // Vanilla's base FOV before the movement multiplier scales it.
     static constexpr float kBaseFieldOfViewDegrees = 70.0F;
 

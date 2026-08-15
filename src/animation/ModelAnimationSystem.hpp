@@ -33,11 +33,17 @@ struct ModelPose final {
 // the resting hand placement (HeldItemRenderer's UseAction.EAT branch).
 [[nodiscard]] glm::mat4 firstPersonEatTransform(const ModelPose& pose, bool cubeModel);
 
-// Drives the first-person held-item swing from data-driven animation clips
-// (the "break" and "use" actions). The keyframes live in JSON and are evaluated
-// through the shared animation library; a compact built-in copy is compiled in
-// so the swing works even before any resource pack is loaded, and `load` can
-// override it from `resources/animation/held_item.animation.json`.
+// Drives the first-person held-item pose from data-driven animation clips
+// (the "break", "use" and "eat" actions). The keyframes live in JSON and are
+// evaluated through the shared animation library; a compact built-in copy is
+// compiled in so the swing works even before any resource pack is loaded, and
+// `load` can override it from `resources/animation/held_item.animation.json`.
+//
+// The action timeline lives in gameplay (PlayerActionState, tick-driven), so
+// this class is a pure function of (action, progress) each frame: the caller
+// supplies the normalised clip progress and the pose is sampled from it. There
+// is no frame-time clock here, which is what makes the swing consume the same
+// ticks at any frame rate.
 class ModelAnimationSystem final {
   public:
     ModelAnimationSystem();
@@ -46,24 +52,20 @@ class ModelAnimationSystem final {
     // present. Failures leave the built-in clips in place.
     void load(const std::filesystem::path& animationDirectory);
 
-    void trigger(ModelAction action);
-    void update(float deltaSeconds);
+    // Samples the action's clip at `progress` in [0, 1], or clears the pose for
+    // None. The caller derives progress from the tick-owned action timeline.
+    void setAction(ModelAction action, float progress);
 
     [[nodiscard]] bool active() const { return action_ != ModelAction::None; }
     [[nodiscard]] ModelAction action() const { return action_; }
     [[nodiscard]] const ModelPose& pose() const { return pose_; }
 
   private:
-    // An action gameplay owns the lifetime of (eating runs for the vanilla
-    // 32-tick meal, or until the button is released), as opposed to a one-shot
-    // swing that ends with its clip.
-    [[nodiscard]] static bool held(ModelAction action) { return action == ModelAction::Eat; }
     [[nodiscard]] const AnimationClip* clipFor(ModelAction action) const;
-    void sample();
+    void sample(float progress);
 
     AnimationLibrary library_;
     ModelAction action_ = ModelAction::None;
-    float elapsedSeconds_ = 0.0F;
     ModelPose pose_{};
 };
 

@@ -105,7 +105,6 @@ class WorldRenderer final {
     CameraPerspective& cameraPerspective;
     float& worldBodyYaw;
     ParticleSystem& particleSystem;
-    bool& breakButtonHeld;
     bool& inventoryOpen;
     bool& spawnPositionInitialized;
     bool& worldReady;
@@ -114,8 +113,6 @@ class WorldRenderer final {
     bool& dropWholeStack;
     bool& chatOpen;
     std::optional<world::VoxelRaycastHit>& targetedBlock;
-    std::optional<glm::ivec3>& miningTarget;
-    std::uint64_t& miningStartedTick;
     double& renderTimeSeconds;
     float& renderInterpolationAlpha;
     GLFWwindow*& window;
@@ -215,11 +212,11 @@ class WorldRenderer final {
         worldPlayerAnimator(b.worldPlayerAnimator), chestLidAnimation(b.chestLidAnimation),
         itemDisplayAnimation(b.itemDisplayAnimation), cameraPerspective(b.cameraPerspective),
         worldBodyYaw(b.worldBodyYaw), particleSystem(b.particleSystem),
-        breakButtonHeld(b.breakButtonHeld), inventoryOpen(b.inventoryOpen),
+        inventoryOpen(b.inventoryOpen),
         spawnPositionInitialized(b.spawnPositionInitialized), worldReady(b.worldReady),
         paused(b.paused), dropRequested(b.dropRequested), dropWholeStack(b.dropWholeStack),
-        chatOpen(b.chatOpen), targetedBlock(b.targetedBlock), miningTarget(b.miningTarget),
-        miningStartedTick(b.miningStartedTick), renderTimeSeconds(b.renderTimeSeconds),
+        chatOpen(b.chatOpen), targetedBlock(b.targetedBlock),
+        renderTimeSeconds(b.renderTimeSeconds),
         renderInterpolationAlpha(b.renderInterpolationAlpha), window(b.window),
         instance(b.instance), surface(b.surface), device(b.device), allocator(b.allocator),
         resources_(b.resources_), textures_(b.textures_),
@@ -1611,12 +1608,15 @@ class WorldRenderer final {
 
 
     void drawMiningProgress(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
-        if (uiFrameData_.gameMode != gameplay::GameMode::Survival || !breakButtonHeld ||
-            !miningTarget.has_value() || !targetedBlock.has_value() ||
-            *miningTarget != targetedBlock->block) {
+        // Read this inside the frame's WorldLock section. Keeping a value copy in
+        // Bindings froze the snapshot at WorldRenderer construction time, which
+        // meant it stayed inactive forever and no destroy stage was ever drawn.
+        const auto digSnapshot = gameSession.interaction().digSnapshot();
+        if (uiFrameData_.gameMode != gameplay::GameMode::Survival || !digSnapshot.active ||
+            !targetedBlock.has_value() || digSnapshot.target != targetedBlock->block) {
             return;
         }
-        const auto block = *miningTarget;
+        const auto block = digSnapshot.target;
         const auto target = interactionWorld.block(block.x, block.y, block.z);
         const float duration = gameplay::miningSeconds(target, uiFrameData_.selectedStack,
                                                        gameSession.player().inWater(),
@@ -1629,7 +1629,7 @@ class WorldRenderer final {
         const auto durationTicks =
             static_cast<float>(duration) * static_cast<float>(world::DayNightCycle::kTicksPerSecond);
         const float elapsedTicks =
-            static_cast<float>(gameSession.serverTick() - miningStartedTick) +
+            static_cast<float>(gameSession.serverTick() - digSnapshot.startedTick) +
             renderInterpolationAlpha;
         const float progress = std::clamp(elapsedTicks / durationTicks, 0.0F, 0.999F);
         // ClientPlayerInteractionManager reports (progress * 10) - 1, so the first
@@ -2107,7 +2107,6 @@ class WorldRenderer final {
   CameraPerspective& cameraPerspective;
   float& worldBodyYaw;
   ParticleSystem& particleSystem;
-  bool& breakButtonHeld;
   bool& inventoryOpen;
   bool& spawnPositionInitialized;
   bool& worldReady;
@@ -2116,8 +2115,6 @@ class WorldRenderer final {
   bool& dropWholeStack;
   bool& chatOpen;
   std::optional<world::VoxelRaycastHit>& targetedBlock;
-  std::optional<glm::ivec3>& miningTarget;
-  std::uint64_t& miningStartedTick;
   double& renderTimeSeconds;
   float& renderInterpolationAlpha;
   GLFWwindow*& window;
