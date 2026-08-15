@@ -13,6 +13,10 @@ void PlayerActionState::swingHand(InteractionHand hand, SwingAnimation animation
     if (swing.active && swing.progress < 0.5F) {
         return;
     }
+    // A restart is a NEW action: sequence bumps, both endpoints reset. The
+    // renderer must not interpolate across the sequence change (that would
+    // lerp the arm back from the apex — a visible replay); it snaps to the new
+    // swing's start instead.
     swing = SwingState{};
     swing.hand = hand;
     swing.animation = animation;

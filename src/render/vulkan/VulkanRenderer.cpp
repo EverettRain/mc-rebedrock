@@ -46,6 +46,7 @@
 #include "runtime/GameRuntime.hpp"
 #include "render/ParticleSystem.hpp"
 #include "render/PerspectiveCamera.hpp"
+#include "render/player/PlayerRenderState.hpp"
 #include "render/RainSystem.hpp"
 #include "render/StreamingBudget.hpp"
 #include "ui/BitmapFontMetrics.hpp"
@@ -1315,28 +1316,31 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // inside the fixed sim tick (gated there by doDaylightCycle), so all
                 // that is left here is the frame-local animation clock.
                 renderTimeSeconds += static_cast<double>(deltaSeconds);
-                // The held-item pose is sampled from the tick-owned action
-                // timeline, so the swing/use progress is FPS-independent: gameplay
-                // advances PlayerActionState once per tick, and this frame picks
-                // the clip and normalised progress from it.
+                // The held-item pose is sampled from the per-tick player snapshot
+                // (published under the sim's write lock), interpolated with THIS
+                // frame's partial tick — never the previous frame's alpha. The
+                // extractor snaps across a swing restart (sequence change) so the
+                // arm never replays back from the apex.
                 {
-                    const auto& playerActions = gameSession.playerActions();
-                    if (playerActions.use.active) {
-                        const float useProgress = playerActions.use.durationTicks > 0U
-                                                     ? 1.0F -
-                                                           static_cast<float>(
-                                                               playerActions.use.remainingTicks) /
-                                                               static_cast<float>(
-                                                                   playerActions.use.durationTicks)
-                                                     : 1.0F;
+                    // Copy the coherent snapshot under a read section, then render
+                    // purely from the copy.
+                    const auto playerSnapshot = [&] {
+                        const auto snapshotRead = worldLock.read();
+                        return gameSession.playerTickSnapshot();
+                    }();
+                    const float currentAlpha = simulationDriver.interpolationAlpha();
+                    const auto frame =
+                        render::player::extractPlayerRenderState(playerSnapshot, currentAlpha,
+                                                                 lastSwingSequence_);
+                    if (frame.use.active) {
                         heldItemAnimation.setAction(animation::ModelAction::Eat,
-                                                    std::clamp(useProgress, 0.0F, 1.0F));
-                    } else if (playerActions.swing.active) {
+                                                    std::clamp(frame.use.progress, 0.0F, 1.0F));
+                    } else if (frame.swing.active) {
                         heldItemAnimation.setAction(
-                            playerActions.swing.animation == gameplay::SwingAnimation::Use
+                            frame.swing.animation == gameplay::SwingAnimation::Use
                                 ? animation::ModelAction::Use
                                 : animation::ModelAction::Break,
-                            playerActions.swing.progress);
+                            frame.swing.progress);
                     } else {
                         heldItemAnimation.setAction(animation::ModelAction::None, 0.0F);
                     }
@@ -6126,6 +6130,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // The aim ray's nearest creature, computed with the block target each frame;
     // the input handlers package it into the destroy command.
     std::optional<gameplay::EntityRayHit> creatureHit;
+    // The swing sequence the held-item bridge sampled last frame, so a restart
+    // (sequence change) snaps instead of interpolating the arm back.
+    std::optional<std::uint64_t> lastSwingSequence_;
     std::string chatInputText;
     ui::ChatHistory chatHistory;
     // Tab completion state for the open chat line: the candidates for the token

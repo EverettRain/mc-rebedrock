@@ -20,6 +20,10 @@ simple versioned history while it is in beta.
   `GameCommand`s and are applied by `PlayerInteraction` during the authoritative
   tick. `PlayerActionState` supplies the tick-owned swing and held-use timeline,
   leaving the renderer to consume its snapshot.
+- Player controllers, inventories, vitals, crafting, game modes, input and
+  action timelines now live in authoritative `ServerPlayer` records indexed by
+  stable `PlayerId`s. The local player uses the same container, establishing a
+  concrete data boundary for adding more connected clients later.
 - Natural spawning now uses 26.1-style weighted tables split by biome and mob
   category, with built-in vanilla weights and group sizes for pigs, cows and
   zombies. Packs may override an individual biome through
@@ -41,6 +45,11 @@ simple versioned history while it is in beta.
   clock. They sample gameplay's tick-owned action progress as a pure input, so
   the same operation consumes the same ticks at every frame rate and its visible
   motion stays aligned with the interaction decision.
+- Player rendering now consumes an atomically published `PlayerTickSnapshot`
+  each gameplay tick and uses the current frame's partial tick to interpolate
+  position, stride, speed, swings and item use without reading live player
+  objects during simulation. Consecutive swings carry action sequences so a
+  restart snaps to its own beginning instead of visibly replaying backwards.
 - Natural spawning now spreads simulation-radius-scaled column samples across
   categories every tick and chooses species with integer weights, replacing a
   burst of three surface scans once per second. Block light continues to

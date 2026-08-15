@@ -44,6 +44,9 @@ int main() {
         assert(state.swing.sequence == sequence + 1U);  // restarted past halfway
         assert(state.swing.elapsedTicks == 0U);
         assert(state.swing.progress == 0.0F);
+        // A restart is a new action: the endpoints reset so the renderer must
+        // snap (the sequence is how it tells the two swings apart).
+        assert(state.swing.previousProgress == 0.0F);
     }
 
     // The sequence distinguishes two consecutive completed swings.

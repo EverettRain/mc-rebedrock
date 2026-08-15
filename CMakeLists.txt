@@ -1008,6 +1008,20 @@ if(BUILD_TESTING)
     )
     target_include_directories(mc_rebedrock_player_action_state_test PRIVATE src)
     add_test(NAME player_action_state COMMAND mc_rebedrock_player_action_state_test)
+    add_executable(mc_rebedrock_player_render_state_test
+        tests/player_render_state_test.cpp
+        src/gameplay/PlayerActionState.cpp
+        src/gameplay/PlayerController.cpp
+        src/world/World.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+    )
+    target_include_directories(mc_rebedrock_player_render_state_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME player_render_state COMMAND mc_rebedrock_player_render_state_test)
+
 
     add_executable(mc_rebedrock_mob_spawn_settings_test
         tests/mob_spawn_settings_test.cpp

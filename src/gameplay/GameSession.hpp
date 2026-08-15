@@ -17,7 +17,9 @@
 #include "gameplay/PlayerActionState.hpp"
 #include "gameplay/PlayerController.hpp"
 #include "gameplay/PlayerInteraction.hpp"
+#include "gameplay/PlayerTickSnapshot.hpp"
 #include "gameplay/PlayerVitals.hpp"
+#include "gameplay/ServerPlayer.hpp"
 #include "gameplay/ScreenHandler.hpp"
 #include "gameplay/SimulationHostBridge.hpp"
 #include "gameplay/WeatherSystem.hpp"
@@ -32,6 +34,7 @@
 #include <cstdint>
 #include <mutex>
 #include <optional>
+#include <unordered_map>
 
 namespace mc::world {
 class World;
@@ -140,8 +143,14 @@ class GameSession final {
     // Advanced once per tick inside tick(); the interaction layer drives it with
     // the semantic actions (swingHand / startUsing / stopUsing), and renderers
     // read the state as a snapshot.
-    [[nodiscard]] PlayerActionState& playerActions() { return playerActions_; }
-    [[nodiscard]] const PlayerActionState& playerActions() const { return playerActions_; }
+    [[nodiscard]] PlayerActionState& playerActions() { return primaryPlayer().actions; }
+    [[nodiscard]] const PlayerActionState& playerActions() const { return primaryPlayer().actions; }
+    // The player state published once per tick under the world write lock. The
+    // render thread reads this snapshot (under a read lock) and interpolates it
+    // with its own frame alpha, instead of touching live gameplay objects.
+    [[nodiscard]] const PlayerTickSnapshot& playerTickSnapshot() const {
+        return playerTickSnapshot_;
+    }
 
     // The render thread enqueues input intents here; GameSession::tick drains
     // them into PlayerInteraction, which applies them once per tick.
@@ -156,7 +165,7 @@ class GameSession final {
     // value to mob despawning and natural spawning, so update both together.
     void setDifficulty(Difficulty difficulty) {
         difficulty_ = difficulty;
-        vitals_.setDifficulty(difficulty);
+        primaryPlayer().vitals.setDifficulty(difficulty);
     }
     // Simulation distance (blocks, horizontal): creatures beyond it are frozen
     // every tick but stay rendered and targetable. Default 64 (4 chunks) keeps
@@ -203,29 +212,38 @@ class GameSession final {
     void setForwardPressed();
     void clearInputEdges();
 
+    // The single local player's authoritative state. N2 packs every player
+    // into the slot map; the render accessors below are single-player shortcuts
+    // that keep the existing call sites working until N3's snapshots replace
+    // them.
+    [[nodiscard]] ServerPlayer& primaryPlayer() { return players_.at(kPrimaryPlayerId); }
+    [[nodiscard]] const ServerPlayer& primaryPlayer() const {
+        return players_.at(kPrimaryPlayerId);
+    }
+
     // ---- Render accessors (inline so hot render paths pay nothing) ----
     // Mutable references: the interactive layer stays in the renderer for now
     // and reads/writes the session's systems through these. The simulation's
     // own code uses the private fields directly.
-    [[nodiscard]] PlayerController& player() { return player_; }
-    [[nodiscard]] const PlayerController& player() const { return player_; }
+    [[nodiscard]] PlayerController& player() { return primaryPlayer().controller; }
+    [[nodiscard]] const PlayerController& player() const { return primaryPlayer().controller; }
     // The input the *main thread* writes each frame. It is staged, not live:
     // the simulation reads its own copy, published by commitInput() under the
     // mutex. Once the tick runs on its own thread this is what stops a
     // half-written keyboard state from being read mid-tick.
-    [[nodiscard]] PlayerInput& input() { return stagedInput_; }
-    [[nodiscard]] const PlayerInput& input() const { return stagedInput_; }
+    [[nodiscard]] PlayerInput& input() { return primaryPlayer().stagedInput; }
+    [[nodiscard]] const PlayerInput& input() const { return primaryPlayer().stagedInput; }
     // Publishes the staged input to the simulation. Called once a frame by the
     // renderer, after the keyboard has been sampled.
     void commitInput();
-    [[nodiscard]] PlayerVitals& vitals() { return vitals_; }
-    [[nodiscard]] const PlayerVitals& vitals() const { return vitals_; }
-    [[nodiscard]] Inventory& inventory() { return inventory_; }
-    [[nodiscard]] const Inventory& inventory() const { return inventory_; }
-    [[nodiscard]] CraftingSystem& craftingSystem() { return craftingSystem_; }
-    [[nodiscard]] const CraftingSystem& craftingSystem() const { return craftingSystem_; }
-    [[nodiscard]] GameMode& gameMode() { return gameMode_; }
-    [[nodiscard]] GameMode gameMode() const { return gameMode_; }
+    [[nodiscard]] PlayerVitals& vitals() { return primaryPlayer().vitals; }
+    [[nodiscard]] const PlayerVitals& vitals() const { return primaryPlayer().vitals; }
+    [[nodiscard]] Inventory& inventory() { return primaryPlayer().inventory; }
+    [[nodiscard]] const Inventory& inventory() const { return primaryPlayer().inventory; }
+    [[nodiscard]] CraftingSystem& craftingSystem() { return primaryPlayer().crafting; }
+    [[nodiscard]] const CraftingSystem& craftingSystem() const { return primaryPlayer().crafting; }
+    [[nodiscard]] GameMode& gameMode() { return primaryPlayer().gameMode; }
+    [[nodiscard]] GameMode gameMode() const { return primaryPlayer().gameMode; }
     [[nodiscard]] GameRules& gameRules() { return gameRules_; }
     [[nodiscard]] const GameRules& gameRules() const { return gameRules_; }
     // Where the simulation publishes its four event classes. Subscribers do the
@@ -294,30 +312,30 @@ class GameSession final {
     // The player's personal spawn point (ServerPlayerEntity#spawnPointPosition):
     // /spawnpoint sets it, death respawns there before the world spawn, and it
     // is persisted with the save.
-    [[nodiscard]] glm::vec3& playerSpawnPosition() { return playerSpawnPosition_; }
-    [[nodiscard]] const glm::vec3& playerSpawnPosition() const { return playerSpawnPosition_; }
-    [[nodiscard]] float& playerSpawnYaw() { return playerSpawnYaw_; }
-    [[nodiscard]] float playerSpawnYaw() const { return playerSpawnYaw_; }
-    [[nodiscard]] bool& hasPlayerSpawn() { return hasPlayerSpawn_; }
-    [[nodiscard]] bool hasPlayerSpawn() const { return hasPlayerSpawn_; }
-    [[nodiscard]] glm::vec3& physicsPreviousPosition() { return physicsPreviousPosition_; }
+    [[nodiscard]] glm::vec3& playerSpawnPosition() { return primaryPlayer().spawnPosition; }
+    [[nodiscard]] const glm::vec3& playerSpawnPosition() const { return primaryPlayer().spawnPosition; }
+    [[nodiscard]] float& playerSpawnYaw() { return primaryPlayer().spawnYaw; }
+    [[nodiscard]] float playerSpawnYaw() const { return primaryPlayer().spawnYaw; }
+    [[nodiscard]] bool& hasPlayerSpawn() { return primaryPlayer().hasSpawn; }
+    [[nodiscard]] bool hasPlayerSpawn() const { return primaryPlayer().hasSpawn; }
+    [[nodiscard]] glm::vec3& physicsPreviousPosition() { return primaryPlayer().physicsPrevious; }
     [[nodiscard]] const glm::vec3& physicsPreviousPosition() const {
-        return physicsPreviousPosition_;
+        return primaryPlayer().physicsPrevious;
     }
-    [[nodiscard]] glm::vec3& physicsCurrentPosition() { return physicsCurrentPosition_; }
+    [[nodiscard]] glm::vec3& physicsCurrentPosition() { return primaryPlayer().physicsCurrent; }
     [[nodiscard]] const glm::vec3& physicsCurrentPosition() const {
-        return physicsCurrentPosition_;
+        return primaryPlayer().physicsCurrent;
     }
-    [[nodiscard]] bool& eating() { return eating_; }
-    [[nodiscard]] bool eating() const { return eating_; }
-    [[nodiscard]] const Item*& eatingKind() { return eatingKind_; }
-    [[nodiscard]] const Item* eatingKind() const { return eatingKind_; }
-    [[nodiscard]] int& eatTicks() { return eatTicks_; }
-    [[nodiscard]] int eatTicks() const { return eatTicks_; }
-    [[nodiscard]] float& footstepDistance() { return footstepDistance_; }
-    [[nodiscard]] float footstepDistance() const { return footstepDistance_; }
-    [[nodiscard]] bool& previousInWater() { return previousInWater_; }
-    [[nodiscard]] bool previousInWater() const { return previousInWater_; }
+    [[nodiscard]] bool& eating() { return primaryPlayer().eating; }
+    [[nodiscard]] bool eating() const { return primaryPlayer().eating; }
+    [[nodiscard]] const Item*& eatingKind() { return primaryPlayer().eatingKind; }
+    [[nodiscard]] const Item* eatingKind() const { return primaryPlayer().eatingKind; }
+    [[nodiscard]] int& eatTicks() { return primaryPlayer().eatTicks; }
+    [[nodiscard]] int eatTicks() const { return primaryPlayer().eatTicks; }
+    [[nodiscard]] float& footstepDistance() { return primaryPlayer().footstepDistance; }
+    [[nodiscard]] float footstepDistance() const { return primaryPlayer().footstepDistance; }
+    [[nodiscard]] bool& previousInWater() { return primaryPlayer().previousInWater; }
+    [[nodiscard]] bool previousInWater() const { return primaryPlayer().previousInWater; }
     // The forward double-tap edge is sampled while staging input; access stays
     // under the same mutex used by the tick that consumes it.
     [[nodiscard]] bool forwardPressed() const;
@@ -331,18 +349,11 @@ class GameSession final {
     void consumeEntityEvents();
     [[nodiscard]] bool submergedInWater(const world::World& world, glm::vec3 position) const;
 
-    gameplay::PlayerController player_;
-    // Three copies on purpose: `stagedInput_` is main-thread-only, `sharedInput_`
-    // is the hand-off under `inputMutex_`, and `playerInput_` is the
-    // simulation's own, refreshed at the top of each tick.
-    gameplay::PlayerInput stagedInput_;
-    gameplay::PlayerInput sharedInput_;
-    gameplay::PlayerInput playerInput_;
+    // Every connected player's authoritative state, keyed by stable PlayerId.
+    // ReBedrock today has one local player (kPrimaryPlayerId); remote players
+    // land here at N2's LAN tier.
+    std::unordered_map<PlayerId, ServerPlayer> players_;
     mutable std::mutex inputMutex_;
-    gameplay::PlayerVitals vitals_;
-    gameplay::Inventory inventory_;
-    gameplay::CraftingSystem craftingSystem_;
-    gameplay::GameMode gameMode_ = gameplay::GameMode::Creative;
     gameplay::Difficulty difficulty_ = gameplay::Difficulty::Normal;
     // ServerWorld#tickChunks simulation distance, in blocks (horizontal).
     float simulationRadiusBlocks_ = 64.0F;
@@ -363,27 +374,17 @@ class GameSession final {
     EnvironmentSnapshot environment_{};
 
     glm::vec3 worldSpawnPosition_{24.0F, 76.38F, 24.0F};
-    glm::vec3 playerSpawnPosition_{24.0F, 76.38F, 24.0F};
-    float playerSpawnYaw_ = 0.0F;
-    bool hasPlayerSpawn_ = false;
-    glm::vec3 physicsPreviousPosition_;
-    glm::vec3 physicsCurrentPosition_;
-    float footstepDistance_ = 0.0F;
-    bool previousInWater_ = false;
     bool jumpPressed_ = false;
     bool forwardPressed_ = false;
     std::uint64_t serverTick_ = 0U;
     world::ClockManager clocks_;
     std::uint32_t lootRandomState_ = 0x9E3779B9U;
-    // The swing/use timeline, advanced once per tick alongside serverTick_.
-    PlayerActionState playerActions_;
     // The authoritative interaction, run at the end of each tick.
     PlayerInteraction playerInteraction_;
     GameCommandQueue commandQueue_;
-
-    bool eating_ = false;
-    const Item* eatingKind_ = nullptr;
-    int eatTicks_ = 0;
+    // The per-tick player snapshot, captured at the end of tick() under the
+    // caller's world write lock and read by the render thread each frame.
+    PlayerTickSnapshot playerTickSnapshot_;
 };
 
 } // namespace mc::gameplay
