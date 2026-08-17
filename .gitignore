@@ -31,7 +31,8 @@ build/
 cmake-build-*/
 compile_commands.json
 -d=/
-net/
+# 根级误建的 net/ 构建产物（源码 src/net/ 不受此规则影响）
+/net/
 # 备份文件
 *.bak
 # 编译产物兜底（正常只出现在 build/ 内）

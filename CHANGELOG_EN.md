@@ -62,6 +62,13 @@ simple versioned history while it is in beta.
   truncated or unknown content is rejected safely. Commands, events and the
   server-to-client mirror therefore have a protocol boundary ready for a
   loopback or TCP transport.
+- A transport layer was introduced (`src/net/`): a single message stream carries
+  commands, snapshots and events over a `MessageChannel`, framed by the shared
+  binary codec and routed by tag, plus an in-process loopback pair of channels
+  modelled on the vanilla local connection. A headless test drives the full
+  command → tick → snapshot round trip through the byte channel against a real
+  game session — the groundwork for single-player to run the same
+  client/server message path a networked client will.
 - Optional slow-frame and resident-memory diagnostics were added:
   `MC_REBEDROCK_FRAME_TRACE=1` reports overruns by persistence, locking, GPU
   fence, event-drain and other stages, while `MC_REBEDROCK_MEMORY_REPORT=1`
