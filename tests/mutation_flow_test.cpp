@@ -260,7 +260,7 @@ int main() {
         session.setEventHost(host);
         GameplayMutationSink sink{world, session};
         const auto result = session.worldMutations().setBlock(
-            world, {5, -1, 5}, BlockState{Block::Stone}, MutationFlags::All,
+            world, {5, mc::world::kMinY - 1, 5}, BlockState{Block::Stone}, MutationFlags::All,
             MutationCause::Command, sink);
         REQUIRE(!result.changed);
         session.drainEvents();

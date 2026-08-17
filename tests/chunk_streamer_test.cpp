@@ -33,6 +33,24 @@ int main() {
     assert(mc::world::chunkPositionFromWorld(-16.01F, -16.0F) ==
            (mc::world::ChunkPosition{-2, -1}));
 
+    // Streamed terrain is shared read-only across worlds. A mutation detaches
+    // only the receiving chunk and cannot write back into the source world.
+    {
+        mc::world::World source;
+        mc::world::Chunk chunk;
+        chunk.setBlock(1, 64, 1, mc::world::Block::Stone);
+        source.setChunk({0, 0}, std::move(chunk));
+        const auto shared = source.sharedChunk({0, 0});
+        assert(shared != nullptr);
+        mc::world::World client;
+        client.setChunk({0, 0}, shared);
+        assert(client.sharedChunk({0, 0}) == shared);
+        assert(client.setBlock(1, 64, 1, mc::world::Block::Dirt));
+        assert(client.block(1, 64, 1) == mc::world::Block::Dirt);
+        assert(source.block(1, 64, 1) == mc::world::Block::Stone);
+        assert(client.sharedChunk({0, 0}) != source.sharedChunk({0, 0}));
+    }
+
     const auto radiusTwo = mc::world::chunkPositionsInRadius({3, -2}, 2);
     assert(radiusTwo.size() == 25U);
     assert(radiusTwo.front() == (mc::world::ChunkPosition{1, -4}));
@@ -74,10 +92,11 @@ int main() {
     auto shifted = waitForBatch(streamer);
     assert(shifted.has_value());
     assert(shifted->loadedChunkCount == 1U);
-    // Sixteen removal records plus only non-empty sections for the newly
-    // generated chunk; empty sections are not useful GPU uploads.
-    assert(shifted->sectionUpdates.size() > 16U);
-    assert(shifted->sectionUpdates.size() < 32U);
+    // Twenty-four removal records (one per section of the 384-tall column) plus
+    // only non-empty sections for the newly generated chunk; empty sections are
+    // not useful GPU uploads.
+    assert(shifted->sectionUpdates.size() > 24U);
+    assert(shifted->sectionUpdates.size() < 48U);
 
     const auto epoch = streamer.resetWorld(0xBEEFULL, {{2, 200, 3, mc::world::BlockState{mc::world::Block::Bricks}}});
     streamer.request({0, 0});
@@ -85,7 +104,7 @@ int main() {
     assert(restored.has_value());
     assert(restored->worldEpoch == epoch);
     assert(restored->chunkUpdates.size() == 1U);
-    assert(restored->chunkUpdates.front().chunk.block(2, 200, 3) == mc::world::Block::Bricks);
+    assert(restored->chunkUpdates.front().chunk->block(2, 200, 3) == mc::world::Block::Bricks);
 
     // Runtime edits remain authoritative after their chunk is unloaded and
     // regenerated during the same world session.
@@ -103,7 +122,7 @@ int main() {
             return !update.remove && update.position == mc::world::ChunkPosition{0, 0};
         });
     assert(reloadedChunk != reloaded->chunkUpdates.end());
-    assert(reloadedChunk->chunk.block(2, 200, 3) == mc::world::Block::Glowstone);
+    assert(reloadedChunk->chunk->block(2, 200, 3) == mc::world::Block::Glowstone);
 
     streamer.setRadii(1, 2);
     assert(streamer.loadRadius() == 1);

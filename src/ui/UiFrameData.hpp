@@ -2,8 +2,10 @@
 
 #include "gameplay/GameMode.hpp"
 #include "gameplay/Inventory.hpp"
+#include "gameplay/ScreenHandler.hpp"
 
 #include <cstddef>
+#include <optional>
 
 namespace mc::gameplay {
 class GameSession;
@@ -27,6 +29,8 @@ struct UiFrameData final {
     bool eating = false;
     gameplay::ItemStack selectedStack{};
     std::size_t selectedHotbarSlot = 0;
+    gameplay::ContainerScreen containerScreen = gameplay::ContainerScreen::PlayerInventory;
+    std::optional<gameplay::ChestPosition> activeChest;
 };
 
 } // namespace mc::ui

@@ -66,8 +66,9 @@ int main() {
         before.previousProgress = 2.0F / 6.0F;
         before.progress = 3.0F / 6.0F;
         std::optional<std::uint64_t> last{7U};
-        // Consume the old swing so last tracks sequence 7.
-        render::player::interpolateSwing(before, 0.5F, last);
+        // Consume the old swing so last tracks sequence 7 (the interpolated pose
+        // itself is irrelevant here — the call advances `last`).
+        static_cast<void>(render::player::interpolateSwing(before, 0.5F, last));
 
         gameplay::SwingState restarted;
         restarted.active = true;

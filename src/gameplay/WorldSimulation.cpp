@@ -113,7 +113,7 @@ bool isCollectableWaterSource(
 }
 
 void WorldSimulation::queueSand(SimulationPosition position) {
-    if (position.y > 0 && position.y < world::kWorldHeight) {
+    if (position.y > world::kMinY && position.y < world::kMaxY) {
         // Two properties of the flat deque this replaced, both expressed as the
         // due tick rather than as a flag:
         //   * No de-duplication — the same cell could be queued twice and each
@@ -129,7 +129,7 @@ void WorldSimulation::queueSand(SimulationPosition position) {
 
 void WorldSimulation::queueWater(SimulationPosition position, std::uint8_t level) {
     static_cast<void>(level);
-    if (position.y < 0 || position.y >= world::kWorldHeight) {
+    if (!world::isWorldYInRange(position.y)) {
         return;
     }
     // WaterFluid#getTickRate is five game ticks in Java 1.16.1. Store the
@@ -139,7 +139,7 @@ void WorldSimulation::queueWater(SimulationPosition position, std::uint8_t level
 }
 
 void WorldSimulation::queueSupportCheck(SimulationPosition position) {
-    if (position.y < 0 || position.y >= world::kWorldHeight) {
+    if (!world::isWorldYInRange(position.y)) {
         return;
     }
     static_cast<void>(ticks_.schedule(TickTask::SupportCheck, position, tickCount_));
@@ -152,7 +152,7 @@ void WorldSimulation::queueNeighborSupportChecks(SimulationPosition position) {
 }
 
 void WorldSimulation::queueLeafDecay(SimulationPosition position) {
-    if (position.y < 0 || position.y >= world::kWorldHeight || randomTickSpeed_ <= 0 ||
+    if (!world::isWorldYInRange(position.y) || randomTickSpeed_ <= 0 ||
         ticks_.contains(TickTask::LeafDecay, position)) {
         return;
     }
@@ -345,7 +345,7 @@ void WorldSimulation::randomTicks(world::World& world, std::vector<BlockChange>&
                 }
                 const SimulationPosition position{
                     chunkPosition.x * world::kChunkWidth + localX,
-                    sectionY * world::kSectionSize + localY,
+                    world::sectionOriginY(sectionY) + localY,
                     chunkPosition.z * world::kChunkDepth + localZ,
                 };
                 randomTickBlock(world, position, drawn, changes);
@@ -413,7 +413,7 @@ void WorldSimulation::randomTickGrass(
             position.y + static_cast<int>(nextBounded(randomTickState_, 5U)) - 3,
             position.z + static_cast<int>(nextBounded(randomTickState_, 3U)) - 1,
         };
-        if (target.y < 0 || target.y >= world::kWorldHeight) {
+        if (!world::isWorldYInRange(target.y)) {
             continue;
         }
         if (world.block(target.x, target.y, target.z) != world::Block::Dirt) {
@@ -426,7 +426,7 @@ void WorldSimulation::randomTickGrass(
         // be able to hold grass itself, but that survival check is physical
         // opacity/fluid state rather than the current day/night brightness.
         const SimulationPosition targetAbove{target.x, target.y + 1, target.z};
-        if (targetAbove.y >= world::kWorldHeight ||
+        if (targetAbove.y >= world::kMaxY ||
             world::opacity(world.block(targetAbove.x, targetAbove.y, targetAbove.z)) > 2) {
             continue;
         }
@@ -477,7 +477,7 @@ float WorldSimulation::availableMoisture(
     // the eight neighbours. Nine moist farmland blocks total about 10.
     float moisture = 1.0F;
     const SimulationPosition below{position.x, position.y - 1, position.z};
-    if (below.y < 0) {
+    if (below.y < world::kMinY) {
         return moisture;
     }
     for (int dz = -1; dz <= 1; ++dz) {
@@ -521,7 +521,7 @@ bool WorldSimulation::cropOnTop(
     const world::World& world,
     SimulationPosition position) {
     const SimulationPosition above{position.x, position.y + 1, position.z};
-    if (above.y >= world::kWorldHeight) {
+    if (above.y >= world::kMaxY) {
         return false;
     }
     return world::isCrop(world.block(above.x, above.y, above.z));
@@ -602,7 +602,7 @@ void WorldSimulation::randomTickFarmland(
 }
 
 void WorldSimulation::queueTreeGrowth(SimulationPosition position) {
-    if (position.y < 0 || position.y >= world::kWorldHeight ||
+    if (!world::isWorldYInRange(position.y) ||
         ticks_.contains(TickTask::TreeGrowth, position)) {
         return;
     }
@@ -674,7 +674,7 @@ void WorldSimulation::growTreeAt(
             return world_.block(x, y, z);
         }
         bool setState(int x, int y, int z, world::BlockState value) override {
-            if (y < 0 || y >= world::kWorldHeight) {
+            if (!world::isWorldYInRange(y)) {
                 return false;
             }
             // A grown tree is a world edit like any other, so its trunk and
@@ -1002,9 +1002,9 @@ std::vector<BlockChange> WorldSimulation::tick(
         // top as a collision instead of sampling the air cell above it.
         constexpr float kContactEpsilon = 1.0e-4F;
         const int highestCandidate = std::min(
-            world::kWorldHeight - 1,
+            world::kMaxY - 1,
             static_cast<int>(std::floor(previousBottom - kContactEpsilon)));
-        const int lowestCandidate = std::max(0, static_cast<int>(std::floor(nextBottom)));
+        const int lowestCandidate = std::max(world::kMinY, static_cast<int>(std::floor(nextBottom)));
         std::optional<int> collisionY;
         for (int candidateY = highestCandidate; candidateY >= lowestCandidate; --candidateY) {
             if (!world::hasCollision(world.block(blockX, candidateY, blockZ))) {
@@ -1090,7 +1090,7 @@ std::vector<BlockChange> WorldSimulation::tick(
         const SimulationPosition below{
             position.x, position.y - 1, position.z};
         bool flowedDown = false;
-        if (below.y >= 0 && waterCanReplace(world, below)) {
+        if (below.y >= world::kMinY && waterCanReplace(world, below)) {
             setSimulatedBlock(
                 world, below, world::Block::Water, changes, kFallingWaterLevel);
             queueWater(below, kFallingWaterLevel);

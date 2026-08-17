@@ -176,38 +176,62 @@ int main() {
         assert(reloaded.burnTicks == 640 && reloaded.initialBurnTicks == 1600);
         assert(reloaded.cookTicks == 75 && reloaded.cookDurationTicks == 200);
     }
-    // The ENTITY block round-trips the herd, species resolved by name later.
+    // The herd round-trips per chunk now — entities ride in their chunk's region
+    // record — so the order they come back in is the region file order, not the
+    // save order. Look each one up by species instead of by index.
     assert(loaded.entities.size() == 2U);
-    assert(loaded.entities[0].species == "pig");
-    assert(loaded.entities[0].x == 10.0F && loaded.entities[0].y == 64.0F &&
-           loaded.entities[0].z == 8.0F);
-    assert(loaded.entities[0].yaw == 0.5F);
-    assert(loaded.entities[0].health == 10.0F);
-    assert(loaded.entities[0].ageTicks == 120U);
-    assert(loaded.entities[0].rngState == 0x1234U);
-    assert(loaded.entities[1].species == "zombie");
-    assert(loaded.entities[1].angerTicks == 40);
-    assert(loaded.entities[1].rngState == 0xABCDU);
+    const auto entityBySpecies = [&](const char* species) -> const persistence::PersistentEntity* {
+        for (const auto& entity : loaded.entities) {
+            if (entity.species == species) {
+                return &entity;
+            }
+        }
+        return nullptr;
+    };
+    const auto* pig = entityBySpecies("pig");
+    const auto* zombie = entityBySpecies("zombie");
+    assert(pig != nullptr);
+    assert(pig->x == 10.0F && pig->y == 64.0F && pig->z == 8.0F);
+    assert(pig->yaw == 0.5F);
+    assert(pig->health == 10.0F);
+    assert(pig->ageTicks == 120U);
+    assert(pig->rngState == 0x1234U);
+    assert(zombie != nullptr);
+    assert(zombie->angerTicks == 40);
+    assert(zombie->rngState == 0xABCDU);
 
-    // Blocks travel as namespaced identifiers now, so the world.dat payload
-    // literally contains them and a renumbered enum cannot silently reinterpret
-    // an old save.
-    {
+    // Blocks travel as namespaced identifiers now, so the payload literally
+    // contains them and a renumbered enum cannot silently reinterpret an old
+    // save. Block edits live in region/ files since M-3; block entities and the
+    // non-default rule stay in world.dat.
+    const auto worldDat = [&] {
         std::ifstream data{root / save.summary.identifier / "world.dat", std::ios::binary};
-        const std::string bytes{std::istreambuf_iterator<char>{data},
-                                std::istreambuf_iterator<char>{}};
-        assert(bytes.find("rebedrock:furnace") != std::string::npos);
-        assert(bytes.find("rebedrock:water") != std::string::npos);
-        assert(bytes.find("rebedrock:chest") != std::string::npos);
-        // Items travel the same way.
-        assert(bytes.find("rebedrock:book") != std::string::npos);
-        // Only the content the save mentions is written, not the whole registry.
-        assert(bytes.find("rebedrock:granite") == std::string::npos);
-        assert(bytes.find("rebedrock:feather") == std::string::npos);
-        // The non-default randomTickSpeed travels as a named entry in the
-        // GameRules block.
-        assert(bytes.find("randomTickSpeed") != std::string::npos);
-    }
+        return std::string{std::istreambuf_iterator<char>{data},
+                           std::istreambuf_iterator<char>{}};
+    }();
+    const auto regionBytes = [&] {
+        std::string all;
+        for (const auto& entry :
+             std::filesystem::directory_iterator(root / save.summary.identifier / "region")) {
+            std::ifstream data{entry.path(), std::ios::binary};
+            all += std::string{std::istreambuf_iterator<char>{data},
+                               std::istreambuf_iterator<char>{}};
+        }
+        return all;
+    }();
+    // The edit states (furnace, water) ride in the region files.
+    assert(regionBytes.find("rebedrock:furnace") != std::string::npos);
+    assert(regionBytes.find("rebedrock:water") != std::string::npos);
+    // The chest block entity and its item palette stay in world.dat.
+    assert(worldDat.find("rebedrock:chest") != std::string::npos);
+    assert(worldDat.find("rebedrock:book") != std::string::npos);
+    // Only the content the save mentions is written, not the whole registry.
+    assert(regionBytes.find("rebedrock:granite") == std::string::npos);
+    assert(worldDat.find("rebedrock:granite") == std::string::npos);
+    assert(worldDat.find("rebedrock:feather") == std::string::npos);
+    // The non-default randomTickSpeed travels as a named entry in the GameRules
+    // block.
+    assert(worldDat.find("randomTickSpeed") != std::string::npos);
 
     // Game rule storage is sparse: a brand-new world, whose rules are all at
     // their defaults, writes a GameRules block with zero entries and no rule
@@ -582,11 +606,18 @@ int main() {
             game.edits.push_back(edit);
         }
         repository.save(game);
-        const auto path = repository.root() / game.summary.identifier / "world.dat";
+        // M-3: the edits live in the chunk's region file now, not world.dat —
+        // so measure the region file the thousand edits land in (all in chunk
+        // (0,0), region (0,0)). Five bytes a record plus the palettes and the
+        // chunk frames; format 16's 17-byte records could not have fitted this
+        // under 17'000 bytes for the edits alone.
+        const auto path = repository.root() / game.summary.identifier / "region" / "r.0.0.cache";
         const auto size = std::filesystem::file_size(path);
-        // Five bytes a record plus the fixed blocks; format 16's 17-byte records
-        // could not have fitted this under 17'000 bytes for the edits alone.
         assert(size < 7'000U);
+        // And world.dat is small now that the edit list is out of it.
+        const auto worldDatSize = std::filesystem::file_size(
+            repository.root() / game.summary.identifier / "world.dat");
+        assert(worldDatSize < 7'000U);
         assert(repository.load(game.summary.identifier).edits.size() == 1000U);
     }
 
@@ -827,6 +858,81 @@ int main() {
         assert(loaded.edits[0].state.block() == world::Block::WheatCrops);
         // The property it does know still arrived.
         assert(loaded.edits[0].state.age() == 6);
+    }
+
+    // --- M-3 region files: edits and creatures ride in the chunk's region
+    // record. A world saved now writes region/r.<rx>.<rz>.cache files and keeps
+    // CHNK and ENTY out of world.dat; loading pulls both sources back. ---
+    {
+        auto game = repository.create("Regioned", 28ULL);
+        // Two edits in different chunks of different regions (negative too).
+        game.edits.push_back({-1, 64, -1, world::BlockState{world::Block::Stone}});
+        game.edits.push_back({40, 64, 40, world::BlockState{world::Block::Dirt}});
+        // A creature in each of the same two regions.
+        game.entities.push_back(
+            {"pig", -8.5F, 64.0F, -8.5F, 0.0F, 0.0F, 0.0F, 0.0F, 10.0F, 0, 0U, 0U});
+        game.entities.push_back(
+            {"zombie", 40.5F, 64.0F, 40.5F, 0.0F, 0.0F, 0.0F, 0.0F, 20.0F, 0, 0U, 0U});
+        repository.save(game);
+        const auto saveDirectory = repository.root() / game.summary.identifier;
+        // Chunk (-1,-1) is region (-1,-1); chunk (2,2) is region (0,0).
+        assert(std::filesystem::is_regular_file(saveDirectory / "region" / "r.-1.-1.cache"));
+        assert(std::filesystem::is_regular_file(saveDirectory / "region" / "r.0.0.cache"));
+        // world.dat no longer carries the edit/entity blocks.
+        {
+            std::ifstream data{saveDirectory / "world.dat", std::ios::binary};
+            const std::string bytes{std::istreambuf_iterator<char>{data},
+                                    std::istreambuf_iterator<char>{}};
+            assert(bytes.find("CHNK") == std::string::npos);
+            assert(bytes.find("ENTY") == std::string::npos);
+        }
+        const auto loaded = repository.load(game.summary.identifier);
+        assert(loaded.edits.size() == 2U);
+        assert(loaded.entities.size() == 2U);
+        const auto pig = std::ranges::find_if(loaded.entities, [](const auto& entity) {
+            return entity.species == "pig";
+        });
+        assert(pig != loaded.entities.end());
+        assert(pig->x == -8.5F && pig->z == -8.5F);
+
+        // Reverting every edit and removing every creature prunes the region
+        // file: content that no longer exists must not linger in an old file and
+        // resurrect on the next load.
+        auto reverted = loaded;
+        reverted.edits.clear();
+        reverted.entities.clear();
+        repository.save(reverted);
+        assert(!std::filesystem::exists(saveDirectory / "region" / "r.-1.-1.cache"));
+        assert(!std::filesystem::exists(saveDirectory / "region" / "r.0.0.cache"));
+        const auto reloaded = repository.load(game.summary.identifier);
+        assert(reloaded.edits.empty());
+        assert(reloaded.entities.empty());
+    }
+
+    // --- A torn region file regenerates from seed rather than refusing the
+    // world: a chunk's edits are the regenerable part, unlike world.dat, whose
+    // checksum mismatch refuses to open. ---
+    {
+        auto game = repository.create("TornRegion", 29ULL);
+        game.edits.push_back({0, 64, 0, world::BlockState{world::Block::Stone}});
+        repository.save(game);
+        const auto saveDirectory = repository.root() / game.summary.identifier;
+        const auto regionPath = saveDirectory / "region" / "r.0.0.cache";
+        assert(std::filesystem::is_regular_file(regionPath));
+        {
+            std::fstream data{regionPath, std::ios::binary | std::ios::in | std::ios::out};
+            assert(data);
+            char byte = 0;
+            data.seekg(12);
+            data.read(&byte, 1);
+            data.seekp(12);
+            byte ^= 0x5A;
+            data.write(&byte, 1);
+        }
+        const auto loaded = repository.load(game.summary.identifier);
+        // The corrupted region is skipped; nothing else is lost.
+        assert(loaded.edits.empty());
+        assert(loaded.entities.empty());
     }
 
     return 0;

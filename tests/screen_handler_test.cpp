@@ -183,6 +183,25 @@ void testLookups() {
     REQUIRE(gameplay::ScreenHandler::slotForStorage(slots, &elsewhere) == nullptr);
 }
 
+// Renderer hit testing receives the same geometry and slot identities, but no
+// pointer into simulation-owned inventory or block-entity storage.
+void testGeometryOnlyLayout() {
+    const auto layout = makeLayout();
+    const gameplay::ChestPosition position{0, 64, 0};
+    const gameplay::ScreenContext context{gameplay::ContainerScreen::Chest, position, {},
+                                          gameplay::GameMode::Survival, true};
+    const auto slots = gameplay::ScreenHandler::buildSlotLayout(context, layout);
+    REQUIRE(countKind(slots, gameplay::SlotKind::ChestStorage) ==
+            gameplay::ChestBlockEntity::kSlotCount);
+    REQUIRE(countKind(slots, gameplay::SlotKind::PlayerInventory) ==
+            gameplay::Inventory::kSlotCount);
+    REQUIRE(std::ranges::all_of(slots, [](const gameplay::SlotView& slot) {
+        return slot.storage == nullptr;
+    }));
+    const auto* hit = gameplay::ScreenHandler::slotAt(slots, centreOf(slots.front().rect));
+    REQUIRE(hit != nullptr && hit->kind == gameplay::SlotKind::ChestStorage && hit->index == 0U);
+}
+
 // The routing itself: a click lands on the system that owns the slot's kind,
 // and a shift-click in the player inventory hands the stack to whatever
 // container is open.
@@ -290,6 +309,7 @@ int main() {
     testChestScreen();
     testFurnaceScreen();
     testLookups();
+    testGeometryOnlyLayout();
     testClickRouting();
     testPlayerInventoryQuickMove();
     testCreativeCatalogQuickDiscard();

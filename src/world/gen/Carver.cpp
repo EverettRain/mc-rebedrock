@@ -12,9 +12,11 @@ namespace {
 constexpr float kPi = 3.14159265358979323846F;
 // CaveCarver#getMaxCaveCount.
 constexpr int kMaximumCaveCount = 15;
-// The lowest layer a carver is allowed to break into, so bedrock stays sealed.
+// The lowest layer a carver is allowed to break into, so the terrain's own
+// bottom (y=0, the top of the filled depth below) stays sealed.
 constexpr int kMinimumCarveY = 1;
 // CaveCarver#carveAtPoint: carved cells become lava below this Y, cave air above.
+// The noise lattice still spans 0..255, so the lava table keeps its old depth.
 constexpr int kLavaFloorY = 11;
 
 [[nodiscard]] int floorToInt(double value) {
@@ -157,7 +159,7 @@ bool Carver::isRegionUncarvable(
     for (int localX = minX; localX <= maxX; ++localX) {
         for (int localZ = minZ; localZ <= maxZ; ++localZ) {
             for (int worldY = minY - 1; worldY <= maxY + 1; ++worldY) {
-                if (worldY < 0 || worldY >= kWorldHeight) {
+                if (!isWorldYInRange(worldY)) {
                     continue;
                 }
                 if (chunk.block(localX, worldY, localZ) == Block::Water) {
@@ -176,8 +178,12 @@ void Carver::carveRoom(
     int mainChunkZ,
     double x,
     double y,
+
     double z,
     float width) const {
+    // The room's seed is carried for the vanilla roll that shapes the room; this
+    // carve shares the cave's deterministic shape instead of re-rolling.
+    static_cast<void>(roomSeed);
     const double radius = 1.5 + static_cast<double>(std::sin(kPi * 0.5F) * width);
     // CaveCarver#carveCave: the room sits one block east of the roll, and its
     // vertical radius is half the horizontal one.

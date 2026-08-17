@@ -245,6 +245,10 @@ void NoiseChunkGenerator::buildBaseTerrain(Chunk& chunk, int chunkX, int chunkZ)
                     const double z1x0 = lerp(deltaY, x0z1y0, x0z1y1);
                     const double z0x1 = lerp(deltaY, x1z0y0, x1z0y1);
                     const double z1x1 = lerp(deltaY, x1z1y0, x1z1y1);
+                    // The noise lattice still spans the historical 0..255 rows,
+                    // so the terrain surface keeps its absolute height (near sea
+                    // level) — the 384-tall column's extra depth is filled solid
+                    // below the lattice in the bottom fill loop below.
                     const int worldY = cellY * kVerticalNoiseResolution + blockY;
                     if (worldY >= kWorldHeight) {
                         continue;
@@ -274,16 +278,26 @@ void NoiseChunkGenerator::buildBaseTerrain(Chunk& chunk, int chunkX, int chunkZ)
         }
         previous = current;
     }
+    // The 384-tall column's extra depth below the historical bottom (0): fill
+    // [kMinY, 0) solid so a fall never drops into void. Features::buildSurface
+    // lays the bedrock rows on top of this stone afterwards.
+    for (int y = kMinY; y < 0; ++y) {
+        for (int localX = 0; localX < kChunkWidth; ++localX) {
+            for (int localZ = 0; localZ < kChunkDepth; ++localZ) {
+                chunk.setBlock(localX, y, localZ, Block::Stone);
+            }
+        }
+    }
 }
 
 int NoiseChunkGenerator::surfaceHeight(const Chunk& chunk, int localX, int localZ) const {
-    for (int y = kWorldHeight - 1; y >= 0; --y) {
+    for (int y = kMaxY - 1; y >= kMinY; --y) {
         const auto block = chunk.block(localX, y, localZ);
         if (block != Block::Air && block != Block::Water) {
             return y;
         }
     }
-    return 0;
+    return kMinY;
 }
 
 } // namespace mc::world::gen

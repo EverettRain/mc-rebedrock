@@ -28,7 +28,18 @@ std::size_t ChunkPositionHash::operator()(const ChunkPosition& position) const n
 }
 
 void World::setChunk(ChunkPosition position, Chunk chunk) {
-    chunks_.insert_or_assign(position, std::move(chunk));
+    chunks_.insert_or_assign(position, std::make_shared<Chunk>(std::move(chunk)));
+}
+
+void World::setChunk(ChunkPosition position, std::shared_ptr<const Chunk> chunk) {
+    if (chunk == nullptr) {
+        chunks_.erase(position);
+        return;
+    }
+    // sharedChunk() only exposes const access. Internally World keeps a mutable
+    // handle and chunk() clones before returning a writable pointer whenever
+    // another owner exists.
+    chunks_.insert_or_assign(position, std::const_pointer_cast<Chunk>(std::move(chunk)));
 }
 
 bool World::removeChunk(ChunkPosition position) {
@@ -41,16 +52,25 @@ bool World::hasChunk(ChunkPosition position) const {
 
 const Chunk* World::chunk(ChunkPosition position) const {
     const auto found = chunks_.find(position);
-    return found == chunks_.end() ? nullptr : &found->second;
+    return found == chunks_.end() ? nullptr : found->second.get();
 }
 
 Chunk* World::chunk(ChunkPosition position) {
     const auto found = chunks_.find(position);
-    return found == chunks_.end() ? nullptr : &found->second;
+    if (found == chunks_.end()) return nullptr;
+    if (found->second.use_count() != 1) {
+        found->second = std::make_shared<Chunk>(*found->second);
+    }
+    return found->second.get();
+}
+
+std::shared_ptr<const Chunk> World::sharedChunk(ChunkPosition position) const {
+    const auto found = chunks_.find(position);
+    return found == chunks_.end() ? nullptr : found->second;
 }
 
 Block World::block(int worldX, int y, int worldZ) const {
-    if (y < 0 || y >= kWorldHeight) {
+    if (!isWorldYInRange(y)) {
         return Block::Air;
     }
     const int chunkX = floorDiv(worldX, kChunkWidth);
@@ -75,7 +95,7 @@ gen::Biome World::biomeAt(int worldX, int worldZ) const {
 }
 
 bool World::setBlock(int worldX, int y, int worldZ, Block value) {
-    if (y < 0 || y >= kWorldHeight) {
+    if (!isWorldYInRange(y)) {
         return false;
     }
     const int chunkX = floorDiv(worldX, kChunkWidth);
@@ -97,7 +117,7 @@ BlockState World::state(int worldX, int y, int worldZ) const {
     // block()/orientation()/fluidLevel() each drop the axes they do not carry,
     // and none of them carries LIT, so composing them here silently unlit every
     // furnace. Out-of-world and unloaded columns read as air, as block() does.
-    if (y < 0 || y >= kWorldHeight) {
+    if (!isWorldYInRange(y)) {
         return BlockState{};
     }
     const int chunkX = floorDiv(worldX, kChunkWidth);
@@ -113,7 +133,7 @@ bool World::setState(int worldX, int y, int worldZ, BlockState value) {
     // The whole state in one write. Going through setBlock() first would reset
     // the cell to the block's default state and lose LIT, which setOrientation/
     // setFluidLevel cannot write back — a lit furnace would land unlit.
-    if (y < 0 || y >= kWorldHeight) {
+    if (!isWorldYInRange(y)) {
         return false;
     }
     const int chunkX = floorDiv(worldX, kChunkWidth);
@@ -127,7 +147,7 @@ bool World::setState(int worldX, int y, int worldZ, BlockState value) {
 }
 
 BlockOrientation World::orientation(int worldX, int y, int worldZ) const {
-    if (y < 0 || y >= kWorldHeight) return BlockOrientation::North;
+    if (!isWorldYInRange(y)) return BlockOrientation::North;
     const int chunkX = floorDiv(worldX, kChunkWidth);
     const int chunkZ = floorDiv(worldZ, kChunkDepth);
     const Chunk* owner = chunk({chunkX, chunkZ});
@@ -137,7 +157,7 @@ BlockOrientation World::orientation(int worldX, int y, int worldZ) const {
 }
 
 bool World::setOrientation(int worldX, int y, int worldZ, BlockOrientation value) {
-    if (y < 0 || y >= kWorldHeight) return false;
+    if (!isWorldYInRange(y)) return false;
     const int chunkX = floorDiv(worldX, kChunkWidth);
     const int chunkZ = floorDiv(worldZ, kChunkDepth);
     Chunk* owner = chunk({chunkX, chunkZ});
@@ -148,7 +168,7 @@ bool World::setOrientation(int worldX, int y, int worldZ, BlockOrientation value
 }
 
 std::uint8_t World::fluidLevel(int worldX, int y, int worldZ) const {
-    if (y < 0 || y >= kWorldHeight) {
+    if (!isWorldYInRange(y)) {
         return 0U;
     }
     const int chunkX = floorDiv(worldX, kChunkWidth);
@@ -162,7 +182,7 @@ std::uint8_t World::fluidLevel(int worldX, int y, int worldZ) const {
 }
 
 bool World::setFluidLevel(int worldX, int y, int worldZ, std::uint8_t value) {
-    if (y < 0 || y >= kWorldHeight) {
+    if (!isWorldYInRange(y)) {
         return false;
     }
     const int chunkX = floorDiv(worldX, kChunkWidth);
@@ -177,8 +197,8 @@ bool World::setFluidLevel(int worldX, int y, int worldZ, std::uint8_t value) {
 }
 
 std::uint8_t World::skyLight(int worldX, int y, int worldZ) const {
-    if (y >= kWorldHeight) return 15U;
-    if (y < 0) return 0U;
+    if (y >= kMaxY) return 15U;
+    if (y < kMinY) return 0U;
     const int chunkX = floorDiv(worldX, kChunkWidth);
     const int chunkZ = floorDiv(worldZ, kChunkDepth);
     const Chunk* owner = chunk({chunkX, chunkZ});
@@ -188,7 +208,7 @@ std::uint8_t World::skyLight(int worldX, int y, int worldZ) const {
 }
 
 std::uint8_t World::blockLight(int worldX, int y, int worldZ) const {
-    if (y < 0 || y >= kWorldHeight) return 0U;
+    if (!isWorldYInRange(y)) return 0U;
     const int chunkX = floorDiv(worldX, kChunkWidth);
     const int chunkZ = floorDiv(worldZ, kChunkDepth);
     const Chunk* owner = chunk({chunkX, chunkZ});
@@ -198,8 +218,8 @@ std::uint8_t World::blockLight(int worldX, int y, int worldZ) const {
 }
 
 std::uint8_t World::directSkyLight(int worldX, int y, int worldZ) const {
-    if (y >= kWorldHeight) return 15U;
-    if (y < 0) return 0U;
+    if (y >= kMaxY) return 15U;
+    if (y < kMinY) return 0U;
     const int chunkX = floorDiv(worldX, kChunkWidth);
     const int chunkZ = floorDiv(worldZ, kChunkDepth);
     const Chunk* owner = chunk({chunkX, chunkZ});
@@ -212,7 +232,7 @@ namespace {
 template <typename Setter>
 bool setWorldLight(World& world, int worldX, int y, int worldZ, std::uint8_t value,
                    Setter setter) {
-    if (y < 0 || y >= kWorldHeight) return false;
+    if (!isWorldYInRange(y)) return false;
     const int chunkX = floorDiv(worldX, kChunkWidth);
     const int chunkZ = floorDiv(worldZ, kChunkDepth);
     Chunk* owner = world.chunk({chunkX, chunkZ});
@@ -245,6 +265,29 @@ std::vector<ChunkPosition> World::positions() const {
         return std::pair{position.z, position.x};
     });
     return result;
+}
+
+std::size_t World::residentBytes() const {
+    std::size_t bytes = sizeof(*this);
+    for (const auto& [position, chunkValue] : chunks_) {
+        static_cast<void>(position);
+        bytes += chunkValue->residentBytes() + sizeof(ChunkPosition);
+    }
+    return bytes;
+}
+
+std::size_t World::uniqueResidentBytes() const {
+    std::size_t bytes = sizeof(*this);
+    for (const auto& [position, chunkValue] : chunks_) {
+        static_cast<void>(position);
+        // use_count()==1 means no other World (server/client/worker) still shares
+        // this chunk — it is a real exclusive copy. Shared chunks are physically
+        // one copy and are excluded here so the number is not triple-counted.
+        if (chunkValue.use_count() == 1) {
+            bytes += chunkValue->residentBytes() + sizeof(ChunkPosition);
+        }
+    }
+    return bytes;
 }
 
 } // namespace mc::world

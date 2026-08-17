@@ -25,7 +25,9 @@ struct OreConfiguration final {
 
 constexpr std::array<OreConfiguration, 10> kOreConfigurations{{
     // The stone variants and the dirt/gravel pockets come first, so an ore blob
-    // placed later can still overwrite them.
+    // placed later can still overwrite them. The noise lattice spans 0..255, so
+    // the ore bands keep their historical depths there; the filled depth below
+    // is uniform stone.
     {Block::Dirt, 33, 10, 0, 256},
     {Block::Gravel, 33, 8, 0, 256},
     {Block::Granite, 33, 10, 0, 80},
@@ -160,7 +162,9 @@ int Features::surfaceHeight(const Chunk& chunk, int localX, int localZ) {
             return y;
         }
     }
-    return -1;
+    // No solid surface. −1 is a legal world row now, so the sentinel lives
+    // below the world.
+    return kMinY - 1;
 }
 
 void Features::buildSurface(Chunk& chunk, int chunkX, int chunkZ) const {
@@ -295,7 +299,7 @@ void Features::buildSurface(Chunk& chunk, int chunkX, int chunkZ) const {
     // ChunkGenerator#buildBedrock: five ragged layers at the bottom of the world.
     for (int localZ = 0; localZ < 16; ++localZ) {
         for (int localX = 0; localX < 16; ++localX) {
-            for (int y = 4; y >= 0; --y) {
+            for (int y = kMinY + 4; y >= kMinY; --y) {
                 if (y <= random.nextInt(5)) {
                     chunk.setBlock(localX, y, localZ, Block::Bedrock);
                 }
@@ -527,7 +531,7 @@ void Features::generateVegetation(
                     break;
                 }
             }
-            if (groundY < 0) {
+            if (groundY < kMinY) {
                 continue;
             }
             // RandomFeature picks by weight; the list is already normalised.
@@ -552,14 +556,14 @@ void Features::generateVegetation(
         const int localX = random.nextInt(16);
         const int localZ = random.nextInt(16);
         const int groundY = surfaceHeight(chunk, localX, localZ);
-        if (groundY < 0 || groundY + 1 >= kWorldHeight) continue;
+        if (!isWorldYInRange(groundY) || !isWorldYInRange(groundY + 1)) continue;
         // Feature.RANDOM_PATCH scatters up to 64 tries around the centre.
         for (int attempt = 0; attempt < 24; ++attempt) {
             const int x = localX + random.nextInt(8) - random.nextInt(8);
             const int z = localZ + random.nextInt(8) - random.nextInt(8);
             if (x < 0 || x > 15 || z < 0 || z > 15) continue;
             const int y = surfaceHeight(chunk, x, z);
-            if (y < 0 || y + 1 >= kWorldHeight) continue;
+            if (!isWorldYInRange(y) || !isWorldYInRange(y + 1)) continue;
             if (isSoilForPlants(chunk.block(x, y, z)) && chunk.block(x, y + 1, z) == Block::Air) {
                 chunk.setBlock(x, y + 1, z, Block::GrassPlant);
             }
@@ -570,7 +574,7 @@ void Features::generateVegetation(
         const int x = random.nextInt(16);
         const int z = random.nextInt(16);
         const int y = surfaceHeight(chunk, x, z);
-        if (y < 0 || y + 1 >= kWorldHeight) continue;
+        if (!isWorldYInRange(y) || !isWorldYInRange(y + 1)) continue;
         if (isSoilForPlants(chunk.block(x, y, z)) && chunk.block(x, y + 1, z) == Block::Air) {
             chunk.setBlock(x, y + 1, z, Block::Dandelion);
         }

@@ -73,6 +73,15 @@ class EntityRenderSnapshot final {
     [[nodiscard]] bool empty() const {
         return entities_.empty() && items_.empty() && fallingBlocks_.empty();
     }
+    // The resident bytes the three buffers hold, counting capacity not size:
+    // capture() reuses the capacity across ticks, so this is the steady-state
+    // cost once a population stabilises. The N-Mem budget gate pins a
+    // per-entity ceiling on it.
+    [[nodiscard]] std::size_t residentBytes() const {
+        return sizeof(*this) + entities_.capacity() * sizeof(EntityRenderState) +
+               items_.capacity() * sizeof(ItemEntity) +
+               fallingBlocks_.capacity() * sizeof(FallingBlockEntity);
+    }
     void clear() {
         entities_.clear();
         items_.clear();

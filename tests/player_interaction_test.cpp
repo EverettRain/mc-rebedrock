@@ -96,6 +96,7 @@ int main() {
         for (std::uint64_t tick = 0; tick < expected; ++tick) {
             session.tick(world, host);
         }
+        static_cast<void>(session.drainEvents());
         // The block gave way exactly on the computed tick.
         assert(world.block(5, 1, 5) == world::Block::Air);
         assert(host.blockBreaks == 1);
@@ -119,6 +120,7 @@ int main() {
         use.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
         session.enqueueCommand(std::move(use));
         session.tick(world, host);
+        static_cast<void>(session.drainEvents());
         assert(world.block(5, 2, 5) == world::Block::Stone);
         assert(host.blockPlaces == 1);
     }
@@ -147,6 +149,7 @@ int main() {
         for (int tick = 0; tick < 5; ++tick) {
             session.tick(world, host);
         }
+        static_cast<void>(session.drainEvents());
         assert(world.block(5, 1, 6) == world::Block::Air);
         assert(host.blockBreaks == 2);
     }
@@ -168,6 +171,7 @@ int main() {
         use.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
         session.enqueueCommand(std::move(use));
         session.tick(world, host);
+        static_cast<void>(session.drainEvents());
         assert(world.block(5, 1, 5) == world::Block::Air);
         assert(session.inventory().selectedStack().item == &gameplay::items::WaterBucket);
         assert(host.splashes == 1);
@@ -220,6 +224,7 @@ int main() {
         for (int tick = 0; tick < gameplay::GameSession::kEatTicks; ++tick) {
             session.tick(world, host);
         }
+        static_cast<void>(session.drainEvents());
         session.enqueueCommand(gameplay::UseItemStop{});
         session.tick(world, host);
         assert(host.eatingStarted == 1);
@@ -242,6 +247,97 @@ int main() {
         session.enqueueCommand(std::move(action));
         session.tick(world, host);
         assert(!session.eating());  // the attack cancelled the meal
+    }
+
+    // --- The creative commands run through the queue like the rest of the
+    // input, and the interaction applies them on the server tick. ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+
+        // A creative catalogue click puts the stack on the cursor; a second
+        // click with the same item adds one more (max-stack creative sizing is
+        // handled by shift, not by repetition).
+        const gameplay::ItemStack diamond{world::Block::Air, 1U, &gameplay::items::Diamond};
+        session.enqueueCommand(
+            gameplay::ClickCreativeItem{diamond, gameplay::InventoryMouseButton::Left, false});
+        session.tick(world, host);
+        session.enqueueCommand(
+            gameplay::ClickCreativeItem{diamond, gameplay::InventoryMouseButton::Left, false});
+        session.tick(world, host);
+        assert(session.inventory().cursorStack().item == &gameplay::items::Diamond);
+        assert(session.inventory().cursorStack().count == 2U);
+
+        // ClearCursor empties the cursor (the creative delete box / an empty
+        // catalogue cell).
+        session.enqueueCommand(gameplay::ClearCursor{});
+        session.tick(world, host);
+        assert(session.inventory().cursorStack().empty());
+
+        // DropCursor throws the cursor stack as an item entity and empties it.
+        session.enqueueCommand(gameplay::ClickCreativeItem{
+            diamond, gameplay::InventoryMouseButton::Left, false});
+        session.tick(world, host);
+        session.enqueueCommand(gameplay::DropCursor{glm::vec3{0.0F, 0.0F, -1.0F}});
+        session.tick(world, host);
+        assert(session.inventory().cursorStack().empty());
+        assert(session.itemEntities().entities().size() == 1U);
+    }
+
+    // --- DragDistribute resolves the swept (kind, index) slots and shares the
+    // cursor stack across them on the server tick (vanilla QUICK_CRAFT). ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        const gameplay::ItemStack diamond{world::Block::Air, 1U, &gameplay::items::Diamond};
+        for (int i = 0; i < 2; ++i) {
+            session.enqueueCommand(
+                gameplay::ClickCreativeItem{diamond, gameplay::InventoryMouseButton::Left, false});
+            session.tick(world, host);
+        }
+        assert(session.inventory().cursorStack().count == 2U);
+
+        gameplay::DragDistribute drag;
+        drag.button = gameplay::InventoryMouseButton::Left;
+        drag.targets = {gameplay::SlotRef{gameplay::SlotKind::PlayerInventory, 0},
+                        gameplay::SlotRef{gameplay::SlotKind::PlayerInventory, 1}};
+        session.enqueueCommand(std::move(drag));
+        session.tick(world, host);
+        assert(session.inventory().cursorStack().empty());
+        assert(session.inventory().slot(0).item == &gameplay::items::Diamond);
+        assert(session.inventory().slot(1).item == &gameplay::items::Diamond);
+        assert(session.inventory().slot(0).count == 1U);
+        assert(session.inventory().slot(1).count == 1U);
+    }
+
+    // --- PickupAll gathers every matching stack into the cursor (the
+    // double-click), stopping at the stack limit. ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        const gameplay::ItemStack diamond{world::Block::Air, 1U, &gameplay::items::Diamond};
+        session.inventory().mutableSlot(0) = diamond;
+        session.inventory().mutableSlot(1) = diamond;
+        session.enqueueCommand(
+            gameplay::ClickCreativeItem{diamond, gameplay::InventoryMouseButton::Left, false});
+        session.tick(world, host);
+        assert(session.inventory().cursorStack().count == 1U);
+
+        gameplay::PickupAll pickup;
+        pickup.targets = {gameplay::SlotRef{gameplay::SlotKind::PlayerInventory, 0},
+                          gameplay::SlotRef{gameplay::SlotKind::PlayerInventory, 1}};
+        session.enqueueCommand(std::move(pickup));
+        session.tick(world, host);
+        assert(session.inventory().cursorStack().item == &gameplay::items::Diamond);
+        assert(session.inventory().cursorStack().count == 3U);
+        assert(session.inventory().slot(0).empty());
+        assert(session.inventory().slot(1).empty());
     }
 
     return 0;

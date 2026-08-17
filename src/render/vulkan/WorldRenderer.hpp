@@ -13,6 +13,8 @@
 #include "render/vulkan/OffscreenTarget.hpp"
 #include "render/vulkan/TextureManager.hpp"
 
+#include "core/FrameTrace.hpp"
+
 #include "animation/AnimationAssets.hpp"
 #include "animation/DisplayEntityAnimation.hpp"
 #include "animation/HingeAnimation.hpp"
@@ -79,6 +81,10 @@ class WorldRenderer final {
     std::optional<TestSceneOptions>& testScene;
     world::ChunkStreamer& chunkStreamer;
     world::World& interactionWorld;
+    // The client-side chunk cache (M-Chunk B-5): the world the renderer meshes
+    // and samples from. The simulation keeps writing interactionWorld; the
+    // renderer reads this cache, so the two sides own their chunk data.
+    world::World& clientCache;
     world::WorldLightEngine& interactionLightEngine;
     std::unordered_map<world::SectionPosition, GpuMesh, world::SectionPositionHash>& gpuMeshes;
     StreamBufferPool& deviceBufferPool_;
@@ -190,15 +196,21 @@ class WorldRenderer final {
     std::function<RenderEye()> renderEyeState;
     std::function<float()> cameraFarPlane;
     std::function<float()> renderDistanceBlocks;
-    std::function<void(gameplay::ItemStack)> spawnDroppedStack;
     std::function<void()> initializeSpawnPosition;
     std::function<void(int, int, int, world::Block, std::uint8_t, std::optional<world::BlockOrientation>)> submitWorldEditFn;
     std::function<bool(int, int, int)> hasPersistentEditFn;
+    // M-3 C5: chunk lifecycle callbacks, wired to the runtime's persistence.
+    // onChunkUnloaded fires when a chunk is removed (left the simulation radius)
+    // and onChunkLoaded when one is generated in — both under the batch's world
+    // write section, so the handler can touch the simulation and the save.
+    std::function<void(world::ChunkPosition)> onChunkUnloaded;
+    std::function<void(world::ChunkPosition)> onChunkLoaded;
   };
 
   explicit WorldRenderer(const Bindings& b)
       : testScene(b.testScene), chunkStreamer(b.chunkStreamer),
-        interactionWorld(b.interactionWorld), interactionLightEngine(b.interactionLightEngine),
+        interactionWorld(b.interactionWorld), clientCache(b.clientCache),
+        interactionLightEngine(b.interactionLightEngine),
         gpuMeshes(b.gpuMeshes), deviceBufferPool_(b.deviceBufferPool_),
         stagingBufferPool_(b.stagingBufferPool_), occlusionQueryPools(b.occlusionQueryPools),
         occlusionQueryPipeline(b.occlusionQueryPipeline),
@@ -258,9 +270,10 @@ class WorldRenderer final {
         totalUploadedBytes(b.totalUploadedBytes), hud_(b.hud_), rainTargetCount(b.rainTargetCount),
         renderViewMatrix(b.renderViewMatrix), viewBobbingMatrix(b.viewBobbingMatrix),
         renderEyeState(b.renderEyeState), cameraFarPlane(b.cameraFarPlane),
-        renderDistanceBlocks(b.renderDistanceBlocks), spawnDroppedStack(b.spawnDroppedStack),
+        renderDistanceBlocks(b.renderDistanceBlocks),
         initializeSpawnPosition(b.initializeSpawnPosition), submitWorldEditFn(b.submitWorldEditFn),
-        hasPersistentEditFn(b.hasPersistentEditFn) {
+        hasPersistentEditFn(b.hasPersistentEditFn), onChunkUnloaded(b.onChunkUnloaded),
+        onChunkLoaded(b.onChunkLoaded) {
   }
 
   WorldRenderer(const WorldRenderer&) = delete;
@@ -273,7 +286,6 @@ class WorldRenderer final {
                                              std::string_view fallback) const {
         return language.translate(key, fallback);
     }
-    [[nodiscard]] gameplay::Inventory& activeInventory() const { return gameSession.inventory(); }
     [[nodiscard]] AllocatedBuffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                                                bool hostVisible) const {
         return resources_.createBuffer(size, usage, hostVisible);
@@ -294,7 +306,7 @@ class WorldRenderer final {
         update.position = position;
         update.mesh = chunkStreamer.acquireMeshData();
         static_cast<void>(
-            world::ChunkMesher::buildSection(interactionWorld, {position.chunkX, position.chunkZ},
+            world::ChunkMesher::buildSection(clientCache, {position.chunkX, position.chunkZ},
                                              position.sectionY, lighting, update.mesh));
         update.remove = update.mesh.empty();
         update.highPriority = true;
@@ -311,43 +323,102 @@ class WorldRenderer final {
     void queueStreamBatch(world::ChunkStreamBatch batch) {
         if (batch.worldEpoch != worldEpoch)
             return;
-        // The streamer's batch swaps whole chunks in and out and rewrites cells,
-        // so it takes the world's write section like a tick does. This is the
-        // third writer the plan names, alongside the simulation and the
-        // interaction pass.
-        const auto batchWrite = worldLock.write();
         loadedCpuChunkCount = batch.loadedChunkCount;
         completedBlockEditCount += batch.appliedBlockEditCount;
         const bool generatedOrUnloadedChunks = batch.appliedBlockEditCount == 0U;
+        ++completedStreamBatchCount;
+        if (diag::traceEnabled()) {
+            ++diag::frameTrace().queueBatchCount;
+        }
+        std::vector<std::size_t> appliedStateUpdates;
+        appliedStateUpdates.reserve(batch.stateUpdates.size());
+
+        // Phase 1 is the only server-world critical section: install/remove
+        // authoritative chunks, apply guarded cross-chunk feature writes, and
+        // run persistence/entity callbacks. Client cache, lighting and mesh
+        // bookkeeping are render-owned and deliberately stay outside it.
+        {
+            const auto batchWrite = worldLock.write();
+            const auto lockHoldStart = std::chrono::steady_clock::now();
+            for (auto& update : batch.chunkUpdates) {
+                if (update.remove) {
+                    if (diag::traceEnabled()) {
+                        ++diag::frameTrace().unloadedChunks;
+                    }
+                    interactionWorld.removeChunk(update.position);
+                    if (onChunkUnloaded) {
+                        onChunkUnloaded(update.position);
+                    }
+                } else if (generatedOrUnloadedChunks) {
+                    // Only generation batches introduce CPU chunks; edit batches
+                    // contribute meshes but never overwrite newer gameplay state.
+                    interactionWorld.setChunk(update.position, update.chunk);
+                    if (onChunkLoaded) {
+                        onChunkLoaded(update.position);
+                    }
+                }
+            }
+            // Generation can extend a tree crown into a neighbour that was
+            // already loaded. Preserve a newer local gameplay edit at the cell.
+            for (std::size_t index = 0; index < batch.stateUpdates.size(); ++index) {
+                const auto& update = batch.stateUpdates[index];
+                if (interactionWorld.state(update.worldX, update.y, update.worldZ) ==
+                        update.expected &&
+                    !hasPersistentEditFn(update.worldX, update.y, update.worldZ)) {
+                    static_cast<void>(interactionWorld.setState(
+                        update.worldX, update.y, update.worldZ, update.state));
+                    appliedStateUpdates.push_back(index);
+                }
+            }
+            if (!spawnPositionInitialized) {
+                initializeSpawnPosition();
+            }
+            if (completedStreamBatchCount == 1U &&
+                std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr) {
+                const auto snap = gameSession.playerTickSnapshot();
+                const glm::vec3 oldPosition = snap.physicsCurrent;
+                gameSession.teleportPlayer(gameplay::kPrimaryPlayerId,
+                                           glm::vec3{52.284F, oldPosition.y, -4.284F});
+                const float eyeHeight = snap.sneaking
+                                            ? gameplay::PlayerController::kSneakingEyeHeight
+                                            : gameplay::PlayerController::kEyeHeight;
+                camera.setPosition(snap.physicsCurrent + glm::vec3{0.0F, eyeHeight, 0.0F});
+            }
+            if (completedStreamBatchCount == 2U &&
+                std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr) {
+                gameplay::GameplayMutationSink sink{interactionWorld, gameSession};
+                const auto place = [&](int x, int y, int z, world::Block block) {
+                    static_cast<void>(gameSession.worldMutations().setBlock(
+                        interactionWorld, {x, y, z}, world::BlockState{block},
+                        world::MutationFlags::All, world::MutationCause::Command, sink));
+                };
+                place(52, 70, -4, world::Block::Glass);
+                place(54, 72, -4, world::Block::Sand);
+                place(50, 70, -4, world::Block::Water);
+            }
+            if (diag::traceEnabled()) {
+                diag::frameTrace().lockHoldMs += diag::msSince(lockHoldStart);
+            }
+        }
+
+        // Phase 2 is entirely render-owned. Moving the worker chunk into the
+        // client cache happens only after the server copied its authoritative
+        // value, and no 20 TPS tick waits for client relighting or mesh queues.
         for (auto& update : batch.chunkUpdates) {
             if (update.remove) {
-                interactionWorld.removeChunk(update.position);
+                clientCache.removeChunk(update.position);
             } else if (generatedOrUnloadedChunks) {
-                // The gameplay world has already applied local edits and may
-                // have advanced several fluid ticks beyond this worker
-                // snapshot. Replacing the whole chunk here used to rewind
-                // water selectively, producing one-direction flow and stale
-                // holes. Only generation batches introduce CPU chunks;
-                // edit batches contribute meshes but never overwrite state.
-                interactionWorld.setChunk(update.position, std::move(update.chunk));
+                clientCache.setChunk(update.position, std::move(update.chunk));
             }
         }
-        // Generation can extend a tree crown into a neighbour that was already
-        // loaded. Its mesh and its blocks must cross the thread boundary
-        // together or rendering, collision and raycasts observe two different
-        // worlds. Apply only against the state the worker saw, preserving a
-        // newer local gameplay edit at the same cell.
-        for (const auto& update : batch.stateUpdates) {
-            if (interactionWorld.state(update.worldX, update.y, update.worldZ) ==
-                    update.expected &&
-                !hasPersistentEditFn(update.worldX, update.y, update.worldZ)) {
-                static_cast<void>(interactionWorld.setState(
-                    update.worldX, update.y, update.worldZ, update.state));
-                interactionLightEngine.updateBlock(
-                    interactionWorld, update.worldX, update.y, update.worldZ);
-            }
+        for (const auto index : appliedStateUpdates) {
+            const auto& update = batch.stateUpdates[index];
+            static_cast<void>(
+                clientCache.setState(update.worldX, update.y, update.worldZ, update.state));
+            interactionLightEngine.updateBlock(clientCache, update.worldX, update.y,
+                                               update.worldZ);
         }
-        if (!batch.stateUpdates.empty()) {
+        if (!appliedStateUpdates.empty()) {
             static_cast<void>(interactionLightEngine.takeDirtySections());
         }
         for (auto& update : batch.sectionUpdates) {
@@ -399,34 +470,6 @@ class WorldRenderer final {
         // std::cout << "Chunk stream center: " << batch.center.x << "," << batch.center.z
         //           << " | CPU chunks: " << batch.loadedChunkCount
         //           << " | queued sections: " << pendingSectionUpdates.size() << '\n';
-        ++completedStreamBatchCount;
-        if (!spawnPositionInitialized) {
-            initializeSpawnPosition();
-        }
-        if (completedStreamBatchCount == 1U && std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr) {
-            const glm::vec3 oldPosition = gameSession.player().position();
-            gameSession.player().setPosition(glm::vec3{52.284F, oldPosition.y, -4.284F});
-            gameSession.physicsPreviousPosition() = gameSession.player().position();
-            gameSession.physicsCurrentPosition() = gameSession.player().position();
-            camera.setPosition(gameSession.player().eyePosition());
-        }
-        if (completedStreamBatchCount == 2U && std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr) {
-            // Through the service like every other edit, so the smoke test
-            // exercises the same path the game does (the sand it drops is what
-            // proves the neighbour notification arrived).
-            gameplay::GameplayMutationSink sink{interactionWorld, gameSession};
-            const auto place = [&](int x, int y, int z, world::Block block) {
-                static_cast<void>(gameSession.worldMutations().setBlock(
-                    interactionWorld, {x, y, z}, world::BlockState{block},
-                    world::MutationFlags::All, world::MutationCause::Command, sink));
-            };
-            place(52, 70, -4, world::Block::Glass);
-            place(54, 72, -4, world::Block::Sand);
-            place(50, 70, -4, world::Block::Water);
-            // The submitWorldEdit / notifyPlaced calls that used to follow are
-            // the sink's job now: the service dirties the section and wakes the
-            // neighbours for all three cells.
-        }
         lastVisibleMeshCount = std::numeric_limits<std::size_t>::max();
     }
 
@@ -449,22 +492,15 @@ class WorldRenderer final {
             playerSnap.physicsCurrent.z - playerSnap.physicsPrevious.z,
         };
         glm::vec3 requestPosition = position;
-        // A gameSession.player() turning (rather than moving) reveals area in the direction
-        // they look, so bias the request centre forward by a fraction of the
-        // view distance. Skipped while spinning (the forward is unstable) so a
-        // rapid pan does not thrash the loaded disk.
-        const glm::vec3 forward = camera.direction();
-        if (hasLastStreamingForward) {
-            constexpr float kSpinGuardRotation = 0.01F; // ~8°/frame
-            if (1.0F - glm::dot(forward, lastStreamingForward) < kSpinGuardRotation) {
-                const float maxLead = std::max(
-                    0.0F,
-                    static_cast<float>(chunkStreamer.loadRadius() * world::kChunkWidth) - 8.0F);
-                requestPosition += forward * std::min(renderDistanceBlocks() * 0.4F, maxLead);
-            }
-        }
-        lastStreamingForward = forward;
-        hasLastStreamingForward = true;
+        // Only movement biases the request centre forward. A player merely
+        // turning in place used to shift the centre by up to 0.4x the view
+        // distance (the old view-direction lead), which dragged the whole
+        // streaming window in a circle and unloaded/reloaded a ring on every pan
+        // — the dominant trigger of the chunk-unload stutter (confirmed by
+        // FRAME_TRACE: standing still and panning produced 25–188ms frames of
+        // synchronous unload work). Standing still now keeps the centre on the
+        // player, so turning the view streams nothing; the surroundings within
+        // the load radius are already resident, so there is no gap when turning.
         const float speed = glm::length(velocity);
         if (speed > 0.001F) {
             const float maxLead = std::max(
@@ -473,7 +509,19 @@ class WorldRenderer final {
             const glm::vec2 direction = velocity / speed;
             requestPosition += glm::vec3{direction.x, 0.0F, direction.y} * leadBlocks;
         }
-        chunkStreamer.request(world::chunkPositionFromWorld(requestPosition.x, requestPosition.z));
+        const auto requestCenter =
+            world::chunkPositionFromWorld(requestPosition.x, requestPosition.z);
+        if (diag::traceEnabled()) {
+            static int lastCenterX = std::numeric_limits<int>::min();
+            static int lastCenterZ = std::numeric_limits<int>::min();
+            diag::frameTrace().newCenterX = requestCenter.x;
+            diag::frameTrace().newCenterZ = requestCenter.z;
+            diag::frameTrace().centerChanged =
+                requestCenter.x != lastCenterX || requestCenter.z != lastCenterZ;
+            lastCenterX = requestCenter.x;
+            lastCenterZ = requestCenter.z;
+        }
+        chunkStreamer.request(requestCenter);
         while (auto batch = chunkStreamer.poll()) {
             queueStreamBatch(std::move(*batch));
         }
@@ -496,7 +544,13 @@ class WorldRenderer final {
             return;
         }
         dropRequested = false;
-        spawnDroppedStack(activeInventory().takeSelected(dropWholeStack));
+        // The Q drop is a command: the interaction takes the selected stack and
+        // throws it on the server tick, so the renderer never touches the
+        // inventory here.
+        gameplay::DropSelected drop;
+        drop.wholeStack = dropWholeStack;
+        drop.lookDirection = camera.direction();
+        gameSession.enqueueCommand(std::move(drop));
         dropWholeStack = false;
     }
 
@@ -720,7 +774,7 @@ class WorldRenderer final {
             GpuMesh gpuMesh;
             gpuMesh.bounds = update.mesh.bounds;
             gpuMesh.sectionOrigin = {static_cast<float>(position.chunkX) * world::kChunkWidth,
-                                     static_cast<float>(position.sectionY) * world::kSectionSize,
+                                     static_cast<float>(world::sectionOriginY(position.sectionY)),
                                      static_cast<float>(position.chunkZ) * world::kChunkDepth};
             uploadRenderMesh(frame, update.mesh, gpuMesh);
             // The worker built this mesh into a pooled RenderMeshData; hand it
@@ -861,9 +915,12 @@ class WorldRenderer final {
 
     void drawItemEntities(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
         // Both read from the per-tick snapshot, for the same reason creatures
-        // do: the live vectors belong to the simulation.
-        const auto& snapshotItems = gameSession.entitySnapshot().items();
-        const auto& snapshotFallingBlocks = gameSession.entitySnapshot().fallingBlocks();
+        // do: the live vectors belong to the simulation. Bind the value snapshot
+        // to a local first — a reference to a member of a by-value return does
+        // not extend its lifetime.
+        const auto snapshot = gameSession.entitySnapshot();
+        const auto& snapshotItems = snapshot.items();
+        const auto& snapshotFallingBlocks = snapshot.fallingBlocks();
         if (snapshotItems.empty() && snapshotFallingBlocks.empty()) {
             return;
         }
@@ -878,7 +935,7 @@ class WorldRenderer final {
                 const int startY = static_cast<int>(std::floor(renderedPosition.y));
                 std::optional<float> groundY;
                 for (int y = startY; y >= std::max(0, startY - 12); --y) {
-                    if (world::hasCollision(interactionWorld.block(
+                    if (world::hasCollision(clientCache.block(
                             static_cast<int>(std::floor(renderedPosition.x)), y,
                             static_cast<int>(std::floor(renderedPosition.z))))) {
                         groundY = static_cast<float>(y + 1) + 0.003F;
@@ -1132,7 +1189,7 @@ class WorldRenderer final {
                     // Probe to the same +32 ceiling used by the drop cache so a
                     // tall nearby roof also collapses the strip completely.
                     const float surface = rainSystem.precipitationSurfaceY(
-                        interactionWorld, blockX, blockZ, cameraPosition.y + 32.0F);
+                        clientCache, blockX, blockZ, cameraPosition.y + 32.0F);
                     if (surface >= 0.0F) {
                         bottom = std::max(bottom, surface);
                         top = std::max(top, surface);
@@ -1309,7 +1366,7 @@ class WorldRenderer final {
                                    static_cast<float>(chest.position.y),
                                    static_cast<float>(chest.position.z)};
             const auto orientation =
-                interactionWorld.orientation(chest.position.x, chest.position.y, chest.position.z);
+                clientCache.orientation(chest.position.x, chest.position.y, chest.position.z);
             const float yaw =
                 orientation == world::BlockOrientation::East
                     ? 1.57079632679F
@@ -1446,8 +1503,8 @@ class WorldRenderer final {
         const int blockX = static_cast<int>(std::floor(samplePoint.x));
         const int blockY = static_cast<int>(std::floor(samplePoint.y));
         const int blockZ = static_cast<int>(std::floor(samplePoint.z));
-        const float sky = static_cast<float>(interactionWorld.skyLight(blockX, blockY, blockZ));
-        const float block = static_cast<float>(interactionWorld.blockLight(blockX, blockY, blockZ));
+        const float sky = static_cast<float>(clientCache.skyLight(blockX, blockY, blockZ));
+        const float block = static_cast<float>(clientCache.blockLight(blockX, blockY, blockZ));
         return 1.0F + sky + block * 16.0F;
     }
 
@@ -1488,8 +1545,10 @@ class WorldRenderer final {
     void drawWorldEntities(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
         // Drawn from the per-tick snapshot, never from the live entity vector:
         // once the simulation runs on its own thread that vector is being
-        // reordered and resized while this pass walks it.
-        const auto& snapshotEntities = gameSession.entitySnapshot().entities();
+        // reordered and resized while this pass walks it. The snapshot is a value
+        // copy bound first so its entities() reference stays valid.
+        const auto snapshot = gameSession.entitySnapshot();
+        const auto& snapshotEntities = snapshot.entities();
         if (!worldReady || snapshotEntities.empty()) {
             return;
         }
@@ -1614,17 +1673,19 @@ class WorldRenderer final {
 
 
     void drawMiningProgress(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
-        // Read this inside the frame's WorldLock section. Keeping a value copy in
-        // Bindings froze the snapshot at WorldRenderer construction time, which
-        // meant it stayed inactive forever and no destroy stage was ever drawn.
-        const auto digSnapshot = gameSession.interaction().digSnapshot();
+        // Read from the published per-tick snapshot — both the player state and
+        // the dig the interaction pass is mid-way through — so the overlay never
+        // touches the live PlayerInteraction on the render thread. A value copy
+        // is kept because one held in Bindings froze at WorldRenderer
+        // construction, which meant it stayed inactive forever.
+        const auto playerSnapshot = gameSession.playerTickSnapshot();
+        const auto& digSnapshot = playerSnapshot.digging;
         if (uiFrameData_.gameMode != gameplay::GameMode::Survival || !digSnapshot.active ||
             !targetedBlock.has_value() || digSnapshot.target != targetedBlock->block) {
             return;
         }
         const auto block = digSnapshot.target;
-        const auto target = interactionWorld.block(block.x, block.y, block.z);
-        const auto& playerSnapshot = gameSession.playerTickSnapshot();
+        const auto target = clientCache.block(block.x, block.y, block.z);
         const float duration = gameplay::miningSeconds(target, uiFrameData_.selectedStack,
                                                        playerSnapshot.inWater,
                                                        !playerSnapshot.onGround);
@@ -1997,13 +2058,13 @@ class WorldRenderer final {
         drawRain(frame.commandBuffer, frame.descriptorSet, particleRecordCount);
         drawMiningProgress(frame.commandBuffer, frame.descriptorSet);
         if (!inventoryOpen && !paused && !chatOpen && targetedBlock.has_value()) {
-            const world::Block targeted = interactionWorld.block(
+            const world::Block targeted = clientCache.block(
                 targetedBlock->block.x, targetedBlock->block.y, targetedBlock->block.z);
             // The outline now traces the block's actual shape, so sub-block
             // blocks (torch, plants, chest) no longer show a full-cube marker.
             // Crops and farmland read their shape from the cell's state.
             const world::BlockBounds bounds =
-                world::blockSelectionBounds(interactionWorld, targetedBlock->block, targeted);
+                world::blockSelectionBounds(clientCache, targetedBlock->block, targeted);
             vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                               outlinePipeline);
             vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -2088,6 +2149,7 @@ class WorldRenderer final {
   std::optional<TestSceneOptions>& testScene;
   world::ChunkStreamer& chunkStreamer;
   world::World& interactionWorld;
+  world::World& clientCache;
   world::WorldLightEngine& interactionLightEngine;
   std::unordered_map<world::SectionPosition, GpuMesh, world::SectionPositionHash>& gpuMeshes;
   StreamBufferPool& deviceBufferPool_;
@@ -2201,10 +2263,11 @@ class WorldRenderer final {
   std::function<RenderEye()> renderEyeState;
   std::function<float()> cameraFarPlane;
   std::function<float()> renderDistanceBlocks;
-  std::function<void(gameplay::ItemStack)> spawnDroppedStack;
   std::function<void()> initializeSpawnPosition;
   std::function<void(int, int, int, world::Block, std::uint8_t, std::optional<world::BlockOrientation>)> submitWorldEditFn;
   std::function<bool(int, int, int)> hasPersistentEditFn;
+  std::function<void(world::ChunkPosition)> onChunkUnloaded;
+  std::function<void(world::ChunkPosition)> onChunkLoaded;
 };
 
 } // namespace mc::render

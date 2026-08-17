@@ -7,11 +7,16 @@
 
 #include <algorithm>
 #include <bit>
+#include <charconv>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <map>
+#include <optional>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -43,7 +48,7 @@ constexpr std::uint64_t kMaximumChests = 1024U * 1024U;
 // started writing a palette of *states*: a block identifier plus named
 // properties. That is what lets a block gain a fourth property without the file
 // layout gaining a column.
-constexpr std::uint32_t kFirstStatePaletteFormatVersion = 18U;
+[[maybe_unused]] constexpr std::uint32_t kFirstStatePaletteFormatVersion = 18U;
 constexpr std::uint32_t kFirstBlockPaletteFormatVersion = 5U;
 constexpr std::uint32_t kFirstItemPaletteFormatVersion = 6U;
 constexpr std::uint32_t kMaximumPaletteEntries = 65535U;
@@ -1304,13 +1309,545 @@ void readChunkBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
                     block, static_cast<std::uint8_t>((packedState >> 4U) & 0x07U), fluidLevel,
                     (packedState & 0x80U) != 0U);
             }
-            if (edit.y < 0 || edit.y >= world::kWorldHeight) {
+            if (!world::isWorldYInRange(edit.y)) {
                 throw std::runtime_error("world.dat contains an invalid block edit");
             }
             edits.push_back(edit);
         }
     }
     cursor = header.end;
+}
+
+// ---------------------------------------------------------------------------
+// M-3 region files (C5: chunks own their edits and their creatures).
+//
+// The CHNK block already groups every edit by chunk; this is the same grouping
+// written to files of its own. A region is a 32x32 grid of chunks, addressed by
+// floor division of the chunk coordinates the way Java's r.*.mca are, so a
+// world spread over thousands of chunks does not rewrite one giant world.dat on
+// every save — and the day a chunk unloads, its edits and its creatures are
+// written together in one small file.
+//
+//   region/r.<rx>.<rz>.cache:
+//     u64 magic          "MCRBREG"
+//     u32 formatVersion  // 1
+//     i32 regionX, regionZ
+//     u32 chunkCount
+//     u16 statePaletteCount
+//     statePalette[]:    { u16 idLen + blockId + u8 propCount + [u16 nameLen + name + u8 value]* }
+//     u16 speciesCount
+//     species[]:         { u16 nameLen + name }
+//     chunks[chunkCount]:
+//       u32 tag "CCNK" + u32 size + u16 ver  // self-framed, unknown versions skip
+//         i32 cx, i32 cz
+//         u32 editCount + edits[]:   { u8 packedXZ + i16 y + u16 stateIndex }
+//         u32 entityCount + entities[]: { u16 speciesIndex + f32 x,y,z,yaw + f32 vx,vy,vz
+//                                       + f32 health + i32 angerTicks + u32 ageTicks
+//                                       + u32 rngState + u8 flags }
+//     u64 checksum (FNV-1a over everything above it)
+//
+// The state and species palettes are region-local and self-contained (block
+// identifiers inline rather than world.dat palette indices) so a region can be
+// read on its own, without the world.dat palettes, the way the Java import's
+// CCNK cache will need.
+constexpr std::array<std::uint8_t, 8> kRegionMagic{'M', 'C', 'R', 'B', 'R', 'E', 'G', 0x00};
+constexpr std::uint32_t kRegionFileVersion = 1U;
+constexpr std::uint32_t kRegionChunkTag = blockTag("CCNK");
+constexpr std::uint16_t kRegionChunkVersion = 1U;
+constexpr std::uint32_t kRegionWidth = 32U;  // chunks per region side
+
+// Floor division of a chunk coordinate by the region width, exactly like the
+// chunk floor division the CHNK block uses for world coordinates.
+[[nodiscard]] constexpr std::int32_t regionOf(std::int32_t chunkCoordinate) {
+    return chunkOf(chunkCoordinate, static_cast<std::int32_t>(kRegionWidth));
+}
+
+// One chunk's share of a region file: its edits and the creatures inside it.
+struct RegionChunkData final {
+    std::int32_t chunkX = 0;
+    std::int32_t chunkZ = 0;
+    std::vector<world::PersistentBlockEdit> edits;
+    std::vector<PersistentEntity> entities;
+};
+
+// One region file's content, as gathered before writing or read back from disk.
+struct RegionData final {
+    std::int32_t regionX = 0;
+    std::int32_t regionZ = 0;
+    std::vector<RegionChunkData> chunks;
+};
+
+[[nodiscard]] std::string regionFileName(std::int32_t regionX, std::int32_t regionZ) {
+    return "r." + std::to_string(regionX) + "." + std::to_string(regionZ) + ".cache";
+}
+
+// "r.<rx>.<rz>.cache" back into its coordinates; anything that does not match
+// the shape is not ours to touch (a foreign file in the region directory).
+[[nodiscard]] std::optional<std::pair<std::int32_t, std::int32_t>> parseRegionFileName(
+    std::string_view name) {
+    if (!name.starts_with("r.") || !name.ends_with(".cache")) {
+        return std::nullopt;
+    }
+    const std::string_view body =
+        name.substr(2U, name.size() - 2U - 6U);  // strip "r." and ".cache"
+    const auto dot = body.rfind('.');
+    if (dot == std::string_view::npos || dot == 0U || dot + 1U == body.size()) {
+        return std::nullopt;
+    }
+    const std::string_view xText = body.substr(0U, dot);
+    const std::string_view zText = body.substr(dot + 1U);
+    std::int32_t regionX = 0;
+    std::int32_t regionZ = 0;
+    if (std::from_chars(xText.data(), xText.data() + xText.size(), regionX).ec != std::errc{} ||
+        std::from_chars(zText.data(), zText.data() + zText.size(), regionZ).ec != std::errc{}) {
+        return std::nullopt;
+    }
+    return std::pair<std::int32_t, std::int32_t>{regionX, regionZ};
+}
+
+// A state palette entry self-contained in the region file: the block identifier
+// is written inline rather than through world.dat's block palette, so a region
+// needs nothing else to decode. Properties are named exactly like CHNK v2's.
+void appendRegionStatePaletteEntry(std::vector<std::uint8_t>& bytes, world::BlockState state) {
+    appendString(bytes, world::blockDefinition(state.block()).identifier.toString());
+    const auto& schema =
+        world::kBlockRegistry[static_cast<std::size_t>(state.block())].states;
+    appendInteger(bytes, static_cast<std::uint8_t>(schema.size()));
+    for (std::size_t index = 0; index < schema.size(); ++index) {
+        const auto property = schema.axis(index).property;
+        appendString(bytes, world::statePropertyName(property));
+        appendInteger(bytes, state.value(property));
+    }
+}
+
+[[nodiscard]] world::BlockState readRegionStatePaletteEntry(
+    std::span<const std::uint8_t> payload,
+    std::size_t& cursor) {
+    const auto name = readString(payload, cursor);
+    auto state =
+        world::BlockState{world::blockFromIdentifier(name).value_or(world::Block::Air)};
+    const auto propertyCount = readInteger<std::uint8_t>(payload, cursor);
+    for (std::uint8_t index = 0; index < propertyCount; ++index) {
+        const auto propertyName = readString(payload, cursor);
+        const auto value = readInteger<std::uint8_t>(payload, cursor);
+        const auto property = world::statePropertyFromName(propertyName);
+        if (property == world::StateProperty::Count) {
+            continue;  // a property this build has no notion of
+        }
+        state = state.with(property, value);
+    }
+    return state;
+}
+
+[[nodiscard]] RegionChunkData& chunkInRegion(RegionData& region, std::int32_t chunkX,
+                                             std::int32_t chunkZ) {
+    for (auto& chunk : region.chunks) {
+        if (chunk.chunkX == chunkX && chunk.chunkZ == chunkZ) {
+            return chunk;
+        }
+    }
+    region.chunks.push_back({chunkX, chunkZ, {}, {}});
+    return region.chunks.back();
+}
+
+// Gathers the region files a save needs: every edit and every creature bucketed
+// by its chunk, then by that chunk's region. Chunks in the same region share one
+// state palette and one species palette, like CHNK and ENTY did per file.
+[[nodiscard]] std::map<std::pair<std::int32_t, std::int32_t>, RegionData> gatherRegions(
+    const SaveGame& game) {
+    std::map<std::pair<std::int32_t, std::int32_t>, RegionData> regions;
+    for (const auto& edit : game.edits) {
+        if (!world::isWorldYInRange(edit.y)) {
+            continue;
+        }
+        const auto chunkX = chunkOf(edit.x, world::kChunkWidth);
+        const auto chunkZ = chunkOf(edit.z, world::kChunkDepth);
+        const auto regionX = regionOf(chunkX);
+        const auto regionZ = regionOf(chunkZ);
+        auto& region = regions[{regionX, regionZ}];
+        region.regionX = regionX;
+        region.regionZ = regionZ;
+        chunkInRegion(region, chunkX, chunkZ).edits.push_back(edit);
+    }
+    for (const auto& entity : game.entities) {
+        // A creature saved outside the world is a corrupt record.
+        if (!(entity.y >= -64.0F && entity.y <= 384.0F)) {
+            continue;
+        }
+        const auto chunkX = chunkOf(static_cast<std::int32_t>(std::floor(entity.x)),
+                                    world::kChunkWidth);
+        const auto chunkZ = chunkOf(static_cast<std::int32_t>(std::floor(entity.z)),
+                                    world::kChunkDepth);
+        const auto regionX = regionOf(chunkX);
+        const auto regionZ = regionOf(chunkZ);
+        auto& region = regions[{regionX, regionZ}];
+        region.regionX = regionX;
+        region.regionZ = regionZ;
+        chunkInRegion(region, chunkX, chunkZ).entities.push_back(entity);
+    }
+    return regions;
+}
+
+void appendRegionFile(std::vector<std::uint8_t>& bytes, const RegionData& region) {
+    const std::size_t fileStart = bytes.size();
+    bytes.insert(bytes.end(), kRegionMagic.begin(), kRegionMagic.end());
+    appendInteger(bytes, kRegionFileVersion);
+    appendInteger(bytes, region.regionX);
+    appendInteger(bytes, region.regionZ);
+    appendInteger(bytes, static_cast<std::uint32_t>(region.chunks.size()));
+
+    // Region-wide state palette, gathered in the chunk order the records below
+    // reference it in and written before them, exactly like CHNK v2.
+    StatePalette states;
+    for (const auto& chunk : region.chunks) {
+        for (const auto& edit : chunk.edits) {
+            static_cast<void>(states.indexOf(edit.state.rawId()));
+        }
+    }
+    appendInteger(bytes, static_cast<std::uint16_t>(states.entries().size()));
+    for (const auto rawId : states.entries()) {
+        appendRegionStatePaletteEntry(bytes, world::BlockState::fromRawId(rawId));
+    }
+
+    // Region-wide species palette, same framing as the ENTITY block's.
+    std::vector<std::string> species;
+    std::unordered_map<std::string, std::uint16_t> speciesIndices;
+    const auto speciesIndexOf = [&](const std::string& name) -> std::uint16_t {
+        const auto existing = speciesIndices.find(name);
+        if (existing != speciesIndices.end()) {
+            return existing->second;
+        }
+        const auto index = static_cast<std::uint16_t>(species.size());
+        species.push_back(name);
+        speciesIndices.emplace(name, index);
+        return index;
+    };
+    for (const auto& chunk : region.chunks) {
+        for (const auto& entity : chunk.entities) {
+            static_cast<void>(speciesIndexOf(entity.species));
+        }
+    }
+    appendInteger(bytes, static_cast<std::uint16_t>(species.size()));
+    for (const auto& name : species) {
+        appendString(bytes, name);
+    }
+
+    for (const auto& chunk : region.chunks) {
+        const SaveBlockWriter block{bytes, kRegionChunkTag, kRegionChunkVersion};
+        appendInteger(bytes, chunk.chunkX);
+        appendInteger(bytes, chunk.chunkZ);
+        appendInteger(bytes, static_cast<std::uint32_t>(chunk.edits.size()));
+        for (const auto& edit : chunk.edits) {
+            const auto packedXZ = static_cast<std::uint8_t>(
+                localOf(edit.x, world::kChunkWidth) |
+                (localOf(edit.z, world::kChunkDepth) << 4U));
+            appendInteger(bytes, packedXZ);
+            appendInteger(bytes, static_cast<std::int16_t>(edit.y));
+            appendInteger(bytes, states.indexOf(edit.state.rawId()));
+        }
+        appendInteger(bytes, static_cast<std::uint32_t>(chunk.entities.size()));
+        for (const auto& entity : chunk.entities) {
+            appendInteger(bytes, speciesIndexOf(entity.species));
+            appendFloat(bytes, entity.x);
+            appendFloat(bytes, entity.y);
+            appendFloat(bytes, entity.z);
+            appendFloat(bytes, entity.yaw);
+            appendFloat(bytes, entity.vx);
+            appendFloat(bytes, entity.vy);
+            appendFloat(bytes, entity.vz);
+            appendFloat(bytes, entity.health);
+            appendInteger(bytes, entity.angerTicks);
+            appendInteger(bytes, entity.ageTicks);
+            appendInteger(bytes, entity.rngState);
+            appendInteger(bytes, static_cast<std::uint8_t>(0U));  // flags, reserved
+        }
+    }
+    appendInteger(
+        bytes,
+        checksum(std::span<const std::uint8_t>{
+            bytes.data() + fileStart, bytes.size() - fileStart}));
+}
+
+// Reads one region file back into its chunk records. Throws on any structural
+// problem; the caller decides a torn region is worth more than the world it sits
+// in (it is not — see readRegionDirectory).
+void readRegionFile(std::span<const std::uint8_t> bytes, RegionData& region) {
+    if (bytes.size() < kRegionMagic.size() + sizeof(std::uint64_t) ||
+        !std::equal(kRegionMagic.begin(), kRegionMagic.end(), bytes.begin())) {
+        throw std::runtime_error("region file has an invalid header");
+    }
+    std::size_t checksumCursor = bytes.size() - sizeof(std::uint64_t);
+    std::size_t checksumReadCursor = checksumCursor;
+    const auto storedChecksum = readInteger<std::uint64_t>(bytes, checksumReadCursor);
+    if (checksum(std::span<const std::uint8_t>{bytes}.first(checksumCursor)) != storedChecksum) {
+        throw std::runtime_error("region file checksum mismatch");
+    }
+    const std::span<const std::uint8_t> payload{bytes.data(), checksumCursor};
+    std::size_t cursor = kRegionMagic.size();
+    const auto version = readInteger<std::uint32_t>(payload, cursor);
+    if (version > kRegionFileVersion) {
+        throw std::runtime_error("region file has a newer format version");
+    }
+    region.regionX = readInteger<std::int32_t>(payload, cursor);
+    region.regionZ = readInteger<std::int32_t>(payload, cursor);
+    const auto chunkCount = readInteger<std::uint32_t>(payload, cursor);
+    if (chunkCount > kMaximumEdits) {
+        throw std::runtime_error("region file has an unreasonable chunk count");
+    }
+
+    std::vector<world::BlockState> statePalette;
+    const auto paletteCount = readInteger<std::uint16_t>(payload, cursor);
+    statePalette.reserve(paletteCount);
+    for (std::uint16_t index = 0; index < paletteCount; ++index) {
+        statePalette.push_back(readRegionStatePaletteEntry(payload, cursor));
+    }
+    if (statePalette.empty()) {
+        throw std::runtime_error("region file has an empty state palette");
+    }
+
+    std::vector<std::string> species;
+    const auto speciesCount = readInteger<std::uint16_t>(payload, cursor);
+    species.reserve(speciesCount);
+    for (std::uint16_t index = 0; index < speciesCount; ++index) {
+        species.push_back(readString(payload, cursor));
+    }
+
+    for (std::uint32_t index = 0; index < chunkCount; ++index) {
+        std::size_t peek = cursor;
+        const auto header = readBlockHeader(payload, peek, "region chunk");
+        if (header.tag != kRegionChunkTag || header.version > kRegionChunkVersion) {
+            // A layout a future build changed: its size is the point of the frame.
+            cursor = header.end;
+            continue;
+        }
+        cursor = peek;
+        RegionChunkData chunk;
+        chunk.chunkX = readInteger<std::int32_t>(payload, cursor);
+        chunk.chunkZ = readInteger<std::int32_t>(payload, cursor);
+        const auto editCount = readInteger<std::uint32_t>(payload, cursor);
+        if (editCount > kMaximumEdits ||
+            static_cast<std::uint64_t>(editCount) * kEditRecordBytes > header.end - cursor) {
+            throw std::runtime_error("region file edit section is truncated");
+        }
+        chunk.edits.reserve(editCount);
+        for (std::uint32_t entry = 0; entry < editCount; ++entry) {
+            const auto packedXZ = readInteger<std::uint8_t>(payload, cursor);
+            world::PersistentBlockEdit edit;
+            edit.x = chunk.chunkX * world::kChunkWidth +
+                     static_cast<std::int32_t>(packedXZ & 0x0FU);
+            edit.z = chunk.chunkZ * world::kChunkDepth +
+                     static_cast<std::int32_t>((packedXZ >> 4U) & 0x0FU);
+            edit.y = readInteger<std::int16_t>(payload, cursor);
+            if (!world::isWorldYInRange(edit.y)) {
+                throw std::runtime_error("region file contains an invalid block edit");
+            }
+            const auto stateIndex = readInteger<std::uint16_t>(payload, cursor);
+            if (stateIndex >= statePalette.size()) {
+                throw std::runtime_error(
+                    "region file references an unknown state palette entry");
+            }
+            edit.state = statePalette[stateIndex];
+            chunk.edits.push_back(std::move(edit));
+        }
+        const auto entityCount = readInteger<std::uint32_t>(payload, cursor);
+        if (entityCount > kMaximumEdits) {
+            throw std::runtime_error("region file has an unreasonable entity count");
+        }
+        chunk.entities.reserve(entityCount);
+        for (std::uint32_t entry = 0; entry < entityCount; ++entry) {
+            const auto speciesIndex = readInteger<std::uint16_t>(payload, cursor);
+            if (speciesIndex >= species.size()) {
+                throw std::runtime_error(
+                    "region file references an unknown species palette entry");
+            }
+            PersistentEntity entity;
+            entity.species = species[speciesIndex];
+            entity.x = readFloat(payload, cursor);
+            entity.y = readFloat(payload, cursor);
+            entity.z = readFloat(payload, cursor);
+            entity.yaw = readFloat(payload, cursor);
+            entity.vx = readFloat(payload, cursor);
+            entity.vy = readFloat(payload, cursor);
+            entity.vz = readFloat(payload, cursor);
+            entity.health = readFloat(payload, cursor);
+            entity.angerTicks = readInteger<std::int32_t>(payload, cursor);
+            entity.ageTicks = readInteger<std::uint32_t>(payload, cursor);
+            entity.rngState = readInteger<std::uint32_t>(payload, cursor);
+            static_cast<void>(readInteger<std::uint8_t>(payload, cursor));  // flags, reserved
+            // A creature saved outside the world is a corrupt record.
+            if (!(entity.y >= -64.0F && entity.y <= 384.0F)) {
+                throw std::runtime_error("region file has an invalid entity position");
+            }
+            chunk.entities.push_back(std::move(entity));
+        }
+        if (cursor != header.end) {
+            throw std::runtime_error("region file chunk has trailing data");
+        }
+        region.chunks.push_back(std::move(chunk));
+    }
+}
+
+// Writes the region files a save needs and prunes the ones it no longer does.
+// Called from save().
+//
+// The gather starts from the flat lists, then merges the region files already on
+// disk for the chunks the unload path is still holding out of the simulation
+// (`unloadedChunks`): those creatures live in their region file, not in
+// game.entities — the unload path removed them from the simulation — so
+// rebuilding the files from game alone would silently drop that herd. Every
+// other disk record is a mirror the fresh gather replaces, or a stale copy of a
+// creature that moved or despawned while its chunk was loaded, and must not
+// survive into the rewritten file.
+void writeRegionFiles(const std::filesystem::path& directory, const SaveGame& game,
+                      const std::set<std::pair<std::int32_t, std::int32_t>>& unloadedChunks) {
+    auto regions = gatherRegions(game);
+    const auto regionDirectory = directory / "region";
+    std::error_code error;
+    if (std::filesystem::is_directory(regionDirectory, error)) {
+        for (const auto& entry : std::filesystem::directory_iterator(regionDirectory, error)) {
+            if (error) {
+                break;
+            }
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            const auto coordinates = parseRegionFileName(entry.path().filename().string());
+            if (!coordinates.has_value()) {
+                continue;
+            }
+            std::ifstream input{entry.path(), std::ios::binary | std::ios::ate};
+            const auto length = input.tellg();
+            if (!input || length < static_cast<std::streamoff>(
+                                      kRegionMagic.size() + sizeof(std::uint64_t))) {
+                continue;  // unreadable: the fresh gather regenerates it
+            }
+            std::vector<std::uint8_t> bytes(static_cast<std::size_t>(length));
+            input.seekg(0);
+            input.read(reinterpret_cast<char*>(bytes.data()), length);
+            if (!input) {
+                continue;
+            }
+            RegionData disk;
+            try {
+                readRegionFile(bytes, disk);
+            } catch (const std::exception&) {
+                continue;  // torn: the fresh gather regenerates it
+            }
+            // Only chunks the unload path is still holding out of the simulation
+            // get their disk creatures preserved; the fresh gather (or its
+            // absence) is authoritative for everything else.
+            bool hasUnloadedChunk = false;
+            for (const auto& diskChunk : disk.chunks) {
+                if (unloadedChunks.contains(
+                        std::pair<std::int32_t, std::int32_t>{diskChunk.chunkX,
+                                                              diskChunk.chunkZ})) {
+                    hasUnloadedChunk = true;
+                    break;
+                }
+            }
+            if (!hasUnloadedChunk) {
+                continue;
+            }
+            auto& region = regions[*coordinates];
+            region.regionX = coordinates->first;
+            region.regionZ = coordinates->second;
+            for (const auto& diskChunk : disk.chunks) {
+                if (!unloadedChunks.contains(
+                        std::pair<std::int32_t, std::int32_t>{diskChunk.chunkX,
+                                                              diskChunk.chunkZ})) {
+                    continue;
+                }
+                auto& target = chunkInRegion(region, diskChunk.chunkX, diskChunk.chunkZ);
+                target.entities.insert(target.entities.end(), diskChunk.entities.begin(),
+                                       diskChunk.entities.end());
+            }
+        }
+    }
+    for (const auto& [coordinates, region] : regions) {
+        std::vector<std::uint8_t> bytes;
+        appendRegionFile(bytes, region);
+        replaceFile(regionDirectory / regionFileName(coordinates.first, coordinates.second), bytes);
+    }
+    // Prune region files this save no longer produces — a reverted edit or a
+    // region emptied by the merge must not linger and resurrect on the next load.
+    if (!std::filesystem::is_directory(regionDirectory, error)) {
+        return;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(regionDirectory, error)) {
+        if (error) {
+            break;
+        }
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        const auto coordinates = parseRegionFileName(entry.path().filename().string());
+        if (!coordinates.has_value()) {
+            continue;
+        }
+        if (regions.contains(*coordinates)) {
+            continue;
+        }
+        std::filesystem::remove(entry.path(), error);
+        error.clear();
+    }
+}
+
+// Loads every region file in the world back into the flat edit and entity lists,
+// the shape the rest of the pipeline works with. A corrupt region is skipped —
+// a torn file regenerates from seed rather than refusing the whole world, which
+// is the difference from world.dat: the region is the regenerable part.
+void readRegionDirectory(const std::filesystem::path& directory, SaveGame& game) {
+    const auto regionDirectory = directory / "region";
+    std::error_code error;
+    if (!std::filesystem::is_directory(regionDirectory, error)) {
+        return;
+    }
+    // Directory iteration order is unspecified; sort the region files by name so
+    // a save flattens back in the same order every load — region lexicographic,
+    // which matches the map order gatherRegions writes them in.
+    std::vector<std::filesystem::path> files;
+    for (const auto& entry : std::filesystem::directory_iterator(regionDirectory, error)) {
+        if (error) {
+            break;
+        }
+        if (entry.is_regular_file() &&
+            parseRegionFileName(entry.path().filename().string()).has_value()) {
+            files.push_back(entry.path());
+        }
+    }
+    std::ranges::sort(files, {}, &std::filesystem::path::filename);
+    for (const auto& path : files) {
+        std::ifstream input{path, std::ios::binary | std::ios::ate};
+        if (!input) {
+            std::cerr << "[save] skipping unreadable region " << path.string() << '\n';
+            continue;
+        }
+        const auto length = input.tellg();
+        if (length < static_cast<std::streamoff>(kRegionMagic.size() + sizeof(std::uint64_t))) {
+            std::cerr << "[save] skipping truncated region " << path.string() << '\n';
+            continue;
+        }
+        std::vector<std::uint8_t> bytes(static_cast<std::size_t>(length));
+        input.seekg(0);
+        input.read(reinterpret_cast<char*>(bytes.data()), length);
+        if (!input) {
+            std::cerr << "[save] skipping unreadable region " << path.string() << '\n';
+            continue;
+        }
+        RegionData region;
+        try {
+            readRegionFile(bytes, region);
+        } catch (const std::exception& exception) {
+            std::cerr << "[save] skipping corrupt region " << path.string() << ": "
+                      << exception.what() << '\n';
+            continue;
+        }
+        for (const auto& chunk : region.chunks) {
+            game.edits.insert(game.edits.end(), chunk.edits.begin(), chunk.edits.end());
+            game.entities.insert(game.entities.end(), chunk.entities.begin(),
+                                 chunk.entities.end());
+        }
+    }
 }
 
 // The block entities. One section per type, each with its own size and version,
@@ -1377,7 +1914,7 @@ void readBlockEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cu
                 chest.position.x = readInteger<std::int32_t>(payload, cursor);
                 chest.position.y = readInteger<std::int32_t>(payload, cursor);
                 chest.position.z = readInteger<std::int32_t>(payload, cursor);
-                if (chest.position.y < 0 || chest.position.y >= world::kWorldHeight) {
+                if (!world::isWorldYInRange(chest.position.y)) {
                     throw std::runtime_error("world.dat contains an invalid chest position");
                 }
                 readSlots(payload, cursor, context, chest.items);
@@ -1395,7 +1932,7 @@ void readBlockEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cu
                 furnace.position.x = readInteger<std::int32_t>(payload, cursor);
                 furnace.position.y = readInteger<std::int32_t>(payload, cursor);
                 furnace.position.z = readInteger<std::int32_t>(payload, cursor);
-                if (furnace.position.y < 0 || furnace.position.y >= world::kWorldHeight) {
+                if (!world::isWorldYInRange(furnace.position.y)) {
                     throw std::runtime_error("world.dat contains an invalid furnace position");
                 }
                 readStackRecord(payload, cursor, context, furnace.input);
@@ -1425,6 +1962,10 @@ struct SaveBlockOwner final {
     std::uint16_t version;
     SaveBlockWriteFn write;
     SaveBlockReadFn read;
+    // M-3: CHNK and ENTY kept their read handlers so a pre-region world.dat still
+    // opens, but nothing new writes them — their content lives in region files
+    // now. `writeable` keeps them out of the save() write loop.
+    bool writeable = true;
 };
 
 // The pre-17 blocks kept their own framing, so they are adapted here rather than
@@ -1481,13 +2022,15 @@ void readDropOwner(std::span<const std::uint8_t> payload, std::size_t& cursor,
 constexpr std::array<SaveBlockOwner, 10> kSaveBlockOwners{{
     {kWorldBlockTag, kWorldBlockVersion, &appendWorldBlock, &readWorldBlock},
     {kPlayerBlockTag, kPlayerBlockVersion, &appendPlayerBlock, &readPlayerBlock},
-    {kChunkBlockTag, kChunkBlockVersion, &appendChunkBlock, &readChunkBlock},
+    {kChunkBlockTag, kChunkBlockVersion, &appendChunkBlock, &readChunkBlock,
+     /*writeable=*/false},
     {kBlockEntityBlockTag, kBlockEntityBlockVersion, &appendBlockEntityBlock,
      &readBlockEntityBlock},
     {kGameRulesBlockTag, kGameRulesBlockVersion, &writeGameRulesOwner, &readGameRulesOwner},
     {kSpawnPointBlockTag, kSpawnPointBlockVersion, &writeSpawnPointOwner, &readSpawnPointOwner},
     {kWeatherBlockTag, kWeatherBlockVersion, &writeWeatherOwner, &readWeatherOwner},
-    {kEntityBlockTag, kEntityBlockVersion, &writeEntityOwner, &readEntityOwner},
+    {kEntityBlockTag, kEntityBlockVersion, &writeEntityOwner, &readEntityOwner,
+     /*writeable=*/false},
     {kClockBlockTag, kClockBlockVersion, &writeClockOwner, &readClockOwner},
     {kDropBlockTag, kDropBlockVersion, &writeDropOwner, &readDropOwner},
 }};
@@ -1552,20 +2095,26 @@ SaveGame SaveRepository::create(std::string displayName, std::uint64_t seed) con
     return game;
 }
 
-void SaveRepository::save(SaveGame game) const {
+void SaveRepository::save(
+    SaveGame game,
+    const std::set<std::pair<std::int32_t, std::int32_t>>& unloadedChunks) const {
     if (!safeIdentifier(game.summary.identifier)) {
         throw std::invalid_argument("Unsafe save identifier");
     }
     game.summary.displayName = sanitizeDisplayName(std::move(game.summary.displayName));
     game.summary.lastPlayedUnixSeconds = nowUnixSeconds();
+    // M-3: the edits and creatures no longer live in world.dat — chunks own them
+    // in region/ files, written (and pruned) below. world.dat stays small: just
+    // the world and player state, the block entities and the drops.
+    const auto directory = root_ / game.summary.identifier;
+    writeRegionFiles(directory, game, unloadedChunks);
+
     std::vector<std::uint8_t> bytes{kMagic.begin(), kMagic.end()};
-    // One allocation for the whole file instead of the twenty-odd doublings a
-    // multi-megabyte edit list would otherwise walk through, each of them
-    // copying everything written so far. The estimate only has to be close: the
-    // edit list dominates and its record size is fixed.
-    bytes.reserve(kReservedPrologueBytes + game.edits.size() * kEditRecordBytes +
-                  game.chests.size() * 64U + game.furnaces.size() * 64U +
-                  game.entities.size() * 48U + game.itemDrops.size() * 40U);
+    // One allocation for the whole file. The edit list used to dominate the
+    // buffer; with region files carrying it, world.dat is a few blocks of
+    // player and container state, so the prologue slack is plenty.
+    bytes.reserve(kReservedPrologueBytes + game.chests.size() * 64U +
+                  game.furnaces.size() * 64U + game.itemDrops.size() * 40U);
     appendInteger(bytes, kFormatVersion);
     appendInteger(bytes, game.summary.seed);
 
@@ -1579,9 +2128,6 @@ void SaveRepository::save(SaveGame game) const {
     };
     for (const auto& stack : game.inventory) {
         gatherStack(stack);
-    }
-    for (const auto& edit : game.edits) {
-        static_cast<void>(blockPalette.indexOf(edit.state.block()));
     }
     for (const auto& chest : game.chests) {
         for (const auto& stack : chest.items) {
@@ -1609,15 +2155,157 @@ void SaveRepository::save(SaveGame game) const {
     }
 
     // Every owner writes its own block. The order here is the order on disk, but
-    // nothing depends on it: the reader dispatches on the tag.
+    // nothing depends on it: the reader dispatches on the tag. CHNK and ENTY are
+    // read-only here (writeable=false) — their content is in the region files.
     const SaveWriteContext context{game, blockPalette, itemPalette};
     for (const auto& owner : kSaveBlockOwners) {
+        if (!owner.writeable) {
+            continue;
+        }
         owner.write(bytes, context);
     }
     appendInteger(bytes, checksum(bytes));
-    const auto directory = root_ / game.summary.identifier;
     replaceFile(directory / "world.dat", bytes);
     writeMetadata(directory / "level.properties", game.summary);
+}
+
+void SaveRepository::saveChunk(const std::string& identifier, int chunkX, int chunkZ,
+                               std::vector<world::PersistentBlockEdit> edits,
+                               std::vector<PersistentEntity> entities) const {
+    if (!safeIdentifier(identifier)) throw std::invalid_argument("Unsafe save identifier");
+    const auto path = root_ / identifier / "region" /
+        regionFileName(regionOf(chunkX), regionOf(chunkZ));
+    RegionData region;
+    // Merge with whatever the region already holds: a chunk unloads while its
+    // neighbours stay, so the file is shared.
+    if (std::filesystem::is_regular_file(path)) {
+        std::ifstream input{path, std::ios::binary | std::ios::ate};
+        const auto length = input.tellg();
+        std::vector<std::uint8_t> bytes;
+        if (input && length >= static_cast<std::streamoff>(
+                                  kRegionMagic.size() + sizeof(std::uint64_t))) {
+            bytes.resize(static_cast<std::size_t>(length));
+            input.seekg(0);
+            input.read(reinterpret_cast<char*>(bytes.data()), length);
+        }
+        if (!bytes.empty()) {
+            try {
+                readRegionFile(bytes, region);
+            } catch (const std::exception&) {
+                // A torn neighbour region regenerates; this chunk's write is the
+                // new truth for it either way.
+                region = RegionData{};
+            }
+        }
+    }
+    std::erase_if(region.chunks, [&](const RegionChunkData& chunk) {
+        return chunk.chunkX == chunkX && chunk.chunkZ == chunkZ;
+    });
+    if (!edits.empty() || !entities.empty()) {
+        region.chunks.push_back({chunkX, chunkZ, std::move(edits), std::move(entities)});
+    }
+    if (region.chunks.empty()) {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+        return;
+    }
+    std::vector<std::uint8_t> bytes;
+    appendRegionFile(bytes, region);
+    replaceFile(path, bytes);
+}
+
+void SaveRepository::saveChunks(const std::string& identifier,
+                                std::vector<ChunkPersistRecord> records) const {
+    if (!safeIdentifier(identifier)) throw std::invalid_argument("Unsafe save identifier");
+    if (records.empty()) {
+        return;
+    }
+    // Group the burst by region file so each region is read-modified-written
+    // once, no matter how many chunks in the burst fall inside it.
+    std::map<std::pair<std::int32_t, std::int32_t>, std::vector<std::size_t>> byRegion;
+    for (std::size_t index = 0; index < records.size(); ++index) {
+        byRegion[{regionOf(records[index].chunkX), regionOf(records[index].chunkZ)}]
+            .push_back(index);
+    }
+    for (const auto& [regionKey, indices] : byRegion) {
+        const auto path = root_ / identifier / "region" /
+            regionFileName(regionKey.first, regionKey.second);
+        RegionData region;
+        if (std::filesystem::is_regular_file(path)) {
+            std::ifstream input{path, std::ios::binary | std::ios::ate};
+            const auto length = input.tellg();
+            std::vector<std::uint8_t> existing;
+            if (input && length >= static_cast<std::streamoff>(
+                                       kRegionMagic.size() + sizeof(std::uint64_t))) {
+                existing.resize(static_cast<std::size_t>(length));
+                input.seekg(0);
+                input.read(reinterpret_cast<char*>(existing.data()), length);
+            }
+            if (!existing.empty()) {
+                try {
+                    readRegionFile(existing, region);
+                } catch (const std::exception&) {
+                    region = RegionData{};
+                }
+            }
+        }
+        for (const auto index : indices) {
+            auto& record = records[index];
+            std::erase_if(region.chunks, [&](const RegionChunkData& chunk) {
+                return chunk.chunkX == record.chunkX && chunk.chunkZ == record.chunkZ;
+            });
+            if (!record.edits.empty() || !record.entities.empty()) {
+                region.chunks.push_back({record.chunkX, record.chunkZ,
+                                         std::move(record.edits), std::move(record.entities)});
+            }
+        }
+        if (region.chunks.empty()) {
+            std::error_code error;
+            std::filesystem::remove(path, error);
+            continue;
+        }
+        std::vector<std::uint8_t> bytes;
+        appendRegionFile(bytes, region);
+        replaceFile(path, bytes);
+    }
+}
+
+std::vector<PersistentEntity> SaveRepository::loadChunkEntities(const std::string& identifier,
+                                                                int chunkX, int chunkZ) const {
+    std::vector<PersistentEntity> entities;
+    if (!safeIdentifier(identifier)) throw std::invalid_argument("Unsafe save identifier");
+    const auto path = root_ / identifier / "region" /
+        regionFileName(regionOf(chunkX), regionOf(chunkZ));
+    if (!std::filesystem::is_regular_file(path)) {
+        return entities;
+    }
+    std::ifstream input{path, std::ios::binary | std::ios::ate};
+    if (!input) {
+        return entities;
+    }
+    const auto length = input.tellg();
+    if (length < static_cast<std::streamoff>(kRegionMagic.size() + sizeof(std::uint64_t))) {
+        return entities;
+    }
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(length));
+    input.seekg(0);
+    input.read(reinterpret_cast<char*>(bytes.data()), length);
+    if (!input) {
+        return entities;
+    }
+    RegionData region;
+    try {
+        readRegionFile(bytes, region);
+    } catch (const std::exception&) {
+        // A torn region regenerates from seed; there is no herd to restore.
+        return entities;
+    }
+    for (const auto& chunk : region.chunks) {
+        if (chunk.chunkX == chunkX && chunk.chunkZ == chunkZ) {
+            return chunk.entities;
+        }
+    }
+    return entities;
 }
 
 void SaveRepository::rename(const std::string& identifier, std::string displayName) const {
@@ -1963,6 +2651,10 @@ SaveGame SaveRepository::load(const std::string& identifier) const {
     game.summary.seed = readInteger<std::uint64_t>(payload, cursor);
     if (formatVersion >= kFirstOwnerDrivenFormatVersion) {
         loadOwnerBlocks(payload, cursor, game);
+        // M-3 region files: a save made since the region layout carries its edits
+        // and creatures in region/, not in world.dat (CHNK and ENTY are only read
+        // for the pre-region saves). Union the two sources so both open.
+        readRegionDirectory(directory, game);
         // gameTimeSeconds stopped being persisted with format 17 — the server
         // tick and the named clocks carry the time now — but the field is still
         // read in a couple of places, so it is derived rather than left at zero.

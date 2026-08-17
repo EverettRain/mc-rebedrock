@@ -32,7 +32,10 @@
 
 #include <glm/vec3.hpp>
 
+#include <array>
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <unordered_map>
@@ -147,20 +150,88 @@ class GameSession final {
     [[nodiscard]] PlayerActionState& playerActions() { return primaryPlayer().actions; }
     [[nodiscard]] const PlayerActionState& playerActions() const { return primaryPlayer().actions; }
     // The player state published once per tick under the world write lock. The
-    // render thread reads this snapshot (under a read lock) and interpolates it
-    // with its own frame alpha, instead of touching live gameplay objects.
-    [[nodiscard]] const PlayerTickSnapshot& playerTickSnapshot() const {
-        return playerTickSnapshot_;
+    // render thread first pins the immutable published bundle, then copies the
+    // requested member. A pooled bundle is never reused while a reader still
+    // owns it, so this remains lock-free for readers without relying on an
+    // unsafe seqlock over ordinary C++ objects.
+    [[nodiscard]] PlayerTickSnapshot playerTickSnapshot() const {
+        const auto snapshots = loadSnapshotBundle();
+        return snapshots->player;
     }
     // The render-visible world state, published once per tick under the world
-    // write lock (weather, time of day, clocks, rules).
-    [[nodiscard]] const WorldSnapshot& worldSnapshot() const { return worldSnapshot_; }
+    // write lock (weather, time of day, clocks, rules). It belongs to the same
+    // immutable bundle as the player and entity snapshots.
+    [[nodiscard]] WorldSnapshot worldSnapshot() const {
+        const auto snapshots = loadSnapshotBundle();
+        return snapshots->world;
+    }
+    // Captures the current authoritative state into the player/world/entity
+    // snapshots without advancing the simulation. Called at the end of tick()
+    // and once right after a world load, so the renderer's first reads see the
+    // restored state instead of the snapshots' default (0,0,0) until the first
+    // tick runs.
+    void publishSnapshots();
 
     // The render thread enqueues input intents here; GameSession::tick drains
     // them into PlayerInteraction, which applies them once per tick.
     void enqueueCommand(GameCommand command) { commandQueue_.enqueue(std::move(command)); }
+
+    // The container the player has open, 26.1's AbstractContainerMenu state.
+    // Gameplay owns it so the container interaction (ClickSlot/SwapSlot) and a
+    // future remote player know what is open without the renderer telling them.
+    // `screen` is the container kind; `chest`/`furnace` name the block entity a
+    // block-backed container is bound to.
+    // Teleports a player to a feet position, snapping the physics interpolation
+    // endpoints so the renderer's camera follows without a frame of drift.
+    void teleportPlayer(PlayerId playerId, const glm::vec3& feet);
+    void setWorldSpawn(const glm::vec3& feet);
+
+    void openContainer(ContainerScreen screen, std::optional<ChestPosition> chest = std::nullopt,
+                       std::optional<glm::ivec3> furnace = std::nullopt);
+    void closeContainer();
+    // Opens a chest block entity and its container in one step; returns false
+    // when the chest has no entity. Gameplay owns the chest's open/lid state.
+    bool openChestContainer(ChestPosition position);
+    // Menu#removed: closes the open container and returns everything the cursor
+    // and crafting grid were holding to the inventory. The renderer's inventory
+    // close and world switch both end here, so it never reaches into the
+    // inventory or crafting systems directly.
+    void closeContainerMenu();
+    [[nodiscard]] const ContainerScreen& openContainerScreen() const {
+        return openContainerScreen_;
+    }
+    [[nodiscard]] const std::optional<ChestPosition>& openChest() const { return openChest_; }
+    [[nodiscard]] const std::optional<glm::ivec3>& openFurnace() const { return openFurnace_; }
     // The current dig (for the renderer's crack overlay).
     [[nodiscard]] const PlayerInteraction& interaction() const { return playerInteraction_; }
+
+    // ---- World lifecycle and the session-driven world writes ----
+    // Tears down every per-world system when the renderer switches worlds: the
+    // simulation, the item/creature entities, the open container and the
+    // block-entity registries. The renderer calls one method instead of reaching
+    // into the individual systems.
+    void resetWorldState();
+    // The furnace lit state is a property of the furnace system mirrored into the
+    // world's LIT flag; gameplay owns that mirror so the renderer never reads the
+    // furnace entities. Written through the mutation service like every edit.
+    void syncFurnaceLitStates(world::World& world);
+    // A chest block entity for a test scene that placed the chest block directly
+    // into the world (the normal placement path creates it through the mutation
+    // sink's onBlockEntityReplaced).
+    void createChestBlockEntity(ChestPosition position);
+    // Spawns a dropped item entity with an initial velocity — the drop-cursor
+    // path, now gameplay-owned instead of the renderer calling itemEntities().
+    void spawnItemEntity(const glm::vec3& position, ItemStack stack,
+                         const glm::vec3& velocity);
+    // Throws the whole cursor stack in front of the player (the click-outside
+    // drop), and the selected hotbar stack (the Q drop). `lookDirection` is the
+    // renderer's camera direction; gameplay picks the spawn point and velocity.
+    void dropCursorStack(const glm::vec3& lookDirection);
+    void dropSelectedStack(bool wholeStack, const glm::vec3& lookDirection);
+    // The one game rule with a runtime mirror (randomTickSpeed -> simulation) is
+    // mirrored by the session itself. The constructor attaches it; a save load
+    // replaces gameRules_ with a null-handler copy, so the loader re-attaches it.
+    void attachGameRuleHandlers();
 
     // ---- Actions (the interactive layer calls these) ----
     void setGameMode(GameMode mode);
@@ -271,8 +342,13 @@ class GameSession final {
     std::size_t drainEvents() { return hostBridge_.drain(); }
     // What the renderer draws creatures from. Rebuilt at the end of every tick,
     // so the draw pass never walks the live entity vector — which the tick is
-    // free to reorder, compact and resize.
-    [[nodiscard]] const EntityRenderSnapshot& entitySnapshot() const { return entitySnapshot_; }
+    // free to reorder, compact and resize. Returned by value after pinning the
+    // immutable published bundle, so the read needs no world lock and a later
+    // publish cannot rewrite its storage mid-copy.
+    [[nodiscard]] EntityRenderSnapshot entitySnapshot() const {
+        const auto snapshots = loadSnapshotBundle();
+        return snapshots->entities;
+    }
     [[nodiscard]] std::size_t pendingEvents() const { return hostBridge_.pending(); }
 
     // The one path block changes take. Exposed so a caller that already holds
@@ -358,6 +434,9 @@ class GameSession final {
                              const glm::vec3& previousPosition, const glm::vec3& currentPosition);
     void consumeEntityEvents();
     [[nodiscard]] bool submergedInWater(const world::World& world, glm::vec3 position) const;
+    // The shared item-drop: throws a stack out of the player's eye along
+    // `lookDirection`, the way vanilla's PlayerInventory#dropAll does.
+    void spawnItemDrop(const glm::vec3& lookDirection, ItemStack stack);
 
     // Every connected player's authoritative state, keyed by stable PlayerId.
     // ReBedrock today has one local player (kPrimaryPlayerId); remote players
@@ -367,8 +446,26 @@ class GameSession final {
     gameplay::Difficulty difficulty_ = gameplay::Difficulty::Normal;
     // ServerWorld#tickChunks simulation distance, in blocks (horizontal).
     float simulationRadiusBlocks_ = 64.0F;
-    // Declared before the bridge: the bridge subscribes to it on construction.
-    EntityRenderSnapshot entitySnapshot_;
+    // All render-visible state is published as one immutable bundle. The writer
+    // retains a small pool to reuse vector capacity, but only selects a bundle
+    // whose shared ownership has returned to the pool alone. A render reader's
+    // atomic load therefore pins the exact allocation it copies until the copy
+    // finishes, including across any number of later publications.
+    struct RenderSnapshots final {
+        PlayerTickSnapshot player;
+        WorldSnapshot world;
+        EntityRenderSnapshot entities;
+    };
+    [[nodiscard]] std::shared_ptr<const RenderSnapshots> loadSnapshotBundle() const;
+    void storeSnapshotBundle(std::shared_ptr<const RenderSnapshots> snapshots);
+#if defined(__cpp_lib_atomic_shared_ptr) && !defined(__APPLE__)
+    std::atomic<std::shared_ptr<const RenderSnapshots>> publishedSnapshots_;
+#else
+    // Older Apple libc++ exposes the C++11 shared_ptr atomic free functions but
+    // not atomic<shared_ptr>'s C++20 class specialization.
+    std::shared_ptr<const RenderSnapshots> publishedSnapshots_;
+#endif
+    std::vector<std::shared_ptr<RenderSnapshots>> snapshotPool_;
     GameEventBus events_;
     SimulationHostBridge hostBridge_{events_};
     world::WorldMutationService worldMutations_;
@@ -392,11 +489,12 @@ class GameSession final {
     // The authoritative interaction, run at the end of each tick.
     PlayerInteraction playerInteraction_;
     GameCommandQueue commandQueue_;
-    // The per-tick player snapshot, captured at the end of tick() under the
-    // caller's world write lock and read by the render thread each frame.
-    PlayerTickSnapshot playerTickSnapshot_;
-    // The render-visible world state, captured alongside the player snapshot.
-    WorldSnapshot worldSnapshot_;
+    [[nodiscard]] std::shared_ptr<RenderSnapshots> acquireSnapshotWriteBundle();
+    void publishSnapshotBundle(const std::shared_ptr<RenderSnapshots>& snapshots);
+    // The container the player has open (26.1's AbstractContainerMenu).
+    ContainerScreen openContainerScreen_ = ContainerScreen::PlayerInventory;
+    std::optional<ChestPosition> openChest_;
+    std::optional<glm::ivec3> openFurnace_;
 };
 
 } // namespace mc::gameplay

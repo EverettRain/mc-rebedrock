@@ -77,7 +77,10 @@ class HudRenderer final {
         ui::TextFont& textFont;
         ui::BitmapFontMetrics& fontMetrics;
         ui::Language& language;
-        world::World& interactionWorld;
+        // The world the HUD samples light from. This is the render-owned client
+        // chunk cache, never the server world — the HUD's light reads must not
+        // take the server lock.
+        world::World& lightWorld;
         GLFWwindow*& window;
         config::GameOptions& options;
         PerspectiveCamera& camera;
@@ -91,12 +94,11 @@ class HudRenderer final {
         VkPipeline& heldItemPipeline;
         VkPipelineLayout& itemPipelineLayout;
         bool& inventoryOpen;
-        ContainerScreen& containerScreen;
-        std::optional<gameplay::ChestPosition>& activeChest;
-        std::optional<glm::ivec3>& activeFurnacePosition;
+        const ContainerScreen& containerScreen;
+        const std::optional<gameplay::ChestPosition>& activeChest;
         bool& debugOverlayOpen;
         bool& inventoryDragActive;
-        std::vector<gameplay::ItemStack*>& inventoryDragSlots;
+        std::vector<gameplay::SlotRef>& inventoryDragSlots;
         bool& chatOpen;
         ui::ChatHistory& chatHistory;
         std::string& chatInputText;
@@ -128,21 +130,21 @@ class HudRenderer final {
         std::function<std::size_t()> creativeMaximumScrollRow;
         std::function<std::vector<std::uint8_t>()> dragPlacementCounts;
         std::function<float()> cameraFarPlane;
-        std::function<std::optional<ui::UiRect>(const ui::HudLayout&, const gameplay::ItemStack*)>
+        std::function<std::optional<ui::UiRect>(const ui::HudLayout&, const gameplay::SlotRef&)>
             dragSlotRectangle;
     };
 
     explicit HudRenderer(const Bindings& b)
         : menuSystem(b.menuSystem), uiFrameData_(b.uiFrameData_), gameSession(b.gameSession),
           textFont(b.textFont), fontMetrics(b.fontMetrics), language(b.language),
-          interactionWorld(b.interactionWorld), window(b.window), options(b.options),
+          lightWorld(b.lightWorld), window(b.window), options(b.options),
           camera(b.camera), swapchainExtent(b.swapchainExtent), hudPipeline(b.hudPipeline),
           hudPipelineLayout(b.hudPipelineLayout), vignettePipeline(b.vignettePipeline),
           crosshairPipeline(b.crosshairPipeline), panoramaPipeline(b.panoramaPipeline),
           panoramaPipelineLayout(b.panoramaPipelineLayout), heldItemPipeline(b.heldItemPipeline),
           itemPipelineLayout(b.itemPipelineLayout), inventoryOpen(b.inventoryOpen),
           containerScreen(b.containerScreen), activeChest(b.activeChest),
-          activeFurnacePosition(b.activeFurnacePosition), debugOverlayOpen(b.debugOverlayOpen),
+          debugOverlayOpen(b.debugOverlayOpen),
           inventoryDragActive(b.inventoryDragActive), inventoryDragSlots(b.inventoryDragSlots),
           chatOpen(b.chatOpen), chatHistory(b.chatHistory), chatInputText(b.chatInputText),
           chatSuggestions_(b.chatSuggestions_), chatSuggestionIndex_(b.chatSuggestionIndex_),
@@ -176,7 +178,6 @@ class HudRenderer final {
     [[nodiscard]] std::string translated(std::string_view key, std::string_view fallback) const {
         return std::string{translate(key, fallback)};
     }
-    [[nodiscard]] gameplay::Inventory& activeInventory() const { return gameSession.inventory(); }
     [[nodiscard]] ui::UiPoint currentFramebufferCursor() const {
         double cursorX = 0.0;
         double cursorY = 0.0;
@@ -307,7 +308,7 @@ class HudRenderer final {
     }
 
     void drawDragPreview(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
-        if (!inventoryDragActive || gameSession.inventory().cursorStack().empty()) {
+        if (!inventoryDragActive || gameSession.worldSnapshot().cursorStack.empty()) {
             return;
         }
         const auto counts = dragPlacementCounts();
@@ -317,7 +318,7 @@ class HudRenderer final {
                 continue;
             }
             drawHudQuad(commandBuffer, *rect, {0.0F, 0.0F, 0.0F, 0.5F});
-            drawHudItemIcon(commandBuffer, *rect, gameSession.inventory().cursorStack());
+            drawHudItemIcon(commandBuffer, *rect, gameSession.worldSnapshot().cursorStack);
             const std::string count = std::to_string(counts[index]);
             const float textScale = layout.scale();
             drawHudText(commandBuffer, count,
@@ -1142,16 +1143,19 @@ class HudRenderer final {
     // corners also appear at night and in caves.
     void updateVignetteDarkness(float deltaSeconds) {
         const auto daylight =
-            world::DayNightCycle::stateAtTick(static_cast<double>(gameSession.dayTimeTicks()));
+            world::DayNightCycle::stateAtTick(gameSession.worldSnapshot().dayTimeTicks);
         const float daylightFactor =
             std::clamp((daylight.skyBrightness - 0.08F) / 0.92F, 0.0F, 1.0F);
-        const glm::vec3 eye = gameSession.player().eyePosition();
+        const auto& playerSnap = gameSession.playerTickSnapshot();
+        const float eyeHeight = playerSnap.sneaking ? gameplay::PlayerController::kSneakingEyeHeight
+                                                    : gameplay::PlayerController::kEyeHeight;
+        const glm::vec3 eye = playerSnap.physicsCurrent + glm::vec3{0.0F, eyeHeight, 0.0F};
         const int eyeX = static_cast<int>(std::floor(eye.x));
         const int eyeY = static_cast<int>(std::floor(eye.y));
         const int eyeZ = static_cast<int>(std::floor(eye.z));
-        const float sky = static_cast<float>(interactionWorld.skyLight(eyeX, eyeY, eyeZ)) / 15.0F;
+        const float sky = static_cast<float>(lightWorld.skyLight(eyeX, eyeY, eyeZ)) / 15.0F;
         const float block =
-            static_cast<float>(interactionWorld.blockLight(eyeX, eyeY, eyeZ)) / 15.0F;
+            static_cast<float>(lightWorld.blockLight(eyeX, eyeY, eyeZ)) / 15.0F;
         const float light = std::max(block, sky * daylightFactor);
         const float brightness = light / (4.0F - 3.0F * light);
         const float target = std::clamp(1.0F - brightness, 0.0F, 1.0F);
@@ -1450,39 +1454,33 @@ class HudRenderer final {
                         panel.x + 8.0F * layout.scale(), panel.y + 73.0F * layout.scale(),
                         layout.scale(), {0.25F, 0.25F, 0.25F, 1.0F}, false);
             if (activeChest.has_value()) {
-                if (const auto* chest = gameSession.chestSystem().find(*activeChest);
-                    chest != nullptr) {
-                    for (std::size_t index = 0; index < gameplay::ChestBlockEntity::kSlotCount;
-                         ++index) {
-                        drawHudSlot(commandBuffer, layout.chestSlot(index), chest->items[index],
-                                    false, false, true);
-                    }
+                const auto& chestItems = gameSession.worldSnapshot().chestItems;
+                for (std::size_t index = 0; index < gameplay::ChestBlockEntity::kSlotCount;
+                     ++index) {
+                    drawHudSlot(commandBuffer, layout.chestSlot(index), chestItems[index], false,
+                                false, true);
                 }
             }
         } else if (containerScreen == ContainerScreen::CraftingTable) {
             for (std::size_t index = 0; index < 9U; ++index) {
                 drawHudSlot(commandBuffer, layout.tableCraftingSlot(index),
-                            gameSession.craftingSystem().tableSlot(index), false, false, true);
+                            gameSession.worldSnapshot().tableCraftingGrid[index], false, false, true);
             }
             drawHudSlot(commandBuffer, layout.tableCraftingOutput(),
-                        gameSession.craftingSystem().tableOutput(), false, false, true);
+                        gameSession.worldSnapshot().tableCraftingOutput, false, false, true);
         } else {
-            const gameplay::FurnacePosition furnace =
-                activeFurnacePosition.has_value()
-                    ? gameplay::FurnacePosition{activeFurnacePosition->x, activeFurnacePosition->y,
-                                                activeFurnacePosition->z}
-                    : gameplay::FurnacePosition{};
-            const auto* entity = gameSession.furnaceSystem().find(furnace);
-            const gameplay::ItemStack empty{};
-            drawHudSlot(commandBuffer, layout.furnaceInputSlot(),
-                        entity != nullptr ? entity->input : empty, false, false, true);
-            drawHudSlot(commandBuffer, layout.furnaceFuelSlot(),
-                        entity != nullptr ? entity->fuel : empty, false, false, true);
-            drawHudSlot(commandBuffer, layout.furnaceOutputSlot(),
-                        entity != nullptr ? entity->output : empty, false, false, true);
+            // N3c-4d: the furnace screen draws from the container display
+            // snapshot; the block entity's position is not read here.
+            const auto& worldSnap = gameSession.worldSnapshot();
+            drawHudSlot(commandBuffer, layout.furnaceInputSlot(), worldSnap.furnaceInput, false,
+                        false, true);
+            drawHudSlot(commandBuffer, layout.furnaceFuelSlot(), worldSnap.furnaceFuel, false,
+                        false, true);
+            drawHudSlot(commandBuffer, layout.furnaceOutputSlot(), worldSnap.furnaceOutput, false,
+                        false, true);
             const float scale = layout.scale();
             const float fuel =
-                std::clamp(gameSession.furnaceSystem().fuelProgress(furnace), 0.0F, 1.0F);
+                std::clamp(gameSession.worldSnapshot().furnaceFuelProgress, 0.0F, 1.0F);
             if (fuel > 0.0F) {
                 const float height = std::ceil(13.0F * fuel);
                 drawGuiSprite(commandBuffer,
@@ -1491,7 +1489,7 @@ class HudRenderer final {
                               8.0F, {176.0F, 13.0F - height, 14.0F, height});
             }
             const float progress =
-                std::clamp(gameSession.furnaceSystem().cookProgress(furnace), 0.0F, 1.0F);
+                std::clamp(gameSession.worldSnapshot().furnaceCookProgress, 0.0F, 1.0F);
             if (progress > 0.0F) {
                 const float width = std::ceil(24.0F * progress);
                 drawGuiSprite(commandBuffer,
@@ -1503,17 +1501,17 @@ class HudRenderer final {
         for (std::size_t index = 0; index < gameplay::Inventory::kSlotCount; ++index) {
             const auto slot =
                 chestScreen ? layout.chestInventorySlot(index) : layout.inventorySlot(index);
-            drawHudSlot(commandBuffer, slot, gameSession.inventory().slot(index),
+            drawHudSlot(commandBuffer, slot, gameSession.worldSnapshot().inventorySlots[index],
                         index == uiFrameData_.selectedHotbarSlot, false, true);
         }
         // An in-progress drag previews the would-be placement in every swept
         // slot before the release, on top of the slots but under the cursor.
         drawDragPreview(commandBuffer, layout);
-        if (!gameSession.inventory().cursorStack().empty()) {
+        if (!gameSession.worldSnapshot().cursorStack.empty()) {
             const auto cursor = currentFramebufferCursor();
             const float size = 16.0F * layout.scale();
             drawHudSlot(commandBuffer, {cursor.x - size * 0.5F, cursor.y - size * 0.5F, size, size},
-                        gameSession.inventory().cursorStack(), false, false, true);
+                        gameSession.worldSnapshot().cursorStack, false, false, true);
         }
         static_cast<void>(descriptorSet);
     }
@@ -1575,10 +1573,10 @@ class HudRenderer final {
             for (std::size_t index = 0; index < gameplay::Inventory::kSlotCount; ++index) {
                 const auto slot = layout.creativeInventorySlot(index);
                 const bool hovered = slot.contains(cursor.x, cursor.y);
-                if (hovered && !gameSession.inventory().slot(index).empty()) {
-                    hoveredStack = gameSession.inventory().slot(index);
+                if (hovered && !gameSession.worldSnapshot().inventorySlots[index].empty()) {
+                    hoveredStack = gameSession.worldSnapshot().inventorySlots[index];
                 }
-                drawHudSlot(commandBuffer, slot, gameSession.inventory().slot(index),
+                drawHudSlot(commandBuffer, slot, gameSession.worldSnapshot().inventorySlots[index],
                             index == uiFrameData_.selectedHotbarSlot, hovered, true);
             }
             const auto deleteSlot = layout.creativeDeleteSlot();
@@ -1621,7 +1619,7 @@ class HudRenderer final {
             }
             for (std::size_t index = 0; index < gameplay::Inventory::kHotbarSize; ++index) {
                 const auto slot = layout.creativeHotbarSlot(index);
-                drawHudSlot(commandBuffer, slot, gameSession.inventory().slot(index),
+                drawHudSlot(commandBuffer, slot, gameSession.worldSnapshot().inventorySlots[index],
                             index == uiFrameData_.selectedHotbarSlot,
                             slot.contains(cursor.x, cursor.y), true);
             }
@@ -1643,7 +1641,7 @@ class HudRenderer final {
             drawHudText(commandBuffer, label, tooltip.x + 4.0F * scale, tooltip.y + 3.0F * scale,
                         scale, {1.0F, 1.0F, 1.0F, 1.0F});
         }
-        if (!gameSession.inventory().cursorStack().empty()) {
+        if (!gameSession.worldSnapshot().cursorStack.empty()) {
             const float iconSize = 16.0F * scale;
             const ui::UiRect cursorRectangle{
                 cursor.x - iconSize * 0.5F,
@@ -1651,12 +1649,12 @@ class HudRenderer final {
                 iconSize,
                 iconSize,
             };
-            drawHudItemIcon(commandBuffer, cursorRectangle, gameSession.inventory().cursorStack());
+            drawHudItemIcon(commandBuffer, cursorRectangle, gameSession.worldSnapshot().cursorStack);
             drawDurabilityBar(commandBuffer, cursorRectangle,
-                              gameSession.inventory().cursorStack());
-            if (gameSession.inventory().cursorStack().count > 1U) {
+                              gameSession.worldSnapshot().cursorStack);
+            if (gameSession.worldSnapshot().cursorStack.count > 1U) {
                 const std::string count =
-                    std::to_string(gameSession.inventory().cursorStack().count);
+                    std::to_string(gameSession.worldSnapshot().cursorStack.count);
                 drawHudText(commandBuffer, count,
                             cursorRectangle.x + 17.0F * scale - hudTextWidth(count, scale),
                             cursorRectangle.y + 9.0F * scale, scale, {1.0F, 1.0F, 1.0F, 1.0F});
@@ -1769,7 +1767,7 @@ class HudRenderer final {
             drawGuiSprite(commandBuffer, layout.hotbarSelection(uiFrameData_.selectedHotbarSlot),
                           0.0F, {0.0F, 22.0F, 24.0F, 24.0F});
             for (std::size_t index = 0; index < gameplay::Inventory::kHotbarSize; ++index) {
-                drawHudSlot(commandBuffer, layout.hotbarSlot(index), activeInventory().slot(index),
+                drawHudSlot(commandBuffer, layout.hotbarSlot(index), gameSession.worldSnapshot().inventorySlots[index],
                             index == uiFrameData_.selectedHotbarSlot, false, true);
             }
             if (uiFrameData_.gameMode == gameplay::GameMode::Survival) {
@@ -1934,10 +1932,10 @@ class HudRenderer final {
             drawPlayerPreview(commandBuffer, descriptorSet, layout);
             for (std::size_t index = 0; index < 4U; ++index) {
                 drawHudSlot(commandBuffer, layout.playerCraftingSlot(index),
-                            gameSession.craftingSystem().playerSlot(index), false, false, true);
+                            gameSession.worldSnapshot().playerCraftingGrid[index], false, false, true);
             }
             drawHudSlot(commandBuffer, layout.playerCraftingOutput(),
-                        gameSession.craftingSystem().playerOutput(), false, false, true);
+                        gameSession.worldSnapshot().playerCraftingOutput, false, false, true);
             std::optional<std::size_t> hoveredSlot;
             for (std::size_t index = 0; index < gameplay::Inventory::kSlotCount; ++index) {
                 const bool hovered = layout.inventorySlot(index).contains(cursorX, cursorY);
@@ -1945,11 +1943,12 @@ class HudRenderer final {
                     hoveredSlot = index;
                 }
                 drawHudSlot(commandBuffer, layout.inventorySlot(index),
-                            gameSession.inventory().slot(index),
+                            gameSession.worldSnapshot().inventorySlots[index],
                             index == uiFrameData_.selectedHotbarSlot, hovered, true);
             }
-            if (hoveredSlot.has_value() && !gameSession.inventory().slot(*hoveredSlot).empty()) {
-                const auto& hoveredStack = gameSession.inventory().slot(*hoveredSlot);
+            if (hoveredSlot.has_value() && !gameSession.worldSnapshot().inventorySlots[*hoveredSlot].empty()) {
+                const auto snapshot = gameSession.worldSnapshot();
+                const auto& hoveredStack = snapshot.inventorySlots[*hoveredSlot];
                 std::string label{itemDisplayName(hoveredStack)};
                 label += " x" + std::to_string(hoveredStack.count);
                 const float labelWidth = hudTextWidth(label, textScale) + 8.0F * textScale;
@@ -1966,18 +1965,18 @@ class HudRenderer final {
             // An in-progress drag previews the would-be placement in every swept
             // slot before the release, on top of the slots but under the cursor.
             drawDragPreview(commandBuffer, layout);
-            if (!gameSession.inventory().cursorStack().empty()) {
+            if (!gameSession.worldSnapshot().cursorStack.empty()) {
                 const float cursorIconSize = 16.0F * layout.scale();
                 const ui::UiRect cursorRectangle{cursorX - cursorIconSize * 0.5F,
                                                  cursorY - cursorIconSize * 0.5F, cursorIconSize,
                                                  cursorIconSize};
                 drawHudItemIcon(commandBuffer, cursorRectangle,
-                                gameSession.inventory().cursorStack());
+                                gameSession.worldSnapshot().cursorStack);
                 drawDurabilityBar(commandBuffer, cursorRectangle,
-                                  gameSession.inventory().cursorStack());
-                if (gameSession.inventory().cursorStack().count > 1U) {
+                                  gameSession.worldSnapshot().cursorStack);
+                if (gameSession.worldSnapshot().cursorStack.count > 1U) {
                     const std::string count =
-                        std::to_string(gameSession.inventory().cursorStack().count);
+                        std::to_string(gameSession.worldSnapshot().cursorStack.count);
                     const float textScale = layout.scale();
                     drawHudText(
                         commandBuffer, count,
@@ -1988,11 +1987,11 @@ class HudRenderer final {
         }
 
         if (debugOverlayOpen) {
+            const auto& debugSnap = gameSession.playerTickSnapshot();
             std::ostringstream coordinates;
             coordinates << std::fixed << std::setprecision(3)
-                        << "XYZ: " << gameSession.player().position().x << " / "
-                        << gameSession.player().position().y << " / "
-                        << gameSession.player().position().z;
+                        << "XYZ: " << debugSnap.physicsCurrent.x << " / "
+                        << debugSnap.physicsCurrent.y << " / " << debugSnap.physicsCurrent.z;
             // Vanilla DebugHud samples the block the gameSession.player()'s feet are in, and
             // a resting gameSession.player()'s feet sit exactly on the integer boundary, so
             // floor() lands on the air cell above the ground block. Rebedrock
@@ -2001,18 +2000,18 @@ class HudRenderer final {
             // construction); nudging past the epsilon reproduces vanilla's
             // sample point.
             const glm::ivec3 playerBlock{
-                static_cast<int>(std::floor(gameSession.player().position().x)),
-                static_cast<int>(std::floor(gameSession.player().position().y + 0.001F)),
-                static_cast<int>(std::floor(gameSession.player().position().z))};
+                static_cast<int>(std::floor(debugSnap.physicsCurrent.x)),
+                static_cast<int>(std::floor(debugSnap.physicsCurrent.y + 0.001F)),
+                static_cast<int>(std::floor(debugSnap.physicsCurrent.z))};
             const std::array labels{
                 options.version + " | FPS: " + std::to_string(displayedFps),
                 coordinates.str(),
                 std::string{"Light: sky "} +
                     std::to_string(
-                        interactionWorld.skyLight(playerBlock.x, playerBlock.y, playerBlock.z)) +
+                        lightWorld.skyLight(playerBlock.x, playerBlock.y, playerBlock.z)) +
                     " / block " +
                     std::to_string(
-                        interactionWorld.blockLight(playerBlock.x, playerBlock.y, playerBlock.z)),
+                        lightWorld.blockLight(playerBlock.x, playerBlock.y, playerBlock.z)),
             };
             const float scale = layout.scale();
             const float textX = 2.0F * scale;
@@ -2037,7 +2036,7 @@ class HudRenderer final {
     ui::TextFont& textFont;
     ui::BitmapFontMetrics& fontMetrics;
     ui::Language& language;
-    world::World& interactionWorld;
+    world::World& lightWorld;
     GLFWwindow*& window;
     config::GameOptions& options;
     PerspectiveCamera& camera;
@@ -2051,12 +2050,11 @@ class HudRenderer final {
     VkPipeline& heldItemPipeline;
     VkPipelineLayout& itemPipelineLayout;
     bool& inventoryOpen;
-    ContainerScreen& containerScreen;
-    std::optional<gameplay::ChestPosition>& activeChest;
-    std::optional<glm::ivec3>& activeFurnacePosition;
+    const ContainerScreen& containerScreen;
+    const std::optional<gameplay::ChestPosition>& activeChest;
     bool& debugOverlayOpen;
     bool& inventoryDragActive;
-    std::vector<gameplay::ItemStack*>& inventoryDragSlots;
+    std::vector<gameplay::SlotRef>& inventoryDragSlots;
     bool& chatOpen;
     ui::ChatHistory& chatHistory;
     std::string& chatInputText;
@@ -2088,7 +2086,7 @@ class HudRenderer final {
     std::function<std::size_t()> creativeMaximumScrollRow;
     std::function<std::vector<std::uint8_t>()> dragPlacementCounts;
     std::function<float()> cameraFarPlane;
-    std::function<std::optional<ui::UiRect>(const ui::HudLayout&, const gameplay::ItemStack*)>
+    std::function<std::optional<ui::UiRect>(const ui::HudLayout&, const gameplay::SlotRef&)>
         dragSlotRectangle;
 
     // ---- owned UI animation / selection state ----

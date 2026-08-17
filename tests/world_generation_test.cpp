@@ -14,9 +14,11 @@ using mc::world::Block;
 using mc::world::Chunk;
 using mc::world::kSeaLevel;
 using mc::world::kWorldHeight;
+using mc::world::kMinY;
+using mc::world::kMaxY;
 
 [[nodiscard]] int surfaceHeight(const Chunk& chunk, int x, int z) {
-    for (int y = kWorldHeight - 1; y >= 0; --y) {
+    for (int y = kMaxY - 1; y >= kMinY; --y) {
         const auto block = chunk.block(x, y, z);
         if (block != Block::Air && block != Block::Water) {
             return y;
@@ -81,7 +83,7 @@ int main() {
     {
         const auto first = generator.generate(3, -5);
         const auto repeated = generator.generate(3, -5);
-        for (int y = 0; y < kWorldHeight; ++y) {
+        for (int y = kMinY; y < kMaxY; ++y) {
             for (int z = 0; z < 16; ++z) {
                 for (int x = 0; x < 16; ++x) {
                     assert(first.block(x, y, z) == repeated.block(x, y, z));
@@ -103,7 +105,7 @@ int main() {
     // pass must place a non-grass filler there, or the pond floor churns
     // through the random-tick grass-to-dirt conversion for no gain.
     long grassUnderWater = 0;
-    int lowestSurface = kWorldHeight;
+    int lowestSurface = kMaxY;
     int highestSurface = 0;
     // A 12x12 survey keeps the cave-fraction and ore-count assertions stable:
     // a smaller region can land on a locally cave-poor spot now that the
@@ -114,20 +116,23 @@ int main() {
             const auto chunk = generator.generate(chunkX, chunkZ);
             for (int z = 0; z < 16; ++z) {
                 for (int x = 0; x < 16; ++x) {
-                    // ChunkGenerator#buildBedrock always fills the bottom layer.
-                    assert(chunk.block(x, 0, z) == Block::Bedrock);
+                    // ChunkGenerator#buildBedrock always fills the bottom layer,
+                    // and the extra depth above it stays solid so a fall never
+                    // drops into void between the bedrock and the terrain.
+                    assert(chunk.block(x, kMinY, z) == Block::Bedrock);
+                    assert(chunk.block(x, kMinY + 5, z) == Block::Stone);
                     const int height = surfaceHeight(chunk, x, z);
-                    assert(height > 0);
+                    assert(height > kMinY);
                     lowestSurface = std::min(lowestSurface, height);
                     highestSurface = std::max(highestSurface, height);
                     // surfaceHeight stops at the first solid block, so a
                     // submerged bed reads as "water right above the top solid".
-                    if (height + 1 < kWorldHeight &&
+                    if (height + 1 < kMaxY &&
                         chunk.block(x, height + 1, z) == Block::Water &&
                         chunk.block(x, height, z) == Block::Grass) {
                         ++grassUnderWater;
                     }
-                    for (int y = 0; y < kWorldHeight; ++y) {
+                    for (int y = kMinY; y < kMaxY; ++y) {
                         const auto block = chunk.block(x, y, z);
                         ++blocks[block];
                         if (y >= 6 && y <= 50) {
@@ -146,7 +151,7 @@ int main() {
     }
 
     assert(lowestSurface > 20);
-    assert(highestSurface < kWorldHeight - 8);
+    assert(highestSurface < kMaxY - 8);
     // Real relief rather than a plate: the survey has to span at least a dozen
     // blocks of height.
     assert(highestSurface - lowestSurface > 12);
@@ -206,7 +211,7 @@ int main() {
     for (int chunkZ = -40; chunkZ <= 40; chunkZ += 5) {
         for (int chunkX = -40; chunkX <= 40; chunkX += 5) {
             const auto chunk = generator.generate(chunkX, chunkZ);
-            for (int y = 0; y < kWorldHeight; ++y) {
+            for (int y = kMinY; y < kMaxY; ++y) {
                 for (int z = 0; z < 16; ++z) {
                     for (int x = 0; x < 16; ++x) {
                         const auto block = chunk.block(x, y, z);

@@ -48,10 +48,10 @@ ChunkLightSampler::ChunkLightSampler(const World& world,
         maximumChunkZ = std::max(maximumChunkZ, position.z);
     }
     minimumX_ = minimumChunkX * kChunkWidth - kVertexSamplePadding - kPropagationRadius;
-    minimumY_ = 0;
+    minimumY_ = kMinY;
     minimumZ_ = minimumChunkZ * kChunkDepth - kVertexSamplePadding - kPropagationRadius;
     const int maximumX = (maximumChunkX + 1) * kChunkWidth + kPropagationRadius;
-    const int maximumY = kWorldHeight - 1;
+    const int maximumY = kMaxY - 1;
     const int maximumZ = (maximumChunkZ + 1) * kChunkDepth + kPropagationRadius;
     width_ = maximumX - minimumX_ + 1;
     height_ = maximumY - minimumY_ + 1;
@@ -159,9 +159,9 @@ bool ChunkLightSampler::cancelled() const {
 VoxelLightLevel ChunkLightSampler::level(int x, int y, int z) const {
     if (stored_) return {world_.skyLight(x, y, z), world_.blockLight(x, y, z)};
     if (!contains(x, y, z)) {
-        if (y < 0)
+        if (y < kMinY)
             return {};
-        if (y >= kWorldHeight)
+        if (y >= kMaxY)
             return {kMaximumLightLevel, 0U};
         return {
             static_cast<std::uint8_t>(!mc::world::isOpaque(world_.block(x, y, z)) ? kMaximumLightLevel : 0),
@@ -182,22 +182,22 @@ float ChunkLightSampler::block(int x, int y, int z) const {
 
 bool ChunkLightSampler::isOpaque(int x, int y, int z) const {
     if (contains(x, y, z)) return opaque_[index(x, y, z)] != 0U;
-    if (y < 0 || y >= kWorldHeight) return false;
+    if (!isWorldYInRange(y)) return false;
     return mc::world::isOpaque(world_.block(x, y, z));
 }
 
 bool ChunkLightSampler::aoOccludes(int x, int y, int z) const {
-    if (y < 0 || y >= kWorldHeight) return false;
+    if (!isWorldYInRange(y)) return false;
     return mc::world::aoOccludes(world_.block(x, y, z));
 }
 
 int ChunkLightSampler::opacity(int x, int y, int z) const {
-    if (y < 0 || y >= kWorldHeight) return 0;
+    if (!isWorldYInRange(y)) return 0;
     return mc::world::opacity(world_.block(x, y, z));
 }
 
 Block ChunkLightSampler::blockType(int x, int y, int z) const {
-    if (y < 0 || y >= kWorldHeight) return Block::Air;
+    if (!isWorldYInRange(y)) return Block::Air;
     return world_.block(x, y, z);
 }
 

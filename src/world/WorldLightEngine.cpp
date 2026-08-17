@@ -9,7 +9,6 @@
 #include <bit>
 #include <cstdint>
 #include <iterator>
-#include <thread>
 
 namespace mc::world {
 namespace {
@@ -33,13 +32,6 @@ constexpr std::array<std::array<int, 3>, 6> kNeighbors{{
 [[nodiscard]] std::size_t mix(std::size_t seed, int value) {
     seed ^= std::hash<int>{}(value) + 0x9e3779b9U + (seed << 6U) + (seed >> 2U);
     return seed;
-}
-
-[[nodiscard]] std::size_t lightWorkerCount(std::size_t requestCount) {
-    const std::size_t hardwareThreads = std::max(1U, std::thread::hardware_concurrency());
-    const std::size_t maxWorkers =
-        std::clamp(hardwareThreads - 1U, std::size_t{1U}, std::size_t{7U});
-    return std::min(requestCount, maxWorkers);
 }
 
 } // namespace
@@ -140,7 +132,9 @@ WorldLightEngine::PackedNode WorldLightEngine::packNode(const Node& node) {
             << 36U) |
            ((static_cast<std::uint64_t>(static_cast<std::uint32_t>(node.z)) & coordinateMask)
             << 9U) |
-           static_cast<std::uint64_t>(node.y & 0x1FF);
+           // World Y is offset by kMinY so the negative rows (−64..−1) pack into
+           // the 9-bit field instead of sign-extending into the z coordinate.
+           static_cast<std::uint64_t>((node.y - kMinY) & 0x1FF);
 }
 
 WorldLightEngine::Node WorldLightEngine::unpackNode(PackedNode node) {
@@ -150,7 +144,7 @@ WorldLightEngine::Node WorldLightEngine::unpackNode(PackedNode node) {
         return static_cast<int>((value ^ sign) - sign);
     };
     return {signExtend(static_cast<std::uint32_t>(node >> 36U) & coordinateMask),
-            static_cast<int>(node & 0x1FFU),
+            static_cast<int>(node & 0x1FFU) + kMinY,
             signExtend(static_cast<std::uint32_t>(node >> 9U) & coordinateMask)};
 }
 
@@ -159,7 +153,7 @@ bool WorldLightEngine::cancelled() const {
 }
 
 bool WorldLightEngine::loaded(const World& world, int x, int y, int z) {
-    if (y < 0 || y >= kWorldHeight) return false;
+    if (!isWorldYInRange(y)) return false;
     return world.hasChunk({floorDiv(x, kChunkWidth), floorDiv(z, kChunkDepth)});
 }
 
@@ -201,16 +195,16 @@ bool WorldLightEngine::setLevel(World& world, Channel channel, const Node& node,
 }
 
 void WorldLightEngine::markDirty(const Node& node) {
-    if (node.y < 0 || node.y >= kWorldHeight) return;
+    if (!isWorldYInRange(node.y)) return;
     std::array<int, 2> chunkXs{floorDiv(node.x, kChunkWidth), 0};
     std::array<int, 2> chunkZs{floorDiv(node.z, kChunkDepth), 0};
-    std::array<int, 2> sectionYs{node.y / kSectionSize, 0};
+    std::array<int, 2> sectionYs{sectionIndexFromWorldY(node.y), 0};
     std::size_t xCount = 1U;
     std::size_t zCount = 1U;
     std::size_t yCount = 1U;
     const int localX = floorMod(node.x, kChunkWidth);
     const int localZ = floorMod(node.z, kChunkDepth);
-    const int localY = node.y % kSectionSize;
+    const int localY = yInSectionFromWorldY(node.y);
     if (localX == 0) chunkXs[xCount++] = chunkXs[0] - 1;
     else if (localX == kChunkWidth - 1) chunkXs[xCount++] = chunkXs[0] + 1;
     if (localZ == 0) chunkZs[zCount++] = chunkZs[0] - 1;
@@ -230,7 +224,7 @@ void WorldLightEngine::markDirty(const Node& node) {
 void WorldLightEngine::recomputeSkyColumn(World& world, int x, int z,
                                           std::vector<Node>& changedSources) {
     std::uint8_t direct = 15U;
-    for (int y = kWorldHeight - 1; y >= 0; --y) {
+    for (int y = kMaxY - 1; y >= kMinY; --y) {
         const Block value = world.block(x, y, z);
         const std::uint8_t opacity = skyLightOpacity(value);
         direct = opacity >= direct ? 0U : static_cast<std::uint8_t>(direct - opacity);
@@ -274,25 +268,24 @@ void WorldLightEngine::initializeChunks(World& world,
     // lookups are safe. The queues each worker fills are merged afterwards and
     // the propagation phase stays serial, so the result is identical to a
     // single-threaded pass.
-    const std::size_t workerCount = lightWorkerCount(positions.size());
+    const std::size_t workerCount = workerPool_ != nullptr
+                                        ? workerPool_->workerCount()
+                                        : std::size_t{1U};
     std::vector<std::vector<Node>> skyQueues(workerCount);
     std::vector<std::vector<Node>> blockQueues(workerCount);
-    std::atomic<std::size_t> nextPosition{0U};
-    const auto scanNext = [&](std::size_t workerIndex) {
+    const auto scanPosition = [&](std::size_t index, std::size_t workerIndex) {
         auto& skyQueue = skyQueues[workerIndex];
         auto& blockQueue = blockQueues[workerIndex];
-        while (!cancelled()) {
-            const std::size_t index = nextPosition.fetch_add(1U, std::memory_order_relaxed);
-            if (index >= positions.size()) return;
+        if (!cancelled()) {
             const ChunkPosition position = positions[index];
             Chunk* chunk = world.chunk(position);
-            if (chunk == nullptr) continue;
+            if (chunk == nullptr) return;
             const int originX = position.x * kChunkWidth;
             const int originZ = position.z * kChunkDepth;
             for (int localZ = 0; localZ < kChunkDepth; ++localZ) {
                 for (int localX = 0; localX < kChunkWidth; ++localX) {
                     std::uint8_t direct = 15U;
-                    for (int y = kWorldHeight - 1; y >= 0; --y) {
+                    for (int y = kMaxY - 1; y >= kMinY; --y) {
                         const Block value = chunk->block(localX, y, localZ);
                         const std::uint8_t opacity = skyLightOpacity(value);
                         const std::uint8_t previousDirect = direct;
@@ -302,14 +295,15 @@ void WorldLightEngine::initializeChunks(World& world,
                         chunk->setDirectSkyLight(localX, y, localZ, sky);
                         chunk->setSkyLight(localX, y, localZ, sky);
                         const std::uint8_t emitted =
-                            chunk->section(y / kSectionSize).state(localX, y % kSectionSize, localZ)
+                            chunk->section(sectionIndexFromWorldY(y))
+                                .state(localX, yInSectionFromWorldY(y), localZ)
                                 .emittedLight();
                         chunk->setBlockLight(localX, y, localZ, emitted);
                         // Do not enqueue the enormous uniform open-sky volume.
                         // Only light boundaries can improve another cell: the
                         // cell above an attenuation step, and horizontal sources
                         // around partially lit transparent cells.
-                        if (previousDirect > direct && y + 1 < kWorldHeight) {
+                        if (previousDirect > direct && y + 1 < kMaxY) {
                             skyQueue.push_back({originX + localX, y + 1, originZ + localZ});
                         }
                         if (!isOpaque(value) && sky < 15U) {
@@ -325,14 +319,11 @@ void WorldLightEngine::initializeChunks(World& world,
             }
         }
     };
-    if (workerCount == 1U) {
-        scanNext(0U);
+    if (workerPool_ != nullptr && positions.size() > 1U) {
+        workerPool_->run(positions.size(), scanPosition);
     } else {
-        std::vector<std::jthread> workers;
-        workers.reserve(workerCount);
-        for (std::size_t index = 0; index < workerCount; ++index) {
-            workers.emplace_back(scanNext, index);
-        }
+        for (std::size_t index = 0U; index < positions.size(); ++index)
+            scanPosition(index, 0U);
     }
     std::vector<Node> skyQueue;
     std::vector<Node> blockQueue;
@@ -349,7 +340,7 @@ void WorldLightEngine::initializeChunks(World& world,
     for (const ChunkPosition position : positions) {
         const int originX = position.x * kChunkWidth;
         const int originZ = position.z * kChunkDepth;
-        for (int y = 0; y < kWorldHeight; ++y) {
+        for (int y = kMinY; y < kMaxY; ++y) {
             for (int offset = 0; offset < kChunkWidth; ++offset) {
                 const std::array<Node, 4> ring{{
                     {originX - 1, y, originZ + offset},
@@ -420,7 +411,7 @@ void WorldLightEngine::updateAfterChunkRemoval(World& world, ChunkPosition remov
     const int originX = removed.x * kChunkWidth;
     const int originZ = removed.z * kChunkDepth;
     skySeeds_.reserve(static_cast<std::size_t>(kWorldHeight * kChunkWidth * 4));
-    for (int y = 0; y < kWorldHeight; ++y) {
+    for (int y = kMinY; y < kMaxY; ++y) {
         for (int offset = 0; offset < kChunkWidth; ++offset) {
             skySeeds_.push_back({originX - 1, y, originZ + offset});
             skySeeds_.push_back({originX + kChunkWidth, y, originZ + offset});

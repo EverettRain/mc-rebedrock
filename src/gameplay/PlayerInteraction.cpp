@@ -8,6 +8,7 @@
 #include "gameplay/ItemUse.hpp"
 #include "gameplay/MiningSystem.hpp"
 #include "gameplay/PlayerController.hpp"
+#include "gameplay/ScreenHandler.hpp"
 #include "world/Block.hpp"
 #include "world/BlockPlacement.hpp"
 #include "world/BlockState.hpp"
@@ -30,6 +31,16 @@ bool isContainerBlock(world::World& world, const glm::ivec3& pos) {
            block == world::Block::Chest;
 }
 
+// The open-container context the slot commands resolve their storages against,
+// rebuilt from the session's container state for each command.
+gameplay::ScreenContext buildScreenContext(GameSession& session) {
+    const auto& furnace = session.openFurnace();
+    return {session.openContainerScreen(), session.openChest(),
+            furnace.has_value() ? gameplay::FurnacePosition{furnace->x, furnace->y, furnace->z}
+                                : gameplay::FurnacePosition{},
+            session.gameMode(), /*creativeInventoryTab*/ true};
+}
+
 // Carrot and potato are both food and seed: right-clicking farmland with one
 // plants the crop, and the plant wins over eating.
 bool aimsAtPlantableFarmland(world::World& world, const UseItemOn& use,
@@ -46,6 +57,10 @@ bool aimsAtPlantableFarmland(world::World& world, const UseItemOn& use,
 
 void PlayerInteraction::tick(GameSession& session, world::World& world, SimulationHost& host,
                              std::vector<GameCommand> commands) {
+    // `host` is retained in the public signature for headless compatibility;
+    // presentation effects now cross the thread boundary exclusively through
+    // the session event queue.
+    static_cast<void>(host);
     // Consume the queued inputs in order.
     for (const auto& command : commands) {
         std::visit(
@@ -61,9 +76,65 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
                     latestUse_.reset();
                 } else if constexpr (std::is_same_v<T, UseItemStop>) {
                     using_ = false;
+                } else if constexpr (std::is_same_v<T, ClickSlot>) {
+                    // A container/inventory slot click executes on the server
+                    // tick, resolved against the open container (26.1's
+                    // AbstractContainerMenu) and routed by ScreenHandler.
+                    const auto& click = specific;
+                    const gameplay::ScreenContext context = buildScreenContext(session);
+                    gameplay::SlotView slot;
+                    slot.kind = click.kind;
+                    slot.index = click.slotIndex;
+                    slot.storage = gameplay::ScreenHandler::resolveSlotStorage(
+                        session, context, click.kind, click.slotIndex);
+                    gameplay::ScreenHandler::click(
+                        session, context, slot,
+                        static_cast<gameplay::InventoryMouseButton>(click.button),
+                        click.shiftHeld);
+                } else if constexpr (std::is_same_v<T, ClickCreativeItem>) {
+                    session.inventory().clickCreativeItem(
+                        specific.catalogStack, specific.button, specific.shiftHeld);
+                } else if constexpr (std::is_same_v<T, ClearCursor>) {
+                    session.inventory().clearCursorStack();
+                } else if constexpr (std::is_same_v<T, DropCursor>) {
+                    session.dropCursorStack(specific.lookDirection);
+                } else if constexpr (std::is_same_v<T, DropSelected>) {
+                    session.dropSelectedStack(specific.wholeStack, specific.lookDirection);
+                } else if constexpr (std::is_same_v<T, DragDistribute>) {
+                    // QUICK_CRAFT: resolve each swept slot to its storage against
+                    // the open container, then let the inventory distribute the
+                    // cursor stack across them.
+                    std::vector<ItemStack*> targets;
+                    targets.reserve(specific.targets.size());
+                    const gameplay::ScreenContext context = buildScreenContext(session);
+                    for (const auto& ref : specific.targets) {
+                        if (auto* storage = gameplay::ScreenHandler::resolveSlotStorage(
+                                session, context, ref.kind, ref.index);
+                            storage != nullptr) {
+                            targets.push_back(storage);
+                        }
+                    }
+                    session.inventory().dragDistribute(targets, specific.button);
+                } else if constexpr (std::is_same_v<T, PickupAll>) {
+                    // PICKUP_ALL: the double-click gather over every matching
+                    // slot in the screen, resolved the same way.
+                    std::vector<ItemStack*> sources;
+                    sources.reserve(specific.targets.size());
+                    const gameplay::ScreenContext context = buildScreenContext(session);
+                    for (const auto& ref : specific.targets) {
+                        if (auto* storage = gameplay::ScreenHandler::resolveSlotStorage(
+                                session, context, ref.kind, ref.index);
+                            storage != nullptr) {
+                            sources.push_back(storage);
+                        }
+                    }
+                    session.inventory().gatherAllIntoCursor(sources);
+                } else if constexpr (std::is_same_v<T, SwapSlot>) {
+                    // Hotbar selection is authoritative gameplay state.
+                    session.inventory().selectHotbar(specific.index);
                 }
-                // SwapSlot / ClickSlot / ChatCommand belong to their own
-                // subsystems and are consumed there, not here.
+                // ChatCommand belongs to its own subsystem and is consumed there,
+                // not here.
             },
             command);
     }
@@ -90,20 +161,23 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
 
     // The continuous dig, once per tick while the attack is held.
     if (destroying_ && destroyTarget_.has_value()) {
-        continueDig(session, world, host);
+        continueDig(session, world);
     }
 
     // The repeated use, once per tick while held (vanilla's 4-tick
     // rightClickDelay lives here now, not in the renderer).
     if (using_ && latestUse_.has_value() && session.serverTick() >= nextUseTick_ &&
         !session.eating()) {
-        performUse(session, world, host, *latestUse_);
+        performUse(session, world, *latestUse_);
         nextUseTick_ = session.serverTick() + 4U;
     }
 }
 
 void PlayerInteraction::handleDestroyCommand(GameSession& session, world::World& world,
                                              SimulationHost& host, const PlayerAction& action) {
+    // The destroy decision never touches the world directly; the swing, the
+    // entity hit and the dig all live on the session or the host.
+    static_cast<void>(world);
     switch (action.kind) {
     case PlayerAction::Kind::StartDestroy:
         if (action.entity) {
@@ -121,7 +195,8 @@ void PlayerInteraction::handleDestroyCommand(GameSession& session, world::World&
                 if (session.gameMode() == GameMode::Survival) {
                     session.vitals().addExhaustion(0.1F);
                     if (session.damageHeldTool(kPrimaryPlayerId, ToolUse::AttackEntity, 0.0F)) {
-                        host.playItemBreak(eye);
+                        session.events().publish(
+                            SoundEvent{SoundEventKind::ItemBreak, eye});
                     }
                 }
             }
@@ -154,15 +229,14 @@ void PlayerInteraction::handleDestroyCommand(GameSession& session, world::World&
     }
 }
 
-void PlayerInteraction::continueDig(GameSession& session, world::World& world,
-                                    SimulationHost& host) {
+void PlayerInteraction::continueDig(GameSession& session, world::World& world) {
     const glm::ivec3 blockPos = *destroyTarget_;
     // The swing repeats once per tick while the dig continues; PlayerActionState
     // only restarts the arc past halfway, which is the vanilla cadence.
     session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Break, 6U);
     if (session.gameMode() == GameMode::Creative) {
         if (session.serverTick() >= nextCreativeBreakTick_) {
-            applyBreak(session, world, host, blockPos);
+            applyBreak(session, world, blockPos);
             nextCreativeBreakTick_ = session.serverTick() + 5U;
         }
         return;
@@ -181,18 +255,19 @@ void PlayerInteraction::continueDig(GameSession& session, world::World& world,
     // used, now counted in ticks.
     if (!done && (lastMiningSoundTick_ < 0 ||
                   static_cast<std::int64_t>(session.serverTick()) - lastMiningSoundTick_ >= 4)) {
-        host.playBlockHit(target, glm::vec3{blockPos} + glm::vec3{0.5F});
+        session.events().publish(SoundEvent{SoundEventKind::BlockHit,
+                                            glm::vec3{blockPos} + glm::vec3{0.5F}, target});
         lastMiningSoundTick_ = static_cast<std::int64_t>(session.serverTick());
     }
     if (done) {
-        applyBreak(session, world, host, blockPos);
+        applyBreak(session, world, blockPos);
         miningStartedTick_ = session.serverTick();
         lastMiningSoundTick_ = -1;
     }
 }
 
 void PlayerInteraction::applyBreak(GameSession& session, world::World& world,
-                                   SimulationHost& host, const glm::ivec3& block) {
+                                   const glm::ivec3& block) {
     const auto brokenBlock = world.block(block.x, block.y, block.z);
     // Creative breaks nothing loose: the drop is vetoed with the flag rather
     // than by skipping the service, so the two modes still take the identical
@@ -210,14 +285,17 @@ void PlayerInteraction::applyBreak(GameSession& session, world::World& world,
             .setBlock(world, {block.x, block.y, block.z}, world::BlockState{},
                       breakFlags, world::MutationCause::PlayerBreak, sink)
             .changed) {
-        host.playBlockBreak(brokenBlock, glm::vec3{block} + glm::vec3{0.5F});
-        host.spawnBlockBreakParticles(block, brokenBlock);
+        session.events().publish(SoundEvent{SoundEventKind::BlockBreak,
+                                            glm::vec3{block} + glm::vec3{0.5F}, brokenBlock});
+        session.events().publish(ParticleEvent{ParticleEventKind::BlockBreak,
+                                               glm::vec3{block}, brokenBlock});
         if (survival) {
             // Player#destroyBlock adds a flat exhaustion per broken block.
             session.vitals().addExhaustion(0.005F);
             if (session.damageHeldTool(kPrimaryPlayerId, ToolUse::BreakBlock,
                                        world::blockDefinition(brokenBlock).hardness)) {
-                host.playItemBreak(session.player().eyePosition());
+                session.events().publish(
+                    SoundEvent{SoundEventKind::ItemBreak, session.player().eyePosition()});
             }
         }
         miningStartedTick_ = session.serverTick();
@@ -227,7 +305,7 @@ void PlayerInteraction::applyBreak(GameSession& session, world::World& world,
 }
 
 void PlayerInteraction::performUse(GameSession& session, world::World& world,
-                                   SimulationHost& host, const UseItemOn& use) {
+                                   const UseItemOn& use) {
     if (session.eating()) {
         return;
     }
@@ -245,7 +323,9 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
         !session.inventory().selectedStack().empty());
     switch (decision.interaction) {
     case BlockInteraction::OpenCraftingTable:
-        host.onOpenContainer(ContainerScreen::CraftingTable, std::nullopt);
+        session.openContainer(ContainerScreen::CraftingTable);
+        session.events().publish(ClientActionEvent{ClientActionEventKind::OpenContainer,
+                                                   ContainerScreen::CraftingTable});
         break;
     case BlockInteraction::OpenFurnace:
         // A furnace placed before block entities existed (or loaded from an
@@ -253,10 +333,16 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
         // back-fill one so it can hold items and smelt.
         static_cast<void>(session.furnaceSystem().findOrCreate(
             {use.block.x, use.block.y, use.block.z}));
-        host.onOpenContainer(ContainerScreen::Furnace, use.block);
+        session.openContainer(ContainerScreen::Furnace, std::nullopt, use.block);
+        session.events().publish(ClientActionEvent{ClientActionEventKind::OpenContainer,
+                                                   ContainerScreen::Furnace, use.block, true});
         break;
     case BlockInteraction::OpenChest:
-        host.onOpenContainer(ContainerScreen::Chest, use.block);
+        if (session.openChestContainer(
+                ChestPosition{use.block.x, use.block.y, use.block.z})) {
+            session.events().publish(ClientActionEvent{ClientActionEventKind::OpenContainer,
+                                                       ContainerScreen::Chest, use.block, true});
+        }
         break;
     case BlockInteraction::UseItem: {
         // Item#useOn: the held item decides what right-clicking does, resolved
@@ -278,8 +364,12 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
                     .setBlock(world, {block.x, block.y, block.z}, world::BlockState{},
                               world::MutationFlags::All, world::MutationCause::Fluid, sink)
                     .changed) {
-                host.playSplash(glm::vec3{block} + glm::vec3{0.5F}, 0.5F);
-                host.spawnWaterSplash(glm::vec3{block} + glm::vec3{0.5F, 0.7F, 0.5F});
+                session.events().publish(SoundEvent{SoundEventKind::Splash,
+                                                    glm::vec3{block} + glm::vec3{0.5F},
+                                                    world::Block::Air, nullptr, 0.5F});
+                session.events().publish(ParticleEvent{
+                    ParticleEventKind::WaterSplash,
+                    glm::vec3{block} + glm::vec3{0.5F, 0.7F, 0.5F}});
                 session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
                 // The empty bucket becomes a full water bucket in hand.
                 session.inventory().replaceSelected({world::Block::Air, 1U, &items::WaterBucket});
@@ -296,8 +386,12 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
                                                 0U},
                               world::MutationFlags::All, world::MutationCause::Fluid, sink)
                     .changed) {
-                host.playSplash(glm::vec3{block} + glm::vec3{0.5F}, 1.0F);
-                host.spawnWaterSplash(glm::vec3{block} + glm::vec3{0.5F, 1.0F, 0.5F});
+                session.events().publish(SoundEvent{SoundEventKind::Splash,
+                                                    glm::vec3{block} + glm::vec3{0.5F},
+                                                    world::Block::Air, nullptr, 1.0F});
+                session.events().publish(ParticleEvent{
+                    ParticleEventKind::WaterSplash,
+                    glm::vec3{block} + glm::vec3{0.5F, 1.0F, 0.5F}});
                 session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
                 // BucketItem#getEmptiedStack: survival reverts the full bucket to
                 // an empty one; creative keeps pouring without spending it.
@@ -315,7 +409,9 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
                     .setBlock(world, {block.x, block.y, block.z}, world::BlockState{},
                               world::MutationFlags::All, world::MutationCause::Fluid, sink)
                     .changed) {
-                host.playBlockBreak(world::Block::Lava, glm::vec3{block} + glm::vec3{0.5F});
+                session.events().publish(SoundEvent{SoundEventKind::BlockBreak,
+                                                    glm::vec3{block} + glm::vec3{0.5F},
+                                                    world::Block::Lava});
                 session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
                 session.inventory().replaceSelected({world::Block::Air, 1U, &items::LavaBucket});
             }
@@ -328,7 +424,9 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
                     .setBlock(world, {block.x, block.y, block.z}, world::BlockState{world::Block::Lava},
                               world::MutationFlags::All, world::MutationCause::Fluid, sink)
                     .changed) {
-                host.playBlockPlace(world::Block::Lava, glm::vec3{block} + glm::vec3{0.5F});
+                session.events().publish(SoundEvent{SoundEventKind::BlockPlace,
+                                                    glm::vec3{block} + glm::vec3{0.5F},
+                                                    world::Block::Lava});
                 session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
                 if (session.gameMode() == GameMode::Survival) {
                     session.inventory().replaceSelected({world::Block::Air, 1U, &items::Bucket});
@@ -371,7 +469,9 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
                     .changed) {
                 // The chest's and furnace's block entities are created by the
                 // sink's onBlockEntityReplaced, so placing one is no special case.
-                host.playBlockPlace(placedBlock, glm::vec3{block} + glm::vec3{0.5F});
+                session.events().publish(SoundEvent{SoundEventKind::BlockPlace,
+                                                    glm::vec3{block} + glm::vec3{0.5F},
+                                                    placedBlock});
                 session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
                 if (session.gameMode() == GameMode::Survival) {
                     static_cast<void>(session.inventory().consumeSelected());
@@ -392,12 +492,14 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
                     .setBlock(world, {block.x, block.y, block.z}, itemUse.state,
                               world::MutationFlags::All, world::MutationCause::PlayerPlace, sink)
                     .changed) {
-                host.playBlockPlace(tilled, glm::vec3{block} + glm::vec3{0.5F});
+                session.events().publish(SoundEvent{SoundEventKind::BlockPlace,
+                                                    glm::vec3{block} + glm::vec3{0.5F}, tilled});
                 session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
                 if (session.gameMode() == GameMode::Survival) {
                     if (session.damageHeldTool(kPrimaryPlayerId, ToolUse::Till,
                                                world::blockDefinition(existing).hardness)) {
-                        host.playItemBreak(session.player().eyePosition());
+                        session.events().publish(SoundEvent{SoundEventKind::ItemBreak,
+                                                            session.player().eyePosition()});
                     }
                 }
             }

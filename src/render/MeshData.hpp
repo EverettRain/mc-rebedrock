@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -188,6 +189,13 @@ struct MeshData final {
     std::vector<std::uint32_t> indices;
 
     [[nodiscard]] bool empty() const { return indices.empty(); }
+    // Reserved heap bytes (capacity, not size) — the CPU mesh pool keeps these
+    // buffers around at their peak capacity for reuse, so N-Mem measures the
+    // capacity, which is the real resident cost.
+    [[nodiscard]] std::size_t capacityBytes() const {
+        return vertices.capacity() * sizeof(VoxelVertex) +
+               indices.capacity() * sizeof(std::uint32_t);
+    }
 };
 
 struct Aabb final {
@@ -203,6 +211,10 @@ struct RenderMeshData final {
 
     [[nodiscard]] bool empty() const {
         return mesh.empty() && cutoutMesh.empty() && translucentMesh.empty();
+    }
+    [[nodiscard]] std::size_t capacityBytes() const {
+        return mesh.capacityBytes() + cutoutMesh.capacityBytes() +
+               translucentMesh.capacityBytes();
     }
 };
 

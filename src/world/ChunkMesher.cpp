@@ -157,7 +157,7 @@ constexpr float kFurnaceFrontOnLayer = 168.0F;
     constexpr int maximumOpticalDepth = 32;
     int depth = 0;
     for (int sampleY = y;
-         sampleY >= 0 && depth < maximumOpticalDepth &&
+         sampleY >= kMinY && depth < maximumOpticalDepth &&
          isFluid(world.block(x, sampleY, z));
          --sampleY) {
         ++depth;
@@ -205,7 +205,7 @@ constexpr float kFurnaceFrontOnLayer = 168.0F;
     constexpr int maximumOpticalDepth = 32;
     int depth = 1;
     for (int sampleY = y + 1;
-         sampleY < kWorldHeight && depth < maximumOpticalDepth &&
+         sampleY < kMaxY && depth < maximumOpticalDepth &&
          isFluid(world.block(x, sampleY, z));
          ++sampleY) {
         ++depth;
@@ -850,6 +850,9 @@ void appendCrossedPlant(
     const glm::vec3& sectionOrigin,
     float layer,
     BiomeTintCache& tints) {
+    // The crossed quads are placed by the block's position and the sampler, so
+    // the world reference is unused here.
+    static_cast<void>(world);
     // OffsetType.None pins the plant to its block centre; XZ/XYZ shift the two
     // crossed quads by the vanilla per-position jitter below. `layer` is the
     // texture-array layer of the plant — a fixed layer for flowers and grass,
@@ -1042,7 +1045,7 @@ bool buildSectionImpl(
     BiomeTintCache tints{world};
 
     const int originX = position.x * kChunkWidth;
-    const int originY = sectionY * kSectionSize;
+    const int originY = sectionOriginY(sectionY);
     const int originZ = position.z * kChunkDepth;
 
     result.bounds = {
@@ -1176,11 +1179,11 @@ MeshLightingSnapshot::MeshLightingSnapshot(const World& world, ChunkPosition pos
     const int originZ = position.z * kChunkDepth;
     minimumX_ = originX - kSamplePadding;
     minimumZ_ = originZ - kSamplePadding;
-    minimumY_ = std::max(0, minimumSectionY * kSectionSize - kSamplePadding);
+    minimumY_ = std::max(kMinY, sectionOriginY(minimumSectionY) - kSamplePadding);
     const int maximumX = originX + kChunkWidth + kSamplePadding - 1;
     const int maximumZ = originZ + kChunkDepth + kSamplePadding - 1;
     const int maximumY = std::min(
-        kWorldHeight - 1, (maximumSectionY + 1) * kSectionSize + kSamplePadding - 1);
+        kMaxY - 1, sectionOriginY(maximumSectionY + 1) + kSamplePadding - 1);
     width_ = maximumX - minimumX_ + 1;
     height_ = maximumY - minimumY_ + 1;
     depth_ = maximumZ - minimumZ_ + 1;
@@ -1191,7 +1194,8 @@ MeshLightingSnapshot::MeshLightingSnapshot(const World& world, ChunkPosition pos
     std::array<const Chunk*, 9> chunks{};
     for (int dz = -1; dz <= 1; ++dz) {
         for (int dx = -1; dx <= 1; ++dx) {
-            chunks[(dz + 1) * 3 + (dx + 1)] = world_.chunk({position.x + dx, position.z + dz});
+            chunks[static_cast<std::size_t>((dz + 1) * 3 + (dx + 1))] =
+                world_.chunk({position.x + dx, position.z + dz});
         }
     }
 
@@ -1209,7 +1213,8 @@ MeshLightingSnapshot::MeshLightingSnapshot(const World& world, ChunkPosition pos
         for (int x = minimumX_; x <= maximumX; ++x) {
             const int ownerChunkX = x < originX ? -1 : (x >= originX + kChunkWidth ? 1 : 0);
             const int chunkLocalX = x - (position.x + ownerChunkX) * kChunkWidth;
-            const Chunk* chunk = chunks[(ownerChunkZ + 1) * 3 + (ownerChunkX + 1)];
+            const Chunk* chunk =
+                chunks[static_cast<std::size_t>((ownerChunkZ + 1) * 3 + (ownerChunkX + 1))];
             for (int y = minimumY_; y <= maximumY; ++y) {
                 const std::size_t cell = index(x, y, z);
                 if (chunk == nullptr) {
@@ -1244,8 +1249,8 @@ bool MeshLightingSnapshot::contains(int x, int y, int z) const {
 
 VoxelLightLevel MeshLightingSnapshot::level(int x, int y, int z) const {
     if (!contains(x, y, z)) {
-        if (y < 0) return {};
-        if (y >= kWorldHeight) return {ChunkLightSampler::kMaximumLightLevel, 0U};
+        if (y < kMinY) return {};
+        if (y >= kMaxY) return {ChunkLightSampler::kMaximumLightLevel, 0U};
         return {
             static_cast<std::uint8_t>(
                 !mc::world::isOpaque(world_.block(x, y, z))
@@ -1270,7 +1275,7 @@ float MeshLightingSnapshot::block(int x, int y, int z) const {
 
 bool MeshLightingSnapshot::isOpaque(int x, int y, int z) const {
     if (!contains(x, y, z)) {
-        return y >= 0 && y < kWorldHeight &&
+        return isWorldYInRange(y) &&
                mc::world::isOpaque(world_.block(x, y, z));
     }
     return (flags_[index(x, y, z)] & 0x01U) != 0U;

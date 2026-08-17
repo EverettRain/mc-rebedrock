@@ -98,6 +98,20 @@ class ScreenHandler final {
         const ScreenContext& context,
         const ui::HudLayout& layout);
 
+    // Geometry-only form for the render thread. It intentionally leaves every
+    // storage pointer null, so hit testing and drag previews cannot reach into
+    // simulation-owned inventory/block-entity memory.
+    [[nodiscard]] static std::vector<SlotView> buildSlotLayout(
+        const ScreenContext& context,
+        const ui::HudLayout& layout);
+
+    // The storage a slot click targets, resolved from the open container
+    // context by slot kind and index — the gameplay half of a ClickSlot
+    // command. The renderer enqueues the intent; the interaction routes it.
+    [[nodiscard]] static ItemStack* resolveSlotStorage(GameSession& session,
+                                                       const ScreenContext& context,
+                                                       SlotKind kind, std::uint16_t index);
+
     // The slot under the cursor, or nullptr.
     [[nodiscard]] static const SlotView* slotAt(
         const std::vector<SlotView>& slots,

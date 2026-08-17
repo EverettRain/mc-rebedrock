@@ -56,12 +56,10 @@ class PlayerInteraction final {
     void handleDestroyCommand(GameSession& session, world::World& world, SimulationHost& host,
                               const PlayerAction& action);
     // The continuous dig the destroy command started, run once per tick.
-    void continueDig(GameSession& session, world::World& world, SimulationHost& host);
-    void applyBreak(GameSession& session, world::World& world, SimulationHost& host,
-                    const glm::ivec3& block);
+    void continueDig(GameSession& session, world::World& world);
+    void applyBreak(GameSession& session, world::World& world, const glm::ivec3& block);
     // The use decision and the held-item action switch, run for one target.
-    void performUse(GameSession& session, world::World& world, SimulationHost& host,
-                    const UseItemOn& use);
+    void performUse(GameSession& session, world::World& world, const UseItemOn& use);
 
     bool destroying_ = false;
     std::optional<glm::ivec3> destroyTarget_;

@@ -40,12 +40,12 @@ int main() {
     assert(mc::world::ChunkMesher::build(empty).empty());
 
     mc::world::Chunk oneBlock;
-    oneBlock.setBlock(1, 1, 1, mc::world::Block::Grass);
+    oneBlock.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::Grass);
     const auto oneBlockMesh = mc::world::ChunkMesher::build(oneBlock);
     assert(oneBlockMesh.vertices.size() == 24U);
     assert(oneBlockMesh.indices.size() == 36U);
 
-    oneBlock.setBlock(2, 1, 1, mc::world::Block::Dirt);
+    oneBlock.setBlock(2, mc::world::kMinY + 1, 1, mc::world::Block::Dirt);
     const auto twoBlockMesh = mc::world::ChunkMesher::build(oneBlock);
     assert(twoBlockMesh.vertices.size() == 40U);
     assert(twoBlockMesh.indices.size() == 60U);
@@ -55,8 +55,8 @@ int main() {
     // appear above the farmland's lower top; the farmland drops only the face
     // directly against the solid dirt. 5 farmland faces + 6 dirt faces = 11.
     mc::world::Chunk farmlandNeighbour;
-    farmlandNeighbour.setBlock(1, 1, 1, mc::world::Block::Farmland);
-    farmlandNeighbour.setBlock(2, 1, 1, mc::world::Block::Dirt);
+    farmlandNeighbour.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::Farmland);
+    farmlandNeighbour.setBlock(2, mc::world::kMinY + 1, 1, mc::world::Block::Dirt);
     const auto farmlandMesh = mc::world::ChunkMesher::build(farmlandNeighbour);
     assert(farmlandMesh.vertices.size() == 44U);
     assert(farmlandMesh.indices.size() == 66U);
@@ -65,23 +65,23 @@ int main() {
     // the quarter offsets (x=4/16, x=12/16, z=4/16, z=12/16), each double-sided
     // — 16 vertices, 48 indices, unlike the two diagonal planes of a `cross`.
     mc::world::Chunk cropChunk;
-    cropChunk.setBlock(1, 1, 1, mc::world::Block::WheatCrops);
+    cropChunk.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::WheatCrops);
     const auto cropMesh = mc::world::ChunkMesher::build(cropChunk);
     assert(cropMesh.vertices.size() == 16U);
     assert(cropMesh.indices.size() == 48U);
 
     mc::world::Chunk sectionBoundary;
-    sectionBoundary.setBlock(1, 15, 1, mc::world::Block::Stone);
-    sectionBoundary.setBlock(1, 16, 1, mc::world::Block::Stone);
+    sectionBoundary.setBlock(1, mc::world::kMinY + 15, 1, mc::world::Block::Stone);
+    sectionBoundary.setBlock(1, mc::world::kMinY + 16, 1, mc::world::Block::Stone);
     const auto sectionBoundaryMesh = mc::world::ChunkMesher::build(sectionBoundary);
     assert(sectionBoundaryMesh.vertices.size() == 40U);
     assert(sectionBoundaryMesh.indices.size() == 60U);
 
     mc::world::World boundaryWorld;
     mc::world::Chunk left;
-    left.setBlock(15, 1, 1, mc::world::Block::Stone);
+    left.setBlock(15, mc::world::kMinY + 1, 1, mc::world::Block::Stone);
     mc::world::Chunk right;
-    right.setBlock(0, 1, 1, mc::world::Block::Stone);
+    right.setBlock(0, mc::world::kMinY + 1, 1, mc::world::Block::Stone);
     boundaryWorld.setChunk({0, 0}, std::move(left));
     boundaryWorld.setChunk({1, 0}, std::move(right));
     const auto leftMesh = mc::world::ChunkMesher::buildSection(boundaryWorld, {0, 0}, 0);
@@ -93,8 +93,8 @@ int main() {
 
     mc::world::World glassWorld;
     mc::world::Chunk glassChunk;
-    glassChunk.setBlock(1, 1, 1, mc::world::Block::Glass);
-    glassChunk.setBlock(2, 1, 1, mc::world::Block::Glass);
+    glassChunk.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::Glass);
+    glassChunk.setBlock(2, mc::world::kMinY + 1, 1, mc::world::Block::Glass);
     glassWorld.setChunk({0, 0}, std::move(glassChunk));
     const auto glassMesh = mc::world::ChunkMesher::buildSection(glassWorld, {0, 0}, 0);
     assert(glassMesh.mesh.empty());
@@ -105,8 +105,8 @@ int main() {
 
     mc::world::World leavesWorld;
     mc::world::Chunk leavesChunk;
-    leavesChunk.setBlock(1, 1, 1, mc::world::Block::OakLeaves);
-    leavesChunk.setBlock(2, 1, 1, mc::world::Block::OakLeaves);
+    leavesChunk.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::OakLeaves);
+    leavesChunk.setBlock(2, mc::world::kMinY + 1, 1, mc::world::Block::OakLeaves);
     leavesWorld.setChunk({0, 0}, std::move(leavesChunk));
     const auto leavesMesh =
         mc::world::ChunkMesher::buildSection(leavesWorld, {0, 0}, 0);
@@ -117,8 +117,8 @@ int main() {
 
     mc::world::World torchWorld;
     mc::world::Chunk torchChunk;
-    torchChunk.setBlock(1, 1, 1, mc::world::Block::Torch);
-    torchChunk.setBlock(3, 1, 1, mc::world::Block::WallTorch);
+    torchChunk.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::Torch);
+    torchChunk.setBlock(3, mc::world::kMinY + 1, 1, mc::world::Block::WallTorch);
     torchWorld.setChunk({0, 0}, std::move(torchChunk));
     const auto torchMesh =
         mc::world::ChunkMesher::buildSection(torchWorld, {0, 0}, 0);
@@ -140,10 +140,10 @@ int main() {
 
     mc::world::World directionalWorld;
     mc::world::Chunk directionalChunk;
-    directionalChunk.setBlock(1, 1, 1, mc::world::Block::Furnace);
-    directionalChunk.setOrientation(1, 1, 1, mc::world::BlockOrientation::East);
-    directionalChunk.setBlock(3, 1, 1, mc::world::Block::OakLog);
-    directionalChunk.setOrientation(3, 1, 1, mc::world::BlockOrientation::East);
+    directionalChunk.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::Furnace);
+    directionalChunk.setOrientation(1, mc::world::kMinY + 1, 1, mc::world::BlockOrientation::East);
+    directionalChunk.setBlock(3, mc::world::kMinY + 1, 1, mc::world::Block::OakLog);
+    directionalChunk.setOrientation(3, mc::world::kMinY + 1, 1, mc::world::BlockOrientation::East);
     directionalWorld.setChunk({0, 0}, std::move(directionalChunk));
     const auto directionalMesh =
         mc::world::ChunkMesher::buildSection(directionalWorld, {0, 0}, 0);
@@ -151,7 +151,7 @@ int main() {
                "furnace front layer");
     expectNear(mc::render::decodeTextureLayer(directionalMesh.mesh.vertices[32]), 9.0F,
                "furnace side layer");
-    assert(directionalWorld.orientation(1, 1, 1) == mc::world::BlockOrientation::East);
+    assert(directionalWorld.orientation(1, mc::world::kMinY + 1, 1) == mc::world::BlockOrientation::East);
 
     // Horizontal pillar models are baked after rotating the model, leaving UVs
     // attached to their source vertices. For the X-axis log, the local +Z
@@ -165,8 +165,8 @@ int main() {
 
     mc::world::World zAxisLogWorld;
     mc::world::Chunk zAxisLogChunk;
-    zAxisLogChunk.setBlock(1, 1, 1, mc::world::Block::OakLog);
-    zAxisLogChunk.setOrientation(1, 1, 1, mc::world::BlockOrientation::South);
+    zAxisLogChunk.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::OakLog);
+    zAxisLogChunk.setOrientation(1, mc::world::kMinY + 1, 1, mc::world::BlockOrientation::South);
     zAxisLogWorld.setChunk({0, 0}, std::move(zAxisLogChunk));
     const auto zAxisLogMesh =
         mc::world::ChunkMesher::buildSection(zAxisLogWorld, {0, 0}, 0);
@@ -179,11 +179,11 @@ int main() {
 
     mc::world::World waterWorld;
     mc::world::Chunk waterChunk;
-    waterChunk.setBlock(1, 1, 1, mc::world::Block::Water);
+    waterChunk.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::Water);
     waterChunk.setFluidLevel(1, 1, 1, 0U);
-    waterChunk.setBlock(2, 1, 1, mc::world::Block::Water);
+    waterChunk.setBlock(2, mc::world::kMinY + 1, 1, mc::world::Block::Water);
     waterChunk.setFluidLevel(2, 1, 1, 7U);
-    for (int y = 1; y <= 4; ++y) {
+    for (int y = mc::world::kMinY + 1; y <= mc::world::kMinY + 4; ++y) {
         waterChunk.setBlock(4, y, 4, mc::world::Block::Water);
         waterChunk.setFluidLevel(4, y, 4, 0U);
     }
@@ -222,8 +222,8 @@ int main() {
         // influence their border corners.
         for (int z = 4; z <= 11; ++z) {
             for (int x = 10; x <= 15; ++x) {
-                borderChunk.setBlock(x, 1, z, mc::world::Block::Water);
-                borderChunk.setFluidLevel(x, 1, z, 0U);
+                borderChunk.setBlock(x, mc::world::kMinY + 1, z, mc::world::Block::Water);
+                borderChunk.setFluidLevel(x, mc::world::kMinY + 1, z, 0U);
             }
         }
         borderWorld.setChunk({0, 0}, std::move(borderChunk));
@@ -264,18 +264,18 @@ int main() {
 
     mc::world::World negativeWorld;
     mc::world::Chunk negativeChunk;
-    negativeChunk.setBlock(15, 3, 15, mc::world::Block::Sand);
+    negativeChunk.setBlock(15, mc::world::kMinY + 3, 15, mc::world::Block::Sand);
     negativeWorld.setChunk({-1, -1}, std::move(negativeChunk));
-    assert(negativeWorld.block(-1, 3, -1) == mc::world::Block::Sand);
-    assert(negativeWorld.block(-16, 3, -16) == mc::world::Block::Air);
+    assert(negativeWorld.block(-1, mc::world::kMinY + 3, -1) == mc::world::Block::Sand);
+    assert(negativeWorld.block(-16, mc::world::kMinY + 3, -16) == mc::world::Block::Air);
 
     const mc::world::SurfaceGenerator generator{0x5EEDULL};
     const auto first = generator.generate(0, 0);
     const auto repeated = generator.generate(0, 0);
     for (int z = 0; z < mc::world::kChunkDepth; ++z) {
         for (int x = 0; x < mc::world::kChunkWidth; ++x) {
-            assert(first.block(x, 0, z) == mc::world::Block::Bedrock);
-            for (int y = 0; y < mc::world::kWorldHeight; ++y) {
+            assert(first.block(x, mc::world::kMinY, z) == mc::world::Block::Bedrock);
+            for (int y = mc::world::kMinY; y < mc::world::kMaxY; ++y) {
                 assert(first.block(x, y, z) == repeated.block(x, y, z));
             }
         }
@@ -313,9 +313,9 @@ int main() {
     // The reference values below were taken from the 1.16.1 Java source.
     mc::world::World plantWorld;
     mc::world::Chunk plantChunk;
-    plantChunk.setBlock(0, 0, 0, mc::world::Block::GrassPlant);
-    plantChunk.setBlock(3, 1, 5, mc::world::Block::Dandelion);
-    plantChunk.setBlock(8, 2, 8, mc::world::Block::OakSapling);
+    plantChunk.setBlock(0, mc::world::kMinY + 0, 0, mc::world::Block::GrassPlant);
+    plantChunk.setBlock(3, mc::world::kMinY + 1, 5, mc::world::Block::Dandelion);
+    plantChunk.setBlock(8, mc::world::kMinY + 2, 8, mc::world::Block::OakSapling);
     plantWorld.setChunk({0, 0}, std::move(plantChunk));
     const auto plantMesh = mc::world::ChunkMesher::buildSection(plantWorld, {0, 0}, 0);
     const auto& plantVertices = plantMesh.cutoutMesh.vertices;

@@ -65,10 +65,10 @@ constexpr float kGroundOffset = 0.001F;
 // Everything else keeps the full cube, so only farmland lowers the player's
 // standing height by a sixteenth.
 [[nodiscard]] float blockCollisionTop(const world::World& world, int x, int y, int z) {
-    if (y < 0) {
+    if (y < world::kMinY) {
         return 1.0F;
     }
-    if (y >= world::kWorldHeight) {
+    if (y >= world::kMaxY) {
         return 0.0F;
     }
     if (!columnLoaded(world, x, z)) {

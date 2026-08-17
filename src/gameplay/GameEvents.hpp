@@ -19,6 +19,7 @@
 // are fine: EntityType instances are static singletons.
 
 #include "gameplay/entities/EntityType.hpp"
+#include "gameplay/ScreenHandler.hpp"
 #include "world/Block.hpp"
 #include "world/BlockState.hpp"
 
@@ -46,10 +47,14 @@ struct WorldEditEvent final {
     // a frame if it does not. Bulk fluid spread deliberately does not ask for
     // it — a thousand cells would each pay for an immediate relight.
     bool immediate = false;
+    [[nodiscard]] friend bool operator==(const WorldEditEvent&, const WorldEditEvent&) = default;
 };
 
 enum class SoundEventKind : std::uint8_t {
     BlockBreak,
+    BlockHit,
+    BlockPlace,
+    ItemBreak,
     ItemPickup,
     Eat,
     PlayerHurt,
@@ -77,26 +82,50 @@ struct SoundEvent final {
     float volume = 1.0F;
     // PlayerFall: the heavy landing variant.
     bool heavy = false;
+    [[nodiscard]] friend bool operator==(const SoundEvent&, const SoundEvent&) = default;
 };
 
 enum class ParticleEventKind : std::uint8_t {
     BlockBreak,
+    WaterSplash,
 };
 
 struct ParticleEvent final {
     ParticleEventKind kind = ParticleEventKind::BlockBreak;
-    glm::ivec3 position{0};
+    glm::vec3 position{0.0F};
     world::Block block = world::Block::Air;
+    [[nodiscard]] friend bool operator==(const ParticleEvent&, const ParticleEvent&) = default;
 };
 
 // The player died this tick. The fact is the whole payload: who and how are
 // already in PlayerVitals, and duplicating them here would be state, not event.
-struct PlayerDiedEvent final {};
+struct PlayerDiedEvent final {
+    [[nodiscard]] friend bool operator==(const PlayerDiedEvent&, const PlayerDiedEvent&) = default;
+};
+
+// Main-thread-only presentation reactions that are neither sounds nor
+// particles. The simulation updates the authoritative container/eating/furnace
+// state first; this event merely tells the client presentation to react.
+enum class ClientActionEventKind : std::uint8_t {
+    OpenContainer,
+    EatingStarted,
+    EatingCancelled,
+};
+
+struct ClientActionEvent final {
+    ClientActionEventKind kind = ClientActionEventKind::OpenContainer;
+    ContainerScreen screen = ContainerScreen::PlayerInventory;
+    glm::ivec3 position{0};
+    bool hasPosition = false;
+    [[nodiscard]] friend bool operator==(const ClientActionEvent&, const ClientActionEvent&) =
+        default;
+};
 
 static_assert(std::is_trivially_copyable_v<WorldEditEvent>);
 static_assert(std::is_trivially_copyable_v<SoundEvent>);
 static_assert(std::is_trivially_copyable_v<ParticleEvent>);
 static_assert(std::is_trivially_copyable_v<PlayerDiedEvent>);
+static_assert(std::is_trivially_copyable_v<ClientActionEvent>);
 
 // Synchronous, single-threaded, in-order delivery. Publishing calls every
 // subscriber before returning, so behaviour is identical to the direct host
@@ -120,11 +149,15 @@ class GameEventBus final {
     void subscribePlayerDied(std::function<void(const PlayerDiedEvent&)> listener) {
         playerDied_.push_back(std::move(listener));
     }
+    void subscribeClientAction(std::function<void(const ClientActionEvent&)> listener) {
+        clientAction_.push_back(std::move(listener));
+    }
 
     void publish(const WorldEditEvent& event) const { dispatch(worldEdit_, event); }
     void publish(const SoundEvent& event) const { dispatch(sound_, event); }
     void publish(const ParticleEvent& event) const { dispatch(particle_, event); }
     void publish(const PlayerDiedEvent& event) const { dispatch(playerDied_, event); }
+    void publish(const ClientActionEvent& event) const { dispatch(clientAction_, event); }
 
   private:
     template <typename Listeners, typename Event>
@@ -138,6 +171,7 @@ class GameEventBus final {
     std::vector<std::function<void(const SoundEvent&)>> sound_;
     std::vector<std::function<void(const ParticleEvent&)>> particle_;
     std::vector<std::function<void(const PlayerDiedEvent&)>> playerDied_;
+    std::vector<std::function<void(const ClientActionEvent&)>> clientAction_;
 };
 
 } // namespace mc::gameplay

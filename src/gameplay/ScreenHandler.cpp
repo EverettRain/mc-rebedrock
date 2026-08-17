@@ -13,7 +13,7 @@ namespace {
 // the way vanilla numbers its slots.
 void appendContainerSlots(
     std::vector<SlotView>& slots,
-    GameSession& session,
+    GameSession* session,
     const ScreenContext& context,
     const ui::HudLayout& layout) {
     switch (context.screen) {
@@ -21,12 +21,12 @@ void appendContainerSlots(
         if (!context.chest.has_value()) {
             return;
         }
-        auto* chest = session.chestSystem().find(*context.chest);
-        if (chest == nullptr) {
-            return;
-        }
+        auto* chest = session != nullptr ? session->chestSystem().find(*context.chest) : nullptr;
+        if (session != nullptr && chest == nullptr) return;
         for (std::size_t index = 0; index < ChestBlockEntity::kSlotCount; ++index) {
-            slots.push_back({layout.chestSlot(index), &chest->items[index], SlotKind::ChestStorage,
+            slots.push_back({layout.chestSlot(index),
+                             chest != nullptr ? &chest->items[index] : nullptr,
+                             SlotKind::ChestStorage,
                              static_cast<std::uint16_t>(index)});
         }
         return;
@@ -34,7 +34,9 @@ void appendContainerSlots(
     case ContainerScreen::CraftingTable: {
         for (std::size_t index = 0; index < 9U; ++index) {
             slots.push_back({layout.tableCraftingSlot(index),
-                             &session.craftingSystem().tableGridSlot(index),
+                             session != nullptr
+                                 ? &session->craftingSystem().tableGridSlot(index)
+                                 : nullptr,
                              SlotKind::TableCraftingGrid, static_cast<std::uint16_t>(index)});
         }
         slots.push_back(
@@ -42,12 +44,16 @@ void appendContainerSlots(
         return;
     }
     case ContainerScreen::Furnace: {
-        auto* furnace = session.furnaceSystem().find(context.furnace);
-        if (furnace == nullptr) {
-            return;
-        }
-        slots.push_back({layout.furnaceInputSlot(), &furnace->input, SlotKind::FurnaceInput, 0U});
-        slots.push_back({layout.furnaceFuelSlot(), &furnace->fuel, SlotKind::FurnaceFuel, 0U});
+        auto* furnace = session != nullptr
+                            ? session->furnaceSystem().find(context.furnace)
+                            : nullptr;
+        if (session != nullptr && furnace == nullptr) return;
+        slots.push_back({layout.furnaceInputSlot(),
+                         furnace != nullptr ? &furnace->input : nullptr,
+                         SlotKind::FurnaceInput, 0U});
+        slots.push_back({layout.furnaceFuelSlot(),
+                         furnace != nullptr ? &furnace->fuel : nullptr,
+                         SlotKind::FurnaceFuel, 0U});
         slots.push_back({layout.furnaceOutputSlot(), nullptr, SlotKind::FurnaceOutput, 0U});
         return;
     }
@@ -59,7 +65,9 @@ void appendContainerSlots(
         }
         for (std::size_t index = 0; index < 4U; ++index) {
             slots.push_back({layout.playerCraftingSlot(index),
-                             &session.craftingSystem().playerGridSlot(index),
+                             session != nullptr
+                                 ? &session->craftingSystem().playerGridSlot(index)
+                                 : nullptr,
                              SlotKind::PlayerCraftingGrid, static_cast<std::uint16_t>(index)});
         }
         slots.push_back(
@@ -77,7 +85,7 @@ std::vector<SlotView> ScreenHandler::buildSlots(
     const ui::HudLayout& layout) {
     std::vector<SlotView> slots;
     slots.reserve(ChestBlockEntity::kSlotCount + Inventory::kSlotCount + 1U);
-    appendContainerSlots(slots, session, context, layout);
+    appendContainerSlots(slots, &session, context, layout);
 
     // The player's own slots follow, drawn wherever the open screen puts them.
     const bool creativeScreen = context.screen == ContainerScreen::PlayerInventory &&
@@ -98,6 +106,64 @@ std::vector<SlotView> ScreenHandler::buildSlots(
                          static_cast<std::uint16_t>(index)});
     }
     return slots;
+}
+
+std::vector<SlotView> ScreenHandler::buildSlotLayout(
+    const ScreenContext& context,
+    const ui::HudLayout& layout) {
+    std::vector<SlotView> slots;
+    slots.reserve(ChestBlockEntity::kSlotCount + Inventory::kSlotCount + 1U);
+    appendContainerSlots(slots, nullptr, context, layout);
+
+    const bool creativeScreen = context.screen == ContainerScreen::PlayerInventory &&
+                                context.gameMode == GameMode::Creative;
+    for (std::size_t index = 0; index < Inventory::kSlotCount; ++index) {
+        if (creativeScreen && !context.creativeInventoryTab &&
+            index >= Inventory::kHotbarSize) {
+            continue;
+        }
+        const auto rect =
+            context.screen == ContainerScreen::Chest ? layout.chestInventorySlot(index)
+            : creativeScreen ? (context.creativeInventoryTab ? layout.creativeInventorySlot(index)
+                                                             : layout.creativeHotbarSlot(index))
+                             : layout.inventorySlot(index);
+        slots.push_back(
+            {rect, nullptr, SlotKind::PlayerInventory, static_cast<std::uint16_t>(index)});
+    }
+    return slots;
+}
+
+ItemStack* ScreenHandler::resolveSlotStorage(GameSession& session,
+                                             const ScreenContext& context, SlotKind kind,
+                                             std::uint16_t index) {
+    switch (kind) {
+    case SlotKind::PlayerInventory:
+        return &session.inventory().mutableSlot(index);
+    case SlotKind::ChestStorage:
+        if (context.chest.has_value()) {
+            if (auto* chest = session.chestSystem().find(*context.chest); chest != nullptr) {
+                return &chest->items[index];
+            }
+        }
+        return nullptr;
+    case SlotKind::PlayerCraftingGrid:
+        return &session.craftingSystem().playerGridSlot(index);
+    case SlotKind::TableCraftingGrid:
+        return &session.craftingSystem().tableGridSlot(index);
+    case SlotKind::FurnaceInput: {
+        auto* furnace = session.furnaceSystem().find(context.furnace);
+        return furnace != nullptr ? &furnace->input : nullptr;
+    }
+    case SlotKind::FurnaceFuel: {
+        auto* furnace = session.furnaceSystem().find(context.furnace);
+        return furnace != nullptr ? &furnace->fuel : nullptr;
+    }
+    case SlotKind::PlayerCraftingOutput:
+    case SlotKind::TableCraftingOutput:
+    case SlotKind::FurnaceOutput:
+        return nullptr;
+    }
+    return nullptr;
 }
 
 const SlotView* ScreenHandler::slotAt(const std::vector<SlotView>& slots, ui::UiPoint cursor) {

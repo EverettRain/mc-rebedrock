@@ -22,6 +22,9 @@ class World;
 }
 
 namespace mc::gameplay {
+class EntityRenderSnapshot;
+
+
 
 // A minimal free-roaming creature. Its per-species constants — hitbox, health
 // cap, wander speed, AI, loot — live on the entities::EntityType it points at,
@@ -116,6 +119,18 @@ struct EntityRayHit final {
     std::uint64_t entityId = 0U;
     float distance = 0.0F;
 };
+
+// Entity#raycast against the published render snapshot instead of the live
+// entity vector: the attack-targeting ray tests the same positions the draw
+// pass shows (the snapshot is what the render thread reads), with no reference
+// into a vector the tick may be mid-compaction on. Skips entities whose death
+// animation has finished, exactly like EntitySystem::raycast. `reach` bounds
+// the result, so the caller's block/entity distance comparison still works.
+[[nodiscard]] std::optional<EntityRayHit> raycastSnapshotEntities(
+    const EntityRenderSnapshot& snapshot,
+    glm::vec3 origin,
+    glm::vec3 direction,
+    float reach);
 
 // The four sound hooks a 1.16.1 LivingEntity raises. The caller plays the
 // matching clip for the creature's species (see entities::EntityType::soundProfile).
@@ -246,6 +261,14 @@ class EntitySystem final {
     // allocator — the world-reset path (a new save or /reload). Any id held by
     // the caller before this is invalid afterwards, exactly as indices were.
     void clear();
+
+    // M-3 (C5): removes every creature whose position is inside the given chunk
+    // and returns them, so the chunk-unload path can write them to the chunk's
+    // region file. A chunk leaving the simulation radius takes its herd with it
+    // instead of leaving it ticking in a chunk that no longer exists; the load
+    // path restores them when the chunk streams back in. The caller must hold
+    // the world write section (no tick is running).
+    [[nodiscard]] std::vector<SimpleEntity> removeInChunk(int chunkX, int chunkZ);
     [[nodiscard]] const std::vector<SimpleEntity>& entities() const { return entities_; }
     // The creature with the given stable id, or null once it has despawned.
     // Stable across vector compactions, so commands and brains can hold an id

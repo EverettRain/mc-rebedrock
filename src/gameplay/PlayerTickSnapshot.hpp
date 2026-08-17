@@ -21,6 +21,14 @@
 namespace mc::gameplay {
 
 struct PlayerTickSnapshot final {
+    // The resident bytes this snapshot holds. All fields are inline POD (no
+    // heap), so the struct size is the whole cost. The N-Mem budget gate pins
+    // a per-tick ceiling on it.
+    [[nodiscard]] std::size_t residentBytes() const { return sizeof(*this); }
+
+    [[nodiscard]] friend bool operator==(const PlayerTickSnapshot&, const PlayerTickSnapshot&) =
+        default;
+
     // The world tick this snapshot was taken at. The renderer uses it to know
     // when the snapshot advanced (a new tick between frames).
     std::uint64_t serverTick = 0U;
@@ -52,6 +60,18 @@ struct PlayerTickSnapshot final {
 
     // The selected inventory stack, for the held-item render and the arm pose.
     ItemStack heldStack{};
+
+    // The cell the player is mining and when it started, so the crack overlay
+    // can interpolate progress. Published from PlayerInteraction each tick — the
+    // renderer must not read the live dig state on its own thread.
+    struct MiningDigState final {
+        bool active = false;
+        glm::ivec3 target{};
+        std::uint64_t startedTick = 0U;
+        [[nodiscard]] friend bool operator==(const MiningDigState&, const MiningDigState&) =
+            default;
+    };
+    MiningDigState digging;
 
     // The HUD-read vitals and mode, so the HUD snapshot is built from the tick
     // snapshot too instead of reaching into live gameplay objects.

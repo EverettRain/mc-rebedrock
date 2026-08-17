@@ -10,6 +10,8 @@
 #include "world/DayNightCycle.hpp"
 #include "world/WorldConstants.hpp"
 
+#include "core/FrameTrace.hpp"
+
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
@@ -20,6 +22,25 @@ namespace {
 // The spawn area stays loaded for the whole session, vanilla-style. Mirrors the
 // constant the renderer used before this class owned world loading.
 constexpr int kSpawnChunkRadius = 4;
+
+// A live creature, reduced to the fields a region record and the save both
+// carry. Shared by the save point and the chunk-unload path.
+[[nodiscard]] persistence::PersistentEntity toPersistentEntity(const gameplay::SimpleEntity& entity) {
+    persistence::PersistentEntity record;
+    record.species = std::string{entity.type->id().path};
+    record.x = entity.position.x;
+    record.y = entity.position.y;
+    record.z = entity.position.z;
+    record.yaw = entity.yaw;
+    record.vx = entity.velocity.x;
+    record.vy = entity.velocity.y;
+    record.vz = entity.velocity.z;
+    record.health = entity.damage.health;
+    record.angerTicks = entity.angerTicks;
+    record.ageTicks = entity.ageTicks;
+    record.rngState = entity.rngState;
+    return record;
+}
 }  // namespace
 
 GameRuntime::GameRuntime(gameplay::SimulationHost& host, world::ChunkStreamer& chunkStreamer,
@@ -29,6 +50,7 @@ GameRuntime::GameRuntime(gameplay::SimulationHost& host, world::ChunkStreamer& c
     // reach the host even before the first tick (tick() re-binds it anyway).
     gameSession_.setEventHost(host_);
     registerAuthoritativeCommands();
+    startPersistenceWorker();
 }
 
 GameRuntime::~GameRuntime() {
@@ -36,6 +58,9 @@ GameRuntime::~GameRuntime() {
     // down. Idempotent: the owner may stop it explicitly (the renderer does,
     // ahead of its Vulkan teardown) and this is then a no-op.
     stopSimulation();
+    // Drain and join the persistence worker last, so every chunk the unload path
+    // queued this session actually reaches disk before the save repository dies.
+    stopPersistenceWorker();
 }
 
 void GameRuntime::startSimulation() {
@@ -60,24 +85,47 @@ void GameRuntime::tick() {
 }
 
 void GameRuntime::enqueueChat(std::string line) {
+    const std::lock_guard<std::mutex> guard{chatMutex_};
     chatQueue_.push_back(std::move(line));
 }
 
 std::optional<gameplay::CommandResult> GameRuntime::takeChatResult() {
+    const std::lock_guard<std::mutex> guard{chatMutex_};
     auto result = chatResult_;
     chatResult_.reset();
     return result;
 }
 
 void GameRuntime::processChatQueue() {
-    for (auto& line : chatQueue_) {
-        chatResult_ = commandDispatcher_.execute(line);
+    // Swap the queue out under the lock so a line enqueued during execution is
+    // not lost, then run the commands without holding it (a command may reach
+    // back into the runtime). The single-slot result is written back under it.
+    std::vector<std::string> lines;
+    {
+        const std::lock_guard<std::mutex> guard{chatMutex_};
+        lines = std::move(chatQueue_);
+        chatQueue_.clear();
     }
-    chatQueue_.clear();
+    for (auto& line : lines) {
+        const auto result = commandDispatcher_.execute(line);
+        const std::lock_guard<std::mutex> guard{chatMutex_};
+        chatResult_ = result;
+    }
 }
 
 void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) {
+    // Drain any writes still queued for a previous world before switching saves,
+    // so the worker never writes an outgoing world's records under the new
+    // identifier.
+    flushAllChunkWrites();
+    // The incoming world replaces the edit list; drop the derived per-chunk index
+    // so refreshEditIndex rebuilds it from the new edits.
+    editsByChunk_.clear();
+    editsIndexed_ = 0;
     currentSave_ = std::move(save);
+    // No chunk has unloaded yet in the fresh world; the unload-then-restore
+    // bookkeeping starts empty.
+    unloadedChunks_.clear();
     gameSession_.inventory().restore(currentSave_->inventory, currentSave_->selectedHotbarSlot);
     gameSession_.chestSystem().restore(currentSave_->chests);
     gameSession_.furnaceSystem().restore(currentSave_->furnaces);
@@ -107,8 +155,10 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     // The world owns its difficulty, the way level.dat does in vanilla.
     gameSession_.setDifficulty(currentSave_->difficulty);
     // Game rules travel with the world too. The copy from the loaded save
-    // carries a null change handler, so the owner re-attaches its own.
+    // carries a null change handler, so the owner re-attaches its own and
+    // applies the one rule with a runtime mirror.
     gameSession_.gameRules() = currentSave_->gameRules;
+    gameSession_.attachGameRuleHandlers();
     gameSession_.worldSimulation().setRandomTickSpeed(
         gameSession_.gameRules().get<std::int32_t>(gameplay::GameRuleId::RandomTickSpeed));
     // The world tick and the named clocks restore separately, so a save made
@@ -165,6 +215,11 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     const int spawnRadius = std::min(viewDistanceChunks, kSpawnChunkRadius);
     chunkStreamer_.setRadii(spawnRadius, viewDistanceChunks);
     chunkStreamer_.request(world::chunkPositionFromWorld(initialFeet.x, initialFeet.z));
+    // Publish a complete snapshot of the just-restored state. The simulation
+    // thread has not started, so nothing would refresh the snapshots otherwise —
+    // the renderer's first reads (camera, F3, held item) must see the saved
+    // position, not the default (0,0,0) the snapshot holds until the first tick.
+    gameSession_.publishSnapshots();
 }
 
 persistence::SaveGame GameRuntime::createWorld(std::string name, std::uint64_t seed,
@@ -182,6 +237,12 @@ persistence::SaveGame GameRuntime::createWorld(std::string name, std::uint64_t s
 }
 
 void GameRuntime::unloadWorld() {
+    // Land every queued chunk of the outgoing world before dropping the save, so
+    // its region files are complete and the queue never carries records into the
+    // next world.
+    flushAllChunkWrites();
+    editsByChunk_.clear();
+    editsIndexed_ = 0;
     currentSave_.reset();
     worldEpoch_ = chunkStreamer_.resetWorld(0U);
 }
@@ -190,6 +251,11 @@ bool GameRuntime::saveLocked() {
     if (!currentSave_.has_value() || currentSave_->summary.identifier.empty()) {
         return false;
     }
+    // The full save rewrites the same region files the background worker writes,
+    // so drain the queue first: after this the queue is empty and, because the
+    // caller holds the world write section, no new unload can enqueue while
+    // save() rewrites the regions.
+    flushAllChunkWrites();
     currentSave_->hasPlayerPosition = true;
     const auto position = gameSession_.player().position();
     currentSave_->playerX = position.x;
@@ -237,20 +303,7 @@ bool GameRuntime::saveLocked() {
         if (entity.type == nullptr) {
             continue;
         }
-        persistence::PersistentEntity record;
-        record.species = std::string{entity.type->id().path};
-        record.x = entity.position.x;
-        record.y = entity.position.y;
-        record.z = entity.position.z;
-        record.yaw = entity.yaw;
-        record.vx = entity.velocity.x;
-        record.vy = entity.velocity.y;
-        record.vz = entity.velocity.z;
-        record.health = entity.damage.health;
-        record.angerTicks = entity.angerTicks;
-        record.ageTicks = entity.ageTicks;
-        record.rngState = entity.rngState;
-        currentSave_->entities.push_back(std::move(record));
+        currentSave_->entities.push_back(toPersistentEntity(entity));
     }
     currentSave_->itemDrops.clear();
     currentSave_->itemDrops.reserve(gameSession_.itemEntities().entities().size());
@@ -270,13 +323,202 @@ bool GameRuntime::saveLocked() {
                                               falling.position.z, falling.verticalVelocity,
                                               falling.block});
     }
-    saveRepository_.save(*currentSave_);
+    // M-3: chunks unloaded but not yet restored have their herd on disk and out
+    // of the simulation — the only region records the save must preserve. Every
+    // other disk record is replaced by the fresh gather (or dropped if stale).
+    std::set<std::pair<int, int>> unloadedChunkCoords;
+    for (const auto& position : unloadedChunks_) {
+        unloadedChunkCoords.emplace(position.x, position.z);
+    }
+    saveRepository_.save(*currentSave_, unloadedChunkCoords);
     return true;
 }
 
 void GameRuntime::save() {
     const auto saveRead = worldLock_.read();
     static_cast<void>(saveLocked());
+}
+
+void GameRuntime::persistUnloadedChunk(world::ChunkPosition position) {
+    if (!currentSave_.has_value() || currentSave_->summary.identifier.empty()) {
+        return;
+    }
+    const auto persistStart = std::chrono::steady_clock::now();
+    const int chunkX = position.x;
+    const int chunkZ = position.z;
+    // The chunk's edits, bucketed by the same floor division the region writer
+    // uses. They stay in currentSave_->edits as well — a same-session reload
+    // regenerates from the streamer's copy, and the next save rewrites them —
+    // but the region file becomes their durable home now, not later. Collected
+    // through the per-chunk index (O(this chunk's edits)) instead of scanning the
+    // whole flat edit list per chunk.
+    refreshEditIndex();
+    std::vector<world::PersistentBlockEdit> edits;
+    if (const auto found = editsByChunk_.find(position); found != editsByChunk_.end()) {
+        edits.reserve(found->second.size());
+        for (const auto index : found->second) {
+            edits.push_back(currentSave_->edits[index]);
+        }
+    }
+    if (diag::traceEnabled()) {
+        diag::frameTrace().editScan += edits.size();
+    }
+    // The creatures inside the chunk leave the simulation and are written to the
+    // same region file, so a herd outside the radius survives on disk instead of
+    // ticking in a chunk that no longer exists.
+    std::vector<persistence::PersistentEntity> entities;
+    for (const auto& entity : gameSession_.worldEntities().removeInChunk(chunkX, chunkZ)) {
+        if (entity.type == nullptr) {
+            continue;
+        }
+        entities.push_back(toPersistentEntity(entity));
+    }
+    // Hand the disk write to the background worker instead of doing a
+    // synchronous region read-modify-write here on the render thread inside the
+    // world write lock. The extraction above (edits + removeInChunk) has to stay
+    // on this thread because it reads the save and mutates the simulation's
+    // entity store, but the actual file I/O — the 25–150ms spike — moves off the
+    // critical path. persistIdentifier_ is the save the queued records belong to;
+    // a world switch flushes the queue first so it never mixes two saves.
+    persistence::ChunkPersistRecord record;
+    record.chunkX = chunkX;
+    record.chunkZ = chunkZ;
+    record.edits = std::move(edits);
+    record.entities = std::move(entities);
+    {
+        const std::lock_guard<std::mutex> guard{persistMutex_};
+        persistIdentifier_ = currentSave_->summary.identifier;
+        ++persistPending_[position];
+        persistQueue_.push_back(std::move(record));
+    }
+    persistWakeCv_.notify_one();
+    if (diag::traceEnabled()) {
+        ++diag::frameTrace().saveChunkCalls;
+        diag::frameTrace().persistMs += diag::msSince(persistStart);
+    }
+    unloadedChunks_.insert(position);
+}
+
+void GameRuntime::refreshEditIndex() {
+    if (!currentSave_.has_value()) {
+        editsByChunk_.clear();
+        editsIndexed_ = 0;
+        return;
+    }
+    const auto& edits = currentSave_->edits;
+    if (edits.size() < editsIndexed_) {
+        // The edit vector shrank — a world switch replaced it. Rebuild.
+        editsByChunk_.clear();
+        editsIndexed_ = 0;
+    }
+    for (std::size_t index = editsIndexed_; index < edits.size(); ++index) {
+        const auto chunk = world::chunkPositionFromWorld(
+            static_cast<float>(edits[index].x), static_cast<float>(edits[index].z));
+        editsByChunk_[{chunk.x, chunk.z}].push_back(index);
+    }
+    editsIndexed_ = edits.size();
+}
+
+void GameRuntime::startPersistenceWorker() {
+    persistenceThread_ = std::thread{[this] { persistenceWorkerLoop(); }};
+}
+
+void GameRuntime::stopPersistenceWorker() {
+    if (!persistenceThread_.joinable()) {
+        return;
+    }
+    {
+        const std::lock_guard<std::mutex> guard{persistMutex_};
+        persistStopping_ = true;
+    }
+    persistWakeCv_.notify_all();
+    persistenceThread_.join();
+}
+
+void GameRuntime::persistenceWorkerLoop() {
+    std::unique_lock<std::mutex> lock{persistMutex_};
+    while (true) {
+        persistWakeCv_.wait(lock,
+                            [this] { return persistStopping_ || !persistQueue_.empty(); });
+        if (persistQueue_.empty()) {
+            // Only stop once the backlog is drained, so a shutdown still lands
+            // every queued chunk on disk.
+            if (persistStopping_) {
+                return;
+            }
+            continue;
+        }
+        // Drain the whole queue in one go; saveChunks batches region rewrites so
+        // a burst of chunks sharing a region file costs one read-modify-write.
+        std::vector<world::ChunkPosition> positions;
+        positions.reserve(persistQueue_.size());
+        for (const auto& record : persistQueue_) {
+            positions.push_back({record.chunkX, record.chunkZ});
+        }
+        std::vector<persistence::ChunkPersistRecord> batch{
+            std::make_move_iterator(persistQueue_.begin()),
+            std::make_move_iterator(persistQueue_.end())};
+        persistQueue_.clear();
+        const std::string identifier = persistIdentifier_;
+        persistBusy_ = true;
+        lock.unlock();
+        try {
+            saveRepository_.saveChunks(identifier, std::move(batch));
+        } catch (const std::exception&) {
+            // A failed region write is non-fatal: the data is still in the
+            // in-session simulation/save and the next full save rewrites it.
+            // Swallow rather than let the worker thread terminate the process.
+        }
+        lock.lock();
+        persistBusy_ = false;
+        for (const auto position : positions) {
+            const auto found = persistPending_.find(position);
+            if (found != persistPending_.end() && --found->second <= 0) {
+                persistPending_.erase(found);
+            }
+        }
+        persistDoneCv_.notify_all();
+    }
+}
+
+void GameRuntime::flushChunkWrites(world::ChunkPosition position) {
+    std::unique_lock<std::mutex> lock{persistMutex_};
+    persistDoneCv_.wait(
+        lock, [this, position] { return persistPending_.find(position) == persistPending_.end(); });
+}
+
+void GameRuntime::flushAllChunkWrites() {
+    std::unique_lock<std::mutex> lock{persistMutex_};
+    persistDoneCv_.wait(lock, [this] { return persistQueue_.empty() && !persistBusy_; });
+}
+
+void GameRuntime::restoreLoadedChunk(world::ChunkPosition position) {
+    if (!currentSave_.has_value() || currentSave_->summary.identifier.empty()) {
+        return;
+    }
+    // Only chunks this session actually unloaded have their herd on disk; the
+    // rest already have their creatures in the simulation (world load restored
+    // every region record at once).
+    if (unloadedChunks_.erase(position) == 0U) {
+        return;
+    }
+    // The unload write is asynchronous, so this chunk's region file may still be
+    // sitting in the persistence queue. Wait for exactly this chunk's writes to
+    // land before reading it back, otherwise the herd would restore from a stale
+    // (or half-written) file.
+    flushChunkWrites(position);
+    const auto records =
+        saveRepository_.loadChunkEntities(currentSave_->summary.identifier, position.x, position.z);
+    for (const auto& record : records) {
+        const auto* type = gameplay::entities::entityTypeRegistry().byId(record.species);
+        if (type == nullptr) {
+            continue;
+        }
+        gameSession_.worldEntities().restore(
+            {record.x, record.y, record.z}, *type, record.yaw,
+            {record.vx, record.vy, record.vz}, record.health, record.angerTicks,
+            record.ageTicks, record.rngState);
+    }
 }
 
 void GameRuntime::registerAuthoritativeCommands() {

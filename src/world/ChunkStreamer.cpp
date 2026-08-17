@@ -12,7 +12,6 @@
 #include <iterator>
 #include <memory>
 #include <stdexcept>
-#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -20,17 +19,6 @@
 
 namespace mc::world {
 namespace {
-
-// Vanilla sizes its world-generation worker pool as clamp(cores - 1, 1, 7)
-// (Util#getServerWorkerExecutor); the chunk pipeline and meshing reuse the same
-// bound so generation and meshing get the same throughput headroom the server
-// would.
-[[nodiscard]] std::size_t parallelWorkerCount(std::size_t requestCount) {
-    const std::size_t hardwareThreads = std::max(1U, std::thread::hardware_concurrency());
-    const std::size_t maxWorkers =
-        std::clamp(hardwareThreads - 1U, std::size_t{1U}, std::size_t{7U});
-    return std::min(requestCount, maxWorkers);
-}
 
 constexpr std::array<ChunkPosition, 8> kNeighborChunks{{
     {1, 0},
@@ -95,8 +83,9 @@ struct GenerationResult final {
 // dozen octave samplers from the seed stream), so building one per batch would
 // tax small batches heavily. SurfaceGenerator is not relocatable, so the pool
 // lives behind unique_ptrs and this helper takes a span of raw pointers. Work
-// is stolen with an atomic counter, mirroring buildChunkMeshesParallel.
+// is stolen by the persistent pool shared with lighting and meshing.
 [[nodiscard]] std::vector<GenerationResult> generateChunksParallel(
+    core::ParallelWorkerPool& workers,
     std::span<SurfaceGenerator*> generators,
     std::span<const GenerationRequest> requests,
     const std::atomic<bool>& stopping) {
@@ -104,17 +93,9 @@ struct GenerationResult final {
         return {};
     }
     std::vector<GenerationResult> results(requests.size());
-    std::vector<std::exception_ptr> errors(requests.size());
-    std::atomic<std::size_t> nextRequest{0U};
-    const std::size_t workerCount = std::min(requests.size(), generators.size());
-    const auto generateNext = [&](std::size_t workerIndex) {
+    const auto generateOne = [&](std::size_t requestIndex, std::size_t workerIndex) {
         SurfaceGenerator& generator = *generators[workerIndex];
-        while (!stopping.load(std::memory_order_relaxed)) {
-            const std::size_t requestIndex = nextRequest.fetch_add(1U, std::memory_order_relaxed);
-            if (requestIndex >= requests.size()) {
-                return;
-            }
-            try {
+        if (!stopping.load(std::memory_order_relaxed)) {
                 const auto& request = requests[requestIndex];
                 std::vector<gen::TreeBorderBlock> borderBlocks;
                 Chunk chunk = generator.generate(
@@ -126,28 +107,9 @@ struct GenerationResult final {
                 }
                 results[requestIndex] = {
                     request.position, std::move(chunk), std::move(borderBlocks)};
-            } catch (...) {
-                errors[requestIndex] = std::current_exception();
-            }
         }
     };
-
-    if (workerCount == 1U) {
-        generateNext(0U);
-    } else {
-        std::vector<std::jthread> workers;
-        workers.reserve(workerCount);
-        for (std::size_t index = 0; index < workerCount; ++index) {
-            workers.emplace_back(generateNext, index);
-        }
-    }
-    if (!stopping.load(std::memory_order_relaxed)) {
-        for (const auto& error : errors) {
-            if (error) {
-                std::rethrow_exception(error);
-            }
-        }
-    }
+    workers.run(requests.size(), generateOne);
     return results;
 }
 
@@ -160,18 +122,13 @@ struct GenerationResult final {
 
 [[nodiscard]] std::vector<SectionMeshUpdate>
 buildChunkMeshesParallel(const World& world, std::span<const ChunkMeshRequest> requests,
-                         const std::atomic<bool>& stopping, const ChunkStreamer& self) {
+                         const std::atomic<bool>& stopping, const ChunkStreamer& self,
+                         core::ParallelWorkerPool& workers) {
     if (requests.empty() || stopping.load(std::memory_order_relaxed))
         return {};
     std::vector<std::vector<SectionMeshUpdate>> perChunk(requests.size());
-    std::vector<std::exception_ptr> errors(requests.size());
-    std::atomic<std::size_t> nextRequest{0U};
-    const auto buildNext = [&] {
-        while (!stopping.load(std::memory_order_relaxed)) {
-            const std::size_t requestIndex = nextRequest.fetch_add(1U, std::memory_order_relaxed);
-            if (requestIndex >= requests.size())
-                return;
-            try {
+    const auto buildOne = [&](std::size_t requestIndex, std::size_t) {
+        if (!stopping.load(std::memory_order_relaxed)) {
                 const auto& request = requests[requestIndex];
                 auto& updates = perChunk[requestIndex];
                 // One O(1) snapshot per request chunk (shared by all its
@@ -211,28 +168,9 @@ buildChunkMeshesParallel(const World& world, std::span<const ChunkMeshRequest> r
                         std::move(mesh), empty, 0U,
                     });
                 }
-            } catch (...) {
-                errors[requestIndex] = std::current_exception();
-            }
         }
     };
-
-    const std::size_t workerCount = parallelWorkerCount(requests.size());
-    if (workerCount == 1U) {
-        buildNext();
-    } else {
-        std::vector<std::jthread> workers;
-        workers.reserve(workerCount);
-        for (std::size_t index = 0; index < workerCount; ++index) {
-            workers.emplace_back(buildNext);
-        }
-    }
-    if (!stopping.load(std::memory_order_relaxed)) {
-        for (const auto& error : errors) {
-            if (error)
-                std::rethrow_exception(error);
-        }
-    }
+    workers.run(requests.size(), buildOne);
     std::vector<SectionMeshUpdate> result;
     for (auto& updates : perChunk) {
         result.insert(result.end(), std::make_move_iterator(updates.begin()),
@@ -273,6 +211,15 @@ void ChunkStreamer::releaseMeshData(render::RenderMeshData&& mesh) const {
     if (meshPool_.free.size() < 96U) {
         meshPool_.free.push_back(std::move(mesh));
     }
+}
+
+std::size_t ChunkStreamer::cpuMeshPoolBytes() const {
+    std::lock_guard<std::mutex> lock(meshPool_.mutex);
+    std::size_t bytes = 0;
+    for (const auto& mesh : meshPool_.free) {
+        bytes += mesh.capacityBytes();
+    }
+    return bytes;
 }
 
 ChunkPosition chunkPositionFromWorld(float worldX, float worldZ) {
@@ -397,7 +344,7 @@ std::optional<ChunkStreamBatch> ChunkStreamer::poll() {
 
 void ChunkStreamer::workerLoop() {
     World world;
-    WorldLightEngine lightEngine{&stopping_};
+    WorldLightEngine lightEngine{&stopping_, &parallelWorkers_};
     ChunkPosition currentCenter{};
     std::vector<PersistentBlockEdit> persistentEdits;
     std::unordered_map<EditPosition, std::size_t, EditPositionHash> persistentEditIndices;
@@ -495,7 +442,8 @@ void ChunkStreamer::workerLoop() {
                 requests.push_back({
                     {position.chunkX, position.chunkZ}, true, {position.sectionY}});
             }
-            auto meshUpdates = buildChunkMeshesParallel(world, requests, stopping_, *this);
+            auto meshUpdates = buildChunkMeshesParallel(
+                world, requests, stopping_, *this, parallelWorkers_);
             if (stopping_.load(std::memory_order_relaxed))
                 return;
             for (auto& update : meshUpdates) {
@@ -526,6 +474,11 @@ void ChunkStreamer::workerLoop() {
             if (stopping_.load(std::memory_order_relaxed))
                 return;
         }
+        // N-Mem: publish the worker world's resident size after this cycle's work
+        // so an outside reader can sample the third chunk copy lock-free. Both the
+        // full and the shared-excluded (unique) figures are published.
+        workerResidentBytes_.store(world.residentBytes(), std::memory_order_relaxed);
+        workerUniqueResidentBytes_.store(world.uniqueResidentBytes(), std::memory_order_relaxed);
     }
 }
 
@@ -551,7 +504,8 @@ void ChunkStreamer::remeshAll(World& world, ChunkPosition center, std::uint64_t 
     for (const auto position : positions) {
         requests.push_back({position, false, {}});
     }
-    auto meshUpdates = buildChunkMeshesParallel(world, requests, stopping_, *this);
+    auto meshUpdates = buildChunkMeshesParallel(
+        world, requests, stopping_, *this, parallelWorkers_);
     if (stopping_.load(std::memory_order_relaxed)) {
         return;
     }
@@ -625,7 +579,7 @@ void ChunkStreamer::processSyncRequests(
     std::unordered_set<BlockEditPosition, BlockEditPositionHash> persistentPositions;
     persistentPositions.reserve(persistentEdits.size());
     for (const auto& edit : persistentEdits) {
-        if (edit.y < 0 || edit.y >= kWorldHeight) {
+        if (!isWorldYInRange(edit.y)) {
             continue;
         }
         editsByChunk[{
@@ -687,7 +641,8 @@ void ChunkStreamer::processSyncRequests(
         for (const auto dirtyPosition : dirty) {
             meshRequests.push_back({dirtyPosition, newlySet.contains(dirtyPosition), {}});
         }
-        auto meshUpdates = buildChunkMeshesParallel(world, meshRequests, stopping_, *this);
+        auto meshUpdates = buildChunkMeshesParallel(
+            world, meshRequests, stopping_, *this, parallelWorkers_);
         for (auto& update : meshUpdates) {
             update.revision = ++nextMeshRevision_;
         }
@@ -698,7 +653,7 @@ void ChunkStreamer::processSyncRequests(
         // Sync deliveries skip the streaming queue: the caller applies them
         // immediately and the mesh uploads jump ahead of distant chunks.
         batch.highPriority = true;
-        batch.chunkUpdates.push_back({position, *world.chunk(position), false});
+        batch.chunkUpdates.push_back({position, world.sharedChunk(position), false});
         batch.stateUpdates = std::move(borderStateUpdates);
         batch.sectionUpdates = std::move(meshUpdates);
         for (auto& update : batch.sectionUpdates) {
@@ -749,7 +704,7 @@ void ChunkStreamer::applyBorderBlocks(
             floorDiv(block.worldX, kChunkWidth),
             floorDiv(block.worldZ, kChunkDepth),
         };
-        Chunk* chunk = world.chunk(target);
+        const Chunk* chunk = std::as_const(world).chunk(target);
         if (chunk == nullptr) {
             // The crown is already retained by rememberBorderBlocks and will
             // be replayed whenever this target chunk is generated.
@@ -767,7 +722,7 @@ void ChunkStreamer::applyBorderBlocks(
         if (previous == next) {
             continue;
         }
-        chunk->setState(localX, block.y, localZ, next);
+        static_cast<void>(world.setState(block.worldX, block.y, block.worldZ, next));
         if (!batchChunks.contains(target) && stateUpdates != nullptr) {
             stateUpdates->push_back(
                 {block.worldX, block.y, block.worldZ, previous, next});
@@ -794,7 +749,7 @@ void ChunkStreamer::updateWorld(
     std::unordered_set<BlockEditPosition, BlockEditPositionHash> persistentPositions;
     persistentPositions.reserve(persistentEdits.size());
     for (const auto& edit : persistentEdits) {
-        if (edit.y < 0 || edit.y >= kWorldHeight)
+        if (!isWorldYInRange(edit.y))
             continue;
         editsByChunk[{
                          floorDiv(edit.x, kChunkWidth),
@@ -868,7 +823,7 @@ void ChunkStreamer::updateWorld(
     std::vector<std::unique_ptr<SurfaceGenerator>> generatorPool;
     std::vector<SurfaceGenerator*> generators;
     if (!missing.empty()) {
-        const std::size_t workerCount = parallelWorkerCount(missing.size());
+        const std::size_t workerCount = parallelWorkers_.workerCount();
         generatorPool.reserve(workerCount);
         generators.reserve(workerCount);
         for (std::size_t index = 0; index < workerCount; ++index) {
@@ -889,9 +844,10 @@ void ChunkStreamer::updateWorld(
             return;
         // Serve any synchronous requests between batches so a render thread
         // blocked in requestSync is not held up by a full radius reload.
-        if (!syncPending_.empty()) {
-            processSyncRequests(world, lightEngine, center, epoch, persistentEdits);
-        }
+        // processSyncRequests takes the mutex and returns immediately when the
+        // set is empty; a racy !empty() fast-check here was a data race against
+        // requestSync's guarded insert.
+        processSyncRequests(world, lightEngine, center, epoch, persistentEdits);
         const std::size_t count = std::min(kBatchSize, missing.size() - offset);
         const std::span<const ChunkPosition> batchPositions{missing.data() + offset, count};
 
@@ -906,7 +862,8 @@ void ChunkStreamer::updateWorld(
                     : std::span<const PersistentBlockEdit*>{},
             });
         }
-        auto generated = generateChunksParallel(generators, requests, stopping_);
+        auto generated = generateChunksParallel(
+            parallelWorkers_, generators, requests, stopping_);
         for (const auto& result : generated) {
             rememberBorderBlocks(result.borderBlocks);
         }
@@ -970,7 +927,7 @@ void ChunkStreamer::updateWorld(
             }
         }
         for (const auto position : batchPositions) {
-            batch.chunkUpdates.push_back({position, *world.chunk(position), false});
+            batch.chunkUpdates.push_back({position, world.sharedChunk(position), false});
         }
         batch.stateUpdates = std::move(borderStateUpdates);
 
@@ -985,7 +942,8 @@ void ChunkStreamer::updateWorld(
         for (const auto position : dirty) {
             meshRequests.push_back({position, newlySet.contains(position), {}});
         }
-        auto meshUpdates = buildChunkMeshesParallel(world, meshRequests, stopping_, *this);
+        auto meshUpdates = buildChunkMeshesParallel(
+            world, meshRequests, stopping_, *this, parallelWorkers_);
         for (auto& update : meshUpdates) update.revision = ++nextMeshRevision_;
         batch.sectionUpdates.insert(batch.sectionUpdates.end(),
                                     std::make_move_iterator(meshUpdates.begin()),
@@ -1020,7 +978,8 @@ void ChunkStreamer::updateWorld(
         for (const auto position : unloadNeighbors) {
             meshRequests.push_back({position, false, {}});
         }
-        auto meshUpdates = buildChunkMeshesParallel(world, meshRequests, stopping_, *this);
+        auto meshUpdates = buildChunkMeshesParallel(
+            world, meshRequests, stopping_, *this, parallelWorkers_);
         for (auto& update : meshUpdates) update.revision = ++nextMeshRevision_;
         batch.sectionUpdates.insert(batch.sectionUpdates.end(),
                                     std::make_move_iterator(meshUpdates.begin()),
@@ -1056,7 +1015,7 @@ ChunkStreamBatch ChunkStreamer::applyBlockEdits(World& world,
     for (const auto& edit : edits) {
         if (stopping_.load(std::memory_order_relaxed))
             return batch;
-        if (edit.y < 0 || edit.y >= kWorldHeight) {
+        if (!isWorldYInRange(edit.y)) {
             continue;
         }
         const auto previous = world.state(edit.worldX, edit.y, edit.worldZ);
@@ -1069,17 +1028,17 @@ ChunkStreamBatch ChunkStreamer::applyBlockEdits(World& world,
             for (int dy = -1; dy <= 1; ++dy) {
                 for (int dx = -1; dx <= 1; ++dx) {
                     const int sampleY = edit.y + dy;
-                    if (sampleY < 0 || sampleY >= kWorldHeight) continue;
+                    if (!isWorldYInRange(sampleY)) continue;
                     const ChunkPosition sampleChunk = chunkPositionFromWorld(
                         static_cast<float>(edit.worldX + dx),
                         static_cast<float>(edit.worldZ + dz));
-                    markSection({sampleChunk.x, sampleY / kSectionSize, sampleChunk.z});
+                    markSection({sampleChunk.x, sectionIndexFromWorldY(sampleY), sampleChunk.z});
                 }
             }
         }
         // Most random-tick edits swap blocks with identical light behaviour —
         // grass reverting to dirt, dirt greening over, crop stages — and
-        // updateBlock recomputes the whole 256-block sky column plus a settle
+        // updateBlock recomputes the whole 384-block sky column plus a settle
         // pass over both channels even when nothing changes. That wasted work
         // on thousands of grass edits saturated the worker and pushed genuine
         // light changes (a grown tree) seconds behind their meshes. The edit's
@@ -1121,7 +1080,8 @@ ChunkStreamBatch ChunkStreamer::applyBlockEdits(World& world,
     std::ranges::sort(meshRequests, {}, [](const ChunkMeshRequest& request) {
         return std::pair{request.position.z, request.position.x};
     });
-    batch.sectionUpdates = buildChunkMeshesParallel(world, meshRequests, stopping_, *this);
+    batch.sectionUpdates = buildChunkMeshesParallel(
+        world, meshRequests, stopping_, *this, parallelWorkers_);
     for (auto& update : batch.sectionUpdates) update.revision = ++nextMeshRevision_;
     batch.loadedChunkCount = world.chunkCount();
     return batch;

@@ -137,7 +137,7 @@ int main() {
     {
         World world = loadedWorld();
         RecordingSink sink;
-        const auto result = service.setBlock(world, {3, -1, 7}, BlockState{Block::Stone},
+        const auto result = service.setBlock(world, {3, kMinY - 1, 7}, BlockState{Block::Stone},
                                              MutationFlags::All, MutationCause::Command, sink);
         assert(!result.changed);
         assert(sink.sectionDirty == 0 && sink.neighborChanged == 0);

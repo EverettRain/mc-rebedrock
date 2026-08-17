@@ -1103,4 +1103,19 @@ void TextureManager::destroy(bool allocatorAlive) noexcept {
     }
 }
 
+std::size_t TextureManager::residentImageBytes() const {
+    const AllocatedImage* const images[] = {
+        &textureImage,      &entityTextureImage, &guiTextureImage,  &fontTextureImage,
+        &rainTextureImage,  &panoramaTextureImage, &biomeGrassImage, &biomeFoliageImage};
+    std::size_t bytes = 0;
+    for (const auto* image : images) {
+        if (image->allocation != VK_NULL_HANDLE) {
+            VmaAllocationInfo info{};
+            vmaGetAllocationInfo(allocator_, image->allocation, &info);
+            bytes += info.size;
+        }
+    }
+    return bytes;
+}
+
 } // namespace mc::render

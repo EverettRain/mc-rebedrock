@@ -9,11 +9,18 @@
 #include "world/WorldLock.hpp"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
+#include <mutex>
 #include <optional>
+#include <set>
 #include <string>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace mc::world {
@@ -85,6 +92,25 @@ class GameRuntime final {
     [[nodiscard]] bool saveLocked();
     void save();
 
+    // M-3 C5: a chunk left the simulation radius (streamed out). Persist its
+    // edits and creatures to the chunk's region file and drop the creatures from
+    // the simulation, so a herd outside the radius lives on disk until its chunk
+    // streams back in — vanilla's chunk-owned entity lifecycle. The caller holds
+    // the world write section (the render thread does when applying an unload
+    // batch). The chunk is remembered so a later restoreLoadedChunk brings its
+    // herd back.
+    void persistUnloadedChunk(world::ChunkPosition position);
+    // A chunk streamed back in; restore the creatures the unload path persisted
+    // for it, if any. The caller holds the world write section.
+    void restoreLoadedChunk(world::ChunkPosition position);
+    // Block until every queued chunk-unload write has reached disk. Chunk-unload
+    // persistence is asynchronous (a background worker batches the region
+    // rewrites off the render thread); save, world switch and restore flush
+    // internally, so ordinary play never needs this. It exists for callers that
+    // must observe the write synchronously — a test reading a region file right
+    // after an unload, or a host forcing a hard checkpoint.
+    void flushChunkPersistence() { flushAllChunkWrites(); }
+
     // Accessors.
     [[nodiscard]] gameplay::GameSession& gameSession() { return gameSession_; }
     [[nodiscard]] const gameplay::GameSession& gameSession() const { return gameSession_; }
@@ -109,6 +135,25 @@ class GameRuntime final {
   private:
     void registerAuthoritativeCommands();
     void processChatQueue();
+    // Background chunk-unload persistence. persistUnloadedChunk does the
+    // in-memory extraction (edits + creatures) on the caller's thread and hands
+    // the disk write to this worker, so a chunk-unload storm no longer blocks
+    // the render thread inside the world write lock. The worker drains the whole
+    // queue at once and batches region rewrites (SaveRepository::saveChunks).
+    void persistenceWorkerLoop();
+    void startPersistenceWorker();
+    void stopPersistenceWorker();
+    // Block until a specific chunk's queued writes have hit disk (restore reads
+    // it back) / until the whole queue is drained (save and world switch must
+    // not race the worker on the same region files).
+    void flushChunkWrites(world::ChunkPosition position);
+    void flushAllChunkWrites();
+    // Keeps editsByChunk_ current with currentSave_->edits. edits is append-only
+    // (savedEditIndices already relies on this — it stores edit vector indices),
+    // so the index is grown incrementally from editsIndexed_; a shrink (world
+    // switch replaced the vector) rebuilds from scratch. All reads/writes of
+    // edits happen inside the world write section, so this needs no extra lock.
+    void refreshEditIndex();
     [[nodiscard]] gameplay::CommandResult applySpawnPoint(
         const std::optional<glm::vec3>& position);
 
@@ -122,11 +167,46 @@ class GameRuntime final {
     std::atomic_bool simulationActive_{false};
     std::optional<persistence::SaveGame> currentSave_;
     std::uint64_t worldEpoch_ = 0U;
+    // Chunks the unload path wrote to region files this session and has not yet
+    // restored. Their creatures are on disk and out of the simulation — the only
+    // region records a save must merge, because every other disk record is either
+    // a mirror the fresh gather replaces or a stale copy of a creature that moved
+    // or despawned. A later stream of one of them restores its herd
+    // (restoreLoadedChunk). Cleared on world load.
+    std::unordered_set<world::ChunkPosition, world::ChunkPositionHash> unloadedChunks_;
+    // Derived per-chunk index into currentSave_->edits, so persisting an unloaded
+    // chunk collects its edits in O(chunk's edits) instead of scanning the whole
+    // flat edit list per chunk. It is a cache (the flat SaveGame DTO stays the
+    // authoritative store, per §2.3), rebuilt on world load. editsIndexed_ is the
+    // prefix of currentSave_->edits already folded in.
+    std::unordered_map<world::ChunkPosition, std::vector<std::size_t>, world::ChunkPositionHash>
+        editsByChunk_;
+    std::size_t editsIndexed_ = 0;
     // The server-authoritative command tree. The renderer registers its
     // client-only commands on it through commandDispatcher().
     gameplay::command::CommandDispatcher commandDispatcher_;
+    // The chat line the render thread enqueues and the command result it reads
+    // back are exchanged across the sim/render boundary, so the queue and the
+    // single-slot result are guarded together.
+    std::mutex chatMutex_;
     std::vector<std::string> chatQueue_;
     std::optional<gameplay::CommandResult> chatResult_;
+
+    // Background chunk-unload persistence worker and its queue. The worker lives
+    // for the whole runtime; the destructor stops and joins it after the
+    // simulation thread. persistIdentifier_ names the save the queued records
+    // belong to — the worker never touches currentSave_, and a world switch
+    // flushes the queue first so it never mixes two saves. persistPending_ counts
+    // a chunk's outstanding writes so flushChunkWrites can wait on exactly one.
+    std::thread persistenceThread_;
+    std::mutex persistMutex_;
+    std::condition_variable persistWakeCv_;
+    std::condition_variable persistDoneCv_;
+    std::deque<persistence::ChunkPersistRecord> persistQueue_;
+    std::string persistIdentifier_;
+    std::unordered_map<world::ChunkPosition, int, world::ChunkPositionHash> persistPending_;
+    bool persistStopping_ = false;
+    bool persistBusy_ = false;
 };
 
 } // namespace mc::runtime

@@ -43,6 +43,11 @@ class Chunk final {
     [[nodiscard]] const ChunkSection& section(int sectionY) const;
     [[nodiscard]] ChunkSection& section(int sectionY);
 
+    // The resident bytes this chunk's data holds: the fixed struct plus every
+    // section's palette/light buffers. Used by the M-Chunk side-split memory
+    // budget (the server world and the client cache each measure their share).
+    [[nodiscard]] std::size_t residentBytes() const;
+
   private:
     std::array<ChunkSection, kSectionCount> sections_{};
     std::array<gen::Biome, kChunkWidth * kChunkDepth> columnBiomes_{};

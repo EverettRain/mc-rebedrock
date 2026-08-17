@@ -1,5 +1,7 @@
 #include "gameplay/EntitySystem.hpp"
 
+#include "gameplay/EntityRenderSnapshot.hpp"
+
 #include "world/Block.hpp"
 #include "world/World.hpp"
 #include "world/WorldConstants.hpp"
@@ -202,7 +204,7 @@ bool EntitySystem::boxIntersectsWorld(
     const int minZ = floorToInt(minimum.z + kCollisionEpsilon);
     const int maxZ = floorToInt(maximum.z - kCollisionEpsilon);
     for (int y = minY; y <= maxY; ++y) {
-        if (y < 0 || y >= world::kWorldHeight) {
+        if (!world::isWorldYInRange(y)) {
             continue;
         }
         for (int z = minZ; z <= maxZ; ++z) {
@@ -284,7 +286,7 @@ void EntitySystem::moveWithCollisions(
             }
         };
         for (int y = minY; y <= maxY; ++y) {
-            if (y < 0 || y >= world::kWorldHeight) {
+            if (!world::isWorldYInRange(y)) {
                 continue;
             }
             for (int z = minZ; z <= maxZ; ++z) {
@@ -582,6 +584,37 @@ void EntitySystem::clear() {
     sections_.clear();
     nextEntityId_ = 1U;
     gameTick_ = 0U;
+}
+
+std::vector<SimpleEntity> EntitySystem::removeInChunk(int chunkX, int chunkZ) {
+    // Swap-and-pop so removal is O(removed) rather than shifting the vector;
+    // rebuildSpatialIndex reconciles the id and section indexes afterwards.
+    // Positions are the feet the persistence layer saved, so the same floor
+    // division buckets them.
+    const auto floorDiv = [](int value, int divisor) {
+        return value >= 0 ? value / divisor : -(((-value) + divisor - 1) / divisor);
+    };
+    const auto inChunk = [&](const SimpleEntity& entity) {
+        return floorDiv(static_cast<int>(std::floor(entity.position.x)), world::kChunkWidth) ==
+                   chunkX &&
+               floorDiv(static_cast<int>(std::floor(entity.position.z)), world::kChunkDepth) ==
+                   chunkZ;
+    };
+    std::vector<SimpleEntity> removed;
+    for (std::size_t index = 0; index < entities_.size();) {
+        if (!inChunk(entities_[index])) {
+            ++index;
+            continue;
+        }
+        removed.push_back(std::move(entities_[index]));
+        entities_[index] = std::move(entities_.back());
+        entities_.pop_back();
+        // The element swapped in must be examined too.
+    }
+    if (!removed.empty()) {
+        rebuildSpatialIndex();
+    }
+    return removed;
 }
 
 void EntitySystem::rebuildSpatialIndex() {
@@ -938,6 +971,38 @@ EntityTickResult EntitySystem::tick(
                   << '\n';
     }
     return result;
+}
+
+std::optional<EntityRayHit> raycastSnapshotEntities(
+    const EntityRenderSnapshot& snapshot,
+    glm::vec3 origin,
+    glm::vec3 direction,
+    float reach) {
+    const float lengthSquared = glm::dot(direction, direction);
+    if (lengthSquared < 1e-9F) {
+        return std::nullopt;
+    }
+    const glm::vec3 unit = direction / std::sqrt(lengthSquared);
+    std::optional<EntityRayHit> nearest;
+    for (const auto& entity : snapshot.entities()) {
+        if (entity.type == nullptr || entity.deathTicks >= kDeathTicks) {
+            continue;
+        }
+        const auto dimensions = entity.type->dimensions();
+        const float half = dimensions.width * 0.5F;
+        const glm::vec3 minimum{entity.position.x - half, entity.position.y,
+                                entity.position.z - half};
+        const glm::vec3 maximum{entity.position.x + half, entity.position.y + dimensions.height,
+                                entity.position.z + half};
+        const auto hit = rayBoxDistance(origin, unit, minimum, maximum);
+        if (!hit.has_value() || *hit > reach) {
+            continue;
+        }
+        if (!nearest.has_value() || *hit < nearest->distance) {
+            nearest = EntityRayHit{entity.id, *hit};
+        }
+    }
+    return nearest;
 }
 
 } // namespace mc::gameplay

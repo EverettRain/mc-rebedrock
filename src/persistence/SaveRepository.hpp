@@ -13,7 +13,9 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mc::persistence {
@@ -124,6 +126,18 @@ struct SaveGame final {
     std::array<world::ClockState, world::kClockCount> clocks{};
 };
 
+// One chunk's persistable payload, used by the batched unload writer. The
+// background persistence worker packs a burst of unloaded chunks into a vector
+// of these and hands it to saveChunks(), which groups them by region file so a
+// region touched by many chunks in the same burst is read-modified-written once
+// instead of once per chunk.
+struct ChunkPersistRecord final {
+    std::int32_t chunkX = 0;
+    std::int32_t chunkZ = 0;
+    std::vector<world::PersistentBlockEdit> edits;
+    std::vector<PersistentEntity> entities;
+};
+
 class SaveRepository final {
   public:
     explicit SaveRepository(std::filesystem::path root);
@@ -132,7 +146,31 @@ class SaveRepository final {
     [[nodiscard]] std::vector<SaveSummary> list() const;
     [[nodiscard]] SaveGame create(std::string displayName, std::uint64_t seed) const;
     [[nodiscard]] SaveGame load(const std::string& identifier) const;
-    void save(SaveGame game) const;
+    // `unloadedChunks` (chunk coordinates) names the chunks the unload path
+    // persisted this session and has not yet restored: their creatures are on
+    // disk and out of the simulation, so the save-time region merge preserves
+    // their records. Every other disk record is a mirror the fresh gather
+    // replaces, or a stale copy of a creature that moved or despawned.
+    void save(SaveGame game,
+              const std::set<std::pair<std::int32_t, std::int32_t>>& unloadedChunks = {}) const;
+    // M-3 (C5): one chunk's own edits and creatures, written to (and read back
+    // from) the chunk's region file. The unload path calls saveChunk when a
+    // chunk leaves the simulation radius so its data persists promptly; the load
+    // path calls loadChunkEntities when the chunk streams back in. saveChunk
+    // merges with whatever the region already holds; empty data removes the
+    // chunk's record (and the file when the region empties).
+    void saveChunk(const std::string& identifier, int chunkX, int chunkZ,
+                   std::vector<world::PersistentBlockEdit> edits,
+                   std::vector<PersistentEntity> entities) const;
+    // Batched form of saveChunk: groups the records by region file and does one
+    // read-modify-write per region for the whole burst. Used off the render
+    // thread by the background persistence worker so a chunk-unload storm no
+    // longer pays one synchronous region rewrite per chunk on the critical path.
+    void saveChunks(const std::string& identifier,
+                    std::vector<ChunkPersistRecord> records) const;
+    [[nodiscard]] std::vector<PersistentEntity> loadChunkEntities(
+        const std::string& identifier, int chunkX, int chunkZ) const;
+
     // Rename keeps the folder/identifier stable and rewrites only the display
     // name stored in level.properties, so an edited world keeps its identity.
     void rename(const std::string& identifier, std::string displayName) const;

@@ -9,6 +9,8 @@
 
 #include "runtime/GameRuntime.hpp"
 
+#include <glm/geometric.hpp>
+
 #include "gameplay/GameplayMutationSink.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "world/ChunkStreamer.hpp"
@@ -120,6 +122,9 @@ int main() {
     std::size_t savedChestCount = 0U;
     std::size_t savedEntityCount = 0U;
     std::size_t serverResident = 0U;
+    // A distinctive, non-default position the player is moved to before saving,
+    // so a reloaded world's live and snapshot positions are both pinned here.
+    const glm::vec3 savedPlayerPos{25.5F, 65.0F, 20.5F};
 
     // Phase 1: create, load, mutate, tick, save.
     {
@@ -170,6 +175,9 @@ int main() {
             runtime.tick();
         }
 
+        // Move the player to a distinctive position first, so the save carries
+        // clearly non-default coordinates for the reload assertions below.
+        runtime.gameSession().teleportPlayer(gameplay::kPrimaryPlayerId, savedPlayerPos);
         runtime.save();
         assert(runtime.currentSave().serverTick > 0U);
         savedServerTick = runtime.currentSave().serverTick;
@@ -192,6 +200,53 @@ int main() {
         // leak without being sensitive to terrain variation.
         assert(serverResident < 1024U * 1024U);
 
+        // M-Chunk B-5 delta principle: the edits the simulation publishes carry
+        // the full state, so a consumer (the renderer's client chunk cache) fed
+        // the same drained events reconstructs the same world the server ticks.
+        // Without the state reaching the cache, the render mesh and the server
+        // would silently diverge. The cache starts from the generated chunks (as
+        // the renderer's does, fed by the streamer batches) then applies edits.
+        {
+            world::World cacheProbe;
+            for (int cx = -1; cx <= 1; ++cx) {
+                for (int cz = -1; cz <= 1; ++cz) {
+                    if (const auto* chunk = runtime.world().chunk({cx, cz}); chunk != nullptr) {
+                        cacheProbe.setChunk({cx, cz}, *chunk);
+                    }
+                }
+            }
+            for (const auto& edit : runtime.currentSave().edits) {
+                static_cast<void>(cacheProbe.setState(edit.x, edit.y, edit.z, edit.state));
+            }
+            assert(cacheProbe.state(24, 80, 24).block() == world::Block::Stone);
+            assert(cacheProbe.state(24, 81, 24).block() == world::Block::Chest);
+            assert(cacheProbe.state(24, 80, 24).block() ==
+                   runtime.world().state(24, 80, 24).block());
+        }
+
+        // M-2b side-split memory: the world's resident measures its chunk data
+        // (states + light + biomes), and the client cache fed from the same
+        // batches and edits mirrors the server's chunk budget exactly.
+        assert(runtime.world().residentBytes() > 64U * 1024U);
+        assert(runtime.world().residentBytes() < 8U * 1024U * 1024U);
+        {
+            world::World mirrorProbe;
+            for (int cx = -1; cx <= 1; ++cx) {
+                for (int cz = -1; cz <= 1; ++cz) {
+                    if (const auto* chunk = runtime.world().chunk({cx, cz}); chunk != nullptr) {
+                        mirrorProbe.setChunk({cx, cz}, *chunk);
+                    }
+                }
+            }
+            for (const auto& edit : runtime.currentSave().edits) {
+                static_cast<void>(mirrorProbe.setState(edit.x, edit.y, edit.z, edit.state));
+            }
+            // Within a small tolerance: the two worlds hold the same chunk data,
+            // and only map/light padding differs by a few dozen bytes.
+            assert(mirrorProbe.residentBytes() + 256U >= runtime.world().residentBytes());
+            assert(runtime.world().residentBytes() + 256U >= mirrorProbe.residentBytes());
+        }
+
         runtime.stopSimulation();
     }  // runtime + streamer destroyed here.
 
@@ -207,6 +262,17 @@ int main() {
         const auto batch = streamer.requestSync({1, 1}, std::chrono::seconds(10));
         assert(batch.has_value());
         applyBatch(runtime, *batch);
+
+        // The saved position survives the reload in BOTH the live controller and
+        // the published snapshot, before the first simulation tick runs. This is
+        // the cold-start regression: the snapshot used to sit at (0,0,0) until a
+        // tick published it, and the world-ready re-anchor teleported the player
+        // back to the origin, overwriting the restored position.
+        const glm::vec3 restoredPos = runtime.gameSession().player().position();
+        assert(glm::length(restoredPos - savedPlayerPos) < 0.01F);
+        const auto& restoredSnap = runtime.gameSession().playerTickSnapshot();
+        assert(glm::length(restoredSnap.physicsCurrent - savedPlayerPos) < 0.01F);
+        assert(glm::length(restoredSnap.physicsPrevious - savedPlayerPos) < 0.01F);
 
         // The placed stone block survived the save/reload.
         assert(runtime.world().state(24, 80, 24).block() == world::Block::Stone);
@@ -241,6 +307,49 @@ int main() {
         // The reloaded runtime still drives ticks headless.
         runtime.tick();
         assert(runtime.gameSession().serverTick() == savedServerTick + 1U);
+
+        runtime.stopSimulation();
+    }
+
+    // Switching worlds must not leak one world's snapshot into the next:
+    // resetWorldState drops the old snapshots and loadWorld republishes the
+    // fresh default, so a second world reads its own position, never the first
+    // world's leftover.
+    {
+        world::ChunkStreamer streamer{0U, 4, 4};
+        RecordingHost host;
+        runtime::GameRuntime runtime{host, streamer, saveRoot};
+        host.save = &runtime.currentSaveSlot();
+
+        // World A restores its saved position.
+        auto saveA = runtime.saveRepository().load(worldId);
+        runtime.loadWorld(std::move(saveA), 4);
+        assert(glm::length(runtime.gameSession().player().position() - savedPlayerPos) < 0.01F);
+        assert(glm::length(runtime.gameSession().playerTickSnapshot().physicsCurrent -
+                           savedPlayerPos) < 0.01F);
+
+        // Tear world A down the way the renderer's world switch does.
+        runtime.gameSession().resetWorldState();
+        // The reset dropped the old snapshots; neither still carries world A's
+        // state (this used to leave the position behind, making a hot reload
+        // look "correct" by residual state).
+        const auto& clearedSnap = runtime.gameSession().playerTickSnapshot();
+        assert(clearedSnap.physicsCurrent == glm::vec3{0.0F});
+        assert(runtime.gameSession().worldSnapshot().dayTimeTicks == 0.0);
+
+        // World B opens fresh: its published snapshots are its own default spawn
+        // and time, not world A's leftovers.
+        auto saveB = runtime.createWorld("second", 99U, gameplay::GameMode::Creative);
+        runtime.loadWorld(std::move(saveB), 4);
+        const auto& secondSnap = runtime.gameSession().playerTickSnapshot();
+        assert(secondSnap.physicsCurrent.y > 0.0F);  // not the cleared default
+        assert(glm::length(secondSnap.physicsCurrent - savedPlayerPos) > 1.0F);
+        assert(glm::length(runtime.gameSession().player().position() -
+                           secondSnap.physicsCurrent) < 0.01F);
+        // B's world snapshot is its own default spawn, not world A's saved
+        // position nor the cleared (0,0,0).
+        assert(glm::length(runtime.gameSession().worldSnapshot().worldSpawnPosition -
+                           glm::vec3{24.0F, 76.38F, 24.0F}) < 0.01F);
 
         runtime.stopSimulation();
     }
@@ -282,6 +391,119 @@ int main() {
         assert(runtime.gameSession().weatherSystem().state().rainTime == 200);
         assert(runtime.gameSession().weatherSystem().state().thunderTime == 200);
         runtime.stopSimulation();
+    }
+
+    // M-3 C5: a chunk leaving the simulation radius persists its edits and
+    // creatures to the chunk's region file and drops the creatures from the
+    // simulation; a later stream of the chunk back restores them. This is the
+    // chunk-owned entity lifecycle — a herd outside the radius lives on disk,
+    // not in a chunk that no longer exists — and a save must not lose it.
+    {
+        world::ChunkStreamer streamer{0U, 4, 4};
+        RecordingHost host;
+        runtime::GameRuntime runtime{host, streamer, saveRoot};
+        host.save = &runtime.currentSaveSlot();
+
+        auto save = runtime.createWorld("unload-write", 0xCU, gameplay::GameMode::Creative);
+        runtime.loadWorld(std::move(save), /*viewDistanceChunks=*/4);
+
+        // An edit inside the chunk being unloaded, and one in a neighbour chunk,
+        // so the unload path writes only its own chunk's record.
+        world::WorldMutationService mutations;
+        gameplay::GameplayMutationSink sink{runtime.world(), runtime.gameSession()};
+        static_cast<void>(mutations.setBlock(
+            runtime.world(), {24, 80, 24}, world::BlockState{world::Block::Stone},
+            world::MutationFlags::All, world::MutationCause::PlayerPlace, sink));
+        static_cast<void>(mutations.setBlock(
+            runtime.world(), {40, 80, 40}, world::BlockState{world::Block::Dirt},
+            world::MutationFlags::All, world::MutationCause::PlayerPlace, sink));
+        // A creature inside chunk (1,1), with fields a fresh spawn would not
+        // reproduce, and one in chunk (2,2) that must survive the unload.
+        const auto* pigType = gameplay::entities::entityTypeRegistry().byId("pig");
+        assert(pigType != nullptr);
+        runtime.gameSession().worldEntities().restore({24.0F, 83.0F, 24.0F}, *pigType, 0.5F,
+                                                      {0.1F, 0.0F, 0.0F}, 7.5F, 3, 42, 0xABABU);
+        const auto* zombieType = gameplay::entities::entityTypeRegistry().byId("zombie");
+        assert(zombieType != nullptr);
+        runtime.gameSession().worldEntities().restore({40.0F, 64.0F, 40.0F}, *zombieType, 0.0F,
+                                                      {0.0F, 0.0F, 0.0F}, 20.0F, 0, 0, 0U);
+        {
+            const auto drainWrite = runtime.lock().write();
+            static_cast<void>(runtime.gameSession().drainEvents());
+        }
+
+        // Chunk (1,1) leaves the radius: its edit and pig persist, the pig leaves
+        // the simulation, the neighbour chunk is untouched.
+        runtime.persistUnloadedChunk({1, 1});
+        // The unload's disk write is asynchronous now; force it to land before
+        // reading the region file back directly.
+        runtime.flushChunkPersistence();
+        bool pigPresent = false;
+        bool zombiePresent = false;
+        for (const auto& entity : runtime.gameSession().worldEntities().entities()) {
+            if (entity.type != nullptr && std::string{entity.type->id().path} == "pig") {
+                pigPresent = true;
+            }
+            if (entity.type != nullptr && std::string{entity.type->id().path} == "zombie") {
+                zombiePresent = true;
+            }
+        }
+        assert(!pigPresent);
+        assert(zombiePresent);
+
+        // The region file for chunk (1,1) holds its pig with every saved field.
+        const auto persisted =
+            runtime.saveRepository().loadChunkEntities(runtime.currentSave().summary.identifier, 1, 1);
+        assert(persisted.size() == 1U);
+        assert(persisted[0].species == "pig");
+        assert(persisted[0].x == 24.0F && persisted[0].y == 83.0F && persisted[0].z == 24.0F);
+        assert(persisted[0].yaw == 0.5F);
+        assert(persisted[0].health == 7.5F);
+        assert(persisted[0].angerTicks == 3);
+        assert(persisted[0].ageTicks == 42U);
+        assert(persisted[0].rngState == 0xABABU);
+        // The neighbour chunk has no record: its zombie stayed in the simulation.
+        assert(runtime.saveRepository()
+                   .loadChunkEntities(runtime.currentSave().summary.identifier, 2, 2)
+                   .empty());
+
+        // Chunk (1,1) streams back in: the pig returns.
+        runtime.restoreLoadedChunk({1, 1});
+        bool pigBack = false;
+        for (const auto& entity : runtime.gameSession().worldEntities().entities()) {
+            if (entity.type != nullptr && std::string{entity.type->id().path} == "pig" &&
+                glm::length(entity.position - glm::vec3{24.0F, 83.0F, 24.0F}) < 0.01F) {
+                pigBack = true;
+            }
+        }
+        assert(pigBack);
+
+        // Unload again and save: the re-persisted pig (already on disk) survives
+        // the save-time region merge, and the reload carries both creatures.
+        runtime.persistUnloadedChunk({1, 1});
+        runtime.save();
+        runtime.stopSimulation();
+        {
+            world::ChunkStreamer streamer2{0U, 4, 4};
+            RecordingHost host2;
+            runtime::GameRuntime runtime2{host2, streamer2, saveRoot};
+            host2.save = &runtime2.currentSaveSlot();
+            auto save2 = runtime.saveRepository().load(runtime.currentSave().summary.identifier);
+            runtime2.loadWorld(std::move(save2), 4);
+            bool pigReloaded = false;
+            bool zombieReloaded = false;
+            for (const auto& record : runtime2.currentSave().entities) {
+                if (record.species == "pig") {
+                    pigReloaded = true;
+                }
+                if (record.species == "zombie") {
+                    zombieReloaded = true;
+                }
+            }
+            assert(pigReloaded);
+            assert(zombieReloaded);
+            runtime2.stopSimulation();
+        }
     }
 
     std::filesystem::remove_all(saveRoot);

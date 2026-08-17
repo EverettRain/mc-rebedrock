@@ -22,6 +22,8 @@
 
 #include <variant>
 #include <vector>
+#include <atomic>
+#include <mutex>
 
 namespace mc::gameplay {
 
@@ -39,16 +41,16 @@ class SimulationHostBridge final {
     // The host the queue is replayed into. Null until one is bound, and events
     // published before then are still queued — a headless test that never
     // supplies a host simply drops them on drain.
-    void setHost(SimulationHost* host) { host_ = host; }
-    [[nodiscard]] SimulationHost* host() const { return host_; }
+    void setHost(SimulationHost* host) { host_.store(host, std::memory_order_release); }
+    [[nodiscard]] SimulationHost* host() const { return host_.load(std::memory_order_acquire); }
 
     // Replays everything queued since the last call, in publish order, into the
     // bound host. Returns how many events ran. Called once a frame by the
     // renderer; a headless caller that never drains simply accumulates, which
     // is why `clear` exists.
     std::size_t drain();
-    void clear() { queued_.clear(); }
-    [[nodiscard]] std::size_t pending() const { return queued_.size(); }
+    void clear();
+    [[nodiscard]] std::size_t pending() const;
 
 
   private:
@@ -57,14 +59,18 @@ class SimulationHostBridge final {
     // removed it, not run in a separate pass. Every payload is trivially
     // copyable, so this stays a flat buffer.
     using QueuedEvent =
-        std::variant<WorldEditEvent, SoundEvent, ParticleEvent, PlayerDiedEvent>;
+        std::variant<WorldEditEvent, SoundEvent, ParticleEvent, PlayerDiedEvent,
+                     ClientActionEvent>;
 
+    void enqueue(QueuedEvent event);
     void run(const WorldEditEvent& event) const;
     void run(const SoundEvent& event) const;
     void run(const ParticleEvent& event) const;
     void run(const PlayerDiedEvent& event) const;
+    void run(const ClientActionEvent& event) const;
 
-    SimulationHost* host_ = nullptr;
+    std::atomic<SimulationHost*> host_{nullptr};
+    mutable std::mutex queueMutex_;
     std::vector<QueuedEvent> queued_;
 };
 

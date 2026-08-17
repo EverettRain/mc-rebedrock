@@ -85,15 +85,18 @@ int main() {
                                       gameplay::entities::ZombieEntity::type(), 9U);
         session.tick(world, host);
 
-        const auto& snapshot = session.entitySnapshot().entities();
-        REQUIRE(snapshot.size() == 2U);
-        for (const auto& state : snapshot) {
+        // The snapshot is a by-value copy from the published bundle; bind it first
+        // so the entities() reference points into the copy, not a dead temporary.
+        const auto snapshot = session.entitySnapshot();
+        const auto& entities = snapshot.entities();
+        REQUIRE(entities.size() == 2U);
+        for (const auto& state : entities) {
             REQUIRE(state.type != nullptr);
             REQUIRE(state.id != 0U);
         }
         // Both interpolation endpoints are carried; without the previous one the
         // renderer cannot interpolate and creatures snap between ticks.
-        REQUIRE(snapshot[0].previousPosition.y > 0.0F);
+        REQUIRE(entities[0].previousPosition.y > 0.0F);
     }
 
     // --- The snapshot is a copy, not a view. Mutating the source afterwards
@@ -204,6 +207,42 @@ int main() {
         session.itemEntities().spawn({4.5F, 2.0F, 4.5F}, {world::Block::Stone, 1U});
         session.tick(world, host);
         REQUIRE(session.entitySnapshot().items().size() == 1U);
+    }
+
+    // --- raycastSnapshotEntities tests the published snapshot, so the attack
+    // ray needs no reference into the live entity vector. ---
+    {
+        gameplay::entities::registerBuiltinEntities();
+        gameplay::EntityRenderSnapshot snapshot;
+        std::vector<gameplay::SimpleEntity> live;
+        auto& pig = live.emplace_back();
+        pig.type = &gameplay::entities::PigEntity::type();
+        pig.id = 7U;
+        pig.position = {10.0F, 4.0F, 10.0F}; // pig AABB spans y [4, 5.4], x/z ±0.45
+        auto& zombie = live.emplace_back();
+        zombie.type = &gameplay::entities::ZombieEntity::type();
+        zombie.id = 9U;
+        zombie.position = {10.0F, 4.0F, 20.0F}; // beyond any reach used here
+        snapshot.capture(live, {}, {});
+
+        // A ray straight down the +Z axis at the pig's x/z reaches the pig.
+        const auto hit = gameplay::raycastSnapshotEntities(
+            snapshot, {10.0F, 4.0F, 8.0F}, {0.0F, 0.0F, 1.0F}, 4.0F);
+        REQUIRE(hit.has_value());
+        REQUIRE(hit->entityId == 7U);
+
+        // Beyond reach the same ray finds nothing.
+        const auto missed = gameplay::raycastSnapshotEntities(
+            snapshot, {10.0F, 4.0F, 8.0F}, {0.0F, 0.0F, 1.0F}, 1.0F);
+        REQUIRE(!missed.has_value());
+
+        // A creature whose death animation has finished is not pickable, exactly
+        // like the live EntitySystem::raycast.
+        live.at(0).damage.deathTicks = gameplay::kDeathTicks;
+        snapshot.capture(live, {}, {});
+        const auto dead = gameplay::raycastSnapshotEntities(
+            snapshot, {10.0F, 4.0F, 8.0F}, {0.0F, 0.0F, 1.0F}, 4.0F);
+        REQUIRE(!dead.has_value());
     }
     return 0;
 }

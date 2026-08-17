@@ -37,6 +37,37 @@ simple versioned history while it is in beta.
   actual height range and validates its support, two-block body space, fluid,
   full entity bounds and three-dimensional player exclusion distance, giving
   caves and future aquatic/lava species a correct placement path.
+- The world is 384 blocks tall (y −64..319, 24 sections), matching the modern
+  height standard: the world access, lighting, meshing, streaming, save and
+  gameplay layers all carry a `kMinY` offset, while the terrain generator keeps
+  its 0..255 noise axis and fills the deep stone below.
+- Chunk ownership split the runtime's authoritative server world from the
+  renderer's client chunk cache: the renderer meshes, lights and samples its own
+  world copy, and every streamed batch and simulation edit lands on both, so
+  each side can eventually drop what the other needs. The two sides measure
+  their chunk memory separately (a resident-bytes budget, ~54 MB each in the
+  smoke world).
+- Saves are region-based. Chunk edits and creatures no longer live in one
+  `world.dat`: each 32×32 chunk region gets its own `region/r.<rx>.<rz>.cache`
+  file, and a chunk owns its edits and its herd together. A chunk leaving the
+  simulation radius submits its edits and creatures to a background persistence
+  queue; writes for the same region are coalesced, and world switches or exit
+  wait for them to reach disk. Creatures leave simulation with the chunk and
+  return when it streams back in, so nothing a player placed or a herd beyond
+  the loaded area is lost to a crash or a save. Old worlds migrate to the
+  region layout on their next save.
+- `GameCommand`s, gameplay events, and player/world snapshots now share a
+  length-framed binary codec. Item stacks, block states and entity types travel
+  by registry identifier; unknown messages can be skipped by length, while
+  truncated or unknown content is rejected safely. Commands, events and the
+  server-to-client mirror therefore have a protocol boundary ready for a
+  loopback or TCP transport.
+- Optional slow-frame and resident-memory diagnostics were added:
+  `MC_REBEDROCK_FRAME_TRACE=1` reports overruns by persistence, locking, GPU
+  fence, event-drain and other stages, while `MC_REBEDROCK_MEMORY_REPORT=1`
+  accounts for server/client chunks, worker chunks, textures, GPU buffers and
+  the CPU mesh pool to expose timing and memory regressions in the dual-world
+  architecture.
 
 ### Changed
 
@@ -59,11 +90,50 @@ simple versioned history while it is in beta.
   named clocks, weather gradients, relevant game rules and chest-lid state each
   tick. Sky, shadow, precipitation and chest rendering no longer read those
   live gameplay systems directly.
+- Player, world and entity render snapshots now expose resident-memory
+  accounting guarded by budget regression tests. Dynamic buffers retain and
+  reuse their capacity across ticks, preventing the dual-world architecture
+  from reintroducing unbounded client memory through per-tick allocation.
+- Container and creative interactions are now fully command-driven, and
+  container screens render from a per-tick snapshot: inventory, chest, crafting,
+  furnace and creative-catalogue slot clicks, shift quick-move, drag
+  distribution (QUICK_CRAFT) and double-click gather (PICKUP_ALL) all run
+  through the authoritative `GameCommand` queue on the server tick, so the
+  renderer no longer mutates live inventory/container state directly. Drag
+  targets travel as (slot kind, index) values and the drag preview reads the
+  published container display snapshot. The same operation consumes the same
+  ticks at any frame rate, laying the path for the client/server process split.
 - Natural spawning now spreads simulation-radius-scaled column samples across
   categories every tick and chooses species with integer weights, replacing a
   burst of three surface scans once per second. Block light continues to
   prevent hostile spawning after dark instead of being incorrectly dimmed with
   the sky.
+- The render thread no longer holds the shared world lock across the frame.
+  Player, world and entity state is atomically published as one immutable
+  snapshot bundle; readers pin that bundle while copying and the writer only
+  reuses storage with no remaining readers, preventing a slow frame from being
+  overwritten as it could be with a fixed double buffer. The renderer reads its
+  own client chunk cache and published snapshots exclusively, and the
+  GPU fence wait, submit and present hold no lock — so the simulation never
+  waits on the GPU. The world lock now covers one tick plus the short
+  installation/edit write sections. This removes the intermittent frame stutter
+  that appeared when moving: the sim thread is no longer blocked by a frame-wide
+  read section spanning vertical sync.
+- Chunk generation, initial lighting and mesh building now reuse one bounded
+  persistent worker pool in sequence instead of creating threads for every
+  stage of every 24-chunk batch. Streaming batches carry shared read-only chunk
+  payloads: the worker world, simulation world and client cache share static
+  terrain storage, and only a side that edits a chunk performs a whole-chunk
+  copy-on-write. This reduces CPU spikes and memory growth while moving. Two
+  extra chunk rings beyond the load radius provide unload hysteresis, avoiding
+  repeated unloads, reloads and region writes near a boundary.
+- Transient Vulkan attachments such as MSAA color and depth now prefer lazy
+  allocation. On Apple GPUs with memoryless attachments, targets used only in
+  tile memory no longer reserve roughly 281 MB of resident GPU memory.
+- Simulation-produced audio, particles, container opens and eating presentation
+  now cross a thread-safe event queue. Container hit testing and drag previews
+  build geometry-only slots with no storage pointers, so the render thread no
+  longer reaches into authoritative inventories or block entities.
 - The README was rewritten for the current beta implementation, including the
   Java 26.1 resource-pack requirement, dual-platform build/test workflow,
   runtime layout, project structure and known boundaries. Obsolete 1.16.1
@@ -91,6 +161,13 @@ simple versioned history while it is in beta.
 - Sky light filtered through leaves no longer makes grass below revert to dirt
   at night. Grass survival now depends only on physical shielding above it,
   while spreading to nearby dirt remains gated by the current brightness.
+- Exiting the game entirely and re-entering a world no longer teleports the
+  player to the world origin (0,0,0). The load path used to overwrite the
+  correctly restored save position with a not-yet-initialized render snapshot
+  (hot reloads looked fine only because of leftover state). After a world load,
+  before the first simulation tick, the live position and the render snapshot
+  now both match the saved coordinates, and switching worlds no longer inherits
+  the previous world's position.
 
 ## ReBedrock beta5
 

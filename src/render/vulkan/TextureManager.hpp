@@ -111,6 +111,11 @@ class TextureManager final {
     VkSampler textureSampler = VK_NULL_HANDLE;
     std::array<float, 4> fluidAnimationFrameTimes{1.0F, 1.0F, 1.0F, 1.0F};
 
+    // N-Mem (§7.4): total VMA-resident bytes of every texture/atlas image this
+    // manager owns (block atlas, entity, GUI, font, panorama, rain, two biome
+    // LUTs). Queried per allocation via vmaGetAllocationInfo.
+    [[nodiscard]] std::size_t residentImageBytes() const;
+
   private:
     const VulkanResources* resources_ = nullptr;
     VkDevice device_ = VK_NULL_HANDLE;

@@ -44,6 +44,17 @@ AllocatedImage VulkanResources::createImage(std::uint32_t width, std::uint32_t h
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     VmaAllocationCreateInfo allocationInfo{};
     allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    // A transient attachment (the MSAA colour/depth targets, usage
+    // TRANSIENT_ATTACHMENT + storeOp DONT_CARE) is written and resolved inside a
+    // single render pass and never read back from memory. On a tile-based GPU
+    // (Apple) a lazily-allocated / memoryless allocation keeps it on-tile and
+    // costs no real device memory. Prefer (not require) that memory property so a
+    // driver without lazily-allocated support falls back to a normal allocation
+    // with no correctness change. Measured impact: ~281MB of these targets that
+    // were being allocated in full (see docs/frame-trace-diagnostics.md, gpumem).
+    if ((usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) != 0U) {
+        allocationInfo.preferredFlags = VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
+    }
     AllocatedImage result;
     checkVk(vmaCreateImage(allocator_, &imageInfo, &allocationInfo, &result.image,
                            &result.allocation, nullptr),

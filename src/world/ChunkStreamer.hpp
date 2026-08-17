@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/ParallelWorkerPool.hpp"
 #include "render/MeshData.hpp"
 #include "world/PersistentBlockEdit.hpp"
 #include "world/World.hpp"
@@ -12,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -56,7 +58,9 @@ struct SectionMeshUpdate final {
 
 struct ChunkDataUpdate final {
     ChunkPosition position;
-    Chunk chunk;
+    // Read-only shared payload: all receiving worlds initially point at the
+    // worker's generated chunk, then World performs whole-chunk copy-on-write.
+    std::shared_ptr<const Chunk> chunk;
     bool remove = false;
 };
 
@@ -87,6 +91,19 @@ struct ChunkStreamBatch final {
 [[nodiscard]] std::vector<ChunkPosition> chunkPositionsInRadius(
     ChunkPosition center,
     int radius);
+
+// Chunks stay loaded this many rings past the load radius before the unload
+// pass takes them. Without the gap, a player lingering on a chunk boundary
+// thrashes the same ring load→unload every time the centre flips by one chunk,
+// and each unload is a region-file write. The load radius sizes the resident
+// window; the unload radius is kept this much larger so the boundary has
+// hysteresis. Steady-state callers pass (r, r + kUnloadHysteresisChunks).
+inline constexpr int kUnloadHysteresisChunks = 2;
+// M-Chunk B-5: this is the server-side chunk source. It generates, lights and
+// persists chunks (through the GameRuntime that owns it) and publishes batches;
+// the renderer's ClientChunkCache (WorldRenderer::clientCache) is the client
+// side that receives those batches and meshes from them. The two worlds stay in
+// sync because the same batches and simulation edits feed both.
 class ChunkStreamer final {
   public:
     ChunkStreamer(std::uint64_t seed, int loadRadius, int unloadRadius);
@@ -140,6 +157,22 @@ class ChunkStreamer final {
     [[nodiscard]] int unloadRadius() const {
         return unloadRadius_.load(std::memory_order_relaxed);
     }
+    // N-Mem: the worker's own World is the third resident chunk copy (besides the
+    // server world and the client cache). It lives on the worker thread, so the
+    // worker publishes its resident bytes to this atomic after each work cycle
+    // and outside readers sample it lock-free. Approximate by design (updated
+    // only when the worker did work), which is all the memory report needs.
+    [[nodiscard]] std::size_t workerWorldResidentBytes() const {
+        return workerResidentBytes_.load(std::memory_order_relaxed);
+    }
+    // Bytes of chunks the worker world solely owns (not shared with server/client
+    // via COW). See World::uniqueResidentBytes.
+    [[nodiscard]] std::size_t workerWorldUniqueResidentBytes() const {
+        return workerUniqueResidentBytes_.load(std::memory_order_relaxed);
+    }
+    // Reserved bytes of the CPU RenderMeshData reuse pool (kept at peak capacity
+    // for reuse — a real resident cost, not a leak). See §7.4#3.
+    [[nodiscard]] std::size_t cpuMeshPoolBytes() const;
     [[nodiscard]] int protectedRadius() const {
         return protectedRadius_.load(std::memory_order_relaxed);
     }
@@ -256,9 +289,15 @@ class ChunkStreamer final {
     };
     // Mutable so the const world-update paths can still circulate pooled meshes.
     mutable MeshDataPool meshPool_;
+    // Generation, initial lighting and meshing are sequential pipeline stages.
+    // Reuse one bounded pool across all three instead of creating 1-7 threads
+    // for every stage of every 24-chunk streaming batch.
+    mutable core::ParallelWorkerPool parallelWorkers_;
     std::atomic<bool> stopping_{false};
     std::atomic<bool> fullRemeshRequested_{false};
     std::atomic<SmoothLightingQuality> smoothLightingQuality_{SmoothLightingQuality::Standard};
+    std::atomic<std::size_t> workerResidentBytes_{0};
+    std::atomic<std::size_t> workerUniqueResidentBytes_{0};
     std::uint64_t requestedEpoch_ = 0U;
     mutable std::uint64_t nextMeshRevision_ = 0U;
     std::thread worker_;

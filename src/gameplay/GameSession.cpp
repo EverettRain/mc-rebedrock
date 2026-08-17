@@ -21,6 +21,10 @@ constexpr float kInfiniteDamage = std::numeric_limits<float>::infinity();
 } // namespace
 
 GameSession::GameSession() {
+    auto initialSnapshots = std::make_shared<RenderSnapshots>();
+    snapshotPool_.push_back(initialSnapshots);
+    storeSnapshotBundle(
+        std::shared_ptr<const RenderSnapshots>{std::move(initialSnapshots)});
     // The single local player lives in the slot map; the primary id is always
     // present. (The initializer-list form would call primaryPlayer() before the
     // map was constructed, so the body emplaces the player instead.)
@@ -30,6 +34,7 @@ GameSession::GameSession() {
     // itself with.
     clocks_.setTotalTicks(world::ClockId::Overworld,
                           static_cast<std::uint64_t>(world::DayNightCycle::kNewWorldTick));
+    attachGameRuleHandlers();
 }
 
 // Every public entry that takes a SimulationHost binds it before doing
@@ -158,11 +163,11 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
         }
     }
     fluidUpdatePhaseConsumed = true;
-    // Every placed furnace smelts on its own now, screen open or not, so a lit
-    // furnace left behind keeps cooking. onFurnaceStateChanged swaps each one's
-    // block to its lit state so the front face and block light follow the burn.
+    // Every placed furnace smelts on its own now, screen open or not. Mirror its
+    // authoritative LIT state while this tick owns the server-world write
+    // section; the mutation event carries the client mesh/light update later.
     furnaceSystem_.tick();
-    host.onFurnaceStateChanged();
+    syncFurnaceLitStates(world);
     chestSystem_.tick();
     if (itemEntities_.tick(world, primaryPlayer().controller.position(), primaryPlayer().inventory) > 0U) {
         events_.publish(SoundEvent{SoundEventKind::ItemPickup, primaryPlayer().controller.position()});
@@ -198,10 +203,28 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // has settled (the old renderer applied them per frame between ticks, which
     // is the same ordering — the edits land on the next tick's processing).
     playerInteraction_.tick(*this, world, host, commandQueue_.drain());
-    primaryPlayer().physicsCurrent = primaryPlayer().controller.position();
-    // Publish the per-tick player snapshot under the caller's world write lock,
-    // so the render thread can interpolate a coherent frame from it instead of
+    // Publish the per-tick snapshots under the caller's world write lock, so
+    // the render thread interpolates a coherent frame from them instead of
     // reading live gameplay objects the tick may be mid-mutation on.
+    publishSnapshots();
+}
+
+void GameSession::publishSnapshots() {
+    // The authoritative current position, then everything the renderer reads
+    // this frame. Called at the end of tick() and once right after a world
+    // load; a cold start restores the player's saved coordinates into the live
+    // controller and the physics endpoints before this runs, so the published
+    // snapshot carries the real position — never the default (0,0,0).
+    primaryPlayer().physicsCurrent = primaryPlayer().controller.position();
+    // The per-tick player snapshot, published under the caller's world write
+    // lock so the render thread interpolates a coherent frame from it instead
+    // of reading live gameplay objects the tick may be mid-mutation on. It is
+    // built into a pooled bundle that has no readers and atomically published
+    // at the end, so the render thread pins a complete frame without a lock.
+    auto snapshots = acquireSnapshotWriteBundle();
+    auto& playerTickSnapshot_ = snapshots->player;
+    auto& worldSnapshot_ = snapshots->world;
+    auto& entitySnapshot_ = snapshots->entities;
     playerTickSnapshot_.serverTick = serverTick_;
     playerTickSnapshot_.swing = primaryPlayer().actions.swing;
     playerTickSnapshot_.use = primaryPlayer().actions.use;
@@ -221,6 +244,10 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     playerTickSnapshot_.fieldOfViewMultiplier =
         primaryPlayer().controller.fieldOfViewMultiplier();
     playerTickSnapshot_.heldStack = primaryPlayer().inventory.selectedStack();
+    // The dig the interaction pass is mid-way through, so the crack overlay
+    // reads the published snapshot instead of the live PlayerInteraction.
+    const auto dig = playerInteraction_.digSnapshot();
+    playerTickSnapshot_.digging = {dig.active, dig.target, dig.startedTick};
     playerTickSnapshot_.health = primaryPlayer().vitals.health();
     playerTickSnapshot_.foodLevel = primaryPlayer().vitals.foodLevel();
     playerTickSnapshot_.airTicks = primaryPlayer().vitals.airTicks();
@@ -243,6 +270,13 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     }
     worldSnapshot_.doDaylightCycle = gameRules_.get<bool>(GameRuleId::DoDaylightCycle);
     worldSnapshot_.doWeatherCycle = gameRules_.get<bool>(GameRuleId::DoWeatherCycle);
+    worldSnapshot_.worldSpawnPosition = worldSpawnPosition_;
+    worldSnapshot_.playerSpawnPosition = primaryPlayer().spawnPosition;
+    worldSnapshot_.playerSpawnYaw = primaryPlayer().spawnYaw;
+    worldSnapshot_.hasPlayerSpawn = primaryPlayer().hasSpawn;
+    worldSnapshot_.openContainerScreen = openContainerScreen_;
+    worldSnapshot_.openChest = openChest_;
+    worldSnapshot_.openFurnace = openFurnace_;
     // The chest lid render state, so the world renderer draws lids from the
     // snapshot instead of the live chest system.
     worldSnapshot_.chests.clear();
@@ -251,10 +285,81 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
         worldSnapshot_.chests.push_back(
             {chest.position, chest.previousLidAngle, chest.lidAngle});
     }
+    // The container screen's display state: the player's inventory and cursor
+    // plus the open container's contents, all values so no reference into a
+    // gameplay vector survives the tick boundary.
+    const auto& primary = primaryPlayer();
+    for (std::size_t i = 0; i < Inventory::kSlotCount; ++i) {
+        worldSnapshot_.inventorySlots[i] = primary.inventory.slot(i);
+    }
+    worldSnapshot_.cursorStack = primary.inventory.cursorStack();
+    for (std::size_t i = 0; i < 4; ++i) {
+        worldSnapshot_.playerCraftingGrid[i] = primary.crafting.playerSlot(i);
+    }
+    worldSnapshot_.playerCraftingOutput = primary.crafting.playerOutput();
+    for (std::size_t i = 0; i < 9; ++i) {
+        worldSnapshot_.tableCraftingGrid[i] = primary.crafting.tableSlot(i);
+    }
+    worldSnapshot_.tableCraftingOutput = primary.crafting.tableOutput();
+    if (openChest_.has_value()) {
+        if (const auto* chest = chestSystem_.find(*openChest_); chest != nullptr) {
+            for (std::size_t i = 0; i < ChestBlockEntity::kSlotCount; ++i) {
+                worldSnapshot_.chestItems[i] = chest->items[i];
+            }
+        }
+    }
+    if (openFurnace_.has_value()) {
+        const gameplay::FurnacePosition furnace{openFurnace_->x, openFurnace_->y,
+                                                openFurnace_->z};
+        if (const auto* entity = furnaceSystem_.find(furnace); entity != nullptr) {
+            worldSnapshot_.furnaceInput = entity->input;
+            worldSnapshot_.furnaceFuel = entity->fuel;
+            worldSnapshot_.furnaceOutput = entity->output;
+        }
+        worldSnapshot_.furnaceFuelProgress = furnaceSystem_.fuelProgress(furnace);
+        worldSnapshot_.furnaceCookProgress = furnaceSystem_.cookProgress(furnace);
+    }
     // Last, once every system has settled: what the renderer will draw from
     // until the next tick replaces it.
     entitySnapshot_.capture(worldEntities_.entities(), itemEntities_.entities(),
                             worldSimulation_.fallingBlocks());
+    // Publish all three views together. Readers that already loaded the previous
+    // shared bundle keep it alive until their copies finish.
+    publishSnapshotBundle(snapshots);
+}
+
+std::shared_ptr<GameSession::RenderSnapshots> GameSession::acquireSnapshotWriteBundle() {
+    const auto current = loadSnapshotBundle();
+    for (const auto& candidate : snapshotPool_) {
+        if (candidate.get() != current.get() && candidate.use_count() == 1) {
+            return candidate;
+        }
+    }
+    auto candidate = std::make_shared<RenderSnapshots>();
+    snapshotPool_.push_back(candidate);
+    return candidate;
+}
+
+void GameSession::publishSnapshotBundle(const std::shared_ptr<RenderSnapshots>& snapshots) {
+    storeSnapshotBundle(std::shared_ptr<const RenderSnapshots>{snapshots});
+}
+
+std::shared_ptr<const GameSession::RenderSnapshots> GameSession::loadSnapshotBundle() const {
+#if defined(__cpp_lib_atomic_shared_ptr) && !defined(__APPLE__)
+    return publishedSnapshots_.load(std::memory_order_acquire);
+#else
+    return std::atomic_load_explicit(&publishedSnapshots_, std::memory_order_acquire);
+#endif
+}
+
+void GameSession::storeSnapshotBundle(
+    std::shared_ptr<const RenderSnapshots> snapshots) {
+#if defined(__cpp_lib_atomic_shared_ptr) && !defined(__APPLE__)
+    publishedSnapshots_.store(std::move(snapshots), std::memory_order_release);
+#else
+    std::atomic_store_explicit(
+        &publishedSnapshots_, std::move(snapshots), std::memory_order_release);
+#endif
 }
 
 void GameSession::commitInput() {
@@ -319,6 +424,11 @@ bool GameSession::die(PlayerId playerId, DamageType source, SimulationHost& host
     if (!beginDeath(player.vitals.damage())) {
         return false;
     }
+    // Closing stows the cursor/crafting grid first, preserving the old death
+    // ordering, then inventory scattering completes on the simulation thread
+    // before the presentation-only death event is queued.
+    closeContainerMenu();
+    onPlayerDeath(playerId);
     events_.publish(PlayerDiedEvent{});
     return true;
 }
@@ -333,6 +443,16 @@ void GameSession::respawn(PlayerId playerId) {
     player.controller.resetForRespawn(spawn);
     player.physicsPrevious = spawn;
     player.physicsCurrent = spawn;
+    // Mirror into a fresh published snapshot. resetForRespawn clears sneaking,
+    // and the camera derives its eye height from the snapshot's sneaking, so the
+    // fresh standing body must publish a standing eye height too.
+    const auto current = loadSnapshotBundle();
+    auto updated = acquireSnapshotWriteBundle();
+    *updated = *current;
+    updated->player.physicsPrevious = spawn;
+    updated->player.physicsCurrent = spawn;
+    updated->player.sneaking = false;
+    publishSnapshotBundle(updated);
 }
 
 void GameSession::beginEating(PlayerId playerId, const Item* kind, SimulationHost& host) {
@@ -344,7 +464,7 @@ void GameSession::beginEating(PlayerId playerId, const Item* kind, SimulationHos
     // The meal is just UseAnimation::Eat on the shared item-use timeline; the
     // renderer reads the countdown from playerActions(), not a private eat state.
     player.actions.startUsing(InteractionHand::Main, UseAnimation::Eat, kEatTicks);
-    host.onEatingStarted();
+    events_.publish(ClientActionEvent{ClientActionEventKind::EatingStarted});
 }
 
 void GameSession::cancelEating(PlayerId playerId, SimulationHost& host) {
@@ -357,8 +477,150 @@ void GameSession::cancelEating(PlayerId playerId, SimulationHost& host) {
     player.eatingKind = nullptr;
     player.eatTicks = 0;
     player.actions.stopUsing();
-    host.onEatingCancelled();
+    events_.publish(ClientActionEvent{ClientActionEventKind::EatingCancelled});
 }
+
+void GameSession::teleportPlayer(PlayerId playerId, const glm::vec3& feet) {
+    auto& player = players_.at(playerId);
+    player.controller.setPosition(feet);
+    player.physicsPrevious = feet;
+    player.physicsCurrent = feet;
+    // The renderer's camera reads the published snapshot, not the live
+    // controller. Mirror the snapped endpoints into a fresh publish so a
+    // teleport that happens between ticks is visible the same frame instead of
+    // one tick later.
+    const auto current = loadSnapshotBundle();
+    auto updated = acquireSnapshotWriteBundle();
+    *updated = *current;
+    updated->player.physicsPrevious = feet;
+    updated->player.physicsCurrent = feet;
+    publishSnapshotBundle(updated);
+}
+
+void GameSession::setWorldSpawn(const glm::vec3& feet) {
+    worldSpawnPosition_ = feet;
+}
+
+void GameSession::openContainer(ContainerScreen screen, std::optional<ChestPosition> chest,
+                                std::optional<glm::ivec3> furnace) {
+    openContainerScreen_ = screen;
+    openChest_ = chest;
+    openFurnace_ = furnace;
+}
+
+void GameSession::closeContainer() {
+    openContainerScreen_ = ContainerScreen::PlayerInventory;
+    openChest_.reset();
+    openFurnace_.reset();
+}
+
+bool GameSession::openChestContainer(ChestPosition position) {
+    if (!chestSystem_.open(position)) {
+        return false;
+    }
+    openContainer(ContainerScreen::Chest, position);
+    return true;
+}
+
+void GameSession::closeContainerMenu() {
+    auto& inventory = primaryPlayer().inventory;
+    inventory.stowCursorStack();
+    primaryPlayer().crafting.stowAll(inventory);
+    if (openChest_.has_value()) {
+        chestSystem_.close(*openChest_);
+    }
+    closeContainer();
+}
+
+void GameSession::resetWorldState() {
+    // The crafting grid is per-player (each player carries one); a world switch
+    // empties every player's grid, not just the primary's.
+    for (auto& [playerId, player] : players_) {
+        player.crafting = {};
+    }
+    worldSimulation_ = {};
+    itemEntities_ = {};
+    worldEntities_.clear();
+    closeContainer();
+    chestSystem_ = {};
+    furnaceSystem_ = {};
+    // Drop the previous world's published state. Readers that pinned it may
+    // finish normally; the fresh pool starts with one empty immutable bundle.
+    snapshotPool_.clear();
+    auto initialSnapshots = std::make_shared<RenderSnapshots>();
+    snapshotPool_.push_back(initialSnapshots);
+    storeSnapshotBundle(
+        std::shared_ptr<const RenderSnapshots>{std::move(initialSnapshots)});
+}
+
+void GameSession::syncFurnaceLitStates(world::World& world) {
+    // Every furnace block entity carries its own burn, and each one smelts
+    // whether or not its screen is open, so the lit state is synced per furnace
+    // rather than only for the one the player is looking at. The early-out on an
+    // unchanged LIT keeps this to a world write only on the ticks a furnace
+    // actually ignites or dies.
+    for (const auto& furnace : furnaceSystem_.entities()) {
+        const auto& position = furnace.position;
+        const auto current = world.state(position.x, position.y, position.z);
+        if (current.block() != world::Block::Furnace) {
+            continue; // the furnace was mined or replaced out from under its entity
+        }
+        if (current.lit() == furnace.burning()) {
+            continue;
+        }
+        // Lighting a furnace is a state change on the same block, so the cell
+        // keeps its facing and its block entity (and thus its smelt). Through
+        // the service like every other edit: because the block is unchanged,
+        // onBlockEntityReplaced does not fire and the furnace keeps its entity.
+        const auto desired = current.withLit(furnace.burning());
+        GameplayMutationSink sink{world, *this};
+        static_cast<void>(worldMutations_.setBlock(
+            world, {position.x, position.y, position.z}, desired,
+            world::MutationFlags::All, world::MutationCause::ScheduledTick, sink));
+    }
+}
+
+void GameSession::createChestBlockEntity(ChestPosition position) {
+    static_cast<void>(chestSystem_.place(position));
+}
+
+void GameSession::spawnItemEntity(const glm::vec3& position, ItemStack stack,
+                                  const glm::vec3& velocity) {
+    static_cast<void>(itemEntities_.spawn(position, stack, velocity));
+}
+
+void GameSession::dropCursorStack(const glm::vec3& lookDirection) {
+    spawnItemDrop(lookDirection, primaryPlayer().inventory.takeCursorStack());
+}
+
+void GameSession::dropSelectedStack(bool wholeStack, const glm::vec3& lookDirection) {
+    spawnItemDrop(lookDirection, primaryPlayer().inventory.takeSelected(wholeStack));
+}
+
+void GameSession::spawnItemDrop(const glm::vec3& lookDirection, ItemStack stack) {
+    if (stack.empty()) {
+        return;
+    }
+    const float lengthSquared = glm::dot(lookDirection, lookDirection);
+    const glm::vec3 direction =
+        lengthSquared < 1e-9F ? glm::vec3{0.0F, 0.0F, -1.0F} : glm::normalize(lookDirection);
+    const glm::vec3 eye = primaryPlayer().controller.eyePosition();
+    spawnItemEntity(eye + direction * 0.45F, stack,
+                    direction * 0.28F + glm::vec3{0.0F, 0.12F, 0.0F});
+}
+
+void GameSession::attachGameRuleHandlers() {
+    // randomTickSpeed is the one rule with a runtime mirror (the simulation
+    // reads it every tick); doDaylightCycle and keepInventory are read straight
+    // from gameRules_ at their use sites instead.
+    gameRules_.setChangeHandler(
+        [this](GameRuleId id, const GameRuleValueData& value) {
+            if (id == GameRuleId::RandomTickSpeed) {
+                worldSimulation_.setRandomTickSpeed(std::get<std::int32_t>(value));
+            }
+        });
+}
+
 
 bool GameSession::damageHeldTool(PlayerId playerId, ToolUse use, float blockHardness) {
     auto& player = players_.at(playerId);

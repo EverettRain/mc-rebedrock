@@ -72,6 +72,7 @@ struct SwingState final {
     std::uint32_t elapsedTicks = 0U;
     float previousProgress = 0.0F;
     float progress = 0.0F;
+    [[nodiscard]] friend bool operator==(const SwingState&, const SwingState&) = default;
 };
 
 // The ongoing item use (eating, a charged bow...). Counts down in whole ticks.
@@ -83,6 +84,7 @@ struct ItemUseState final {
     std::uint32_t durationTicks = 0U;
     std::uint32_t remainingTicks = 0U;
     std::uint32_t previousRemainingTicks = 0U;
+    [[nodiscard]] friend bool operator==(const ItemUseState&, const ItemUseState&) = default;
 };
 
 // Owns the swing and use timelines. The interaction controller calls tick()

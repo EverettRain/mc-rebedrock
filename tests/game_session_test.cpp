@@ -10,6 +10,7 @@
 #include "world/WorldClock.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 
@@ -20,6 +21,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 
 // Exercises GameSession as a headless simulation unit: the fixed-tick loop
@@ -113,6 +115,61 @@ int main() {
     assert(session.playerTickSnapshot().onGround);
     assert(!session.playerTickSnapshot().inWater);
     assert(session.playerTickSnapshot().serverTick == session.serverTick());
+
+    // P0: the render snapshots are atomically published as an immutable bundle
+    // and returned by value. A later publish selects a new frame, and a copy
+    // taken earlier keeps its own frame.
+    {
+        gameplay::GameSession publisher;
+        publisher.setGameMode(gameplay::GameMode::Creative);
+        publisher.player().setPosition({1.0F, 3.0F, 1.0F});
+        publisher.physicsPreviousPosition() = {1.0F, 3.0F, 1.0F};
+        publisher.physicsCurrentPosition() = {1.0F, 3.0F, 1.0F};
+        TestHost publishingHost;
+        publisher.tick(world, publishingHost);
+        const auto first = publisher.playerTickSnapshot();
+        assert(first.physicsCurrent.x == 1.0F);
+        // Mutating the returned copy must not reach the session's frame.
+        auto tampered = first;
+        tampered.physicsCurrent = {99.0F, 99.0F, 99.0F};
+        (void)tampered;
+        // A later publish selects the new frame.
+        publisher.player().setPosition({7.0F, 3.0F, 7.0F});
+        publisher.physicsPreviousPosition() = {7.0F, 3.0F, 7.0F};
+        publisher.physicsCurrentPosition() = {7.0F, 3.0F, 7.0F};
+        publisher.tick(world, publishingHost);
+        assert(publisher.playerTickSnapshot().physicsCurrent.x == 7.0F);
+        // The earlier copy is still the earlier frame.
+        assert(first.physicsCurrent.x == 1.0F);
+    }
+
+    // P0: the immutable snapshot bundle is safe to read from one thread while
+    // a second publishes — the production pattern (sim publishes, render reads
+    // without the world lock). A TSan build verifies acquire/release ordering.
+    {
+        world::World concurrentWorld;
+        buildFloor(concurrentWorld);
+        gameplay::GameSession concurrent;
+        concurrent.setGameMode(gameplay::GameMode::Creative);
+        concurrent.player().setPosition({8.5F, 1.001F, 8.5F});
+        concurrent.physicsPreviousPosition() = {8.5F, 1.001F, 8.5F};
+        concurrent.physicsCurrentPosition() = {8.5F, 1.001F, 8.5F};
+        TestHost concurrentHost;
+        std::atomic<bool> stop{false};
+        std::thread publisher([&] {
+            for (int i = 0; i < 200; ++i) {
+                concurrent.tick(concurrentWorld, concurrentHost);
+            }
+            stop.store(true, std::memory_order_release);
+        });
+        std::uint64_t lastTick = 0U;
+        while (!stop.load(std::memory_order_acquire)) {
+            const auto snap = concurrent.playerTickSnapshot();
+            lastTick = snap.serverTick;
+        }
+        publisher.join();
+        assert(lastTick > 0U);
+    }
 
     // Entity#move adds horizontalDistance * 0.6 to its step accumulator and
     // emits once per integer crossing. This catches the old 0.85-block stride,
@@ -393,6 +450,106 @@ int main() {
         assert(respawner.vitals().health() == gameplay::PlayerVitals::kMaximumHealth);
         assert(respawner.vitals().foodLevel() == gameplay::PlayerVitals::kMaximumFood);
         assert(!respawner.vitals().dead());
+    }
+
+    // --- A teleport/respawn mirrors the physics endpoints into the published
+    // snapshot, so the renderer's camera (which reads only the snapshot) has no
+    // frame of drift after a synchronous teleport. ---
+    {
+        gameplay::GameSession teleporter;
+        teleporter.teleportPlayer(gameplay::kPrimaryPlayerId, {12.0F, 70.5F, -3.0F});
+        // Without the mirror the snapshot would still carry the initial spawn
+        // until the next tick, and the camera would lag a tick behind the body.
+        assert(teleporter.playerTickSnapshot().physicsCurrent.x == 12.0F);
+        assert(teleporter.playerTickSnapshot().physicsCurrent.y == 70.5F);
+        assert(teleporter.playerTickSnapshot().physicsCurrent.z == -3.0F);
+        assert(teleporter.playerTickSnapshot().physicsPrevious ==
+               teleporter.playerTickSnapshot().physicsCurrent);
+    }
+    {
+        // Respawn clears sneaking in the snapshot too: the camera derives its
+        // eye height from snapshot.sneaking, so a respawning body must publish
+        // a standing eye height, not the dying body's crouch. Drive the body
+        // into a sneak so the snapshot actually holds crouch before respawn.
+        world::World respawnWorld;
+        buildFloor(respawnWorld);
+        TestHost host;
+        gameplay::GameSession respawner;
+        respawner.teleportPlayer(gameplay::kPrimaryPlayerId, {8.5F, 3.0F, 8.5F});
+        respawner.player().setPosition({8.5F, 3.0F, 8.5F});
+        respawner.input().sneakHeld = true;
+        respawner.commitInput();
+        respawner.tick(respawnWorld, host);
+        assert(respawner.playerTickSnapshot().sneaking); // the tick captured the crouch
+        respawner.respawn(gameplay::kPrimaryPlayerId);
+        assert(!respawner.playerTickSnapshot().sneaking); // the mirror cleared it now
+        assert(respawner.playerTickSnapshot().physicsCurrent == respawner.player().position());
+    }
+
+    // --- syncFurnaceLitStates mirrors each furnace's burn into the world's LIT
+    // flag, so the renderer never has to read the furnace entities. ---
+    {
+        world::World furnaceWorld;
+        buildFloor(furnaceWorld);
+        TestHost host;
+        gameplay::GameSession furnaceSession;
+        const gameplay::FurnacePosition position{0, 1, 0};
+        static_cast<void>(furnaceWorld.setState(
+            0, 1, 0, world::BlockState{world::Block::Furnace,
+                                       world::defaultOrientation(world::Block::Furnace)}));
+        static_cast<void>(furnaceSession.furnaceSystem().findOrCreate(position));
+
+        // An idle furnace leaves an unlit block unlit.
+        furnaceSession.syncFurnaceLitStates(furnaceWorld);
+        assert(!furnaceWorld.state(0, 1, 0).lit());
+
+        // A burning furnace lights the world block; the early-out skips the
+        // unchanged state (so the write count stays low).
+        furnaceSession.furnaceSystem().find(position)->burnTicks = 100;
+        furnaceSession.syncFurnaceLitStates(furnaceWorld);
+        assert(furnaceWorld.state(0, 1, 0).lit());
+
+        // The burn ends and the flag follows back off.
+        furnaceSession.furnaceSystem().find(position)->burnTicks = 0;
+        furnaceSession.syncFurnaceLitStates(furnaceWorld);
+        assert(!furnaceWorld.state(0, 1, 0).lit());
+    }
+
+    // --- resetWorldState clears every per-world system the renderer used to
+    // touch one by one. ---
+    {
+        world::World resetWorld;
+        buildFloor(resetWorld);
+        TestHost host;
+        gameplay::GameSession resetSession;
+        resetSession.teleportPlayer(gameplay::kPrimaryPlayerId, {8.5F, 3.0F, 8.5F});
+        resetSession.openContainer(gameplay::ContainerScreen::CraftingTable);
+        resetSession.spawnItemEntity({9.0F, 3.0F, 8.5F}, {world::Block::Stone, 1U},
+                                     {0.0F, 0.0F, 0.0F});
+        resetSession.resetWorldState();
+        // The published snapshot follows on the next tick; both the item and
+        // the container are gone after the reset.
+        resetSession.tick(resetWorld, host);
+        assert(resetSession.openContainerScreen() == gameplay::ContainerScreen::PlayerInventory);
+        assert(resetSession.entitySnapshot().items().empty());
+        assert(resetSession.entitySnapshot().entities().empty());
+    }
+
+    // --- The renderer reads the game mode from the published snapshot (its
+    // creative branches and reach), so the tick must publish it. ---
+    {
+        world::World modeWorld;
+        buildFloor(modeWorld);
+        TestHost host;
+        gameplay::GameSession modeSession;
+        modeSession.tick(modeWorld, host);
+        assert(modeSession.playerTickSnapshot().gameMode == gameplay::GameMode::Creative);
+        modeSession.setGameMode(gameplay::GameMode::Survival);
+        modeSession.tick(modeWorld, host);
+        assert(modeSession.playerTickSnapshot().gameMode == gameplay::GameMode::Survival);
+        modeSession.setGameMode(gameplay::GameMode::Creative);
+        modeSession.tick(modeWorld, host);
+        assert(modeSession.playerTickSnapshot().gameMode == gameplay::GameMode::Creative);
     }
 
     // --- The clocks are separate from the world tick. ---

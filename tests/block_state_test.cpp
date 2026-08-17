@@ -243,10 +243,12 @@ int main() {
         assert(!world.state(5, 5, 7).lit());
         assert(world.state(5, 5, 7).emittedLight() == 0U);
 
-        // Out of the world and outside a loaded chunk both read as air and
-        // refuse the write, exactly as block()/setBlock() already do.
-        assert(!world.setState(3, -1, 7, BlockState{Block::Stone}));
-        assert(world.state(3, -1, 7).block() == Block::Air);
+        // Out of the world (below the new bottom) and outside a loaded chunk
+        // both read as air and refuse the write, exactly as block()/setBlock()
+        // already do. −1 is inside the 384-tall column now, so the test uses a
+        // row below kMinY.
+        assert(!world.setState(3, kMinY - 1, 7, BlockState{Block::Stone}));
+        assert(world.state(3, kMinY - 1, 7).block() == Block::Air);
         assert(world.state(1000, 5, 1000).block() == Block::Air);
     }
 

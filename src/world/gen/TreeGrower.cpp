@@ -122,7 +122,7 @@ void placeAcaciaFoliage(TreeWriter& writer, int x, int topY, int z, Block leaves
 bool ChunkTreeWriter::inBounds(int x, int y, int z) const {
     const int localX = x - chunkX_ * kChunkWidth;
     const int localZ = z - chunkZ_ * kChunkDepth;
-    return localX >= 0 && localX < kChunkWidth && y >= 0 && y < kWorldHeight &&
+    return localX >= 0 && localX < kChunkWidth && isWorldYInRange(y) &&
            localZ >= 0 && localZ < kChunkDepth;
 }
 
@@ -195,7 +195,7 @@ bool growTree(
         const int base = choice.kind == TreeKind::Oak ? 4 : (choice.kind == TreeKind::Birch ? 5 : 5);
         const int extra = choice.kind == TreeKind::SwampOak ? 3 : 2;
         const int height = base + random.nextInt(extra + 1);
-        if (baseY + height + 2 >= kWorldHeight) return false;
+        if (baseY + height + 2 >= kMaxY) return false;
         for (int y = 0; y < height; ++y) {
             placeLog(writer, worldX, baseY + y, worldZ, log);
         }
@@ -209,7 +209,7 @@ bool growTree(
         // LargeOakTrunkPlacer(3, 11, 0): a tall trunk with two or three limbs
         // that each carry their own blob.
         const int height = 3 + random.nextInt(12);
-        if (baseY + height + 4 >= kWorldHeight) return false;
+        if (baseY + height + 4 >= kMaxY) return false;
         for (int y = 0; y < height; ++y) {
             placeLog(writer, worldX, baseY + y, worldZ, log);
         }
@@ -236,7 +236,7 @@ bool growTree(
     case TreeKind::Pine: {
         const bool pine = choice.kind == TreeKind::Pine;
         const int height = pine ? 6 + random.nextInt(5) : 5 + random.nextInt(3);
-        if (baseY + height + 3 >= kWorldHeight) return false;
+        if (baseY + height + 3 >= kMaxY) return false;
         for (int y = 0; y < height; ++y) {
             placeLog(writer, worldX, baseY + y, worldZ, log);
         }
@@ -250,7 +250,7 @@ bool growTree(
     }
     case TreeKind::JungleTree: {
         const int height = 4 + random.nextInt(9);
-        if (baseY + height + 3 >= kWorldHeight) return false;
+        if (baseY + height + 3 >= kMaxY) return false;
         for (int y = 0; y < height; ++y) {
             placeLog(writer, worldX, baseY + y, worldZ, log);
         }
@@ -261,7 +261,7 @@ bool growTree(
         // ForkingTrunkPlacer(5, 2, 2): the trunk leans partway up and the crown
         // sits over the lean, which is what gives an acacia its silhouette.
         const int height = 5 + random.nextInt(3);
-        if (baseY + height + 3 >= kWorldHeight) return false;
+        if (baseY + height + 3 >= kMaxY) return false;
         const int forkAt = height / 2 + random.nextInt(2);
         const int leanX = random.nextInt(3) - 1;
         const int leanZ = leanX == 0 ? (random.nextBoolean() ? 1 : -1) : 0;
@@ -286,7 +286,7 @@ bool growTree(
         // between the trunk's two corners), corner-trimmed into an octagon,
         // exactly like vanilla's generateSquare over -baseHeight..baseHeight+1.
         const int height = 6 + random.nextInt(3);
-        if (baseY + height + 3 >= kWorldHeight) return false;
+        if (baseY + height + 3 >= kMaxY) return false;
         for (int cornerX = 0; cornerX < 2; ++cornerX) {
             for (int cornerZ = 0; cornerZ < 2; ++cornerZ) {
                 if (!isSoilForPlants(writer.block(worldX + cornerX, groundY, worldZ + cornerZ))) {

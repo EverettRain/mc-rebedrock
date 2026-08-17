@@ -80,7 +80,10 @@ int Application::run() {
     config::GameOptions options = config::GameOptions::load(optionsPath);
     const int loadRadius = testScene_.has_value()
         ? 0 : developmentLoadRadius(options.viewDistance);
-    const int unloadRadius = loadRadius;
+    // Unload a couple of rings past the load radius so a player sitting on a
+    // chunk boundary does not thrash the same ring load/unload (each unload is a
+    // region write). See world::kUnloadHysteresisChunks.
+    const int unloadRadius = loadRadius + world::kUnloadHysteresisChunks;
     world::ChunkStreamer chunkStreamer{
         0x5EEDULL,
         loadRadius,

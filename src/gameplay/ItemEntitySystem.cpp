@@ -57,7 +57,7 @@ std::size_t ItemEntitySystem::tick(
         const int minZ = static_cast<int>(std::floor(minimum.z + 1e-4F));
         const int maxZ = static_cast<int>(std::floor(maximum.z - 1e-4F));
         for (int y = minY; y <= maxY; ++y) {
-            if (y < 0 || y >= world::kWorldHeight) continue;
+            if (!world::isWorldYInRange(y)) continue;
             for (int z = minZ; z <= maxZ; ++z) {
                 for (int x = minX; x <= maxX; ++x) {
                     if (world::hasCollision(world.block(x, y, z))) {

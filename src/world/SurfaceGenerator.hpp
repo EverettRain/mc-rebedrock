@@ -59,7 +59,6 @@ class SurfaceGenerator final {
     }
 
   private:
-    std::uint64_t seed_;
     gen::BiomeSource biomeSource_;
     // The samplers are drawn once in the constructor and handed down, so the
     // three terrain stacks, the surface depth and the density offset all share

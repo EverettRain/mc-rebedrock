@@ -2,14 +2,24 @@
 
 // The reader/writer lock guarding the one shared World.
 //
-// P3 Step 4. The world is read by the render thread every frame (block
-// sampling for particles, rain, the weather ambience, the interaction ray, mesh
-// building) and written by the simulation every tick, plus by the chunk
-// streamer when a batch lands. Once the tick moves off the render thread those
-// are concurrent, and the plan's answer is a single coarse `shared_mutex`: one
-// read section per frame, one write section per tick. Fine-grained locking
-// inside World would cost more (a lock per block read, on a path that does
-// thousands per frame) and buy nothing while the write side is one tick.
+// P3 Step 4. The world is written by the simulation every tick, by the render
+// thread when a streamer batch or a drained world edit lands, and by the few
+// short write call sites (save, inventory, pause). Once the tick moves off the
+// render thread those are concurrent, and the plan's answer is a single coarse
+// `shared_mutex`: one write section per tick, short write sections elsewhere.
+//
+// The render thread's per-frame *reads* no longer take this lock. Since
+// M-Chunk/P0 (2026-08-16) the frame path samples only:
+//   - the render-owned `clientCache` (a distinct World written exclusively by
+//     the render thread, so single-threaded reads need no lock), and
+//   - one immutable render-snapshot bundle (PlayerTickSnapshot / WorldSnapshot /
+//     EntityRenderSnapshot), published under the world write lock through an
+//     atomic shared handle, so an acquire read pins a complete frame and storage
+//     is not reused while that reader still owns it.
+// The remaining read sections cover one-time or non-frame reads
+// (initializeSpawnPosition, the save path). Crucially, the GPU fence wait,
+// command-buffer record, submit and present in drawFrame() hold no lock, so the
+// simulation never waits on the GPU.
 //
 // This is deliberately *not* folded into World. Making every accessor lock
 // would put a lock on the hottest read in the engine and would still not be

@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -24,11 +25,17 @@ struct ChunkPositionHash final {
 class World final {
   public:
     void setChunk(ChunkPosition position, Chunk chunk);
+    // Installs the same immutable chunk payload in another world. The first
+    // write through either World detaches that whole chunk, so the streaming
+    // world, simulation world and client cache share static terrain without
+    // sharing mutable state.
+    void setChunk(ChunkPosition position, std::shared_ptr<const Chunk> chunk);
     bool removeChunk(ChunkPosition position);
 
     [[nodiscard]] bool hasChunk(ChunkPosition position) const;
     [[nodiscard]] const Chunk* chunk(ChunkPosition position) const;
     [[nodiscard]] Chunk* chunk(ChunkPosition position);
+    [[nodiscard]] std::shared_ptr<const Chunk> sharedChunk(ChunkPosition position) const;
     [[nodiscard]] Block block(int worldX, int y, int worldZ) const;
     bool setBlock(int worldX, int y, int worldZ, Block value);
     // The whole cell as one value. These are the accessors WorldMutationService
@@ -53,9 +60,21 @@ class World final {
     // The generation biome of the column, used to tint grass-family blocks; an
     // unloaded chunk reads as plains.
     [[nodiscard]] gen::Biome biomeAt(int worldX, int worldZ) const;
+    // The resident bytes of this world's chunk data (states + light + biomes),
+    // including the fixed struct and the map's bucket overhead. M-Chunk uses it
+    // to measure the server world and the client cache separately.
+    [[nodiscard]] std::size_t residentBytes() const;
+    // The resident bytes of only the chunks this World solely owns (the backing
+    // shared_ptr's use_count is 1). The server world, client cache and streamer
+    // worker world share chunk objects through copy-on-write shared_ptr, so a
+    // chunk still shared with another World is physically one copy that
+    // residentBytes() counts once per holder (double/triple-counting). This
+    // separates the real exclusive cost, so N-Mem can tell how much of the
+    // three-world footprint is genuinely duplicated vs still shared.
+    [[nodiscard]] std::size_t uniqueResidentBytes() const;
 
   private:
-    std::unordered_map<ChunkPosition, Chunk, ChunkPositionHash> chunks_;
+    std::unordered_map<ChunkPosition, std::shared_ptr<Chunk>, ChunkPositionHash> chunks_;
 };
 
 } // namespace mc::world

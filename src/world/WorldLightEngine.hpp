@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/ParallelWorkerPool.hpp"
 #include "world/World.hpp"
 
 #include <atomic>
@@ -28,8 +29,10 @@ struct LightSectionPositionHash final {
 // stable world while section meshes are built.
 class WorldLightEngine final {
   public:
-    explicit WorldLightEngine(const std::atomic<bool>* cancellation = nullptr)
-        : cancellation_(cancellation) {}
+    explicit WorldLightEngine(
+        const std::atomic<bool>* cancellation = nullptr,
+        core::ParallelWorkerPool* workerPool = nullptr)
+        : cancellation_(cancellation), workerPool_(workerPool) {}
 
     void initializeChunks(World& world, std::span<const ChunkPosition> positions);
     void updateBlock(World& world, int worldX, int y, int worldZ);
@@ -93,6 +96,9 @@ class WorldLightEngine final {
     void markDirty(const Node& node);
 
     const std::atomic<bool>* cancellation_ = nullptr;
+    // Non-owning: ChunkStreamer owns the pool and outlives the light engine in
+    // its worker loop. Other call sites remain serial by leaving this null.
+    core::ParallelWorkerPool* workerPool_ = nullptr;
     std::unordered_set<LightSectionPosition, LightSectionPositionHash> dirtySections_;
     std::vector<PackedNode> settleQueue_;
     QueuedNodeSet queuedNodes_;

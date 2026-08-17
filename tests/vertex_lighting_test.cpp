@@ -71,7 +71,7 @@ topFaceVertices(const mc::render::MeshData& mesh, int blockX, int blockY, int bl
 [[nodiscard]] mc::render::MeshData buildLightingScene(std::initializer_list<glm::ivec3> occluders) {
     mc::world::World world;
     mc::world::Chunk chunk;
-    chunk.setBlock(1, 1, 1, mc::world::Block::Stone);
+    chunk.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::Stone);
     for (const auto& position : occluders) {
         chunk.setBlock(position.x, position.y, position.z, mc::world::Block::Stone);
     }
@@ -83,7 +83,7 @@ topFaceVertices(const mc::render::MeshData& mesh, int blockX, int blockY, int bl
     std::initializer_list<glm::ivec3> occluders) {
     mc::world::World world;
     mc::world::Chunk chunk;
-    chunk.setBlock(1, 1, 1, mc::world::Block::Stone);
+    chunk.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::Stone);
     for (const auto& position : occluders) {
         chunk.setBlock(position.x, position.y, position.z, mc::world::Block::Stone);
     }
@@ -98,23 +98,23 @@ int main() {
     {
         mc::world::World world;
         mc::world::Chunk chunk;
-        chunk.setBlock(8, 10, 8, mc::world::Block::Stone);
-        chunk.setBlock(4, 8, 4, mc::world::Block::Torch);
-        chunk.setBlock(12, 8, 12, mc::world::Block::Glowstone);
+        chunk.setBlock(8, mc::world::kMinY + 10, 8, mc::world::Block::Stone);
+        chunk.setBlock(4, mc::world::kMinY + 8, 4, mc::world::Block::Torch);
+        chunk.setBlock(12, mc::world::kMinY + 8, 12, mc::world::Block::Glowstone);
         world.setChunk({0, 0}, std::move(chunk));
         const mc::world::ChunkLightSampler lighting{world, {0, 0}};
-        assert(lighting.level(8, 11, 8).sky == 15U);
-        assert(lighting.level(8, 9, 8).sky == 14U);
-        assert(lighting.level(4, 8, 4).block == 14U);
-        assert(lighting.level(5, 8, 4).block == 13U);
-        assert(lighting.level(12, 8, 12).block == 15U);
-        assert(lighting.level(13, 8, 12).block == 14U);
+        assert(lighting.level(8, mc::world::kMinY + 11, 8).sky == 15U);
+        assert(lighting.level(8, mc::world::kMinY + 9, 8).sky == 14U);
+        assert(lighting.level(4, mc::world::kMinY + 8, 4).block == 14U);
+        assert(lighting.level(5, mc::world::kMinY + 8, 4).block == 13U);
+        assert(lighting.level(12, mc::world::kMinY + 8, 12).block == 15U);
+        assert(lighting.level(13, mc::world::kMinY + 8, 12).block == 14U);
     }
 
     {
         mc::world::World world;
         mc::world::Chunk left;
-        left.setBlock(15, 8, 8, mc::world::Block::Torch);
+        left.setBlock(15, mc::world::kMinY + 8, 8, mc::world::Block::Torch);
         world.setChunk({0, 0}, std::move(left));
         world.setChunk({1, 0}, mc::world::Chunk{});
         const std::array positions{
@@ -123,8 +123,8 @@ int main() {
         };
         const mc::world::ChunkLightSampler sharedLighting{
             world, std::span<const mc::world::ChunkPosition>{positions}};
-        assert(sharedLighting.level(15, 8, 8).block == 14U);
-        assert(sharedLighting.level(16, 8, 8).block == 13U);
+        assert(sharedLighting.level(15, mc::world::kMinY + 8, 8).block == 14U);
+        assert(sharedLighting.level(16, mc::world::kMinY + 8, 8).block == 13U);
     }
 
     {
@@ -138,7 +138,7 @@ int main() {
     }
 
     {
-        const auto vertices = topFaceVertices(buildLightingScene({{0, 2, 1}}), 1, 1, 1);
+        const auto vertices = topFaceVertices(buildLightingScene({{0, mc::world::kMinY + 2, 1}}), 1, 1, 1);
         expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[0]), kSingleSideOcclusion,
                      "single side AO at north-west corner");
         expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[1]), 1.0F,
@@ -150,7 +150,7 @@ int main() {
     }
 
     {
-        const auto vertices = topFaceVertices(buildLightingScene({{0, 2, 1}, {1, 2, 0}}), 1, 1, 1);
+        const auto vertices = topFaceVertices(buildLightingScene({{0, mc::world::kMinY + 2, 1}, {1, mc::world::kMinY + 2, 0}}), 1, 1, 1);
         expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[0]), kClosedCornerOcclusion,
                      "closed-corner AO");
         expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[1]), kSingleSideOcclusion,
@@ -164,9 +164,9 @@ int main() {
     {
         mc::world::World world;
         mc::world::Chunk left;
-        left.setBlock(15, 1, 1, mc::world::Block::Stone);
+        left.setBlock(15, mc::world::kMinY + 1, 1, mc::world::Block::Stone);
         mc::world::Chunk right;
-        right.setBlock(0, 2, 1, mc::world::Block::Stone);
+        right.setBlock(0, mc::world::kMinY + 2, 1, mc::world::Block::Stone);
         world.setChunk({0, 0}, std::move(left));
         world.setChunk({1, 0}, std::move(right));
         const auto mesh = mc::world::ChunkMesher::buildSection(world, {0, 0}, 0);
@@ -187,32 +187,33 @@ int main() {
         // ring and the out-of-world Y fallbacks.
         mc::world::World world;
         mc::world::Chunk left;
-        left.setBlock(8, 8, 8, mc::world::Block::Stone);
-        left.setSkyLight(8, 9, 8, 14U);
-        left.setBlockLight(8, 8, 8, 10U);
+        left.setBlock(8, mc::world::kMinY + 8, 8, mc::world::Block::Stone);
+        left.setSkyLight(8, mc::world::kMinY + 9, 8, 14U);
+        left.setBlockLight(8, mc::world::kMinY + 8, 8, 10U);
         mc::world::Chunk right;
-        right.setBlock(0, 8, 8, mc::world::Block::Glowstone);
-        right.setBlockLight(0, 8, 8, 15U);
+        right.setBlock(0, mc::world::kMinY + 8, 8, mc::world::Block::Glowstone);
+        right.setBlockLight(0, mc::world::kMinY + 8, 8, 15U);
         world.setChunk({0, 0}, std::move(left));
         world.setChunk({1, 0}, std::move(right));
         const mc::world::MeshLightingSnapshot snapshot{
             world, {0, 0}, 0, 0, mc::world::SmoothLightingQuality::Standard};
-        assert(snapshot.level(8, 9, 8).sky == 14U);
-        assert(snapshot.level(8, 8, 8).block == 10U);
-        assert(snapshot.blockType(8, 8, 8) == mc::world::Block::Stone);
-        assert(snapshot.isOpaque(8, 8, 8));
-        assert(snapshot.aoOccludes(8, 8, 8));
+        assert(snapshot.level(8, mc::world::kMinY + 9, 8).sky == 14U);
+        assert(snapshot.level(8, mc::world::kMinY + 8, 8).block == 10U);
+        assert(snapshot.blockType(8, mc::world::kMinY + 8, 8) == mc::world::Block::Stone);
+        assert(snapshot.isOpaque(8, mc::world::kMinY + 8, 8));
+        assert(snapshot.aoOccludes(8, mc::world::kMinY + 8, 8));
         // Neighbour-chunk cell routes to the right chunk, not the request one.
-        assert(snapshot.blockType(16, 8, 8) == mc::world::Block::Glowstone);
-        assert(snapshot.level(16, 8, 8).block == 15U);
+        assert(snapshot.blockType(16, mc::world::kMinY + 8, 8) == mc::world::Block::Glowstone);
+        assert(snapshot.level(16, mc::world::kMinY + 8, 8).block == 15U);
         // Glowstone's vanilla material is glass: it does not darken AO corners.
-        assert(!snapshot.aoOccludes(16, 8, 8));
+        assert(!snapshot.aoOccludes(16, mc::world::kMinY + 8, 8));
         // Missing neighbour chunk resolves to air, fully sky-lit.
-        assert(snapshot.blockType(-2, 8, 8) == mc::world::Block::Air);
-        assert(snapshot.level(-2, 8, 8).sky == 15U);
-        // Out-of-world Y fallbacks match ChunkLightSampler::level.
-        assert(snapshot.level(8, -1, 8).sky == 0U);
-        assert(snapshot.level(8, 256, 8).sky == 15U);
+        assert(snapshot.blockType(-2, mc::world::kMinY + 8, 8) == mc::world::Block::Air);
+        assert(snapshot.level(-2, mc::world::kMinY + 8, 8).sky == 15U);
+        // Out-of-world Y fallbacks match ChunkLightSampler::level: below the new
+        // bottom is dark, above the new top is full sky.
+        assert(snapshot.level(8, mc::world::kMinY - 1, 8).sky == 0U);
+        assert(snapshot.level(8, mc::world::kMaxY, 8).sky == 15U);
     }
 
     {
@@ -221,8 +222,8 @@ int main() {
         // in this scene does not matter).
         mc::world::World world;
         mc::world::Chunk chunk;
-        chunk.setBlock(1, 1, 1, mc::world::Block::Stone);
-        chunk.setBlock(0, 2, 1, mc::world::Block::Stone);
+        chunk.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::Stone);
+        chunk.setBlock(0, mc::world::kMinY + 2, 1, mc::world::Block::Stone);
         world.setChunk({0, 0}, std::move(chunk));
         const mc::world::MeshLightingSnapshot snapshot{
             world, {0, 0}, 0, 0, mc::world::SmoothLightingQuality::Standard};
@@ -252,7 +253,7 @@ int main() {
     {
         // One occluding side darkens the two corners beside it: the 2×2 ring
         // average puts one 0.2 cell among three open ones → (0.2+1+1+1)/4 = 0.8.
-        const auto vertices = topFaceVertices(buildLightingSceneHigh({{0, 2, 1}}), 1, 1, 1);
+        const auto vertices = topFaceVertices(buildLightingSceneHigh({{0, mc::world::kMinY + 2, 1}}), 1, 1, 1);
         expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[0]), 0.8F,
                      "high single side AO at north-west corner");
         expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[1]), 1.0F,
@@ -268,7 +269,7 @@ int main() {
         // → (0.2+0.2+1+1)/4 = 0.6 at the closed corner; the edge corners carry
         // one 0.2 cell → 0.8; the far corner stays open.
         const auto vertices =
-            topFaceVertices(buildLightingSceneHigh({{0, 2, 1}, {1, 2, 0}}), 1, 1, 1);
+            topFaceVertices(buildLightingSceneHigh({{0, mc::world::kMinY + 2, 1}, {1, mc::world::kMinY + 2, 0}}), 1, 1, 1);
         expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[0]), 0.6F,
                      "high closed-corner AO");
         expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[1]), 0.8F,
@@ -286,11 +287,11 @@ int main() {
         // depends on the four ring cells, which is what keeps adjacent blocks
         // consistent at the shared corner.
         const auto withDiagonal =
-            topFaceVertices(buildLightingSceneHigh({{0, 2, 0}}), 1, 1, 1);
+            topFaceVertices(buildLightingSceneHigh({{0, mc::world::kMinY + 2, 0}}), 1, 1, 1);
         expectNearAo(mc::render::decodeAmbientOcclusion(*withDiagonal[0]), 0.8F,
                      "high diagonal occluder AO");
         const auto withOverhangAbove =
-            topFaceVertices(buildLightingSceneHigh({{0, 2, 0}, {0, 3, 0}}), 1, 1, 1);
+            topFaceVertices(buildLightingSceneHigh({{0, mc::world::kMinY + 2, 0}, {0, mc::world::kMinY + 3, 0}}), 1, 1, 1);
         expectNearAo(mc::render::decodeAmbientOcclusion(*withOverhangAbove[0]), 0.8F,
                      "high diagonal occluder AO with a block above it");
     }
@@ -301,8 +302,8 @@ int main() {
         // face remains full-bright.
         mc::world::World world;
         mc::world::Chunk chunk;
-        chunk.setBlock(1, 1, 1, mc::world::Block::Stone);
-        chunk.setBlock(1, 2, 1, mc::world::Block::Glass);
+        chunk.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::Stone);
+        chunk.setBlock(1, mc::world::kMinY + 2, 1, mc::world::Block::Glass);
         world.setChunk({0, 0}, std::move(chunk));
         const auto mesh = mc::world::ChunkMesher::buildSection(
             world, {0, 0}, 0, mc::world::SmoothLightingQuality::High);

@@ -102,7 +102,7 @@ namespace {
 
 [[nodiscard]] bool defaultStandable(const world::World& world, const SimpleEntity& self,
                                     glm::ivec3 feet) {
-    if (feet.y <= 0 || feet.y >= world::kWorldHeight) {
+    if (feet.y <= world::kMinY || feet.y >= world::kMaxY) {
         return false;
     }
 
@@ -126,7 +126,7 @@ namespace {
                 return false;
             }
             for (int offset = 0; offset < bodyCells; ++offset) {
-                if (feet.y + offset >= world::kWorldHeight ||
+                if (feet.y + offset >= world::kMaxY ||
                     world::hasCollision(world.block(x, feet.y + offset, z))) {
                     return false;
                 }

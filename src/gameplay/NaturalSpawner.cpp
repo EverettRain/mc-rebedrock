@@ -84,7 +84,7 @@ constexpr int kMaximumColumnSamples = 16;
     const int chunkZ = floorDiv(z, world::kChunkDepth);
     const world::Chunk* chunk = world.chunk({chunkX, chunkZ});
     if (chunk == nullptr) {
-        return -1;
+        return world::kMinY - 1;  // an unloaded column: a value below the world
     }
     const int localX = x - chunkX * world::kChunkWidth;
     const int localZ = z - chunkZ * world::kChunkDepth;
@@ -92,14 +92,16 @@ constexpr int kMaximumColumnSamples = 16;
         if (chunk->section(sectionY).empty()) {
             continue;
         }
-        const int base = sectionY * world::kSectionSize;
+        const int base = world::sectionOriginY(sectionY);
         for (int offset = world::kSectionSize - 1; offset >= 0; --offset) {
             if (chunk->block(localX, base + offset, localZ) != world::Block::Air) {
                 return base + offset;
             }
         }
     }
-    return -1;
+    // No solid surface: the same below-the-world sentinel. −1 is a legal world
+    // row in the 384-tall column now, so it can no longer stand in for "none".
+    return world::kMinY - 1;
 }
 
 // Small deterministic LCG (same constants as the entity wander) so a spawn
@@ -207,13 +209,14 @@ void NaturalSpawner::spawnOnce(const world::World& world, EntitySystem& entities
     const int spawnX = static_cast<int>(std::floor(center.x + std::cos(angle) * distance));
     const int spawnZ = static_cast<int>(std::floor(center.z + std::sin(angle) * distance));
     const int surfaceY = worldSurfaceY(world, spawnX, spawnZ);
-    if (surfaceY < 0) {
+    if (surfaceY < world::kMinY) {
         return; // an empty column, or a chunk the streamer has not sent
     }
     // Mth.randomBetweenInclusive(random, minY, surface + 1): inclusive at both
     // ends, so the cell just above the terrain is drawn like any other.
-    const auto columnHeight = static_cast<std::uint32_t>(surfaceY + 2);
-    const int spawnY = static_cast<int>(nextRandom(randomState_) % columnHeight);
+    const auto columnHeight = static_cast<std::uint32_t>(surfaceY - world::kMinY + 2);
+    const int spawnY =
+        world::kMinY + static_cast<int>(nextRandom(randomState_) % columnHeight);
     const SimulationPosition position{spawnX, spawnY, spawnZ};
 
     // --- distance to the player (isRightDistanceToPlayerAndSpawnPoint) ---
