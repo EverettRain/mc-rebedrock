@@ -89,6 +89,10 @@ const ContentRegistry& contentRegistry() {
             world::Block::CoarseDirt, world::Block::Podzol,
             world::Block::RedSand, world::Block::WhiteWool, world::Block::RedWool,
             world::Block::BlackWool, world::Block::Bedrock,
+            world::Block::OakSlab, world::Block::SpruceSlab, world::Block::BirchSlab,
+            world::Block::JungleSlab, world::Block::AcaciaSlab, world::Block::DarkOakSlab,
+            world::Block::StoneSlab, world::Block::CobblestoneSlab,
+            world::Block::StoneBrickSlab, world::Block::SmoothStoneSlab,
         };
         constexpr std::array decoration{
             world::Block::Glass, world::Block::OakLeaves, world::Block::SpruceLeaves,

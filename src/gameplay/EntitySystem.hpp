@@ -231,7 +231,11 @@ class EntitySystem final {
 
     // Whether a still-present creature overlaps this full block cell. Block
     // placement uses it alongside the player's overlap check.
-    [[nodiscard]] bool intersectsBlock(int x, int y, int z) const;
+    // Whether any live creature overlaps a block placed at (x, y, z) whose
+    // collision box spans [y+boxBottom, y+boxTop]. The default is a full cube;
+    // slab placement passes the half box so a slab can go in beside a creature.
+    [[nodiscard]] bool intersectsBlock(int x, int y, int z, float boxBottom = 0.0F,
+                                       float boxTop = 1.0F) const;
 
     // LivingEntity#hurt plus the attacker's knockback. Returns true when the hit
     // landed rather than being swallowed by the invulnerability window.

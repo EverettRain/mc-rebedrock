@@ -69,6 +69,11 @@ simple versioned history while it is in beta.
   command → tick → snapshot round trip through the byte channel against a real
   game session — the groundwork for single-player to run the same
   client/server message path a networked client will.
+- Oak, spruce, birch, jungle, acacia, dark-oak, stone, cobblestone,
+  stone-brick and smooth-stone slabs were added. Slabs carry bottom/top/double
+  block states and half-height meshes, collision and raycast outlines; they
+  place from the clicked face, merge with their own kind, and fully support
+  saves, doubled drops, the creative catalogue and half-height HUD icons.
 - Optional slow-frame and resident-memory diagnostics were added:
   `MC_REBEDROCK_FRAME_TRACE=1` reports overruns by persistence, locking, GPU
   fence, event-drain and other stages, while `MC_REBEDROCK_MEMORY_REPORT=1`
@@ -141,6 +146,13 @@ simple versioned history while it is in beta.
   now cross a thread-safe event queue. Container hit testing and drag previews
   build geometry-only slots with no storage pointers, so the render thread no
   longer reaches into authoritative inventories or block entities.
+- Single-player now runs the in-process loopback message path in both
+  directions: every semantic command is encoded before the server tick consumes
+  it, while gameplay events and player, world and entity snapshots return into a
+  `ClientMirror`. The HUD and world renderer no longer read the authoritative
+  `GameSession` directly. World switches clear both channels and the mirror,
+  mining/container state travels in snapshots, and a per-tick encoded-size
+  regression check constrains the cost of the full mirror.
 - The README was rewritten for the current beta implementation, including the
   Java 26.1 resource-pack requirement, dual-platform build/test workflow,
   runtime layout, project structure and known boundaries. Obsolete 1.16.1
@@ -175,6 +187,10 @@ simple versioned history while it is in beta.
   before the first simulation tick, the live position and the render snapshot
   now both match the saved coordinates, and switching worlds no longer inherits
   the previous world's position.
+- The player, swung hand, item drops, falling blocks and creatures no longer
+  occasionally jitter at tick boundaries. Interpolation is now timed from the
+  client's receipt of a mirrored snapshot and paired with the endpoints from
+  that same mirror update, so it cannot drift one tick out of phase.
 
 ## ReBedrock beta5
 

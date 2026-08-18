@@ -6,6 +6,7 @@
 // mirrors in one stream, with the same forward-compatibility (an unknown tag
 // is skipped by size).
 
+#include "gameplay/EntityRenderSnapshot.hpp"
 #include "gameplay/PlayerTickSnapshot.hpp"
 #include "gameplay/WorldSnapshot.hpp"
 
@@ -31,5 +32,14 @@ using PublishedSnapshot = std::variant<PlayerTickSnapshot, WorldSnapshot>;
 // The total bytes the snapshot at the start of `bytes` occupies, including its
 // frame header — how a stream is split back into snapshots. 0 when truncated.
 [[nodiscard]] std::size_t encodedSnapshotSize(std::span<const std::uint8_t> bytes);
+
+// The entity render snapshot (creatures, drops, falling blocks) the renderer
+// draws. It carries its own tag, after the event tags, so it rides the same
+// stream as the other messages without colliding. Unknown species/items/blocks
+// (a newer build's content) are skipped, the same forward-compatibility the
+// other codecs apply.
+[[nodiscard]] std::vector<std::uint8_t> encodeEntitySnapshot(const EntityRenderSnapshot& snapshot);
+[[nodiscard]] std::optional<EntityRenderSnapshot> decodeEntitySnapshot(
+    std::span<const std::uint8_t> bytes);
 
 }  // namespace mc::gameplay

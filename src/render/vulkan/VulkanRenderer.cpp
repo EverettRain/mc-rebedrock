@@ -20,6 +20,7 @@
 #include "animation/SkeletalModel.hpp"
 #include "assets/ImageData.hpp"
 #include "audio/AudioSystem.hpp"
+#include "client/ClientMirror.hpp"
 #include "gameplay/ChestSystem.hpp"
 #include "gameplay/ContentRegistry.hpp"
 #include "gameplay/CraftingSystem.hpp"
@@ -625,7 +626,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 key <= GLFW_KEY_9) {
                 gameplay::SwapSlot swap;
                 swap.index = static_cast<std::size_t>(key - GLFW_KEY_1);
-                renderer->gameSession.enqueueCommand(std::move(swap));
+                renderer->runtime.enqueueClientCommand(std::move(swap));
             }
             if (key == GLFW_KEY_Q && action == GLFW_PRESS && !renderer->inventoryOpen &&
                 !renderer->paused) {
@@ -677,7 +678,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             } else if (!renderer->inventoryOpen && !renderer->paused && !renderer->chatOpen &&
                        yOffset != 0.0) {
                 {
-                    const auto& playerSnap = renderer->gameSession.playerTickSnapshot();
+                    const auto& playerSnap = renderer->clientMirror_.player();
                     const std::size_t current = playerSnap.selectedHotbarSlot;
                     const std::size_t count = gameplay::Inventory::kHotbarSize;
                     std::size_t target = (yOffset > 0.0)
@@ -685,7 +686,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                              : (current + 1U) % count;
                     gameplay::SwapSlot swap;
                     swap.index = target;
-                    renderer->gameSession.enqueueCommand(std::move(swap));
+                    renderer->runtime.enqueueClientCommand(std::move(swap));
                 }
             }
         });
@@ -894,7 +895,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // A thunderstorm drenches the world: the rain volume scales with the
         // thunder gradient up to double the plain-rain count, and the async
         // path's capacity is what makes thousands of extra drops free to draw.
-        const float thunderBoost = 1.0F + gameSession.worldSnapshot().thunderGradient;
+        const float thunderBoost = 1.0F + clientMirror_.world().thunderGradient;
         // The user-facing rain bump (plain and thunder rain both 1.5x of the
         // pre-bump baseline) rides the 粒子效果 level: 中 (1x) yields the 1.5x
         // budget, 高 doubles it, 疯狂 triples it, 低 halves it.
@@ -947,7 +948,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // rain (1.16.1 leaves the clip at a flat 0.2; the ramp is the adaptation
     // the gradient-volume ask calls for).
     void updateWeatherSound(world::World& world) {
-        const float rainGradient = gameSession.worldSnapshot().rainGradient;
+        const float rainGradient = clientMirror_.world().rainGradient;
         if (rainGradient <= 0.0F) {
             return;
         }
@@ -989,7 +990,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                    .has_value();
         const bool rainAbove = surface->y > static_cast<float>(cameraBlock.y + 1);
         const float volumeScale =
-            rainGradient * (1.0F + 0.5F * gameSession.worldSnapshot().thunderGradient);
+            rainGradient * (1.0F + 0.5F * clientMirror_.world().thunderGradient);
         const bool underCover = rainAbove && underRoof;
         if (underCover) {
             audioSystem.playWeatherRainAbove(*surface, 0.1F * volumeScale);
@@ -1270,6 +1271,19 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // GameSession's own input mutex) and reads published snapshots and
                 // renderer-local state — nothing that needs the world lock.
                 processInput();
+                // C-1b-2/1b-3: pump the channel at the very top of the frame.
+                // Snapshot frames refresh the client mirror (so every read below
+                // sees this frame's player/world); event frames apply the tick's
+                // side effects (world edits to the client cache, sounds,
+                // particles, container/eating reactions) to this renderer as the
+                // host. Draining every frame keeps the channel from accumulating.
+                {
+                    const auto pumpStart = std::chrono::steady_clock::now();
+                    static_cast<void>(clientMirror_.pump(runtime.clientChannel(), *this));
+                    if (diag::traceEnabled()) {
+                        diag::frameTrace().drainMs += diag::msSince(pumpStart);
+                    }
+                }
                 if (inventoryOpen) {
                     const ui::HudLayout animationLayout{
                         static_cast<float>(std::max(swapchainExtent.width, 1U)),
@@ -1277,7 +1291,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                         menuSystem.guiScaleSetting};
                     const auto cursor = currentFramebufferCursor();
                     const auto preview = animationLayout.playerPreview(
-                        gameSession.playerTickSnapshot().gameMode == gameplay::GameMode::Creative);
+                        clientMirror_.player().gameMode == gameplay::GameMode::Creative);
                     playerModelAnimator.setCursorLook(
                         (cursor.x - preview.lookOrigin.x) / (40.0F * animationLayout.scale()),
                         (cursor.y - preview.lookOrigin.y) / (40.0F * animationLayout.scale()));
@@ -1285,7 +1299,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // The animator's gait inputs come from the per-tick player
                 // snapshot, not live gameplay objects. The snapshot is published
                 // atomically, so this copy needs no lock.
-                const auto playerSnap = gameSession.playerTickSnapshot();
+                const auto playerSnap = clientMirror_.player();
                 playerWalking = playerSnap.speed > 0.02F;
                 playerSneaking = playerSnap.sneaking;
             }
@@ -1333,8 +1347,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // replays back from the apex.
                 {
                     // Copy the coherent snapshot, then render purely from the copy.
-                    const auto playerSnapshot = gameSession.playerTickSnapshot();
-                    const float currentAlpha = simulationDriver.interpolationAlpha();
+                    const auto playerSnapshot = clientMirror_.player();
+                    const float currentAlpha = clientMirror_.interpolationAlpha();
                     const auto frame =
                         render::player::extractPlayerRenderState(playerSnapshot, currentAlpha,
                                                                  lastSwingSequence_);
@@ -1363,7 +1377,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // landing splashes/audio in every mode. Particle and async also
                 // render these exact drops; texture mode independently draws the
                 // vanilla precipitation-column field.
-                const float thunderGradient = gameSession.worldSnapshot().thunderGradient;
+                const float thunderGradient = clientMirror_.world().thunderGradient;
                 // The wind holds a heading for 10-20 s, then veers to a new
                 // one over a couple of seconds — an occasional, slow shift
                 // instead of the old constant rotation that kept the whole rain
@@ -1384,11 +1398,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 const glm::vec2 wind{std::cos(rainWindAngle_) * windSpeed,
                                      std::sin(rainWindAngle_) * windSpeed};
                 rainSystem.update(deltaSeconds, camera.position(),
-                                  gameSession.worldSnapshot().rainGradient, rainTargetCount(),
+                                  clientMirror_.world().rainGradient, rainTargetCount(),
                                   clientCache, wind);
                 if (rainMode_ == RainMode::Texture) {
                     rainSystem.emitTextureImpacts(deltaSeconds, camera.position(),
-                                                  gameSession.worldSnapshot().rainGradient,
+                                                  clientMirror_.world().rainGradient,
                                                   clientCache);
                 }
                 for (const auto& splash : rainSystem.splashes()) {
@@ -1403,7 +1417,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // under a roof, all scaled by the smoothed rain gradient.
                     updateWeatherSound(clientCache);
                 static bool stormReported = false;
-                if (!stormReported && gameSession.worldSnapshot().thundering &&
+                if (!stormReported && clientMirror_.world().thundering &&
                     rainSystem.drops().size() > 5000U) {
                     stormReported = true;
                     std::cout << "[thunder] storm drops=" << rainSystem.drops().size()
@@ -1450,13 +1464,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (const auto chatResult = runtime.takeChatResult(); chatResult.has_value()) {
                 chatHistory.push(chatResult->message, chatResult->success, uiTimeSeconds);
             }
-            const float physicsAlpha = simulationDriver.interpolationAlpha();
+            // The alpha comes from the published snapshot's own timestamp
+            // (gameSession) rather than SimulationDriver's separately-clocked
+            // accumulator, so it stays in step with the endpoints this frame
+            // reads instead of running a tick ahead of them at a tick boundary —
+            // the phase race that made moving drops and the swung hand jitter.
+            const float physicsAlpha = clientMirror_.interpolationAlpha();
             renderInterpolationAlpha = physicsAlpha;
             glm::vec3 renderedFeetPosition{};
             float playerEyeHeight = 0.0F;
             float fovMultiplier = 1.0F;
             {
-                const auto playerSnap = gameSession.playerTickSnapshot();
+                const auto playerSnap = clientMirror_.player();
                 renderedFeetPosition = playerSnap.physicsPrevious +
                                        (playerSnap.physicsCurrent - playerSnap.physicsPrevious) *
                                            physicsAlpha;
@@ -1470,7 +1489,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 uiFrameData_.eating = playerSnap.eating;
                 uiFrameData_.selectedStack = playerSnap.heldStack;
                 uiFrameData_.selectedHotbarSlot = playerSnap.selectedHotbarSlot;
-                const auto worldSnap = gameSession.worldSnapshot();
+                const auto worldSnap = clientMirror_.world();
                 uiFrameData_.containerScreen = worldSnap.openContainerScreen;
                 uiFrameData_.activeChest = worldSnap.openChest;
                 playerEyeHeight =
@@ -1536,20 +1555,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 const auto dropWrite = worldLock.write();
                 world_.updateItemDrop();
             }
-            // P3 Step 3: the simulation's side effects run here, on the main
-            // thread, rather than at the moment the tick published them. After
-            // the interaction pass so a break made this frame is applied, and
-            // before drawing so it is visible in the same frame.
-            // The bridge owns its cross-thread queue; every handler below is a
-            // render-side reaction. No server-world lock is needed while audio,
-            // particles, client light and UI are updated.
-            {
-                const auto drainStart = std::chrono::steady_clock::now();
-                static_cast<void>(gameSession.drainEvents());
-                if (diag::traceEnabled()) {
-                    diag::frameTrace().drainMs += diag::msSince(drainStart);
-                }
-            }
+            // C-1b-3: the simulation's side effects (world edits to the client
+            // cache, sounds, particles, container/eating reactions) are applied
+            // by the frame-top channel pump above, decoded from the server's
+            // per-tick events instead of drained from the bridge here.
             drawFrame();
             ++renderedFrames;
             if (diag::traceEnabled()) {
@@ -1758,13 +1767,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 gameplay::ClickCreativeItem creative;
                 creative.catalogStack = {world::Block::Air, 1U, &gameplay::items::Diamond};
                 creative.button = gameplay::InventoryMouseButton::Left;
-                gameSession.enqueueCommand(std::move(creative));
+                runtime.enqueueClientCommand(std::move(creative));
             } else if (smokeTest && smokeGameplayFrames == 24U) {
                 gameplay::ClickSlot click;
                 click.kind = gameplay::SlotKind::PlayerInventory;
                 click.slotIndex = 0U;
                 click.button = 0;
-                gameSession.enqueueCommand(std::move(click));
+                runtime.enqueueClientCommand(std::move(click));
             } else if (smokeTest && smokeGameplayFrames == 28U) {
                 const auto smokeRead = worldLock.read();
                 scrollCreative(1);
@@ -1782,7 +1791,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             } else if (smokeTest && smokeGameplayFrames == 40U) {
                 const auto smokeWrite = worldLock.write();
                 gameSession.spawnItemEntity(
-                    gameSession.playerTickSnapshot().physicsCurrent + glm::vec3{1.8F, 1.0F, 0.0F},
+                    clientMirror_.player().physicsCurrent + glm::vec3{1.8F, 1.0F, 0.0F},
                     {world::Block::DiamondOre, 3}, {0.0F, 0.12F, 0.0F});
             } else if (smokeTest && smokeGameplayFrames == 44U) {
                 debugOverlayOpen = true;
@@ -1800,9 +1809,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 smokeWaitLabel = "enter survival mode";
                 smokeWaitCondition = [&] {
                     const auto smokeRead = worldLock.read();
-                    return gameSession.playerTickSnapshot().gameMode == gameplay::GameMode::Survival;
+                    return clientMirror_.player().gameMode == gameplay::GameMode::Survival;
                 };
-                if (gameSession.worldSnapshot().inventorySlots[0].item != &gameplay::items::Diamond) {
+                if (clientMirror_.world().inventorySlots[0].item != &gameplay::items::Diamond) {
                     throw std::runtime_error(
                         "Smoke test lost the shared inventory during mode switch");
                 }
@@ -1833,7 +1842,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // block-break burst next to the player produces hundreds of
                 // particles in a single vkCmdDraw.
                 const auto smokeRead = worldLock.read();
-                const glm::vec3 spawn = gameSession.playerTickSnapshot().physicsCurrent;
+                const glm::vec3 spawn = clientMirror_.player().physicsCurrent;
                 particleSystem.spawnBlockBreak({static_cast<int>(std::floor(spawn.x)),
                                                 static_cast<int>(std::floor(spawn.y)) - 2,
                                                 static_cast<int>(std::floor(spawn.z))},
@@ -1852,8 +1861,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 smokeWaitLabel = "return to creative mode";
                 smokeWaitCondition = [&] {
                     const auto smokeRead = worldLock.read();
-                    return gameSession.playerTickSnapshot().gameMode == gameplay::GameMode::Creative &&
-                           gameSession.worldSnapshot().inventorySlots[0].item ==
+                    return clientMirror_.player().gameMode == gameplay::GameMode::Creative &&
+                           clientMirror_.world().inventorySlots[0].item ==
                                &gameplay::items::Diamond;
                 };
             } else if (smokeTest && smokeGameplayFrames == 74U) {
@@ -1870,7 +1879,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 smokeWaitCondition = [&] {
                     const auto smokeRead = worldLock.read();
                     return std::ranges::any_of(
-                        gameSession.worldSnapshot().inventorySlots,
+                        clientMirror_.world().inventorySlots,
                         [](const gameplay::ItemStack& stack) {
                             return stack.block == world::Block::Grass && stack.count >= 1U;
                         });
@@ -1887,7 +1896,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 smokeWaitCondition = [&] {
                     const auto smokeRead = worldLock.read();
                     return std::ranges::any_of(
-                        gameSession.worldSnapshot().inventorySlots,
+                        clientMirror_.world().inventorySlots,
                         [](const gameplay::ItemStack& stack) {
                             return stack.block == world::Block::AcaciaPlanks && stack.count >= 3U;
                         });
@@ -1905,7 +1914,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     const auto smokeRead = worldLock.read();
                     const auto perDay =
                         static_cast<std::uint64_t>(world::DayNightCycle::kTicksPerDay);
-                    const auto tick = std::fmod(gameSession.worldSnapshot().dayTimeTicks, static_cast<double>(perDay));
+                    const auto tick = std::fmod(clientMirror_.world().dayTimeTicks, static_cast<double>(perDay));
                     return std::abs(tick - 18000.0) <= 4.0;
                 };
             } else if (smokeTest && smokeGameplayFrames == 92U) {
@@ -1917,21 +1926,21 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 gameplay::ClickCreativeItem creative;
                 creative.catalogStack = {world::Block::Air, 1U, &gameplay::items::Apple};
                 creative.button = gameplay::InventoryMouseButton::Left;
-                gameSession.enqueueCommand(std::move(creative));
+                runtime.enqueueClientCommand(std::move(creative));
                 gameplay::ClickSlot click;
                 click.kind = gameplay::SlotKind::PlayerInventory;
                 click.slotIndex = 8U;
                 click.button = 0;
-                gameSession.enqueueCommand(std::move(click));
+                runtime.enqueueClientCommand(std::move(click));
                 const auto smokeWrite = worldLock.write();
                 setInventoryOpenLocked(false);
                 gameplay::SwapSlot swap;
                 swap.index = 8U;
-                gameSession.enqueueCommand(std::move(swap));
+                runtime.enqueueClientCommand(std::move(swap));
             } else if (smokeTest && smokeGameplayFrames == 96U) {
                 const auto smokeRead = worldLock.read();
-                smokeAppleCount = gameSession.worldSnapshot()
-                                      .inventorySlots[gameSession.playerTickSnapshot()
+                smokeAppleCount = clientMirror_.world()
+                                      .inventorySlots[clientMirror_.player()
                                                           .selectedHotbarSlot]
                                       .count;
                 if (smokeAppleCount == 0U) {
@@ -1942,8 +1951,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             } else if (smokeTest && smokeGameplayFrames == 400U) {
                 enqueueUseStop();
                 const auto smokeRead = worldLock.read();
-                if (gameSession.worldSnapshot()
-                        .inventorySlots[gameSession.playerTickSnapshot().selectedHotbarSlot]
+                if (clientMirror_.world()
+                        .inventorySlots[clientMirror_.player().selectedHotbarSlot]
                         .count != smokeAppleCount) {
                     throw std::runtime_error("Smoke test creative eating consumed food");
                 }
@@ -1959,15 +1968,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 smokeWaitLabel = "return to survival mode";
                 smokeWaitCondition = [&] {
                     const auto smokeRead = worldLock.read();
-                    return gameSession.playerTickSnapshot().gameMode == gameplay::GameMode::Survival;
+                    return clientMirror_.player().gameMode == gameplay::GameMode::Survival;
                 };
                 // Once the mode lands, arm the meal: the apple survived creative
                 // eating, survival should spend it.
                 smokeWaitAction = [&] {
                     gameplay::SwapSlot swap;
                     swap.index = 8U;
-                    gameSession.enqueueCommand(std::move(swap));
-                    smokeAppleCount = gameSession.worldSnapshot()
+                    runtime.enqueueClientCommand(std::move(swap));
+                    smokeAppleCount = clientMirror_.world()
                                           .inventorySlots[8U]
                                           .count;
                     if (smokeAppleCount == 0U) {
@@ -1990,8 +1999,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             } else if (smokeTest && smokeGameplayFrames == 700U) {
                 enqueueUseStop();
                 const auto smokeRead = worldLock.read();
-                if (gameSession.worldSnapshot()
-                        .inventorySlots[gameSession.playerTickSnapshot().selectedHotbarSlot]
+                if (clientMirror_.world()
+                        .inventorySlots[clientMirror_.player().selectedHotbarSlot]
                         .count >= smokeAppleCount) {
                     throw std::runtime_error("Smoke test survival eating did not consume an apple");
                 }
@@ -2007,7 +2016,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 smokeWaitLabel = "/tp teleport";
                 smokeWaitCondition = [&] {
                     const auto smokeRead = worldLock.read();
-                    return gameSession.playerTickSnapshot().physicsCurrent.y >= 150.0F;
+                    return clientMirror_.player().physicsCurrent.y >= 150.0F;
                 };
             }
             if (smokeTest && !smokeReturnedToTitle && smokeGameplayFrames >= smokeFrameLimit &&
@@ -2287,6 +2296,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         chunkStreamer.setSmoothLightingQuality(currentMeshQuality);
         interactionWorld = {};
         clientCache = {};
+        // Drop the mirror so the next world does not briefly show the previous
+        // one's player/world state before the first tick republishes.
+        clientMirror_.clear();
         gameSession.resetWorldState();
         particleSystem = {};
         savedEditIndices.clear();
@@ -2415,7 +2427,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // Vanilla only lets a gameSession.player() sprint above six food points, unless they
         // may fly. A creative gameSession.player() is never gated on hunger.
         gameSession.input().sprintAllowed =
-            gameSession.input().flightAllowed || gameSession.playerTickSnapshot().foodLevel > 6;
+            gameSession.input().flightAllowed || clientMirror_.player().foodLevel > 6;
         // Bedrock-style auto-jump: walking forward into a one-block rise jumps
         // on its own; the gameSession.player() physics decides when the obstacle is jumpable.
         gameSession.input().autoJump = options.autoJump;
@@ -2441,12 +2453,19 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     void respawnPlayer() {
         gameSession.respawn(gameplay::kPrimaryPlayerId);
+        // respawn moved the authoritative player to the spawn and republished the
+        // session snapshot; push that onto the channel and pump it into the mirror
+        // now (the simulation is paused on the death screen, so nothing races),
+        // so the camera and reads below see the spawn this frame instead of the
+        // stale death position a tick later.
+        runtime.publishStateToChannel();
+        static_cast<void>(clientMirror_.pump(runtime.clientChannel(), *this));
         camera.setPosition(snapshotCameraEye());
         // PlayerManager#respawnPlayer snaps the new body to the spawn's stored
         // angle (vanilla yaw 0) instead of carrying the death look over. The
         // /tp conversion applies here: vanilla yaw 0 faces +Z.
-        camera.setRotation(gameSession.worldSnapshot().playerSpawnYaw + 90.0F, 0.0F);
-        const auto& worldSnap = gameSession.worldSnapshot();
+        camera.setRotation(clientMirror_.world().playerSpawnYaw + 90.0F, 0.0F);
+        const auto& worldSnap = clientMirror_.world();
         chunkStreamer.request(world::chunkPositionFromWorld(worldSnap.worldSpawnPosition.x,
                                                             worldSnap.worldSpawnPosition.z));
         setPaused(false);
@@ -2545,6 +2564,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                 bool withRotation) {
         if (const auto position = context.find<gameplay::command::Position3>("destination");
             position.has_value()) {
+            // The relative /tp base is the authoritative feet (this teleports the
+            // server player), not the lagging client mirror.
             const glm::vec3 base = gameSession.playerTickSnapshot().physicsCurrent;
             const glm::vec3 target{
                 position->relativeX ? base.x + static_cast<float>(position->x)
@@ -2608,7 +2629,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // (either namespace) matches, as its stable entity id. The render side names
     // entities for commands from what it draws, never from the live vector.
     [[nodiscard]] std::optional<std::uint64_t> entityIdById(std::string_view id) const {
-        const auto snapshot = gameSession.entitySnapshot();
+        const auto& snapshot = clientMirror_.entities();
         for (const auto& entity : snapshot.entities()) {
             if (entity.type == nullptr) {
                 continue;
@@ -2622,7 +2643,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     // The creature's render position from the published snapshot, by stable id.
     [[nodiscard]] std::optional<glm::vec3> snapshotEntityPosition(std::uint64_t entityId) const {
-        const auto snapshot = gameSession.entitySnapshot();
+        const auto& snapshot = clientMirror_.entities();
         for (const auto& entity : snapshot.entities()) {
             if (entity.id == entityId) {
                 return entity.position;
@@ -2714,7 +2735,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // renderer owns which screen that is and where the creative view sits; the
     // slot layout and the click routing that follow from it do not belong here.
     [[nodiscard]] gameplay::ScreenContext screenContext() const {
-        const auto snapshot = gameSession.worldSnapshot();
+        const auto snapshot = clientMirror_.world();
         const auto furnace = snapshot.openFurnace.has_value()
                                  ? gameplay::FurnacePosition{snapshot.openFurnace->x,
                                                              snapshot.openFurnace->y,
@@ -2728,7 +2749,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // rule the per-frame camera uses), so a caller that needs just the height —
     // a stress teleport's feet target, say — reads the snapshot too.
     [[nodiscard]] float snapshotEyeHeight() const {
-        return gameSession.playerTickSnapshot().sneaking
+        return clientMirror_.player().sneaking
                    ? gameplay::PlayerController::kSneakingEyeHeight
                    : gameplay::PlayerController::kEyeHeight;
     }
@@ -2737,7 +2758,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // snapped endpoints into the snapshot, so a synchronous teleport is visible
     // the same frame — the camera never reads the live controller.
     [[nodiscard]] glm::vec3 snapshotCameraEye() const {
-        const auto& snap = gameSession.playerTickSnapshot();
+        const auto& snap = clientMirror_.player();
         return snap.physicsCurrent + glm::vec3{0.0F, snapshotEyeHeight(), 0.0F};
     }
 
@@ -2776,6 +2797,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         releaseInteractionButtons();
         dropRequested = false;
+        // Re-anchor to the *authoritative* position, not the client mirror: this
+        // writes the server player, so it must read the session snapshot (which
+        // respawn/teleport update synchronously) — the channel mirror lags a
+        // tick, and after a respawn it still holds the death position, which would
+        // teleport the freshly respawned player back onto its corpse.
         gameSession.teleportPlayer(gameplay::kPrimaryPlayerId,
                                    gameSession.playerTickSnapshot().physicsCurrent);
         if (pause) {
@@ -3378,17 +3404,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             click.slotIndex = slot->index;
             click.button = static_cast<int>(button);
             click.shiftHeld = shiftHeld;
-            gameSession.enqueueCommand(std::move(click));
+            runtime.enqueueClientCommand(std::move(click));
             return;
         }
-        if (gameSession.worldSnapshot().openContainerScreen !=
+        if (clientMirror_.world().openContainerScreen !=
             ContainerScreen::PlayerInventory) {
             // Clicking outside every slot of an open container throws the held
             // stack on the floor, but only outside the panel itself.
             if (!layout.inventoryPanel().contains(framebufferCursor.x, framebufferCursor.y)) {
                 gameplay::DropCursor drop;
                 drop.lookDirection = camera.direction();
-                gameSession.enqueueCommand(std::move(drop));
+                runtime.enqueueClientCommand(std::move(drop));
             }
             return;
         }
@@ -3415,13 +3441,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // and the space outside the panel remain here.
                 if (layout.creativeDeleteSlot().contains(framebufferCursor.x,
                                                          framebufferCursor.y)) {
-                    gameSession.enqueueCommand(gameplay::ClearCursor{});
+                    runtime.enqueueClientCommand(gameplay::ClearCursor{});
                     return;
                 }
                 if (!layout.creativePanel().contains(framebufferCursor.x, framebufferCursor.y)) {
                     gameplay::DropCursor drop;
                     drop.lookDirection = camera.direction();
-                    gameSession.enqueueCommand(std::move(drop));
+                    runtime.enqueueClientCommand(std::move(drop));
                 }
                 return;
             }
@@ -3436,14 +3462,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                         // Empty cells in the creative catalogue are delete
                         // targets. Only clicks outside the panel create an
                         // item entity, matching the vanilla container.
-                        gameSession.enqueueCommand(gameplay::ClearCursor{});
+                        runtime.enqueueClientCommand(gameplay::ClearCursor{});
                         return;
                     }
                     gameplay::ClickCreativeItem click;
                     click.catalogStack = catalog[catalogIndex];
                     click.button = button;
                     click.shiftHeld = shiftHeld;
-                    gameSession.enqueueCommand(std::move(click));
+                    runtime.enqueueClientCommand(std::move(click));
                     return;
                 }
             }
@@ -3452,7 +3478,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (!layout.creativePanel().contains(framebufferCursor.x, framebufferCursor.y)) {
                 gameplay::DropCursor drop;
                 drop.lookDirection = camera.direction();
-                gameSession.enqueueCommand(std::move(drop));
+                runtime.enqueueClientCommand(std::move(drop));
             }
             return;
         }
@@ -3461,7 +3487,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (!layout.inventoryPanel().contains(framebufferCursor.x, framebufferCursor.y)) {
             gameplay::DropCursor drop;
             drop.lookDirection = camera.direction();
-            gameSession.enqueueCommand(std::move(drop));
+            runtime.enqueueClientCommand(std::move(drop));
         }
     }
 
@@ -3481,7 +3507,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                            now - lastClickTime < 0.25;
         lastClickedSlot = clickedSlot;
         lastClickTime = now;
-        if (gameSession.worldSnapshot().cursorStack.empty() ||
+        if (clientMirror_.world().cursorStack.empty() ||
             immediateCreativeControlUnderCursor()) {
             dispatchInventoryClick(button, shiftHeld);
             cancelNextInventoryRelease = true;
@@ -3501,7 +3527,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // state machine in both game modes and in creative-opened containers.
     [[nodiscard]] bool immediateCreativeControlUnderCursor() const {
         if (uiFrameData_.gameMode != gameplay::GameMode::Creative ||
-            gameSession.worldSnapshot().openContainerScreen !=
+            clientMirror_.world().openContainerScreen !=
                 ContainerScreen::PlayerInventory) {
             return false;
         }
@@ -3617,7 +3643,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     snapshotStackAt(gameplay::SlotKind kind, std::uint16_t index) const {
         // The world snapshot is a by-value copy, so the stack is returned by
         // value rather than as a reference into the copy.
-        const auto snap = gameSession.worldSnapshot();
+        const auto snap = clientMirror_.world();
         switch (kind) {
         case gameplay::SlotKind::PlayerInventory:
             return snap.inventorySlots[index];
@@ -3651,7 +3677,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // distribution does. Reads the container display snapshot, never live slots.
     [[nodiscard]] std::vector<std::uint8_t> dragPlacementCounts() const {
         std::vector<std::uint8_t> counts(inventoryDragSlots.size(), 0U);
-        const auto& cursor = gameSession.worldSnapshot().cursorStack;
+        const auto& cursor = clientMirror_.world().cursorStack;
         if (cursor.empty() || inventoryDragSlots.empty()) {
             return counts;
         }
@@ -3717,7 +3743,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             // second press already began a drag, so clear that state too.
             gameplay::PickupAll pickup;
             pickup.targets = allScreenSlots();
-            gameSession.enqueueCommand(std::move(pickup));
+            runtime.enqueueClientCommand(std::move(pickup));
             isDoubleClicking = false;
             inventoryDragActive = false;
             inventoryDragSlots.clear();
@@ -3733,7 +3759,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             gameplay::DragDistribute drag;
             drag.button = inventoryDragButton;
             drag.targets = std::move(inventoryDragSlots);
-            gameSession.enqueueCommand(std::move(drag));
+            runtime.enqueueClientCommand(std::move(drag));
         } else {
             // No movement: a plain press-release places the cursor stack into
             // the released slot (vanilla's PICKUP on release). A full-cursor
@@ -3770,7 +3796,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (!slot.has_value()) {
             return;
         }
-        if (static_cast<std::size_t>(gameSession.worldSnapshot().cursorStack.count) <=
+        if (static_cast<std::size_t>(clientMirror_.world().cursorStack.count) <=
             inventoryDragSlots.size()) {
             return;
         }
@@ -4039,7 +4065,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // behind a screen must end the dig/use); the start edges are guarded by
         // the caller so a press during a pause or a menu never queues stale.
         if (worldSessionActive) {
-            gameSession.enqueueCommand(std::move(command));
+            runtime.enqueueClientCommand(std::move(command));
         }
     }
 
@@ -4132,7 +4158,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             creatureHit.reset();
             return;
         }
-        const auto& selectedStack = gameSession.playerTickSnapshot().heldStack;
+        const auto& selectedStack = clientMirror_.player().heldStack;
         const bool collectingWater = selectedStack.item == &gameplay::items::Bucket;
         const float blockReach =
             uiFrameData_.gameMode == gameplay::GameMode::Creative ? 5.0F : 4.5F;
@@ -4142,7 +4168,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // (vanilla's HitResult is the nearest of block-or-entity). Tested against
         // the published entity snapshot, never the live vector.
         const auto hit = gameplay::raycastSnapshotEntities(
-            gameSession.entitySnapshot(), camera.position(), camera.direction(), blockReach);
+            clientMirror_.entities(), camera.position(), camera.direction(), blockReach);
         creatureHit = (hit.has_value() &&
                        (!targetedBlock.has_value() || hit->distance < targetedBlock->distance))
                           ? hit
@@ -5747,7 +5773,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     [[nodiscard]] glm::mat4 viewBobbingMatrix() const {
-        const auto& playerSnap = gameSession.playerTickSnapshot();
+        const auto& playerSnap = clientMirror_.player();
         if (!options.viewBobbing || playerSnap.flying)
             return glm::mat4{1.0F};
         const float alpha = renderInterpolationAlpha;
@@ -5824,7 +5850,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // real frames. The 20 Hz tick is coarse enough only for fast-moving
         // things; the sun barely moves per tick, so no sub-tick interpolation is
         // needed here.
-        const auto dayTick = gameSession.worldSnapshot().dayTimeTicks;
+        const auto dayTick = clientMirror_.world().dayTimeTicks;
         const auto daylight = world::DayNightCycle::stateAtTick(dayTick);
         uniform.sunDirection = glm::vec4{daylight.sunDirection, daylight.skyBrightness};
         // horizonFog.w drives only the moon phase. Fluid animation uses the
@@ -5848,7 +5874,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         uniform.celestialLayers = glm::vec4{kSunLayer, kMoonPhaseFirstLayer, 0.0F, 0.0F};
         // The sky's weather read comes from the per-tick snapshot, reproducing
         // the frame interpolation the live system's rainGradientAt(alpha) gave.
-        const auto& weather = gameSession.worldSnapshot();
+        const auto& weather = clientMirror_.world();
         const float alpha = renderInterpolationAlpha;
         const float rainGradient = weather.previousRainGradient +
                                    (weather.rainGradient - weather.previousRainGradient) * alpha;
@@ -5873,9 +5899,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             textures_.fluidAnimationFrameTimes[0], textures_.fluidAnimationFrameTimes[1],
             textures_.fluidAnimationFrameTimes[2], textures_.fluidAnimationFrameTimes[3]};
         uniform.fluidAnimationSettings.x =
-            static_cast<float>(gameSession.worldSnapshot().serverTick) + renderInterpolationAlpha;
+            static_cast<float>(clientMirror_.world().serverTick) + renderInterpolationAlpha;
         std::size_t lightCount = 0U;
-        const auto& heldStack = gameSession.playerTickSnapshot().heldStack;
+        const auto& heldStack = clientMirror_.player().heldStack;
         const bool holdingTorch = gameplay::emitsHeldLight(heldStack);
         if (options.dynamicLight && holdingTorch) {
             uniform.pointLights[lightCount] = glm::vec4{camera.position(), 7.7F};
@@ -6088,7 +6114,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         checkVk(vkResetFences(device, 1, &frame.inFlight), "vkResetFences");
         checkVk(vkResetCommandBuffer(frame.commandBuffer, 0), "vkResetCommandBuffer");
         const std::size_t visibleCount = world_.recordCommandBuffer(frame, imageIndex);
-        const auto& titleSnap = gameSession.playerTickSnapshot();
+        const auto& titleSnap = clientMirror_.player();
         const std::string movementMode =
             titleSnap.flying ? (titleSnap.sprinting ? "FLY SPRINT" : "FLY")
                              : (titleSnap.sprinting ? "SPRINT" : "WALK");
@@ -6169,6 +6195,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // simulation keeps ticking interactionWorld; the renderer reads only this
     // cache, so the two sides own their own chunk data.
     world::World clientCache;
+    // The client-side render mirror: filled each frame by pumping the loopback
+    // channel. Player, world and entity presentation all read the decoded views
+    // here instead of reaching into the authoritative session.
+    client::ClientMirror clientMirror_;
     gameplay::GameSession& gameSession;
     gameplay::SimulationDriver& simulationDriver;
     std::atomic_bool& simulationActive;
@@ -6507,6 +6537,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .menuSystem = menuSystem,
             .uiFrameData_ = uiFrameData_,
             .gameSession = gameSession,
+            .clientMirror = clientMirror_,
             .textFont = textFont,
             .fontMetrics = fontMetrics,
             .language = language,
@@ -6592,6 +6623,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .targetMeshQuality = targetMeshQuality,
             .qualityRemeshPending = qualityRemeshPending,
             .gameSession = gameSession,
+            .clientMirror = clientMirror_,
+            .enqueueClientCommand =
+                [this](gameplay::GameCommand command) {
+                    runtime.enqueueClientCommand(std::move(command));
+                },
             .simulationHost = *this,
             .worldLock = worldLock,
             .uiFrameData_ = uiFrameData_,

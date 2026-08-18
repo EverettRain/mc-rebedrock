@@ -40,6 +40,21 @@ const vec2 blockUvs[18] = vec2[](
 void main() {
     if (hud.data.x > 3.5 && hud.data.x < 4.5) {
         vec2 corner = blockCorners[gl_VertexIndex];
+        // Slab icon: the block is drawn half height. hud.uvRect.x carries the
+        // portion (0 = full cube, 1 = bottom half, 2 = top half); the block
+        // branch never reads uvRect otherwise. One block's side rises 0.48 of the
+        // icon on screen, so folding the top edge (or the bottom edge) down by
+        // half of that collapses the cube to the matching half slab.
+        float portion = hud.uvRect.x;
+        int index = gl_VertexIndex;
+        bool bottomEdge = index == 8 || index == 10 || index == 11 ||
+                          index == 14 || index == 16 || index == 17;
+        const float halfBlock = 0.24;
+        if (portion > 0.5 && portion < 1.5 && !bottomEdge) {
+            corner.y += halfBlock; // bottom slab: drop the top face to mid height
+        } else if (portion > 1.5 && bottomEdge) {
+            corner.y -= halfBlock; // top slab: lift the bottom edge to mid height
+        }
         gl_Position = vec4(hud.rect.xy + corner * hud.rect.zw, 0.0, 1.0);
         fragmentUv = blockUvs[gl_VertexIndex];
         fragmentTextureLayer = gl_VertexIndex < 6

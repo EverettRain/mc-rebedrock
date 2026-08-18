@@ -21,6 +21,7 @@
 #include "animation/ModelAnimationSystem.hpp"
 #include "animation/PlayerModelAnimator.hpp"
 #include "animation/SkeletalModel.hpp"
+#include "client/ClientMirror.hpp"
 #include "config/GameOptions.hpp"
 #include "gameplay/ChestSystem.hpp"
 #include "gameplay/GameSession.hpp"
@@ -99,6 +100,14 @@ class WorldRenderer final {
     world::SmoothLightingQuality& targetMeshQuality;
     std::unordered_set<world::SectionPosition, world::SectionPositionHash>& qualityRemeshPending;
     gameplay::GameSession& gameSession;
+    // The client-side player/world/entity mirror. Render reads come from here
+    // after decoding the channel; the session remains only for the few explicit
+    // authoritative operations used by test and interaction paths.
+    const client::ClientMirror& clientMirror;
+    // Stage C slice 1b: the client end of the loopback channel, as a command-only
+    // hook so the Q-drop ships its intent over the message path like every other
+    // command instead of reaching into the session's queue directly.
+    std::function<void(gameplay::GameCommand)> enqueueClientCommand;
     gameplay::SimulationHost& simulationHost;
     world::WorldLock& worldLock;
     ui::UiFrameData& uiFrameData_;
@@ -219,7 +228,9 @@ class WorldRenderer final {
         occlusionBoxIndexBuffer(b.occlusionBoxIndexBuffer),
         pendingSectionOrder(b.pendingSectionOrder), currentMeshQuality(b.currentMeshQuality),
         targetMeshQuality(b.targetMeshQuality), qualityRemeshPending(b.qualityRemeshPending),
-        gameSession(b.gameSession), simulationHost(b.simulationHost), worldLock(b.worldLock), uiFrameData_(b.uiFrameData_),
+        gameSession(b.gameSession), clientMirror(b.clientMirror),
+        enqueueClientCommand(b.enqueueClientCommand),
+        simulationHost(b.simulationHost), worldLock(b.worldLock), uiFrameData_(b.uiFrameData_),
         camera(b.camera), speciesModels(b.speciesModels), heldItemAnimation(b.heldItemAnimation),
         worldPlayerAnimator(b.worldPlayerAnimator), chestLidAnimation(b.chestLidAnimation),
         itemDisplayAnimation(b.itemDisplayAnimation), cameraPerspective(b.cameraPerspective),
@@ -375,7 +386,7 @@ class WorldRenderer final {
             }
             if (completedStreamBatchCount == 1U &&
                 std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr) {
-                const auto snap = gameSession.playerTickSnapshot();
+                const auto snap = clientMirror.player();
                 const glm::vec3 oldPosition = snap.physicsCurrent;
                 gameSession.teleportPlayer(gameplay::kPrimaryPlayerId,
                                            glm::vec3{52.284F, oldPosition.y, -4.284F});
@@ -486,7 +497,7 @@ class WorldRenderer final {
         // keep the chunks in front of the gameSession.player() generated; this is the client-side
         // equivalent. The lead is capped so the gameSession.player()'s own chunk stays inside
         // the unload radius.
-        const auto& playerSnap = gameSession.playerTickSnapshot();
+        const auto& playerSnap = clientMirror.player();
         const glm::vec2 velocity{
             playerSnap.physicsCurrent.x - playerSnap.physicsPrevious.x,
             playerSnap.physicsCurrent.z - playerSnap.physicsPrevious.z,
@@ -550,7 +561,7 @@ class WorldRenderer final {
         gameplay::DropSelected drop;
         drop.wholeStack = dropWholeStack;
         drop.lookDirection = camera.direction();
-        gameSession.enqueueCommand(std::move(drop));
+        enqueueClientCommand(std::move(drop));
         dropWholeStack = false;
     }
 
@@ -806,7 +817,7 @@ class WorldRenderer final {
             return;
         }
         const auto daylight = world::DayNightCycle::stateAtTick(
-            gameSession.worldSnapshot().dayTimeTicks);
+            clientMirror.world().dayTimeTicks);
         const glm::vec3 sun = glm::normalize(daylight.sunDirection);
         const glm::vec3 eye = camera.position();
         const glm::mat4 lightView =
@@ -918,7 +929,15 @@ class WorldRenderer final {
         // do: the live vectors belong to the simulation. Bind the value snapshot
         // to a local first — a reference to a member of a by-value return does
         // not extend its lifetime.
-        const auto snapshot = gameSession.entitySnapshot();
+        //
+        // Take the snapshot and the interpolation alpha from one bundle load
+        // (entityRenderFrame): a drop's endpoints and the alpha that blends them
+        // must be from the same publish, or a tick landing between two separate
+        // loads leaves the alpha a tick out of step with the endpoints and the
+        // drop jitters. The frame-wide renderInterpolationAlpha is not used here.
+        const auto entityFrame = clientMirror.entityRenderFrame();
+        const auto& snapshot = entityFrame.snapshot;
+        const float itemAlpha = entityFrame.alpha;
         const auto& snapshotItems = snapshot.items();
         const auto& snapshotFallingBlocks = snapshot.fallingBlocks();
         if (snapshotItems.empty() && snapshotFallingBlocks.empty()) {
@@ -931,7 +950,7 @@ class WorldRenderer final {
             for (const auto& entity : snapshotItems) {
                 const glm::vec3 renderedPosition =
                     entity.previousPosition +
-                    (entity.position - entity.previousPosition) * renderInterpolationAlpha;
+                    (entity.position - entity.previousPosition) * itemAlpha;
                 const int startY = static_cast<int>(std::floor(renderedPosition.y));
                 std::optional<float> groundY;
                 for (int y = startY; y >= std::max(0, startY - 12); --y) {
@@ -974,7 +993,7 @@ class WorldRenderer final {
         for (const auto& entity : snapshotItems) {
             const glm::vec3 renderedPosition =
                 entity.previousPosition +
-                (entity.position - entity.previousPosition) * renderInterpolationAlpha;
+                (entity.position - entity.previousPosition) * itemAlpha;
             const bool cubeModel =
                 gameplay::isBlockStack(entity.stack) &&
                 (world::blockDefinition(entity.stack.block).model == world::BlockModel::Cube ||
@@ -986,7 +1005,7 @@ class WorldRenderer final {
                                                       gameplay::itemTextureLayer(entity.stack)};
             const float previousAge =
                 entity.ageTicks == 0U ? 0.0F : static_cast<float>(entity.ageTicks - 1U);
-            const float age = previousAge + renderInterpolationAlpha;
+            const float age = previousAge + itemAlpha;
             // Float and spin are now driven by the animation library's display
             // entity preset (Molang-authored curves).
             const auto motion = itemDisplayAnimation.at(age, entity.visualPhase);
@@ -1032,7 +1051,7 @@ class WorldRenderer final {
         for (const auto& entity : snapshotFallingBlocks) {
             const glm::vec3 renderedPosition =
                 entity.previousPosition +
-                (entity.position - entity.previousPosition) * renderInterpolationAlpha;
+                (entity.position - entity.previousPosition) * itemAlpha;
             const auto layers = world::textureLayers(entity.block);
             // The falling block is drawn centred on its position, and the cell it
             // is falling through is air, so sample it directly.
@@ -1140,7 +1159,7 @@ class WorldRenderer final {
         const auto& drops = rainSystem.drops();
         static bool reported = false;
         if (rainMode_ == RainMode::Texture) {
-            const float rainGradient = gameSession.worldSnapshot().rainGradient;
+            const float rainGradient = clientMirror.world().rainGradient;
             if (rainGradient <= 0.02F) {
                 return;
             }
@@ -1351,7 +1370,7 @@ class WorldRenderer final {
 
 
     void drawChestEntities(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
-        const auto& chests = gameSession.worldSnapshot().chests;
+        const auto& chests = clientMirror.world().chests;
         if (chests.empty())
             return;
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline);
@@ -1428,7 +1447,7 @@ class WorldRenderer final {
         // The camera sits at the interpolated eye; anchor the model at the feet.
         const glm::vec3 feet =
             camera.position() -
-            glm::vec3{0.0F, gameSession.playerTickSnapshot().sneaking
+            glm::vec3{0.0F, clientMirror.player().sneaking
                           ? gameplay::PlayerController::kSneakingEyeHeight
                           : gameplay::PlayerController::kEyeHeight,
                       0.0F};
@@ -1547,7 +1566,7 @@ class WorldRenderer final {
         // once the simulation runs on its own thread that vector is being
         // reordered and resized while this pass walks it. The snapshot is a value
         // copy bound first so its entities() reference stays valid.
-        const auto snapshot = gameSession.entitySnapshot();
+        const auto& snapshot = clientMirror.entities();
         const auto& snapshotEntities = snapshot.entities();
         if (!worldReady || snapshotEntities.empty()) {
             return;
@@ -1678,7 +1697,7 @@ class WorldRenderer final {
         // touches the live PlayerInteraction on the render thread. A value copy
         // is kept because one held in Bindings froze at WorldRenderer
         // construction, which meant it stayed inactive forever.
-        const auto playerSnapshot = gameSession.playerTickSnapshot();
+        const auto playerSnapshot = clientMirror.player();
         const auto& digSnapshot = playerSnapshot.digging;
         if (uiFrameData_.gameMode != gameplay::GameMode::Survival || !digSnapshot.active ||
             !targetedBlock.has_value() || digSnapshot.target != targetedBlock->block) {
@@ -2164,6 +2183,8 @@ class WorldRenderer final {
   world::SmoothLightingQuality& targetMeshQuality;
   std::unordered_set<world::SectionPosition, world::SectionPositionHash>& qualityRemeshPending;
   gameplay::GameSession& gameSession;
+  const client::ClientMirror& clientMirror;
+  std::function<void(gameplay::GameCommand)> enqueueClientCommand;
   gameplay::SimulationHost& simulationHost;
   world::WorldLock& worldLock;
   ui::UiFrameData& uiFrameData_;

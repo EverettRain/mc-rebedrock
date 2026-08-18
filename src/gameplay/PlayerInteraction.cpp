@@ -43,6 +43,50 @@ gameplay::ScreenContext buildScreenContext(GameSession& session) {
 
 // Carrot and potato are both food and seed: right-clicking farmland with one
 // plants the crop, and the plant wins over eating.
+// The block a held stack would place, or Air for a non-block item. A legacy
+// block stack carries the block directly with a null item pointer.
+[[nodiscard]] world::Block heldPlacementBlock(const ItemStack& stack) {
+    if (const auto* blockItem = asBlockItem(stack.item)) {
+        return blockItem->block();
+    }
+    return stack.item == nullptr ? stack.block : world::Block::Air;
+}
+
+// SlabBlock#canBeReplaced: right-clicking an existing single slab with the same
+// slab merges the two into a double. Without a sub-cell hit fraction the gesture
+// is read from the clicked face — completing a bottom slab from above or a top
+// slab from below — plus the case where the placement cell already holds the
+// same single slab. Returns the cell to rewrite and the double state, or nothing
+// when no merge applies (the caller then runs ordinary placement).
+[[nodiscard]] std::optional<std::pair<glm::ivec3, world::BlockState>> slabMergeTarget(
+    world::World& world, world::Block held, const UseItemOn& use) {
+    if (!world::isSlab(held)) {
+        return std::nullopt;
+    }
+    const auto asDouble = [&](glm::ivec3 cell) {
+        return std::pair{cell, world::BlockState{held}.withSlabPortion(
+                                   world::SlabPortion::Double)};
+    };
+    // The clicked cell: complete the slab from its open side.
+    const auto clicked = world.state(use.block.x, use.block.y, use.block.z);
+    if (clicked.block() == held) {
+        const auto portion = clicked.slabPortion();
+        if ((portion == world::SlabPortion::Bottom &&
+             use.face == world::BlockOrientation::Up) ||
+            (portion == world::SlabPortion::Top &&
+             use.face == world::BlockOrientation::Down)) {
+            return asDouble(use.block);
+        }
+    }
+    // The placement cell already holds the matching single slab (stacking a slab
+    // into a cell whose complementary half is filled).
+    const auto target = world.state(use.adjacent.x, use.adjacent.y, use.adjacent.z);
+    if (target.block() == held && target.slabPortion() != world::SlabPortion::Double) {
+        return asDouble(use.adjacent);
+    }
+    return std::nullopt;
+}
+
 bool aimsAtPlantableFarmland(world::World& world, const UseItemOn& use,
                              const ItemStack& selectedStack) {
     const auto* held = selectedStack.item;
@@ -351,6 +395,27 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
         const world::PlacementContext placement{use.block, placeTarget, use.face,
                                                 use.lookDirection};
         const auto& selectedStack = session.inventory().selectedStack();
+        // SlabBlock merge: two single slabs of the same kind become a double,
+        // rewriting the cell that already holds a slab rather than placing into
+        // an empty neighbour. This is its own path because the target cell is not
+        // replaceable (it is a slab), so the ordinary PlaceBlock check rejects it.
+        if (const auto merge = slabMergeTarget(world, heldPlacementBlock(selectedStack), use)) {
+            const auto cell = merge->first;
+            GameplayMutationSink sink{world, session};
+            if (session.worldMutations()
+                    .setBlock(world, {cell.x, cell.y, cell.z}, merge->second,
+                              world::MutationFlags::All, world::MutationCause::PlayerPlace, sink)
+                    .changed) {
+                session.events().publish(SoundEvent{SoundEventKind::BlockPlace,
+                                                    glm::vec3{cell} + glm::vec3{0.5F},
+                                                    merge->second.block()});
+                session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
+                if (session.gameMode() == GameMode::Survival) {
+                    static_cast<void>(session.inventory().consumeSelected());
+                }
+            }
+            break;
+        }
         const ItemUseResult itemUse = selectedStack.item != nullptr
                                           ? itemUseOn(selectedStack.item, world, placement)
                                           : legacyBlockStackUseOn(selectedStack, world, placement);
@@ -458,11 +523,17 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
             const auto block = placeTarget;
             const auto existingBlock = world.block(block.x, block.y, block.z);
             const world::Block placedBlock = itemUse.state.block();
+            // Occupancy is checked against the block's real box, not a full cube,
+            // so a slab drops into the empty half of the cell the player (or a
+            // creature) is standing in instead of being rejected as blocked.
+            const auto placedSpan = world::collisionSpan(itemUse.state);
             GameplayMutationSink sink{world, session};
             if (world::isRenderable(placedBlock) && world::isReplaceable(existingBlock) &&
                 (!world::hasCollision(placedBlock) ||
-                 (!session.player().intersectsBlock(block.x, block.y, block.z) &&
-                  !session.worldEntities().intersectsBlock(block.x, block.y, block.z))) &&
+                 (!session.player().intersectsBlock(block.x, block.y, block.z,
+                                                    placedSpan.bottom, placedSpan.top) &&
+                  !session.worldEntities().intersectsBlock(block.x, block.y, block.z,
+                                                           placedSpan.bottom, placedSpan.top))) &&
                 session.worldMutations()
                     .setBlock(world, {block.x, block.y, block.z}, itemUse.state,
                               world::MutationFlags::All, world::MutationCause::PlayerPlace, sink)

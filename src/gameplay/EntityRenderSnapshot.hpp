@@ -49,10 +49,22 @@ struct EntityRenderState final {
     // progress and whether to flash the hurt overlay.
     int hurtTicks = 0;
     int deathTicks = 0;
+
+    // EntityType instances are static singletons, so the pointer compares by
+    // identity and round-trips by id — the codec can rebuild the same pointer.
+    [[nodiscard]] friend bool operator==(const EntityRenderState&, const EntityRenderState&) =
+        default;
 };
 
 class EntityRenderSnapshot final {
   public:
+    // Value equality over the three vectors, needed so NetMessage (a variant that
+    // includes this) is equality-comparable. libc++ requires every variant
+    // alternative to be comparable even when a held value never is at runtime;
+    // libstdc++ is lenient, so this is what makes the mac build match Linux.
+    [[nodiscard]] friend bool operator==(const EntityRenderSnapshot&,
+                                         const EntityRenderSnapshot&) = default;
+
     // Rebuilds from the live lists. Called at the end of a tick, on whichever
     // thread owns the simulation.
     //
@@ -69,6 +81,15 @@ class EntityRenderSnapshot final {
     [[nodiscard]] const std::vector<ItemEntity>& items() const { return items_; }
     [[nodiscard]] const std::vector<FallingBlockEntity>& fallingBlocks() const {
         return fallingBlocks_;
+    }
+    // Populates the snapshot directly, for the client side of the transport
+    // (C-1b-4): the codec decodes the three vectors off the channel and hands
+    // them here, the client analogue of capture() on the server.
+    void assign(std::vector<EntityRenderState> creatures, std::vector<ItemEntity> items,
+                std::vector<FallingBlockEntity> fallingBlocks) {
+        entities_ = std::move(creatures);
+        items_ = std::move(items);
+        fallingBlocks_ = std::move(fallingBlocks);
     }
     [[nodiscard]] bool empty() const {
         return entities_.empty() && items_.empty() && fallingBlocks_.empty();

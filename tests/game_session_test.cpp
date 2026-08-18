@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 
 #include <glm/geometric.hpp>
@@ -141,6 +142,35 @@ int main() {
         assert(publisher.playerTickSnapshot().physicsCurrent.x == 7.0F);
         // The earlier copy is still the earlier frame.
         assert(first.physicsCurrent.x == 1.0F);
+    }
+
+    // Stage C jitter fix: the interpolation alpha is derived from the published
+    // bundle's own timestamp, so a moving entity's endpoints and the alpha that
+    // blends them always come from one publish — the tick-boundary phase race
+    // that jittered drops and the swung hand is gone. Headless pins the
+    // coherence (the race itself needs the two threads, i.e. TSan/eyes on mac):
+    // a fresh bundle reads a near-zero alpha, the alpha grows with wall time,
+    // and entityRenderFrame pairs the snapshot with an in-range alpha.
+    {
+        world::World timedWorld;
+        gameplay::GameSession timed;
+        TestHost timedHost;
+        // No tick has published a real timestamp yet, so there is nothing to
+        // interpolate past: the alpha reads 0.
+        assert(timed.interpolationAlpha() == 0.0F);
+        timed.tick(timedWorld, timedHost);
+        // Immediately after publish, almost no wall time has passed — well under
+        // one 50 ms tick.
+        assert(timed.interpolationAlpha() < 0.5F);
+        // Half a tick later the alpha has advanced. If publishSnapshots failed to
+        // stamp the bundle it would stay pinned at 0, which this catches.
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        assert(timed.interpolationAlpha() > 0.2F);
+        // The paired frame carries the same entities the plain accessor returns
+        // and an in-range alpha, both from one bundle load.
+        const auto frame = timed.entityRenderFrame();
+        assert(frame.alpha >= 0.0F && frame.alpha <= 1.0F);
+        assert(frame.snapshot.items().size() == timed.entitySnapshot().items().size());
     }
 
     // P0: the immutable snapshot bundle is safe to read from one thread while

@@ -18,6 +18,7 @@
 // own thread. Making the queue thread-safe is then a change to this class
 // alone, and not to any emitter.
 
+#include "gameplay/GameEventCodec.hpp"
 #include "gameplay/GameEvents.hpp"
 
 #include <variant>
@@ -28,6 +29,12 @@
 namespace mc::gameplay {
 
 struct SimulationHost;
+
+// Applies one decoded event to a host, the event->host mapping the bridge has
+// always done, extracted so the client side of the transport (stage C-1b-3) can
+// perform the very same host calls after decoding a GameEvent off the channel.
+// GameEvent is the codec's variant, identical to the bridge's queued type.
+void applyGameEvent(const GameEvent& event, SimulationHost& host);
 
 class SimulationHostBridge final {
   public:
@@ -52,26 +59,23 @@ class SimulationHostBridge final {
     void clear();
     [[nodiscard]] std::size_t pending() const;
 
+    // Swaps the queued events out without applying them, for a caller that will
+    // carry them elsewhere — stage C-1b-3's transport encodes each and sends it
+    // on the channel, and the client applies them with applyGameEvent instead of
+    // the bridge draining straight into the host. Preserves publish order.
+    [[nodiscard]] std::vector<GameEvent> takeQueued();
 
   private:
     // One vector rather than four, because the *relative* order matters: a
     // block's break sound and its particles have to follow the world edit that
     // removed it, not run in a separate pass. Every payload is trivially
-    // copyable, so this stays a flat buffer.
-    using QueuedEvent =
-        std::variant<WorldEditEvent, SoundEvent, ParticleEvent, PlayerDiedEvent,
-                     ClientActionEvent>;
-
-    void enqueue(QueuedEvent event);
-    void run(const WorldEditEvent& event) const;
-    void run(const SoundEvent& event) const;
-    void run(const ParticleEvent& event) const;
-    void run(const PlayerDiedEvent& event) const;
-    void run(const ClientActionEvent& event) const;
+    // copyable, so this stays a flat buffer. The element type is the codec's
+    // GameEvent (same variant), so takeQueued hands them straight to the codec.
+    void enqueue(GameEvent event);
 
     std::atomic<SimulationHost*> host_{nullptr};
     mutable std::mutex queueMutex_;
-    std::vector<QueuedEvent> queued_;
+    std::vector<GameEvent> queued_;
 };
 
 } // namespace mc::gameplay

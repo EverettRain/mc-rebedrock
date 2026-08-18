@@ -154,7 +154,7 @@ void MinedDrops::add(const ItemStack& stack) {
 }
 
 MinedDrops minedDrops(world::Block block, const ItemStack& tool, std::uint32_t& randomState,
-                      int age) {
+                      int age, bool doubledSlab) {
     MinedDrops drops;
     // Breaking a block with too weak a tool destroys it without any loot.
     if (!canHarvestBlock(block, tool)) return drops;
@@ -262,9 +262,10 @@ MinedDrops minedDrops(world::Block block, const ItemStack& tool, std::uint32_t& 
 
     default:
         // dropsItem marks the blocks whose loot is simply themselves; the rest
-        // (tall grass, which would need seeds) drop nothing.
+        // (tall grass, which would need seeds) drop nothing. A double slab is two
+        // slab items, so it comes back whole when rebuilt.
         if (world::blockDefinition(block).dropsItem) {
-            drops.add({block, 1U, blockItemFor(block)});
+            drops.add({block, static_cast<std::uint8_t>(doubledSlab ? 2 : 1), blockItemFor(block)});
         }
         break;
     }

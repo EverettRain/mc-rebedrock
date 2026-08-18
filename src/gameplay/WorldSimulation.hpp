@@ -65,6 +65,8 @@ struct FallingBlockEntity final {
     float verticalVelocity = 0.0F;
     world::Block block = world::Block::Sand;
     bool removed = false;
+    [[nodiscard]] friend bool operator==(const FallingBlockEntity&, const FallingBlockEntity&) =
+        default;
 };
 
 [[nodiscard]] bool isCollectableWaterSource(

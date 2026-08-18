@@ -76,7 +76,12 @@ class PlayerController final {
     [[nodiscard]] float previousHorizontalSpeed() const { return previousHorizontalSpeed_; }
     [[nodiscard]] float strideDistance() const { return strideDistance_; }
     [[nodiscard]] float previousStrideDistance() const { return previousStrideDistance_; }
-    [[nodiscard]] bool intersectsBlock(int x, int y, int z) const;
+    // Whether the player's box overlaps a block placed at (x, y, z) whose
+    // collision box spans [y+boxBottom, y+boxTop] vertically. The default is a
+    // full cube; a slab passes its half box so the player can place a slab into
+    // the empty half of the cell it is standing in.
+    [[nodiscard]] bool intersectsBlock(int x, int y, int z, float boxBottom = 0.0F,
+                                       float boxTop = 1.0F) const;
     // Whether the last move was stopped by a wall on X or Z, the way vanilla's
     // Entity#horizontalCollision reads after move(). Cancels sprinting.
     [[nodiscard]] bool horizontalCollision() const { return horizontalCollision_; }

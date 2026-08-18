@@ -7,6 +7,7 @@
 #include "gameplay/GameSnapshotCodec.hpp"
 
 #include "gameplay/Item.hpp"
+#include "gameplay/entities/EntityRegistry.hpp"
 #include "persistence/SaveStream.hpp"
 #include "world/Block.hpp"
 
@@ -63,6 +64,7 @@ void checkRoundTrip(const gameplay::PublishedSnapshot& snapshot) {
     snap.previousFieldOfViewMultiplier = 1.0F;
     snap.fieldOfViewMultiplier = 1.1F;
     snap.heldStack = {world::Block::Air, 3U, &gameplay::items::Diamond};
+    snap.digging = {true, {4, 5, 6}, 123U};
     snap.health = 17.5F;
     snap.foodLevel = 14;
     snap.airTicks = 250;
@@ -108,14 +110,77 @@ void checkRoundTrip(const gameplay::PublishedSnapshot& snapshot) {
     snap.furnaceOutput = {world::Block::Air, 1U, &gameplay::items::IronIngot};
     snap.furnaceFuelProgress = 0.3F;
     snap.furnaceCookProgress = 0.6F;
+    // The open-container binding: the HUD dispatches the drawn screen from this,
+    // so the codec must round-trip it (a non-default value catches the gap).
+    snap.openContainerScreen = gameplay::ContainerScreen::CraftingTable;
+    snap.openChest = gameplay::ChestPosition{7, 8, 9};
+    snap.openFurnace = glm::ivec3{1, 2, 3};
     return snap;
+}
+
+// A populated entity snapshot: a creature, a drop and a falling block, each with
+// non-default render fields (the sim-only fields stay default so the render-only
+// encoding round-trips exactly).
+[[nodiscard]] gameplay::EntityRenderSnapshot populatedEntities() {
+    std::vector<gameplay::EntityRenderState> creatures;
+    gameplay::EntityRenderState pig;
+    pig.type = gameplay::entities::entityTypeRegistry().byId("pig");
+    pig.id = 7U;
+    pig.position = {1.0F, 2.0F, 3.0F};
+    pig.previousPosition = {1.0F, 2.0F, 2.5F};
+    pig.yaw = 45.0F;
+    pig.previousYaw = 40.0F;
+    pig.walkDistance = 5.0F;
+    pig.previousWalkDistance = 4.0F;
+    pig.hurtTicks = 2;
+    pig.deathTicks = 0;
+    creatures.push_back(pig);
+
+    std::vector<gameplay::ItemEntity> drops;
+    gameplay::ItemEntity drop;
+    drop.position = {4.0F, 5.0F, 6.0F};
+    drop.previousPosition = {4.0F, 5.0F, 5.5F};
+    drop.stack = {world::Block::Air, 2U, &gameplay::items::Diamond};
+    drop.ageTicks = 100U;
+    drop.visualPhase = 0.5F;
+    drops.push_back(drop);
+
+    std::vector<gameplay::FallingBlockEntity> falling;
+    gameplay::FallingBlockEntity block;
+    block.position = {7.0F, 8.0F, 9.0F};
+    block.previousPosition = {7.0F, 9.0F, 9.0F};
+    block.block = world::Block::Sand;
+    falling.push_back(block);
+
+    gameplay::EntityRenderSnapshot snapshot;
+    snapshot.assign(std::move(creatures), std::move(drops), std::move(falling));
+    return snapshot;
 }
 
 }  // namespace
 
 int main() {
+    gameplay::entities::registerBuiltinEntities();
+
     // --- A fully-populated player snapshot round-trips with every field. ---
     checkRoundTrip(gameplay::PlayerTickSnapshot{populatedPlayer()});
+
+    // --- The entity snapshot (creature + drop + falling block) round-trips, and
+    // a decoded empty one is empty. ---
+    {
+        const auto snapshot = populatedEntities();
+        const auto bytes = gameplay::encodeEntitySnapshot(snapshot);
+        const auto decoded = gameplay::decodeEntitySnapshot(bytes);
+        assert(decoded.has_value());
+        assert(decoded->entities() == snapshot.entities());
+        assert(decoded->items() == snapshot.items());
+        assert(decoded->fallingBlocks() == snapshot.fallingBlocks());
+        std::cout << "entitySnapshotBytes=" << bytes.size() << "\n";
+
+        const auto emptyBytes = gameplay::encodeEntitySnapshot(gameplay::EntityRenderSnapshot{});
+        const auto decodedEmpty = gameplay::decodeEntitySnapshot(emptyBytes);
+        assert(decodedEmpty.has_value() && decodedEmpty->empty());
+    }
 
     // --- A fully-populated world snapshot (chests + container display + block
     // and item stacks) round-trips. ---

@@ -9,6 +9,7 @@
 #include <glm/vec2.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -323,6 +324,12 @@ void GameSession::publishSnapshots() {
     // until the next tick replaces it.
     entitySnapshot_.capture(worldEntities_.entities(), itemEntities_.entities(),
                             worldSimulation_.fallingBlocks());
+    // Stamp the publish time so the render thread derives the interpolation alpha
+    // from this very bundle. Written just before the atomic publish, so a reader
+    // that pins this bundle sees a timestamp that belongs to the endpoints it
+    // carries — the alpha and the endpoints can never be a tick out of step.
+    snapshots->tickPublishRep =
+        std::chrono::steady_clock::now().time_since_epoch().count();
     // Publish all three views together. Readers that already loaded the previous
     // shared bundle keep it alive until their copies finish.
     publishSnapshotBundle(snapshots);
@@ -360,6 +367,32 @@ void GameSession::storeSnapshotBundle(
     std::atomic_store_explicit(
         &publishedSnapshots_, std::move(snapshots), std::memory_order_release);
 #endif
+}
+
+namespace {
+// The interpolation alpha for a bundle published at `tickPublishRep` (a
+// steady_clock::duration rep): how far now sits past that publish, in [0,1]. A
+// zero rep means nothing has been published yet, so the frame sits exactly on
+// the (default) snapshot and the alpha is 0.
+[[nodiscard]] float alphaFromPublishRep(std::int64_t tickPublishRep) {
+    if (tickPublishRep == 0) {
+        return 0.0F;
+    }
+    const std::chrono::steady_clock::time_point published{
+        std::chrono::steady_clock::duration{tickPublishRep}};
+    const float elapsed =
+        std::chrono::duration<float>{std::chrono::steady_clock::now() - published}.count();
+    return std::clamp(elapsed / PlayerController::kTickSeconds, 0.0F, 1.0F);
+}
+}  // namespace
+
+float GameSession::interpolationAlpha() const {
+    return alphaFromPublishRep(loadSnapshotBundle()->tickPublishRep);
+}
+
+GameSession::InterpolatedEntities GameSession::entityRenderFrame() const {
+    const auto bundle = loadSnapshotBundle();
+    return {bundle->entities, alphaFromPublishRep(bundle->tickPublishRep)};
 }
 
 void GameSession::commitInput() {
@@ -633,7 +666,9 @@ void GameSession::spawnBlockDrops(glm::ivec3 position, world::BlockState removed
     // The whole state arrives, so the loot table can roll against the stage a
     // crop had grown to rather than against the bare block.
     const auto drops =
-        minedDrops(removed.block(), tool, lootRandomState_, removed.age());
+        minedDrops(removed.block(), tool, lootRandomState_, removed.age(),
+                   world::isSlab(removed.block()) &&
+                       removed.slabPortion() == world::SlabPortion::Double);
     std::size_t dropIndex = 0U;
     for (const auto& stack : drops.view()) {
         const float angle = static_cast<float>(dropIndex) * 2.39996323F;

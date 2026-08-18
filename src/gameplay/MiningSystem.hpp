@@ -64,8 +64,10 @@ struct MinedDrops final {
 // the same state sequence always produces the same drops. Pass an empty stack
 // as `tool` for a break nobody swung at, such as a torch losing its wall.
 // `age` is the crop's AGE property, 0-7, read off the state before the crop was
-// removed; the crop loot tables roll against it.
+// removed; the crop loot tables roll against it. `doubledSlab` is set when the
+// removed state was a double slab, which drops two slab items instead of one.
 [[nodiscard]] MinedDrops minedDrops(
-    world::Block block, const ItemStack& tool, std::uint32_t& randomState, int age = 0);
+    world::Block block, const ItemStack& tool, std::uint32_t& randomState, int age = 0,
+    bool doubledSlab = false);
 
 } // namespace mc::gameplay

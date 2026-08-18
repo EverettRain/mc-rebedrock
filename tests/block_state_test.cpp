@@ -143,6 +143,41 @@ int main() {
                 BlockState{Block::WallTorch, BlockOrientation::West}));
     }
 
+    // --- SlabBlock.TYPE: bottom/top/double round-trip, default is bottom. ---
+    {
+        // Exactly three states per slab (type only; waterlogged is a later
+        // slice), and no other axis leaks in.
+        assert(kBlockRegistry[static_cast<std::size_t>(Block::OakSlab)].states.stateCount() == 3U);
+        assert(kBlockRegistry[static_cast<std::size_t>(Block::StoneSlab)].states.stateCount() == 3U);
+
+        // A freshly placed slab is the block's default state: the bottom half.
+        const BlockState fresh{Block::OakSlab};
+        assert(fresh.slabPortion() == SlabPortion::Bottom);
+        assert(!fresh.isFullCubeState());
+
+        for (const auto portion : {SlabPortion::Bottom, SlabPortion::Top, SlabPortion::Double}) {
+            const auto slab = BlockState{Block::OakSlab}.withSlabPortion(portion);
+            assert(slab.block() == Block::OakSlab);
+            assert(slab.slabPortion() == portion);
+            // Only a double slab fills its whole cell.
+            assert(slab.isFullCubeState() == (portion == SlabPortion::Double));
+            // The SlabType axis does not disturb the block's other reads.
+            assert(slab.orientation() == BlockOrientation::North);
+        }
+
+        // The three portions are three distinct states of the one block.
+        assert(BlockState{Block::OakSlab}.withSlabPortion(SlabPortion::Top) !=
+               BlockState{Block::OakSlab}.withSlabPortion(SlabPortion::Bottom));
+        assert(BlockState{Block::OakSlab}.withSlabPortion(SlabPortion::Double)
+                   .isSameBlock(BlockState{Block::OakSlab}));
+
+        // A non-slab block reads back the zero portion and ignores the write.
+        assert(BlockState{Block::Stone}.slabPortion() == SlabPortion::Bottom);
+        assert(BlockState{Block::Stone}.withSlabPortion(SlabPortion::Top) ==
+               BlockState{Block::Stone});
+        assert(BlockState{Block::Stone}.isFullCubeState());
+    }
+
     // --- The raw id survives a round trip, for the save palette. ---
     {
         const BlockState state{Block::Farmland, static_cast<BlockOrientation>(7), 0U};

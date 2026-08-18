@@ -105,6 +105,12 @@ int main() {
         // properties that all used to be the same overloaded byte.
         {6, 62, -8, world::BlockState{world::Block::WheatCrops}.withAge(5)},
         {7, 62, -8, world::BlockState{world::Block::OakLeaves}.withPersistent(true)},
+        // A slab's SlabType survives by name too: a top slab and a double slab
+        // must reopen in the same half rather than defaulting back to bottom.
+        {8, 62, -8,
+         world::BlockState{world::Block::OakSlab}.withSlabPortion(world::SlabPortion::Top)},
+        {9, 62, -8,
+         world::BlockState{world::Block::StoneSlab}.withSlabPortion(world::SlabPortion::Double)},
     };
     gameplay::ChestBlockEntity chest;
     chest.position = {8, 65, -4};
@@ -154,6 +160,10 @@ int main() {
     assert(loaded.edits[2].state.moisture() == 7);
     assert(loaded.edits[3].state.age() == 5);
     assert(loaded.edits[4].state.persistent());
+    assert(loaded.edits[5].state.block() == world::Block::OakSlab);
+    assert(loaded.edits[5].state.slabPortion() == world::SlabPortion::Top);
+    assert(loaded.edits[6].state.block() == world::Block::StoneSlab);
+    assert(loaded.edits[6].state.slabPortion() == world::SlabPortion::Double);
     // The palette names the block, not the state: `lit_furnace` is gone.
     {
         std::ifstream data{root / save.summary.identifier / "world.dat", std::ios::binary};

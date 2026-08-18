@@ -109,6 +109,20 @@ enum class Block : std::uint8_t {
     PolishedDiorite,
     PolishedAndesite,
     SmoothStone,
+    // SlabBlock: a half-height block carrying a SlabType (bottom/top/double).
+    // Each reuses its parent block's texture, so no new atlas entries are
+    // needed. Two slabs of the same kind merge into a double when the second is
+    // placed against the first.
+    OakSlab,
+    SpruceSlab,
+    BirchSlab,
+    JungleSlab,
+    AcaciaSlab,
+    DarkOakSlab,
+    StoneSlab,
+    CobblestoneSlab,
+    StoneBrickSlab,
+    SmoothStoneSlab,
     Count,
 };
 
@@ -138,6 +152,20 @@ enum class BlockModel : std::uint8_t {
     Crop,
     Torch,
     Chest,
+    // A SlabBlock: a half-height box whose SlabType property places it in the
+    // bottom or top half of the cell, or fills the whole cell (double). The
+    // mesher reads the property to pick the box; a double slab meshes as a full
+    // cube.
+    Slab,
+};
+
+// SlabBlock.TYPE, the value the SlabType property serialises as. Bottom is 0 so
+// a freshly placed slab (the block's default state) sits in the lower half, the
+// way vanilla's SlabType.BOTTOM is the default.
+enum class SlabPortion : std::uint8_t {
+    Bottom,
+    Top,
+    Double,
 };
 
 // What a block needs underneath or beside it in order to stay in the world.
@@ -435,6 +463,15 @@ class BlockProperties final {
             .renderLayer(BlockRenderLayer::Cutout)
             .lightFilter(1U)
             .state(StateProperty::Persistent, 2U);
+    }
+
+    // A SlabBlock: the Slab model plus its SlabType axis (bottom/top/double).
+    // Cutout is wrong for a slab (its box has solid faces), so it keeps the
+    // opaque layer; the mesher and collision read the SlabType to place the box,
+    // and a double slab behaves as a full cube.
+    [[nodiscard]] constexpr BlockProperties slab() const {
+        BlockProperties copy = *this;
+        return copy.model(BlockModel::Slab).state(StateProperty::SlabType, 3U);
     }
 
     // The shorthands vanilla blocks reach for again and again.
@@ -796,6 +833,49 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     BlockProperties::of(Block::SmoothStone, "smooth_stone", "Smooth Stone")
         .texture("smooth_stone")
         .strength(2.0F, 6.0F),
+    // Slabs: each mirrors its parent block's texture and hardness. The SlabType
+    // property (bottom/top/double) is declared by slab(); breaking a double slab
+    // yields two slab items (MiningSystem), a single slab yields one.
+    BlockProperties::of(Block::OakSlab, "oak_slab", "Oak Slab")
+        .texture("oak_planks")
+        .strength(2.0F, 3.0F)
+        .slab(),
+    BlockProperties::of(Block::SpruceSlab, "spruce_slab", "Spruce Slab")
+        .texture("spruce_planks")
+        .strength(2.0F, 3.0F)
+        .slab(),
+    BlockProperties::of(Block::BirchSlab, "birch_slab", "Birch Slab")
+        .texture("birch_planks")
+        .strength(2.0F, 3.0F)
+        .slab(),
+    BlockProperties::of(Block::JungleSlab, "jungle_slab", "Jungle Slab")
+        .texture("jungle_planks")
+        .strength(2.0F, 3.0F)
+        .slab(),
+    BlockProperties::of(Block::AcaciaSlab, "acacia_slab", "Acacia Slab")
+        .texture("acacia_planks")
+        .strength(2.0F, 3.0F)
+        .slab(),
+    BlockProperties::of(Block::DarkOakSlab, "dark_oak_slab", "Dark Oak Slab")
+        .texture("dark_oak_planks")
+        .strength(2.0F, 3.0F)
+        .slab(),
+    BlockProperties::of(Block::StoneSlab, "stone_slab", "Stone Slab")
+        .texture("stone")
+        .strength(1.5F, 6.0F)
+        .slab(),
+    BlockProperties::of(Block::CobblestoneSlab, "cobblestone_slab", "Cobblestone Slab")
+        .texture("cobblestone")
+        .strength(2.0F, 6.0F)
+        .slab(),
+    BlockProperties::of(Block::StoneBrickSlab, "stone_brick_slab", "Stone Brick Slab")
+        .texture("stone_bricks")
+        .strength(1.5F, 6.0F)
+        .slab(),
+    BlockProperties::of(Block::SmoothStoneSlab, "smooth_stone_slab", "Smooth Stone Slab")
+        .texture("smooth_stone")
+        .strength(2.0F, 6.0F)
+        .slab(),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {
@@ -933,6 +1013,12 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
 }
 
 [[nodiscard]] constexpr bool isFluid(Block block) { return block == Block::Water; }
+
+// A SlabBlock: its box is a half of the cell (or the whole cell when double),
+// decided by the state's SlabType property rather than the block identity.
+[[nodiscard]] constexpr bool isSlab(Block block) {
+    return blockDefinition(block).model == BlockModel::Slab;
+}
 
 // Whether the block fills its whole 1x1x1 cell. Cross plants, torches, chests
 // and fluids are the "incomplete" blocks: they neither occlude a neighbour face

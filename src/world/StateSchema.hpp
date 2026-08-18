@@ -38,6 +38,7 @@ enum class StateProperty : std::uint8_t {
     Persistent, // LeavesBlock.PERSISTENT
     Lit,        // AbstractFurnaceBlock.LIT
     FluidLevel, // LiquidBlock.LEVEL, 0-8
+    SlabType,   // SlabBlock.TYPE, bottom/top/double
     Count,
 };
 
@@ -60,6 +61,8 @@ inline constexpr std::size_t kStatePropertyCount = static_cast<std::size_t>(Stat
         return "lit";
     case StateProperty::FluidLevel:
         return "level";
+    case StateProperty::SlabType:
+        return "type";
     case StateProperty::Count:
         break;
     }

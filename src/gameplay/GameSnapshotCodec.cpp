@@ -12,6 +12,9 @@ namespace {
 // never routes a snapshot to the command decoder or vice versa.
 constexpr std::uint8_t kPlayerTickTag = 13U;
 constexpr std::uint8_t kWorldTag = 14U;
+// After the event tags (15..19) so the entity snapshot rides the same mixed
+// stream without colliding — see NetMessage's tag ranges.
+constexpr std::uint8_t kEntitySnapshotTag = 20U;
 
 void appendBool(std::vector<std::uint8_t>& bytes, bool value) {
     persistence::appendInteger(bytes, static_cast<std::uint8_t>(value ? 1 : 0));
@@ -86,6 +89,12 @@ void appendPlayerTick(std::vector<std::uint8_t>& bytes, const PlayerTickSnapshot
     persistence::appendFloat(bytes, snap.previousFieldOfViewMultiplier);
     persistence::appendFloat(bytes, snap.fieldOfViewMultiplier);
     codec::appendItemStack(bytes, snap.heldStack);
+    // The dig in progress (crack overlay): active, the cell, and the tick it
+    // started. Without it a mirror reads an inactive dig and mining shows no
+    // crack stages.
+    appendBool(bytes, snap.digging.active);
+    codec::appendIvec3(bytes, snap.digging.target);
+    persistence::appendInteger(bytes, snap.digging.startedTick);
     persistence::appendFloat(bytes, snap.health);
     persistence::appendInteger(bytes, static_cast<std::int32_t>(snap.foodLevel));
     persistence::appendInteger(bytes, static_cast<std::int32_t>(snap.airTicks));
@@ -119,6 +128,9 @@ void appendPlayerTick(std::vector<std::uint8_t>& bytes, const PlayerTickSnapshot
         throw std::runtime_error("Snapshot holds an unknown item");
     }
     snap.heldStack = *held;
+    snap.digging.active = readBool(bytes, cursor);
+    snap.digging.target = codec::readIvec3(bytes, cursor);
+    snap.digging.startedTick = persistence::readInteger<std::uint64_t>(bytes, cursor);
     snap.health = persistence::readFloat(bytes, cursor);
     snap.foodLevel = persistence::readInteger<std::int32_t>(bytes, cursor);
     snap.airTicks = persistence::readInteger<std::int32_t>(bytes, cursor);
@@ -151,6 +163,21 @@ void appendWorld(std::vector<std::uint8_t>& bytes, const WorldSnapshot& snap) {
     codec::appendVec3(bytes, snap.playerSpawnPosition);
     persistence::appendFloat(bytes, snap.playerSpawnYaw);
     appendBool(bytes, snap.hasPlayerSpawn);
+    // The open container binding: which screen is open and, for a block-backed
+    // container, the chest/furnace cell. The HUD dispatches the container it
+    // draws from this, so it must ride the wire — without it a mirror always
+    // reads the default PlayerInventory and every container opens as the pack.
+    persistence::appendInteger(bytes, static_cast<std::uint8_t>(snap.openContainerScreen));
+    appendBool(bytes, snap.openChest.has_value());
+    if (snap.openChest.has_value()) {
+        persistence::appendInteger(bytes, static_cast<std::int32_t>(snap.openChest->x));
+        persistence::appendInteger(bytes, static_cast<std::int32_t>(snap.openChest->y));
+        persistence::appendInteger(bytes, static_cast<std::int32_t>(snap.openChest->z));
+    }
+    appendBool(bytes, snap.openFurnace.has_value());
+    if (snap.openFurnace.has_value()) {
+        codec::appendIvec3(bytes, *snap.openFurnace);
+    }
     persistence::appendInteger(bytes, static_cast<std::uint32_t>(snap.chests.size()));
     for (const auto& chest : snap.chests) {
         persistence::appendInteger(bytes, static_cast<std::int32_t>(chest.position.x));
@@ -204,6 +231,18 @@ void appendWorld(std::vector<std::uint8_t>& bytes, const WorldSnapshot& snap) {
     snap.playerSpawnPosition = codec::readVec3(bytes, cursor);
     snap.playerSpawnYaw = persistence::readFloat(bytes, cursor);
     snap.hasPlayerSpawn = readBool(bytes, cursor);
+    snap.openContainerScreen =
+        static_cast<ContainerScreen>(persistence::readInteger<std::uint8_t>(bytes, cursor));
+    if (readBool(bytes, cursor)) {
+        ChestPosition chest;
+        chest.x = persistence::readInteger<std::int32_t>(bytes, cursor);
+        chest.y = persistence::readInteger<std::int32_t>(bytes, cursor);
+        chest.z = persistence::readInteger<std::int32_t>(bytes, cursor);
+        snap.openChest = chest;
+    }
+    if (readBool(bytes, cursor)) {
+        snap.openFurnace = codec::readIvec3(bytes, cursor);
+    }
     const auto chestCount = persistence::readInteger<std::uint32_t>(bytes, cursor);
     snap.chests.reserve(chestCount);
     for (std::uint32_t index = 0; index < chestCount; ++index) {
@@ -244,6 +283,109 @@ void appendWorld(std::vector<std::uint8_t>& bytes, const WorldSnapshot& snap) {
     snap.furnaceFuelProgress = persistence::readFloat(bytes, cursor);
     snap.furnaceCookProgress = persistence::readFloat(bytes, cursor);
     return snap;
+}
+
+// --- Entity render snapshot: creatures, drops, falling blocks ---
+// Only the render-relevant fields ride the wire (not the sim-only velocity of a
+// drop or a falling block's vertical velocity / removed flag), keeping the
+// per-tick entity payload — the largest, one record per entity — lean.
+
+void appendCreature(std::vector<std::uint8_t>& bytes, const EntityRenderState& s) {
+    codec::appendEntityType(bytes, s.type);
+    persistence::appendInteger(bytes, s.id);
+    codec::appendVec3(bytes, s.position);
+    codec::appendVec3(bytes, s.previousPosition);
+    persistence::appendFloat(bytes, s.yaw);
+    persistence::appendFloat(bytes, s.previousYaw);
+    persistence::appendFloat(bytes, s.walkDistance);
+    persistence::appendFloat(bytes, s.previousWalkDistance);
+    persistence::appendInteger(bytes, static_cast<std::int32_t>(s.hurtTicks));
+    persistence::appendInteger(bytes, static_cast<std::int32_t>(s.deathTicks));
+}
+
+void appendDrop(std::vector<std::uint8_t>& bytes, const ItemEntity& drop) {
+    codec::appendVec3(bytes, drop.position);
+    codec::appendVec3(bytes, drop.previousPosition);
+    codec::appendItemStack(bytes, drop.stack);
+    persistence::appendInteger(bytes, static_cast<std::uint32_t>(drop.ageTicks));
+    persistence::appendFloat(bytes, drop.visualPhase);
+}
+
+void appendFalling(std::vector<std::uint8_t>& bytes, const FallingBlockEntity& block) {
+    codec::appendVec3(bytes, block.position);
+    codec::appendVec3(bytes, block.previousPosition);
+    codec::appendBlock(bytes, block.block);
+}
+
+void appendEntities(std::vector<std::uint8_t>& bytes, const EntityRenderSnapshot& snap) {
+    persistence::appendInteger(bytes, static_cast<std::uint32_t>(snap.entities().size()));
+    for (const auto& creature : snap.entities()) {
+        appendCreature(bytes, creature);
+    }
+    persistence::appendInteger(bytes, static_cast<std::uint32_t>(snap.items().size()));
+    for (const auto& drop : snap.items()) {
+        appendDrop(bytes, drop);
+    }
+    persistence::appendInteger(bytes, static_cast<std::uint32_t>(snap.fallingBlocks().size()));
+    for (const auto& block : snap.fallingBlocks()) {
+        appendFalling(bytes, block);
+    }
+}
+
+[[nodiscard]] EntityRenderSnapshot readEntities(std::span<const std::uint8_t> bytes,
+                                                std::size_t& cursor) {
+    std::vector<EntityRenderState> creatures;
+    const auto creatureCount = persistence::readInteger<std::uint32_t>(bytes, cursor);
+    creatures.reserve(creatureCount);
+    for (std::uint32_t index = 0; index < creatureCount; ++index) {
+        EntityRenderState s;
+        s.type = codec::readEntityType(bytes, cursor);
+        s.id = persistence::readInteger<std::uint64_t>(bytes, cursor);
+        s.position = codec::readVec3(bytes, cursor);
+        s.previousPosition = codec::readVec3(bytes, cursor);
+        s.yaw = persistence::readFloat(bytes, cursor);
+        s.previousYaw = persistence::readFloat(bytes, cursor);
+        s.walkDistance = persistence::readFloat(bytes, cursor);
+        s.previousWalkDistance = persistence::readFloat(bytes, cursor);
+        s.hurtTicks = persistence::readInteger<std::int32_t>(bytes, cursor);
+        s.deathTicks = persistence::readInteger<std::int32_t>(bytes, cursor);
+        // A creature of a species this build does not know is skipped, not drawn.
+        if (s.type != nullptr) {
+            creatures.push_back(s);
+        }
+    }
+    std::vector<ItemEntity> drops;
+    const auto dropCount = persistence::readInteger<std::uint32_t>(bytes, cursor);
+    drops.reserve(dropCount);
+    for (std::uint32_t index = 0; index < dropCount; ++index) {
+        ItemEntity drop;
+        drop.position = codec::readVec3(bytes, cursor);
+        drop.previousPosition = codec::readVec3(bytes, cursor);
+        const auto stack = codec::readItemStack(bytes, cursor);
+        drop.ageTicks = persistence::readInteger<std::uint32_t>(bytes, cursor);
+        drop.visualPhase = persistence::readFloat(bytes, cursor);
+        // An unknown item is skipped rather than drawn as air.
+        if (stack.has_value()) {
+            drop.stack = *stack;
+            drops.push_back(drop);
+        }
+    }
+    std::vector<FallingBlockEntity> falling;
+    const auto fallingCount = persistence::readInteger<std::uint32_t>(bytes, cursor);
+    falling.reserve(fallingCount);
+    for (std::uint32_t index = 0; index < fallingCount; ++index) {
+        FallingBlockEntity block;
+        block.position = codec::readVec3(bytes, cursor);
+        block.previousPosition = codec::readVec3(bytes, cursor);
+        const auto kind = codec::readBlock(bytes, cursor);
+        if (kind.has_value()) {
+            block.block = *kind;
+            falling.push_back(block);
+        }
+    }
+    EntityRenderSnapshot snapshot;
+    snapshot.assign(std::move(creatures), std::move(drops), std::move(falling));
+    return snapshot;
 }
 
 }  // namespace
@@ -294,6 +436,33 @@ std::optional<PublishedSnapshot> decodeSnapshot(std::span<const std::uint8_t> by
             return std::nullopt;
         }
         if (!decoded.has_value() || cursor > payloadEnd) {
+            return std::nullopt;
+        }
+        return decoded;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+std::vector<std::uint8_t> encodeEntitySnapshot(const EntityRenderSnapshot& snapshot) {
+    std::vector<std::uint8_t> bytes;
+    codec::appendFrame(bytes, kEntitySnapshotTag, [&] { appendEntities(bytes, snapshot); });
+    return bytes;
+}
+
+std::optional<EntityRenderSnapshot> decodeEntitySnapshot(std::span<const std::uint8_t> bytes) {
+    try {
+        std::size_t cursor = 0;
+        const auto frame = codec::readFrame(bytes, cursor);
+        if (!frame.has_value()) {
+            return std::nullopt;
+        }
+        const auto [tag, payloadEnd] = *frame;
+        if (tag != kEntitySnapshotTag) {
+            return std::nullopt;  // unknown tag
+        }
+        auto decoded = readEntities(bytes, cursor);
+        if (cursor > payloadEnd) {
             return std::nullopt;
         }
         return decoded;

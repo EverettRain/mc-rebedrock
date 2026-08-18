@@ -75,6 +75,20 @@ class BlockState final {
     [[nodiscard]] constexpr std::uint8_t emittedLight() const {
         return emittedLightOfState(id_);
     }
+    // SlabBlock.TYPE. Bottom for anything that is not a slab, so a caller reads
+    // it without checking the block first.
+    [[nodiscard]] constexpr SlabPortion slabPortion() const {
+        return static_cast<SlabPortion>(value(StateProperty::SlabType));
+    }
+    // Whether this state fills its whole cell: a full cube, or a double slab.
+    // The mesher, collision and support checks read this rather than
+    // isFullCube(block), which cannot see a slab's per-state shape.
+    [[nodiscard]] constexpr bool isFullCubeState() const {
+        if (isSlab(block())) {
+            return slabPortion() == SlabPortion::Double;
+        }
+        return isFullCube(block());
+    }
 
     [[nodiscard]] constexpr BlockState with(BlockOrientation orientation) const {
         return with(StateProperty::Facing, static_cast<std::uint8_t>(orientation));
@@ -96,6 +110,9 @@ class BlockState final {
     }
     [[nodiscard]] constexpr BlockState withPersistent(bool value) const {
         return with(StateProperty::Persistent, value ? 1U : 0U);
+    }
+    [[nodiscard]] constexpr BlockState withSlabPortion(SlabPortion portion) const {
+        return with(StateProperty::SlabType, static_cast<std::uint8_t>(portion));
     }
 
     // Whether two states belong to the same block, ignoring everything else.
@@ -137,6 +154,43 @@ class BlockState final {
 
     std::uint16_t id_ = 0U;
 };
+
+// The vertical span [bottom, top] of a state's collision box within its cell,
+// in 0..1 cell-local units. A full cube is {0, 1}, a non-colliding block {0, 0},
+// farmland the vanilla 15/16 box, and a slab its half box (bottom {0, 0.5}, top
+// {0.5, 1}, double {0, 1}). An empty span (top <= bottom) means no collision.
+//
+// This is the one place the "how tall is this block, and where does its box sit"
+// question is answered, so the player walk, the creature walk and the placement
+// occupancy check all read the same shape instead of each assuming a full cube.
+// It is a vertical span rather than a box set because every shape this project
+// has so far (farmland, slabs) fills its whole 1x1 footprint; stairs and fences
+// will need a box set and should extend this rather than fork it.
+struct BlockCollisionSpan final {
+    float bottom = 0.0F;
+    float top = 0.0F;
+};
+
+[[nodiscard]] constexpr BlockCollisionSpan collisionSpan(BlockState state) {
+    const Block block = state.block();
+    if (!hasCollision(block)) {
+        return {};
+    }
+    if (isSlab(block)) {
+        switch (state.slabPortion()) {
+        case SlabPortion::Bottom:
+            return {0.0F, 0.5F};
+        case SlabPortion::Top:
+            return {0.5F, 1.0F};
+        case SlabPortion::Double:
+            return {0.0F, 1.0F};
+        }
+    }
+    if (isFarmland(block)) {
+        return {0.0F, kFarmlandModelHeight};
+    }
+    return {0.0F, 1.0F};
+}
 
 static_assert(sizeof(BlockState) == sizeof(std::uint16_t));
 static_assert(BlockState{}.block() == Block::Air);

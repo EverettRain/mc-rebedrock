@@ -240,6 +240,20 @@ BlockBounds blockSelectionBounds(
         case BlockModel::Chest:
             // 14x14x14 chest sitting on the floor (1/16 inset on each side).
             return {{0.0625F, 0.0F, 0.0625F}, {0.9375F, 0.875F, 0.9375F}};
+        case BlockModel::Slab: {
+            // The outline matches the slab's half box (or the whole cell for a
+            // double slab), so clicking a slab highlights the shape that is
+            // actually there.
+            switch (world.state(position.x, position.y, position.z).slabPortion()) {
+            case SlabPortion::Top:
+                return {{0.0F, 0.5F, 0.0F}, {1.0F, 1.0F, 1.0F}};
+            case SlabPortion::Double:
+                return {{0.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 1.0F}};
+            case SlabPortion::Bottom:
+                break;
+            }
+            return {{0.0F, 0.0F, 0.0F}, {1.0F, 0.5F, 1.0F}};
+        }
         case BlockModel::Cube:
             break;
     }

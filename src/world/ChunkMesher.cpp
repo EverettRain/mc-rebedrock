@@ -594,10 +594,19 @@ void appendFace(
     SmoothLightingQuality quality,
     const glm::vec3& sectionOrigin,
     BiomeTintCache& tints,
-    bool doubleSided = false) {
+    bool doubleSided = false,
+    float slabLow = -1.0F,
+    float slabHigh = 1.0F) {
     const auto firstVertex = static_cast<std::uint32_t>(mesh.vertices.size());
     const glm::vec3 origin{
         static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
+    // A slab occupies a vertical sub-range [slabLow, slabHigh] of the cell; its
+    // side faces map the matching sub-strip of the texture (v = 1 at the floor)
+    // so the half box shows the block's lower or upper half rather than the whole
+    // texture squeezed into half the height.
+    const bool slabBox = slabLow >= 0.0F;
+    const bool horizontalFace =
+        face.face == Face::PositiveY || face.face == Face::NegativeY;
     // A truncated block (farmland) lowers the top of its solid box. The AO and
     // light samples keep the canonical corner (they only read the surrounding
     // cells, which a 1/16 drop does not change); only the mesh position drops.
@@ -626,7 +635,15 @@ void appendFace(
             lighting, quality, face, face.corners[corner], x, y, z, outsideLight);
         if (selfLit) smoothLight.block = 1.0F;
         glm::vec3 positionCorner = face.corners[corner];
-        if (modelHeight < 1.0F) {
+        glm::vec2 uv = kUvs[corner];
+        if (slabBox) {
+            const float height =
+                slabLow + positionCorner.y * (slabHigh - slabLow);
+            if (!horizontalFace) {
+                uv.y = 1.0F - height;
+            }
+            positionCorner.y = height;
+        } else if (modelHeight < 1.0F) {
             positionCorner.y *= modelHeight;
         }
         // Which biome-colour lookup the fragment shader should apply: 1 for the
@@ -644,7 +661,7 @@ void appendFace(
         mesh.vertices.push_back(packVertex(
             (origin + positionCorner) - sectionOrigin,
             face.normal,
-            kUvs[corner],
+            uv,
             layer,
             ambientOcclusion[corner],
             1.0F,
@@ -755,6 +772,14 @@ void appendWaterFace(
     if (blockDefinition(neighbor).modelHeight < 1.0F) {
         return true;
     }
+    // A slab neighbour only fills half the cell (a double slab fills it, but the
+    // mesher sees the block, not the state), so it cannot occlude the shared
+    // face without knowing the neighbour's SlabType. Keep the face rather than
+    // risk culling against an open half; the extra faces against a double slab
+    // are the same conservative overdraw farmland already takes above.
+    if (isSlab(neighbor)) {
+        return true;
+    }
     if (currentLayer == BlockRenderLayer::Translucent) {
         return neighborLayer == BlockRenderLayer::Translucent && neighbor != current;
     }
@@ -768,6 +793,45 @@ void appendWaterFace(
         return neighbor != current && neighborLayer != BlockRenderLayer::Opaque;
     }
     return neighborLayer != BlockRenderLayer::Opaque;
+}
+
+// SlabBlock geometry: a box filling [low, high] of the cell's height. A bottom
+// slab is [0, 0.5], a top slab [0.5, 1], a double slab [0, 1] (a full cube).
+// The two horizontal faces at the cell boundary cull against their neighbour;
+// the internal cut face (a slab's flat top/bottom) is always drawn, and the four
+// side faces cull like any other block's side.
+template <typename Sampler>
+void appendSlab(
+    render::MeshData& mesh,
+    const World& world,
+    Block block,
+    SlabPortion portion,
+    int x,
+    int y,
+    int z,
+    const Sampler& lighting,
+    SmoothLightingQuality quality,
+    const glm::vec3& sectionOrigin,
+    BiomeTintCache& tints) {
+    const float low = portion == SlabPortion::Top ? 0.5F : 0.0F;
+    const float high = portion == SlabPortion::Bottom ? 0.5F : 1.0F;
+    for (const auto& face : kFaces) {
+        // A horizontal face is on the cell boundary only when the box reaches
+        // that boundary; otherwise it is the slab's internal cut, always shown.
+        bool boundary = true;
+        if (face.face == Face::PositiveY) {
+            boundary = high >= 1.0F;
+        } else if (face.face == Face::NegativeY) {
+            boundary = low <= 0.0F;
+        }
+        const Block neighbor =
+            lighting.blockType(x + face.dx, y + face.dy, z + face.dz);
+        if (boundary && !shouldRenderFace(block, neighbor, face)) {
+            continue;
+        }
+        appendFace(mesh, world, block, face, x, y, z, lighting, quality,
+                   sectionOrigin, tints, /*doubleSided=*/false, low, high);
+    }
 }
 
 // AbstractBlock#getModelOffset for OffsetType.XZ/XYZ: a deterministic jitter
@@ -1119,6 +1183,13 @@ bool buildSectionImpl(
                 }
                 if (definition.model == BlockModel::Chest) {
                     // ChestBlockEntity owns the animated base/lid render.
+                    continue;
+                }
+                if (definition.model == BlockModel::Slab) {
+                    appendSlab(targetMesh, world, current,
+                               chunk->state(localX, worldY, localZ).slabPortion(),
+                               worldX, worldY, worldZ, lighting, quality,
+                               sectionOrigin, tints);
                     continue;
                 }
                 const auto orientation = chunk->orientation(localX, worldY, localZ);

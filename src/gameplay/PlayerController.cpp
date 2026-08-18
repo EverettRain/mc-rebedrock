@@ -60,25 +60,21 @@ constexpr float kGroundOffset = 0.001F;
     });
 }
 
-// The height of a cell's solid box measured from its floor: 1.0 for a full
-// cube, 0 for a block with no collision, and the vanilla 15/16 farmland shape.
-// Everything else keeps the full cube, so only farmland lowers the player's
-// standing height by a sixteenth.
-[[nodiscard]] float blockCollisionTop(const world::World& world, int x, int y, int z) {
+// The vertical collision span of the cell at (x, y, z), reading the block's
+// shape through the shared world::collisionSpan. Out-of-range and unloaded cells
+// stay solid so the player never falls through a chunk seam.
+[[nodiscard]] world::BlockCollisionSpan blockCollisionSpan(const world::World& world, int x,
+                                                           int y, int z) {
     if (y < world::kMinY) {
-        return 1.0F;
+        return {0.0F, 1.0F};
     }
     if (y >= world::kMaxY) {
-        return 0.0F;
+        return {};
     }
     if (!columnLoaded(world, x, z)) {
-        return 1.0F;
+        return {0.0F, 1.0F};
     }
-    const auto block = world.block(x, y, z);
-    if (!world::hasCollision(block)) {
-        return 0.0F;
-    }
-    return world::isFarmland(block) ? world::kFarmlandModelHeight : 1.0F;
+    return world::collisionSpan(world.state(x, y, z));
 }
 
 [[nodiscard]] bool pointInWater(const world::World& world, glm::vec3 point) {
@@ -143,16 +139,23 @@ glm::vec3 PlayerController::eyePosition() const {
     return position_ + glm::vec3{0.0F, eyeHeight(), 0.0F};
 }
 
-bool PlayerController::intersectsBlock(int x, int y, int z) const {
+bool PlayerController::intersectsBlock(int x, int y, int z, float boxBottom,
+                                      float boxTop) const {
+    if (boxTop <= boxBottom) {
+        return false;
+    }
     const glm::vec3 playerMin{position_.x - kHalfWidth, position_.y, position_.z - kHalfWidth};
     const glm::vec3 playerMax{
         position_.x + kHalfWidth,
         position_.y + collisionHeight(),
         position_.z + kHalfWidth,
     };
+    // The would-be block only occupies [y+boxBottom, y+boxTop] vertically, so a
+    // slab's half box lets the player stand in the empty half of the same cell.
     const glm::vec3 blockMin{
-        static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
-    const glm::vec3 blockMax = blockMin + glm::vec3{1.0F};
+        static_cast<float>(x), static_cast<float>(y) + boxBottom, static_cast<float>(z)};
+    const glm::vec3 blockMax{
+        static_cast<float>(x) + 1.0F, static_cast<float>(y) + boxTop, static_cast<float>(z) + 1.0F};
     return playerMin.x + kCollisionEpsilon < blockMax.x &&
            playerMax.x - kCollisionEpsilon > blockMin.x &&
            playerMin.y + kCollisionEpsilon < blockMax.y &&
@@ -173,15 +176,16 @@ bool PlayerController::collidesAt(const world::World& world, glm::vec3 position)
     for (int y = minY; y <= maxY; ++y) {
         for (int z = minZ; z <= maxZ; ++z) {
             for (int x = minX; x <= maxX; ++x) {
-                // A truncated block (farmland at 15/16) only collides below its
-                // top; the AABB overlap with [y, y+top] decides, so the player
-                // rests on the farmland surface rather than a full block's top.
-                const float top = blockCollisionTop(world, x, y, z);
-                if (top <= 0.0F) {
+                // A partial block (farmland at 15/16, a slab's half box) only
+                // collides over its own [bottom, top] span, so the player rests
+                // on a slab's surface and can stand inside the open half above a
+                // bottom slab or below a top slab.
+                const auto span = blockCollisionSpan(world, x, y, z);
+                if (span.top <= span.bottom) {
                     continue;
                 }
-                if (position.y < static_cast<float>(y) + top &&
-                    position.y + collisionHeight() > static_cast<float>(y)) {
+                if (position.y < static_cast<float>(y) + span.top &&
+                    position.y + collisionHeight() > static_cast<float>(y) + span.bottom) {
                     return true;
                 }
             }

@@ -70,6 +70,60 @@ int main() {
     assert(cropMesh.vertices.size() == 16U);
     assert(cropMesh.indices.size() == 48U);
 
+    // A lone bottom slab draws all six faces (four half-height sides, the bottom
+    // against air and the internal cut on top): 24 vertices like a cube, but its
+    // box only reaches halfway, so every vertex sits between y and y + 0.5.
+    {
+        // Positions decode relative to the section origin (section 0 starts at
+        // kMinY), so the cell at kMinY + 1 has its floor one unit up.
+        const float floorY = 1.0F;
+        mc::world::Chunk slabChunk;
+        slabChunk.setState(1, mc::world::kMinY + 1, 1,
+                           mc::world::BlockState{mc::world::Block::OakSlab}.withSlabPortion(
+                               mc::world::SlabPortion::Bottom));
+        const auto bottomMesh = mc::world::ChunkMesher::build(slabChunk);
+        assert(bottomMesh.vertices.size() == 24U);
+        assert(bottomMesh.indices.size() == 36U);
+        float minY = 1e9F;
+        float maxY = -1e9F;
+        for (const auto& vertex : bottomMesh.vertices) {
+            minY = std::min(minY, worldPos(vertex).y);
+            maxY = std::max(maxY, worldPos(vertex).y);
+        }
+        expectNear(minY, floorY, "bottom slab floor");
+        expectNear(maxY, floorY + 0.5F, "bottom slab cut");
+
+        // A top slab fills the upper half: floor at y + 0.5, top at y + 1.
+        slabChunk.setState(1, mc::world::kMinY + 1, 1,
+                           mc::world::BlockState{mc::world::Block::OakSlab}.withSlabPortion(
+                               mc::world::SlabPortion::Top));
+        const auto topMesh = mc::world::ChunkMesher::build(slabChunk);
+        assert(topMesh.vertices.size() == 24U);
+        minY = 1e9F;
+        maxY = -1e9F;
+        for (const auto& vertex : topMesh.vertices) {
+            minY = std::min(minY, worldPos(vertex).y);
+            maxY = std::max(maxY, worldPos(vertex).y);
+        }
+        expectNear(minY, floorY + 0.5F, "top slab cut");
+        expectNear(maxY, floorY + 1.0F, "top slab top");
+
+        // A double slab is a full cube again, spanning the whole cell.
+        slabChunk.setState(1, mc::world::kMinY + 1, 1,
+                           mc::world::BlockState{mc::world::Block::OakSlab}.withSlabPortion(
+                               mc::world::SlabPortion::Double));
+        const auto doubleMesh = mc::world::ChunkMesher::build(slabChunk);
+        assert(doubleMesh.vertices.size() == 24U);
+        minY = 1e9F;
+        maxY = -1e9F;
+        for (const auto& vertex : doubleMesh.vertices) {
+            minY = std::min(minY, worldPos(vertex).y);
+            maxY = std::max(maxY, worldPos(vertex).y);
+        }
+        expectNear(minY, floorY, "double slab floor");
+        expectNear(maxY, floorY + 1.0F, "double slab top");
+    }
+
     mc::world::Chunk sectionBoundary;
     sectionBoundary.setBlock(1, mc::world::kMinY + 15, 1, mc::world::Block::Stone);
     sectionBoundary.setBlock(1, mc::world::kMinY + 16, 1, mc::world::Block::Stone);

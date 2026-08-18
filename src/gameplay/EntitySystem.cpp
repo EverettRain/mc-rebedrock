@@ -209,7 +209,13 @@ bool EntitySystem::boxIntersectsWorld(
         }
         for (int z = minZ; z <= maxZ; ++z) {
             for (int x = minX; x <= maxX; ++x) {
-                if (world::hasCollision(world.block(x, y, z))) {
+                // A slab (or farmland) only fills part of the cell vertically, so
+                // a creature rests on it and walks through the open half instead
+                // of being blocked by a phantom full cube.
+                const auto span = world::collisionSpan(world.state(x, y, z));
+                if (span.top > span.bottom &&
+                    minimum.y < static_cast<float>(y) + span.top &&
+                    maximum.y > static_cast<float>(y) + span.bottom) {
                     return true;
                 }
             }
@@ -229,10 +235,14 @@ bool EntitySystem::canOccupy(
         {position.x + half, position.y + dimensions.height, position.z + half});
 }
 
-bool EntitySystem::intersectsBlock(int x, int y, int z) const {
+bool EntitySystem::intersectsBlock(int x, int y, int z, float boxBottom, float boxTop) const {
+    if (boxTop <= boxBottom) {
+        return false;
+    }
     const glm::vec3 blockMinimum{
-        static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
-    const glm::vec3 blockMaximum = blockMinimum + glm::vec3{1.0F};
+        static_cast<float>(x), static_cast<float>(y) + boxBottom, static_cast<float>(z)};
+    const glm::vec3 blockMaximum{
+        static_cast<float>(x) + 1.0F, static_cast<float>(y) + boxTop, static_cast<float>(z) + 1.0F};
     for (const auto& entity : entities_) {
         if (entity.damage.deathTicks >= kDeathTicks || entity.position.y < kDespawnBelowY) {
             continue;

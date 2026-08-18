@@ -35,8 +35,8 @@ namespace mc::net {
 // One message on the wire, discriminated by which server/client boundary it
 // crosses. The three alternatives are themselves variants; because they are
 // distinct types, std::visit over a NetMessage picks the boundary unambiguously.
-using NetMessage =
-    std::variant<gameplay::GameCommand, gameplay::PublishedSnapshot, gameplay::GameEvent>;
+using NetMessage = std::variant<gameplay::GameCommand, gameplay::PublishedSnapshot,
+                                gameplay::GameEvent, gameplay::EntityRenderSnapshot>;
 
 // The tag ranges, derived from the variant sizes so they stay consistent with
 // the codecs' own scheme (each codec's base offset is the count of the
@@ -48,6 +48,9 @@ inline constexpr std::uint8_t kSnapshotTagEnd = static_cast<std::uint8_t>(
     kCommandTagEnd + std::variant_size_v<gameplay::PublishedSnapshot>);
 inline constexpr std::uint8_t kEventTagEnd =
     static_cast<std::uint8_t>(kSnapshotTagEnd + std::variant_size_v<gameplay::GameEvent>);
+// The entity render snapshot is a single type, not a variant, so it occupies one
+// tag right after the events (20 today).
+inline constexpr std::uint8_t kEntityTagEnd = static_cast<std::uint8_t>(kEventTagEnd + 1);
 
 // Frames one message with the codec that matches its boundary. The result is a
 // self-delimiting frame: its header carries the payload size, so a byte stream
@@ -60,8 +63,10 @@ inline constexpr std::uint8_t kEventTagEnd =
                 return gameplay::encodeGameCommand(specific);
             } else if constexpr (std::is_same_v<T, gameplay::PublishedSnapshot>) {
                 return gameplay::encodeSnapshot(specific);
-            } else {
+            } else if constexpr (std::is_same_v<T, gameplay::GameEvent>) {
                 return gameplay::encodeGameEvent(specific);
+            } else {
+                return gameplay::encodeEntitySnapshot(specific);
             }
         },
         message);
@@ -105,6 +110,12 @@ inline constexpr std::uint8_t kEventTagEnd =
     if (tag < kEventTagEnd) {
         if (auto event = gameplay::decodeGameEvent(bytes); event.has_value()) {
             return NetMessage{std::move(*event)};
+        }
+        return std::nullopt;
+    }
+    if (tag < kEntityTagEnd) {
+        if (auto entities = gameplay::decodeEntitySnapshot(bytes); entities.has_value()) {
+            return NetMessage{std::move(*entities)};
         }
         return std::nullopt;
     }

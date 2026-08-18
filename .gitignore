@@ -29,6 +29,7 @@ __pycache__/
 build/
 .cache/
 cmake-build-*/
+/Testing/
 compile_commands.json
 -d=/
 # 根级误建的 net/ 构建产物（源码 src/net/ 不受此规则影响）

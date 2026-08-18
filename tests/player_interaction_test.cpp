@@ -125,6 +125,43 @@ int main() {
         assert(host.blockPlaces == 1);
     }
 
+    // --- Slab: placed on a top face it is a bottom slab; right-clicking its top
+    //     with the same slab merges the pair into a double rather than stacking a
+    //     new slab above. ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        session.inventory().mutableSlot(0) = {world::Block::OakSlab, 1U, nullptr};
+        session.inventory().selectHotbar(0);
+        gameplay::UseItemOn place;
+        place.block = glm::ivec3{5, 0, 5};
+        place.adjacent = glm::ivec3{5, 1, 5};
+        place.face = world::BlockOrientation::Up;
+        place.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(place));
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.block(5, 1, 5) == world::Block::OakSlab);
+        assert(world.state(5, 1, 5).slabPortion() == world::SlabPortion::Bottom);
+
+        // The 4-tick right-click delay has to pass before the next use fires.
+        session.inventory().mutableSlot(0) = {world::Block::OakSlab, 1U, nullptr};
+        gameplay::UseItemOn merge;
+        merge.block = glm::ivec3{5, 1, 5};
+        merge.adjacent = glm::ivec3{5, 2, 5};
+        merge.face = world::BlockOrientation::Up;
+        merge.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(merge));
+        for (int tick = 0; tick < 6; ++tick) {
+            session.tick(world, host);
+        }
+        static_cast<void>(session.drainEvents());
+        assert(world.state(5, 1, 5).slabPortion() == world::SlabPortion::Double);
+        assert(world.block(5, 2, 5) == world::Block::Air);
+    }
+
     // --- Held dig hand-off: no release is needed between two instant blocks.
     // The renderer sends a new StartDestroy when the vanished first target lets
     // the ray reach the next cell; the interaction remains armed and accepts it

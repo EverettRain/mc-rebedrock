@@ -80,8 +80,59 @@ void GameRuntime::stopSimulation() {
 
 void GameRuntime::tick() {
     const auto tickWrite = worldLock_.write();
+    drainClientCommands();
     gameSession_.tick(serverWorld_, host_);
+    publishSnapshotsToChannel();
     processChatQueue();
+}
+
+void GameRuntime::publishSnapshotsToChannel() {
+    // The tick's side-effect events go first, in publish order, so the client
+    // applies them (world edits to its cache, sounds, particles, container
+    // opens/eating) before it takes the new player/world mirror — the same order
+    // the renderer's drainEvents used to run, now carried over the channel.
+    for (const auto& event : gameSession_.takeEvents()) {
+        loopback_.server->sendFrame(net::encodeMessage(net::NetMessage{event}));
+    }
+    // gameSession_.tick just published fresh snapshots; encode the player and
+    // world views and send them on the server end. Encoding here (rather than in
+    // sendFrame) lets us record the real per-tick serialization size. The client
+    // pumps the newest of these into its mirror; older frames left by a slow
+    // frame are drained and discarded, so the queue never grows unbounded.
+    auto playerFrame = net::encodeMessage(
+        net::NetMessage{gameplay::PublishedSnapshot{gameSession_.playerTickSnapshot()}});
+    auto worldFrame = net::encodeMessage(
+        net::NetMessage{gameplay::PublishedSnapshot{gameSession_.worldSnapshot()}});
+    auto entityFrame = net::encodeMessage(net::NetMessage{gameSession_.entitySnapshot()});
+    snapshotEncodedBytes_ = playerFrame.size() + worldFrame.size() + entityFrame.size();
+    loopback_.server->sendFrame(std::move(playerFrame));
+    loopback_.server->sendFrame(std::move(worldFrame));
+    loopback_.server->sendFrame(std::move(entityFrame));
+}
+
+void GameRuntime::enqueueClientCommand(gameplay::GameCommand command) {
+    net::sendMessage(*loopback_.client, net::NetMessage{std::move(command)});
+}
+
+void GameRuntime::drainClientCommands() {
+    std::optional<net::NetMessage> message;
+    while (net::receiveMessage(*loopback_.server, message)) {
+        // A frame that did not decode (an unknown tag from a newer client) is
+        // reported as an empty optional but already consumed — skip it and keep
+        // draining. Only command frames are expected on this end today.
+        if (message.has_value() &&
+            std::holds_alternative<gameplay::GameCommand>(*message)) {
+            gameSession_.enqueueCommand(std::get<gameplay::GameCommand>(std::move(*message)));
+        }
+    }
+}
+
+void GameRuntime::clearChannels() {
+    std::vector<std::uint8_t> discard;
+    while (loopback_.server->receiveFrame(discard)) {
+    }
+    while (loopback_.client->receiveFrame(discard)) {
+    }
 }
 
 void GameRuntime::enqueueChat(std::string line) {
@@ -118,6 +169,9 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     // so the worker never writes an outgoing world's records under the new
     // identifier.
     flushAllChunkWrites();
+    // Drop any intents still in the loopback channel so the previous world's
+    // queued commands never reach the incoming one.
+    clearChannels();
     // The incoming world replaces the edit list; drop the derived per-chunk index
     // so refreshEditIndex rebuilds it from the new edits.
     editsByChunk_.clear();
@@ -220,6 +274,10 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     // the renderer's first reads (camera, F3, held item) must see the saved
     // position, not the default (0,0,0) the snapshot holds until the first tick.
     gameSession_.publishSnapshots();
+    // Seed the channel too (C-1b-2), so the client mirror's first pump — before
+    // the simulation thread runs a tick — already holds the restored player/world
+    // instead of the default state.
+    publishSnapshotsToChannel();
 }
 
 persistence::SaveGame GameRuntime::createWorld(std::string name, std::uint64_t seed,

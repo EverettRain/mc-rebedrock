@@ -4,6 +4,7 @@
 #include "gameplay/GameSession.hpp"
 #include "gameplay/SimulationDriver.hpp"
 #include "gameplay/command/CommandDispatcher.hpp"
+#include "net/LoopbackTransport.hpp"
 #include "persistence/SaveRepository.hpp"
 #include "world/World.hpp"
 #include "world/WorldLock.hpp"
@@ -72,6 +73,30 @@ class GameRuntime final {
     [[nodiscard]] gameplay::command::CommandDispatcher& commandDispatcher() {
         return commandDispatcher_;
     }
+
+    // Stage C, slice 1b: the client's intents travel over the in-process loopback
+    // channel instead of straight into the session's command queue. The renderer
+    // (the client end) calls enqueueClientCommand between ticks; the tick drains
+    // the server end into the session, so single-player runs the same
+    // client→server message path a networked client will. It adds no latency —
+    // the frame lands in the server queue immediately and the next tick consumes
+    // it, exactly as the direct enqueue did — only a byte encode/decode.
+    void enqueueClientCommand(gameplay::GameCommand command);
+    // The client end of the loopback channel. The renderer pumps it each frame
+    // to drain the server's per-tick player/world snapshot frames into its
+    // ClientMirror (C-1b-2), the same end it sent commands on.
+    [[nodiscard]] net::MessageChannel& clientChannel() { return *loopback_.client; }
+    // Pushes the current player/world snapshots onto the channel now, outside a
+    // tick — for a client-initiated synchronous change (respawn, teleport) so the
+    // mirror can be pumped to reflect it this frame instead of a tick later. The
+    // caller must not be racing a tick (respawn runs while the simulation is
+    // paused).
+    void publishStateToChannel() { publishSnapshotsToChannel(); }
+    // Bytes the last tick's player+world snapshot frames encoded to — the real
+    // per-tick snapshot serialization cost the loopback path first pays. Kept so
+    // a test or the HUD can pin it and catch a regression that would drag the
+    // tick (§13.3#4: every-tick full snapshot encoding).
+    [[nodiscard]] std::size_t lastSnapshotEncodedBytes() const { return snapshotEncodedBytes_; }
     // The most recently executed chat command's result, consumed (cleared) by
     // the renderer to append to the chat history.
     [[nodiscard]] std::optional<gameplay::CommandResult> takeChatResult();
@@ -135,6 +160,20 @@ class GameRuntime final {
   private:
     void registerAuthoritativeCommands();
     void processChatQueue();
+    // Drains the client→server channel into the session's command queue at the
+    // start of a tick. Safe to call inside the world write section: the channel
+    // and the command queue each carry their own mutex, so this depends on
+    // neither the world lock nor the SimulationHostBridge write-section invariant.
+    void drainClientCommands();
+    // Discards any frames still in the loopback channels — a world switch must
+    // not let the previous world's queued intents reach the new one (the channel
+    // analogue of the streaming epoch).
+    void clearChannels();
+    // Encodes the tick's player and world snapshots and sends them on the server
+    // end of the loopback channel, for the client (renderer/test) to decode into
+    // its mirror. Called at the end of tick(), after publishSnapshots, inside the
+    // world write section. Records the encoded size for metering.
+    void publishSnapshotsToChannel();
     // Background chunk-unload persistence. persistUnloadedChunk does the
     // in-memory extraction (edits + creatures) on the caller's thread and hands
     // the disk write to this worker, so a chunk-unload storm no longer blocks
@@ -158,6 +197,14 @@ class GameRuntime final {
         const std::optional<glm::vec3>& position);
 
     gameplay::SimulationHost& host_;
+    // The in-process loopback pair: the client end the renderer sends intents on
+    // and (later slices) reads snapshots/events from, the server end the tick
+    // drains and (later) publishes on. Same-process, no latency; the boundary is
+    // the byte codec, not a socket.
+    net::LoopbackPair loopback_ = net::makeLoopbackPair();
+    // Bytes the last tick's player+world snapshot frames encoded to (C-1b-2
+    // metering).
+    std::size_t snapshotEncodedBytes_ = 0;
     persistence::SaveRepository saveRepository_;
     world::ChunkStreamer& chunkStreamer_;
     world::World serverWorld_;

@@ -22,6 +22,7 @@ struct ItemEntity final {
     ItemStack stack;
     unsigned int ageTicks = 0;
     float visualPhase = 0.0F;
+    [[nodiscard]] friend bool operator==(const ItemEntity&, const ItemEntity&) = default;
 };
 
 class ItemEntitySystem final {

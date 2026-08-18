@@ -9,6 +9,8 @@
 
 #include "runtime/GameRuntime.hpp"
 
+#include "client/ClientMirror.hpp"
+
 #include <glm/geometric.hpp>
 
 #include "gameplay/GameplayMutationSink.hpp"
@@ -169,10 +171,62 @@ int main() {
         }
         assert(host.submittedStateEdits >= 2U);
 
+        // Stage C slice 1b: the client's intent travels the in-process loopback
+        // channel, not a direct enqueueCommand. Ship a hotbar change on the
+        // client end; the next tick drains the server end into the session and
+        // applies it, with no added latency (the frame is already queued when the
+        // tick runs). A command enqueued between ticks lands on the next one.
+        assert(runtime.gameSession().inventory().selectedHotbarSlot() != 4U);
+        runtime.enqueueClientCommand(gameplay::SwapSlot{4U});
+        // Not yet consumed: no tick has drained the channel.
+        assert(runtime.gameSession().inventory().selectedHotbarSlot() != 4U);
+        runtime.tick();
+        assert(runtime.gameSession().inventory().selectedHotbarSlot() == 4U);
+
         // Advance a handful of ticks synchronously (headless drives tick()
         // directly; the threaded form is exercised by the smoke test).
         for (int tick = 0; tick < 10; ++tick) {
             runtime.tick();
+        }
+
+        // Stage C slice 1b-2: the server encodes the player/world snapshots onto
+        // the channel every tick; a client mirror decodes the newest into itself,
+        // the ClientLevel-equivalent the renderer will read from. Pumping the
+        // client end drains the ticks above and keeps the latest, which must
+        // match what the authoritative session just published — byte round trip,
+        // no direct snapshot read. Metering the encoded size pins the per-tick
+        // serialization cost so a regression that would drag the tick is caught.
+        {
+            // Place a block so a WorldEditEvent is guaranteed on the channel this
+            // tick — the mirror pump must carry events (C-1b-3), not just
+            // snapshots. The edit reaches the host through the channel, decoded
+            // and applied by applyGameEvent instead of a direct drainEvents.
+            static_cast<void>(mutations.setBlock(
+                runtime.world(), {26, 80, 26}, world::BlockState{world::Block::Stone},
+                world::MutationFlags::All, world::MutationCause::PlayerPlace, sink));
+            runtime.tick();
+
+            RecordingHost mirrorHost;  // events apply here, isolated from the save's host
+            client::ClientMirror mirror;
+            const auto applied = mirror.pump(runtime.clientChannel(), mirrorHost);
+            assert(applied >= 3U);  // the edit event + the last tick's player + world
+            // The world edit round-tripped the channel and reached the host.
+            assert(mirrorHost.submittedStateEdits >= 1U);
+            assert(mirror.player() == runtime.gameSession().playerTickSnapshot());
+            assert(mirror.world() == runtime.gameSession().worldSnapshot());
+            // The entity snapshot (the restored pig) round-tripped into the
+            // mirror too: same creatures the session published this tick.
+            assert(mirror.entities().entities() ==
+                   runtime.gameSession().entitySnapshot().entities());
+            assert(!mirror.entities().entities().empty());  // the pig is there
+            // The per-tick snapshot encoding is non-trivial but bounded (the
+            // player POD plus the world's weather/clocks/container display).
+            assert(runtime.lastSnapshotEncodedBytes() > 0U);
+            assert(runtime.lastSnapshotEncodedBytes() < 64U * 1024U);
+            std::cout << "snapshotEncodedBytes/tick=" << runtime.lastSnapshotEncodedBytes()
+                      << "\n";
+            // A drained channel yields nothing more.
+            assert(mirror.pump(runtime.clientChannel(), mirrorHost) == 0U);
         }
 
         // Move the player to a distinctive position first, so the save carries

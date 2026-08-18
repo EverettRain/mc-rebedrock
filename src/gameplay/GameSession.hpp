@@ -340,6 +340,11 @@ class GameSession final {
     // does this once a frame, after the tick and the interaction pass and
     // before drawing, so an edit made this frame is applied before it is drawn.
     std::size_t drainEvents() { return hostBridge_.drain(); }
+    // Takes the tick's queued events without applying them, so the transport can
+    // encode and send each on the channel (C-1b-3); the client applies them with
+    // applyGameEvent. drainEvents stays for the headless tests that apply events
+    // to their own host directly.
+    [[nodiscard]] std::vector<GameEvent> takeEvents() { return hostBridge_.takeQueued(); }
     // What the renderer draws creatures from. Rebuilt at the end of every tick,
     // so the draw pass never walks the live entity vector — which the tick is
     // free to reorder, compact and resize. Returned by value after pinning the
@@ -349,6 +354,23 @@ class GameSession final {
         const auto snapshots = loadSnapshotBundle();
         return snapshots->entities;
     }
+    // How far the current frame sits past the tick that produced the snapshot the
+    // renderer is about to read, in [0,1] — the interpolation alpha, derived from
+    // the published bundle's own timestamp rather than a separately clocked
+    // accumulator. Using it keeps the alpha in step with the endpoints; the
+    // previous SimulationDriver alpha could be a tick ahead of the snapshot for a
+    // frame, which is what made moving drops and the swung hand jitter.
+    [[nodiscard]] float interpolationAlpha() const;
+    // The entity snapshot paired with the interpolation alpha from the *same*
+    // published bundle. A moving drop or creature must be interpolated with an
+    // alpha that matches its endpoints exactly; taking both from one immutable
+    // bundle in a single load makes a tick landing mid-frame impossible to catch
+    // half-applied. This is the jitter-free path the entity draws use.
+    struct InterpolatedEntities final {
+        EntityRenderSnapshot snapshot;
+        float alpha = 0.0F;
+    };
+    [[nodiscard]] InterpolatedEntities entityRenderFrame() const;
     [[nodiscard]] std::size_t pendingEvents() const { return hostBridge_.pending(); }
 
     // The one path block changes take. Exposed so a caller that already holds
@@ -455,6 +477,16 @@ class GameSession final {
         PlayerTickSnapshot player;
         WorldSnapshot world;
         EntityRenderSnapshot entities;
+        // The steady_clock time this bundle was published (end of the tick), as a
+        // steady_clock::duration rep (a raw count in the clock's own period, not
+        // necessarily nanoseconds — the same encoding SimulationDriver uses). The
+        // render thread derives the interpolation alpha from this, so the alpha
+        // comes from the very bundle it is interpolating rather than from a
+        // separate clock the tick thread updates a moment later. Reading the
+        // endpoints and the alpha from one immutable bundle removes the phase race
+        // that made moving entities jitter at tick boundaries. 0 before the first
+        // publish (alpha then reads 0).
+        std::int64_t tickPublishRep = 0;
     };
     [[nodiscard]] std::shared_ptr<const RenderSnapshots> loadSnapshotBundle() const;
     void storeSnapshotBundle(std::shared_ptr<const RenderSnapshots> snapshots);

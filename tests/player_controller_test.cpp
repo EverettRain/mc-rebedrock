@@ -157,5 +157,51 @@ int main() {
     expiredTap.tick(world, creativeJump);
     assert(!expiredTap.flying());
 
+    // A slab's half box holds the player at the slab's own surface, not a full
+    // block's top. A bottom slab on the floor (its box [1.0, 1.5]) rests a
+    // falling player at y=1.5; the open upper half is walkable, so the same
+    // player is not pushed up to y=2 the way a full block would.
+    world.setState(2, 1, 2,
+                   mc::world::BlockState{mc::world::Block::OakSlab}.withSlabPortion(
+                       mc::world::SlabPortion::Bottom));
+    mc::gameplay::PlayerController onSlab({2.5F, 3.0F, 2.5F});
+    for (int tick = 0; tick < 40; ++tick) {
+        onSlab.tick(world, idle);
+    }
+    assert(onSlab.onGround());
+    assert(std::abs(onSlab.position().y - 1.5F) < 0.02F);
+
+    // A top slab in the air (box [1.5, 2.0]) leaves its lower half open: a player
+    // standing on the floor below it at y=1 is not lifted by the slab overhead.
+    world.setState(3, 1, 3,
+                   mc::world::BlockState{mc::world::Block::OakSlab}.withSlabPortion(
+                       mc::world::SlabPortion::Top));
+    mc::gameplay::PlayerController underTopSlab({3.5F, 1.0F, 3.5F});
+    for (int tick = 0; tick < 20; ++tick) {
+        underTopSlab.tick(world, idle);
+    }
+    assert(std::abs(underTopSlab.position().y - 1.0F) < 0.02F);
+
+    // Placement occupancy respects the would-be block's box, not a full cube. A
+    // player standing in the upper half of a cell (feet at y=1.5) blocks a full
+    // block there, and blocks a top slab (whose box is that same upper half), but
+    // does not block a bottom slab dropped into the empty lower half.
+    {
+        mc::gameplay::PlayerController probe({0.5F, 1.5F, 0.5F});
+        assert(probe.intersectsBlock(0, 1, 0));               // full cube [1,2]
+        assert(probe.intersectsBlock(0, 1, 0, 0.5F, 1.0F));   // top slab   [1.5,2]
+        assert(!probe.intersectsBlock(0, 1, 0, 0.0F, 0.5F));  // bottom slab[1,1.5]
+    }
+
+    // A double slab is a full cube again: it rests the player a whole block up.
+    world.setState(2, 1, 2,
+                   mc::world::BlockState{mc::world::Block::OakSlab}.withSlabPortion(
+                       mc::world::SlabPortion::Double));
+    mc::gameplay::PlayerController onDouble({2.5F, 3.0F, 2.5F});
+    for (int tick = 0; tick < 40; ++tick) {
+        onDouble.tick(world, idle);
+    }
+    assert(std::abs(onDouble.position().y - 2.0F) < 0.02F);
+
     return 0;
 }
