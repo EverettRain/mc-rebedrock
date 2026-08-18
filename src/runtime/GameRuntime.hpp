@@ -82,10 +82,42 @@ class GameRuntime final {
     // the frame lands in the server queue immediately and the next tick consumes
     // it, exactly as the direct enqueue did — only a byte encode/decode.
     void enqueueClientCommand(gameplay::GameCommand command);
+    // The client's continuous movement intent for the coming tick (D0). The
+    // renderer samples the keyboard/look each frame and sends it here instead of
+    // writing gameSession().input() directly; the server drains it before the
+    // tick and stages it on the authoritative player. Unlike a GameCommand it is
+    // not queued for the late interaction drain — movement must be published
+    // before the tick reads it, exactly as commitInput() did.
+    void sendClientMovement(gameplay::MovementInput input);
+    // A session-level client intent (D0): respawn from the death screen, a
+    // game-mode switch. Sent on the client end; the server applies it
+    // authoritatively when it drains the channel. Respawn is issued while the
+    // simulation is paused (the death screen), which no tick would drain — so the
+    // caller follows it with applyClientCommandsNow() to apply it at once.
+    void sendClientSessionCommand(gameplay::SessionCommand command);
+    // Drains and applies the client channel now, outside the tick, then
+    // republishes the player/world snapshots — for a synchronous client action
+    // taken while the simulation is paused (respawn), so the change lands and the
+    // mirror reflects it this frame instead of never (no tick runs while paused).
+    // Takes the world write section itself; the caller must not already hold it.
+    void applyClientCommandsNow();
     // The client end of the loopback channel. The renderer pumps it each frame
     // to drain the server's per-tick player/world snapshot frames into its
     // ClientMirror (C-1b-2), the same end it sent commands on.
     [[nodiscard]] net::MessageChannel& clientChannel() { return *loopback_.client; }
+
+    // D7: redirect the server's client-facing channel from the internal loopback
+    // to an external one — the server end of a TCP connection the dedicated server
+    // accepted. After this the tick drains client intents from, and publishes
+    // snapshots to, `channel` instead of the loopback; the integrated single-player
+    // renderer never calls this and keeps the loopback. Discards anything stale on
+    // the newly attached channel (the previous world's frames must not leak in).
+    void attachConnection(net::MessageChannel& channel) {
+        attachedServerChannel_ = &channel;
+        clearChannels();
+    }
+    // Return to the internal loopback (a connection dropped).
+    void detachConnection() { attachedServerChannel_ = nullptr; }
     // Pushes the current player/world snapshots onto the channel now, outside a
     // tick — for a client-initiated synchronous change (respawn, teleport) so the
     // mirror can be pumped to reflect it this frame instead of a tick later. The
@@ -165,6 +197,15 @@ class GameRuntime final {
     // and the command queue each carry their own mutex, so this depends on
     // neither the world lock nor the SimulationHostBridge write-section invariant.
     void drainClientCommands();
+    // The channel the tick drains client intents from and publishes snapshots to:
+    // an attached connection (the dedicated server's TCP socket) when one is set,
+    // else the internal loopback's server end (single-player integrated).
+    [[nodiscard]] net::MessageChannel& serverChannel() {
+        return attachedServerChannel_ != nullptr ? *attachedServerChannel_ : *loopback_.server;
+    }
+    // Applies one drained session intent to the authoritative session (respawn,
+    // game-mode switch).
+    void applySessionCommand(const gameplay::SessionCommand& command);
     // Discards any frames still in the loopback channels — a world switch must
     // not let the previous world's queued intents reach the new one (the channel
     // analogue of the streaming epoch).
@@ -197,11 +238,14 @@ class GameRuntime final {
         const std::optional<glm::vec3>& position);
 
     gameplay::SimulationHost& host_;
-    // The in-process loopback pair: the client end the renderer sends intents on
-    // and (later slices) reads snapshots/events from, the server end the tick
-    // drains and (later) publishes on. Same-process, no latency; the boundary is
-    // the byte codec, not a socket.
+    // The in-process loopback pair: the integrated client sends intents and reads
+    // snapshots/events on its end, while the server tick drains and publishes on
+    // the other. Same-process, no latency; the boundary is the byte codec, not a
+    // socket.
     net::LoopbackPair loopback_ = net::makeLoopbackPair();
+    // When non-null, the server drains/publishes on this external channel (a TCP
+    // connection) instead of loopback_.server — set by attachConnection (D7).
+    net::MessageChannel* attachedServerChannel_ = nullptr;
     // Bytes the last tick's player+world snapshot frames encoded to (C-1b-2
     // metering).
     std::size_t snapshotEncodedBytes_ = 0;

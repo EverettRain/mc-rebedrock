@@ -36,7 +36,8 @@ namespace mc::net {
 // crosses. The three alternatives are themselves variants; because they are
 // distinct types, std::visit over a NetMessage picks the boundary unambiguously.
 using NetMessage = std::variant<gameplay::GameCommand, gameplay::PublishedSnapshot,
-                                gameplay::GameEvent, gameplay::EntityRenderSnapshot>;
+                                gameplay::GameEvent, gameplay::EntityRenderSnapshot,
+                                gameplay::MovementInput, gameplay::SessionCommand>;
 
 // The tag ranges, derived from the variant sizes so they stay consistent with
 // the codecs' own scheme (each codec's base offset is the count of the
@@ -51,6 +52,16 @@ inline constexpr std::uint8_t kEventTagEnd =
 // The entity render snapshot is a single type, not a variant, so it occupies one
 // tag right after the events (20 today).
 inline constexpr std::uint8_t kEntityTagEnd = static_cast<std::uint8_t>(kEventTagEnd + 1);
+// The movement input is likewise a single type, one tag past the entity snapshot
+// (21 today) — it matches gameplay::kMovementInputTag.
+inline constexpr std::uint8_t kMovementTagEnd = static_cast<std::uint8_t>(kEntityTagEnd + 1);
+// The session commands are a variant occupying the tags right after movement
+// (22.. today); its codec bases its frame tags at gameplay::kSessionCommandTagBase,
+// which must equal where movement ends.
+static_assert(kMovementTagEnd == gameplay::kSessionCommandTagBase,
+              "SessionCommand tag base must follow the movement tag");
+inline constexpr std::uint8_t kSessionTagEnd = static_cast<std::uint8_t>(
+    kMovementTagEnd + std::variant_size_v<gameplay::SessionCommand>);
 
 // Frames one message with the codec that matches its boundary. The result is a
 // self-delimiting frame: its header carries the payload size, so a byte stream
@@ -65,8 +76,12 @@ inline constexpr std::uint8_t kEntityTagEnd = static_cast<std::uint8_t>(kEventTa
                 return gameplay::encodeSnapshot(specific);
             } else if constexpr (std::is_same_v<T, gameplay::GameEvent>) {
                 return gameplay::encodeGameEvent(specific);
-            } else {
+            } else if constexpr (std::is_same_v<T, gameplay::EntityRenderSnapshot>) {
                 return gameplay::encodeEntitySnapshot(specific);
+            } else if constexpr (std::is_same_v<T, gameplay::MovementInput>) {
+                return gameplay::encodeMovementInput(specific);
+            } else {
+                return gameplay::encodeSessionCommand(specific);
             }
         },
         message);
@@ -116,6 +131,18 @@ inline constexpr std::uint8_t kEntityTagEnd = static_cast<std::uint8_t>(kEventTa
     if (tag < kEntityTagEnd) {
         if (auto entities = gameplay::decodeEntitySnapshot(bytes); entities.has_value()) {
             return NetMessage{std::move(*entities)};
+        }
+        return std::nullopt;
+    }
+    if (tag < kMovementTagEnd) {
+        if (auto movement = gameplay::decodeMovementInput(bytes); movement.has_value()) {
+            return NetMessage{std::move(*movement)};
+        }
+        return std::nullopt;
+    }
+    if (tag < kSessionTagEnd) {
+        if (auto session = gameplay::decodeSessionCommand(bytes); session.has_value()) {
+            return NetMessage{std::move(*session)};
         }
         return std::nullopt;
     }

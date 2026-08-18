@@ -211,4 +211,20 @@ readFrame(std::span<const std::uint8_t> bytes, std::size_t& cursor) {
     return std::pair{tag, payloadEnd};
 }
 
+// The total length one frame occupies (header + payload), read from the header
+// alone. nullopt while fewer than the header's bytes are present. Unlike
+// readFrame this does not require the payload to be there yet, so a byte-stream
+// reassembler (the TCP channel) can decide from a partial buffer how many more
+// bytes a whole frame still needs — the half-packet/coalesced-packet case a raw
+// stream has and the loopback queue never does.
+[[nodiscard]] inline std::optional<std::size_t> peekFrameLength(
+    std::span<const std::uint8_t> bytes) {
+    if (bytes.size() < kFrameHeaderBytes) {
+        return std::nullopt;
+    }
+    std::size_t cursor = 1U;  // Skip the tag; the size follows it.
+    const auto size = persistence::readInteger<std::uint32_t>(bytes, cursor);
+    return kFrameHeaderBytes + static_cast<std::size_t>(size);
+}
+
 }  // namespace mc::gameplay::codec

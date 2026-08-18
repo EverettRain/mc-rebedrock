@@ -230,4 +230,102 @@ std::optional<GameCommand> decodeGameCommand(std::span<const std::uint8_t> bytes
     }
 }
 
+std::vector<std::uint8_t> encodeMovementInput(const MovementInput& input) {
+    std::vector<std::uint8_t> bytes;
+    codec::appendFrame(bytes, kMovementInputTag, [&] {
+        persistence::appendFloat(bytes, input.forward);
+        persistence::appendFloat(bytes, input.strafe);
+        codec::appendVec3(bytes, input.lookDirection);
+        // The six intent bits packed into one byte, LSB first.
+        const std::uint8_t bits = static_cast<std::uint8_t>(
+            (input.jumpHeld ? 0x01U : 0U) | (input.descendHeld ? 0x02U : 0U) |
+            (input.sneakHeld ? 0x04U : 0U) | (input.sprintHeld ? 0x08U : 0U) |
+            (input.jumpPressed ? 0x10U : 0U) | (input.forwardPressed ? 0x20U : 0U) |
+            (input.autoJump ? 0x40U : 0U));
+        persistence::appendInteger(bytes, bits);
+    });
+    return bytes;
+}
+
+std::optional<MovementInput> decodeMovementInput(std::span<const std::uint8_t> bytes) {
+    try {
+        std::size_t cursor = 0;
+        const auto frame = codec::readFrame(bytes, cursor);
+        if (!frame.has_value() || frame->first != kMovementInputTag) {
+            return std::nullopt;
+        }
+        MovementInput input;
+        input.forward = persistence::readFloat(bytes, cursor);
+        input.strafe = persistence::readFloat(bytes, cursor);
+        input.lookDirection = codec::readVec3(bytes, cursor);
+        const auto bits = persistence::readInteger<std::uint8_t>(bytes, cursor);
+        input.jumpHeld = (bits & 0x01U) != 0U;
+        input.descendHeld = (bits & 0x02U) != 0U;
+        input.sneakHeld = (bits & 0x04U) != 0U;
+        input.sprintHeld = (bits & 0x08U) != 0U;
+        input.jumpPressed = (bits & 0x10U) != 0U;
+        input.forwardPressed = (bits & 0x20U) != 0U;
+        input.autoJump = (bits & 0x40U) != 0U;
+        if (cursor > frame->second) {
+            return std::nullopt;
+        }
+        return input;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+std::vector<std::uint8_t> encodeSessionCommand(const SessionCommand& command) {
+    std::vector<std::uint8_t> bytes;
+    const std::uint8_t tag =
+        static_cast<std::uint8_t>(kSessionCommandTagBase + command.index());
+    codec::appendFrame(bytes, tag, [&] {
+        std::visit(
+            [&](const auto& specific) {
+                using T = std::decay_t<decltype(specific)>;
+                if constexpr (std::is_same_v<T, SetGameMode>) {
+                    persistence::appendInteger(bytes, static_cast<std::uint8_t>(specific.mode));
+                }
+                // Respawn has no payload.
+            },
+            command);
+    });
+    return bytes;
+}
+
+std::optional<SessionCommand> decodeSessionCommand(std::span<const std::uint8_t> bytes) {
+    try {
+        std::size_t cursor = 0;
+        const auto frame = codec::readFrame(bytes, cursor);
+        if (!frame.has_value()) {
+            return std::nullopt;
+        }
+        const auto [tag, payloadEnd] = *frame;
+        if (tag < kSessionCommandTagBase) {
+            return std::nullopt;
+        }
+        const std::uint8_t index = static_cast<std::uint8_t>(tag - kSessionCommandTagBase);
+        SessionCommand decoded;
+        switch (index) {
+        case 0:  // Respawn
+            decoded = Respawn{};
+            break;
+        case 1: {  // SetGameMode
+            SetGameMode set;
+            set.mode = static_cast<GameMode>(persistence::readInteger<std::uint8_t>(bytes, cursor));
+            decoded = set;
+            break;
+        }
+        default:
+            return std::nullopt;  // a newer build's session command
+        }
+        if (cursor > payloadEnd) {
+            return std::nullopt;
+        }
+        return decoded;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
 }  // namespace mc::gameplay

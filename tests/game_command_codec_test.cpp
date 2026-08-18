@@ -76,6 +76,63 @@ int main() {
     checkRoundTrip(gameplay::GameCommand{gameplay::PickupAll{
         {gameplay::SlotRef{gameplay::SlotKind::PlayerInventory, 3U}}}});
 
+    // --- MovementInput (D0): the continuous intent round-trips with its floats
+    // and all six intent bits, and its frame carries the movement tag. ---
+    {
+        gameplay::MovementInput input;
+        input.forward = 1.0F;
+        input.strafe = -1.0F;
+        input.lookDirection = glm::vec3{0.25F, -0.5F, 0.8F};
+        input.jumpHeld = true;
+        input.descendHeld = false;
+        input.sneakHeld = true;
+        input.sprintHeld = false;
+        input.jumpPressed = true;
+        input.forwardPressed = true;
+        input.autoJump = true;
+        const auto bytes = gameplay::encodeMovementInput(input);
+        assert(!bytes.empty());
+        assert(bytes.front() == gameplay::kMovementInputTag);
+        const auto decoded = gameplay::decodeMovementInput(bytes);
+        assert(decoded.has_value());
+        assert(*decoded == input);
+
+        // The default-valued input round-trips too (all bits clear).
+        const gameplay::MovementInput zero;
+        const auto zeroDecoded = gameplay::decodeMovementInput(gameplay::encodeMovementInput(zero));
+        assert(zeroDecoded.has_value() && *zeroDecoded == zero);
+
+        // A command frame is not a movement frame and vice versa: the tag guards.
+        assert(!gameplay::decodeMovementInput(
+                    gameplay::encodeGameCommand(gameplay::GameCommand{gameplay::SwapSlot{1U}}))
+                    .has_value());
+        assert(!gameplay::decodeGameCommand(bytes).has_value());
+    }
+
+    // --- SessionCommand (D0): respawn (no payload) and a game-mode switch both
+    // round-trip, and their frames carry tags in the session range, distinct from
+    // a movement or game command. ---
+    {
+        const gameplay::SessionCommand respawn{gameplay::Respawn{}};
+        const auto respawnBytes = gameplay::encodeSessionCommand(respawn);
+        assert(respawnBytes.front() == gameplay::kSessionCommandTagBase);  // index 0
+        const auto respawnDecoded = gameplay::decodeSessionCommand(respawnBytes);
+        assert(respawnDecoded.has_value() && *respawnDecoded == respawn);
+
+        const gameplay::SessionCommand setMode{gameplay::SetGameMode{gameplay::GameMode::Creative}};
+        const auto modeBytes = gameplay::encodeSessionCommand(setMode);
+        assert(modeBytes.front() == gameplay::kSessionCommandTagBase + 1U);  // index 1
+        const auto modeDecoded = gameplay::decodeSessionCommand(modeBytes);
+        assert(modeDecoded.has_value() && *modeDecoded == setMode);
+        assert(std::get<gameplay::SetGameMode>(*modeDecoded).mode == gameplay::GameMode::Creative);
+
+        // A game command is not a session command and vice versa: tags guard.
+        assert(!gameplay::decodeSessionCommand(
+                    gameplay::encodeGameCommand(gameplay::GameCommand{gameplay::SwapSlot{1U}}))
+                    .has_value());
+        assert(!gameplay::decodeGameCommand(modeBytes).has_value());
+    }
+
     // --- Two commands in one byte stream split back at the frame boundary. ---
     {
         const gameplay::GameCommand first{gameplay::DropCursor{{1.0F, 2.0F, 3.0F}}};

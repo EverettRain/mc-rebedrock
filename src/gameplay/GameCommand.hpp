@@ -148,6 +148,34 @@ struct PickupAll final {
     [[nodiscard]] friend bool operator==(const PickupAll&, const PickupAll&) = default;
 };
 
+// The player's continuous movement intent for one tick — the per-frame keyboard
+// and look sample the renderer wrote straight into GameSession::input() before
+// the client/server split. Deliberately NOT a GameCommand: those are discrete
+// actions the tick drains late (after physics), whereas movement must be staged
+// before the tick reads it, exactly as commitInput() published it. Cross-process
+// the client has no session to write, so it ships this each tick and the server
+// stages it on the authoritative player. It carries only raw intent — the server
+// derives the gated fields (flightAllowed from the game mode, sprintAllowed from
+// the food level) itself rather than trusting the client's copy of them.
+struct MovementInput final {
+    float forward = 0.0F;
+    float strafe = 0.0F;
+    glm::vec3 lookDirection{0.0F, 0.0F, -1.0F};
+    bool jumpHeld = false;
+    bool descendHeld = false;
+    bool sneakHeld = false;
+    bool sprintHeld = false;
+    // The jump edge (a fresh press this interval), which toggles creative flight;
+    // ORed across the inputs that arrive between two ticks so a press is never
+    // dropped. Distinct from jumpHeld, which is level-sampled for ordinary jumps.
+    bool jumpPressed = false;
+    // The sprint double-tap edge the client detects.
+    bool forwardPressed = false;
+    // The client's auto-jump option.
+    bool autoJump = false;
+    [[nodiscard]] friend bool operator==(const MovementInput&, const MovementInput&) = default;
+};
+
 // One queued input, discriminated. All payloads are trivially copyable except
 // the chat string and the two drag vectors.
 using GameCommand = std::variant<PlayerAction, UseItemOn, UseItem, UseItemStop, SwapSlot, ClickSlot,

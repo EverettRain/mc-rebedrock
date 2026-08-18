@@ -92,7 +92,7 @@ void GameRuntime::publishSnapshotsToChannel() {
     // opens/eating) before it takes the new player/world mirror — the same order
     // the renderer's drainEvents used to run, now carried over the channel.
     for (const auto& event : gameSession_.takeEvents()) {
-        loopback_.server->sendFrame(net::encodeMessage(net::NetMessage{event}));
+        serverChannel().sendFrame(net::encodeMessage(net::NetMessage{event}));
     }
     // gameSession_.tick just published fresh snapshots; encode the player and
     // world views and send them on the server end. Encoding here (rather than in
@@ -105,31 +105,71 @@ void GameRuntime::publishSnapshotsToChannel() {
         net::NetMessage{gameplay::PublishedSnapshot{gameSession_.worldSnapshot()}});
     auto entityFrame = net::encodeMessage(net::NetMessage{gameSession_.entitySnapshot()});
     snapshotEncodedBytes_ = playerFrame.size() + worldFrame.size() + entityFrame.size();
-    loopback_.server->sendFrame(std::move(playerFrame));
-    loopback_.server->sendFrame(std::move(worldFrame));
-    loopback_.server->sendFrame(std::move(entityFrame));
+    serverChannel().sendFrame(std::move(playerFrame));
+    serverChannel().sendFrame(std::move(worldFrame));
+    serverChannel().sendFrame(std::move(entityFrame));
 }
 
 void GameRuntime::enqueueClientCommand(gameplay::GameCommand command) {
     net::sendMessage(*loopback_.client, net::NetMessage{std::move(command)});
 }
 
+void GameRuntime::sendClientMovement(gameplay::MovementInput input) {
+    net::sendMessage(*loopback_.client, net::NetMessage{std::move(input)});
+}
+
+void GameRuntime::sendClientSessionCommand(gameplay::SessionCommand command) {
+    net::sendMessage(*loopback_.client, net::NetMessage{std::move(command)});
+}
+
+void GameRuntime::applyClientCommandsNow() {
+    const auto write = worldLock_.write();
+    drainClientCommands();
+    publishSnapshotsToChannel();
+}
+
 void GameRuntime::drainClientCommands() {
     std::optional<net::NetMessage> message;
-    while (net::receiveMessage(*loopback_.server, message)) {
+    while (net::receiveMessage(serverChannel(), message)) {
         // A frame that did not decode (an unknown tag from a newer client) is
         // reported as an empty optional but already consumed — skip it and keep
-        // draining. Only command frames are expected on this end today.
-        if (message.has_value() &&
-            std::holds_alternative<gameplay::GameCommand>(*message)) {
+        // draining. The client→server kinds expected on this end: discrete
+        // GameCommands (queued for the tick's late interaction drain), the
+        // continuous MovementInput (staged on the player now, before the tick
+        // reads its input at the top), and SessionCommands (respawn/game mode,
+        // applied to the session at once).
+        if (!message.has_value()) {
+            continue;
+        }
+        if (std::holds_alternative<gameplay::GameCommand>(*message)) {
             gameSession_.enqueueCommand(std::get<gameplay::GameCommand>(std::move(*message)));
+        } else if (std::holds_alternative<gameplay::MovementInput>(*message)) {
+            gameSession_.applyMovementInput(std::get<gameplay::MovementInput>(*message));
+        } else if (std::holds_alternative<gameplay::SessionCommand>(*message)) {
+            applySessionCommand(std::get<gameplay::SessionCommand>(*message));
         }
     }
 }
 
+void GameRuntime::applySessionCommand(const gameplay::SessionCommand& command) {
+    std::visit(
+        [&](const auto& specific) {
+            using T = std::decay_t<decltype(specific)>;
+            if constexpr (std::is_same_v<T, gameplay::Respawn>) {
+                gameSession_.respawn(gameplay::kPrimaryPlayerId);
+            } else if constexpr (std::is_same_v<T, gameplay::SetGameMode>) {
+                gameSession_.setGameMode(specific.mode);
+            }
+        },
+        command);
+}
+
 void GameRuntime::clearChannels() {
     std::vector<std::uint8_t> discard;
-    while (loopback_.server->receiveFrame(discard)) {
+    // Drain the effective server channel (attached connection or loopback server)
+    // and the integrated client's inbound; a world switch must not let the
+    // previous world's queued frames reach the new one.
+    while (serverChannel().receiveFrame(discard)) {
     }
     while (loopback_.client->receiveFrame(discard)) {
     }

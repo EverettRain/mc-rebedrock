@@ -1122,6 +1122,128 @@ if(BUILD_TESTING)
     find_package(Threads REQUIRED)
     target_link_libraries(mc_rebedrock_loopback_transport_test PRIVATE Threads::Threads)
     add_test(NAME loopback_transport COMMAND mc_rebedrock_loopback_transport_test)
+    add_executable(mc_rebedrock_tcp_transport_test
+        tests/tcp_transport_test.cpp
+        src/gameplay/GameCommandCodec.cpp
+        src/gameplay/GameSnapshotCodec.cpp
+        src/gameplay/GameEventCodec.cpp
+        src/gameplay/ChestSystem.cpp
+        src/gameplay/FurnaceSystem.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/CraftingSystem.cpp
+        src/gameplay/EntitySystem.cpp
+        src/gameplay/EntityRenderSnapshot.cpp
+        src/gameplay/GameRules.cpp
+        src/gameplay/GameSession.cpp
+        src/gameplay/PlayerInteraction.cpp
+        src/gameplay/PlayerActionState.cpp
+        src/gameplay/ScreenHandler.cpp
+        src/ui/HudLayout.cpp
+        src/gameplay/GameplayMutationSink.cpp
+        src/gameplay/SimulationHostBridge.cpp
+        src/gameplay/Inventory.cpp
+        src/gameplay/ItemEntitySystem.cpp
+        src/gameplay/ItemPlacement.cpp
+        src/gameplay/MiningSystem.cpp
+        src/gameplay/BlockTags.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
+        src/gameplay/NaturalSpawner.cpp
+        src/gameplay/MobSpawnSettings.cpp
+        src/gameplay/PlayerController.cpp
+        src/gameplay/PlayerVitals.cpp
+        src/gameplay/WeatherSystem.cpp
+        src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/world/BlockPlacement.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/DayNightCycle.cpp
+        src/world/WorldClock.cpp
+        src/world/World.cpp
+        src/world/gen/Biome.cpp
+        src/world/gen/BiomeSource.cpp
+        src/world/gen/LayeredBiomeSource.cpp
+        src/world/gen/NoiseSampler.cpp
+        src/world/gen/TreeGrower.cpp
+    )
+    target_include_directories(mc_rebedrock_tcp_transport_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    target_link_libraries(mc_rebedrock_tcp_transport_test PRIVATE Threads::Threads)
+    add_test(NAME tcp_transport COMMAND mc_rebedrock_tcp_transport_test)
+    add_executable(mc_rebedrock_handshake_test
+        tests/handshake_test.cpp
+        src/gameplay/GameCommandCodec.cpp
+        src/gameplay/GameSnapshotCodec.cpp
+        src/gameplay/GameEventCodec.cpp
+        src/gameplay/ChestSystem.cpp
+        src/gameplay/FurnaceSystem.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/CraftingSystem.cpp
+        src/gameplay/EntitySystem.cpp
+        src/gameplay/EntityRenderSnapshot.cpp
+        src/gameplay/GameRules.cpp
+        src/gameplay/GameSession.cpp
+        src/gameplay/PlayerInteraction.cpp
+        src/gameplay/PlayerActionState.cpp
+        src/gameplay/ScreenHandler.cpp
+        src/ui/HudLayout.cpp
+        src/gameplay/GameplayMutationSink.cpp
+        src/gameplay/SimulationHostBridge.cpp
+        src/gameplay/Inventory.cpp
+        src/gameplay/ItemEntitySystem.cpp
+        src/gameplay/ItemPlacement.cpp
+        src/gameplay/MiningSystem.cpp
+        src/gameplay/BlockTags.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
+        src/gameplay/NaturalSpawner.cpp
+        src/gameplay/MobSpawnSettings.cpp
+        src/gameplay/PlayerController.cpp
+        src/gameplay/PlayerVitals.cpp
+        src/gameplay/WeatherSystem.cpp
+        src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/world/BlockPlacement.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/DayNightCycle.cpp
+        src/world/WorldClock.cpp
+        src/world/World.cpp
+        src/world/gen/Biome.cpp
+        src/world/gen/BiomeSource.cpp
+        src/world/gen/LayeredBiomeSource.cpp
+        src/world/gen/NoiseSampler.cpp
+        src/world/gen/TreeGrower.cpp
+    )
+    target_include_directories(mc_rebedrock_handshake_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    target_link_libraries(mc_rebedrock_handshake_test PRIVATE Threads::Threads)
+    add_test(NAME handshake COMMAND mc_rebedrock_handshake_test)
     add_executable(mc_rebedrock_player_interaction_test
         tests/player_interaction_test.cpp
         src/gameplay/ChestSystem.cpp
@@ -1309,6 +1431,98 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME game_runtime COMMAND mc_rebedrock_game_runtime_test)
+
+    # The authoritative runtime source chain — everything the simulation needs and
+    # nothing from render/vulkan/glfw. Shared by the dedicated server binary and
+    # its test, and identical to what game_runtime_test links (that test is the
+    # server's functional ancestor).
+    set(MC_REBEDROCK_RUNTIME_SOURCES
+        src/runtime/GameRuntime.cpp
+        src/gameplay/GameCommandCodec.cpp
+        src/gameplay/GameSnapshotCodec.cpp
+        src/gameplay/GameEventCodec.cpp
+        src/persistence/SaveRepository.cpp
+        src/gameplay/ChestSystem.cpp
+        src/gameplay/FurnaceSystem.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/CraftingSystem.cpp
+        src/gameplay/EntitySystem.cpp
+        src/gameplay/EntityRenderSnapshot.cpp
+        src/gameplay/GameRules.cpp
+        src/gameplay/GameSession.cpp
+        src/gameplay/PlayerInteraction.cpp
+        src/gameplay/PlayerActionState.cpp
+        src/gameplay/ScreenHandler.cpp
+        src/ui/HudLayout.cpp
+        src/gameplay/GameplayMutationSink.cpp
+        src/gameplay/SimulationHostBridge.cpp
+        src/gameplay/Inventory.cpp
+        src/gameplay/ItemEntitySystem.cpp
+        src/gameplay/ItemPlacement.cpp
+        src/gameplay/MiningSystem.cpp
+        src/gameplay/BlockTags.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
+        src/gameplay/NaturalSpawner.cpp
+        src/gameplay/MobSpawnSettings.cpp
+        src/gameplay/PlayerController.cpp
+        src/gameplay/PlayerVitals.cpp
+        src/gameplay/WeatherSystem.cpp
+        src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/world/BlockPlacement.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/ChunkStreamer.cpp
+        src/world/ChunkMesher.cpp
+        src/world/WorldLighting.cpp
+        src/world/WorldLightEngine.cpp
+        src/world/SurfaceGenerator.cpp
+        src/world/gen/Biome.cpp
+        src/world/gen/BiomeSource.cpp
+        src/world/gen/LayeredBiomeSource.cpp
+        src/world/gen/Carver.cpp
+        src/world/gen/Features.cpp
+        src/world/gen/NoiseChunkGenerator.cpp
+        src/world/gen/NoiseSampler.cpp
+        src/world/gen/TreeGrower.cpp
+        src/world/World.cpp
+        src/world/DayNightCycle.cpp
+        src/world/WorldClock.cpp
+    )
+    find_package(Threads REQUIRED)
+
+    # D7: the dedicated server executable — links the runtime, not render/vulkan.
+    add_executable(mc_rebedrock_dedicated_server
+        src/server/dedicated_server_main.cpp
+        ${MC_REBEDROCK_RUNTIME_SOURCES}
+    )
+    target_include_directories(mc_rebedrock_dedicated_server PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    target_link_libraries(mc_rebedrock_dedicated_server PRIVATE Threads::Threads)
+
+    add_executable(mc_rebedrock_dedicated_server_test
+        tests/dedicated_server_test.cpp
+        ${MC_REBEDROCK_RUNTIME_SOURCES}
+    )
+    target_include_directories(mc_rebedrock_dedicated_server_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    target_link_libraries(mc_rebedrock_dedicated_server_test PRIVATE Threads::Threads)
+    add_test(NAME dedicated_server COMMAND mc_rebedrock_dedicated_server_test)
 
     add_executable(mc_rebedrock_player_action_state_test
         tests/player_action_state_test.cpp

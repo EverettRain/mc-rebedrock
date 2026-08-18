@@ -317,6 +317,13 @@ class GameSession final {
     // Publishes the staged input to the simulation. Called once a frame by the
     // renderer, after the keyboard has been sampled.
     void commitInput();
+    // Applies a client's MovementInput to the authoritative player: stages the
+    // raw intent and publishes it (as commitInput does), derives the gated fields
+    // (flightAllowed/sprintAllowed) from authoritative state rather than the
+    // client's copy, and ORs in the jump edge. The server calls this from the
+    // channel drain before the tick, so a cross-process client with no session
+    // of its own steers the player exactly as the in-process renderer did.
+    void applyMovementInput(const MovementInput& intent);
     [[nodiscard]] PlayerVitals& vitals() { return primaryPlayer().vitals; }
     [[nodiscard]] const PlayerVitals& vitals() const { return primaryPlayer().vitals; }
     [[nodiscard]] Inventory& inventory() { return primaryPlayer().inventory; }

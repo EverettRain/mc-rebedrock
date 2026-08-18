@@ -74,6 +74,20 @@ simple versioned history while it is in beta.
   block states and half-height meshes, collision and raycast outlines; they
   place from the clicked face, merge with their own kind, and fully support
   saves, doubled drops, the creative catalogue and half-height HUD icons.
+- A POSIX TCP `MessageChannel` and listener were added. A dedicated I/O thread
+  reassembles fragmented/coalesced TCP data into ordered frames, applies
+  backpressure with an 8 MB bounded send queue, and handles disconnects and
+  invalid lengths safely. The same command → tick → snapshot chain can therefore
+  switch from in-process loopback to a real socket without changing its protocol.
+- New connections now perform a protocol handshake before gameplay messages:
+  client and server exchange an application identifier and protocol version,
+  entering play only on a match. Wrong applications, malformed hellos, version
+  mismatches and silent peers produce explicit refusal or timeout outcomes.
+- An experimental `mc_rebedrock_dedicated_server` was added without GLFW or
+  Vulkan linkage. It creates or loads a world, prepares spawn chunks, runs and
+  saves headlessly at 20 TPS, and can accept one handshaken client on a local TCP
+  port. This is currently a single-connection skeleton; a graphical remote-connect
+  entry point and multi-player ownership remain future work.
 - Optional slow-frame and resident-memory diagnostics were added:
   `MC_REBEDROCK_FRAME_TRACE=1` reports overruns by persistence, locking, GPU
   fence, event-drain and other stages, while `MC_REBEDROCK_MEMORY_REPORT=1`
@@ -153,6 +167,11 @@ simple versioned history while it is in beta.
   `GameSession` directly. World switches clear both channels and the mirror,
   mining/container state travels in snapshots, and a per-tick encoded-size
   regression check constrains the cost of the full mirror.
+- Continuous movement, look direction, jump/sprint edges and auto-jump now travel
+  through the channel as `MovementInput`, while respawn and game-mode changes use
+  separate `SessionCommand`s. The client no longer writes or directly calls the
+  authoritative `GameSession`; the server also derives flight and sprint
+  permission from game mode and hunger instead of trusting client results.
 - The README was rewritten for the current beta implementation, including the
   Java 26.1 resource-pack requirement, dual-platform build/test workflow,
   runtime layout, project structure and known boundaries. Obsolete 1.16.1
@@ -191,6 +210,10 @@ simple versioned history while it is in beta.
   occasionally jitter at tick boundaries. Interpolation is now timed from the
   client's receipt of a mirrored snapshot and paired with the endpoints from
   that same mirror update, so it cannot drift one tick out of phase.
+- When render frames outnumber server ticks, a later no-press frame no longer
+  overwrites an unconsumed jump or forward-double-tap edge. The server merges
+  one-shot edges across `MovementInput`s, so double-tap sprint no longer fails
+  intermittently.
 
 ## ReBedrock beta5
 

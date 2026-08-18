@@ -10,6 +10,9 @@
 #include "runtime/GameRuntime.hpp"
 
 #include "client/ClientMirror.hpp"
+#include "net/LoopbackTransport.hpp"
+#include "net/NetMessage.hpp"
+#include "net/Transport.hpp"
 
 #include <glm/geometric.hpp>
 
@@ -304,6 +307,132 @@ int main() {
         runtime.stopSimulation();
     }  // runtime + streamer destroyed here.
 
+    // Phase 1.5 (D0 movement over the channel): isolated in its own runtime so
+    // the extra ticks it drives do not perturb Phase 1's server-resident bound.
+    // The client's continuous movement intent travels the channel, but the server
+    // stages it on the player *before* the tick rather than queuing it for the
+    // late command drain — the renderer used to write gameSession().input()
+    // directly, which a cross-process client has no session to do. A forward walk
+    // moves the player in its look direction, and the server derives the gated
+    // fields (flightAllowed from the creative game mode, sprintAllowed from the
+    // food level) itself: MovementInput carries neither, so the walk proves the
+    // authority moved server-side.
+    {
+        world::ChunkStreamer streamer{0U, 4, 4};
+        RecordingHost host;
+        runtime::GameRuntime runtime{host, streamer, saveRoot};
+        host.save = &runtime.currentSaveSlot();
+        auto save = runtime.createWorld("movement", 7U, gameplay::GameMode::Creative);
+        runtime.loadWorld(std::move(save), /*viewDistanceChunks=*/4);
+        // The player's column must be loaded or the controller bails before it
+        // moves (columnLoaded early-out). Pull the spawn chunk (24,?,24 -> 1,1).
+        const auto batch = streamer.requestSync({1, 1}, std::chrono::seconds(10));
+        assert(batch.has_value());
+        applyBatch(runtime, *batch);
+
+        // Fly above the terrain so the move is unobstructed. Teleport high, then
+        // toggle creative flight with a jump double-tap (two jump edges within the
+        // toggle window) — each edge is sent as its own MovementInput, exactly as
+        // a client would sample the key.
+        runtime.gameSession().teleportPlayer(gameplay::kPrimaryPlayerId,
+                                             glm::vec3{24.5F, 120.0F, 24.5F});
+        gameplay::MovementInput jump;
+        jump.jumpPressed = true;
+        runtime.sendClientMovement(jump);
+        runtime.tick();
+        runtime.sendClientMovement(jump);
+        runtime.tick();
+        assert(runtime.gameSession().player().flying());  // flight toggled on
+
+        gameplay::MovementInput fly;
+        fly.forward = 1.0F;
+        fly.lookDirection = glm::vec3{1.0F, 0.0F, 0.0F};  // face +X
+        fly.sprintHeld = true;
+        runtime.sendClientMovement(fly);
+
+        const auto before = runtime.gameSession().player().position();
+        for (int tick = 0; tick < 20; ++tick) {
+            runtime.tick();
+        }
+        const auto after = runtime.gameSession().player().position();
+        const glm::vec3 horizontal{after.x - before.x, 0.0F, after.z - before.z};
+        assert(glm::length(horizontal) > 0.1F);  // it flew along the intent
+        assert(after.x > before.x);               // in the look direction (+X)
+
+        // The intent was staged and the gated fields were set by the server, not
+        // the client (which never sent them).
+        const auto& applied = runtime.gameSession().input();
+        assert(applied.forward == 1.0F);
+        assert(applied.sprintHeld);
+        assert(applied.flightAllowed);   // creative -> server-derived
+        assert(applied.sprintAllowed);   // creative -> server-derived
+
+        // Double-tap-forward sprint must survive several frame-sends landing
+        // between two ticks. Regression (D0-b2 first cut): the forwardPressed edge
+        // was written level-triggered into sharedInput, so a following no-press
+        // send in the same interval overwrote it to false and the tap was lost —
+        // only Ctrl (sprintHeld) could sprint. The fix OR-accumulates the edge
+        // server-side (like the jump edge), so a false send never erases it. Still
+        // flying at altitude here, so no terrain collision cancels the sprint.
+        {
+            // Re-center over the loaded spawn chunk: the sprint-fly above may have
+            // carried the player past the one loaded column, where the controller
+            // early-outs before the sprint logic would run.
+            runtime.gameSession().teleportPlayer(gameplay::kPrimaryPlayerId,
+                                                 glm::vec3{24.5F, 120.0F, 24.5F});
+            gameplay::MovementInput tap;
+            tap.forward = 1.0F;
+            tap.lookDirection = glm::vec3{1.0F, 0.0F, 0.0F};
+            // First tap, then a no-press send in the same between-tick interval.
+            tap.forwardPressed = true;
+            runtime.sendClientMovement(tap);
+            tap.forwardPressed = false;
+            runtime.sendClientMovement(tap);  // would erase the tap under the bug
+            runtime.tick();
+            assert(!runtime.gameSession().player().sprinting());  // one tap: not yet
+            // Second tap within the double-tap window, same overwrite pattern.
+            tap.forwardPressed = true;
+            runtime.sendClientMovement(tap);
+            tap.forwardPressed = false;
+            runtime.sendClientMovement(tap);
+            runtime.tick();
+            assert(runtime.gameSession().player().sprinting());  // double-tap sprint
+        }
+
+        // D0 session commands over the channel: a game-mode switch and a respawn
+        // travel as SessionCommands (not GameSession method calls the cross-process
+        // client cannot make). SetGameMode applies on the next tick's drain.
+        assert(runtime.gameSession().gameMode() == gameplay::GameMode::Creative);
+        runtime.sendClientSessionCommand(gameplay::SetGameMode{gameplay::GameMode::Survival});
+        runtime.tick();
+        assert(runtime.gameSession().gameMode() == gameplay::GameMode::Survival);
+
+        // Respawn is issued while the simulation is paused (the death screen), so
+        // it is applied through applyClientCommandsNow() rather than a tick. It
+        // returns the player to a fixed spawn regardless of where it was, and
+        // republishes so the client mirror reflects the spawn this frame.
+        runtime.gameSession().teleportPlayer(gameplay::kPrimaryPlayerId,
+                                             glm::vec3{200.0F, 100.0F, 200.0F});
+        runtime.sendClientSessionCommand(gameplay::Respawn{});
+        runtime.applyClientCommandsNow();
+        const auto spawnA = runtime.gameSession().player().position();
+        assert(glm::length(spawnA - glm::vec3{200.0F, 100.0F, 200.0F}) > 1.0F);  // moved off
+
+        // The republished spawn reached the channel: a mirror pumped now shows it.
+        RecordingHost respawnMirrorHost;
+        client::ClientMirror respawnMirror;
+        assert(respawnMirror.pump(runtime.clientChannel(), respawnMirrorHost) > 0U);
+        assert(respawnMirror.player() == runtime.gameSession().playerTickSnapshot());
+
+        // A respawn from a different spot lands at the same fixed spawn.
+        runtime.gameSession().teleportPlayer(gameplay::kPrimaryPlayerId,
+                                             glm::vec3{-150.0F, 90.0F, -150.0F});
+        runtime.sendClientSessionCommand(gameplay::Respawn{});
+        runtime.applyClientCommandsNow();
+        const auto spawnB = runtime.gameSession().player().position();
+        assert(glm::length(spawnB - spawnA) < 0.01F);  // same spawn both times
+    }
+
     // Phase 2: a fresh runtime reloads the same save and the mutations survived.
     {
         world::ChunkStreamer streamer{0U, 4, 4};
@@ -558,6 +687,43 @@ int main() {
             assert(zombieReloaded);
             runtime2.stopSimulation();
         }
+    }
+
+    // D7 channel injection: the server drains client intents from, and publishes
+    // snapshots to, an *attached* external channel instead of its internal
+    // loopback — the seam the dedicated server plugs a TCP connection into. Prove
+    // it with a second loopback pair standing in for the connection: a command
+    // sent on the attached channel is applied, and the tick's snapshots come back
+    // on it (not on the internal loopback), so a cross-process client would drive
+    // and observe the world over exactly this path.
+    {
+        world::ChunkStreamer streamer{0U, 4, 4};
+        RecordingHost host;
+        runtime::GameRuntime runtime{host, streamer, saveRoot};
+        host.save = &runtime.currentSaveSlot();
+        auto save = runtime.createWorld("attach", 3U, gameplay::GameMode::Creative);
+        runtime.loadWorld(std::move(save), 4);
+
+        auto connection = net::makeLoopbackPair();  // stands in for a TCP connection
+        runtime.attachConnection(*connection.server);
+
+        // A client intent sent on the attached channel reaches the session.
+        assert(runtime.gameSession().inventory().selectedHotbarSlot() != 6U);
+        net::sendMessage(*connection.client,
+                         net::NetMessage{gameplay::GameCommand{gameplay::SwapSlot{6U}}});
+        runtime.tick();
+        assert(runtime.gameSession().inventory().selectedHotbarSlot() == 6U);
+
+        // The tick's snapshots came back on the attached channel: a mirror pumped
+        // from its client end matches what the session published.
+        RecordingHost mirrorHost;
+        client::ClientMirror mirror;
+        assert(mirror.pump(*connection.client, mirrorHost) > 0U);
+        assert(mirror.player() == runtime.gameSession().playerTickSnapshot());
+
+        // Nothing leaked onto the internal loopback while a connection is attached.
+        std::vector<std::uint8_t> stray;
+        assert(!runtime.clientChannel().receiveFrame(stray));
     }
 
     std::filesystem::remove_all(saveRoot);

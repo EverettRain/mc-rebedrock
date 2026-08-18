@@ -463,8 +463,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         simulationActive.store(false, std::memory_order_release);
         paused = true;
         menuSystem.pageStack.reset(ui::PageId::Death);
-        gameSession.input() = {};
-        gameSession.clearInputEdges();
+        // D0: the player stops via the zeroed MovementInput processInput sends
+        // while a screen is up; here we only drop the client-side edges.
+        clearPendingInputEdges();
         releaseInteractionButtons();
         dropRequested = false;
         pressedMenuButton = MenuButton::None;
@@ -571,7 +572,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
             if (key == GLFW_KEY_W && action == GLFW_PRESS && !renderer->inventoryOpen &&
                 !renderer->paused) {
-                renderer->gameSession.setForwardPressed();
+                renderer->pendingForwardPressed_ = true;
             }
             if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
                 // Modal gameplay screens consume Back before the page stack.
@@ -619,7 +620,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
             if (key == GLFW_KEY_SPACE && action == GLFW_PRESS) {
                 if (!renderer->inventoryOpen && !renderer->paused) {
-                    renderer->gameSession.setJumpPressed();
+                    renderer->pendingJumpPressed_ = true;
                 }
             }
             if (!renderer->paused && action == GLFW_PRESS && key >= GLFW_KEY_1 &&
@@ -1446,8 +1447,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 }
                     rainTime_ += deltaSeconds;
                 }
-                // Publish this frame's keyboard state for the tick to pick up.
-                gameSession.commitInput();
+                // D0: processInput() already shipped this frame's movement over
+                // the channel; the server stages it before the tick reads it, so
+                // there is no separate commitInput() publish step any more.
                 if (!simulationDriver.threaded()) {
                     // Synchronous fallback (MC_REBEDROCK_SYNC_TICK=1). Kept
                     // because it is the only way to bisect a threading problem
@@ -2398,39 +2400,52 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void processInput() {
+        // D0: sample the keyboard/look once a frame and ship it as a MovementInput
+        // over the channel — the server stages it on the authoritative player and
+        // derives the gated fields (flightAllowed/sprintAllowed) itself. This is
+        // the same once-a-frame cadence commitInput() had; the client no longer
+        // writes gameSession.input() (it has no session across a real connection).
         if (!worldReady || inventoryOpen || paused || chatOpen) {
-            gameSession.input() = {};
-            gameSession.input().flightAllowed =
-                uiFrameData_.gameMode == gameplay::GameMode::Creative;
-            gameSession.clearInputEdges();
+            // A screen is up: send a zeroed intent so the server stops the player.
+            runtime.sendClientMovement(gameplay::MovementInput{});
+            clearPendingInputEdges();
             return;
         }
-        gameSession.input().forward = (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS ? 1.0F : 0.0F) -
-                                      (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS ? 1.0F : 0.0F);
-        gameSession.input().strafe = (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ? 1.0F : 0.0F) -
-                                     (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ? 1.0F : 0.0F);
-        gameSession.input().lookDirection = camera.direction();
-        // The GLFW key callback is the sole producer of the jump edge. Sampling
-        // the same transition here as well could publish one physical press on
-        // two adjacent simulation ticks, making creative flight toggle from a
-        // single jump. The held state remains frame-sampled for normal jumping.
-        const bool jumpKeyDown = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
-        gameSession.input().jumpHeld = jumpKeyDown;
-        gameSession.input().descendHeld = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
-        gameSession.input().sneakHeld = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
-        gameSession.input().sprintHeld = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS;
+        gameplay::MovementInput movement;
+        movement.forward = (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS ? 1.0F : 0.0F) -
+                           (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS ? 1.0F : 0.0F);
+        movement.strafe = (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ? 1.0F : 0.0F) -
+                          (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ? 1.0F : 0.0F);
+        movement.lookDirection = camera.direction();
+        // The GLFW key callback is the sole producer of the jump edge (below);
+        // here only the held state is frame-sampled, so a single physical press
+        // toggles creative flight once rather than on two adjacent ticks.
+        movement.jumpHeld = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+        movement.descendHeld = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
+        movement.sneakHeld = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
+        movement.sprintHeld = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS;
         if (stressFrames > 0U) {
-            gameSession.setForwardPressed();
+            pendingForwardPressed_ = true;
         }
-        gameSession.input().forwardPressed = gameSession.forwardPressed();
-        gameSession.input().flightAllowed = uiFrameData_.gameMode == gameplay::GameMode::Creative;
-        // Vanilla only lets a gameSession.player() sprint above six food points, unless they
-        // may fly. A creative gameSession.player() is never gated on hunger.
-        gameSession.input().sprintAllowed =
-            gameSession.input().flightAllowed || clientMirror_.player().foodLevel > 6;
-        // Bedrock-style auto-jump: walking forward into a one-block rise jumps
-        // on its own; the gameSession.player() physics decides when the obstacle is jumpable.
-        gameSession.input().autoJump = options.autoJump;
+        // The two edges the key callback accumulated since the last send. The
+        // server ORs the jump edge across the inputs between two ticks; the
+        // sprint double-tap edge drives its own window server-side.
+        movement.jumpPressed = pendingJumpPressed_;
+        movement.forwardPressed = pendingForwardPressed_;
+        // Bedrock-style auto-jump is a client option; the physics decides when the
+        // obstacle is actually jumpable. flightAllowed/sprintAllowed are NOT sent —
+        // the server derives them from the authoritative game mode and food level.
+        movement.autoJump = options.autoJump;
+        runtime.sendClientMovement(movement);
+        clearPendingInputEdges();
+    }
+
+    // Clears the client-side input edges, consumed once they have been folded into
+    // a sent MovementInput or discarded when a screen comes up. Replaces the old
+    // gameSession.clearInputEdges(), which reached into the session's accumulators.
+    void clearPendingInputEdges() {
+        pendingJumpPressed_ = false;
+        pendingForwardPressed_ = false;
     }
 
     // The gameSession.player()'s external damage entry: any hit the world deals to the
@@ -2452,13 +2467,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void respawnPlayer() {
-        gameSession.respawn(gameplay::kPrimaryPlayerId);
-        // respawn moved the authoritative player to the spawn and republished the
-        // session snapshot; push that onto the channel and pump it into the mirror
-        // now (the simulation is paused on the death screen, so nothing races),
+        // D0: the respawn intent travels the channel; the runtime applies it now
+        // (the simulation is paused on the death screen, so no tick would drain it)
+        // and republishes the fresh spawn snapshot. Then pump it into the mirror
         // so the camera and reads below see the spawn this frame instead of the
-        // stale death position a tick later.
-        runtime.publishStateToChannel();
+        // stale death position a tick later. The client no longer calls
+        // GameSession::respawn directly — a cross-process client has no session.
+        runtime.sendClientSessionCommand(gameplay::Respawn{});
+        runtime.applyClientCommandsNow();
         static_cast<void>(clientMirror_.pump(runtime.clientChannel(), *this));
         camera.setPosition(snapshotCameraEye());
         // PlayerManager#respawnPlayer snaps the new body to the spawn's stored
@@ -2475,7 +2491,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (uiFrameData_.gameMode == mode) {
             return;
         }
-        gameSession.setGameMode(mode);
+        // D0: the game-mode switch travels the channel and the runtime applies it
+        // authoritatively at once (working whether the sim is paused or ticking),
+        // republishing so the next mirror pump updates uiFrameData_.gameMode. The
+        // client no longer calls GameSession::setGameMode directly.
+        runtime.sendClientSessionCommand(gameplay::SetGameMode{mode});
+        runtime.applyClientCommandsNow();
         std::cout << "Game mode: " << gameplay::gameModeName(mode) << '\n';
         menuSystem.creativeScrollRow = 0U;
         creativeScrollbarDragging = false;
@@ -2497,7 +2518,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void setChatOpen(bool open) {
         chatOpen = open;
         firstMouseSample = true;
-        gameSession.clearInputEdges();
+        clearPendingInputEdges();
         releaseInteractionButtons();
         dropRequested = false;
         chatSuggestions_.clear();
@@ -2717,7 +2738,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         inventoryOpen = open;
         creativeScrollbarDragging = false;
         firstMouseSample = true;
-        gameSession.clearInputEdges();
+        clearPendingInputEdges();
         releaseInteractionButtons();
         if (open) {
             unlockCursor();
@@ -2790,8 +2811,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         menuSystem.simulationDistanceSliderDragging = false;
         menuSystem.masterVolumeSliderDragging = false;
         firstMouseSample = true;
-        gameSession.input() = {};
-        gameSession.clearInputEdges();
+        clearPendingInputEdges();
         if (!pause && worldReady) {
             simulationActive.store(true, std::memory_order_release);
         }
@@ -6306,6 +6326,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     bool isDoubleClicking = false;
     bool paused = true;
     bool debugOverlayOpen = false;
+    // D0: the client-side jump and sprint-double-tap edges. The GLFW key callback
+    // sets them; processInput folds them into the frame's MovementInput and clears
+    // them on send. Before the client/server split these were GameSession's
+    // jumpPressed_/forwardPressed_ accumulators, which a cross-process client (no
+    // session) cannot touch — now the edge is the client's and travels the channel.
+    bool pendingJumpPressed_ = false;
+    bool pendingForwardPressed_ = false;
     bool dropRequested = false;
     bool dropWholeStack = false;
     bool chatOpen = false;

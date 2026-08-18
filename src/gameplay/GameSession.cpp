@@ -78,7 +78,11 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     {
         const std::lock_guard<std::mutex> guard{inputMutex_};
         primaryPlayer().playerInput = primaryPlayer().sharedInput;
+        // The jump and sprint-double-tap edges come from their accumulators, not
+        // sharedInput's level copy — a press ORed in by any input between two ticks
+        // reaches this tick exactly once, then is cleared.
         primaryPlayer().playerInput.jumpPressed = jumpPressed_;
+        primaryPlayer().playerInput.forwardPressed = forwardPressed_;
         jumpPressed_ = false;
         forwardPressed_ = false;
     }
@@ -398,6 +402,44 @@ GameSession::InterpolatedEntities GameSession::entityRenderFrame() const {
 void GameSession::commitInput() {
     const std::lock_guard<std::mutex> guard{inputMutex_};
     primaryPlayer().sharedInput = primaryPlayer().stagedInput;
+}
+
+void GameSession::applyMovementInput(const MovementInput& intent) {
+    // The gated fields are the server's to decide, not the client's: creative
+    // flight follows the authoritative game mode, and sprinting needs a food
+    // level above six (unless flight is allowed). Deriving them here — instead of
+    // trusting the client's copy of gameMode/foodLevel — is the authority the
+    // pre-split renderer used to hold and a networked client must not.
+    const bool flightAllowed = primaryPlayer().gameMode == GameMode::Creative;
+    const bool sprintAllowed = flightAllowed || primaryPlayer().vitals.foodLevel() > 6;
+    const std::lock_guard<std::mutex> guard{inputMutex_};
+    // Stage the raw intent onto the published input the tick reads at its top.
+    // Both stagedInput and sharedInput are set so any residual staged reader sees
+    // the same state; the tick takes sharedInput.
+    PlayerInput& staged = primaryPlayer().stagedInput;
+    staged.forward = intent.forward;
+    staged.strafe = intent.strafe;
+    staged.lookDirection = intent.lookDirection;
+    staged.jumpHeld = intent.jumpHeld;
+    staged.descendHeld = intent.descendHeld;
+    staged.sneakHeld = intent.sneakHeld;
+    staged.sprintHeld = intent.sprintHeld;
+    staged.autoJump = intent.autoJump;
+    staged.flightAllowed = flightAllowed;
+    staged.sprintAllowed = sprintAllowed;
+    primaryPlayer().sharedInput = staged;
+    // The two edges are consumed once by the next tick and cleared there, so they
+    // must be OR-accumulated — not written level-triggered into sharedInput, which
+    // a later frame's send in the same between-tick interval would overwrite back
+    // to false (losing the press). The tick reads jumpPressed_/forwardPressed_,
+    // not sharedInput's copies. This is what makes the sprint double-tap survive
+    // when several frames land between two ticks.
+    if (intent.jumpPressed) {
+        jumpPressed_ = true;
+    }
+    if (intent.forwardPressed) {
+        forwardPressed_ = true;
+    }
 }
 
 void GameSession::setJumpPressed() {

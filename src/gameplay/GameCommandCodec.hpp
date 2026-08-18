@@ -12,6 +12,7 @@
 // tag is the variant index, stable because it is protocol, not an enum ordinal.
 
 #include "gameplay/GameCommand.hpp"
+#include "gameplay/SessionCommand.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -32,5 +33,29 @@ namespace mc::gameplay {
 // frame header — how a stream is split back into commands. Returns 0 when the
 // frame is truncated.
 [[nodiscard]] std::size_t encodedGameCommandSize(std::span<const std::uint8_t> bytes);
+
+// The frame tag the MovementInput continuous intent occupies — one past the
+// entity render snapshot (20), so it never collides with a command, snapshot,
+// event or entity frame in the mixed stream.
+inline constexpr std::uint8_t kMovementInputTag = 21U;
+
+// Encodes / decodes the per-tick MovementInput. It is not a GameCommand (the
+// server applies it before the tick rather than in the late command drain), so
+// it has its own frame on the same wire, tagged kMovementInputTag.
+[[nodiscard]] std::vector<std::uint8_t> encodeMovementInput(const MovementInput& input);
+[[nodiscard]] std::optional<MovementInput> decodeMovementInput(
+    std::span<const std::uint8_t> bytes);
+
+// The base frame tag for SessionCommand — one past the movement input (22), so a
+// session command's tag is this plus its variant index, clear of the command,
+// snapshot, event, entity and movement tags. net::kMovementTagEnd must equal this
+// (a static_assert there guards the two staying aligned).
+inline constexpr std::uint8_t kSessionCommandTagBase = 22U;
+
+// Encodes / decodes a SessionCommand (respawn, game-mode switch). Like
+// MovementInput it is not a GameCommand and rides its own tag range.
+[[nodiscard]] std::vector<std::uint8_t> encodeSessionCommand(const SessionCommand& command);
+[[nodiscard]] std::optional<SessionCommand> decodeSessionCommand(
+    std::span<const std::uint8_t> bytes);
 
 }  // namespace mc::gameplay
