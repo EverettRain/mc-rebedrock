@@ -994,10 +994,17 @@ class WorldRenderer final {
             const glm::vec3 renderedPosition =
                 entity.previousPosition +
                 (entity.position - entity.previousPosition) * itemAlpha;
+            // A slab is a block, not a flat 2.5D icon: vanilla's ItemRenderer
+            // draws its block model, a half-height box lying flat, rather than
+            // the upright extruded sprite the else-branch would spin. It rides
+            // the cube path with a halved Y extent (see slabDrop below).
+            const bool slabDrop =
+                gameplay::isBlockStack(entity.stack) && world::isSlab(entity.stack.block);
             const bool cubeModel =
                 gameplay::isBlockStack(entity.stack) &&
                 (world::blockDefinition(entity.stack.block).model == world::BlockModel::Cube ||
-                 world::blockDefinition(entity.stack.block).model == world::BlockModel::Chest);
+                 world::blockDefinition(entity.stack.block).model == world::BlockModel::Chest ||
+                 slabDrop);
             const auto layers =
                 cubeModel ? world::textureLayers(entity.stack.block)
                           : world::BlockTextureLayers{gameplay::itemTextureLayer(entity.stack),
@@ -1016,12 +1023,20 @@ class WorldRenderer final {
             const float packedLight =
                 packedSceneLight(renderedPosition + glm::vec3{0.0F, 0.5F, 0.0F});
             if (cubeModel) {
+                // A slab halves the box's Y extent so it lies flat like the
+                // vanilla item model; other cubes keep the scalar size (a zero
+                // xyz makes the shader fall back to positionSize.w).
+                const glm::vec4 dimensions =
+                    slabDrop ? glm::vec4{0.30F, 0.15F, 0.30F, packedLight}
+                             : glm::vec4{0.0F, 0.0F, 0.0F, packedLight};
                 const ItemPush push{
                     {renderedPosition.x, renderedPosition.y + 0.18F + bob, renderedPosition.z,
                      0.30F},
                     {layers.top, layers.side, layers.bottom, rotation},
-                    {1.0F, 0.0F, 0.0F, 0.0F},
-                    {0.0F, 0.0F, 0.0F, packedLight},
+                    // data.z (roll, unused on this cube path) flags a slab so the
+                    // shader shows the lower texture strip on its side faces.
+                    {1.0F, 0.0F, slabDrop ? 1.0F : 0.0F, 0.0F},
+                    dimensions,
                 };
                 vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                    sizeof(push), &push);
@@ -1751,10 +1766,15 @@ class WorldRenderer final {
         const auto& stack = uiFrameData_.selectedStack;
         const bool emptyHand = stack.empty();
         const auto& pose = heldItemAnimation.pose();
+        // A held slab is its block model — a half-height box held flat — rather
+        // than the upright extruded item sprite; it rides the cube path with a
+        // halved Y extent (heldDimensions below).
+        const bool heldSlab =
+            !emptyHand && gameplay::isBlockStack(stack) && world::isSlab(stack.block);
         const bool cubeModel =
             !emptyHand && gameplay::isBlockStack(stack) &&
             (world::blockDefinition(stack.block).model == world::BlockModel::Cube ||
-             world::blockDefinition(stack.block).model == world::BlockModel::Chest);
+             world::blockDefinition(stack.block).model == world::BlockModel::Chest || heldSlab);
         const auto layers =
             emptyHand
                 ? world::BlockTextureLayers{kPlayerRightArmFirstLayer, kPlayerRightArmFirstLayer,
@@ -1780,10 +1800,10 @@ class WorldRenderer final {
         const ItemPush push{
             {0.0F, 0.0F, 0.0F, 1.0F},
             {layers.top, layers.side, layers.bottom, heldFrontLayer},
-            {(!emptyHand && !cubeModel) ? 7.0F : 6.0F, 0.0F, emptyHand ? 1.0F : 0.0F,
-             emptyHand ? 1.0F : 0.0F},
+            {(!emptyHand && !cubeModel) ? 7.0F : 6.0F, 0.0F,
+             emptyHand ? 1.0F : (heldSlab ? 1.0F : 0.0F), emptyHand ? 1.0F : 0.0F},
             emptyHand ? glm::vec4{0.25F, 0.75F, 0.25F, heldLight}
-                      : (cubeModel ? glm::vec4{1.0F, 1.0F, 1.0F, heldLight}
+                      : (cubeModel ? glm::vec4{1.0F, heldSlab ? 0.5F : 1.0F, 1.0F, heldLight}
                                    : glm::vec4{1.0F, 1.0F, 0.0625F, heldLight}),
             heldTransform,
         };
@@ -2077,13 +2097,11 @@ class WorldRenderer final {
         drawRain(frame.commandBuffer, frame.descriptorSet, particleRecordCount);
         drawMiningProgress(frame.commandBuffer, frame.descriptorSet);
         if (!inventoryOpen && !paused && !chatOpen && targetedBlock.has_value()) {
-            const world::Block targeted = clientCache.block(
-                targetedBlock->block.x, targetedBlock->block.y, targetedBlock->block.z);
-            // The outline now traces the block's actual shape, so sub-block
-            // blocks (torch, plants, chest) no longer show a full-cube marker.
-            // Crops and farmland read their shape from the cell's state.
+            // The outline traces the block's actual shape, so sub-block blocks
+            // (torch, plants, chest, slab) no longer show a full-cube marker.
+            // The shape is read from the cell's state (slab half, crop age, ...).
             const world::BlockBounds bounds =
-                world::blockSelectionBounds(clientCache, targetedBlock->block, targeted);
+                world::blockSelectionBounds(clientCache, targetedBlock->block);
             vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                               outlinePipeline);
             vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,

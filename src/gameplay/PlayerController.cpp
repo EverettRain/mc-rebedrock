@@ -1,6 +1,7 @@
 #include "gameplay/PlayerController.hpp"
 
 #include "world/Block.hpp"
+#include "world/BlockShape.hpp"
 #include "world/World.hpp"
 #include "world/WorldConstants.hpp"
 
@@ -60,21 +61,22 @@ constexpr float kGroundOffset = 0.001F;
     });
 }
 
-// The vertical collision span of the cell at (x, y, z), reading the block's
-// shape through the shared world::collisionSpan. Out-of-range and unloaded cells
-// stay solid so the player never falls through a chunk seam.
-[[nodiscard]] world::BlockCollisionSpan blockCollisionSpan(const world::World& world, int x,
-                                                           int y, int z) {
+// The collision shape of the cell at (x, y, z), reading the block through the
+// shared world::collisionShape. Out-of-range and unloaded cells stay a solid
+// full cube so the player never falls through a chunk seam; above the world is
+// empty air.
+[[nodiscard]] world::BlockShape blockCollisionShape(const world::World& world, int x, int y,
+                                                    int z) {
     if (y < world::kMinY) {
-        return {0.0F, 1.0F};
+        return {world::ShapeKind::Column, 0.0F, 1.0F, {}};
     }
     if (y >= world::kMaxY) {
-        return {};
+        return {world::ShapeKind::Empty, 0.0F, 0.0F, {}};
     }
     if (!columnLoaded(world, x, z)) {
-        return {0.0F, 1.0F};
+        return {world::ShapeKind::Column, 0.0F, 1.0F, {}};
     }
-    return world::collisionSpan(world.state(x, y, z));
+    return world::collisionShape(world.state(x, y, z));
 }
 
 [[nodiscard]] bool pointInWater(const world::World& world, glm::vec3 point) {
@@ -173,19 +175,25 @@ bool PlayerController::collidesAt(const world::World& world, glm::vec3 position)
     const int minZ = static_cast<int>(std::floor(position.z - kHalfWidth + kCollisionEpsilon));
     const int maxZ = static_cast<int>(std::floor(position.z + kHalfWidth - kCollisionEpsilon));
 
+    const float qMinX = position.x - kHalfWidth;
+    const float qMaxX = position.x + kHalfWidth;
+    const float qMinZ = position.z - kHalfWidth;
+    const float qMaxZ = position.z + kHalfWidth;
+    const float qMinY = position.y;
+    const float qMaxY = position.y + collisionHeight();
     for (int y = minY; y <= maxY; ++y) {
         for (int z = minZ; z <= maxZ; ++z) {
             for (int x = minX; x <= maxX; ++x) {
-                // A partial block (farmland at 15/16, a slab's half box) only
-                // collides over its own [bottom, top] span, so the player rests
-                // on a slab's surface and can stand inside the open half above a
-                // bottom slab or below a top slab.
-                const auto span = blockCollisionSpan(world, x, y, z);
-                if (span.top <= span.bottom) {
-                    continue;
-                }
-                if (position.y < static_cast<float>(y) + span.top &&
-                    position.y + collisionHeight() > static_cast<float>(y) + span.bottom) {
+                // A partial block only collides over its own boxes: a slab's half
+                // box (Column) lets the player stand in the empty half of the
+                // cell, and a fence post or stair step (Boxes) fills only part of
+                // the footprint. The cell iteration already established the
+                // horizontal overlap for a full-footprint Column, so that path
+                // stays a plain vertical-span test; Boxes are tested in 3D.
+                if (world::shapeOverlaps(blockCollisionShape(world, x, y, z),
+                                         static_cast<float>(x), static_cast<float>(y),
+                                         static_cast<float>(z), qMinX, qMinY, qMinZ, qMaxX, qMaxY,
+                                         qMaxZ)) {
                     return true;
                 }
             }
@@ -241,6 +249,12 @@ void PlayerController::moveWithCollisions(const world::World& world, glm::vec3 d
     // The vertical result is folded into onGround_, so the return is discarded.
     static_cast<void>(moveAxis(world, 1, distance.y));
     const glm::vec3 beforeHorizontal = position_;
+    // The horizontal speed carried into the move: moveAxis zeroes the axis it is
+    // stopped on, but a step that then recovers the whole move must not lose that
+    // speed, or the player re-accelerates from zero every slab and the run
+    // stutters. Vanilla only keeps a component zeroed when the move on that axis
+    // was truly cut short.
+    const glm::vec3 velocityBeforeHorizontal = velocity_;
     // LivingEntity#adjustMovementForCollisions resolves the dominant horizontal
     // axis first (|z| >= |x| → Z, else X): the box clears a corner on its main
     // direction before the other axis is checked, so a diagonal walk around a
@@ -254,13 +268,18 @@ void PlayerController::moveWithCollisions(const world::World& world, glm::vec3 d
         blockedX = moveAxis(world, 0, distance.x);
         blockedZ = moveAxis(world, 2, distance.z);
     }
-    if ((blockedX || blockedZ) && onGround_) {
-        stepUp(world, distance, beforeHorizontal);
+    if ((blockedX || blockedZ) && onGround_ &&
+        stepUp(world, distance, beforeHorizontal)) {
+        // The step recovered the full horizontal move, so restore the speed the
+        // wall zeroed — stepping onto a slab keeps a sprint's momentum instead of
+        // hitching to a stop and building back up.
+        velocity_.x = velocityBeforeHorizontal.x;
+        velocity_.z = velocityBeforeHorizontal.z;
     }
 }
 
-void PlayerController::stepUp(const world::World& world, glm::vec3 distance,
-                              glm::vec3 beforeHorizontal) {
+bool PlayerController::stepUp(const world::World& world, glm::vec3 distance,
+                             glm::vec3 beforeHorizontal) {
     // Entity#maxUpStep: when the horizontal move is stopped by a wall while on
     // the ground, retry it from a step up, keeping the move only if the lifted
     // body clears both the lift and the horizontal move and then drops back to
@@ -287,8 +306,16 @@ void PlayerController::stepUp(const world::World& world, glm::vec3 distance,
         target.y = collidesAt(world, {target.x, dropped, target.z}) ? target.y : dropped;
         position_ = target;
         onGround_ = true;
-        break;
+        // The horizontal move was fully realised by stepping up, so it is not a
+        // collision: Entity#move reports horizontalCollision only when the
+        // desired movement is cut short. moveAxis set the flag when the flat
+        // move was blocked; clear it now that the step recovered the whole
+        // distance, matching vanilla — stepping onto a slab or from farmland
+        // onto a full block keeps a sprint instead of breaking it.
+        horizontalCollision_ = false;
+        return true;
     }
+    return false;
 }
 
 bool PlayerController::autoJumpCanClear(const world::World& world, glm::vec3 forward) const {

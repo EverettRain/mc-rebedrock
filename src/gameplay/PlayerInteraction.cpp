@@ -11,6 +11,7 @@
 #include "gameplay/ScreenHandler.hpp"
 #include "world/Block.hpp"
 #include "world/BlockPlacement.hpp"
+#include "world/BlockShape.hpp"
 #include "world/BlockState.hpp"
 #include "world/DayNightCycle.hpp"
 #include "world/World.hpp"
@@ -67,14 +68,18 @@ gameplay::ScreenContext buildScreenContext(GameSession& session) {
         return std::pair{cell, world::BlockState{held}.withSlabPortion(
                                    world::SlabPortion::Double)};
     };
-    // The clicked cell: complete the slab from its open side.
+    // The clicked cell: complete the slab from its open side. SlabBlock#
+    // canBeReplaced completes a bottom slab from its top face or the upper half
+    // of a side, and a top slab from its bottom face or the lower half of a side.
     const auto clicked = world.state(use.block.x, use.block.y, use.block.z);
     if (clicked.block() == held) {
         const auto portion = clicked.slabPortion();
+        const bool above = use.hitPosition.y - static_cast<float>(use.block.y) > 0.5F;
+        const bool horizontal = world::isHorizontal(use.face);
         if ((portion == world::SlabPortion::Bottom &&
-             use.face == world::BlockOrientation::Up) ||
+             (use.face == world::BlockOrientation::Up || (above && horizontal))) ||
             (portion == world::SlabPortion::Top &&
-             use.face == world::BlockOrientation::Down)) {
+             (use.face == world::BlockOrientation::Down || (!above && horizontal)))) {
             return asDouble(use.block);
         }
     }
@@ -393,7 +398,7 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
         // by its own class; the side effects (world edit, audio, animation) are
         // applied below from the answer.
         const world::PlacementContext placement{use.block, placeTarget, use.face,
-                                                use.lookDirection};
+                                                use.hitPosition, use.lookDirection};
         const auto& selectedStack = session.inventory().selectedStack();
         // SlabBlock merge: two single slabs of the same kind become a double,
         // rewriting the cell that already holds a slab rather than placing into

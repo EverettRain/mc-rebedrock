@@ -172,6 +172,20 @@ simple versioned history while it is in beta.
   separate `SessionCommand`s. The client no longer writes or directly calls the
   authoritative `GameSession`; the server also derives flight and sprint
   permission from game mode and hunger instead of trusting client results.
+- Base block geometry now comes from one `BlockShape` source, rather than
+  separate special cases in ray hits, selection outlines, player/creature
+  collision and placement occupancy. Full blocks and slabs use continuous-height
+  columns; torches, plants and chests use exact AABB sets. Chest collision now
+  matches its 14×14×14-pixel model, and the same path is ready for multi-box
+  stairs, fences and doors.
+- Block-state wire encoding now iterates every property declared by the schema
+  and sends property-index/value pairs instead of a six-property handwritten
+  bitmask; unknown newer properties remain skippable. Because this changes the
+  wire layout incompatibly, the handshake protocol version is now 3.
+- Held and dropped slabs now use a half-height block model with the correct
+  half-strip side UVs instead of appearing as a full cube or upright flat item.
+  Slab placement and merging on a horizontal face use the ray's precise hit
+  height to choose top or bottom.
 - The README was rewritten for the current beta implementation, including the
   Java 26.1 resource-pack requirement, dual-platform build/test workflow,
   runtime layout, project structure and known boundaries. Obsolete 1.16.1
@@ -214,6 +228,16 @@ simple versioned history while it is in beta.
   overwrites an unconsumed jump or forward-double-tap edge. The server merges
   one-shot edges across `MovementInput`s, so double-tap sprint no longer fails
   intermittently.
+- Slab ray hits and selection outlines no longer disagree: aiming through the
+  empty half does not hit an invisible full-cell wall, while aiming at the slab
+  returns the correct distance and face. Torches, plants, crops and chests now
+  use their real outlines too.
+- Top and double slabs no longer revert to the default bottom state when a world
+  edit event reaches the client. The transport codec omitted `SlabType`, leaving
+  the authoritative world correct while the client mesh was wrong.
+- Sprinting onto a slab or another steppable height no longer causes a sudden
+  stop or cancels sprint. A successful step-up preserves horizontal velocity and
+  clears the collision it fully overcame; a true one-block wall still stops it.
 
 ## ReBedrock beta5
 

@@ -337,9 +337,19 @@ void main() {
             // the fingers. data.z flags the held arm and mirrors V so the sleeve
             // lands on the wrist and the skin on the hand, exactly as vanilla's
             // HeldItemRenderer lays the 40,16 box-UV net out.
+            // A slab item is a half-height block: on this cube path data.z flags
+            // it (it is the roll angle, unused here). Its four side faces show
+            // only the lower half strip of the side texture — v in [0.5, 1] — the
+            // way vanilla's slab model maps a 16x8 side, instead of the whole
+            // texture squeezed into half height. Top and bottom faces keep full
+            // UVs. The held arm keeps its own V mirror (it is playerSkinCuboid).
+            vec2 cubeUv = uv;
+            if (!playerSkinCuboid && item.data.z > 0.5 && face != 2 && face != 3) {
+                cubeUv.y = 0.5 + cubeUv.y * 0.5;
+            }
             fragmentUv = playerSkinCuboid && item.data.z > 0.5
                 ? vec2(uv.x, 1.0 - uv.y)
-                : uv;
+                : cubeUv;
             fragmentTextureLayer = playerSkinCuboid
                 ? item.textureLayersRotation.x + float(face)
                 : (matrixViewModel && item.textureLayersRotation.w > 10.0 && face == 4

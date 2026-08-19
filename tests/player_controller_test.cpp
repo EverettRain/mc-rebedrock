@@ -203,5 +203,78 @@ int main() {
     }
     assert(std::abs(onDouble.position().y - 2.0F) < 0.02F);
 
+    // Auto-stepping up a partial rise keeps a sprint. A sprinter crossing a row
+    // of bottom slabs (each a 0.5 step) lifts onto them without the step counting
+    // as a horizontal collision — the flag that would otherwise cancel the
+    // sprint the next tick. A row (not one) so the player is still on a slab,
+    // mid-run, when the assertions read.
+    {
+        mc::world::Chunk slabRun;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                slabRun.setBlock(x, 0, z, mc::world::Block::Stone);
+            }
+        }
+        mc::world::World runWorld;
+        runWorld.setChunk({0, 0}, std::move(slabRun));
+        for (int x = 6; x < 14; ++x) {
+            runWorld.setState(x, 1, 8,
+                              mc::world::BlockState{mc::world::Block::OakSlab}.withSlabPortion(
+                                  mc::world::SlabPortion::Bottom));
+        }
+        mc::gameplay::PlayerController sprinter({4.5F, 1.0F, 8.5F});
+        mc::gameplay::PlayerInput run;
+        run.forward = 1.0F;
+        run.lookDirection = {1.0F, 0.0F, 0.0F};
+        run.sprintHeld = true;
+        run.sprintAllowed = true;
+        bool steppedOnto = false;
+        float speedBeforeStep = 0.0F;
+        float speedAfterStep = -1.0F;
+        float previousY = sprinter.position().y;
+        float previousSpeed = 0.0F;
+        for (int tick = 0; tick < 30; ++tick) {
+            const float speedEnteringTick = std::abs(sprinter.velocity().x);
+            sprinter.tick(runWorld, run);
+            // The tick that lifts the player onto the first slab: the step must
+            // preserve the horizontal speed, not zero it against the slab's side
+            // (which would stutter the run to a crawl and rebuild). Capture the
+            // speed just before that step and the speed left right after it.
+            if (previousY < 1.4F && sprinter.position().y > 1.4F && speedAfterStep < 0.0F) {
+                speedBeforeStep = previousSpeed;
+                speedAfterStep = std::abs(sprinter.velocity().x);
+            }
+            previousY = sprinter.position().y;
+            previousSpeed = speedEnteringTick;
+            if (sprinter.position().y > 1.4F) {
+                steppedOnto = true;
+                assert(!sprinter.horizontalCollision());
+                assert(sprinter.sprinting());
+            }
+        }
+        assert(steppedOnto);
+        // The speed going into the step was a real sprint (not a standstill), and
+        // it survived the step rather than being zeroed against the slab: without
+        // the velocity restore this drops to ~0 and the run visibly stutters.
+        assert(speedBeforeStep > 0.05F);
+        assert(speedAfterStep > 0.5F * speedBeforeStep);
+
+    // A full wall still breaks the sprint: a one-block rise is not steppable, so
+    // the collision flag stays set and sprinting stops.
+        runWorld.setBlock(9, 1, 2, mc::world::Block::Stone);
+        runWorld.setBlock(9, 2, 2, mc::world::Block::Stone);
+        mc::gameplay::PlayerController intoWall({6.5F, 1.0F, 2.5F});
+        mc::gameplay::PlayerInput runNoJump = run;
+        runNoJump.autoJump = false;
+        bool sprintBroke = false;
+        for (int tick = 0; tick < 30; ++tick) {
+            intoWall.tick(runWorld, runNoJump);
+            if (intoWall.horizontalCollision() && !intoWall.sprinting()) {
+                sprintBroke = true;
+            }
+        }
+        assert(sprintBroke);
+    }
+
     return 0;
 }

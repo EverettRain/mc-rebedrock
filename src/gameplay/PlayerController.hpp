@@ -109,7 +109,10 @@ class PlayerController final {
     void moveWithCollisions(const world::World& world, glm::vec3 distance);
     // LivingEntity#maxUpStep: re-attempt a wall-blocked horizontal move from a
     // step up, keeping the move only if the lifted body clears it and lands.
-    void stepUp(const world::World& world, glm::vec3 distance, glm::vec3 beforeHorizontal);
+    // Returns whether the step recovered the move, so the caller can restore the
+    // horizontal velocity moveAxis zeroed against the wall.
+    [[nodiscard]] bool stepUp(const world::World& world, glm::vec3 distance,
+                              glm::vec3 beforeHorizontal);
     // Whether a jump clears the one-block rise the player is currently walking
     // into: the body lifted a full block over the blocked forward cell is open.
     [[nodiscard]] bool autoJumpCanClear(const world::World& world, glm::vec3 forward) const;

@@ -4156,7 +4156,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             use.adjacent = targetedBlock->adjacent;
             use.face = world::orientationFromOffset(targetedBlock->adjacent -
                                                     targetedBlock->block);
-            use.hitPosition = glm::vec3{targetedBlock->block} + glm::vec3{0.5F};
+            // The precise point on the block's shape the ray struck, so placement
+            // can read the sub-cell hit height (SlabBlock#getStateForPlacement
+            // rests a slab on the half the player aimed at). The cell centre it
+            // used to carry threw that fraction away.
+            use.hitPosition =
+                camera.position() + camera.direction() * targetedBlock->distance;
             use.lookDirection = camera.direction();
             enqueueInteractionCommand(std::move(use));
         } else {

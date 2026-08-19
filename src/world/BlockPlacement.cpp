@@ -150,13 +150,17 @@ std::optional<BlockState> placementBlock(
         return std::nullopt;
     }
     if (isSlab(selected)) {
-        // SlabBlock#getStateForPlacement: the clicked face decides the half.
-        // Clicking a top face rests a bottom slab, a bottom face hangs a top
-        // slab; a side face has no sub-cell hit fraction here, so it defaults to
-        // the bottom half the way a floor placement does.
+        // SlabBlock#getStateForPlacement: a Down face hangs a top slab, an Up
+        // face rests a bottom one, and a horizontal face reads the sub-cell hit
+        // height within the placement cell — aim at the upper half of a block's
+        // side and the slab rests on top, the lower half and it sits on the floor.
+        const bool aboveHalf =
+            context.hitPosition.y - static_cast<float>(context.placePosition.y) > 0.5F;
         const SlabPortion portion =
-            context.clickedFace == BlockOrientation::Down ? SlabPortion::Top
-                                                          : SlabPortion::Bottom;
+            (context.clickedFace != BlockOrientation::Down &&
+             (context.clickedFace == BlockOrientation::Up || !aboveHalf))
+                ? SlabPortion::Bottom
+                : SlabPortion::Top;
         return BlockState{selected}.withSlabPortion(portion);
     }
     return BlockState{selected, placementOrientation(selected, context)};

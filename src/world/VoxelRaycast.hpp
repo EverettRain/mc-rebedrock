@@ -25,8 +25,7 @@ struct BlockBounds final {
     glm::vec3 maximum{1.0F};
 };
 
-[[nodiscard]] BlockBounds blockSelectionBounds(
-    const World& world, glm::ivec3 position, Block block);
+[[nodiscard]] BlockBounds blockSelectionBounds(const World& world, glm::ivec3 position);
 
 [[nodiscard]] std::optional<VoxelRaycastHit> raycastVoxels(
     const World& world,

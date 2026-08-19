@@ -3,6 +3,7 @@
 #include "gameplay/EntityRenderSnapshot.hpp"
 
 #include "world/Block.hpp"
+#include "world/BlockShape.hpp"
 #include "world/World.hpp"
 #include "world/WorldConstants.hpp"
 
@@ -209,13 +210,15 @@ bool EntitySystem::boxIntersectsWorld(
         }
         for (int z = minZ; z <= maxZ; ++z) {
             for (int x = minX; x <= maxX; ++x) {
-                // A slab (or farmland) only fills part of the cell vertically, so
-                // a creature rests on it and walks through the open half instead
-                // of being blocked by a phantom full cube.
-                const auto span = world::collisionSpan(world.state(x, y, z));
-                if (span.top > span.bottom &&
-                    minimum.y < static_cast<float>(y) + span.top &&
-                    maximum.y > static_cast<float>(y) + span.bottom) {
+                // A partial block only fills part of its cell, so a creature rests
+                // on a slab and walks through its open half, and a fence post or
+                // stair step blocks only its own boxes rather than a phantom full
+                // cube. The cell iteration covers the horizontal overlap for a
+                // full-footprint Column; Boxes are tested in 3D.
+                if (world::shapeOverlaps(world::collisionShape(world.state(x, y, z)),
+                                         static_cast<float>(x), static_cast<float>(y),
+                                         static_cast<float>(z), minimum.x, minimum.y, minimum.z,
+                                         maximum.x, maximum.y, maximum.z)) {
                     return true;
                 }
             }

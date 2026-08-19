@@ -155,42 +155,9 @@ class BlockState final {
     std::uint16_t id_ = 0U;
 };
 
-// The vertical span [bottom, top] of a state's collision box within its cell,
-// in 0..1 cell-local units. A full cube is {0, 1}, a non-colliding block {0, 0},
-// farmland the vanilla 15/16 box, and a slab its half box (bottom {0, 0.5}, top
-// {0.5, 1}, double {0, 1}). An empty span (top <= bottom) means no collision.
-//
-// This is the one place the "how tall is this block, and where does its box sit"
-// question is answered, so the player walk, the creature walk and the placement
-// occupancy check all read the same shape instead of each assuming a full cube.
-// It is a vertical span rather than a box set because every shape this project
-// has so far (farmland, slabs) fills its whole 1x1 footprint; stairs and fences
-// will need a box set and should extend this rather than fork it.
-struct BlockCollisionSpan final {
-    float bottom = 0.0F;
-    float top = 0.0F;
-};
-
-[[nodiscard]] constexpr BlockCollisionSpan collisionSpan(BlockState state) {
-    const Block block = state.block();
-    if (!hasCollision(block)) {
-        return {};
-    }
-    if (isSlab(block)) {
-        switch (state.slabPortion()) {
-        case SlabPortion::Bottom:
-            return {0.0F, 0.5F};
-        case SlabPortion::Top:
-            return {0.5F, 1.0F};
-        case SlabPortion::Double:
-            return {0.0F, 1.0F};
-        }
-    }
-    if (isFarmland(block)) {
-        return {0.0F, kFarmlandModelHeight};
-    }
-    return {0.0F, 1.0F};
-}
+// The collision/selection shape a state carries lives in BlockShape.hpp
+// (`blockShape`, `collisionSpan`), a layer above this one so the shape source
+// can name a BlockState without this header depending on it.
 
 static_assert(sizeof(BlockState) == sizeof(std::uint16_t));
 static_assert(BlockState{}.block() == Block::Air);

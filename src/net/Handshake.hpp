@@ -36,7 +36,7 @@ namespace mc::net {
 // a way an older peer cannot decode — it is the single number the handshake
 // negotiates. It is protocol, not a build number: two builds with the same wire
 // format share it.
-inline constexpr std::uint32_t kProtocolVersion = 2U;
+inline constexpr std::uint32_t kProtocolVersion = 3U;
 
 // Identifies this as a rebedrock game connection, so a stray or hostile peer
 // that opens the socket but speaks something else is refused at the first frame

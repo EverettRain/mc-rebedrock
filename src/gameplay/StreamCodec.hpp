@@ -121,32 +121,30 @@ inline void appendBlock(std::vector<std::uint8_t>& bytes, world::Block block) {
 // A block state as its identifier plus the properties the block declares, the
 // same "identifier + named properties" shape save format 18 uses. Only declared
 // properties ride the wire, so an undeclared one can never corrupt a state.
+// Block state on the wire: the block, then every property its schema declares as
+// an (index, value) pair. Schema-driven on purpose — a hand-listed property set
+// is what silently dropped SlabType here, so a placed top or double slab crossed
+// the loopback channel as a default bottom slab and meshed as one while the
+// authoritative world still knew the truth. Iterating the enum means the stair,
+// fence and door axes to come travel without this codec being touched. The
+// property index is written (not a fixed bitmask) so the format scales past the
+// eight properties a single flags byte could name.
 inline void appendBlockState(std::vector<std::uint8_t>& bytes, const world::BlockState& state) {
     appendBlock(bytes, state.block());
-    std::uint8_t flags = 0U;
-    const auto mark = [&](world::StateProperty property, std::uint8_t bit) {
-        if (state.has(property)) {
-            flags |= bit;
+    std::uint8_t count = 0U;
+    for (std::size_t index = 0; index < world::kStatePropertyCount; ++index) {
+        if (state.has(static_cast<world::StateProperty>(index))) {
+            ++count;
         }
-    };
-    mark(world::StateProperty::Facing, 1U << 0U);
-    mark(world::StateProperty::Age, 1U << 1U);
-    mark(world::StateProperty::Moisture, 1U << 2U);
-    mark(world::StateProperty::Persistent, 1U << 3U);
-    mark(world::StateProperty::Lit, 1U << 4U);
-    mark(world::StateProperty::FluidLevel, 1U << 5U);
-    persistence::appendInteger(bytes, flags);
-    const auto write = [&](world::StateProperty property, std::uint8_t bit) {
-        if ((flags & bit) != 0U) {
+    }
+    persistence::appendInteger(bytes, count);
+    for (std::size_t index = 0; index < world::kStatePropertyCount; ++index) {
+        const auto property = static_cast<world::StateProperty>(index);
+        if (state.has(property)) {
+            persistence::appendInteger(bytes, static_cast<std::uint8_t>(index));
             persistence::appendInteger(bytes, state.value(property));
         }
-    };
-    write(world::StateProperty::Facing, 1U << 0U);
-    write(world::StateProperty::Age, 1U << 1U);
-    write(world::StateProperty::Moisture, 1U << 2U);
-    write(world::StateProperty::Persistent, 1U << 3U);
-    write(world::StateProperty::Lit, 1U << 4U);
-    write(world::StateProperty::FluidLevel, 1U << 5U);
+    }
 }
 [[nodiscard]] inline std::optional<world::BlockState>
 readBlockState(std::span<const std::uint8_t> bytes, std::size_t& cursor) {
@@ -155,18 +153,16 @@ readBlockState(std::span<const std::uint8_t> bytes, std::size_t& cursor) {
         return std::nullopt;
     }
     auto state = world::BlockState{*block};
-    const auto flags = persistence::readInteger<std::uint8_t>(bytes, cursor);
-    const auto apply = [&](world::StateProperty property, std::uint8_t bit) {
-        if ((flags & bit) != 0U) {
-            state = state.with(property, persistence::readInteger<std::uint8_t>(bytes, cursor));
+    const auto count = persistence::readInteger<std::uint8_t>(bytes, cursor);
+    for (std::uint8_t written = 0U; written < count; ++written) {
+        const auto index = persistence::readInteger<std::uint8_t>(bytes, cursor);
+        const auto value = persistence::readInteger<std::uint8_t>(bytes, cursor);
+        // A property this build does not know (a newer peer) is skipped, not
+        // refused — the value was already consumed, so the stream stays aligned.
+        if (index < world::kStatePropertyCount) {
+            state = state.with(static_cast<world::StateProperty>(index), value);
         }
-    };
-    apply(world::StateProperty::Facing, 1U << 0U);
-    apply(world::StateProperty::Age, 1U << 1U);
-    apply(world::StateProperty::Moisture, 1U << 2U);
-    apply(world::StateProperty::Persistent, 1U << 3U);
-    apply(world::StateProperty::Lit, 1U << 4U);
-    apply(world::StateProperty::FluidLevel, 1U << 5U);
+    }
     return state;
 }
 

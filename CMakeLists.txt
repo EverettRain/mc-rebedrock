@@ -2136,6 +2136,15 @@ if(BUILD_TESTING)
     )
     add_test(NAME block_state COMMAND mc_rebedrock_block_state_test)
 
+    add_executable(mc_rebedrock_block_shape_test
+        tests/block_shape_test.cpp
+    )
+    target_include_directories(mc_rebedrock_block_shape_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME block_shape COMMAND mc_rebedrock_block_shape_test)
+
     add_executable(mc_rebedrock_world_mutation_service_test
         tests/world_mutation_service_test.cpp
         src/world/WorldMutationService.cpp

@@ -162,6 +162,47 @@ int main() {
         assert(world.block(5, 2, 5) == world::Block::Air);
     }
 
+    // --- Slab: the sub-cell hit height decides the half on a horizontal face.
+    //     Aiming at the upper half of a block's side rests a TOP slab in the
+    //     neighbour; the lower half a bottom one. Without the real hit point this
+    //     regressed to bottom-only once the pick ray honoured the half box. ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        world.setBlock(5, 1, 7, world::Block::Stone); // an exposed post to click
+        session.inventory().mutableSlot(0) = {world::Block::OakSlab, 1U, nullptr};
+        session.inventory().selectHotbar(0);
+
+        // Click the south face of the post, high up: a top slab lands in (5,1,8).
+        gameplay::UseItemOn high;
+        high.block = glm::ivec3{5, 1, 7};
+        high.adjacent = glm::ivec3{5, 1, 8};
+        high.face = world::BlockOrientation::South;
+        high.hitPosition = glm::vec3{5.5F, 1.8F, 8.0F};
+        high.lookDirection = glm::vec3{0.0F, 0.0F, 1.0F};
+        session.enqueueCommand(std::move(high));
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.state(5, 1, 8).slabPortion() == world::SlabPortion::Top);
+
+        // Click the north face of the post, low down: a bottom slab in (5,1,6).
+        session.inventory().mutableSlot(0) = {world::Block::OakSlab, 1U, nullptr};
+        gameplay::UseItemOn low;
+        low.block = glm::ivec3{5, 1, 7};
+        low.adjacent = glm::ivec3{5, 1, 6};
+        low.face = world::BlockOrientation::North;
+        low.hitPosition = glm::vec3{5.5F, 1.2F, 7.0F};
+        low.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(low));
+        for (int tick = 0; tick < 6; ++tick) {
+            session.tick(world, host);
+        }
+        static_cast<void>(session.drainEvents());
+        assert(world.state(5, 1, 6).slabPortion() == world::SlabPortion::Bottom);
+    }
+
     // --- Held dig hand-off: no release is needed between two instant blocks.
     // The renderer sends a new StartDestroy when the vanished first target lets
     // the ray reach the next cell; the interaction remains armed and accepts it

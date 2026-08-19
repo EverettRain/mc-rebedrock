@@ -27,6 +27,10 @@ struct PlacementContext final {
     glm::ivec3 placePosition{};
     // The face of the clicked block that the ray hit, pointing away from it.
     BlockOrientation clickedFace = BlockOrientation::Up;
+    // The precise point the ray struck the block's shape, in world space. Its
+    // sub-cell height decides a slab's half when the clicked face alone cannot
+    // (a horizontal face: upper half rests a top slab, lower half a bottom one).
+    glm::vec3 hitPosition{0.0F};
     // The player's view direction, used for the horizontal FACING property.
     glm::vec3 lookDirection{0.0F, 0.0F, -1.0F};
 };

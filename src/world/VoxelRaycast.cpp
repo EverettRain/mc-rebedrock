@@ -1,5 +1,7 @@
 #include "world/VoxelRaycast.hpp"
 
+#include "world/BlockShape.hpp"
+
 #include <glm/geometric.hpp>
 
 #include <algorithm>
@@ -32,65 +34,21 @@ struct BoxRaycastHit final {
     glm::ivec3 normal{};
 };
 
-// A wall torch's lean is its FACING state now, so the box needs the cell's
-// orientation rather than just its block.
-[[nodiscard]] SelectionBox torchSelectionBox(Block block, BlockOrientation orientation) {
-    glm::vec3 facing{0.0F};
-    const bool wall = block == Block::WallTorch;
-    if (wall) {
-        if (orientation == BlockOrientation::North) facing.z = -1.0F;
-        if (orientation == BlockOrientation::East) facing.x = 1.0F;
-        if (orientation == BlockOrientation::South) facing.z = 1.0F;
-        if (orientation == BlockOrientation::West) facing.x = -1.0F;
-    }
-    const glm::vec3 base = wall
-        ? glm::vec3{0.5F, 0.18F, 0.5F} - facing * kWallTorchInset
-        : glm::vec3{0.5F, 0.0F, 0.5F};
-    const glm::vec3 axis = wall
-        ? glm::vec3{facing.x * 0.28F, 0.58F, facing.z * 0.28F}
-        : glm::vec3{0.0F, 0.625F, 0.0F};
-    const glm::vec3 up = glm::normalize(axis);
-    const glm::vec3 right = wall
-        ? glm::normalize(glm::vec3{facing.z, 0.0F, -facing.x})
-        : glm::vec3{1.0F, 0.0F, 0.0F};
-    const glm::vec3 forward = glm::normalize(glm::cross(right, up));
-    constexpr float halfWidth = 1.0F / 16.0F;
-    const glm::vec3 r = right * halfWidth;
-    const glm::vec3 f = forward * halfWidth;
-    const std::array corners{
-        base - r - f, base + r - f, base + r + f, base - r + f,
-        base + axis - r - f, base + axis + r - f,
-        base + axis + r + f, base + axis - r + f,
-    };
-    SelectionBox bounds{corners.front(), corners.front()};
-    for (const glm::vec3& corner : corners) {
-        bounds.minimum.x = std::min(bounds.minimum.x, corner.x);
-        bounds.minimum.y = std::min(bounds.minimum.y, corner.y);
-        bounds.minimum.z = std::min(bounds.minimum.z, corner.z);
-        bounds.maximum.x = std::max(bounds.maximum.x, corner.x);
-        bounds.maximum.y = std::max(bounds.maximum.y, corner.y);
-        bounds.maximum.z = std::max(bounds.maximum.z, corner.z);
-    }
-    return bounds;
+// The box for a shape's Column form: it fills the whole footprint, so only its
+// height varies.
+[[nodiscard]] SelectionBox columnBox(const BlockShape& shape) {
+    return SelectionBox{{0.0F, shape.bottom, 0.0F}, {1.0F, shape.top, 1.0F}};
 }
 
-// The selection box a block's raycast tests against, or nullopt for a block
-// whose whole cell is selectable (the common cube and cross-plant cases). A
-// crop reads its stage from its AGE property and shrinks to that height;
-// farmland is the vanilla 15/16 box. Torches keep their dedicated shape.
-[[nodiscard]] std::optional<SelectionBox> blockInteractionShape(
-    const World& world, glm::ivec3 cell, Block block) {
-    if (isTorch(block)) {
-        return torchSelectionBox(block, world.orientation(cell.x, cell.y, cell.z));
-    }
-    if (isCrop(block)) {
-        const int age = world.state(cell.x, cell.y, cell.z).age();
-        return SelectionBox{{0.0F, 0.0F, 0.0F}, {1.0F, cropSelectionHeight(age), 1.0F}};
-    }
-    if (isFarmland(block)) {
-        return SelectionBox{{0.0F, 0.0F, 0.0F}, {1.0F, kFarmlandModelHeight, 1.0F}};
-    }
-    return std::nullopt;
+[[nodiscard]] SelectionBox boxOf(const ShapeBox& box) {
+    return SelectionBox{{box.minX, box.minY, box.minZ}, {box.maxX, box.maxY, box.maxZ}};
+}
+
+// Whether a shape fills its whole cell, so the ray hits it the instant it enters
+// — the common cube, and a double slab. Kept as a fast path so the overwhelming
+// majority of cells never build or test a box.
+[[nodiscard]] bool isFullCellShape(const BlockShape& shape) {
+    return shape.kind == ShapeKind::Column && shape.bottom <= 0.0F && shape.top >= 1.0F;
 }
 
 [[nodiscard]] std::optional<BoxRaycastHit> raycastBox(
@@ -137,6 +95,37 @@ struct BoxRaycastHit final {
     return BoxRaycastHit{nearDistance, nearNormal};
 }
 
+// The nearest hit among a non-full shape's boxes. A Column contributes its one
+// footprint box; Boxes contributes each of its boxes; the closest wins so a
+// stair or fence (many boxes) reports the face the ray reaches first.
+[[nodiscard]] std::optional<BoxRaycastHit> raycastShape(
+    glm::vec3 origin,
+    glm::vec3 direction,
+    const BlockShape& shape,
+    glm::ivec3 cell,
+    float maximumDistance) {
+    std::optional<BoxRaycastHit> best;
+    const auto consider = [&](const SelectionBox& box) {
+        const auto hit = raycastBox(origin, direction, box, cell, maximumDistance);
+        if (hit.has_value() && (!best.has_value() || hit->distance < best->distance)) {
+            best = hit;
+        }
+    };
+    switch (shape.kind) {
+    case ShapeKind::Empty:
+        break;
+    case ShapeKind::Column:
+        consider(columnBox(shape));
+        break;
+    case ShapeKind::Boxes:
+        for (const ShapeBox& box : shape.boxes) {
+            consider(boxOf(box));
+        }
+        break;
+    }
+    return best;
+}
+
 } // namespace
 
 std::optional<VoxelRaycastHit> raycastVoxels(
@@ -171,31 +160,34 @@ std::optional<VoxelRaycastHit> raycastVoxels(
     float distance = 0.0F;
     while (distance <= maximumDistance) {
         const Block current = world.block(cell.x, cell.y, cell.z);
-        // A bucket ray stops only at a still-water source (BucketItem's
-        // SOURCE_ONLY); flowing water is walked past, so a block behind it
-        // stays reachable.
-        if (isSelectable(current) ||
-            (includeFluids && isFluid(current) && world.fluidLevel(cell.x, cell.y, cell.z) == 0U)) {
-            // Sub-block shapes (torch, crop, farmland) are tested against their
-            // actual box; a full-cell block is hit the moment the ray enters.
-            const auto shape = blockInteractionShape(world, cell, current);
-            if (shape.has_value()) {
-                const auto shapeHit = raycastBox(
-                    origin, direction, *shape, cell, maximumDistance);
-                const float cellExitDistance = std::min(
-                    nextDistance.x, std::min(nextDistance.y, nextDistance.z));
-                if (shapeHit.has_value() &&
-                    shapeHit->distance <= cellExitDistance + 0.00001F) {
-                    return VoxelRaycastHit{
-                        cell,
-                        cell + shapeHit->normal,
-                        shapeHit->normal,
-                        shapeHit->distance,
-                    };
-                }
-            } else {
+        if (isSelectable(current)) {
+            // The pick ray tests the block's base shape — the one source the
+            // outline and collision also read, so a slab's half box, a chest's
+            // 14/16 box and a flower's stalk are hit where they are drawn rather
+            // than anywhere in the cell. A full-cell shape is hit the instant
+            // the ray enters, exactly as before.
+            const BlockShape shape = blockShape(world.state(cell.x, cell.y, cell.z));
+            if (isFullCellShape(shape)) {
                 return VoxelRaycastHit{cell, cell + entryNormal, entryNormal, distance};
             }
+            const auto shapeHit = raycastShape(origin, direction, shape, cell, maximumDistance);
+            const float cellExitDistance = std::min(
+                nextDistance.x, std::min(nextDistance.y, nextDistance.z));
+            if (shapeHit.has_value() &&
+                shapeHit->distance <= cellExitDistance + 0.00001F) {
+                return VoxelRaycastHit{
+                    cell,
+                    cell + shapeHit->normal,
+                    shapeHit->normal,
+                    shapeHit->distance,
+                };
+            }
+        } else if (includeFluids && isFluid(current) &&
+                   world.fluidLevel(cell.x, cell.y, cell.z) == 0U) {
+            // A bucket ray stops only at a still-water source (BucketItem's
+            // SOURCE_ONLY); flowing water is walked past, so a block behind it
+            // stays reachable. A source fills its cell, hit on entry.
+            return VoxelRaycastHit{cell, cell + entryNormal, entryNormal, distance};
         }
 
         if (nextDistance.x <= nextDistance.y && nextDistance.x <= nextDistance.z) {
@@ -218,48 +210,35 @@ std::optional<VoxelRaycastHit> raycastVoxels(
     return std::nullopt;
 }
 
-BlockBounds blockSelectionBounds(
-    const World& world, glm::ivec3 position, Block block) {
-    switch (blockDefinition(block).model) {
-        case BlockModel::Cross:
-            // Plants: a slim upright box, roughly the cross's footprint.
-            return {{0.1F, 0.0F, 0.1F}, {0.9F, 0.8F, 0.9F}};
-        case BlockModel::Crop:
-            // CropBlock.SHAPES: the box grows with the block's AGE property,
-            // from 2/16 to a full block.
-            return {{0.0F, 0.0F, 0.0F},
-                    {1.0F,
-                     cropSelectionHeight(
-                         world.state(position.x, position.y, position.z).age()),
-                     1.0F}};
-        case BlockModel::Torch: {
-            const SelectionBox box = torchSelectionBox(
-                block, world.orientation(position.x, position.y, position.z));
-            return {box.minimum, box.maximum};
-        }
-        case BlockModel::Chest:
-            // 14x14x14 chest sitting on the floor (1/16 inset on each side).
-            return {{0.0625F, 0.0F, 0.0625F}, {0.9375F, 0.875F, 0.9375F}};
-        case BlockModel::Slab: {
-            // The outline matches the slab's half box (or the whole cell for a
-            // double slab), so clicking a slab highlights the shape that is
-            // actually there.
-            switch (world.state(position.x, position.y, position.z).slabPortion()) {
-            case SlabPortion::Top:
-                return {{0.0F, 0.5F, 0.0F}, {1.0F, 1.0F, 1.0F}};
-            case SlabPortion::Double:
-                return {{0.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 1.0F}};
-            case SlabPortion::Bottom:
-                break;
-            }
-            return {{0.0F, 0.0F, 0.0F}, {1.0F, 0.5F, 1.0F}};
-        }
-        case BlockModel::Cube:
+BlockBounds blockSelectionBounds(const World& world, glm::ivec3 position) {
+    // The outline is the block's base shape — the same source the pick ray tests
+    // — so the highlight can never again hug a shape the ray does not hit. A
+    // Column is its footprint at its height; Boxes shows the boxes' bounding box
+    // (a single box for a torch, chest or plant today).
+    const BlockShape shape = blockShape(world.state(position.x, position.y, position.z));
+    switch (shape.kind) {
+    case ShapeKind::Empty:
+        break;
+    case ShapeKind::Column:
+        return {{0.0F, shape.bottom, 0.0F}, {1.0F, shape.top, 1.0F}};
+    case ShapeKind::Boxes: {
+        if (shape.boxes.empty()) {
             break;
+        }
+        glm::vec3 minimum{shape.boxes.front().minX, shape.boxes.front().minY,
+                          shape.boxes.front().minZ};
+        glm::vec3 maximum{shape.boxes.front().maxX, shape.boxes.front().maxY,
+                          shape.boxes.front().maxZ};
+        for (const ShapeBox& box : shape.boxes) {
+            minimum.x = std::min(minimum.x, box.minX);
+            minimum.y = std::min(minimum.y, box.minY);
+            minimum.z = std::min(minimum.z, box.minZ);
+            maximum.x = std::max(maximum.x, box.maxX);
+            maximum.y = std::max(maximum.y, box.maxY);
+            maximum.z = std::max(maximum.z, box.maxZ);
+        }
+        return {minimum, maximum};
     }
-    // Farmland is a cube whose solid box is the vanilla 15/16 shape.
-    if (isFarmland(block)) {
-        return {{0.0F, 0.0F, 0.0F}, {1.0F, kFarmlandModelHeight, 1.0F}};
     }
     return {};
 }

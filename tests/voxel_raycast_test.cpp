@@ -20,7 +20,16 @@ int main() {
     chunk.setBlock(15, 5, 14, mc::world::Block::Stone);
     chunk.setBlock(14, 3, 8, mc::world::Block::Farmland);
     chunk.setBlock(15, 3, 8, mc::world::Block::Stone);
+    // A bottom slab and a top slab, each with a stone backdrop, to prove the pick
+    // ray hits the half box that is drawn rather than the whole cell.
+    chunk.setBlock(4, 7, 1, mc::world::Block::OakSlab);            // bottom (default)
+    chunk.setBlock(7, 7, 1, mc::world::Block::Stone);
+    chunk.setBlock(4, 8, 3, mc::world::Block::OakSlab);            // set to top below
+    chunk.setBlock(7, 8, 3, mc::world::Block::Stone);
     world.setChunk({0, 0}, std::move(chunk));
+    world.setState(4, 8, 3,
+                   mc::world::BlockState{mc::world::Block::OakSlab}.withSlabPortion(
+                       mc::world::SlabPortion::Top));
     world.setFluidLevel(12, 3, 1, 3U);
     // Age 0 and moisture 0 are each block's default state, so both cells are
     // already right; naming them keeps the fixture explicit about the stage the
@@ -116,5 +125,37 @@ int main() {
         world, {12.5F, 3.8F, 8.5F}, {1.0F, 0.0F, 0.0F}, 6.0F);
     assert(hitsFarmland.has_value());
     assert(hitsFarmland->block == (glm::ivec3{14, 3, 8}));
+
+    // The reported bug: a bottom slab fills y[0,0.5]. A ray through the empty
+    // upper half must pass to the block behind, not select the slab as a full
+    // cube; a ray through the solid lower half selects the slab.
+    const auto overBottomSlab = mc::world::raycastVoxels(
+        world, {0.5F, 7.75F, 1.5F}, {1.0F, 0.0F, 0.0F}, 8.0F);
+    assert(overBottomSlab.has_value());
+    assert(overBottomSlab->block == (glm::ivec3{7, 7, 1}));
+    const auto hitsBottomSlab = mc::world::raycastVoxels(
+        world, {0.5F, 7.25F, 1.5F}, {1.0F, 0.0F, 0.0F}, 8.0F);
+    assert(hitsBottomSlab.has_value());
+    assert(hitsBottomSlab->block == (glm::ivec3{4, 7, 1}));
+
+    // Looking straight down onto a bottom slab selects it, hitting the top face
+    // at y=7.5 (its half height), not the cell top at y=8.
+    const auto ontoSlabTop = mc::world::raycastVoxels(
+        world, {4.5F, 9.0F, 1.5F}, {0.0F, -1.0F, 0.0F}, 8.0F);
+    assert(ontoSlabTop.has_value());
+    assert(ontoSlabTop->block == (glm::ivec3{4, 7, 1}));
+    assert(ontoSlabTop->normal == (glm::ivec3{0, 1, 0}));
+    assert(ontoSlabTop->distance > 1.49F && ontoSlabTop->distance < 1.51F);
+
+    // A top slab fills y[0.5,1]. The empty lower half passes through; the solid
+    // upper half selects it.
+    const auto underTopSlab = mc::world::raycastVoxels(
+        world, {0.5F, 8.25F, 3.5F}, {1.0F, 0.0F, 0.0F}, 8.0F);
+    assert(underTopSlab.has_value());
+    assert(underTopSlab->block == (glm::ivec3{7, 8, 3}));
+    const auto hitsTopSlab = mc::world::raycastVoxels(
+        world, {0.5F, 8.75F, 3.5F}, {1.0F, 0.0F, 0.0F}, 8.0F);
+    assert(hitsTopSlab.has_value());
+    assert(hitsTopSlab->block == (glm::ivec3{4, 8, 3}));
     return 0;
 }

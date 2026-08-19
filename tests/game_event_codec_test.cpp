@@ -51,6 +51,14 @@ int main() {
     // A state with no declared properties (plain stone) round-trips too.
     checkRoundTrip(gameplay::GameEvent{
         gameplay::WorldEditEvent{1, 2, 3, world::BlockState{world::Block::Stone}, false}});
+    // A slab's SlabType must survive: a hand-listed property set once dropped it,
+    // so a top or double slab reached the client mesh as a bottom one. Each half
+    // round-trips through the schema-driven codec.
+    for (const auto portion : {world::SlabPortion::Bottom, world::SlabPortion::Top,
+                               world::SlabPortion::Double}) {
+        checkRoundTrip(gameplay::GameEvent{gameplay::WorldEditEvent{
+            4, 5, 6, world::BlockState{world::Block::OakSlab}.withSlabPortion(portion), true}});
+    }
 
     // --- A creature sound round-trips its species by identifier. ---
     checkRoundTrip(gameplay::GameEvent{gameplay::SoundEvent{
