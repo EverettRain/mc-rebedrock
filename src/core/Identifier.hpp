@@ -44,6 +44,24 @@ struct Identifier final {
         result.append(path);
         return result;
     }
+
+    // Splits a `space:path` string into its two halves without allocating; a
+    // bare `path` (no colon) yields an Identifier with an empty namespace, which
+    // the caller resolves against whatever default namespace makes sense (the
+    // registry treats it as "match any namespace"). This is the inverse of
+    // matches(): everything that reads a key off a save file, a command or the
+    // wire parses it here rather than re-splitting the colon by hand.
+    [[nodiscard]] static constexpr Identifier parse(std::string_view text) {
+        std::size_t separator = text.size();
+        for (std::size_t index = 0; index < text.size(); ++index) {
+            if (text[index] == ':') {
+                separator = index;
+                break;
+            }
+        }
+        if (separator == text.size()) return Identifier{std::string_view{}, text};
+        return Identifier{text.substr(0, separator), text.substr(separator + 1U)};
+    }
 };
 
 } // namespace mc::core

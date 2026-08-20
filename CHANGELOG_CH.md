@@ -59,6 +59,11 @@
 - 新增可选的慢帧与驻留内存诊断：`MC_REBEDROCK_FRAME_TRACE=1` 会分项报告持久化、锁、
   GPU fence、事件排空等超时阶段，`MC_REBEDROCK_MEMORY_REPORT=1` 会统计服务端/客户端
   区块、工作区块、纹理、GPU 缓冲与 CPU 网格池，方便定位双世界架构的时间与内存回归。
+- 在 `src/core` 搭建运行期内容身份底座：强类型稠密 `uint16` id
+  （`BlockId`/`ItemId`/`EntityTypeId`/`BlockEntityTypeId`）、`Identifier` 驻留器，以及带
+  `Bootstrap → External → Freeze` 生命周期的通用 `Registry<Def, Id>`——内置 id 稳定、外部
+  （mod/数据包）内容随后注册、错相位/重名/非法 id 访问一律 abort。方块表被灌入一个冻结的
+  注册表并与现有 `Block` 枚举并行，暂无行为变化，为后续淘汰 256 顶枚举及其 switch 铺路。
 
 ### 变更
 

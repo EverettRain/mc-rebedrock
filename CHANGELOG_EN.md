@@ -94,6 +94,14 @@ simple versioned history while it is in beta.
   accounts for server/client chunks, worker chunks, textures, GPU buffers and
   the CPU mesh pool to expose timing and memory regressions in the dual-world
   architecture.
+- A runtime content-identity foundation was stood up in `src/core`: strongly
+  typed dense `uint16` ids (`BlockId`/`ItemId`/`EntityTypeId`/`BlockEntityTypeId`),
+  an `Identifier` interner, and a generic `Registry<Def, Id>` with a
+  `Bootstrap → External → Freeze` lifecycle that keeps built-in ids stable,
+  admits external (mod/datapack) content afterward and aborts on wrong-phase,
+  duplicate-name or invalid-id access. The block table is poured into a frozen
+  registry alongside the existing `Block` enum with no behavior change yet,
+  laying the groundwork for retiring the 256-entry enum and its switches.
 
 ### Changed
 

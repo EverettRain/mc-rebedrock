@@ -2427,6 +2427,12 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_content_registry_test PRIVATE src)
     add_test(NAME content_registry COMMAND mc_rebedrock_content_registry_test)
 
+    add_executable(mc_rebedrock_registry_test
+        tests/registry_test.cpp
+    )
+    target_include_directories(mc_rebedrock_registry_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME registry COMMAND mc_rebedrock_registry_test)
+
     endif()
 
 install(TARGETS mc_rebedrock RUNTIME DESTINATION bin)
