@@ -1,5 +1,7 @@
 #include "persistence/SaveRepository.hpp"
+#include "persistence/UnknownBlockTable.hpp"
 
+#include "world/BlockState.hpp"
 #include "world/DayNightCycle.hpp"
 #include "world/WorldClock.hpp"
 
@@ -943,6 +945,74 @@ int main() {
         // The corrupted region is skipped; nothing else is lost.
         assert(loaded.edits.empty());
         assert(loaded.entities.empty());
+    }
+
+    // A block a removed datapack/mod placed is kept as an UnknownBlock
+    // placeholder rather than dropped to air: its identifier and property blob
+    // ride the save unchanged, and re-adding the content restores the real block.
+    {
+        // Stand in for content this build's registry does not know. The blob mixes
+        // a property this build happens to have a name for ("age") with one it does
+        // not ("custom"), to prove the bytes survive without interpretation.
+        const auto placeholder = persistence::unknownBlockTable().intern(
+            "moddedmc:gadget",
+            {{"age", 5U}, {"custom", 2U}});
+        assert(persistence::unknownBlockTable().isUnknown(placeholder));
+        // A second placeholder whose name is one this build *does* know, standing
+        // in for the same on-disk bytes read by a build where the content is
+        // (re)registered: it must resolve to the real block, not a placeholder.
+        const auto reregistered = persistence::unknownBlockTable().intern(
+            "rebedrock:furnace",
+            {{"lit", 1U}});
+        assert(persistence::unknownBlockTable().isUnknown(reregistered));
+
+        auto game = repository.create("Unknown", 7ULL);
+        game.edits = {
+            {100, 70, 100, placeholder},
+            {101, 70, 100, world::BlockState{world::Block::Stone}},
+            {102, 70, 100, reregistered},
+        };
+        repository.save(game);
+
+        // The original identifier is on disk verbatim — no data was lost to air.
+        const auto regionBytes = [&] {
+            std::string all;
+            for (const auto& entry : std::filesystem::directory_iterator(
+                     root / game.summary.identifier / "region")) {
+                std::ifstream data{entry.path(), std::ios::binary};
+                all += std::string{std::istreambuf_iterator<char>{data},
+                                   std::istreambuf_iterator<char>{}};
+            }
+            return all;
+        }();
+        assert(regionBytes.find("moddedmc:gadget") != std::string::npos);
+
+        const auto loaded = repository.load(game.summary.identifier);
+        assert(loaded.edits.size() == 3U);
+        const auto editAt = [&](int x) -> const world::PersistentBlockEdit& {
+            for (const auto& edit : loaded.edits) {
+                if (edit.x == x) return edit;
+            }
+            assert(false && "edit missing after round-trip");
+            std::abort();
+        };
+        // The unknown block came back as the same placeholder (interning dedupes
+        // by name+blob), and its stored identity is intact — not air.
+        const auto& unknown = editAt(100);
+        assert(persistence::unknownBlockTable().isUnknown(unknown.state));
+        assert(unknown.state != world::BlockState{world::Block::Air});
+        const auto record = persistence::unknownBlockTable().record(unknown.state);
+        assert(record.name == "moddedmc:gadget");
+        assert((record.properties ==
+                std::vector<persistence::UnknownStateProperty>{{"age", 5U}, {"custom", 2U}}));
+        // The known block beside it is unaffected.
+        assert(editAt(101).state.block() == world::Block::Stone);
+        // The placeholder whose name this build knows resolves to the real block:
+        // this is the "re-register the content and it restores" guarantee.
+        const auto& restored = editAt(102);
+        assert(!persistence::unknownBlockTable().isUnknown(restored.state));
+        assert(restored.state.block() == world::Block::Furnace);
+        assert(restored.state.lit());
     }
 
     return 0;

@@ -134,9 +134,16 @@ class BlockState final {
     // builds — the save layer must map it through identifiers and property
     // names, exactly as it already does for Block.
     [[nodiscard]] constexpr std::uint16_t rawId() const { return id_; }
+    // Rebuilds a state from a raw id — a chunk section's palette entry, or the
+    // save layer round-tripping a cell. An id at or above the built-in table
+    // (isUnknownStateId) names an UnknownBlock placeholder: content this build's
+    // registry does not know, kept verbatim so the save can write its original
+    // name and properties back. Such an id is preserved rather than clamped here;
+    // every metadata accessor already clamps it to block 0's air-like defaults
+    // (see validatedBlockStateId), so the cell stays inert without a special case.
     [[nodiscard]] static constexpr BlockState fromRawId(std::uint16_t value) {
         BlockState state;
-        state.id_ = validatedBlockStateId(value);
+        state.id_ = value;
         return state;
     }
 

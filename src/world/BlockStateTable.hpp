@@ -74,6 +74,22 @@ inline constexpr std::uint32_t kBlockStateCount = kBlockStateRangeStarts[kBlockK
 static_assert(kBlockStateCount <= 65536U,
               "the interned block-state table must fit in a std::uint16_t id");
 
+// State ids at or above the built-in table are not interned states at all: they
+// name an UnknownBlock placeholder — a block a removed datapack/mod once placed —
+// whose identity this build's registry no longer knows. They carry no baked
+// metadata (every accessor below clamps them to block 0's air-like defaults) and
+// exist only so the persistence layer can round-trip the block's original
+// identifier and property blob (see persistence/UnknownBlockTable.hpp).
+// BlockState::fromRawId keeps such an id verbatim rather than clamping it, which
+// is what lets the sentinel survive a chunk-section palette and reach the save
+// writer unchanged.
+static_assert(kBlockStateCount < 65536U,
+              "no id space is left above the built-in table for UnknownBlock placeholders");
+inline constexpr std::uint16_t kFirstUnknownStateId = static_cast<std::uint16_t>(kBlockStateCount);
+[[nodiscard]] constexpr bool isUnknownStateId(std::uint16_t id) {
+    return id >= kFirstUnknownStateId;
+}
+
 // Hot-path metadata, indexed directly by the raw state id. Java stores these
 // values on every BlockStateBase instance and precomputes its cache; C++ keeps
 // the cell itself at two bytes and moves the immutable metadata to one compact

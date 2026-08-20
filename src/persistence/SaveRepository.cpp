@@ -1,6 +1,7 @@
 #include "persistence/SaveRepository.hpp"
 
 #include "persistence/SaveStream.hpp"
+#include "persistence/UnknownBlockTable.hpp"
 
 #include "world/BlockRegistry.hpp"
 #include "world/DayNightCycle.hpp"
@@ -171,6 +172,20 @@ using BlockPalette = DensePalette<world::BlockId>;
 // A palette empty-keyed on air and sized to every registered block identity.
 [[nodiscard]] inline BlockPalette makeBlockPalette() {
     return BlockPalette{world::blockId(world::Block::Air), world::blockCount()};
+}
+
+// Resolves a saved block identifier through the runtime block registry — the
+// single source of block identity since R0-2 — returning the block for a known
+// name and nothing for one this build does not carry. This replaces the direct
+// enum walk `blockFromIdentifier` did, so external content registered into the
+// registry resolves the same way built-ins do, and the `minecraft:` alias a
+// 1.16.1 save uses still lands on its block.
+[[nodiscard]] std::optional<world::Block> blockByName(std::string_view text) {
+    const world::BlockId id = world::blockRegistry().byName(text);
+    if (!id.valid()) {
+        return std::nullopt;
+    }
+    return world::blockFromId(id);
 }
 // States are keyed by their raw interned id, which is compact but *not* stable
 // across builds — so the id is only ever the palette's key, never the thing
@@ -774,7 +789,7 @@ void readDropBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
     blocks.reserve(blockCount);
     for (std::uint16_t index = 0; index < blockCount; ++index) {
         const auto name = readString(payload, cursor);
-        blocks.push_back(world::blockFromIdentifier(name).value_or(world::Block::Air));
+        blocks.push_back(blockByName(name).value_or(world::Block::Air));
     }
 
     const auto dropCount = readInteger<std::uint32_t>(payload, cursor);
@@ -1417,7 +1432,22 @@ struct RegionData final {
 // is written inline rather than through world.dat's block palette, so a region
 // needs nothing else to decode. Properties are named exactly like CHNK v2's.
 void appendRegionStatePaletteEntry(std::vector<std::uint8_t>& bytes, world::BlockState state) {
-    appendString(bytes, world::blockDefinition(state.block()).identifier.toString());
+    // A block this build's registry does not know (a removed mod/datapack block)
+    // is written back exactly as it came in — the original identifier and every
+    // property byte — so unloading it is lossless and re-adding the content
+    // restores the real block. See persistence/UnknownBlockTable.hpp.
+    if (unknownBlockTable().isUnknown(state)) {
+        const UnknownBlockState record = unknownBlockTable().record(state);
+        appendString(bytes, record.name);
+        appendInteger(bytes, static_cast<std::uint8_t>(record.properties.size()));
+        for (const auto& property : record.properties) {
+            appendString(bytes, property.name);
+            appendInteger(bytes, property.value);
+        }
+        return;
+    }
+    const auto stateId = world::blockIdOfState(state.rawId());
+    appendString(bytes, world::blockRegistry().identifier(stateId).toString());
     const auto& schema =
         world::kBlockRegistry[static_cast<std::size_t>(state.block())].states;
     appendInteger(bytes, static_cast<std::uint8_t>(schema.size()));
@@ -1432,17 +1462,30 @@ void appendRegionStatePaletteEntry(std::vector<std::uint8_t>& bytes, world::Bloc
     std::span<const std::uint8_t> payload,
     std::size_t& cursor) {
     const auto name = readString(payload, cursor);
-    auto state =
-        world::BlockState{world::blockFromIdentifier(name).value_or(world::Block::Air)};
+    // Read the whole property blob first: for a known block the values are
+    // applied below, and for an unknown one the raw pairs are kept verbatim so the
+    // block can be written back unchanged.
     const auto propertyCount = readInteger<std::uint8_t>(payload, cursor);
+    std::vector<UnknownStateProperty> blob;
+    blob.reserve(propertyCount);
     for (std::uint8_t index = 0; index < propertyCount; ++index) {
-        const auto propertyName = readString(payload, cursor);
+        auto propertyName = readString(payload, cursor);
         const auto value = readInteger<std::uint8_t>(payload, cursor);
-        const auto property = world::statePropertyFromName(propertyName);
-        if (property == world::StateProperty::Count) {
+        blob.push_back({std::move(propertyName), value});
+    }
+    const std::optional<world::Block> known = blockByName(name);
+    if (!known.has_value()) {
+        // Content this build lacks: keep it as a placeholder rather than dropping
+        // the cell to air, which is what value_or(Air) used to do.
+        return unknownBlockTable().intern(std::move(name), std::move(blob));
+    }
+    auto state = world::BlockState{*known};
+    for (const auto& property : blob) {
+        const auto resolved = world::statePropertyFromName(property.name);
+        if (resolved == world::StateProperty::Count) {
             continue;  // a property this build has no notion of
         }
-        state = state.with(property, value);
+        state = state.with(resolved, property.value);
     }
     return state;
 }
@@ -2417,7 +2460,7 @@ void loadLegacy(std::span<const std::uint8_t> payload, std::size_t& cursor,
                 const auto legacy = legacyStateIdentifier(text);
                 blockPaletteStates.push_back(legacy);
                 if (legacy.has_value()) return legacy->block;
-                return world::blockFromIdentifier(text);
+                return blockByName(text);
             },
             world::Block::Air);
     }
@@ -2597,7 +2640,7 @@ void loadOwnerBlocks(std::span<const std::uint8_t> payload, std::size_t& cursor,
         return entries;
     };
     const auto blockPalette = readPalette(
-        [](std::string_view text) { return world::blockFromIdentifier(text); },
+        [](std::string_view text) { return blockByName(text); },
         world::Block::Air);
     const auto itemPalette = readPalette(
         [](std::string_view text) -> std::optional<const gameplay::Item*> {

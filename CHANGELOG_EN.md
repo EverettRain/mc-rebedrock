@@ -216,6 +216,11 @@ simple versioned history while it is in beta.
 
 ### Fixed
 
+- A block placed by content this build no longer has — a datapack or mod that
+  was removed — is now preserved in the save as-is instead of being replaced by
+  air. Its identifier and state are kept verbatim, so re-adding the content
+  brings the block back exactly where it was, matching how Java keeps unknown
+  blocks rather than dropping them.
 - Sapling-grown logs are now written and published atomically as complete block
   states, so trunks no longer render their end grain sideways after an
   orientation-only follow-up update was lost. Cross-chunk tree blocks retain
