@@ -2433,6 +2433,16 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_registry_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME registry COMMAND mc_rebedrock_registry_test)
 
+    add_executable(mc_rebedrock_block_deenum_test
+        tests/block_deenum_test.cpp
+        src/gameplay/BlockTags.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
+    )
+    target_include_directories(mc_rebedrock_block_deenum_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME block_deenum COMMAND mc_rebedrock_block_deenum_test)
+
     endif()
 
 install(TARGETS mc_rebedrock RUNTIME DESTINATION bin)

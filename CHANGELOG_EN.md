@@ -102,6 +102,15 @@ simple versioned history while it is in beta.
   duplicate-name or invalid-id access. The block table is poured into a frozen
   registry alongside the existing `Block` enum with no behavior change yet,
   laying the groundwork for retiring the 256-entry enum and its switches.
+- The block-identity tables now index by `BlockId` and size to the block
+  registry rather than the 256-entry `Block` enum, so content can grow past the
+  old ceiling: the interned state metadata carries each state's block as a
+  `BlockId`, the block-tag table and the save block palette size to
+  `blockCount()` (the palette dropped its compile-time 256 cap entirely), and
+  the creative catalog is now a view whose identity comes from the registry. The
+  `Block` enum stays as a transitional handle over the same ids, so there is no
+  behavior or save-format change. Retiring the remaining `switch(block)` chains
+  is a later step.
 
 ### Changed
 

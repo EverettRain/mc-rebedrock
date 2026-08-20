@@ -2,6 +2,7 @@
 
 #include "persistence/SaveStream.hpp"
 
+#include "world/BlockRegistry.hpp"
 #include "world/DayNightCycle.hpp"
 #include "world/WorldConstants.hpp"
 
@@ -161,9 +162,16 @@ constexpr std::array<std::string_view, 27> kLegacyItemOrder{
     return state.withFluidLevel(fluidLevel).withLit(lit);
 }
 
-// Blocks are a dense uint8 enum, so the palette indexes an array instead of
-// hashing: one load per stack rather than a hash and a bucket walk.
-using BlockPalette = DensePalette<world::Block, world::Block::Air, 256U>;
+// Blocks are a dense BlockId, so the palette indexes an array instead of
+// hashing: one load per stack rather than a hash and a bucket walk. Sized to the
+// block registry at construction (see makeBlockPalette), so it holds however
+// many block identities exist rather than the old 256 ceiling.
+using BlockPalette = DensePalette<world::BlockId>;
+
+// A palette empty-keyed on air and sized to every registered block identity.
+[[nodiscard]] inline BlockPalette makeBlockPalette() {
+    return BlockPalette{world::blockId(world::Block::Air), world::blockCount()};
+}
 // States are keyed by their raw interned id, which is compact but *not* stable
 // across builds — so the id is only ever the palette's key, never the thing
 // written. Each entry goes to disk as a block identifier plus its named
@@ -687,13 +695,13 @@ void appendDropBlock(std::vector<std::uint8_t>& bytes,
     appendInteger(bytes, kDropBlockVersion);
 
     ItemPalette itemPalette;
-    BlockPalette blockPalette;
+    BlockPalette blockPalette = makeBlockPalette();
     for (const auto& drop : drops) {
         static_cast<void>(itemPalette.indexOf(drop.stack.item));
-        static_cast<void>(blockPalette.indexOf(drop.stack.block));
+        static_cast<void>(blockPalette.indexOf(world::blockId(drop.stack.block)));
     }
     for (const auto& entity : falling) {
-        static_cast<void>(blockPalette.indexOf(entity.block));
+        static_cast<void>(blockPalette.indexOf(world::blockId(entity.block)));
     }
     appendInteger(bytes, static_cast<std::uint16_t>(itemPalette.entries().size()));
     for (const auto* item : itemPalette.entries()) {
@@ -701,13 +709,13 @@ void appendDropBlock(std::vector<std::uint8_t>& bytes,
     }
     appendInteger(bytes, static_cast<std::uint16_t>(blockPalette.entries().size()));
     for (const auto block : blockPalette.entries()) {
-        appendString(bytes, world::blockDefinition(block).identifier.toString());
+        appendString(bytes, world::blockRegistry().identifier(block).toString());
     }
 
     appendInteger(bytes, static_cast<std::uint32_t>(drops.size()));
     for (const auto& drop : drops) {
         appendInteger(bytes, itemPalette.indexOf(drop.stack.item));
-        appendInteger(bytes, blockPalette.indexOf(drop.stack.block));
+        appendInteger(bytes, blockPalette.indexOf(world::blockId(drop.stack.block)));
         appendInteger(bytes, drop.stack.count);
         appendFloat(bytes, drop.x);
         appendFloat(bytes, drop.y);
@@ -719,7 +727,7 @@ void appendDropBlock(std::vector<std::uint8_t>& bytes,
     }
     appendInteger(bytes, static_cast<std::uint32_t>(falling.size()));
     for (const auto& entity : falling) {
-        appendInteger(bytes, blockPalette.indexOf(entity.block));
+        appendInteger(bytes, blockPalette.indexOf(world::blockId(entity.block)));
         appendFloat(bytes, entity.x);
         appendFloat(bytes, entity.y);
         appendFloat(bytes, entity.z);
@@ -955,7 +963,7 @@ struct SaveReadContext final {
 
 void appendStack(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context,
                  const gameplay::ItemStack& stack) {
-    appendInteger(bytes, context.blocks.indexOf(stack.block));
+    appendInteger(bytes, context.blocks.indexOf(world::blockId(stack.block)));
     appendInteger(bytes, stack.count);
     appendInteger(bytes, context.items.indexOf(stack.item));
     appendInteger(bytes, stack.damage);
@@ -1120,7 +1128,7 @@ constexpr std::uint16_t kChunkBlockVersion = 2U;
 // told about, so neither adding nor removing a property breaks a world.
 void appendStatePaletteEntry(std::vector<std::uint8_t>& bytes, BlockPalette& blocks,
                              world::BlockState state) {
-    appendInteger(bytes, blocks.indexOf(state.block()));
+    appendInteger(bytes, blocks.indexOf(world::blockId(state.block())));
     const auto& schema =
         world::kBlockRegistry[static_cast<std::size_t>(state.block())].states;
     appendInteger(bytes, static_cast<std::uint8_t>(schema.size()));
@@ -2120,10 +2128,10 @@ void SaveRepository::save(
 
     // Both palettes are gathered first and written ahead of every block, because
     // every record past this point names its content by palette index.
-    BlockPalette blockPalette;
+    BlockPalette blockPalette = makeBlockPalette();
     ItemPalette itemPalette;
     const auto gatherStack = [&](const gameplay::ItemStack& stack) {
-        static_cast<void>(blockPalette.indexOf(stack.block));
+        static_cast<void>(blockPalette.indexOf(world::blockId(stack.block)));
         static_cast<void>(itemPalette.indexOf(stack.item));
     };
     for (const auto& stack : game.inventory) {
@@ -2145,7 +2153,7 @@ void SaveRepository::save(
     }
     appendInteger(bytes, static_cast<std::uint16_t>(blockPalette.entries().size()));
     for (const auto block : blockPalette.entries()) {
-        appendString(bytes, world::blockDefinition(block).identifier.toString());
+        appendString(bytes, world::blockRegistry().identifier(block).toString());
     }
     appendInteger(bytes, static_cast<std::uint16_t>(itemPalette.entries().size()));
     for (const auto* item : itemPalette.entries()) {

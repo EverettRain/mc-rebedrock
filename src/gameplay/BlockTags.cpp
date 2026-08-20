@@ -1,6 +1,7 @@
 #include "gameplay/BlockTags.hpp"
 
 #include "core/Json.hpp"
+#include "world/BlockRegistry.hpp"
 
 #include <unordered_set>
 #include <vector>
@@ -162,10 +163,18 @@ std::string_view blockTagPath(BlockTag tag) {
 }
 
 void BlockTagTable::set(world::Block block, BlockTag tag) {
-    const auto index = static_cast<std::size_t>(block);
-    if (index < masks_.size()) {
-        masks_[index] |= bit(tag);
+    set(world::blockId(block), tag);
+}
+
+void BlockTagTable::set(world::BlockId block, BlockTag tag) {
+    const auto index = block.index();
+    // Grow to cover this id: a caller building a table by hand (a test, or a
+    // block that registered after load) must be able to tag any id the registry
+    // hands out, not only the ones present when the table was last sized.
+    if (index >= masks_.size()) {
+        masks_.resize(index + 1U, 0U);
     }
+    masks_[index] |= bit(tag);
 }
 
 void BlockTagTable::clear(BlockTag tag) {
@@ -176,7 +185,9 @@ void BlockTagTable::clear(BlockTag tag) {
 }
 
 void BlockTagTable::loadBuiltinDefaults() {
-    masks_.fill(0U);
+    // Sized to the registry, so every registered BlockId has a slot before any
+    // tag is applied (built-in content today, external content once R0-5 opens).
+    masks_.assign(world::blockCount(), 0U);
     dataDrivenTags_ = 0U;
     const auto apply = [this](BlockTag tag, auto&& identifiers) {
         for (const auto identifier : identifiers) {

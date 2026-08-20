@@ -105,23 +105,22 @@ class WorldSimulation final {
     // load. An out-of-line table costs a call plus a static-init guard on that
     // path, which measured ~4% slower than the switch — inside the plan's 5%
     // gate, but paying anything here for no reason is the wrong trade.
-    static constexpr std::array<RandomTickFn, static_cast<std::size_t>(world::Block::Count)>
-        kRandomTickTable = [] {
-            std::array<RandomTickFn, static_cast<std::size_t>(world::Block::Count)> entries{};
-            entries[static_cast<std::size_t>(world::Block::Grass)] = &randomTickGrassEntry;
-            for (const auto sapling :
-                 {world::Block::OakSapling, world::Block::SpruceSapling, world::Block::BirchSapling,
-                  world::Block::JungleSapling, world::Block::AcaciaSapling,
-                  world::Block::DarkOakSapling}) {
-                entries[static_cast<std::size_t>(sapling)] = &randomTickSaplingEntry;
-            }
-            for (const auto crop :
-                 {world::Block::WheatCrops, world::Block::Carrots, world::Block::Potatoes}) {
-                entries[static_cast<std::size_t>(crop)] = &randomTickCropEntry;
-            }
-            entries[static_cast<std::size_t>(world::Block::Farmland)] = &randomTickFarmlandEntry;
-            return entries;
-        }();
+    static constexpr std::array<RandomTickFn, world::kBuiltinBlockCount> kRandomTickTable = [] {
+        std::array<RandomTickFn, world::kBuiltinBlockCount> entries{};
+        entries[world::blockId(world::Block::Grass).index()] = &randomTickGrassEntry;
+        for (const auto sapling :
+             {world::Block::OakSapling, world::Block::SpruceSapling, world::Block::BirchSapling,
+              world::Block::JungleSapling, world::Block::AcaciaSapling,
+              world::Block::DarkOakSapling}) {
+            entries[world::blockId(sapling).index()] = &randomTickSaplingEntry;
+        }
+        for (const auto crop :
+             {world::Block::WheatCrops, world::Block::Carrots, world::Block::Potatoes}) {
+            entries[world::blockId(crop).index()] = &randomTickCropEntry;
+        }
+        entries[world::blockId(world::Block::Farmland).index()] = &randomTickFarmlandEntry;
+        return entries;
+    }();
 
     static constexpr std::size_t kMaximumWaterUpdatesPerPhase = 16U;
     // How many saplings may grow into trees in one game tick. Growing a tree
@@ -165,7 +164,10 @@ class WorldSimulation final {
     // block silently leaving it has no other symptom than grass quietly no
     // longer spreading.
     [[nodiscard]] static constexpr bool isRandomlyTicking(world::Block block) {
-        const auto index = static_cast<std::size_t>(block);
+        return isRandomlyTicking(world::blockId(block));
+    }
+    [[nodiscard]] static constexpr bool isRandomlyTicking(world::BlockId block) {
+        const auto index = block.index();
         return index < kRandomTickTable.size() && kRandomTickTable[index] != nullptr;
     }
 

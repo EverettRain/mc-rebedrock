@@ -44,4 +44,12 @@ using BlockRegistry = core::Registry<BlockDefinition, core::BlockId>;
     return registry;
 }
 
+// The number of registered block identities — the size the runtime BlockId-keyed
+// tables (block tags, the save palette) cut themselves to. Equals
+// `kBuiltinBlockCount` for a build with no external content, and grows with the
+// registry once the External phase can add blocks (R0-5). A constexpr built-in
+// table cannot bake behaviour for a block that does not exist at compile time,
+// so those stay `kBuiltinBlockCount` wide; only the runtime tables read this.
+[[nodiscard]] inline std::size_t blockCount() { return blockRegistry().size(); }
+
 } // namespace mc::world

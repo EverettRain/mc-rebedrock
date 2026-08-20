@@ -161,16 +161,27 @@ struct SaveBlockHeader final {
 // index 0, so an index a reader cannot resolve still means "nothing here".
 //
 // Two shapes, because the two registries are shaped differently: blocks are a
-// dense small enum, items are pointers. Java would reach for a HashMap in both
-// cases; a hash per stack is real cost on a world with a hundred thousand
-// stored stacks, and for blocks it buys nothing an array indexed by the enum
-// does not already give.
-template <typename Value, Value Empty, std::size_t Domain>
+// dense integer identity (a BlockId), items are pointers. Java would reach for a
+// HashMap in both cases; a hash per stack is real cost on a world with a hundred
+// thousand stored stacks, and for a dense id an array indexed by the id already
+// gives O(1) with no hashing.
+//
+// The reverse index is sized at construction to the id domain the caller passes
+// — `blockCount()` for blocks — rather than a compile-time ceiling, so the
+// palette holds however many ids the registry hands out. This is what removed
+// the old 256 cap: an id past the domain is a caller bug (it never came from
+// this registry), which throws rather than silently colliding.
+template <typename Value>
 class DensePalette final {
   public:
+    DensePalette(Value empty, std::size_t domain)
+        : entries_{empty}, indices_(domain, kAbsent) {
+        indices_[slotOf(empty)] = 0U;
+    }
+
     [[nodiscard]] std::uint16_t indexOf(Value value) {
-        const auto slot = static_cast<std::size_t>(value);
-        if (slot >= Domain) {
+        const auto slot = slotOf(value);
+        if (slot >= indices_.size()) {
             throw std::runtime_error("Save references a value outside the palette domain");
         }
         auto& index = indices_[slot];
@@ -185,15 +196,20 @@ class DensePalette final {
     [[nodiscard]] std::span<const Value> entries() const { return entries_; }
 
   private:
+    // The reverse-index slot a value occupies. A dense id (BlockId) answers with
+    // its `index()`; a plain enum or integer casts straight to size_t.
+    [[nodiscard]] static std::size_t slotOf(Value value) {
+        if constexpr (requires { value.index(); }) {
+            return value.index();
+        } else {
+            return static_cast<std::size_t>(value);
+        }
+    }
+
     static constexpr std::uint16_t kAbsent = 0xFFFFU;
-    std::vector<Value> entries_{Empty};
+    std::vector<Value> entries_;
     // Index 0 is reserved for Empty, so "absent" cannot be spelled as 0.
-    std::array<std::uint16_t, Domain> indices_ = [] {
-        std::array<std::uint16_t, Domain> slots{};
-        slots.fill(kAbsent);
-        slots[static_cast<std::size_t>(Empty)] = 0U;
-        return slots;
-    }();
+    std::vector<std::uint16_t> indices_;
 };
 
 template <typename Value, Value Empty>

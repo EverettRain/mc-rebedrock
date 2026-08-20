@@ -64,6 +64,10 @@
   `Bootstrap → External → Freeze` 生命周期的通用 `Registry<Def, Id>`——内置 id 稳定、外部
   （mod/数据包）内容随后注册、错相位/重名/非法 id 访问一律 abort。方块表被灌入一个冻结的
   注册表并与现有 `Block` 枚举并行，暂无行为变化，为后续淘汰 256 顶枚举及其 switch 铺路。
+- 方块身份相关的表改按 `BlockId` 索引、按方块注册表定容，不再受 256 顶 `Block` 枚举限制，内容可
+  突破旧上限：interned 状态元数据以 `BlockId` 记录每个状态的方块、方块 tag 表与存档块调色板按
+  `blockCount()` 定容（调色板彻底去掉编译期 256 顶）、创造栏目录降为身份来自注册表的 view。`Block`
+  枚举保留为同一 id 之上的过渡 handle，故无行为变化、存档格式不变。淘汰剩余 `switch(block)` 留待后续。
 
 ### 变更
 

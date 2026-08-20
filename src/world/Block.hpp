@@ -1,9 +1,11 @@
 #pragma once
 
+#include "core/ContentId.hpp"
 #include "core/Identifier.hpp"
 #include "world/StateSchema.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string_view>
@@ -15,6 +17,20 @@ using core::Identifier;
 using core::kNamespace;
 using core::kVanillaNamespace;
 
+// The runtime block identity: a dense uint16 the block registry hands out (see
+// BlockRegistry.hpp). Every table that used to be sized to `Block::Count` and
+// indexed by the enum ordinal now indexes by this instead, so content can grow
+// past the 256 the u8 enum topped out at.
+using core::BlockId;
+
+// The `Block` enum is, as of R0-2, a *transitional handle* over the registry's
+// BlockId rather than the identity source: a built-in block's enum ordinal is
+// exactly its BlockId (BlockRegistry asserts the equality), so `blockId()` and
+// `blockFromId()` below convert with no lookup. New code should prefer BlockId;
+// the enum stays because 589-odd call sites still name blocks as `Block::Stone`
+// and the six `switch(block)` chains are R1's to retire, not R0's. Until then
+// both spell the same identity, and this file keeps answering block questions by
+// enum for source compatibility.
 enum class Block : std::uint8_t {
     Air,
     Grass,
@@ -125,6 +141,25 @@ enum class Block : std::uint8_t {
     SmoothStoneSlab,
     Count,
 };
+
+// The number of built-in blocks — the size every compile-time built-in table
+// (random tick, state metadata) is cut to. It equals `blockRegistry().size()`
+// for a build with no external content; once the External phase can add blocks
+// (R0-5), the runtime tables (block tags, the save palette) size to the registry
+// instead so they grow past this, while the constexpr built-in tables stay this
+// wide because only built-in blocks have compile-time behaviour to bake.
+inline constexpr std::size_t kBuiltinBlockCount = static_cast<std::size_t>(Block::Count);
+
+// The bridge between the enum handle and the runtime identity. A built-in
+// block's BlockId is its enum ordinal (BlockRegistry.hpp asserts this on load),
+// so both directions are a cast, not a registry lookup — cheap enough to sit on
+// any path the enum used to.
+[[nodiscard]] constexpr BlockId blockId(Block block) {
+    return BlockId::of(static_cast<BlockId::Value>(block));
+}
+[[nodiscard]] constexpr Block blockFromId(BlockId id) {
+    return static_cast<Block>(id.value());
+}
 
 // The direction of a block's authored "front" (furnaces/chests), or the
 // direction of the end grain for pillar blocks such as logs.

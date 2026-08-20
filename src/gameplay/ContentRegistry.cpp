@@ -1,5 +1,7 @@
 #include "gameplay/ContentRegistry.hpp"
 
+#include "world/BlockRegistry.hpp"
+
 #include <array>
 
 namespace mc::gameplay {
@@ -7,7 +9,10 @@ namespace mc::gameplay {
 bool ContentRegistry::registerBlock(world::Block blockValue, CreativeCategory category) {
     if (!world::isValidBlock(blockValue) || blockValue == world::Block::Air ||
         category == CreativeCategory::Count) return false;
-    const auto definition = world::blockDefinition(blockValue);
+    // Identity comes from the block registry, not a parallel copy: this catalog is
+    // a creative-tab *view* over the registry, so the definition it stores is the
+    // one the registry froze for this block's BlockId.
+    const auto& definition = world::blockRegistry().get(world::blockId(blockValue));
     // The registry key is the namespaced identifier, "rebedrock:stone".
     auto identifier = definition.identifier.toString();
     if (blockIdentifiers_.contains(identifier)) return false;
@@ -39,10 +44,11 @@ const RegisteredBlock* ContentRegistry::block(std::string_view identifier) const
     auto found = blockIdentifiers_.find(std::string{identifier});
     if (found == blockIdentifiers_.end()) {
         // Vanilla aliases and bare names resolve through the block registry, so
-        // "minecraft:chest" and "chest" both find `rebedrock:chest`.
-        const auto resolved = world::blockFromIdentifier(identifier);
-        if (!resolved.has_value()) return nullptr;
-        found = blockIdentifiers_.find(world::blockDefinition(*resolved).identifier.toString());
+        // "minecraft:chest" and "chest" both find `rebedrock:chest`. The registry
+        // is the identity source; this catalog keys on the canonical name it froze.
+        const auto id = world::blockRegistry().byName(identifier);
+        if (!id.valid()) return nullptr;
+        found = blockIdentifiers_.find(world::blockRegistry().identifier(id).toString());
         if (found == blockIdentifiers_.end()) return nullptr;
     }
     return &blocks_[found->second];

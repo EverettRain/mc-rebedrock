@@ -46,7 +46,11 @@ namespace mc::world {
     return definition.states.stateCount();
 }
 
-inline constexpr std::size_t kBlockKindCount = static_cast<std::size_t>(Block::Count);
+// One id range per built-in block, keyed by BlockId (== the enum ordinal for a
+// built-in). The mixed-radix state arithmetic below is derived straight from the
+// BlockId's declared StateSchema, so numbering a block's states never consults
+// the enum — only the id and its schema.
+inline constexpr std::size_t kBlockKindCount = kBuiltinBlockCount;
 
 // The first id of each block's range, plus a trailing total.
 [[nodiscard]] constexpr std::array<std::uint16_t, kBlockKindCount + 1U> buildStateRangeStarts() {
@@ -80,7 +84,11 @@ static_assert(kBlockStateCount <= 65536U,
 // every state of a block that does not declare it — which is why every
 // property's zero has to be its sensible default (north, age 0, unlit, dry).
 struct BlockStateMetadataTable final {
-    std::array<Block, kBlockStateCount> blocks{};
+    // The identity of each interned state, held as a BlockId (uint16) rather than
+    // the u8 enum so a state's block can range past 256 once external content
+    // exists. `blockIdOfState` reads it directly; `blockOfState` narrows it back
+    // to the enum handle for the callers that still speak `Block`.
+    std::array<BlockId, kBlockStateCount> blocks{};
     std::array<std::array<std::uint8_t, kBlockStateCount>, kStatePropertyCount> values{};
     std::array<std::uint8_t, kBlockStateCount> emittedLights{};
 };
@@ -94,7 +102,7 @@ struct BlockStateMetadataTable final {
              id < kBlockStateRangeStarts[kind + 1U]; ++id) {
             const auto offset =
                 static_cast<std::uint16_t>(id - kBlockStateRangeStarts[kind]);
-            result.blocks[id] = static_cast<Block>(kind);
+            result.blocks[id] = BlockId::of(static_cast<BlockId::Value>(kind));
             for (std::size_t axisIndex = 0; axisIndex < schema.size(); ++axisIndex) {
                 const auto axis = schema.axis(axisIndex);
                 const auto digit = static_cast<std::uint8_t>(
@@ -122,6 +130,14 @@ inline constexpr auto kBlockStateMetadata = buildBlockStateMetadata();
     return kBlockStateRangeStarts[kind];
 }
 
+// The BlockId-keyed form of the above, for identity-first callers. An id past
+// the built-in table (a future external block with no baked state range) falls
+// back to block 0's default, the same way an out-of-enum Block does.
+[[nodiscard]] constexpr std::uint16_t defaultBlockStateId(BlockId id) {
+    const auto kind = id.index() < kBlockKindCount ? id.index() : 0U;
+    return kBlockStateRangeStarts[kind];
+}
+
 // One property's value, straight out of the cache.
 [[nodiscard]] constexpr std::uint8_t stateValueOf(std::uint16_t id, StateProperty property) {
     return kBlockStateMetadata
@@ -138,7 +154,7 @@ inline constexpr auto kBlockStateMetadata = buildBlockStateMetadata();
 [[nodiscard]] constexpr std::uint16_t withStateValue(std::uint16_t id, StateProperty property,
                                                      std::uint8_t value) {
     const auto validId = validatedBlockStateId(id);
-    const auto kind = static_cast<std::size_t>(kBlockStateMetadata.blocks[validId]);
+    const auto kind = kBlockStateMetadata.blocks[validId].index();
     const auto& schema = kBlockRegistry[kind].states;
     const auto stride = schema.strideOf(property);
     if (stride == 0U) {
@@ -150,8 +166,13 @@ inline constexpr auto kBlockStateMetadata = buildBlockStateMetadata();
     return static_cast<std::uint16_t>(validId + (next - current) * stride);
 }
 
-[[nodiscard]] constexpr Block blockOfState(std::uint16_t id) {
+// The block identity of an interned state, as the runtime BlockId.
+[[nodiscard]] constexpr BlockId blockIdOfState(std::uint16_t id) {
     return kBlockStateMetadata.blocks[validatedBlockStateId(id)];
+}
+
+[[nodiscard]] constexpr Block blockOfState(std::uint16_t id) {
+    return blockFromId(blockIdOfState(id));
 }
 
 [[nodiscard]] constexpr BlockOrientation orientationOfState(std::uint16_t id) {

@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <vector>
 
 namespace mc::gameplay {
 
@@ -59,7 +60,10 @@ class BlockTagTable final {
     void load(const assets::ResourceProvider& resources);
 
     [[nodiscard]] bool has(world::Block block, BlockTag tag) const {
-        const auto index = static_cast<std::size_t>(block);
+        return has(world::blockId(block), tag);
+    }
+    [[nodiscard]] bool has(world::BlockId block, BlockTag tag) const {
+        const auto index = block.index();
         return index < masks_.size() && (masks_[index] & bit(tag)) != 0U;
     }
 
@@ -77,6 +81,7 @@ class BlockTagTable final {
 
     // For tests, and for building a table by hand.
     void set(world::Block block, BlockTag tag);
+    void set(world::BlockId block, BlockTag tag);
     void clear(BlockTag tag);
 
   private:
@@ -84,7 +89,10 @@ class BlockTagTable final {
         return std::uint64_t{1} << static_cast<std::uint64_t>(tag);
     }
 
-    std::array<std::uint64_t, static_cast<std::size_t>(world::Block::Count)> masks_{};
+    // One membership mask per BlockId, sized to the block registry rather than
+    // the enum's 256 ceiling so external content (R0-5) gets tag slots too.
+    // Indexed by BlockId::index(); an id past the vector reads as untagged.
+    std::vector<std::uint64_t> masks_;
     std::uint64_t dataDrivenTags_ = 0U;
 };
 
