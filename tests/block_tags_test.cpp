@@ -175,6 +175,37 @@ int main() {
         REQUIRE(tags.has(Block::OakLeaves, BlockTag::Leaves));
     }
 
+    // --- The per-id tag bitset scales past 64 tags (R0-5). ---
+    // The membership store is a multi-word bitset, so a tag id in the second or
+    // later word is set and tested independently of the first — the property that
+    // lets the tag vocabulary grow past the old single-uint64_t ceiling.
+    {
+        mc::gameplay::TagBitset<100> bits;
+        REQUIRE(!bits.test(0));
+        REQUIRE(!bits.test(64));
+        REQUIRE(!bits.test(99));
+        bits.set(0);    // first word, low bit
+        bits.set(63);   // first word, high bit
+        bits.set(64);   // second word, low bit — the one a single word cannot hold
+        bits.set(99);   // second word
+        REQUIRE(bits.test(0));
+        REQUIRE(bits.test(63));
+        REQUIRE(bits.test(64));
+        REQUIRE(bits.test(99));
+        // Setting the 65th tag did not bleed into the first word's bits, and
+        // clearing one word's bit leaves the others alone.
+        REQUIRE(!bits.test(1));
+        REQUIRE(!bits.test(65));
+        bits.reset(64);
+        REQUIRE(!bits.test(64));
+        REQUIRE(bits.test(63));
+        REQUIRE(bits.test(99));
+        // An index past the width is simply not a member, never an out-of-bounds
+        // read.
+        REQUIRE(!bits.test(100));
+        REQUIRE(!bits.test(1000));
+    }
+
     fs::remove_all(root);
     return 0;
 }

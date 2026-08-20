@@ -2433,6 +2433,12 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_registry_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME registry COMMAND mc_rebedrock_registry_test)
 
+    add_executable(mc_rebedrock_block_registry_lifecycle_test
+        tests/block_registry_lifecycle_test.cpp
+    )
+    target_include_directories(mc_rebedrock_block_registry_lifecycle_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME block_registry_lifecycle COMMAND mc_rebedrock_block_registry_lifecycle_test)
+
     add_executable(mc_rebedrock_block_deenum_test
         tests/block_deenum_test.cpp
         src/gameplay/BlockTags.cpp

@@ -172,23 +172,22 @@ void BlockTagTable::set(world::BlockId block, BlockTag tag) {
     // block that registered after load) must be able to tag any id the registry
     // hands out, not only the ones present when the table was last sized.
     if (index >= masks_.size()) {
-        masks_.resize(index + 1U, 0U);
+        masks_.resize(index + 1U);
     }
-    masks_[index] |= bit(tag);
+    masks_[index].set(static_cast<std::size_t>(tag));
 }
 
 void BlockTagTable::clear(BlockTag tag) {
-    const std::uint64_t keep = ~bit(tag);
     for (auto& mask : masks_) {
-        mask &= keep;
+        mask.reset(static_cast<std::size_t>(tag));
     }
 }
 
 void BlockTagTable::loadBuiltinDefaults() {
     // Sized to the registry, so every registered BlockId has a slot before any
     // tag is applied (built-in content today, external content once R0-5 opens).
-    masks_.assign(world::blockCount(), 0U);
-    dataDrivenTags_ = 0U;
+    masks_.assign(world::blockCount(), BlockTagMask{});
+    dataDrivenTags_ = BlockTagMask{};
     const auto apply = [this](BlockTag tag, auto&& identifiers) {
         for (const auto identifier : identifiers) {
             if (const auto block = world::blockFromIdentifier(identifier); block.has_value()) {
@@ -225,7 +224,7 @@ void BlockTagTable::load(const assets::ResourceProvider& resources) {
         // it, so a data pack that removes a block from `mineable/pickaxe`
         // actually removes it.
         clear(tag);
-        dataDrivenTags_ |= bit(tag);
+        dataDrivenTags_.set(static_cast<std::size_t>(tag));
         for (const auto block : blocks) {
             set(block, tag);
         }

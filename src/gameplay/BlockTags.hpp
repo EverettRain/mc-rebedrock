@@ -41,7 +41,43 @@ enum class BlockTag : std::uint8_t {
 };
 
 inline constexpr std::size_t kBlockTagCount = static_cast<std::size_t>(BlockTag::Count);
-static_assert(kBlockTagCount <= 64U, "BlockTag membership is stored as one uint64_t per block");
+
+// A fixed-width bit set over the tag ids — one bit per BlockTag, per block. Kept
+// as an array of 64-bit words rather than a single uint64_t so the tag
+// vocabulary can grow past 64 without changing the storage's shape or the O(1)
+// membership test: `test` is still one indexed load and one bit-and, it just
+// picks the word first. This is R0-5's generalisation — Java scans a HolderSet,
+// this stays a per-id mask. `Bits` is the tag count; the word count rounds up,
+// so today's nine tags are one word and a build that adds a 65th spills into a
+// second with no other change.
+template <std::size_t Bits>
+class TagBitset final {
+  public:
+    [[nodiscard]] constexpr bool test(std::size_t bit) const {
+        return bit < Bits && (words_[bit / 64U] & mask(bit)) != 0U;
+    }
+    constexpr void set(std::size_t bit) {
+        if (bit < Bits) {
+            words_[bit / 64U] |= mask(bit);
+        }
+    }
+    constexpr void reset(std::size_t bit) {
+        if (bit < Bits) {
+            words_[bit / 64U] &= ~mask(bit);
+        }
+    }
+    [[nodiscard]] constexpr bool operator==(const TagBitset&) const = default;
+
+  private:
+    static constexpr std::size_t kWords = (Bits + 63U) / 64U;
+    [[nodiscard]] static constexpr std::uint64_t mask(std::size_t bit) {
+        return std::uint64_t{1} << (bit % 64U);
+    }
+    std::array<std::uint64_t, kWords> words_{};
+};
+
+// One block's whole tag membership.
+using BlockTagMask = TagBitset<kBlockTagCount>;
 
 // The pack-relative data path each tag loads from, indexed by BlockTag.
 [[nodiscard]] std::string_view blockTagPath(BlockTag tag);
@@ -64,7 +100,7 @@ class BlockTagTable final {
     }
     [[nodiscard]] bool has(world::BlockId block, BlockTag tag) const {
         const auto index = block.index();
-        return index < masks_.size() && (masks_[index] & bit(tag)) != 0U;
+        return index < masks_.size() && masks_[index].test(static_cast<std::size_t>(tag));
     }
 
     // Fills the table with 26.1's own tag contents, compiled in. This is the
@@ -76,7 +112,7 @@ class BlockTagTable final {
     // the built-in defaults. Diagnostics only — behaviour never branches on it,
     // because both sources are equally authoritative once loaded.
     [[nodiscard]] bool dataDriven(BlockTag tag) const {
-        return (dataDrivenTags_ & bit(tag)) != 0U;
+        return dataDrivenTags_.test(static_cast<std::size_t>(tag));
     }
 
     // For tests, and for building a table by hand.
@@ -85,15 +121,11 @@ class BlockTagTable final {
     void clear(BlockTag tag);
 
   private:
-    [[nodiscard]] static constexpr std::uint64_t bit(BlockTag tag) {
-        return std::uint64_t{1} << static_cast<std::uint64_t>(tag);
-    }
-
     // One membership mask per BlockId, sized to the block registry rather than
     // the enum's 256 ceiling so external content (R0-5) gets tag slots too.
     // Indexed by BlockId::index(); an id past the vector reads as untagged.
-    std::vector<std::uint64_t> masks_;
-    std::uint64_t dataDrivenTags_ = 0U;
+    std::vector<BlockTagMask> masks_;
+    BlockTagMask dataDrivenTags_;
 };
 
 // The process-level table the mining rules read, alongside the block and entity
