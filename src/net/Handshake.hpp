@@ -18,6 +18,7 @@
 // slot every future connection into, rather than a socket that is assumed to be
 // a compatible peer.
 
+#include "gameplay/BlockIdRemap.hpp"
 #include "gameplay/StreamCodec.hpp"
 #include "net/Transport.hpp"
 
@@ -36,7 +37,11 @@ namespace mc::net {
 // a way an older peer cannot decode — it is the single number the handshake
 // negotiates. It is protocol, not a build number: two builds with the same wire
 // format share it.
-inline constexpr std::uint32_t kProtocolVersion = 3U;
+//
+// v4: block identity crosses the wire as a dense BlockId rather than an
+// identifier string, and the ServerHello carries the server's block-registry
+// name snapshot so the client can remap peer ids to its own by name (R0-4).
+inline constexpr std::uint32_t kProtocolVersion = 4U;
 
 // Identifies this as a rebedrock game connection, so a stray or hostile peer
 // that opens the socket but speaks something else is refused at the first frame
@@ -66,6 +71,10 @@ struct ServerHello final {
     bool accepted = false;
     std::uint32_t protocolVersion = kProtocolVersion;
     std::string reason;
+    // The server's block registry as a name list in BlockId order, so the client
+    // can build a peer-id -> local-id remap by name (R0-4). Sent only on an
+    // accepted connection; empty on a refusal, which the client closes anyway.
+    gameplay::BlockRegistrySnapshot blockRegistry;
 
     friend bool operator==(const ServerHello&, const ServerHello&) = default;
 };
@@ -102,6 +111,10 @@ struct ServerHello final {
         persistence::appendInteger(bytes, static_cast<std::uint8_t>(hello.accepted ? 1U : 0U));
         persistence::appendInteger(bytes, hello.protocolVersion);
         gameplay::codec::appendString32(bytes, hello.reason);
+        persistence::appendInteger(bytes, static_cast<std::uint32_t>(hello.blockRegistry.size()));
+        for (const auto& name : hello.blockRegistry) {
+            gameplay::codec::appendString32(bytes, name);
+        }
     });
     return bytes;
 }
@@ -118,6 +131,11 @@ struct ServerHello final {
         hello.accepted = persistence::readInteger<std::uint8_t>(bytes, cursor) != 0U;
         hello.protocolVersion = persistence::readInteger<std::uint32_t>(bytes, cursor);
         hello.reason = gameplay::codec::readString32(bytes, cursor);
+        const auto count = persistence::readInteger<std::uint32_t>(bytes, cursor);
+        hello.blockRegistry.reserve(count);
+        for (std::uint32_t index = 0; index < count; ++index) {
+            hello.blockRegistry.push_back(gameplay::codec::readString32(bytes, cursor));
+        }
         return hello;
     } catch (const std::exception&) {
         return std::nullopt;
@@ -142,6 +160,11 @@ struct HandshakeResult final {
     std::uint32_t peerProtocolVersion = 0U;
     // Human-readable cause when not Accepted.
     std::string reason;
+    // The client's peer-id -> local-id block remap, built from the server's
+    // registry snapshot on an accepted connection (R0-4). Identity on the server
+    // side and on loopback, where the two registries match. The connection's
+    // decode path carries this into receiveMessage/decodeMessage.
+    gameplay::BlockIdRemap remap;
 
     [[nodiscard]] bool ok() const { return status == HandshakeStatus::Accepted; }
 };
@@ -190,7 +213,11 @@ namespace detail {
         return HandshakeResult{HandshakeStatus::BadPeer, 0U, "server sent a malformed hello"};
     }
     if (hello->accepted) {
-        return HandshakeResult{HandshakeStatus::Accepted, hello->protocolVersion, {}};
+        HandshakeResult result{HandshakeStatus::Accepted, hello->protocolVersion, {}};
+        // Reconcile the server's block ids to ours by name; identity when the two
+        // registries match (loopback, or a peer with the same content).
+        result.remap = gameplay::BlockIdRemap{hello->blockRegistry};
+        return result;
     }
     return HandshakeResult{HandshakeStatus::Rejected, hello->protocolVersion, hello->reason};
 }
@@ -227,7 +254,10 @@ namespace detail {
         channel.sendFrame(encodeServerHello(ServerHello{false, protocolVersion, reason}));
         return HandshakeResult{HandshakeStatus::VersionMismatch, hello->protocolVersion, reason};
     }
-    channel.sendFrame(encodeServerHello(ServerHello{true, protocolVersion, {}}));
+    // An accepted client gets our block registry so it can remap our ids to its
+    // own by name; a refusal above sent none.
+    channel.sendFrame(encodeServerHello(
+        ServerHello{true, protocolVersion, {}, gameplay::localBlockRegistrySnapshot()}));
     return HandshakeResult{HandshakeStatus::Accepted, hello->protocolVersion, {}};
 }
 

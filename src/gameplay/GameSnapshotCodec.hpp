@@ -6,6 +6,7 @@
 // mirrors in one stream, with the same forward-compatibility (an unknown tag
 // is skipped by size).
 
+#include "gameplay/BlockIdRemap.hpp"
 #include "gameplay/EntityRenderSnapshot.hpp"
 #include "gameplay/PlayerTickSnapshot.hpp"
 #include "gameplay/WorldSnapshot.hpp"
@@ -39,7 +40,9 @@ using PublishedSnapshot = std::variant<PlayerTickSnapshot, WorldSnapshot>;
 // (a newer build's content) are skipped, the same forward-compatibility the
 // other codecs apply.
 [[nodiscard]] std::vector<std::uint8_t> encodeEntitySnapshot(const EntityRenderSnapshot& snapshot);
+// `remap` maps the sender's block ids to this end's for the falling blocks
+// (null / identity on loopback).
 [[nodiscard]] std::optional<EntityRenderSnapshot> decodeEntitySnapshot(
-    std::span<const std::uint8_t> bytes);
+    std::span<const std::uint8_t> bytes, const BlockIdRemap* remap = nullptr);
 
 }  // namespace mc::gameplay

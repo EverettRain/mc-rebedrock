@@ -3,6 +3,12 @@
 #include "net/TcpTransport.hpp"
 #include "net/Transport.hpp"
 
+#include "gameplay/BlockIdRemap.hpp"
+#include "gameplay/StreamCodec.hpp"
+#include "persistence/SaveStream.hpp"
+#include "world/Block.hpp"
+#include "world/BlockRegistry.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <future>
@@ -169,6 +175,94 @@ void testSilentPeerTimesOut() {
     REQUIRE(elapsed < std::chrono::seconds{5});
 }
 
+// R0-4: block identity crosses the wire as a dense BlockId, and the ServerHello
+// carries the server's block registry so the client can remap the peer's ids to
+// its own by name. An accepted hello round-trips the whole name list.
+void testServerHelloCarriesRegistrySnapshot() {
+    const auto snapshot = gameplay::localBlockRegistrySnapshot();
+    REQUIRE(snapshot.size() == world::blockRegistry().size());
+    // Entry i is the block the sender calls BlockId i.
+    REQUIRE(snapshot[static_cast<std::size_t>(world::Block::Stone)] == "rebedrock:stone");
+
+    const net::ServerHello server{true, net::kProtocolVersion, {}, snapshot};
+    const auto bytes = net::encodeServerHello(server);
+    const auto decoded = net::decodeServerHello(bytes);
+    REQUIRE(decoded.has_value());
+    REQUIRE(decoded->blockRegistry == snapshot);
+    REQUIRE(*decoded == server);
+}
+
+// On loopback both ends share one registry, so the remap the accepted client
+// builds is the identity — no per-block cost in single-player.
+void testLoopbackHandshakeBuildsIdentityRemap() {
+    auto pair = net::makeLoopbackPair();
+    auto serverSide = std::async(std::launch::async,
+                                 [&] { return net::performServerHandshake(*pair.server); });
+    const auto clientResult = net::performClientHandshake(*pair.client);
+    static_cast<void>(serverSide.get());
+
+    REQUIRE(clientResult.ok());
+    REQUIRE(clientResult.remap.isIdentity());
+    // A block's id maps straight to itself.
+    const auto stone = world::blockId(world::Block::Stone);
+    REQUIRE(clientResult.remap.toLocal(stone.value()) == stone);
+}
+
+// Two ends whose registries assign different ids to the same block still agree,
+// because the remap aligns by name, not by the raw id. The peer here has one
+// extra block ahead of ours, so every shared block sits one id higher on its
+// side; the remap has to undo exactly that shift.
+void testCrossProcessRemapAlignsByName() {
+    auto peer = gameplay::localBlockRegistrySnapshot();
+    peer.insert(peer.begin(), "servermod:extra");  // shifts every shared id by +1
+    const gameplay::BlockIdRemap remap{peer};
+
+    REQUIRE(!remap.isIdentity());
+    // A name this build does not have (the peer's extra block) maps to nothing.
+    REQUIRE(!remap.toLocal(0).valid());
+    // Every shared block maps back from its shifted peer id to our own id by name.
+    for (std::size_t ordinal = 0; ordinal < world::kBuiltinBlockCount; ++ordinal) {
+        const auto local = world::BlockId::of(static_cast<world::BlockId::Value>(ordinal));
+        REQUIRE(remap.toLocal(static_cast<std::uint16_t>(ordinal + 1U)) == local);
+    }
+}
+
+// End to end over the wire: a block the peer encodes with *its* id decodes to the
+// right local block through the remap — and to the wrong one without it, which is
+// exactly why the id must be remapped and never trusted raw across ends.
+void testWireBlockRemap() {
+    auto peer = gameplay::localBlockRegistrySnapshot();
+    peer.insert(peer.begin(), "servermod:extra");
+    const gameplay::BlockIdRemap remap{peer};
+
+    const auto localStone = world::blockId(world::Block::Stone);
+    // The peer's id for stone is one higher than ours.
+    std::vector<std::uint8_t> bytes;
+    persistence::appendInteger(bytes, static_cast<std::uint16_t>(localStone.value() + 1U));
+
+    std::size_t cursor = 0;
+    const auto viaRemap = gameplay::codec::readBlock(bytes, cursor, &remap);
+    REQUIRE(viaRemap.has_value());
+    REQUIRE(*viaRemap == world::Block::Stone);
+
+    // The same bytes, read as a raw id with no remap, land on a different block —
+    // the corruption the remap exists to prevent.
+    cursor = 0;
+    const auto viaRaw = gameplay::codec::readBlock(bytes, cursor, nullptr);
+    REQUIRE(!viaRaw.has_value() || *viaRaw != world::Block::Stone);
+
+    // A block-state round-trips through the wire with an identity remap (loopback),
+    // proving the id form carries the properties intact.
+    std::vector<std::uint8_t> stateBytes;
+    const world::BlockState furnace =
+        world::BlockState{world::Block::Furnace, world::BlockOrientation::West}.withLit(true);
+    gameplay::codec::appendBlockState(stateBytes, furnace);
+    std::size_t stateCursor = 0;
+    const auto state = gameplay::codec::readBlockState(stateBytes, stateCursor, nullptr);
+    REQUIRE(state.has_value());
+    REQUIRE(*state == furnace);
+}
+
 }  // namespace
 
 int main() {
@@ -178,5 +272,9 @@ int main() {
     testVersionMismatchRejected();
     testBadMagicRejected();
     testSilentPeerTimesOut();
+    testServerHelloCarriesRegistrySnapshot();
+    testLoopbackHandshakeBuildsIdentityRemap();
+    testCrossProcessRemapAlignsByName();
+    testWireBlockRemap();
     return 0;
 }

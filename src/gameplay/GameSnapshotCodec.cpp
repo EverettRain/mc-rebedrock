@@ -333,7 +333,8 @@ void appendEntities(std::vector<std::uint8_t>& bytes, const EntityRenderSnapshot
 }
 
 [[nodiscard]] EntityRenderSnapshot readEntities(std::span<const std::uint8_t> bytes,
-                                                std::size_t& cursor) {
+                                                std::size_t& cursor,
+                                                const BlockIdRemap* remap) {
     std::vector<EntityRenderState> creatures;
     const auto creatureCount = persistence::readInteger<std::uint32_t>(bytes, cursor);
     creatures.reserve(creatureCount);
@@ -377,7 +378,7 @@ void appendEntities(std::vector<std::uint8_t>& bytes, const EntityRenderSnapshot
         FallingBlockEntity block;
         block.position = codec::readVec3(bytes, cursor);
         block.previousPosition = codec::readVec3(bytes, cursor);
-        const auto kind = codec::readBlock(bytes, cursor);
+        const auto kind = codec::readBlock(bytes, cursor, remap);
         if (kind.has_value()) {
             block.block = *kind;
             falling.push_back(block);
@@ -450,7 +451,8 @@ std::vector<std::uint8_t> encodeEntitySnapshot(const EntityRenderSnapshot& snaps
     return bytes;
 }
 
-std::optional<EntityRenderSnapshot> decodeEntitySnapshot(std::span<const std::uint8_t> bytes) {
+std::optional<EntityRenderSnapshot> decodeEntitySnapshot(std::span<const std::uint8_t> bytes,
+                                                         const BlockIdRemap* remap) {
     try {
         std::size_t cursor = 0;
         const auto frame = codec::readFrame(bytes, cursor);
@@ -461,7 +463,7 @@ std::optional<EntityRenderSnapshot> decodeEntitySnapshot(std::span<const std::ui
         if (tag != kEntitySnapshotTag) {
             return std::nullopt;  // unknown tag
         }
-        auto decoded = readEntities(bytes, cursor);
+        auto decoded = readEntities(bytes, cursor, remap);
         if (cursor > payloadEnd) {
             return std::nullopt;
         }

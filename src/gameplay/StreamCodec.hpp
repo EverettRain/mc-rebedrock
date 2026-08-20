@@ -9,11 +9,13 @@
 // catalogue and the save format use; an unknown identifier on read is skipped,
 // not fatal.
 
+#include "gameplay/BlockIdRemap.hpp"
 #include "gameplay/Inventory.hpp"
 #include "gameplay/Item.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "persistence/SaveStream.hpp"
 #include "world/Block.hpp"
+#include "world/BlockRegistry.hpp"
 #include "world/StateSchema.hpp"
 
 #include <glm/vec3.hpp>
@@ -107,15 +109,28 @@ inline void appendItemStack(std::vector<std::uint8_t>& bytes, const ItemStack& s
     return std::nullopt;
 }
 
-// A block by its registry identifier (the vanilla id when the block mirrors
-// vanilla content, its own otherwise), the same id `blockFromIdentifier`
-// resolves — so an unknown block on read is skipped, not fatal.
+// A block by its dense BlockId — two bytes, not a name string — the way 26.1
+// sends block ids against a shared palette. The id is the sender's own; the
+// receiver maps it back to its local BlockId through `remap` (null / identity on
+// loopback, a name-aligned table on a cross-process connection, see
+// BlockIdRemap.hpp). A peer block this build has no place for (an external id, or
+// a name the remap could not resolve) reads back as nullopt and is skipped, the
+// same forward-compatible skip the identifier form gave.
 inline void appendBlock(std::vector<std::uint8_t>& bytes, world::Block block) {
-    appendString32(bytes, world::translationIdentifier(block).toString());
+    persistence::appendInteger(bytes, world::blockId(block).value());
 }
 [[nodiscard]] inline std::optional<world::Block> readBlock(std::span<const std::uint8_t> bytes,
-                                                           std::size_t& cursor) {
-    return world::blockFromIdentifier(readString32(bytes, cursor));
+                                                           std::size_t& cursor,
+                                                           const BlockIdRemap* remap = nullptr) {
+    const auto peerId = persistence::readInteger<std::uint16_t>(bytes, cursor);
+    const world::BlockId local =
+        remap != nullptr ? remap->toLocal(peerId) : world::BlockId::of(peerId);
+    // Only built-in blocks have an enum handle and a place in this build's world;
+    // an external id (or an unresolved name) is skipped rather than forced.
+    if (!local.valid() || local.index() >= world::kBuiltinBlockCount) {
+        return std::nullopt;
+    }
+    return world::blockFromId(local);
 }
 
 // A block state as its identifier plus the properties the block declares, the
@@ -147,8 +162,9 @@ inline void appendBlockState(std::vector<std::uint8_t>& bytes, const world::Bloc
     }
 }
 [[nodiscard]] inline std::optional<world::BlockState>
-readBlockState(std::span<const std::uint8_t> bytes, std::size_t& cursor) {
-    const auto block = readBlock(bytes, cursor);
+readBlockState(std::span<const std::uint8_t> bytes, std::size_t& cursor,
+               const BlockIdRemap* remap = nullptr) {
+    const auto block = readBlock(bytes, cursor, remap);
     if (!block.has_value()) {
         return std::nullopt;
     }

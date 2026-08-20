@@ -5,6 +5,7 @@
 // the command and snapshot codecs, so a future transport carries intents,
 // mirrors and events in one stream with one forward-compatibility rule.
 
+#include "gameplay/BlockIdRemap.hpp"
 #include "gameplay/GameEvents.hpp"
 
 #include <cstdint>
@@ -24,8 +25,10 @@ using GameEvent =
 [[nodiscard]] std::vector<std::uint8_t> encodeGameEvent(const GameEvent& event);
 
 // Decodes one event from the start of `bytes`, or nullopt when the frame is
-// truncated, holds an unknown event tag, or references an unknown block.
-[[nodiscard]] std::optional<GameEvent> decodeGameEvent(std::span<const std::uint8_t> bytes);
+// truncated, holds an unknown event tag, or references an unknown block. `remap`
+// maps the sender's block ids to this end's (null / identity on loopback).
+[[nodiscard]] std::optional<GameEvent> decodeGameEvent(std::span<const std::uint8_t> bytes,
+                                                       const BlockIdRemap* remap = nullptr);
 
 // The total bytes the event at the start of `bytes` occupies, including its
 // frame header — how a stream is split back into events. 0 when truncated.

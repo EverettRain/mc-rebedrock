@@ -32,12 +32,13 @@ void appendWorldEdit(std::vector<std::uint8_t>& bytes, const WorldEditEvent& eve
 }
 
 [[nodiscard]] std::optional<WorldEditEvent> readWorldEdit(std::span<const std::uint8_t> bytes,
-                                                          std::size_t& cursor) {
+                                                          std::size_t& cursor,
+                                                          const BlockIdRemap* remap) {
     WorldEditEvent event;
     event.x = persistence::readInteger<std::int32_t>(bytes, cursor);
     event.y = persistence::readInteger<std::int32_t>(bytes, cursor);
     event.z = persistence::readInteger<std::int32_t>(bytes, cursor);
-    const auto state = codec::readBlockState(bytes, cursor);
+    const auto state = codec::readBlockState(bytes, cursor, remap);
     if (!state.has_value()) {
         return std::nullopt;
     }
@@ -56,11 +57,12 @@ void appendSound(std::vector<std::uint8_t>& bytes, const SoundEvent& event) {
 }
 
 [[nodiscard]] std::optional<SoundEvent> readSound(std::span<const std::uint8_t> bytes,
-                                                  std::size_t& cursor) {
+                                                  std::size_t& cursor,
+                                                  const BlockIdRemap* remap) {
     SoundEvent event;
     event.kind = static_cast<SoundEventKind>(persistence::readInteger<std::uint8_t>(bytes, cursor));
     event.position = codec::readVec3(bytes, cursor);
-    const auto block = codec::readBlock(bytes, cursor);
+    const auto block = codec::readBlock(bytes, cursor, remap);
     if (!block.has_value()) {
         return std::nullopt;
     }
@@ -78,12 +80,13 @@ void appendParticle(std::vector<std::uint8_t>& bytes, const ParticleEvent& event
 }
 
 [[nodiscard]] std::optional<ParticleEvent> readParticle(std::span<const std::uint8_t> bytes,
-                                                        std::size_t& cursor) {
+                                                        std::size_t& cursor,
+                                                        const BlockIdRemap* remap) {
     ParticleEvent event;
     event.kind =
         static_cast<ParticleEventKind>(persistence::readInteger<std::uint8_t>(bytes, cursor));
     event.position = codec::readVec3(bytes, cursor);
-    const auto block = codec::readBlock(bytes, cursor);
+    const auto block = codec::readBlock(bytes, cursor, remap);
     if (!block.has_value()) {
         return std::nullopt;
     }
@@ -148,7 +151,8 @@ std::size_t encodedGameEventSize(std::span<const std::uint8_t> bytes) {
     return cursor + size;
 }
 
-std::optional<GameEvent> decodeGameEvent(std::span<const std::uint8_t> bytes) {
+std::optional<GameEvent> decodeGameEvent(std::span<const std::uint8_t> bytes,
+                                         const BlockIdRemap* remap) {
     try {
         std::size_t cursor = 0;
         const auto frame = codec::readFrame(bytes, cursor);
@@ -158,11 +162,11 @@ std::optional<GameEvent> decodeGameEvent(std::span<const std::uint8_t> bytes) {
         const auto [tag, payloadEnd] = *frame;
         std::optional<GameEvent> decoded;
         if (tag == kWorldEditTag) {
-            decoded = readWorldEdit(bytes, cursor);
+            decoded = readWorldEdit(bytes, cursor, remap);
         } else if (tag == kSoundTag) {
-            decoded = readSound(bytes, cursor);
+            decoded = readSound(bytes, cursor, remap);
         } else if (tag == kParticleTag) {
-            decoded = readParticle(bytes, cursor);
+            decoded = readParticle(bytes, cursor, remap);
         } else if (tag == kPlayerDiedTag) {
             decoded = PlayerDiedEvent{};
         } else if (tag == kClientActionTag) {

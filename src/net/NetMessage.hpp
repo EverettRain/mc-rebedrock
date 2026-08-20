@@ -105,7 +105,8 @@ inline constexpr std::uint8_t kSessionTagEnd = static_cast<std::uint8_t>(
 // tag is unknown (a newer build's message), or its payload references content
 // this build does not have — the same forward-compatibility every codec already
 // applies.
-[[nodiscard]] inline std::optional<NetMessage> decodeMessage(std::span<const std::uint8_t> bytes) {
+[[nodiscard]] inline std::optional<NetMessage> decodeMessage(
+    std::span<const std::uint8_t> bytes, const gameplay::BlockIdRemap* remap = nullptr) {
     if (bytes.size() < gameplay::codec::kFrameHeaderBytes) {
         return std::nullopt;
     }
@@ -123,13 +124,13 @@ inline constexpr std::uint8_t kSessionTagEnd = static_cast<std::uint8_t>(
         return std::nullopt;
     }
     if (tag < kEventTagEnd) {
-        if (auto event = gameplay::decodeGameEvent(bytes); event.has_value()) {
+        if (auto event = gameplay::decodeGameEvent(bytes, remap); event.has_value()) {
             return NetMessage{std::move(*event)};
         }
         return std::nullopt;
     }
     if (tag < kEntityTagEnd) {
-        if (auto entities = gameplay::decodeEntitySnapshot(bytes); entities.has_value()) {
+        if (auto entities = gameplay::decodeEntitySnapshot(bytes, remap); entities.has_value()) {
             return NetMessage{std::move(*entities)};
         }
         return std::nullopt;

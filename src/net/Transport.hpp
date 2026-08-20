@@ -56,12 +56,13 @@ inline void sendMessage(MessageChannel& channel, const NetMessage& message) {
 }
 
 [[nodiscard]] inline bool receiveMessage(MessageChannel& channel,
-                                         std::optional<NetMessage>& outMessage) {
+                                         std::optional<NetMessage>& outMessage,
+                                         const gameplay::BlockIdRemap* remap = nullptr) {
     std::vector<std::uint8_t> frame;
     if (!channel.receiveFrame(frame)) {
         return false;
     }
-    outMessage = decodeMessage(frame);
+    outMessage = decodeMessage(frame, remap);
     return true;
 }
 
