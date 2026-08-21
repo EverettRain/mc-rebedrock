@@ -1,5 +1,7 @@
 #include "gameplay/CraftingSystem.hpp"
 
+#include "gameplay/RecipeTable.hpp"
+
 #include <algorithm>
 #include <array>
 #include <ranges>
@@ -25,18 +27,6 @@ namespace {
         blockIs(stack, AcaciaPlanks) || blockIs(stack, DarkOakPlanks);
 }
 
-[[nodiscard]] constexpr RecipeIngredient block(world::Block value) {
-    return {IngredientKind::Block, value, nullptr};
-}
-
-[[nodiscard]] constexpr RecipeIngredient item(const Item& value) {
-    return {IngredientKind::Item, world::Block::Air, &value};
-}
-
-[[nodiscard]] constexpr RecipeIngredient planks() {
-    return {IngredientKind::AnyPlanks, world::Block::Air, nullptr};
-}
-
 [[nodiscard]] bool ingredientMatches(
     const RecipeIngredient& ingredient,
     const ItemStack& stack) {
@@ -53,192 +43,6 @@ namespace {
     return false;
 }
 
-[[nodiscard]] const std::vector<CraftingRecipe>& craftingRecipeStorage() {
-    static const std::vector<CraftingRecipe> recipes{
-        {"minecraft:oak_planks", 1, 1, false, false,
-         {block(world::Block::OakLog)}, {world::Block::OakPlanks, 4U, blockItemFor(world::Block::OakPlanks)}},
-        {"minecraft:spruce_planks", 1, 1, false, false,
-         {block(world::Block::SpruceLog)}, {world::Block::SprucePlanks, 4U, blockItemFor(world::Block::SprucePlanks)}},
-        {"minecraft:birch_planks", 1, 1, false, false,
-         {block(world::Block::BirchLog)}, {world::Block::BirchPlanks, 4U, blockItemFor(world::Block::BirchPlanks)}},
-        {"minecraft:sticks", 1, 2, false, false,
-         {planks(), planks()}, {world::Block::Air, 4U, &items::Stick}},
-        // Three wheat in a row is bread, the 1.16.1 bread.json pattern "###".
-        {"minecraft:bread", 3, 1, false, false,
-         {item(items::Wheat), item(items::Wheat), item(items::Wheat)},
-         {world::Block::Air, 1U, &items::Bread}},
-        {"minecraft:crafting_table", 2, 2, false, false,
-         {planks(), planks(), planks(), planks()}, {world::Block::CraftingTable, 1U, blockItemFor(world::Block::CraftingTable)}},
-        {"minecraft:chest", 3, 3, false, false,
-         {planks(), planks(), planks(), planks(), {}, planks(),
-          planks(), planks(), planks()},
-         {world::Block::Chest, 1U, blockItemFor(world::Block::Chest)}},
-        {"minecraft:torch", 1, 2, false, false,
-         {item(items::Coal), item(items::Stick)}, {world::Block::Torch, 4U, blockItemFor(world::Block::Torch)}},
-        {"minecraft:sandstone", 2, 2, false, false,
-         {block(world::Block::Sand), block(world::Block::Sand),
-          block(world::Block::Sand), block(world::Block::Sand)},
-         {world::Block::Sandstone, 1U, blockItemFor(world::Block::Sandstone)}},
-        {"minecraft:coarse_dirt", 2, 2, true, false,
-         {block(world::Block::Dirt), block(world::Block::Dirt),
-          block(world::Block::Gravel), block(world::Block::Gravel)},
-         {world::Block::CoarseDirt, 4U, blockItemFor(world::Block::CoarseDirt)}},
-        {"minecraft:stone_bricks", 2, 2, false, false,
-         {block(world::Block::Stone), block(world::Block::Stone),
-          block(world::Block::Stone), block(world::Block::Stone)},
-         {world::Block::StoneBricks, 4U, blockItemFor(world::Block::StoneBricks)}},
-        // The polished stone variants: a 2x2 block of the parent stone, four of
-        // the polished product — vanilla's ["SS","SS"] shaped recipe.
-        {"minecraft:polished_granite", 2, 2, false, false,
-         {block(world::Block::Granite), block(world::Block::Granite),
-          block(world::Block::Granite), block(world::Block::Granite)},
-         {world::Block::PolishedGranite, 4U, blockItemFor(world::Block::PolishedGranite)}},
-        {"minecraft:polished_diorite", 2, 2, false, false,
-         {block(world::Block::Diorite), block(world::Block::Diorite),
-          block(world::Block::Diorite), block(world::Block::Diorite)},
-         {world::Block::PolishedDiorite, 4U, blockItemFor(world::Block::PolishedDiorite)}},
-        {"minecraft:polished_andesite", 2, 2, false, false,
-         {block(world::Block::Andesite), block(world::Block::Andesite),
-          block(world::Block::Andesite), block(world::Block::Andesite)},
-         {world::Block::PolishedAndesite, 4U, blockItemFor(world::Block::PolishedAndesite)}},
-        {"minecraft:furnace", 3, 3, false, false,
-         {block(world::Block::Cobblestone), block(world::Block::Cobblestone),
-          block(world::Block::Cobblestone), block(world::Block::Cobblestone), {},
-          block(world::Block::Cobblestone), block(world::Block::Cobblestone),
-          block(world::Block::Cobblestone), block(world::Block::Cobblestone)},
-         {world::Block::Furnace, 1U, blockItemFor(world::Block::Furnace)}},
-        {"minecraft:wooden_pickaxe", 3, 3, false, false,
-         {planks(), planks(), planks(), {}, item(items::Stick), {}, {},
-          item(items::Stick), {}},
-         {world::Block::Air, 1U, &items::WoodenPickaxe}},
-        {"minecraft:stone_pickaxe", 3, 3, false, false,
-         {block(world::Block::Cobblestone), block(world::Block::Cobblestone),
-          block(world::Block::Cobblestone), {}, item(items::Stick), {}, {},
-          item(items::Stick), {}},
-         {world::Block::Air, 1U, &items::StonePickaxe}},
-        {"minecraft:iron_pickaxe", 3, 3, false, false,
-         {item(items::IronIngot), item(items::IronIngot),
-          item(items::IronIngot), {}, item(items::Stick), {}, {},
-          item(items::Stick), {}},
-         {world::Block::Air, 1U, &items::IronPickaxe}},
-        {"minecraft:diamond_pickaxe", 3, 3, false, false,
-         {item(items::Diamond), item(items::Diamond), item(items::Diamond),
-          {}, item(items::Stick), {}, {}, item(items::Stick), {}},
-         {world::Block::Air, 1U, &items::DiamondPickaxe}},
-        {"minecraft:golden_pickaxe", 3, 3, false, false,
-         {item(items::GoldIngot), item(items::GoldIngot),
-          item(items::GoldIngot), {}, item(items::Stick), {}, {},
-          item(items::Stick), {}},
-         {world::Block::Air, 1U, &items::GoldPickaxe}},
-        {"minecraft:jungle_planks", 1, 1, false, false,
-         {block(world::Block::JungleLog)}, {world::Block::JunglePlanks, 4U, blockItemFor(world::Block::JunglePlanks)}},
-        {"minecraft:acacia_planks", 1, 1, false, false,
-         {block(world::Block::AcaciaLog)}, {world::Block::AcaciaPlanks, 4U, blockItemFor(world::Block::AcaciaPlanks)}},
-        {"minecraft:dark_oak_planks", 1, 1, false, false,
-         {block(world::Block::DarkOakLog)}, {world::Block::DarkOakPlanks, 4U, blockItemFor(world::Block::DarkOakPlanks)}},
-        {"minecraft:wooden_axe", 2, 3, false, true,
-         {planks(), planks(), planks(), item(items::Stick), {},
-          item(items::Stick)},
-         {world::Block::Air, 1U, &items::WoodenAxe}},
-        {"minecraft:stone_axe", 2, 3, false, true,
-         {block(world::Block::Cobblestone), block(world::Block::Cobblestone),
-          block(world::Block::Cobblestone), item(items::Stick), {},
-          item(items::Stick)},
-         {world::Block::Air, 1U, &items::StoneAxe}},
-        {"minecraft:iron_axe", 2, 3, false, true,
-         {item(items::IronIngot), item(items::IronIngot),
-          item(items::IronIngot), item(items::Stick), {},
-          item(items::Stick)},
-         {world::Block::Air, 1U, &items::IronAxe}},
-        {"minecraft:golden_axe", 2, 3, false, true,
-         {item(items::GoldIngot), item(items::GoldIngot),
-          item(items::GoldIngot), item(items::Stick), {},
-          item(items::Stick)},
-         {world::Block::Air, 1U, &items::GoldAxe}},
-        {"minecraft:diamond_axe", 2, 3, false, true,
-         {item(items::Diamond), item(items::Diamond),
-          item(items::Diamond), item(items::Stick), {},
-          item(items::Stick)},
-         {world::Block::Air, 1U, &items::DiamondAxe}},
-        {"minecraft:wooden_shovel", 1, 3, false, false,
-         {planks(), item(items::Stick), item(items::Stick)},
-         {world::Block::Air, 1U, &items::WoodenShovel}},
-        {"minecraft:stone_shovel", 1, 3, false, false,
-         {block(world::Block::Cobblestone), item(items::Stick),
-          item(items::Stick)},
-         {world::Block::Air, 1U, &items::StoneShovel}},
-        {"minecraft:iron_shovel", 1, 3, false, false,
-         {item(items::IronIngot), item(items::Stick), item(items::Stick)},
-         {world::Block::Air, 1U, &items::IronShovel}},
-        {"minecraft:golden_shovel", 1, 3, false, false,
-         {item(items::GoldIngot), item(items::Stick), item(items::Stick)},
-         {world::Block::Air, 1U, &items::GoldShovel}},
-        {"minecraft:diamond_shovel", 1, 3, false, false,
-         {item(items::Diamond), item(items::Stick), item(items::Stick)},
-         {world::Block::Air, 1U, &items::DiamondShovel}},
-        {"minecraft:wooden_hoe", 2, 2, false, false,
-         {planks(), planks(), item(items::Stick), item(items::Stick)},
-         {world::Block::Air, 1U, &items::WoodenHoe}},
-        {"minecraft:stone_hoe", 2, 2, false, false,
-         {block(world::Block::Cobblestone), block(world::Block::Cobblestone),
-          item(items::Stick), item(items::Stick)},
-         {world::Block::Air, 1U, &items::StoneHoe}},
-        {"minecraft:iron_hoe", 2, 2, false, false,
-         {item(items::IronIngot), item(items::IronIngot),
-          item(items::Stick), item(items::Stick)},
-         {world::Block::Air, 1U, &items::IronHoe}},
-        {"minecraft:golden_hoe", 2, 2, false, false,
-         {item(items::GoldIngot), item(items::GoldIngot),
-          item(items::Stick), item(items::Stick)},
-         {world::Block::Air, 1U, &items::GoldHoe}},
-        {"minecraft:diamond_hoe", 2, 2, false, false,
-         {item(items::Diamond), item(items::Diamond),
-          item(items::Stick), item(items::Stick)},
-         {world::Block::Air, 1U, &items::DiamondHoe}},
-        {"minecraft:wooden_sword", 1, 3, false, false,
-         {planks(), planks(), item(items::Stick)},
-         {world::Block::Air, 1U, &items::WoodenSword}},
-        {"minecraft:stone_sword", 1, 3, false, false,
-         {block(world::Block::Cobblestone), block(world::Block::Cobblestone),
-          item(items::Stick)},
-         {world::Block::Air, 1U, &items::StoneSword}},
-        {"minecraft:iron_sword", 1, 3, false, false,
-         {item(items::IronIngot), item(items::IronIngot),
-          item(items::Stick)},
-         {world::Block::Air, 1U, &items::IronSword}},
-        {"minecraft:golden_sword", 1, 3, false, false,
-         {item(items::GoldIngot), item(items::GoldIngot),
-          item(items::Stick)},
-         {world::Block::Air, 1U, &items::GoldSword}},
-        {"minecraft:diamond_sword", 1, 3, false, false,
-         {item(items::Diamond), item(items::Diamond),
-          item(items::Stick)},
-         {world::Block::Air, 1U, &items::DiamondSword}},
-    };
-    return recipes;
-}
-
-[[nodiscard]] const std::vector<FurnaceRecipe>& furnaceRecipeStorage() {
-    static const std::vector<FurnaceRecipe> recipes{
-        {"minecraft:iron_ingot_from_smelting", block(world::Block::IronOre),
-         {world::Block::Air, 1U, &items::IronIngot}, 200, 0.7F},
-        {"minecraft:gold_ingot_from_smelting", block(world::Block::GoldOre),
-         {world::Block::Air, 1U, &items::GoldIngot}, 200, 1.0F},
-        {"minecraft:stone_from_smelting", block(world::Block::Cobblestone),
-         {world::Block::Stone, 1U, blockItemFor(world::Block::Stone)}, 200, 0.1F},
-        // Smooth stone has no crafting recipe in 1.16.1; it is smelted from
-        // stone like the other smooth variants.
-        {"minecraft:smooth_stone", block(world::Block::Stone),
-         {world::Block::SmoothStone, 1U, blockItemFor(world::Block::SmoothStone)}, 200, 0.1F},
-        {"minecraft:glass_from_sand", block(world::Block::Sand),
-         {world::Block::Glass, 1U, blockItemFor(world::Block::Glass)}, 200, 0.1F},
-        {"minecraft:glass_from_red_sand", block(world::Block::RedSand),
-         {world::Block::Glass, 1U, blockItemFor(world::Block::Glass)}, 200, 0.1F},
-        {"minecraft:cooked_porkchop", item(items::Porkchop),
-         {world::Block::Air, 1U, &items::CookedPorkchop}, 200, 0.35F},
-    };
-    return recipes;
-}
 
 template <std::size_t Size>
 [[nodiscard]] bool shapedRecipeMatches(
@@ -301,7 +105,7 @@ template <std::size_t Size>
 [[nodiscard]] const CraftingRecipe* matchedCraftingRecipe(
     const std::array<ItemStack, Size>& grid) {
     const std::size_t gridWidth = Size == 4U ? 2U : 3U;
-    for (const auto& recipe : craftingRecipeStorage()) {
+    for (const auto& recipe : recipeTable().crafting()) {
         if (recipe.width > gridWidth || recipe.height > gridWidth) continue;
         if (recipe.shapeless) {
             if (shapelessRecipeMatches(recipe, grid)) return &recipe;
@@ -317,7 +121,7 @@ template <std::size_t Size>
 } // namespace
 
 const FurnaceRecipe* matchedFurnaceRecipe(const ItemStack& input) {
-    const auto& recipes = furnaceRecipeStorage();
+    const auto recipes = recipeTable().furnace();
     const auto recipe = std::ranges::find_if(recipes, [&input](const FurnaceRecipe& candidate) {
         return ingredientMatches(candidate.input, input);
     });
@@ -325,11 +129,11 @@ const FurnaceRecipe* matchedFurnaceRecipe(const ItemStack& input) {
 }
 
 std::span<const CraftingRecipe> craftingRecipes() {
-    return craftingRecipeStorage();
+    return recipeTable().crafting();
 }
 
 std::span<const FurnaceRecipe> furnaceRecipes() {
-    return furnaceRecipeStorage();
+    return recipeTable().furnace();
 }
 
 int fuelBurnTicks(const ItemStack& stack) {

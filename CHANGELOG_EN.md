@@ -9,6 +9,14 @@ simple versioned history while it is in beta.
 
 ### Changed
 
+- Crafting and smelting recipes now come from data instead of a static vector in
+  the crafting system. The built-in recipes are a baked constexpr floor resolved
+  at load, and a datapack can add or replace recipes through the data codec
+  (`data/<namespace>/recipes/*.json`, with `type: "smelting"` selecting the
+  furnace shape); a build with no `data/` still crafts on the built-in floor. The
+  matcher is unchanged and recipe results are identical — the recipe list simply
+  moved out of the evaluator into the data layer, and an overlay recipe naming an
+  item this build lacks is skipped rather than resolved wrong.
 - Block tags now read their datapack file format through the data codec: a
   single `TagFile` codec (`{replace, values}`, values as bare strings or
   `{id, required}` objects) replaces the hand-rolled JSON walking BlockTags did

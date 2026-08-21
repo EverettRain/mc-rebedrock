@@ -8,6 +8,10 @@
 
 ### 变更
 
+- 合成与熔炼配方现从数据产出，不再是合成系统里的静态 vector。内置配方是加载时解析的烘焙
+  constexpr floor，数据包可经数据 codec 增改配方（`data/<命名空间>/recipes/*.json`，`type: "smelting"`
+  选熔炉形）；完全没有 `data/` 的构建仍靠内置floor合成。求值器不变、配方结果完全一致——配方列表只是
+  从求值器搬进数据层；overlay 若引用本 build 没有的物品则整条跳过，绝不解析出错误配方。
 - 方块标签的数据包文件格式改由数据 codec 解析：单一 `TagFile` codec（`{replace, values}`，
   `values` 项支持裸字符串或 `{id, required}` 对象）取代 BlockTags 内联手搓的 JSON 遍历。标签策略
   不变——`#tag` 引用照常展开、数据包仍低→高合并且 `replace` 截断、未知方块仍跳过——成员仍存于

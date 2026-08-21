@@ -3,6 +3,7 @@
 #include "assets/PackMetadata.hpp"
 #include "assets/ResourceProvider.hpp"
 #include "gameplay/BlockTags.hpp"
+#include "gameplay/RecipeTable.hpp"
 #include "gameplay/MobSpawnSettings.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "assets/ZipResourcePack.hpp"
@@ -227,6 +228,11 @@ int Application::run() {
     // Registration is idempotent, so the renderer's call stays harmless.
     gameplay::entities::registerBuiltinEntities();
     gameplay::blockTags().load(resources);
+    // Recipes load the same way: the baked built-in floor first, then any recipes
+    // a datapack supplies. An ordinary resource pack ships no `data/`, so this
+    // usually keeps the compiled-in recipe set rather than emptying the crafting
+    // table.
+    gameplay::recipeTable().load(resources);
     // The biome spawn tables come from the same `data/` half, and follow the
     // same rule: an ordinary resource pack ships no `data/`, so this usually
     // keeps the compiled-in 26.1 numbers rather than leaving the world empty.

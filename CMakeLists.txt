@@ -211,6 +211,7 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/FurnaceSystem.cpp
     src/gameplay/ContentRegistry.cpp
     src/gameplay/CraftingSystem.cpp
+    src/gameplay/RecipeTable.cpp
     src/gameplay/EntitySystem.cpp
     src/gameplay/EntityRenderSnapshot.cpp
     src/gameplay/GameRules.cpp
@@ -1608,6 +1609,14 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_data_codec_test PRIVATE mc_rebedrock_runtime)
     target_include_directories(mc_rebedrock_data_codec_test PRIVATE src tests "${glm_SOURCE_DIR}")
     add_test(NAME data_codec COMMAND mc_rebedrock_data_codec_test)
+
+    # D-3: recipes resolved from the baked floor + datapack overlay.
+    add_executable(mc_rebedrock_recipe_data_test
+        tests/recipe_data_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_recipe_data_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_recipe_data_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME recipe_data COMMAND mc_rebedrock_recipe_data_test)
 
     add_executable(mc_rebedrock_block_registry_lifecycle_test
         tests/block_registry_lifecycle_test.cpp
