@@ -138,8 +138,19 @@ void testPrefilterParity() {
         assert(runtime.has(BlockBehaviorBit::HasRandomTick) ==
                WorldSimulation::isRandomlyTicking(block));
         assert(runtime.has(BlockBehaviorBit::HasDrops) == blockYieldsLoot(block));
-        // Redstone lands in W-4; nothing is a signal source yet.
-        assert(!runtime.has(BlockBehaviorBit::IsSignalSource));
+        // Redstone (W-4/5/6) has landed: the bit tracks the emission model, and
+        // the weak/strong power slots are wired for exactly the signal sources,
+        // each locked to the block's own emission handler (the single source the
+        // hot redstone query reads too), never a shared switch.
+        const bool isSource = mc::gameplay::redstone::isSignalSource(block);
+        assert(runtime.has(BlockBehaviorBit::IsSignalSource) == isSource);
+        if (isSource) {
+            assert(behaviorFor(id).getWeakPower == mc::gameplay::redstone::weakPowerFn(block));
+            assert(behaviorFor(id).getStrongPower == mc::gameplay::redstone::strongPowerFn(block));
+        } else {
+            assert(behaviorFor(id).getWeakPower == nullptr);
+            assert(behaviorFor(id).getStrongPower == nullptr);
+        }
     }
 }
 

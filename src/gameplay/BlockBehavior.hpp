@@ -24,6 +24,7 @@
 
 #include "gameplay/Inventory.hpp"       // ItemStack
 #include "gameplay/MiningSystem.hpp"    // MinedDrops, minedDrops
+#include "gameplay/RedstoneEmission.hpp" // redstone::PowerFn, weakPowerFn, isSignalSource
 #include "gameplay/WorldSimulation.hpp" // WorldSimulation::isRandomlyTicking
 #include "world/Block.hpp"
 #include "world/BlockPlacement.hpp" // PlacementContext, placementBlock (World fwd)
@@ -48,8 +49,10 @@ enum class BlockBehaviorBit : std::uint8_t {
     // bad ground, torches that fall). Sourced from the block's support rule now;
     // W-3 generalises it to updateShape (fence connections, redstone wire).
     HasNeighborReaction = 0,
-    // Emits a redstone signal. Always 0 until W-4 adds redstone; reserved so the
-    // bit index is stable and W-4 only flips values, never reshuffles the enum.
+    // Emits a redstone signal (redstone::isSignalSource): the pre-filter the
+    // signal aggregation and the wire evaluator use to skip the overwhelming
+    // majority of blocks before asking for any power. Sourced from the redstone
+    // emission model now that redstone (W-4/5/6) has landed.
     IsSignalSource = 1,
     // Breaking it can yield loot (the non-silk drop). Distinct from the block's
     // dropsItem flag: glass drops nothing despite dropsItem, and tall grass and
@@ -113,7 +116,7 @@ struct BlockBehaviorPrefilter final {
                   definition.support != world::BlockSupport::None);
     prefilter.set(BlockBehaviorBit::HasRandomTick, WorldSimulation::isRandomlyTicking(block));
     prefilter.set(BlockBehaviorBit::HasDrops, blockYieldsLoot(block));
-    prefilter.set(BlockBehaviorBit::IsSignalSource, false); // reserved for W-4
+    prefilter.set(BlockBehaviorBit::IsSignalSource, redstone::isSignalSource(block));
     return prefilter;
 }
 
@@ -187,9 +190,15 @@ struct BlockBehavior final {
     UpdateShapeFn updateShape = nullptr;                    // W-3
     BlockLifecycleFn onPlace = nullptr;                     // lifecycle
     BlockLifecycleFn onRemove = nullptr;                    // lifecycle
-    // Redstone signal slots (isSignalSource/getWeakPower/getStrongPower/
-    // connectsRedstone) are reserved for W-4; they are added when redstone lands
-    // so their signatures match its evaluator rather than a guessed one now.
+    // Redstone signal emission (RedstoneEmission.hpp): weak power (getSignal) and
+    // strong/direct power (getDirectSignal) a block state pushes out of a face.
+    // Wired for every signal source, gated by the IsSignalSource pre-filter. The
+    // hot redstone query reads the constexpr emission tables directly (see
+    // RedstoneEmission.hpp), the way the mesher reads world::blockShape rather
+    // than dispatchBlockShape; these slots put the same answer on the one
+    // behaviour face so a non-redstone consumer reaches it uniformly.
+    redstone::PowerFn getWeakPower = nullptr;              // == redstone::getSignal
+    redstone::PowerFn getStrongPower = nullptr;            // == redstone::getDirectSignal
 
     BlockBehaviorPrefilter prefilter{};
 };
@@ -229,6 +238,14 @@ placementSlot(const PlacementBehaviorContext& context) {
         // identical to calling them directly.
         entry.getShape = &world::blockShape;
         entry.getStateForPlacement = &placementSlot;
+        if (entry.prefilter.has(BlockBehaviorBit::IsSignalSource)) {
+            // The block's own weak/strong emission handler (redstone::weakPowerFn),
+            // so the slot is per-block rather than one shared function with a
+            // switch inside — the same shape getDrops takes.
+            const auto block = static_cast<world::Block>(i);
+            entry.getWeakPower = redstone::weakPowerFn(block);
+            entry.getStrongPower = redstone::strongPowerFn(block);
+        }
     }
     return table;
 }

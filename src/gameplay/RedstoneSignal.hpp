@@ -2,13 +2,9 @@
 
 // The redstone signal-query model (W-4), source-derived from Java 26.1's
 // SignalGetter/RedstoneTorchBlock/RedstoneWallTorchBlock/PoweredBlock. This is
-// the foundation every component's driving logic reads: "how much power does a
-// block emit toward a side" and the world-level aggregation that turns those
-// per-block answers into "is this cell powered".
-//
-// It is a by-BlockId query, not a virtual dispatch — the DOD shape the roadmap
-// asks for (isSignalSource pre-filter + a small switch that R1 folds into the
-// behaviour table). Two power kinds, exactly as Java:
+// the world-level aggregation that turns each block's per-face emission (now in
+// RedstoneEmission.hpp, a BlockId-keyed table rather than a switch) into "is this
+// cell powered". Two power kinds, exactly as Java:
 //
 //   * **weak** (getSignal): powers adjacent redstone dust/components.
 //   * **strong / direct** (getDirectSignal): also powers a conductor, which then
@@ -16,10 +12,13 @@
 //     lever on a block powers dust two cells away but a block of redstone — which
 //     is weak-only — does not.
 //
-// Timing (torch toggle/burnout, repeater delay) is NOT here; this file is the
-// pure, side-effect-free signal answer the component tick and the wire evaluator
-// both consult.
+// The per-block emission answers (getSignal/getDirectSignal on a BlockState) live
+// in RedstoneEmission.hpp; this file reads that table directly on its hot path
+// and builds the world aggregation on top. Timing (torch toggle/burnout, repeater
+// delay) is NOT here; this is the pure, side-effect-free signal answer the
+// component tick and the wire evaluator both consult.
 
+#include "gameplay/RedstoneEmission.hpp"
 #include "world/Block.hpp"
 #include "world/BlockPos.hpp"
 #include "world/BlockState.hpp"
@@ -31,9 +30,8 @@
 
 namespace mc::gameplay::redstone {
 
-// The six faces, in Java's Direction sense. Order is irrelevant to every query
-// below (they all reduce by max or or), so it is chosen for readability.
-enum class Direction : std::uint8_t { Down, Up, North, South, West, East };
+// Direction, facingOf, isSignalSource, isDiode and the per-block getSignal/
+// getDirectSignal emission answers come from RedstoneEmission.hpp.
 
 inline constexpr std::array<world::BlockPos, 6> kDirectionOffsets{{
     {0, -1, 0}, // Down
@@ -52,103 +50,6 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
 [[nodiscard]] constexpr world::BlockPos relative(world::BlockPos pos, Direction dir) {
     const world::BlockPos offset = kDirectionOffsets[static_cast<std::size_t>(dir)];
     return {pos.x + offset.x, pos.y + offset.y, pos.z + offset.z};
-}
-
-// A wall torch's FACING as a Direction (it is always horizontal).
-[[nodiscard]] constexpr Direction facingOf(world::BlockState state) {
-    switch (state.orientation()) {
-    case world::BlockOrientation::North:
-        return Direction::North;
-    case world::BlockOrientation::East:
-        return Direction::East;
-    case world::BlockOrientation::South:
-        return Direction::South;
-    case world::BlockOrientation::West:
-        return Direction::West;
-    case world::BlockOrientation::Up:
-        return Direction::Up;
-    case world::BlockOrientation::Down:
-        return Direction::Down;
-    }
-    return Direction::North;
-}
-
-// Whether the block ever emits a redstone signal — the pre-filter that lets the
-// aggregation skip the overwhelming majority of blocks (PoweredBlock/torches now;
-// lever/button/etc. join as they land).
-[[nodiscard]] constexpr bool isSignalSource(world::Block block) {
-    return block == world::Block::RedstoneBlock || block == world::Block::RedstoneTorch ||
-           block == world::Block::RedstoneWallTorch || block == world::Block::Lever ||
-           block == world::Block::Repeater || block == world::Block::Comparator ||
-           block == world::Block::RedstoneWire || block == world::Block::Observer ||
-           block == world::Block::StoneButton;
-}
-
-// Whether a block is a diode (repeater or comparator) — DiodeBlock.isDiode.
-[[nodiscard]] constexpr bool isDiode(world::Block block) {
-    return block == world::Block::Repeater || block == world::Block::Comparator;
-}
-
-// Weak power this block emits toward `dir` (RedstoneTorchBlock.getSignal etc.).
-[[nodiscard]] constexpr int getSignal(world::BlockState state, Direction dir) {
-    switch (state.block()) {
-    case world::Block::RedstoneBlock:
-        return 15; // PoweredBlock: every side, always
-    case world::Block::RedstoneTorch:
-        // LIT && direction != UP ? 15 : 0
-        return state.lit() && dir != Direction::Up ? 15 : 0;
-    case world::Block::RedstoneWallTorch:
-        // LIT && FACING != direction ? 15 : 0 (never toward the wall it faces)
-        return state.lit() && facingOf(state) != dir ? 15 : 0;
-    case world::Block::Lever:
-    case world::Block::StoneButton:
-        // LeverBlock/ButtonBlock.getSignal: POWERED ? 15 : 0, every side weakly.
-        return state.powered() ? 15 : 0;
-    case world::Block::Repeater:
-        // DiodeBlock.getSignal: output 15 only out of its FACING side when on.
-        return state.powered() && facingOf(state) == dir ? 15 : 0;
-    case world::Block::Comparator:
-        // Same, but the output is its analog value rather than a flat 15.
-        return state.powered() && facingOf(state) == dir ? state.analogSignal() : 0;
-    case world::Block::RedstoneWire:
-        // Wire weakly powers every side except DOWN with its POWER (the
-        // connection-directional refinement lands with a later slice).
-        return dir != Direction::Down ? state.analogSignal() : 0;
-    case world::Block::Observer:
-        // ObserverBlock.getSignal: 15 out its FACING side (its back, which the
-        // pulse faces) while POWERED.
-        return state.powered() && facingOf(state) == dir ? 15 : 0;
-    default:
-        return 0;
-    }
-}
-
-// Strong/direct power this block emits toward `dir`. A torch strongly powers only
-// its DOWN face (RedstoneTorchBlock.getDirectSignal); redstone_block is weak-only
-// (PoweredBlock does not override getDirectSignal, so it inherits 0).
-[[nodiscard]] constexpr int getDirectSignal(world::BlockState state, Direction dir) {
-    switch (state.block()) {
-    case world::Block::RedstoneTorch:
-    case world::Block::RedstoneWallTorch:
-        return dir == Direction::Down ? getSignal(state, Direction::Down) : 0;
-    case world::Block::Lever:
-    case world::Block::StoneButton:
-        // LeverBlock/ButtonBlock.getDirectSignal: strongly powers only the block
-        // it hangs on (getConnectedDirection), which FACING records here.
-        return state.powered() && facingOf(state) == dir ? 15 : 0;
-    case world::Block::Repeater:
-    case world::Block::Comparator:
-        // DiodeBlock.getDirectSignal == getSignal (strong out the FACING side).
-        return getSignal(state, dir);
-    case world::Block::RedstoneWire:
-        // RedStoneWireBlock.getDirectSignal: strongly powers only the block below.
-        return dir == Direction::Down ? state.analogSignal() : 0;
-    case world::Block::Observer:
-        // ObserverBlock.getDirectSignal == getSignal.
-        return getSignal(state, dir);
-    default:
-        return 0;
-    }
 }
 
 // A lever's connected direction (LeverBlock.getConnectedDirection): FACING,
