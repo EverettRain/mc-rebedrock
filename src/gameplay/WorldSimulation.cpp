@@ -1,5 +1,6 @@
 #include "gameplay/WorldSimulation.hpp"
 
+#include "gameplay/RedstoneSignal.hpp"
 #include "world/BlockPlacement.hpp"
 #include "world/World.hpp"
 #include "world/WorldConstants.hpp"
@@ -101,6 +102,25 @@ constexpr std::array<SimulationPosition, 26> kLeafFloodNeighbors = makeLeafFlood
 // what the service is used for is the single, shared decision about *whether*
 // a cell changed, and the block-entity rule that rides on it.
 class RecordingMutationSink final : public world::MutationSink {};
+
+// The sink a redstone component's own tick writes through. Unlike the recording
+// sink above, this one *does* react to the neighbour fan-out: a torch going out
+// (flags 3) must wake the components it feeds so they schedule their own ticks —
+// the block-update propagation that carries a signal change through a circuit.
+// The mesh/save side still travels as BlockChange, recorded by the caller.
+class RedstoneReactionSink final : public world::MutationSink {
+  public:
+    RedstoneReactionSink(const world::World& world, WorldSimulation& simulation)
+        : world_(world), simulation_(simulation) {}
+
+    void onNeighborChanged(world::BlockPos neighbor, world::BlockPos /*source*/) override {
+        simulation_.notifyRedstoneComponent(world_, {neighbor.x, neighbor.y, neighbor.z});
+    }
+
+  private:
+    const world::World& world_;
+    WorldSimulation& simulation_;
+};
 
 } // namespace
 
@@ -917,6 +937,66 @@ bool WorldSimulation::setSimulatedBlock(
     return result.changed;
 }
 
+void WorldSimulation::notifyRedstoneComponent(const world::World& world,
+                                              SimulationPosition position) {
+    const auto block = world.block(position.x, position.y, position.z);
+    if (block != world::Block::RedstoneTorch && block != world::Block::RedstoneWallTorch) {
+        return;
+    }
+    const auto state = world.state(position.x, position.y, position.z);
+    const bool hasNeighborSignal =
+        redstone::torchHasNeighborSignal(world, {position.x, position.y, position.z});
+    // The dedup guard (UNIQUE_TICK_HASH / willTickThisTick): a component with a
+    // toggle already pending must not queue a second one, so a flurry of input
+    // updates before the tick fires still collapses to one flip.
+    const bool alreadyScheduled = ticks_.contains(TickTask::RedstoneComponent, position);
+    if (redstone::torchShouldScheduleToggle(state, hasNeighborSignal, alreadyScheduled)) {
+        static_cast<void>(ticks_.schedule(
+            TickTask::RedstoneComponent, position,
+            tickCount_ + static_cast<std::uint64_t>(redstone::kTorchToggleDelay), false,
+            TickPriority::Normal));
+    }
+}
+
+void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPosition position,
+                                           std::vector<BlockChange>& changes) {
+    const auto block = world.block(position.x, position.y, position.z);
+    if (block != world::Block::RedstoneTorch && block != world::Block::RedstoneWallTorch) {
+        return;
+    }
+    // Age out toggles older than the burnout window before this tick counts,
+    // exactly as RedstoneTorchBlock.tick does at its top.
+    torchBurnout_.prune(static_cast<std::int64_t>(tickCount_));
+    const auto state = world.state(position.x, position.y, position.z);
+    const bool hasNeighborSignal =
+        redstone::torchHasNeighborSignal(world, {position.x, position.y, position.z});
+    const auto result =
+        redstone::torchTick(state, hasNeighborSignal, {position.x, position.y, position.z},
+                            static_cast<std::int64_t>(tickCount_), torchBurnout_);
+    if (!result.changed) {
+        return;
+    }
+    // Write with flags 3 (neighbours + clients) so the flip propagates: the
+    // reaction sink wakes any component this torch feeds. Not KnownShape — a
+    // torch has no shape to update, but the default path is correct and cheap.
+    RedstoneReactionSink sink{world, *this};
+    const auto applied = mutations_.setBlock(
+        world, {position.x, position.y, position.z}, result.newState,
+        world::MutationFlags::NotifyNeighbors | world::MutationFlags::NotifyClients,
+        world::MutationCause::ScheduledTick, sink);
+    if (applied.changed) {
+        changes.push_back({position, result.newState});
+    }
+    if (result.burnedOut) {
+        // Burned out: re-check after RESTART_DELAY, when the window has aged out.
+        // The smoke levelEvent(1502) is presentation and is intentionally omitted.
+        static_cast<void>(ticks_.schedule(
+            TickTask::RedstoneComponent, position,
+            tickCount_ + static_cast<std::uint64_t>(redstone::kTorchRestartDelay), false,
+            TickPriority::Normal));
+    }
+}
+
 std::vector<BlockChange> WorldSimulation::tick(
     world::World& world,
     bool processFluidUpdates) {
@@ -1059,6 +1139,16 @@ std::vector<BlockChange> WorldSimulation::tick(
     std::erase_if(fallingBlocks_, [](const FallingBlockEntity& entity) {
         return entity.removed;
     });
+
+    // Redstone components' scheduled ticks. One drain, so torch/repeater/
+    // comparator run in the single (dueTick, priority, subTickOrder) order — the
+    // snapshot the drain takes means a flip that schedules a follow-up (delay>=1)
+    // lands in a later gametick, never this one, which is what keeps a circuit's
+    // stages cleanly separated the way Java's two-phase LevelTicks does.
+    constexpr std::size_t kMaximumRedstoneTicks = 1024;
+    ticks_.drainDue(
+        TickTask::RedstoneComponent, tickCount_, kMaximumRedstoneTicks,
+        [&](SimulationPosition position) { dispatchRedstoneTick(world, position, changes); });
 
     if (!processFluidUpdates) {
         return changes;

@@ -2,6 +2,7 @@
 
 #include "gameplay/ChunkTickScheduler.hpp"
 #include "gameplay/EnvironmentSnapshot.hpp"
+#include "gameplay/RedstoneTorch.hpp"
 #include "gameplay/SimulationPosition.hpp"
 #include "world/Block.hpp"
 #include "world/BlockState.hpp"
@@ -158,6 +159,14 @@ class WorldSimulation final {
 
     void notifyPlaced(SimulationPosition position, world::Block block);
     void notifyNeighborChanged(const world::World& world, SimulationPosition position);
+
+    // A redstone component at `position` learned a neighbour changed: read its
+    // input and, if it needs to flip, schedule its toggle tick. This is the
+    // block-update half of the redstone drive (RedstoneTorchBlock.neighborChanged)
+    // — the write half is the scheduled tick drained inside tick(). A no-op for a
+    // cell that is not a redstone component, so the neighbour fan-out can call it
+    // for every neighbour without a type check at the call site.
+    void notifyRedstoneComponent(const world::World& world, SimulationPosition position);
     // Whether a block has a random tick at all — the draw loop's pre-filter, and
     // the cheapest possible statement of "does this block do anything on a
     // random tick". Public because it is a property of the block set, and a
@@ -315,6 +324,12 @@ class WorldSimulation final {
         std::uint8_t fluidLevel = 0U,
         bool immediateRenderUpdate = false);
 
+    // Runs one redstone component's due tick: applies its state change through
+    // the mutation service (flags 3, so the change fans out to neighbours and
+    // wakes the components it feeds) and records the BlockChange for the mesher.
+    void dispatchRedstoneTick(world::World& world, SimulationPosition position,
+                              std::vector<BlockChange>& changes);
+
     // Every simulated block write goes through this, so the "did the cell
     // actually change?" rule is the one the player's edits use.
     world::WorldMutationService mutations_;
@@ -324,6 +339,9 @@ class WorldSimulation final {
     // shape five times over. Keyed by chunk they can be dropped when the chunk
     // unloads and saved with it; the drain order is unchanged (see the header).
     ChunkTickScheduler ticks_;
+    // The recent off-toggles behind redstone-torch burnout, shared across the
+    // world's torches (Java's RECENT_TOGGLES list, packed).
+    redstone::TorchBurnoutTracker torchBurnout_;
     EnvironmentSnapshot environment_{};
     std::uint32_t leafRandomState_ = 0x2545F491U;
     int randomTickSpeed_ = 3;

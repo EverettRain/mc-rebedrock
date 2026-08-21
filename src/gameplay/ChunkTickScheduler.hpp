@@ -47,6 +47,11 @@ enum class TickTask : std::uint8_t {
     SupportCheck,
     LeafDecay,
     TreeGrowth,
+    // A redstone component's scheduled tick (torch toggle, repeater/comparator
+    // flip). One task for every component so they drain in the single
+    // (dueTick, priority, subTickOrder) order Java's LevelTicks gives them —
+    // diodes schedule at HIGH so they run before the ordinary ticks around them.
+    RedstoneComponent,
     Count,
 };
 

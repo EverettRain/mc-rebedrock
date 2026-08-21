@@ -2210,6 +2210,23 @@ if(BUILD_TESTING)
     )
     add_test(NAME redstone_torch COMMAND mc_rebedrock_redstone_torch_test)
 
+    add_executable(mc_rebedrock_redstone_drive_test
+        tests/redstone_drive_test.cpp
+        src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
+        src/world/BlockPlacement.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/World.cpp
+        src/world/gen/TreeGrower.cpp
+    )
+    target_include_directories(mc_rebedrock_redstone_drive_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME redstone_drive COMMAND mc_rebedrock_redstone_drive_test)
+
     add_executable(mc_rebedrock_chunk_section_test
         tests/chunk_section_test.cpp
         src/world/ChunkSection.cpp
