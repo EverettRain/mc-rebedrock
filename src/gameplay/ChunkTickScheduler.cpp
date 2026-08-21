@@ -36,7 +36,8 @@ ChunkTickScheduler::ChunkKey ChunkTickScheduler::keyOf(SimulationPosition positi
 }
 
 bool ChunkTickScheduler::schedule(TickTask task, SimulationPosition position,
-                                  std::uint64_t dueTick, bool allowDuplicates) {
+                                  std::uint64_t dueTick, bool allowDuplicates,
+                                  TickPriority priority) {
     const auto index = static_cast<std::size_t>(task);
     auto& bucket = chunks_[keyOf(position)];
     if (!allowDuplicates && !bucket.queued[index].insert(position).second) {
@@ -45,7 +46,7 @@ bool ChunkTickScheduler::schedule(TickTask task, SimulationPosition position,
     if (allowDuplicates) {
         bucket.queued[index].insert(position);
     }
-    bucket.tasks[index].push_back({position, dueTick, nextSequence_++});
+    bucket.tasks[index].push_back({position, dueTick, priority, nextSequence_++});
     ++totals_[index];
     return true;
 }
@@ -100,6 +101,74 @@ std::vector<std::pair<int, int>> ChunkTickScheduler::scheduledChunks() const {
         result.emplace_back(chunk.x, chunk.z);
     }
     return result;
+}
+
+namespace {
+
+// A pending tick paired with the task it belongs to — ScheduledTick alone does
+// not carry its task, since the task is the bucket it lives in.
+struct TaskedTick final {
+    TickTask task = TickTask::FallingBlock;
+    ScheduledTick tick;
+};
+
+void collectBucket(const std::array<std::vector<ScheduledTick>, kTickTaskCount>& tasks,
+                   std::vector<TaskedTick>& out) {
+    for (std::size_t index = 0; index < kTickTaskCount; ++index) {
+        for (const ScheduledTick& tick : tasks[index]) {
+            out.push_back({static_cast<TickTask>(index), tick});
+        }
+    }
+}
+
+[[nodiscard]] std::vector<SavedTick> toSavedTicks(std::vector<TaskedTick>& collected,
+                                                  std::uint64_t gameTime) {
+    // Drain order, so subTickOrder can be dropped and rebuilt from list position
+    // on import.
+    std::ranges::sort(collected, [](const TaskedTick& left, const TaskedTick& right) {
+        return ChunkTickScheduler::drainOrder(left.tick, right.tick);
+    });
+    std::vector<SavedTick> saved;
+    saved.reserve(collected.size());
+    for (const TaskedTick& entry : collected) {
+        const auto delay = static_cast<std::int32_t>(static_cast<std::int64_t>(entry.tick.dueTick) -
+                                                     static_cast<std::int64_t>(gameTime));
+        saved.push_back({entry.task, entry.tick.position, delay, entry.tick.priority});
+    }
+    return saved;
+}
+
+} // namespace
+
+std::vector<SavedTick> ChunkTickScheduler::exportSavedTicks(std::uint64_t gameTime) const {
+    std::vector<TaskedTick> collected;
+    for (const auto& [chunk, bucket] : chunks_) {
+        collectBucket(bucket.tasks, collected);
+    }
+    return toSavedTicks(collected, gameTime);
+}
+
+std::vector<SavedTick> ChunkTickScheduler::exportSavedTicks(int chunkX, int chunkZ,
+                                                            std::uint64_t gameTime) const {
+    std::vector<TaskedTick> collected;
+    const auto found = chunks_.find(ChunkKey{chunkX, chunkZ});
+    if (found != chunks_.end()) {
+        collectBucket(found->second.tasks, collected);
+    }
+    return toSavedTicks(collected, gameTime);
+}
+
+void ChunkTickScheduler::importSavedTicks(std::uint64_t gameTime,
+                                          std::span<const SavedTick> ticks) {
+    // List position becomes subTickOrder: exportSavedTicks emitted them already
+    // sorted by drainOrder, so scheduling them in sequence rebuilds that order.
+    // Falling blocks keep their duplicate-allowing behaviour on the way back in.
+    for (const SavedTick& tick : ticks) {
+        const auto dueTick = static_cast<std::uint64_t>(static_cast<std::int64_t>(gameTime) +
+                                                        tick.delay);
+        static_cast<void>(schedule(tick.type, tick.position, dueTick,
+                                    tick.type == TickTask::FallingBlock, tick.priority));
+    }
 }
 
 void ChunkTickScheduler::clear() {

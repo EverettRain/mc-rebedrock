@@ -2167,6 +2167,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME neighbor_updater COMMAND mc_rebedrock_neighbor_updater_test)
 
+    add_executable(mc_rebedrock_tick_priority_and_events_test
+        tests/tick_priority_and_events_test.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+    )
+    target_include_directories(mc_rebedrock_tick_priority_and_events_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME tick_priority_and_events COMMAND mc_rebedrock_tick_priority_and_events_test)
+
     add_executable(mc_rebedrock_chunk_section_test
         tests/chunk_section_test.cpp
         src/world/ChunkSection.cpp
