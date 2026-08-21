@@ -170,6 +170,52 @@ class ChunkTickScheduler final {
         return processed;
     }
 
+    // Like drainDue, but the drain order over the whole due set is chosen by
+    // `planner` rather than the built-in (dueTick, priority, subTickOrder).
+    // `planner(due, out)` receives every entry currently due for `task` and fills
+    // `out` with them in the order to run. The redstone island drain uses this to
+    // run island-major while the serial path keeps drainDue; the two must produce
+    // identical results, which the lockstep gate checks.
+    //
+    // Unlike drainDue this is deliberately single-pass — it takes the due set once
+    // and does not re-collect after each handler. That assumes a handler schedules
+    // no new *immediately-due* work of the same task, which holds for redstone:
+    // every follow-up a component schedules is delay>=1, landing a later gametick
+    // (the two-phase separation the redstone drain relies on). It must not be used
+    // for tasks whose handlers cascade same-tick work (support checks do; they
+    // stay on drainDue).
+    template <typename Planner, typename Handler>
+    std::size_t drainDuePlanned(TickTask task, std::uint64_t now, std::size_t budget,
+                                Planner&& planner, Handler&& handler) {
+        const auto index = static_cast<std::size_t>(task);
+        if (totals_[index] == 0U) {
+            return 0U;
+        }
+        auto& due = scratch_;
+        due.clear();
+        for (auto& [chunk, bucket] : chunks_) {
+            for (const auto& entry : bucket.tasks[index]) {
+                if (entry.dueTick <= now) {
+                    due.push_back(entry);
+                }
+            }
+        }
+        if (due.empty()) {
+            return 0U;
+        }
+        planner(std::span<const ScheduledTick>(due), planned_);
+        std::size_t processed = 0U;
+        for (const auto& entry : planned_) {
+            if (processed >= budget) {
+                break;
+            }
+            remove(task, entry.position);
+            handler(entry.position);
+            ++processed;
+        }
+        return processed;
+    }
+
     [[nodiscard]] std::size_t pending(TickTask task) const {
         return totals_[static_cast<std::size_t>(task)];
     }
@@ -243,6 +289,8 @@ class ChunkTickScheduler final {
     // Reused across drains so a tick does not allocate.
     std::vector<ScheduledTick> scratch_;
     std::vector<ScheduledTick> positions_;
+    // The planner's ordered output, reused across planned drains.
+    std::vector<ScheduledTick> planned_;
 };
 
 } // namespace mc::gameplay

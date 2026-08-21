@@ -1359,6 +1359,28 @@ if(BUILD_TESTING)
     )
     add_test(NAME piston_event_fixture COMMAND mc_rebedrock_piston_event_fixture_test)
 
+    add_executable(mc_rebedrock_redstone_island_partition_test
+        tests/redstone_island_partition_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_redstone_island_partition_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_redstone_island_partition_test PRIVATE
+        src
+        tests
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME redstone_island_partition COMMAND mc_rebedrock_redstone_island_partition_test)
+
+    add_executable(mc_rebedrock_lockstep_fixture_test
+        tests/redstone/lockstep_fixture_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_lockstep_fixture_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_lockstep_fixture_test PRIVATE
+        src
+        tests
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME lockstep_fixture COMMAND mc_rebedrock_lockstep_fixture_test)
+
     add_executable(mc_rebedrock_chunk_section_test
         tests/chunk_section_test.cpp
         src/world/ChunkSection.cpp

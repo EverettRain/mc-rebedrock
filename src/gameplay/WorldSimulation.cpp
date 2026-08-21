@@ -14,6 +14,8 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <span>
+#include <vector>
 
 namespace mc::gameplay {
 namespace {
@@ -1400,9 +1402,24 @@ std::vector<BlockChange> WorldSimulation::tick(
     // lands in a later gametick, never this one, which is what keeps a circuit's
     // stages cleanly separated the way Java's two-phase LevelTicks does.
     constexpr std::size_t kMaximumRedstoneTicks = 1024;
-    ticks_.drainDue(
-        TickTask::RedstoneComponent, tickCount_, kMaximumRedstoneTicks,
-        [&](SimulationPosition position) { dispatchRedstoneTick(world, position, changes); });
+    lastRedstoneIslandCount_ = 0U;
+    if (redstoneDrainMode_ == RedstoneDrainMode::Island) {
+        // Island mode reorders the same due set into independent islands (still
+        // single-threaded) so the lockstep gate can prove the reorder is identical
+        // to Serial. The plan is built from the pre-drain world — the snapshot a
+        // threaded evaluator would partition over — before any handler runs.
+        ticks_.drainDuePlanned(
+            TickTask::RedstoneComponent, tickCount_, kMaximumRedstoneTicks,
+            [&](std::span<const ScheduledTick> due, std::vector<ScheduledTick>& out) {
+                islandPlanner_.plan(world, due, out, islandOffsets_);
+            },
+            [&](SimulationPosition position) { dispatchRedstoneTick(world, position, changes); });
+        lastRedstoneIslandCount_ = islandPlanner_.islandCount();
+    } else {
+        ticks_.drainDue(
+            TickTask::RedstoneComponent, tickCount_, kMaximumRedstoneTicks,
+            [&](SimulationPosition position) { dispatchRedstoneTick(world, position, changes); });
+    }
 
     // Block events settle at the end of the tick, after the scheduled ticks, in a
     // deterministic FIFO — Java's runBlockEvents. Pistons queued their extend/

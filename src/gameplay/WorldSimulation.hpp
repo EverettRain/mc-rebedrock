@@ -3,6 +3,7 @@
 #include "gameplay/BlockEventQueue.hpp"
 #include "gameplay/ChunkTickScheduler.hpp"
 #include "gameplay/EnvironmentSnapshot.hpp"
+#include "gameplay/RedstoneIslandPlanner.hpp"
 #include "gameplay/RedstoneTorch.hpp"
 #include "gameplay/RedstoneWireEvaluator.hpp"
 #include "gameplay/SimulationPosition.hpp"
@@ -229,6 +230,23 @@ class WorldSimulation final {
     void setRandomTickSpeed(int speed) { randomTickSpeed_ = speed; }
     [[nodiscard]] int randomTickSpeed() const { return randomTickSpeed_; }
 
+    // How the redstone component ticks due on a gametick are ordered before they
+    // drain (W-6). Serial — the default and ground truth — drains the whole due
+    // set in the single (dueTick, priority, subTickOrder) order Java uses. Island
+    // partitions the due set into components that cannot influence each other this
+    // tick and drains island-major (islands ordered by min (chunkPos, packed pos),
+    // ticks within an island still in drain order). Island is a *reordering* of
+    // the same serial drain, single-threaded: it exists so the lockstep gate can
+    // prove the partition is bit-for-bit identical to Serial, the analysis a
+    // future threaded evaluator needs. It is never the default.
+    enum class RedstoneDrainMode : std::uint8_t { Serial, Island };
+    void setRedstoneDrainMode(RedstoneDrainMode mode) { redstoneDrainMode_ = mode; }
+    [[nodiscard]] RedstoneDrainMode redstoneDrainMode() const { return redstoneDrainMode_; }
+    // The number of islands the last Island-mode redstone drain partitioned the
+    // due set into (0 after a Serial tick). The parallelism the partition exposes,
+    // read by the benchmark and the multi-island test.
+    [[nodiscard]] std::size_t lastRedstoneIslandCount() const { return lastRedstoneIslandCount_; }
+
     // The environment the current tick runs under, resolved once by the session
     // and handed down. Growth and spreading read fields off it rather than
     // asking a clock or the weather what is going on — 26.1 routes the same
@@ -366,6 +384,12 @@ class WorldSimulation final {
     // once warm). Replaces RedstoneWire.hpp's naive relaxation on the hot path;
     // the serial evaluator survives only as the lockstep cross-check oracle.
     redstone::WireNetworkEvaluator wireEvaluator_;
+    // The island partitioner (W-6, analysis scope): reused across ticks so its
+    // union-find and cell arenas stay warm. Only touched in Island drain mode.
+    redstone::RedstoneIslandPlanner islandPlanner_;
+    std::vector<std::size_t> islandOffsets_;
+    RedstoneDrainMode redstoneDrainMode_ = RedstoneDrainMode::Serial;
+    std::size_t lastRedstoneIslandCount_ = 0U;
     // Piston/note block events, collected through a tick and settled at its end
     // (Java's Level.blockEvent). This is the W-2 queue's first live consumer.
     BlockEventQueue blockEvents_;

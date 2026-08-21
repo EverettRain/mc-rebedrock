@@ -23,6 +23,7 @@
 #include "world/Chunk.hpp"
 #include "world/World.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -202,6 +203,19 @@ class RedstoneCircuit final {
     }
     [[nodiscard]] std::uint64_t gameTime() const { return gameTime_; }
 
+    // W-6: select how the redstone drain orders the due ticks. Serial (default)
+    // is the ground truth; Island partitions and drains island-major. Set before
+    // advancing; wiring and inputs go through the mutation service, not tick(), so
+    // the mode only affects the scheduled-tick drain the lockstep compares.
+    void setRedstoneDrainMode(mc::gameplay::WorldSimulation::RedstoneDrainMode mode) {
+        session_.worldSimulation().setRedstoneDrainMode(mode);
+    }
+    // The islands the last advance's redstone drain partitioned into (0 in Serial
+    // mode). Lets a lockstep assert the partition actually exposed parallelism.
+    [[nodiscard]] std::size_t redstoneIslandCount() {
+        return session_.worldSimulation().lastRedstoneIslandCount();
+    }
+
     // Probes. `lit` reads a component's on/off state: POWERED for a diode or a
     // lever, LIT for a torch — the one probe redstone-reference tables use.
     [[nodiscard]] bool lit(mc::world::BlockPos rel) const {
@@ -302,6 +316,60 @@ inline void runFixture(RedstoneCircuit& circuit, const FixtureScript& script) {
             }
         }
     }
+}
+
+// W-6 lockstep: run the same wiring and timed events under both redstone drain
+// modes — Serial and Island — and assert every probe agrees bit for bit on every
+// gametick. The island drain is only a reordering of the serial drain, so any
+// divergence means the partition split a coupled pair (or ordered a shared cell
+// wrong); this is the determinism gate the design makes CI. Returns the maximum
+// island count the island run reached, so a caller can require the partition
+// actually exposed parallelism (> 1) rather than passing vacuously with one
+// island. `build` wires an empty circuit; `script.events`/`script.expected` fix
+// the timeline (expected values are ignored here — the two runs are compared to
+// each other, not to a reference table).
+inline std::size_t runLockstep(const std::function<void(RedstoneCircuit&)>& build,
+                               const FixtureScript& script) {
+    RedstoneCircuit serial;
+    RedstoneCircuit island;
+    island.setRedstoneDrainMode(mc::gameplay::WorldSimulation::RedstoneDrainMode::Island);
+    build(serial);
+    build(island);
+
+    std::uint64_t last = 0;
+    for (const auto& [gt, fn] : script.events) {
+        last = std::max(last, gt);
+    }
+    for (const ExpectedRow& row : script.expected) {
+        last = std::max(last, row.gt);
+    }
+
+    std::size_t maxIslands = 0;
+    for (std::uint64_t gt = 0; gt <= last; ++gt) {
+        if (gt != 0) {
+            serial.advance(1);
+            island.advance(1);
+            maxIslands = std::max(maxIslands, island.redstoneIslandCount());
+        }
+        for (const auto& [eventGt, fn] : script.events) {
+            if (eventGt == gt) {
+                fn(serial);
+                fn(island);
+            }
+        }
+        for (std::size_t i = 0; i < script.probes.size(); ++i) {
+            const int serialValue = readProbe(serial, script.probes[i]);
+            const int islandValue = readProbe(island, script.probes[i]);
+            if (serialValue != islandValue) {
+                std::fprintf(stderr,
+                             "redstone lockstep diverged at gt=%llu, probe #%zu: serial %d, "
+                             "island %d\n",
+                             static_cast<unsigned long long>(gt), i, serialValue, islandValue);
+                std::abort();
+            }
+        }
+    }
+    return maxIslands;
 }
 
 } // namespace mc::test::redstone
