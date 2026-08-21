@@ -4,6 +4,8 @@
 #include "core/ContentId.hpp"
 #include "core/Identifier.hpp"
 #include "gameplay/Inventory.hpp"
+#include "gameplay/entities/EntityAttributes.hpp"
+#include "gameplay/entities/EntityAttributeOverlay.hpp"
 
 #include <array>
 #include <cstddef>
@@ -95,17 +97,6 @@ enum class SpawnPlacement : std::uint8_t {
 struct EntityDimensions final {
     float width = 0.9F;
     float height = 0.9F;
-};
-
-// The slice of DefaultAttributeContainer a LivingEntity needs in this project.
-// Each field is the registered attribute's base value / hard cap, mirroring the
-// GENERIC_* attributes a MobEntity.createMobAttributes() chain configures.
-struct EntityAttributes final {
-    float maxHealth = 10.0F;          // GENERIC_MAX_HEALTH
-    float movementSpeed = 0.25F;      // MOVEMENT_SPEED attribute; converted by locomotion
-    float attackDamage = 0.0F;        // GENERIC_ATTACK_DAMAGE, zero for passive mobs
-    float followRange = 16.0F;        // GENERIC_FOLLOW_RANGE
-    float knockbackResistance = 0.0F; // GENERIC_KNOCKBACK_RESISTANCE, in [0, 1]
 };
 
 // SpawnEggItem's two tint colours, packed 0xRRGGBB. `primary` paints the shell,
@@ -213,7 +204,17 @@ class EntityType final {
     // that is the default a species need not restate.
     [[nodiscard]] SpawnPlacement spawnPlacement() const { return spawnPlacement_; }
     [[nodiscard]] EntityDimensions dimensions() const { return dimensions_; }
-    [[nodiscard]] const EntityAttributes& attributes() const { return attributes_; }
+    // The effective attributes: the species' compiled-in floor, with any
+    // datapack override applied on top (per attribute). Resolves through the
+    // process-wide overlay by this type's id — one subscript, no map, and the
+    // floor itself when no pack overrode this species (the usual case).
+    [[nodiscard]] const EntityAttributes& attributes() const {
+        return entityAttributeTable().effectiveOr(typeId(), attributes_);
+    }
+    // The compiled-in floor alone, ignoring any overlay. The overlay loader reads
+    // a datapack file onto a copy of this so unlisted attributes keep their
+    // default; tests use it to prove the floor is untouched.
+    [[nodiscard]] const EntityAttributes& attributesFloor() const { return attributes_; }
     [[nodiscard]] SpawnEggColors spawnEgg() const { return spawnEgg_; }
     [[nodiscard]] bool hasSpawnEgg() const { return hasSpawnEgg_; }
     [[nodiscard]] const EntityRenderDescriptor& render() const { return render_; }

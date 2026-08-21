@@ -34,8 +34,8 @@ int main() {
     const auto dimensions = cow->dimensions();
     assert(dimensions.width == 0.9F);
     assert(dimensions.height == 1.4F);
-    assert(cow->attributes().maxHealth == 10.0F);
-    assert(cow->attributes().movementSpeed == 0.20F);
+    assert(cow->attributes().maxHealth() == 10.0F);
+    assert(cow->attributes().movementSpeed() == 0.20F);
     const auto egg = cow->spawnEgg();
     assert(egg.primary == 0xF3C9A3U);
     assert(egg.secondary == 0xFFFFFFU);

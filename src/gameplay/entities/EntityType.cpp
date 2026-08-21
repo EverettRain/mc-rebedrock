@@ -27,27 +27,27 @@ EntityType::Builder& EntityType::Builder::sized(float width, float height) {
 }
 
 EntityType::Builder& EntityType::Builder::health(float maxHealth) {
-    draft_.attributes_.maxHealth = maxHealth;
+    draft_.attributes_.set(Attribute::MaxHealth, maxHealth);
     return *this;
 }
 
 EntityType::Builder& EntityType::Builder::movementSpeed(float speed) {
-    draft_.attributes_.movementSpeed = speed;
+    draft_.attributes_.set(Attribute::MovementSpeed, speed);
     return *this;
 }
 
 EntityType::Builder& EntityType::Builder::attackDamage(float damage) {
-    draft_.attributes_.attackDamage = damage;
+    draft_.attributes_.set(Attribute::AttackDamage, damage);
     return *this;
 }
 
 EntityType::Builder& EntityType::Builder::followRange(float range) {
-    draft_.attributes_.followRange = range;
+    draft_.attributes_.set(Attribute::FollowRange, range);
     return *this;
 }
 
 EntityType::Builder& EntityType::Builder::knockbackResistance(float resistance) {
-    draft_.attributes_.knockbackResistance = resistance;
+    draft_.attributes_.set(Attribute::KnockbackResistance, resistance);
     return *this;
 }
 

@@ -6,6 +6,7 @@
 #include "gameplay/LootTable.hpp"
 #include "gameplay/RecipeTable.hpp"
 #include "gameplay/MobSpawnSettings.hpp"
+#include "gameplay/entities/EntityAttributeOverlay.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "assets/ZipResourcePack.hpp"
 #include "config/GameOptions.hpp"
@@ -228,6 +229,11 @@ int Application::run() {
     // tables with nothing in them and a world that never spawned a mob.
     // Registration is idempotent, so the renderer's call stays harmless.
     gameplay::entities::registerBuiltinEntities();
+    // Entity attribute overrides load the same two-layer way: each species keeps
+    // its compiled-in floor, and a datapack that ships
+    // `data/<space>/entity_attributes/<species>.json` overrides the attributes it
+    // lists. No `data/` keeps every species' built-in numbers.
+    gameplay::entities::entityAttributeTable().load(resources);
     gameplay::blockTags().load(resources);
     // Recipes load the same way: the baked built-in floor first, then any recipes
     // a datapack supplies. An ordinary resource pack ships no `data/`, so this

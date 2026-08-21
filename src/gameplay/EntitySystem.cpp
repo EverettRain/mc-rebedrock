@@ -404,7 +404,7 @@ void EntitySystem::spawn(glm::vec3 position, const entities::EntityType& type, s
     entity.id = nextEntityId_++;
     entity.position = position;
     entity.previousPosition = position;
-    entity.damage.health = entity.damage.maxHealth = type.attributes().maxHealth;
+    entity.damage.health = entity.damage.maxHealth = type.attributes().maxHealth();
     entity.rngState =
         seed != 0U ? seed : (0x9E3779B9U ^ (static_cast<std::uint32_t>(entities_.size()) + 1U));
     entity.yaw = randomUnit(entity.rngState) * kTwoPi;
@@ -441,7 +441,7 @@ std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityTy
     entity.rngState = rngState;
     // The species owns the max; the save's health is the current value, clamped
     // so a corrupt record cannot restore a creature over its cap.
-    entity.damage.maxHealth = type.attributes().maxHealth;
+    entity.damage.maxHealth = type.attributes().maxHealth();
     entity.damage.health = std::min(health, entity.damage.maxHealth);
     // MobEntity#initGoals runs once at spawn, exactly like a fresh spawn.
     type.ai().configureBrain(entity.brain);
@@ -774,7 +774,7 @@ EntityTickResult EntitySystem::tick(
         // end-of-tick drag, so a creature that just left the ground still pays
         // the ground value on that tick.
         const bool groundedBeforeMovement = entity.onGround;
-        const float wanderSpeed = entity.kind().attributes().movementSpeed *
+        const float wanderSpeed = entity.kind().attributes().movementSpeed() *
                                   kMovementAttributeToInternalSpeed *
                                   entity.movementSpeedMultiplier;
         if (!entity.dead() && entity.moving && groundedBeforeMovement) {

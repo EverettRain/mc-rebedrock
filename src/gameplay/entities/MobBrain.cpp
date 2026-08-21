@@ -633,7 +633,7 @@ bool ActiveTargetPlayerGoal::canStart(SimpleEntity& self, MobAiContext& context,
         nextRandom(self.rngState) % 10U != 0U) {
         return false;
     }
-    const float followRange = self.kind().attributes().followRange;
+    const float followRange = self.kind().attributes().followRange();
     const glm::vec3 delta = player.position - self.position;
     return glm::dot(delta, delta) <= followRange * followRange &&
            context.canSee(self, ActorReference::player());
@@ -646,7 +646,7 @@ bool ActiveTargetPlayerGoal::shouldContinue(SimpleEntity& self, MobAiContext& co
         player.creative) {
         return false;
     }
-    const float followRange = self.kind().attributes().followRange;
+    const float followRange = self.kind().attributes().followRange();
     const glm::vec3 delta = player.position - self.position;
     if (glm::dot(delta, delta) > followRange * followRange) {
         return false;
@@ -680,7 +680,7 @@ bool MeleeAttackGoal::targetValid(SimpleEntity& self, MobAiContext& context,
         (!context.player().alive || context.player().creative)) {
         return false;
     }
-    const float followRange = self.kind().attributes().followRange;
+    const float followRange = self.kind().attributes().followRange();
     const glm::vec3 delta = *position - self.position;
     return glm::dot(delta, delta) <= followRange * followRange;
 }
@@ -743,7 +743,7 @@ void MeleeAttackGoal::tick(SimpleEntity& self, MobAiContext& context, MobBrain& 
         brain.navigation().stop(self);
         self.yaw = self.lookYaw;
         if (attackCooldownTicks_ <= 0) {
-            brain.requestAttack(target, self.kind().attributes().attackDamage);
+            brain.requestAttack(target, self.kind().attributes().attackDamage());
             attackCooldownTicks_ = 20;
         }
         return;
