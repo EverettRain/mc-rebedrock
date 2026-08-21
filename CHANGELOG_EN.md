@@ -9,7 +9,29 @@ simple versioned history while it is in beta.
 
 ### Changed
 
-- Block drops now come from data. The deterministic block loot (stone to
+- Entity types now share the same content registry as blocks and items, so a
+  creature this build no longer knows — one a removed datapack or mod placed —
+  is kept as a placeholder instead of vanishing from a saved world; it round-trips
+  by name and comes back as the real creature once the content is re-added. Names
+  resolve through the `minecraft:` alias beside the `rebedrock:` id, and a name
+  nobody registered is a clean miss (so a command cannot summon a placeholder).
+- Entity attributes now come from data. Each creature's health, movement speed,
+  attack damage, follow range and knockback resistance are a fixed array with a
+  compiled-in floor, and a datapack can override any subset per creature through
+  `data/<namespace>/entity_attributes/<species>.json`; unlisted attributes fall
+  back to the floor, and a build with no `data/` keeps every creature's built-in
+  numbers. Because the AI reads follow range and attack damage through the same
+  path, shrinking a creature's follow range in a datapack changes its acquisition
+  radius with no code change.
+
+### Added
+
+- A species manifest: new creatures are now a data row instead of a C++ class
+  plus a registration line. Three creatures ride it — chicken and sheep (passive)
+  and husk (a melee hostile) — resolving by name, carrying the right category and
+  attributes, spawning, ticking, dropping loot (chicken feathers) and obeying the
+  peaceful-removal rule by category. Like the zombie, their render assets are not
+  shipped yet, so they do not appear in-game. The deterministic block loot (stone to
   cobblestone, an ore to its item, glass to nothing, and the rest) moved out of
   the mining system's hand-written handlers into a baked loot floor plus a
   datapack overlay (`data/<namespace>/loot_tables/blocks/*.json`); a build with no
