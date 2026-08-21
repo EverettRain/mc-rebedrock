@@ -9,6 +9,15 @@ simple versioned history while it is in beta.
 
 ### Changed
 
+- Block drops now come from data. The deterministic block loot (stone to
+  cobblestone, an ore to its item, glass to nothing, and the rest) moved out of
+  the mining system's hand-written handlers into a baked loot floor plus a
+  datapack overlay (`data/<namespace>/loot_tables/blocks/*.json`); a build with no
+  `data/` still drops on the built-in floor, and a block with no table drops
+  itself. Drop results are identical. The loot format is deliberately a direct
+  block-to-drops table with no chance, Fortune or Silk-Touch machinery — this
+  build has no system to make those vary — and the few genuinely random blocks
+  (leaves, gravel, crops) keep their procedural handler.
 - Crafting and smelting recipes now come from data instead of a static vector in
   the crafting system. The built-in recipes are a baked constexpr floor resolved
   at load, and a datapack can add or replace recipes through the data codec

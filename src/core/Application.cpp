@@ -3,6 +3,7 @@
 #include "assets/PackMetadata.hpp"
 #include "assets/ResourceProvider.hpp"
 #include "gameplay/BlockTags.hpp"
+#include "gameplay/LootTable.hpp"
 #include "gameplay/RecipeTable.hpp"
 #include "gameplay/MobSpawnSettings.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
@@ -233,6 +234,9 @@ int Application::run() {
     // usually keeps the compiled-in recipe set rather than emptying the crafting
     // table.
     gameplay::recipeTable().load(resources);
+    // Block loot the same way: the baked drop floor, then any block loot tables a
+    // datapack supplies; no `data/` keeps the built-in drops.
+    gameplay::lootTable().load(resources);
     // The biome spawn tables come from the same `data/` half, and follow the
     // same rule: an ordinary resource pack ships no `data/`, so this usually
     // keeps the compiled-in 26.1 numbers rather than leaving the world empty.

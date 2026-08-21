@@ -2,6 +2,7 @@
 
 #include "gameplay/BlockTags.hpp"
 #include "gameplay/ItemPlacement.hpp"
+#include "gameplay/LootTable.hpp"
 #include "world/BlockRegistry.hpp" // kBuiltinBlockCount
 
 #include <limits>
@@ -164,65 +165,25 @@ namespace {
 // handler only rolls the block's loot. Unused parameters keep the shared slot
 // signature so every handler is one BlockDropFn.
 
-// The default: a block whose loot is simply itself when it dropsItem (a double
-// slab is two slab items), and nothing otherwise. Also the handler for silk-only
-// Glass and every block with no special table, and for external blocks.
-MinedDrops dropDefault(world::Block block, const ItemStack&, std::uint32_t&, int, bool doubledSlab) {
+// The data-driven handler: a block's drops come from the loot table (D-4) when
+// it has an entry there — stone -> cobblestone, an ore -> its item, glass -> the
+// empty entry that drops nothing — and otherwise the block simply drops itself
+// (a double slab, two). This is where the deterministic per-block handlers went:
+// the drop *data* moved into the baked loot floor + datapack overlay, and this
+// one function reads it. It is also the handler for external blocks. The random
+// blocks (leaves, gravel, crops) keep their own handlers below.
+MinedDrops dropFromLootOrDefault(world::Block block, const ItemStack&, std::uint32_t&, int,
+                                 bool doubledSlab) {
     MinedDrops drops;
+    if (const LootEntry* entry = lootTable().find(block); entry != nullptr) {
+        for (const auto& stack : entry->stacks) {
+            drops.add(stack);
+        }
+        return drops;
+    }
     if (world::blockDefinition(block).dropsItem) {
         drops.add({block, static_cast<std::uint8_t>(doubledSlab ? 2 : 1), blockItemFor(block)});
     }
-    return drops;
-}
-
-// Silk-touch-only: harvestable, but leaves nothing behind for a plain break.
-MinedDrops dropNothing(world::Block, const ItemStack&, std::uint32_t&, int, bool) {
-    return {};
-}
-
-MinedDrops dropCobblestone(world::Block, const ItemStack&, std::uint32_t&, int, bool) {
-    MinedDrops drops;
-    drops.add({world::Block::Cobblestone, 1U, blockItemFor(world::Block::Cobblestone)});
-    return drops;
-}
-
-// Only silk touch keeps the topsoil layer; everything else (grass, podzol,
-// farmland) yields dirt.
-MinedDrops dropDirt(world::Block, const ItemStack&, std::uint32_t&, int, bool) {
-    MinedDrops drops;
-    drops.add({world::Block::Dirt, 1U, blockItemFor(world::Block::Dirt)});
-    return drops;
-}
-
-MinedDrops dropCoal(world::Block, const ItemStack&, std::uint32_t&, int, bool) {
-    MinedDrops drops;
-    drops.add({world::Block::Air, 1U, &items::Coal});
-    return drops;
-}
-
-MinedDrops dropDiamond(world::Block, const ItemStack&, std::uint32_t&, int, bool) {
-    MinedDrops drops;
-    drops.add({world::Block::Air, 1U, &items::Diamond});
-    return drops;
-}
-
-MinedDrops dropEmerald(world::Block, const ItemStack&, std::uint32_t&, int, bool) {
-    MinedDrops drops;
-    drops.add({world::Block::Air, 1U, &items::Emerald});
-    return drops;
-}
-
-MinedDrops dropBookshelf(world::Block, const ItemStack&, std::uint32_t&, int, bool) {
-    MinedDrops drops;
-    drops.add({world::Block::Air, 3U, &items::Book});
-    return drops;
-}
-
-// Whatever it was leaning on, a wall torch comes back as the standing one: the
-// facing is a state, and the item has no facing at all.
-MinedDrops dropWallTorch(world::Block, const ItemStack&, std::uint32_t&, int, bool) {
-    MinedDrops drops;
-    drops.add({world::Block::Torch, 1U, blockItemFor(world::Block::Torch)});
     return drops;
 }
 
@@ -293,27 +254,20 @@ MinedDrops dropCarrotPotato(world::Block block, const ItemStack&, std::uint32_t&
     return drops;
 }
 
-// The block -> drop-handler table, built once for the built-in blocks. A block
-// with no special loot keeps dropDefault (its own item if dropsItem); the
-// special cases below name their handler. This is the switch, turned inside out
-// into data: one array load selects the behaviour.
+// The block -> drop-handler table, built once for the built-in blocks. Only the
+// blocks whose loot is *random* name a handler now; every deterministic block
+// (special drop or plain self-drop) shares dropFromLootOrDefault, which reads the
+// data loot table. So this table holds just the procedural cases the loot data
+// deliberately does not model — the D-4 rule that the evaluator stays a direct
+// lookup, and rolls live in code until there is a system to make them vary.
 [[nodiscard]] const std::array<BlockDropFn, world::kBuiltinBlockCount>& dropTable() {
     static const std::array<BlockDropFn, world::kBuiltinBlockCount> table = [] {
         std::array<BlockDropFn, world::kBuiltinBlockCount> entries{};
-        entries.fill(&dropDefault);
+        entries.fill(&dropFromLootOrDefault);
         const auto set = [&](world::Block block, BlockDropFn fn) {
             entries[static_cast<std::size_t>(block)] = fn;
         };
         using world::Block;
-        set(Block::Stone, &dropCobblestone);
-        set(Block::Grass, &dropDirt);
-        set(Block::Podzol, &dropDirt);
-        set(Block::Farmland, &dropDirt);
-        set(Block::CoalOre, &dropCoal);
-        set(Block::DiamondOre, &dropDiamond);
-        set(Block::EmeraldOre, &dropEmerald);
-        set(Block::Bookshelf, &dropBookshelf);
-        set(Block::WallTorch, &dropWallTorch);
         set(Block::OakLeaves, &dropLeaves);
         set(Block::SpruceLeaves, &dropLeaves);
         set(Block::BirchLeaves, &dropLeaves);
@@ -325,7 +279,6 @@ MinedDrops dropCarrotPotato(world::Block block, const ItemStack&, std::uint32_t&
         set(Block::WheatCrops, &dropWheat);
         set(Block::Carrots, &dropCarrotPotato);
         set(Block::Potatoes, &dropCarrotPotato);
-        set(Block::Glass, &dropNothing);
         return entries;
     }();
     return table;
@@ -335,9 +288,9 @@ MinedDrops dropCarrotPotato(world::Block block, const ItemStack&, std::uint32_t&
 
 BlockDropFn blockDropFn(world::Block block) {
     const auto index = static_cast<std::size_t>(block);
-    // External blocks (past the built-ins) fall to the default: their own item
-    // when they dropsItem, nothing otherwise — the old switch's `default:` case.
-    return index < world::kBuiltinBlockCount ? dropTable()[index] : &dropDefault;
+    // External blocks (past the built-ins) share the data-driven handler too: its
+    // own item when it dropsItem, or a datapack-supplied loot entry.
+    return index < world::kBuiltinBlockCount ? dropTable()[index] : &dropFromLootOrDefault;
 }
 
 MinedDrops minedDrops(world::Block block, const ItemStack& tool, std::uint32_t& randomState,

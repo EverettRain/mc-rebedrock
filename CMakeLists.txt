@@ -226,6 +226,7 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/ItemEntitySystem.cpp
     src/gameplay/ItemPlacement.cpp
     src/gameplay/MiningSystem.cpp
+    src/gameplay/LootTable.cpp
     src/gameplay/BlockTags.cpp
     src/assets/ResourceProvider.cpp
     src/assets/PackMetadata.cpp
@@ -1617,6 +1618,14 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_recipe_data_test PRIVATE mc_rebedrock_runtime)
     target_include_directories(mc_rebedrock_recipe_data_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME recipe_data COMMAND mc_rebedrock_recipe_data_test)
+
+    # D-4: block loot resolved from the baked floor + datapack overlay.
+    add_executable(mc_rebedrock_loot_data_test
+        tests/loot_data_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_loot_data_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_loot_data_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME loot_data COMMAND mc_rebedrock_loot_data_test)
 
     add_executable(mc_rebedrock_block_registry_lifecycle_test
         tests/block_registry_lifecycle_test.cpp
