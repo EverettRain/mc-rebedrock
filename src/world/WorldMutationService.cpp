@@ -2,15 +2,11 @@
 
 #include "world/World.hpp"
 
-#include <array>
-
 namespace mc::world {
 
 BlockMutationResult WorldMutationService::setBlock(World& world, BlockPos pos, BlockState newState,
                                                    MutationFlags flags, MutationCause cause,
                                                    MutationSink& sink, int updateLimit) {
-    static_cast<void>(updateLimit); // recursive shape propagation lands with A3b
-
     const BlockState previous = world.state(pos.x, pos.y, pos.z);
     BlockMutationResult result{false, previous, previous};
 
@@ -53,15 +49,15 @@ BlockMutationResult WorldMutationService::setBlock(World& world, BlockPos pos, B
     // every real change regardless of the notify flags.
     sink.onSectionDirty(pos);
 
-    // Neighbours only react when asked. The six orthogonal cells are notified in
-    // a fixed order so the reaction sequence is deterministic.
+    // Neighbours only react when asked. The fan-out runs through the collecting
+    // updater rather than a bare loop, so a reaction that itself edits a block
+    // has its neighbours queued onto this drain instead of recursing, the depth
+    // limit caps a self-feeding chain, and the six cells are still notified in
+    // the fixed kNeighborUpdateOrder for a deterministic sequence.
     if (hasFlag(flags, MutationFlags::NotifyNeighbors)) {
-        constexpr std::array<BlockPos, 6> offsets{{
-            {-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1},
-        }};
-        for (const auto& offset : offsets) {
-            sink.onNeighborChanged({pos.x + offset.x, pos.y + offset.y, pos.z + offset.z}, pos);
-        }
+        neighborUpdater_.updateNeighborsAt(
+            pos, updateLimit,
+            [&sink](BlockPos neighbor, BlockPos source) { sink.onNeighborChanged(neighbor, source); });
     }
 
     return result;

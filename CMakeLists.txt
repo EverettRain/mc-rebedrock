@@ -2158,6 +2158,15 @@ if(BUILD_TESTING)
     )
     add_test(NAME world_mutation_service COMMAND mc_rebedrock_world_mutation_service_test)
 
+    add_executable(mc_rebedrock_neighbor_updater_test
+        tests/neighbor_updater_test.cpp
+    )
+    target_include_directories(mc_rebedrock_neighbor_updater_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME neighbor_updater COMMAND mc_rebedrock_neighbor_updater_test)
+
     add_executable(mc_rebedrock_chunk_section_test
         tests/chunk_section_test.cpp
         src/world/ChunkSection.cpp

@@ -1,22 +1,13 @@
 #pragma once
 
+#include "world/BlockPos.hpp"
 #include "world/BlockState.hpp"
 #include "world/MutationFlags.hpp"
+#include "world/NeighborUpdater.hpp"
 
 namespace mc::world {
 
 class World;
-
-// A block position in world space. World-layer callers (the mutation service,
-// block behaviour) use this rather than gameplay's SimulationPosition so world/
-// keeps no dependency on gameplay/.
-struct BlockPos final {
-    int x = 0;
-    int y = 0;
-    int z = 0;
-
-    [[nodiscard]] bool operator==(const BlockPos&) const = default;
-};
 
 // What a single setBlock did, so a caller can react without re-reading the cell.
 struct BlockMutationResult final {
@@ -75,6 +66,13 @@ class WorldMutationService final {
     BlockMutationResult setBlock(World& world, BlockPos pos, BlockState newState,
                                  MutationFlags flags, MutationCause cause, MutationSink& sink,
                                  int updateLimit = kDefaultUpdateLimit);
+
+  private:
+    // The queue that carries neighbour reactions. Persisting it on the service
+    // (rather than a fresh one per call) is what lets a reaction that re-enters
+    // setBlock have its own neighbour fan-out collected onto the running drain
+    // instead of recursing — the CollectingNeighborUpdater contract.
+    NeighborUpdater neighborUpdater_;
 };
 
 } // namespace mc::world

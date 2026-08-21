@@ -21,6 +21,11 @@ enum class MutationFlags : std::uint16_t {
     NotifyNeighbors = 1U << 0U,
     // Clients are told, and the section is queued for a redraw.
     NotifyClients = 1U << 1U,
+    // Suppress the client render update this write would otherwise cause. Java's
+    // UPDATE_INVISIBLE, set when a caller has already drawn the change itself (a
+    // block being placed by a player it belongs to) and a second remesh would
+    // only flicker. Kept here for bit-exact parity with Block.UpdateFlags.
+    Invisible = 1U << 2U,
     // Run the neighbour shape updates in this call instead of deferring them.
     Immediate = 1U << 3U,
     // The caller already knows the shape is unchanged, so the recursive
@@ -30,6 +35,13 @@ enum class MutationFlags : std::uint16_t {
     SuppressDrops = 1U << 5U,
     // A piston moved this block; block entities travel rather than break.
     MovedByPiston = 1U << 6U,
+    // Redstone-wire optimisation: a wire recomputing its own power fires shape
+    // updates on its neighbours but must NOT let those shape updates loop back
+    // and re-shape the wire itself. Java's UPDATE_SKIP_SHAPE_UPDATE_ON_WIRE,
+    // checked in the shape-update path (executeShapeUpdate) so a wire-driven
+    // update skips shape work on redstone_wire. Consumed by the redstone slice;
+    // defined here so flags stay bit-exact with Block.UpdateFlags.
+    SkipShapeUpdateOnWire = 1U << 7U,
     // Do not create, keep or destroy a block entity for this write. World
     // generation uses it; nothing in a running world should.
     SkipBlockEntity = 1U << 8U,
