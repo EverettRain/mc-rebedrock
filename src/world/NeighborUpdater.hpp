@@ -21,6 +21,21 @@ inline constexpr std::array<BlockPos, 6> kNeighborUpdateOrder{{
     {0, 0, 1},  // SOUTH
 }};
 
+// The order a changed cell's neighbours recompute their *shape* in, bit-for-bit
+// Java Edition's BlockBehaviour.UPDATE_SHAPE_ORDER
+// {WEST, EAST, NORTH, SOUTH, DOWN, UP}. Deliberately distinct from the neighbour
+// order above: JE runs the shape pass (updateNeighbourShapes) and the reaction
+// pass (updateNeighborsAt) with different fixed orders, and a fence corner or a
+// stair join derived from neighbours is sensitive to which one is used.
+inline constexpr std::array<BlockPos, 6> kShapeUpdateOrder{{
+    {-1, 0, 0}, // WEST
+    {1, 0, 0},  // EAST
+    {0, 0, -1}, // NORTH
+    {0, 0, 1},  // SOUTH
+    {0, -1, 0}, // DOWN
+    {0, 1, 0},  // UP
+}};
+
 // The C++ equivalent of Java's CollectingNeighborUpdater: neighbour reactions
 // run through a queue drained iteratively, never by deep recursion.
 //

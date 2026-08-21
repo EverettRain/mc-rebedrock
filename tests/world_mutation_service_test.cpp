@@ -1,8 +1,10 @@
 #include "world/Chunk.hpp"
+#include "world/NeighborUpdater.hpp"
 #include "world/World.hpp"
 #include "world/WorldMutationService.hpp"
 
 #include <cassert>
+#include <vector>
 
 namespace {
 
@@ -13,13 +15,19 @@ using namespace mc::world;
 struct RecordingSink final : MutationSink {
     int blockEntityReplaced = 0;
     int neighborChanged = 0;
+    int shapeUpdated = 0;
     int sectionDirty = 0;
     int dropsRequested = 0;
     BlockState lastRemoved{};
     MutationCause lastCause = MutationCause::PlayerBreak;
+    std::vector<BlockPos> shapeOrder;
 
     void onBlockEntityReplaced(BlockPos, BlockState, BlockState) override { ++blockEntityReplaced; }
     void onNeighborChanged(BlockPos, BlockPos) override { ++neighborChanged; }
+    void onNeighborShapeUpdate(BlockPos neighbor, BlockPos) override {
+        ++shapeUpdated;
+        shapeOrder.push_back(neighbor);
+    }
     void onSectionDirty(BlockPos) override { ++sectionDirty; }
     void onDropsRequested(BlockPos, BlockState removed, MutationCause cause) override {
         ++dropsRequested;
@@ -131,6 +139,52 @@ int main() {
         assert(sink.dropsRequested == 0);           // suppressed
         assert(sink.blockEntityReplaced == 1);      // still a real block swap
         assert(sink.neighborChanged == 6);
+    }
+
+    // --- The shape pass: every neighbour recomputes its shape in
+    //     kShapeUpdateOrder, before the reaction pass, on any real change. ---
+    {
+        World world = loadedWorld();
+        assert(world.setState(pos.x, pos.y, pos.z, BlockState{Block::Stone}));
+        RecordingSink sink;
+        const auto result = service.setBlock(world, pos, BlockState{Block::Air},
+                                             MutationFlags::All, MutationCause::PlayerBreak, sink);
+        assert(result.changed);
+        assert(sink.shapeUpdated == 6);            // all six neighbours
+        assert(sink.shapeOrder.size() == 6U);
+        for (std::size_t i = 0; i < 6U; ++i) {
+            const auto& offset = kShapeUpdateOrder[i];
+            assert(sink.shapeOrder[i] ==
+                   BlockPos(pos.x + offset.x, pos.y + offset.y, pos.z + offset.z));
+        }
+    }
+
+    // --- KnownShape is the caller's promise no shape changed: the shape pass is
+    //     skipped, but neighbours still react. ---
+    {
+        World world = loadedWorld();
+        assert(world.setState(pos.x, pos.y, pos.z, BlockState{Block::Stone}));
+        RecordingSink sink;
+        const auto result = service.setBlock(
+            world, pos, BlockState{Block::Air},
+            MutationFlags::KnownShape | MutationFlags::NotifyNeighbors, MutationCause::Command, sink);
+        assert(result.changed);
+        assert(sink.shapeUpdated == 0);            // shape pass skipped
+        assert(sink.neighborChanged == 6);         // reaction pass still runs
+    }
+
+    // --- Generation (which includes KnownShape) dirties the mesh but runs no
+    //     shape pass and no reactions. ---
+    {
+        World world = loadedWorld();
+        assert(world.setState(pos.x, pos.y, pos.z, BlockState{Block::Stone}));
+        RecordingSink sink;
+        static_cast<void>(service.setBlock(world, pos, BlockState{Block::Dirt},
+                                           MutationFlags::Generation, MutationCause::Generation,
+                                           sink));
+        assert(sink.shapeUpdated == 0);
+        assert(sink.neighborChanged == 0);
+        assert(sink.sectionDirty == 1);
     }
 
     // --- An out-of-world write changes nothing and dispatches nothing. ---

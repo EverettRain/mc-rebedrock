@@ -1,9 +1,12 @@
 #include "gameplay/GameplayMutationSink.hpp"
 
+#include "gameplay/BlockBehavior.hpp"
 #include "gameplay/GameSession.hpp"
+#include "world/Block.hpp"
 #include "world/World.hpp"
 
 #include <cmath>
+#include <optional>
 
 namespace mc::gameplay {
 namespace {
@@ -67,6 +70,33 @@ void GameplayMutationSink::onBlockEntityReplaced(world::BlockPos pos, world::Blo
         // before its screen is first opened.
         static_cast<void>(session_->furnaceSystem().place({pos.x, pos.y, pos.z}));
     }
+}
+
+void GameplayMutationSink::onNeighborShapeUpdate(world::BlockPos neighbor, world::BlockPos source) {
+    // The neighbour recomputes its shape against the changed source. The
+    // pre-filter rejects the overwhelming majority (stone, dirt, ore) with one
+    // bit test inside dispatchUpdateShape, before any state is read or a slot
+    // fetched — no block in the current content set fills the updateShape slot,
+    // so this is the fence/wire/stair join mechanism waiting for its content
+    // (W-4+), not yet a runtime write.
+    const world::BlockState state = world_->state(neighbor.x, neighbor.y, neighbor.z);
+    const NeighborUpdateContext context{
+        *world_,
+        neighbor,
+        state,
+        {source.x - neighbor.x, source.y - neighbor.y, source.z - neighbor.z},
+        world_->state(source.x, source.y, source.z),
+    };
+    const std::optional<world::BlockState> updated =
+        dispatchUpdateShape(world::blockId(state.block()), context);
+    if (!updated.has_value()) {
+        return;
+    }
+    // A pure property rewrite: same block, so no block entity churns and nothing
+    // drops. It travels the ordinary state-edit channel — written to the cell,
+    // then published so the mesher and save pick it up exactly like any edit.
+    static_cast<void>(world_->setState(neighbor.x, neighbor.y, neighbor.z, *updated));
+    session_->events().publish(WorldEditEvent{neighbor.x, neighbor.y, neighbor.z, *updated, true});
 }
 
 void GameplayMutationSink::onNeighborChanged(world::BlockPos neighbor, world::BlockPos source) {

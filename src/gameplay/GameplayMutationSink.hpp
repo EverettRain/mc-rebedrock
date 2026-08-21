@@ -44,6 +44,7 @@ class GameplayMutationSink final : public world::MutationSink {
 
     void onBlockEntityReplaced(world::BlockPos pos, world::BlockState previous,
                                world::BlockState current) override;
+    void onNeighborShapeUpdate(world::BlockPos neighbor, world::BlockPos source) override;
     void onNeighborChanged(world::BlockPos neighbor, world::BlockPos source) override;
     void onSectionDirty(world::BlockPos pos) override;
     void onDropsRequested(world::BlockPos pos, world::BlockState removed,

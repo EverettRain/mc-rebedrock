@@ -49,6 +49,18 @@ BlockMutationResult WorldMutationService::setBlock(World& world, BlockPos pos, B
     // every real change regardless of the notify flags.
     sink.onSectionDirty(pos);
 
+    // Shape pass, before the reaction pass — Java's markAndNotifyBlock order.
+    // Each of the six neighbours recomputes its shape against this change (a
+    // fence connection, a wire re-point), a pure property rewrite. KnownShape is
+    // the caller's promise that nothing shape-relevant changed, so worldgen and
+    // bulk edits skip it. The order is kShapeUpdateOrder, distinct from the
+    // reaction order below.
+    if (!hasFlag(flags, MutationFlags::KnownShape)) {
+        for (const auto& offset : kShapeUpdateOrder) {
+            sink.onNeighborShapeUpdate({pos.x + offset.x, pos.y + offset.y, pos.z + offset.z}, pos);
+        }
+    }
+
     // Neighbours only react when asked. The fan-out runs through the collecting
     // updater rather than a bare loop, so a reaction that itself edits a block
     // has its neighbours queued onto this drain instead of recursing, the depth

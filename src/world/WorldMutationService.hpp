@@ -35,6 +35,15 @@ class MutationSink {
     virtual void onBlockEntityReplaced(BlockPos /*pos*/, BlockState /*previous*/,
                                        BlockState /*current*/) {}
 
+    // A neighbour of the edited cell should recompute its *shape* against the
+    // change: a fence grows or drops a connection arm, a redstone wire re-points,
+    // a stair squares off a corner. This is a pure property rewrite of the
+    // neighbour (never a block-kind change, never a break) and runs before the
+    // reaction pass, mirroring Java's updateNeighbourShapes → neighborChanged
+    // order. Called once per orthogonal neighbour in kShapeUpdateOrder unless
+    // MutationFlags::KnownShape says the caller already knows no shape changed.
+    virtual void onNeighborShapeUpdate(BlockPos /*neighbor*/, BlockPos /*source*/) {}
+
     // A neighbour of the edited cell should re-evaluate: sand falls, a torch
     // pops off, a comparator re-reads. Called once per orthogonal neighbour,
     // only when MutationFlags::NotifyNeighbors is set.

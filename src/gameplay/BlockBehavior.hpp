@@ -27,6 +27,7 @@
 #include "gameplay/WorldSimulation.hpp" // WorldSimulation::isRandomlyTicking
 #include "world/Block.hpp"
 #include "world/BlockPlacement.hpp" // PlacementContext, placementBlock (World fwd)
+#include "world/BlockPos.hpp"       // BlockPos
 #include "world/BlockRegistry.hpp"  // blockCount
 #include "world/BlockShape.hpp"     // BlockShape, blockShape
 #include "world/BlockState.hpp"
@@ -146,6 +147,20 @@ struct PlacementBehaviorContext final {
     const world::World& world;
     world::Block block = world::Block::Air;
     const world::PlacementContext& placement;
+};
+
+// Everything the updateShape slot reads (W-3), the C++ shape of Java's
+// updateShape(state, level, pos, direction, neighborPos, neighborState). The
+// derivation looks at the changed neighbour (and, through `world`, any others it
+// needs — a fence checks all four sides) and returns the block's *new state*, or
+// nullopt for "no change". Its contract is A3b: a pure property rewrite of the
+// same block. `neighborPos` is `pos + fromOffset`.
+struct NeighborUpdateContext final {
+    const world::World& world;
+    world::BlockPos pos;              // the cell recomputing its shape
+    world::BlockState state;          // its current state — the derivation's input
+    world::BlockPos fromOffset;       // pos -> the neighbour that changed
+    world::BlockState neighborState;  // that neighbour's new state
 };
 
 using GetDropsFn =
@@ -291,6 +306,61 @@ template <class Fn>
 dispatchStateForPlacement(core::BlockId id, const PlacementBehaviorContext& context) {
     const auto slot = behaviorFor(id).getStateForPlacement;
     return slot != nullptr ? slot(context) : std::nullopt;
+}
+
+// Runs one updateShape derivation under the A3b contract, the single place that
+// contract is enforced so every fence/wire/stair/door derivation obeys it by
+// construction:
+//
+//   * **Pure property rewrite** — the result must be the same block. A
+//     derivation that changed the block kind would be a placement or a break
+//     wearing updateShape's clothes; it is refused (treated as no-change) rather
+//     than allowed to corrupt the cell — updateShape may not create or destroy.
+//   * **Idempotent, converging to a fixed point** — a derivation that returns
+//     the state unchanged means "settled", reported as nullopt so a re-
+//     notification writes nothing and the fan-out cannot churn. This is what
+//     makes repeatedly notifying a stable connection free.
+//
+// Returns the new state only when it genuinely differs and is the same block;
+// nullopt otherwise.
+[[nodiscard]] inline std::optional<world::BlockState>
+applyUpdateShapeContract(UpdateShapeFn slot, const NeighborUpdateContext& context) {
+    if (slot == nullptr) {
+        return std::nullopt;
+    }
+    const std::optional<world::BlockState> result = slot(context);
+    if (!result.has_value()) {
+        return std::nullopt;
+    }
+    // A3b: updateShape only rewrites properties, never the block itself. A
+    // kind-changing result is a bug in the derivation; refuse it.
+    if (result->block() != context.state.block()) {
+        return std::nullopt;
+    }
+    // Fixed point: an unchanged result is "no change", not a write.
+    if (*result == context.state) {
+        return std::nullopt;
+    }
+    return result;
+}
+
+// The neighbour's new shape state, through the behaviour table's updateShape
+// slot — or nullopt when the block cannot react to a neighbour at all. The
+// HasNeighborReaction pre-filter is the whole point: stone, dirt, ore and the
+// other overwhelming majority test one bit and are rejected before the slot is
+// ever fetched or a context examined, the cost Java pays a virtual call for on
+// every neighbour of every block even though almost none override updateShape.
+[[nodiscard]] inline std::optional<world::BlockState>
+dispatchUpdateShape(const BlockBehavior& behavior, const NeighborUpdateContext& context) {
+    if (!behavior.prefilter.has(BlockBehaviorBit::HasNeighborReaction)) {
+        return std::nullopt;
+    }
+    return applyUpdateShapeContract(behavior.updateShape, context);
+}
+
+[[nodiscard]] inline std::optional<world::BlockState>
+dispatchUpdateShape(core::BlockId id, const NeighborUpdateContext& context) {
+    return dispatchUpdateShape(behaviorFor(id), context);
 }
 
 } // namespace mc::gameplay
