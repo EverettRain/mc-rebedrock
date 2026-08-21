@@ -1,6 +1,7 @@
 #include "gameplay/BlockTags.hpp"
 
 #include "core/Json.hpp"
+#include "data/TagFile.hpp"
 #include "world/BlockRegistry.hpp"
 
 #include <unordered_set>
@@ -78,19 +79,6 @@ constexpr std::array<std::string_view, 1> kBuiltinNeedsDiamond{"obsidian"};
 // pathological pack that nests without repeating.
 constexpr int kMaximumTagDepth = 16;
 
-// The identifier of one `values` entry, whichever spelling the pack used: a
-// bare string, or the object form `{"id": "...", "required": false}` the format
-// allows for entries a pack tolerates being absent.
-[[nodiscard]] std::string entryIdentifier(const core::Json& entry) {
-    if (entry.isString()) {
-        return entry.asString();
-    }
-    if (entry.isObject() && entry["id"].isString()) {
-        return entry["id"].asString();
-    }
-    return {};
-}
-
 // Turns `<namespace>:<name>` (or a bare name) into the tag's content path.
 [[nodiscard]] assets::ResourceLocation tagLocation(std::string_view reference) {
     const auto separator = reference.find(':');
@@ -126,28 +114,30 @@ bool collectTag(const assets::ResourceProvider& resources, const assets::Resourc
         } catch (const std::exception&) {
             continue; // a malformed tag must not take the rest down
         }
-        if (root["replace"].asBool(false)) {
-            out.clear();
-        }
-        const core::Json& values = root["values"];
-        if (!values.isArray()) {
+        // The file shape is the D-1 tag codec now, not a hand walk of the Json.
+        // A file whose Json is not a tag object supplies no members (but still
+        // counts as supplied, so it replaces the built-in with nothing).
+        data::TagFile tag;
+        if (!data::Codec<data::TagFile>::read(root, tag)) {
             continue;
         }
-        for (std::size_t index = 0; index < values.size(); ++index) {
-            const std::string identifier = entryIdentifier(values[index]);
-            if (identifier.empty()) {
+        if (tag.replace) {
+            out.clear();
+        }
+        for (const auto& entry : tag.values) {
+            if (entry.id.empty()) {
                 continue;
             }
-            if (identifier.front() == '#') {
+            if (entry.id.front() == '#') {
                 supplied = collectTag(resources,
-                                      tagLocation(std::string_view{identifier}.substr(1U)),
+                                      tagLocation(std::string_view{entry.id}.substr(1U)),
                                       depth + 1, visited, out) ||
                            supplied;
                 continue;
             }
             // A vanilla tag names hundreds of blocks this build does not have.
             // Skipping them is the expected case, not a failure.
-            if (const auto block = world::blockFromIdentifier(identifier); block.has_value()) {
+            if (const auto block = world::blockFromIdentifier(entry.id); block.has_value()) {
                 out.push_back(*block);
             }
         }

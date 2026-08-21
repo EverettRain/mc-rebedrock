@@ -6,6 +6,13 @@
 
 ## 未发布
 
+### 变更
+
+- 方块标签的数据包文件格式改由数据 codec 解析：单一 `TagFile` codec（`{replace, values}`，
+  `values` 项支持裸字符串或 `{id, required}` 对象）取代 BlockTags 内联手搓的 JSON 遍历。标签策略
+  不变——`#tag` 引用照常展开、数据包仍低→高合并且 `replace` 截断、未知方块仍跳过——成员仍存于
+  per-id bitset，工具规则行为与之前完全一致。物品/实体标签日后复用同一 codec。
+
 ### 新增
 
 - 新增数据 codec 与双层烘焙基建（`src/data/`），用于把配方、掉落、标签从手抄进 C++ 外置成

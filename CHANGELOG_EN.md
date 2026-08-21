@@ -7,6 +7,16 @@ simple versioned history while it is in beta.
 
 ## Unreleased
 
+### Changed
+
+- Block tags now read their datapack file format through the data codec: a
+  single `TagFile` codec (`{replace, values}`, values as bare strings or
+  `{id, required}` objects) replaces the hand-rolled JSON walking BlockTags did
+  inline. The tag policy is unchanged — `#tag` references still expand, packs
+  still merge low-to-high with `replace` truncating, unknown blocks are still
+  skipped — and membership still lives in the per-id bitset, so tool rules behave
+  exactly as before. Item and entity tags will reuse the same codec.
+
 ### Added
 
 - A data codec and two-layer baking foundation (`src/data/`) for moving recipes,

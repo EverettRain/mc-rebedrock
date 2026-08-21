@@ -1,4 +1,7 @@
 #include "assets/ResourceProvider.hpp"
+#include "core/Json.hpp"
+#include "data/Codec.hpp"
+#include "data/TagFile.hpp"
 #include "gameplay/BlockTags.hpp"
 #include "world/Block.hpp"
 
@@ -92,6 +95,50 @@ int main() {
         // A block in no tag stays clean.
         REQUIRE(!tags.has(Block::Dirt, BlockTag::MineableWithPickaxe));
         REQUIRE(!tags.has(Block::Stone, BlockTag::MineableWithAxe));
+    }
+
+    // --- The object entry form `{"id": ..., "required": ...}` the codec unifies
+    // with the bare-string form: both spellings name a member, and `required:
+    // false` still just means "skip if absent", which every unknown block already
+    // is. ---
+    {
+        const fs::path objectRoot = root / "object-form";
+        fs::create_directories(objectRoot);
+        writeTag(objectRoot, "mineable/pickaxe.json",
+                 R"({"values": [{"id": "minecraft:stone", "required": true},
+                                "minecraft:iron_ore",
+                                {"id": "minecraft:absent_block", "required": false}]})");
+        assets::StandardPackResourceProvider pack{objectRoot};
+        mc::gameplay::BlockTagTable tags;
+        tags.load(pack);
+        REQUIRE(tags.has(Block::Stone, BlockTag::MineableWithPickaxe));   // object form
+        REQUIRE(tags.has(Block::IronOre, BlockTag::MineableWithPickaxe)); // bare string beside it
+    }
+
+    // --- The tag file is a D-1 codec now: it round-trips through JSON text, both
+    // entry spellings and the `replace` flag survive, and a non-object value is a
+    // clean read failure rather than a crash. ---
+    {
+        const mc::data::TagFile original{
+            true, {{"minecraft:stone", true}, {"minecraft:iron_ore", false}}};
+        REQUIRE(mc::data::roundTripsThroughText(original));
+
+        // A required entry dumps as a bare string; an optional one as the object.
+        const std::string text = mc::data::Codec<mc::data::TagFile>::write(original).dump();
+        REQUIRE(text.find("\"replace\":true") != std::string::npos);
+        REQUIRE(text.find("\"minecraft:stone\"") != std::string::npos);
+        REQUIRE(text.find("\"required\":false") != std::string::npos);
+
+        // Reading tolerates the defaults: no `replace`, no `values`.
+        mc::data::TagFile empty;
+        REQUIRE(mc::data::Codec<mc::data::TagFile>::read(mc::core::Json::parse("{}"), empty));
+        REQUIRE(!empty.replace);
+        REQUIRE(empty.values.empty());
+
+        // A values array whose element is neither string nor object fails cleanly.
+        mc::data::TagFile bad;
+        REQUIRE(!mc::data::Codec<mc::data::TagFile>::read(
+            mc::core::Json::parse(R"({"values": [42]})"), bad));
     }
 
     // --- A cycle terminates instead of hanging. A broken pack must not be able
