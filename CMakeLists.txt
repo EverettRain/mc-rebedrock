@@ -1627,6 +1627,14 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_loot_data_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME loot_data COMMAND mc_rebedrock_loot_data_test)
 
+    # D-5: Java-Edition data-side mapping — vanilla-name authority + JE ingestion.
+    add_executable(mc_rebedrock_je_mapping_test
+        tests/je_mapping_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_je_mapping_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_je_mapping_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME je_mapping COMMAND mc_rebedrock_je_mapping_test)
+
     add_executable(mc_rebedrock_block_registry_lifecycle_test
         tests/block_registry_lifecycle_test.cpp
     )

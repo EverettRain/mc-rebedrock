@@ -24,6 +24,11 @@
 
 ### 新增
 
+- 新增 Java 版互通的数据侧映射层：一个可行性映射，把 vanilla `minecraft:` 数据包 JSON（配方/掉落/标签）
+  摄取成本项目自己的定义。标签直接摄取（vanilla 标签文件即本项目标签格式），合成/熔炼配方经薄适配器，
+  方块掉落仅摄取确定性子集（纯掉落，或 silk/非-silk 对的非-silk 分支）；随机或条件掉落标记为需转换。
+  完整性检查确认每个方块与物品都映射到 `minecraft:` 名。这是世界互通的数据半边——存档/世界半边
+  （block-state palette、scheduled tick、NBT）另计——且为带测试的能力，尚未接入加载；见 wiki 互通报告。
 - 新增数据 codec 与双层烘焙基建（`src/data/`），用于把配方、掉落、标签从手抄进 C++ 外置成
   文件。serde 式 `Codec<T>` 以值语义在 POD 与 JSON 间双向编解码（不用函数式管道）；
   `DataStore<Def>` 在底铺一层烘焙的 constexpr 内置floor（落 `.rodata`、零启动解析），

@@ -36,6 +36,16 @@ simple versioned history while it is in beta.
 
 ### Added
 
+- A Java-Edition data-side interop layer: a feasibility mapping that ingests
+  vanilla `minecraft:` datapack JSON (recipes, loot, tags) into the project's own
+  definitions. Tags ingest directly (the vanilla tag file already is the
+  project's tag format), crafting/smelting recipes through a thin adapter, and
+  the deterministic subset of block loot (a plain drop, or the non-silk branch of
+  a silk/non-silk pair); random or conditional loot is reported as needing
+  conversion. A completeness check confirms every block and item maps to a
+  `minecraft:` name. This is the data half of world interop — the save/world half
+  (block-state palette, scheduled ticks, NBT) is separate — and it is a tested
+  capability, not yet wired into loading; see the interop report in the wiki.
 - A data codec and two-layer baking foundation (`src/data/`) for moving recipes,
   loot and tags out of hand-written C++ into files. A serde-style `Codec<T>`
   encodes a POD to and from JSON with value semantics (no functional pipeline);
