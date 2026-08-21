@@ -1,7 +1,12 @@
 #include "gameplay/ItemPlacement.hpp"
 
+#include "gameplay/ItemBehavior.hpp"
+#include "gameplay/ItemRegistry.hpp"
 #include "gameplay/WorldSimulation.hpp"
 #include "world/World.hpp"
+
+#include <cstddef>
+#include <vector>
 
 namespace mc::gameplay {
 namespace {
@@ -135,6 +140,51 @@ namespace {
     return {ItemUseAction::TilGround, world::BlockState{tilled}};
 }
 
+// The useOn handler for a registered item, classified once at table build. This
+// is the old itemUseOn `if`-chain, run at registration time so the runtime path
+// is a table lookup rather than a per-click scan. Block items and a custom
+// Item::useAction override are handled in itemUseOn itself (a block item is not a
+// registry entry, and a custom override wins over its class), so they are absent
+// here: this classifies only the built-in item classes.
+[[nodiscard]] ItemUseFn itemUseOnSlot(const Item* item) {
+    if (asSpawnEgg(item) != nullptr) {
+        return spawnEggItemUseOn;
+    }
+    if (item == &items::Bucket) {
+        return bucketCollectUseOn;
+    }
+    if (item == &items::WaterBucket) {
+        return bucketPlaceUseOn;
+    }
+    if (item == &items::LavaBucket) {
+        return lavaBucketPlaceUseOn;
+    }
+    if (cropForSeedItem(item) != world::Block::Air) {
+        return plantCropOnFarmland;
+    }
+    if (item->toolType == ToolType::Hoe) {
+        return tillBlockWithHoe;
+    }
+    return nullptr;
+}
+
+// Builds the runtime behaviour table, sized to the frozen item registry and
+// indexed by ItemId — the same shape buildBlockBehaviorTable gives blocks. Every
+// registered item takes its classified useOn slot and the matching pre-filter
+// bit; an item that does nothing on right-click stays an empty entry.
+[[nodiscard]] std::vector<ItemBehavior> buildItemBehaviorTable() {
+    const auto& registry = itemRegistry();
+    std::vector<ItemBehavior> table(registry.size());
+    for (std::size_t index = 0; index < table.size(); ++index) {
+        const Item* item = registry.get(
+            core::ItemId::of(static_cast<core::ItemId::Value>(index)));
+        auto& entry = table[index];
+        entry.useOn = itemUseOnSlot(item);
+        entry.prefilter.set(ItemBehaviorBit::HasUseOn, entry.useOn != nullptr);
+    }
+    return table;
+}
+
 } // namespace
 
 std::optional<world::BlockState> itemPlacementBlock(
@@ -156,39 +206,42 @@ std::optional<world::BlockState> itemPlacementBlock(
     return world::placementBlock(world, blockItem->block(), context);
 }
 
+const std::vector<ItemBehavior>& itemBehaviorTable() {
+    static const std::vector<ItemBehavior> table = buildItemBehaviorTable();
+    return table;
+}
+
+const ItemBehavior& itemBehaviorFor(core::ItemId id) {
+    static const ItemBehavior empty{};
+    const auto& table = itemBehaviorTable();
+    const auto index = id.index();
+    return id.valid() && index < table.size() ? table[index] : empty;
+}
+
+bool itemHasBehavior(core::ItemId id, ItemBehaviorBit bit) {
+    return itemBehaviorFor(id).prefilter.has(bit);
+}
+
 ItemUseResult itemUseOn(
     const Item* item, world::World& world, const world::PlacementContext& context) {
     if (item == nullptr) {
         return {};
     }
-    // A custom item's own handler wins over the built-in classes.
+    // A custom item's own handler wins over its class, and reaches items that
+    // never registered (a bare custom Item), so it is checked ahead of the table.
     if (item->useOn != nullptr) {
         return item->useOn(item, world, context);
     }
-    // The built-in behaviours, dispatched by the item's class.
-    if (asSpawnEgg(item) != nullptr) {
-        return spawnEggItemUseOn(item, world, context);
-    }
+    // A block item places its block; its identity is the block's, so it is not a
+    // registry entry and dispatches on the block side rather than the item table.
     if (asBlockItem(item) != nullptr) {
         return blockItemUseOn(item, world, context);
     }
-    if (item == &items::Bucket) {
-        return bucketCollectUseOn(item, world, context);
-    }
-    if (item == &items::WaterBucket) {
-        return bucketPlaceUseOn(item, world, context);
-    }
-    if (item == &items::LavaBucket) {
-        return lavaBucketPlaceUseOn(item, world, context);
-    }
-    // The seed items (SeedsItem subclasses): wheat seeds, carrot and potato plant
-    // their crop on the farmland under the placement cell.
-    if (cropForSeedItem(item) != world::Block::Air) {
-        return plantCropOnFarmland(item, world, context);
-    }
-    // HoeItem#useOn: any hoe tills dirt-family blocks.
-    if (item->toolType == ToolType::Hoe) {
-        return tillBlockWithHoe(item, world, context);
+    // Every other built-in item resolves through the behaviour table by its
+    // ItemId: one indexed load and a pre-filter bit, no per-click identity scan.
+    const ItemBehavior& behavior = itemBehaviorFor(itemId(item));
+    if (behavior.prefilter.has(ItemBehaviorBit::HasUseOn) && behavior.useOn != nullptr) {
+        return behavior.useOn(item, world, context);
     }
     return {};
 }

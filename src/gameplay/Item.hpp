@@ -285,7 +285,7 @@ class BlockItem : public Item {
   public:
     constexpr BlockItem() = default;
 
-    constexpr BlockItem(world::Block block) : block_(block) {
+    constexpr BlockItem(world::Block block) : block_(world::blockId(block)) {
         const auto& definition = world::blockDefinition(block);
         identifier = definition.identifier;
         vanillaAlias = definition.vanilla;
@@ -295,10 +295,14 @@ class BlockItem : public Item {
         blockItemKind = BlockItemKind::Plain;
     }
 
-    [[nodiscard]] constexpr world::Block block() const { return block_; }
+    // The block this item places, held as a dense BlockId (the DOD "holder = id"
+    // rule) rather than the Block enum: a block item references block identity by
+    // id, and block() converts back for the callers that still speak in Block.
+    [[nodiscard]] constexpr world::Block block() const { return world::blockFromId(block_); }
+    [[nodiscard]] constexpr world::BlockId blockId() const { return block_; }
 
   private:
-    world::Block block_ = world::Block::Air;
+    world::BlockId block_ = world::blockId(world::Block::Air);
 };
 
 // StandingAndWallBlockItem (1.16.1): a block item that places one of two blocks
@@ -308,14 +312,16 @@ class BlockItem : public Item {
 class StandingAndWallBlockItem : public BlockItem {
   public:
     constexpr StandingAndWallBlockItem(world::Block standing, world::Block wall)
-        : BlockItem(standing), wallBlock_(wall) {
+        : BlockItem(standing), wallBlock_(world::blockId(wall)) {
         blockItemKind = BlockItemKind::StandingAndWall;
     }
 
-    [[nodiscard]] constexpr world::Block wallBlock() const { return wallBlock_; }
+    [[nodiscard]] constexpr world::Block wallBlock() const {
+        return world::blockFromId(wallBlock_);
+    }
 
   private:
-    world::Block wallBlock_ = world::Block::Air;
+    world::BlockId wallBlock_ = world::blockId(world::Block::Air);
 };
 
 // Returns non-null when `item` is a block item, so callers can reach its block().
@@ -630,30 +636,11 @@ constexpr bool itemRegistryIsWellFormed() {
 static_assert(itemRegistryIsWellFormed(),
               "kItemRegistry entries must be namespaced and uniquely identified");
 
-// Resolves a registry key to its item. Accepts `rebedrock:book`, the vanilla
-// alias `minecraft:book`, and the bare `book`. Returns nullptr when unknown.
-[[nodiscard]] inline const Item* itemFromIdentifier(std::string_view text) {
-    for (const Item* item : kItemRegistry) {
-        if (item->identifier.matches(text)) return item;
-    }
-    for (const Item* item : kItemRegistry) {
-        if (item->vanillaAlias.matches(text)) return item;
-    }
-    // Spawn eggs and any other items registered through the runtime slot.
-    for (const Item* item : extraItemRegistry()) {
-        if (item->identifier.matches(text)) return item;
-    }
-    for (const Item* item : extraItemRegistry()) {
-        if (item->vanillaAlias.matches(text)) return item;
-    }
-    // Every registered block is also wielded as its BlockItem, the way 1.16.1's
-    // Items registry holds `Items.STONE` alongside `Blocks.STONE`. Real items win
-    // the lookup first; a block id that matched no item resolves to its block item.
-    if (const auto block = world::blockFromIdentifier(text); block.has_value()) {
-        return blockItemFor(*block);
-    }
-    return nullptr;
-}
+// itemFromIdentifier — resolving a registry key to its item — now lives in
+// gameplay/ItemRegistry.hpp, where it is a view over the runtime ItemRegistry
+// (the single item-identity source) rather than a hand-rolled scan of the
+// tables here. Item.hpp keeps only the constexpr definitions; the registry that
+// hands out ItemIds and resolves names is built from them one layer up.
 
 // The harvest and combat parameters Java 1.16.1 assigns to one tool. The
 // project does not consume durability yet, but the numbers are kept so the

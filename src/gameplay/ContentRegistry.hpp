@@ -42,7 +42,11 @@ class ContentRegistry final {
     std::vector<RegisteredBlock> blocks_;
     std::vector<RegisteredItem> items_;
     std::unordered_map<std::string, std::size_t> blockIdentifiers_;
-    std::unordered_map<std::string, std::size_t> itemIdentifiers_;
+    // The item catalog is a view over the ItemRegistry: identity (name -> Item)
+    // resolves through that registry, and this map only records which registered
+    // items are catalogued here, keyed by the resolved Item pointer. No parallel
+    // name -> item map — the registry is the single item-identity source.
+    std::unordered_map<const Item*, std::size_t> itemIndex_;
     std::array<std::vector<ItemStack>, kCategoryCount> catalogs_;
     std::vector<ItemStack> allCatalog_;
     std::vector<ItemStack> blockCatalog_;

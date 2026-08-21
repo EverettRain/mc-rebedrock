@@ -1,5 +1,6 @@
 #include "persistence/SaveRepository.hpp"
 
+#include "gameplay/ItemRegistry.hpp"
 #include "persistence/SaveStream.hpp"
 #include "persistence/UnknownBlockTable.hpp"
 

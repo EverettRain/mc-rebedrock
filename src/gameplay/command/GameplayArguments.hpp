@@ -5,6 +5,7 @@
 #include "gameplay/GameMode.hpp"
 #include "gameplay/GameRules.hpp"
 #include "gameplay/Item.hpp"
+#include "gameplay/ItemRegistry.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "world/Block.hpp"
 

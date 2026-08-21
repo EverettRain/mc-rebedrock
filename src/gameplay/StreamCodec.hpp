@@ -12,6 +12,7 @@
 #include "gameplay/BlockIdRemap.hpp"
 #include "gameplay/Inventory.hpp"
 #include "gameplay/Item.hpp"
+#include "gameplay/ItemRegistry.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "persistence/SaveStream.hpp"
 #include "world/Block.hpp"

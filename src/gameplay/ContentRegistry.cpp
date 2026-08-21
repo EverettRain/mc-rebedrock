@@ -1,5 +1,6 @@
 #include "gameplay/ContentRegistry.hpp"
 
+#include "gameplay/ItemRegistry.hpp"
 #include "world/BlockRegistry.hpp"
 
 #include <array>
@@ -29,9 +30,10 @@ bool ContentRegistry::registerBlock(world::Block blockValue, CreativeCategory ca
 
 bool ContentRegistry::registerItem(const Item* itemValue, CreativeCategory category) {
     if (itemValue == nullptr || category == CreativeCategory::Count) return false;
-    auto identifier = itemValue->identifier.toString();
-    if (itemIdentifiers_.contains(identifier)) return false;
-    itemIdentifiers_.emplace(std::move(identifier), items_.size());
+    // Catalog membership is keyed by the Item itself; the ItemRegistry owns the
+    // name -> Item mapping this view resolves through.
+    if (itemIndex_.contains(itemValue)) return false;
+    itemIndex_.emplace(itemValue, items_.size());
     items_.push_back({itemValue, category});
     const ItemStack stack{world::Block::Air, 1U, itemValue};
     catalogs_[static_cast<std::size_t>(category)].push_back(stack);
@@ -55,14 +57,14 @@ const RegisteredBlock* ContentRegistry::block(std::string_view identifier) const
 }
 
 const RegisteredItem* ContentRegistry::item(std::string_view identifier) const {
-    auto found = itemIdentifiers_.find(std::string{identifier});
-    if (found == itemIdentifiers_.end()) {
-        // Vanilla aliases and bare names resolve through the item registry.
-        const auto* resolved = itemFromIdentifier(identifier);
-        if (resolved == nullptr) return nullptr;
-        found = itemIdentifiers_.find(resolved->identifier.toString());
-        if (found == itemIdentifiers_.end()) return nullptr;
-    }
+    // Resolve identity through the ItemRegistry (the single item-identity source);
+    // this catalog is a view keyed by the resolved Item pointer. A name that
+    // resolves to an item outside this catalog (e.g. a block wielded as its
+    // BlockItem, which lives in the block catalog) is not listed here.
+    const Item* resolved = itemFromIdentifier(identifier);
+    if (resolved == nullptr) return nullptr;
+    const auto found = itemIndex_.find(resolved);
+    if (found == itemIndex_.end()) return nullptr;
     return &items_[found->second];
 }
 

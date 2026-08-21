@@ -3,6 +3,7 @@
 #include "gameplay/ContentRegistry.hpp"
 #include "gameplay/EntitySystem.hpp"
 #include "gameplay/Item.hpp"
+#include "gameplay/ItemRegistry.hpp"
 #include "gameplay/command/GameplayArguments.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "world/Block.hpp"
