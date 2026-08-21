@@ -78,7 +78,13 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
 // lever/button/etc. join as they land).
 [[nodiscard]] constexpr bool isSignalSource(world::Block block) {
     return block == world::Block::RedstoneBlock || block == world::Block::RedstoneTorch ||
-           block == world::Block::RedstoneWallTorch || block == world::Block::Lever;
+           block == world::Block::RedstoneWallTorch || block == world::Block::Lever ||
+           block == world::Block::Repeater;
+}
+
+// Whether a block is a diode (repeater or, later, comparator) — DiodeBlock.isDiode.
+[[nodiscard]] constexpr bool isDiode(world::Block block) {
+    return block == world::Block::Repeater;
 }
 
 // Weak power this block emits toward `dir` (RedstoneTorchBlock.getSignal etc.).
@@ -95,6 +101,9 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
     case world::Block::Lever:
         // LeverBlock.getSignal: POWERED ? 15 : 0, every side weakly.
         return state.powered() ? 15 : 0;
+    case world::Block::Repeater:
+        // DiodeBlock.getSignal: output 15 only out of its FACING side when on.
+        return state.powered() && facingOf(state) == dir ? 15 : 0;
     default:
         return 0;
     }
@@ -112,6 +121,9 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
         // LeverBlock.getDirectSignal: strongly powers only the block it hangs on
         // (getConnectedDirection), which FACING records here.
         return state.powered() && facingOf(state) == dir ? 15 : 0;
+    case world::Block::Repeater:
+        // DiodeBlock.getDirectSignal == getSignal (strong out the FACING side).
+        return getSignal(state, dir);
     default:
         return 0;
     }
@@ -207,6 +219,88 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
 [[nodiscard]] inline bool torchHasNeighborSignal(const world::World& world,
                                                  world::BlockPos torchPos) {
     return hasSignal(world, {torchPos.x, torchPos.y - 1, torchPos.z}, Direction::Down);
+}
+
+// Horizontal clockwise / counter-clockwise, viewed from above (Direction
+// .getClockWise / getCounterClockWise). Non-horizontal directions are returned
+// unchanged; a diode's FACING is always horizontal.
+[[nodiscard]] constexpr Direction clockWise(Direction dir) {
+    switch (dir) {
+    case Direction::North:
+        return Direction::East;
+    case Direction::East:
+        return Direction::South;
+    case Direction::South:
+        return Direction::West;
+    case Direction::West:
+        return Direction::North;
+    default:
+        return dir;
+    }
+}
+[[nodiscard]] constexpr Direction counterClockWise(Direction dir) {
+    return clockWise(clockWise(clockWise(dir)));
+}
+
+// SignalGetter.getControlInputSignal: what a diode reads from one side. With
+// onlyDiodes (a repeater's side/lock input) only a diode's direct signal counts;
+// otherwise (a comparator's side input) redstone_block/wire/any source count.
+[[nodiscard]] inline int getControlInputSignal(const world::World& world, world::BlockPos pos,
+                                               Direction dir, bool onlyDiodes) {
+    const world::BlockState state = world.state(pos.x, pos.y, pos.z);
+    if (onlyDiodes) {
+        return isDiode(state.block()) ? getDirectSignal(state, dir) : 0;
+    }
+    if (state.block() == world::Block::RedstoneBlock) {
+        return 15;
+    }
+    // (redstone_wire POWER slots in here once wire lands.)
+    return isSignalSource(state.block()) ? getDirectSignal(state, dir) : 0;
+}
+
+// DiodeBlock.getInputSignal: the signal at the block one step along FACING (the
+// diode's input side). >=15 short-circuits; a wire there would also contribute
+// its POWER (added when wire lands).
+[[nodiscard]] inline int diodeInputSignal(const world::World& world, world::BlockPos pos,
+                                          world::BlockState state) {
+    const Direction facing = facingOf(state);
+    const world::BlockPos target = relative(pos, facing);
+    return getSignal(world, target, facing);
+}
+
+// DiodeBlock.getAlternateSignal: the strongest control input from the two
+// perpendicular sides. `onlyDiodes` is true for a repeater (its lock input).
+[[nodiscard]] inline int diodeAlternateSignal(const world::World& world, world::BlockPos pos,
+                                              world::BlockState state, bool onlyDiodes) {
+    const Direction facing = facingOf(state);
+    const Direction cw = clockWise(facing);
+    const Direction ccw = counterClockWise(facing);
+    return std::max(getControlInputSignal(world, relative(pos, cw), cw, onlyDiodes),
+                    getControlInputSignal(world, relative(pos, ccw), ccw, onlyDiodes));
+}
+
+// RepeaterBlock.isLocked: a repeater is locked while a powered diode points into
+// either of its sides (getAlternateSignal > 0, diodes only).
+[[nodiscard]] inline bool repeaterIsLocked(const world::World& world, world::BlockPos pos,
+                                           world::BlockState state) {
+    return diodeAlternateSignal(world, pos, state, /*onlyDiodes=*/true) > 0;
+}
+
+// DiodeBlock.shouldTurnOn for a repeater: its input side carries a signal.
+[[nodiscard]] inline bool repeaterShouldTurnOn(const world::World& world, world::BlockPos pos,
+                                               world::BlockState state) {
+    return diodeInputSignal(world, pos, state) > 0;
+}
+
+// DiodeBlock.shouldPrioritize: the cell behind the output holds a diode not
+// facing back at this one (diode-facing-diode), which schedules at EXTREMELY_HIGH.
+[[nodiscard]] inline bool diodeShouldPrioritize(const world::World& world, world::BlockPos pos,
+                                                world::BlockState state) {
+    const Direction behind = opposite(facingOf(state));
+    const world::BlockPos oppositePos = relative(pos, behind);
+    const world::BlockState oppositeState =
+        world.state(oppositePos.x, oppositePos.y, oppositePos.z);
+    return isDiode(oppositeState.block()) && facingOf(oppositeState) != behind;
 }
 
 } // namespace mc::gameplay::redstone

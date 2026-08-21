@@ -40,6 +40,7 @@ enum class StateProperty : std::uint8_t {
     FluidLevel, // LiquidBlock.LEVEL, 0-8
     SlabType,   // SlabBlock.TYPE, bottom/top/double
     Powered,    // LeverBlock/ButtonBlock.POWERED, and any redstone output bool
+    Delay,      // RepeaterBlock.DELAY, stored 0-3 for a 1-4 tick delay
     Count,
 };
 
@@ -66,6 +67,8 @@ inline constexpr std::size_t kStatePropertyCount = static_cast<std::size_t>(Stat
         return "type";
     case StateProperty::Powered:
         return "powered";
+    case StateProperty::Delay:
+        return "delay";
     case StateProperty::Count:
         break;
     }

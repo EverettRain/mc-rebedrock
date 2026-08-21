@@ -112,6 +112,13 @@ class RedstoneCircuit final {
         return place(rel, mc::world::BlockState{mc::world::Block::Lever, orientationOf(connectedDir)}
                               .withPowered(on));
     }
+    // `facing` is the repeater's FACING == its input side (getInputSignal reads
+    // one step along it). `delay` is 1-4 ticks.
+    RedstoneCircuit& repeater(mc::world::BlockPos rel, gameplay::redstone::Direction facing,
+                              int delay = 1) {
+        return place(rel, mc::world::BlockState{mc::world::Block::Repeater, orientationOf(facing)}
+                              .withRepeaterDelay(delay));
+    }
 
     // The deterministic input primitive == LeverBlock.pull: toggle POWERED, then
     // updateNeighbours — the lever's own six neighbours (via the write) plus the
@@ -144,10 +151,12 @@ class RedstoneCircuit final {
     }
     [[nodiscard]] std::uint64_t gameTime() const { return gameTime_; }
 
-    // Probes.
+    // Probes. `lit` reads a component's on/off state: POWERED for a diode or a
+    // lever, LIT for a torch — the one probe redstone-reference tables use.
     [[nodiscard]] bool lit(mc::world::BlockPos rel) const {
         const auto pos = absolute(rel);
-        return world_.state(pos.x, pos.y, pos.z).lit();
+        const auto state = world_.state(pos.x, pos.y, pos.z);
+        return state.has(mc::world::StateProperty::Powered) ? state.powered() : state.lit();
     }
     [[nodiscard]] int power(mc::world::BlockPos rel) const {
         const auto pos = absolute(rel);

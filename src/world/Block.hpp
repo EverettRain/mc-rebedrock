@@ -152,6 +152,11 @@ enum class Block : std::uint8_t {
     // records the direction it was attached from, so it strongly powers the block
     // it hangs on (getConnectedDirection) and weakly powers every side.
     Lever,
+    // A redstone repeater (RepeaterBlock/DiodeBlock): a one-way signal relay with
+    // a 1-4 tick adjustable DELAY. FACING points at its input; POWERED is its
+    // output. Locking is computed live from the side inputs, so it needs no
+    // stored LOCKED property here.
+    Repeater,
     Count,
 };
 
@@ -966,6 +971,19 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .noCollision()
         .support(BlockSupport::Wall)
         .state(StateProperty::Facing, 6U)
+        .state(StateProperty::Powered, 2U),
+    // Repeater: horizontal FACING, a DELAY of 1-4 ticks, and a POWERED output.
+    // The Torch model is a placeholder that keeps it out of the full-cube (and so
+    // the redstone-conductor) set until a repeater model lands in the renderer.
+    BlockProperties::of(Block::Repeater, "repeater", "Redstone Repeater")
+        .texture("repeater")
+        .instantBreak()
+        .renderLayer(BlockRenderLayer::Cutout)
+        .model(BlockModel::Torch)
+        .noCollision()
+        .support(BlockSupport::Ground)
+        .horizontalFacing()
+        .state(StateProperty::Delay, 4U)
         .state(StateProperty::Powered, 2U),
 };
 

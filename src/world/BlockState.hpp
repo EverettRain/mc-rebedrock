@@ -75,6 +75,10 @@ class BlockState final {
     [[nodiscard]] constexpr bool powered() const {
         return value(StateProperty::Powered) != 0U;
     }
+    // RepeaterBlock.DELAY, exposed as the 1-4 tick delay (stored 0-3).
+    [[nodiscard]] constexpr int repeaterDelay() const {
+        return static_cast<int>(value(StateProperty::Delay)) + 1;
+    }
     // The light this state emits: a furnace's 13 only while it burns.
     [[nodiscard]] constexpr std::uint8_t emittedLight() const {
         return emittedLightOfState(id_);
@@ -117,6 +121,11 @@ class BlockState final {
     }
     [[nodiscard]] constexpr BlockState withPowered(bool value) const {
         return with(StateProperty::Powered, value ? 1U : 0U);
+    }
+    // `delay` is the 1-4 tick delay a repeater shows; stored 0-3.
+    [[nodiscard]] constexpr BlockState withRepeaterDelay(int delay) const {
+        const int clamped = delay < 1 ? 1 : (delay > 4 ? 4 : delay);
+        return with(StateProperty::Delay, static_cast<std::uint8_t>(clamped - 1));
     }
     [[nodiscard]] constexpr BlockState withSlabPortion(SlabPortion portion) const {
         return with(StateProperty::SlabType, static_cast<std::uint8_t>(portion));

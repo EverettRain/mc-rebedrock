@@ -1,5 +1,6 @@
 #include "gameplay/WorldSimulation.hpp"
 
+#include "gameplay/RedstoneDiode.hpp"
 #include "gameplay/RedstoneSignal.hpp"
 #include "world/BlockPlacement.hpp"
 #include "world/World.hpp"
@@ -940,60 +941,101 @@ bool WorldSimulation::setSimulatedBlock(
 void WorldSimulation::notifyRedstoneComponent(const world::World& world,
                                               SimulationPosition position) {
     const auto block = world.block(position.x, position.y, position.z);
-    if (block != world::Block::RedstoneTorch && block != world::Block::RedstoneWallTorch) {
-        return;
-    }
+    const world::BlockPos pos{position.x, position.y, position.z};
     const auto state = world.state(position.x, position.y, position.z);
-    const bool hasNeighborSignal =
-        redstone::torchHasNeighborSignal(world, {position.x, position.y, position.z});
     // The dedup guard (UNIQUE_TICK_HASH / willTickThisTick): a component with a
     // toggle already pending must not queue a second one, so a flurry of input
     // updates before the tick fires still collapses to one flip.
     const bool alreadyScheduled = ticks_.contains(TickTask::RedstoneComponent, position);
-    if (redstone::torchShouldScheduleToggle(state, hasNeighborSignal, alreadyScheduled)) {
-        static_cast<void>(ticks_.schedule(
-            TickTask::RedstoneComponent, position,
-            tickCount_ + static_cast<std::uint64_t>(redstone::kTorchToggleDelay), false,
-            TickPriority::Normal));
+
+    if (block == world::Block::RedstoneTorch || block == world::Block::RedstoneWallTorch) {
+        const bool hasNeighborSignal = redstone::torchHasNeighborSignal(world, pos);
+        if (redstone::torchShouldScheduleToggle(state, hasNeighborSignal, alreadyScheduled)) {
+            static_cast<void>(ticks_.schedule(
+                TickTask::RedstoneComponent, position,
+                tickCount_ + static_cast<std::uint64_t>(redstone::kTorchToggleDelay), false,
+                TickPriority::Normal));
+        }
+        return;
+    }
+
+    if (block == world::Block::Repeater) {
+        const auto schedule = redstone::diodeCheckTick(
+            state, redstone::repeaterShouldTurnOn(world, pos, state),
+            redstone::repeaterIsLocked(world, pos, state), alreadyScheduled,
+            redstone::diodeShouldPrioritize(world, pos, state),
+            redstone::repeaterDelayGameticks(state));
+        if (schedule.has_value()) {
+            static_cast<void>(ticks_.schedule(
+                TickTask::RedstoneComponent, position,
+                tickCount_ + static_cast<std::uint64_t>(schedule->delayGameticks), false,
+                schedule->priority));
+        }
+        return;
     }
 }
 
 void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPosition position,
                                            std::vector<BlockChange>& changes) {
     const auto block = world.block(position.x, position.y, position.z);
-    if (block != world::Block::RedstoneTorch && block != world::Block::RedstoneWallTorch) {
-        return;
-    }
-    // Age out toggles older than the burnout window before this tick counts,
-    // exactly as RedstoneTorchBlock.tick does at its top.
-    torchBurnout_.prune(static_cast<std::int64_t>(tickCount_));
+    const world::BlockPos pos{position.x, position.y, position.z};
     const auto state = world.state(position.x, position.y, position.z);
-    const bool hasNeighborSignal =
-        redstone::torchHasNeighborSignal(world, {position.x, position.y, position.z});
-    const auto result =
-        redstone::torchTick(state, hasNeighborSignal, {position.x, position.y, position.z},
-                            static_cast<std::int64_t>(tickCount_), torchBurnout_);
-    if (!result.changed) {
+    RedstoneReactionSink sink{world, *this};
+
+    if (block == world::Block::RedstoneTorch || block == world::Block::RedstoneWallTorch) {
+        // Age out toggles older than the burnout window before this tick counts,
+        // exactly as RedstoneTorchBlock.tick does at its top.
+        torchBurnout_.prune(static_cast<std::int64_t>(tickCount_));
+        const bool hasNeighborSignal = redstone::torchHasNeighborSignal(world, pos);
+        const auto result = redstone::torchTick(state, hasNeighborSignal, pos,
+                                                static_cast<std::int64_t>(tickCount_), torchBurnout_);
+        if (!result.changed) {
+            return;
+        }
+        // Flags 3 (neighbours + clients): a torch's flip propagates, so the
+        // reaction sink wakes any component it feeds.
+        const auto applied = mutations_.setBlock(
+            world, pos, result.newState,
+            world::MutationFlags::NotifyNeighbors | world::MutationFlags::NotifyClients,
+            world::MutationCause::ScheduledTick, sink);
+        if (applied.changed) {
+            changes.push_back({position, result.newState});
+        }
+        if (result.burnedOut) {
+            // Re-check after RESTART_DELAY, when the window has aged out. The
+            // smoke levelEvent(1502) is presentation and is intentionally omitted.
+            static_cast<void>(ticks_.schedule(
+                TickTask::RedstoneComponent, position,
+                tickCount_ + static_cast<std::uint64_t>(redstone::kTorchRestartDelay), false,
+                TickPriority::Normal));
+        }
         return;
     }
-    // Write with flags 3 (neighbours + clients) so the flip propagates: the
-    // reaction sink wakes any component this torch feeds. Not KnownShape — a
-    // torch has no shape to update, but the default path is correct and cheap.
-    RedstoneReactionSink sink{world, *this};
-    const auto applied = mutations_.setBlock(
-        world, {position.x, position.y, position.z}, result.newState,
-        world::MutationFlags::NotifyNeighbors | world::MutationFlags::NotifyClients,
-        world::MutationCause::ScheduledTick, sink);
-    if (applied.changed) {
-        changes.push_back({position, result.newState});
-    }
-    if (result.burnedOut) {
-        // Burned out: re-check after RESTART_DELAY, when the window has aged out.
-        // The smoke levelEvent(1502) is presentation and is intentionally omitted.
-        static_cast<void>(ticks_.schedule(
-            TickTask::RedstoneComponent, position,
-            tickCount_ + static_cast<std::uint64_t>(redstone::kTorchRestartDelay), false,
-            TickPriority::Normal));
+
+    if (block == world::Block::Repeater) {
+        const auto result = redstone::diodeTick(
+            state, redstone::repeaterShouldTurnOn(world, pos, state),
+            redstone::repeaterIsLocked(world, pos, state), redstone::repeaterDelayGameticks(state));
+        if (!result.changed) {
+            return;
+        }
+        // Flags 2 (clients only): a diode's POWERED flip does NOT fan out
+        // neighbour updates — DiodeBlock.tick writes flag 2 — so it re-shapes and
+        // re-renders but does not itself wake the block in front. The BlockChange
+        // still carries the flip to the mesher.
+        const auto applied =
+            mutations_.setBlock(world, pos, result.newState, world::MutationFlags::NotifyClients,
+                                world::MutationCause::ScheduledTick, sink);
+        if (applied.changed) {
+            changes.push_back({position, result.newState});
+        }
+        if (result.pulseReschedule.has_value()) {
+            static_cast<void>(ticks_.schedule(
+                TickTask::RedstoneComponent, position,
+                tickCount_ + static_cast<std::uint64_t>(result.pulseReschedule->delayGameticks),
+                false, result.pulseReschedule->priority));
+        }
+        return;
     }
 }
 
