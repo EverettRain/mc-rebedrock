@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -65,6 +66,21 @@ class Json final {
 
     // Parses UTF-8 text. Throws std::runtime_error with line/column on error.
     [[nodiscard]] static Json parse(std::string_view text);
+
+    // Serialises back to compact UTF-8 JSON text. Member order is the value's own
+    // insertion order (Object is an ordered vector), so a value that was parsed
+    // and dumped keeps its layout and a hand-built value dumps in the order it was
+    // written. This is the writer half the data codec needs: a POD encodes to a
+    // Json value, dumps to text, and reads back the same, so a round-trip is a
+    // real serialise/parse cycle rather than an in-memory copy.
+    [[nodiscard]] std::string dump() const;
+
+    // How many times parse() has run in this process, ever. The data layer bakes
+    // its built-in content into constexpr `.rodata` precisely so startup performs
+    // no JSON parsing; this counter is what a test reads to prove the built-in
+    // path stayed at zero parses while an overlay path did parse. Monotonic and
+    // process-wide; it is a diagnostic, never a thing behaviour branches on.
+    [[nodiscard]] static std::uint64_t parseCount();
 
   private:
     Type type_ = Type::Null;

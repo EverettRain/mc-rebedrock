@@ -9,6 +9,16 @@ simple versioned history while it is in beta.
 
 ### Added
 
+- A data codec and two-layer baking foundation (`src/data/`) for moving recipes,
+  loot and tags out of hand-written C++ into files. A serde-style `Codec<T>`
+  encodes a POD to and from JSON with value semantics (no functional pipeline);
+  a `DataStore<Def>` lays a baked constexpr built-in floor (in `.rodata`, zero
+  startup parse) and merges a datapack overlay on top by name, while a build with
+  no `data/` at all still runs on the floor alone. An offline baking generator
+  (`tools/bake`) turns source JSON into the constexpr floor through the same
+  codec, and `core::Json` gained a `dump()` writer plus a parse counter. This is
+  infrastructure the recipe/loot/tag work builds on; no player-facing content
+  moved yet.
 - A renderer-independent authoritative `GameRuntime` now owns the world, save
   repository, game session, simulation thread, world lock and server command
   tree. World creation/loading/saving/unloading and the 20 TPS tick no longer

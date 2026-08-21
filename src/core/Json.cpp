@@ -1,8 +1,10 @@
 #include "core/Json.hpp"
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 
 namespace mc::core {
 namespace {
@@ -10,6 +12,96 @@ namespace {
 const Json& nullValue() {
     static const Json kNull{};
     return kNull;
+}
+
+// Process-wide parse tally, read by parseCount(). Relaxed because it is a pure
+// diagnostic — nothing orders memory against it — but atomic so a headless test
+// that parses on more than one thread still gets a coherent count.
+std::atomic<std::uint64_t> g_parseCount{0};
+
+void escapeInto(std::string& out, std::string_view text) {
+    out.push_back('"');
+    for (const char c : text) {
+        switch (c) {
+            case '"': out.append("\\\""); break;
+            case '\\': out.append("\\\\"); break;
+            case '\b': out.append("\\b"); break;
+            case '\f': out.append("\\f"); break;
+            case '\n': out.append("\\n"); break;
+            case '\r': out.append("\\r"); break;
+            case '\t': out.append("\\t"); break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20U) {
+                    // A bare control character is not legal JSON text; spell it as
+                    // a \u escape. Everything printable (including UTF-8 multibyte
+                    // sequences) passes straight through.
+                    std::array<char, 7> buffer{};
+                    std::snprintf(buffer.data(), buffer.size(), "\\u%04x",
+                                  static_cast<unsigned>(static_cast<unsigned char>(c)));
+                    out.append(buffer.data());
+                } else {
+                    out.push_back(c);
+                }
+        }
+    }
+    out.push_back('"');
+}
+
+void numberInto(std::string& out, double value) {
+    // A number that is exactly an integer prints without a decimal point, so a
+    // baked count of 4 dumps as `4` and reads back as 4 — the round-trip the codec
+    // relies on to carry integer fields. Anything fractional (or huge) uses a
+    // precision that reproduces the double exactly on re-parse.
+    if (std::isfinite(value) && value == std::floor(value) &&
+        std::abs(value) < 9007199254740992.0 /* 2^53: integers are exact below this */) {
+        std::array<char, 32> buffer{};
+        std::snprintf(buffer.data(), buffer.size(), "%lld",
+                      static_cast<long long>(value));
+        out.append(buffer.data());
+        return;
+    }
+    std::array<char, 32> buffer{};
+    std::snprintf(buffer.data(), buffer.size(), "%.17g", value);
+    out.append(buffer.data());
+}
+
+void dumpInto(std::string& out, const Json& value) {
+    switch (value.type()) {
+        case Json::Type::Null:
+            out.append("null");
+            return;
+        case Json::Type::Boolean:
+            out.append(value.asBool() ? "true" : "false");
+            return;
+        case Json::Type::Number:
+            numberInto(out, value.asNumber());
+            return;
+        case Json::Type::String:
+            escapeInto(out, value.asString());
+            return;
+        case Json::Type::Array: {
+            out.push_back('[');
+            const auto& array = value.asArray();
+            for (std::size_t index = 0; index < array.size(); ++index) {
+                if (index != 0U) out.push_back(',');
+                dumpInto(out, array[index]);
+            }
+            out.push_back(']');
+            return;
+        }
+        case Json::Type::Object: {
+            out.push_back('{');
+            const auto& members = value.asObject();
+            for (std::size_t index = 0; index < members.size(); ++index) {
+                if (index != 0U) out.push_back(',');
+                escapeInto(out, members[index].first);
+                out.push_back(':');
+                dumpInto(out, members[index].second);
+            }
+            out.push_back('}');
+            return;
+        }
+    }
 }
 
 class Parser final {
@@ -337,8 +429,19 @@ std::size_t Json::size() const {
 }
 
 Json Json::parse(std::string_view text) {
+    g_parseCount.fetch_add(1U, std::memory_order_relaxed);
     Parser parser{text};
     return parser.parse();
+}
+
+std::uint64_t Json::parseCount() {
+    return g_parseCount.load(std::memory_order_relaxed);
+}
+
+std::string Json::dump() const {
+    std::string out;
+    dumpInto(out, *this);
+    return out;
 }
 
 } // namespace mc::core

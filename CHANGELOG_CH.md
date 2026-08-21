@@ -8,6 +8,12 @@
 
 ### 新增
 
+- 新增数据 codec 与双层烘焙基建（`src/data/`），用于把配方、掉落、标签从手抄进 C++ 外置成
+  文件。serde 式 `Codec<T>` 以值语义在 POD 与 JSON 间双向编解码（不用函数式管道）；
+  `DataStore<Def>` 在底铺一层烘焙的 constexpr 内置floor（落 `.rodata`、零启动解析），
+  数据包 overlay 按名合并在上，而完全没有 `data/` 的构建仍靠floor可玩。离线烘焙生成器
+  （`tools/bake`）经同一 codec 把源 JSON 转成 constexpr floor；`core::Json` 新增 `dump()`
+  序列化与解析计数。此为配方/掉落/标签所依赖的基建，尚未迁移任何面向玩家的内容。
 - 新增不依赖 GLFW 或 Vulkan 的权威 `GameRuntime`，统一拥有世界、存档仓库、游戏会话、
   模拟线程、世界锁和服务端命令树。世界创建/加载/保存/卸载与 20 TPS Tick 不再由
   Vulkan 客户端保存；无头测试可运行完整游戏链，并可统计服务端区块状态与光照的驻留

@@ -740,6 +740,23 @@ if(BUILD_TESTING)
             src
             "${glm_SOURCE_DIR}"
         )
+
+        # D-1's baking step: reads the demo JSON dataset through the data codec and
+        # emits the constexpr floor (tests/data/DemoBakedData.inc). Its output is
+        # committed, so ordinary builds compile the baked table with no codegen
+        # dependency; run mc_rebedrock_bake_demo_data to regenerate it from source.
+        add_executable(mc_rebedrock_bake_demo_data
+            tools/bake/bake_demo_data.cpp
+        )
+        target_link_libraries(mc_rebedrock_bake_demo_data PRIVATE mc_rebedrock_runtime)
+        target_include_directories(mc_rebedrock_bake_demo_data PRIVATE src tests)
+        add_custom_target(mc_rebedrock_regenerate_demo_bake
+            COMMAND mc_rebedrock_bake_demo_data
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/bake/demo-source"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/DemoBakedData.inc"
+            COMMENT "Regenerating the baked demo data floor from source JSON"
+            VERBATIM
+        )
     endif()
 
     add_executable(mc_rebedrock_game_session_test
@@ -1583,6 +1600,14 @@ if(BUILD_TESTING)
     )
     target_include_directories(mc_rebedrock_registry_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME registry COMMAND mc_rebedrock_registry_test)
+
+    # D-1: the data codec, the two-layer DataStore, and the baked floor.
+    add_executable(mc_rebedrock_data_codec_test
+        tests/data_codec_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_data_codec_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_data_codec_test PRIVATE src tests "${glm_SOURCE_DIR}")
+    add_test(NAME data_codec COMMAND mc_rebedrock_data_codec_test)
 
     add_executable(mc_rebedrock_block_registry_lifecycle_test
         tests/block_registry_lifecycle_test.cpp

@@ -1,0 +1,7 @@
+{
+    "weight": 3,
+    "label": "alpha-label",
+    "steps": [1, 2, 3],
+    "enabled": true,
+    "scale": 2.5
+}
