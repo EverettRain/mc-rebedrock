@@ -2449,6 +2449,31 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_block_deenum_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME block_deenum COMMAND mc_rebedrock_block_deenum_test)
 
+    add_executable(mc_rebedrock_block_behavior_test
+        tests/block_behavior_test.cpp
+        src/gameplay/MiningSystem.cpp
+        src/gameplay/BlockTags.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
+        src/gameplay/ItemPlacement.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/Inventory.cpp
+        src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
+        src/world/BlockPlacement.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/World.cpp
+        src/world/gen/TreeGrower.cpp
+    )
+    target_include_directories(mc_rebedrock_block_behavior_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME block_behavior COMMAND mc_rebedrock_block_behavior_test)
+
     endif()
 
 install(TARGETS mc_rebedrock RUNTIME DESTINATION bin)
