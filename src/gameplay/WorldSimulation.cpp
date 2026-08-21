@@ -1,6 +1,7 @@
 #include "gameplay/WorldSimulation.hpp"
 
 #include "gameplay/RedstoneDiode.hpp"
+#include "gameplay/RedstoneObserver.hpp"
 #include "gameplay/RedstoneSignal.hpp"
 #include "gameplay/RedstoneWire.hpp"
 #include "world/BlockPlacement.hpp"
@@ -1004,6 +1005,40 @@ void WorldSimulation::notifyRedstoneComponent(const world::World& world,
     }
 }
 
+void WorldSimulation::notifyObserverShapeChange(const world::World& world,
+                                                SimulationPosition observerPos,
+                                                SimulationPosition changedPos) {
+    if (world.block(observerPos.x, observerPos.y, observerPos.z) != world::Block::Observer) {
+        return;
+    }
+    const auto state = world.state(observerPos.x, observerPos.y, observerPos.z);
+    // Only the block on the watched (FACING) side, and only while not already
+    // pulsing — ObserverBlock.updateShape's edge-trigger guard.
+    const world::BlockPos watched =
+        redstone::relative({observerPos.x, observerPos.y, observerPos.z},
+                           redstone::facingOf(state));
+    if (watched.x != changedPos.x || watched.y != changedPos.y || watched.z != changedPos.z) {
+        return;
+    }
+    if (state.powered() || ticks_.contains(TickTask::RedstoneComponent, observerPos)) {
+        return;
+    }
+    static_cast<void>(ticks_.schedule(
+        TickTask::RedstoneComponent, observerPos,
+        tickCount_ + static_cast<std::uint64_t>(redstone::kObserverDelay), false,
+        TickPriority::Normal));
+}
+
+void WorldSimulation::scheduleButtonRelease(SimulationPosition position) {
+    // ButtonBlock: 20gt for stone. (Wooden buttons' 30gt and arrow triggering
+    // land with the wooden variant.)
+    constexpr int kStoneButtonPressTicks = 20;
+    static_cast<void>(ticks_.schedule(TickTask::RedstoneComponent, position,
+                                      tickCount_ +
+                                          static_cast<std::uint64_t>(kStoneButtonPressTicks),
+                                      false, TickPriority::Normal));
+}
+
 void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPosition position,
                                            std::vector<BlockChange>& changes) {
     const auto block = world.block(position.x, position.y, position.z);
@@ -1108,6 +1143,45 @@ void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPositi
                 changes.push_back({{cell.pos.x, cell.pos.y, cell.pos.z}, next});
             }
         }
+        return;
+    }
+
+    if (block == world::Block::Observer) {
+        const auto result = redstone::observerTick(state);
+        // Flags 2 (clients only), like a diode.
+        const auto applied =
+            mutations_.setBlock(world, pos, result.newState, world::MutationFlags::NotifyClients,
+                                world::MutationCause::ScheduledTick, sink);
+        if (applied.changed) {
+            changes.push_back({position, result.newState});
+        }
+        if (result.reschedule) {
+            static_cast<void>(ticks_.schedule(
+                TickTask::RedstoneComponent, position,
+                tickCount_ + static_cast<std::uint64_t>(redstone::kObserverDelay), false,
+                TickPriority::Normal));
+        }
+        // ObserverBlock.updateNeighborsInFront: wake the block behind it (opposite
+        // FACING) so its pulse reaches downstream.
+        const auto back = redstone::relative(pos, redstone::opposite(redstone::facingOf(state)));
+        mutations_.updateNeighborsAt(back, sink);
+        return;
+    }
+
+    if (block == world::Block::StoneButton) {
+        if (!state.powered()) {
+            return;
+        }
+        const auto next = state.withPowered(false);
+        // Release with flags 3 so downstream sees it go quiet, plus the lever's
+        // mount-neighbour propagation.
+        const auto applied = mutations_.setBlock(
+            world, pos, next, world::MutationFlags::NotifyNeighbors | world::MutationFlags::NotifyClients,
+            world::MutationCause::ScheduledTick, sink);
+        if (applied.changed) {
+            changes.push_back({position, next});
+        }
+        mutations_.updateNeighborsAt(redstone::leverMountPos(next, pos), sink);
         return;
     }
 }

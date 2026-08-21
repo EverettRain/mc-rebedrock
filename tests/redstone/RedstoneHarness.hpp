@@ -136,6 +136,34 @@ class RedstoneCircuit final {
     RedstoneCircuit& wire(mc::world::BlockPos rel) {
         return place(rel, mc::world::BlockState{mc::world::Block::RedstoneWire});
     }
+    // `facing` is the observer's watched side.
+    RedstoneCircuit& observer(mc::world::BlockPos rel, gameplay::redstone::Direction facing) {
+        return place(rel, mc::world::BlockState{mc::world::Block::Observer, orientationOf(facing)});
+    }
+    // `connectedDir` is the side the button hangs against, as for a lever.
+    RedstoneCircuit& button(mc::world::BlockPos rel, gameplay::redstone::Direction connectedDir) {
+        return place(rel,
+                     mc::world::BlockState{mc::world::Block::StoneButton, orientationOf(connectedDir)});
+    }
+
+    // Press == ButtonBlock.press: set POWERED (with the lever's propagation) and
+    // schedule the timed release.
+    void pressButton(mc::world::BlockPos rel) {
+        const auto pos = absolute(rel);
+        const auto state = world_.state(pos.x, pos.y, pos.z);
+        if (state.block() != mc::world::Block::StoneButton || state.powered()) {
+            return;
+        }
+        const auto next = state.withPowered(true);
+        mc::gameplay::GameplayMutationSink sink{world_, session_};
+        static_cast<void>(session_.worldMutations().setBlock(
+            world_, pos, next, mc::world::MutationFlags::All, mc::world::MutationCause::Command,
+            sink));
+        session_.worldMutations().updateNeighborsAt(gameplay::redstone::leverMountPos(next, pos),
+                                                    sink);
+        session_.worldSimulation().scheduleButtonRelease({pos.x, pos.y, pos.z});
+        session_.drainEvents();
+    }
 
     // The deterministic input primitive == LeverBlock.pull: toggle POWERED, then
     // updateNeighbours — the lever's own six neighbours (via the write) plus the

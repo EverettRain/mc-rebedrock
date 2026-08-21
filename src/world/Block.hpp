@@ -167,6 +167,15 @@ enum class Block : std::uint8_t {
     // directional powering rules land with a later slice; this identity carries
     // the power the serial evaluator distributes.
     RedstoneWire,
+    // An observer (ObserverBlock): watches the block state on its FACING side and
+    // emits a fixed 2gt pulse out its back on any change. FACING is the watched
+    // side (six directions); POWERED is the pulse. Driven by the updateShape pass
+    // (it is the first real consumer of that mechanism), not by neighborChanged.
+    Observer,
+    // A stone button (ButtonBlock): a timed pulse source. Pressing sets POWERED
+    // for a fixed number of ticks (20 for stone), then it releases itself. Signal
+    // is the lever's; FACING records the direction it hangs from.
+    StoneButton,
     Count,
 };
 
@@ -1019,6 +1028,24 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .noCollision()
         .support(BlockSupport::Ground)
         .state(StateProperty::AnalogSignal, 16U),
+    // Observer: FACING is the six-way watched direction, POWERED the pulse. Torch
+    // model placeholder keeps it out of the redstone-conductor set.
+    BlockProperties::of(Block::Observer, "observer", "Observer")
+        .texture("observer")
+        .strength(3.0F)
+        .model(BlockModel::Torch)
+        .state(StateProperty::Facing, 6U)
+        .state(StateProperty::Powered, 2U),
+    // Stone button: like the lever (attach + POWERED), but a press is timed.
+    BlockProperties::of(Block::StoneButton, "stone_button", "Stone Button")
+        .texture("stone")
+        .instantBreak()
+        .renderLayer(BlockRenderLayer::Cutout)
+        .model(BlockModel::Torch)
+        .noCollision()
+        .support(BlockSupport::Wall)
+        .state(StateProperty::Facing, 6U)
+        .state(StateProperty::Powered, 2U),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {

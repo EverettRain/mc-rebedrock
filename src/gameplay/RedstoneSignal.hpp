@@ -80,7 +80,8 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
     return block == world::Block::RedstoneBlock || block == world::Block::RedstoneTorch ||
            block == world::Block::RedstoneWallTorch || block == world::Block::Lever ||
            block == world::Block::Repeater || block == world::Block::Comparator ||
-           block == world::Block::RedstoneWire;
+           block == world::Block::RedstoneWire || block == world::Block::Observer ||
+           block == world::Block::StoneButton;
 }
 
 // Whether a block is a diode (repeater or comparator) — DiodeBlock.isDiode.
@@ -100,7 +101,8 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
         // LIT && FACING != direction ? 15 : 0 (never toward the wall it faces)
         return state.lit() && facingOf(state) != dir ? 15 : 0;
     case world::Block::Lever:
-        // LeverBlock.getSignal: POWERED ? 15 : 0, every side weakly.
+    case world::Block::StoneButton:
+        // LeverBlock/ButtonBlock.getSignal: POWERED ? 15 : 0, every side weakly.
         return state.powered() ? 15 : 0;
     case world::Block::Repeater:
         // DiodeBlock.getSignal: output 15 only out of its FACING side when on.
@@ -112,6 +114,10 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
         // Wire weakly powers every side except DOWN with its POWER (the
         // connection-directional refinement lands with a later slice).
         return dir != Direction::Down ? state.analogSignal() : 0;
+    case world::Block::Observer:
+        // ObserverBlock.getSignal: 15 out its FACING side (its back, which the
+        // pulse faces) while POWERED.
+        return state.powered() && facingOf(state) == dir ? 15 : 0;
     default:
         return 0;
     }
@@ -126,8 +132,9 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
     case world::Block::RedstoneWallTorch:
         return dir == Direction::Down ? getSignal(state, Direction::Down) : 0;
     case world::Block::Lever:
-        // LeverBlock.getDirectSignal: strongly powers only the block it hangs on
-        // (getConnectedDirection), which FACING records here.
+    case world::Block::StoneButton:
+        // LeverBlock/ButtonBlock.getDirectSignal: strongly powers only the block
+        // it hangs on (getConnectedDirection), which FACING records here.
         return state.powered() && facingOf(state) == dir ? 15 : 0;
     case world::Block::Repeater:
     case world::Block::Comparator:
@@ -136,6 +143,9 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
     case world::Block::RedstoneWire:
         // RedStoneWireBlock.getDirectSignal: strongly powers only the block below.
         return dir == Direction::Down ? state.analogSignal() : 0;
+    case world::Block::Observer:
+        // ObserverBlock.getDirectSignal == getSignal.
+        return getSignal(state, dir);
     default:
         return 0;
     }

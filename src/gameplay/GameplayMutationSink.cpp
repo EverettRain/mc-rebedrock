@@ -73,6 +73,11 @@ void GameplayMutationSink::onBlockEntityReplaced(world::BlockPos pos, world::Blo
 }
 
 void GameplayMutationSink::onNeighborShapeUpdate(world::BlockPos neighbor, world::BlockPos source) {
+    // An observer watches for a block-state change on its FACING side; the shape
+    // pass is exactly "a neighbour's state changed", so this is where it detects.
+    session_->worldSimulation().notifyObserverShapeChange(
+        *world_, {neighbor.x, neighbor.y, neighbor.z}, {source.x, source.y, source.z});
+
     // The neighbour recomputes its shape against the changed source. The
     // pre-filter rejects the overwhelming majority (stone, dirt, ore) with one
     // bit test inside dispatchUpdateShape, before any state is read or a slot

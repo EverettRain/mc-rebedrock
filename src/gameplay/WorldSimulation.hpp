@@ -167,6 +167,18 @@ class WorldSimulation final {
     // cell that is not a redstone component, so the neighbour fan-out can call it
     // for every neighbour without a type check at the call site.
     void notifyRedstoneComponent(const world::World& world, SimulationPosition position);
+
+    // An observer at `observerPos` saw a block-state change at `changedPos`
+    // (the updateShape pass reports every neighbour a write touched). If that is
+    // the block on its FACING side and it is not already pulsing, it schedules
+    // its 2gt pulse. A no-op for anything that is not an observer watching that
+    // cell, so the shape pass can call it for every neighbour.
+    void notifyObserverShapeChange(const world::World& world, SimulationPosition observerPos,
+                                   SimulationPosition changedPos);
+
+    // A button was just pressed (POWERED set by the caller): schedule its
+    // release tick the fixed number of gameticks later.
+    void scheduleButtonRelease(SimulationPosition position);
     // Whether a block has a random tick at all — the draw loop's pre-filter, and
     // the cheapest possible statement of "does this block do anything on a
     // random tick". Public because it is a property of the block set, and a
