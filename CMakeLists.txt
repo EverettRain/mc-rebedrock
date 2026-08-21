@@ -2189,6 +2189,18 @@ if(BUILD_TESTING)
     )
     add_test(NAME update_shape COMMAND mc_rebedrock_update_shape_test)
 
+    add_executable(mc_rebedrock_redstone_signal_test
+        tests/redstone_signal_test.cpp
+        src/world/World.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+    )
+    target_include_directories(mc_rebedrock_redstone_signal_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME redstone_signal COMMAND mc_rebedrock_redstone_signal_test)
+
     add_executable(mc_rebedrock_chunk_section_test
         tests/chunk_section_test.cpp
         src/world/ChunkSection.cpp

@@ -139,6 +139,15 @@ enum class Block : std::uint8_t {
     CobblestoneSlab,
     StoneBrickSlab,
     SmoothStoneSlab,
+    // Redstone power sources (W-4). RedstoneBlock is a constant source, powering
+    // every side. RedstoneTorch/RedstoneWallTorch carry a LIT state and invert
+    // their input on a fixed 2gt delay, driven purely by scheduled ticks and
+    // block updates — never a random tick. Their signal semantics live in the
+    // by-BlockId query table in gameplay/RedstoneSignal.hpp, and their timing in
+    // the redstone component layer.
+    RedstoneBlock,
+    RedstoneTorch,
+    RedstoneWallTorch,
     Count,
 };
 
@@ -911,6 +920,38 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("smooth_stone")
         .strength(2.0F, 6.0F)
         .slab(),
+    // RedstoneBlock: a full solid cube that is a constant redstone source. The
+    // power itself is not a property — it is answered by the signal table for
+    // every side — so the block needs no extra state.
+    BlockProperties::of(Block::RedstoneBlock, "redstone_block", "Block of Redstone")
+        .texture("redstone_block")
+        .strength(5.0F, 6.0F),
+    // RedstoneTorch: mounts on the ground like a torch and carries a LIT state
+    // (default handled by the placement/component layer, vanilla default true).
+    // Emits light 7 while lit; the redstone signal comes from the signal table,
+    // not the light level.
+    BlockProperties::of(Block::RedstoneTorch, "redstone_torch", "Redstone Torch")
+        .texture("redstone_torch")
+        .instantBreak()
+        .renderLayer(BlockRenderLayer::Cutout)
+        .model(BlockModel::Torch)
+        .noCollision()
+        .support(BlockSupport::Ground)
+        .torch()
+        .lit(7U),
+    // RedstoneWallTorch: the wall-mounted variant, FACING as a state exactly like
+    // WallTorch, plus the LIT state.
+    BlockProperties::of(Block::RedstoneWallTorch, "redstone_wall_torch", "Redstone Wall Torch")
+        .vanillaAlias("redstone_wall_torch")
+        .texture("redstone_torch")
+        .instantBreak()
+        .renderLayer(BlockRenderLayer::Cutout)
+        .model(BlockModel::Torch)
+        .noCollision()
+        .support(BlockSupport::Wall)
+        .horizontalFacing()
+        .torch()
+        .lit(7U),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {
