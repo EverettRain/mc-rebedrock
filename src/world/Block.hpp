@@ -157,6 +157,11 @@ enum class Block : std::uint8_t {
     // output. Locking is computed live from the side inputs, so it needs no
     // stored LOCKED property here.
     Repeater,
+    // A redstone comparator (ComparatorBlock/DiodeBlock): compares or subtracts
+    // its side input from its back input. FACING points at its input; MODE picks
+    // compare/subtract; POWERED is the boolean output and AnalogSignal its 0-15
+    // analog output (Java's ComparatorBlockEntity value).
+    Comparator,
     Count,
 };
 
@@ -985,6 +990,20 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .horizontalFacing()
         .state(StateProperty::Delay, 4U)
         .state(StateProperty::Powered, 2U),
+    // Comparator: horizontal FACING, a MODE (compare/subtract), a POWERED
+    // boolean output and a 0-15 AnalogSignal output. Torch-model placeholder as
+    // for the repeater.
+    BlockProperties::of(Block::Comparator, "comparator", "Redstone Comparator")
+        .texture("comparator")
+        .instantBreak()
+        .renderLayer(BlockRenderLayer::Cutout)
+        .model(BlockModel::Torch)
+        .noCollision()
+        .support(BlockSupport::Ground)
+        .horizontalFacing()
+        .state(StateProperty::ComparatorMode, 2U)
+        .state(StateProperty::Powered, 2U)
+        .state(StateProperty::AnalogSignal, 16U),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {

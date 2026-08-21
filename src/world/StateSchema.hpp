@@ -41,6 +41,8 @@ enum class StateProperty : std::uint8_t {
     SlabType,   // SlabBlock.TYPE, bottom/top/double
     Powered,    // LeverBlock/ButtonBlock.POWERED, and any redstone output bool
     Delay,      // RepeaterBlock.DELAY, stored 0-3 for a 1-4 tick delay
+    AnalogSignal,   // 0-15: a comparator's output signal (and, later, wire POWER)
+    ComparatorMode, // ComparatorBlock.MODE: 0 compare, 1 subtract
     Count,
 };
 
@@ -69,6 +71,10 @@ inline constexpr std::size_t kStatePropertyCount = static_cast<std::size_t>(Stat
         return "powered";
     case StateProperty::Delay:
         return "delay";
+    case StateProperty::AnalogSignal:
+        return "signal";
+    case StateProperty::ComparatorMode:
+        return "mode";
     case StateProperty::Count:
         break;
     }

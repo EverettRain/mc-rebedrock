@@ -83,5 +83,54 @@ int main() {
         REQUIRE(!redstone::diodeTick(repeater(2, true), false, true, 4).changed);
     }
 
+    // --- Comparator evaluate: compare vs subtract, the side-vs-back rules. ---
+    {
+        // SUBTRACT: output = back - side; on when back > side.
+        REQUIRE(redstone::comparatorEvaluate(15, 0, true).output == 15);
+        REQUIRE(redstone::comparatorEvaluate(15, 0, true).shouldTurnOn);
+        REQUIRE(redstone::comparatorEvaluate(15, 10, true).output == 5);
+        REQUIRE(redstone::comparatorEvaluate(15, 10, true).shouldTurnOn);
+        // SUBTRACT with side == back: 0, and OFF (equality does not turn on).
+        REQUIRE(redstone::comparatorEvaluate(15, 15, true).output == 0);
+        REQUIRE(!redstone::comparatorEvaluate(15, 15, true).shouldTurnOn);
+        // COMPARE with side == back: passes the back through, ON.
+        REQUIRE(redstone::comparatorEvaluate(15, 15, false).output == 15);
+        REQUIRE(redstone::comparatorEvaluate(15, 15, false).shouldTurnOn);
+        // side > back: 0 and OFF, both modes.
+        REQUIRE(redstone::comparatorEvaluate(10, 15, false).output == 0);
+        REQUIRE(!redstone::comparatorEvaluate(10, 15, false).shouldTurnOn);
+        // no back input: 0, OFF.
+        REQUIRE(redstone::comparatorEvaluate(0, 5, false).output == 0);
+        REQUIRE(!redstone::comparatorEvaluate(0, 5, false).shouldTurnOn);
+    }
+
+    // --- Comparator checkTick / tick. ---
+    {
+        const auto fresh = BlockState{Block::Comparator, BlockOrientation::North}
+                               .withComparatorSubtract(true)
+                               .withAnalogSignal(0)
+                               .withPowered(false);
+        // Back 15, no side: output 15, should turn on -> schedule at NORMAL.
+        const auto eval = redstone::comparatorEvaluate(15, 0, true);
+        const auto sched = redstone::comparatorCheckTick(fresh, eval, false, false);
+        REQUIRE(sched.has_value());
+        REQUIRE(sched->delayGameticks == 2);
+        REQUIRE(sched->priority == TickPriority::Normal);
+        REQUIRE(!redstone::comparatorCheckTick(fresh, eval, true, false)); // dedup
+        // Diode faces output -> HIGH.
+        REQUIRE(redstone::comparatorCheckTick(fresh, eval, false, true)->priority ==
+                TickPriority::High);
+        // Nothing to change.
+        const auto settled = fresh.withAnalogSignal(15).withPowered(true);
+        REQUIRE(!redstone::comparatorCheckTick(settled, eval, false, false));
+
+        // tick writes the analog value and turns on.
+        const auto tick = redstone::comparatorTick(fresh, eval);
+        REQUIRE(tick.changed);
+        REQUIRE(tick.newState.analogSignal() == 15);
+        REQUIRE(tick.newState.powered());
+        REQUIRE(tick.notifyFront);
+    }
+
     return 0;
 }

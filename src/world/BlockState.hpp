@@ -79,6 +79,14 @@ class BlockState final {
     [[nodiscard]] constexpr int repeaterDelay() const {
         return static_cast<int>(value(StateProperty::Delay)) + 1;
     }
+    // A comparator's output signal, 0-15 (its ComparatorBlockEntity value here).
+    [[nodiscard]] constexpr int analogSignal() const {
+        return static_cast<int>(value(StateProperty::AnalogSignal));
+    }
+    // ComparatorBlock.MODE: true = SUBTRACT, false = COMPARE.
+    [[nodiscard]] constexpr bool comparatorSubtract() const {
+        return value(StateProperty::ComparatorMode) != 0U;
+    }
     // The light this state emits: a furnace's 13 only while it burns.
     [[nodiscard]] constexpr std::uint8_t emittedLight() const {
         return emittedLightOfState(id_);
@@ -126,6 +134,13 @@ class BlockState final {
     [[nodiscard]] constexpr BlockState withRepeaterDelay(int delay) const {
         const int clamped = delay < 1 ? 1 : (delay > 4 ? 4 : delay);
         return with(StateProperty::Delay, static_cast<std::uint8_t>(clamped - 1));
+    }
+    [[nodiscard]] constexpr BlockState withAnalogSignal(int signal) const {
+        const int clamped = signal < 0 ? 0 : (signal > 15 ? 15 : signal);
+        return with(StateProperty::AnalogSignal, static_cast<std::uint8_t>(clamped));
+    }
+    [[nodiscard]] constexpr BlockState withComparatorSubtract(bool subtract) const {
+        return with(StateProperty::ComparatorMode, subtract ? 1U : 0U);
     }
     [[nodiscard]] constexpr BlockState withSlabPortion(SlabPortion portion) const {
         return with(StateProperty::SlabType, static_cast<std::uint8_t>(portion));

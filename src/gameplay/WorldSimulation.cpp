@@ -973,6 +973,22 @@ void WorldSimulation::notifyRedstoneComponent(const world::World& world,
         }
         return;
     }
+
+    if (block == world::Block::Comparator) {
+        const auto eval = redstone::comparatorEvaluate(
+            redstone::diodeInputSignal(world, pos, state),
+            redstone::diodeAlternateSignal(world, pos, state, /*onlyDiodes=*/false),
+            state.comparatorSubtract());
+        const auto schedule = redstone::comparatorCheckTick(
+            state, eval, alreadyScheduled, redstone::diodeShouldPrioritize(world, pos, state));
+        if (schedule.has_value()) {
+            static_cast<void>(ticks_.schedule(
+                TickTask::RedstoneComponent, position,
+                tickCount_ + static_cast<std::uint64_t>(schedule->delayGameticks), false,
+                schedule->priority));
+        }
+        return;
+    }
 }
 
 void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPosition position,
@@ -1034,6 +1050,32 @@ void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPositi
                 TickTask::RedstoneComponent, position,
                 tickCount_ + static_cast<std::uint64_t>(result.pulseReschedule->delayGameticks),
                 false, result.pulseReschedule->priority));
+        }
+        return;
+    }
+
+    if (block == world::Block::Comparator) {
+        const auto eval = redstone::comparatorEvaluate(
+            redstone::diodeInputSignal(world, pos, state),
+            redstone::diodeAlternateSignal(world, pos, state, /*onlyDiodes=*/false),
+            state.comparatorSubtract());
+        const auto result = redstone::comparatorTick(state, eval);
+        if (result.changed) {
+            // Flags 2 (clients only), like a repeater — the analog/POWERED write
+            // does not itself fan out neighbour updates.
+            const auto applied =
+                mutations_.setBlock(world, pos, result.newState, world::MutationFlags::NotifyClients,
+                                    world::MutationCause::ScheduledTick, sink);
+            if (applied.changed) {
+                changes.push_back({position, result.newState});
+            }
+        }
+        if (result.notifyFront) {
+            // ComparatorBlock.updateNeighborsInFront: unlike a repeater, a
+            // comparator explicitly wakes the block its output faces (one step
+            // opposite FACING) so downstream re-reads the changed analog signal.
+            const auto front = redstone::relative(pos, redstone::opposite(redstone::facingOf(state)));
+            mutations_.updateNeighborsAt(front, sink);
         }
         return;
     }

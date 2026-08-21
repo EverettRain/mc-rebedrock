@@ -119,6 +119,20 @@ class RedstoneCircuit final {
         return place(rel, mc::world::BlockState{mc::world::Block::Repeater, orientationOf(facing)}
                               .withRepeaterDelay(delay));
     }
+    // `facing` is the comparator's FACING == its back (input) side.
+    RedstoneCircuit& comparator(mc::world::BlockPos rel, gameplay::redstone::Direction facing,
+                                bool subtract) {
+        return place(rel, mc::world::BlockState{mc::world::Block::Comparator, orientationOf(facing)}
+                              .withComparatorSubtract(subtract));
+    }
+    // A block of redstone: a constant weak source, useful as a comparator's back
+    // or side input (place to power, place Air over it to remove).
+    RedstoneCircuit& redstoneBlock(mc::world::BlockPos rel) {
+        return place(rel, mc::world::BlockState{mc::world::Block::RedstoneBlock});
+    }
+    RedstoneCircuit& clear(mc::world::BlockPos rel) {
+        return place(rel, mc::world::BlockState{mc::world::Block::Air});
+    }
 
     // The deterministic input primitive == LeverBlock.pull: toggle POWERED, then
     // updateNeighbours — the lever's own six neighbours (via the write) plus the

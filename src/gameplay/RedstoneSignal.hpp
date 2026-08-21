@@ -79,12 +79,12 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
 [[nodiscard]] constexpr bool isSignalSource(world::Block block) {
     return block == world::Block::RedstoneBlock || block == world::Block::RedstoneTorch ||
            block == world::Block::RedstoneWallTorch || block == world::Block::Lever ||
-           block == world::Block::Repeater;
+           block == world::Block::Repeater || block == world::Block::Comparator;
 }
 
-// Whether a block is a diode (repeater or, later, comparator) — DiodeBlock.isDiode.
+// Whether a block is a diode (repeater or comparator) — DiodeBlock.isDiode.
 [[nodiscard]] constexpr bool isDiode(world::Block block) {
-    return block == world::Block::Repeater;
+    return block == world::Block::Repeater || block == world::Block::Comparator;
 }
 
 // Weak power this block emits toward `dir` (RedstoneTorchBlock.getSignal etc.).
@@ -104,6 +104,9 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
     case world::Block::Repeater:
         // DiodeBlock.getSignal: output 15 only out of its FACING side when on.
         return state.powered() && facingOf(state) == dir ? 15 : 0;
+    case world::Block::Comparator:
+        // Same, but the output is its analog value rather than a flat 15.
+        return state.powered() && facingOf(state) == dir ? state.analogSignal() : 0;
     default:
         return 0;
     }
@@ -122,6 +125,7 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
         // (getConnectedDirection), which FACING records here.
         return state.powered() && facingOf(state) == dir ? 15 : 0;
     case world::Block::Repeater:
+    case world::Block::Comparator:
         // DiodeBlock.getDirectSignal == getSignal (strong out the FACING side).
         return getSignal(state, dir);
     default:

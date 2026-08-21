@@ -80,4 +80,66 @@ struct DiodeTickResult final {
     return result;
 }
 
+// --- Comparator (ComparatorBlock, a diode with an analog output) ---
+
+// ComparatorBlock.calculateOutputSignal + shouldTurnOn. `input` is the back
+// signal, `alt` the strongest side signal, `subtract` the mode.
+struct ComparatorEval final {
+    int output = 0;
+    bool shouldTurnOn = false;
+};
+[[nodiscard]] inline ComparatorEval comparatorEvaluate(int input, int alt, bool subtract) {
+    if (input == 0) {
+        return {0, false};
+    }
+    const int output = alt > input ? 0 : (subtract ? input - alt : input);
+    // input > alt turns on; input == alt turns on only in COMPARE mode.
+    const bool shouldTurnOn = input > alt || (input == alt && !subtract);
+    return {output, shouldTurnOn};
+}
+
+// ComparatorBlock.checkTickOnNeighbor: schedule (delay 2) when the analog output
+// or the POWERED boolean would change. NORMAL priority, or HIGH facing a diode.
+// A comparator never locks.
+[[nodiscard]] inline std::optional<DiodeSchedule> comparatorCheckTick(world::BlockState state,
+                                                                      ComparatorEval eval,
+                                                                      bool alreadyScheduled,
+                                                                      bool shouldPrioritize) {
+    if (alreadyScheduled) {
+        return std::nullopt;
+    }
+    if (eval.output == state.analogSignal() && state.powered() == eval.shouldTurnOn) {
+        return std::nullopt;
+    }
+    return DiodeSchedule{2, shouldPrioritize ? TickPriority::High : TickPriority::Normal};
+}
+
+struct ComparatorTickResult final {
+    bool changed = false;
+    world::BlockState newState{};
+    bool notifyFront = false;
+};
+
+// ComparatorBlock.refreshOutputState: always store the fresh analog output; when
+// it changed (or in COMPARE mode) set POWERED to shouldTurnOn and notify the
+// block in front.
+[[nodiscard]] inline ComparatorTickResult comparatorTick(world::BlockState state,
+                                                         ComparatorEval eval) {
+    ComparatorTickResult result;
+    world::BlockState next = state.withAnalogSignal(eval.output);
+    const bool doUpdate = state.analogSignal() != eval.output || !state.comparatorSubtract();
+    if (doUpdate) {
+        const bool isOn = state.powered();
+        if (isOn && !eval.shouldTurnOn) {
+            next = next.withPowered(false);
+        } else if (!isOn && eval.shouldTurnOn) {
+            next = next.withPowered(true);
+        }
+        result.notifyFront = true;
+    }
+    result.newState = next;
+    result.changed = next != state;
+    return result;
+}
+
 } // namespace mc::gameplay::redstone
