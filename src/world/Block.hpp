@@ -1136,16 +1136,10 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
 
 // The crop's stage-0 texture name the registry stores (wheat_stage0, ...).
 [[nodiscard]] constexpr const char* cropStage0Name(Block block) {
-    switch (block) {
-    case Block::WheatCrops:
-        return "wheat_stage0";
-    case Block::Carrots:
-        return "carrots_stage0";
-    case Block::Potatoes:
-        return "potatoes_stage0";
-    default:
-        return nullptr;
-    }
+    if (block == Block::WheatCrops) return "wheat_stage0";
+    if (block == Block::Carrots) return "carrots_stage0";
+    if (block == Block::Potatoes) return "potatoes_stage0";
+    return nullptr;
 }
 
 // The selection-box height of a crop at the given age, from vanilla's

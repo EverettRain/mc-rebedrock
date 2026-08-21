@@ -101,9 +101,8 @@ struct InteractionResult final {
 };
 
 // What the game does with a right-click on a block, once the two rules above
-// have been applied. This is the decision that used to be spelled as
-// `switch (suppressBlockUse ? ContainerType::None : definition.container)`
-// inside the renderer's input loop, where nothing could reach it.
+// have been applied. This is the decision that used to be a container-type
+// branch buried inside the renderer's input loop, where nothing could reach it.
 enum class BlockInteraction : std::uint8_t {
     // No block interaction: fall through to the held item's own use.
     UseItem,

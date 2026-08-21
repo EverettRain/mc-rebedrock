@@ -59,6 +59,21 @@ struct MinedDrops final {
     }
 };
 
+// A block's drop behaviour: rolls the loot for one broken block. B1-3 replaces
+// minedDrops' switch(block) with a table of these — one handler per block — so
+// this is the getDrops behaviour slot's type (it matches BlockBehavior's
+// GetDropsFn). The tool-adequacy gate (canHarvestBlock) is the caller's, not the
+// handler's, so a handler only rolls loot; `randomState`/`age`/`doubledSlab`
+// carry the same meaning they do for minedDrops below.
+using BlockDropFn =
+    MinedDrops (*)(world::Block block, const ItemStack& tool, std::uint32_t& randomState, int age,
+                   bool doubledSlab);
+
+// The drop handler for `block`: its own if it has special loot, else the default
+// (loot = the block item itself when the block dropsItem). This is what the
+// behaviour table wires into each block's getDrops slot.
+[[nodiscard]] BlockDropFn blockDropFn(world::Block block);
+
 // Rolls the block's loot table. `randomState` is the caller's LCG state (the
 // stand-in for Level#random) and is advanced by every chance-based entry, so
 // the same state sequence always produces the same drops. Pass an empty stack

@@ -108,24 +108,28 @@ namespace {
     return {ItemUseAction::PlaceBlock, world::BlockState{crop}};
 }
 
+// HoeItem#useOn → setTilledAndGetDrop: the block a hoe turns `block` into, or Air
+// when a hoe does nothing to it. Dirt, grass and podzol become farmland; coarse
+// dirt becomes dirt (the re-till step of the vanilla HOE_LOOKUP map). Expressed
+// as a predicate chain rather than a switch on identity, like the block traits.
+[[nodiscard]] world::Block hoeTilledForm(world::Block block) {
+    using world::Block;
+    if (block == Block::Dirt || block == Block::Grass || block == Block::Podzol) {
+        return Block::Farmland;
+    }
+    if (block == Block::CoarseDirt) {
+        return Block::Dirt;
+    }
+    return Block::Air;
+}
+
 // HoeItem#useOn → setTilledAndGetDrop: the clicked dirt-family block converts in
-// place. Dirt, grass and podzol become farmland; coarse dirt becomes dirt (the
-// re-till step of the vanilla HOE_LOOKUP map).
+// place; anything else is left untouched.
 [[nodiscard]] ItemUseResult tillBlockWithHoe(
     const Item*, world::World& world, const world::PlacementContext& context) {
     const auto target = context.clickedBlock;
-    const auto block = world.block(target.x, target.y, target.z);
-    world::Block tilled = world::Block::Air;
-    switch (block) {
-    case world::Block::Dirt:
-    case world::Block::Grass:
-    case world::Block::Podzol:
-        tilled = world::Block::Farmland;
-        break;
-    case world::Block::CoarseDirt:
-        tilled = world::Block::Dirt;
-        break;
-    default:
+    const auto tilled = hoeTilledForm(world.block(target.x, target.y, target.z));
+    if (tilled == world::Block::Air) {
         return {};
     }
     return {ItemUseAction::TilGround, world::BlockState{tilled}};

@@ -203,7 +203,9 @@ placementSlot(const PlacementBehaviorContext& context) {
         auto& entry = table[i];
         entry.prefilter = kBuiltinBlockBehaviorPrefilter[i];
         if (entry.prefilter.has(BlockBehaviorBit::HasDrops)) {
-            entry.getDrops = &minedDrops;
+            // B1-3 wires the block's own drop handler (blockDropFn), so the slot
+            // is per-block rather than one shared minedDrops with a switch inside.
+            entry.getDrops = blockDropFn(static_cast<world::Block>(i));
         }
         // getShape/getStateForPlacement point at the single-source free functions
         // (world::blockShape and placementSlot). Both gate internally — blockShape
@@ -248,11 +250,11 @@ template <class Fn>
     return behaviorFor(id).*slot;
 }
 
-// The one wired dispatch: block -> drops, through the table and the pre-filter
-// instead of a switch. A block whose HasDrops bit is clear has no getDrops slot
-// and yields nothing without ever calling minedDrops; otherwise it forwards to
-// the wired slot. This is behaviour-identical to calling minedDrops directly
-// (minedDrops itself returns empty for a block with no drops), which is what the
+// Block -> drops, through the table and the pre-filter instead of a switch. A
+// block whose HasDrops bit is clear has no getDrops slot and yields nothing
+// without a call; otherwise the tool-adequacy gate (the same canHarvestBlock
+// minedDrops applies) runs, then the block's own drop handler produces the loot.
+// This is behaviour-identical to calling minedDrops directly, which is what the
 // parity harness asserts across every block and tool.
 [[nodiscard]] inline MinedDrops dispatchBlockDrops(core::BlockId id, const ItemStack& tool,
                                                    std::uint32_t& randomState, int age = 0,
@@ -261,7 +263,11 @@ template <class Fn>
     if (!behavior.prefilter.has(BlockBehaviorBit::HasDrops) || behavior.getDrops == nullptr) {
         return {};
     }
-    return behavior.getDrops(world::blockFromId(id), tool, randomState, age, doubledSlab);
+    const auto block = world::blockFromId(id);
+    if (!canHarvestBlock(block, tool)) {
+        return {};
+    }
+    return behavior.getDrops(block, tool, randomState, age, doubledSlab);
 }
 
 // A block's base shape, through the table's getShape slot. This is the uniform

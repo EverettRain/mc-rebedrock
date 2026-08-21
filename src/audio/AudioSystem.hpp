@@ -21,54 +21,34 @@ enum class BlockSoundFamily {
 
 [[nodiscard]] constexpr BlockSoundFamily blockSoundFamily(world::Block block) {
     using enum world::Block;
-    switch (block) {
-    case Grass:
-    case Dirt:
-    case CoarseDirt:
-    case Podzol:
-    case GrassPlant:
-    case Dandelion:
-    case OakSapling:
-    case OakLeaves:
-    case SpruceLeaves:
-    case BirchLeaves:
-    case JungleLeaves:
-    case AcaciaLeaves:
-    case DarkOakLeaves:
+    // A block's step/break sound family, as grouped conditions rather than a
+    // switch on identity: the leaves and logs come from their traits (isLeaves /
+    // isLog are exactly the six leaf and six log blocks), the rest are the small
+    // named lists the vanilla sound groups hold. Anything else falls to Stone.
+    if (block == Grass || block == Dirt || block == CoarseDirt || block == Podzol ||
+        block == GrassPlant || block == Dandelion || block == OakSapling ||
+        world::isLeaves(block)) {
         return BlockSoundFamily::Grass;
-    case OakPlanks:
-    case SprucePlanks:
-    case BirchPlanks:
-    case JunglePlanks:
-    case AcaciaPlanks:
-    case DarkOakPlanks:
-    case OakLog:
-    case SpruceLog:
-    case BirchLog:
-    case JungleLog:
-    case AcaciaLog:
-    case DarkOakLog:
-    case Bookshelf:
-    case CraftingTable:
-    case Pumpkin:
-    case Melon:
-    case Torch:
-    case WallTorch:
-        return BlockSoundFamily::Wood;
-    case Sand:
-    case RedSand:
-        return BlockSoundFamily::Sand;
-    case Gravel:
-        return BlockSoundFamily::Gravel;
-    case WhiteWool:
-    case RedWool:
-    case BlackWool:
-        return BlockSoundFamily::Cloth;
-    case Glass:
-        return BlockSoundFamily::Glass;
-    default:
-        return BlockSoundFamily::Stone;
     }
+    if (world::isLog(block) || block == OakPlanks || block == SprucePlanks ||
+        block == BirchPlanks || block == JunglePlanks || block == AcaciaPlanks ||
+        block == DarkOakPlanks || block == Bookshelf || block == CraftingTable ||
+        block == Pumpkin || block == Melon || block == Torch || block == WallTorch) {
+        return BlockSoundFamily::Wood;
+    }
+    if (block == Sand || block == RedSand) {
+        return BlockSoundFamily::Sand;
+    }
+    if (block == Gravel) {
+        return BlockSoundFamily::Gravel;
+    }
+    if (block == WhiteWool || block == RedWool || block == BlackWool) {
+        return BlockSoundFamily::Cloth;
+    }
+    if (block == Glass) {
+        return BlockSoundFamily::Glass;
+    }
+    return BlockSoundFamily::Stone;
 }
 
 [[nodiscard]] const char* blockSoundFamilyName(BlockSoundFamily family);

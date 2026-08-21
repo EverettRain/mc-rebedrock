@@ -2,6 +2,7 @@
 
 #include "gameplay/BlockTags.hpp"
 #include "gameplay/ItemPlacement.hpp"
+#include "world/BlockRegistry.hpp" // kBuiltinBlockCount
 
 #include <limits>
 #include <optional>
@@ -153,123 +154,197 @@ void MinedDrops::add(const ItemStack& stack) {
     ++count;
 }
 
-MinedDrops minedDrops(world::Block block, const ItemStack& tool, std::uint32_t& randomState,
-                      int age, bool doubledSlab) {
+namespace {
+
+// The per-block drop handlers. B1-3 replaces minedDrops' switch(block) with a
+// table of these — one behaviour per block — so adding a block wires a handler
+// instead of extending a central switch (the R1 audit's parallel-list target).
+// Each is a getDrops slot the behaviour table holds; the tool-adequacy gate
+// (canHarvestBlock) lives in the callers (minedDrops / dispatchBlockDrops), so a
+// handler only rolls the block's loot. Unused parameters keep the shared slot
+// signature so every handler is one BlockDropFn.
+
+// The default: a block whose loot is simply itself when it dropsItem (a double
+// slab is two slab items), and nothing otherwise. Also the handler for silk-only
+// Glass and every block with no special table, and for external blocks.
+MinedDrops dropDefault(world::Block block, const ItemStack&, std::uint32_t&, int, bool doubledSlab) {
     MinedDrops drops;
-    // Breaking a block with too weak a tool destroys it without any loot.
-    if (!canHarvestBlock(block, tool)) return drops;
-    switch (block) {
-    // Blocks that turn into something else on the way out.
-    case world::Block::Stone:
-        drops.add({world::Block::Cobblestone, 1U, blockItemFor(world::Block::Cobblestone)});
-        break;
-    case world::Block::Grass:
-    case world::Block::Podzol:
-        // Only silk touch keeps the topsoil layer; everything else yields dirt.
-        drops.add({world::Block::Dirt, 1U, blockItemFor(world::Block::Dirt)});
-        break;
-    case world::Block::CoalOre:
-        drops.add({world::Block::Air, 1U, &items::Coal});
-        break;
-    case world::Block::DiamondOre:
-        drops.add({world::Block::Air, 1U, &items::Diamond});
-        break;
-    case world::Block::EmeraldOre:
-        drops.add({world::Block::Air, 1U, &items::Emerald});
-        break;
-    case world::Block::Bookshelf:
-        drops.add({world::Block::Air, 3U, &items::Book});
-        break;
-    case world::Block::WallTorch:
-        // Whatever it was leaning on, a wall torch comes back as the standing
-        // one: the facing is a state, and the item has no facing at all.
-        drops.add({world::Block::Torch, 1U, blockItemFor(world::Block::Torch)});
-        break;
-
-    // Chance-based tables.
-    case world::Block::OakLeaves:
-    case world::Block::SpruceLeaves:
-    case world::Block::BirchLeaves:
-    case world::Block::JungleLeaves:
-    case world::Block::AcaciaLeaves:
-    case world::Block::DarkOakLeaves:
-        // Without shears or silk touch the leaves themselves are lost; what is
-        // left are the rolls of the vanilla leaves tables. Jungle leaves drop
-        // their sapling at 1/40 rather than 1/20, and only oak and dark oak
-        // carry the apple roll.
-        if (rollChance(randomState,
-                       block == world::Block::JungleLeaves ? 0.025F : 0.05F)) {
-            drops.add({saplingForLeaves(block), 1U, blockItemFor(saplingForLeaves(block))});
-        }
-        if (rollChance(randomState, 0.02F)) {
-            drops.add({world::Block::Air, randomCount(randomState, 1U, 2U), &items::Stick});
-        }
-        if ((block == world::Block::OakLeaves || block == world::Block::DarkOakLeaves) &&
-            rollChance(randomState, 0.005F)) {
-            drops.add({world::Block::Air, 1U, &items::Apple});
-        }
-        break;
-    case world::Block::Gravel:
-        // 10% flint, and the gravel itself only when that roll fails.
-        if (rollChance(randomState, 0.10F)) {
-            drops.add({world::Block::Air, 1U, &items::Flint});
-        } else {
-            drops.add({world::Block::Gravel, 1U, blockItemFor(world::Block::Gravel)});
-        }
-        break;
-
-    case world::Block::GrassPlant:
-        // Tall grass drops a wheat seed 1/8 of the time (1.16.1's grass.json
-        // loot table); the grass plant itself is only kept by shears.
-        if (rollChance(randomState, 0.125F)) {
-            drops.add({world::Block::Air, 1U, &items::WheatSeeds});
-        }
-        break;
-    case world::Block::Farmland:
-        // FarmlandBlock#getDrops: breaking tilled soil always yields dirt.
-        drops.add({world::Block::Dirt, 1U, blockItemFor(world::Block::Dirt)});
-        break;
-
-    case world::Block::WheatCrops: {
-        // Wheat's loot table: at age 7 the guaranteed pool drops wheat and an
-        // extra binomial(3, 0.5714) roll of seeds; an immature crop drops a
-        // single seed instead.
-        const bool mature = age >= 7;
-        drops.add({world::Block::Air, 1U, mature ? produceForCrop(block) : seedForCrop(block)});
-        if (mature) {
-            const auto seeds = binomialCount(randomState, 3, 0.5714286F);
-            if (seeds > 0U) {
-                drops.add({world::Block::Air, seeds, seedForCrop(block)});
-            }
-        }
-        break;
-    }
-    case world::Block::Carrots:
-    case world::Block::Potatoes: {
-        // Carrot/potato share a table: one crop unconditionally (so even a young
-        // plant yields one), plus a binomial(3, 0.5714) extra roll at maturity.
-        std::uint8_t count = 1U;
-        if (age >= 7) {
-            count = static_cast<std::uint8_t>(count + binomialCount(randomState, 3, 0.5714286F));
-        }
-        drops.add({world::Block::Air, count, produceForCrop(block)});
-        break;
-    }
-
-    // Silk-touch-only blocks: harvestable, but they leave nothing behind.
-    case world::Block::Glass:
-        break;
-
-    default:
-        // dropsItem marks the blocks whose loot is simply themselves; the rest
-        // (tall grass, which would need seeds) drop nothing. A double slab is two
-        // slab items, so it comes back whole when rebuilt.
-        if (world::blockDefinition(block).dropsItem) {
-            drops.add({block, static_cast<std::uint8_t>(doubledSlab ? 2 : 1), blockItemFor(block)});
-        }
-        break;
+    if (world::blockDefinition(block).dropsItem) {
+        drops.add({block, static_cast<std::uint8_t>(doubledSlab ? 2 : 1), blockItemFor(block)});
     }
     return drops;
+}
+
+// Silk-touch-only: harvestable, but leaves nothing behind for a plain break.
+MinedDrops dropNothing(world::Block, const ItemStack&, std::uint32_t&, int, bool) {
+    return {};
+}
+
+MinedDrops dropCobblestone(world::Block, const ItemStack&, std::uint32_t&, int, bool) {
+    MinedDrops drops;
+    drops.add({world::Block::Cobblestone, 1U, blockItemFor(world::Block::Cobblestone)});
+    return drops;
+}
+
+// Only silk touch keeps the topsoil layer; everything else (grass, podzol,
+// farmland) yields dirt.
+MinedDrops dropDirt(world::Block, const ItemStack&, std::uint32_t&, int, bool) {
+    MinedDrops drops;
+    drops.add({world::Block::Dirt, 1U, blockItemFor(world::Block::Dirt)});
+    return drops;
+}
+
+MinedDrops dropCoal(world::Block, const ItemStack&, std::uint32_t&, int, bool) {
+    MinedDrops drops;
+    drops.add({world::Block::Air, 1U, &items::Coal});
+    return drops;
+}
+
+MinedDrops dropDiamond(world::Block, const ItemStack&, std::uint32_t&, int, bool) {
+    MinedDrops drops;
+    drops.add({world::Block::Air, 1U, &items::Diamond});
+    return drops;
+}
+
+MinedDrops dropEmerald(world::Block, const ItemStack&, std::uint32_t&, int, bool) {
+    MinedDrops drops;
+    drops.add({world::Block::Air, 1U, &items::Emerald});
+    return drops;
+}
+
+MinedDrops dropBookshelf(world::Block, const ItemStack&, std::uint32_t&, int, bool) {
+    MinedDrops drops;
+    drops.add({world::Block::Air, 3U, &items::Book});
+    return drops;
+}
+
+// Whatever it was leaning on, a wall torch comes back as the standing one: the
+// facing is a state, and the item has no facing at all.
+MinedDrops dropWallTorch(world::Block, const ItemStack&, std::uint32_t&, int, bool) {
+    MinedDrops drops;
+    drops.add({world::Block::Torch, 1U, blockItemFor(world::Block::Torch)});
+    return drops;
+}
+
+// Without shears or silk touch the leaves themselves are lost; what is left are
+// the rolls of the vanilla leaves tables. Jungle leaves drop their sapling at
+// 1/40 rather than 1/20, and only oak and dark oak carry the apple roll.
+MinedDrops dropLeaves(world::Block block, const ItemStack&, std::uint32_t& randomState, int, bool) {
+    MinedDrops drops;
+    if (rollChance(randomState, block == world::Block::JungleLeaves ? 0.025F : 0.05F)) {
+        drops.add({saplingForLeaves(block), 1U, blockItemFor(saplingForLeaves(block))});
+    }
+    if (rollChance(randomState, 0.02F)) {
+        drops.add({world::Block::Air, randomCount(randomState, 1U, 2U), &items::Stick});
+    }
+    if ((block == world::Block::OakLeaves || block == world::Block::DarkOakLeaves) &&
+        rollChance(randomState, 0.005F)) {
+        drops.add({world::Block::Air, 1U, &items::Apple});
+    }
+    return drops;
+}
+
+// 10% flint, and the gravel itself only when that roll fails.
+MinedDrops dropGravel(world::Block, const ItemStack&, std::uint32_t& randomState, int, bool) {
+    MinedDrops drops;
+    if (rollChance(randomState, 0.10F)) {
+        drops.add({world::Block::Air, 1U, &items::Flint});
+    } else {
+        drops.add({world::Block::Gravel, 1U, blockItemFor(world::Block::Gravel)});
+    }
+    return drops;
+}
+
+// Tall grass drops a wheat seed 1/8 of the time (1.16.1's grass.json loot
+// table); the grass plant itself is only kept by shears.
+MinedDrops dropTallGrass(world::Block, const ItemStack&, std::uint32_t& randomState, int, bool) {
+    MinedDrops drops;
+    if (rollChance(randomState, 0.125F)) {
+        drops.add({world::Block::Air, 1U, &items::WheatSeeds});
+    }
+    return drops;
+}
+
+// Wheat's loot table: at age 7 the guaranteed pool drops wheat and an extra
+// binomial(3, 0.5714) roll of seeds; an immature crop drops a single seed.
+MinedDrops dropWheat(world::Block block, const ItemStack&, std::uint32_t& randomState, int age, bool) {
+    MinedDrops drops;
+    const bool mature = age >= 7;
+    drops.add({world::Block::Air, 1U, mature ? produceForCrop(block) : seedForCrop(block)});
+    if (mature) {
+        const auto seeds = binomialCount(randomState, 3, 0.5714286F);
+        if (seeds > 0U) {
+            drops.add({world::Block::Air, seeds, seedForCrop(block)});
+        }
+    }
+    return drops;
+}
+
+// Carrot/potato share a table: one crop unconditionally (so even a young plant
+// yields one), plus a binomial(3, 0.5714) extra roll at maturity.
+MinedDrops dropCarrotPotato(world::Block block, const ItemStack&, std::uint32_t& randomState,
+                            int age, bool) {
+    MinedDrops drops;
+    std::uint8_t count = 1U;
+    if (age >= 7) {
+        count = static_cast<std::uint8_t>(count + binomialCount(randomState, 3, 0.5714286F));
+    }
+    drops.add({world::Block::Air, count, produceForCrop(block)});
+    return drops;
+}
+
+// The block -> drop-handler table, built once for the built-in blocks. A block
+// with no special loot keeps dropDefault (its own item if dropsItem); the
+// special cases below name their handler. This is the switch, turned inside out
+// into data: one array load selects the behaviour.
+[[nodiscard]] const std::array<BlockDropFn, world::kBuiltinBlockCount>& dropTable() {
+    static const std::array<BlockDropFn, world::kBuiltinBlockCount> table = [] {
+        std::array<BlockDropFn, world::kBuiltinBlockCount> entries{};
+        entries.fill(&dropDefault);
+        const auto set = [&](world::Block block, BlockDropFn fn) {
+            entries[static_cast<std::size_t>(block)] = fn;
+        };
+        using world::Block;
+        set(Block::Stone, &dropCobblestone);
+        set(Block::Grass, &dropDirt);
+        set(Block::Podzol, &dropDirt);
+        set(Block::Farmland, &dropDirt);
+        set(Block::CoalOre, &dropCoal);
+        set(Block::DiamondOre, &dropDiamond);
+        set(Block::EmeraldOre, &dropEmerald);
+        set(Block::Bookshelf, &dropBookshelf);
+        set(Block::WallTorch, &dropWallTorch);
+        set(Block::OakLeaves, &dropLeaves);
+        set(Block::SpruceLeaves, &dropLeaves);
+        set(Block::BirchLeaves, &dropLeaves);
+        set(Block::JungleLeaves, &dropLeaves);
+        set(Block::AcaciaLeaves, &dropLeaves);
+        set(Block::DarkOakLeaves, &dropLeaves);
+        set(Block::Gravel, &dropGravel);
+        set(Block::GrassPlant, &dropTallGrass);
+        set(Block::WheatCrops, &dropWheat);
+        set(Block::Carrots, &dropCarrotPotato);
+        set(Block::Potatoes, &dropCarrotPotato);
+        set(Block::Glass, &dropNothing);
+        return entries;
+    }();
+    return table;
+}
+
+} // namespace
+
+BlockDropFn blockDropFn(world::Block block) {
+    const auto index = static_cast<std::size_t>(block);
+    // External blocks (past the built-ins) fall to the default: their own item
+    // when they dropsItem, nothing otherwise — the old switch's `default:` case.
+    return index < world::kBuiltinBlockCount ? dropTable()[index] : &dropDefault;
+}
+
+MinedDrops minedDrops(world::Block block, const ItemStack& tool, std::uint32_t& randomState,
+                      int age, bool doubledSlab) {
+    // Breaking a block with too weak a tool destroys it without any loot.
+    if (!canHarvestBlock(block, tool)) return {};
+    return blockDropFn(block)(block, tool, randomState, age, doubledSlab);
 }
 
 } // namespace mc::gameplay

@@ -20,14 +20,17 @@ struct PieceCount final {
 };
 
 [[nodiscard]] PieceCount breakPieceCount(world::Block block) {
-    switch (world::blockDefinition(block).model) {
-    case world::BlockModel::Torch:
+    // From the model's outline box, as a branch on the model field rather than a
+    // switch: the torch's slim box subdivides 2x3x2 and a cross plant's 3x4x3;
+    // every other model uses the full 4x4x4 cube grid.
+    const auto model = world::blockDefinition(block).model;
+    if (model == world::BlockModel::Torch) {
         return {2, 3, 2};
-    case world::BlockModel::Cross:
-        return {3, 4, 3};
-    default:
-        return {4, 4, 4};
     }
+    if (model == world::BlockModel::Cross) {
+        return {3, 4, 3};
+    }
+    return {4, 4, 4};
 }
 
 } // namespace

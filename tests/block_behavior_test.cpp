@@ -201,6 +201,55 @@ void testDropsDispatchEqualsSwitch() {
     }
 }
 
+// The per-block drop handlers produce the right loot, pinned to absolute values.
+// B1-3 replaced minedDrops' switch with a per-block table, so table==minedDrops
+// parity alone cannot catch a handler wired to the wrong loot (both paths would
+// drift together); these deterministic drops are the independent ground truth a
+// mis-wired or mis-coded handler trips. Chance-based tables (leaves, crops) are
+// left to the parity/HasDrops checks since their exact roll needs a fixed seed.
+void testDropsAbsoluteValues() {
+    const ItemStack pick{Block::Air, 1U, &mc::gameplay::items::DiamondPickaxe};
+
+    const auto single = [&](Block block, const ItemStack& tool, int age, bool doubledSlab) {
+        std::uint32_t seed = 1U;
+        return minedDrops(block, tool, seed, age, doubledSlab);
+    };
+
+    // Blocks that turn into something else.
+    const auto stone = single(Block::Stone, pick, 0, false);
+    assert(stone.count == 1 && stone.entries[0].block == Block::Cobblestone &&
+           stone.entries[0].count == 1U);
+    const auto grass = single(Block::Grass, pick, 0, false);
+    assert(grass.count == 1 && grass.entries[0].block == Block::Dirt);
+    const auto farmland = single(Block::Farmland, pick, 0, false);
+    assert(farmland.count == 1 && farmland.entries[0].block == Block::Dirt);
+
+    // Ores yield their item (block field Air), not the ore block itself.
+    const auto coal = single(Block::CoalOre, pick, 0, false);
+    assert(coal.count == 1 && coal.entries[0].block == Block::Air &&
+           coal.entries[0].item == &mc::gameplay::items::Coal);
+    const auto diamond = single(Block::DiamondOre, pick, 0, false);
+    assert(diamond.count == 1 && diamond.entries[0].item == &mc::gameplay::items::Diamond);
+    const auto bookshelf = single(Block::Bookshelf, pick, 0, false);
+    assert(bookshelf.count == 1 && bookshelf.entries[0].item == &mc::gameplay::items::Book &&
+           bookshelf.entries[0].count == 3U);
+
+    // A wall torch comes back as the standing torch (no facing on the item).
+    const auto wallTorch = single(Block::WallTorch, ItemStack{}, 0, false);
+    assert(wallTorch.count == 1 && wallTorch.entries[0].block == Block::Torch);
+
+    // The default handler: a plain block drops itself; a double slab drops two.
+    const auto cobble = single(Block::Cobblestone, pick, 0, false);
+    assert(cobble.count == 1 && cobble.entries[0].block == Block::Cobblestone &&
+           cobble.entries[0].count == 1U);
+    const auto twinSlab = single(Block::OakSlab, pick, 0, true);
+    assert(twinSlab.count == 1 && twinSlab.entries[0].block == Block::OakSlab &&
+           twinSlab.entries[0].count == 2U);
+
+    // Silk-only glass leaves nothing for a plain break.
+    assert(single(Block::Glass, pick, 0, false).empty());
+}
+
 // The dispatch mechanism: a clear pre-filter means a null slot and no call; a
 // set one exposes the wired pointer through the generic fetch; and the slots the
 // migration tasks own are still null everywhere (B1-1 fills only getDrops).
@@ -214,11 +263,12 @@ void testDispatchMechanism() {
     std::uint32_t glassSeed = 1U;
     assert(dispatchBlockDrops(glass, diamondPickaxe, glassSeed).empty());
 
-    // Stone drops: bit set, slot wired to the shared minedDrops.
+    // Stone drops: bit set, slot wired to Stone's own drop handler (B1-3 split
+    // minedDrops per block, so the slot is blockDropFn(Stone), not the wrapper).
     const auto stone = mc::world::blockId(Block::Stone);
     assert(behaviorFor(stone).prefilter.has(BlockBehaviorBit::HasDrops));
-    assert(behaviorFor(stone).getDrops == &minedDrops);
-    assert(behaviorSlot(stone, &BlockBehavior::getDrops) == &minedDrops);
+    assert(behaviorFor(stone).getDrops == mc::gameplay::blockDropFn(Block::Stone));
+    assert(behaviorSlot(stone, &BlockBehavior::getDrops) == mc::gameplay::blockDropFn(Block::Stone));
 
     // B1-2 wired getShape and getStateForPlacement for every built-in: getShape
     // to the single-source world::blockShape, getStateForPlacement to a forwarder
@@ -349,6 +399,7 @@ int main() {
     testPrefilterParity();
     testHasDropsLockedToBehaviour();
     testDropsDispatchEqualsSwitch();
+    testDropsAbsoluteValues();
     testShapeDispatchEqualsSource();
     testPlacementDispatchEqualsSource();
     testDispatchMechanism();
