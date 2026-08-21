@@ -107,6 +107,9 @@ cmake --build build/rebedrock-debug --parallel 8
 ctest --test-dir build/rebedrock-debug --output-on-failure
 ```
 
+模拟链打成静态库 `mc_rebedrock_runtime`，游戏、无头服务端和绝大多数测试都链接它，因此一次改动只编
+一遍。benchmark 和存档迁移诊断这类手动工具默认不构建，需要时加 `-DMC_REBEDROCK_BUILD_TOOLS=ON`。
+
 构建结果位于：
 
 ```text

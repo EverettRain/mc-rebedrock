@@ -253,9 +253,13 @@ int main() {
                   << "(~" << (chunks > 0U ? serverResident / chunks : 0U) << " B/chunk)\n";
         assert(serverResident > 0U);
         assert(chunks >= 1U);
-        // A single-chunk headless world is ~40 KB; a megabyte catches a gross
-        // leak without being sensitive to terrain variation.
-        assert(serverResident < 1024U * 1024U);
+        // Per chunk, not in total: how many chunks the streaming worker has
+        // finished by this line is a race (1 on an idle machine, the full 24 of
+        // the view window under load), so an absolute ceiling failed roughly one
+        // run in six on a busy box. A chunk is ~82 KB here; a 256 KB per-chunk
+        // bound still catches a gross leak and no longer depends on the worker's
+        // timing.
+        assert(serverResident / chunks < 256U * 1024U);
 
         // M-Chunk B-5 delta principle: the edits the simulation publishes carry
         // the full state, so a consumer (the renderer's client chunk cache) fed
@@ -288,11 +292,13 @@ int main() {
         assert(runtime.world().residentBytes() < 8U * 1024U * 1024U);
         {
             world::World mirrorProbe;
-            for (int cx = -1; cx <= 1; ++cx) {
-                for (int cz = -1; cz <= 1; ++cz) {
-                    if (const auto* chunk = runtime.world().chunk({cx, cz}); chunk != nullptr) {
-                        mirrorProbe.setChunk({cx, cz}, *chunk);
-                    }
+            // Every chunk the server holds, not a hardcoded 3x3 window: how far
+            // the streaming worker has got by this line is a race, and mirroring
+            // fewer chunks than the server holds made the byte comparison below
+            // fail on a busy machine.
+            for (const auto position : runtime.world().positions()) {
+                if (const auto* chunk = runtime.world().chunk(position); chunk != nullptr) {
+                    mirrorProbe.setChunk(position, *chunk);
                 }
             }
             for (const auto& edit : runtime.currentSave().edits) {

@@ -39,9 +39,15 @@ void expectNearAo(float actual, float expected, std::string_view context) {
     throw std::runtime_error(message.str());
 }
 
-[[nodiscard]] std::array<const mc::render::VoxelVertex*, 4>
+// Returns the four corner vertices *by value*. An earlier version handed back
+// pointers into the mesh, which every call site fed a temporary MeshData built
+// inline: the mesh died at the end of the full expression and the assertions
+// read freed memory (a segfault on the default stack, a silent AO of 0 with a
+// larger one). Copying 4 x 24 bytes makes the lifetime question disappear.
+[[nodiscard]] std::array<mc::render::VoxelVertex, 4>
 topFaceVertices(const mc::render::MeshData& mesh, int blockX, int blockY, int blockZ) {
-    std::array<const mc::render::VoxelVertex*, 4> result{};
+    std::array<mc::render::VoxelVertex, 4> result{};
+    std::array<bool, 4> found{};
     for (const auto& vertex : mesh.vertices) {
         // All scenes build section 0 of chunk (0,0), whose origin is the world
         // origin, so decoded local positions equal world positions.
@@ -58,10 +64,12 @@ topFaceVertices(const mc::render::MeshData& mesh, int blockX, int blockY, int bl
         }
         const int xCorner = static_cast<int>(std::lround(position.x)) - blockX;
         const int zCorner = static_cast<int>(std::lround(position.z)) - blockZ;
-        result[static_cast<std::size_t>(zCorner * 2 + xCorner)] = &vertex;
+        const auto corner = static_cast<std::size_t>(zCorner * 2 + xCorner);
+        result[corner] = vertex;
+        found[corner] = true;
     }
-    for (const auto* vertex : result) {
-        if (vertex == nullptr) {
+    for (const bool present : found) {
+        if (!present) {
             throw std::runtime_error("top face did not contain all four expected vertices");
         }
     }
@@ -130,34 +138,34 @@ int main() {
     {
         const auto vertices = topFaceVertices(buildLightingScene({}), 1, 1, 1);
         for (std::size_t corner = 0; corner < vertices.size(); ++corner) {
-            expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[corner]), 1.0F,
+            expectNearAo(mc::render::decodeAmbientOcclusion(vertices[corner]), 1.0F,
                          "isolated cube AO corner " + std::to_string(corner));
-            expectNear(mc::render::decodeSkyLight(*vertices[corner]), 1.0F,
+            expectNear(mc::render::decodeSkyLight(vertices[corner]), 1.0F,
                        "isolated cube sky light corner " + std::to_string(corner));
         }
     }
 
     {
         const auto vertices = topFaceVertices(buildLightingScene({{0, mc::world::kMinY + 2, 1}}), 1, 1, 1);
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[0]), kSingleSideOcclusion,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[0]), kSingleSideOcclusion,
                      "single side AO at north-west corner");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[1]), 1.0F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[1]), 1.0F,
                      "single side AO at north-east corner");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[2]), kSingleSideOcclusion,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[2]), kSingleSideOcclusion,
                      "single side AO at south-west corner");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[3]), 1.0F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[3]), 1.0F,
                      "single side AO at south-east corner");
     }
 
     {
         const auto vertices = topFaceVertices(buildLightingScene({{0, mc::world::kMinY + 2, 1}, {1, mc::world::kMinY + 2, 0}}), 1, 1, 1);
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[0]), kClosedCornerOcclusion,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[0]), kClosedCornerOcclusion,
                      "closed-corner AO");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[1]), kSingleSideOcclusion,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[1]), kSingleSideOcclusion,
                      "north edge AO");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[2]), kSingleSideOcclusion,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[2]), kSingleSideOcclusion,
                      "west edge AO");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[3]), 1.0F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[3]), 1.0F,
                      "unoccluded opposite corner AO");
     }
 
@@ -171,13 +179,13 @@ int main() {
         world.setChunk({1, 0}, std::move(right));
         const auto mesh = mc::world::ChunkMesher::buildSection(world, {0, 0}, 0);
         const auto vertices = topFaceVertices(mesh.mesh, 15, 1, 1);
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[0]), 1.0F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[0]), 1.0F,
                      "chunk-border west corner AO");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[1]), kSingleSideOcclusion,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[1]), kSingleSideOcclusion,
                      "chunk-border east corner AO");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[2]), 1.0F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[2]), 1.0F,
                      "chunk-border south-west corner AO");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[3]), kSingleSideOcclusion,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[3]), kSingleSideOcclusion,
                      "chunk-border south-east corner AO");
     }
 
@@ -231,13 +239,13 @@ int main() {
         static_cast<void>(mc::world::ChunkMesher::buildSection(
             world, {0, 0}, 0, snapshot, snapshotMesh));
         const auto vertices = topFaceVertices(snapshotMesh.mesh, 1, 1, 1);
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[0]), kSingleSideOcclusion,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[0]), kSingleSideOcclusion,
                      "snapshot single side AO at north-west corner");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[1]), 1.0F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[1]), 1.0F,
                      "snapshot single side AO at north-east corner");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[2]), kSingleSideOcclusion,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[2]), kSingleSideOcclusion,
                      "snapshot single side AO at south-west corner");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[3]), 1.0F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[3]), 1.0F,
                      "snapshot single side AO at south-east corner");
     }
 
@@ -245,7 +253,7 @@ int main() {
         // High quality (vanilla 1.16.1 AO): an isolated cube stays full-bright.
         const auto vertices = topFaceVertices(buildLightingSceneHigh({}), 1, 1, 1);
         for (std::size_t corner = 0; corner < vertices.size(); ++corner) {
-            expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[corner]), 1.0F,
+            expectNearAo(mc::render::decodeAmbientOcclusion(vertices[corner]), 1.0F,
                          "high isolated cube AO corner " + std::to_string(corner));
         }
     }
@@ -254,13 +262,13 @@ int main() {
         // One occluding side darkens the two corners beside it: the 2×2 ring
         // average puts one 0.2 cell among three open ones → (0.2+1+1+1)/4 = 0.8.
         const auto vertices = topFaceVertices(buildLightingSceneHigh({{0, mc::world::kMinY + 2, 1}}), 1, 1, 1);
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[0]), 0.8F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[0]), 0.8F,
                      "high single side AO at north-west corner");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[1]), 1.0F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[1]), 1.0F,
                      "high single side AO at north-east corner");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[2]), 0.8F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[2]), 0.8F,
                      "high single side AO at south-west corner");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[3]), 1.0F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[3]), 1.0F,
                      "high single side AO at south-east corner");
     }
 
@@ -270,13 +278,13 @@ int main() {
         // one 0.2 cell → 0.8; the far corner stays open.
         const auto vertices =
             topFaceVertices(buildLightingSceneHigh({{0, mc::world::kMinY + 2, 1}, {1, mc::world::kMinY + 2, 0}}), 1, 1, 1);
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[0]), 0.6F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[0]), 0.6F,
                      "high closed-corner AO");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[1]), 0.8F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[1]), 0.8F,
                      "high north edge AO");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[2]), 0.8F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[2]), 0.8F,
                      "high west edge AO");
-        expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[3]), 1.0F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[3]), 1.0F,
                      "high unoccluded opposite corner AO");
     }
 
@@ -288,11 +296,11 @@ int main() {
         // consistent at the shared corner.
         const auto withDiagonal =
             topFaceVertices(buildLightingSceneHigh({{0, mc::world::kMinY + 2, 0}}), 1, 1, 1);
-        expectNearAo(mc::render::decodeAmbientOcclusion(*withDiagonal[0]), 0.8F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(withDiagonal[0]), 0.8F,
                      "high diagonal occluder AO");
         const auto withOverhangAbove =
             topFaceVertices(buildLightingSceneHigh({{0, mc::world::kMinY + 2, 0}, {0, mc::world::kMinY + 3, 0}}), 1, 1, 1);
-        expectNearAo(mc::render::decodeAmbientOcclusion(*withOverhangAbove[0]), 0.8F,
+        expectNearAo(mc::render::decodeAmbientOcclusion(withOverhangAbove[0]), 0.8F,
                      "high diagonal occluder AO with a block above it");
     }
 
@@ -309,7 +317,7 @@ int main() {
             world, {0, 0}, 0, mc::world::SmoothLightingQuality::High);
         const auto vertices = topFaceVertices(mesh.mesh, 1, 1, 1);
         for (std::size_t corner = 0; corner < vertices.size(); ++corner) {
-            expectNearAo(mc::render::decodeAmbientOcclusion(*vertices[corner]), 1.0F,
+            expectNearAo(mc::render::decodeAmbientOcclusion(vertices[corner]), 1.0F,
                          "high glass center AO corner " + std::to_string(corner));
         }
     }
