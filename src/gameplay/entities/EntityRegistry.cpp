@@ -1,5 +1,6 @@
 #include "gameplay/entities/EntityRegistry.hpp"
 
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "gameplay/entities/CowEntity.hpp"
 #include "gameplay/entities/PigEntity.hpp"
 #include "gameplay/entities/UnknownEntity.hpp"
@@ -54,6 +55,9 @@ void registerBuiltinEntities() {
     static_cast<void>(PigEntity::type());
     static_cast<void>(CowEntity::type());
     static_cast<void>(ZombieEntity::type());
+    // New species are data, not classes: the manifest builds and files each row
+    // after the hand-written three, so their ids continue the same dense sequence.
+    registerBuiltinSpeciesManifest();
 }
 
 const EntityType& resolveEntityTypeForRestore(std::string_view name) {

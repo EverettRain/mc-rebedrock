@@ -242,6 +242,7 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/entities/EntityType.cpp
     src/gameplay/entities/EntityRegistry.cpp
     src/gameplay/entities/EntityAttributeOverlay.cpp
+    src/gameplay/entities/BuiltinSpecies.cpp
     src/gameplay/entities/UnknownEntity.cpp
     src/gameplay/entities/NeutralMob.cpp
     src/gameplay/entities/MobAi.cpp
@@ -733,6 +734,16 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME entity_attributes COMMAND mc_rebedrock_entity_attributes_test)
+
+    add_executable(mc_rebedrock_entity_species_test
+        tests/entity_species_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_entity_species_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_entity_species_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME entity_species COMMAND mc_rebedrock_entity_species_test)
 
     add_executable(mc_rebedrock_mob_brain_test
         tests/mob_brain_test.cpp

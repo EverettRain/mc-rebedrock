@@ -137,9 +137,9 @@ int main() {
         writeBiome(packRoot, "forest.json", R"({
             "spawners": {
                 "creature": [
-                    {"type": "minecraft:sheep", "weight": 12, "minCount": 4, "maxCount": 4},
+                    {"type": "minecraft:rabbit", "weight": 12, "minCount": 4, "maxCount": 4},
                     {"type": "minecraft:pig", "weight": 7, "minCount": 1, "maxCount": 2},
-                    {"type": "minecraft:chicken", "weight": 10, "minCount": 4, "maxCount": 4}
+                    {"type": "minecraft:fox", "weight": 10, "minCount": 4, "maxCount": 4}
                 ]
             }
         })");

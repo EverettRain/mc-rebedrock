@@ -280,6 +280,10 @@ class EntityType::Builder final {
     // the ground states this, exactly as vanilla only registers the exceptions.
     Builder& spawnPlacement(SpawnPlacement placement);
     Builder& sized(float width, float height);
+    // Sets the whole attribute array at once — the form the species manifest
+    // (batch import) uses, where a row already carries a built EntityAttributes.
+    // The per-attribute setters below stay for the hand-written species classes.
+    Builder& attributes(const EntityAttributes& attributes);
     Builder& health(float maxHealth);
     Builder& movementSpeed(float speed);
     Builder& attackDamage(float damage);

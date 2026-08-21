@@ -26,6 +26,11 @@ EntityType::Builder& EntityType::Builder::sized(float width, float height) {
     return *this;
 }
 
+EntityType::Builder& EntityType::Builder::attributes(const EntityAttributes& attributes) {
+    draft_.attributes_ = attributes;
+    return *this;
+}
+
 EntityType::Builder& EntityType::Builder::health(float maxHealth) {
     draft_.attributes_.set(Attribute::MaxHealth, maxHealth);
     return *this;

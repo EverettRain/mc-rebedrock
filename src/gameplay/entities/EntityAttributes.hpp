@@ -39,18 +39,20 @@ struct EntityAttributes final {
         /*MaxHealth=*/10.0F, /*MovementSpeed=*/0.25F, /*AttackDamage=*/0.0F,
         /*FollowRange=*/16.0F, /*KnockbackResistance=*/0.0F};
 
-    [[nodiscard]] float get(Attribute attribute) const {
+    [[nodiscard]] constexpr float get(Attribute attribute) const {
         return values[static_cast<std::size_t>(attribute)];
     }
-    void set(Attribute attribute, float value) {
+    constexpr void set(Attribute attribute, float value) {
         values[static_cast<std::size_t>(attribute)] = value;
     }
 
-    [[nodiscard]] float maxHealth() const { return get(Attribute::MaxHealth); }
-    [[nodiscard]] float movementSpeed() const { return get(Attribute::MovementSpeed); }
-    [[nodiscard]] float attackDamage() const { return get(Attribute::AttackDamage); }
-    [[nodiscard]] float followRange() const { return get(Attribute::FollowRange); }
-    [[nodiscard]] float knockbackResistance() const { return get(Attribute::KnockbackResistance); }
+    [[nodiscard]] constexpr float maxHealth() const { return get(Attribute::MaxHealth); }
+    [[nodiscard]] constexpr float movementSpeed() const { return get(Attribute::MovementSpeed); }
+    [[nodiscard]] constexpr float attackDamage() const { return get(Attribute::AttackDamage); }
+    [[nodiscard]] constexpr float followRange() const { return get(Attribute::FollowRange); }
+    [[nodiscard]] constexpr float knockbackResistance() const {
+        return get(Attribute::KnockbackResistance);
+    }
 
     [[nodiscard]] bool operator==(const EntityAttributes&) const = default;
 };
