@@ -2,6 +2,7 @@
 
 #include "core/ContentId.hpp"
 #include "core/Identifier.hpp"
+#include "world/BlockEntityType.hpp"
 #include "world/StateSchema.hpp"
 
 #include <array>
@@ -347,6 +348,14 @@ struct BlockDefinition final {
     std::uint8_t litLight = 0U;
     // The container screen this block opens on right-click, None otherwise.
     ContainerType container = ContainerType::None;
+    // The block entity this block hosts, invalid when it hosts none. Placing or
+    // breaking the block reads this in one subscript to learn whether — and which
+    // — block entity to build or destroy, instead of each system testing the
+    // block identity (BlockEntityType.hpp). Set by the builder's blockEntity();
+    // `hasBlockEntity(block)` is the derived pre-filter over it. The lifecycle
+    // that acts on it stays the caller's (BE2's unified entry); BE1 only makes the
+    // mapping a single indexed load.
+    core::BlockEntityTypeId blockEntityType{};
     bool torch = false;
     // A LeavesBlock: decays when no log is left within six blocks of it, unless
     // a player placed it. See BlockState::persistent().
@@ -528,6 +537,14 @@ class BlockProperties final {
         copy.definition_.container = type;
         return copy;
     }
+    // The block entity this block hosts (BlockEntityType.Builder.of(factory,
+    // blocks...) in vanilla, where the block names the entity type). Bakes the
+    // built-in kind's dense id, so placement/break read the kind in one subscript.
+    [[nodiscard]] constexpr BlockProperties blockEntity(BlockEntityKind kind) const {
+        BlockProperties copy = *this;
+        copy.definition_.blockEntityType = blockEntityTypeId(kind);
+        return copy;
+    }
     [[nodiscard]] constexpr BlockProperties torch() const {
         BlockProperties copy = *this;
         copy.definition_.torch = true;
@@ -676,7 +693,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .strength(3.5F)
         .horizontalFacing()
         .lit(13U)
-        .container(ContainerType::Furnace),
+        .container(ContainerType::Furnace)
+        .blockEntity(BlockEntityKind::Furnace),
     BlockProperties::of(Block::Obsidian, "obsidian", "Obsidian")
         .texture("obsidian")
         .strength(50.0F, 1'200.0F),
@@ -775,7 +793,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .renderLayer(BlockRenderLayer::Cutout)
         .model(BlockModel::Chest)
         .horizontalFacing()
-        .container(ContainerType::Chest),
+        .container(ContainerType::Chest)
+        .blockEntity(BlockEntityKind::Chest),
     BlockProperties::of(Block::LapisOre, "lapis_ore", "Lapis Lazuli Ore")
         .texture("lapis_ore")
         .strength(3.0F),
@@ -1313,6 +1332,23 @@ inline constexpr float kFarmlandModelHeight = 15.0F / 16.0F;
 // Blocks whose model reads a horizontal FACING property (HorizontalDirectionalBlock).
 [[nodiscard]] constexpr bool hasHorizontalFacing(Block block) {
     return blockDefinition(block).horizontalFacing;
+}
+
+// The block-entity type this block hosts, invalid when it hosts none. deref =
+// one subscript into the block table; the returned id derefs into the
+// block-entity type registry. Chest -> chest, Furnace -> furnace, everything
+// else invalid.
+[[nodiscard]] constexpr core::BlockEntityTypeId blockEntityTypeOf(Block block) {
+    return blockDefinition(block).blockEntityType;
+}
+
+// Java's BlockEntityType.isValid(block) compressed to a single indexed bit-test:
+// does placing this block create a block entity? This is the pre-filter the
+// placement/break path checks before deciding to build or destroy one, so the
+// overwhelming majority of blocks (stone, dirt, ore) reject in one load without
+// naming any block-entity kind.
+[[nodiscard]] constexpr bool hasBlockEntity(Block block) {
+    return blockDefinition(block).blockEntityType.valid();
 }
 
 [[nodiscard]] constexpr BlockOrientation defaultOrientation(Block block) {

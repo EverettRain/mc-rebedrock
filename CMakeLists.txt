@@ -1674,6 +1674,18 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_block_registry_lifecycle_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME block_registry_lifecycle COMMAND mc_rebedrock_block_registry_lifecycle_test)
 
+    add_executable(mc_rebedrock_block_entity_type_registry_test
+        tests/block_entity_type_registry_test.cpp
+    )
+    target_include_directories(mc_rebedrock_block_entity_type_registry_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME block_entity_type_registry COMMAND mc_rebedrock_block_entity_type_registry_test)
+
+    add_executable(mc_rebedrock_block_entity_store_test
+        tests/block_entity_store_test.cpp
+    )
+    target_include_directories(mc_rebedrock_block_entity_store_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME block_entity_store COMMAND mc_rebedrock_block_entity_store_test)
+
     add_executable(mc_rebedrock_block_deenum_test
         tests/block_deenum_test.cpp
     )

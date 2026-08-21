@@ -2,6 +2,7 @@
 
 #include "gameplay/BlockEntityStore.hpp"
 #include "gameplay/Inventory.hpp"
+#include "world/BlockPos.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -11,13 +12,10 @@
 
 namespace mc::gameplay {
 
-struct FurnacePosition final {
-    int x = 0;
-    int y = 0;
-    int z = 0;
-
-    [[nodiscard]] bool operator==(const FurnacePosition&) const = default;
-};
+// BE1 unified every block entity's position on one BlockPos (int x/y/z). Kept as
+// an alias so the furnace business code and its callers stay untouched — see the
+// note on ChestPosition in ChestSystem.hpp.
+using FurnacePosition = ::mc::world::BlockPos;
 
 // One furnace in the world, the way vanilla's FurnaceBlockEntity is: its own
 // three slots and its own burn/cook counters, tied to a block position. This is

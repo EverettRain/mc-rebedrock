@@ -2,6 +2,7 @@
 
 #include "gameplay/BlockEntityStore.hpp"
 #include "gameplay/Inventory.hpp"
+#include "world/BlockPos.hpp"
 
 #include <array>
 #include <cstddef>
@@ -11,13 +12,11 @@
 
 namespace mc::gameplay {
 
-struct ChestPosition final {
-    int x = 0;
-    int y = 0;
-    int z = 0;
-
-    [[nodiscard]] bool operator==(const ChestPosition&) const = default;
-};
+// BE1 unified every block entity's position on one BlockPos (int x/y/z), so the
+// store keys on a single type rather than each system minting its own. This is
+// kept as an alias so the chest business code — and every caller that spells a
+// cell as `ChestPosition{x,y,z}` — is untouched.
+using ChestPosition = ::mc::world::BlockPos;
 
 struct ChestBlockEntity final {
     static constexpr std::size_t kSlotCount = 27U;
