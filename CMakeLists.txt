@@ -2201,6 +2201,15 @@ if(BUILD_TESTING)
     )
     add_test(NAME redstone_signal COMMAND mc_rebedrock_redstone_signal_test)
 
+    add_executable(mc_rebedrock_redstone_torch_test
+        tests/redstone_torch_test.cpp
+    )
+    target_include_directories(mc_rebedrock_redstone_torch_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME redstone_torch COMMAND mc_rebedrock_redstone_torch_test)
+
     add_executable(mc_rebedrock_chunk_section_test
         tests/chunk_section_test.cpp
         src/world/ChunkSection.cpp
