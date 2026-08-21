@@ -58,7 +58,7 @@ simple versioned history while it is in beta.
   region layout on their next save.
 - `GameCommand`s, gameplay events, and player/world snapshots now share a
   length-framed binary codec. Item stacks, block states and entity types travel
-  by registry identifier; unknown messages can be skipped by length, while
+  by registry identity; unknown messages can be skipped by length, while
   truncated or unknown content is rejected safely. Commands, events and the
   server-to-client mirror therefore have a protocol boundary ready for a
   loopback or TCP transport.
@@ -111,6 +111,11 @@ simple versioned history while it is in beta.
   `Block` enum stays as a transitional handle over the same ids, so there is no
   behavior or save-format change. Retiring the remaining `switch(block)` chains
   is a later step.
+- Block-tag membership now uses a `TagBitset` that spans as many 64-bit words as
+  needed, allowing the tag vocabulary to grow past 64 while the hot lookup stays
+  one indexed load and bit-and. After built-ins register, the block registry now
+  enters an `External` phase before freezing, so mod/datapack blocks can receive
+  following ids without moving any stable built-in id.
 
 ### Changed
 
@@ -197,8 +202,15 @@ simple versioned history while it is in beta.
   stairs, fences and doors.
 - Block-state wire encoding now iterates every property declared by the schema
   and sends property-index/value pairs instead of a six-property handwritten
-  bitmask; unknown newer properties remain skippable. Because this changes the
-  wire layout incompatibly, the handshake protocol version is now 3.
+  bitmask; unknown newer properties remain skippable. Because this changed the
+  wire layout incompatibly, that stage raised the handshake protocol to 3.
+- Block identity on the wire now uses a two-byte dense `BlockId` instead of an
+  identifier string of roughly 20 bytes. The handshake sends the server block
+  registry as a name list in id order, and the client builds a name-aligned
+  peer-id→local-id remap, so external content registered in different orders is
+  never misidentified. Single-player loopback shares one registry and keeps the
+  identity fast path. This subsequent protocol change raises the current
+  handshake version to 4.
 - Held and dropped slabs now use a half-height block model with the correct
   half-strip side UVs instead of appearing as a full cube or upright flat item.
   Slab placement and merging on a horizontal face use the ray's precise hit
