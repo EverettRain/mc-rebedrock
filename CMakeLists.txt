@@ -2416,6 +2416,67 @@ if(BUILD_TESTING)
     )
     add_test(NAME comparator_subtract_fixture COMMAND mc_rebedrock_comparator_subtract_fixture_test)
 
+    add_executable(mc_rebedrock_wire_heavy_fixture_test
+        tests/redstone/wire_heavy_fixture_test.cpp
+        src/gameplay/ChestSystem.cpp
+        src/gameplay/FurnaceSystem.cpp
+        src/gameplay/ContentRegistry.cpp
+        src/gameplay/CraftingSystem.cpp
+        src/gameplay/EntitySystem.cpp
+        src/gameplay/EntityRenderSnapshot.cpp
+        src/gameplay/GameRules.cpp
+        src/gameplay/GameSession.cpp
+        src/gameplay/PlayerInteraction.cpp
+        src/gameplay/PlayerActionState.cpp
+        src/gameplay/ScreenHandler.cpp
+        src/ui/HudLayout.cpp
+        src/gameplay/GameplayMutationSink.cpp
+        src/gameplay/SimulationHostBridge.cpp
+        src/gameplay/Inventory.cpp
+        src/gameplay/ItemEntitySystem.cpp
+        src/gameplay/ItemPlacement.cpp
+        src/gameplay/MiningSystem.cpp
+        src/gameplay/BlockTags.cpp
+        src/assets/ResourceProvider.cpp
+        src/assets/PackMetadata.cpp
+        src/core/Json.cpp
+        src/gameplay/NaturalSpawner.cpp
+        src/gameplay/MobSpawnSettings.cpp
+        src/core/Json.cpp
+        src/gameplay/PlayerController.cpp
+        src/gameplay/PlayerVitals.cpp
+        src/gameplay/WeatherSystem.cpp
+        src/gameplay/WorldSimulation.cpp
+        src/gameplay/ChunkTickScheduler.cpp
+        src/world/WorldMutationService.cpp
+        src/gameplay/entities/EntityType.cpp
+        src/gameplay/entities/EntityRegistry.cpp
+        src/gameplay/entities/NeutralMob.cpp
+        src/gameplay/entities/MobAi.cpp
+        src/gameplay/entities/MobBrain.cpp
+        src/gameplay/entities/PigEntity.cpp
+        src/gameplay/entities/CowEntity.cpp
+        src/gameplay/entities/ZombieEntity.cpp
+        src/world/BlockPlacement.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/DayNightCycle.cpp
+        src/world/WorldClock.cpp
+        src/world/World.cpp
+        src/world/gen/Biome.cpp
+        src/world/gen/BiomeSource.cpp
+        src/world/gen/LayeredBiomeSource.cpp
+        src/world/gen/NoiseSampler.cpp
+        src/world/gen/TreeGrower.cpp
+    )
+    target_include_directories(mc_rebedrock_wire_heavy_fixture_test PRIVATE
+        src
+        tests
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME wire_heavy_fixture COMMAND mc_rebedrock_wire_heavy_fixture_test)
+
+
 
 
 

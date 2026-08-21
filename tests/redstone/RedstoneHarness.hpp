@@ -133,6 +133,9 @@ class RedstoneCircuit final {
     RedstoneCircuit& clear(mc::world::BlockPos rel) {
         return place(rel, mc::world::BlockState{mc::world::Block::Air});
     }
+    RedstoneCircuit& wire(mc::world::BlockPos rel) {
+        return place(rel, mc::world::BlockState{mc::world::Block::RedstoneWire});
+    }
 
     // The deterministic input primitive == LeverBlock.pull: toggle POWERED, then
     // updateNeighbours — the lever's own six neighbours (via the write) plus the
@@ -174,6 +177,12 @@ class RedstoneCircuit final {
     }
     [[nodiscard]] int power(mc::world::BlockPos rel) const {
         const auto pos = absolute(rel);
+        const auto state = world_.state(pos.x, pos.y, pos.z);
+        // A wire (or comparator) carries its level in AnalogSignal; anywhere else
+        // read the strongest signal reaching the cell.
+        if (state.has(mc::world::StateProperty::AnalogSignal)) {
+            return state.analogSignal();
+        }
         return gameplay::redstone::getBestNeighborSignal(world_, pos);
     }
     [[nodiscard]] mc::world::BlockState state(mc::world::BlockPos rel) const {

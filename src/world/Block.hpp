@@ -162,6 +162,11 @@ enum class Block : std::uint8_t {
     // compare/subtract; POWERED is the boolean output and AnalogSignal its 0-15
     // analog output (Java's ComparatorBlockEntity value).
     Comparator,
+    // Redstone dust (RedStoneWireBlock): carries a 0-15 POWER (its AnalogSignal)
+    // that attenuates one per cell along a wire network. Connection shape and the
+    // directional powering rules land with a later slice; this identity carries
+    // the power the serial evaluator distributes.
+    RedstoneWire,
     Count,
 };
 
@@ -1003,6 +1008,16 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .horizontalFacing()
         .state(StateProperty::ComparatorMode, 2U)
         .state(StateProperty::Powered, 2U)
+        .state(StateProperty::AnalogSignal, 16U),
+    // Redstone dust: a flat wire carrying POWER 0-15 in its AnalogSignal. Torch
+    // model placeholder keeps it non-full-cube; needs a sturdy floor.
+    BlockProperties::of(Block::RedstoneWire, "redstone_wire", "Redstone Dust")
+        .texture("redstone_dust_line")
+        .instantBreak()
+        .renderLayer(BlockRenderLayer::Cutout)
+        .model(BlockModel::Torch)
+        .noCollision()
+        .support(BlockSupport::Ground)
         .state(StateProperty::AnalogSignal, 16U),
 };
 

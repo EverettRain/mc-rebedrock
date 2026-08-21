@@ -79,7 +79,8 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
 [[nodiscard]] constexpr bool isSignalSource(world::Block block) {
     return block == world::Block::RedstoneBlock || block == world::Block::RedstoneTorch ||
            block == world::Block::RedstoneWallTorch || block == world::Block::Lever ||
-           block == world::Block::Repeater || block == world::Block::Comparator;
+           block == world::Block::Repeater || block == world::Block::Comparator ||
+           block == world::Block::RedstoneWire;
 }
 
 // Whether a block is a diode (repeater or comparator) — DiodeBlock.isDiode.
@@ -107,6 +108,10 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
     case world::Block::Comparator:
         // Same, but the output is its analog value rather than a flat 15.
         return state.powered() && facingOf(state) == dir ? state.analogSignal() : 0;
+    case world::Block::RedstoneWire:
+        // Wire weakly powers every side except DOWN with its POWER (the
+        // connection-directional refinement lands with a later slice).
+        return dir != Direction::Down ? state.analogSignal() : 0;
     default:
         return 0;
     }
@@ -128,6 +133,9 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
     case world::Block::Comparator:
         // DiodeBlock.getDirectSignal == getSignal (strong out the FACING side).
         return getSignal(state, dir);
+    case world::Block::RedstoneWire:
+        // RedStoneWireBlock.getDirectSignal: strongly powers only the block below.
+        return dir == Direction::Down ? state.analogSignal() : 0;
     default:
         return 0;
     }
@@ -258,7 +266,9 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
     if (state.block() == world::Block::RedstoneBlock) {
         return 15;
     }
-    // (redstone_wire POWER slots in here once wire lands.)
+    if (state.block() == world::Block::RedstoneWire) {
+        return state.analogSignal();
+    }
     return isSignalSource(state.block()) ? getDirectSignal(state, dir) : 0;
 }
 
@@ -269,7 +279,15 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
                                           world::BlockState state) {
     const Direction facing = facingOf(state);
     const world::BlockPos target = relative(pos, facing);
-    return getSignal(world, target, facing);
+    int input = getSignal(world, target, facing);
+    if (input >= 15) {
+        return input;
+    }
+    const world::BlockState targetState = world.state(target.x, target.y, target.z);
+    if (targetState.block() == world::Block::RedstoneWire) {
+        input = std::max(input, targetState.analogSignal());
+    }
+    return input;
 }
 
 // DiodeBlock.getAlternateSignal: the strongest control input from the two

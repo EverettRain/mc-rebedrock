@@ -2,6 +2,7 @@
 
 #include "gameplay/RedstoneDiode.hpp"
 #include "gameplay/RedstoneSignal.hpp"
+#include "gameplay/RedstoneWire.hpp"
 #include "world/BlockPlacement.hpp"
 #include "world/World.hpp"
 #include "world/WorldConstants.hpp"
@@ -989,6 +990,18 @@ void WorldSimulation::notifyRedstoneComponent(const world::World& world,
         }
         return;
     }
+
+    if (block == world::Block::RedstoneWire) {
+        // Wire has no per-cell delay in Java (a source change re-solves the
+        // network the same tick). Here it re-solves on the next gametick, which
+        // matches the reference's per-gametick "before/after" snapshot; the whole
+        // connected network is solved at once inside the tick.
+        if (!alreadyScheduled) {
+            static_cast<void>(ticks_.schedule(TickTask::RedstoneComponent, position,
+                                              tickCount_ + 1U, false, TickPriority::Normal));
+        }
+        return;
+    }
 }
 
 void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPosition position,
@@ -1076,6 +1089,24 @@ void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPositi
             // opposite FACING) so downstream re-reads the changed analog signal.
             const auto front = redstone::relative(pos, redstone::opposite(redstone::facingOf(state)));
             mutations_.updateNeighborsAt(front, sink);
+        }
+        return;
+    }
+
+    if (block == world::Block::RedstoneWire) {
+        // Re-solve the whole connected wire network at once and write each cell's
+        // new POWER directly (not through the mutation service): wire-to-wire
+        // does not fan out neighbour updates, so a network re-solve does not storm
+        // the queue. Each changed cell still travels as a BlockChange for the mesh.
+        const auto network = redstone::computeWireNetwork(world, pos);
+        for (const auto& cell : network) {
+            const auto current = world.state(cell.pos.x, cell.pos.y, cell.pos.z);
+            if (current.block() == world::Block::RedstoneWire &&
+                current.analogSignal() != cell.power) {
+                const auto next = current.withAnalogSignal(cell.power);
+                static_cast<void>(world.setState(cell.pos.x, cell.pos.y, cell.pos.z, next));
+                changes.push_back({{cell.pos.x, cell.pos.y, cell.pos.z}, next});
+            }
         }
         return;
     }
