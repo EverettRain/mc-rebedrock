@@ -148,6 +148,10 @@ enum class Block : std::uint8_t {
     RedstoneBlock,
     RedstoneTorch,
     RedstoneWallTorch,
+    // A lever: a manually toggled redstone source. POWERED is its state; FACING
+    // records the direction it was attached from, so it strongly powers the block
+    // it hangs on (getConnectedDirection) and weakly powers every side.
+    Lever,
     Count,
 };
 
@@ -952,6 +956,17 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .horizontalFacing()
         .torch()
         .lit(7U),
+    // Lever: FACING is stored as the full six directions (getConnectedDirection
+    // can be UP/DOWN for a floor/ceiling lever or a horizontal for a wall one),
+    // plus the POWERED toggle. Wall-mounted in this slice.
+    BlockProperties::of(Block::Lever, "lever", "Lever")
+        .texture("lever")
+        .instantBreak()
+        .renderLayer(BlockRenderLayer::Cutout)
+        .noCollision()
+        .support(BlockSupport::Wall)
+        .state(StateProperty::Facing, 6U)
+        .state(StateProperty::Powered, 2U),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {

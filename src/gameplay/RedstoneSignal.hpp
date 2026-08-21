@@ -78,7 +78,7 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
 // lever/button/etc. join as they land).
 [[nodiscard]] constexpr bool isSignalSource(world::Block block) {
     return block == world::Block::RedstoneBlock || block == world::Block::RedstoneTorch ||
-           block == world::Block::RedstoneWallTorch;
+           block == world::Block::RedstoneWallTorch || block == world::Block::Lever;
 }
 
 // Weak power this block emits toward `dir` (RedstoneTorchBlock.getSignal etc.).
@@ -92,6 +92,9 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
     case world::Block::RedstoneWallTorch:
         // LIT && FACING != direction ? 15 : 0 (never toward the wall it faces)
         return state.lit() && facingOf(state) != dir ? 15 : 0;
+    case world::Block::Lever:
+        // LeverBlock.getSignal: POWERED ? 15 : 0, every side weakly.
+        return state.powered() ? 15 : 0;
     default:
         return 0;
     }
@@ -105,9 +108,48 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
     case world::Block::RedstoneTorch:
     case world::Block::RedstoneWallTorch:
         return dir == Direction::Down ? getSignal(state, Direction::Down) : 0;
+    case world::Block::Lever:
+        // LeverBlock.getDirectSignal: strongly powers only the block it hangs on
+        // (getConnectedDirection), which FACING records here.
+        return state.powered() && facingOf(state) == dir ? 15 : 0;
     default:
         return 0;
     }
+}
+
+// A lever's connected direction (LeverBlock.getConnectedDirection): FACING,
+// which points *away* from the block it hangs on and is the side it strongly
+// powers. Its opposite is the "front" that points at the mount — the block whose
+// neighbours the lever also notifies when toggled (LeverBlock.updateNeighbours),
+// which is how a torch standing on that mount learns the input changed.
+[[nodiscard]] constexpr Direction leverConnectedDirection(world::BlockState state) {
+    return facingOf(state);
+}
+
+[[nodiscard]] constexpr Direction opposite(Direction dir) {
+    switch (dir) {
+    case Direction::Down:
+        return Direction::Up;
+    case Direction::Up:
+        return Direction::Down;
+    case Direction::North:
+        return Direction::South;
+    case Direction::South:
+        return Direction::North;
+    case Direction::West:
+        return Direction::East;
+    case Direction::East:
+        return Direction::West;
+    }
+    return dir;
+}
+
+// The mount a lever hangs on: one cell along the front (opposite its connected
+// direction). This is the block whose neighbours LeverBlock.updateNeighbours
+// notifies in addition to the lever's own.
+[[nodiscard]] constexpr world::BlockPos leverMountPos(world::BlockState state,
+                                                      world::BlockPos leverPos) {
+    return relative(leverPos, opposite(leverConnectedDirection(state)));
 }
 
 // Whether a block re-emits the strong power it receives — a full solid cube.

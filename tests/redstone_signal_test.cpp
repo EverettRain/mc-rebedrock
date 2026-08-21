@@ -26,6 +26,7 @@ void require(bool condition, const char* expression, int line) {
 using namespace mc::gameplay;
 using mc::world::Block;
 using mc::world::BlockOrientation;
+using mc::world::BlockPos;
 using mc::world::BlockState;
 
 [[nodiscard]] mc::world::World loadedWorld() {
@@ -139,6 +140,43 @@ void testBestNeighborSignal() {
     REQUIRE(redstone::getBestNeighborSignal(world, {5, 4, 5}) == 0);
 }
 
+// --- Lever: weak power all round when on, strong power only toward the side it
+//     hangs against, and the mount whose neighbours it notifies. End to end it
+//     powers its mount block so a torch on that mount reads its input. ---
+void testLever() {
+    using redstone::Direction;
+    // FACING East == getConnectedDirection East: strongly powers its East side,
+    // and hangs on the block to its West (opposite the connected direction).
+    const BlockState on = BlockState{Block::Lever, BlockOrientation::East}.withPowered(true);
+    const BlockState off = BlockState{Block::Lever, BlockOrientation::East}.withPowered(false);
+
+    REQUIRE(redstone::isSignalSource(Block::Lever));
+    for (const Direction dir : redstone::kAllDirections) {
+        REQUIRE(redstone::getSignal(on, dir) == 15); // weak, every side
+    }
+    REQUIRE(redstone::getDirectSignal(on, Direction::East) == 15); // strong toward the mounted side
+    REQUIRE(redstone::getDirectSignal(on, Direction::West) == 0);
+    REQUIRE(redstone::getDirectSignal(on, Direction::Up) == 0);
+    for (const Direction dir : redstone::kAllDirections) {
+        REQUIRE(redstone::getSignal(off, dir) == 0);
+        REQUIRE(redstone::getDirectSignal(off, dir) == 0);
+    }
+    // The mount is one cell West (opposite the connected direction).
+    REQUIRE(redstone::leverMountPos(on, {0, 64, 0}) == (BlockPos{-1, 64, 0}));
+
+    // End to end: lever on its mount, torch standing on the mount reads power.
+    auto world = loadedWorld();
+    world.setState(-1, 64, 0, BlockState{Block::Stone});                       // mount (base)
+    world.setState(0, 64, 0, on);                                             // lever, hangs West
+    world.setState(-1, 65, 0, BlockState{Block::RedstoneTorch}.withLit(true)); // torch on base
+    REQUIRE(redstone::getDirectSignalTo(world, {-1, 64, 0}) == 15);            // base strongly powered
+    REQUIRE(redstone::torchHasNeighborSignal(world, {-1, 65, 0}));            // torch input on
+
+    world.setState(0, 64, 0, off); // flip the lever off
+    REQUIRE(redstone::getDirectSignalTo(world, {-1, 64, 0}) == 0);
+    REQUIRE(!redstone::torchHasNeighborSignal(world, {-1, 65, 0}));
+}
+
 } // namespace
 
 int main() {
@@ -147,5 +185,6 @@ int main() {
     testConductorReemission();
     testWeakOnlyDoesNotPowerConductor();
     testBestNeighborSignal();
+    testLever();
     return 0;
 }

@@ -39,6 +39,7 @@ enum class StateProperty : std::uint8_t {
     Lit,        // AbstractFurnaceBlock.LIT
     FluidLevel, // LiquidBlock.LEVEL, 0-8
     SlabType,   // SlabBlock.TYPE, bottom/top/double
+    Powered,    // LeverBlock/ButtonBlock.POWERED, and any redstone output bool
     Count,
 };
 
@@ -63,6 +64,8 @@ inline constexpr std::size_t kStatePropertyCount = static_cast<std::size_t>(Stat
         return "level";
     case StateProperty::SlabType:
         return "type";
+    case StateProperty::Powered:
+        return "powered";
     case StateProperty::Count:
         break;
     }

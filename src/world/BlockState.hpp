@@ -71,6 +71,10 @@ class BlockState final {
     [[nodiscard]] constexpr bool persistent() const {
         return value(StateProperty::Persistent) != 0U;
     }
+    // LeverBlock/ButtonBlock.POWERED: whether the switch is on / the button held.
+    [[nodiscard]] constexpr bool powered() const {
+        return value(StateProperty::Powered) != 0U;
+    }
     // The light this state emits: a furnace's 13 only while it burns.
     [[nodiscard]] constexpr std::uint8_t emittedLight() const {
         return emittedLightOfState(id_);
@@ -110,6 +114,9 @@ class BlockState final {
     }
     [[nodiscard]] constexpr BlockState withPersistent(bool value) const {
         return with(StateProperty::Persistent, value ? 1U : 0U);
+    }
+    [[nodiscard]] constexpr BlockState withPowered(bool value) const {
+        return with(StateProperty::Powered, value ? 1U : 0U);
     }
     [[nodiscard]] constexpr BlockState withSlabPortion(SlabPortion portion) const {
         return with(StateProperty::SlabType, static_cast<std::uint8_t>(portion));

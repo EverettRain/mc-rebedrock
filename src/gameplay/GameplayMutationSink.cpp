@@ -100,7 +100,16 @@ void GameplayMutationSink::onNeighborShapeUpdate(world::BlockPos neighbor, world
 }
 
 void GameplayMutationSink::onNeighborChanged(world::BlockPos neighbor, world::BlockPos source) {
-    static_cast<void>(neighbor); // see notifiedSource_: the reaction is source-centric
+    // Redstone reacts per-neighbour: whichever of the six cells is a component
+    // re-reads its input and may schedule its toggle tick. A no-op for a
+    // non-component, so it runs for every neighbour without a type check here —
+    // this is the block-update half of the redstone drive (W-4).
+    session_->worldSimulation().notifyRedstoneComponent(
+        *world_, {neighbor.x, neighbor.y, neighbor.z});
+
+    // Everything below is source-centric — the falling-block/fluid/support/leaf
+    // fan-out that WorldSimulation drives from the changed cell — so it collapses
+    // the service's six per-neighbour callbacks back into one call per mutation.
     if (notifiedSource_.has_value() && *notifiedSource_ == source) {
         return;
     }

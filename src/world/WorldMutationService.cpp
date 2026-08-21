@@ -75,4 +75,10 @@ BlockMutationResult WorldMutationService::setBlock(World& world, BlockPos pos, B
     return result;
 }
 
+void WorldMutationService::updateNeighborsAt(BlockPos pos, MutationSink& sink, int updateLimit) {
+    neighborUpdater_.updateNeighborsAt(pos, updateLimit, [&sink](BlockPos neighbor, BlockPos source) {
+        sink.onNeighborChanged(neighbor, source);
+    });
+}
+
 } // namespace mc::world

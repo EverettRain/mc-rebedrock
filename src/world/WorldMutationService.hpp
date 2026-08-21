@@ -76,6 +76,14 @@ class WorldMutationService final {
                                  MutationFlags flags, MutationCause cause, MutationSink& sink,
                                  int updateLimit = kDefaultUpdateLimit);
 
+    // Fire the neighbour-changed pass for `pos`'s six neighbours without a write,
+    // the equivalent of Java's Level.updateNeighborsAt. A redstone source uses it
+    // to propagate a signal change past the block it powers: a lever notifies the
+    // neighbours of the block it hangs on, so a torch standing there reacts even
+    // though it is not the lever's own neighbour.
+    void updateNeighborsAt(BlockPos pos, MutationSink& sink,
+                           int updateLimit = kDefaultUpdateLimit);
+
   private:
     // The queue that carries neighbour reactions. Persisting it on the service
     // (rather than a fresh one per call) is what lets a reaction that re-enters
