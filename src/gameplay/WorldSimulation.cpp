@@ -1180,6 +1180,7 @@ void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPositi
         // does not fan out neighbour updates, so a network re-solve does not storm
         // the queue. Each changed cell still travels as a BlockChange for the mesh.
         const auto network = redstone::computeWireNetwork(world, pos);
+        std::vector<world::BlockPos> changedCells;
         for (const auto& cell : network) {
             const auto current = world.state(cell.pos.x, cell.pos.y, cell.pos.z);
             if (current.block() == world::Block::RedstoneWire &&
@@ -1187,6 +1188,21 @@ void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPositi
                 const auto next = current.withAnalogSignal(cell.power);
                 static_cast<void>(world.setState(cell.pos.x, cell.pos.y, cell.pos.z, next));
                 changes.push_back({{cell.pos.x, cell.pos.y, cell.pos.z}, next});
+                changedCells.push_back(cell.pos);
+            }
+        }
+        // Wire-to-downstream: a cell whose POWER changed wakes its non-wire
+        // neighbours so the components the wire feeds (a torch on a block it
+        // powers, a diode reading its input) re-evaluate. Wire-to-wire already
+        // travelled through the network re-solve above, so wire neighbours are
+        // skipped. This is scheduled/queued, never a nested write, so it does not
+        // storm.
+        for (const world::BlockPos& changed : changedCells) {
+            for (const redstone::Direction dir : redstone::kAllDirections) {
+                const world::BlockPos neighbor = redstone::relative(changed, dir);
+                if (world.block(neighbor.x, neighbor.y, neighbor.z) != world::Block::RedstoneWire) {
+                    notifyRedstoneComponent(world, {neighbor.x, neighbor.y, neighbor.z});
+                }
             }
         }
         return;
