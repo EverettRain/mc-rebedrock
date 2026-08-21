@@ -39,6 +39,47 @@ constexpr std::array<BlockOrientation, 4> kClockwiseHorizontals{
     return ordered;
 }
 
+// BlockBehaviour#canSurvive as data: one rule per BlockSupport category, indexed
+// by the block's support field. B1-2 replaces canBlockSurvive's
+// `switch(blockSupport(block))` with this table, so adding a block never adds a
+// case — it names the support it needs and the table routes it (the R1 audit
+// flagged the switch as one of the six parallel lists). `facing` is only read by
+// the wall rule, whose support sits behind the block's FACING state.
+using SupportRuleFn = bool (*)(const World&, glm::ivec3, BlockOrientation);
+
+[[nodiscard]] bool supportAlways(const World&, glm::ivec3, BlockOrientation) {
+    return true;
+}
+[[nodiscard]] bool supportGround(const World& world, glm::ivec3 position, BlockOrientation) {
+    return isFaceSturdy(world.block(position.x, position.y - 1, position.z));
+}
+[[nodiscard]] bool supportWall(const World& world, glm::ivec3 position, BlockOrientation facing) {
+    // A wall block's support is behind its FACING, which is state rather than
+    // identity now, so the caller supplies it.
+    const auto support = position + orientationOffset(wallTorchSupportSide(facing));
+    return isFaceSturdy(world.block(support.x, support.y, support.z));
+}
+[[nodiscard]] bool supportSoil(const World& world, glm::ivec3 position, BlockOrientation) {
+    return isSoil(world.block(position.x, position.y - 1, position.z));
+}
+[[nodiscard]] bool supportFarmland(const World& world, glm::ivec3 position, BlockOrientation) {
+    // CropsBlock#canSurvive: only farmland (tilled soil) holds a crop.
+    return isFarmland(world.block(position.x, position.y - 1, position.z));
+}
+
+inline constexpr std::array<SupportRuleFn, 5> kSupportRules{{
+    &supportAlways,   // BlockSupport::None
+    &supportGround,   // BlockSupport::Ground
+    &supportWall,     // BlockSupport::Wall
+    &supportSoil,     // BlockSupport::Soil
+    &supportFarmland, // BlockSupport::Farmland
+}};
+static_assert(static_cast<std::size_t>(BlockSupport::None) == 0U);
+static_assert(static_cast<std::size_t>(BlockSupport::Ground) == 1U);
+static_assert(static_cast<std::size_t>(BlockSupport::Wall) == 2U);
+static_assert(static_cast<std::size_t>(BlockSupport::Soil) == 3U);
+static_assert(static_cast<std::size_t>(BlockSupport::Farmland) == 4U);
+
 } // namespace
 
 glm::ivec3 orientationOffset(BlockOrientation orientation) {
@@ -79,24 +120,7 @@ BlockOrientation horizontalFacing(glm::vec3 lookDirection) {
 
 bool canBlockSurvive(const World& world, glm::ivec3 position, Block block,
                      BlockOrientation facing) {
-    switch (blockSupport(block)) {
-    case BlockSupport::None:
-        return true;
-    case BlockSupport::Ground:
-        return isFaceSturdy(world.block(position.x, position.y - 1, position.z));
-    case BlockSupport::Wall: {
-        // A wall block's support is behind its FACING, which is state rather
-        // than identity now, so the caller supplies it.
-        const auto support = position + orientationOffset(wallTorchSupportSide(facing));
-        return isFaceSturdy(world.block(support.x, support.y, support.z));
-    }
-    case BlockSupport::Soil:
-        return isSoil(world.block(position.x, position.y - 1, position.z));
-    case BlockSupport::Farmland:
-        // CropsBlock#canSurvive: only farmland (tilled soil) holds a crop.
-        return isFarmland(world.block(position.x, position.y - 1, position.z));
-    }
-    return true;
+    return kSupportRules[static_cast<std::size_t>(blockSupport(block))](world, position, facing);
 }
 
 std::optional<BlockState> standingAndWallPlacement(

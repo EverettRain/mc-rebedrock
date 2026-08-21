@@ -1,10 +1,12 @@
-// B1-1 — the block behaviour table and its pre-filter.
+// B1-1/B1-2 — the block behaviour table, its pre-filter, and the shape/placement
+// slots B1-2 fills.
 //
 // This is the infrastructure R1 (B-block) retires switches on: a table indexed
-// by BlockId with fn-ptr slots and a pre-filter bitset. B1-1 builds it and
-// proves the mechanism without deleting any switch — the getDrops slot is wired
-// to the existing MiningSystem::minedDrops in parallel with its switch, and the
-// harness shows the table dispatches exactly the drops the switch does.
+// by BlockId with fn-ptr slots and a pre-filter bitset. B1-1 built it and wired
+// getDrops; B1-2 fills getShape and getStateForPlacement, pointing them at the
+// single-source free functions in place of the model/support switches those
+// functions used to hold, and this harness shows the table dispatches exactly
+// what the free functions do.
 //
 // What this pins:
 //   1. the pre-filter is consistent — the constexpr baked table, the runtime
@@ -15,9 +17,15 @@
 //   3. dispatchBlockDrops is behaviour-identical to calling minedDrops — the
 //      table + pre-filter path produces the same MinedDrops as the switch, for
 //      every block and tool;
-//   4. the dispatch mechanism itself — a null slot skips, the generic slot fetch
-//      returns the wired pointer, and the reserved slots are all still null;
-//   5. the table is sized to the registry, not a constant, so it grows with
+//   4. dispatchBlockShape is behaviour-identical to world::blockShape across
+//      every built-in and a spread of states (slab halves, wall-torch facings,
+//      crop ages), proving the getShape slot is the single shape source;
+//   5. dispatchStateForPlacement is behaviour-identical to world::placementBlock,
+//      proving the getStateForPlacement slot routes to the single placement
+//      source (whose canSurvive switch B1-2 replaced with a table);
+//   6. the dispatch mechanism itself — a null slot skips, the generic slot fetch
+//      returns the wired pointer, and the slots later tasks own are still null;
+//   7. the table is sized to the registry, not a constant, so it grows with
 //      external blocks (R0-5) instead of dropping or overflowing them.
 
 #include "gameplay/BlockBehavior.hpp"
@@ -26,12 +34,18 @@
 #include "gameplay/MiningSystem.hpp"
 #include "gameplay/WorldSimulation.hpp"
 #include "world/Block.hpp"
+#include "world/BlockPlacement.hpp"
 #include "world/BlockRegistry.hpp"
+#include "world/BlockShape.hpp"
+#include "world/BlockState.hpp"
+#include "world/Chunk.hpp"
+#include "world/World.hpp"
 
 #include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 namespace {
@@ -45,7 +59,10 @@ using mc::gameplay::blockBehaviorPrefilterFor;
 using mc::gameplay::blockBehaviorTable;
 using mc::gameplay::blockYieldsLoot;
 using mc::gameplay::dispatchBlockDrops;
+using mc::gameplay::dispatchBlockShape;
+using mc::gameplay::dispatchStateForPlacement;
 using mc::gameplay::ItemStack;
+using mc::gameplay::PlacementBehaviorContext;
 using mc::gameplay::kBuiltinBlockBehaviorPrefilter;
 using mc::gameplay::minedDrops;
 using mc::gameplay::MinedDrops;
@@ -72,6 +89,32 @@ using mc::world::Block;
         if (a.entries[i].item != b.entries[i].item) return false;
     }
     return true;
+}
+
+// Two shapes are equal iff their kind, column span and box set match.
+[[nodiscard]] bool sameShape(const mc::world::BlockShape& a, const mc::world::BlockShape& b) {
+    if (a.kind != b.kind) return false;
+    if (a.bottom != b.bottom || a.top != b.top) return false;
+    if (a.boxes.size() != b.boxes.size()) return false;
+    for (std::size_t i = 0; i < a.boxes.size(); ++i) {
+        const auto& x = a.boxes[i];
+        const auto& y = b.boxes[i];
+        if (x.minX != y.minX || x.minY != y.minY || x.minZ != y.minZ) return false;
+        if (x.maxX != y.maxX || x.maxY != y.maxY || x.maxZ != y.maxZ) return false;
+    }
+    return true;
+}
+
+// A stone floor so ground/soil/wall-supported blocks have something to survive
+// on when the placement dispatch is probed, mirroring player_interaction_test.
+void buildFloor(mc::world::World& world) {
+    mc::world::Chunk chunk;
+    for (int z = 0; z < 16; ++z) {
+        for (int x = 0; x < 16; ++x) {
+            chunk.setBlock(x, 0, z, Block::Stone);
+        }
+    }
+    world.setChunk({0, 0}, std::move(chunk));
 }
 
 // The pre-filter agrees with itself (baked vs runtime) and with every bit's
@@ -177,14 +220,100 @@ void testDispatchMechanism() {
     assert(behaviorFor(stone).getDrops == &minedDrops);
     assert(behaviorSlot(stone, &BlockBehavior::getDrops) == &minedDrops);
 
-    // The reserved slots belong to later tasks and are null for every block.
+    // B1-2 wired getShape and getStateForPlacement for every built-in: getShape
+    // to the single-source world::blockShape, getStateForPlacement to a forwarder
+    // (probed for behaviour below, since the forwarder is not itself public).
     for (std::size_t i = 0; i < mc::world::kBuiltinBlockCount; ++i) {
         const auto& behavior = behaviorFor(mc::world::blockId(static_cast<Block>(i)));
-        assert(behavior.getStateForPlacement == nullptr);
+        assert(behavior.getShape == &mc::world::blockShape);
+        assert(behavior.getStateForPlacement != nullptr);
+    }
+
+    // The slots later tasks own are null for every block.
+    for (std::size_t i = 0; i < mc::world::kBuiltinBlockCount; ++i) {
+        const auto& behavior = behaviorFor(mc::world::blockId(static_cast<Block>(i)));
         assert(behavior.useItemOn == nullptr);
         assert(behavior.updateShape == nullptr);
         assert(behavior.onPlace == nullptr);
         assert(behavior.onRemove == nullptr);
+    }
+}
+
+// Dispatching a block's shape through the getShape slot yields exactly what
+// world::blockShape does, for every built-in and a spread of states: the slab
+// halves, the wall-torch facings and the crop ages that make the shape depend on
+// state, not just identity. This is the "table == single source" equivalence for
+// the shape the mesher, pick ray and collision all derive from.
+void testShapeDispatchEqualsSource() {
+    using mc::world::BlockOrientation;
+    using mc::world::BlockState;
+    using mc::world::blockShape;
+    using mc::world::SlabPortion;
+
+    for (std::size_t i = 0; i < mc::world::kBuiltinBlockCount; ++i) {
+        const auto block = static_cast<Block>(i);
+        const auto id = mc::world::blockId(block);
+
+        const BlockState base{block};
+        assert(sameShape(dispatchBlockShape(id, base), blockShape(base)));
+
+        if (mc::world::isSlab(block)) {
+            for (const auto portion : {SlabPortion::Bottom, SlabPortion::Top, SlabPortion::Double}) {
+                const auto state = base.withSlabPortion(portion);
+                assert(sameShape(dispatchBlockShape(id, state), blockShape(state)));
+            }
+        }
+        if (block == Block::WallTorch) {
+            for (const auto facing : {BlockOrientation::North, BlockOrientation::East,
+                                      BlockOrientation::South, BlockOrientation::West}) {
+                const BlockState state{block, facing};
+                assert(sameShape(dispatchBlockShape(id, state), blockShape(state)));
+            }
+        }
+        if (mc::world::blockDefinition(block).model == mc::world::BlockModel::Crop) {
+            for (int age = 0; age <= 7; ++age) {
+                const auto state = base.withAge(age);
+                assert(sameShape(dispatchBlockShape(id, state), blockShape(state)));
+            }
+        }
+    }
+}
+
+// Dispatching placement through the getStateForPlacement slot yields exactly what
+// world::placementBlock does, on a real world with a stone floor. Probed across
+// every built-in and a spread of clicked faces so blocks that survive only in
+// some orientations (a torch, a wall torch, a crop over farmland) exercise both
+// the survives and the nullopt branch — the block's support switch B1-2 turned
+// into a table lives on the direct side of this equivalence.
+void testPlacementDispatchEqualsSource() {
+    using mc::world::BlockOrientation;
+    using mc::world::PlacementContext;
+
+    mc::world::World world;
+    buildFloor(world);
+    world.setBlock(5, 1, 5, Block::Farmland); // a tilled cell so crops can survive
+
+    const std::array<BlockOrientation, 3> faces{BlockOrientation::Up, BlockOrientation::North,
+                                                BlockOrientation::Down};
+    for (std::size_t i = 0; i < mc::world::kBuiltinBlockCount; ++i) {
+        const auto block = static_cast<Block>(i);
+        const auto id = mc::world::blockId(block);
+        for (const auto face : faces) {
+            PlacementContext context;
+            context.clickedBlock = glm::ivec3{5, 1, 5};
+            context.placePosition = glm::ivec3{5, 2, 5};
+            context.clickedFace = face;
+            context.hitPosition = glm::vec3{5.5F, 2.7F, 5.5F};
+            context.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+
+            const PlacementBehaviorContext behaviorContext{world, block, context};
+            const auto viaTable = dispatchStateForPlacement(id, behaviorContext);
+            const auto viaDirect = mc::world::placementBlock(world, block, context);
+            assert(viaTable.has_value() == viaDirect.has_value());
+            if (viaTable.has_value()) {
+                assert(*viaTable == *viaDirect);
+            }
+        }
     }
 }
 
@@ -199,7 +328,13 @@ void testTableSizedToRegistry() {
         const auto id = BlockId::of(static_cast<BlockId::Value>(i));
         const auto& behavior = behaviorFor(id);  // in bounds, no overflow
         assert(behavior.getDrops == nullptr);
+        assert(behavior.getShape == nullptr);
+        assert(behavior.getStateForPlacement == nullptr);
         assert(behavior.prefilter.bits == 0U);
+        // A block with no getShape slot dispatches to an empty shape rather than
+        // reading past the table.
+        assert(dispatchBlockShape(id, mc::world::BlockState{}).kind ==
+               mc::world::ShapeKind::Empty);
     }
 }
 
@@ -214,6 +349,8 @@ int main() {
     testPrefilterParity();
     testHasDropsLockedToBehaviour();
     testDropsDispatchEqualsSwitch();
+    testShapeDispatchEqualsSource();
+    testPlacementDispatchEqualsSource();
     testDispatchMechanism();
     testTableSizedToRegistry();
     return 0;

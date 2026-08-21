@@ -26,7 +26,9 @@
 #include "gameplay/MiningSystem.hpp"    // MinedDrops, minedDrops
 #include "gameplay/WorldSimulation.hpp" // WorldSimulation::isRandomlyTicking
 #include "world/Block.hpp"
-#include "world/BlockRegistry.hpp" // blockCount
+#include "world/BlockPlacement.hpp" // PlacementContext, placementBlock (World fwd)
+#include "world/BlockRegistry.hpp"  // blockCount
+#include "world/BlockShape.hpp"     // BlockShape, blockShape
 #include "world/BlockState.hpp"
 
 #include <array>
@@ -127,17 +129,28 @@ inline constexpr std::array<BlockBehaviorPrefilter, world::kBuiltinBlockCount>
         return entries;
     }();
 
-// The behaviour slots the migration tasks fill. B1-1 declares the slot types and
-// leaves every one but getDrops null; dispatch skips a null slot. The reserved
-// slots' contexts are forward-declared and defined by the task that fills them,
-// so reserving a slot pulls no extra include and pre-commits no context layout.
-struct PlacementBehaviorContext;   // B1-2 (getStateForPlacement)
+// The behaviour slots the migration tasks fill. B1-1 declared the slot types and
+// left every one but getDrops null; B1-2 fills getShape and getStateForPlacement.
+// Dispatch skips a null slot. A reserved slot's context is forward-declared and
+// defined by the task that fills it, so reserving it pulls no extra include and
+// pre-commits no context layout.
 struct InteractionBehaviorContext; // B1-3 (useItemOn)
 struct NeighborUpdateContext;      // W-3 (updateShape)
 struct BlockLifecycleContext;      // onPlace / onRemove owner
 
+// Everything the getStateForPlacement slot reads (B1-2). It carries the world,
+// the block being placed and the use-on interaction, and forwards to
+// world::placementBlock — the single placement source — so placement dispatches
+// through the behaviour table rather than a switch on the block.
+struct PlacementBehaviorContext final {
+    const world::World& world;
+    world::Block block = world::Block::Air;
+    const world::PlacementContext& placement;
+};
+
 using GetDropsFn =
     MinedDrops (*)(world::Block, const ItemStack&, std::uint32_t&, int, bool);
+using GetShapeFn = world::BlockShape (*)(world::BlockState);
 using GetStateForPlacementFn = std::optional<world::BlockState> (*)(const PlacementBehaviorContext&);
 using UseItemOnFn = void (*)(const InteractionBehaviorContext&);
 using UpdateShapeFn = std::optional<world::BlockState> (*)(const NeighborUpdateContext&);
@@ -150,8 +163,11 @@ struct BlockBehavior final {
     // Wired in B1-1 to the existing MiningSystem::minedDrops, in parallel with
     // its switch. B1-3 splits it per block and deletes the switch.
     GetDropsFn getDrops = nullptr;
+    // Wired in B1-2 to the single-source shape/placement free functions, in place
+    // of the model/support switches those functions used to hold.
+    GetShapeFn getShape = nullptr;                          // B1-2
+    GetStateForPlacementFn getStateForPlacement = nullptr;  // B1-2
     // Reserved, null until their owning task fills them.
-    GetStateForPlacementFn getStateForPlacement = nullptr; // B1-2
     UseItemOnFn useItemOn = nullptr;                        // B1-3
     UpdateShapeFn updateShape = nullptr;                    // W-3
     BlockLifecycleFn onPlace = nullptr;                     // lifecycle
@@ -165,11 +181,21 @@ struct BlockBehavior final {
 
 namespace detail {
 
+// The getStateForPlacement slot: forwards to world::placementBlock, the single
+// placement source (it resolves orientation/slab-half/wall-facing from the
+// block's model and support fields, and routes the torch to standingAndWall
+// itself). Every built-in shares this one slot; B1-3/I-item may later split it.
+[[nodiscard]] inline std::optional<world::BlockState>
+placementSlot(const PlacementBehaviorContext& context) {
+    return world::placementBlock(context.world, context.block, context.placement);
+}
+
 // Builds the runtime table. Sized to the *registry* (blockCount()), not to the
 // built-in constant, so it grows with external blocks (R0-5) instead of topping
 // out — a hardcoded capacity here would drop or overflow external ids. Built-in
-// entries take the baked pre-filter and the wired getDrops slot; external
-// entries stay empty until data-driven definitions (D) attach their behaviour.
+// entries take the baked pre-filter and the wired slots (getDrops, getShape,
+// getStateForPlacement); external entries stay empty until data-driven
+// definitions (D) attach their behaviour.
 [[nodiscard]] inline std::vector<BlockBehavior> buildBlockBehaviorTable() {
     std::vector<BlockBehavior> table(world::blockCount());
     const std::size_t builtins = std::min<std::size_t>(world::kBuiltinBlockCount, table.size());
@@ -179,6 +205,13 @@ namespace detail {
         if (entry.prefilter.has(BlockBehaviorBit::HasDrops)) {
             entry.getDrops = &minedDrops;
         }
+        // getShape/getStateForPlacement point at the single-source free functions
+        // (world::blockShape and placementSlot). Both gate internally — blockShape
+        // maps air/fluid to an empty shape, placementBlock returns nullopt for a
+        // block that cannot be placed — so wiring every built-in stays behaviour-
+        // identical to calling them directly.
+        entry.getShape = &world::blockShape;
+        entry.getStateForPlacement = &placementSlot;
     }
     return table;
 }
@@ -229,6 +262,29 @@ template <class Fn>
         return {};
     }
     return behavior.getDrops(world::blockFromId(id), tool, randomState, age, doubledSlab);
+}
+
+// A block's base shape, through the table's getShape slot. This is the uniform
+// behaviour surface (and the parity harness' subject): it produces exactly what
+// world::blockShape does for a built-in, and an empty shape for a block with no
+// slot. The hot mesher/raycast/collision paths keep calling the constexpr
+// world::blockShape directly — routing them through this runtime table would cost
+// the allocation-backed lookup and lose constexpr, and blockShape is already the
+// single source this slot points at (B-DESIGN §2: getShape "已 BlockShape").
+[[nodiscard]] inline world::BlockShape dispatchBlockShape(core::BlockId id,
+                                                          world::BlockState state) {
+    const auto slot = behaviorFor(id).getShape;
+    return slot != nullptr ? slot(state) : world::BlockShape{};
+}
+
+// The state a placement resolves to, through the table's getStateForPlacement
+// slot, or nullopt for a block with no slot. Behaviour-identical to calling
+// world::placementBlock directly (the slot forwards to it); the switch this
+// replaced was the block's support switch inside canBlockSurvive, now a table.
+[[nodiscard]] inline std::optional<world::BlockState>
+dispatchStateForPlacement(core::BlockId id, const PlacementBehaviorContext& context) {
+    const auto slot = behaviorFor(id).getStateForPlacement;
+    return slot != nullptr ? slot(context) : std::nullopt;
 }
 
 } // namespace mc::gameplay

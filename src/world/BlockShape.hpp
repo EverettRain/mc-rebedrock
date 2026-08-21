@@ -90,41 +90,43 @@ inline constexpr std::array<ShapeBox, 4> kWallTorchBox{{
     {0.663716F, 0.152828F, 0.437500F, 1.056284F, 0.787172F, 0.562500F}, // West
 }};
 
-} // namespace detail
-
-// A block state's base shape. Column blocks (full cube, slab, farmland, a crop's
-// per-stage box) fill their whole 1x1 footprint and differ only in height; the
-// torch, chest and cross-plant are explicit Boxes; air and fluids are Empty (a
-// fluid is not a solid the pick ray tests here, and neither collides).
-[[nodiscard]] constexpr BlockShape blockShape(BlockState state) {
-    const Block block = state.block();
-    switch (blockDefinition(block).model) {
-    case BlockModel::Cross:
-        return {ShapeKind::Boxes, 0.0F, 0.0F, {&detail::kCrossBox, 1}};
-    case BlockModel::Chest:
-        return {ShapeKind::Boxes, 0.0F, 0.0F, {&detail::kChestBox, 1}};
-    case BlockModel::Torch:
-        if (block == Block::WallTorch) {
-            const auto index = static_cast<std::size_t>(state.orientation());
-            const auto& box = detail::kWallTorchBox[index < 4U ? index : 0U];
-            return {ShapeKind::Boxes, 0.0F, 0.0F, {&box, 1}};
-        }
-        return {ShapeKind::Boxes, 0.0F, 0.0F, {&detail::kFloorTorchBox, 1}};
-    case BlockModel::Slab:
-        switch (state.slabPortion()) {
-        case SlabPortion::Bottom:
-            return {ShapeKind::Column, 0.0F, 0.5F, {}};
-        case SlabPortion::Top:
-            return {ShapeKind::Column, 0.5F, 1.0F, {}};
-        case SlabPortion::Double:
-            return {ShapeKind::Column, 0.0F, 1.0F, {}};
-        }
-        break;
-    case BlockModel::Crop:
-        return {ShapeKind::Column, 0.0F, cropSelectionHeight(state.age()), {}};
-    case BlockModel::Cube:
-        break;
+// One shape handler per BlockModel. B1-2 replaces the shape's `switch(model)`
+// with a table indexed by the block's model, the same DOD move kRandomTickTable
+// makes for random ticks: the model is a definition field, so a block selects
+// its shape through one array load instead of a switch the R1 audit flagged as a
+// parallel list. Each handler derives the state's base shape for its model.
+[[nodiscard]] constexpr BlockShape shapeCross(BlockState) {
+    return {ShapeKind::Boxes, 0.0F, 0.0F, {&kCrossBox, 1}};
+}
+[[nodiscard]] constexpr BlockShape shapeChest(BlockState) {
+    return {ShapeKind::Boxes, 0.0F, 0.0F, {&kChestBox, 1}};
+}
+[[nodiscard]] constexpr BlockShape shapeTorch(BlockState state) {
+    if (state.block() == Block::WallTorch) {
+        const auto index = static_cast<std::size_t>(state.orientation());
+        const auto& box = kWallTorchBox[index < 4U ? index : 0U];
+        return {ShapeKind::Boxes, 0.0F, 0.0F, {&box, 1}};
     }
+    return {ShapeKind::Boxes, 0.0F, 0.0F, {&kFloorTorchBox, 1}};
+}
+[[nodiscard]] constexpr BlockShape shapeSlab(BlockState state) {
+    switch (state.slabPortion()) {
+    case SlabPortion::Bottom:
+        return {ShapeKind::Column, 0.0F, 0.5F, {}};
+    case SlabPortion::Top:
+        return {ShapeKind::Column, 0.5F, 1.0F, {}};
+    case SlabPortion::Double:
+        return {ShapeKind::Column, 0.0F, 1.0F, {}};
+    }
+    return {ShapeKind::Column, 0.0F, 1.0F, {}};
+}
+[[nodiscard]] constexpr BlockShape shapeCrop(BlockState state) {
+    return {ShapeKind::Column, 0.0F, cropSelectionHeight(state.age()), {}};
+}
+// The Cube model and the catch-all: farmland's 15/16 box, air/fluid's empty
+// shape, or a solid full cube.
+[[nodiscard]] constexpr BlockShape shapeCube(BlockState state) {
+    const Block block = state.block();
     if (isFarmland(block)) {
         return {ShapeKind::Column, 0.0F, kFarmlandModelHeight, {}};
     }
@@ -133,6 +135,37 @@ inline constexpr std::array<ShapeBox, 4> kWallTorchBox{{
         return {ShapeKind::Empty, 0.0F, 0.0F, {}};
     }
     return {ShapeKind::Column, 0.0F, 1.0F, {}};
+}
+
+using BlockShapeFn = BlockShape (*)(BlockState);
+
+// The per-model shape handlers indexed by BlockModel ordinal — shape dispatch as
+// data. `blockShape` loads the block's model and calls through this, so the shape
+// stays a single source with no switch(block...) to drift.
+inline constexpr std::array<BlockShapeFn, 6> kShapeByModel{{
+    &shapeCube,  // BlockModel::Cube
+    &shapeCross, // BlockModel::Cross
+    &shapeCrop,  // BlockModel::Crop
+    &shapeTorch, // BlockModel::Torch
+    &shapeChest, // BlockModel::Chest
+    &shapeSlab,  // BlockModel::Slab
+}};
+static_assert(static_cast<std::size_t>(BlockModel::Cube) == 0U);
+static_assert(static_cast<std::size_t>(BlockModel::Cross) == 1U);
+static_assert(static_cast<std::size_t>(BlockModel::Crop) == 2U);
+static_assert(static_cast<std::size_t>(BlockModel::Torch) == 3U);
+static_assert(static_cast<std::size_t>(BlockModel::Chest) == 4U);
+static_assert(static_cast<std::size_t>(BlockModel::Slab) == 5U);
+
+} // namespace detail
+
+// A block state's base shape. Column blocks (full cube, slab, farmland, a crop's
+// per-stage box) fill their whole 1x1 footprint and differ only in height; the
+// torch, chest and cross-plant are explicit Boxes; air and fluids are Empty (a
+// fluid is not a solid the pick ray tests here, and neither collides).
+[[nodiscard]] constexpr BlockShape blockShape(BlockState state) {
+    const auto model = static_cast<std::size_t>(blockDefinition(state.block()).model);
+    return detail::kShapeByModel[model](state);
 }
 
 // The vertical span [bottom, top] of a collision box within its cell, in 0..1
