@@ -1179,7 +1179,10 @@ void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPositi
         // new POWER directly (not through the mutation service): wire-to-wire
         // does not fan out neighbour updates, so a network re-solve does not storm
         // the queue. Each changed cell still travels as a BlockChange for the mesh.
-        const auto network = redstone::computeWireNetwork(world, pos);
+        // The AC wavefront settles the whole network in one pass; its per-cell
+        // POWER equals the serial oracle bit for bit (W-5), and the discovery
+        // order fixes the deterministic order downstream neighbours are woken.
+        const auto& network = wireEvaluator_.solve(world, pos);
         std::vector<world::BlockPos> changedCells;
         for (const auto& cell : network) {
             const auto current = world.state(cell.pos.x, cell.pos.y, cell.pos.z);

@@ -4,6 +4,7 @@
 #include "gameplay/ChunkTickScheduler.hpp"
 #include "gameplay/EnvironmentSnapshot.hpp"
 #include "gameplay/RedstoneTorch.hpp"
+#include "gameplay/RedstoneWireEvaluator.hpp"
 #include "gameplay/SimulationPosition.hpp"
 #include "world/Block.hpp"
 #include "world/BlockState.hpp"
@@ -360,6 +361,11 @@ class WorldSimulation final {
     // The recent off-toggles behind redstone-torch burnout, shared across the
     // world's torches (Java's RECENT_TOGGLES list, packed).
     redstone::TorchBurnoutTracker torchBurnout_;
+    // The AC wire evaluator (W-5): one instance reused across every wire tick so
+    // its wavefront/cell/map buffers are a live per-tick arena (zero allocation
+    // once warm). Replaces RedstoneWire.hpp's naive relaxation on the hot path;
+    // the serial evaluator survives only as the lockstep cross-check oracle.
+    redstone::WireNetworkEvaluator wireEvaluator_;
     // Piston/note block events, collected through a tick and settled at its end
     // (Java's Level.blockEvent). This is the W-2 queue's first live consumer.
     BlockEventQueue blockEvents_;

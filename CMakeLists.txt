@@ -730,6 +730,16 @@ if(BUILD_TESTING)
             tests/mob_ai_benchmark.cpp
         )
         target_link_libraries(mc_rebedrock_mob_ai_benchmark PRIVATE mc_rebedrock_runtime)
+
+        # Informational: the W-5 AC wire wavefront vs the naive serial relaxation.
+        add_executable(mc_rebedrock_redstone_wire_benchmark
+            tests/redstone_wire_benchmark.cpp
+        )
+        target_link_libraries(mc_rebedrock_redstone_wire_benchmark PRIVATE mc_rebedrock_runtime)
+        target_include_directories(mc_rebedrock_redstone_wire_benchmark PRIVATE
+            src
+            "${glm_SOURCE_DIR}"
+        )
     endif()
 
     add_executable(mc_rebedrock_game_session_test
@@ -1250,6 +1260,16 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME redstone_drive COMMAND mc_rebedrock_redstone_drive_test)
+
+    add_executable(mc_rebedrock_redstone_wire_ac_test
+        tests/redstone_wire_ac_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_redstone_wire_ac_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_redstone_wire_ac_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME redstone_wire_ac COMMAND mc_rebedrock_redstone_wire_ac_test)
 
     add_executable(mc_rebedrock_torch_inverter_fixture_test
         tests/redstone/torch_inverter_fixture_test.cpp
