@@ -125,6 +125,11 @@ class RedstoneReactionSink final : public world::MutationSink {
     WorldSimulation& simulation_;
 };
 
+// Piston block-event ids (PistonBaseBlock: TRIGGER_EXTEND=0, TRIGGER_CONTRACT=1).
+constexpr std::uint16_t kPistonEventType = 1U;
+constexpr std::int32_t kPistonExtend = 0;
+constexpr std::int32_t kPistonContract = 1;
+
 } // namespace
 
 bool isCollectableWaterSource(
@@ -1003,6 +1008,47 @@ void WorldSimulation::notifyRedstoneComponent(const world::World& world,
         }
         return;
     }
+
+    if (block == world::Block::Piston || block == world::Block::StickyPiston) {
+        // Phase one (checkIfExtend): decide whether the piston should be extended
+        // from its redstone power, and if that disagrees with its current state,
+        // queue a block event — settled at tick end, not now.
+        const bool extend = redstone::getBestNeighborSignal(world, pos) > 0;
+        const bool extended = state.powered(); // EXTENDED reuses the POWERED bit
+        if (extend && !extended) {
+            static_cast<void>(blockEvents_.queue({position, kPistonEventType, kPistonExtend, 0}));
+        } else if (!extend && extended) {
+            static_cast<void>(blockEvents_.queue({position, kPistonEventType, kPistonContract, 0}));
+        }
+        return;
+    }
+}
+
+void WorldSimulation::settlePistonEvent(world::World& world, const BlockEvent& event,
+                                        std::vector<BlockChange>& changes) {
+    if (event.type != kPistonEventType) {
+        return;
+    }
+    const SimulationPosition pos = event.position;
+    const auto block = world.block(pos.x, pos.y, pos.z);
+    if (block != world::Block::Piston && block != world::Block::StickyPiston) {
+        return;
+    }
+    const auto state = world.state(pos.x, pos.y, pos.z);
+    const auto next = state.withPowered(event.param0 == kPistonExtend); // EXTENDED
+    if (next == state) {
+        return;
+    }
+    // The actual block movement (PistonStructureResolver, moving block entity) is
+    // a separate large task; this flips the extension state, which is what the
+    // reference's fixtures probe.
+    RedstoneReactionSink sink{world, *this};
+    const auto applied =
+        mutations_.setBlock(world, {pos.x, pos.y, pos.z}, next, world::MutationFlags::NotifyClients,
+                            world::MutationCause::ScheduledTick, sink);
+    if (applied.changed) {
+        changes.push_back({pos, next});
+    }
 }
 
 void WorldSimulation::notifyObserverShapeChange(const world::World& world,
@@ -1338,6 +1384,12 @@ std::vector<BlockChange> WorldSimulation::tick(
     ticks_.drainDue(
         TickTask::RedstoneComponent, tickCount_, kMaximumRedstoneTicks,
         [&](SimulationPosition position) { dispatchRedstoneTick(world, position, changes); });
+
+    // Block events settle at the end of the tick, after the scheduled ticks, in a
+    // deterministic FIFO — Java's runBlockEvents. Pistons queued their extend/
+    // contract here; this is the W-2 BlockEventQueue's first live consumer.
+    blockEvents_.drain(
+        [&](const BlockEvent& event) { settlePistonEvent(world, event, changes); });
 
     if (!processFluidUpdates) {
         return changes;

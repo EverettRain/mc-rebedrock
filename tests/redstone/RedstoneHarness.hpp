@@ -140,6 +140,12 @@ class RedstoneCircuit final {
     RedstoneCircuit& observer(mc::world::BlockPos rel, gameplay::redstone::Direction facing) {
         return place(rel, mc::world::BlockState{mc::world::Block::Observer, orientationOf(facing)});
     }
+    // `facing` is the push direction.
+    RedstoneCircuit& piston(mc::world::BlockPos rel, gameplay::redstone::Direction facing,
+                            bool sticky = false) {
+        const auto block = sticky ? mc::world::Block::StickyPiston : mc::world::Block::Piston;
+        return place(rel, mc::world::BlockState{block, orientationOf(facing)});
+    }
     // `connectedDir` is the side the button hangs against, as for a lever.
     RedstoneCircuit& button(mc::world::BlockPos rel, gameplay::redstone::Direction connectedDir) {
         return place(rel,

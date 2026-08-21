@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gameplay/BlockEventQueue.hpp"
 #include "gameplay/ChunkTickScheduler.hpp"
 #include "gameplay/EnvironmentSnapshot.hpp"
 #include "gameplay/RedstoneTorch.hpp"
@@ -342,6 +343,11 @@ class WorldSimulation final {
     void dispatchRedstoneTick(world::World& world, SimulationPosition position,
                               std::vector<BlockChange>& changes);
 
+    // Settles one piston block event at tick end (phase two): flips EXTENDED.
+    // The actual block movement is a separate task; this carries the state.
+    void settlePistonEvent(world::World& world, const BlockEvent& event,
+                           std::vector<BlockChange>& changes);
+
     // Every simulated block write goes through this, so the "did the cell
     // actually change?" rule is the one the player's edits use.
     world::WorldMutationService mutations_;
@@ -354,6 +360,9 @@ class WorldSimulation final {
     // The recent off-toggles behind redstone-torch burnout, shared across the
     // world's torches (Java's RECENT_TOGGLES list, packed).
     redstone::TorchBurnoutTracker torchBurnout_;
+    // Piston/note block events, collected through a tick and settled at its end
+    // (Java's Level.blockEvent). This is the W-2 queue's first live consumer.
+    BlockEventQueue blockEvents_;
     EnvironmentSnapshot environment_{};
     std::uint32_t leafRandomState_ = 0x2545F491U;
     int randomTickSpeed_ = 3;

@@ -176,6 +176,13 @@ enum class Block : std::uint8_t {
     // for a fixed number of ticks (20 for stone), then it releases itself. Signal
     // is the lever's; FACING records the direction it hangs from.
     StoneButton,
+    // A piston (PistonBaseBlock): extends/retracts on redstone power via a
+    // two-phase block event (trigger on the update, settle at tick end). FACING
+    // is the six-way push direction; EXTENDED is stored in the POWERED bit. The
+    // sticky variant pulls one block back. The actual block movement (structure
+    // resolver) is a separate large task; this carries the extension state.
+    Piston,
+    StickyPiston,
     Count,
 };
 
@@ -1044,6 +1051,17 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .model(BlockModel::Torch)
         .noCollision()
         .support(BlockSupport::Wall)
+        .state(StateProperty::Facing, 6U)
+        .state(StateProperty::Powered, 2U),
+    // Piston: a full-cube block with a six-way FACING and EXTENDED in POWERED.
+    BlockProperties::of(Block::Piston, "piston", "Piston")
+        .texture("piston_side")
+        .strength(1.5F)
+        .state(StateProperty::Facing, 6U)
+        .state(StateProperty::Powered, 2U),
+    BlockProperties::of(Block::StickyPiston, "sticky_piston", "Sticky Piston")
+        .texture("piston_side")
+        .strength(1.5F)
         .state(StateProperty::Facing, 6U)
         .state(StateProperty::Powered, 2U),
 };
