@@ -71,7 +71,7 @@ const EntityType& PigEntity::type() {
                                  .build("pig");
     // File it in the registry exactly once, passing the static's stable address.
     static const bool registered = [] {
-        entityTypeRegistry().add(type);
+        entityTypeRegistry().registerBuiltin(type);
         return true;
     }();
     static_cast<void>(registered);

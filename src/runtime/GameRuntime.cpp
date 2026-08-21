@@ -225,14 +225,12 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     gameSession_.chestSystem().restore(currentSave_->chests);
     gameSession_.furnaceSystem().restore(currentSave_->furnaces);
     // Restore the herd a saved world carried, resolving species by their
-    // registered id so a species this build no longer knows is skipped instead
-    // of failing to open the world.
+    // registered id. A species this build no longer knows resolves to an
+    // UnknownEntity placeholder (not dropped), so a removed datapack/mod's
+    // creature round-trips by name instead of vanishing from the world.
     for (const auto& record : currentSave_->entities) {
-        const auto* type = gameplay::entities::entityTypeRegistry().byId(record.species);
-        if (type == nullptr) {
-            continue;
-        }
-        gameSession_.worldEntities().restore({record.x, record.y, record.z}, *type, record.yaw,
+        const auto& type = gameplay::entities::resolveEntityTypeForRestore(record.species);
+        gameSession_.worldEntities().restore({record.x, record.y, record.z}, type, record.yaw,
                                              {record.vx, record.vy, record.vz}, record.health,
                                              record.angerTicks, record.ageTicks, record.rngState);
     }
@@ -609,12 +607,9 @@ void GameRuntime::restoreLoadedChunk(world::ChunkPosition position) {
     const auto records =
         saveRepository_.loadChunkEntities(currentSave_->summary.identifier, position.x, position.z);
     for (const auto& record : records) {
-        const auto* type = gameplay::entities::entityTypeRegistry().byId(record.species);
-        if (type == nullptr) {
-            continue;
-        }
+        const auto& type = gameplay::entities::resolveEntityTypeForRestore(record.species);
         gameSession_.worldEntities().restore(
-            {record.x, record.y, record.z}, *type, record.yaw,
+            {record.x, record.y, record.z}, type, record.yaw,
             {record.vx, record.vy, record.vz}, record.health, record.angerTicks,
             record.ageTicks, record.rngState);
     }

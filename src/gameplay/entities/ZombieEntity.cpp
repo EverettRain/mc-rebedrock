@@ -70,7 +70,7 @@ const EntityType& ZombieEntity::type() {
                                  .vanillaName("zombie")
                                  .build("zombie");
     static const bool registered = [] {
-        entityTypeRegistry().add(type);
+        entityTypeRegistry().registerBuiltin(type);
         return true;
     }();
     static_cast<void>(registered);

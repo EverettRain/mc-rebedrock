@@ -33,6 +33,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <span>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -140,6 +141,12 @@ class Registry final {
     }
 
     [[nodiscard]] std::size_t size() const { return definitions_.size(); }
+
+    // The dense definition table, viewed in id order (index i is the Def for
+    // Id::of(i)). For the handful of callers that enumerate every entry — a
+    // command's tab-completion, the natural spawner walking every species — not
+    // a hot per-frame path. Never outlives the registry.
+    [[nodiscard]] std::span<const Def> definitions() const { return definitions_; }
 
   private:
     Id insert(const Identifier& name, Def definition) {

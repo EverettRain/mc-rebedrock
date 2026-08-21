@@ -241,6 +241,7 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/world/WorldMutationService.cpp
     src/gameplay/entities/EntityType.cpp
     src/gameplay/entities/EntityRegistry.cpp
+    src/gameplay/entities/UnknownEntity.cpp
     src/gameplay/entities/NeutralMob.cpp
     src/gameplay/entities/MobAi.cpp
     src/gameplay/entities/MobBrain.cpp
@@ -711,6 +712,16 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME entity_registry COMMAND mc_rebedrock_entity_registry_test)
+
+    add_executable(mc_rebedrock_entity_type_identity_test
+        tests/entity_type_identity_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_entity_type_identity_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_entity_type_identity_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME entity_type_identity COMMAND mc_rebedrock_entity_type_identity_test)
 
     add_executable(mc_rebedrock_mob_brain_test
         tests/mob_brain_test.cpp

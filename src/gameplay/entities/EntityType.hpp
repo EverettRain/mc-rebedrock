@@ -1,6 +1,7 @@
 #pragma once
 
 #include "audio/MobSoundProfile.hpp"
+#include "core/ContentId.hpp"
 #include "core/Identifier.hpp"
 #include "gameplay/Inventory.hpp"
 
@@ -227,6 +228,13 @@ class EntityType final {
     // caches by a small integer.
     [[nodiscard]] std::uint16_t networkId() const { return networkId_; }
 
+    // The same value as a strongly-typed dense id, the handle every other kind
+    // of content uses (BlockId / ItemId). deref = entityTypeRegistry().all()[id]
+    // or byNetworkId(id.value()); the two forms carry the identical integer.
+    [[nodiscard]] core::EntityTypeId typeId() const {
+        return core::EntityTypeId::of(networkId_);
+    }
+
     // Loot-table roll for a creature of this type; empty when none is defined.
     [[nodiscard]] EntityDrops rollLoot(std::uint32_t& rng) const {
         return loot_ != nullptr ? loot_(rng) : EntityDrops{};
@@ -235,6 +243,7 @@ class EntityType final {
   private:
     friend class Builder;
     friend class EntityTypeRegistry;
+    friend class UnknownEntityTable;
 
     core::Identifier id_{};
     core::Identifier vanillaId_{};
