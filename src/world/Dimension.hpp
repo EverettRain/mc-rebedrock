@@ -3,6 +3,7 @@
 #include "world/WorldClock.hpp"  // ClockId — one clock per dimension, index-aligned
 
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -154,8 +155,10 @@ inline constexpr std::array<DimensionType, kDimensionCount> kDimensionTypes = {{
 
 // Dereferences a dimension to its static type. A subscript into rodata; the id
 // is a caller's own enum value, so an out-of-range one is a programming bug the
-// bounds assert catches, never a lookup miss.
+// bounds assert catches, never a lookup miss (DimensionId::Count is a sentinel,
+// not a real dimension).
 [[nodiscard]] constexpr const DimensionType& dimensionType(DimensionId dimension) {
+    assert(static_cast<std::size_t>(dimension) < kDimensionCount);
     return kDimensionTypes[static_cast<std::size_t>(dimension)];
 }
 
