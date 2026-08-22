@@ -1,13 +1,41 @@
+#include "assets/ResourceProvider.hpp"
 #include "audio/AudioSystem.hpp"
+#include "audio/SoundCategory.hpp"
 
 #include <cassert>
+#include <cmath>
+#include <filesystem>
 #include <string_view>
+#include <vector>
+
+namespace {
+
+// A provider that owns no assets: locate/exists/readBytes all come back empty.
+// The audio system builds cleanly on it (an empty SoundRegistry, no device in a
+// headless container), which is all the per-category gain state under test
+// needs — no clip is ever decoded.
+class EmptyResourceProvider final : public mc::assets::ResourceProvider {
+  public:
+    [[nodiscard]] std::filesystem::path
+    locate(const mc::assets::ResourceLocation&) const override {
+        return {};
+    }
+    [[nodiscard]] bool exists(const mc::assets::ResourceLocation&) const override { return false; }
+    [[nodiscard]] std::filesystem::path resourceRoot() const override { return {}; }
+};
+
+[[nodiscard]] bool nearlyEqual(float lhs, float rhs) { return std::fabs(lhs - rhs) < 1e-5F; }
+
+} // namespace
 
 int main() {
+    using mc::audio::AudioSystem;
     using mc::audio::BlockSoundFamily;
     using mc::audio::blockSoundFamily;
+    using mc::audio::SoundCategory;
     using mc::world::Block;
 
+    // ---- Block sound families (unchanged behaviour) ----
     assert(blockSoundFamily(Block::Stone) == BlockSoundFamily::Stone);
     assert(blockSoundFamily(Block::OakLog) == BlockSoundFamily::Wood);
     assert(blockSoundFamily(Block::OakLeaves) == BlockSoundFamily::Grass);
@@ -17,7 +45,78 @@ int main() {
     assert(blockSoundFamily(Block::Glass) == BlockSoundFamily::Glass);
     assert(std::string_view{mc::audio::blockSoundFamilyName(BlockSoundFamily::Glass)} == "glass");
     assert(std::string_view{mc::audio::blockSoundFamilyName(BlockSoundFamily::Wood)} == "wood");
-    // The gameplay family remains Cloth, but 26.1 names the event block.wool.*.
     assert(std::string_view{mc::audio::blockSoundFamilyName(BlockSoundFamily::Cloth)} == "wool");
+
+    // ---- SoundCategory: 11 slots (10 vanilla categories + the Count sentinel),
+    // names round-trip, unknown names reject ----
+    static_assert(mc::audio::kSoundCategoryCount == 10U,
+                  "the ten vanilla SoundSource categories, Master included");
+    assert(mc::audio::soundCategoryName(SoundCategory::Master) == "master");
+    assert(mc::audio::soundCategoryName(SoundCategory::Hostile) == "hostile");
+    assert(mc::audio::soundCategoryName(SoundCategory::Voice) == "voice");
+    for (std::size_t index = 0; index < mc::audio::kSoundCategoryCount; ++index) {
+        const auto category = static_cast<SoundCategory>(index);
+        assert(mc::audio::soundCategoryFromName(mc::audio::soundCategoryName(category)) == category);
+    }
+    assert(mc::audio::soundCategoryFromName("nonsense") == SoundCategory::Count);
+    assert(mc::audio::soundCategoryFromName("") == SoundCategory::Count);
+
+    // Defaults are all 1.
+    const auto defaults = mc::audio::defaultSoundCategoryVolumes();
+    for (const float volume : defaults) {
+        assert(nearlyEqual(volume, 1.0F));
+    }
+
+    // ---- Per-category gain state (no audio device required) ----
+    const EmptyResourceProvider provider;
+    AudioSystem audio(provider, 1.0F);
+
+    // Master defaults through the constructor argument; sub-categories default 1.
+    assert(nearlyEqual(audio.categoryVolume(SoundCategory::Master), 1.0F));
+    assert(nearlyEqual(audio.categoryVolume(SoundCategory::Block), 1.0F));
+
+    // Effective volume = master × category × event. All 1 → passthrough.
+    assert(nearlyEqual(audio.effectiveVolume(SoundCategory::Block, 0.8F), 0.8F));
+
+    // Muting one category silences only itself: Block=0 leaves Hostile untouched.
+    audio.setCategoryVolume(SoundCategory::Block, 0.0F);
+    assert(nearlyEqual(audio.effectiveVolume(SoundCategory::Block, 1.0F), 0.0F));
+    assert(nearlyEqual(audio.effectiveVolume(SoundCategory::Hostile, 1.0F), 1.0F));
+    assert(nearlyEqual(audio.effectiveVolume(SoundCategory::Weather, 0.5F), 0.5F));
+
+    // The layers multiply: master 0.5, Hostile 0.4, event 0.5 → 0.1.
+    audio.setMasterVolume(0.5F);
+    audio.setCategoryVolume(SoundCategory::Hostile, 0.4F);
+    assert(nearlyEqual(audio.effectiveVolume(SoundCategory::Hostile, 0.5F), 0.5F * 0.4F * 0.5F));
+    // Block is still muted, independent of the master change.
+    assert(nearlyEqual(audio.effectiveVolume(SoundCategory::Block, 1.0F), 0.0F));
+    // A Master-routed play folds master's own gain in: master × event, no double
+    // attenuation.
+    assert(nearlyEqual(audio.effectiveVolume(SoundCategory::Master, 0.8F), 0.5F * 0.8F));
+
+    // setMasterVolume keeps the Master slot mirrored.
+    assert(nearlyEqual(audio.categoryVolume(SoundCategory::Master), 0.5F));
+
+    // Clamping: out-of-range gains saturate to [0, 1].
+    audio.setCategoryVolume(SoundCategory::Player, 2.0F);
+    assert(nearlyEqual(audio.categoryVolume(SoundCategory::Player), 1.0F));
+    audio.setCategoryVolume(SoundCategory::Player, -1.0F);
+    assert(nearlyEqual(audio.categoryVolume(SoundCategory::Player), 0.0F));
+
+    // Bulk apply from an options table.
+    mc::audio::SoundCategoryVolumes table = mc::audio::defaultSoundCategoryVolumes();
+    table[static_cast<std::size_t>(SoundCategory::Weather)] = 0.25F;
+    table[static_cast<std::size_t>(SoundCategory::Master)] = 0.6F;
+    audio.setCategoryVolumes(table);
+    assert(nearlyEqual(audio.categoryVolume(SoundCategory::Weather), 0.25F));
+    assert(nearlyEqual(audio.categoryVolume(SoundCategory::Master), 0.6F));
+
+    // ---- Directional Audio toggle ----
+    assert(audio.directionalAudio()); // on by default (vanilla parity)
+    audio.setDirectionalAudio(false);
+    assert(!audio.directionalAudio());
+    audio.setDirectionalAudio(true);
+    assert(audio.directionalAudio());
+
     return 0;
 }

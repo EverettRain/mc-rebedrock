@@ -119,6 +119,25 @@
 namespace mc::render {
 namespace {
 
+// Which volume bus a creature's sounds route through, derived from its
+// SpawnGroup: monsters use Hostile, bats (Ambient category) use the Ambient
+// bus, and every other animal uses Neutral — the same split vanilla applies in
+// MobEntity#getSoundCategory (HOSTILE vs NEUTRAL, with bats on AMBIENT).
+[[nodiscard]] audio::SoundCategory
+creatureSoundCategory(const gameplay::entities::EntityType& type) {
+    switch (type.category()) {
+    case gameplay::entities::MobCategory::Monster:
+        return audio::SoundCategory::Hostile;
+    case gameplay::entities::MobCategory::Ambient:
+        return audio::SoundCategory::Ambient;
+    case gameplay::entities::MobCategory::Creature:
+    case gameplay::entities::MobCategory::WaterCreature:
+    case gameplay::entities::MobCategory::Misc:
+        break;
+    }
+    return audio::SoundCategory::Neutral;
+}
+
 [[nodiscard]] bool disableOcclusionQueries() {
     if (std::getenv("MC_REBEDROCK_DISABLE_OCCLUSION") != nullptr) {
         return true;
@@ -325,6 +344,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                      : (initialTestScene.has_value() ? glm::vec3{8.5F, 64.5F, 8.5F}
                                                      : glm::vec3{8.0F, 61.0F, 8.0F}),
                  65.0F) {
+        // Push the persisted audio settings into the engine: the per-category
+        // sub-volumes (Master already went in through the constructor) and the
+        // Directional Audio toggle.
+        audioSystem.setCategoryVolumes(options.soundCategoryVolumes);
+        audioSystem.setDirectionalAudio(options.directionalAudio);
         viewDistanceChunks = chunkStreamer.loadRadius();
         simulationDistanceChunks = std::clamp(options.simulationDistance, 2, 12);
         gameSession.setSimulationRadius(static_cast<float>(simulationDistanceChunks) *
@@ -404,18 +428,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
     void playBurp(glm::vec3 position) override { audioSystem.playBurp(position); }
     void playCreatureHurt(const gameplay::entities::EntityType& type, glm::vec3 position) override {
-        audioSystem.playCreatureHurt(type.soundProfile(), position);
+        audioSystem.playCreatureHurt(type.soundProfile(), creatureSoundCategory(type), position);
     }
     void playCreatureDeath(const gameplay::entities::EntityType& type,
                            glm::vec3 position) override {
-        audioSystem.playCreatureDeath(type.soundProfile(), position);
+        audioSystem.playCreatureDeath(type.soundProfile(), creatureSoundCategory(type), position);
     }
     void playCreatureAmbient(const gameplay::entities::EntityType& type,
                              glm::vec3 position) override {
-        audioSystem.playCreatureAmbient(type.soundProfile(), position);
+        audioSystem.playCreatureAmbient(type.soundProfile(), creatureSoundCategory(type), position);
     }
     void playCreatureStep(const gameplay::entities::EntityType& type, glm::vec3 position) override {
-        audioSystem.playCreatureStep(type.soundProfile(), position);
+        audioSystem.playCreatureStep(type.soundProfile(), creatureSoundCategory(type), position);
     }
     void playFootstep(world::Block ground, glm::vec3 position, float volume) override {
         audioSystem.playFootstep(ground, position, volume);

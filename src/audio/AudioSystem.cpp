@@ -97,6 +97,7 @@ class AudioSystem::Impl final {
     Impl(const assets::ResourceProvider& resourceProvider, float initialMasterVolume)
         : provider(&resourceProvider), registry(assets::SoundRegistry::load(resourceProvider)),
           masterVolume(std::clamp(initialMasterVolume, 0.0F, 1.0F)) {
+        categoryVolumes[static_cast<std::size_t>(SoundCategory::Master)] = masterVolume;
         ma_engine_config engineConfig = ma_engine_config_init();
         engineConfig.listenerCount = 1;
         // Listener transforms are consumed by miniaudio's real-time callback.
@@ -151,10 +152,38 @@ class AudioSystem::Impl final {
 
     void setMasterVolume(float volume) {
         masterVolume = std::clamp(volume, 0.0F, 1.0F);
+        categoryVolumes[static_cast<std::size_t>(SoundCategory::Master)] = masterVolume;
         if (initialized) {
             ma_engine_set_volume(&engine, masterVolume);
         }
     }
+
+    void setCategoryVolume(SoundCategory category, float volume) {
+        if (category == SoundCategory::Count) {
+            return;
+        }
+        if (category == SoundCategory::Master) {
+            setMasterVolume(volume);
+            return;
+        }
+        categoryVolumes[static_cast<std::size_t>(category)] = std::clamp(volume, 0.0F, 1.0F);
+    }
+
+    [[nodiscard]] float categoryVolume(SoundCategory category) const {
+        if (category == SoundCategory::Count) {
+            return 0.0F;
+        }
+        return categoryVolumes[static_cast<std::size_t>(category)];
+    }
+
+    void setCategoryVolumes(const SoundCategoryVolumes& volumes) {
+        for (std::size_t index = 0; index < kSoundCategoryCount; ++index) {
+            setCategoryVolume(static_cast<SoundCategory>(index), volumes[index]);
+        }
+    }
+
+    void setDirectionalAudio(bool enabled) { directionalAudioEnabled = enabled; }
+    [[nodiscard]] bool directionalAudio() const { return directionalAudioEnabled; }
 
     void updateListener(const glm::vec3& position, const glm::vec3& direction,
                         const glm::vec3& up) {
@@ -213,7 +242,8 @@ class AudioSystem::Impl final {
         }
     }
 
-    void playEvent(std::string_view event, const glm::vec3& position, float volume, float pitch) {
+    void playEvent(std::string_view event, SoundCategory category, const glm::vec3& position,
+                   float volume, float pitch) {
         if (event.empty()) {
             return;
         }
@@ -224,15 +254,33 @@ class AudioSystem::Impl final {
             }
             return;
         }
-        play(*entry, position, volume * entry->volume, pitch * entry->pitch);
+        play(*entry, category, position, volume * entry->volume, pitch * entry->pitch);
     }
 
-    void playEvent(assets::SoundEventId event, const glm::vec3& position, float volume,
-                   float pitch) {
+    void playEvent(assets::SoundEventId event, SoundCategory category, const glm::vec3& position,
+                   float volume, float pitch) {
         const assets::SoundEntry* entry = registry.pick(event, randomState);
         if (entry != nullptr) {
-            play(*entry, position, volume * entry->volume, pitch * entry->pitch);
+            play(*entry, category, position, volume * entry->volume, pitch * entry->pitch);
         }
+    }
+
+    // The sub-category gain applied on top of the engine's master bus. Master
+    // itself returns 1 here (it is the engine volume, applied globally) so a
+    // caller that misroutes to Master does not double-attenuate.
+    [[nodiscard]] float categoryGain(SoundCategory category) const {
+        if (category == SoundCategory::Master || category == SoundCategory::Count) {
+            return 1.0F;
+        }
+        return categoryVolumes[static_cast<std::size_t>(category)];
+    }
+
+    // The pre-distance volume a play would receive: master × sub-category gain ×
+    // event volume. The engine applies master globally at runtime, so the value
+    // set on an individual voice is only sub-category × event; folding master in
+    // here gives the caller the full effective level to reason about.
+    [[nodiscard]] float effectiveVolume(SoundCategory category, float eventVolume) const {
+        return masterVolume * categoryGain(category) * std::max(eventVolume, 0.0F);
     }
 
     // LivingEntity#getSoundPitch: (nextFloat() - nextFloat()) * 0.2 + 1.0, the
@@ -244,11 +292,19 @@ class AudioSystem::Impl final {
         return blockEvents[static_cast<std::size_t>(family)][static_cast<std::size_t>(action)];
     }
 
-    void play(const assets::SoundEntry& entry, const glm::vec3& position, float volume,
-              float pitch) {
+    void play(const assets::SoundEntry& entry, SoundCategory category, const glm::vec3& position,
+              float volume, float pitch) {
         if (!initialized || masterVolume <= 0.0F) {
             return;
         }
+        // The sub-category gain multiplies on top of the master bus. A muted
+        // category silences only itself — every other bus keeps playing — and
+        // there is no point decoding a voice nobody will hear.
+        const float gain = categoryGain(category);
+        if (gain <= 0.0F) {
+            return;
+        }
+        volume *= gain;
         const auto cached = soundAssets.find(entry.name);
         if (cached == soundAssets.end() || !cached->second.exists) {
             if (warnedMissingAssets.emplace(entry.name).second) {
@@ -308,6 +364,13 @@ class AudioSystem::Impl final {
         ma_sound_set_min_distance(&active->sound, 4.0F);
         ma_sound_set_max_distance(&active->sound, 48.0F);
         ma_sound_set_rolloff(&active->sound, 0.75F);
+        // Vanilla's "Directional Audio" toggle. This backend has no true HRTF,
+        // so the parity mapping is the pan mode: ON = a true pan (the sound
+        // travels across and blends to the far side, the "surround" feel),
+        // OFF = a plain L/R balance (the engine default). No occlusion/reverb is
+        // added either way — vanilla adds none.
+        ma_sound_set_pan_mode(&active->sound,
+                              directionalAudioEnabled ? ma_pan_mode_pan : ma_pan_mode_balance);
         const ma_result startResult = ma_sound_start(&active->sound);
         if (startResult != MA_SUCCESS) {
             std::cerr << "Unable to start sound asset " << entry.name << " (miniaudio result "
@@ -401,6 +464,11 @@ class AudioSystem::Impl final {
     const assets::ResourceProvider* provider = nullptr;
     assets::SoundRegistry registry;
     float masterVolume = 1.0F;
+    // Per-category linear gains, index = SoundCategory. Master (index 0) mirrors
+    // masterVolume; the rest default to 1 so nothing is attenuated until an
+    // options load or a slider lowers a bus.
+    SoundCategoryVolumes categoryVolumes = defaultSoundCategoryVolumes();
+    bool directionalAudioEnabled = true;
     ma_engine engine{};
     bool initialized = false;
     std::uint32_t randomState = 0x4D43564BU;
@@ -435,6 +503,28 @@ bool AudioSystem::available() const { return implementation->initialized; }
 
 void AudioSystem::setMasterVolume(float volume) { implementation->setMasterVolume(volume); }
 
+void AudioSystem::setCategoryVolume(SoundCategory category, float volume) {
+    implementation->setCategoryVolume(category, volume);
+}
+
+float AudioSystem::categoryVolume(SoundCategory category) const {
+    return implementation->categoryVolume(category);
+}
+
+void AudioSystem::setCategoryVolumes(const SoundCategoryVolumes& volumes) {
+    implementation->setCategoryVolumes(volumes);
+}
+
+void AudioSystem::setDirectionalAudio(bool enabled) {
+    implementation->setDirectionalAudio(enabled);
+}
+
+bool AudioSystem::directionalAudio() const { return implementation->directionalAudio(); }
+
+float AudioSystem::effectiveVolume(SoundCategory category, float eventVolume) const {
+    return implementation->effectiveVolume(category, eventVolume);
+}
+
 void AudioSystem::updateListener(const glm::vec3& position, const glm::vec3& direction,
                                  const glm::vec3& up) {
     implementation->updateListener(position, direction, up);
@@ -444,90 +534,97 @@ void AudioSystem::update() { implementation->update(); }
 
 void AudioSystem::playBlockBreak(world::Block block, const glm::vec3& position) {
     implementation->playEvent(
-        implementation->blockEventId(blockSoundFamily(block), BlockSoundAction::Break), position,
-        1.0F, 0.8F);
+        implementation->blockEventId(blockSoundFamily(block), BlockSoundAction::Break),
+        SoundCategory::Block, position, 1.0F, 0.8F);
 }
 
 void AudioSystem::playBlockHit(world::Block block, const glm::vec3& position) {
     // WorldRenderer.playEvent uses the block sound at roughly one quarter
     // volume for the four-tick mining cadence.
     implementation->playEvent(
-        implementation->blockEventId(blockSoundFamily(block), BlockSoundAction::Hit), position,
-        0.25F, 0.5F);
+        implementation->blockEventId(blockSoundFamily(block), BlockSoundAction::Hit),
+        SoundCategory::Block, position, 0.25F, 0.5F);
 }
 
 void AudioSystem::playBlockPlace(world::Block block, const glm::vec3& position) {
     implementation->playEvent(
-        implementation->blockEventId(blockSoundFamily(block), BlockSoundAction::Place), position,
-        0.8F, 0.8F);
+        implementation->blockEventId(blockSoundFamily(block), BlockSoundAction::Place),
+        SoundCategory::Block, position, 0.8F, 0.8F);
 }
 
 void AudioSystem::playButtonClick(const glm::vec3& position) {
-    implementation->playEvent("ui.button.click", position, 1.0F, 1.0F);
+    // UI clicks route through Master (vanilla plays them on the master bus).
+    implementation->playEvent("ui.button.click", SoundCategory::Master, position, 1.0F, 1.0F);
 }
 
 void AudioSystem::playFootstep(world::Block block, const glm::vec3& position, float volume) {
+    // The local player's own footsteps route through the Players bus, matching
+    // vanilla's ClientPlayerEntity#playStepSound (SoundCategory.PLAYERS).
     implementation->playEvent(
-        implementation->blockEventId(blockSoundFamily(block), BlockSoundAction::Step), position,
-        volume, 1.0F);
+        implementation->blockEventId(blockSoundFamily(block), BlockSoundAction::Step),
+        SoundCategory::Player, position, volume, 1.0F);
 }
 
 void AudioSystem::playItemPickup(const glm::vec3& position) {
-    implementation->playEvent("entity.item.pickup", position, 0.25F, 1.8F);
+    implementation->playEvent("entity.item.pickup", SoundCategory::Player, position, 0.25F, 1.8F);
 }
 
 void AudioSystem::playSplash(const glm::vec3& position, float volume) {
-    implementation->playEvent("entity.player.splash", position, volume, 1.0F);
+    implementation->playEvent("entity.player.splash", SoundCategory::Player, position, volume, 1.0F);
 }
 
 void AudioSystem::playPlayerHurt(const glm::vec3& position) {
-    implementation->playEvent("entity.player.hurt", position, 0.7F, 1.0F);
+    implementation->playEvent("entity.player.hurt", SoundCategory::Player, position, 0.7F, 1.0F);
 }
 
 void AudioSystem::playPlayerFall(const glm::vec3& position, bool heavy) {
     implementation->playEvent(heavy ? "entity.player.big_fall" : "entity.player.small_fall",
-                              position, 0.7F, 1.0F);
+                              SoundCategory::Player, position, 0.7F, 1.0F);
 }
 
 void AudioSystem::playEat(const glm::vec3& position) {
     // The three eating variants the way SoundEvents.ENTITY_GENERIC_EAT does.
-    implementation->playEvent("entity.generic.eat", position, 1.0F, 1.0F);
+    implementation->playEvent("entity.generic.eat", SoundCategory::Player, position, 1.0F, 1.0F);
 }
 
 void AudioSystem::playBurp(const glm::vec3& position) {
-    implementation->playEvent("entity.player.burp", position, 1.0F, 1.0F);
+    implementation->playEvent("entity.player.burp", SoundCategory::Player, position, 1.0F, 1.0F);
 }
 
 void AudioSystem::playItemBreak(const glm::vec3& position) {
     // ENTITY_ITEM_BREAK: volume 0.8, and vanilla spreads the pitch a little.
-    implementation->playEvent("entity.item.break", position, 0.8F, 0.9F);
+    implementation->playEvent("entity.item.break", SoundCategory::Player, position, 0.8F, 0.9F);
 }
 
-void AudioSystem::playCreatureHurt(const MobSoundProfile& profile, const glm::vec3& position) {
-    implementation->playEvent(profile.hurtEvent, position, profile.volume,
+void AudioSystem::playCreatureHurt(const MobSoundProfile& profile, SoundCategory category,
+                                   const glm::vec3& position) {
+    implementation->playEvent(profile.hurtEvent, category, position, profile.volume,
                               implementation->nextPitch());
 }
 
-void AudioSystem::playCreatureDeath(const MobSoundProfile& profile, const glm::vec3& position) {
-    implementation->playEvent(profile.deathEvent, position, profile.volume,
+void AudioSystem::playCreatureDeath(const MobSoundProfile& profile, SoundCategory category,
+                                    const glm::vec3& position) {
+    implementation->playEvent(profile.deathEvent, category, position, profile.volume,
                               implementation->nextPitch());
 }
 
-void AudioSystem::playCreatureAmbient(const MobSoundProfile& profile, const glm::vec3& position) {
-    implementation->playEvent(profile.ambientEvent, position, profile.volume,
+void AudioSystem::playCreatureAmbient(const MobSoundProfile& profile, SoundCategory category,
+                                      const glm::vec3& position) {
+    implementation->playEvent(profile.ambientEvent, category, position, profile.volume,
                               implementation->nextPitch());
 }
 
-void AudioSystem::playCreatureStep(const MobSoundProfile& profile, const glm::vec3& position) {
-    implementation->playEvent(profile.stepEvent, position, profile.stepVolume, 1.0F);
+void AudioSystem::playCreatureStep(const MobSoundProfile& profile, SoundCategory category,
+                                   const glm::vec3& position) {
+    implementation->playEvent(profile.stepEvent, category, position, profile.stepVolume, 1.0F);
 }
 
 void AudioSystem::playWeatherRain(const glm::vec3& position, float volume) {
-    implementation->playEvent("weather.rain", position, volume, 1.0F);
+    implementation->playEvent("weather.rain", SoundCategory::Weather, position, volume, 1.0F);
 }
 
 void AudioSystem::playWeatherRainAbove(const glm::vec3& position, float volume) {
-    implementation->playEvent("weather.rain.above", position, volume, 1.0F);
+    implementation->playEvent("weather.rain.above", SoundCategory::Weather, position, volume, 1.0F);
 }
 
 } // namespace mc::audio
