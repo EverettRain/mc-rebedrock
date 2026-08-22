@@ -430,6 +430,9 @@ class GameSession final {
     void bindPrimaryWorld(world::World& world) {
         primaryLevel().id = primaryDimension_;
         primaryLevel().bindWorld(world);
+        // The player is in the primary dimension; only it streams (DIM-3).
+        primaryLevel().hasPlayer = true;
+        primaryLevel().generationSeed = world::dimensionSeed(worldSeed_, primaryDimension_);
         pinFixedTimeClocks();
     }
 
@@ -437,11 +440,25 @@ class GameSession final {
     // second-dimension terrain (that is DIM-3), but the cross-dimension tick loop
     // and its skip/no-force-load semantics are validated by binding a world to,
     // say, the Nether and hand-loading a chunk. Sets the level's id so its clock
-    // and DimensionType resolve correctly.
+    // and DimensionType resolve correctly, and derives its per-dimension terrain
+    // seed (DIM-3).
     void bindWorld(world::DimensionId id, world::World& world) {
         level(id).id = id;
         level(id).bindWorld(world);
+        level(id).generationSeed = world::dimensionSeed(worldSeed_, id);
     }
+
+    // The world seed, which drives every dimension's derived terrain seed
+    // (DIM-3). Set on world load/create before the levels stream; re-derives each
+    // bound level's generationSeed so a /reload follows the new seed.
+    void setWorldGenerationSeed(std::uint64_t seed) {
+        worldSeed_ = seed;
+        for (std::size_t i = 0; i < world::kDimensionCount; ++i) {
+            const auto dim = static_cast<world::DimensionId>(i);
+            level(dim).generationSeed = world::dimensionSeed(seed, dim);
+        }
+    }
+    [[nodiscard]] std::uint64_t worldGenerationSeed() const { return worldSeed_; }
 
     // DIM-2's cross-dimension tick loop: after the primary level has ticked in
     // full (GameSession::tick), advance every *other* active dimension's passive
@@ -469,6 +486,20 @@ class GameSession final {
         return pendingCrossDimLoads_;
     }
     void clearPendingCrossDimLoads() { pendingCrossDimLoads_.clear(); }
+
+    // DIM-3: routes the recorded cross-dimension load requests (DIM-2) through the
+    // per-dimension generator hook, partitioning them into requests a streamer
+    // could satisfy (the dimension has a real terrain generator) and requests
+    // that must be deferred (the Nether/End generator seam is not yet filled by
+    // worldgen — a streamer must not fabricate their terrain). Draining is
+    // asynchronous by construction: it decides routing, it never generates a chunk
+    // in the tick. Returns the number of requests routed to a live streamer; the
+    // deferred ones stay in pendingCrossDimLoads_ for a future worldgen delivery.
+    struct CrossDimLoadRouting final {
+        std::size_t routableToStreamer = 0;  // dimension has a generator
+        std::size_t deferredNoGenerator = 0; // Nether/End seam, held for worldgen
+    };
+    CrossDimLoadRouting resolvePendingCrossDimLoads();
 
     // The last cross-dimension tick pass's per-dimension reports, indexed by
     // DimensionId. Metering for the "empty dimension is free" assertions.
@@ -604,6 +635,8 @@ class GameSession final {
     // DIM-2 metering + cross-dimension bookkeeping.
     std::array<LevelTickReport, world::kDimensionCount> secondaryLevelReports_{};
     std::vector<PendingCrossDimLoad> pendingCrossDimLoads_;
+    // DIM-3: the world seed every dimension derives its terrain seed from.
+    std::uint64_t worldSeed_ = 0U;
 
     // Pins the fixed-time dimensions' clocks (Nether/End: DimensionType.fixedTime)
     // to their fixed value and pauses them, so ClockManager::tick never advances

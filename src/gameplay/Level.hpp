@@ -6,6 +6,7 @@
 #include "gameplay/NaturalSpawner.hpp"
 #include "gameplay/WeatherSystem.hpp"
 #include "world/Dimension.hpp"
+#include "world/DimensionGenerator.hpp"
 #include "world/World.hpp"
 
 #include <cstddef>
@@ -68,6 +69,32 @@ struct Level final {
     // per-dimension tick reaches its clock through the world-level ClockManager
     // by a subscript rather than a lookup.
     [[nodiscard]] world::ClockId clockId() const { return world::clockOf(id); }
+
+    // DIM-3 per-dimension streaming/generation seam ---------------------------
+    //
+    // Whether the player is present in this dimension. Idle dimensions (no player
+    // and no forced load) do not stream — the streaming complement of DIM-2's
+    // "empty dimension is free": a dimension nobody is in generates nothing.
+    bool hasPlayer = false;
+
+    // This dimension's derived terrain seed. Set at bind time from the world seed
+    // and the DimensionId, so the Nether's noise is never the Overworld's.
+    std::uint64_t generationSeed = 0U;
+
+    // The generation config (bounds + generator seam) for this dimension, read
+    // from the DimensionType. A generator reads height/ceiling from here, never a
+    // hardcoded 256.
+    [[nodiscard]] world::DimensionGeneratorConfig generatorConfig() const {
+        return world::dimensionGeneratorConfig(id);
+    }
+
+    // Whether this dimension should stream chunks this tick: it needs a bound
+    // world, a real terrain generator (the Nether/End seam is not yet filled by
+    // worldgen), and a reason to be active (a player is in it). An idle or
+    // generator-less dimension requests nothing.
+    [[nodiscard]] bool shouldStream() const {
+        return world_ != nullptr && hasPlayer && generatorConfig().hasTerrainGenerator;
+    }
 
     // True when this dimension is dormant: no world bound, or a world with no
     // loaded chunks. This is the "empty dimension is free" test — DIM DESIGN §2:

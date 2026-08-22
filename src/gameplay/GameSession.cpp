@@ -275,6 +275,30 @@ world::Block GameSession::blockAcrossDimensions(world::DimensionId id, int x, in
     return world::Block::Air;
 }
 
+GameSession::CrossDimLoadRouting GameSession::resolvePendingCrossDimLoads() {
+    CrossDimLoadRouting routing;
+    std::vector<PendingCrossDimLoad> deferred;
+    for (const auto& request : pendingCrossDimLoads_) {
+        // The generator seam: a dimension with a real terrain generator (only the
+        // Overworld today) can be handed to a streamer; the Nether/End requests
+        // are held until the worldgen subtree delivers their generators. Either
+        // way this only *routes* — it never generates a chunk in the tick.
+        if (world::dimensionGeneratorConfig(request.dimension).hasTerrainGenerator) {
+            ++routing.routableToStreamer;
+            // A live per-dimension streamer would enqueue request.chunk here; the
+            // Overworld already streams through GameRuntime's single streamer, so
+            // there is no second streamer to feed yet (see DIM-3 blocked note).
+        } else {
+            ++routing.deferredNoGenerator;
+            deferred.push_back(request);
+        }
+    }
+    // Keep only the deferred (generator-less) requests; the routable ones are
+    // considered handed off.
+    pendingCrossDimLoads_ = std::move(deferred);
+    return routing;
+}
+
 void GameSession::publishSnapshots() {
     // The authoritative current position, then everything the renderer reads
     // this frame. Called at the end of tick() and once right after a world

@@ -803,6 +803,11 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     // Natural spawning reads the biome map from the same seed that drives the
     // terrain, so spawns follow the biome being generated.
     gameSession_.setWorldSeed(currentSave_->summary.seed);
+    // DIM-3: every dimension derives its own terrain seed from the world seed, so
+    // the Nether/End (when worldgen delivers their generators) get their own
+    // noise. The Overworld's derived seed is the world seed unchanged, so the
+    // existing single-dimension world regenerates identically (no regression).
+    gameSession_.setWorldGenerationSeed(currentSave_->summary.seed);
     gameSession_.lootRandomState() =
         static_cast<std::uint32_t>(currentSave_->summary.seed) ^
         static_cast<std::uint32_t>(currentSave_->summary.seed >> 32U) ^ 0x9E3779B9U;
