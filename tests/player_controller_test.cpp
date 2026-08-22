@@ -322,5 +322,58 @@ int main() {
         assert(walker.walkAnimationSpeed() < 0.05F);  // decayed essentially to rest
     }
 
+    // Steady-state movement speed matches 26.1 §18.1. The physics loop
+    // (accel a/tick + drag g) converges to a/(1-g) blocks/tick; this pins that the
+    // constants already produce vanilla speeds — walk 0.2159, sprint 0.2806, sneak
+    // 0.0648 — so the animation amplitude min(4*d,1) lands on the spec values
+    // (walk ~0.86, sprint ~1.0) with NO animation compensation. A short run on a
+    // 16-wide chunk reaches steady state (~tick 10) without leaving the chunk.
+    {
+        mc::world::Chunk floor;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                floor.setBlock(x, 0, z, mc::world::Block::Stone);
+            }
+        }
+        mc::world::World flat;
+        flat.setChunk({0, 0}, std::move(floor));
+
+        const auto steadySpeed = [&flat](const mc::gameplay::PlayerInput& in) {
+            mc::gameplay::PlayerController p({2.5F, 1.0F, 8.5F});
+            glm::vec3 prev = p.position();
+            float last = 0.0F;
+            for (int tick = 0; tick < 12; ++tick) {
+                p.tick(flat, in);
+                const glm::vec3 now = p.position();
+                const float dx = now.x - prev.x;
+                const float dz = now.z - prev.z;
+                last = std::sqrt(dx * dx + dz * dz);
+                prev = now;
+            }
+            return std::pair<float, float>{last, p.walkAnimationSpeed()};
+        };
+
+        mc::gameplay::PlayerInput walk;
+        walk.forward = 1.0F;
+        walk.lookDirection = {1.0F, 0.0F, 0.0F};
+        walk.sprintAllowed = true;
+        const auto [walkV, walkAmp] = steadySpeed(walk);
+        assert(std::abs(walkV - 0.2159F) < 0.005F);   // 26.1 walk
+        assert(std::abs(walkAmp - 0.863F) < 0.03F);   // min(4d,1) ~ 0.86
+
+        mc::gameplay::PlayerInput sprint = walk;
+        sprint.sprintHeld = true;
+        const auto [sprintV, sprintAmp] = steadySpeed(sprint);
+        assert(std::abs(sprintV - 0.2806F) < 0.005F);  // 26.1 sprint
+        assert(sprintAmp > 0.98F);                     // saturates to ~1.0
+        assert(sprintV > walkV);                       // sprint genuinely faster
+
+        mc::gameplay::PlayerInput sneak = walk;
+        sneak.sneakHeld = true;
+        const auto [sneakV, sneakAmp] = steadySpeed(sneak);
+        assert(std::abs(sneakV - 0.0648F) < 0.005F);   // 26.1 sneak
+        assert(sneakAmp > 0.0F && sneakAmp < walkAmp); // smaller gait than walking
+    }
+
     return 0;
 }
