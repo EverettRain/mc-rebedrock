@@ -173,6 +173,7 @@ add_library(mc_rebedrock_animation STATIC
     src/animation/SkeletalModel.cpp
     src/animation/AnimationClip.cpp
     src/animation/Animator.cpp
+    src/animation/BoneMask.cpp
     src/animation/AnimationAssets.cpp
     src/animation/HumanoidPoseSolver.cpp
     src/animation/ModelAnimationSystem.cpp
@@ -1728,6 +1729,10 @@ if(BUILD_TESTING)
     add_executable(mc_rebedrock_skeletal_animation_test tests/skeletal_animation_test.cpp)
     target_link_libraries(mc_rebedrock_skeletal_animation_test PRIVATE mc_rebedrock_animation)
     add_test(NAME skeletal_animation COMMAND mc_rebedrock_skeletal_animation_test)
+
+    add_executable(mc_rebedrock_bone_mask_test tests/bone_mask_test.cpp)
+    target_link_libraries(mc_rebedrock_bone_mask_test PRIVATE mc_rebedrock_animation)
+    add_test(NAME bone_mask COMMAND mc_rebedrock_bone_mask_test)
 
     add_executable(mc_rebedrock_keyframe_bezier_test tests/keyframe_bezier_test.cpp)
     target_link_libraries(mc_rebedrock_keyframe_bezier_test PRIVATE mc_rebedrock_animation)

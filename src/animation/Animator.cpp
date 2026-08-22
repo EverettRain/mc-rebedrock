@@ -47,11 +47,12 @@ void Animator::setModel(const SkeletalModel* model) {
 
 void Animator::clearLayers() { layers_.clear(); }
 
-void Animator::addLayer(const AnimationClip& clip, float localTime, float weight) {
+void Animator::addLayer(const AnimationClip& clip, float localTime, float weight,
+                        const BoneMask* mask) {
     if (weight <= 0.0F) {
         return;
     }
-    layers_.push_back({&clip, localTime, weight});
+    layers_.push_back({&clip, localTime, weight, mask});
 }
 
 void Animator::playSingle(const AnimationClip& clip, float elapsedSeconds, float weight) {
@@ -85,6 +86,12 @@ SkeletonPose Animator::evaluate() const {
             const int index = model_->findBone(boneName);
             if (index < 0) {
                 continue; // clip targets a bone this geometry does not have
+            }
+            // A masked layer only writes the bones it selects; bones outside the
+            // mask keep whatever earlier layers left. A null mask writes every
+            // bone (the pre-mask path), so the whole-skeleton case is unchanged.
+            if (layer.mask != nullptr && !layer.mask->test(index)) {
+                continue;
             }
             BonePose& target = pose.bone(static_cast<std::size_t>(index));
 

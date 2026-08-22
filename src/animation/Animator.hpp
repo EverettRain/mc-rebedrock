@@ -1,6 +1,7 @@
 #pragma once
 
 #include "animation/AnimationClip.hpp"
+#include "animation/BoneMask.hpp"
 #include "animation/Molang.hpp"
 #include "animation/SkeletalModel.hpp"
 
@@ -67,7 +68,13 @@ class Animator final {
     // time (see AnimationClip::localTime). `weight` scales its contribution;
     // additive layers stack, so a walk clip at weight 1 plus a look override at
     // weight 1 compose the way Bedrock layered animations do.
-    void addLayer(const AnimationClip& clip, float localTime, float weight = 1.0F);
+    //
+    // `mask`, when non-null, restricts this layer to the bones it selects: bones
+    // outside the mask are left untouched by this layer (Bedrock avatar-mask /
+    // upper-vs-lower-body separation). The pointer must outlive `evaluate()`; a
+    // null mask keeps the whole-skeleton path byte-for-byte as before.
+    void addLayer(const AnimationClip& clip, float localTime, float weight = 1.0F,
+                  const BoneMask* mask = nullptr);
 
     // Convenience for the common single-clip case: sets anim_time and adds it.
     void playSingle(const AnimationClip& clip, float elapsedSeconds, float weight = 1.0F);
@@ -80,6 +87,7 @@ class Animator final {
         const AnimationClip* clip = nullptr;
         float localTime = 0.0F;
         float weight = 1.0F;
+        const BoneMask* mask = nullptr; // null = whole skeleton
     };
 
     const SkeletalModel* model_ = nullptr;
