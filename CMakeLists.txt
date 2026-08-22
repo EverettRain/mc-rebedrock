@@ -322,6 +322,7 @@ add_executable(mc_rebedrock
     src/ui/BitmapFontMetrics.cpp
     src/ui/Language.cpp
     src/ui/TextFont.cpp
+    src/ui/TextWrap.cpp
     src/ui/ChatHistory.cpp
     src/ui/PageStack.cpp
     src/world/VoxelRaycast.cpp
@@ -753,6 +754,13 @@ if(BUILD_TESTING)
     )
     target_include_directories(mc_rebedrock_chat_history_test PRIVATE src)
     add_test(NAME chat_history COMMAND mc_rebedrock_chat_history_test)
+
+    add_executable(mc_rebedrock_text_wrap_test
+        tests/text_wrap_test.cpp
+        src/ui/TextWrap.cpp
+    )
+    target_include_directories(mc_rebedrock_text_wrap_test PRIVATE src)
+    add_test(NAME text_wrap COMMAND mc_rebedrock_text_wrap_test)
 
     add_executable(mc_rebedrock_command_suggestions_test
         tests/command_suggestions_test.cpp

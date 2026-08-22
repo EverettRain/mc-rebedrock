@@ -34,6 +34,7 @@
 #include "ui/MenuSystem.hpp"
 #include "ui/PageStack.hpp"
 #include "ui/TextFont.hpp"
+#include "ui/TextWrap.hpp"
 #include "ui/UiFrameData.hpp"
 #include "world/ChunkStreamer.hpp"
 #include "world/DayNightCycle.hpp"
@@ -1681,6 +1682,16 @@ class HudRenderer final {
         const float scale = layout.scale();
         float messageY = chatOpen ? layout.chatInput().y - 12.0F * scale
                                   : static_cast<float>(swapchainExtent.height) - 28.0F * scale;
+        // Vanilla ChatHud wraps every message to a fixed 320 unscaled-GUI-pixel
+        // width (the default chat width) and stores one ChatHudLine per wrapped
+        // row. rebedrock keeps the store line-oriented per logical line and wraps
+        // to width here at draw time, so the wrap reflows for free when the GUI
+        // scale or window width changes. Measurement is in unscaled GUI pixels
+        // (scale 1) to match that width; the scale is applied only when drawing.
+        constexpr float kChatWidth = 320.0F;
+        const auto measure = [this](std::string_view piece) {
+            return textFont.textWidth(piece, 1.0F);
+        };
         const auto messages = chatHistory.messages();
         for (auto message = messages.rbegin(); message != messages.rend(); ++message) {
             if (!chatOpen && uiTimeSeconds >= message->createdAt + 5.0) {
@@ -1689,15 +1700,25 @@ class HudRenderer final {
             if (messageY < 2.0F * scale) {
                 break;
             }
-            drawHudQuad(commandBuffer,
-                        {2.0F * scale, messageY, hudTextWidth(message->text, scale) + 4.0F * scale,
-                         11.0F * scale},
-                        {0.0F, 0.0F, 0.0F, 0.55F});
-            drawHudText(commandBuffer, message->text, 4.0F * scale, messageY + scale, scale,
-                        message->successful ? glm::vec4{1.0F, 1.0F, 1.0F, 1.0F}
-                                            : glm::vec4{1.0F, 0.35F, 0.35F, 1.0F},
-                        false);
-            messageY -= 11.0F * scale;
+            const glm::vec4 color = message->successful
+                                        ? glm::vec4{1.0F, 1.0F, 1.0F, 1.0F}
+                                        : glm::vec4{1.0F, 0.35F, 0.35F, 1.0F};
+            // Wrapped lines read top-to-bottom, so draw them bottom-up: the last
+            // visual line sits nearest the input and earlier lines stack above.
+            const std::vector<std::string> lines =
+                ui::wrapText(message->text, kChatWidth, measure);
+            for (auto line = lines.rbegin(); line != lines.rend(); ++line) {
+                if (messageY < 2.0F * scale) {
+                    break;
+                }
+                drawHudQuad(commandBuffer,
+                            {2.0F * scale, messageY, hudTextWidth(*line, scale) + 4.0F * scale,
+                             11.0F * scale},
+                            {0.0F, 0.0F, 0.0F, 0.55F});
+                drawHudText(commandBuffer, *line, 4.0F * scale, messageY + scale, scale, color,
+                            false);
+                messageY -= 11.0F * scale;
+            }
         }
         if (!chatOpen) {
             return;
