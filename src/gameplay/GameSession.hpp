@@ -501,6 +501,50 @@ class GameSession final {
     };
     CrossDimLoadRouting resolvePendingCrossDimLoads();
 
+    // DIM-5: dimension transfer -----------------------------------------------
+    //
+    // The result of trying to move a creature to another dimension.
+    enum class TransferResult : std::uint8_t {
+        Moved,          // detached from the source, re-created in the target
+        QueuedAwaitingChunk,  // target chunk not loaded: queued + async requested
+        NoTargetWorld,  // the target dimension has no world bound
+        SourceMissing,  // no such creature in the source dimension
+    };
+
+    // Moves a creature from one dimension's Level to another's, mirroring JE
+    // Entity.changeDimension: the creature is detached from the source (no death,
+    // no loot), its X/Z scaled by the dimensions' coordinateScale ratio (DIM-0),
+    // and re-created in the target Level preserving its state and RNG stream. If
+    // the destination chunk is not loaded the transfer is *queued* and an async
+    // load request recorded — never a synchronous generate in the tick
+    // ([[lowframe-chunk-unload-io]]). Returns what happened.
+    TransferResult transferEntity(std::uint64_t entityId, world::DimensionId from,
+                                  world::DimensionId to);
+
+    // A transfer waiting on its destination chunk to stream in. Held here (not
+    // fabricated) until the streamer delivers the chunk; drainQueuedTransfers
+    // retries them.
+    struct QueuedTransfer final {
+        SimpleEntity entity;              // the detached creature, state intact
+        world::DimensionId to = world::DimensionId::Overworld;
+        world::ChunkPosition destinationChunk{};
+    };
+    [[nodiscard]] const std::vector<QueuedTransfer>& queuedTransfers() const {
+        return queuedTransfers_;
+    }
+    // Retries every queued transfer whose destination chunk is now loaded, moving
+    // those creatures into their target Level. Returns how many landed. Ones still
+    // awaiting their chunk stay queued. Never loads/generates a chunk itself.
+    std::size_t drainQueuedTransfers();
+
+    // Moves the player to another dimension: repoints primaryDimension_, hands the
+    // hasPlayer flag from the old Level to the new one, and returns the scaled
+    // landing position for the runtime to re-anchor the camera/streaming at (the
+    // render/stream re-anchor itself lives in GameRuntime, mirroring respawn). The
+    // player's actual world binding is GameRuntime's to move; this owns the
+    // authoritative dimension identity and the scaled coordinate.
+    glm::vec3 transferPlayer(world::DimensionId to);
+
     // The last cross-dimension tick pass's per-dimension reports, indexed by
     // DimensionId. Metering for the "empty dimension is free" assertions.
     [[nodiscard]] const std::array<LevelTickReport, world::kDimensionCount>&
@@ -637,6 +681,8 @@ class GameSession final {
     std::vector<PendingCrossDimLoad> pendingCrossDimLoads_;
     // DIM-3: the world seed every dimension derives its terrain seed from.
     std::uint64_t worldSeed_ = 0U;
+    // DIM-5: transfers waiting on their destination chunk to stream in.
+    std::vector<QueuedTransfer> queuedTransfers_;
 
     // Pins the fixed-time dimensions' clocks (Nether/End: DimensionType.fixedTime)
     // to their fixed value and pauses them, so ClockManager::tick never advances

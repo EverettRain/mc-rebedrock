@@ -360,6 +360,14 @@ class EntitySystem final {
     // path restores them when the chunk streams back in. The caller must hold
     // the world write section (no tick is running).
     [[nodiscard]] std::vector<SimpleEntity> removeInChunk(int chunkX, int chunkZ);
+
+    // DIM-5: silently removes one creature by id and returns its full state, or
+    // nullopt if the id is unknown. Unlike kill(), no death, loot or sound fires —
+    // this is the extraction half of a cross-dimension transfer (the creature is
+    // about to be re-created in another Level with the same state), the
+    // single-entity analogue of removeInChunk.
+    [[nodiscard]] std::optional<SimpleEntity> detach(std::uint64_t entityId);
+
     [[nodiscard]] const std::vector<SimpleEntity>& entities() const { return entities_; }
     // The creature with the given stable id, or null once it has despawned.
     // Stable across vector compactions, so commands and brains can hold an id

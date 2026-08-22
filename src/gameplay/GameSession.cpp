@@ -1,6 +1,7 @@
 #include "gameplay/GameSession.hpp"
 
 #include "gameplay/BlockEntityTicker.hpp"
+#include "gameplay/DimensionTransfer.hpp"
 #include "gameplay/GameplayMutationSink.hpp"
 
 #include "world/DayNightCycle.hpp"
@@ -297,6 +298,88 @@ GameSession::CrossDimLoadRouting GameSession::resolvePendingCrossDimLoads() {
     // considered handed off.
     pendingCrossDimLoads_ = std::move(deferred);
     return routing;
+}
+
+namespace {
+// Re-creates a detached creature in a target Level's entity system at `position`,
+// preserving the state and RNG stream a save round-trip preserves (velocity,
+// health, anger, age, rng, fire, effects, love). Returns the new stable id.
+std::uint64_t recreateInLevel(Level& target, const SimpleEntity& entity, glm::vec3 position) {
+    return target.entities.restore(
+        position, *entity.type, entity.yaw, entity.velocity, entity.damage.health,
+        entity.angerTicks, entity.ageTicks, entity.rngState, entity.fireTicks,
+        entity.effects, entity.age, entity.loveTicks);
+}
+}  // namespace
+
+GameSession::TransferResult GameSession::transferEntity(std::uint64_t entityId,
+                                                        world::DimensionId from,
+                                                        world::DimensionId to) {
+    // Detach from the source (no death/loot) — the extraction half of the move.
+    auto detached = level(from).entities.detach(entityId);
+    if (!detached.has_value()) {
+        return TransferResult::SourceMissing;
+    }
+    // Scale the horizontal coordinate by the dimensions' scale ratio (DIM-0),
+    // never a hardcoded 8.
+    const glm::vec3 scaled =
+        scaleCoordinatesBetweenDimensions(detached->position, from, to);
+    Level& targetLevel = level(to);
+    const PortalDestination destination =
+        resolvePortalDestination(targetLevel.hasWorld() ? &targetLevel.world() : nullptr, scaled);
+    switch (destination.status) {
+    case PortalDestinationStatus::NoWorld:
+        // Put the creature back where it was — a transfer to an unbound dimension
+        // is a no-op, not a loss.
+        static_cast<void>(recreateInLevel(level(from), *detached, detached->position));
+        return TransferResult::NoTargetWorld;
+    case PortalDestinationStatus::AwaitingChunk:
+        // The destination chunk is not loaded. Queue the transfer with the
+        // creature's state intact — its position already scaled to the target —
+        // and record an async load request; never a synchronous generate in the
+        // tick. drainQueuedTransfers lands it once the chunk is resident.
+        detached->position = destination.position;  // already scaled
+        queuedTransfers_.push_back({std::move(*detached), to, destination.chunk});
+        pendingCrossDimLoads_.push_back({to, destination.chunk});
+        return TransferResult::QueuedAwaitingChunk;
+    case PortalDestinationStatus::Ready:
+        static_cast<void>(recreateInLevel(targetLevel, *detached, destination.position));
+        return TransferResult::Moved;
+    }
+    return TransferResult::SourceMissing;
+}
+
+std::size_t GameSession::drainQueuedTransfers() {
+    std::size_t landed = 0;
+    std::vector<QueuedTransfer> stillWaiting;
+    for (auto& queued : queuedTransfers_) {
+        Level& targetLevel = level(queued.to);
+        // Only land when the destination chunk is now resident; never load it here.
+        if (targetLevel.hasWorld() && targetLevel.world().hasChunk(queued.destinationChunk)) {
+            const glm::vec3 position = queued.entity.position;  // already scaled at queue time
+            static_cast<void>(recreateInLevel(targetLevel, queued.entity, position));
+            ++landed;
+        } else {
+            stillWaiting.push_back(std::move(queued));
+        }
+    }
+    queuedTransfers_ = std::move(stillWaiting);
+    return landed;
+}
+
+glm::vec3 GameSession::transferPlayer(world::DimensionId to) {
+    const world::DimensionId from = primaryDimension_;
+    const glm::vec3 scaled =
+        scaleCoordinatesBetweenDimensions(primaryPlayer().controller.position(), from, to);
+    // Hand the player flag from the old Level to the new one, and repoint the
+    // authoritative primary dimension. The world binding + camera/stream re-anchor
+    // is GameRuntime's to perform (mirroring respawn); this owns the dimension
+    // identity and the scaled coordinate.
+    level(from).hasPlayer = false;
+    level(to).hasPlayer = true;
+    level(to).id = to;
+    primaryDimension_ = to;
+    return scaled;
 }
 
 void GameSession::publishSnapshots() {

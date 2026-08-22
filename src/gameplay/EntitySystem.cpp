@@ -772,6 +772,21 @@ std::vector<SimpleEntity> EntitySystem::removeInChunk(int chunkX, int chunkZ) {
     return removed;
 }
 
+std::optional<SimpleEntity> EntitySystem::detach(std::uint64_t entityId) {
+    const auto found = idToIndex_.find(entityId);
+    if (found == idToIndex_.end()) {
+        return std::nullopt;
+    }
+    const std::size_t index = found->second;
+    SimpleEntity taken = std::move(entities_[index]);
+    // Swap-and-pop, matching removeInChunk; rebuildSpatialIndex reconciles the id
+    // and section indexes afterwards.
+    entities_[index] = std::move(entities_.back());
+    entities_.pop_back();
+    rebuildSpatialIndex();
+    return taken;
+}
+
 void EntitySystem::rebuildSpatialIndex() {
     idToIndex_.clear();
     sections_.clear();

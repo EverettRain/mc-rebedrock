@@ -1010,6 +1010,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME dimension_save COMMAND mc_rebedrock_dimension_save_test)
 
+    add_executable(mc_rebedrock_dimension_transfer_test
+        tests/dimension_transfer_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_dimension_transfer_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_dimension_transfer_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME dimension_transfer COMMAND mc_rebedrock_dimension_transfer_test)
+
     # D7: the dedicated server executable — links the runtime, not render/vulkan.
     add_executable(mc_rebedrock_dedicated_server
         src/server/dedicated_server_main.cpp
