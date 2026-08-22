@@ -736,6 +736,13 @@ if(BUILD_TESTING)
     )
     add_test(NAME command_help COMMAND mc_rebedrock_command_help_test)
 
+    add_executable(mc_rebedrock_chat_history_test
+        tests/chat_history_test.cpp
+        src/ui/ChatHistory.cpp
+    )
+    target_include_directories(mc_rebedrock_chat_history_test PRIVATE src)
+    add_test(NAME chat_history COMMAND mc_rebedrock_chat_history_test)
+
     add_executable(mc_rebedrock_command_suggestions_test
         tests/command_suggestions_test.cpp
     )
