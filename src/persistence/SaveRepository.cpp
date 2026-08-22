@@ -39,7 +39,13 @@ constexpr std::array<std::uint8_t, 8> kMagic{'M', 'C', 'R', 'B', 'S', 'A', 'V', 
 // Format 17 stops writing sections at fixed offsets. Everything is a
 // self-describing block now, the reader dispatches on the tag, and adding a
 // state owner needs neither a format bump nor a positional read.
-constexpr std::uint32_t kFormatVersion = 18U;
+// Format 19 (DIM-4) adds per-dimension region subdirectories, mirroring vanilla's
+// 1.16.1 layout: the Overworld stays at `<world>/region` (byte-identical to
+// format 18, so an old flat world is read back unchanged as the Overworld), while
+// the Nether writes to `<world>/DIM-1/region` and the End to `<world>/DIM1/region`.
+// The bump only advertises the capability — an 18 (or older) world has no
+// dimension subfolders and loads exactly as before (only the Overworld present).
+constexpr std::uint32_t kFormatVersion = 19U;
 constexpr std::uint32_t kFirstOwnerDrivenFormatVersion = 17U;
 constexpr std::uint32_t kOldestSupportedFormatVersion = 1U;
 constexpr std::uint64_t kMaximumEdits = 16U * 1024U * 1024U;
@@ -1474,6 +1480,37 @@ struct RegionData final {
     return "r." + std::to_string(regionX) + "." + std::to_string(regionZ) + ".cache";
 }
 
+// DIM-4: the per-dimension subdirectory inside a world folder, mirroring vanilla
+// 1.16.1's layout so the JC import (JC3) finds each dimension where a vanilla
+// world keeps it — the Overworld at the world root (no subfolder, so an existing
+// flat world is unchanged), the Nether under DIM-1 and the End under DIM1. An
+// empty return means "the world root itself" (Overworld). Returning the vanilla
+// folder names here, not a rebedrock-specific spelling, is what keeps the compat
+// layer free of a new deviation.
+[[nodiscard]] std::filesystem::path dimensionSubdirectory(world::DimensionId dimension) {
+    switch (dimension) {
+    case world::DimensionId::Overworld:
+        return {};  // the world root itself
+    case world::DimensionId::Nether:
+        return "DIM-1";
+    case world::DimensionId::End:
+        return "DIM1";
+    case world::DimensionId::Count:
+        break;
+    }
+    return {};
+}
+
+// The region directory for a dimension: the world folder, plus the dimension
+// subdirectory (none for the Overworld), plus "region". Overworld resolves to the
+// historical `<world>/region`, so old saves are byte-compatible.
+[[nodiscard]] std::filesystem::path regionDirectoryFor(const std::filesystem::path& worldDirectory,
+                                                       world::DimensionId dimension) {
+    const auto subdirectory = dimensionSubdirectory(dimension);
+    return subdirectory.empty() ? worldDirectory / "region"
+                                : worldDirectory / subdirectory / "region";
+}
+
 // "r.<rx>.<rz>.cache" back into its coordinates; anything that does not match
 // the shape is not ours to touch (a foreign file in the region directory).
 [[nodiscard]] std::optional<std::pair<std::int32_t, std::int32_t>> parseRegionFileName(
@@ -2347,9 +2384,10 @@ void SaveRepository::save(
 
 void SaveRepository::saveChunk(const std::string& identifier, int chunkX, int chunkZ,
                                std::vector<world::PersistentBlockEdit> edits,
-                               std::vector<PersistentEntity> entities) const {
+                               std::vector<PersistentEntity> entities,
+                               world::DimensionId dimension) const {
     if (!safeIdentifier(identifier)) throw std::invalid_argument("Unsafe save identifier");
-    const auto path = root_ / identifier / "region" /
+    const auto path = regionDirectoryFor(root_ / identifier, dimension) /
         regionFileName(regionOf(chunkX), regionOf(chunkZ));
     RegionData region;
     // Merge with whatever the region already holds: a chunk unloads while its
@@ -2391,11 +2429,13 @@ void SaveRepository::saveChunk(const std::string& identifier, int chunkX, int ch
 }
 
 void SaveRepository::saveChunks(const std::string& identifier,
-                                std::vector<ChunkPersistRecord> records) const {
+                                std::vector<ChunkPersistRecord> records,
+                                world::DimensionId dimension) const {
     if (!safeIdentifier(identifier)) throw std::invalid_argument("Unsafe save identifier");
     if (records.empty()) {
         return;
     }
+    const auto regionDirectory = regionDirectoryFor(root_ / identifier, dimension);
     // Group the burst by region file so each region is read-modified-written
     // once, no matter how many chunks in the burst fall inside it.
     std::map<std::pair<std::int32_t, std::int32_t>, std::vector<std::size_t>> byRegion;
@@ -2404,7 +2444,7 @@ void SaveRepository::saveChunks(const std::string& identifier,
             .push_back(index);
     }
     for (const auto& [regionKey, indices] : byRegion) {
-        const auto path = root_ / identifier / "region" /
+        const auto path = regionDirectory /
             regionFileName(regionKey.first, regionKey.second);
         RegionData region;
         if (std::filesystem::is_regular_file(path)) {
@@ -2446,11 +2486,11 @@ void SaveRepository::saveChunks(const std::string& identifier,
     }
 }
 
-std::vector<PersistentEntity> SaveRepository::loadChunkEntities(const std::string& identifier,
-                                                                int chunkX, int chunkZ) const {
+std::vector<PersistentEntity> SaveRepository::loadChunkEntities(
+    const std::string& identifier, int chunkX, int chunkZ, world::DimensionId dimension) const {
     std::vector<PersistentEntity> entities;
     if (!safeIdentifier(identifier)) throw std::invalid_argument("Unsafe save identifier");
-    const auto path = root_ / identifier / "region" /
+    const auto path = regionDirectoryFor(root_ / identifier, dimension) /
         regionFileName(regionOf(chunkX), regionOf(chunkZ));
     if (!std::filesystem::is_regular_file(path)) {
         return entities;
@@ -2482,6 +2522,11 @@ std::vector<PersistentEntity> SaveRepository::loadChunkEntities(const std::strin
         }
     }
     return entities;
+}
+
+std::filesystem::path SaveRepository::dimensionRegionDirectory(
+    const std::string& identifier, world::DimensionId dimension) const {
+    return regionDirectoryFor(root_ / identifier, dimension);
 }
 
 void SaveRepository::rename(const std::string& identifier, std::string displayName) const {

@@ -7,6 +7,7 @@
 #include "gameplay/Inventory.hpp"
 #include "gameplay/PlayerVitals.hpp"
 #include "gameplay/WeatherSystem.hpp"
+#include "world/Dimension.hpp"
 #include "world/PersistentBlockEdit.hpp"
 #include "world/WorldClock.hpp"
 
@@ -184,17 +185,33 @@ class SaveRepository final {
     // path calls loadChunkEntities when the chunk streams back in. saveChunk
     // merges with whatever the region already holds; empty data removes the
     // chunk's record (and the file when the region empties).
+    // `dimension` selects the per-dimension region subdirectory (DIM-4): the
+    // Overworld writes to `<world>/region/` (unchanged, so old flat worlds are
+    // byte-compatible), the Nether to `<world>/DIM-1/region/` and the End to
+    // `<world>/DIM1/region/` — the vanilla 1.16.1 layout JC3 import targets, so
+    // the compat layer adds no new deviation. Defaulted to Overworld so every
+    // existing single-dimension caller keeps its behaviour.
     void saveChunk(const std::string& identifier, int chunkX, int chunkZ,
                    std::vector<world::PersistentBlockEdit> edits,
-                   std::vector<PersistentEntity> entities) const;
+                   std::vector<PersistentEntity> entities,
+                   world::DimensionId dimension = world::DimensionId::Overworld) const;
     // Batched form of saveChunk: groups the records by region file and does one
     // read-modify-write per region for the whole burst. Used off the render
     // thread by the background persistence worker so a chunk-unload storm no
     // longer pays one synchronous region rewrite per chunk on the critical path.
     void saveChunks(const std::string& identifier,
-                    std::vector<ChunkPersistRecord> records) const;
+                    std::vector<ChunkPersistRecord> records,
+                    world::DimensionId dimension = world::DimensionId::Overworld) const;
     [[nodiscard]] std::vector<PersistentEntity> loadChunkEntities(
-        const std::string& identifier, int chunkX, int chunkZ) const;
+        const std::string& identifier, int chunkX, int chunkZ,
+        world::DimensionId dimension = world::DimensionId::Overworld) const;
+
+    // The region directory for one dimension of a world, mirroring vanilla's
+    // 1.16.1 layout (Overworld at the world root, the Nether under DIM-1, the End
+    // under DIM1). Exposed so tests and the JC compat layer can cross-check the
+    // on-disk path against what a vanilla import expects.
+    [[nodiscard]] std::filesystem::path dimensionRegionDirectory(
+        const std::string& identifier, world::DimensionId dimension) const;
 
     // Rename keeps the folder/identifier stable and rewrites only the display
     // name stored in level.properties, so an edited world keeps its identity.
