@@ -14,8 +14,23 @@ namespace mc::world {
 // mining, use cooldowns, chat and the cursor along with the sun.
 enum class ClockId : std::uint8_t {
     Overworld,
+    // The Nether and the End each run their own clock too (26.1
+    // WorldClocks.OVERWORLD / THE_END plus the Nether). Their DimensionType
+    // carries a fixed time, so DIM2's tick will hold these clocks at that value
+    // instead of advancing the day — the enum only names them so a paused sun in
+    // one dimension can never freeze another.
+    Nether,
+    End,
     Count,
 };
+
+// One clock per dimension: the clock ids line up index-for-index with
+// DimensionId (see world/Dimension.hpp), so `level(dim)` and its clock share the
+// same dense index. This equality is what lets a per-dimension tick reach its
+// clock by a subscript rather than a lookup.
+static_assert(static_cast<std::uint8_t>(ClockId::Overworld) == 0U);
+static_assert(static_cast<std::uint8_t>(ClockId::Nether) == 1U);
+static_assert(static_cast<std::uint8_t>(ClockId::End) == 2U);
 
 inline constexpr std::size_t kClockCount = static_cast<std::size_t>(ClockId::Count);
 

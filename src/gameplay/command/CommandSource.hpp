@@ -3,6 +3,7 @@
 #include "gameplay/CommandResult.hpp"
 #include "gameplay/ServerPlayer.hpp"  // PlayerId / kPrimaryPlayerId (the source's player identity)
 #include "gameplay/command/ArgumentType.hpp"
+#include "world/Dimension.hpp"  // DimensionId — the real dimension identity (DIM0)
 
 #include <glm/vec3.hpp>
 
@@ -10,6 +11,13 @@
 #include <functional>
 
 namespace mc::gameplay::command {
+
+// The dimension a command source runs in. This is now the real dense id from the
+// DIM0 registry — the earlier overworld-only placeholder proxy is gone. A source
+// still defaults to the Overworld (single-player has only it loaded so far), but
+// `execute in <dimension>` (CMD5) and cross-dimension commands can carry the
+// Nether/End through unchanged.
+using Dimension = world::DimensionId;
 
 // The op level a command requires, mirroring 1.16.1's Commands.LEVEL_* ladder.
 // A command declares the level it needs (`.requires(...)`), and a source below
@@ -34,14 +42,6 @@ enum class PermissionLevel : std::uint8_t {
 [[nodiscard]] constexpr PermissionLevel maxLevel(PermissionLevel left, PermissionLevel right) {
     return static_cast<std::uint8_t>(left) >= static_cast<std::uint8_t>(right) ? left : right;
 }
-
-// Which dimension the source is in. A placeholder proxy while ReBedrock is
-// overworld-only: it exists so the source POD carries the field `execute in
-// <dimension>` (CMD5) will rebind, and so a command can read it, but a real
-// dimension registry lands with the Nether/End (W milestone 5), not here.
-enum class Dimension : std::uint8_t {
-    Overworld = 0,
-};
 
 // Where a command's feedback goes, handed the executed result. Value-carried in
 // the source so `execute as/at` (CMD5) inherits it by copy. Single-player points
