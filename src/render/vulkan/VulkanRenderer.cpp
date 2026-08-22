@@ -40,6 +40,8 @@
 #include "gameplay/WorldSimulation.hpp"
 #include "gameplay/command/CommandDispatcher.hpp"
 #include "gameplay/command/GameplayArguments.hpp"
+#include "input/GlfwInputBackend.hpp"
+#include "input/InputSystem.hpp"
 #include "gameplay/entities/CowEntity.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/PigEntity.hpp"
@@ -505,8 +507,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             static_cast<Impl*>(glfwGetWindowUserPointer(callbackWindow))
                 ->noteWindowMaximizeChanged(maximized == GLFW_TRUE);
         });
-        glfwSetKeyCallback(window, [](GLFWwindow* callbackWindow, int key, int, int action,
-                                      int modifiers) {
+        glfwSetKeyCallback(window, [](GLFWwindow* callbackWindow, int key, int, int action, int) {
             auto* renderer = static_cast<Impl*>(glfwGetWindowUserPointer(callbackWindow));
             const auto currentPage = renderer->menuSystem.pageStack.current();
             if (currentPage == ui::PageId::ConfirmDelete) {
@@ -562,18 +563,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 }
                 return;
             }
-            if (key == GLFW_KEY_F3 && action == GLFW_PRESS) {
-                renderer->debugOverlayOpen = !renderer->debugOverlayOpen;
-                return;
-            }
-            if (key == GLFW_KEY_F5 && action == GLFW_PRESS) {
-                renderer->cameraPerspective = nextPerspective(renderer->cameraPerspective);
-                return;
-            }
-            if (key == GLFW_KEY_W && action == GLFW_PRESS && !renderer->inventoryOpen &&
-                !renderer->paused) {
-                renderer->pendingForwardPressed_ = true;
-            }
+            // PX-1: F3 (debug), F5 (perspective), W (sprint double-tap edge),
+            // E (inventory), Space (jump edge), 1-9 (hotbar) and Q (drop) are no
+            // longer read here — the InputSystem level-samples them in
+            // processInput() and dispatchGameplayInputEvents() applies the edges.
+            // Only the modal Back/Escape page-stack navigation (which must run
+            // while a screen is up, where processInput's gameplay poll is gated
+            // off) stays in the key callback; that is PX-4 menu territory.
             if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
                 // Modal gameplay screens consume Back before the page stack.
                 // Inventory is an overlay on PageId::Game, so letting the page
@@ -614,25 +610,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     renderer->setPaused(true);
                 }
                 return;
-            }
-            if (key == GLFW_KEY_E && action == GLFW_PRESS && !renderer->paused) {
-                renderer->setInventoryOpen(!renderer->inventoryOpen);
-            }
-            if (key == GLFW_KEY_SPACE && action == GLFW_PRESS) {
-                if (!renderer->inventoryOpen && !renderer->paused) {
-                    renderer->pendingJumpPressed_ = true;
-                }
-            }
-            if (!renderer->paused && action == GLFW_PRESS && key >= GLFW_KEY_1 &&
-                key <= GLFW_KEY_9) {
-                gameplay::SwapSlot swap;
-                swap.index = static_cast<std::size_t>(key - GLFW_KEY_1);
-                renderer->runtime.enqueueClientCommand(std::move(swap));
-            }
-            if (key == GLFW_KEY_Q && action == GLFW_PRESS && !renderer->inventoryOpen &&
-                !renderer->paused) {
-                renderer->dropRequested = true;
-                renderer->dropWholeStack = (modifiers & GLFW_MOD_CONTROL) != 0;
             }
         });
         glfwSetCharCallback(window, [](GLFWwindow* callbackWindow, unsigned int codepoint) {
@@ -2405,39 +2382,85 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // derives the gated fields (flightAllowed/sprintAllowed) itself. This is
         // the same once-a-frame cadence commitInput() had; the client no longer
         // writes gameSession.input() (it has no session across a real connection).
-        if (!worldReady || inventoryOpen || paused || chatOpen) {
+        // PX-1: sample the window into a device-agnostic frame, then let the
+        // InputSystem derive the whole movement intent (WASD/space/shift/ctrl,
+        // gamepad left stick, jump/forward edges) from the rebindable table. When
+        // a screen is up we still poll (so edge history stays consistent) but with
+        // gameplay actions gated, which yields a zeroed intent for the server.
+        input::RawInputFrame frame;
+        input::sampleGlfwWindow(window, camera.direction(), frame);
+        const bool gameplayEnabled = worldReady && !inventoryOpen && !paused && !chatOpen;
+        const input::MovementIntent intent =
+            inputSystem_.poll(frame, inputEvents_, gameplayEnabled);
+        dispatchGameplayInputEvents(gameplayEnabled);
+        if (!gameplayEnabled) {
             // A screen is up: send a zeroed intent so the server stops the player.
             runtime.sendClientMovement(gameplay::MovementInput{});
             clearPendingInputEdges();
             return;
         }
         gameplay::MovementInput movement;
-        movement.forward = (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS ? 1.0F : 0.0F) -
-                           (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS ? 1.0F : 0.0F);
-        movement.strafe = (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ? 1.0F : 0.0F) -
-                          (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ? 1.0F : 0.0F);
-        movement.lookDirection = camera.direction();
-        // The GLFW key callback is the sole producer of the jump edge (below);
-        // here only the held state is frame-sampled, so a single physical press
-        // toggles creative flight once rather than on two adjacent ticks.
-        movement.jumpHeld = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
-        movement.descendHeld = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
-        movement.sneakHeld = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
-        movement.sprintHeld = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS;
+        movement.forward = intent.forward;
+        movement.strafe = intent.strafe;
+        movement.lookDirection = intent.lookDirection;
+        movement.jumpHeld = intent.jumpHeld;
+        movement.descendHeld = intent.descendHeld;
+        movement.sneakHeld = intent.sneakHeld;
+        movement.sprintHeld = intent.sprintHeld;
         if (stressFrames > 0U) {
             pendingForwardPressed_ = true;
         }
-        // The two edges the key callback accumulated since the last send. The
-        // server ORs the jump edge across the inputs between two ticks; the
-        // sprint double-tap edge drives its own window server-side.
-        movement.jumpPressed = pendingJumpPressed_;
-        movement.forwardPressed = pendingForwardPressed_;
+        // The jump edge toggles creative flight; the forward edge feeds the sprint
+        // double-tap window. The InputSystem derives both from the level bitmap;
+        // the key callback's pending flags are ORed in so a press that arrived as
+        // a GLFW event between polls (and the stress harness above) is not lost.
+        movement.jumpPressed = intent.jumpPressed || pendingJumpPressed_;
+        movement.forwardPressed = intent.forwardPressed || pendingForwardPressed_;
         // Bedrock-style auto-jump is a client option; the physics decides when the
         // obstacle is actually jumpable. flightAllowed/sprintAllowed are NOT sent —
         // the server derives them from the authoritative game mode and food level.
         movement.autoJump = options.autoJump;
         runtime.sendClientMovement(movement);
         clearPendingInputEdges();
+    }
+
+    // PX-1: translate the InputSystem's discrete UI/gameplay action edges into the
+    // renderer's existing side effects (inventory toggle, hotbar swap, drop,
+    // debug/perspective). Replaces the per-key GLFW_PRESS branches the key
+    // callback used to carry for these gameplay actions.
+    void dispatchGameplayInputEvents(bool gameplayEnabled) {
+        if (!gameplayEnabled) {
+            return;
+        }
+        for (std::size_t i = 0; i < inputEvents_.size(); ++i) {
+            const auto& event = inputEvents_[i];
+            if (event.phase != input::EventPhase::Pressed) {
+                continue;
+            }
+            switch (event.action) {
+                case input::InputAction::Inventory:
+                    setInventoryOpen(!inventoryOpen);
+                    break;
+                case input::InputAction::DropItem:
+                    dropRequested = true;
+                    dropWholeStack =
+                        glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS;
+                    break;
+                case input::InputAction::Debug:
+                    debugOverlayOpen = !debugOverlayOpen;
+                    break;
+                case input::InputAction::Perspective:
+                    cameraPerspective = nextPerspective(cameraPerspective);
+                    break;
+                default:
+                    if (input::isHotbarAction(event.action)) {
+                        gameplay::SwapSlot swap;
+                        swap.index = input::hotbarSlot(event.action);
+                        runtime.enqueueClientCommand(std::move(swap));
+                    }
+                    break;
+            }
+        }
     }
 
     // Clears the client-side input edges, consumed once they have been folded into
@@ -6334,6 +6357,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // session) cannot touch — now the edge is the client's and travels the channel.
     bool pendingJumpPressed_ = false;
     bool pendingForwardPressed_ = false;
+    // PX-1: the single input collection point. Holds the rebindable action ->
+    // binding table and the previous-frame level bitmap for edge detection, so
+    // processInput() no longer reads raw GLFW keys and the key callback compares
+    // against bindings instead of hardcoded GLFW_KEY_* constants.
+    input::InputSystem inputSystem_;
+    input::InputSystem::EventQueue inputEvents_;
     bool dropRequested = false;
     bool dropWholeStack = false;
     bool chatOpen = false;

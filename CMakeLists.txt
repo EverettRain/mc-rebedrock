@@ -235,6 +235,7 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/MobSpawnSettings.cpp
     src/gameplay/PlayerController.cpp
     src/gameplay/PlayerVitals.cpp
+    src/input/InputSystem.cpp
     src/gameplay/StatusEffect.cpp
     src/gameplay/WeatherSystem.cpp
     src/gameplay/WorldSimulation.cpp
@@ -705,6 +706,16 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME command_source COMMAND mc_rebedrock_command_source_test)
+
+    add_executable(mc_rebedrock_input_system_test
+        tests/input_system_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_input_system_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_input_system_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME input_system COMMAND mc_rebedrock_input_system_test)
 
     add_executable(mc_rebedrock_dimension_test
         tests/dimension_test.cpp
