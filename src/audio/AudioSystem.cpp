@@ -224,6 +224,10 @@ class AudioSystem::Impl final {
             }
             return;
         }
+        // PX-6 Bug3: capture the played event's accessibility subtitle so the
+        // renderer can show it when subtitles are on. Empty for events without a
+        // caption (those simply do not show a subtitle).
+        recordSubtitle(event);
         play(*entry, position, volume * entry->volume, pitch * entry->pitch);
     }
 
@@ -231,8 +235,22 @@ class AudioSystem::Impl final {
                    float pitch) {
         const assets::SoundEntry* entry = registry.pick(event, randomState);
         if (entry != nullptr) {
+            recordSubtitle(event);
             play(*entry, position, volume * entry->volume, pitch * entry->pitch);
         }
+    }
+
+    // PX-6 Bug3: remember the most recently played event's subtitle (empty if the
+    // event has none), for the renderer's subtitle overlay to read.
+    void recordSubtitle(std::string_view event) {
+        const assets::SoundEvent* resolved = registry.find(event);
+        lastSubtitle = resolved != nullptr ? resolved->subtitle : std::string{};
+    }
+    void recordSubtitle(assets::SoundEventId event) {
+        const auto& events = registry.events();
+        lastSubtitle = static_cast<std::size_t>(event) < events.size()
+                           ? events[static_cast<std::size_t>(event)].subtitle
+                           : std::string{};
     }
 
     // LivingEntity#getSoundPitch: (nextFloat() - nextFloat()) * 0.2 + 1.0, the
@@ -400,6 +418,8 @@ class AudioSystem::Impl final {
 
     const assets::ResourceProvider* provider = nullptr;
     assets::SoundRegistry registry;
+    // PX-6 Bug3: the subtitle of the most recently played event (empty if none).
+    std::string lastSubtitle;
     float masterVolume = 1.0F;
     ma_engine engine{};
     bool initialized = false;
@@ -432,6 +452,8 @@ AudioSystem::AudioSystem(const assets::ResourceProvider& provider, float masterV
 AudioSystem::~AudioSystem() = default;
 
 bool AudioSystem::available() const { return implementation->initialized; }
+
+std::string_view AudioSystem::lastSubtitle() const { return implementation->lastSubtitle; }
 
 void AudioSystem::setMasterVolume(float volume) { implementation->setMasterVolume(volume); }
 

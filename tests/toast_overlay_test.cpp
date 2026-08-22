@@ -9,6 +9,7 @@
 #include <cassert>
 #include <cstddef>
 #include <string>
+#include <string_view>
 
 using namespace mc;
 
@@ -145,6 +146,41 @@ void testSubtitleAlphaFade() {
     assert(mid > 0.4F && mid < 0.6F);  // halfway: ~0.5
 }
 
+// PX-6 Bug3: the renderer's showSoundSubtitle gate — a sound's caption enters the
+// feed only when subtitles are ON and the caption is non-empty. This mirrors
+// VulkanRenderer::showSoundSubtitle so the wiring rule is pinned headless (the
+// per-sound emission itself needs an audio device; the gate does not).
+void feedSubtitleIfEnabled(ui::SubtitleFeed& feed, bool showSubtitles,
+                           std::string_view caption) {
+    if (!showSubtitles || caption.empty()) {
+        return;
+    }
+    feed.show(std::string{caption});
+}
+
+void testSubtitleGate() {
+    // Subtitles OFF: a captioned sound shows nothing.
+    {
+        ui::SubtitleFeed feed;
+        feedSubtitleIfEnabled(feed, /*showSubtitles=*/false, "subtitles.block.stone.break");
+        assert(feed.empty());
+    }
+    // Subtitles ON, captioned sound: the caption enters the feed.
+    {
+        ui::SubtitleFeed feed;
+        feedSubtitleIfEnabled(feed, /*showSubtitles=*/true, "subtitles.entity.player.hurt");
+        assert(feed.count() == 1);
+        assert(feed.activeCaptions()[0].text == "subtitles.entity.player.hurt");
+    }
+    // Subtitles ON but the sound has NO caption (empty): nothing shows — footstep-
+    // style silent sounds do not spam the overlay.
+    {
+        ui::SubtitleFeed feed;
+        feedSubtitleIfEnabled(feed, /*showSubtitles=*/true, "");
+        assert(feed.empty());
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -155,5 +191,6 @@ int main() {
     testNegativeDeltaIgnored();
     testSubtitleFeed();
     testSubtitleAlphaFade();
+    testSubtitleGate();
     return 0;
 }

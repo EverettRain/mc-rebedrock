@@ -6,6 +6,7 @@
 
 #include <glm/vec3.hpp>
 #include <memory>
+#include <string_view>
 
 namespace mc::audio {
 
@@ -64,6 +65,10 @@ class AudioSystem final {
     AudioSystem& operator=(AudioSystem&&) = delete;
 
     [[nodiscard]] bool available() const;
+    // PX-6 Bug3: the accessibility subtitle of the most recently played sound
+    // event (empty when the event has no caption). The renderer reads this right
+    // after a play call to feed the subtitle overlay when subtitles are enabled.
+    [[nodiscard]] std::string_view lastSubtitle() const;
     void setMasterVolume(float volume);
     void updateListener(const glm::vec3& position, const glm::vec3& direction, const glm::vec3& up);
     void update();

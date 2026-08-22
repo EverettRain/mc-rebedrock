@@ -130,11 +130,66 @@ void testControlsListWindowed() {
     assert(rows <= window);
 }
 
+// PX-6 Bug1 (round 2): the visible key-bind rows must land in the MIDDLE band —
+// between the top (title) and the bottom button band — and shift by exactly one
+// row step when the scroll offset advances. This guards the "middle band
+// invisible / rows off-screen" regression at the geometry level (the draw skip
+// that hid them is a renderer concern, verified on mac).
+void testControlsRowsInMiddleBandAndScroll() {
+    // A canvas where the list scrolls (more actions than fit).
+    const float fbW = 1920.0F;
+    const float fbH = 1080.0F;
+    const int scale = 3;
+    const ui::HudLayout layout{fbW, fbH, scale};
+    const std::size_t window = ui::controlsVisibleRowCount(fbW, fbH, scale);
+    const std::size_t total = input::keyBindRows().size();
+    assert(window < total);  // this canvas genuinely scrolls
+
+    const ui::UiRect box = ui::controlsListBox(layout, fbW);
+    const ui::UiRect band = layout.bottomMenuButton(0U, 4U, 2U);
+    // Every visible row sits inside the middle band: below the box top, and its
+    // bottom stays above the bottom button band.
+    for (std::size_t i = 0; i < window; ++i) {
+        const ui::UiRect row = ui::controlsRow(i, layout, fbW);
+        assert(row.y >= box.y - 0.01F);
+        assert(row.y + row.height <= band.y + 0.01F);
+        assert(row.width > 0.0F && row.height > 0.0F);
+    }
+
+    // Scrolling by one advances the first visible action, and the row at visible
+    // index 0 keeps the SAME screen rect (the window slides over the data, the
+    // slots stay put) — while the ACTION shown there is the next one.
+    const ui::UiRect firstSlot = ui::controlsRow(0U, layout, fbW);
+    // The rect for visible slot 0 is offset-independent (it is the top slot).
+    // What changes is which action maps to it, which the page builder handles via
+    // keyBindFirstIndex: build at offset 0 and offset 1 and compare row 0's action.
+    const auto rows = input::keyBindRows();
+    ui::MenuBuildContext ctx0;
+    ctx0.keyBindFirstIndex = 0U;
+    ctx0.keyBindRowCount = window;
+    ctx0.keyBindLabelFor = [](input::InputAction a) {
+        return std::string{input::actionDisplayName(a)};
+    };
+    ui::MenuBuildContext ctx1 = ctx0;
+    ctx1.keyBindFirstIndex = 1U;
+    ui::MenuCallbacks cb;
+    const ui::Page p0 = ui::buildPage(ui::PageId::Controls, ctx0, cb,
+                                      providerFor(ui::PageId::Controls, layout, fbW, 4U, window));
+    const ui::Page p1 = ui::buildPage(ui::PageId::Controls, ctx1, cb,
+                                      providerFor(ui::PageId::Controls, layout, fbW, 4U, window));
+    // Slot 0 keeps its rect; the action label advances by one.
+    assert(p0[0].rect.y == firstSlot.y);
+    assert(p1[0].rect.y == firstSlot.y);
+    assert(p0[0].label == std::string{input::actionDisplayName(rows[0])});
+    assert(p1[0].label == std::string{input::actionDisplayName(rows[1])});
+}
+
 }  // namespace
 
 int main() {
     testEveryPageLaysOut();
     testControlsBottomBandBounded();
     testControlsListWindowed();
+    testControlsRowsInMiddleBandAndScroll();
     return 0;
 }

@@ -402,35 +402,61 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // SimulationHost: the render-side reactions the game session's tick drives.
     // submitWorldEdit and previewBlockEdit are the Impl's own methods, marked
     // override at their definitions; the remaining host methods are here.
+    // PX-6 Bug3: after each sound plays, feed its accessibility caption (if any)
+    // to the subtitle overlay when subtitles are enabled. audioSystem.lastSubtitle
+    // is the event just played; showSoundSubtitle no-ops on an empty caption or a
+    // disabled option, so sounds without a subtitle simply do not show one.
+    void emitLastSubtitle() { showSoundSubtitle(audioSystem.lastSubtitle()); }
+
     void playBlockBreak(world::Block block, glm::vec3 position) override {
         audioSystem.playBlockBreak(block, position);
+        emitLastSubtitle();
     }
-    void playItemPickup(glm::vec3 position) override { audioSystem.playItemPickup(position); }
-    void playEat(glm::vec3 position) override { audioSystem.playEat(position); }
-    void playPlayerHurt(glm::vec3 position) override { audioSystem.playPlayerHurt(position); }
+    void playItemPickup(glm::vec3 position) override {
+        audioSystem.playItemPickup(position);
+        emitLastSubtitle();
+    }
+    void playEat(glm::vec3 position) override {
+        audioSystem.playEat(position);
+        emitLastSubtitle();
+    }
+    void playPlayerHurt(glm::vec3 position) override {
+        audioSystem.playPlayerHurt(position);
+        emitLastSubtitle();
+    }
     void playPlayerFall(glm::vec3 position, bool heavy) override {
         audioSystem.playPlayerFall(position, heavy);
+        emitLastSubtitle();
     }
-    void playBurp(glm::vec3 position) override { audioSystem.playBurp(position); }
+    void playBurp(glm::vec3 position) override {
+        audioSystem.playBurp(position);
+        emitLastSubtitle();
+    }
     void playCreatureHurt(const gameplay::entities::EntityType& type, glm::vec3 position) override {
         audioSystem.playCreatureHurt(type.soundProfile(), position);
+        emitLastSubtitle();
     }
     void playCreatureDeath(const gameplay::entities::EntityType& type,
                            glm::vec3 position) override {
         audioSystem.playCreatureDeath(type.soundProfile(), position);
+        emitLastSubtitle();
     }
     void playCreatureAmbient(const gameplay::entities::EntityType& type,
                              glm::vec3 position) override {
         audioSystem.playCreatureAmbient(type.soundProfile(), position);
+        emitLastSubtitle();
     }
     void playCreatureStep(const gameplay::entities::EntityType& type, glm::vec3 position) override {
         audioSystem.playCreatureStep(type.soundProfile(), position);
+        emitLastSubtitle();
     }
     void playFootstep(world::Block ground, glm::vec3 position, float volume) override {
         audioSystem.playFootstep(ground, position, volume);
+        emitLastSubtitle();  // vanilla footsteps carry no subtitle -> no-op
     }
     void playSplash(glm::vec3 position, float volume) override {
         audioSystem.playSplash(position, volume);
+        emitLastSubtitle();
     }
     void spawnBlockBreakParticles(glm::ivec3 position, world::Block block) override {
         particleSystem.spawnBlockBreak(position, block);
@@ -439,12 +465,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // host's render-side half of the moved updateBlockInteraction.
     void playBlockHit(world::Block block, glm::vec3 position) override {
         audioSystem.playBlockHit(block, position);
+        emitLastSubtitle();
     }
     void playBlockPlace(world::Block block, glm::vec3 position) override {
         audioSystem.playBlockPlace(block, position);
+        emitLastSubtitle();
     }
     void playItemBreak(glm::vec3 position) override {
         audioSystem.playItemBreak(position);
+        emitLastSubtitle();
     }
     void spawnWaterSplash(glm::vec3 position) override {
         particleSystem.spawnWaterSplash(position);

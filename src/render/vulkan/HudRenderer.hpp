@@ -978,6 +978,14 @@ class HudRenderer final {
                          float scale) const {
         const auto cursor = currentFramebufferCursor();
         for (const auto& widget : widgets) {
+            // PX-6 Bug1: the Controls key-bind rows are ListRow widgets — the old
+            // draw skipped every non-Button/Slider kind, so the whole middle band
+            // was invisible. Draw a ListRow as a hover-highlighted "Action: Key"
+            // row (vanilla's EntryList look), not a full button frame.
+            if (widget.kind == ui::WidgetKind::ListRow) {
+                drawKeyBindRow(commandBuffer, widget, cursor.x, cursor.y, scale);
+                continue;
+            }
             if (widget.kind != ui::WidgetKind::Button &&
                 widget.kind != ui::WidgetKind::Slider) {
                 continue;
@@ -999,6 +1007,44 @@ class HudRenderer final {
                                     tint);
             }
         }
+    }
+
+    // PX-6 Bug1: one Controls key-bind row — the "Action: Key" label on a subtle
+    // row background that brightens on hover, matching vanilla's key-bind
+    // EntryList (the row is clickable to begin the rebind capture).
+    void drawKeyBindRow(VkCommandBuffer commandBuffer, const ui::Widget& widget, float cursorX,
+                        float cursorY, float scale) const {
+        const bool hovered = widget.rect.contains(cursorX, cursorY);
+        drawHudQuad(commandBuffer, widget.rect,
+                    hovered ? glm::vec4{0.28F, 0.28F, 0.32F, 0.9F}
+                            : glm::vec4{0.0F, 0.0F, 0.0F, 0.55F});
+        drawHudText(commandBuffer, widget.label, widget.rect.x + 4.0F * scale,
+                    widget.rect.y + 1.5F * scale, scale, {1.0F, 1.0F, 1.0F, 1.0F}, false);
+    }
+
+    // PX-6 Bug1: the Controls key-bind list scrollbar. Only drawn when there are
+    // more actions than the visible window; the thumb spans the visible fraction
+    // and slides with the scroll offset (the world/language lists do the same).
+    void drawControlsScrollbar(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
+        const float fbWidth = static_cast<float>(swapchainExtent.width);
+        const std::size_t total = input::keyBindRows().size();
+        const std::size_t visible = ui::controlsVisibleRowCount(
+            fbWidth, static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting);
+        if (total <= visible) {
+            return;  // everything fits; no scrollbar
+        }
+        const auto track = ui::controlsScrollbarTrack(layout, fbWidth);
+        drawHudQuad(commandBuffer, track, {0.0F, 0.0F, 0.0F, 0.6F});
+        const std::size_t maximumFirst = total - visible;
+        const std::size_t first = std::min(menuSystem.controlsListFirstIndex, maximumFirst);
+        const float thumbHeight =
+            std::max(track.height * static_cast<float>(visible) / static_cast<float>(total),
+                     layout.scale() * 6.0F);
+        const float travel = std::max(track.height - thumbHeight, 1.0F);
+        const float thumbY = track.y + travel * static_cast<float>(first) /
+                                           static_cast<float>(maximumFirst);
+        drawHudQuad(commandBuffer, {track.x, thumbY, track.width, thumbHeight},
+                    {0.55F, 0.55F, 0.55F, 1.0F});
     }
 
     void drawFrontend(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
@@ -1309,11 +1355,25 @@ class HudRenderer final {
         const auto firstButton =
             frontendButtonRect(layout, menuSystem.pageStack.current(), 0, buttonCount);
         const float titleScale = deathScreen ? scale * 2.0F : scale;
+        // PX-6 Bug1: Controls is a three-band layout — the title is the TOP band,
+        // above the scrolling key-bind list, not 30px over the bottom button band
+        // (which is where firstButton sits). Other pages keep the historic
+        // above-the-first-button title.
+        const float titleY =
+            menuSystem.pageStack.current() == ui::PageId::Controls
+                ? ui::controlsListBox(layout, static_cast<float>(swapchainExtent.width)).y -
+                      14.0F * titleScale
+                : firstButton.y - 30.0F * titleScale;
         drawHudText(commandBuffer, title,
                     (static_cast<float>(swapchainExtent.width) - hudTextWidth(title, titleScale)) *
                         0.5F,
-                    firstButton.y - 30.0F * titleScale, titleScale, {1.0F, 1.0F, 1.0F, 1.0F});
+                    titleY, titleScale, {1.0F, 1.0F, 1.0F, 1.0F});
         drawMenuWidgets(commandBuffer, buildDrawPage(), scale);
+        // PX-6 Bug1: the Controls key-bind list scrollbar (middle band), drawn
+        // when the action count exceeds the visible window.
+        if (menuSystem.pageStack.current() == ui::PageId::Controls) {
+            drawControlsScrollbar(commandBuffer, layout);
+        }
         if (!menuSystem.saveStatus.empty()) {
             drawHudText(commandBuffer, menuSystem.saveStatus, 4.0F * scale,
                         static_cast<float>(swapchainExtent.height) - 12.0F * scale, scale,
