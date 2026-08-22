@@ -140,6 +140,11 @@ class SuggestionSink final {
                    std::string_view partial)
         : output_(&output), startOffset_(startOffset), partial_(partial) {}
 
+    // The token typed so far under the cursor, which suggest() filters against.
+    // A multi-part argument (an entity selector) reads it to decide what part of
+    // the token the cursor sits in and emit whole-token continuations for it.
+    [[nodiscard]] std::string_view partial() const { return partial_; }
+
     void suggest(std::string_view text, std::string_view hint = {}) {
         const bool fullMatch = text.starts_with(partial_);
         bool pathMatch = false;

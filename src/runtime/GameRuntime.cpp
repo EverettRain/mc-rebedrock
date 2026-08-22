@@ -208,6 +208,61 @@ void GameRuntime::processChatQueue() {
     }
 }
 
+std::vector<gameplay::command::SelectorCandidate> GameRuntime::gatherSelectorCandidates() const {
+    std::vector<gameplay::command::SelectorCandidate> candidates;
+    // Players first, in a deterministic id order (the map's own order is not
+    // guaranteed), then the world entities in their vector order — so `@r`/random
+    // sort see a stable candidate sequence and stay reproducible.
+    std::vector<gameplay::PlayerId> playerIds;
+    for (const auto& entry : gameSession_.players()) {
+        playerIds.push_back(entry.first);
+    }
+    std::sort(playerIds.begin(), playerIds.end());
+    for (const gameplay::PlayerId id : playerIds) {
+        gameplay::command::SelectorCandidate candidate;
+        candidate.player = true;
+        candidate.playerId = id;
+        candidate.position = gameSession_.players().at(id).controller.position();
+        candidates.push_back(candidate);
+    }
+    for (const auto& entity : gameSession_.worldEntities().entities()) {
+        if (entity.dead()) {
+            continue;
+        }
+        gameplay::command::SelectorCandidate candidate;
+        candidate.entityId = entity.id;
+        candidate.position = entity.position;
+        candidate.type = entity.type;
+        candidates.push_back(candidate);
+    }
+    return candidates;
+}
+
+std::uint64_t GameRuntime::nextCommandRandom() {
+    commandRandomState_ = gameplay::command::selectorMix(commandRandomState_);
+    return commandRandomState_;
+}
+
+gameplay::CommandResult GameRuntime::killSelector(const gameplay::command::EntitySelector& selector,
+                                                  const gameplay::command::CommandSource& source) {
+    const auto candidates = gatherSelectorCandidates();
+    const auto targets = selector.resolve(source, candidates, nextCommandRandom());
+    std::size_t killed = 0U;
+    for (const auto& target : targets) {
+        if (target.player) {
+            gameSession_.killPlayer(target.playerId, host_);
+        } else {
+            gameSession_.worldEntities().kill(target.entityId);
+        }
+        ++killed;
+    }
+    if (killed == 0U) {
+        return gameplay::CommandResult{false, "No entity was found"};
+    }
+    return gameplay::CommandResult{true, "Killed " + std::to_string(killed) +
+                                             (killed == 1U ? " entity" : " entities")};
+}
+
 gameplay::command::CommandSource GameRuntime::makeCommandSource() {
     gameplay::command::CommandSource source;
     source.playerId = gameplay::kPrimaryPlayerId;
@@ -337,6 +392,10 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     gameSession_.weatherSystem().seedRandom(
         static_cast<std::uint32_t>(currentSave_->summary.seed) ^
         static_cast<std::uint32_t>(currentSave_->summary.seed >> 32U) ^ 0x57E4F10AU);
+    // `@r` selectors draw from a world-seeded deterministic stream (never the
+    // wall clock), so a fixed world plus a fixed command sequence always picks the
+    // same target — the confidence the determinism rule wants.
+    commandRandomState_ = currentSave_->summary.seed ^ 0x2545F4914F6CDD1DULL;
     // Two-phase load: ask for a small area around the player first so the world
     // opens quickly, then widen to the full view distance once the load screen
     // clears and let the rest stream in during play. The unload radius stays at
@@ -780,35 +839,22 @@ void GameRuntime::registerAuthoritativeCommands() {
             }
             return gameSession_.gameRules().setFromCommand(*rule, *value);
         });
+    // `/kill` with no target kills the executor (@s); `/kill <selector>` resolves
+    // a real target selector (@e[type=…], @a, @r, …) and kills each match.
     commandDispatcher_.literal("kill")
         .requiresLevel(PermissionLevel::GameMasters)
-        .executes([this](const gameplay::command::CommandContext&) {
-            gameSession_.killPlayer(gameplay::kPrimaryPlayerId, host_);
-            return gameplay::CommandResult{true, "Killed the player"};
-        })
-        .argument("target", gameplay::command::kEntityTargetArgument)
         .executes([this](const gameplay::command::CommandContext& context) {
-            const auto target = context.find<std::string>("target");
-            if (!target.has_value()) {
-                return gameplay::CommandResult{false, "Usage: /kill [<entity>]"};
+            gameplay::command::EntitySelector self;
+            self.variable = gameplay::command::SelectorVariable::Self;
+            return killSelector(self, context.source());
+        })
+        .argument("targets", gameplay::command::kEntitySelectorArgument)
+        .executes([this](const gameplay::command::CommandContext& context) {
+            const auto selector = context.find<gameplay::command::EntitySelector>("targets");
+            if (!selector.has_value()) {
+                return gameplay::CommandResult{false, "Usage: /kill [<targets>]"};
             }
-            if (*target == "player") {
-                gameSession_.killPlayer(gameplay::kPrimaryPlayerId, host_);
-                return gameplay::CommandResult{true, "Killed the player"};
-            }
-            std::size_t killed = 0U;
-            for (const auto& entity : gameSession_.worldEntities().entities()) {
-                if (entity.type != nullptr && (entity.type->id().matches(*target) ||
-                                               entity.type->vanillaId().matches(*target))) {
-                    gameSession_.worldEntities().kill(entity.id);
-                    ++killed;
-                }
-            }
-            if (killed == 0U) {
-                return gameplay::CommandResult{false, "No entities of that species are spawned"};
-            }
-            return gameplay::CommandResult{true,
-                                           "Killed " + std::to_string(killed) + "x " + *target};
+            return killSelector(*selector, context.source());
         });
     commandDispatcher_.literal("spawnpoint")
         .requiresLevel(PermissionLevel::GameMasters)

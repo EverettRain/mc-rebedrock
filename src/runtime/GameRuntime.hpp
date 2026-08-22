@@ -4,6 +4,7 @@
 #include "gameplay/GameSession.hpp"
 #include "gameplay/SimulationDriver.hpp"
 #include "gameplay/command/CommandDispatcher.hpp"
+#include "gameplay/command/EntitySelector.hpp"
 #include "net/LoopbackTransport.hpp"
 #include "persistence/SaveRepository.hpp"
 #include "world/World.hpp"
@@ -197,6 +198,18 @@ class GameRuntime final {
     // routes the result to the chat HUD, gated by the sendCommandFeedback
     // gamerule. Rebuilt per line so a moving command updates the next `~`.
     [[nodiscard]] gameplay::command::CommandSource makeCommandSource();
+    // Flattens the live players and world entities into the candidate list a
+    // target selector runs over (players first, in id order, then entities in
+    // vector order — a deterministic sequence for @r/random sort).
+    [[nodiscard]] std::vector<gameplay::command::SelectorCandidate> gatherSelectorCandidates() const;
+    // Advances the world-seeded command RNG one step and returns it — the
+    // deterministic stream @r/random draws from.
+    [[nodiscard]] std::uint64_t nextCommandRandom();
+    // Resolves a selector against the live pools and kills each target (players
+    // through killPlayer, entities through WorldEntities::kill).
+    [[nodiscard]] gameplay::CommandResult killSelector(
+        const gameplay::command::EntitySelector& selector,
+        const gameplay::command::CommandSource& source);
     // Drains the client→server channel into the session's command queue at the
     // start of a tick. Safe to call inside the world write section: the channel
     // and the command queue each carry their own mutex, so this depends on
@@ -287,6 +300,10 @@ class GameRuntime final {
     std::mutex chatMutex_;
     std::vector<std::string> chatQueue_;
     std::optional<gameplay::CommandResult> chatResult_;
+    // The deterministic stream `@r`/random selectors draw from, seeded from the
+    // world seed on load (see loadWorld). Transient — never saved; a fixed world
+    // plus a fixed command sequence reproduces the same picks.
+    std::uint64_t commandRandomState_ = 0x9E3779B97F4A7C15ULL;
 
     // Background chunk-unload persistence worker and its queue. The worker lives
     // for the whole runtime; the destructor stops and joins it after the

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gameplay/command/EntitySelector.hpp"
 #include "gameplay/command/IdentifierTable.hpp"
 
 #include "gameplay/GameMode.hpp"
@@ -291,6 +292,65 @@ class EntityTargetArgument final : public ArgumentType {
     }
 };
 
+// `@s/@p/@a/@e/@r[filters]`: a real target selector (1.16.1's EntitySelector),
+// binding a parsed EntitySelector the handler resolves against its player/entity
+// pools. Completion is context-aware: the variable list at `@`, the option keys
+// inside `[`, and the species registry after `type=` (never a hardcoded list).
+class EntitySelectorArgument final : public ArgumentType {
+  public:
+    ArgumentParseResult parse(StringReader& reader) const override {
+        return parseEntitySelector(reader);
+    }
+
+    void collectSuggestions(SuggestionSink& sink) const override {
+        const std::string_view partial = sink.partial();
+        const auto bracket = partial.find('[');
+        if (bracket == std::string_view::npos) {
+            // Completing the variable: the leading `@` prefix-matches these.
+            sink.suggest("@s", "the executor");
+            sink.suggest("@p", "nearest player");
+            sink.suggest("@a", "all players");
+            sink.suggest("@e", "all entities");
+            sink.suggest("@r", "random");
+            return;
+        }
+        // Inside the filter block: the current option fragment starts after the
+        // last ',' (or the '['), and the completion continues the whole token.
+        std::size_t optionStart = partial.rfind(',');
+        if (optionStart == std::string_view::npos || optionStart < bracket) {
+            optionStart = bracket;
+        }
+        const std::string prefix{partial.substr(0, optionStart + 1U)};
+        const std::string_view fragment = partial.substr(optionStart + 1U);
+        const auto equals = fragment.find('=');
+        if (equals == std::string_view::npos) {
+            for (const char* key : {"type=", "distance=", "limit=", "sort="}) {
+                sink.suggest(prefix + key);
+            }
+            return;
+        }
+        const std::string_view key = fragment.substr(0, equals);
+        const std::string valuePrefix = prefix + std::string{fragment.substr(0, equals + 1U)};
+        if (key == "type") {
+            // Species from the registry; emit both the full id and its bare path
+            // so a bare fragment (`co`) completes as well as a namespaced one.
+            for (const entities::EntityType* type : entities::entityTypeRegistry().all()) {
+                if (type == nullptr) continue;
+                const std::string full = type->id().toString();
+                sink.suggest(valuePrefix + full);
+                if (const auto colon = full.rfind(':'); colon != std::string::npos) {
+                    sink.suggest(valuePrefix + full.substr(colon + 1U));
+                }
+            }
+        } else if (key == "sort") {
+            for (const char* option : {"nearest", "furthest", "random", "arbitrary"}) {
+                sink.suggest(valuePrefix + option);
+            }
+        }
+        // distance / limit are numeric — no candidate list to offer.
+    }
+};
+
 // Shared, stateless instances of the gameplay argument types. One instance
 // serves every command that uses a type (1.16.1's ArgumentType.instance()).
 inline const GameModeArgument kGameModeArgument;
@@ -299,6 +359,7 @@ inline const GiveItemArgument kGiveItemArgument;
 inline const TableArgument<GameRuleTable> kGameRuleArgument;
 inline const TeleportDestinationArgument kTeleportDestinationArgument;
 inline const EntityTargetArgument kEntityTargetArgument;
+inline const EntitySelectorArgument kEntitySelectorArgument;
 // `/weather clear|rain [<duration>]`: the duration (seconds) is bounded by the
 // same 0..1000000 1.16.1's WeatherCommand hands IntegerArgumentType; the
 // handler converts it to ticks at 20 per second. A bound is required so a

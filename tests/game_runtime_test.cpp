@@ -764,6 +764,63 @@ int main() {
         assert(!runtime.clientChannel().receiveFrame(stray));
     }
 
+    // CMD3: `/kill <selector>` runs a real target selector over the live pools.
+    // Self-contained (its own world) so removing creatures disturbs nothing above.
+    {
+        world::ChunkStreamer streamer{0U, 4, 4};
+        RecordingHost host;
+        runtime::GameRuntime runtime{host, streamer, saveRoot};
+        host.save = &runtime.currentSaveSlot();
+        auto save = runtime.createWorld("selectors", 5U, gameplay::GameMode::Creative);
+        runtime.loadWorld(std::move(save), 4);
+
+        const auto* pigType = gameplay::entities::entityTypeRegistry().byId("pig");
+        const auto* zombieType = gameplay::entities::entityTypeRegistry().byId("zombie");
+        assert(pigType != nullptr && zombieType != nullptr);
+        const auto liveOf = [&](std::string_view species) {
+            std::size_t count = 0U;
+            for (const auto& e : runtime.gameSession().worldEntities().entities()) {
+                if (!e.dead() && e.type != nullptr && std::string{e.type->id().path} == species) {
+                    ++count;
+                }
+            }
+            return count;
+        };
+        runtime.gameSession().worldEntities().restore({10.0F, 64.0F, 0.0F}, *pigType, 0.0F,
+                                                      {0.0F, 0.0F, 0.0F}, 10.0F, 0, 0, 1U);
+        runtime.gameSession().worldEntities().restore({12.0F, 64.0F, 0.0F}, *pigType, 0.0F,
+                                                      {0.0F, 0.0F, 0.0F}, 10.0F, 0, 0, 2U);
+        runtime.gameSession().worldEntities().restore({14.0F, 64.0F, 0.0F}, *zombieType, 0.0F,
+                                                      {0.0F, 0.0F, 0.0F}, 20.0F, 0, 0, 3U);
+        assert(liveOf("pig") == 2U && liveOf("zombie") == 1U);
+
+        // type= restricts the kill to the species — the zombie dies, pigs survive.
+        runtime.enqueueChat("/kill @e[type=zombie]");
+        runtime.tick();
+        const auto killedZombie = runtime.takeChatResult();
+        assert(killedZombie.has_value() && killedZombie->success);
+        assert(liveOf("zombie") == 0U && liveOf("pig") == 2U);
+
+        // limit caps the match count: one pig falls, one remains.
+        runtime.enqueueChat("/kill @e[type=pig,limit=1]");
+        runtime.tick();
+        assert(runtime.takeChatResult().value().success);
+        assert(liveOf("pig") == 1U);
+
+        // A selector that matches nothing fails (and reports so).
+        runtime.enqueueChat("/kill @e[type=zombie]");
+        runtime.tick();
+        const auto noZombie = runtime.takeChatResult();
+        assert(noZombie.has_value() && !noZombie->success);
+
+        // No target defaults to @s (the executor) — kills the player.
+        runtime.enqueueChat("/kill");
+        runtime.tick();
+        assert(runtime.takeChatResult().value().success);
+
+        runtime.stopSimulation();
+    }
+
     std::filesystem::remove_all(saveRoot);
     std::cout << "PASS: game_runtime_test\n";
     return 0;

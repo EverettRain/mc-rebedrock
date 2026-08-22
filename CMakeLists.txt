@@ -705,6 +705,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME command_source COMMAND mc_rebedrock_command_source_test)
 
+    add_executable(mc_rebedrock_command_selector_test
+        tests/command_selector_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_command_selector_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_command_selector_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME command_selector COMMAND mc_rebedrock_command_selector_test)
+
     add_executable(mc_rebedrock_command_suggestions_test
         tests/command_suggestions_test.cpp
     )
