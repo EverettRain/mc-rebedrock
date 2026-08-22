@@ -193,6 +193,28 @@ void testSingleAssemblyPoint() {
 
 }  // namespace
 
+// --- PX-6 Bug3: the Options page carries a Subtitles toggle wired to its cb ----
+void testOptionsHasSubtitlesToggle() {
+    ui::MenuBuildContext ctx;
+    ui::MenuCallbacks cb;
+    bool toggled = false;
+    cb.toggleSubtitles = [&] { toggled = true; };
+    ui::Page opts = ui::buildPage(ui::PageId::Options, ctx, cb, rowLayout());
+
+    std::size_t subIndex = ui::kNoWidget;
+    for (std::size_t i = 0; i < opts.size(); ++i) {
+        if (opts[i].debugId == static_cast<std::uint16_t>(ui::WidgetId::Subtitles)) {
+            subIndex = i;
+        }
+    }
+    assert(subIndex != ui::kNoWidget);
+    // Clicking the Subtitles row fires exactly its toggle callback.
+    const float rowY = opts[subIndex].rect.y + opts[subIndex].rect.height * 0.5F;
+    const std::size_t fired = ui::clickAt(opts, 50.0F, rowY);
+    assert(fired == subIndex);
+    assert(toggled);
+}
+
 int main() {
     testPageAssembly();
     testClickDispatch();
@@ -200,5 +222,6 @@ int main() {
     testPressReleaseMismatch();
     testSliderThroughCallback();
     testSingleAssemblyPoint();
+    testOptionsHasSubtitlesToggle();
     return 0;
 }

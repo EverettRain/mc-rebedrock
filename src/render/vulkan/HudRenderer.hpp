@@ -24,6 +24,8 @@
 #include "persistence/SaveRepository.hpp"
 #include "render/PerspectiveCamera.hpp"
 #include "render/TestScene.hpp"
+#include "input/InputAction.hpp"
+#include "input/InputNaming.hpp"
 #include "ui/BitmapFontMetrics.hpp"
 #include "ui/ButtonControl.hpp"
 #include "ui/ChatHistory.hpp"
@@ -132,6 +134,9 @@ class HudRenderer final {
         bool& paused;
         double& uiTimeSeconds;
         std::function<bool()> cameraSubmergedInWater;
+        // PX-6 Bug1: the Controls key-bind row label ("Action: Key") from the
+        // InputSystem single source, so the draw page shows live bindings.
+        std::function<std::string(input::InputAction)> keyBindLabel;
         std::function<void(VkCommandBuffer, VkDescriptorSet)> drawHeldItem;
         std::function<VkDescriptorSet()> currentFrameDescriptorSet;
         std::function<std::span<const gameplay::ItemStack>()> activeCreativeCatalog;
@@ -169,6 +174,7 @@ class HudRenderer final {
           pendingSectionUpdates(b.pendingSectionUpdates), testScene(b.testScene),
           guiWidgetSprites(b.guiWidgetSprites), paused(b.paused),
           uiTimeSeconds(b.uiTimeSeconds), cameraSubmergedInWater(b.cameraSubmergedInWater),
+          keyBindLabel(b.keyBindLabel),
           drawHeldItem(b.drawHeldItem), currentFrameDescriptorSet(b.currentFrameDescriptorSet),
           activeCreativeCatalog(b.activeCreativeCatalog),
           creativeScrollPosition(b.creativeScrollPosition),
@@ -249,6 +255,24 @@ class HudRenderer final {
         ctx.labelFor = [this](std::uint16_t id) {
             return widgetLabel(static_cast<ui::WidgetId>(id));
         };
+        // PX-6 Bug1: on Controls, feed the scroll window + the live key-bind
+        // labels, and lay the visible rows out as list rows (controlsRow). The
+        // trailing four are the bottom button band. Everything else is unchanged.
+        const float fbWidth = static_cast<float>(swapchainExtent.width);
+        std::size_t keyRows = 0U;
+        if (pageId == ui::PageId::Controls) {
+            const std::size_t total = input::keyBindRows().size();
+            const std::size_t window = ui::controlsVisibleRowCount(
+                fbWidth, static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting);
+            const std::size_t first = std::min(menuSystem.controlsListFirstIndex, total);
+            keyRows = std::min(window, total - first);
+            ctx.keyBindFirstIndex = first;
+            ctx.keyBindRowCount = keyRows;
+            ctx.keyBindLabelFor = [this](input::InputAction action) {
+                return keyBindLabel ? keyBindLabel(action)
+                                    : std::string{input::actionDisplayName(action)};
+            };
+        }
         ui::MenuCallbacks callbacks;
         callbacks.viewDistance.value = [this] {
             return static_cast<float>(viewDistanceChunks - 2) / 34.0F;
@@ -258,8 +282,13 @@ class HudRenderer final {
         };
         callbacks.masterVolume.value = [this] { return options.masterVolume; };
         return ui::buildPage(pageId, ctx, callbacks,
-                             [layout, pageId, count](std::size_t index) {
-                                 return ui::frontendButtonRect(layout, pageId, index, count);
+                             [layout, pageId, count, fbWidth, keyRows](std::size_t index) {
+                                 if (pageId == ui::PageId::Controls && index < keyRows) {
+                                     return ui::controlsRow(index, layout, fbWidth);
+                                 }
+                                 const std::size_t buttonIndex =
+                                     pageId == ui::PageId::Controls ? index - keyRows : index;
+                                 return ui::frontendButtonRect(layout, pageId, buttonIndex, count);
                              });
     }
 
@@ -790,6 +819,10 @@ class HudRenderer final {
         case ui::WidgetId::ForceUnicodeFont:
             return optionValue(translated("options.forceUnicodeFont", "Force Unicode Font"),
                                toggle(options.forceUnicodeFont));
+        case ui::WidgetId::Subtitles:
+            // PX-6 Bug3: the sound-subtitles accessibility toggle.
+            return optionValue(translated("options.showSubtitles", "Show Subtitles"),
+                               toggle(options.showSubtitles));
         case ui::WidgetId::Done:
             return translated("gui.done", "Done");
         case ui::WidgetId::Singleplayer:
@@ -1755,8 +1788,15 @@ class HudRenderer final {
         for (const ui::ActiveToast& active : toastQueue.visibleToasts()) {
             // slideFraction 1 = fully in; 0 = off the right edge.
             const float x = right - active.slideFraction * (toastWidth + margin);
-            drawHudQuad(commandBuffer, {x, slotY, toastWidth, toastHeight},
-                        {0.06F, 0.06F, 0.06F, 0.94F});
+            // PX-6 Bug4: draw the toast on the GUI atlas's nine-sliced widget
+            // panel (the Button frame), not a flat grey quad — a proper 26.x
+            // bordered background. (Vanilla's dedicated toasts.png is not in the
+            // shipped assets; the widget panel is the closest real sprite. If a
+            // toasts sprite is ever added, swap the sprite here.)
+            const ui::UiRect panel{std::floor(x), std::floor(slotY), std::floor(toastWidth),
+                                   std::floor(toastHeight)};
+            drawScaledGuiSprite(commandBuffer, panel, 0.0F,
+                                guiWidgetSprite(guiWidgetSprites, GuiWidgetSprite::Button), scale);
             drawHudText(commandBuffer, active.toast.title, x + 5.0F * scale, slotY + 4.0F * scale,
                         scale, {1.0F, 1.0F, 1.0F, 1.0F}, false);
             if (!active.toast.subtitle.empty()) {
@@ -2157,6 +2197,7 @@ class HudRenderer final {
 
     // ---- world-render / per-frame couplings (bound to Impl lambdas) ----
     std::function<bool()> cameraSubmergedInWater;
+    std::function<std::string(input::InputAction)> keyBindLabel;
     std::function<void(VkCommandBuffer, VkDescriptorSet)> drawHeldItem;
     std::function<VkDescriptorSet()> currentFrameDescriptorSet;
     std::function<std::span<const gameplay::ItemStack>()> activeCreativeCatalog;

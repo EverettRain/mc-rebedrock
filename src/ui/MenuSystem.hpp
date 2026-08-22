@@ -72,6 +72,9 @@ class MenuSystem final {
     std::string languageStatus;
     std::size_t languageListFirstIndex = 0U;
     bool languageScrollbarDragging = false;
+    // PX-6 Bug1: the Controls key-bind list scroll offset + scrollbar drag.
+    std::size_t controlsListFirstIndex = 0U;
+    bool controlsScrollbarDragging = false;
     bool optionsOpen = false;
     bool viewDistanceSliderDragging = false;
     bool simulationDistanceSliderDragging = false;

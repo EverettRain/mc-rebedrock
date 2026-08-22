@@ -116,6 +116,10 @@ void testControlsPageLIstsBindRows() {
         return std::string{input::actionDisplayName(action)} + ": " +
                input::bindingDisplayName(system.bindings().binding(action));
     };
+    // PX-6 Bug1: the Controls key-bind list is windowed. Ask for the full window
+    // so every action is listed (a real screen sizes the window to the canvas).
+    ctx.keyBindFirstIndex = 0;
+    ctx.keyBindRowCount = input::keyBindRows().size();
     ui::MenuCallbacks cb;
     InputAction captured = InputAction::Count;
     bool reset = false;
@@ -127,7 +131,7 @@ void testControlsPageLIstsBindRows() {
     };
     const ui::Page page = ui::buildPage(ui::PageId::Controls, ctx, cb, rectFor);
 
-    // One ListRow per rebindable action.
+    // One ListRow per rebindable action (the full window was requested).
     std::size_t rows = 0;
     std::size_t firstRow = ui::kNoWidget;
     for (std::size_t i = 0; i < page.size(); ++i) {
@@ -162,6 +166,9 @@ void testPageRowToRebind() {
     input::InputSystem system;
     input::KeyBindingScreen screen{system};
     ui::MenuBuildContext ctx;
+    // PX-6 Bug1: request the full key-bind window so the Inventory row is built.
+    ctx.keyBindFirstIndex = 0;
+    ctx.keyBindRowCount = input::keyBindRows().size();
     ctx.keyBindLabelFor = [&system, &screen](InputAction action) {
         if (screen.capturing() && screen.capturingAction() == action) {
             return std::string{input::actionDisplayName(action)} + ": > ? <";

@@ -52,6 +52,12 @@ struct MenuBuildContext final {
     // InputSystem single source; a test can stub it. When set, the Controls page
     // renders the key-bind table instead of the legacy toggle scaffold.
     std::function<std::string(input::InputAction action)> keyBindLabelFor{};
+    // PX-6 Bug1: the Controls key-bind list is SCROLLING. Only the visible window
+    // is built (like the world/language lists), so the widget count stays bounded
+    // regardless of how many actions exist. keyBindFirstIndex is the scroll
+    // offset into input::keyBindRows(); keyBindRowCount is the visible window.
+    std::size_t keyBindFirstIndex = 0;
+    std::size_t keyBindRowCount = 0;
 };
 
 // Every menu action the pages can fire, as injectable callbacks. The renderer
@@ -101,6 +107,7 @@ struct MenuCallbacks final {
     std::function<void()> toggleAutoJump{};
     std::function<void()> cycleDifficulty{};
     std::function<void()> toggleForceUnicodeFont{};
+    std::function<void()> toggleSubtitles{};  // PX-6 Bug3: sound subtitles on/off
 
     // Experimental page
     std::function<void()> cycleRainMode{};
@@ -140,6 +147,7 @@ enum class WidgetId : std::uint16_t {
     RainMode, ParticleLevel, SunShadows, RainCollisionCache,
     WorldRow, LanguageRow,
     KeyBindRow, ResetKeyBinds,
+    Subtitles,  // PX-6 Bug3: the sound-subtitles accessibility toggle
 };
 
 namespace detail {
@@ -264,6 +272,7 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
             }
             addButton(page, rectFor, ctx, WidgetId::Controls, cb.openControls);
             addButton(page, rectFor, ctx, WidgetId::VideoSettings, cb.openVideoSettings);
+            addButton(page, rectFor, ctx, WidgetId::Subtitles, cb.toggleSubtitles);
             addButton(page, rectFor, ctx, WidgetId::Language, cb.openLanguage);
             addButton(page, rectFor, ctx, WidgetId::Experimental, cb.openExperimental);
             addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
@@ -283,12 +292,19 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
             addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
             break;
 
-        case PageId::Controls:
-            // PX-5 Key Binds: one row per rebindable action (label from the PX-1
-            // InputSystem single source), each row begins its rebind capture on
-            // click. The View Bobbing / Auto Jump toggles and Reset/Done sit
-            // below the table, matching vanilla's Controls layout.
-            for (const input::InputAction action : input::keyBindRows()) {
+        case PageId::Controls: {
+            // PX-6 Bug1: the key-bind rows are a SCROLLING list — only the visible
+            // window [keyBindFirstIndex, +keyBindRowCount) is built, so the page
+            // never exceeds the layout capacity (24 fixed buttons would throw).
+            // Each row's rect comes from rectFor (the renderer maps these list
+            // indices to controlsRow rects); the trailing four are bottom buttons.
+            // PX-5: each row begins its rebind capture on click, label from the
+            // InputSystem single source.
+            constexpr auto rows = input::keyBindRows();
+            const std::size_t first = std::min(ctx.keyBindFirstIndex, rows.size());
+            const std::size_t last = std::min(first + ctx.keyBindRowCount, rows.size());
+            for (std::size_t i = first; i < last; ++i) {
+                const input::InputAction action = rows[i];
                 detail::addKeyBindRow(page, rectFor, ctx, action, [cb, action]() {
                     if (cb.beginKeyCapture) cb.beginKeyCapture(action);
                 });
@@ -298,6 +314,7 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
             addButton(page, rectFor, ctx, WidgetId::ResetKeyBinds, cb.resetKeyBinds);
             addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
             break;
+        }
 
         case PageId::Language:
             for (std::size_t row = 0; row < ctx.languageRowCount; ++row) {

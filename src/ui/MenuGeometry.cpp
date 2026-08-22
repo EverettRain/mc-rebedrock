@@ -18,14 +18,18 @@ std::size_t menuButtonCount(PageId page, bool worldOpen) {
     case PageId::ConfirmDelete:
         return 2U;
     case PageId::Options:
-        // One fewer button without a world open (no Difficulty entry).
-        return worldOpen ? 7U : 6U;
+        // One fewer button without a world open (no Difficulty entry). PX-6 Bug3
+        // added the Subtitles toggle, so the counts are one higher than before.
+        return worldOpen ? 8U : 7U;
     case PageId::Experimental:
         return 5U;
     case PageId::VideoSettings:
         return 11U;
     case PageId::Controls:
-        return 3U;
+        // PX-6 Bug1: the bottom button band only — View Bobbing / Auto Jump /
+        // Reset / Done. The 24 key-bind rows above are a scrolling list, not
+        // menu buttons, so they do not count toward the button cap.
+        return 4U;
     case PageId::Language:
         return 2U;
     case PageId::Pause:
@@ -165,9 +169,80 @@ std::size_t languageScrollIndexFromCursor(const HudLayout& layout, float framebu
         std::lround(normalized * static_cast<float>(maximumFirst)));
 }
 
+// PX-6 Bug1: the Controls key-bind list. The box sits between the title and the
+// bottom button band (View Bobbing / Auto Jump / Reset / Done). Mirrors the
+// language list, but leaves room for two rows of bottom buttons rather than one
+// warning line.
+UiRect controlsListBox(const HudLayout& layout, float framebufferWidth) {
+    const float scale = layout.scale();
+    constexpr float kRowStep = 12.0F;
+    const float topBound = 40.0F * scale;
+    // The list ends above the bottom button band. Derive the band's top row from
+    // the first of the four bottom buttons (2 columns -> 2 rows), the same way
+    // languageWarningY reads the band position without a height accessor.
+    const float bandTop = layout.bottomMenuButton(0U, 4U, 2U).y;
+    const float bottomBound = bandTop - 12.0F * scale;
+    const std::size_t rows = std::max<std::size_t>(
+        static_cast<std::size_t>((bottomBound - topBound) / (kRowStep * scale)), 1U);
+    const float height = static_cast<float>(rows) * kRowStep * scale;
+    return {0.0F, topBound, framebufferWidth, height};
+}
+
+UiRect controlsRow(std::size_t visibleIndex, const HudLayout& layout, float framebufferWidth) {
+    const float scale = layout.scale();
+    const auto box = controlsListBox(layout, framebufferWidth);
+    constexpr float kRowStep = 12.0F;
+    constexpr float kRowWidth = 300.0F;
+    const float rowWidth =
+        std::min(kRowWidth * scale, std::max(box.width - 32.0F * scale, 1.0F));
+    return {
+        box.x + (box.width - rowWidth) * 0.5F,
+        box.y + static_cast<float>(visibleIndex) * kRowStep * scale,
+        rowWidth,
+        11.0F * scale,
+    };
+}
+
+std::size_t controlsVisibleRowCount(float framebufferWidth, float framebufferHeight, int guiScale) {
+    const HudLayout layout{framebufferWidth, framebufferHeight, guiScale};
+    const float scale = layout.scale();
+    constexpr float kRowStep = 12.0F;
+    const float rows =
+        std::max(controlsListBox(layout, framebufferWidth).height / (kRowStep * scale), 1.0F);
+    return static_cast<std::size_t>(rows);
+}
+
+UiRect controlsScrollbarTrack(const HudLayout& layout, float framebufferWidth) {
+    const float scale = layout.scale();
+    const auto box = controlsListBox(layout, framebufferWidth);
+    const auto row = controlsRow(0U, layout, framebufferWidth);
+    const float center = row.x + row.width + 6.0F * scale;
+    return {center - 5.0F * scale, box.y + 2.0F * scale, 10.0F * scale,
+            std::max(box.height - 4.0F * scale, 1.0F)};
+}
+
+std::size_t controlsScrollIndexFromCursor(const HudLayout& layout, float framebufferWidth,
+                                          std::size_t itemCount, std::size_t visibleRows,
+                                          float cursorY) {
+    if (itemCount <= visibleRows) {
+        return 0U;
+    }
+    const std::size_t maximumFirst = itemCount - visibleRows;
+    const auto track = controlsScrollbarTrack(layout, framebufferWidth);
+    const float travel = std::max(track.height, 1.0F);
+    const float normalized = std::clamp((cursorY - track.y) / travel, 0.0F, 1.0F);
+    return static_cast<std::size_t>(std::lround(normalized * static_cast<float>(maximumFirst)));
+}
+
 UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t index,
                           std::size_t buttonCount) {
     if (page == PageId::WorldList) {
+        return layout.bottomMenuButton(index, buttonCount, 2U);
+    }
+    // PX-6 Bug1: the Controls bottom band (View Bobbing / Auto Jump / Reset /
+    // Done) is two columns; the key-bind rows above use the scrolling list rects
+    // (controlsRow), never this button grid.
+    if (page == PageId::Controls) {
         return layout.bottomMenuButton(index, buttonCount, 2U);
     }
     // The video page grew past one column's worth of buttons: its settings stack

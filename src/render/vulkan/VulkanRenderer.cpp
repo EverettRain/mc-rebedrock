@@ -16,6 +16,7 @@
 #include "animation/DisplayEntityAnimation.hpp"
 #include "animation/HingeAnimation.hpp"
 #include "animation/ModelAnimationSystem.hpp"
+#include "animation/HumanoidPoseSolver.hpp"
 #include "animation/PlayerModelAnimator.hpp"
 #include "animation/SkeletalModel.hpp"
 #include "assets/ImageData.hpp"
@@ -673,6 +674,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             } else if (renderer->menuSystem.pageStack.current() == ui::PageId::Language &&
                        yOffset != 0.0) {
                 renderer->scrollLanguageList(yOffset > 0.0 ? -1 : 1);
+            } else if (renderer->menuSystem.pageStack.current() == ui::PageId::Controls &&
+                       yOffset != 0.0) {
+                renderer->scrollControlsList(yOffset > 0.0 ? -1 : 1);
             } else if (renderer->inventoryOpen &&
                        renderer->uiFrameData_.gameMode == gameplay::GameMode::Creative &&
                        yOffset != 0.0) {
@@ -1342,6 +1346,43 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             const float headRelative = wrapAngle(lookYaw - worldBodyYaw);
             worldPlayerAnimator.setCursorLook(headRelative / kMaxHeadYaw, -lookDir.y);
             worldPlayerAnimator.update(deltaSeconds, playerWalking, playerSneaking);
+            // PX-2 Bug2: solve the third-person pose from the per-tick snapshot via
+            // the deterministic HumanoidPoseSolver — the gait amplitude is the
+            // real walk speed (idle -> no swing), crouch bends the body, and the
+            // head look uses the same body-relative yaw/pitch the model root uses.
+            // worldPlayerAnimator supplies only the geometry now.
+            {
+                if (!worldPlayerBonesBound_) {
+                    worldPlayerBones_ =
+                        animation::HumanoidBoneBindings::bind(worldPlayerAnimator.model());
+                    worldPlayerBonesBound_ = true;
+                }
+                const auto worldSnap = clientMirror_.player();
+                const float worldAlpha = clientMirror_.interpolationAlpha();
+                render::player::PlayerRenderState worldState;
+                worldState.walkStride =
+                    worldSnap.previousStride + (worldSnap.stride - worldSnap.previousStride) * worldAlpha;
+                worldState.walkSpeed =
+                    worldSnap.previousSpeed + (worldSnap.speed - worldSnap.previousSpeed) * worldAlpha;
+                worldState.sneaking = worldSnap.sneaking;
+                worldState.headYawDegrees = headRelative * 180.0F / 3.14159265358979F;
+                worldState.pitchDegrees = std::asin(std::clamp(-lookDir.y, -1.0F, 1.0F)) *
+                                          180.0F / 3.14159265358979F;
+                worldState.heldStack = worldSnap.heldStack;
+                worldState.swing = render::player::interpolateSwing(worldSnap.swing, worldAlpha,
+                                                                    lastWorldSwingSequence_);
+                worldState.use = render::player::interpolateUse(worldSnap.use, worldAlpha);
+                const bool usingMain = worldState.use.active &&
+                                       worldSnap.use.hand == gameplay::InteractionHand::Main;
+                worldState.rightArmPose = render::player::deriveArmPose(
+                    worldState.heldStack, usingMain, worldState.use.animation);
+                const float ageInTicks =
+                    static_cast<float>(worldSnap.serverTick) + worldAlpha;
+                worldPlayerPose_ =
+                    animation::solveHumanoidPose(worldPlayerAnimator.model(), worldPlayerBones_,
+                                                 worldState, ageInTicks)
+                        .skeleton;
+            }
             if (!paused && worldReady) {
                 // The sun no longer rides real frames: the Overworld clock advances
                 // inside the fixed sim tick (gated there by doDaylightCycle), so all
@@ -2118,6 +2159,19 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                              : 0U;
         const auto requested = static_cast<long long>(menuSystem.languageListFirstIndex) + rows;
         menuSystem.languageListFirstIndex = static_cast<std::size_t>(
+            std::clamp<long long>(requested, 0LL, static_cast<long long>(maximumFirst)));
+    }
+
+    // PX-6 Bug1: scroll the Controls key-bind list by the wheel, clamped to the
+    // last visible page (the same contract as the world/language lists).
+    void scrollControlsList(int rows) {
+        const std::size_t total = input::keyBindRows().size();
+        const std::size_t visibleRows = ui::controlsVisibleRowCount(
+            static_cast<float>(swapchainExtent.width),
+            static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting);
+        const std::size_t maximumFirst = total > visibleRows ? total - visibleRows : 0U;
+        const auto requested = static_cast<long long>(menuSystem.controlsListFirstIndex) + rows;
+        menuSystem.controlsListFirstIndex = static_cast<std::size_t>(
             std::clamp<long long>(requested, 0LL, static_cast<long long>(maximumFirst)));
     }
 
@@ -3139,6 +3193,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             recreateFontTexture();
             persistOptions();
         };
+        // PX-6 Bug3: the sound-subtitles accessibility toggle gates the subtitle
+        // overlay feed. Persisted like every other option.
+        cb.toggleSubtitles = [this] {
+            options.showSubtitles = !options.showSubtitles;
+            if (!options.showSubtitles) {
+                subtitleFeed_.clear();
+            }
+            persistOptions();
+        };
 
         cb.cycleRainMode = [this] {
             options.rainMode = (options.rainMode + 1) % 3;
@@ -3217,9 +3280,30 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                    static_cast<float>(swapchainExtent.height),
                                    menuSystem.guiScaleSetting};
         const std::size_t count = menuButtonCount();
-        return [layout, page, count](std::size_t index) {
-            return ui::frontendButtonRect(layout, page, index, count);
+        const float fbWidth = static_cast<float>(swapchainExtent.width);
+        // PX-6 Bug1: on Controls, the first `keyRows` widget indices are scrolling
+        // key-bind list rows (controlsRow); the trailing four are the bottom
+        // button band. Elsewhere every widget is a frontend button.
+        const std::size_t keyRows =
+            page == ui::PageId::Controls ? controlsVisibleKeyBindRowCount() : 0U;
+        return [layout, page, count, fbWidth, keyRows](std::size_t index) {
+            if (page == ui::PageId::Controls && index < keyRows) {
+                return ui::controlsRow(index, layout, fbWidth);
+            }
+            const std::size_t buttonIndex = page == ui::PageId::Controls ? index - keyRows : index;
+            return ui::frontendButtonRect(layout, page, buttonIndex, count);
         };
+    }
+
+    // PX-6 Bug1: how many key-bind rows are visible on the Controls list this
+    // frame — the visible window, clamped to the number of rebindable actions.
+    [[nodiscard]] std::size_t controlsVisibleKeyBindRowCount() const {
+        const std::size_t total = input::keyBindRows().size();
+        const std::size_t window = ui::controlsVisibleRowCount(
+            static_cast<float>(swapchainExtent.width),
+            static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting);
+        const std::size_t first = std::min(menuSystem.controlsListFirstIndex, total);
+        return std::min(window, total - first);
     }
 
     // PX-4: the widget index under the cursor on the given page (kNoWidget if
@@ -3236,6 +3320,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         ctx.worldSelectable = !menuSystem.saveSummaries.empty();
         ctx.worldRowCount = 0;       // list rows are drawn by the list path today
         ctx.languageRowCount = 0;
+        // PX-6 Bug1: the Controls key-bind list is scrolling — build only the
+        // visible window so the page never exceeds the layout button cap.
+        if (menuSystem.pageStack.current() == ui::PageId::Controls) {
+            ctx.keyBindFirstIndex = menuSystem.controlsListFirstIndex;
+            ctx.keyBindRowCount = controlsVisibleKeyBindRowCount();
+        }
         // PX-5 Key Binds: each row's label is "Action: Key" from the InputSystem
         // single source, or "Action: > ? <" while that row is capturing.
         ctx.keyBindLabelFor = [this](input::InputAction action) -> std::string {
@@ -6440,6 +6530,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // the gameSession.player()'s own look/movement).
     animation::PlayerModelAnimator playerModelAnimator;
     animation::PlayerModelAnimator worldPlayerAnimator;
+    // PX-2 Bug2: the third-person world player's pose is now solved by the
+    // deterministic HumanoidPoseSolver from the per-tick PlayerRenderState, so
+    // idle/crouch/walk/sprint are distinguished (an idle player no longer swings
+    // its arms and legs). worldPlayerAnimator supplies only the geometry; this
+    // solved pose replaces its walk-clip pose in drawWorldPlayer.
+    animation::HumanoidBoneBindings worldPlayerBones_;
+    animation::SkeletonPose worldPlayerPose_;
+    bool worldPlayerBonesBound_ = false;
     // Data-driven motion for the chest lid (Bezier ease-out hinge) and the
     // dropped-item float/spin, evaluated through the animation library.
     animation::HingeAnimation chestLidAnimation;
@@ -6535,6 +6633,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // The swing sequence the held-item bridge sampled last frame, so a restart
     // (sequence change) snaps instead of interpolating the arm back.
     std::optional<std::uint64_t> lastSwingSequence_;
+    // PX-2 Bug2: the third-person world player's own swing-sequence memory, so its
+    // attack arc snaps on a restart independently of the first-person bridge.
+    std::optional<std::uint64_t> lastWorldSwingSequence_;
     std::string chatInputText;
     ui::ChatHistory chatHistory;
     // Tab completion state for the open chat line: the candidates for the token
@@ -6787,6 +6888,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .paused = paused,
             .uiTimeSeconds = uiTimeSeconds,
             .cameraSubmergedInWater = [this] { return cameraSubmergedInWater(); },
+            .keyBindLabel =
+                [this](input::InputAction action) -> std::string {
+                    const std::string name{input::actionDisplayName(action)};
+                    if (keyBindScreen_.capturing() &&
+                        keyBindScreen_.capturingAction() == action) {
+                        return name + ": > ? <";
+                    }
+                    return name + ": " +
+                           input::bindingDisplayName(inputSystem_.bindings().binding(action));
+                },
             .drawHeldItem = [this](VkCommandBuffer c,
                                    VkDescriptorSet d) { world_.drawHeldItem(c, d); },
             .currentFrameDescriptorSet = [this] { return frames[currentFrame].descriptorSet; },
@@ -6841,6 +6952,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .speciesModels = speciesModels,
             .heldItemAnimation = heldItemAnimation,
             .worldPlayerAnimator = worldPlayerAnimator,
+            .worldPlayerPose = worldPlayerPose_,
             .chestLidAnimation = chestLidAnimation,
             .itemDisplayAnimation = itemDisplayAnimation,
             .cameraPerspective = cameraPerspective,

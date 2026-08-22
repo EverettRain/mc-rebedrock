@@ -45,6 +45,22 @@ namespace mc::ui {
     const HudLayout& layout, float framebufferWidth, std::size_t itemCount,
     std::size_t visibleRows, float cursorY);
 
+// PX-6 Bug1: the Controls key-bind list is a SCROLLING list (like the world /
+// language lists), not a fixed button grid — 24 rebindable actions would blow
+// past the 20-button menu cap and throw. These mirror the language-list geometry:
+// a content-sized box between the title and the bottom button band, one row per
+// visible action, plus a scrollbar.
+[[nodiscard]] UiRect controlsListBox(const HudLayout& layout, float framebufferWidth);
+[[nodiscard]] UiRect controlsRow(std::size_t visibleIndex, const HudLayout& layout,
+                                 float framebufferWidth);
+[[nodiscard]] std::size_t controlsVisibleRowCount(float framebufferWidth, float framebufferHeight,
+                                                  int guiScale);
+[[nodiscard]] UiRect controlsScrollbarTrack(const HudLayout& layout, float framebufferWidth);
+[[nodiscard]] std::size_t controlsScrollIndexFromCursor(const HudLayout& layout,
+                                                        float framebufferWidth,
+                                                        std::size_t itemCount,
+                                                        std::size_t visibleRows, float cursorY);
+
 // Shared button geometry across the front-end pages: bottom-anchored for the
 // save/edit/delete/language pages, two-column for video settings, centred menu
 // otherwise.

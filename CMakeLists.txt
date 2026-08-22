@@ -1696,6 +1696,15 @@ if(BUILD_TESTING)
     )
     add_test(NAME toast_overlay COMMAND mc_rebedrock_toast_overlay_test)
 
+    add_executable(mc_rebedrock_menu_layout_test
+        tests/menu_layout_test.cpp
+        src/ui/MenuGeometry.cpp
+        src/ui/HudLayout.cpp
+    )
+    target_include_directories(mc_rebedrock_menu_layout_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_menu_layout_test PRIVATE glm::glm)
+    add_test(NAME menu_layout COMMAND mc_rebedrock_menu_layout_test)
+
     add_executable(mc_rebedrock_tree_grower_test
         tests/tree_grower_test.cpp
         src/world/Chunk.cpp
