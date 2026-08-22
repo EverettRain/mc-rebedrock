@@ -130,7 +130,7 @@ void PlayerController::resetForRespawn(glm::vec3 feetPosition) {
     // block under the feet, so forcing it off here is safe.
     flying_ = false;
     sprinting_ = false;
-    sneaking_ = false;
+    pose_ = Pose::Standing;
     inWater_ = false;
     jumpedThisTick_ = false;
     flightToggleWindowTicks_ = 0;
@@ -167,11 +167,16 @@ bool PlayerController::intersectsBlock(int x, int y, int z, float boxBottom,
 }
 
 bool PlayerController::collidesAt(const world::World& world, glm::vec3 position) const {
+    return collidesAtHeight(world, position, collisionHeight());
+}
+
+bool PlayerController::collidesAtHeight(const world::World& world, glm::vec3 position,
+                                       float height) const {
     const int minX = static_cast<int>(std::floor(position.x - kHalfWidth + kCollisionEpsilon));
     const int maxX = static_cast<int>(std::floor(position.x + kHalfWidth - kCollisionEpsilon));
     const int minY = static_cast<int>(std::floor(position.y + kCollisionEpsilon));
     const int maxY = static_cast<int>(
-        std::floor(position.y + collisionHeight() - kCollisionEpsilon));
+        std::floor(position.y + height - kCollisionEpsilon));
     const int minZ = static_cast<int>(std::floor(position.z - kHalfWidth + kCollisionEpsilon));
     const int maxZ = static_cast<int>(std::floor(position.z + kHalfWidth - kCollisionEpsilon));
 
@@ -180,7 +185,7 @@ bool PlayerController::collidesAt(const world::World& world, glm::vec3 position)
     const float qMinZ = position.z - kHalfWidth;
     const float qMaxZ = position.z + kHalfWidth;
     const float qMinY = position.y;
-    const float qMaxY = position.y + collisionHeight();
+    const float qMaxY = position.y + height;
     for (int y = minY; y <= maxY; ++y) {
         for (int z = minZ; z <= maxZ; ++z) {
             for (int x = minX; x <= maxX; ++x) {
@@ -331,7 +336,7 @@ bool PlayerController::autoJumpCanClear(const world::World& world, glm::vec3 for
 glm::vec3 PlayerController::adjustMovementForSneaking(
     const world::World& world,
     glm::vec3 distance) const {
-    if (!sneaking_ || !onGround_) {
+    if (!sneaking() || !onGround_) {
         return distance;
     }
     constexpr float edgeStep = 0.05F;
@@ -341,10 +346,15 @@ glm::vec3 PlayerController::adjustMovementForSneaking(
         }
         return value > 0.0F ? value - edgeStep : value + edgeStep;
     };
+    // The edge guard drops a probe of the body one maxUpStep (0.6) below the feet
+    // and keeps the move only while that lifted-down body still rests on ground —
+    // matching LivingEntity#maxUpStep, so a crouching player will not walk off a
+    // ledge it could have stepped down. (Was a hardcoded -0.5; kStepHeight ties it
+    // to the same step constant the wall step-up uses.)
     const auto supported = [&](float x, float z) {
         return collidesAt(
             world,
-            position_ + glm::vec3{x, -0.5F, z});
+            position_ + glm::vec3{x, -kStepHeight, z});
     };
     while (std::abs(distance.x) > kCollisionEpsilon &&
            !supported(distance.x, 0.0F)) {
@@ -361,6 +371,16 @@ glm::vec3 PlayerController::adjustMovementForSneaking(
         distance.z = reduceTowardZero(distance.z);
     }
     return distance;
+}
+
+void PlayerController::updatePlayerPose(const world::World& world, bool wantsCrouch) {
+    // LivingEntity#updatePlayerPose: the player crouches when it asks to, and is
+    // FORCED to stay crouched when a standing (1.8) body would not fit — releasing
+    // shift under a slab/trapdoor keeps the crouch instead of clipping the head
+    // into the ceiling. The standing fit is tested at the crouch height's feet, so
+    // the query is not itself blocked by the very ceiling it is checking for.
+    const bool canStand = !collidesAtHeight(world, position_, kHeight);
+    pose_ = (wantsCrouch || !canStand) ? Pose::Crouching : Pose::Standing;
 }
 
 void PlayerController::tick(const world::World& world, const PlayerInput& input) {
@@ -409,14 +429,17 @@ void PlayerController::tick(const world::World& world, const PlayerInput& input)
             flightToggleWindowTicks_ = kCreativeFlightToggleWindowTicks;
         }
     }
-    sneaking_ = input.sneakHeld && !flying_;
-
     const int feetX = static_cast<int>(std::floor(position_.x));
     const int feetZ = static_cast<int>(std::floor(position_.z));
     if (!columnLoaded(world, feetX, feetZ)) {
         velocity_ = glm::vec3{0.0F};
         return;
     }
+    // The pose is resolved from the shift input and the headroom, after the
+    // column guard so the standing-fit query reads loaded blocks. It drives the
+    // collision height and eye height, the sneak edge-guard, and the render
+    // snapshot's crouch — all through pose_/sneaking(), never the raw key.
+    updatePlayerPose(world, input.sneakHeld && !flying_);
     const bool wasInWater = inWater_;
     inWater_ = playerTouchesWater(world, position_);
     if (wasInWater && !inWater_ && input.jumpHeld && velocity_.y > 0.0F) {
@@ -436,7 +459,7 @@ void PlayerController::tick(const world::World& world, const PlayerInput& input)
     }
     movement *= kInputScale;
 
-    if (sneaking_) {
+    if (sneaking()) {
         movement *= kSneakingSpeedMultiplier;
     }
 
@@ -466,7 +489,7 @@ void PlayerController::tick(const world::World& world, const PlayerInput& input)
     // actually clear — never a two-high wall or a missing headroom.
     const bool wantsAutoJump =
         input.autoJump && onGround_ && horizontalCollision_ && input.forward > 0.0F &&
-        !sneaking_ && !inWater_ && !flying_ && jumpingCooldownTicks_ == 0 &&
+        !sneaking() && !inWater_ && !flying_ && jumpingCooldownTicks_ == 0 &&
         autoJumpCanClear(world, forward);
     if (flying_) {
         const float acceleration = kFlyAcceleration *
@@ -485,7 +508,7 @@ void PlayerController::tick(const world::World& world, const PlayerInput& input)
         velocity_ += movement * acceleration;
         if (inWater_ && input.jumpHeld) {
             velocity_.y += kWaterLiftAcceleration;
-        } else if (inWater_ && sneaking_) {
+        } else if (inWater_ && sneaking()) {
             velocity_.y -= kWaterLiftAcceleration;
         } else if ((input.jumpHeld || wantsAutoJump) && onGround_ &&
                    jumpingCooldownTicks_ == 0) {

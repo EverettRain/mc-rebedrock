@@ -2,6 +2,8 @@
 
 #include <glm/vec3.hpp>
 
+#include <cstdint>
+
 namespace mc::world {
 class World;
 }
@@ -27,6 +29,20 @@ struct PlayerInput final {
     // player jumps on its own instead of jamming against the face. Off by
     // default, mirroring Java 1.16.1.
     bool autoJump = false;
+};
+
+// The player's body posture, 26.1's EntityPose. The pose is an explicit state
+// resolved once per tick from input and the space overhead — not a raw shift
+// derivation — so releasing crouch under a 1.5-high ceiling (a slab/trapdoor)
+// keeps the player crouched until it can actually stand, instead of snapping the
+// 1.8 body up into the block. Standing/Crouching land now; the rest are reserved
+// so the collision-height and pose-solver switches are written once.
+enum class Pose : std::uint8_t {
+    Standing,
+    Crouching,
+    // Reserved for later content; no behaviour keys off them yet.
+    Swimming,
+    FallFlying,
 };
 
 class PlayerController final {
@@ -64,14 +80,26 @@ class PlayerController final {
     [[nodiscard]] glm::vec3 position() const { return position_; }
     [[nodiscard]] glm::vec3 eyePosition() const;
     [[nodiscard]] float eyeHeight() const {
-        return sneaking_ ? kSneakingEyeHeight : kEyeHeight;
+        return pose_ == Pose::Crouching ? kSneakingEyeHeight : kEyeHeight;
     }
     [[nodiscard]] glm::vec3 velocity() const { return velocity_; }
     [[nodiscard]] bool onGround() const { return onGround_; }
     [[nodiscard]] bool flying() const { return flying_; }
     [[nodiscard]] bool sprinting() const { return sprinting_; }
     [[nodiscard]] bool inWater() const { return inWater_; }
-    [[nodiscard]] bool sneaking() const { return sneaking_; }
+    // The current body posture. Everything crouch-related (collision height, eye
+    // height, the sneak edge-guard, the pose the render snapshot carries) reads
+    // this single state instead of re-deriving from the raw shift key.
+    [[nodiscard]] Pose pose() const { return pose_; }
+    // Kept as the boolean the rest of the game (interaction, snapshot, sounds)
+    // already asks for; now it is a view of the pose, not a separate flag.
+    [[nodiscard]] bool sneaking() const { return pose_ == Pose::Crouching; }
+    // Whether the standing (1.8) body fits at the current feet position — i.e.
+    // there is headroom to stand up. Pure query against the world; the pose
+    // solver uses it to keep a low-ceilinged player crouched.
+    [[nodiscard]] bool canStandUp(const world::World& world) const {
+        return !collidesAtHeight(world, position_, kHeight);
+    }
     [[nodiscard]] float horizontalSpeed() const { return horizontalSpeed_; }
     [[nodiscard]] float previousHorizontalSpeed() const { return previousHorizontalSpeed_; }
     [[nodiscard]] float strideDistance() const { return strideDistance_; }
@@ -103,6 +131,16 @@ class PlayerController final {
 
   private:
     [[nodiscard]] bool collidesAt(const world::World& world, glm::vec3 position) const;
+    // collidesAt, but for a body of an arbitrary height rather than the current
+    // pose's — so the pose solver can ask "would a 1.8 body fit here?" without
+    // first standing up and risking a frame clipped into the ceiling.
+    [[nodiscard]] bool collidesAtHeight(const world::World& world, glm::vec3 position,
+                                        float height) const;
+    // EntityPose resolution (LivingEntity#updatePlayerPose): the player crouches
+    // when it wants to (shift, not flying) OR when a standing body would not fit
+    // overhead. Called once per tick before the move, so collision height and the
+    // sneak edge-guard use the resolved pose.
+    void updatePlayerPose(const world::World& world, bool wantsCrouch);
     // Moves one axis and reports whether the move was stopped by a collision,
     // so moveWithCollisions can retry the horizontal move from a step up.
     [[nodiscard]] bool moveAxis(const world::World& world, int axis, float distance);
@@ -121,7 +159,7 @@ class PlayerController final {
         glm::vec3 distance) const;
     void updateFieldOfViewMultiplier();
     [[nodiscard]] float collisionHeight() const {
-        return sneaking_ ? kSneakingHeight : kHeight;
+        return pose_ == Pose::Crouching ? kSneakingHeight : kHeight;
     }
 
     glm::vec3 position_;
@@ -130,7 +168,7 @@ class PlayerController final {
     bool flying_ = false;
     bool sprinting_ = false;
     bool inWater_ = false;
-    bool sneaking_ = false;
+    Pose pose_ = Pose::Standing;
     bool horizontalCollision_ = false;
     float fallDistance_ = 0.0F;
     bool jumpedThisTick_ = false;
