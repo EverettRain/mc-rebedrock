@@ -1783,6 +1783,10 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_bone_mask_test PRIVATE mc_rebedrock_animation)
     add_test(NAME bone_mask COMMAND mc_rebedrock_bone_mask_test)
 
+    add_executable(mc_rebedrock_blend_mode_test tests/blend_mode_test.cpp)
+    target_link_libraries(mc_rebedrock_blend_mode_test PRIVATE mc_rebedrock_animation)
+    add_test(NAME blend_mode COMMAND mc_rebedrock_blend_mode_test)
+
     add_executable(mc_rebedrock_keyframe_bezier_test tests/keyframe_bezier_test.cpp)
     target_link_libraries(mc_rebedrock_keyframe_bezier_test PRIVATE mc_rebedrock_animation)
     add_test(NAME keyframe_bezier COMMAND mc_rebedrock_keyframe_bezier_test)
