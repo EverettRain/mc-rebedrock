@@ -141,6 +141,7 @@ endif()
 
 add_library(mc_rebedrock_audio STATIC
     src/audio/AudioSystem.cpp
+    src/audio/AmbientMusicScheduler.cpp
     src/audio/MiniaudioImplementation.cpp
 )
 target_include_directories(mc_rebedrock_audio
@@ -1751,6 +1752,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(mc_rebedrock_audio_system_test PRIVATE mc_rebedrock_audio)
     add_test(NAME audio_system COMMAND mc_rebedrock_audio_system_test)
+
+    # AU-2: the device-free ambient/music scheduler (MusicScheduler +
+    # MoodAccumulator). Links only the audio library, which carries the
+    # scheduler's translation unit; no audio device is touched.
+    add_executable(mc_rebedrock_ambient_music_scheduler_test
+        tests/ambient_music_scheduler_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_ambient_music_scheduler_test PRIVATE mc_rebedrock_audio)
+    add_test(NAME ambient_music_scheduler COMMAND mc_rebedrock_ambient_music_scheduler_test)
 
     # Every animation test links the standalone animation library, proving it
     # stands on its own without gameplay or rendering sources.
