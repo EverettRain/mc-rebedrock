@@ -20,6 +20,13 @@ enum class DamageType : std::uint8_t {
     Drown,
     Starve,
     OutOfWorld,    // vanilla `fell_out_of_world`: the void and /kill
+    // The three fire families, split the way vanilla does. `OnFire` is the burn
+    // tick a creature that caught fire takes every second; `InFire` is standing
+    // in a fire block; `Lava` is contact with lava. They share the IsFire tag so
+    // fire-immunity/resistance answer them all with one test.
+    OnFire,        // vanilla `on_fire`: the per-second burn while ablaze
+    InFire,        // vanilla `in_fire`: standing inside a fire block
+    Lava,          // vanilla `lava`: touching lava
     Count,
 };
 
@@ -118,6 +125,19 @@ inline constexpr std::array<DamageTypeData, kDamageTypeCount> kDamageTypes{{
     {"outOfWorld", DamageScaling::WhenCausedByLivingNonPlayer, 0.0F,
      damageTags(DamageTag::BypassesArmor, DamageTag::BypassesInvulnerability,
                 DamageTag::BypassesResistance, DamageTag::NoKnockback)},
+    // The three fire types. `new DamageType("onFire", 0.0F)` /
+    // `new DamageType("inFire", 0.0F)` / `new DamageType("lava", 0.1F)` in
+    // vanilla; all carry IS_FIRE and none bypass armor (fire is reduced by
+    // armor, unlike the world's other damage). Only lava costs the 0.1 hunger a
+    // living attacker's swing does; the passive burn and standing in fire do
+    // not. NO_KNOCKBACK: the burn tick and standing in fire do not shove — only
+    // an attacker's swing pushes a burning victim, which is a different source.
+    {"onFire", DamageScaling::WhenCausedByLivingNonPlayer, 0.0F,
+     damageTags(DamageTag::IsFire, DamageTag::NoKnockback)},
+    {"inFire", DamageScaling::WhenCausedByLivingNonPlayer, 0.0F,
+     damageTags(DamageTag::IsFire)},
+    {"lava", DamageScaling::WhenCausedByLivingNonPlayer, 0.1F,
+     damageTags(DamageTag::IsFire)},
 }};
 
 [[nodiscard]] constexpr const DamageTypeData& damageTypeData(DamageType type) {

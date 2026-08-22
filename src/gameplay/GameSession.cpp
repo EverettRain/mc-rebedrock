@@ -187,7 +187,7 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     const auto entityTick = worldEntities_.tick(
         world, primaryPlayer().controller.position(), PlayerController::kWidth, PlayerController::kHeight,
         difficulty_, !primaryPlayer().vitals.dead(), primaryPlayer().gameMode == GameMode::Creative,
-        simulationRadiusBlocks_);
+        simulationRadiusBlocks_, weatherSystem_.isRaining());
     primaryPlayer().controller.applyExternalPush(entityTick.playerPush);
     for (const auto& attack : entityTick.mobAttacks) {
         if (attack.target == ActorReference::player()) {

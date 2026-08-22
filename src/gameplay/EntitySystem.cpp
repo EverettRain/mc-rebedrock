@@ -426,7 +426,7 @@ void EntitySystem::spawn(glm::vec3 position, const entities::EntityType& type, s
 std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityType& type,
                                     float yaw, glm::vec3 velocity, float health,
                                     int angerTicks, unsigned int ageTicks,
-                                    std::uint32_t rngState) {
+                                    std::uint32_t rngState, int fireTicks) {
     SimpleEntity entity;
     entity.type = &type;
     entity.id = nextEntityId_++;
@@ -439,6 +439,8 @@ std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityTy
     entity.ageTicks = ageTicks;
     entity.angerTicks = angerTicks;
     entity.rngState = rngState;
+    // A fire-immune species can never be ablaze; drop a stray record on restore.
+    entity.fireTicks = type.fireImmune() ? 0 : std::max(fireTicks, 0);
     // The species owns the max; the save's health is the current value, clamped
     // so a corrupt record cannot restore a creature over its cap.
     entity.damage.maxHealth = type.attributes().maxHealth();
@@ -590,6 +592,22 @@ bool EntitySystem::kill(std::uint64_t entityId) {
     return outcome.landed;
 }
 
+bool EntitySystem::setOnFire(std::uint64_t entityId, int seconds) {
+    const auto found = idToIndex_.find(entityId);
+    if (found == idToIndex_.end()) {
+        return false;
+    }
+    auto& entity = entities_[found->second];
+    // Entity#setSecondsOnFire: a fire-immune creature never catches, and a dead
+    // one is not relit. Vanilla only ever lengthens a burn, so take the max of
+    // the current and requested duration; a negative request cannot shorten it.
+    if (entity.type->fireImmune() || entity.damage.dead() || seconds <= 0) {
+        return entity.fireTicks > 0;
+    }
+    entity.fireTicks = std::max(entity.fireTicks, seconds * kTicksPerSecond);
+    return entity.fireTicks > 0;
+}
+
 void EntitySystem::clear() {
     entities_.clear();
     entitySections_.clear();
@@ -683,7 +701,8 @@ EntityTickResult EntitySystem::tick(
     Difficulty difficulty,
     bool playerAlive,
     bool playerCreative,
-    float simulationRadius) {
+    float simulationRadius,
+    bool raining) {
     EntityTickResult result;
     ++gameTick_;
     const bool playerPresent = pusher.y > -900.0F;
@@ -738,6 +757,47 @@ EntityTickResult EntitySystem::tick(
             --entity.wanderTimer;
         }
         entity.movementSpeedMultiplier = 1.0F;
+
+        // Entity#baseTick's fire block. A burning creature is put out the moment
+        // it touches water or stands in the rain under open sky (isBeingRainedOn),
+        // and otherwise takes one point of OnFire damage every second while
+        // `fireTicks` counts down. A fire-immune species never carries fireTicks
+        // (setOnFire refuses it), so the whole block is skipped for it. The burn
+        // routes through the shared damage pipeline and the same die() path fall
+        // damage uses, so a mob that burns to death drops its loot once.
+        if (entity.fireTicks > 0 && !entity.damage.dead()) {
+            const int fireFootX = floorToInt(entity.position.x);
+            const int fireFootY = floorToInt(entity.position.y);
+            const int fireFootZ = floorToInt(entity.position.z);
+            const bool inWater =
+                world::isFluid(world.block(fireFootX, fireFootY, fireFootZ)) ||
+                world::isFluid(world.block(fireFootX, fireFootY + 1, fireFootZ));
+            // Entity#isBeingRainedOn: raining, and the head cell can see the sky.
+            const bool rainedOn =
+                raining && world.directSkyLight(fireFootX, fireFootY + 1, fireFootZ) > 0U;
+            if (inWater || rainedOn) {
+                entity.fireTicks = 0;
+            } else {
+                // Vanilla checks `fireTicks % 20 == 0` before decrementing, so a
+                // 100-tick burn hits at 100/80/60/40/20 — five points for five
+                // seconds — and the last decrement leaves it at zero.
+                if (entity.fireTicks % kFireDamageInterval == 0) {
+                    const DamageOutcome outcome =
+                        applyDamage(entity.damage, DamageType::OnFire, 1.0F);
+                    if (outcome.landed) {
+                        entity.ambientSoundChance = -kMinAmbientSoundDelay;
+                        pendingSounds_.push_back(
+                            {entity.position,
+                             outcome.died ? MobSoundEvent::Death : MobSoundEvent::Hurt,
+                             entity.type});
+                        if (outcome.died) {
+                            die(entity);
+                        }
+                    }
+                }
+                --entity.fireTicks;
+            }
+        }
 
         // MobEntity#baseTick's ambient scheduler: every tick it rolls
         // nextInt(1000) against a counter that climbs one per tick and snaps

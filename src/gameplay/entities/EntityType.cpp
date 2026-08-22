@@ -62,6 +62,20 @@ EntityType::Builder& EntityType::Builder::spawnEgg(std::uint32_t primary, std::u
     return *this;
 }
 
+EntityType::Builder& EntityType::Builder::behavior(EntityBehavior flag) {
+    draft_.behaviorFlags_ = static_cast<std::uint16_t>(
+        draft_.behaviorFlags_ | static_cast<std::uint16_t>(flag));
+    return *this;
+}
+
+EntityType::Builder& EntityType::Builder::fireImmune() {
+    return behavior(EntityBehavior::FireImmune);
+}
+
+EntityType::Builder& EntityType::Builder::sunImmune() {
+    return behavior(EntityBehavior::SunImmune);
+}
+
 EntityType::Builder& EntityType::Builder::loot(LootRoll roll) {
     draft_.loot_ = roll;
     return *this;

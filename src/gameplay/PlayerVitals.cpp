@@ -63,6 +63,13 @@ bool PlayerVitals::hurt(float amount, DamageType cause, bool causedByLivingNonPl
     return true;
 }
 
+void PlayerVitals::setOnFire(int seconds) {
+    if (dead() || seconds <= 0) {
+        return;
+    }
+    fireTicks_ = std::max(fireTicks_, seconds * kTicksPerSecond);
+}
+
 void PlayerVitals::reset() {
     damage_ = DamageState{kMaximumHealth, kMaximumHealth};
     foodLevel_ = kMaximumFood;
@@ -71,6 +78,7 @@ void PlayerVitals::reset() {
     foodTimer_ = 0;
     airTicks_ = kMaximumAirTicks;
     fallDistance_ = 0.0F;
+    fireTicks_ = 0;
     ticksSinceDamage_ = 1000;
 }
 
@@ -194,6 +202,21 @@ VitalsTickResult PlayerVitals::tick(const VitalsInput& input) {
         if (hurt(kVoidDamage, DamageType::OutOfWorld)) {
             result.damageTaken = kVoidDamage;
             result.cause = DamageType::OutOfWorld;
+        }
+    }
+
+    // Entity#baseTick's fire block, the player's half. Water or rain under open
+    // sky puts the fire out; otherwise it takes one point of OnFire damage each
+    // second while fireTicks counts down (vanilla's `fireTicks % 20 == 0` burn).
+    if (fireTicks_ > 0) {
+        if (input.inWater || input.rainedOn) {
+            fireTicks_ = 0;
+        } else {
+            if (fireTicks_ % kFireDamageInterval == 0 && hurt(1.0F, DamageType::OnFire)) {
+                result.damageTaken = 1.0F;
+                result.cause = DamageType::OnFire;
+            }
+            --fireTicks_;
         }
     }
 

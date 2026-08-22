@@ -795,6 +795,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME mob_brain COMMAND mc_rebedrock_mob_brain_test)
 
+    add_executable(mc_rebedrock_entity_fire_test
+        tests/entity_fire_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_entity_fire_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_entity_fire_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME entity_fire COMMAND mc_rebedrock_entity_fire_test)
+
     # Manual tools, not part of the test suite: they take arguments or print
     # numbers instead of asserting, so ctest cannot judge them and a normal build
     # has no reason to compile them. Configure with -DMC_REBEDROCK_BUILD_TOOLS=ON

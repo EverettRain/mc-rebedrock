@@ -45,6 +45,9 @@ struct PersistentEntity final {
     std::int32_t angerTicks = 0;
     std::uint32_t ageTicks = 0U;
     std::uint32_t rngState = 0U;
+    // Entity#fireTicks: a creature saved mid-burn reopens still ablaze. Added in
+    // entity block version 2; a version-1 record reads it as zero (not on fire).
+    std::int32_t fireTicks = 0;
 };
 
 // A dropped item awaiting pickup. Position and velocity are the whole physical

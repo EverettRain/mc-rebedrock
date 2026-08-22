@@ -88,6 +88,12 @@ struct SimpleEntity final {
     // blocks for a distant-despawning category (MONSTER/AMBIENT/WATER_CREATURE).
     // Once it crosses the threshold the creature is silently removed.
     int despawnTicks = 0;
+    // Entity#fireTicks: how many ticks the creature stays ablaze. Set by
+    // setSecondsOnFire (a lit block, lava, a future daylight source); ticks down
+    // every simulation tick and deals OnFire damage each second while it burns.
+    // Water and rain extinguish it. Zero means not on fire, which is the usual
+    // case, so it costs nothing until something lights the creature.
+    int fireTicks = 0;
 
     // Stateful Goal instances and the current navigation path are per entity.
     entities::MobBrain brain;
@@ -190,7 +196,7 @@ class EntitySystem final {
     // it left off. Returns the stable id the restored creature holds.
     std::uint64_t restore(glm::vec3 position, const entities::EntityType& type, float yaw,
                           glm::vec3 velocity, float health, int angerTicks,
-                          unsigned int ageTicks, std::uint32_t rngState);
+                          unsigned int ageTicks, std::uint32_t rngState, int fireTicks = 0);
 
     // Advances every creature one 20 TPS tick against the world: target/action
     // selectors, land navigation, gravity, collision, pushing and damage timers.
@@ -210,7 +216,12 @@ class EntitySystem final {
         Difficulty difficulty = Difficulty::Normal,
         bool playerAlive = true,
         bool playerCreative = false,
-        float simulationRadius = 0.0F);
+        float simulationRadius = 0.0F,
+        // Whether it is raining this tick (WeatherSystem#isRaining). A burning
+        // creature standing under open sky is put out by the rain, the way
+        // Entity#baseTick's isBeingRainedOn extinguishes it. False leaves fire to
+        // be quenched only by water.
+        bool raining = false);
 
     // GameRenderer's crosshair pick: the nearest creature whose targeting box
     // the ray enters within `reach`. Ordinary 1.16.1 living entities have a
@@ -246,6 +257,13 @@ class EntitySystem final {
     // the same path /kill routes a player through. Returns true when the
     // creature was killed by this call.
     bool kill(std::uint64_t entityId);
+
+    // Entity#setSecondsOnFire: lights the creature for `seconds` of burning, the
+    // single entry point every ignition source (lava, a fire block, the daylight
+    // burn) routes through. Vanilla only ever lengthens a burn, so this takes the
+    // max of the current and requested duration. A fireImmune species is never
+    // lit. Returns true when the call left the creature ablaze.
+    bool setOnFire(std::uint64_t entityId, int seconds);
 
     // The loot a creature that just finished dying leaves behind. Drained by
     // the caller after tick(); the same creature never reports twice.

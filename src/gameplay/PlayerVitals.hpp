@@ -20,6 +20,10 @@ struct VitalsInput final {
     bool headInWater = false;
     bool flying = false;
     float feetY = 0.0F;
+    // Whether the player stands in the rain under open sky this tick, so a
+    // burning player is put out the way Entity#baseTick's isBeingRainedOn does.
+    // Defaulted false: an ignition source (lava, fire) is a later content node.
+    bool rainedOn = false;
 };
 
 struct VitalsTickResult final {
@@ -43,6 +47,7 @@ class PlayerVitals final {
     [[nodiscard]] float exhaustion() const { return exhaustion_; }
     [[nodiscard]] int airTicks() const { return airTicks_; }
     [[nodiscard]] float fallDistance() const { return fallDistance_; }
+    [[nodiscard]] int fireTicks() const { return fireTicks_; }
     [[nodiscard]] bool dead() const { return damage_.dead(); }
     // The shared damage state, so GameSession can run the unified onDeath guard
     // (beginDeath) once across the player's death paths.
@@ -65,6 +70,11 @@ class PlayerVitals final {
     // condition: a mob swung it, so a harder world swings harder. False for the
     // world hurting the player — falling, drowning, starving, the void.
     bool hurt(float amount, DamageType cause, bool causedByLivingNonPlayer = false);
+    // Entity#setSecondsOnFire: lights the player for `seconds` of burning, the
+    // single entry every ignition source routes through. Vanilla only ever
+    // lengthens a burn, so this takes the max; a dead player is not relit. The
+    // burn itself is resolved in tick() through the shared damage pipeline.
+    void setOnFire(int seconds);
     // Restores a respawning player to full health and food.
     void reset();
     void restore(float health, int foodLevel, float saturation, int airTicks);
@@ -86,6 +96,9 @@ class PlayerVitals final {
     int foodTimer_ = 0;
     int airTicks_ = kMaximumAirTicks;
     float fallDistance_ = 0.0F;
+    // Entity#fireTicks: how long the player stays ablaze. Zero unless an
+    // ignition source lit them; water and rain put it out.
+    int fireTicks_ = 0;
     int ticksSinceDamage_ = 1000;
 };
 

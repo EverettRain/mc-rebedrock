@@ -185,6 +185,30 @@ class EntityAi {
 // A species' loot table, reduced to a roll against the entity's RNG stream.
 using LootRoll = EntityDrops (*)(std::uint32_t& rng);
 
+// The per-species boolean behaviours that decide whether a mechanic touches a
+// creature at all: "does this type burn?", "does this type burn in daylight?".
+// Vanilla scatters these across boolean fields and overridable methods
+// (Entity#isFireImmune, the mob's own daylight-burn check); here they are one
+// bit set on the type, so a mechanic tests one bit instead of a species switch.
+//
+// This is the single home for every "some class is exempt from some mechanic"
+// question. When fall-immunity or water-breathing acquires a consumer it is one
+// more bit here, never an `if (species == …)` at the mechanic's call site.
+enum class EntityBehavior : std::uint16_t {
+    // Entity#isFireImmune: fire, lava and the burn tick do nothing. Set by
+    // nether natives (a future strider/blaze); the mechanic (EM1) reads it.
+    FireImmune = 1U << 0U,
+    // The daylight-burn exemption undead read: a husk does not catch fire in the
+    // sun. The daylight ignition source itself is AR-M2; this is the bit it will
+    // consult so the ignition never needs a species switch.
+    SunImmune = 1U << 1U,
+};
+
+[[nodiscard]] constexpr std::uint16_t operator|(EntityBehavior a, EntityBehavior b) {
+    return static_cast<std::uint16_t>(static_cast<std::uint16_t>(a) |
+                                      static_cast<std::uint16_t>(b));
+}
+
 // EntityType<T> (1.16.1): the immutable, per-species control object. It owns the
 // creature's hitbox, classification, attribute caps, spawn-egg tint, renderer
 // descriptor, AI and loot. Every consumer — simulation, renderer, spawn egg,
@@ -217,6 +241,16 @@ class EntityType final {
     [[nodiscard]] const EntityAttributes& attributesFloor() const { return attributes_; }
     [[nodiscard]] SpawnEggColors spawnEgg() const { return spawnEgg_; }
     [[nodiscard]] bool hasSpawnEgg() const { return hasSpawnEgg_; }
+
+    // The behaviour bit set, and the one-bit tests mechanics read. `fireImmune`
+    // is consumed by EM1's fire state machine; `sunImmune` is reserved for the
+    // daylight-burn source (AR-M2). Adding a mechanic exemption is a bit here.
+    [[nodiscard]] std::uint16_t behaviorFlags() const { return behaviorFlags_; }
+    [[nodiscard]] bool hasBehavior(EntityBehavior flag) const {
+        return (behaviorFlags_ & static_cast<std::uint16_t>(flag)) != 0U;
+    }
+    [[nodiscard]] bool fireImmune() const { return hasBehavior(EntityBehavior::FireImmune); }
+    [[nodiscard]] bool sunImmune() const { return hasBehavior(EntityBehavior::SunImmune); }
     [[nodiscard]] const EntityRenderDescriptor& render() const { return render_; }
     [[nodiscard]] const EntityAi& ai() const { return *ai_; }
 
@@ -254,6 +288,9 @@ class EntityType final {
     EntityAttributes attributes_{};
     SpawnEggColors spawnEgg_{};
     bool hasSpawnEgg_ = false;
+    // The behaviour bit set (EntityBehavior). Zero means the creature is subject
+    // to every mechanic, which is the default for ordinary land animals.
+    std::uint16_t behaviorFlags_ = 0U;
     EntityRenderDescriptor render_{};
     audio::MobSoundProfile soundProfile_{};
     const EntityAi* ai_ = nullptr;
@@ -290,6 +327,13 @@ class EntityType::Builder final {
     Builder& followRange(float range);
     Builder& knockbackResistance(float resistance);
     Builder& spawnEgg(std::uint32_t primary, std::uint32_t secondary);
+    // Sets a behaviour bit. Chainable, so a nether native reads
+    // `.fireImmune()` and a husk `.sunImmune()`; a species that states nothing
+    // is subject to every mechanic. The generic `behavior()` takes the enum for
+    // the manifest/import path.
+    Builder& behavior(EntityBehavior flag);
+    Builder& fireImmune();
+    Builder& sunImmune();
     Builder& loot(LootRoll roll);
     Builder& renderer(const EntityRenderDescriptor& descriptor);
     // The species' sound set; without it the creature is silent. Each species

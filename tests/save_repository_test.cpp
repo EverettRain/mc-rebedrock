@@ -144,7 +144,9 @@ int main() {
     // with their pose and state intact.
     save.entities = {
         {"pig", 10.0F, 64.0F, 8.0F, 0.5F, 0.0F, 0.0F, 0.0F, 10.0F, 0, 120U, 0x1234U},
-        {"zombie", 20.0F, 64.0F, -5.0F, 1.2F, 0.1F, 0.0F, 0.0F, 20.0F, 40, 5U, 0xABCDU},
+        // The zombie is saved mid-burn (entity block/region version 2's
+        // fireTicks): it must reopen still ablaze.
+        {"zombie", 20.0F, 64.0F, -5.0F, 1.2F, 0.1F, 0.0F, 0.0F, 20.0F, 40, 5U, 0xABCDU, 60},
     };
     repository.save(save);
     const auto listed = repository.list();
@@ -222,9 +224,13 @@ int main() {
     assert(pig->health == 10.0F);
     assert(pig->ageTicks == 120U);
     assert(pig->rngState == 0x1234U);
+    // The pig was never lit, so it reopens not on fire.
+    assert(pig->fireTicks == 0);
     assert(zombie != nullptr);
     assert(zombie->angerTicks == 40);
     assert(zombie->rngState == 0xABCDU);
+    // The burning zombie kept its fireTicks across the round trip.
+    assert(zombie->fireTicks == 60);
 
     // Blocks travel as namespaced identifiers now, so the payload literally
     // contains them and a renumbered enum cannot silently reinterpret an old

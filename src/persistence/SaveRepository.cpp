@@ -557,14 +557,19 @@ void readWeatherBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
 //     i32 angerTicks
 //     u32 ageTicks
 //     u32 rngState
+//     i32 fireTicks       // version >= 2; absent (read as 0) in version 1
 //     u8  flags           // reserved
 //
 // Species are palette-encoded the same way blocks/items are, so a species that
 // is removed in a future build skips cleanly on load (the unknown name becomes
 // an unknown palette entry) instead of renumbering every record.
+//
+// Version 2 inserts `fireTicks` before the reserved flags byte so a creature
+// saved mid-burn reopens still ablaze. A version-1 region omits it entirely and
+// reads it back as zero, so an old world migrates without a fixer.
 constexpr std::uint32_t kEntityBlockTag =
     'E' | ('N' << 8) | ('T' << 16) | ('Y' << 24);
-constexpr std::uint16_t kEntityBlockVersion = 1U;
+constexpr std::uint16_t kEntityBlockVersion = 2U;
 
 void appendEntityBlock(std::vector<std::uint8_t>& bytes,
                        const std::vector<PersistentEntity>& entities) {
@@ -606,6 +611,7 @@ void appendEntityBlock(std::vector<std::uint8_t>& bytes,
         appendInteger(bytes, entity.angerTicks);
         appendInteger(bytes, entity.ageTicks);
         appendInteger(bytes, entity.rngState);
+        appendInteger(bytes, entity.fireTicks);  // version 2
         appendInteger(bytes, static_cast<std::uint8_t>(0U));  // flags, reserved
     }
     const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
@@ -668,6 +674,11 @@ void readEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
         entity.angerTicks = readInteger<std::int32_t>(payload, cursor);
         entity.ageTicks = readInteger<std::uint32_t>(payload, cursor);
         entity.rngState = readInteger<std::uint32_t>(payload, cursor);
+        // fireTicks arrived in version 2; a version-1 record leaves it at its
+        // default zero (not on fire), which is exactly a migrated old world.
+        if (blockVersion >= 2U) {
+            entity.fireTicks = readInteger<std::int32_t>(payload, cursor);
+        }
         static_cast<void>(readInteger<std::uint8_t>(payload, cursor));  // flags, reserved
         // A creature saved outside the world is a corrupt record.
         if (!(entity.y >= -64.0F && entity.y <= 384.0F)) {
@@ -1367,7 +1378,7 @@ void readChunkBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
 //         u32 editCount + edits[]:   { u8 packedXZ + i16 y + u16 stateIndex }
 //         u32 entityCount + entities[]: { u16 speciesIndex + f32 x,y,z,yaw + f32 vx,vy,vz
 //                                       + f32 health + i32 angerTicks + u32 ageTicks
-//                                       + u32 rngState + u8 flags }
+//                                       + u32 rngState + i32 fireTicks (ver >= 2) + u8 flags }
 //     u64 checksum (FNV-1a over everything above it)
 //
 // The state and species palettes are region-local and self-contained (block
@@ -1377,7 +1388,9 @@ void readChunkBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
 constexpr std::array<std::uint8_t, 8> kRegionMagic{'M', 'C', 'R', 'B', 'R', 'E', 'G', 0x00};
 constexpr std::uint32_t kRegionFileVersion = 1U;
 constexpr std::uint32_t kRegionChunkTag = blockTag("CCNK");
-constexpr std::uint16_t kRegionChunkVersion = 1U;
+// Version 2 appends fireTicks to each entity record (see the ENTITY block's
+// version 2); a version-1 region reads it back as zero, migrating cleanly.
+constexpr std::uint16_t kRegionChunkVersion = 2U;
 constexpr std::uint32_t kRegionWidth = 32U;  // chunks per region side
 
 // Floor division of a chunk coordinate by the region width, exactly like the
@@ -1611,6 +1624,7 @@ void appendRegionFile(std::vector<std::uint8_t>& bytes, const RegionData& region
             appendInteger(bytes, entity.angerTicks);
             appendInteger(bytes, entity.ageTicks);
             appendInteger(bytes, entity.rngState);
+            appendInteger(bytes, entity.fireTicks);  // version 2
             appendInteger(bytes, static_cast<std::uint8_t>(0U));  // flags, reserved
         }
     }
@@ -1725,6 +1739,10 @@ void readRegionFile(std::span<const std::uint8_t> bytes, RegionData& region) {
             entity.angerTicks = readInteger<std::int32_t>(payload, cursor);
             entity.ageTicks = readInteger<std::uint32_t>(payload, cursor);
             entity.rngState = readInteger<std::uint32_t>(payload, cursor);
+            // fireTicks arrived in version 2; a version-1 region leaves it zero.
+            if (header.version >= 2U) {
+                entity.fireTicks = readInteger<std::int32_t>(payload, cursor);
+            }
             static_cast<void>(readInteger<std::uint8_t>(payload, cursor));  // flags, reserved
             // A creature saved outside the world is a corrupt record.
             if (!(entity.y >= -64.0F && entity.y <= 384.0F)) {

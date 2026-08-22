@@ -33,6 +33,14 @@ inline constexpr int kInvulnerableWindowTicks = 20;
 // removed.
 inline constexpr int kDeathTicks = 20;
 
+// Entity#baseTick's fire cadence: a burning thing takes one point of OnFire
+// damage every second (twenty ticks) while `fireTicks` counts down, matching
+// vanilla's `this.fireTicks % 20 == 0` burn. setSecondsOnFire multiplies its
+// argument by this to reach a tick count, so `setOnFire(5)` burns for 100 ticks
+// and deals five points of damage.
+inline constexpr int kFireDamageInterval = 20;
+inline constexpr int kTicksPerSecond = 20;
+
 struct DamageOutcome final {
     bool landed = false;  // the hit applied (not swallowed by the window)
     bool died = false;    // health crossed zero on this hit
