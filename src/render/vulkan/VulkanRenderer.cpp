@@ -1643,6 +1643,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             camera.setFieldOfViewDegrees(baseFieldOfViewDegrees * fovMultiplier);
             audioSystem.updateListener(camera.position(), camera.direction(), {0.0F, 1.0F, 0.0F});
             audioSystem.update();
+            driveAmbientMusic();
             if (worldSessionActive)
                 world_.processChunkStreaming();
             {
@@ -4360,6 +4361,49 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void playUiClick() { audioSystem.playButtonClick(camera.position()); }
+
+    // AU-2: feed one tick of the ambient/music scheduler. Builds the situational
+    // context (menu vs overworld, creative vs game) and, when a world is loaded,
+    // a cave-mood brightness sample at a random block near the eye — the input
+    // BiomeAmbientSoundsHandler samples each tick. All scheduling/threshold logic
+    // lives in the audio system; this only gathers render-side context. Biome
+    // ambient loops are left empty until WG lands the nether/cave biomes that own
+    // them (记账).
+    void driveAmbientMusic() {
+        audio::AudioSystem::AmbientMusicContext context;
+        context.listenerPosition = camera.position();
+        if (!worldSessionActive) {
+            context.situation = audio::MusicSituation::Menu;
+        } else {
+            context.situation = uiFrameData_.gameMode == gameplay::GameMode::Creative
+                                    ? audio::MusicSituation::Creative
+                                    : audio::MusicSituation::Game;
+            // A random block within the mood search extent (8) of the eye. The
+            // per-frame LCG keeps the sampling cheap and needs no world RNG.
+            ambientMusicRandom_ = ambientMusicRandom_ * 1664525U + 1013904223U;
+            const auto roll = [this](int span) {
+                ambientMusicRandom_ = ambientMusicRandom_ * 1664525U + 1013904223U;
+                return static_cast<int>((ambientMusicRandom_ >> 8) % static_cast<std::uint32_t>(span)) -
+                       (span / 2);
+            };
+            constexpr int kExtent = 8;
+            constexpr int kSpan = kExtent * 2 + 1;
+            const glm::vec3 eye = camera.position();
+            const int bx = static_cast<int>(std::floor(eye.x)) + roll(kSpan);
+            const int by = static_cast<int>(std::floor(eye.y)) + roll(kSpan);
+            const int bz = static_cast<int>(std::floor(eye.z)) + roll(kSpan);
+            const auto light = world_.skyBlockLightAt(bx, by, bz);
+            audio::MoodSample sample;
+            sample.offsetX = (static_cast<double>(bx) + 0.5) - static_cast<double>(eye.x);
+            sample.offsetY = (static_cast<double>(by) + 0.5) - static_cast<double>(eye.y);
+            sample.offsetZ = (static_cast<double>(bz) + 0.5) - static_cast<double>(eye.z);
+            sample.skyBrightness = light.sky;
+            sample.blockBrightness = light.block;
+            context.moodSample = sample;
+        }
+        audioSystem.tickAmbientMusic(context);
+    }
+    std::uint32_t ambientMusicRandom_ = 0x1F123BB5U;
 
     // Rolls a broken block's loot table and drops whatever came out on top of the
     // cell it left behind. Several stacks fan out on the golden angle so they do

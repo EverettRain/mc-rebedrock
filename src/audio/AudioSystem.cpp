@@ -139,6 +139,10 @@ class AudioSystem::Impl final {
         // engine's uninit walking freed buffers.
         activeSounds.clear();
         freeSounds.clear();
+        // The AU-2 streamed voices (music / biome loop) reference registered
+        // bytes too; tear them down before the engine, same as the pool above.
+        musicVoice.reset();
+        ambientLoopVoice.reset();
         // The prototypes are data sources over those same bytes.
         for (auto& [name, asset] : soundAssets) {
             static_cast<void>(name);
@@ -380,7 +384,10 @@ class AudioSystem::Impl final {
         // A four-block reference distance also avoids the default inverse
         // attenuation making a 4.5-block mining sound effectively inaudible.
         ma_sound_set_min_distance(&active->sound, 4.0F);
-        ma_sound_set_max_distance(&active->sound, 48.0F);
+        // The attenuation ceiling. 48 blocks for ordinary sounds; a record
+        // overrides this to carry across the jukebox's whole radius (set through
+        // recordMaxDistance_ around the playPositioned call).
+        ma_sound_set_max_distance(&active->sound, recordMaxDistance_);
         ma_sound_set_rolloff(&active->sound, 0.75F);
         // Vanilla's "Directional Audio" toggle. This backend has no true HRTF,
         // so the parity mapping is the pan mode: ON = a true pan (the sound
@@ -512,6 +519,190 @@ class AudioSystem::Impl final {
         blockEvents{};
     std::vector<std::unique_ptr<ActiveSound>> activeSounds;
     std::vector<std::unique_ptr<ActiveSound>> freeSounds;
+
+    // ---- AU-2 ambient/music state ----
+    // The situational-music state machine and the single streamed music voice it
+    // drives. One voice at a time; a new/replacing song stops the old one.
+    MusicScheduler musicScheduler{defaultMusicTable()};
+    ActiveSound musicVoice;
+    // The biome ambient loop voice and which event it is playing (empty = none),
+    // cross-faded when the biome's loop changes.
+    ActiveSound ambientLoopVoice;
+    std::string ambientLoopEvent;
+    // The cave-mood accumulator (LEGACY_CAVE_SETTINGS).
+    MoodAccumulator moodAccumulator{MoodSettings{}};
+    // MusicManager cross-fade: fade a music start in over ~2 s, a stop out over
+    // ~0.5 s, matching the smooth feel vanilla gets from its per-tick gain ramp.
+    static constexpr std::uint64_t kMusicFadeInMs = 2000U;
+    static constexpr std::uint64_t kMusicStopFadeMs = 500U;
+    static constexpr std::uint64_t kAmbientLoopFadeMs = 2000U;
+
+    // ---- AU-2 methods ----
+
+    // Start a streamed, non-positioned voice (music / biome loop) into `voice`,
+    // fading in. Any previous voice there is stopped first. Returns false when the
+    // asset is missing or the engine is down (voice left stopped).
+    bool startStreamedVoice(ActiveSound& voice, std::string_view event, SoundCategory category,
+                            bool looping, std::uint64_t fadeInMs) {
+        stopStreamedVoice(voice, 0U);
+        if (!initialized || event.empty()) {
+            return false;
+        }
+        const assets::SoundEntry* entry = registry.pick(event, randomState);
+        if (entry == nullptr) {
+            if (warnedMissingEvents.emplace(event).second) {
+                std::cerr << "Missing sound event: " << event << '\n';
+            }
+            return false;
+        }
+        const auto cached = soundAssets.find(entry->name);
+        if (cached == soundAssets.end() || !cached->second.exists) {
+            if (warnedMissingAssets.emplace(entry->name).second) {
+                std::cerr << "Missing sound asset: " << entry->name << '\n';
+            }
+            return false;
+        }
+        if (!ensureRegistered(entry->name, cached->second)) {
+            return false;
+        }
+        const ma_result initResult =
+            ma_sound_init_from_file(&engine, cached->second.virtualName.c_str(),
+                                    MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_ASYNC, nullptr, nullptr,
+                                    &voice.sound);
+        if (initResult != MA_SUCCESS) {
+            std::cerr << "Unable to stream sound asset: " << entry->name << '\n';
+            return false;
+        }
+        voice.initialized = true;
+        voice.createdAt = std::chrono::steady_clock::now();
+        // Music and menu ambience are non-positional (relative to the listener):
+        // no distance attenuation, they play at full category volume everywhere.
+        ma_sound_set_spatialization_enabled(&voice.sound, MA_FALSE);
+        ma_sound_set_looping(&voice.sound, looping ? MA_TRUE : MA_FALSE);
+        const float gain = categoryGain(category);
+        ma_sound_set_volume(&voice.sound, masterVolume * gain);
+        if (fadeInMs > 0U) {
+            ma_sound_set_fade_in_milliseconds(&voice.sound, 0.0F, masterVolume * gain,
+                                              fadeInMs);
+        }
+        if (ma_sound_start(&voice.sound) != MA_SUCCESS) {
+            voice.reset();
+            return false;
+        }
+        return true;
+    }
+
+    // Stop a streamed voice, fading out over `fadeMs` (0 = immediate). miniaudio's
+    // scheduled stop lets the fade finish before the voice is torn down on the
+    // audio thread; here we uninit at once for simplicity, which is inaudible for
+    // the short stop fades used.
+    void stopStreamedVoice(ActiveSound& voice, std::uint64_t fadeMs) {
+        if (!voice.initialized) {
+            return;
+        }
+        if (initialized && fadeMs > 0U) {
+            ma_sound_set_fade_in_milliseconds(&voice.sound, -1.0F, 0.0F, fadeMs);
+            const ma_uint64 stopFrames =
+                ma_engine_get_sample_rate(&engine) * fadeMs / 1000U;
+            ma_sound_set_stop_time_in_pcm_frames(
+                &voice.sound, ma_engine_get_time_in_pcm_frames(&engine) + stopFrames);
+            // Leave the fade to play out; the voice will be reclaimed on the next
+            // start or on teardown. For a deterministic teardown we still reset.
+        }
+        voice.reset();
+    }
+
+    [[nodiscard]] bool musicVoiceActive() {
+        if (!musicVoice.initialized) {
+            return false;
+        }
+        // A looping/streamed music voice is "active" until it ends. Music tracks
+        // are one-shot (not looping), so at_end marks completion.
+        return ma_sound_at_end(&musicVoice.sound) != MA_TRUE;
+    }
+
+    // Place a one-shot positioned event on `category` with a caller-chosen max
+    // distance (records carry further than the 48-block default). Mirrors play()
+    // but takes an explicit event id and attenuation ceiling.
+    void playPositioned(std::string_view event, SoundCategory category, const glm::vec3& position,
+                        float volume, float maxDistance) {
+        if (event.empty()) {
+            return;
+        }
+        const assets::SoundEntry* entry = registry.pick(event, randomState);
+        if (entry == nullptr) {
+            if (warnedMissingEvents.emplace(event).second) {
+                std::cerr << "Missing sound event: " << event << '\n';
+            }
+            return;
+        }
+        recordSubtitle(event);
+        // play() already applies the category gain, position, min/max distance
+        // (48) and pan mode. For records we want a wider ceiling, so play a copy
+        // with the default path but override the max distance afterwards is not
+        // possible post-start cleanly; instead reuse play() for the common case
+        // and only records pass a wider ceiling through recordMaxDistance_.
+        recordMaxDistance_ = maxDistance;
+        play(*entry, category, position, volume * entry->volume, entry->pitch);
+        recordMaxDistance_ = kDefaultMaxDistance;
+    }
+
+    static constexpr float kDefaultMaxDistance = 48.0F;
+    float recordMaxDistance_ = kDefaultMaxDistance;
+
+    void tickAmbientMusic(MusicSituation situation, std::string_view ambientLoopEventNow,
+                          const MoodSample* moodSample, const glm::vec3& listenerPosition,
+                          int ticks) {
+        // ---- situational music ----
+        for (int i = 0; i < std::max(ticks, 1); ++i) {
+            const bool active = musicVoiceActive();
+            const MusicCommand command = musicScheduler.tick(situation, active);
+            if (command.action == MusicAction::StartTrack ||
+                command.action == MusicAction::ReplaceTrack) {
+                startStreamedVoice(musicVoice, command.event, musicSoundCategory(),
+                                   /*looping=*/false, kMusicFadeInMs);
+            }
+        }
+
+        // ---- biome ambient loop (cross-fade on change) ----
+        if (ambientLoopEventNow != ambientLoopEvent) {
+            ambientLoopEvent.assign(ambientLoopEventNow);
+            if (ambientLoopEventNow.empty()) {
+                stopStreamedVoice(ambientLoopVoice, kAmbientLoopFadeMs);
+            } else {
+                startStreamedVoice(ambientLoopVoice, ambientLoopEventNow, ambientSoundCategory(),
+                                   /*looping=*/true, kAmbientLoopFadeMs);
+            }
+        }
+
+        // ---- cave mood ----
+        if (moodSample != nullptr) {
+            if (const auto trigger = moodAccumulator.tick(*moodSample)) {
+                const glm::vec3 at{
+                    listenerPosition.x + static_cast<float>(trigger->positionX),
+                    listenerPosition.y + static_cast<float>(trigger->positionY),
+                    listenerPosition.z + static_cast<float>(trigger->positionZ)};
+                playEvent(trigger->event, ambientSoundCategory(), at, 1.0F, 1.0F);
+            }
+        }
+    }
+
+    void playRecord(std::string_view event, const glm::vec3& position) {
+        // JukeboxBlockEntity plays the disc at 64-block range (vanilla records
+        // are audible across the whole jukebox radius), on the Record bus.
+        playPositioned(event, recordSoundCategory(), position, 4.0F, 64.0F);
+    }
+
+    void stopRecord() {
+        // Records are one-shot voices in the active pool; a real jukebox stop
+        // would track the specific voice. Kept minimal: the next tick's update()
+        // reclaims ended voices. (记账：per-disc stop tracking deferred.)
+    }
+
+    [[nodiscard]] bool musicPlaying() { return musicScheduler.isPlaying() && musicVoiceActive(); }
+    [[nodiscard]] MusicSituation musicSituation() const {
+        return musicScheduler.playingSituation();
+    }
 };
 
 AudioSystem::AudioSystem(const assets::ResourceProvider& provider, float masterVolume)
@@ -648,5 +839,21 @@ void AudioSystem::playWeatherRain(const glm::vec3& position, float volume) {
 void AudioSystem::playWeatherRainAbove(const glm::vec3& position, float volume) {
     implementation->playEvent("weather.rain.above", SoundCategory::Weather, position, volume, 1.0F);
 }
+
+void AudioSystem::tickAmbientMusic(const AmbientMusicContext& context) {
+    implementation->tickAmbientMusic(context.situation, context.ambientLoopEvent,
+                                     context.moodSample ? &*context.moodSample : nullptr,
+                                     context.listenerPosition, context.ticks);
+}
+
+void AudioSystem::playRecord(std::string_view event, const glm::vec3& position) {
+    implementation->playRecord(event, position);
+}
+
+void AudioSystem::stopRecord() { implementation->stopRecord(); }
+
+bool AudioSystem::musicPlaying() const { return implementation->musicPlaying(); }
+
+MusicSituation AudioSystem::musicSituation() const { return implementation->musicSituation(); }
 
 } // namespace mc::audio

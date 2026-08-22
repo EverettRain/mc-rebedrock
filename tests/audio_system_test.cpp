@@ -118,5 +118,39 @@ int main() {
     audio.setDirectionalAudio(true);
     assert(audio.directionalAudio());
 
+    // ---- AU-2: ambient/music integration (no assets on this provider, so the
+    // scheduler runs but no voice actually sounds) ----
+    using mc::audio::MusicSituation;
+    // Nothing playing before the first tick.
+    assert(!audio.musicPlaying());
+    assert(audio.musicSituation() == MusicSituation::None);
+
+    // Driving the scheduler with a large tick budget reaches a StartTrack
+    // decision; with no music asset the voice never becomes audible, so
+    // musicPlaying() (which also requires the voice to be sounding) stays false —
+    // this is the "缺资产则记账不硬造" behaviour, not a crash.
+    AudioSystem::AmbientMusicContext context;
+    context.situation = MusicSituation::Game;
+    context.ticks = 2000; // enough ticks to clear the start delay
+    context.listenerPosition = {0.0F, 64.0F, 0.0F};
+    audio.tickAmbientMusic(context); // must not crash without assets
+
+    // A mood sample in the dark drives the accumulator through the audio system;
+    // over enough ticks it would emit a cave sound (again silent without assets).
+    // Just prove the call path is safe.
+    mc::audio::MoodSample dark{};
+    dark.offsetX = 4.0;
+    dark.skyBrightness = 0;
+    dark.blockBrightness = 0;
+    context.moodSample = dark;
+    context.ticks = 1;
+    for (int i = 0; i < 10; ++i) {
+        audio.tickAmbientMusic(context);
+    }
+
+    // Records and their stop are safe to call with no jukebox asset.
+    audio.playRecord("music_disc.cat", {1.0F, 64.0F, 1.0F});
+    audio.stopRecord();
+
     return 0;
 }

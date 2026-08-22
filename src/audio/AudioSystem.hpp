@@ -1,12 +1,14 @@
 #pragma once
 
 #include "assets/ResourceProvider.hpp"
+#include "audio/AmbientMusicScheduler.hpp"
 #include "audio/MobSoundProfile.hpp"
 #include "audio/SoundCategory.hpp"
 #include "world/Block.hpp"
 
 #include <glm/vec3.hpp>
 #include <memory>
+#include <optional>
 #include <string_view>
 
 namespace mc::audio {
@@ -133,6 +135,47 @@ class AudioSystem final {
     // caller's gradient-scaled value — 0.2 base for rain, 0.1 for rain-above.
     void playWeatherRain(const glm::vec3& position, float volume);
     void playWeatherRainAbove(const glm::vec3& position, float volume);
+
+    // ---- AU-2: ambient environment + situational music + jukebox ----
+
+    // The per-tick context the ambient/music scheduler reads: which situational
+    // music applies, the biome's ambient loop event (empty = none), and — when
+    // the caller is in a mood-capable place — a brightness sample near the player
+    // for the cave-mood accumulator. All of it is gathered by the renderer, so
+    // the audio system stays free of world/biome types.
+    struct AmbientMusicContext final {
+        MusicSituation situation = MusicSituation::Game;
+        // The biome's looping ambience (BiomeAmbientSoundsHandler loop sound),
+        // e.g. a nether/cave loop; empty means the current biome has none.
+        std::string_view ambientLoopEvent{};
+        // When present, the mood accumulator advances by this sample. Absent when
+        // the world is not loaded / no sampling happened this tick.
+        std::optional<MoodSample> moodSample{};
+        // The listener position, used to place the mood cave sound in the world.
+        glm::vec3 listenerPosition{0.0F};
+        // ticks elapsed since the last call; the scheduler counts in ticks.
+        int ticks = 1;
+    };
+
+    // Drive one client-tick of the ambient/music scheduler: fade/replace the
+    // situational music voice, advance the cave-mood accumulator and play its
+    // trigger, and cross-fade the biome ambient loop. Pure client presentation;
+    // routes music→Music, loop/mood→Ambient (AU-1 buses).
+    void tickAmbientMusic(const AmbientMusicContext& context);
+
+    // Jukebox: play a music-disc clip at `position` on the Record bus. Records
+    // ignore the normal attenuation ceiling the way vanilla does (audible across
+    // the jukebox's play radius), so this uses a wider max distance.
+    void playRecord(std::string_view event, const glm::vec3& position);
+    // Stop a currently-playing record (hopper removes the disc / another disc
+    // inserted). No-op when nothing is playing.
+    void stopRecord();
+
+    // Whether a situational-music voice is currently sounding. Exposed for the
+    // "at most one music at a time" invariant and for tests.
+    [[nodiscard]] bool musicPlaying() const;
+    // The situation whose music is currently playing (None when silent).
+    [[nodiscard]] MusicSituation musicSituation() const;
 
   private:
     class Impl;

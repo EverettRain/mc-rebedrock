@@ -1551,6 +1551,18 @@ class WorldRenderer final {
         return 1.0F + sky + block * 16.0F;
     }
 
+    // AU-2: the raw sky/block light levels (0..15) at a world block, for the
+    // cave-mood accumulator to sample. Reads the render-owned client cache, the
+    // same lock-free source the interaction raycast uses.
+    struct LightSample final {
+        int sky = 0;
+        int block = 0;
+    };
+    [[nodiscard]] LightSample skyBlockLightAt(int blockX, int blockY, int blockZ) const {
+        return {static_cast<int>(clientCache.skyLight(blockX, blockY, blockZ)),
+                static_cast<int>(clientCache.blockLight(blockX, blockY, blockZ))};
+    }
+
     // Draws one box-UV skinned cuboid (mode 9): the world matrix carries the
     // bone/cube transform, `renderSize` is the drawn cube extent in model units,
     // `uvSize` the (uninflated) size whose box-UV net is sampled and `uv` that
