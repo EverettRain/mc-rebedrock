@@ -41,6 +41,7 @@
 #include "gameplay/command/CommandDispatcher.hpp"
 #include "gameplay/command/GameplayArguments.hpp"
 #include "input/GlfwInputBackend.hpp"
+#include "input/InputActionRouting.hpp"
 #include "input/InputSystem.hpp"
 #include "gameplay/entities/CowEntity.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
@@ -2392,7 +2393,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const bool gameplayEnabled = worldReady && !inventoryOpen && !paused && !chatOpen;
         const input::MovementIntent intent =
             inputSystem_.poll(frame, inputEvents_, gameplayEnabled);
-        dispatchGameplayInputEvents(gameplayEnabled);
+        // The action edges are dispatched every frame, NOT only when gameplay is
+        // enabled: E must close the inventory (a screen that itself disables the
+        // gameplay poll), and F3/F5 toggle debug/perspective regardless of any
+        // screen — the pre-PX-1 key callback fired those unconditionally. Only the
+        // strictly in-play actions (hotbar swap, drop) stay gameplay-gated; the
+        // dispatcher applies the right gate per action.
+        dispatchInputEvents(gameplayEnabled);
         if (!gameplayEnabled) {
             // A screen is up: send a zeroed intent so the server stops the player.
             runtime.sendClientMovement(gameplay::MovementInput{});
@@ -2424,33 +2431,48 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         clearPendingInputEdges();
     }
 
-    // PX-1: translate the InputSystem's discrete UI/gameplay action edges into the
-    // renderer's existing side effects (inventory toggle, hotbar swap, drop,
-    // debug/perspective). Replaces the per-key GLFW_PRESS branches the key
-    // callback used to carry for these gameplay actions.
-    void dispatchGameplayInputEvents(bool gameplayEnabled) {
-        if (!gameplayEnabled) {
-            return;
-        }
+    // PX-1: translate the InputSystem's discrete action edges into the renderer's
+    // existing side effects (inventory toggle, hotbar swap, drop, debug,
+    // perspective). Replaces the per-key GLFW_PRESS branches the key callback used
+    // to carry. Each action carries its own gate, mirroring the pre-PX-1 guards:
+    //
+    //   Debug / Perspective  — fired unconditionally (the old callback had no
+    //                          guard); toggling debug/perspective works from any
+    //                          screen state, matching vanilla F3/F5.
+    //   Inventory (E)        — fired while not paused and not typing in chat, so
+    //                          E BOTH opens play->inventory AND closes it again
+    //                          (the inventory screen disables the gameplay poll,
+    //                          so gating this on gameplayEnabled would strand it
+    //                          open — the reported regression). Chat swallows E as
+    //                          a character instead.
+    //   DropItem / Hotbar    — strictly in-play; gated on gameplayEnabled.
+    void dispatchInputEvents(bool gameplayEnabled) {
+        const input::InputDispatchGate gate{
+            gameplayEnabled,
+            /*inventoryToggleEnabled=*/worldReady && !paused && !chatOpen,
+        };
         for (std::size_t i = 0; i < inputEvents_.size(); ++i) {
             const auto& event = inputEvents_[i];
             if (event.phase != input::EventPhase::Pressed) {
+                continue;
+            }
+            if (!input::shouldDispatchAction(event.action, gate)) {
                 continue;
             }
             switch (event.action) {
                 case input::InputAction::Inventory:
                     setInventoryOpen(!inventoryOpen);
                     break;
-                case input::InputAction::DropItem:
-                    dropRequested = true;
-                    dropWholeStack =
-                        glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS;
-                    break;
                 case input::InputAction::Debug:
                     debugOverlayOpen = !debugOverlayOpen;
                     break;
                 case input::InputAction::Perspective:
                     cameraPerspective = nextPerspective(cameraPerspective);
+                    break;
+                case input::InputAction::DropItem:
+                    dropRequested = true;
+                    dropWholeStack =
+                        glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS;
                     break;
                 default:
                     if (input::isHotbarAction(event.action)) {

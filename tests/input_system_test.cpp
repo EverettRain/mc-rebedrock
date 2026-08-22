@@ -1,4 +1,5 @@
 #include "input/BindingConfig.hpp"
+#include "input/InputActionRouting.hpp"
 #include "input/InputSystem.hpp"
 #include "input/RawInputFrame.hpp"
 
@@ -286,6 +287,75 @@ void testZeroAllocQueueBound() {
     assert(queue.size() > 0);
 }
 
+// --- Regression: F3/F5 are bound and produce Debug/Perspective edges, even with
+// gameplay gated. The poll fills the event queue regardless of the gameplay gate
+// (only the continuous movement is suppressed), so the renderer can act on
+// debug/perspective/inventory while a screen is up. The original bug was two-
+// fold: the GLFW backend never SAMPLED F3/F5 (covered by the binding-key mapping
+// below), and the renderer then gated ALL edges on gameplayEnabled. This locks
+// the core half: given F3/F5 down, the edges must fire. -------------------------
+void testFunctionKeyEdgesFireWhenGated() {
+    InputSystem system;
+    InputSystem::EventQueue queue;
+    RawInputFrame frame;
+    frame.setKey(Key::F3, true);
+    frame.setKey(Key::F5, true);
+    // Gameplay disabled (a screen is up): movement is zeroed, but the discrete
+    // action edges must still be emitted.
+    system.poll(frame, queue, /*enableGameplayActions=*/false);
+    assert(hasEvent(queue, InputAction::Debug, EventPhase::Pressed));
+    assert(hasEvent(queue, InputAction::Perspective, EventPhase::Pressed));
+
+    // And the defaults bind them to F3/F5, so the GLFW backend must sample those
+    // keys — the omission that made the actions permanently dead.
+    const BindingTable table = BindingTable::defaults();
+    assert(table.binding(InputAction::Debug) == keyboard(Key::F3));
+    assert(table.binding(InputAction::Perspective) == keyboard(Key::F5));
+}
+
+// --- Regression: the per-action dispatch gate. E must close the inventory (whose
+// own screen disables the gameplay poll), F3/F5 fire from any screen state, and
+// hotbar/drop stay strictly in play. This pins the routing rule that replaced the
+// stranding `if (!gameplayEnabled) return;`. ----------------------------------
+void testDispatchGate() {
+    // In active play: everything in-play routes.
+    {
+        const InputDispatchGate gate{/*gameplayEnabled=*/true, /*inventoryToggle=*/true};
+        assert(shouldDispatchAction(InputAction::Inventory, gate));
+        assert(shouldDispatchAction(InputAction::Debug, gate));
+        assert(shouldDispatchAction(InputAction::Perspective, gate));
+        assert(shouldDispatchAction(InputAction::DropItem, gate));
+        assert(shouldDispatchAction(InputAction::Hotbar5, gate));
+    }
+    // Inventory open: gameplay poll is OFF, but the inventory toggle is still on,
+    // so E closes it — the reported regression. Drop/hotbar do not fire.
+    {
+        const InputDispatchGate gate{/*gameplayEnabled=*/false, /*inventoryToggle=*/true};
+        assert(shouldDispatchAction(InputAction::Inventory, gate));   // E closes it
+        assert(shouldDispatchAction(InputAction::Debug, gate));       // F3 still toggles
+        assert(shouldDispatchAction(InputAction::Perspective, gate)); // F5 still toggles
+        assert(!shouldDispatchAction(InputAction::DropItem, gate));
+        assert(!shouldDispatchAction(InputAction::Hotbar1, gate));
+    }
+    // Paused / chat typing: both gates off. Only debug/perspective (unconditional)
+    // fire; E must NOT toggle the inventory (E types 'e' in chat / does nothing
+    // in the pause menu).
+    {
+        const InputDispatchGate gate{/*gameplayEnabled=*/false, /*inventoryToggle=*/false};
+        assert(!shouldDispatchAction(InputAction::Inventory, gate));
+        assert(!shouldDispatchAction(InputAction::DropItem, gate));
+        assert(!shouldDispatchAction(InputAction::Hotbar9, gate));
+        assert(shouldDispatchAction(InputAction::Debug, gate));
+        assert(shouldDispatchAction(InputAction::Perspective, gate));
+    }
+    // Actions this rule does not route (mouse attack/use) never fire through it.
+    {
+        const InputDispatchGate gate{/*gameplayEnabled=*/true, /*inventoryToggle=*/true};
+        assert(!shouldDispatchAction(InputAction::Attack, gate));
+        assert(!shouldDispatchAction(InputAction::Use, gate));
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -301,5 +371,7 @@ int main() {
     testResetEdges();
     testConfigRoundTrip();
     testZeroAllocQueueBound();
+    testFunctionKeyEdgesFireWhenGated();
+    testDispatchGate();
     return 0;
 }

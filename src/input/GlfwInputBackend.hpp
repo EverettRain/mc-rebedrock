@@ -96,6 +96,11 @@ inline void sampleGlfwWindow(GLFWwindow* window, glm::vec3 lookDirection, RawInp
     sampleKey(Key::LeftShift, GLFW_KEY_LEFT_SHIFT);
     sampleKey(Key::LeftControl, GLFW_KEY_LEFT_CONTROL);
     sampleKey(Key::Slash, GLFW_KEY_SLASH);
+    // The function keys the debug/perspective actions bind to. Omitting these
+    // (the PX-1 miss) left F3/F5 permanently up-false, so their action edges
+    // never fired and the debug overlay / camera toggle did nothing.
+    sampleKey(Key::F3, GLFW_KEY_F3);
+    sampleKey(Key::F5, GLFW_KEY_F5);
     sampleKey(Key::Digit1, GLFW_KEY_1);
     sampleKey(Key::Digit2, GLFW_KEY_2);
     sampleKey(Key::Digit3, GLFW_KEY_3);
