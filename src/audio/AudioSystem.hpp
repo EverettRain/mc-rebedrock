@@ -2,6 +2,7 @@
 
 #include "assets/ResourceProvider.hpp"
 #include "audio/MobSoundProfile.hpp"
+#include "audio/SoundCategory.hpp"
 #include "world/Block.hpp"
 
 #include <glm/vec3.hpp>
@@ -70,6 +71,27 @@ class AudioSystem final {
     // after a play call to feed the subtitle overlay when subtitles are enabled.
     [[nodiscard]] std::string_view lastSubtitle() const;
     void setMasterVolume(float volume);
+    // Per-category (non-master) gain. Master is still driven by setMasterVolume
+    // (the engine's global bus); setting SoundCategory::Master here folds into the
+    // same value. Every subsequent play of that category multiplies by this gain,
+    // so lowering one category never touches another.
+    void setCategoryVolume(SoundCategory category, float volume);
+    [[nodiscard]] float categoryVolume(SoundCategory category) const;
+    // Apply a whole options-loaded table at once (Master routed to the engine,
+    // the rest to the per-category gains).
+    void setCategoryVolumes(const SoundCategoryVolumes& volumes);
+    // Vanilla's "Directional Audio" (HRTF) toggle. On enables miniaudio's HRTF
+    // spatializer for positioned voices; off falls back to plain stereo panning.
+    // Parity only — no occlusion or reverb is added (vanilla has none).
+    void setDirectionalAudio(bool enabled);
+    [[nodiscard]] bool directionalAudio() const;
+    // The pre-distance effective volume a play of `eventVolume` on `category`
+    // would use: master × category-gain × eventVolume. This is exactly the value
+    // handed to miniaudio's set_volume (miniaudio then applies distance on top),
+    // exposed so the layered-multiply and category isolation are verifiable
+    // without an audio device. Master's own gain folds into master, so a Master
+    // play is master × eventVolume.
+    [[nodiscard]] float effectiveVolume(SoundCategory category, float eventVolume) const;
     void updateListener(const glm::vec3& position, const glm::vec3& direction, const glm::vec3& up);
     void update();
 
@@ -93,11 +115,17 @@ class AudioSystem final {
     // Each resolves the species event through sounds.json and applies its
     // getSoundVolume with the vanilla pitch roll. A profile with no event
     // stays silent, so species without an ambient sound are not forced to bark.
-    void playCreatureHurt(const MobSoundProfile& profile, const glm::vec3& position);
-    void playCreatureDeath(const MobSoundProfile& profile, const glm::vec3& position);
-    void playCreatureAmbient(const MobSoundProfile& profile, const glm::vec3& position);
+    // `category` is the creature bus (Hostile for monsters, Neutral for the rest,
+    // Ambient for bats) the caller derives from the species' MobCategory.
+    void playCreatureHurt(const MobSoundProfile& profile, SoundCategory category,
+                          const glm::vec3& position);
+    void playCreatureDeath(const MobSoundProfile& profile, SoundCategory category,
+                           const glm::vec3& position);
+    void playCreatureAmbient(const MobSoundProfile& profile, SoundCategory category,
+                             const glm::vec3& position);
     // Steps use profile.stepVolume and fixed pitch 1.0.
-    void playCreatureStep(const MobSoundProfile& profile, const glm::vec3& position);
+    void playCreatureStep(const MobSoundProfile& profile, SoundCategory category,
+                          const glm::vec3& position);
 
     // ---- Weather ----
     // weather.rain / weather.rain.above: the per-frame rain clip played at the

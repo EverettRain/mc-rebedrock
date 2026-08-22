@@ -1,5 +1,6 @@
 #pragma once
 
+#include "audio/SoundCategory.hpp"
 #include "world/WorldConstants.hpp"
 
 #include <filesystem>
@@ -24,6 +25,17 @@ struct GameOptions final {
     int frameRateLimit = 120;
     int anisotropy = 8;
     float masterVolume = 0.8F;
+    // Per-category (non-master) sound volumes, indexed by mc::audio::SoundCategory
+    // (Master's slot mirrors masterVolume and is never persisted here — the
+    // existing audio.masterVolume key stays authoritative). Each sub-category
+    // multiplies on top of Master at play time. Default 1 for every bus, and the
+    // file writes each one sparsely under audio.category.<name>; an old options
+    // file with no such lines loads every sub-category at 1, i.e. unchanged
+    // behaviour.
+    mc::audio::SoundCategoryVolumes soundCategoryVolumes = mc::audio::defaultSoundCategoryVolumes();
+    // Vanilla's "Directional Audio" accessibility toggle (HRTF in vanilla; a pan
+    // mode here — see AudioSystem). On by default, matching vanilla.
+    bool directionalAudio = true;
     bool antiAliasing = true;
     bool viewBobbing = true;
     // Bedrock-style auto-jump: walking forward into a one-block rise jumps

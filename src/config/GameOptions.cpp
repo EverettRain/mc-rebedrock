@@ -65,6 +65,13 @@ void GameOptions::sanitize() {
     else if (anisotropy <= 8) anisotropy = 8;
     else anisotropy = 16;
     masterVolume = std::clamp(masterVolume, 0.0F, 1.0F);
+    for (float& categoryVolume : soundCategoryVolumes) {
+        categoryVolume = std::clamp(categoryVolume, 0.0F, 1.0F);
+    }
+    // Master's slot is not an independent setting; keep it a mirror of the
+    // authoritative masterVolume so a reader that indexes the array by
+    // SoundCategory::Master sees the right value.
+    soundCategoryVolumes[static_cast<std::size_t>(mc::audio::SoundCategory::Master)] = masterVolume;
     rainMode = std::clamp(rainMode, 0, 2);
     particleLevel = std::clamp(particleLevel, 0, 3);
     if (language.empty() ||
@@ -125,6 +132,19 @@ GameOptions GameOptions::load(const std::filesystem::path& path) {
             static_cast<void>(parseNumber(value, options.masterVolume));
         } else if (key == "accessibility.showSubtitles") {
             options.showSubtitles = value == "true" || value == "1" || value == "on";
+        } else if (key == "audio.directionalAudio") {
+            options.directionalAudio = value == "true" || value == "1" || value == "on";
+        } else if (key.rfind("audio.category.", 0U) == 0U) {
+            // A per-category sub-volume line, audio.category.<name>. An unknown
+            // name (or the master line, which is written elsewhere) is ignored so
+            // a stray token never lands in the wrong bus.
+            const auto name = key.substr(std::string_view{"audio.category."}.size());
+            const auto category = mc::audio::soundCategoryFromName(name);
+            if (category != mc::audio::SoundCategory::Count &&
+                category != mc::audio::SoundCategory::Master) {
+                static_cast<void>(parseNumber(
+                    value, options.soundCategoryVolumes[static_cast<std::size_t>(category)]));
+            }
         } else if (key == "lighting.dynamic") {
             options.dynamicLight = value == "true" || value == "1" || value == "on";
         } else if (key == "lighting.smooth") {
@@ -180,7 +200,23 @@ void GameOptions::save(const std::filesystem::path& path) const {
            << "audio.masterVolume=" << sanitized.masterVolume << '\n'
            << "accessibility.showSubtitles=" << (sanitized.showSubtitles ? "true" : "false")
            << '\n'
-           << "lighting.smooth=" << smoothLightingName(sanitized.smoothLightingQuality) << '\n'
+           << "audio.directionalAudio=" << (sanitized.directionalAudio ? "true" : "false") << '\n';
+    // Sparse per-category volumes: only a bus that a slider actually lowered from
+    // the 1.0 default is written, so a fresh options file has no category lines at
+    // all and stays forward/backward compatible. Master is skipped — it is the
+    // audio.masterVolume line above.
+    for (std::size_t index = 0; index < mc::audio::kSoundCategoryCount; ++index) {
+        const auto category = static_cast<mc::audio::SoundCategory>(index);
+        if (category == mc::audio::SoundCategory::Master) {
+            continue;
+        }
+        const float volume = sanitized.soundCategoryVolumes[index];
+        if (volume < 1.0F) {
+            output << "audio.category." << mc::audio::soundCategoryName(category) << '=' << volume
+                   << '\n';
+        }
+    }
+    output << "lighting.smooth=" << smoothLightingName(sanitized.smoothLightingQuality) << '\n'
            << "lighting.dynamic=" << (sanitized.dynamicLight ? "true" : "false") << '\n'
            << "render.vsync=" << (sanitized.vsync ? "true" : "false") << '\n'
            << "text.language=" << sanitized.language << '\n'
