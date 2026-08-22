@@ -818,9 +818,12 @@ class HudRenderer final {
             return translated("deathScreen.respawn", "Respawn");
         case ui::WidgetId::TitleScreen:
             return translated("deathScreen.titleScreen", "Title Screen");
+        case ui::WidgetId::ResetKeyBinds:
+            return translated("controls.resetAll", "Reset Keys");
         case ui::WidgetId::None:
         case ui::WidgetId::WorldRow:
         case ui::WidgetId::LanguageRow:
+        case ui::WidgetId::KeyBindRow:  // per-action label comes from keyBindLabelFor
             return {};
         }
         return {};
