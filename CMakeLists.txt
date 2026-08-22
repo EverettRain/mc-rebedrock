@@ -174,6 +174,7 @@ add_library(mc_rebedrock_animation STATIC
     src/animation/AnimationClip.cpp
     src/animation/Animator.cpp
     src/animation/BoneMask.cpp
+    src/animation/AnimationController.cpp
     src/animation/AnimationAssets.cpp
     src/animation/HumanoidPoseSolver.cpp
     src/animation/ModelAnimationSystem.cpp
@@ -1786,6 +1787,10 @@ if(BUILD_TESTING)
     add_executable(mc_rebedrock_blend_mode_test tests/blend_mode_test.cpp)
     target_link_libraries(mc_rebedrock_blend_mode_test PRIVATE mc_rebedrock_animation)
     add_test(NAME blend_mode COMMAND mc_rebedrock_blend_mode_test)
+
+    add_executable(mc_rebedrock_animation_controller_test tests/animation_controller_test.cpp)
+    target_link_libraries(mc_rebedrock_animation_controller_test PRIVATE mc_rebedrock_animation)
+    add_test(NAME animation_controller COMMAND mc_rebedrock_animation_controller_test)
 
     add_executable(mc_rebedrock_keyframe_bezier_test tests/keyframe_bezier_test.cpp)
     target_link_libraries(mc_rebedrock_keyframe_bezier_test PRIVATE mc_rebedrock_animation)
