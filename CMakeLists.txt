@@ -1792,6 +1792,11 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_animation_controller_test PRIVATE mc_rebedrock_animation)
     add_test(NAME animation_controller COMMAND mc_rebedrock_animation_controller_test)
 
+    add_executable(mc_rebedrock_player_layered_animation_test
+        tests/player_layered_animation_test.cpp)
+    target_link_libraries(mc_rebedrock_player_layered_animation_test PRIVATE mc_rebedrock_animation)
+    add_test(NAME player_layered_animation COMMAND mc_rebedrock_player_layered_animation_test)
+
     add_executable(mc_rebedrock_keyframe_bezier_test tests/keyframe_bezier_test.cpp)
     target_link_libraries(mc_rebedrock_keyframe_bezier_test PRIVATE mc_rebedrock_animation)
     add_test(NAME keyframe_bezier COMMAND mc_rebedrock_keyframe_bezier_test)

@@ -1,7 +1,9 @@
 #pragma once
 
 #include "animation/AnimationClip.hpp"
+#include "animation/AnimationController.hpp"
 #include "animation/Animator.hpp"
+#include "animation/BoneMask.hpp"
 #include "animation/SkeletalModel.hpp"
 
 #include <filesystem>
@@ -40,10 +42,28 @@ class PlayerModelAnimator final {
     // already follows the look direction through the renderer's separate
     // "head leads, body follows" yaw.
     void setBodyFollowsLook(bool enabled) { bodyFollowsLook_ = enabled; }
-    // `walking`/`sneaking` are targets; their influence eases in and out over a
-    // few frames so state changes blend instead of snapping.
+    // Holds an item pose on the upper body (arms) as an OVERRIDE layer masked to
+    // the arms: while `holding` is true the arms take the item-hold pitch instead
+    // of the locomotion arm swing (ANIM-1 mask + ANIM-2 override), so walking and
+    // holding an item no longer bleed into each other. `pitchDegrees` is the arm
+    // pitch of the held pose (0 = rest, negative = raised forward).
+    void setItemHold(bool holding, float pitchDegrees = -55.0F);
+    // `walking`/`sneaking` are targets; the ANIM-3 controller selects the
+    // idle/walk/sneak state and an ANIM-2 crossfade eases the state blend, so
+    // state changes fade instead of snapping (no hand-written eased weights).
     void update(float deltaSeconds, bool walking, bool sneaking = false);
     [[nodiscard]] const PlayerModelPose& pose() const { return pose_; }
+
+    // The controller state the locomotion machine settled on this frame
+    // (idle/walk/sneak). Exposed for tests and mob reuse.
+    [[nodiscard]] const std::string& locomotionState() const {
+        return controllerInstance_.currentState();
+    }
+    // True while a state crossfade is in flight (ANIM-2 Transition ramp). Exposed
+    // so tests can prove the state blend eases over time rather than snapping.
+    [[nodiscard]] bool locomotionTransitioning() const {
+        return controllerInstance_.transitioning();
+    }
 
     // The full skeletal pose from the most recent update, plus the geometry it
     // belongs to. The world renderer uses these to draw the third-person player
@@ -60,6 +80,17 @@ class PlayerModelAnimator final {
     Animator animator_;
     SkeletonPose skeletonPose_;
 
+    // ANIM-4 layered animation: masks split the skeleton so locomotion drives the
+    // legs, the item pose overrides the arms, and the look drives the head — each
+    // without touching the others. The controller selects idle/walk/sneak.
+    BoneGroups masks_;
+    AnimationControllerSet controllers_;
+    AnimationControllerInstance controllerInstance_;
+    // The held-item override pose, authored as a clip once and masked to the arms.
+    AnimationClip itemHoldClip_;
+    bool holdingItem_ = false;
+    float itemHoldPitch_ = -55.0F;
+
     int bodyBone_ = -1;
     int headBone_ = -1;
     int rightArmBone_ = -1;
@@ -70,9 +101,11 @@ class PlayerModelAnimator final {
     float lookX_ = 0.0F;
     float lookY_ = 0.0F;
     float elapsed_ = 0.0F;
-    // Eased blend weights so walk/sneak transitions are smooth, not abrupt.
+    // The walk amplitude fed to the walk clip's Molang; the controller crossfade
+    // owns the idle<->walk state blend, so this only scales the swing magnitude.
     float walkAmount_ = 0.0F;
-    float sneakAmount_ = 0.0F;
+    bool walking_ = false;
+    bool sneaking_ = false;
     bool bodyFollowsLook_ = false;
     PlayerModelPose pose_{};
 };
