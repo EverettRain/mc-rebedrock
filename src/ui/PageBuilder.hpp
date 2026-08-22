@@ -15,6 +15,8 @@
 // asserts that clicking widget N fires callback N. ui:: never touches Vulkan.
 
 #include "ui/PageStack.hpp"
+#include "input/InputAction.hpp"
+#include "input/InputNaming.hpp"
 #include "ui/Widget.hpp"
 
 #include <cstddef>
@@ -45,6 +47,11 @@ struct MenuBuildContext final {
     // scroll offset + visible window into these before building.
     std::size_t worldRowCount = 0;
     std::size_t languageRowCount = 0;
+    // PX-5 Key Binds: the label for an action's row ("Forward: W", or "Forward:
+    // > ? <" while that row is capturing). The renderer builds it from the
+    // InputSystem single source; a test can stub it. When set, the Controls page
+    // renders the key-bind table instead of the legacy toggle scaffold.
+    std::function<std::string(input::InputAction action)> keyBindLabelFor{};
 };
 
 // Every menu action the pages can fire, as injectable callbacks. The renderer
@@ -104,6 +111,12 @@ struct MenuCallbacks final {
     // Language list row select (draft selection, committed on Done)
     std::function<void(std::size_t rowIndex)> selectLanguageRow{};
 
+    // PX-5 Key Binds: clicking an action's row begins capturing its next key
+    // (KeyBindingScreen::beginCapture); Reset restores the vanilla defaults. Both
+    // act on the PX-1 InputSystem single source through the renderer's closures.
+    std::function<void(input::InputAction action)> beginKeyCapture{};
+    std::function<void()> resetKeyBinds{};
+
     // Sliders: value getters + drag/commit appliers (fraction in [0,1]).
     SliderBind viewDistance{};
     SliderBind simulationDistance{};
@@ -126,6 +139,7 @@ enum class WidgetId : std::uint16_t {
     ViewBobbing, AutoJump, ForceUnicodeFont,
     RainMode, ParticleLevel, SunShadows, RainCollisionCache,
     WorldRow, LanguageRow,
+    KeyBindRow, ResetKeyBinds,
 };
 
 namespace detail {
@@ -166,6 +180,20 @@ inline void addListRow(Page& page, const RectProvider& rectFor, WidgetId id, std
     w.rect = rectFor ? rectFor(page.size()) : UiRect{};
     w.onActivate = std::move(onActivate);
     static_cast<void>(rowIndex);
+    page.push_back(std::move(w));
+}
+
+// A key-bind row: an "Action: Key" ListRow whose click begins the rebind capture
+// for that action. The label comes from the InputSystem single source via the
+// context's keyBindLabelFor. `enabled` is always true (any row is rebindable).
+inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBuildContext& ctx,
+                          input::InputAction action, std::function<void()> onActivate) {
+    Widget w;
+    w.kind = WidgetKind::ListRow;
+    w.debugId = static_cast<std::uint16_t>(WidgetId::KeyBindRow);
+    w.rect = rectFor ? rectFor(page.size()) : UiRect{};
+    w.label = ctx.keyBindLabelFor ? ctx.keyBindLabelFor(action) : std::string{};
+    w.onActivate = std::move(onActivate);
     page.push_back(std::move(w));
 }
 
@@ -256,8 +284,18 @@ inline void addListRow(Page& page, const RectProvider& rectFor, WidgetId id, std
             break;
 
         case PageId::Controls:
+            // PX-5 Key Binds: one row per rebindable action (label from the PX-1
+            // InputSystem single source), each row begins its rebind capture on
+            // click. The View Bobbing / Auto Jump toggles and Reset/Done sit
+            // below the table, matching vanilla's Controls layout.
+            for (const input::InputAction action : input::keyBindRows()) {
+                detail::addKeyBindRow(page, rectFor, ctx, action, [cb, action]() {
+                    if (cb.beginKeyCapture) cb.beginKeyCapture(action);
+                });
+            }
             addButton(page, rectFor, ctx, WidgetId::ViewBobbing, cb.toggleViewBobbing);
             addButton(page, rectFor, ctx, WidgetId::AutoJump, cb.toggleAutoJump);
+            addButton(page, rectFor, ctx, WidgetId::ResetKeyBinds, cb.resetKeyBinds);
             addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
             break;
 

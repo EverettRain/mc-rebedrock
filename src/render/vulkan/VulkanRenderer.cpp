@@ -42,7 +42,9 @@
 #include "gameplay/command/GameplayArguments.hpp"
 #include "input/GlfwInputBackend.hpp"
 #include "input/InputActionRouting.hpp"
+#include "input/InputNaming.hpp"
 #include "input/InputSystem.hpp"
+#include "input/KeyBindingScreen.hpp"
 #include "gameplay/entities/CowEntity.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/PigEntity.hpp"
@@ -514,6 +516,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         glfwSetKeyCallback(window, [](GLFWwindow* callbackWindow, int key, int, int action, int) {
             auto* renderer = static_cast<Impl*>(glfwGetWindowUserPointer(callbackWindow));
             const auto currentPage = renderer->menuSystem.pageStack.current();
+            // PX-5 Key Binds: while a Controls row is capturing, the next key press
+            // IS the rebind — consume it here (writing through the InputSystem
+            // single source) instead of letting it act as a menu/gameplay key.
+            // Escape cancels the capture rather than binding Escape.
+            if (renderer->keyBindScreen_.capturing() && action == GLFW_PRESS) {
+                if (key == GLFW_KEY_ESCAPE) {
+                    renderer->keyBindScreen_.cancelCapture();
+                } else {
+                    const input::Key captured = input::keyFromGlfw(key);
+                    if (captured != input::Key::Unknown) {
+                        renderer->keyBindScreen_.applyKey(captured);
+                        renderer->playUiClick();
+                    }
+                }
+                return;
+            }
             if (currentPage == ui::PageId::ConfirmDelete) {
                 if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
                     renderer->menuSystem.pageStack.pop();
@@ -3117,6 +3135,19 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
         };
 
+        // PX-5 Key Binds: clicking a row begins capturing the next key for that
+        // action; Reset restores the vanilla defaults. Both act on the PX-1
+        // InputSystem single source (via keyBindScreen_), never a private copy.
+        cb.beginKeyCapture = [this](input::InputAction action) {
+            keyBindScreen_.beginCapture(action);
+            playUiClick();
+        };
+        cb.resetKeyBinds = [this] {
+            keyBindScreen_.resetToDefaults();
+            persistOptions();
+            playUiClick();
+        };
+
         cb.viewDistance.value = [this] {
             return std::clamp((static_cast<float>(viewDistanceChunks) - 2.0F) / 34.0F, 0.0F, 1.0F);
         };
@@ -3173,6 +3204,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         ctx.worldSelectable = !menuSystem.saveSummaries.empty();
         ctx.worldRowCount = 0;       // list rows are drawn by the list path today
         ctx.languageRowCount = 0;
+        // PX-5 Key Binds: each row's label is "Action: Key" from the InputSystem
+        // single source, or "Action: > ? <" while that row is capturing.
+        ctx.keyBindLabelFor = [this](input::InputAction action) -> std::string {
+            const std::string name{input::actionDisplayName(action)};
+            if (keyBindScreen_.capturing() && keyBindScreen_.capturingAction() == action) {
+                return name + ": > ? <";
+            }
+            return name + ": " + input::bindingDisplayName(inputSystem_.bindings().binding(action));
+        };
         return ui::buildPage(menuSystem.pageStack.current(), ctx, buildMenuCallbacks(),
                              menuRectProvider());
     }
@@ -6425,6 +6465,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // against bindings instead of hardcoded GLFW_KEY_* constants.
     input::InputSystem inputSystem_;
     input::InputSystem::EventQueue inputEvents_;
+    // PX-5: the Key Binds screen's rebind state, over the InputSystem single
+    // source. Non-null capture means the next key press is consumed as a rebind
+    // rather than gameplay input.
+    input::KeyBindingScreen keyBindScreen_{inputSystem_};
     bool dropRequested = false;
     bool dropWholeStack = false;
     bool chatOpen = false;

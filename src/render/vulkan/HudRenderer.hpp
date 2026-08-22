@@ -898,6 +898,12 @@ class HudRenderer final {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, panoramaPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 panoramaPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+        // PX-5: the menu background blur radius, in framebuffer pixels. 26.1's
+        // Screen.renderBlurredBackground drives its box blur from the
+        // `menuBackgroundBlurriness` option (default 0.5) scaled to a radius; the
+        // shipped default lands at a radius of 5. Kept as this named tunable so
+        // the mac visual pass can match vanilla by adjusting one value (the exact
+        // radius/kernel is a shader-visual call that cannot be judged headless).
         constexpr float kMenuBlurRadius = 5.0F;
         const PanoramaPush push{{yaw, pitch, tanHalfFov, aspect},
                                 {blurred ? kMenuBlurRadius : 0.0F, 0.0F, 0.0F, 0.0F}};
