@@ -74,12 +74,10 @@ PlayerPoseFrame solveHumanoidPose(const SkeletalModel& model, const HumanoidBone
     // 3. applyLocomotion: limbs swing along the walk phase, amplitude scaled by
     //    the walk speed. Arms and legs are the standard vanilla phase pairs.
     const float phase = state.walkStride * kWalkFrequency;
-    // Sprinting keeps the same tick-owned phase but carries a visibly stronger
-    // gait. Clamp after the multiplier so malformed snapshots cannot spin limbs
-    // through multiple revolutions.
-    constexpr float kSprintSwingMultiplier = 1.25F;
-    const float amount = std::clamp(
-        state.walkSpeed * (state.sprinting ? kSprintSwingMultiplier : 1.0F), 0.0F, 1.0F);
+    // ANIM A2: no sprint multiplier — the amplitude s already saturates to 1.0 for
+    // sprint and creative flight (§8.1: sprint does not change the pose formula).
+    // A negative amplitude (§5 backpedal) reverses the phase, which cos handles.
+    const float amount = std::clamp(state.walkSpeed, -1.0F, 1.0F);
     const float rightArmX = toDegrees(std::cos(phase + kPi) * kArmSwingRadians * amount);
     const float leftArmX = toDegrees(std::cos(phase) * kArmSwingRadians * amount);
     const float rightLegX = toDegrees(std::cos(phase) * kLegSwingRadians * amount);
@@ -89,25 +87,27 @@ PlayerPoseFrame solveHumanoidPose(const SkeletalModel& model, const HumanoidBone
     addRotation(pose, bones.rightLeg, glm::vec3{rightLegX, 0.0F, 0.0F});
     addRotation(pose, bones.leftLeg, glm::vec3{leftLegX, 0.0F, 0.0F});
 
-    // 4. applyArmPoses: an item is held slightly forward; a block a bit more;
-    //    eating raises the arm toward the head. The main hand is the right arm.
-    const auto applyArmPose = [&](int armBone, render::player::ArmPose armPose) {
+    // 4. applyArmPoses (§14): the ArmPose OVERRIDES the held arm's xRot — it halves
+    //    the walk swing and adds a forward lift, exactly `arm.xRot = arm.xRot*0.5 -
+    //    offset` (not a plain add). `side` is +1 for the right arm, -1 for the left
+    //    (the Y inward tuck mirrors). Eating/drinking use the ITEM pose in third
+    //    person (§16.3: raising to the mouth + chewing is first-person only, A9).
+    constexpr float kItemLiftDegrees = 18.0F;   // 0.3141593 rad
+    constexpr float kBlockLiftDegrees = 54.0F;  // 0.9424779 rad
+    constexpr float kBlockYawDegrees = 30.0F;   // 0.5235988 rad, inward tuck
+    const auto applyArmPose = [&](int armBone, render::player::ArmPose armPose, float side) {
+        if (armBone < 0) {
+            return;
+        }
+        glm::vec3& rotation = pose.bone(static_cast<std::size_t>(armBone)).rotation;
         switch (armPose) {
             case render::player::ArmPose::Item:
-                addRotation(pose, armBone, glm::vec3{-30.0F, 0.0F, 0.0F});
+            case render::player::ArmPose::Eat:  // A9: third person eats with ITEM pose
+                rotation.x = rotation.x * 0.5F - kItemLiftDegrees;
                 break;
             case render::player::ArmPose::Block:
-                addRotation(pose, armBone, glm::vec3{-45.0F, 0.0F, 0.0F});
-                break;
-            case render::player::ArmPose::Eat:
-                // Raised to the mouth, wobbling with the use progress. This is an
-                // OVERRIDE, not an add: the use pose owns the arm (vanilla sets
-                // the arm's pitch absolutely for eating/drinking), so it replaces
-                // the locomotion swing rather than summing with it — otherwise a
-                // walk phase would tilt the food away from the mouth.
-                setRotation(pose, armBone,
-                            glm::vec3{-70.0F + std::sin(state.use.progress * kPi * 6.0F) * 5.0F,
-                                      0.0F, 0.0F});
+                rotation.x = rotation.x * 0.5F - kBlockLiftDegrees;
+                rotation.y = -side * kBlockYawDegrees;  // inward tuck 30 deg
                 break;
             case render::player::ArmPose::Empty:
             case render::player::ArmPose::Bow:
@@ -119,16 +119,28 @@ PlayerPoseFrame solveHumanoidPose(const SkeletalModel& model, const HumanoidBone
                 break;
         }
     };
-    applyArmPose(bones.rightArm, state.rightArmPose);
-    applyArmPose(bones.leftArm, state.leftArmPose);
+    applyArmPose(bones.rightArm, state.rightArmPose, 1.0F);
+    applyArmPose(bones.leftArm, state.leftArmPose, -1.0F);
 
-    // 5. applyAttack: the swinging arm sweeps forward-and-up over the arc. sin(pi
-    //    * progress) peaks mid-swing. The main-hand swing drives the right arm;
-    //    the body twists slightly toward the swing (26.1's attack body rotation).
+    // 5. applyAttack (§15): the non-symmetric "whip" swing. The body twists on Y
+    //    with a very fast sqrt ease; the swinging arm lifts on X with a quartic
+    //    ease-out (fast up ~1 tick, slow down ~5), rolls out on Z, and yaws with
+    //    twice the body twist. Amplitudes: body 11.46 deg, arm lift 68.75 deg, arm
+    //    roll -22.9 deg. The pivot translation (±5px) and the head-pitch coupling
+    //    (h term) are first-person-camera niceties left to the visual pass.
     if (state.swing.active) {
-        const float swingLift = std::sin(state.swing.progress * kPi);
-        addRotation(pose, bones.rightArm, glm::vec3{-swingLift * 60.0F, 0.0F, 0.0F});
-        addRotation(pose, bones.body, glm::vec3{0.0F, swingLift * 8.0F, 0.0F});
+        const float t = std::clamp(state.swing.progress, 0.0F, 1.0F);
+        const float bodyTwist = std::sin(std::sqrt(t) * 2.0F * kPi) * toDegrees(0.2F);  // 11.46
+        float f = 1.0F - t;
+        f *= f;
+        f *= f;
+        f = 1.0F - f;  // 1 - (1-t)^4, quartic ease-out
+        const float lift = std::sin(f * kPi) * toDegrees(1.2F);       // 68.75 deg main lift
+        const float roll = std::sin(t * kPi) * toDegrees(-0.4F);      // -22.9 deg outward
+        addRotation(pose, bones.body, glm::vec3{0.0F, bodyTwist, 0.0F});
+        // The main hand is the right arm; -lift raises it forward (matches the
+        // walk swing's forward sign), yRot follows body twist doubled.
+        addRotation(pose, bones.rightArm, glm::vec3{-lift, bodyTwist * 2.0F, roll});
     }
 
     // 6. applyCrouch: reproduce HumanoidModel's 0.5-radian body lean and model-
@@ -168,14 +180,18 @@ PlayerPoseFrame solveHumanoidPose(const SkeletalModel& model, const HumanoidBone
         setPosition(pose, bones.leftLeg, glm::vec3{0.0F, -0.2F, -4.0F});
     }
 
-    // 7. applyIdleBob: a small cosmetic arm sway from the render age. Skipped
-    //    while an item is actively used (the eat/aim pose owns the arm), matching
-    //    the vanilla suppression for spyglass/aim poses.
+    // 7. applyIdleBob (§4, A3): AnimationUtils.bobModelPart, the ONLY idle motion,
+    //    on both arms (body/head/legs stay still). Z sways outward-only
+    //    `cos(age*0.09)*2.86 + 2.86` (0..5.73 deg, mirrored: right +, left -), X
+    //    front/back `sin(age*0.067)*2.86` (reversed between arms). It is additive
+    //    and persists during walking; skipped while an item use owns the arm.
     const bool armBusy = state.use.active;
     if (!armBusy) {
-        const float bob = std::sin(ageInTicks * 0.067F) * 2.0F;
-        addRotation(pose, bones.rightArm, glm::vec3{0.0F, 0.0F, bob});
-        addRotation(pose, bones.leftArm, glm::vec3{0.0F, 0.0F, -bob});
+        constexpr float kBobDegrees = 2.86F;  // 0.05 rad
+        const float outward = std::cos(ageInTicks * 0.09F) * kBobDegrees + kBobDegrees;
+        const float frontBack = std::sin(ageInTicks * 0.067F) * kBobDegrees;
+        addRotation(pose, bones.rightArm, glm::vec3{frontBack, 0.0F, outward});
+        addRotation(pose, bones.leftArm, glm::vec3{-frontBack, 0.0F, -outward});
     }
 
     // 8. resolveSockets: the hand sockets follow the animated arm bones. The

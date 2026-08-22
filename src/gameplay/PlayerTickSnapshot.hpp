@@ -49,6 +49,15 @@ struct PlayerTickSnapshot final {
     float stride = 0.0F;
     float previousSpeed = 0.0F;
     float speed = 0.0F;
+    // ANIM A1/A2: the vanilla WalkAnimationState — the gait amplitude
+    // (`walkAmount`, min(4d,1) eased, saturates to 1.0, decays to 0 on stop) and
+    // the phase (`walkPosition`, += amplitude). These are the ANIM drive
+    // quantities the third-person clips read (walk_amount / walk_position),
+    // distinct from the camera-bob `stride`. The renderer interpolates each pair.
+    float previousWalkAmount = 0.0F;
+    float walkAmount = 0.0F;
+    float previousWalkPosition = 0.0F;
+    float walkPosition = 0.0F;
 
     // Rotation endpoints (degrees), owned by the tick rather than derived in the
     // renderer from the camera each frame (animation §7.1: worldBodyYaw must not

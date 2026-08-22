@@ -42,18 +42,27 @@ constexpr const char* kBuiltinAnimations = R"({
     "animation.player.walk": {
       "loop": true, "animation_length": 1.0,
       "bones": {
-        "rightLeg": {"rotation": ["math.cos(query.anim_time * 360) * 40 * variable.walk_amount", 0, 0]},
-        "leftLeg":  {"rotation": ["math.cos(query.anim_time * 360 + 180) * 40 * variable.walk_amount", 0, 0]},
-        "rightArm": {"rotation": ["math.cos(query.anim_time * 360 + 180) * 40 * variable.walk_amount", 0, 0]},
-        "leftArm":  {"rotation": ["math.cos(query.anim_time * 360) * 40 * variable.walk_amount", 0, 0]}
+        // B1/B2 (26.1 §3): cos(walk_position * 0.6662 (+PI)) * A * walk_amount,
+        // arm A = 57.3 deg (1.0 rad), leg A = 80.2 deg (1.4 rad = arm * 1.4).
+        // Diagonal sync: rightArm<->leftLeg, leftArm<->rightLeg. walk_position is
+        // the vanilla phase accumulator (position += speed); walk_amount the eased
+        // amplitude. The preview, which has no displacement, falls back to
+        // anim_time as the phase source via walk_position = anim_time * 2*PI.
+        "rightLeg": {"rotation": ["math.cos(variable.walk_position * 0.6662) * 80.2 * variable.walk_amount", 0, 0]},
+        "leftLeg":  {"rotation": ["math.cos(variable.walk_position * 0.6662 + 3.14159265) * 80.2 * variable.walk_amount", 0, 0]},
+        "rightArm": {"rotation": ["math.cos(variable.walk_position * 0.6662 + 3.14159265) * 57.3 * variable.walk_amount", 0, 0]},
+        "leftArm":  {"rotation": ["math.cos(variable.walk_position * 0.6662) * 57.3 * variable.walk_amount", 0, 0]}
       }
     },
     "animation.player.idle": {
       "loop": true, "animation_length": 3.0,
       "bones": {
-        "rightArm": {"rotation": [0, 0, "math.cos(query.anim_time * 120) * 2 + 3"]},
-        "leftArm":  {"rotation": [0, 0, "math.cos(query.anim_time * 120) * -2 - 3"]},
-        "body":     {"position": [0, "math.cos(query.anim_time * 120) * 0.1", 0]}
+        // A3/B3 (26.1 §4): the ONLY idle motion is AnimationUtils.bobModelPart on
+        // the two arms — Z sways outward-only cos(age*0.09)*2.86 + 2.86 (mirrored
+        // right +, left -), X front/back sin(age*0.067)*2.86 (reversed per arm).
+        // The body/head/legs stay still — NO body Y bob. age = anim_time in ticks.
+        "rightArm": {"rotation": ["math.sin(variable.idle_age * 0.067) * 2.86", 0, "math.cos(variable.idle_age * 0.09) * 2.86 + 2.86"]},
+        "leftArm":  {"rotation": ["math.sin(variable.idle_age * 0.067) * -2.86", 0, "math.cos(variable.idle_age * 0.09) * -2.86 - 2.86"]}
       }
     },
     "animation.player.look": {
@@ -72,8 +81,12 @@ constexpr const char* kBuiltinAnimations = R"({
     "animation.player.sneak": {
       "loop": true, "animation_length": 1.0,
       "bones": {
-        "body": {"rotation": [28, 0, 0], "position": [0, -1.405, 5.634]},
-        "head": {"rotation": [-16, 0, 0]}
+        // B4 (26.1 §9): body leans +28.65 deg (0.5 rad) on X. head is a child of
+        // body here, so it inherits that lean; to keep the gaze level it fully
+        // compensates with -28.65 deg (the previous -16 under-compensated, tilting
+        // the head down). The look clip then adds the view pitch on top.
+        "body": {"rotation": [28.65, 0, 0], "position": [0, -1.405, 5.634]},
+        "head": {"rotation": [-28.65, 0, 0]}
       }
     }
   }
@@ -164,6 +177,14 @@ void PlayerModelAnimator::update(float deltaSeconds, bool walking, bool sneaking
 
     MolangContext& ctx = animator_.context();
     ctx.setVariable("walk_amount", walkAmount_);
+    // B2: the walk clip is phase-driven by walk_position (vanilla `position`). The
+    // preview has no world displacement, so it advances the phase from the clock
+    // at the ~2.16 rad/s a walking player accumulates (0.6662 * 0.216 blk/tick *
+    // 20 tick/s), keeping the preview's cadence close to a real walk.
+    walkPosition_ += dt * 20.0F * 0.216F;
+    ctx.setVariable("walk_position", walkPosition_);
+    // A3: the idle bob is driven by age in ticks (anim_time seconds * 20).
+    ctx.setVariable("idle_age", elapsed_ * 20.0F);
     ctx.setVariable("sneaking", sneaking ? 1.0F : 0.0F);
     ctx.setVariable("look_yaw", lookX_ * kLookYawDegrees);
     ctx.setVariable("look_pitch", lookY_ * kLookPitchDegrees);

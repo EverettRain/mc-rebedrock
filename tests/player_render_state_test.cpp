@@ -106,35 +106,34 @@ int main() {
         assert(std::abs(frame.progress - 1.5F / 32.0F) < 0.0001F);
     }
 
-    // A full extract maps the controller's historical fields correctly:
-    // speed is accumulated phase; stride is the eased locomotion amplitude.
+    // ANIM A1/A2: the extractor reads the vanilla WalkAnimationState directly —
+    // walkStride is the interpolated phase (walkPosition), walkSpeed the
+    // interpolated amplitude (walkAmount). No bob-derived hack, no sprint scaling.
     {
         gameplay::PlayerTickSnapshot snapshot;
         snapshot.physicsPrevious = glm::vec3{1.0F, 2.0F, 3.0F};
         snapshot.physicsCurrent = glm::vec3{5.0F, 6.0F, 7.0F};
-        snapshot.previousSpeed = 0.6F;
-        snapshot.speed = 1.2F;
-        snapshot.previousStride = 0.10F;
-        snapshot.stride = 0.0F;
+        snapshot.previousWalkPosition = 4.0F;
+        snapshot.walkPosition = 8.0F;
+        snapshot.previousWalkAmount = 0.30F;
+        snapshot.walkAmount = 0.50F;
         snapshot.sneaking = true;
         std::optional<std::uint64_t> last;
         const auto state = render::player::extractPlayerRenderState(snapshot, 0.5F, last);
         assert(std::abs(state.feetPosition.x - 3.0F) < 0.0001F);
-        assert(std::abs(state.walkStride - 6.0F) < 0.0001F);
-        assert(std::abs(state.walkSpeed - 0.40F) < 0.0001F);
+        assert(std::abs(state.walkStride - 6.0F) < 0.0001F);   // phase lerp: 4->8 @0.5
+        assert(std::abs(state.walkSpeed - 0.40F) < 0.0001F);   // amount lerp: 0.3->0.5 @0.5
         assert(state.sneaking);
     }
 
-    // Flying has no view-bob stride, but horizontal travel must still animate
-    // third-person limbs. Sprint amplification remains a solver concern.
+    // The amplitude is clamped to [0, 1] (a saturated snapshot never over-swings).
     {
         gameplay::PlayerTickSnapshot snapshot;
-        snapshot.flying = true;
-        snapshot.physicsPrevious = glm::vec3{2.0F, 8.0F, 3.0F};
-        snapshot.physicsCurrent = glm::vec3{2.15F, 8.0F, 3.0F};
+        snapshot.previousWalkAmount = 1.0F;
+        snapshot.walkAmount = 1.0F;
         std::optional<std::uint64_t> last;
         const auto state = render::player::extractPlayerRenderState(snapshot, 0.5F, last);
-        assert(std::abs(state.walkSpeed - 0.60F) < 0.0001F);
+        assert(std::abs(state.walkSpeed - 1.0F) < 0.0001F);
     }
 
     // FPS-independence: the same tick endpoints + partialTicks give the same

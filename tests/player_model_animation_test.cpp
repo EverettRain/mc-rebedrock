@@ -31,7 +31,16 @@ int main() {
     const float idleArm = animator.pose().rightArmPitch;
     animator.update(0.1F, true);
     assert(animator.pose().rightArmPitch != idleArm);
-    assert(animator.pose().leftLegPitch == animator.pose().rightArmPitch);
+    // B1/B2 diagonal sync: rightArm and leftLeg share the same walk phase (both
+    // cos(p*0.6662 + PI)), so they swing in the SAME direction. The leg amplitude
+    // is 1.4x the arm's (80.2 vs 57.3 deg), so the pitches match in sign and in
+    // the ~1.4 ratio, not in exact value.
+    const float arm = animator.pose().rightArmPitch;
+    const float leg = animator.pose().leftLegPitch;
+    if (std::abs(arm) > 1e-4F) {
+        assert((arm > 0.0F) == (leg > 0.0F));            // same direction
+        assert(std::abs(leg / arm - 1.4F) < 0.05F);      // leg = arm * 1.4
+    }
 
     // The skeletal pose (used by the third-person world renderer) is exposed and
     // consistent with the flat preview pose.

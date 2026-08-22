@@ -407,6 +407,14 @@ void GameSession::publishSnapshots() {
     playerTickSnapshot_.stride = primaryPlayer().controller.strideDistance();
     playerTickSnapshot_.previousSpeed = primaryPlayer().controller.previousHorizontalSpeed();
     playerTickSnapshot_.speed = primaryPlayer().controller.horizontalSpeed();
+    // ANIM A1/A2: the vanilla WalkAnimationState amplitude + phase for the
+    // third-person gait clips (separate from the view-bob stride above).
+    playerTickSnapshot_.previousWalkAmount =
+        primaryPlayer().controller.previousWalkAnimationSpeed();
+    playerTickSnapshot_.walkAmount = primaryPlayer().controller.walkAnimationSpeed();
+    playerTickSnapshot_.previousWalkPosition =
+        primaryPlayer().controller.previousWalkAnimationPosition();
+    playerTickSnapshot_.walkPosition = primaryPlayer().controller.walkAnimationPosition();
     playerTickSnapshot_.sneaking = primaryPlayer().controller.sneaking();
     playerTickSnapshot_.flying = primaryPlayer().controller.flying();
     playerTickSnapshot_.sprinting = primaryPlayer().controller.sprinting();

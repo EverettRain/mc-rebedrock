@@ -131,9 +131,11 @@ void testWalkAntiPhase(const animation::SkeletalModel& model,
     assert((ra > 0.0F) == (ll > 0.0F));
 }
 
-// --- Solver: sprint preserves coordination with a stronger gait --------------
-void testSprintAmplifiesWalk(const animation::SkeletalModel& model,
-                             const animation::HumanoidBoneBindings& bones) {
+// --- Solver A2: sprint does NOT change the pose formula; the amplitude s alone
+// decides the gait (§8.1). At the same walkSpeed, sprinting and walking produce
+// the SAME limb angles — the sprint flag is not a swing multiplier.
+void testSprintDoesNotAmplify(const animation::SkeletalModel& model,
+                              const animation::HumanoidBoneBindings& bones) {
     rp::PlayerRenderState walking = restState();
     walking.walkStride = 0.0F;
     walking.walkSpeed = 0.8F;
@@ -141,11 +143,18 @@ void testSprintAmplifiesWalk(const animation::SkeletalModel& model,
     sprinting.sprinting = true;
     const auto walk = animation::solveHumanoidPose(model, bones, walking, 0.0F);
     const auto sprint = animation::solveHumanoidPose(model, bones, sprinting, 0.0F);
-    const float walkLeg = std::fabs(
-        walk.skeleton.bone(static_cast<std::size_t>(bones.rightLeg)).rotation.x);
-    const float sprintLeg = std::fabs(
-        sprint.skeleton.bone(static_cast<std::size_t>(bones.rightLeg)).rotation.x);
-    assert(sprintLeg > walkLeg * 1.2F);
+    const float walkLeg =
+        walk.skeleton.bone(static_cast<std::size_t>(bones.rightLeg)).rotation.x;
+    const float sprintLeg =
+        sprint.skeleton.bone(static_cast<std::size_t>(bones.rightLeg)).rotation.x;
+    assert(near(sprintLeg, walkLeg));
+    // A higher amplitude (saturated 1.0) genuinely swings wider than 0.8.
+    rp::PlayerRenderState saturated = walking;
+    saturated.walkSpeed = 1.0F;
+    const float satLeg = std::fabs(
+        animation::solveHumanoidPose(model, bones, saturated, 0.0F)
+            .skeleton.bone(static_cast<std::size_t>(bones.rightLeg)).rotation.x);
+    assert(satLeg > std::fabs(walkLeg));
 }
 
 // --- Solver: crouch bends the body forward and drops the torso ----------------
@@ -196,12 +205,35 @@ void testLook(const animation::SkeletalModel& model,
 // --- Solver: attack lifts the swinging (right) arm ----------------------------
 void testAttack(const animation::SkeletalModel& model,
                 const animation::HumanoidBoneBindings& bones) {
-    rp::PlayerRenderState s = restState();
-    s.swing.active = true;
-    s.swing.progress = 0.5F;  // mid swing, sin(pi/2)=1, peak lift
-    const auto frame = animation::solveHumanoidPose(model, bones, s, 0.0F);
-    const float ra = frame.skeleton.bone(static_cast<std::size_t>(bones.rightArm)).rotation.x;
-    assert(ra < -30.0F);  // swung well forward/up
+    // A4: the main lift peaks where f = 1-(1-t)^4 = 0.5, i.e. t ~= 0.159 (fast
+    // up), reaching near the full -68.75 deg; the curve is asymmetric (a late
+    // t=0.5 is already well past the peak and much smaller).
+    rp::PlayerRenderState peak = restState();
+    peak.swing.active = true;
+    peak.swing.progress = 0.159F;
+    const float raPeak = animation::solveHumanoidPose(model, bones, peak, 0.0F)
+                             .skeleton.bone(static_cast<std::size_t>(bones.rightArm))
+                             .rotation.x;
+    assert(raPeak < -60.0F);  // near the -68.75 deg lift
+    assert(raPeak > -75.0F);
+
+    // A5: the body twists on Y (fast sqrt ease), peaking near t ~= 0.0625.
+    rp::PlayerRenderState early = restState();
+    early.swing.active = true;
+    early.swing.progress = 0.0625F;
+    const float bodyY = animation::solveHumanoidPose(model, bones, early, 0.0F)
+                            .skeleton.bone(static_cast<std::size_t>(bones.body))
+                            .rotation.y;
+    assert(bodyY > 10.0F && bodyY < 12.5F);  // ~11.46 deg peak
+
+    // Asymmetry: t=0.5 (past the lift peak) lifts far less than the t=0.159 peak.
+    rp::PlayerRenderState late = restState();
+    late.swing.active = true;
+    late.swing.progress = 0.5F;
+    const float raLate = animation::solveHumanoidPose(model, bones, late, 0.0F)
+                             .skeleton.bone(static_cast<std::size_t>(bones.rightArm))
+                             .rotation.x;
+    assert(std::fabs(raLate) < std::fabs(raPeak));
 }
 
 // --- Solver determinism: same state -> same matrices, any frame rate ----------
@@ -246,40 +278,58 @@ void testUseSuppressesIdleBob(const animation::SkeletalModel& model,
     assert(near(busyRoll, 0.0F));  // idle bob suppressed while using an item
 }
 
-// --- Solver: an eat pose owns the arm, overriding the walk swing --------------
-// §17.1 "use item 覆盖 walk arm": while eating, the arm is raised to the mouth
-// and does not read as the walk swing, even at a walk phase where the swing would
-// otherwise be large. The eat pose must dominate the locomotion contribution.
-void testUseOverridesWalkArm(const animation::SkeletalModel& model,
-                             const animation::HumanoidBoneBindings& bones) {
-    // A walk phase/speed that alone would swing the right arm well forward. The
-    // solver's phase = walkStride * 0.6662; picking stride = pi/0.6662 puts the
-    // right arm at cos(phase+pi)=cos(2pi)=+1, its maximum forward swing.
+// --- Solver A7/A8: an ArmPose OVERRIDES the held arm (halve the walk swing + a
+// forward lift), it does NOT sum onto the swing. Item lift 18 deg, Block 54 deg +
+// 30 deg inward yaw; the off arm is untouched.
+void testArmPoseHalvesAndOverrides(const animation::SkeletalModel& model,
+                                   const animation::HumanoidBoneBindings& bones) {
     constexpr float kPi = 3.14159265358979323846F;
     constexpr float kWalkFrequency = 0.6662F;
     rp::PlayerRenderState walking = restState();
-    walking.walkStride = kPi / kWalkFrequency;
+    walking.walkStride = kPi / kWalkFrequency;  // right arm at its max forward swing
     walking.walkSpeed = 1.0F;
     const float walkArmX =
         animation::solveHumanoidPose(model, bones, walking, 0.0F)
             .skeleton.bone(static_cast<std::size_t>(bones.rightArm))
             .rotation.x;
-    assert(std::fabs(walkArmX) > 30.0F);  // the bare walk swing is large
+    assert(walkArmX > 40.0F);  // the bare walk swing (~+57.3 deg) is large
 
-    // The same walk, but now eating on the right (main) hand: the arm is raised
-    // to the mouth (a strong negative pitch), not left at the forward walk swing.
-    rp::PlayerRenderState eatingWhileWalking = walking;
-    eatingWhileWalking.use.active = true;
-    eatingWhileWalking.use.animation = gameplay::UseAnimation::Eat;
-    eatingWhileWalking.use.progress = 0.5F;
-    eatingWhileWalking.rightArmPose = rp::ArmPose::Eat;
-    const float eatArmX =
-        animation::solveHumanoidPose(model, bones, eatingWhileWalking, 0.0F)
+    // ITEM on the right (main) hand: xRot = walkArmX*0.5 - 18, halving the swing
+    // and lifting forward — NOT summed, NOT raised to the mouth (A9).
+    rp::PlayerRenderState item = walking;
+    item.rightArmPose = rp::ArmPose::Item;
+    const auto itemPose = animation::solveHumanoidPose(model, bones, item, 0.0F);
+    const float itemRight =
+        itemPose.skeleton.bone(static_cast<std::size_t>(bones.rightArm)).rotation.x;
+    assert(near(itemRight, walkArmX * 0.5F - 18.0F, 0.05F));
+    // The off (left) arm keeps its own walk swing — the pose is single-armed.
+    const float leftWalk =
+        animation::solveHumanoidPose(model, bones, walking, 0.0F)
+            .skeleton.bone(static_cast<std::size_t>(bones.leftArm))
+            .rotation.x;
+    const float itemLeft =
+        itemPose.skeleton.bone(static_cast<std::size_t>(bones.leftArm)).rotation.x;
+    assert(near(itemLeft, leftWalk));
+
+    // BLOCK: xRot halved - 54, plus a 30 deg inward Y tuck on the right arm.
+    rp::PlayerRenderState block = walking;
+    block.rightArmPose = rp::ArmPose::Block;
+    const auto blockPose = animation::solveHumanoidPose(model, bones, block, 0.0F);
+    const auto& blockArm = blockPose.skeleton.bone(static_cast<std::size_t>(bones.rightArm));
+    assert(near(blockArm.rotation.x, walkArmX * 0.5F - 54.0F, 0.05F));
+    assert(near(blockArm.rotation.y, -30.0F));  // right hand tucks inward (-side*30)
+
+    // A9: third-person Eat uses the ITEM pose, not a mouth-raise. Same as ITEM.
+    rp::PlayerRenderState eat = walking;
+    eat.use.active = true;
+    eat.use.animation = gameplay::UseAnimation::Eat;
+    eat.rightArmPose = rp::ArmPose::Eat;
+    const float eatRight =
+        animation::solveHumanoidPose(model, bones, eat, 0.0F)
             .skeleton.bone(static_cast<std::size_t>(bones.rightArm))
             .rotation.x;
-    // Raised toward the mouth: strongly negative, and clearly above (more raised
-    // than) the plain forward walk swing rather than merely summed with it.
-    assert(eatArmX < -50.0F);
+    // Eat suppresses the idle bob (use active) so it is the pure item override.
+    assert(near(eatRight, walkArmX * 0.5F - 18.0F, 0.05F));
 }
 
 // --- World and preview share ONE solver: same synthetic state -> same bones ----
@@ -401,13 +451,13 @@ int main() {
     testArmPoseDerivation();
     testRestPose(model, bones);
     testWalkAntiPhase(model, bones);
-    testSprintAmplifiesWalk(model, bones);
+    testSprintDoesNotAmplify(model, bones);
     testCrouch(model, bones);
     testLook(model, bones);
     testAttack(model, bones);
     testDeterminism(model, bones);
     testUseSuppressesIdleBob(model, bones);
-    testUseOverridesWalkArm(model, bones);
+    testArmPoseHalvesAndOverrides(model, bones);
     testWorldPreviewShareSolver(model, bones);
     testHeadRelativeAcrossSeam();
     testFirstPersonHandSolver();

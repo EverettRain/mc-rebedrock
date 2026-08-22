@@ -120,6 +120,8 @@ void PlayerController::setPosition(glm::vec3 feetPosition) {
     fovMultiplier_ = previousFovMultiplier_ = 1.0F;
     horizontalSpeed_ = previousHorizontalSpeed_ = 0.0F;
     strideDistance_ = previousStrideDistance_ = 0.0F;
+    walkAnimationSpeed_ = previousWalkAnimationSpeed_ = 0.0F;
+    walkAnimationPosition_ = previousWalkAnimationPosition_ = 0.0F;
 }
 
 void PlayerController::resetForRespawn(glm::vec3 feetPosition) {
@@ -386,6 +388,8 @@ void PlayerController::updatePlayerPose(const world::World& world, bool wantsCro
 void PlayerController::tick(const world::World& world, const PlayerInput& input) {
     previousHorizontalSpeed_ = horizontalSpeed_;
     previousStrideDistance_ = strideDistance_;
+    previousWalkAnimationSpeed_ = walkAnimationSpeed_;
+    previousWalkAnimationPosition_ = walkAnimationPosition_;
     jumpedThisTick_ = false;
     const glm::vec3 positionBeforeMovement = position_;
     // Vanilla LivingEntity#travel samples the friction once, before moving, and
@@ -545,6 +549,15 @@ void PlayerController::tick(const world::World& world, const PlayerInput& input)
     horizontalSpeed_ += horizontalDistance * 0.6F;
     const float targetStride = onGround_ ? std::min(0.1F, horizontalDistance) : 0.0F;
     strideDistance_ += (targetStride - strideDistance_) * 0.4F;
+    // ANIM A1/A2: the gait amplitude is the vanilla WalkAnimationState — driven by
+    // ACTUAL horizontal displacement (not the "W key"), target = min(4d, 1) eased
+    // by 0.4/tick. Walking (~0.216 blk/tick) saturates near 0.86; sprint and
+    // creative flight (>=0.25) both hit 1.0, so no sprint multiplier is needed.
+    // Stopping decays it to 0 over ~5 ticks, which is what returns the limbs to
+    // rest. The phase advances by the amplitude, exactly like `position += speed`.
+    const float walkTarget = std::min(4.0F * horizontalDistance, 1.0F);
+    walkAnimationSpeed_ += (walkTarget - walkAnimationSpeed_) * 0.4F;
+    walkAnimationPosition_ += walkAnimationSpeed_;
 
     if (!flying_) {
         if (!onGround_ && velocity_.y <= 0.0F &&

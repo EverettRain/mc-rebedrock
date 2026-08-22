@@ -101,6 +101,9 @@ class PlayerModelAnimator final {
     float lookX_ = 0.0F;
     float lookY_ = 0.0F;
     float elapsed_ = 0.0F;
+    // B2: the walk-clip phase accumulator (vanilla `walkAnimation.position`); for
+    // the preview it advances from the clock at a walking cadence.
+    float walkPosition_ = 0.0F;
     // The walk amplitude fed to the walk clip's Molang; the controller crossfade
     // owns the idle<->walk state blend, so this only scales the swing magnitude.
     float walkAmount_ = 0.0F;

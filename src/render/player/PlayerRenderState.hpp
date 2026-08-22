@@ -153,32 +153,18 @@ struct PlayerRenderState final {
     PlayerRenderState state;
     state.feetPosition = snapshot.physicsPrevious +
                          (snapshot.physicsCurrent - snapshot.physicsPrevious) * partialTicks;
-    // PlayerController's historical horizontalSpeed is accumulated horizontal
-    // travel scaled by 0.6, whereas HumanoidModel's walk position advances by
-    // roughly 4 times horizontal travel. Convert the units here before applying
-    // the vanilla 0.6662 cadence in the solver; feeding the raw distance phase
-    // makes the limbs visibly slide through the world at about one seventh speed.
-    constexpr float kControllerTravelScale = 0.6F;
-    constexpr float kWalkPositionPerBlock = 4.0F;
-    const float distancePhase =
-        snapshot.previousSpeed + (snapshot.speed - snapshot.previousSpeed) * partialTicks;
-    state.walkStride = distancePhase * (kWalkPositionPerBlock / kControllerTravelScale);
-    const float strideAmount =
-        snapshot.previousStride + (snapshot.stride - snapshot.previousStride) * partialTicks;
-    // Keep PlayerController's 0.1 view-bob cap untouched (the first-person path
-    // reads it directly), but normalize the world-model gait to a useful 0..1.
-    float locomotionAmount = strideAmount * 8.0F;
-    if (snapshot.flying) {
-        // The controller intentionally drives the view-bob stride toward zero
-        // off ground. Third-person flight still needs a gait, so derive its
-        // amount from this tick's horizontal travel. The accumulated distance
-        // phase above already continues in flight and keeps the cycle aligned.
-        const float deltaX = snapshot.physicsCurrent.x - snapshot.physicsPrevious.x;
-        const float deltaZ = snapshot.physicsCurrent.z - snapshot.physicsPrevious.z;
-        const float flyingDistance = std::sqrt(deltaX * deltaX + deltaZ * deltaZ);
-        locomotionAmount = std::max(locomotionAmount, flyingDistance * 4.0F);
-    }
-    state.walkSpeed = std::clamp(locomotionAmount, 0.0F, 1.0F);
+    // ANIM A1/A2: the gait is driven by the vanilla WalkAnimationState the
+    // controller now publishes directly — no bob-derived hack, no sprint
+    // multiplier. `walkStride` is the phase p (vanilla `position`); `walkSpeed` is
+    // the amplitude s (vanilla `speed`, min(4d,1) eased, saturating to 1.0 and
+    // decaying to 0 on stop). The walk clip reads them as walk_position /
+    // walk_amount; the solver applies cos(p * 0.6662) * A * s.
+    state.walkStride = snapshot.previousWalkPosition +
+                       (snapshot.walkPosition - snapshot.previousWalkPosition) * partialTicks;
+    state.walkSpeed = std::clamp(
+        snapshot.previousWalkAmount +
+            (snapshot.walkAmount - snapshot.previousWalkAmount) * partialTicks,
+        0.0F, 1.0F);
     state.sneaking = snapshot.sneaking;
     state.flying = snapshot.flying;
     state.sprinting = snapshot.sprinting;

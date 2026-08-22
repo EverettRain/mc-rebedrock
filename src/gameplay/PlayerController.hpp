@@ -104,6 +104,22 @@ class PlayerController final {
     [[nodiscard]] float previousHorizontalSpeed() const { return previousHorizontalSpeed_; }
     [[nodiscard]] float strideDistance() const { return strideDistance_; }
     [[nodiscard]] float previousStrideDistance() const { return previousStrideDistance_; }
+    // ANIM A1/A2: vanilla WalkAnimationState split into two independent quantities,
+    // distinct from the camera bob above.
+    //  - walkAnimationSpeed = the gait AMPLITUDE: target = min(4 * d, 1) eased by
+    //    0.4/tick, so it saturates to 1.0 (walk 0.86, sprint & creative-fly 1.0 —
+    //    no sprint multiplier hack) and decays to 0 when the player stops. This is
+    //    what makes the limbs return to rest instead of freezing at the last angle.
+    //  - walkAnimationPosition = the phase, `position += speed` each tick.
+    // The camera bob (strideDistance_, capped 0.1) stays separate for view bob.
+    [[nodiscard]] float walkAnimationSpeed() const { return walkAnimationSpeed_; }
+    [[nodiscard]] float previousWalkAnimationSpeed() const {
+        return previousWalkAnimationSpeed_;
+    }
+    [[nodiscard]] float walkAnimationPosition() const { return walkAnimationPosition_; }
+    [[nodiscard]] float previousWalkAnimationPosition() const {
+        return previousWalkAnimationPosition_;
+    }
     // Whether the player's box overlaps a block placed at (x, y, z) whose
     // collision box spans [y+boxBottom, y+boxTop] vertically. The default is a
     // full cube; a slab passes its half box so the player can place a slab into
@@ -183,6 +199,11 @@ class PlayerController final {
     float previousHorizontalSpeed_ = 0.0F;
     float strideDistance_ = 0.0F;
     float previousStrideDistance_ = 0.0F;
+    // ANIM A1/A2: the vanilla WalkAnimationState amplitude + phase (see accessors).
+    float walkAnimationSpeed_ = 0.0F;
+    float previousWalkAnimationSpeed_ = 0.0F;
+    float walkAnimationPosition_ = 0.0F;
+    float previousWalkAnimationPosition_ = 0.0F;
 };
 
 } // namespace mc::gameplay

@@ -81,6 +81,10 @@ void appendPlayerTick(std::vector<std::uint8_t>& bytes, const PlayerTickSnapshot
     persistence::appendFloat(bytes, snap.stride);
     persistence::appendFloat(bytes, snap.previousSpeed);
     persistence::appendFloat(bytes, snap.speed);
+    persistence::appendFloat(bytes, snap.previousWalkAmount);
+    persistence::appendFloat(bytes, snap.walkAmount);
+    persistence::appendFloat(bytes, snap.previousWalkPosition);
+    persistence::appendFloat(bytes, snap.walkPosition);
     appendBool(bytes, snap.sneaking);
     appendBool(bytes, snap.flying);
     appendBool(bytes, snap.sprinting);
@@ -116,6 +120,10 @@ void appendPlayerTick(std::vector<std::uint8_t>& bytes, const PlayerTickSnapshot
     snap.stride = persistence::readFloat(bytes, cursor);
     snap.previousSpeed = persistence::readFloat(bytes, cursor);
     snap.speed = persistence::readFloat(bytes, cursor);
+    snap.previousWalkAmount = persistence::readFloat(bytes, cursor);
+    snap.walkAmount = persistence::readFloat(bytes, cursor);
+    snap.previousWalkPosition = persistence::readFloat(bytes, cursor);
+    snap.walkPosition = persistence::readFloat(bytes, cursor);
     snap.sneaking = readBool(bytes, cursor);
     snap.flying = readBool(bytes, cursor);
     snap.sprinting = readBool(bytes, cursor);

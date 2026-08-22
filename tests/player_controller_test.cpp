@@ -276,5 +276,51 @@ int main() {
         assert(sprintBroke);
     }
 
+    // ANIM A1/A2: the walk-animation drive quantities. Walking forward drives the
+    // gait AMPLITUDE (walkAnimationSpeed) up toward saturation; stopping decays it
+    // back to ~0 (the "stops -> limbs return to rest" root). The phase accumulates
+    // monotonically by the amplitude, and the sprint flag is NOT a multiplier.
+    {
+        mc::world::Chunk floor;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                floor.setBlock(x, 0, z, mc::world::Block::Stone);
+            }
+        }
+        mc::world::World flat;
+        flat.setChunk({0, 0}, std::move(floor));
+        // Start near one edge and walk toward the far side so the short run stays
+        // on the loaded chunk (leaving it would freeze the player and confound the
+        // amplitude reading).
+        mc::gameplay::PlayerController walker({2.5F, 1.0F, 8.5F});
+        mc::gameplay::PlayerInput forward;
+        forward.forward = 1.0F;
+        forward.lookDirection = {1.0F, 0.0F, 0.0F};
+        forward.sprintAllowed = true;
+        // At rest the amplitude is zero.
+        assert(walker.walkAnimationSpeed() < 0.01F);
+        // Walk a short while (staying on the chunk): the amplitude eases up off
+        // zero and the phase accumulates monotonically.
+        const float phaseStart = walker.walkAnimationPosition();
+        for (int tick = 0; tick < 20; ++tick) {
+            walker.tick(flat, forward);
+        }
+        const float movingAmp = walker.walkAnimationSpeed();
+        assert(movingAmp > 0.01F);                    // the gait is active while moving
+        assert(movingAmp <= 1.0F + 1e-4F);            // never exceeds saturation
+        assert(walker.walkAnimationPosition() > phaseStart);  // phase advanced by amplitude
+
+        // Stop: the amplitude decays back toward zero over a handful of ticks —
+        // this is what returns the limbs to rest instead of freezing at the last
+        // angle (the reported "stops but keeps swinging" root cause).
+        mc::gameplay::PlayerInput stop;
+        stop.sprintAllowed = true;
+        for (int tick = 0; tick < 30; ++tick) {
+            walker.tick(flat, stop);
+        }
+        assert(walker.walkAnimationSpeed() < movingAmp);
+        assert(walker.walkAnimationSpeed() < 0.05F);  // decayed essentially to rest
+    }
+
     return 0;
 }

@@ -1388,17 +1388,31 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 worldBodyYaw = lookYaw;
                 worldBodyYawInitialized = true;
             }
-            constexpr float kMaxHeadYaw = 0.9599F; // 55 degrees, the head yaw range
-            const float lagDiff = wrapAngle(lookYaw - worldBodyYaw);
-            if (lagDiff > kMaxHeadYaw) {
-                worldBodyYaw = lookYaw - kMaxHeadYaw;
-            } else if (lagDiff < -kMaxHeadYaw) {
-                worldBodyYaw = lookYaw + kMaxHeadYaw;
+            // ANIM A12 (26.1 §6/§7.3): the body follows the head with a dead zone
+            // and a hard clamp. head-relative yaw is free within +/-50 deg (dead
+            // zone); past that the body eases toward the look at ~30%/tick, plus an
+            // extra 20%/tick beyond the 50 deg edge; the head-relative angle is
+            // hard-clamped to +/-75 deg so the head never over-rotates. dt*20 maps
+            // the per-tick rates onto the frame. (Rebedrock +Y sign / exact feel
+            // is a mac visual-pass concern.)
+            constexpr float kHeadYawDeadZone = 0.8727F;  // 50 deg
+            constexpr float kHeadYawClamp = 1.3090F;     // 75 deg hard clamp
+            const float tickAlpha = std::min(1.0F, deltaSeconds * 20.0F);
+            float lagDiff = wrapAngle(lookYaw - worldBodyYaw);
+            const float absLag = std::fabs(lagDiff);
+            if (absLag > kHeadYawDeadZone || playerWalking) {
+                // Base 30%/tick follow, plus 20%/tick more once past the dead zone.
+                const float followRate = 0.30F + (absLag > kHeadYawDeadZone ? 0.20F : 0.0F);
+                worldBodyYaw += lagDiff * followRate * tickAlpha;
+                lagDiff = wrapAngle(lookYaw - worldBodyYaw);
             }
-            if (playerWalking) {
-                worldBodyYaw +=
-                    wrapAngle(lookYaw - worldBodyYaw) * std::min(1.0F, deltaSeconds * 8.0F);
+            // Hard clamp: the head-relative yaw can never exceed 75 deg.
+            if (lagDiff > kHeadYawClamp) {
+                worldBodyYaw = lookYaw - kHeadYawClamp;
+            } else if (lagDiff < -kHeadYawClamp) {
+                worldBodyYaw = lookYaw + kHeadYawClamp;
             }
+            constexpr float kMaxHeadYaw = kHeadYawClamp;
             const float headRelative = wrapAngle(lookYaw - worldBodyYaw);
             worldPlayerAnimator.setCursorLook(headRelative / kMaxHeadYaw, -lookDir.y);
             worldPlayerAnimator.update(deltaSeconds, playerWalking, playerSneaking);
