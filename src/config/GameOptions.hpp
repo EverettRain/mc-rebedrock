@@ -37,6 +37,10 @@ struct GameOptions final {
     mc::world::SmoothLightingQuality smoothLightingQuality =
         mc::world::SmoothLightingQuality::Standard;
     bool dynamicLight = false;
+    // PX-6: show sound subtitles (26.1 accessibility captions). A client option,
+    // not a gamerule; off by default, matching vanilla. Gates the subtitle
+    // overlay feed — captions only appear when this is on.
+    bool showSubtitles = false;
     // Present at the monitor's refresh rate (FIFO) instead of MAILBOX's
     // drop-on-demand presentation; zero CPU cost and no tearing, at the price
     // of never exceeding the display rate.

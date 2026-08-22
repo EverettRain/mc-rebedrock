@@ -28,6 +28,8 @@
 #include "ui/ButtonControl.hpp"
 #include "ui/ChatHistory.hpp"
 #include "ui/GuiNineSlice.hpp"
+#include "ui/SubtitleFeed.hpp"
+#include "ui/Toast.hpp"
 #include "ui/HudLayout.hpp"
 #include "ui/Language.hpp"
 #include "ui/MenuGeometry.hpp"
@@ -109,6 +111,8 @@ class HudRenderer final {
         std::string& chatInputText;
         std::vector<gameplay::command::Suggestion>& chatSuggestions_;
         std::size_t& chatSuggestionIndex_;
+        ui::ToastQueue& toastQueue;
+        ui::SubtitleFeed& subtitleFeed;
         std::optional<persistence::SaveGame>& currentSave;
         int& displayedFps;
         animation::PlayerModelAnimator& playerModelAnimator;
@@ -154,6 +158,7 @@ class HudRenderer final {
           inventoryDragActive(b.inventoryDragActive), inventoryDragSlots(b.inventoryDragSlots),
           chatOpen(b.chatOpen), chatHistory(b.chatHistory), chatInputText(b.chatInputText),
           chatSuggestions_(b.chatSuggestions_), chatSuggestionIndex_(b.chatSuggestionIndex_),
+          toastQueue(b.toastQueue), subtitleFeed(b.subtitleFeed),
           currentSave(b.currentSave), displayedFps(b.displayedFps),
           playerModelAnimator(b.playerModelAnimator), pressedMenuButton(b.pressedMenuButton),
           spawnPositionInitialized(b.spawnPositionInitialized), worldReady(b.worldReady),
@@ -1680,25 +1685,108 @@ class HudRenderer final {
         const std::string visibleText = chatInputText + (cursorVisible ? "_" : "");
         drawHudText(commandBuffer, visibleText, input.x + 2.0F * scale, input.y + 2.0F * scale,
                     scale, {1.0F, 1.0F, 1.0F, 1.0F}, false);
-        // 1.16.1's CommandSuggestor renders up to eight completions stacked above
-        // the input, the currently selected (Tab-cycled) row highlighted.
+        // 26.1's CommandSuggestions draws the completion list in ONE opaque dark
+        // box (not per-row translucent strips), the selected row highlighted, the
+        // suggestion text white and its usage/hint in grey. Match that here: one
+        // background rect sized to the widest row, then the rows over it.
         const std::size_t maxRows = std::min<std::size_t>(chatSuggestions_.size(), 8U);
-        for (std::size_t row = 0; row < maxRows; ++row) {
-            const auto& suggestion = chatSuggestions_[row];
-            const float rowY = input.y - (static_cast<float>(row) + 1.0F) * 11.0F * scale;
-            const bool selected = row == chatSuggestionIndex_;
-            std::string localizedHint = suggestion.hint;
-            if (localizedHint.starts_with("item.") || localizedHint.starts_with("block.")) {
-                localizedHint = translated(localizedHint, localizedHint);
+        if (maxRows > 0) {
+            const float rowHeight = 11.0F * scale;
+            const float boxLeft = 2.0F * scale;
+            // Width the box to the widest "text  hint" row so the opaque panel
+            // fully backs every row (vanilla sizes the tooltip to its content).
+            float widest = 0.0F;
+            for (std::size_t row = 0; row < maxRows; ++row) {
+                std::string hint = chatSuggestions_[row].hint;
+                if (hint.starts_with("item.") || hint.starts_with("block.")) {
+                    hint = translated(hint, hint);
+                }
+                const std::string measured =
+                    chatSuggestions_[row].text + (hint.empty() ? "" : "  " + hint);
+                widest = std::max(widest, hudTextWidth(measured, scale));
             }
-            const std::string label = suggestion.text +
-                (localizedHint.empty() ? "" : " — " + localizedHint);
-            drawHudQuad(
-                commandBuffer,
-                {2.0F * scale, rowY, hudTextWidth(label, scale) + 4.0F * scale, 11.0F * scale},
-                selected ? glm::vec4{0.2F, 0.3F, 0.6F, 0.8F} : glm::vec4{0.0F, 0.0F, 0.0F, 0.6F});
-            drawHudText(commandBuffer, label, 4.0F * scale, rowY + scale, scale,
-                        {1.0F, 1.0F, 1.0F, 1.0F}, false);
+            const float boxWidth = widest + 4.0F * scale;
+            const float boxTop = input.y - static_cast<float>(maxRows) * rowHeight;
+            // 26.1's opaque tooltip background (a near-black panel, alpha ~0.95).
+            drawHudQuad(commandBuffer,
+                        {boxLeft, boxTop, boxWidth, static_cast<float>(maxRows) * rowHeight},
+                        {0.05F, 0.05F, 0.05F, 0.95F});
+            for (std::size_t row = 0; row < maxRows; ++row) {
+                const auto& suggestion = chatSuggestions_[row];
+                const float rowY = input.y - (static_cast<float>(row) + 1.0F) * rowHeight;
+                if (row == chatSuggestionIndex_) {
+                    // The selected row's highlight bar.
+                    drawHudQuad(commandBuffer, {boxLeft, rowY, boxWidth, rowHeight},
+                                {0.10F, 0.10F, 0.10F, 1.0F});
+                }
+                std::string hint = suggestion.hint;
+                if (hint.starts_with("item.") || hint.starts_with("block.")) {
+                    hint = translated(hint, hint);
+                }
+                // The suggestion text: white when selected, light grey otherwise.
+                const glm::vec4 textColor = row == chatSuggestionIndex_
+                                                ? glm::vec4{1.0F, 1.0F, 1.0F, 1.0F}
+                                                : glm::vec4{0.66F, 0.66F, 0.66F, 1.0F};
+                drawHudText(commandBuffer, suggestion.text, boxLeft + 2.0F * scale, rowY + scale,
+                            scale, textColor, false);
+                // The usage/hint trails in grey after the text (26.1 usage colour).
+                if (!hint.empty()) {
+                    const float hintX =
+                        boxLeft + 2.0F * scale + hudTextWidth(suggestion.text + "  ", scale);
+                    drawHudText(commandBuffer, hint, hintX, rowY + scale, scale,
+                                {0.53F, 0.53F, 0.53F, 1.0F}, false);
+                }
+            }
+        }
+    }
+
+    // PX-6: the top-right toast overlay (26.1 ToastComponent). Each visible toast
+    // is an opaque panel that slides in from the right by its slideFraction, with
+    // a white title and grey subtitle. The queue's lifetime/cap/animation is the
+    // Vulkan-free ui::ToastQueue; this only paints its current visibleToasts().
+    // Passed by parameter (not a builder member) so wiring it is one call site.
+    void drawToastOverlay(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
+        const float scale = layout.scale();
+        const float toastWidth = 160.0F * scale;
+        const float toastHeight = 28.0F * scale;
+        const float margin = 4.0F * scale;
+        const float right = static_cast<float>(swapchainExtent.width);
+        float slotY = margin;
+        for (const ui::ActiveToast& active : toastQueue.visibleToasts()) {
+            // slideFraction 1 = fully in; 0 = off the right edge.
+            const float x = right - active.slideFraction * (toastWidth + margin);
+            drawHudQuad(commandBuffer, {x, slotY, toastWidth, toastHeight},
+                        {0.06F, 0.06F, 0.06F, 0.94F});
+            drawHudText(commandBuffer, active.toast.title, x + 5.0F * scale, slotY + 4.0F * scale,
+                        scale, {1.0F, 1.0F, 1.0F, 1.0F}, false);
+            if (!active.toast.subtitle.empty()) {
+                drawHudText(commandBuffer, active.toast.subtitle, x + 5.0F * scale,
+                            slotY + 15.0F * scale, scale, {0.66F, 0.66F, 0.66F, 1.0F}, false);
+            }
+            slotY += toastHeight + margin;
+        }
+    }
+
+    // PX-6: the bottom-right sound-subtitle overlay (26.1 SubtitleOverlay). Each
+    // active caption is drawn right-aligned above the last, fading with its alpha.
+    // The list/cap/fade is the Vulkan-free ui::SubtitleFeed; this only paints it.
+    void drawSubtitleOverlay(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
+        const float scale = layout.scale();
+        const float right = static_cast<float>(swapchainExtent.width);
+        const float bottom = static_cast<float>(swapchainExtent.height);
+        const float lineHeight = 11.0F * scale;
+        const float margin = 4.0F * scale;
+        const auto& captions = subtitleFeed.activeCaptions();
+        for (std::size_t i = 0; i < captions.size(); ++i) {
+            const auto& caption = captions[captions.size() - 1U - i];  // newest at bottom
+            const float alpha = caption.alpha();
+            const float textWidth = hudTextWidth(caption.text, scale);
+            const float y = bottom - margin - static_cast<float>(i + 1U) * lineHeight;
+            const float x = right - margin - textWidth - 4.0F * scale;
+            drawHudQuad(commandBuffer, {x, y, textWidth + 4.0F * scale, lineHeight},
+                        {0.0F, 0.0F, 0.0F, 0.6F * alpha});
+            drawHudText(commandBuffer, caption.text, x + 2.0F * scale, y + scale, scale,
+                        {1.0F, 1.0F, 1.0F, alpha}, false);
         }
     }
 
@@ -2010,6 +2098,10 @@ class HudRenderer final {
             }
         }
         drawChatOverlay(commandBuffer, layout);
+        // PX-6: the game-in overlays sit above the chat/HUD: top-right toasts and
+        // bottom-right sound subtitles.
+        drawToastOverlay(commandBuffer, layout);
+        drawSubtitleOverlay(commandBuffer, layout);
     }
 
     // ---- bound references to renderer-core state ----
@@ -2044,6 +2136,8 @@ class HudRenderer final {
     std::string& chatInputText;
     std::vector<gameplay::command::Suggestion>& chatSuggestions_;
     std::size_t& chatSuggestionIndex_;
+    ui::ToastQueue& toastQueue;
+    ui::SubtitleFeed& subtitleFeed;
     std::optional<persistence::SaveGame>& currentSave;
     int& displayedFps;
     animation::PlayerModelAnimator& playerModelAnimator;

@@ -123,6 +123,8 @@ GameOptions GameOptions::load(const std::filesystem::path& path) {
             options.autoJump = value == "true" || value == "1" || value == "on";
         } else if (key == "audio.masterVolume") {
             static_cast<void>(parseNumber(value, options.masterVolume));
+        } else if (key == "accessibility.showSubtitles") {
+            options.showSubtitles = value == "true" || value == "1" || value == "on";
         } else if (key == "lighting.dynamic") {
             options.dynamicLight = value == "true" || value == "1" || value == "on";
         } else if (key == "lighting.smooth") {
@@ -176,6 +178,8 @@ void GameOptions::save(const std::filesystem::path& path) const {
            << "render.viewBobbing=" << (sanitized.viewBobbing ? "true" : "false") << '\n'
            << "control.autoJump=" << (sanitized.autoJump ? "true" : "false") << '\n'
            << "audio.masterVolume=" << sanitized.masterVolume << '\n'
+           << "accessibility.showSubtitles=" << (sanitized.showSubtitles ? "true" : "false")
+           << '\n'
            << "lighting.smooth=" << smoothLightingName(sanitized.smoothLightingQuality) << '\n'
            << "lighting.dynamic=" << (sanitized.dynamicLight ? "true" : "false") << '\n'
            << "render.vsync=" << (sanitized.vsync ? "true" : "false") << '\n'

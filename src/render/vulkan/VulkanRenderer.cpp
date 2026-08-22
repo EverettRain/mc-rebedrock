@@ -67,6 +67,8 @@
 #include "ui/MenuSystem.hpp"
 #include "ui/PageBuilder.hpp"
 #include "ui/PageStack.hpp"
+#include "ui/SubtitleFeed.hpp"
+#include "ui/Toast.hpp"
 #include "ui/Widget.hpp"
 #include "ui/TextFont.hpp"
 #include "ui/UiFrameData.hpp"
@@ -1256,6 +1258,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             streamingUploadBudget_ = mc::render::streamingUploadBudgetForFrameMs(
                 smoothedFrameSeconds_ * 1000.0F, streamingUploadBudget_);
             uiTimeSeconds += static_cast<double>(deltaSeconds);
+            // PX-6: advance the HUD overlays on the render clock (client
+            // presentation, never the world tick), so toasts slide/expire and
+            // subtitles fade at real time regardless of the sim rate.
+            toastQueue_.advance(deltaSeconds);
+            subtitleFeed_.advance(deltaSeconds);
             fpsSampleSeconds += deltaSeconds;
             ++fpsSampleFrames;
             if (fpsSampleSeconds >= 0.5F) {
@@ -2962,6 +2969,27 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return ui::frontendButtonRect(layout, page, index, buttonCount);
     }
 
+    // PX-6: push a system toast (top-right notification). Only used for triggers
+    // that already exist (e.g. a setting change) — never a placeholder for an
+    // absent system (achievements/recipes have none, so none is pushed).
+    void pushSystemToast(std::string title, std::string subtitle) {
+        ui::Toast toast;
+        toast.kind = ui::ToastKind::System;
+        toast.title = std::move(title);
+        toast.subtitle = std::move(subtitle);
+        toastQueue_.push(std::move(toast));
+    }
+
+    // PX-6: show a sound's accessibility caption (SoundRegistry.subtitle) when
+    // subtitles are enabled. The client option gates it; until that toggle is
+    // wired the feed stays inert (no fake-on captions).
+    void showSoundSubtitle(std::string_view subtitle) {
+        if (!options.showSubtitles || subtitle.empty()) {
+            return;
+        }
+        subtitleFeed_.show(std::string{subtitle});
+    }
+
     // PX-4: the callback factory — binds every menu action to a renderer method,
     // captured by `this`. buildPage() stamps these onto the page's widgets, so a
     // click runs the same effect the old switch(MenuButton) case did. This is the
@@ -3099,6 +3127,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (currentSave.has_value()) {
                 currentSave->difficulty = gameplay::nextDifficulty(currentSave->difficulty);
                 gameSession.setDifficulty(currentSave->difficulty);
+                // PX-6 system toast: a setting change (a trigger that already
+                // exists) confirms to the player via the top-right overlay.
+                pushSystemToast("Difficulty",
+                                std::string{gameplay::difficultyName(currentSave->difficulty)});
             }
         };
         cb.toggleForceUnicodeFont = [this] {
@@ -6469,6 +6501,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // source. Non-null capture means the next key press is consumed as a rebind
     // rather than gameplay input.
     input::KeyBindingScreen keyBindScreen_{inputSystem_};
+    // PX-6: the game-in HUD overlays. The toast queue (top-right notifications)
+    // and the subtitle feed (bottom-right sound captions) are Vulkan-free client-
+    // presentation state, advanced on frame delta and drawn by HudRenderer.
+    ui::ToastQueue toastQueue_;
+    ui::SubtitleFeed subtitleFeed_;
     bool dropRequested = false;
     bool dropWholeStack = false;
     bool chatOpen = false;
@@ -6732,6 +6769,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .chatInputText = chatInputText,
             .chatSuggestions_ = chatSuggestions_,
             .chatSuggestionIndex_ = chatSuggestionIndex_,
+            .toastQueue = toastQueue_,
+            .subtitleFeed = subtitleFeed_,
             .currentSave = currentSave,
             .displayedFps = displayedFps,
             .playerModelAnimator = playerModelAnimator,
