@@ -15,9 +15,11 @@
 #include "gameplay/PlayerActionState.hpp"
 #include "gameplay/PlayerController.hpp"
 #include "gameplay/PlayerTickSnapshot.hpp"
+#include "render/player/ArmPose.hpp"
 
 #include <glm/vec3.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <optional>
 
@@ -45,6 +47,16 @@ struct PlayerRenderState final {
     glm::vec3 feetPosition{0.0F};
     float walkStride = 0.0F;
     float walkSpeed = 0.0F;
+
+    // Rotation (degrees), interpolated from the tick endpoints. bodyYaw is the
+    // torso facing applied to the world root; headYaw is RELATIVE to the body
+    // (the head bone turns this much on top of the body); pitch is the head/eye
+    // pitch. Both solvers (third-person body, first-person hand) read these; the
+    // camera perspective never enters here (animation §5.2 / §19.4).
+    float bodyYawDegrees = 0.0F;
+    float headYawDegrees = 0.0F;  // relative to the body
+    float pitchDegrees = 0.0F;
+
     bool sneaking = false;
     bool flying = false;
     bool sprinting = false;
@@ -53,7 +65,27 @@ struct PlayerRenderState final {
     InterpolatedUse use;
     // The held stack's block/item, for the ArmPose and the item render.
     gameplay::ItemStack heldStack{};
+
+    // The arm poses, derived once here so every consumer agrees (Phase 4). The
+    // main hand renders on the main arm (right by default); the off arm is Empty
+    // until an off-hand slot exists.
+    ArmPose rightArmPose = ArmPose::Empty;
+    ArmPose leftArmPose = ArmPose::Empty;
 };
+
+// Shortest-path angle lerp for degrees, so 179 -> -179 crosses the +180 seam by
+// 2 degrees instead of sweeping 358 the wrong way (animation §13.3). Pure.
+[[nodiscard]] inline float wrapDegrees(float degrees) {
+    float wrapped = std::fmod(degrees + 180.0F, 360.0F);
+    if (wrapped < 0.0F) {
+        wrapped += 360.0F;
+    }
+    return wrapped - 180.0F;
+}
+
+[[nodiscard]] inline float lerpAngleDegrees(float from, float to, float alpha) {
+    return from + wrapDegrees(to - from) * alpha;
+}
 
 // Interpolates the tick-owned swing against `partialTicks` in [0, 1). The
 // action's previous/current endpoints were captured by the simulation's tick;
@@ -126,9 +158,30 @@ struct PlayerRenderState final {
     state.sneaking = snapshot.sneaking;
     state.flying = snapshot.flying;
     state.sprinting = snapshot.sprinting;
+
+    // Rotation: wrapped angle lerp so the seam at +/-180 never sweeps the long
+    // way. The head yaw stored in the snapshot is absolute; the render state
+    // wants it relative to the body, so the body yaw is subtracted after both are
+    // interpolated (each on its own shortest path).
+    const float bodyYaw =
+        lerpAngleDegrees(snapshot.previousBodyYawDegrees, snapshot.bodyYawDegrees, partialTicks);
+    const float headYaw =
+        lerpAngleDegrees(snapshot.previousHeadYawDegrees, snapshot.headYawDegrees, partialTicks);
+    state.bodyYawDegrees = bodyYaw;
+    state.headYawDegrees = wrapDegrees(headYaw - bodyYaw);
+    state.pitchDegrees =
+        snapshot.previousPitchDegrees +
+        (snapshot.pitchDegrees - snapshot.previousPitchDegrees) * partialTicks;
+
     state.swing = interpolateSwing(snapshot.swing, partialTicks, lastSwingSequence);
     state.use = interpolateUse(snapshot.use, partialTicks);
     state.heldStack = snapshot.heldStack;
+
+    // Arm poses derived once (Phase 4). The main hand is the right arm by
+    // default; the use hand is the main hand today. The off arm has no slot yet.
+    const bool usingMain = state.use.active && snapshot.use.hand == gameplay::InteractionHand::Main;
+    state.rightArmPose = deriveArmPose(state.heldStack, usingMain, state.use.animation);
+    state.leftArmPose = ArmPose::Empty;
     return state;
 }
 

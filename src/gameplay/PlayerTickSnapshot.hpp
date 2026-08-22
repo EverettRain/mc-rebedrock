@@ -47,6 +47,21 @@ struct PlayerTickSnapshot final {
     float previousSpeed = 0.0F;
     float speed = 0.0F;
 
+    // Rotation endpoints (degrees), owned by the tick rather than derived in the
+    // renderer from the camera each frame (animation §7.1: worldBodyYaw must not
+    // be a frame-driven renderer float). bodyYaw is the torso facing; headYaw is
+    // absolute here (the extractor makes it relative to the body); pitch is the
+    // head/eye pitch. The renderer wrapped-lerps them by partialTicks, so the
+    // same tick yields the same facing at any frame rate and F5 does not touch
+    // them. The simulation advances body yaw toward the look each tick with the
+    // vanilla head/body clamp.
+    float previousBodyYawDegrees = 0.0F;
+    float bodyYawDegrees = 0.0F;
+    float previousHeadYawDegrees = 0.0F;
+    float headYawDegrees = 0.0F;
+    float previousPitchDegrees = 0.0F;
+    float pitchDegrees = 0.0F;
+
     bool sneaking = false;
     bool flying = false;
     bool sprinting = false;
