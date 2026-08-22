@@ -8,9 +8,58 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 
+#include <cstdint>
 #include <vector>
 
 namespace mc::animation {
+
+// How a layer combines with the pose accumulated by earlier layers.
+//
+//  * Additive — the layer's sampled value is scaled by its weight and *added* to
+//    the bone (rotations/positions sum; scale composes multiplicatively toward
+//    1). This is how Bedrock stacks a walk cycle, an idle sway and a look, and
+//    is the original (pre-ANIM-2) behaviour.
+//  * Override — the bone is *lerped toward* the layer's value by its weight:
+//    `target = lerp(target, value, weight)`. weight 1 replaces the bone
+//    outright (an item-hold pose that must not read the walk's arm swing);
+//    weight 0.5 blends halfway; weight 0 leaves it unchanged. Combined with an
+//    ANIM-1 mask this cleanly replaces just the masked bones.
+enum class BlendMode : std::uint8_t { Additive, Override };
+
+// A weight ramp between two values over a fixed duration — the reusable
+// crossfade primitive that replaces the hand-written `approach()` eases
+// scattered across the animators. It carries no clip; callers advance it each
+// frame and feed `value()` as a layer weight (or any blend factor).
+//
+// Deterministic and side-effect free: purely a function of elapsed time, so the
+// same inputs always give the same weight. The optional ease smooths the ramp
+// (smoothstep) without changing its endpoints or duration.
+class Transition final {
+  public:
+    Transition() = default;
+    Transition(float from, float to, float durationSeconds, bool eased = false)
+        : from_(from), to_(to),
+          duration_(durationSeconds > 0.0F ? durationSeconds : 0.0F), eased_(eased) {}
+
+    // Advances the ramp by `deltaSeconds` (clamped at 0) and returns the new
+    // value. A zero/negative duration snaps straight to `to`.
+    float advance(float deltaSeconds);
+
+    // Retarget the ramp toward a new destination from wherever it is now,
+    // restarting the clock. Used when a state flips mid-transition.
+    void retarget(float to, float durationSeconds, bool eased = false);
+
+    [[nodiscard]] float value() const;
+    [[nodiscard]] bool finished() const { return elapsed_ >= duration_; }
+    [[nodiscard]] float target() const { return to_; }
+
+  private:
+    float from_ = 0.0F;
+    float to_ = 0.0F;
+    float duration_ = 0.0F;
+    float elapsed_ = 0.0F;
+    bool eased_ = false;
+};
 
 // The animated transform of a single bone, relative to its rest pose.
 struct BonePose final {
@@ -73,8 +122,13 @@ class Animator final {
     // outside the mask are left untouched by this layer (Bedrock avatar-mask /
     // upper-vs-lower-body separation). The pointer must outlive `evaluate()`; a
     // null mask keeps the whole-skeleton path byte-for-byte as before.
+    //
+    // `mode` chooses additive stacking (default; the pre-ANIM-2 behaviour) or an
+    // override that lerps the bone toward the layer value by its weight. Evaluate
+    // applies all additive layers first, then the override layers in the order
+    // they were added, matching Bedrock's layered-animation composition.
     void addLayer(const AnimationClip& clip, float localTime, float weight = 1.0F,
-                  const BoneMask* mask = nullptr);
+                  const BoneMask* mask = nullptr, BlendMode mode = BlendMode::Additive);
 
     // Convenience for the common single-clip case: sets anim_time and adds it.
     void playSingle(const AnimationClip& clip, float elapsedSeconds, float weight = 1.0F);
@@ -87,7 +141,8 @@ class Animator final {
         const AnimationClip* clip = nullptr;
         float localTime = 0.0F;
         float weight = 1.0F;
-        const BoneMask* mask = nullptr; // null = whole skeleton
+        const BoneMask* mask = nullptr;             // null = whole skeleton
+        BlendMode mode = BlendMode::Additive;
     };
 
     const SkeletalModel* model_ = nullptr;

@@ -48,11 +48,11 @@ void Animator::setModel(const SkeletalModel* model) {
 void Animator::clearLayers() { layers_.clear(); }
 
 void Animator::addLayer(const AnimationClip& clip, float localTime, float weight,
-                        const BoneMask* mask) {
+                        const BoneMask* mask, BlendMode mode) {
     if (weight <= 0.0F) {
         return;
     }
-    layers_.push_back({&clip, localTime, weight, mask});
+    layers_.push_back({&clip, localTime, weight, mask, mode});
 }
 
 void Animator::playSingle(const AnimationClip& clip, float elapsedSeconds, float weight) {
@@ -75,12 +75,11 @@ SkeletonPose Animator::evaluate() const {
     // dominated the evaluation cost.
     MolangContext frameContext = context_;
 
-    for (const Layer& layer : layers_) {
-        if (layer.clip == nullptr) {
-            continue;
-        }
+    // Applies one layer's channels onto the pose, respecting its mask and mode.
+    const auto applyLayer = [&](const Layer& layer) {
         // Expose this layer's clip time so channel expressions can reference it.
         frameContext.setQuery("anim_time", layer.localTime);
+        const float w = layer.weight;
 
         for (const auto& [boneName, boneAnimation] : layer.clip->bones()) {
             const int index = model_->findBone(boneName);
@@ -96,24 +95,80 @@ SkeletonPose Animator::evaluate() const {
             BonePose& target = pose.bone(static_cast<std::size_t>(index));
 
             if (!boneAnimation.rotation.empty()) {
-                target.rotation +=
-                    boneAnimation.rotation.sample(layer.localTime, frameContext, glm::vec3{0.0F}) *
-                    layer.weight;
+                const glm::vec3 value =
+                    boneAnimation.rotation.sample(layer.localTime, frameContext, glm::vec3{0.0F});
+                // Additive: scaled add. Override: lerp the bone toward the value.
+                target.rotation = (layer.mode == BlendMode::Override)
+                                      ? target.rotation + (value - target.rotation) * w
+                                      : target.rotation + value * w;
             }
             if (!boneAnimation.position.empty()) {
-                target.position +=
-                    boneAnimation.position.sample(layer.localTime, frameContext, glm::vec3{0.0F}) *
-                    layer.weight;
+                const glm::vec3 value =
+                    boneAnimation.position.sample(layer.localTime, frameContext, glm::vec3{0.0F});
+                target.position = (layer.mode == BlendMode::Override)
+                                      ? target.position + (value - target.position) * w
+                                      : target.position + value * w;
             }
             if (!boneAnimation.scale.empty()) {
-                const glm::vec3 scale =
+                const glm::vec3 value =
                     boneAnimation.scale.sample(layer.localTime, frameContext, glm::vec3{1.0F});
-                // Compose scale multiplicatively, blended toward 1 by weight.
-                target.scale *= glm::vec3{1.0F} + (scale - glm::vec3{1.0F}) * layer.weight;
+                target.scale = (layer.mode == BlendMode::Override)
+                                   // Override: lerp the scale toward the value.
+                                   ? target.scale + (value - target.scale) * w
+                                   // Additive: compose multiplicatively toward 1.
+                                   : target.scale * (glm::vec3{1.0F} + (value - glm::vec3{1.0F}) * w);
             }
+        }
+    };
+
+    // Bedrock composition order: sum every additive layer first, then apply the
+    // override layers in the order they were queued (each lerps against the pose
+    // the earlier layers built). Two passes keep this order independent of how
+    // additive and override layers happen to be interleaved by the caller.
+    for (const Layer& layer : layers_) {
+        if (layer.clip != nullptr && layer.mode == BlendMode::Additive) {
+            applyLayer(layer);
+        }
+    }
+    for (const Layer& layer : layers_) {
+        if (layer.clip != nullptr && layer.mode == BlendMode::Override) {
+            applyLayer(layer);
         }
     }
     return pose;
+}
+
+float Transition::value() const {
+    if (duration_ <= 0.0F) {
+        return to_;
+    }
+    float t = elapsed_ / duration_;
+    if (t <= 0.0F) {
+        return from_;
+    }
+    if (t >= 1.0F) {
+        return to_;
+    }
+    if (eased_) {
+        t = t * t * (3.0F - 2.0F * t); // smoothstep
+    }
+    return from_ + (to_ - from_) * t;
+}
+
+float Transition::advance(float deltaSeconds) {
+    elapsed_ += std::max(deltaSeconds, 0.0F);
+    if (elapsed_ > duration_) {
+        elapsed_ = duration_;
+    }
+    return value();
+}
+
+void Transition::retarget(float to, float durationSeconds, bool eased) {
+    from_ = value();
+    to_ = to;
+    duration_ = durationSeconds > 0.0F ? durationSeconds : 0.0F;
+    elapsed_ = 0.0F;
+    eased_ = eased;
 }
 
 } // namespace mc::animation
