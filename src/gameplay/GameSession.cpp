@@ -20,6 +20,15 @@ namespace mc::gameplay {
 
 namespace {
 constexpr float kInfiniteDamage = std::numeric_limits<float>::infinity();
+
+// Floor division toward negative infinity, so a cross-dimension query at a
+// negative world coordinate lands on the correct chunk (a plain `/ 16` truncates
+// toward zero and would misplace the boundary chunk).
+[[nodiscard]] int floorDiv(int value, int divisor) {
+    const int quotient = value / divisor;
+    const int remainder = value % divisor;
+    return (remainder != 0 && (remainder < 0) != (divisor < 0)) ? quotient - 1 : quotient;
+}
 } // namespace
 
 GameSession::GameSession() {
@@ -213,10 +222,56 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // has settled (the old renderer applied them per frame between ticks, which
     // is the same ordering — the edits land on the next tick's processing).
     playerInteraction_.tick(*this, world, host, commandQueue_.drain());
+    // DIM-2: after the player's dimension has ticked in full, advance every other
+    // active dimension's passive simulation (MinecraftServer.tickChildren walks
+    // every ServerLevel, not only the player's). Dormant dimensions cost a
+    // branch each; the loop is fixed DimensionId order for determinism.
+    tickSecondaryLevels();
     // Publish the per-tick snapshots under the caller's world write lock, so
     // the render thread interpolates a coherent frame from them instead of
-    // reading live gameplay objects the tick may be mid-mutation on.
+    // reading live gameplay objects the tick may be mid-mutation on. Only the
+    // player's dimension is mirrored to the client — secondary dimensions tick
+    // server-side with no render coupling.
     publishSnapshots();
+}
+
+void GameSession::tickSecondaryLevels() {
+    const bool doWeatherCycle = gameRules_.get<bool>(GameRuleId::DoWeatherCycle);
+    // Fixed ascending DimensionId order: the loop must never depend on hash-map
+    // iteration order, so the same seed produces the same per-tick sequence
+    // across every dimension (determinism iron rule).
+    for (std::size_t index = 0; index < world::kDimensionCount; ++index) {
+        const auto dim = static_cast<world::DimensionId>(index);
+        if (dim == primaryDimension_) {
+            // The player's dimension already ticked in full above; record its
+            // residency for symmetry but do not tick it twice.
+            secondaryLevelReports_[index] = LevelTickReport{
+                /*skippedEmpty=*/level(dim).isDormant(),
+                /*chunksResident=*/level(dim).isDormant() ? 0U : level(dim).world().chunkCount(),
+                /*creaturesTicked=*/0U};
+            continue;
+        }
+        secondaryLevelReports_[index] = level(dim).tickPassive(doWeatherCycle, difficulty_);
+    }
+}
+
+world::Block GameSession::blockAcrossDimensions(world::DimensionId id, int x, int y, int z) {
+    Level& target = level(id);
+    // No world bound at all: the dimension is not even set up. Nothing to load;
+    // return Air (JE getChunk on an absent level yields nothing).
+    if (!target.hasWorld()) {
+        return world::Block::Air;
+    }
+    const world::ChunkPosition chunkPos{floorDiv(x, 16), floorDiv(z, 16)};
+    if (target.world().hasChunk(chunkPos)) {
+        // Loaded: a plain read, one hash lookup. Never a generate.
+        return target.world().block(x, y, z);
+    }
+    // Unloaded: record an async request for the streamer and return the default.
+    // Crucially this does NOT create/generate the chunk — synchronous generation
+    // in a tick is the long-tail root cause DIM-2 must never reintroduce.
+    pendingCrossDimLoads_.push_back({id, chunkPos});
+    return world::Block::Air;
 }
 
 void GameSession::publishSnapshots() {

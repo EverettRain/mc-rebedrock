@@ -1,18 +1,26 @@
 #pragma once
 
+#include "gameplay/Difficulty.hpp"
 #include "gameplay/EntitySystem.hpp"
 #include "gameplay/ItemEntitySystem.hpp"
 #include "gameplay/NaturalSpawner.hpp"
 #include "gameplay/WeatherSystem.hpp"
 #include "world/Dimension.hpp"
+#include "world/World.hpp"
 
+#include <cstddef>
 #include <cstdint>
 
-namespace mc::world {
-class World;
-} // namespace mc::world
-
 namespace mc::gameplay {
+
+// What one secondary-Level tick did, for metering and the DIM-2 skip assertions.
+// A dimension with no loaded chunks costs `skippedEmpty == true` and touches
+// nothing — the "empty dimension is free" invariant made observable.
+struct LevelTickReport final {
+    bool skippedEmpty = false;      // no bound world or no loaded chunks -> did nothing
+    std::size_t chunksResident = 0; // chunks the level held this tick (0 when skipped)
+    std::size_t creaturesTicked = 0;
+};
 
 // One dimension's per-world simulation bundle, mirroring 26.1's ServerLevel: the
 // creatures, the dropped items, the weather and the natural spawner that all
@@ -60,6 +68,50 @@ struct Level final {
     // per-dimension tick reaches its clock through the world-level ClockManager
     // by a subscript rather than a lookup.
     [[nodiscard]] world::ClockId clockId() const { return world::clockOf(id); }
+
+    // True when this dimension is dormant: no world bound, or a world with no
+    // loaded chunks. This is the "empty dimension is free" test — DIM DESIGN §2:
+    // a dimension nobody is in has an empty chunk map, and that emptiness is one
+    // hash-size check, no ticket-system object graph. JE's DistanceManager exists
+    // to reach the same answer; here it is `chunks_.empty()`.
+    [[nodiscard]] bool isDormant() const {
+        return world_ == nullptr || world_->chunkCount() == 0;
+    }
+
+    // Advances this dimension's passive simulation one 20 TPS tick — the parts
+    // that do not need the player: its weather and its creatures against its own
+    // world. The primary level (the one the player is in) is NOT ticked through
+    // here; GameSession ticks it in full with all the player-coupled systems.
+    // This is the per-ServerLevel body of DIM-2's cross-dimension loop, run only
+    // for the secondary (playerless) dimensions.
+    //
+    // A dormant dimension returns immediately having touched nothing: no chunk is
+    // read, no entity vector is walked beyond its empty size. That is the whole
+    // point — a Nether nobody has entered costs a branch, not a tick.
+    LevelTickReport tickPassive(bool doWeatherCycle, Difficulty difficulty) {
+        LevelTickReport report;
+        if (isDormant()) {
+            report.skippedEmpty = true;
+            return report;
+        }
+        report.chunksResident = world_->chunkCount();
+        // Non-natural dimensions (Nether/End) have no weather cycle; the
+        // WeatherSystem still exists but its auto-cycle is gated off.
+        weather.tick(doWeatherCycle && world::dimensionType(id).natural);
+        // Playerless: the default pusher sits far below the world, so no creature
+        // is shoved by an absent player, and simulationRadius 0 means every
+        // creature ticks (there is no player to measure distance from). The
+        // difficulty still drives the peaceful-despawn pass. Items and the natural
+        // spawner both need a player, so a secondary level does not tick them yet
+        // (DIM-5 gives non-primary dimensions a player when one transfers in).
+        const auto entityTick = entities.tick(
+            *world_, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F, difficulty,
+            /*playerAlive=*/false, /*playerCreative=*/false, /*simulationRadius=*/0.0F,
+            weather.isRaining());
+        static_cast<void>(entityTick);
+        report.creaturesTicked = entities.entities().size();
+        return report;
+    }
 
   private:
     world::World* world_ = nullptr;

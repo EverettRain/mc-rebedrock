@@ -430,6 +430,51 @@ class GameSession final {
     void bindPrimaryWorld(world::World& world) {
         primaryLevel().id = primaryDimension_;
         primaryLevel().bindWorld(world);
+        pinFixedTimeClocks();
+    }
+
+    // Binds a world to a secondary (non-primary) dimension. DIM-2 has no real
+    // second-dimension terrain (that is DIM-3), but the cross-dimension tick loop
+    // and its skip/no-force-load semantics are validated by binding a world to,
+    // say, the Nether and hand-loading a chunk. Sets the level's id so its clock
+    // and DimensionType resolve correctly.
+    void bindWorld(world::DimensionId id, world::World& world) {
+        level(id).id = id;
+        level(id).bindWorld(world);
+    }
+
+    // DIM-2's cross-dimension tick loop: after the primary level has ticked in
+    // full (GameSession::tick), advance every *other* active dimension's passive
+    // simulation, in ascending DimensionId order (deterministic — never map
+    // iteration order). A dormant dimension (no world, or no loaded chunks) is
+    // skipped for the cost of one branch. Reports are accumulated for metering.
+    void tickSecondaryLevels();
+
+    // A cross-dimension block read that never forces a chunk to load or generate
+    // (JE getChunk(create=false)): if the target dimension has that chunk
+    // resident it returns the block, otherwise it records an async load request
+    // and returns Air. This is the one legal shape of a cross-dimension query
+    // inside a tick — synchronous generation here is the [[lowframe-chunk-unload-
+    // io]] long-tail root cause and is forbidden.
+    [[nodiscard]] world::Block blockAcrossDimensions(world::DimensionId id, int x, int y, int z);
+
+    // The chunk coordinates a cross-dimension query found unloaded this session,
+    // for the streamer to satisfy asynchronously (DIM-3 wires the consumer). Read
+    // by the DIM-2 tests to prove a query recorded a request instead of loading.
+    struct PendingCrossDimLoad final {
+        world::DimensionId dimension = world::DimensionId::Overworld;
+        world::ChunkPosition chunk{};
+    };
+    [[nodiscard]] const std::vector<PendingCrossDimLoad>& pendingCrossDimLoads() const {
+        return pendingCrossDimLoads_;
+    }
+    void clearPendingCrossDimLoads() { pendingCrossDimLoads_.clear(); }
+
+    // The last cross-dimension tick pass's per-dimension reports, indexed by
+    // DimensionId. Metering for the "empty dimension is free" assertions.
+    [[nodiscard]] const std::array<LevelTickReport, world::kDimensionCount>&
+    secondaryLevelReports() const {
+        return secondaryLevelReports_;
     }
     // The environment resolved for the tick in progress. Anything that needs to
     // know how dark it is should read this rather than sampling the clock.
@@ -556,6 +601,24 @@ class GameSession final {
     // The dimension the player is in — the Overworld until DIM-5 lets the player
     // change dimension. primaryLevel() routes through this.
     world::DimensionId primaryDimension_ = world::DimensionId::Overworld;
+    // DIM-2 metering + cross-dimension bookkeeping.
+    std::array<LevelTickReport, world::kDimensionCount> secondaryLevelReports_{};
+    std::vector<PendingCrossDimLoad> pendingCrossDimLoads_;
+
+    // Pins the fixed-time dimensions' clocks (Nether/End: DimensionType.fixedTime)
+    // to their fixed value and pauses them, so ClockManager::tick never advances
+    // their day. DIM-0 says the Nether sits at 18000 and the End at 6000; a
+    // fixed-time clock reads that constant forever.
+    void pinFixedTimeClocks() {
+        for (std::size_t i = 0; i < world::kDimensionCount; ++i) {
+            const auto dim = static_cast<world::DimensionId>(i);
+            const auto& type = world::dimensionType(dim);
+            if (type.fixedTime.has_value()) {
+                clocks_.setTotalTicks(world::clockOf(dim), *type.fixedTime);
+                clocks_.setPaused(world::clockOf(dim), true);
+            }
+        }
+    }
     gameplay::ChestSystem chestSystem_;
     gameplay::ChestSystem trappedChestSystem_;
     gameplay::FurnaceSystem furnaceSystem_;
