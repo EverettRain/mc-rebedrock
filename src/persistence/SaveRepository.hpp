@@ -27,6 +27,16 @@ struct SaveSummary final {
     std::int64_t lastPlayedUnixSeconds = 0;
 };
 
+// One active MobEffect persisted with its carrier. The effect is stored by its
+// registry *name*, never its runtime id — a dense id is a per-run value that a
+// save must not bake in (an added/removed effect would renumber every record).
+// A name this build no longer knows is dropped cleanly on load.
+struct PersistentEffect final {
+    std::string name;              // the registry path, e.g. "poison"
+    std::int32_t durationTicks = 0;
+    std::uint8_t amplifier = 0U;
+};
+
 // One live creature persisted with the world (format 12's ENTITY block): the
 // species by its registered id path, the pose/physics the renderer interpolates
 // between, and the fields a fresh spawn would not reproduce. Only creatures
@@ -48,6 +58,9 @@ struct PersistentEntity final {
     // Entity#fireTicks: a creature saved mid-burn reopens still ablaze. Added in
     // entity block version 2; a version-1 record reads it as zero (not on fire).
     std::int32_t fireTicks = 0;
+    // The creature's active MobEffects. Added in entity block version 3; earlier
+    // records carry none, so an old world migrates to an unaffected herd.
+    std::vector<PersistentEffect> effects;
 };
 
 // A dropped item awaiting pickup. Position and velocity are the whole physical

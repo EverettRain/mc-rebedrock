@@ -43,7 +43,30 @@ constexpr int kSpawnChunkRadius = 4;
     record.ageTicks = entity.ageTicks;
     record.rngState = entity.rngState;
     record.fireTicks = entity.fireTicks;
+    // The active MobEffects, by name (never the per-run id). An id with no name —
+    // impossible for a registered effect — is skipped rather than stored blank.
+    for (std::size_t index = 0; index < entity.effects.count; ++index) {
+        const gameplay::EffectInstance& live = entity.effects.entries[index];
+        const std::string_view name = gameplay::statusEffectName(live.id);
+        if (name.empty()) {
+            continue;
+        }
+        record.effects.push_back(
+            {std::string{name}, live.durationTicks, live.amplifier});
+    }
     return record;
+}
+
+// The inverse: a save's effect list back into the live inline store, resolving
+// each name through the registry. A name this build no longer knows is dropped.
+[[nodiscard]] gameplay::ActiveEffects toActiveEffects(
+    const std::vector<persistence::PersistentEffect>& effects) {
+    gameplay::ActiveEffects live;
+    for (const auto& record : effects) {
+        const core::StatusEffectId id = gameplay::statusEffectByName(record.name);
+        static_cast<void>(gameplay::applyEffect(live, id, record.durationTicks, record.amplifier));
+    }
+    return live;
 }
 }  // namespace
 
@@ -716,7 +739,7 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
         gameSession_.worldEntities().restore({record.x, record.y, record.z}, type, record.yaw,
                                              {record.vx, record.vy, record.vz}, record.health,
                                              record.angerTicks, record.ageTicks, record.rngState,
-                                             record.fireTicks);
+                                             record.fireTicks, toActiveEffects(record.effects));
     }
     // Format 16: dropped items and blocks mid-fall. Before it, everything a
     // player had thrown or mined but not picked up vanished on reload.
@@ -1101,7 +1124,8 @@ void GameRuntime::restoreLoadedChunk(world::ChunkPosition position) {
         gameSession_.worldEntities().restore(
             {record.x, record.y, record.z}, type, record.yaw,
             {record.vx, record.vy, record.vz}, record.health, record.angerTicks,
-            record.ageTicks, record.rngState, record.fireTicks);
+            record.ageTicks, record.rngState, record.fireTicks,
+            toActiveEffects(record.effects));
     }
 }
 

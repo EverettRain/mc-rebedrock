@@ -4,6 +4,7 @@
 #include "gameplay/Difficulty.hpp"
 #include "gameplay/EntitySection.hpp"
 #include "gameplay/Inventory.hpp"
+#include "gameplay/StatusEffect.hpp"
 #include "gameplay/entities/EntityType.hpp"
 #include "gameplay/entities/MobBrain.hpp"
 
@@ -94,6 +95,10 @@ struct SimpleEntity final {
     // Water and rain extinguish it. Zero means not on fire, which is the usual
     // case, so it costs nothing until something lights the creature.
     int fireTicks = 0;
+    // LivingEntity's active MobEffects, as EM-2's small fixed inline store rather
+    // than a heap map. Empty for almost every creature (count == 0), so an
+    // unaffected mob pays one integer to skip the whole effect tick.
+    ActiveEffects effects{};
 
     // Stateful Goal instances and the current navigation path are per entity.
     entities::MobBrain brain;
@@ -196,7 +201,8 @@ class EntitySystem final {
     // it left off. Returns the stable id the restored creature holds.
     std::uint64_t restore(glm::vec3 position, const entities::EntityType& type, float yaw,
                           glm::vec3 velocity, float health, int angerTicks,
-                          unsigned int ageTicks, std::uint32_t rngState, int fireTicks = 0);
+                          unsigned int ageTicks, std::uint32_t rngState, int fireTicks = 0,
+                          const ActiveEffects& effects = {});
 
     // Advances every creature one 20 TPS tick against the world: target/action
     // selectors, land navigation, gravity, collision, pushing and damage timers.
@@ -264,6 +270,17 @@ class EntitySystem final {
     // max of the current and requested duration. A fireImmune species is never
     // lit. Returns true when the call left the creature ablaze.
     bool setOnFire(std::uint64_t entityId, int seconds);
+
+    // LivingEntity#addEffect: applies a status effect to a creature by id. The
+    // merge (stronger/longer wins) lives in the shared StatusEffect API; this
+    // just resolves the id. Returns true when the store changed. A miss (dead or
+    // unknown id) is false, not an abort — content applies effects speculatively.
+    bool applyEffect(std::uint64_t entityId, core::StatusEffectId effect,
+                     std::int32_t durationTicks, std::uint8_t amplifier);
+    // LivingEntity#removeEffect / #removeAllEffects. `hasEffect` is a query.
+    bool removeEffect(std::uint64_t entityId, core::StatusEffectId effect);
+    std::size_t clearEffects(std::uint64_t entityId);
+    [[nodiscard]] bool hasEffect(std::uint64_t entityId, core::StatusEffectId effect) const;
 
     // The loot a creature that just finished dying leaves behind. Drained by
     // the caller after tick(); the same creature never reports twice.

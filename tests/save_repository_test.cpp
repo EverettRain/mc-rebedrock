@@ -148,6 +148,12 @@ int main() {
         // fireTicks): it must reopen still ablaze.
         {"zombie", 20.0F, 64.0F, -5.0F, 1.2F, 0.1F, 0.0F, 0.0F, 20.0F, 40, 5U, 0xABCDU, 60},
     };
+    // The zombie also carries active MobEffects (entity block/region version 3):
+    // they travel by name and must reopen with their remaining duration intact.
+    save.entities[1].effects = {
+        {"poison", 80, 0},
+        {"speed", 200, 1},
+    };
     repository.save(save);
     const auto listed = repository.list();
     assert(listed.size() == 1U);
@@ -231,6 +237,24 @@ int main() {
     assert(zombie->rngState == 0xABCDU);
     // The burning zombie kept its fireTicks across the round trip.
     assert(zombie->fireTicks == 60);
+    // Its active effects survived by name, with their durations and amplifiers.
+    assert(zombie->effects.size() == 2U);
+    {
+        const auto effectByName = [&](const char* name) -> const persistence::PersistentEffect* {
+            for (const auto& effect : zombie->effects) {
+                if (effect.name == name) {
+                    return &effect;
+                }
+            }
+            return nullptr;
+        };
+        const auto* poison = effectByName("poison");
+        const auto* speed = effectByName("speed");
+        assert(poison != nullptr && poison->durationTicks == 80 && poison->amplifier == 0);
+        assert(speed != nullptr && speed->durationTicks == 200 && speed->amplifier == 1);
+    }
+    // The pig carried no effects.
+    assert(pig->effects.empty());
 
     // Blocks travel as namespaced identifiers now, so the payload literally
     // contains them and a renumbered enum cannot silently reinterpret an old

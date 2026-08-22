@@ -235,6 +235,7 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/MobSpawnSettings.cpp
     src/gameplay/PlayerController.cpp
     src/gameplay/PlayerVitals.cpp
+    src/gameplay/StatusEffect.cpp
     src/gameplay/WeatherSystem.cpp
     src/gameplay/WorldSimulation.cpp
     src/gameplay/ChunkTickScheduler.cpp
@@ -805,6 +806,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME entity_fire COMMAND mc_rebedrock_entity_fire_test)
 
+    add_executable(mc_rebedrock_status_effect_test
+        tests/status_effect_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_status_effect_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_status_effect_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME status_effect COMMAND mc_rebedrock_status_effect_test)
+
     # Manual tools, not part of the test suite: they take arguments or print
     # numbers instead of asserting, so ctest cannot judge them and a normal build
     # has no reason to compile them. Configure with -DMC_REBEDROCK_BUILD_TOOLS=ON
@@ -1007,8 +1018,8 @@ if(BUILD_TESTING)
 
     add_executable(mc_rebedrock_damage_pipeline_test
         tests/damage_pipeline_test.cpp
-        src/gameplay/PlayerVitals.cpp
     )
+    target_link_libraries(mc_rebedrock_damage_pipeline_test PRIVATE mc_rebedrock_runtime)
     target_include_directories(mc_rebedrock_damage_pipeline_test PRIVATE
         src
         "${glm_SOURCE_DIR}"

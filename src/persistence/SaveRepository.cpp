@@ -559,17 +559,54 @@ void readWeatherBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
 //     u32 rngState
 //     i32 fireTicks       // version >= 2; absent (read as 0) in version 1
 //     u8  flags           // reserved
+//     u8  effectCount     // version >= 3; absent (read as 0) in versions 1-2
+//     effects[]:          // version >= 3
+//       u16 nameLen + name   // the effect registry path, e.g. "poison"
+//       i32 durationTicks
+//       u8  amplifier
 //
 // Species are palette-encoded the same way blocks/items are, so a species that
 // is removed in a future build skips cleanly on load (the unknown name becomes
 // an unknown palette entry) instead of renumbering every record.
 //
 // Version 2 inserts `fireTicks` before the reserved flags byte so a creature
-// saved mid-burn reopens still ablaze. A version-1 region omits it entirely and
-// reads it back as zero, so an old world migrates without a fixer.
+// saved mid-burn reopens still ablaze. Version 3 appends the active MobEffects
+// after the flags byte (by name, not id). An older region omits the newer
+// fields, which read back as their defaults, so an old world migrates without a
+// fixer.
 constexpr std::uint32_t kEntityBlockTag =
     'E' | ('N' << 8) | ('T' << 16) | ('Y' << 24);
-constexpr std::uint16_t kEntityBlockVersion = 2U;
+constexpr std::uint16_t kEntityBlockVersion = 3U;
+
+// An entity's active MobEffects, shared by the world.dat ENTITY block and the
+// per-chunk region record (both grew effects in the same version bump). Effects
+// are stored by name, and capped at 255 so the count fits one byte — far above
+// the handful an entity ever carries.
+void appendEffectList(std::vector<std::uint8_t>& bytes,
+                      const std::vector<PersistentEffect>& effects) {
+    const auto count = static_cast<std::uint8_t>(
+        std::min<std::size_t>(effects.size(), 255U));
+    appendInteger(bytes, count);
+    for (std::uint8_t index = 0; index < count; ++index) {
+        const PersistentEffect& effect = effects[index];
+        appendString(bytes, effect.name);
+        appendInteger(bytes, effect.durationTicks);
+        appendInteger(bytes, effect.amplifier);
+    }
+}
+
+void readEffectList(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                    std::vector<PersistentEffect>& effects) {
+    const auto count = readInteger<std::uint8_t>(payload, cursor);
+    effects.reserve(count);
+    for (std::uint8_t index = 0; index < count; ++index) {
+        PersistentEffect effect;
+        effect.name = readString(payload, cursor);
+        effect.durationTicks = readInteger<std::int32_t>(payload, cursor);
+        effect.amplifier = readInteger<std::uint8_t>(payload, cursor);
+        effects.push_back(std::move(effect));
+    }
+}
 
 void appendEntityBlock(std::vector<std::uint8_t>& bytes,
                        const std::vector<PersistentEntity>& entities) {
@@ -613,6 +650,7 @@ void appendEntityBlock(std::vector<std::uint8_t>& bytes,
         appendInteger(bytes, entity.rngState);
         appendInteger(bytes, entity.fireTicks);  // version 2
         appendInteger(bytes, static_cast<std::uint8_t>(0U));  // flags, reserved
+        appendEffectList(bytes, entity.effects);  // version 3
     }
     const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
     for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
@@ -680,6 +718,10 @@ void readEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
             entity.fireTicks = readInteger<std::int32_t>(payload, cursor);
         }
         static_cast<void>(readInteger<std::uint8_t>(payload, cursor));  // flags, reserved
+        // Active effects arrived in version 3; versions 1-2 leave the list empty.
+        if (blockVersion >= 3U) {
+            readEffectList(payload, cursor, entity.effects);
+        }
         // A creature saved outside the world is a corrupt record.
         if (!(entity.y >= -64.0F && entity.y <= 384.0F)) {
             throw std::runtime_error("world.dat entity block has an invalid position");
@@ -1378,7 +1420,9 @@ void readChunkBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
 //         u32 editCount + edits[]:   { u8 packedXZ + i16 y + u16 stateIndex }
 //         u32 entityCount + entities[]: { u16 speciesIndex + f32 x,y,z,yaw + f32 vx,vy,vz
 //                                       + f32 health + i32 angerTicks + u32 ageTicks
-//                                       + u32 rngState + i32 fireTicks (ver >= 2) + u8 flags }
+//                                       + u32 rngState + i32 fireTicks (ver >= 2) + u8 flags
+//                                       + effects (ver >= 3): u8 count,
+//                                         [u16 nameLen + name + i32 duration + u8 amplifier]* }
 //     u64 checksum (FNV-1a over everything above it)
 //
 // The state and species palettes are region-local and self-contained (block
@@ -1388,9 +1432,10 @@ void readChunkBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
 constexpr std::array<std::uint8_t, 8> kRegionMagic{'M', 'C', 'R', 'B', 'R', 'E', 'G', 0x00};
 constexpr std::uint32_t kRegionFileVersion = 1U;
 constexpr std::uint32_t kRegionChunkTag = blockTag("CCNK");
-// Version 2 appends fireTicks to each entity record (see the ENTITY block's
-// version 2); a version-1 region reads it back as zero, migrating cleanly.
-constexpr std::uint16_t kRegionChunkVersion = 2U;
+// Version 2 appends fireTicks to each entity record; version 3 appends the
+// active MobEffects after the flags byte (see the ENTITY block). An older region
+// omits the newer fields, which read back as their defaults, migrating cleanly.
+constexpr std::uint16_t kRegionChunkVersion = 3U;
 constexpr std::uint32_t kRegionWidth = 32U;  // chunks per region side
 
 // Floor division of a chunk coordinate by the region width, exactly like the
@@ -1626,6 +1671,7 @@ void appendRegionFile(std::vector<std::uint8_t>& bytes, const RegionData& region
             appendInteger(bytes, entity.rngState);
             appendInteger(bytes, entity.fireTicks);  // version 2
             appendInteger(bytes, static_cast<std::uint8_t>(0U));  // flags, reserved
+            appendEffectList(bytes, entity.effects);  // version 3
         }
     }
     appendInteger(
@@ -1744,6 +1790,10 @@ void readRegionFile(std::span<const std::uint8_t> bytes, RegionData& region) {
                 entity.fireTicks = readInteger<std::int32_t>(payload, cursor);
             }
             static_cast<void>(readInteger<std::uint8_t>(payload, cursor));  // flags, reserved
+            // Active effects arrived in version 3; older regions leave it empty.
+            if (header.version >= 3U) {
+                readEffectList(payload, cursor, entity.effects);
+            }
             // A creature saved outside the world is a corrupt record.
             if (!(entity.y >= -64.0F && entity.y <= 384.0F)) {
                 throw std::runtime_error("region file has an invalid entity position");

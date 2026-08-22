@@ -47,12 +47,16 @@ class ContentId final {
     Value value_ = kInvalidValue;
 };
 
-// Phantom tags. Empty structs whose only job is to make the four id types
-// distinct; they are never instantiated.
+// Phantom tags. Empty structs whose only job is to make the id types distinct;
+// they are never instantiated.
 struct BlockIdTag final {};
 struct ItemIdTag final {};
 struct EntityTypeIdTag final {};
 struct BlockEntityTypeIdTag final {};
+// A registered status effect (poison, speed, …). EM-2's MobEffect registry
+// hands these out; a per-entity EffectInstance holds one plus its duration and
+// amplifier.
+struct StatusEffectIdTag final {};
 // The dense id an Identifier interns to, for hot paths that want to compare
 // registry keys as integers instead of walking two string_views.
 struct IdentifierIdTag final {};
@@ -61,6 +65,7 @@ using BlockId = ContentId<BlockIdTag>;
 using ItemId = ContentId<ItemIdTag>;
 using EntityTypeId = ContentId<EntityTypeIdTag>;
 using BlockEntityTypeId = ContentId<BlockEntityTypeIdTag>;
+using StatusEffectId = ContentId<StatusEffectIdTag>;
 using IdentifierId = ContentId<IdentifierIdTag>;
 
 } // namespace mc::core

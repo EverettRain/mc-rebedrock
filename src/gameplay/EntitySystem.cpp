@@ -426,7 +426,8 @@ void EntitySystem::spawn(glm::vec3 position, const entities::EntityType& type, s
 std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityType& type,
                                     float yaw, glm::vec3 velocity, float health,
                                     int angerTicks, unsigned int ageTicks,
-                                    std::uint32_t rngState, int fireTicks) {
+                                    std::uint32_t rngState, int fireTicks,
+                                    const ActiveEffects& effects) {
     SimpleEntity entity;
     entity.type = &type;
     entity.id = nextEntityId_++;
@@ -441,6 +442,9 @@ std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityTy
     entity.rngState = rngState;
     // A fire-immune species can never be ablaze; drop a stray record on restore.
     entity.fireTicks = type.fireImmune() ? 0 : std::max(fireTicks, 0);
+    // The active MobEffects travel with the save (a poisoned creature reopens
+    // still poisoned with its remaining duration intact).
+    entity.effects = effects;
     // The species owns the max; the save's health is the current value, clamped
     // so a corrupt record cannot restore a creature over its cap.
     entity.damage.maxHealth = type.attributes().maxHealth();
@@ -606,6 +610,44 @@ bool EntitySystem::setOnFire(std::uint64_t entityId, int seconds) {
     }
     entity.fireTicks = std::max(entity.fireTicks, seconds * kTicksPerSecond);
     return entity.fireTicks > 0;
+}
+
+bool EntitySystem::applyEffect(std::uint64_t entityId, core::StatusEffectId effect,
+                               std::int32_t durationTicks, std::uint8_t amplifier) {
+    const auto found = idToIndex_.find(entityId);
+    if (found == idToIndex_.end()) {
+        return false;
+    }
+    auto& entity = entities_[found->second];
+    // A corpse does not accrue effects.
+    if (entity.damage.dead()) {
+        return false;
+    }
+    return mc::gameplay::applyEffect(entity.effects, effect, durationTicks, amplifier);
+}
+
+bool EntitySystem::removeEffect(std::uint64_t entityId, core::StatusEffectId effect) {
+    const auto found = idToIndex_.find(entityId);
+    if (found == idToIndex_.end()) {
+        return false;
+    }
+    return mc::gameplay::removeEffect(entities_[found->second].effects, effect);
+}
+
+std::size_t EntitySystem::clearEffects(std::uint64_t entityId) {
+    const auto found = idToIndex_.find(entityId);
+    if (found == idToIndex_.end()) {
+        return 0U;
+    }
+    return mc::gameplay::clearEffects(entities_[found->second].effects);
+}
+
+bool EntitySystem::hasEffect(std::uint64_t entityId, core::StatusEffectId effect) const {
+    const auto found = idToIndex_.find(entityId);
+    if (found == idToIndex_.end()) {
+        return false;
+    }
+    return mc::gameplay::hasEffect(entities_[found->second].effects, effect);
 }
 
 void EntitySystem::clear() {
@@ -797,6 +839,38 @@ EntityTickResult EntitySystem::tick(
                 }
                 --entity.fireTicks;
             }
+        }
+
+        // LivingEntity#tickEffects: advance the active MobEffects. The store
+        // returns what this tick wants applied; the creature's DamageState and
+        // movement multiplier apply it, so poison/regeneration go through the
+        // shared damage pipeline and the same die() path fire uses. An entity
+        // with no effects returns immediately (count == 0), so this is free for
+        // the common case. The speed factor multiplies into the per-tick
+        // movement multiplier that was just reset to 1.0, so a lapsed speed
+        // effect restores the base speed on its own with nothing to unload.
+        if (!entity.damage.dead() && !entity.effects.empty()) {
+            const EffectTickOutcome effectTick =
+                tickEffects(entity.effects, entity.damage.health);
+            if (effectTick.heal > 0.0F) {
+                entity.damage.health =
+                    std::min(entity.damage.health + effectTick.heal, entity.damage.maxHealth);
+            }
+            if (effectTick.damage > 0.0F) {
+                const DamageOutcome outcome =
+                    applyDamage(entity.damage, effectTick.damageType, effectTick.damage);
+                if (outcome.landed) {
+                    entity.ambientSoundChance = -kMinAmbientSoundDelay;
+                    pendingSounds_.push_back(
+                        {entity.position,
+                         outcome.died ? MobSoundEvent::Death : MobSoundEvent::Hurt,
+                         entity.type});
+                    if (outcome.died) {
+                        die(entity);
+                    }
+                }
+            }
+            entity.movementSpeedMultiplier *= effectTick.speedMultiplier;
         }
 
         // MobEntity#baseTick's ambient scheduler: every tick it rolls

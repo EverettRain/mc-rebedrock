@@ -70,6 +70,26 @@ void PlayerVitals::setOnFire(int seconds) {
     fireTicks_ = std::max(fireTicks_, seconds * kTicksPerSecond);
 }
 
+bool PlayerVitals::applyEffect(core::StatusEffectId effect, std::int32_t durationTicks,
+                               std::uint8_t amplifier) {
+    if (dead()) {
+        return false;
+    }
+    return mc::gameplay::applyEffect(effects_, effect, durationTicks, amplifier);
+}
+
+bool PlayerVitals::removeEffect(core::StatusEffectId effect) {
+    return mc::gameplay::removeEffect(effects_, effect);
+}
+
+std::size_t PlayerVitals::clearEffects() {
+    return mc::gameplay::clearEffects(effects_);
+}
+
+bool PlayerVitals::hasEffect(core::StatusEffectId effect) const {
+    return mc::gameplay::hasEffect(effects_, effect);
+}
+
 void PlayerVitals::reset() {
     damage_ = DamageState{kMaximumHealth, kMaximumHealth};
     foodLevel_ = kMaximumFood;
@@ -79,6 +99,9 @@ void PlayerVitals::reset() {
     airTicks_ = kMaximumAirTicks;
     fallDistance_ = 0.0F;
     fireTicks_ = 0;
+    // A respawn wipes every effect, matching vanilla's clean slate.
+    mc::gameplay::clearEffects(effects_);
+    speedMultiplier_ = 1.0F;
     ticksSinceDamage_ = 1000;
 }
 
@@ -218,6 +241,27 @@ VitalsTickResult PlayerVitals::tick(const VitalsInput& input) {
             }
             --fireTicks_;
         }
+    }
+
+    // LivingEntity#tickEffects, the player's half: advance the active MobEffects
+    // and apply what the tick produced. Poison hurts (never below one health),
+    // regeneration heals, hunger drains food exhaustion, and speed/slowness set
+    // the movement factor the controller reads. The factor is recomputed every
+    // tick, so it returns to 1.0 the moment neither effect is active.
+    speedMultiplier_ = 1.0F;
+    if (!effects_.empty()) {
+        const EffectTickOutcome effectTick = tickEffects(effects_, damage_.health);
+        if (effectTick.heal > 0.0F) {
+            heal(effectTick.heal);
+        }
+        if (effectTick.damage > 0.0F && hurt(effectTick.damage, effectTick.damageType)) {
+            result.damageTaken = effectTick.damage;
+            result.cause = effectTick.damageType;
+        }
+        if (effectTick.exhaustion > 0.0F) {
+            addExhaustion(effectTick.exhaustion);
+        }
+        speedMultiplier_ = effectTick.speedMultiplier;
     }
 
     if (input.jumped) {

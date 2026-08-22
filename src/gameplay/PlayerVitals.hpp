@@ -1,7 +1,9 @@
 #pragma once
 
+#include "core/ContentId.hpp"
 #include "gameplay/Damage.hpp"
 #include "gameplay/Difficulty.hpp"
+#include "gameplay/StatusEffect.hpp"
 
 #include <cstdint>
 
@@ -48,6 +50,13 @@ class PlayerVitals final {
     [[nodiscard]] int airTicks() const { return airTicks_; }
     [[nodiscard]] float fallDistance() const { return fallDistance_; }
     [[nodiscard]] int fireTicks() const { return fireTicks_; }
+    // The player's active MobEffects, read by the persistence/HUD paths.
+    [[nodiscard]] const ActiveEffects& effects() const { return effects_; }
+    // The movement-speed factor the active speed/slowness effects impose this
+    // tick (1.0 with neither). PlayerController multiplies its walk speed by it,
+    // so the boost/slow appears and — because it is recomputed every tick from
+    // the live effect set — vanishes the instant the effect expires.
+    [[nodiscard]] float speedMultiplier() const { return speedMultiplier_; }
     [[nodiscard]] bool dead() const { return damage_.dead(); }
     // The shared damage state, so GameSession can run the unified onDeath guard
     // (beginDeath) once across the player's death paths.
@@ -75,9 +84,20 @@ class PlayerVitals final {
     // lengthens a burn, so this takes the max; a dead player is not relit. The
     // burn itself is resolved in tick() through the shared damage pipeline.
     void setOnFire(int seconds);
+    // LivingEntity#addEffect / #removeEffect / #removeAllEffects, over the same
+    // shared StatusEffect store the mobs use. clearEffects returns the count
+    // removed (a milk drink reports how many it wiped). A respawn (reset) also
+    // clears every effect, matching vanilla.
+    bool applyEffect(core::StatusEffectId effect, std::int32_t durationTicks,
+                     std::uint8_t amplifier);
+    bool removeEffect(core::StatusEffectId effect);
+    std::size_t clearEffects();
+    [[nodiscard]] bool hasEffect(core::StatusEffectId effect) const;
     // Restores a respawning player to full health and food.
     void reset();
     void restore(float health, int foodLevel, float saturation, int airTicks);
+    // Restores the persisted active effects on world load.
+    void restoreEffects(const ActiveEffects& effects) { effects_ = effects; }
 
   private:
     void tickFood(VitalsTickResult& result);
@@ -99,6 +119,11 @@ class PlayerVitals final {
     // Entity#fireTicks: how long the player stays ablaze. Zero unless an
     // ignition source lit them; water and rain put it out.
     int fireTicks_ = 0;
+    // The player's active MobEffects, the same fixed inline store the mobs use.
+    ActiveEffects effects_{};
+    // The movement factor the active speed/slowness effects impose, recomputed
+    // every tick so it reverts to 1.0 the moment neither is present.
+    float speedMultiplier_ = 1.0F;
     int ticksSinceDamage_ = 1000;
 };
 
