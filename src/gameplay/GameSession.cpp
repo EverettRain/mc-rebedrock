@@ -62,7 +62,7 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // ServerWorld.tick runs its weather section first, before the world and
     // entities; the auto-cycle is gated on the doWeatherCycle gamerule the same
     // way doDaylightCycle gates the day.
-    weatherSystem_.tick(gameRules_.get<bool>(GameRuleId::DoWeatherCycle));
+    primaryLevel().weather.tick(gameRules_.get<bool>(GameRuleId::DoWeatherCycle));
     // Level#updateSkyBrightness, right after the clock and the weather that
     // feed it and before anything reads light. Resolved once here and handed
     // down as a POD: growth, spreading and spawning all read the same fields
@@ -70,8 +70,8 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // is. 26.1 does the same thing through EnvironmentAttributes, with
     // invalidateTickCache standing where this single call does.
     environment_ = EnvironmentSnapshot::resolve(static_cast<double>(dayTimeTicks()),
-                                                weatherSystem_.rainGradient(),
-                                                weatherSystem_.thunderGradient());
+                                                primaryLevel().weather.rainGradient(),
+                                                primaryLevel().weather.thunderGradient());
     worldSimulation_.setEnvironment(environment_);
     // Take the published input once, at the top of the tick, so the whole tick
     // sees one consistent keyboard state rather than whatever the main thread
@@ -179,15 +179,15 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // this tick owns the server-world write section; the mutation event carries
     // the client mesh/light update later.
     syncFurnaceLitStates(world);
-    if (itemEntities_.tick(world, primaryPlayer().controller.position(), primaryPlayer().inventory) > 0U) {
+    if (primaryLevel().items.tick(world, primaryPlayer().controller.position(), primaryPlayer().inventory) > 0U) {
         events_.publish(SoundEvent{SoundEventKind::ItemPickup, primaryPlayer().controller.position()});
     }
     // The herd pushes back: Entity#pushAwayFrom moves both parties, so a pig
     // walking into the player nudges them. Difficulty is per-save (level.dat).
-    const auto entityTick = worldEntities_.tick(
+    const auto entityTick = primaryLevel().entities.tick(
         world, primaryPlayer().controller.position(), PlayerController::kWidth, PlayerController::kHeight,
         difficulty_, !primaryPlayer().vitals.dead(), primaryPlayer().gameMode == GameMode::Creative,
-        simulationRadiusBlocks_, weatherSystem_.isRaining());
+        simulationRadiusBlocks_, primaryLevel().weather.isRaining());
     primaryPlayer().controller.applyExternalPush(entityTick.playerPush);
     for (const auto& attack : entityTick.mobAttacks) {
         if (attack.target == ActorReference::player()) {
@@ -205,7 +205,7 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // It reads the tick's ambient darkness off the same snapshot the growth
     // checks use, so "dark enough for a monster" and "too dark for grass to
     // spread" can no longer disagree about the time of day.
-    naturalSpawner_.tick(world, worldEntities_, primaryPlayer().controller.position(), simulationRadiusBlocks_,
+    primaryLevel().spawner.tick(world, primaryLevel().entities, primaryPlayer().controller.position(), simulationRadiusBlocks_,
                          difficulty_, environment_);
     consumeEntityEvents();
     // The authoritative interaction: consume the render thread's queued commands
@@ -267,13 +267,13 @@ void GameSession::publishSnapshots() {
     playerTickSnapshot_.selectedHotbarSlot = primaryPlayer().inventory.selectedHotbarSlot();
     // The render-visible world state, captured under the same lock.
     worldSnapshot_.serverTick = serverTick_;
-    worldSnapshot_.previousRainGradient = weatherSystem_.previousRainGradient();
-    worldSnapshot_.rainGradient = weatherSystem_.rainGradient();
-    worldSnapshot_.previousThunderGradient = weatherSystem_.previousThunderGradient();
-    worldSnapshot_.thunderGradient = weatherSystem_.thunderGradient();
+    worldSnapshot_.previousRainGradient = primaryLevel().weather.previousRainGradient();
+    worldSnapshot_.rainGradient = primaryLevel().weather.rainGradient();
+    worldSnapshot_.previousThunderGradient = primaryLevel().weather.previousThunderGradient();
+    worldSnapshot_.thunderGradient = primaryLevel().weather.thunderGradient();
     // The gradient-derived flags, matching what the renderer's rain/sky reads.
-    worldSnapshot_.raining = weatherSystem_.isRaining();
-    worldSnapshot_.thundering = weatherSystem_.isThundering();
+    worldSnapshot_.raining = primaryLevel().weather.isRaining();
+    worldSnapshot_.thundering = primaryLevel().weather.isThundering();
     worldSnapshot_.dayTimeTicks = static_cast<double>(dayTimeTicks());
     for (std::size_t index = 0; index < world::kClockCount; ++index) {
         worldSnapshot_.clocks[index] = clocks_.state(static_cast<world::ClockId>(index));
@@ -331,7 +331,7 @@ void GameSession::publishSnapshots() {
     }
     // Last, once every system has settled: what the renderer will draw from
     // until the next tick replaces it.
-    entitySnapshot_.capture(worldEntities_.entities(), itemEntities_.entities(),
+    entitySnapshot_.capture(primaryLevel().entities.entities(), primaryLevel().items.entities(),
                             worldSimulation_.fallingBlocks());
     // Stamp the publish time so the render thread derives the interpolation alpha
     // from this very bundle. Written just before the atomic publish, so a reader
@@ -619,8 +619,8 @@ void GameSession::resetWorldState() {
         player.crafting = {};
     }
     worldSimulation_ = {};
-    itemEntities_ = {};
-    worldEntities_.clear();
+    primaryLevel().items = {};
+    primaryLevel().entities.clear();
     closeContainer();
     chestSystem_ = {};
     trappedChestSystem_ = {};
@@ -667,7 +667,7 @@ void GameSession::createChestBlockEntity(ChestPosition position) {
 
 void GameSession::spawnItemEntity(const glm::vec3& position, ItemStack stack,
                                   const glm::vec3& velocity) {
-    static_cast<void>(itemEntities_.spawn(position, stack, velocity));
+    static_cast<void>(primaryLevel().items.spawn(position, stack, velocity));
 }
 
 void GameSession::dropCursorStack(const glm::vec3& lookDirection) {
@@ -723,7 +723,7 @@ void GameSession::spawnBlockDrops(glm::ivec3 position, world::BlockState removed
         const glm::vec3 velocity = drops.count > 1U
             ? glm::vec3{std::cos(angle) * 0.08F, 0.12F, std::sin(angle) * 0.08F}
             : glm::vec3{0.0F, 0.12F, 0.0F};
-        itemEntities_.spawn(glm::vec3{position} + glm::vec3{0.5F}, stack, velocity);
+        primaryLevel().items.spawn(glm::vec3{position} + glm::vec3{0.5F}, stack, velocity);
         ++dropIndex;
     }
 }
@@ -739,7 +739,7 @@ void GameSession::onPlayerDeath(PlayerId playerId) {
     std::size_t dropIndex = 0U;
     const auto scatter = [&](const ItemStack& stack) {
         const float angle = static_cast<float>(dropIndex++) * 2.39996323F;
-        itemEntities_.spawn(dropOrigin, stack,
+        primaryLevel().items.spawn(dropOrigin, stack,
                             {std::cos(angle) * 0.12F, 0.18F, std::sin(angle) * 0.12F});
     };
     // The cursor stack drops first; then the crafting grid stows into the
@@ -859,7 +859,7 @@ void GameSession::updateMovementAudio(const world::World& world,
 }
 
 void GameSession::consumeEntityEvents() {
-    for (const auto& sound : worldEntities_.pendingSounds()) {
+    for (const auto& sound : primaryLevel().entities.pendingSounds()) {
         // The species rides along so the host plays the right clip for the
         // right creature — a cow's hurt is not a zombie's hurt.
         const auto& type = *sound.type;
@@ -882,19 +882,19 @@ void GameSession::consumeEntityEvents() {
             break;
         }
     }
-    worldEntities_.clearPendingSounds();
+    primaryLevel().entities.clearPendingSounds();
     // A dead mob drops its loot whatever the player's game mode is — vanilla's
     // LivingEntity loot is rolled at death, never gated on the killer's mode.
-    for (const auto& [position, drops] : worldEntities_.pendingDrops()) {
+    for (const auto& [position, drops] : primaryLevel().entities.pendingDrops()) {
         std::size_t dropIndex = 0U;
         for (const auto& stack : drops.view()) {
             const float angle = static_cast<float>(dropIndex) * 2.39996323F;
-            itemEntities_.spawn(position, stack,
+            primaryLevel().items.spawn(position, stack,
                                 {std::cos(angle) * 0.08F, 0.12F, std::sin(angle) * 0.08F});
             ++dropIndex;
         }
     }
-    worldEntities_.clearPendingDrops();
+    primaryLevel().entities.clearPendingDrops();
 }
 
 bool GameSession::submergedInWater(const world::World& world, glm::vec3 position) const {

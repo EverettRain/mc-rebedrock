@@ -12,6 +12,7 @@
 #include "gameplay/GameRules.hpp"
 #include "gameplay/Inventory.hpp"
 #include "gameplay/ItemEntitySystem.hpp"
+#include "gameplay/Level.hpp"
 #include "gameplay/MiningSystem.hpp"
 #include "gameplay/NaturalSpawner.hpp"
 #include "gameplay/PlayerActionState.hpp"
@@ -250,7 +251,7 @@ class GameSession final {
     [[nodiscard]] float simulationRadius() const { return simulationRadiusBlocks_; }
     // The world seed drives the spawner's biome map; a new save or /reload
     // rebuilds it so natural spawns follow the terrain being generated.
-    void setWorldSeed(std::uint64_t seed) { naturalSpawner_.setSeed(seed); }
+    void setWorldSeed(std::uint64_t seed) { primaryLevel().spawner.setSeed(seed); }
     // 1.16.1 entity.kill(): OutOfWorld damage at infinite magnitude.
     void killPlayer(PlayerId playerId, SimulationHost& host);
     // `causedByLivingNonPlayer` gates the damage type's difficulty scaling: a
@@ -387,10 +388,14 @@ class GameSession final {
     [[nodiscard]] world::WorldMutationService& worldMutations() { return worldMutations_; }
     [[nodiscard]] WorldSimulation& worldSimulation() { return worldSimulation_; }
     [[nodiscard]] const WorldSimulation& worldSimulation() const { return worldSimulation_; }
-    [[nodiscard]] ItemEntitySystem& itemEntities() { return itemEntities_; }
-    [[nodiscard]] const ItemEntitySystem& itemEntities() const { return itemEntities_; }
-    [[nodiscard]] EntitySystem& worldEntities() { return worldEntities_; }
-    [[nodiscard]] const EntitySystem& worldEntities() const { return worldEntities_; }
+    // The per-dimension simulation systems now live in the primary Level (the
+    // dimension the player is in — always the Overworld while the world is
+    // single-dimension). These accessors route through it so every existing
+    // caller reaches the same systems it always did, one indirection later.
+    [[nodiscard]] ItemEntitySystem& itemEntities() { return primaryLevel().items; }
+    [[nodiscard]] const ItemEntitySystem& itemEntities() const { return primaryLevel().items; }
+    [[nodiscard]] EntitySystem& worldEntities() { return primaryLevel().entities; }
+    [[nodiscard]] const EntitySystem& worldEntities() const { return primaryLevel().entities; }
     [[nodiscard]] ChestSystem& chestSystem() { return chestSystem_; }
     [[nodiscard]] const ChestSystem& chestSystem() const { return chestSystem_; }
     // The trapped chest's storage (BE3). A separate ChestSystem instance — the
@@ -400,8 +405,32 @@ class GameSession final {
     [[nodiscard]] const ChestSystem& trappedChestSystem() const { return trappedChestSystem_; }
     [[nodiscard]] FurnaceSystem& furnaceSystem() { return furnaceSystem_; }
     [[nodiscard]] const FurnaceSystem& furnaceSystem() const { return furnaceSystem_; }
-    [[nodiscard]] WeatherSystem& weatherSystem() { return weatherSystem_; }
-    [[nodiscard]] const WeatherSystem& weatherSystem() const { return weatherSystem_; }
+    [[nodiscard]] WeatherSystem& weatherSystem() { return primaryLevel().weather; }
+    [[nodiscard]] const WeatherSystem& weatherSystem() const { return primaryLevel().weather; }
+
+    // The per-dimension simulation bundle for a dimension (DIM-1). A subscript
+    // into the level table, not a lookup. primaryLevel() is the dimension the
+    // player is in — the Overworld while the world is single-dimension; DIM-5's
+    // dimension transfer will move the player and repoint it.
+    [[nodiscard]] Level& level(world::DimensionId id) {
+        return levels_[static_cast<std::size_t>(id)];
+    }
+    [[nodiscard]] const Level& level(world::DimensionId id) const {
+        return levels_[static_cast<std::size_t>(id)];
+    }
+    [[nodiscard]] Level& primaryLevel() { return level(primaryDimension_); }
+    [[nodiscard]] const Level& primaryLevel() const { return level(primaryDimension_); }
+    [[nodiscard]] world::DimensionId primaryDimension() const { return primaryDimension_; }
+
+    // Wires GameRuntime's World into the level table. GameRuntime owns the World
+    // (its lifetime is braided through the world lock / streamer / persist
+    // worker), so it binds the reference here once the world is constructed;
+    // every per-dimension system reaches its blocks through level(id).world().
+    // While single-dimension, the one World backs the Overworld level.
+    void bindPrimaryWorld(world::World& world) {
+        primaryLevel().id = primaryDimension_;
+        primaryLevel().bindWorld(world);
+    }
     // The environment resolved for the tick in progress. Anything that needs to
     // know how dark it is should read this rather than sampling the clock.
     [[nodiscard]] const EnvironmentSnapshot& environment() const { return environment_; }
@@ -516,14 +545,22 @@ class GameSession final {
     world::WorldMutationService worldMutations_;
     gameplay::WorldSimulation worldSimulation_;
     gameplay::GameRules gameRules_;
-    gameplay::ItemEntitySystem itemEntities_;
-    gameplay::EntitySystem worldEntities_;
-    gameplay::NaturalSpawner naturalSpawner_{0U};
+    // The per-dimension simulation bundles (DIM-1): what used to be the exclusive
+    // singletons itemEntities_/worldEntities_/weatherSystem_/naturalSpawner_ now
+    // live one-per-dimension inside these Levels, reached through level(id) /
+    // primaryLevel(). The world is single-dimension for now, so only the Overworld
+    // level is active — the array is sized for the full set so DIM-2's cross-
+    // dimension tick can walk it without another hoist. World is bound into the
+    // level by GameRuntime (bindPrimaryWorld) since GameRuntime owns the World.
+    std::array<Level, world::kDimensionCount> levels_{};
+    // The dimension the player is in — the Overworld until DIM-5 lets the player
+    // change dimension. primaryLevel() routes through this.
+    world::DimensionId primaryDimension_ = world::DimensionId::Overworld;
     gameplay::ChestSystem chestSystem_;
     gameplay::ChestSystem trappedChestSystem_;
     gameplay::FurnaceSystem furnaceSystem_;
-    gameplay::WeatherSystem weatherSystem_;
-    // Resolved at the top of every tick from the clock and the weather above.
+    // Resolved at the top of every tick from the clock and the primary level's
+    // weather.
     EnvironmentSnapshot environment_{};
 
     glm::vec3 worldSpawnPosition_{24.0F, 76.38F, 24.0F};

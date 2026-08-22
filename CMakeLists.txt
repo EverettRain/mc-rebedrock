@@ -949,6 +949,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME game_runtime COMMAND mc_rebedrock_game_runtime_test)
 
+    add_executable(mc_rebedrock_level_test
+        tests/level_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_level_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_level_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME level COMMAND mc_rebedrock_level_test)
+
     # D7: the dedicated server executable — links the runtime, not render/vulkan.
     add_executable(mc_rebedrock_dedicated_server
         src/server/dedicated_server_main.cpp

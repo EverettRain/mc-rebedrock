@@ -53,6 +53,11 @@ GameRuntime::GameRuntime(gameplay::SimulationHost& host, world::ChunkStreamer& c
     // Bind the event host up front so the world-edit events a mutation publishes
     // reach the host even before the first tick (tick() re-binds it anyway).
     gameSession_.setEventHost(host_);
+    // Wire the runtime-owned World into the session's primary Level (DIM-1). The
+    // World is a GameRuntime member, fully constructed by now; the session's
+    // per-dimension systems reach their blocks through this reference. While the
+    // world is single-dimension, the one World backs the Overworld level.
+    gameSession_.bindPrimaryWorld(serverWorld_);
     registerAuthoritativeCommands();
     startPersistenceWorker();
 }
