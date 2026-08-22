@@ -91,6 +91,7 @@ constexpr const char* kBuiltinAnimations = R"({
 PlayerModelAnimator::PlayerModelAnimator() {
     model_ = SkeletalModel::parse(kBuiltinGeometry);
     library_ = AnimationLibrary::parse(kBuiltinAnimations);
+    controllers_ = builtinPlayerControllers();
     animator_.setModel(&model_);
     rebindBones();
 }
@@ -103,6 +104,28 @@ void PlayerModelAnimator::rebindBones() {
     leftArmBone_ = model_.findBone("leftArm");
     rightLegBone_ = model_.findBone("rightLeg");
     leftLegBone_ = model_.findBone("leftLeg");
+
+    // ANIM-1 named masks derived from the (possibly overridden) skeleton, so the
+    // layered player animation splits legs / arms / head cleanly.
+    masks_ = buildBoneGroups(model_);
+
+    // The item-hold override pose: an authored clip that pitches both arms
+    // forward. Applied as an ANIM-2 override masked to the arms so it replaces the
+    // walk swing rather than summing with it.
+    itemHoldClip_ = AnimationClip{};
+    itemHoldClip_.setLength(0.0F);
+    itemHoldClip_.setLoop(false);
+
+    // The ANIM-3 locomotion controller drives idle/walk/sneak; reset it onto the
+    // (rebound) player skeleton.
+    if (const AnimationController* loco = controllers_.find("controller.player.locomotion")) {
+        controllerInstance_.bind(*loco);
+    }
+}
+
+void PlayerModelAnimator::setItemHold(bool holding, float pitchDegrees) {
+    holdingItem_ = holding;
+    itemHoldPitch_ = pitchDegrees;
 }
 
 void PlayerModelAnimator::load(const std::filesystem::path& animationDirectory) {
@@ -131,36 +154,58 @@ void PlayerModelAnimator::setCursorLook(float normalizedX, float normalizedY) {
 void PlayerModelAnimator::update(float deltaSeconds, bool walking, bool sneaking) {
     const float dt = std::max(deltaSeconds, 0.0F);
     elapsed_ += dt;
+    walking_ = walking;
+    sneaking_ = sneaking;
+    // The walk clip's swing amplitude is full whenever we are in/entering the walk
+    // state; the ANIM-3 controller crossfade owns the idle<->walk *state* blend,
+    // so there is no hand-eased weight here anymore (REGULAR §3). walk_amount is
+    // kept as a plain locomotion amplitude the walk clip's Molang reads.
+    walkAmount_ = walking ? 1.0F : 0.0F;
 
-    // Ease the blend weights toward their targets so starting/stopping a state
-    // (walk, sneak) fades over a few frames instead of snapping. rate*dt is the
-    // fraction of the remaining gap closed this frame.
-    const auto approach = [dt](float current, float target, float rate) {
-        return current + (target - current) * std::min(1.0F, rate * dt);
-    };
-    walkAmount_ = approach(walkAmount_, walking ? 1.0F : 0.0F, 10.0F);
-    sneakAmount_ = approach(sneakAmount_, sneaking ? 1.0F : 0.0F, 9.0F);
-
-    animator_.context().setVariable("walk_amount", walkAmount_);
-    animator_.context().setVariable("look_yaw", lookX_ * kLookYawDegrees);
-    animator_.context().setVariable("look_pitch", lookY_ * kLookPitchDegrees);
+    MolangContext& ctx = animator_.context();
+    ctx.setVariable("walk_amount", walkAmount_);
+    ctx.setVariable("sneaking", sneaking ? 1.0F : 0.0F);
+    ctx.setVariable("look_yaw", lookX_ * kLookYawDegrees);
+    ctx.setVariable("look_pitch", lookY_ * kLookPitchDegrees);
     // The look clip turns the body bone with the look at half the head's yaw
     // amplitude when the preview enabled it; the world player keeps it off so
     // its own "head leads, body follows" yaw is not doubled.
-    animator_.context().setVariable("body_look_amount", bodyFollowsLook_ ? 0.5F : 0.0F);
+    ctx.setVariable("body_look_amount", bodyFollowsLook_ ? 0.5F : 0.0F);
+    ctx.setQuery("anim_time", elapsed_);
 
+    // ANIM-3: advance the state machine (idle/walk/sneak) and crossfade, then let
+    // it queue the active state's locomotion/sneak clips onto the animator.
+    controllerInstance_.update(dt, ctx);
     animator_.clearLayers();
-    if (const AnimationClip* walk = library_.find("animation.player.walk")) {
-        animator_.addLayer(*walk, walk->localTime(elapsed_), 1.0F);
-    }
-    if (const AnimationClip* idle = library_.find("animation.player.idle")) {
-        animator_.addLayer(*idle, idle->localTime(elapsed_), 1.0F - walkAmount_);
-    }
-    if (const AnimationClip* sneak = library_.find("animation.player.sneak")) {
-        animator_.addLayer(*sneak, sneak->localTime(elapsed_), sneakAmount_);
-    }
+    const MaskResolver resolveMask = [this](std::string_view name) -> const BoneMask* {
+        if (name == "lower_body") return &masks_.lowerBody;
+        if (name == "upper_body") return &masks_.upperBody;
+        if (name == "arms") return &masks_.arms;
+        if (name == "head") return &masks_.head;
+        return nullptr;
+    };
+    controllerInstance_.apply(animator_, library_, resolveMask, ctx);
+
+    // ANIM-1 head mask: the look drives the head (and, in the preview, the body at
+    // half amplitude) independently of locomotion and sneak. Kept as its own layer
+    // so head tracking is always live regardless of the locomotion state.
     if (const AnimationClip* look = library_.find("animation.player.look")) {
-        animator_.addLayer(*look, 0.0F, 1.0F);
+        // body_look_amount routes the body yaw inside the clip; mask to head+body
+        // union via the head/torso groups so it never disturbs arms or legs.
+        animator_.addLayer(*look, 0.0F, 1.0F, &masks_.upperBody);
+    }
+
+    // ANIM-2 override: an item-hold pose masked to the arms REPLACES the arm swing
+    // rather than summing with it — walking while holding an item no longer bends
+    // the held pose by the gait. This is the separation fix (upper vs lower body).
+    if (holdingItem_) {
+        BoneAnimation& rightArm = itemHoldClip_.bone("rightArm");
+        BoneAnimation& leftArm = itemHoldClip_.bone("leftArm");
+        rightArm.rotation = AnimationChannel{};
+        leftArm.rotation = AnimationChannel{};
+        rightArm.rotation.addLinear(0.0F, glm::vec3{itemHoldPitch_, 0.0F, 0.0F});
+        leftArm.rotation.addLinear(0.0F, glm::vec3{itemHoldPitch_, 0.0F, 0.0F});
+        animator_.addLayer(itemHoldClip_, 0.0F, 1.0F, &masks_.arms, BlendMode::Override);
     }
 
     skeletonPose_ = animator_.evaluate();

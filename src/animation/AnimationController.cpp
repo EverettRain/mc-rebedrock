@@ -259,10 +259,11 @@ void AnimationControllerInstance::apply(Animator& animator, const AnimationLibra
 
 AnimationControllerSet builtinPlayerControllers() {
     // idle <-> walk on variable.walk_amount, and a sneak state on
-    // variable.sneaking, blended by short crossfades. The look clip is applied
-    // in every state so head tracking is independent of locomotion. This is the
-    // data equivalent of PlayerModelAnimator's hand-eased walk/sneak weights;
-    // wiring the player to consume it is ANIM-4.
+    // variable.sneaking, blended by short crossfades. This is the data
+    // equivalent of PlayerModelAnimator's hand-eased walk/sneak weights. The
+    // head-look is applied by the consumer as an always-on ANIM-1 head-masked
+    // layer (orthogonal to the locomotion state), so it is intentionally NOT a
+    // controller animation here. ANIM-4 wires the player to consume this.
     static constexpr const char* kDocument = R"({
       "animation_controllers": {
         "controller.player.locomotion": {
@@ -270,8 +271,7 @@ AnimationControllerSet builtinPlayerControllers() {
           "states": {
             "idle": {
               "animations": [
-                {"animation.player.idle": 1.0},
-                {"animation": "animation.player.look"}
+                {"animation.player.idle": 1.0}
               ],
               "transitions": [
                 {"sneak": "variable.sneaking"},
@@ -281,8 +281,7 @@ AnimationControllerSet builtinPlayerControllers() {
             },
             "walk": {
               "animations": [
-                {"animation.player.walk": 1.0},
-                {"animation": "animation.player.look"}
+                {"animation.player.walk": 1.0}
               ],
               "transitions": [
                 {"sneak": "variable.sneaking"},
@@ -293,8 +292,7 @@ AnimationControllerSet builtinPlayerControllers() {
             "sneak": {
               "animations": [
                 {"animation.player.sneak": 1.0},
-                {"animation": "animation.player.walk", "weight": "variable.walk_amount"},
-                {"animation": "animation.player.look"}
+                {"animation": "animation.player.walk", "weight": "variable.walk_amount"}
               ],
               "transitions": [
                 {"idle": "!variable.sneaking"}

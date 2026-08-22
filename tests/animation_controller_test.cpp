@@ -70,7 +70,7 @@ int main() {
     const ControllerState* idle = loco->findState("idle");
     const ControllerState* walk = loco->findState("walk");
     assert(idle != nullptr && walk != nullptr);
-    assert(idle->animations.size() == 2U); // idle clip + look
+    assert(idle->animations.size() == 1U); // idle clip (look is a consumer layer)
     assert(!idle->transitions.empty());
     assert(std::abs(idle->blendTransition - 0.15F) < 1e-6F);
     assert(std::abs(walk->blendTransition - 0.1F) < 1e-6F);
@@ -130,10 +130,11 @@ int main() {
         animator.clearLayers();
         inst.apply(animator, library, resolveMask, ctx);
         const SkeletonPose pose = animator.evaluate();
-        // Walk state poses rightLeg (30) and look poses head (5); idle body(1)
-        // must NOT contribute (we are fully in walk).
+        // Walk state poses rightLeg (30); idle body(1) must NOT contribute (we are
+        // fully in walk), and head look is a consumer layer, not a controller
+        // animation, so the controller alone leaves the head at rest.
         assert(std::abs(boneRotX(pose, model, "rightLeg") - 30.0F) < 1e-3F);
-        assert(std::abs(boneRotX(pose, model, "head") - 5.0F) < 1e-3F);
+        assert(std::abs(boneRotX(pose, model, "head")) < 1e-3F);
         assert(std::abs(boneRotX(pose, model, "body")) < 1e-3F);
     }
 
