@@ -16,7 +16,6 @@
 #include "animation/DisplayEntityAnimation.hpp"
 #include "animation/HingeAnimation.hpp"
 #include "animation/ModelAnimationSystem.hpp"
-#include "animation/HumanoidPoseSolver.hpp"
 #include "animation/PlayerModelAnimator.hpp"
 #include "animation/SkeletalModel.hpp"
 #include "assets/ImageData.hpp"
@@ -1415,40 +1414,37 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             constexpr float kMaxHeadYaw = kHeadYawClamp;
             const float headRelative = wrapAngle(lookYaw - worldBodyYaw);
             worldPlayerAnimator.setCursorLook(headRelative / kMaxHeadYaw, -lookDir.y);
-            worldPlayerAnimator.update(deltaSeconds, playerWalking, playerSneaking);
-            // PX-2 Bug2: solve the third-person pose from the per-tick snapshot via
-            // the deterministic HumanoidPoseSolver — the gait amplitude is the
-            // real walk speed (idle -> no swing), crouch bends the body, and the
-            // head look uses the same body-relative yaw/pitch the model root uses.
-            // worldPlayerAnimator supplies only the geometry now.
+            // ANIM task2: the third-person world player now runs the SAME
+            // PlayerModelAnimator controller stack as the inventory preview
+            // (retiring HumanoidPoseSolver). It is fed the AUTHORITATIVE vanilla
+            // WalkAnimationState the snapshot carries — the gait amplitude
+            // (walkAmount, saturates to 1.0, decays to 0 on stop) and phase
+            // (walkPosition) — plus sneaking and the render age, so idle -> no
+            // swing and stopping returns the limbs to rest. body_look_amount stays
+            // 0 (the world body yaw is applied at the model root, not in the clip).
             {
-                if (!worldPlayerBonesBound_) {
-                    worldPlayerBones_ =
-                        animation::HumanoidBoneBindings::bind(worldPlayerAnimator.model());
-                    worldPlayerBonesBound_ = true;
-                }
                 const auto worldSnap = clientMirror_.player();
                 const float worldAlpha = clientMirror_.interpolationAlpha();
-                auto worldState = render::player::extractPlayerRenderState(
+                const float walkAmount = std::clamp(
+                    worldSnap.previousWalkAmount +
+                        (worldSnap.walkAmount - worldSnap.previousWalkAmount) * worldAlpha,
+                    0.0F, 1.0F);
+                const float walkPosition =
+                    worldSnap.previousWalkPosition +
+                    (worldSnap.walkPosition - worldSnap.previousWalkPosition) * worldAlpha;
+                // Item/Block arm poses would raise one arm with no held-item layer
+                // drawn yet, so ordinary holding stays at rest (matching the prior
+                // solver wiring); an active use is still shown.
+                const auto worldState = render::player::extractPlayerRenderState(
                     worldSnap, worldAlpha, lastWorldSwingSequence_);
-                // The world renderer does not draw the held-item layer yet. A
-                // bare Item/Block arm pose therefore looks like one inexplicably
-                // raised arm; keep ordinary holding at rest until its item is
-                // visible, while preserving active use/eat poses.
-                if (!worldState.use.active &&
-                    (worldState.rightArmPose == render::player::ArmPose::Item ||
-                     worldState.rightArmPose == render::player::ArmPose::Block)) {
-                    worldState.rightArmPose = render::player::ArmPose::Empty;
-                }
-                worldState.headYawDegrees = headRelative * 180.0F / 3.14159265358979F;
-                worldState.pitchDegrees = std::asin(std::clamp(-lookDir.y, -1.0F, 1.0F)) *
-                                          180.0F / 3.14159265358979F;
+                const bool holdingItem =
+                    worldState.use.active &&
+                    (worldState.rightArmPose == render::player::ArmPose::Eat);
+                worldPlayerAnimator.setItemHold(holdingItem);
                 const float ageInTicks =
                     static_cast<float>(worldSnap.serverTick) + worldAlpha;
-                worldPlayerPose_ =
-                    animation::solveHumanoidPose(worldPlayerAnimator.model(), worldPlayerBones_,
-                                                 worldState, ageInTicks)
-                        .skeleton;
+                worldPlayerAnimator.updateWorldPlayer(deltaSeconds, walkAmount, walkPosition,
+                                                      ageInTicks, worldSnap.sneaking);
             }
             if (!paused && worldReady) {
                 // The sun no longer rides real frames: the Overworld clock advances
@@ -6640,15 +6636,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // gameSession.player() use separate animator instances driven by different inputs (cursor vs.
     // the gameSession.player()'s own look/movement).
     animation::PlayerModelAnimator playerModelAnimator;
+    // ANIM task2: the third-person world player runs this PlayerModelAnimator
+    // controller stack (shared with the inventory preview), fed the authoritative
+    // WalkAnimationState — HumanoidPoseSolver is retired, no separate solved pose.
     animation::PlayerModelAnimator worldPlayerAnimator;
-    // PX-2 Bug2: the third-person world player's pose is now solved by the
-    // deterministic HumanoidPoseSolver from the per-tick PlayerRenderState, so
-    // idle/crouch/walk/sprint are distinguished (an idle player no longer swings
-    // its arms and legs). worldPlayerAnimator supplies only the geometry; this
-    // solved pose replaces its walk-clip pose in drawWorldPlayer.
-    animation::HumanoidBoneBindings worldPlayerBones_;
-    animation::SkeletonPose worldPlayerPose_;
-    bool worldPlayerBonesBound_ = false;
     // Data-driven motion for the chest lid (Bezier ease-out hinge) and the
     // dropped-item float/spin, evaluated through the animation library.
     animation::HingeAnimation chestLidAnimation;
@@ -7063,7 +7054,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .speciesModels = speciesModels,
             .heldItemAnimation = heldItemAnimation,
             .worldPlayerAnimator = worldPlayerAnimator,
-            .worldPlayerPose = worldPlayerPose_,
             .chestLidAnimation = chestLidAnimation,
             .itemDisplayAnimation = itemDisplayAnimation,
             .cameraPerspective = cameraPerspective,

@@ -177,7 +177,6 @@ add_library(mc_rebedrock_animation STATIC
     src/animation/BoneMask.cpp
     src/animation/AnimationController.cpp
     src/animation/AnimationAssets.cpp
-    src/animation/HumanoidPoseSolver.cpp
     src/animation/ModelAnimationSystem.cpp
     src/animation/PlayerModelAnimator.cpp
     src/animation/HingeAnimation.cpp
@@ -722,19 +721,6 @@ if(BUILD_TESTING)
     )
     add_test(NAME input_system COMMAND mc_rebedrock_input_system_test)
 
-    add_executable(mc_rebedrock_humanoid_pose_solver_test
-        tests/humanoid_pose_solver_test.cpp
-    )
-    target_link_libraries(mc_rebedrock_humanoid_pose_solver_test PRIVATE
-        mc_rebedrock_runtime
-        mc_rebedrock_animation
-    )
-    target_include_directories(mc_rebedrock_humanoid_pose_solver_test PRIVATE
-        src
-        "${glm_SOURCE_DIR}"
-    )
-    add_test(NAME humanoid_pose_solver COMMAND mc_rebedrock_humanoid_pose_solver_test)
-
     add_executable(mc_rebedrock_dimension_test
         tests/dimension_test.cpp
     )
@@ -1092,7 +1078,10 @@ if(BUILD_TESTING)
     add_executable(mc_rebedrock_player_render_state_test
         tests/player_render_state_test.cpp
     )
-    target_link_libraries(mc_rebedrock_player_render_state_test PRIVATE mc_rebedrock_runtime)
+    target_link_libraries(mc_rebedrock_player_render_state_test PRIVATE
+        mc_rebedrock_runtime
+        mc_rebedrock_animation
+    )
     target_include_directories(mc_rebedrock_player_render_state_test PRIVATE
         src
         "${glm_SOURCE_DIR}"

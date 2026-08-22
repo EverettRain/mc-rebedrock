@@ -115,9 +115,6 @@ class WorldRenderer final {
     std::vector<gameplay::entities::SpeciesRenderModel>& speciesModels;
     animation::ModelAnimationSystem& heldItemAnimation;
     animation::PlayerModelAnimator& worldPlayerAnimator;
-    // PX-2 Bug2: the HumanoidPoseSolver-solved third-person pose (idle/crouch/
-    // walk/sprint), replacing worldPlayerAnimator's walk-clip pose in the draw.
-    animation::SkeletonPose& worldPlayerPose;
     animation::HingeAnimation& chestLidAnimation;
     animation::DisplayEntityAnimation& itemDisplayAnimation;
     CameraPerspective& cameraPerspective;
@@ -235,7 +232,7 @@ class WorldRenderer final {
         enqueueClientCommand(b.enqueueClientCommand),
         simulationHost(b.simulationHost), worldLock(b.worldLock), uiFrameData_(b.uiFrameData_),
         camera(b.camera), speciesModels(b.speciesModels), heldItemAnimation(b.heldItemAnimation),
-        worldPlayerAnimator(b.worldPlayerAnimator), worldPlayerPose(b.worldPlayerPose),
+        worldPlayerAnimator(b.worldPlayerAnimator),
         chestLidAnimation(b.chestLidAnimation),
         itemDisplayAnimation(b.itemDisplayAnimation), cameraPerspective(b.cameraPerspective),
         worldBodyYaw(b.worldBodyYaw), particleSystem(b.particleSystem),
@@ -1501,12 +1498,11 @@ class WorldRenderer final {
         };
 
         const auto& model = worldPlayerAnimator.model();
-        // PX-2 Bug2: the HumanoidPoseSolver pose (idle/crouch/walk/sprint), not the
-        // old walk-clip animator pose that swung the limbs in every state. Falls
-        // back to the animator pose only if the solved pose is not yet built.
-        const auto& pose = worldPlayerPose.boneCount() == model.boneCount()
-                               ? worldPlayerPose
-                               : worldPlayerAnimator.skeletonPose();
+        // ANIM task2: the third-person pose now comes from the PlayerModelAnimator
+        // controller stack (shared with the inventory preview), fed the authentic
+        // WalkAnimationState — idle -> no swing, stopping decays to rest, crouch
+        // leans the body. HumanoidPoseSolver / worldPlayerPose_ is retired.
+        const auto& pose = worldPlayerAnimator.skeletonPose();
         for (std::size_t index = 0; index < model.boneCount(); ++index) {
             const auto& bone = model.bones()[index];
             const float layer = layerForBone(bone.name);
@@ -2231,7 +2227,6 @@ class WorldRenderer final {
   std::vector<gameplay::entities::SpeciesRenderModel>& speciesModels;
   animation::ModelAnimationSystem& heldItemAnimation;
   animation::PlayerModelAnimator& worldPlayerAnimator;
-  animation::SkeletonPose& worldPlayerPose;
   animation::HingeAnimation& chestLidAnimation;
   animation::DisplayEntityAnimation& itemDisplayAnimation;
   CameraPerspective& cameraPerspective;

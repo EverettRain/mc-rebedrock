@@ -4,6 +4,8 @@
 // instead of replaying the arm back from the apex; and the same endpoints give
 // the same pose at any frame rate.
 
+#include "animation/FirstPersonHandPoseSolver.hpp"
+#include "render/player/ArmPose.hpp"
 #include "render/player/PlayerRenderState.hpp"
 
 #include <cassert>
@@ -12,6 +14,95 @@
 #include <optional>
 
 using namespace mc;
+namespace rp = mc::render::player;
+
+namespace {
+bool near(float a, float b, float eps = 0.0005F) { return std::fabs(a - b) < eps; }
+
+// Migrated from the retired humanoid_pose_solver_test: these exercise the live
+// render::player extractor helpers and the first-person hand mapping (both used
+// by the renderer), which were only covered by the solver test file.
+void testWrappedYawLerp() {
+    assert(near(std::fabs(rp::wrapDegrees(540.0F)), 180.0F));
+    assert(near(rp::wrapDegrees(540.0F), rp::wrapDegrees(-540.0F)));
+    assert(near(rp::wrapDegrees(90.0F), 90.0F));
+    assert(near(rp::wrapDegrees(-90.0F), -90.0F));
+    assert(near(rp::wrapDegrees(190.0F), -170.0F));
+    assert(near(rp::lerpAngleDegrees(0.0F, 90.0F, 0.5F), 45.0F));
+    const float mid = rp::lerpAngleDegrees(170.0F, -170.0F, 0.5F);
+    assert(std::fabs(mid) > 175.0F);  // crosses the +/-180 seam the short way
+}
+
+void testHeadRelativeToBody() {
+    gameplay::PlayerTickSnapshot snap;
+    snap.previousBodyYawDegrees = 30.0F;
+    snap.bodyYawDegrees = 30.0F;
+    snap.previousHeadYawDegrees = 50.0F;
+    snap.headYawDegrees = 50.0F;
+    snap.previousPitchDegrees = -10.0F;
+    snap.pitchDegrees = -10.0F;
+    std::optional<std::uint64_t> last;
+    const auto state = rp::extractPlayerRenderState(snap, 0.5F, last);
+    assert(near(state.bodyYawDegrees, 30.0F));
+    assert(near(state.headYawDegrees, 20.0F));  // 50 - 30, relative to the body
+    assert(near(state.pitchDegrees, -10.0F));
+}
+
+void testHeadRelativeAcrossSeam() {
+    gameplay::PlayerTickSnapshot snap;
+    snap.previousBodyYawDegrees = 170.0F;
+    snap.bodyYawDegrees = 170.0F;
+    snap.previousHeadYawDegrees = -170.0F;  // 20 deg past the seam from the body
+    snap.headYawDegrees = -170.0F;
+    std::optional<std::uint64_t> last;
+    const auto state = rp::extractPlayerRenderState(snap, 0.5F, last);
+    assert(near(state.headYawDegrees, 20.0F));  // short path +20, not -340
+    assert(near(state.bodyYawDegrees, 170.0F));
+}
+
+void testArmPoseDerivation() {
+    gameplay::ItemStack empty{};
+    assert(rp::deriveArmPose(empty, false, gameplay::UseAnimation::None) == rp::ArmPose::Empty);
+    gameplay::ItemStack block{};
+    block.block = world::Block::Stone;
+    block.count = 1U;
+    assert(rp::deriveArmPose(block, false, gameplay::UseAnimation::None) == rp::ArmPose::Block);
+    assert(rp::deriveArmPose(block, true, gameplay::UseAnimation::Eat) == rp::ArmPose::Eat);
+    assert(rp::deriveArmPose(block, false, gameplay::UseAnimation::Eat) == rp::ArmPose::Block);
+}
+
+void testFirstPersonHandSolver() {
+    {
+        rp::PlayerRenderState s;
+        assert(animation::solveFirstPersonHand(s).action == animation::ModelAction::None);
+    }
+    {
+        rp::PlayerRenderState s;
+        s.swing.active = true;
+        s.swing.animation = gameplay::SwingAnimation::Break;
+        s.swing.progress = 0.4F;
+        const auto in = animation::solveFirstPersonHand(s);
+        assert(in.action == animation::ModelAction::Break && near(in.progress, 0.4F));
+    }
+    {
+        rp::PlayerRenderState s;
+        s.swing.active = true;
+        s.swing.animation = gameplay::SwingAnimation::Use;
+        s.swing.progress = 0.2F;
+        assert(animation::solveFirstPersonHand(s).action == animation::ModelAction::Use);
+    }
+    {
+        rp::PlayerRenderState s;
+        s.swing.active = true;
+        s.swing.animation = gameplay::SwingAnimation::Break;
+        s.use.active = true;
+        s.use.animation = gameplay::UseAnimation::Eat;
+        s.use.progress = 0.7F;
+        const auto in = animation::solveFirstPersonHand(s);
+        assert(in.action == animation::ModelAction::Eat && near(in.progress, 0.7F));
+    }
+}
+}  // namespace
 
 int main() {
     // A swing at its tick endpoint, interpolated halfway into the next frame,
@@ -149,5 +240,10 @@ int main() {
                         render::player::interpolateSwing(swing, 0.5F, b).progress) < 0.0001F);
     }
 
+    testWrappedYawLerp();
+    testHeadRelativeToBody();
+    testHeadRelativeAcrossSeam();
+    testArmPoseDerivation();
+    testFirstPersonHandSolver();
     return 0;
 }

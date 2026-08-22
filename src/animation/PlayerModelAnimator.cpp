@@ -46,12 +46,13 @@ constexpr const char* kBuiltinAnimations = R"({
         // arm A = 57.3 deg (1.0 rad), leg A = 80.2 deg (1.4 rad = arm * 1.4).
         // Diagonal sync: rightArm<->leftLeg, leftArm<->rightLeg. walk_position is
         // the vanilla phase accumulator (position += speed); walk_amount the eased
-        // amplitude. The preview, which has no displacement, falls back to
-        // anim_time as the phase source via walk_position = anim_time * 2*PI.
-        "rightLeg": {"rotation": ["math.cos(variable.walk_position * 0.6662) * 80.2 * variable.walk_amount", 0, 0]},
-        "leftLeg":  {"rotation": ["math.cos(variable.walk_position * 0.6662 + 3.14159265) * 80.2 * variable.walk_amount", 0, 0]},
-        "rightArm": {"rotation": ["math.cos(variable.walk_position * 0.6662 + 3.14159265) * 57.3 * variable.walk_amount", 0, 0]},
-        "leftArm":  {"rotation": ["math.cos(variable.walk_position * 0.6662) * 57.3 * variable.walk_amount", 0, 0]}
+        // amplitude. NOTE: Molang math.cos takes DEGREES, so the vanilla radian
+        // frequency 0.6662 is expressed as 0.6662*180/pi = 38.166 deg/unit, and
+        // the +PI anti-phase as +180 deg.
+        "rightLeg": {"rotation": ["math.cos(variable.walk_position * 38.166) * 80.2 * variable.walk_amount", 0, 0]},
+        "leftLeg":  {"rotation": ["math.cos(variable.walk_position * 38.166 + 180) * 80.2 * variable.walk_amount", 0, 0]},
+        "rightArm": {"rotation": ["math.cos(variable.walk_position * 38.166 + 180) * 57.3 * variable.walk_amount", 0, 0]},
+        "leftArm":  {"rotation": ["math.cos(variable.walk_position * 38.166) * 57.3 * variable.walk_amount", 0, 0]}
       }
     },
     "animation.player.idle": {
@@ -60,9 +61,11 @@ constexpr const char* kBuiltinAnimations = R"({
         // A3/B3 (26.1 §4): the ONLY idle motion is AnimationUtils.bobModelPart on
         // the two arms — Z sways outward-only cos(age*0.09)*2.86 + 2.86 (mirrored
         // right +, left -), X front/back sin(age*0.067)*2.86 (reversed per arm).
-        // The body/head/legs stay still — NO body Y bob. age = anim_time in ticks.
-        "rightArm": {"rotation": ["math.sin(variable.idle_age * 0.067) * 2.86", 0, "math.cos(variable.idle_age * 0.09) * 2.86 + 2.86"]},
-        "leftArm":  {"rotation": ["math.sin(variable.idle_age * 0.067) * -2.86", 0, "math.cos(variable.idle_age * 0.09) * -2.86 - 2.86"]}
+        // The body/head/legs stay still — NO body Y bob. age = ticks. NOTE: Molang
+        // trig is in DEGREES, so the radian rates become 0.09*180/pi = 5.1566 and
+        // 0.067*180/pi = 3.8388 deg/tick.
+        "rightArm": {"rotation": ["math.sin(variable.idle_age * 3.8388) * 2.86", 0, "math.cos(variable.idle_age * 5.1566) * 2.86 + 2.86"]},
+        "leftArm":  {"rotation": ["math.sin(variable.idle_age * 3.8388) * -2.86", 0, "math.cos(variable.idle_age * 5.1566) * -2.86 - 2.86"]}
       }
     },
     "animation.player.look": {
@@ -166,25 +169,42 @@ void PlayerModelAnimator::setCursorLook(float normalizedX, float normalizedY) {
 
 void PlayerModelAnimator::update(float deltaSeconds, bool walking, bool sneaking) {
     const float dt = std::max(deltaSeconds, 0.0F);
+    // Preview path: it has no world displacement, so it synthesizes the drive
+    // quantities. The walk amplitude is full in the walk state (the controller
+    // crossfade owns the idle<->walk state blend); the phase advances from the
+    // clock at the ~2.16 rad/s a real walk accumulates (0.6662 * 0.216 blk/tick *
+    // 20 tick/s); the idle age is the elapsed clock in ticks.
     elapsed_ += dt;
-    walking_ = walking;
+    const float walkAmount = walking ? 1.0F : 0.0F;
+    walkPosition_ += dt * 20.0F * 0.216F;
+    evaluatePose(dt, walkAmount, walkPosition_, elapsed_ * 20.0F, sneaking);
+}
+
+void PlayerModelAnimator::updateWorldPlayer(float deltaSeconds, float walkAmount,
+                                            float walkPosition, float ageInTicks, bool sneaking) {
+    // World-player path: feed the AUTHORITATIVE vanilla WalkAnimationState the
+    // controller published (walkAnimationSpeed / walkAnimationPosition) and the
+    // real render age, so the same controller stack drives idle/walk/sneak from
+    // true movement (idle -> no swing, stopping decays to rest) instead of a
+    // synthesized clock. Look + item-hold are set through setCursorLook /
+    // setItemHold before this call; body_look_amount stays 0 (the renderer applies
+    // the world body yaw at the model root).
+    elapsed_ += std::max(deltaSeconds, 0.0F);
+    evaluatePose(std::max(deltaSeconds, 0.0F), walkAmount, walkPosition, ageInTicks, sneaking);
+}
+
+void PlayerModelAnimator::evaluatePose(float dt, float walkAmount, float walkPosition,
+                                       float idleAgeTicks, bool sneaking) {
+    walking_ = walkAmount > 0.1F;
     sneaking_ = sneaking;
-    // The walk clip's swing amplitude is full whenever we are in/entering the walk
-    // state; the ANIM-3 controller crossfade owns the idle<->walk *state* blend,
-    // so there is no hand-eased weight here anymore (REGULAR §3). walk_amount is
-    // kept as a plain locomotion amplitude the walk clip's Molang reads.
-    walkAmount_ = walking ? 1.0F : 0.0F;
+    walkAmount_ = walkAmount;
 
     MolangContext& ctx = animator_.context();
     ctx.setVariable("walk_amount", walkAmount_);
-    // B2: the walk clip is phase-driven by walk_position (vanilla `position`). The
-    // preview has no world displacement, so it advances the phase from the clock
-    // at the ~2.16 rad/s a walking player accumulates (0.6662 * 0.216 blk/tick *
-    // 20 tick/s), keeping the preview's cadence close to a real walk.
-    walkPosition_ += dt * 20.0F * 0.216F;
-    ctx.setVariable("walk_position", walkPosition_);
-    // A3: the idle bob is driven by age in ticks (anim_time seconds * 20).
-    ctx.setVariable("idle_age", elapsed_ * 20.0F);
+    // B2: the walk clip is phase-driven by walk_position (vanilla `position`).
+    ctx.setVariable("walk_position", walkPosition);
+    // A3: the idle bob is driven by age in ticks.
+    ctx.setVariable("idle_age", idleAgeTicks);
     ctx.setVariable("sneaking", sneaking ? 1.0F : 0.0F);
     ctx.setVariable("look_yaw", lookX_ * kLookYawDegrees);
     ctx.setVariable("look_pitch", lookY_ * kLookPitchDegrees);

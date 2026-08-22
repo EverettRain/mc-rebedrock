@@ -52,6 +52,15 @@ class PlayerModelAnimator final {
     // idle/walk/sneak state and an ANIM-2 crossfade eases the state blend, so
     // state changes fade instead of snapping (no hand-written eased weights).
     void update(float deltaSeconds, bool walking, bool sneaking = false);
+    // World-player entry point: drive the same controller stack from the
+    // AUTHORITATIVE walk drive quantities (walkAnimationSpeed = amplitude,
+    // walkAnimationPosition = phase) and the real render age, rather than the
+    // preview's clock-synthesized values. Look and item-hold are set via
+    // setCursorLook / setItemHold first. This replaces the retired
+    // HumanoidPoseSolver: the third-person world player now shares the preview's
+    // Molang clips + ANIM controller + masks (one animation path, two feeds).
+    void updateWorldPlayer(float deltaSeconds, float walkAmount, float walkPosition,
+                           float ageInTicks, bool sneaking = false);
     [[nodiscard]] const PlayerModelPose& pose() const { return pose_; }
 
     // The controller state the locomotion machine settled on this frame
@@ -74,6 +83,12 @@ class PlayerModelAnimator final {
 
   private:
     void rebindBones();
+    // The shared per-frame evaluation both feeds call: sets the Molang drive
+    // variables, runs the controller + masks + item-hold override, and projects
+    // the flat PlayerModelPose. `walkAmount` is the gait amplitude, `walkPosition`
+    // the phase, `idleAgeTicks` the idle-bob age.
+    void evaluatePose(float dt, float walkAmount, float walkPosition, float idleAgeTicks,
+                      bool sneaking);
 
     SkeletalModel model_;
     AnimationLibrary library_;

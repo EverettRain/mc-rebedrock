@@ -75,5 +75,70 @@ int main() {
     assert(std::abs(worldWaist.x) < 0.5F);
     assert(std::abs(worldWaist.z) < 0.5F);
     assert(std::abs(worldWaist.y - 12.0F) < 1.0F);
+
+    // --- ANIM task2: the world-player feed (updateWorldPlayer) drives the SAME
+    // controller stack from the authoritative WalkAnimationState. These migrate
+    // the spec behaviours the retired HumanoidPoseSolver's test guarded: idle ->
+    // no limb swing, walk -> anti-phase swing with amplitude, and determinism.
+    const int rArm = model.findBone("rightArm");
+    const int lArm = model.findBone("leftArm");
+    const int lLeg = model.findBone("leftLeg");
+    assert(rArm >= 0 && lArm >= 0 && lLeg >= 0 && rightLeg >= 0);
+
+    // Idle: amplitude 0, phase irrelevant -> legs do NOT swing (the "stops but
+    // keeps swinging" regression the solver fix targeted). Only the idle arm bob
+    // (Z/X on the arms) moves; legs stay at rest.
+    {
+        mc::animation::PlayerModelAnimator wp;
+        // A steady age so the idle bob is well into its cycle, proving legs are
+        // still untouched by it.
+        for (int i = 0; i < 10; ++i) {
+            wp.updateWorldPlayer(0.05F, /*walkAmount=*/0.0F, /*walkPosition=*/0.0F,
+                                 /*ageInTicks=*/static_cast<float>(i), /*sneaking=*/false);
+        }
+        const auto& p = wp.skeletonPose();
+        assert(std::abs(p.bone(static_cast<std::size_t>(rightLeg)).rotation.x) < 0.01F);
+        assert(std::abs(p.bone(static_cast<std::size_t>(lLeg)).rotation.x) < 0.01F);
+    }
+
+    // Walk: amplitude 0.86 at a phase where cos differs from +/-1 -> legs swing in
+    // anti-phase (opposite signs), and rightArm shares leftLeg's phase.
+    {
+        mc::animation::PlayerModelAnimator wp;
+        // Feed several ticks so the idle->walk controller crossfade completes (the
+        // state blend eases in over a few frames), holding the phase fixed so the
+        // final swing angle is deterministic.
+        for (int i = 0; i < 30; ++i) {
+            // walkPosition fixed at 1.5 so 0.6662*p ~ 1 rad (cos ~ 0.54), a clear
+            // swing, once the walk state has fully faded in.
+            wp.updateWorldPlayer(0.05F, /*walkAmount=*/0.863F, /*walkPosition=*/1.5F,
+                                 /*ageInTicks=*/0.0F, /*sneaking=*/false);
+        }
+        const auto& p = wp.skeletonPose();
+        const float rl = p.bone(static_cast<std::size_t>(rightLeg)).rotation.x;
+        const float ll = p.bone(static_cast<std::size_t>(lLeg)).rotation.x;
+        assert(std::abs(rl) > 1.0F);              // legs actually swing
+        assert((rl > 0.0F) != (ll > 0.0F));       // anti-phase (opposite signs)
+        const float ra = p.bone(static_cast<std::size_t>(rArm)).rotation.x;
+        assert((ra > 0.0F) == (ll > 0.0F));       // rightArm in phase with leftLeg
+    }
+
+    // Determinism: identical world-player inputs -> identical pose (no frame-rate
+    // or hidden-state dependence), the property the solver test asserted.
+    {
+        mc::animation::PlayerModelAnimator a;
+        mc::animation::PlayerModelAnimator b;
+        a.updateWorldPlayer(0.05F, 0.7F, 3.3F, 12.0F, true);
+        b.updateWorldPlayer(0.05F, 0.7F, 3.3F, 12.0F, true);
+        const auto& pa = a.skeletonPose();
+        const auto& pb = b.skeletonPose();
+        for (std::size_t i = 0; i < pa.boneCount(); ++i) {
+            const auto& ba = pa.bone(i);
+            const auto& bb = pb.bone(i);
+            assert(std::abs(ba.rotation.x - bb.rotation.x) < 1e-4F);
+            assert(std::abs(ba.rotation.y - bb.rotation.y) < 1e-4F);
+            assert(std::abs(ba.rotation.z - bb.rotation.z) < 1e-4F);
+        }
+    }
     return 0;
 }
