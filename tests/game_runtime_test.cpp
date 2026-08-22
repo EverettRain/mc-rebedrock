@@ -935,6 +935,95 @@ int main() {
         runtime.stopSimulation();
     }
 
+    // CMD5: execute rebinds the command source (as/at/positioned) and gates it
+    // (if/unless), then `run` re-enters the dispatcher on each transformed source.
+    {
+        world::ChunkStreamer streamer{0U, 4, 4};
+        RecordingHost host;
+        runtime::GameRuntime runtime{host, streamer, saveRoot};
+        host.save = &runtime.currentSaveSlot();
+        auto save = runtime.createWorld("execute", 7U, gameplay::GameMode::Creative);
+        runtime.loadWorld(std::move(save), 4);
+        const auto batch = streamer.requestSync({1, 1}, std::chrono::seconds(10));
+        assert(batch.has_value());
+        applyBatch(runtime, *batch);
+
+        const auto runCmd = [&](const std::string& line) {
+            runtime.enqueueChat(line);
+            runtime.tick();
+            return runtime.takeChatResult();
+        };
+        const auto liveOf = [&](std::string_view species) {
+            std::size_t count = 0U;
+            for (const auto& e : runtime.gameSession().worldEntities().entities()) {
+                if (!e.dead() && e.type != nullptr && std::string{e.type->id().path} == species) {
+                    ++count;
+                }
+            }
+            return count;
+        };
+
+        const auto* pigType = gameplay::entities::entityTypeRegistry().byId("pig");
+        const auto* zombieType = gameplay::entities::entityTypeRegistry().byId("zombie");
+        assert(pigType != nullptr && zombieType != nullptr);
+        runtime.gameSession().worldEntities().restore({20.0F, 90.0F, 20.0F}, *pigType, 0.0F,
+                                                      {0.0F, 0.0F, 0.0F}, 10.0F, 0, 0, 1U);
+        runtime.gameSession().worldEntities().restore({21.0F, 90.0F, 21.0F}, *pigType, 0.0F,
+                                                      {0.0F, 0.0F, 0.0F}, 10.0F, 0, 0, 2U);
+        runtime.gameSession().worldEntities().restore({22.0F, 90.0F, 22.0F}, *pigType, 0.0F,
+                                                      {0.0F, 0.0F, 0.0F}, 10.0F, 0, 0, 3U);
+        runtime.gameSession().worldEntities().restore({24.0F, 90.0F, 24.0F}, *zombieType, 0.0F,
+                                                      {0.0F, 0.0F, 0.0F}, 20.0F, 0, 0, 4U);
+        assert(liveOf("pig") == 3U && liveOf("zombie") == 1U);
+
+        // as: each pig becomes @s in turn, so `kill @s` kills every pig (not the
+        // player, and not one pig three times) — the zombie is untouched.
+        {
+            const auto result = runCmd("/execute as @e[type=pig] run kill @s");
+            assert(result.has_value() && result->success);
+            assert(liveOf("pig") == 0U && liveOf("zombie") == 1U);
+        }
+        // positioned penetrates to run's `~`: the block lands at the given
+        // position, not at the executor's feet.
+        {
+            const auto result = runCmd("/execute positioned 30 90 30 run setblock ~ ~ ~ stone");
+            assert(result.has_value() && result->success);
+            assert(runtime.world().block(30, 90, 30) == world::Block::Stone);
+        }
+        // at moves the source onto the target, so `~` follows it there: `at @p`
+        // then `setblock ~ ~ ~` lands at the player's own cell. (Read the feet
+        // after the command: setblock ran at the end of that tick, so the same
+        // post-physics position it used is what we floor here.)
+        {
+            const auto result = runCmd("/execute at @p run setblock ~ ~ ~ stone");
+            assert(result.has_value() && result->success);
+            const glm::vec3 feet = runtime.gameSession().player().position();
+            const int px = static_cast<int>(std::floor(feet.x));
+            const int py = static_cast<int>(std::floor(feet.y));
+            const int pz = static_cast<int>(std::floor(feet.z));
+            assert(runtime.world().block(px, py, pz) == world::Block::Stone);
+        }
+        // if entity gates on a match: the zombie exists, so the block is placed.
+        {
+            const auto result = runCmd("/execute if entity @e[type=zombie] run setblock 28 90 28 stone");
+            assert(result.has_value() && result->success);
+            assert(runtime.world().block(28, 90, 28) == world::Block::Stone);
+        }
+        // unless entity: no pig is left, so `unless entity @e[type=pig]` runs.
+        {
+            const auto result = runCmd("/execute unless entity @e[type=pig] run setblock 29 90 29 stone");
+            assert(result.has_value() && result->success);
+            assert(runtime.world().block(29, 90, 29) == world::Block::Stone);
+        }
+        // A failed gate runs nothing: no pig means `if entity @e[type=pig]` skips.
+        {
+            const auto result = runCmd("/execute if entity @e[type=pig] run setblock 31 90 31 stone");
+            assert(result.has_value() && !result->success);
+            assert(runtime.world().block(31, 90, 31) != world::Block::Stone);
+        }
+        runtime.stopSimulation();
+    }
+
     std::filesystem::remove_all(saveRoot);
     std::cout << "PASS: game_runtime_test\n";
     return 0;

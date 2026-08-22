@@ -156,11 +156,24 @@ inline std::vector<SelectorTarget> EntitySelector::resolve(
     //    entity; @e from everything.
     std::vector<SelectorCandidate> pool;
     if (variable == SelectorVariable::Self) {
-        SelectorCandidate self;
-        self.player = true;
-        self.playerId = source.playerId;
-        self.position = source.position;
-        pool.push_back(self);
+        if (source.executorIsEntity) {
+            // The executor is a mob (execute as <entity>): look it up in the live
+            // set so @s carries its real position and species (and yields nothing
+            // if it has since died). Never synthesise it — a stale position would
+            // make `@s` lie.
+            for (const SelectorCandidate& candidate : candidates) {
+                if (!candidate.player && candidate.entityId == source.entityId) {
+                    pool.push_back(candidate);
+                    break;
+                }
+            }
+        } else {
+            SelectorCandidate self;
+            self.player = true;
+            self.playerId = source.playerId;
+            self.position = source.position;
+            pool.push_back(self);
+        }
     } else {
         const bool playersOnly =
             (variable == SelectorVariable::NearestPlayer ||

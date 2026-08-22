@@ -180,5 +180,44 @@ int main() {
         }
     }
 
+    // ---- CMD5 support: @e order is deterministic (no randomness) -------------
+    // execute-as walks @e in a fixed order; two different seeds must resolve the
+    // same sequence, so a chain over @e is reproducible.
+    {
+        const auto orderA = parseSel("@e").resolve(source, candidates, 1U);
+        const auto orderB = parseSel("@e").resolve(source, candidates, 999U);
+        assert(orderA.size() == orderB.size());
+        for (std::size_t index = 0; index < orderA.size(); ++index) {
+            assert(orderA[index].player == orderB[index].player &&
+                   orderA[index].entityId == orderB[index].entityId &&
+                   orderA[index].playerId == orderB[index].playerId);
+        }
+    }
+
+    // ---- CMD5 support: @s resolves the entity executor (execute as <entity>) --
+    {
+        CommandSource entitySource;
+        entitySource.executorIsEntity = true;
+        entitySource.entityId = 101; // the pig at (10,0,0) in the candidate set
+        const auto self = parseSel("@s").resolve(entitySource, candidates, 0U);
+        assert(self.size() == 1U && !self[0].player && self[0].entityId == 101);
+        entitySource.entityId = 9999; // a since-removed entity yields nothing
+        assert(parseSel("@s").resolve(entitySource, candidates, 0U).empty());
+    }
+
+    // ---- CMD5 support: the withXxx source copies change one field -------------
+    {
+        CommandSource base;
+        base.playerId = 1;
+        base.position = {1.0F, 2.0F, 3.0F};
+        assert(base.withExecutorEntity(7).executorIsEntity &&
+               base.withExecutorEntity(7).entityId == 7U);
+        assert(!base.withExecutorEntity(7).withExecutorPlayer(2).executorIsEntity);
+        assert(base.withExecutorPlayer(2).playerId == 2U);
+        const CommandSource moved = base.withPosition({4.0F, 5.0F, 6.0F});
+        assert(moved.position == glm::vec3(4.0F, 5.0F, 6.0F));
+        assert(moved.playerId == 1U); // other fields preserved by the copy
+    }
+
     return 0;
 }

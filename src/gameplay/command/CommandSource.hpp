@@ -65,6 +65,43 @@ struct CommandSource final {
     Dimension dimension = Dimension::Overworld;
     PermissionLevel permissionLevel = PermissionLevel::Owners;
     FeedbackSink feedback;  // null: feedback is discarded (return value only)
+    // The executor: a player (default) or a world entity. `execute as <entity>`
+    // (CMD5) rebinds it to a mob, so `@s` inside `run` resolves to that mob, not
+    // the player. entityId is meaningful only while executorIsEntity is true.
+    bool executorIsEntity = false;
+    std::uint64_t entityId = 0;
+
+    // The 1.16.1 CommandSourceStack.withXxx derivations, as value copies — the
+    // whole point of the POD source: `execute as/at/positioned/rotated/in` is a
+    // copy with one field changed, no object tree. `as` rebinds only the
+    // executor (position stays, matching vanilla); `at` moves the position.
+    [[nodiscard]] CommandSource withExecutorPlayer(PlayerId id) const {
+        CommandSource copy = *this;
+        copy.executorIsEntity = false;
+        copy.playerId = id;
+        return copy;
+    }
+    [[nodiscard]] CommandSource withExecutorEntity(std::uint64_t id) const {
+        CommandSource copy = *this;
+        copy.executorIsEntity = true;
+        copy.entityId = id;
+        return copy;
+    }
+    [[nodiscard]] CommandSource withPosition(glm::vec3 newPosition) const {
+        CommandSource copy = *this;
+        copy.position = newPosition;
+        return copy;
+    }
+    [[nodiscard]] CommandSource withRotation(Rotation2 newRotation) const {
+        CommandSource copy = *this;
+        copy.rotation = newRotation;
+        return copy;
+    }
+    [[nodiscard]] CommandSource withDimension(Dimension newDimension) const {
+        CommandSource copy = *this;
+        copy.dimension = newDimension;
+        return copy;
+    }
 };
 
 // The single place a `~`-relative Position3 becomes a concrete world position:

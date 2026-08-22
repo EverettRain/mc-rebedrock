@@ -19,6 +19,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -226,6 +227,16 @@ class GameRuntime final {
         const gameplay::command::CommandContext& context, std::string_view mode);
     [[nodiscard]] gameplay::CommandResult runSummon(
         const gameplay::command::CommandContext& context);
+    // execute (CMD5): runExecute parses the greedy tail into a clause chain,
+    // applyExecuteClause transforms/forks/gates the source contexts one clause at
+    // a time, and `run` re-enters the dispatcher on each transformed source.
+    // applyExecuteClause returns an empty string on success or an error message.
+    [[nodiscard]] gameplay::CommandResult runExecute(
+        const gameplay::command::CommandContext& context);
+    [[nodiscard]] std::string applyExecuteClause(
+        const std::string& clause, gameplay::command::StringReader& reader,
+        std::vector<gameplay::command::CommandSource>& contexts,
+        std::span<const gameplay::command::SelectorCandidate> candidates);
     // Drains the client→server channel into the session's command queue at the
     // start of a tick. Safe to call inside the world write section: the channel
     // and the command queue each carry their own mutex, so this depends on
@@ -320,6 +331,10 @@ class GameRuntime final {
     // world seed on load (see loadWorld). Transient — never saved; a fixed world
     // plus a fixed command sequence reproduces the same picks.
     std::uint64_t commandRandomState_ = 0x9E3779B97F4A7C15ULL;
+    // Guards `execute run execute run …` recursion (CMD5): incremented on entry to
+    // runExecute, capped so a runaway chain returns an error instead of blowing
+    // the stack.
+    int commandRecursionDepth_ = 0;
 
     // Background chunk-unload persistence worker and its queue. The worker lives
     // for the whole runtime; the destructor stops and joins it after the
