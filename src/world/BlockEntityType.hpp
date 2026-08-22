@@ -44,6 +44,11 @@ using core::kVanillaNamespace;
 enum class BlockEntityKind : std::uint8_t {
     Chest,
     Furnace,
+    // The trapped chest's block entity (BE3). Structurally a chest — it reuses
+    // the ChestSystem storage/tick/spill wholesale — but a distinct identity so
+    // the trapped chest and the chest never share a container or a save section,
+    // and (later) the redstone output can be tied to it.
+    TrappedChest,
     Count,
 };
 
@@ -75,6 +80,10 @@ inline constexpr std::array<BlockEntityTypeDefinition,
                                   {kNamespace, "furnace"},
                                   {kVanillaNamespace, "furnace"},
                                   "Furnace"},
+        BlockEntityTypeDefinition{BlockEntityKind::TrappedChest,
+                                  {kNamespace, "trapped_chest"},
+                                  {kVanillaNamespace, "trapped_chest"},
+                                  "Trapped Chest"},
     };
 
 // The number of built-in block-entity types — the size a compile-time

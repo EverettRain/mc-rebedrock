@@ -34,6 +34,7 @@ namespace mc::gameplay {
 // argument, whatever a future ticker ends up needing.
 struct BlockEntityTickContext final {
     ChestSystem& chests;
+    ChestSystem& trappedChests;
     FurnaceSystem& furnaces;
 };
 
@@ -46,6 +47,11 @@ using BlockEntityTickerFn = void (*)(const BlockEntityTickContext&);
 // data (BE2 moves the *drive*, not the logic).
 inline void tickChestEntities(const BlockEntityTickContext& context) {
     context.chests.tick();
+}
+inline void tickTrappedChestEntities(const BlockEntityTickContext& context) {
+    // A trapped chest's lid eases exactly like a chest's — same ChestSystem tick,
+    // its own container.
+    context.trappedChests.tick();
 }
 inline void tickFurnaceEntities(const BlockEntityTickContext& context) {
     context.furnaces.tick();
@@ -63,6 +69,8 @@ inline constexpr std::array<BlockEntityTickerFn, world::kBuiltinBlockEntityTypeC
         std::array<BlockEntityTickerFn, world::kBuiltinBlockEntityTypeCount> entries{};
         entries[world::blockEntityTypeId(world::BlockEntityKind::Chest).index()] =
             &tickChestEntities;
+        entries[world::blockEntityTypeId(world::BlockEntityKind::TrappedChest).index()] =
+            &tickTrappedChestEntities;
         entries[world::blockEntityTypeId(world::BlockEntityKind::Furnace).index()] =
             &tickFurnaceEntities;
         return entries;

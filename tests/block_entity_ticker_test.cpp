@@ -26,9 +26,10 @@ int main() {
     };
     const auto coal = [] { return ItemStack{Block::Air, 1U, &items::Coal}; };
 
-    // --- The pre-filter agrees with the table: both built-in kinds tick. ---
+    // --- The pre-filter agrees with the table: every built-in kind ticks. ---
     {
         assert(hasTicker(mc::world::blockEntityTypeId(BlockEntityKind::Chest)));
+        assert(hasTicker(mc::world::blockEntityTypeId(BlockEntityKind::TrappedChest)));
         assert(hasTicker(mc::world::blockEntityTypeId(BlockEntityKind::Furnace)));
         // Invalid id, and any id past the table, is tickless rather than a crash.
         assert(!hasTicker(mc::core::BlockEntityTypeId::invalid()));
@@ -40,16 +41,17 @@ int main() {
     //     did: the moved drive changed who calls tick(), not the lid maths. ---
     {
         ChestSystem chests;
+        ChestSystem trapped;
         FurnaceSystem furnaces;
         assert(chests.place({0, 64, 0}));
         assert(chests.open({0, 64, 0}));
 
-        const BlockEntityTickContext context{chests, furnaces};
+        const BlockEntityTickContext context{chests, trapped, furnaces};
         // One drive: the lid eases 0.1 toward the open target, the same step
         // ChestSystem::tick() applies.
         const auto stats = tickBlockEntities(context);
-        // Both built-in kinds have a ticker, so nothing was skipped this drive.
-        assert(stats.ticked == 2);
+        // Every built-in kind has a ticker, so nothing was skipped this drive.
+        assert(stats.ticked == 3);
         assert(stats.skipped == 0);
         const auto* chest = chests.find({0, 64, 0});
         assert(chest != nullptr);
@@ -62,18 +64,36 @@ int main() {
         assert(chests.find({0, 64, 0})->lidAngle == 1.0F);
     }
 
+    // --- The trapped chest ticks on its own container: its lid eases like a
+    //     chest's, and the (empty) chest container beside it is untouched. This
+    //     is BE3's reuse — the same ChestSystem tick, a distinct container. ---
+    {
+        ChestSystem chests;
+        ChestSystem trapped;
+        FurnaceSystem furnaces;
+        assert(trapped.place({2, 64, 2}));
+        assert(trapped.open({2, 64, 2}));
+
+        const BlockEntityTickContext context{chests, trapped, furnaces};
+        static_cast<void>(tickBlockEntities(context));
+        assert(trapped.find({2, 64, 2})->lidAngle > 0.09F);
+        // Nothing leaked into the chest container.
+        assert(chests.entities().empty());
+    }
+
     // --- Driving the table burns a furnace exactly as FurnaceSystem::tick()
     //     did, and does so on the same drive as the chest above — the two
     //     containers step in one call. ---
     {
         ChestSystem chests;
+        ChestSystem trapped;
         FurnaceSystem furnaces;
         assert(furnaces.place({0, 64, 0}));
         auto& furnace = *furnaces.find({0, 64, 0});
         furnace.input = ironOre();
         furnace.fuel = coal();
 
-        const BlockEntityTickContext context{chests, furnaces};
+        const BlockEntityTickContext context{chests, trapped, furnaces};
         static_cast<void>(tickBlockEntities(context));
         // The first drive lit the furnace (fuel spent, burn started) and made a
         // dent in the 200-tick smelt — precisely FurnaceSystem::tick()'s first
@@ -93,6 +113,7 @@ int main() {
             out.fuel = coal();
         };
         ChestSystem chestsTable;
+        ChestSystem trappedTable;
         FurnaceSystem furnacesTable;
         ChestSystem chestsDirect;
         FurnaceSystem furnacesDirect;
@@ -105,7 +126,7 @@ int main() {
             build(*f->find({1, 64, 1}));
         }
 
-        const BlockEntityTickContext tableContext{chestsTable, furnacesTable};
+        const BlockEntityTickContext tableContext{chestsTable, trappedTable, furnacesTable};
         for (int i = 0; i < 120; ++i) {
             static_cast<void>(tickBlockEntities(tableContext));
             // The hand-list this replaced: furnace then chest, called directly.
@@ -125,6 +146,7 @@ int main() {
     //     entity cost nothing per tick. ---
     {
         ChestSystem chests;
+        ChestSystem trapped;
         FurnaceSystem furnaces;
         assert(furnaces.place({0, 64, 0}));
         auto& furnace = *furnaces.find({0, 64, 0});
@@ -136,9 +158,9 @@ int main() {
             kBlockEntityTickerTable;
         punched[mc::world::blockEntityTypeId(BlockEntityKind::Furnace).index()] = nullptr;
 
-        const BlockEntityTickContext context{chests, furnaces};
+        const BlockEntityTickContext context{chests, trapped, furnaces};
         const auto stats = tickBlockEntities(context, punched);
-        assert(stats.ticked == 1);  // only the chest slot ran
+        assert(stats.ticked == 2);  // the chest and trapped-chest slots ran
         assert(stats.skipped == 1); // the furnace slot was stepped over
         // The furnace never lit: its fuel is intact and no smelt began.
         assert(!furnace.burning());
@@ -153,12 +175,13 @@ int main() {
     {
         const auto run = [&]() {
             ChestSystem chests;
+            ChestSystem trapped;
             FurnaceSystem furnaces;
             static_cast<void>(furnaces.place({3, 64, 3}));
             auto& furnace = *furnaces.find({3, 64, 3});
             furnace.input = ironOre();
             furnace.fuel = coal();
-            const BlockEntityTickContext context{chests, furnaces};
+            const BlockEntityTickContext context{chests, trapped, furnaces};
             for (int i = 0; i < 205; ++i) {
                 static_cast<void>(tickBlockEntities(context));
             }

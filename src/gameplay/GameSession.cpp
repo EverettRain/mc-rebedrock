@@ -173,7 +173,7 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // of system tick() calls: each type with a ticker steps its container once,
     // in ascending BlockEntityTypeId order, and a tickless type is skipped by the
     // pre-filter. Chest lids and furnace burns are both driven here.
-    tickBlockEntities(BlockEntityTickContext{chestSystem_, furnaceSystem_});
+    tickBlockEntities(BlockEntityTickContext{chestSystem_, trappedChestSystem_, furnaceSystem_});
     // Every placed furnace smelts on its own now, screen open or not. Mirror its
     // authoritative LIT state — after the furnace ticker ran this tick — while
     // this tick owns the server-world write section; the mutation event carries
@@ -623,6 +623,7 @@ void GameSession::resetWorldState() {
     worldEntities_.clear();
     closeContainer();
     chestSystem_ = {};
+    trappedChestSystem_ = {};
     furnaceSystem_ = {};
     // Drop the previous world's published state. Readers that pinned it may
     // finish normally; the fresh pool starts with one empty immutable bundle.

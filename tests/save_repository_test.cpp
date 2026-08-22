@@ -119,6 +119,14 @@ int main() {
     chest.items[0] = {world::Block::Chest, 1U};
     chest.items[8] = {world::Block::Air, 3U, &gameplay::items::Book};
     save.chests.push_back(chest);
+    // BE3's trapped chest block entities: the same ChestBlockEntity record in
+    // their own section (TCST), so a trapped chest reopens holding its own
+    // contents and is never confused with a chest at load.
+    gameplay::ChestBlockEntity trappedChest;
+    trappedChest.position = {8, 65, -10};
+    trappedChest.items[3] = {world::Block::Air, 7U, &gameplay::items::Diamond};
+    trappedChest.items[26] = {world::Block::Stone, 12U};
+    save.trappedChests.push_back(trappedChest);
     // Format 15's furnace block entities: each furnace's three slots and its
     // burn/cook counters travel with the world, so a furnace reopens holding
     // what it held and resumes the smelt it was partway through.
@@ -176,6 +184,12 @@ int main() {
     assert(loaded.chests.size() == 1U);
     assert(loaded.chests.front().position == chest.position);
     assert(loaded.chests.front().items == chest.items);
+    // The trapped chest round-trips in its own section, distinct from the chest.
+    assert(loaded.trappedChests.size() == 1U);
+    assert(loaded.trappedChests.front().position == trappedChest.position);
+    assert(loaded.trappedChests.front().items == trappedChest.items);
+    assert(loaded.trappedChests.front().items[3].item == &gameplay::items::Diamond);
+    assert(loaded.trappedChests.front().items[3].count == 7U);
     // The furnace block entity survives the round trip whole: contents and the
     // burn/cook counters that let it resume its smelt.
     assert(loaded.furnaces.size() == 1U);

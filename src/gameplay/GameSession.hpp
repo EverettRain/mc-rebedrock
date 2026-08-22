@@ -392,6 +392,11 @@ class GameSession final {
     [[nodiscard]] const EntitySystem& worldEntities() const { return worldEntities_; }
     [[nodiscard]] ChestSystem& chestSystem() { return chestSystem_; }
     [[nodiscard]] const ChestSystem& chestSystem() const { return chestSystem_; }
+    // The trapped chest's storage (BE3). A separate ChestSystem instance — the
+    // whole class is reused, keyed by position, so a trapped chest and a chest
+    // never collide even though both are ChestBlockEntity.
+    [[nodiscard]] ChestSystem& trappedChestSystem() { return trappedChestSystem_; }
+    [[nodiscard]] const ChestSystem& trappedChestSystem() const { return trappedChestSystem_; }
     [[nodiscard]] FurnaceSystem& furnaceSystem() { return furnaceSystem_; }
     [[nodiscard]] const FurnaceSystem& furnaceSystem() const { return furnaceSystem_; }
     [[nodiscard]] WeatherSystem& weatherSystem() { return weatherSystem_; }
@@ -514,6 +519,7 @@ class GameSession final {
     gameplay::EntitySystem worldEntities_;
     gameplay::NaturalSpawner naturalSpawner_{0U};
     gameplay::ChestSystem chestSystem_;
+    gameplay::ChestSystem trappedChestSystem_;
     gameplay::FurnaceSystem furnaceSystem_;
     gameplay::WeatherSystem weatherSystem_;
     // Resolved at the top of every tick from the clock and the weather above.

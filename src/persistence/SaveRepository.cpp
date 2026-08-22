@@ -1911,17 +1911,31 @@ constexpr std::uint32_t kBlockEntityBlockTag = blockTag("BENT");
 constexpr std::uint16_t kBlockEntityBlockVersion = 1U;
 constexpr std::uint32_t kChestSectionTag = blockTag("CHST");
 constexpr std::uint32_t kFurnaceSectionTag = blockTag("FURN");
+constexpr std::uint32_t kTrappedChestSectionTag = blockTag("TCST");
 constexpr std::uint16_t kChestSectionVersion = 1U;
 constexpr std::uint16_t kFurnaceSectionVersion = 1U;
+constexpr std::uint16_t kTrappedChestSectionVersion = 1U;
 
 void appendBlockEntityBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
     const auto& game = context.game;
     const SaveBlockWriter block{bytes, kBlockEntityBlockTag, kBlockEntityBlockVersion};
-    appendInteger(bytes, static_cast<std::uint16_t>(2U));  // section count
+    appendInteger(bytes, static_cast<std::uint16_t>(3U));  // section count
     {
         const SaveBlockWriter chests{bytes, kChestSectionTag, kChestSectionVersion};
         appendInteger(bytes, static_cast<std::uint32_t>(game.chests.size()));
         for (const auto& chest : game.chests) {
+            appendInteger(bytes, static_cast<std::int32_t>(chest.position.x));
+            appendInteger(bytes, static_cast<std::int32_t>(chest.position.y));
+            appendInteger(bytes, static_cast<std::int32_t>(chest.position.z));
+            appendSlots(bytes, context, chest.items);
+        }
+    }
+    {
+        // The trapped chests: the same per-chest record as CHST, in their own
+        // section so a chest and a trapped chest are never confused on load.
+        const SaveBlockWriter trapped{bytes, kTrappedChestSectionTag, kTrappedChestSectionVersion};
+        appendInteger(bytes, static_cast<std::uint32_t>(game.trappedChests.size()));
+        for (const auto& chest : game.trappedChests) {
             appendInteger(bytes, static_cast<std::int32_t>(chest.position.x));
             appendInteger(bytes, static_cast<std::int32_t>(chest.position.y));
             appendInteger(bytes, static_cast<std::int32_t>(chest.position.z));
@@ -1971,6 +1985,24 @@ void readBlockEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cu
                 }
                 readSlots(payload, cursor, context, chest.items);
                 game.chests.push_back(std::move(chest));
+            }
+        } else if (section.tag == kTrappedChestSectionTag &&
+                   section.version <= kTrappedChestSectionVersion) {
+            const auto count = readInteger<std::uint32_t>(payload, cursor);
+            if (count > kMaximumChests) {
+                throw std::runtime_error("world.dat trapped chest count is unreasonable");
+            }
+            game.trappedChests.reserve(count);
+            for (std::uint32_t entry = 0; entry < count; ++entry) {
+                gameplay::ChestBlockEntity chest;
+                chest.position.x = readInteger<std::int32_t>(payload, cursor);
+                chest.position.y = readInteger<std::int32_t>(payload, cursor);
+                chest.position.z = readInteger<std::int32_t>(payload, cursor);
+                if (!world::isWorldYInRange(chest.position.y)) {
+                    throw std::runtime_error("world.dat contains an invalid trapped chest position");
+                }
+                readSlots(payload, cursor, context, chest.items);
+                game.trappedChests.push_back(std::move(chest));
             }
         } else if (section.tag == kFurnaceSectionTag &&
                    section.version <= kFurnaceSectionVersion) {
@@ -2166,7 +2198,8 @@ void SaveRepository::save(
     // buffer; with region files carrying it, world.dat is a few blocks of
     // player and container state, so the prologue slack is plenty.
     bytes.reserve(kReservedPrologueBytes + game.chests.size() * 64U +
-                  game.furnaces.size() * 64U + game.itemDrops.size() * 40U);
+                  game.trappedChests.size() * 64U + game.furnaces.size() * 64U +
+                  game.itemDrops.size() * 40U);
     appendInteger(bytes, kFormatVersion);
     appendInteger(bytes, game.summary.seed);
 
@@ -2182,6 +2215,11 @@ void SaveRepository::save(
         gatherStack(stack);
     }
     for (const auto& chest : game.chests) {
+        for (const auto& stack : chest.items) {
+            gatherStack(stack);
+        }
+    }
+    for (const auto& chest : game.trappedChests) {
         for (const auto& stack : chest.items) {
             gatherStack(stack);
         }

@@ -91,6 +91,15 @@ int main() {
         assert(world::blockEntityTypeId(BlockEntityKind::Chest) == chest);
         assert(world::blockEntityTypeId(BlockEntityKind::Furnace) == furnace);
 
+        // The trapped chest (BE3) is its own identity beside the chest, reachable
+        // by either key, at its own ordinal — never sharing the chest's id.
+        const auto trapped = registry.byName("rebedrock:trapped_chest");
+        assert(trapped.valid() &&
+               trapped.index() == static_cast<std::size_t>(BlockEntityKind::TrappedChest));
+        assert(registry.byName("minecraft:trapped_chest") == trapped);
+        assert(trapped != chest);
+        assert(world::blockEntityTypeId(BlockEntityKind::TrappedChest) == trapped);
+
         // The definition derefs by that id.
         assert(registry.get(chest).kind == BlockEntityKind::Chest);
         assert(registry.identifier(furnace).toString() == "rebedrock:furnace");

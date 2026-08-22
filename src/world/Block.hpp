@@ -184,6 +184,15 @@ enum class Block : std::uint8_t {
     // resolver) is a separate large task; this carries the extension state.
     Piston,
     StickyPiston,
+    // A trapped chest (TrappedChestBlock): a chest in every storage respect — 27
+    // slots, the same lid animation, the same spill on break — that vanilla makes
+    // a distinct block so it can emit a redstone signal proportional to how many
+    // players have it open. It hosts its own block-entity type (TrappedChest)
+    // rather than the chest's, so the two never share storage and the redstone
+    // output (deferred: BE3 lands identity + container + save, not the signal)
+    // can key on the block. Reuses BlockModel::Chest, so it renders through the
+    // chest path with no new model.
+    TrappedChest,
     Count,
 };
 
@@ -1083,6 +1092,19 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .strength(1.5F)
         .state(StateProperty::Facing, 6U)
         .state(StateProperty::Powered, 2U),
+    // Identical to the chest in every rendered and stored respect (same texture,
+    // model, container UI and horizontal facing), differing only in identity: it
+    // hosts the TrappedChest block-entity type, so its storage and save section
+    // are its own. The redstone output is deferred (BE3), so nothing here yet
+    // distinguishes its behaviour from a chest.
+    BlockProperties::of(Block::TrappedChest, "trapped_chest", "Trapped Chest")
+        .texture("chest", "chest", "chest")
+        .strength(2.5F)
+        .renderLayer(BlockRenderLayer::Cutout)
+        .model(BlockModel::Chest)
+        .horizontalFacing()
+        .container(ContainerType::Chest)
+        .blockEntity(BlockEntityKind::TrappedChest),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {

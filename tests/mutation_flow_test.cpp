@@ -314,6 +314,39 @@ int main() {
         REQUIRE(session.furnaceSystem().find({9, 40, 9}) == nullptr);
     }
 
+    // (4) BE3: a trapped chest routes through the very same unified entry — its
+    //     block maps to the TrappedChest block entity, so placing it builds one
+    //     in the trapped-chest container (not the chest's), and breaking it
+    //     spills all 27 slots. No new call-site branch: the mapping carried it.
+    {
+        auto world = loadedWorld();
+        mc::gameplay::GameSession session;
+        RecordingHost host;
+        session.setEventHost(host);
+        GameplayMutationSink placeSink{world, session};
+        static_cast<void>(session.worldMutations().setBlock(
+            world, {7, 40, 7}, BlockState{Block::TrappedChest}, MutationFlags::All,
+            MutationCause::PlayerPlace, placeSink));
+        // The block entity landed in the trapped-chest container, and the chest
+        // container is untouched — the two never share storage.
+        auto* trapped = session.trappedChestSystem().find({7, 40, 7});
+        REQUIRE(trapped != nullptr);
+        REQUIRE(session.chestSystem().find({7, 40, 7}) == nullptr);
+        for (auto& slot : trapped->items) {
+            slot = mc::gameplay::ItemStack{Block::Stone, 1U};
+        }
+        const std::size_t itemsBefore = session.itemEntities().entities().size();
+
+        GameplayMutationSink breakSink{world, session};
+        static_cast<void>(session.worldMutations().setBlock(
+            world, {7, 40, 7}, BlockState{}, MutationFlags::All | MutationFlags::SuppressDrops,
+            MutationCause::PlayerBreak, breakSink));
+        session.drainEvents();
+        REQUIRE(session.trappedChestSystem().find({7, 40, 7}) == nullptr);
+        REQUIRE(session.itemEntities().entities().size() - itemsBefore ==
+                mc::gameplay::ChestBlockEntity::kSlotCount);
+    }
+
     // --- A write that resolves to the state already stored is free: no
     // submission, no preview, no neighbour wake-up. Re-placing the same block
     // must not churn the mesh pipeline. ---

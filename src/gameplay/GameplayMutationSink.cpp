@@ -59,8 +59,14 @@ void GameplayMutationSink::destroyBlockEntity(core::BlockEntityTypeId type, worl
     // The store removal + content spill is inherently per-kind (a chest's 27
     // slots, a furnace's three), so the concrete arm is selected by the mapped
     // type id rather than duplicated per hosting block.
-    if (type == world::blockEntityTypeId(world::BlockEntityKind::Chest)) {
-        const auto removed = session_->chestSystem().remove({pos.x, pos.y, pos.z});
+    if (type == world::blockEntityTypeId(world::BlockEntityKind::Chest) ||
+        type == world::blockEntityTypeId(world::BlockEntityKind::TrappedChest)) {
+        // A trapped chest spills its 27 slots exactly like a chest; only the
+        // container it removes from differs.
+        ChestSystem& chests = type == world::blockEntityTypeId(world::BlockEntityKind::TrappedChest)
+                                  ? session_->trappedChestSystem()
+                                  : session_->chestSystem();
+        const auto removed = chests.remove({pos.x, pos.y, pos.z});
         if (removed.has_value()) {
             std::size_t dropIndex = 0U;
             for (const auto& stack : removed->items) {
@@ -87,6 +93,8 @@ void GameplayMutationSink::destroyBlockEntity(core::BlockEntityTypeId type, worl
 void GameplayMutationSink::createBlockEntity(core::BlockEntityTypeId type, world::BlockPos pos) {
     if (type == world::blockEntityTypeId(world::BlockEntityKind::Chest)) {
         static_cast<void>(session_->chestSystem().place({pos.x, pos.y, pos.z}));
+    } else if (type == world::blockEntityTypeId(world::BlockEntityKind::TrappedChest)) {
+        static_cast<void>(session_->trappedChestSystem().place({pos.x, pos.y, pos.z}));
     } else if (type == world::blockEntityTypeId(world::BlockEntityKind::Furnace)) {
         // Give the furnace its block entity immediately so it smelts even
         // before its screen is first opened.

@@ -99,6 +99,11 @@ struct SaveGame final {
     std::array<gameplay::ItemStack, gameplay::Inventory::kSlotCount> inventory{};
     std::vector<world::PersistentBlockEdit> edits;
     std::vector<gameplay::ChestBlockEntity> chests;
+    // The trapped chest block entities at save time (BE3). Same ChestBlockEntity
+    // shape as `chests`, its own self-describing section (TCST). An older world
+    // has none and loads with an empty list, exactly as furnaces did before their
+    // section existed.
+    std::vector<gameplay::ChestBlockEntity> trappedChests;
     // The furnace block entities at save time — their three slots and burn/cook
     // counters — serialised into their own self-describing block by format 15.
     // Before that, furnaces were a single global inventory that no save carried,

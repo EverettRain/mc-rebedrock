@@ -223,6 +223,7 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     unloadedChunks_.clear();
     gameSession_.inventory().restore(currentSave_->inventory, currentSave_->selectedHotbarSlot);
     gameSession_.chestSystem().restore(currentSave_->chests);
+    gameSession_.trappedChestSystem().restore(currentSave_->trappedChests);
     gameSession_.furnaceSystem().restore(currentSave_->furnaces);
     // Restore the herd a saved world carried, resolving species by their
     // registered id. A species this build no longer knows resolves to an
@@ -389,6 +390,8 @@ bool GameRuntime::saveLocked() {
     currentSave_->playerAirTicks = gameSession_.vitals().airTicks();
     currentSave_->chests.assign(gameSession_.chestSystem().entities().begin(),
                                 gameSession_.chestSystem().entities().end());
+    currentSave_->trappedChests.assign(gameSession_.trappedChestSystem().entities().begin(),
+                                       gameSession_.trappedChestSystem().entities().end());
     currentSave_->furnaces.assign(gameSession_.furnaceSystem().entities().begin(),
                                   gameSession_.furnaceSystem().entities().end());
     // The live creatures ride along like the chests: a world saved mid-session
