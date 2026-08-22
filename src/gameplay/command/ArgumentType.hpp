@@ -183,6 +183,13 @@ class ArgumentType {
     [[nodiscard]] virtual ArgumentParseResult parse(StringReader& reader) const = 0;
 
     virtual void collectSuggestions(SuggestionSink& sink) const = 0;
+
+    // The token this argument shows in a generated usage string (CMD6's
+    // smart-usage). Empty means "use the argument node's own name", so the
+    // generator renders `<name>` from the tree. A type overrides this only when
+    // one node name maps to several placeholders — a Vec3 renders `<x> <y> <z>`,
+    // not `<pos>`. Returned verbatim (brackets included) when non-empty.
+    [[nodiscard]] virtual std::string usageHint() const { return {}; }
 };
 
 // Builds a successful parse result carrying `value`.

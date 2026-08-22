@@ -269,6 +269,9 @@ class TeleportDestinationArgument final : public ArgumentType {
         EntityTable{}.forEach(
             [&](const TableEntry& entry) { sink.suggest(entry.identifier, entry.hint); });
     }
+
+    // One `<pos>` node name stands for three coordinates; show them in usage.
+    [[nodiscard]] std::string usageHint() const override { return "<x> <y> <z>"; }
 };
 
 // `/kill`'s target: the special `player` keyword (the player) or a registered

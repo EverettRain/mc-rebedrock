@@ -293,8 +293,7 @@ gameplay::CommandResult GameRuntime::runSetblock(const gameplay::command::Comman
     const auto position = context.find<gameplay::command::Position3>("pos");
     const auto blockName = context.find<std::string>("block");
     if (!position.has_value() || !blockName.has_value()) {
-        return gameplay::CommandResult{false,
-                                       "Usage: /setblock <x> <y> <z> <block> [replace|keep|destroy]"};
+        return usageError("setblock", context.source());
     }
     const auto block = world::blockFromIdentifier(*blockName);
     if (!block.has_value()) {
@@ -320,8 +319,7 @@ gameplay::CommandResult GameRuntime::runFill(const gameplay::command::CommandCon
     const auto to = context.find<gameplay::command::Position3>("to");
     const auto blockName = context.find<std::string>("block");
     if (!from.has_value() || !to.has_value() || !blockName.has_value()) {
-        return gameplay::CommandResult{
-            false, "Usage: /fill <x1 y1 z1> <x2 y2 z2> <block> [replace|keep|destroy|outline|hollow]"};
+        return usageError("fill", context.source());
     }
     const auto block = world::blockFromIdentifier(*blockName);
     if (!block.has_value()) {
@@ -374,7 +372,7 @@ gameplay::CommandResult GameRuntime::runFill(const gameplay::command::CommandCon
 gameplay::CommandResult GameRuntime::runSummon(const gameplay::command::CommandContext& context) {
     const auto name = context.find<std::string>("entity");
     if (!name.has_value()) {
-        return gameplay::CommandResult{false, "Usage: /summon <entity> [<x> <y> <z>]"};
+        return usageError("summon", context.source());
     }
     const auto* type = gameplay::entities::entityTypeRegistry().byId(*name);
     if (type == nullptr) {
@@ -598,7 +596,7 @@ gameplay::CommandResult GameRuntime::runExecute(const gameplay::command::Command
     namespace cmd = gameplay::command;
     const auto chain = context.find<std::string>("chain");
     if (!chain.has_value() || chain->empty()) {
-        return gameplay::CommandResult{false, "Usage: /execute <subcommand...> run <command>"};
+        return usageError("execute", context.source());
     }
     if (commandRecursionDepth_ >= kMaxExecuteDepth) {
         return gameplay::CommandResult{false, "Command recursion limit reached"};
@@ -1118,7 +1116,7 @@ void GameRuntime::registerAuthoritativeCommands() {
         .executes([this](const gameplay::command::CommandContext& context) {
             const auto mode = context.find<gameplay::GameMode>("mode");
             if (!mode.has_value()) {
-                return gameplay::CommandResult{false, "Usage: /gamemode <survival|creative>"};
+                return usageError("gamemode", context.source());
             }
             gameSession_.setGameMode(*mode);
             return gameplay::CommandResult{
@@ -1131,8 +1129,7 @@ void GameRuntime::registerAuthoritativeCommands() {
         .executes([this](const gameplay::command::CommandContext& context) {
             const auto ticks = context.find<double>("time");
             if (!ticks.has_value()) {
-                return gameplay::CommandResult{
-                    false, "Usage: /time set <day|noon|night|midnight|ticks>"};
+                return usageError("time", context.source());
             }
             // Set the sun's clock, not the frame timer; the target is folded into
             // the current day so the calendar does not jump back to day zero.
@@ -1152,7 +1149,7 @@ void GameRuntime::registerAuthoritativeCommands() {
             const auto itemToken = context.find<std::string>("item");
             const auto count = context.find<std::int64_t>("count");
             if (!itemToken.has_value() || !count.has_value()) {
-                return gameplay::CommandResult{false, "Usage: /give <item|index> [count]"};
+                return usageError("give", context.source());
             }
             const bool numeric = std::all_of(itemToken->begin(), itemToken->end(),
                                              [](char c) { return c >= '0' && c <= '9'; });
@@ -1214,7 +1211,7 @@ void GameRuntime::registerAuthoritativeCommands() {
         .executes([this](const gameplay::command::CommandContext& context) {
             const auto rule = context.find<std::string>("rule");
             if (!rule.has_value()) {
-                return gameplay::CommandResult{false, "Usage: /gamerule <rule> [<value>]"};
+                return usageError("gamerule", context.source());
             }
             return gameSession_.gameRules().query(*rule);
         })
@@ -1223,7 +1220,7 @@ void GameRuntime::registerAuthoritativeCommands() {
             const auto rule = context.find<std::string>("rule");
             const auto value = context.find<std::string>("value");
             if (!rule.has_value() || !value.has_value()) {
-                return gameplay::CommandResult{false, "Usage: /gamerule <rule> [<value>]"};
+                return usageError("gamerule", context.source());
             }
             return gameSession_.gameRules().setFromCommand(*rule, *value);
         });
@@ -1240,7 +1237,7 @@ void GameRuntime::registerAuthoritativeCommands() {
         .executes([this](const gameplay::command::CommandContext& context) {
             const auto selector = context.find<gameplay::command::EntitySelector>("targets");
             if (!selector.has_value()) {
-                return gameplay::CommandResult{false, "Usage: /kill [<targets>]"};
+                return usageError("kill", context.source());
             }
             return killSelector(*selector, context.source());
         });
@@ -1253,7 +1250,7 @@ void GameRuntime::registerAuthoritativeCommands() {
         .executes([this](const gameplay::command::CommandContext& context) {
             const auto position = context.find<gameplay::command::Position3>("pos");
             if (!position.has_value()) {
-                return gameplay::CommandResult{false, "Usage: /spawnpoint [<x> <y> <z>]"};
+                return usageError("spawnpoint", context.source());
             }
             // Relative `~` axes resolve against the source's position in the one
             // shared resolve() — no hand-written base+offset branch here anymore.
@@ -1280,11 +1277,10 @@ void GameRuntime::registerAuthoritativeCommands() {
             return setClearWeather(6000);
         })
         .argument("duration", gameplay::command::kWeatherDurationArgument)
-        .executes([setClearWeather](const gameplay::command::CommandContext& context) {
+        .executes([this, setClearWeather](const gameplay::command::CommandContext& context) {
             const auto seconds = context.find<std::int64_t>("duration");
-            return seconds.has_value()
-                       ? setClearWeather(static_cast<int>(*seconds * 20))
-                       : gameplay::CommandResult{false, "Usage: /weather clear [<duration>]"};
+            return seconds.has_value() ? setClearWeather(static_cast<int>(*seconds * 20))
+                                       : usageError("weather", context.source());
         });
     commandDispatcher_.literal("weather")
         .requiresLevel(PermissionLevel::GameMasters)
@@ -1293,11 +1289,10 @@ void GameRuntime::registerAuthoritativeCommands() {
             return setRainWeather(6000);
         })
         .argument("duration", gameplay::command::kWeatherDurationArgument)
-        .executes([setRainWeather](const gameplay::command::CommandContext& context) {
+        .executes([this, setRainWeather](const gameplay::command::CommandContext& context) {
             const auto seconds = context.find<std::int64_t>("duration");
-            return seconds.has_value()
-                       ? setRainWeather(static_cast<int>(*seconds * 20))
-                       : gameplay::CommandResult{false, "Usage: /weather rain [<duration>]"};
+            return seconds.has_value() ? setRainWeather(static_cast<int>(*seconds * 20))
+                                       : usageError("weather", context.source());
         });
     commandDispatcher_.literal("weather")
         .requiresLevel(PermissionLevel::GameMasters)
@@ -1306,11 +1301,10 @@ void GameRuntime::registerAuthoritativeCommands() {
             return setThunderWeather(6000);
         })
         .argument("duration", gameplay::command::kWeatherDurationArgument)
-        .executes([setThunderWeather](const gameplay::command::CommandContext& context) {
+        .executes([this, setThunderWeather](const gameplay::command::CommandContext& context) {
             const auto seconds = context.find<std::int64_t>("duration");
-            return seconds.has_value()
-                       ? setThunderWeather(static_cast<int>(*seconds * 20))
-                       : gameplay::CommandResult{false, "Usage: /weather thunder [<duration>]"};
+            return seconds.has_value() ? setThunderWeather(static_cast<int>(*seconds * 20))
+                                       : usageError("weather", context.source());
         });
 
     // ---- CMD-4 content commands: thin wiring to existing systems -------------
@@ -1377,8 +1371,7 @@ void GameRuntime::registerAuthoritativeCommands() {
         .executes([this](const gameplay::command::CommandContext& context) {
             const auto level = context.find<gameplay::Difficulty>("level");
             if (!level.has_value()) {
-                return gameplay::CommandResult{false,
-                                               "Usage: /difficulty [<peaceful|easy|normal|hard>]"};
+                return usageError("difficulty", context.source());
             }
             gameSession_.setDifficulty(*level);
             return gameplay::CommandResult{
@@ -1419,6 +1412,45 @@ void GameRuntime::registerAuthoritativeCommands() {
         .executes([this](const gameplay::command::CommandContext& context) {
             return runExecute(context);
         });
+
+    // help (CMD6): consumes the dispatcher's introspection API. No requiresLevel,
+    // so it is level 0 like vanilla — but it only lists commands the source may
+    // actually use (usage() returns empty for the rest). `/help` lists every
+    // available command with its smart-usage; `/help <command>` shows one.
+    commandDispatcher_.literal("help")
+        .executes([this](const gameplay::command::CommandContext& context) {
+            std::string listing;
+            commandDispatcher_.forEachRootCommand([&](std::string_view name) {
+                const std::string smart = commandDispatcher_.usage(name, context.source());
+                if (!smart.empty()) {
+                    listing += "/" + smart + "\n";
+                }
+            });
+            if (!listing.empty()) {
+                listing.pop_back(); // drop the trailing newline
+            }
+            return gameplay::CommandResult{true, listing};
+        })
+        .argument("command", gameplay::command::kStringArgument)
+        .executes([this](const gameplay::command::CommandContext& context) {
+            const auto name = context.find<std::string>("command");
+            if (!name.has_value()) {
+                return usageError("help", context.source());
+            }
+            const std::string smart = commandDispatcher_.usage(*name, context.source());
+            if (smart.empty()) {
+                return gameplay::CommandResult{false,
+                                               "No help available for command: " + *name};
+            }
+            return gameplay::CommandResult{true, "/" + smart};
+        });
+}
+
+gameplay::CommandResult GameRuntime::usageError(std::string_view command,
+                                                const gameplay::command::CommandSource& source) {
+    // The single source of a command's usage: generated from the node tree, so a
+    // signature change moves the usage with it (no hand-written string drifts).
+    return gameplay::CommandResult{false, "Usage: /" + commandDispatcher_.usage(command, source)};
 }
 
 gameplay::CommandResult GameRuntime::applySpawnPoint(const std::optional<glm::vec3>& position) {

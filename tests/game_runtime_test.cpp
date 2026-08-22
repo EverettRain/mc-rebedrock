@@ -1024,6 +1024,73 @@ int main() {
         runtime.stopSimulation();
     }
 
+    // CMD6: command introspection + /help, and the R1 refactor (usage generated
+    // from the node tree, not hand-written). usage() needs no world.
+    {
+        world::ChunkStreamer streamer{0U, 4, 4};
+        RecordingHost host;
+        runtime::GameRuntime runtime{host, streamer, saveRoot};
+        host.save = &runtime.currentSaveSlot();
+        auto save = runtime.createWorld("help", 1U, gameplay::GameMode::Creative);
+        runtime.loadWorld(std::move(save), 4);
+        auto& dispatcher = runtime.commandDispatcher();
+
+        gameplay::command::CommandSource owner; // op4
+        gameplay::command::CommandSource op1;
+        op1.permissionLevel = gameplay::command::PermissionLevel::Moderators;
+
+        // R1 regression: the generated usage of every command is locked to its
+        // canonical shape, so a signature change that would silently reword it is
+        // caught here (the old hand-written strings had drifted from this shape).
+        assert(dispatcher.usage("gamemode", owner) == "gamemode <mode>");
+        assert(dispatcher.usage("gamerule", owner) == "gamerule <rule> [<value>]");
+        assert(dispatcher.usage("weather", owner) == "weather (clear|rain|thunder) [<duration>]");
+        // Literal alternatives are sorted (determinism), so the modes read
+        // alphabetically rather than in registration order.
+        assert(dispatcher.usage("setblock", owner) ==
+               "setblock <x> <y> <z> <block> [destroy|keep|replace]");
+        assert(dispatcher.usage("fill", owner) ==
+               "fill <x> <y> <z> <x> <y> <z> <block> [destroy|hollow|keep|outline|replace]");
+        assert(dispatcher.usage("summon", owner) == "summon <entity> [<x> <y> <z>]");
+        assert(dispatcher.usage("spawnpoint", owner) == "spawnpoint [<x> <y> <z>]");
+        assert(dispatcher.usage("kill", owner) == "kill [<targets>]");
+        assert(dispatcher.usage("difficulty", owner) == "difficulty [<level>]");
+        assert(dispatcher.usage("time", owner) == "time set <time>");
+        assert(dispatcher.usage("give", owner) == "give <item> <count>");
+        assert(dispatcher.usage("execute", owner) == "execute <chain>");
+        assert(dispatcher.usage("seed", owner) == "seed");
+        assert(dispatcher.usage("clear", owner) == "clear");
+
+        // op filtering: a level-2 command is hidden from op1; /help (level 0) is not.
+        assert(dispatcher.usage("gamemode", op1).empty());
+        assert(dispatcher.usage("help", op1) == "help [<command>]");
+
+        // R2: an incomplete command reports its usage (via the same generator).
+        {
+            runtime.enqueueChat("/gamerule");
+            runtime.tick();
+            const auto result = runtime.takeChatResult();
+            assert(result.has_value() && !result->success);
+            assert(result->message == "Usage: /gamerule <rule> [<value>]");
+        }
+        // /help lists commands with usage; /help <command> shows one.
+        {
+            runtime.enqueueChat("/help");
+            runtime.tick();
+            const auto all = runtime.takeChatResult();
+            assert(all.has_value() && all->success);
+            assert(all->message.find("/gamemode <mode>") != std::string::npos);
+            assert(all->message.find("/setblock <x> <y> <z> <block>") != std::string::npos);
+
+            runtime.enqueueChat("/help gamerule");
+            runtime.tick();
+            const auto one = runtime.takeChatResult();
+            assert(one.has_value() && one->success);
+            assert(one->message == "/gamerule <rule> [<value>]");
+        }
+        runtime.stopSimulation();
+    }
+
     std::filesystem::remove_all(saveRoot);
     std::cout << "PASS: game_runtime_test\n";
     return 0;

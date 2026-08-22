@@ -237,6 +237,10 @@ class GameRuntime final {
         const std::string& clause, gameplay::command::StringReader& reader,
         std::vector<gameplay::command::CommandSource>& contexts,
         std::span<const gameplay::command::SelectorCandidate> candidates);
+    // A command's missing-argument feedback (CMD6 R1): the usage generated from
+    // the node tree, so it never drifts from the command's actual shape.
+    [[nodiscard]] gameplay::CommandResult usageError(
+        std::string_view command, const gameplay::command::CommandSource& source);
     // Drains the client→server channel into the session's command queue at the
     // start of a tick. Safe to call inside the world write section: the channel
     // and the command queue each carry their own mutex, so this depends on

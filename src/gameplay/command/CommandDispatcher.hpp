@@ -33,6 +33,9 @@ struct ParseResults final {
     bool hasPartial = false;       // whether the cursor sits in a partial token
     bool error = false;
     std::string errorMessage;
+    // The root command literal this line began with (the first token matched off
+    // the root), so an incomplete command can report that command's usage.
+    std::string commandName;
     // The highest op level any node on the walked path declared — a child
     // inherits its ancestors' requirement, so this is folded to the max as the
     // walk descends. execute() refuses a source below it (Brigadier's per-node
@@ -87,6 +90,33 @@ class CommandDispatcher final {
         return nodes_[root_].literalChildren.size();
     }
 
+    // Read-only introspection (CMD6), mirroring Brigadier's getAllUsage /
+    // getSmartUsage — it walks the same node tree execution does, never a second
+    // structure. forEachRootCommand visits every root command name in sorted
+    // order (the children map is a hash map, so sorting is what makes /help
+    // output deterministic). The visitor takes a std::string_view name.
+    template <typename Visitor>
+    void forEachRootCommand(Visitor&& visitor) const {
+        std::vector<std::string_view> names;
+        names.reserve(nodes_[root_].literalChildren.size());
+        for (const auto& [name, child] : nodes_[root_].literalChildren) {
+            static_cast<void>(child);
+            names.emplace_back(name);
+        }
+        std::sort(names.begin(), names.end());
+        for (const std::string_view name : names) {
+            visitor(name);
+        }
+    }
+
+    // The smart-usage string for `command` (without the leading '/'), generated
+    // from its subtree and filtered by the source's op level: a literal group is
+    // `(a|b|c)`, an argument is `<name>` (or the type's usageHint), and an
+    // optional tail is `[...]`. Empty when the command does not exist or the
+    // source may not use it (so /help hides it). Example:
+    // `weather (clear|rain|thunder) [<duration>]`.
+    [[nodiscard]] std::string usage(std::string_view command, const CommandSource& source) const;
+
     // Walks `line` token by token from the root. With `stopCursor`, stops at the
     // token under the cursor (marking it as partial) so completion can suggest
     // there; without it, consumes the whole line and reports the first error
@@ -124,6 +154,9 @@ class CommandDispatcher final {
     [[nodiscard]] std::size_t addLiteralChild(std::size_t parent, std::string_view token);
     [[nodiscard]] std::size_t addArgumentChild(std::size_t parent, std::string_view key,
                                                 const ArgumentType& type);
+    // Generates the usage of everything under `node` (its children onward),
+    // already bracketed/grouped, op-filtered by `source`. Empty for a leaf.
+    [[nodiscard]] std::string usageChildren(std::size_t node, const CommandSource& source) const;
 
     std::vector<Node> nodes_;
     std::size_t root_ = 0;
@@ -261,6 +294,11 @@ inline CommandResult CommandDispatcher::execute(std::string_view input,
         parsed.context.setSource(&source);
         return route(leaf.handler(parsed.context));
     }
+    // Incomplete: point the player at what the command wants (R2) instead of a
+    // bare "Incomplete command".
+    if (const std::string smart = usage(parsed.commandName, source); !smart.empty()) {
+        return route({false, "Usage: /" + smart});
+    }
     return route({false, "Incomplete command"});
 }
 
@@ -269,6 +307,121 @@ inline CommandResult CommandDispatcher::execute(std::string_view input) const {
     // address is stable for the context's source pointer across the call.
     static const CommandSource kOwnerSource{};
     return execute(input, kOwnerSource);
+}
+
+inline std::string CommandDispatcher::usageChildren(std::size_t node,
+                                                    const CommandSource& source) const {
+    // Collect the children the source may use: literals (sorted for determinism)
+    // then the single argument child.
+    const Node& parent = nodes_[node];
+    std::vector<std::size_t> children;
+    {
+        std::vector<std::string_view> literalNames;
+        literalNames.reserve(parent.literalChildren.size());
+        for (const auto& [name, child] : parent.literalChildren) {
+            static_cast<void>(child);
+            literalNames.emplace_back(name);
+        }
+        std::sort(literalNames.begin(), literalNames.end());
+        for (const std::string_view name : literalNames) {
+            const std::size_t child = parent.literalChildren.find(name)->second;
+            if (hasPermission(source.permissionLevel, nodes_[child].requiredLevel)) {
+                children.push_back(child);
+            }
+        }
+    }
+    if (parent.argumentChild.has_value() &&
+        hasPermission(source.permissionLevel, nodes_[*parent.argumentChild].requiredLevel)) {
+        children.push_back(*parent.argumentChild);
+    }
+    if (children.empty()) {
+        return {};
+    }
+
+    // The token and tail of each child.
+    struct Part final {
+        bool literal = false;
+        std::string token;
+        std::string tail;
+    };
+    std::vector<Part> parts;
+    parts.reserve(children.size());
+    for (const std::size_t child : children) {
+        Part part;
+        part.literal = !nodes_[child].argument;
+        if (part.literal) {
+            part.token = nodes_[child].name;
+        } else if (std::string hint = nodes_[child].argumentType->usageHint(); !hint.empty()) {
+            part.token = std::move(hint);
+        } else {
+            part.token = "<" + nodes_[child].name + ">";
+        }
+        part.tail = usageChildren(child, source);
+        parts.push_back(std::move(part));
+    }
+
+    // A node with a handler makes its children optional (`[...]`), the way
+    // `/gamerule <rule> [<value>]` works.
+    const bool optional = static_cast<bool>(parent.handler);
+    const auto joinTokens = [&parts](char separator) {
+        std::string joined;
+        for (std::size_t index = 0; index < parts.size(); ++index) {
+            if (index != 0) {
+                joined.push_back(separator);
+            }
+            joined += parts[index].token;
+        }
+        return joined;
+    };
+
+    // All-literal siblings that share the same tail factor into one group with
+    // the tail pulled out once — `(clear|rain|thunder) [<duration>]`.
+    const bool allLiteral =
+        std::all_of(parts.begin(), parts.end(), [](const Part& part) { return part.literal; });
+    const bool sameTail = std::all_of(parts.begin(), parts.end(), [&parts](const Part& part) {
+        return part.tail == parts.front().tail;
+    });
+    if (parts.size() > 1 && allLiteral && sameTail) {
+        const std::string group = joinTokens('|');
+        std::string body = optional ? "[" + group + "]" : "(" + group + ")";
+        if (!parts.front().tail.empty()) {
+            body += " " + parts.front().tail;
+        }
+        return body;
+    }
+    if (parts.size() == 1) {
+        std::string body = parts.front().token;
+        if (!parts.front().tail.empty()) {
+            body += " " + parts.front().tail;
+        }
+        return optional ? "[" + body + "]" : body;
+    }
+    // Mixed or differing tails: each alternative carries its own tail.
+    std::string group;
+    for (std::size_t index = 0; index < parts.size(); ++index) {
+        if (index != 0) {
+            group.push_back('|');
+        }
+        group += parts[index].token;
+        if (!parts[index].tail.empty()) {
+            group += " " + parts[index].tail;
+        }
+    }
+    return optional ? "[" + group + "]" : "(" + group + ")";
+}
+
+inline std::string CommandDispatcher::usage(std::string_view command,
+                                            const CommandSource& source) const {
+    const auto found = nodes_[root_].literalChildren.find(command);
+    if (found == nodes_[root_].literalChildren.end()) {
+        return {};
+    }
+    const std::size_t node = found->second;
+    if (!hasPermission(source.permissionLevel, nodes_[node].requiredLevel)) {
+        return {}; // hidden from a source that may not use it
+    }
+    const std::string tail = usageChildren(node, source);
+    return tail.empty() ? std::string{command} : std::string{command} + " " + tail;
 }
 
 inline std::vector<Suggestion> CommandDispatcher::suggestions(std::string_view input,
@@ -349,6 +502,9 @@ inline ParseResults CommandDispatcher::parse(std::string_view line,
             // token without allocating a temporary string.
             if (const auto found = current.literalChildren.find(*token);
                 found != current.literalChildren.end()) {
+                if (node == root_) {
+                    result.commandName = *token; // the command this line invokes
+                }
                 node = found->second;
                 result.node = node;
                 result.requiredLevel = maxLevel(result.requiredLevel, nodes_[node].requiredLevel);
