@@ -61,8 +61,11 @@
 #include "ui/HudLayout.hpp"
 #include "ui/Language.hpp"
 #include "ui/MenuGeometry.hpp"
+#include "ui/MenuInteraction.hpp"
 #include "ui/MenuSystem.hpp"
+#include "ui/PageBuilder.hpp"
 #include "ui/PageStack.hpp"
+#include "ui/Widget.hpp"
 #include "ui/TextFont.hpp"
 #include "ui/UiFrameData.hpp"
 #include "world/BlockPlacement.hpp"
@@ -2957,6 +2960,238 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return MenuButton::None;
     }
 
+    // PX-4: the callback factory — binds every menu action to a renderer method,
+    // captured by `this`. buildPage() stamps these onto the page's widgets, so a
+    // click runs the same effect the old switch(MenuButton) case did. This is the
+    // single seam where Vulkan/save/audio state meets the Vulkan-free ui:: model.
+    [[nodiscard]] ui::MenuCallbacks buildMenuCallbacks() {
+        ui::MenuCallbacks cb;
+        cb.openSingleplayer = [this] {
+            refreshSaveList();
+            menuSystem.pageStack.push(ui::PageId::WorldList);
+        };
+        cb.exitGame = [this] { glfwSetWindowShouldClose(window, GLFW_TRUE); };
+        cb.playSelectedWorld = [this] {
+            if (menuSystem.selectedWorldIndex < menuSystem.saveSummaries.size()) {
+                try {
+                    startWorld(saveRepository.load(
+                        menuSystem.saveSummaries[menuSystem.selectedWorldIndex].identifier));
+                } catch (const std::exception& exception) {
+                    menuSystem.saveStatus = "Load failed: " + std::string{exception.what()};
+                }
+            }
+        };
+        cb.createWorld = [this] {
+            menuSystem.createWorldName.clear();
+            menuSystem.createWorldGameMode = gameplay::GameMode::Survival;
+            menuSystem.pageStack.push(ui::PageId::CreateWorld);
+        };
+        cb.editWorld = [this] {
+            if (menuSystem.selectedWorldIndex < menuSystem.saveSummaries.size()) {
+                menuSystem.editWorldIdentifier =
+                    menuSystem.saveSummaries[menuSystem.selectedWorldIndex].identifier;
+                menuSystem.editWorldName =
+                    menuSystem.saveSummaries[menuSystem.selectedWorldIndex].displayName;
+                menuSystem.pageStack.push(ui::PageId::EditWorld);
+            }
+        };
+        cb.confirmCreate = [this] { startNewWorld(); };
+        cb.toggleCreateGameMode = [this] {
+            menuSystem.createWorldGameMode =
+                menuSystem.createWorldGameMode == gameplay::GameMode::Survival
+                    ? gameplay::GameMode::Creative
+                    : gameplay::GameMode::Survival;
+        };
+        cb.renameWorld = [this] { applyRename(); };
+        cb.deleteWorld = [this] { menuSystem.pageStack.push(ui::PageId::ConfirmDelete); };
+        cb.confirmDelete = [this] { deleteSelectedWorld(); };
+        cb.cancelDelete = [this] { menuSystem.pageStack.pop(); };
+        cb.selectWorldRow = [this](std::size_t row) { menuSystem.selectedWorldIndex = row; };
+
+        cb.resume = [this] { setPaused(false); };
+        cb.saveAndQuit = [this] { returnToTitle(true); };
+        cb.respawn = [this] { respawnPlayer(); };
+        cb.returnToTitle = [this] { returnToTitle(true); };
+
+        cb.openOptions = [this] {
+            menuSystem.optionsOpen = true;
+            menuSystem.pageStack.push(ui::PageId::Options);
+        };
+        cb.openVideoSettings = [this] { menuSystem.pageStack.push(ui::PageId::VideoSettings); };
+        cb.openControls = [this] { menuSystem.pageStack.push(ui::PageId::Controls); };
+        cb.openLanguage = [this] {
+            menuSystem.pendingLanguageCode = options.language;
+            menuSystem.languageStatus.clear();
+            menuSystem.pageStack.push(ui::PageId::Language);
+        };
+        cb.openExperimental = [this] { menuSystem.pageStack.push(ui::PageId::Experimental); };
+        cb.doneOptions = [this] {
+            if (menuSystem.pageStack.current() == ui::PageId::Language) {
+                beginLanguageLoad(menuSystem.pendingLanguageCode);
+            }
+            menuSystem.pageStack.pop();
+            menuSystem.optionsOpen = menuSystem.pageStack.current() == ui::PageId::Options;
+        };
+        cb.back = [this] { menuSystem.pageStack.pop(); };
+
+        cb.cycleResolution = [this] { cycleResolution(); };
+        cb.cycleGuiScale = [this] { cycleGuiScale(); };
+        cb.cycleFrameRateLimit = [this] {
+            constexpr std::array limits{30, 60, 120, 144, 240, 0};
+            const auto found = std::ranges::find(limits, options.frameRateLimit);
+            const std::size_t current =
+                found == limits.end()
+                    ? 0U
+                    : static_cast<std::size_t>(std::distance(limits.begin(), found));
+            options.frameRateLimit = limits[(current + 1U) % limits.size()];
+            persistOptions();
+        };
+        cb.toggleAntiAliasing = [this] {
+            options.antiAliasing = !options.antiAliasing;
+            persistOptions();
+            recreateSwapchain();
+        };
+        cb.cycleAnisotropy = [this] {
+            options.anisotropy = options.anisotropy >= 16 ? 1 : options.anisotropy * 2;
+            persistOptions();
+            recreateTextureSampler();
+        };
+        cb.toggleVsync = [this] {
+            options.vsync = !options.vsync;
+            persistOptions();
+            recreateSwapchain();
+        };
+        cb.toggleSmoothLighting = [this] {
+            options.smoothLightingQuality =
+                nextSmoothLightingQuality(options.smoothLightingQuality);
+            persistOptions();
+            const auto baked = options.smoothLightingQuality == world::SmoothLightingQuality::Off
+                                   ? currentMeshQuality
+                                   : options.smoothLightingQuality;
+            if (baked != currentMeshQuality) {
+                targetMeshQuality = baked;
+                qualityRemeshPending.clear();
+                for (const auto& [position, mesh] : gpuMeshes) {
+                    qualityRemeshPending.insert(position);
+                }
+                for (const auto& [position, update] : pendingSectionUpdates) {
+                    qualityRemeshPending.insert(position);
+                }
+                chunkStreamer.setSmoothLightingQuality(baked);
+                chunkStreamer.requestFullRemesh();
+            }
+        };
+        cb.toggleDynamicLight = [this] {
+            options.dynamicLight = !options.dynamicLight;
+            persistOptions();
+        };
+        cb.toggleViewBobbing = [this] {
+            options.viewBobbing = !options.viewBobbing;
+            persistOptions();
+        };
+        cb.toggleAutoJump = [this] {
+            options.autoJump = !options.autoJump;
+            persistOptions();
+        };
+        cb.cycleDifficulty = [this] {
+            if (currentSave.has_value()) {
+                currentSave->difficulty = gameplay::nextDifficulty(currentSave->difficulty);
+                gameSession.setDifficulty(currentSave->difficulty);
+            }
+        };
+        cb.toggleForceUnicodeFont = [this] {
+            options.forceUnicodeFont = !options.forceUnicodeFont;
+            textFont.setForceUnicode(options.forceUnicodeFont);
+            recreateFontTexture();
+            persistOptions();
+        };
+
+        cb.cycleRainMode = [this] {
+            options.rainMode = (options.rainMode + 1) % 3;
+            rainMode_ = static_cast<RainMode>(options.rainMode);
+            persistOptions();
+        };
+        cb.cycleParticleLevel = [this] {
+            options.particleLevel = (options.particleLevel + 1) % 4;
+            applyParticleLevel();
+            persistOptions();
+        };
+        cb.toggleSunShadows = [this] {
+            options.sunShadows = !options.sunShadows;
+            shadowDisabled = !options.sunShadows;
+            persistOptions();
+        };
+        cb.toggleRainCollisionCache = [this] {
+            options.rainCollisionCache = !options.rainCollisionCache;
+            rainSystem.setCollisionCache(options.rainCollisionCache);
+            persistOptions();
+        };
+        cb.selectLanguageRow = [this](std::size_t row) {
+            if (row < menuSystem.languageCodes.size()) {
+                menuSystem.pendingLanguageCode = menuSystem.languageCodes[row];
+                playUiClick();
+            }
+        };
+
+        cb.viewDistance.value = [this] {
+            return std::clamp((static_cast<float>(viewDistanceChunks) - 2.0F) / 34.0F, 0.0F, 1.0F);
+        };
+        cb.viewDistance.onDrag = [this](float) { updateViewDistanceFromCursor(); };
+        cb.viewDistance.onCommit = [this] {
+            updateViewDistanceFromCursor();
+            persistOptions();
+        };
+        cb.simulationDistance.value = [this] {
+            return std::clamp((static_cast<float>(simulationDistanceChunks) - 2.0F) / 10.0F, 0.0F,
+                              1.0F);
+        };
+        cb.simulationDistance.onDrag = [this](float) { updateSimulationDistanceFromCursor(); };
+        cb.simulationDistance.onCommit = [this] {
+            updateSimulationDistanceFromCursor();
+            persistOptions();
+        };
+        cb.masterVolume.value = [this] { return options.masterVolume; };
+        cb.masterVolume.onDrag = [this](float) { updateMasterVolumeFromCursor(); };
+        cb.masterVolume.onCommit = [this] {
+            updateMasterVolumeFromCursor();
+            persistOptions();
+            if (options.masterVolume > 0.0F) {
+                audioSystem.playItemPickup(camera.position());
+            }
+        };
+        return cb;
+    }
+
+    // PX-4: the current page's rects come from the existing HudLayout, indexed by
+    // widget ordinal — the exact frontendButtonRect contract the old draw used.
+    [[nodiscard]] ui::RectProvider menuRectProvider() const {
+        const ui::PageId page = menuSystem.pageStack.current();
+        const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
+                                   static_cast<float>(swapchainExtent.height),
+                                   menuSystem.guiScaleSetting};
+        const std::size_t count = menuButtonCount();
+        return [layout, page, count](std::size_t index) {
+            return ui::frontendButtonRect(layout, page, index, count);
+        };
+    }
+
+    // PX-4: the widget index under the cursor on the given page (kNoWidget if
+    // none) — the model's hitTest against the page's laid-out rects.
+    [[nodiscard]] std::size_t hoveredMenuIndex(const ui::Page& page) const {
+        const auto cursor = currentFramebufferCursor();
+        return ui::hitTest(page, cursor.x, cursor.y);
+    }
+
+    // PX-4: assemble the current page as a ui::Page value — the single build point.
+    [[nodiscard]] ui::Page buildCurrentPage() {
+        ui::MenuBuildContext ctx;
+        ctx.worldOpen = currentSave.has_value();
+        ctx.worldRowCount = 0;       // list rows are drawn by the list path today
+        ctx.languageRowCount = 0;
+        return ui::buildPage(menuSystem.pageStack.current(), ctx, buildMenuCallbacks(),
+                             menuRectProvider());
+    }
+
     void handleMenuButtonPress() {
         if (menuSystem.pageStack.current() == ui::PageId::WorldList) {
             const auto cursor = currentFramebufferCursor();
@@ -2978,16 +3213,33 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 }
             }
         }
+        // PX-4: the pressed widget is resolved through the ui:: model (index into
+        // the current page); pressedMenuButton is kept only as the draw/debug id.
         pressedMenuButton = hoveredMenuButton();
-        if (pressedMenuButton == MenuButton::ViewDistance) {
-            menuSystem.viewDistanceSliderDragging = true;
-            updateViewDistanceFromCursor();
-        } else if (pressedMenuButton == MenuButton::SimulationDistance) {
-            menuSystem.simulationDistanceSliderDragging = true;
-            updateSimulationDistanceFromCursor();
-        } else if (pressedMenuButton == MenuButton::MasterVolume) {
-            menuSystem.masterVolumeSliderDragging = true;
-            updateMasterVolumeFromCursor();
+        const ui::Page page = buildCurrentPage();
+        pressedMenuIndex_ = hoveredMenuIndex(page);
+        // A press on a Slider starts its drag; the drag effect runs through the
+        // slider's onDrag callback (never a traversal side effect). The dragging
+        // flags stay so the release path and draw highlight keep working.
+        if (pressedMenuIndex_ != ui::kNoWidget &&
+            page[pressedMenuIndex_].kind == ui::WidgetKind::Slider) {
+            const auto& slider = page[pressedMenuIndex_].slider;
+            switch (static_cast<ui::WidgetId>(page[pressedMenuIndex_].debugId)) {
+                case ui::WidgetId::ViewDistance:
+                    menuSystem.viewDistanceSliderDragging = true;
+                    break;
+                case ui::WidgetId::SimulationDistance:
+                    menuSystem.simulationDistanceSliderDragging = true;
+                    break;
+                case ui::WidgetId::MasterVolume:
+                    menuSystem.masterVolumeSliderDragging = true;
+                    break;
+                default:
+                    break;
+            }
+            if (slider.onDrag) {
+                slider.onDrag(0.0F);  // the appliers read the cursor themselves
+            }
         }
         // 26.1 keeps a draft selection while the screen is open. Done commits
         // it through one resource reload, so browsing several rows does not
@@ -3198,231 +3450,30 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 audioSystem.playItemPickup(camera.position());
             }
         }
-        const MenuButton releasedButton = hoveredMenuButton();
-        const MenuButton activatedButton =
-            releasedButton == pressedMenuButton ? releasedButton : MenuButton::None;
+        // PX-4: dispatch through the ui:: model. The pressed widget index was
+        // captured on press; if the release lands on the same enabled widget its
+        // onActivate runs the effect the old switch(MenuButton) case did.
+        const ui::Page page = buildCurrentPage();
+        const std::size_t released = hoveredMenuIndex(page);
+        const std::size_t pressed = pressedMenuIndex_;
         pressedMenuButton = MenuButton::None;
+        pressedMenuIndex_ = ui::kNoWidget;
         menuSystem.viewDistanceSliderDragging = false;
         menuSystem.simulationDistanceSliderDragging = false;
         menuSystem.masterVolumeSliderDragging = false;
         menuSystem.languageScrollbarDragging = false;
-        // A button that actually fired (pressed and released over the same spot)
-        // clicks; the three sliders are drags and keep their own feedback.
-        if (activatedButton != MenuButton::None && activatedButton != MenuButton::ViewDistance &&
-            activatedButton != MenuButton::SimulationDistance &&
-            activatedButton != MenuButton::MasterVolume) {
+        // A slider release commits (persist + feedback) through its callback.
+        if (pressed != ui::kNoWidget && page[pressed].kind == ui::WidgetKind::Slider &&
+            page[pressed].slider.onCommit) {
+            page[pressed].slider.onCommit();
+            return;
+        }
+        // A button release over the same widget clicks and runs its onActivate.
+        if (released != ui::kNoWidget && released == pressed) {
             playUiClick();
         }
-        switch (activatedButton) {
-        case MenuButton::Resume:
-            setPaused(false);
-            break;
-        case MenuButton::Options:
-            menuSystem.optionsOpen = true;
-            menuSystem.pageStack.push(ui::PageId::Options);
-            break;
-        case MenuButton::Quit:
-            glfwSetWindowShouldClose(window, GLFW_TRUE);
-            break;
-        case MenuButton::Resolution:
-            cycleResolution();
-            break;
-        case MenuButton::GuiScale:
-            cycleGuiScale();
-            break;
-        // The sliders act on drag, so releasing over one does nothing here.
-        case MenuButton::ViewDistance:
-        case MenuButton::SimulationDistance:
-        case MenuButton::MasterVolume:
-            break;
-        case MenuButton::VideoSettings:
-            menuSystem.pageStack.push(ui::PageId::VideoSettings);
-            break;
-        case MenuButton::Controls:
-            menuSystem.pageStack.push(ui::PageId::Controls);
-            break;
-        case MenuButton::AutoJump:
-            options.autoJump = !options.autoJump;
-            persistOptions();
-            break;
-        case MenuButton::FrameRateLimit: {
-            constexpr std::array limits{30, 60, 120, 144, 240, 0};
-            const auto found = std::ranges::find(limits, options.frameRateLimit);
-            const std::size_t current =
-                found == limits.end()
-                    ? 0U
-                    : static_cast<std::size_t>(std::distance(limits.begin(), found));
-            options.frameRateLimit = limits[(current + 1U) % limits.size()];
-            persistOptions();
-            break;
-        }
-        case MenuButton::AntiAliasing:
-            options.antiAliasing = !options.antiAliasing;
-            persistOptions();
-            recreateSwapchain();
-            break;
-        case MenuButton::Vsync:
-            options.vsync = !options.vsync;
-            persistOptions();
-            // The present mode lives on the swapchain, so toggling sync has to
-            // rebuild it with the matching FIFO/MAILBOX choice.
-            recreateSwapchain();
-            break;
-        case MenuButton::Anisotropy:
-            options.anisotropy = options.anisotropy >= 16 ? 1 : options.anisotropy * 2;
-            persistOptions();
-            recreateTextureSampler();
-            break;
-        case MenuButton::ViewBobbing:
-            options.viewBobbing = !options.viewBobbing;
-            persistOptions();
-            break;
-        case MenuButton::SmoothLighting: {
-            options.smoothLightingQuality =
-                nextSmoothLightingQuality(options.smoothLightingQuality);
-            persistOptions();
-            // The mesh is baked at the active quality (the packed vertex carries
-            // one AO set), so changing the baked tier re-meshes every loaded
-            // section; switching to Off keeps the last baked meshes and the
-            // shader just ignores the smooth light channels.
-            const auto baked = options.smoothLightingQuality == world::SmoothLightingQuality::Off
-                                   ? currentMeshQuality
-                                   : options.smoothLightingQuality;
-            if (baked != currentMeshQuality) {
-                targetMeshQuality = baked;
-                qualityRemeshPending.clear();
-                for (const auto& [position, mesh] : gpuMeshes) {
-                    qualityRemeshPending.insert(position);
-                }
-                for (const auto& [position, update] : pendingSectionUpdates) {
-                    qualityRemeshPending.insert(position);
-                }
-                chunkStreamer.setSmoothLightingQuality(baked);
-                chunkStreamer.requestFullRemesh();
-            }
-            break;
-        }
-        case MenuButton::DynamicLight:
-            options.dynamicLight = !options.dynamicLight;
-            persistOptions();
-            break;
-        case MenuButton::Difficulty:
-            // Vanilla's Difficulty button cycles the open world's setting in
-            // place; it has no meaning outside a world, which is why the button
-            // only exists on the in-world options page.
-            if (currentSave.has_value()) {
-                currentSave->difficulty = gameplay::nextDifficulty(currentSave->difficulty);
-                gameSession.setDifficulty(currentSave->difficulty);
-            }
-            break;
-        case MenuButton::Experimental:
-            menuSystem.pageStack.push(ui::PageId::Experimental);
-            break;
-        case MenuButton::RainMode:
-            options.rainMode = (options.rainMode + 1) % 3;
-            rainMode_ = static_cast<RainMode>(options.rainMode);
-            persistOptions();
-            break;
-        case MenuButton::ParticleLevel:
-            options.particleLevel = (options.particleLevel + 1) % 4;
-            applyParticleLevel();
-            persistOptions();
-            break;
-        case MenuButton::SunShadows:
-            options.sunShadows = !options.sunShadows;
-            shadowDisabled = !options.sunShadows;
-            persistOptions();
-            break;
-        case MenuButton::RainCollisionCache:
-            options.rainCollisionCache = !options.rainCollisionCache;
-            rainSystem.setCollisionCache(options.rainCollisionCache);
-            persistOptions();
-            break;
-        case MenuButton::Language:
-            menuSystem.pendingLanguageCode = options.language;
-            menuSystem.languageStatus.clear();
-            menuSystem.pageStack.push(ui::PageId::Language);
-            break;
-        case MenuButton::ForceUnicodeFont:
-            options.forceUnicodeFont = !options.forceUnicodeFont;
-            textFont.setForceUnicode(options.forceUnicodeFont);
-            recreateFontTexture();
-            persistOptions();
-            break;
-        case MenuButton::Done:
-            if (menuSystem.pageStack.current() == ui::PageId::Language) {
-                beginLanguageLoad(menuSystem.pendingLanguageCode);
-            }
-            menuSystem.pageStack.pop();
-            menuSystem.optionsOpen = menuSystem.pageStack.current() == ui::PageId::Options;
-            break;
-        case MenuButton::Singleplayer:
-            refreshSaveList();
-            menuSystem.pageStack.push(ui::PageId::WorldList);
-            break;
-        case MenuButton::Exit:
-            glfwSetWindowShouldClose(window, GLFW_TRUE);
-            break;
-        case MenuButton::PlaySelected:
-            if (menuSystem.selectedWorldIndex < menuSystem.saveSummaries.size()) {
-                try {
-                    startWorld(saveRepository.load(
-                        menuSystem.saveSummaries[menuSystem.selectedWorldIndex].identifier));
-                } catch (const std::exception& exception) {
-                    menuSystem.saveStatus = "Load failed: " + std::string{exception.what()};
-                }
-            }
-            break;
-        case MenuButton::CreateWorld:
-            menuSystem.createWorldName.clear();
-            menuSystem.createWorldGameMode = gameplay::GameMode::Survival;
-            menuSystem.pageStack.push(ui::PageId::CreateWorld);
-            break;
-        case MenuButton::Edit:
-            if (menuSystem.selectedWorldIndex < menuSystem.saveSummaries.size()) {
-                menuSystem.editWorldIdentifier =
-                    menuSystem.saveSummaries[menuSystem.selectedWorldIndex].identifier;
-                menuSystem.editWorldName =
-                    menuSystem.saveSummaries[menuSystem.selectedWorldIndex].displayName;
-                menuSystem.pageStack.push(ui::PageId::EditWorld);
-            }
-            break;
-        case MenuButton::SaveRename:
-            applyRename();
-            break;
-        case MenuButton::DeleteWorld:
-            menuSystem.pageStack.push(ui::PageId::ConfirmDelete);
-            break;
-        case MenuButton::DeleteConfirm:
-            deleteSelectedWorld();
-            break;
-        case MenuButton::DeleteCancel:
-            menuSystem.pageStack.pop();
-            break;
-        case MenuButton::Back:
-            menuSystem.pageStack.pop();
-            break;
-        case MenuButton::CreateConfirm:
-            startNewWorld();
-            break;
-        case MenuButton::CreateGameMode:
-            menuSystem.createWorldGameMode =
-                menuSystem.createWorldGameMode == gameplay::GameMode::Survival
-                    ? gameplay::GameMode::Creative
-                    : gameplay::GameMode::Survival;
-            break;
-        case MenuButton::SaveQuit:
-            returnToTitle(true);
-            break;
-        case MenuButton::Respawn:
-            respawnPlayer();
-            break;
-        case MenuButton::TitleScreen:
-            returnToTitle(true);
-            break;
-        case MenuButton::None:
-            break;
-        }
+        const auto cursor = currentFramebufferCursor();
+        static_cast<void>(ui::dispatchActivate(page, pressed, cursor.x, cursor.y));
     }
 
     // The slot and creative hit-testing shared by a press and by the release
@@ -6399,6 +6450,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     int simulationDistanceChunks = 4;
 
     MenuButton pressedMenuButton = MenuButton::None;
+    // PX-4: the pressed widget's index into the current ui::Page, so the release
+    // dispatches through the model (dispatchActivate) instead of a MenuButton
+    // switch. kNoWidget when no widget is pressed.
+    std::size_t pressedMenuIndex_ = ui::kNoWidget;
     std::optional<world::VoxelRaycastHit> targetedBlock;
 
     // The furnace block the gameSession.player() last opened; while the shared furnace state

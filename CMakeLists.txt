@@ -1666,6 +1666,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME player_pose COMMAND mc_rebedrock_player_pose_test)
 
+    add_executable(mc_rebedrock_menu_widget_test
+        tests/menu_widget_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_menu_widget_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_menu_widget_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME menu_widget COMMAND mc_rebedrock_menu_widget_test)
+
     add_executable(mc_rebedrock_tree_grower_test
         tests/tree_grower_test.cpp
         src/world/Chunk.cpp
