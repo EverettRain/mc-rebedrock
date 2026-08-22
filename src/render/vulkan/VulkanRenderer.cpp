@@ -1328,7 +1328,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 fpsSampleFrames = 0U;
             }
             bool playerWalking = false;
-            bool playerSneaking = false;
             {
                 // Input preparation writes the staged PlayerInput (guarded by
                 // GameSession's own input mutex) and reads published snapshots and
@@ -1367,7 +1366,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // returns to zero. The eased stride is the locomotion amount.
                 playerWalking = playerSnap.stride > 0.002F ||
                                 playerSnap.previousStride > 0.002F;
-                playerSneaking = playerSnap.sneaking;
             }
             playerModelAnimator.update(deltaSeconds, playerWalking);
             // Head leads, body follows: the head turns freely up to a limit, and
