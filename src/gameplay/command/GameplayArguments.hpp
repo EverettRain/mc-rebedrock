@@ -3,6 +3,7 @@
 #include "gameplay/command/EntitySelector.hpp"
 #include "gameplay/command/IdentifierTable.hpp"
 
+#include "gameplay/Difficulty.hpp"
 #include "gameplay/GameMode.hpp"
 #include "gameplay/GameRules.hpp"
 #include "gameplay/Item.hpp"
@@ -351,6 +352,28 @@ class EntitySelectorArgument final : public ArgumentType {
     }
 };
 
+// `/difficulty <peaceful|easy|normal|hard>`, binding the typed Difficulty.
+class DifficultyArgument final : public ArgumentType {
+  public:
+    ArgumentParseResult parse(StringReader& reader) const override {
+        const auto token = reader.readString();
+        if (!token.has_value()) {
+            return parseFail("Expected a difficulty", reader);
+        }
+        const auto difficulty = gameplay::difficultyFromName(*token);
+        if (!difficulty.has_value()) {
+            return parseFail("Unknown difficulty: " + *token, reader);
+        }
+        return parseOk(*difficulty);
+    }
+
+    void collectSuggestions(SuggestionSink& sink) const override {
+        for (std::uint8_t index = 0; index < gameplay::kDifficultyCount; ++index) {
+            sink.suggest(gameplay::difficultyName(static_cast<gameplay::Difficulty>(index)));
+        }
+    }
+};
+
 // Shared, stateless instances of the gameplay argument types. One instance
 // serves every command that uses a type (1.16.1's ArgumentType.instance()).
 inline const GameModeArgument kGameModeArgument;
@@ -360,6 +383,11 @@ inline const TableArgument<GameRuleTable> kGameRuleArgument;
 inline const TeleportDestinationArgument kTeleportDestinationArgument;
 inline const EntityTargetArgument kEntityTargetArgument;
 inline const EntitySelectorArgument kEntitySelectorArgument;
+inline const DifficultyArgument kDifficultyArgument;
+// Block name (setblock/fill) and entity species name (summon): registry-backed,
+// so validation and completion follow the content tables with no hardcoded list.
+inline const TableArgument<BlockTable> kBlockArgument;
+inline const TableArgument<EntityTable> kSummonEntityArgument;
 // `/weather clear|rain [<duration>]`: the duration (seconds) is bounded by the
 // same 0..1000000 1.16.1's WeatherCommand hands IntegerArgumentType; the
 // handler converts it to ticks at 20 per second. A bound is required so a

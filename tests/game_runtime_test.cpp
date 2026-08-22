@@ -16,6 +16,7 @@
 
 #include <glm/geometric.hpp>
 
+#include "gameplay/Difficulty.hpp"
 #include "gameplay/GameplayMutationSink.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "world/ChunkStreamer.hpp"
@@ -818,6 +819,119 @@ int main() {
         runtime.tick();
         assert(runtime.takeChatResult().value().success);
 
+        runtime.stopSimulation();
+    }
+
+    // CMD4: content commands wired to existing systems (setblock/fill/summon/
+    // difficulty/seed/clear). Self-contained world.
+    {
+        world::ChunkStreamer streamer{0U, 4, 4};
+        RecordingHost host;
+        runtime::GameRuntime runtime{host, streamer, saveRoot};
+        host.save = &runtime.currentSaveSlot();
+        auto save = runtime.createWorld("content", 12345U, gameplay::GameMode::Creative);
+        runtime.loadWorld(std::move(save), 4);
+        // Pump the spawn chunk into the world so setblock/fill have loaded cells to
+        // write (every edit below stays inside chunk (1,1): x,z in [16,31]).
+        const auto batch = streamer.requestSync({1, 1}, std::chrono::seconds(10));
+        assert(batch.has_value());
+        applyBatch(runtime, *batch);
+
+        const auto runCmd = [&](const std::string& line) {
+            runtime.enqueueChat(line);
+            runtime.tick();
+            return runtime.takeChatResult();
+        };
+        const auto blockAt = [&](int x, int y, int z) {
+            return runtime.world().block(x, y, z);
+        };
+
+        // setblock writes one cell (default mode replace).
+        {
+            const auto result = runCmd("/setblock 24 90 24 stone");
+            assert(result.has_value() && result->success);
+            assert(blockAt(24, 90, 24) == world::Block::Stone);
+        }
+        // keep only writes into air, so the stone stays and the command reports failure.
+        {
+            const auto result = runCmd("/setblock 24 90 24 dirt keep");
+            assert(result.has_value() && !result->success);
+            assert(blockAt(24, 90, 24) == world::Block::Stone);
+        }
+        // A chest routes through the mutation path, so its block entity is created —
+        // proof the write is not a raw block-array poke.
+        {
+            const auto result = runCmd("/setblock 24 91 24 chest");
+            assert(result.has_value() && result->success);
+            assert(blockAt(24, 91, 24) == world::Block::Chest);
+            assert(runtime.gameSession().chestSystem().find({24, 91, 24}) != nullptr);
+        }
+        // fill replace covers the whole 3x3 area.
+        {
+            const auto result = runCmd("/fill 26 90 26 28 90 28 stone");
+            assert(result.has_value() && result->success);
+            std::size_t stone = 0U;
+            for (int x = 26; x <= 28; ++x) {
+                for (int z = 26; z <= 28; ++z) {
+                    if (blockAt(x, 90, z) == world::Block::Stone) ++stone;
+                }
+            }
+            assert(stone == 9U);
+        }
+        // fill outline writes only the shell of a 3x3x3 box; the interior is untouched.
+        {
+            const auto result = runCmd("/fill 20 92 20 22 94 22 stone outline");
+            assert(result.has_value() && result->success);
+            assert(blockAt(20, 92, 20) == world::Block::Stone);   // a corner
+            assert(blockAt(21, 93, 21) != world::Block::Stone);   // the interior
+        }
+        // fill enforces the volume cap rather than stalling the tick.
+        {
+            const auto result = runCmd("/fill 0 0 0 100 100 100 stone");
+            assert(result.has_value() && !result->success);
+        }
+        // summon spawns the species at the given position.
+        {
+            const auto before = runtime.gameSession().worldEntities().entities().size();
+            const auto result = runCmd("/summon pig 18 92 18");
+            assert(result.has_value() && result->success);
+            assert(runtime.gameSession().worldEntities().entities().size() > before);
+            bool found = false;
+            for (const auto& e : runtime.gameSession().worldEntities().entities()) {
+                if (!e.dead() && e.type != nullptr && std::string{e.type->id().path} == "pig" &&
+                    glm::length(e.position - glm::vec3{18.0F, 92.0F, 18.0F}) < 1.5F) {
+                    found = true;
+                }
+            }
+            assert(found);
+        }
+        // difficulty set + query.
+        {
+            const auto set = runCmd("/difficulty hard");
+            assert(set.has_value() && set->success);
+            assert(runtime.gameSession().difficulty() == gameplay::Difficulty::Hard);
+            const auto query = runCmd("/difficulty");
+            assert(query.has_value() && query->success &&
+                   query->message.find("hard") != std::string::npos);
+        }
+        // seed reports the world seed.
+        {
+            const auto result = runCmd("/seed");
+            assert(result.has_value() && result->success &&
+                   result->message.find("12345") != std::string::npos);
+        }
+        // clear empties the inventory.
+        {
+            static_cast<void>(runCmd("/give stone 10"));
+            std::size_t before = 0U;
+            for (const auto& s : runtime.gameSession().inventory().slots()) before += s.count;
+            assert(before >= 10U);
+            const auto result = runCmd("/clear");
+            assert(result.has_value() && result->success);
+            std::size_t after = 0U;
+            for (const auto& s : runtime.gameSession().inventory().slots()) after += s.count;
+            assert(after == 0U);
+        }
         runtime.stopSimulation();
     }
 

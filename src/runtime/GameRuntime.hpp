@@ -29,6 +29,10 @@ namespace mc::world {
 class ChunkStreamer;
 }
 
+namespace mc::gameplay {
+class GameplayMutationSink;
+}
+
 namespace mc::runtime {
 
 // The authoritative world runtime: everything a dedicated server needs, with no
@@ -210,6 +214,18 @@ class GameRuntime final {
     [[nodiscard]] gameplay::CommandResult killSelector(
         const gameplay::command::EntitySelector& selector,
         const gameplay::command::CommandSource& source);
+    // CMD-4 content commands, each thin wiring onto an existing system. setblock
+    // and fill write through the authoritative mutation path (commandSetBlock);
+    // summon goes through WorldEntities::spawn. `mode` picks the setblock/fill
+    // variant (replace/keep/destroy, plus outline/hollow for fill).
+    [[nodiscard]] bool commandSetBlock(glm::ivec3 cell, world::BlockState state, bool drop,
+                                       gameplay::GameplayMutationSink& sink);
+    [[nodiscard]] gameplay::CommandResult runSetblock(
+        const gameplay::command::CommandContext& context, std::string_view mode);
+    [[nodiscard]] gameplay::CommandResult runFill(
+        const gameplay::command::CommandContext& context, std::string_view mode);
+    [[nodiscard]] gameplay::CommandResult runSummon(
+        const gameplay::command::CommandContext& context);
     // Drains the client→server channel into the session's command queue at the
     // start of a tick. Safe to call inside the world write section: the channel
     // and the command queue each carry their own mutex, so this depends on

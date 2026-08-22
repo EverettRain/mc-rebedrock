@@ -2,6 +2,7 @@
 
 #include "gameplay/ContentRegistry.hpp"
 #include "gameplay/EntitySystem.hpp"
+#include "gameplay/GameplayMutationSink.hpp"
 #include "gameplay/Item.hpp"
 #include "gameplay/ItemRegistry.hpp"
 #include "gameplay/command/GameplayArguments.hpp"
@@ -261,6 +262,131 @@ gameplay::CommandResult GameRuntime::killSelector(const gameplay::command::Entit
     }
     return gameplay::CommandResult{true, "Killed " + std::to_string(killed) +
                                              (killed == 1U ? " entity" : " entities")};
+}
+
+namespace {
+[[nodiscard]] int floorToInt(float value) {
+    return static_cast<int>(std::floor(value));
+}
+// 1.16.1's FillCommand fillLimit: a fill covering more cells than this is
+// rejected, so an accidental huge box cannot stall the tick.
+constexpr long long kFillLimit = 32768;
+} // namespace
+
+bool GameRuntime::commandSetBlock(glm::ivec3 cell, world::BlockState state, bool drop,
+                                  gameplay::GameplayMutationSink& sink) {
+    // Every command edit goes through the authoritative mutation path (neighbours,
+    // light, block entities stay consistent) — never a raw section poke. `drop`
+    // chooses destroy (the old block breaks) over a silent replace.
+    auto flags = world::MutationFlags::All;
+    if (!drop) {
+        flags = flags | world::MutationFlags::SuppressDrops;
+    }
+    return gameSession_.worldMutations()
+        .setBlock(serverWorld_, {cell.x, cell.y, cell.z}, state, flags,
+                  world::MutationCause::Command, sink)
+        .changed;
+}
+
+gameplay::CommandResult GameRuntime::runSetblock(const gameplay::command::CommandContext& context,
+                                                 std::string_view mode) {
+    const auto position = context.find<gameplay::command::Position3>("pos");
+    const auto blockName = context.find<std::string>("block");
+    if (!position.has_value() || !blockName.has_value()) {
+        return gameplay::CommandResult{false,
+                                       "Usage: /setblock <x> <y> <z> <block> [replace|keep|destroy]"};
+    }
+    const auto block = world::blockFromIdentifier(*blockName);
+    if (!block.has_value()) {
+        return gameplay::CommandResult{false, "Unknown block: " + *blockName};
+    }
+    const glm::vec3 resolved = gameplay::command::resolve(*position, context.source());
+    const glm::ivec3 cell{floorToInt(resolved.x), floorToInt(resolved.y), floorToInt(resolved.z)};
+    if (mode == "keep" && serverWorld_.block(cell.x, cell.y, cell.z) != world::Block::Air) {
+        return gameplay::CommandResult{false, "Could not set the block (keep: the cell is not air)"};
+    }
+    gameplay::GameplayMutationSink sink{serverWorld_, gameSession_};
+    const world::BlockState state{*block, world::defaultOrientation(*block)};
+    if (!commandSetBlock(cell, state, /*drop=*/mode == "destroy", sink)) {
+        return gameplay::CommandResult{false, "Could not set the block"};
+    }
+    return gameplay::CommandResult{true, "Changed the block at " + std::to_string(cell.x) + " " +
+                                             std::to_string(cell.y) + " " + std::to_string(cell.z)};
+}
+
+gameplay::CommandResult GameRuntime::runFill(const gameplay::command::CommandContext& context,
+                                             std::string_view mode) {
+    const auto from = context.find<gameplay::command::Position3>("from");
+    const auto to = context.find<gameplay::command::Position3>("to");
+    const auto blockName = context.find<std::string>("block");
+    if (!from.has_value() || !to.has_value() || !blockName.has_value()) {
+        return gameplay::CommandResult{
+            false, "Usage: /fill <x1 y1 z1> <x2 y2 z2> <block> [replace|keep|destroy|outline|hollow]"};
+    }
+    const auto block = world::blockFromIdentifier(*blockName);
+    if (!block.has_value()) {
+        return gameplay::CommandResult{false, "Unknown block: " + *blockName};
+    }
+    const glm::vec3 a = gameplay::command::resolve(*from, context.source());
+    const glm::vec3 b = gameplay::command::resolve(*to, context.source());
+    const glm::ivec3 lo{std::min(floorToInt(a.x), floorToInt(b.x)),
+                        std::min(floorToInt(a.y), floorToInt(b.y)),
+                        std::min(floorToInt(a.z), floorToInt(b.z))};
+    const glm::ivec3 hi{std::max(floorToInt(a.x), floorToInt(b.x)),
+                        std::max(floorToInt(a.y), floorToInt(b.y)),
+                        std::max(floorToInt(a.z), floorToInt(b.z))};
+    const long long volume = static_cast<long long>(hi.x - lo.x + 1) *
+                             static_cast<long long>(hi.y - lo.y + 1) *
+                             static_cast<long long>(hi.z - lo.z + 1);
+    if (volume > kFillLimit) {
+        return gameplay::CommandResult{
+            false, "Too many blocks in the specified area (maximum " + std::to_string(kFillLimit) +
+                       ")"};
+    }
+    const world::BlockState state{*block, world::defaultOrientation(*block)};
+    const world::BlockState air{world::Block::Air};
+    gameplay::GameplayMutationSink sink{serverWorld_, gameSession_};
+    std::size_t changed = 0U;
+    for (int x = lo.x; x <= hi.x; ++x) {
+        for (int y = lo.y; y <= hi.y; ++y) {
+            for (int z = lo.z; z <= hi.z; ++z) {
+                const bool shell = x == lo.x || x == hi.x || y == lo.y || y == hi.y ||
+                                   z == lo.z || z == hi.z;
+                if ((mode == "outline" || mode == "hollow") && !shell) {
+                    // outline leaves the interior untouched; hollow clears it.
+                    if (mode == "hollow" && commandSetBlock({x, y, z}, air, false, sink)) {
+                        ++changed;
+                    }
+                    continue;
+                }
+                if (mode == "keep" && serverWorld_.block(x, y, z) != world::Block::Air) {
+                    continue;
+                }
+                if (commandSetBlock({x, y, z}, state, /*drop=*/mode == "destroy", sink)) {
+                    ++changed;
+                }
+            }
+        }
+    }
+    return gameplay::CommandResult{true, "Filled " + std::to_string(changed) + " blocks"};
+}
+
+gameplay::CommandResult GameRuntime::runSummon(const gameplay::command::CommandContext& context) {
+    const auto name = context.find<std::string>("entity");
+    if (!name.has_value()) {
+        return gameplay::CommandResult{false, "Usage: /summon <entity> [<x> <y> <z>]"};
+    }
+    const auto* type = gameplay::entities::entityTypeRegistry().byId(*name);
+    if (type == nullptr) {
+        return gameplay::CommandResult{false, "Unknown entity: " + *name};
+    }
+    glm::vec3 position = context.source().position;
+    if (const auto posArg = context.find<gameplay::command::Position3>("pos"); posArg.has_value()) {
+        position = gameplay::command::resolve(*posArg, context.source());
+    }
+    gameSession_.worldEntities().spawn(position, *type,
+                                       static_cast<std::uint32_t>(nextCommandRandom()));
+    return gameplay::CommandResult{true, "Summoned " + type->id().toString()};
 }
 
 gameplay::command::CommandSource GameRuntime::makeCommandSource() {
@@ -923,6 +1049,100 @@ void GameRuntime::registerAuthoritativeCommands() {
             return seconds.has_value()
                        ? setThunderWeather(static_cast<int>(*seconds * 20))
                        : gameplay::CommandResult{false, "Usage: /weather thunder [<duration>]"};
+        });
+
+    // ---- CMD-4 content commands: thin wiring to existing systems -------------
+    // setblock <pos> <block> [replace|keep|destroy]. The mode variants share one
+    // base path (idempotent registration reuses its nodes); the default is
+    // replace. Writes go through the authoritative mutation path (below).
+    const auto setblockBase = [this]() {
+        return commandDispatcher_.literal("setblock")
+            .requiresLevel(PermissionLevel::GameMasters)
+            .argument("pos", gameplay::command::kTeleportDestinationArgument)
+            .argument("block", gameplay::command::kBlockArgument);
+    };
+    setblockBase().executes([this](const gameplay::command::CommandContext& context) {
+        return runSetblock(context, "replace");
+    });
+    for (const char* mode : {"replace", "keep", "destroy"}) {
+        const std::string modeName = mode;
+        setblockBase().then(mode).executes(
+            [this, modeName](const gameplay::command::CommandContext& context) {
+                return runSetblock(context, modeName);
+            });
+    }
+
+    // fill <from> <to> <block> [replace|keep|destroy|outline|hollow].
+    const auto fillBase = [this]() {
+        return commandDispatcher_.literal("fill")
+            .requiresLevel(PermissionLevel::GameMasters)
+            .argument("from", gameplay::command::kTeleportDestinationArgument)
+            .argument("to", gameplay::command::kTeleportDestinationArgument)
+            .argument("block", gameplay::command::kBlockArgument);
+    };
+    fillBase().executes([this](const gameplay::command::CommandContext& context) {
+        return runFill(context, "replace");
+    });
+    for (const char* mode : {"replace", "keep", "destroy", "outline", "hollow"}) {
+        const std::string modeName = mode;
+        fillBase().then(mode).executes(
+            [this, modeName](const gameplay::command::CommandContext& context) {
+                return runFill(context, modeName);
+            });
+    }
+
+    // summon <entity> [<x> <y> <z>].
+    commandDispatcher_.literal("summon")
+        .requiresLevel(PermissionLevel::GameMasters)
+        .argument("entity", gameplay::command::kSummonEntityArgument)
+        .executes([this](const gameplay::command::CommandContext& context) {
+            return runSummon(context);
+        })
+        .argument("pos", gameplay::command::kTeleportDestinationArgument)
+        .executes([this](const gameplay::command::CommandContext& context) {
+            return runSummon(context);
+        });
+
+    // difficulty [<peaceful|easy|normal|hard>] — query with no argument, set with one.
+    commandDispatcher_.literal("difficulty")
+        .requiresLevel(PermissionLevel::GameMasters)
+        .executes([this](const gameplay::command::CommandContext&) {
+            return gameplay::CommandResult{
+                true, "The difficulty is " +
+                          std::string{gameplay::difficultyName(gameSession_.difficulty())}};
+        })
+        .argument("level", gameplay::command::kDifficultyArgument)
+        .executes([this](const gameplay::command::CommandContext& context) {
+            const auto level = context.find<gameplay::Difficulty>("level");
+            if (!level.has_value()) {
+                return gameplay::CommandResult{false,
+                                               "Usage: /difficulty [<peaceful|easy|normal|hard>]"};
+            }
+            gameSession_.setDifficulty(*level);
+            return gameplay::CommandResult{
+                true, "Set the difficulty to " + std::string{gameplay::difficultyName(*level)}};
+        });
+
+    // seed — report the world seed.
+    commandDispatcher_.literal("seed")
+        .requiresLevel(PermissionLevel::GameMasters)
+        .executes([this](const gameplay::command::CommandContext&) {
+            const std::uint64_t seed =
+                currentSave_.has_value() ? currentSave_->summary.seed : 0U;
+            return gameplay::CommandResult{true, "Seed: " + std::to_string(seed)};
+        });
+
+    // clear — empty the executor's inventory (the whole-inventory form).
+    commandDispatcher_.literal("clear")
+        .requiresLevel(PermissionLevel::GameMasters)
+        .executes([this](const gameplay::command::CommandContext&) {
+            auto& inventory = gameSession_.inventory();
+            std::size_t cleared = 0U;
+            for (const auto& stack : inventory.slots()) {
+                cleared += stack.count;
+            }
+            inventory.restore({}, inventory.selectedHotbarSlot());
+            return gameplay::CommandResult{true, "Removed " + std::to_string(cleared) + " items"};
         });
 }
 

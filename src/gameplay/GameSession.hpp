@@ -242,6 +242,7 @@ class GameSession final {
         difficulty_ = difficulty;
         primaryPlayer().vitals.setDifficulty(difficulty);
     }
+    [[nodiscard]] Difficulty difficulty() const { return difficulty_; }
     // Simulation distance (blocks, horizontal): creatures beyond it are frozen
     // every tick but stay rendered and targetable. Default 64 (4 chunks) keeps
     // the simulated herd close to the player; 0 disables the gate.
