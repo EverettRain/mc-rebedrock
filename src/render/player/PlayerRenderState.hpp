@@ -19,6 +19,7 @@
 
 #include <glm/vec3.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <optional>
@@ -40,9 +41,9 @@ struct InterpolatedUse final {
     float progress = 0.0F;  // elapsed fraction of the use, in [0, 1]
 };
 
-// Everything the renderer draws a player from. `feetPosition` and `walkStride`
-// are interpolated between the physics endpoints; the look angles are passed in
-// (the camera is the look source until Phase 3 moves it into player state).
+// Everything the renderer draws a player from. `feetPosition`, `walkStride`
+// (the accumulated phase), and `walkSpeed` (the eased locomotion amplitude) are
+// interpolated between tick endpoints.
 struct PlayerRenderState final {
     glm::vec3 feetPosition{0.0F};
     float walkStride = 0.0F;
@@ -152,9 +153,32 @@ struct PlayerRenderState final {
     PlayerRenderState state;
     state.feetPosition = snapshot.physicsPrevious +
                          (snapshot.physicsCurrent - snapshot.physicsPrevious) * partialTicks;
-    state.walkStride =
+    // PlayerController's historical horizontalSpeed is accumulated horizontal
+    // travel scaled by 0.6, whereas HumanoidModel's walk position advances by
+    // roughly 4 times horizontal travel. Convert the units here before applying
+    // the vanilla 0.6662 cadence in the solver; feeding the raw distance phase
+    // makes the limbs visibly slide through the world at about one seventh speed.
+    constexpr float kControllerTravelScale = 0.6F;
+    constexpr float kWalkPositionPerBlock = 4.0F;
+    const float distancePhase =
+        snapshot.previousSpeed + (snapshot.speed - snapshot.previousSpeed) * partialTicks;
+    state.walkStride = distancePhase * (kWalkPositionPerBlock / kControllerTravelScale);
+    const float strideAmount =
         snapshot.previousStride + (snapshot.stride - snapshot.previousStride) * partialTicks;
-    state.walkSpeed = snapshot.previousSpeed + (snapshot.speed - snapshot.previousSpeed) * partialTicks;
+    // Keep PlayerController's 0.1 view-bob cap untouched (the first-person path
+    // reads it directly), but normalize the world-model gait to a useful 0..1.
+    float locomotionAmount = strideAmount * 8.0F;
+    if (snapshot.flying) {
+        // The controller intentionally drives the view-bob stride toward zero
+        // off ground. Third-person flight still needs a gait, so derive its
+        // amount from this tick's horizontal travel. The accumulated distance
+        // phase above already continues in flight and keeps the cycle aligned.
+        const float deltaX = snapshot.physicsCurrent.x - snapshot.physicsPrevious.x;
+        const float deltaZ = snapshot.physicsCurrent.z - snapshot.physicsPrevious.z;
+        const float flyingDistance = std::sqrt(deltaX * deltaX + deltaZ * deltaZ);
+        locomotionAmount = std::max(locomotionAmount, flyingDistance * 4.0F);
+    }
+    state.walkSpeed = std::clamp(locomotionAmount, 0.0F, 1.0F);
     state.sneaking = snapshot.sneaking;
     state.flying = snapshot.flying;
     state.sprinting = snapshot.sprinting;

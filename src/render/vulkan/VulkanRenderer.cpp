@@ -1340,7 +1340,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // snapshot, not live gameplay objects. The snapshot is published
                 // atomically, so this copy needs no lock.
                 const auto playerSnap = clientMirror_.player();
-                playerWalking = playerSnap.speed > 0.02F;
+                // `speed` is the accumulated gait phase and therefore never
+                // returns to zero. The eased stride is the locomotion amount.
+                playerWalking = playerSnap.stride > 0.002F ||
+                                playerSnap.previousStride > 0.002F;
                 playerSneaking = playerSnap.sneaking;
             }
             playerModelAnimator.update(deltaSeconds, playerWalking);
@@ -1388,23 +1391,20 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 }
                 const auto worldSnap = clientMirror_.player();
                 const float worldAlpha = clientMirror_.interpolationAlpha();
-                render::player::PlayerRenderState worldState;
-                worldState.walkStride =
-                    worldSnap.previousStride + (worldSnap.stride - worldSnap.previousStride) * worldAlpha;
-                worldState.walkSpeed =
-                    worldSnap.previousSpeed + (worldSnap.speed - worldSnap.previousSpeed) * worldAlpha;
-                worldState.sneaking = worldSnap.sneaking;
+                auto worldState = render::player::extractPlayerRenderState(
+                    worldSnap, worldAlpha, lastWorldSwingSequence_);
+                // The world renderer does not draw the held-item layer yet. A
+                // bare Item/Block arm pose therefore looks like one inexplicably
+                // raised arm; keep ordinary holding at rest until its item is
+                // visible, while preserving active use/eat poses.
+                if (!worldState.use.active &&
+                    (worldState.rightArmPose == render::player::ArmPose::Item ||
+                     worldState.rightArmPose == render::player::ArmPose::Block)) {
+                    worldState.rightArmPose = render::player::ArmPose::Empty;
+                }
                 worldState.headYawDegrees = headRelative * 180.0F / 3.14159265358979F;
                 worldState.pitchDegrees = std::asin(std::clamp(-lookDir.y, -1.0F, 1.0F)) *
                                           180.0F / 3.14159265358979F;
-                worldState.heldStack = worldSnap.heldStack;
-                worldState.swing = render::player::interpolateSwing(worldSnap.swing, worldAlpha,
-                                                                    lastWorldSwingSequence_);
-                worldState.use = render::player::interpolateUse(worldSnap.use, worldAlpha);
-                const bool usingMain = worldState.use.active &&
-                                       worldSnap.use.hand == gameplay::InteractionHand::Main;
-                worldState.rightArmPose = render::player::deriveArmPose(
-                    worldState.heldStack, usingMain, worldState.use.animation);
                 const float ageInTicks =
                     static_cast<float>(worldSnap.serverTick) + worldAlpha;
                 worldPlayerPose_ =

@@ -1,5 +1,6 @@
 #include "animation/HumanoidPoseSolver.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -12,8 +13,9 @@ constexpr float kDegreesPerRadian = 180.0F / kPi;
 // 26.1's HumanoidModel walk cadence: limbs swing as cos(pos * 0.6662) scaled by
 // speed. rightArm/leftLeg are in phase; leftArm/rightLeg are a half period out.
 constexpr float kWalkFrequency = 0.6662F;
-// The base amplitudes (radians) HumanoidModel uses; arms 2.0, legs 1.4.
-constexpr float kArmSwingRadians = 2.0F;
+// HumanoidModel's arm expression includes a final 0.5 factor: 2.0 * 0.5 = 1.0
+// effective radian. Legs use 1.4 radians.
+constexpr float kArmSwingRadians = 1.0F;
 constexpr float kLegSwingRadians = 1.4F;
 
 // The wrist offset from the arm pivot, in model units, where a held item hangs.
@@ -72,7 +74,12 @@ PlayerPoseFrame solveHumanoidPose(const SkeletalModel& model, const HumanoidBone
     // 3. applyLocomotion: limbs swing along the walk phase, amplitude scaled by
     //    the walk speed. Arms and legs are the standard vanilla phase pairs.
     const float phase = state.walkStride * kWalkFrequency;
-    const float amount = state.walkSpeed;
+    // Sprinting keeps the same tick-owned phase but carries a visibly stronger
+    // gait. Clamp after the multiplier so malformed snapshots cannot spin limbs
+    // through multiple revolutions.
+    constexpr float kSprintSwingMultiplier = 1.25F;
+    const float amount = std::clamp(
+        state.walkSpeed * (state.sprinting ? kSprintSwingMultiplier : 1.0F), 0.0F, 1.0F);
     const float rightArmX = toDegrees(std::cos(phase + kPi) * kArmSwingRadians * amount);
     const float leftArmX = toDegrees(std::cos(phase) * kArmSwingRadians * amount);
     const float rightLegX = toDegrees(std::cos(phase) * kLegSwingRadians * amount);
@@ -124,17 +131,41 @@ PlayerPoseFrame solveHumanoidPose(const SkeletalModel& model, const HumanoidBone
         addRotation(pose, bones.body, glm::vec3{0.0F, swingLift * 8.0F, 0.0F});
     }
 
-    // 6. applyCrouch: the body tips forward, the head compensates so the gaze
-    //    stays level, and the whole torso drops so the legs still meet the
-    //    ground (the vanilla sneak offset — arms/legs shift with the body).
+    // 6. applyCrouch: reproduce HumanoidModel's 0.5-radian body lean and model-
+    //    part offsets. This geometry parents head/arms to body while JE keeps the
+    //    parts independent, so their local transforms cancel the inherited body
+    //    rotation/translation before adding JE's own head/arm offsets.
     if (state.sneaking) {
-        addRotation(pose, bones.body, glm::vec3{22.918F, 0.0F, 0.0F});  // 0.4 rad
-        addRotation(pose, bones.head, glm::vec3{0.0F, 0.0F, 0.0F});
-        setPosition(pose, bones.body, glm::vec3{0.0F, 3.0F, 4.0F});
-        setPosition(pose, bones.rightArm, glm::vec3{0.0F, 3.0F, 4.0F});
-        setPosition(pose, bones.leftArm, glm::vec3{0.0F, 3.0F, 4.0F});
-        setPosition(pose, bones.rightLeg, glm::vec3{0.0F, 3.0F, 1.0F});
-        setPosition(pose, bones.leftLeg, glm::vec3{0.0F, 3.0F, 1.0F});
+        constexpr float kBodyLeanRadians = 0.5F;
+        constexpr float kArmCrouchRadians = 0.4F;
+        const float bodyLeanDegrees = toDegrees(kBodyLeanRadians);
+        addRotation(pose, bones.body, glm::vec3{bodyLeanDegrees, 0.0F, 0.0F});
+        setPosition(pose, bones.body, glm::vec3{0.0F, -3.2F, 0.0F});
+
+        addRotation(pose, bones.head, glm::vec3{-bodyLeanDegrees, 0.0F, 0.0F});
+        setPosition(pose, bones.head,
+                    glm::vec3{0.0F, -std::cos(kBodyLeanRadians),
+                              std::sin(kBodyLeanRadians)});
+
+        const glm::vec3 armParentCompensation{
+            0.0F,
+            2.0F - 2.0F * std::cos(kBodyLeanRadians),
+            2.0F * std::sin(kBodyLeanRadians),
+        };
+        const float armRotationCompensation =
+            toDegrees(kArmCrouchRadians - kBodyLeanRadians);
+        addRotation(pose, bones.rightArm,
+                    glm::vec3{armRotationCompensation, 0.0F, 0.0F});
+        addRotation(pose, bones.leftArm,
+                    glm::vec3{armRotationCompensation, 0.0F, 0.0F});
+        setPosition(pose, bones.rightArm, armParentCompensation);
+        setPosition(pose, bones.leftArm, armParentCompensation);
+
+        // JE's model-space +Z points toward the crouching torso. This Bedrock
+        // geometry faces -Z, so the equivalent leg offset must be negated or the
+        // upper and lower body move in opposite directions and visibly split.
+        setPosition(pose, bones.rightLeg, glm::vec3{0.0F, -0.2F, -4.0F});
+        setPosition(pose, bones.leftLeg, glm::vec3{0.0F, -0.2F, -4.0F});
     }
 
     // 7. applyIdleBob: a small cosmetic arm sway from the render age. Skipped

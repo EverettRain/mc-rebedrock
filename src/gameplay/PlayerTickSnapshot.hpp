@@ -41,7 +41,10 @@ struct PlayerTickSnapshot final {
     glm::vec3 physicsPrevious{0.0F};
     glm::vec3 physicsCurrent{0.0F};
 
-    // Walk animation endpoints.
+    // Walk animation endpoints. The inherited controller names are historical:
+    // `speed` is accumulated horizontal travel (the view-bob phase, scaled by
+    // 0.6) and `stride` is the eased movement amplitude (which returns to zero
+    // after stopping). PlayerRenderState converts both into HumanoidModel units.
     float previousStride = 0.0F;
     float stride = 0.0F;
     float previousSpeed = 0.0F;

@@ -16,6 +16,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <glm/vec4.hpp>
 #include <optional>
 #include <string>
 
@@ -34,8 +35,8 @@ const char* kPlayerGeo = R"({
       {"name": "head", "parent": "body", "pivot": [0, 24, 0]},
       {"name": "rightArm", "parent": "body", "pivot": [-5, 22, 0]},
       {"name": "leftArm", "parent": "body", "pivot": [5, 22, 0]},
-      {"name": "rightLeg", "parent": "body", "pivot": [-2, 12, 0]},
-      {"name": "leftLeg", "parent": "body", "pivot": [2, 12, 0]}
+      {"name": "rightLeg", "pivot": [-2, 12, 0]},
+      {"name": "leftLeg", "pivot": [2, 12, 0]}
     ]
   }]
 })";
@@ -130,6 +131,23 @@ void testWalkAntiPhase(const animation::SkeletalModel& model,
     assert((ra > 0.0F) == (ll > 0.0F));
 }
 
+// --- Solver: sprint preserves coordination with a stronger gait --------------
+void testSprintAmplifiesWalk(const animation::SkeletalModel& model,
+                             const animation::HumanoidBoneBindings& bones) {
+    rp::PlayerRenderState walking = restState();
+    walking.walkStride = 0.0F;
+    walking.walkSpeed = 0.8F;
+    rp::PlayerRenderState sprinting = walking;
+    sprinting.sprinting = true;
+    const auto walk = animation::solveHumanoidPose(model, bones, walking, 0.0F);
+    const auto sprint = animation::solveHumanoidPose(model, bones, sprinting, 0.0F);
+    const float walkLeg = std::fabs(
+        walk.skeleton.bone(static_cast<std::size_t>(bones.rightLeg)).rotation.x);
+    const float sprintLeg = std::fabs(
+        sprint.skeleton.bone(static_cast<std::size_t>(bones.rightLeg)).rotation.x);
+    assert(sprintLeg > walkLeg * 1.2F);
+}
+
 // --- Solver: crouch bends the body forward and drops the torso ----------------
 void testCrouch(const animation::SkeletalModel& model,
                 const animation::HumanoidBoneBindings& bones) {
@@ -137,8 +155,30 @@ void testCrouch(const animation::SkeletalModel& model,
     s.sneaking = true;
     const auto frame = animation::solveHumanoidPose(model, bones, s, 0.0F);
     const auto& body = frame.skeleton.bone(static_cast<std::size_t>(bones.body));
-    assert(body.rotation.x > 20.0F);      // tipped forward ~0.4 rad
-    assert(body.position.z > 0.0F);       // shifted so the legs still reach ground
+    const auto& head = frame.skeleton.bone(static_cast<std::size_t>(bones.head));
+    const auto& rightArm = frame.skeleton.bone(static_cast<std::size_t>(bones.rightArm));
+    const auto& rightLeg = frame.skeleton.bone(static_cast<std::size_t>(bones.rightLeg));
+    assert(near(body.rotation.x, 28.64789F));
+    assert(near(body.position.y, -3.2F));
+    assert(near(body.position.z, 0.0F));
+    assert(near(head.rotation.x, -28.64789F));
+    assert(near(head.position.y, -0.877583F));
+    assert(near(head.position.z, 0.479426F));
+    // Local compensation makes parented arms match JE's independent model parts.
+    assert(near(rightArm.position.x, 0.0F));
+    assert(near(rightArm.position.y, 0.244835F));
+    assert(near(rightArm.position.z, 0.958851F));
+    assert(near(rightArm.rotation.x, -5.729578F));
+    assert(near(rightLeg.position.y, -0.2F));
+    assert(near(rightLeg.position.z, -4.0F));
+    // The torso waist and leg top travel toward the same side of the player;
+    // the opposite sign creates the user-visible upper/lower-body split.
+    const glm::vec4 bodyWaist = frame.skeleton.worldMatrix(bones.body) *
+                                glm::vec4{0.0F, 12.0F, 0.0F, 1.0F};
+    const glm::vec4 rightLegTop = frame.skeleton.worldMatrix(bones.rightLeg) *
+                                  glm::vec4{-2.0F, 12.0F, 0.0F, 1.0F};
+    assert(std::fabs(bodyWaist.y - rightLegTop.y) < 2.0F);
+    assert(std::fabs(bodyWaist.z - rightLegTop.z) < 2.0F);
 }
 
 // --- Solver: look turns the head, relative to the body ------------------------
@@ -361,6 +401,7 @@ int main() {
     testArmPoseDerivation();
     testRestPose(model, bones);
     testWalkAntiPhase(model, bones);
+    testSprintAmplifiesWalk(model, bones);
     testCrouch(model, bones);
     testLook(model, bones);
     testAttack(model, bones);
