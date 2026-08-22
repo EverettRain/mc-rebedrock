@@ -2586,16 +2586,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (const auto position = context.find<gameplay::command::Position3>("destination");
             position.has_value()) {
             // The relative /tp base is the authoritative feet (this teleports the
-            // server player), not the lagging client mirror.
-            const glm::vec3 base = gameSession.playerTickSnapshot().physicsCurrent;
-            const glm::vec3 target{
-                position->relativeX ? base.x + static_cast<float>(position->x)
-                                    : static_cast<float>(position->x),
-                position->relativeY ? base.y + static_cast<float>(position->y)
-                                    : static_cast<float>(position->y),
-                position->relativeZ ? base.z + static_cast<float>(position->z)
-                                    : static_cast<float>(position->z),
-            };
+            // server player), not the lagging client mirror. Resolve `~` axes
+            // through the one shared resolve() — the same function the
+            // authoritative commands use, so a coordinate never means two things.
+            gameplay::command::CommandSource base;
+            base.position = gameSession.playerTickSnapshot().physicsCurrent;
+            const glm::vec3 target = gameplay::command::resolve(*position, base);
             teleportPlayerTo(target);
             if (withRotation) {
                 const auto rotation = context.find<gameplay::command::Rotation2>("rotation");

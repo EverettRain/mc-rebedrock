@@ -14,6 +14,7 @@
 #include "core/FrameTrace.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 
@@ -199,10 +200,44 @@ void GameRuntime::processChatQueue() {
         chatQueue_.clear();
     }
     for (auto& line : lines) {
-        const auto result = commandDispatcher_.execute(line);
+        // Build the source fresh per line: a command may move the player, so a
+        // following line's `~` resolves against the updated position. The source's
+        // feedback sink writes chatResult_ (gated by sendCommandFeedback), so the
+        // result is routed there rather than stored from the return value.
+        static_cast<void>(commandDispatcher_.execute(line, makeCommandSource()));
+    }
+}
+
+gameplay::command::CommandSource GameRuntime::makeCommandSource() {
+    gameplay::command::CommandSource source;
+    source.playerId = gameplay::kPrimaryPlayerId;
+    source.position = gameSession_.player().position();
+    // Derive yaw/pitch from where the sender faces (Rotation2: yaw 0 faces +Z,
+    // positive pitch up), so a rotation-reading command and CMD5's `^`/`facing`
+    // see a real orientation rather than a placeholder.
+    const glm::vec3 look = gameSession_.primaryPlayer().playerInput.lookDirection;
+    constexpr double kRadiansToDegrees = 57.295779513082323;  // 180 / pi
+    source.rotation.yaw =
+        std::atan2(static_cast<double>(look.x), static_cast<double>(look.z)) * kRadiansToDegrees;
+    source.rotation.pitch =
+        std::asin(std::clamp(static_cast<double>(look.y), -1.0, 1.0)) * kRadiansToDegrees;
+    source.dimension = gameplay::command::Dimension::Overworld;
+    // The single-player host owns the world (op4): every command passes. The op
+    // level exists so a multiplayer source below it is refused, not to gate the
+    // host.
+    source.permissionLevel = gameplay::command::PermissionLevel::Owners;
+    // Feedback goes to the chat HUD. A successful command is silent when
+    // sendCommandFeedback is off; a failure always reports — vanilla's
+    // CommandSourceStack sendSuccess/sendFailure split.
+    source.feedback = [this](const gameplay::CommandResult& result) {
+        if (result.success &&
+            !gameSession_.gameRules().get<bool>(gameplay::GameRuleId::SendCommandFeedback)) {
+            return;
+        }
         const std::lock_guard<std::mutex> guard{chatMutex_};
         chatResult_ = result;
-    }
+    };
+    return source;
 }
 
 void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) {
@@ -623,7 +658,15 @@ void GameRuntime::registerAuthoritativeCommands() {
     // ones — they only touch the session, the world and the save, so a headless
     // dedicated server runs them too. The renderer registers its client-only
     // commands on commandDispatcher() through the shared tree.
+    //
+    // Every command below changes the world or a player and so declares op level
+    // 2 (GAMEMASTERS), 1.16.1's requirement for gamemode/gamerule/kill/give/time/
+    // weather/spawnpoint. Single-player runs as the owner (op4) and always
+    // passes; the level exists so a multiplayer (S subtree) source below it is
+    // refused server-side without any command touching the check.
+    using gameplay::command::PermissionLevel;
     commandDispatcher_.literal("gamemode")
+        .requiresLevel(PermissionLevel::GameMasters)
         .argument("mode", gameplay::command::kGameModeArgument)
         .executes([this](const gameplay::command::CommandContext& context) {
             const auto mode = context.find<gameplay::GameMode>("mode");
@@ -635,6 +678,7 @@ void GameRuntime::registerAuthoritativeCommands() {
                 true, "Set own game mode to " + std::string{gameplay::gameModeName(*mode)}};
         });
     commandDispatcher_.literal("time")
+        .requiresLevel(PermissionLevel::GameMasters)
         .then("set")
         .argument("time", gameplay::command::kTimeArgument)
         .executes([this](const gameplay::command::CommandContext& context) {
@@ -654,6 +698,7 @@ void GameRuntime::registerAuthoritativeCommands() {
                                                      std::to_string(static_cast<int>(*ticks))};
         });
     commandDispatcher_.literal("give")
+        .requiresLevel(PermissionLevel::GameMasters)
         .argument("item", gameplay::command::kGiveItemArgument)
         .argument("count", gameplay::command::kIntArgument)
         .executes([this](const gameplay::command::CommandContext& context) {
@@ -717,6 +762,7 @@ void GameRuntime::registerAuthoritativeCommands() {
     // gamerule keeps GameRules as its rule engine; the tree supplies the
     // validated rule name and the raw value string it parses.
     commandDispatcher_.literal("gamerule")
+        .requiresLevel(PermissionLevel::GameMasters)
         .argument("rule", gameplay::command::kGameRuleArgument)
         .executes([this](const gameplay::command::CommandContext& context) {
             const auto rule = context.find<std::string>("rule");
@@ -735,6 +781,7 @@ void GameRuntime::registerAuthoritativeCommands() {
             return gameSession_.gameRules().setFromCommand(*rule, *value);
         });
     commandDispatcher_.literal("kill")
+        .requiresLevel(PermissionLevel::GameMasters)
         .executes([this](const gameplay::command::CommandContext&) {
             gameSession_.killPlayer(gameplay::kPrimaryPlayerId, host_);
             return gameplay::CommandResult{true, "Killed the player"};
@@ -764,6 +811,7 @@ void GameRuntime::registerAuthoritativeCommands() {
                                            "Killed " + std::to_string(killed) + "x " + *target};
         });
     commandDispatcher_.literal("spawnpoint")
+        .requiresLevel(PermissionLevel::GameMasters)
         .executes([this](const gameplay::command::CommandContext&) {
             return applySpawnPoint(std::nullopt);
         })
@@ -773,16 +821,9 @@ void GameRuntime::registerAuthoritativeCommands() {
             if (!position.has_value()) {
                 return gameplay::CommandResult{false, "Usage: /spawnpoint [<x> <y> <z>]"};
             }
-            const glm::vec3 base = gameSession_.player().position();
-            const glm::vec3 target{
-                position->relativeX ? base.x + static_cast<float>(position->x)
-                                    : static_cast<float>(position->x),
-                position->relativeY ? base.y + static_cast<float>(position->y)
-                                    : static_cast<float>(position->y),
-                position->relativeZ ? base.z + static_cast<float>(position->z)
-                                    : static_cast<float>(position->z),
-            };
-            return applySpawnPoint(target);
+            // Relative `~` axes resolve against the source's position in the one
+            // shared resolve() — no hand-written base+offset branch here anymore.
+            return applySpawnPoint(gameplay::command::resolve(*position, context.source()));
         });
     const auto setClearWeather = [this](int ticks) {
         gameSession_.weatherSystem().setWeather(ticks, 0, false, false);
@@ -799,6 +840,7 @@ void GameRuntime::registerAuthoritativeCommands() {
         return gameplay::CommandResult{true, "It started thundering"};
     };
     commandDispatcher_.literal("weather")
+        .requiresLevel(PermissionLevel::GameMasters)
         .then("clear")
         .executes([setClearWeather](const gameplay::command::CommandContext&) {
             return setClearWeather(6000);
@@ -811,6 +853,7 @@ void GameRuntime::registerAuthoritativeCommands() {
                        : gameplay::CommandResult{false, "Usage: /weather clear [<duration>]"};
         });
     commandDispatcher_.literal("weather")
+        .requiresLevel(PermissionLevel::GameMasters)
         .then("rain")
         .executes([setRainWeather](const gameplay::command::CommandContext&) {
             return setRainWeather(6000);
@@ -823,6 +866,7 @@ void GameRuntime::registerAuthoritativeCommands() {
                        : gameplay::CommandResult{false, "Usage: /weather rain [<duration>]"};
         });
     commandDispatcher_.literal("weather")
+        .requiresLevel(PermissionLevel::GameMasters)
         .then("thunder")
         .executes([setThunderWeather](const gameplay::command::CommandContext&) {
             return setThunderWeather(6000);

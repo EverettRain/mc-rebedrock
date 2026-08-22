@@ -26,6 +26,7 @@
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -185,6 +186,37 @@ int main() {
         assert(runtime.gameSession().inventory().selectedHotbarSlot() != 4U);
         runtime.tick();
         assert(runtime.gameSession().inventory().selectedHotbarSlot() == 4U);
+
+        // CMD2: a chat command runs against a CommandSource built from the primary
+        // player (op4 owner). `/spawnpoint ~ ~ ~` resolves the relative axes
+        // through the one resolve() against that source's authoritative position,
+        // proving the source is threaded into the handler and the feedback routes
+        // back to the chat result.
+        {
+            const glm::vec3 playerPos = runtime.gameSession().player().position();
+            runtime.enqueueChat("/spawnpoint ~ ~ ~");
+            runtime.tick();
+            const auto spawnResult = runtime.takeChatResult();
+            assert(spawnResult.has_value() && spawnResult->success);
+            const glm::vec3 spawn = runtime.gameSession().playerSpawnPosition();
+            assert(std::fabs(spawn.x - playerPos.x) < 1e-3F &&
+                   std::fabs(spawn.y - playerPos.y) < 1e-3F &&
+                   std::fabs(spawn.z - playerPos.z) < 1e-3F);
+
+            // Feedback is gated by sendCommandFeedback: a successful command is
+            // silent when the rule is off, but a failure always reports.
+            static_cast<void>(runtime.gameSession().gameRules().set<bool>(
+                gameplay::GameRuleId::SendCommandFeedback, false));
+            runtime.enqueueChat("/spawnpoint ~ ~ ~");
+            runtime.tick();
+            assert(!runtime.takeChatResult().has_value()); // a success is silenced
+            runtime.enqueueChat("/notacommand");
+            runtime.tick();
+            const auto failResult = runtime.takeChatResult();
+            assert(failResult.has_value() && !failResult->success); // failures still report
+            static_cast<void>(runtime.gameSession().gameRules().set<bool>(
+                gameplay::GameRuleId::SendCommandFeedback, true)); // restore the default
+        }
 
         // Advance a handful of ticks synchronously (headless drives tick()
         // directly; the threaded form is exercised by the smoke test).

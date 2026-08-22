@@ -37,6 +37,7 @@ enum class GameRuleId : std::uint8_t {
     DoWeatherCycle,
     KeepInventory,
     RandomTickSpeed,
+    SendCommandFeedback,
     Count,  // must stay last; the values array is sized by it
 };
 
@@ -55,12 +56,16 @@ struct GameRuleDefinition final {
 // The registry table: one row per rule. Adding a rule = one enumerator in
 // `GameRuleId` plus one row here; every other surface (command, save, default)
 // derives from this table. Validated at compile time below.
-inline constexpr std::array<GameRuleDefinition, 4> kGameRuleDefinitions{{
+inline constexpr std::array<GameRuleDefinition, 5> kGameRuleDefinitions{{
     //     name                 type              default  min  max  category
     {"doDaylightCycle",        GameRuleType::Boolean, true, 0, 0, "updates"},
     {"doWeatherCycle",         GameRuleType::Boolean, true, 0, 0, "updates"},
     {"keepInventory",          GameRuleType::Boolean, false, 0, 0, "players"},
     {"randomTickSpeed",        GameRuleType::Int,     std::int32_t{3}, 0, 1000, "updates"},
+    // Whether a successful command reports back to its sender's chat; failures
+    // always report. Default true, so it is absent from a save until turned off
+    // (the block is sparse), keeping older worlds byte-identical.
+    {"sendCommandFeedback",    GameRuleType::Boolean, true, 0, 0, "chat"},
 }};
 
 constexpr bool gameRuleDefinitionsAreWellFormed() {

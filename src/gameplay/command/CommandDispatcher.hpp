@@ -2,6 +2,7 @@
 
 #include "gameplay/CommandResult.hpp"
 #include "gameplay/command/ArgumentType.hpp"
+#include "gameplay/command/CommandSource.hpp"
 #include "gameplay/command/StringReader.hpp"
 
 #include <algorithm>
@@ -32,6 +33,11 @@ struct ParseResults final {
     bool hasPartial = false;       // whether the cursor sits in a partial token
     bool error = false;
     std::string errorMessage;
+    // The highest op level any node on the walked path declared — a child
+    // inherits its ancestors' requirement, so this is folded to the max as the
+    // walk descends. execute() refuses a source below it (Brigadier's per-node
+    // `requires`, collapsed to one integer compared once at the leaf).
+    PermissionLevel requiredLevel = PermissionLevel::All;
 };
 
 // The command tree, mirroring 1.16.1's Brigadier CommandDispatcher shape: a
@@ -61,7 +67,16 @@ class CommandDispatcher final {
     // Begins registering a root-level literal command (e.g. "gamemode").
     CommandBuilder literal(std::string_view name);
 
-    // Parses and executes one full input line ("/gamemode survival").
+    // Parses and executes one full input line ("/gamemode survival") on behalf of
+    // `source`: the walk resolves `~` coordinates against it, the command is
+    // refused when the source's op level is below what the command declared, and
+    // the result is routed to the source's feedback sink (when it has one) before
+    // being returned.
+    [[nodiscard]] CommandResult execute(std::string_view input, const CommandSource& source) const;
+    // Convenience for callers with no source of their own (a headless test, an
+    // internal script): runs as the single-player owner (op4, at the origin, no
+    // feedback sink), so every command is permitted and the result comes back by
+    // return value only.
     [[nodiscard]] CommandResult execute(std::string_view input) const;
 
     // Whether a root command with this exact name is registered.
@@ -101,6 +116,9 @@ class CommandDispatcher final {
         const ArgumentType* argumentType = nullptr; // set when argument; not owned
         Handler handler;                            // executable leaf handler
         SuggestionsProvider customSuggestions;      // extra node-level completions
+        // The op level this node (and, by inheritance, its subtree) requires;
+        // All means unrestricted. Set through CommandBuilder::requires.
+        PermissionLevel requiredLevel = PermissionLevel::All;
     };
 
     [[nodiscard]] std::size_t addLiteralChild(std::size_t parent, std::string_view token);
@@ -126,6 +144,14 @@ class CommandBuilder final {
 
     // Attaches the executable handler to the current node.
     CommandBuilder& executes(CommandDispatcher::Handler handler);
+
+    // Declares the op level this command needs (Brigadier's `requires`, narrowed
+    // to the op-level predicate; `requires` itself is a C++20 keyword). Set on a
+    // literal, it gates the whole subtree rooted there —
+    // `literal("gamemode").requiresLevel(GameMasters)` gates every `/gamemode …`
+    // form — because execute() folds the path's levels to their max. A source
+    // below the level is refused before the handler runs.
+    CommandBuilder& requiresLevel(PermissionLevel level);
 
     // Attaches node-level completion candidates to the current node, in
     // addition to its argument type's own suggestions (Brigadier's
@@ -167,6 +193,11 @@ inline CommandBuilder& CommandBuilder::suggests(CommandDispatcher::SuggestionsPr
     return *this;
 }
 
+inline CommandBuilder& CommandBuilder::requiresLevel(PermissionLevel level) {
+    dispatcher_->nodes_[node_].requiredLevel = level;
+    return *this;
+}
+
 inline std::size_t CommandDispatcher::addLiteralChild(std::size_t parent, std::string_view token) {
     const std::string key{token};
     if (const auto found = nodes_[parent].literalChildren.find(key);
@@ -202,19 +233,42 @@ inline bool CommandDispatcher::contains(std::string_view name) const {
     return nodes_[root_].literalChildren.contains(name);
 }
 
-inline CommandResult CommandDispatcher::execute(std::string_view input) const {
+inline CommandResult CommandDispatcher::execute(std::string_view input,
+                                                const CommandSource& source) const {
+    // A single place decides the outcome, then routes it to the source's feedback
+    // sink before returning — successes and failures alike (the sink applies the
+    // sendCommandFeedback gamerule, so the gate is not duplicated here).
+    const auto route = [&source](CommandResult result) {
+        if (source.feedback) {
+            source.feedback(result);
+        }
+        return result;
+    };
     if (input.empty() || input.front() != '/') {
-        return {false, "Commands must start with /"};
+        return route({false, "Commands must start with /"});
     }
-    const auto parsed = parse(input.substr(1), std::nullopt);
+    auto parsed = parse(input.substr(1), std::nullopt);
     if (parsed.error) {
-        return {false, parsed.errorMessage};
+        return route({false, parsed.errorMessage});
+    }
+    if (!hasPermission(source.permissionLevel, parsed.requiredLevel)) {
+        return route({false, "You do not have permission to use this command"});
     }
     const Node& leaf = nodes_[parsed.node];
     if (leaf.handler) {
-        return leaf.handler(parsed.context);
+        // The handler reads the source (relative coordinates, op level) through
+        // the context; bind it just before dispatch.
+        parsed.context.setSource(&source);
+        return route(leaf.handler(parsed.context));
     }
-    return {false, "Incomplete command"};
+    return route({false, "Incomplete command"});
+}
+
+inline CommandResult CommandDispatcher::execute(std::string_view input) const {
+    // The single-player owner: op4 at the origin, no feedback sink. Static so its
+    // address is stable for the context's source pointer across the call.
+    static const CommandSource kOwnerSource{};
+    return execute(input, kOwnerSource);
 }
 
 inline std::vector<Suggestion> CommandDispatcher::suggestions(std::string_view input,
@@ -297,6 +351,7 @@ inline ParseResults CommandDispatcher::parse(std::string_view line,
                 found != current.literalChildren.end()) {
                 node = found->second;
                 result.node = node;
+                result.requiredLevel = maxLevel(result.requiredLevel, nodes_[node].requiredLevel);
                 continue;
             }
         }
@@ -322,6 +377,7 @@ inline ParseResults CommandDispatcher::parse(std::string_view line,
             result.context.bind(nodes_[argumentNode].name, parsed.value);
             node = argumentNode;
             result.node = node;
+            result.requiredLevel = maxLevel(result.requiredLevel, nodes_[node].requiredLevel);
             continue;
         }
         result.error = true;

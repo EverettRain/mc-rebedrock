@@ -192,6 +192,11 @@ class GameRuntime final {
   private:
     void registerAuthoritativeCommands();
     void processChatQueue();
+    // Builds the command source for a chat line run this tick: the primary player
+    // (op4 owner) with its current position/rotation and a feedback sink that
+    // routes the result to the chat HUD, gated by the sendCommandFeedback
+    // gamerule. Rebuilt per line so a moving command updates the next `~`.
+    [[nodiscard]] gameplay::command::CommandSource makeCommandSource();
     // Drains the client→server channel into the session's command queue at the
     // start of a tick. Safe to call inside the world write section: the channel
     // and the command queue each carry their own mutex, so this depends on

@@ -17,6 +17,10 @@
 
 namespace mc::gameplay::command {
 
+// Defined in CommandSource.hpp; the context only holds a pointer to it, so the
+// argument layer need not pull the player identity / feedback types in.
+struct CommandSource;
+
 // A transparent hasher for string-keyed maps. With `is_transparent` and
 // std::equal_to<>, find() runs on a string_view without building a temporary
 // std::string; std::hash<string_view> and std::hash<string> hash the same
@@ -99,8 +103,19 @@ class CommandContext final {
         return std::nullopt;
     }
 
+    // The source that ran this command — who, where, in which dimension, at what
+    // op level (CommandSource.hpp). Set by the dispatcher just before the handler
+    // runs; a handler resolves `~` coordinates and (future) `@s` against it. Null
+    // when a command was executed without a source (the default execute() path a
+    // headless test uses); handlers that touch the source only do so for `~`
+    // forms, which the source-aware execute always supplies.
+    void setSource(const CommandSource* source) { source_ = source; }
+    [[nodiscard]] bool hasSource() const { return source_ != nullptr; }
+    [[nodiscard]] const CommandSource& source() const { return *source_; }
+
   private:
     std::unordered_map<std::string, std::any, LiteralHash, std::equal_to<>> values_;
+    const CommandSource* source_ = nullptr;  // not owned; outlives one execute() call
 };
 
 using CommandResult = mc::gameplay::CommandResult;
