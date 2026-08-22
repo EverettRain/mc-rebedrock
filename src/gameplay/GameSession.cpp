@@ -1,5 +1,6 @@
 #include "gameplay/GameSession.hpp"
 
+#include "gameplay/BlockEntityTicker.hpp"
 #include "gameplay/GameplayMutationSink.hpp"
 
 #include "world/DayNightCycle.hpp"
@@ -168,12 +169,16 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
         }
     }
     fluidUpdatePhaseConsumed = true;
+    // Block entities advance through the ticker behaviour table, not a hand-list
+    // of system tick() calls: each type with a ticker steps its container once,
+    // in ascending BlockEntityTypeId order, and a tickless type is skipped by the
+    // pre-filter. Chest lids and furnace burns are both driven here.
+    tickBlockEntities(BlockEntityTickContext{chestSystem_, furnaceSystem_});
     // Every placed furnace smelts on its own now, screen open or not. Mirror its
-    // authoritative LIT state while this tick owns the server-world write
-    // section; the mutation event carries the client mesh/light update later.
-    furnaceSystem_.tick();
+    // authoritative LIT state — after the furnace ticker ran this tick — while
+    // this tick owns the server-world write section; the mutation event carries
+    // the client mesh/light update later.
     syncFurnaceLitStates(world);
-    chestSystem_.tick();
     if (itemEntities_.tick(world, primaryPlayer().controller.position(), primaryPlayer().inventory) > 0U) {
         events_.publish(SoundEvent{SoundEventKind::ItemPickup, primaryPlayer().controller.position()});
     }

@@ -1,5 +1,6 @@
 #include "gameplay/GameSession.hpp"
 #include "gameplay/GameplayMutationSink.hpp"
+#include "gameplay/Item.hpp"
 
 #include "world/Block.hpp"
 #include "world/BlockState.hpp"
@@ -229,6 +230,88 @@ int main() {
             world, {8, 40, 8}, BlockState{Block::Chest}, MutationFlags::All,
             MutationCause::PlayerPlace, sink));
         REQUIRE(session.chestSystem().find({8, 40, 8}) != nullptr);
+    }
+
+    // --- BE2 lifecycle contract: the unified entry gates create/destroy on the
+    // block's own hasBlockEntity pre-filter, so the three failures the contract
+    // exists to forbid are each pinned here. ---
+
+    // (1) Break a full chest: every one of its 27 slots spills and the entity is
+    //     gone. This is the "forgot to spill" guard — a removal that only deletes
+    //     the entity would scatter nothing.
+    {
+        auto world = loadedWorld();
+        mc::gameplay::GameSession session;
+        RecordingHost host;
+        session.setEventHost(host);
+        GameplayMutationSink placeSink{world, session};
+        static_cast<void>(session.worldMutations().setBlock(
+            world, {8, 40, 8}, BlockState{Block::Chest}, MutationFlags::All,
+            MutationCause::PlayerPlace, placeSink));
+        auto* chest = session.chestSystem().find({8, 40, 8});
+        REQUIRE(chest != nullptr);
+        // Fill all 27 slots so the spill count is exact rather than "some".
+        for (auto& slot : chest->items) {
+            slot = mc::gameplay::ItemStack{Block::Stone, 1U};
+        }
+        const std::size_t itemsBefore = session.itemEntities().entities().size();
+
+        // Drops suppressed so the count is the container spill alone, not the
+        // chest block's own loot on top of it.
+        GameplayMutationSink breakSink{world, session};
+        static_cast<void>(session.worldMutations().setBlock(
+            world, {8, 40, 8}, BlockState{}, MutationFlags::All | MutationFlags::SuppressDrops,
+            MutationCause::PlayerBreak, breakSink));
+        session.drainEvents();
+        REQUIRE(session.chestSystem().find({8, 40, 8}) == nullptr);
+        REQUIRE(session.itemEntities().entities().size() - itemsBefore ==
+                mc::gameplay::ChestBlockEntity::kSlotCount);
+    }
+
+    // (2) Break a furnace with all three slots and an item mid-smelt loaded: the
+    //     input, the fuel and the output all spill. The old special-case only
+    //     ever spilled what a test happened to set.
+    {
+        auto world = loadedWorld();
+        mc::gameplay::GameSession session;
+        RecordingHost host;
+        session.setEventHost(host);
+        GameplayMutationSink placeSink{world, session};
+        static_cast<void>(session.worldMutations().setBlock(
+            world, {6, 40, 6}, BlockState{Block::Furnace}, MutationFlags::All,
+            MutationCause::PlayerPlace, placeSink));
+        auto* furnace = session.furnaceSystem().find({6, 40, 6});
+        REQUIRE(furnace != nullptr);
+        furnace->input = mc::gameplay::ItemStack{Block::IronOre, 2U};
+        furnace->fuel = mc::gameplay::ItemStack{Block::Air, 1U, &mc::gameplay::items::Coal};
+        furnace->output = mc::gameplay::ItemStack{Block::Air, 1U, &mc::gameplay::items::IronIngot};
+        const std::size_t itemsBefore = session.itemEntities().entities().size();
+
+        // Drops suppressed so the count is the three furnace slots alone.
+        GameplayMutationSink breakSink{world, session};
+        static_cast<void>(session.worldMutations().setBlock(
+            world, {6, 40, 6}, BlockState{}, MutationFlags::All | MutationFlags::SuppressDrops,
+            MutationCause::PlayerBreak, breakSink));
+        session.drainEvents();
+        REQUIRE(session.furnaceSystem().find({6, 40, 6}) == nullptr);
+        REQUIRE(session.itemEntities().entities().size() - itemsBefore == 3U);
+    }
+
+    // (3) The pre-filter is a real gate, not a chest/furnace enumeration: placing
+    //     a block with no block entity (stone) creates none, and breaking it
+    //     tries to destroy none. A hasBlockEntity that leaked true for stone
+    //     would try to mint a chest here.
+    {
+        auto world = loadedWorld();
+        mc::gameplay::GameSession session;
+        RecordingHost host;
+        session.setEventHost(host);
+        GameplayMutationSink sink{world, session};
+        static_cast<void>(session.worldMutations().setBlock(
+            world, {9, 40, 9}, BlockState{Block::Stone}, MutationFlags::All,
+            MutationCause::PlayerPlace, sink));
+        REQUIRE(session.chestSystem().find({9, 40, 9}) == nullptr);
+        REQUIRE(session.furnaceSystem().find({9, 40, 9}) == nullptr);
     }
 
     // --- A write that resolves to the state already stored is free: no

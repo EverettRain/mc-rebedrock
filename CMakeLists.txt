@@ -1045,6 +1045,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME furnace_system COMMAND mc_rebedrock_furnace_system_test)
 
+    add_executable(mc_rebedrock_block_entity_ticker_test
+        tests/block_entity_ticker_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_block_entity_ticker_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_block_entity_ticker_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME block_entity_ticker COMMAND mc_rebedrock_block_entity_ticker_test)
+
     add_executable(mc_rebedrock_resource_provider_test
         tests/resource_provider_test.cpp
         src/assets/PackMetadata.cpp

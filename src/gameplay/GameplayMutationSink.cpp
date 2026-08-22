@@ -3,6 +3,7 @@
 #include "gameplay/BlockBehavior.hpp"
 #include "gameplay/GameSession.hpp"
 #include "world/Block.hpp"
+#include "world/BlockEntityType.hpp"
 #include "world/World.hpp"
 
 #include <cmath>
@@ -37,9 +38,28 @@ void GameplayMutationSink::scatterContents(world::BlockPos pos, const ItemStack&
 
 void GameplayMutationSink::onBlockEntityReplaced(world::BlockPos pos, world::BlockState previous,
                                                  world::BlockState current) {
+    // The unified lifecycle entry (A3b): the decision to destroy or create is
+    // gated on the block's own `hasBlockEntity` pre-filter (one indexed bit test)
+    // and dispatched by the BlockEntityTypeId it maps to — never a per-block
+    // switch here. That is what makes "placed a container but forgot to build its
+    // block entity" unrepresentable: any block whose table row says it hosts one
+    // gets it, without this call site enumerating which blocks those are.
+    //
     // Destroy first, then create: a cell that swaps one container for another
     // must not have the new entity clobbered by the old one's removal.
-    if (previous.block() == world::Block::Chest) {
+    if (world::hasBlockEntity(previous.block())) {
+        destroyBlockEntity(world::blockEntityTypeOf(previous.block()), pos);
+    }
+    if (world::hasBlockEntity(current.block())) {
+        createBlockEntity(world::blockEntityTypeOf(current.block()), pos);
+    }
+}
+
+void GameplayMutationSink::destroyBlockEntity(core::BlockEntityTypeId type, world::BlockPos pos) {
+    // The store removal + content spill is inherently per-kind (a chest's 27
+    // slots, a furnace's three), so the concrete arm is selected by the mapped
+    // type id rather than duplicated per hosting block.
+    if (type == world::blockEntityTypeId(world::BlockEntityKind::Chest)) {
         const auto removed = session_->chestSystem().remove({pos.x, pos.y, pos.z});
         if (removed.has_value()) {
             std::size_t dropIndex = 0U;
@@ -49,9 +69,9 @@ void GameplayMutationSink::onBlockEntityReplaced(world::BlockPos pos, world::Blo
                 }
             }
         }
-    } else if (previous.block() == world::Block::Furnace) {
-        // A broken furnace scatters its three slots, exactly as a chest
-        // scatters its inventory.
+    } else if (type == world::blockEntityTypeId(world::BlockEntityKind::Furnace)) {
+        // A broken furnace scatters its three slots — input, fuel and the item
+        // mid-smelt in the output — exactly as a chest scatters its inventory.
         const auto removed = session_->furnaceSystem().remove({pos.x, pos.y, pos.z});
         if (removed.has_value()) {
             std::size_t dropIndex = 0U;
@@ -62,10 +82,12 @@ void GameplayMutationSink::onBlockEntityReplaced(world::BlockPos pos, world::Blo
             }
         }
     }
+}
 
-    if (current.block() == world::Block::Chest) {
+void GameplayMutationSink::createBlockEntity(core::BlockEntityTypeId type, world::BlockPos pos) {
+    if (type == world::blockEntityTypeId(world::BlockEntityKind::Chest)) {
         static_cast<void>(session_->chestSystem().place({pos.x, pos.y, pos.z}));
-    } else if (current.block() == world::Block::Furnace) {
+    } else if (type == world::blockEntityTypeId(world::BlockEntityKind::Furnace)) {
         // Give the furnace its block entity immediately so it smelts even
         // before its screen is first opened.
         static_cast<void>(session_->furnaceSystem().place({pos.x, pos.y, pos.z}));

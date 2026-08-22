@@ -11,6 +11,7 @@
 // state diff by WorldMutationService and dispatched here, so a cell edited by a
 // player, a bucket or a command produces the same set of effects.
 
+#include "core/ContentId.hpp"
 #include "world/MutationFlags.hpp"
 #include "world/WorldMutationService.hpp"
 
@@ -51,6 +52,14 @@ class GameplayMutationSink final : public world::MutationSink {
                           world::MutationCause cause) override;
 
   private:
+    // Destroys the block entity a broken/replaced block owned, spilling its
+    // contents, and creates the one a newly placed block needs. Keyed on the
+    // BlockEntityTypeId the block maps to (BE1's block->BE table), not on the
+    // block identity, so two blocks that host the same block entity — a chest and
+    // a trapped chest, once it exists — collapse to one arm.
+    void destroyBlockEntity(core::BlockEntityTypeId type, world::BlockPos pos);
+    void createBlockEntity(core::BlockEntityTypeId type, world::BlockPos pos);
+
     // Scatters a removed container's contents at `pos`, the way a broken chest
     // or furnace spills its slots.
     void scatterContents(world::BlockPos pos, const ItemStack& stack, std::size_t dropIndex) const;
