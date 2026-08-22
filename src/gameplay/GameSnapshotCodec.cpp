@@ -301,6 +301,7 @@ void appendCreature(std::vector<std::uint8_t>& bytes, const EntityRenderState& s
     persistence::appendFloat(bytes, s.previousWalkDistance);
     persistence::appendInteger(bytes, static_cast<std::int32_t>(s.hurtTicks));
     persistence::appendInteger(bytes, static_cast<std::int32_t>(s.deathTicks));
+    persistence::appendFloat(bytes, s.scale);
 }
 
 void appendDrop(std::vector<std::uint8_t>& bytes, const ItemEntity& drop) {
@@ -350,6 +351,7 @@ void appendEntities(std::vector<std::uint8_t>& bytes, const EntityRenderSnapshot
         s.previousWalkDistance = persistence::readFloat(bytes, cursor);
         s.hurtTicks = persistence::readInteger<std::int32_t>(bytes, cursor);
         s.deathTicks = persistence::readInteger<std::int32_t>(bytes, cursor);
+        s.scale = persistence::readFloat(bytes, cursor);
         // A creature of a species this build does not know is skipped, not drawn.
         if (s.type != nullptr) {
             creatures.push_back(s);

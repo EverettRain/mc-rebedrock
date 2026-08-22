@@ -13,6 +13,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <utility>
 
 namespace mc::gameplay {
@@ -398,6 +399,22 @@ void EntitySystem::moveWithCollisions(
     }
 }
 
+void EntitySystem::installBreedingGoals(SimpleEntity& entity) {
+    const entities::EntityType& type = *entity.type;
+    if (!type.breedable()) {
+        return;
+    }
+    // AnimalMateGoal (2) outranks temptation (3), which outranks the wander/look
+    // fallback AnimalAi installs at 5+, matching the vanilla Animal goal order.
+    const entities::BreedingProfile& breeding = type.breeding();
+    entity.brain.goals().add(2, std::make_unique<entities::AnimalMateGoal>(1.0F));
+    entity.brain.goals().add(
+        3, std::make_unique<entities::TemptGoal>(breeding.temptItem, 1.25F, /*range=*/10.0F));
+    // FollowParent sits above the wander/look fallback (5+) so a baby trailing the
+    // herd is not constantly interrupted by a wander pick of equal priority.
+    entity.brain.goals().add(4, std::make_unique<entities::FollowParentGoal>(1.1F));
+}
+
 void EntitySystem::spawn(glm::vec3 position, const entities::EntityType& type, std::uint32_t seed) {
     SimpleEntity entity;
     entity.type = &type;
@@ -412,6 +429,7 @@ void EntitySystem::spawn(glm::vec3 position, const entities::EntityType& type, s
     entity.lookYaw = entity.yaw;
     // MobEntity#initGoals runs once at spawn.
     type.ai().configureBrain(entity.brain);
+    installBreedingGoals(entity);
     type.ai().onSpawn(entity, entity.rngState);
     entities_.push_back(std::move(entity));
     // Register the stable id and drop the creature into its section bucket so
@@ -427,7 +445,7 @@ std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityTy
                                     float yaw, glm::vec3 velocity, float health,
                                     int angerTicks, unsigned int ageTicks,
                                     std::uint32_t rngState, int fireTicks,
-                                    const ActiveEffects& effects) {
+                                    const ActiveEffects& effects, int age, int loveTicks) {
     SimpleEntity entity;
     entity.type = &type;
     entity.id = nextEntityId_++;
@@ -445,12 +463,19 @@ std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityTy
     // The active MobEffects travel with the save (a poisoned creature reopens
     // still poisoned with its remaining duration intact).
     entity.effects = effects;
+    // AgeableMob age/love travel with the save: a baby reopens a baby with its
+    // remaining growth, an adult keeps its breed cooldown, love survives. A
+    // non-breedable species is forced to adult, so a stray record cannot leave it
+    // a permanent baby with no way to grow up.
+    entity.age = type.breedable() ? age : 0;
+    entity.loveTicks = type.breedable() ? std::max(loveTicks, 0) : 0;
     // The species owns the max; the save's health is the current value, clamped
     // so a corrupt record cannot restore a creature over its cap.
     entity.damage.maxHealth = type.attributes().maxHealth();
     entity.damage.health = std::min(health, entity.damage.maxHealth);
     // MobEntity#initGoals runs once at spawn, exactly like a fresh spawn.
     type.ai().configureBrain(entity.brain);
+    installBreedingGoals(entity);
     type.ai().onSpawn(entity, entity.rngState);
     entities_.push_back(std::move(entity));
     const std::size_t index = entities_.size() - 1U;
@@ -650,6 +675,63 @@ bool EntitySystem::hasEffect(std::uint64_t entityId, core::StatusEffectId effect
     return mc::gameplay::hasEffect(entities_[found->second].effects, effect);
 }
 
+bool EntitySystem::setInLove(std::uint64_t entityId) {
+    const auto found = idToIndex_.find(entityId);
+    if (found == idToIndex_.end()) {
+        return false;
+    }
+    SimpleEntity& entity = entities_[found->second];
+    // Only a breedable adult off cooldown enters love — a baby or a mob still on
+    // its post-breed cooldown cannot.
+    if (entity.dead() || !entity.canBreed()) {
+        return false;
+    }
+    entity.loveTicks = kLoveTicks;
+    return true;
+}
+
+bool EntitySystem::setAge(std::uint64_t entityId, int age) {
+    const auto found = idToIndex_.find(entityId);
+    if (found == idToIndex_.end()) {
+        return false;
+    }
+    SimpleEntity& entity = entities_[found->second];
+    // A non-breedable species has no age axis; keep it an adult.
+    entity.age = entity.type->breedable() ? age : 0;
+    return true;
+}
+
+void EntitySystem::processBreeding(
+    const std::vector<std::pair<std::uint64_t, std::uint64_t>>& requests) {
+    for (const auto& [firstId, secondId] : requests) {
+        SimpleEntity* first = byId(firstId);
+        SimpleEntity* second = byId(secondId);
+        // Both parents must still exist, be the same species, and still be ready:
+        // a parent that died, grew out of love, or already bred this tick (its
+        // cooldown is now non-zero) cancels the breed.
+        if (first == nullptr || second == nullptr || first->type != second->type ||
+            !first->readyToMate() || !second->readyToMate()) {
+            continue;
+        }
+        // Capture what the baby needs before spawn(), which appends to entities_
+        // and may reallocate the vector — invalidating first/second. Both parents
+        // go on cooldown and fall out of love now (the vanilla anti-spam rule), so
+        // a herd cannot breed every tick.
+        const glm::vec3 midpoint = (first->position + second->position) * 0.5F;
+        const std::uint32_t babySeed =
+            (first->rngState ^ (second->rngState * 2654435761U)) | 1U;
+        const entities::EntityType& species = *first->type;
+        first->age = kBreedCooldownTicks;
+        second->age = kBreedCooldownTicks;
+        first->loveTicks = 0;
+        second->loveTicks = 0;
+        // The baby spawns at the parents' midpoint as a newborn (age negative);
+        // its RNG is derived from both parents so the same seed breeds identically.
+        spawn(midpoint, species, babySeed);
+        entities_.back().age = kBabyAgeTicks;
+    }
+}
+
 void EntitySystem::clear() {
     entities_.clear();
     entitySections_.clear();
@@ -744,9 +826,14 @@ EntityTickResult EntitySystem::tick(
     bool playerAlive,
     bool playerCreative,
     float simulationRadius,
-    bool raining) {
+    bool raining,
+    ItemStack heldItem) {
     EntityTickResult result;
     ++gameTick_;
+    // AnimalMateGoal emits breeds here; the babies are spawned after the AI loop
+    // (spawning mid-loop would reallocate the vector this loop iterates). Each
+    // entry is (parentA id, parentB id) — the lower-id parent filed it.
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> breedRequests;
     const bool playerPresent = pusher.y > -900.0F;
     // ServerWorld's tick distance: a creature beyond the radius is frozen this
     // tick (dormant but rendered). No radius means nothing is gated.
@@ -765,7 +852,8 @@ EntityTickResult EntitySystem::tick(
         world,
         std::span<const SimpleEntity>{entities_},
         idToIndex_,
-        PlayerAiView{pusher, playerPresent, playerAlive, playerCreative, pusherWidth, pusherHeight},
+        PlayerAiView{pusher, playerPresent, playerAlive, playerCreative, pusherWidth, pusherHeight,
+                     heldItem},
         gameTick_};
     for (auto& entity : entities_) {
         entity.previousPosition = entity.position;
@@ -797,6 +885,18 @@ EntityTickResult EntitySystem::tick(
         }
         if (entity.wanderTimer > 0U) {
             --entity.wanderTimer;
+        }
+        // AgeableMob#aiStep age logic (EM-3): a baby's age climbs toward zero and
+        // becomes an adult on the tick it reaches it; an adult's positive breed
+        // cooldown counts back down to zero. Love counts down independently. Only
+        // moves for a breedable species (age/love stay zero otherwise).
+        if (entity.age < 0) {
+            ++entity.age;  // grows up; reaches 0 -> adult, full-size hitbox
+        } else if (entity.age > 0) {
+            --entity.age;  // breed cooldown expiring
+        }
+        if (entity.loveTicks > 0) {
+            --entity.loveTicks;
         }
         entity.movementSpeedMultiplier = 1.0F;
 
@@ -900,6 +1000,9 @@ EntityTickResult EntitySystem::tick(
             if (const auto attack = entity.brain.takeAttackRequest()) {
                 result.mobAttacks.push_back({entity.id, attack->target, attack->amount});
             }
+            if (const auto partner = entity.brain.takeBreedRequest()) {
+                breedRequests.emplace_back(entity.id, *partner);
+            }
         }
 
         // Horizontal intent comes from the wander heading, plus whatever
@@ -984,6 +1087,11 @@ EntityTickResult EntitySystem::tick(
             }
         }
     }
+
+    // AnimalMateGoal#breed: resolve the breeds the AI pass requested now that the
+    // loop over the (possibly-reallocating) vector is done. Spawning a baby here
+    // appends through spawn(), which keeps every parallel index consistent.
+    processBreeding(breedRequests);
 
     // Maintain persistent buckets like vanilla's EntitySectionStorage. Most
     // creatures remain in the same 16-block section, so the common case is only

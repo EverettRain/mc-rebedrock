@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gameplay/Inventory.hpp"
+
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
@@ -48,6 +50,11 @@ struct PlayerAiView final {
     bool creative = false;
     float width = 0.6F;
     float height = 1.8F;
+    // The player's held stack, so TemptGoal can see whether the player is
+    // offering a species' tempt item. Empty when the hand is empty; a TemptGoal
+    // matches it against its own attractant, so the goal layer never learns which
+    // item any particular species wants — the species states that.
+    ItemStack heldItem{};
 };
 
 // Read-only sensing context for one AI pass. Actions are written to the mob's
@@ -68,9 +75,14 @@ class MobAiContext final {
     [[nodiscard]] std::uint64_t gameTick() const { return gameTick_; }
     [[nodiscard]] std::optional<glm::vec3> actorPosition(ActorReference actor) const;
     [[nodiscard]] bool canSee(const SimpleEntity& observer, ActorReference actor) const;
+    // The other creatures this pass can sense, read-only. Breeding/follow goals
+    // scan it for a nearby partner or parent of the same species. It is the same
+    // vector EntitySystem is ticking, so a goal must not store a pointer into it
+    // past the pass — it holds a stable id (findPartner/findParent) instead.
+    [[nodiscard]] std::span<const SimpleEntity> entities() const { return entities_; }
+    [[nodiscard]] const SimpleEntity* entityById(std::uint64_t id) const;
 
   private:
-    [[nodiscard]] const SimpleEntity* entityById(std::uint64_t id) const;
 
     const world::World& world_;
     std::span<const SimpleEntity> entities_;
@@ -295,6 +307,14 @@ class MobBrain final {
     void requestAttack(ActorReference target, float amount);
     [[nodiscard]] std::optional<AttackRequest> takeAttackRequest();
 
+    // AnimalMateGoal emits a breed the same way MeleeAttackGoal emits an attack:
+    // the read-only AI pass cannot spawn a baby into the (const) entity span, so
+    // it records the partner and EntitySystem resolves it after the pass, when it
+    // owns the mutable vector. The lower id of the pair carries the request so a
+    // couple breeds once, not twice.
+    void requestBreed(std::uint64_t partnerId);
+    [[nodiscard]] std::optional<std::uint64_t> takeBreedRequest();
+
     void tick(SimpleEntity& self, MobAiContext& context);
     void stop(SimpleEntity& self, MobAiContext& context);
 
@@ -304,6 +324,7 @@ class MobBrain final {
     GroundNavigation navigation_;
     ActorReference combatTarget_{};
     std::optional<AttackRequest> attackRequest_;
+    std::optional<std::uint64_t> breedRequest_;
 };
 
 // ActiveTargetGoal<PlayerEntity>: acquires a living non-creative player inside
@@ -438,6 +459,85 @@ class LookAroundGoal final : public MobGoal {
   private:
     int remainingTicks_ = 0;
     float lookYaw_ = 0.0F;
+};
+
+// TemptGoal (26.1): while the player holds this goal's attractant item, the
+// animal walks toward the player and stops the moment the hand no longer offers
+// it. The attractant is a parameter — the species passes wheat/seeds through its
+// breeding profile — so the goal itself is content-free. Adults and babies are
+// both temptable, matching vanilla.
+class TemptGoal final : public MobGoal {
+  public:
+    TemptGoal(gameplay::ItemStack attractant, float speedMultiplier, float range)
+        : attractant_(attractant), speedMultiplier_(speedMultiplier), range_(range) {}
+
+    [[nodiscard]] std::string_view name() const override { return "tempt"; }
+    [[nodiscard]] GoalControls controls() const override {
+        return entities::controls(GoalControl::Move, GoalControl::Look);
+    }
+    [[nodiscard]] bool canStart(SimpleEntity& self, MobAiContext& context,
+                                MobBrain& brain) override;
+    [[nodiscard]] bool shouldContinue(SimpleEntity& self, MobAiContext& context,
+                                      MobBrain& brain) override;
+    void tick(SimpleEntity& self, MobAiContext& context, MobBrain& brain) override;
+
+  private:
+    [[nodiscard]] bool playerOffering(const MobAiContext& context) const;
+
+    gameplay::ItemStack attractant_{};
+    float speedMultiplier_ = 1.0F;
+    float range_ = 10.0F;
+};
+
+// AnimalMateGoal (26.1): an in-love adult seeks the nearest in-love adult of its
+// own species, walks to it, and once the pair is within breeding range asks the
+// brain to breed. The lower-id partner carries the request so a couple produces
+// one baby, not two. Spawning the baby is EntitySystem's job (this pass is
+// read-only); the goal only signals the intent.
+class AnimalMateGoal final : public MobGoal {
+  public:
+    explicit AnimalMateGoal(float speedMultiplier) : speedMultiplier_(speedMultiplier) {}
+
+    [[nodiscard]] std::string_view name() const override { return "animal_mate"; }
+    [[nodiscard]] GoalControls controls() const override {
+        return entities::controls(GoalControl::Move, GoalControl::Look);
+    }
+    [[nodiscard]] bool canStart(SimpleEntity& self, MobAiContext& context,
+                                MobBrain& brain) override;
+    [[nodiscard]] bool shouldContinue(SimpleEntity& self, MobAiContext& context,
+                                      MobBrain& brain) override;
+    void tick(SimpleEntity& self, MobAiContext& context, MobBrain& brain) override;
+
+  private:
+    // The nearest in-love adult of the same species within breeding search range,
+    // or an invalid reference. Reads the shared entity span from the context.
+    [[nodiscard]] std::uint64_t findPartner(const SimpleEntity& self,
+                                            const MobAiContext& context) const;
+
+    float speedMultiplier_ = 1.0F;
+    std::uint64_t partnerId_ = 0U;
+};
+
+// FollowParentGoal (26.1): a baby walks toward the nearest adult of its own
+// species, so newborns trail the herd. Only babies run it; adults never start.
+class FollowParentGoal final : public MobGoal {
+  public:
+    explicit FollowParentGoal(float speedMultiplier) : speedMultiplier_(speedMultiplier) {}
+
+    [[nodiscard]] std::string_view name() const override { return "follow_parent"; }
+    [[nodiscard]] GoalControls controls() const override { return control(GoalControl::Move); }
+    [[nodiscard]] bool canStart(SimpleEntity& self, MobAiContext& context,
+                                MobBrain& brain) override;
+    [[nodiscard]] bool shouldContinue(SimpleEntity& self, MobAiContext& context,
+                                      MobBrain& brain) override;
+    void tick(SimpleEntity& self, MobAiContext& context, MobBrain& brain) override;
+
+  private:
+    [[nodiscard]] std::uint64_t findParent(const SimpleEntity& self,
+                                           const MobAiContext& context) const;
+
+    float speedMultiplier_ = 1.0F;
+    std::uint64_t parentId_ = 0U;
 };
 
 } // namespace entities

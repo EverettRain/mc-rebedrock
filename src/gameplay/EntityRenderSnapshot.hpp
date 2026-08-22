@@ -49,6 +49,10 @@ struct EntityRenderState final {
     // progress and whether to flash the hurt overlay.
     int hurtTicks = 0;
     int deathTicks = 0;
+    // EM-3 per-instance body scale: a baby is drawn smaller than an adult of the
+    // same species. 1.0 for adults and every non-ageable mob, so the draw pass
+    // multiplies unconditionally without a branch.
+    float scale = 1.0F;
 
     // EntityType instances are static singletons, so the pointer compares by
     // identity and round-trips by id — the codec can rebuild the same pointer.

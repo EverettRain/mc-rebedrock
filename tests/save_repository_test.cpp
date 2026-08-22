@@ -154,6 +154,11 @@ int main() {
         {"poison", 80, 0},
         {"speed", 200, 1},
     };
+    // AgeableMob age/love (entity block/region version 4): the pig is a baby with
+    // growth left, the zombie an adult on a breed cooldown and in love.
+    save.entities[0].age = -12000;   // pig: baby, halfway grown
+    save.entities[1].age = 4000;     // zombie: breed cooldown
+    save.entities[1].loveTicks = 300;
     repository.save(save);
     const auto listed = repository.list();
     assert(listed.size() == 1U);
@@ -255,6 +260,12 @@ int main() {
     }
     // The pig carried no effects.
     assert(pig->effects.empty());
+    // AgeableMob age/love survived: the pig is still a baby with its remaining
+    // growth, the zombie still on cooldown and in love.
+    assert(pig->age == -12000);
+    assert(pig->loveTicks == 0);
+    assert(zombie->age == 4000);
+    assert(zombie->loveTicks == 300);
 
     // Blocks travel as namespaced identifiers now, so the payload literally
     // contains them and a renumbered enum cannot silently reinterpret an old

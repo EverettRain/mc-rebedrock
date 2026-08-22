@@ -61,6 +61,10 @@ struct PersistentEntity final {
     // The creature's active MobEffects. Added in entity block version 3; earlier
     // records carry none, so an old world migrates to an unaffected herd.
     std::vector<PersistentEffect> effects;
+    // AgeableMob age/love (EM-3). Added in entity block version 4; earlier records
+    // read both as zero, i.e. an ordinary adult with no cooldown and no love.
+    std::int32_t age = 0;
+    std::int32_t loveTicks = 0;
 };
 
 // A dropped item awaiting pickup. Position and velocity are the whole physical

@@ -816,6 +816,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME status_effect COMMAND mc_rebedrock_status_effect_test)
 
+    add_executable(mc_rebedrock_aging_breeding_test
+        tests/aging_breeding_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_aging_breeding_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_aging_breeding_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME aging_breeding COMMAND mc_rebedrock_aging_breeding_test)
+
     # Manual tools, not part of the test suite: they take arguments or print
     # numbers instead of asserting, so ctest cannot judge them and a normal build
     # has no reason to compile them. Configure with -DMC_REBEDROCK_BUILD_TOOLS=ON

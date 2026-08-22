@@ -54,6 +54,8 @@ constexpr int kSpawnChunkRadius = 4;
         record.effects.push_back(
             {std::string{name}, live.durationTicks, live.amplifier});
     }
+    record.age = entity.age;
+    record.loveTicks = entity.loveTicks;
     return record;
 }
 
@@ -739,7 +741,8 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
         gameSession_.worldEntities().restore({record.x, record.y, record.z}, type, record.yaw,
                                              {record.vx, record.vy, record.vz}, record.health,
                                              record.angerTicks, record.ageTicks, record.rngState,
-                                             record.fireTicks, toActiveEffects(record.effects));
+                                             record.fireTicks, toActiveEffects(record.effects),
+                                             record.age, record.loveTicks);
     }
     // Format 16: dropped items and blocks mid-fall. Before it, everything a
     // player had thrown or mined but not picked up vanished on reload.
@@ -1125,7 +1128,7 @@ void GameRuntime::restoreLoadedChunk(world::ChunkPosition position) {
             {record.x, record.y, record.z}, type, record.yaw,
             {record.vx, record.vy, record.vz}, record.health, record.angerTicks,
             record.ageTicks, record.rngState, record.fireTicks,
-            toActiveEffects(record.effects));
+            toActiveEffects(record.effects), record.age, record.loveTicks);
     }
 }
 

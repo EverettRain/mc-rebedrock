@@ -99,6 +99,15 @@ struct SimpleEntity final {
     // than a heap map. Empty for almost every creature (count == 0), so an
     // unaffected mob pays one integer to skip the whole effect tick.
     ActiveEffects effects{};
+    // AgeableMob#age (EM-3): negative = a baby with that many ticks left to grow,
+    // 0 = an adult ready to breed, positive = an adult's breed cooldown counting
+    // down. Distinct from `ageTicks` above, which is a monotonic counter for
+    // despawn/sound cadence and never goes negative. Zero (adult, no cooldown) is
+    // the default, so a non-ageable mob simply never moves it.
+    int age = 0;
+    // Animal#loveTicks: ticks of the in-love state a feed grants. Two in-love
+    // adults of one species breed on contact; ticks down to zero otherwise.
+    int loveTicks = 0;
 
     // Stateful Goal instances and the current navigation path are per entity.
     entities::MobBrain brain;
@@ -106,9 +115,28 @@ struct SimpleEntity final {
     [[nodiscard]] bool dead() const { return damage.dead(); }
     // Angerable#hasAngerTime: whether a neutral mob is currently provoked.
     [[nodiscard]] bool angry() const { return angerTicks > 0; }
+    // AgeableMob#isBaby: a negative age. Only ageable species ever go negative.
+    [[nodiscard]] bool baby() const { return age < 0; }
+    // Animal#canBreed / #isInLove, and the combined "ready to make a baby": an
+    // adult (age 0, so not a baby and off cooldown) that is currently in love.
+    [[nodiscard]] bool inLove() const { return loveTicks > 0; }
+    [[nodiscard]] bool canBreed() const { return age == 0 && type->breedable(); }
+    [[nodiscard]] bool readyToMate() const { return canBreed() && inLove(); }
+    // The per-instance render/collision scale: a baby is drawn and collides at
+    // its species' baby scale, an adult at 1.0. Derived from age and the type, so
+    // it needs no stored field and stays correct the instant a baby grows up.
+    [[nodiscard]] float bodyScale() const {
+        return baby() ? type->breeding().babyScale : 1.0F;
+    }
     // The species control object. Safe to dereference for any spawned entity.
     [[nodiscard]] const entities::EntityType& kind() const { return *type; }
-    [[nodiscard]] entities::EntityDimensions dimensions() const { return type->dimensions(); }
+    // Entity#getDimensions: the species box, shrunk by the per-instance scale so a
+    // baby's hitbox matches its smaller body.
+    [[nodiscard]] entities::EntityDimensions dimensions() const {
+        const auto box = type->dimensions();
+        const float scale = bodyScale();
+        return {box.width * scale, box.height * scale};
+    }
     // Entity#getBoundingBox: the box is centred on the feet position in X/Z and
     // rises from it.
     [[nodiscard]] glm::vec3 boundingBoxMinimum() const {
@@ -121,6 +149,15 @@ struct SimpleEntity final {
         return {position.x + half, position.y + box.height, position.z + half};
     }
 };
+
+// AgeableMob age constants (26.1). A newborn starts this many ticks below zero
+// (twenty real minutes to grow up) and climbs to adulthood; a fresh breed sets
+// both parents to the cooldown; a feed grants the love window.
+inline constexpr int kBabyAgeTicks = -24000;
+inline constexpr int kBreedCooldownTicks = 6000;
+inline constexpr int kLoveTicks = 600;
+// AnimalMateGoal's contact distance: parents within this settle and breed.
+inline constexpr float kBreedingRange = 3.0F;
 
 // What a ray found: which creature it hit and how far along the ray. The id is
 // stable across ticks — unlike a vector index, which is only valid until the
@@ -202,7 +239,7 @@ class EntitySystem final {
     std::uint64_t restore(glm::vec3 position, const entities::EntityType& type, float yaw,
                           glm::vec3 velocity, float health, int angerTicks,
                           unsigned int ageTicks, std::uint32_t rngState, int fireTicks = 0,
-                          const ActiveEffects& effects = {});
+                          const ActiveEffects& effects = {}, int age = 0, int loveTicks = 0);
 
     // Advances every creature one 20 TPS tick against the world: target/action
     // selectors, land navigation, gravity, collision, pushing and damage timers.
@@ -227,7 +264,10 @@ class EntitySystem final {
         // creature standing under open sky is put out by the rain, the way
         // Entity#baseTick's isBeingRainedOn extinguishes it. False leaves fire to
         // be quenched only by water.
-        bool raining = false);
+        bool raining = false,
+        // The player's held stack, so TemptGoal can see a species' tempt item on
+        // offer. Empty (default) means an empty hand — no animal is tempted.
+        ItemStack heldItem = {});
 
     // GameRenderer's crosshair pick: the nearest creature whose targeting box
     // the ray enters within `reach`. Ordinary 1.16.1 living entities have a
@@ -282,6 +322,18 @@ class EntitySystem final {
     std::size_t clearEffects(std::uint64_t entityId);
     [[nodiscard]] bool hasEffect(std::uint64_t entityId, core::StatusEffectId effect) const;
 
+    // Animal#setInLove: puts a breedable adult into love for kLoveTicks. This is
+    // the entry a feeding interaction (AR-A) calls after it has decided the held
+    // item matches the species' tempt item and consumed one. Returns true when
+    // the creature entered love (a baby or a mob on cooldown cannot). The item
+    // check and consumption stay with the caller — EM-3 owns only the state.
+    bool setInLove(std::uint64_t entityId);
+    // AgeableMob#setBaby / #setBreedingAge: force a creature's age, so a spawn
+    // egg can make a baby and a test can age one up. Ageing a baby to 0 turns it
+    // into an adult with its full-size hitbox on the same call.
+    bool setAge(std::uint64_t entityId, int age);
+    [[nodiscard]] const SimpleEntity* byIdConst(std::uint64_t id) const { return byId(id); }
+
     // The loot a creature that just finished dying leaves behind. Drained by
     // the caller after tick(); the same creature never reports twice.
     [[nodiscard]] std::span<const std::pair<glm::vec3, EntityDrops>> pendingDrops() const {
@@ -322,6 +374,17 @@ class EntitySystem final {
     // death, not when the corpse is removed twenty ticks later. Returns false
     // if death was already claimed.
     bool die(SimpleEntity& entity);
+    // Installs EM-3's Tempt/AnimalMate/FollowParent goals on a freshly built
+    // brain when the species is breedable, reading the numbers off its breeding
+    // profile. A non-breedable species gets none, so it pays nothing. Kept in the
+    // spawn path (not AnimalAi::configureBrain) because the goals are data-driven
+    // off the type, which configureBrain does not receive.
+    static void installBreedingGoals(SimpleEntity& entity);
+    // AnimalMateGoal#breed: for each (parentA, parentB) the AI pass filed, if both
+    // are still adults in love, spawns one baby at their midpoint, puts both on
+    // the breed cooldown and clears their love. Runs after the tick's main loop so
+    // the spawn cannot invalidate the iteration.
+    void processBreeding(const std::vector<std::pair<std::uint64_t, std::uint64_t>>& requests);
     void moveWithCollisions(const world::World& world, SimpleEntity& entity, glm::vec3 distance);
     [[nodiscard]] static bool boxIntersectsWorld(
         const world::World& world,

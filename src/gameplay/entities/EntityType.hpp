@@ -123,6 +123,25 @@ struct EntityRenderDescriptor final {
     float scale = 1.0F;               // uniform model scale, 1.0 for most mobs
 };
 
+// AgeableMob's breeding parameters, as data on the type rather than a species
+// class override (EM-3). A species that does not set one is not breedable; a
+// species that does states only the numbers — which held item tempts it into
+// love, and (optionally) a non-default baby scale. This is the "content states
+// parameters, the mechanism is shared" rule: EM-3 owns the state machine and
+// the goals, AR-A hands each animal its wheat/seeds through this struct.
+struct BreedingProfile final {
+    // Whether this species breeds at all. False leaves the tempt/mate/follow
+    // goals uninstalled, so a non-ageable mob pays nothing.
+    bool breedable = false;
+    // The item that tempts the animal and, when fed to two adults, starts love.
+    // Empty means "nothing tempts it" (a breedable species with no attractant is
+    // a misconfiguration, but harmless — it simply never enters love).
+    ItemStack temptItem{};
+    // AgeableMob baby render scale. Vanilla babies are half size; a species may
+    // override (a chicken chick is smaller still).
+    float babyScale = 0.5F;
+};
+
 // One creature's death drops. Small and inline so a loot roll never allocates;
 // vanilla pigs roll one to three raw porkchops, which is the widest case here.
 struct EntityDrops final {
@@ -251,6 +270,10 @@ class EntityType final {
     }
     [[nodiscard]] bool fireImmune() const { return hasBehavior(EntityBehavior::FireImmune); }
     [[nodiscard]] bool sunImmune() const { return hasBehavior(EntityBehavior::SunImmune); }
+    // AgeableMob breeding parameters (EM-3). `breedable()` is the one-flag test
+    // the AI/tick reads before installing or running any breeding logic.
+    [[nodiscard]] const BreedingProfile& breeding() const { return breeding_; }
+    [[nodiscard]] bool breedable() const { return breeding_.breedable; }
     [[nodiscard]] const EntityRenderDescriptor& render() const { return render_; }
     [[nodiscard]] const EntityAi& ai() const { return *ai_; }
 
@@ -291,6 +314,8 @@ class EntityType final {
     // The behaviour bit set (EntityBehavior). Zero means the creature is subject
     // to every mechanic, which is the default for ordinary land animals.
     std::uint16_t behaviorFlags_ = 0U;
+    // AgeableMob breeding parameters; default is non-breedable.
+    BreedingProfile breeding_{};
     EntityRenderDescriptor render_{};
     audio::MobSoundProfile soundProfile_{};
     const EntityAi* ai_ = nullptr;
@@ -334,6 +359,12 @@ class EntityType::Builder final {
     Builder& behavior(EntityBehavior flag);
     Builder& fireImmune();
     Builder& sunImmune();
+    // Marks the species breedable and states its whole breeding profile (tempt
+    // item + baby scale). AR-A hands each animal its wheat/seeds through this;
+    // EM-3 owns everything the profile drives.
+    Builder& breeding(const BreedingProfile& profile);
+    // Shorthand: breedable with `temptItem` and the default 0.5 baby scale.
+    Builder& breedableWith(const ItemStack& temptItem);
     Builder& loot(LootRoll roll);
     Builder& renderer(const EntityRenderDescriptor& descriptor);
     // The species' sound set; without it the creature is silent. Each species

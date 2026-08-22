@@ -627,6 +627,18 @@ std::optional<MobBrain::AttackRequest> MobBrain::takeAttackRequest() {
     return request;
 }
 
+void MobBrain::requestBreed(std::uint64_t partnerId) {
+    if (partnerId != 0U) {
+        breedRequest_ = partnerId;
+    }
+}
+
+std::optional<std::uint64_t> MobBrain::takeBreedRequest() {
+    auto request = breedRequest_;
+    breedRequest_.reset();
+    return request;
+}
+
 bool ActiveTargetPlayerGoal::canStart(SimpleEntity& self, MobAiContext& context, MobBrain&) {
     const auto& player = context.player();
     if (!player.present || !player.alive || player.creative ||
@@ -903,6 +915,142 @@ void LookAroundGoal::start(SimpleEntity& self, MobAiContext&, MobBrain&) {
 void LookAroundGoal::tick(SimpleEntity& self, MobAiContext&, MobBrain&) {
     --remainingTicks_;
     self.lookYaw = lookYaw_;
+}
+
+// --- EM-3 breeding goals ---
+
+bool TemptGoal::playerOffering(const MobAiContext& context) const {
+    const auto& player = context.player();
+    if (!player.present || !player.alive) {
+        return false;
+    }
+    // The player must be holding this species' attractant. sameItem compares an
+    // item stack the way ItemStack#canCombine does (block-by-block or
+    // item-by-item), so a species tempted by seeds ignores wheat.
+    return !attractant_.empty() && sameItem(player.heldItem, attractant_);
+}
+
+bool TemptGoal::canStart(SimpleEntity& self, MobAiContext& context, MobBrain&) {
+    if (!playerOffering(context)) {
+        return false;
+    }
+    const glm::vec3 delta = context.player().position - self.position;
+    return glm::dot(delta, delta) <= range_ * range_;
+}
+
+bool TemptGoal::shouldContinue(SimpleEntity& self, MobAiContext& context, MobBrain& brain) {
+    // Follows for as long as the offer stands and the player stays in range.
+    return canStart(self, context, brain);
+}
+
+void TemptGoal::tick(SimpleEntity& self, MobAiContext& context, MobBrain& brain) {
+    const glm::vec3 target = context.player().position;
+    const glm::vec3 delta = target - self.position;
+    self.lookYaw = std::atan2(delta.x, delta.z);
+    static_cast<void>(
+        brain.navigation().startMovingTo(context.world(), self, target, speedMultiplier_));
+}
+
+std::uint64_t AnimalMateGoal::findPartner(const SimpleEntity& self,
+                                          const MobAiContext& context) const {
+    std::uint64_t best = 0U;
+    float bestDistance = kBreedingRange * kBreedingRange * 4.0F;  // a wider search than contact
+    for (const SimpleEntity& other : context.entities()) {
+        if (other.id == self.id || other.type != self.type || other.dead()) {
+            continue;
+        }
+        if (!other.readyToMate()) {
+            continue;
+        }
+        const float distance = horizontalDistanceSquared(self.position, other.position);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            best = other.id;
+        }
+    }
+    return best;
+}
+
+bool AnimalMateGoal::canStart(SimpleEntity& self, MobAiContext& context, MobBrain&) {
+    if (!self.readyToMate()) {
+        return false;
+    }
+    partnerId_ = findPartner(self, context);
+    return partnerId_ != 0U;
+}
+
+bool AnimalMateGoal::shouldContinue(SimpleEntity& self, MobAiContext& context, MobBrain&) {
+    if (!self.readyToMate()) {
+        return false;
+    }
+    const SimpleEntity* partner = context.entityById(partnerId_);
+    return partner != nullptr && partner->readyToMate() && partner->type == self.type;
+}
+
+void AnimalMateGoal::tick(SimpleEntity& self, MobAiContext& context, MobBrain& brain) {
+    const SimpleEntity* partner = context.entityById(partnerId_);
+    if (partner == nullptr) {
+        return;
+    }
+    const glm::vec3 delta = partner->position - self.position;
+    self.lookYaw = std::atan2(delta.x, delta.z);
+    if (horizontalDistanceSquared(self.position, partner->position) <=
+        kBreedingRange * kBreedingRange) {
+        brain.navigation().stop(self);
+        // One baby per couple: only the lower-id parent files the request, so the
+        // pair is not resolved twice in the same tick.
+        if (self.id < partner->id) {
+            brain.requestBreed(partner->id);
+        }
+        return;
+    }
+    static_cast<void>(brain.navigation().startMovingTo(context.world(), self, partner->position,
+                                                       speedMultiplier_));
+}
+
+std::uint64_t FollowParentGoal::findParent(const SimpleEntity& self,
+                                           const MobAiContext& context) const {
+    std::uint64_t best = 0U;
+    float bestDistance = 64.0F;  // FollowParentGoal searches within eight blocks
+    for (const SimpleEntity& other : context.entities()) {
+        if (other.id == self.id || other.type != self.type || other.dead() || other.baby()) {
+            continue;
+        }
+        const float distance = horizontalDistanceSquared(self.position, other.position);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            best = other.id;
+        }
+    }
+    return best;
+}
+
+bool FollowParentGoal::canStart(SimpleEntity& self, MobAiContext& context, MobBrain&) {
+    if (!self.baby()) {
+        return false;
+    }
+    parentId_ = findParent(self, context);
+    return parentId_ != 0U;
+}
+
+bool FollowParentGoal::shouldContinue(SimpleEntity& self, MobAiContext& context, MobBrain&) {
+    if (!self.baby()) {
+        return false;
+    }
+    const SimpleEntity* parent = context.entityById(parentId_);
+    return parent != nullptr && !parent->baby() && parent->type == self.type;
+}
+
+void FollowParentGoal::tick(SimpleEntity& self, MobAiContext& context, MobBrain& brain) {
+    const SimpleEntity* parent = context.entityById(parentId_);
+    if (parent == nullptr) {
+        return;
+    }
+    // FollowParentGoal only closes to within a few blocks, then idles.
+    if (horizontalDistanceSquared(self.position, parent->position) > 9.0F) {
+        static_cast<void>(brain.navigation().startMovingTo(context.world(), self, parent->position,
+                                                           speedMultiplier_));
+    }
 }
 
 } // namespace entities

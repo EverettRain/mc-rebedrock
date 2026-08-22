@@ -564,6 +564,8 @@ void readWeatherBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
 //       u16 nameLen + name   // the effect registry path, e.g. "poison"
 //       i32 durationTicks
 //       u8  amplifier
+//     i32 age             // version >= 4; absent (read as 0) in versions 1-3
+//     i32 loveTicks       // version >= 4
 //
 // Species are palette-encoded the same way blocks/items are, so a species that
 // is removed in a future build skips cleanly on load (the unknown name becomes
@@ -571,12 +573,12 @@ void readWeatherBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
 //
 // Version 2 inserts `fireTicks` before the reserved flags byte so a creature
 // saved mid-burn reopens still ablaze. Version 3 appends the active MobEffects
-// after the flags byte (by name, not id). An older region omits the newer
-// fields, which read back as their defaults, so an old world migrates without a
-// fixer.
+// after the flags byte (by name, not id). Version 4 appends AgeableMob age/love.
+// An older region omits the newer fields, which read back as their defaults, so
+// an old world migrates without a fixer.
 constexpr std::uint32_t kEntityBlockTag =
     'E' | ('N' << 8) | ('T' << 16) | ('Y' << 24);
-constexpr std::uint16_t kEntityBlockVersion = 3U;
+constexpr std::uint16_t kEntityBlockVersion = 4U;
 
 // An entity's active MobEffects, shared by the world.dat ENTITY block and the
 // per-chunk region record (both grew effects in the same version bump). Effects
@@ -651,6 +653,8 @@ void appendEntityBlock(std::vector<std::uint8_t>& bytes,
         appendInteger(bytes, entity.fireTicks);  // version 2
         appendInteger(bytes, static_cast<std::uint8_t>(0U));  // flags, reserved
         appendEffectList(bytes, entity.effects);  // version 3
+        appendInteger(bytes, entity.age);        // version 4
+        appendInteger(bytes, entity.loveTicks);  // version 4
     }
     const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
     for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
@@ -721,6 +725,11 @@ void readEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
         // Active effects arrived in version 3; versions 1-2 leave the list empty.
         if (blockVersion >= 3U) {
             readEffectList(payload, cursor, entity.effects);
+        }
+        // AgeableMob age/love arrived in version 4; earlier records read as zero.
+        if (blockVersion >= 4U) {
+            entity.age = readInteger<std::int32_t>(payload, cursor);
+            entity.loveTicks = readInteger<std::int32_t>(payload, cursor);
         }
         // A creature saved outside the world is a corrupt record.
         if (!(entity.y >= -64.0F && entity.y <= 384.0F)) {
@@ -1422,7 +1431,8 @@ void readChunkBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
 //                                       + f32 health + i32 angerTicks + u32 ageTicks
 //                                       + u32 rngState + i32 fireTicks (ver >= 2) + u8 flags
 //                                       + effects (ver >= 3): u8 count,
-//                                         [u16 nameLen + name + i32 duration + u8 amplifier]* }
+//                                         [u16 nameLen + name + i32 duration + u8 amplifier]*
+//                                       + i32 age + i32 loveTicks (ver >= 4) }
 //     u64 checksum (FNV-1a over everything above it)
 //
 // The state and species palettes are region-local and self-contained (block
@@ -1433,9 +1443,10 @@ constexpr std::array<std::uint8_t, 8> kRegionMagic{'M', 'C', 'R', 'B', 'R', 'E',
 constexpr std::uint32_t kRegionFileVersion = 1U;
 constexpr std::uint32_t kRegionChunkTag = blockTag("CCNK");
 // Version 2 appends fireTicks to each entity record; version 3 appends the
-// active MobEffects after the flags byte (see the ENTITY block). An older region
-// omits the newer fields, which read back as their defaults, migrating cleanly.
-constexpr std::uint16_t kRegionChunkVersion = 3U;
+// active MobEffects after the flags byte; version 4 appends AgeableMob age/love
+// (see the ENTITY block). An older region omits the newer fields, which read
+// back as their defaults, migrating cleanly.
+constexpr std::uint16_t kRegionChunkVersion = 4U;
 constexpr std::uint32_t kRegionWidth = 32U;  // chunks per region side
 
 // Floor division of a chunk coordinate by the region width, exactly like the
@@ -1672,6 +1683,8 @@ void appendRegionFile(std::vector<std::uint8_t>& bytes, const RegionData& region
             appendInteger(bytes, entity.fireTicks);  // version 2
             appendInteger(bytes, static_cast<std::uint8_t>(0U));  // flags, reserved
             appendEffectList(bytes, entity.effects);  // version 3
+            appendInteger(bytes, entity.age);        // version 4
+            appendInteger(bytes, entity.loveTicks);  // version 4
         }
     }
     appendInteger(
@@ -1793,6 +1806,11 @@ void readRegionFile(std::span<const std::uint8_t> bytes, RegionData& region) {
             // Active effects arrived in version 3; older regions leave it empty.
             if (header.version >= 3U) {
                 readEffectList(payload, cursor, entity.effects);
+            }
+            // AgeableMob age/love arrived in version 4; earlier regions read zero.
+            if (header.version >= 4U) {
+                entity.age = readInteger<std::int32_t>(payload, cursor);
+                entity.loveTicks = readInteger<std::int32_t>(payload, cursor);
             }
             // A creature saved outside the world is a corrupt record.
             if (!(entity.y >= -64.0F && entity.y <= 384.0F)) {

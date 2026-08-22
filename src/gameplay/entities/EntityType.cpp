@@ -76,6 +76,16 @@ EntityType::Builder& EntityType::Builder::sunImmune() {
     return behavior(EntityBehavior::SunImmune);
 }
 
+EntityType::Builder& EntityType::Builder::breeding(const BreedingProfile& profile) {
+    draft_.breeding_ = profile;
+    return *this;
+}
+
+EntityType::Builder& EntityType::Builder::breedableWith(const ItemStack& temptItem) {
+    draft_.breeding_ = BreedingProfile{/*breedable=*/true, temptItem, /*babyScale=*/0.5F};
+    return *this;
+}
+
 EntityType::Builder& EntityType::Builder::loot(LootRoll roll) {
     draft_.loot_ = roll;
     return *this;

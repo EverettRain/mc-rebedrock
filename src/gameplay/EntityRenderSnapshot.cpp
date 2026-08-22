@@ -25,6 +25,7 @@ void EntityRenderSnapshot::capture(const std::vector<SimpleEntity>& creatures,
             entity.previousWalkDistance,
             entity.damage.hurtTicks,
             entity.damage.deathTicks,
+            entity.bodyScale(),
         });
     }
 }
