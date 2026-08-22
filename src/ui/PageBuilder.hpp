@@ -33,6 +33,11 @@ using RectProvider = std::function<UiRect(std::size_t index)>;
 // test can set them directly.
 struct MenuBuildContext final {
     bool worldOpen = false;  // a save is loaded: Options gains Difficulty, etc.
+    // At least one save exists: the WorldList's Play/Edit buttons are enabled only
+    // then (empty save list greys them, and a click must not fire). Draw and
+    // dispatch read the same flag, so a disabled button neither paints active nor
+    // activates.
+    bool worldSelectable = false;
     // Label text the builder stamps onto option buttons (already localized +
     // value-formatted by the renderer). Empty strings are fine for tests.
     std::function<std::string(std::uint16_t debugId)> labelFor{};
@@ -200,9 +205,10 @@ inline void addListRow(Page& page, const RectProvider& rectFor, WidgetId id, std
                 addListRow(page, rectFor, WidgetId::WorldRow, row,
                            [cb, row]() { if (cb.selectWorldRow) cb.selectWorldRow(row); });
             }
-            addButton(page, rectFor, ctx, WidgetId::PlaySelected, cb.playSelectedWorld);
+            addButton(page, rectFor, ctx, WidgetId::PlaySelected, cb.playSelectedWorld,
+                      ctx.worldSelectable);
             addButton(page, rectFor, ctx, WidgetId::CreateWorld, cb.createWorld);
-            addButton(page, rectFor, ctx, WidgetId::Edit, cb.editWorld);
+            addButton(page, rectFor, ctx, WidgetId::Edit, cb.editWorld, ctx.worldSelectable);
             addButton(page, rectFor, ctx, WidgetId::Back, cb.back);
             break;
 

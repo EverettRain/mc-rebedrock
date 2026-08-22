@@ -32,6 +32,7 @@
 #include "ui/Language.hpp"
 #include "ui/MenuGeometry.hpp"
 #include "ui/MenuSystem.hpp"
+#include "ui/PageBuilder.hpp"
 #include "ui/PageStack.hpp"
 #include "ui/TextFont.hpp"
 #include "ui/TextWrap.hpp"
@@ -111,7 +112,7 @@ class HudRenderer final {
         std::optional<persistence::SaveGame>& currentSave;
         int& displayedFps;
         animation::PlayerModelAnimator& playerModelAnimator;
-        MenuButton& pressedMenuButton;
+        ui::WidgetId& pressedMenuButton;
         bool& spawnPositionInitialized;
         bool& worldReady;
         bool& worldSessionActive;
@@ -226,90 +227,35 @@ class HudRenderer final {
         return ui::frontendButtonRect(layout, page, index, buttonCount);
     }
 
-    [[nodiscard]] MenuButton menuButtonForIndex(std::size_t index) const {
-        switch (menuSystem.pageStack.current()) {
-        case ui::PageId::Title: {
-            constexpr std::array buttons{MenuButton::Singleplayer, MenuButton::Options,
-                                         MenuButton::Exit};
-            return buttons.at(index);
-        }
-        case ui::PageId::WorldList: {
-            // Two columns of two: left Play/Create, right Edit/Back.
-            constexpr std::array buttons{MenuButton::PlaySelected, MenuButton::CreateWorld,
-                                         MenuButton::Edit, MenuButton::Back};
-            return buttons.at(index);
-        }
-        case ui::PageId::CreateWorld: {
-            constexpr std::array buttons{MenuButton::CreateGameMode, MenuButton::CreateConfirm,
-                                         MenuButton::Back};
-            return buttons.at(index);
-        }
-        case ui::PageId::EditWorld: {
-            constexpr std::array buttons{MenuButton::SaveRename, MenuButton::DeleteWorld,
-                                         MenuButton::Back};
-            return buttons.at(index);
-        }
-        case ui::PageId::ConfirmDelete: {
-            constexpr std::array buttons{MenuButton::DeleteConfirm, MenuButton::DeleteCancel};
-            return buttons.at(index);
-        }
-        case ui::PageId::Options: {
-            // The Difficulty button only exists while a world is open: the
-            // setting is per-save and has no meaning on the title-screen
-            // options page (vanilla does not list it there either).
-            if (currentSave.has_value()) {
-                constexpr std::array buttons{MenuButton::MasterVolume, MenuButton::Difficulty,
-                                             MenuButton::Controls,     MenuButton::VideoSettings,
-                                             MenuButton::Language,     MenuButton::Experimental,
-                                             MenuButton::Done};
-                return buttons.at(index);
-            }
-            constexpr std::array buttons{MenuButton::MasterVolume,  MenuButton::Controls,
-                                         MenuButton::VideoSettings, MenuButton::Language,
-                                         MenuButton::Experimental,  MenuButton::Done};
-            return buttons.at(index);
-        }
-        case ui::PageId::Experimental: {
-            constexpr std::array buttons{MenuButton::RainMode, MenuButton::ParticleLevel,
-                                         MenuButton::SunShadows, MenuButton::RainCollisionCache,
-                                         MenuButton::Back};
-            return buttons.at(index);
-        }
-        case ui::PageId::Language: {
-            constexpr std::array buttons{MenuButton::ForceUnicodeFont, MenuButton::Done};
-            return buttons.at(index);
-        }
-        case ui::PageId::VideoSettings: {
-            constexpr std::array buttons{MenuButton::Resolution,
-                                         MenuButton::GuiScale,
-                                         MenuButton::ViewDistance,
-                                         MenuButton::SimulationDistance,
-                                         MenuButton::FrameRateLimit,
-                                         MenuButton::AntiAliasing,
-                                         MenuButton::Anisotropy,
-                                         MenuButton::SmoothLighting,
-                                         MenuButton::DynamicLight,
-                                         MenuButton::Vsync,
-                                         MenuButton::Done};
-            return buttons.at(index);
-        }
-        case ui::PageId::Controls: {
-            constexpr std::array buttons{MenuButton::ViewBobbing, MenuButton::AutoJump,
-                                         MenuButton::Done};
-            return buttons.at(index);
-        }
-        case ui::PageId::Pause: {
-            constexpr std::array buttons{MenuButton::Resume, MenuButton::Options,
-                                         MenuButton::SaveQuit};
-            return buttons.at(index);
-        }
-        case ui::PageId::Death: {
-            constexpr std::array buttons{MenuButton::Respawn, MenuButton::TitleScreen};
-            return buttons.at(index);
-        }
-        default:
-            return MenuButton::None;
-        }
+    // PX-4: the current page as a ui::Page for DRAWING — the single source shared
+    // with dispatch (ui::buildPage), so the old per-page MenuButton arrays are
+    // gone. Wired with labels + slider display values (not action callbacks): the
+    // draw backend reads label/rect/kind/enabled/slider.value off each widget.
+    // Action callbacks are intentionally empty; drawing never fires them.
+    [[nodiscard]] ui::Page buildDrawPage() const {
+        const ui::PageId pageId = menuSystem.pageStack.current();
+        const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
+                                   static_cast<float>(swapchainExtent.height),
+                                   menuSystem.guiScaleSetting};
+        const std::size_t count = menuButtonCount();
+        ui::MenuBuildContext ctx;
+        ctx.worldOpen = currentSave.has_value();
+        ctx.worldSelectable = !menuSystem.saveSummaries.empty();
+        ctx.labelFor = [this](std::uint16_t id) {
+            return widgetLabel(static_cast<ui::WidgetId>(id));
+        };
+        ui::MenuCallbacks callbacks;
+        callbacks.viewDistance.value = [this] {
+            return static_cast<float>(viewDistanceChunks - 2) / 34.0F;
+        };
+        callbacks.simulationDistance.value = [this] {
+            return static_cast<float>(simulationDistanceChunks - 2) / 10.0F;
+        };
+        callbacks.masterVolume.value = [this] { return options.masterVolume; };
+        return ui::buildPage(pageId, ctx, callbacks,
+                             [layout, pageId, count](std::size_t index) {
+                                 return ui::frontendButtonRect(layout, pageId, index, count);
+                             });
     }
 
     void drawDragPreview(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
@@ -704,7 +650,11 @@ class HudRenderer final {
     // Applies the option to the live particle system (the spawn-count and
     // live-cap scaling); the rain budget reads options.particleLevel directly.
 
-    [[nodiscard]] std::string menuButtonLabel(MenuButton button) const {
+    // PX-4: the localized, value-formatted label for a widget id. Wired into the
+    // draw page as MenuBuildContext.labelFor, so a widget carries its own text and
+    // the draw backend never re-derives it. Keyed on ui::WidgetId (the stable id);
+    // the old MenuButton enum is gone.
+    [[nodiscard]] std::string widgetLabel(ui::WidgetId button) const {
         // Every label carries its English text as the fallback, so a language
         // without the vanilla key still reads correctly.
         const auto toggle = [this](bool value) {
@@ -722,13 +672,11 @@ class HudRenderer final {
                 translated("options.percent_value", "%s: %s%%"), arguments);
         };
         switch (button) {
-        case MenuButton::Resume:
+        case ui::WidgetId::Resume:
             return translated("menu.returnToGame", "Back to Game");
-        case MenuButton::Options:
+        case ui::WidgetId::Options:
             return translated("menu.options", "Options...");
-        case MenuButton::Quit:
-            return translated("menu.quit", "Quit Game");
-        case MenuButton::Resolution: {
+        case ui::WidgetId::Resolution: {
             // The label shows the live window size so a maximized or manually
             // resized window reads correctly instead of echoing the last preset.
             const auto resolution = ui::kDisplayResolutions[menuSystem.resolutionIndex];
@@ -745,50 +693,50 @@ class HudRenderer final {
             return optionValue(
                 translated("options.fullscreen.resolution", "Fullscreen Resolution"), value);
         }
-        case MenuButton::GuiScale:
+        case ui::WidgetId::GuiScale:
             return optionValue(
                 translated("options.guiScale", "GUI Scale"),
                 menuSystem.guiScaleSetting == 0 ? translated("options.guiScale.auto", "Auto")
                                                 : std::to_string(menuSystem.guiScaleSetting));
-        case MenuButton::ViewDistance:
+        case ui::WidgetId::ViewDistance:
             return optionValue(
                 translated("options.renderDistance", "Render Distance"),
                 formatTemplate(translated("options.chunks", "%s chunks"),
                                std::to_string(viewDistanceChunks)));
-        case MenuButton::SimulationDistance:
+        case ui::WidgetId::SimulationDistance:
             return optionValue(
                 translated("options.simulationDistance", "Simulation Distance"),
                 formatTemplate(translated("options.chunks", "%s chunks"),
                                std::to_string(simulationDistanceChunks)));
-        case MenuButton::MasterVolume:
+        case ui::WidgetId::MasterVolume:
             return percentValue(
                 translated("soundCategory.master", "Master Volume"),
                 static_cast<int>(std::lround(options.masterVolume * 100.0F)));
-        case MenuButton::VideoSettings:
+        case ui::WidgetId::VideoSettings:
             return translated("options.video", "Video Settings...");
-        case MenuButton::Controls:
+        case ui::WidgetId::Controls:
             return translated("options.controls", "Controls...");
-        case MenuButton::AutoJump:
+        case ui::WidgetId::AutoJump:
             return optionValue(translated("options.autoJump", "Auto-Jump"),
                                toggle(options.autoJump));
-        case MenuButton::FrameRateLimit:
+        case ui::WidgetId::FrameRateLimit:
             return optionValue(
                 translated("options.framerateLimit", "Max Framerate"),
                 options.frameRateLimit == 0
                     ? translated("options.framerateLimit.max", "Unlimited")
                     : formatTemplate(translated("options.framerate", "%s fps"),
                                      std::to_string(options.frameRateLimit)));
-        case MenuButton::AntiAliasing:
+        case ui::WidgetId::AntiAliasing:
             return optionValue(
                 translated("options.rebedrock.antiAliasing", "Anti-Aliasing"),
                 toggle(options.antiAliasing));
-        case MenuButton::Anisotropy:
+        case ui::WidgetId::Anisotropy:
             return optionValue(translated("options.maxAnisotropy", "Anisotropic Filtering"),
                                std::to_string(options.anisotropy) + "x");
-        case MenuButton::ViewBobbing:
+        case ui::WidgetId::ViewBobbing:
             return optionValue(translated("options.viewBobbing", "View Bobbing"),
                                toggle(options.viewBobbing));
-        case MenuButton::SmoothLighting:
+        case ui::WidgetId::SmoothLighting:
             switch (options.smoothLightingQuality) {
             case world::SmoothLightingQuality::Off:
                 return optionValue(translated("options.ao", "Smooth Lighting"),
@@ -801,13 +749,13 @@ class HudRenderer final {
                                    translated("options.ao.min", "Minimum"));
             }
             return {};
-        case MenuButton::DynamicLight:
+        case ui::WidgetId::DynamicLight:
             return optionValue(
                 translated("options.rebedrock.dynamicLights", "Dynamic Lighting"),
                 toggle(options.dynamicLight));
-        case MenuButton::Vsync:
+        case ui::WidgetId::Vsync:
             return optionValue(translated("options.vsync", "VSync"), toggle(options.vsync));
-        case MenuButton::Difficulty:
+        case ui::WidgetId::Difficulty:
             // Only present on the in-world options page, where a save is open.
             return optionValue(
                 translated("options.difficulty", "Difficulty"),
@@ -817,60 +765,62 @@ class HudRenderer final {
                            gameplay::difficultyName(currentSave.has_value()
                                                         ? currentSave->difficulty
                                                         : gameplay::Difficulty::Normal)));
-        case MenuButton::Experimental:
+        case ui::WidgetId::Experimental:
             return translated("selectWorld.experimental", "Experimental") + "...";
-        case MenuButton::RainMode:
+        case ui::WidgetId::RainMode:
             return optionValue(translated("options.rebedrock.rainMode", "Rain Mode"),
                                rainModeLabel(options.rainMode));
-        case MenuButton::ParticleLevel:
+        case ui::WidgetId::ParticleLevel:
             return optionValue(translated("options.particles", "Particles"),
                                particleLevelLabel(options.particleLevel));
-        case MenuButton::SunShadows:
+        case ui::WidgetId::SunShadows:
             return optionValue(translated("options.rebedrock.sunShadows", "Sun Shadows"),
                                toggle(options.sunShadows));
-        case MenuButton::RainCollisionCache:
+        case ui::WidgetId::RainCollisionCache:
             return optionValue(
                 translated("options.rebedrock.rainCollisionCache", "Rain Collision Cache"),
                 toggle(options.rainCollisionCache));
-        case MenuButton::Language:
+        case ui::WidgetId::Language:
             return translated("options.language", "Language...");
-        case MenuButton::ForceUnicodeFont:
+        case ui::WidgetId::ForceUnicodeFont:
             return optionValue(translated("options.forceUnicodeFont", "Force Unicode Font"),
                                toggle(options.forceUnicodeFont));
-        case MenuButton::Done:
+        case ui::WidgetId::Done:
             return translated("gui.done", "Done");
-        case MenuButton::Singleplayer:
+        case ui::WidgetId::Singleplayer:
             return translated("menu.singleplayer", "Singleplayer");
-        case MenuButton::Exit:
+        case ui::WidgetId::Exit:
             return translated("menu.quit", "Quit Game");
-        case MenuButton::PlaySelected:
+        case ui::WidgetId::PlaySelected:
             return translated("selectWorld.select", "Play Selected World");
-        case MenuButton::CreateWorld:
+        case ui::WidgetId::CreateWorld:
             return translated("selectWorld.create", "Create New World");
-        case MenuButton::Edit:
+        case ui::WidgetId::Edit:
             return translated("selectWorld.edit", "Edit");
-        case MenuButton::SaveRename:
+        case ui::WidgetId::SaveRename:
             return translated("gui.done", "Done");
-        case MenuButton::DeleteWorld:
+        case ui::WidgetId::DeleteWorld:
             return translated("selectWorld.delete", "Delete");
-        case MenuButton::DeleteConfirm:
+        case ui::WidgetId::DeleteConfirm:
             return translated("selectWorld.deleteButton", "Delete");
-        case MenuButton::DeleteCancel:
+        case ui::WidgetId::DeleteCancel:
             return translated("gui.cancel", "Cancel");
-        case MenuButton::Back:
+        case ui::WidgetId::Back:
             return translated("gui.back", "Back");
-        case MenuButton::CreateConfirm:
+        case ui::WidgetId::CreateConfirm:
             return translated("selectWorld.create", "Create World");
-        case MenuButton::CreateGameMode:
+        case ui::WidgetId::CreateGameMode:
             return optionValue(translated("selectWorld.gameMode", "Game Mode"),
                                gameModeLabel(menuSystem.createWorldGameMode));
-        case MenuButton::SaveQuit:
+        case ui::WidgetId::SaveQuit:
             return translated("menu.returnToMenu", "Save and Quit to Title");
-        case MenuButton::Respawn:
+        case ui::WidgetId::Respawn:
             return translated("deathScreen.respawn", "Respawn");
-        case MenuButton::TitleScreen:
+        case ui::WidgetId::TitleScreen:
             return translated("deathScreen.titleScreen", "Title Screen");
-        case MenuButton::None:
+        case ui::WidgetId::None:
+        case ui::WidgetId::WorldRow:
+        case ui::WidgetId::LanguageRow:
             return {};
         }
         return {};
@@ -971,6 +921,39 @@ class HudRenderer final {
         }
     }
 
+    // PX-4: the generic menu draw backend — paint one page's widgets by kind.
+    // Replaced the three near-identical per-page button loops (which each called
+    // menuButtonForIndex + menuButtonLabel). Each widget carries its own rect,
+    // label, enabled and (Slider) display value; the pressed highlight matches the
+    // widget whose id equals pressedMenuButton, and DeleteConfirm keeps its red
+    // tint. List rows are painted by the dedicated list path, not here.
+    void drawMenuWidgets(VkCommandBuffer commandBuffer, const ui::Page& widgets,
+                         float scale) const {
+        const auto cursor = currentFramebufferCursor();
+        for (const auto& widget : widgets) {
+            if (widget.kind != ui::WidgetKind::Button &&
+                widget.kind != ui::WidgetKind::Slider) {
+                continue;
+            }
+            const bool pressed =
+                static_cast<ui::WidgetId>(widget.debugId) == pressedMenuButton;
+            const auto state = ui::buttonVisualState(widget.rect, cursor.x, cursor.y,
+                                                     widget.enabled, pressed);
+            if (widget.kind == ui::WidgetKind::Slider) {
+                const float value = widget.slider.value ? widget.slider.value() : 0.0F;
+                drawMinecraftSlider(commandBuffer, widget.rect, widget.label, state, value,
+                                    scale);
+            } else {
+                const glm::vec4 tint =
+                    static_cast<ui::WidgetId>(widget.debugId) == ui::WidgetId::DeleteConfirm
+                        ? glm::vec4{0.72F, 0.22F, 0.22F, 1.0F}
+                        : glm::vec4{1.0F};
+                drawMinecraftButton(commandBuffer, widget.rect, widget.label, state, scale,
+                                    tint);
+            }
+        }
+    }
+
     void drawFrontend(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
                       VkDescriptorSet descriptorSet) const {
         const auto page = menuSystem.pageStack.current();
@@ -979,7 +962,6 @@ class HudRenderer final {
         // their text, buttons and list rows are emitted afterwards and stay sharp.
         drawTitleCarousel(commandBuffer, descriptorSet, page != ui::PageId::Title, layout.scale());
         const float scale = layout.scale();
-        const auto cursor = currentFramebufferCursor();
         const std::string title = frontendTitle(page);
         drawHudText(commandBuffer, title,
                     (static_cast<float>(swapchainExtent.width) -
@@ -1061,21 +1043,7 @@ class HudRenderer final {
                         warningY, scale, {1.0F, 1.0F, 1.0F, 1.0F});
         }
 
-        const std::size_t buttonCount = menuButtonCount();
-        for (std::size_t index = 0; index < buttonCount; ++index) {
-            const auto button = menuButtonForIndex(index);
-            const auto rectangle = frontendButtonRect(layout, page, index, buttonCount);
-            const bool enabled =
-                (button != MenuButton::PlaySelected && button != MenuButton::Edit) ||
-                !menuSystem.saveSummaries.empty();
-            const glm::vec4 tint = button == MenuButton::DeleteConfirm
-                                       ? glm::vec4{0.72F, 0.22F, 0.22F, 1.0F}
-                                       : glm::vec4{1.0F};
-            drawMinecraftButton(commandBuffer, rectangle, menuButtonLabel(button),
-                                ui::buttonVisualState(rectangle, cursor.x, cursor.y, enabled,
-                                                      pressedMenuButton == button),
-                                scale, tint);
-        }
+        drawMenuWidgets(commandBuffer, buildDrawPage(), scale);
         if (!menuSystem.saveStatus.empty()) {
             drawHudText(commandBuffer, menuSystem.saveStatus, 4.0F * scale,
                         static_cast<float>(swapchainExtent.height) - 12.0F * scale, scale,
@@ -1260,20 +1228,10 @@ class HudRenderer final {
                             0.5F,
                         warningY, scale, {0.5F, 0.5F, 0.5F, 1.0F});
         }
-        const std::size_t buttonCount = menuButtonCount();
-        for (std::size_t index = 0; index < buttonCount; ++index) {
-            const auto button = menuButtonForIndex(index);
-            const auto rectangle =
-                frontendButtonRect(layout, ui::PageId::Language, index, buttonCount);
-            drawMinecraftButton(commandBuffer, rectangle, menuButtonLabel(button),
-                                ui::buttonVisualState(rectangle, cursor.x, cursor.y, true,
-                                                      pressedMenuButton == button),
-                                scale, glm::vec4{1.0F});
-        }
+        drawMenuWidgets(commandBuffer, buildDrawPage(), scale);
     }
 
     void drawPauseMenu(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
-        const auto cursor = currentFramebufferCursor();
         const bool deathScreen = menuSystem.pageStack.current() == ui::PageId::Death;
         // 1.16.1's PauseScreen calls Screen.renderBackground(), which paints the
         // same dark gray gradient used by the gameSession.inventory() screens over the frozen
@@ -1308,27 +1266,7 @@ class HudRenderer final {
                     (static_cast<float>(swapchainExtent.width) - hudTextWidth(title, titleScale)) *
                         0.5F,
                     firstButton.y - 30.0F * titleScale, titleScale, {1.0F, 1.0F, 1.0F, 1.0F});
-        for (std::size_t index = 0; index < buttonCount; ++index) {
-            const auto button = menuButtonForIndex(index);
-            const auto rectangle =
-                frontendButtonRect(layout, menuSystem.pageStack.current(), index, buttonCount);
-            const auto state = ui::buttonVisualState(rectangle, cursor.x, cursor.y, true,
-                                                     pressedMenuButton == button);
-            if (button == MenuButton::ViewDistance || button == MenuButton::SimulationDistance ||
-                button == MenuButton::MasterVolume) {
-                const float value =
-                    button == MenuButton::ViewDistance
-                        ? static_cast<float>(viewDistanceChunks - 2) / 34.0F
-                        : (button == MenuButton::SimulationDistance
-                               ? static_cast<float>(simulationDistanceChunks - 2) / 10.0F
-                               : options.masterVolume);
-                drawMinecraftSlider(commandBuffer, rectangle, menuButtonLabel(button), state, value,
-                                    scale);
-            } else {
-                drawMinecraftButton(commandBuffer, rectangle, menuButtonLabel(button), state,
-                                    scale);
-            }
-        }
+        drawMenuWidgets(commandBuffer, buildDrawPage(), scale);
         if (!menuSystem.saveStatus.empty()) {
             drawHudText(commandBuffer, menuSystem.saveStatus, 4.0F * scale,
                         static_cast<float>(swapchainExtent.height) - 12.0F * scale, scale,
@@ -2100,7 +2038,7 @@ class HudRenderer final {
     std::optional<persistence::SaveGame>& currentSave;
     int& displayedFps;
     animation::PlayerModelAnimator& playerModelAnimator;
-    MenuButton& pressedMenuButton;
+    ui::WidgetId& pressedMenuButton;
     bool& spawnPositionInitialized;
     bool& worldReady;
     bool& worldSessionActive;

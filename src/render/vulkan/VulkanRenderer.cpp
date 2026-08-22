@@ -474,7 +474,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         clearPendingInputEdges();
         releaseInteractionButtons();
         dropRequested = false;
-        pressedMenuButton = MenuButton::None;
+        pressedMenuButton = ui::WidgetId::None;
         firstMouseSample = true;
         unlockCursor();
     }
@@ -586,23 +586,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 const auto page = renderer->menuSystem.pageStack.current();
                 if (page == ui::PageId::VideoSettings) {
                     renderer->menuSystem.pageStack.pop();
-                    renderer->pressedMenuButton = MenuButton::None;
+                    renderer->pressedMenuButton = ui::WidgetId::None;
                     renderer->menuSystem.viewDistanceSliderDragging = false;
                     renderer->menuSystem.simulationDistanceSliderDragging = false;
                 } else if (page == ui::PageId::Experimental) {
                     renderer->menuSystem.pageStack.pop();
-                    renderer->pressedMenuButton = MenuButton::None;
+                    renderer->pressedMenuButton = ui::WidgetId::None;
                 } else if (page == ui::PageId::Language) {
                     // Escape cancels the draft row selection. Only Done starts
                     // the asynchronous language reload.
                     renderer->menuSystem.pendingLanguageCode = renderer->options.language;
                     renderer->menuSystem.languageScrollbarDragging = false;
                     renderer->menuSystem.pageStack.pop();
-                    renderer->pressedMenuButton = MenuButton::None;
+                    renderer->pressedMenuButton = ui::WidgetId::None;
                 } else if (page == ui::PageId::Options) {
                     renderer->menuSystem.pageStack.pop();
                     renderer->menuSystem.optionsOpen = false;
-                    renderer->pressedMenuButton = MenuButton::None;
+                    renderer->pressedMenuButton = ui::WidgetId::None;
                     renderer->menuSystem.viewDistanceSliderDragging = false;
                     renderer->menuSystem.simulationDistanceSliderDragging = false;
                     renderer->menuSystem.masterVolumeSliderDragging = false;
@@ -2850,7 +2850,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             menuSystem.pageStack.push(ui::PageId::Pause);
         else
             menuSystem.pageStack.reset(ui::PageId::Game);
-        pressedMenuButton = MenuButton::None;
+        pressedMenuButton = ui::WidgetId::None;
         menuSystem.viewDistanceSliderDragging = false;
         menuSystem.simulationDistanceSliderDragging = false;
         menuSystem.masterVolumeSliderDragging = false;
@@ -2942,22 +2942,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     [[nodiscard]] ui::UiRect frontendButtonRect(const ui::HudLayout& layout, ui::PageId page,
                                                 std::size_t index, std::size_t buttonCount) const {
         return ui::frontendButtonRect(layout, page, index, buttonCount);
-    }
-
-    [[nodiscard]] MenuButton hoveredMenuButton() const {
-        const auto cursor = currentFramebufferCursor();
-        const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
-                                   static_cast<float>(swapchainExtent.height),
-                                   menuSystem.guiScaleSetting};
-        const std::size_t buttonCount = menuButtonCount();
-        for (std::size_t index = 0; index < buttonCount; ++index) {
-            const auto rectangle =
-                frontendButtonRect(layout, menuSystem.pageStack.current(), index, buttonCount);
-            if (rectangle.contains(cursor.x, cursor.y)) {
-                return hud_.menuButtonForIndex(index);
-            }
-        }
-        return MenuButton::None;
     }
 
     // PX-4: the callback factory — binds every menu action to a renderer method,
@@ -3186,6 +3170,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     [[nodiscard]] ui::Page buildCurrentPage() {
         ui::MenuBuildContext ctx;
         ctx.worldOpen = currentSave.has_value();
+        ctx.worldSelectable = !menuSystem.saveSummaries.empty();
         ctx.worldRowCount = 0;       // list rows are drawn by the list path today
         ctx.languageRowCount = 0;
         return ui::buildPage(menuSystem.pageStack.current(), ctx, buildMenuCallbacks(),
@@ -3215,9 +3200,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         // PX-4: the pressed widget is resolved through the ui:: model (index into
         // the current page); pressedMenuButton is kept only as the draw/debug id.
-        pressedMenuButton = hoveredMenuButton();
         const ui::Page page = buildCurrentPage();
         pressedMenuIndex_ = hoveredMenuIndex(page);
+        // The pressed widget's stable id drives the draw highlight (which widget
+        // paints pressed); the index drives dispatch. None when the press missed.
+        pressedMenuButton = pressedMenuIndex_ != ui::kNoWidget
+                                ? static_cast<ui::WidgetId>(page[pressedMenuIndex_].debugId)
+                                : ui::WidgetId::None;
         // A press on a Slider starts its drag; the drag effect runs through the
         // slider's onDrag callback (never a traversal side effect). The dragging
         // flags stay so the release path and draw highlight keep working.
@@ -3259,7 +3248,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (menuSystem.languageCodes.size() > visible &&
                 scrollTrack.contains(cursor.x, cursor.y)) {
                 menuSystem.languageScrollbarDragging = true;
-                pressedMenuButton = MenuButton::None;
+                pressedMenuButton = ui::WidgetId::None;
                 updateLanguageScrollFromCursor();
                 return;
             }
@@ -3456,7 +3445,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const ui::Page page = buildCurrentPage();
         const std::size_t released = hoveredMenuIndex(page);
         const std::size_t pressed = pressedMenuIndex_;
-        pressedMenuButton = MenuButton::None;
+        pressedMenuButton = ui::WidgetId::None;
         pressedMenuIndex_ = ui::kNoWidget;
         menuSystem.viewDistanceSliderDragging = false;
         menuSystem.simulationDistanceSliderDragging = false;
@@ -6449,7 +6438,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // reads like the view-distance slider next to it.
     int simulationDistanceChunks = 4;
 
-    MenuButton pressedMenuButton = MenuButton::None;
+    ui::WidgetId pressedMenuButton = ui::WidgetId::None;
     // PX-4: the pressed widget's index into the current ui::Page, so the release
     // dispatches through the model (dispatchActivate) instead of a MenuButton
     // switch. kNoWidget when no widget is pressed.

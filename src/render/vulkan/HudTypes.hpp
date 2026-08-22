@@ -29,51 +29,9 @@ inline constexpr std::size_t kPanoramaFaces = 6U;
 // Six category tabs on the top row, plus Spawn Eggs and Inventory on the bottom.
 inline constexpr std::size_t kCreativeTabCount = 8U;
 
-enum class MenuButton : std::uint8_t {
-    None,
-    Resume,
-    Options,
-    Quit,
-    Resolution,
-    GuiScale,
-    ViewDistance,
-    SimulationDistance,
-    MasterVolume,
-    VideoSettings,
-    Controls,
-    AutoJump,
-    FrameRateLimit,
-    AntiAliasing,
-    Anisotropy,
-    ViewBobbing,
-    SmoothLighting,
-    DynamicLight,
-    Vsync,
-    Done,
-    Singleplayer,
-    Exit,
-    PlaySelected,
-    CreateWorld,
-    Edit,
-    SaveRename,
-    DeleteWorld,
-    DeleteConfirm,
-    DeleteCancel,
-    Back,
-    CreateConfirm,
-    CreateGameMode,
-    Respawn,
-    TitleScreen,
-    Language,
-    ForceUnicodeFont,
-    Difficulty,
-    Experimental,
-    RainMode,
-    ParticleLevel,
-    SunShadows,
-    RainCollisionCache,
-    SaveQuit,
-};
+// PX-4 removed the MenuButton enum: menu identity is now ui::WidgetId
+// (src/ui/PageBuilder.hpp), pages are built by ui::buildPage and drawn generically
+// by widget kind, so there is no renderer-side button enum any more.
 
 // Which screen is open is a gameplay fact — the slot routing keys off it — so
 // the enum lives with the ScreenHandler and the renderer just names it.
