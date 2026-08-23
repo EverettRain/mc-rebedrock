@@ -331,9 +331,15 @@ class EntitySystem final {
                                        float boxTop = 1.0F) const;
 
     // LivingEntity#hurt plus the attacker's knockback. Returns true when the hit
-    // landed rather than being swallowed by the invulnerability window.
+    // landed rather than being swallowed by the invulnerability window. `type`
+    // picks which DamageType the shared Damage.hpp pipeline scores this hit
+    // as — melee callers leave it at the default EntityAttack; RW-0's
+    // projectile hit passes DamageType::Projectile so the same pipeline stage
+    // order (armor/effects/absorption/shield, once they exist) applies to an
+    // arrow exactly the way it already does to a sword swing.
     bool hurt(std::uint64_t entityId, float amount, glm::vec3 knockbackOrigin,
-              ActorReference attacker = ActorReference::player());
+              ActorReference attacker = ActorReference::player(),
+              DamageType type = DamageType::EntityAttack);
 
     // Entity#kill / LivingEntity#kill: OutOfWorld damage at infinite magnitude,
     // the same path /kill routes a player through. Returns true when the

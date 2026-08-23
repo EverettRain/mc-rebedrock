@@ -260,6 +260,11 @@ class GameSession final {
     void setWorldSeed(std::uint64_t seed) {
         primaryLevel().spawner.setSeed(seed);
         experienceOrbRandom_.setSeed(seed ^ 0xE3B0C44298FC1C14ULL);
+        // RW-0: the projectile pool's own deterministic stream (reserved for
+        // RW-1+'s draw-dependent crit/scatter rolls), salted independently of
+        // the orb scatter and enchantment seeds the same way every per-system
+        // stream here is — one system's draw sequence never perturbs another's.
+        projectileRandom_.setSeed(seed ^ 0x9E6B4A2D7F103C58ULL);
     }
     // XP-1's spawnExperienceOrbs(pos, amount): denomination-splits `amount` into
     // vanilla's fixed orb values and places each one, drawing every scatter
@@ -271,6 +276,27 @@ class GameSession final {
         primaryLevel().experienceOrbs.spawnMany(position, amount, experienceOrbRandom_);
     }
     [[nodiscard]] world::gen::JavaRandom& experienceOrbRandom() { return experienceOrbRandom_; }
+    // RW-0: the seam RW-1 (bow/arrow, RW-2 trident, RW-3 crossbow) calls to
+    // launch a projectile — the exact entry point the card's report asks for.
+    // `shooterId` should be ActorReference::player() for the player's own
+    // shot; `pickupItem` is what a contacting player receives back (RW-1 sets
+    // it to the arrow ItemStack; RW-0's own tests may leave it empty or set it
+    // to any placeholder item to exercise the pickup mechanic generically).
+    // Always scatters through this session's own projectileRandom_ stream
+    // (never the wall clock), so every real launch is replay-deterministic by
+    // construction; `inaccuracy` lets a future fully-drawn bow shot (RW-1)
+    // pass a tighter value than a hip-fired one.
+    void spawnProjectile(glm::vec3 position, glm::vec3 velocity, ActorReference shooterId,
+                         float damage, bool critical = false,
+                         ProjectilePickupState pickupState = ProjectilePickupState::Pickupable,
+                         ItemStack pickupItem = {},
+                         float inaccuracy = kProjectileDefaultInaccuracy) {
+        primaryLevel().projectiles.spawn(position, velocity, shooterId, damage, critical,
+                                         pickupState, pickupItem, &projectileRandom_, inaccuracy);
+    }
+    [[nodiscard]] ProjectileSystem& projectiles() { return primaryLevel().projectiles; }
+    [[nodiscard]] const ProjectileSystem& projectiles() const { return primaryLevel().projectiles; }
+    [[nodiscard]] world::gen::JavaRandom& projectileRandom() { return projectileRandom_; }
     // 1.16.1 entity.kill(): OutOfWorld damage at infinite magnitude.
     void killPlayer(PlayerId playerId, SimulationHost& host);
     // `causedByLivingNonPlayer` gates the damage type's difficulty scaling: a
@@ -765,6 +791,9 @@ class GameSession final {
     // independent JavaRandom stream, salted differently from the enchantment
     // seed roll and the weather/loot RNGs so none of them perturb each other.
     world::gen::JavaRandom experienceOrbRandom_;
+    // RW-0: the projectile pool's own stream (reserved for RW-1+'s crit/scatter
+    // draws), the same independent-per-system shape as experienceOrbRandom_.
+    world::gen::JavaRandom projectileRandom_;
     // The authoritative interaction, run at the end of each tick.
     PlayerInteraction playerInteraction_;
     GameCommandQueue commandQueue_;

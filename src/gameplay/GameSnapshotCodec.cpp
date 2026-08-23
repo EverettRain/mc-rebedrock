@@ -352,6 +352,20 @@ void appendExperienceOrb(std::vector<std::uint8_t>& bytes, const ExperienceOrb& 
     persistence::appendInteger(bytes, orb.count);
 }
 
+// RW-0: the flying/stuck projectile's render-relevant fields. previousPosition
+// rides along (unlike the orb record above, which only needs position for the
+// draw pass) because RW-0's own card asks for interpolation the same way
+// items/orbs get it; inGround/critical pick the model's resting-vs-flying pose
+// once PX reads this. shooterId/pickupItem/lifeTicks are simulation-only
+// (never read by the draw pass), the same "leave the sim-only fields off the
+// wire" choice appendExperienceOrb already makes for pickupDelay/age.
+void appendProjectile(std::vector<std::uint8_t>& bytes, const Projectile& projectile) {
+    codec::appendVec3(bytes, projectile.position);
+    codec::appendVec3(bytes, projectile.previousPosition);
+    persistence::appendInteger(bytes, static_cast<std::uint8_t>(projectile.critical ? 1U : 0U));
+    persistence::appendInteger(bytes, static_cast<std::uint8_t>(projectile.inGround ? 1U : 0U));
+}
+
 void appendEntities(std::vector<std::uint8_t>& bytes, const EntityRenderSnapshot& snap) {
     persistence::appendInteger(bytes, static_cast<std::uint32_t>(snap.entities().size()));
     for (const auto& creature : snap.entities()) {
@@ -364,6 +378,10 @@ void appendEntities(std::vector<std::uint8_t>& bytes, const EntityRenderSnapshot
     persistence::appendInteger(bytes, static_cast<std::uint32_t>(snap.experienceOrbs().size()));
     for (const auto& orb : snap.experienceOrbs()) {
         appendExperienceOrb(bytes, orb);
+    }
+    persistence::appendInteger(bytes, static_cast<std::uint32_t>(snap.projectiles().size()));
+    for (const auto& projectile : snap.projectiles()) {
+        appendProjectile(bytes, projectile);
     }
     persistence::appendInteger(bytes, static_cast<std::uint32_t>(snap.fallingBlocks().size()));
     for (const auto& block : snap.fallingBlocks()) {
@@ -426,6 +444,17 @@ void appendEntities(std::vector<std::uint8_t>& bytes, const EntityRenderSnapshot
             orbs.push_back(orb);
         }
     }
+    std::vector<Projectile> projectiles;
+    const auto projectileCount = persistence::readInteger<std::uint32_t>(bytes, cursor);
+    projectiles.reserve(projectileCount);
+    for (std::uint32_t index = 0; index < projectileCount; ++index) {
+        Projectile projectile;
+        projectile.position = codec::readVec3(bytes, cursor);
+        projectile.previousPosition = codec::readVec3(bytes, cursor);
+        projectile.critical = persistence::readInteger<std::uint8_t>(bytes, cursor) != 0U;
+        projectile.inGround = persistence::readInteger<std::uint8_t>(bytes, cursor) != 0U;
+        projectiles.push_back(projectile);
+    }
     std::vector<FallingBlockEntity> falling;
     const auto fallingCount = persistence::readInteger<std::uint32_t>(bytes, cursor);
     falling.reserve(fallingCount);
@@ -440,7 +469,8 @@ void appendEntities(std::vector<std::uint8_t>& bytes, const EntityRenderSnapshot
         }
     }
     EntityRenderSnapshot snapshot;
-    snapshot.assign(std::move(creatures), std::move(drops), std::move(orbs), std::move(falling));
+    snapshot.assign(std::move(creatures), std::move(drops), std::move(orbs),
+                    std::move(projectiles), std::move(falling));
     return snapshot;
 }
 

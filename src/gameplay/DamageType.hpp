@@ -16,6 +16,11 @@ enum class DamageType : std::uint8_t {
     None,          // no damage this tick / an applyDamage() guard
     Generic,       // untyped damage (command fallback, unclassified)
     EntityAttack,  // vanilla `mob_attack`: a melee hit from another creature
+    // RW-0: vanilla `arrow`/`trident` family — a projectile's hit, routed
+    // through the same applyDamage() pipeline as a melee hit so a future
+    // armored target (EQ-2) automatically takes less arrow damage without RW
+    // needing its own reduction logic (RW-DESIGN.md §5).
+    Projectile,
     Fall,
     Drown,
     Starve,
@@ -109,6 +114,11 @@ inline constexpr std::array<DamageTypeData, kDamageTypeCount> kDamageTypes{{
      damageTags(DamageTag::BypassesArmor)},
     // `new DamageType("mob", 0.1F)` — the only type here that costs hunger.
     {"mob", DamageScaling::WhenCausedByLivingNonPlayer, 0.1F, 0U},
+    // `new DamageType("arrow", 0.1F)` (`DamageTypes.ARROW`): a projectile hit
+    // costs the same hunger as a melee swing and is reduced by armor like any
+    // other physical hit (no BypassesArmor), unlike the world hazards below.
+    {"arrow", DamageScaling::WhenCausedByLivingNonPlayer, 0.1F,
+     damageTags(DamageTag::IsProjectile)},
     // `new DamageType("fall", …, 0.0F, …)`. Falling costs no hunger: it is the
     // landing that hurts, not an effort the player made.
     {"fall", DamageScaling::WhenCausedByLivingNonPlayer, 0.0F,

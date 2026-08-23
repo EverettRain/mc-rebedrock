@@ -7,9 +7,11 @@ namespace mc::gameplay {
 void EntityRenderSnapshot::capture(const std::vector<SimpleEntity>& creatures,
                                    const std::vector<ItemEntity>& items,
                                    const std::vector<ExperienceOrb>& experienceOrbs,
+                                   const std::vector<Projectile>& projectiles,
                                    const std::vector<FallingBlockEntity>& fallingBlocks) {
     items_ = items;
     experienceOrbs_ = experienceOrbs;
+    projectiles_ = projectiles;
     fallingBlocks_ = fallingBlocks;
     // Reused rather than reallocated: this runs every tick, and the population
     // is stable from one tick to the next.

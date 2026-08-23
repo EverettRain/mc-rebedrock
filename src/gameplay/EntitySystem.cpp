@@ -571,16 +571,16 @@ const SimpleEntity* EntitySystem::byId(std::uint64_t id) const {
 }
 
 bool EntitySystem::hurt(std::uint64_t entityId, float amount, glm::vec3 knockbackOrigin,
-                        ActorReference attacker) {
+                        ActorReference attacker, DamageType type) {
     const auto found = idToIndex_.find(entityId);
     if (found == idToIndex_.end()) {
         return false;
     }
     auto& entity = entities_[found->second];
     // The guards and the invulnerability window live in the shared pipeline, so
-    // the player and every mob resolve a hit the same way.
-    const DamageOutcome outcome =
-        applyDamage(entity.damage, DamageType::EntityAttack, amount);
+    // the player and every mob resolve a hit the same way regardless of
+    // whether it came from a melee swing or (RW-0) a projectile.
+    const DamageOutcome outcome = applyDamage(entity.damage, type, amount);
     if (!outcome.landed) {
         return false;
     }

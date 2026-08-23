@@ -220,6 +220,18 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
                 hurtPlayer(kPrimaryPlayerId, DamageType::EntityAttack, attack.amount, host, true));
         }
     }
+    // RW-0: the projectile pool — physics/raycast hit (entity through
+    // Damage.hpp above, or block -> stick), landed-arrow pickup, lifetime
+    // despawn. Runs after the creature tick above so a hit this same tick
+    // sees the herd's post-move positions, matching the ordering entityTick's
+    // own mobAttacks already established.
+    for (auto& pickup : primaryLevel().projectiles.tick(
+             world, primaryLevel().entities, primaryPlayer().controller.position(),
+             !primaryPlayer().vitals.dead(), projectileRandom_)) {
+        if (primaryPlayer().inventory.add(pickup)) {
+            events_.publish(SoundEvent{SoundEventKind::ItemPickup, primaryPlayer().controller.position()});
+        }
+    }
     // AR-A2: EatGrassGoal filed these mid-tick, when it only held a
     // `const World&` and could not write the cell itself (see MobBrain's
     // requestEatGrass comment). This is where the write actually happens —
@@ -574,6 +586,7 @@ void GameSession::publishSnapshots() {
     // until the next tick replaces it.
     entitySnapshot_.capture(primaryLevel().entities.entities(), primaryLevel().items.entities(),
                             primaryLevel().experienceOrbs.entities(),
+                            primaryLevel().projectiles.entities(),
                             worldSimulation_.fallingBlocks());
     // Stamp the publish time so the render thread derives the interpolation alpha
     // from this very bundle. Written just before the atomic publish, so a reader

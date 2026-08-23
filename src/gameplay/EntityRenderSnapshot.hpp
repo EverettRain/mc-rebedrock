@@ -22,6 +22,7 @@
 #include "gameplay/WorldSimulation.hpp"
 #include "gameplay/entities/EntityType.hpp"
 #include "gameplay/entities/ExperienceOrb.hpp"
+#include "gameplay/entities/ProjectileSystem.hpp"
 
 #include <cstdint>
 #include <vector>
@@ -73,15 +74,16 @@ class EntityRenderSnapshot final {
     // Rebuilds from the live lists. Called at the end of a tick, on whichever
     // thread owns the simulation.
     //
-    // Items, experience orbs and falling blocks are copied whole rather than
-    // projected the way creatures are: all three are already flat value types
-    // with nothing simulation-private in them, so a narrower struct would be
-    // duplication without a reason. `SimpleEntity` is the odd one out
-    // precisely because it is not — it carries a MobBrain and is not even
-    // copyable.
+    // Items, experience orbs, projectiles and falling blocks are copied whole
+    // rather than projected the way creatures are: all four are already flat
+    // value types with nothing simulation-private in them, so a narrower
+    // struct would be duplication without a reason. `SimpleEntity` is the odd
+    // one out precisely because it is not — it carries a MobBrain and is not
+    // even copyable.
     void capture(const std::vector<SimpleEntity>& creatures,
                  const std::vector<ItemEntity>& items,
                  const std::vector<ExperienceOrb>& experienceOrbs,
+                 const std::vector<Projectile>& projectiles,
                  const std::vector<FallingBlockEntity>& fallingBlocks);
 
     [[nodiscard]] const std::vector<EntityRenderState>& entities() const { return entities_; }
@@ -89,6 +91,11 @@ class EntityRenderSnapshot final {
     [[nodiscard]] const std::vector<ExperienceOrb>& experienceOrbs() const {
         return experienceOrbs_;
     }
+    // RW-0: the flying/stuck projectiles PX reads to draw an arrow's model —
+    // carries previousPosition like items/orbs above, so the draw pass can
+    // interpolate a moving shot without jitter (RW-0-projectile-system.md's
+    // "snapshot carries previousPosition" requirement).
+    [[nodiscard]] const std::vector<Projectile>& projectiles() const { return projectiles_; }
     [[nodiscard]] const std::vector<FallingBlockEntity>& fallingBlocks() const {
         return fallingBlocks_;
     }
@@ -96,16 +103,17 @@ class EntityRenderSnapshot final {
     // (C-1b-4): the codec decodes the vectors off the channel and hands them
     // here, the client analogue of capture() on the server.
     void assign(std::vector<EntityRenderState> creatures, std::vector<ItemEntity> items,
-                std::vector<ExperienceOrb> experienceOrbs,
+                std::vector<ExperienceOrb> experienceOrbs, std::vector<Projectile> projectiles,
                 std::vector<FallingBlockEntity> fallingBlocks) {
         entities_ = std::move(creatures);
         items_ = std::move(items);
         experienceOrbs_ = std::move(experienceOrbs);
+        projectiles_ = std::move(projectiles);
         fallingBlocks_ = std::move(fallingBlocks);
     }
     [[nodiscard]] bool empty() const {
         return entities_.empty() && items_.empty() && experienceOrbs_.empty() &&
-               fallingBlocks_.empty();
+               projectiles_.empty() && fallingBlocks_.empty();
     }
     // The resident bytes the buffers hold, counting capacity not size:
     // capture() reuses the capacity across ticks, so this is the steady-state
@@ -115,12 +123,14 @@ class EntityRenderSnapshot final {
         return sizeof(*this) + entities_.capacity() * sizeof(EntityRenderState) +
                items_.capacity() * sizeof(ItemEntity) +
                experienceOrbs_.capacity() * sizeof(ExperienceOrb) +
+               projectiles_.capacity() * sizeof(Projectile) +
                fallingBlocks_.capacity() * sizeof(FallingBlockEntity);
     }
     void clear() {
         entities_.clear();
         items_.clear();
         experienceOrbs_.clear();
+        projectiles_.clear();
         fallingBlocks_.clear();
     }
 
@@ -128,6 +138,7 @@ class EntityRenderSnapshot final {
     std::vector<EntityRenderState> entities_;
     std::vector<ItemEntity> items_;
     std::vector<ExperienceOrb> experienceOrbs_;
+    std::vector<Projectile> projectiles_;
     std::vector<FallingBlockEntity> fallingBlocks_;
 };
 

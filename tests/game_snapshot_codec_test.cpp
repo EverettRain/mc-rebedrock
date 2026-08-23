@@ -156,6 +156,14 @@ void checkRoundTrip(const gameplay::PublishedSnapshot& snapshot) {
     orb.count = 3;
     orbs.push_back(orb);
 
+    std::vector<gameplay::Projectile> projectiles;
+    gameplay::Projectile arrow;
+    arrow.position = {3.0F, 4.0F, 5.0F};
+    arrow.previousPosition = {2.5F, 4.2F, 5.0F};
+    arrow.critical = true;
+    arrow.inGround = false;
+    projectiles.push_back(arrow);
+
     std::vector<gameplay::FallingBlockEntity> falling;
     gameplay::FallingBlockEntity block;
     block.position = {7.0F, 8.0F, 9.0F};
@@ -164,7 +172,8 @@ void checkRoundTrip(const gameplay::PublishedSnapshot& snapshot) {
     falling.push_back(block);
 
     gameplay::EntityRenderSnapshot snapshot;
-    snapshot.assign(std::move(creatures), std::move(drops), std::move(orbs), std::move(falling));
+    snapshot.assign(std::move(creatures), std::move(drops), std::move(orbs),
+                    std::move(projectiles), std::move(falling));
     return snapshot;
 }
 
@@ -186,6 +195,19 @@ int main() {
         assert(decoded->entities() == snapshot.entities());
         assert(decoded->items() == snapshot.items());
         assert(decoded->experienceOrbs() == snapshot.experienceOrbs());
+        // RW-0: only the render-relevant fields ride the wire (position/
+        // previousPosition/critical/inGround), so this checks those rather than
+        // a whole-struct == the way items()/experienceOrbs() above can (their
+        // codecs happen to round-trip every field those structs carry).
+        assert(decoded->projectiles().size() == snapshot.projectiles().size());
+        for (std::size_t index = 0; index < snapshot.projectiles().size(); ++index) {
+            const auto& expected = snapshot.projectiles()[index];
+            const auto& actual = decoded->projectiles()[index];
+            assert(actual.position == expected.position);
+            assert(actual.previousPosition == expected.previousPosition);
+            assert(actual.critical == expected.critical);
+            assert(actual.inGround == expected.inGround);
+        }
         assert(decoded->fallingBlocks() == snapshot.fallingBlocks());
         std::cout << "entitySnapshotBytes=" << bytes.size() << "\n";
 

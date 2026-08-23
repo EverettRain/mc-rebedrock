@@ -1047,6 +1047,159 @@ void readExperienceOrbBlock(std::span<const std::uint8_t> payload, std::size_t& 
     }
 }
 
+// The PJTL block (RW-0) carries the projectile pool, its own self-describing
+// block added after format 19 — same local-palette shape as DROP (an item
+// carried by pickupItem can be a block stack too, so it gets its own item +
+// block palette local to this block, exactly like the drop record's).
+//
+//   u32 blockTag          // 'P','J','T','L'
+//   u32 blockSizeBytes    // whole block length incl. this field
+//   u16 blockVersion      // 1
+//   u16 itemPaletteCount, [string]*   // "" is the block-only sentinel
+//   u16 blockPaletteCount, [string]*
+//   u32 projectileCount
+//   projectiles[]: f32 x, y, z, f32 vx, vy, vz,
+//                  u8 shooterKind, u64 shooterEntityId,
+//                  f32 damage, u8 critical, u8 pickupState,
+//                  u16 itemIndex, u16 blockIndex, u8 count,
+//                  u8 inGround, i32 inBlockX, inBlockY, inBlockZ,
+//                  u32 lifeTicks
+//
+// A pre-RW-0 world has no PJTL block at all; the reader simply never finds
+// the tag and projectiles loads empty, exactly the way XPOB itself behaved
+// for worlds that predate it.
+constexpr std::uint32_t kProjectileBlockTag =
+    'P' | ('J' << 8) | ('T' << 16) | ('L' << 24);
+constexpr std::uint16_t kProjectileBlockVersion = 1U;
+
+void appendProjectileBlock(std::vector<std::uint8_t>& bytes,
+                           const std::vector<PersistentProjectile>& projectiles) {
+    const std::size_t blockStart = bytes.size();
+    appendInteger(bytes, kProjectileBlockTag);
+    appendInteger(bytes, 0U);  // blockSizeBytes, patched below
+    appendInteger(bytes, kProjectileBlockVersion);
+
+    ItemPalette itemPalette;
+    BlockPalette blockPalette = makeBlockPalette();
+    for (const auto& projectile : projectiles) {
+        static_cast<void>(itemPalette.indexOf(projectile.pickupItem.item));
+        static_cast<void>(blockPalette.indexOf(world::blockId(projectile.pickupItem.block)));
+    }
+    appendInteger(bytes, static_cast<std::uint16_t>(itemPalette.entries().size()));
+    for (const auto* item : itemPalette.entries()) {
+        appendString(bytes, item == nullptr ? std::string{} : item->identifier.toString());
+    }
+    appendInteger(bytes, static_cast<std::uint16_t>(blockPalette.entries().size()));
+    for (const auto block : blockPalette.entries()) {
+        appendString(bytes, world::blockRegistry().identifier(block).toString());
+    }
+
+    appendInteger(bytes, static_cast<std::uint32_t>(projectiles.size()));
+    for (const auto& projectile : projectiles) {
+        appendFloat(bytes, projectile.x);
+        appendFloat(bytes, projectile.y);
+        appendFloat(bytes, projectile.z);
+        appendFloat(bytes, projectile.vx);
+        appendFloat(bytes, projectile.vy);
+        appendFloat(bytes, projectile.vz);
+        appendInteger(bytes, projectile.shooterKind);
+        appendInteger(bytes, projectile.shooterEntityId);
+        appendFloat(bytes, projectile.damage);
+        appendInteger(bytes, static_cast<std::uint8_t>(projectile.critical ? 1U : 0U));
+        appendInteger(bytes, projectile.pickupState);
+        appendInteger(bytes, itemPalette.indexOf(projectile.pickupItem.item));
+        appendInteger(bytes, blockPalette.indexOf(world::blockId(projectile.pickupItem.block)));
+        appendInteger(bytes, projectile.pickupItem.count);
+        appendInteger(bytes, static_cast<std::uint8_t>(projectile.inGround ? 1U : 0U));
+        appendInteger(bytes, projectile.inBlockX);
+        appendInteger(bytes, projectile.inBlockY);
+        appendInteger(bytes, projectile.inBlockZ);
+        appendInteger(bytes, projectile.lifeTicks);
+    }
+    const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
+    for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
+        bytes[blockStart + 4U + offset] =
+            static_cast<std::uint8_t>(blockSize >> (offset * 8U));
+    }
+}
+
+void readProjectileBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                         std::vector<PersistentProjectile>& projectiles) {
+    const std::size_t blockStart = cursor;
+    if (blockStart + 12U > payload.size()) {
+        throw std::runtime_error("world.dat projectile block is truncated");
+    }
+    const auto tag = readInteger<std::uint32_t>(payload, cursor);
+    if (tag != kProjectileBlockTag) {
+        throw std::runtime_error("world.dat has an invalid projectile block");
+    }
+    const auto blockSize = readInteger<std::uint32_t>(payload, cursor);
+    if (blockSize < 12U || static_cast<std::size_t>(blockSize) > payload.size() - blockStart) {
+        throw std::runtime_error("world.dat projectile block is malformed");
+    }
+    const auto blockVersion = readInteger<std::uint16_t>(payload, cursor);
+    if (blockVersion > kProjectileBlockVersion) {
+        cursor = blockStart + blockSize;
+        return;
+    }
+    const std::size_t blockEnd = blockStart + blockSize;
+
+    const auto itemCount = readInteger<std::uint16_t>(payload, cursor);
+    std::vector<const gameplay::Item*> items;
+    items.reserve(itemCount);
+    for (std::uint16_t index = 0; index < itemCount; ++index) {
+        const auto name = readString(payload, cursor);
+        items.push_back(name.empty() ? nullptr : gameplay::itemFromIdentifier(name));
+    }
+    const auto blockCount = readInteger<std::uint16_t>(payload, cursor);
+    std::vector<world::Block> blocks;
+    blocks.reserve(blockCount);
+    for (std::uint16_t index = 0; index < blockCount; ++index) {
+        const auto name = readString(payload, cursor);
+        blocks.push_back(blockByName(name).value_or(world::Block::Air));
+    }
+
+    const auto projectileCount = readInteger<std::uint32_t>(payload, cursor);
+    projectiles.reserve(projectiles.size() + static_cast<std::size_t>(projectileCount));
+    for (std::uint32_t index = 0; index < projectileCount; ++index) {
+        if (cursor >= blockEnd) {
+            throw std::runtime_error("world.dat projectile block is truncated");
+        }
+        PersistentProjectile projectile;
+        projectile.x = readFloat(payload, cursor);
+        projectile.y = readFloat(payload, cursor);
+        projectile.z = readFloat(payload, cursor);
+        projectile.vx = readFloat(payload, cursor);
+        projectile.vy = readFloat(payload, cursor);
+        projectile.vz = readFloat(payload, cursor);
+        projectile.shooterKind = readInteger<std::uint8_t>(payload, cursor);
+        projectile.shooterEntityId = readInteger<std::uint64_t>(payload, cursor);
+        projectile.damage = readFloat(payload, cursor);
+        projectile.critical = readInteger<std::uint8_t>(payload, cursor) != 0U;
+        projectile.pickupState = readInteger<std::uint8_t>(payload, cursor);
+        const auto itemIndex = readInteger<std::uint16_t>(payload, cursor);
+        const auto blockIndex = readInteger<std::uint16_t>(payload, cursor);
+        if (itemIndex >= items.size() || blockIndex >= blocks.size()) {
+            throw std::runtime_error("world.dat projectile block references an unknown palette entry");
+        }
+        projectile.pickupItem.item = items[itemIndex];
+        projectile.pickupItem.block = blocks[blockIndex];
+        projectile.pickupItem.count = readInteger<std::uint8_t>(payload, cursor);
+        projectile.inGround = readInteger<std::uint8_t>(payload, cursor) != 0U;
+        projectile.inBlockX = readInteger<std::int32_t>(payload, cursor);
+        projectile.inBlockY = readInteger<std::int32_t>(payload, cursor);
+        projectile.inBlockZ = readInteger<std::int32_t>(payload, cursor);
+        projectile.lifeTicks = readInteger<std::uint32_t>(payload, cursor);
+        if (!(projectile.y >= -64.0F && projectile.y <= 384.0F)) {
+            throw std::runtime_error("world.dat projectile block has an invalid position");
+        }
+        projectiles.push_back(projectile);
+    }
+    if (cursor != blockEnd) {
+        throw std::runtime_error("world.dat projectile block has trailing data");
+    }
+}
+
 // The DPKS block (PACK-1) carries which of this save's <save>/datapacks/*
 // packs are enabled, and in what order — bottom (lowest priority) to top
 // (highest), matching PackManager::order()'s own convention so GameRuntime
@@ -2619,6 +2772,14 @@ void readExperienceOrbOwner(std::span<const std::uint8_t> payload, std::size_t& 
     cursor = header.bodyStart - kBlockHeaderBytes;
     readExperienceOrbBlock(payload, cursor, context.game.experienceOrbs);
 }
+void writeProjectileOwner(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    appendProjectileBlock(bytes, context.game.projectiles);
+}
+void readProjectileOwner(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                         const SaveBlockHeader& header, SaveReadContext& context) {
+    cursor = header.bodyStart - kBlockHeaderBytes;
+    readProjectileBlock(payload, cursor, context.game.projectiles);
+}
 void writeDataPackOwner(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
     appendDataPackBlock(bytes, context.game.enabledDataPacks);
 }
@@ -2628,7 +2789,7 @@ void readDataPackOwner(std::span<const std::uint8_t> payload, std::size_t& curso
     readDataPackBlock(payload, cursor, context.game.enabledDataPacks);
 }
 
-constexpr std::array<SaveBlockOwner, 13> kSaveBlockOwners{{
+constexpr std::array<SaveBlockOwner, 14> kSaveBlockOwners{{
     {kVersionBlockTag, kVersionBlockVersion, &appendVersionBlock, &readVersionBlock},
     {kWorldBlockTag, kWorldBlockVersion, &appendWorldBlock, &readWorldBlock},
     {kPlayerBlockTag, kPlayerBlockVersion, &appendPlayerBlock, &readPlayerBlock},
@@ -2645,6 +2806,7 @@ constexpr std::array<SaveBlockOwner, 13> kSaveBlockOwners{{
     {kDropBlockTag, kDropBlockVersion, &writeDropOwner, &readDropOwner},
     {kExperienceOrbBlockTag, kExperienceOrbBlockVersion, &writeExperienceOrbOwner,
      &readExperienceOrbOwner},
+    {kProjectileBlockTag, kProjectileBlockVersion, &writeProjectileOwner, &readProjectileOwner},
     {kDataPackBlockTag, kDataPackBlockVersion, &writeDataPackOwner, &readDataPackOwner},
 }};
 

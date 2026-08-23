@@ -807,6 +807,22 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
                                               orb.value, orb.count, orb.ageTicks,
                                               orb.pickupDelayTicks);
     }
+    // RW-0: the projectile pool, its own PJTL block. A pre-RW-0 save has none,
+    // so this loop simply does not run and the pool starts empty — the same
+    // DROP/XPOB-block precedent's "old world migrates cleanly" shape.
+    for (const auto& projectile : currentSave_->projectiles) {
+        const auto shooter = projectile.shooterKind == 1U
+            ? gameplay::ActorReference::player()
+            : (projectile.shooterKind == 2U
+                   ? gameplay::ActorReference::entity(projectile.shooterEntityId)
+                   : gameplay::ActorReference{});
+        gameSession_.projectiles().restore(
+            {projectile.x, projectile.y, projectile.z}, {projectile.vx, projectile.vy, projectile.vz},
+            shooter, projectile.damage, projectile.critical,
+            static_cast<gameplay::ProjectilePickupState>(projectile.pickupState),
+            projectile.pickupItem, projectile.inGround,
+            {projectile.inBlockX, projectile.inBlockY, projectile.inBlockZ}, projectile.lifeTicks);
+    }
     for (const auto& falling : currentSave_->fallingBlocks) {
         gameSession_.worldSimulation().restoreFallingBlock(
             {falling.x, falling.y, falling.z}, falling.block, falling.verticalVelocity);
@@ -1046,6 +1062,23 @@ bool GameRuntime::saveLocked() {
         currentSave_->experienceOrbs.push_back(
             {orb.position.x, orb.position.y, orb.position.z, orb.velocity.x, orb.velocity.y,
              orb.velocity.z, orb.value, orb.count, orb.ageTicks, orb.pickupDelayTicks});
+    }
+    // RW-0: the projectile pool rides along like the experience orbs above,
+    // into its own PJTL block.
+    currentSave_->projectiles.clear();
+    currentSave_->projectiles.reserve(gameSession_.projectiles().entities().size());
+    for (const auto& projectile : gameSession_.projectiles().entities()) {
+        const std::uint8_t shooterKind =
+            projectile.shooterId.kind == gameplay::ActorReference::Kind::Player   ? 1U
+            : projectile.shooterId.kind == gameplay::ActorReference::Kind::Entity ? 2U
+                                                                                   : 0U;
+        currentSave_->projectiles.push_back(persistence::PersistentProjectile{
+            projectile.position.x, projectile.position.y, projectile.position.z,
+            projectile.velocity.x, projectile.velocity.y, projectile.velocity.z, shooterKind,
+            projectile.shooterId.entityId, projectile.damage, projectile.critical,
+            static_cast<std::uint8_t>(projectile.pickupState), projectile.pickupItem,
+            projectile.inGround, projectile.inBlockPos.x, projectile.inBlockPos.y,
+            projectile.inBlockPos.z, projectile.lifeTicks});
     }
     currentSave_->fallingBlocks.clear();
     for (const auto& falling : gameSession_.worldSimulation().fallingBlocks()) {

@@ -133,6 +133,33 @@ struct PersistentExperienceOrb final {
     std::uint32_t pickupDelayTicks = 0U;
 };
 
+// A flying or stuck projectile (RW-0). Position/velocity/inGround/inBlockPos
+// are the whole physical state; shooterKind/shooterEntityId identify who fired
+// it (JC deviation, see je-save-compat-layer: this is not vanilla NBT, the
+// same sparse-binary shape XPOB/DROP already use); damage/critical/pickupState
+// are its economic state; pickupItem is what a contacting player receives
+// (RW-1's arrow item once it exists — empty/air round-trips cleanly for RW-0's
+// own generic-mechanic tests); lifeTicks drives the pickup-timeout despawn.
+struct PersistentProjectile final {
+    float x = 0.0F;
+    float y = 0.0F;
+    float z = 0.0F;
+    float vx = 0.0F;
+    float vy = 0.0F;
+    float vz = 0.0F;
+    std::uint8_t shooterKind = 0U;  // ActorReference::Kind: 0 None, 1 Player, 2 Entity
+    std::uint64_t shooterEntityId = 0U;
+    float damage = 2.0F;
+    bool critical = false;
+    std::uint8_t pickupState = 1U;  // ProjectilePickupState: 0 NoPickup, 1 Pickupable, 2 CreativeOnly
+    gameplay::ItemStack pickupItem;
+    bool inGround = false;
+    std::int32_t inBlockX = 0;
+    std::int32_t inBlockY = 0;
+    std::int32_t inBlockZ = 0;
+    std::uint32_t lifeTicks = 0U;
+};
+
 struct SaveGame final {
     SaveSummary summary;
     // Which build wrote this world (META-1). On save() this is filled from the
@@ -218,6 +245,11 @@ struct SaveGame final {
     // way DROP itself did not move the number when it was added). A pre-XP-1
     // world simply has no XPOB block and loads with an empty list.
     std::vector<PersistentExperienceOrb> experienceOrbs;
+    // RW-0: the projectile pool, its own self-describing block (PJTL, added
+    // after format 19 the same owner-block-addition shape XPOB used — no
+    // format bump needed). A pre-RW-0 world simply has no PJTL block and loads
+    // with an empty list.
+    std::vector<PersistentProjectile> projectiles;
     // The world's own tick count and every named clock, split apart by format 13
     // so the sun can be frozen without freezing gameplay timing. Loading an
     // older save backfills both from gameTimeSeconds above, which used to carry

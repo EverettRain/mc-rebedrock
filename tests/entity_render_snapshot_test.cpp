@@ -72,6 +72,7 @@ void buildFloor(world::World& world) {
 int main() {
     const std::vector<gameplay::ItemEntity> noItems;
     const std::vector<gameplay::ExperienceOrb> noOrbs;
+    const std::vector<gameplay::Projectile> noProjectiles;
     const std::vector<gameplay::FallingBlockEntity> noFallingBlocks;
 
     // --- Capturing copies what the draw pass reads, keyed by the stable id. ---
@@ -121,7 +122,7 @@ int main() {
         pig.damage.deathTicks = 2;
 
         gameplay::EntityRenderSnapshot snapshot;
-        snapshot.capture(live, noItems, noOrbs, noFallingBlocks);
+        snapshot.capture(live, noItems, noOrbs, noProjectiles, noFallingBlocks);
         REQUIRE(snapshot.entities().size() == 1U);
         const auto& state = snapshot.entities().at(0);
         REQUIRE(state.id == 41U);
@@ -144,7 +145,7 @@ int main() {
 
         // Re-capturing from an empty source is what makes a removed creature
         // stop being drawn.
-        snapshot.capture(live, noItems, noOrbs, noFallingBlocks);
+        snapshot.capture(live, noItems, noOrbs, noProjectiles, noFallingBlocks);
         REQUIRE(snapshot.empty());
     }
 
@@ -158,10 +159,10 @@ int main() {
             entity.type = &gameplay::entities::ZombieEntity::type();
             entity.id = id;
         }
-        snapshot.capture(live, noItems, noOrbs, noFallingBlocks);
+        snapshot.capture(live, noItems, noOrbs, noProjectiles, noFallingBlocks);
         REQUIRE(snapshot.entities().size() == 3U);
         live.pop_back();
-        snapshot.capture(live, noItems, noOrbs, noFallingBlocks);
+        snapshot.capture(live, noItems, noOrbs, noProjectiles, noFallingBlocks);
         REQUIRE(snapshot.entities().size() == 2U);
         REQUIRE(snapshot.entities().at(1).id == 2U);
     }
@@ -187,7 +188,7 @@ int main() {
         sand.position = {6.0F, 7.0F, 8.0F};
         sand.block = world::Block::Sand;
 
-        snapshot.capture(creatures, items, orbs, falling);
+        snapshot.capture(creatures, items, orbs, noProjectiles, falling);
         REQUIRE(snapshot.items().size() == 1U);
         REQUIRE(snapshot.items().at(0).position == glm::vec3(3.0F, 4.0F, 5.0F));
         REQUIRE(snapshot.experienceOrbs().size() == 1U);
@@ -205,7 +206,7 @@ int main() {
         REQUIRE(snapshot.experienceOrbs().size() == 1U);
         REQUIRE(snapshot.fallingBlocks().size() == 1U);
 
-        snapshot.capture(creatures, items, orbs, falling);
+        snapshot.capture(creatures, items, orbs, noProjectiles, falling);
         REQUIRE(snapshot.empty());
     }
 
@@ -234,7 +235,7 @@ int main() {
         zombie.type = &gameplay::entities::ZombieEntity::type();
         zombie.id = 9U;
         zombie.position = {10.0F, 4.0F, 20.0F}; // beyond any reach used here
-        snapshot.capture(live, {}, {}, {});
+        snapshot.capture(live, {}, {}, {}, {});
 
         // A ray straight down the +Z axis at the pig's x/z reaches the pig.
         const auto hit = gameplay::raycastSnapshotEntities(
@@ -250,7 +251,7 @@ int main() {
         // A creature whose death animation has finished is not pickable, exactly
         // like the live EntitySystem::raycast.
         live.at(0).damage.deathTicks = gameplay::kDeathTicks;
-        snapshot.capture(live, {}, {}, {});
+        snapshot.capture(live, {}, {}, {}, {});
         const auto dead = gameplay::raycastSnapshotEntities(
             snapshot, {10.0F, 4.0F, 8.0F}, {0.0F, 0.0F, 1.0F}, 4.0F);
         REQUIRE(!dead.has_value());

@@ -514,7 +514,7 @@ void testSnapshotCodecRoundTrip() {
     std::vector<ExperienceOrb> orbs;
     orbs.push_back({{1.0F, 2.0F, 3.0F}, {0.9F, 2.0F, 3.0F}, {0.0F, 0.0F, 0.0F}, 17, 1, 40U, 0U});
     orbs.push_back({{-5.0F, 64.0F, 5.0F}, {-5.0F, 64.0F, 5.0F}, {0.0F, 0.0F, 0.0F}, 7, 3, 0U, 0U});
-    snapshot.assign({}, {}, orbs, {});
+    snapshot.assign({}, {}, orbs, {}, {});
 
     const auto encoded = encodeEntitySnapshot(snapshot);
     const auto decoded = decodeEntitySnapshot(encoded, nullptr);

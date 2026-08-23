@@ -6,6 +6,7 @@
 #include "gameplay/NaturalSpawner.hpp"
 #include "gameplay/WeatherSystem.hpp"
 #include "gameplay/entities/ExperienceOrb.hpp"
+#include "gameplay/entities/ProjectileSystem.hpp"
 #include "world/Dimension.hpp"
 #include "world/DimensionGenerator.hpp"
 #include "world/World.hpp"
@@ -56,6 +57,10 @@ struct Level final {
     // not a MobEntity, not folded into EntitySystem — so orb physics/merge/
     // magnet never pay a Mob's AI/health/equipment columns.
     ExperienceOrbSystem experienceOrbs;
+    // RW-0: the third non-living SoA pool, same routing as items/experienceOrbs
+    // above — a flying/stuck projectile has no AI, no health, no equipment, so
+    // it never touches EntitySystem's SimpleEntity columns.
+    ProjectileSystem projectiles;
     WeatherSystem weather;
     NaturalSpawner spawner{0U};
 

@@ -298,6 +298,7 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/entities/CowEntity.cpp
     src/gameplay/entities/ZombieEntity.cpp
     src/gameplay/entities/ExperienceOrb.cpp
+    src/gameplay/entities/ProjectileSystem.cpp
     src/world/BlockPlacement.cpp
     src/world/Chunk.cpp
     src/world/ChunkSection.cpp
@@ -321,6 +322,12 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/world/World.cpp
     src/world/DayNightCycle.cpp
     src/world/WorldClock.cpp
+    # RW-0: the world-ray/block-hit test a flying projectile needs every tick.
+    # Previously only linked into the GL executable (its sole caller was the
+    # renderer's crosshair pick); ProjectileSystem needs it headless too, and
+    # the header/impl pull in nothing but World/BlockShape, so moving it here
+    # costs the GL build nothing (mc_rebedrock already links mc_rebedrock_runtime).
+    src/world/VoxelRaycast.cpp
 )
 # The runtime spawns threads (ChunkStreamer worker, the TCP IO thread). This is
 # looked up without REQUIRED because the MinGW cross build reconfigures this same
@@ -376,7 +383,6 @@ add_executable(mc_rebedrock
     src/ui/TextWrap.cpp
     src/ui/ChatHistory.cpp
     src/ui/PageStack.cpp
-    src/world/VoxelRaycast.cpp
 )
 
 set(
@@ -2231,6 +2237,16 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME experience_orb COMMAND mc_rebedrock_experience_orb_test)
+
+    add_executable(mc_rebedrock_projectile_system_test
+        tests/projectile_system_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_projectile_system_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_projectile_system_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME projectile_system COMMAND mc_rebedrock_projectile_system_test)
 
     add_executable(mc_rebedrock_experience_sources_test
         tests/experience_sources_test.cpp
