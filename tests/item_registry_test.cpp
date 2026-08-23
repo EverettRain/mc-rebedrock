@@ -117,6 +117,15 @@ int main() {
     assert(hasUseOn(&items::WoodenHoe));
     assert(hasUseOn(&items::DiamondHoe));
     assert(hasUseOn(&items::PigSpawnEgg));
+    // AR-A1: sheep/chicken spawn eggs resolve their entity type through the
+    // deferred manifest lookup (sheepTypeForSpawnEgg/chickenTypeForSpawnEgg)
+    // rather than a `::type()` static accessor, but behave identically once
+    // registered — same useOn slot, same catalog membership.
+    assert(hasUseOn(&items::SheepSpawnEgg));
+    assert(hasUseOn(&items::ChickenSpawnEgg));
+    assert(&items::SheepSpawnEgg.entityType() == entities::entityTypeRegistry().byId("sheep"));
+    assert(&items::ChickenSpawnEgg.entityType() ==
+           entities::entityTypeRegistry().byId("chicken"));
     // Plain materials / tools that are not hoes do nothing on right-click.
     assert(!hasUseOn(&items::Diamond));
     assert(!hasUseOn(&items::Stick));

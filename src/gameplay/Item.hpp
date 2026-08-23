@@ -469,8 +469,11 @@ inline constexpr Item Leather =
     Item::of("leather").category(CreativeCategory::Materials);
 inline constexpr Item Sugar =
     Item::of("sugar").category(CreativeCategory::Materials);
+// AR-A1: EggItem (26.1) files under the Food tab (it is throwable AND edible
+// via FoodComponents.EGG, but the creative catalog lists it under Foodstuffs,
+// not Materials — this was mis-tabbed before any chicken existed to drop it).
 inline constexpr Item Egg =
-    Item::of("egg").category(CreativeCategory::Materials).stackSize(16U);
+    Item::of("egg").category(CreativeCategory::Food).stackSize(16U);
 inline constexpr Item Bone =
     Item::of("bone").category(CreativeCategory::Materials);
 inline constexpr Item Paper =
@@ -503,6 +506,17 @@ inline constexpr Item CookedPorkchop = Item::of("cooked_porkchop")
 inline constexpr Item Beef = Item::of("beef")
                                  .category(CreativeCategory::Food)
                                  .food({3, 0.3F});
+// Raw chicken: the chicken's meat drop. Vanilla food value 2 hunger / 0.3
+// saturation (lower than the other raw meats — it also carries a hunger-effect
+// chance on eat raw in 26.1, which this build does not model yet: EM2 status
+// effects, not in scope here).
+inline constexpr Item RawChicken = Item::of("chicken")
+                                       .category(CreativeCategory::Food)
+                                       .food({2, 0.3F});
+// Mutton: the sheep's meat drop. Vanilla food value 2 hunger / 0.3 saturation.
+inline constexpr Item Mutton = Item::of("mutton")
+                                   .category(CreativeCategory::Food)
+                                   .food({2, 0.3F});
 // Carrot and potato are both food (1.16.1 FoodComponent) and the seed of their
 // own crop — a held carrot/potato plants itself on farmland, like the vanilla
 // items whose useOn is a SeedsItem subclass. Planting is dispatched by item
@@ -630,7 +644,7 @@ inline constexpr Item GoldSword = Item::of("golden_sword")
 // their constructors need entity headers that sit above us in the include graph.
 // The order sets both the creative-catalog order within each tab and the item
 // texture-array layout the renderer appends. Grouped materials / food / tools.
-inline constexpr std::array<const Item*, 52> kItemRegistry{
+inline constexpr std::array<const Item*, 54> kItemRegistry{
     &items::Bucket,     &items::WaterBucket, &items::LavaBucket, &items::Coal,
     &items::IronIngot,
     &items::GoldIngot,  &items::Diamond,     &items::Emerald,    &items::Stick,
@@ -638,7 +652,7 @@ inline constexpr std::array<const Item*, 52> kItemRegistry{
     &items::Sugar,      &items::Egg,         &items::Bone,       &items::Paper,
     &items::Book,       &items::WheatSeeds,  &items::Wheat,
     &items::Apple,      &items::Bread,       &items::Porkchop,   &items::CookedPorkchop,
-    &items::Beef,
+    &items::Beef,       &items::RawChicken,  &items::Mutton,
     &items::Carrot,     &items::Potato,
     &items::WoodenPickaxe,  &items::StonePickaxe,  &items::IronPickaxe,
     &items::DiamondPickaxe, &items::GoldPickaxe,

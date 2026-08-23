@@ -1,4 +1,6 @@
 #include "gameplay/ContentRegistry.hpp"
+#include "gameplay/SpawnEggItems.hpp"
+#include "gameplay/entities/EntityRegistry.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -6,6 +8,11 @@
 int main() {
     using namespace mc;
     using namespace mc::gameplay;
+
+    // Spawn eggs register into the creative catalog off the entity registry
+    // (kSpawnEggItemsRegistered, SpawnEggItems.hpp); the species must exist
+    // first, mirroring the app's own startup order.
+    entities::registerBuiltinEntities();
 
     const auto& registry = contentRegistry();
     // Blocks and items are filed under this project's namespace, and reachable
@@ -63,6 +70,40 @@ int main() {
     assert(std::ranges::any_of(materials, [](const ItemStack& stack) {
         return stack.item == &items::LavaBucket;
     }));
+
+    // --- AR-A1: the animal drop items land in Food (auto-catalogued off their
+    // own .category(CreativeCategory::Food) declaration — no catalog-list edit
+    // needed, per AR-CI). Egg used to be mis-tabbed under Materials; it now
+    // joins the other drops here. ---
+    assert(std::ranges::any_of(food, [](const ItemStack& stack) {
+        return stack.item == &items::Mutton;
+    }));
+    assert(std::ranges::any_of(food, [](const ItemStack& stack) {
+        return stack.item == &items::RawChicken;
+    }));
+    assert(std::ranges::any_of(food, [](const ItemStack& stack) {
+        return stack.item == &items::Beef;
+    }));
+    assert(std::ranges::any_of(food, [](const ItemStack& stack) {
+        return stack.item == &items::Egg;
+    }));
+    assert(!std::ranges::any_of(materials, [](const ItemStack& stack) {
+        return stack.item == &items::Egg;
+    }));
+
+    // --- AR-A1: sheep/chicken spawn eggs reach the SpawnEggs tab, the same way
+    // the pre-existing pig/cow/zombie eggs do — reachable via /give and via the
+    // creative inventory even before natural spawning is mac-verified. ---
+    const auto spawnEggs = registry.catalog(CreativeCategory::SpawnEggs);
+    assert(std::ranges::any_of(spawnEggs, [](const ItemStack& stack) {
+        return stack.item == &items::SheepSpawnEgg;
+    }));
+    assert(std::ranges::any_of(spawnEggs, [](const ItemStack& stack) {
+        return stack.item == &items::ChickenSpawnEgg;
+    }));
+    assert(registry.item("rebedrock:sheep_spawn_egg") != nullptr);
+    assert(registry.item("rebedrock:chicken_spawn_egg") != nullptr);
+    assert(registry.item("minecraft:sheep_spawn_egg") == registry.item("rebedrock:sheep_spawn_egg"));
 
     ContentRegistry isolated;
     assert(isolated.registerBlock(world::Block::Stone,

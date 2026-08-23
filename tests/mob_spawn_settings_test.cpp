@@ -65,6 +65,15 @@ int main() {
         // BiomeDefaultFeatures.farmAnimals: pig 10, cow 8.
         REQUIRE(weightOf(tables, Biome::Plains, MobCategory::Creature, "pig") == 10);
         REQUIRE(weightOf(tables, Biome::Plains, MobCategory::Creature, "cow") == 8);
+        // AR-A1: sheep 12, chicken 10 — the two farmAnimals weights vanilla
+        // lists that this build previously had no species to carry.
+        REQUIRE(weightOf(tables, Biome::Plains, MobCategory::Creature, "sheep") == 12);
+        REQUIRE(weightOf(tables, Biome::Plains, MobCategory::Creature, "chicken") == 10);
+        REQUIRE(weightOf(tables, Biome::Forest, MobCategory::Creature, "sheep") == 12);
+        REQUIRE(weightOf(tables, Biome::Forest, MobCategory::Creature, "chicken") == 10);
+        // A desert gets no farm animals at all, sheep/chicken included.
+        REQUIRE(weightOf(tables, Biome::Desert, MobCategory::Creature, "sheep") == 0);
+        REQUIRE(weightOf(tables, Biome::Desert, MobCategory::Creature, "chicken") == 0);
         // BiomeDefaultFeatures.monsters: zombie 95.
         REQUIRE(weightOf(tables, Biome::Plains, MobCategory::Monster, "zombie") == 95);
         // A desert gets no farm animals in vanilla; the old table gave it the
@@ -97,6 +106,8 @@ int main() {
         assets::StandardPackResourceProvider pack{packRoot};
         tables.load(pack);
         REQUIRE(weightOf(tables, Biome::Plains, MobCategory::Creature, "pig") == 10);
+        REQUIRE(weightOf(tables, Biome::Plains, MobCategory::Creature, "sheep") == 12);
+        REQUIRE(weightOf(tables, Biome::Plains, MobCategory::Creature, "chicken") == 10);
         REQUIRE(!tables.settings(Biome::Plains).empty(MobCategory::Monster));
         REQUIRE(!tables.dataDriven(Biome::Plains));
     }

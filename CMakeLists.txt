@@ -2015,11 +2015,13 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_game_rules_registry_test PRIVATE src)
     add_test(NAME game_rules_registry COMMAND mc_rebedrock_game_rules_registry_test)
 
+    # AR-A1: now exercises spawn-egg creative-catalog reachability too, which
+    # needs the entity registry/species manifest — linking the shared runtime
+    # rather than re-listing just the two Content sources.
     add_executable(mc_rebedrock_content_registry_test
         tests/content_registry_test.cpp
-        src/gameplay/ContentRegistry.cpp
-        src/gameplay/Inventory.cpp
     )
+    target_link_libraries(mc_rebedrock_content_registry_test PRIVATE mc_rebedrock_runtime)
     target_include_directories(mc_rebedrock_content_registry_test PRIVATE src)
     add_test(NAME content_registry COMMAND mc_rebedrock_content_registry_test)
 

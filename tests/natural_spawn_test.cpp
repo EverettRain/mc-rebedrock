@@ -102,18 +102,84 @@ int main() {
     assert(spawner.table(world::gen::Biome::Desert).empty(MobCategory::Creature));
     bool hasPig = false;
     bool hasCow = false;
+    bool hasSheep = false;
+    bool hasChicken = false;
     for (const auto& entry : spawner.table(world::gen::Biome::Plains).forCategory(
              MobCategory::Creature)) {
         hasPig = hasPig || entry.type->id().matches("pig");
         hasCow = hasCow || entry.type->id().matches("cow");
+        hasSheep = hasSheep || entry.type->id().matches("sheep");
+        hasChicken = hasChicken || entry.type->id().matches("chicken");
         // BiomeDefaultFeatures.farmAnimals' own numbers: groups of four, and a
         // pig is 10/8 as likely as a cow.
         assert(entry.minGroup == 4 && entry.maxGroup == 4);
     }
-    assert(hasPig && hasCow);
+    // AR-A1: sheep and chicken now spawn alongside pig/cow in every
+    // farmAnimals biome — "plains should spawn sheep [and chicken]".
+    assert(hasPig && hasCow && hasSheep && hasChicken);
     for (const auto& entry : spawner.table(world::gen::Biome::Plains).forCategory(
              MobCategory::Creature)) {
-        assert(entry.type->id().matches("pig") ? entry.weight == 10 : entry.weight == 8);
+        if (entry.type->id().matches("pig")) {
+            assert(entry.weight == 10);
+        } else if (entry.type->id().matches("cow")) {
+            assert(entry.weight == 8);
+        } else if (entry.type->id().matches("sheep")) {
+            assert(entry.weight == 12);
+        } else if (entry.type->id().matches("chicken")) {
+            assert(entry.weight == 10);
+        } else {
+            assert(false && "unexpected species in the plains farmAnimals table");
+        }
+    }
+
+    // A seeded, deterministic herd on a real plains chunk actually contains
+    // cow/sheep/chicken individuals (not just table entries) — the
+    // spawnForChunkGeneration path AR-A1's acceptance calls out, and it must
+    // reproduce identically for the same seed + chunk.
+    {
+        auto genFloor = makeFlatWorld();
+        const auto herdOf = [&](std::uint64_t worldSeed, int chunkX, int chunkZ) {
+            mc::gameplay::NaturalSpawner herdSpawner(worldSeed);
+            mc::gameplay::EntitySystem herd;
+            herdSpawner.spawnForChunkGeneration(genFloor, herd, worldSeed, chunkX, chunkZ);
+            return herd;
+        };
+        // Scan a handful of (seed, chunk) pairs for one that actually lands a
+        // farm herd on a Plains chunk — spawnForChunkGeneration is a
+        // probability draw, so not every position spawns anything.
+        bool foundHerd = false;
+        for (std::uint64_t seedTrial = 1U; seedTrial < 64U && !foundHerd; ++seedTrial) {
+            world::gen::BiomeSource biomes{seedTrial};
+            for (int cx = -3; cx <= 3 && !foundHerd; ++cx) {
+                for (int cz = -3; cz <= 3 && !foundHerd; ++cz) {
+                    if (biomes.biomeAtBlock(cx * 16 + 8, cz * 16 + 8) != world::gen::Biome::Plains) {
+                        continue;
+                    }
+                    const auto first = herdOf(seedTrial, cx, cz);
+                    if (first.entities().empty()) {
+                        continue;
+                    }
+                    foundHerd = true;
+                    // Determinism: the identical seed + chunk reproduces the
+                    // exact same herd (species, position, individual seed).
+                    const auto second = herdOf(seedTrial, cx, cz);
+                    assert(second.entities().size() == first.entities().size());
+                    for (std::size_t index = 0; index < first.entities().size(); ++index) {
+                        assert(first.entities()[index].type == second.entities()[index].type);
+                        assert(first.entities()[index].position == second.entities()[index].position);
+                        assert(first.entities()[index].rngState == second.entities()[index].rngState);
+                    }
+                    // Every individual is one of the four farmAnimals species —
+                    // the table this herd drew from carries nothing else.
+                    for (const auto& individual : first.entities()) {
+                        const auto path = individual.type->id().path;
+                        assert(path == "pig" || path == "cow" || path == "sheep" ||
+                               path == "chicken");
+                    }
+                }
+            }
+        }
+        assert(foundHerd);
     }
     for (const auto& entry : spawner.table(world::gen::Biome::Plains).forCategory(
              MobCategory::Monster)) {

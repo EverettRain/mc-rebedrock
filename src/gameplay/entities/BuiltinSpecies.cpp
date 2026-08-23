@@ -38,12 +38,26 @@ const MeleeMonsterAi kMeleeMonsterAi;
 
 // --- loot ----------------------------------------------------------------
 
-// Chicken.json: 0-2 feathers (and raw chicken, an item this build lacks, so the
-// meat pool is dropped like the zombie's rotten flesh).
+// Chicken.json (26.1): one raw chicken plus 0-2 feathers. (Vanilla swaps the
+// raw chicken for cooked when the chicken dies on fire; that path is not
+// modelled here, same simplification CowEntity's loot notes.)
 EntityDrops rollChickenLoot(std::uint32_t& rng) {
     EntityDrops drops;
     const auto feathers = static_cast<std::uint8_t>((nextRandom(rng) >> 8) % 3U);
+    drops.add({world::Block::Air, 1U, &items::RawChicken});
     drops.add({world::Block::Air, feathers, &items::Feather});
+    return drops;
+}
+
+// Sheep.json (26.1): 1-2 mutton plus exactly one wool block, tinted by the
+// sheep's dye colour. Colour variants (dye/AR-A2 shearing) are out of scope
+// here — every sheep this manifest spawns drops white wool, the default a
+// freshly-spawned sheep carries before any dye interaction exists.
+EntityDrops rollSheepLoot(std::uint32_t& rng) {
+    EntityDrops drops;
+    const auto mutton = static_cast<std::uint8_t>(1U + (nextRandom(rng) >> 8) % 2U);
+    drops.add({world::Block::Air, mutton, &items::Mutton});
+    drops.add({world::Block::WhiteWool, 1U, blockItemFor(world::Block::WhiteWool)});
     return drops;
 }
 
@@ -125,12 +139,13 @@ const std::array<SpeciesDef, 3> kManifest{{
         SpawnEggColors{0xA1A1A1U, 0xFF0000U}, kChickenRender, kChickenSounds, &kChickenAi,
         &rollChickenLoot},
     // Sheep (26.1): 8 health, MOVEMENT_SPEED 0.23, box 0.9 x 1.3, egg tint
-    // 0xE7E7E7 / 0xFFB5B5. Wool/mutton need items this build lacks: no loot yet.
+    // 0xE7E7E7 / 0xFFB5B5. Drops mutton + white wool (rollSheepLoot).
     SpeciesDef{
         /*path=*/"sheep", /*vanillaName=*/"sheep", MobCategory::Creature,
         SpawnPlacement::OnGround, EntityDimensions{0.9F, 1.3F},
         attributesOf(8.0F, 0.23F, 0.0F, 16.0F), /*hasSpawnEgg=*/true,
-        SpawnEggColors{0xE7E7E7U, 0xFFB5B5U}, kSheepRender, kSheepSounds, &kSheepAi, nullptr},
+        SpawnEggColors{0xE7E7E7U, 0xFFB5B5U}, kSheepRender, kSheepSounds, &kSheepAi,
+        &rollSheepLoot},
     // Husk (26.1): a desert zombie — 20 health, follow range 35, MOVEMENT_SPEED
     // 0.23, attack 3, box 0.6 x 1.95, egg tint 0x797061 / 0x66907B. Melee like
     // the zombie; rotten flesh needs an item this build lacks, so no loot.

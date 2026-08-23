@@ -53,10 +53,10 @@ constexpr std::array<std::string_view, kBiomeCount> kBiomeIds{
     return "misc";
 }
 
-// BiomeDefaultFeatures.farmAnimals: pig 10, cow 8, in groups of four. Sheep and
-// chicken carry the other two weights vanilla lists; they do not exist here, so
-// the two that do keep their real numbers rather than being renormalised — a
-// pig stays 10/8 more likely than a cow, which is the ratio that matters.
+// BiomeDefaultFeatures.farmAnimals (26.1): pig 10, cow 8, sheep 12, chicken 10,
+// all in groups of four. AR-A1 adds sheep/chicken alongside the pig/cow that
+// were already here; the weights are vanilla's own, not renormalised — a sheep
+// stays the single most likely farm spawn, exactly as in 26.1.
 [[nodiscard]] bool hasFarmAnimals(Biome biome) {
     switch (biome) {
     case Biome::Plains:
@@ -144,12 +144,15 @@ void BiomeSpawnTables::loadBuiltinDefaults() {
     dataDriven_ = {};
     const auto* pig = speciesById("pig");
     const auto* cow = speciesById("cow");
+    const auto* sheep = speciesById("sheep");
+    const auto* chicken = speciesById("chicken");
     const auto* zombie = speciesById("zombie");
     // Resolving none of them means the entity registry was still empty when
     // this ran, and the result is a world that silently never spawns anything.
     // It has to be loud: the tables look fine, every call succeeds, and the only
     // symptom is an empty world hours later.
-    if (pig == nullptr && cow == nullptr && zombie == nullptr) {
+    if (pig == nullptr && cow == nullptr && sheep == nullptr && chicken == nullptr &&
+        zombie == nullptr) {
         std::cerr << "[spawn-tables] built the biome spawn tables before any species was "
                      "registered; no mob will ever spawn\n";
     }
@@ -162,6 +165,12 @@ void BiomeSpawnTables::loadBuiltinDefaults() {
             }
             if (cow != nullptr) {
                 creatures.push_back({cow, 8, 4, 4});
+            }
+            if (sheep != nullptr) {
+                creatures.push_back({sheep, 12, 4, 4});
+            }
+            if (chicken != nullptr) {
+                creatures.push_back({chicken, 10, 4, 4});
             }
             set(biome, entities::MobCategory::Creature, std::move(creatures));
         }
