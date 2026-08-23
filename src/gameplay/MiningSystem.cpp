@@ -286,6 +286,37 @@ MinedDrops dropCarrotPotato(world::Block block, const ItemStack&, std::uint32_t&
 
 } // namespace
 
+std::int32_t rollOreExperience(std::uint32_t& randomState, OreExperienceRange range) {
+    return static_cast<std::int32_t>(randomCount(randomState, range.minimum, range.maximum));
+}
+
+std::optional<OreExperienceRange> oreExperienceRange(world::Block block) {
+    // 26.1 OreBlock construction: coal/redstone/lapis/diamond/emerald/quartz
+    // each state their own xpRange; deepslate variants (not modelled in this
+    // build) share the same range as their stone counterpart. Iron and gold
+    // ore are also OreBlock instances but are built with xpRange (0, 0) — the
+    // raw ore is the reward; experience comes later, from smelting (XP-2's
+    // furnace half). A block absent from this table (everything that is not
+    // an ore, plus iron/gold) is simply not in the switch, matching the
+    // dropTable() precedent of "one entry per exception."
+    switch (block) {
+    case world::Block::CoalOre:
+        return OreExperienceRange{0U, 2U};
+    case world::Block::RedstoneOre:
+        return OreExperienceRange{1U, 5U};
+    case world::Block::LapisOre:
+        return OreExperienceRange{2U, 5U};
+    case world::Block::DiamondOre:
+        return OreExperienceRange{3U, 7U};
+    case world::Block::EmeraldOre:
+        return OreExperienceRange{3U, 7U};
+    case world::Block::NetherQuartzOre:
+        return OreExperienceRange{2U, 5U};
+    default:
+        return std::nullopt;
+    }
+}
+
 BlockDropFn blockDropFn(world::Block block) {
     const auto index = static_cast<std::size_t>(block);
     // External blocks (past the built-ins) share the data-driven handler too: its

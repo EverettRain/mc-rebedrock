@@ -57,6 +57,7 @@ const EntityType& ZombieEntity::type() {
     // MOVEMENT_SPEED 0.23, attack damage 3. Box 0.6 x 1.95.
     // Spawn-egg tint 0x00AFAF / 0x799C65. No loot roll: its rotten-flesh drop
     // needs an item this build does not have yet, so the table is left empty.
+    // xpReward 5 (Mob's DEFAULT_XP_REWARD, which Zombie inherits unchanged).
     static EntityType type = EntityType::Builder::create(MobCategory::Monster, kZombieAi)
                                  .sized(0.6F, 1.95F)
                                  .health(20.0F)
@@ -65,6 +66,7 @@ const EntityType& ZombieEntity::type() {
                                  .followRange(35.0F)
                                  .knockbackResistance(0.0F)
                                  .spawnEgg(0x00AFAFU, 0x799C65U)
+                                 .xpReward(5)
                                  .renderer(kZombieRender)
                                  .sounds(kZombieSounds)
                                  .vanillaName("zombie")

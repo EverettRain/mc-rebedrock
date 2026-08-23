@@ -2,11 +2,13 @@
 
 #include "gameplay/BlockBehavior.hpp"
 #include "gameplay/GameSession.hpp"
+#include "gameplay/MiningSystem.hpp"
 #include "world/Block.hpp"
 #include "world/BlockEntityType.hpp"
 #include "world/World.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <optional>
 
 namespace mc::gameplay {
@@ -173,9 +175,32 @@ void GameplayMutationSink::onSectionDirty(world::BlockPos pos) {
 
 void GameplayMutationSink::onDropsRequested(world::BlockPos pos, world::BlockState removed,
                                             world::MutationCause cause) {
-    static_cast<void>(cause);
-    session_->spawnBlockDrops(toVector(pos), removed,
-                              dropTool_ != nullptr ? *dropTool_ : emptyTool());
+    const ItemStack& tool = dropTool_ != nullptr ? *dropTool_ : emptyTool();
+    session_->spawnBlockDrops(toVector(pos), removed, tool);
+    // XP-2: mining experience is a player-only reward — an explosion popping
+    // the same ore, or any other non-player destruction, must not pay it (the
+    // task's "破 stone -> 0" bar applies just as much to "a creeper popped a
+    // diamond ore": only a PlayerBreak counts). It also shares the drop's own
+    // tool-tier gate: an ore mined with too weak a tool (Block#
+    // requiresCorrectToolForDrops, the same canHarvestBlock check
+    // minedDrops() applies internally) drops nothing *and* pays nothing,
+    // exactly the way a wood pickaxe on diamond ore leaves the block gone but
+    // the inventory empty. Rolled off the session's own lootRandomState_ — the
+    // identical deterministic stream spawnBlockDrops just advanced for this
+    // same break — so replaying the same seed and edit sequence always
+    // reproduces the same experience, exactly as the block's own drop roll
+    // does.
+    if (cause == world::MutationCause::PlayerBreak && canHarvestBlock(removed.block(), tool)) {
+        if (const auto range = oreExperienceRange(removed.block()); range.has_value()) {
+            const std::int32_t amount = rollOreExperience(session_->lootRandomState(), *range);
+            if (amount > 0) {
+                session_->spawnExperienceOrbs(
+                    {static_cast<float>(pos.x) + 0.5F, static_cast<float>(pos.y) + 0.5F,
+                     static_cast<float>(pos.z) + 0.5F},
+                    amount);
+            }
+        }
+    }
 }
 
 } // namespace mc::gameplay

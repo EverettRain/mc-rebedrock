@@ -298,6 +298,15 @@ class EntityType final {
         return loot_ != nullptr ? loot_(rng) : EntityDrops{};
     }
 
+    // Mob#xpReward (26.1): the experience a killed creature awards, before
+    // XP-2's lastHurtByPlayer gate is even checked. Zero (the default) is a
+    // creature that never drops experience regardless of who or what killed
+    // it — vanilla's passive animals (cow, pig) score 0 here; only a kill
+    // grants any, never a breed (that path is a flat 1-7 roll, not this
+    // field). A data field on the type rather than a per-species switch at
+    // the death call site, matching the fireImmune precedent.
+    [[nodiscard]] std::int32_t xpReward() const { return xpReward_; }
+
   private:
     friend class Builder;
     friend class EntityTypeRegistry;
@@ -320,6 +329,8 @@ class EntityType final {
     audio::MobSoundProfile soundProfile_{};
     const EntityAi* ai_ = nullptr;
     LootRoll loot_ = nullptr;
+    // Mob#xpReward; 0 (never drops experience) unless the species states one.
+    std::int32_t xpReward_ = 0;
     std::uint16_t networkId_ = 0U;
 };
 
@@ -366,6 +377,10 @@ class EntityType::Builder final {
     // Shorthand: breedable with `temptItem` and the default 0.5 baby scale.
     Builder& breedableWith(const ItemStack& temptItem);
     Builder& loot(LootRoll roll);
+    // Mob#xpReward: the flat experience a kill of this species awards (XP-2's
+    // lastHurtByPlayer gate decides *whether* it is paid out, not how much).
+    // A species that states nothing keeps the zero default.
+    Builder& xpReward(std::int32_t amount);
     Builder& renderer(const EntityRenderDescriptor& descriptor);
     // The species' sound set; without it the creature is silent. Each species
     // states its own clips the way its Java class overrides the sound hooks.

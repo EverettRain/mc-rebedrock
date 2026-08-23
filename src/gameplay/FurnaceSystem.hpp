@@ -35,6 +35,16 @@ struct FurnaceBlockEntity final {
     // resets progress. It points into the static recipe table, so it outlives
     // any furnace; restore() re-points it after a load so progress resumes.
     std::string_view activeRecipe{};
+    // AbstractFurnaceBlockEntity's recipesUsed map, reduced to a single running
+    // total (this furnace only ever tracks its own activeRecipe, so there is
+    // nothing to key a map by): every completed smelt adds that recipe's
+    // `experience` here uncashed, exactly the way vanilla accumulates
+    // recipesUsed counts rather than paying out per-craft. XP-2's popExperience
+    // cashes it out the moment the player actually takes the result, the same
+    // "smelt now, pay on withdrawal" rule FurnaceResultSlot#onTake enforces
+    // (never earlier — vanilla lets a furnace queue dozens of smelts with the
+    // screen closed and pays the lot only when a hand finally reaches in).
+    float pendingExperience = 0.0F;
 
     [[nodiscard]] bool burning() const { return burnTicks > 0; }
 };
@@ -57,7 +67,12 @@ class FurnaceSystem final {
                     InventoryMouseButton button, bool shiftHeld = false);
     void clickFuel(FurnacePosition position, Inventory& inventory,
                    InventoryMouseButton button, bool shiftHeld = false);
-    void clickOutput(FurnacePosition position, Inventory& inventory, bool shiftHeld = false);
+    // FurnaceResultSlot#remove/onTake: returns true when this click actually
+    // moved any amount out of the output slot (a full take, a partial
+    // quick-move that could not fit the whole stack, anything above zero) —
+    // vanilla's onTake/checkTakeAchievements fires on exactly that condition,
+    // which is XP-2's cue to cash in pendingExperience via popExperience.
+    bool clickOutput(FurnacePosition position, Inventory& inventory, bool shiftHeld = false);
     // QUICK_MOVE's inventory direction: a smeltable stack routes to the input
     // slot, a burnable one to the fuel slot. Returns true when it all fit.
     bool moveInto(FurnacePosition position, ItemStack& stack);
@@ -66,6 +81,16 @@ class FurnaceSystem final {
     // furnace reads as idle rather than throwing, so the UI never has to guard.
     [[nodiscard]] float cookProgress(FurnacePosition position) const;
     [[nodiscard]] float fuelProgress(FurnacePosition position) const;
+
+    // AbstractFurnaceBlockEntity#getRecipesToAwardAndPopExperience: hands back
+    // the furnace's whole uncashed experience total and resets it to zero — a
+    // missing furnace (should not happen right after clickOutput found one,
+    // but a screen can outlive a broken block) simply pops nothing. The
+    // fractional-remainder roll (createExperience's `Mth.frac` + a coin flip)
+    // is the caller's job: it needs a JavaRandom stream, which this system
+    // does not own (furnace math stays RNG-free, matching cookProgress/
+    // fuelProgress being pure reads).
+    [[nodiscard]] float popExperience(FurnacePosition position);
 
     void restore(std::vector<FurnaceBlockEntity> entities);
     [[nodiscard]] std::span<const FurnaceBlockEntity> entities() const {

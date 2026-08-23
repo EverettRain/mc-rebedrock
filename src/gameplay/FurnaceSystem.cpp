@@ -56,6 +56,10 @@ void FurnaceSystem::tickOne(FurnaceBlockEntity& furnace) {
             if (furnace.input.count == 0U) furnace.input = {};
             if (furnace.output.empty()) furnace.output = result;
             else ++furnace.output.count;
+            // AbstractFurnaceBlockEntity#setRecipeUsed: every completed smelt
+            // banks its recipe's experience uncashed, whether or not a screen
+            // is open. `recipe` is non-null here (outputAccepts required it).
+            furnace.pendingExperience += recipe->experience;
         }
     } else {
         furnace.cookTicks = 0;
@@ -91,18 +95,24 @@ void FurnaceSystem::clickFuel(FurnacePosition position, Inventory& inventory,
     inventory.clickExternalSlot(furnace->fuel, button);
 }
 
-void FurnaceSystem::clickOutput(FurnacePosition position, Inventory& inventory, bool shiftHeld) {
+bool FurnaceSystem::clickOutput(FurnacePosition position, Inventory& inventory, bool shiftHeld) {
     auto* furnace = find(position);
-    if (furnace == nullptr || furnace->output.empty()) return;
+    if (furnace == nullptr || furnace->output.empty()) return false;
     // Plain click takes the result onto the cursor; Shift-click QUICK_MOVEs it
     // into the player inventory, matching vanilla's furnace result slot.
     if (shiftHeld) {
+        const std::uint8_t before = furnace->output.count;
         inventory.quickMoveInto(furnace->output);
-        return;
+        // A stack that stayed exactly the same size never left the slot (the
+        // inventory had no room at all); anything less is FurnaceResultSlot's
+        // "amount above zero moved" condition.
+        return furnace->output.count != before;
     }
     if (inventory.mergeIntoCursor(furnace->output)) {
         furnace->output = {};
+        return true;
     }
+    return false;
 }
 
 bool FurnaceSystem::moveInto(FurnacePosition position, ItemStack& stack) {
@@ -148,6 +158,14 @@ float FurnaceSystem::fuelProgress(FurnacePosition position) const {
     if (furnace == nullptr || furnace->initialBurnTicks <= 0) return 0.0F;
     return static_cast<float>(furnace->burnTicks) /
            static_cast<float>(furnace->initialBurnTicks);
+}
+
+float FurnaceSystem::popExperience(FurnacePosition position) {
+    auto* furnace = find(position);
+    if (furnace == nullptr) return 0.0F;
+    const float amount = furnace->pendingExperience;
+    furnace->pendingExperience = 0.0F;
+    return amount;
 }
 
 void FurnaceSystem::restore(std::vector<FurnaceBlockEntity> entities) {

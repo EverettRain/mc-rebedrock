@@ -348,6 +348,17 @@ class EntitySystem final {
     }
     void clearPendingSounds() { pendingSounds_.clear(); }
 
+    // XP-2: experience a kill (lastHurtByPlayer-gated, see die()) or a
+    // successful breed (processBreeding) earned this tick, as (position,
+    // points) pairs. Drained the same way as pendingDrops — the caller turns
+    // each into an orb via GameSession::spawnExperienceOrbs, which is where
+    // the denomination split and the deterministic scatter RNG live (XP-1).
+    // This queue only ever grows during tick(); nothing here bypasses it.
+    [[nodiscard]] std::span<const std::pair<glm::vec3, std::int32_t>> pendingExperience() const {
+        return pendingExperience_;
+    }
+    void clearPendingExperience() { pendingExperience_.clear(); }
+
     // Wipes every creature and the id/spatial indexes, and restarts the id
     // allocator — the world-reset path (a new save or /reload). Any id held by
     // the caller before this is invalid afterwards, exactly as indices were.
@@ -416,6 +427,8 @@ class EntitySystem final {
     std::vector<EntitySection> entitySections_;
     std::vector<std::pair<glm::vec3, EntityDrops>> pendingDrops_;
     std::vector<PendingMobSound> pendingSounds_;
+    // XP-2: (position, points) pairs from a gated kill or a successful breed.
+    std::vector<std::pair<glm::vec3, std::int32_t>> pendingExperience_;
     std::uint32_t lootRandomState_ = 0x1F123BB5U;
     std::uint64_t nextEntityId_ = 1U;
     std::uint64_t gameTick_ = 0U;

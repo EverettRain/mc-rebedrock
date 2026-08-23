@@ -4,6 +4,8 @@
 #include "gameplay/GameSession.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 
 namespace mc::gameplay {
 namespace {
@@ -184,6 +186,37 @@ const SlotView* ScreenHandler::slotForStorage(
     return found == slots.end() ? nullptr : &*found;
 }
 
+namespace {
+
+// AbstractFurnaceBlockEntity#createExperience: the banked float splits into a
+// guaranteed integer part plus a fractional coin flip — smelting one iron ore
+// (0.7 experience) does not owe an orb every time, but does about 70% of the
+// time, and a big batch converges on the same *total* either roll order would
+// give. Drawn from the session's own experienceOrbRandom stream (the same one
+// spawnExperienceOrbs' scatter velocity uses), so replaying the same seed and
+// click sequence always cashes in the same amount.
+void cashInFurnaceExperience(GameSession& session, FurnacePosition position) {
+    const float banked = session.furnaceSystem().popExperience(position);
+    if (banked <= 0.0F) {
+        return;
+    }
+    const float whole = std::floor(banked);
+    const float fraction = banked - whole;
+    std::int32_t amount = static_cast<std::int32_t>(whole);
+    if (fraction > 0.0F && session.experienceOrbRandom().nextFloat() < fraction) {
+        ++amount;
+    }
+    if (amount <= 0) {
+        return;
+    }
+    session.spawnExperienceOrbs(
+        {static_cast<float>(position.x) + 0.5F, static_cast<float>(position.y) + 0.5F,
+         static_cast<float>(position.z) + 0.5F},
+        amount);
+}
+
+} // namespace
+
 void ScreenHandler::click(
     GameSession& session,
     const ScreenContext& context,
@@ -223,7 +256,15 @@ void ScreenHandler::click(
         session.furnaceSystem().clickFuel(context.furnace, session.inventory(), button, shiftHeld);
         break;
     case SlotKind::FurnaceOutput:
-        session.furnaceSystem().clickOutput(context.furnace, session.inventory(), shiftHeld);
+        if (session.furnaceSystem().clickOutput(context.furnace, session.inventory(), shiftHeld)) {
+            // FurnaceResultSlot#onTake -> checkTakeAchievements ->
+            // awardUsedRecipesAndPopExperience: cash in whatever this furnace
+            // banked across every smelt since the last withdrawal, the instant
+            // any amount actually left the result slot — never on the smelt
+            // tick itself, so a furnace can queue dozens of items unattended
+            // and pay out only once a hand reaches in for real.
+            cashInFurnaceExperience(session, context.furnace);
+        }
         break;
     case SlotKind::PlayerInventory:
         if (shiftHeld) {

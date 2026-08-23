@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 namespace mc::gameplay {
@@ -84,5 +85,28 @@ using BlockDropFn =
 [[nodiscard]] MinedDrops minedDrops(
     world::Block block, const ItemStack& tool, std::uint32_t& randomState, int age = 0,
     bool doubledSlab = false);
+
+// XP-2: an inclusive [minimum, maximum] experience roll, mirroring the vanilla
+// OreBlock.xpRange each ore states directly on the block (not the loot table —
+// unlike an item drop, ore experience is not Fortune-scaled and does not roll
+// through LootTable at all, vanilla awards it straight from the block's break
+// handler). A small closed table by block, the same "one entry per exception,
+// everything else pays nothing" shape as dropTable()'s procedural handlers.
+struct OreExperienceRange final {
+    std::uint8_t minimum = 0U;
+    std::uint8_t maximum = 0U;
+};
+
+// The ore's experience range, or nullopt for every non-ore block (and for the
+// two ores — coal's raw-metal cousins iron/gold — that vanilla pays zero for
+// because their value is smelting, not the raw block). The caller rolls once
+// against its own deterministic stream; this function only states the range.
+[[nodiscard]] std::optional<OreExperienceRange> oreExperienceRange(world::Block block);
+
+// A uniform point count in `range`, drawn from the caller's own deterministic
+// LCG stream (REGULAR.md's determinism rule: no wall clock, no global RNG —
+// the caller owns and replays the stream, the same shape minedDrops takes).
+[[nodiscard]] std::int32_t rollOreExperience(std::uint32_t& randomState,
+                                             OreExperienceRange range);
 
 } // namespace mc::gameplay

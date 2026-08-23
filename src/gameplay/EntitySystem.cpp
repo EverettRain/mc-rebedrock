@@ -721,10 +721,21 @@ void EntitySystem::processBreeding(
         const std::uint32_t babySeed =
             (first->rngState ^ (second->rngState * 2654435761U)) | 1U;
         const entities::EntityType& species = *first->type;
+        // Animal#finalizeSpawnChildFromBreeding: a successful breed always pays
+        // 1-7 experience (getRandom().nextInt(7) + 1), independent of the
+        // species' own xpReward (that field is a kill-only reward; breeding is
+        // its own flat roll). Drawn off the first parent's own deterministic
+        // stream — the same source its wander and AI already advance — before
+        // the cooldown/love writes below and before spawn() can reallocate the
+        // vector this loop iterates.
+        const std::int32_t breedExperience =
+            1 + static_cast<std::int32_t>(nextRandom(first->rngState) % 7U);
+        const glm::vec3 breedPosition = first->position;
         first->age = kBreedCooldownTicks;
         second->age = kBreedCooldownTicks;
         first->loveTicks = 0;
         second->loveTicks = 0;
+        pendingExperience_.emplace_back(breedPosition, breedExperience);
         // The baby spawns at the parents' midpoint as a newborn (age negative);
         // its RNG is derived from both parents so the same seed breeds identically.
         spawn(midpoint, species, babySeed);
@@ -829,6 +840,20 @@ bool EntitySystem::die(SimpleEntity& entity) {
     }
     pendingDrops_.emplace_back(entity.position + glm::vec3{0.0F, 0.25F, 0.0F},
                                entity.kind().rollLoot(lootRandomState_));
+    // LivingEntity#dropExperience, gated by lastHurtByPlayerMemoryTime > 0
+    // (Java's PLAYER_HURT_EXPERIENCE_TIME window, 100 ticks — the same 100
+    // hurt() stamps into recentAttackerTicks). A creature that starved, burned,
+    // fell or was struck by another mob never had a *player* attacker land
+    // inside that window, so it must not pay out: only hurt()'s default
+    // ActorReference::player() attacker sets lastAttacker to Kind::Player, and
+    // only while recentAttackerTicks (ticked down every tick in tick()) is
+    // still positive does that attribution count as "recent" the way vanilla's
+    // memory timer does. A zero xpReward (the default; every passive animal)
+    // costs nothing extra to check.
+    if (entity.type->xpReward() > 0 && entity.lastAttacker.kind == ActorReference::Kind::Player &&
+        entity.recentAttackerTicks > 0) {
+        pendingExperience_.emplace_back(entity.position, entity.type->xpReward());
+    }
     return true;
 }
 

@@ -1093,6 +1093,15 @@ void GameSession::consumeEntityEvents() {
         }
     }
     primaryLevel().entities.clearPendingDrops();
+    // XP-2: a gated kill (die()'s lastHurtByPlayer check) or a successful
+    // breed (processBreeding) queued its points here; each becomes real orbs
+    // through the one spawnExperienceOrbs entry point XP-1 built, so the
+    // denomination split and the scatter velocity stay on the session's own
+    // deterministic JavaRandom stream regardless of which source paid it.
+    for (const auto& [position, amount] : primaryLevel().entities.pendingExperience()) {
+        spawnExperienceOrbs(position, amount);
+    }
+    primaryLevel().entities.clearPendingExperience();
 }
 
 bool GameSession::submergedInWater(const world::World& world, glm::vec3 position) const {

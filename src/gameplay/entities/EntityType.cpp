@@ -91,6 +91,11 @@ EntityType::Builder& EntityType::Builder::loot(LootRoll roll) {
     return *this;
 }
 
+EntityType::Builder& EntityType::Builder::xpReward(std::int32_t amount) {
+    draft_.xpReward_ = amount;
+    return *this;
+}
+
 EntityType::Builder& EntityType::Builder::renderer(const EntityRenderDescriptor& descriptor) {
     draft_.render_ = descriptor;
     return *this;
