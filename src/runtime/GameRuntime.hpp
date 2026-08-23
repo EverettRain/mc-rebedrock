@@ -165,7 +165,12 @@ class GameRuntime final {
     // streams back in — vanilla's chunk-owned entity lifecycle. The caller holds
     // the world write section (the render thread does when applying an unload
     // batch). The chunk is remembered so a later restoreLoadedChunk brings its
-    // herd back.
+    // herd back. CS-5: also stamps the region record's `populated` marker
+    // (unconditionally true — reaching unload means restoreLoadedChunk already
+    // ran on this chunk this session, in either branch), so the write survives
+    // even when this chunk carries neither edits nor entities right now — a
+    // herd that fully wandered off before it unloaded is exactly the case the
+    // marker exists to distinguish from "never generated".
     void persistUnloadedChunk(world::ChunkPosition position);
     // A chunk streamed in. Two cases, told apart by unloadedChunks_ (this
     // session's own unload bookkeeping — see persistUnloadedChunk):
@@ -173,9 +178,13 @@ class GameRuntime final {
     //    path persisted for it (the original M-3 C5 behaviour, unchanged).
     //  - Otherwise: CS-4's world-generation-time population pass —
     //    NaturalSpawner::spawnForChunkGeneration — runs once, but only the
-    //    first time this chunk is ever seen with no prior record (no persisted
-    //    edits and no persisted region entities), so a chunk that already
-    //    carries a record from an earlier session (edits or a saved herd) is
+    //    first time this chunk is ever seen with no prior record: no persisted
+    //    edits, no persisted region entities, and (CS-5) no persisted
+    //    `populated` marker (SaveRepository::isChunkPopulated) — the marker is
+    //    what catches a chunk that was visited and populated, then had its
+    //    entire generation-time herd wander off with no edit ever made in it,
+    //    which would otherwise leave no disk trace and look unvisited again.
+    //    A chunk that already carries any of these three kinds of record is
     //    never re-populated on top of what survived. The caller holds the
     //    world write section.
     void restoreLoadedChunk(world::ChunkPosition position);

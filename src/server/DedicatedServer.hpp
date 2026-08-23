@@ -195,15 +195,28 @@ class DedicatedServer final {
     // state updates land only when the CAS expectation still holds — the same
     // epoch/CAS discipline the render side uses, so a batch generated against a
     // world edit the tick has since changed is dropped rather than clobbering it.
+    //
+    // CS-5: also drives the M-3 C5 / CS-4 chunk-loaded/unloaded hooks
+    // (persistUnloadedChunk / restoreLoadedChunk) the same way
+    // VulkanRenderer.cpp's onChunkUnloaded/onChunkLoaded callbacks do — same
+    // call, same order relative to the world edit (unload persists then
+    // removes the chunk data; load restores after the chunk data lands). This
+    // was a known gap (see the CS README's CS-4 entry): the headless dedicated
+    // server ran world generation but never triggered the generation-time
+    // creature pass or the unload/reload herd round-trip, because nothing
+    // called either hook. Low-cost fix — the exact same two calls the renderer
+    // already makes, just made from this loop instead.
     void applyBatch(const world::ChunkStreamBatch& batch) {
         if (batch.worldEpoch != runtime_.worldEpoch()) {
             return;
         }
         for (const auto& update : batch.chunkUpdates) {
             if (update.remove) {
+                runtime_.persistUnloadedChunk(update.position);
                 runtime_.world().removeChunk(update.position);
             } else {
                 runtime_.world().setChunk(update.position, update.chunk);
+                runtime_.restoreLoadedChunk(update.position);
             }
         }
         for (const auto& update : batch.stateUpdates) {

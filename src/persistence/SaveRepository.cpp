@@ -1655,9 +1655,12 @@ constexpr std::uint32_t kRegionFileVersion = 1U;
 constexpr std::uint32_t kRegionChunkTag = blockTag("CCNK");
 // Version 2 appends fireTicks to each entity record; version 3 appends the
 // active MobEffects after the flags byte; version 4 appends AgeableMob age/love
-// (see the ENTITY block). An older region omits the newer fields, which read
-// back as their defaults, migrating cleanly.
-constexpr std::uint16_t kRegionChunkVersion = 4U;
+// (see the ENTITY block); version 5 appends the chunk-level `populated` byte
+// (CS-5) after the entity list. An older region omits the newer fields, which
+// read back as their defaults, migrating cleanly — version < 5 reads
+// `populated = false`, the correct "never marked" default for a save a
+// pre-CS-5 build wrote.
+constexpr std::uint16_t kRegionChunkVersion = 5U;
 constexpr std::uint32_t kRegionWidth = 32U;  // chunks per region side
 
 // Floor division of a chunk coordinate by the region width, exactly like the
@@ -1672,6 +1675,8 @@ struct RegionChunkData final {
     std::int32_t chunkZ = 0;
     std::vector<world::PersistentBlockEdit> edits;
     std::vector<PersistentEntity> entities;
+    // CS-5: see ChunkPersistRecord::populated in SaveRepository.hpp.
+    bool populated = false;
 };
 
 // One region file's content, as gathered before writing or read back from disk.
@@ -1928,6 +1933,12 @@ void appendRegionFile(std::vector<std::uint8_t>& bytes, const RegionData& region
             appendInteger(bytes, entity.age);        // version 4
             appendInteger(bytes, entity.loveTicks);  // version 4
         }
+        // CS-5: version 5. A bare marker byte, independent of the edit/entity
+        // counts above it — a chunk can be `populated == true` with both lists
+        // empty (its generation-time herd fully wandered off, or the pass drew
+        // nobody), which is exactly the case this field exists to distinguish
+        // from "never visited".
+        appendInteger(bytes, static_cast<std::uint8_t>(chunk.populated ? 1U : 0U));
     }
     appendInteger(
         bytes,
@@ -2060,6 +2071,14 @@ void readRegionFile(std::span<const std::uint8_t> bytes, RegionData& region) {
             }
             chunk.entities.push_back(std::move(entity));
         }
+        // CS-5: the `populated` marker arrived in version 5; a version-4-or-
+        // earlier region (written before CS-5 existed) has no such field and
+        // correctly defaults to false — its chunks look "never populated",
+        // which the caller resolves with exactly one legitimate population
+        // pass, not a repeat: this build has never recorded them either way.
+        if (header.version >= 5U) {
+            chunk.populated = readInteger<std::uint8_t>(payload, cursor) != 0U;
+        }
         if (cursor != header.end) {
             throw std::runtime_error("region file chunk has trailing data");
         }
@@ -2078,6 +2097,17 @@ void readRegionFile(std::span<const std::uint8_t> bytes, RegionData& region) {
 // other disk record is a mirror the fresh gather replaces, or a stale copy of a
 // creature that moved or despawned while its chunk was loaded, and must not
 // survive into the rewritten file.
+//
+// CS-5: a currently-loaded chunk's `populated` marker lives only on disk (the
+// in-memory SaveGame carries edits/entities, never a "has this chunk's
+// generation-time pass run" bit — that is GameRuntime::populatedChunks_'s
+// session-scoped job, and disk is the only thing a *new* session consults). A
+// chunk not in `unloadedChunks` is still loaded and simulating, so its disk
+// record's edits/entities are stale mirrors the fresh gather correctly
+// replaces or drops — but its `populated` bit is not stale: nothing in the
+// simulation ever un-populates a chunk. Every disk chunk's `populated` flag is
+// therefore carried forward into the fresh gather regardless of load state,
+// creating a bare marker record if the fresh gather has none for it.
 void writeRegionFiles(const std::filesystem::path& directory, const SaveGame& game,
                       const std::set<std::pair<std::int32_t, std::int32_t>>& unloadedChunks) {
     auto regions = gatherRegions(game);
@@ -2113,33 +2143,39 @@ void writeRegionFiles(const std::filesystem::path& directory, const SaveGame& ga
             } catch (const std::exception&) {
                 continue;  // torn: the fresh gather regenerates it
             }
-            // Only chunks the unload path is still holding out of the simulation
-            // get their disk creatures preserved; the fresh gather (or its
-            // absence) is authoritative for everything else.
-            bool hasUnloadedChunk = false;
-            for (const auto& diskChunk : disk.chunks) {
-                if (unloadedChunks.contains(
-                        std::pair<std::int32_t, std::int32_t>{diskChunk.chunkX,
-                                                              diskChunk.chunkZ})) {
-                    hasUnloadedChunk = true;
-                    break;
-                }
-            }
-            if (!hasUnloadedChunk) {
+            const bool hasUnloadedChunk = std::ranges::any_of(
+                disk.chunks, [&](const RegionChunkData& diskChunk) {
+                    return unloadedChunks.contains(std::pair<std::int32_t, std::int32_t>{
+                        diskChunk.chunkX, diskChunk.chunkZ});
+                });
+            const bool hasPopulatedChunk = std::ranges::any_of(
+                disk.chunks, [](const RegionChunkData& diskChunk) { return diskChunk.populated; });
+            if (!hasUnloadedChunk && !hasPopulatedChunk) {
                 continue;
             }
             auto& region = regions[*coordinates];
             region.regionX = coordinates->first;
             region.regionZ = coordinates->second;
             for (const auto& diskChunk : disk.chunks) {
-                if (!unloadedChunks.contains(
-                        std::pair<std::int32_t, std::int32_t>{diskChunk.chunkX,
-                                                              diskChunk.chunkZ})) {
-                    continue;
+                const bool isUnloaded = unloadedChunks.contains(
+                    std::pair<std::int32_t, std::int32_t>{diskChunk.chunkX, diskChunk.chunkZ});
+                // Only chunks the unload path is still holding out of the
+                // simulation get their disk creatures preserved; the fresh
+                // gather (or its absence) is authoritative for a loaded
+                // chunk's edits/entities.
+                if (isUnloaded) {
+                    auto& target = chunkInRegion(region, diskChunk.chunkX, diskChunk.chunkZ);
+                    target.entities.insert(target.entities.end(), diskChunk.entities.begin(),
+                                           diskChunk.entities.end());
                 }
-                auto& target = chunkInRegion(region, diskChunk.chunkX, diskChunk.chunkZ);
-                target.entities.insert(target.entities.end(), diskChunk.entities.begin(),
-                                       diskChunk.entities.end());
+                // The `populated` bit carries forward unconditionally — see the
+                // function comment. chunkInRegion finds-or-creates the fresh
+                // gather's record for this chunk (possibly bare, if the chunk
+                // is loaded, unpopulated of edits/entities right now, and only
+                // needs the marker preserved).
+                if (diskChunk.populated) {
+                    chunkInRegion(region, diskChunk.chunkX, diskChunk.chunkZ).populated = true;
+                }
             }
         }
     }
@@ -2717,7 +2753,7 @@ void SaveRepository::save(
 
 void SaveRepository::saveChunk(const std::string& identifier, int chunkX, int chunkZ,
                                std::vector<world::PersistentBlockEdit> edits,
-                               std::vector<PersistentEntity> entities,
+                               std::vector<PersistentEntity> entities, bool populated,
                                world::DimensionId dimension) const {
     if (!safeIdentifier(identifier)) throw std::invalid_argument("Unsafe save identifier");
     const auto path = regionDirectoryFor(root_ / identifier, dimension) /
@@ -2748,8 +2784,13 @@ void SaveRepository::saveChunk(const std::string& identifier, int chunkX, int ch
     std::erase_if(region.chunks, [&](const RegionChunkData& chunk) {
         return chunk.chunkX == chunkX && chunk.chunkZ == chunkZ;
     });
-    if (!edits.empty() || !entities.empty()) {
-        region.chunks.push_back({chunkX, chunkZ, std::move(edits), std::move(entities)});
+    // CS-5: `populated` keeps a bare marker record even when this chunk has
+    // neither edits nor entities — the herd fully wandered off, or none ever
+    // spawned — so a later session can still tell "visited, nothing survived"
+    // apart from "never visited".
+    if (!edits.empty() || !entities.empty() || populated) {
+        region.chunks.push_back(
+            {chunkX, chunkZ, std::move(edits), std::move(entities), populated});
     }
     if (region.chunks.empty()) {
         std::error_code error;
@@ -2803,9 +2844,11 @@ void SaveRepository::saveChunks(const std::string& identifier,
             std::erase_if(region.chunks, [&](const RegionChunkData& chunk) {
                 return chunk.chunkX == record.chunkX && chunk.chunkZ == record.chunkZ;
             });
-            if (!record.edits.empty() || !record.entities.empty()) {
+            // CS-5: same "keep a bare marker" rule as saveChunk above.
+            if (!record.edits.empty() || !record.entities.empty() || record.populated) {
                 region.chunks.push_back({record.chunkX, record.chunkZ,
-                                         std::move(record.edits), std::move(record.entities)});
+                                         std::move(record.edits), std::move(record.entities),
+                                         record.populated});
             }
         }
         if (region.chunks.empty()) {
@@ -2855,6 +2898,44 @@ std::vector<PersistentEntity> SaveRepository::loadChunkEntities(
         }
     }
     return entities;
+}
+
+bool SaveRepository::isChunkPopulated(const std::string& identifier, int chunkX, int chunkZ,
+                                      world::DimensionId dimension) const {
+    if (!safeIdentifier(identifier)) throw std::invalid_argument("Unsafe save identifier");
+    const auto path = regionDirectoryFor(root_ / identifier, dimension) /
+        regionFileName(regionOf(chunkX), regionOf(chunkZ));
+    if (!std::filesystem::is_regular_file(path)) {
+        return false;
+    }
+    std::ifstream input{path, std::ios::binary | std::ios::ate};
+    if (!input) {
+        return false;
+    }
+    const auto length = input.tellg();
+    if (length < static_cast<std::streamoff>(kRegionMagic.size() + sizeof(std::uint64_t))) {
+        return false;
+    }
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(length));
+    input.seekg(0);
+    input.read(reinterpret_cast<char*>(bytes.data()), length);
+    if (!input) {
+        return false;
+    }
+    RegionData region;
+    try {
+        readRegionFile(bytes, region);
+    } catch (const std::exception&) {
+        // A torn region regenerates from seed; nothing on disk to say it was
+        // ever populated, so treat it as unvisited (one legitimate pass).
+        return false;
+    }
+    for (const auto& chunk : region.chunks) {
+        if (chunk.chunkX == chunkX && chunk.chunkZ == chunkZ) {
+            return chunk.populated;
+        }
+    }
+    return false;
 }
 
 std::filesystem::path SaveRepository::dimensionRegionDirectory(

@@ -831,6 +831,100 @@ int main() {
         }
     }
 
+    // CS-5: the cross-session dedup gap CS-4 left open (see the CS README's
+    // CS-4 entry) — a chunk whose generation-time herd fully wanders off
+    // before the world is ever saved leaves neither an edit nor a surviving
+    // region entity record. Without the `populated` marker, a fresh process
+    // reopening the save has no way to tell "visited, herd left" apart from
+    // "never generated", and would run spawnForChunkGeneration a second time,
+    // stacking a fresh herd onto empty space that was actually already
+    // visited. This proves the marker closes that gap: after the herd leaves
+    // and the chunk unloads-and-saves with zero edits/entities, a brand new
+    // process's first restoreLoadedChunk for that chunk must NOT repopulate it.
+    {
+        world::ChunkStreamer streamer{17U, 4, 4};
+        RecordingHost host;
+        runtime::GameRuntime runtime{host, streamer, saveRoot};
+        host.save = &runtime.currentSaveSlot();
+
+        auto save = runtime.createWorld("cs5-dedup-gap", 17U, gameplay::GameMode::Creative);
+        for (int index = 0; index < static_cast<int>(world::gen::Biome::Count); ++index) {
+            runtime.gameSession().naturalSpawner().spawnTables().set(
+                static_cast<world::gen::Biome>(index), gameplay::entities::MobCategory::Creature,
+                {{gameplay::entities::entityTypeRegistry().byId("pig"), 10, 4, 4}});
+        }
+        runtime.loadWorld(std::move(save), /*viewDistanceChunks=*/4);
+
+        // Same fixed point as the CS-4 test above: seed 17, chunk (1,1) — a
+        // real, non-empty generation-time herd (4 pigs), not a vacuous zero.
+        const auto batch = streamer.requestSync({1, 1}, std::chrono::seconds(10));
+        assert(batch.has_value());
+        applyBatch(runtime, *batch);
+        runtime.restoreLoadedChunk({1, 1});
+        const auto firstCount = runtime.gameSession().worldEntities().entities().size();
+        assert(firstCount == 4U);
+
+        // The herd fully wanders off before anything is ever unloaded or
+        // saved — removeInChunk is the exact extraction persistUnloadedChunk
+        // itself uses, so this reproduces "no creature left in the chunk" the
+        // same way natural movement out of the chunk's bounds would, without
+        // fabricating a different code path. No edit was ever made here
+        // either (no WorldMutationService call in this test), so the chunk
+        // has neither kind of "there is content" evidence.
+        static_cast<void>(runtime.gameSession().worldEntities().removeInChunk(1, 1));
+        assert(runtime.gameSession().worldEntities().entities().empty());
+
+        // Unload: persistUnloadedChunk finds zero edits and zero entities for
+        // (1,1) — without CS-5 this would prune the record entirely (the
+        // pre-CS-5 `saveChunk` rule). With CS-5's `populated=true` on every
+        // unload, a bare marker record survives instead.
+        runtime.persistUnloadedChunk({1, 1});
+        runtime.flushChunkPersistence();
+        assert(runtime.saveRepository().isChunkPopulated(
+            runtime.currentSave().summary.identifier, 1, 1));
+        assert(runtime.saveRepository()
+                   .loadChunkEntities(runtime.currentSave().summary.identifier, 1, 1)
+                   .empty());
+
+        // A full save (not just the per-chunk unload write) must not drop the
+        // marker either — writeRegionFiles' whole-world rewrite is a distinct
+        // code path from saveChunk/saveChunks.
+        runtime.save();
+        const auto identifier = runtime.currentSave().summary.identifier;
+        assert(runtime.saveRepository().isChunkPopulated(identifier, 1, 1));
+        runtime.stopSimulation();
+
+        // New process, same save: the first restoreLoadedChunk for (1,1) must
+        // see the marker and skip spawnForChunkGeneration — without the CS-5
+        // fix this is exactly the reproduction of the recorded gap (a second
+        // herd of 4 pigs would appear on top of the empty chunk).
+        {
+            world::ChunkStreamer streamer2{17U, 4, 4};
+            RecordingHost host2;
+            runtime::GameRuntime runtime2{host2, streamer2, saveRoot};
+            host2.save = &runtime2.currentSaveSlot();
+            for (int index = 0; index < static_cast<int>(world::gen::Biome::Count); ++index) {
+                runtime2.gameSession().naturalSpawner().spawnTables().set(
+                    static_cast<world::gen::Biome>(index),
+                    gameplay::entities::MobCategory::Creature,
+                    {{gameplay::entities::entityTypeRegistry().byId("pig"), 10, 4, 4}});
+            }
+            auto reloaded = runtime2.saveRepository().load(identifier);
+            runtime2.loadWorld(std::move(reloaded), 4);
+            // loadWorld's flat-entity restore has nothing to bring back either
+            // (the herd's departure was never captured in any flat list).
+            assert(runtime2.gameSession().worldEntities().entities().empty());
+
+            const auto batch2 = streamer2.requestSync({1, 1}, std::chrono::seconds(10));
+            assert(batch2.has_value());
+            applyBatch(runtime2, *batch2);
+            runtime2.restoreLoadedChunk({1, 1});
+            // The core CS-5 assertion: still zero, not a fresh 4-pig herd.
+            assert(runtime2.gameSession().worldEntities().entities().empty());
+            runtime2.stopSimulation();
+        }
+    }
+
     // D7 channel injection: the server drains client intents from, and publishes
     // snapshots to, an *attached* external channel instead of its internal
     // loopback — the seam the dedicated server plugs a TCP connection into. Prove

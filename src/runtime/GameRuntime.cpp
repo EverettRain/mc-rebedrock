@@ -1072,6 +1072,18 @@ void GameRuntime::persistUnloadedChunk(world::ChunkPosition position) {
     record.chunkZ = chunkZ;
     record.edits = std::move(edits);
     record.entities = std::move(entities);
+    // CS-5: a chunk reaching unload was, by construction, streamed into this
+    // session's simulation — restoreLoadedChunk always runs on it first (the
+    // renderer's onChunkLoaded/onChunkUnloaded pair, or a test driving the same
+    // sequence), taking either the CS-4 generation-time branch or the M-3
+    // restore branch. Either way its generation-time pass has already
+    // happened, so the marker records `true` unconditionally here — this is
+    // the only place besides the CS-4 branch itself that ever sets it, and it
+    // is what lets a later session tell "visited, herd fully wandered off"
+    // apart from "never generated" once this write lands (record.populated
+    // keeps the region record even if edits/entities end up empty, e.g. every
+    // animal left the chunk before it unloaded and there was never an edit).
+    record.populated = true;
     {
         const std::lock_guard<std::mutex> guard{persistMutex_};
         persistIdentifier_ = currentSave_->summary.identifier;
@@ -1213,14 +1225,16 @@ void GameRuntime::restoreLoadedChunk(world::ChunkPosition position) {
     // CS-4: not a same-session restore. Populate this chunk's generation-time
     // herd exactly once — but only if nothing has ever marked it visited:
     //   - this session already ran the pass here (populatedChunks_), or
-    //   - an earlier session left a persisted trace: either a block edit
-    //     (editsByChunk_, the in-memory index — no I/O) or a saved region
-    //     entity record (loadChunkEntities — the same read restore above
-    //     already pays when it applies). A chunk that was visited, fully
-    //     drained of edits and left with no surviving herd (every animal
-    //     wandered off before the world was saved) has no record either way
-    //     and would look unvisited again — a known gap CS-5's storage/
-    //     retrieval verification is scoped to close; see the CS README.
+    //   - an earlier session left a persisted trace: a block edit
+    //     (editsByChunk_, the in-memory index — no I/O), a saved region entity
+    //     record (loadChunkEntities — the same read restore above already pays
+    //     when it applies), or CS-5's `populated` marker (isChunkPopulated —
+    //     the region record's bare "this chunk's pass already ran" bit, kept
+    //     on disk even when the chunk carries neither edits nor a surviving
+    //     herd). That marker is what closes the gap CS-4 left open: a chunk
+    //     visited and populated, then fully drained of edits with every animal
+    //     wandering off before the world was saved, no longer looks
+    //     indistinguishable from a chunk that was never generated.
     if (populatedChunks_.contains(position)) {
         return;
     }
@@ -1230,7 +1244,9 @@ void GameRuntime::restoreLoadedChunk(world::ChunkPosition position) {
         editsByChunk_.find(position) != editsByChunk_.end() ||
         !saveRepository_
              .loadChunkEntities(currentSave_->summary.identifier, position.x, position.z)
-             .empty();
+             .empty() ||
+        saveRepository_.isChunkPopulated(currentSave_->summary.identifier, position.x,
+                                         position.z);
     if (hasPriorRecord) {
         return;
     }

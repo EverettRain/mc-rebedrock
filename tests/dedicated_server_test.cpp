@@ -4,10 +4,12 @@
 #include "gameplay/GameCommand.hpp"
 #include "gameplay/GameMode.hpp"
 #include "gameplay/SessionCommand.hpp"
+#include "gameplay/entities/EntityRegistry.hpp"
 #include "net/Handshake.hpp"
 #include "net/NetMessage.hpp"
 #include "net/TcpTransport.hpp"
 #include "net/Transport.hpp"
+#include "world/gen/Biome.hpp"
 
 #include <glm/vec3.hpp>
 
@@ -113,6 +115,55 @@ int main() {
     {
         server::DedicatedServer server{saveRoot, /*viewDistanceChunks=*/1};
         assert(!server.loadWorldByName("no-such-world"));
+    }
+
+    // CS-5: the headless dedicated server now drives the M-3 C5 / CS-4
+    // chunk-loaded hook too (applyBatch calls restoreLoadedChunk/
+    // persistUnloadedChunk the same way VulkanRenderer.cpp's
+    // onChunkLoaded/onChunkUnloaded callbacks do) — this was a recorded gap
+    // (CS README's CS-4 entry: "DedicatedServer... currently does not wire
+    // restoreLoadedChunk"). Proves world-generation-time creature population
+    // actually fires headless: every biome forced to carry pig (same
+    // determinism fixture natural_spawn_test/game_runtime_test use), spawn
+    // point's own chunk force-loaded, and the simulation must come up with a
+    // real, non-empty herd rather than the pre-fix silence.
+    {
+        server::DedicatedServer server{saveRoot, /*viewDistanceChunks=*/1};
+        server.createAndLoadWorld("cs5-dedicated-spawn", 17U, gameplay::GameMode::Survival);
+        // Registered once already by gameplay::entities::registerBuiltinEntities()
+        // inside DedicatedServer's constructor-time BuiltinEntityRegistration;
+        // safe to look the type up directly. Must run *after*
+        // createAndLoadWorld: loadWorld's NaturalSpawner::setSeed replaces
+        // tables_ with a fresh copy of the process-wide default tables (see
+        // NaturalSpawner.cpp), so setting the override first would just be
+        // overwritten — the same ordering game_runtime_test's CS-4 case uses.
+        for (int index = 0; index < static_cast<int>(world::gen::Biome::Count); ++index) {
+            server.runtime().gameSession().naturalSpawner().spawnTables().set(
+                static_cast<world::gen::Biome>(index), gameplay::entities::MobCategory::Creature,
+                {{gameplay::entities::entityTypeRegistry().byId("pig"), 10, 4, 4}});
+        }
+        // Chunk (1,1) is the deterministic fixed point game_runtime_test's CS-4
+        // case uses (seed 17 clears the probability draw and lands on real
+        // terrain, not open water) — force it in directly via requestSync +
+        // the same applyBatch the server's own force-load path uses, instead
+        // of depending on where the default spawn column happens to fall.
+        auto& runtime = server.runtime();
+        const auto batch =
+            runtime.chunkStreamer().requestSync({1, 1}, std::chrono::seconds(10));
+        assert(batch.has_value());
+        assert(batch->worldEpoch == runtime.worldEpoch());
+        for (const auto& update : batch->chunkUpdates) {
+            if (!update.remove) {
+                runtime.world().setChunk(update.position, update.chunk);
+                runtime.restoreLoadedChunk(update.position);
+            }
+        }
+        assert(runtime.world().hasChunk({1, 1}));
+        assert(runtime.gameSession().worldEntities().entities().size() == 4U);
+        for (const auto& entity : runtime.gameSession().worldEntities().entities()) {
+            assert(entity.type != nullptr);
+            assert(std::string{entity.type->id().path} == "pig");
+        }
     }
 
     // D7 cross-process play over a real socket: a client connects on 127.0.0.1,

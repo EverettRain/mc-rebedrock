@@ -90,6 +90,47 @@ struct LegacyWriter final {
            (static_cast<std::uint32_t>(static_cast<unsigned char>(text[3])) << 24U);
 }
 
+// CS-5: a region file written by hand at CCNK version 4 (kRegionChunkVersion
+// was 4 before CS-5 added the `populated` byte) — a pre-CS-5 build's on-disk
+// shape, byte for byte. Reuses LegacyWriter's framing (same block header/
+// checksum algorithm the region format shares with world.dat) so the region
+// magic is the only thing that differs. The chunk carries one edit — Stone at
+// local (0,0,0) — so the state palette has a real second entry beyond the
+// always-present Empty/Air one at index 0, keeping this close to a real
+// pre-CS-5 unload write rather than a degenerate all-defaults case.
+void writeLegacyVersion4Region(const std::filesystem::path& path, std::int32_t regionX,
+                               std::int32_t regionZ, std::int32_t chunkX, std::int32_t chunkZ) {
+    LegacyWriter writer;
+    for (const char character : std::string_view{"MCRBREG"}) {
+        writer.bytes.push_back(static_cast<std::uint8_t>(character));
+    }
+    writer.bytes.push_back(0U);  // magic's 8th byte, matching kRegionMagic's trailing 0x00
+    writer.integer<std::uint32_t>(1U);  // kRegionFileVersion
+    writer.integer<std::int32_t>(regionX);
+    writer.integer<std::int32_t>(regionZ);
+    writer.integer<std::uint32_t>(1U);  // chunk count
+    // State palette: index 0 is always "air" with no properties (HashPalette's
+    // Empty seed, BlockState{}'s default block, which has no state axes).
+    writer.integer<std::uint16_t>(1U);
+    writer.stringValue("air");
+    writer.integer<std::uint8_t>(0U);  // property count
+    // Species palette: empty (no entities in this record).
+    writer.integer<std::uint16_t>(0U);
+    // The one CCNK block, version 4 — no trailing `populated` byte.
+    writer.block(fourCC("CCNK"), 4U, [&] {
+        writer.integer<std::int32_t>(chunkX);
+        writer.integer<std::int32_t>(chunkZ);
+        writer.integer<std::uint32_t>(0U);  // edit count
+        writer.integer<std::uint32_t>(0U);  // entity count
+        // version 4 stops here — no populated byte, that is the point of the test.
+    });
+    writer.finish();
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output{path, std::ios::binary | std::ios::trunc};
+    output.write(reinterpret_cast<const char*>(writer.bytes.data()),
+                 static_cast<std::streamsize>(writer.bytes.size()));
+}
+
 } // namespace
 
 int main() {
@@ -1530,6 +1571,82 @@ int main() {
         assert(loaded.playerExperiencePoints == 0);
         assert(loaded.playerTotalExperience == 0);
         assert(loaded.playerEnchantmentSeed == 0);
+    }
+
+    // --- CS-5: the `populated` marker round-trips through saveChunk/
+    // isChunkPopulated even with no edits and no entities — the exact shape
+    // of "a chunk whose generation-time herd fully wandered off before the
+    // world was saved", which is the gap CS-4 left open (see the CS README's
+    // CS-4 entry) and CS-5 exists to close. ---
+    {
+        auto game = repository.create("Cs5Marker", 31ULL);
+        const auto id = game.summary.identifier;
+        repository.save(game);
+
+        // Never touched: unmarked.
+        assert(!repository.isChunkPopulated(id, 9, 9));
+
+        // A bare marker — no edits, no entities — still lands on disk and
+        // reads back true, and does NOT fabricate a phantom entity/edit record
+        // (loadChunkEntities on the same chunk stays empty).
+        repository.saveChunk(id, 5, 5, {}, {}, /*populated=*/true);
+        assert(repository.isChunkPopulated(id, 5, 5));
+        assert(repository.loadChunkEntities(id, 5, 5).empty());
+        // A neighbour chunk in the same region file is untouched.
+        assert(!repository.isChunkPopulated(id, 5, 6));
+
+        // A full save() (writeRegionFiles, the whole-world path, not the
+        // per-chunk unload path) must not drop the marker for a chunk that is
+        // not in `unloadedChunks` — this is the loaded-chunk-with-no-fresh-
+        // edits-or-entities case a real session hits when a populated chunk
+        // stays resident (never unloaded) and the player saves.
+        repository.save(game, {});
+        assert(repository.isChunkPopulated(id, 5, 5));
+
+        // populated=false with real content does not spuriously mark the
+        // chunk — the marker is CS-5's own explicit signal, not inferred from
+        // "this record exists".
+        std::vector<world::PersistentBlockEdit> edits;
+        edits.push_back({96, 70, 96, world::BlockState{world::Block::Stone}});  // chunk (6,6)
+        repository.saveChunk(id, 6, 6, edits, {}, /*populated=*/false);
+        assert(!repository.isChunkPopulated(id, 6, 6));
+
+        // Re-saving the same chunk with populated=false after it was true
+        // downgrades the on-disk record — saveChunk always writes the caller's
+        // current flag, it does not OR with whatever was already there.
+        repository.saveChunk(id, 5, 5, {}, {}, /*populated=*/false);
+        assert(!repository.isChunkPopulated(id, 5, 5));
+    }
+
+    // --- CS-5 backward compatibility: a region file written at CCNK version 4
+    // (before CS-5 added the `populated` byte) has no such field. Reading it
+    // back must default to `populated == false` — "never marked" — not throw,
+    // not misread the following bytes (there are none: version 4 stops
+    // exactly where version 5's extra byte would start) and not desync a
+    // multi-chunk region's later records. ---
+    {
+        auto game = repository.create("Cs5Legacy", 32ULL);
+        const auto id = game.summary.identifier;
+        repository.save(game);
+        const auto regionPath = repository.dimensionRegionDirectory(id, world::DimensionId::Overworld) /
+            "r.0.0.cache";
+        writeLegacyVersion4Region(regionPath, 0, 0, 2, 3);
+
+        // The legacy chunk's edit still reads correctly (proves the reader
+        // did not desync trying to find a populated byte that is not there)...
+        const auto entities = repository.loadChunkEntities(id, 2, 3);
+        assert(entities.empty());  // the hand-written record has no entities
+        // ...and the marker defaults to false: this build has never recorded
+        // this chunk's generation-time pass either way, so it gets exactly one
+        // legitimate pass rather than being mistaken for "already populated"
+        // (which would silently suppress CS-4 forever on every pre-CS-5 save)
+        // or desyncing into garbage read as a populated byte.
+        assert(!repository.isChunkPopulated(id, 2, 3));
+
+        // Writing a fresh marker through this build's saveChunk upgrades the
+        // same region file's chunk record to version 5 in place.
+        repository.saveChunk(id, 2, 3, {}, {}, /*populated=*/true);
+        assert(repository.isChunkPopulated(id, 2, 3));
     }
 
     return 0;

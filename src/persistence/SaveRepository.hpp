@@ -250,6 +250,13 @@ struct ChunkPersistRecord final {
     std::int32_t chunkZ = 0;
     std::vector<world::PersistentBlockEdit> edits;
     std::vector<PersistentEntity> entities;
+    // CS-5: this chunk has been visited and its world-generation-time
+    // population pass (CS-4) has already run — recorded even when the chunk
+    // carries no edits and no surviving creatures (a herd that fully wandered
+    // off, or a pass whose probability draw produced nobody), so a later
+    // session does not mistake "no record" for "never generated" and re-run
+    // the pass on top of whatever remains. See SaveRepository::saveChunk.
+    bool populated = false;
 };
 
 class SaveRepository final {
@@ -276,8 +283,12 @@ class SaveRepository final {
     // from) the chunk's region file. The unload path calls saveChunk when a
     // chunk leaves the simulation radius so its data persists promptly; the load
     // path calls loadChunkEntities when the chunk streams back in. saveChunk
-    // merges with whatever the region already holds; empty data removes the
-    // chunk's record (and the file when the region empties).
+    // merges with whatever the region already holds; empty data with
+    // `populated == false` removes the chunk's record (and the file when the
+    // region empties) — but `populated == true` keeps a record on disk even
+    // with no edits and no entities, a bare marker (CS-5) proving the chunk's
+    // generation-time population pass already ran so a later session does not
+    // re-run it on a herd that has since fully wandered off.
     // `dimension` selects the per-dimension region subdirectory (DIM-4): the
     // Overworld writes to `<world>/region/` (unchanged, so old flat worlds are
     // byte-compatible), the Nether to `<world>/DIM-1/region/` and the End to
@@ -286,7 +297,7 @@ class SaveRepository final {
     // existing single-dimension caller keeps its behaviour.
     void saveChunk(const std::string& identifier, int chunkX, int chunkZ,
                    std::vector<world::PersistentBlockEdit> edits,
-                   std::vector<PersistentEntity> entities,
+                   std::vector<PersistentEntity> entities, bool populated = false,
                    world::DimensionId dimension = world::DimensionId::Overworld) const;
     // Batched form of saveChunk: groups the records by region file and does one
     // read-modify-write per region for the whole burst. Used off the render
@@ -296,6 +307,17 @@ class SaveRepository final {
                     std::vector<ChunkPersistRecord> records,
                     world::DimensionId dimension = world::DimensionId::Overworld) const;
     [[nodiscard]] std::vector<PersistentEntity> loadChunkEntities(
+        const std::string& identifier, int chunkX, int chunkZ,
+        world::DimensionId dimension = world::DimensionId::Overworld) const;
+    // CS-5: whether this chunk's region record carries the `populated` marker —
+    // its world-generation-time population pass (CS-4) has already run, even if
+    // no edits or entities currently back it up. False for a chunk with no
+    // record at all (never visited) and for a region written by a pre-CS-5
+    // build (the version-4-and-earlier CCNK layout has no such field, defaults
+    // to unset — see readRegionFile), which is the correct backward-compatible
+    // read: an old save's chunks look "never populated" and get exactly one
+    // legitimate population pass the first time this build visits them.
+    [[nodiscard]] bool isChunkPopulated(
         const std::string& identifier, int chunkX, int chunkZ,
         world::DimensionId dimension = world::DimensionId::Overworld) const;
 

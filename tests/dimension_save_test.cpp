@@ -64,9 +64,9 @@ int main() {
     std::vector<mc::world::PersistentBlockEdit> netherEdits{
         {4, 5, 6, mc::world::BlockState{mc::world::Block::Dirt}}};
 
-    repository.saveChunk(id, 0, 0, owEdits, {makeEntity("pig", 1.0F)},
+    repository.saveChunk(id, 0, 0, owEdits, {makeEntity("pig", 1.0F)}, /*populated=*/false,
                          DimensionId::Overworld);
-    repository.saveChunk(id, 0, 0, netherEdits, {makeEntity("cow", 2.0F)},
+    repository.saveChunk(id, 0, 0, netherEdits, {makeEntity("cow", 2.0F)}, /*populated=*/false,
                          DimensionId::Nether);
 
     // Files landed in the right subdirectories.
