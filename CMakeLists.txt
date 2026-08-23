@@ -1459,6 +1459,20 @@ if(BUILD_TESTING)
     )
     add_test(NAME block_shape COMMAND mc_rebedrock_block_shape_test)
 
+    if(MC_REBEDROCK_BUILD_TOOLS)
+        # Informational: us-per-step of the shape-derivation hot path
+        # (collisionShape -> shapeOverlaps) the physics collision walk hits every
+        # tick, the A/B baseline for AR-B1 Slice D (BlockShape unification).
+        add_executable(mc_rebedrock_block_shape_benchmark
+            tests/block_shape_benchmark.cpp
+        )
+        target_link_libraries(mc_rebedrock_block_shape_benchmark PRIVATE mc_rebedrock_runtime)
+        target_include_directories(mc_rebedrock_block_shape_benchmark PRIVATE
+            src
+            "${glm_SOURCE_DIR}"
+        )
+    endif()
+
     add_executable(mc_rebedrock_world_mutation_service_test
         tests/world_mutation_service_test.cpp
     )

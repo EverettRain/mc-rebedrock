@@ -135,6 +135,25 @@ int main() {
         // A box tucked in the cell corner misses it (the gap a fence leaves).
         assert(!shapeOverlaps(post, ox, oy, oz, ox + 0.02F, oy + 0.2F, oz + 0.02F, ox + 0.2F,
                               oy + 0.8F, oz + 0.2F));
+
+        // A short Boxes shape (the chest's box, top well under the cell
+        // ceiling): centred in XZ so only the Y test can exclude it. This is
+        // the axis PlayerController's tall-collision scan row depends on (a
+        // short box in the cell below a query must NOT match once the query
+        // starts above the box's own top) — AR-B1 Slice D sabotage caught a
+        // shapeOverlaps edit here that dropped the Y test and passed every
+        // other assertion in this file, so it earns its own case.
+        static constexpr std::array<ShapeBox, 1> kShortBox{
+            ShapeBox{0.0625F, 0.0F, 0.0625F, 0.9375F, 0.875F, 0.9375F}};
+        const BlockShape shortBox{ShapeKind::Boxes, 0.0F, 0.0F, kShortBox};
+        // Centred query, low enough to overlap the box's [0, 0.875] span.
+        assert(shapeOverlaps(shortBox, ox, oy, oz, ox + 0.3F, oy + 0.1F, oz + 0.3F, ox + 0.7F,
+                             oy + 0.5F, oz + 0.7F));
+        // Same XZ footprint, but the query sits entirely above the box's top
+        // (0.875): must miss, even though X/Z alone would call it a hit.
+        assert(!shapeOverlaps(shortBox, ox, oy, oz, ox + 0.3F, oy + 0.9F, oz + 0.3F, ox + 0.7F,
+                              oy + 0.95F, oz + 0.7F));
+
         // Empty never collides.
         assert(!shapeOverlaps(BlockShape{}, ox, oy, oz, ox, oy, oz, ox + 1, oy + 1, oz + 1));
     }
