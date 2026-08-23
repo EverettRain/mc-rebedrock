@@ -2,6 +2,7 @@
 
 #include "gameplay/GameMode.hpp"
 #include "gameplay/ChestSystem.hpp"
+#include "gameplay/Equipment.hpp"
 #include "gameplay/FurnaceSystem.hpp"
 #include "gameplay/GameRules.hpp"
 #include "gameplay/Inventory.hpp"
@@ -180,6 +181,12 @@ struct SaveGame final {
     std::int32_t playerTotalExperience = 0;
     std::int32_t playerEnchantmentSeed = 0;
     std::array<gameplay::ItemStack, gameplay::Inventory::kSlotCount> inventory{};
+    // EQ-0: the four armor slots + offhand, PLYR block version 4. A pre-EQ-0
+    // world (version <4) has none of these on disk; the reader leaves the
+    // SaveGame's default-constructed (empty) slots in place, matching "no
+    // equipment was ever worn" exactly — the same backward compatibility
+    // ENCH-0's per-stack enchantment tail and XP-0's experience fields use.
+    std::array<gameplay::ItemStack, gameplay::kEquipmentSlotCount> equipment{};
     std::vector<world::PersistentBlockEdit> edits;
     std::vector<gameplay::ChestBlockEntity> chests;
     // The trapped chest block entities at save time (BE3). Same ChestBlockEntity

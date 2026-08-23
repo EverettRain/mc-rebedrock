@@ -774,6 +774,10 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     // CS-4: this session has not populated any chunk yet either.
     populatedChunks_.clear();
     gameSession_.inventory().restore(currentSave_->inventory, currentSave_->selectedHotbarSlot);
+    // EQ-0: a pre-EQ-0 save leaves currentSave_->equipment at the SaveGame's
+    // default-constructed (empty) slots, so this restores to "nothing worn"
+    // for an old world exactly like a fresh one.
+    gameSession_.equipment().restore(currentSave_->equipment);
     gameSession_.chestSystem().restore(currentSave_->chests);
     gameSession_.trappedChestSystem().restore(currentSave_->trappedChests);
     gameSession_.furnaceSystem().restore(currentSave_->furnaces);
@@ -1001,6 +1005,7 @@ bool GameRuntime::saveLocked() {
     currentSave_->spawnYaw = gameSession_.playerSpawnYaw();
     currentSave_->inventory = gameSession_.inventory().slots();
     currentSave_->selectedHotbarSlot = gameSession_.inventory().selectedHotbarSlot();
+    currentSave_->equipment = gameSession_.equipment().slots();
     currentSave_->playerHealth = gameSession_.vitals().health();
     currentSave_->playerFoodLevel = gameSession_.vitals().foodLevel();
     currentSave_->playerSaturation = gameSession_.vitals().saturation();

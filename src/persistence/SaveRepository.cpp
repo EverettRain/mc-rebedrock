@@ -1435,8 +1435,14 @@ void readVersionBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
 // unconditionally, matching "no save has ever produced an enchanted item
 // before this node" exactly — no data loss, because there was never any
 // enchantment data to lose.
+// Version 4 (EQ-0) appends the five equipment slots (armor x4 + offhand)
+// after the experience fields. A version 1-3 block predates equipment
+// entirely and carries none of it; the reader leaves the SaveGame's
+// default-constructed (empty) equipment slots in place — "no armor/offhand
+// was ever worn", the same backward-compatibility shape XP-0's experience
+// fields and ENCH-0's enchantment tail use one version earlier each.
 constexpr std::uint32_t kPlayerBlockTag = blockTag("PLYR");
-constexpr std::uint16_t kPlayerBlockVersion = 3U;
+constexpr std::uint16_t kPlayerBlockVersion = 4U;
 
 void appendPlayerBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
     const auto& game = context.game;
@@ -1455,6 +1461,10 @@ void appendPlayerBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext&
     appendInteger(bytes, game.playerExperiencePoints);
     appendInteger(bytes, game.playerTotalExperience);
     appendInteger(bytes, game.playerEnchantmentSeed);
+    // EQ-0: the five equipment slots, same sparse appendSlots shape the
+    // inventory uses above (an all-empty player, the overwhelming common
+    // case pre-EQ-1 armor items exist, costs one extra zero byte).
+    appendSlots(bytes, context, game.equipment);
 }
 
 void readPlayerBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
@@ -1497,6 +1507,16 @@ void readPlayerBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
             game.playerTotalExperience < 0) {
             throw std::runtime_error("world.dat contains invalid player experience");
         }
+    }
+    // Equipment arrived in version 4 (EQ-0); a version 1-3 block has no
+    // equipment tail at all, and the SaveGame's default-constructed
+    // (all-empty) equipment slots are left untouched — no data loss, because
+    // there was never any equipment data to lose (armor items do not exist
+    // yet as of this node either).
+    if (header.version >= 4U) {
+        readSlots(payload, cursor, context, game.equipment, /*includeEnchantments=*/true);
+    } else {
+        game.equipment = {};
     }
     cursor = header.end;
 }
@@ -2835,6 +2855,11 @@ void SaveRepository::save(
         static_cast<void>(itemPalette.indexOf(stack.item));
     };
     for (const auto& stack : game.inventory) {
+        gatherStack(stack);
+    }
+    // EQ-0: the equipment slots are ItemStacks too (armor items are a later
+    // node, but the palette gather must not assume they never appear).
+    for (const auto& stack : game.equipment) {
         gatherStack(stack);
     }
     for (const auto& chest : game.chests) {

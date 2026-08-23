@@ -219,6 +219,12 @@ void appendWorld(std::vector<std::uint8_t>& bytes, const WorldSnapshot& snap) {
     codec::appendItemStack(bytes, snap.furnaceOutput);
     persistence::appendFloat(bytes, snap.furnaceFuelProgress);
     persistence::appendFloat(bytes, snap.furnaceCookProgress);
+    // EQ-0: the equipment slots, live wire format like every other ItemStack
+    // array here — no version gate needed (see StreamCodec.hpp's appendItemStack
+    // banner: this message shape is never persisted across builds).
+    for (const auto& stack : snap.equipmentSlots) {
+        codec::appendItemStack(bytes, stack);
+    }
 }
 
 [[nodiscard]] std::optional<WorldSnapshot> readWorld(std::span<const std::uint8_t> bytes,
@@ -295,6 +301,9 @@ void appendWorld(std::vector<std::uint8_t>& bytes, const WorldSnapshot& snap) {
     if (!readStack(snap.furnaceOutput)) return std::nullopt;
     snap.furnaceFuelProgress = persistence::readFloat(bytes, cursor);
     snap.furnaceCookProgress = persistence::readFloat(bytes, cursor);
+    for (auto& stack : snap.equipmentSlots) {
+        if (!readStack(stack)) return std::nullopt;
+    }
     return snap;
 }
 

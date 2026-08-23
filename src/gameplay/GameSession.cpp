@@ -538,6 +538,12 @@ void GameSession::publishSnapshots() {
         worldSnapshot_.inventorySlots[i] = primary.inventory.slot(i);
     }
     worldSnapshot_.cursorStack = primary.inventory.cursorStack();
+    // EQ-0: the equipment slots ride the same per-tick snapshot, values not
+    // references, the same "no gameplay reference survives the tick
+    // boundary" contract every other snapshot field here follows.
+    for (std::size_t i = 0; i < kEquipmentSlotCount; ++i) {
+        worldSnapshot_.equipmentSlots[i] = primary.equipment.get(static_cast<EquipmentSlot>(i));
+    }
     for (std::size_t i = 0; i < 4; ++i) {
         worldSnapshot_.playerCraftingGrid[i] = primary.crafting.playerSlot(i);
     }

@@ -11,6 +11,7 @@
 
 #include "gameplay/ChestSystem.hpp"
 #include "gameplay/CraftingSystem.hpp"
+#include "gameplay/Equipment.hpp"
 #include "gameplay/FurnaceSystem.hpp"
 #include "gameplay/Inventory.hpp"
 #include "gameplay/ScreenHandler.hpp"
@@ -94,6 +95,12 @@ struct WorldSnapshot final {
     // so no reference into a gameplay vector survives the tick boundary.
     std::array<ItemStack, Inventory::kSlotCount> inventorySlots{};
     ItemStack cursorStack{};
+    // EQ-0: the four armor slots + offhand, so a future armor renderer (and
+    // today's headless mirror test) can read what is worn from the same
+    // per-tick snapshot the rest of the container display state rides in.
+    // No UI reads this yet — that is the explicit EQ-1/PX seam this node
+    // leaves clean, not this node's job.
+    std::array<ItemStack, kEquipmentSlotCount> equipmentSlots{};
     std::array<ItemStack, ChestBlockEntity::kSlotCount> chestItems{};
     std::array<ItemStack, 9> tableCraftingGrid{};
     ItemStack tableCraftingOutput{};

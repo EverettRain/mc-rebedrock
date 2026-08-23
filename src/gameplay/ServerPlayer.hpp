@@ -12,6 +12,7 @@
 // `playerInput` the simulation's own snapshot at the top of each tick.
 
 #include "gameplay/CraftingSystem.hpp"
+#include "gameplay/Equipment.hpp"
 #include "gameplay/GameMode.hpp"
 #include "gameplay/Inventory.hpp"
 #include "gameplay/PlayerActionState.hpp"
@@ -43,6 +44,10 @@ struct ServerPlayer final {
     // but never experience).
     PlayerExperience experience;
     Inventory inventory;
+    // EQ-0: the four armor slots + offhand, a small companion to `inventory`
+    // rather than folded into its slot array (see Equipment.hpp's banner).
+    // Mainhand stays inventory.selectedStack() — not duplicated here.
+    EquipmentSlots equipment;
     CraftingSystem crafting;
     GameMode gameMode = GameMode::Creative;
 

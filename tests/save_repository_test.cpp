@@ -1724,6 +1724,92 @@ int main() {
         }
     }
 
+    // --- EQ-0: the five equipment slots (armor x4 + offhand) round-trip
+    // through the PLYR block (version 4) the same way the inventory does.
+    // Detailed slot-level coverage lives in equipment_slots_test.cpp (the
+    // storage owner); this is the save-path integration check. ---
+    {
+        auto game = repository.create("EquipRoundTrip", 29ULL);
+        game.equipment[static_cast<std::size_t>(gameplay::EquipmentSlot::Head)] =
+            gameplay::ItemStack{world::Block::Air, 1U, &gameplay::items::IronPickaxe};
+        game.equipment[static_cast<std::size_t>(gameplay::EquipmentSlot::Offhand)] =
+            gameplay::ItemStack{world::Block::Stone, 1U};
+        repository.save(game);
+        const auto loaded = repository.load(game.summary.identifier);
+        assert(loaded.equipment == game.equipment);
+        assert(loaded.equipment[static_cast<std::size_t>(gameplay::EquipmentSlot::Head)].item ==
+               &gameplay::items::IronPickaxe);
+        assert(loaded.equipment[static_cast<std::size_t>(gameplay::EquipmentSlot::Chest)].empty());
+    }
+
+    // --- EQ-0 backward compatibility: a PLYR block written before EQ-0
+    // (version 3 — has the ENCH-0 enchantment tail and experience fields,
+    // but no equipment tail at all) loads with every equipment slot empty,
+    // and does NOT try to read equipment bytes that were never written
+    // (which would either throw on a truncated read or desync whatever
+    // followed). Mirrors the ENCH-0 legacy test immediately above, one
+    // version bump later. ---
+    {
+        auto game = repository.create("EquipLegacyPlayer", 30ULL);
+        repository.save(game);
+        const auto path = repository.root() / game.summary.identifier / "world.dat";
+        std::vector<std::uint8_t> bytes;
+        {
+            std::ifstream input{path, std::ios::binary | std::ios::ate};
+            assert(input);
+            bytes.resize(static_cast<std::size_t>(input.tellg()));
+            input.seekg(0);
+            input.read(reinterpret_cast<char*>(bytes.data()),
+                       static_cast<std::streamsize>(bytes.size()));
+        }
+        bytes.resize(bytes.size() - sizeof(std::uint64_t));
+        LegacyWriter writer;
+        writer.bytes = std::move(bytes);
+        writer.block(fourCC("PLYR"), 3U, [&] {
+            writer.integer<std::uint8_t>(0U);  // hasPlayerPosition = false
+            writer.floating(0.0F);
+            writer.floating(0.0F);
+            writer.floating(0.0F);
+            writer.integer<std::uint8_t>(0U);   // selectedHotbarSlot
+            writer.floating(18.0F);             // playerHealth
+            writer.integer<std::int32_t>(15);   // playerFoodLevel
+            writer.floating(2.0F);              // playerSaturation
+            writer.integer<std::int32_t>(280);  // playerAirTicks
+            // appendSlots' sparse format: a zero occupied-count closes the
+            // inventory list — version 3's stacks carry the ENCH-0 tail, but
+            // an empty list never reads any per-stack bytes regardless.
+            writer.integer<std::uint16_t>(0U);
+            // Version 2+'s own experience fields, present at version 3.
+            writer.integer<std::int32_t>(6);    // playerExperienceLevel
+            writer.integer<std::int32_t>(1);    // playerExperiencePoints
+            writer.integer<std::int32_t>(50);   // playerTotalExperience
+            writer.integer<std::int32_t>(777);  // playerEnchantmentSeed
+            // No equipment tail — this is exactly the version-3 (pre-EQ-0) shape.
+        });
+        writer.finish();
+        {
+            std::ofstream output{path, std::ios::binary | std::ios::trunc};
+            output.write(reinterpret_cast<const char*>(writer.bytes.data()),
+                         static_cast<std::streamsize>(writer.bytes.size()));
+        }
+        const auto loaded = repository.load(game.summary.identifier);
+        // The version-3 fields still read correctly (proves the reader did
+        // NOT misalign trying to consume a nonexistent equipment tail)...
+        assert(loaded.playerHealth == 18.0F);
+        assert(loaded.playerFoodLevel == 15);
+        assert(loaded.playerAirTicks == 280);
+        assert(loaded.playerExperienceLevel == 6);
+        assert(loaded.playerExperiencePoints == 1);
+        assert(loaded.playerTotalExperience == 50);
+        assert(loaded.playerEnchantmentSeed == 777);
+        // ...and every equipment slot — absent from this version-3 block
+        // entirely — reads back empty, the "no equipment ever existed to
+        // lose" contract, no crash.
+        for (const auto& stack : loaded.equipment) {
+            assert(stack.empty());
+        }
+    }
+
     // --- CS-5: the `populated` marker round-trips through saveChunk/
     // isChunkPopulated even with no edits and no entities — the exact shape
     // of "a chunk whose generation-time herd fully wandered off before the
