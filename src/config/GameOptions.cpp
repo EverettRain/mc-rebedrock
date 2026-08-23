@@ -82,7 +82,6 @@ void GameOptions::sanitize() {
 
 GameOptions GameOptions::load(const std::filesystem::path& path) {
     GameOptions options;
-    bool hasVersion = false;
     std::ifstream input{path};
     if (!input) {
         options.save(path);
@@ -101,12 +100,7 @@ GameOptions GameOptions::load(const std::filesystem::path& path) {
         }
         const auto key = trim(cleaned.substr(0U, separator));
         const auto value = trim(cleaned.substr(separator + 1U));
-        if (key == "game.version") {
-            if (!value.empty()) {
-                options.version = std::string{value};
-            }
-            hasVersion = true;
-        } else if (key == "window.width") {
+        if (key == "window.width") {
             static_cast<void>(parseNumber(value, options.windowWidth));
         } else if (key == "window.height") {
             static_cast<void>(parseNumber(value, options.windowHeight));
@@ -168,9 +162,6 @@ GameOptions GameOptions::load(const std::filesystem::path& path) {
         }
     }
     options.sanitize();
-    if (!hasVersion) {
-        options.save(path);
-    }
     return options;
 }
 
@@ -185,7 +176,6 @@ void GameOptions::save(const std::filesystem::path& path) const {
         throw std::runtime_error("Unable to write game options: " + path.string());
     }
     output << "# MC Rebedrock options\n"
-           << "game.version=" << sanitized.version << '\n'
            << "window.width=" << sanitized.windowWidth << '\n'
            << "window.height=" << sanitized.windowHeight << '\n'
            << "window.maximized=" << (sanitized.windowMaximized ? "true" : "false") << '\n'

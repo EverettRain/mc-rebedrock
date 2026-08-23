@@ -71,4 +71,24 @@ namespace mc::render {
     return resizedRegion(layer, 0, 0, layer.width, layer.height, reference.width, reference.height);
 }
 
+// A block texture streamed through the dynamic (registry-driven) path may be a
+// vertical animation strip — magma, sea lantern, prismarine — whose height is a
+// whole multiple of its width (one square frame stacked per row). The atlas's
+// animated section is hardwired to the fluids (water/lava), so a non-fluid
+// animated block cannot stream frames; baking its FIRST frame gives a correct
+// static tile instead of vertically squashing the whole strip into one blurred
+// layer (which is what conformToAtlasLayer alone would do). A texture that is
+// not such a strip is conformed as usual.
+[[nodiscard]] inline assets::ImageData conformBlockLayer(const assets::ImageData& reference,
+                                                         const assets::ImageData& layer,
+                                                         std::string_view name) {
+    if (layer.width > 0 && layer.height > layer.width && layer.height % layer.width == 0) {
+        std::cerr << "[texture-atlas] " << name << " is a " << (layer.height / layer.width)
+                  << "-frame strip; baking frame 0 (block animation unsupported).\n";
+        return resizedRegion(layer, 0, 0, layer.width, layer.width, reference.width,
+                             reference.height);
+    }
+    return conformToAtlasLayer(reference, layer, name);
+}
+
 } // namespace mc::render

@@ -23,7 +23,6 @@ int main() {
     assert(defaults.anisotropy == 8);
     assert(defaults.viewBobbing);
     assert(!defaults.windowMaximized);
-    assert(defaults.version == "ReBedrock beta2");
     // Every sound sub-category defaults to full volume, and Directional Audio is
     // on (vanilla parity).
     for (const float categoryVolume : defaults.soundCategoryVolumes) {
@@ -39,7 +38,6 @@ int main() {
     defaults.masterVolume = 0.35F;
     defaults.smoothLightingQuality = mc::world::SmoothLightingQuality::Off;
     defaults.dynamicLight = true;
-    defaults.version = "ReBedrock test-version";
     defaults.soundCategoryVolumes[static_cast<std::size_t>(mc::audio::SoundCategory::Block)] = 0.3F;
     defaults.soundCategoryVolumes[static_cast<std::size_t>(mc::audio::SoundCategory::Music)] = 0.0F;
     defaults.directionalAudio = false;
@@ -113,7 +111,6 @@ int main() {
     assert(sanitized.anisotropy == 8);
     assert(sanitized.masterVolume == 1.0F);
     assert(!sanitized.windowMaximized);
-    assert(sanitized.version == "ReBedrock beta2");
     // Difficulty is per-save (world.dat), not a game option: a legacy
     // game.difficulty line in options.properties is ignored entirely.
     {

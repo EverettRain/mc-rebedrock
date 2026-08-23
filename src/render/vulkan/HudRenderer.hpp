@@ -14,6 +14,7 @@
 #include "gameplay/CraftingSystem.hpp"
 #include "gameplay/GameMode.hpp"
 #include "client/ClientMirror.hpp"
+#include "core/VersionManifest.hpp"
 #include "gameplay/GameSession.hpp"
 #include "gameplay/Inventory.hpp"
 #include "gameplay/ItemEntitySystem.hpp"
@@ -2174,8 +2175,14 @@ class HudRenderer final {
                 static_cast<int>(std::floor(debugSnap.physicsCurrent.x)),
                 static_cast<int>(std::floor(debugSnap.physicsCurrent.y + 0.001F)),
                 static_cast<int>(std::floor(debugSnap.physicsCurrent.z))};
+            // The version line reads the single build-identity source (core::kVersion,
+            // META's rodata manifest) rather than any persisted/hardcoded string, so
+            // F3 always shows the version this binary actually is, tagged with the
+            // git build ref for diagnostics.
+            const std::string versionLine = "ReBedrock " + std::string{core::kVersion.name} +
+                                            " (" + std::string{core::kVersion.buildRef} + ")";
             const std::array labels{
-                options.version + " | FPS: " + std::to_string(displayedFps),
+                versionLine + " | FPS: " + std::to_string(displayedFps),
                 coordinates.str(),
                 std::string{"Light: sky "} +
                     std::to_string(

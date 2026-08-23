@@ -400,7 +400,7 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
             return first;
         }
         const float index = static_cast<float>(layers.size());
-        layers.push_back(conformToAtlasLayer(top, blockTex(name), name));
+        layers.push_back(conformBlockLayer(top, blockTex(name), name));
         layerByName.emplace(name, index);
         return index;
     };

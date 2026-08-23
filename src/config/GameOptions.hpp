@@ -9,7 +9,10 @@
 namespace mc::config {
 
 struct GameOptions final {
-    std::string version = "ReBedrock beta2";
+    // The build's version identity is NOT a user option — it lives once in
+    // core::kVersion (META's single source) and the F3 overlay reads it there.
+    // It used to be a hardcoded string persisted here as `game.version`, which
+    // let a stale options file misreport the running build; that scatter is gone.
     int windowWidth = 960;
     int windowHeight = 720;
     // The windowed restore size above remains meaningful while maximized: GLFW
