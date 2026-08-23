@@ -47,6 +47,14 @@ class EquipmentSlots final {
         slots_[static_cast<std::size_t>(slot)] = stack;
     }
 
+    // EQ-1: the mutable reference behind one equipment slot, for the
+    // ScreenHandler slot-click model (which addresses external storage by
+    // pointer, exactly like Inventory::mutableSlot) and the auto-equip/
+    // death-drop paths that swap or clear a slot in place.
+    [[nodiscard]] ItemStack& mutableSlot(EquipmentSlot slot) {
+        return slots_[static_cast<std::size_t>(slot)];
+    }
+
     // The seam EQ-1 (armor items existing at all) and the future EQ-2
     // (armor damage-reduction formula, plugging into Damage.hpp's still-empty
     // "--- armor / toughness ---" stage) both read through this: "whatever is

@@ -65,7 +65,12 @@ void testPlayerScreen() {
     REQUIRE(countKind(slots, gameplay::SlotKind::PlayerCraftingOutput) == 1U);
     REQUIRE(countKind(slots, gameplay::SlotKind::PlayerInventory) ==
             gameplay::Inventory::kSlotCount);
-    REQUIRE(slots.size() == 4U + 1U + gameplay::Inventory::kSlotCount);
+    // EQ-1: the four armor slots + offhand are part of this same screen's own
+    // body now, alongside the 2x2 crafting grid and the 36 carried slots.
+    REQUIRE(countKind(slots, gameplay::SlotKind::Equipment) ==
+            gameplay::kEquipmentScreenSlotCount);
+    REQUIRE(slots.size() == 4U + 1U + gameplay::kEquipmentScreenSlotCount +
+                                gameplay::Inventory::kSlotCount);
 
     // The output slot has no storage of its own and never takes an item, which
     // is what keeps it out of the PICKUP_ALL gather and out of a drag.
@@ -96,7 +101,13 @@ void testCreativeTabs() {
                                     true};
     const auto inventoryTab = gameplay::ScreenHandler::buildSlots(session, context, layout);
     REQUIRE(countKind(inventoryTab, gameplay::SlotKind::PlayerCraftingGrid) == 0U);
-    REQUIRE(inventoryTab.size() == gameplay::Inventory::kSlotCount);
+    // EQ-1: the creative screen's own "Inventory" tab shows the armor row too
+    // (the same tab the plain 36 carried slots are shown under); an item
+    // category tab (below) shows neither.
+    REQUIRE(countKind(inventoryTab, gameplay::SlotKind::Equipment) ==
+            gameplay::kEquipmentScreenSlotCount);
+    REQUIRE(inventoryTab.size() ==
+            gameplay::kEquipmentScreenSlotCount + gameplay::Inventory::kSlotCount);
 
     context.creativeInventoryTab = false;
     const auto itemTab = gameplay::ScreenHandler::buildSlots(session, context, layout);
@@ -104,8 +115,14 @@ void testCreativeTabs() {
     // in the same place in both tabs (creativeInventorySlot delegates to
     // creativeHotbarSlot below nine), so the difference is which slots exist —
     // and a click on where the inventory rows would be must hit nothing.
+    REQUIRE(countKind(itemTab, gameplay::SlotKind::Equipment) == 0U);
     REQUIRE(itemTab.size() == gameplay::Inventory::kHotbarSize);
-    REQUIRE(itemTab.front().rect.y == inventoryTab.front().rect.y);
+    // Compared by PlayerInventory-kind slot specifically, not .front() — the
+    // full inventory tab's front slot is now an armor slot (EQ-1 prepends
+    // equipment ahead of the 36 carried slots), so .front() alone no longer
+    // names "the hotbar's own row" in that tab.
+    REQUIRE(itemTab.front().rect.y ==
+            firstOfKind(inventoryTab, gameplay::SlotKind::PlayerInventory)->rect.y);
     const auto inventoryRow = centreOf(layout.creativeInventorySlot(20));
     REQUIRE(gameplay::ScreenHandler::slotAt(inventoryTab, inventoryRow) != nullptr);
     REQUIRE(gameplay::ScreenHandler::slotAt(itemTab, inventoryRow) == nullptr);

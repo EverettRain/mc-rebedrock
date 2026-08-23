@@ -2318,6 +2318,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME armor_content COMMAND mc_rebedrock_armor_content_test)
 
+    add_executable(mc_rebedrock_equipment_wear_test
+        tests/equipment_wear_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_equipment_wear_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_equipment_wear_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME equipment_wear COMMAND mc_rebedrock_equipment_wear_test)
+
     endif()
 
 install(TARGETS mc_rebedrock RUNTIME DESTINATION bin)

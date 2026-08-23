@@ -156,6 +156,24 @@ static_assert(std::is_trivially_copyable_v<ItemStack>,
     return itemMaximumDamage(stack) > 0U;
 }
 
+// EQ-1: EquipmentSlot#canEquip's filter (its actual home in 1.16.1 is
+// per-slot: LivingEntity#getEquipmentSlotForItem consults
+// EquipmentSlot.MAINHAND/OFFHAND/ARMOR's own canEquip predicate, and armor's
+// slot-matching test is ArmorItem#getSlotType == the target slot). The
+// offhand takes anything (vanilla's OFFHAND slot has no canEquip restriction
+// at all — it is the one slot every item type may occupy); an armor slot
+// takes only the armor whose own body slot matches, and only armor (a
+// pickaxe can never be "worn" in the head slot even though nothing else
+// would want it there). This is the single source both the click-slot filter
+// (ScreenHandler) and the auto-equip right-click path (PlayerInteraction)
+// read, so they can never disagree about what a given slot accepts.
+[[nodiscard]] constexpr bool canEquip(EquipmentSlot slot, const ItemStack& stack) {
+    if (slot == EquipmentSlot::Offhand) {
+        return true;
+    }
+    return isArmor(stack.item) && armorSlotOf(stack.item) == slot;
+}
+
 // ItemStack#canCombine, which compares the damage too: a half-worn pickaxe is
 // not the same item as a fresh one. Block stacks combine by block, whatever form
 // their item pointer takes; every other stack needs a matching item (or a

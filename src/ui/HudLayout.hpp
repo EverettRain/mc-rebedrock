@@ -71,6 +71,13 @@ class HudLayout final {
     [[nodiscard]] UiRect experienceBar() const;
     [[nodiscard]] UiRect inventoryPanel() const;
     [[nodiscard]] UiRect inventorySlot(std::size_t index) const;
+    // EQ-1: InventoryScreen's four armor slots and the offhand slot, GUI spec
+    // §10's `(8,8)(8,26)(8,44)(8,62)` (index 0=Head..3=Feet, the screen's own
+    // top-to-bottom draw order) and `(77,62)`. Geometry only — the pixel
+    // rendering of these slots is PX/render (待 mac); this is the hit-test
+    // rectangle ScreenHandler needs to route a click at all.
+    [[nodiscard]] UiRect armorSlot(std::size_t index) const;
+    [[nodiscard]] UiRect offhandSlot() const;
     [[nodiscard]] UiRect playerCraftingSlot(std::size_t index) const;
     [[nodiscard]] UiRect playerCraftingOutput() const;
     [[nodiscard]] PlayerPreviewLayout playerPreview(bool creative) const;

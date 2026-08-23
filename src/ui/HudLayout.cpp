@@ -135,6 +135,22 @@ UiRect HudLayout::inventorySlot(std::size_t index) const {
     };
 }
 
+UiRect HudLayout::armorSlot(std::size_t index) const {
+    if (index >= 4U)
+        throw std::out_of_range("armor slot index is outside 0..3");
+    const auto panel = inventoryPanel();
+    // GUI spec §10: (8,8) (8,26) (8,44) (8,62), top-to-bottom Head/Chest/Legs/
+    // Feet — the screen's own draw order, an 18px row pitch like every other
+    // slot grid.
+    return {panel.x + 8.0F * scale_, panel.y + (8.0F + static_cast<float>(index) * 18.0F) * scale_,
+            16.0F * scale_, 16.0F * scale_};
+}
+
+UiRect HudLayout::offhandSlot() const {
+    const auto panel = inventoryPanel();
+    return {panel.x + 77.0F * scale_, panel.y + 62.0F * scale_, 16.0F * scale_, 16.0F * scale_};
+}
+
 UiRect HudLayout::chestSlot(std::size_t index) const {
     if (index >= 27U)
         throw std::out_of_range("chest slot index is outside 0..26");

@@ -117,6 +117,34 @@ bool aimsAtPlantableFarmland(world::World& world, const UseItemOn& use,
     return world::isFarmland(world.block(below.x, below.y, below.z));
 }
 
+// EQ-1: ArmorItem#use — right-clicking with an armor piece in hand swaps it
+// into its matching equipment slot: the selected stack goes to the (now
+// empty, or previously occupied) armor slot and whatever was worn there
+// (nothing, the first time) comes back into the hand. `armorSlotOf`/canEquip
+// are the same routing Item.hpp/Inventory.hpp expose to ScreenHandler's
+// slot-click filter, so a right-click equip and a drag-and-drop equip can
+// never disagree about which slot a given piece belongs in (sabotage③'s
+// target: this must never consult anything BUT armorSlotOf). Returns whether
+// a swap happened, so the caller knows to swing the arm and stop — vanilla's
+// ArmorItem#use returns InteractionResultHolder.success unconditionally
+// once armor is in hand, whether or not a slot was already occupied.
+bool tryAutoEquipArmor(GameSession& session) {
+    const ItemStack selected = session.inventory().selectedStack();
+    if (!isArmor(selected.item)) {
+        return false;
+    }
+    const EquipmentSlot target = armorSlotOf(selected.item);
+    ItemStack& wornSlot = session.equipment().mutableSlot(target);
+    // The swap: whatever was worn (possibly nothing) becomes the held stack,
+    // the held stack becomes worn. replaceSelected is the same
+    // ItemUsage#method_30012 primitive the bucket-fill path already uses for
+    // "the hand's held stack becomes a different single stack in place".
+    const ItemStack previouslyWorn = wornSlot;
+    wornSlot = selected;
+    session.inventory().replaceSelected(previouslyWorn);
+    return true;
+}
+
 // AR-B2: DoorBlock#useWithoutItem / FenceGateBlock#useWithoutItem — a plain
 // right-click on the block itself (not suppressed by sneaking-with-item-in-
 // hand, checked by the caller) flips OPEN. A door writes both halves so they
@@ -288,6 +316,13 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
     // presentation effects now cross the thread boundary exclusively through
     // the session event queue.
     static_cast<void>(host);
+    // A UseItemOn/UseItem command is only ever enqueued on the button's
+    // GLFW_PRESS edge (UseItemStop is the release) — so seeing either one this
+    // tick IS a fresh press, never a held-button repeat. That is exactly the
+    // edge auto-equip needs: ArmorItem#use fires once per right-click, not
+    // once per tick the button stays down (the 4-tick repeat below is for
+    // placement/bucket items, which DO want to keep firing while held).
+    bool freshUsePress = false;
     // Consume the queued inputs in order.
     for (const auto& command : commands) {
         std::visit(
@@ -297,9 +332,11 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
                     handleDestroyCommand(session, world, host, specific);
                 } else if constexpr (std::is_same_v<T, UseItemOn>) {
                     using_ = true;
+                    freshUsePress = true;
                     latestUse_ = specific;
                 } else if constexpr (std::is_same_v<T, UseItem>) {
                     using_ = true;
+                    freshUsePress = true;
                     latestUse_.reset();
                 } else if constexpr (std::is_same_v<T, UseItemStop>) {
                     using_ = false;
@@ -378,6 +415,18 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
                                    isContainerBlock(world, latestUse_->block);
     const bool plantable = latestUse_.has_value() && !latestUse_->entity &&
                            aimsAtPlantableFarmland(world, *latestUse_, selectedStack);
+    // EQ-1: ArmorItem#use, on the press edge only (armor equips once per
+    // click, not every tick the button stays down like a bucket's repeated
+    // placement). A container target opens the container instead — the same
+    // "the block gets first refusal" ordering the eat/plant checks above use
+    // — and an entity target goes through performUseOnEntity's own switch,
+    // never this generic path.
+    const bool targetedEntity = latestUse_.has_value() && latestUse_->entity;
+    if (freshUsePress && !targetedContainer && !targetedEntity && !session.eating()) {
+        if (tryAutoEquipArmor(session)) {
+            session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
+        }
+    }
     if (using_ && foodInHand && !targetedContainer && !plantable && !session.eating()) {
         session.beginEating(kPrimaryPlayerId, selectedStack.item, host);
     } else if (session.eating() &&

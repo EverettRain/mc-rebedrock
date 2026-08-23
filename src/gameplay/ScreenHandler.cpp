@@ -81,13 +81,44 @@ void appendContainerSlots(
 
 } // namespace
 
+namespace {
+
+// EQ-1: the four armor slots + offhand only exist on the player-inventory
+// screen's own body — never in a chest/furnace/crafting-table screen, and (like
+// the 2x2 crafting grid above) not under a creative item-category tab, which
+// shows only the hotbar. `session` is null for the geometry-only render-thread
+// form, exactly like appendContainerSlots' own null-session convention.
+void appendEquipmentSlots(
+    std::vector<SlotView>& slots,
+    GameSession* session,
+    const ScreenContext& context,
+    const ui::HudLayout& layout) {
+    if (context.screen != ContainerScreen::PlayerInventory) {
+        return;
+    }
+    if (context.gameMode == GameMode::Creative && !context.creativeInventoryTab) {
+        return;
+    }
+    for (std::size_t index = 0; index < kEquipmentScreenSlotCount; ++index) {
+        const auto rect = index < 4U ? layout.armorSlot(index) : layout.offhandSlot();
+        slots.push_back(
+            {rect,
+             session != nullptr ? &session->equipment().mutableSlot(equipmentSlotAt(index))
+                                 : nullptr,
+             SlotKind::Equipment, static_cast<std::uint16_t>(index)});
+    }
+}
+
+} // namespace
+
 std::vector<SlotView> ScreenHandler::buildSlots(
     GameSession& session,
     const ScreenContext& context,
     const ui::HudLayout& layout) {
     std::vector<SlotView> slots;
-    slots.reserve(ChestBlockEntity::kSlotCount + Inventory::kSlotCount + 1U);
+    slots.reserve(ChestBlockEntity::kSlotCount + Inventory::kSlotCount + kEquipmentScreenSlotCount);
     appendContainerSlots(slots, &session, context, layout);
+    appendEquipmentSlots(slots, &session, context, layout);
 
     // The player's own slots follow, drawn wherever the open screen puts them.
     const bool creativeScreen = context.screen == ContainerScreen::PlayerInventory &&
@@ -114,8 +145,9 @@ std::vector<SlotView> ScreenHandler::buildSlotLayout(
     const ScreenContext& context,
     const ui::HudLayout& layout) {
     std::vector<SlotView> slots;
-    slots.reserve(ChestBlockEntity::kSlotCount + Inventory::kSlotCount + 1U);
+    slots.reserve(ChestBlockEntity::kSlotCount + Inventory::kSlotCount + kEquipmentScreenSlotCount);
     appendContainerSlots(slots, nullptr, context, layout);
+    appendEquipmentSlots(slots, nullptr, context, layout);
 
     const bool creativeScreen = context.screen == ContainerScreen::PlayerInventory &&
                                 context.gameMode == GameMode::Creative;
@@ -141,6 +173,9 @@ ItemStack* ScreenHandler::resolveSlotStorage(GameSession& session,
     switch (kind) {
     case SlotKind::PlayerInventory:
         return &session.inventory().mutableSlot(index);
+    case SlotKind::Equipment:
+        if (index >= kEquipmentScreenSlotCount) return nullptr;
+        return &session.equipment().mutableSlot(equipmentSlotAt(index));
     case SlotKind::ChestStorage:
         if (context.chest.has_value()) {
             if (auto* chest = session.chestSystem().find(*context.chest); chest != nullptr) {
@@ -215,6 +250,30 @@ void cashInFurnaceExperience(GameSession& session, FurnacePosition position) {
         amount);
 }
 
+// EQ-1: Slot#mayPlace for an armor/offhand slot — the click still goes through
+// Inventory::clickExternalSlot's ordinary pickup/place/merge machinery (so an
+// armor slot behaves exactly like any other slot for stacking, half-stack
+// right-click pickup, etc.), except that placing the cursor stack down is
+// refused outright when it fails canEquip. Taking an item out (cursor empty,
+// slot occupied) is always allowed regardless of what is worn — canEquip only
+// gates what may go IN, matching vanilla's Slot#mayPlace (there is no
+// corresponding mayPickup restriction on armor).
+void clickEquipmentSlot(GameSession& session, EquipmentSlot equipmentSlot,
+                        InventoryMouseButton button) {
+    ItemStack& worn = session.equipment().mutableSlot(equipmentSlot);
+    const ItemStack& cursor = session.inventory().cursorStack();
+    // A right-click with an empty slot and a full cursor would place one item
+    // (clickExternalSlot's pickup==0 branch simply falls through and does
+    // nothing when clicked is empty and cursor is non-empty on Right — the
+    // "place one" case); a left-click would place the whole stack. Either
+    // way, if the cursor holds something this slot cannot equip and the slot
+    // itself is not simply being emptied, refuse.
+    if (!cursor.empty() && !canEquip(equipmentSlot, cursor)) {
+        return;
+    }
+    session.inventory().clickExternalSlot(worn, button);
+}
+
 } // namespace
 
 void ScreenHandler::click(
@@ -266,9 +325,35 @@ void ScreenHandler::click(
             cashInFurnaceExperience(session, context.furnace);
         }
         break;
+    case SlotKind::Equipment:
+        if (slot.index >= kEquipmentScreenSlotCount) break;
+        if (shiftHeld) {
+            // Shift-click OUT of an armor/offhand slot: QUICK_MOVE back into the
+            // player's own inventory, the same direction a shift-click furnace
+            // output or chest slot uses — Slot#mayPlace never gates a takeaway.
+            session.inventory().quickMoveInto(
+                session.equipment().mutableSlot(equipmentSlotAt(slot.index)));
+        } else {
+            clickEquipmentSlot(session, equipmentSlotAt(slot.index), button);
+        }
+        break;
     case SlotKind::PlayerInventory:
         if (shiftHeld) {
             if (context.screen == ContainerScreen::PlayerInventory) {
+                // Vanilla's InventoryMenu#quickMoveStack: a shift-clicked armor
+                // (or offhand-eligible) piece tries its own equipment slot
+                // FIRST, before falling into the ordinary hotbar<->main swap —
+                // "shift-click quick-equips", not "shift-click stores".
+                const ItemStack& clicked = session.inventory().slot(slot.index);
+                if (!clicked.empty() && isArmor(clicked.item)) {
+                    const EquipmentSlot target = armorSlotOf(clicked.item);
+                    ItemStack& wornSlot = session.equipment().mutableSlot(target);
+                    if (wornSlot.empty()) {
+                        wornSlot = session.inventory().mutableSlot(slot.index);
+                        session.inventory().mutableSlot(slot.index) = {};
+                        break;
+                    }
+                }
                 if (context.gameMode == GameMode::Creative &&
                     !context.creativeInventoryTab) {
                     // In an item-category tab the only real player slots are

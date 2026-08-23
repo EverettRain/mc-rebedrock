@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gameplay/ChestSystem.hpp"
+#include "gameplay/Equipment.hpp"
 #include "gameplay/FurnaceSystem.hpp"
 #include "gameplay/GameMode.hpp"
 #include "gameplay/Inventory.hpp"
@@ -44,7 +45,29 @@ enum class SlotKind : std::uint8_t {
     // The smelted result. Like a crafting output, it only ever gives.
     FurnaceOutput,
     ChestStorage,
+    // EQ-1: one of the player's five equipment slots. `index` is the screen's
+    // own draw order (0..3 = Head/Chest/Legs/Feet, 4 = Offhand — see
+    // equipmentSlotAt below), not gameplay::EquipmentSlot's underlying value;
+    // the click router converts.
+    Equipment,
 };
+
+// EQ-1: the screen's armor-slot draw order (0..3 = Head/Chest/Legs/Feet, the
+// GUI spec §10 top-to-bottom layout) plus offhand at 4, mapped to the
+// gameplay::EquipmentSlot each index addresses. A SlotKind::Equipment index
+// outside 0..4 has no slot; callers guard with the count below first.
+inline constexpr std::size_t kEquipmentScreenSlotCount = 5U;
+
+[[nodiscard]] constexpr EquipmentSlot equipmentSlotAt(std::size_t screenIndex) {
+    switch (screenIndex) {
+    case 0U: return EquipmentSlot::Head;
+    case 1U: return EquipmentSlot::Chest;
+    case 2U: return EquipmentSlot::Legs;
+    case 3U: return EquipmentSlot::Feet;
+    case 4U: return EquipmentSlot::Offhand;
+    default: return EquipmentSlot::Offhand;
+    }
+}
 
 // One slot on the open screen: where it is, what it is, and the exact storage
 // behind it.

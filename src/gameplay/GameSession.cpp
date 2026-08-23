@@ -1033,6 +1033,21 @@ void GameSession::onPlayerDeath(PlayerId playerId) {
         scatter(stack);
     }
     player.inventory.restore({}, player.inventory.selectedHotbarSlot());
+
+    // EQ-1: LivingEntity#dropEquipment scatters the four armor slots + offhand
+    // too, gated by the exact same keepInventory early-out above — this is
+    // the "keepInventory keeps equipment too" acceptance case, reached simply
+    // by never getting here when the rule is on. Cleared after scattering so
+    // a dead (and about-to-respawn) player is not still "wearing" what just
+    // hit the ground.
+    for (std::size_t index = 0; index < kEquipmentSlotCount; ++index) {
+        const auto slot = static_cast<EquipmentSlot>(index);
+        const auto& worn = player.equipment.get(slot);
+        if (!worn.empty()) {
+            scatter(worn);
+        }
+    }
+    player.equipment = EquipmentSlots{};
 }
 
 void GameSession::tickEating(SimulationHost& host) {
