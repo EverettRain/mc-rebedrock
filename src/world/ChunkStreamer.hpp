@@ -2,6 +2,7 @@
 
 #include "core/ParallelWorkerPool.hpp"
 #include "render/MeshData.hpp"
+#include "world/Dimension.hpp"
 #include "world/PersistentBlockEdit.hpp"
 #include "world/World.hpp"
 #include "world/WorldLightEngine.hpp"
@@ -106,8 +107,16 @@ inline constexpr int kUnloadHysteresisChunks = 2;
 // sync because the same batches and simulation edits feed both.
 class ChunkStreamer final {
   public:
-    ChunkStreamer(std::uint64_t seed, int loadRadius, int unloadRadius);
+    // `dimension` selects which terrain generator the worker uses
+    // (DimensionChunkGenerator): the Overworld's SurfaceGenerator by default, or
+    // the Nether/End generators once WG-4 stands a per-dimension streamer up. The
+    // seed is the *world* seed for every dimension; the nether/end generators
+    // derive their own stream from it, so the overworld streamer is unchanged.
+    ChunkStreamer(std::uint64_t seed, int loadRadius, int unloadRadius,
+                  DimensionId dimension = DimensionId::Overworld);
     ~ChunkStreamer();
+
+    [[nodiscard]] DimensionId dimension() const { return dimension_; }
 
     ChunkStreamer(const ChunkStreamer&) = delete;
     ChunkStreamer& operator=(const ChunkStreamer&) = delete;
@@ -253,6 +262,10 @@ class ChunkStreamer final {
         std::vector<BlockEdit> edits) const;
 
     std::uint64_t seed_;
+    // Which dimension this streamer generates. Fixed for the streamer's life (a
+    // streamer serves one world/dimension), so the generator dispatch is chosen
+    // once, not per chunk.
+    DimensionId dimension_ = DimensionId::Overworld;
     std::atomic<int> loadRadius_;
     std::atomic<int> unloadRadius_;
     // The never-unload spawn region (vanilla spawn chunks). `protectedRadius_`

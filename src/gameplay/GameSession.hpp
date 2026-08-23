@@ -481,11 +481,19 @@ class GameSession final {
     struct PendingCrossDimLoad final {
         world::DimensionId dimension = world::DimensionId::Overworld;
         world::ChunkPosition chunk{};
+
+        [[nodiscard]] bool operator==(const PendingCrossDimLoad&) const = default;
     };
     [[nodiscard]] const std::vector<PendingCrossDimLoad>& pendingCrossDimLoads() const {
         return pendingCrossDimLoads_;
     }
     void clearPendingCrossDimLoads() { pendingCrossDimLoads_.clear(); }
+
+    // Records a cross-dimension load request, deduped by (dimension, chunk) so a
+    // per-tick query of the same unloaded chunk cannot grow the deferred list
+    // without bound (DIM-3 leftover #1, fixed in WG-4). Both the block read and the
+    // queued-transfer path route through here.
+    void recordPendingCrossDimLoad(PendingCrossDimLoad request);
 
     // DIM-3: routes the recorded cross-dimension load requests (DIM-2) through the
     // per-dimension generator hook, partitioning them into requests a streamer

@@ -1,7 +1,7 @@
 #include "world/ChunkStreamer.hpp"
 
 #include "world/ChunkMesher.hpp"
-#include "world/SurfaceGenerator.hpp"
+#include "world/DimensionChunkGenerator.hpp"
 #include "world/WorldConstants.hpp"
 
 #include <algorithm>
@@ -75,18 +75,18 @@ struct GenerationResult final {
 // Generates the requested chunks on a small pool of worker threads. Chunk
 // generation is the expensive part of a world load (noise, carvers, surface,
 // features), and unlike meshing it is embarrassingly parallel — each chunk is
-// independent. Every worker owns its own SurfaceGenerator (the noise samplers
-// are read-only, but a per-thread copy keeps concurrent generation trivially
-// safe, the way vanilla gives each ChunkGenerator thread its own generator).
-// The generators are constructed once per world update by the caller and
-// reused across batches: constructing them is itself nontrivial (each draws a
+// independent. Every worker owns its own DimensionChunkGenerator (the noise
+// samplers are read-only, but a per-thread copy keeps concurrent generation
+// trivially safe, the way vanilla gives each ChunkGenerator thread its own
+// generator). The generators are constructed once per world update by the caller
+// and reused across batches: constructing them is itself nontrivial (each draws a
 // dozen octave samplers from the seed stream), so building one per batch would
-// tax small batches heavily. SurfaceGenerator is not relocatable, so the pool
-// lives behind unique_ptrs and this helper takes a span of raw pointers. Work
-// is stolen by the persistent pool shared with lighting and meshing.
+// tax small batches heavily. The pool lives behind unique_ptrs and this helper
+// takes a span of raw pointers. Work is stolen by the persistent pool shared with
+// lighting and meshing.
 [[nodiscard]] std::vector<GenerationResult> generateChunksParallel(
     core::ParallelWorkerPool& workers,
-    std::span<SurfaceGenerator*> generators,
+    std::span<DimensionChunkGenerator*> generators,
     std::span<const GenerationRequest> requests,
     const std::atomic<bool>& stopping) {
     if (requests.empty() || stopping.load(std::memory_order_relaxed)) {
@@ -94,7 +94,7 @@ struct GenerationResult final {
     }
     std::vector<GenerationResult> results(requests.size());
     const auto generateOne = [&](std::size_t requestIndex, std::size_t workerIndex) {
-        SurfaceGenerator& generator = *generators[workerIndex];
+        DimensionChunkGenerator& generator = *generators[workerIndex];
         if (!stopping.load(std::memory_order_relaxed)) {
                 const auto& request = requests[requestIndex];
                 std::vector<gen::TreeBorderBlock> borderBlocks;
@@ -244,8 +244,9 @@ std::vector<ChunkPosition> chunkPositionsInRadius(ChunkPosition center, int radi
     return positions;
 }
 
-ChunkStreamer::ChunkStreamer(std::uint64_t seed, int loadRadius, int unloadRadius)
-    : seed_(seed), loadRadius_(loadRadius), unloadRadius_(unloadRadius) {
+ChunkStreamer::ChunkStreamer(std::uint64_t seed, int loadRadius, int unloadRadius,
+                             DimensionId dimension)
+    : seed_(seed), dimension_(dimension), loadRadius_(loadRadius), unloadRadius_(unloadRadius) {
     if (loadRadius < 0 || unloadRadius < loadRadius) {
         throw std::invalid_argument(
             "Chunk unload radius must be greater than or equal to load radius");
@@ -589,7 +590,7 @@ void ChunkStreamer::processSyncRequests(
             .push_back(&edit);
         persistentPositions.insert({edit.x, edit.y, edit.z});
     }
-    const SurfaceGenerator generator{seed_};
+    const DimensionChunkGenerator generator{dimension_, seed_};
     for (const auto position : pending) {
         if (stopping_.load(std::memory_order_relaxed)) {
             return;
@@ -817,17 +818,18 @@ void ChunkStreamer::updateWorld(
         lightEngine.updateAfterChunkRemoval(world, position);
     }
 
-    // SurfaceGenerator construction is nontrivial (each draws a dozen octave
-    // samplers from the seed stream), so build one per worker once and share
-    // them across all batches of this update instead of rebuilding per batch.
-    std::vector<std::unique_ptr<SurfaceGenerator>> generatorPool;
-    std::vector<SurfaceGenerator*> generators;
+    // Generator construction is nontrivial (each draws a dozen octave samplers
+    // from the seed stream), so build one per worker once and share them across
+    // all batches of this update instead of rebuilding per batch. The dimension
+    // fixes which terrain generator each holds (Overworld/Nether/End).
+    std::vector<std::unique_ptr<DimensionChunkGenerator>> generatorPool;
+    std::vector<DimensionChunkGenerator*> generators;
     if (!missing.empty()) {
         const std::size_t workerCount = parallelWorkers_.workerCount();
         generatorPool.reserve(workerCount);
         generators.reserve(workerCount);
         for (std::size_t index = 0; index < workerCount; ++index) {
-            generatorPool.push_back(std::make_unique<SurfaceGenerator>(seed_));
+            generatorPool.push_back(std::make_unique<DimensionChunkGenerator>(dimension_, seed_));
             generators.push_back(generatorPool.back().get());
         }
     }

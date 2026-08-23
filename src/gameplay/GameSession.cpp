@@ -257,6 +257,13 @@ void GameSession::tickSecondaryLevels() {
     }
 }
 
+void GameSession::recordPendingCrossDimLoad(PendingCrossDimLoad request) {
+    if (std::find(pendingCrossDimLoads_.begin(), pendingCrossDimLoads_.end(), request) ==
+        pendingCrossDimLoads_.end()) {
+        pendingCrossDimLoads_.push_back(request);
+    }
+}
+
 world::Block GameSession::blockAcrossDimensions(world::DimensionId id, int x, int y, int z) {
     Level& target = level(id);
     // No world bound at all: the dimension is not even set up. Nothing to load;
@@ -272,7 +279,14 @@ world::Block GameSession::blockAcrossDimensions(world::DimensionId id, int x, in
     // Unloaded: record an async request for the streamer and return the default.
     // Crucially this does NOT create/generate the chunk — synchronous generation
     // in a tick is the long-tail root cause DIM-2 must never reintroduce.
-    pendingCrossDimLoads_.push_back({id, chunkPos});
+    //
+    // WG-4 (DIM-3 leftover #1): dedup by (dimension, chunk). A cross-dimension read
+    // of an unloaded chunk that a caller repeats every tick — a redstone comparator
+    // reaching into the Nether, say — used to push a fresh request each time, so the
+    // deferred list grew without bound until the chunk finally loaded. Recording
+    // each (dim, chunk) once keeps the queue bounded by the number of *distinct*
+    // unloaded chunks queried, not the number of queries.
+    recordPendingCrossDimLoad({id, chunkPos});
     return world::Block::Air;
 }
 
@@ -340,7 +354,7 @@ GameSession::TransferResult GameSession::transferEntity(std::uint64_t entityId,
         // tick. drainQueuedTransfers lands it once the chunk is resident.
         detached->position = destination.position;  // already scaled
         queuedTransfers_.push_back({std::move(*detached), to, destination.chunk});
-        pendingCrossDimLoads_.push_back({to, destination.chunk});
+        recordPendingCrossDimLoad({to, destination.chunk});
         return TransferResult::QueuedAwaitingChunk;
     case PortalDestinationStatus::Ready:
         static_cast<void>(recreateInLevel(targetLevel, *detached, destination.position));

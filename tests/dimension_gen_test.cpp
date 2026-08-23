@@ -1,10 +1,15 @@
 // DIM-3: per-dimension streaming + generation hook (headless).
 //
-// DIM-3 only builds the *seam* — the per-dimension seed derivation, the
-// generator-config hook (bounds from the DimensionType, generator-present flag),
-// the idle-skip gate, and the consumer of DIM-2's recorded cross-dimension load
-// requests. Real Nether/End terrain is the worldgen subtree's delivery and is
-// NOT generated here; the hook reports hasTerrainGenerator == false for them.
+// DIM-3 built the *seam* — the per-dimension seed derivation, the generator-config
+// hook (bounds from the DimensionType, generator-present flag), the idle-skip
+// gate, and the consumer of DIM-2's recorded cross-dimension load requests.
+//
+// WG-4 FILLED the seam: the Nether/End now have real terrain generators
+// (NetherGenerator/EndGenerator behind DimensionChunkGenerator), so
+// hasTerrainGenerator is true for every built-in dimension, a Nether/End level
+// with a player streams, and its recorded cross-dimension requests route to a
+// streamer instead of deferring. This test now asserts that filled state; the
+// pre-WG-4 "deferred, no generator" expectations were retired with WG-4.
 #include "gameplay/GameSession.hpp"  // SimulationHost lives here
 #include "gameplay/Level.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
@@ -101,11 +106,12 @@ int main() {
         assert(ow.height == dimensionType(DimensionId::Overworld).height);
         assert(!ow.hasCeiling);
 
-        // The generator seam: only the Overworld has a real terrain generator on
-        // disk today; the Nether/End stay false until worldgen delivers theirs.
+        // The generator seam is filled (WG-4): every built-in dimension now has a
+        // real terrain generator behind DimensionChunkGenerator (Overworld
+        // SurfaceGenerator, Nether NetherGenerator, End EndGenerator).
         assert(ow.hasTerrainGenerator);
-        assert(!nether.hasTerrainGenerator);
-        assert(!end.hasTerrainGenerator);
+        assert(nether.hasTerrainGenerator);
+        assert(end.hasTerrainGenerator);
     }
 
     // --- Idle-skip: a dimension with no player / no generator does not stream --
@@ -119,16 +125,16 @@ int main() {
         ow.hasPlayer = true;
         assert(ow.shouldStream());  // player present + generator present -> stream
 
-        // The Nether has a player but no generator (seam) -> still does not
-        // stream (Sabotage ③'s guard: an idle/generator-less dimension requests
-        // nothing).
+        // The Nether now has a generator (WG-4), so a Nether level with a player
+        // streams just like the Overworld — this is the DIM-3 unlock.
         mc::gameplay::Level nether;
         nether.id = DimensionId::Nether;
         mc::world::World netherWorld;
         nether.bindWorld(netherWorld);
+        assert(!nether.shouldStream());  // no player yet -> idle -> no streaming
         nether.hasPlayer = true;
-        assert(!nether.shouldStream());  // no terrain generator -> no streaming
-        // And with no world bound at all, nothing streams.
+        assert(nether.shouldStream());   // player + generator -> streams (WG-4)
+        // The idle gate still holds: with no world bound at all, nothing streams.
         mc::gameplay::Level unbound;
         unbound.id = DimensionId::Overworld;
         unbound.hasPlayer = true;
@@ -137,8 +143,9 @@ int main() {
 
     // --- Consumer of DIM-2's cross-dimension load requests --------------------
     // A cross-dimension query into an unloaded Nether coordinate records a
-    // request (DIM-2). DIM-3's resolver routes it: the Nether has no generator, so
-    // the request is deferred (held for worldgen), never generated in the tick.
+    // request (DIM-2). WG-4 filled the generator seam, so the resolver now ROUTES
+    // the Nether request to a streamer (rather than deferring it), never
+    // generating a chunk in the tick either way.
     {
         mc::world::World overworld;
         loadFlatChunk(overworld, 0, 0);
@@ -159,15 +166,29 @@ int main() {
         static_cast<void>(session.blockAcrossDimensions(DimensionId::Nether, 40, 0, 40));
         assert(session.pendingCrossDimLoads().size() == 1U);
 
-        // Resolve: the Nether has no generator, so it is deferred, not routed to a
-        // streamer, and the request stays queued for a future worldgen delivery.
+        // WG-4 (DIM-3 leftover #1): a *repeated* query of the same unloaded
+        // (dimension, chunk) does not grow the deferred list — it dedups. The list
+        // stays bounded by distinct chunks queried, not query count.
+        for (int i = 0; i < 100; ++i) {
+            static_cast<void>(session.blockAcrossDimensions(DimensionId::Nether, 40, 0, 40));
+        }
+        assert(session.pendingCrossDimLoads().size() == 1U);  // still one, not 101
+        // A different chunk in the same dimension records a distinct request.
+        static_cast<void>(session.blockAcrossDimensions(DimensionId::Nether, 40 + 16 * 8, 0, 40));
+        assert(session.pendingCrossDimLoads().size() == 2U);
+        session.clearPendingCrossDimLoads();
+        static_cast<void>(session.blockAcrossDimensions(DimensionId::Nether, 40, 0, 40));
+        assert(session.pendingCrossDimLoads().size() == 1U);
+
+        // Resolve: the Nether now HAS a generator (WG-4), so its request routes to
+        // a streamer rather than deferring, and the queue clears.
         const auto routing = session.resolvePendingCrossDimLoads();
-        assert(routing.routableToStreamer == 0U);
-        assert(routing.deferredNoGenerator == 1U);
-        assert(session.pendingCrossDimLoads().size() == 1U);  // still held
+        assert(routing.routableToStreamer == 1U);
+        assert(routing.deferredNoGenerator == 0U);
+        assert(session.pendingCrossDimLoads().empty());  // routed, cleared
 
         // An Overworld cross-dimension request (a chunk not resident in the loaded
-        // set) DOES route to a streamer, because the Overworld has a generator.
+        // set) also routes to a streamer, because the Overworld has a generator.
         session.clearPendingCrossDimLoads();
         static_cast<void>(session.blockAcrossDimensions(DimensionId::Overworld, 5000, 0, 5000));
         assert(session.pendingCrossDimLoads().size() == 1U);
@@ -175,7 +196,8 @@ int main() {
         assert(owRouting.routableToStreamer == 1U);
         assert(owRouting.deferredNoGenerator == 0U);
         assert(session.pendingCrossDimLoads().empty());  // routed, cleared
-        // The Nether world was never generated by any of this.
+        // Routing never generated a chunk in the tick — the Nether world stays
+        // empty (real terrain arrives asynchronously through a streamer, not here).
         assert(nether.chunkCount() == 0U);
     }
 

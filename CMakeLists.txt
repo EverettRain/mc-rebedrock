@@ -2002,6 +2002,14 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_end_terrain_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME end_terrain COMMAND mc_rebedrock_end_terrain_test)
 
+    # WG-4: DimensionGenerator seam wiring + per-dimension world height.
+    add_executable(mc_rebedrock_dimension_seam_wiring_test
+        tests/dimension_seam_wiring_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_dimension_seam_wiring_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_dimension_seam_wiring_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME dimension_seam_wiring COMMAND mc_rebedrock_dimension_seam_wiring_test)
+
     add_executable(mc_rebedrock_block_registry_lifecycle_test
         tests/block_registry_lifecycle_test.cpp
     )

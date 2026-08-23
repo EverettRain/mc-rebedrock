@@ -81,9 +81,13 @@ struct DimensionGeneratorConfig final {
         .minY = type.minY,
         .height = type.height,
         .hasCeiling = type.hasCeiling,
-        // Only the Overworld has a terrain generator (SurfaceGenerator) today.
-        // The Nether/End seam stays false until the worldgen subtree fills it.
-        .hasTerrainGenerator = (id == DimensionId::Overworld),
+        // WG-4: every built-in dimension now has a real terrain generator behind
+        // the DimensionChunkGenerator binding — the Overworld's SurfaceGenerator,
+        // the Nether's NetherGenerator (WG-2) and the End's EndGenerator (WG-3).
+        // The seam is filled, so a per-dimension streamer generates real terrain
+        // rather than deferring. DimensionId::Count is the sentinel, never a real
+        // dimension, so it reports false.
+        .hasTerrainGenerator = (id != DimensionId::Count),
     };
 }
 
