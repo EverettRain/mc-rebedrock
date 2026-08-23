@@ -78,7 +78,21 @@ class PlayerVitals final {
     // `causedByLivingNonPlayer` is DamageScaling::WhenCausedByLivingNonPlayer's
     // condition: a mob swung it, so a harder world swings harder. False for the
     // world hurting the player — falling, drowning, starving, the void.
-    bool hurt(float amount, DamageType cause, bool causedByLivingNonPlayer = false);
+    //
+    // EQ-2: `armor`/`toughness` are the defender's summed armor points and
+    // toughness (GameSession::hurtPlayer sums the four EquipmentSlots pieces
+    // before calling this); every internal caller in this file — fall,
+    // drowning, fire, starvation, effect ticks — leaves them at the zero
+    // default, which is correct either way: those types all carry
+    // BypassesArmor except OnFire, and an unarmored player reduces by zero
+    // regardless. `armorApplied`, if given, receives whether the armor stage
+    // actually ran on a landed hit (false on a miss, a bypass, or no armor
+    // worn); `preArmorDamage`, if given, receives the damage the stage was
+    // handed (post-difficulty, pre-reduction). The caller sums both to decide
+    // whether, and by how much, worn armor spends durability.
+    bool hurt(float amount, DamageType cause, bool causedByLivingNonPlayer = false,
+             float armor = 0.0F, float armorToughness = 0.0F, bool* armorApplied = nullptr,
+             float* preArmorDamage = nullptr);
     // Entity#setSecondsOnFire: lights the player for `seconds` of burning, the
     // single entry every ignition source routes through. Vanilla only ever
     // lengthens a burn, so this takes the max; a dead player is not relit. The

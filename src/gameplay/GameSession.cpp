@@ -31,6 +31,51 @@ constexpr float kInfiniteDamage = std::numeric_limits<float>::infinity();
     const int remainder = value % divisor;
     return (remainder != 0 && (remainder < 0) != (divisor < 0)) ? quotient - 1 : quotient;
 }
+
+// EQ-2: LivingEntity#getArmor / #getAttributeValue(GENERIC_ARMOR_TOUGHNESS) —
+// the defender's armor points and toughness are an ADDITION sum of each
+// equipped ArmorItem's per-slot modifier across the four armor slots (never
+// the offhand, which is not armor). Zero for a naked player, matching vanilla.
+struct ArmorTotals final {
+    float armor = 0.0F;
+    float toughness = 0.0F;
+};
+
+[[nodiscard]] ArmorTotals sumEquippedArmor(const EquipmentSlots& equipment) {
+    ArmorTotals totals;
+    for (const EquipmentSlot slot : kArmorSlots) {
+        const Item* item = equipment.equippedArmor(slot).item;
+        totals.armor += static_cast<float>(armorValue(item));
+        totals.toughness += armorToughness(item);
+    }
+    return totals;
+}
+
+// LivingEntity#damageArmor's default body deals `max(1, amount / 4)` to
+// EVERY equipped armor piece on a hit the armor stage actually reduced
+// (ArmorItem#damage is 1 per point of that shared cost, split across however
+// many armor pieces are worn — 1.16.1's own doc comment on the override:
+// "each point of damage is randomly assigned to a piece"; the base
+// LivingEntity implementation this project follows applies it to all four
+// uniformly, `float f = amount / 4.0F; if (f < 1.0F) f = 1.0F;` then a call
+// per slot). Reuses the same break-at-threshold arithmetic
+// Inventory::damageSelected already uses for a worn-down tool, just indexed
+// through EquipmentSlots instead of the hotbar-selected slot.
+void damageEquippedArmor(EquipmentSlots& equipment, float damage) {
+    const auto cost = static_cast<std::uint16_t>(std::max(1.0F, std::floor(damage / 4.0F)));
+    for (const EquipmentSlot slot : kArmorSlots) {
+        ItemStack& piece = equipment.mutableSlot(slot);
+        const std::uint16_t maximumDamage = itemMaximumDamage(piece);
+        if (piece.empty() || maximumDamage == 0U) {
+            continue;
+        }
+        if (piece.damage + cost > maximumDamage) {
+            piece = {};
+            continue;
+        }
+        piece.damage = static_cast<std::uint16_t>(piece.damage + cost);
+    }
+}
 } // namespace
 
 GameSession::GameSession() {
@@ -752,8 +797,27 @@ bool GameSession::hurtPlayer(PlayerId playerId, DamageType source, float amount,
                              SimulationHost& host, bool causedByLivingNonPlayer) {
     hostBridge_.setHost(&host);
     auto& player = players_.at(playerId);
-    if (!player.vitals.hurt(amount, source, causedByLivingNonPlayer)) {
+    // EQ-2: the armor/toughness stage reads the player's currently worn
+    // armor, summed fresh on every hit (armor can change between hits, so
+    // this is not cached on the player).
+    const ArmorTotals armor = sumEquippedArmor(player.equipment);
+    bool armorApplied = false;
+    float preArmorDamage = 0.0F;
+    if (!player.vitals.hurt(amount, source, causedByLivingNonPlayer, armor.armor,
+                            armor.toughness, &armorApplied, &preArmorDamage)) {
         return false;
+    }
+    // LivingEntity#applyArmorToDamage calls damageArmor() unconditionally
+    // whenever the hit was not bypassesArmor — even a hit the toughness/armor
+    // math reduces to a sliver still wears the armor down. armorApplied is
+    // exactly that "the stage ran" signal (false on a bypass or an unarmored
+    // player, where armor.armor == 0 skips the reduction call entirely);
+    // preArmorDamage is the post-difficulty, pre-reduction amount
+    // PlayerInventory#damageArmor actually divides by four — not the raw
+    // `amount` parameter (pre-difficulty) and not the already-reduced health
+    // cost.
+    if (armorApplied) {
+        damageEquippedArmor(player.equipment, preArmorDamage);
     }
     events_.publish(SoundEvent{SoundEventKind::PlayerHurt, player.controller.position()});
     if (player.vitals.dead()) {

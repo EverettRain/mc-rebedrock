@@ -1240,6 +1240,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME damage_pipeline COMMAND mc_rebedrock_damage_pipeline_test)
 
+    add_executable(mc_rebedrock_armor_mitigation_test
+        tests/armor_mitigation_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_armor_mitigation_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_armor_mitigation_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME armor_mitigation COMMAND mc_rebedrock_armor_mitigation_test)
+
     add_executable(mc_rebedrock_screen_handler_test
         tests/screen_handler_test.cpp
     )

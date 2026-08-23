@@ -52,6 +52,22 @@ struct DamageOutcome final {
     float exhaustion = 0.0F;
     // What actually landed after scaling, for callers that report or animate it.
     float appliedDamage = 0.0F;
+    // EQ-2: whether the armor/toughness stage actually ran on this hit — false
+    // when the type carries BypassesArmor (the void, falling, drowning,
+    // starving) or when the hit never reached that stage at all (swallowed by
+    // a guard or the invulnerability window). The caller uses this, not
+    // "landed", to decide whether worn armor spends durability: armor that
+    // was bypassed absorbed nothing and must not wear out from a hit it never
+    // touched.
+    bool armorApplied = false;
+    // EQ-2: the damage the armor/toughness stage was handed — after the
+    // invulnerability window and difficulty scaling, but before the armor
+    // reduction itself — zero unless armorApplied is true. This is the value
+    // PlayerInventory#damageArmor (1.16.1) divides by four for durability, so
+    // the caller applying armor wear needs it rather than appliedDamage
+    // (which is already-reduced) or the raw incoming amount (which is not
+    // yet difficulty-scaled).
+    float preArmorDamage = 0.0F;
 };
 
 // Everything one hit is. 26.1's DamageType is the type plus who caused it and
@@ -64,7 +80,35 @@ struct DamageContext final {
     // DamageScaling::WhenCausedByLivingNonPlayer's condition. False for the
     // world hurting you: falling, drowning, starving, the void.
     bool causedByLivingNonPlayer = false;
+    // EQ-2: the defender's summed armor points / toughness at the moment of
+    // the hit (LivingEntity#getArmor / #getAttributeValue(GENERIC_ARMOR_
+    // TOUGHNESS), each a sum across the four equipped ArmorItem modifiers).
+    // Zero for every mob today (no mob armor yet) and for any caller that
+    // predates this field — appended at the end, defaulted, so every existing
+    // aggregate-init call site (positional, ending at causedByLivingNonPlayer)
+    // keeps compiling unchanged.
+    float armor = 0.0F;
+    float armorToughness = 0.0F;
 };
+
+// DamageUtil#getDamageLeft (1.16.1, `net.minecraft.entity.DamageUtil`),
+// transcribed symbol-for-symbol rather than reconstructed from the wiki:
+//
+//   float f = 2.0F + armorToughness / 4.0F;
+//   float g = clamp(armor - damage / f, armor * 0.2F, 20.0F);
+//   return damage * (1.0F - g / 25.0F);
+//
+// A pure function on purpose (EQ-DESIGN.md §3): it takes the three numbers
+// the formula actually needs and returns the one it produces, so it is
+// unit-testable in isolation from the DamageState/EquipmentSlots machinery
+// that gathers those numbers, and slots into the pipeline's named "armor /
+// toughness" stage as a single call rather than inlined arithmetic.
+[[nodiscard]] constexpr float damageAfterArmor(float damage, float armor, float armorToughness) {
+    const float toughnessDivisor = 2.0F + armorToughness / 4.0F;
+    const float reduction =
+        std::clamp(armor - damage / toughnessDivisor, armor * 0.2F, 20.0F);
+    return damage * (1.0F - reduction / 25.0F);
+}
 
 // LivingEntity#hurt, as the fixed pipeline it is in vanilla rather than a
 // subtraction with the difficulty already folded in by whoever called it:
@@ -73,12 +117,13 @@ struct DamageContext final {
 //   -> effects/enchantments -> absorption -> shield -> health -> exhaustion
 //   -> death
 //
-// Four of those stages have no content in this game yet (there is no armor, no
-// status effect, no absorption and no shield), and they are named here rather
-// than implemented so the order is already right when they arrive — inserting a
-// stage into a named sequence is a different job from rediscovering where it
-// went. The tags each stage would consult (BypassesArmor, BypassesEffects,
-// BypassesResistance, BypassesShield) already exist and are already set.
+// EQ-2 fills the armor/toughness stage; the other three (status effect,
+// absorption, shield) still have no content in this game and stay named here
+// rather than implemented, so the order is already right when they arrive —
+// inserting a stage into a named sequence is a different job from
+// rediscovering where it went. The tags each stage consults (BypassesArmor,
+// BypassesEffects, BypassesResistance, BypassesShield) already exist and are
+// already set.
 inline DamageOutcome applyDamage(DamageState& state, const DamageContext& context) {
     // --- guards ---
     if (state.dead() || context.type == DamageType::None || context.amount <= 0.0F) {
@@ -106,7 +151,22 @@ inline DamageOutcome applyDamage(DamageState& state, const DamageContext& contex
     // --- difficulty scaling ---
     float applied = scaleDamageForDifficulty(context.type, amount, context.difficulty,
                                              context.causedByLivingNonPlayer);
-    // --- armor / toughness ---      (no armor yet; BypassesArmor is already set)
+
+    // --- armor / toughness ---
+    // LivingEntity#applyArmorToDamage: BypassesArmor short-circuits the whole
+    // stage (the void, falling, drowning, starving hit for the scaled amount
+    // untouched); everything else — a mob's swing, an arrow, fire — runs
+    // through the vanilla formula against whatever the defender has summed
+    // from its four worn armor pieces (zero for an unarmored player or any
+    // mob, which is a no-op reduction: damageAfterArmor(d, 0, *) == d).
+    const bool bypassesArmor = hasDamageTag(context.type, DamageTag::BypassesArmor);
+    bool armorApplied = false;
+    float preArmorDamage = 0.0F;
+    if (!bypassesArmor && context.armor > 0.0F) {
+        preArmorDamage = applied;
+        applied = damageAfterArmor(applied, context.armor, context.armorToughness);
+        armorApplied = true;
+    }
     // --- status effects / enchantments ---  (BypassesEffects / BypassesResistance)
     // --- absorption ---
     // --- shield ---                 (BypassesShield)
@@ -125,6 +185,8 @@ inline DamageOutcome applyDamage(DamageState& state, const DamageContext& contex
     // --- exhaustion ---
     outcome.exhaustion = damageTypeData(context.type).exhaustion;
     outcome.appliedDamage = applied;
+    outcome.armorApplied = armorApplied;
+    outcome.preArmorDamage = preArmorDamage;
     return outcome;
 }
 
