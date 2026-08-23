@@ -162,5 +162,72 @@ int main() {
     assert(std::abs(zombiePose.bone(static_cast<std::size_t>(zombieLeftArm)).rotation.x - 90.0F) <
            1e-3F);
 
+    // AR-A1: Sheep. Derived from the cow's quadruped bone layout (body/head/
+    // four legs) with an extra "wool" bone parented to the body — the fleece
+    // overlay. Structure only is asserted here (schema loads, hierarchy
+    // resolves, walk cycle animates the legs); proportions/texture/look are
+    // 待 mac (see task report, not verifiable headless).
+    const AnimatedModel sheep = loadAnimatedModel(
+        kDir / "sheep.geo.json", {kDir / "sheep.animation.json"});
+    assert(sheep.model.boneCount() == 7U); // body, wool, head, 4 legs
+    assert(sheep.animations.find("animation.sheep.walk") != nullptr);
+    assert(sheep.animations.find("animation.sheep.idle") != nullptr);
+    const int sheepWool = sheep.model.findBone("wool");
+    const int sheepBody = sheep.model.findBone("body");
+    const int sheepHead = sheep.model.findBone("head");
+    assert(sheepWool >= 0 && sheepBody >= 0 && sheepHead >= 0);
+    // The wool bone is parented to the body, the way the fleece overlay rides
+    // the sheep's torso in vanilla — moving the body moves the wool with it.
+    assert(sheep.model.bones()[static_cast<std::size_t>(sheepWool)].parent == sheepBody);
+    const int sheepFrontRight = sheep.model.findBone("legFrontRight");
+    const int sheepFrontLeft = sheep.model.findBone("legFrontLeft");
+    const int sheepBackRight = sheep.model.findBone("legBackRight");
+    const int sheepBackLeft = sheep.model.findBone("legBackLeft");
+    assert(sheepFrontRight >= 0 && sheepFrontLeft >= 0 && sheepBackRight >= 0 &&
+           sheepBackLeft >= 0);
+    assert(!sheep.model.bones()[static_cast<std::size_t>(sheepFrontRight)].cubes[0].mirror);
+    assert(sheep.model.bones()[static_cast<std::size_t>(sheepFrontLeft)].cubes[0].mirror);
+    Animator sheepMob;
+    sheepMob.setModel(&sheep.model);
+    sheepMob.context().setVariable("walk_amount", 1.0F);
+    sheepMob.clearLayers();
+    sheepMob.addLayer(*sheep.animations.find("animation.sheep.walk"), 0.5F);
+    const SkeletonPose sheepPose = sheepMob.evaluate();
+    // cos(180) * 30 = -30 degrees at t = 0.5, the quadruped walk cadence this
+    // geometry's legs were sized for.
+    assert(std::abs(sheepPose.bone(static_cast<std::size_t>(sheepFrontRight)).rotation.x + 30.0F) <
+           1e-3F);
+    assert(std::abs(sheepPose.bone(static_cast<std::size_t>(sheepFrontLeft)).rotation.x - 30.0F) <
+           1e-3F);
+
+    // AR-A1: Chicken. A small biped: body/head/two legs like the zombie's
+    // lower half, plus two wing bones (a bird has none of the zombie's arms).
+    // Structure only — see the sheep note above for what "待 mac" covers.
+    const AnimatedModel chicken = loadAnimatedModel(
+        kDir / "chicken.geo.json", {kDir / "chicken.animation.json"});
+    assert(chicken.model.boneCount() == 6U); // body, head, 2 legs, 2 wings
+    assert(chicken.animations.find("animation.chicken.walk") != nullptr);
+    assert(chicken.animations.find("animation.chicken.idle") != nullptr);
+    const int chickenRightLeg = chicken.model.findBone("rightLeg");
+    const int chickenLeftLeg = chicken.model.findBone("leftLeg");
+    const int chickenRightWing = chicken.model.findBone("rightWing");
+    const int chickenLeftWing = chicken.model.findBone("leftWing");
+    assert(chickenRightLeg >= 0 && chickenLeftLeg >= 0 && chickenRightWing >= 0 &&
+           chickenLeftWing >= 0);
+    assert(!chicken.model.bones()[static_cast<std::size_t>(chickenRightLeg)].cubes[0].mirror);
+    assert(chicken.model.bones()[static_cast<std::size_t>(chickenLeftLeg)].cubes[0].mirror);
+    Animator chickenMob;
+    chickenMob.setModel(&chicken.model);
+    chickenMob.context().setVariable("walk_amount", 1.0F);
+    chickenMob.clearLayers();
+    chickenMob.addLayer(*chicken.animations.find("animation.chicken.walk"), 0.3F);
+    const SkeletonPose chickenPose = chickenMob.evaluate();
+    // At t = 0.3 of a 0.6s clip: cos(360 * 0.3 / 0.6) = cos(180) = -1, so
+    // -25 degrees on the right leg and +25 on the left (anti-phase).
+    assert(std::abs(chickenPose.bone(static_cast<std::size_t>(chickenRightLeg)).rotation.x +
+                    25.0F) < 1e-3F);
+    assert(std::abs(chickenPose.bone(static_cast<std::size_t>(chickenLeftLeg)).rotation.x -
+                    25.0F) < 1e-3F);
+
     return 0;
 }
