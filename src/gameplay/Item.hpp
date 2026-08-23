@@ -41,6 +41,12 @@ enum class ToolType : std::uint8_t {
     Axe,
     Shovel,
     Hoe,
+    // ShearsItem (26.1): no harvest table of its own — mining speed/harvest
+    // level are irrelevant (nothing in kItemRegistry routes ordinary block
+    // breaking through it yet) — but it wears down 1 point per shear, so it
+    // needs a durability entry in toolAttributes. ToolTier::None; shears are
+    // not tiered.
+    Shears,
 };
 
 enum class ToolTier : std::uint8_t {
@@ -640,6 +646,14 @@ inline constexpr Item GoldSword = Item::of("golden_sword")
                                       .category(CreativeCategory::Tools)
                                       .single()
                                       .tool(ToolType::Sword, ToolTier::Gold);
+// ShearsItem (26.1): AR-A2's sheep-shearing tool. Single-stacking, 238
+// durability (toolAttributes' Shears case), one point spent per shear. Its
+// right-click-on-mob behaviour is dispatched in PlayerInteraction.cpp, not
+// through useOn — a mob is not a block placement target.
+inline constexpr Item Shears = Item::of("shears")
+                                   .category(CreativeCategory::Tools)
+                                   .single()
+                                   .tool(ToolType::Shears, ToolTier::None);
 
 // Spawn eggs are defined in SpawnEggItems.hpp (they need entity headers that
 // live above Item.hpp in the include graph). See kSpawnEggItems there.
@@ -651,7 +665,7 @@ inline constexpr Item GoldSword = Item::of("golden_sword")
 // their constructors need entity headers that sit above us in the include graph.
 // The order sets both the creative-catalog order within each tab and the item
 // texture-array layout the renderer appends. Grouped materials / food / tools.
-inline constexpr std::array<const Item*, 55> kItemRegistry{
+inline constexpr std::array<const Item*, 56> kItemRegistry{
     &items::Bucket,     &items::WaterBucket, &items::LavaBucket, &items::Coal,
     &items::IronIngot,
     &items::GoldIngot,  &items::Diamond,     &items::Emerald,    &items::Stick,
@@ -671,6 +685,7 @@ inline constexpr std::array<const Item*, 55> kItemRegistry{
     &items::DiamondHoe,     &items::GoldHoe,
     &items::WoodenSword,    &items::StoneSword,    &items::IronSword,
     &items::DiamondSword,   &items::GoldSword,
+    &items::Shears,
 };
 
 // The registry is well formed when every entry is in this project's namespace,
@@ -751,6 +766,10 @@ struct ToolAttributes final {
         return {kMiningSpeed[material], kHarvestLevel[material], 1.0F, kSpeed[material],
                 kDurability[material]};
     }
+    case ToolType::Shears:
+        // ShearsItem (26.1): 238 durability, no tier table (it is not
+        // materialed) — a flat entry independent of `tier`/`material` above.
+        return {15.0F, 0U, 1.0F, 1.0F, 238U};
     default:
         return {};
     }

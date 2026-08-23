@@ -45,6 +45,14 @@ struct PlayerAction final {
 // Right-click on a block: use the held item on it. The ray's exact hit is
 // carried so the server decides without re-raycasting. `adjacent` is the cell
 // a placement would land in (BlockPlaceContext#getClickedPos).
+//
+// AR-A2: also carries a right-click-on-creature hit (Minecraft#doAttack's
+// entity branch, but for the *use* button rather than attack — vanilla's
+// ServerboundInteractPacket InteractionHand/EntityInteraction). `entity` mirrors
+// PlayerAction's own (entity, entityId) pair: the render thread already prefers
+// a creature hit over a block hit for the attack button (see updateInteractionTarget
+// resetting targetedBlock once creatureHit is set), so the use button follows the
+// same precedence. When `entity` is true the block fields are unused/zeroed.
 struct UseItemOn final {
     glm::ivec3 block{};
     glm::ivec3 adjacent{};
@@ -52,6 +60,8 @@ struct UseItemOn final {
     glm::vec3 hitPosition{0.0F};
     // The player's view direction, for the placement's horizontal FACING.
     glm::vec3 lookDirection{0.0F, 0.0F, -1.0F};
+    bool entity = false;
+    std::uint64_t entityId = 0U;
     [[nodiscard]] friend bool operator==(const UseItemOn&, const UseItemOn&) = default;
 };
 

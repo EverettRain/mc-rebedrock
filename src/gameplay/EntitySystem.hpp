@@ -108,6 +108,14 @@ struct SimpleEntity final {
     // Animal#loveTicks: ticks of the in-love state a feed grants. Two in-love
     // adults of one species breed on contact; ticks down to zero otherwise.
     int loveTicks = 0;
+    // AR-A2: SheepEntity#sheared. Only meaningful for the sheep species (any
+    // other creature simply never has this flipped), so it lives here rather
+    // than on a sheep-only subtype — the same "shared struct, per-species field
+    // idles at its default" shape `age`/`loveTicks` already use for non-ageable
+    // mobs. True once shorn; EatGrassGoal clears it after the sheep eats a
+    // grass block. Wool colour (dye, 26.1) is deferred — every sheep this build
+    // spawns/regrows is white, see rollSheepLoot's note.
+    bool sheared = false;
 
     // Stateful Goal instances and the current navigation path are per entity.
     entities::MobBrain brain;
@@ -212,12 +220,25 @@ struct EntityTickResult final {
         float amount = 0.0F;
     };
 
+    // AR-A2: a sheared sheep's EatGrassGoal finished its animation and wants
+    // this cell eaten. `entityId` is who to clear `sheared` on once the write
+    // actually lands (GameSession, which alone can reach WorldMutationService);
+    // the goal recorded `cell` when it last saw the grass, which is why the
+    // caller must re-check the block itself before writing (it may have
+    // changed since — a broken block, another sheep, or the sheep having
+    // wandered off between the request and this drain).
+    struct GrassEatRequest final {
+        std::uint64_t entityId = 0U;
+        glm::ivec3 cell{0};
+    };
+
     std::size_t liveCount = 0U;
     // Entity#pushAwayFrom moves both parties; this is the player's share.
     glm::vec3 playerPush{0.0F};
     // AI emits attacks as simulation events; GameSession owns applying player
     // damage, difficulty scaling, hurt audio and death handling.
     std::vector<MobAttack> mobAttacks;
+    std::vector<GrassEatRequest> grassEats;
 };
 
 class EntitySystem final {
@@ -332,6 +353,16 @@ class EntitySystem final {
     // egg can make a baby and a test can age one up. Ageing a baby to 0 turns it
     // into an adult with its full-size hitbox on the same call.
     bool setAge(std::uint64_t entityId, int age);
+    // AR-A2: SheepEntity#shear — sets `sheared` true. Returns false (a no-op)
+    // if the creature is unknown or already sheared, which is sabotage anchor
+    // ③'s contract: shearing an already-bald sheep must yield nothing, and the
+    // caller (PlayerInteraction) gates the wool drop on this return value.
+    bool shear(std::uint64_t entityId);
+    // AR-A2: the other half of EatGrassGoal's relay — GameSession calls this
+    // once its WorldMutationService write actually lands, so a sheep whose
+    // grass turned out to be already gone (races against another sheep, a
+    // player break) never regrows wool for nothing.
+    bool clearSheared(std::uint64_t entityId);
     [[nodiscard]] const SimpleEntity* byIdConst(std::uint64_t id) const { return byId(id); }
 
     // The loot a creature that just finished dying leaves behind. Drained by

@@ -370,10 +370,10 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
     // independently of the 4-tick rightClickDelay; attacking cancels it.
     const auto& selectedStack = session.inventory().selectedStack();
     const bool foodInHand = isFood(selectedStack.item);
-    const bool targetedContainer =
-        latestUse_.has_value() && isContainerBlock(world, latestUse_->block);
-    const bool plantable =
-        latestUse_.has_value() && aimsAtPlantableFarmland(world, *latestUse_, selectedStack);
+    const bool targetedContainer = latestUse_.has_value() && !latestUse_->entity &&
+                                   isContainerBlock(world, latestUse_->block);
+    const bool plantable = latestUse_.has_value() && !latestUse_->entity &&
+                           aimsAtPlantableFarmland(world, *latestUse_, selectedStack);
     if (using_ && foodInHand && !targetedContainer && !plantable && !session.eating()) {
         session.beginEating(kPrimaryPlayerId, selectedStack.item, host);
     } else if (session.eating() &&
@@ -550,6 +550,13 @@ void PlayerInteraction::applyBreak(GameSession& session, world::World& world,
 void PlayerInteraction::performUse(GameSession& session, world::World& world,
                                    const UseItemOn& use) {
     if (session.eating()) {
+        return;
+    }
+    // AR-A2: a creature hit never reaches the block ladder below — shearing/
+    // feeding a mob has nothing to do with the aimed-at block cell (use.block
+    // is unset for an entity hit; see UseItemOn's comment).
+    if (use.entity) {
+        performUseOnEntity(session, world, use);
         return;
     }
     const auto interactedBlock = world.block(use.block.x, use.block.y, use.block.z);
@@ -894,6 +901,71 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
     }
     if (infiniteMaterials) {
         session.inventory().replaceSelected(preservedStack);
+    }
+}
+
+void PlayerInteraction::performUseOnEntity(GameSession& session, world::World&,
+                                           const UseItemOn& use) {
+    const SimpleEntity* target = session.worldEntities().byIdConst(use.entityId);
+    if (target == nullptr || target->dead()) {
+        return;
+    }
+    const auto& selectedStack = session.inventory().selectedStack();
+
+    // Sheep#mobInteract: shears win over the tempt-feed branch below (a shears
+    // stack is never a species' tempt item, so the two never actually compete,
+    // but vanilla's own dispatch checks shears first and this mirrors that
+    // order for AR-A3/AR-A4 to extend safely).
+    if (selectedStack.item == &items::Shears) {
+        if (!session.worldEntities().shear(use.entityId)) {
+            // Sabotage anchor ③: an already-sheared (or baby, or dead) sheep
+            // must not drop wool or spend durability — bail before either.
+            return;
+        }
+        // Sheep.json (26.1): 1-3 white wool from a shear. Colour variants (dye)
+        // are deferred — see rollSheepLoot's note; every sheep sheared here is
+        // white. The loot table's own RNG stream does not exist in this build,
+        // so the roll (and the drop's scatter angle) uses the same
+        // deterministic per-tick stream every other world edit in this file
+        // already draws from.
+        auto& rng = session.lootRandomState();
+        rng = rng * 1664525U + 1013904223U;
+        const auto woolCount = static_cast<std::uint8_t>(1U + (rng >> 8) % 3U);
+        const ItemStack woolStack{world::Block::WhiteWool, woolCount,
+                                  blockItemFor(world::Block::WhiteWool)};
+        rng = rng * 1664525U + 1013904223U;
+        const float angle =
+            static_cast<float>(rng >> 8) / static_cast<float>(1U << 24) * 6.28318530718F;
+        session.spawnItemEntity(target->position + glm::vec3{0.0F, target->dimensions().height * 0.5F, 0.0F},
+                                woolStack,
+                                glm::vec3{std::cos(angle), 0.15F, std::sin(angle)} * 0.1F);
+        session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
+        // Sheep#mobInteract: `itemStack.hurtAndBreak(1, ...)` — a flat one point,
+        // unlike the sword-vs-mining-tool AttackEntity table (damageHeldTool's
+        // ToolUse enum has no "flat one point" case, so this calls
+        // damageSelected directly rather than stretching that table for shears).
+        if (session.gameMode() == GameMode::Survival && session.inventory().damageSelected(1U)) {
+            session.events().publish(SoundEvent{SoundEventKind::ItemBreak,
+                                                session.player().eyePosition()});
+        }
+        return;
+    }
+
+    // Animal#mobInteract's feed branch: the held stack must match this
+    // creature's own tempt item (BreedingProfile.temptItem — the parameterized
+    // check TemptGoal itself uses, see sameItem's callers), not a hardcoded
+    // wheat check, so AR-A3/AR-A4's cow/chicken need only set their own
+    // breeding profile to reach this same code path. Sabotage anchor ② is this
+    // exact comparison.
+    const auto& breeding = target->kind().breeding();
+    if (target->kind().breedable() && !breeding.temptItem.empty() &&
+        sameItem(selectedStack, breeding.temptItem) && !target->baby()) {
+        if (session.worldEntities().setInLove(use.entityId)) {
+            session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
+            if (session.gameMode() == GameMode::Survival) {
+                static_cast<void>(session.inventory().consumeSelected());
+            }
+        }
     }
 }
 

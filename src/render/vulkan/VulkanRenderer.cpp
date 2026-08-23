@@ -4525,7 +4525,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (!(worldReady && !paused && !inventoryOpen && !chatOpen)) {
             return;
         }
-        if (targetedBlock.has_value()) {
+        // AR-A2: a creature under the crosshair takes the use button too (shears,
+        // feeding), the same precedence the attack button already gives it —
+        // creatureHit is only ever set when it is the nearer of the two hits.
+        if (creatureHit.has_value()) {
+            gameplay::UseItemOn use;
+            use.entity = true;
+            use.entityId = creatureHit->entityId;
+            use.lookDirection = camera.direction();
+            enqueueInteractionCommand(std::move(use));
+        } else if (targetedBlock.has_value()) {
             gameplay::UseItemOn use;
             use.block = targetedBlock->block;
             use.adjacent = targetedBlock->adjacent;

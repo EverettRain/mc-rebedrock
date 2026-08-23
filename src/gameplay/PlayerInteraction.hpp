@@ -75,6 +75,11 @@ class PlayerInteraction final {
     void applyBreak(GameSession& session, world::World& world, const glm::ivec3& block);
     // The use decision and the held-item action switch, run for one target.
     void performUse(GameSession& session, world::World& world, const UseItemOn& use);
+    // AR-A2: right-clicking a creature with the use button — shears (shear a
+    // wooled sheep) and a species' tempt item (feed toward love). Split out of
+    // performUse because it never touches a block cell at all; AR-A3/AR-A4 (cow/
+    // chicken) extend this same switch rather than performUse's block ladder.
+    void performUseOnEntity(GameSession& session, world::World& world, const UseItemOn& use);
 
     bool destroying_ = false;
     std::optional<glm::ivec3> destroyTarget_;

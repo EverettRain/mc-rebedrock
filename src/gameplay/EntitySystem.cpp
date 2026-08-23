@@ -701,6 +701,34 @@ bool EntitySystem::setAge(std::uint64_t entityId, int age) {
     return true;
 }
 
+bool EntitySystem::shear(std::uint64_t entityId) {
+    const auto found = idToIndex_.find(entityId);
+    if (found == idToIndex_.end()) {
+        return false;
+    }
+    SimpleEntity& entity = entities_[found->second];
+    // Sheep#readyForShearing: alive, not already sheared, not a baby.
+    // Sabotage anchor ③ is the `entity.sheared` half of this guard.
+    if (entity.dead() || entity.sheared || entity.baby()) {
+        return false;
+    }
+    entity.sheared = true;
+    return true;
+}
+
+bool EntitySystem::clearSheared(std::uint64_t entityId) {
+    const auto found = idToIndex_.find(entityId);
+    if (found == idToIndex_.end()) {
+        return false;
+    }
+    SimpleEntity& entity = entities_[found->second];
+    if (!entity.sheared) {
+        return false;
+    }
+    entity.sheared = false;
+    return true;
+}
+
 void EntitySystem::processBreeding(
     const std::vector<std::pair<std::uint64_t, std::uint64_t>>& requests) {
     for (const auto& [firstId, secondId] : requests) {
@@ -1042,6 +1070,9 @@ EntityTickResult EntitySystem::tick(
             }
             if (const auto partner = entity.brain.takeBreedRequest()) {
                 breedRequests.emplace_back(entity.id, *partner);
+            }
+            if (const auto grassCell = entity.brain.takeEatGrassRequest()) {
+                result.grassEats.push_back({entity.id, *grassCell});
             }
         }
 
