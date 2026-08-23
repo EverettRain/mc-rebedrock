@@ -2471,12 +2471,18 @@ SaveGame SaveRepository::create(std::string displayName, std::uint64_t seed) con
     }
     while (!slug.empty() && slug.back() == '-') slug.pop_back();
     if (slug.empty()) slug = "world";
-    const std::string base = slug + "-" + std::to_string(game.summary.lastPlayedUnixSeconds);
-    game.summary.identifier = base;
+    // The folder name is an external identity, so it mirrors vanilla: the
+    // display-name slug alone, with a numeric suffix appended only when that
+    // slug already exists on disk. It used to carry "-<lastPlayedUnixSeconds>",
+    // which leaked the creation time into every path and made the folder name a
+    // noisy timestamp string. lastPlayedUnixSeconds still drives the summary
+    // sort; it just no longer names the directory. Existing saves keep their
+    // already-persisted identifier, so only newly created worlds are affected.
+    game.summary.identifier = slug;
     for (unsigned int suffix = 2U;
          std::filesystem::exists(root_ / game.summary.identifier);
          ++suffix) {
-        game.summary.identifier = base + "-" + std::to_string(suffix);
+        game.summary.identifier = slug + "-" + std::to_string(suffix);
     }
     return game;
 }

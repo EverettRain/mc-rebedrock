@@ -100,6 +100,9 @@ int main() {
     persistence::SaveRepository repository{root};
     auto save = repository.create("  Test=World  ", 0x12345678ULL);
     assert(save.summary.displayName == "TestWorld");
+    // META-3: the folder name is the display-name slug alone — no leaked
+    // creation-time suffix (it used to be "testworld-<unix seconds>").
+    assert(save.summary.identifier == "testworld");
     save.hasPlayerPosition = true;
     save.playerX = -12.5F;
     save.playerY = 64.0F;
@@ -1352,6 +1355,19 @@ int main() {
         std::filesystem::remove_all(root / currentId);
         std::filesystem::remove_all(root / "summary-old");
         std::filesystem::remove_all(root / "summary-newer");
+    }
+
+    // META-3: two worlds sharing a display name get distinct vanilla-style
+    // folder names — the slug, then a numeric suffix only on collision (never a
+    // timestamp). The first must be persisted (its directory must exist on disk)
+    // before the second's create() sees the collision.
+    {
+        const auto first = repository.create("Twin", 7ULL);
+        assert(first.summary.identifier == "twin");
+        repository.save(first, {});
+        const auto second = repository.create("Twin", 8ULL);
+        assert(second.summary.identifier == "twin-2");
+        std::filesystem::remove_all(root / "twin");
     }
 
     return 0;
