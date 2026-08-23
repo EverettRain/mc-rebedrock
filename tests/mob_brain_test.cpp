@@ -96,7 +96,11 @@ int main() {
     entities.spawn({8.0F, 1.001F, 12.0F}, PigEntity::type(), 13U);
     entities.spawn({12.0F, 1.001F, 12.0F}, ZombieEntity::type(), 14U);
     REQUIRE(entities.entities()[0].id != entities.entities()[1].id);
-    REQUIRE(entities.entities()[0].brain.goals().size() == 5U);
+    // AR-A3: the cow is now breedable (tempt=wheat), so installBreedingGoals
+    // adds AnimalMateGoal/TemptGoal/FollowParentGoal on top of AnimalAi's five
+    // (Swim/EscapeDanger/WanderAroundFar/LookAtPlayer/LookAround) — 8 total.
+    // The pig (index 2) is not yet breedable, so its count is unchanged.
+    REQUIRE(entities.entities()[0].brain.goals().size() == 8U);
     REQUIRE(entities.entities()[2].brain.goals().size() == 5U);
     REQUIRE(entities.entities()[3].brain.goals().size() == 4U);
     REQUIRE(entities.entities()[3].brain.targets().size() == 1U);
