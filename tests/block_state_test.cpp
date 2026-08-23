@@ -145,14 +145,17 @@ int main() {
 
     // --- SlabBlock.TYPE: bottom/top/double round-trip, default is bottom. ---
     {
-        // Exactly three states per slab (type only; waterlogged is a later
-        // slice), and no other axis leaks in.
-        assert(kBlockRegistry[static_cast<std::size_t>(Block::OakSlab)].states.stateCount() == 3U);
-        assert(kBlockRegistry[static_cast<std::size_t>(Block::StoneSlab)].states.stateCount() == 3U);
+        // Six states per slab now: SlabType(3) x SubmergedFluid(2) (F2 —
+        // slabs are the first submergible block, F-2-submerged-fluid-axis.md's
+        // "台阶先行"), and no other axis leaks in.
+        assert(kBlockRegistry[static_cast<std::size_t>(Block::OakSlab)].states.stateCount() == 6U);
+        assert(kBlockRegistry[static_cast<std::size_t>(Block::StoneSlab)].states.stateCount() == 6U);
 
-        // A freshly placed slab is the block's default state: the bottom half.
+        // A freshly placed slab is the block's default state: the bottom half,
+        // dry (SubmergedFluid::None).
         const BlockState fresh{Block::OakSlab};
         assert(fresh.slabPortion() == SlabPortion::Bottom);
+        assert(fresh.submergedFluid() == SubmergedFluid::None);
         assert(!fresh.isFullCubeState());
 
         for (const auto portion : {SlabPortion::Bottom, SlabPortion::Top, SlabPortion::Double}) {
@@ -176,6 +179,53 @@ int main() {
         assert(BlockState{Block::Stone}.withSlabPortion(SlabPortion::Top) ==
                BlockState{Block::Stone});
         assert(BlockState{Block::Stone}.isFullCubeState());
+    }
+
+    // --- StateProperty::SubmergedFluid (F2): none/water round-trip, the two
+    //     axes are independent, and a non-submergible block ignores the write.
+    {
+        // none=0 / water=1 is a load-bearing constant (compat/VanillaMapping.
+        // hpp's waterlogged override hard-codes this numbering ahead of F2).
+        static_assert(static_cast<std::uint8_t>(SubmergedFluid::None) == 0U);
+        static_assert(static_cast<std::uint8_t>(SubmergedFluid::Water) == 1U);
+
+        assert(canBeSubmerged(Block::OakSlab));
+        assert(canBeSubmerged(Block::StoneSlab));
+        // Nothing outside the declared submergible set can hold the axis —
+        // this is sabotage #1's target: canBeSubmerged is schema-derived, not
+        // an identity switch, so a future block that never called .submerges()
+        // reads back None unconditionally rather than "leaking" water.
+        assert(!canBeSubmerged(Block::Stone));
+        assert(!canBeSubmerged(Block::Water));
+
+        for (const auto fluid : {SubmergedFluid::None, SubmergedFluid::Water}) {
+            const auto slab = BlockState{Block::OakSlab}.withSubmergedFluid(fluid);
+            assert(slab.submergedFluid() == fluid);
+            // Independent of the shape axis: submerging a slab does not move
+            // its SlabType, and vice versa (F1's "拆轴非并轴" decision).
+            assert(slab.slabPortion() == SlabPortion::Bottom);
+        }
+        const auto wetTop =
+            BlockState{Block::OakSlab}.withSlabPortion(SlabPortion::Top)
+                .withSubmergedFluid(SubmergedFluid::Water);
+        assert(wetTop.slabPortion() == SlabPortion::Top);
+        assert(wetTop.submergedFluid() == SubmergedFluid::Water);
+        assert(wetTop.isSameBlock(BlockState{Block::OakSlab}));
+
+        // A block that never declared the axis reads back None and ignores a
+        // write to it — the same "absent property is a no-op" contract every
+        // other axis in this file already relies on.
+        assert(BlockState{Block::Stone}.submergedFluid() == SubmergedFluid::None);
+        assert(BlockState{Block::Stone}.withSubmergedFluid(SubmergedFluid::Water) ==
+               BlockState{Block::Stone});
+
+        // The state-aware light overload: a dry slab keeps its own (zero)
+        // filter, a submerged one reads Water's — the light engine dims a
+        // submerged cell exactly like a water cell (F2's lighting requirement).
+        assert(skyLightOpacity(BlockState{Block::OakSlab}) ==
+               skyLightOpacity(Block::OakSlab));
+        assert(skyLightOpacity(BlockState{Block::OakSlab}.withSubmergedFluid(SubmergedFluid::Water)) ==
+               skyLightOpacity(Block::Water));
     }
 
     // --- The raw id survives a round trip, for the save palette. ---

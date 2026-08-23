@@ -164,6 +164,14 @@ enum class ItemUseAction : std::uint8_t {
     CollectWater,
     PlaceLava,
     CollectLava,
+    // F2's SimpleWaterloggedBlock bucket pair: a water bucket used on a
+    // submergible block that is not already wet sets its SubmergedFluid axis
+    // rather than replacing the block outright (BucketItem#emptyContents'
+    // LiquidBlockContainer branch); an empty bucket used on a wet one clears
+    // the axis and returns the source (BucketPickup#pickupBlock's other
+    // branch). Both keep the block identity — a submerged slab stays a slab.
+    SubmergeBlock,
+    CollectSubmergedWater,
     // SpawnEntity: the spawn egg is re-read for the entity type to spawn.
     SpawnEntity,
     // TilGround: the hoe converts the *clicked* block in place (dirt/grass/

@@ -225,10 +225,11 @@ void WorldLightEngine::recomputeSkyColumn(World& world, int x, int z,
                                           std::vector<Node>& changedSources) {
     std::uint8_t direct = 15U;
     for (int y = kMaxY - 1; y >= kMinY; --y) {
-        const Block value = world.block(x, y, z);
-        const std::uint8_t opacity = skyLightOpacity(value);
+        const BlockState state = world.state(x, y, z);
+        // State-aware opacity: a submerged slab dims the column like water (F2).
+        const std::uint8_t opacity = skyLightOpacity(state);
         direct = opacity >= direct ? 0U : static_cast<std::uint8_t>(direct - opacity);
-        const std::uint8_t stored = isOpaque(value) ? 0U : direct;
+        const std::uint8_t stored = isOpaque(state.block()) ? 0U : direct;
         if (world.setDirectSkyLight(x, y, z, stored)) {
             changedSources.push_back({x, y, z});
         }
@@ -286,12 +287,13 @@ void WorldLightEngine::initializeChunks(World& world,
                 for (int localX = 0; localX < kChunkWidth; ++localX) {
                     std::uint8_t direct = 15U;
                     for (int y = kMaxY - 1; y >= kMinY; --y) {
-                        const Block value = chunk->block(localX, y, localZ);
+                        const BlockState value = chunk->state(localX, y, localZ);
+                        // State-aware: a submerged slab dims like water (F2).
                         const std::uint8_t opacity = skyLightOpacity(value);
                         const std::uint8_t previousDirect = direct;
                         direct = opacity >= direct ? 0U
                                                    : static_cast<std::uint8_t>(direct - opacity);
-                        const std::uint8_t sky = isOpaque(value) ? 0U : direct;
+                        const std::uint8_t sky = isOpaque(value.block()) ? 0U : direct;
                         chunk->setDirectSkyLight(localX, y, localZ, sky);
                         chunk->setSkyLight(localX, y, localZ, sky);
                         const std::uint8_t emitted =
@@ -306,7 +308,7 @@ void WorldLightEngine::initializeChunks(World& world,
                         if (previousDirect > direct && y + 1 < kMaxY) {
                             skyQueue.push_back({originX + localX, y + 1, originZ + localZ});
                         }
-                        if (!isOpaque(value) && sky < 15U) {
+                        if (!isOpaque(value.block()) && sky < 15U) {
                             skyQueue.push_back({originX + localX - 1, y, originZ + localZ});
                             skyQueue.push_back({originX + localX + 1, y, originZ + localZ});
                             skyQueue.push_back({originX + localX, y, originZ + localZ - 1});

@@ -67,13 +67,35 @@ namespace {
     if (world.block(source.x, source.y, source.z) == world::Block::Lava) {
         return {ItemUseAction::CollectLava};
     }
-    return isCollectableWaterSource(world, {source.x, source.y, source.z})
-        ? ItemUseResult{ItemUseAction::CollectWater}
-        : ItemUseResult{};
+    if (isCollectableWaterSource(world, {source.x, source.y, source.z})) {
+        return {ItemUseAction::CollectWater};
+    }
+    // BucketPickup#pickupBlock's other branch (F2): the clicked block is not
+    // itself water, but it may be carrying a parasitic source on its
+    // SubmergedFluid axis (a wet slab) — the empty bucket takes that instead,
+    // and the slab stays behind dry rather than being replaced.
+    if (world::canBeSubmerged(world.block(source.x, source.y, source.z)) &&
+        world.state(source.x, source.y, source.z).submergedFluid() ==
+            world::SubmergedFluid::Water) {
+        return {ItemUseAction::CollectSubmergedWater};
+    }
+    return {};
 }
 
 [[nodiscard]] ItemUseResult bucketPlaceUseOn(
     const Item*, world::World& world, const world::PlacementContext& context) {
+    // BucketItem#useOn / LiquidBlockContainer (F2): a water bucket used
+    // directly on a dry submergible block wets it in place, before falling
+    // back to WaterBucketItem#useOn's ordinary "pour into the adjacent
+    // replaceable cell" behaviour — the same clicked-before-adjacent order
+    // vanilla's emptyContents dispatch uses.
+    const auto clicked = context.clickedBlock;
+    const auto clickedBlock = world.block(clicked.x, clicked.y, clicked.z);
+    if (world::canBeSubmerged(clickedBlock) &&
+        world.state(clicked.x, clicked.y, clicked.z).submergedFluid() ==
+            world::SubmergedFluid::None) {
+        return {ItemUseAction::SubmergeBlock};
+    }
     // WaterBucketItem#useOn: water pours into a replaceable cell, washing away
     // the decoration blocks it covers.
     const auto target = context.placePosition;

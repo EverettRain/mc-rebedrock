@@ -277,6 +277,22 @@ enum class SlabPortion : std::uint8_t {
     Double,
 };
 
+// StateProperty::SubmergedFluid's value, the vanilla `waterlogged` axis
+// generalised to a small closed enum (F-2-submerged-fluid-axis.md). None is 0
+// so a freshly placed submergible block's default state is dry, the way
+// vanilla's `waterlogged=false` is the default. `Water` is 1 — this exact
+// numbering is a load-bearing constant: compat/VanillaMapping.hpp's
+// `waterlogged` override (JC1) hard-codes false->0/true->1 ahead of this
+// enumerator existing, so it must not be renumbered without also updating
+// `detail::waterloggedToSubmergedIn` there. `Lava` is reserved (F1's decision
+// to leave a slot for it) but no block declares three values on this axis yet
+// — F2 is water-only, "waterlogged对等".
+enum class SubmergedFluid : std::uint8_t {
+    None,
+    Water,
+    Lava,
+};
+
 // What a block needs underneath or beside it in order to stay in the world.
 enum class BlockSupport : std::uint8_t {
     None,
@@ -597,6 +613,18 @@ class BlockProperties final {
     [[nodiscard]] constexpr BlockProperties slab() const {
         BlockProperties copy = *this;
         return copy.model(BlockModel::Slab).state(StateProperty::SlabType, 3U);
+    }
+
+    // SimpleWaterloggedBlock: declares the SubmergedFluid axis (F2). Two values
+    // (none/water) — the lava slot SubmergedFluid reserves is not opted into by
+    // this helper, matching F1's "water first, lava gated" decision. A block
+    // that has not called this cannot hold a parasitic fluid source at all: its
+    // SubmergedFluid read is the schema's own "absent property reads back as
+    // 0/none" default (StateSchema.hpp), so nothing downstream has to check
+    // `canBeSubmerged` before reading `submergedFluid()` — only before *writing*
+    // it, which is exactly the prefilter's job (place/break/bucket hooks).
+    [[nodiscard]] constexpr BlockProperties submerges() const {
+        return state(StateProperty::SubmergedFluid, 2U);
     }
 
     // The shorthands vanilla blocks reach for again and again.
@@ -963,46 +991,59 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     // Slabs: each mirrors its parent block's texture and hardness. The SlabType
     // property (bottom/top/double) is declared by slab(); breaking a double slab
     // yields two slab items (MiningSystem), a single slab yields one.
+    // SimpleWaterloggedBlock: a slab is the first (and, until AR-B2/AR-B's stair
+    // and fence land, only) block that declares submerges() — F2's scope is
+    // limited to slabs on purpose (F-2-submerged-fluid-axis.md's "台阶先行").
     BlockProperties::of(Block::OakSlab, "oak_slab", "Oak Slab")
         .texture("oak_planks")
         .strength(2.0F, 3.0F)
-        .slab(),
+        .slab()
+        .submerges(),
     BlockProperties::of(Block::SpruceSlab, "spruce_slab", "Spruce Slab")
         .texture("spruce_planks")
         .strength(2.0F, 3.0F)
-        .slab(),
+        .slab()
+        .submerges(),
     BlockProperties::of(Block::BirchSlab, "birch_slab", "Birch Slab")
         .texture("birch_planks")
         .strength(2.0F, 3.0F)
-        .slab(),
+        .slab()
+        .submerges(),
     BlockProperties::of(Block::JungleSlab, "jungle_slab", "Jungle Slab")
         .texture("jungle_planks")
         .strength(2.0F, 3.0F)
-        .slab(),
+        .slab()
+        .submerges(),
     BlockProperties::of(Block::AcaciaSlab, "acacia_slab", "Acacia Slab")
         .texture("acacia_planks")
         .strength(2.0F, 3.0F)
-        .slab(),
+        .slab()
+        .submerges(),
     BlockProperties::of(Block::DarkOakSlab, "dark_oak_slab", "Dark Oak Slab")
         .texture("dark_oak_planks")
         .strength(2.0F, 3.0F)
-        .slab(),
+        .slab()
+        .submerges(),
     BlockProperties::of(Block::StoneSlab, "stone_slab", "Stone Slab")
         .texture("stone")
         .strength(1.5F, 6.0F)
-        .slab(),
+        .slab()
+        .submerges(),
     BlockProperties::of(Block::CobblestoneSlab, "cobblestone_slab", "Cobblestone Slab")
         .texture("cobblestone")
         .strength(2.0F, 6.0F)
-        .slab(),
+        .slab()
+        .submerges(),
     BlockProperties::of(Block::StoneBrickSlab, "stone_brick_slab", "Stone Brick Slab")
         .texture("stone_bricks")
         .strength(1.5F, 6.0F)
-        .slab(),
+        .slab()
+        .submerges(),
     BlockProperties::of(Block::SmoothStoneSlab, "smooth_stone_slab", "Smooth Stone Slab")
         .texture("smooth_stone")
         .strength(2.0F, 6.0F)
-        .slab(),
+        .slab()
+        .submerges(),
     // RedstoneBlock: a full solid cube that is a constant redstone source. The
     // power itself is not a property — it is answered by the signal table for
     // every side — so the block needs no extra state.
@@ -1315,6 +1356,19 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
 // decided by the state's SlabType property rather than the block identity.
 [[nodiscard]] constexpr bool isSlab(Block block) {
     return blockDefinition(block).model == BlockModel::Slab;
+}
+
+// SimpleWaterloggedBlock's own prefilter: can this block hold a parasitic
+// fluid source at all? Derived from the schema (`.submerges()`'s axis) rather
+// than a second hand-set flag, so there is exactly one place that says "this
+// block can be submerged" — the state declaration itself — and no way for the
+// two to disagree. The place/break/bucket hooks check this before *writing*
+// SubmergedFluid (F-2-submerged-fluid-axis.md's sabotage #1: a hook that
+// instead special-cases `block == Stairs` would let an unrelated future block
+// "leak" water it never declared, which is exactly the bug this predicate
+// exists to make impossible — there is no identity check anywhere in it).
+[[nodiscard]] constexpr bool canBeSubmerged(Block block) {
+    return blockDefinition(block).states.has(StateProperty::SubmergedFluid);
 }
 
 // Whether the block fills its whole 1x1x1 cell. Cross plants, torches, chests

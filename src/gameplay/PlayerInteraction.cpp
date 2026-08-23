@@ -53,6 +53,20 @@ gameplay::ScreenContext buildScreenContext(GameSession& session) {
     return stack.item == nullptr ? stack.block : world::Block::Air;
 }
 
+// F2's "破坏留水" rule: what a cell becomes after its block is removed. A
+// submerged block leaves the water source it was carrying behind rather than
+// air (SimpleWaterloggedBlock's implicit behaviour: `updateShape`/removal
+// never touches the fluid layer, so the water that was already "in" the cell
+// is simply what remains once the solid shape is gone) — sabotage #2's target
+// is exactly this function returning plain Air instead.
+[[nodiscard]] world::BlockState breakResidue(world::BlockState broken) {
+    if (broken.submergedFluid() == world::SubmergedFluid::Water) {
+        return world::BlockState{world::Block::Water,
+                                 world::defaultOrientation(world::Block::Water), 0U};
+    }
+    return world::BlockState{};
+}
+
 // SlabBlock#canBeReplaced: right-clicking an existing single slab with the same
 // slab merges the two into a double. Without a sub-cell hit fraction the gesture
 // is read from the clicked face — completing a bottom slab from above or a top
@@ -317,7 +331,8 @@ void PlayerInteraction::continueDig(GameSession& session, world::World& world) {
 
 void PlayerInteraction::applyBreak(GameSession& session, world::World& world,
                                    const glm::ivec3& block) {
-    const auto brokenBlock = world.block(block.x, block.y, block.z);
+    const auto brokenState = world.state(block.x, block.y, block.z);
+    const auto brokenBlock = brokenState.block();
     // Creative breaks nothing loose: the drop is vetoed with the flag rather
     // than by skipping the service, so the two modes still take the identical
     // mutation path.
@@ -331,7 +346,7 @@ void PlayerInteraction::applyBreak(GameSession& session, world::World& world,
         (session.gameMode() == GameMode::Creative ||
          world::blockDefinition(brokenBlock).hardness >= 0.0F) &&
         session.worldMutations()
-            .setBlock(world, {block.x, block.y, block.z}, world::BlockState{},
+            .setBlock(world, {block.x, block.y, block.z}, breakResidue(brokenState),
                       breakFlags, world::MutationCause::PlayerBreak, sink)
             .changed) {
         session.events().publish(SoundEvent{SoundEventKind::BlockBreak,
@@ -443,6 +458,55 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
                 session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
                 // The empty bucket becomes a full water bucket in hand.
                 session.inventory().replaceSelected({world::Block::Air, 1U, &items::WaterBucket});
+            }
+            break;
+        }
+        case ItemUseAction::CollectSubmergedWater: {
+            // BucketPickup#pickupBlock, the SubmergedFluid branch (F2): the
+            // clicked block keeps its identity and shape, only its axis clears.
+            // A plain `with(SubmergedFluid, None)` on the *current* state is
+            // used rather than reconstructing a fresh BlockState, so a slab's
+            // other axes (SlabType) ride along unchanged.
+            const auto block = use.block;
+            const auto current = world.state(block.x, block.y, block.z);
+            GameplayMutationSink sink{world, session};
+            if (session.worldMutations()
+                    .setBlock(world, {block.x, block.y, block.z},
+                              current.withSubmergedFluid(world::SubmergedFluid::None),
+                              world::MutationFlags::All, world::MutationCause::Fluid, sink)
+                    .changed) {
+                session.events().publish(SoundEvent{SoundEventKind::Splash,
+                                                    glm::vec3{block} + glm::vec3{0.5F},
+                                                    world::Block::Air, nullptr, 0.5F});
+                session.events().publish(ParticleEvent{
+                    ParticleEventKind::WaterSplash,
+                    glm::vec3{block} + glm::vec3{0.5F, 0.7F, 0.5F}});
+                session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
+                session.inventory().replaceSelected({world::Block::Air, 1U, &items::WaterBucket});
+            }
+            break;
+        }
+        case ItemUseAction::SubmergeBlock: {
+            // LiquidBlockContainer#placeLiquid, the SubmergedFluid branch (F2):
+            // wets the clicked block in place instead of replacing it.
+            const auto block = use.block;
+            const auto current = world.state(block.x, block.y, block.z);
+            GameplayMutationSink sink{world, session};
+            if (session.worldMutations()
+                    .setBlock(world, {block.x, block.y, block.z},
+                              current.withSubmergedFluid(world::SubmergedFluid::Water),
+                              world::MutationFlags::All, world::MutationCause::Fluid, sink)
+                    .changed) {
+                session.events().publish(SoundEvent{SoundEventKind::Splash,
+                                                    glm::vec3{block} + glm::vec3{0.5F},
+                                                    world::Block::Air, nullptr, 1.0F});
+                session.events().publish(ParticleEvent{
+                    ParticleEventKind::WaterSplash,
+                    glm::vec3{block} + glm::vec3{0.5F, 1.0F, 0.5F}});
+                session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
+                if (session.gameMode() == GameMode::Survival) {
+                    session.inventory().replaceSelected({world::Block::Air, 1U, &items::Bucket});
+                }
             }
             break;
         }

@@ -418,5 +418,126 @@ int main() {
         assert(session.inventory().slot(1).empty());
     }
 
+    // --- F2: placing a slab into a still water source comes out submerged. ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        world.setState(5, 1, 5, world::BlockState{world::Block::Water});
+        session.inventory().mutableSlot(0) = {world::Block::OakSlab, 1U, nullptr};
+        session.inventory().selectHotbar(0);
+        // Click the floor's top face; the placement cell (adjacent) is the
+        // water-filled cell above it, exactly like right-clicking the seabed
+        // to place a slab into a shallow pool.
+        gameplay::UseItemOn place;
+        place.block = glm::ivec3{5, 0, 5};
+        place.adjacent = glm::ivec3{5, 1, 5};
+        place.face = world::BlockOrientation::Up;
+        place.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(place));
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.block(5, 1, 5) == world::Block::OakSlab);
+        assert(world.state(5, 1, 5).submergedFluid() == world::SubmergedFluid::Water);
+
+        // A slab placed on dry land stays dry (the auto-submerge only fires
+        // when the target cell was actually a still water source).
+        session.inventory().mutableSlot(0) = {world::Block::OakSlab, 1U, nullptr};
+        gameplay::UseItemOn dryPlace;
+        dryPlace.block = glm::ivec3{6, 0, 5};
+        dryPlace.adjacent = glm::ivec3{6, 1, 5};
+        dryPlace.face = world::BlockOrientation::Up;
+        dryPlace.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(dryPlace));
+        for (int tick = 0; tick < 6; ++tick) {
+            session.tick(world, host);
+        }
+        static_cast<void>(session.drainEvents());
+        assert(world.block(6, 1, 5) == world::Block::OakSlab);
+        assert(world.state(6, 1, 5).submergedFluid() == world::SubmergedFluid::None);
+    }
+
+    // --- F2: breaking a submerged slab leaves a water source, not air. ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        world.setState(5, 1, 5,
+                       world::BlockState{world::Block::OakSlab}
+                           .withSubmergedFluid(world::SubmergedFluid::Water));
+        session.enqueueCommand(gameplay::PlayerAction{gameplay::PlayerAction::Kind::StartDestroy,
+                                                      glm::ivec3{5, 1, 5}});
+        // Give the dig loop enough ticks to finish (a slab breaks quickly by
+        // hand, but drive several ticks to be independent of the exact speed).
+        for (int tick = 0; tick < 40 && world.block(5, 1, 5) != world::Block::Water; ++tick) {
+            session.tick(world, host);
+        }
+        static_cast<void>(session.drainEvents());
+        // Sabotage #2's target: this must be a water *source*, not air — a
+        // breakResidue that forgot the axis and returned plain BlockState{}
+        // would leave Air here instead.
+        assert(world.block(5, 1, 5) == world::Block::Water);
+        assert(world.state(5, 1, 5).fluidLevel() == 0U);
+        assert(host.blockBreaks == 1);
+
+        // A dry slab breaks to ordinary air, exactly as before F2.
+        world.setState(6, 1, 5, world::BlockState{world::Block::OakSlab});
+        session.enqueueCommand(gameplay::PlayerAction{gameplay::PlayerAction::Kind::StartDestroy,
+                                                      glm::ivec3{6, 1, 5}});
+        for (int tick = 0; tick < 40 && world.block(6, 1, 5) != world::Block::Air; ++tick) {
+            session.tick(world, host);
+        }
+        static_cast<void>(session.drainEvents());
+        assert(world.block(6, 1, 5) == world::Block::Air);
+    }
+
+    // --- F2: bucket interactions on a submergible block wet/dry it in place
+    //     instead of replacing the block. ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        session.setGameMode(gameplay::GameMode::Survival);
+        world::World world;
+        buildFloor(world);
+        world.setState(5, 1, 5, world::BlockState{world::Block::OakSlab}
+                                     .withSlabPortion(world::SlabPortion::Top));
+        session.inventory().mutableSlot(0) = {world::Block::Air, 1U, &gameplay::items::WaterBucket};
+        session.inventory().selectHotbar(0);
+        gameplay::UseItemOn pour;
+        pour.block = glm::ivec3{5, 1, 5};
+        pour.adjacent = glm::ivec3{5, 2, 5};
+        pour.face = world::BlockOrientation::Up;
+        pour.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(pour));
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        // The slab is still there, still a top slab, now wet — a bucket used
+        // directly on it must not have replaced it with a plain water block.
+        assert(world.block(5, 1, 5) == world::Block::OakSlab);
+        assert(world.state(5, 1, 5).slabPortion() == world::SlabPortion::Top);
+        assert(world.state(5, 1, 5).submergedFluid() == world::SubmergedFluid::Water);
+        assert(session.inventory().selectedStack().item == &gameplay::items::Bucket);
+
+        // An empty bucket on that same wet slab takes the water back and
+        // leaves the (still top) slab dry, rather than mining it.
+        session.inventory().mutableSlot(0) = {world::Block::Air, 1U, &gameplay::items::Bucket};
+        gameplay::UseItemOn collect;
+        collect.block = glm::ivec3{5, 1, 5};
+        collect.adjacent = glm::ivec3{5, 2, 5};
+        collect.face = world::BlockOrientation::Up;
+        collect.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(collect));
+        for (int tick = 0; tick < 6; ++tick) {
+            session.tick(world, host);
+        }
+        static_cast<void>(session.drainEvents());
+        assert(world.block(5, 1, 5) == world::Block::OakSlab);
+        assert(world.state(5, 1, 5).slabPortion() == world::SlabPortion::Top);
+        assert(world.state(5, 1, 5).submergedFluid() == world::SubmergedFluid::None);
+        assert(session.inventory().selectedStack().item == &gameplay::items::WaterBucket);
+    }
+
     return 0;
 }

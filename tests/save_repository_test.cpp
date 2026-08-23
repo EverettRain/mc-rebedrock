@@ -149,6 +149,13 @@ int main() {
          world::BlockState{world::Block::OakSlab}.withSlabPortion(world::SlabPortion::Top)},
         {9, 62, -8,
          world::BlockState{world::Block::StoneSlab}.withSlabPortion(world::SlabPortion::Double)},
+        // F2: SubmergedFluid round-trips by name (submerged_in) exactly like
+        // every other axis here — a submerged slab must reopen wet, and its
+        // SlabType must ride along unaffected by the new axis.
+        {10, 62, -8,
+         world::BlockState{world::Block::CobblestoneSlab}
+             .withSlabPortion(world::SlabPortion::Top)
+             .withSubmergedFluid(world::SubmergedFluid::Water)},
     };
     gameplay::ChestBlockEntity chest;
     chest.position = {8, 65, -4};
@@ -237,8 +244,18 @@ int main() {
     assert(loaded.edits[4].state.persistent());
     assert(loaded.edits[5].state.block() == world::Block::OakSlab);
     assert(loaded.edits[5].state.slabPortion() == world::SlabPortion::Top);
+    // These two slabs were saved dry (no withSubmergedFluid call at all) — the
+    // migration case in miniature: a state written without ever touching the
+    // new axis still round-trips it as None, exactly as an edit written by a
+    // pre-F2 binary (which never had a submerged_in name to write) would when
+    // read by this one.
+    assert(loaded.edits[5].state.submergedFluid() == world::SubmergedFluid::None);
     assert(loaded.edits[6].state.block() == world::Block::StoneSlab);
     assert(loaded.edits[6].state.slabPortion() == world::SlabPortion::Double);
+    assert(loaded.edits[6].state.submergedFluid() == world::SubmergedFluid::None);
+    assert(loaded.edits[7].state.block() == world::Block::CobblestoneSlab);
+    assert(loaded.edits[7].state.slabPortion() == world::SlabPortion::Top);
+    assert(loaded.edits[7].state.submergedFluid() == world::SubmergedFluid::Water);
     // The palette names the block, not the state: `lit_furnace` is gone.
     {
         std::ifstream data{root / save.summary.identifier / "world.dat", std::ios::binary};

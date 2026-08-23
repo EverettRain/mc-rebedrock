@@ -105,6 +105,16 @@ class BlockState final {
         }
         return isFullCube(block());
     }
+    // StateProperty::SubmergedFluid (F2). None for anything that has not
+    // declared the axis (canBeSubmerged), so a caller reads it without
+    // checking the block first — the same "absent property reads back as its
+    // zero" contract every other axis here already gives.
+    [[nodiscard]] constexpr SubmergedFluid submergedFluid() const {
+        return static_cast<SubmergedFluid>(value(StateProperty::SubmergedFluid));
+    }
+    [[nodiscard]] constexpr BlockState withSubmergedFluid(SubmergedFluid fluid) const {
+        return with(StateProperty::SubmergedFluid, static_cast<std::uint8_t>(fluid));
+    }
 
     [[nodiscard]] constexpr BlockState with(BlockOrientation orientation) const {
         return with(StateProperty::Facing, static_cast<std::uint8_t>(orientation));
@@ -196,6 +206,23 @@ class BlockState final {
 // The collision/selection shape a state carries lives in BlockShape.hpp
 // (`blockShape`, `collisionSpan`), a layer above this one so the shape source
 // can name a BlockState without this header depending on it.
+
+// The light-engine's per-cell opacity, state-aware. skyLightOpacity(Block) in
+// Block.hpp answers by *identity* alone, which is right for every block that
+// does not carry a per-state shape — but a dry slab and a submerged one are
+// the same Block with different light behaviour (F2's "含水格按水衰减"
+// requirement), and Block.hpp cannot see BlockState (this header is the
+// layer above it). Anything that is not a slab defers to the identity
+// answer unchanged; a submerged slab reads Water's own filter instead of its
+// own (a slab's un-submerged `lightFilter` is 0 — a dry slab does not dim the
+// column at all, matching a dry stair/fence's vanilla behaviour), so the
+// light engine dims a submerged cell exactly as if the cell held water.
+[[nodiscard]] constexpr std::uint8_t skyLightOpacity(BlockState state) {
+    if (state.submergedFluid() == SubmergedFluid::Water) {
+        return skyLightOpacity(Block::Water);
+    }
+    return skyLightOpacity(state.block());
+}
 
 static_assert(sizeof(BlockState) == sizeof(std::uint16_t));
 static_assert(BlockState{}.block() == Block::Air);

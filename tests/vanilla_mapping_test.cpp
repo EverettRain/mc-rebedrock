@@ -100,13 +100,7 @@ void testDefaultIdentitySmallInteger() {
 
 void testWaterloggedOverrideBothDirections() {
     // The core closed-loop assertion the task calls out: true -> water(1),
-    // false -> none(0). SubmergedFluid is not landed yet (F2), so
-    // statePropertyFromName("submerged_in") resolves to StateProperty::Count
-    // today and the mapping is correctly inert (mapped but not valid, since
-    // Count is "no such property") rather than silently wrong. The value
-    // function side of the override is exercised directly, independent of
-    // whether the target enumerator exists yet, so this test does not have to
-    // wait on F2 to prove the override logic itself.
+    // false -> none(0).
     const auto* override_ = compat::findOverride("waterlogged");
     assert(override_ != nullptr);
     const auto trueValue = override_->valueFn("true");
@@ -116,12 +110,38 @@ void testWaterloggedOverrideBothDirections() {
     assert(falseValue.has_value());
     assert(*falseValue == 0U);  // none
 
-    // And through the full mapVanillaState entry point: today it reports
-    // "not valid" (rebedrockProperty == Count, F2 not landed), which is the
-    // correct "skip" answer rather than a crash or a bogus write — proves the
-    // "override claims the property but the target doesn't exist yet" branch.
-    const auto mapped = compat::mapVanillaState("waterlogged", "true");
-    assert(!mapped.valid());
+    // F2 landed: SubmergedFluid now exists (StateSchema.hpp), so
+    // statePropertyFromName("submerged_in") resolves for real and the override
+    // is no longer inert — this is JC1's forward registration activating
+    // exactly as its own comment promised, with zero changes needed here in
+    // VanillaMapping.hpp. The end-to-end assertion below is what proves that:
+    // it builds a real BlockState off a real submergible block (a slab) and
+    // checks the axis actually moved, not just that the mapped property/value
+    // pair looks right in isolation.
+    const auto mappedTrue = compat::mapVanillaState("waterlogged", "true");
+    assert(mappedTrue.valid());
+    assert(mappedTrue.property == world::StateProperty::SubmergedFluid);
+    assert(mappedTrue.value == 1U);  // water
+    const auto mappedFalse = compat::mapVanillaState("waterlogged", "false");
+    assert(mappedFalse.valid());
+    assert(mappedFalse.property == world::StateProperty::SubmergedFluid);
+    assert(mappedFalse.value == 0U);  // none
+
+    // End to end (the "current JC-1 test only isolates the value function"
+    // gap the F-2 card calls out): apply both onto a real slab BlockState and
+    // read the axis back through BlockState::submergedFluid(), not just the
+    // raw MappedStateValue. none=0/water=1 is confirmed on the wire a real
+    // save read/write would use.
+    const auto dryOakSlab = compat::applyMappedState(
+        world::BlockState{world::Block::OakSlab}, mappedFalse);
+    assert(dryOakSlab.submergedFluid() == world::SubmergedFluid::None);
+    const auto wetOakSlab = compat::applyMappedState(
+        world::BlockState{world::Block::OakSlab}, mappedTrue);
+    assert(wetOakSlab.submergedFluid() == world::SubmergedFluid::Water);
+    // The slab's own shape axis is untouched by the override (SlabType stays
+    // whatever it already was) — applyMappedState only writes the one
+    // property the mapping named.
+    assert(wetOakSlab.slabPortion() == world::SlabPortion::Bottom);
 }
 
 void testWaterloggedOverrideUnknownValueSkips() {

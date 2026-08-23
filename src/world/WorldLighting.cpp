@@ -73,7 +73,9 @@ ChunkLightSampler::ChunkLightSampler(const World& world,
                 const auto state = world_.state(x, y, z);
                 const Block value = state.block();
                 opaque_[cell] = mc::world::isOpaque(value) ? 1U : 0U;
-                const std::uint8_t opacity = skyLightOpacity(value);
+                // State-aware: a submerged slab dims like water even though its
+                // own identity (a dry slab) does not (F2).
+                const std::uint8_t opacity = skyLightOpacity(state);
                 if (opacity >= directSky) {
                     directSky = 0U;
                 } else {

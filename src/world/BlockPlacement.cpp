@@ -159,6 +159,20 @@ std::optional<BlockState> standingAndWallPlacement(
     return std::nullopt;
 }
 
+// SimpleWaterloggedBlock#getStateForPlacement's own contribution: `context.
+// getLevel().getFluidState(pos).getType() == Fluids.WATER` sets the new
+// block's WATERLOGGED true. Read before the write happens — the caller places
+// into `context.placePosition`, which right now (before this state lands)
+// either is the water source itself (placing into a water cell replaces it,
+// per `isReplaceable(Water)`) or is unrelated dry air, so "was that cell a
+// still water source" is exactly the question to ask about the *current*
+// world, not the one this function is about to produce.
+[[nodiscard]] bool placingIntoWaterSource(const World& world, const PlacementContext& context) {
+    const auto& target = context.placePosition;
+    return world.block(target.x, target.y, target.z) == Block::Water &&
+        world.state(target.x, target.y, target.z).value(StateProperty::FluidLevel) == 0U;
+}
+
 std::optional<BlockState> placementBlock(
     const World& world,
     Block selected,
@@ -173,6 +187,12 @@ std::optional<BlockState> placementBlock(
                          placementOrientation(selected, context))) {
         return std::nullopt;
     }
+    // F2: a submergible block placed into a still water source comes out wet
+    // (SimpleWaterloggedBlock#getStateForPlacement), regardless of which shape
+    // branch below decides the rest of its state.
+    const SubmergedFluid submerged = (canBeSubmerged(selected) && placingIntoWaterSource(world, context))
+                                         ? SubmergedFluid::Water
+                                         : SubmergedFluid::None;
     if (isSlab(selected)) {
         // SlabBlock#getStateForPlacement: a Down face hangs a top slab, an Up
         // face rests a bottom one, and a horizontal face reads the sub-cell hit
@@ -185,9 +205,9 @@ std::optional<BlockState> placementBlock(
              (context.clickedFace == BlockOrientation::Up || !aboveHalf))
                 ? SlabPortion::Bottom
                 : SlabPortion::Top;
-        return BlockState{selected}.withSlabPortion(portion);
+        return BlockState{selected}.withSlabPortion(portion).withSubmergedFluid(submerged);
     }
-    return BlockState{selected, placementOrientation(selected, context)};
+    return BlockState{selected, placementOrientation(selected, context)}.withSubmergedFluid(submerged);
 }
 
 BlockOrientation placementOrientation(Block placed, const PlacementContext& context) {

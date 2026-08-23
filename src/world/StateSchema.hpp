@@ -43,6 +43,15 @@ enum class StateProperty : std::uint8_t {
     Delay,      // RepeaterBlock.DELAY, stored 0-3 for a 1-4 tick delay
     AnalogSignal,   // 0-15: a comparator's output signal (and, later, wire POWER)
     ComparatorMode, // ComparatorBlock.MODE: 0 compare, 1 subtract
+    // F2: the vanilla `waterlogged` axis, generalised to a small closed fluid
+    // enum rather than a bool (F-2-submerged-fluid-axis.md's storage decision).
+    // A non-full block (a slab, later a stair/fence) that declares this axis can
+    // hold a *parasitic* water source alongside its own shape; the source never
+    // flows on this axis (F-DESIGN.md's "含流体块只装源不自流动" rule — real flow
+    // is FluidLevel's job on a water block itself, F3). Values are the
+    // SubmergedFluid enum in BlockState.hpp (none=0, water=1); a lava slot is
+    // reserved there but not declared on any block yet.
+    SubmergedFluid,
     Count,
 };
 
@@ -75,6 +84,14 @@ inline constexpr std::size_t kStatePropertyCount = static_cast<std::size_t>(Stat
         return "signal";
     case StateProperty::ComparatorMode:
         return "mode";
+    case StateProperty::SubmergedFluid:
+        // Mirrors vanilla's `waterlogged` in meaning, not in shape (a bool
+        // there, a small enum here) — the name deliberately does not reuse
+        // "waterlogged" so the JC1 override table (compat/VanillaMapping.hpp)
+        // has one name for "what vanilla calls it" and a different one for
+        // "what this build calls it", which is exactly what an override entry
+        // is for. See F-2-submerged-fluid-axis.md's serialisation choice.
+        return "submerged_in";
     case StateProperty::Count:
         break;
     }
