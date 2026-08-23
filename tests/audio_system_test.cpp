@@ -147,11 +147,13 @@ int main() {
     audio.setDirectionalAudio(true);
     assert(audio.directionalAudio());
 
-    // ---- AU-3 ⑥: distance attenuation reaches ZERO past the ceiling (no穿地听
-    // 声). The old miniaudio default (inverse) clamped distance to max and left a
+    // ---- AU-3 ⑥: distance attenuation reaches ZERO at the ceiling (no穿地听声).
+    // The old miniaudio default (inverse) clamped distance to max and left a
     // ~0.108 non-zero plateau, so a mob hundreds of blocks away / deep underground
-    // stayed audible. The linear model play() now sets is full up close and
-    // exactly zero at/after maxDistance. ----
+    // stayed audible. play() now sets the LINEAR model with rolloff = 1.0, whose
+    // gain = 1 − (clamp(d,min,max)−min)/(max−min): full up close, converging
+    // smoothly to exactly 0 at maxDistance from the formula itself (not a boundary
+    // guard). The helper mirrors that curve so it is device-free verifiable. ----
     {
         using mc::audio::cullByDistance;
         using mc::audio::linearAttenuationGain;
@@ -160,12 +162,18 @@ int main() {
         // Near field: full volume at and inside the reference distance.
         assert(nearlyEqual(linearAttenuationGain(0.0F, minD, maxD), 1.0F));
         assert(nearlyEqual(linearAttenuationGain(minD, minD, maxD), 1.0F));
-        // 4.5-block mining stays essentially full (barely inside min) — the
-        // regression the min_distance choice guards is unaffected by linear.
-        assert(linearAttenuationGain(4.5F, minD, maxD) > 0.99F);
-        // At and beyond the ceiling the gain is EXACTLY zero — the fix's core
-        // guarantee. Inverse would have returned ~0.108 here.
+        // 4.5-block mining stays near full — with rolloff 1.0 the gain there is
+        // 1 − 0.5/44 ≈ 0.989, well within reach (inverse's near field was worse,
+        // which is exactly why min_distance = 4 was chosen).
+        assert(linearAttenuationGain(4.5F, minD, maxD) > 0.98F);
+        // Exact expected values at two interior points (formula, rolloff 1.0).
+        assert(nearlyEqual(linearAttenuationGain(26.0F, minD, maxD), 1.0F - 22.0F / 44.0F)); // 0.5
+        assert(nearlyEqual(linearAttenuationGain(4.5F, minD, maxD), 1.0F - 0.5F / 44.0F));
+        // At the ceiling the gain is EXACTLY zero — and it gets there from the
+        // formula (clamp(max)==max → 1 − 1 = 0), so approaching max is continuous,
+        // not a 0.25→0 jump. Beyond max the clamp keeps it at 0. Inverse left 0.108.
         assert(nearlyEqual(linearAttenuationGain(maxD, minD, maxD), 0.0F));
+        assert(linearAttenuationGain(47.9F, minD, maxD) < 0.01F); // continuous → ~0 just inside
         assert(nearlyEqual(linearAttenuationGain(60.0F, minD, maxD), 0.0F));
         assert(nearlyEqual(linearAttenuationGain(500.0F, minD, maxD), 0.0F));
         // Strictly monotonically decreasing between min and max.
@@ -175,12 +183,13 @@ int main() {
             assert(g <= previous + 1e-6F);
             previous = g;
         }
-        // Records carry further (64) but still reach zero past their own ceiling.
+        // Records carry further (64) but still reach zero at their own ceiling.
         assert(linearAttenuationGain(50.0F, minD, 64.0F) > 0.0F);
         assert(nearlyEqual(linearAttenuationGain(64.0F, minD, 64.0F), 0.0F));
 
         // The cull predicate play() uses: a source past the ceiling is skipped
-        // entirely (never decoded), inside it is kept.
+        // entirely (never decoded) as a pure optimisation/backstop; inside it is
+        // kept and the linear curve above does the audible attenuation.
         assert(cullByDistance(48.01F, maxD));
         assert(cullByDistance(1000.0F, maxD));
         assert(!cullByDistance(47.9F, maxD));

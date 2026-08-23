@@ -433,14 +433,17 @@ class AudioSystem::Impl final {
         // radius. An explicit argument, not a mutable member, so play() cannot be
         // perturbed by whatever ran before it.
         ma_sound_set_max_distance(&active->sound, std::max(maxDistance, 0.0F));
-        ma_sound_set_rolloff(&active->sound, 0.75F);
         // ⑥ Use the LINEAR attenuation model, not miniaudio's default inverse.
         // Inverse clamps distance to max_distance, so its gain flattens onto a
         // non-zero plateau (min/(min+rolloff·(max−min)) ≈ 0.108 here) and a sound
         // NEVER goes silent — a mob hundreds of blocks away or deep underground
-        // stayed ~11% audible. Linear reaches exactly zero at max_distance (and is
-        // louder than inverse up close, so short-range mining is unaffected).
+        // stayed ~11% audible. Linear's gain is 1 − rolloff·(clamp(d,min,max)−min)
+        // /(max−min); with rolloff = 1.0 it converges smoothly to exactly 0 at
+        // max_distance (no plateau, no jump), and is louder than inverse up close
+        // so short-range mining is unaffected. The distance cull above is then a
+        // pure optimisation/backstop for d > max, not the thing carrying silence.
         ma_sound_set_attenuation_model(&active->sound, ma_attenuation_model_linear);
+        ma_sound_set_rolloff(&active->sound, 1.0F);
         // Vanilla's "Directional Audio" toggle. This backend has no true HRTF,
         // so the parity mapping is the pan mode: ON = a true pan (the sound
         // travels across and blends to the far side, the "surround" feel),
@@ -580,10 +583,15 @@ class AudioSystem::Impl final {
     // The situational-music state machine and the single streamed music voice it
     // drives. One voice at a time; a new/replacing song stops the old one.
     MusicScheduler musicScheduler{defaultMusicTable()};
-    ActiveSound musicVoice;
+    // These voices live on the heap at a STABLE address: a ma_sound embeds a node
+    // that the engine's node graph tracks by address, so the struct must never be
+    // moved/copied once initialised. Holding them by unique_ptr lets a fading voice
+    // be handed to dyingVoices by moving only the pointer (the ActiveSound stays
+    // put), and the slot refilled with a fresh allocation. Always allocated.
+    std::unique_ptr<ActiveSound> musicVoice = std::make_unique<ActiveSound>();
     // The biome ambient loop voice and which event it is playing (empty = none),
     // cross-faded when the biome's loop changes.
-    ActiveSound ambientLoopVoice;
+    std::unique_ptr<ActiveSound> ambientLoopVoice = std::make_unique<ActiveSound>();
     std::string ambientLoopEvent;
     // The cave-mood accumulator (LEGACY_CAVE_SETTINGS).
     MoodAccumulator moodAccumulator{MoodSettings{}};
@@ -598,8 +606,8 @@ class AudioSystem::Impl final {
     // Start a streamed, non-positioned voice (music / biome loop) into `voice`,
     // fading in. Any previous voice there is stopped first. Returns false when the
     // asset is missing or the engine is down (voice left stopped).
-    bool startStreamedVoice(ActiveSound& voice, std::string_view event, SoundCategory category,
-                            bool looping, std::uint64_t fadeInMs) {
+    bool startStreamedVoice(std::unique_ptr<ActiveSound>& voice, std::string_view event,
+                            SoundCategory category, bool looping, std::uint64_t fadeInMs) {
         stopStreamedVoice(voice, 0U);
         if (!initialized || event.empty()) {
             return false;
@@ -624,28 +632,28 @@ class AudioSystem::Impl final {
         const ma_result initResult =
             ma_sound_init_from_file(&engine, cached->second.virtualName.c_str(),
                                     MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_ASYNC, nullptr, nullptr,
-                                    &voice.sound);
+                                    &voice->sound);
         if (initResult != MA_SUCCESS) {
             std::cerr << "Unable to stream sound asset: " << entry->name << '\n';
             return false;
         }
-        voice.initialized = true;
-        voice.createdAt = std::chrono::steady_clock::now();
+        voice->initialized = true;
+        voice->createdAt = std::chrono::steady_clock::now();
         // Music and menu ambience are non-positional (relative to the listener):
         // no distance attenuation, they play at full category volume everywhere.
-        ma_sound_set_spatialization_enabled(&voice.sound, MA_FALSE);
-        ma_sound_set_looping(&voice.sound, looping ? MA_TRUE : MA_FALSE);
+        ma_sound_set_spatialization_enabled(&voice->sound, MA_FALSE);
+        ma_sound_set_looping(&voice->sound, looping ? MA_TRUE : MA_FALSE);
         // Master is the engine's global endpoint gain (ma_engine_set_volume),
         // applied once to every voice. A streamed voice therefore carries only the
         // sub-category gain, exactly like the positioned play() path — folding
         // master in here too would attenuate a second time (master² × gain).
         const float gain = streamedVoiceVolume(category);
-        ma_sound_set_volume(&voice.sound, gain);
+        ma_sound_set_volume(&voice->sound, gain);
         if (fadeInMs > 0U) {
-            ma_sound_set_fade_in_milliseconds(&voice.sound, 0.0F, gain, fadeInMs);
+            ma_sound_set_fade_in_milliseconds(&voice->sound, 0.0F, gain, fadeInMs);
         }
-        if (ma_sound_start(&voice.sound) != MA_SUCCESS) {
-            voice.reset();
+        if (ma_sound_start(&voice->sound) != MA_SUCCESS) {
+            voice->reset();
             return false;
         }
         return true;
@@ -656,34 +664,35 @@ class AudioSystem::Impl final {
     // so instead of tearing it down at once (which made the documented cross-fade
     // a hard cut) we schedule miniaudio's fade + stop and hand the voice to a
     // dying-voice list, which update() reclaims once the fade has played out.
-    void stopStreamedVoice(ActiveSound& voice, std::uint64_t fadeMs) {
-        if (!voice.initialized) {
+    void stopStreamedVoice(std::unique_ptr<ActiveSound>& voice, std::uint64_t fadeMs) {
+        if (!voice->initialized) {
             return;
         }
         if (initialized && fadeMs > 0U) {
-            ma_sound_set_fade_in_milliseconds(&voice.sound, -1.0F, 0.0F, fadeMs);
+            ma_sound_set_fade_in_milliseconds(&voice->sound, -1.0F, 0.0F, fadeMs);
             const ma_uint64 stopFrames = ma_engine_get_sample_rate(&engine) * fadeMs / 1000U;
             ma_sound_set_stop_time_in_pcm_frames(
-                &voice.sound, ma_engine_get_time_in_pcm_frames(&engine) + stopFrames);
-            // Move the still-sounding voice into the dying list, transferring
-            // ownership out of `voice` so a new start can reuse the slot at once.
-            // A little slack past the fade covers scheduling jitter before reclaim.
+                &voice->sound, ma_engine_get_time_in_pcm_frames(&engine) + stopFrames);
+            // Hand the still-sounding voice to the dying list by MOVING the
+            // unique_ptr — the ActiveSound (and its embedded ma_sound node) keeps
+            // its heap address, so the engine's node graph stays valid and the fade
+            // is actually heard. The slot is refilled with a fresh allocation so a
+            // new start can reuse it at once. Never copy/relocate an init'd
+            // ma_sound: the graph tracks it by address. A little slack past the
+            // fade covers scheduling jitter before reclaim.
             DyingVoice dying;
-            dying.voice = std::make_unique<ActiveSound>();
-            dying.voice->sound = voice.sound;
-            dying.voice->initialized = true;
             dying.reclaimAt = std::chrono::steady_clock::now() +
                               std::chrono::milliseconds{fadeMs + 100U};
-            voice.sound = {};
-            voice.initialized = false;
+            dying.voice = std::move(voice);
+            voice = std::make_unique<ActiveSound>();
             dyingVoices.push_back(std::move(dying));
             return;
         }
-        voice.reset();
+        voice->reset();
     }
 
     [[nodiscard]] bool musicVoiceActive() {
-        if (!musicVoice.initialized) {
+        if (!musicVoice->initialized) {
             return false;
         }
         // Same async-decode grace as update() gives positioned sounds: a streamed
@@ -692,12 +701,12 @@ class AudioSystem::Impl final {
         // just-started song is misread as finished on the very next tick, and the
         // scheduler restarts it every tick (stuttering the intro). Treat a voice
         // younger than the decode window as active regardless of at_end.
-        if (std::chrono::steady_clock::now() - musicVoice.createdAt < std::chrono::seconds{2}) {
+        if (std::chrono::steady_clock::now() - musicVoice->createdAt < std::chrono::seconds{2}) {
             return true;
         }
         // A looping/streamed music voice is "active" until it ends. Music tracks
         // are one-shot (not looping), so at_end marks completion.
-        return ma_sound_at_end(&musicVoice.sound) != MA_TRUE;
+        return ma_sound_at_end(&musicVoice->sound) != MA_TRUE;
     }
 
     // Place a one-shot positioned event on `category` with a caller-chosen max

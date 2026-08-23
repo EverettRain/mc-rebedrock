@@ -58,26 +58,27 @@ enum class BlockSoundFamily {
 [[nodiscard]] const char* blockSoundFamilyName(BlockSoundFamily family);
 
 // ⑥ The linear distance-attenuation gain a positioned voice receives, matching
-// the model play() sets on miniaudio (ma_attenuation_model_linear):
-//   dist <= minDistance      → 1  (full volume in the near field)
-//   dist >= maxDistance      → 0  (silent — the whole point: no non-zero plateau
-//                                  the way miniaudio's default inverse model had)
-//   between                  → linearly interpolated, monotonically decreasing.
-// The engine also folds `rolloff` in as a slope factor; play() uses 0.75, and the
-// gain is clamped to [0, 1]. Pure and device-free so the "silent past max"
-// guarantee (穿地听声修复) is verifiable without an audio device.
+// miniaudio's linear model exactly (ma_attenuation_model_linear):
+//   gain = 1 − rolloff · (clamp(d, min, max) − min) / (max − min), clamped [0,1].
+// play() sets rolloff = 1.0, so the gain converges SMOOTHLY to exactly 0 as the
+// distance approaches maxDistance — no non-zero plateau (miniaudio's default
+// inverse model flattened at ≈0.108, which is what leaked distant/underground
+// mobs through) and no discontinuous jump. This is the faithful curve, not a
+// guard that fakes zero at the boundary: with rolloff = 1.0, clamp(d,min,max)==max
+// makes the formula itself return 0. Pure/device-free so the near-field-full,
+// silent-past-max, monotonic guarantees are verifiable without an audio device.
 [[nodiscard]] constexpr float linearAttenuationGain(float distance, float minDistance,
-                                                    float maxDistance, float rolloff = 0.75F) {
+                                                    float maxDistance, float rolloff = 1.0F) {
     if (maxDistance <= minDistance) {
         return distance <= minDistance ? 1.0F : 0.0F;
     }
-    if (distance <= minDistance) {
-        return 1.0F;
-    }
-    if (distance >= maxDistance) {
-        return 0.0F;
-    }
-    const float gain = 1.0F - rolloff * (distance - minDistance) / (maxDistance - minDistance);
+    // Clamp the distance into [min, max] first, exactly as miniaudio does; beyond
+    // max the clamped distance is max, so the formula yields 1 − rolloff (0 when
+    // rolloff == 1.0) with no separate early-out needed.
+    const float clamped = distance < minDistance ? minDistance
+                          : distance > maxDistance ? maxDistance
+                                                   : distance;
+    const float gain = 1.0F - rolloff * (clamped - minDistance) / (maxDistance - minDistance);
     return gain < 0.0F ? 0.0F : (gain > 1.0F ? 1.0F : gain);
 }
 
