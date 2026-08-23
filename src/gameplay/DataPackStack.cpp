@@ -105,9 +105,13 @@ const std::vector<std::string>& PerSaveDataStack::enabledOrder() const {
     return manager_.order(assets::PackStackKind::Data);
 }
 
+assets::LayeredResourceProvider PerSaveDataStack::buildProvider(
+    const assets::ResourceProvider& base) const {
+    return manager_.buildProvider(assets::PackStackKind::Data, base);
+}
+
 void PerSaveDataStack::rebuild(const assets::ResourceProvider& base) const {
-    const assets::LayeredResourceProvider dataStack =
-        manager_.buildProvider(assets::PackStackKind::Data, base);
+    const assets::LayeredResourceProvider dataStack = buildProvider(base);
     // Entity types must exist before entity_attributes/biome spawn tables name
     // a species (same ordering rule Application.cpp's loadDataPacks documents);
     // idempotent, so calling it again on a second rebuild() is harmless.

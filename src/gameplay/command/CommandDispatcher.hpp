@@ -109,6 +109,20 @@ class CommandDispatcher final {
     // return value only.
     [[nodiscard]] CommandResult execute(std::string_view input) const;
 
+    // PACK-2: runs an already-parsed line against `source`, with zero re-parsing.
+    // This is what makes a compiled `.mcfunction` line cheap to replay every time
+    // `/function` (or a `#tick` member) fires: the loader calls parse() once per
+    // line and keeps the ParseResults (FunctionManager's compiled command), and
+    // every later run calls this instead of execute(input, source) — the token
+    // walk, literal/argument matching and permission-level fold from parse() are
+    // not repeated. Semantics mirror execute()'s post-parse half exactly (same
+    // permission gate, same redirect replay for a parsed `execute … run …` line,
+    // same feedback routing); only the "turn text into a walked tree path" step
+    // is skipped because `parsed` already did it. Takes `parsed` by non-const
+    // reference because running it rebinds its context's source pointer, exactly
+    // like execute() does to its own local copy.
+    [[nodiscard]] CommandResult executeParsed(ParseResults& parsed, const CommandSource& source) const;
+
     // The root node id and a builder positioned at an existing node — used to
     // wire `execute`'s redirect chain, where several clauses branch off the same
     // node and `run` redirects back to the root.
@@ -340,19 +354,31 @@ inline bool CommandDispatcher::contains(std::string_view name) const {
 
 inline CommandResult CommandDispatcher::execute(std::string_view input,
                                                 const CommandSource& source) const {
+    if (input.empty() || input.front() != '/') {
+        CommandResult result{false, "Commands must start with /"};
+        if (source.feedback) {
+            source.feedback(result);
+        }
+        return result;
+    }
+    auto parsed = parse(input.substr(1), std::nullopt);
+    return executeParsed(parsed, source);
+}
+
+inline CommandResult CommandDispatcher::executeParsed(ParseResults& parsed,
+                                                       const CommandSource& source) const {
     // A single place decides the outcome, then routes it to the source's feedback
     // sink before returning — successes and failures alike (the sink applies the
-    // sendCommandFeedback gamerule, so the gate is not duplicated here).
+    // sendCommandFeedback gamerule, so the gate is not duplicated here). Shared by
+    // execute() (parses then falls straight through) and a compiled `.mcfunction`
+    // line replay (PACK-2: parse() ran once at load time, this runs the cached
+    // result every time the function fires — no re-parsing on the hot path).
     const auto route = [&source](CommandResult result) {
         if (source.feedback) {
             source.feedback(result);
         }
         return result;
     };
-    if (input.empty() || input.front() != '/') {
-        return route({false, "Commands must start with /"});
-    }
-    auto parsed = parse(input.substr(1), std::nullopt);
     if (parsed.error) {
         return route({false, parsed.errorMessage});
     }

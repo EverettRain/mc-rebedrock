@@ -272,6 +272,7 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/LootTable.cpp
     src/gameplay/BlockTags.cpp
     src/gameplay/DataPackStack.cpp
+    src/gameplay/FunctionManager.cpp
     src/assets/ResourceProvider.cpp
     src/assets/PackMetadata.cpp
     src/assets/PackManager.cpp
@@ -1380,6 +1381,13 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_data_pack_stack_test PRIVATE mc_rebedrock_runtime)
     target_include_directories(mc_rebedrock_data_pack_stack_test PRIVATE src)
     add_test(NAME data_pack_stack COMMAND mc_rebedrock_data_pack_stack_test)
+
+    add_executable(mc_rebedrock_function_manager_test
+        tests/function_manager_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_function_manager_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_function_manager_test PRIVATE src)
+    add_test(NAME function_manager COMMAND mc_rebedrock_function_manager_test)
 
     add_executable(mc_rebedrock_gui_nine_slice_test
         tests/gui_nine_slice_test.cpp

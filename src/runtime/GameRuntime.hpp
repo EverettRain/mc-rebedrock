@@ -2,6 +2,7 @@
 
 #include "gameplay/CommandResult.hpp"
 #include "gameplay/DataPackStack.hpp"
+#include "gameplay/FunctionManager.hpp"
 #include "gameplay/GameSession.hpp"
 #include "gameplay/SimulationDriver.hpp"
 #include "gameplay/command/CommandDispatcher.hpp"
@@ -232,7 +233,7 @@ class GameRuntime final {
     [[nodiscard]] gameplay::SimulationDriver& simulationDriver() { return simulationDriver_; }
 
     // PACK-1: the open world's per-save data-pack stack — `/datapack
-    // list|enable|disable` and PACK-2's future `/reload` read and mutate this
+    // list|enable|disable` and PACK-2's `/reload` read and mutate this
     // directly, then call rebuildDataPacks() to apply it. Reflects whatever
     // loadWorld's scan (and any persisted DPKS enable/order) found; empty
     // (nothing discovered/enabled) when no world is open or dataBase was
@@ -240,10 +241,25 @@ class GameRuntime final {
     [[nodiscard]] gameplay::PerSaveDataStack& dataPackStack() { return dataPackStack_; }
     // Re-applies dataPackStack_'s current enable/order onto dataBase_ — the
     // single reusable "rebuild the data-driven gameplay tables" entry point
-    // loadWorld, `/datapack enable|disable`, and (later) `/reload` all share.
+    // loadWorld, `/datapack enable|disable`, and `/reload` all share.
     // No-op when this runtime was built with no dataBase (dataBase_ is
     // null) — the pre-PACK-1 callers this constructor default keeps working.
     void rebuildDataPacks();
+
+    // PACK-2: the open world's compiled function set — `/function <id>` reads
+    // this to run a function by hand; tick()/loadWorld read it to fire
+    // `#minecraft:tick`/`#minecraft:load`. Exposed mainly for the test fixture
+    // (a headless caller can inspect functionCount()/tickFunctions() without a
+    // full world) — GameRuntime itself is the only caller that mutates it via
+    // rebuildFunctions().
+    [[nodiscard]] gameplay::FunctionManager& functionManager() { return functionManager_; }
+    // Recompiles every `.mcfunction` from the current data-pack stack (reusing
+    // whatever rebuildDataPacks() just applied — /reload calls both in
+    // sequence) and then runs `#minecraft:load` once. Called by loadWorld (a
+    // fresh world's own one-time #load) and by `/reload` (a rebuild's one-time
+    // #load) — never by tick(). No-op when dataBase_ is null, matching
+    // rebuildDataPacks()'s existing opt-in contract.
+    void rebuildFunctions();
 
     // N-Mem, first piece: the server-side resident bytes, measurable headless
     // because no render allocation exists here. Sums each chunk's section state
@@ -366,6 +382,11 @@ class GameRuntime final {
     // passed none, which keeps rebuildDataPacks()/loadWorld's scan a no-op.
     const assets::ResourceProvider* dataBase_ = nullptr;
     gameplay::PerSaveDataStack dataPackStack_;
+    // PACK-2: this world's compiled `.mcfunction` set + tag membership,
+    // rebuilt by rebuildFunctions() every time rebuildDataPacks() is (loadWorld,
+    // /reload) — a function is data-pack content, so it shares the data
+    // stack's rebuild timing exactly.
+    gameplay::FunctionManager functionManager_;
     world::ChunkStreamer& chunkStreamer_;
     world::World serverWorld_;
     gameplay::GameSession gameSession_;

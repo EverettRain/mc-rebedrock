@@ -119,6 +119,13 @@ void GameRuntime::tick() {
     const auto tickWrite = worldLock_.write();
     drainClientCommands();
     gameSession_.tick(serverWorld_, host_);
+    // PACK-2: `#minecraft:tick`'s members run once every authoritative tick,
+    // after gameplay has ticked (so a function that reads e.g. block state sees
+    // this tick's world) and before the snapshot publish (so a function's world
+    // edit reaches the client in the same tick it happened, exactly like any
+    // other in-tick mutation). A no-op when no function is tagged #tick — most
+    // ticks, most worlds.
+    functionManager_.runTick(commandDispatcher_, makeCommandSource());
     publishSnapshotsToChannel();
     processChatQueue();
 }
@@ -767,6 +774,10 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
             dataPackStack_.enable(id);
         }
         rebuildDataPacks();
+        // PACK-2: functions are data-pack content too — recompile them from the
+        // stack just rebuilt and run this world's one-time #load, exactly the
+        // way vanilla runs #load when a world (re)opens.
+        rebuildFunctions();
     }
     // No chunk has unloaded yet in the fresh world; the unload-then-restore
     // bookkeeping starts empty.
@@ -938,6 +949,22 @@ void GameRuntime::rebuildDataPacks() {
     dataPackStack_.rebuild(*dataBase_);
 }
 
+void GameRuntime::rebuildFunctions() {
+    if (dataBase_ == nullptr) {
+        return;
+    }
+    // The exact same layered stack rebuildDataPacks() just applied to the five
+    // gameplay tables — functions are data-pack content too, so they share the
+    // stack, not a second copy of the enable/order rule.
+    const assets::LayeredResourceProvider dataStack = dataPackStack_.buildProvider(*dataBase_);
+    functionManager_.load(commandDispatcher_, dataStack);
+    // #minecraft:load runs exactly once here — right after (re)compiling, never
+    // from tick() — covering both call sites this method has: a fresh
+    // loadWorld (the world's own one-time #load) and /reload (its one-time
+    // re-run of #load per the card's #3).
+    functionManager_.runLoad(commandDispatcher_, makeCommandSource());
+}
+
 persistence::SaveGame GameRuntime::createWorld(std::string name, std::uint64_t seed,
                                                gameplay::GameMode mode, bool allowCommands) {
     auto save = saveRepository_.create(name, seed);
@@ -974,6 +1001,10 @@ void GameRuntime::unloadWorld() {
     if (dataBase_ != nullptr) {
         gameplay::PerSaveDataStack::rebuildBuiltinOnly(*dataBase_);
     }
+    // PACK-2: drop the outgoing world's compiled functions too — no #tick
+    // member of a just-closed world may keep firing, and the next loadWorld's
+    // rebuildFunctions() call starts from nothing rather than a stale set.
+    functionManager_.reset();
 }
 
 bool GameRuntime::saveLocked() {
@@ -1499,6 +1530,11 @@ void GameRuntime::registerAuthoritativeCommands() {
             }
             dataPackStack_.enable(*name);
             rebuildDataPacks();
+            // A pack may carry functions too — refresh the compiled set (and
+            // re-run #load) the same way /reload does, so an enabled pack's
+            // functions are callable immediately, not only after the next
+            // world load.
+            rebuildFunctions();
             return gameplay::CommandResult{true, "Enabled data pack " + *name};
         });
     commandDispatcher_.literal("datapack")
@@ -1512,7 +1548,40 @@ void GameRuntime::registerAuthoritativeCommands() {
             }
             dataPackStack_.disable(*name);
             rebuildDataPacks();
+            rebuildFunctions();
             return gameplay::CommandResult{true, "Disabled data pack " + *name};
+        });
+    // PACK-2: /function <ns:id> runs a compiled function's cached command
+    // sequence against the caller's own source (so a function's `~` resolves
+    // relative to whoever typed /function, matching vanilla's FunctionCommand).
+    // The dispatcher parses this line itself, exactly once, the same as any
+    // other command — the "compile once" discipline lives inside
+    // FunctionManager, which never re-parses the *function's own* lines on
+    // this or any other call.
+    commandDispatcher_.literal("function")
+        .requiresLevel(PermissionLevel::GameMasters)
+        .argument("name", gameplay::command::kStringArgument)
+        .executes([this](const gameplay::command::CommandContext& context) {
+            const auto name = context.find<std::string>("name");
+            if (!name.has_value()) {
+                return usageError("function", context.source());
+            }
+            return functionManager_.run(commandDispatcher_, *name, context.source());
+        });
+    // PACK-2: /reload rebuilds the whole data stack (PACK-1's rebuildDataPacks,
+    // reused verbatim — the same "apply the current enable/order" entry point
+    // /datapack enable|disable already calls) and then recompiles every
+    // function and re-runs #load, mirroring vanilla's own /reload: a datapack
+    // author edits a file, runs /reload, and both the data tables and the
+    // function set reflect the edit without restarting the world. Per-save
+    // isolation (PACK-1's whole point) is untouched — this only re-applies
+    // *this* world's already-scanned stack, it does not rescan or switch saves.
+    commandDispatcher_.literal("reload")
+        .requiresLevel(PermissionLevel::GameMasters)
+        .executes([this](const gameplay::command::CommandContext&) {
+            rebuildDataPacks();
+            rebuildFunctions();
+            return gameplay::CommandResult{true, "Reloaded data packs and functions"};
         });
     // `/kill` with no target kills the executor (@s); `/kill <selector>` resolves
     // a real target selector (@e[type=…], @a, @r, …) and kills each match.

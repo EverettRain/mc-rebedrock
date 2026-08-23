@@ -108,6 +108,15 @@ class PerSaveDataStack final {
     // reproduces the same tables (each table's own load() clears first).
     void rebuild(const assets::ResourceProvider& base) const;
 
+    // The same layered provider rebuild() builds internally (built-in `base`
+    // plus this stack's enabled packs, in priority order), handed back instead
+    // of consumed — PACK-2's FunctionManager::load() needs to scan and read
+    // `.mcfunction`/tag files from exactly the stack rebuild() just applied to
+    // the five gameplay tables, so GameRuntime::rebuildFunctions() calls this
+    // rather than duplicating PackManager's overlay-assembly rule a second
+    // time. Cheap to call again (a handful of pointers, no IO of its own).
+    [[nodiscard]] assets::LayeredResourceProvider buildProvider(const assets::ResourceProvider& base) const;
+
     // Rebuilds with no packs at all — the built-in floor. Used on world
     // unload (so a load() failure or a caller reading the tables between
     // unloadWorld and the next loadWorld sees the floor, never the outgoing
