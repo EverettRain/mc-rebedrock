@@ -303,9 +303,11 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/world/WorldLighting.cpp
     src/world/WorldLightEngine.cpp
     src/world/SurfaceGenerator.cpp
+    src/world/NetherGenerator.cpp
     src/world/gen/Biome.cpp
     src/world/gen/BiomeSource.cpp
     src/world/gen/LayeredBiomeSource.cpp
+    src/world/gen/MultiNoiseBiomeSource.cpp
     src/world/gen/Carver.cpp
     src/world/gen/Features.cpp
     src/world/gen/NoiseChunkGenerator.cpp
@@ -503,12 +505,14 @@ set(MC_REBEDROCK_HOT_PATH_SOURCES
     src/world/gen/Biome.cpp
     src/world/gen/BiomeSource.cpp
     src/world/gen/LayeredBiomeSource.cpp
+    src/world/gen/MultiNoiseBiomeSource.cpp
     src/world/gen/TreeGrower.cpp
     src/world/Chunk.cpp
     src/world/ChunkSection.cpp
     src/world/ChunkStreamer.cpp
     src/world/ChunkMesher.cpp
     src/world/SurfaceGenerator.cpp
+    src/world/NetherGenerator.cpp
     src/world/World.cpp
     src/world/WorldLightEngine.cpp
     src/world/WorldLighting.cpp
@@ -1969,6 +1973,14 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_noise_generator_settings_test PRIVATE mc_rebedrock_runtime)
     target_include_directories(mc_rebedrock_noise_generator_settings_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME noise_generator_settings COMMAND mc_rebedrock_noise_generator_settings_test)
+
+    # WG-2: nether terrain (settings + MultiNoiseBiomeSource + surface/features).
+    add_executable(mc_rebedrock_nether_terrain_test
+        tests/nether_terrain_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_nether_terrain_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_nether_terrain_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME nether_terrain COMMAND mc_rebedrock_nether_terrain_test)
 
     add_executable(mc_rebedrock_block_registry_lifecycle_test
         tests/block_registry_lifecycle_test.cpp

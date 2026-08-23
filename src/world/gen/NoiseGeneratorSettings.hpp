@@ -77,6 +77,17 @@ struct NoiseGeneratorSettings final {
     // minY so a dimension can opt out explicitly.
     bool fillBelowLatticeFloor = true;
 
+    // NoiseGeneratorSettings#getBedrockFloorPosition / #getBedrockRoofPosition:
+    // the number of bedrock rows to lay at the floor and (for a ceilinged
+    // dimension) the roof of the noise column. The overworld lays its bedrock in
+    // the Features surface pass, so it leaves these 0 and the noise generator does
+    // not cap it; the nether wants a solid bedrock floor at minY and a bedrock
+    // roof under its ceiling (DimensionType.hasCeiling). A cap of N writes N rows,
+    // the bottom/top one always solid and the rest thinning out, the way vanilla's
+    // bedrock band does.
+    int bedrockFloorRows = 0;
+    int bedrockRoofRows = 0;
+
     // The overworld value set: exactly the constants NoiseChunkGenerator used to
     // hardcode. Kept in one place so the regression can diff generated overworld
     // terrain against the pre-WG-1 output.
@@ -93,6 +104,51 @@ struct NoiseGeneratorSettings final {
         settings.topSlide = NoiseSlide{-10.0, 3, 0};
         settings.bottomSlide = NoiseSlide{-30.0, 0, 0};
         settings.fillBelowLatticeFloor = true;
+        settings.bedrockFloorRows = 0;  // Features::buildSurface lays it
+        settings.bedrockRoofRows = 0;
+        return settings;
+    }
+
+    // The nether value set (WG-2). One algorithm, nether values: netherrack over a
+    // lava sea at y=32, a mostly-solid column with the noise carving air pockets
+    // and cave systems, a bedrock floor and (under the ceiling) roof. Height and
+    // ceiling come from the nether DimensionType (0..128, hasCeiling), never a
+    // literal. The shape terms differ from the overworld's: a strong bottom slide
+    // and a top slide both pull the column solid near the floor and the roof, and
+    // the density bias keeps the middle mostly netherrack with hollows — the
+    // characteristic nether "solid rock riddled with caverns" rather than a single
+    // ground surface. These are not a byte-for-byte 1.16.1 port (the nether is not
+    // under the overworld逐格 parity guard); they reproduce the qualitative
+    // nether the acceptance checks.
+    [[nodiscard]] static constexpr NoiseGeneratorSettings nether() {
+        const DimensionType& type = dimensionType(DimensionId::Nether);
+        NoiseGeneratorSettings settings;
+        settings.minY = type.minY;              // 0
+        // The nether *generates* into a 128-tall column with its bedrock roof at
+        // y=127 (1.16.1 logical height), even though the DimensionType's coordinate
+        // ceiling (type.height) is taller: the playable nether is the 0..128 band
+        // under the roof. Kept a literal here — a nether-specific logical height
+        // rather than the DimensionType's coordinate limit — with a static_assert
+        // below pinning it to the DimensionType's floor so a reorder is caught.
+        settings.height = 128;
+        settings.seaLevel = 32;                 // the lava sea
+        settings.defaultBlock = Block::Netherrack;
+        settings.defaultFluid = Block::Lava;
+        // A near-flat density bias with a small negative offset: most of the
+        // column stays above the solid threshold (netherrack), and the noise digs
+        // the hollows. Weaker than the overworld's 1.0 factor so the terrain does
+        // not resolve into one clean surface.
+        settings.densityFactor = 0.0;
+        settings.densityOffset = 0.019;
+        // Both ends slide toward solid so the floor and the roof close off (the
+        // roof matters because the nether has a ceiling); vanilla's nether uses a
+        // top slide of (0.9375,3,0) and a strong bottom slide (2.5,4,-1). Positive
+        // targets push toward solid.
+        settings.topSlide = NoiseSlide{0.9375, 3, 0};
+        settings.bottomSlide = NoiseSlide{2.5, 4, -1};
+        settings.fillBelowLatticeFloor = false;  // the floor is the lattice at y=0
+        settings.bedrockFloorRows = 5;
+        settings.bedrockRoofRows = type.hasCeiling ? 5 : 0;
         return settings;
     }
 };

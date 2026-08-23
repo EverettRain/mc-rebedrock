@@ -244,10 +244,15 @@ void NoiseChunkGenerator::buildBaseTerrain(Chunk& chunk, int chunkX, int chunkZ)
                     const double z1x1 = lerp(deltaY, x1z1y0, x1z1y1);
                     // The noise lattice still spans the historical 0..255 rows,
                     // so the terrain surface keeps its absolute height (near sea
-                    // level) — the 384-tall column's extra depth is filled solid
-                    // below the lattice in the bottom fill loop below.
+                    // level) — the extra depth of a taller column is filled solid
+                    // below the lattice in the bottom fill loop below. A column
+                    // shorter than the lattice (the nether's 128) clips the noise
+                    // at its build limit so nothing generates above the ceiling.
+                    // For the overworld this limit (minY+height = 320) sits above
+                    // the 0..255 lattice, so the clip never fires and the terrain
+                    // is byte-for-byte unchanged.
                     const int worldY = cellY * kVerticalNoiseResolution + blockY;
-                    if (worldY >= kWorldHeight) {
+                    if (worldY >= settings_.minY + settings_.height) {
                         continue;
                     }
                     for (int blockX = 0; blockX < kHorizontalNoiseResolution; ++blockX) {
