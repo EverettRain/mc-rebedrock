@@ -4,6 +4,7 @@
 #include "core/Json.hpp"
 #include "core/VersionManifest.hpp"
 #include "core/VersionManifestJson.hpp"
+#include "gameplay/Enchantment.hpp"
 #include "world/BlockState.hpp"
 #include "world/DayNightCycle.hpp"
 #include "world/WorldClock.hpp"
@@ -167,6 +168,16 @@ int main() {
     save.inventory = inventory.slots();
     // A half-worn tool has to come back with the same damage on it.
     save.inventory[4] = {world::Block::Air, 1U, &gameplay::items::IronPickaxe, 137U};
+    // ENCH-0: an enchanted stack must round-trip its enchantments (PLYR block
+    // version 3's new tail) alongside every other field a plain stack already
+    // carried.
+    save.inventory[5] = {world::Block::Air, 1U, &gameplay::items::DiamondSword, 0U};
+    gameplay::setEnchantmentLevel(save.inventory[5], gameplay::EnchantmentId::Sharpness, 3U);
+    gameplay::setEnchantmentLevel(save.inventory[5], gameplay::EnchantmentId::Unbreaking, 2U);
+    // An unenchanted stack (enchantmentCount==0) must still round-trip
+    // byte-identically to a pre-ENCH-0 save's expectations: nothing new to
+    // assert here beyond the existing `loaded.inventory == save.inventory`
+    // whole-array comparison already below, which now also covers slot 5.
     save.selectedHotbarSlot = inventory.selectedHotbarSlot();
     save.edits = {
         // A burning furnace is the same block with LIT set; format 14 carries
@@ -336,6 +347,18 @@ int main() {
     assert(loaded.selectedHotbarSlot == 4U);
     assert(loaded.inventory == save.inventory);
     assert(loaded.inventory[4].damage == 137U);
+    // ENCH-0: the enchanted sword in slot 5 must reopen with both
+    // enchantments at their original levels.
+    assert(loaded.inventory[5].enchantmentCount == 2U);
+    assert(gameplay::enchantmentLevel(loaded.inventory[5], gameplay::EnchantmentId::Sharpness) ==
+           3U);
+    assert(gameplay::enchantmentLevel(loaded.inventory[5], gameplay::EnchantmentId::Unbreaking) ==
+           2U);
+    // A stack with enchantmentCount==0 elsewhere in the same array (slot 0,
+    // untouched) must still be the ordinary all-zero default — the old-save
+    // compatibility contract holds even when a *different* slot in the same
+    // array is enchanted.
+    assert(loaded.inventory[0].enchantmentCount == 0U);
     assert(loaded.edits == save.edits);
     assert(loaded.edits[0].state.lit());
     // Every property survives the round trip by name, not by column.
@@ -1628,6 +1651,77 @@ int main() {
         assert(loaded.playerExperiencePoints == 0);
         assert(loaded.playerTotalExperience == 0);
         assert(loaded.playerEnchantmentSeed == 0);
+    }
+
+    // --- ENCH-0 backward compatibility: a PLYR block written before ENCH-0
+    // (version 2 — has experience fields, but the inventory stacks predate
+    // the enchantment tail) loads with every stack's enchantmentCount==0,
+    // and — critically — does NOT try to read enchantment bytes that were
+    // never written (which would either throw on a truncated read or
+    // desync every field after the inventory). Mirrors the XP-0 legacy test
+    // immediately above, one version bump later. ---
+    {
+        auto game = repository.create("EnchLegacyPlayer", 28ULL);
+        game.playerExperienceLevel = 4;
+        game.playerExperiencePoints = 2;
+        game.playerTotalExperience = 30;
+        game.playerEnchantmentSeed = 555;
+        repository.save(game);
+        const auto path = repository.root() / game.summary.identifier / "world.dat";
+        std::vector<std::uint8_t> bytes;
+        {
+            std::ifstream input{path, std::ios::binary | std::ios::ate};
+            assert(input);
+            bytes.resize(static_cast<std::size_t>(input.tellg()));
+            input.seekg(0);
+            input.read(reinterpret_cast<char*>(bytes.data()),
+                       static_cast<std::streamsize>(bytes.size()));
+        }
+        bytes.resize(bytes.size() - sizeof(std::uint64_t));
+        LegacyWriter writer;
+        writer.bytes = std::move(bytes);
+        writer.block(fourCC("PLYR"), 2U, [&] {
+            writer.integer<std::uint8_t>(0U);  // hasPlayerPosition = false
+            writer.floating(0.0F);
+            writer.floating(0.0F);
+            writer.floating(0.0F);
+            writer.integer<std::uint8_t>(0U);   // selectedHotbarSlot
+            writer.floating(20.0F);             // playerHealth
+            writer.integer<std::int32_t>(20);   // playerFoodLevel
+            writer.floating(5.0F);              // playerSaturation
+            writer.integer<std::int32_t>(300);  // playerAirTicks
+            // appendSlots' sparse format: a zero occupied-count closes the
+            // list — no enchantment tail follows (version 2 stacks end at
+            // damage), unlike a version-3 block's per-stack tail.
+            writer.integer<std::uint16_t>(0U);
+            // Version 2's own experience fields, present at this version.
+            writer.integer<std::int32_t>(9);     // playerExperienceLevel
+            writer.integer<std::int32_t>(3);     // playerExperiencePoints
+            writer.integer<std::int32_t>(200);   // playerTotalExperience
+            writer.integer<std::int32_t>(-42);   // playerEnchantmentSeed
+        });
+        writer.finish();
+        {
+            std::ofstream output{path, std::ios::binary | std::ios::trunc};
+            output.write(reinterpret_cast<const char*>(writer.bytes.data()),
+                         static_cast<std::streamsize>(writer.bytes.size()));
+        }
+        const auto loaded = repository.load(game.summary.identifier);
+        // The version-2 fields still read correctly (proves the reader did
+        // NOT misalign trying to consume a nonexistent enchantment tail)...
+        assert(loaded.playerHealth == 20.0F);
+        assert(loaded.playerFoodLevel == 20);
+        assert(loaded.playerAirTicks == 300);
+        assert(loaded.playerExperienceLevel == 9);
+        assert(loaded.playerExperiencePoints == 3);
+        assert(loaded.playerTotalExperience == 200);
+        assert(loaded.playerEnchantmentSeed == -42);
+        // ...and every inventory stack — absent from this version-2 block's
+        // enchantment tail — carries enchantmentCount==0, the "no
+        // enchantment ever existed to lose" contract.
+        for (const auto& stack : loaded.inventory) {
+            assert(stack.enchantmentCount == 0U);
+        }
     }
 
     // --- CS-5: the `populated` marker round-trips through saveChunk/

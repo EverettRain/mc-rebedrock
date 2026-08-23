@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <type_traits>
 
 namespace mc::gameplay {
 
@@ -15,6 +16,34 @@ struct ItemStack;
 // Defined after ItemStack (it reads the stack's fields); both forms of a block
 // stack — the legacy null item pointer or the block's own BlockItem — count.
 [[nodiscard]] constexpr bool isBlockStack(const ItemStack& stack);
+
+// ENCH-0: one enchantment carried by a stack. `EnchantmentId` is declared in
+// gameplay/Enchantment.hpp, which is deliberately NOT included here — this
+// header only needs a POD-storable id, and Enchantment.hpp itself does not
+// depend on ItemStack, so Inventory.hpp would otherwise be the one taking on
+// a (currently) one-way include for no reason. The id is stored as its raw
+// underlying type to avoid the include; every reader casts it back.
+using EnchantmentIdStorage = std::uint8_t;
+
+struct EnchantmentInstance final {
+    EnchantmentIdStorage id = 0U;
+    std::uint8_t level = 0U;
+
+    [[nodiscard]] constexpr bool operator==(const EnchantmentInstance&) const = default;
+};
+
+// A deliberate vanilla deviation (JC debt, see Enchantment.hpp's banner): a
+// fixed inline capacity instead of an unbounded list, so ItemStack stays
+// trivially-copyable/heap-free on the hot inventory paths (DOD: no
+// allocation on a slot click, a stack split, a save-buffer append). 34
+// vanilla enchantments exist today and only a handful can ever be
+// simultaneously compatible on one item (the exclusivity table in
+// Enchantment.hpp guarantees at most one member of each mutually-exclusive
+// family survives a real application), so 12 is generous headroom, not a
+// realistic ceiling — a legitimately over-full "give"-command or a corrupt
+// save simply drops enchantments past the cap rather than growing the
+// struct's footprint for a case that cannot occur through play.
+inline constexpr std::size_t kMaxEnchantmentsPerStack = 12U;
 
 struct ItemStack final {
     world::Block block = world::Block::Air;
@@ -25,20 +54,81 @@ struct ItemStack final {
     // ItemStack#getDamage: how much of the tool's durability has been spent.
     // Zero for everything that has no durability at all.
     std::uint16_t damage = 0;
+    // ENCH-0: the stack's enchantments, inline (no heap) and order-independent
+    // (two stacks carrying the same set in a different order are the same
+    // stack — see enchantmentsEqual below, used by operator== and sameItem).
+    std::array<EnchantmentInstance, kMaxEnchantmentsPerStack> enchantments{};
+    std::uint8_t enchantmentCount = 0U;
 
     [[nodiscard]] constexpr bool empty() const {
         return count == 0 || (item == nullptr && block == world::Block::Air);
     }
 
-    // ItemStack#equals. Two block stacks compare by their block alone: a stack
-    // that still carries the legacy null item pointer is the same stone stack as
-    // one that points at stone's BlockItem. Item stacks compare by item.
-    [[nodiscard]] constexpr bool operator==(const ItemStack& other) const {
-        if (count != other.count || damage != other.damage) return false;
-        if (isBlockStack(*this) && isBlockStack(other)) return block == other.block;
-        return item == other.item && block == other.block;
+    // Looks up this stack's level for `id` (0 = not enchanted with it). Takes
+    // the raw storage id so this header need not include Enchantment.hpp;
+    // gameplay/Enchantment.hpp provides the typed convenience wrapper.
+    [[nodiscard]] constexpr std::uint8_t enchantmentLevelRaw(EnchantmentIdStorage id) const {
+        for (std::uint8_t index = 0; index < enchantmentCount; ++index) {
+            if (enchantments[index].id == id) return enchantments[index].level;
+        }
+        return 0U;
+    }
+
+    // Sets (or clears, for level 0) `id`'s level. A no-op past the fixed
+    // capacity (see kMaxEnchantmentsPerStack's comment) rather than UB.
+    constexpr void setEnchantmentRaw(EnchantmentIdStorage id, std::uint8_t level) {
+        for (std::uint8_t index = 0; index < enchantmentCount; ++index) {
+            if (enchantments[index].id == id) {
+                if (level == 0U) {
+                    // Swap-erase: order does not matter (see enchantmentsEqual).
+                    enchantments[index] = enchantments[enchantmentCount - 1U];
+                    enchantments[enchantmentCount - 1U] = EnchantmentInstance{};
+                    --enchantmentCount;
+                } else {
+                    enchantments[index].level = level;
+                }
+                return;
+            }
+        }
+        if (level == 0U || enchantmentCount >= enchantments.size()) {
+            return;
+        }
+        enchantments[enchantmentCount] = EnchantmentInstance{id, level};
+        ++enchantmentCount;
     }
 };
+
+// Two stacks' enchantment sets match when they carry the same (id, level)
+// pairs, independent of storage order (setEnchantmentRaw's swap-erase does
+// not preserve insertion order, and neither does a save/net round trip that
+// writes them in a different sequence than they were applied in).
+[[nodiscard]] constexpr bool enchantmentsEqual(const ItemStack& first, const ItemStack& second) {
+    if (first.enchantmentCount != second.enchantmentCount) return false;
+    for (std::uint8_t index = 0; index < first.enchantmentCount; ++index) {
+        const auto& entry = first.enchantments[index];
+        if (second.enchantmentLevelRaw(entry.id) != entry.level) return false;
+    }
+    return true;
+}
+
+// ItemStack#equals. Two block stacks compare by their block alone: a stack
+// that still carries the legacy null item pointer is the same stone stack as
+// one that points at stone's BlockItem. Item stacks compare by item.
+// Enchantments participate in equality for every stack shape: an enchanted
+// item is never the "same" stack as its unenchanted (or differently
+// enchanted) twin, matching vanilla's NBT-inclusive ItemStack#equals (and,
+// separately, matching the vanilla RULE that enchanted items do not stack —
+// canCombine below is what actually enforces non-merging; this operator is
+// the general-purpose value comparison callers such as tests reach for).
+[[nodiscard]] constexpr bool operator==(const ItemStack& first, const ItemStack& second) {
+    if (first.count != second.count || first.damage != second.damage) return false;
+    if (!enchantmentsEqual(first, second)) return false;
+    if (isBlockStack(first) && isBlockStack(second)) return first.block == second.block;
+    return first.item == second.item && first.block == second.block;
+}
+
+static_assert(std::is_trivially_copyable_v<ItemStack>,
+              "ItemStack must stay trivially copyable — no heap on the hot inventory paths");
 
 // A stack is a block stack when it names a real block and its item is either the
 // legacy null pointer or the block's own BlockItem. The block field stays the
@@ -63,9 +153,14 @@ struct ItemStack final {
 // not the same item as a fresh one. Block stacks combine by block, whatever form
 // their item pointer takes; every other stack needs a matching item (or a
 // matching block for the legacy null-item sentinel, which keeps an empty stack
-// distinct from a block stack).
+// distinct from a block stack). ENCH-0: also compares enchantments, so a
+// Sharpness sword never merges with a plain one (vanilla's enchanted items are
+// unstackable in the first place via maximumStackSize==1, but the comparison
+// itself must still refuse two DIFFERENTLY-enchanted stacks of something that
+// could otherwise stack, such as two enchanted books).
 [[nodiscard]] constexpr bool sameItem(const ItemStack& first, const ItemStack& second) {
     if (first.damage != second.damage) return false;
+    if (!enchantmentsEqual(first, second)) return false;
     if (isBlockStack(first) && isBlockStack(second)) return first.block == second.block;
     return first.item == second.item &&
         (first.item != nullptr || first.block == second.block);

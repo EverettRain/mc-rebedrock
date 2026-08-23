@@ -10,6 +10,7 @@
 // not fatal.
 
 #include "gameplay/BlockIdRemap.hpp"
+#include "gameplay/Enchantment.hpp"
 #include "gameplay/Inventory.hpp"
 #include "gameplay/Item.hpp"
 #include "gameplay/ItemRegistry.hpp"
@@ -79,7 +80,11 @@ inline void appendIvec3(std::vector<std::uint8_t>& bytes, glm::ivec3 value) {
 }
 
 // An item stack is its identity plus its count and damage. A block stack is
-// identified by its block, an item stack by its registered item.
+// identified by its block, an item stack by its registered item. ENCH-0: the
+// enchantment list rides after damage, sparse (count then (id,level) pairs) —
+// this is a live per-message wire format (never persisted across builds the
+// way the save format is), so there is no version gate to thread here: every
+// build that can decode this message at all decodes this exact shape.
 inline void appendItemStack(std::vector<std::uint8_t>& bytes, const ItemStack& stack) {
     if (isBlockStack(stack)) {
         const auto* blockItem = blockItemFor(stack.block);
@@ -91,6 +96,11 @@ inline void appendItemStack(std::vector<std::uint8_t>& bytes, const ItemStack& s
     }
     persistence::appendInteger(bytes, stack.count);
     persistence::appendInteger(bytes, stack.damage);
+    persistence::appendInteger(bytes, stack.enchantmentCount);
+    for (std::uint8_t index = 0; index < stack.enchantmentCount; ++index) {
+        persistence::appendInteger(bytes, stack.enchantments[index].id);
+        persistence::appendInteger(bytes, stack.enchantments[index].level);
+    }
 }
 
 [[nodiscard]] inline std::optional<ItemStack> readItemStack(std::span<const std::uint8_t> bytes,
@@ -98,14 +108,28 @@ inline void appendItemStack(std::vector<std::uint8_t>& bytes, const ItemStack& s
     const auto identifier = readString32(bytes, cursor);
     const auto count = persistence::readInteger<std::uint8_t>(bytes, cursor);
     const auto damage = persistence::readInteger<std::uint16_t>(bytes, cursor);
+    const auto enchantmentCount = persistence::readInteger<std::uint8_t>(bytes, cursor);
+    std::array<EnchantmentInstance, kMaxEnchantmentsPerStack> enchantments{};
+    std::uint8_t storedCount = 0U;
+    for (std::uint8_t index = 0; index < enchantmentCount; ++index) {
+        const auto id = persistence::readInteger<EnchantmentIdStorage>(bytes, cursor);
+        const auto level = persistence::readInteger<std::uint8_t>(bytes, cursor);
+        // Same forward-compatible skip as every other palette lookup here: an
+        // id this build does not recognise (or a corrupt/zero level) is
+        // dropped, the bytes having already been consumed either way.
+        if (id < kEnchantmentCount && level > 0U && storedCount < kMaxEnchantmentsPerStack) {
+            enchantments[storedCount] = EnchantmentInstance{id, level};
+            ++storedCount;
+        }
+    }
     if (const auto block = world::blockFromIdentifier(identifier); block.has_value()) {
-        return ItemStack{*block, count, nullptr, damage};
+        return ItemStack{*block, count, nullptr, damage, enchantments, storedCount};
     }
     if (const auto* item = itemFromIdentifier(identifier); item != nullptr) {
         if (const auto* blockItem = asBlockItem(item); blockItem != nullptr) {
-            return ItemStack{blockItem->block(), count, item, damage};
+            return ItemStack{blockItem->block(), count, item, damage, enchantments, storedCount};
         }
-        return ItemStack{world::Block::Air, count, item, damage};
+        return ItemStack{world::Block::Air, count, item, damage, enchantments, storedCount};
     }
     return std::nullopt;
 }

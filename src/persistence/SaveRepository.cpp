@@ -1,6 +1,7 @@
 #include "persistence/SaveRepository.hpp"
 
 #include "core/VersionManifest.hpp"
+#include "gameplay/Enchantment.hpp"
 #include "gameplay/ItemRegistry.hpp"
 #include "persistence/SaveStream.hpp"
 #include "persistence/UnknownBlockTable.hpp"
@@ -1172,22 +1173,59 @@ struct SaveReadContext final {
     return context.items[index];
 }
 
+// ENCH-0: enchantments append after damage, sparse (a count byte then that
+// many (id, level) pairs) — an unenchanted stack (the overwhelming majority
+// of stacks ever written) costs exactly one extra zero byte over the
+// pre-ENCH-0 layout, not a fixed-size 12-entry array's worth of padding.
+// Every writer now emits this tail unconditionally (this build always writes
+// the current, ENCH-0-aware layout); only the READER is gated by the owning
+// block/section's version, so a save containing byte-identical unenchanted
+// stacks from before ENCH-0 keeps its old version number and skips the tail.
 void appendStack(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context,
                  const gameplay::ItemStack& stack) {
     appendInteger(bytes, context.blocks.indexOf(world::blockId(stack.block)));
     appendInteger(bytes, stack.count);
     appendInteger(bytes, context.items.indexOf(stack.item));
     appendInteger(bytes, stack.damage);
+    appendInteger(bytes, stack.enchantmentCount);
+    for (std::uint8_t index = 0; index < stack.enchantmentCount; ++index) {
+        appendInteger(bytes, stack.enchantments[index].id);
+        appendInteger(bytes, stack.enchantments[index].level);
+    }
 }
 
+// `includeEnchantments` is false only for a block/section version written
+// before ENCH-0, whose bytes end right after `damage` (matching the pre-v7
+// `damage` precedent right below in spirit: an old field this format did not
+// carry yet leaves the ItemStack's zero/empty default, here "no
+// enchantments" rather than "no damage").
 void readStackRecord(std::span<const std::uint8_t> payload, std::size_t& cursor,
-                     const SaveReadContext& context, gameplay::ItemStack& stack) {
+                     const SaveReadContext& context, gameplay::ItemStack& stack,
+                     bool includeEnchantments = true) {
     stack.block = resolveBlock(context, readInteger<std::uint16_t>(payload, cursor));
     stack.count = readInteger<std::uint8_t>(payload, cursor);
     stack.item = resolveItem(context, readInteger<std::uint16_t>(payload, cursor));
     stack.damage = readInteger<std::uint16_t>(payload, cursor);
     if (stack.damage > gameplay::itemMaximumDamage(stack)) {
         throw std::runtime_error("world.dat contains an over-damaged item");
+    }
+    stack.enchantmentCount = 0U;
+    stack.enchantments = {};
+    if (!includeEnchantments) {
+        return;
+    }
+    const auto count = readInteger<std::uint8_t>(payload, cursor);
+    for (std::uint8_t index = 0; index < count; ++index) {
+        const auto id = readInteger<gameplay::EnchantmentIdStorage>(payload, cursor);
+        const auto level = readInteger<std::uint8_t>(payload, cursor);
+        // A future build's enchantment id (or a corrupt one) this build does
+        // not recognise is dropped rather than refused, the same
+        // forward-compatible skip every other palette/property lookup in
+        // this format applies — the byte was already consumed either way, so
+        // the stream stays aligned.
+        if (id < gameplay::kEnchantmentCount && level > 0U) {
+            stack.setEnchantmentRaw(id, level);
+        }
     }
 }
 
@@ -1216,7 +1254,7 @@ void appendSlots(std::vector<std::uint8_t>& bytes, const SaveWriteContext& conte
 
 template <typename Slots>
 void readSlots(std::span<const std::uint8_t> payload, std::size_t& cursor,
-               const SaveReadContext& context, Slots& slots) {
+               const SaveReadContext& context, Slots& slots, bool includeEnchantments = true) {
     slots = Slots{};
     const auto used = readInteger<std::uint16_t>(payload, cursor);
     if (used > slots.size()) {
@@ -1227,7 +1265,7 @@ void readSlots(std::span<const std::uint8_t> payload, std::size_t& cursor,
         if (index >= slots.size()) {
             throw std::runtime_error("world.dat container references a slot it has not got");
         }
-        readStackRecord(payload, cursor, context, slots[index]);
+        readStackRecord(payload, cursor, context, slots[index], includeEnchantments);
     }
 }
 
@@ -1321,8 +1359,14 @@ void readVersionBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
 // them; the reader leaves the SaveGame's zero defaults in place for those,
 // which is exactly "new player, no experience" — the same backward
 // compatibility the fireTicks/effects fields on the entity block use.
+// Version 3 (ENCH-0) gives every stack in the inventory slot array its
+// enchantment tail (see appendStack/readStackRecord's ENCH-0 comment). A
+// version 1 or 2 block's inventory stacks read back with enchantmentCount==0
+// unconditionally, matching "no save has ever produced an enchanted item
+// before this node" exactly — no data loss, because there was never any
+// enchantment data to lose.
 constexpr std::uint32_t kPlayerBlockTag = blockTag("PLYR");
-constexpr std::uint16_t kPlayerBlockVersion = 2U;
+constexpr std::uint16_t kPlayerBlockVersion = 3U;
 
 void appendPlayerBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
     const auto& game = context.game;
@@ -1368,7 +1412,10 @@ void readPlayerBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
         game.playerAirTicks > gameplay::PlayerVitals::kMaximumAirTicks) {
         throw std::runtime_error("world.dat contains invalid player vitals");
     }
-    readSlots(payload, cursor, context, game.inventory);
+    // Enchantments arrived in version 3; a version 1 or 2 block's stacks read
+    // back plain (enchantmentCount==0), the ENCH-0 backward-compatibility
+    // case kPlayerBlockVersion's comment describes.
+    readSlots(payload, cursor, context, game.inventory, /*includeEnchantments=*/header.version >= 3U);
     // Experience arrived in version 2; a version-1 world leaves the
     // SaveGame's zero defaults (level 0, no progress, no history).
     if (header.version >= 2U) {
@@ -2279,9 +2326,13 @@ constexpr std::uint16_t kBlockEntityBlockVersion = 1U;
 constexpr std::uint32_t kChestSectionTag = blockTag("CHST");
 constexpr std::uint32_t kFurnaceSectionTag = blockTag("FURN");
 constexpr std::uint32_t kTrappedChestSectionTag = blockTag("TCST");
-constexpr std::uint16_t kChestSectionVersion = 1U;
-constexpr std::uint16_t kFurnaceSectionVersion = 1U;
-constexpr std::uint16_t kTrappedChestSectionVersion = 1U;
+// Version 2 (ENCH-0) gives every stack in the section its enchantment tail —
+// same backward-compatible shape as kPlayerBlockVersion 3 (a version-1
+// section's stacks read back with enchantmentCount==0, exactly the "no
+// enchantment ever existed to lose" case).
+constexpr std::uint16_t kChestSectionVersion = 2U;
+constexpr std::uint16_t kFurnaceSectionVersion = 2U;
+constexpr std::uint16_t kTrappedChestSectionVersion = 2U;
 
 void appendBlockEntityBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
     const auto& game = context.game;
@@ -2350,7 +2401,7 @@ void readBlockEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cu
                 if (!world::isWorldYInRange(chest.position.y)) {
                     throw std::runtime_error("world.dat contains an invalid chest position");
                 }
-                readSlots(payload, cursor, context, chest.items);
+                readSlots(payload, cursor, context, chest.items, /*includeEnchantments=*/section.version >= 2U);
                 game.chests.push_back(std::move(chest));
             }
         } else if (section.tag == kTrappedChestSectionTag &&
@@ -2368,7 +2419,7 @@ void readBlockEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cu
                 if (!world::isWorldYInRange(chest.position.y)) {
                     throw std::runtime_error("world.dat contains an invalid trapped chest position");
                 }
-                readSlots(payload, cursor, context, chest.items);
+                readSlots(payload, cursor, context, chest.items, /*includeEnchantments=*/section.version >= 2U);
                 game.trappedChests.push_back(std::move(chest));
             }
         } else if (section.tag == kFurnaceSectionTag &&
@@ -2386,9 +2437,10 @@ void readBlockEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cu
                 if (!world::isWorldYInRange(furnace.position.y)) {
                     throw std::runtime_error("world.dat contains an invalid furnace position");
                 }
-                readStackRecord(payload, cursor, context, furnace.input);
-                readStackRecord(payload, cursor, context, furnace.fuel);
-                readStackRecord(payload, cursor, context, furnace.output);
+                const bool includeEnchantments = section.version >= 2U;
+                readStackRecord(payload, cursor, context, furnace.input, includeEnchantments);
+                readStackRecord(payload, cursor, context, furnace.fuel, includeEnchantments);
+                readStackRecord(payload, cursor, context, furnace.output, includeEnchantments);
                 furnace.burnTicks = readInteger<std::int32_t>(payload, cursor);
                 furnace.initialBurnTicks = readInteger<std::int32_t>(payload, cursor);
                 furnace.cookTicks = readInteger<std::int32_t>(payload, cursor);
@@ -3090,6 +3142,9 @@ void loadLegacy(std::span<const std::uint8_t> payload, std::size_t& cursor,
         return itemPalette[index];
     };
     // Tool wear arrived with v7; anything older read back as a pristine tool.
+    // This whole function only runs for formatVersion < kFirstOwnerDrivenFormatVersion
+    // (17), which predates ENCH-0 by many formats — no legacy save can carry
+    // enchantment data, so `stack` keeps its default enchantmentCount==0 here.
     const auto readStack = [&](gameplay::ItemStack& stack) {
         stack.block = readBlock(cursor);
         stack.count = readInteger<std::uint8_t>(payload, cursor);
