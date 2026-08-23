@@ -3,13 +3,17 @@
 #include "gameplay/ItemRegistry.hpp"
 #include "world/BlockRegistry.hpp"
 
-#include <array>
-
 namespace mc::gameplay {
 
 bool ContentRegistry::registerBlock(world::Block blockValue, CreativeCategory category) {
+    // AR-CI: Hidden is the sentinel a technical/unobtainable block's definition
+    // carries by default (Air among them) — reject it the same way Count is
+    // rejected, so no caller can accidentally list a hidden block by passing an
+    // explicit category that disagrees with the block's own declaration.
     if (!world::isValidBlock(blockValue) || blockValue == world::Block::Air ||
-        category == CreativeCategory::Count) return false;
+        category == CreativeCategory::Count || category == CreativeCategory::Hidden) {
+        return false;
+    }
     // Identity comes from the block registry, not a parallel copy: this catalog is
     // a creative-tab *view* over the registry, so the definition it stores is the
     // one the registry froze for this block's BlockId.
@@ -29,7 +33,10 @@ bool ContentRegistry::registerBlock(world::Block blockValue, CreativeCategory ca
 }
 
 bool ContentRegistry::registerItem(const Item* itemValue, CreativeCategory category) {
-    if (itemValue == nullptr || category == CreativeCategory::Count) return false;
+    if (itemValue == nullptr || category == CreativeCategory::Count ||
+        category == CreativeCategory::Hidden) {
+        return false;
+    }
     // Catalog membership is keyed by the Item itself; the ItemRegistry owns the
     // name -> Item mapping this view resolves through.
     if (itemIndex_.contains(itemValue)) return false;
@@ -69,62 +76,32 @@ const RegisteredItem* ContentRegistry::item(std::string_view identifier) const {
 }
 
 std::span<const ItemStack> ContentRegistry::catalog(CreativeCategory category) const {
-    if (category == CreativeCategory::Count) return {};
+    // Count is the array-size sentinel and Hidden sits deliberately outside
+    // [0, Count) (see core/CreativeCategory.hpp) — neither indexes a real slot.
+    if (category == CreativeCategory::Count || category == CreativeCategory::Hidden) return {};
     return catalogs_[static_cast<std::size_t>(category)];
 }
 
 const ContentRegistry& contentRegistry() {
     static const ContentRegistry registry = [] {
         ContentRegistry result;
-        constexpr std::array building{
-            world::Block::Grass, world::Block::Dirt, world::Block::Stone,
-            world::Block::Cobblestone, world::Block::OakPlanks,
-            world::Block::SprucePlanks, world::Block::BirchPlanks,
-            world::Block::JunglePlanks, world::Block::AcaciaPlanks,
-            world::Block::DarkOakPlanks,
-            world::Block::OakLog, world::Block::SpruceLog, world::Block::BirchLog,
-            world::Block::JungleLog, world::Block::AcaciaLog,
-            world::Block::DarkOakLog,
-            world::Block::Bricks, world::Block::StoneBricks,
-            world::Block::MossyStoneBricks, world::Block::ChiseledStoneBricks,
-            world::Block::MossyCobblestone, world::Block::Sand,
-            world::Block::Gravel, world::Block::Sandstone, world::Block::QuartzBlock,
-            world::Block::Obsidian, world::Block::Clay, world::Block::SnowBlock,
-            world::Block::Netherrack, world::Block::Granite, world::Block::Diorite,
-            world::Block::Andesite, world::Block::PolishedGranite,
-            world::Block::PolishedDiorite, world::Block::PolishedAndesite,
-            world::Block::SmoothStone,
-            world::Block::CoarseDirt, world::Block::Podzol,
-            world::Block::RedSand, world::Block::WhiteWool, world::Block::RedWool,
-            world::Block::BlackWool, world::Block::Bedrock,
-            world::Block::OakSlab, world::Block::SpruceSlab, world::Block::BirchSlab,
-            world::Block::JungleSlab, world::Block::AcaciaSlab, world::Block::DarkOakSlab,
-            world::Block::StoneSlab, world::Block::CobblestoneSlab,
-            world::Block::StoneBrickSlab, world::Block::SmoothStoneSlab,
-        };
-        constexpr std::array decoration{
-            world::Block::Glass, world::Block::OakLeaves, world::Block::SpruceLeaves,
-            world::Block::BirchLeaves, world::Block::JungleLeaves,
-            world::Block::AcaciaLeaves, world::Block::DarkOakLeaves,
-            world::Block::Bookshelf, world::Block::Pumpkin, world::Block::Melon,
-            world::Block::GrassPlant, world::Block::Dandelion, world::Block::OakSapling,
-            world::Block::SpruceSapling, world::Block::BirchSapling,
-            world::Block::JungleSapling, world::Block::AcaciaSapling,
-            world::Block::DarkOakSapling,
-        };
-        constexpr std::array functional{
-            world::Block::CraftingTable, world::Block::Furnace, world::Block::Chest,
-            world::Block::Glowstone, world::Block::Tnt, world::Block::Torch,
-            world::Block::CoalOre, world::Block::IronOre, world::Block::GoldOre,
-            world::Block::DiamondOre, world::Block::LapisOre,
-            world::Block::RedstoneOre, world::Block::EmeraldOre,
-        };
-        for (const auto block : building)
-            result.registerBlock(block, CreativeCategory::BuildingBlocks);
-        for (const auto block : decoration)
-            result.registerBlock(block, CreativeCategory::Decoration);
-        for (const auto block : functional)
-            result.registerBlock(block, CreativeCategory::Functional);
+        // AR-CI: block catalog membership is data-driven off each block's own
+        // BlockDefinition::creativeCategory (declared via BlockProperties::
+        // creative() in Block.hpp) rather than a parallel hand-maintained list.
+        // A single pass over the block registry, in registry (BlockId) order,
+        // is both the entire registration and the reachability guarantee: a
+        // block that never declares a tab defaults to Hidden and registerBlock
+        // rejects it, and a block that does declare one is *automatically*
+        // catalogued the moment it lands — there is no second place a future
+        // block (a stair, a redstone component, ...) needs to be listed, and so
+        // no way for new content to silently drift out of creative again.
+        const auto& blocks = world::blockRegistry();
+        for (std::size_t index = 0; index < blocks.size(); ++index) {
+            const core::BlockId id = core::BlockId::of(static_cast<core::BlockId::Value>(index));
+            const world::BlockDefinition& definition = blocks.get(id);
+            if (definition.creativeCategory == CreativeCategory::Hidden) continue;
+            result.registerBlock(definition.block, definition.creativeCategory);
+        }
 
         // Every registered item declares its own creative tab, so registration
         // is a single pass over the registry in declaration order. Spawn eggs

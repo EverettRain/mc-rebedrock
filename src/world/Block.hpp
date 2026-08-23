@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/ContentId.hpp"
+#include "core/CreativeCategory.hpp"
 #include "core/Identifier.hpp"
 #include "world/BlockEntityType.hpp"
 #include "world/StateSchema.hpp"
@@ -17,6 +18,12 @@ namespace mc::world {
 using core::Identifier;
 using core::kNamespace;
 using core::kVanillaNamespace;
+// AR-CI: the creative-inventory tab, shared with gameplay::Item so a block and
+// an ordinary item declare tab membership the same way. See
+// core/CreativeCategory.hpp for why the type lives there instead of on either
+// side directly (Item.hpp already includes this header, so this header cannot
+// include Item.hpp back).
+using core::CreativeCategory;
 
 // The runtime block identity: a dense uint16 the block registry hands out (see
 // BlockRegistry.hpp). Every table that used to be sized to `Block::Count` and
@@ -470,6 +477,14 @@ struct BlockDefinition final {
     // A LeavesBlock: decays when no log is left within six blocks of it, unless
     // a player placed it. See BlockState::persistent().
     bool leaves = false;
+    // AR-CI: the creative-inventory tab this block is filed under, declared by
+    // the builder's creative() below. Defaults to Hidden — a block that never
+    // opts in is technical/unobtainable (Air, fluids, wall-mounted duplicate
+    // variants, piston heads, the upper half of a two-cell block, ...) and
+    // ContentRegistry::registerBlock skips it rather than listing it under some
+    // fallback tab. This is the single source of catalog membership: no
+    // parallel hand-maintained array names which blocks are reachable.
+    CreativeCategory creativeCategory = CreativeCategory::Hidden;
     // Java's `createBlockStateDefinition`: which properties this block's states
     // are the cartesian product of. Declared through the builder below — the
     // flags above that imply a property (pillar, horizontalFacing, lit, leaves)
@@ -645,6 +660,15 @@ class BlockProperties final {
     [[nodiscard]] constexpr BlockProperties container(ContainerType type) const {
         BlockProperties copy = *this;
         copy.definition_.container = type;
+        return copy;
+    }
+    // AR-CI: declares the creative-inventory tab this block is filed under,
+    // mirroring gameplay::Item::category(). A block that never calls this stays
+    // CreativeCategory::Hidden (the field's default) and is technical/
+    // unobtainable — registerBlock's single registry pass skips it.
+    [[nodiscard]] constexpr BlockProperties creative(CreativeCategory category) const {
+        BlockProperties copy = *this;
+        copy.definition_.creativeCategory = category;
         return copy;
     }
     // The block entity this block hosts (BlockEntityType.Builder.of(factory,
@@ -825,34 +849,64 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     BlockProperties::of(Block::Grass, "grass_block", "Grass Block")
         .texture("grass_block_top", "grass_block_side", "dirt")
         .strength(0.6F)
-        .soil(),
-    BlockProperties::of(Block::Dirt, "dirt", "Dirt").texture("dirt").strength(0.5F).soil(),
-    BlockProperties::of(Block::Stone, "stone", "Stone").texture("stone").strength(1.5F, 6.0F),
+        .soil()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::Dirt, "dirt", "Dirt")
+        .texture("dirt")
+        .strength(0.5F)
+        .soil()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::Stone, "stone", "Stone")
+        .texture("stone")
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::Cobblestone, "cobblestone", "Cobblestone")
         .texture("cobblestone")
-        .strength(2.0F, 6.0F),
+        .strength(2.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::OakPlanks, "oak_planks", "Oak Planks")
         .texture("oak_planks")
-        .strength(2.0F, 3.0F),
+        .strength(2.0F, 3.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::OakLog, "oak_log", "Oak Log")
         .texture("oak_log_top", "oak_log", "oak_log_top")
         .strength(2.0F)
-        .pillar(),
-    BlockProperties::of(Block::Bricks, "bricks", "Bricks").texture("bricks").strength(2.0F, 6.0F),
+        .pillar()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::Bricks, "bricks", "Bricks")
+        .texture("bricks")
+        .strength(2.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::Bedrock, "bedrock", "Bedrock")
         .texture("bedrock")
-        .unbreakable(3'600'000.0F),
-    BlockProperties::of(Block::Sand, "sand", "Sand").texture("sand").strength(0.5F).gravity(),
+        .unbreakable(3'600'000.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::Sand, "sand", "Sand")
+        .texture("sand")
+        .strength(0.5F)
+        .gravity()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::Glass, "glass", "Glass")
         .texture("glass")
         .strength(0.3F)
-        .renderLayer(BlockRenderLayer::Translucent),
-    BlockProperties::of(Block::CoalOre, "coal_ore", "Coal Ore").texture("coal_ore").strength(3.0F),
-    BlockProperties::of(Block::IronOre, "iron_ore", "Iron Ore").texture("iron_ore").strength(3.0F),
-    BlockProperties::of(Block::GoldOre, "gold_ore", "Gold Ore").texture("gold_ore").strength(3.0F),
+        .renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::Decoration),
+    BlockProperties::of(Block::CoalOre, "coal_ore", "Coal Ore")
+        .texture("coal_ore")
+        .strength(3.0F)
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::IronOre, "iron_ore", "Iron Ore")
+        .texture("iron_ore")
+        .strength(3.0F)
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::GoldOre, "gold_ore", "Gold Ore")
+        .texture("gold_ore")
+        .strength(3.0F)
+        .creative(CreativeCategory::Functional),
     BlockProperties::of(Block::DiamondOre, "diamond_ore", "Diamond Ore")
         .texture("diamond_ore")
-        .strength(3.0F),
+        .strength(3.0F)
+        .creative(CreativeCategory::Functional),
     // Material.REPLACEABLE_PLANT: placing a block inside tall grass replaces it.
     BlockProperties::of(Block::GrassPlant, "short_grass", "Short Grass")
         .texture("short_grass")
@@ -861,21 +915,25 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .offsetType(BlockOffsetType::XZ)
         .replaceable()
         .noDrops()
-        .support(BlockSupport::Soil),
+        .support(BlockSupport::Soil)
+        .creative(CreativeCategory::Decoration),
     BlockProperties::of(Block::Dandelion, "dandelion", "Dandelion")
         .texture("dandelion")
         .instantBreak()
         .cross()
         .offsetType(BlockOffsetType::XZ)
-        .support(BlockSupport::Soil),
+        .support(BlockSupport::Soil)
+        .creative(CreativeCategory::Decoration),
     BlockProperties::of(Block::OakSapling, "oak_sapling", "Oak Sapling")
         .texture("oak_sapling")
         .instantBreak()
         .cross()
-        .support(BlockSupport::Soil),
+        .support(BlockSupport::Soil)
+        .creative(CreativeCategory::Decoration),
     BlockProperties::of(Block::OakLeaves, "oak_leaves", "Oak Leaves")
         .texture("oak_leaves")
-        .leaves(),
+        .leaves()
+        .creative(CreativeCategory::Decoration),
     BlockProperties::of(Block::Water, "water", "Water")
         .texture("water_still", "water_flow", "water_flow")
         .strength(100.0F)
@@ -890,28 +948,35 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     BlockProperties::of(Block::Gravel, "gravel", "Gravel")
         .texture("gravel")
         .strength(0.6F)
-        .gravity(),
+        .gravity()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::SprucePlanks, "spruce_planks", "Spruce Planks")
         .texture("spruce_planks")
-        .strength(2.0F, 3.0F),
+        .strength(2.0F, 3.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::BirchPlanks, "birch_planks", "Birch Planks")
         .texture("birch_planks")
-        .strength(2.0F, 3.0F),
+        .strength(2.0F, 3.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::SpruceLog, "spruce_log", "Spruce Log")
         .texture("spruce_log_top", "spruce_log", "spruce_log_top")
         .strength(2.0F)
-        .pillar(),
+        .pillar()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::BirchLog, "birch_log", "Birch Log")
         .texture("birch_log_top", "birch_log", "birch_log_top")
         .strength(2.0F)
-        .pillar(),
+        .pillar()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::Bookshelf, "bookshelf", "Bookshelf")
         .texture("oak_planks", "bookshelf", "oak_planks")
-        .strength(1.5F),
+        .strength(1.5F)
+        .creative(CreativeCategory::Decoration),
     BlockProperties::of(Block::CraftingTable, "crafting_table", "Crafting Table")
         .texture("crafting_table_top", "crafting_table_side", "oak_planks")
         .strength(2.5F)
-        .container(ContainerType::CraftingTable),
+        .container(ContainerType::CraftingTable)
+        .creative(CreativeCategory::Functional),
     // One furnace, lit or not: AbstractFurnaceBlock's LIT is a state, so a
     // burning furnace is the same block and keeps its block entity (and its
     // smelt) across the swap. The lit front is picked by the mesher
@@ -922,72 +987,100 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .horizontalFacing()
         .lit(13U)
         .container(ContainerType::Furnace)
-        .blockEntity(BlockEntityKind::Furnace),
+        .blockEntity(BlockEntityKind::Furnace)
+        .creative(CreativeCategory::Functional),
     BlockProperties::of(Block::Obsidian, "obsidian", "Obsidian")
         .texture("obsidian")
-        .strength(50.0F, 1'200.0F),
-    BlockProperties::of(Block::Clay, "clay", "Clay").texture("clay").strength(0.6F),
+        .strength(50.0F, 1'200.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::Clay, "clay", "Clay")
+        .texture("clay")
+        .strength(0.6F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::SnowBlock, "snow_block", "Snow Block")
         .texture("snow")
-        .strength(0.2F),
+        .strength(0.2F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::Netherrack, "netherrack", "Netherrack")
         .texture("netherrack")
-        .strength(0.4F),
+        .strength(0.4F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::Glowstone, "glowstone", "Glowstone")
         .texture("glowstone")
         .strength(0.3F)
-        .light(15U),
+        .light(15U)
+        .creative(CreativeCategory::Functional),
     BlockProperties::of(Block::WhiteWool, "white_wool", "White Wool")
         .texture("white_wool")
-        .strength(0.8F),
-    BlockProperties::of(Block::RedWool, "red_wool", "Red Wool").texture("red_wool").strength(0.8F),
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::RedWool, "red_wool", "Red Wool")
+        .texture("red_wool")
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::BlackWool, "black_wool", "Black Wool")
         .texture("black_wool")
-        .strength(0.8F),
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::StoneBricks, "stone_bricks", "Stone Bricks")
         .texture("stone_bricks")
-        .strength(1.5F, 6.0F),
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::MossyCobblestone, "mossy_cobblestone", "Mossy Cobblestone")
         .texture("mossy_cobblestone")
-        .strength(2.0F, 6.0F),
+        .strength(2.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::Sandstone, "sandstone", "Sandstone")
         .texture("sandstone_top", "sandstone", "sandstone_bottom")
-        .strength(0.8F),
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::Pumpkin, "pumpkin", "Pumpkin")
         .texture("pumpkin_top", "pumpkin_side", "pumpkin_top")
-        .strength(1.0F),
+        .strength(1.0F)
+        .creative(CreativeCategory::Decoration),
     BlockProperties::of(Block::Melon, "melon", "Melon")
         .texture("melon_top", "melon_side", "melon_top")
-        .strength(1.0F),
+        .strength(1.0F)
+        .creative(CreativeCategory::Decoration),
     BlockProperties::of(Block::Tnt, "tnt", "TNT")
         .texture("tnt_top", "tnt_side", "tnt_bottom")
-        .instantBreak(),
+        .instantBreak()
+        .creative(CreativeCategory::Functional),
     BlockProperties::of(Block::Granite, "granite", "Granite")
         .texture("granite")
-        .strength(1.5F, 6.0F),
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::Diorite, "diorite", "Diorite")
         .texture("diorite")
-        .strength(1.5F, 6.0F),
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::Andesite, "andesite", "Andesite")
         .texture("andesite")
-        .strength(1.5F, 6.0F),
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::CoarseDirt, "coarse_dirt", "Coarse Dirt")
         .texture("coarse_dirt")
         .strength(0.5F)
-        .soil(),
+        .soil()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::Podzol, "podzol", "Podzol")
         .texture("podzol_top", "podzol_side", "dirt")
         .strength(0.5F)
-        .soil(),
+        .soil()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::RedSand, "red_sand", "Red Sand")
         .texture("red_sand")
         .strength(0.5F)
-        .gravity(),
+        .gravity()
+        .creative(CreativeCategory::BuildingBlocks),
     // Carved cells below y=11 become lava (CaveCarver#carveAtPoint). Rendered
     // as a solid self-lit cube for now; it carries no fluid simulation. The
     // top face uses the animated still strip and the sides the animated flow
     // strip. Their bases/counts come from BlockAtlasLayout.hpp so resource-pack
     // animation data cannot drift away from shader literals.
+    // AR-CI: no .creative() — a fluid source is world-generated/bucket-placed
+    // only, never a block item in the creative catalog (vanilla LAVA has no
+    // BlockItem either); stays Hidden.
     BlockProperties::of(Block::Lava, "lava", "Lava")
         .texture("lava_still", "lava_flow", "lava_flow")
         .strength(100.0F)
@@ -1002,8 +1095,13 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .noCollision()
         .light(14U)
         .support(BlockSupport::Ground)
-        .torch(),
-    // WallTorchBlock's FACING is a state, not four blocks.
+        .torch()
+        .creative(CreativeCategory::Functional),
+    // WallTorchBlock's FACING is a state, not four blocks. AR-CI: no
+    // .creative() — this is the placed-against-a-wall variant of Torch, reached
+    // only through StandingAndWallBlockItem placement (blockItemFor's torch
+    // special case), never its own catalog entry — exactly the "duplicate/
+    // placed-only state" the task calls out to keep Hidden.
     BlockProperties::of(Block::WallTorch, "wall_torch", "Wall Torch")
         .vanillaAlias("wall_torch")
         .texture("torch")
@@ -1022,87 +1120,114 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .model(BlockModel::Chest)
         .horizontalFacing()
         .container(ContainerType::Chest)
-        .blockEntity(BlockEntityKind::Chest),
+        .blockEntity(BlockEntityKind::Chest)
+        .creative(CreativeCategory::Functional),
     BlockProperties::of(Block::LapisOre, "lapis_ore", "Lapis Lazuli Ore")
         .texture("lapis_ore")
-        .strength(3.0F),
+        .strength(3.0F)
+        .creative(CreativeCategory::Functional),
+    // AR-CI: kept in Functional (its pre-existing tab from the old hand-array)
+    // per the no-regression rule, even though vanilla files redstone_ore's item
+    // under naturalBlocks — moving it to the new Redstone tab is a judgment
+    // call this pass declines to make unasked.
     BlockProperties::of(Block::RedstoneOre, "redstone_ore", "Redstone Ore")
         .texture("redstone_ore")
-        .strength(3.0F),
+        .strength(3.0F)
+        .creative(CreativeCategory::Functional),
     BlockProperties::of(Block::EmeraldOre, "emerald_ore", "Emerald Ore")
         .texture("emerald_ore")
-        .strength(3.0F),
+        .strength(3.0F)
+        .creative(CreativeCategory::Functional),
     BlockProperties::of(Block::MossyStoneBricks, "mossy_stone_bricks", "Mossy Stone Bricks")
         .texture("mossy_stone_bricks")
-        .strength(1.5F, 6.0F),
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::ChiseledStoneBricks, "chiseled_stone_bricks",
                         "Chiseled Stone Bricks")
         .texture("chiseled_stone_bricks")
-        .strength(1.5F, 6.0F),
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::QuartzBlock, "quartz_block", "Block of Quartz")
         .texture("quartz_block_top", "quartz_block_side", "quartz_block_top")
-        .strength(0.8F),
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::JungleLog, "jungle_log", "Jungle Log")
         .texture("jungle_log_top", "jungle_log", "jungle_log_top")
         .strength(2.0F)
-        .pillar(),
+        .pillar()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::JunglePlanks, "jungle_planks", "Jungle Planks")
         .texture("jungle_planks")
-        .strength(2.0F, 3.0F),
+        .strength(2.0F, 3.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::AcaciaLog, "acacia_log", "Acacia Log")
         .texture("acacia_log_top", "acacia_log", "acacia_log_top")
         .strength(2.0F)
-        .pillar(),
+        .pillar()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::AcaciaPlanks, "acacia_planks", "Acacia Planks")
         .texture("acacia_planks")
-        .strength(2.0F, 3.0F),
+        .strength(2.0F, 3.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::DarkOakLog, "dark_oak_log", "Dark Oak Log")
         .texture("dark_oak_log_top", "dark_oak_log", "dark_oak_log_top")
         .strength(2.0F)
-        .pillar(),
+        .pillar()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::DarkOakPlanks, "dark_oak_planks", "Dark Oak Planks")
         .texture("dark_oak_planks")
-        .strength(2.0F, 3.0F),
+        .strength(2.0F, 3.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::SpruceLeaves, "spruce_leaves", "Spruce Leaves")
         .texture("spruce_leaves")
-        .leaves(),
+        .leaves()
+        .creative(CreativeCategory::Decoration),
     BlockProperties::of(Block::BirchLeaves, "birch_leaves", "Birch Leaves")
         .texture("birch_leaves")
-        .leaves(),
+        .leaves()
+        .creative(CreativeCategory::Decoration),
     BlockProperties::of(Block::JungleLeaves, "jungle_leaves", "Jungle Leaves")
         .texture("jungle_leaves")
-        .leaves(),
+        .leaves()
+        .creative(CreativeCategory::Decoration),
     BlockProperties::of(Block::AcaciaLeaves, "acacia_leaves", "Acacia Leaves")
         .texture("acacia_leaves")
-        .leaves(),
+        .leaves()
+        .creative(CreativeCategory::Decoration),
     BlockProperties::of(Block::DarkOakLeaves, "dark_oak_leaves", "Dark Oak Leaves")
         .texture("dark_oak_leaves")
-        .leaves(),
+        .leaves()
+        .creative(CreativeCategory::Decoration),
     BlockProperties::of(Block::SpruceSapling, "spruce_sapling", "Spruce Sapling")
         .texture("spruce_sapling")
         .instantBreak()
         .cross()
-        .support(BlockSupport::Soil),
+        .support(BlockSupport::Soil)
+        .creative(CreativeCategory::Decoration),
     BlockProperties::of(Block::BirchSapling, "birch_sapling", "Birch Sapling")
         .texture("birch_sapling")
         .instantBreak()
         .cross()
-        .support(BlockSupport::Soil),
+        .support(BlockSupport::Soil)
+        .creative(CreativeCategory::Decoration),
     BlockProperties::of(Block::JungleSapling, "jungle_sapling", "Jungle Sapling")
         .texture("jungle_sapling")
         .instantBreak()
         .cross()
-        .support(BlockSupport::Soil),
+        .support(BlockSupport::Soil)
+        .creative(CreativeCategory::Decoration),
     BlockProperties::of(Block::AcaciaSapling, "acacia_sapling", "Acacia Sapling")
         .texture("acacia_sapling")
         .instantBreak()
         .cross()
-        .support(BlockSupport::Soil),
+        .support(BlockSupport::Soil)
+        .creative(CreativeCategory::Decoration),
     BlockProperties::of(Block::DarkOakSapling, "dark_oak_sapling", "Dark Oak Sapling")
         .texture("dark_oak_sapling")
         .instantBreak()
         .cross()
-        .support(BlockSupport::Soil),
+        .support(BlockSupport::Soil)
+        .creative(CreativeCategory::Decoration),
     // FarmlandBlock: the tilled soil a hoe makes. The top face swaps between
     // the dry and moist textures once the orientation's moisture passes 0;
     // the sides are plain dirt, matching the vanilla model. Breaking it
@@ -1149,16 +1274,20 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     // layers 242-245 occupy four of newContentTextures' placeholder slots.
     BlockProperties::of(Block::PolishedGranite, "polished_granite", "Polished Granite")
         .texture("polished_granite")
-        .strength(1.5F, 6.0F),
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::PolishedDiorite, "polished_diorite", "Polished Diorite")
         .texture("polished_diorite")
-        .strength(1.5F, 6.0F),
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::PolishedAndesite, "polished_andesite", "Polished Andesite")
         .texture("polished_andesite")
-        .strength(1.5F, 6.0F),
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::SmoothStone, "smooth_stone", "Smooth Stone")
         .texture("smooth_stone")
-        .strength(2.0F, 6.0F),
+        .strength(2.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     // Slabs: each mirrors its parent block's texture and hardness. The SlabType
     // property (bottom/top/double) is declared by slab(); breaking a double slab
     // yields two slab items (MiningSystem), a single slab yields one.
@@ -1169,58 +1298,69 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("oak_planks")
         .strength(2.0F, 3.0F)
         .slab()
-        .submerges(),
+        .submerges()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::SpruceSlab, "spruce_slab", "Spruce Slab")
         .texture("spruce_planks")
         .strength(2.0F, 3.0F)
         .slab()
-        .submerges(),
+        .submerges()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::BirchSlab, "birch_slab", "Birch Slab")
         .texture("birch_planks")
         .strength(2.0F, 3.0F)
         .slab()
-        .submerges(),
+        .submerges()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::JungleSlab, "jungle_slab", "Jungle Slab")
         .texture("jungle_planks")
         .strength(2.0F, 3.0F)
         .slab()
-        .submerges(),
+        .submerges()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::AcaciaSlab, "acacia_slab", "Acacia Slab")
         .texture("acacia_planks")
         .strength(2.0F, 3.0F)
         .slab()
-        .submerges(),
+        .submerges()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::DarkOakSlab, "dark_oak_slab", "Dark Oak Slab")
         .texture("dark_oak_planks")
         .strength(2.0F, 3.0F)
         .slab()
-        .submerges(),
+        .submerges()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::StoneSlab, "stone_slab", "Stone Slab")
         .texture("stone")
         .strength(1.5F, 6.0F)
         .slab()
-        .submerges(),
+        .submerges()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::CobblestoneSlab, "cobblestone_slab", "Cobblestone Slab")
         .texture("cobblestone")
         .strength(2.0F, 6.0F)
         .slab()
-        .submerges(),
+        .submerges()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::StoneBrickSlab, "stone_brick_slab", "Stone Brick Slab")
         .texture("stone_bricks")
         .strength(1.5F, 6.0F)
         .slab()
-        .submerges(),
+        .submerges()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::SmoothStoneSlab, "smooth_stone_slab", "Smooth Stone Slab")
         .texture("smooth_stone")
         .strength(2.0F, 6.0F)
         .slab()
-        .submerges(),
+        .submerges()
+        .creative(CreativeCategory::BuildingBlocks),
     // RedstoneBlock: a full solid cube that is a constant redstone source. The
     // power itself is not a property — it is answered by the signal table for
     // every side — so the block needs no extra state.
     BlockProperties::of(Block::RedstoneBlock, "redstone_block", "Block of Redstone")
         .texture("redstone_block")
-        .strength(5.0F, 6.0F),
+        .strength(5.0F, 6.0F)
+        .creative(CreativeCategory::Redstone),
     // RedstoneTorch: mounts on the ground like a torch and carries a LIT state
     // (default handled by the placement/component layer, vanilla default true).
     // Emits light 7 while lit; the redstone signal comes from the signal table,
@@ -1233,9 +1373,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .noCollision()
         .support(BlockSupport::Ground)
         .torch()
-        .lit(7U),
+        .lit(7U)
+        .creative(CreativeCategory::Redstone),
     // RedstoneWallTorch: the wall-mounted variant, FACING as a state exactly like
-    // WallTorch, plus the LIT state.
+    // WallTorch, plus the LIT state. AR-CI: no .creative() — same "placed-
+    // against-a-wall duplicate variant" as WallTorch, reached only through
+    // StandingAndWallBlockItem placement, never its own catalog entry.
     BlockProperties::of(Block::RedstoneWallTorch, "redstone_wall_torch", "Redstone Wall Torch")
         .vanillaAlias("redstone_wall_torch")
         .texture("redstone_torch")
@@ -1257,7 +1400,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .noCollision()
         .support(BlockSupport::Wall)
         .state(StateProperty::Facing, 6U)
-        .state(StateProperty::Powered, 2U),
+        .state(StateProperty::Powered, 2U)
+        .creative(CreativeCategory::Redstone),
     // Repeater: horizontal FACING, a DELAY of 1-4 ticks, and a POWERED output.
     // The Torch model is a placeholder that keeps it out of the full-cube (and so
     // the redstone-conductor) set until a repeater model lands in the renderer.
@@ -1270,7 +1414,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .support(BlockSupport::Ground)
         .horizontalFacing()
         .state(StateProperty::Delay, 4U)
-        .state(StateProperty::Powered, 2U),
+        .state(StateProperty::Powered, 2U)
+        .creative(CreativeCategory::Redstone),
     // Comparator: horizontal FACING, a MODE (compare/subtract), a POWERED
     // boolean output and a 0-15 AnalogSignal output. Torch-model placeholder as
     // for the repeater.
@@ -1284,7 +1429,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .horizontalFacing()
         .state(StateProperty::ComparatorMode, 2U)
         .state(StateProperty::Powered, 2U)
-        .state(StateProperty::AnalogSignal, 16U),
+        .state(StateProperty::AnalogSignal, 16U)
+        .creative(CreativeCategory::Redstone),
     // Redstone dust: a flat wire carrying POWER 0-15 in its AnalogSignal. Torch
     // model placeholder keeps it non-full-cube; needs a sturdy floor.
     BlockProperties::of(Block::RedstoneWire, "redstone_wire", "Redstone Dust")
@@ -1294,7 +1440,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .model(BlockModel::Torch)
         .noCollision()
         .support(BlockSupport::Ground)
-        .state(StateProperty::AnalogSignal, 16U),
+        .state(StateProperty::AnalogSignal, 16U)
+        .creative(CreativeCategory::Redstone),
     // Observer: FACING is the six-way watched direction, POWERED the pulse. Torch
     // model placeholder keeps it out of the redstone-conductor set.
     BlockProperties::of(Block::Observer, "observer", "Observer")
@@ -1302,7 +1449,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .strength(3.0F)
         .model(BlockModel::Torch)
         .state(StateProperty::Facing, 6U)
-        .state(StateProperty::Powered, 2U),
+        .state(StateProperty::Powered, 2U)
+        .creative(CreativeCategory::Redstone),
     // Stone button: like the lever (attach + POWERED), but a press is timed.
     // AR-B3: gains a real shape/collision through .button() — it used to sit
     // on the Torch placeholder model with noCollision(), which predates this
@@ -1310,18 +1458,21 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     BlockProperties::of(Block::StoneButton, "stone_button", "Stone Button")
         .texture("stone")
         .instantBreak()
-        .button(),
+        .button()
+        .creative(CreativeCategory::Redstone),
     // Piston: a full-cube block with a six-way FACING and EXTENDED in POWERED.
     BlockProperties::of(Block::Piston, "piston", "Piston")
         .texture("piston_side")
         .strength(1.5F)
         .state(StateProperty::Facing, 6U)
-        .state(StateProperty::Powered, 2U),
+        .state(StateProperty::Powered, 2U)
+        .creative(CreativeCategory::Redstone),
     BlockProperties::of(Block::StickyPiston, "sticky_piston", "Sticky Piston")
         .texture("piston_side")
         .strength(1.5F)
         .state(StateProperty::Facing, 6U)
-        .state(StateProperty::Powered, 2U),
+        .state(StateProperty::Powered, 2U)
+        .creative(CreativeCategory::Redstone),
     // Identical to the chest in every rendered and stored respect (same texture,
     // model, container UI and horizontal facing), differing only in identity: it
     // hosts the TrappedChest block-entity type, so its storage and save section
@@ -1334,55 +1485,75 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .model(BlockModel::Chest)
         .horizontalFacing()
         .container(ContainerType::Chest)
-        .blockEntity(BlockEntityKind::TrappedChest),
+        .blockEntity(BlockEntityKind::TrappedChest)
+        .creative(CreativeCategory::Redstone),
     // WG-0 nether base blocks. Strengths and the magma light level mirror
     // 1.16.1/26.1 Blocks.java; textures name the vanilla sprites so the
     // name-driven atlas build resolves them. These are identity only — placement
     // is WG-2, playable content (nether-brick building, nether wart farming)
     // is AR-B.
+    // AR-CI judgment call: WG-0's own comment calls these "identity only", but
+    // NetherGenerator.cpp/EndGenerator.cpp already place every one of them in
+    // generated terrain and MiningSystem breaks/drops them like any other
+    // block — nothing here is placed-only or a duplicate variant, so they are
+    // filed as obtainable BuildingBlocks (matching how the pre-existing array
+    // grouped Netherrack/Sand/Granite as "natural building material") rather
+    // than left Hidden pending WG-2/WG-3's full dimension reachability.
     BlockProperties::of(Block::SoulSand, "soul_sand", "Soul Sand")
         .texture("soul_sand")
-        .strength(0.5F),
+        .strength(0.5F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::SoulSoil, "soul_soil", "Soul Soil")
         .texture("soul_soil")
-        .strength(0.5F),
+        .strength(0.5F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::NetherQuartzOre, "nether_quartz_ore", "Nether Quartz Ore")
         .texture("nether_quartz_ore")
-        .strength(3.0F, 3.0F),
+        .strength(3.0F, 3.0F)
+        .creative(CreativeCategory::Functional),
     // MagmaBlock: a full solid cube that glows at light level 3 (vanilla
     // lightLevel(3)). The damage-on-standing behaviour is AR-B, not WG-0.
     BlockProperties::of(Block::MagmaBlock, "magma_block", "Magma Block")
         .texture("magma")
         .strength(0.5F)
-        .light(3U),
+        .light(3U)
+        .creative(CreativeCategory::BuildingBlocks),
     // Basalt: a RotatedPillarBlock in vanilla (top/side end grain), so it takes
     // the axis of the face it is placed against, like a log.
     BlockProperties::of(Block::Basalt, "basalt", "Basalt")
         .texture("basalt_top", "basalt_side", "basalt_top")
         .strength(1.25F, 4.2F)
-        .pillar(),
+        .pillar()
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::Blackstone, "blackstone", "Blackstone")
         .texture("blackstone_top", "blackstone", "blackstone_top")
-        .strength(1.5F, 6.0F),
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::NetherBricks, "nether_bricks", "Nether Bricks")
         .texture("nether_bricks")
-        .strength(2.0F, 6.0F),
+        .strength(2.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::NetherWartBlock, "nether_wart_block", "Nether Wart Block")
         .texture("nether_wart_block")
-        .strength(1.0F),
+        .strength(1.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::CrimsonNylium, "crimson_nylium", "Crimson Nylium")
         .texture("crimson_nylium", "crimson_nylium_side", "netherrack")
-        .strength(0.4F),
+        .strength(0.4F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::WarpedNylium, "warped_nylium", "Warped Nylium")
         .texture("warped_nylium", "warped_nylium_side", "netherrack")
-        .strength(0.4F),
+        .strength(0.4F)
+        .creative(CreativeCategory::BuildingBlocks),
     // WG-0 end base blocks. WG-3 places these; playable content stays AR-B.
     BlockProperties::of(Block::EndStone, "end_stone", "End Stone")
         .texture("end_stone")
-        .strength(3.0F, 9.0F),
+        .strength(3.0F, 9.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::PurpurBlock, "purpur_block", "Purpur Block")
         .texture("purpur_block")
-        .strength(1.5F, 6.0F),
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
     // AR-B2: the first stair/door/fence-gate species. Hardness/blast resistance
     // mirror oak_planks, the parent block each recipe crafts from.
     // F2 extension (this pass): StairBlock is `implements SimpleWaterloggedBlock`
@@ -1392,7 +1563,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("oak_planks")
         .strength(2.0F, 3.0F)
         .stairs()
-        .submerges(),
+        .submerges()
+        .creative(CreativeCategory::BuildingBlocks),
     // DoorBlock: `top`/`side` name the two vanilla door sprites (the upper and
     // lower halves), reused here as the top/side texture slots the mesher's
     // per-half box lookup reads — a door has no bottom face on either half, so
@@ -1405,7 +1577,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     BlockProperties::of(Block::OakDoor, "oak_door", "Oak Door")
         .texture("oak_door_top", "oak_door_bottom", "oak_door_bottom")
         .strength(3.0F)
-        .door(),
+        .door()
+        .creative(CreativeCategory::BuildingBlocks),
     // F2 extension: FenceGateBlock also does *not* implement
     // SimpleWaterloggedBlock in vanilla (`class FenceGateBlock extends
     // HorizontalDirectionalBlock` — no WATERLOGGED property in
@@ -1417,7 +1590,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     BlockProperties::of(Block::OakFenceGate, "oak_fence_gate", "Oak Fence Gate")
         .texture("oak_planks")
         .strength(2.0F, 3.0F)
-        .fenceGate(),
+        .fenceGate()
+        .creative(CreativeCategory::BuildingBlocks),
     // AR-B3: TrapDoorBlock `implements SimpleWaterloggedBlock` in vanilla
     // (TrapDoorBlock.java:43) — unlike the door, a trapdoor *does* submerge.
     // Left un-opted for this pass (matching AR-B2's own stated boundary: F2
@@ -1426,19 +1600,22 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     BlockProperties::of(Block::OakTrapdoor, "oak_trapdoor", "Oak Trapdoor")
         .texture("oak_trapdoor", "oak_trapdoor", "oak_trapdoor")
         .strength(3.0F)
-        .trapdoor(),
+        .trapdoor()
+        .creative(CreativeCategory::BuildingBlocks),
     // BasePressurePlateBlock: not a SimpleWaterloggedBlock in vanilla either
     // (PressurePlateBlock.java has no WATERLOGGED property) — no .submerges().
     BlockProperties::of(Block::StonePressurePlate, "stone_pressure_plate", "Stone Pressure Plate")
         .texture("stone")
         .instantBreak()
-        .pressurePlate(),
+        .pressurePlate()
+        .creative(CreativeCategory::BuildingBlocks),
     // WallBlock: the first cobblestone-family wall, proving the four-side
     // connection mechanism the way OakStairs proved the join-shape mechanism.
     BlockProperties::of(Block::CobblestoneWall, "cobblestone_wall", "Cobblestone Wall")
         .texture("cobblestone")
         .strength(2.0F, 6.0F)
-        .wall(),
+        .wall()
+        .creative(CreativeCategory::BuildingBlocks),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {

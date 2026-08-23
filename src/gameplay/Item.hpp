@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/CreativeCategory.hpp"
 #include "core/Identifier.hpp"
 #include "gameplay/ItemUse.hpp"
 #include "world/Block.hpp"
@@ -22,6 +23,11 @@ class EntityType;
 using core::Identifier;
 using core::kNamespace;
 using core::kVanillaNamespace;
+// The creative-inventory tab an item or block is filed under. The type itself
+// lives in core/CreativeCategory.hpp (AR-CI) so world/Block.hpp can declare a
+// block's tab too, without a circular include back to this header; the alias
+// keeps every existing `gameplay::CreativeCategory` call site unchanged.
+using core::CreativeCategory;
 
 // The tool a stack is wielded as, and the material it is made from. Together
 // they carry Java 1.16.1's ToolMaterials: a tier's harvest level and mining
@@ -44,19 +50,6 @@ enum class ToolTier : std::uint8_t {
     Iron,
     Gold,
     Diamond,
-};
-
-// The creative-inventory tab an item or block is filed under. Lives here (rather
-// than in Inventory.hpp) because it is metadata every registered Item carries.
-enum class CreativeCategory : std::uint8_t {
-    BuildingBlocks,
-    Decoration,
-    Functional,
-    Materials,
-    Food,
-    Tools,
-    SpawnEggs,
-    Count,
 };
 
 // What eating one item restores, following Java 1.16.1 FoodComponent.

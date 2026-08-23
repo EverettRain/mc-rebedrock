@@ -2023,6 +2023,15 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_content_registry_test PRIVATE src)
     add_test(NAME content_registry COMMAND mc_rebedrock_content_registry_test)
 
+    # AR-CI: the creative-catalog reachability guard (every non-Hidden block in
+    # exactly one tab, no technical leakage, no regression on the old tabs).
+    add_executable(mc_rebedrock_creative_catalog_test
+        tests/creative_catalog_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_creative_catalog_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_creative_catalog_test PRIVATE src)
+    add_test(NAME creative_catalog COMMAND mc_rebedrock_creative_catalog_test)
+
     add_executable(mc_rebedrock_registry_test
         tests/registry_test.cpp
     )
