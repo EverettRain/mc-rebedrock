@@ -141,8 +141,22 @@ void GameplayMutationSink::onNeighborChanged(world::BlockPos neighbor, world::Bl
     // re-reads its input and may schedule its toggle tick. A no-op for a
     // non-component, so it runs for every neighbour without a type check here —
     // this is the block-update half of the redstone drive (W-4).
+    //
+    // Most components only schedule a later tick here (a torch's 2gt toggle),
+    // whose own write travels through dispatchRedstoneTick's own sink/changes
+    // path at drain time — but a trapdoor's neighborChanged (W-signal) writes
+    // synchronously, in this same call, exactly as vanilla's TrapDoorBlock does
+    // (no scheduled delay). The before/after compare is what makes that write
+    // visible without a second special-cased publish path: cheap (one extra
+    // state read) even on the overwhelming majority of neighbours where nothing
+    // changed, and correct for exactly the one case that does.
+    const auto before = world_->state(neighbor.x, neighbor.y, neighbor.z);
     session_->worldSimulation().notifyRedstoneComponent(
         *world_, {neighbor.x, neighbor.y, neighbor.z});
+    const auto after = world_->state(neighbor.x, neighbor.y, neighbor.z);
+    if (after != before) {
+        session_->events().publish(WorldEditEvent{neighbor.x, neighbor.y, neighbor.z, after, true});
+    }
 
     // Everything below is source-centric — the falling-block/fluid/support/leaf
     // fan-out that WorldSimulation drives from the changed cell — so it collapses

@@ -248,6 +248,16 @@ void tickPressurePlates(GameSession& session, world::World& world, glm::vec3 pla
     for (const glm::vec3 feet : creatureFeet) {
         addIfPlate(cellUnder(feet));
     }
+    // BasePressurePlateBlock#checkPressed: on a signal change, write the new
+    // POWERED state (flags 2, matching vanilla's level.setBlock(pos, state, 2) —
+    // clients only, no built-in neighbour fan-out from the write itself) and then
+    // explicitly call updateNeighbours, which — unlike the write's own
+    // NotifyNeighbors fan-out — notifies *both* the plate's own six neighbours
+    // AND the six neighbours of the block the plate sits on
+    // (BasePressurePlateBlock#updateNeighbours: `level.updateNeighborsAt(pos, ...)`
+    // + `level.updateNeighborsAt(pos.below(), ...)`). That second call is what
+    // lets a wire or repeater sitting directly under the solid block the plate
+    // rests on react — a cell the plate's own six neighbours never reach.
     const auto setPowered = [&](glm::ivec3 cell, bool powered) {
         const auto state = world.state(cell.x, cell.y, cell.z);
         if (state.powered() == powered) {
@@ -255,8 +265,10 @@ void tickPressurePlates(GameSession& session, world::World& world, glm::vec3 pla
         }
         GameplayMutationSink sink{world, session};
         session.worldMutations().setBlock(world, {cell.x, cell.y, cell.z}, state.withPowered(powered),
-                                          world::MutationFlags::All,
+                                          world::MutationFlags::NotifyClients,
                                           world::MutationCause::PlayerPlace, sink);
+        session.worldMutations().updateNeighborsAt({cell.x, cell.y, cell.z}, sink);
+        session.worldMutations().updateNeighborsAt({cell.x, cell.y - 1, cell.z}, sink);
     };
     for (const auto& cell : covered) {
         setPowered(cell, true);

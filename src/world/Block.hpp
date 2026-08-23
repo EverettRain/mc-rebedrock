@@ -736,7 +736,12 @@ class BlockProperties final {
             .state(StateProperty::Open, 2U);
     }
 
-    // A TrapDoorBlock (AR-B3): the TrapDoor model plus Facing x Half x Open.
+    // A TrapDoorBlock (AR-B3, redstone sink wired in W-signal): the TrapDoor
+    // model plus Facing x Half x Open x Powered. Powered is not rendered/shaped
+    // (the mesher and BlockShape only ever read Open) — it exists purely so
+    // TrapDoorBlock.neighborChanged's "signal != POWERED" edge check has
+    // somewhere to remember the last signal it saw, exactly as vanilla stores it
+    // alongside OPEN rather than re-deriving it every neighbour notification.
     // Collision stays on — its thin box, like a door's, is the real collision
     // source (noCollision() would zero collisionSpan entirely).
     [[nodiscard]] constexpr BlockProperties trapdoor() const {
@@ -745,7 +750,8 @@ class BlockProperties final {
             .renderLayer(BlockRenderLayer::Cutout)
             .horizontalFacing()
             .state(StateProperty::Half, 2U)
-            .state(StateProperty::Open, 2U);
+            .state(StateProperty::Open, 2U)
+            .state(StateProperty::Powered, 2U);
     }
 
     // A BasePressurePlateBlock (AR-B3): the PressurePlate model plus Powered,

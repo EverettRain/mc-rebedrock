@@ -225,13 +225,18 @@ int main() {
              .withOpen(true)
              .withDoorUpperHalf(true)},
         {14, 62, -8, world::BlockState{world::Block::OakFenceGate, world::BlockOrientation::West}},
-        // AR-B3: the trapdoor's Half/Open axes round-trip by name exactly like
-        // the door's did above (they share the same Half property, read
-        // through the trapdoor-specific accessor).
+        // AR-B3 + W-signal: the trapdoor's Half/Open axes round-trip by name
+        // exactly like the door's did above (they share the same Half
+        // property, read through the trapdoor-specific accessor); Powered is
+        // this pass's new axis (the redstone-sink edge memory
+        // TrapDoorBlock.neighborChanged compares against), saved alongside a
+        // signal that agrees with Open — the state a lever-held-open trapdoor
+        // would actually be saved in.
         {15, 62, -8,
          world::BlockState{world::Block::OakTrapdoor, world::BlockOrientation::East}
              .withTrapdoorHalf(world::SlabPortion::Top)
-             .withOpen(true)},
+             .withOpen(true)
+             .withPowered(true)},
         // The button's Facing/Powered axes — Powered already had a name
         // (shared with the lever), so this is not a new axis, just a new
         // block exercising it.
@@ -395,6 +400,7 @@ int main() {
     assert(loaded.edits[12].state.orientation() == world::BlockOrientation::East);
     assert(loaded.edits[12].state.trapdoorHalf() == world::SlabPortion::Top);
     assert(loaded.edits[12].state.open());
+    assert(loaded.edits[12].state.powered());
     assert(loaded.edits[13].state.block() == world::Block::StoneButton);
     assert(loaded.edits[13].state.orientation() == world::BlockOrientation::South);
     assert(loaded.edits[13].state.powered());

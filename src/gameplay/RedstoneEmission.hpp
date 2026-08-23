@@ -63,7 +63,7 @@ enum class Direction : std::uint8_t { Down, Up, North, South, West, East };
            block == world::Block::RedstoneWallTorch || block == world::Block::Lever ||
            block == world::Block::Repeater || block == world::Block::Comparator ||
            block == world::Block::RedstoneWire || block == world::Block::Observer ||
-           block == world::Block::StoneButton;
+           block == world::Block::StoneButton || block == world::Block::StonePressurePlate;
 }
 
 // Whether a block is a diode (repeater or comparator) — DiodeBlock.isDiode.
@@ -106,6 +106,13 @@ namespace detail {
 [[nodiscard]] constexpr int weakRedstoneWire(world::BlockState s, Direction dir) {
     return dir != Direction::Down ? s.analogSignal() : 0;
 }
+// BasePressurePlateBlock.getSignal: POWERED ? 15 : 0, every side weakly — the
+// same shape as a lever/button's weakPoweredAllSides (PressurePlateBlock's
+// getSignalForState is exactly POWERED ? 15 : 0, and BasePressurePlateBlock.
+// getSignal returns that unconditionally regardless of direction).
+[[nodiscard]] constexpr int weakPressurePlate(world::BlockState s, Direction dir) {
+    return weakPoweredAllSides(s, dir);
+}
 
 // The weak table, baked into rodata and indexed by block ordinal — the built-in
 // block's ordinal is its BlockId, so this is a BlockId-keyed emission table.
@@ -124,6 +131,7 @@ inline constexpr std::array<PowerFn, world::kBuiltinBlockCount> kWeakPowerTable 
     set(world::Block::Comparator, &weakComparator);
     set(world::Block::RedstoneWire, &weakRedstoneWire);
     set(world::Block::Observer, &poweredOutFacing15);
+    set(world::Block::StonePressurePlate, &weakPressurePlate);
     return table;
 }();
 
@@ -156,6 +164,13 @@ namespace detail {
 [[nodiscard]] constexpr int strongWireDown(world::BlockState s, Direction dir) {
     return dir == Direction::Down ? s.analogSignal() : 0;
 }
+// BasePressurePlateBlock.getDirectSignal: direction == UP ? getSignalForState :
+// 0 — a pressure plate strongly charges only the block it sits on top of
+// (unlike a lever/button, which strongly charge the block they are mounted
+// against, i.e. their own FACING).
+[[nodiscard]] constexpr int strongPressurePlateUp(world::BlockState s, Direction dir) {
+    return dir == Direction::Up ? weakPressurePlate(s, dir) : 0;
+}
 
 // The strong table. Levers/buttons strongly power only the block they hang on
 // (FACING); diodes and the observer's direct signal equal their weak emission;
@@ -174,6 +189,7 @@ inline constexpr std::array<PowerFn, world::kBuiltinBlockCount> kStrongPowerTabl
     set(world::Block::Comparator, &weakComparator);     // == getSignal
     set(world::Block::Observer, &poweredOutFacing15);   // == getSignal
     set(world::Block::RedstoneWire, &strongWireDown);
+    set(world::Block::StonePressurePlate, &strongPressurePlateUp);
     return table;
 }();
 

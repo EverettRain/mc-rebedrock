@@ -152,6 +152,40 @@ class RedstoneCircuit final {
         return place(rel,
                      mc::world::BlockState{mc::world::Block::StoneButton, orientationOf(connectedDir)});
     }
+    // A pressure plate, unpressed by default.
+    RedstoneCircuit& pressurePlate(mc::world::BlockPos rel) {
+        return place(rel, mc::world::BlockState{mc::world::Block::StonePressurePlate});
+    }
+    // A trapdoor, closed by default. `facing` only matters for its shape/mesh —
+    // its redstone reaction (W-signal) is direction-independent, reading
+    // getBestNeighborSignal like any other sink.
+    RedstoneCircuit& trapdoor(mc::world::BlockPos rel, gameplay::redstone::Direction facing) {
+        return place(rel, mc::world::BlockState{mc::world::Block::OakTrapdoor, orientationOf(facing)});
+    }
+
+    // The deterministic input primitive for a pressure plate ==
+    // BasePressurePlateBlock#checkPressed's write path, standing in for the
+    // entityInside/tick pair PlayerInteraction::tickPressurePlates drives in the
+    // real runtime (this harness has no entities): writes POWERED directly, then
+    // calls BasePressurePlateBlock#updateNeighbours — the plate's own six
+    // neighbours *and* the six neighbours of the block it sits on
+    // (`pos.below()`), exactly the two-call fan-out PlayerInteraction.cpp's
+    // tickPressurePlates now performs.
+    void setPressurePlate(mc::world::BlockPos rel, bool pressed) {
+        const auto pos = absolute(rel);
+        const auto state = world_.state(pos.x, pos.y, pos.z);
+        if (state.block() != mc::world::Block::StonePressurePlate || state.powered() == pressed) {
+            return;
+        }
+        const auto next = state.withPowered(pressed);
+        mc::gameplay::GameplayMutationSink sink{world_, session_};
+        static_cast<void>(session_.worldMutations().setBlock(
+            world_, pos, next, mc::world::MutationFlags::NotifyClients,
+            mc::world::MutationCause::Command, sink));
+        session_.worldMutations().updateNeighborsAt(pos, sink);
+        session_.worldMutations().updateNeighborsAt({pos.x, pos.y - 1, pos.z}, sink);
+        session_.drainEvents();
+    }
 
     // Press == ButtonBlock.press: set POWERED (with the lever's propagation) and
     // schedule the timed release.

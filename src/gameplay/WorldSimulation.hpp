@@ -169,7 +169,13 @@ class WorldSimulation final {
     // — the write half is the scheduled tick drained inside tick(). A no-op for a
     // cell that is not a redstone component, so the neighbour fan-out can call it
     // for every neighbour without a type check at the call site.
-    void notifyRedstoneComponent(const world::World& world, SimulationPosition position);
+    //
+    // Non-const: most components only read `world` here and schedule a later
+    // tick, but a trapdoor's neighborChanged (W-signal) writes its OPEN/POWERED
+    // state synchronously, in this same block-update pass, exactly as vanilla's
+    // TrapDoorBlock.neighborChanged calls level.setBlock inline rather than
+    // scheduling anything — a trapdoor has no delay, unlike a torch's 2gt toggle.
+    void notifyRedstoneComponent(world::World& world, SimulationPosition position);
 
     // An observer at `observerPos` saw a block-state change at `changedPos`
     // (the updateShape pass reports every neighbour a write touched). If that is

@@ -115,7 +115,7 @@ class RecordingMutationSink final : public world::MutationSink {};
 // The mesh/save side still travels as BlockChange, recorded by the caller.
 class RedstoneReactionSink final : public world::MutationSink {
   public:
-    RedstoneReactionSink(const world::World& world, WorldSimulation& simulation)
+    RedstoneReactionSink(world::World& world, WorldSimulation& simulation)
         : world_(world), simulation_(simulation) {}
 
     void onNeighborChanged(world::BlockPos neighbor, world::BlockPos /*source*/) override {
@@ -123,7 +123,7 @@ class RedstoneReactionSink final : public world::MutationSink {
     }
 
   private:
-    const world::World& world_;
+    world::World& world_;
     WorldSimulation& simulation_;
 };
 
@@ -947,7 +947,7 @@ bool WorldSimulation::setSimulatedBlock(
     return result.changed;
 }
 
-void WorldSimulation::notifyRedstoneComponent(const world::World& world,
+void WorldSimulation::notifyRedstoneComponent(world::World& world,
                                               SimulationPosition position) {
     const auto block = world.block(position.x, position.y, position.z);
     const world::BlockPos pos{position.x, position.y, position.z};
@@ -1022,6 +1022,29 @@ void WorldSimulation::notifyRedstoneComponent(const world::World& world,
         } else if (!extend && extended) {
             static_cast<void>(blockEvents_.queue({position, kPistonEventType, kPistonContract, 0}));
         }
+        return;
+    }
+
+    if (block == world::Block::OakTrapdoor) {
+        // TrapDoorBlock.neighborChanged: a redstone SINK, not a source (never
+        // in isSignalSource/the emission tables) — it reacts to the strongest
+        // signal reaching it and writes synchronously, in this same block-update
+        // pass, unlike a torch's scheduled 2gt toggle. `hasNeighborSignal` reads
+        // level.hasNeighborSignal(pos) == getBestNeighborSignal(pos) > 0.
+        const bool signal = redstone::getBestNeighborSignal(world, pos) > 0;
+        if (signal == state.powered()) {
+            return; // no edge: vanilla's `signal != state.getValue(POWERED)` guard
+        }
+        // OPEN tracks the signal 1:1 (a disagreement toggles it to match); the
+        // sound event vanilla plays here is presentation and is intentionally
+        // omitted, per this node's scope.
+        const auto next = state.withOpen(signal).withPowered(signal);
+        RedstoneReactionSink sink{world, *this};
+        // Flags 2 (clients only), matching vanilla's level.setBlock(pos, state, 2)
+        // — TrapDoorBlock.neighborChanged does not itself fan out a neighbour
+        // pass; only the write that caused the input change already did that.
+        static_cast<void>(mutations_.setBlock(world, pos, next, world::MutationFlags::NotifyClients,
+                                              world::MutationCause::ScheduledTick, sink));
         return;
     }
 }
