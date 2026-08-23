@@ -18,6 +18,7 @@
 // slot every future connection into, rather than a socket that is assumed to be
 // a compatible peer.
 
+#include "core/VersionManifest.hpp"
 #include "gameplay/BlockIdRemap.hpp"
 #include "gameplay/StreamCodec.hpp"
 #include "net/Transport.hpp"
@@ -41,7 +42,11 @@ namespace mc::net {
 // v4: block identity crosses the wire as a dense BlockId rather than an
 // identifier string, and the ServerHello carries the server's block-registry
 // name snapshot so the client can remap peer ids to its own by name (R0-4).
-inline constexpr std::uint32_t kProtocolVersion = 4U;
+//
+// The value lives in the single version manifest (core/VersionManifest.hpp); this
+// is a named alias so the handshake code reads naturally, but the number is
+// defined once, in kVersion, and bumped there.
+inline constexpr std::uint32_t kProtocolVersion = core::kVersion.protocolVersion;
 
 // Identifies this as a rebedrock game connection, so a stray or hostile peer
 // that opens the socket but speaks something else is refused at the first frame

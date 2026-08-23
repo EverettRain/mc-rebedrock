@@ -1,5 +1,6 @@
 #include "persistence/SaveRepository.hpp"
 
+#include "core/VersionManifest.hpp"
 #include "gameplay/ItemRegistry.hpp"
 #include "persistence/SaveStream.hpp"
 #include "persistence/UnknownBlockTable.hpp"
@@ -45,7 +46,14 @@ constexpr std::array<std::uint8_t, 8> kMagic{'M', 'C', 'R', 'B', 'S', 'A', 'V', 
 // the Nether writes to `<world>/DIM-1/region` and the End to `<world>/DIM1/region`.
 // The bump only advertises the capability — an 18 (or older) world has no
 // dimension subfolders and loads exactly as before (only the Overworld present).
-constexpr std::uint32_t kFormatVersion = 19U;
+// The save/world format number now lives in the single version manifest as
+// kVersion.worldVersion (Java's `world_version`); this is a named alias so the
+// save code reads unchanged, but the number is defined once, in kVersion, and
+// bumped there. The static_assert guards "bumped the format but forgot to sync
+// the manifest": the two must agree at compile time.
+constexpr std::uint32_t kFormatVersion = core::kVersion.worldVersion;
+static_assert(kFormatVersion == 19U,
+              "save format version must match kVersion.worldVersion; bump both together");
 constexpr std::uint32_t kFirstOwnerDrivenFormatVersion = 17U;
 constexpr std::uint32_t kOldestSupportedFormatVersion = 1U;
 constexpr std::uint64_t kMaximumEdits = 16U * 1024U * 1024U;

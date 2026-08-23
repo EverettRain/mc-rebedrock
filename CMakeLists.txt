@@ -34,6 +34,46 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# --- Build metadata for the single version manifest (META-0) -----------------
+# core/VersionManifest.hpp's kBuildTime / kBuildRef are baked in from the git
+# commit, NOT the wall clock: the commit's author date and short hash. Two
+# configures of the same commit therefore produce byte-identical metadata — a
+# build's identity is a function of its source, not of when it was built (see
+# content-dev/META-metadata/REGULAR.md §3 determinism). Outside a checkout both
+# fall back to "unknown"; nothing ever reads the current system time.
+set(MC_REBEDROCK_BUILD_TIME "unknown")
+set(MC_REBEDROCK_BUILD_REF "unknown")
+find_package(Git QUIET)
+if(GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_CURRENT_SOURCE_DIR}"
+                show -s --format=%cd --date=format:%Y-%m-%dT%H:%M:%SZ HEAD
+        OUTPUT_VARIABLE _MC_REBEDROCK_GIT_TIME
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE _MC_REBEDROCK_GIT_TIME_RC)
+    if(_MC_REBEDROCK_GIT_TIME_RC EQUAL 0 AND _MC_REBEDROCK_GIT_TIME)
+        set(MC_REBEDROCK_BUILD_TIME "${_MC_REBEDROCK_GIT_TIME}")
+    endif()
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_CURRENT_SOURCE_DIR}"
+                rev-parse --short HEAD
+        OUTPUT_VARIABLE _MC_REBEDROCK_GIT_REF
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE _MC_REBEDROCK_GIT_REF_RC)
+    if(_MC_REBEDROCK_GIT_REF_RC EQUAL 0 AND _MC_REBEDROCK_GIT_REF)
+        set(MC_REBEDROCK_BUILD_REF "${_MC_REBEDROCK_GIT_REF}")
+    endif()
+endif()
+# The generated header lands under the build tree; its directory is added to the
+# runtime library's PUBLIC include path so every consumer sees core/BuildInfo.hpp.
+set(MC_REBEDROCK_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/BuildInfo.hpp.in"
+    "${MC_REBEDROCK_GENERATED_INCLUDE_DIR}/core/BuildInfo.hpp"
+    @ONLY)
+
 option(MC_REBEDROCK_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(
     MC_REBEDROCK_BUILD_WINDOWS_ON_MAC
@@ -281,7 +321,8 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
 # library passes it on to everything that links it.
 find_package(Threads)
 add_library(mc_rebedrock_runtime STATIC ${MC_REBEDROCK_RUNTIME_SOURCES})
-target_include_directories(mc_rebedrock_runtime PUBLIC src "${glm_SOURCE_DIR}")
+target_include_directories(mc_rebedrock_runtime PUBLIC
+    src "${MC_REBEDROCK_GENERATED_INCLUDE_DIR}" "${glm_SOURCE_DIR}")
 if(TARGET Threads::Threads)
     target_link_libraries(mc_rebedrock_runtime PUBLIC Threads::Threads)
 endif()
@@ -603,6 +644,13 @@ if(BUILD_TESTING)
     )
     target_include_directories(mc_rebedrock_world_constants_test PRIVATE src)
     add_test(NAME world_constants COMMAND mc_rebedrock_world_constants_test)
+
+    add_executable(mc_rebedrock_version_manifest_test
+        tests/version_manifest_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_version_manifest_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_version_manifest_test PRIVATE src)
+    add_test(NAME version_manifest COMMAND mc_rebedrock_version_manifest_test)
 
     add_executable(mc_rebedrock_camera_test
         tests/perspective_camera_test.cpp
