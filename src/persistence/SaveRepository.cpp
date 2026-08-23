@@ -10,6 +10,7 @@
 #include "world/WorldConstants.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <charconv>
 #include <chrono>
@@ -27,6 +28,21 @@
 #include <unordered_map>
 
 namespace mc::persistence {
+
+// How many times a region file has been opened for chunk loading in this process,
+// ever. worldSummaries() must never touch region/ (it reads only world.dat's
+// header), so a test proves its laziness by asserting this counter does not move
+// across a worldSummaries() call. Same diagnostic shape as Json::parseCount();
+// monotonic, process-wide, never a thing behaviour branches on.
+std::atomic<std::uint64_t>& regionReadCounter() {
+    static std::atomic<std::uint64_t> counter{0U};
+    return counter;
+}
+
+std::uint64_t SaveRepository::regionReadCount() {
+    return regionReadCounter().load(std::memory_order_relaxed);
+}
+
 namespace {
 
 constexpr std::array<std::uint8_t, 8> kMagic{'M', 'C', 'R', 'B', 'S', 'A', 'V', 'E'};
@@ -299,15 +315,12 @@ void writeMetadata(const std::filesystem::path& path, const SaveSummary& summary
     if (error) throw std::runtime_error("Unable to install level.properties: " + error.message());
 }
 
-[[nodiscard]] SaveSummary summaryFromProperties(
-    const std::filesystem::path& path,
+// The name/seed/last-played fields, without any format gate. Used by the version-
+// aware listing (META-2b), which must still show a world whose format this build
+// cannot open so it can badge it "from a newer version" rather than hide it.
+[[nodiscard]] SaveSummary summaryFieldsFromProperties(
+    const std::map<std::string, std::string>& properties,
     const std::string& directoryIdentifier) {
-    const auto properties = readProperties(path);
-    const auto format = properties.contains("format")
-        ? std::stoul(properties.at("format")) : 0UL;
-    if (format < kOldestSupportedFormatVersion || format > kFormatVersion) {
-        throw std::runtime_error("Unsupported save format in " + path.string());
-    }
     SaveSummary summary;
     summary.identifier = directoryIdentifier;
     summary.displayName = properties.contains("name")
@@ -317,6 +330,18 @@ void writeMetadata(const std::filesystem::path& path, const SaveSummary& summary
     summary.lastPlayedUnixSeconds = properties.contains("last_played")
         ? std::stoll(properties.at("last_played")) : 0;
     return summary;
+}
+
+[[nodiscard]] SaveSummary summaryFromProperties(
+    const std::filesystem::path& path,
+    const std::string& directoryIdentifier) {
+    const auto properties = readProperties(path);
+    const auto format = properties.contains("format")
+        ? std::stoul(properties.at("format")) : 0UL;
+    if (format < kOldestSupportedFormatVersion || format > kFormatVersion) {
+        throw std::runtime_error("Unsupported save format in " + path.string());
+    }
+    return summaryFieldsFromProperties(properties, directoryIdentifier);
 }
 
 // The GameRules block is the self-describing region format 9 appends after the
@@ -1163,8 +1188,11 @@ void appendVersionBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext
     appendInteger(bytes, static_cast<std::uint8_t>(header.stable ? 1U : 0U));
 }
 
-void readVersionBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
-                      const SaveBlockHeader& header, SaveReadContext& context) {
+// Parses a VERS block body (cursor already past the frame header) into a header.
+// Shared by the full loader and the lazy world-summary reader (META-2b), so the
+// two never drift in what a version block contains.
+[[nodiscard]] SaveVersionHeader parseVersionBlockBody(std::span<const std::uint8_t> payload,
+                                                      std::size_t& cursor) {
     SaveVersionHeader parsed;
     parsed.worldVersion = readInteger<std::uint32_t>(payload, cursor);
     parsed.protocolVersion = readInteger<std::uint32_t>(payload, cursor);
@@ -1173,7 +1201,12 @@ void readVersionBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
     parsed.buildTime = readString(payload, cursor);
     parsed.stable = readInteger<std::uint8_t>(payload, cursor) != 0U;
     parsed.derived = false;  // read from a real VERS block, not reconstructed
-    context.game.versionHeader = std::move(parsed);
+    return parsed;
+}
+
+void readVersionBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                      const SaveBlockHeader& header, SaveReadContext& context) {
+    context.game.versionHeader = parseVersionBlockBody(payload, cursor);
     cursor = header.end;
 }
 
@@ -2039,6 +2072,9 @@ void readRegionDirectory(const std::filesystem::path& directory, SaveGame& game)
     }
     std::ranges::sort(files, {}, &std::filesystem::path::filename);
     for (const auto& path : files) {
+        // Count every region file we open to load chunks from; worldSummaries()
+        // never reaches here, which is what its laziness test asserts.
+        regionReadCounter().fetch_add(1U, std::memory_order_relaxed);
         std::ifstream input{path, std::ios::binary | std::ios::ate};
         if (!input) {
             std::cerr << "[save] skipping unreadable region " << path.string() << '\n';
@@ -2290,6 +2326,68 @@ constexpr std::array<SaveBlockOwner, 11> kSaveBlockOwners{{
     {kDropBlockTag, kDropBlockVersion, &writeDropOwner, &readDropOwner},
 }};
 
+// META-2b: read only the version header from a save's world.dat, without loading
+// any region chunk. world.dat itself is small since M-3 moved edits/creatures to
+// region files, so reading it whole is cheap; the point of "lazy" is that the
+// region/ directory is never touched. Reconstructs a minimal header from the
+// format number when the save predates the VERS block (mirrors load()); throws
+// on a corrupt or unreadable file so the caller can skip that world.
+[[nodiscard]] SaveVersionHeader readVersionHeaderOnly(const std::filesystem::path& worldDat) {
+    std::ifstream input{worldDat, std::ios::binary | std::ios::ate};
+    if (!input) throw std::runtime_error("Unable to open world.dat");
+    const auto length = input.tellg();
+    if (length < static_cast<std::streamoff>(kMagic.size() + sizeof(std::uint64_t))) {
+        throw std::runtime_error("world.dat is truncated");
+    }
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(length));
+    input.seekg(0);
+    input.read(reinterpret_cast<char*>(bytes.data()), length);
+    if (!input) throw std::runtime_error("Unable to read world.dat");
+    if (!std::equal(kMagic.begin(), kMagic.end(), bytes.begin())) {
+        throw std::runtime_error("world.dat has an invalid header");
+    }
+    const std::size_t checksumCursor = bytes.size() - sizeof(std::uint64_t);
+    const std::span<const std::uint8_t> payload{bytes.data(), checksumCursor};
+    std::size_t cursor = kMagic.size();
+    const auto formatVersion = readInteger<std::uint32_t>(payload, cursor);
+
+    // The reconstructed default, replaced below if a VERS block is present. Same
+    // rule as load(): worldVersion is the save's own format number, name unknown.
+    SaveVersionHeader header{formatVersion, {}, 0U, {}, {}, false, /*derived=*/true};
+    if (formatVersion < kFirstOwnerDrivenFormatVersion) {
+        // Pre-owner-block saves have no VERS block at all; the reconstruction is
+        // the whole answer.
+        return header;
+    }
+    // Skip the seed and the two palettes to reach the flat block sequence, then
+    // walk the frames looking for VERS, skipping every other owner by its size.
+    cursor += sizeof(std::uint64_t);  // seed
+    const auto skipPalette = [&] {
+        const auto count = readInteger<std::uint16_t>(payload, cursor);
+        for (std::uint16_t index = 0; index < count; ++index) {
+            static_cast<void>(readString(payload, cursor));
+        }
+    };
+    skipPalette();  // block palette
+    skipPalette();  // item palette
+    while (cursor < payload.size()) {
+        std::size_t peek = cursor;
+        const auto blockHeader = readBlockHeader(payload, peek, "summary");
+        if (blockHeader.tag == kVersionBlockTag && blockHeader.version <= kVersionBlockVersion) {
+            std::size_t bodyCursor = blockHeader.bodyStart;
+            return parseVersionBlockBody(payload, bodyCursor);
+        }
+        cursor = blockHeader.end;  // not VERS: skip by size, never load its content
+    }
+    return header;  // no VERS block: the reconstructed header stands
+}
+
+[[nodiscard]] WorldCompatibility classifyCompatibility(std::uint32_t worldVersion) {
+    if (worldVersion > kFormatVersion) return WorldCompatibility::FromNewerVersion;
+    if (worldVersion < kFormatVersion) return WorldCompatibility::NeedsUpgrade;
+    return WorldCompatibility::Openable;
+}
+
 } // namespace
 
 SaveRepository::SaveRepository(std::filesystem::path root) : root_(std::move(root)) {}
@@ -2325,6 +2423,39 @@ std::vector<SaveSummary> SaveRepository::list() const {
     }
     std::ranges::sort(saves, std::greater{}, &SaveSummary::lastPlayedUnixSeconds);
     return saves;
+}
+
+std::vector<WorldSummary> SaveRepository::worldSummaries() const {
+    std::vector<WorldSummary> summaries;
+    std::error_code error;
+    if (!std::filesystem::is_directory(root_, error)) return summaries;
+    for (const auto& entry : std::filesystem::directory_iterator(root_, error)) {
+        if (error) break;
+        if (!entry.is_directory()) continue;
+        const auto identifier = entry.path().filename().string();
+        if (!safeIdentifier(identifier)) continue;
+        const auto metadata = entry.path() / "level.properties";
+        if (!std::filesystem::is_regular_file(metadata)) continue;
+        try {
+            WorldSummary summary;
+            // Lenient on format: a world newer than this build must still list so
+            // it can be badged FromNewerVersion, not silently dropped.
+            summary.summary =
+                summaryFieldsFromProperties(readProperties(metadata), identifier);
+            // Lazy: only world.dat's header, never the region chunks.
+            summary.versionHeader = readVersionHeaderOnly(entry.path() / "world.dat");
+            summary.compatibility = classifyCompatibility(summary.versionHeader.worldVersion);
+            std::error_code sizeError;
+            summary.sizeBytes = std::filesystem::file_size(entry.path() / "world.dat", sizeError);
+            if (sizeError) summary.sizeBytes = 0U;
+            summaries.push_back(std::move(summary));
+        } catch (const std::exception&) {
+            // A damaged world remains isolated and does not hide healthy saves.
+        }
+    }
+    std::ranges::sort(summaries, std::greater{},
+                      [](const WorldSummary& s) { return s.summary.lastPlayedUnixSeconds; });
+    return summaries;
 }
 
 SaveGame SaveRepository::create(std::string displayName, std::uint64_t seed) const {

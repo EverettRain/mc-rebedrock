@@ -180,6 +180,27 @@ struct SaveGame final {
     std::array<world::ClockState, world::kClockCount> clocks{};
 };
 
+// How a stored world's save format relates to this build's (META-2b), decided by
+// comparing the world's worldVersion with kVersion.worldVersion. It is pure data:
+// the world-selection UI (PX) renders it, but the classification is computed
+// headless here so it can be tested and reused without a screen.
+enum class WorldCompatibility : std::uint8_t {
+    Openable,          // Same format number: opens as-is.
+    NeedsUpgrade,      // Older format: this build can read and migrate it.
+    FromNewerVersion,  // Newer format than this build understands: not openable.
+};
+
+// One world's listing entry (META-2b): the basic summary, the self-description
+// read *lazily* from the save header (no chunks loaded), the on-disk size, and
+// the compatibility verdict. This is the data a world-selection screen needs to
+// list every world with a version/compatibility badge without opening any world.
+struct WorldSummary final {
+    SaveSummary summary;
+    SaveVersionHeader versionHeader;
+    WorldCompatibility compatibility = WorldCompatibility::Openable;
+    std::uintmax_t sizeBytes = 0U;
+};
+
 // One chunk's persistable payload, used by the batched unload writer. The
 // background persistence worker packs a burst of unloaded chunks into a vector
 // of these and hands it to saveChunks(), which groups them by region file so a
@@ -198,6 +219,11 @@ class SaveRepository final {
 
     [[nodiscard]] const std::filesystem::path& root() const { return root_; }
     [[nodiscard]] std::vector<SaveSummary> list() const;
+    // META-2b: a version-aware listing. Like list(), but for each world it also
+    // reads the SaveVersionHeader *lazily* — only world.dat's small header/blocks,
+    // never the region chunks — and classifies compatibility against this build.
+    // This is what a world-selection screen consumes; the screen itself is PX.
+    [[nodiscard]] std::vector<WorldSummary> worldSummaries() const;
     [[nodiscard]] SaveGame create(std::string displayName, std::uint64_t seed) const;
     [[nodiscard]] SaveGame load(const std::string& identifier) const;
     // `unloadedChunks` (chunk coordinates) names the chunks the unload path
@@ -248,6 +274,12 @@ class SaveRepository final {
     void remove(const std::string& identifier) const;
 
     [[nodiscard]] static std::string sanitizeDisplayName(std::string name);
+
+    // Diagnostic: how many region files have been opened for chunk loading in
+    // this process, ever. worldSummaries() reads only world.dat's header and must
+    // not touch region/, so a test proves that by asserting this counter is
+    // unchanged across a worldSummaries() call. Monotonic, process-wide.
+    [[nodiscard]] static std::uint64_t regionReadCount();
 
   private:
     std::filesystem::path root_;

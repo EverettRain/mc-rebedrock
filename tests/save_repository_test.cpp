@@ -1,7 +1,9 @@
 #include "persistence/SaveRepository.hpp"
 #include "persistence/UnknownBlockTable.hpp"
 
+#include "core/Json.hpp"
 #include "core/VersionManifest.hpp"
+#include "core/VersionManifestJson.hpp"
 #include "world/BlockState.hpp"
 #include "world/DayNightCycle.hpp"
 #include "world/WorldClock.hpp"
@@ -1170,6 +1172,186 @@ int main() {
         assert(!persistence::unknownBlockTable().isUnknown(restored.state));
         assert(restored.state.block() == world::Block::Furnace);
         assert(restored.state.lit());
+    }
+
+    // META-2a: version.json export mirrors Java's shape. The document parses back,
+    // its keys are exactly Java's snake_case set (no rebedrock-private key that a
+    // tool or JC could not line up), and its values equal the single-source
+    // manifest.
+    {
+        const auto text = core::exportVersionJson();
+        const auto document = core::Json::parse(text);
+        assert(document.isObject());
+        // Exactly the JE key set, in order, no extras.
+        const auto& members = document.asObject();
+        assert(members.size() == std::size(core::kVersionJsonKeys));
+        for (std::size_t index = 0; index < members.size(); ++index) {
+            assert(members[index].first == core::kVersionJsonKeys[index]);
+        }
+        // Values equal the manifest; version numbers are integers in the JSON.
+        assert(document["id"].asString() == std::string{core::kVersion.id});
+        assert(document["name"].asString() == std::string{core::kVersion.name});
+        assert(document["world_version"].asNumber() ==
+               static_cast<double>(core::kVersion.worldVersion));
+        assert(document["protocol_version"].asNumber() ==
+               static_cast<double>(core::kVersion.protocolVersion));
+        assert(document["pack_version"]["resource"].asNumber() ==
+               static_cast<double>(core::kVersion.packVersion.resource));
+        assert(document["pack_version"]["data"].asNumber() ==
+               static_cast<double>(core::kVersion.packVersion.data));
+        assert(document["build_time"].asString() == std::string{core::kVersion.buildTime});
+        assert(document["series_id"].asString() == std::string{core::kVersion.seriesId});
+        assert(document["stable"].asBool() == core::kVersion.stable);
+        // Integer-valued numbers dump without a decimal point (interop with a
+        // tool that expects `"world_version": 19`, not `19.0`).
+        assert(text.find("\"world_version\":" +
+                         std::to_string(core::kVersion.worldVersion)) != std::string::npos);
+    }
+
+    // META-2b: worldSummaries() lists each world with its version header, read
+    // lazily, and a compatibility verdict — without loading any region chunk.
+    {
+        // A freshly created-and-saved world summarises as this build's version and
+        // is Openable (its worldVersion == the current format).
+        auto current = repository.create("Summary Current", 7ULL);
+        const auto currentId = current.summary.identifier;
+        repository.save(current);
+        // Give it a region file with real chunk data, then poison that file. A
+        // full load() would trip on it; worldSummaries() must not, which is the
+        // headless proof it never reads region/ (i.e. loads no chunk).
+        {
+            std::vector<world::PersistentBlockEdit> edits;
+            edits.push_back({5, 70, 5, world::BlockState{world::Block::Stone}});
+            repository.saveChunk(currentId, 0, 0, edits, {});
+            const auto region = root / currentId / "region";
+            assert(std::filesystem::is_directory(region));
+            for (const auto& file : std::filesystem::directory_iterator(region)) {
+                std::fstream data{file.path(), std::ios::binary | std::ios::in | std::ios::out};
+                assert(data);
+                // Corrupt the body past the block frame header so a chunk read
+                // would throw; the version header (in world.dat) is untouched.
+                data.seekp(16);
+                const char garbage[] = {'\x7F', '\x7F', '\x7F', '\x7F'};
+                data.write(garbage, sizeof(garbage));
+            }
+        }
+
+        // An old world with no VERS block: its summary version is reconstructed
+        // from the format number (derived), so it still lists.
+        {
+            LegacyWriter oldWriter;
+            oldWriter.magic();
+            oldWriter.integer<std::uint32_t>(8U);            // format 8 (pre-VERS)
+            oldWriter.integer<std::uint64_t>(0x0ULL);
+            oldWriter.integer<std::uint8_t>(0U);             // hasPlayerPosition
+            oldWriter.floating(0.0F);
+            oldWriter.floating(64.0F);
+            oldWriter.floating(0.0F);
+            oldWriter.doubleValue(0.0);
+            oldWriter.integer<std::uint8_t>(
+                static_cast<std::uint8_t>(gameplay::GameMode::Creative));
+            oldWriter.integer<std::uint8_t>(0U);
+            oldWriter.integer<std::uint8_t>(
+                static_cast<std::uint8_t>(gameplay::Difficulty::Normal));
+            oldWriter.integer<std::int32_t>(3);              // format-8 randomTickSpeed
+            oldWriter.floating(gameplay::PlayerVitals::kMaximumHealth);
+            oldWriter.integer<std::int32_t>(gameplay::PlayerVitals::kMaximumFood);
+            oldWriter.floating(5.0F);
+            oldWriter.integer<std::int32_t>(gameplay::PlayerVitals::kMaximumAirTicks);
+            oldWriter.integer<std::uint16_t>(1U);
+            oldWriter.stringValue("air");
+            oldWriter.integer<std::uint16_t>(1U);
+            oldWriter.stringValue("");
+            for (std::size_t slot = 0; slot < gameplay::Inventory::kSlotCount; ++slot) {
+                oldWriter.integer<std::uint16_t>(0U);
+                oldWriter.integer<std::uint8_t>(0U);
+                oldWriter.integer<std::uint16_t>(0U);
+                oldWriter.integer<std::uint16_t>(0U);
+            }
+            oldWriter.integer<std::uint64_t>(0U);  // edits
+            oldWriter.integer<std::uint64_t>(0U);  // chests
+            oldWriter.finish();
+            const auto oldDir = root / "summary-old";
+            std::filesystem::create_directories(oldDir);
+            {
+                std::ofstream metadata{oldDir / "level.properties"};
+                metadata << "format=8\nid=summary-old\nname=Old\nseed=1\nlast_played=1\n";
+            }
+            std::ofstream data{oldDir / "world.dat", std::ios::binary};
+            data.write(reinterpret_cast<const char*>(oldWriter.bytes.data()),
+                       static_cast<std::streamsize>(oldWriter.bytes.size()));
+        }
+
+        // A world claiming a newer format than this build understands: it must be
+        // classified FromNewerVersion, not silently Openable.
+        {
+            LegacyWriter newer;
+            newer.magic();
+            newer.integer<std::uint32_t>(core::kVersion.worldVersion + 1U);  // future format
+            newer.integer<std::uint64_t>(0x0ULL);
+            newer.integer<std::uint16_t>(1U);
+            newer.stringValue("air");
+            newer.integer<std::uint16_t>(1U);
+            newer.stringValue("");
+            newer.block(fourCC("VERS"), 1U, [&] {
+                newer.integer<std::uint32_t>(core::kVersion.worldVersion + 1U);
+                newer.integer<std::uint32_t>(core::kVersion.protocolVersion + 1U);
+                newer.stringValue("99.0");
+                newer.stringValue("future");
+                newer.stringValue("2099-01-01T00:00:00Z");
+                newer.integer<std::uint8_t>(1U);
+            });
+            newer.finish();
+            const auto newerDir = root / "summary-newer";
+            std::filesystem::create_directories(newerDir);
+            {
+                std::ofstream metadata{newerDir / "level.properties"};
+                metadata << "format=" << (core::kVersion.worldVersion + 1U)
+                         << "\nid=summary-newer\nname=Future\nseed=1\nlast_played=1\n";
+            }
+            std::ofstream data{newerDir / "world.dat", std::ios::binary};
+            data.write(reinterpret_cast<const char*>(newer.bytes.data()),
+                       static_cast<std::streamsize>(newer.bytes.size()));
+        }
+
+        // The laziness proof: worldSummaries() must open no region file. The
+        // counter of region opens does not move across the call — and the poisoned
+        // region above would have thrown had a chunk been read at all.
+        const auto regionReadsBefore = persistence::SaveRepository::regionReadCount();
+        const auto summaries = repository.worldSummaries();
+        assert(persistence::SaveRepository::regionReadCount() == regionReadsBefore);
+        const auto find = [&](std::string_view id) -> const persistence::WorldSummary& {
+            for (const auto& s : summaries) {
+                if (s.summary.identifier == id) return s;
+            }
+            assert(false && "expected world missing from summaries");
+            std::abort();
+        };
+
+        // Current build's world: real header (not derived), Openable, despite the
+        // poisoned region file — which proves no chunk was loaded.
+        const auto& cur = find(currentId);
+        assert(!cur.versionHeader.derived);
+        assert(cur.versionHeader.worldVersion == core::kVersion.worldVersion);
+        assert(cur.versionHeader.versionName == std::string{core::kVersion.name});
+        assert(cur.compatibility == persistence::WorldCompatibility::Openable);
+        assert(cur.sizeBytes > 0U);
+
+        // Old world: header reconstructed from the format number, and an older
+        // format is NeedsUpgrade.
+        const auto& old = find("summary-old");
+        assert(old.versionHeader.derived);
+        assert(old.versionHeader.worldVersion == 8U);
+        assert(old.compatibility == persistence::WorldCompatibility::NeedsUpgrade);
+
+        // Newer world: classified FromNewerVersion (not Openable).
+        const auto& newer = find("summary-newer");
+        assert(newer.versionHeader.worldVersion == core::kVersion.worldVersion + 1U);
+        assert(newer.compatibility == persistence::WorldCompatibility::FromNewerVersion);
+
+        std::filesystem::remove_all(root / currentId);
+        std::filesystem::remove_all(root / "summary-old");
+        std::filesystem::remove_all(root / "summary-newer");
     }
 
     return 0;
