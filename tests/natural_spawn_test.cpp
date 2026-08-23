@@ -186,6 +186,28 @@ int main() {
         assert(entry.weight == 95 && entry.minGroup == 4 && entry.maxGroup == 4);
     }
 
+    // AR-M1: husk only ever appears in the desert's monster table, never
+    // plains' — "husk ONLY in desert biomes" (sabotage③ target).
+    {
+        bool plainsHasHusk = false;
+        for (const auto& entry :
+             spawner.table(world::gen::Biome::Plains).forCategory(MobCategory::Monster)) {
+            plainsHasHusk = plainsHasHusk || entry.type->id().matches("husk");
+        }
+        assert(!plainsHasHusk);
+        bool desertHasHusk = false;
+        bool desertHasZombie = false;
+        for (const auto& entry :
+             spawner.table(world::gen::Biome::Desert).forCategory(MobCategory::Monster)) {
+            if (entry.type->id().matches("husk")) {
+                desertHasHusk = true;
+                assert(entry.weight == 80 && entry.minGroup == 4 && entry.maxGroup == 4);
+            }
+            desertHasZombie = desertHasZombie || entry.type->id().matches("zombie");
+        }
+        assert(desertHasHusk && desertHasZombie);
+    }
+
     // A dark surface is monster territory. At a 64-block radius the 1.16.1 cap
     // of 70 scales down with the area (× (64/128)² ≈ 17); nothing may spawn in
     // the 24-block ring around the player.
@@ -263,6 +285,57 @@ int main() {
         }
         assert(countCategory(nightEntities, gameplay::entities::MobCategory::Monster) > 0U);
         assert(countInsideRing(nightEntities, player) == 0U);
+    }
+
+    // AR-M1: a husk-only table, forced onto every biome, reproduces the same
+    // dark/light rule zombie already carries — dark spawns it, a lit surface
+    // does not — proving the MONSTER category's spawnsInDarkness rule applies
+    // to husk exactly like every other Monster-category species (sabotage①
+    // catches a husk mis-filed into a bright/Creature bucket).
+    {
+        mc::world::World huskWorld;
+        for (int chunkZ = -4; chunkZ <= 4; ++chunkZ) {
+            for (int chunkX = -4; chunkX <= 4; ++chunkX) {
+                mc::world::Chunk chunk;
+                for (int z = 0; z < 16; ++z) {
+                    for (int x = 0; x < 16; ++x) {
+                        chunk.setBlock(x, 0, z, mc::world::Block::Stone);
+                    }
+                }
+                huskWorld.setChunk({chunkX, chunkZ}, std::move(chunk));
+            }
+        }
+        for (int z = -64; z < 80; ++z) {
+            for (int x = -64; x < 80; ++x) {
+                huskWorld.setSkyLight(x, 1, z, 15U);
+            }
+        }
+        const auto* huskType = gameplay::entities::entityTypeRegistry().byId("husk");
+        assert(huskType != nullptr);
+
+        mc::gameplay::EntitySystem darkHuskEntities;
+        mc::gameplay::NaturalSpawner darkHuskSpawner(0x0BADF00DU);
+        for (int index = 0; index < static_cast<int>(world::gen::Biome::Count); ++index) {
+            darkHuskSpawner.spawnTables().set(static_cast<world::gen::Biome>(index),
+                                              MobCategory::Monster, {{huskType, 80, 4, 4}});
+        }
+        for (int tick = 0; tick < 400; ++tick) {
+            darkHuskSpawner.tick(huskWorld, darkHuskEntities, player, 64.0F,
+                                 mc::gameplay::Difficulty::Normal, midnight);
+        }
+        assert(countCategory(darkHuskEntities, MobCategory::Monster) > 0U);
+
+        mc::gameplay::EntitySystem litHuskEntities;
+        mc::gameplay::NaturalSpawner litHuskSpawner(0x5EED5EEDU);
+        for (int index = 0; index < static_cast<int>(world::gen::Biome::Count); ++index) {
+            litHuskSpawner.spawnTables().set(static_cast<world::gen::Biome>(index),
+                                             MobCategory::Monster, {{huskType, 80, 4, 4}});
+        }
+        for (int tick = 0; tick < 400; ++tick) {
+            litHuskSpawner.tick(huskWorld, litHuskEntities, player, 64.0F,
+                                mc::gameplay::Difficulty::Normal, noon);
+        }
+        assert(countCategory(litHuskEntities, MobCategory::Monster) == 0U);
     }
 
     // A canopy is collision geometry but not a land-spawn surface. The scan

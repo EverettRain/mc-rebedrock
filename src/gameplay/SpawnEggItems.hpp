@@ -37,6 +37,14 @@ namespace mc::gameplay::entities {
     return *type;
 }
 
+// AR-M1: husk is likewise an E3 manifest species with no `::type()` accessor —
+// same deferred byId() lookup as sheep/chicken above.
+[[nodiscard]] inline const EntityType& huskTypeForSpawnEgg() {
+    const EntityType* type = entityTypeRegistry().byId("husk");
+    assert(type != nullptr && "husk spawn egg used before the species manifest registered");
+    return *type;
+}
+
 } // namespace mc::gameplay::entities
 
 namespace mc::gameplay::items {
@@ -62,6 +70,10 @@ inline constexpr SpawnEggItem SheepSpawnEgg{
 inline constexpr SpawnEggItem ChickenSpawnEgg{
     "chicken_spawn_egg", &entities::chickenTypeForSpawnEgg};
 
+// AR-M1: husk, same deferred-lookup pattern as sheep/chicken.
+inline constexpr SpawnEggItem HuskSpawnEgg{
+    "husk_spawn_egg", &entities::huskTypeForSpawnEgg};
+
 } // namespace mc::gameplay::items
 
 namespace mc::gameplay {
@@ -70,12 +82,13 @@ namespace mc::gameplay {
 // building the creative catalog or the texture atlas. Defined here because the
 // spawn-egg constructors need entity headers that cannot be included from
 // Item.hpp (circular dependency through Inventory.hpp → Item.hpp).
-inline constexpr std::array<const Item*, 5> kSpawnEggItems{
+inline constexpr std::array<const Item*, 6> kSpawnEggItems{
     &items::PigSpawnEgg,
     &items::ZombieSpawnEgg,
     &items::CowSpawnEgg,
     &items::SheepSpawnEgg,
     &items::ChickenSpawnEgg,
+    &items::HuskSpawnEgg,
 };
 
 // Push spawn eggs into the runtime-extensible lookup (for itemFromIdentifier,

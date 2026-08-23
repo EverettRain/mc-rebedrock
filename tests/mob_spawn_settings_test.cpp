@@ -84,6 +84,15 @@ int main() {
         // call commonSpawns too.
         REQUIRE(!tables.settings(Biome::Ocean).empty(MobCategory::Monster));
         REQUIRE(!tables.settings(Biome::Desert).empty(MobCategory::Monster));
+        // AR-M1: husk (desertSpawns, weight 80) joins zombie only in the
+        // desert biome; every other biome's monster table stays zombie-only,
+        // and zombie's own weight there is untouched.
+        REQUIRE(weightOf(tables, Biome::Desert, MobCategory::Monster, "husk") == 80);
+        REQUIRE(weightOf(tables, Biome::Desert, MobCategory::Monster, "zombie") == 95);
+        REQUIRE(weightOf(tables, Biome::Plains, MobCategory::Monster, "husk") == 0);
+        REQUIRE(weightOf(tables, Biome::Forest, MobCategory::Monster, "husk") == 0);
+        REQUIRE(weightOf(tables, Biome::Ocean, MobCategory::Monster, "husk") == 0);
+        REQUIRE(weightOf(tables, Biome::Savanna, MobCategory::Monster, "husk") == 0);
         // Groups of four, as vanilla's SpawnerData says.
         for (const auto& entry : tables.settings(Biome::Plains).forCategory(
                  MobCategory::Creature)) {

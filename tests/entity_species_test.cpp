@@ -134,6 +134,54 @@ void testSheepLoot() {
     assert(sawMutton1 && sawMutton2);
 }
 
+// AR-M1: killing a husk drops 0-2 rotten flesh, the item this build previously
+// lacked (the manifest row carried nullptr for loot before this task).
+// EntityDrops::add() skips an empty (zero-count) stack — the same convention
+// chicken's 0-2 feather roll already relies on — so "0" surfaces as no stack
+// at all; the two reachable *non-empty* counts are 1 and 2, and the roll must
+// sometimes produce zero flesh too (the pool must not always fire).
+void testHuskLoot() {
+    const auto* husk = entityTypeRegistry().byId("husk");
+    assert(husk != nullptr);
+    std::uint32_t rng = 0xABCDEF01U;
+    bool sawOne = false;
+    bool sawTwo = false;
+    bool sawEmptyRoll = false;
+    for (int roll = 0; roll < 300; ++roll) {
+        bool sawRottenFlesh = false;
+        for (const auto& stack : husk->rollLoot(rng).view()) {
+            if (stack.item == &mc::gameplay::items::RottenFlesh) {
+                sawRottenFlesh = true;
+                assert(stack.count >= 1U && stack.count <= 2U);
+                sawOne = sawOne || stack.count == 1U;
+                sawTwo = sawTwo || stack.count == 2U;
+            }
+        }
+        sawEmptyRoll = sawEmptyRoll || !sawRottenFlesh;
+    }
+    // Sabotage②: an empty loot fn (nullptr, or one that never adds the item)
+    // never produces a rotten-flesh stack at all — this must be reachable.
+    assert(sawOne && sawTwo && sawEmptyRoll);
+}
+
+// AR-M1: zombie's own loot fn (ZombieEntity.cpp's rollZombieLoot), wired in
+// this task for the first time, rolls the identical 0-2 rotten flesh range.
+void testZombieLoot() {
+    const auto* zombie = entityTypeRegistry().byId("zombie");
+    assert(zombie != nullptr);
+    std::uint32_t rng = 0x13572468U;
+    bool sawRottenFleshEver = false;
+    for (int roll = 0; roll < 300; ++roll) {
+        for (const auto& stack : zombie->rollLoot(rng).view()) {
+            if (stack.item == &mc::gameplay::items::RottenFlesh) {
+                sawRottenFleshEver = true;
+                assert(stack.count >= 1U && stack.count <= 2U);
+            }
+        }
+    }
+    assert(sawRottenFleshEver);
+}
+
 // AR-A1 acceptance: "Hit/kill: raycast hits all three; hurt/kill works." The
 // raycast/hurt/kill mechanism is entity-generic (EntitySystem dispatches off
 // each SimpleEntity's dimensions()/health, never a species switch — see
@@ -181,6 +229,41 @@ void testChickenAndSheepHitAndKill() {
     }
     assert(chickenDroppedMeat);
     assert(sheepDroppedWoolOrMutton);
+}
+
+// AR-M1 acceptance: "killing zombie/husk drops 0-2 RottenFlesh" through the
+// real hurt()/pendingDrops() path, not just the loot fn in isolation — mirrors
+// testChickenAndSheepHitAndKill's coverage of the same mechanism for the two
+// AR-A1 species.
+void testZombieAndHuskKillDropsRottenFlesh() {
+    const auto* zombieType = entityTypeRegistry().byId("zombie");
+    const auto* huskType = entityTypeRegistry().byId("husk");
+    assert(zombieType != nullptr && huskType != nullptr);
+
+    EntitySystem targets;
+    targets.spawn({0.0F, 0.0F, 3.0F}, *zombieType, 301U);
+    targets.spawn({4.0F, 0.0F, 3.0F}, *huskType, 302U);
+    assert(targets.entities().size() == 2U);
+    const std::uint64_t zombieId = targets.entities()[0].id;
+    const std::uint64_t huskId = targets.entities()[1].id;
+
+    assert(targets.pendingDrops().empty());
+    assert(targets.hurt(zombieId, 100.0F, {0.0F, 1.0F, 3.0F})); // lethal
+    assert(targets.hurt(huskId, 100.0F, {4.0F, 1.0F, 3.0F}));   // lethal
+    // Two kills recorded two drop rolls — each species' own loot fn fired
+    // (sabotage②: an empty loot fn drops nothing, so this would stay empty
+    // or come up short).
+    assert(targets.pendingDrops().size() == 2U);
+    bool sawRottenFlesh = false;
+    for (const auto& drop : targets.pendingDrops()) {
+        for (const auto& stack : drop.second.view()) {
+            if (stack.item == &mc::gameplay::items::RottenFlesh) {
+                sawRottenFlesh = true;
+                assert(stack.count <= 2U);
+            }
+        }
+    }
+    assert(sawRottenFlesh);
 }
 
 // A manifest species spawns and ticks through the generic simulation with no
@@ -258,7 +341,10 @@ int main() {
     testManifestSpeciesResolve();
     testChickenLoot();
     testSheepLoot();
+    testHuskLoot();
+    testZombieLoot();
     testChickenAndSheepHitAndKill();
+    testZombieAndHuskKillDropsRottenFlesh();
     testSpawnAndTick();
     testPeacefulRemovalByCategory();
     testSaveRoundTrip(scratch);

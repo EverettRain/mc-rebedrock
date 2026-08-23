@@ -1,9 +1,11 @@
 #include "gameplay/entities/ZombieEntity.hpp"
 
 #include "gameplay/EntitySystem.hpp"
+#include "gameplay/Item.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/MobAi.hpp"
 #include "gameplay/entities/MobBrain.hpp"
+#include "world/Block.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -24,6 +26,18 @@ class ZombieAi final : public MonsterAi {
 };
 
 const ZombieAi kZombieAi;
+
+// Zombie.json (26.1): 0-2 rotten flesh, no other pool (no armour/equipment
+// table yet — AR-M2). Husk's own manifest-row loot fn in BuiltinSpecies.cpp
+// rolls the identical range; the two are kept as separate functions rather
+// than a shared header entry point because every other species' loot fn in
+// this codebase is likewise local to its own translation unit (Cow/Pig).
+EntityDrops rollZombieLoot(std::uint32_t& rng) {
+    EntityDrops drops;
+    const auto count = static_cast<std::uint8_t>((nextRandom(rng) >> 8) % 3U);
+    drops.add({world::Block::Air, count, &items::RottenFlesh});
+    return drops;
+}
 
 // The bedrock model, skin and animation identifiers a renderer would bind for a
 // zombie. The assets are not shipped yet, so nothing spawns a zombie in-game;
@@ -55,8 +69,8 @@ constexpr audio::MobSoundProfile kZombieSounds{
 const EntityType& ZombieEntity::type() {
     // Zombie.createAttributes() (26.1): 20 health, follow range 35,
     // MOVEMENT_SPEED 0.23, attack damage 3. Box 0.6 x 1.95.
-    // Spawn-egg tint 0x00AFAF / 0x799C65. No loot roll: its rotten-flesh drop
-    // needs an item this build does not have yet, so the table is left empty.
+    // Spawn-egg tint 0x00AFAF / 0x799C65. AR-M1: loot wired to 0-2 rotten flesh
+    // (rollZombieLoot), the item this build previously lacked.
     // xpReward 5 (Mob's DEFAULT_XP_REWARD, which Zombie inherits unchanged).
     static EntityType type = EntityType::Builder::create(MobCategory::Monster, kZombieAi)
                                  .sized(0.6F, 1.95F)
@@ -70,6 +84,7 @@ const EntityType& ZombieEntity::type() {
                                  .renderer(kZombieRender)
                                  .sounds(kZombieSounds)
                                  .vanillaName("zombie")
+                                 .loot(&rollZombieLoot)
                                  .build("zombie");
     static const bool registered = [] {
         entityTypeRegistry().registerBuiltin(type);

@@ -517,6 +517,13 @@ inline constexpr Item RawChicken = Item::of("chicken")
 inline constexpr Item Mutton = Item::of("mutton")
                                    .category(CreativeCategory::Food)
                                    .food({2, 0.3F});
+// Rotten flesh: the zombie/husk melee drop. Vanilla food value 4 hunger / 0.1
+// saturation — edible, but AR-M1 defers the FoodComponents.ROTTEN_FLESH
+// "chance of Hunger effect on eat" behaviour (needs EM2 status effects, not in
+// scope here); the item still registers and feeds like any other food.
+inline constexpr Item RottenFlesh = Item::of("rotten_flesh")
+                                        .category(CreativeCategory::Food)
+                                        .food({4, 0.1F});
 // Carrot and potato are both food (1.16.1 FoodComponent) and the seed of their
 // own crop — a held carrot/potato plants itself on farmland, like the vanilla
 // items whose useOn is a SeedsItem subclass. Planting is dispatched by item
@@ -644,7 +651,7 @@ inline constexpr Item GoldSword = Item::of("golden_sword")
 // their constructors need entity headers that sit above us in the include graph.
 // The order sets both the creative-catalog order within each tab and the item
 // texture-array layout the renderer appends. Grouped materials / food / tools.
-inline constexpr std::array<const Item*, 54> kItemRegistry{
+inline constexpr std::array<const Item*, 55> kItemRegistry{
     &items::Bucket,     &items::WaterBucket, &items::LavaBucket, &items::Coal,
     &items::IronIngot,
     &items::GoldIngot,  &items::Diamond,     &items::Emerald,    &items::Stick,
@@ -652,7 +659,7 @@ inline constexpr std::array<const Item*, 54> kItemRegistry{
     &items::Sugar,      &items::Egg,         &items::Bone,       &items::Paper,
     &items::Book,       &items::WheatSeeds,  &items::Wheat,
     &items::Apple,      &items::Bread,       &items::Porkchop,   &items::CookedPorkchop,
-    &items::Beef,       &items::RawChicken,  &items::Mutton,
+    &items::Beef,       &items::RawChicken,  &items::Mutton,     &items::RottenFlesh,
     &items::Carrot,     &items::Potato,
     &items::WoodenPickaxe,  &items::StonePickaxe,  &items::IronPickaxe,
     &items::DiamondPickaxe, &items::GoldPickaxe,

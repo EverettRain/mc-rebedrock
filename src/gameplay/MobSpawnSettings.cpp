@@ -103,6 +103,14 @@ constexpr std::array<std::string_view, kBiomeCount> kBiomeIds{
     return biome != Biome::Count;
 }
 
+// BiomeDefaultFeatures.desertSpawns (26.1): husk replaces zombie's usual slot
+// in desert-type biomes only — a sand dweller with no burn-in-daylight
+// penalty. AR-M1 gives it exactly the one biome this build has that fits;
+// vanilla's desert hills/lakes are the same identity here.
+[[nodiscard]] bool isDesert(Biome biome) {
+    return biome == Biome::Desert;
+}
+
 // A biome file writes vanilla ids (`minecraft:cow`), and this game's species
 // are registered under its own namespace with the vanilla name kept alongside
 // — which is exactly what `vanillaId` is for. Matching only the native id would
@@ -147,12 +155,13 @@ void BiomeSpawnTables::loadBuiltinDefaults() {
     const auto* sheep = speciesById("sheep");
     const auto* chicken = speciesById("chicken");
     const auto* zombie = speciesById("zombie");
+    const auto* husk = speciesById("husk");
     // Resolving none of them means the entity registry was still empty when
     // this ran, and the result is a world that silently never spawns anything.
     // It has to be loud: the tables look fine, every call succeeds, and the only
     // symptom is an empty world hours later.
     if (pig == nullptr && cow == nullptr && sheep == nullptr && chicken == nullptr &&
-        zombie == nullptr) {
+        zombie == nullptr && husk == nullptr) {
         std::cerr << "[spawn-tables] built the biome spawn tables before any species was "
                      "registered; no mob will ever spawn\n";
     }
@@ -175,7 +184,15 @@ void BiomeSpawnTables::loadBuiltinDefaults() {
             set(biome, entities::MobCategory::Creature, std::move(creatures));
         }
         if (hasMonsters(biome) && zombie != nullptr) {
-            set(biome, entities::MobCategory::Monster, {{zombie, 95, 4, 4}});
+            std::vector<SpawnerData> monsters{{zombie, 95, 4, 4}};
+            // BiomeDefaultFeatures.desertSpawns (26.1): husk (weight 80, groups
+            // of four) joins zombie in desert-type biomes only — every other
+            // biome's monster table stays zombie-only, exactly as it was before
+            // AR-M1.
+            if (isDesert(biome) && husk != nullptr) {
+                monsters.push_back({husk, 80, 4, 4});
+            }
+            set(biome, entities::MobCategory::Monster, std::move(monsters));
         }
     }
 }

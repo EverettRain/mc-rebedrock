@@ -61,6 +61,17 @@ EntityDrops rollSheepLoot(std::uint32_t& rng) {
     return drops;
 }
 
+// Husk.json (26.1): 0-2 rotten flesh, the same pool zombie.json rolls — a
+// husk drops nothing else (no armour/equipment table exists yet, AR-M2).
+// Shared with the zombie's own loot fn below since both tables are identical
+// in 26.1 (LootTables.ZOMBIE reused verbatim by Husk).
+EntityDrops rollRottenFleshLoot(std::uint32_t& rng) {
+    EntityDrops drops;
+    const auto count = static_cast<std::uint8_t>((nextRandom(rng) >> 8) % 3U);
+    drops.add({world::Block::Air, count, &items::RottenFlesh});
+    return drops;
+}
+
 // --- render descriptors --------------------------------------------------
 //
 // The bedrock model/skin/animation ids a renderer would bind. Like the zombie,
@@ -88,13 +99,22 @@ constexpr EntityRenderDescriptor kSheepRender{
     /*scale=*/1.0F,
 };
 
+// AR-M1 Tier B: husk reuses the zombie's own geometry/animation wholesale
+// (26.1's `humanoid` model, same box-UV body a husk shares with a zombie in
+// vanilla too — HuskModel extends ZombieModel with no new geometry) rather
+// than pointing at a husk.geo/animation.json this build never shipped. Only
+// the texture path differs, and even that is a filename the pack stack does
+// not carry yet: buildSpeciesSkin degrades to the same procedural box-UV
+// placeholder the zombie itself renders with when no pack skin exists. A real
+// sandy husk skin, and the walk-cycle geometry actually looking right in the
+// desert at night, are both 待 mac — see task report.
 constexpr EntityRenderDescriptor kHuskRender{
-    /*geometryPath=*/"animation/husk.geo.json",
-    /*animationPath=*/"animation/husk.animation.json",
+    /*geometryPath=*/"animation/zombie.geo.json",
+    /*animationPath=*/"animation/zombie.animation.json",
     /*texturePath=*/"entity/zombie/husk.png",
-    /*geometryId=*/"geometry.husk",
-    /*walkAnimation=*/"animation.husk.walk",
-    /*idleAnimation=*/"animation.husk.idle",
+    /*geometryId=*/"geometry.zombie",
+    /*walkAnimation=*/"animation.zombie.walk",
+    /*idleAnimation=*/"animation.zombie.idle",
     /*scale=*/1.0F,
 };
 
@@ -148,12 +168,13 @@ const std::array<SpeciesDef, 3> kManifest{{
         &rollSheepLoot},
     // Husk (26.1): a desert zombie — 20 health, follow range 35, MOVEMENT_SPEED
     // 0.23, attack 3, box 0.6 x 1.95, egg tint 0x797061 / 0x66907B. Melee like
-    // the zombie; rotten flesh needs an item this build lacks, so no loot.
+    // the zombie; AR-M1 wires its loot to the same 0-2 rotten flesh pool.
     SpeciesDef{
         /*path=*/"husk", /*vanillaName=*/"husk", MobCategory::Monster,
         SpawnPlacement::OnGround, EntityDimensions{0.6F, 1.95F},
         attributesOf(20.0F, 0.23F, 3.0F, 35.0F), /*hasSpawnEgg=*/true,
-        SpawnEggColors{0x797061U, 0x66907BU}, kHuskRender, kHuskSounds, &kMeleeMonsterAi, nullptr},
+        SpawnEggColors{0x797061U, 0x66907BU}, kHuskRender, kHuskSounds, &kMeleeMonsterAi,
+        &rollRottenFleshLoot},
 }};
 
 // Builds one manifest row into an immutable EntityType. The mechanical

@@ -126,6 +126,12 @@ int main() {
     assert(&items::SheepSpawnEgg.entityType() == entities::entityTypeRegistry().byId("sheep"));
     assert(&items::ChickenSpawnEgg.entityType() ==
            entities::entityTypeRegistry().byId("chicken"));
+    // AR-M1: husk spawn egg, same deferred-lookup pattern (sabotage③ target:
+    // an unregistered husk_spawn_egg would drop out of kSpawnEggItems, so the
+    // round-trip loop above would never touch it and this direct lookup
+    // would fail first).
+    assert(hasUseOn(&items::HuskSpawnEgg));
+    assert(&items::HuskSpawnEgg.entityType() == entities::entityTypeRegistry().byId("husk"));
     // Plain materials / tools that are not hoes do nothing on right-click.
     assert(!hasUseOn(&items::Diamond));
     assert(!hasUseOn(&items::Stick));

@@ -91,6 +91,15 @@ int main() {
         return stack.item == &items::Egg;
     }));
 
+    // --- AR-M1: rotten flesh (zombie/husk drop) lands in the Food tab the
+    // same auto-catalogued way, off its own .category(CreativeCategory::Food)
+    // declaration. ---
+    assert(std::ranges::any_of(food, [](const ItemStack& stack) {
+        return stack.item == &items::RottenFlesh;
+    }));
+    assert(registry.item("rebedrock:rotten_flesh") != nullptr);
+    assert(registry.item("minecraft:rotten_flesh") == registry.item("rebedrock:rotten_flesh"));
+
     // --- AR-A1: sheep/chicken spawn eggs reach the SpawnEggs tab, the same way
     // the pre-existing pig/cow/zombie eggs do — reachable via /give and via the
     // creative inventory even before natural spawning is mac-verified. ---
@@ -104,6 +113,13 @@ int main() {
     assert(registry.item("rebedrock:sheep_spawn_egg") != nullptr);
     assert(registry.item("rebedrock:chicken_spawn_egg") != nullptr);
     assert(registry.item("minecraft:sheep_spawn_egg") == registry.item("rebedrock:sheep_spawn_egg"));
+
+    // --- AR-M1: husk spawn egg reaches the SpawnEggs tab the same way. ---
+    assert(std::ranges::any_of(spawnEggs, [](const ItemStack& stack) {
+        return stack.item == &items::HuskSpawnEgg;
+    }));
+    assert(registry.item("rebedrock:husk_spawn_egg") != nullptr);
+    assert(registry.item("minecraft:husk_spawn_egg") == registry.item("rebedrock:husk_spawn_egg"));
 
     ContentRegistry isolated;
     assert(isolated.registerBlock(world::Block::Stone,
