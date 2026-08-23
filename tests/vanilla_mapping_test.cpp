@@ -1,0 +1,207 @@
+// JC1: the vanilla <-> rebedrock mapping framework (compat/VanillaMapping.hpp).
+//
+// Covers what the header's own static_asserts cannot (registry-backed lookups
+// that need registerBuiltinEntities() to have run, and the sabotage-friendly
+// end-to-end BlockState assembly through applyMappedState): identity
+// round-trip for block/item/entity, default-identity for same-named
+// properties, the waterlogged<->submerged_in override in both directions,
+// unknown-content skip (property, value and block), and the reverse-mapping
+// placeholder's existence (JC4 seam, not behaviour).
+
+#include "compat/VanillaMapping.hpp"
+
+#include "gameplay/ItemRegistry.hpp"
+#include "gameplay/entities/CowEntity.hpp"
+#include "gameplay/entities/EntityRegistry.hpp"
+#include "world/Block.hpp"
+#include "world/BlockState.hpp"
+#include "world/StateSchema.hpp"
+
+#include <cassert>
+#include <cstdint>
+
+namespace {
+
+namespace compat = mc::compat;
+namespace world = mc::world;
+namespace gameplay = mc::gameplay;
+
+// --- Layer 1: identity --------------------------------------------------
+
+void testBlockIdentity() {
+    // A real vanilla name resolves to the block it names.
+    const auto stone = compat::mapVanillaBlockName("minecraft:stone");
+    assert(stone.has_value());
+    assert(*stone == world::Block::Stone);
+
+    // The bare path (no namespace) also resolves — the same convenience
+    // world::blockFromIdentifier already gives every caller.
+    assert(compat::mapVanillaBlockName("stone") == world::Block::Stone);
+
+    // A vanilla-only block this build does not implement: skip (nullopt),
+    // never abort. BlockIdRemap's "unknown -> invalid, not a crash" rule,
+    // layer 1's version of it.
+    assert(!compat::mapVanillaBlockName("minecraft:this_block_does_not_exist").has_value());
+}
+
+void testItemIdentity() {
+    const auto* stick = compat::mapVanillaItemName("minecraft:stick");
+    assert(stick != nullptr);
+    assert(gameplay::itemId(stick) == gameplay::itemId(gameplay::itemFromIdentifier("stick")));
+
+    assert(compat::mapVanillaItemName("minecraft:this_item_does_not_exist") == nullptr);
+}
+
+void testEntityIdentity() {
+    mc::gameplay::entities::registerBuiltinEntities();
+
+    const auto* cow = compat::mapVanillaEntityTypeName("minecraft:cow");
+    assert(cow != nullptr);
+    assert(cow == &mc::gameplay::entities::CowEntity::type());
+
+    assert(compat::mapVanillaEntityTypeName("minecraft:this_mob_does_not_exist") == nullptr);
+}
+
+// --- Layer 2: state property/value, default identity ---------------------
+
+void testDefaultIdentityBoolean() {
+    // "lit" mirrors vanilla's AbstractFurnaceBlock.LIT by name (StateSchema.hpp
+    // comment) and is boolean in both — the ordinary case defaultValueLookup
+    // covers with no override entry at all.
+    const auto mappedTrue = compat::mapVanillaState("lit", "true");
+    assert(mappedTrue.valid());
+    assert(mappedTrue.property == world::StateProperty::Lit);
+    assert(mappedTrue.value == 1U);
+
+    const auto mappedFalse = compat::mapVanillaState("lit", "false");
+    assert(mappedFalse.valid());
+    assert(mappedFalse.value == 0U);
+
+    // End to end: applying it to a real furnace BlockState lights it, exactly
+    // as BlockState::withLit(true) would.
+    const auto furnace =
+        compat::applyMappedState(world::BlockState{world::Block::Furnace}, mappedTrue);
+    assert(furnace.lit());
+}
+
+void testDefaultIdentitySmallInteger() {
+    // "age" mirrors CropBlock.AGE (0-7), a plain digit string in vanilla NBT.
+    const auto mapped = compat::mapVanillaState("age", "5");
+    assert(mapped.valid());
+    assert(mapped.property == world::StateProperty::Age);
+    assert(mapped.value == 5U);
+
+    const auto crops =
+        compat::applyMappedState(world::BlockState{world::Block::WheatCrops}, mapped);
+    assert(crops.age() == 5);
+}
+
+// --- Layer 2: the registered deviation override (waterlogged) ------------
+
+void testWaterloggedOverrideBothDirections() {
+    // The core closed-loop assertion the task calls out: true -> water(1),
+    // false -> none(0). SubmergedFluid is not landed yet (F2), so
+    // statePropertyFromName("submerged_in") resolves to StateProperty::Count
+    // today and the mapping is correctly inert (mapped but not valid, since
+    // Count is "no such property") rather than silently wrong. The value
+    // function side of the override is exercised directly, independent of
+    // whether the target enumerator exists yet, so this test does not have to
+    // wait on F2 to prove the override logic itself.
+    const auto* override_ = compat::findOverride("waterlogged");
+    assert(override_ != nullptr);
+    const auto trueValue = override_->valueFn("true");
+    assert(trueValue.has_value());
+    assert(*trueValue == 1U);  // water
+    const auto falseValue = override_->valueFn("false");
+    assert(falseValue.has_value());
+    assert(*falseValue == 0U);  // none
+
+    // And through the full mapVanillaState entry point: today it reports
+    // "not valid" (rebedrockProperty == Count, F2 not landed), which is the
+    // correct "skip" answer rather than a crash or a bogus write — proves the
+    // "override claims the property but the target doesn't exist yet" branch.
+    const auto mapped = compat::mapVanillaState("waterlogged", "true");
+    assert(!mapped.valid());
+}
+
+void testWaterloggedOverrideUnknownValueSkips() {
+    // An override that recognises the *property* but not this *value* still
+    // skips rather than guessing.
+    const auto* override_ = compat::findOverride("waterlogged");
+    assert(override_ != nullptr);
+    assert(!override_->valueFn("maybe").has_value());
+}
+
+// --- Unknown content: skip, never abort -----------------------------------
+
+void testUnknownPropertySkips() {
+    assert(!compat::mapVanillaState("this_property_does_not_exist", "true").valid());
+}
+
+void testUnknownValueShapeSkips() {
+    // "facing" mirrors vanilla's DirectionProperty but vanilla spells its
+    // values as words ("north"), which defaultValueLookup deliberately does
+    // not guess at (see the comment on defaultValueLookup) — a property that
+    // needs enum-word values is a future override, not a silent 0.
+    assert(!compat::mapVanillaState("facing", "north").valid());
+}
+
+// --- Ledger sanity: the override table is exactly the registered deviation,
+//     never queried for a same-named property (hot-path discipline: default
+//     path costs zero override lookups). ----------------------------------
+
+void testOverrideTableOnlyListsDeviations() {
+    assert(compat::kOverrides.size() == 1);
+    assert(compat::kOverrides[0].vanillaProperty == "waterlogged");
+    // A property with no deviation is simply absent from the table — the
+    // table is not an exhaustive property list, only exceptions to identity.
+    assert(compat::findOverride("lit") == nullptr);
+    assert(compat::findOverride("age") == nullptr);
+    assert(compat::findOverride("moisture") == nullptr);
+}
+
+// --- Layer 4: reverse-mapping placeholder (JC4 seam), existence only ------
+
+void testReverseSeamShape() {
+    // hasVanillaIdentity is real and usable today: every built-in mirrors a
+    // vanilla block except deliberately-original content, of which this build
+    // currently has none, so every block reports true. The point of this
+    // assertion is the *shape* (a caller can ask this before attempting an
+    // export), not a specific original block existing yet.
+    for (std::size_t i = 0; i < static_cast<std::size_t>(world::Block::Count); ++i) {
+        const auto block = static_cast<world::Block>(i);
+        // Every built-in registered so far mirrors vanilla (JC-DESIGN.md
+        // §1's "vanilla id" row + je_mapping_test's own completeness audit).
+        // If this ever goes false it means original content landed, which is
+        // expected and fine — it is JC4's job to give it a substitute, not
+        // this test's. So this only pins that the predicate runs cleanly over
+        // every block without crashing, not a fixed answer.
+        static_cast<void>(compat::hasVanillaIdentity(block));
+    }
+    // vanillaBlockNameForExport (JC4's reverse-identity seam) is declared in
+    // VanillaMapping.hpp but deliberately has no definition anywhere in this
+    // build (JC1's scope excludes JC4 — see the header's own comment on it).
+    // Not called or referenced here on purpose: doing so would force a link
+    // error, which is the *correct* outcome for "not implemented yet" but
+    // would make this test binary fail to link rather than fail an assertion
+    // — the wrong failure mode for ctest. Its declaration compiling (proven
+    // when this translation unit includes the header at all) is the whole of
+    // what JC1 promises for layer 4.
+}
+
+} // namespace
+
+int main() {
+    testBlockIdentity();
+    testItemIdentity();
+    testEntityIdentity();
+    testDefaultIdentityBoolean();
+    testDefaultIdentitySmallInteger();
+    testWaterloggedOverrideBothDirections();
+    testWaterloggedOverrideUnknownValueSkips();
+    testUnknownPropertySkips();
+    testUnknownValueShapeSkips();
+    testOverrideTableOnlyListsDeviations();
+    testReverseSeamShape();
+    return 0;
+}

@@ -1970,6 +1970,15 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_je_mapping_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME je_mapping COMMAND mc_rebedrock_je_mapping_test)
 
+    # JC1: vanilla <-> rebedrock mapping framework (identity/state/deviation
+    # override registry), the JE-save-compat axis's greenfield framework node.
+    add_executable(mc_rebedrock_vanilla_mapping_test
+        tests/vanilla_mapping_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_vanilla_mapping_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_vanilla_mapping_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME vanilla_mapping COMMAND mc_rebedrock_vanilla_mapping_test)
+
     # WG-0: nether/end base-block and biome identity registration.
     add_executable(mc_rebedrock_nether_end_identity_test
         tests/nether_end_identity_test.cpp
