@@ -1,16 +1,21 @@
 #include "gameplay/GameMode.hpp"
 #include "gameplay/command/CommandDispatcher.hpp"
+#include "gameplay/command/CommandSource.hpp"
 #include "gameplay/command/GameplayArguments.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 
 #include <cassert>
 #include <charconv>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <vector>
 
 using mc::gameplay::command::CommandContext;
 using mc::gameplay::command::CommandDispatcher;
+using mc::gameplay::command::CommandSource;
 using mc::gameplay::command::GreedyStringArgument;
 using mc::gameplay::command::kEntityTargetArgument;
 using mc::gameplay::command::kGameModeArgument;
@@ -22,6 +27,16 @@ using mc::gameplay::command::kStringArgument;
 using mc::gameplay::command::kTeleportDestinationArgument;
 using mc::gameplay::command::kTimeArgument;
 using mc::gameplay::CommandResult;
+
+namespace {
+bool hasText(const std::vector<mc::gameplay::command::Suggestion>& suggestions,
+             std::string_view text) {
+    for (const auto& suggestion : suggestions) {
+        if (suggestion.text == text) return true;
+    }
+    return false;
+}
+} // namespace
 
 int main() {
     // Every built-in species must be registered before entity-target commands
@@ -265,7 +280,8 @@ int main() {
             }
             return mc::gameplay::command::parseOk(speed);
         }
-        void collectSuggestions(mc::gameplay::command::SuggestionSink&) const override {}
+        void collectSuggestions(mc::gameplay::command::SuggestionSink&,
+                                const mc::gameplay::command::CommandContext&) const override {}
     };
     static SpeedArgument speedArgument; // local instance; outlives the dispatcher
     float lastSpeed = 0.0F;
@@ -331,5 +347,95 @@ int main() {
     isolated.bind("x", std::int64_t{7});
     assert(isolated.find<std::int64_t>("x") == 7);
     assert(!isolated.find<std::string>("x").has_value());
+
+    // CMD-7: the redirect / source-fork machinery `execute` is built on. A tiny
+    // `exec` subtree exercises forking, gating, redirect-to-root, and completion
+    // across a redirect — the same primitives GameRuntime wires the real clauses
+    // onto — without depending on the world.
+    {
+        CommandDispatcher redirect;
+        std::vector<std::uint64_t> marks; // one entry per source the terminal ran as
+        // Terminal command: records which source ran it (by executor entity id).
+        redirect.literal("mark").executes([&](const CommandContext& context) {
+            marks.push_back(context.hasSource() ? context.source().entityId : 0U);
+            return CommandResult{true, ""};
+        });
+        auto exec = redirect.literal("exec");
+        const std::size_t execNode = exec.nodeId();
+        const std::size_t rootNode = redirect.rootId();
+        // `spread <n>`: fork the incoming source into n copies, each tagged with a
+        // distinct executor id, then continue the clause chain.
+        redirect.builderAt(execNode)
+            .then("spread")
+            .argument("n", kIntArgument)
+            .redirectTo(execNode)
+            .modifiesSource([](const CommandContext& args, const CommandSource& incoming,
+                               std::vector<CommandSource>& out) -> std::string {
+                const auto n = args.find<std::int64_t>("n");
+                if (!n.has_value() || *n < 0) return "spread: expected a count";
+                for (std::int64_t index = 0; index < *n; ++index) {
+                    out.push_back(incoming.withExecutorEntity(static_cast<std::uint64_t>(index)));
+                }
+                return "";
+            });
+        // `keep <flag>`: gate — the source survives only when flag != 0.
+        redirect.builderAt(execNode)
+            .then("keep")
+            .argument("flag", kIntArgument)
+            .redirectTo(execNode)
+            .modifiesSource([](const CommandContext& args, const CommandSource& incoming,
+                               std::vector<CommandSource>& out) -> std::string {
+                const auto flag = args.find<std::int64_t>("flag");
+                if (!flag.has_value()) return "keep: expected a flag";
+                if (*flag != 0) out.push_back(incoming);
+                return "";
+            });
+        // `run` redirects to the root: the tail parses as a fresh command.
+        redirect.builderAt(execNode).then("run").redirectTo(rootNode);
+
+        // Fork: three sources, so `mark` runs three times, once per tagged source.
+        marks.clear();
+        auto forked = redirect.execute("/exec spread 3 run mark");
+        assert(forked.success);
+        assert((marks == std::vector<std::uint64_t>{0U, 1U, 2U}));
+
+        // Nesting composes left to right: 2 × 2 = 4 sources reach the terminal.
+        marks.clear();
+        assert(redirect.execute("/exec spread 2 run exec spread 2 run mark").success);
+        assert(marks.size() == 4U);
+
+        // Gate that passes runs once; gate that fails runs nothing (and reports
+        // failure, so a forked `run` that matched no source is not a silent win).
+        marks.clear();
+        assert(redirect.execute("/exec keep 1 run mark").success);
+        assert(marks.size() == 1U);
+        marks.clear();
+        assert(!redirect.execute("/exec keep 0 run mark").success);
+        assert(marks.empty());
+
+        // Incomplete: a clause chain with no `run` executes nothing.
+        marks.clear();
+        assert(!redirect.execute("/exec spread 3").success);
+        assert(marks.empty());
+
+        // The fork guard trips before a fork bomb exhausts memory.
+        marks.clear();
+        assert(!redirect.execute("/exec spread 70000 run mark").success);
+        assert(marks.empty());
+
+        // Completion follows the redirect: after a clause the target's children
+        // are offered, and after `run` every root command is.
+        auto clauseSuggest = redirect.suggestions("/exec ", 6);
+        assert(hasText(clauseSuggest, "spread"));
+        assert(hasText(clauseSuggest, "keep"));
+        assert(hasText(clauseSuggest, "run"));
+        auto afterClause = redirect.suggestions("/exec spread 3 ", 15);
+        assert(hasText(afterClause, "run"));
+        auto afterRun = redirect.suggestions("/exec spread 3 run ", 19);
+        assert(hasText(afterRun, "mark"));
+        assert(hasText(afterRun, "exec"));
+        auto partialRun = redirect.suggestions("/exec spread 3 ru", 17);
+        assert(hasText(partialRun, "run") && partialRun.size() == 1U);
+    }
     return 0;
 }

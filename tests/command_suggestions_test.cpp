@@ -124,7 +124,8 @@ int main() {
     // Node-level customSuggestions add candidates beyond any argument type
     // (Brigadier's customSuggestions), and exact matches sort before prefixes.
     dispatcher.literal("custom")
-        .suggests([](mc::gameplay::command::SuggestionSink& sink) {
+        .suggests([](mc::gameplay::command::SuggestionSink& sink,
+                     const mc::gameplay::command::CommandContext&) {
             sink.suggest("foo", "a custom suggestion");
             sink.suggest("foobar", "a longer one");
         })

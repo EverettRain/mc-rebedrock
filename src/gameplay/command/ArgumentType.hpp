@@ -182,7 +182,12 @@ class ArgumentType {
 
     [[nodiscard]] virtual ArgumentParseResult parse(StringReader& reader) const = 0;
 
-    virtual void collectSuggestions(SuggestionSink& sink) const = 0;
+    // Feeds this type's completion candidates to the sink. `context` carries the
+    // arguments already bound earlier on the same line, so a value can complete
+    // relative to a prior one (a gamerule's value offers true/false once the rule
+    // is known) — Brigadier passes the CommandContext to its SuggestionProvider
+    // for the same reason. Most types ignore it.
+    virtual void collectSuggestions(SuggestionSink& sink, const CommandContext& context) const = 0;
 
     // The token this argument shows in a generated usage string (CMD6's
     // smart-usage). Empty means "use the argument node's own name", so the
@@ -216,7 +221,7 @@ class StringArgument final : public ArgumentType {
         return parseOk(*token);
     }
 
-    void collectSuggestions(SuggestionSink&) const override {}
+    void collectSuggestions(SuggestionSink&, const CommandContext&) const override {}
 };
 
 // Reads to the end of the line — StringArgumentType's GreedyString. The value is
@@ -232,7 +237,7 @@ class GreedyStringArgument final : public ArgumentType {
         return parseOk(rest);
     }
 
-    void collectSuggestions(SuggestionSink&) const override {}
+    void collectSuggestions(SuggestionSink&, const CommandContext&) const override {}
 };
 
 // A signed whole number, bound as int64, optionally range-checked (the
@@ -262,7 +267,7 @@ class IntArgument final : public ArgumentType {
         return parseOk(value);
     }
 
-    void collectSuggestions(SuggestionSink& sink) const override {
+    void collectSuggestions(SuggestionSink& sink, const CommandContext&) const override {
         if (minimum_.has_value() && maximum_.has_value()) {
             sink.suggest(std::to_string(*minimum_),
                          "[" + std::to_string(*minimum_) + ", " + std::to_string(*maximum_) + "]");
@@ -320,7 +325,7 @@ class RotationArgument final : public ArgumentType {
         return parseOk(rotation);
     }
 
-    void collectSuggestions(SuggestionSink&) const override {}
+    void collectSuggestions(SuggestionSink&, const CommandContext&) const override {}
 };
 
 // Shared, stateless instances of the generic argument types. The pure-function

@@ -419,265 +419,199 @@ gameplay::CommandResult GameRuntime::runSummon(const gameplay::command::CommandC
 }
 
 namespace {
-// Reads the next whitespace-delimited chunk (a selector like `@e[type=cow]`, a
-// coordinate `~`, a keyword). Selectors carry punctuation outside the
-// unquoted-string set, so a plain "read to the next space" is what the execute
-// clause parser needs, not readString.
-[[nodiscard]] std::string readWord(gameplay::command::StringReader& reader) {
-    reader.skipWhitespace();
-    std::string word;
-    while (reader.canRead() &&
-           !gameplay::command::StringReader::isWhitespace(reader.peek())) {
-        word.push_back(reader.read());
-    }
-    return word;
-}
-
-// Parses one whitespace-delimited selector token. Returns nullopt on a parse
-// error (with the message in `error`).
-[[nodiscard]] std::optional<gameplay::command::EntitySelector> readSelector(
-    gameplay::command::StringReader& reader, std::string& error) {
-    const std::string token = readWord(reader);
-    gameplay::command::StringReader inner{token};
-    const auto parsed = gameplay::command::parseEntitySelector(inner);
-    if (!parsed.ok()) {
-        error = parsed.error->message;
-        return std::nullopt;
-    }
-    return std::any_cast<gameplay::command::EntitySelector>(parsed.value);
-}
-
-// Reads three coordinate words into a Position3 (relative `~` axes allowed).
-[[nodiscard]] bool readPosition(gameplay::command::StringReader& reader,
-                                gameplay::command::Position3& out) {
-    const std::string sx = readWord(reader);
-    const std::string sy = readWord(reader);
-    const std::string sz = readWord(reader);
-    return gameplay::command::parseCoordinate(sx, out.x, out.relativeX) &&
-           gameplay::command::parseCoordinate(sy, out.y, out.relativeY) &&
-           gameplay::command::parseCoordinate(sz, out.z, out.relativeZ);
-}
-
-constexpr int kMaxExecuteDepth = 16;
 constexpr double kRadiansToDegrees = 57.295779513082323;
 } // namespace
 
-std::string GameRuntime::applyExecuteClause(
-    const std::string& clause, gameplay::command::StringReader& reader,
-    std::vector<gameplay::command::CommandSource>& contexts,
-    std::span<const gameplay::command::SelectorCandidate> candidates) {
+void GameRuntime::registerExecute(std::size_t executeNode) {
     namespace cmd = gameplay::command;
-    if (clause == "as" || clause == "at") {
-        std::string error;
-        const auto selector = readSelector(reader, error);
-        if (!selector.has_value()) {
-            return "execute " + clause + ": " + error;
-        }
-        std::vector<cmd::CommandSource> next;
-        for (const auto& ctx : contexts) {
-            for (const auto& target : selector->resolve(ctx, candidates, nextCommandRandom())) {
-                if (clause == "as") {
-                    next.push_back(target.player ? ctx.withExecutorPlayer(target.playerId)
-                                                 : ctx.withExecutorEntity(target.entityId));
-                } else {
-                    next.push_back(ctx.withPosition(target.position));
-                }
-            }
-        }
-        contexts = std::move(next);
-        return "";
-    }
-    if (clause == "positioned") {
-        const std::string word = readWord(reader);
-        if (word == "as") {
-            std::string error;
-            const auto selector = readSelector(reader, error);
-            if (!selector.has_value()) {
-                return "execute positioned as: " + error;
-            }
-            std::vector<cmd::CommandSource> next;
-            for (const auto& ctx : contexts) {
-                for (const auto& target : selector->resolve(ctx, candidates, nextCommandRandom())) {
-                    next.push_back(ctx.withPosition(target.position));
-                }
-            }
-            contexts = std::move(next);
-            return "";
-        }
-        // `word` is the first coordinate; read the other two from the reader.
-        const std::string sy = readWord(reader);
-        const std::string sz = readWord(reader);
-        cmd::Position3 position;
-        if (!cmd::parseCoordinate(word, position.x, position.relativeX) ||
-            !cmd::parseCoordinate(sy, position.y, position.relativeY) ||
-            !cmd::parseCoordinate(sz, position.z, position.relativeZ)) {
-            return "execute positioned: expected <x> <y> <z>";
-        }
-        for (auto& ctx : contexts) {
-            ctx = ctx.withPosition(cmd::resolve(position, ctx));
-        }
-        return "";
-    }
-    if (clause == "rotated") {
-        const std::string yaw = readWord(reader);
-        if (yaw == "as") {
-            return "execute rotated as is not supported yet";
-        }
-        const std::string pitch = readWord(reader);
-        cmd::Rotation2 rotation;
-        bool relative = false;
-        if (!cmd::parseCoordinate(yaw, rotation.yaw, relative) ||
-            !cmd::parseCoordinate(pitch, rotation.pitch, relative)) {
-            return "execute rotated: expected <yaw> <pitch>";
-        }
-        for (auto& ctx : contexts) {
-            ctx = ctx.withRotation(rotation);
-        }
-        return "";
-    }
-    if (clause == "facing") {
-        const std::string word = readWord(reader);
-        if (word == "entity") {
-            return "execute facing entity is not supported yet";
-        }
-        const std::string sy = readWord(reader);
-        const std::string sz = readWord(reader);
-        cmd::Position3 position;
-        if (!cmd::parseCoordinate(word, position.x, position.relativeX) ||
-            !cmd::parseCoordinate(sy, position.y, position.relativeY) ||
-            !cmd::parseCoordinate(sz, position.z, position.relativeZ)) {
-            return "execute facing: expected <x> <y> <z>";
-        }
-        for (auto& ctx : contexts) {
-            const glm::vec3 target = cmd::resolve(position, ctx);
-            const glm::vec3 direction = target - ctx.position;
-            cmd::Rotation2 rotation = ctx.rotation;
-            if (const float length = glm::length(direction); length > 1e-4F) {
-                const glm::vec3 unit = direction / length;
-                rotation.yaw = std::atan2(static_cast<double>(unit.x),
-                                          static_cast<double>(unit.z)) *
-                               kRadiansToDegrees;
-                rotation.pitch = std::asin(std::clamp(static_cast<double>(unit.y), -1.0, 1.0)) *
-                                 kRadiansToDegrees;
-            }
-            ctx = ctx.withRotation(rotation);
-        }
-        return "";
-    }
-    if (clause == "in") {
-        const std::string dimension = readWord(reader);
-        if (dimension != "overworld" && dimension != "minecraft:overworld" &&
-            dimension != "rebedrock:overworld") {
-            return "Unknown dimension: " + dimension;
-        }
-        for (auto& ctx : contexts) {
-            ctx = ctx.withDimension(cmd::Dimension::Overworld);
-        }
-        return "";
-    }
-    if (clause == "if" || clause == "unless") {
-        const bool negate = clause == "unless";
-        const std::string condition = readWord(reader);
-        if (condition == "entity") {
-            std::string error;
-            const auto selector = readSelector(reader, error);
-            if (!selector.has_value()) {
-                return "execute " + clause + " entity: " + error;
-            }
-            std::vector<cmd::CommandSource> next;
-            for (const auto& ctx : contexts) {
-                const bool matches =
-                    !selector->resolve(ctx, candidates, nextCommandRandom()).empty();
-                if (matches != negate) {
-                    next.push_back(ctx);
-                }
-            }
-            contexts = std::move(next);
-            return "";
-        }
-        if (condition == "block") {
-            cmd::Position3 position;
-            if (!readPosition(reader, position)) {
-                return "execute " + clause + " block: expected <x> <y> <z> <block>";
-            }
-            const std::string blockName = readWord(reader);
-            const auto block = world::blockFromIdentifier(blockName);
-            if (!block.has_value()) {
-                return "Unknown block: " + blockName;
-            }
-            std::vector<cmd::CommandSource> next;
-            for (const auto& ctx : contexts) {
-                const glm::vec3 resolved = cmd::resolve(position, ctx);
-                const bool matches = serverWorld_.block(floorToInt(resolved.x),
-                                                        floorToInt(resolved.y),
-                                                        floorToInt(resolved.z)) == *block;
-                if (matches != negate) {
-                    next.push_back(ctx);
-                }
-            }
-            contexts = std::move(next);
-            return "";
-        }
-        return "execute " + clause + ": expected 'entity' or 'block'";
-    }
-    return "Unknown execute subcommand: " + clause;
-}
+    const std::size_t root = commandDispatcher_.rootId();
+    const std::size_t E = executeNode;
+    // A fresh builder positioned at the execute node, so every clause branches
+    // off the same node (and `run` redirects back to it / to the root).
+    const auto atExecute = [this, E] { return commandDispatcher_.builderAt(E); };
 
-gameplay::CommandResult GameRuntime::runExecute(const gameplay::command::CommandContext& context) {
-    namespace cmd = gameplay::command;
-    const auto chain = context.find<std::string>("chain");
-    if (!chain.has_value() || chain->empty()) {
-        return usageError("execute", context.source());
-    }
-    if (commandRecursionDepth_ >= kMaxExecuteDepth) {
-        return gameplay::CommandResult{false, "Command recursion limit reached"};
-    }
-    ++commandRecursionDepth_;
-    struct DepthGuard final {
-        int& depth;
-        ~DepthGuard() { --depth; }
-    } guard{commandRecursionDepth_};
+    // --- Source modifiers: the DOD stand-ins for Brigadier's fork/redirect
+    // modifiers. Each transforms the incoming source into 0..N outgoing sources
+    // as its clause's redirect is crossed. `as` rebinds the executor; `at` /
+    // `positioned as` move to a target's position; `positioned`/`rotated`/
+    // `facing`/`in` transform one source; `if`/`unless` gate it.
+    cmd::SourceModifier asModifier = [this](const cmd::CommandContext& args,
+                                            const cmd::CommandSource& incoming,
+                                            std::vector<cmd::CommandSource>& out) -> std::string {
+        const auto selector = args.find<cmd::EntitySelector>("targets");
+        if (!selector.has_value()) return "execute as: expected a target selector";
+        const auto candidates = gatherSelectorCandidates();
+        for (const auto& target : selector->resolve(incoming, candidates, nextCommandRandom())) {
+            out.push_back(target.player ? incoming.withExecutorPlayer(target.playerId)
+                                        : incoming.withExecutorEntity(target.entityId));
+        }
+        return "";
+    };
+    // `at` and `positioned as` share the "move to each target's position" body.
+    cmd::SourceModifier positionAtTargets =
+        [this](const cmd::CommandContext& args, const cmd::CommandSource& incoming,
+               std::vector<cmd::CommandSource>& out) -> std::string {
+        const auto selector = args.find<cmd::EntitySelector>("targets");
+        if (!selector.has_value()) return "execute at: expected a target selector";
+        const auto candidates = gatherSelectorCandidates();
+        for (const auto& target : selector->resolve(incoming, candidates, nextCommandRandom())) {
+            out.push_back(incoming.withPosition(target.position));
+        }
+        return "";
+    };
+    cmd::SourceModifier positionedModifier =
+        [](const cmd::CommandContext& args, const cmd::CommandSource& incoming,
+           std::vector<cmd::CommandSource>& out) -> std::string {
+        const auto pos = args.find<cmd::Position3>("pos");
+        if (!pos.has_value()) return "execute positioned: expected <x> <y> <z>";
+        out.push_back(incoming.withPosition(cmd::resolve(*pos, incoming)));
+        return "";
+    };
+    cmd::SourceModifier rotatedModifier =
+        [](const cmd::CommandContext& args, const cmd::CommandSource& incoming,
+           std::vector<cmd::CommandSource>& out) -> std::string {
+        const auto rot = args.find<cmd::Rotation2>("rot");
+        if (!rot.has_value()) return "execute rotated: expected <yaw> <pitch>";
+        out.push_back(incoming.withRotation(*rot));
+        return "";
+    };
+    cmd::SourceModifier facingModifier =
+        [](const cmd::CommandContext& args, const cmd::CommandSource& incoming,
+           std::vector<cmd::CommandSource>& out) -> std::string {
+        const auto pos = args.find<cmd::Position3>("pos");
+        if (!pos.has_value()) return "execute facing: expected <x> <y> <z>";
+        const glm::vec3 target = cmd::resolve(*pos, incoming);
+        const glm::vec3 direction = target - incoming.position;
+        cmd::Rotation2 rotation = incoming.rotation;
+        if (const float length = glm::length(direction); length > 1e-4F) {
+            const glm::vec3 unit = direction / length;
+            rotation.yaw = std::atan2(static_cast<double>(unit.x),
+                                      static_cast<double>(unit.z)) *
+                           kRadiansToDegrees;
+            rotation.pitch = std::asin(std::clamp(static_cast<double>(unit.y), -1.0, 1.0)) *
+                             kRadiansToDegrees;
+        }
+        out.push_back(incoming.withRotation(rotation));
+        return "";
+    };
+    cmd::SourceModifier inModifier =
+        [](const cmd::CommandContext& args, const cmd::CommandSource& incoming,
+           std::vector<cmd::CommandSource>& out) -> std::string {
+        const auto dimension = args.find<std::string>("dimension");
+        if (!dimension.has_value()) return "execute in: expected a dimension";
+        if (*dimension != "overworld" && *dimension != "minecraft:overworld" &&
+            *dimension != "rebedrock:overworld") {
+            return "Unknown dimension: " + *dimension;
+        }
+        out.push_back(incoming.withDimension(cmd::Dimension::Overworld));
+        return "";
+    };
+    const auto ifEntityModifier = [this](bool negate) -> cmd::SourceModifier {
+        return [this, negate](const cmd::CommandContext& args, const cmd::CommandSource& incoming,
+                              std::vector<cmd::CommandSource>& out) -> std::string {
+            const auto selector = args.find<cmd::EntitySelector>("targets");
+            if (!selector.has_value()) return "execute if entity: expected a target selector";
+            const auto candidates = gatherSelectorCandidates();
+            const bool matches =
+                !selector->resolve(incoming, candidates, nextCommandRandom()).empty();
+            if (matches != negate) out.push_back(incoming);
+            return "";
+        };
+    };
+    const auto ifBlockModifier = [this](bool negate) -> cmd::SourceModifier {
+        return [this, negate](const cmd::CommandContext& args, const cmd::CommandSource& incoming,
+                              std::vector<cmd::CommandSource>& out) -> std::string {
+            const auto pos = args.find<cmd::Position3>("pos");
+            const auto blockName = args.find<std::string>("block");
+            if (!pos.has_value() || !blockName.has_value()) {
+                return "execute if block: expected <x> <y> <z> <block>";
+            }
+            const auto block = world::blockFromIdentifier(*blockName);
+            if (!block.has_value()) return "Unknown block: " + *blockName;
+            const glm::vec3 resolved = cmd::resolve(*pos, incoming);
+            const bool matches = serverWorld_.block(floorToInt(resolved.x), floorToInt(resolved.y),
+                                                    floorToInt(resolved.z)) == *block;
+            if (matches != negate) out.push_back(incoming);
+            return "";
+        };
+    };
+    const auto unsupported = [](std::string message) -> cmd::SourceModifier {
+        return [message = std::move(message)](const cmd::CommandContext&, const cmd::CommandSource&,
+                                              std::vector<cmd::CommandSource>&) -> std::string {
+            return message;
+        };
+    };
 
-    const auto candidates = gatherSelectorCandidates();
-    // The starting context is the original source with feedback stripped: the
-    // inner `run` results are aggregated by execute, not each broadcast to chat.
-    std::vector<cmd::CommandSource> contexts;
+    // --- Clause tree. Each clause redirects back to the execute node so another
+    // clause may follow; `run` redirects to the root so the tail is a command.
+    atExecute()
+        .then("as")
+        .argument("targets", cmd::kEntitySelectorArgument)
+        .redirectTo(E)
+        .modifiesSource(asModifier);
+    atExecute()
+        .then("at")
+        .argument("targets", cmd::kEntitySelectorArgument)
+        .redirectTo(E)
+        .modifiesSource(positionAtTargets);
     {
-        cmd::CommandSource base = context.source();
-        base.feedback = nullptr;
-        contexts.push_back(base);
+        const std::size_t positioned = atExecute().then("positioned").nodeId();
+        commandDispatcher_.builderAt(positioned)
+            .argument("pos", cmd::kVec3Argument)
+            .redirectTo(E)
+            .modifiesSource(positionedModifier);
+        commandDispatcher_.builderAt(positioned)
+            .then("as")
+            .argument("targets", cmd::kEntitySelectorArgument)
+            .redirectTo(E)
+            .modifiesSource(positionAtTargets);
     }
-
-    cmd::StringReader reader{*chain};
-    while (true) {
-        const std::string clause = readWord(reader);
-        if (clause.empty()) {
-            return gameplay::CommandResult{false, "execute needs a 'run <command>' at the end"};
-        }
-        if (clause == "run") {
-            reader.skipWhitespace();
-            const std::string rest{reader.remaining()};
-            if (rest.empty()) {
-                return gameplay::CommandResult{false, "execute run needs a command"};
-            }
-            const std::string line = "/" + rest;
-            std::size_t ran = 0U;
-            for (const auto& ctx : contexts) {
-                if (commandDispatcher_.execute(line, ctx).success) {
-                    ++ran;
-                }
-            }
-            if (ran == 0U) {
-                return gameplay::CommandResult{false, "Executed no commands"};
-            }
-            return gameplay::CommandResult{true, "Executed " + std::to_string(ran) +
-                                                     (ran == 1U ? " command" : " commands")};
-        }
-        const std::string error = applyExecuteClause(clause, reader, contexts, candidates);
-        if (!error.empty()) {
-            return gameplay::CommandResult{false, error};
-        }
+    {
+        const std::size_t rotated = atExecute().then("rotated").nodeId();
+        commandDispatcher_.builderAt(rotated)
+            .argument("rot", cmd::kRotationArgument)
+            .redirectTo(E)
+            .modifiesSource(rotatedModifier);
+        commandDispatcher_.builderAt(rotated)
+            .then("as")
+            .argument("targets", cmd::kEntitySelectorArgument)
+            .redirectTo(E)
+            .modifiesSource(unsupported("execute rotated as is not supported yet"));
     }
+    {
+        const std::size_t facing = atExecute().then("facing").nodeId();
+        commandDispatcher_.builderAt(facing)
+            .argument("pos", cmd::kVec3Argument)
+            .redirectTo(E)
+            .modifiesSource(facingModifier);
+        commandDispatcher_.builderAt(facing)
+            .then("entity")
+            .argument("targets", cmd::kEntitySelectorArgument)
+            .redirectTo(E)
+            .modifiesSource(unsupported("execute facing entity is not supported yet"));
+    }
+    atExecute()
+        .then("in")
+        .argument("dimension", cmd::kDimensionArgument)
+        .redirectTo(E)
+        .modifiesSource(inModifier);
+    for (const bool negate : {false, true}) {
+        const std::size_t branch = atExecute().then(negate ? "unless" : "if").nodeId();
+        commandDispatcher_.builderAt(branch)
+            .then("entity")
+            .argument("targets", cmd::kEntitySelectorArgument)
+            .redirectTo(E)
+            .modifiesSource(ifEntityModifier(negate));
+        commandDispatcher_.builderAt(branch)
+            .then("block")
+            .argument("pos", cmd::kVec3Argument)
+            .argument("block", cmd::kBlockArgument)
+            .redirectTo(E)
+            .modifiesSource(ifBlockModifier(negate));
+    }
+    // `run <command>`: redirect to the root, no modifier — the surviving sources
+    // pass through unchanged and the terminal command runs once per source.
+    atExecute().then("run").redirectTo(root);
 }
 
 gameplay::command::CommandSource GameRuntime::makeCommandSource() {
@@ -1254,7 +1188,7 @@ void GameRuntime::registerAuthoritativeCommands() {
             }
             return gameSession_.gameRules().query(*rule);
         })
-        .argument("value", gameplay::command::kStringArgument)
+        .argument("value", gameplay::command::kGameRuleValueArgument)
         .executes([this](const gameplay::command::CommandContext& context) {
             const auto rule = context.find<std::string>("rule");
             const auto value = context.find<std::string>("value");
@@ -1439,18 +1373,17 @@ void GameRuntime::registerAuthoritativeCommands() {
             return gameplay::CommandResult{true, "Removed " + std::to_string(cleared) + " items"};
         });
 
-    // execute <subcommand...> run <command> (CMD5). The whole tail is a greedy
-    // string parsed by runExecute into a clause chain: each clause transforms the
-    // command source (a POD copy — as/at/positioned/rotated/facing/in), or gates
-    // it (if/unless), and `run` re-enters the dispatcher on the transformed
-    // source. A single command with a greedy tail (rather than a redirecting
-    // subtree) keeps the token-walk dispatcher unchanged.
-    commandDispatcher_.literal("execute")
-        .requiresLevel(PermissionLevel::GameMasters)
-        .argument("chain", gameplay::command::kGreedyStringArgument)
-        .executes([this](const gameplay::command::CommandContext& context) {
-            return runExecute(context);
-        });
+    // execute (CMD-7): a real redirect subtree. `execute` is the clause-dispatch
+    // node; every `as/at/positioned/…` clause is a node whose SourceModifier
+    // forks/gates the source set and redirects back here, and `run` redirects to
+    // the root so the tail parses as a fresh command. registerExecute wires the
+    // modifiers — so completion and value types come from the tree, not a hand
+    // parser (which CMD-5 used and CMD-7 retired).
+    {
+        auto execute = commandDispatcher_.literal("execute");
+        execute.requiresLevel(PermissionLevel::GameMasters);
+        registerExecute(execute.nodeId());
+    }
 
     // help (CMD6): consumes the dispatcher's introspection API. No requiresLevel,
     // so it is level 0 like vanilla — but it only lists commands the source may

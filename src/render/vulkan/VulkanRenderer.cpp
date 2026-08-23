@@ -2741,7 +2741,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     // Recomputes the completion list for the token under the (end-of-input)
     // cursor. Called whenever the input changes; Tab cycles without recomputing.
+    // Only command lines (a leading '/') are completed: plain chat is not a
+    // command, so it gets no suggestions. 1.16.1's ChatScreen builds its
+    // CommandSuggestor only for input beginning with '/'. The dispatcher keeps
+    // the '/' optional for programmatic callers; the gate lives here at the UI
+    // entry so a normal chat message never pops the command completion box.
     void refreshChatSuggestions() {
+        if (chatInputText.empty() || chatInputText.front() != '/') {
+            chatSuggestions_.clear();
+            chatSuggestionIndex_ = 0;
+            return;
+        }
         chatSuggestions_ =
             runtime.commandDispatcher().suggestions(chatInputText, chatInputText.size());
         chatSuggestionIndex_ = 0;

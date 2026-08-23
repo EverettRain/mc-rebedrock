@@ -1057,13 +1057,50 @@ int main() {
         assert(dispatcher.usage("difficulty", owner) == "difficulty [<level>]");
         assert(dispatcher.usage("time", owner) == "time set <time>");
         assert(dispatcher.usage("give", owner) == "give <item> <count>");
-        assert(dispatcher.usage("execute", owner) == "execute <chain>");
+        // CMD-7: execute is a real redirect subtree now, so its usage is
+        // generated from the clause nodes (sorted, grouped) instead of the old
+        // hand-written `execute <chain>`. Locks the whole clause tree's shape.
+        assert(dispatcher.usage("execute", owner) ==
+               "execute (as <targets>|at <targets>|facing (entity <targets>|<x> <y> <z>)|"
+               "if (block <x> <y> <z> <block>|entity <targets>)|in <dimension>|"
+               "positioned (as <targets>|<x> <y> <z>)|rotated (as <targets>|<rot>)|run|"
+               "unless (block <x> <y> <z> <block>|entity <targets>))");
         assert(dispatcher.usage("seed", owner) == "seed");
         assert(dispatcher.usage("clear", owner) == "clear");
 
         // op filtering: a level-2 command is hidden from op1; /help (level 0) is not.
         assert(dispatcher.usage("gamemode", op1).empty());
         assert(dispatcher.usage("help", op1) == "help [<command>]");
+
+        // CMD-7: the real /execute tree completes across its redirects — the
+        // clause list after `execute`, and every command after `run` (the win
+        // the greedy-string form could not give). Uses the live runtime tree.
+        const auto textOf = [](const std::vector<gameplay::command::Suggestion>& list,
+                               std::string_view text) {
+            return std::ranges::any_of(
+                list, [&](const auto& suggestion) { return suggestion.text == text; });
+        };
+        {
+            const auto clauses = dispatcher.suggestions("/execute ", 9);
+            assert(textOf(clauses, "as") && textOf(clauses, "if") && textOf(clauses, "run"));
+            const auto afterRun = dispatcher.suggestions("/execute run ", 13);
+            assert(textOf(afterRun, "setblock") && textOf(afterRun, "gamemode"));
+            const auto partial = dispatcher.suggestions("/execute positioned ~ ~ ~ ru", 28);
+            assert(textOf(partial, "run"));
+        }
+
+        // CMD-7 item 3: the gamerule value completes by the selected rule's type —
+        // a boolean rule offers true/false, an int rule its range instead. The
+        // value type reads the `rule` bound earlier on the line.
+        {
+            const std::string boolLine = "/gamerule keepInventory ";
+            const auto boolValue = dispatcher.suggestions(boolLine, boolLine.size());
+            assert(textOf(boolValue, "true") && textOf(boolValue, "false"));
+            const std::string intLine = "/gamerule randomTickSpeed ";
+            const auto intValue = dispatcher.suggestions(intLine, intLine.size());
+            assert(textOf(intValue, "0"));
+            assert(!textOf(intValue, "true")); // an int rule is not boolean-completed
+        }
 
         // R2: an incomplete command reports its usage (via the same generator).
         {

@@ -169,7 +169,7 @@ class GameModeArgument final : public ArgumentType {
         return parseOk(*mode);
     }
 
-    void collectSuggestions(SuggestionSink& sink) const override {
+    void collectSuggestions(SuggestionSink& sink, const CommandContext&) const override {
         sink.suggest("survival", "Survival");
         sink.suggest("creative", "Creative");
     }
@@ -190,7 +190,7 @@ class TimeArgument final : public ArgumentType {
         return parseOk(*ticks);
     }
 
-    void collectSuggestions(SuggestionSink& sink) const override {
+    void collectSuggestions(SuggestionSink& sink, const CommandContext&) const override {
         sink.suggest("day", "1000");
         sink.suggest("noon", "6000");
         sink.suggest("night", "13000");
@@ -219,7 +219,7 @@ class GiveItemArgument final : public ArgumentType {
         return parseFail("Unknown item: " + *token, reader);
     }
 
-    void collectSuggestions(SuggestionSink& sink) const override {
+    void collectSuggestions(SuggestionSink& sink, const CommandContext&) const override {
         ItemTable table;
         table.forEach([&](const TableEntry& entry) { sink.suggest(entry.identifier, entry.hint); });
     }
@@ -265,7 +265,7 @@ class TeleportDestinationArgument final : public ArgumentType {
         return parseOk(std::string{*entity});
     }
 
-    void collectSuggestions(SuggestionSink& sink) const override {
+    void collectSuggestions(SuggestionSink& sink, const CommandContext&) const override {
         EntityTable{}.forEach(
             [&](const TableEntry& entry) { sink.suggest(entry.identifier, entry.hint); });
     }
@@ -289,7 +289,7 @@ class EntityTargetArgument final : public ArgumentType {
         return parseFail("Unknown target: " + *token, reader);
     }
 
-    void collectSuggestions(SuggestionSink& sink) const override {
+    void collectSuggestions(SuggestionSink& sink, const CommandContext&) const override {
         sink.suggest("player", "the player");
         EntityTable{}.forEach(
             [&](const TableEntry& entry) { sink.suggest(entry.identifier, entry.hint); });
@@ -306,7 +306,7 @@ class EntitySelectorArgument final : public ArgumentType {
         return parseEntitySelector(reader);
     }
 
-    void collectSuggestions(SuggestionSink& sink) const override {
+    void collectSuggestions(SuggestionSink& sink, const CommandContext&) const override {
         const std::string_view partial = sink.partial();
         const auto bracket = partial.find('[');
         if (bracket == std::string_view::npos) {
@@ -370,9 +370,101 @@ class DifficultyArgument final : public ArgumentType {
         return parseOk(*difficulty);
     }
 
-    void collectSuggestions(SuggestionSink& sink) const override {
+    void collectSuggestions(SuggestionSink& sink, const CommandContext&) const override {
         for (std::uint8_t index = 0; index < gameplay::kDifficultyCount; ++index) {
             sink.suggest(gameplay::difficultyName(static_cast<gameplay::Difficulty>(index)));
+        }
+    }
+};
+
+// A bare coordinate triple (no entity form), binding a Position3 — `execute
+// positioned`/`facing` and `execute if block`. `~`-relative axes resolve against
+// the source at execution time. Unlike TeleportDestinationArgument this never
+// accepts an entity id, so `execute positioned <entity>` is rejected where only
+// a position is meaningful.
+class Vec3Argument final : public ArgumentType {
+  public:
+    ArgumentParseResult parse(StringReader& reader) const override {
+        Position3 position;
+        const std::string first = reader.readCoordinate();
+        if (first.empty() || !parseCoordinate(first, position.x, position.relativeX)) {
+            return parseFail("Expected <x> <y> <z>", reader);
+        }
+        // The dispatcher skips whitespace once before parse(); a multi-token
+        // argument skips between its own tokens.
+        reader.skipWhitespace();
+        const std::string second = reader.readCoordinate();
+        if (second.empty() || !parseCoordinate(second, position.y, position.relativeY)) {
+            return parseFail("Incomplete position: expected <x> <y> <z>", reader);
+        }
+        reader.skipWhitespace();
+        const std::string third = reader.readCoordinate();
+        if (third.empty() || !parseCoordinate(third, position.z, position.relativeZ)) {
+            return parseFail("Incomplete position: expected <x> <y> <z>", reader);
+        }
+        return parseOk(position);
+    }
+
+    void collectSuggestions(SuggestionSink& sink, const CommandContext&) const override {
+        sink.suggest("~", "here");
+    }
+
+    // One `<pos>` node name stands for three coordinates; show them in usage.
+    [[nodiscard]] std::string usageHint() const override { return "<x> <y> <z>"; }
+};
+
+// `execute in <dimension>`: a dimension id. The overworld is the only dimension
+// the runtime ticks today, so completion offers it (and its `minecraft:` alias);
+// the handler validates the parsed name.
+class DimensionArgument final : public ArgumentType {
+  public:
+    ArgumentParseResult parse(StringReader& reader) const override {
+        const auto token = reader.readString();
+        if (!token.has_value() || token->empty()) {
+            return parseFail("Expected a dimension", reader);
+        }
+        return parseOk(std::string{*token});
+    }
+
+    void collectSuggestions(SuggestionSink& sink, const CommandContext&) const override {
+        sink.suggest("overworld");
+        sink.suggest("minecraft:overworld");
+    }
+};
+
+// `/gamerule <rule> <value>`: the value is parsed permissively (GameRules
+// validates it by the rule's type at execution time), but completed by that
+// type — a boolean rule offers true/false, an int rule its range — derived from
+// the `rule` bound earlier on the line. 1.16.1 registers a per-rule typed value
+// node; rebedrock keeps GameRules as the single rule engine and reads the same
+// completion off the parsed rule name, so no per-rule tree is duplicated.
+class GameRuleValueArgument final : public ArgumentType {
+  public:
+    ArgumentParseResult parse(StringReader& reader) const override {
+        const auto token = reader.readString();
+        if (!token.has_value()) {
+            return parseFail("Expected a value", reader);
+        }
+        return parseOk(std::string{*token});
+    }
+
+    void collectSuggestions(SuggestionSink& sink, const CommandContext& context) const override {
+        const auto rule = context.find<std::string>("rule");
+        if (!rule.has_value()) {
+            return; // the rule is not typed yet — nothing to specialise on
+        }
+        const GameRuleId id = gameRuleIdFromName(*rule);
+        if (id == GameRuleId::Count) {
+            return;
+        }
+        const auto& definition = kGameRuleDefinitions[static_cast<std::size_t>(id)];
+        if (definition.type == GameRuleType::Boolean) {
+            sink.suggest("true");
+            sink.suggest("false");
+        } else if (definition.type == GameRuleType::Int) {
+            sink.suggest(std::to_string(definition.minimum),
+                         "[" + std::to_string(definition.minimum) + ", " +
+                             std::to_string(definition.maximum) + "]");
         }
     }
 };
@@ -387,6 +479,9 @@ inline const TeleportDestinationArgument kTeleportDestinationArgument;
 inline const EntityTargetArgument kEntityTargetArgument;
 inline const EntitySelectorArgument kEntitySelectorArgument;
 inline const DifficultyArgument kDifficultyArgument;
+inline const Vec3Argument kVec3Argument;
+inline const DimensionArgument kDimensionArgument;
+inline const GameRuleValueArgument kGameRuleValueArgument;
 // Block name (setblock/fill) and entity species name (summon): registry-backed,
 // so validation and completion follow the content tables with no hardcoded list.
 inline const TableArgument<BlockTable> kBlockArgument;

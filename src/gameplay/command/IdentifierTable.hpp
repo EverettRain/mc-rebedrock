@@ -47,7 +47,7 @@ class TableArgument final : public ArgumentType {
         return parseOk(std::string{*token});
     }
 
-    void collectSuggestions(SuggestionSink& sink) const override {
+    void collectSuggestions(SuggestionSink& sink, const CommandContext&) const override {
         table_.forEach([&](const TableEntry& entry) { sink.suggest(entry.identifier, entry.hint); });
     }
 

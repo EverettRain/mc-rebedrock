@@ -147,10 +147,11 @@ int main() {
     }
 
     // ---- suggestions ---------------------------------------------------------
+    const mc::gameplay::command::CommandContext emptyContext;
     {
         std::vector<Suggestion> out;
         SuggestionSink sink{out, 0U, "@"};
-        kEntitySelectorArgument.collectSuggestions(sink);
+        kEntitySelectorArgument.collectSuggestions(sink, emptyContext);
         for (const char* v : {"@s", "@p", "@a", "@e", "@r"}) {
             assert(suggested(out, v));
         }
@@ -158,7 +159,7 @@ int main() {
     {
         std::vector<Suggestion> out;
         SuggestionSink sink{out, 0U, "@e["};
-        kEntitySelectorArgument.collectSuggestions(sink);
+        kEntitySelectorArgument.collectSuggestions(sink, emptyContext);
         for (const char* k : {"@e[type=", "@e[distance=", "@e[limit=", "@e[sort="}) {
             assert(suggested(out, k));
         }
@@ -167,14 +168,14 @@ int main() {
         // type= completes from the registry (bare path form), not a hardcoded list.
         std::vector<Suggestion> out;
         SuggestionSink sink{out, 0U, "@e[type="};
-        kEntitySelectorArgument.collectSuggestions(sink);
+        kEntitySelectorArgument.collectSuggestions(sink, emptyContext);
         assert(suggested(out, "@e[type=pig"));
         assert(suggested(out, "@e[type=zombie"));
     }
     {
         std::vector<Suggestion> out;
         SuggestionSink sink{out, 0U, "@e[sort="};
-        kEntitySelectorArgument.collectSuggestions(sink);
+        kEntitySelectorArgument.collectSuggestions(sink, emptyContext);
         for (const char* s : {"@e[sort=nearest", "@e[sort=furthest", "@e[sort=random"}) {
             assert(suggested(out, s));
         }

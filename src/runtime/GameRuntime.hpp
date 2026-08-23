@@ -227,16 +227,12 @@ class GameRuntime final {
         const gameplay::command::CommandContext& context, std::string_view mode);
     [[nodiscard]] gameplay::CommandResult runSummon(
         const gameplay::command::CommandContext& context);
-    // execute (CMD5): runExecute parses the greedy tail into a clause chain,
-    // applyExecuteClause transforms/forks/gates the source contexts one clause at
-    // a time, and `run` re-enters the dispatcher on each transformed source.
-    // applyExecuteClause returns an empty string on success or an error message.
-    [[nodiscard]] gameplay::CommandResult runExecute(
-        const gameplay::command::CommandContext& context);
-    [[nodiscard]] std::string applyExecuteClause(
-        const std::string& clause, gameplay::command::StringReader& reader,
-        std::vector<gameplay::command::CommandSource>& contexts,
-        std::span<const gameplay::command::SelectorCandidate> candidates);
+    // execute (CMD-7): the clause chain is a real redirect subtree on the
+    // dispatcher (each `as/at/positioned/…` clause is a node whose SourceModifier
+    // forks/gates the source set; `run` redirects to the root). registerExecute
+    // wires it, so the runtime holds no hand parser — completion and value types
+    // come from the tree like every other command.
+    void registerExecute(std::size_t executeNode);
     // A command's missing-argument feedback (CMD6 R1): the usage generated from
     // the node tree, so it never drifts from the command's actual shape.
     [[nodiscard]] gameplay::CommandResult usageError(
@@ -335,10 +331,6 @@ class GameRuntime final {
     // world seed on load (see loadWorld). Transient — never saved; a fixed world
     // plus a fixed command sequence reproduces the same picks.
     std::uint64_t commandRandomState_ = 0x9E3779B97F4A7C15ULL;
-    // Guards `execute run execute run …` recursion (CMD5): incremented on entry to
-    // runExecute, capped so a runaway chain returns an error instead of blowing
-    // the stack.
-    int commandRecursionDepth_ = 0;
 
     // Background chunk-unload persistence worker and its queue. The worker lives
     // for the whole runtime; the destructor stops and joins it after the

@@ -21,13 +21,39 @@ using CommandResult = mc::gameplay::CommandResult;
 
 class CommandBuilder; // literal() returns it; see the fluent DSL below
 
+// Transforms the command source(s) an `execute` clause applies to — the DOD
+// stand-in for Brigadier's RedirectModifier/fork. Given the arguments bound in
+// this segment and one incoming source, it appends the resulting sources to
+// `out`: many (`as`/`at` over a multi-entity selector = fork), one (`positioned`
+// = transform), or zero (`if`/`unless` that fails = gate). Returns an empty
+// string on success or an error message. The dispatcher owns the redirect walk
+// and the forking loop; the modifier (a closure over the runtime) owns the
+// per-clause semantics, so the tree never grows a clause-specific branch.
+using SourceModifier = std::function<std::string(
+    const CommandContext& args, const CommandSource& incoming,
+    std::vector<CommandSource>& out)>;
+
+// One link of a redirected command (an `execute` clause chain): the arguments
+// bound while walking it and the node whose SourceModifier fires after it. The
+// terminal command (what `run` points at) is not a segment — it is the leaf the
+// dispatcher runs once per surviving source.
+struct ParseSegment final {
+    std::size_t node = 0;    // the redirect node; its sourceModifier transforms the sources
+    CommandContext context;  // arguments bound within this segment
+};
+
 // The result of walking the tree over one input line — the single parse path
 // both execution and completion share (1.16.1's ParseResults analogue). The
 // fields describe where the walk stopped, so execute() and suggestions() never
 // reimplement the token-walk themselves.
 struct ParseResults final {
     std::size_t node = 0;          // node reached by the last complete token
-    CommandContext context;        // argument values bound along the way
+    CommandContext context;        // argument values bound in the terminal segment
+    // Redirect links crossed before the terminal node (empty for a plain
+    // command). Each carries its own bound arguments and the modifier that forks
+    // the source set; execute() replays them in order, then runs the terminal
+    // once per surviving source. `run` contributes a modifier-less link.
+    std::vector<ParseSegment> priorSegments;
     std::size_t cursor = 0;        // where the walk stopped (line coordinates)
     std::size_t partialStart = 0;  // start of the partial token, else cursor
     bool hasPartial = false;       // whether the cursor sits in a partial token
@@ -61,9 +87,10 @@ class CommandDispatcher final {
     using Handler = std::function<CommandResult(const CommandContext&)>;
 
     // Extra completion candidates for one node, independent of its argument
-    // type — Brigadier's node-level customSuggestions. Called with the same
-    // sink that collects literal and argument suggestions.
-    using SuggestionsProvider = std::function<void(SuggestionSink&)>;
+    // type — Brigadier's node-level customSuggestions. Called with the same sink
+    // that collects literal and argument suggestions, plus the arguments already
+    // bound on the line (so a node can complete relative to an earlier value).
+    using SuggestionsProvider = std::function<void(SuggestionSink&, const CommandContext&)>;
 
     CommandDispatcher() { nodes_.emplace_back(); } // subscript 0 is always the root
 
@@ -81,6 +108,12 @@ class CommandDispatcher final {
     // feedback sink), so every command is permitted and the result comes back by
     // return value only.
     [[nodiscard]] CommandResult execute(std::string_view input) const;
+
+    // The root node id and a builder positioned at an existing node — used to
+    // wire `execute`'s redirect chain, where several clauses branch off the same
+    // node and `run` redirects back to the root.
+    [[nodiscard]] std::size_t rootId() const { return root_; }
+    [[nodiscard]] CommandBuilder builderAt(std::size_t node);
 
     // Whether a root command with this exact name is registered.
     [[nodiscard]] bool contains(std::string_view name) const;
@@ -134,6 +167,11 @@ class CommandDispatcher final {
   private:
     friend class CommandBuilder;
 
+    // The ceiling on the forked source set an `execute` chain may build, so a
+    // fork bomb fails cleanly instead of exhausting memory (1.16.1 bounds its
+    // command chain analogously).
+    static constexpr std::size_t kMaxForkedSources = std::size_t{1} << 16U;
+
     struct Node {
         bool argument = false; // true: this node parses a value under `name`
         std::string name;      // literal token (exact) or argument key
@@ -149,6 +187,13 @@ class CommandDispatcher final {
         // The op level this node (and, by inheritance, its subtree) requires;
         // All means unrestricted. Set through CommandBuilder::requires.
         PermissionLevel requiredLevel = PermissionLevel::All;
+        // After this node, parsing continues from `redirect` instead of this
+        // node's own children — Brigadier's node redirect. `execute`'s clauses
+        // redirect back to the execute node (another clause follows); `run`
+        // redirects to the root (a fresh command follows). `sourceModifier`, when
+        // set, forks/gates the source set as the redirect is crossed.
+        std::optional<std::size_t> redirect;
+        SourceModifier sourceModifier;
     };
 
     [[nodiscard]] std::size_t addLiteralChild(std::size_t parent, std::string_view token);
@@ -191,6 +236,19 @@ class CommandBuilder final {
     // customSuggestions).
     CommandBuilder& suggests(CommandDispatcher::SuggestionsProvider provider);
 
+    // Redirects parsing from the current node to `target` (Brigadier's redirect):
+    // the next token is matched against `target`'s children. `execute`'s clauses
+    // redirect back to the execute node; `run` redirects to rootId().
+    CommandBuilder& redirectTo(std::size_t target);
+
+    // Attaches the SourceModifier that forks/gates the source set as this node's
+    // redirect is crossed (an `execute` clause's semantics).
+    CommandBuilder& modifiesSource(SourceModifier modifier);
+
+    // The id of the node the builder currently sits on — captured so sibling
+    // clauses can be branched off it and `run` can redirect to it.
+    [[nodiscard]] std::size_t nodeId() const { return node_; }
+
   private:
     friend class CommandDispatcher;
     CommandBuilder(CommandDispatcher& dispatcher, std::size_t node)
@@ -229,6 +287,20 @@ inline CommandBuilder& CommandBuilder::suggests(CommandDispatcher::SuggestionsPr
 inline CommandBuilder& CommandBuilder::requiresLevel(PermissionLevel level) {
     dispatcher_->nodes_[node_].requiredLevel = level;
     return *this;
+}
+
+inline CommandBuilder& CommandBuilder::redirectTo(std::size_t target) {
+    dispatcher_->nodes_[node_].redirect = target;
+    return *this;
+}
+
+inline CommandBuilder& CommandBuilder::modifiesSource(SourceModifier modifier) {
+    dispatcher_->nodes_[node_].sourceModifier = std::move(modifier);
+    return *this;
+}
+
+inline CommandBuilder CommandDispatcher::builderAt(std::size_t node) {
+    return CommandBuilder{*this, node};
 }
 
 inline std::size_t CommandDispatcher::addLiteralChild(std::size_t parent, std::string_view token) {
@@ -288,18 +360,62 @@ inline CommandResult CommandDispatcher::execute(std::string_view input,
         return route({false, "You do not have permission to use this command"});
     }
     const Node& leaf = nodes_[parsed.node];
-    if (leaf.handler) {
-        // The handler reads the source (relative coordinates, op level) through
-        // the context; bind it just before dispatch.
+    if (!leaf.handler) {
+        // Incomplete: point the player at what the command wants (R2) instead of
+        // a bare "Incomplete command".
+        if (const std::string smart = usage(parsed.commandName, source); !smart.empty()) {
+            return route({false, "Usage: /" + smart});
+        }
+        return route({false, "Incomplete command"});
+    }
+    // Plain command (no redirect crossed): run once as the source. The handler
+    // reads the source (relative coordinates, op level) through the context.
+    if (parsed.priorSegments.empty()) {
         parsed.context.setSource(&source);
         return route(leaf.handler(parsed.context));
     }
-    // Incomplete: point the player at what the command wants (R2) instead of a
-    // bare "Incomplete command".
-    if (const std::string smart = usage(parsed.commandName, source); !smart.empty()) {
-        return route({false, "Usage: /" + smart});
+    // Redirected command (`execute … run <command>`): replay the clause chain to
+    // build the source set, then run the terminal command once per surviving
+    // source. Inner results are aggregated (a forked run does not broadcast each
+    // sub-result), so the working sources carry no feedback sink — only this one
+    // aggregate is routed to the original source's sink.
+    std::vector<CommandSource> sources;
+    {
+        CommandSource base = source;
+        base.feedback = nullptr;
+        sources.push_back(std::move(base));
     }
-    return route({false, "Incomplete command"});
+    for (const ParseSegment& segment : parsed.priorSegments) {
+        const Node& redirectNode = nodes_[segment.node];
+        if (!redirectNode.sourceModifier) {
+            continue; // a modifier-less link (`run`) leaves the source set intact
+        }
+        std::vector<CommandSource> next;
+        for (const CommandSource& incoming : sources) {
+            if (std::string error = redirectNode.sourceModifier(segment.context, incoming, next);
+                !error.empty()) {
+                return route({false, std::move(error)});
+            }
+        }
+        // Guard against a fork bomb (`execute as @e run execute as @e …`): the
+        // source set can multiply per clause, so cap it the way 1.16.1 bounds the
+        // command chain rather than letting it grow without limit.
+        if (next.size() > kMaxForkedSources) {
+            return route({false, "Too many entities selected by execute"});
+        }
+        sources = std::move(next);
+    }
+    std::size_t ran = 0;
+    for (const CommandSource& forked : sources) {
+        parsed.context.setSource(&forked);
+        if (leaf.handler(parsed.context).success) {
+            ++ran;
+        }
+    }
+    if (ran == 0) {
+        return route({false, "Executed no commands"});
+    }
+    return route({true, "Executed " + std::to_string(ran) + (ran == 1U ? " command" : " commands")});
 }
 
 inline CommandResult CommandDispatcher::execute(std::string_view input) const {
@@ -453,10 +569,12 @@ inline std::vector<Suggestion> CommandDispatcher::suggestions(std::string_view i
         sink.suggest(name);
     }
     if (current.argumentChild.has_value()) {
-        nodes_[*current.argumentChild].argumentType->collectSuggestions(sink);
+        // The value type completes against the arguments bound so far (parsed.context),
+        // so e.g. a gamerule value offers true/false once its rule is known.
+        nodes_[*current.argumentChild].argumentType->collectSuggestions(sink, parsed.context);
     }
     if (current.customSuggestions) {
-        current.customSuggestions(sink);
+        current.customSuggestions(sink, parsed.context);
     }
     // Exact matches of the typed token lead, then lexicographic order, so a
     // completed command stays put while Tab cycles the remaining candidates.
@@ -477,16 +595,37 @@ inline ParseResults CommandDispatcher::parse(std::string_view line,
     ParseResults result;
     StringReader reader{line};
     std::size_t node = root_;
+    CommandContext currentContext; // arguments of the segment being walked now
+    // Crosses every redirect the current node declares, recording each as a
+    // prior segment (its bound arguments + the modifier that forks the source
+    // set) and moving to the redirect target. Called only when another token
+    // slot follows, so an incomplete `execute as @e` (no `run`) stops on the
+    // redirect node itself rather than chasing the link into nothing.
+    const auto followRedirects = [&] {
+        while (nodes_[node].redirect.has_value()) {
+            result.priorSegments.push_back(ParseSegment{node, std::move(currentContext)});
+            currentContext = CommandContext{};
+            node = *nodes_[node].redirect;
+            result.requiredLevel = maxLevel(result.requiredLevel, nodes_[node].requiredLevel);
+        }
+    };
     while (true) {
         reader.skipWhitespace();
         if (stopCursor.has_value() && reader.cursor() >= *stopCursor) {
-            // Clean boundary: the cursor sits in whitespace or at end-of-input.
+            // Clean boundary: the cursor sits in whitespace or at end-of-input,
+            // which is a fresh token slot — cross any redirect first so
+            // completion offers the redirect target's children (execute's
+            // clauses, or every command after `run`).
+            followRedirects();
             result.partialStart = std::min(reader.cursor(), *stopCursor);
             break;
         }
         if (!reader.canRead()) {
-            break;
+            break; // end of input with no further token: do not cross a redirect
         }
+        // Another token follows: its continuation lives under the redirect
+        // target when the current node redirects, so cross the link now.
+        followRedirects();
         const std::size_t tokenStart = reader.cursor();
         const auto token = reader.readString();
         const std::size_t tokenEnd = reader.cursor();
@@ -530,7 +669,7 @@ inline ParseResults CommandDispatcher::parse(std::string_view line,
                 result.errorMessage = parsed.error->message;
                 break;
             }
-            result.context.bind(nodes_[argumentNode].name, parsed.value);
+            currentContext.bind(nodes_[argumentNode].name, parsed.value);
             node = argumentNode;
             result.node = node;
             result.requiredLevel = maxLevel(result.requiredLevel, nodes_[node].requiredLevel);
@@ -544,6 +683,7 @@ inline ParseResults CommandDispatcher::parse(std::string_view line,
     }
     result.node = node;
     result.cursor = reader.cursor();
+    result.context = std::move(currentContext);
     return result;
 }
 
