@@ -916,6 +916,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME entity_fire COMMAND mc_rebedrock_entity_fire_test)
 
+    add_executable(mc_rebedrock_monster_completion_test
+        tests/monster_completion_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_monster_completion_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_monster_completion_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME monster_completion COMMAND mc_rebedrock_monster_completion_test)
+
     add_executable(mc_rebedrock_status_effect_test
         tests/status_effect_test.cpp
     )

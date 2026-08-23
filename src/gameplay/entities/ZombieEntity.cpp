@@ -72,6 +72,8 @@ const EntityType& ZombieEntity::type() {
     // Spawn-egg tint 0x00AFAF / 0x799C65. AR-M1: loot wired to 0-2 rotten flesh
     // (rollZombieLoot), the item this build previously lacked.
     // xpReward 5 (Mob's DEFAULT_XP_REWARD, which Zombie inherits unchanged).
+    // AR-M2: undead() — the family the daylight-ignition rule (EntitySystem::
+    // tick) gates on; a zombie carries no SunImmune bit, so it burns.
     static EntityType type = EntityType::Builder::create(MobCategory::Monster, kZombieAi)
                                  .sized(0.6F, 1.95F)
                                  .health(20.0F)
@@ -85,6 +87,7 @@ const EntityType& ZombieEntity::type() {
                                  .sounds(kZombieSounds)
                                  .vanillaName("zombie")
                                  .loot(&rollZombieLoot)
+                                 .undead()
                                  .build("zombie");
     static const bool registered = [] {
         entityTypeRegistry().registerBuiltin(type);

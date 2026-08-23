@@ -912,7 +912,8 @@ EntityTickResult EntitySystem::tick(
     bool playerCreative,
     float simulationRadius,
     bool raining,
-    ItemStack heldItem) {
+    ItemStack heldItem,
+    const EnvironmentSnapshot& environment) {
     EntityTickResult result;
     ++gameTick_;
     // AnimalMateGoal emits breeds here; the babies are spawned after the AI loop
@@ -984,6 +985,40 @@ EntityTickResult EntitySystem::tick(
             --entity.loveTicks;
         }
         entity.movementSpeedMultiplier = 1.0F;
+
+        // AR-M2: Zombie#isSunBurnTick / AbstractSkeleton's own copy, generalised
+        // off the type rather than duplicated per hostile class. Gate is three
+        // data reads and no species switch: MobCategory::Monster (a passive cow
+        // never reaches this branch), EntityBehavior::Undead (the family vanilla
+        // actually wires this to — a creeper or spider never burns even though
+        // both are MONSTER), and !sunImmune() (husk's own bit skips it here,
+        // which is the entire reason AR-M1/EM1 reserved the bit). "Day" is
+        // Level#isDay's own definition (skyDarken < 4), read off the same
+        // per-tick EnvironmentSnapshot NaturalSpawner uses so this can never
+        // disagree with the spawner about what time it is. "Sky-exposed" is
+        // directSkyLight at the head cell reading full (15) — the stored
+        // static full-sun value the sky-light engine writes for a column with
+        // nothing between it and the sky, unaffected by the tick's ambient
+        // darkness the way the *stored* rain check just below also reads it
+        // raw. Not in water reuses the exact fireFootX/Y/Z cells and isFluid
+        // test the fire tick two blocks down performs, so both checks agree on
+        // what "underwater" means for this creature. Vanilla also skips a
+        // helmeted zombie; no mob armor exists yet (AR-M2 defers it, see task
+        // report), so nothing here reads one.
+        if (!entity.damage.dead() && entity.type->category() == entities::MobCategory::Monster &&
+            entity.type->undead() && !entity.type->sunImmune() &&
+            environment.ambientDarkness < 4) {
+            const int headX = floorToInt(entity.position.x);
+            const int headY = floorToInt(entity.position.y) + 1;
+            const int headZ = floorToInt(entity.position.z);
+            const bool skyExposed = world.directSkyLight(headX, headY, headZ) >= 15U;
+            const bool submerged =
+                world::isFluid(world.block(headX, floorToInt(entity.position.y), headZ)) ||
+                world::isFluid(world.block(headX, headY, headZ));
+            if (skyExposed && !submerged) {
+                entity.fireTicks = std::max(entity.fireTicks, 8 * kTicksPerSecond);
+            }
+        }
 
         // Entity#baseTick's fire block. A burning creature is put out the moment
         // it touches water or stands in the rain under open sky (isBeingRainedOn),

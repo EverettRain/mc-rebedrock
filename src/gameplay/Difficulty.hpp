@@ -85,4 +85,24 @@ inline constexpr std::uint8_t kDifficultyCount = 4U;
     return amount;
 }
 
+// HuskEntity#tryAttack (AR-M2): `140 * (int) getLocalDifficulty()`, where
+// getLocalDifficulty is ServerWorld's regional-difficulty float — a
+// world-age/inhabited-time/moon-phase blend this codebase has no equivalent
+// of. Approximated here off the world Difficulty setting alone, the same
+// simplification scaledDamage above makes for the identical source value:
+// Easy/Normal/Hard land on 140/280/420 ticks (7/14/21 seconds), the
+// {1,2,3} multiplier getLocalDifficulty averages to across a world's
+// lifetime at each setting. Peaceful returns 0 (a husk cannot exist there —
+// MobCategoryTraits removes every MONSTER instantly), matching scaledDamage's
+// own Peaceful floor.
+[[nodiscard]] constexpr std::int32_t huskHungerDurationTicks(Difficulty difficulty) {
+    switch (difficulty) {
+    case Difficulty::Peaceful: return 0;
+    case Difficulty::Easy: return 140;
+    case Difficulty::Normal: return 280;
+    case Difficulty::Hard: return 420;
+    }
+    return 280;
+}
+
 } // namespace mc::gameplay

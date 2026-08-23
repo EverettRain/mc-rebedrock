@@ -3,6 +3,7 @@
 #include "gameplay/BlockEntityTicker.hpp"
 #include "gameplay/DimensionTransfer.hpp"
 #include "gameplay/GameplayMutationSink.hpp"
+#include "gameplay/StatusEffect.hpp"
 
 #include "world/DayNightCycle.hpp"
 #include "world/World.hpp"
@@ -203,11 +204,15 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     }
     // The herd pushes back: Entity#pushAwayFrom moves both parties, so a pig
     // walking into the player nudges them. Difficulty is per-save (level.dat).
+    // AR-M2: environment_ carries the tick's ambientDarkness, so the daylight-
+    // ignition rule's "is it day" reads the exact same source NaturalSpawner's
+    // darkness check already does (see EntitySystem::tick's doc comment) —
+    // neither can disagree about the time of day.
     const auto entityTick = primaryLevel().entities.tick(
         world, primaryPlayer().controller.position(), PlayerController::kWidth, PlayerController::kHeight,
         difficulty_, !primaryPlayer().vitals.dead(), primaryPlayer().gameMode == GameMode::Creative,
         simulationRadiusBlocks_, primaryLevel().weather.isRaining(),
-        primaryPlayer().inventory.selectedStack());
+        primaryPlayer().inventory.selectedStack(), environment_);
     primaryPlayer().controller.applyExternalPush(entityTick.playerPush);
     for (const auto& attack : entityTick.mobAttacks) {
         if (attack.target == ActorReference::player()) {
@@ -216,8 +221,21 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
             // inside the pipeline against the unscaled amount the way
             // LivingEntity#hurt does — the call site used to apply it here,
             // which put it on the wrong side of the invulnerability window.
-            static_cast<void>(
-                hurtPlayer(kPrimaryPlayerId, DamageType::EntityAttack, attack.amount, host, true));
+            const bool landed =
+                hurtPlayer(kPrimaryPlayerId, DamageType::EntityAttack, attack.amount, host, true);
+            // AR-M2: HuskEntity#tryAttack — a landed hit from an attacker whose
+            // type carries EntityBehavior::HungerOnHit (husk; the zombie beside
+            // it in BuiltinSpecies.cpp carries no such bit) also applies EM2's
+            // hunger effect. Read off the type, not a species id compare, so
+            // this never grows an `if (species == husk)` branch here.
+            if (landed) {
+                if (const auto* attacker = primaryLevel().entities.byIdConst(attack.attackerId);
+                    attacker != nullptr && attacker->type != nullptr &&
+                    attacker->type->hungerOnHit()) {
+                    static_cast<void>(primaryPlayer().vitals.applyEffect(
+                        hungerEffect(), huskHungerDurationTicks(difficulty_), 0U));
+                }
+            }
         }
     }
     // RW-0: the projectile pool — physics/raycast hit (entity through

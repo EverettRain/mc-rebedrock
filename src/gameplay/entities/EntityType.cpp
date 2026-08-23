@@ -80,6 +80,14 @@ EntityType::Builder& EntityType::Builder::fallImmune() {
     return behavior(EntityBehavior::FallImmune);
 }
 
+EntityType::Builder& EntityType::Builder::undead() {
+    return behavior(EntityBehavior::Undead);
+}
+
+EntityType::Builder& EntityType::Builder::hungerOnHit() {
+    return behavior(EntityBehavior::HungerOnHit);
+}
+
 EntityType::Builder& EntityType::Builder::breeding(const BreedingProfile& profile) {
     draft_.breeding_ = profile;
     return *this;

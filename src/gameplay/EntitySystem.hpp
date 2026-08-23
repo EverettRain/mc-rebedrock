@@ -3,6 +3,7 @@
 #include "gameplay/Damage.hpp"
 #include "gameplay/Difficulty.hpp"
 #include "gameplay/EntitySection.hpp"
+#include "gameplay/EnvironmentSnapshot.hpp"
 #include "gameplay/Inventory.hpp"
 #include "gameplay/StatusEffect.hpp"
 #include "gameplay/entities/EntityType.hpp"
@@ -303,7 +304,16 @@ class EntitySystem final {
         bool raining = false,
         // The player's held stack, so TemptGoal can see a species' tempt item on
         // offer. Empty (default) means an empty hand — no animal is tempted.
-        ItemStack heldItem = {});
+        ItemStack heldItem = {},
+        // AR-M2: the same tick-resolved snapshot NaturalSpawner reads
+        // (GameSession::environment_). `ambientDarkness < 4` is Level#isDay —
+        // the daylight-ignition rule below reads it alongside per-cell
+        // directSkyLight, so "is it day" and "is this cell dark enough for a
+        // monster to spawn" can never disagree about the same tick. The default
+        // (ambientDarkness == 0, full daylight) matches every existing headless
+        // caller that never lit a test world's sky — such a world reads as
+        // "daytime but no sky exposure anywhere", so nothing ignites there.
+        const EnvironmentSnapshot& environment = EnvironmentSnapshot{});
 
     // GameRenderer's crosshair pick: the nearest creature whose targeting box
     // the ray enters within `reach`. Ordinary 1.16.1 living entities have a

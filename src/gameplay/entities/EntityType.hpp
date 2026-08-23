@@ -241,11 +241,30 @@ enum class EntityBehavior : std::uint16_t {
     // fallDistance-to-damage conversion for any type with this bit rather than
     // naming the species at the call site.
     FallImmune = 1U << 2U,
+    // AR-M2: the family the daylight-burn source (below) gates ignition on,
+    // alongside MobCategory::Monster and !sunImmune(). Vanilla's own daylight
+    // check is written against Zombie/AbstractSkeleton specifically, not every
+    // hostile (a creeper or spider never burns) — this bit reproduces that
+    // narrower family without a species switch at the ignition call site.
+    // Zombie and husk both carry it; husk additionally carries SunImmune so
+    // the ignition rule's `!sunImmune()` term skips it.
+    Undead = 1U << 3U,
+    // AR-M2: Husk#doHurtTarget's Hunger-on-hit. The mob-melee call site in
+    // GameSession reads this bit off the attacker's type after a landed hit
+    // and applies EM2's hunger effect — no `if (species == husk)` there either.
+    HungerOnHit = 1U << 4U,
 };
 
 [[nodiscard]] constexpr std::uint16_t operator|(EntityBehavior a, EntityBehavior b) {
     return static_cast<std::uint16_t>(static_cast<std::uint16_t>(a) |
                                       static_cast<std::uint16_t>(b));
+}
+
+// AR-M2: lets a third (and later) bit chain onto the pair-wise overload above
+// (`a | b | c`), which would otherwise fail to resolve once the left operand
+// has already collapsed to the plain uint16_t the first `operator|` returns.
+[[nodiscard]] constexpr std::uint16_t operator|(std::uint16_t a, EntityBehavior b) {
+    return static_cast<std::uint16_t>(a | static_cast<std::uint16_t>(b));
 }
 
 // EntityType<T> (1.16.1): the immutable, per-species control object. It owns the
@@ -293,6 +312,11 @@ class EntityType final {
     // AR-A4: Entity#fall's landing-tick damage conversion skips a type with this
     // bit — see EntityBehavior::FallImmune.
     [[nodiscard]] bool fallImmune() const { return hasBehavior(EntityBehavior::FallImmune); }
+    // AR-M2: the daylight-burn source's family gate — see EntityBehavior::Undead.
+    [[nodiscard]] bool undead() const { return hasBehavior(EntityBehavior::Undead); }
+    // AR-M2: whether a landed melee hit from this type applies EM2's hunger
+    // effect to the player — see EntityBehavior::HungerOnHit.
+    [[nodiscard]] bool hungerOnHit() const { return hasBehavior(EntityBehavior::HungerOnHit); }
     // AgeableMob breeding parameters (EM-3). `breedable()` is the one-flag test
     // the AI/tick reads before installing or running any breeding logic.
     [[nodiscard]] const BreedingProfile& breeding() const { return breeding_; }
@@ -403,6 +427,12 @@ class EntityType::Builder final {
     // AR-A4: EntityBehavior::FallImmune — a chicken (and, in vanilla, a
     // bat/parrot) reads this to skip the landing-tick fall-damage conversion.
     Builder& fallImmune();
+    // AR-M2: EntityBehavior::Undead — the family the daylight-ignition rule
+    // gates on (zombie, husk).
+    Builder& undead();
+    // AR-M2: EntityBehavior::HungerOnHit — husk's melee applies EM2's hunger
+    // effect to whatever it lands a hit on.
+    Builder& hungerOnHit();
     // Marks the species breedable and states its whole breeding profile (tempt
     // item + baby scale). AR-A hands each animal its wheat/seeds through this;
     // EM-3 owns everything the profile drives.

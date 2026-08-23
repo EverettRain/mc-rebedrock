@@ -205,12 +205,20 @@ const std::array<SpeciesDef, 3> kManifest{{
     // Husk (26.1): a desert zombie — 20 health, follow range 35, MOVEMENT_SPEED
     // 0.23, attack 3, box 0.6 x 1.95, egg tint 0x797061 / 0x66907B. Melee like
     // the zombie; AR-M1 wires its loot to the same 0-2 rotten flesh pool.
+    // AR-M2: undead() so the daylight-ignition rule considers it at all, plus
+    // sunImmune() so that same rule skips it — the whole reason the SunImmune
+    // bit exists (EM1). hungerOnHit(): Husk#doHurtTarget applies EM2's Hunger
+    // effect to whatever it lands a melee hit on; the zombie beside it in this
+    // manifest carries no such bit, so only husk's hit does.
     SpeciesDef{
         /*path=*/"husk", /*vanillaName=*/"husk", MobCategory::Monster,
         SpawnPlacement::OnGround, EntityDimensions{0.6F, 1.95F},
         attributesOf(20.0F, 0.23F, 3.0F, 35.0F), /*hasSpawnEgg=*/true,
         SpawnEggColors{0x797061U, 0x66907BU}, kHuskRender, kHuskSounds, &kMeleeMonsterAi,
-        &rollRottenFleshLoot},
+        &rollRottenFleshLoot, /*breeding=*/BreedingProfile{},
+        /*behaviorFlags=*/static_cast<std::uint16_t>(EntityBehavior::Undead |
+                                                       EntityBehavior::SunImmune |
+                                                       EntityBehavior::HungerOnHit)},
 }};
 
 // Builds one manifest row into an immutable EntityType. The mechanical
