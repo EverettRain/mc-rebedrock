@@ -73,13 +73,13 @@ struct VersionManifest final {
 
 // The one and only build identity. constexpr .rodata — compiled in, not parsed.
 inline constexpr VersionManifest kVersion{
-    .id = "26.1",
-    .name = "26.1",
+    .id = "26.1beta1",
+    .name = "26.1beta1",
     .worldVersion = 19U,
     .protocolVersion = 4U,
     .packVersion = PackVersion{.resource = 1U, .data = 1U},
     .seriesId = "main",
-    .stable = true,
+    .stable = false,
     .buildTime = kBuildTime,
     .buildRef = kBuildRef,
 };

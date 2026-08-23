@@ -5,27 +5,34 @@
 All notable player-facing changes are recorded here. The project follows a
 simple versioned history while it is in beta.
 
-## Unreleased
-
-### Changed
-
-- Entity types now share the same content registry as blocks and items, so a
-  creature this build no longer knows — one a removed datapack or mod placed —
-  is kept as a placeholder instead of vanishing from a saved world; it round-trips
-  by name and comes back as the real creature once the content is re-added. Names
-  resolve through the `minecraft:` alias beside the `rebedrock:` id, and a name
-  nobody registered is a clean miss (so a command cannot summon a placeholder).
-- Entity attributes now come from data. Each creature's health, movement speed,
-  attack damage, follow range and knockback resistance are a fixed array with a
-  compiled-in floor, and a datapack can override any subset per creature through
-  `data/<namespace>/entity_attributes/<species>.json`; unlisted attributes fall
-  back to the floor, and a build with no `data/` keeps every creature's built-in
-  numbers. Because the AI reads follow range and attack damage through the same
-  path, shrinking a creature's follow range in a datapack changes its acquisition
-  radius with no code change.
+## ReBedrock 26.1beta1
 
 ### Added
 
+- A full experience system: levels, progress and total with the 26.1 curve, a HUD
+  experience bar and level number, experience-orb entities (gravity, same-value
+  merging, magnetic attraction and pickup), and four sources — mob kills (gated by
+  recent player damage), ore mining, smelting and breeding — plus a death drop of
+  `min(7*level, 100)` (retained when `keepInventory` is on). The `/experience`
+  (`/xp`) command was added.
+- Nether and End world generation: nether terrain (multi-noise biomes, surface and
+  features) and end terrain (a central island plus outer islands), each dimension
+  with its own world height, independent per-dimension ticking (an unloaded
+  dimension costs nothing) and per-dimension region storage.
+- More shaped blocks: stairs, doors, fence gates, trapdoors, buttons, pressure
+  plates, walls and fences — polymorphic shapes, block states, placement and
+  interaction, all through the single `BlockShape` collision/raycast/culling path.
+- Slabs and stairs can be waterlogged (the `SubmergedFluid` state axis), activating
+  the first property-deviation override in the Java interop mapping.
+- Audio gained 11 sound categories with individual volumes, a Directional Audio
+  toggle, and biome ambient loops, cave mood, situational music and jukebox playback.
+- Commands gained an `/execute` subcommand tree (as/at/positioned/if/unless/run,
+  with `run` redirecting back to the root), `/help` introspection with smart usage,
+  and value-type contextual Tab completion; an Allow Cheats world flag and its
+  create-world toggle were added.
+- Game version identity metadata (a single `26.1` version source, a `version.json`
+  export, a self-describing save version header and world summaries) was added.
+- Natural spawning now populates animals at world-generation time.
 - A species manifest: new creatures are now a data row instead of a C++ class
   plus a registration line. Three creatures ride it — chicken and sheep (passive)
   and husk (a melee hostile) — resolving by name, carrying the right category and
@@ -55,9 +62,6 @@ simple versioned history while it is in beta.
   still merge low-to-high with `replace` truncating, unknown blocks are still
   skipped — and membership still lives in the per-id bitset, so tool rules behave
   exactly as before. Item and entity tags will reuse the same codec.
-
-### Added
-
 - A Java-Edition data-side interop layer: a feasibility mapping that ingests
   vanilla `minecraft:` datapack JSON (recipes, loot, tags) into the project's own
   definitions. Tags ingest directly (the vanilla tag file already is the
@@ -188,6 +192,25 @@ simple versioned history while it is in beta.
 
 ### Changed
 
+- Player animation moved onto a layered bone-mask + override-blend +
+  animation-controller stack, with the world player and first-person view sharing
+  it, and its clips were calibrated to the 26.1 specification.
+- Save folders are named by the world-name slug instead of appending a
+  creation-time string; a numeric suffix is added only on a name collision.
+- Entity types now share the same content registry as blocks and items, so a
+  creature this build no longer knows — one a removed datapack or mod placed —
+  is kept as a placeholder instead of vanishing from a saved world; it round-trips
+  by name and comes back as the real creature once the content is re-added. Names
+  resolve through the `minecraft:` alias beside the `rebedrock:` id, and a name
+  nobody registered is a clean miss (so a command cannot summon a placeholder).
+- Entity attributes now come from data. Each creature's health, movement speed,
+  attack damage, follow range and knockback resistance are a fixed array with a
+  compiled-in floor, and a datapack can override any subset per creature through
+  `data/<namespace>/entity_attributes/<species>.json`; unlisted attributes fall
+  back to the floor, and a build with no `data/` keeps every creature's built-in
+  numbers. Because the AI reads follow range and attack damage through the same
+  path, shrinking a creature's follow range in a datapack changes its acquisition
+  radius with no code change.
 - The Vulkan client now composes `GameRuntime` and delegates world lifecycle,
   persistence, simulation and authoritative commands to it, removing the
   corresponding client-owned implementations. The client retains window/input
@@ -297,6 +320,15 @@ simple versioned history while it is in beta.
 
 ### Fixed
 
+- Sound distance attenuation was fixed: the default inverse model previously
+  stopped at about 0.1 volume past the maximum distance, so mobs at any depth were
+  clearly audible at the surface; it now falls off linearly to silence at the
+  maximum distance and culls out-of-range sources, alongside fixes to several
+  runtime audio defects.
+- Fixed chunk-streaming issues: centre-chunk starvation when turning, out-of-order
+  section delivery and first-mesh metric distortion.
+- Fixed an animated-block atlas squash (magma) that misaligned its texture.
+- Command suggestions no longer appear when the input does not begin with `/`.
 - A block placed by content this build no longer has — a datapack or mod that
   was removed — is now preserved in the save as-is instead of being replaced by
   air. Its identifier and state are kept verbatim, so re-adding the content
