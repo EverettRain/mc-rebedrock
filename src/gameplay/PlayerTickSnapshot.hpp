@@ -109,6 +109,12 @@ struct PlayerTickSnapshot final {
     GameMode gameMode = GameMode::Survival;
     bool eating = false;
     std::size_t selectedHotbarSlot = 0U;
+    // XP-0: the two HUD-relevant experience fields (the bar's fill fraction
+    // and the level number drawn above it). totalExperience/enchantmentSeed
+    // are not HUD-visible, so — like the container slots this snapshot
+    // deliberately omits — they do not ride the per-tick wire.
+    int experienceLevel = 0;
+    float experienceProgress = 0.0F;
 };
 
 } // namespace mc::gameplay

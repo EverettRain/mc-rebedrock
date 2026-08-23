@@ -11,6 +11,7 @@
 #include "world/ChunkStreamer.hpp"
 #include "world/DayNightCycle.hpp"
 #include "world/WorldConstants.hpp"
+#include "world/gen/JavaRandom.hpp"
 
 #include "core/FrameTrace.hpp"
 
@@ -728,6 +729,23 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     if (gameSession_.vitals().dead()) {
         gameSession_.vitals().reset();
     }
+    // XP-0: restore() takes the four fields verbatim (a pre-XP-0 save leaves
+    // them at the SaveGame's zero defaults, i.e. a fresh level-0 player).
+    gameSession_.experience().restore(
+        currentSave_->playerExperienceLevel, currentSave_->playerExperiencePoints,
+        currentSave_->playerTotalExperience, currentSave_->playerEnchantmentSeed);
+    // Player's constructor lazily rolls enchantmentSeed the first time a save
+    // carries none (`if (enchantmentSeed == 0) enchantmentSeed = random.nextInt()`,
+    // Player.java:632-634): a brand-new world or a pre-XP-0 save both load a
+    // zero seed here, so roll it once from a world-seed-derived JavaRandom
+    // stream (never the wall clock) so the same world always lands on the
+    // same enchantment preview sequence on first open.
+    if (gameSession_.experience().enchantmentSeed() == 0) {
+        world::gen::JavaRandom enchantmentSeedRoll;
+        enchantmentSeedRoll.setSeed(static_cast<std::uint64_t>(currentSave_->summary.seed) ^
+                                    0x3F5A79D1C2B4E608ULL);
+        gameSession_.experience().rerollEnchantmentSeed(enchantmentSeedRoll);
+    }
     gameSession_.worldSpawnPosition() = initialFeet;
     gameSession_.physicsPreviousPosition() = initialFeet;
     gameSession_.physicsCurrentPosition() = initialFeet;
@@ -848,6 +866,10 @@ bool GameRuntime::saveLocked() {
     currentSave_->playerFoodLevel = gameSession_.vitals().foodLevel();
     currentSave_->playerSaturation = gameSession_.vitals().saturation();
     currentSave_->playerAirTicks = gameSession_.vitals().airTicks();
+    currentSave_->playerExperienceLevel = gameSession_.experience().level();
+    currentSave_->playerExperiencePoints = gameSession_.experience().pointsIntoLevel();
+    currentSave_->playerTotalExperience = gameSession_.experience().totalExperience();
+    currentSave_->playerEnchantmentSeed = gameSession_.experience().enchantmentSeed();
     currentSave_->chests.assign(gameSession_.chestSystem().entities().begin(),
                                 gameSession_.chestSystem().entities().end());
     currentSave_->trappedChests.assign(gameSession_.trappedChestSystem().entities().begin(),

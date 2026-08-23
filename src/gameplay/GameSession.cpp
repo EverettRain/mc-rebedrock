@@ -447,6 +447,8 @@ void GameSession::publishSnapshots() {
     playerTickSnapshot_.foodLevel = primaryPlayer().vitals.foodLevel();
     playerTickSnapshot_.airTicks = primaryPlayer().vitals.airTicks();
     playerTickSnapshot_.ticksSinceDamage = primaryPlayer().vitals.ticksSinceDamage();
+    playerTickSnapshot_.experienceLevel = primaryPlayer().experience.level();
+    playerTickSnapshot_.experienceProgress = primaryPlayer().experience.progress();
     playerTickSnapshot_.gameMode = primaryPlayer().gameMode;
     playerTickSnapshot_.eating = primaryPlayer().eating;
     playerTickSnapshot_.selectedHotbarSlot = primaryPlayer().inventory.selectedHotbarSlot();

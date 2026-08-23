@@ -17,6 +17,7 @@
 #include "gameplay/NaturalSpawner.hpp"
 #include "gameplay/PlayerActionState.hpp"
 #include "gameplay/PlayerController.hpp"
+#include "gameplay/PlayerExperience.hpp"
 #include "gameplay/PlayerInteraction.hpp"
 #include "gameplay/PlayerTickSnapshot.hpp"
 #include "gameplay/PlayerVitals.hpp"
@@ -328,6 +329,9 @@ class GameSession final {
     void applyMovementInput(const MovementInput& intent);
     [[nodiscard]] PlayerVitals& vitals() { return primaryPlayer().vitals; }
     [[nodiscard]] const PlayerVitals& vitals() const { return primaryPlayer().vitals; }
+    // XP-0: the level/points/total/enchantmentSeed currency state.
+    [[nodiscard]] PlayerExperience& experience() { return primaryPlayer().experience; }
+    [[nodiscard]] const PlayerExperience& experience() const { return primaryPlayer().experience; }
     [[nodiscard]] Inventory& inventory() { return primaryPlayer().inventory; }
     [[nodiscard]] const Inventory& inventory() const { return primaryPlayer().inventory; }
     [[nodiscard]] CraftingSystem& craftingSystem() { return primaryPlayer().crafting; }

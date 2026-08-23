@@ -1377,5 +1377,78 @@ int main() {
         std::filesystem::remove_all(root / "twin");
     }
 
+    // --- XP-0: the four experience fields round-trip through the PLYR block
+    // (version 2) the same way health/food do. ---
+    {
+        auto game = repository.create("XpRoundTrip", 26ULL);
+        game.playerExperienceLevel = 17;
+        game.playerExperiencePoints = 9;
+        game.playerTotalExperience = 456;
+        game.playerEnchantmentSeed = -123456789;
+        repository.save(game);
+        const auto loaded = repository.load(game.summary.identifier);
+        assert(loaded.playerExperienceLevel == 17);
+        assert(loaded.playerExperiencePoints == 9);
+        assert(loaded.playerTotalExperience == 456);
+        assert(loaded.playerEnchantmentSeed == -123456789);
+    }
+
+    // --- XP-0 backward compatibility: a PLYR block written before XP-0
+    // (version 1, no experience fields at all) loads with the SaveGame's zero
+    // defaults instead of misreading trailing bytes as experience data or
+    // desyncing the reader. This hand-writes a version-1 PLYR block the way a
+    // pre-XP-0 build would have, without going through appendPlayerBlock
+    // (which always writes the current version). ---
+    {
+        auto game = repository.create("XpLegacyPlayer", 27ULL);
+        repository.save(game);
+        const auto path = repository.root() / game.summary.identifier / "world.dat";
+        std::vector<std::uint8_t> bytes;
+        {
+            std::ifstream input{path, std::ios::binary | std::ios::ate};
+            assert(input);
+            bytes.resize(static_cast<std::size_t>(input.tellg()));
+            input.seekg(0);
+            input.read(reinterpret_cast<char*>(bytes.data()),
+                       static_cast<std::streamsize>(bytes.size()));
+        }
+        // Drop the trailing checksum, append a version-1 PLYR block (position +
+        // hotbar + vitals + an empty inventory, no experience fields), re-checksum.
+        bytes.resize(bytes.size() - sizeof(std::uint64_t));
+        LegacyWriter writer;
+        writer.bytes = std::move(bytes);
+        writer.block(fourCC("PLYR"), 1U, [&] {
+            writer.integer<std::uint8_t>(0U);  // hasPlayerPosition = false
+            writer.floating(0.0F);
+            writer.floating(0.0F);
+            writer.floating(0.0F);
+            writer.integer<std::uint8_t>(0U);   // selectedHotbarSlot
+            writer.floating(15.0F);             // playerHealth
+            writer.integer<std::int32_t>(12);   // playerFoodLevel
+            writer.floating(3.0F);              // playerSaturation
+            writer.integer<std::int32_t>(250);  // playerAirTicks
+            // appendSlots' sparse format: a zero occupied-count closes the list.
+            writer.integer<std::uint16_t>(0U);
+        });
+        writer.finish();
+        {
+            std::ofstream output{path, std::ios::binary | std::ios::trunc};
+            output.write(reinterpret_cast<const char*>(writer.bytes.data()),
+                         static_cast<std::streamsize>(writer.bytes.size()));
+        }
+        const auto loaded = repository.load(game.summary.identifier);
+        // The rest of the version-1 block still reads correctly...
+        assert(loaded.playerHealth == 15.0F);
+        assert(loaded.playerFoodLevel == 12);
+        assert(loaded.playerAirTicks == 250);
+        // ...and the experience fields — absent from this version-1 block —
+        // are the SaveGame's zero defaults: a pre-XP-0 world reopens as a
+        // level-0 player, not a crash or a misread of neighbouring bytes.
+        assert(loaded.playerExperienceLevel == 0);
+        assert(loaded.playerExperiencePoints == 0);
+        assert(loaded.playerTotalExperience == 0);
+        assert(loaded.playerEnchantmentSeed == 0);
+    }
+
     return 0;
 }

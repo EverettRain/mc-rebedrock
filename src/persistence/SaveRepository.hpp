@@ -153,6 +153,14 @@ struct SaveGame final {
     std::int32_t playerFoodLevel = gameplay::PlayerVitals::kMaximumFood;
     float playerSaturation = 5.0F;
     std::int32_t playerAirTicks = gameplay::PlayerVitals::kMaximumAirTicks;
+    // XP-0: the experience currency, PLYR block version 2 (JC: XpLevel/XpP
+    // stored as the derived pointsIntoLevel/XpTotal/XpSeed). A pre-XP-0 world
+    // (version 1) has none of these on disk; the reader leaves them at these
+    // zero defaults, matching vanilla's "new player" state.
+    std::int32_t playerExperienceLevel = 0;
+    std::int32_t playerExperiencePoints = 0;
+    std::int32_t playerTotalExperience = 0;
+    std::int32_t playerEnchantmentSeed = 0;
     std::array<gameplay::ItemStack, gameplay::Inventory::kSlotCount> inventory{};
     std::vector<world::PersistentBlockEdit> edits;
     std::vector<gameplay::ChestBlockEntity> chests;

@@ -1220,8 +1220,15 @@ void readVersionBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
 
 // The player: where they stand, what state their body is in, and what they
 // carry. The spawn point stays in its own SPWN block, which predates this one.
+//
+// Version 2 (XP-0) appends the four experience fields (level / points into
+// the current level / lifetime total / enchantment seed) after the
+// inventory. A version-1 block predates XP-0 entirely and carries none of
+// them; the reader leaves the SaveGame's zero defaults in place for those,
+// which is exactly "new player, no experience" — the same backward
+// compatibility the fireTicks/effects fields on the entity block use.
 constexpr std::uint32_t kPlayerBlockTag = blockTag("PLYR");
-constexpr std::uint16_t kPlayerBlockVersion = 1U;
+constexpr std::uint16_t kPlayerBlockVersion = 2U;
 
 void appendPlayerBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
     const auto& game = context.game;
@@ -1236,6 +1243,10 @@ void appendPlayerBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext&
     appendFloat(bytes, game.playerSaturation);
     appendInteger(bytes, game.playerAirTicks);
     appendSlots(bytes, context, game.inventory);
+    appendInteger(bytes, game.playerExperienceLevel);
+    appendInteger(bytes, game.playerExperiencePoints);
+    appendInteger(bytes, game.playerTotalExperience);
+    appendInteger(bytes, game.playerEnchantmentSeed);
 }
 
 void readPlayerBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
@@ -1264,6 +1275,18 @@ void readPlayerBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
         throw std::runtime_error("world.dat contains invalid player vitals");
     }
     readSlots(payload, cursor, context, game.inventory);
+    // Experience arrived in version 2; a version-1 world leaves the
+    // SaveGame's zero defaults (level 0, no progress, no history).
+    if (header.version >= 2U) {
+        game.playerExperienceLevel = readInteger<std::int32_t>(payload, cursor);
+        game.playerExperiencePoints = readInteger<std::int32_t>(payload, cursor);
+        game.playerTotalExperience = readInteger<std::int32_t>(payload, cursor);
+        game.playerEnchantmentSeed = readInteger<std::int32_t>(payload, cursor);
+        if (game.playerExperienceLevel < 0 || game.playerExperiencePoints < 0 ||
+            game.playerTotalExperience < 0) {
+            throw std::runtime_error("world.dat contains invalid player experience");
+        }
+    }
     cursor = header.end;
 }
 

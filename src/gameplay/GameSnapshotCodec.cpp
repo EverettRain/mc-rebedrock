@@ -106,6 +106,9 @@ void appendPlayerTick(std::vector<std::uint8_t>& bytes, const PlayerTickSnapshot
     persistence::appendInteger(bytes, static_cast<std::uint8_t>(snap.gameMode));
     appendBool(bytes, snap.eating);
     persistence::appendInteger(bytes, static_cast<std::uint64_t>(snap.selectedHotbarSlot));
+    // XP-0: the HUD's experience bar fill and level number.
+    persistence::appendInteger(bytes, static_cast<std::int32_t>(snap.experienceLevel));
+    persistence::appendFloat(bytes, snap.experienceProgress);
 }
 
 [[nodiscard]] PlayerTickSnapshot readPlayerTick(std::span<const std::uint8_t> bytes,
@@ -147,6 +150,8 @@ void appendPlayerTick(std::vector<std::uint8_t>& bytes, const PlayerTickSnapshot
     snap.eating = readBool(bytes, cursor);
     snap.selectedHotbarSlot =
         static_cast<std::size_t>(persistence::readInteger<std::uint64_t>(bytes, cursor));
+    snap.experienceLevel = persistence::readInteger<std::int32_t>(bytes, cursor);
+    snap.experienceProgress = persistence::readFloat(bytes, cursor);
     return snap;
 }
 

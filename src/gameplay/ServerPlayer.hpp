@@ -16,6 +16,7 @@
 #include "gameplay/Inventory.hpp"
 #include "gameplay/PlayerActionState.hpp"
 #include "gameplay/PlayerController.hpp"
+#include "gameplay/PlayerExperience.hpp"
 #include "gameplay/PlayerVitals.hpp"
 
 #include <glm/vec3.hpp>
@@ -36,6 +37,11 @@ struct ServerPlayer final {
 
     PlayerController controller;
     PlayerVitals vitals;
+    // XP-0: the level/points/total/enchantmentSeed currency state, parallel to
+    // vitals rather than folded into it (Player keeps these as siblings of
+    // health/food in 26.1 too — different lifetime: a respawn resets vitals
+    // but never experience).
+    PlayerExperience experience;
     Inventory inventory;
     CraftingSystem crafting;
     GameMode gameMode = GameMode::Creative;

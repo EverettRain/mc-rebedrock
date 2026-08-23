@@ -25,6 +25,9 @@ struct UiFrameData final {
     int foodLevel = 0;
     int airTicks = 0;
     int ticksSinceDamage = 1000;
+    // XP-0: the experience bar's fill fraction and the level number above it.
+    int experienceLevel = 0;
+    float experienceProgress = 0.0F;
     gameplay::GameMode gameMode = gameplay::GameMode::Survival;
     bool eating = false;
     gameplay::ItemStack selectedStack{};

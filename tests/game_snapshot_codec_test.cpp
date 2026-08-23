@@ -72,6 +72,9 @@ void checkRoundTrip(const gameplay::PublishedSnapshot& snapshot) {
     snap.gameMode = gameplay::GameMode::Creative;
     snap.eating = true;
     snap.selectedHotbarSlot = 5U;
+    // XP-0: the HUD's two experience fields.
+    snap.experienceLevel = 12;
+    snap.experienceProgress = 0.375F;
     return snap;
 }
 

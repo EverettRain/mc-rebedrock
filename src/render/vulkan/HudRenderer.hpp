@@ -1199,21 +1199,44 @@ class HudRenderer final {
     }
 
     // Gui#renderExperienceBar: the 182x5 bar centred over the hotbar, seven
-    // logical pixels above it. The experience system is not wired up yet, so
-    // the bar always draws a static placeholder fill instead of reading gameSession.player()
-    // progress; swap the constant for the real progress fraction when it lands.
+    // logical pixels above it, filled by the player's real progress fraction
+    // (XP-0: uiFrameData_ carries it from the tick snapshot, ContextualBarRenderer's
+    // extractExperienceLevel green level number drawn just above it).
     void drawExperienceBar(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         const float scale = layout.scale();
         const auto bar = layout.experienceBar();
         // 26.1's named experience-bar background, then its green progress sprite.
         drawGuiSprite(commandBuffer, bar, 1.0F, {0.0F, 64.0F, 182.0F, 5.0F});
-        constexpr float kPlaceholderExperienceProgress = 0.5F;
-        if (kPlaceholderExperienceProgress > 0.0F) {
+        const float progress = std::clamp(uiFrameData_.experienceProgress, 0.0F, 1.0F);
+        if (progress > 0.0F) {
             // A partial fill samples only the leading columns of the sprite,
             // the way vanilla's blit(x, y, 0, 69, progressWidth, 5) does.
-            const float filledWidth = kPlaceholderExperienceProgress * 182.0F * scale;
+            const float filledWidth = progress * 182.0F * scale;
             drawGuiSprite(commandBuffer, {bar.x, bar.y, filledWidth, bar.height}, 1.0F,
-                          {0.0F, 69.0F, kPlaceholderExperienceProgress * 182.0F, 5.0F});
+                          {0.0F, 69.0F, progress * 182.0F, 5.0F});
+        }
+        // ContextualBarRenderer#extractExperienceLevel: the level number is
+        // only drawn once the player has actually left level 0 (26.1 gates on
+        // `hasExperience() && experienceLevel > 0`), so a fresh survival spawn
+        // shows an empty bar with no "0" floating above it.
+        if (uiFrameData_.experienceLevel > 0) {
+            const std::string label = std::to_string(uiFrameData_.experienceLevel);
+            const float textWidth = hudTextWidth(label, scale);
+            const float textX = bar.x + (bar.width - textWidth) * 0.5F;
+            // 26.1's y = guiHeight - 24 - 9 - 2, six logical pixels above the
+            // bar's own top (guiHeight - 24 - 5); expressed relative to `bar`
+            // so it tracks the same anchor HudLayout::experienceBar() uses.
+            const float textY = bar.y - 6.0F * scale;
+            // Vanilla draws the level number with a four-direction black
+            // outline (not the usual single offset drop shadow) before the
+            // green fill, so it reads over both the empty and filled bar.
+            constexpr glm::vec4 kOutline{0.0F, 0.0F, 0.0F, 1.0F};
+            drawHudText(commandBuffer, label, textX + scale, textY, scale, kOutline, false);
+            drawHudText(commandBuffer, label, textX - scale, textY, scale, kOutline, false);
+            drawHudText(commandBuffer, label, textX, textY + scale, scale, kOutline, false);
+            drawHudText(commandBuffer, label, textX, textY - scale, scale, kOutline, false);
+            constexpr glm::vec4 kLevelGreen{0.5019608F, 1.0F, 0.1254902F, 1.0F};
+            drawHudText(commandBuffer, label, textX, textY, scale, kLevelGreen, false);
         }
     }
 

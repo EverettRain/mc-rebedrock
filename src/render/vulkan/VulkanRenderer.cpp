@@ -1595,6 +1595,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 uiFrameData_.foodLevel = playerSnap.foodLevel;
                 uiFrameData_.airTicks = playerSnap.airTicks;
                 uiFrameData_.ticksSinceDamage = playerSnap.ticksSinceDamage;
+                uiFrameData_.experienceLevel = playerSnap.experienceLevel;
+                uiFrameData_.experienceProgress = playerSnap.experienceProgress;
                 uiFrameData_.gameMode = playerSnap.gameMode;
                 uiFrameData_.eating = playerSnap.eating;
                 uiFrameData_.selectedStack = playerSnap.heldStack;
