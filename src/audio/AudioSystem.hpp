@@ -57,6 +57,38 @@ enum class BlockSoundFamily {
 
 [[nodiscard]] const char* blockSoundFamilyName(BlockSoundFamily family);
 
+// ⑥ The linear distance-attenuation gain a positioned voice receives, matching
+// the model play() sets on miniaudio (ma_attenuation_model_linear):
+//   dist <= minDistance      → 1  (full volume in the near field)
+//   dist >= maxDistance      → 0  (silent — the whole point: no non-zero plateau
+//                                  the way miniaudio's default inverse model had)
+//   between                  → linearly interpolated, monotonically decreasing.
+// The engine also folds `rolloff` in as a slope factor; play() uses 0.75, and the
+// gain is clamped to [0, 1]. Pure and device-free so the "silent past max"
+// guarantee (穿地听声修复) is verifiable without an audio device.
+[[nodiscard]] constexpr float linearAttenuationGain(float distance, float minDistance,
+                                                    float maxDistance, float rolloff = 0.75F) {
+    if (maxDistance <= minDistance) {
+        return distance <= minDistance ? 1.0F : 0.0F;
+    }
+    if (distance <= minDistance) {
+        return 1.0F;
+    }
+    if (distance >= maxDistance) {
+        return 0.0F;
+    }
+    const float gain = 1.0F - rolloff * (distance - minDistance) / (maxDistance - minDistance);
+    return gain < 0.0F ? 0.0F : (gain > 1.0F ? 1.0F : gain);
+}
+
+// ⑥ Whether play() should skip a positioned voice entirely: its source sits past
+// the attenuation ceiling, where the linear model is already silent. Culling it
+// saves the decode and is the second guarantee that nothing beyond `maxDistance`
+// is ever heard. Shared by play() and the regression so a dropped cull is caught.
+[[nodiscard]] constexpr bool cullByDistance(float distance, float maxDistance) {
+    return distance > (maxDistance < 0.0F ? 0.0F : maxDistance);
+}
+
 class AudioSystem final {
   public:
     explicit AudioSystem(const assets::ResourceProvider& provider, float masterVolume = 1.0F);
@@ -94,6 +126,12 @@ class AudioSystem final {
     // without an audio device. Master's own gain folds into master, so a Master
     // play is master × eventVolume.
     [[nodiscard]] float effectiveVolume(SoundCategory category, float eventVolume) const;
+    // The per-voice volume a streamed voice (situational music / biome ambient
+    // loop) hands to miniaudio: the sub-category gain alone, with NO master
+    // factor. Master is the engine's global endpoint gain applied once to every
+    // voice, so a streamed voice must not fold it in again (the master² bug).
+    // Exposed so that invariant is verifiable without an audio device.
+    [[nodiscard]] float streamedVoiceVolume(SoundCategory category) const;
     void updateListener(const glm::vec3& position, const glm::vec3& direction, const glm::vec3& up);
     void update();
 
@@ -176,6 +214,11 @@ class AudioSystem final {
     [[nodiscard]] bool musicPlaying() const;
     // The situation whose music is currently playing (None when silent).
     [[nodiscard]] MusicSituation musicSituation() const;
+    // The cave-mood accumulator's current level, 0..1. It advances once per
+    // game-tick that tickAmbientMusic processes, so it is the device-free witness
+    // that the scheduler steps by `ticks` (linear, zero when ticks==0) rather than
+    // once per call/frame. Not part of the audio contract — for tests only.
+    [[nodiscard]] float moodLevelForTest() const;
 
   private:
     class Impl;

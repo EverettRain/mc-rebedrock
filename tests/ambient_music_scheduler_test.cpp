@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <optional>
 
 namespace {
@@ -179,6 +180,71 @@ int main() {
         assert(mc::audio::musicSoundCategory() != mc::audio::SoundCategory::Master);
         assert(mc::audio::ambientSoundCategory() != mc::audio::SoundCategory::Master);
         assert(mc::audio::recordSoundCategory() != mc::audio::SoundCategory::Master);
+    }
+
+    // ---- AU-3 ②: TickAccumulator turns real frame time into whole 20-tps ticks,
+    // FPS-decoupled — the same real duration yields the same tick total no matter
+    // the frame rate, and a sub-tick frame yields 0 (advance nothing). ----
+    {
+        using mc::audio::TickAccumulator;
+        constexpr float tick = TickAccumulator::kTickSeconds; // 0.05 s
+
+        // A frame shorter than a tick crosses no boundary: 0 ticks.
+        {
+            TickAccumulator acc;
+            assert(acc.advance(tick * 0.5F) == 0);
+            // The remainder is retained; a second half-tick frame now crosses one.
+            assert(acc.advance(tick * 0.5F) == 1);
+        }
+        // Exactly one tick per frame → one tick per call.
+        {
+            TickAccumulator acc;
+            for (int i = 0; i < 50; ++i) {
+                assert(acc.advance(tick) == 1);
+            }
+        }
+        // A long frame crosses several ticks at once.
+        {
+            TickAccumulator acc;
+            assert(acc.advance(tick * 3.0F) == 3);
+        }
+        // FPS decoupling: two clients advancing the SAME one real second, one at
+        // 144 fps and one at 30 fps, must accumulate the SAME 20 ticks.
+        {
+            TickAccumulator fast;
+            TickAccumulator slow;
+            int fastTicks = 0;
+            int slowTicks = 0;
+            const float fastDt = 1.0F / 144.0F;
+            const float slowDt = 1.0F / 30.0F;
+            float fastElapsed = 0.0F;
+            float slowElapsed = 0.0F;
+            while (fastElapsed < 1.0F) {
+                fastTicks += fast.advance(fastDt);
+                fastElapsed += fastDt;
+            }
+            while (slowElapsed < 1.0F) {
+                slowTicks += slow.advance(slowDt);
+                slowElapsed += slowDt;
+            }
+            // Both crossed ~1 s of frames → ~20 ticks, and within one tick of each
+            // other (frame quantisation of when the last boundary lands).
+            assert(std::abs(fastTicks - slowTicks) <= 1);
+            assert(fastTicks >= 19 && fastTicks <= 21);
+        }
+        // A stall past the backlog cap drops the excess instead of firing a burst.
+        {
+            TickAccumulator acc;
+            const int ticks = acc.advance(5.0F); // 5 s stall
+            const int cap = static_cast<int>(TickAccumulator::kMaximumBacklogSeconds / tick);
+            assert(ticks == cap); // 0.25 s / 0.05 s = 5, not 100
+        }
+        // Non-positive delta advances nothing (a paused/first frame).
+        {
+            TickAccumulator acc;
+            assert(acc.advance(0.0F) == 0);
+            assert(acc.advance(-1.0F) == 0);
+        }
     }
 
     // ---- The built-in default table is well-formed: Game exists and does not

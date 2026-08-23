@@ -94,6 +94,35 @@ int main() {
     // attenuation.
     assert(nearlyEqual(audio.effectiveVolume(SoundCategory::Master, 0.8F), 0.5F * 0.8F));
 
+    // ---- AU-3 ①: a streamed voice (music / biome loop) carries ONLY the
+    // sub-category gain, NEVER master. Master is the engine's global endpoint
+    // gain applied once; folding it into the per-voice volume too gave master²
+    // (music barely audible at the default master 0.8). This must stay decoupled
+    // from master at every master level. ----
+    {
+        using mc::audio::ambientSoundCategory;
+        using mc::audio::musicSoundCategory;
+        // master 0.5 (set above), Music gain 1.0 → streamed voice volume 1.0, not
+        // 0.5. The engine multiplies master in globally at runtime.
+        assert(nearlyEqual(audio.streamedVoiceVolume(musicSoundCategory()), 1.0F));
+        audio.setCategoryVolume(musicSoundCategory(), 0.6F);
+        // Now the per-voice volume is the Music gain alone (0.6), independent of
+        // master: sweep master and the streamed-voice volume must not move.
+        for (const float master : {0.0F, 0.2F, 0.5F, 0.8F, 1.0F}) {
+            audio.setMasterVolume(master);
+            assert(nearlyEqual(audio.streamedVoiceVolume(musicSoundCategory()), 0.6F));
+        }
+        // An ambient loop on its own bus behaves the same, isolated from Music.
+        audio.setCategoryVolume(ambientSoundCategory(), 0.3F);
+        assert(nearlyEqual(audio.streamedVoiceVolume(ambientSoundCategory()), 0.3F));
+        assert(nearlyEqual(audio.streamedVoiceVolume(musicSoundCategory()), 0.6F));
+        // Restore the state the following assertions rely on: master 0.5 (as it
+        // was before this block) and the streamed buses back to unity gain.
+        audio.setMasterVolume(0.5F);
+        audio.setCategoryVolume(musicSoundCategory(), 1.0F);
+        audio.setCategoryVolume(ambientSoundCategory(), 1.0F);
+    }
+
     // setMasterVolume keeps the Master slot mirrored.
     assert(nearlyEqual(audio.categoryVolume(SoundCategory::Master), 0.5F));
 
@@ -117,6 +146,46 @@ int main() {
     assert(!audio.directionalAudio());
     audio.setDirectionalAudio(true);
     assert(audio.directionalAudio());
+
+    // ---- AU-3 ⑥: distance attenuation reaches ZERO past the ceiling (no穿地听
+    // 声). The old miniaudio default (inverse) clamped distance to max and left a
+    // ~0.108 non-zero plateau, so a mob hundreds of blocks away / deep underground
+    // stayed audible. The linear model play() now sets is full up close and
+    // exactly zero at/after maxDistance. ----
+    {
+        using mc::audio::cullByDistance;
+        using mc::audio::linearAttenuationGain;
+        constexpr float minD = 4.0F;  // play()'s min_distance
+        constexpr float maxD = 48.0F; // ordinary max_distance
+        // Near field: full volume at and inside the reference distance.
+        assert(nearlyEqual(linearAttenuationGain(0.0F, minD, maxD), 1.0F));
+        assert(nearlyEqual(linearAttenuationGain(minD, minD, maxD), 1.0F));
+        // 4.5-block mining stays essentially full (barely inside min) — the
+        // regression the min_distance choice guards is unaffected by linear.
+        assert(linearAttenuationGain(4.5F, minD, maxD) > 0.99F);
+        // At and beyond the ceiling the gain is EXACTLY zero — the fix's core
+        // guarantee. Inverse would have returned ~0.108 here.
+        assert(nearlyEqual(linearAttenuationGain(maxD, minD, maxD), 0.0F));
+        assert(nearlyEqual(linearAttenuationGain(60.0F, minD, maxD), 0.0F));
+        assert(nearlyEqual(linearAttenuationGain(500.0F, minD, maxD), 0.0F));
+        // Strictly monotonically decreasing between min and max.
+        float previous = 2.0F;
+        for (float dist = minD; dist <= maxD; dist += 1.0F) {
+            const float g = linearAttenuationGain(dist, minD, maxD);
+            assert(g <= previous + 1e-6F);
+            previous = g;
+        }
+        // Records carry further (64) but still reach zero past their own ceiling.
+        assert(linearAttenuationGain(50.0F, minD, 64.0F) > 0.0F);
+        assert(nearlyEqual(linearAttenuationGain(64.0F, minD, 64.0F), 0.0F));
+
+        // The cull predicate play() uses: a source past the ceiling is skipped
+        // entirely (never decoded), inside it is kept.
+        assert(cullByDistance(48.01F, maxD));
+        assert(cullByDistance(1000.0F, maxD));
+        assert(!cullByDistance(47.9F, maxD));
+        assert(!cullByDistance(0.0F, maxD));
+    }
 
     // ---- AU-2: ambient/music integration (no assets on this provider, so the
     // scheduler runs but no voice actually sounds) ----
@@ -151,6 +220,83 @@ int main() {
     // Records and their stop are safe to call with no jukebox asset.
     audio.playRecord("music_disc.cat", {1.0F, 64.0F, 1.0F});
     audio.stopRecord();
+
+    // ---- AU-3 ②: tickAmbientMusic advances by `ticks`, linearly, and ticks=0
+    // advances nothing. The cave-mood accumulator is the device-free witness: a
+    // dark sample fills it by 1/tickDelay per game-tick, so after T processed
+    // ticks the level is the same regardless of how the T were split across
+    // calls/frames. This is the FPS-decoupling: the scheduler steps per tick, not
+    // per call. moodLevelForTest() exposes that internal level for the test. ----
+    {
+        auto darkCtx = []() {
+            AudioSystem::AmbientMusicContext c;
+            c.situation = MusicSituation::Game;
+            c.listenerPosition = {0.0F, 64.0F, 0.0F};
+            mc::audio::MoodSample dark{};
+            dark.offsetX = 4.0; // off the player so the trigger has a direction
+            dark.skyBrightness = 0;
+            dark.blockBrightness = 0;
+            c.moodSample = dark;
+            return c;
+        };
+
+        // ticks=0 never advances: a system fed only zero-tick frames keeps the
+        // mood at exactly zero forever (a frame with no tick boundary does
+        // nothing — this is what decouples the scheduler from the frame rate).
+        {
+            AudioSystem zero(provider, 1.0F);
+            auto ctx = darkCtx();
+            ctx.ticks = 0;
+            for (int i = 0; i < 10000; ++i) {
+                zero.tickAmbientMusic(ctx);
+            }
+            assert(nearlyEqual(zero.moodLevelForTest(), 0.0F));
+        }
+
+        // Linear: one call of T ticks == N calls summing to T ticks. Keep T well
+        // under the ~6000-tick trigger threshold so no reset intervenes.
+        const int total = 900;
+        float bulkLevel = 0.0F;
+        {
+            AudioSystem bulk(provider, 1.0F);
+            auto ctx = darkCtx();
+            ctx.ticks = total;
+            bulk.tickAmbientMusic(ctx);
+            bulkLevel = bulk.moodLevelForTest();
+            assert(bulkLevel > 0.0F); // it actually moved
+        }
+        // Split as 900 single-tick calls.
+        {
+            AudioSystem split1(provider, 1.0F);
+            auto ctx = darkCtx();
+            ctx.ticks = 1;
+            for (int i = 0; i < total; ++i) {
+                split1.tickAmbientMusic(ctx);
+            }
+            assert(nearlyEqual(split1.moodLevelForTest(), bulkLevel));
+        }
+        // Split as 300 three-tick calls, and one lopsided 300+600 split. All must
+        // land on the same level as the single 900-tick call.
+        {
+            AudioSystem split3(provider, 1.0F);
+            auto ctx = darkCtx();
+            ctx.ticks = 3;
+            for (int i = 0; i < total / 3; ++i) {
+                split3.tickAmbientMusic(ctx);
+            }
+            assert(nearlyEqual(split3.moodLevelForTest(), bulkLevel));
+        }
+        {
+            AudioSystem lop(provider, 1.0F);
+            auto a = darkCtx();
+            a.ticks = 300;
+            auto b = darkCtx();
+            b.ticks = 600;
+            lop.tickAmbientMusic(a);
+            lop.tickAmbientMusic(b);
+            assert(nearlyEqual(lop.moodLevelForTest(), bulkLevel));
+        }
+    }
 
     return 0;
 }
