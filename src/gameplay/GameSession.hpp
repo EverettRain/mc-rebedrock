@@ -753,6 +753,11 @@ class GameSession final {
     std::uint64_t serverTick_ = 0U;
     world::ClockManager clocks_;
     std::uint32_t lootRandomState_ = 0x9E3779B9U;
+    // AR-B3: the pressure-plate press/release diff state — see
+    // PlayerInteraction.hpp's tickPressurePlates for why this lives here
+    // (caller-owned, not hidden static state) rather than inside that
+    // function.
+    std::vector<glm::ivec3> pressedPlates_;
     // XP-1: the experience orb scatter stream (spawnExperienceOrbs' initial
     // velocities), reseeded from the world seed in setWorldSeed — its own
     // independent JavaRandom stream, salted differently from the enchantment

@@ -220,6 +220,16 @@ enum class Block : std::uint8_t {
     OakStairs,
     OakDoor,
     OakFenceGate,
+    // AR-B3: the second wave of shaped/interactive blocks — a trapdoor (single
+    // cell, door-style thin box that swings between horizontal-closed and
+    // vertical-open), a pressure plate (thin column, entity-triggered), and a
+    // stone/cobblestone pair proving the button and wall mechanisms
+    // (StoneButton already carried identity + redstone timing from the W-4/5
+    // slice; this pass gives it a shape, a placement and a press interaction —
+    // see the block's own comment below).
+    OakTrapdoor,
+    StonePressurePlate,
+    CobblestoneWall,
     Count,
 };
 
@@ -284,6 +294,23 @@ enum class BlockModel : std::uint8_t {
     // A FenceGateBlock: a Boxes shape on the Facing axis that empties when Open
     // (AR-B2).
     FenceGate,
+    // A TrapDoorBlock (AR-B3): the same thin-leaf box family a door uses, but
+    // one cell, and the closed orientation lies flat (Half decides top/bottom
+    // face) rather than always standing on the facing-axis wall. Facing x Half
+    // x Open (no Hinge — a trapdoor has none).
+    TrapDoor,
+    // A BasePressurePlateBlock (AR-B3): a thin full-footprint column, two
+    // heights (raised/pressed) keyed off Powered — no Boxes shape needed, the
+    // Column kind already answers "how tall", the same way a slab does.
+    PressurePlate,
+    // A ButtonBlock (AR-B3): a small Boxes shape on the Facing axis (wall-
+    // mounted only, matching Lever's existing simplification), whose box
+    // shrinks slightly while Powered.
+    Button,
+    // A WallBlock (AR-B3): a Boxes shape assembled from a centre post plus one
+    // arm per connected side (WallNorth/East/South/West), the same
+    // mask-indexed-table shape a fence's connection mechanism would use.
+    Wall,
 };
 
 // SlabBlock.TYPE, the value the SlabType property serialises as. Bottom is 0 so
@@ -707,6 +734,62 @@ class BlockProperties final {
             .renderLayer(BlockRenderLayer::Cutout)
             .horizontalFacing()
             .state(StateProperty::Open, 2U);
+    }
+
+    // A TrapDoorBlock (AR-B3): the TrapDoor model plus Facing x Half x Open.
+    // Collision stays on — its thin box, like a door's, is the real collision
+    // source (noCollision() would zero collisionSpan entirely).
+    [[nodiscard]] constexpr BlockProperties trapdoor() const {
+        BlockProperties copy = *this;
+        return copy.model(BlockModel::TrapDoor)
+            .renderLayer(BlockRenderLayer::Cutout)
+            .horizontalFacing()
+            .state(StateProperty::Half, 2U)
+            .state(StateProperty::Open, 2U);
+    }
+
+    // A BasePressurePlateBlock (AR-B3): the PressurePlate model plus Powered,
+    // read as the shape's raised/pressed column height and the mesher's
+    // pressed-texture bit alike (BasePressurePlateBlock.SHAPE/SHAPE_PRESSED).
+    // Collision stays on; the plate itself does not require a wall/ground
+    // flag here since canBlockSurvive routes a plain BlockSupport::Ground.
+    [[nodiscard]] constexpr BlockProperties pressurePlate() const {
+        BlockProperties copy = *this;
+        return copy.model(BlockModel::PressurePlate)
+            .renderLayer(BlockRenderLayer::Cutout)
+            .support(BlockSupport::Ground)
+            .state(StateProperty::Powered, 2U);
+    }
+
+    // A ButtonBlock (AR-B3): the Button model plus Facing x Powered, wall-
+    // mounted only (Lever's existing simplification — vanilla's FACE axis for
+    // floor/ceiling attachment is not carried here). Collision stays on — a
+    // button's small box is real collision (an arrow can rest on it, a player
+    // can stand on a floor one), the same door/gate lesson AR-B2 already
+    // learned the hard way: noCollision() zeroes collisionSpan entirely
+    // regardless of the shape a state answers, which would be wrong here too.
+    [[nodiscard]] constexpr BlockProperties button() const {
+        BlockProperties copy = *this;
+        return copy.model(BlockModel::Button)
+            .renderLayer(BlockRenderLayer::Cutout)
+            .support(BlockSupport::Wall)
+            .state(StateProperty::Facing, 6U)
+            .state(StateProperty::Powered, 2U);
+    }
+
+    // A WallBlock (AR-B3): the Wall model plus the four per-side connection
+    // booleans (WallNorth/East/South/West). Collision stays on; the taller
+    // (1.5-cell) collision-vs-visual split a full vanilla wall has is folded
+    // into one shape here (see BlockShape.hpp's wall box table comment) since
+    // this pass does not carry the LOW/TALL distinction.
+    [[nodiscard]] constexpr BlockProperties wall() const {
+        BlockProperties copy = *this;
+        return copy.model(BlockModel::Wall)
+            .renderLayer(BlockRenderLayer::Cutout)
+            .state(StateProperty::WallNorth, 2U)
+            .state(StateProperty::WallEast, 2U)
+            .state(StateProperty::WallSouth, 2U)
+            .state(StateProperty::WallWest, 2U);
     }
 
     // The shorthands vanilla blocks reach for again and again.
@@ -1215,15 +1298,13 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .state(StateProperty::Facing, 6U)
         .state(StateProperty::Powered, 2U),
     // Stone button: like the lever (attach + POWERED), but a press is timed.
+    // AR-B3: gains a real shape/collision through .button() — it used to sit
+    // on the Torch placeholder model with noCollision(), which predates this
+    // pass giving it its own shape family (see BlockShape.hpp's shapeButton).
     BlockProperties::of(Block::StoneButton, "stone_button", "Stone Button")
         .texture("stone")
         .instantBreak()
-        .renderLayer(BlockRenderLayer::Cutout)
-        .model(BlockModel::Torch)
-        .noCollision()
-        .support(BlockSupport::Wall)
-        .state(StateProperty::Facing, 6U)
-        .state(StateProperty::Powered, 2U),
+        .button(),
     // Piston: a full-cube block with a six-way FACING and EXTENDED in POWERED.
     BlockProperties::of(Block::Piston, "piston", "Piston")
         .texture("piston_side")
@@ -1331,6 +1412,27 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("oak_planks")
         .strength(2.0F, 3.0F)
         .fenceGate(),
+    // AR-B3: TrapDoorBlock `implements SimpleWaterloggedBlock` in vanilla
+    // (TrapDoorBlock.java:43) — unlike the door, a trapdoor *does* submerge.
+    // Left un-opted for this pass (matching AR-B2's own stated boundary: F2
+    // extension is a separate, deliberate pass per block family) — recorded
+    // here as the same "interface ready, not yet wired" note AR-B2 left doors.
+    BlockProperties::of(Block::OakTrapdoor, "oak_trapdoor", "Oak Trapdoor")
+        .texture("oak_trapdoor", "oak_trapdoor", "oak_trapdoor")
+        .strength(3.0F)
+        .trapdoor(),
+    // BasePressurePlateBlock: not a SimpleWaterloggedBlock in vanilla either
+    // (PressurePlateBlock.java has no WATERLOGGED property) — no .submerges().
+    BlockProperties::of(Block::StonePressurePlate, "stone_pressure_plate", "Stone Pressure Plate")
+        .texture("stone")
+        .instantBreak()
+        .pressurePlate(),
+    // WallBlock: the first cobblestone-family wall, proving the four-side
+    // connection mechanism the way OakStairs proved the join-shape mechanism.
+    BlockProperties::of(Block::CobblestoneWall, "cobblestone_wall", "Cobblestone Wall")
+        .texture("cobblestone")
+        .strength(2.0F, 6.0F)
+        .wall(),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {

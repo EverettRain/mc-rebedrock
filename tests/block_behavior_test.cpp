@@ -135,11 +135,13 @@ void testPrefilterParity() {
                (definition.container != mc::world::ContainerType::None));
         // AR-B2: a stair recomputes its join shape and a door's upper half
         // tracks its lower half, both model-driven alongside the existing
-        // support-based reaction.
+        // support-based reaction. AR-B3: a wall recomputes its four
+        // connection bits the same model-driven way.
         assert(runtime.has(BlockBehaviorBit::HasNeighborReaction) ==
                (definition.support != mc::world::BlockSupport::None ||
                 definition.model == mc::world::BlockModel::Stairs ||
-                definition.model == mc::world::BlockModel::Door));
+                definition.model == mc::world::BlockModel::Door ||
+                definition.model == mc::world::BlockModel::Wall));
         assert(runtime.has(BlockBehaviorBit::HasRandomTick) ==
                WorldSimulation::isRandomlyTicking(block));
         assert(runtime.has(BlockBehaviorBit::HasDrops) == blockYieldsLoot(block));
@@ -296,12 +298,14 @@ void testDispatchMechanism() {
     }
 
     // The slots later tasks own are null for every block, except AR-B2's
-    // stair/door updateShape (wired by model, see testPrefilterParity above).
+    // stair/door and AR-B3's wall updateShape (wired by model, see
+    // testPrefilterParity above).
     for (std::size_t i = 0; i < mc::world::kBuiltinBlockCount; ++i) {
         const auto& behavior = behaviorFor(mc::world::blockId(static_cast<Block>(i)));
         assert(behavior.useItemOn == nullptr);
         const auto model = mc::world::blockDefinition(static_cast<Block>(i)).model;
-        if (model == mc::world::BlockModel::Stairs || model == mc::world::BlockModel::Door) {
+        if (model == mc::world::BlockModel::Stairs || model == mc::world::BlockModel::Door ||
+            model == mc::world::BlockModel::Wall) {
             assert(behavior.updateShape != nullptr);
         } else {
             assert(behavior.updateShape == nullptr);

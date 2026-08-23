@@ -72,6 +72,19 @@ enum class StateProperty : std::uint8_t {
     // FenceGateBlock.OPEN). Toggled by a right-click, never anything else —
     // no random tick, no scheduled tick reads it.
     Open,
+    // AR-B3: CrossCollisionBlock's four per-side connection booleans
+    // (WallBlock.NORTH/EAST/SOUTH/WEST), simplified to a plain two-value
+    // "connected or not" axis rather than vanilla's three-value WallSide
+    // (NONE/LOW/TALL) — the task card frames the wall as "similar to a
+    // fence's multi-box connection", and a fence itself has no LOW/TALL
+    // distinction either. One axis per horizontal direction, the same way a
+    // fence's four connection booleans would be declared, so the connection
+    // mask a neighbour-derivation table computes is four independent bits
+    // rather than a packed enum.
+    WallNorth,
+    WallEast,
+    WallSouth,
+    WallWest,
     Count,
 };
 
@@ -120,6 +133,14 @@ inline constexpr std::size_t kStatePropertyCount = static_cast<std::size_t>(Stat
         return "hinge";
     case StateProperty::Open:
         return "open";
+    case StateProperty::WallNorth:
+        return "wall_north";
+    case StateProperty::WallEast:
+        return "wall_east";
+    case StateProperty::WallSouth:
+        return "wall_south";
+    case StateProperty::WallWest:
+        return "wall_west";
     case StateProperty::Count:
         break;
     }

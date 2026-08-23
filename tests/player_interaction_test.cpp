@@ -5,6 +5,7 @@
 
 #include "gameplay/GameSession.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
+#include "gameplay/entities/PigEntity.hpp"
 #include "world/Block.hpp"
 #include "world/BlockShape.hpp"
 #include "world/BlockState.hpp"
@@ -947,6 +948,160 @@ int main() {
                    world::SubmergedFluid::Water) == world::BlockState{world::Block::OakDoor});
         assert(world::BlockState{world::Block::OakFenceGate}.withSubmergedFluid(
                    world::SubmergedFluid::Water) == world::BlockState{world::Block::OakFenceGate});
+    }
+
+    // --- AR-B3 trapdoor: placement against a horizontal face resolves
+    // Facing+Half from the clicked face/hit height, a right-click flips OPEN,
+    // and the collision box genuinely relocates (mirrors the door test's
+    // sabotage③-style assertion). ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        world.setState(6, 1, 5, world::BlockState{world::Block::Stone});
+        session.inventory().mutableSlot(0) = {world::Block::OakTrapdoor, 1U, nullptr};
+        session.inventory().selectHotbar(0);
+        gameplay::UseItemOn place;
+        place.block = glm::ivec3{6, 1, 5};
+        place.adjacent = glm::ivec3{5, 1, 5};
+        place.face = world::BlockOrientation::West;
+        place.hitPosition = glm::vec3{6.0F, 1.3F, 5.5F}; // lower half of the clicked face
+        place.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(place));
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.block(5, 1, 5) == world::Block::OakTrapdoor);
+        assert(world.state(5, 1, 5).orientation() == world::BlockOrientation::West);
+        assert(world.state(5, 1, 5).trapdoorHalf() == world::SlabPortion::Bottom);
+        assert(!world.state(5, 1, 5).open());
+        assert(world::hasCollision(world::Block::OakTrapdoor));
+
+        gameplay::UseItemOn toggle;
+        toggle.block = glm::ivec3{5, 1, 5};
+        toggle.adjacent = glm::ivec3{4, 1, 5};
+        toggle.face = world::BlockOrientation::West;
+        toggle.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(toggle));
+        for (int tick = 0; tick < 20 && !world.state(5, 1, 5).open(); ++tick) {
+            session.tick(world, host);
+        }
+        session.enqueueCommand(gameplay::UseItemStop{});
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.state(5, 1, 5).open());
+        // The collision box genuinely moves: an open trapdoor's Y span covers
+        // the whole cell (a vertical leaf), unlike the closed thin slab.
+        const auto openShape = world::blockShape(world.state(5, 1, 5));
+        assert(openShape.boxes.front().minY == 0.0F && openShape.boxes.front().maxY == 1.0F);
+    }
+
+    // --- AR-B3 button: placement against a wall resolves Facing from the
+    // clicked face, a right-click presses it (POWERED true immediately), and
+    // it releases itself automatically 20 ticks later without any further
+    // input — the "按下→计时回弹" clause, and this test's own sabotage①
+    // target (a broken release timer would leave it stuck powered forever). ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        world.setState(6, 1, 5, world::BlockState{world::Block::Stone});
+        session.inventory().mutableSlot(0) = {world::Block::StoneButton, 1U, nullptr};
+        session.inventory().selectHotbar(0);
+        gameplay::UseItemOn place;
+        place.block = glm::ivec3{6, 1, 5};
+        place.adjacent = glm::ivec3{5, 1, 5};
+        place.face = world::BlockOrientation::West;
+        place.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(place));
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.block(5, 1, 5) == world::Block::StoneButton);
+        assert(world.state(5, 1, 5).orientation() == world::BlockOrientation::West);
+        assert(!world.state(5, 1, 5).powered());
+
+        gameplay::UseItemOn press;
+        press.block = glm::ivec3{5, 1, 5};
+        press.adjacent = glm::ivec3{4, 1, 5};
+        press.face = world::BlockOrientation::West;
+        press.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(press));
+        for (int tick = 0; tick < 5 && !world.state(5, 1, 5).powered(); ++tick) {
+            session.tick(world, host);
+        }
+        session.enqueueCommand(gameplay::UseItemStop{});
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.state(5, 1, 5).powered());
+        // A re-press while already powered does not restart the timer or do
+        // anything observable (ButtonBlock#useWithoutItem's CONSUME-without-
+        // re-trigger branch) — the release below still lands at the original
+        // 20-tick mark, not later, which the tick budget below would miss if
+        // a re-press had pushed it out.
+        gameplay::UseItemOn rePress;
+        rePress.block = glm::ivec3{5, 1, 5};
+        rePress.adjacent = glm::ivec3{4, 1, 5};
+        rePress.face = world::BlockOrientation::West;
+        rePress.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(rePress));
+        session.tick(world, host);
+        session.enqueueCommand(gameplay::UseItemStop{});
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.state(5, 1, 5).powered());
+
+        // Sabotage①'s target: the release timer must fire on its own, with no
+        // further player input — 20gt after the *first* press (kStoneButton-
+        // PressTicks in WorldSimulation.cpp), well within a generous 30-tick
+        // budget.
+        bool released = false;
+        for (int tick = 0; tick < 30; ++tick) {
+            session.tick(world, host);
+            if (!world.state(5, 1, 5).powered()) {
+                released = true;
+                break;
+            }
+        }
+        static_cast<void>(session.drainEvents());
+        assert(released);
+    }
+
+    // --- AR-B3 pressure plate: placement on solid ground, a live creature
+    // standing on it presses it, walking off releases it — the "踩踏触发→离开
+    // 复位" clause and this test's own sabotage②/③ targets. ---
+    {
+        gameplay::entities::registerBuiltinEntities();
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        world.setState(5, 1, 5, world::BlockState{world::Block::StonePressurePlate});
+        assert(!world.state(5, 1, 5).powered());
+
+        // The player's own feet, tickPressurePlates' bounded set: standing on
+        // the plate presses it. The plate occupies cell y=1 (floor cell y=0
+        // holds the stone below it), so its top surface — where standing feet
+        // rest — is world y=2.0.
+        session.teleportPlayer(gameplay::kPrimaryPlayerId, {5.5F, 2.0F, 5.5F});
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.state(5, 1, 5).powered());
+
+        // Walking off releases it (sabotage②'s target: a missing release path
+        // would leave this stuck true forever).
+        session.teleportPlayer(gameplay::kPrimaryPlayerId, {10.5F, 1.0F, 10.5F});
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(!world.state(5, 1, 5).powered());
+
+        // A creature (not the player) standing on the plate also presses it —
+        // proves the check is not player-only.
+        session.primaryLevel().entities.spawn({5.5F, 2.001F, 5.5F},
+                                              gameplay::entities::PigEntity::type());
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.state(5, 1, 5).powered());
     }
 
     return 0;

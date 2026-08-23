@@ -2,6 +2,7 @@
 
 #include "world/BlockPos.hpp"
 #include "world/StairShapeDerivation.hpp" // AR-B2: stairShapeFor
+#include "world/WallShapeDerivation.hpp"  // AR-B3: wallConnectionsFor
 #include "world/World.hpp"
 
 #include <array>
@@ -229,12 +230,52 @@ std::optional<BlockState> placementBlock(
         return oriented.withStairShape(stairShapeFor(world, placePos, oriented))
             .withSubmergedFluid(submerged);
     }
+    if (blockDefinition(selected).model == BlockModel::TrapDoor) {
+        // TrapDoorBlock#getStateForPlacement: a horizontal clicked face hangs
+        // the trapdoor on that wall, half decided by the sub-cell hit height
+        // (upper half of the click -> Top, lower -> Bottom); a vertical
+        // clicked face (top/bottom of the block below/above) instead uses the
+        // player's own horizontal facing and reads Bottom/Top straight off
+        // which face was clicked.
+        BlockOrientation facing;
+        SlabPortion half;
+        if (isHorizontal(context.clickedFace)) {
+            facing = context.clickedFace;
+            const bool aboveHalf =
+                context.hitPosition.y - static_cast<float>(context.placePosition.y) > 0.5F;
+            half = aboveHalf ? SlabPortion::Top : SlabPortion::Bottom;
+        } else {
+            facing = oppositeOrientation(horizontalFacing(context.lookDirection));
+            half = context.clickedFace == BlockOrientation::Up ? SlabPortion::Bottom
+                                                                : SlabPortion::Top;
+        }
+        return BlockState{selected, facing}
+            .withTrapdoorHalf(half)
+            .withSubmergedFluid(submerged);
+    }
+    if (blockDefinition(selected).model == BlockModel::Wall) {
+        // WallBlock#getStateForPlacement: the connection mask is known the
+        // instant the wall lands, not left for the first neighbour
+        // notification — same "compute immediately" move stairs already make.
+        const BlockPos placePos{context.placePosition.x, context.placePosition.y,
+                                context.placePosition.z};
+        return wallConnectionsFor(world, placePos, BlockState{selected})
+            .withSubmergedFluid(submerged);
+    }
     return BlockState{selected, placementOrientation(selected, context)}.withSubmergedFluid(submerged);
 }
 
 BlockOrientation placementOrientation(Block placed, const PlacementContext& context) {
     if (isLog(placed)) {
         // RotatedPillarBlock stores the axis of the clicked face.
+        return context.clickedFace;
+    }
+    // AR-B3: the button's wall-only simplification (support(Wall), Facing(6)
+    // but only ever placed against a horizontal face here — see button()'s own
+    // comment). Its FACING is the side it protrudes away from, exactly
+    // WallTorch's convention: the clicked face directly, not its opposite —
+    // clicking a wall's east face hangs the button facing east, off that wall.
+    if (blockDefinition(placed).model == BlockModel::Button && isHorizontal(context.clickedFace)) {
         return context.clickedFace;
     }
     if (hasHorizontalFacing(placed)) {

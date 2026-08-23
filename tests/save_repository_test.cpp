@@ -225,6 +225,34 @@ int main() {
              .withOpen(true)
              .withDoorUpperHalf(true)},
         {14, 62, -8, world::BlockState{world::Block::OakFenceGate, world::BlockOrientation::West}},
+        // AR-B3: the trapdoor's Half/Open axes round-trip by name exactly like
+        // the door's did above (they share the same Half property, read
+        // through the trapdoor-specific accessor).
+        {15, 62, -8,
+         world::BlockState{world::Block::OakTrapdoor, world::BlockOrientation::East}
+             .withTrapdoorHalf(world::SlabPortion::Top)
+             .withOpen(true)},
+        // The button's Facing/Powered axes — Powered already had a name
+        // (shared with the lever), so this is not a new axis, just a new
+        // block exercising it.
+        {16, 62, -8,
+         world::BlockState{world::Block::StoneButton, world::BlockOrientation::South}
+             .withPowered(true)},
+        // The pressure plate's Powered axis, saved pressed.
+        {17, 62, -8, world::BlockState{world::Block::StonePressurePlate}.withPowered(true)},
+        // The wall's four new WallNorth/East/South/West axes — written with
+        // only two of the four connected, proving each axis travels
+        // independently rather than as a packed enum.
+        {18, 62, -8,
+         world::BlockState{world::Block::CobblestoneWall}
+             .withWallConnected(world::BlockOrientation::North, true)
+             .withWallConnected(world::BlockOrientation::South, true)},
+        // A second wall, saved with no connections touched at all — the
+        // migration case in miniature for these four new axes: an edit that
+        // predates them (or simply never called withWallConnected) must
+        // reopen every side disconnected, the schema's "absent property reads
+        // back as 0" contract.
+        {19, 62, -8, world::BlockState{world::Block::CobblestoneWall}},
     };
     gameplay::ChestBlockEntity chest;
     chest.position = {8, 65, -4};
@@ -362,6 +390,29 @@ int main() {
     assert(!world::canBeSubmerged(world::Block::OakFenceGate));
     assert(loaded.edits[10].state.submergedFluid() == world::SubmergedFluid::None);
     assert(loaded.edits[11].state.submergedFluid() == world::SubmergedFluid::None);
+    // AR-B3: trapdoor/button/pressure-plate/wall axes round-trip by name too.
+    assert(loaded.edits[12].state.block() == world::Block::OakTrapdoor);
+    assert(loaded.edits[12].state.orientation() == world::BlockOrientation::East);
+    assert(loaded.edits[12].state.trapdoorHalf() == world::SlabPortion::Top);
+    assert(loaded.edits[12].state.open());
+    assert(loaded.edits[13].state.block() == world::Block::StoneButton);
+    assert(loaded.edits[13].state.orientation() == world::BlockOrientation::South);
+    assert(loaded.edits[13].state.powered());
+    assert(loaded.edits[14].state.block() == world::Block::StonePressurePlate);
+    assert(loaded.edits[14].state.powered());
+    assert(loaded.edits[15].state.block() == world::Block::CobblestoneWall);
+    assert(loaded.edits[15].state.wallConnected(world::BlockOrientation::North));
+    assert(loaded.edits[15].state.wallConnected(world::BlockOrientation::South));
+    assert(!loaded.edits[15].state.wallConnected(world::BlockOrientation::East));
+    assert(!loaded.edits[15].state.wallConnected(world::BlockOrientation::West));
+    // Migration in miniature: a wall edit that never called withWallConnected
+    // at all reopens every side disconnected — the same "absent property
+    // reads back as 0" contract the gate's untouched Open axis proved above.
+    assert(loaded.edits[16].state.block() == world::Block::CobblestoneWall);
+    assert(!loaded.edits[16].state.wallConnected(world::BlockOrientation::North));
+    assert(!loaded.edits[16].state.wallConnected(world::BlockOrientation::East));
+    assert(!loaded.edits[16].state.wallConnected(world::BlockOrientation::South));
+    assert(!loaded.edits[16].state.wallConnected(world::BlockOrientation::West));
     // The palette names the block, not the state: `lit_furnace` is gone.
     {
         std::ifstream data{root / save.summary.identifier / "world.dat", std::ios::binary};

@@ -33,6 +33,7 @@
 #include "world/BlockShape.hpp"     // BlockShape, blockShape
 #include "world/BlockState.hpp"
 #include "world/StairShapeDerivation.hpp" // AR-B2: stairUpdateShape, doorUpdateShape
+#include "world/WallShapeDerivation.hpp"  // AR-B3: wallUpdateShape
 
 #include <array>
 #include <cstddef>
@@ -118,10 +119,14 @@ struct BlockBehaviorPrefilter final {
     // lower half's removal (DoorBlock#updateShape) — both are updateShape
     // reactions, model-driven like the interaction bit above so a species never
     // needs to declare this by hand.
+    // AR-B3: a wall recomputes its four connection bits from a changed
+    // horizontal neighbour (WallBlock#updateShape), the identical
+    // model-driven updateShape reaction stairs/doors already declare here.
     prefilter.set(BlockBehaviorBit::HasNeighborReaction,
                   definition.support != world::BlockSupport::None ||
                       definition.model == world::BlockModel::Stairs ||
-                      definition.model == world::BlockModel::Door);
+                      definition.model == world::BlockModel::Door ||
+                      definition.model == world::BlockModel::Wall);
     prefilter.set(BlockBehaviorBit::HasRandomTick, WorldSimulation::isRandomlyTicking(block));
     prefilter.set(BlockBehaviorBit::HasDrops, blockYieldsLoot(block));
     prefilter.set(BlockBehaviorBit::IsSignalSource, redstone::isSignalSource(block));
@@ -236,6 +241,13 @@ stairUpdateShapeSlot(const NeighborUpdateContext& context) {
 doorUpdateShapeSlot(const NeighborUpdateContext& context) {
     return world::doorUpdateShape(context.state, context.fromOffset, context.neighborState);
 }
+// AR-B3's updateShape slot: wallUpdateShape re-derives all four connection
+// bits from the current world (same "re-derive fresh, not incremental" shape
+// stairUpdateShapeSlot already takes above).
+[[nodiscard]] inline std::optional<world::BlockState>
+wallUpdateShapeSlot(const NeighborUpdateContext& context) {
+    return world::wallUpdateShape(context.world, context.pos, context.state, context.fromOffset);
+}
 
 // Builds the runtime table. Sized to the *registry* (blockCount()), not to the
 // built-in constant, so it grows with external blocks (R0-5) instead of topping
@@ -270,6 +282,8 @@ doorUpdateShapeSlot(const NeighborUpdateContext& context) {
                 entry.updateShape = &stairUpdateShapeSlot;
             } else if (model == world::BlockModel::Door) {
                 entry.updateShape = &doorUpdateShapeSlot;
+            } else if (model == world::BlockModel::Wall) {
+                entry.updateShape = &wallUpdateShapeSlot;
             }
         }
         if (entry.prefilter.has(BlockBehaviorBit::IsSignalSource)) {

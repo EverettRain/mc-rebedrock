@@ -233,6 +233,18 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // has settled (the old renderer applied them per frame between ticks, which
     // is the same ordering — the edits land on the next tick's processing).
     playerInteraction_.tick(*this, world, host, commandQueue_.drain());
+    // AR-B3: pressure plates check the player's feet and every live creature's
+    // — a bounded set rather than a full loaded-chunk scan (see
+    // PlayerInteraction.hpp's tickPressurePlates comment).
+    {
+        std::vector<glm::vec3> creatureFeet;
+        creatureFeet.reserve(primaryLevel().entities.entities().size());
+        for (const auto& creature : primaryLevel().entities.entities()) {
+            creatureFeet.push_back(creature.position);
+        }
+        tickPressurePlates(*this, world, primaryPlayer().controller.position(), creatureFeet,
+                           pressedPlates_);
+    }
     // DIM-2: after the player's dimension has ticked in full, advance every other
     // active dimension's passive simulation (MinecraftServer.tickChildren walks
     // every ServerLevel, not only the player's). Dormant dimensions cost a

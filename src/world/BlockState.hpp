@@ -138,6 +138,17 @@ class BlockState final {
     [[nodiscard]] constexpr BlockState withDoorUpperHalf(bool upper) const {
         return with(StateProperty::Half, upper ? 1U : 0U);
     }
+    // AR-B3: StateProperty::Half read as a trapdoor's Half (TrapDoorBlock.HALF,
+    // vanilla's Half enum — bottom/top face of the single cell it occupies,
+    // not a door's "which of two cells" meaning). Bottom (0) for anything that
+    // has not declared the axis, the same "absent reads as zero" contract
+    // every other accessor here gives.
+    [[nodiscard]] constexpr SlabPortion trapdoorHalf() const {
+        return static_cast<SlabPortion>(value(StateProperty::Half));
+    }
+    [[nodiscard]] constexpr BlockState withTrapdoorHalf(SlabPortion half) const {
+        return with(StateProperty::Half, static_cast<std::uint8_t>(half));
+    }
     // StairBlock.SHAPE. Straight for anything that has not declared the axis.
     [[nodiscard]] constexpr StairShape stairShape() const {
         return static_cast<StairShape>(value(StateProperty::StairShape));
@@ -157,6 +168,34 @@ class BlockState final {
     [[nodiscard]] constexpr bool open() const { return value(StateProperty::Open) != 0U; }
     [[nodiscard]] constexpr BlockState withOpen(bool value) const {
         return with(StateProperty::Open, value ? 1U : 0U);
+    }
+    // AR-B3: WallBlock's four per-side connection booleans. False (not
+    // connected) for anything that has not declared the axis. `wallConnected`
+    // takes a horizontal BlockOrientation rather than four named accessors, so
+    // a neighbour-derivation loop over the four directions (updateShape, the
+    // shape table) reads and writes through one call instead of a per-side
+    // switch at the call site.
+    [[nodiscard]] constexpr StateProperty wallAxis(BlockOrientation side) const {
+        switch (side) {
+        case BlockOrientation::North:
+            return StateProperty::WallNorth;
+        case BlockOrientation::East:
+            return StateProperty::WallEast;
+        case BlockOrientation::South:
+            return StateProperty::WallSouth;
+        case BlockOrientation::West:
+            return StateProperty::WallWest;
+        case BlockOrientation::Up:
+        case BlockOrientation::Down:
+            return StateProperty::WallNorth; // never asked; horizontal-only axis
+        }
+        return StateProperty::WallNorth;
+    }
+    [[nodiscard]] constexpr bool wallConnected(BlockOrientation side) const {
+        return value(wallAxis(side)) != 0U;
+    }
+    [[nodiscard]] constexpr BlockState withWallConnected(BlockOrientation side, bool connected) const {
+        return with(wallAxis(side), connected ? 1U : 0U);
     }
 
     [[nodiscard]] constexpr BlockState with(BlockOrientation orientation) const {

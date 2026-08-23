@@ -228,6 +228,143 @@ inline constexpr std::array<ShapeBox, 4U * 2U * 2U> kDoorBoxTable = [] {
     return table;
 }();
 
+// TrapDoorBlock (AR-B3): the same `Block.boxZ(16,13,16)` thin-leaf box a door
+// uses (26.1 TrapDoorBlock.java:51 — literally the identical formula, a 3/16
+// slab-thin leaf flush against one face of the cell), but a trapdoor is one
+// cell rather than two and its *closed* orientation lies flat against the
+// floor or ceiling instead of always standing against the facing wall.
+// `kTrapdoorBottomBox`/`kTrapdoorTopBox` are that formula rotated onto the
+// horizontal plane (Down/Up in vanilla's `Shapes.rotateAll` terms) rather than
+// reusing `invertedY` on the door's vertical box, since a 90-degree axis swap
+// (vertical leaf -> horizontal slab) is not a Y-mirror. Open reuses the door's
+// exact vertical box family (`rotatedBy(kDoorClosedBox, facing)` — a trapdoor
+// has no Hinge axis, so it swings flush against its own Facing side, never a
+// hinge-rotated one) via the shared `kDoorClosedBox`/`rotatedBy` primitives,
+// which is the single-source point: two callers (door, trapdoor) reading one
+// interned box rather than two independently-typed 0.8125 constants.
+inline constexpr ShapeBox kTrapdoorBottomBox{0.0F, 0.0F, 0.0F, 1.0F, 0.1875F, 1.0F};
+inline constexpr ShapeBox kTrapdoorTopBox{0.0F, 0.8125F, 0.0F, 1.0F, 1.0F, 1.0F};
+[[nodiscard]] constexpr std::size_t trapdoorShapeIndex(BlockOrientation facing, SlabPortion half,
+                                                       bool open) {
+    return (static_cast<std::size_t>(facing) * 2U + static_cast<std::size_t>(half)) * 2U +
+           (open ? 1U : 0U);
+}
+inline constexpr std::array<ShapeBox, 4U * 2U * 2U> kTrapdoorBoxTable = [] {
+    std::array<ShapeBox, 4U * 2U * 2U> table{};
+    for (std::size_t f = 0; f < 4U; ++f) {
+        for (std::size_t h = 0; h < 2U; ++h) {
+            for (std::size_t o = 0; o < 2U; ++o) {
+                const auto facing = static_cast<BlockOrientation>(f);
+                const auto half = static_cast<SlabPortion>(h);
+                const bool open = o != 0U;
+                ShapeBox box;
+                if (open) {
+                    // TrapDoorBlock#getShape: `SHAPES.get(state.getValue(FACING))`
+                    // when OPEN — the swing side is Facing itself, no hinge.
+                    box = rotatedBy(kDoorClosedBox, facing);
+                } else {
+                    // `SHAPES.get(HALF == TOP ? DOWN : UP)` — a closed trapdoor's
+                    // key ignores Facing entirely; only which face it hangs from
+                    // matters.
+                    box = half == SlabPortion::Top ? kTrapdoorTopBox : kTrapdoorBottomBox;
+                }
+                table[trapdoorShapeIndex(facing, half, open)] = box;
+            }
+        }
+    }
+    return table;
+}();
+
+// BasePressurePlateBlock (AR-B3): `Block.column(14.0, 0.0, 1.0)` raised /
+// `Block.column(14.0, 0.0, 0.5)` pressed (26.1 BasePressurePlateBlock.java:26-27)
+// — a Column shape (full 1x1 footprint, height-only), exactly like a slab's,
+// so it needs no box table at all; `shapePressurePlate` reads Powered directly.
+inline constexpr float kPressurePlateRaisedHeight = 1.0F / 16.0F;
+inline constexpr float kPressurePlatePressedHeight = 0.5F / 16.0F;
+
+// ButtonBlock (AR-B3): `Block.boxZ(6.0, 4.0, 8.0, 16.0)` unpressed / pressed
+// shrinks the box's protrusion by 2/16 (26.1 ButtonBlock.java:76-78 —
+// `Shapes.join(attachFace..., pressed ? cube(14) : cube(12), ONLY_FIRST)`
+// intersects the wall-face box against a slightly larger/smaller test cube,
+// which for the wall-mounted case reduces to "how far the box protrudes off
+// the wall shrinks by 2px while pressed"). Wall-mounted only, matching the
+// button() builder's Lever-style simplification: no FACE (floor/ceiling) axis,
+// so the box always protrudes from the wall behind `oppositeOrientation(facing)`
+// the same way `kWallTorchBox`/`kFloorTorchBox` already encode a wall/floor
+// split by hand rather than a data-driven attach-face table.
+inline constexpr ShapeBox kButtonUnpressedBox{0.3125F, 0.375F, 0.75F, 0.6875F, 0.625F, 1.0F};
+inline constexpr ShapeBox kButtonPressedBox{0.3125F, 0.375F, 0.8125F, 0.6875F, 0.625F, 1.0F};
+[[nodiscard]] constexpr std::size_t buttonShapeIndex(BlockOrientation facing, bool powered) {
+    return static_cast<std::size_t>(facing) * 2U + (powered ? 1U : 0U);
+}
+inline constexpr std::array<ShapeBox, 6U * 2U> kButtonBoxTable = [] {
+    std::array<ShapeBox, 6U * 2U> table{};
+    for (std::size_t f = 0; f < 6U; ++f) {
+        for (std::size_t p = 0; p < 2U; ++p) {
+            const auto facing = static_cast<BlockOrientation>(f);
+            const bool powered = p != 0U;
+            const ShapeBox& base = powered ? kButtonPressedBox : kButtonUnpressedBox;
+            // Only the horizontal four are meaningfully distinct (a button's
+            // Facing axis technically spans six values through the shared
+            // .state(Facing, 6) call, but the wall-only placement this pass
+            // wires only ever produces a horizontal one) — rotatedBy already
+            // answers Up/Down as identity, which is a safe, inert default for
+            // a facing this content never actually places.
+            table[buttonShapeIndex(facing, powered)] = rotatedBy(base, facing);
+        }
+    }
+    return table;
+}();
+
+// WallBlock (AR-B3): a centre post plus one arm per connected side, the same
+// "post + per-direction arm" shape family the AR-B1 handoff notes describe for
+// a fence (`FenceBoxSet`/`makeFenceBoxSet` in the abandoned wip/fence-m1-m6
+// branch), sized to vanilla's actual wall pixels rather than the fence's
+// (26.1 WallBlock.java:71-74: an 8px-square post 0..16 tall, and a 6px-wide arm
+// reaching from the post to the cell edge, 0..16 tall — this pass folds
+// vanilla's separate LOW(14px)/TALL(16px) visual-vs-collision split into one
+// full-height arm, since the WallNorth/East/South/West axis here is a plain
+// connected/not-connected bool rather than vanilla's three-value WallSide).
+// The post is unconditional (this pass does not carry vanilla's UP
+// raise/lower logic either — a post-less wall segment is a later refinement,
+// tracked in the task's known-simplifications).
+inline constexpr ShapeBox kWallPostBox{0.25F, 0.0F, 0.25F, 0.75F, 1.0F, 0.75F};
+// North arm: reaches from the post's near edge (z=0.25) to the cell's far
+// edge (z=0.0), 6px wide (x 0.3125..0.6875), full height.
+inline constexpr ShapeBox kWallArmNorth{0.3125F, 0.0F, 0.0F, 0.6875F, 1.0F, 0.25F};
+[[nodiscard]] constexpr unsigned wallConnectionMask(bool north, bool east, bool south, bool west) {
+    return (north ? 1U : 0U) | (east ? 2U : 0U) | (south ? 4U : 0U) | (west ? 8U : 0U);
+}
+struct WallBoxSet final {
+    std::array<ShapeBox, 5> boxes{}; // post + up to 4 arms
+    std::uint8_t count = 0U;
+};
+[[nodiscard]] constexpr WallBoxSet buildWallBoxSet(unsigned mask) {
+    WallBoxSet set;
+    set.boxes[set.count++] = kWallPostBox;
+    if ((mask & 1U) != 0U) { // North
+        set.boxes[set.count++] = kWallArmNorth;
+    }
+    if ((mask & 2U) != 0U) { // East: North arm rotated 90 clockwise
+        set.boxes[set.count++] = rotatedClockwise(kWallArmNorth);
+    }
+    if ((mask & 4U) != 0U) { // South: North arm rotated 180
+        set.boxes[set.count++] = rotatedClockwise(rotatedClockwise(kWallArmNorth));
+    }
+    if ((mask & 8U) != 0U) { // West: North arm rotated 270 clockwise
+        set.boxes[set.count++] =
+            rotatedClockwise(rotatedClockwise(rotatedClockwise(kWallArmNorth)));
+    }
+    return set;
+}
+inline constexpr std::array<WallBoxSet, 16> kWallBoxTable = [] {
+    std::array<WallBoxSet, 16> table{};
+    for (unsigned mask = 0; mask < 16U; ++mask) {
+        table[mask] = buildWallBoxSet(mask);
+    }
+    return table;
+}();
+
 // FenceGateBlock's post-pair box (26.1's `Block.cube(16,16,4)`: full X/Y, z
 // 6/16..10/16 at the Z axis key — a gate spanning the cell on the axis
 // perpendicular to travel), rotated by facing when closed and empty when open
@@ -318,22 +455,61 @@ inline constexpr std::array<ShapeBox, 4> kFenceGateBoxByFacing = [] {
     const auto& box = kFenceGateBoxByFacing[index < 4U ? index : 0U];
     return {ShapeKind::Boxes, 0.0F, 0.0F, {&box, 1}};
 }
+// AR-B3: TrapDoorBlock's Boxes shape — one thin box keyed by Facing x Half x
+// Open into kTrapdoorBoxTable, mirroring shapeDoor's structure exactly (one
+// table lookup, one-box span) since a trapdoor's shape is likewise always a
+// single thin leaf, just repositioned rather than reshaped.
+[[nodiscard]] constexpr BlockShape shapeTrapdoor(BlockState state) {
+    const auto& box = kTrapdoorBoxTable[trapdoorShapeIndex(state.orientation(),
+                                                            state.trapdoorHalf(), state.open())];
+    return {ShapeKind::Boxes, 0.0F, 0.0F, {&box, 1}};
+}
+// AR-B3: BasePressurePlateBlock's Column shape — full 1x1 footprint, height
+// only, exactly like a slab's; Powered picks the raised or pressed height
+// (the same "state answers a different Column span" move a slab's SlabType
+// already makes).
+[[nodiscard]] constexpr BlockShape shapePressurePlate(BlockState state) {
+    const float top = state.powered() ? kPressurePlatePressedHeight : kPressurePlateRaisedHeight;
+    return {ShapeKind::Column, 0.0F, top, {}};
+}
+// AR-B3: ButtonBlock's Boxes shape — one small box keyed by Facing x Powered
+// into kButtonBoxTable, protruding slightly less off the wall while pressed.
+[[nodiscard]] constexpr BlockShape shapeButton(BlockState state) {
+    const auto& box = kButtonBoxTable[buttonShapeIndex(state.orientation(), state.powered())];
+    return {ShapeKind::Boxes, 0.0F, 0.0F, {&box, 1}};
+}
+// AR-B3: WallBlock's Boxes shape — a post plus one arm per connected side,
+// keyed by the four WallNorth/East/South/West axes packed into a 4-bit mask
+// into kWallBoxTable, the same "connection state -> interned box-set table"
+// shape shapeStairs already established for its own (facing,half,shape) key.
+[[nodiscard]] constexpr BlockShape shapeWall(BlockState state) {
+    const auto mask = wallConnectionMask(state.wallConnected(BlockOrientation::North),
+                                        state.wallConnected(BlockOrientation::East),
+                                        state.wallConnected(BlockOrientation::South),
+                                        state.wallConnected(BlockOrientation::West));
+    const auto& set = kWallBoxTable[mask];
+    return {ShapeKind::Boxes, 0.0F, 0.0F, {set.boxes.data(), set.count}};
+}
 
 using BlockShapeFn = BlockShape (*)(BlockState);
 
 // The per-model shape handlers indexed by BlockModel ordinal — shape dispatch as
 // data. `blockShape` loads the block's model and calls through this, so the shape
 // stays a single source with no switch(block...) to drift.
-inline constexpr std::array<BlockShapeFn, 9> kShapeByModel{{
-    &shapeCube,      // BlockModel::Cube
-    &shapeCross,     // BlockModel::Cross
-    &shapeCrop,      // BlockModel::Crop
-    &shapeTorch,     // BlockModel::Torch
-    &shapeChest,     // BlockModel::Chest
-    &shapeSlab,      // BlockModel::Slab
-    &shapeStairs,    // BlockModel::Stairs
-    &shapeDoor,      // BlockModel::Door
-    &shapeFenceGate, // BlockModel::FenceGate
+inline constexpr std::array<BlockShapeFn, 13> kShapeByModel{{
+    &shapeCube,          // BlockModel::Cube
+    &shapeCross,         // BlockModel::Cross
+    &shapeCrop,          // BlockModel::Crop
+    &shapeTorch,         // BlockModel::Torch
+    &shapeChest,         // BlockModel::Chest
+    &shapeSlab,          // BlockModel::Slab
+    &shapeStairs,        // BlockModel::Stairs
+    &shapeDoor,          // BlockModel::Door
+    &shapeFenceGate,     // BlockModel::FenceGate
+    &shapeTrapdoor,      // BlockModel::TrapDoor
+    &shapePressurePlate, // BlockModel::PressurePlate
+    &shapeButton,        // BlockModel::Button
+    &shapeWall,          // BlockModel::Wall
 }};
 static_assert(static_cast<std::size_t>(BlockModel::Cube) == 0U);
 static_assert(static_cast<std::size_t>(BlockModel::Cross) == 1U);
@@ -344,6 +520,10 @@ static_assert(static_cast<std::size_t>(BlockModel::Slab) == 5U);
 static_assert(static_cast<std::size_t>(BlockModel::Stairs) == 6U);
 static_assert(static_cast<std::size_t>(BlockModel::Door) == 7U);
 static_assert(static_cast<std::size_t>(BlockModel::FenceGate) == 8U);
+static_assert(static_cast<std::size_t>(BlockModel::TrapDoor) == 9U);
+static_assert(static_cast<std::size_t>(BlockModel::PressurePlate) == 10U);
+static_assert(static_cast<std::size_t>(BlockModel::Button) == 11U);
+static_assert(static_cast<std::size_t>(BlockModel::Wall) == 12U);
 
 } // namespace detail
 

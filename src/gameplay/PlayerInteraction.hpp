@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace mc::gameplay {
@@ -28,6 +29,20 @@ class World;
 } // namespace mc::world
 
 namespace mc::gameplay {
+
+// AR-B3: BasePressurePlateBlock's per-tick check (BasePressurePlateBlock#tick /
+// #entityInside collapsed into one call): tests whether `playerFeet`/
+// `creatureFeet` stand over a pressure plate and flips its Powered bit
+// accordingly. `pressedPlates` is caller-owned per-session state (the
+// previous tick's covered-plate set, diffed against this tick's) — GameSession
+// holds it and passes it by reference so the function itself stays free of
+// hidden static state. Free rather than a PlayerInteraction member since it
+// is not gated by a queued command; GameSession calls it once per tick
+// alongside the other per-tick world checks (farmland trample is the nearest
+// precedent — see GameSession::tick).
+void tickPressurePlates(GameSession& session, world::World& world, glm::vec3 playerFeet,
+                        std::span<const glm::vec3> creatureFeet,
+                        std::vector<glm::ivec3>& pressedPlates);
 
 class PlayerInteraction final {
   public:

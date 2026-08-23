@@ -172,10 +172,102 @@ bool aimsAtPlantableFarmland(world::World& world, const UseItemOn& use,
                                             glm::vec3{clicked} + glm::vec3{0.5F}, clickedState.block()});
         return true;
     }
+    // AR-B3: TrapDoorBlock#useWithoutItem — a plain right-click flips OPEN,
+    // one cell, no atomic partner to keep in sync (unlike the door above).
+    if (model == world::BlockModel::TrapDoor) {
+        GameplayMutationSink sink{world, session};
+        session.worldMutations().setBlock(world, {clicked.x, clicked.y, clicked.z},
+                                          clickedState.withOpen(!clickedState.open()),
+                                          world::MutationFlags::All,
+                                          world::MutationCause::PlayerPlace, sink);
+        session.events().publish(SoundEvent{SoundEventKind::BlockPlace,
+                                            glm::vec3{clicked} + glm::vec3{0.5F}, clickedState.block()});
+        return true;
+    }
     return false;
 }
 
+// AR-B3: ButtonBlock#useWithoutItem — press: POWERED true immediately, and
+// the release is left to the existing WorldSimulation::scheduleButtonRelease
+// / dispatchRedstoneTick(StoneButton) timer (wired in the W-4/5 redstone
+// slice, never previously reachable because nothing called this). Re-pressing
+// an already-pressed button is a no-op (ButtonBlock#useWithoutItem returns
+// CONSUME without re-scheduling when already POWERED), matching vanilla's
+// "does not restart the timer" behaviour. Returns whether a press actually
+// happened, the same reporting shape toggleDoorOrGate uses.
+[[nodiscard]] bool pressButton(GameSession& session, world::World& world, glm::ivec3 clicked) {
+    const auto clickedState = world.state(clicked.x, clicked.y, clicked.z);
+    if (world::blockDefinition(clickedState.block()).model != world::BlockModel::Button) {
+        return false;
+    }
+    if (clickedState.powered()) {
+        return false; // already pressed: no re-trigger, matching vanilla
+    }
+    GameplayMutationSink sink{world, session};
+    session.worldMutations().setBlock(world, {clicked.x, clicked.y, clicked.z},
+                                      clickedState.withPowered(true), world::MutationFlags::All,
+                                      world::MutationCause::PlayerPlace, sink);
+    session.worldSimulation().scheduleButtonRelease({clicked.x, clicked.y, clicked.z});
+    session.events().publish(SoundEvent{SoundEventKind::BlockPlace,
+                                        glm::vec3{clicked} + glm::vec3{0.5F}, clickedState.block()});
+    return true;
+}
+
 } // namespace
+
+// AR-B3: BasePressurePlateBlock's tick/entityInside collapsed into one
+// per-tick pass over a bounded set of feet positions (the player's own, then
+// every live creature's) — see the header comment for why this is bounded
+// rather than a full loaded-chunk scan. `pressedPlates` is the *caller's*
+// previous-tick set of plate cells found occupied (owned by GameSession, not
+// module state — a free-standing mutable global would break test isolation
+// and multi-session determinism) — a plain re-derive-from-scratch-and-diff
+// each tick, the same "world/feet positions are the source of truth, no
+// per-plate scheduled entry" approach wallConnectionsFor/stairShapeFor
+// already take for their own neighbour state: the *new* covered set is
+// computed fresh from this tick's feet positions, then diffed against the
+// previous set — newly covered cells power on, cells that dropped out power
+// off, and the caller's set is replaced with the new one for next tick's diff.
+void tickPressurePlates(GameSession& session, world::World& world, glm::vec3 playerFeet,
+                        std::span<const glm::vec3> creatureFeet,
+                        std::vector<glm::ivec3>& pressedPlates) {
+    const auto cellUnder = [](glm::vec3 feet) {
+        return glm::ivec3{static_cast<int>(std::floor(feet.x)),
+                          static_cast<int>(std::floor(feet.y - 0.05F)), // just under the feet
+                          static_cast<int>(std::floor(feet.z))};
+    };
+    std::vector<glm::ivec3> covered;
+    const auto addIfPlate = [&](glm::ivec3 cell) {
+        const auto state = world.state(cell.x, cell.y, cell.z);
+        if (world::blockDefinition(state.block()).model == world::BlockModel::PressurePlate &&
+            std::find(covered.begin(), covered.end(), cell) == covered.end()) {
+            covered.push_back(cell);
+        }
+    };
+    addIfPlate(cellUnder(playerFeet));
+    for (const glm::vec3 feet : creatureFeet) {
+        addIfPlate(cellUnder(feet));
+    }
+    const auto setPowered = [&](glm::ivec3 cell, bool powered) {
+        const auto state = world.state(cell.x, cell.y, cell.z);
+        if (state.powered() == powered) {
+            return;
+        }
+        GameplayMutationSink sink{world, session};
+        session.worldMutations().setBlock(world, {cell.x, cell.y, cell.z}, state.withPowered(powered),
+                                          world::MutationFlags::All,
+                                          world::MutationCause::PlayerPlace, sink);
+    };
+    for (const auto& cell : covered) {
+        setPowered(cell, true);
+    }
+    for (const auto& cell : pressedPlates) {
+        if (std::find(covered.begin(), covered.end(), cell) == covered.end()) {
+            setPowered(cell, false);
+        }
+    }
+    pressedPlates = std::move(covered);
+}
 
 void PlayerInteraction::tick(GameSession& session, world::World& world, SimulationHost& host,
                              std::vector<GameCommand> commands) {
@@ -455,14 +547,16 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
     // being replaced.
     const bool infiniteMaterials = restoresHeldStack(session.gameMode());
     const auto preservedStack = session.inventory().selectedStack();
-    // AR-B2: DoorBlock/FenceGateBlock#useWithoutItem run ahead of the container
-    // decision below (both are "the block itself answers the click, no item
-    // involved"), gated by the identical sneaking-with-item-in-hand suppression
-    // a container obeys — sneaking with something in hand always means "build
-    // against this block", door and gate included.
+    // AR-B2/AR-B3: DoorBlock/FenceGateBlock/TrapDoorBlock/ButtonBlock#
+    // useWithoutItem all run ahead of the container decision below (each is
+    // "the block itself answers the click, no item involved"), gated by the
+    // identical sneaking-with-item-in-hand suppression a container obeys —
+    // sneaking with something in hand always means "build against this
+    // block".
     if (!blockInteractionSuppressed(session.player().sneaking(),
                                     !session.inventory().selectedStack().empty()) &&
-        toggleDoorOrGate(session, world, use.block, world::horizontalFacing(use.lookDirection))) {
+        (toggleDoorOrGate(session, world, use.block, world::horizontalFacing(use.lookDirection)) ||
+         pressButton(session, world, use.block))) {
         session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
         return;
     }
