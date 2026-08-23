@@ -117,6 +117,14 @@ struct SimpleEntity final {
     // spawns/regrows is white, see rollSheepLoot's note.
     bool sheared = false;
 
+    // AR-A4: ChickenEntity#eggTime. Only meaningful for a laysEggs() species
+    // (the same "shared struct, per-species field idles at its default" shape
+    // `sheared` uses) — counts down to zero, at which point the landing tick's
+    // egg scheduler drops one of the species' egg item and rerolls the next
+    // interval. Zero is never a resting value for a laying species (spawn/
+    // restore always give it a fresh positive roll before tick can observe it).
+    int eggLayTimer = 0;
+
     // Stateful Goal instances and the current navigation path are per entity.
     entities::MobBrain brain;
 
@@ -166,6 +174,13 @@ inline constexpr int kBreedCooldownTicks = 6000;
 inline constexpr int kLoveTicks = 600;
 // AnimalMateGoal's contact distance: parents within this settle and breed.
 inline constexpr float kBreedingRange = 3.0F;
+
+// AR-A4: ChickenEntity#eggTime (26.1): `random.nextInt(6000) + 6000`, so the
+// next lay is 6000-12000 ticks (5-10 minutes) after the last, redrawn every
+// time the timer elapses. Shared by every laysEggs() species, not chicken-only
+// — matching kBreedCooldownTicks/kLoveTicks being mechanism constants above.
+inline constexpr int kEggLayBaseTicks = 6000;
+inline constexpr int kEggLayRandomTicks = 6000;
 
 // What a ray found: which creature it hit and how far along the ray. The id is
 // stable across ticks — unlike a vector index, which is only valid until the

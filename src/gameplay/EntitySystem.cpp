@@ -427,6 +427,15 @@ void EntitySystem::spawn(glm::vec3 position, const entities::EntityType& type, s
     entity.yaw = randomUnit(entity.rngState) * kTwoPi;
     entity.previousYaw = entity.yaw;
     entity.lookYaw = entity.yaw;
+    // AR-A4: a laysEggs() species gets its first countdown rolled off the same
+    // stream its yaw/AI draw from, so a fresh spawn's first lay tick is
+    // reproducible per seed exactly like every other timer here. A
+    // non-laying species leaves this at zero, never observed (the tick-site
+    // egg scheduler is itself gated on laysEggs()).
+    if (type.laysEggs()) {
+        entity.eggLayTimer =
+            kEggLayBaseTicks + static_cast<int>(nextRandom(entity.rngState) % kEggLayRandomTicks);
+    }
     // MobEntity#initGoals runs once at spawn.
     type.ai().configureBrain(entity.brain);
     installBreedingGoals(entity);
@@ -473,6 +482,14 @@ std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityTy
     // so a corrupt record cannot restore a creature over its cap.
     entity.damage.maxHealth = type.attributes().maxHealth();
     entity.damage.health = std::min(health, entity.damage.maxHealth);
+    // AR-A4: eggLayTimer is not part of the save record (like
+    // ambientSoundChance/stepAccumulator above it), so a reopened world simply
+    // rerolls a fresh countdown off the restored rngState — a laying species
+    // never gets stuck at zero, and a non-laying species leaves it unused.
+    if (type.laysEggs()) {
+        entity.eggLayTimer =
+            kEggLayBaseTicks + static_cast<int>(nextRandom(entity.rngState) % kEggLayRandomTicks);
+    }
     // MobEntity#initGoals runs once at spawn, exactly like a fresh spawn.
     type.ai().configureBrain(entity.brain);
     installBreedingGoals(entity);
@@ -1054,6 +1071,22 @@ EntityTickResult EntitySystem::tick(
             pendingSounds_.push_back({entity.position, MobSoundEvent::Ambient, entity.type});
         }
 
+        // AR-A4: ChickenEntity#aiStep's egg timer, generalised off
+        // laysEggs() rather than a chicken-only branch — any future
+        // egg-laying species (vanilla's own set is chicken-only in 26.1) rides
+        // the same countdown. Reuses the death-loot drop queue (pendingDrops_)
+        // since "one item stack appears at this position" is exactly what that
+        // queue already carries; GameSession drains both through the same
+        // ItemEntitySystem::spawn call. Off the entity's own rngState, so lay
+        // ticks are deterministic per seed like every other timer here.
+        if (!entity.damage.dead() && entity.type->laysEggs() && --entity.eggLayTimer <= 0) {
+            EntityDrops drops;
+            drops.add(entity.type->eggLay().item);
+            pendingDrops_.emplace_back(entity.position + glm::vec3{0.0F, 0.25F, 0.0F}, drops);
+            entity.eggLayTimer =
+                kEggLayBaseTicks + static_cast<int>(nextRandom(entity.rngState) % kEggLayRandomTicks);
+        }
+
         if (entity.damage.dead()) {
             // LivingEntity#updatePostDeath: the corpse tips over for twenty
             // ticks and is then removed; its loot already left on the tick
@@ -1126,7 +1159,10 @@ EntityTickResult EntitySystem::tick(
         // LivingEntity#handleFallDamage costs ceil(fallDistance - 3) health,
         // applied through the shared invulnerability window but with no
         // knockback and no anger hook. Water cancels a fall, exactly like
-        // vanilla's isTouchingWater check.
+        // vanilla's isTouchingWater check. AR-A4: a fallImmune() type (a
+        // chicken, in vanilla also bats/parrots) still resets fallDistance on
+        // landing like everyone else — it just never converts it to damage,
+        // read off the type rather than a species switch here.
         const int footX = floorToInt(entity.position.x);
         const int footY = floorToInt(entity.position.y);
         const int footZ = floorToInt(entity.position.z);
@@ -1135,7 +1171,7 @@ EntityTickResult EntitySystem::tick(
             world::isFluid(world.block(footX, footY + 1, footZ))) {
             entity.fallDistance = 0.0F;
         } else if (entity.onGround) {
-            if (entity.fallDistance > 0.0F) {
+            if (entity.fallDistance > 0.0F && !entity.type->fallImmune()) {
                 const float damage = std::ceil(entity.fallDistance - 3.0F);
                 const DamageOutcome outcome =
                     applyDamage(entity.damage, DamageType::Fall, damage);

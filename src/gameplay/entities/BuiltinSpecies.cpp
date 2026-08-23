@@ -172,13 +172,24 @@ constexpr audio::MobSoundProfile kHuskSounds{
 
 const std::array<SpeciesDef, 3> kManifest{{
     // Chicken (26.1): 4 health, MOVEMENT_SPEED 0.25, box 0.4 x 0.7, egg tint
-    // 0xA1A1A1 / 0xFF0000.
+    // 0xA1A1A1 / 0xFF0000. AR-A4: breedable, tempted by (and bred with) wheat
+    // seeds, chick baby scale 0.5 (EM-3's default); fall-immune
+    // (EntityBehavior::FallImmune — ChickenEntity#causeFallDamage is a no-op in
+    // vanilla); lays an Egg on the shared 6000-12000 tick timer
+    // (EggLayProfile, EntitySystem's egg scheduler).
     SpeciesDef{
         /*path=*/"chicken", /*vanillaName=*/"chicken", MobCategory::Creature,
         SpawnPlacement::OnGround, EntityDimensions{0.4F, 0.7F},
         attributesOf(4.0F, 0.25F, 0.0F, 16.0F), /*hasSpawnEgg=*/true,
         SpawnEggColors{0xA1A1A1U, 0xFF0000U}, kChickenRender, kChickenSounds, &kChickenAi,
-        &rollChickenLoot},
+        &rollChickenLoot,
+        /*breeding=*/BreedingProfile{/*breedable=*/true,
+                                     /*temptItem=*/ItemStack{world::Block::Air, 1U,
+                                                             &items::WheatSeeds},
+                                     /*babyScale=*/0.5F},
+        /*behaviorFlags=*/static_cast<std::uint16_t>(EntityBehavior::FallImmune),
+        /*eggLay=*/EggLayProfile{/*laysEggs=*/true,
+                                 ItemStack{world::Block::Air, 1U, &items::Egg}}},
     // Sheep (26.1): 8 health, MOVEMENT_SPEED 0.23, box 0.9 x 1.3, egg tint
     // 0xE7E7E7 / 0xFFB5B5. Drops mutton + white wool (rollSheepLoot). AR-A2:
     // breedable, tempted by wheat, lamb baby scale 0.5 (EM-3's default).
@@ -222,6 +233,12 @@ const std::array<SpeciesDef, 3> kManifest{{
     }
     if (def.breeding.breedable) {
         builder.breeding(def.breeding);
+    }
+    if (def.behaviorFlags != 0U) {
+        builder.behavior(static_cast<EntityBehavior>(def.behaviorFlags));
+    }
+    if (def.eggLay.laysEggs) {
+        builder.eggLay(def.eggLay);
     }
     return builder.build(def.path);
 }

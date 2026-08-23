@@ -142,6 +142,21 @@ struct BreedingProfile final {
     float babyScale = 0.5F;
 };
 
+// AR-A4: ChickenEntity#eggTime, as data on the type rather than a species-only
+// code path — the same "content states parameters, the mechanism is shared"
+// split BreedingProfile uses. A species that does not set one never lays; a
+// species that does states only which item drops. The interval itself
+// (6000-12000 ticks, EntitySystem::kEggLayBaseTicks/kEggLayRandomTicks) is a
+// mechanism constant, not per-species, matching vanilla where every
+// egg-laying mob shares Chicken's own timer shape.
+struct EggLayProfile final {
+    // Whether this species lays eggs at all. False costs a non-laying creature
+    // nothing — its eggLayTimer field simply never moves off zero.
+    bool laysEggs = false;
+    // The item dropped when the timer elapses (a chicken's Egg).
+    ItemStack item{};
+};
+
 // One creature's death drops. Small and inline so a loot roll never allocates;
 // vanilla pigs roll one to three raw porkchops, which is the widest case here.
 struct EntityDrops final {
@@ -221,6 +236,11 @@ enum class EntityBehavior : std::uint16_t {
     // sun. The daylight ignition source itself is AR-M2; this is the bit it will
     // consult so the ignition never needs a species switch.
     SunImmune = 1U << 1U,
+    // AR-A4: Entity#causeFallDamage's exemption a chicken (and, in vanilla, a
+    // bat/parrot) reads — the landing tick in EntitySystem::tick skips the
+    // fallDistance-to-damage conversion for any type with this bit rather than
+    // naming the species at the call site.
+    FallImmune = 1U << 2U,
 };
 
 [[nodiscard]] constexpr std::uint16_t operator|(EntityBehavior a, EntityBehavior b) {
@@ -270,10 +290,18 @@ class EntityType final {
     }
     [[nodiscard]] bool fireImmune() const { return hasBehavior(EntityBehavior::FireImmune); }
     [[nodiscard]] bool sunImmune() const { return hasBehavior(EntityBehavior::SunImmune); }
+    // AR-A4: Entity#fall's landing-tick damage conversion skips a type with this
+    // bit — see EntityBehavior::FallImmune.
+    [[nodiscard]] bool fallImmune() const { return hasBehavior(EntityBehavior::FallImmune); }
     // AgeableMob breeding parameters (EM-3). `breedable()` is the one-flag test
     // the AI/tick reads before installing or running any breeding logic.
     [[nodiscard]] const BreedingProfile& breeding() const { return breeding_; }
     [[nodiscard]] bool breedable() const { return breeding_.breedable; }
+    // AR-A4: egg-laying parameters. `laysEggs()` is the one-flag test the
+    // landing-tick egg scheduler reads before touching a creature's
+    // eggLayTimer at all.
+    [[nodiscard]] const EggLayProfile& eggLay() const { return eggLay_; }
+    [[nodiscard]] bool laysEggs() const { return eggLay_.laysEggs; }
     [[nodiscard]] const EntityRenderDescriptor& render() const { return render_; }
     [[nodiscard]] const EntityAi& ai() const { return *ai_; }
 
@@ -325,6 +353,8 @@ class EntityType final {
     std::uint16_t behaviorFlags_ = 0U;
     // AgeableMob breeding parameters; default is non-breedable.
     BreedingProfile breeding_{};
+    // AR-A4: egg-laying parameters; default is a species that never lays.
+    EggLayProfile eggLay_{};
     EntityRenderDescriptor render_{};
     audio::MobSoundProfile soundProfile_{};
     const EntityAi* ai_ = nullptr;
@@ -370,12 +400,20 @@ class EntityType::Builder final {
     Builder& behavior(EntityBehavior flag);
     Builder& fireImmune();
     Builder& sunImmune();
+    // AR-A4: EntityBehavior::FallImmune — a chicken (and, in vanilla, a
+    // bat/parrot) reads this to skip the landing-tick fall-damage conversion.
+    Builder& fallImmune();
     // Marks the species breedable and states its whole breeding profile (tempt
     // item + baby scale). AR-A hands each animal its wheat/seeds through this;
     // EM-3 owns everything the profile drives.
     Builder& breeding(const BreedingProfile& profile);
     // Shorthand: breedable with `temptItem` and the default 0.5 baby scale.
     Builder& breedableWith(const ItemStack& temptItem);
+    // AR-A4: states the whole egg-laying profile (the dropped item). The
+    // landing-tick scheduler (EntitySystem::tick) owns the timer/interval.
+    Builder& eggLay(const EggLayProfile& profile);
+    // Shorthand: lays `item` on the shared 6000-12000 tick interval.
+    Builder& laysEggs(const ItemStack& item);
     Builder& loot(LootRoll roll);
     // Mob#xpReward: the flat experience a kill of this species awards (XP-2's
     // lastHurtByPlayer gate decides *whether* it is paid out, not how much).

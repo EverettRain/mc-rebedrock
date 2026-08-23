@@ -76,6 +76,10 @@ EntityType::Builder& EntityType::Builder::sunImmune() {
     return behavior(EntityBehavior::SunImmune);
 }
 
+EntityType::Builder& EntityType::Builder::fallImmune() {
+    return behavior(EntityBehavior::FallImmune);
+}
+
 EntityType::Builder& EntityType::Builder::breeding(const BreedingProfile& profile) {
     draft_.breeding_ = profile;
     return *this;
@@ -83,6 +87,16 @@ EntityType::Builder& EntityType::Builder::breeding(const BreedingProfile& profil
 
 EntityType::Builder& EntityType::Builder::breedableWith(const ItemStack& temptItem) {
     draft_.breeding_ = BreedingProfile{/*breedable=*/true, temptItem, /*babyScale=*/0.5F};
+    return *this;
+}
+
+EntityType::Builder& EntityType::Builder::eggLay(const EggLayProfile& profile) {
+    draft_.eggLay_ = profile;
+    return *this;
+}
+
+EntityType::Builder& EntityType::Builder::laysEggs(const ItemStack& item) {
+    draft_.eggLay_ = EggLayProfile{/*laysEggs=*/true, item};
     return *this;
 }
 

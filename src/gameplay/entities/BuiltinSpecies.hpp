@@ -17,6 +17,7 @@
 #include "audio/MobSoundProfile.hpp"
 #include "gameplay/entities/EntityType.hpp"
 
+#include <cstdint>
 #include <span>
 #include <string_view>
 
@@ -47,6 +48,12 @@ struct SpeciesDef final {
     // false) costs a non-ageable species nothing — the same "content states
     // parameters, EM-3 owns the mechanism" rule BreedingProfile documents.
     BreedingProfile breeding{};
+    // AR-A4: the behaviour bit set (EntityBehavior) — e.g. a chicken's
+    // fallImmune. Default (0) subjects the species to every mechanic.
+    std::uint16_t behaviorFlags = 0U;
+    // AR-A4: egg-laying parameters, stated as data exactly like breeding.
+    // Default (laysEggs == false) costs a non-laying species nothing.
+    EggLayProfile eggLay{};
 };
 
 // The built-in new-species table. Dropping a row removes that species from the
