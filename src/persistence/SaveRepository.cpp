@@ -1138,6 +1138,45 @@ void readWorldBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
     cursor = header.end;
 }
 
+// The save's self-description (META-1): which build wrote this world. It mirrors
+// 1.16.1's level.dat `Version` compound + top-level `DataVersion`, but as a
+// snapshot of the compile-time VersionManifest taken at write time — a world
+// always reports the version that produced it, which is what an upgrade or a JC
+// import reasons about. `worldVersion` here is the same number as the file's
+// top-level format field (one source: both come from kVersion.worldVersion via
+// kFormatVersion), never a second independent value.
+constexpr std::uint32_t kVersionBlockTag = blockTag("VERS");
+constexpr std::uint16_t kVersionBlockVersion = 1U;
+
+void appendVersionBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    const SaveBlockWriter block{bytes, kVersionBlockTag, kVersionBlockVersion};
+    // The header carried on the SaveGame is the write-time snapshot (save()
+    // stamps it from kVersion just before serialising). worldVersion is asserted
+    // equal to kFormatVersion at save() time, so this is the same number the
+    // file's top-level format field holds.
+    const auto& header = context.game.versionHeader;
+    appendInteger(bytes, header.worldVersion);
+    appendInteger(bytes, header.protocolVersion);
+    appendString(bytes, header.versionName);
+    appendString(bytes, header.buildRef);
+    appendString(bytes, header.buildTime);
+    appendInteger(bytes, static_cast<std::uint8_t>(header.stable ? 1U : 0U));
+}
+
+void readVersionBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                      const SaveBlockHeader& header, SaveReadContext& context) {
+    SaveVersionHeader parsed;
+    parsed.worldVersion = readInteger<std::uint32_t>(payload, cursor);
+    parsed.protocolVersion = readInteger<std::uint32_t>(payload, cursor);
+    parsed.versionName = readString(payload, cursor);
+    parsed.buildRef = readString(payload, cursor);
+    parsed.buildTime = readString(payload, cursor);
+    parsed.stable = readInteger<std::uint8_t>(payload, cursor) != 0U;
+    parsed.derived = false;  // read from a real VERS block, not reconstructed
+    context.game.versionHeader = std::move(parsed);
+    cursor = header.end;
+}
+
 // The player: where they stand, what state their body is in, and what they
 // carry. The spawn point stays in its own SPWN block, which predates this one.
 constexpr std::uint32_t kPlayerBlockTag = blockTag("PLYR");
@@ -2234,7 +2273,8 @@ void readDropOwner(std::span<const std::uint8_t> payload, std::size_t& cursor,
     readDropBlock(payload, cursor, context.game.itemDrops, context.game.fallingBlocks);
 }
 
-constexpr std::array<SaveBlockOwner, 10> kSaveBlockOwners{{
+constexpr std::array<SaveBlockOwner, 11> kSaveBlockOwners{{
+    {kVersionBlockTag, kVersionBlockVersion, &appendVersionBlock, &readVersionBlock},
     {kWorldBlockTag, kWorldBlockVersion, &appendWorldBlock, &readWorldBlock},
     {kPlayerBlockTag, kPlayerBlockVersion, &appendPlayerBlock, &readPlayerBlock},
     {kChunkBlockTag, kChunkBlockVersion, &appendChunkBlock, &readChunkBlock,
@@ -2318,6 +2358,19 @@ void SaveRepository::save(
     }
     game.summary.displayName = sanitizeDisplayName(std::move(game.summary.displayName));
     game.summary.lastPlayedUnixSeconds = nowUnixSeconds();
+    // META-1: stamp the write-time version identity so the save self-describes.
+    // worldVersion comes from the single source (kFormatVersion == kVersion
+    // .worldVersion), the same number the top-level format field below carries —
+    // never a second independent value. The VERS owner writes this snapshot.
+    game.versionHeader = SaveVersionHeader{
+        .worldVersion = kFormatVersion,
+        .versionName = std::string{core::kVersion.name},
+        .protocolVersion = core::kVersion.protocolVersion,
+        .buildRef = std::string{core::kVersion.buildRef},
+        .buildTime = std::string{core::kVersion.buildTime},
+        .stable = core::kVersion.stable,
+        .derived = false,
+    };
     // M-3: the edits and creatures no longer live in world.dat — chunks own them
     // in region/ files, written (and pruned) below. world.dat stays small: just
     // the world and player state, the block entities and the drops.
@@ -2878,6 +2931,21 @@ SaveGame SaveRepository::load(const std::string& identifier) const {
         formatVersion > kFormatVersion)
         throw std::runtime_error("Unsupported world.dat version");
     game.summary.seed = readInteger<std::uint64_t>(payload, cursor);
+    // META-1: before reading the blocks, reconstruct a minimal version header
+    // from the format number, so a save that predates the VERS block still
+    // self-describes (name unknown, `derived` set). A save that carries a VERS
+    // block overwrites this with its real write-time snapshot; a newer one this
+    // build cannot read leaves the reconstruction in place. `worldVersion` is the
+    // save's own format number — one source, not a second fact.
+    game.versionHeader = SaveVersionHeader{
+        .worldVersion = formatVersion,
+        .versionName = {},
+        .protocolVersion = 0U,
+        .buildRef = {},
+        .buildTime = {},
+        .stable = false,
+        .derived = true,
+    };
     if (formatVersion >= kFirstOwnerDrivenFormatVersion) {
         loadOwnerBlocks(payload, cursor, game);
         // M-3 region files: a save made since the region layout carries its edits

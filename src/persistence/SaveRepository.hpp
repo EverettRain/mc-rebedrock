@@ -28,6 +28,28 @@ struct SaveSummary final {
     std::int64_t lastPlayedUnixSeconds = 0;
 };
 
+// A save's self-description: which build wrote it (META-1, the equivalent of
+// 1.16.1's level.dat `Version { Id, Name, Snapshot }` compound plus the top-level
+// `DataVersion`). It records the VersionManifest snapshot taken at *write* time,
+// so a world always reports the version that produced it — not the one reading it
+// — which is exactly what an upgrade or a JC import needs to reason about the
+// source. `worldVersion` is the save format number, the same value the file's
+// top-level format field carries (one source, not a second fact). A save written
+// before this block existed reconstructs a minimal header from that format number
+// on load (`name` empty, `derived` set), so an old world still self-describes as
+// well as it can without breaking.
+struct SaveVersionHeader final {
+    std::uint32_t worldVersion = 0U;   // = the file's save format number
+    std::string versionName;           // e.g. "26.1"; empty when reconstructed
+    std::uint32_t protocolVersion = 0U;
+    std::string buildRef;              // git short hash, or "unknown"
+    std::string buildTime;             // ISO 8601, or "unknown"
+    bool stable = false;
+    // True when this header was reconstructed from the format number of a save
+    // that predates the self-describing version block (so the name is unknown).
+    bool derived = false;
+};
+
 // One active MobEffect persisted with its carrier. The effect is stored by its
 // registry *name*, never its runtime id — a dense id is a per-run value that a
 // save must not bake in (an added/removed effect would renumber every record).
@@ -94,6 +116,12 @@ struct PersistentFallingBlock final {
 
 struct SaveGame final {
     SaveSummary summary;
+    // Which build wrote this world (META-1). On save() this is filled from the
+    // current VersionManifest and written to the VERS block; on load() it holds
+    // what the save reported (or a header reconstructed from the format number
+    // for a pre-VERS world). A freshly created SaveGame carries a zeroed header
+    // until save() stamps it.
+    SaveVersionHeader versionHeader;
     bool hasPlayerPosition = false;
     float playerX = 0.0F;
     float playerY = 0.0F;

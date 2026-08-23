@@ -1,6 +1,7 @@
 #include "persistence/SaveRepository.hpp"
 #include "persistence/UnknownBlockTable.hpp"
 
+#include "core/VersionManifest.hpp"
 #include "world/BlockState.hpp"
 #include "world/DayNightCycle.hpp"
 #include "world/WorldClock.hpp"
@@ -50,6 +51,24 @@ struct LegacyWriter final {
         }
     }
 
+    // Writes a self-describing block frame (u32 tag, u32 size, u16 version) whose
+    // body is produced by `writeBody`, patching the size once the body is known —
+    // the same framing SaveBlockWriter emits, so a hand-built block loads exactly
+    // as a real one.
+    template <typename WriteBody>
+    void block(std::uint32_t tag, std::uint16_t version, WriteBody writeBody) {
+        const std::size_t start = bytes.size();
+        integer<std::uint32_t>(tag);
+        integer<std::uint32_t>(0U);  // size placeholder
+        integer<std::uint16_t>(version);
+        writeBody();
+        const auto size = static_cast<std::uint32_t>(bytes.size() - start);
+        for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
+            bytes[start + sizeof(std::uint32_t) + offset] =
+                static_cast<std::uint8_t>(size >> (offset * 8U));
+        }
+    }
+
     void finish() {
         std::uint64_t hash = 1469598103934665603ULL;
         for (const auto byte : bytes) {
@@ -59,6 +78,15 @@ struct LegacyWriter final {
         integer(hash);
     }
 };
+
+// The four-character block tag, matching persistence::blockTag's little-endian
+// packing, so the test can address the same owner the writer registered.
+[[nodiscard]] constexpr std::uint32_t fourCC(const char (&text)[5]) {
+    return static_cast<std::uint32_t>(static_cast<unsigned char>(text[0])) |
+           (static_cast<std::uint32_t>(static_cast<unsigned char>(text[1])) << 8U) |
+           (static_cast<std::uint32_t>(static_cast<unsigned char>(text[2])) << 16U) |
+           (static_cast<std::uint32_t>(static_cast<unsigned char>(text[3])) << 24U);
+}
 
 } // namespace
 
@@ -166,6 +194,21 @@ int main() {
     const auto loaded = repository.load(save.summary.identifier);
     assert(loaded.summary.displayName == "TestWorld");
     assert(loaded.summary.seed == 0x12345678ULL);
+    // META-1: a world written by this build carries a real (non-derived)
+    // self-description that round-trips the write-time VersionManifest snapshot.
+    {
+        const auto& header = loaded.versionHeader;
+        assert(!header.derived);
+        assert(header.versionName == std::string{core::kVersion.name});
+        assert(header.protocolVersion == core::kVersion.protocolVersion);
+        assert(header.buildRef == std::string{core::kVersion.buildRef});
+        assert(header.buildTime == std::string{core::kVersion.buildTime});
+        assert(header.stable == core::kVersion.stable);
+        // Single source: the header's worldVersion is the save's own top-level
+        // format number, not a second independent value. It equals the manifest's
+        // worldVersion because both come from the one place.
+        assert(header.worldVersion == core::kVersion.worldVersion);
+    }
     assert(loaded.hasPlayerPosition && loaded.playerX == -12.5F);
     assert(loaded.hasSpawnPoint && loaded.spawnX == -30.5F && loaded.spawnY == 66.0F &&
            loaded.spawnZ == 12.0F);
@@ -477,13 +520,72 @@ int main() {
         assert(migrated.gameRules.get<std::int32_t>(gameplay::GameRuleId::RandomTickSpeed) == 7);
         // A pre-format-10 save has no spawn point block; the field stays unset.
         assert(!migrated.hasSpawnPoint);
+        // META-1: a real old world has no VERS block, so its version header is
+        // reconstructed from the format number — worldVersion == 8, name unknown,
+        // `derived` set. The load neither crashed nor rejected the save.
+        assert(migrated.versionHeader.derived);
+        assert(migrated.versionHeader.worldVersion == 8U);
+        assert(migrated.versionHeader.versionName.empty());
         // Saving the migrated world rewrites it as format 10, where the value
         // lives in the GameRules block and the absent spawn point is preserved.
         repository.save(migrated);
         const auto roundTrip = repository.load(v8Identifier);
         assert(roundTrip.gameRules.get<std::int32_t>(gameplay::GameRuleId::RandomTickSpeed) == 7);
         assert(!roundTrip.hasSpawnPoint);
+        // Re-saving stamped the current build's identity: the rewritten world now
+        // self-describes with a real (non-derived) header at the current version.
+        assert(!roundTrip.versionHeader.derived);
+        assert(roundTrip.versionHeader.worldVersion == core::kVersion.worldVersion);
+        assert(roundTrip.versionHeader.versionName == std::string{core::kVersion.name});
         std::filesystem::remove_all(v8Directory);
+    }
+
+    // META-1: a save's version header records the version at *write* time, not the
+    // one reading it. A world hand-written with a VERS block naming a different
+    // build ("25.0", protocol 3) must read back that build, proving the header is
+    // the writer's snapshot — self-description would be worthless otherwise.
+    {
+        LegacyWriter writer;
+        writer.magic();
+        writer.integer<std::uint32_t>(core::kVersion.worldVersion);  // current format
+        writer.integer<std::uint64_t>(0x2500ULL);                    // seed
+        writer.integer<std::uint16_t>(1U);  // block palette: air only
+        writer.stringValue("air");
+        writer.integer<std::uint16_t>(1U);  // item palette: the empty sentinel
+        writer.stringValue("");
+        writer.block(fourCC("VERS"), 1U, [&] {
+            writer.integer<std::uint32_t>(core::kVersion.worldVersion);  // worldVersion
+            writer.integer<std::uint32_t>(3U);                           // protocolVersion
+            writer.stringValue("25.0");                                  // versionName
+            writer.stringValue("abc1234");                               // buildRef
+            writer.stringValue("2025-01-02T03:04:05Z");                  // buildTime
+            writer.integer<std::uint8_t>(0U);                           // stable = false
+        });
+        writer.finish();
+
+        const std::string otherIdentifier = "other-build-world";
+        const auto otherDirectory = root / otherIdentifier;
+        std::filesystem::create_directories(otherDirectory);
+        {
+            std::ofstream metadata{otherDirectory / "level.properties"};
+            metadata << "format=" << core::kVersion.worldVersion << "\nid=" << otherIdentifier
+                     << "\nname=Other\nseed=9472\nlast_played=1\n";
+        }
+        {
+            std::ofstream data{otherDirectory / "world.dat", std::ios::binary};
+            data.write(reinterpret_cast<const char*>(writer.bytes.data()),
+                       static_cast<std::streamsize>(writer.bytes.size()));
+        }
+        const auto other = repository.load(otherIdentifier);
+        assert(!other.versionHeader.derived);
+        assert(other.versionHeader.versionName == "25.0");
+        assert(other.versionHeader.protocolVersion == 3U);
+        assert(other.versionHeader.buildRef == "abc1234");
+        assert(other.versionHeader.buildTime == "2025-01-02T03:04:05Z");
+        assert(!other.versionHeader.stable);
+        // Not the current build's name — the write-time snapshot was preserved.
+        assert(other.versionHeader.versionName != std::string{core::kVersion.name});
+        std::filesystem::remove_all(otherDirectory);
     }
 
     bool rejectedTraversal = false;
