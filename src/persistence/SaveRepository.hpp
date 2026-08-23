@@ -217,6 +217,15 @@ struct SaveGame final {
     // all of it at once.
     std::uint64_t serverTick = 0U;
     std::array<world::ClockState, world::kClockCount> clocks{};
+    // PACK-1: which of this save's <save>/datapacks/* packs are enabled, and
+    // in what order — bottom (lowest priority) to top (highest), the same
+    // convention PackManager::order() uses. Its own self-describing block
+    // (DPKS, added after format 19 the same way XPOB was — an owner-block
+    // addition needs no format bump). A pre-PACK-1 world simply has no DPKS
+    // block and loads with this empty, which GameRuntime treats as "every
+    // discovered pack starts disabled" — the all-built-in default the sparse-
+    // persistence rule requires, not a crash.
+    std::vector<std::string> enabledDataPacks;
 };
 
 // How a stored world's save format relates to this build's (META-2b), decided by

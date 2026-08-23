@@ -1047,6 +1047,76 @@ void readExperienceOrbBlock(std::span<const std::uint8_t> payload, std::size_t& 
     }
 }
 
+// The DPKS block (PACK-1) carries which of this save's <save>/datapacks/*
+// packs are enabled, and in what order — bottom (lowest priority) to top
+// (highest), matching PackManager::order()'s own convention so GameRuntime
+// hands the list straight to PerSaveDataStack::enable() in file order with no
+// reversal. Same shape as the GameRules block: a flat, ordered list of
+// strings, no palette (a pack id is a directory name, not registry content).
+//
+//   u32 blockTag          // 'D','P','K','S'
+//   u32 blockSizeBytes    // whole block length incl. this field
+//   u16 blockVersion      // 1
+//   u16 packCount
+//   packs[]: string id    // u16 length-prefixed, directory name
+//
+// A pre-PACK-1 world has no DPKS block at all; the reader simply never finds
+// the tag and enabledDataPacks loads empty — every discovered pack starts
+// disabled, the all-built-in default PACK REGULAR #2 requires, exactly the
+// DROP/XPOB-block precedent's "old world migrates cleanly" shape.
+constexpr std::uint32_t kDataPackBlockTag =
+    'D' | ('P' << 8) | ('K' << 16) | ('S' << 24);
+constexpr std::uint16_t kDataPackBlockVersion = 1U;
+
+void appendDataPackBlock(std::vector<std::uint8_t>& bytes, const std::vector<std::string>& ids) {
+    const std::size_t blockStart = bytes.size();
+    appendInteger(bytes, kDataPackBlockTag);
+    appendInteger(bytes, 0U);  // blockSizeBytes, patched below
+    appendInteger(bytes, kDataPackBlockVersion);
+    appendInteger(bytes, static_cast<std::uint16_t>(ids.size()));
+    for (const auto& id : ids) {
+        appendString(bytes, id);
+    }
+    const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
+    for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
+        bytes[blockStart + 4U + offset] =
+            static_cast<std::uint8_t>(blockSize >> (offset * 8U));
+    }
+}
+
+void readDataPackBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                       std::vector<std::string>& ids) {
+    const std::size_t blockStart = cursor;
+    if (blockStart + 12U > payload.size()) {
+        throw std::runtime_error("world.dat data pack block is truncated");
+    }
+    const auto tag = readInteger<std::uint32_t>(payload, cursor);
+    if (tag != kDataPackBlockTag) {
+        throw std::runtime_error("world.dat has an invalid data pack block");
+    }
+    const auto blockSize = readInteger<std::uint32_t>(payload, cursor);
+    if (blockSize < 12U || static_cast<std::size_t>(blockSize) > payload.size() - blockStart) {
+        throw std::runtime_error("world.dat data pack block is malformed");
+    }
+    const auto blockVersion = readInteger<std::uint16_t>(payload, cursor);
+    if (blockVersion > kDataPackBlockVersion) {
+        cursor = blockStart + blockSize;
+        return;
+    }
+    const std::size_t blockEnd = blockStart + blockSize;
+    const auto packCount = readInteger<std::uint16_t>(payload, cursor);
+    ids.reserve(ids.size() + static_cast<std::size_t>(packCount));
+    for (std::uint16_t index = 0; index < packCount; ++index) {
+        if (cursor >= blockEnd) {
+            throw std::runtime_error("world.dat data pack block is truncated");
+        }
+        ids.push_back(readString(payload, cursor));
+    }
+    if (cursor != blockEnd) {
+        throw std::runtime_error("world.dat data pack block has trailing data");
+    }
+}
+
 // The CLOCK block is the self-describing region format 13 appends after the
 // entity block, mirroring the GameRules framing:
 //
@@ -2529,8 +2599,16 @@ void readExperienceOrbOwner(std::span<const std::uint8_t> payload, std::size_t& 
     cursor = header.bodyStart - kBlockHeaderBytes;
     readExperienceOrbBlock(payload, cursor, context.game.experienceOrbs);
 }
+void writeDataPackOwner(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    appendDataPackBlock(bytes, context.game.enabledDataPacks);
+}
+void readDataPackOwner(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                       const SaveBlockHeader& header, SaveReadContext& context) {
+    cursor = header.bodyStart - kBlockHeaderBytes;
+    readDataPackBlock(payload, cursor, context.game.enabledDataPacks);
+}
 
-constexpr std::array<SaveBlockOwner, 12> kSaveBlockOwners{{
+constexpr std::array<SaveBlockOwner, 13> kSaveBlockOwners{{
     {kVersionBlockTag, kVersionBlockVersion, &appendVersionBlock, &readVersionBlock},
     {kWorldBlockTag, kWorldBlockVersion, &appendWorldBlock, &readWorldBlock},
     {kPlayerBlockTag, kPlayerBlockVersion, &appendPlayerBlock, &readPlayerBlock},
@@ -2547,6 +2625,7 @@ constexpr std::array<SaveBlockOwner, 12> kSaveBlockOwners{{
     {kDropBlockTag, kDropBlockVersion, &writeDropOwner, &readDropOwner},
     {kExperienceOrbBlockTag, kExperienceOrbBlockVersion, &writeExperienceOrbOwner,
      &readExperienceOrbOwner},
+    {kDataPackBlockTag, kDataPackBlockVersion, &writeDataPackOwner, &readDataPackOwner},
 }};
 
 // META-2b: read only the version header from a save's world.dat, without loading
