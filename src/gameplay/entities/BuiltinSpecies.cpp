@@ -214,7 +214,9 @@ const std::array<SpeciesDef, 3> kManifest{{
     // sunImmune() so that same rule skips it — the whole reason the SunImmune
     // bit exists (EM1). hungerOnHit(): Husk#doHurtTarget applies EM2's Hunger
     // effect to whatever it lands a melee hit on; the zombie beside it in this
-    // manifest carries no such bit, so only husk's hit does.
+    // manifest carries no such bit, so only husk's hit does. The same Undead bit
+    // is ENCH-1's Smite target-category gate (getGroup() == UNDEAD, HuskEntity
+    // extends ZombieEntity and never overrides getGroup).
     SpeciesDef{
         /*path=*/"husk", /*vanillaName=*/"husk", MobCategory::Monster,
         SpawnPlacement::OnGround, EntityDimensions{0.6F, 1.95F},

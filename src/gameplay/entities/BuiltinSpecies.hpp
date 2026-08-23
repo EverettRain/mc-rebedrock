@@ -48,8 +48,10 @@ struct SpeciesDef final {
     // false) costs a non-ageable species nothing — the same "content states
     // parameters, EM-3 owns the mechanism" rule BreedingProfile documents.
     BreedingProfile breeding{};
-    // AR-A4: the behaviour bit set (EntityBehavior) — e.g. a chicken's
-    // fallImmune. Default (0) subjects the species to every mechanic.
+    // AR-A4: the behaviour bit set (EntityBehavior), OR'd together — e.g. a
+    // chicken's fallImmune, a husk's Undead ENCH-1 target-category marker.
+    // Default (0) subjects the species to every mechanic. The hand-written
+    // classes set these directly on the Builder instead.
     std::uint16_t behaviorFlags = 0U;
     // AR-A4: egg-laying parameters, stated as data exactly like breeding.
     // Default (laysEggs == false) costs a non-laying species nothing.

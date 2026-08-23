@@ -246,12 +246,23 @@ enum class EntityBehavior : std::uint16_t {
     // hostile (a creeper or spider never burns) — this bit reproduces that
     // narrower family without a species switch at the ignition call site.
     // Zombie and husk both carry it; husk additionally carries SunImmune so
-    // the ignition rule's `!sunImmune()` term skips it.
+    // the ignition rule's `!sunImmune()` term skips it. Doubles as
+    // LivingEntity#getGroup() == EntityGroup.UNDEAD (1.16.1): the same undead
+    // family ENCH-1's Smite target-category gate reads
+    // (DamageEnchantment#getAttackDamage's typeIndex==1 branch).
     Undead = 1U << 3U,
     // AR-M2: Husk#doHurtTarget's Hunger-on-hit. The mob-melee call site in
     // GameSession reads this bit off the attacker's type after a landed hit
     // and applies EM2's hunger effect — no `if (species == husk)` there either.
     HungerOnHit = 1U << 4U,
+    // LivingEntity#getGroup() == EntityGroup.ARTHROPOD: the gate Bane of
+    // Arthropods reads (DamageEnchantment#getAttackDamage's typeIndex==2 branch,
+    // plus its Slowness-on-hit). No arthropod mob exists in this build yet
+    // (spider/silverfish are AR content gaps), so nothing sets this today — the
+    // bit and its accessor exist so the category check is honest (answers false
+    // because no arthropod has been registered, not because the mechanic is
+    // unimplemented) and so a future spider/silverfish needs only this one flag.
+    Arthropod = 1U << 5U,
 };
 
 [[nodiscard]] constexpr std::uint16_t operator|(EntityBehavior a, EntityBehavior b) {
@@ -316,6 +327,11 @@ class EntityType final {
     // AR-M2: whether a landed melee hit from this type applies EM2's hunger
     // effect to the player — see EntityBehavior::HungerOnHit.
     [[nodiscard]] bool hungerOnHit() const { return hasBehavior(EntityBehavior::HungerOnHit); }
+    // The Smite / Bane of Arthropods target-category gates (ENCH-1). `isUndead()`
+    // reads the same UNDEAD bit AR-M2's daylight burn does — one bit, two
+    // consumers — so tagging a mob undead once serves both.
+    [[nodiscard]] bool isUndead() const { return hasBehavior(EntityBehavior::Undead); }
+    [[nodiscard]] bool isArthropod() const { return hasBehavior(EntityBehavior::Arthropod); }
     // AgeableMob breeding parameters (EM-3). `breedable()` is the one-flag test
     // the AI/tick reads before installing or running any breeding logic.
     [[nodiscard]] const BreedingProfile& breeding() const { return breeding_; }
@@ -427,11 +443,14 @@ class EntityType::Builder final {
     // bat/parrot) reads this to skip the landing-tick fall-damage conversion.
     Builder& fallImmune();
     // AR-M2: EntityBehavior::Undead — the family the daylight-ignition rule
-    // gates on (zombie, husk).
+    // gates on (zombie, husk); doubles as ENCH-1's Smite target-category marker.
     Builder& undead();
     // AR-M2: EntityBehavior::HungerOnHit — husk's melee applies EM2's hunger
     // effect to whatever it lands a hit on.
     Builder& hungerOnHit();
+    // ENCH-1: EntityBehavior::Arthropod — the Bane of Arthropods target-category
+    // marker (no arthropod mob exists yet, so nothing sets it today).
+    Builder& arthropod();
     // Marks the species breedable and states its whole breeding profile (tempt
     // item + baby scale). AR-A hands each animal its wheat/seeds through this;
     // EM-3 owns everything the profile drives.

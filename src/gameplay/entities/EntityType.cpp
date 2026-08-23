@@ -88,6 +88,10 @@ EntityType::Builder& EntityType::Builder::hungerOnHit() {
     return behavior(EntityBehavior::HungerOnHit);
 }
 
+EntityType::Builder& EntityType::Builder::arthropod() {
+    return behavior(EntityBehavior::Arthropod);
+}
+
 EntityType::Builder& EntityType::Builder::breeding(const BreedingProfile& profile) {
     draft_.breeding_ = profile;
     return *this;

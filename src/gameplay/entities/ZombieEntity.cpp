@@ -74,7 +74,8 @@ const EntityType& ZombieEntity::type() {
     // (rollZombieLoot), the item this build previously lacked.
     // xpReward 5 (Mob's DEFAULT_XP_REWARD, which Zombie inherits unchanged).
     // AR-M2: undead() — the family the daylight-ignition rule (EntitySystem::
-    // tick) gates on; a zombie carries no SunImmune bit, so it burns.
+    // tick) gates on; a zombie carries no SunImmune bit, so it burns. The same
+    // bit is ENCH-1's Smite target-category gate (getGroup() == UNDEAD).
     static EntityType type = EntityType::Builder::create(MobCategory::Monster, kZombieAi)
                                  .sized(0.6F, 1.95F)
                                  .health(20.0F)
@@ -82,13 +83,13 @@ const EntityType& ZombieEntity::type() {
                                  .attackDamage(3.0F)
                                  .followRange(35.0F)
                                  .knockbackResistance(0.0F)
+                                 .undead()
                                  .spawnEgg(0x00AFAFU, 0x799C65U)
                                  .xpReward(5)
                                  .renderer(kZombieRender)
                                  .sounds(kZombieSounds)
                                  .vanillaName("zombie")
                                  .loot(&rollZombieLoot)
-                                 .undead()
                                  .build("zombie");
     static const bool registered = [] {
         entityTypeRegistry().registerBuiltin(type);
