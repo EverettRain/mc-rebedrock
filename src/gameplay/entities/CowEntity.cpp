@@ -62,6 +62,10 @@ constexpr audio::MobSoundProfile kCowSounds{
 const EntityType& CowEntity::type() {
     // AbstractCow.createAttributes() (26.1): 10 health, MOVEMENT_SPEED 0.2.
     // Box 0.9 x 1.4. Spawn-egg tint 0xF3C9A3 / 0xFFFFFF.
+    // AR-A3: breedable, tempted by wheat (Animal.TEMPT_INGREDIENT for cows),
+    // calf baby scale 0.5 (EM-3's default) — the same shorthand AR-A2 used for
+    // sheep. EM-3's installBreedingGoals reads this generically off the type,
+    // so no cow-specific goal wiring is needed here.
     static EntityType type = EntityType::Builder::create(MobCategory::Creature, kCowAi)
                                  .sized(0.9F, 1.4F)
                                  .health(10.0F)
@@ -71,6 +75,7 @@ const EntityType& CowEntity::type() {
                                  .loot(&rollCowLoot)
                                  .renderer(kCowRender)
                                  .sounds(kCowSounds)
+                                 .breedableWith(ItemStack{world::Block::Air, 1U, &items::Wheat})
                                  .vanillaName("cow")
                                  .build("cow");
     // File it in the registry exactly once, passing the static's stable address.
