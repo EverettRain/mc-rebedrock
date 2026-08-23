@@ -151,6 +151,28 @@ struct NoiseGeneratorSettings final {
         settings.bedrockRoofRows = type.hasCeiling ? 5 : 0;
         return settings;
     }
+
+    // The end value set (WG-3): end_stone with *no* fluid (the end has no sea — a
+    // non-solid cell is the void, not water) and no bedrock cap (the islands float
+    // in the void, capped by nothing). Unlike the overworld/nether, the end's
+    // density is not the biome-depth shape term at all — its terrain is the island
+    // height field (see EndGenerator), so this value set carries the block/fluid
+    // identity and bounds while the island shaping lives in the generator. The
+    // sea level is left at 0 and the fluid at Air so the shared buildBaseTerrain,
+    // if ever run with these, would place no fluid.
+    [[nodiscard]] static constexpr NoiseGeneratorSettings end() {
+        const DimensionType& type = dimensionType(DimensionId::End);
+        NoiseGeneratorSettings settings;
+        settings.minY = type.minY;              // 0
+        settings.height = type.height;          // 256
+        settings.seaLevel = 0;                  // no sea
+        settings.defaultBlock = Block::EndStone;
+        settings.defaultFluid = Block::Air;     // the void, not water
+        settings.fillBelowLatticeFloor = false;  // islands float over the void
+        settings.bedrockFloorRows = 0;           // no bedrock cap
+        settings.bedrockRoofRows = 0;
+        return settings;
+    }
 };
 
 } // namespace mc::world::gen

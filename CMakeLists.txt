@@ -304,10 +304,12 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/world/WorldLightEngine.cpp
     src/world/SurfaceGenerator.cpp
     src/world/NetherGenerator.cpp
+    src/world/EndGenerator.cpp
     src/world/gen/Biome.cpp
     src/world/gen/BiomeSource.cpp
     src/world/gen/LayeredBiomeSource.cpp
     src/world/gen/MultiNoiseBiomeSource.cpp
+    src/world/gen/TheEndBiomeSource.cpp
     src/world/gen/Carver.cpp
     src/world/gen/Features.cpp
     src/world/gen/NoiseChunkGenerator.cpp
@@ -506,6 +508,7 @@ set(MC_REBEDROCK_HOT_PATH_SOURCES
     src/world/gen/BiomeSource.cpp
     src/world/gen/LayeredBiomeSource.cpp
     src/world/gen/MultiNoiseBiomeSource.cpp
+    src/world/gen/TheEndBiomeSource.cpp
     src/world/gen/TreeGrower.cpp
     src/world/Chunk.cpp
     src/world/ChunkSection.cpp
@@ -513,6 +516,7 @@ set(MC_REBEDROCK_HOT_PATH_SOURCES
     src/world/ChunkMesher.cpp
     src/world/SurfaceGenerator.cpp
     src/world/NetherGenerator.cpp
+    src/world/EndGenerator.cpp
     src/world/World.cpp
     src/world/WorldLightEngine.cpp
     src/world/WorldLighting.cpp
@@ -1981,6 +1985,14 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_nether_terrain_test PRIVATE mc_rebedrock_runtime)
     target_include_directories(mc_rebedrock_nether_terrain_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME nether_terrain COMMAND mc_rebedrock_nether_terrain_test)
+
+    # WG-3: end terrain (settings + TheEndBiomeSource + island generator).
+    add_executable(mc_rebedrock_end_terrain_test
+        tests/end_terrain_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_end_terrain_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_end_terrain_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME end_terrain COMMAND mc_rebedrock_end_terrain_test)
 
     add_executable(mc_rebedrock_block_registry_lifecycle_test
         tests/block_registry_lifecycle_test.cpp

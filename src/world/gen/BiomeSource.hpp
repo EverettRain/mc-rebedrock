@@ -14,9 +14,10 @@ namespace mc::world::gen {
 // passes zooming a 1:256 continent grid up to a 1:4 biome grid (ported in
 // LayeredBiomeSource). The nether answers with MultiNoiseBiomeSource, four
 // climate-noise fields selecting one of five biomes by nearest parameter point.
-// BiomeSource owns whichever one the dimension needs and dispatches on a stored
-// kind tag — a branch, not a virtual call, so the noise column stays off the
-// vtable (the DOD stance the rest of worldgen keeps).
+// The end answers with TheEndBiomeSource, distance to the origin and the island
+// height field. BiomeSource owns whichever one the dimension needs and dispatches
+// on a stored kind tag — a branch, not a virtual call, so the noise column stays
+// off the vtable (the DOD stance the rest of worldgen keeps).
 class BiomeSource final {
   public:
     // The overworld source (the layered GenLayer map), for source compatibility
@@ -35,6 +36,10 @@ class BiomeSource final {
     // derived seed (dimensionSeed(worldSeed, Nether)).
     [[nodiscard]] static BiomeSource nether(std::uint64_t seed);
 
+    // The end source (TheEndBiomeSource). `seed` is already the end's derived seed
+    // (dimensionSeed(worldSeed, End)).
+    [[nodiscard]] static BiomeSource end(std::uint64_t seed);
+
     // BiomeSource#getBiomeForNoiseGen: coordinates are in quart (1:4) space,
     // which is what the noise column and the surface builder both work in.
     [[nodiscard]] Biome biomeForNoiseGeneration(int quartX, int quartZ) const;
@@ -45,19 +50,22 @@ class BiomeSource final {
     }
 
   private:
-    enum class Kind : std::uint8_t { Layered, MultiNoise };
+    enum class Kind : std::uint8_t { Layered, MultiNoise, TheEnd };
 
-    // The nether factory constructs this variant directly; the public ctor stays
-    // the layered overworld one.
+    // The nether/end factories construct their variant directly; the public ctor
+    // stays the layered overworld one.
     struct NetherTag {};
+    struct EndTag {};
     BiomeSource(NetherTag, std::uint64_t seed);
+    BiomeSource(EndTag, std::uint64_t seed);
 
     Kind kind_ = Kind::Layered;
-    // Exactly one is populated, per kind_. Held by pointer so the two source types
-    // (both with their own heavy impl) do not bloat every BiomeSource, and so the
+    // Exactly one is populated, per kind_. Held by pointer so the source types
+    // (each with their own heavy impl) do not bloat every BiomeSource, and so the
     // header need not pull their definitions in.
     std::unique_ptr<class LayeredBiomeSource> layered_;
     std::unique_ptr<class MultiNoiseBiomeSource> multiNoise_;
+    std::unique_ptr<class TheEndBiomeSource> theEnd_;
 };
 
 } // namespace mc::world::gen
