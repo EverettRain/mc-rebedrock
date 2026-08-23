@@ -240,6 +240,16 @@ class GameRuntime final {
         const gameplay::command::CommandContext& context, std::string_view mode);
     [[nodiscard]] gameplay::CommandResult runSummon(
         const gameplay::command::CommandContext& context);
+    // XP-3: /experience (/xp) add|set|query <targets> <amount> [points|levels].
+    // A thin selector-driven wrapper over PlayerExperience's existing add/set
+    // API (XP-0) — no experience-state logic lives here. `mode` is "add"/"set"/
+    // "query" and `unit` is "points"/"levels"; query ignores non-player targets
+    // by construction (the selector candidates already carry which pool a
+    // target came from, but query additionally requires exactly one player
+    // target the way vanilla's single-value report does).
+    [[nodiscard]] gameplay::CommandResult runExperience(
+        const gameplay::command::CommandContext& context, std::string_view mode,
+        std::string_view unit);
     // execute (CMD-7): the clause chain is a real redirect subtree on the
     // dispatcher (each `as/at/positioned/…` clause is a node whose SourceModifier
     // forks/gates the source set; `run` redirects to the root). registerExecute

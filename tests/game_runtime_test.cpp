@@ -1038,6 +1038,115 @@ int main() {
         runtime.stopSimulation();
     }
 
+    // XP-3: /experience (/xp) add|set|query <targets> <amount> [points|levels] —
+    // thin command-tree wiring onto XP-0's PlayerExperience add/set API, plus a
+    // genuine `/xp` alias (same subtree via redirectTo, not a second copy).
+    {
+        world::ChunkStreamer streamer{0U, 4, 4};
+        RecordingHost host;
+        runtime::GameRuntime runtime{host, streamer, saveRoot};
+        host.save = &runtime.currentSaveSlot();
+        auto save = runtime.createWorld("experience", 99U, gameplay::GameMode::Survival);
+        runtime.loadWorld(std::move(save), 4);
+
+        const auto runCmd = [&](const std::string& line) {
+            runtime.enqueueChat(line);
+            runtime.tick();
+            return runtime.takeChatResult();
+        };
+        auto& experience = runtime.gameSession().experience();
+
+        // add ... levels: whole levels, not points (sabotage target ①: swapping
+        // the points/levels branch would make this land on points instead).
+        {
+            const auto result = runCmd("/xp add @s 10 levels");
+            assert(result.has_value() && result->success);
+            assert(experience.level() == 10);
+            assert(experience.totalExperience() == 0); // giveExperienceLevels leaves points/total at 0
+        }
+        // add ... points: raw points, walking levels up the way addExperience does.
+        {
+            const auto before = experience.totalExperience();
+            const auto result = runCmd("/xp add @s 100 points");
+            assert(result.has_value() && result->success);
+            assert(experience.totalExperience() == before + 100);
+        }
+        // The bare (unit-omitted) add form defaults to points, matching 26.1's
+        // two-argument ExperienceCommand overload.
+        {
+            const auto before = experience.totalExperience();
+            const auto result = runCmd("/xp add @s 5");
+            assert(result.has_value() && result->success);
+            assert(experience.totalExperience() == before + 5);
+        }
+        // set ... levels pins the level and zeroes in-level progress/total.
+        {
+            const auto result = runCmd("/xp set @s 3 levels");
+            assert(result.has_value() && result->success);
+            assert(experience.level() == 3);
+        }
+        // set ... points re-derives level/progress from a raw lifetime total.
+        {
+            const auto result = runCmd("/xp set @s 400 points");
+            assert(result.has_value() && result->success);
+            assert(experience.totalExperience() == 400);
+            assert(experience.level() > 0); // 400 points is well past level 1
+        }
+        // query levels / points report the live values (via /experience, the
+        // canonical name — /xp is checked for equivalence separately below).
+        {
+            const auto levels = runCmd("/experience query @s levels");
+            assert(levels.has_value() && levels->success);
+            assert(levels->message.find(std::to_string(experience.level())) != std::string::npos);
+            const auto points = runCmd("/experience query @s points");
+            assert(points.has_value() && points->success);
+            assert(points->message.find(std::to_string(experience.totalExperience())) !=
+                   std::string::npos);
+        }
+        // Negative add levels decrements and does not go below zero (giveExperienceLevels
+        // saturates at 0 rather than going negative) — sabotage target ③ variant.
+        {
+            static_cast<void>(runCmd("/xp set @s 1 levels"));
+            const auto result = runCmd("/xp add @s -5 levels");
+            assert(result.has_value() && result->success);
+            assert(experience.level() == 0);
+        }
+        // set ... levels with a negative value clamps to 0, not a crash or an
+        // underflowed level (sabotage target ③: the primary case the card names).
+        {
+            static_cast<void>(runCmd("/xp set @s 8 levels"));
+            const auto result = runCmd("/xp set @s -3 levels");
+            assert(result.has_value() && result->success);
+            assert(experience.level() == 0);
+        }
+        // /xp and /experience are a genuine alias: same completion, same effect.
+        {
+            static_cast<void>(runCmd("/xp set @s 0 levels"));
+            const auto viaAlias = runCmd("/xp add @s 7 levels");
+            assert(viaAlias.has_value() && viaAlias->success);
+            assert(experience.level() == 7);
+            static_cast<void>(runCmd("/xp set @s 0 levels"));
+            const auto viaFull = runCmd("/experience add @s 7 levels");
+            assert(viaFull.has_value() && viaFull->success);
+            assert(experience.level() == 7); // identical outcome through either name
+            // The alias shares the real subtree (redirectTo), so completion after
+            // `/xp add @s 7 ` offers the same points/levels literals `/experience`
+            // does — proof it is not a second, driftable copy of the tree.
+            const auto afterXp = runtime.commandDispatcher().suggestions("/xp add @s 7 ", 13);
+            const auto hasUnit = [](const auto& list, std::string_view text) {
+                return std::ranges::any_of(
+                    list, [&](const auto& suggestion) { return suggestion.text == text; });
+            };
+            assert(hasUnit(afterXp, "points") && hasUnit(afterXp, "levels"));
+        }
+        // A selector matching no players affects nothing and fails cleanly.
+        {
+            const auto result = runCmd("/xp add @e[type=pig] 5 levels");
+            assert(result.has_value() && !result->success);
+        }
+        runtime.stopSimulation();
+    }
+
     // CMD5: execute rebinds the command source (as/at/positioned) and gates it
     // (if/unless), then `run` re-enters the dispatcher on each transformed source.
     {

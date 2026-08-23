@@ -419,6 +419,92 @@ gameplay::CommandResult GameRuntime::runSummon(const gameplay::command::CommandC
     return gameplay::CommandResult{true, "Summoned " + type->id().toString()};
 }
 
+// XP-3: thin command-tree wiring onto XP-0's PlayerExperience API — every
+// branch below calls straight into an existing add/set/level/total accessor,
+// never touches level_/pointsIntoLevel_/total_ itself. Experience is a
+// player-only currency (26.1's ExperienceCommand resolves against
+// EntityArgument.getPlayers, not getEntities), so a selector that also caught
+// world entities (`@e`) simply skips them here rather than erroring — the
+// same "selector can widen, non-players are quietly excluded" contract `/xp`
+// vanilla's own `players()` selector enforces by construction.
+gameplay::CommandResult GameRuntime::runExperience(const gameplay::command::CommandContext& context,
+                                                   std::string_view mode, std::string_view unit) {
+    const auto selector = context.find<gameplay::command::EntitySelector>("targets");
+    if (!selector.has_value()) {
+        return usageError("experience", context.source());
+    }
+    const bool isQuery = mode == "query";
+    std::optional<std::int64_t> amount;
+    if (!isQuery) {
+        amount = context.find<std::int64_t>("amount");
+        if (!amount.has_value()) {
+            return usageError("experience", context.source());
+        }
+    }
+    const auto candidates = gatherSelectorCandidates();
+    const auto targets = selector->resolve(context.source(), candidates, nextCommandRandom());
+
+    if (isQuery) {
+        // Vanilla's query form takes a single-player selector and reports one
+        // value; a selector matching zero or several players has nothing
+        // singular to report.
+        gameplay::PlayerId queried = 0;
+        std::size_t playerCount = 0U;
+        for (const auto& target : targets) {
+            if (target.player) {
+                queried = target.playerId;
+                ++playerCount;
+            }
+        }
+        if (playerCount != 1U) {
+            return gameplay::CommandResult{false, "No player was found"};
+        }
+        const auto found = gameSession_.players().find(queried);
+        if (found == gameSession_.players().end()) {
+            return gameplay::CommandResult{false, "No player was found"};
+        }
+        const gameplay::PlayerExperience& experience = found->second.experience;
+        const std::int32_t value =
+            unit == "levels" ? experience.level() : experience.totalExperience();
+        return gameplay::CommandResult{true, std::to_string(value) + " " + std::string{unit}};
+    }
+
+    std::size_t affected = 0U;
+    for (const auto& target : targets) {
+        if (!target.player) {
+            continue; // non-player selector matches (@e) carry no experience
+        }
+        const auto found = gameSession_.players().find(target.playerId);
+        if (found == gameSession_.players().end()) {
+            continue;
+        }
+        gameplay::PlayerExperience& experience = found->second.experience;
+        const auto amountI32 = static_cast<std::int32_t>(
+            std::clamp<std::int64_t>(*amount, INT32_MIN, INT32_MAX));
+        if (mode == "add") {
+            if (unit == "levels") {
+                experience.giveExperienceLevels(amountI32);
+            } else {
+                experience.addExperience(amountI32);
+            }
+        } else { // "set"
+            if (unit == "levels") {
+                experience.setExperienceLevel(amountI32);
+            } else {
+                experience.setExperiencePoints(amountI32);
+            }
+        }
+        ++affected;
+    }
+    if (affected == 0U) {
+        return gameplay::CommandResult{false, "No player was found"};
+    }
+    return gameplay::CommandResult{
+        true, (mode == "add" ? "Added " : "Set ") + std::to_string(*amount) + " " +
+                  std::string{unit} + " experience for " + std::to_string(affected) +
+                  (affected == 1U ? " player" : " players")};
+}
+
 namespace {
 constexpr double kRadiansToDegrees = 57.295779513082323;
 } // namespace
@@ -1454,6 +1540,58 @@ void GameRuntime::registerAuthoritativeCommands() {
             inventory.restore({}, inventory.selectedHotbarSlot());
             return gameplay::CommandResult{true, "Removed " + std::to_string(cleared) + " items"};
         });
+
+    // XP-3: /experience add|set <targets> <amount> [points|levels]; query takes
+    // no amount. `points`/`levels` are plain literal children (not a value
+    // argument type) — their tokens double as free completion the way
+    // setblock/fill's mode literals do — and the handler closure captures which
+    // one matched, so runExperience only branches on mode + unit strings, never
+    // reparses the line. `/xp` is registered as a genuine alias: a bare literal
+    // node with no handler of its own, redirected onto `/experience`'s root, so
+    // both names share one subtree end to end (execution and completion alike)
+    // instead of a second copy that could drift from the first.
+    {
+        const auto experienceBase = [this]() {
+            return commandDispatcher_.literal("experience").requiresLevel(PermissionLevel::GameMasters);
+        };
+        for (const char* modeName : {"add", "set"}) {
+            const std::string mode = modeName;
+            for (const char* unitName : {"points", "levels"}) {
+                const std::string unit = unitName;
+                experienceBase()
+                    .then(mode)
+                    .argument("targets", gameplay::command::kEntitySelectorArgument)
+                    .argument("amount", gameplay::command::kIntArgument)
+                    .then(unit)
+                    .executes([this, mode, unit](const gameplay::command::CommandContext& context) {
+                        return runExperience(context, mode, unit);
+                    });
+            }
+            // `points` is the implicit default when the unit is omitted (26.1's
+            // ExperienceCommand: the two-argument add/set overload targets
+            // points), so the same handler is reachable without the trailing
+            // literal too.
+            experienceBase()
+                .then(mode)
+                .argument("targets", gameplay::command::kEntitySelectorArgument)
+                .argument("amount", gameplay::command::kIntArgument)
+                .executes([this, mode](const gameplay::command::CommandContext& context) {
+                    return runExperience(context, mode, "points");
+                });
+        }
+        for (const char* unitName : {"points", "levels"}) {
+            const std::string unit = unitName;
+            experienceBase()
+                .then("query")
+                .argument("targets", gameplay::command::kEntitySelectorArgument)
+                .then(unit)
+                .executes([this, unit](const gameplay::command::CommandContext& context) {
+                    return runExperience(context, "query", unit);
+                });
+        }
+        const std::size_t experienceRoot = experienceBase().nodeId();
+        commandDispatcher_.literal("xp").redirectTo(experienceRoot);
+    }
 
     // execute (CMD-7): a real redirect subtree. `execute` is the clause-dispatch
     // node; every `as/at/positioned/…` clause is a node whose SourceModifier
