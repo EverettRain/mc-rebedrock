@@ -315,6 +315,19 @@ class MobBrain final {
     void requestBreed(std::uint64_t partnerId);
     [[nodiscard]] std::optional<std::uint64_t> takeBreedRequest();
 
+    // EatGrassGoal (AR-A2) emits the block it wants eaten the same way
+    // AnimalMateGoal emits a breed: MobAiContext only holds a `const World&`,
+    // so the goal cannot write the cell itself, and even a mutable World
+    // reference would be the wrong layer — a block edit must flow through
+    // WorldMutationService so neighbour/light updates fire (see the mechanism-
+    // fix-progress "lost lit" class of bug this is written to avoid). The goal
+    // only records which cell it ate; EntitySystem::tick collects the request
+    // into EntityTickResult, and GameSession performs the actual setBlock
+    // (mirroring how block-drop events already cross from EntitySystem to
+    // GameSession's mutation sink).
+    void requestEatGrass(glm::ivec3 grassBlock);
+    [[nodiscard]] std::optional<glm::ivec3> takeEatGrassRequest();
+
     void tick(SimpleEntity& self, MobAiContext& context);
     void stop(SimpleEntity& self, MobAiContext& context);
 
@@ -325,6 +338,7 @@ class MobBrain final {
     ActorReference combatTarget_{};
     std::optional<AttackRequest> attackRequest_;
     std::optional<std::uint64_t> breedRequest_;
+    std::optional<glm::ivec3> eatGrassRequest_;
 };
 
 // ActiveTargetGoal<PlayerEntity>: acquires a living non-creative player inside
@@ -538,6 +552,37 @@ class FollowParentGoal final : public MobGoal {
 
     float speedMultiplier_ = 1.0F;
     std::uint64_t parentId_ = 0U;
+};
+
+// EatGrassGoal (AR-A2, sheep-specific): a sheared sheep that stands over a
+// grass-family block lowers its head for kEatDurationTicks, then eats the
+// block (grass_block -> dirt, short_grass -> air) and regrows its wool.
+// Vanilla's EatBlockGoal only ever looks at the block occupying the mob's feet
+// cell (short_grass) and the cell directly below it (grass_block) — no wider
+// search — which this mirrors. Deterministic: both the 1-in-1000 roll that
+// starts the goal and the eat itself are entirely driven by `self.rngState`,
+// never a global RNG or wall clock. The goal only *requests* the eat (see
+// MobBrain::requestEatGrass) — the write itself happens where
+// WorldMutationService is reachable.
+class EatGrassGoal final : public MobGoal {
+  public:
+    [[nodiscard]] std::string_view name() const override { return "eat_grass"; }
+    [[nodiscard]] GoalControls controls() const override {
+        return entities::controls(GoalControl::Move, GoalControl::Look);
+    }
+    [[nodiscard]] bool canStart(SimpleEntity& self, MobAiContext& context,
+                                MobBrain& brain) override;
+    [[nodiscard]] bool shouldContinue(SimpleEntity& self, MobAiContext& context,
+                                      MobBrain& brain) override;
+    void start(SimpleEntity& self, MobAiContext& context, MobBrain& brain) override;
+    void stop(SimpleEntity& self, MobAiContext& context, MobBrain& brain) override;
+    void tick(SimpleEntity& self, MobAiContext& context, MobBrain& brain) override;
+
+  private:
+    // EatBlockGoal#EAT_ANIMATION_TICKS: forty ticks (two seconds) of the head
+    // lowered before the block actually changes.
+    static constexpr int kEatDurationTicks = 40;
+    int remainingTicks_ = 0;
 };
 
 } // namespace entities

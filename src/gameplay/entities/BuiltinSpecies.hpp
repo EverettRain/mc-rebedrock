@@ -42,6 +42,11 @@ struct SpeciesDef final {
     // The death-drop roll, or null for a creature whose drop needs an item this
     // build does not have yet (the zombie's rotten flesh, say).
     LootRoll loot = nullptr;
+    // AR-A2: EM-3's breeding parameters (tempt item + baby scale), stated as
+    // data exactly like every other manifest row field. Default (breedable ==
+    // false) costs a non-ageable species nothing — the same "content states
+    // parameters, EM-3 owns the mechanism" rule BreedingProfile documents.
+    BreedingProfile breeding{};
 };
 
 // The built-in new-species table. Dropping a row removes that species from the

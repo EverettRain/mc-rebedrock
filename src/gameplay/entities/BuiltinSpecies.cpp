@@ -19,7 +19,28 @@ namespace {
 // Passive land animals reuse AnimalAi wholesale (Swim/EscapeDanger/Wander/Look),
 // exactly as Pig and Cow do; only the panic-speed multiplier differs per species.
 const AnimalAi kChickenAi{1.4F, 1.0F, 0}; // chicken PanicGoal runs at 1.4
-const AnimalAi kSheepAi{1.25F, 1.0F, 0};  // sheep PanicGoal runs at 1.25
+
+// AR-A2: the one thing sheep do that no other AnimalAi species does yet — a
+// sheared sheep regrows its wool by eating grass. This is exactly the
+// "a creature that does something new gets a fresh EntityAi" case the
+// MeleeMonsterAi comment below describes: AnimalAi's shared Swim/Escape/
+// Wander/Look stays wholesale (installed via the base configureBrain call),
+// only EatGrassGoal is new. Priority 5 matches vanilla's own EatBlockGoal,
+// tied with WanderAroundFarGoal (also 5, both Move-controlled): GoalSelector's
+// `<=` preemption rule means neither can interrupt the other once running, so
+// whichever canStart wins the tick keeps running until it naturally finishes
+// — the same "one passive action at a time" shape vanilla's own tie produces.
+class SheepAi final : public AnimalAi {
+  public:
+    SheepAi() : AnimalAi(1.25F, 1.0F, 0) {} // sheep PanicGoal runs at 1.25
+
+    void configureBrain(MobBrain& brain) const override {
+        AnimalAi::configureBrain(brain);
+        brain.goals().add(5, std::make_unique<EatGrassGoal>());
+    }
+};
+
+const SheepAi kSheepAi;
 
 // A melee hostile: MonsterAi's idle fallback plus the same player-acquire + melee
 // goals the zombie installs. A husk fights hand-to-hand like a zombie, so it is
@@ -159,13 +180,17 @@ const std::array<SpeciesDef, 3> kManifest{{
         SpawnEggColors{0xA1A1A1U, 0xFF0000U}, kChickenRender, kChickenSounds, &kChickenAi,
         &rollChickenLoot},
     // Sheep (26.1): 8 health, MOVEMENT_SPEED 0.23, box 0.9 x 1.3, egg tint
-    // 0xE7E7E7 / 0xFFB5B5. Drops mutton + white wool (rollSheepLoot).
+    // 0xE7E7E7 / 0xFFB5B5. Drops mutton + white wool (rollSheepLoot). AR-A2:
+    // breedable, tempted by wheat, lamb baby scale 0.5 (EM-3's default).
     SpeciesDef{
         /*path=*/"sheep", /*vanillaName=*/"sheep", MobCategory::Creature,
         SpawnPlacement::OnGround, EntityDimensions{0.9F, 1.3F},
         attributesOf(8.0F, 0.23F, 0.0F, 16.0F), /*hasSpawnEgg=*/true,
         SpawnEggColors{0xE7E7E7U, 0xFFB5B5U}, kSheepRender, kSheepSounds, &kSheepAi,
-        &rollSheepLoot},
+        &rollSheepLoot,
+        /*breeding=*/BreedingProfile{/*breedable=*/true,
+                                     /*temptItem=*/ItemStack{world::Block::Air, 1U, &items::Wheat},
+                                     /*babyScale=*/0.5F}},
     // Husk (26.1): a desert zombie — 20 health, follow range 35, MOVEMENT_SPEED
     // 0.23, attack 3, box 0.6 x 1.95, egg tint 0x797061 / 0x66907B. Melee like
     // the zombie; AR-M1 wires its loot to the same 0-2 rotten flesh pool.
@@ -194,6 +219,9 @@ const std::array<SpeciesDef, 3> kManifest{{
     }
     if (def.loot != nullptr) {
         builder.loot(def.loot);
+    }
+    if (def.breeding.breedable) {
+        builder.breeding(def.breeding);
     }
     return builder.build(def.path);
 }

@@ -220,6 +220,33 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
                 hurtPlayer(kPrimaryPlayerId, DamageType::EntityAttack, attack.amount, host, true));
         }
     }
+    // AR-A2: EatGrassGoal filed these mid-tick, when it only held a
+    // `const World&` and could not write the cell itself (see MobBrain's
+    // requestEatGrass comment). This is where the write actually happens —
+    // through WorldMutationService, exactly like the farmland-trample edit
+    // just above, so the eaten cell's neighbours and light get the same
+    // treatment a player's own break would give it. The block is re-checked
+    // here (not trusted from the request) because a tick can pass between the
+    // goal filing the request and this drain running.
+    for (const auto& request : entityTick.grassEats) {
+        const auto& cell = request.cell;
+        const auto current = world.block(cell.x, cell.y, cell.z);
+        world::BlockState next;
+        if (current == world::Block::GrassPlant) {
+            next = world::BlockState{};  // short_grass -> air
+        } else if (current == world::Block::Grass) {
+            next = world::BlockState{world::Block::Dirt};  // grass_block -> dirt
+        } else {
+            continue;  // already gone (another sheep, a break) — nothing to eat
+        }
+        GameplayMutationSink sink{world, *this};
+        if (worldMutations_
+                .setBlock(world, {cell.x, cell.y, cell.z}, next, world::MutationFlags::All,
+                          world::MutationCause::Gravity, sink)
+                .changed) {
+            static_cast<void>(worldEntities().clearSheared(request.entityId));
+        }
+    }
     // NaturalSpawner: creatures and monsters settle inside the simulation
     // radius, respecting each category's spawnCap and the biome's spawn table.
     // It reads the tick's ambient darkness off the same snapshot the growth

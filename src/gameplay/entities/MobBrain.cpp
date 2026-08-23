@@ -639,6 +639,16 @@ std::optional<std::uint64_t> MobBrain::takeBreedRequest() {
     return request;
 }
 
+void MobBrain::requestEatGrass(glm::ivec3 grassBlock) {
+    eatGrassRequest_ = grassBlock;
+}
+
+std::optional<glm::ivec3> MobBrain::takeEatGrassRequest() {
+    auto request = eatGrassRequest_;
+    eatGrassRequest_.reset();
+    return request;
+}
+
 bool ActiveTargetPlayerGoal::canStart(SimpleEntity& self, MobAiContext& context, MobBrain&) {
     const auto& player = context.player();
     if (!player.present || !player.alive || player.creative ||
@@ -1050,6 +1060,100 @@ void FollowParentGoal::tick(SimpleEntity& self, MobAiContext& context, MobBrain&
     if (horizontalDistanceSquared(self.position, parent->position) > 9.0F) {
         static_cast<void>(brain.navigation().startMovingTo(context.world(), self, parent->position,
                                                            speedMultiplier_));
+    }
+}
+
+namespace {
+
+// The cell EatGrassGoal reads/eats: directly under the sheep's feet, exactly
+// like vanilla's EatBlockGoal (`level.getBlockState(mob.blockPosition().below())`
+// for grass_block, and the feet cell itself for short_grass). The vertical
+// nudge matches feetCellAt's own +0.05 above — a grounded entity's position.y
+// settles a hair below its integer resting height (gravity/collision leave it
+// at e.g. 0.9999), and a bare floor() would silently floor into the cell
+// below the one the entity is actually standing on.
+[[nodiscard]] glm::ivec3 eatGrassFeetCell(const SimpleEntity& self) {
+    return {static_cast<int>(std::floor(self.position.x)),
+            static_cast<int>(std::floor(self.position.y + 0.05F)),
+            static_cast<int>(std::floor(self.position.z))};
+}
+
+// Whether a cell holds a block EatGrassGoal can eat, and which cell to test:
+// short_grass lives in the feet cell itself, grass_block is the ground one
+// cell below the feet — matching SheepEntity.EatBlockGoal's two branches.
+[[nodiscard]] std::optional<glm::ivec3> findEdibleGrass(const world::World& world,
+                                                        const SimpleEntity& self) {
+    const glm::ivec3 feet = eatGrassFeetCell(self);
+    if (world.block(feet.x, feet.y, feet.z) == world::Block::GrassPlant) {
+        return feet;
+    }
+    const glm::ivec3 below{feet.x, feet.y - 1, feet.z};
+    if (world.block(below.x, below.y, below.z) == world::Block::Grass) {
+        return below;
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+bool EatGrassGoal::canStart(SimpleEntity& self, MobAiContext& context, MobBrain&) {
+    // Only a sheared sheep is hungry for grass; a wooled one never starts this
+    // (sabotage ③'s twin — an already-sheared check belongs on the shearing
+    // side, this is the regrow side's own gate). EatBlockGoal#canUse rolls
+    // `random.nextInt(reducedTickDelay(1000)) == 0` every tick it is not
+    // already running; vanilla's reducedTickDelay halves the constant to
+    // compensate for goal canStart already being polled at a throttled
+    // cadence elsewhere in Brain — this engine's GoalSelector has no such
+    // throttle (every goal's canStart runs every simulation tick), so the
+    // raw un-halved 1000 is the correct equivalent rate here, not the halved
+    // 500 the throttled engine actually rolls against.
+    if (!self.sheared) {
+        return false;
+    }
+    if (nextRandom(self.rngState) % 1000U != 0U) {
+        return false;
+    }
+    return findEdibleGrass(context.world(), self).has_value();
+}
+
+bool EatGrassGoal::shouldContinue(SimpleEntity& self, MobAiContext& context, MobBrain&) {
+    if (!self.sheared || remainingTicks_ <= 0) {
+        return false;
+    }
+    // The grass might have been eaten by another sheep, or broken, mid-animation
+    // — vanilla's EatBlockGoal re-reads the block every tick and stops the goal
+    // (without restarting the animation) once it is gone.
+    return findEdibleGrass(context.world(), self).has_value();
+}
+
+void EatGrassGoal::start(SimpleEntity& self, MobAiContext&, MobBrain& brain) {
+    remainingTicks_ = kEatDurationTicks;
+    brain.navigation().stop(self);
+}
+
+void EatGrassGoal::stop(SimpleEntity&, MobAiContext&, MobBrain&) {
+    remainingTicks_ = 0;
+}
+
+void EatGrassGoal::tick(SimpleEntity& self, MobAiContext& context, MobBrain& brain) {
+    if (remainingTicks_ <= 0) {
+        return;
+    }
+    --remainingTicks_;
+    // EatBlockGoal keeps the sheep still, head down, for the whole animation;
+    // it does not path anywhere while eating.
+    brain.navigation().stop(self);
+    if (remainingTicks_ == 4) {
+        // The last few ticks are the actual bite; vanilla fires the block
+        // change (and the eating particles/sound, not modelled here) a few
+        // ticks before the goal ends, not on the very last tick. The goal
+        // cannot write the block itself (MobAiContext only holds a
+        // `const World&`) — it files the request and EntitySystem/GameSession
+        // carry it through WorldMutationService, the same relay AnimalMateGoal
+        // uses for a breed.
+        if (const auto cell = findEdibleGrass(context.world(), self)) {
+            brain.requestEatGrass(*cell);
+        }
     }
 }
 
