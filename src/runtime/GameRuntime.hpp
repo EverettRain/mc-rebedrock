@@ -167,8 +167,17 @@ class GameRuntime final {
     // batch). The chunk is remembered so a later restoreLoadedChunk brings its
     // herd back.
     void persistUnloadedChunk(world::ChunkPosition position);
-    // A chunk streamed back in; restore the creatures the unload path persisted
-    // for it, if any. The caller holds the world write section.
+    // A chunk streamed in. Two cases, told apart by unloadedChunks_ (this
+    // session's own unload bookkeeping — see persistUnloadedChunk):
+    //  - This session already unloaded it: restore the creatures the unload
+    //    path persisted for it (the original M-3 C5 behaviour, unchanged).
+    //  - Otherwise: CS-4's world-generation-time population pass —
+    //    NaturalSpawner::spawnForChunkGeneration — runs once, but only the
+    //    first time this chunk is ever seen with no prior record (no persisted
+    //    edits and no persisted region entities), so a chunk that already
+    //    carries a record from an earlier session (edits or a saved herd) is
+    //    never re-populated on top of what survived. The caller holds the
+    //    world write section.
     void restoreLoadedChunk(world::ChunkPosition position);
     // Block until every queued chunk-unload write has reached disk. Chunk-unload
     // persistence is asynchronous (a background worker batches the region
@@ -314,6 +323,14 @@ class GameRuntime final {
     // or despawned. A later stream of one of them restores its herd
     // (restoreLoadedChunk). Cleared on world load.
     std::unordered_set<world::ChunkPosition, world::ChunkPositionHash> unloadedChunks_;
+    // CS-4: chunks this session has already run the generation-time population
+    // pass for. Session-scoped dedup — the cheap, common case (a chunk
+    // unloaded and re-streamed while the world stays open, e.g. the player
+    // walks away and back) never re-populates, without touching disk. Cleared
+    // on world load alongside unloadedChunks_. This does not by itself cover a
+    // *new process* reopening the same save; restoreLoadedChunk additionally
+    // consults editsByChunk_/loadChunkEntities for that case (see its comment).
+    std::unordered_set<world::ChunkPosition, world::ChunkPositionHash> populatedChunks_;
     // Derived per-chunk index into currentSave_->edits, so persisting an unloaded
     // chunk collects its edits in O(chunk's edits) instead of scanning the whole
     // flat edit list per chunk. It is a cache (the flat SaveGame DTO stays the

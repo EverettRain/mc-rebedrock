@@ -435,6 +435,12 @@ class GameSession final {
     [[nodiscard]] const FurnaceSystem& furnaceSystem() const { return furnaceSystem_; }
     [[nodiscard]] WeatherSystem& weatherSystem() { return primaryLevel().weather; }
     [[nodiscard]] const WeatherSystem& weatherSystem() const { return primaryLevel().weather; }
+    // CS-4: the generation-time population pass (NaturalSpawner::
+    // spawnForChunkGeneration) needs the same per-dimension spawner tick()
+    // already reads, so the runtime's chunk-loaded hook can reach it the same
+    // routing-through-primary-Level way as worldEntities()/weatherSystem().
+    [[nodiscard]] NaturalSpawner& naturalSpawner() { return primaryLevel().spawner; }
+    [[nodiscard]] const NaturalSpawner& naturalSpawner() const { return primaryLevel().spawner; }
 
     // The per-dimension simulation bundle for a dimension (DIM-1). A subscript
     // into the level table, not a lookup. primaryLevel() is the dimension the

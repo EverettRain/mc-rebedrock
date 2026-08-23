@@ -666,6 +666,8 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     // No chunk has unloaded yet in the fresh world; the unload-then-restore
     // bookkeeping starts empty.
     unloadedChunks_.clear();
+    // CS-4: this session has not populated any chunk yet either.
+    populatedChunks_.clear();
     gameSession_.inventory().restore(currentSave_->inventory, currentSave_->selectedHotbarSlot);
     gameSession_.chestSystem().restore(currentSave_->chests);
     gameSession_.trappedChestSystem().restore(currentSave_->trappedChests);
@@ -1098,24 +1100,57 @@ void GameRuntime::restoreLoadedChunk(world::ChunkPosition position) {
     // Only chunks this session actually unloaded have their herd on disk; the
     // rest already have their creatures in the simulation (world load restored
     // every region record at once).
-    if (unloadedChunks_.erase(position) == 0U) {
+    if (unloadedChunks_.erase(position) != 0U) {
+        // The unload write is asynchronous, so this chunk's region file may
+        // still be sitting in the persistence queue. Wait for exactly this
+        // chunk's writes to land before reading it back, otherwise the herd
+        // would restore from a stale (or half-written) file.
+        flushChunkWrites(position);
+        const auto records = saveRepository_.loadChunkEntities(currentSave_->summary.identifier,
+                                                                position.x, position.z);
+        for (const auto& record : records) {
+            const auto& type = gameplay::entities::resolveEntityTypeForRestore(record.species);
+            gameSession_.worldEntities().restore(
+                {record.x, record.y, record.z}, type, record.yaw,
+                {record.vx, record.vy, record.vz}, record.health, record.angerTicks,
+                record.ageTicks, record.rngState, record.fireTicks,
+                toActiveEffects(record.effects), record.age, record.loveTicks);
+        }
+        // A chunk this session unloaded already had (or explicitly did not
+        // have) its generation-time pass long before this unload — mark it so
+        // a later re-unload/re-load cycle within the same session never
+        // re-runs spawnForChunkGeneration on top of the just-restored herd.
+        populatedChunks_.insert(position);
         return;
     }
-    // The unload write is asynchronous, so this chunk's region file may still be
-    // sitting in the persistence queue. Wait for exactly this chunk's writes to
-    // land before reading it back, otherwise the herd would restore from a stale
-    // (or half-written) file.
-    flushChunkWrites(position);
-    const auto records =
-        saveRepository_.loadChunkEntities(currentSave_->summary.identifier, position.x, position.z);
-    for (const auto& record : records) {
-        const auto& type = gameplay::entities::resolveEntityTypeForRestore(record.species);
-        gameSession_.worldEntities().restore(
-            {record.x, record.y, record.z}, type, record.yaw,
-            {record.vx, record.vy, record.vz}, record.health, record.angerTicks,
-            record.ageTicks, record.rngState, record.fireTicks,
-            toActiveEffects(record.effects), record.age, record.loveTicks);
+
+    // CS-4: not a same-session restore. Populate this chunk's generation-time
+    // herd exactly once — but only if nothing has ever marked it visited:
+    //   - this session already ran the pass here (populatedChunks_), or
+    //   - an earlier session left a persisted trace: either a block edit
+    //     (editsByChunk_, the in-memory index — no I/O) or a saved region
+    //     entity record (loadChunkEntities — the same read restore above
+    //     already pays when it applies). A chunk that was visited, fully
+    //     drained of edits and left with no surviving herd (every animal
+    //     wandered off before the world was saved) has no record either way
+    //     and would look unvisited again — a known gap CS-5's storage/
+    //     retrieval verification is scoped to close; see the CS README.
+    if (populatedChunks_.contains(position)) {
+        return;
     }
+    populatedChunks_.insert(position);
+    refreshEditIndex();
+    const bool hasPriorRecord =
+        editsByChunk_.find(position) != editsByChunk_.end() ||
+        !saveRepository_
+             .loadChunkEntities(currentSave_->summary.identifier, position.x, position.z)
+             .empty();
+    if (hasPriorRecord) {
+        return;
+    }
+    gameSession_.naturalSpawner().spawnForChunkGeneration(
+        serverWorld_, gameSession_.worldEntities(), currentSave_->summary.seed, position.x,
+        position.z);
 }
 
 void GameRuntime::registerAuthoritativeCommands() {

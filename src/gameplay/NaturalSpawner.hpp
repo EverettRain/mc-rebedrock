@@ -54,6 +54,25 @@ class NaturalSpawner final {
     // Rebuilds the biome source for a new world seed (a new save or /reload).
     void setSeed(std::uint64_t seed);
 
+    // NaturalSpawner.spawnMobsForChunkGeneration (26.1): the world-generation-
+    // time population pass, run once when a chunk is first generated rather
+    // than waited out over the persistent per-tick cycle above. Only the
+    // CREATURE category spawns here (vanilla's chunk-generation pass never
+    // seeds MONSTER/AMBIENT/WATER_CREATURE — those still arrive solely through
+    // tick()); a biome with no creature entries in its table is a no-op.
+    //
+    // Deterministic in (worldSeed, chunkX, chunkZ) alone: the position rolls,
+    // the species pick, the group size and the retry jitter all come from one
+    // JavaRandom stream seeded by setPopulationSeed(worldSeed, chunkX*16,
+    // chunkZ*16) — the same derivation Features::generateVegetation already
+    // uses for tree placement, so a chunk's generation-time herd is exactly as
+    // reproducible as its trees. No wall-clock, no global RNG: replaying the
+    // same seed and chunk position always lands the same individuals in the
+    // same spots. Every spawned individual gets a `spawn(...)` seed itself
+    // drawn from that same stream, so its wander/yaw is reproducible too.
+    void spawnForChunkGeneration(const world::World& world, EntitySystem& entities,
+                                 std::uint64_t worldSeed, int chunkX, int chunkZ) const;
+
     // Overlays the biome tables from a pack's `data/minecraft/worldgen/biome/…`.
     // Without this the built-in 26.1 numbers stand, which is the usual case:
     // an ordinary resource pack carries no `data/` at all.

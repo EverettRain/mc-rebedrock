@@ -6,6 +6,7 @@
 #include "world/Chunk.hpp"
 #include "world/World.hpp"
 #include "world/WorldConstants.hpp"
+#include "world/gen/JavaRandom.hpp"
 
 #include <glm/geometric.hpp>
 
@@ -138,6 +139,29 @@ constexpr int kMaximumColumnSamples = 16;
     return count;
 }
 
+// WeightedList#getRandom, drawn from the world-generation JavaRandom stream
+// rather than the tick spawner's small LCG — spawnForChunkGeneration shares one
+// stream across the whole pass (position, species, group size, retry jitter),
+// matching vanilla's WorldgenRandom usage in spawnMobsForChunkGeneration.
+[[nodiscard]] const SpawnerData* pickWeightedGeneration(
+    const std::vector<SpawnerData>& entries, world::gen::JavaRandom& random) {
+    int total = 0;
+    for (const auto& entry : entries) {
+        total += entry.weight;
+    }
+    if (total <= 0) {
+        return nullptr;
+    }
+    int roll = random.nextInt(total);
+    for (const auto& entry : entries) {
+        roll -= entry.weight;
+        if (roll < 0) {
+            return &entry;
+        }
+    }
+    return &entries.back();
+}
+
 } // namespace
 
 NaturalSpawner::NaturalSpawner(std::uint64_t seed)
@@ -152,6 +176,105 @@ void NaturalSpawner::setSeed(std::uint64_t seed) {
     // registration *and* after the pack stack has been read, so this is where
     // the spawner picks up whatever the process-wide tables ended up holding.
     tables_ = biomeSpawnTables();
+}
+
+// NaturalSpawner.spawnMobsForChunkGeneration, condensed to this game's shape:
+// no world border term (SpawnPlacements.isSpawnPositionOk here already drops
+// it, matching spawnOnce above), no ceiling probe in getTopNonCollidingPos
+// (the overworld here has none — that branch is `dimensionType().hasCeiling()`,
+// vanilla's nether-only case), and finalizeSpawn/checkSpawnObstruction/
+// checkSpawnRules are named as comments rather than faked, the same "a stage
+// with nothing behind it stays a comment" rule spawnOnce documents above.
+void NaturalSpawner::spawnForChunkGeneration(const world::World& world, EntitySystem& entities,
+                                             std::uint64_t worldSeed, int chunkX,
+                                             int chunkZ) const {
+    // getRandomSpawnMobAt reads the biome at the chunk's own centre column in
+    // vanilla's spawnOriginalMobs (worldGenRegion.getCenter()), not per-member —
+    // one biome lookup governs the whole chunk's generation-time population.
+    const auto biome = biomes_->biomeAtBlock(chunkX * world::kChunkWidth + 8,
+                                             chunkZ * world::kChunkDepth + 8);
+    const auto& mobs = tables_.settings(biome).forCategory(entities::MobCategory::Creature);
+    if (mobs.empty()) {
+        return;
+    }
+
+    // setDecorationSeed (Java) / setPopulationSeed (this port, same LCG and the
+    // same derivation Features::generateVegetation already draws tree placement
+    // from): the whole pass is one JavaRandom stream seeded from
+    // (worldSeed, chunkMinX, chunkMinZ) alone, so replaying the same seed and
+    // chunk position reproduces the exact same herd every time — no wall-clock,
+    // no shared/global RNG, independent of generation order or thread.
+    world::gen::JavaRandom random;
+    random.setPopulationSeed(worldSeed, chunkX * world::kChunkWidth, chunkZ * world::kChunkDepth);
+
+    const int originX = chunkX * world::kChunkWidth;
+    const int originZ = chunkZ * world::kChunkDepth;
+
+    // creatureGenerationProbability's WeightedList loop: vanilla draws entries
+    // until a coin flip fails, so a chunk can seed more than one species/group
+    // (usually zero or one at the default 0.1 probability). kMaxDraws bounds a
+    // pathological probability from spinning forever — vanilla's own bound is a
+    // codec range clamp (0..0.9999999), not a loop counter, but a bound here
+    // costs nothing and keeps generation latency predictable.
+    constexpr float kCreatureSpawnProbability = 0.1F; // MobSpawnSettings' default
+    constexpr int kMaxDraws = 64;
+    for (int draws = 0; draws < kMaxDraws && random.nextFloat() < kCreatureSpawnProbability;
+         ++draws) {
+        const SpawnerData* entry = pickWeightedGeneration(mobs, random);
+        if (entry == nullptr || entry->type == nullptr) {
+            continue;
+        }
+        const int count =
+            entry->minGroup + random.nextInt(1 + entry->maxGroup - entry->minGroup);
+        const int startX = originX + random.nextInt(world::kChunkWidth);
+        const int startZ = originZ + random.nextInt(world::kChunkDepth);
+        int x = startX;
+        int z = startZ;
+        const entities::SpawnPlacement placement = entry->type->spawnPlacement();
+
+        for (int member = 0; member < count; ++member) {
+            bool success = false;
+            // getTopNonCollidingPos + isSpawnPositionOk + noCollision, retried
+            // with vanilla's `x/z += nextInt(5) - nextInt(5)` jitter up to four
+            // times, re-clamped into the chunk's own 16x16 column whenever the
+            // jitter walks the probe outside it (vanilla's do-while below the
+            // attempts loop).
+            for (int attempts = 0; !success && attempts < 4; ++attempts) {
+                const int surfaceY = worldSurfaceY(world, x, z);
+                if (surfaceY >= world::kMinY) {
+                    const int spawnY = surfaceY + 1;
+                    const SimulationPosition cell{x, spawnY, z};
+                    if (isSpawnPositionOk(world, cell, placement)) {
+                        const glm::vec3 memberPosition{
+                            static_cast<float>(x) + 0.5F, static_cast<float>(spawnY),
+                            static_cast<float>(z) + 0.5F};
+                        if (EntitySystem::canOccupy(world, memberPosition,
+                                                    entry->type->dimensions())) {
+                            // --- species spawn rules ---  (checkSpawnRules: none yet)
+                            // Deterministic per-individual seed drawn from the
+                            // same stream, so wander/yaw reproduce too.
+                            const auto individualSeed = static_cast<std::uint32_t>(
+                                random.nextInt() ^ static_cast<std::int32_t>(worldSeed));
+                            entities.spawn(memberPosition, *entry->type,
+                                          individualSeed == 0U ? 1U : individualSeed);
+                            // --- finalizeSpawn ---  (group buffs: none yet)
+                            success = true;
+                        }
+                    }
+                }
+                if (success) {
+                    break;
+                }
+                x += random.nextInt(5) - random.nextInt(5);
+                z += random.nextInt(5) - random.nextInt(5);
+                while (x < originX || x >= originX + world::kChunkWidth || z < originZ ||
+                      z >= originZ + world::kChunkDepth) {
+                    x = startX + random.nextInt(5) - random.nextInt(5);
+                    z = startZ + random.nextInt(5) - random.nextInt(5);
+                }
+            }
+        }
+    }
 }
 
 void NaturalSpawner::tick(const world::World& world, EntitySystem& entities, glm::vec3 center,

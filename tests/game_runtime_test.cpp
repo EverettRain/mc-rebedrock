@@ -18,10 +18,12 @@
 
 #include "gameplay/Difficulty.hpp"
 #include "gameplay/GameplayMutationSink.hpp"
+#include "gameplay/NaturalSpawner.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "world/ChunkStreamer.hpp"
 #include "world/PersistentBlockEdit.hpp"
 #include "world/WorldMutationService.hpp"
+#include "world/gen/Biome.hpp"
 
 #include <algorithm>
 #include <array>
@@ -724,6 +726,107 @@ int main() {
             }
             assert(pigReloaded);
             assert(zombieReloaded);
+            runtime2.stopSimulation();
+        }
+    }
+
+    // CS-4: world-generation-time population. restoreLoadedChunk's chunk-
+    // loaded hook is the same one M-3 C5 exercises above; this covers its new
+    // branch — the first time a chunk streams in this session with no restore
+    // pending, it runs NaturalSpawner::spawnForChunkGeneration once instead of
+    // doing nothing (the pre-CS-4 behaviour: only unload-then-reload chunks
+    // got anything, a brand new chunk got no generation-time herd at all).
+    {
+        world::ChunkStreamer streamer{17U, 4, 4};
+        RecordingHost host;
+        runtime::GameRuntime runtime{host, streamer, saveRoot};
+        host.save = &runtime.currentSaveSlot();
+
+        auto save = runtime.createWorld("cs4-generation", 17U, gameplay::GameMode::Creative);
+        runtime.loadWorld(std::move(save), /*viewDistanceChunks=*/4);
+
+        // Every biome is forced to carry pig, the same way natural_spawn_test
+        // sidesteps the real biome map for a deterministic assertion — CS-4's
+        // contract is "a fresh chunk gets its generation-time herd", which
+        // this exercises independent of which biome the terrain happens to be.
+        for (int index = 0; index < static_cast<int>(world::gen::Biome::Count); ++index) {
+            runtime.gameSession().naturalSpawner().spawnTables().set(
+                static_cast<world::gen::Biome>(index), gameplay::entities::MobCategory::Creature,
+                {{gameplay::entities::entityTypeRegistry().byId("pig"), 10, 4, 4}});
+        }
+
+        // Chunk (1,1) generates for the first time this session — no prior
+        // unload, so unloadedChunks_ has nothing to restore for it.
+        const auto batch = streamer.requestSync({1, 1}, std::chrono::seconds(10));
+        assert(batch.has_value());
+        applyBatch(runtime, *batch);
+        assert(runtime.world().hasChunk({1, 1}));
+        assert(runtime.gameSession().worldEntities().entities().empty());
+
+        runtime.restoreLoadedChunk({1, 1});
+        const auto firstCount = runtime.gameSession().worldEntities().entities().size();
+        // Seed 17 at chunk (1,1) is a fixed point confirmed offline to clear
+        // the pass's creature-spawn-probability draw *and* land its group on
+        // real generated terrain (not open water, which the OnGround
+        // placement rule correctly refuses), producing 4 pigs — so this is a
+        // real, non-empty herd, and the "no duplicate on reload" assertions
+        // below are a genuine proof, not a vacuously-true comparison of zeros.
+        assert(firstCount == 4U);
+        for (const auto& entity : runtime.gameSession().worldEntities().entities()) {
+            assert(entity.type != nullptr);
+            assert(std::string{entity.type->id().path} == "pig");
+        }
+
+        // Calling restoreLoadedChunk again for the same chunk without an
+        // intervening unload (a spurious duplicate onChunkLoaded, or the
+        // streamer redelivering the same generation batch) must not run the
+        // pass a second time — populatedChunks_ dedups within the session.
+        runtime.restoreLoadedChunk({1, 1});
+        assert(runtime.gameSession().worldEntities().entities().size() == firstCount);
+
+        // Unload the chunk (its herd, if any, and no edits, go to the region
+        // file) and stream it back in: this is the M-3 C5 restore path, which
+        // must take over instead of running spawnForChunkGeneration again —
+        // restoring the exact surviving herd, not adding a fresh one on top.
+        runtime.persistUnloadedChunk({1, 1});
+        runtime.flushChunkPersistence();
+        assert(runtime.gameSession().worldEntities().entities().empty());
+        runtime.restoreLoadedChunk({1, 1});
+        assert(runtime.gameSession().worldEntities().entities().size() == firstCount);
+        runtime.restoreLoadedChunk({1, 1});  // still idempotent post-restore
+        assert(runtime.gameSession().worldEntities().entities().size() == firstCount);
+
+        // Cross-session: save (the surviving herd rides the flat entity list
+        // the way M-3 C5's phase 1 already does), close, and reopen in a new
+        // GameRuntime. The reload restores every entity immediately
+        // (loadWorld's flat-list loop) — before any chunk streams — so the
+        // first restoreLoadedChunk for (1,1) in the new process must detect
+        // the chunk was already visited and must not add a second herd on
+        // top of the one loadWorld just restored.
+        runtime.save();
+        const auto identifier = runtime.currentSave().summary.identifier;
+        runtime.stopSimulation();
+        {
+            world::ChunkStreamer streamer2{17U, 4, 4};
+            RecordingHost host2;
+            runtime::GameRuntime runtime2{host2, streamer2, saveRoot};
+            host2.save = &runtime2.currentSaveSlot();
+            for (int index = 0; index < static_cast<int>(world::gen::Biome::Count); ++index) {
+                runtime2.gameSession().naturalSpawner().spawnTables().set(
+                    static_cast<world::gen::Biome>(index),
+                    gameplay::entities::MobCategory::Creature,
+                    {{gameplay::entities::entityTypeRegistry().byId("pig"), 10, 4, 4}});
+            }
+            auto reloaded = runtime2.saveRepository().load(identifier);
+            runtime2.loadWorld(std::move(reloaded), 4);
+            assert(runtime2.gameSession().worldEntities().entities().size() == firstCount);
+
+            const auto batch2 = streamer2.requestSync({1, 1}, std::chrono::seconds(10));
+            assert(batch2.has_value());
+            applyBatch(runtime2, *batch2);
+            runtime2.restoreLoadedChunk({1, 1});
+            // No duplicate herd: still exactly what loadWorld restored.
+            assert(runtime2.gameSession().worldEntities().entities().size() == firstCount);
             runtime2.stopSimulation();
         }
     }
