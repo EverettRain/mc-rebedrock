@@ -13,8 +13,14 @@
 // (wire, torch, repeater, comparator, observer, piston family, lever, button,
 // pressure plate, redstone block) is large and coherent enough to earn its own
 // tab without reworking the other six. Full alignment to 26.1's complete tab
-// taxonomy (Colored Blocks / Natural Blocks / Combat / Ingredients / Operator
+// taxonomy (Colored Blocks / Natural Blocks / Ingredients / Operator
 // Utilities / ...) is deferred — see the AR-CI report for the debt note.
+//
+// EQ-0: `Combat` is the same bounded addition for vanilla 26.1's distinct
+// COMBAT tab (armor, swords, and other player-defense/offense gear) — armor
+// is new content this node adds and none of the existing seven tabs fit it,
+// so it earns its own tab the same way Redstone did rather than forcing a
+// taxonomy rework.
 //
 // `Hidden` is a sentinel, not a real tab: it is every block's default (a block
 // that never calls `.creative(...)` is technical/unobtainable and stays out of
@@ -35,6 +41,7 @@ enum class CreativeCategory : std::uint8_t {
     Tools,
     SpawnEggs,
     Redstone,
+    Combat,
     Count,
     // Sentinel: deliberately not in [0, Count) so it can never alias a real
     // catalog slot. Every block defaults to this; declaring a tab via

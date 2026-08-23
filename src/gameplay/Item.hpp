@@ -2,6 +2,7 @@
 
 #include "core/CreativeCategory.hpp"
 #include "core/Identifier.hpp"
+#include "gameplay/EquipmentSlot.hpp"
 #include "gameplay/ItemUse.hpp"
 #include "world/Block.hpp"
 
@@ -53,6 +54,20 @@ enum class ToolTier : std::uint8_t {
     None,
     Wood,
     Stone,
+    Iron,
+    Gold,
+    Diamond,
+};
+
+// EQ-0: Java 1.16.1's ArmorMaterials enum — the five armor materials, kept as
+// its own enum rather than reusing ToolTier because leather and chainmail
+// have no tool-tier counterpart (and gold/iron/diamond's armor numbers do not
+// share ToolTier's mining-speed/harvest-level axis at all). None is the "not
+// armor" sentinel, mirroring ToolTier::None.
+enum class ArmorMaterialId : std::uint8_t {
+    None,
+    Leather,
+    Chainmail,
     Iron,
     Gold,
     Diamond,
@@ -179,6 +194,18 @@ class Item {
         return copy;
     }
 
+    // EQ-0: marks the item as armor of the given material worn in the given
+    // slot — Java 1.16.1's ArmorItem constructor. Mirrors tool()'s shape: the
+    // registry table (armorAttributes below) derives protection/toughness/
+    // durability/enchantability from (material, slot) rather than storing
+    // them redundantly on every one of the 20 items.
+    [[nodiscard]] constexpr Item armor(ArmorMaterialId material, EquipmentSlot slot) const {
+        Item copy = *this;
+        copy.armorMaterial = material;
+        copy.armorSlot = slot;
+        return copy;
+    }
+
     // Declares what eating the item restores.
     [[nodiscard]] constexpr Item food(FoodValue value) const {
         Item copy = *this;
@@ -237,6 +264,11 @@ class Item {
     // The tool role and material for tools; ToolType::None for everything else.
     ToolType toolType = ToolType::None;
     ToolTier toolTier = ToolTier::None;
+    // EQ-0: the material and body slot for armor; ArmorMaterialId::None for
+    // everything else (armorSlot is then meaningless — always check the
+    // material, matching how toolTier is only meaningful under toolType).
+    ArmorMaterialId armorMaterial = ArmorMaterialId::None;
+    EquipmentSlot armorSlot = EquipmentSlot::Offhand;
     FoodValue nutrition{};
     // Item#useOn: what right-clicking with this item does. Null for an item the
     // interaction system does not route through the item (it places nothing).
@@ -667,6 +699,106 @@ inline constexpr Item Shears = Item::of("shears")
                                    .single()
                                    .tool(ToolType::Shears, ToolTier::None);
 
+// Armor: 5 materials (leather/chainmail/iron/gold/diamond) x 4 slots
+// (head/chest/legs/feet), Java 1.16.1 ArmorItem. Each is single-stacking,
+// carries its material + slot (armorAttributes below derives protection,
+// toughness, durability and enchantability from that pair), and files under
+// the Combat creative tab. Chainmail has no crafting recipe in 1.16.1 (see
+// RecipeBakedData.inc's comment) but its item identity still registers —
+// obtainable via /give, mob drops and (once loot is wired) trades, exactly
+// as vanilla.
+inline constexpr Item LeatherHelmet = Item::of("leather_helmet")
+                                          .category(CreativeCategory::Combat)
+                                          .single()
+                                          .armor(ArmorMaterialId::Leather, EquipmentSlot::Head);
+inline constexpr Item LeatherChestplate =
+    Item::of("leather_chestplate")
+        .category(CreativeCategory::Combat)
+        .single()
+        .armor(ArmorMaterialId::Leather, EquipmentSlot::Chest);
+inline constexpr Item LeatherLeggings =
+    Item::of("leather_leggings")
+        .category(CreativeCategory::Combat)
+        .single()
+        .armor(ArmorMaterialId::Leather, EquipmentSlot::Legs);
+inline constexpr Item LeatherBoots = Item::of("leather_boots")
+                                         .category(CreativeCategory::Combat)
+                                         .single()
+                                         .armor(ArmorMaterialId::Leather, EquipmentSlot::Feet);
+inline constexpr Item ChainmailHelmet =
+    Item::of("chainmail_helmet")
+        .category(CreativeCategory::Combat)
+        .single()
+        .armor(ArmorMaterialId::Chainmail, EquipmentSlot::Head);
+inline constexpr Item ChainmailChestplate =
+    Item::of("chainmail_chestplate")
+        .category(CreativeCategory::Combat)
+        .single()
+        .armor(ArmorMaterialId::Chainmail, EquipmentSlot::Chest);
+inline constexpr Item ChainmailLeggings =
+    Item::of("chainmail_leggings")
+        .category(CreativeCategory::Combat)
+        .single()
+        .armor(ArmorMaterialId::Chainmail, EquipmentSlot::Legs);
+inline constexpr Item ChainmailBoots =
+    Item::of("chainmail_boots")
+        .category(CreativeCategory::Combat)
+        .single()
+        .armor(ArmorMaterialId::Chainmail, EquipmentSlot::Feet);
+inline constexpr Item IronHelmet = Item::of("iron_helmet")
+                                       .category(CreativeCategory::Combat)
+                                       .single()
+                                       .armor(ArmorMaterialId::Iron, EquipmentSlot::Head);
+inline constexpr Item IronChestplate = Item::of("iron_chestplate")
+                                           .category(CreativeCategory::Combat)
+                                           .single()
+                                           .armor(ArmorMaterialId::Iron, EquipmentSlot::Chest);
+inline constexpr Item IronLeggings = Item::of("iron_leggings")
+                                         .category(CreativeCategory::Combat)
+                                         .single()
+                                         .armor(ArmorMaterialId::Iron, EquipmentSlot::Legs);
+inline constexpr Item IronBoots = Item::of("iron_boots")
+                                      .category(CreativeCategory::Combat)
+                                      .single()
+                                      .armor(ArmorMaterialId::Iron, EquipmentSlot::Feet);
+inline constexpr Item GoldHelmet = Item::of("golden_helmet")
+                                       .category(CreativeCategory::Combat)
+                                       .single()
+                                       .armor(ArmorMaterialId::Gold, EquipmentSlot::Head);
+inline constexpr Item GoldChestplate =
+    Item::of("golden_chestplate")
+        .category(CreativeCategory::Combat)
+        .single()
+        .armor(ArmorMaterialId::Gold, EquipmentSlot::Chest);
+inline constexpr Item GoldLeggings = Item::of("golden_leggings")
+                                         .category(CreativeCategory::Combat)
+                                         .single()
+                                         .armor(ArmorMaterialId::Gold, EquipmentSlot::Legs);
+inline constexpr Item GoldBoots = Item::of("golden_boots")
+                                      .category(CreativeCategory::Combat)
+                                      .single()
+                                      .armor(ArmorMaterialId::Gold, EquipmentSlot::Feet);
+inline constexpr Item DiamondHelmet =
+    Item::of("diamond_helmet")
+        .category(CreativeCategory::Combat)
+        .single()
+        .armor(ArmorMaterialId::Diamond, EquipmentSlot::Head);
+inline constexpr Item DiamondChestplate =
+    Item::of("diamond_chestplate")
+        .category(CreativeCategory::Combat)
+        .single()
+        .armor(ArmorMaterialId::Diamond, EquipmentSlot::Chest);
+inline constexpr Item DiamondLeggings =
+    Item::of("diamond_leggings")
+        .category(CreativeCategory::Combat)
+        .single()
+        .armor(ArmorMaterialId::Diamond, EquipmentSlot::Legs);
+inline constexpr Item DiamondBoots =
+    Item::of("diamond_boots")
+        .category(CreativeCategory::Combat)
+        .single()
+        .armor(ArmorMaterialId::Diamond, EquipmentSlot::Feet);
+
 // Spawn eggs are defined in SpawnEggItems.hpp (they need entity headers that
 // live above Item.hpp in the include graph). See kSpawnEggItems there.
 
@@ -677,7 +809,7 @@ inline constexpr Item Shears = Item::of("shears")
 // their constructors need entity headers that sit above us in the include graph.
 // The order sets both the creative-catalog order within each tab and the item
 // texture-array layout the renderer appends. Grouped materials / food / tools.
-inline constexpr std::array<const Item*, 57> kItemRegistry{
+inline constexpr std::array<const Item*, 77> kItemRegistry{
     &items::Bucket,     &items::WaterBucket, &items::LavaBucket, &items::MilkBucket,
     &items::Coal,
     &items::IronIngot,
@@ -699,7 +831,25 @@ inline constexpr std::array<const Item*, 57> kItemRegistry{
     &items::WoodenSword,    &items::StoneSword,    &items::IronSword,
     &items::DiamondSword,   &items::GoldSword,
     &items::Shears,
+    // EQ-0: armor, 5 materials x 4 slots (head, chest, legs, feet order).
+    &items::LeatherHelmet,   &items::LeatherChestplate, &items::LeatherLeggings,
+    &items::LeatherBoots,
+    &items::ChainmailHelmet, &items::ChainmailChestplate, &items::ChainmailLeggings,
+    &items::ChainmailBoots,
+    &items::IronHelmet,      &items::IronChestplate,    &items::IronLeggings,
+    &items::IronBoots,
+    &items::GoldHelmet,      &items::GoldChestplate,    &items::GoldLeggings,
+    &items::GoldBoots,
+    &items::DiamondHelmet,   &items::DiamondChestplate, &items::DiamondLeggings,
+    &items::DiamondBoots,
 };
+
+// A forgotten count bump (adding an item without growing the array, or vice
+// versa) is a compile error, not a silent truncation: 57 pre-EQ-0 items + the
+// 20 armor items this node adds.
+static_assert(kItemRegistry.size() == 57U + 20U,
+              "kItemRegistry size must track every entry listed above — bump "
+              "this alongside the array when adding or removing items");
 
 // The registry is well formed when every entry is in this project's namespace,
 // has a non-empty path, and no two entries share an identifier.
@@ -786,6 +936,112 @@ struct ToolAttributes final {
     default:
         return {};
     }
+}
+
+// EQ-0: the position of an armor slot in the per-slot tables below, matching
+// vanilla's own EquipmentSlot#getEntitySlotId ordering (FEET=0, LEGS=1,
+// CHEST=2, HEAD=3) — the exact order Java's ArmorMaterials/ArmorItem index
+// PROTECTION_VALUES and BASE_DURABILITY by. gameplay::EquipmentSlot's own
+// numeric values differ (Offhand=0 first, so this project can index its own
+// kArmorSlots/EquipmentSlots array too), so this is a deliberate second,
+// vanilla-shaped index rather than reusing EquipmentSlot's underlying value.
+[[nodiscard]] constexpr std::size_t armorSlotIndex(EquipmentSlot slot) {
+    switch (slot) {
+    case EquipmentSlot::Feet: return 0;
+    case EquipmentSlot::Legs: return 1;
+    case EquipmentSlot::Chest: return 2;
+    case EquipmentSlot::Head: return 3;
+    case EquipmentSlot::Offhand: return 0;
+    }
+    return 0;
+}
+
+// The position of an armor material in the per-material tables below.
+[[nodiscard]] constexpr std::size_t armorMaterialIndex(ArmorMaterialId material) {
+    switch (material) {
+    case ArmorMaterialId::Leather: return 0;
+    case ArmorMaterialId::Chainmail: return 1;
+    case ArmorMaterialId::Iron: return 2;
+    case ArmorMaterialId::Gold: return 3;
+    case ArmorMaterialId::Diamond: return 4;
+    case ArmorMaterialId::None: return 0;
+    }
+    return 0;
+}
+
+// Java 1.16.1 ArmorMaterial: what one piece of armor (a material x slot pair)
+// carries. toughness/enchantability are per-material (every slot of the same
+// material shares them); protection and durability vary by slot too.
+struct ArmorAttributes final {
+    std::uint8_t protection = 0;
+    float toughness = 0.0F;
+    std::uint8_t enchantability = 0;
+    std::uint16_t durability = 0;
+};
+
+// Java 1.16.1 ArmorMaterials enum (net.minecraft.item.ArmorMaterials, yarn
+// 1.16.1) — transcribed from the decompiled source, not the wiki. Material
+// order below is Leather, Chainmail, Iron, Gold, Diamond (armorMaterialIndex
+// above); each PROTECTION_VALUES row is {feet, legs, chest, head}
+// (armorSlotIndex above) exactly as ArmorMaterials declares
+// `new int[]{feet, legs, chest, head}`:
+//   LEATHER   {1, 2, 3, 1}   durabilityMultiplier  5   toughness 0.0  ench 15
+//   CHAIN     {1, 4, 5, 2}   durabilityMultiplier 15   toughness 0.0  ench 12
+//   IRON      {2, 5, 6, 2}   durabilityMultiplier 15   toughness 0.0  ench  9
+//   GOLD      {1, 3, 5, 2}   durabilityMultiplier  7   toughness 0.0  ench 25
+//   DIAMOND   {3, 6, 8, 3}   durabilityMultiplier 33   toughness 2.0  ench 10
+// getDurability(slot) = BASE_DURABILITY[slot] * durabilityMultiplier, where
+// BASE_DURABILITY = {13, 15, 16, 11} (feet, legs, chest, head) — so the
+// per-slot durability actually stored below is that product, precomputed
+// (the multiplier itself is not otherwise needed anywhere in this project).
+[[nodiscard]] constexpr ArmorAttributes armorAttributes(ArmorMaterialId material,
+                                                         EquipmentSlot slot) {
+    constexpr std::array<std::uint16_t, 4> kBaseDurability{13, 15, 16, 11};
+    constexpr std::array<std::array<std::uint8_t, 4>, 5> kProtection{{
+        {1, 2, 3, 1},  // Leather
+        {1, 4, 5, 2},  // Chainmail
+        {2, 5, 6, 2},  // Iron
+        {1, 3, 5, 2},  // Gold
+        {3, 6, 8, 3},  // Diamond
+    }};
+    constexpr std::array<std::uint8_t, 5> kDurabilityMultiplier{5, 15, 15, 7, 33};
+    constexpr std::array<float, 5> kToughness{0.0F, 0.0F, 0.0F, 0.0F, 2.0F};
+    constexpr std::array<std::uint8_t, 5> kEnchantability{15, 12, 9, 25, 10};
+
+    if (material == ArmorMaterialId::None) return {};
+    const std::size_t materialIndex = armorMaterialIndex(material);
+    const std::size_t slotIndex = armorSlotIndex(slot);
+    const std::uint16_t durability = static_cast<std::uint16_t>(
+        kBaseDurability[slotIndex] * kDurabilityMultiplier[materialIndex]);
+    return {kProtection[materialIndex][slotIndex], kToughness[materialIndex],
+            kEnchantability[materialIndex], durability};
+}
+
+[[nodiscard]] constexpr bool isArmor(const Item* item) {
+    return item != nullptr && item->armorMaterial != ArmorMaterialId::None;
+}
+
+// ArmorItem#getSlotType: which body slot an armor item occupies. Meaningless
+// (and unused) for a non-armor item.
+[[nodiscard]] constexpr EquipmentSlot armorSlotOf(const Item* item) {
+    return item == nullptr ? EquipmentSlot::Offhand : item->armorSlot;
+}
+
+// The seam EQ-1 (wearing/removing armor) and EQ-2 (the still-empty
+// armor/toughness stage in Damage.hpp's mitigation pipeline) both read
+// through: how many armor points and how much toughness one worn item stack
+// contributes. Zero for a non-armor item — summing these across the four
+// equipped armor slots is exactly vanilla's LivingEntity#getArmor /
+// #getAttributeValue(GENERIC_ARMOR_TOUGHNESS) totals (EntityAttributeModifier
+// ADDITION across each equipped ArmorItem's per-slot modifier).
+[[nodiscard]] constexpr std::uint8_t armorValue(const Item* item) {
+    if (!isArmor(item)) return 0U;
+    return armorAttributes(item->armorMaterial, item->armorSlot).protection;
+}
+
+[[nodiscard]] constexpr float armorToughness(const Item* item) {
+    if (!isArmor(item)) return 0.0F;
+    return armorAttributes(item->armorMaterial, item->armorSlot).toughness;
 }
 
 [[nodiscard]] constexpr FoodValue foodValue(const Item* item) {

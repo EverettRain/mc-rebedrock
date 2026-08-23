@@ -48,6 +48,33 @@ inline constexpr BakedIngredient kCraftIng_40[] = {{IngredientDefKind::Item, "re
 inline constexpr BakedIngredient kCraftIng_41[] = {{IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:stick"}};
 inline constexpr BakedIngredient kCraftIng_42[] = {{IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:stick"}};
 
+// EQ-0: armor recipes. Java 1.16.1 RecipesProvider shapes, transcribed
+// exactly — helmet is a 3x2 "XXX / X X", chestplate a 3x3 "X X / XXX / XXX",
+// leggings a 3x3 "XXX / X X / X X", boots a 2x2 "X X / X X". Leather uses
+// `rebedrock:leather` for X, iron/gold/diamond use their ingot/gem item; each
+// material's four pieces reuse one ingredient row per shape (helmet/
+// chestplate/leggings/boots), just swapping the material identifier. No
+// chainmail recipe exists in 1.16.1 (RecipesProvider never calls
+// ShapedRecipeJsonFactory.create for any CHAINMAIL_* item — obtainable only
+// via mob drop / trade / give, not crafting), so it is omitted here on
+// purpose, not a gap to fill in later.
+inline constexpr BakedIngredient kCraftIng_43[] = {{IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:leather"}};
+inline constexpr BakedIngredient kCraftIng_44[] = {{IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Item, "rebedrock:leather"}};
+inline constexpr BakedIngredient kCraftIng_45[] = {{IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:leather"}};
+inline constexpr BakedIngredient kCraftIng_46[] = {{IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Item, "rebedrock:leather"}, {IngredientDefKind::Item, "rebedrock:leather"}};
+inline constexpr BakedIngredient kCraftIng_47[] = {{IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}};
+inline constexpr BakedIngredient kCraftIng_48[] = {{IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}};
+inline constexpr BakedIngredient kCraftIng_49[] = {{IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}};
+inline constexpr BakedIngredient kCraftIng_50[] = {{IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}};
+inline constexpr BakedIngredient kCraftIng_51[] = {{IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}};
+inline constexpr BakedIngredient kCraftIng_52[] = {{IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}};
+inline constexpr BakedIngredient kCraftIng_53[] = {{IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}};
+inline constexpr BakedIngredient kCraftIng_54[] = {{IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}};
+inline constexpr BakedIngredient kCraftIng_55[] = {{IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:diamond"}};
+inline constexpr BakedIngredient kCraftIng_56[] = {{IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}};
+inline constexpr BakedIngredient kCraftIng_57[] = {{IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:diamond"}};
+inline constexpr BakedIngredient kCraftIng_58[] = {{IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}};
+
 inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     {"minecraft:oak_planks", 1, 1, false, false, kCraftIng_0, "rebedrock:oak_planks", 4},
     {"minecraft:spruce_planks", 1, 1, false, false, kCraftIng_1, "rebedrock:spruce_planks", 4},
@@ -92,6 +119,23 @@ inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     {"minecraft:iron_sword", 1, 3, false, false, kCraftIng_40, "rebedrock:iron_sword", 1},
     {"minecraft:golden_sword", 1, 3, false, false, kCraftIng_41, "rebedrock:golden_sword", 1},
     {"minecraft:diamond_sword", 1, 3, false, false, kCraftIng_42, "rebedrock:diamond_sword", 1},
+    // EQ-0: armor. No chainmail entries — see kCraftIng_43's banner comment.
+    {"minecraft:leather_helmet", 3, 2, false, false, kCraftIng_43, "rebedrock:leather_helmet", 1},
+    {"minecraft:leather_chestplate", 3, 3, false, false, kCraftIng_44, "rebedrock:leather_chestplate", 1},
+    {"minecraft:leather_leggings", 3, 3, false, false, kCraftIng_45, "rebedrock:leather_leggings", 1},
+    {"minecraft:leather_boots", 2, 2, false, false, kCraftIng_46, "rebedrock:leather_boots", 1},
+    {"minecraft:iron_helmet", 3, 2, false, false, kCraftIng_47, "rebedrock:iron_helmet", 1},
+    {"minecraft:iron_chestplate", 3, 3, false, false, kCraftIng_48, "rebedrock:iron_chestplate", 1},
+    {"minecraft:iron_leggings", 3, 3, false, false, kCraftIng_49, "rebedrock:iron_leggings", 1},
+    {"minecraft:iron_boots", 2, 2, false, false, kCraftIng_50, "rebedrock:iron_boots", 1},
+    {"minecraft:golden_helmet", 3, 2, false, false, kCraftIng_51, "rebedrock:golden_helmet", 1},
+    {"minecraft:golden_chestplate", 3, 3, false, false, kCraftIng_52, "rebedrock:golden_chestplate", 1},
+    {"minecraft:golden_leggings", 3, 3, false, false, kCraftIng_53, "rebedrock:golden_leggings", 1},
+    {"minecraft:golden_boots", 2, 2, false, false, kCraftIng_54, "rebedrock:golden_boots", 1},
+    {"minecraft:diamond_helmet", 3, 2, false, false, kCraftIng_55, "rebedrock:diamond_helmet", 1},
+    {"minecraft:diamond_chestplate", 3, 3, false, false, kCraftIng_56, "rebedrock:diamond_chestplate", 1},
+    {"minecraft:diamond_leggings", 3, 3, false, false, kCraftIng_57, "rebedrock:diamond_leggings", 1},
+    {"minecraft:diamond_boots", 2, 2, false, false, kCraftIng_58, "rebedrock:diamond_boots", 1},
 };
 
 inline constexpr BakedFurnaceRecipe kBakedFurnaceRecipes[] = {

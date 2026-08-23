@@ -12,6 +12,7 @@
 // PlayerInventory#getSelected equivalent. Duplicating it here would give the
 // mainhand two sources of truth.
 
+#include "gameplay/EquipmentSlot.hpp"
 #include "gameplay/Inventory.hpp"
 
 #include <array>
@@ -21,40 +22,11 @@
 
 namespace mc::gameplay {
 
-// Java 1.16.1's net.minecraft.entity.EquipmentSlot enum, minus MAINHAND
-// (which stays Inventory's selected hotbar slot — see the file banner). The
-// declaration order below mirrors vanilla's own enum order exactly
-// (MAINHAND, OFFHAND, FEET, LEGS, CHEST, HEAD) with MAINHAND dropped, so a
-// JC reader lining this up against the vanilla source sees the same
-// relative ordering rather than a reshuffled one.
-//
-// Dense and zero-based (DOD): a fixed-size array indexes directly by this
-// enum, no map, no heap.
-enum class EquipmentSlot : std::uint8_t {
-    Offhand = 0U,
-    Feet = 1U,
-    Legs = 2U,
-    Chest = 3U,
-    Head = 4U,
-};
-
-inline constexpr std::size_t kEquipmentSlotCount = 5U;
-
-// The four armor slots, in the same head-to-feet order the future armor
-// renderer and EQ-2's damage-reduction formula will want to walk (matching
-// vanilla's own iteration order in LivingEntity#getArmorSlots, which walks
-// FEET..HEAD — see armorSlotsInWearOrder below for that exact order; this
-// array is simply "the slots that are armor" for iteration/validation).
-inline constexpr std::array<EquipmentSlot, 4U> kArmorSlots{
-    EquipmentSlot::Feet,
-    EquipmentSlot::Legs,
-    EquipmentSlot::Chest,
-    EquipmentSlot::Head,
-};
-
-[[nodiscard]] constexpr bool isArmorSlot(EquipmentSlot slot) {
-    return slot != EquipmentSlot::Offhand;
-}
+// EquipmentSlot, kEquipmentSlotCount, kArmorSlots and isArmorSlot now live in
+// gameplay/EquipmentSlot.hpp (still namespace mc::gameplay, so every existing
+// call site through this header is unaffected) — EQ-0's armor items need the
+// enum too, and Item.hpp sits below this header in the include graph. See
+// that header's banner for the full reasoning.
 
 // The player's five equipment slots (armor x4 + offhand), owned as a small
 // companion to Inventory rather than folded into Inventory's own slot array:

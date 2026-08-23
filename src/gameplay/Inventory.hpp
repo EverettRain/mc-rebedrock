@@ -138,10 +138,17 @@ static_assert(std::is_trivially_copyable_v<ItemStack>,
         (stack.item == nullptr || asBlockItem(stack.item) != nullptr);
 }
 
-// ItemStack#getMaxDamage: the tool material's durability, or zero for anything
-// that never wears out.
+// ItemStack#getMaxDamage: the tool material's durability, or the armor
+// material's per-slot durability for armor (EQ-0), or zero for anything that
+// never wears out. A stack is never both a tool and armor (toolType and
+// armorMaterial are set by mutually distinct builder calls — tool() vs
+// armor() — on disjoint Item constants), so checking armor first when
+// toolType is None is unambiguous.
 [[nodiscard]] constexpr std::uint16_t itemMaximumDamage(const ItemStack& stack) {
     if (stack.item == nullptr) return 0U;
+    if (stack.item->armorMaterial != ArmorMaterialId::None) {
+        return armorAttributes(stack.item->armorMaterial, stack.item->armorSlot).durability;
+    }
     return toolAttributes(stack.item->toolType, stack.item->toolTier).durability;
 }
 

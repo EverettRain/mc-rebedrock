@@ -127,7 +127,9 @@ void testBuiltinFloorResolves() {
     table.loadBuiltinDefaults();
     const auto crafting = table.crafting();
     const auto furnace = table.furnace();
-    assert(crafting.size() == 43U); // the exact count that used to be hardcoded
+    // EQ-0 added 16 armor recipes (4 materials craftable x 4 slots; chainmail
+    // has no recipe) on top of the 43 that used to be hardcoded.
+    assert(crafting.size() == 43U + 16U);
     assert(furnace.size() == 7U);
 
     // 1x1 log -> 4 planks, a block ingredient and a block output.
@@ -187,7 +189,8 @@ void testOverlayMerges() {
                  "output":"minecraft:stone","count":1,"cookTicks":123,"experience":0.5})");
 
     table.load(pack);
-    assert(table.crafting().size() == 44U); // 43 built-ins + demo_combo (oak_planks replaced)
+    // 43+16 built-ins (EQ-0 added 16 armor recipes) + demo_combo (oak_planks replaced).
+    assert(table.crafting().size() == 43U + 16U + 1U);
     assert(findCrafting(table.crafting(), "minecraft:demo_combo") != nullptr);
     assert(findCrafting(table.crafting(), "minecraft:oak_planks")->output.count == 8U);
     const FurnaceRecipe* smelt = findFurnace(table.furnace(), "minecraft:demo_smelt");
@@ -199,7 +202,7 @@ void testNoDataFallback() {
     RecipeTable table;
     MemoryProvider empty;
     table.load(empty);
-    assert(table.crafting().size() == 43U);
+    assert(table.crafting().size() == 43U + 16U);
     assert(table.furnace().size() == 7U);
     assert(findCrafting(table.crafting(), "minecraft:oak_planks")->output.count == 4U);
 }
@@ -216,7 +219,7 @@ void testUnknownIdentifierSkipped() {
              R"({"width":1,"height":1,"ingredients":[{"item":"minecraft:coal"}],
                  "output":"minecraft:no_such_block","count":1})");
     table.load(pack);
-    assert(table.crafting().size() == 43U); // neither bad recipe was added
+    assert(table.crafting().size() == 43U + 16U); // neither bad recipe was added
     assert(findCrafting(table.crafting(), "minecraft:bad_item") == nullptr);
     assert(findCrafting(table.crafting(), "minecraft:bad_output") == nullptr);
 }
