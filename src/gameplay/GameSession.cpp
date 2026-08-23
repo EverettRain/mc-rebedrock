@@ -927,12 +927,28 @@ void GameSession::spawnBlockDrops(glm::ivec3 position, world::BlockState removed
 }
 
 void GameSession::onPlayerDeath(PlayerId playerId) {
-    // Vanilla scatters the whole inventory at the death position unless the
-    // keepInventory gamerule keeps it on the respawned player.
+    // Vanilla scatters the whole inventory AND drops experience at the death
+    // position unless the keepInventory gamerule keeps both on the respawned
+    // player (XP-4 / XP-experience/REGULAR.md #8: "保经验与保物品同一开关" —
+    // one gamerule gates both, matching PlayerEntity#die's
+    // `!level.getGameRules().getBoolean(GameRules.RULE_KEEPINVENTORY)` guard
+    // around both the inventory drop and the `dropExperience()` call).
     if (gameRules_.get<bool>(GameRuleId::KeepInventory)) {
         return;
     }
     auto& player = players_.at(playerId);
+    // PlayerEntity#dropExperience: min(7*level, 100), vanilla's cap so a
+    // high-level survival death cannot dump an unbounded pile of orbs. XP-0's
+    // `level()` is the integer truth this reads, and `giveExperienceLevels`
+    // with a very negative amount is how vanilla's own zeroing (progress AND
+    // total together) is expressed, rather than hand-rolling a separate
+    // "clear" method that could drift out of step with XP-0's own floor logic.
+    const std::int32_t droppedExperience =
+        std::min(7 * player.experience.level(), 100);
+    if (droppedExperience > 0) {
+        spawnExperienceOrbs(player.controller.position(), droppedExperience);
+    }
+    player.experience.giveExperienceLevels(std::numeric_limits<std::int32_t>::min());
     const glm::vec3 dropOrigin = player.controller.position() + glm::vec3{0.0F, 0.9F, 0.0F};
     std::size_t dropIndex = 0U;
     const auto scatter = [&](const ItemStack& stack) {
