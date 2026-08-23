@@ -1651,7 +1651,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             camera.setFieldOfViewDegrees(baseFieldOfViewDegrees * fovMultiplier);
             audioSystem.updateListener(camera.position(), camera.direction(), {0.0F, 1.0F, 0.0F});
             audioSystem.update();
-            driveAmbientMusic();
+            driveAmbientMusic(deltaSeconds);
             if (worldSessionActive)
                 world_.processChunkStreaming();
             {
@@ -4387,9 +4387,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // lives in the audio system; this only gathers render-side context. Biome
     // ambient loops are left empty until WG lands the nether/cave biomes that own
     // them (记账).
-    void driveAmbientMusic() {
+    void driveAmbientMusic(float deltaSeconds) {
         audio::AudioSystem::AmbientMusicContext context;
         context.listenerPosition = camera.position();
+        // The scheduler counts in 20-tps game-ticks, not frames. Absorb this
+        // frame's real time and pass the whole ticks it crossed (0 on most frames,
+        // >1 only on a long frame), so song delays and the cave-mood rate stay
+        // FPS-decoupled instead of racing at the render frame rate.
+        context.ticks = ambientMusicTicks_.advance(deltaSeconds);
         if (!worldSessionActive) {
             context.situation = audio::MusicSituation::Menu;
         } else {
@@ -4422,6 +4427,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         audioSystem.tickAmbientMusic(context);
     }
     std::uint32_t ambientMusicRandom_ = 0x1F123BB5U;
+    // Fixed-step accumulator that turns frame time into whole 20-tps ticks for the
+    // ambient/music scheduler (FPS-decoupled), mirroring SimulationDriver.
+    audio::TickAccumulator ambientMusicTicks_;
 
     // Rolls a broken block's loot table and drops whatever came out on top of the
     // cell it left behind. Several stacks fan out on the golden angle so they do

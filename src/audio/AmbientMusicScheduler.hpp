@@ -2,6 +2,7 @@
 
 #include "audio/SoundCategory.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -172,6 +173,44 @@ class MoodAccumulator final {
   private:
     MoodSettings settings_;
     float moodiness_ = 0.0F;
+};
+
+// Turns real frame time into whole 20-tps game-ticks for the ambient/music
+// scheduler, decoupling it from the render frame rate. The renderer calls
+// tickAmbientMusic() once per frame, but every scheduling constant (song delays,
+// mood tickDelay) is calibrated to 20 tps; feeding the raw frame count made a
+// 60 fps client run the scheduler 3× fast and a 144 fps one faster still.
+//
+// Mirrors gameplay::SimulationDriver's fixed-step accumulator: absorb the frame's
+// real delta, then report how many whole ticks fit. Most frames cross zero tick
+// boundaries (report 0 → advance nothing); a long frame crosses several. A frame
+// that stalled past the backlog cap drops the excess rather than firing a burst.
+// Header-only and device-free so the FPS-decoupling is unit-testable.
+class TickAccumulator final {
+  public:
+    static constexpr float kTickSeconds = 1.0F / 20.0F;
+    // The longest backlog one call absorbs, matching SimulationDriver: a stalled
+    // frame drops the excess instead of replaying a quarter-second of ticks.
+    static constexpr float kMaximumBacklogSeconds = 0.25F;
+
+    // Absorb `realDeltaSeconds` of frame time and return the whole ticks crossed.
+    [[nodiscard]] int advance(float realDeltaSeconds) {
+        if (realDeltaSeconds > 0.0F) {
+            accumulator_ = std::min(accumulator_ + realDeltaSeconds, kMaximumBacklogSeconds);
+        }
+        int ticks = 0;
+        while (accumulator_ >= kTickSeconds) {
+            accumulator_ -= kTickSeconds;
+            ++ticks;
+        }
+        return ticks;
+    }
+
+    void reset() { accumulator_ = 0.0F; }
+    [[nodiscard]] float pending() const { return accumulator_; }
+
+  private:
+    float accumulator_ = 0.0F;
 };
 
 // Built-in music table: the overworld/menu/creative/underwater defaults. Events
