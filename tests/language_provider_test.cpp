@@ -23,7 +23,8 @@ class CatalogOnlyProvider final : public mc::assets::ResourceProvider {
     }
     [[nodiscard]] bool exists(const mc::assets::ResourceLocation&) const override { return false; }
     [[nodiscard]] std::vector<mc::assets::ResourceLocation>
-    list(std::string_view, std::string_view) const override {
+    list(std::string_view, std::string_view,
+        mc::assets::PackType = mc::assets::PackType::ClientResources) const override {
         throw std::runtime_error("language JSON enumeration is forbidden");
     }
     [[nodiscard]] std::vector<mc::assets::PackLanguage> languages() const override {

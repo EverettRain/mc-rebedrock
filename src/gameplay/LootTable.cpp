@@ -97,7 +97,10 @@ void LootTable::load(const assets::ResourceProvider& resources) {
 }
 
 void LootTable::applyOverlay(const assets::ResourceProvider& resources) {
-    for (const auto& location : resources.list("minecraft", "loot_tables/blocks")) {
+    // Loot tables live under a pack's `data/` half, never `assets/` — same
+    // list()-root fix as RecipeTable::applyOverlay (see its comment).
+    for (const auto& location :
+        resources.list("minecraft", "loot_tables/blocks", assets::PackType::ServerData)) {
         const auto bytes = resources.readBytes(location);
         if (bytes.empty()) {
             continue;

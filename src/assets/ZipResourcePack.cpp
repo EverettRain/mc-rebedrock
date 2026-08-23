@@ -146,18 +146,20 @@ std::vector<std::byte> ZipResourcePackProvider::readBytes(const ResourceLocation
 }
 
 std::vector<ResourceLocation> ZipResourcePackProvider::list(std::string_view space,
-                                                            std::string_view pathPrefix) const {
+                                                            std::string_view pathPrefix,
+                                                            PackType type) const {
     std::vector<ResourceLocation> result;
     if (!impl_->opened) {
         return result;
     }
-    const std::string entryPrefix = "assets/" + std::string{space} + "/" + std::string{pathPrefix};
+    const std::string root = type == PackType::ServerData ? "data" : "assets";
+    const std::string entryPrefix = root + "/" + std::string{space} + "/" + std::string{pathPrefix};
     for (const auto& entry : impl_->entries) {
         if (!entry.starts_with(entryPrefix)) {
             continue;
         }
         result.push_back(ResourceLocation{
-            std::string{space}, entry.substr(std::string{"assets/"}.size() + space.size() + 1U)});
+            std::string{space}, entry.substr(root.size() + 1U + space.size() + 1U), type});
     }
     return result;
 }

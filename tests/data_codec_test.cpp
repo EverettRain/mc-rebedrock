@@ -67,7 +67,8 @@ class MemoryProvider final : public mc::assets::ResourceProvider {
     }
 
     [[nodiscard]] std::vector<mc::assets::ResourceLocation>
-    list(std::string_view space, std::string_view pathPrefix) const override {
+    list(std::string_view space, std::string_view pathPrefix,
+        mc::assets::PackType = mc::assets::PackType::ClientResources) const override {
         std::vector<mc::assets::ResourceLocation> found;
         for (const auto& [key, body] : files_) {
             (void)body;

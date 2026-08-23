@@ -60,9 +60,15 @@ class ResourceProvider {
 
     // Lists logical files below a standard content prefix. Language discovery
     // deliberately does not use this broad scan; its compact catalog comes
-    // from languages()/pack.mcmeta.
-    [[nodiscard]] virtual std::vector<ResourceLocation> list(std::string_view space,
-                                                             std::string_view pathPrefix) const;
+    // from languages()/pack.mcmeta. `type` picks which root the scan walks —
+    // `assets/<space>/<pathPrefix>` (ClientResources, the historical default:
+    // textures/lang/etc.) or `data/<space>/<pathPrefix>` (ServerData: recipes,
+    // loot tables, tags) — mirroring locate()'s own ServerData/ClientResources
+    // split (PACK-1: RecipeTable/LootTable's overlay scans need the data/
+    // root, which this call never reached before).
+    [[nodiscard]] virtual std::vector<ResourceLocation> list(
+        std::string_view space, std::string_view pathPrefix,
+        PackType type = PackType::ClientResources) const;
 
     // Language-menu metadata declared by this pack's top-level pack.mcmeta.
     // Vanilla builds the menu from this compact catalog; it never opens every
@@ -117,8 +123,9 @@ class StandardPackResourceProvider final : public ResourceProvider {
 
     [[nodiscard]] std::filesystem::path locate(const ResourceLocation& location) const override;
     [[nodiscard]] bool exists(const ResourceLocation& location) const override;
-    [[nodiscard]] std::vector<ResourceLocation> list(std::string_view space,
-                                                     std::string_view pathPrefix) const override;
+    [[nodiscard]] std::vector<ResourceLocation> list(
+        std::string_view space, std::string_view pathPrefix,
+        PackType type = PackType::ClientResources) const override;
     [[nodiscard]] std::vector<PackLanguage> languages() const override { return languages_; }
     [[nodiscard]] std::filesystem::path resourceRoot() const override { return packRoot_; }
 
@@ -153,8 +160,9 @@ class LayeredResourceProvider final : public ResourceProvider {
     [[nodiscard]] std::vector<std::byte> readBytes(const ResourceLocation& location) const override;
     [[nodiscard]] std::vector<std::vector<std::byte>>
     readAllBytes(const ResourceLocation& location) const override;
-    [[nodiscard]] std::vector<ResourceLocation> list(std::string_view space,
-                                                     std::string_view pathPrefix) const override;
+    [[nodiscard]] std::vector<ResourceLocation> list(
+        std::string_view space, std::string_view pathPrefix,
+        PackType type = PackType::ClientResources) const override;
     [[nodiscard]] std::vector<PackLanguage> languages() const override;
     [[nodiscard]] std::filesystem::path resourceRoot() const override {
         return base_->resourceRoot();

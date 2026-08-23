@@ -58,7 +58,8 @@ ResourceProvider::readAllBytes(const ResourceLocation& location) const {
     return {readBytes(location)};
 }
 
-std::vector<ResourceLocation> ResourceProvider::list(std::string_view, std::string_view) const {
+std::vector<ResourceLocation> ResourceProvider::list(std::string_view, std::string_view,
+                                                      PackType) const {
     return {};
 }
 
@@ -146,9 +147,11 @@ bool StandardPackResourceProvider::exists(const ResourceLocation& location) cons
 }
 
 std::vector<ResourceLocation>
-StandardPackResourceProvider::list(std::string_view space, std::string_view pathPrefix) const {
+StandardPackResourceProvider::list(std::string_view space, std::string_view pathPrefix,
+                                   PackType type) const {
     std::vector<ResourceLocation> result;
-    const auto namespaceRoot = packRoot_ / "assets" / space;
+    const char* const root = type == PackType::ServerData ? "data" : "assets";
+    const auto namespaceRoot = packRoot_ / root / space;
     const auto searchRoot = namespaceRoot / pathPrefix;
     std::error_code error;
     if (!std::filesystem::is_directory(searchRoot, error)) {
@@ -162,7 +165,8 @@ StandardPackResourceProvider::list(std::string_view space, std::string_view path
             continue;
         }
         result.push_back(ResourceLocation{
-            std::string{space}, entry.path().lexically_relative(namespaceRoot).generic_string()});
+            std::string{space}, entry.path().lexically_relative(namespaceRoot).generic_string(),
+            type});
     }
     return result;
 }
@@ -234,11 +238,12 @@ LayeredResourceProvider::readAllBytes(const ResourceLocation& location) const {
 }
 
 std::vector<ResourceLocation> LayeredResourceProvider::list(std::string_view space,
-                                                            std::string_view pathPrefix) const {
+                                                            std::string_view pathPrefix,
+                                                            PackType type) const {
     std::vector<ResourceLocation> result;
     std::unordered_set<std::string> seen;
     const auto append = [&](const ResourceProvider& provider) {
-        for (auto location : provider.list(space, pathPrefix)) {
+        for (auto location : provider.list(space, pathPrefix, type)) {
             if (seen.insert(location.toString()).second) {
                 result.push_back(std::move(location));
             }

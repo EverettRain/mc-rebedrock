@@ -147,7 +147,12 @@ void RecipeTable::load(const assets::ResourceProvider& resources) {
 }
 
 void RecipeTable::applyOverlay(const assets::ResourceProvider& resources) {
-    for (const auto& location : resources.list("minecraft", "recipes")) {
+    // Recipes live under a pack's `data/` half (JE layout: data/<ns>/recipes/),
+    // never `assets/` — PACK-1's on-disk per-save datapacks are the first real
+    // caller to scan a directory for these, which is what surfaced list()'s
+    // default-to-assets root as a bug fixed alongside this card.
+    for (const auto& location :
+        resources.list("minecraft", "recipes", assets::PackType::ServerData)) {
         const auto bytes = resources.readBytes(location);
         if (bytes.empty()) {
             continue;
