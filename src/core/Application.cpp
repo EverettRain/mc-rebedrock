@@ -1,7 +1,9 @@
 #include "core/Application.hpp"
 
+#include "assets/PackManager.hpp"
 #include "assets/PackMetadata.hpp"
 #include "assets/ResourceProvider.hpp"
+#include "core/VersionManifest.hpp"
 #include "gameplay/BlockTags.hpp"
 #include "gameplay/LootTable.hpp"
 #include "gameplay/RecipeTable.hpp"
@@ -23,6 +25,7 @@
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <vector>
@@ -186,6 +189,19 @@ int Application::run() {
             // assets/ that override the main assets, last-declared highest. Each
             // becomes a provider stacked above the pack's main assets.
             const auto metadata = readMetadata(entry.path / "pack.mcmeta");
+            // pack_format vs this build's packVersion (META): recorded, not a
+            // hard failure — vanilla loads an out-of-range pack behind a
+            // caution too (PACK REGULAR #9). Checked against the resource
+            // half's format number since this whole `found` scan is the
+            // resource-pack folder; PACK-1's per-save data packs get the same
+            // check against packVersion.data when they land.
+            const auto compat = assets::PackManager::checkCompatibility(
+                metadata, assets::PackStackKind::Resources, core::kVersion.packVersion);
+            if (!compat.compatible) {
+                std::cerr << "  警告：pack_format 不兼容 (declares " << compat.packFormatMin << "-"
+                          << compat.packFormatMax << ", build targets " << compat.buildPackVersion
+                          << ") — loading anyway\n";
+            }
             for (const auto& overlay : metadata.overlays) {
                 if (!overlay.appliesTo(kTargetPackFormat)) {
                     continue;
@@ -214,43 +230,76 @@ int Application::run() {
         return 1;
     }
 
-    // Highest priority first for the resolver: the last-listed pack wins, so it
-    // is searched before the earlier ones and before the bundled base.
-    std::vector<const assets::ResourceProvider*> overlays{enabled.rbegin(), enabled.rend()};
-    const assets::LayeredResourceProvider resources{bundled, overlays};
+    // PACK-0: the double-end split. Every discovered pack (this project has no
+    // pack that ships only one half yet — see PACK-1/PACK-3 for real per-save
+    // data packs and a client resource-pack UI) is registered once and enabled
+    // on BOTH stacks, in discovery order, so today's behaviour is unchanged
+    // bit-for-bit: what used to be one monolithic `resources` provider used
+    // for everything is now two providers built from the same enable order.
+    // The split is in *where the two providers go*, not in which packs are
+    // enabled — loadDataPacks feeds only the data-driven gameplay tables
+    // (the authoritative side, which the dedicated server also runs and which
+    // never touches loadResourcePacks), loadResourcePacks feeds only the
+    // renderer.
+    assets::PackManager packManager;
+    for (std::size_t index = 0; index < enabled.size(); ++index) {
+        const std::string id = "pack" + std::to_string(index);
+        packManager.registerPack(id, *enabled[index], assets::PackMetadata{},
+                                 /*hasDataHalf=*/true, /*hasResourceHalf=*/true);
+        packManager.enable(assets::PackStackKind::Data, id);
+        packManager.enable(assets::PackStackKind::Resources, id);
+    }
 
-    // Block tags come from the `data/` half of the pack stack, the same way
-    // textures come from `assets/`. An ordinary resource pack ships no `data/`
-    // at all, so this usually keeps the compiled-in 26.1 defaults; a full data
-    // pack overrides them per tag.
-    // The species registry has to exist before anything that names species is
-    // built. The biome spawn tables below resolve pig/cow/zombie through it, and
-    // the renderer's own call comes later — so loading them first produced
-    // tables with nothing in them and a world that never spawned a mob.
-    // Registration is idempotent, so the renderer's call stays harmless.
-    gameplay::entities::registerBuiltinEntities();
-    // Entity attribute overrides load the same two-layer way: each species keeps
-    // its compiled-in floor, and a datapack that ships
-    // `data/<space>/entity_attributes/<species>.json` overrides the attributes it
-    // lists. No `data/` keeps every species' built-in numbers.
-    gameplay::entities::entityAttributeTable().load(resources);
-    gameplay::blockTags().load(resources);
-    // Recipes load the same way: the baked built-in floor first, then any recipes
-    // a datapack supplies. An ordinary resource pack ships no `data/`, so this
-    // usually keeps the compiled-in recipe set rather than emptying the crafting
-    // table.
-    gameplay::recipeTable().load(resources);
-    // Block loot the same way: the baked drop floor, then any block loot tables a
-    // datapack supplies; no `data/` keeps the built-in drops.
-    gameplay::lootTable().load(resources);
-    // The biome spawn tables come from the same `data/` half, and follow the
-    // same rule: an ordinary resource pack ships no `data/`, so this usually
-    // keeps the compiled-in 26.1 numbers rather than leaving the world empty.
-    gameplay::biomeSpawnTables().load(resources);
+    // The data stack: authoritative, `data/` half only. This is the exact
+    // provider set loadDataPacks below feeds to the data-driven gameplay
+    // tables — no ZipResourcePackProvider/Vulkan-only type is required to
+    // reach it, which is what lets the dedicated server (mc_rebedrock_runtime
+    // only, no render/vulkan) build the same call some day. See
+    // PackManager's class comment for the composition contract.
+    const auto loadDataPacks = [&](const assets::PackManager& manager) {
+        const assets::LayeredResourceProvider dataStack =
+            manager.buildProvider(assets::PackStackKind::Data, bundled);
+        // Block tags come from the `data/` half of the pack stack, the same way
+        // textures come from `assets/`. An ordinary resource pack ships no `data/`
+        // at all, so this usually keeps the compiled-in 26.1 defaults; a full data
+        // pack overrides them per tag.
+        // The species registry has to exist before anything that names species is
+        // built. The biome spawn tables below resolve pig/cow/zombie through it, and
+        // the renderer's own call comes later — so loading them first produced
+        // tables with nothing in them and a world that never spawned a mob.
+        // Registration is idempotent, so the renderer's call stays harmless.
+        gameplay::entities::registerBuiltinEntities();
+        // Entity attribute overrides load the same two-layer way: each species keeps
+        // its compiled-in floor, and a datapack that ships
+        // `data/<space>/entity_attributes/<species>.json` overrides the attributes it
+        // lists. No `data/` keeps every species' built-in numbers.
+        gameplay::entities::entityAttributeTable().load(dataStack);
+        gameplay::blockTags().load(dataStack);
+        // Recipes load the same way: the baked built-in floor first, then any recipes
+        // a datapack supplies. An ordinary resource pack ships no `data/`, so this
+        // usually keeps the compiled-in recipe set rather than emptying the crafting
+        // table.
+        gameplay::recipeTable().load(dataStack);
+        // Block loot the same way: the baked drop floor, then any block loot tables a
+        // datapack supplies; no `data/` keeps the built-in drops.
+        gameplay::lootTable().load(dataStack);
+        // The biome spawn tables come from the same `data/` half, and follow the
+        // same rule: an ordinary resource pack ships no `data/`, so this usually
+        // keeps the compiled-in 26.1 numbers rather than leaving the world empty.
+        gameplay::biomeSpawnTables().load(dataStack);
+    };
+    loadDataPacks(packManager);
+
+    // The resource stack: render-only, `assets/` half. Render-only means the
+    // dedicated server (no VulkanRenderer) never calls this — the guardrail
+    // is structural: nothing above this line needs it, and dedicated_server_main.cpp
+    // never links render/vulkan in the first place, so it has no way to.
+    const assets::LayeredResourceProvider resourceStack =
+        packManager.buildProvider(assets::PackStackKind::Resources, bundled);
 
     render::VulkanRenderer renderer{
         shaderRoot_,
-        resources,
+        resourceStack,
         chunkStreamer,
         options,
         optionsPath,
