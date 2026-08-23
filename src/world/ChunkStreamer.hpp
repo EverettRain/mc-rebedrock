@@ -198,10 +198,18 @@ class ChunkStreamer final {
     // quality changes). The worker picks the flag up on its next wake and
     // publishes one high-priority batch so the render thread applies it fast.
     void requestFullRemesh();
-    // Re-meshes one section (used by the render thread when the pending-mesh
-    // backlog evicts a section that never reached the GPU, so it is not left as
-    // a permanent hole). The worker re-meshes just that section and republishes.
-    void requestSectionRemesh(SectionPosition position);
+    // Re-meshes one section and republishes it. Two callers, two priorities:
+    //   - gameplay/edit paths (default `highPriority = true`) want the section
+    //     back on the GPU immediately, jumping ahead of the ring buckets, same
+    //     as before CS-2b.
+    //   - the render thread's backlog-cap eviction (CS-2b) passes
+    //     `highPriority = false`: an evicted *distant* section must be
+    //     re-delivered so it is not left as a permanent hole, but it must NOT
+    //     re-enter the priority lane — doing so let far-ring recovery work
+    //     preempt the centre ring buckets (the CS-2 starve regression). A
+    //     normal-priority recovery re-queues at its natural ring distance and
+    //     never jumps the centre-out expansion.
+    void requestSectionRemesh(SectionPosition position, bool highPriority = true);
 
   private:
     struct BlockEdit final {
@@ -281,7 +289,16 @@ class ChunkStreamer final {
     std::optional<ChunkPosition> pendingCenter_;
     std::optional<WorldReset> pendingReset_;
     std::vector<BlockEdit> pendingBlockEdits_;
-    std::vector<SectionPosition> pendingSectionRemesh_;
+    // Sections the render thread asked the worker to rebuild, each with the
+    // priority its requester wanted (CS-2b): edit-path recoveries are high
+    // priority, backlog-cap-eviction recoveries are normal so they re-queue at
+    // their natural ring instead of preempting the centre. A high-priority
+    // request for a section already pending upgrades it to high.
+    struct PendingSectionRemesh final {
+        SectionPosition position;
+        bool highPriority = true;
+    };
+    std::vector<PendingSectionRemesh> pendingSectionRemesh_;
     std::optional<ChunkPosition> lastRequestedCenter_;
     std::deque<ChunkStreamBatch> completed_;
     // Positions the render thread is blocking on via requestSync; the worker

@@ -47,6 +47,37 @@ int main() {
         // not re-trigger.
         metrics.recordFirstMesh({3, 0, -2}, Clock::now());
         assert(metrics.firstMeshSamples().size() == 1U);
+
+        // Bug ① fix: once a chunk has recorded a first mesh, re-arming it (a
+        // centre move re-walks the still-resident window) must be REFUSED —
+        // otherwise the chunk's next ordinary remesh would be mis-counted as a
+        // brand-new first mesh with a fake latency (the same-coordinate
+        // duplicate first samples seen on the real run).
+        metrics.armFirstMesh({3, 0, -2}, Clock::now());
+        metrics.recordFirstMesh({3, 0, -2}, Clock::now());
+        assert(metrics.firstMeshSamples().size() == 1U); // still just the one
+
+        // But a genuine re-entry (the chunk left the radius / unloaded and its
+        // arm was disarmed) clears the recorded-guard, so it counts one clean
+        // first mesh again.
+        metrics.disarmFirstMesh({3, 0, -2});
+        const auto reRequested = Clock::now();
+        metrics.armFirstMesh({3, 0, -2}, reRequested);
+        metrics.recordFirstMesh({3, 0, -2}, Clock::now());
+        assert(metrics.firstMeshSamples().size() == 2U); // fresh residency counts
+    }
+
+    // -------------------------------------------------------------------
+    // Bug ① fix: disarmFirstMesh cancels a *pending* (never-recorded) arm too,
+    // so a chunk that leaves the radius before its mesh ever landed does not
+    // fire a bogus first-mesh sample if a stray upload arrives afterward.
+    // -------------------------------------------------------------------
+    {
+        ChunkStreamingMetrics metrics;
+        metrics.armFirstMesh({4, 0, 4}, Clock::now());
+        metrics.disarmFirstMesh({4, 0, 4}); // left the radius before delivery
+        metrics.recordFirstMesh({4, 0, 4}, Clock::now());
+        assert(metrics.firstMeshSamples().empty()); // no fabricated sample
     }
 
     // -------------------------------------------------------------------
@@ -158,14 +189,20 @@ int main() {
     // -------------------------------------------------------------------
     // 3. Delivery-order trace.
     // -------------------------------------------------------------------
+    // A tiny helper: record a streaming event at a fixed centre/epoch so the
+    // ordering-only cases below stay readable (the centre/epoch/type fields are
+    // exercised by the exclusion cases that follow).
+    const auto stream = [](DeliveryOrderTrace& trace, int cx, int cz, int ring) {
+        trace.record(cx, cz, ring, 0, 0, 1U, DeliveryEventType::Streaming);
+    };
     {
         DeliveryOrderTrace trace;
         // A clean ring-by-ring expansion (0, 0, 1, 1, 1, 2, ...) is
         // monotonic.
-        trace.record(0, 0, 0);
-        trace.record(1, 0, 1);
-        trace.record(0, 1, 1);
-        trace.record(2, 0, 2);
+        stream(trace, 0, 0, 0);
+        stream(trace, 1, 0, 1);
+        stream(trace, 0, 1, 1);
+        stream(trace, 2, 0, 2);
         assert(trace.isMonotonicRingExpansion());
         const auto events = trace.events();
         assert(events.size() == 4U);
@@ -177,17 +214,72 @@ int main() {
         // exactly what README problem ② describes: delivery not a strict
         // outward expansion. The trace must catch it.
         DeliveryOrderTrace trace;
-        trace.record(2, 2, 2);
-        trace.record(0, 0, 0);
+        stream(trace, 2, 2, 2);
+        stream(trace, 0, 0, 0);
         assert(!trace.isMonotonicRingExpansion());
 
         // Slack tolerates small batch-internal reordering (same ring or one
         // below) without excusing a whole-ring regression.
         DeliveryOrderTrace withinSlack;
-        withinSlack.record(3, 0, 3);
-        withinSlack.record(2, 1, 2); // one ring back — within slack 1
+        stream(withinSlack, 3, 0, 3);
+        stream(withinSlack, 2, 1, 2); // one ring back — within slack 1
         assert(withinSlack.isMonotonicRingExpansion(1));
         assert(!withinSlack.isMonotonicRingExpansion(0));
+    }
+
+    // -------------------------------------------------------------------
+    // Bug ① fix: priority (edit/sync) and remesh events are excluded from the
+    // ordering verdict — they jump the ring buckets by design. A low ring
+    // arriving late as a Priority/Remesh event is NOT a regression. Without the
+    // exclusion, these polluted the analysis and produced false failures.
+    // -------------------------------------------------------------------
+    {
+        DeliveryOrderTrace trace;
+        trace.record(0, 0, 0, 0, 0, 1U, DeliveryEventType::Streaming);
+        trace.record(1, 0, 1, 0, 0, 1U, DeliveryEventType::Streaming);
+        trace.record(2, 0, 2, 0, 0, 1U, DeliveryEventType::Streaming);
+        // A gameplay edit at the centre uploads after ring 2 — ring 0, but as a
+        // Priority event it must be ignored by the check.
+        trace.record(0, 0, 0, 0, 0, 1U, DeliveryEventType::Priority);
+        // An eviction-recovery remesh of a near section, also out of order.
+        trace.record(1, 1, 1, 0, 0, 1U, DeliveryEventType::Remesh);
+        assert(trace.isMonotonicRingExpansion()); // excluded events do not break it
+
+        // A genuine Streaming regression is still caught even amid excluded
+        // events.
+        trace.record(0, 5, 0, 0, 0, 1U, DeliveryEventType::Streaming);
+        assert(!trace.isMonotonicRingExpansion());
+    }
+
+    // -------------------------------------------------------------------
+    // Bug ① fix: the ring datum is per (centre, epoch). When the centre moves
+    // (or the epoch switches on a world reset) the ring is measured against a
+    // new origin, so the check restarts the expansion instead of comparing
+    // rings across centres — a mixed-centre band is not a real regression.
+    // -------------------------------------------------------------------
+    {
+        DeliveryOrderTrace trace;
+        // Fill the outer ring at centre A, then the inner ring at centre B.
+        // Physically ring 5 (centre A) precedes ring 0 (centre B) — a naive
+        // walk would call this a regression. Per-centre datum: two clean
+        // expansions, each monotonic.
+        trace.record(0, 0, 5, 0, 0, 1U, DeliveryEventType::Streaming);   // centre A
+        trace.record(10, 0, 0, 10, 0, 1U, DeliveryEventType::Streaming); // centre B
+        trace.record(11, 0, 1, 10, 0, 1U, DeliveryEventType::Streaming); // centre B
+        assert(trace.isMonotonicRingExpansion());
+
+        // Same for an epoch switch at an unchanged centre (world reset).
+        DeliveryOrderTrace acrossEpoch;
+        acrossEpoch.record(0, 0, 4, 0, 0, 1U, DeliveryEventType::Streaming); // epoch 1
+        acrossEpoch.record(0, 0, 0, 0, 0, 2U, DeliveryEventType::Streaming); // epoch 2 restart
+        acrossEpoch.record(1, 0, 1, 0, 0, 2U, DeliveryEventType::Streaming);
+        assert(acrossEpoch.isMonotonicRingExpansion());
+
+        // But a regression WITHIN one centre/epoch is still caught.
+        DeliveryOrderTrace sameCentre;
+        sameCentre.record(2, 0, 2, 0, 0, 1U, DeliveryEventType::Streaming);
+        sameCentre.record(0, 0, 0, 0, 0, 1U, DeliveryEventType::Streaming);
+        assert(!sameCentre.isMonotonicRingExpansion());
     }
 
     // -------------------------------------------------------------------
@@ -255,7 +347,8 @@ int main() {
                                        std::abs(sectionChunkZ - enqueueCenterZ));
         assert(staleRing == 13 && staleRing > loadRadius); // what the bug produced
         // The fix records the captured ring, which stays in bounds.
-        trace.record(sectionChunkX, sectionChunkZ, capturedRing);
+        trace.record(sectionChunkX, sectionChunkZ, capturedRing, enqueueCenterX, enqueueCenterZ,
+                     1U, DeliveryEventType::Streaming);
         const auto events = trace.events();
         assert(events.size() == 1U);
         assert(events.front().ring >= 0 && events.front().ring <= loadRadius);
@@ -277,16 +370,17 @@ int main() {
         DeliveryOrderTrace trace;
         constexpr int kCapacity = 4096;
         // Fill the buffer exactly: 4096 events, all ring 5, in delivery order.
+        // Same centre/epoch throughout so the per-centre datum does not restart.
         for (int i = 0; i < kCapacity; ++i) {
-            trace.record(i, 0, 5);
+            trace.record(i, 0, 5, 0, 0, 1U, DeliveryEventType::Streaming);
         }
         // Now push a rising tail that wraps and overwrites the oldest slots.
         // In true (sequence) order these come strictly after every ring-5, and
         // never regress: 5 -> 5 -> 6 -> 7 -> 8. Monotonic.
-        trace.record(0, 1, 5);
-        trace.record(0, 2, 6);
-        trace.record(0, 3, 7);
-        trace.record(0, 4, 8);
+        trace.record(0, 1, 5, 0, 0, 1U, DeliveryEventType::Streaming);
+        trace.record(0, 2, 6, 0, 0, 1U, DeliveryEventType::Streaming);
+        trace.record(0, 3, 7, 0, 0, 1U, DeliveryEventType::Streaming);
+        trace.record(0, 4, 8, 0, 0, 1U, DeliveryEventType::Streaming);
 
         const auto raw = trace.events();
         assert(raw.size() == static_cast<std::size_t>(kCapacity));
@@ -307,7 +401,7 @@ int main() {
         // And a genuine post-wrap regression is still caught: append a ring-2
         // event (older-ring than the ring-8 just delivered) with the newest
         // sequence. In true order 8 -> 2 regresses; must return false.
-        trace.record(9, 9, 2);
+        trace.record(9, 9, 2, 0, 0, 1U, DeliveryEventType::Streaming);
         assert(!trace.isMonotonicRingExpansion());
     }
 
@@ -320,7 +414,7 @@ int main() {
     {
         chunkStreamingMetrics().recordFrameCost(1.0, 1.0, 1U);
         missingChunkDetector().noteChunkDelivered(7, 7, Clock::now());
-        deliveryOrderTrace().record(7, 7, 0);
+        deliveryOrderTrace().record(7, 7, 0, 0, 0, 1U, DeliveryEventType::Streaming);
         assert(!chunkStreamingMetrics().streamingFrameCostSamples().empty());
         assert(missingChunkDetector().trackedCount() > 0U);
         assert(!deliveryOrderTrace().events().empty());

@@ -293,17 +293,39 @@ class WorldRenderer final {
   WorldRenderer(const WorldRenderer&) = delete;
   WorldRenderer& operator=(const WorldRenderer&) = delete;
 
-  // CS-1 (Bug 2 fix): the ring distance each pending section had *at the moment
-  // it was enqueued*, computed from that batch's own centre. The upload-side
-  // delivery-order trace must use this captured value, not the newest request
-  // centre (which every later batch would advance): an event uploaded after the
-  // centre moved would otherwise be scored against a stale-relative centre and
-  // report a ring outside [0, loadRadius]. Owned here (diagnostics-only, not
-  // part of Impl's crash-sensitive GPU-resource lifecycle nor the game-owned
+  // CS-1 (Bug 2 fix) / CS-2b: what each pending section was enqueued as, so the
+  // upload-side delivery-order trace scores it against the centre that actually
+  // requested it (not the newest request centre, which every later batch would
+  // advance — an event uploaded after the centre moved would otherwise report a
+  // ring outside [0, loadRadius]). CS-2b also records the enqueue-time centre,
+  // epoch, and event type (streaming / priority / remesh) so the order analysis
+  // can exclude priority/remesh events and restart the ring datum across a
+  // centre/epoch change. Owned here (diagnostics-only, not part of Impl's
+  // crash-sensitive GPU-resource lifecycle nor the game-owned
   // pendingSectionUpdates map); populated and consumed only under
   // chunkTraceEnabled().
-  std::unordered_map<world::SectionPosition, int, world::SectionPositionHash>
+  struct PendingSectionTrace final {
+      int ring = 0;
+      int centerX = 0;
+      int centerZ = 0;
+      std::uint64_t epoch = 0;
+      diag::DeliveryEventType type = diag::DeliveryEventType::Streaming;
+  };
+  std::unordered_map<world::SectionPosition, PendingSectionTrace, world::SectionPositionHash>
       pendingSectionEnqueueRing_{};
+
+  // CS-2b (Bug ① fix): the firstMesh-latency arm window currently in effect, so
+  // processChunkStreaming arms only the chunks that newly entered the request
+  // radius and disarms the ones that just left (or all of them on an epoch
+  // switch), instead of re-arming the whole window every centre move — which
+  // re-armed already-visible chunks and let their next ordinary remesh forge a
+  // fake first-mesh sample. Diagnostics-only, touched only under
+  // chunkTraceEnabled().
+  bool traceWindowValid_ = false;
+  int traceArmedCenterX_ = 0;
+  int traceArmedCenterZ_ = 0;
+  int traceArmedRadius_ = 0;
+  std::uint64_t traceArmedEpoch_ = 0;
 
 
     // ---- helpers duplicated from the renderer core (pure forwards over the
@@ -402,6 +424,12 @@ class WorldRenderer final {
                         // not chunks that correctly left the radius).
                         diag::missingChunkDetector().noteChunkRemoved(update.position.x,
                                                                       update.position.z);
+                        // Bug ① fix: an unloaded chunk clears its firstMesh arm
+                        // and recorded-guard so a later re-load counts one clean
+                        // first mesh again, and no stale arm lingers to be
+                        // recorded against a mesh from a different residency.
+                        diag::chunkStreamingMetrics().disarmFirstMesh(
+                            {update.position.x, 0, update.position.z});
                     }
                     interactionWorld.removeChunk(update.position);
                     if (onChunkUnloaded) {
@@ -503,7 +531,17 @@ class WorldRenderer final {
                 std::max(std::abs(update.position.chunkX - batch.center.x),
                          std::abs(update.position.chunkZ - batch.center.z));
             if (chunkTrace) {
-                pendingSectionEnqueueRing_[update.position] = enqueueRing;
+                // CS-2b: tag the event type by the lane it enters. A
+                // high-priority batch (gameplay edit, sync, quality remesh)
+                // jumps the ring buckets and is not part of the centre-out
+                // expansion, so it is a Priority event the order analysis
+                // excludes. Everything else — including a normal-priority
+                // eviction-recovery remesh — re-enters the ring buckets at its
+                // natural ring and is ordinary Streaming.
+                pendingSectionEnqueueRing_[update.position] = {
+                    enqueueRing, batch.center.x, batch.center.z, batch.worldEpoch,
+                    batch.highPriority ? diag::DeliveryEventType::Priority
+                                       : diag::DeliveryEventType::Streaming};
             }
             if (!pendingSectionUpdates.contains(update.position)) {
                 // Cap the mesh backlog. High-priority entries are exempt
@@ -532,8 +570,18 @@ class WorldRenderer final {
                             // a remesh so the section is delivered again after the
                             // backlog clears. Sections already on the GPU only lose a
                             // re-mesh, so they need no re-request.
+                            //
+                            // CS-2b: the recovery is requested at NORMAL priority
+                            // (highPriority=false). The evicted section is the
+                            // *farthest* queued ring (evictFarthest), so re-delivering
+                            // it through the priority lane would let far-ring recovery
+                            // work preempt the centre ring buckets — the exact
+                            // regression that broke centre protection and slowed
+                            // radiusFill ~25%. Normal priority re-queues it at its
+                            // natural ring distance, behind the centre, and it still
+                            // lands once the backlog drains (no permanent hole).
                             if (!gpuMeshes.contains(*victim)) {
-                                chunkStreamer.requestSectionRemesh(*victim);
+                                chunkStreamer.requestSectionRemesh(*victim, /*highPriority=*/false);
                             }
                         }
                     }
@@ -617,30 +665,64 @@ class WorldRenderer final {
             // (it either already completed, or the previous move's fill is
             // still catching up — re-arming on every unchanged frame would
             // never let a slow fill be observed).
-            static int lastArmedX = std::numeric_limits<int>::min();
-            static int lastArmedZ = std::numeric_limits<int>::min();
-            if (requestCenter.x != lastArmedX || requestCenter.z != lastArmedZ) {
-                lastArmedX = requestCenter.x;
-                lastArmedZ = requestCenter.z;
-                const int radius = chunkStreamer.loadRadius();
+            const int radius = chunkStreamer.loadRadius();
+            const bool epochChanged = traceArmedEpoch_ != worldEpoch;
+            const bool centerMoved = !traceWindowValid_ ||
+                                     requestCenter.x != traceArmedCenterX_ ||
+                                     requestCenter.z != traceArmedCenterZ_;
+            if (epochChanged || centerMoved) {
                 const std::size_t expected =
                     static_cast<std::size_t>(2 * radius + 1) * static_cast<std::size_t>(2 * radius + 1);
                 const auto enteredRadiusAt = diag::ChunkStreamingMetrics::Clock::now();
                 diag::chunkStreamingMetrics().beginRadiusFill(
                     requestCenter.x, requestCenter.z, radius, expected, enteredRadiusAt);
-                // Bug 1 fix: firstMeshLatency's clock starts here — the moment a
-                // chunk position enters the request radius — not when its CPU
-                // batch later arrives (queueStreamBatch). Arm every position in
-                // the (2r+1)^2 window at "now"; armFirstMesh is idempotent, so
-                // positions still resident from the previous centre keep their
-                // earlier (correct) arm and only newly-entered positions take
-                // this timestamp. This runs only under chunkTraceEnabled().
-                for (int dz = -radius; dz <= radius; ++dz) {
-                    for (int dx = -radius; dx <= radius; ++dx) {
-                        diag::chunkStreamingMetrics().armFirstMesh(
-                            {requestCenter.x + dx, 0, requestCenter.z + dz}, enteredRadiusAt);
+                // Bug ① fix: disarm the positions that just left the window and
+                // arm only the newly-entered ones, instead of re-arming the
+                // whole (2r+1)^2 every move. Re-arming an already-visible chunk
+                // (its first mesh already recorded) let a later ordinary remesh
+                // be mis-counted as a fresh "first mesh" with a multi-second
+                // latency — the fake long tail. disarmFirstMesh also clears the
+                // recorded-guard, so a chunk that genuinely leaves and re-enters
+                // counts one clean first mesh again.
+                //
+                // On an epoch switch (world reset) the previous window's arms
+                // and recorded-guards no longer refer to this world; disarm all
+                // of them so no stale arm survives across the reset, then arm
+                // the fresh window.
+                const auto inNewWindow = [&](int x, int z) {
+                    return std::abs(x - requestCenter.x) <= radius &&
+                           std::abs(z - requestCenter.z) <= radius;
+                };
+                if (traceWindowValid_) {
+                    for (int dz = -traceArmedRadius_; dz <= traceArmedRadius_; ++dz) {
+                        for (int dx = -traceArmedRadius_; dx <= traceArmedRadius_; ++dx) {
+                            const int x = traceArmedCenterX_ + dx;
+                            const int z = traceArmedCenterZ_ + dz;
+                            if (epochChanged || !inNewWindow(x, z)) {
+                                diag::chunkStreamingMetrics().disarmFirstMesh({x, 0, z});
+                            }
+                        }
                     }
                 }
+                const auto inOldWindow = [&](int x, int z) {
+                    return traceWindowValid_ && !epochChanged &&
+                           std::abs(x - traceArmedCenterX_) <= traceArmedRadius_ &&
+                           std::abs(z - traceArmedCenterZ_) <= traceArmedRadius_;
+                };
+                for (int dz = -radius; dz <= radius; ++dz) {
+                    for (int dx = -radius; dx <= radius; ++dx) {
+                        const int x = requestCenter.x + dx;
+                        const int z = requestCenter.z + dz;
+                        if (!inOldWindow(x, z)) {
+                            diag::chunkStreamingMetrics().armFirstMesh({x, 0, z}, enteredRadiusAt);
+                        }
+                    }
+                }
+                traceWindowValid_ = true;
+                traceArmedCenterX_ = requestCenter.x;
+                traceArmedCenterZ_ = requestCenter.z;
+                traceArmedRadius_ = radius;
+                traceArmedEpoch_ = worldEpoch;
             }
         }
         chunkStreamer.request(requestCenter);
@@ -884,15 +966,16 @@ class WorldRenderer final {
             pendingSectionUpdates.erase(found);
             pendingSectionOrder.popFront();
             ++processedUpdates;
-            // Bug 2 fix: pull the ring captured at enqueue time (against the
-            // batch centre that requested this section) and drop it from the
-            // side table whether or not this section ends up uploading a mesh,
-            // so the diagnostics map never outlives its pending entry.
-            int enqueueRing = 0;
+            // Bug 2 fix: pull the ring + centre + epoch + type captured at
+            // enqueue time (against the batch centre that requested this
+            // section) and drop it from the side table whether or not this
+            // section ends up uploading a mesh, so the diagnostics map never
+            // outlives its pending entry.
+            PendingSectionTrace enqueueTrace{};
             if (chunkTrace) {
                 const auto ringFound = pendingSectionEnqueueRing_.find(position);
                 if (ringFound != pendingSectionEnqueueRing_.end()) {
-                    enqueueRing = ringFound->second;
+                    enqueueTrace = ringFound->second;
                     pendingSectionEnqueueRing_.erase(ringFound);
                 }
             }
@@ -941,7 +1024,9 @@ class WorldRenderer final {
                 diag::chunkStreamingMetrics().recordFirstMesh(
                     {position.chunkX, 0, position.chunkZ}, uploadedAt);
                 diag::missingChunkDetector().noteChunkResolved(position.chunkX, position.chunkZ);
-                diag::deliveryOrderTrace().record(position.chunkX, position.chunkZ, enqueueRing);
+                diag::deliveryOrderTrace().record(
+                    position.chunkX, position.chunkZ, enqueueTrace.ring, enqueueTrace.centerX,
+                    enqueueTrace.centerZ, enqueueTrace.epoch, enqueueTrace.type);
                 ++tracedUploads;
             }
             if (priority) {

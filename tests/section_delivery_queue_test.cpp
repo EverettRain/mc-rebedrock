@@ -138,6 +138,26 @@ int main() {
         assert(queue.contains(Key{0, 0}));
     }
 
+    // ---- CS-2b: an eviction-recovery re-push is NORMAL priority, so it
+    // re-enters at its natural (far) ring, BEHIND the centre ring buckets —
+    // never the priority lane. This is the queue-side guarantee that a
+    // recovered far section cannot preempt the centre (the CS-2b fix for the
+    // high-priority-remesh reflux that broke centre protection). ----
+    {
+        Queue queue;
+        queue.push({0, 0}, 0, false); // centre section, waiting
+        // A far section was evicted and the worker re-delivered it; the render
+        // thread re-queues it at NORMAL priority and its natural ring (far).
+        queue.push({30, 30}, 9, false);
+        // The centre still drains first: the recovered far section did not jump
+        // ahead of it (which a highPriority=true re-push would have).
+        assert((queue.front() == Key{0, 0}));
+        queue.popFront();
+        assert((queue.front() == Key{30, 30}));
+        queue.popFront();
+        assert(queue.empty());
+    }
+
     // ---- Priority entries are exempt from evictFarthest: with only a
     // priority-lane entry queued, eviction finds nothing to take. ----
     {

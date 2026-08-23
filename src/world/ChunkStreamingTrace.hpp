@@ -35,6 +35,7 @@
 #include <mutex>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace mc::diag {
@@ -130,15 +131,28 @@ class ChunkStreamingMetrics final {
     using Clock = std::chrono::steady_clock;
 
     // --- firstMeshLatency -------------------------------------------------
-    // Called when a chunk position first enters the request radius (a
-    // generation batch names it as newly loaded). No-op if already armed.
+    // Called when a chunk position first enters the request radius. Arms the
+    // enter-radius -> first-GPU-visible clock. No-op if already armed (keeps
+    // the earlier, correct enter-radius timestamp on an overlapping re-walk),
+    // AND no-op if the chunk has already recorded a first mesh this residency
+    // (Bug ① fix): without the recorded-guard, a centre move that re-walks the
+    // window would re-arm an already-visible chunk, and that chunk's *next*
+    // ordinary remesh would be mis-counted as a fresh "first mesh" with a huge
+    // latency — the source of the same-coordinate duplicate first samples and
+    // the fake multi-second tail. A genuine re-entry (the chunk left the radius
+    // / unloaded / epoch changed, which calls disarmFirstMesh and clears the
+    // guard) is allowed to arm and record cleanly again.
     void armFirstMesh(TraceSectionKey chunkKey, Clock::time_point requestedAt) {
         std::scoped_lock lock{mutex_};
+        if (firstMeshRecorded_.contains(chunkKey)) {
+            return;
+        }
         firstMeshArmed_.try_emplace(chunkKey, requestedAt);
     }
     // Called the first time a section belonging to that chunk becomes
-    // GPU-visible (prepareStreamingUpdates uploads it). Disarms so later
-    // sections of the same chunk do not re-trigger.
+    // GPU-visible (prepareStreamingUpdates uploads it). Disarms and marks the
+    // chunk recorded so later sections of the same chunk — and any re-walk of
+    // the request window while the chunk stays resident — do not re-trigger.
     void recordFirstMesh(TraceSectionKey chunkKey, Clock::time_point uploadedAt) {
         std::scoped_lock lock{mutex_};
         const auto found = firstMeshArmed_.find(chunkKey);
@@ -149,6 +163,16 @@ class ChunkStreamingMetrics final {
             std::chrono::duration<double, std::milli>(uploadedAt - found->second).count();
         firstMesh_.push({chunkKey.chunkX, chunkKey.chunkZ, latencyMs});
         firstMeshArmed_.erase(found);
+        firstMeshRecorded_.insert(chunkKey);
+    }
+    // Called when a chunk leaves the load radius, is unloaded, or an epoch
+    // switch invalidates the streaming window (Bug ① fix). Clears any pending
+    // arm AND the recorded guard, so if this chunk genuinely re-enters later it
+    // counts one clean first-mesh again instead of being permanently muted.
+    void disarmFirstMesh(TraceSectionKey chunkKey) {
+        std::scoped_lock lock{mutex_};
+        firstMeshArmed_.erase(chunkKey);
+        firstMeshRecorded_.erase(chunkKey);
     }
 
     // --- radiusFillTime -----------------------------------------------------
@@ -203,6 +227,7 @@ class ChunkStreamingMetrics final {
         radiusFill_.clear();
         streamingFrameCost_.clear();
         firstMeshArmed_.clear();
+        firstMeshRecorded_.clear();
         radiusFillArmed_.reset();
     }
 
@@ -217,6 +242,11 @@ class ChunkStreamingMetrics final {
 
     mutable std::mutex mutex_;
     std::unordered_map<TraceSectionKey, Clock::time_point, TraceSectionKeyHash> firstMeshArmed_;
+    // Chunks that have already recorded a first mesh this residency. Guards
+    // against re-arming an already-visible chunk (a later ordinary remesh would
+    // otherwise be mis-counted as a new first mesh). Cleared per chunk by
+    // disarmFirstMesh on leave/unload/epoch so a true re-entry counts afresh.
+    std::unordered_set<TraceSectionKey, TraceSectionKeyHash> firstMeshRecorded_;
     std::optional<RadiusFillArm> radiusFillArmed_;
     SampleRing<FirstMeshLatencySample, 512> firstMesh_;
     SampleRing<RadiusFillSample, 64> radiusFill_;
@@ -340,6 +370,18 @@ class MissingChunkDetector final {
 // 3. Delivery-order trace
 // ---------------------------------------------------------------------------
 
+// How a section came to be delivered. The ring-monotonicity check only makes
+// sense for ordinary centre-out streaming: priority (gameplay-edit) uploads and
+// eviction-recovery/quality remeshes are deliberately out of ring order and
+// must be excluded from an ordering verdict, not counted as regressions (Bug ①
+// fix: without this, priority/remesh events at a stale-or-far ring polluted the
+// order analysis and fabricated ring>loadRadius regressions).
+enum class DeliveryEventType : std::uint8_t {
+    Streaming = 0, // normal nearest-first radius fill
+    Priority = 1,  // gameplay-edit / sync upload, jumped the ring buckets
+    Remesh = 2,    // eviction-recovery or quality remesh republish
+};
+
 // One section's GPU-visible delivery event, in the order the render thread
 // actually uploaded it (README problem ②: "is delivery a strict ring
 // expansion, or a jumbled band?").
@@ -347,16 +389,25 @@ struct DeliveryEvent final {
     int chunkX = 0;
     int chunkZ = 0;
     // Chebyshev ring distance from the request centre in effect when this
-    // section was uploaded (matches ChunkStreamer's orderByDistance metric).
+    // section was ENQUEUED (matches ChunkStreamer's orderByDistance metric).
     int ring = 0;
+    // The request centre this event's ring was measured against, and the world
+    // epoch it belonged to, so the order analysis can drop events straddling a
+    // centre move / epoch switch (a mixed-centre band is not a real regression).
+    int centerX = 0;
+    int centerZ = 0;
+    std::uint64_t epoch = 0;
+    DeliveryEventType type = DeliveryEventType::Streaming;
     std::uint64_t sequence = 0;
 };
 
 class DeliveryOrderTrace final {
   public:
-    void record(int chunkX, int chunkZ, int ring) {
+    void record(int chunkX, int chunkZ, int ring, int centerX, int centerZ, std::uint64_t epoch,
+                DeliveryEventType type) {
         std::scoped_lock lock{mutex_};
-        events_.push({chunkX, chunkZ, ring, nextSequence_++});
+        events_.push(
+            {chunkX, chunkZ, ring, centerX, centerZ, epoch, type, nextSequence_++});
     }
 
     [[nodiscard]] std::vector<DeliveryEvent> events() const {
@@ -369,6 +420,14 @@ class DeliveryOrderTrace final {
     // slack. Slack exists because sections inside one already-fetched batch
     // can complete meshing out of order (README problem ②'s "batch-internal"
     // caveat); it does not excuse a whole ring regressing.
+    //
+    // Bug ① fix: only ordinary Streaming events at a *single* (centre, epoch)
+    // are part of the centre-out expansion picture. Priority (edit/sync) and
+    // Remesh (eviction-recovery/quality) events are excluded — they jump the
+    // ring buckets by design. And when the centre or epoch changes the ring
+    // datum moves, so the walk restarts rather than comparing rings measured
+    // against two different centres (which manufactured ring>loadRadius
+    // regressions from a perfectly ordered stream).
     [[nodiscard]] bool isMonotonicRingExpansion(int slack = 0) const {
         std::scoped_lock lock{mutex_};
         // The ring buffer stores events in physical slot order; once it has
@@ -380,7 +439,25 @@ class DeliveryOrderTrace final {
         std::vector<DeliveryEvent> ordered = events_.samples();
         std::ranges::sort(ordered, {}, &DeliveryEvent::sequence);
         int maxRingSeen = -1;
+        bool haveDatum = false;
+        int datumCenterX = 0;
+        int datumCenterZ = 0;
+        std::uint64_t datumEpoch = 0;
         for (const auto& event : ordered) {
+            if (event.type != DeliveryEventType::Streaming) {
+                continue; // priority/remesh are not ring-ordered by design
+            }
+            if (!haveDatum || event.centerX != datumCenterX || event.centerZ != datumCenterZ ||
+                event.epoch != datumEpoch) {
+                // New centre/epoch: the ring datum shifted, so start a fresh
+                // expansion rather than comparing across centres.
+                haveDatum = true;
+                datumCenterX = event.centerX;
+                datumCenterZ = event.centerZ;
+                datumEpoch = event.epoch;
+                maxRingSeen = event.ring;
+                continue;
+            }
             if (event.ring < maxRingSeen - slack) {
                 return false;
             }

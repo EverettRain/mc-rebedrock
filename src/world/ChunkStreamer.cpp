@@ -354,7 +354,7 @@ void ChunkStreamer::workerLoop() {
         std::optional<WorldReset> reset;
         std::optional<ChunkPosition> requestedCenter;
         std::vector<BlockEdit> edits;
-        std::vector<SectionPosition> sectionRemeshes;
+        std::vector<PendingSectionRemesh> sectionRemeshes;
         {
             std::unique_lock lock{mutex_};
             wakeWorker_.wait(lock, [this] {
@@ -435,28 +435,53 @@ void ChunkStreamer::workerLoop() {
                 return;
         }
         if (!sectionRemeshes.empty() && !stopping_.load(std::memory_order_relaxed)) {
-            // Re-mesh sections the render thread's backlog evicted before they
-            // reached the GPU. This is cheap (no regeneration, no relight).
-            std::vector<ChunkMeshRequest> requests;
-            requests.reserve(sectionRemeshes.size());
-            for (const auto& position : sectionRemeshes) {
-                requests.push_back({
-                    {position.chunkX, position.chunkZ}, true, {position.sectionY}});
-            }
-            auto meshUpdates = buildChunkMeshesParallel(
-                world, requests, stopping_, *this, parallelWorkers_);
+            // Re-mesh sections the render thread asked to rebuild. This is
+            // cheap (no regeneration, no relight). CS-2b: the request carries
+            // the priority its requester wanted — gameplay/edit recoveries stay
+            // high priority (jump the ring buckets), backlog-cap-eviction
+            // recoveries are normal so they re-queue at their natural ring and
+            // never preempt the centre-out expansion. Rebuild in one meshing
+            // pass, then publish the two priority classes as separate batches
+            // (the batch.highPriority flag is per-batch on the wire).
+            const auto remeshBatch = [&](std::span<const PendingSectionRemesh> group,
+                                         bool highPriority) {
+                if (group.empty() || stopping_.load(std::memory_order_relaxed)) {
+                    return;
+                }
+                std::vector<ChunkMeshRequest> requests;
+                requests.reserve(group.size());
+                for (const auto& entry : group) {
+                    requests.push_back({
+                        {entry.position.chunkX, entry.position.chunkZ},
+                        true,
+                        {entry.position.sectionY}});
+                }
+                auto meshUpdates = buildChunkMeshesParallel(
+                    world, requests, stopping_, *this, parallelWorkers_);
+                if (stopping_.load(std::memory_order_relaxed))
+                    return;
+                for (auto& update : meshUpdates) {
+                    update.revision = ++nextMeshRevision_;
+                }
+                ChunkStreamBatch batch;
+                batch.worldEpoch = currentEpoch;
+                batch.center = currentCenter;
+                batch.highPriority = highPriority;
+                batch.sectionUpdates = std::move(meshUpdates);
+                batch.loadedChunkCount = world.chunkCount();
+                publish(std::move(batch));
+            };
+            // Stable partition keeps each class in request order.
+            const auto midpoint = std::stable_partition(
+                sectionRemeshes.begin(), sectionRemeshes.end(),
+                [](const PendingSectionRemesh& entry) { return entry.highPriority; });
+            const std::span<const PendingSectionRemesh> all{sectionRemeshes};
+            const auto highCount =
+                static_cast<std::size_t>(midpoint - sectionRemeshes.begin());
+            remeshBatch(all.subspan(0, highCount), true);
             if (stopping_.load(std::memory_order_relaxed))
                 return;
-            for (auto& update : meshUpdates) {
-                update.revision = ++nextMeshRevision_;
-            }
-            ChunkStreamBatch batch;
-            batch.worldEpoch = currentEpoch;
-            batch.center = currentCenter;
-            batch.highPriority = true;
-            batch.sectionUpdates = std::move(meshUpdates);
-            batch.loadedChunkCount = world.chunkCount();
-            publish(std::move(batch));
+            remeshBatch(all.subspan(highCount), false);
         }
         if (!edits.empty() && !editsApplied) {
             for (const auto& edit : edits) {
@@ -488,11 +513,18 @@ void ChunkStreamer::requestFullRemesh() {
     wakeWorker_.notify_one();
 }
 
-void ChunkStreamer::requestSectionRemesh(SectionPosition position) {
+void ChunkStreamer::requestSectionRemesh(SectionPosition position, bool highPriority) {
     {
         std::scoped_lock lock{mutex_};
-        if (std::ranges::find(pendingSectionRemesh_, position) == pendingSectionRemesh_.end()) {
-            pendingSectionRemesh_.push_back(position);
+        const auto found = std::ranges::find(
+            pendingSectionRemesh_, position, &PendingSectionRemesh::position);
+        if (found == pendingSectionRemesh_.end()) {
+            pendingSectionRemesh_.push_back({position, highPriority});
+        } else if (highPriority) {
+            // A high-priority request for an already-pending section wins: it
+            // must never be demoted to the ring buckets by an earlier
+            // normal-priority (eviction-recovery) request for the same section.
+            found->highPriority = true;
         }
     }
     wakeWorker_.notify_one();
