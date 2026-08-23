@@ -1,5 +1,7 @@
 #include "world/BlockPlacement.hpp"
 
+#include "world/BlockPos.hpp"
+#include "world/StairShapeDerivation.hpp" // AR-B2: stairShapeFor
 #include "world/World.hpp"
 
 #include <array>
@@ -206,6 +208,26 @@ std::optional<BlockState> placementBlock(
                 ? SlabPortion::Bottom
                 : SlabPortion::Top;
         return BlockState{selected}.withSlabPortion(portion).withSubmergedFluid(submerged);
+    }
+    if (blockDefinition(selected).model == BlockModel::Stairs) {
+        // StairBlock#getStateForPlacement: the same up/down/hit-height rule a
+        // slab's half uses (BlockPlacement.hpp's PlacementContext carries the
+        // same hitPosition a slab reads), plus the join shape computed against
+        // the *current* world right away — a stair's SHAPE is known the instant
+        // it lands, not left for the first neighbour notification to fill in.
+        const bool aboveHalf =
+            context.hitPosition.y - static_cast<float>(context.placePosition.y) > 0.5F;
+        const SlabPortion half =
+            (context.clickedFace != BlockOrientation::Down &&
+             (context.clickedFace == BlockOrientation::Up || !aboveHalf))
+                ? SlabPortion::Bottom
+                : SlabPortion::Top;
+        const BlockState oriented =
+            BlockState{selected, placementOrientation(selected, context)}.withStairHalf(half);
+        const BlockPos placePos{context.placePosition.x, context.placePosition.y,
+                                context.placePosition.z};
+        return oriented.withStairShape(stairShapeFor(world, placePos, oriented))
+            .withSubmergedFluid(submerged);
     }
     return BlockState{selected, placementOrientation(selected, context)}.withSubmergedFluid(submerged);
 }

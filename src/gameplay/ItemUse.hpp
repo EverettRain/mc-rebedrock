@@ -177,6 +177,13 @@ enum class ItemUseAction : std::uint8_t {
     // TilGround: the hoe converts the *clicked* block in place (dirt/grass/
     // podzol to farmland, coarse dirt to dirt). result.block names the new block.
     TilGround,
+    // AR-B2: DoorBlockItem#place — result.state is the *lower* half's resolved
+    // state (facing/hinge already decided); the caller derives the upper half
+    // from it (withDoorUpperHalf(true)) and writes both cells in one atomic
+    // two-setBlock sequence, mirroring DoorBlock#setPlacedBy's
+    // `level.setBlock(pos.above(), ...)` immediately following the lower
+    // placement.
+    PlaceDoor,
 };
 
 struct ItemUseResult final {

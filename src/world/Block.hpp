@@ -213,6 +213,13 @@ enum class Block : std::uint8_t {
     // End:
     EndStone,
     PurpurBlock,
+    // AR-B2: the first stair/door/fence-gate species (oak), proving the
+    // multi-box shape + neighbour-derived state mechanism the same way OakSlab
+    // led the slab family. Later species reuse the same BlockModel and
+    // updateShape handlers — adding one is a registry row, not new logic.
+    OakStairs,
+    OakDoor,
+    OakFenceGate,
     Count,
 };
 
@@ -266,6 +273,17 @@ enum class BlockModel : std::uint8_t {
     // mesher reads the property to pick the box; a double slab meshes as a full
     // cube.
     Slab,
+    // A StairBlock: a Boxes shape built from Facing x Half x StairShape, ported
+    // from StairBlock's five fixed VoxelShapes (AR-B2).
+    Stairs,
+    // A DoorBlock: two cells (Half::Bottom/Top standing in for
+    // DoubleBlockHalf.LOWER/UPPER — the same two-value axis, read through
+    // BlockState::doorHalf) sharing one thin Boxes shape that swings with
+    // Facing x Open x Hinge (AR-B2).
+    Door,
+    // A FenceGateBlock: a Boxes shape on the Facing axis that empties when Open
+    // (AR-B2).
+    FenceGate,
 };
 
 // SlabBlock.TYPE, the value the SlabType property serialises as. Bottom is 0 so
@@ -275,6 +293,26 @@ enum class SlabPortion : std::uint8_t {
     Bottom,
     Top,
     Double,
+};
+
+// StairBlock.SHAPE (StairsShape): Straight is 0 so a freshly placed stair with
+// no stair neighbour yet (the common case) is its default state, matching
+// vanilla's StairsShape.STRAIGHT default. Derived by updateShape from the two
+// horizontal neighbours along the stair's facing axis; never placed by hand.
+enum class StairShape : std::uint8_t {
+    Straight,
+    InnerLeft,
+    InnerRight,
+    OuterLeft,
+    OuterRight,
+};
+
+// DoorBlock.HINGE (DoorHingeSide): Left is 0, matching vanilla's
+// DoorHingeSide.LEFT default. Decided once at placement (DoorBlock#getHinge);
+// never recomputed afterward.
+enum class DoorHinge : std::uint8_t {
+    Left,
+    Right,
 };
 
 // StateProperty::SubmergedFluid's value, the vanilla `waterlogged` axis
@@ -625,6 +663,50 @@ class BlockProperties final {
     // it, which is exactly the prefilter's job (place/break/bucket hooks).
     [[nodiscard]] constexpr BlockProperties submerges() const {
         return state(StateProperty::SubmergedFluid, 2U);
+    }
+
+    // A StairBlock (AR-B2): the Stairs model plus its Facing x Half x
+    // StairShape axes. Cutout, like the vanilla stair — its box has open
+    // corners a translucent-style depth sort is not needed for, but it is not a
+    // full cube either.
+    [[nodiscard]] constexpr BlockProperties stairs() const {
+        BlockProperties copy = *this;
+        return copy.model(BlockModel::Stairs)
+            .renderLayer(BlockRenderLayer::Cutout)
+            .horizontalFacing()
+            .state(StateProperty::Half, 2U)
+            .state(StateProperty::StairShape, 5U);
+    }
+
+    // A DoorBlock (AR-B2): the Door model plus Facing x Half x Open x Hinge. A
+    // door is placed as two cells sharing one block identity (BE2's atomic
+    // two-cell write, not this file's concern); the schema only says what one
+    // cell's state can hold.
+    // Collision stays on (the default): a door's thin Boxes shape supplies its
+    // real collision box, not a full cube — noCollision() would zero out
+    // collisionSpan entirely (hasCollision(block) gates it before the shape is
+    // even read), which is wrong for a solid leaf a creature must walk around.
+    [[nodiscard]] constexpr BlockProperties door() const {
+        BlockProperties copy = *this;
+        return copy.model(BlockModel::Door)
+            .renderLayer(BlockRenderLayer::Cutout)
+            .horizontalFacing()
+            .state(StateProperty::Half, 2U)
+            .state(StateProperty::Open, 2U)
+            .state(StateProperty::Hinge, 2U);
+    }
+
+    // A FenceGateBlock (AR-B2): the FenceGate model plus Facing x Open.
+    // Collision likewise stays on; shapeFenceGate answers Empty itself when
+    // Open, which is the correct way to represent "swung fully clear" (a
+    // per-state fact collisionSpan can see), not a per-block noCollision that
+    // would leave a *closed* gate equally walkable.
+    [[nodiscard]] constexpr BlockProperties fenceGate() const {
+        BlockProperties copy = *this;
+        return copy.model(BlockModel::FenceGate)
+            .renderLayer(BlockRenderLayer::Cutout)
+            .horizontalFacing()
+            .state(StateProperty::Open, 2U);
     }
 
     // The shorthands vanilla blocks reach for again and again.
@@ -1214,6 +1296,24 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     BlockProperties::of(Block::PurpurBlock, "purpur_block", "Purpur Block")
         .texture("purpur_block")
         .strength(1.5F, 6.0F),
+    // AR-B2: the first stair/door/fence-gate species. Hardness/blast resistance
+    // mirror oak_planks, the parent block each recipe crafts from.
+    BlockProperties::of(Block::OakStairs, "oak_stairs", "Oak Stairs")
+        .texture("oak_planks")
+        .strength(2.0F, 3.0F)
+        .stairs(),
+    // DoorBlock: `top`/`side` name the two vanilla door sprites (the upper and
+    // lower halves), reused here as the top/side texture slots the mesher's
+    // per-half box lookup reads — a door has no bottom face on either half, so
+    // the third slot goes unused like a cross plant's.
+    BlockProperties::of(Block::OakDoor, "oak_door", "Oak Door")
+        .texture("oak_door_top", "oak_door_bottom", "oak_door_bottom")
+        .strength(3.0F)
+        .door(),
+    BlockProperties::of(Block::OakFenceGate, "oak_fence_gate", "Oak Fence Gate")
+        .texture("oak_planks")
+        .strength(2.0F, 3.0F)
+        .fenceGate(),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {
@@ -1527,6 +1627,47 @@ inline constexpr float kFarmlandModelHeight = 15.0F / 16.0F;
 // The wall that carries the torch is on the opposite side.
 [[nodiscard]] constexpr BlockOrientation wallTorchSupportSide(BlockOrientation facing) {
     return oppositeOrientation(facing);
+}
+
+// Direction#getClockWise / getCounterClockWise, restricted to the horizontal
+// four (the only ones a stair/door/gate ever names). AR-B2's stair-shape and
+// door-hinge derivations both need "the direction 90 degrees left/right of
+// facing" — this is that primitive, ported once here rather than reimplemented
+// per derivation. A non-horizontal input returns itself unchanged (Up/Down have
+// no clockwise neighbour on this axis), which callers never feed it in practice
+// since every consumer first filters to a horizontal facing.
+[[nodiscard]] constexpr BlockOrientation clockwiseOrientation(BlockOrientation orientation) {
+    switch (orientation) {
+    case BlockOrientation::North:
+        return BlockOrientation::East;
+    case BlockOrientation::East:
+        return BlockOrientation::South;
+    case BlockOrientation::South:
+        return BlockOrientation::West;
+    case BlockOrientation::West:
+        return BlockOrientation::North;
+    case BlockOrientation::Up:
+    case BlockOrientation::Down:
+        return orientation;
+    }
+    return orientation;
+}
+[[nodiscard]] constexpr BlockOrientation counterClockwiseOrientation(BlockOrientation orientation) {
+    // The inverse of clockwiseOrientation: three 90-degree clockwise turns is
+    // one counter-clockwise turn on a four-cycle. (Applying opposite() around
+    // a single clockwise turn is *not* the inverse — opposite is its own
+    // inverse and commutes with the rotation, so that composition collapses
+    // back to the same clockwise turn instead of undoing it.)
+    return clockwiseOrientation(clockwiseOrientation(clockwiseOrientation(orientation)));
+}
+// Direction.Axis equality for the horizontal four: true when both directions
+// share a line (North/South are one axis, East/West the other). Doors and
+// gates both gate a neighbour reaction on "is this the axis facing runs
+// along", the same test JE's `Direction.Axis` enum answers directly.
+[[nodiscard]] constexpr bool sameHorizontalAxis(BlockOrientation a, BlockOrientation b) {
+    const bool aNorthSouth = a == BlockOrientation::North || a == BlockOrientation::South;
+    const bool bNorthSouth = b == BlockOrientation::North || b == BlockOrientation::South;
+    return aNorthSouth == bNorthSouth;
 }
 
 [[nodiscard]] constexpr bool isSelectable(Block block) {

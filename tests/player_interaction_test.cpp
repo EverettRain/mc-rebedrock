@@ -6,6 +6,7 @@
 #include "gameplay/GameSession.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "world/Block.hpp"
+#include "world/BlockShape.hpp"
 #include "world/BlockState.hpp"
 #include "world/DayNightCycle.hpp"
 #include "world/World.hpp"
@@ -537,6 +538,234 @@ int main() {
         assert(world.state(5, 1, 5).slabPortion() == world::SlabPortion::Top);
         assert(world.state(5, 1, 5).submergedFluid() == world::SubmergedFluid::None);
         assert(session.inventory().selectedStack().item == &gameplay::items::WaterBucket);
+    }
+
+    // --- AR-B2 stairs: placement resolves Facing (opposite the player's look,
+    // HorizontalDirectionalBlock's rule) and Half (from the sub-cell hit
+    // height, the same slab rule) in one UseItemOn; the join Shape is already
+    // computed against the world at placement time, and a later neighbour
+    // placement recomputes it through updateShape rather than a second
+    // placement-time compute. ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        session.inventory().mutableSlot(0) = {world::Block::OakStairs, 1U, nullptr};
+        session.inventory().selectHotbar(0);
+        gameplay::UseItemOn place;
+        place.block = glm::ivec3{5, 0, 5};
+        place.adjacent = glm::ivec3{5, 1, 5};
+        place.face = world::BlockOrientation::Up;
+        // Looking North (-Z): HorizontalDirectionalBlock faces the placer, so
+        // the stair's FACING resolves to the opposite, South.
+        place.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(place));
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.block(5, 1, 5) == world::Block::OakStairs);
+        const auto placed = world.state(5, 1, 5);
+        assert(placed.orientation() == world::BlockOrientation::South);
+        assert(placed.stairHalf() == world::SlabPortion::Bottom);
+        // No stair neighbour yet on either facing-axis side: Straight.
+        assert(placed.stairShape() == world::StairShape::Straight);
+
+        // A South-facing stair's "behind" cell is pos + offset(South) =
+        // (5,1,6) (one *more* in Z). Placing a matching stair there, facing
+        // off-axis, corner-joins (5,1,5) through updateShape — not a second
+        // placement-time compute on the already-placed cell.
+        session.inventory().mutableSlot(0) = {world::Block::OakStairs, 1U, nullptr};
+        gameplay::UseItemOn second;
+        second.block = glm::ivec3{5, 0, 6};
+        second.adjacent = glm::ivec3{5, 1, 6};
+        second.face = world::BlockOrientation::Up;
+        second.lookDirection = glm::vec3{1.0F, 0.0F, 0.0F}; // facing resolves to West
+        session.enqueueCommand(std::move(second));
+        for (int tick = 0; tick < 6; ++tick) {
+            session.tick(world, host);
+        }
+        static_cast<void>(session.drainEvents());
+        assert(world.block(5, 1, 6) == world::Block::OakStairs);
+        assert(world.state(5, 1, 6).orientation() == world::BlockOrientation::West);
+        // (5,1,5)'s own shape recomputed once its behind-neighbour appeared —
+        // sabotage target ②'s subject: if updateShape used the wrong offset or
+        // direction, this would stay Straight instead of joining.
+        assert(world.state(5, 1, 5).stairShape() != world::StairShape::Straight);
+    }
+
+    // --- AR-B2 door: a single UseItemOn places two cells atomically (both
+    // exist and share Facing/Hinge the instant the command resolves — no tick
+    // boundary between them to observe a lone half), a right-click on either
+    // half toggles Open on both together, and breaking either half removes
+    // both. This is the task card's "两格原子" + "破坏任一半→两半皆消" +
+    // "开关切换" trio in one flow. ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        session.inventory().mutableSlot(0) = {world::Block::OakDoor, 1U, nullptr};
+        session.inventory().selectHotbar(0);
+        gameplay::UseItemOn place;
+        place.block = glm::ivec3{5, 0, 5};
+        place.adjacent = glm::ivec3{5, 1, 5};
+        place.face = world::BlockOrientation::Up;
+        place.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(place));
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        // Both halves exist, right after the one command that placed them.
+        assert(world.block(5, 1, 5) == world::Block::OakDoor);
+        assert(world.block(5, 2, 5) == world::Block::OakDoor);
+        assert(!world.state(5, 1, 5).isDoorUpperHalf());
+        assert(world.state(5, 2, 5).isDoorUpperHalf());
+        assert(world.state(5, 1, 5).orientation() == world.state(5, 2, 5).orientation());
+        assert(world.state(5, 1, 5).hinge() == world.state(5, 2, 5).hinge());
+        assert(!world.state(5, 1, 5).open() && !world.state(5, 2, 5).open());
+        // A door has real collision (the thin box), unlike an ordinary
+        // no-collision decoration — the interaction test double-checks the
+        // shape source's own hasCollision assertion from a gameplay angle.
+        assert(world::hasCollision(world::Block::OakDoor));
+
+        // Right-click the *lower* half: both flip open together, and the
+        // door's own collision shape genuinely changes (the sabotage③
+        // target: an open-but-uncollided-update door would still report the
+        // closed box). Stopped the instant the toggle lands (mirroring a
+        // real mouse-up), so the interaction's own "repeat every 4 ticks
+        // while held" never gets a second window to re-fire and flip it
+        // straight back — waiting for the flip and stopping on the same tick
+        // (rather than an unconditional multi-tick loop) is what lets this
+        // test hand-click a door safely.
+        gameplay::UseItemOn toggleLower;
+        toggleLower.block = glm::ivec3{5, 1, 5};
+        toggleLower.adjacent = glm::ivec3{4, 1, 5};
+        toggleLower.face = world::BlockOrientation::West;
+        toggleLower.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(toggleLower));
+        for (int tick = 0; tick < 20 && !world.state(5, 1, 5).open(); ++tick) {
+            session.tick(world, host);
+        }
+        session.enqueueCommand(gameplay::UseItemStop{});
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.state(5, 1, 5).open() && world.state(5, 2, 5).open());
+        // The XZ footprint genuinely moves when open — the real "collision
+        // changed" signal a door's toggle produces (unlike the gate, whose
+        // whole span empties instead).
+        assert(!(world::blockShape(world.state(5, 1, 5)).boxes.front().minX ==
+                      world::blockShape(world.state(5, 1, 5).withOpen(false)).boxes.front().minX &&
+                  world::blockShape(world.state(5, 1, 5)).boxes.front().minZ ==
+                      world::blockShape(world.state(5, 1, 5).withOpen(false)).boxes.front().minZ));
+
+        // Right-click the *upper* half: both flip closed together too.
+        gameplay::UseItemOn toggleUpper;
+        toggleUpper.block = glm::ivec3{5, 2, 5};
+        toggleUpper.adjacent = glm::ivec3{4, 2, 5};
+        toggleUpper.face = world::BlockOrientation::West;
+        toggleUpper.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(toggleUpper));
+        for (int tick = 0; tick < 20 && world.state(5, 1, 5).open(); ++tick) {
+            session.tick(world, host);
+        }
+        session.enqueueCommand(gameplay::UseItemStop{});
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(!world.state(5, 1, 5).open() && !world.state(5, 2, 5).open());
+
+        // Breaking the *upper* half removes both — sabotage①'s target: a break
+        // that only deletes the clicked half would leave (5,1,5) standing.
+        session.enqueueCommand(gameplay::PlayerAction{gameplay::PlayerAction::Kind::StartDestroy,
+                                                       glm::ivec3{5, 2, 5}});
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.block(5, 1, 5) == world::Block::Air);
+        assert(world.block(5, 2, 5) == world::Block::Air);
+    }
+
+    // --- AR-B2 door: breaking the *lower* half also removes the upper one
+    // (the symmetric direction to the case above). ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        session.inventory().mutableSlot(0) = {world::Block::OakDoor, 1U, nullptr};
+        session.inventory().selectHotbar(0);
+        gameplay::UseItemOn place;
+        place.block = glm::ivec3{5, 0, 5};
+        place.adjacent = glm::ivec3{5, 1, 5};
+        place.face = world::BlockOrientation::Up;
+        place.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(place));
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.block(5, 1, 5) == world::Block::OakDoor);
+        assert(world.block(5, 2, 5) == world::Block::OakDoor);
+
+        session.enqueueCommand(gameplay::PlayerAction{gameplay::PlayerAction::Kind::StartDestroy,
+                                                       glm::ivec3{5, 1, 5}});
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.block(5, 1, 5) == world::Block::Air);
+        assert(world.block(5, 2, 5) == world::Block::Air);
+    }
+
+    // --- AR-B2 fence gate: placement (single cell, Facing only), right-click
+    // toggle, and the collision shape genuinely emptying while open (unlike
+    // the door's thin sliver, a gate collides with nothing at all). ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        session.inventory().mutableSlot(0) = {world::Block::OakFenceGate, 1U, nullptr};
+        session.inventory().selectHotbar(0);
+        gameplay::UseItemOn place;
+        place.block = glm::ivec3{5, 0, 5};
+        place.adjacent = glm::ivec3{5, 1, 5};
+        place.face = world::BlockOrientation::Up;
+        place.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(place));
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.block(5, 1, 5) == world::Block::OakFenceGate);
+        assert(!world.state(5, 1, 5).open());
+        const auto closedSpan = world::collisionSpan(world.state(5, 1, 5));
+        assert(closedSpan.top > closedSpan.bottom); // solid while closed
+
+        // Stopped the instant the toggle lands (see the door test's comment):
+        // one click, not a held button the 4-tick repeat would keep re-firing.
+        gameplay::UseItemOn toggle;
+        toggle.block = glm::ivec3{5, 1, 5};
+        toggle.adjacent = glm::ivec3{4, 1, 5};
+        toggle.face = world::BlockOrientation::West;
+        toggle.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(toggle));
+        for (int tick = 0; tick < 20 && !world.state(5, 1, 5).open(); ++tick) {
+            session.tick(world, host);
+        }
+        session.enqueueCommand(gameplay::UseItemStop{});
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.state(5, 1, 5).open());
+        const auto openSpan = world::collisionSpan(world.state(5, 1, 5));
+        assert(openSpan.top <= openSpan.bottom); // fully clear while open
+
+        // Toggling again closes it.
+        session.inventory().mutableSlot(0) = {world::Block::Air, 1U, nullptr};
+        gameplay::UseItemOn toggleBack;
+        toggleBack.block = glm::ivec3{5, 1, 5};
+        toggleBack.adjacent = glm::ivec3{4, 1, 5};
+        toggleBack.face = world::BlockOrientation::West;
+        toggleBack.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(toggleBack));
+        for (int tick = 0; tick < 20 && world.state(5, 1, 5).open(); ++tick) {
+            session.tick(world, host);
+        }
+        session.enqueueCommand(gameplay::UseItemStop{});
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(!world.state(5, 1, 5).open());
     }
 
     return 0;

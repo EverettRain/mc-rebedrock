@@ -40,8 +40,94 @@ namespace {
     return {ItemUseAction::PlaceBlock, itemPlacementState(stack, *placed)};
 }
 
+// DoorBlock#getHinge: the hinge side is picked by counting how many sturdy
+// (full-cube) blocks flank each side of the placement, tie-broken by which
+// half of the clicked cell the player aimed at. A neighbouring lower door half
+// biases the same way (so two doors placed side by side hinge away from each
+// other) unless the solid-block count already decided it. Ported field-for-
+// field from the Java source (DoorBlock.java) rather than simplified, since
+// the tie-break order is exactly what makes doors along a wall hinge the way
+// vanilla players expect.
+[[nodiscard]] world::DoorHinge doorHingeFor(const world::World& world,
+                                            const world::PlacementContext& context) {
+    using world::BlockOrientation;
+    const auto pos = context.placePosition;
+    const auto placeDirection = world::horizontalFacing(context.lookDirection);
+    const glm::ivec3 above{pos.x, pos.y + 1, pos.z};
+
+    const auto leftDirection = world::counterClockwiseOrientation(placeDirection);
+    const auto leftOffset = world::orientationOffset(leftDirection);
+    const glm::ivec3 leftPos = pos + leftOffset;
+    const glm::ivec3 leftAbovePos = above + leftOffset;
+    const auto rightDirection = world::clockwiseOrientation(placeDirection);
+    const auto rightOffset = world::orientationOffset(rightDirection);
+    const glm::ivec3 rightPos = pos + rightOffset;
+    const glm::ivec3 rightAbovePos = above + rightOffset;
+
+    const auto sturdy = [&world](glm::ivec3 p) {
+        return world::isFaceSturdy(world.block(p.x, p.y, p.z));
+    };
+    const int solidBlockBalance = (sturdy(leftPos) ? -1 : 0) + (sturdy(leftAbovePos) ? -1 : 0) +
+                                  (sturdy(rightPos) ? 1 : 0) + (sturdy(rightAbovePos) ? 1 : 0);
+
+    const auto isLowerDoor = [&world](glm::ivec3 p) {
+        const auto state = world.state(p.x, p.y, p.z);
+        return world::blockDefinition(state.block()).model == world::BlockModel::Door &&
+               !state.isDoorUpperHalf();
+    };
+    const bool doorLeft = isLowerDoor(leftPos);
+    const bool doorRight = isLowerDoor(rightPos);
+
+    if ((!doorLeft || doorRight) && solidBlockBalance <= 0) {
+        if ((!doorRight || doorLeft) && solidBlockBalance >= 0) {
+            // The click's sub-cell position within the placement cell breaks the
+            // remaining tie, mirroring the Java stepX/stepZ comparison exactly.
+            const auto offset = world::orientationOffset(placeDirection);
+            const float clickX = context.hitPosition.x - static_cast<float>(pos.x);
+            const float clickZ = context.hitPosition.z - static_cast<float>(pos.z);
+            const bool left = (offset.x >= 0 || !(clickZ < 0.5F)) &&
+                (offset.x <= 0 || !(clickZ > 0.5F)) &&
+                (offset.z >= 0 || !(clickX > 0.5F)) &&
+                (offset.z <= 0 || !(clickX < 0.5F));
+            return left ? world::DoorHinge::Left : world::DoorHinge::Right;
+        }
+        return world::DoorHinge::Left;
+    }
+    return world::DoorHinge::Right;
+}
+
+// DoorBlock#getStateForPlacement: resolves the *lower* half's state (facing +
+// hinge), or Nothing when the cell above cannot take the upper half, and when
+// the placement cell itself cannot survive (needs sturdy ground below, the
+// same BlockSupport::Ground rule an ordinary block's canBlockSurvive already
+// answers, since a door declares no support flag of its own to avoid the
+// generic support table dispatching a wall-torch-style facing read). The
+// upper half itself, and writing both cells, are the caller's job
+// (PlayerInteraction.cpp) — this stays a pure "what would the lower half be"
+// query so it can be probed the same way every other placement decision is.
+[[nodiscard]] ItemUseResult doorPlaceResult(world::Block block, world::World& world,
+                                            const world::PlacementContext& context) {
+    const auto pos = context.placePosition;
+    const glm::ivec3 above{pos.x, pos.y + 1, pos.z};
+    if (!world::isReplaceable(world.block(above.x, above.y, above.z))) {
+        return {};
+    }
+    if (!world::isFaceSturdy(world.block(pos.x, pos.y - 1, pos.z))) {
+        return {}; // DoorBlock#canSurvive: the lower half needs sturdy ground
+    }
+    const auto facing = world::horizontalFacing(context.lookDirection);
+    const auto hinge = doorHingeFor(world, context);
+    const auto lower = world::BlockState{block, facing}.withHinge(hinge).withDoorUpperHalf(false);
+    return {ItemUseAction::PlaceDoor, lower};
+}
+
 [[nodiscard]] ItemUseResult blockItemUseOn(
     const Item* item, world::World& world, const world::PlacementContext& context) {
+    // AR-B2: a door places two cells atomically, so its own kind routes to
+    // doorPlaceResult ahead of the ordinary single-cell path.
+    if (const auto* doorItem = asDoorBlockItem(item); doorItem != nullptr) {
+        return doorPlaceResult(doorItem->block(), world, context);
+    }
     const auto* blockItem = asBlockItem(item);
     if (blockItem == nullptr) {
         return {};
@@ -272,6 +358,11 @@ ItemUseResult legacyBlockStackUseOn(
     const ItemStack& stack, world::World& world, const world::PlacementContext& context) {
     if (stack.item != nullptr || stack.block == world::Block::Air) {
         return {};
+    }
+    // AR-B2: a legacy door stack (a null item pointer naming a door block)
+    // still routes through the two-cell placement, matching the live-item path.
+    if (world::blockDefinition(stack.block).model == world::BlockModel::Door) {
+        return doorPlaceResult(stack.block, world, context);
     }
     return placeBlockResult(blockItemFor(stack.block), stack.block, world, context);
 }

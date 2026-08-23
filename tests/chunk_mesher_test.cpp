@@ -388,5 +388,27 @@ int main() {
     expectNear(worldPos(plantVertices[16]).x, 8.0F, "sapling x");
     expectNear(worldPos(plantVertices[16]).z, 8.0F, "sapling z");
     expectNear(worldPos(plantVertices[16]).y, 2.0F, "sapling y");
+
+    // AR-B2 smoke test: stairs/doors/gates carry no dedicated mesh branch yet
+    // (ChunkMesher's per-shape geometry is deliberately deferred to mac, same
+    // scope line AR-B1 Slice D drew — see the AR-B2 landing notes). None of
+    // the three model branches exist here, so the mesher's catch-all cube
+    // path meshes them: visually a full block rather than the real partial
+    // shape, but the build must still complete without a crash or an
+    // out-of-bounds read, and produce real geometry rather than silently
+    // nothing. This pins today's known-wrong-but-safe fallback so a future
+    // mesher change is caught if it starts crashing on these models instead
+    // of quietly under- or over-meshing them.
+    {
+        mc::world::Chunk stairsAndFixtures;
+        stairsAndFixtures.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::OakStairs);
+        stairsAndFixtures.setBlock(3, mc::world::kMinY + 1, 1, mc::world::Block::OakDoor);
+        stairsAndFixtures.setBlock(3, mc::world::kMinY + 2, 1, mc::world::Block::OakDoor);
+        stairsAndFixtures.setBlock(5, mc::world::kMinY + 1, 1, mc::world::Block::OakFenceGate);
+        const auto mesh = mc::world::ChunkMesher::build(stairsAndFixtures);
+        assert(!mesh.vertices.empty());
+        assert(!mesh.indices.empty());
+        assert(mesh.indices.size() % 3U == 0U); // whole triangles only
+    }
     return 0;
 }

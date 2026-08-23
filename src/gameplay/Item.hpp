@@ -81,6 +81,10 @@ enum class BlockItemKind : std::uint8_t {
     Plain,
     StandingAndWall,
     Leaves,
+    // AR-B2: DoorBlockItem — its useOn places two cells atomically (the lower
+    // half here, the upper half above it) rather than the one every other
+    // BlockItem places.
+    Door,
 };
 
 // C++ representation of Java's textual description id. Keeping the three
@@ -360,6 +364,26 @@ class LeavesBlockItem : public BlockItem {
     return nullptr;
 }
 
+// DoorBlockItem (AR-B2): a door's own block item, marked so the interaction
+// system routes its useOn through the two-cell atomic placement
+// (PlayerInteraction.cpp's ItemUseAction::PlaceDoor) instead of the ordinary
+// single-cell PlaceBlock every other BlockItem takes.
+class DoorBlockItem : public BlockItem {
+  public:
+    constexpr DoorBlockItem() = default;
+
+    constexpr DoorBlockItem(world::Block block) : BlockItem(block) {
+        blockItemKind = BlockItemKind::Door;
+    }
+};
+
+[[nodiscard]] inline const DoorBlockItem* asDoorBlockItem(const Item* item) {
+    if (item != nullptr && item->blockItemKind == BlockItemKind::Door) {
+        return static_cast<const DoorBlockItem*>(item);
+    }
+    return nullptr;
+}
+
 // The one BlockItem a block is wielded as, mirroring the entry every block gets
 // in vanilla's Items registry. The pointer is stable, so two stacks of the same
 // block always point at the same item. The torch is a StandingAndWallBlockItem,
@@ -370,6 +394,20 @@ class LeavesBlockItem : public BlockItem {
                                                 world::Block::WallTorch};
     if (block == world::Block::Torch) return &torch;
     if (!world::isValidBlock(block)) return nullptr;
+    // AR-B2: a door is placed as two cells, so its BlockItem is a DoorBlockItem
+    // — model-driven, not a per-species identity check, so a second door
+    // species needs no line here.
+    if (world::blockDefinition(block).model == world::BlockModel::Door) {
+        static const std::array<DoorBlockItem, static_cast<std::size_t>(world::Block::Count)>
+            doorItems = [] {
+                std::array<DoorBlockItem, static_cast<std::size_t>(world::Block::Count)> result{};
+                for (std::size_t index = 0; index < result.size(); ++index) {
+                    result[index] = DoorBlockItem{static_cast<world::Block>(index)};
+                }
+                return result;
+            }();
+        return &doorItems[static_cast<std::size_t>(block)];
+    }
     if (world::isLeaves(block)) {
         static const std::array<LeavesBlockItem,
                                 static_cast<std::size_t>(world::Block::Count)> leavesItems =

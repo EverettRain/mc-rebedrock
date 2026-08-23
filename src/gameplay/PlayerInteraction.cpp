@@ -116,6 +116,65 @@ bool aimsAtPlantableFarmland(world::World& world, const UseItemOn& use,
     return world::isFarmland(world.block(below.x, below.y, below.z));
 }
 
+// AR-B2: DoorBlock#useWithoutItem / FenceGateBlock#useWithoutItem — a plain
+// right-click on the block itself (not suppressed by sneaking-with-item-in-
+// hand, checked by the caller) flips OPEN. A door writes both halves so they
+// never observe different OPEN values; a gate also snaps its FACING to face
+// the player when opening from closed (FenceGateBlock#useWithoutItem: "if
+// closed and the player faces the opposite way, turn to face them first"),
+// which is why an untouched gate always swings open toward whoever opens it.
+// Returns whether a toggle actually happened, so the caller knows to swing/
+// play a sound and skip every other interaction this click could have been.
+[[nodiscard]] bool toggleDoorOrGate(GameSession& session, world::World& world,
+                                    glm::ivec3 clicked, world::BlockOrientation playerFacing) {
+    const auto clickedState = world.state(clicked.x, clicked.y, clicked.z);
+    const auto model = world::blockDefinition(clickedState.block()).model;
+    if (model == world::BlockModel::Door) {
+        const bool upper = clickedState.isDoorUpperHalf();
+        const glm::ivec3 lower{clicked.x, clicked.y - (upper ? 1 : 0), clicked.z};
+        const glm::ivec3 upperCell{lower.x, lower.y + 1, lower.z};
+        const auto lowerState = world.state(lower.x, lower.y, lower.z);
+        const bool open = !lowerState.open();
+        GameplayMutationSink sink{world, session};
+        session.worldMutations().setBlock(world, {lower.x, lower.y, lower.z},
+                                          lowerState.withOpen(open), world::MutationFlags::All,
+                                          world::MutationCause::PlayerPlace, sink);
+        const auto upperState = world.state(upperCell.x, upperCell.y, upperCell.z);
+        if (upperState.block() == clickedState.block()) {
+            session.worldMutations().setBlock(world, {upperCell.x, upperCell.y, upperCell.z},
+                                              upperState.withOpen(open),
+                                              world::MutationFlags::All,
+                                              world::MutationCause::PlayerPlace, sink);
+        }
+        session.events().publish(SoundEvent{SoundEventKind::BlockPlace,
+                                            glm::vec3{lower} + glm::vec3{0.5F, 1.0F, 0.5F},
+                                            clickedState.block()});
+        return true;
+    }
+    if (model == world::BlockModel::FenceGate) {
+        GameplayMutationSink sink{world, session};
+        world::BlockState next = clickedState;
+        if (clickedState.open()) {
+            next = next.withOpen(false);
+        } else {
+            // FenceGateBlock#useWithoutItem: only re-faces when the gate's
+            // current facing is exactly opposite the player's — an already
+            // aligned or perpendicular gate keeps its facing.
+            if (clickedState.orientation() == world::oppositeOrientation(playerFacing)) {
+                next = next.with(playerFacing);
+            }
+            next = next.withOpen(true);
+        }
+        session.worldMutations().setBlock(world, {clicked.x, clicked.y, clicked.z}, next,
+                                          world::MutationFlags::All,
+                                          world::MutationCause::PlayerPlace, sink);
+        session.events().publish(SoundEvent{SoundEventKind::BlockPlace,
+                                            glm::vec3{clicked} + glm::vec3{0.5F}, clickedState.block()});
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 void PlayerInteraction::tick(GameSession& session, world::World& world, SimulationHost& host,
@@ -353,6 +412,22 @@ void PlayerInteraction::applyBreak(GameSession& session, world::World& world,
                                             glm::vec3{block} + glm::vec3{0.5F}, brokenBlock});
         session.events().publish(ParticleEvent{ParticleEventKind::BlockBreak,
                                                glm::vec3{block}, brokenBlock});
+        // AR-B2: DoorBlock#playerWillDestroy — breaking either half removes
+        // both. The other half's own drops are suppressed (DoublePlantBlock's
+        // "prevent drop from bottom part" equivalent: vanilla only rolls the
+        // clicked half's loot table, never double-counting the item), so this
+        // second write goes through with SuppressDrops regardless of survival.
+        if (world::blockDefinition(brokenBlock).model == world::BlockModel::Door) {
+            const bool wasUpper = brokenState.isDoorUpperHalf();
+            const glm::ivec3 otherHalf{block.x, block.y + (wasUpper ? -1 : 1), block.z};
+            const auto otherState = world.state(otherHalf.x, otherHalf.y, otherHalf.z);
+            if (otherState.block() == brokenBlock && otherState.isDoorUpperHalf() != wasUpper) {
+                session.worldMutations().setBlock(
+                    world, {otherHalf.x, otherHalf.y, otherHalf.z}, world::BlockState{},
+                    breakFlags | world::MutationFlags::SuppressDrops,
+                    world::MutationCause::PlayerBreak, sink);
+            }
+        }
         if (survival) {
             // Player#destroyBlock adds a flat exhaustion per broken block.
             session.vitals().addExhaustion(0.005F);
@@ -380,6 +455,17 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
     // being replaced.
     const bool infiniteMaterials = restoresHeldStack(session.gameMode());
     const auto preservedStack = session.inventory().selectedStack();
+    // AR-B2: DoorBlock/FenceGateBlock#useWithoutItem run ahead of the container
+    // decision below (both are "the block itself answers the click, no item
+    // involved"), gated by the identical sneaking-with-item-in-hand suppression
+    // a container obeys — sneaking with something in hand always means "build
+    // against this block", door and gate included.
+    if (!blockInteractionSuppressed(session.player().sneaking(),
+                                    !session.inventory().selectedStack().empty()) &&
+        toggleDoorOrGate(session, world, use.block, world::horizontalFacing(use.lookDirection))) {
+        session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
+        return;
+    }
     // ServerPlayerGameMode#useItemOn's first decision: sneaking with an item in
     // hand builds against the block, an untouched container opens.
     const auto decision = decideBlockInteraction(
@@ -615,6 +701,57 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
                 session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
                 if (session.gameMode() == GameMode::Survival) {
                     static_cast<void>(session.inventory().consumeSelected());
+                }
+            }
+            break;
+        }
+        case ItemUseAction::PlaceDoor: {
+            // AR-B2: DoorBlock#setPlacedBy — the lower half (already resolved:
+            // facing/hinge decided) writes first, then the upper half
+            // immediately after at pos+Up, sharing every axis except Half. Both
+            // cells are checked for entity occupancy the same way PlaceBlock
+            // does (a door's thin box still occupies real space), and the
+            // second write is what makes this "atomic" in the sense the task
+            // card asks for: nothing observes a lower half with no upper half,
+            // because no tick boundary falls between the two setBlock calls —
+            // this function runs to completion before the session is read
+            // again (single-threaded gameplay tick, no yield point here).
+            const auto lower = placeTarget;
+            const glm::ivec3 upperCell{lower.x, lower.y + 1, lower.z};
+            const auto upperState = itemUse.state.withDoorUpperHalf(true);
+            const auto lowerSpan = world::collisionSpan(itemUse.state);
+            const auto upperSpan = world::collisionSpan(upperState);
+            const world::Block placedBlock = itemUse.state.block();
+            const bool spaceFree =
+                world::isReplaceable(world.block(lower.x, lower.y, lower.z)) &&
+                world::isReplaceable(world.block(upperCell.x, upperCell.y, upperCell.z)) &&
+                !session.player().intersectsBlock(lower.x, lower.y, lower.z, lowerSpan.bottom,
+                                                   lowerSpan.top) &&
+                !session.player().intersectsBlock(upperCell.x, upperCell.y, upperCell.z,
+                                                   upperSpan.bottom, upperSpan.top) &&
+                !session.worldEntities().intersectsBlock(lower.x, lower.y, lower.z,
+                                                          lowerSpan.bottom, lowerSpan.top) &&
+                !session.worldEntities().intersectsBlock(upperCell.x, upperCell.y, upperCell.z,
+                                                          upperSpan.bottom, upperSpan.top);
+            if (world::isRenderable(placedBlock) && spaceFree) {
+                GameplayMutationSink sink{world, session};
+                const bool lowerPlaced =
+                    session.worldMutations()
+                        .setBlock(world, {lower.x, lower.y, lower.z}, itemUse.state,
+                                  world::MutationFlags::All, world::MutationCause::PlayerPlace, sink)
+                        .changed;
+                if (lowerPlaced) {
+                    session.worldMutations().setBlock(
+                        world, {upperCell.x, upperCell.y, upperCell.z}, upperState,
+                        world::MutationFlags::All, world::MutationCause::PlayerPlace, sink);
+                    session.events().publish(SoundEvent{SoundEventKind::BlockPlace,
+                                                        glm::vec3{lower} + glm::vec3{0.5F},
+                                                        placedBlock});
+                    session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use,
+                                                      6U);
+                    if (session.gameMode() == GameMode::Survival) {
+                        static_cast<void>(session.inventory().consumeSelected());
+                    }
                 }
             }
             break;

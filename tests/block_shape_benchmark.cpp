@@ -167,5 +167,29 @@ int main() {
     auto boxesWorld = makeBoxesWorld(kChunkRadius);
     run(boxesWorld, kSteps, "boxes (chest)        ");
 
+    // AR-B2: ShapeKind::Boxes, the widest entry the table now dispatches — an
+    // inner-corner stair's 3-box list (vs. the chest's fixed 1), the new
+    // content that grew kShapeByModel from 6 to 9 rows. Same access pattern,
+    // worst-case box count, so a regression from the table's growth or the
+    // stair handler's own cost (an interned-table subscript, not a per-call
+    // rotation) would show here relative to the chest row above.
+    {
+        World stairWorld;
+        const auto innerStair =
+            mc::world::BlockState{Block::OakStairs}.withStairShape(mc::world::StairShape::InnerLeft);
+        for (int chunkZ = -kChunkRadius; chunkZ <= kChunkRadius; ++chunkZ) {
+            for (int chunkX = -kChunkRadius; chunkX <= kChunkRadius; ++chunkX) {
+                Chunk chunk;
+                for (int z = 0; z < 16; ++z) {
+                    for (int x = 0; x < 16; ++x) {
+                        chunk.setState(x, kFloorY, z, innerStair);
+                    }
+                }
+                stairWorld.setChunk({chunkX, chunkZ}, std::move(chunk));
+            }
+        }
+        run(stairWorld, kSteps, "boxes (stair, 3-box) ");
+    }
+
     return 0;
 }

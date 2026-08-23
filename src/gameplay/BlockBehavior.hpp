@@ -32,6 +32,7 @@
 #include "world/BlockRegistry.hpp"  // blockCount
 #include "world/BlockShape.hpp"     // BlockShape, blockShape
 #include "world/BlockState.hpp"
+#include "world/StairShapeDerivation.hpp" // AR-B2: stairUpdateShape, doorUpdateShape
 
 #include <array>
 #include <cstddef>
@@ -112,8 +113,15 @@ struct BlockBehaviorPrefilter final {
     prefilter.set(BlockBehaviorBit::HasCollision, definition.collision);
     prefilter.set(BlockBehaviorBit::HasInteraction,
                   definition.container != world::ContainerType::None);
+    // AR-B2: a stair recomputes its join shape from a changed horizontal
+    // neighbour (StairBlock#updateShape) and a door's upper half tracks its
+    // lower half's removal (DoorBlock#updateShape) — both are updateShape
+    // reactions, model-driven like the interaction bit above so a species never
+    // needs to declare this by hand.
     prefilter.set(BlockBehaviorBit::HasNeighborReaction,
-                  definition.support != world::BlockSupport::None);
+                  definition.support != world::BlockSupport::None ||
+                      definition.model == world::BlockModel::Stairs ||
+                      definition.model == world::BlockModel::Door);
     prefilter.set(BlockBehaviorBit::HasRandomTick, WorldSimulation::isRandomlyTicking(block));
     prefilter.set(BlockBehaviorBit::HasDrops, blockYieldsLoot(block));
     prefilter.set(BlockBehaviorBit::IsSignalSource, redstone::isSignalSource(block));
@@ -214,6 +222,21 @@ placementSlot(const PlacementBehaviorContext& context) {
     return world::placementBlock(context.world, context.block, context.placement);
 }
 
+// AR-B2's updateShape slots: adapt the context struct into the plain
+// (world, pos, state, ...) parameters StairShapeUpdate.hpp's derivations take
+// (kept independent of this header — see that file's comment), always
+// returning a value so applyUpdateShapeContract's own fixed-point check (an
+// unchanged result reports "no change") is the single place that convergence
+// is decided, not each derivation re-deciding it.
+[[nodiscard]] inline std::optional<world::BlockState>
+stairUpdateShapeSlot(const NeighborUpdateContext& context) {
+    return world::stairUpdateShape(context.world, context.pos, context.state, context.fromOffset);
+}
+[[nodiscard]] inline std::optional<world::BlockState>
+doorUpdateShapeSlot(const NeighborUpdateContext& context) {
+    return world::doorUpdateShape(context.state, context.fromOffset, context.neighborState);
+}
+
 // Builds the runtime table. Sized to the *registry* (blockCount()), not to the
 // built-in constant, so it grows with external blocks (R0-5) instead of topping
 // out — a hardcoded capacity here would drop or overflow external ids. Built-in
@@ -238,6 +261,17 @@ placementSlot(const PlacementBehaviorContext& context) {
         // identical to calling them directly.
         entry.getShape = &world::blockShape;
         entry.getStateForPlacement = &placementSlot;
+        // AR-B2: the model-driven updateShape reaction the prefilter above
+        // just turned on for Stairs/Door — a per-model slot, not per-block,
+        // since every stair species shares the same derivation.
+        if (entry.prefilter.has(BlockBehaviorBit::HasNeighborReaction)) {
+            const auto model = world::blockDefinition(static_cast<world::Block>(i)).model;
+            if (model == world::BlockModel::Stairs) {
+                entry.updateShape = &stairUpdateShapeSlot;
+            } else if (model == world::BlockModel::Door) {
+                entry.updateShape = &doorUpdateShapeSlot;
+            }
+        }
         if (entry.prefilter.has(BlockBehaviorBit::IsSignalSource)) {
             // The block's own weak/strong emission handler (redstone::weakPowerFn),
             // so the slot is per-block rather than one shared function with a

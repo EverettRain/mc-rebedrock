@@ -90,6 +90,161 @@ inline constexpr std::array<ShapeBox, 4> kWallTorchBox{{
     {0.663716F, 0.152828F, 0.437500F, 1.056284F, 0.787172F, 0.562500F}, // West
 }};
 
+// A box rotated 90 degrees clockwise (viewed from above, +Y up) about the
+// cell's horizontal centre: `(x, z) -> (1 - z, x)`. This is the exact mapping
+// `kWallTorchBox`'s North->East pair above already exercises (its East box is
+// this formula applied to its North box), so stair/door/gate boxes rotate
+// through the same convention rather than a second, independently-checked one.
+[[nodiscard]] constexpr ShapeBox rotatedClockwise(const ShapeBox& box) {
+    const float x1 = 1.0F - box.maxZ;
+    const float z1 = box.minX;
+    const float x2 = 1.0F - box.minZ;
+    const float z2 = box.maxX;
+    return {x1 < x2 ? x1 : x2, box.minY, z1 < z2 ? z1 : z2,
+            x1 < x2 ? x2 : x1, box.maxY, z1 < z2 ? z2 : z1};
+}
+[[nodiscard]] constexpr ShapeBox rotatedBy(const ShapeBox& box, BlockOrientation facing) {
+    switch (facing) {
+    case BlockOrientation::North:
+        return box;
+    case BlockOrientation::East:
+        return rotatedClockwise(box);
+    case BlockOrientation::South:
+        return rotatedClockwise(rotatedClockwise(box));
+    case BlockOrientation::West:
+        return rotatedClockwise(rotatedClockwise(rotatedClockwise(box)));
+    case BlockOrientation::Up:
+    case BlockOrientation::Down:
+        return box;
+    }
+    return box;
+}
+// A box mirrored top<->bottom about the cell's vertical centre (y -> 1 - y),
+// the way a top stair/gate-post mirrors its bottom counterpart.
+[[nodiscard]] constexpr ShapeBox invertedY(const ShapeBox& box) {
+    return {box.minX, 1.0F - box.maxY, box.minZ, box.maxX, 1.0F - box.minY, box.maxZ};
+}
+
+// StairBlock's fixed box set, ported box-for-box from 26.1's SHAPE_OUTER /
+// SHAPE_STRAIGHT / SHAPE_INNER (StairBlock.java): each is built at facing=North
+// by composing the previous shape with its own 90-degree rotation, matching the
+// Java `Shapes.or(previous, Shapes.rotate(previous, ROT_Y_90))` construction —
+// see the derivation in AR-B2's design notes. `kStairFullBottom` is the shared
+// full-footprint lower half every shape includes; the others are the
+// shape-specific step box(es) on top of it (Straight's two adjacent
+// quarter-boxes merge into one full-depth half, exactly as SHAPE_STRAIGHT's
+// union does), each already in its North-facing orientation.
+inline constexpr ShapeBox kStairFullBottom{0.0F, 0.0F, 0.0F, 1.0F, 0.5F, 1.0F};
+inline constexpr ShapeBox kStairOuterStep{0.0F, 0.5F, 0.0F, 0.5F, 1.0F, 0.5F};
+inline constexpr ShapeBox kStairStraightStep{0.0F, 0.5F, 0.0F, 1.0F, 1.0F, 0.5F};
+inline constexpr ShapeBox kStairInnerStep2{0.5F, 0.5F, 0.5F, 1.0F, 1.0F, 1.0F};
+
+// One (facing, half, shape) combination's box list, up to 3 boxes long
+// (Straight/Outer use 2, Inner uses 3 — the trailing slots of a shorter entry
+// are zero-initialised and never read past `count`).
+struct StairBoxEntry final {
+    std::array<ShapeBox, 3> boxes{};
+    std::uint8_t count = 0U;
+};
+
+// Every stair box list, interned once at compile time and indexed by
+// `stairShapeIndex` — the same "build the whole table in rodata, index it with
+// arithmetic" move `kWallTorchBox` makes for its four entries, just wider.
+// `blockShape` returns a `std::span` into whichever row this table computed, so
+// the row must be a static array (never a per-call local) or the span would
+// point at a destroyed stack temporary the moment the handler returns.
+[[nodiscard]] constexpr std::size_t stairShapeIndex(BlockOrientation facing, SlabPortion half,
+                                                    StairShape shape) {
+    // facing(4) outermost, half(2), shape(5) innermost — an arbitrary but fixed
+    // mixed-radix order, private to this table.
+    return ((static_cast<std::size_t>(facing) * 2U) + static_cast<std::size_t>(half)) * 5U +
+           static_cast<std::size_t>(shape);
+}
+[[nodiscard]] constexpr StairBoxEntry buildStairBoxEntry(BlockOrientation facing, SlabPortion half,
+                                                         StairShape shape) {
+    // INNER_LEFT/OUTER_RIGHT read the *rotated* facing key, exactly as
+    // StairBlock#getShape's inner switch selects (StairBlock.java:85-89) —
+    // the shape name is relative to the placed facing, not an independent axis.
+    const BlockOrientation key = shape == StairShape::InnerLeft
+        ? counterClockwiseOrientation(facing)
+        : (shape == StairShape::OuterRight ? clockwiseOrientation(facing) : facing);
+    const bool top = half == SlabPortion::Top;
+    const auto place = [top](ShapeBox box) { return top ? invertedY(box) : box; };
+
+    StairBoxEntry entry;
+    entry.boxes[entry.count++] = place(rotatedBy(kStairFullBottom, key));
+    entry.boxes[entry.count++] = place(rotatedBy(
+        shape == StairShape::Straight ? kStairStraightStep : kStairOuterStep, key));
+    if (shape == StairShape::InnerLeft || shape == StairShape::InnerRight) {
+        entry.boxes[entry.count++] = place(rotatedBy(kStairInnerStep2, key));
+    }
+    return entry;
+}
+inline constexpr std::array<StairBoxEntry, 4U * 2U * 5U> kStairBoxTable = [] {
+    std::array<StairBoxEntry, 4U * 2U * 5U> table{};
+    for (std::size_t f = 0; f < 4U; ++f) {
+        for (std::size_t h = 0; h < 2U; ++h) {
+            for (std::size_t s = 0; s < 5U; ++s) {
+                const auto facing = static_cast<BlockOrientation>(f);
+                const auto half = static_cast<SlabPortion>(h);
+                const auto shape = static_cast<StairShape>(s);
+                table[stairShapeIndex(facing, half, shape)] = buildStairBoxEntry(facing, half, shape);
+            }
+        }
+    }
+    return table;
+}();
+
+// DoorBlock's single thin box (26.1's `Block.boxZ(16,13,16)`, which resolves to
+// full X, full Y, z 13/16..1 at facing=North — a slab-thin leaf flush against
+// the cell's far face), rotated by the *effective* swing direction: closed
+// reads `facing` directly, open reads facing rotated toward the hinge exactly
+// as DoorBlock#getShape computes `doorDirection` (right hinge turns
+// counter-clockwise, left hinge clockwise) before indexing the same
+// North-keyed table `SHAPES.get(doorDirection)` every closed door shares.
+inline constexpr ShapeBox kDoorClosedBox{0.0F, 0.0F, 0.8125F, 1.0F, 1.0F, 1.0F};
+[[nodiscard]] constexpr std::size_t doorShapeIndex(BlockOrientation facing, bool open,
+                                                   DoorHinge hinge) {
+    return (static_cast<std::size_t>(facing) * 2U + (open ? 1U : 0U)) * 2U +
+           static_cast<std::size_t>(hinge);
+}
+inline constexpr std::array<ShapeBox, 4U * 2U * 2U> kDoorBoxTable = [] {
+    std::array<ShapeBox, 4U * 2U * 2U> table{};
+    for (std::size_t f = 0; f < 4U; ++f) {
+        for (std::size_t o = 0; o < 2U; ++o) {
+            for (std::size_t h = 0; h < 2U; ++h) {
+                const auto facing = static_cast<BlockOrientation>(f);
+                const bool open = o != 0U;
+                const auto hinge = static_cast<DoorHinge>(h);
+                BlockOrientation swing = facing;
+                if (open) {
+                    swing = hinge == DoorHinge::Right ? counterClockwiseOrientation(facing)
+                                                       : clockwiseOrientation(facing);
+                }
+                table[doorShapeIndex(facing, open, hinge)] = rotatedBy(kDoorClosedBox, swing);
+            }
+        }
+    }
+    return table;
+}();
+
+// FenceGateBlock's post-pair box (26.1's `Block.cube(16,16,4)`: full X/Y, z
+// 6/16..10/16 at the Z axis key — a gate spanning the cell on the axis
+// perpendicular to travel), rotated by facing when closed and empty when open
+// (FenceGateBlock#getCollisionShape/getBlockSupportShape both go `Shapes.empty()`
+// on OPEN — the gate swings fully out of the way, unlike a door which still
+// occupies a thin sliver). `kFenceGateEmpty` is an empty box list an open gate's
+// entry points at, so shapeFenceGate stays a single-branch subscript rather
+// than an if/else on `open` at read time.
+inline constexpr ShapeBox kFenceGateClosedBox{0.0F, 0.0F, 0.375F, 1.0F, 1.0F, 0.625F};
+inline constexpr std::array<ShapeBox, 4> kFenceGateBoxByFacing = [] {
+    std::array<ShapeBox, 4> table{};
+    for (std::size_t f = 0; f < 4U; ++f) {
+        table[f] = rotatedBy(kFenceGateClosedBox, static_cast<BlockOrientation>(f));
+    }
+    return table;
+}();
+
 // One shape handler per BlockModel. B1-2 replaces the shape's `switch(model)`
 // with a table indexed by the block's model, the same DOD move kRandomTickTable
 // makes for random ticks: the model is a definition field, so a block selects
@@ -136,19 +291,49 @@ inline constexpr std::array<ShapeBox, 4> kWallTorchBox{{
     }
     return {ShapeKind::Column, 0.0F, 1.0F, {}};
 }
+// AR-B2: StairBlock's Boxes shape, keyed by Facing x Half x StairShape into the
+// interned `kStairBoxTable` row built above — the mesher, the pick ray and
+// (filtered by hasCollision) the walk all see the same 2-or-3 box list.
+[[nodiscard]] constexpr BlockShape shapeStairs(BlockState state) {
+    const auto& entry = kStairBoxTable[stairShapeIndex(state.orientation(), state.stairHalf(),
+                                                        state.stairShape())];
+    return {ShapeKind::Boxes, 0.0F, 0.0F, {entry.boxes.data(), entry.count}};
+}
+// AR-B2: DoorBlock's Boxes shape — one thin leaf box, keyed by Facing x Open x
+// Hinge into `kDoorBoxTable`. Both door halves (Half::Bottom/Top standing in
+// for lower/upper) share the same in-cell box; only their Y position in the
+// world differs, which is the cell origin the caller adds, not this shape.
+[[nodiscard]] constexpr BlockShape shapeDoor(BlockState state) {
+    const auto& box =
+        kDoorBoxTable[doorShapeIndex(state.orientation(), state.open(), state.hinge())];
+    return {ShapeKind::Boxes, 0.0F, 0.0F, {&box, 1}};
+}
+// AR-B2: FenceGateBlock's Boxes shape — the post-pair box on the Facing axis
+// when closed, empty when open (the gate swings fully clear, unlike a door).
+[[nodiscard]] constexpr BlockShape shapeFenceGate(BlockState state) {
+    if (state.open()) {
+        return {ShapeKind::Boxes, 0.0F, 0.0F, {}};
+    }
+    const auto index = static_cast<std::size_t>(state.orientation());
+    const auto& box = kFenceGateBoxByFacing[index < 4U ? index : 0U];
+    return {ShapeKind::Boxes, 0.0F, 0.0F, {&box, 1}};
+}
 
 using BlockShapeFn = BlockShape (*)(BlockState);
 
 // The per-model shape handlers indexed by BlockModel ordinal — shape dispatch as
 // data. `blockShape` loads the block's model and calls through this, so the shape
 // stays a single source with no switch(block...) to drift.
-inline constexpr std::array<BlockShapeFn, 6> kShapeByModel{{
-    &shapeCube,  // BlockModel::Cube
-    &shapeCross, // BlockModel::Cross
-    &shapeCrop,  // BlockModel::Crop
-    &shapeTorch, // BlockModel::Torch
-    &shapeChest, // BlockModel::Chest
-    &shapeSlab,  // BlockModel::Slab
+inline constexpr std::array<BlockShapeFn, 9> kShapeByModel{{
+    &shapeCube,      // BlockModel::Cube
+    &shapeCross,     // BlockModel::Cross
+    &shapeCrop,      // BlockModel::Crop
+    &shapeTorch,     // BlockModel::Torch
+    &shapeChest,     // BlockModel::Chest
+    &shapeSlab,      // BlockModel::Slab
+    &shapeStairs,    // BlockModel::Stairs
+    &shapeDoor,      // BlockModel::Door
+    &shapeFenceGate, // BlockModel::FenceGate
 }};
 static_assert(static_cast<std::size_t>(BlockModel::Cube) == 0U);
 static_assert(static_cast<std::size_t>(BlockModel::Cross) == 1U);
@@ -156,6 +341,9 @@ static_assert(static_cast<std::size_t>(BlockModel::Crop) == 2U);
 static_assert(static_cast<std::size_t>(BlockModel::Torch) == 3U);
 static_assert(static_cast<std::size_t>(BlockModel::Chest) == 4U);
 static_assert(static_cast<std::size_t>(BlockModel::Slab) == 5U);
+static_assert(static_cast<std::size_t>(BlockModel::Stairs) == 6U);
+static_assert(static_cast<std::size_t>(BlockModel::Door) == 7U);
+static_assert(static_cast<std::size_t>(BlockModel::FenceGate) == 8U);
 
 } // namespace detail
 

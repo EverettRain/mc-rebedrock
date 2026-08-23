@@ -116,6 +116,49 @@ class BlockState final {
         return with(StateProperty::SubmergedFluid, static_cast<std::uint8_t>(fluid));
     }
 
+    // AR-B2: StateProperty::Half read as a stair's Half (bottom/top). Bottom
+    // (0) for anything that has not declared the axis.
+    [[nodiscard]] constexpr SlabPortion stairHalf() const {
+        // Reuses SlabPortion's Bottom/Top enumerators (both are plain 0/1 axes
+        // with the same "which half of the cell" meaning) rather than minting a
+        // third identical two-value enum; Double is never produced here since
+        // the schema only ever gives Half two values.
+        return static_cast<SlabPortion>(value(StateProperty::Half));
+    }
+    [[nodiscard]] constexpr BlockState withStairHalf(SlabPortion half) const {
+        return with(StateProperty::Half, static_cast<std::uint8_t>(half));
+    }
+    // AR-B2: StateProperty::Half read as a door's Half (DoubleBlockHalf's
+    // lower/upper). Same axis as stairHalf, different accessor name for the
+    // reader — a door has no "which half of the cell" question, only "which of
+    // the two cells".
+    [[nodiscard]] constexpr bool isDoorUpperHalf() const {
+        return value(StateProperty::Half) != 0U;
+    }
+    [[nodiscard]] constexpr BlockState withDoorUpperHalf(bool upper) const {
+        return with(StateProperty::Half, upper ? 1U : 0U);
+    }
+    // StairBlock.SHAPE. Straight for anything that has not declared the axis.
+    [[nodiscard]] constexpr StairShape stairShape() const {
+        return static_cast<StairShape>(value(StateProperty::StairShape));
+    }
+    [[nodiscard]] constexpr BlockState withStairShape(StairShape shape) const {
+        return with(StateProperty::StairShape, static_cast<std::uint8_t>(shape));
+    }
+    // DoorBlock.HINGE. Left for anything that has not declared the axis.
+    [[nodiscard]] constexpr DoorHinge hinge() const {
+        return static_cast<DoorHinge>(value(StateProperty::Hinge));
+    }
+    [[nodiscard]] constexpr BlockState withHinge(DoorHinge side) const {
+        return with(StateProperty::Hinge, static_cast<std::uint8_t>(side));
+    }
+    // DoorBlock.OPEN / FenceGateBlock.OPEN. False for anything that has not
+    // declared the axis.
+    [[nodiscard]] constexpr bool open() const { return value(StateProperty::Open) != 0U; }
+    [[nodiscard]] constexpr BlockState withOpen(bool value) const {
+        return with(StateProperty::Open, value ? 1U : 0U);
+    }
+
     [[nodiscard]] constexpr BlockState with(BlockOrientation orientation) const {
         return with(StateProperty::Facing, static_cast<std::uint8_t>(orientation));
     }

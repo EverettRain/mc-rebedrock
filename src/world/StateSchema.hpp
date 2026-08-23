@@ -52,6 +52,26 @@ enum class StateProperty : std::uint8_t {
     // SubmergedFluid enum in BlockState.hpp (none=0, water=1); a lava slot is
     // reserved there but not declared on any block yet.
     SubmergedFluid,
+    // AR-B2: the vanilla `half` axis, shared by two different meanings the way
+    // vanilla itself splits them into two enums (Half for a stair's
+    // bottom/top, DoubleBlockHalf for a door's lower/upper) — both are a plain
+    // two-value axis here, read through the block-appropriate accessor
+    // (BlockState::stairHalf/doorHalf) rather than two separate properties,
+    // since no block ever needs both meanings at once.
+    Half,
+    // AR-B2: StairsShape (straight/inner_left/inner_right/outer_left/
+    // outer_right), StairBlock.SHAPE. Derived by updateShape from the two
+    // horizontal neighbours along the stair's own facing axis (ported from
+    // StairBlock#getStairsShape), never placed by hand.
+    StairShape,
+    // AR-B2: DoorHingeSide (left/right), DoorBlock.HINGE. Decided once at
+    // placement from the neighbours flanking the clicked cell (ported from
+    // DoorBlock#getHinge); never recomputed afterward.
+    Hinge,
+    // AR-B2: the door/fence-gate OPEN boolean (DoorBlock.OPEN /
+    // FenceGateBlock.OPEN). Toggled by a right-click, never anything else —
+    // no random tick, no scheduled tick reads it.
+    Open,
     Count,
 };
 
@@ -92,6 +112,14 @@ inline constexpr std::size_t kStatePropertyCount = static_cast<std::size_t>(Stat
         // "what this build calls it", which is exactly what an override entry
         // is for. See F-2-submerged-fluid-axis.md's serialisation choice.
         return "submerged_in";
+    case StateProperty::Half:
+        return "half";
+    case StateProperty::StairShape:
+        return "shape";
+    case StateProperty::Hinge:
+        return "hinge";
+    case StateProperty::Open:
+        return "open";
     case StateProperty::Count:
         break;
     }

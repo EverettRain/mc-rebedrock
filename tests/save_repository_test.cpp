@@ -156,6 +156,23 @@ int main() {
          world::BlockState{world::Block::CobblestoneSlab}
              .withSlabPortion(world::SlabPortion::Top)
              .withSubmergedFluid(world::SubmergedFluid::Water)},
+        // AR-B2: the stair's Half/StairShape axes and the door's Half/Open/
+        // Hinge round-trip exactly like every property above — new axes, same
+        // by-name mechanism, no format change. The gate is written *without*
+        // touching Open at all (its default state), the migration case in
+        // miniature for AR-B2's own new properties: an edit that predates
+        // these axes reads back Open=false/Half=Bottom/Shape=Straight, the
+        // schema's own "absent property reads back as 0" contract.
+        {11, 62, -8,
+         world::BlockState{world::Block::OakStairs, world::BlockOrientation::East}
+             .withStairHalf(world::SlabPortion::Top)
+             .withStairShape(world::StairShape::InnerRight)},
+        {12, 62, -8,
+         world::BlockState{world::Block::OakDoor, world::BlockOrientation::South}
+             .withHinge(world::DoorHinge::Right)
+             .withOpen(true)
+             .withDoorUpperHalf(true)},
+        {13, 62, -8, world::BlockState{world::Block::OakFenceGate, world::BlockOrientation::West}},
     };
     gameplay::ChestBlockEntity chest;
     chest.position = {8, 65, -4};
@@ -256,6 +273,22 @@ int main() {
     assert(loaded.edits[7].state.block() == world::Block::CobblestoneSlab);
     assert(loaded.edits[7].state.slabPortion() == world::SlabPortion::Top);
     assert(loaded.edits[7].state.submergedFluid() == world::SubmergedFluid::Water);
+    // AR-B2: stair/door/gate axes round-trip by name too.
+    assert(loaded.edits[8].state.block() == world::Block::OakStairs);
+    assert(loaded.edits[8].state.orientation() == world::BlockOrientation::East);
+    assert(loaded.edits[8].state.stairHalf() == world::SlabPortion::Top);
+    assert(loaded.edits[8].state.stairShape() == world::StairShape::InnerRight);
+    assert(loaded.edits[9].state.block() == world::Block::OakDoor);
+    assert(loaded.edits[9].state.orientation() == world::BlockOrientation::South);
+    assert(loaded.edits[9].state.hinge() == world::DoorHinge::Right);
+    assert(loaded.edits[9].state.open());
+    assert(loaded.edits[9].state.isDoorUpperHalf());
+    assert(loaded.edits[10].state.block() == world::Block::OakFenceGate);
+    assert(loaded.edits[10].state.orientation() == world::BlockOrientation::West);
+    // Migration in miniature: the gate was saved without ever touching Open —
+    // it reads back false, the schema's own "absent axis reads as 0" default,
+    // exactly what a pre-AR-B2 edit (no Open name to write at all) would give.
+    assert(!loaded.edits[10].state.open());
     // The palette names the block, not the state: `lit_furnace` is gone.
     {
         std::ifstream data{root / save.summary.identifier / "world.dat", std::ios::binary};

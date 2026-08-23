@@ -1542,6 +1542,19 @@ if(BUILD_TESTING)
     )
     add_test(NAME update_shape COMMAND mc_rebedrock_update_shape_test)
 
+    add_executable(mc_rebedrock_stair_door_gate_shape_test
+        tests/stair_door_gate_shape_test.cpp
+        src/world/World.cpp
+        src/world/Chunk.cpp
+        src/world/ChunkSection.cpp
+        src/world/BlockPlacement.cpp
+    )
+    target_include_directories(mc_rebedrock_stair_door_gate_shape_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME stair_door_gate_shape COMMAND mc_rebedrock_stair_door_gate_shape_test)
+
     add_executable(mc_rebedrock_redstone_signal_test
         tests/redstone_signal_test.cpp
         src/world/World.cpp
