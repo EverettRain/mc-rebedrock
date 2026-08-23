@@ -1962,6 +1962,14 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_nether_end_identity_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME nether_end_identity COMMAND mc_rebedrock_nether_end_identity_test)
 
+    # WG-1: NoiseChunkGenerator generalisation — per-dimension NoiseGeneratorSettings.
+    add_executable(mc_rebedrock_noise_generator_settings_test
+        tests/noise_generator_settings_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_noise_generator_settings_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_noise_generator_settings_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME noise_generator_settings COMMAND mc_rebedrock_noise_generator_settings_test)
+
     add_executable(mc_rebedrock_block_registry_lifecycle_test
         tests/block_registry_lifecycle_test.cpp
     )

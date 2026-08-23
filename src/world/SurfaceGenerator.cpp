@@ -27,8 +27,8 @@ namespace {
 SurfaceGenerator::SurfaceGenerator(std::uint64_t seed)
     : biomeSource_(seed),
       samplers_(buildGenerationSamplers(seed)),
-      noiseGenerator_(biomeSource_, samplers_.lower, samplers_.upper, samplers_.interpolation,
-                      samplers_.densityOffset),
+      noiseGenerator_(biomeSource_, gen::NoiseGeneratorSettings::overworld(), samplers_.lower,
+                      samplers_.upper, samplers_.interpolation, samplers_.densityOffset),
       carver_(seed),
       features_(seed, biomeSource_, samplers_.surfaceDepth) {}
 

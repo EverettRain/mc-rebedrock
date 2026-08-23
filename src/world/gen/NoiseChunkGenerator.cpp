@@ -9,24 +9,11 @@
 namespace mc::world::gen {
 namespace {
 
-// GenerationShapeConfig.OVERWORLD's NoiseSamplingConfig, times the fixed
-// 684.412 the generator multiplies every sampling config by.
-constexpr double kBaseScale = 684.412;
-constexpr double kXzScale = kBaseScale * 0.9999999814507745;
-constexpr double kYScale = kBaseScale * 0.9999999814507745;
-constexpr double kXzFactor = kXzScale / 80.0;
-constexpr double kYFactor = kYScale / 160.0;
-
-// GenerationShapeConfig#getTopSlide / #getBottomSlide.
-constexpr double kTopSlideTarget = -10.0;
-constexpr int kTopSlideSize = 3;
-constexpr int kTopSlideOffset = 0;
-constexpr double kBottomSlideTarget = -30.0;
-constexpr int kBottomSlideSize = 0;
-constexpr int kBottomSlideOffset = 0;
-
-constexpr double kDensityFactor = 1.0;
-constexpr double kDensityOffset = -0.46875;
+// The sampling scales, the density factor/offset and the top/bottom slides all
+// used to be constexpr here (overworld-only). WG-1 moved them into
+// NoiseGeneratorSettings so the nether/end can pass different values; the
+// overworld() value set carries the exact literals they held, so this file's
+// output is unchanged for the overworld.
 
 // NoiseChunkGenerator.BIOME_WEIGHT_TABLE, 10 / sqrt(x^2 + z^2 + 0.2) over the
 // 5x5 window. Nearby columns dominate, so a biome boundary is a slope rather
@@ -69,11 +56,13 @@ constexpr double kDensityOffset = -0.46875;
 
 NoiseChunkGenerator::NoiseChunkGenerator(
     const BiomeSource& biomeSource,
+    const NoiseGeneratorSettings& settings,
     std::vector<PerlinNoiseSampler> lower,
     std::vector<PerlinNoiseSampler> upper,
     std::vector<PerlinNoiseSampler> interpolation,
     OctavePerlinNoiseSampler densityOffset)
     : biomeSource_(&biomeSource),
+      settings_(settings),
       lowerNoise_(std::move(lower)),
       upperNoise_(std::move(upper)),
       interpolationNoise_(std::move(interpolation)),
@@ -129,11 +118,15 @@ double NoiseChunkGenerator::sampleDensity(int noiseX, int noiseY, int noiseZ) co
     // halves the frequency and doubles the amplitude, so the last few carry the
     // terrain-scale shape.
     double frequency = 1.0;
+    const double xzScale = settings_.sampling.xzScale;
+    const double yScale = settings_.sampling.yScale;
+    const double xzFactor = settings_.sampling.xzFactor;
+    const double yFactor = settings_.sampling.yFactor;
     for (int octave = 0; octave < kOctaveCount; ++octave) {
-        const double x = maintainPrecision(static_cast<double>(noiseX) * kXzScale * frequency);
-        const double y = maintainPrecision(static_cast<double>(noiseY) * kYScale * frequency);
-        const double z = maintainPrecision(static_cast<double>(noiseZ) * kXzScale * frequency);
-        const double yLattice = kYScale * frequency;
+        const double x = maintainPrecision(static_cast<double>(noiseX) * xzScale * frequency);
+        const double y = maintainPrecision(static_cast<double>(noiseY) * yScale * frequency);
+        const double z = maintainPrecision(static_cast<double>(noiseZ) * xzScale * frequency);
+        const double yLattice = yScale * frequency;
         lower += lowerNoise_[static_cast<std::size_t>(octave)].sample(
                      x, y, z, yLattice, static_cast<double>(noiseY) * yLattice) /
                  frequency;
@@ -141,12 +134,12 @@ double NoiseChunkGenerator::sampleDensity(int noiseX, int noiseY, int noiseZ) co
                      x, y, z, yLattice, static_cast<double>(noiseY) * yLattice) /
                  frequency;
         if (octave < kInterpolationOctaveCount) {
-            const double stretchY = kYFactor * frequency;
+            const double stretchY = yFactor * frequency;
             interpolation +=
                 interpolationNoise_[static_cast<std::size_t>(octave)].sample(
-                    maintainPrecision(static_cast<double>(noiseX) * kXzFactor * frequency),
-                    maintainPrecision(static_cast<double>(noiseY) * kYFactor * frequency),
-                    maintainPrecision(static_cast<double>(noiseZ) * kXzFactor * frequency),
+                    maintainPrecision(static_cast<double>(noiseX) * xzFactor * frequency),
+                    maintainPrecision(static_cast<double>(noiseY) * yFactor * frequency),
+                    maintainPrecision(static_cast<double>(noiseZ) * xzFactor * frequency),
                     stretchY, static_cast<double>(noiseY) * stretchY) /
                 frequency;
         }
@@ -169,23 +162,27 @@ double NoiseChunkGenerator::applyShape(
     const double preferred =
         1.0 - static_cast<double>(noiseY) * 2.0 / static_cast<double>(kNoiseSizeY) +
         randomDensityOffset;
-    const double linear = preferred * kDensityFactor + kDensityOffset;
+    const double linear = preferred * settings_.densityFactor + settings_.densityOffset;
     const double shape = (linear + depth * 0.265625) * (96.0 / scale);
     double shaped = density + (shape > 0.0 ? shape * 4.0 : shape);
 
     // The top slide pulls the last few noise rows toward solid air so nothing
-    // reaches the build limit; the bottom slide does the same in reverse.
-    if (kTopSlideSize > 0) {
+    // reaches the build limit; the bottom slide does the same in reverse. Both
+    // are dimension settings (a nether has a strong bottom slide for its floor);
+    // a size of 0 disables the slide.
+    const NoiseSlide& top = settings_.topSlide;
+    if (top.size > 0) {
         const double distance =
-            (static_cast<double>(kNoiseSizeY - noiseY) - static_cast<double>(kTopSlideOffset)) /
-            static_cast<double>(kTopSlideSize);
-        shaped = clampedLerp(kTopSlideTarget, shaped, distance);
+            (static_cast<double>(kNoiseSizeY - noiseY) - static_cast<double>(top.offset)) /
+            static_cast<double>(top.size);
+        shaped = clampedLerp(top.target, shaped, distance);
     }
-    if (kBottomSlideSize > 0) {
+    const NoiseSlide& bottom = settings_.bottomSlide;
+    if (bottom.size > 0) {
         const double distance =
-            (static_cast<double>(noiseY) - static_cast<double>(kBottomSlideOffset)) /
-            static_cast<double>(kBottomSlideSize);
-        shaped = clampedLerp(kBottomSlideTarget, shaped, distance);
+            (static_cast<double>(noiseY) - static_cast<double>(bottom.offset)) /
+            static_cast<double>(bottom.size);
+        shaped = clampedLerp(bottom.target, shaped, distance);
     }
     return shaped;
 }
@@ -266,9 +263,10 @@ void NoiseChunkGenerator::buildBaseTerrain(Chunk& chunk, int chunkX, int chunkZ)
                             const int localX = cellX * kHorizontalNoiseResolution + blockX;
                             const int localZ = cellZ * kHorizontalNoiseResolution + blockZ;
                             if (density > 0.0) {
-                                chunk.setBlock(localX, worldY, localZ, Block::Stone);
-                            } else if (worldY <= kSeaLevel) {
-                                chunk.setBlock(localX, worldY, localZ, Block::Water);
+                                chunk.setBlock(localX, worldY, localZ, settings_.defaultBlock);
+                            } else if (worldY <= settings_.seaLevel &&
+                                       settings_.defaultFluid != Block::Air) {
+                                chunk.setBlock(localX, worldY, localZ, settings_.defaultFluid);
                                 chunk.setFluidLevel(localX, worldY, localZ, 0U);
                             }
                         }
@@ -278,26 +276,31 @@ void NoiseChunkGenerator::buildBaseTerrain(Chunk& chunk, int chunkX, int chunkZ)
         }
         previous = current;
     }
-    // The 384-tall column's extra depth below the historical bottom (0): fill
-    // [kMinY, 0) solid so a fall never drops into void. Features::buildSurface
-    // lays the bedrock rows on top of this stone afterwards.
-    for (int y = kMinY; y < 0; ++y) {
-        for (int localX = 0; localX < kChunkWidth; ++localX) {
-            for (int localZ = 0; localZ < kChunkDepth; ++localZ) {
-                chunk.setBlock(localX, y, localZ, Block::Stone);
+    // The column's extra depth below the historical noise-lattice floor (0):
+    // fill [minY, 0) solid so a fall never drops into void, for a dimension whose
+    // floor sits below the lattice (the overworld's -64..0). A dimension whose
+    // floor is the lattice itself (the nether/end at minY 0) opts out.
+    if (settings_.fillBelowLatticeFloor) {
+        for (int y = settings_.minY; y < 0; ++y) {
+            for (int localX = 0; localX < kChunkWidth; ++localX) {
+                for (int localZ = 0; localZ < kChunkDepth; ++localZ) {
+                    chunk.setBlock(localX, y, localZ, settings_.defaultBlock);
+                }
             }
         }
     }
 }
 
 int NoiseChunkGenerator::surfaceHeight(const Chunk& chunk, int localX, int localZ) const {
-    for (int y = kMaxY - 1; y >= kMinY; --y) {
+    const int minY = settings_.minY;
+    const int maxY = settings_.minY + settings_.height;
+    for (int y = maxY - 1; y >= minY; --y) {
         const auto block = chunk.block(localX, y, localZ);
-        if (block != Block::Air && block != Block::Water) {
+        if (block != Block::Air && block != settings_.defaultFluid) {
             return y;
         }
     }
-    return kMinY;
+    return minY;
 }
 
 } // namespace mc::world::gen
