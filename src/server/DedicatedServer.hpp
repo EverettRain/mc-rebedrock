@@ -12,7 +12,22 @@
 // caller's cadence, save), or accept one TCP client, gate it through the protocol
 // handshake, and attach that MessageChannel to the runtime in place of loopback.
 // Multi-client player ownership and reconnect/accept loops remain later work.
+//
+// PACK-1: an optional `resourceRoot` is this build's built-in resources
+// directory — the *data* half only (recipes/loot/tags/entity_attributes/
+// biome spawn tables' `data/` floor), read through the same headless
+// DirectoryResourceProvider the runtime already links (assets/ResourceProvider
+// is in mc_rebedrock_runtime; it is the render/Vulkan/atlas machinery, not
+// resource IO itself, that this binary must never link — see PACK REGULAR
+// #1's "dedicated server has no resource stack" guardrail, which is about the
+// client Resources PackStackKind, never built here). When given, loadWorld
+// scans and rebuilds the open save's `<save>/datapacks/` the same way the
+// integrated single-player runtime does — proving the authoritative per-save
+// data-pack path with zero render dependency. Omitted (the default), the
+// server behaves exactly as before this card: no data-pack scan, tables stay
+// at whatever their own lazy built-in defaults are.
 
+#include "assets/ResourceProvider.hpp"
 #include "gameplay/GameMode.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "net/Handshake.hpp"
@@ -35,10 +50,17 @@ class DedicatedServer final {
   public:
     // saveRoot is the directory worlds live in; viewDistanceChunks is the
     // simulation/stream radius the server keeps loaded around the player.
-    explicit DedicatedServer(std::filesystem::path saveRoot, int viewDistanceChunks = 8)
+    // resourceRoot (PACK-1) is this build's resources/ directory; empty keeps
+    // the pre-PACK-1 behaviour (see the class comment above).
+    explicit DedicatedServer(std::filesystem::path saveRoot, int viewDistanceChunks = 8,
+                             std::filesystem::path resourceRoot = {})
         : builtinEntities_{}, viewDistanceChunks_{viewDistanceChunks},
           streamer_{0U, viewDistanceChunks, viewDistanceChunks + 2},
-          runtime_{host_, streamer_, std::move(saveRoot)} {
+          dataBase_{resourceRoot.empty() ? std::nullopt
+                                         : std::optional<assets::DirectoryResourceProvider>{
+                                               std::in_place, std::move(resourceRoot)}},
+          runtime_{host_, streamer_, std::move(saveRoot),
+                   dataBase_.has_value() ? &*dataBase_ : nullptr} {
         host_.save = &runtime_.currentSaveSlot();
     }
 
@@ -231,6 +253,11 @@ class DedicatedServer final {
     int viewDistanceChunks_;
     ServerHost host_;
     world::ChunkStreamer streamer_;
+    // PACK-1: declared before runtime_ so it is fully constructed before
+    // runtime_'s member-initialiser takes its address; std::nullopt when no
+    // resourceRoot was given (runtime_ then gets a null dataBase pointer, the
+    // pre-PACK-1 no-op path).
+    std::optional<assets::DirectoryResourceProvider> dataBase_;
     // The listener and the accepted connection are declared before runtime_ so
     // they are destroyed *after* it: runtime_'s destructor stops the tick/sim
     // threads first, so nothing publishes to the connection after it is gone.

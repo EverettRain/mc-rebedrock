@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gameplay/CommandResult.hpp"
+#include "gameplay/DataPackStack.hpp"
 #include "gameplay/GameSession.hpp"
 #include "gameplay/SimulationDriver.hpp"
 #include "gameplay/command/CommandDispatcher.hpp"
@@ -34,6 +35,10 @@ namespace mc::gameplay {
 class GameplayMutationSink;
 }
 
+namespace mc::assets {
+class ResourceProvider;
+}
+
 namespace mc::runtime {
 
 // The authoritative world runtime: everything a dedicated server needs, with no
@@ -54,8 +59,22 @@ namespace mc::runtime {
 // application constructs it and it outlives this runtime.
 class GameRuntime final {
   public:
+    // PACK-1: `dataBase` is the built-in resource floor (Application's
+    // `bundled`, or the equivalent the renderer already holds as
+    // `resourceProvider` — its `data/` half falls through to the same
+    // built-in floor a resource pack never overrides) that per-save data
+    // packs layer over. Null keeps every data-driven gameplay table
+    // (BlockTagTable, RecipeTable, LootTable, EntityAttributeOverlay,
+    // BiomeSpawnTables) exactly as before this card — a caller (existing
+    // tests, a headless tool that never touches those tables) that passes
+    // nothing gets the pre-PACK-1 behaviour verbatim: the tables keep
+    // whichever state their own lazy built-in-default first-use left them in,
+    // and loadWorld/unloadWorld do not rebuild them at all. Passing a real
+    // provider is what makes loadWorld scan and rebuild
+    // `<save>/datapacks/`; the dedicated server and the renderer both do.
     GameRuntime(gameplay::SimulationHost& host, world::ChunkStreamer& chunkStreamer,
-                std::filesystem::path saveRoot);
+                std::filesystem::path saveRoot,
+                const assets::ResourceProvider* dataBase = nullptr);
     ~GameRuntime();
 
     GameRuntime(const GameRuntime&) = delete;
@@ -212,6 +231,20 @@ class GameRuntime final {
     [[nodiscard]] std::atomic_bool& simulationActive() { return simulationActive_; }
     [[nodiscard]] gameplay::SimulationDriver& simulationDriver() { return simulationDriver_; }
 
+    // PACK-1: the open world's per-save data-pack stack — `/datapack
+    // list|enable|disable` and PACK-2's future `/reload` read and mutate this
+    // directly, then call rebuildDataPacks() to apply it. Reflects whatever
+    // loadWorld's scan (and any persisted DPKS enable/order) found; empty
+    // (nothing discovered/enabled) when no world is open or dataBase was
+    // never supplied.
+    [[nodiscard]] gameplay::PerSaveDataStack& dataPackStack() { return dataPackStack_; }
+    // Re-applies dataPackStack_'s current enable/order onto dataBase_ — the
+    // single reusable "rebuild the data-driven gameplay tables" entry point
+    // loadWorld, `/datapack enable|disable`, and (later) `/reload` all share.
+    // No-op when this runtime was built with no dataBase (dataBase_ is
+    // null) — the pre-PACK-1 callers this constructor default keeps working.
+    void rebuildDataPacks();
+
     // N-Mem, first piece: the server-side resident bytes, measurable headless
     // because no render allocation exists here. Sums each chunk's section state
     // storage plus the light nibble arrays.
@@ -327,6 +360,12 @@ class GameRuntime final {
     // metering).
     std::size_t snapshotEncodedBytes_ = 0;
     persistence::SaveRepository saveRepository_;
+    // PACK-1: the built-in resource floor per-save data packs layer over.
+    // Non-owning (Application/DedicatedServer/VulkanRenderer own the real
+    // provider, exactly like chunkStreamer_ below); null when the caller
+    // passed none, which keeps rebuildDataPacks()/loadWorld's scan a no-op.
+    const assets::ResourceProvider* dataBase_ = nullptr;
+    gameplay::PerSaveDataStack dataPackStack_;
     world::ChunkStreamer& chunkStreamer_;
     world::World serverWorld_;
     gameplay::GameSession gameSession_;

@@ -6,10 +6,16 @@
 // Usage:
 //   dedicated_server [--save-dir DIR] [--world NAME] [--seed N]
 //                    [--view-distance N] [--ticks N] [--port N]
+//                    [--resource-dir DIR]
 //
 // --ticks N runs exactly N ticks then saves and exits (bounded run / smoke test);
 // omitted, it runs continuously until SIGINT/SIGTERM. --port enables the current
 // single-client TCP listener; without it the server runs locally/headlessly.
+// --resource-dir (PACK-1) is this build's resources/ directory; when given,
+// loadWorld scans and rebuilds the open save's <save>/datapacks/ (recipes,
+// loot, tags, entity attributes, biome spawn tables) the same way single-
+// player does — proving the authoritative per-save data-pack path headless.
+// Omitted, the server never touches those tables (pre-PACK-1 behaviour).
 
 #include "gameplay/GameMode.hpp"
 #include "server/DedicatedServer.hpp"
@@ -56,6 +62,7 @@ int main(int argc, char** argv) {
     int viewDistance = 8;
     long long tickLimit = -1;  // negative: run until interrupted
     long long listenPort = -1;  // negative: local-only, no listener
+    std::filesystem::path resourceDir;  // empty: no per-save data-pack rebuild (PACK-1)
 
     for (int index = 1; index < argc; ++index) {
         const std::string_view arg = argv[index];
@@ -86,6 +93,8 @@ int main(int argc, char** argv) {
                 std::cerr << "dedicated_server: --port needs a value in 0..65535\n";
                 return 1;
             }
+        } else if (arg == "--resource-dir") {
+            resourceDir = std::string{next()};
         } else {
             std::cerr << "dedicated_server: unknown argument '" << arg << "'\n";
             return 1;
@@ -96,7 +105,7 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, requestStop);
 
     std::filesystem::create_directories(saveDir);
-    mc::server::DedicatedServer server{saveDir, viewDistance};
+    mc::server::DedicatedServer server{saveDir, viewDistance, resourceDir};
 
     // Open the world by name if it already exists, else create it fresh.
     if (server.loadWorldByName(worldName)) {

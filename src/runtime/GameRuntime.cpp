@@ -1,5 +1,6 @@
 #include "runtime/GameRuntime.hpp"
 
+#include "assets/ResourceProvider.hpp"
 #include "gameplay/ContentRegistry.hpp"
 #include "gameplay/EntitySystem.hpp"
 #include "gameplay/GameplayMutationSink.hpp"
@@ -74,8 +75,9 @@ constexpr int kSpawnChunkRadius = 4;
 }  // namespace
 
 GameRuntime::GameRuntime(gameplay::SimulationHost& host, world::ChunkStreamer& chunkStreamer,
-                         std::filesystem::path saveRoot)
-    : host_(host), saveRepository_(std::move(saveRoot)), chunkStreamer_(chunkStreamer) {
+                         std::filesystem::path saveRoot, const assets::ResourceProvider* dataBase)
+    : host_(host), saveRepository_(std::move(saveRoot)), dataBase_(dataBase),
+      chunkStreamer_(chunkStreamer) {
     // Bind the event host up front so the world-edit events a mutation publishes
     // reach the host even before the first tick (tick() re-binds it anyway).
     gameSession_.setEventHost(host_);
@@ -749,6 +751,23 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     editsByChunk_.clear();
     editsIndexed_ = 0;
     currentSave_ = std::move(save);
+    // PACK-1: scan this save's <save>/datapacks/*, apply its persisted
+    // enable/order (the DPKS block — empty on an old or fresh save, which
+    // leaves every discovered pack disabled, the all-built-in default), and
+    // rebuild the data-driven gameplay tables from that stack. This is the
+    // "world load, not app startup" migration the card asks for: each
+    // loadWorld call re-scans and re-applies its own save's stack, so two
+    // different saves opened in the same process never share a data stack.
+    // A no-op end to end when dataBase_ is null (a caller that never opted
+    // in keeps the pre-PACK-1 behaviour of never touching these tables here).
+    dataPackStack_.reset();
+    if (dataBase_ != nullptr) {
+        dataPackStack_.scan(saveRepository_.root() / currentSave_->summary.identifier);
+        for (const auto& id : currentSave_->enabledDataPacks) {
+            dataPackStack_.enable(id);
+        }
+        rebuildDataPacks();
+    }
     // No chunk has unloaded yet in the fresh world; the unload-then-restore
     // bookkeeping starts empty.
     unloadedChunks_.clear();
@@ -892,6 +911,13 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     publishSnapshotsToChannel();
 }
 
+void GameRuntime::rebuildDataPacks() {
+    if (dataBase_ == nullptr) {
+        return;
+    }
+    dataPackStack_.rebuild(*dataBase_);
+}
+
 persistence::SaveGame GameRuntime::createWorld(std::string name, std::uint64_t seed,
                                                gameplay::GameMode mode, bool allowCommands) {
     auto save = saveRepository_.create(name, seed);
@@ -917,6 +943,17 @@ void GameRuntime::unloadWorld() {
     editsIndexed_ = 0;
     currentSave_.reset();
     worldEpoch_ = chunkStreamer_.resetWorld(0U);
+    // PACK-1: drop the outgoing save's data-pack stack and fall the five
+    // data-driven gameplay tables back to the built-in floor — the "return to
+    // a re-registerable state" the card asks for, so a caller that reads
+    // blockTags()/recipeTable()/etc. between this unload and the next
+    // loadWorld sees the built-in defaults, never the outgoing save's
+    // residue, and the next loadWorld's scan starts from a clean stack rather
+    // than one still carrying the previous save's discovered packs.
+    dataPackStack_.reset();
+    if (dataBase_ != nullptr) {
+        gameplay::PerSaveDataStack::rebuildBuiltinOnly(*dataBase_);
+    }
 }
 
 bool GameRuntime::saveLocked() {
@@ -949,6 +986,12 @@ bool GameRuntime::saveLocked() {
     currentSave_->weather = gameSession_.weatherSystem().state();
     currentSave_->gameMode = gameSession_.gameMode();
     currentSave_->gameRules = gameSession_.gameRules();
+    // PACK-1: the data-pack stack's current enable/order, bottom to top —
+    // written to the DPKS block so a reload (or a later session) reopens with
+    // the same packs enabled in the same priority order. A save with none
+    // enabled writes an empty list, which round-trips to "all built-in" on
+    // load exactly like a save that predates DPKS entirely.
+    currentSave_->enabledDataPacks = dataPackStack_.enabledOrder();
     // The /spawnpoint result rides along like the player's own position.
     currentSave_->hasSpawnPoint = gameSession_.hasPlayerSpawn();
     const auto spawnPosition = gameSession_.playerSpawnPosition();
@@ -1380,6 +1423,58 @@ void GameRuntime::registerAuthoritativeCommands() {
                 return usageError("gamerule", context.source());
             }
             return gameSession_.gameRules().setFromCommand(*rule, *value);
+        });
+    // PACK-1: /datapack list|enable|disable <name>, vanilla's own subcommands
+    // (worldgen/predicates/advancements packs are out of scope per the card —
+    // this only mutates PerSaveDataStack's enable/order and rebuilds the same
+    // five data-driven tables loadWorld does). All three share
+    // rebuildDataPacks() as the "apply the current stack" step, the same call
+    // PACK-2's /reload will reuse.
+    commandDispatcher_.literal("datapack")
+        .requiresLevel(PermissionLevel::GameMasters)
+        .then("list")
+        .executes([this](const gameplay::command::CommandContext&) {
+            const auto packs = dataPackStack_.list();
+            if (packs.empty()) {
+                return gameplay::CommandResult{true, "No data packs found in this world's datapacks/"};
+            }
+            std::string message = "Data packs (" + std::to_string(packs.size()) + "):";
+            for (const auto& pack : packs) {
+                message += pack.enabled ? "\n  [enabled] " : "\n  [disabled] ";
+                message += pack.id;
+            }
+            return gameplay::CommandResult{true, message};
+        });
+    commandDispatcher_.literal("datapack")
+        .requiresLevel(PermissionLevel::GameMasters)
+        .then("enable")
+        .argument("name", gameplay::command::kStringArgument)
+        .executes([this](const gameplay::command::CommandContext& context) {
+            const auto name = context.find<std::string>("name");
+            if (!name.has_value()) {
+                return usageError("datapack", context.source());
+            }
+            if (!dataPackStack_.contains(*name)) {
+                return gameplay::CommandResult{
+                    false, "Unknown data pack: " + *name +
+                               " (not found under this world's datapacks/)"};
+            }
+            dataPackStack_.enable(*name);
+            rebuildDataPacks();
+            return gameplay::CommandResult{true, "Enabled data pack " + *name};
+        });
+    commandDispatcher_.literal("datapack")
+        .requiresLevel(PermissionLevel::GameMasters)
+        .then("disable")
+        .argument("name", gameplay::command::kStringArgument)
+        .executes([this](const gameplay::command::CommandContext& context) {
+            const auto name = context.find<std::string>("name");
+            if (!name.has_value()) {
+                return usageError("datapack", context.source());
+            }
+            dataPackStack_.disable(*name);
+            rebuildDataPacks();
+            return gameplay::CommandResult{true, "Disabled data pack " + *name};
         });
     // `/kill` with no target kills the executor (@s); `/kill <selector>` resolves
     // a real target selector (@e[type=…], @a, @r, …) and kills each match.

@@ -1,6 +1,7 @@
 #include "server/DedicatedServer.hpp"
 
 #include "client/ClientMirror.hpp"
+#include "gameplay/BlockTags.hpp"
 #include "gameplay/GameCommand.hpp"
 #include "gameplay/GameMode.hpp"
 #include "gameplay/SessionCommand.hpp"
@@ -18,6 +19,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -164,6 +166,109 @@ int main() {
             assert(entity.type != nullptr);
             assert(std::string{entity.type->id().path} == "pig");
         }
+    }
+
+    // PACK-1: the dedicated server (no render, no resource stack — this test
+    // build lists no render/vulkan source, so a link would fail if the
+    // runtime reached into them) loads a save's <save>/datapacks/, and
+    // `/datapack enable` triggers the rebuild — the authoritative-on-both-
+    // ends acceptance point proven with zero render dependency. Also proves
+    // per-save isolation and the "no residue after unload" property across
+    // two different saves opened in the same process.
+    {
+        const auto resourceDir = saveRoot / "pack1-resources";
+        std::filesystem::create_directories(resourceDir);  // an empty built-in base is enough
+
+        server::DedicatedServer server{saveRoot, /*viewDistanceChunks=*/1, resourceDir};
+        server.createAndLoadWorld("pack1-a", 1U, gameplay::GameMode::Survival);
+        const std::string worldA = server.worldIdentifier();
+
+        // Write a datapack directly into save A's own datapacks/ folder,
+        // after the world exists (mirrors a player dropping a folder in
+        // while the world is closed, then reopening it).
+        const auto packRoot = saveRoot / worldA / "datapacks" / "pickaxe-override";
+        std::filesystem::create_directories(packRoot);
+        {
+            std::ofstream mcmeta{packRoot / "pack.mcmeta", std::ios::binary};
+            mcmeta << R"({"pack": {"pack_format": 84, "description": "server test"}})";
+        }
+        const auto tagPath =
+            packRoot / "data" / "minecraft" / "tags" / "block" / "mineable" / "pickaxe.json";
+        std::filesystem::create_directories(tagPath.parent_path());
+        {
+            std::ofstream tag{tagPath, std::ios::binary};
+            tag << R"({"replace": true, "values": []})";
+        }
+
+        // Reopen save A: loadWorld's scan discovers the new folder. Not yet
+        // enabled, so the built-in floor still holds.
+        const bool reopened = server.loadWorld(worldA);
+        assert(reopened);
+        assert(!gameplay::blockTags().dataDriven(gameplay::BlockTag::MineableWithPickaxe));
+        auto& runtimeA = server.runtime();
+        {
+            const auto listing = runtimeA.dataPackStack().list();
+            assert(listing.size() == 1U);
+            assert(listing[0].id == "pickaxe-override");
+            assert(!listing[0].enabled);
+        }
+
+        // `/datapack enable` mutates the stack and rebuilds — the tag becomes
+        // data-driven without reloading the world.
+        runtimeA.enqueueChat("/datapack enable pickaxe-override");
+        server.tickOnce();
+        const auto enableResult = runtimeA.takeChatResult();
+        assert(enableResult.has_value());
+        assert(enableResult->success);
+        assert(gameplay::blockTags().dataDriven(gameplay::BlockTag::MineableWithPickaxe));
+
+        // Persists: save, reopen the same world, the pack is still enabled
+        // with no /datapack call needed.
+        server.save();
+        assert(server.loadWorld(worldA));
+        assert(gameplay::blockTags().dataDriven(gameplay::BlockTag::MineableWithPickaxe));
+        assert(server.runtime().dataPackStack().list().at(0).enabled);
+
+        // A second, unrelated save with no datapack folder: opening it must
+        // show the built-in floor, not save A's override — per-save
+        // isolation, and no residue left by unloadWorld's reset.
+        server.createAndLoadWorld("pack1-b", 2U, gameplay::GameMode::Survival);
+        assert(!gameplay::blockTags().dataDriven(gameplay::BlockTag::MineableWithPickaxe));
+        assert(server.runtime().dataPackStack().list().empty());
+
+        // Back to save A: the tables follow A's stack again (still enabled,
+        // persisted above), proving a world switch is not one-directional.
+        assert(server.loadWorld(worldA));
+        assert(gameplay::blockTags().dataDriven(gameplay::BlockTag::MineableWithPickaxe));
+
+        // Explicit unloadWorld(), with no new loadWorld yet: the tables must
+        // already be back at the built-in floor — a caller reading between
+        // unload and the next load must never see the outgoing save's
+        // residue. This is the direct proof of the "world unload leaves
+        // tables un-reset" sabotage target, distinct from loadWorld's own
+        // reset-then-rescan (which the save-B switch above already exercises).
+        runtimeA.unloadWorld();
+        assert(!gameplay::blockTags().dataDriven(gameplay::BlockTag::MineableWithPickaxe));
+        assert(runtimeA.dataPackStack().list().empty());
+
+        // Re-open A: the stack and tables come back from disk, unaffected by
+        // the unload/reload round trip.
+        assert(server.loadWorld(worldA));
+        assert(gameplay::blockTags().dataDriven(gameplay::BlockTag::MineableWithPickaxe));
+
+        // `/datapack disable` + rebuild falls back to the floor without a
+        // reload, and `/datapack list` reports it.
+        runtimeA.enqueueChat("/datapack disable pickaxe-override");
+        server.tickOnce();
+        assert(runtimeA.takeChatResult().has_value());
+        assert(!gameplay::blockTags().dataDriven(gameplay::BlockTag::MineableWithPickaxe));
+
+        runtimeA.enqueueChat("/datapack list");
+        server.tickOnce();
+        const auto listResult = runtimeA.takeChatResult();
+        assert(listResult.has_value());
+        assert(listResult->success);
+        assert(listResult->message.find("disabled") != std::string::npos);
     }
 
     // D7 cross-process play over a real socket: a client connects on 127.0.0.1,
