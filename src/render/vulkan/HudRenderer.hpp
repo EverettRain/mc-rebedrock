@@ -851,6 +851,9 @@ class HudRenderer final {
         case ui::WidgetId::CreateGameMode:
             return optionValue(translated("selectWorld.gameMode", "Game Mode"),
                                gameModeLabel(menuSystem.createWorldGameMode));
+        case ui::WidgetId::CreateAllowCommands:
+            return optionValue(translated("selectWorld.allowCommands", "Allow Cheats"),
+                               toggle(menuSystem.createWorldAllowCommands));
         case ui::WidgetId::SaveQuit:
             return translated("menu.returnToMenu", "Save and Quit to Title");
         case ui::WidgetId::Respawn:

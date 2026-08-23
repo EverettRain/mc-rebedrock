@@ -2469,7 +2469,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             const auto seed = static_cast<std::uint64_t>(
                 std::chrono::high_resolution_clock::now().time_since_epoch().count());
             auto save = runtime.createWorld(menuSystem.createWorldName, seed,
-                                            menuSystem.createWorldGameMode);
+                                            menuSystem.createWorldGameMode,
+                                            menuSystem.createWorldAllowCommands);
             refreshSaveList();
             startWorld(std::move(save));
         } catch (const std::exception& exception) {
@@ -3157,6 +3158,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 menuSystem.createWorldGameMode == gameplay::GameMode::Survival
                     ? gameplay::GameMode::Creative
                     : gameplay::GameMode::Survival;
+        };
+        cb.toggleCreateAllowCommands = [this] {
+            menuSystem.createWorldAllowCommands = !menuSystem.createWorldAllowCommands;
         };
         cb.renameWorld = [this] { applyRename(); };
         cb.deleteWorld = [this] { menuSystem.pageStack.push(ui::PageId::ConfirmDelete); };

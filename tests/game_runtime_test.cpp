@@ -1128,6 +1128,45 @@ int main() {
         runtime.stopSimulation();
     }
 
+    // CMD-8: allowCommands (Allow Cheats) drives the host's op level. Cheats off →
+    // gameplay commands (GameMasters) are refused by the existing permission layer,
+    // while client-side level-0 commands (/help) still run; cheats on → all pass.
+    {
+        world::ChunkStreamer streamer{0U, 4, 4};
+        RecordingHost host;
+        runtime::GameRuntime runtime{host, streamer, saveRoot};
+        host.save = &runtime.currentSaveSlot();
+        const auto runCmd = [&](const std::string& line) {
+            runtime.enqueueChat(line);
+            runtime.tick();
+            return runtime.takeChatResult();
+        };
+
+        auto noCheats =
+            runtime.createWorld("no-cheats", 1U, gameplay::GameMode::Creative, /*allowCommands=*/false);
+        runtime.loadWorld(std::move(noCheats), 4);
+        const auto denied = runCmd("/gamemode survival");
+        assert(denied.has_value() && !denied->success);
+        assert(denied->message.find("permission") != std::string::npos);
+        const auto help = runCmd("/help"); // level All — unaffected by cheats
+        assert(help.has_value() && help->success);
+        runtime.stopSimulation();
+    }
+    {
+        world::ChunkStreamer streamer{0U, 4, 4};
+        RecordingHost host;
+        runtime::GameRuntime runtime{host, streamer, saveRoot};
+        host.save = &runtime.currentSaveSlot();
+        auto cheats =
+            runtime.createWorld("cheats", 2U, gameplay::GameMode::Creative, /*allowCommands=*/true);
+        runtime.loadWorld(std::move(cheats), 4);
+        runtime.enqueueChat("/gamemode survival");
+        runtime.tick();
+        const auto allowed = runtime.takeChatResult();
+        assert(allowed.has_value() && allowed->success);
+        runtime.stopSimulation();
+    }
+
     std::filesystem::remove_all(saveRoot);
     std::cout << "PASS: game_runtime_test\n";
     return 0;

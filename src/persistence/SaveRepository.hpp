@@ -140,6 +140,14 @@ struct SaveGame final {
     // Game rules travel with the world the way 1.16.1 keeps them in level.dat;
     // format 9 serialises them into a sparse, self-describing block.
     gameplay::GameRules gameRules;
+    // Whether cheats are allowed in this world — 1.16.1's level.dat allowCommands
+    // (CMD-8). It drives the command source's op level: on → the host is Owners
+    // (op4, every command passes), off → All (only client-side level-0 commands
+    // like /help work, gameplay commands are refused by the existing permission
+    // layer). Defaults true so a pre-CMD-8 world (whose WRLD block is version 1
+    // and carries no flag) keeps its historical op4 behaviour on load; a newly
+    // created world takes the value the create screen chose (vanilla default off).
+    bool allowCommands = true;
     std::size_t selectedHotbarSlot = 0U;
     float playerHealth = gameplay::PlayerVitals::kMaximumHealth;
     std::int32_t playerFoodLevel = gameplay::PlayerVitals::kMaximumFood;

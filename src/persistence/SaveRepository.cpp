@@ -1140,12 +1140,15 @@ void readSlots(std::span<const std::uint8_t> payload, std::size_t& cursor,
 // The world's own settings: what a second player joining would share, as
 // opposed to anything the player carries.
 constexpr std::uint32_t kWorldBlockTag = blockTag("WRLD");
-constexpr std::uint16_t kWorldBlockVersion = 1U;
+// Version 2 (CMD-8) appends the allowCommands flag after difficulty; a version-1
+// block (any pre-CMD-8 world) has no flag and reads back the SaveGame default.
+constexpr std::uint16_t kWorldBlockVersion = 2U;
 
 void appendWorldBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
     const SaveBlockWriter block{bytes, kWorldBlockTag, kWorldBlockVersion};
     appendInteger(bytes, static_cast<std::uint8_t>(context.game.gameMode));
     appendInteger(bytes, static_cast<std::uint8_t>(context.game.difficulty));
+    appendInteger(bytes, static_cast<std::uint8_t>(context.game.allowCommands ? 1U : 0U));
 }
 
 void readWorldBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
@@ -1160,6 +1163,11 @@ void readWorldBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
         throw std::runtime_error("world.dat contains an invalid difficulty");
     }
     context.game.difficulty = static_cast<gameplay::Difficulty>(difficulty);
+    // allowCommands is absent in version 1: leaving context.game.allowCommands at
+    // its SaveGame default (true) keeps a pre-CMD-8 world on its historical op4.
+    if (header.version >= 2U) {
+        context.game.allowCommands = readInteger<std::uint8_t>(payload, cursor) != 0U;
+    }
     cursor = header.end;
 }
 

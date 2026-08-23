@@ -628,10 +628,13 @@ gameplay::command::CommandSource GameRuntime::makeCommandSource() {
     source.rotation.pitch =
         std::asin(std::clamp(static_cast<double>(look.y), -1.0, 1.0)) * kRadiansToDegrees;
     source.dimension = gameplay::command::Dimension::Overworld;
-    // The single-player host owns the world (op4): every command passes. The op
-    // level exists so a multiplayer source below it is refused, not to gate the
-    // host.
-    source.permissionLevel = gameplay::command::PermissionLevel::Owners;
+    // Cheats decide the host's op level (CMD-8): with allowCommands the host owns
+    // the world (Owners/op4, every command passes); without it the host drops to
+    // All, so the existing permission layer refuses gameplay commands (≥Moderators)
+    // while client-side level-0 commands like /help still run. The op ladder was
+    // always ready to consume this — CMD-8 only replaces the hardcoded constant.
+    source.permissionLevel = commandsAllowed_ ? gameplay::command::PermissionLevel::Owners
+                                              : gameplay::command::PermissionLevel::All;
     // Feedback goes to the chat HUD. A successful command is silent when
     // sendCommandFeedback is off; a failure always reports — vanilla's
     // CommandSourceStack sendSuccess/sendFailure split.
@@ -691,6 +694,9 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     gameSession_.gameMode() = currentSave_->gameMode;
     // The world owns its difficulty, the way level.dat does in vanilla.
     gameSession_.setDifficulty(currentSave_->difficulty);
+    // Cheats travel with the world (CMD-8): mirror the flag so makeCommandSource
+    // picks the host op level for this world without touching the save each line.
+    commandsAllowed_ = currentSave_->allowCommands;
     // Game rules travel with the world too. The copy from the loaded save
     // carries a null change handler, so the owner re-attaches its own and
     // applies the one rule with a runtime mirror.
@@ -773,12 +779,14 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
 }
 
 persistence::SaveGame GameRuntime::createWorld(std::string name, std::uint64_t seed,
-                                               gameplay::GameMode mode) {
+                                               gameplay::GameMode mode, bool allowCommands) {
     auto save = saveRepository_.create(name, seed);
     save.gameMode = mode;
     // A new world starts on Normal difficulty, exactly like vanilla; each world
     // then owns the setting from here on.
     save.difficulty = gameplay::Difficulty::Normal;
+    // Cheats are set once at creation (CMD-8) and persisted with the world.
+    save.allowCommands = allowCommands;
     gameplay::Inventory initialInventory;
     save.inventory = initialInventory.slots();
     save.selectedHotbarSlot = initialInventory.selectedHotbarSlot();

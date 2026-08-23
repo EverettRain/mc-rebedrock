@@ -12,7 +12,8 @@ std::size_t menuButtonCount(PageId page, bool worldOpen) {
     case PageId::WorldList:
         return 4U;
     case PageId::CreateWorld:
-        return 3U;
+        // Game Mode, Allow Cheats (CMD-8), Create World, Back.
+        return 4U;
     case PageId::EditWorld:
         return 3U;
     case PageId::ConfirmDelete:

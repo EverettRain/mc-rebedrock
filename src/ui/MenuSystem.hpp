@@ -61,6 +61,9 @@ class MenuSystem final {
     std::size_t worldListFirstIndex = 0U;
     std::string createWorldName = "New World";
     gameplay::GameMode createWorldGameMode = gameplay::GameMode::Survival;
+    // Allow Cheats for the world being created (CMD-8). Vanilla defaults this off
+    // on the create screen; the player toggles it before creating.
+    bool createWorldAllowCommands = false;
     std::string editWorldName;
     std::string editWorldIdentifier;
     std::string saveStatus;

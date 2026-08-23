@@ -145,8 +145,12 @@ class GameRuntime final {
     // and persists a fresh save. unloadWorld drops the save and unloads the
     // chunks.
     void loadWorld(persistence::SaveGame save, int viewDistanceChunks);
+    // allowCommands (Allow Cheats, CMD-8) rides on the new world. It defaults
+    // true so a headless / dedicated caller keeps the historical op4 host; the
+    // create screen passes its toggle (vanilla default off) explicitly.
     [[nodiscard]] persistence::SaveGame createWorld(std::string name, std::uint64_t seed,
-                                                    gameplay::GameMode mode);
+                                                    gameplay::GameMode mode,
+                                                    bool allowCommands = true);
     void unloadWorld();
 
     // Persists the open world. saveLocked() assumes the caller already holds the
@@ -331,6 +335,11 @@ class GameRuntime final {
     // world seed on load (see loadWorld). Transient — never saved; a fixed world
     // plus a fixed command sequence reproduces the same picks.
     std::uint64_t commandRandomState_ = 0x9E3779B97F4A7C15ULL;
+    // Whether cheats are allowed in the loaded world (CMD-8), mirrored from the
+    // save on loadWorld. makeCommandSource reads it to pick the host's op level:
+    // true → Owners (op4), false → All (client-side commands only). Defaults true
+    // so a runtime with no world loaded (or a pre-CMD-8 world) behaves as before.
+    bool commandsAllowed_ = true;
 
     // Background chunk-unload persistence worker and its queue. The worker lives
     // for the whole runtime; the destructor stops and joins it after the

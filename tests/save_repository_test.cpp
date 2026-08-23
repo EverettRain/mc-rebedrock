@@ -116,6 +116,9 @@ int main() {
     save.gameTimeSeconds = 42.5;
     save.gameMode = gameplay::GameMode::Survival;
     save.difficulty = gameplay::Difficulty::Hard;
+    // CMD-8: cheats-off world; the flag must survive the round trip (it defaults
+    // true, so writing false and reading it back proves the WRLD v2 field works).
+    save.allowCommands = false;
     static_cast<void>(
         save.gameRules.set<std::int32_t>(gameplay::GameRuleId::RandomTickSpeed, 7));
     gameplay::Inventory inventory;
@@ -219,6 +222,7 @@ int main() {
            loaded.spawnZ == 12.0F);
     assert(loaded.gameMode == gameplay::GameMode::Survival);
     assert(loaded.difficulty == gameplay::Difficulty::Hard);
+    assert(loaded.allowCommands == false); // CMD-8: cheats flag round-trips
     assert(loaded.gameRules.get<std::int32_t>(gameplay::GameRuleId::RandomTickSpeed) == 7);
     assert(loaded.selectedHotbarSlot == 4U);
     assert(loaded.inventory == save.inventory);
@@ -434,6 +438,9 @@ int main() {
         assert(legacy.inventory[0] ==
                (gameplay::ItemStack{world::Block::Air, 1U, &gameplay::items::DiamondPickaxe}));
         assert(legacy.gameMode == gameplay::GameMode::Survival);
+        // CMD-8: a pre-CMD-8 world carries no allowCommands flag, so it loads as
+        // true — the historical op4 host is preserved, not silently disabled.
+        assert(legacy.allowCommands == true);
         // Format 13 split the single gameTimeSeconds into a world tick and the
         // named clocks; a save older than that seeds both from it rather than
         // reopening at tick zero.

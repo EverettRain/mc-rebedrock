@@ -73,6 +73,7 @@ struct MenuCallbacks final {
     std::function<void()> editWorld{};
     std::function<void()> confirmCreate{};
     std::function<void()> toggleCreateGameMode{};
+    std::function<void()> toggleCreateAllowCommands{};
     std::function<void()> renameWorld{};
     std::function<void()> deleteWorld{};
     std::function<void()> confirmDelete{};
@@ -137,7 +138,7 @@ enum class WidgetId : std::uint16_t {
     None = 0,
     Singleplayer, Options, Exit,
     PlaySelected, CreateWorld, Edit, Back,
-    CreateGameMode, CreateConfirm,
+    CreateGameMode, CreateAllowCommands, CreateConfirm,
     SaveRename, DeleteWorld, DeleteConfirm, DeleteCancel,
     Resume, SaveQuit, Respawn, TitleScreen,
     MasterVolume, Difficulty, Controls, VideoSettings, Language, Experimental, Done,
@@ -250,6 +251,8 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
 
         case PageId::CreateWorld:
             addButton(page, rectFor, ctx, WidgetId::CreateGameMode, cb.toggleCreateGameMode);
+            addButton(page, rectFor, ctx, WidgetId::CreateAllowCommands,
+                      cb.toggleCreateAllowCommands);
             addButton(page, rectFor, ctx, WidgetId::CreateConfirm, cb.confirmCreate);
             addButton(page, rectFor, ctx, WidgetId::Back, cb.back);
             break;
