@@ -453,6 +453,18 @@ inline constexpr Item WaterBucket = Item::of("water_bucket")
 inline constexpr Item LavaBucket = Item::of("lava_bucket")
                                        .category(CreativeCategory::Materials)
                                        .single();
+// MilkBucketItem (26.1): AR-A3's milking product. Vanilla files it under the
+// Food & Drinks creative tab (not Materials, unlike the water/lava buckets) —
+// this project's catalog has no separate drinks tab, so Food is the closest
+// fit. Drinking it (PlayerInteraction's use-item timeline) clears every
+// active status effect and reverts to an empty Bucket in survival; creative
+// keeps pouring/drinking without spending the stack, the same
+// restoresHeldStack rule the water/lava buckets already follow. No FoodValue
+// is set — milk does not restore hunger, only status effects, so it is not
+// classified `isFood` and never enters the ordinary eating gate.
+inline constexpr Item MilkBucket = Item::of("milk_bucket")
+                                       .category(CreativeCategory::Food)
+                                       .single();
 inline constexpr Item Coal =
     Item::of("coal").category(CreativeCategory::Materials);
 inline constexpr Item IronIngot =
@@ -665,8 +677,9 @@ inline constexpr Item Shears = Item::of("shears")
 // their constructors need entity headers that sit above us in the include graph.
 // The order sets both the creative-catalog order within each tab and the item
 // texture-array layout the renderer appends. Grouped materials / food / tools.
-inline constexpr std::array<const Item*, 56> kItemRegistry{
-    &items::Bucket,     &items::WaterBucket, &items::LavaBucket, &items::Coal,
+inline constexpr std::array<const Item*, 57> kItemRegistry{
+    &items::Bucket,     &items::WaterBucket, &items::LavaBucket, &items::MilkBucket,
+    &items::Coal,
     &items::IronIngot,
     &items::GoldIngot,  &items::Diamond,     &items::Emerald,    &items::Stick,
     &items::Flint,      &items::Feather,     &items::String,     &items::Leather,
@@ -781,6 +794,25 @@ struct ToolAttributes final {
 
 [[nodiscard]] constexpr bool isFood(const Item* item) {
     return foodValue(item).foodLevel > 0;
+}
+
+// MilkBucketItem#getUseAction (26.1): milk is drunk on the same held-right-
+// click timeline as food (UseAction.DRINK, still 32 ticks — MilkBucketItem#
+// getMaxUseTime), but it carries no FoodValue (drinking restores no hunger,
+// only clears status effects), so it cannot piggyback isFood's "is this
+// consumable" test. A single named predicate rather than a per-item flag: milk
+// is the only drinkable item registered today, and a second one (a future
+// potion) would need its own finish-of-use behaviour anyway, not just this
+// bit — see GameSession::tickEating's branch, which is the actual behavioural
+// fork.
+[[nodiscard]] constexpr bool isDrinkable(const Item* item) {
+    return item == &items::MilkBucket;
+}
+
+// Whether holding `item` down starts the shared 32-tick use timeline
+// (PlayerInteraction's eat/drink gate) — food to eat, or milk to drink.
+[[nodiscard]] constexpr bool startsUseTimeline(const Item* item) {
+    return isFood(item) || isDrinkable(item);
 }
 
 // The texture-array layer the renderer assigned an item's icon. gameplay only
