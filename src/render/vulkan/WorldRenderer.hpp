@@ -43,6 +43,7 @@
 #include "ui/UiFrameData.hpp"
 #include "world/ChunkMesher.hpp"
 #include "world/ChunkStreamer.hpp"
+#include "world/ChunkStreamingTrace.hpp"
 #include "world/WorldLock.hpp"
 #include "world/DayNightCycle.hpp"
 #include "world/World.hpp"
@@ -291,6 +292,13 @@ class WorldRenderer final {
   WorldRenderer(const WorldRenderer&) = delete;
   WorldRenderer& operator=(const WorldRenderer&) = delete;
 
+  // CS-1: the request centre in effect for the most recently applied stream
+  // batch. Diagnostics-only (not part of Impl's crash-sensitive GPU-resource
+  // lifecycle, so it is owned here directly rather than bound through
+  // Bindings): prepareStreamingUpdates uses it to compute each upload's ring
+  // distance for the delivery-order trace.
+  world::ChunkPosition chunkTraceCenter_{};
+
 
     // ---- helpers duplicated from the renderer core (pure forwards over the
     // bound references) so the moved bodies resolve them; Impl keeps its own. ----
@@ -335,6 +343,30 @@ class WorldRenderer final {
     void queueStreamBatch(world::ChunkStreamBatch batch) {
         if (batch.worldEpoch != worldEpoch)
             return;
+        // CS-1: streamingFrameCost, half 1 of 2 (see prepareStreamingUpdates
+        // for the upload-side half). Both halves land in the same sample so a
+        // caller can see per-frame batch-apply cost vs. GPU-upload-prep cost.
+        // This function runs once per delivered batch (poll() drains a small
+        // queue, not per-section), so the single steady_clock::now() below is
+        // unconditional even when tracing is off — negligible next to the
+        // world-lock acquisition and chunk map writes this function already
+        // performs every call.
+        const bool chunkTrace = diag::chunkTraceEnabled();
+        const auto queueBatchStart = diag::ChunkStreamingMetrics::Clock::now();
+        if (chunkTrace) {
+            chunkTraceCenter_ = batch.center;
+            // Arm firstMeshLatency for every chunk this batch introduces. A
+            // repeat arm on an already-armed chunk (e.g. a later edit batch
+            // touching the same position) is a no-op — see armFirstMesh.
+            for (const auto& update : batch.chunkUpdates) {
+                if (!update.remove) {
+                    diag::chunkStreamingMetrics().armFirstMesh(
+                        {update.position.x, 0, update.position.z}, queueBatchStart);
+                }
+            }
+            diag::chunkStreamingMetrics().noteRadiusProgress(
+                batch.center.x, batch.center.z, batch.loadedChunkCount, queueBatchStart);
+        }
         loadedCpuChunkCount = batch.loadedChunkCount;
         completedBlockEditCount += batch.appliedBlockEditCount;
         const bool generatedOrUnloadedChunks = batch.appliedBlockEditCount == 0U;
@@ -357,6 +389,14 @@ class WorldRenderer final {
                     if (diag::traceEnabled()) {
                         ++diag::frameTrace().unloadedChunks;
                     }
+                    if (chunkTrace) {
+                        // Intentional unload: stop tracking so it is never
+                        // reported as a missing chunk (README problem ③ is
+                        // about chunks that should be resident and are not,
+                        // not chunks that correctly left the radius).
+                        diag::missingChunkDetector().noteChunkRemoved(update.position.x,
+                                                                      update.position.z);
+                    }
                     interactionWorld.removeChunk(update.position);
                     if (onChunkUnloaded) {
                         onChunkUnloaded(update.position);
@@ -364,6 +404,10 @@ class WorldRenderer final {
                 } else if (generatedOrUnloadedChunks) {
                     // Only generation batches introduce CPU chunks; edit batches
                     // contribute meshes but never overwrite newer gameplay state.
+                    if (chunkTrace) {
+                        diag::missingChunkDetector().noteChunkDelivered(
+                            update.position.x, update.position.z, queueBatchStart);
+                    }
                     interactionWorld.setChunk(update.position, update.chunk);
                     if (onChunkLoaded) {
                         onChunkLoaded(update.position);
@@ -483,6 +527,15 @@ class WorldRenderer final {
         //           << " | CPU chunks: " << batch.loadedChunkCount
         //           << " | queued sections: " << pendingSectionUpdates.size() << '\n';
         lastVisibleMeshCount = std::numeric_limits<std::size_t>::max();
+        if (chunkTrace) {
+            // CS-1 streamingFrameCost, half 1 of 2: cost of applying this
+            // batch (server-world write + client-cache mirror + section-queue
+            // bookkeeping). The GPU-upload half is recorded separately in
+            // prepareStreamingUpdates, tagged with 0 here so a caller summing
+            // per-frame cost adds both halves' rows for the same frame.
+            diag::chunkStreamingMetrics().recordFrameCost(
+                diag::msSince(queueBatchStart), 0.0, 0U);
+        }
     }
 
 
@@ -532,6 +585,25 @@ class WorldRenderer final {
                 requestCenter.x != lastCenterX || requestCenter.z != lastCenterZ;
             lastCenterX = requestCenter.x;
             lastCenterZ = requestCenter.z;
+        }
+        if (diag::chunkTraceEnabled()) {
+            // CS-1 radiusFillTime: (re)arm whenever the request centre moves.
+            // A centre that has not changed leaves the existing arm running
+            // (it either already completed, or the previous move's fill is
+            // still catching up — re-arming on every unchanged frame would
+            // never let a slow fill be observed).
+            static int lastArmedX = std::numeric_limits<int>::min();
+            static int lastArmedZ = std::numeric_limits<int>::min();
+            if (requestCenter.x != lastArmedX || requestCenter.z != lastArmedZ) {
+                lastArmedX = requestCenter.x;
+                lastArmedZ = requestCenter.z;
+                const int radius = chunkStreamer.loadRadius();
+                const std::size_t expected =
+                    static_cast<std::size_t>(2 * radius + 1) * static_cast<std::size_t>(2 * radius + 1);
+                diag::chunkStreamingMetrics().beginRadiusFill(
+                    requestCenter.x, requestCenter.z, radius, expected,
+                    diag::ChunkStreamingMetrics::Clock::now());
+            }
         }
         chunkStreamer.request(requestCenter);
         while (auto batch = chunkStreamer.poll()) {
@@ -727,6 +799,14 @@ class WorldRenderer final {
         std::size_t processedUpdates = 0;
         std::size_t priorityUploads = 0;
         constexpr std::size_t kMaxRemovalsPerFrame = 256;
+        const bool chunkTrace = diag::chunkTraceEnabled();
+        // Clock::now() only when tracing (this function runs every frame,
+        // unlike queueStreamBatch which runs once per streaming batch — see
+        // the zero-cost note in queueStreamBatch for why that call site does
+        // not bother gating its single now()).
+        const auto uploadPrepStart =
+            chunkTrace ? diag::ChunkStreamingMetrics::Clock::now() : diag::ChunkStreamingMetrics::Clock::time_point{};
+        std::size_t tracedUploads = 0;
 
         while (!pendingSectionOrder.empty()) {
             const world::SectionPosition position = pendingSectionOrder.front();
@@ -779,6 +859,16 @@ class WorldRenderer final {
             occlusionStates.erase(position);
             occlusionMissCount.erase(position);
             if (!uploadsMesh) {
+                if (chunkTrace && !update.remove) {
+                    // A confirmed-empty section (skipEmptySections still
+                    // delivers a `remove` update for it — see
+                    // buildChunkMeshesParallel) is a legitimate resolution,
+                    // not a gap; a section evicted by the pending-backlog
+                    // cap without ever reaching the GPU is re-requested
+                    // separately (requestSectionRemesh) and stays open here.
+                    diag::missingChunkDetector().noteChunkResolved(position.chunkX,
+                                                                    position.chunkZ);
+                }
                 chunkStreamer.releaseMeshData(std::move(update.mesh));
                 continue;
             }
@@ -796,6 +886,16 @@ class WorldRenderer final {
             // A fresh mesh must be drawn and queried before occlusion can trust
             // it, so it starts Unknown instead of inheriting a stale result.
             occlusionStates[position] = OcclusionState::Unknown;
+            if (chunkTrace) {
+                const auto uploadedAt = diag::ChunkStreamingMetrics::Clock::now();
+                diag::chunkStreamingMetrics().recordFirstMesh(
+                    {position.chunkX, 0, position.chunkZ}, uploadedAt);
+                diag::missingChunkDetector().noteChunkResolved(position.chunkX, position.chunkZ);
+                const int ring = std::max(std::abs(position.chunkX - chunkTraceCenter_.x),
+                                          std::abs(position.chunkZ - chunkTraceCenter_.z));
+                diag::deliveryOrderTrace().record(position.chunkX, position.chunkZ, ring);
+                ++tracedUploads;
+            }
             if (priority) {
                 ++priorityUploads;
             } else {
@@ -803,6 +903,14 @@ class WorldRenderer final {
                 uploadedBytesThisFrame += updateBytes;
             }
             totalUploadedBytes += updateBytes;
+        }
+        if (chunkTrace && tracedUploads > 0U) {
+            // CS-1 streamingFrameCost, half 2/2: GPU-upload-prep cost for
+            // this frame's share of the pending section backlog (staging
+            // copy + buffer acquire), paired with the batch-apply half
+            // recorded in queueStreamBatch.
+            diag::chunkStreamingMetrics().recordFrameCost(
+                0.0, diag::msSince(uploadPrepStart), tracedUploads);
         }
         // Once every section re-baked at targetMeshQuality has landed, flip the
         // quality the shader's High branch expects so it never reads the new AO

@@ -710,6 +710,14 @@ if(BUILD_TESTING)
     )
     add_test(NAME chunk_streamer COMMAND mc_rebedrock_chunk_streamer_test)
 
+    add_executable(mc_rebedrock_chunk_streaming_trace_test
+        tests/chunk_streaming_trace_test.cpp
+    )
+    target_include_directories(mc_rebedrock_chunk_streaming_trace_test PRIVATE
+        src
+    )
+    add_test(NAME chunk_streaming_trace COMMAND mc_rebedrock_chunk_streaming_trace_test)
+
     add_executable(mc_rebedrock_voxel_raycast_test
         tests/voxel_raycast_test.cpp
         src/world/Chunk.cpp
