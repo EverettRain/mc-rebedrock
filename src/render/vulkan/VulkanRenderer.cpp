@@ -2411,6 +2411,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pendingSectionOrder.clear();
         pendingSectionUpdates.clear();
         latestSectionRevisions.clear();
+        // CS-1: keep the diagnostics ring side table in step with the pending
+        // section maps it shadows (empty when tracing is off, so free then).
+        world_.pendingSectionEnqueueRing_.clear();
         // Re-anchor the baked quality at the saved option: a fresh world starts
         // meshing at the stored quality (Off keeps Standard-baked meshes, since
         // the shader ignores the smooth light channels anyway).

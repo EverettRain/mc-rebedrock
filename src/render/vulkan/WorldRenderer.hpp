@@ -292,12 +292,17 @@ class WorldRenderer final {
   WorldRenderer(const WorldRenderer&) = delete;
   WorldRenderer& operator=(const WorldRenderer&) = delete;
 
-  // CS-1: the request centre in effect for the most recently applied stream
-  // batch. Diagnostics-only (not part of Impl's crash-sensitive GPU-resource
-  // lifecycle, so it is owned here directly rather than bound through
-  // Bindings): prepareStreamingUpdates uses it to compute each upload's ring
-  // distance for the delivery-order trace.
-  world::ChunkPosition chunkTraceCenter_{};
+  // CS-1 (Bug 2 fix): the ring distance each pending section had *at the moment
+  // it was enqueued*, computed from that batch's own centre. The upload-side
+  // delivery-order trace must use this captured value, not the newest request
+  // centre (which every later batch would advance): an event uploaded after the
+  // centre moved would otherwise be scored against a stale-relative centre and
+  // report a ring outside [0, loadRadius]. Owned here (diagnostics-only, not
+  // part of Impl's crash-sensitive GPU-resource lifecycle nor the game-owned
+  // pendingSectionUpdates map); populated and consumed only under
+  // chunkTraceEnabled().
+  std::unordered_map<world::SectionPosition, int, world::SectionPositionHash>
+      pendingSectionEnqueueRing_{};
 
 
     // ---- helpers duplicated from the renderer core (pure forwards over the
@@ -354,16 +359,12 @@ class WorldRenderer final {
         const bool chunkTrace = diag::chunkTraceEnabled();
         const auto queueBatchStart = diag::ChunkStreamingMetrics::Clock::now();
         if (chunkTrace) {
-            chunkTraceCenter_ = batch.center;
-            // Arm firstMeshLatency for every chunk this batch introduces. A
-            // repeat arm on an already-armed chunk (e.g. a later edit batch
-            // touching the same position) is a no-op — see armFirstMesh.
-            for (const auto& update : batch.chunkUpdates) {
-                if (!update.remove) {
-                    diag::chunkStreamingMetrics().armFirstMesh(
-                        {update.position.x, 0, update.position.z}, queueBatchStart);
-                }
-            }
+            // Bug 1 fix: firstMeshLatency is armed in processChunkStreaming when
+            // a chunk *enters the request radius* (matches the documented "from
+            // a chunk entering the request radius to GPU-visible" semantics),
+            // not here on CPU-batch arrival — arming on arrival dropped the
+            // enter-radius-to-generation-queued interval and understated the
+            // long tail. This batch only advances the radius-fill progress.
             diag::chunkStreamingMetrics().noteRadiusProgress(
                 batch.center.x, batch.center.z, batch.loadedChunkCount, queueBatchStart);
         }
@@ -484,6 +485,16 @@ class WorldRenderer final {
             }
             latestSectionRevisions.insert_or_assign(update.position, update.revision);
             update.highPriority = batch.highPriority;
+            if (chunkTrace) {
+                // Bug 2 fix: capture the ring against *this* batch's centre now,
+                // so a section uploaded after the centre later moves is scored
+                // against the centre that requested it (ring stays in
+                // [0, loadRadius]) rather than the newest chunkTraceCenter_.
+                const int enqueueRing =
+                    std::max(std::abs(update.position.chunkX - batch.center.x),
+                             std::abs(update.position.chunkZ - batch.center.z));
+                pendingSectionEnqueueRing_[update.position] = enqueueRing;
+            }
             if (!pendingSectionUpdates.contains(update.position)) {
                 // Cap the mesh backlog. High-priority updates push_front and
                 // repeat positions never re-queue, so order.back() is always the
@@ -500,6 +511,7 @@ class WorldRenderer final {
                         latestSectionRevisions.erase(victim);
                         pendingSectionUpdates.erase(victimFound);
                         pendingSectionOrder.pop_back();
+                        pendingSectionEnqueueRing_.erase(victim);
                         // Dropping a section that was queued but never uploaded
                         // would leave a permanent hole once the worker's streaming
                         // backlog drains (the symptom: missing chunks that only
@@ -600,9 +612,22 @@ class WorldRenderer final {
                 const int radius = chunkStreamer.loadRadius();
                 const std::size_t expected =
                     static_cast<std::size_t>(2 * radius + 1) * static_cast<std::size_t>(2 * radius + 1);
+                const auto enteredRadiusAt = diag::ChunkStreamingMetrics::Clock::now();
                 diag::chunkStreamingMetrics().beginRadiusFill(
-                    requestCenter.x, requestCenter.z, radius, expected,
-                    diag::ChunkStreamingMetrics::Clock::now());
+                    requestCenter.x, requestCenter.z, radius, expected, enteredRadiusAt);
+                // Bug 1 fix: firstMeshLatency's clock starts here — the moment a
+                // chunk position enters the request radius — not when its CPU
+                // batch later arrives (queueStreamBatch). Arm every position in
+                // the (2r+1)^2 window at "now"; armFirstMesh is idempotent, so
+                // positions still resident from the previous centre keep their
+                // earlier (correct) arm and only newly-entered positions take
+                // this timestamp. This runs only under chunkTraceEnabled().
+                for (int dz = -radius; dz <= radius; ++dz) {
+                    for (int dx = -radius; dx <= radius; ++dx) {
+                        diag::chunkStreamingMetrics().armFirstMesh(
+                            {requestCenter.x + dx, 0, requestCenter.z + dz}, enteredRadiusAt);
+                    }
+                }
             }
         }
         chunkStreamer.request(requestCenter);
@@ -846,6 +871,18 @@ class WorldRenderer final {
             pendingSectionUpdates.erase(found);
             pendingSectionOrder.pop_front();
             ++processedUpdates;
+            // Bug 2 fix: pull the ring captured at enqueue time (against the
+            // batch centre that requested this section) and drop it from the
+            // side table whether or not this section ends up uploading a mesh,
+            // so the diagnostics map never outlives its pending entry.
+            int enqueueRing = 0;
+            if (chunkTrace) {
+                const auto ringFound = pendingSectionEnqueueRing_.find(position);
+                if (ringFound != pendingSectionEnqueueRing_.end()) {
+                    enqueueRing = ringFound->second;
+                    pendingSectionEnqueueRing_.erase(ringFound);
+                }
+            }
             // A section the quality remesh was waiting on has been replaced
             // (either uploaded or retired), so it no longer gates the uniform
             // flip at the bottom.
@@ -891,9 +928,7 @@ class WorldRenderer final {
                 diag::chunkStreamingMetrics().recordFirstMesh(
                     {position.chunkX, 0, position.chunkZ}, uploadedAt);
                 diag::missingChunkDetector().noteChunkResolved(position.chunkX, position.chunkZ);
-                const int ring = std::max(std::abs(position.chunkX - chunkTraceCenter_.x),
-                                          std::abs(position.chunkZ - chunkTraceCenter_.z));
-                diag::deliveryOrderTrace().record(position.chunkX, position.chunkZ, ring);
+                diag::deliveryOrderTrace().record(position.chunkX, position.chunkZ, enqueueRing);
                 ++tracedUploads;
             }
             if (priority) {

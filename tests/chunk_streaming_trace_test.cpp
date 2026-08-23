@@ -191,6 +191,127 @@ int main() {
     }
 
     // -------------------------------------------------------------------
+    // Bug 1 fix: firstMeshLatency arms when a chunk enters the request radius,
+    // not when its CPU batch later arrives. The WorldRenderer seam now walks
+    // the whole (2r+1)^2 window and arms every position at the enter-radius
+    // instant; armFirstMesh is idempotent, so a position already armed from an
+    // earlier centre keeps its *earlier* (enter-radius) timestamp and the
+    // latency measured spans the full enter-radius -> GPU-visible interval,
+    // never the shorter batch-arrival -> GPU-visible one. This models that seam
+    // headlessly: arm at t0 (radius entry), re-arm at a later t1 (a subsequent
+    // centre move re-walks the overlapping window), then record — the sample
+    // must reflect t0, proving the batch-arrival re-arm cannot shorten it.
+    {
+        ChunkStreamingMetrics metrics;
+        const auto enteredRadiusAt = Clock::now();
+        // Simulate a (2r+1)^2 radius arm covering the chunk (r=1 -> 9 arms).
+        for (int dz = -1; dz <= 1; ++dz) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                metrics.armFirstMesh({dx, 0, dz}, enteredRadiusAt);
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        // A later centre move re-walks the same window (the chunk is still in
+        // radius). The idempotent re-arm must NOT overwrite the earlier arm —
+        // otherwise the enter-radius interval would be lost, understating the
+        // long tail exactly as the batch-arrival arm did.
+        const auto laterReArm = Clock::now();
+        metrics.armFirstMesh({0, 0, 0}, laterReArm);
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        metrics.recordFirstMesh({0, 0, 0}, Clock::now());
+
+        const auto samples = metrics.firstMeshSamples();
+        assert(samples.size() == 1U);
+        // Total elapsed spans both sleeps (~10ms) from the ORIGINAL arm; if the
+        // re-arm had won, only the second sleep (~5ms) would show.
+        assert(samples.front().latencyMs >= 9.0);
+    }
+
+    // -------------------------------------------------------------------
+    // Bug 2 fix: the delivery-order ring is computed against the centre in
+    // effect when the section was ENQUEUED, not the latest centre at upload
+    // time. With the fix the ring the seam feeds record() is always within
+    // [0, loadRadius] even after the centre has since moved. This models the
+    // seam: capture ring from the enqueue-time centre, move the centre, then
+    // record the captured ring (not one recomputed from the moved centre).
+    // -------------------------------------------------------------------
+    {
+        DeliveryOrderTrace trace;
+        const int loadRadius = 12;
+        // Section at chunk (12, 0); enqueued when the centre was (0,0):
+        // captured ring = max(|12-0|,|0-0|) = 12  (== loadRadius, in bounds).
+        const int enqueueCenterX = 0;
+        const int enqueueCenterZ = 0;
+        const int sectionChunkX = 12;
+        const int sectionChunkZ = 0;
+        const int capturedRing = std::max(std::abs(sectionChunkX - enqueueCenterX),
+                                          std::abs(sectionChunkZ - enqueueCenterZ));
+        assert(capturedRing == 12);
+        // The centre then moves AWAY to (-1, 0) before this queued event is
+        // uploaded. The stale-centre bug would recompute ring against (-1,0):
+        // max(|12-(-1)|,0) = 13 > loadRadius — an impossible out-of-range ring.
+        const int movedCenterX = -1;
+        const int staleRing = std::max(std::abs(sectionChunkX - movedCenterX),
+                                       std::abs(sectionChunkZ - enqueueCenterZ));
+        assert(staleRing == 13 && staleRing > loadRadius); // what the bug produced
+        // The fix records the captured ring, which stays in bounds.
+        trace.record(sectionChunkX, sectionChunkZ, capturedRing);
+        const auto events = trace.events();
+        assert(events.size() == 1U);
+        assert(events.front().ring >= 0 && events.front().ring <= loadRadius);
+        assert(events.front().ring == 12);
+    }
+
+    // -------------------------------------------------------------------
+    // Bug 3 fix: isMonotonicRingExpansion sorts by `sequence` before walking,
+    // so a ring buffer that has WRAPPED (physical slot order != logical
+    // delivery order) is judged on the true delivery order. Construct a
+    // genuine wrap: fill the 4096-slot buffer with ring 5, then overwrite the
+    // oldest slots with a rising ring. Physically, slot 0 now holds a high
+    // ring while later slots still hold ring 5 — a physical-order walk sees a
+    // regression and wrongly returns false; the sequence-sorted walk sees the
+    // true order (all the ring-5s first, then the rising tail) and returns
+    // true.
+    // -------------------------------------------------------------------
+    {
+        DeliveryOrderTrace trace;
+        constexpr int kCapacity = 4096;
+        // Fill the buffer exactly: 4096 events, all ring 5, in delivery order.
+        for (int i = 0; i < kCapacity; ++i) {
+            trace.record(i, 0, 5);
+        }
+        // Now push a rising tail that wraps and overwrites the oldest slots.
+        // In true (sequence) order these come strictly after every ring-5, and
+        // never regress: 5 -> 5 -> 6 -> 7 -> 8. Monotonic.
+        trace.record(0, 1, 5);
+        trace.record(0, 2, 6);
+        trace.record(0, 3, 7);
+        trace.record(0, 4, 8);
+
+        const auto raw = trace.events();
+        assert(raw.size() == static_cast<std::size_t>(kCapacity));
+        // Prove the buffer actually wrapped: physical order is NOT sorted by
+        // sequence (some later slot holds an older sequence than slot 0).
+        bool physicallyOutOfOrder = false;
+        for (std::size_t i = 1; i < raw.size(); ++i) {
+            if (raw[i].sequence < raw[i - 1].sequence) {
+                physicallyOutOfOrder = true;
+                break;
+            }
+        }
+        assert(physicallyOutOfOrder); // confirms the wrap scenario is real
+        // Despite the physical disorder, the true delivery order is a clean
+        // outward expansion, so the sequence-sorted check accepts it.
+        assert(trace.isMonotonicRingExpansion());
+
+        // And a genuine post-wrap regression is still caught: append a ring-2
+        // event (older-ring than the ring-8 just delivered) with the newest
+        // sequence. In true order 8 -> 2 regresses; must return false.
+        trace.record(9, 9, 2);
+        assert(!trace.isMonotonicRingExpansion());
+    }
+
+    // -------------------------------------------------------------------
     // Global singletons + resetChunkStreamingTrace: the accessors used by
     // WorldRenderer's call sites should behave like ordinary singletons and
     // clear cleanly (verifies test isolation is possible for anything that

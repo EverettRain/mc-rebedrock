@@ -371,8 +371,16 @@ class DeliveryOrderTrace final {
     // caveat); it does not excuse a whole ring regressing.
     [[nodiscard]] bool isMonotonicRingExpansion(int slack = 0) const {
         std::scoped_lock lock{mutex_};
+        // The ring buffer stores events in physical slot order; once it has
+        // wrapped, that order no longer matches the logical delivery order.
+        // Rebuild the logical order by sorting on the monotonically-increasing
+        // `sequence` stamp before walking the ring-distance sequence, otherwise
+        // a wrapped buffer compares a newer event against an older one and
+        // fabricates a regression (or masks a real one).
+        std::vector<DeliveryEvent> ordered = events_.samples();
+        std::ranges::sort(ordered, {}, &DeliveryEvent::sequence);
         int maxRingSeen = -1;
-        for (const auto& event : events_.samples()) {
+        for (const auto& event : ordered) {
             if (event.ring < maxRingSeen - slack) {
                 return false;
             }
