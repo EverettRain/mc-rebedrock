@@ -193,6 +193,26 @@ enum class Block : std::uint8_t {
     // can key on the block. Reuses BlockModel::Chest, so it renders through the
     // chest path with no new model.
     TrappedChest,
+    // WG-0 base blocks: the nether/end terrain palette registered as identity
+    // only. WG-2/3 place these; WG-0 gives them a BlockId, properties and a
+    // `minecraft:*` alias so the generator has something to place and JC import
+    // maps straight onto them. No new behaviour — they are plain solid cubes
+    // (Magma emits light 3, the rest inert), mirroring the 1.16.1 base blocks.
+    //
+    // Nether:
+    SoulSand,
+    SoulSoil,
+    NetherQuartzOre,
+    MagmaBlock,
+    Basalt,
+    Blackstone,
+    NetherBricks,
+    NetherWartBlock,
+    CrimsonNylium,
+    WarpedNylium,
+    // End:
+    EndStone,
+    PurpurBlock,
     Count,
 };
 
@@ -1105,6 +1125,54 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .horizontalFacing()
         .container(ContainerType::Chest)
         .blockEntity(BlockEntityKind::TrappedChest),
+    // WG-0 nether base blocks. Strengths and the magma light level mirror
+    // 1.16.1/26.1 Blocks.java; textures name the vanilla sprites so the
+    // name-driven atlas build resolves them. These are identity only — placement
+    // is WG-2, playable content (nether-brick building, nether wart farming)
+    // is AR-B.
+    BlockProperties::of(Block::SoulSand, "soul_sand", "Soul Sand")
+        .texture("soul_sand")
+        .strength(0.5F),
+    BlockProperties::of(Block::SoulSoil, "soul_soil", "Soul Soil")
+        .texture("soul_soil")
+        .strength(0.5F),
+    BlockProperties::of(Block::NetherQuartzOre, "nether_quartz_ore", "Nether Quartz Ore")
+        .texture("nether_quartz_ore")
+        .strength(3.0F, 3.0F),
+    // MagmaBlock: a full solid cube that glows at light level 3 (vanilla
+    // lightLevel(3)). The damage-on-standing behaviour is AR-B, not WG-0.
+    BlockProperties::of(Block::MagmaBlock, "magma_block", "Magma Block")
+        .texture("magma")
+        .strength(0.5F)
+        .light(3U),
+    // Basalt: a RotatedPillarBlock in vanilla (top/side end grain), so it takes
+    // the axis of the face it is placed against, like a log.
+    BlockProperties::of(Block::Basalt, "basalt", "Basalt")
+        .texture("basalt_top", "basalt_side", "basalt_top")
+        .strength(1.25F, 4.2F)
+        .pillar(),
+    BlockProperties::of(Block::Blackstone, "blackstone", "Blackstone")
+        .texture("blackstone_top", "blackstone", "blackstone_top")
+        .strength(1.5F, 6.0F),
+    BlockProperties::of(Block::NetherBricks, "nether_bricks", "Nether Bricks")
+        .texture("nether_bricks")
+        .strength(2.0F, 6.0F),
+    BlockProperties::of(Block::NetherWartBlock, "nether_wart_block", "Nether Wart Block")
+        .texture("nether_wart_block")
+        .strength(1.0F),
+    BlockProperties::of(Block::CrimsonNylium, "crimson_nylium", "Crimson Nylium")
+        .texture("crimson_nylium", "crimson_nylium_side", "netherrack")
+        .strength(0.4F),
+    BlockProperties::of(Block::WarpedNylium, "warped_nylium", "Warped Nylium")
+        .texture("warped_nylium", "warped_nylium_side", "netherrack")
+        .strength(0.4F),
+    // WG-0 end base blocks. WG-3 places these; playable content stays AR-B.
+    BlockProperties::of(Block::EndStone, "end_stone", "End Stone")
+        .texture("end_stone")
+        .strength(3.0F, 9.0F),
+    BlockProperties::of(Block::PurpurBlock, "purpur_block", "Purpur Block")
+        .texture("purpur_block")
+        .strength(1.5F, 6.0F),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {

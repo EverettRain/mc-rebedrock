@@ -29,6 +29,22 @@ enum class Biome : std::uint8_t {
     Mountains,
     River,
     DeepOcean,
+    // WG-0 nether biomes (1.16.1's five). Identity only: the BiomeSource that
+    // selects between them by multi-noise is WG-2. Their surface palette and
+    // colours are recorded here so the generator has a complete definition to
+    // read; placement stays downstream.
+    NetherWastes,
+    SoulSandValley,
+    CrimsonForest,
+    WarpedForest,
+    BasaltDeltas,
+    // WG-0 end biomes. The TheEndBiomeSource that selects by distance to centre
+    // is WG-3.
+    TheEnd,
+    EndHighlands,
+    EndMidlands,
+    EndBarrens,
+    SmallEndIslands,
     Count,
 };
 
@@ -97,6 +113,12 @@ struct BiomeDefinition final {
 };
 
 [[nodiscard]] const BiomeDefinition& biomeDefinition(Biome biome);
+
+// Resolves a biome registry key to its Biome. A biome's `identifier` path is its
+// vanilla id, so this accepts the bare name (`nether_wastes`), the `minecraft:`
+// alias (`minecraft:nether_wastes`) and the `rebedrock:` key alike — the JC
+// import anchor, mirroring blockFromIdentifier. Returns Count for an unknown key.
+[[nodiscard]] Biome biomeFromIdentifier(std::string_view text);
 
 // The grass-family atlas layers (top / side / plant) tinted with this biome's
 // vanilla grass colour (BiomeColors.getGrassColor through the grass colour map,

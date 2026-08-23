@@ -102,6 +102,35 @@ const std::array<BiomeDefinition, static_cast<std::size_t>(Biome::Count)> kBiome
     // shallow-ocean floor.
     {Biome::DeepOcean, "deep_ocean", -1.8F, 0.1F, 0.5F, 0.5F, Block::Gravel, Block::Gravel, Block::Gravel,
      0, 0.0F, 1, {}, 0, 0},
+    // WG-0 nether biomes (1.16.1's five). depth/scale are the vanilla
+    // Biome.Builder values (0.1/0.2), temperature 2.0 / downfall 0.0 as every
+    // nether biome carries. The surface palette records each biome's floor
+    // block so WG-2 has a complete definition to read; no trees/grass (those
+    // are nether vegetal features, WG-2/5). Underwater surface is the floor
+    // block itself since the nether has no seas.
+    {Biome::NetherWastes, "nether_wastes", 0.1F, 0.2F, 2.0F, 0.0F, Block::Netherrack, Block::Netherrack,
+     Block::Netherrack, 0, 0.0F, 1, {}, 0, 0},
+    {Biome::SoulSandValley, "soul_sand_valley", 0.1F, 0.2F, 2.0F, 0.0F, Block::SoulSand, Block::SoulSoil,
+     Block::SoulSand, 0, 0.0F, 1, {}, 0, 0},
+    {Biome::CrimsonForest, "crimson_forest", 0.1F, 0.2F, 2.0F, 0.0F, Block::CrimsonNylium, Block::Netherrack,
+     Block::CrimsonNylium, 0, 0.0F, 1, {}, 0, 0},
+    {Biome::WarpedForest, "warped_forest", 0.1F, 0.2F, 2.0F, 0.0F, Block::WarpedNylium, Block::Netherrack,
+     Block::WarpedNylium, 0, 0.0F, 1, {}, 0, 0},
+    {Biome::BasaltDeltas, "basalt_deltas", 0.1F, 0.2F, 2.0F, 0.0F, Block::Basalt, Block::Blackstone,
+     Block::Basalt, 0, 0.0F, 1, {}, 0, 0},
+    // WG-0 end biomes. All end_stone surfaced; temperature 0.5 / downfall 0.5 as
+    // the vanilla end biomes carry. Placement (centre island vs outer ring vs
+    // void) is WG-3's TheEndBiomeSource, driven by distance to origin.
+    {Biome::TheEnd, "the_end", 0.1F, 0.2F, 0.5F, 0.5F, Block::EndStone, Block::EndStone, Block::EndStone,
+     0, 0.0F, 1, {}, 0, 0},
+    {Biome::EndHighlands, "end_highlands", 0.1F, 0.2F, 0.5F, 0.5F, Block::EndStone, Block::EndStone,
+     Block::EndStone, 0, 0.0F, 1, {}, 0, 0},
+    {Biome::EndMidlands, "end_midlands", 0.1F, 0.2F, 0.5F, 0.5F, Block::EndStone, Block::EndStone,
+     Block::EndStone, 0, 0.0F, 1, {}, 0, 0},
+    {Biome::EndBarrens, "end_barrens", 0.1F, 0.2F, 0.5F, 0.5F, Block::EndStone, Block::EndStone,
+     Block::EndStone, 0, 0.0F, 1, {}, 0, 0},
+    {Biome::SmallEndIslands, "small_end_islands", 0.1F, 0.2F, 0.5F, 0.5F, Block::EndStone, Block::EndStone,
+     Block::EndStone, 0, 0.0F, 1, {}, 0, 0},
 }};
 
 } // namespace
@@ -109,6 +138,19 @@ const std::array<BiomeDefinition, static_cast<std::size_t>(Biome::Count)> kBiome
 const BiomeDefinition& biomeDefinition(Biome biome) {
     const auto index = static_cast<std::size_t>(biome);
     return kBiomeRegistry[index < kBiomeRegistry.size() ? index : 0U];
+}
+
+Biome biomeFromIdentifier(std::string_view text) {
+    // Strip the namespace: a biome's path is its vanilla id, so `minecraft:` and
+    // `rebedrock:` (and the bare name) all resolve to the same biome.
+    const auto colon = text.find(':');
+    const std::string_view path = colon == std::string_view::npos ? text : text.substr(colon + 1U);
+    for (const auto& definition : kBiomeRegistry) {
+        if (definition.identifier == path) {
+            return definition.biome;
+        }
+    }
+    return Biome::Count;
 }
 
 namespace {

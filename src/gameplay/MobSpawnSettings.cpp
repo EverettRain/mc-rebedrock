@@ -78,6 +78,19 @@ constexpr std::array<std::string_view, kBiomeCount> kBiomeIds{
     case Biome::Desert:
     case Biome::Jungle:
     case Biome::SnowyTundra:
+    // The nether and end have no farm animals (their spawns are the WG/AR mob
+    // tables); WG-0 registers their identity, so they join the "none" arm to
+    // keep this switch exhaustive.
+    case Biome::NetherWastes:
+    case Biome::SoulSandValley:
+    case Biome::CrimsonForest:
+    case Biome::WarpedForest:
+    case Biome::BasaltDeltas:
+    case Biome::TheEnd:
+    case Biome::EndHighlands:
+    case Biome::EndMidlands:
+    case Biome::EndBarrens:
+    case Biome::SmallEndIslands:
     case Biome::Count:
         break;
     }

@@ -1954,6 +1954,14 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_je_mapping_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME je_mapping COMMAND mc_rebedrock_je_mapping_test)
 
+    # WG-0: nether/end base-block and biome identity registration.
+    add_executable(mc_rebedrock_nether_end_identity_test
+        tests/nether_end_identity_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_nether_end_identity_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_nether_end_identity_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME nether_end_identity COMMAND mc_rebedrock_nether_end_identity_test)
+
     add_executable(mc_rebedrock_block_registry_lifecycle_test
         tests/block_registry_lifecycle_test.cpp
     )
