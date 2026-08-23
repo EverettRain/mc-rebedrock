@@ -1375,6 +1375,14 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_image_data_test PRIVATE src "${stb_SOURCE_DIR}")
     add_test(NAME image_data COMMAND mc_rebedrock_image_data_test)
 
+    add_executable(mc_rebedrock_atlas_layer_fit_test
+        tests/atlas_layer_fit_test.cpp
+        src/assets/ImageData.cpp
+        src/assets/StbImageImplementation.cpp
+    )
+    target_include_directories(mc_rebedrock_atlas_layer_fit_test PRIVATE src "${stb_SOURCE_DIR}")
+    add_test(NAME atlas_layer_fit COMMAND mc_rebedrock_atlas_layer_fit_test)
+
     add_executable(mc_rebedrock_sound_registry_test
         tests/sound_registry_test.cpp
         src/assets/PackMetadata.cpp

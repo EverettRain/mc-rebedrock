@@ -1,5 +1,6 @@
 #include "render/vulkan/BlockAtlasBaker.hpp"
 
+#include "render/vulkan/AtlasLayerFit.hpp"
 #include "render/vulkan/BlockAtlasLayout.hpp"
 
 #include "assets/ImageData.hpp"
@@ -26,12 +27,6 @@
 namespace mc::render {
 
 namespace {
-
-void requireSameSize(const assets::ImageData& first, const assets::ImageData& other) {
-    if (first.width != other.width || first.height != other.height) {
-        throw std::runtime_error("Grass block texture layers must have identical dimensions");
-    }
-}
 
 [[nodiscard]] std::vector<assets::ImageData> animatedSquareFrames(const assets::ImageData& image,
                                                                   int targetSize) {
@@ -98,26 +93,6 @@ fitAnimationFrames(std::vector<assets::ImageData> source,
         fitted.push_back(ordered[index % ordered.size()]);
     }
     return fitted;
-}
-
-[[nodiscard]] assets::ImageData resizedRegion(const assets::ImageData& image, int sourceX,
-                                              int sourceY, int sourceWidth, int sourceHeight,
-                                              int targetSize) {
-    assets::ImageData result;
-    result.width = targetSize;
-    result.height = targetSize;
-    result.rgba.resize(static_cast<std::size_t>(targetSize * targetSize * 4));
-    for (int y = 0; y < targetSize; ++y) {
-        for (int x = 0; x < targetSize; ++x) {
-            const int sx = sourceX + x * sourceWidth / targetSize;
-            const int sy = sourceY + y * sourceHeight / targetSize;
-            const std::size_t source = static_cast<std::size_t>((sy * image.width + sx) * 4);
-            const std::size_t target = static_cast<std::size_t>((y * targetSize + x) * 4);
-            std::copy_n(image.rgba.begin() + static_cast<std::ptrdiff_t>(source), 4,
-                        result.rgba.begin() + static_cast<std::ptrdiff_t>(target));
-        }
-    }
-    return result;
 }
 
 using PlayerSkinFaces = std::array<assets::ImageData, 6>;
@@ -348,8 +323,7 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
     // ---- Fixed special section, in a deterministic order ----
     std::vector<assets::ImageData> layers;
     const auto append = [&](const assets::ImageData& image) {
-        requireSameSize(top, image);
-        layers.push_back(image);
+        layers.push_back(conformToAtlasLayer(top, image, "fixed-section layer"));
     };
     for (const auto& frame : waterStillFrames)
         append(frame); // 0..31
@@ -400,9 +374,7 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
             for (int stage = 0; stage < count; ++stage) {
                 const std::string file{prefix};
                 const std::string image = file.substr(0, file.size() - 1) + std::to_string(stage);
-                assets::ImageData pixels = blockTex(image);
-                requireSameSize(top, pixels);
-                layers.push_back(std::move(pixels));
+                layers.push_back(conformToAtlasLayer(top, blockTex(image), image));
             }
             return first;
         };
@@ -422,17 +394,13 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         if (view == "farmland") {
             const float first = static_cast<float>(layers.size());
             for (const char* file : {"farmland", "farmland_moist"}) {
-                assets::ImageData pixels = blockTex(file);
-                requireSameSize(top, pixels);
-                layers.push_back(std::move(pixels));
+                layers.push_back(conformToAtlasLayer(top, blockTex(file), file));
             }
             layerByName.emplace(name, first);
             return first;
         }
-        assets::ImageData pixels = blockTex(name);
-        requireSameSize(top, pixels);
         const float index = static_cast<float>(layers.size());
-        layers.push_back(std::move(pixels));
+        layers.push_back(conformToAtlasLayer(top, blockTex(name), name));
         layerByName.emplace(name, index);
         return index;
     };
@@ -677,8 +645,8 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         // the legacy shared shell/overlay tint composite no longer exists.
         icon = assets::ImageData::loadRgbaOrMissing(resources, assets::textures("item/" + std::string{item->textureName} + ".png"),
             top.width, top.height);
-        requireSameSize(top, icon);
-        output.rgba.insert(output.rgba.end(), icon.rgba.begin(), icon.rgba.end());
+        const auto fitted = conformToAtlasLayer(top, icon, item->textureName);
+        output.rgba.insert(output.rgba.end(), fitted.rgba.begin(), fitted.rgba.end());
         gameplay::setItemTextureLayer(item, static_cast<float>(baseLayerCount + itemIndex));
         ++itemIndex;
     };
