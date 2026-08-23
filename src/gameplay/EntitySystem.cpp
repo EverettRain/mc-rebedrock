@@ -1,5 +1,6 @@
 #include "gameplay/EntitySystem.hpp"
 
+#include "gameplay/EnchantmentCombat.hpp"
 #include "gameplay/EntityRenderSnapshot.hpp"
 #include "gameplay/Random.hpp"
 
@@ -573,7 +574,8 @@ const SimpleEntity* EntitySystem::byId(std::uint64_t id) const {
 }
 
 bool EntitySystem::hurt(std::uint64_t entityId, float amount, glm::vec3 knockbackOrigin,
-                        ActorReference attacker, DamageType type) {
+                        ActorReference attacker, DamageType type,
+                        float extraKnockbackStrength) {
     const auto found = idToIndex_.find(entityId);
     if (found == idToIndex_.end()) {
         return false;
@@ -595,11 +597,17 @@ bool EntitySystem::hurt(std::uint64_t entityId, float amount, glm::vec3 knockbac
     entity.kind().ai().onAttacked(entity, entity.rngState);
 
     // LivingEntity#takeKnockback: horizontal shove away from the attacker plus a
-    // fixed lift, with the existing velocity halved first.
+    // fixed lift, with the existing velocity halved first. ENCH-1's Knockback
+    // enchant (extraKnockbackStrength, see EnchantmentCombat.hpp's
+    // meleeKnockbackEnchantBonus) folds additively into the strength here
+    // rather than replaying vanilla's second, separate takeKnockback call —
+    // see that function's own comment for why; zero for every caller with no
+    // weapon enchant to add.
+    const float knockbackStrength = kKnockbackStrength + extraKnockbackStrength;
     const glm::vec3 away = pushBetween(knockbackOrigin, entity.position);
     const float lengthSquared = away.x * away.x + away.z * away.z;
     if (lengthSquared > 1e-9F) {
-        const float inverse = kKnockbackStrength / std::sqrt(lengthSquared);
+        const float inverse = knockbackStrength / std::sqrt(lengthSquared);
         entity.velocity.x = entity.velocity.x * 0.5F + away.x * inverse;
         entity.velocity.z = entity.velocity.z * 0.5F + away.z * inverse;
     }
@@ -607,8 +615,8 @@ bool EntitySystem::hurt(std::uint64_t entityId, float amount, glm::vec3 knockbac
     // An accepted follow-up hit in mid-air still refreshes horizontal
     // knockback, but cannot reset the target to another full jump arc.
     if (entity.onGround) {
-        entity.velocity.y = std::min(entity.velocity.y * 0.5F + kKnockbackStrength,
-                                     kKnockbackStrength);
+        entity.velocity.y = std::min(entity.velocity.y * 0.5F + knockbackStrength,
+                                     knockbackStrength);
     }
     // playHurtSound's resetSoundDelay: a landed hit pushes the next idle sound
     // back, so a mob being mauled stops its ambient chatter mid-fight.
@@ -692,6 +700,30 @@ bool EntitySystem::hasEffect(std::uint64_t entityId, core::StatusEffectId effect
         return false;
     }
     return mc::gameplay::hasEffect(entities_[found->second].effects, effect);
+}
+
+bool EntitySystem::applyBaneOfArthropodsSlowness(std::uint64_t entityId, std::uint8_t level) {
+    if (level == 0U) {
+        return false;
+    }
+    const auto found = idToIndex_.find(entityId);
+    if (found == idToIndex_.end()) {
+        return false;
+    }
+    auto& entity = entities_[found->second];
+    if (entity.damage.dead()) {
+        return false;
+    }
+    // DamageEnchantment#onTargetDamaged: `20 + random.nextInt(10 * level)` ticks
+    // of Slowness IV. `user.getRandom()` in vanilla; here the draw runs off the
+    // target's own reproducible stream (mc::rng, Java's LegacyRandomSource core)
+    // so a replayed hit lands the identical duration — no wall clock.
+    const int randomDraw = static_cast<int>(mc::rng::nextInt(
+        entity.rngState,
+        static_cast<std::uint32_t>(baneOfArthropodsSlownessRandomBound(level))));
+    const int durationTicks = baneOfArthropodsSlownessTicks(level, randomDraw);
+    return mc::gameplay::applyEffect(entity.effects, slownessEffect(), durationTicks,
+                                     kBaneOfArthropodsSlownessAmplifier);
 }
 
 bool EntitySystem::setInLove(std::uint64_t entityId) {

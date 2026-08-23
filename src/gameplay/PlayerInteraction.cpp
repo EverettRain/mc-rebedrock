@@ -1,5 +1,6 @@
 #include "gameplay/PlayerInteraction.hpp"
 
+#include "gameplay/EnchantmentCombat.hpp"
 #include "gameplay/EntitySystem.hpp"
 #include "gameplay/GameSession.hpp"
 #include "gameplay/GameplayMutationSink.hpp"
@@ -509,11 +510,41 @@ void PlayerInteraction::handleDestroyCommand(GameSession& session, world::World&
             // the durability and exhaustion side effects stay survival-only.
             const auto& weapon = session.inventory().selectedStack();
             const auto attributes = toolAttributes(toolType(weapon), toolTier(weapon));
-            const float damage =
+            const float baseDamage =
                 toolType(weapon) == ToolType::None ? 1.0F : attributes.attackDamage;
+            // ENCH-1: the outgoing melee weapon enchants (Sharpness/Smite/Bane of
+            // Arthropods/Knockback/Fire Aspect), read off the held weapon and the
+            // target's category before the hit lands — PlayerEntity#attack reads
+            // EnchantmentHelper.getAttackDamage/getKnockback/getFireAspect the
+            // same way, ahead of the target.damage() call.
+            const auto* target = session.worldEntities().byIdConst(action.entityId);
+            const bool targetUndead = target != nullptr && target->type != nullptr &&
+                target->type->isUndead();
+            const bool targetArthropod = target != nullptr && target->type != nullptr &&
+                target->type->isArthropod();
+            const float damage = baseDamage +
+                meleeDamageEnchantBonus(weapon, targetUndead, targetArthropod);
+            const float extraKnockback = meleeKnockbackEnchantBonus(weapon);
+            const int fireAspectSeconds = meleeFireAspectSeconds(weapon);
+            const std::uint8_t baneLevel =
+                targetArthropod ? enchantmentLevel(weapon, EnchantmentId::BaneOfArthropods) : 0U;
             const glm::vec3 eye = session.player().eyePosition();
             session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Break, 6U);
-            if (session.worldEntities().hurt(action.entityId, damage, eye)) {
+            if (session.worldEntities().hurt(action.entityId, damage, eye,
+                                             ActorReference::player(), DamageType::EntityAttack,
+                                             extraKnockback)) {
+                if (fireAspectSeconds > 0) {
+                    session.worldEntities().setOnFire(action.entityId, fireAspectSeconds);
+                }
+                // DamageEnchantment#onTargetDamaged (typeIndex==2): Bane of
+                // Arthropods lands Slowness IV on an arthropod target for a
+                // level-scaled duration. Drawn from the target's own
+                // reproducible RNG stream (see applyBaneOfArthropodsSlowness),
+                // never the wall clock.
+                if (baneLevel > 0U) {
+                    session.worldEntities().applyBaneOfArthropodsSlowness(action.entityId,
+                                                                          baneLevel);
+                }
                 if (session.gameMode() == GameMode::Survival) {
                     session.vitals().addExhaustion(0.1F);
                     if (session.damageHeldTool(kPrimaryPlayerId, ToolUse::AttackEntity, 0.0F)) {

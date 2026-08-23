@@ -349,9 +349,15 @@ class EntitySystem final {
     // projectile hit passes DamageType::Projectile so the same pipeline stage
     // order (armor/effects/absorption/shield, once they exist) applies to an
     // arrow exactly the way it already does to a sword swing.
+    // `extraKnockbackStrength` is ENCH-1's Knockback enchant contribution
+    // (EnchantmentHelper.getKnockback's `level * 0.5F`, see
+    // EnchantmentCombat.hpp's meleeKnockbackEnchantBonus) — zero for every
+    // caller that has no weapon enchant to add, which is every caller but the
+    // player's own melee attack today.
     bool hurt(std::uint64_t entityId, float amount, glm::vec3 knockbackOrigin,
               ActorReference attacker = ActorReference::player(),
-              DamageType type = DamageType::EntityAttack);
+              DamageType type = DamageType::EntityAttack,
+              float extraKnockbackStrength = 0.0F);
 
     // Entity#kill / LivingEntity#kill: OutOfWorld damage at infinite magnitude,
     // the same path /kill routes a player through. Returns true when the
@@ -375,6 +381,16 @@ class EntitySystem final {
     bool removeEffect(std::uint64_t entityId, core::StatusEffectId effect);
     std::size_t clearEffects(std::uint64_t entityId);
     [[nodiscard]] bool hasEffect(std::uint64_t entityId, core::StatusEffectId effect) const;
+
+    // ENCH-1 / DamageEnchantment#onTargetDamaged (typeIndex==2): applies Bane of
+    // Arthropods' bonus Slowness IV to the target for `20 + nextInt(10*level)`
+    // ticks. The duration's random draw comes from the target creature's own
+    // reproducible RNG stream (entity.rngState, the same LCG the mob's AI and
+    // XP drop use) rather than the wall clock, so a replayed hit lands the same
+    // duration every time. Returns true when the effect store changed; a no-op
+    // (unknown id, level 0) is false. The caller (PlayerInteraction) has already
+    // confirmed the target is an arthropod.
+    bool applyBaneOfArthropodsSlowness(std::uint64_t entityId, std::uint8_t level);
 
     // Animal#setInLove: puts a breedable adult into love for kLoveTicks. This is
     // the entry a feeding interaction (AR-A) calls after it has decided the held
