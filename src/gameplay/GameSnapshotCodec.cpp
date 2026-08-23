@@ -331,6 +331,18 @@ void appendFalling(std::vector<std::uint8_t>& bytes, const FallingBlockEntity& b
     codec::appendBlock(bytes, block.block);
 }
 
+// XP-1: the orb's denomination and stacked count go over the wire too — a
+// value-dependent icon (getIcon's tier table) is a render-side decision, but
+// it needs both fields to make it, and pickupDelay/age are simulation-only
+// (never read by the draw pass), so they are deliberately left off, matching
+// the drop record's own choice to carry ageTicks but not the merge-only state.
+void appendExperienceOrb(std::vector<std::uint8_t>& bytes, const ExperienceOrb& orb) {
+    codec::appendVec3(bytes, orb.position);
+    codec::appendVec3(bytes, orb.previousPosition);
+    persistence::appendInteger(bytes, orb.value);
+    persistence::appendInteger(bytes, orb.count);
+}
+
 void appendEntities(std::vector<std::uint8_t>& bytes, const EntityRenderSnapshot& snap) {
     persistence::appendInteger(bytes, static_cast<std::uint32_t>(snap.entities().size()));
     for (const auto& creature : snap.entities()) {
@@ -339,6 +351,10 @@ void appendEntities(std::vector<std::uint8_t>& bytes, const EntityRenderSnapshot
     persistence::appendInteger(bytes, static_cast<std::uint32_t>(snap.items().size()));
     for (const auto& drop : snap.items()) {
         appendDrop(bytes, drop);
+    }
+    persistence::appendInteger(bytes, static_cast<std::uint32_t>(snap.experienceOrbs().size()));
+    for (const auto& orb : snap.experienceOrbs()) {
+        appendExperienceOrb(bytes, orb);
     }
     persistence::appendInteger(bytes, static_cast<std::uint32_t>(snap.fallingBlocks().size()));
     for (const auto& block : snap.fallingBlocks()) {
@@ -386,6 +402,21 @@ void appendEntities(std::vector<std::uint8_t>& bytes, const EntityRenderSnapshot
             drops.push_back(drop);
         }
     }
+    std::vector<ExperienceOrb> orbs;
+    const auto orbCount = persistence::readInteger<std::uint32_t>(bytes, cursor);
+    orbs.reserve(orbCount);
+    for (std::uint32_t index = 0; index < orbCount; ++index) {
+        ExperienceOrb orb;
+        orb.position = codec::readVec3(bytes, cursor);
+        orb.previousPosition = codec::readVec3(bytes, cursor);
+        orb.value = persistence::readInteger<std::int32_t>(bytes, cursor);
+        orb.count = persistence::readInteger<std::int32_t>(bytes, cursor);
+        // A malformed/zeroed record would draw as an invisible entity; skip it
+        // the same way an unknown item or block is skipped above.
+        if (orb.value > 0 && orb.count > 0) {
+            orbs.push_back(orb);
+        }
+    }
     std::vector<FallingBlockEntity> falling;
     const auto fallingCount = persistence::readInteger<std::uint32_t>(bytes, cursor);
     falling.reserve(fallingCount);
@@ -400,7 +431,7 @@ void appendEntities(std::vector<std::uint8_t>& bytes, const EntityRenderSnapshot
         }
     }
     EntityRenderSnapshot snapshot;
-    snapshot.assign(std::move(creatures), std::move(drops), std::move(falling));
+    snapshot.assign(std::move(creatures), std::move(drops), std::move(orbs), std::move(falling));
     return snapshot;
 }
 

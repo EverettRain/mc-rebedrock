@@ -21,6 +21,7 @@
 #include "gameplay/ItemEntitySystem.hpp"
 #include "gameplay/WorldSimulation.hpp"
 #include "gameplay/entities/EntityType.hpp"
+#include "gameplay/entities/ExperienceOrb.hpp"
 
 #include <cstdint>
 #include <vector>
@@ -62,7 +63,7 @@ struct EntityRenderState final {
 
 class EntityRenderSnapshot final {
   public:
-    // Value equality over the three vectors, needed so NetMessage (a variant that
+    // Value equality over the vectors, needed so NetMessage (a variant that
     // includes this) is equality-comparable. libc++ requires every variant
     // alternative to be comparable even when a held value never is at runtime;
     // libstdc++ is lenient, so this is what makes the mac build match Linux.
@@ -72,50 +73,61 @@ class EntityRenderSnapshot final {
     // Rebuilds from the live lists. Called at the end of a tick, on whichever
     // thread owns the simulation.
     //
-    // Items and falling blocks are copied whole rather than projected the way
-    // creatures are: both are already flat value types with nothing
-    // simulation-private in them, so a narrower struct would be duplication
-    // without a reason. `SimpleEntity` is the odd one out precisely because it
-    // is not — it carries a MobBrain and is not even copyable.
+    // Items, experience orbs and falling blocks are copied whole rather than
+    // projected the way creatures are: all three are already flat value types
+    // with nothing simulation-private in them, so a narrower struct would be
+    // duplication without a reason. `SimpleEntity` is the odd one out
+    // precisely because it is not — it carries a MobBrain and is not even
+    // copyable.
     void capture(const std::vector<SimpleEntity>& creatures,
                  const std::vector<ItemEntity>& items,
+                 const std::vector<ExperienceOrb>& experienceOrbs,
                  const std::vector<FallingBlockEntity>& fallingBlocks);
 
     [[nodiscard]] const std::vector<EntityRenderState>& entities() const { return entities_; }
     [[nodiscard]] const std::vector<ItemEntity>& items() const { return items_; }
+    [[nodiscard]] const std::vector<ExperienceOrb>& experienceOrbs() const {
+        return experienceOrbs_;
+    }
     [[nodiscard]] const std::vector<FallingBlockEntity>& fallingBlocks() const {
         return fallingBlocks_;
     }
     // Populates the snapshot directly, for the client side of the transport
-    // (C-1b-4): the codec decodes the three vectors off the channel and hands
-    // them here, the client analogue of capture() on the server.
+    // (C-1b-4): the codec decodes the vectors off the channel and hands them
+    // here, the client analogue of capture() on the server.
     void assign(std::vector<EntityRenderState> creatures, std::vector<ItemEntity> items,
+                std::vector<ExperienceOrb> experienceOrbs,
                 std::vector<FallingBlockEntity> fallingBlocks) {
         entities_ = std::move(creatures);
         items_ = std::move(items);
+        experienceOrbs_ = std::move(experienceOrbs);
         fallingBlocks_ = std::move(fallingBlocks);
     }
     [[nodiscard]] bool empty() const {
-        return entities_.empty() && items_.empty() && fallingBlocks_.empty();
+        return entities_.empty() && items_.empty() && experienceOrbs_.empty() &&
+               fallingBlocks_.empty();
     }
-    // The resident bytes the three buffers hold, counting capacity not size:
+    // The resident bytes the buffers hold, counting capacity not size:
     // capture() reuses the capacity across ticks, so this is the steady-state
     // cost once a population stabilises. The N-Mem budget gate pins a
     // per-entity ceiling on it.
     [[nodiscard]] std::size_t residentBytes() const {
         return sizeof(*this) + entities_.capacity() * sizeof(EntityRenderState) +
                items_.capacity() * sizeof(ItemEntity) +
+               experienceOrbs_.capacity() * sizeof(ExperienceOrb) +
                fallingBlocks_.capacity() * sizeof(FallingBlockEntity);
     }
     void clear() {
         entities_.clear();
         items_.clear();
+        experienceOrbs_.clear();
         fallingBlocks_.clear();
     }
 
   private:
     std::vector<EntityRenderState> entities_;
     std::vector<ItemEntity> items_;
+    std::vector<ExperienceOrb> experienceOrbs_;
     std::vector<FallingBlockEntity> fallingBlocks_;
 };
 

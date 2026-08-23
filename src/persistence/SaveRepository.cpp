@@ -952,6 +952,100 @@ void readDropBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
     }
 }
 
+// The XPOB block (XP-1) carries the experience orb pool, its own
+// self-describing block added after format 19 — same shape as DROP, one flat
+// record per orb, no palette needed (an orb carries no item/block identity):
+//
+//   u32 blockTag          // 'X','P','O','B'
+//   u32 blockSizeBytes    // whole block length incl. this field
+//   u16 blockVersion      // 1
+//   u32 orbCount
+//   orbs[]: f32 x, y, z, f32 vx, vy, vz, i32 value, i32 count,
+//           u32 ageTicks, u32 pickupDelayTicks
+//
+// A pre-XP-1 world has no XPOB block at all; the reader simply never finds the
+// tag and experienceOrbs loads empty, exactly the way DROP itself behaved for
+// worlds that predate format 16.
+constexpr std::uint32_t kExperienceOrbBlockTag =
+    'X' | ('P' << 8) | ('O' << 16) | ('B' << 24);
+constexpr std::uint16_t kExperienceOrbBlockVersion = 1U;
+
+void appendExperienceOrbBlock(std::vector<std::uint8_t>& bytes,
+                              const std::vector<PersistentExperienceOrb>& orbs) {
+    const std::size_t blockStart = bytes.size();
+    appendInteger(bytes, kExperienceOrbBlockTag);
+    appendInteger(bytes, 0U);  // blockSizeBytes, patched below
+    appendInteger(bytes, kExperienceOrbBlockVersion);
+    appendInteger(bytes, static_cast<std::uint32_t>(orbs.size()));
+    for (const auto& orb : orbs) {
+        appendFloat(bytes, orb.x);
+        appendFloat(bytes, orb.y);
+        appendFloat(bytes, orb.z);
+        appendFloat(bytes, orb.vx);
+        appendFloat(bytes, orb.vy);
+        appendFloat(bytes, orb.vz);
+        appendInteger(bytes, orb.value);
+        appendInteger(bytes, orb.count);
+        appendInteger(bytes, orb.ageTicks);
+        appendInteger(bytes, orb.pickupDelayTicks);
+    }
+    const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
+    for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
+        bytes[blockStart + 4U + offset] =
+            static_cast<std::uint8_t>(blockSize >> (offset * 8U));
+    }
+}
+
+void readExperienceOrbBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                            std::vector<PersistentExperienceOrb>& orbs) {
+    const std::size_t blockStart = cursor;
+    if (blockStart + 12U > payload.size()) {
+        throw std::runtime_error("world.dat experience orb block is truncated");
+    }
+    const auto tag = readInteger<std::uint32_t>(payload, cursor);
+    if (tag != kExperienceOrbBlockTag) {
+        throw std::runtime_error("world.dat has an invalid experience orb block");
+    }
+    const auto blockSize = readInteger<std::uint32_t>(payload, cursor);
+    if (blockSize < 12U || static_cast<std::size_t>(blockSize) > payload.size() - blockStart) {
+        throw std::runtime_error("world.dat experience orb block is malformed");
+    }
+    const auto blockVersion = readInteger<std::uint16_t>(payload, cursor);
+    if (blockVersion > kExperienceOrbBlockVersion) {
+        cursor = blockStart + blockSize;
+        return;
+    }
+    const std::size_t blockEnd = blockStart + blockSize;
+    const auto orbCount = readInteger<std::uint32_t>(payload, cursor);
+    orbs.reserve(orbs.size() + static_cast<std::size_t>(orbCount));
+    for (std::uint32_t index = 0; index < orbCount; ++index) {
+        if (cursor >= blockEnd) {
+            throw std::runtime_error("world.dat experience orb block is truncated");
+        }
+        PersistentExperienceOrb orb;
+        orb.x = readFloat(payload, cursor);
+        orb.y = readFloat(payload, cursor);
+        orb.z = readFloat(payload, cursor);
+        orb.vx = readFloat(payload, cursor);
+        orb.vy = readFloat(payload, cursor);
+        orb.vz = readFloat(payload, cursor);
+        orb.value = readInteger<std::int32_t>(payload, cursor);
+        orb.count = readInteger<std::int32_t>(payload, cursor);
+        orb.ageTicks = readInteger<std::uint32_t>(payload, cursor);
+        orb.pickupDelayTicks = readInteger<std::uint32_t>(payload, cursor);
+        if (!(orb.y >= -64.0F && orb.y <= 384.0F)) {
+            throw std::runtime_error("world.dat experience orb block has an invalid position");
+        }
+        // A corrupt/zeroed record would be an invisible, unpickable orb.
+        if (orb.value > 0 && orb.count > 0) {
+            orbs.push_back(orb);
+        }
+    }
+    if (cursor != blockEnd) {
+        throw std::runtime_error("world.dat experience orb block has trailing data");
+    }
+}
+
 // The CLOCK block is the self-describing region format 13 appends after the
 // entity block, mirroring the GameRules framing:
 //
@@ -2339,8 +2433,16 @@ void readDropOwner(std::span<const std::uint8_t> payload, std::size_t& cursor,
     cursor = header.bodyStart - kBlockHeaderBytes;
     readDropBlock(payload, cursor, context.game.itemDrops, context.game.fallingBlocks);
 }
+void writeExperienceOrbOwner(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    appendExperienceOrbBlock(bytes, context.game.experienceOrbs);
+}
+void readExperienceOrbOwner(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                            const SaveBlockHeader& header, SaveReadContext& context) {
+    cursor = header.bodyStart - kBlockHeaderBytes;
+    readExperienceOrbBlock(payload, cursor, context.game.experienceOrbs);
+}
 
-constexpr std::array<SaveBlockOwner, 11> kSaveBlockOwners{{
+constexpr std::array<SaveBlockOwner, 12> kSaveBlockOwners{{
     {kVersionBlockTag, kVersionBlockVersion, &appendVersionBlock, &readVersionBlock},
     {kWorldBlockTag, kWorldBlockVersion, &appendWorldBlock, &readWorldBlock},
     {kPlayerBlockTag, kPlayerBlockVersion, &appendPlayerBlock, &readPlayerBlock},
@@ -2355,6 +2457,8 @@ constexpr std::array<SaveBlockOwner, 11> kSaveBlockOwners{{
      /*writeable=*/false},
     {kClockBlockTag, kClockBlockVersion, &writeClockOwner, &readClockOwner},
     {kDropBlockTag, kDropBlockVersion, &writeDropOwner, &readDropOwner},
+    {kExperienceOrbBlockTag, kExperienceOrbBlockVersion, &writeExperienceOrbOwner,
+     &readExperienceOrbOwner},
 }};
 
 // META-2b: read only the version header from a save's world.dat, without loading

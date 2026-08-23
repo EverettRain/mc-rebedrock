@@ -295,6 +295,7 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/entities/PigEntity.cpp
     src/gameplay/entities/CowEntity.cpp
     src/gameplay/entities/ZombieEntity.cpp
+    src/gameplay/entities/ExperienceOrb.cpp
     src/world/BlockPlacement.cpp
     src/world/Chunk.cpp
     src/world/ChunkSection.cpp
@@ -937,6 +938,17 @@ if(BUILD_TESTING)
             tests/mob_ai_benchmark.cpp
         )
         target_link_libraries(mc_rebedrock_mob_ai_benchmark PRIVATE mc_rebedrock_runtime)
+
+        # Informational: XP-1's per-tick orb pool cost (physics + magnet + merge
+        # scan + pickup) at 10/50/200 orbs.
+        add_executable(mc_rebedrock_experience_orb_benchmark
+            tests/experience_orb_benchmark.cpp
+        )
+        target_link_libraries(mc_rebedrock_experience_orb_benchmark PRIVATE mc_rebedrock_runtime)
+        target_include_directories(mc_rebedrock_experience_orb_benchmark PRIVATE
+            src
+            "${glm_SOURCE_DIR}"
+        )
 
         # Informational: the W-5 AC wire wavefront vs the naive serial relaxation.
         add_executable(mc_rebedrock_redstone_wire_benchmark
@@ -2103,6 +2115,16 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME player_experience COMMAND mc_rebedrock_player_experience_test)
+
+    add_executable(mc_rebedrock_experience_orb_test
+        tests/experience_orb_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_experience_orb_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_experience_orb_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME experience_orb COMMAND mc_rebedrock_experience_orb_test)
 
     endif()
 

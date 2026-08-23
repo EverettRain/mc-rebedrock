@@ -5,6 +5,7 @@
 #include "gameplay/ItemEntitySystem.hpp"
 #include "gameplay/NaturalSpawner.hpp"
 #include "gameplay/WeatherSystem.hpp"
+#include "gameplay/entities/ExperienceOrb.hpp"
 #include "world/Dimension.hpp"
 #include "world/DimensionGenerator.hpp"
 #include "world/World.hpp"
@@ -51,6 +52,10 @@ struct Level final {
     // level table, never separately heap-allocated.
     EntitySystem entities;
     ItemEntitySystem items;
+    // XP-1: the experience orb pool. A Level member like items/entities above —
+    // not a MobEntity, not folded into EntitySystem — so orb physics/merge/
+    // magnet never pay a Mob's AI/health/equipment columns.
+    ExperienceOrbSystem experienceOrbs;
     WeatherSystem weather;
     NaturalSpawner spawner{0U};
 

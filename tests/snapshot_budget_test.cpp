@@ -112,20 +112,20 @@ int main() {
             entity.id = id;
             entity.position = {1.0F, 2.0F, 3.0F};
         }
-        snapshot.capture(live, {}, {});
+        snapshot.capture(live, {}, {}, {});
         assert(snapshot.entities().size() == 100U);
         assert(snapshot.entities().capacity() >= 100U);
         assert(snapshot.residentBytes() < 4096U + 100U * 128U);
         const auto capacity = snapshot.entities().capacity();
 
         // Same population: the buffer is reused, capacity is stable.
-        snapshot.capture(live, {}, {});
+        snapshot.capture(live, {}, {}, {});
         assert(snapshot.entities().capacity() == capacity);
 
         // Dropped to zero: capacity is kept for the next capture, not freed and
         // reallocated every tick.
         live.clear();
-        snapshot.capture(live, {}, {});
+        snapshot.capture(live, {}, {}, {});
         assert(snapshot.entities().empty());
         assert(snapshot.entities().capacity() >= 100U);
     }

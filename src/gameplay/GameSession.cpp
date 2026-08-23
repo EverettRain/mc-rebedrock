@@ -192,6 +192,15 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     if (primaryLevel().items.tick(world, primaryPlayer().controller.position(), primaryPlayer().inventory) > 0U) {
         events_.publish(SoundEvent{SoundEventKind::ItemPickup, primaryPlayer().controller.position()});
     }
+    // XP-1: the experience orb pool — physics/magnet/merge/despawn, then
+    // contact pickup credits primaryPlayer().experience directly (no loot/
+    // inventory indirection, unlike item drops). Reuses ItemPickup for the
+    // collect sound; XP has no dedicated orb sound event yet (AU scope).
+    if (primaryLevel().experienceOrbs.tick(world, primaryPlayer().controller.position(),
+                                           !primaryPlayer().vitals.dead(),
+                                           primaryPlayer().experience) > 0) {
+        events_.publish(SoundEvent{SoundEventKind::ItemPickup, primaryPlayer().controller.position()});
+    }
     // The herd pushes back: Entity#pushAwayFrom moves both parties, so a pig
     // walking into the player nudges them. Difficulty is per-save (level.dat).
     const auto entityTick = primaryLevel().entities.tick(
@@ -519,6 +528,7 @@ void GameSession::publishSnapshots() {
     // Last, once every system has settled: what the renderer will draw from
     // until the next tick replaces it.
     entitySnapshot_.capture(primaryLevel().entities.entities(), primaryLevel().items.entities(),
+                            primaryLevel().experienceOrbs.entities(),
                             worldSimulation_.fallingBlocks());
     // Stamp the publish time so the render thread derives the interpolation alpha
     // from this very bundle. Written just before the atomic publish, so a reader
@@ -807,6 +817,7 @@ void GameSession::resetWorldState() {
     }
     worldSimulation_ = {};
     primaryLevel().items = {};
+    primaryLevel().experienceOrbs = {};
     primaryLevel().entities.clear();
     closeContainer();
     chestSystem_ = {};

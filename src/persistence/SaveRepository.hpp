@@ -114,6 +114,24 @@ struct PersistentFallingBlock final {
     world::Block block = world::Block::Sand;
 };
 
+// An experience orb awaiting pickup (XP-1). Position/velocity are the whole
+// physical state, `value`/`count` the whole economic state (a merged orb
+// stacks `count` orbs of the same `value` denomination into one record — see
+// ExperienceOrb::merge), and `ageTicks`/`pickupDelayTicks` the two timers that
+// drive despawn and the same-tick "don't touch what you just placed" guard.
+struct PersistentExperienceOrb final {
+    float x = 0.0F;
+    float y = 0.0F;
+    float z = 0.0F;
+    float vx = 0.0F;
+    float vy = 0.0F;
+    float vz = 0.0F;
+    std::int32_t value = 0;
+    std::int32_t count = 1;
+    std::uint32_t ageTicks = 0U;
+    std::uint32_t pickupDelayTicks = 0U;
+};
+
 struct SaveGame final {
     SaveSummary summary;
     // Which build wrote this world (META-1). On save() this is filled from the
@@ -188,6 +206,11 @@ struct SaveGame final {
     // as a hole with its blocks nowhere.
     std::vector<PersistentItemDrop> itemDrops;
     std::vector<PersistentFallingBlock> fallingBlocks;
+    // XP-1: the experience orb pool, its own self-describing block (XPOB, added
+    // after format 19 — an owner-block addition needs no format bump, the same
+    // way DROP itself did not move the number when it was added). A pre-XP-1
+    // world simply has no XPOB block and loads with an empty list.
+    std::vector<PersistentExperienceOrb> experienceOrbs;
     // The world's own tick count and every named clock, split apart by format 13
     // so the sun can be frozen without freezing gameplay timing. Loading an
     // older save backfills both from gameTimeSeconds above, which used to carry

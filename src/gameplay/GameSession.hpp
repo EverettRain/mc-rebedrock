@@ -31,6 +31,7 @@
 #include "world/BlockState.hpp"
 #include "world/WorldMutationService.hpp"
 #include "world/WorldClock.hpp"
+#include "world/gen/JavaRandom.hpp"
 
 #include <glm/vec3.hpp>
 
@@ -252,7 +253,24 @@ class GameSession final {
     [[nodiscard]] float simulationRadius() const { return simulationRadiusBlocks_; }
     // The world seed drives the spawner's biome map; a new save or /reload
     // rebuilds it so natural spawns follow the terrain being generated.
-    void setWorldSeed(std::uint64_t seed) { primaryLevel().spawner.setSeed(seed); }
+    // It also reseeds the experience orb scatter stream (XP-1) — every world
+    // gets its own deterministic orb-velocity sequence, the same way the
+    // enchantment seed roll and the weather RNG are each salted off this seed
+    // but kept in their own independent stream.
+    void setWorldSeed(std::uint64_t seed) {
+        primaryLevel().spawner.setSeed(seed);
+        experienceOrbRandom_.setSeed(seed ^ 0xE3B0C44298FC1C14ULL);
+    }
+    // XP-1's spawnExperienceOrbs(pos, amount): denomination-splits `amount` into
+    // vanilla's fixed orb values and places each one, drawing every scatter
+    // velocity from this session's own JavaRandom stream — never the wall
+    // clock — so the same save replayed with the same call sequence always
+    // spawns the same orbs. XP-2's future source hookups (mob kill / mining /
+    // smelting / breeding) all funnel through this one entry point.
+    void spawnExperienceOrbs(glm::vec3 position, std::int32_t amount) {
+        primaryLevel().experienceOrbs.spawnMany(position, amount, experienceOrbRandom_);
+    }
+    [[nodiscard]] world::gen::JavaRandom& experienceOrbRandom() { return experienceOrbRandom_; }
     // 1.16.1 entity.kill(): OutOfWorld damage at infinite magnitude.
     void killPlayer(PlayerId playerId, SimulationHost& host);
     // `causedByLivingNonPlayer` gates the damage type's difficulty scaling: a
@@ -400,6 +418,12 @@ class GameSession final {
     [[nodiscard]] const ItemEntitySystem& itemEntities() const { return primaryLevel().items; }
     [[nodiscard]] EntitySystem& worldEntities() { return primaryLevel().entities; }
     [[nodiscard]] const EntitySystem& worldEntities() const { return primaryLevel().entities; }
+    // XP-1: the experience orb pool, same routing-through-primary-Level shape as
+    // items/entities above.
+    [[nodiscard]] ExperienceOrbSystem& experienceOrbs() { return primaryLevel().experienceOrbs; }
+    [[nodiscard]] const ExperienceOrbSystem& experienceOrbs() const {
+        return primaryLevel().experienceOrbs;
+    }
     [[nodiscard]] ChestSystem& chestSystem() { return chestSystem_; }
     [[nodiscard]] const ChestSystem& chestSystem() const { return chestSystem_; }
     // The trapped chest's storage (BE3). A separate ChestSystem instance — the
@@ -723,6 +747,11 @@ class GameSession final {
     std::uint64_t serverTick_ = 0U;
     world::ClockManager clocks_;
     std::uint32_t lootRandomState_ = 0x9E3779B9U;
+    // XP-1: the experience orb scatter stream (spawnExperienceOrbs' initial
+    // velocities), reseeded from the world seed in setWorldSeed — its own
+    // independent JavaRandom stream, salted differently from the enchantment
+    // seed roll and the weather/loot RNGs so none of them perturb each other.
+    world::gen::JavaRandom experienceOrbRandom_;
     // The authoritative interaction, run at the end of each tick.
     PlayerInteraction playerInteraction_;
     GameCommandQueue commandQueue_;

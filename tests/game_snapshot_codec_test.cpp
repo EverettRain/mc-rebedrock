@@ -121,9 +121,9 @@ void checkRoundTrip(const gameplay::PublishedSnapshot& snapshot) {
     return snap;
 }
 
-// A populated entity snapshot: a creature, a drop and a falling block, each with
-// non-default render fields (the sim-only fields stay default so the render-only
-// encoding round-trips exactly).
+// A populated entity snapshot: a creature, a drop, an experience orb (XP-1)
+// and a falling block, each with non-default render fields (the sim-only
+// fields stay default so the render-only encoding round-trips exactly).
 [[nodiscard]] gameplay::EntityRenderSnapshot populatedEntities() {
     std::vector<gameplay::EntityRenderState> creatures;
     gameplay::EntityRenderState pig;
@@ -148,6 +148,14 @@ void checkRoundTrip(const gameplay::PublishedSnapshot& snapshot) {
     drop.visualPhase = 0.5F;
     drops.push_back(drop);
 
+    std::vector<gameplay::ExperienceOrb> orbs;
+    gameplay::ExperienceOrb orb;
+    orb.position = {2.0F, 3.0F, 4.0F};
+    orb.previousPosition = {2.0F, 2.5F, 4.0F};
+    orb.value = 17;
+    orb.count = 3;
+    orbs.push_back(orb);
+
     std::vector<gameplay::FallingBlockEntity> falling;
     gameplay::FallingBlockEntity block;
     block.position = {7.0F, 8.0F, 9.0F};
@@ -156,7 +164,7 @@ void checkRoundTrip(const gameplay::PublishedSnapshot& snapshot) {
     falling.push_back(block);
 
     gameplay::EntityRenderSnapshot snapshot;
-    snapshot.assign(std::move(creatures), std::move(drops), std::move(falling));
+    snapshot.assign(std::move(creatures), std::move(drops), std::move(orbs), std::move(falling));
     return snapshot;
 }
 
@@ -168,8 +176,8 @@ int main() {
     // --- A fully-populated player snapshot round-trips with every field. ---
     checkRoundTrip(gameplay::PlayerTickSnapshot{populatedPlayer()});
 
-    // --- The entity snapshot (creature + drop + falling block) round-trips, and
-    // a decoded empty one is empty. ---
+    // --- The entity snapshot (creature + drop + experience orb + falling
+    // block) round-trips, and a decoded empty one is empty. ---
     {
         const auto snapshot = populatedEntities();
         const auto bytes = gameplay::encodeEntitySnapshot(snapshot);
@@ -177,6 +185,7 @@ int main() {
         assert(decoded.has_value());
         assert(decoded->entities() == snapshot.entities());
         assert(decoded->items() == snapshot.items());
+        assert(decoded->experienceOrbs() == snapshot.experienceOrbs());
         assert(decoded->fallingBlocks() == snapshot.fallingBlocks());
         std::cout << "entitySnapshotBytes=" << bytes.size() << "\n";
 

@@ -155,7 +155,7 @@ void testBabyScaleInSnapshot() {
     REQUIRE(system.setAge(babyId, -100));
 
     EntityRenderSnapshot snapshot;
-    snapshot.capture(system.entities(), {}, {});
+    snapshot.capture(system.entities(), {}, {}, {});
     bool sawBaby = false;
     bool sawAdult = false;
     for (const auto& state : snapshot.entities()) {

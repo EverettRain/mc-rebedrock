@@ -688,6 +688,14 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
         gameSession_.itemEntities().restore({drop.x, drop.y, drop.z}, drop.stack,
                                             {drop.vx, drop.vy, drop.vz}, drop.ageTicks);
     }
+    // XP-1: the experience orb pool, its own XPOB block. A pre-XP-1 save has
+    // none, so this loop simply does not run and the pool starts empty —
+    // exactly the DROP-block precedent's "old world migrates cleanly" shape.
+    for (const auto& orb : currentSave_->experienceOrbs) {
+        gameSession_.experienceOrbs().restore({orb.x, orb.y, orb.z}, {orb.vx, orb.vy, orb.vz},
+                                              orb.value, orb.count, orb.ageTicks,
+                                              orb.pickupDelayTicks);
+    }
     for (const auto& falling : currentSave_->fallingBlocks) {
         gameSession_.worldSimulation().restoreFallingBlock(
             {falling.x, falling.y, falling.z}, falling.block, falling.verticalVelocity);
@@ -893,6 +901,15 @@ bool GameRuntime::saveLocked() {
         currentSave_->itemDrops.push_back({drop.position.x, drop.position.y, drop.position.z,
                                            drop.velocity.x, drop.velocity.y, drop.velocity.z,
                                            drop.stack, drop.ageTicks});
+    }
+    // XP-1: the experience orb pool rides along like the item drops above,
+    // into its own XPOB block.
+    currentSave_->experienceOrbs.clear();
+    currentSave_->experienceOrbs.reserve(gameSession_.experienceOrbs().entities().size());
+    for (const auto& orb : gameSession_.experienceOrbs().entities()) {
+        currentSave_->experienceOrbs.push_back(
+            {orb.position.x, orb.position.y, orb.position.z, orb.velocity.x, orb.velocity.y,
+             orb.velocity.z, orb.value, orb.count, orb.ageTicks, orb.pickupDelayTicks});
     }
     currentSave_->fallingBlocks.clear();
     for (const auto& falling : gameSession_.worldSimulation().fallingBlocks()) {
