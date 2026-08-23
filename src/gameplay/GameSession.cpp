@@ -838,6 +838,70 @@ void GameSession::cancelEating(PlayerId playerId, SimulationHost& host) {
     events_.publish(ClientActionEvent{ClientActionEventKind::EatingCancelled});
 }
 
+void GameSession::beginDrawingBow(PlayerId playerId, SimulationHost& host) {
+    hostBridge_.setHost(&host);
+    auto& player = players_.at(playerId);
+    // startUsing no-ops if a use is already active (a bow held through
+    // another right-click edge), matching startUsing's own "no restart" rule
+    // eating already relies on.
+    player.actions.startUsing(InteractionHand::Main, UseAnimation::Bow, kBowMaxUseTicks);
+}
+
+void GameSession::releaseBow(PlayerId playerId, const glm::vec3& lookDirection,
+                             SimulationHost& host) {
+    hostBridge_.setHost(&host);
+    auto& player = players_.at(playerId);
+    if (!player.actions.use.active || player.actions.use.animation != UseAnimation::Bow) {
+        return;
+    }
+    // BowItem.onStoppedUsing: `this.getMaxUseTime(stack) - remainingUseTicks`
+    // — elapsed ticks since the draw started, read off the still-live use
+    // state before stopUsing() below clears it.
+    const std::uint32_t elapsedTicks =
+        player.actions.use.durationTicks - player.actions.use.remainingTicks;
+    const float pullProgress = bowPullProgress(elapsedTicks);
+    // stopUsing() always ends the draw on release, whether or not a shot
+    // actually fires — vanilla's onStoppedUsing runs unconditionally once the
+    // use ends, and its own `f < 0.1` guard below just skips the shot itself.
+    player.actions.stopUsing();
+    if (pullProgress < kBowMinimumPullProgress) {
+        return;
+    }
+    const bool creative = player.gameMode == GameMode::Creative;
+    // PlayerEntity#getArrowType: creative always finds a (virtual) arrow;
+    // survival needs a real one somewhere in the inventory. Infinity's
+    // "survival player with the enchant also skips the scan" branch is RW-4's
+    // seam — not modeled here, so a non-creative shot always needs a real
+    // arrow stack today.
+    const auto arrowSlot = player.inventory.findFirstArrowSlot();
+    if (!creative && !arrowSlot.has_value()) {
+        return;
+    }
+    const float lengthSquared = glm::dot(lookDirection, lookDirection);
+    const glm::vec3 direction =
+        lengthSquared < 1e-9F ? glm::vec3{0.0F, 0.0F, -1.0F} : glm::normalize(lookDirection);
+    const glm::vec3 eye = player.controller.eyePosition();
+    const float velocityLength = pullProgress * kBowFullDrawVelocity;
+    // PersistentProjectileEntity#onEntityHit: `ceil(velocity.length() *
+    // damage)` is the damage actually applied on hit — baking the velocity
+    // multiplier into the stored `damage` field here (rather than at hit
+    // time) keeps ProjectileSystem's own hit path a single multiply-by-crit,
+    // unchanged since RW-0.
+    const float damage = std::ceil(velocityLength * kArrowBaseDamage);
+    // AbstractArrow: only a FULLY drawn shot (pullProgress == 1.0F) crits —
+    // not merely "a strong pull" — matching `if (f == 1.0F)` exactly.
+    const bool critical = pullProgress >= 1.0F;
+    const ItemStack arrowPickup{world::Block::Air, 1U, &items::Arrow};
+    spawnProjectile(eye, direction * velocityLength, ActorReference::player(), damage, critical,
+                    ProjectilePickupState::Pickupable, arrowPickup);
+    if (!creative) {
+        static_cast<void>(player.inventory.consumeSlot(*arrowSlot));
+    }
+    if (player.inventory.damageSelected(1U)) {
+        events_.publish(SoundEvent{SoundEventKind::ItemBreak, eye});
+    }
+}
+
 void GameSession::teleportPlayer(PlayerId playerId, const glm::vec3& feet) {
     auto& player = players_.at(playerId);
     player.controller.setPosition(feet);

@@ -456,6 +456,30 @@ bool Inventory::damageSelected(std::uint16_t amount) {
     return false;
 }
 
+std::optional<std::size_t> Inventory::findFirstArrowSlot() const {
+    for (std::size_t index = 0; index < slots_.size(); ++index) {
+        if (isArrow(slots_[index].item) && slots_[index].count > 0U) {
+            return index;
+        }
+    }
+    return std::nullopt;
+}
+
+bool Inventory::consumeSlot(std::size_t index, std::uint8_t count) {
+    if (index >= slots_.size()) {
+        return false;
+    }
+    ItemStack& target = slots_[index];
+    if (target.empty() || target.count < count) {
+        return false;
+    }
+    target.count = static_cast<std::uint8_t>(target.count - count);
+    if (target.count == 0U) {
+        target = {};
+    }
+    return true;
+}
+
 bool Inventory::add(ItemStack& stack) {
     if (stack.empty()) {
         return true;

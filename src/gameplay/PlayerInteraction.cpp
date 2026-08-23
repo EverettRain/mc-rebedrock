@@ -340,6 +340,18 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
                     latestUse_.reset();
                 } else if constexpr (std::is_same_v<T, UseItemStop>) {
                     using_ = false;
+                    // RW-1: BowItem#onStoppedUsing — the release edge fires
+                    // exactly once, here, whether or not a draw was actually
+                    // active (releaseBow no-ops when it was not). The aim
+                    // reads this tick's own staged copy of the look direction
+                    // (primaryPlayer().playerInput, refreshed once at the top
+                    // of GameSession::tick before this call runs) rather than
+                    // the render thread's live stagedInput, so every system
+                    // that reads "which way is the player looking" this tick
+                    // agrees, the same consistency PlayerController::tick's
+                    // own read of playerInput already relies on.
+                    session.releaseBow(kPrimaryPlayerId, session.primaryPlayer().playerInput.lookDirection,
+                                       host);
                 } else if constexpr (std::is_same_v<T, ClickSlot>) {
                     // A container/inventory slot click executes on the server
                     // tick, resolved against the open container (26.1's
@@ -427,6 +439,26 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
             session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
         }
     }
+    // RW-1: BowItem#use — a fresh right-click with a bow in hand starts the
+    // draw, on the same press edge auto-equip uses (a bow held down must not
+    // re-issue startUsing every tick — PlayerActionState::startUsing already
+    // refuses to restart an active use, but gating on freshUsePress here keeps
+    // the intent explicit and matches vanilla's use() firing once per click).
+    // Survival needs a real arrow somewhere in the inventory before the draw
+    // even begins (BowItem.java's `if (!user.abilities.creativeMode && !bl)
+    // return TypedActionResult.fail(...)`); creative always may draw. A
+    // container/entity target takes right-click priority the same way the
+    // eat/plant/armor checks already give it first refusal.
+    const bool bowInHand = isBow(selectedStack.item);
+    const bool drawingBow =
+        session.playerActions().use.active && session.playerActions().use.animation == UseAnimation::Bow;
+    if (freshUsePress && bowInHand && !targetedContainer && !targetedEntity && !drawingBow &&
+        !session.eating()) {
+        if (session.gameMode() == GameMode::Creative ||
+            session.inventory().findFirstArrowSlot().has_value()) {
+            session.beginDrawingBow(kPrimaryPlayerId, host);
+        }
+    }
     if (using_ && foodInHand && !targetedContainer && !plantable && !session.eating()) {
         session.beginEating(kPrimaryPlayerId, selectedStack.item, host);
     } else if (session.eating() &&
@@ -434,8 +466,16 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
                 targetedContainer)) {
         session.cancelEating(kPrimaryPlayerId, host);
     }
-    if (destroying_ && session.eating()) {
-        session.cancelEating(kPrimaryPlayerId, host);
+    // Attacking interrupts an in-progress meal or bow draw, the same
+    // LivingEntity#clearActiveItem an attack swing triggers in vanilla for
+    // any active use item, not just food.
+    if (destroying_) {
+        if (session.eating()) {
+            session.cancelEating(kPrimaryPlayerId, host);
+        }
+        if (drawingBow) {
+            session.playerActions().stopUsing();
+        }
     }
 
     // The continuous dig, once per tick while the attack is held.
@@ -444,9 +484,11 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
     }
 
     // The repeated use, once per tick while held (vanilla's 4-tick
-    // rightClickDelay lives here now, not in the renderer).
+    // rightClickDelay lives here now, not in the renderer). A bow draw owns
+    // the use timeline exclusively — like eating, it must not also re-enter
+    // the block-placement ladder below while held.
     if (using_ && latestUse_.has_value() && session.serverTick() >= nextUseTick_ &&
-        !session.eating()) {
+        !session.eating() && !drawingBow) {
         performUse(session, world, *latestUse_);
         nextUseTick_ = session.serverTick() + 4U;
     }

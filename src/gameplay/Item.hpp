@@ -48,6 +48,12 @@ enum class ToolType : std::uint8_t {
     // needs a durability entry in toolAttributes. ToolTier::None; shears are
     // not tiered.
     Shears,
+    // RW-1: BowItem — like Shears, no mining-speed/harvest-level table (a bow
+    // never breaks blocks) but it does wear down (1 point per shot,
+    // ItemStack#damage(1, ...) in onStoppedUsing), so it needs the same
+    // durability-only slot in toolAttributes. ToolTier::None; a bow is not
+    // materialed either.
+    Bow,
 };
 
 enum class ToolTier : std::uint8_t {
@@ -699,6 +705,24 @@ inline constexpr Item Shears = Item::of("shears")
                                    .single()
                                    .tool(ToolType::Shears, ToolTier::None);
 
+// RW-1: ArrowItem (1.16.1) — ordinary stackable ammunition, 64 per stack
+// (Item.Settings' default maxCount, ArrowItem sets no override). Ranged
+// weapons scan the whole inventory for one (Inventory::findArrowSlot below),
+// not just the selected hotbar slot, mirroring PlayerEntity#getArrowType's
+// inventory scan.
+inline constexpr Item Arrow =
+    Item::of("arrow").category(CreativeCategory::Combat);
+// RW-1: BowItem (1.16.1) — a charge/startUsing item (UseAnimation::Bow,
+// vanilla's UseAction.BOW), 384 durability (toolAttributes' Bow case), one
+// point spent per shot. No useOn: a bow is never aimed at a block placement
+// target — PlayerInteraction's release path (UseItemStop) drives the whole
+// draw/release/spawn-arrow sequence directly, the same way eating's
+// beginEating/tickEating pair drives food instead of a useOn callback.
+inline constexpr Item Bow = Item::of("bow")
+                                .category(CreativeCategory::Combat)
+                                .single()
+                                .tool(ToolType::Bow, ToolTier::None);
+
 // Armor: 5 materials (leather/chainmail/iron/gold/diamond) x 4 slots
 // (head/chest/legs/feet), Java 1.16.1 ArmorItem. Each is single-stacking,
 // carries its material + slot (armorAttributes below derives protection,
@@ -809,7 +833,7 @@ inline constexpr Item DiamondBoots =
 // their constructors need entity headers that sit above us in the include graph.
 // The order sets both the creative-catalog order within each tab and the item
 // texture-array layout the renderer appends. Grouped materials / food / tools.
-inline constexpr std::array<const Item*, 77> kItemRegistry{
+inline constexpr std::array<const Item*, 79> kItemRegistry{
     &items::Bucket,     &items::WaterBucket, &items::LavaBucket, &items::MilkBucket,
     &items::Coal,
     &items::IronIngot,
@@ -831,6 +855,8 @@ inline constexpr std::array<const Item*, 77> kItemRegistry{
     &items::WoodenSword,    &items::StoneSword,    &items::IronSword,
     &items::DiamondSword,   &items::GoldSword,
     &items::Shears,
+    // RW-1: arrow (ammunition) + bow (the charge/draw ranged weapon).
+    &items::Arrow,      &items::Bow,
     // EQ-0: armor, 5 materials x 4 slots (head, chest, legs, feet order).
     &items::LeatherHelmet,   &items::LeatherChestplate, &items::LeatherLeggings,
     &items::LeatherBoots,
@@ -846,8 +872,8 @@ inline constexpr std::array<const Item*, 77> kItemRegistry{
 
 // A forgotten count bump (adding an item without growing the array, or vice
 // versa) is a compile error, not a silent truncation: 57 pre-EQ-0 items + the
-// 20 armor items this node adds.
-static_assert(kItemRegistry.size() == 57U + 20U,
+// 20 armor items EQ-0 added + the 2 (arrow, bow) RW-1 adds here.
+static_assert(kItemRegistry.size() == 57U + 20U + 2U,
               "kItemRegistry size must track every entry listed above — bump "
               "this alongside the array when adding or removing items");
 
@@ -933,6 +959,12 @@ struct ToolAttributes final {
         // ShearsItem (26.1): 238 durability, no tier table (it is not
         // materialed) — a flat entry independent of `tier`/`material` above.
         return {15.0F, 0U, 1.0F, 1.0F, 238U};
+    case ToolType::Bow:
+        // BowItem (1.16.1): 384 durability (Items.java's
+        // `new BowItem(new Item.Settings().maxDamage(384)...)`), same flat
+        // shape as Shears — no mining speed/harvest level/attack numbers a
+        // bow ever consults.
+        return {1.0F, 0U, 1.0F, 1.0F, 384U};
     default:
         return {};
     }
@@ -1051,6 +1083,52 @@ struct ArmorAttributes final {
 [[nodiscard]] constexpr bool isFood(const Item* item) {
     return foodValue(item).foodLevel > 0;
 }
+
+// RW-1: BowItem#getProjectiles' BOW_PROJECTILES predicate (`stack ->
+// stack.getItem() instanceof ArrowItem`) — this project has exactly one arrow
+// item today, so a direct pointer match stands in for the tag/instanceof
+// check; a second arrow species (spectral/tipped) would extend this the same
+// way isDrinkable would extend for a second drinkable.
+[[nodiscard]] constexpr bool isArrow(const Item* item) {
+    return item == &items::Arrow;
+}
+
+// RW-1: BowItem's own identity, so PlayerInteraction can gate the draw/
+// release path without an ItemUseAction/useOn hook (a bow is never aimed at a
+// block placement target, so it has no useOn at all).
+[[nodiscard]] constexpr bool isBow(const Item* item) {
+    return item == &items::Bow;
+}
+
+// BowItem#getMaxUseTime (1.16.1): 72000 ticks — effectively "until released",
+// never a self-expiring countdown the way eating's fixed 32 ticks is. Passed
+// to PlayerActionState::startUsing as the draw's durationTicks so the shared
+// use timeline never auto-finishes a held bow out from under the player.
+inline constexpr std::uint32_t kBowMaxUseTicks = 72000U;
+// BowItem#getPullProgress: `f = useTicks / 20.0`, then vanilla's own eased
+// curve `(f*f + f*2) / 3`, clamped to 1 past full draw — NOT a bare linear
+// t/20 (a straight ratio would make the draw feel front-loaded; the quadratic
+// term is why the last few ticks before full draw gain pull faster than the
+// first few). `useTicks` is elapsed ticks since the draw started
+// (getMaxUseTime(stack) - remainingUseTicks in vanilla; the caller passes
+// durationTicks - remainingTicks, the same subtraction against
+// PlayerActionState's countdown).
+[[nodiscard]] constexpr float bowPullProgress(std::uint32_t useTicks) {
+    const float f = static_cast<float>(useTicks) / 20.0F;
+    const float eased = (f * f + f * 2.0F) / 3.0F;
+    return eased > 1.0F ? 1.0F : eased;
+}
+// AbstractArrow/BowItem's own full-draw numbers: velocity 3.0 blocks/tick
+// (setProperties' `f * 3.0F` modifierZ term) and the PersistentProjectileEntity
+// base damage field's default value 2.0 — onEntityHit's actual applied damage
+// is `ceil(velocity.length() * damage)`, so a full draw (velocity length 3.0)
+// deals ceil(3.0 * 2.0) = 6, matching vanilla's known full-draw arrow damage.
+inline constexpr float kBowFullDrawVelocity = 3.0F;
+inline constexpr float kArrowBaseDamage = 2.0F;
+// BowItem#onStoppedUsing: `if (!(f < 0.1))` — a draw under 10% pull progress
+// releases nothing at all (too weak to nock), the vanilla "tap and release"
+// no-op.
+inline constexpr float kBowMinimumPullProgress = 0.1F;
 
 // MilkBucketItem#getUseAction (26.1): milk is drunk on the same held-right-
 // click timeline as food (UseAction.DRINK, still 32 ticks — MilkBucketItem#

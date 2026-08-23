@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <type_traits>
 
@@ -290,6 +291,17 @@ class Inventory final {
     // whether the tool broke, which is when the caller plays the break sound.
     // Undamageable stacks and empty hands are left alone and report false.
     bool damageSelected(std::uint16_t amount);
+    // RW-1: PlayerEntity#getArrowType's inventory scan — a bow does not need
+    // an arrow in the SELECTED slot, only somewhere in the 36-slot inventory
+    // (hotbar first, since that mirrors the scan order vanilla's own
+    // `for (i = 0; i < this.inventory.size(); i++)` walks: hotbar slots occupy
+    // Java's low indices too). Returns the slot index of the first matching
+    // stack, or nullopt if none carries one.
+    [[nodiscard]] std::optional<std::size_t> findFirstArrowSlot() const;
+    // Spends one item from the given slot (the arrow slot findFirstArrowSlot
+    // located), the same shrink-to-empty rule consumeSelected applies to the
+    // selected slot.
+    bool consumeSlot(std::size_t index, std::uint8_t count = 1U);
     bool add(ItemStack& stack);
     void restore(
         const std::array<ItemStack, kSlotCount>& slots,

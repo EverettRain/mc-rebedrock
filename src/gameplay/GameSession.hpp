@@ -316,6 +316,24 @@ class GameSession final {
     void respawn(PlayerId playerId);
     void beginEating(PlayerId playerId, const Item* kind, SimulationHost& host);
     void cancelEating(PlayerId playerId, SimulationHost& host);
+    // RW-1: BowItem#use — right-clicking a bow starts the draw on the shared
+    // item-use timeline (UseAnimation::Bow), the same startUsing() eating
+    // already reuses. Vanilla's own use() only even STARTS the draw when the
+    // player is creative or already carries an arrow (BowItem.java's `bl`
+    // check) — PlayerInteraction gates the call the same way before it ever
+    // reaches here, so this always succeeds once called (mirrors
+    // beginEating's own no-gate shape).
+    void beginDrawingBow(PlayerId playerId, SimulationHost& host);
+    // RW-1: BowItem#onStoppedUsing — right-click released while a bow draw was
+    // active. Reads the elapsed draw ticks off the still-live ItemUseState
+    // (stopUsing() has not run yet), resolves BowItem's own getPullProgress
+    // curve, spawns the arrow projectile through RW-0's spawnProjectile seam,
+    // consumes one arrow (creative/Infinity exempt — Infinity itself is RW-4),
+    // spends one point of the bow's durability, then ends the use timeline.
+    // `lookDirection` is the aim at the instant of release (the render
+    // thread's latest sample, PlayerInput::lookDirection — the same source
+    // dropCursorStack/dropSelectedStack already throw items along).
+    void releaseBow(PlayerId playerId, const glm::vec3& lookDirection, SimulationHost& host);
     // ItemStack#damage on the selected stack; returns true when the tool broke,
     // which is when the renderer plays the break sound.
     [[nodiscard]] bool damageHeldTool(PlayerId playerId, ToolUse use, float blockHardness);

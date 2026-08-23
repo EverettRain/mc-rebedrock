@@ -201,8 +201,11 @@ void testEnchantability() {
 // The registry grew by exactly the 20 armor items, and every entry stays
 // unique/namespaced (itemRegistryIsWellFormed's static_assert already proves
 // this at compile time; this just double-checks the runtime view agrees).
+// RW-1 added 2 more (arrow, bow) after EQ-0 landed, so the registry total
+// this test rechecks is EQ-0's own 77 + RW-1's 2 — the armor count below is
+// unaffected (neither of RW-1's two items is armor).
 void testRegistryCount() {
-    static_assert(kItemRegistry.size() == 77U);
+    static_assert(kItemRegistry.size() == 79U);
     int armorCount = 0;
     for (const Item* item : kItemRegistry) {
         if (isArmor(item)) ++armorCount;
@@ -254,11 +257,12 @@ void testCraftingRecipesResolve() {
     std::cout << "testCraftingRecipesResolve OK\n";
 }
 
-// Creative catalog: all 20 armor items are filed under Combat.
+// Creative catalog: all 20 armor items are filed under Combat, plus (RW-1)
+// arrow and bow — both Combat-tabbed in vanilla too.
 void testCreativeCombatTab() {
     const auto& registry = contentRegistry();
     const auto combat = registry.catalog(core::CreativeCategory::Combat);
-    assert(combat.size() == 20U);
+    assert(combat.size() == 22U);
 
     int found = 0;
     for (const auto& stack : combat) {

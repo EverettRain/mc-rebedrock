@@ -2258,6 +2258,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME projectile_system COMMAND mc_rebedrock_projectile_system_test)
 
+    add_executable(mc_rebedrock_bow_arrow_test
+        tests/bow_arrow_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_bow_arrow_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_bow_arrow_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME bow_arrow COMMAND mc_rebedrock_bow_arrow_test)
+
     add_executable(mc_rebedrock_experience_sources_test
         tests/experience_sources_test.cpp
     )
