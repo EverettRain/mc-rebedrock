@@ -9,6 +9,7 @@
 #include "gameplay/MiningSystem.hpp"
 #include "gameplay/PlayerController.hpp"
 #include "gameplay/ScreenHandler.hpp"
+#include "gameplay/entities/CowEntity.hpp"
 #include "world/Block.hpp"
 #include "world/BlockPlacement.hpp"
 #include "world/BlockShape.hpp"
@@ -366,10 +367,13 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
     }
 
     // The eat decision, from the held use state and the current hand: a held
-    // use with food in hand starts (or keeps) the vanilla 32-tick meal,
-    // independently of the 4-tick rightClickDelay; attacking cancels it.
+    // use with food (or, AR-A3, milk) in hand starts (or keeps) the vanilla
+    // 32-tick meal/drink, independently of the 4-tick rightClickDelay;
+    // attacking cancels it. startsUseTimeline covers both — GameSession picks
+    // the Eat/Drink animation and the hunger-vs-clear-effects finish behaviour
+    // from the held item itself.
     const auto& selectedStack = session.inventory().selectedStack();
-    const bool foodInHand = isFood(selectedStack.item);
+    const bool foodInHand = startsUseTimeline(selectedStack.item);
     const bool targetedContainer = latestUse_.has_value() && !latestUse_->entity &&
                                    isContainerBlock(world, latestUse_->block);
     const bool plantable = latestUse_.has_value() && !latestUse_->entity &&
@@ -947,6 +951,42 @@ void PlayerInteraction::performUseOnEntity(GameSession& session, world::World&,
         if (session.gameMode() == GameMode::Survival && session.inventory().damageSelected(1U)) {
             session.events().publish(SoundEvent{SoundEventKind::ItemBreak,
                                                 session.player().eyePosition()});
+        }
+        return;
+    }
+
+    // AbstractCow#mobInteract (26.1): an empty bucket right-clicked on a
+    // non-baby cow returns a milk bucket. Gated on the target's species
+    // (CowEntity::type(), compared by the EntityType's stable address, the
+    // same pointer-identity idiom the tempt/breeding check below uses for
+    // BreedingProfile) rather than a generic capability bit — milking has no
+    // vanilla analogue on any other species, so unlike shear/tempt this stays
+    // a one-species check instead of a data table entry.
+    if (selectedStack.item == &items::Bucket && &target->kind() == &entities::CowEntity::type() &&
+        !target->baby()) {
+        // Sabotage anchor ①(non-empty-bucket half): only the plain empty
+        // Bucket item reaches here — WaterBucket/LavaBucket are distinct Item
+        // registrations, so a full bucket simply never matches this branch
+        // and produces no milk.
+        session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
+        // BucketItem#getEmptiedStack / ItemUtils#createFilledResult: survival
+        // spends the empty bucket for the milk bucket; creative pours without
+        // spending anything (hasInfiniteMaterials keeps the original empty
+        // bucket in hand, mirroring the water/lava CollectX branches in
+        // performUse). No cooldown — unlike shears, vanilla's cow milking has
+        // no durability or timer, so the same bucket can be emptied again
+        // next click once refilled.
+        //
+        // selectedStack is a reference into the same slot replaceSelected
+        // writes, so the original empty-bucket stack must be snapshotted by
+        // value first — restoring `selectedStack` after the write would just
+        // hand the milk bucket back to itself.
+        const ItemStack originalStack = selectedStack;
+        session.inventory().replaceSelected({world::Block::Air, 1U, &items::MilkBucket});
+        if (restoresHeldStack(session.gameMode())) {
+            // Sabotage anchor ①(creative half): creative must keep its empty
+            // bucket rather than pocket a free milk bucket.
+            session.inventory().replaceSelected(originalStack);
         }
         return;
     }

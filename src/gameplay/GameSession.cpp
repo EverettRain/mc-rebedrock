@@ -777,9 +777,14 @@ void GameSession::beginEating(PlayerId playerId, const Item* kind, SimulationHos
     player.eating = true;
     player.eatingKind = kind;
     player.eatTicks = 0;
-    // The meal is just UseAnimation::Eat on the shared item-use timeline; the
-    // renderer reads the countdown from playerActions(), not a private eat state.
-    player.actions.startUsing(InteractionHand::Main, UseAnimation::Eat, kEatTicks);
+    // The meal (or, AR-A3, the milk drink) is just UseAnimation::Eat/Drink on
+    // the shared item-use timeline; the renderer reads the countdown from
+    // playerActions(), not a private eat state. ArmPose::deriveArmPose already
+    // treats both animations identically, so nothing downstream needs to know
+    // which one this is beyond the finish-of-use branch in tickEating.
+    player.actions.startUsing(InteractionHand::Main,
+                              isDrinkable(kind) ? UseAnimation::Drink : UseAnimation::Eat,
+                              kEatTicks);
     events_.publish(ClientActionEvent{ClientActionEventKind::EatingStarted});
 }
 
@@ -1026,8 +1031,23 @@ void GameSession::tickEating(SimulationHost& host) {
     if (primaryPlayer().eatTicks < kEatTicks) {
         return;
     }
-    // The meal lands only if the same food is still in hand.
+    // The meal lands only if the same food/drink is still in hand.
     if (primaryPlayer().inventory.selectedStack().item != primaryPlayer().eatingKind) {
+        cancelEating(kPrimaryPlayerId, host);
+        return;
+    }
+    // MilkBucketItem#finishUsing (26.1): drinking milk clears every active
+    // status effect and reverts to an empty Bucket — it never touches hunger,
+    // so this is a separate finish path from the ordinary food branch below,
+    // not an extra case bolted onto it. Creative keeps its milk bucket
+    // (restoresHeldStack), same as the bucket-fill branches in performUse.
+    if (isDrinkable(primaryPlayer().eatingKind)) {
+        static_cast<void>(primaryPlayer().vitals.clearEffects());
+        if (!restoresHeldStack(primaryPlayer().gameMode)) {
+            primaryPlayer().inventory.replaceSelected({world::Block::Air, 1U, &items::Bucket});
+        }
+        // MilkBucketItem has no consumeItem burst/burp — the drink itself is
+        // silent past its own use-sound cadence above.
         cancelEating(kPrimaryPlayerId, host);
         return;
     }
