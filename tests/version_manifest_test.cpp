@@ -37,7 +37,10 @@ int main() {
     if (kVersion.worldVersion != 19U || kVersion.protocolVersion != 4U) {
         return 4;
     }
-    if (kVersion.id != "26.1") {
+    // Prefix check, not equality: the id carries the game generation ("26.1")
+    // but a build may append a channel suffix ("26.1beta1", "26.1-rc2") that
+    // should not trip this guard — only a drift of the generation itself should.
+    if (!kVersion.id.starts_with("26.1")) {
         return 5;
     }
 
