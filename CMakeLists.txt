@@ -273,6 +273,7 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/BlockTags.cpp
     src/assets/ResourceProvider.cpp
     src/assets/PackMetadata.cpp
+    src/assets/PackManager.cpp
     src/core/Json.cpp
     src/gameplay/NaturalSpawner.cpp
     src/gameplay/MobSpawnSettings.cpp
@@ -1308,6 +1309,13 @@ if(BUILD_TESTING)
     )
     target_include_directories(mc_rebedrock_pack_metadata_test PRIVATE src)
     add_test(NAME pack_metadata COMMAND mc_rebedrock_pack_metadata_test)
+
+    add_executable(mc_rebedrock_pack_manager_test
+        tests/pack_manager_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_pack_manager_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_pack_manager_test PRIVATE src)
+    add_test(NAME pack_manager COMMAND mc_rebedrock_pack_manager_test)
 
     add_executable(mc_rebedrock_gui_nine_slice_test
         tests/gui_nine_slice_test.cpp
