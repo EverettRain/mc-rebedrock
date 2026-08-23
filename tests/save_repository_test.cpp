@@ -163,16 +163,27 @@ int main() {
         // miniature for AR-B2's own new properties: an edit that predates
         // these axes reads back Open=false/Half=Bottom/Shape=Straight, the
         // schema's own "absent property reads back as 0" contract.
+        // F2 extension (this pass): a stair also carries SubmergedFluid now —
+        // written wet here, riding along with its Half/StairShape axes exactly
+        // like CobblestoneSlab above.
         {11, 62, -8,
          world::BlockState{world::Block::OakStairs, world::BlockOrientation::East}
              .withStairHalf(world::SlabPortion::Top)
-             .withStairShape(world::StairShape::InnerRight)},
+             .withStairShape(world::StairShape::InnerRight)
+             .withSubmergedFluid(world::SubmergedFluid::Water)},
+        // A second stair, saved dry (no withSubmergedFluid call) — this is the
+        // "old edit predates the new axis" migration case for stairs
+        // specifically, distinct from edit 11: a state written before this F2
+        // pass never had a submerged_in name to write and must reopen None.
         {12, 62, -8,
+         world::BlockState{world::Block::OakStairs, world::BlockOrientation::North}
+             .withStairHalf(world::SlabPortion::Bottom)},
+        {13, 62, -8,
          world::BlockState{world::Block::OakDoor, world::BlockOrientation::South}
              .withHinge(world::DoorHinge::Right)
              .withOpen(true)
              .withDoorUpperHalf(true)},
-        {13, 62, -8, world::BlockState{world::Block::OakFenceGate, world::BlockOrientation::West}},
+        {14, 62, -8, world::BlockState{world::Block::OakFenceGate, world::BlockOrientation::West}},
     };
     gameplay::ChestBlockEntity chest;
     chest.position = {8, 65, -4};
@@ -278,17 +289,38 @@ int main() {
     assert(loaded.edits[8].state.orientation() == world::BlockOrientation::East);
     assert(loaded.edits[8].state.stairHalf() == world::SlabPortion::Top);
     assert(loaded.edits[8].state.stairShape() == world::StairShape::InnerRight);
-    assert(loaded.edits[9].state.block() == world::Block::OakDoor);
-    assert(loaded.edits[9].state.orientation() == world::BlockOrientation::South);
-    assert(loaded.edits[9].state.hinge() == world::DoorHinge::Right);
-    assert(loaded.edits[9].state.open());
-    assert(loaded.edits[9].state.isDoorUpperHalf());
-    assert(loaded.edits[10].state.block() == world::Block::OakFenceGate);
-    assert(loaded.edits[10].state.orientation() == world::BlockOrientation::West);
+    // F2 extension: the same stair's SubmergedFluid axis rides along with its
+    // Half/StairShape axes, unaffected by them (a stair is now the second
+    // submergible block after slabs).
+    assert(loaded.edits[8].state.submergedFluid() == world::SubmergedFluid::Water);
+    // The second stair was saved dry — proves an edit that never touched the
+    // new axis (i.e. one written by the pre-this-pass binary, which never had
+    // stairs opted into submerges() at all) reopens None rather than leaking
+    // whatever the previous edit's axis happened to hold.
+    assert(loaded.edits[9].state.block() == world::Block::OakStairs);
+    assert(loaded.edits[9].state.orientation() == world::BlockOrientation::North);
+    assert(loaded.edits[9].state.stairHalf() == world::SlabPortion::Bottom);
+    assert(loaded.edits[9].state.submergedFluid() == world::SubmergedFluid::None);
+    assert(loaded.edits[10].state.block() == world::Block::OakDoor);
+    assert(loaded.edits[10].state.orientation() == world::BlockOrientation::South);
+    assert(loaded.edits[10].state.hinge() == world::DoorHinge::Right);
+    assert(loaded.edits[10].state.open());
+    assert(loaded.edits[10].state.isDoorUpperHalf());
+    assert(loaded.edits[11].state.block() == world::Block::OakFenceGate);
+    assert(loaded.edits[11].state.orientation() == world::BlockOrientation::West);
     // Migration in miniature: the gate was saved without ever touching Open —
     // it reads back false, the schema's own "absent axis reads as 0" default,
     // exactly what a pre-AR-B2 edit (no Open name to write at all) would give.
-    assert(!loaded.edits[10].state.open());
+    assert(!loaded.edits[11].state.open());
+    // Doors and fence gates never call .submerges() (vanilla: DoorBlock and
+    // FenceGateBlock do not implement SimpleWaterloggedBlock — confirmed
+    // against 26.1's DoorBlock.java/FenceGateBlock.java, which have no
+    // WATERLOGGED property at all, unlike StairBlock.java) — canBeSubmerged
+    // stays false and the axis is a schema-absent no-op on both.
+    assert(!world::canBeSubmerged(world::Block::OakDoor));
+    assert(!world::canBeSubmerged(world::Block::OakFenceGate));
+    assert(loaded.edits[10].state.submergedFluid() == world::SubmergedFluid::None);
+    assert(loaded.edits[11].state.submergedFluid() == world::SubmergedFluid::None);
     // The palette names the block, not the state: `lit_furnace` is gone.
     {
         std::ifstream data{root / save.summary.identifier / "world.dat", std::ios::binary};

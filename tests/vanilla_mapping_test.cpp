@@ -142,6 +142,39 @@ void testWaterloggedOverrideBothDirections() {
     // whatever it already was) — applyMappedState only writes the one
     // property the mapping named.
     assert(wetOakSlab.slabPortion() == world::SlabPortion::Bottom);
+
+    // F2 extension (this pass): the same override, exercised end to end on a
+    // stair now that OakStairs calls .submerges() too — the mapping itself
+    // needed zero changes (it is keyed on the StateProperty, not the block),
+    // but this proves that generality actually holds for the new block, not
+    // just the slab it was originally proven against.
+    const auto dryOakStairs = compat::applyMappedState(
+        world::BlockState{world::Block::OakStairs, world::BlockOrientation::East}
+            .withStairShape(world::StairShape::InnerRight),
+        mappedFalse);
+    assert(dryOakStairs.submergedFluid() == world::SubmergedFluid::None);
+    const auto wetOakStairs = compat::applyMappedState(
+        world::BlockState{world::Block::OakStairs, world::BlockOrientation::East}
+            .withStairShape(world::StairShape::InnerRight),
+        mappedTrue);
+    assert(wetOakStairs.submergedFluid() == world::SubmergedFluid::Water);
+    // Facing/StairShape survive the override untouched, same guarantee as the
+    // slab's SlabType above.
+    assert(wetOakStairs.orientation() == world::BlockOrientation::East);
+    assert(wetOakStairs.stairShape() == world::StairShape::InnerRight);
+
+    // Doors and fence gates are the negative case: applying the override onto
+    // them is a no-op because neither declared the SubmergedFluid axis (JC-1's
+    // own "absent property is a no-op" contract, inherited from StateSchema),
+    // exactly matching that vanilla import of a JE waterlogged=true door/gate
+    // (which cannot actually happen — neither carries WATERLOGGED in vanilla
+    // either) would not silently manufacture a wet door.
+    const auto doorMapped =
+        compat::applyMappedState(world::BlockState{world::Block::OakDoor}, mappedTrue);
+    assert(doorMapped.submergedFluid() == world::SubmergedFluid::None);
+    const auto gateMapped =
+        compat::applyMappedState(world::BlockState{world::Block::OakFenceGate}, mappedTrue);
+    assert(gateMapped.submergedFluid() == world::SubmergedFluid::None);
 }
 
 void testWaterloggedOverrideUnknownValueSkips() {

@@ -593,6 +593,132 @@ int main() {
         assert(world.state(5, 1, 5).stairShape() != world::StairShape::Straight);
     }
 
+    // --- F2 extension (this pass): a stair placed into a still water source
+    // comes out submerged, using the exact same placementBlock branch a slab
+    // does — the F2 axis and the AR-B2 shape resolution are independent
+    // concerns computed side by side in the same call. ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        world.setState(5, 1, 5, world::BlockState{world::Block::Water});
+        session.inventory().mutableSlot(0) = {world::Block::OakStairs, 1U, nullptr};
+        session.inventory().selectHotbar(0);
+        gameplay::UseItemOn place;
+        place.block = glm::ivec3{5, 0, 5};
+        place.adjacent = glm::ivec3{5, 1, 5};
+        place.face = world::BlockOrientation::Up;
+        place.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(place));
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.block(5, 1, 5) == world::Block::OakStairs);
+        assert(world.state(5, 1, 5).submergedFluid() == world::SubmergedFluid::Water);
+        // Its Facing/Half/StairShape axes still resolved normally, unaffected
+        // by the extra wet axis.
+        assert(world.state(5, 1, 5).orientation() == world::BlockOrientation::South);
+        assert(world.state(5, 1, 5).stairHalf() == world::SlabPortion::Bottom);
+
+        // A stair placed on dry land stays dry.
+        session.inventory().mutableSlot(0) = {world::Block::OakStairs, 1U, nullptr};
+        gameplay::UseItemOn dryPlace;
+        dryPlace.block = glm::ivec3{6, 0, 5};
+        dryPlace.adjacent = glm::ivec3{6, 1, 5};
+        dryPlace.face = world::BlockOrientation::Up;
+        dryPlace.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(dryPlace));
+        for (int tick = 0; tick < 6; ++tick) {
+            session.tick(world, host);
+        }
+        static_cast<void>(session.drainEvents());
+        assert(world.block(6, 1, 5) == world::Block::OakStairs);
+        assert(world.state(6, 1, 5).submergedFluid() == world::SubmergedFluid::None);
+    }
+
+    // --- F2 extension: breaking a submerged stair leaves a water source, not
+    // air — the same breakResidue path a slab uses, now exercised on a
+    // non-full-cube shape that is not the slab's own model. ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        world.setState(5, 1, 5,
+                       world::BlockState{world::Block::OakStairs}
+                           .withSubmergedFluid(world::SubmergedFluid::Water));
+        session.enqueueCommand(gameplay::PlayerAction{gameplay::PlayerAction::Kind::StartDestroy,
+                                                      glm::ivec3{5, 1, 5}});
+        for (int tick = 0; tick < 40 && world.block(5, 1, 5) != world::Block::Water; ++tick) {
+            session.tick(world, host);
+        }
+        static_cast<void>(session.drainEvents());
+        // Sabotage target: a breakResidue that forgot the axis (or that only
+        // special-cased slabs) would leave Air here instead of a water source.
+        assert(world.block(5, 1, 5) == world::Block::Water);
+        assert(world.state(5, 1, 5).fluidLevel() == 0U);
+        assert(host.blockBreaks == 1);
+
+        // A dry stair breaks to ordinary air, exactly as before this pass.
+        world.setState(6, 1, 5, world::BlockState{world::Block::OakStairs});
+        session.enqueueCommand(gameplay::PlayerAction{gameplay::PlayerAction::Kind::StartDestroy,
+                                                      glm::ivec3{6, 1, 5}});
+        for (int tick = 0; tick < 40 && world.block(6, 1, 5) != world::Block::Air; ++tick) {
+            session.tick(world, host);
+        }
+        static_cast<void>(session.drainEvents());
+        assert(world.block(6, 1, 5) == world::Block::Air);
+    }
+
+    // --- F2 extension: bucket interactions on a stair wet/dry it in place,
+    // preserving its Facing/Half/StairShape exactly like the slab case
+    // preserves SlabType. ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        session.setGameMode(gameplay::GameMode::Survival);
+        world::World world;
+        buildFloor(world);
+        world.setState(5, 1, 5, world::BlockState{world::Block::OakStairs, world::BlockOrientation::East}
+                                     .withStairHalf(world::SlabPortion::Top));
+        session.inventory().mutableSlot(0) = {world::Block::Air, 1U, &gameplay::items::WaterBucket};
+        session.inventory().selectHotbar(0);
+        gameplay::UseItemOn pour;
+        pour.block = glm::ivec3{5, 1, 5};
+        pour.adjacent = glm::ivec3{5, 2, 5};
+        pour.face = world::BlockOrientation::Up;
+        pour.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(pour));
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        // Still the same stair, still Top/East, now wet — a bucket used
+        // directly on it must not have replaced it with a plain water block.
+        assert(world.block(5, 1, 5) == world::Block::OakStairs);
+        assert(world.state(5, 1, 5).orientation() == world::BlockOrientation::East);
+        assert(world.state(5, 1, 5).stairHalf() == world::SlabPortion::Top);
+        assert(world.state(5, 1, 5).submergedFluid() == world::SubmergedFluid::Water);
+        assert(session.inventory().selectedStack().item == &gameplay::items::Bucket);
+
+        // An empty bucket on that same wet stair takes the water back and
+        // leaves the (still Top/East) stair dry, rather than mining it.
+        session.inventory().mutableSlot(0) = {world::Block::Air, 1U, &gameplay::items::Bucket};
+        gameplay::UseItemOn collect;
+        collect.block = glm::ivec3{5, 1, 5};
+        collect.adjacent = glm::ivec3{5, 2, 5};
+        collect.face = world::BlockOrientation::Up;
+        collect.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(collect));
+        for (int tick = 0; tick < 6; ++tick) {
+            session.tick(world, host);
+        }
+        static_cast<void>(session.drainEvents());
+        assert(world.block(5, 1, 5) == world::Block::OakStairs);
+        assert(world.state(5, 1, 5).orientation() == world::BlockOrientation::East);
+        assert(world.state(5, 1, 5).stairHalf() == world::SlabPortion::Top);
+        assert(world.state(5, 1, 5).submergedFluid() == world::SubmergedFluid::None);
+        assert(session.inventory().selectedStack().item == &gameplay::items::WaterBucket);
+    }
+
     // --- AR-B2 door: a single UseItemOn places two cells atomically (both
     // exist and share Facing/Hinge the instant the command resolves — no tick
     // boundary between them to observe a lone half), a right-click on either
@@ -766,6 +892,61 @@ int main() {
         session.tick(world, host);
         static_cast<void>(session.drainEvents());
         assert(!world.state(5, 1, 5).open());
+    }
+
+    // --- F2 extension: doors and fence gates are the negative case — vanilla
+    // does not make either SimpleWaterloggedBlock (confirmed against 26.1's
+    // DoorBlock.java/FenceGateBlock.java, neither carries a WATERLOGGED
+    // property, unlike StairBlock.java), so this pass never called
+    // .submerges() on them. Placing either into a still water source must NOT
+    // wet it — placementBlock's `canBeSubmerged(selected)` prefilter is what
+    // is under test here, the same prefilter sabotage①'s "make it identity-
+    // blind" attack targets. ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        world.setState(5, 1, 5, world::BlockState{world::Block::Water});
+        world.setState(5, 2, 5, world::BlockState{world::Block::Water});
+        session.inventory().mutableSlot(0) = {world::Block::OakDoor, 1U, nullptr};
+        session.inventory().selectHotbar(0);
+        gameplay::UseItemOn placeDoor;
+        placeDoor.block = glm::ivec3{5, 0, 5};
+        placeDoor.adjacent = glm::ivec3{5, 1, 5};
+        placeDoor.face = world::BlockOrientation::Up;
+        placeDoor.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(placeDoor));
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.block(5, 1, 5) == world::Block::OakDoor);
+        assert(world.block(5, 2, 5) == world::Block::OakDoor);
+        assert(world.state(5, 1, 5).submergedFluid() == world::SubmergedFluid::None);
+        assert(world.state(5, 2, 5).submergedFluid() == world::SubmergedFluid::None);
+
+        world.setState(6, 1, 5, world::BlockState{world::Block::Water});
+        session.inventory().mutableSlot(0) = {world::Block::OakFenceGate, 1U, nullptr};
+        gameplay::UseItemOn placeGate;
+        placeGate.block = glm::ivec3{6, 0, 5};
+        placeGate.adjacent = glm::ivec3{6, 1, 5};
+        placeGate.face = world::BlockOrientation::Up;
+        placeGate.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(placeGate));
+        for (int tick = 0; tick < 6; ++tick) {
+            session.tick(world, host);
+        }
+        static_cast<void>(session.drainEvents());
+        assert(world.block(6, 1, 5) == world::Block::OakFenceGate);
+        assert(world.state(6, 1, 5).submergedFluid() == world::SubmergedFluid::None);
+
+        // A water bucket used directly on either has no submerge effect (the
+        // clicked-block prefilter in bucketPlaceUseOn falls through to the
+        // adjacent-cell pour branch instead), and neither block round-trips
+        // withSubmergedFluid as anything but a no-op.
+        assert(world::BlockState{world::Block::OakDoor}.withSubmergedFluid(
+                   world::SubmergedFluid::Water) == world::BlockState{world::Block::OakDoor});
+        assert(world::BlockState{world::Block::OakFenceGate}.withSubmergedFluid(
+                   world::SubmergedFluid::Water) == world::BlockState{world::Block::OakFenceGate});
     }
 
     return 0;

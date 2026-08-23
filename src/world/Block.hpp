@@ -1298,18 +1298,35 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .strength(1.5F, 6.0F),
     // AR-B2: the first stair/door/fence-gate species. Hardness/blast resistance
     // mirror oak_planks, the parent block each recipe crafts from.
+    // F2 extension (this pass): StairBlock is `implements SimpleWaterloggedBlock`
+    // in vanilla 26.1 (StairBlock.java:32, WATERLOGGED field at :39) — stairs
+    // submerge like slabs.
     BlockProperties::of(Block::OakStairs, "oak_stairs", "Oak Stairs")
         .texture("oak_planks")
         .strength(2.0F, 3.0F)
-        .stairs(),
+        .stairs()
+        .submerges(),
     // DoorBlock: `top`/`side` name the two vanilla door sprites (the upper and
     // lower halves), reused here as the top/side texture slots the mesher's
     // per-half box lookup reads — a door has no bottom face on either half, so
     // the third slot goes unused like a cross plant's.
+    // F2 extension: DoorBlock does *not* implement SimpleWaterloggedBlock in
+    // vanilla (`class DoorBlock extends Block` — no WATERLOGGED property
+    // anywhere in DoorBlock.java) — doors deliberately do not call
+    // .submerges(). Do not add it; a two-cell block occupying both a solid
+    // and an air-ish cell has no vanilla waterlogged precedent to copy.
     BlockProperties::of(Block::OakDoor, "oak_door", "Oak Door")
         .texture("oak_door_top", "oak_door_bottom", "oak_door_bottom")
         .strength(3.0F)
         .door(),
+    // F2 extension: FenceGateBlock also does *not* implement
+    // SimpleWaterloggedBlock in vanilla (`class FenceGateBlock extends
+    // HorizontalDirectionalBlock` — no WATERLOGGED property in
+    // FenceGateBlock.java, unlike FenceBlock/WallBlock which route through
+    // CrossCollisionBlock's SimpleWaterloggedBlock). Confirmed directly
+    // against the 26.1 source, contra the initial task assumption that fence
+    // gates were waterloggable like fences/walls — they are not. No
+    // .submerges() here either.
     BlockProperties::of(Block::OakFenceGate, "oak_fence_gate", "Oak Fence Gate")
         .texture("oak_planks")
         .strength(2.0F, 3.0F)

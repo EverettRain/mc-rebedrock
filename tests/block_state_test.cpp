@@ -191,6 +191,22 @@ int main() {
 
         assert(canBeSubmerged(Block::OakSlab));
         assert(canBeSubmerged(Block::StoneSlab));
+        // F2 extension (AR-B2 follow-up): a stair is `implements
+        // SimpleWaterloggedBlock` in vanilla 26.1 (StairBlock.java) — the
+        // second submergible block after slabs, same prefilter mechanism.
+        assert(canBeSubmerged(Block::OakStairs));
+        // Facing(4) x Half(2) x StairShape(5) x SubmergedFluid(2) = 80 — the
+        // axis multiplies onto the stair's existing state count exactly like
+        // it multiplied SlabType's 3 into the slab's 6, and door/gate (which
+        // never called .submerges()) are unaffected.
+        assert(kBlockRegistry[static_cast<std::size_t>(Block::OakStairs)].states.stateCount() == 80U);
+        // Doors and fence gates are *not* SimpleWaterloggedBlock in vanilla
+        // (no WATERLOGGED property in DoorBlock.java/FenceGateBlock.java,
+        // confirmed against 26.1 source) — neither called .submerges(), so
+        // both must read false here exactly like any other non-submergible
+        // block.
+        assert(!canBeSubmerged(Block::OakDoor));
+        assert(!canBeSubmerged(Block::OakFenceGate));
         // Nothing outside the declared submergible set can hold the axis —
         // this is sabotage #1's target: canBeSubmerged is schema-derived, not
         // an identity switch, so a future block that never called .submerges()
@@ -218,6 +234,39 @@ int main() {
         assert(BlockState{Block::Stone}.submergedFluid() == SubmergedFluid::None);
         assert(BlockState{Block::Stone}.withSubmergedFluid(SubmergedFluid::Water) ==
                BlockState{Block::Stone});
+        // Doors and fence gates specifically: same no-op contract as any other
+        // non-submergible block, exercised on the two AR-B2 blocks a reader
+        // might expect to be waterloggable (fences/walls are, gates are not).
+        assert(BlockState{Block::OakDoor}.submergedFluid() == SubmergedFluid::None);
+        assert(BlockState{Block::OakDoor}.withSubmergedFluid(SubmergedFluid::Water) ==
+               BlockState{Block::OakDoor});
+        assert(BlockState{Block::OakFenceGate}.submergedFluid() == SubmergedFluid::None);
+        assert(BlockState{Block::OakFenceGate}.withSubmergedFluid(SubmergedFluid::Water) ==
+               BlockState{Block::OakFenceGate});
+
+        // A stair carries the axis independently of its own Facing/Half/
+        // StairShape axes, the same "拆轴非并轴" independence the slab case
+        // above proves — submerging a stair must not disturb its shape, and
+        // resolving its shape must not disturb its wetness.
+        const auto wetStair =
+            BlockState{Block::OakStairs, BlockOrientation::East}
+                .withStairHalf(SlabPortion::Top)
+                .withStairShape(StairShape::InnerRight)
+                .withSubmergedFluid(SubmergedFluid::Water);
+        assert(wetStair.orientation() == BlockOrientation::East);
+        assert(wetStair.stairHalf() == SlabPortion::Top);
+        assert(wetStair.stairShape() == StairShape::InnerRight);
+        assert(wetStair.submergedFluid() == SubmergedFluid::Water);
+        assert(wetStair.isSameBlock(BlockState{Block::OakStairs}));
+        // A freshly placed stair is dry by default, same as a fresh slab.
+        assert(BlockState{Block::OakStairs}.submergedFluid() == SubmergedFluid::None);
+
+        // The state-aware light overload: a dry stair keeps its own filter, a
+        // submerged one reads Water's, matching the slab lighting requirement.
+        assert(skyLightOpacity(BlockState{Block::OakStairs}) ==
+               skyLightOpacity(Block::OakStairs));
+        assert(skyLightOpacity(BlockState{Block::OakStairs}.withSubmergedFluid(SubmergedFluid::Water)) ==
+               skyLightOpacity(Block::Water));
 
         // The state-aware light overload: a dry slab keeps its own (zero)
         // filter, a submerged one reads Water's — the light engine dims a
