@@ -331,7 +331,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         : shaderRoot(std::move(shaderDirectory)),
           resourceProvider(&provider), languageLoader(provider),
           optionsPath(std::move(initialOptionsPath)),
-          runtime(*this, streamer, std::move(saveRoot)),
+          // PACK-1: `provider` is the resource stack Application built over
+          // `bundled` — its `data/` half falls through to the same built-in
+          // floor a resource pack never overrides (no resource pack ships
+          // `data/`), so it doubles as the per-save data-pack base without
+          // pulling in a second provider. This is what makes loadWorld scan
+          // and rebuild each save's <save>/datapacks/ in single-player.
+          runtime(*this, streamer, std::move(saveRoot), &provider),
           saveRepository(runtime.saveRepository()),
           chunkStreamer(runtime.chunkStreamer()),
           interactionWorld(runtime.world()),

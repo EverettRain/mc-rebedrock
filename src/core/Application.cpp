@@ -4,12 +4,7 @@
 #include "assets/PackMetadata.hpp"
 #include "assets/ResourceProvider.hpp"
 #include "core/VersionManifest.hpp"
-#include "gameplay/BlockTags.hpp"
-#include "gameplay/LootTable.hpp"
-#include "gameplay/RecipeTable.hpp"
-#include "gameplay/MobSpawnSettings.hpp"
-#include "gameplay/entities/EntityAttributeOverlay.hpp"
-#include "gameplay/entities/EntityRegistry.hpp"
+#include "gameplay/DataPackStack.hpp"
 #include "assets/ZipResourcePack.hpp"
 #include "config/GameOptions.hpp"
 #include "render/vulkan/VulkanRenderer.hpp"
@@ -230,65 +225,30 @@ int Application::run() {
         return 1;
     }
 
-    // PACK-0: the double-end split. Every discovered pack (this project has no
-    // pack that ships only one half yet — see PACK-1/PACK-3 for real per-save
-    // data packs and a client resource-pack UI) is registered once and enabled
-    // on BOTH stacks, in discovery order, so today's behaviour is unchanged
-    // bit-for-bit: what used to be one monolithic `resources` provider used
-    // for everything is now two providers built from the same enable order.
-    // The split is in *where the two providers go*, not in which packs are
-    // enabled — loadDataPacks feeds only the data-driven gameplay tables
-    // (the authoritative side, which the dedicated server also runs and which
-    // never touches loadResourcePacks), loadResourcePacks feeds only the
-    // renderer.
+    // PACK-0: the double-end split, resource half only. <gameroot>/resourcepacks
+    // stays app-startup, global, client-only (PACK-3 territory: user selection
+    // eventually persists in client options, not touched here). What used to
+    // also register every discovered pack onto a Data stack and rebuild the
+    // data-driven gameplay tables from it moved to PACK-1: that rebuild is now
+    // per-save, driven by GameRuntime::loadWorld from each save's own
+    // <save>/datapacks/, not from this app-global resourcepacks/ folder — see
+    // gameplay::PerSaveDataStack. App startup's only remaining job for the data
+    // half is preparing the built-in floor below, so a caller that reads
+    // blockTags()/recipeTable()/etc. before any world is loaded (or the
+    // in-process tests that construct these tables directly) still sees sane
+    // built-in defaults rather than whatever partial state the previous process
+    // run left statics in.
     assets::PackManager packManager;
     for (std::size_t index = 0; index < enabled.size(); ++index) {
         const std::string id = "pack" + std::to_string(index);
         packManager.registerPack(id, *enabled[index], assets::PackMetadata{},
-                                 /*hasDataHalf=*/true, /*hasResourceHalf=*/true);
-        packManager.enable(assets::PackStackKind::Data, id);
+                                 /*hasDataHalf=*/false, /*hasResourceHalf=*/true);
         packManager.enable(assets::PackStackKind::Resources, id);
     }
 
-    // The data stack: authoritative, `data/` half only. This is the exact
-    // provider set loadDataPacks below feeds to the data-driven gameplay
-    // tables — no ZipResourcePackProvider/Vulkan-only type is required to
-    // reach it, which is what lets the dedicated server (mc_rebedrock_runtime
-    // only, no render/vulkan) build the same call some day. See
-    // PackManager's class comment for the composition contract.
-    const auto loadDataPacks = [&](const assets::PackManager& manager) {
-        const assets::LayeredResourceProvider dataStack =
-            manager.buildProvider(assets::PackStackKind::Data, bundled);
-        // Block tags come from the `data/` half of the pack stack, the same way
-        // textures come from `assets/`. An ordinary resource pack ships no `data/`
-        // at all, so this usually keeps the compiled-in 26.1 defaults; a full data
-        // pack overrides them per tag.
-        // The species registry has to exist before anything that names species is
-        // built. The biome spawn tables below resolve pig/cow/zombie through it, and
-        // the renderer's own call comes later — so loading them first produced
-        // tables with nothing in them and a world that never spawned a mob.
-        // Registration is idempotent, so the renderer's call stays harmless.
-        gameplay::entities::registerBuiltinEntities();
-        // Entity attribute overrides load the same two-layer way: each species keeps
-        // its compiled-in floor, and a datapack that ships
-        // `data/<space>/entity_attributes/<species>.json` overrides the attributes it
-        // lists. No `data/` keeps every species' built-in numbers.
-        gameplay::entities::entityAttributeTable().load(dataStack);
-        gameplay::blockTags().load(dataStack);
-        // Recipes load the same way: the baked built-in floor first, then any recipes
-        // a datapack supplies. An ordinary resource pack ships no `data/`, so this
-        // usually keeps the compiled-in recipe set rather than emptying the crafting
-        // table.
-        gameplay::recipeTable().load(dataStack);
-        // Block loot the same way: the baked drop floor, then any block loot tables a
-        // datapack supplies; no `data/` keeps the built-in drops.
-        gameplay::lootTable().load(dataStack);
-        // The biome spawn tables come from the same `data/` half, and follow the
-        // same rule: an ordinary resource pack ships no `data/`, so this usually
-        // keeps the compiled-in 26.1 numbers rather than leaving the world empty.
-        gameplay::biomeSpawnTables().load(dataStack);
-    };
-    loadDataPacks(packManager);
+    // The data-driven gameplay tables' built-in floor: no pack stack, so this
+    // is exactly the state a fresh save with no <save>/datapacks/ rebuilds to.
+    gameplay::PerSaveDataStack::rebuildBuiltinOnly(bundled);
 
     // The resource stack: render-only, `assets/` half. Render-only means the
     // dedicated server (no VulkanRenderer) never calls this — the guardrail
