@@ -37,6 +37,7 @@
 #include "render/ParticleSystem.hpp"
 #include "render/PerspectiveCamera.hpp"
 #include "render/RainSystem.hpp"
+#include "render/SectionDeliveryQueue.hpp"
 #include "render/StreamingBudget.hpp"
 #include "ui/Language.hpp"
 #include "ui/TextFont.hpp"
@@ -96,7 +97,7 @@ class WorldRenderer final {
     VkPipelineLayout& occlusionQueryLayout;
     AllocatedBuffer& occlusionBoxVertexBuffer;
     AllocatedBuffer& occlusionBoxIndexBuffer;
-    std::deque<world::SectionPosition>& pendingSectionOrder;
+    render::SectionDeliveryQueue<world::SectionPosition, world::SectionPositionHash>& pendingSectionOrder;
     world::SmoothLightingQuality& currentMeshQuality;
     world::SmoothLightingQuality& targetMeshQuality;
     std::unordered_set<world::SectionPosition, world::SectionPositionHash>& qualityRemeshPending;
@@ -339,7 +340,11 @@ class WorldRenderer final {
         // transient overlay. The worker's authoritative rebuild carries a strictly
         // higher revision and overrides it when its batch is polled.
         if (!pendingSectionUpdates.contains(position)) {
-            pendingSectionOrder.push_front(position);
+            // highPriority == true routes this into the queue's priority lane
+            // (ahead of every ring bucket), matching the old push_front
+            // behaviour for instant edit previews. The ring argument is
+            // unused for priority entries.
+            pendingSectionOrder.push(position, 0, true);
         }
         pendingSectionUpdates.insert_or_assign(position, std::move(update));
     }
@@ -485,52 +490,60 @@ class WorldRenderer final {
             }
             latestSectionRevisions.insert_or_assign(update.position, update.revision);
             update.highPriority = batch.highPriority;
+            // CS-2: the Chebyshev ring of this section relative to *this*
+            // batch's own request centre. This used to be computed only
+            // under chunkTrace (diagnostics-only); it is now load-bearing —
+            // it is the bucket key the delivery queue uses to keep upload
+            // order a strict centre-out ring expansion instead of plain
+            // arrival order. Same "capture at this batch's centre, not the
+            // newest one" reasoning as the CS-1b ring-tracking fix: a
+            // section uploaded after the centre later moves must still be
+            // scored against the centre that actually requested it.
+            const int enqueueRing =
+                std::max(std::abs(update.position.chunkX - batch.center.x),
+                         std::abs(update.position.chunkZ - batch.center.z));
             if (chunkTrace) {
-                // Bug 2 fix: capture the ring against *this* batch's centre now,
-                // so a section uploaded after the centre later moves is scored
-                // against the centre that requested it (ring stays in
-                // [0, loadRadius]) rather than the newest chunkTraceCenter_.
-                const int enqueueRing =
-                    std::max(std::abs(update.position.chunkX - batch.center.x),
-                             std::abs(update.position.chunkZ - batch.center.z));
                 pendingSectionEnqueueRing_[update.position] = enqueueRing;
             }
             if (!pendingSectionUpdates.contains(update.position)) {
-                // Cap the mesh backlog. High-priority updates push_front and
-                // repeat positions never re-queue, so order.back() is always the
-                // oldest low-priority entry; evict it and roll back its revision
-                // so a later batch re-queues the section instead of skipping it
-                // as stale.
+                // Cap the mesh backlog. High-priority entries are exempt
+                // (they are never queued as anything but priority — see
+                // below — and evictFarthest never touches the priority
+                // lane). CS-2: eviction now takes from the delivery queue's
+                // farthest non-empty ring bucket, not the FIFO tail. The old
+                // FIFO tail was frequently a near-centre section that simply
+                // arrived late in a batch that also queued a lot of
+                // far-ring work ahead of it — evicting it was the direct
+                // cause of the observed centre-chunk starvation. Evicting
+                // the farthest ring instead guarantees the shed work is
+                // never closer than anything left queued.
                 if (!update.highPriority &&
-                    pendingSectionUpdates.size() >= kMaxPendingSectionUpdates &&
-                    !pendingSectionOrder.empty()) {
-                    const world::SectionPosition victim = pendingSectionOrder.back();
-                    const auto victimFound = pendingSectionUpdates.find(victim);
-                    if (victimFound != pendingSectionUpdates.end() &&
-                        !victimFound->second.highPriority) {
-                        latestSectionRevisions.erase(victim);
-                        pendingSectionUpdates.erase(victimFound);
-                        pendingSectionOrder.pop_back();
-                        pendingSectionEnqueueRing_.erase(victim);
-                        // Dropping a section that was queued but never uploaded
-                        // would leave a permanent hole once the worker's streaming
-                        // backlog drains (the symptom: missing chunks that only
-                        // reappear when a placed block forces a remesh). Re-request
-                        // a remesh so the section is delivered again after the
-                        // backlog clears. Sections already on the GPU only lose a
-                        // re-mesh, so they need no re-request.
-                        if (!gpuMeshes.contains(victim)) {
-                            chunkStreamer.requestSectionRemesh(victim);
+                    pendingSectionUpdates.size() >= kMaxPendingSectionUpdates) {
+                    if (const auto victim = pendingSectionOrder.evictFarthest()) {
+                        const auto victimFound = pendingSectionUpdates.find(*victim);
+                        if (victimFound != pendingSectionUpdates.end()) {
+                            latestSectionRevisions.erase(*victim);
+                            pendingSectionUpdates.erase(victimFound);
+                            pendingSectionEnqueueRing_.erase(*victim);
+                            // Dropping a section that was queued but never uploaded
+                            // would leave a permanent hole once the worker's streaming
+                            // backlog drains (the symptom: missing chunks that only
+                            // reappear when a placed block forces a remesh). Re-request
+                            // a remesh so the section is delivered again after the
+                            // backlog clears. Sections already on the GPU only lose a
+                            // re-mesh, so they need no re-request.
+                            if (!gpuMeshes.contains(*victim)) {
+                                chunkStreamer.requestSectionRemesh(*victim);
+                            }
                         }
                     }
                 }
                 // Gameplay edit batches jump ahead of streaming so recent world
-                // changes are not stuck behind a queue of distant chunk meshes.
-                if (batch.highPriority) {
-                    pendingSectionOrder.push_front(update.position);
-                } else {
-                    pendingSectionOrder.push_back(update.position);
-                }
+                // changes are not stuck behind a queue of distant chunk meshes;
+                // everything else queues by ring so delivery stays a strict
+                // centre-out expansion regardless of which order this batch's
+                // sections happened to finish meshing in.
+                pendingSectionOrder.push(update.position, enqueueRing, batch.highPriority);
             }
             pendingSectionUpdates.insert_or_assign(update.position, std::move(update));
         }
@@ -837,7 +850,7 @@ class WorldRenderer final {
             const world::SectionPosition position = pendingSectionOrder.front();
             const auto found = pendingSectionUpdates.find(position);
             if (found == pendingSectionUpdates.end()) {
-                pendingSectionOrder.pop_front();
+                pendingSectionOrder.popFront();
                 continue;
             }
 
@@ -869,7 +882,7 @@ class WorldRenderer final {
 
             world::SectionMeshUpdate update = std::move(found->second);
             pendingSectionUpdates.erase(found);
-            pendingSectionOrder.pop_front();
+            pendingSectionOrder.popFront();
             ++processedUpdates;
             // Bug 2 fix: pull the ring captured at enqueue time (against the
             // batch centre that requested this section) and drop it from the
@@ -2356,7 +2369,7 @@ class WorldRenderer final {
   VkPipelineLayout& occlusionQueryLayout;
   AllocatedBuffer& occlusionBoxVertexBuffer;
   AllocatedBuffer& occlusionBoxIndexBuffer;
-  std::deque<world::SectionPosition>& pendingSectionOrder;
+  render::SectionDeliveryQueue<world::SectionPosition, world::SectionPositionHash>& pendingSectionOrder;
   world::SmoothLightingQuality& currentMeshQuality;
   world::SmoothLightingQuality& targetMeshQuality;
   std::unordered_set<world::SectionPosition, world::SectionPositionHash>& qualityRemeshPending;

@@ -1198,7 +1198,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 update.position = {0, sectionY, 0};
                 update.mesh = world::ChunkMesher::buildSection(clientCache, {0, 0}, sectionY);
                 update.revision = static_cast<std::uint64_t>(sectionY);
-                pendingSectionOrder.push_back(update.position);
+                pendingSectionOrder.push(update.position, 0, false);
                 latestSectionRevisions.insert_or_assign(update.position, update.revision);
                 pendingSectionUpdates.insert_or_assign(update.position, std::move(update));
             }
@@ -1238,7 +1238,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         update.mesh =
             world::ChunkMesher::buildSection(clientCache, {0, 0}, update.position.sectionY);
         update.revision = 1U;
-        pendingSectionOrder.push_back(update.position);
+        pendingSectionOrder.push(update.position, 0, false);
         latestSectionRevisions.insert_or_assign(update.position, update.revision);
         pendingSectionUpdates.insert_or_assign(update.position, std::move(update));
         if (testScene->block == world::Block::Chest) {
@@ -6627,7 +6627,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     VkPipelineLayout occlusionQueryLayout = VK_NULL_HANDLE;
     AllocatedBuffer occlusionBoxVertexBuffer;
     AllocatedBuffer occlusionBoxIndexBuffer;
-    std::deque<world::SectionPosition> pendingSectionOrder;
+    render::SectionDeliveryQueue<world::SectionPosition, world::SectionPositionHash>
+        pendingSectionOrder;
     std::unordered_map<world::SectionPosition, world::SectionMeshUpdate, world::SectionPositionHash>
         pendingSectionUpdates;
     std::unordered_map<world::SectionPosition, std::uint64_t, world::SectionPositionHash>
