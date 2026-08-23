@@ -4009,6 +4009,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             return snap.furnaceFuel;
         case gameplay::SlotKind::FurnaceOutput:
             return snap.furnaceOutput;
+        case gameplay::SlotKind::Equipment:
+            // EQ-1: the 4 armour slots + offhand the storage half publishes each
+            // tick (WorldSnapshot::equipmentSlots), indexed by EquipmentSlot.
+            return snap.equipmentSlots[index];
         case gameplay::SlotKind::PlayerCraftingOutput:
         case gameplay::SlotKind::TableCraftingOutput:
             // Output slots are not drag targets (acceptsItems is false), so the
