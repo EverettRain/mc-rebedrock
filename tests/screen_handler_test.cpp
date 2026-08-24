@@ -318,10 +318,48 @@ void testCreativeCatalogQuickDiscard() {
     REQUIRE(session.inventory().slot(4).empty());
 }
 
+// RN-3: the renderer publishes equipmentSlots keyed by EquipmentSlot's
+// underlying value (GameSession fills equipmentSlots[i] = equipment.get(
+// EquipmentSlot(i))), but the HUD asks for slots in screen draw order
+// [Head,Chest,Legs,Feet,Offhand] = enum values [4,3,2,1,0], reversed. Reading
+// that enum-keyed array with the raw screen index only lands for Legs; the
+// renderer must route the screen index through equipmentSlotAt first. This
+// pins that invariant headless, since the renderer's snapshotStackAt needs a
+// full Vulkan renderer and cannot be constructed here.
+void testEquipmentScreenIndexMapping() {
+    // Mirror GameSession's fill: index the array by EquipmentSlot value, with a
+    // distinct sentinel per slot so a wrong read is observable.
+    std::array<gameplay::ItemStack, gameplay::kEquipmentSlotCount> byEnumValue{};
+    for (std::size_t i = 0; i < gameplay::kEquipmentSlotCount; ++i) {
+        byEnumValue[i] = {world::Block::Stone, static_cast<std::uint8_t>(i + 1U)};
+    }
+
+    // The fix: screen index -> EquipmentSlot -> enum-keyed array. Head is drawn
+    // first (screen 0) and stored last (enum 4); Offhand is drawn last (screen
+    // 4) and stored first (enum 0).
+    const auto read = [&](std::size_t screenIndex) {
+        return byEnumValue[static_cast<std::size_t>(
+            gameplay::equipmentSlotAt(screenIndex))].count;
+    };
+    REQUIRE(read(0U) == static_cast<std::uint8_t>(gameplay::EquipmentSlot::Head) + 1U);
+    REQUIRE(read(1U) == static_cast<std::uint8_t>(gameplay::EquipmentSlot::Chest) + 1U);
+    REQUIRE(read(2U) == static_cast<std::uint8_t>(gameplay::EquipmentSlot::Legs) + 1U);
+    REQUIRE(read(3U) == static_cast<std::uint8_t>(gameplay::EquipmentSlot::Feet) + 1U);
+    REQUIRE(read(4U) == static_cast<std::uint8_t>(gameplay::EquipmentSlot::Offhand) + 1U);
+
+    // And the old bug (indexing the enum-keyed array with the raw screen index)
+    // must disagree at the ends: screen 0 (Head) and screen 4 (Offhand) swap,
+    // only screen 2 (Legs) coincides.
+    REQUIRE(byEnumValue[0U].count != read(0U));
+    REQUIRE(byEnumValue[4U].count != read(4U));
+    REQUIRE(byEnumValue[2U].count == read(2U));
+}
+
 } // namespace
 
 int main() {
     testPlayerScreen();
+    testEquipmentScreenIndexMapping();
     testCreativeTabs();
     testChestScreen();
     testFurnaceScreen();

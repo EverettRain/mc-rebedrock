@@ -4011,8 +4011,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             return snap.furnaceOutput;
         case gameplay::SlotKind::Equipment:
             // EQ-1: the 4 armour slots + offhand the storage half publishes each
-            // tick (WorldSnapshot::equipmentSlots), indexed by EquipmentSlot.
-            return snap.equipmentSlots[index];
+            // tick (WorldSnapshot::equipmentSlots), indexed by EquipmentSlot's
+            // underlying value. RN-3: `index` here is the screen's own draw order
+            // ([Head,Chest,Legs,Feet,Offhand] = enum values [4,3,2,1,0], reversed),
+            // so map through equipmentSlotAt() — the same screen-order → enum
+            // conversion the click router (ScreenHandler::resolveSlotStorage) uses
+            // — instead of indexing the enum-keyed array with the draw-order index.
+            return snap.equipmentSlots[static_cast<std::size_t>(
+                gameplay::equipmentSlotAt(index))];
         case gameplay::SlotKind::PlayerCraftingOutput:
         case gameplay::SlotKind::TableCraftingOutput:
             // Output slots are not drag targets (acceptsItems is false), so the
