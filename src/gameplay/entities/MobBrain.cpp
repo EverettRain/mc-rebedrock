@@ -652,7 +652,7 @@ std::optional<glm::ivec3> MobBrain::takeEatGrassRequest() {
 bool ActiveTargetPlayerGoal::canStart(SimpleEntity& self, MobAiContext& context, MobBrain&) {
     const auto& player = context.player();
     if (!player.present || !player.alive || player.creative ||
-        nextRandom(self.rngState) % 10U != 0U) {
+        mc::rng::nextInt(self.rngState, 10U) != 0U) {
         return false;
     }
     const float followRange = self.kind().attributes().followRange();
@@ -776,7 +776,7 @@ void MeleeAttackGoal::tick(SimpleEntity& self, MobAiContext& context, MobBrain& 
         const bool started = brain.navigation().startMovingTo(context.world(), self,
                                                               *targetPosition, speedMultiplier_);
         lastTargetPosition_ = *targetPosition;
-        repathCooldownTicks_ = 4 + static_cast<int>(nextRandom(self.rngState) % 7U);
+        repathCooldownTicks_ = 4 + static_cast<int>(mc::rng::nextInt(self.rngState, 7U));
         // 1.16.1 adds fifteen ticks when navigation rejects the route, avoiding
         // a cluster of unreachable mobs all rebuilding failed paths at 4–10 tick
         // cadence while still letting them retry if the world changes.
@@ -861,7 +861,7 @@ bool WanderAroundFarGoal::canStart(SimpleEntity& self, MobAiContext& context, Mo
     if (!brain.navigation().isIdle() || self.wanderTimer > 0U) {
         return false;
     }
-    self.wanderTimer = 40U + nextRandom(self.rngState) % 60U;
+    self.wanderTimer = 40U + mc::rng::nextInt(self.rngState, 60U);
     if (randomUnit(self.rngState) < 0.25F) {
         return false;
     }
@@ -894,7 +894,7 @@ bool LookAtPlayerGoal::canStart(SimpleEntity& self, MobAiContext& context, MobBr
     if (horizontalDistanceSquared(self.position, context.player().position) > range_ * range_) {
         return false;
     }
-    remainingTicks_ = 40 + static_cast<int>(nextRandom(self.rngState) % 40U);
+    remainingTicks_ = 40 + static_cast<int>(mc::rng::nextInt(self.rngState, 40U));
     return true;
 }
 
@@ -918,7 +918,7 @@ bool LookAroundGoal::shouldContinue(SimpleEntity&, MobAiContext&, MobBrain&) {
 }
 
 void LookAroundGoal::start(SimpleEntity& self, MobAiContext&, MobBrain&) {
-    remainingTicks_ = 20 + static_cast<int>(nextRandom(self.rngState) % 20U);
+    remainingTicks_ = 20 + static_cast<int>(mc::rng::nextInt(self.rngState, 20U));
     lookYaw_ = randomUnit(self.rngState) * 6.28318530718F;
 }
 
@@ -1110,7 +1110,7 @@ bool EatGrassGoal::canStart(SimpleEntity& self, MobAiContext& context, MobBrain&
     if (!self.sheared) {
         return false;
     }
-    if (nextRandom(self.rngState) % 1000U != 0U) {
+    if (mc::rng::nextInt(self.rngState, 1000U) != 0U) {
         return false;
     }
     return findEdibleGrass(context.world(), self).has_value();

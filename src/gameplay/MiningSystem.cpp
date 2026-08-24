@@ -3,6 +3,7 @@
 #include "gameplay/BlockTags.hpp"
 #include "gameplay/ItemPlacement.hpp"
 #include "gameplay/LootTable.hpp"
+#include "gameplay/Random.hpp"
 #include "world/BlockRegistry.hpp" // kBuiltinBlockCount
 
 #include <limits>
@@ -11,35 +12,31 @@
 namespace mc::gameplay {
 namespace {
 
-// The same LCG the entity wander uses, so loot stays reproducible without a
-// global generator (see EntitySystem.cpp).
-[[nodiscard]] std::uint32_t nextRandom(std::uint32_t& state) {
-    state = state * 1664525U + 1013904223U;
-    return state;
-}
+// The same generator the entity wander uses (the shared mc::rng, Java's
+// LegacyRandomSource core), so loot stays reproducible without a global RNG
+// (see EntitySystem.cpp).
 
-// A value in [0, 1) from the top 24 bits (the low bits of an LCG are weak).
-[[nodiscard]] float randomUnit(std::uint32_t& state) {
-    return static_cast<float>(nextRandom(state) >> 8) / static_cast<float>(1U << 24);
-}
+// A value in [0, 1) — Java nextFloat, from the top 24 bits.
+[[nodiscard]] float randomUnit(std::uint64_t& state) { return mc::rng::nextFloat(state); }
 
 // One roll of a loot-table condition. Always consumes a value so the sequence
 // does not depend on earlier entries succeeding.
-[[nodiscard]] bool rollChance(std::uint32_t& state, float chance) {
+[[nodiscard]] bool rollChance(std::uint64_t& state, float chance) {
     return randomUnit(state) < chance;
 }
 
 // A uniform count in [minimum, maximum], mirroring UniformLootNumberProvider.
-[[nodiscard]] std::uint8_t randomCount(std::uint32_t& state, std::uint8_t minimum,
+// The high-bit nextInt draw carries no modulo bias for any span.
+[[nodiscard]] std::uint8_t randomCount(std::uint64_t& state, std::uint8_t minimum,
                                        std::uint8_t maximum) {
     const std::uint32_t span = static_cast<std::uint32_t>(maximum - minimum) + 1U;
-    return static_cast<std::uint8_t>(minimum + (nextRandom(state) >> 8) % span);
+    return static_cast<std::uint8_t>(minimum + mc::rng::nextInt(state, span));
 }
 
 // The number of successes from `trials` independent rolls at `probability`,
 // mirroring the binomial_with_bonus_count bonus formula the crop loot tables
 // use for their extra produce (extra=3, probability=0.5714286 at fortune 0).
-[[nodiscard]] std::uint8_t binomialCount(std::uint32_t& state, int trials, float probability) {
+[[nodiscard]] std::uint8_t binomialCount(std::uint64_t& state, int trials, float probability) {
     std::uint8_t count = 0U;
     for (int roll = 0; roll < trials; ++roll) {
         if (rollChance(state, probability)) {
@@ -172,7 +169,7 @@ namespace {
 // the drop *data* moved into the baked loot floor + datapack overlay, and this
 // one function reads it. It is also the handler for external blocks. The random
 // blocks (leaves, gravel, crops) keep their own handlers below.
-MinedDrops dropFromLootOrDefault(world::Block block, const ItemStack&, std::uint32_t&, int,
+MinedDrops dropFromLootOrDefault(world::Block block, const ItemStack&, std::uint64_t&, int,
                                  bool doubledSlab) {
     MinedDrops drops;
     if (const LootEntry* entry = lootTable().find(block); entry != nullptr) {
@@ -190,7 +187,7 @@ MinedDrops dropFromLootOrDefault(world::Block block, const ItemStack&, std::uint
 // Without shears or silk touch the leaves themselves are lost; what is left are
 // the rolls of the vanilla leaves tables. Jungle leaves drop their sapling at
 // 1/40 rather than 1/20, and only oak and dark oak carry the apple roll.
-MinedDrops dropLeaves(world::Block block, const ItemStack&, std::uint32_t& randomState, int, bool) {
+MinedDrops dropLeaves(world::Block block, const ItemStack&, std::uint64_t& randomState, int, bool) {
     MinedDrops drops;
     if (rollChance(randomState, block == world::Block::JungleLeaves ? 0.025F : 0.05F)) {
         drops.add({saplingForLeaves(block), 1U, blockItemFor(saplingForLeaves(block))});
@@ -206,7 +203,7 @@ MinedDrops dropLeaves(world::Block block, const ItemStack&, std::uint32_t& rando
 }
 
 // 10% flint, and the gravel itself only when that roll fails.
-MinedDrops dropGravel(world::Block, const ItemStack&, std::uint32_t& randomState, int, bool) {
+MinedDrops dropGravel(world::Block, const ItemStack&, std::uint64_t& randomState, int, bool) {
     MinedDrops drops;
     if (rollChance(randomState, 0.10F)) {
         drops.add({world::Block::Air, 1U, &items::Flint});
@@ -218,7 +215,7 @@ MinedDrops dropGravel(world::Block, const ItemStack&, std::uint32_t& randomState
 
 // Tall grass drops a wheat seed 1/8 of the time (1.16.1's grass.json loot
 // table); the grass plant itself is only kept by shears.
-MinedDrops dropTallGrass(world::Block, const ItemStack&, std::uint32_t& randomState, int, bool) {
+MinedDrops dropTallGrass(world::Block, const ItemStack&, std::uint64_t& randomState, int, bool) {
     MinedDrops drops;
     if (rollChance(randomState, 0.125F)) {
         drops.add({world::Block::Air, 1U, &items::WheatSeeds});
@@ -228,7 +225,7 @@ MinedDrops dropTallGrass(world::Block, const ItemStack&, std::uint32_t& randomSt
 
 // Wheat's loot table: at age 7 the guaranteed pool drops wheat and an extra
 // binomial(3, 0.5714) roll of seeds; an immature crop drops a single seed.
-MinedDrops dropWheat(world::Block block, const ItemStack&, std::uint32_t& randomState, int age, bool) {
+MinedDrops dropWheat(world::Block block, const ItemStack&, std::uint64_t& randomState, int age, bool) {
     MinedDrops drops;
     const bool mature = age >= 7;
     drops.add({world::Block::Air, 1U, mature ? produceForCrop(block) : seedForCrop(block)});
@@ -243,7 +240,7 @@ MinedDrops dropWheat(world::Block block, const ItemStack&, std::uint32_t& random
 
 // Carrot/potato share a table: one crop unconditionally (so even a young plant
 // yields one), plus a binomial(3, 0.5714) extra roll at maturity.
-MinedDrops dropCarrotPotato(world::Block block, const ItemStack&, std::uint32_t& randomState,
+MinedDrops dropCarrotPotato(world::Block block, const ItemStack&, std::uint64_t& randomState,
                             int age, bool) {
     MinedDrops drops;
     std::uint8_t count = 1U;
@@ -286,7 +283,7 @@ MinedDrops dropCarrotPotato(world::Block block, const ItemStack&, std::uint32_t&
 
 } // namespace
 
-std::int32_t rollOreExperience(std::uint32_t& randomState, OreExperienceRange range) {
+std::int32_t rollOreExperience(std::uint64_t& randomState, OreExperienceRange range) {
     return static_cast<std::int32_t>(randomCount(randomState, range.minimum, range.maximum));
 }
 
@@ -324,7 +321,7 @@ BlockDropFn blockDropFn(world::Block block) {
     return index < world::kBuiltinBlockCount ? dropTable()[index] : &dropFromLootOrDefault;
 }
 
-MinedDrops minedDrops(world::Block block, const ItemStack& tool, std::uint32_t& randomState,
+MinedDrops minedDrops(world::Block block, const ItemStack& tool, std::uint64_t& randomState,
                       int age, bool doubledSlab) {
     // Breaking a block with too weak a tool destroys it without any loot.
     if (!canHarvestBlock(block, tool)) return {};

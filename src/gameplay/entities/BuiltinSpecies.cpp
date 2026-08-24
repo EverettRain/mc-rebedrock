@@ -1,6 +1,7 @@
 #include "gameplay/entities/BuiltinSpecies.hpp"
 
 #include "gameplay/Item.hpp"
+#include "gameplay/Random.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/MobAi.hpp"
 #include "gameplay/entities/MobBrain.hpp"
@@ -62,9 +63,9 @@ const MeleeMonsterAi kMeleeMonsterAi;
 // Chicken.json (26.1): one raw chicken plus 0-2 feathers. (Vanilla swaps the
 // raw chicken for cooked when the chicken dies on fire; that path is not
 // modelled here, same simplification CowEntity's loot notes.)
-EntityDrops rollChickenLoot(std::uint32_t& rng) {
+EntityDrops rollChickenLoot(std::uint64_t& rng) {
     EntityDrops drops;
-    const auto feathers = static_cast<std::uint8_t>((nextRandom(rng) >> 8) % 3U);
+    const auto feathers = static_cast<std::uint8_t>(mc::rng::nextInt(rng, 3U));
     drops.add({world::Block::Air, 1U, &items::RawChicken});
     drops.add({world::Block::Air, feathers, &items::Feather});
     return drops;
@@ -74,9 +75,9 @@ EntityDrops rollChickenLoot(std::uint32_t& rng) {
 // sheep's dye colour. Colour variants (dye/AR-A2 shearing) are out of scope
 // here — every sheep this manifest spawns drops white wool, the default a
 // freshly-spawned sheep carries before any dye interaction exists.
-EntityDrops rollSheepLoot(std::uint32_t& rng) {
+EntityDrops rollSheepLoot(std::uint64_t& rng) {
     EntityDrops drops;
-    const auto mutton = static_cast<std::uint8_t>(1U + (nextRandom(rng) >> 8) % 2U);
+    const auto mutton = static_cast<std::uint8_t>(1U + mc::rng::nextInt(rng, 2U));
     drops.add({world::Block::Air, mutton, &items::Mutton});
     drops.add({world::Block::WhiteWool, 1U, blockItemFor(world::Block::WhiteWool)});
     return drops;
@@ -86,9 +87,9 @@ EntityDrops rollSheepLoot(std::uint32_t& rng) {
 // husk drops nothing else (no armour/equipment table exists yet, AR-M2).
 // Shared with the zombie's own loot fn below since both tables are identical
 // in 26.1 (LootTables.ZOMBIE reused verbatim by Husk).
-EntityDrops rollRottenFleshLoot(std::uint32_t& rng) {
+EntityDrops rollRottenFleshLoot(std::uint64_t& rng) {
     EntityDrops drops;
-    const auto count = static_cast<std::uint8_t>((nextRandom(rng) >> 8) % 3U);
+    const auto count = static_cast<std::uint8_t>(mc::rng::nextInt(rng, 3U));
     drops.add({world::Block::Air, count, &items::RottenFlesh});
     return drops;
 }

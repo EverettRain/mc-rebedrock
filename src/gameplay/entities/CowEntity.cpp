@@ -1,6 +1,7 @@
 #include "gameplay/entities/CowEntity.hpp"
 
 #include "gameplay/EntitySystem.hpp"
+#include "gameplay/Random.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/MobAi.hpp"
 
@@ -24,10 +25,10 @@ const CowAi kCowAi;
 // entities/cow.json: one pool rolls 0-2 leather, the other 1-3 raw beef. (Vanilla
 // swaps the beef for cooked steak when the cow dies on fire; that path is not
 // modelled here.)
-EntityDrops rollCowLoot(std::uint32_t& rng) {
+EntityDrops rollCowLoot(std::uint64_t& rng) {
     EntityDrops drops;
-    const auto beefCount = static_cast<std::uint8_t>(1U + (nextRandom(rng) >> 8) % 3U);
-    const auto leatherCount = static_cast<std::uint8_t>((nextRandom(rng) >> 8) % 3U);
+    const auto beefCount = static_cast<std::uint8_t>(1U + mc::rng::nextInt(rng, 3U));
+    const auto leatherCount = static_cast<std::uint8_t>(mc::rng::nextInt(rng, 3U));
     drops.add({world::Block::Air, beefCount, &items::Beef});
     drops.add({world::Block::Air, leatherCount, &items::Leather});
     return drops;

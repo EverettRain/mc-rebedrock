@@ -918,8 +918,7 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     // The weather auto-cycle's RNG is seeded from the world the same way the
     // loot RNG is; the timers themselves come from the save above.
     gameSession_.weatherSystem().seedRandom(
-        static_cast<std::uint32_t>(currentSave_->summary.seed) ^
-        static_cast<std::uint32_t>(currentSave_->summary.seed >> 32U) ^ 0x57E4F10AU);
+        static_cast<std::uint64_t>(currentSave_->summary.seed) ^ 0x57E4F10AULL);
     // `@r` selectors draw from a world-seeded deterministic stream (never the
     // wall clock), so a fixed world plus a fixed command sequence always picks the
     // same target — the confidence the determinism rule wants.

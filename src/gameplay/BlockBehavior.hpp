@@ -180,7 +180,7 @@ struct NeighborUpdateContext final {
 };
 
 using GetDropsFn =
-    MinedDrops (*)(world::Block, const ItemStack&, std::uint32_t&, int, bool);
+    MinedDrops (*)(world::Block, const ItemStack&, std::uint64_t&, int, bool);
 using GetShapeFn = world::BlockShape (*)(world::BlockState);
 using GetStateForPlacementFn = std::optional<world::BlockState> (*)(const PlacementBehaviorContext&);
 using UseItemOnFn = void (*)(const InteractionBehaviorContext&);
@@ -337,7 +337,7 @@ template <class Fn>
 // This is behaviour-identical to calling minedDrops directly, which is what the
 // parity harness asserts across every block and tool.
 [[nodiscard]] inline MinedDrops dispatchBlockDrops(core::BlockId id, const ItemStack& tool,
-                                                   std::uint32_t& randomState, int age = 0,
+                                                   std::uint64_t& randomState, int age = 0,
                                                    bool doubledSlab = false) {
     const auto& behavior = behaviorFor(id);
     if (!behavior.prefilter.has(BlockBehaviorBit::HasDrops) || behavior.getDrops == nullptr) {

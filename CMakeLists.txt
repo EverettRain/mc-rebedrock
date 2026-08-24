@@ -1546,6 +1546,24 @@ if(BUILD_TESTING)
     )
     add_test(NAME mining_system COMMAND mc_rebedrock_mining_system_test)
 
+    add_executable(mc_rebedrock_rng_golden_test
+        tests/rng_golden_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_rng_golden_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_rng_golden_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME rng_golden COMMAND mc_rebedrock_rng_golden_test)
+
+    add_executable(mc_rebedrock_rng_scope_guard_test
+        tests/rng_scope_guard_test.cpp
+    )
+    target_compile_definitions(mc_rebedrock_rng_scope_guard_test PRIVATE
+        "MC_REBEDROCK_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/src\""
+    )
+    add_test(NAME rng_scope_guard COMMAND mc_rebedrock_rng_scope_guard_test)
+
     add_executable(mc_rebedrock_block_state_test
         tests/block_state_test.cpp
         src/world/Chunk.cpp

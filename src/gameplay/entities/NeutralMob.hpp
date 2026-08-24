@@ -20,12 +20,12 @@ class NeutralAi : public EntityAi {
   public:
     // Angerable#chooseRandomAngerTime: a provoked mob stays angry 20–39 seconds
     // (400–799 ticks). Overridable so a species can widen or narrow the window.
-    [[nodiscard]] virtual int chooseAngerTime(std::uint32_t& rng) const;
+    [[nodiscard]] virtual int chooseAngerTime(std::uint64_t& rng) const;
 
     // Angerable#setTarget via LivingEntity#damage: being hit starts (or refreshes)
     // the anger timer. A concrete neutral mob's target/pursuit goals would read
     // SimpleEntity::angry() to switch from wandering to chasing.
-    void onAttacked(SimpleEntity& self, std::uint32_t& rng) const override;
+    void onAttacked(SimpleEntity& self, std::uint64_t& rng) const override;
 
     // configureBrain stays pure virtual: a neutral species still has to install
     // its calm and provoked goals, exactly like any other creature.

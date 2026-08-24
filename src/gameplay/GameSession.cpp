@@ -3,6 +3,7 @@
 #include "gameplay/BlockEntityTicker.hpp"
 #include "gameplay/DimensionTransfer.hpp"
 #include "gameplay/GameplayMutationSink.hpp"
+#include "gameplay/Random.hpp"
 #include "gameplay/StatusEffect.hpp"
 
 #include "world/DayNightCycle.hpp"
@@ -157,9 +158,7 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
         const int trampleY = static_cast<int>(std::floor(feet.y - 0.001F));
         const int trampleZ = static_cast<int>(std::floor(feet.z));
         const auto soil = world.block(trampleX, trampleY, trampleZ);
-        lootRandomState_ = lootRandomState_ * 1664525U + 1013904223U;
-        const float roll =
-            static_cast<float>(lootRandomState_ >> 8) / static_cast<float>(1U << 24);
+        const float roll = mc::rng::nextFloat(lootRandomState_);
         if (world::isFarmland(soil) && roll < primaryPlayer().controller.fallDistance() - 0.5F) {
             // Trampling farmland is an ordinary world edit, so it goes through
             // the service: the section is dirtied and the neighbours (a crop

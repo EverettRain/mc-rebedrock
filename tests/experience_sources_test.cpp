@@ -341,7 +341,7 @@ void testOreExperienceRangeTable() {
 
 // rollOreExperience always lands inside the stated inclusive range.
 void testRollOreExperienceStaysInRange() {
-    std::uint32_t state = 0x1234ABCDU;
+    std::uint64_t state = 0x1234ABCDULL;
     const OreExperienceRange range{3U, 7U};
     for (int i = 0; i < 500; ++i) {
         const auto amount = rollOreExperience(state, range);
@@ -662,8 +662,8 @@ void testBreedingExperienceIsDeterministic() {
 // involved at all — this isolates the RNG contract itself from the block
 // break plumbing above). ---
 void testOreRollIsDeterministicAcrossIndependentStreams() {
-    std::uint32_t stateA = 777U;
-    std::uint32_t stateB = 777U;
+    std::uint64_t stateA = 777ULL;
+    std::uint64_t stateB = 777ULL;
     const OreExperienceRange range{2U, 5U};
     std::vector<std::int32_t> sequenceA;
     std::vector<std::int32_t> sequenceB;

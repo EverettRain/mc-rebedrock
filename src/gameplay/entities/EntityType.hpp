@@ -4,6 +4,7 @@
 #include "core/ContentId.hpp"
 #include "core/Identifier.hpp"
 #include "gameplay/Inventory.hpp"
+#include "gameplay/Random.hpp"
 #include "gameplay/entities/EntityAttributes.hpp"
 #include "gameplay/entities/EntityAttributeOverlay.hpp"
 
@@ -169,18 +170,11 @@ struct EntityDrops final {
     [[nodiscard]] std::span<const ItemStack> view() const { return {entries.data(), count}; }
 };
 
-// The shared deterministic LCG (Numerical Recipes constants). Exposed here so a
-// species' AI and loot draw from the entity's own reproducible stream, the same
-// generator the simulation advances — no separate global RNG, no <random>.
-[[nodiscard]] inline std::uint32_t nextRandom(std::uint32_t& state) {
-    state = state * 1664525U + 1013904223U;
-    return state;
-}
-
-// A value in [0, 1) from the top 24 bits (an LCG's low bits are weak).
-[[nodiscard]] inline float randomUnit(std::uint32_t& state) {
-    return static_cast<float>(nextRandom(state) >> 8) / static_cast<float>(1U << 24);
-}
+// A value in [0, 1) drawn from the entity's own reproducible stream, the same
+// generator the simulation advances — no separate global RNG, no <random>. This
+// forwards to the shared mc::rng (Java's LegacyRandomSource core); the old inline
+// 32-bit Numerical-Recipes LCG that lived here is gone.
+[[nodiscard]] inline float randomUnit(std::uint64_t& state) { return rng::nextFloat(state); }
 
 // The immutable AI profile for a species. The profile itself is shared, but it
 // configures a distinct MobBrain (and therefore distinct stateful Goal objects)
@@ -195,14 +189,14 @@ class EntityAi {
     virtual void configureBrain(MobBrain& brain) const = 0;
 
     // Fires once when a creature spawns, the moment MobEntity#initGoals runs.
-    virtual void onSpawn(SimpleEntity& self, std::uint32_t& rng) const {
+    virtual void onSpawn(SimpleEntity& self, std::uint64_t& rng) const {
         static_cast<void>(self);
         static_cast<void>(rng);
     }
 
     // A species-level tick hook for behavior outside the Goal selectors. It is
     // called before the per-entity MobBrain every simulation tick.
-    virtual void tick(SimpleEntity& self, std::uint32_t& rng) const {
+    virtual void tick(SimpleEntity& self, std::uint64_t& rng) const {
         static_cast<void>(self);
         static_cast<void>(rng);
     }
@@ -210,14 +204,14 @@ class EntityAi {
     // LivingEntity#damage → Angerable#setTarget: fired when the creature takes a
     // hit, the hook a neutral species overrides to turn on its attacker. Default
     // does nothing, so passive and hostile mobs ignore it; see NeutralMob.hpp.
-    virtual void onAttacked(SimpleEntity& self, std::uint32_t& rng) const {
+    virtual void onAttacked(SimpleEntity& self, std::uint64_t& rng) const {
         static_cast<void>(self);
         static_cast<void>(rng);
     }
 };
 
 // A species' loot table, reduced to a roll against the entity's RNG stream.
-using LootRoll = EntityDrops (*)(std::uint32_t& rng);
+using LootRoll = EntityDrops (*)(std::uint64_t& rng);
 
 // The per-species boolean behaviours that decide whether a mechanic touches a
 // creature at all: "does this type burn?", "does this type burn in daylight?".
@@ -346,7 +340,7 @@ class EntityType final {
     }
 
     // Loot-table roll for a creature of this type; empty when none is defined.
-    [[nodiscard]] EntityDrops rollLoot(std::uint32_t& rng) const {
+    [[nodiscard]] EntityDrops rollLoot(std::uint64_t& rng) const {
         return loot_ != nullptr ? loot_(rng) : EntityDrops{};
     }
 

@@ -2,6 +2,7 @@
 
 #include "gameplay/EntitySystem.hpp"
 #include "gameplay/Item.hpp"
+#include "gameplay/Random.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/MobAi.hpp"
 #include "gameplay/entities/MobBrain.hpp"
@@ -32,9 +33,9 @@ const ZombieAi kZombieAi;
 // rolls the identical range; the two are kept as separate functions rather
 // than a shared header entry point because every other species' loot fn in
 // this codebase is likewise local to its own translation unit (Cow/Pig).
-EntityDrops rollZombieLoot(std::uint32_t& rng) {
+EntityDrops rollZombieLoot(std::uint64_t& rng) {
     EntityDrops drops;
-    const auto count = static_cast<std::uint8_t>((nextRandom(rng) >> 8) % 3U);
+    const auto count = static_cast<std::uint8_t>(mc::rng::nextInt(rng, 3U));
     drops.add({world::Block::Air, count, &items::RottenFlesh});
     return drops;
 }

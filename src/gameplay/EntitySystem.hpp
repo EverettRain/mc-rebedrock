@@ -59,7 +59,9 @@ struct SimpleEntity final {
     float movementSpeedMultiplier = 1.0F;
     unsigned int ageTicks = 0U;
     unsigned int wanderTimer = 0U;
-    std::uint32_t rngState = 0U;
+    // The 48-bit LegacyRandomSource state (stored in a u64) this creature's
+    // wander/AI/loot draws advance in place. Widened from 32-bit with RNG-0.
+    std::uint64_t rngState = 0U;
 
     // LivingEntity#getAttacker plus a monotonically increasing hit sequence.
     // EscapeDangerGoal consumes every landed hit once while the stable actor
@@ -267,7 +269,7 @@ class EntitySystem final {
     // deterministic so tests and replays are reproducible; 0 derives a seed from
     // the spawn order. The type must outlive every creature spawned from it,
     // which registered types (static storage) always do.
-    void spawn(glm::vec3 position, const entities::EntityType& type, std::uint32_t seed = 0U);
+    void spawn(glm::vec3 position, const entities::EntityType& type, std::uint64_t seed = 0U);
 
     // Restores a creature from a save record: spawns it and overwrites the pose
     // and fields a fresh spawn would not reproduce (velocity, health, yaw, the
@@ -275,7 +277,7 @@ class EntitySystem final {
     // it left off. Returns the stable id the restored creature holds.
     std::uint64_t restore(glm::vec3 position, const entities::EntityType& type, float yaw,
                           glm::vec3 velocity, float health, int angerTicks,
-                          unsigned int ageTicks, std::uint32_t rngState, int fireTicks = 0,
+                          unsigned int ageTicks, std::uint64_t rngState, int fireTicks = 0,
                           const ActiveEffects& effects = {}, int age = 0, int loveTicks = 0);
 
     // Advances every creature one 20 TPS tick against the world: target/action
@@ -491,7 +493,9 @@ class EntitySystem final {
     std::vector<PendingMobSound> pendingSounds_;
     // XP-2: (position, points) pairs from a gated kill or a successful breed.
     std::vector<std::pair<glm::vec3, std::int32_t>> pendingExperience_;
-    std::uint32_t lootRandomState_ = 0x1F123BB5U;
+    // The 48-bit mc::rng state (Java LegacyRandomSource core) mob-death loot
+    // rolls advance. Session-derived, so a fixed raw internal state.
+    std::uint64_t lootRandomState_ = 0x00001F123BB5ULL;
     std::uint64_t nextEntityId_ = 1U;
     std::uint64_t gameTick_ = 0U;
 };

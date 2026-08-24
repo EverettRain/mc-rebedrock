@@ -98,7 +98,9 @@ class NaturalSpawner final {
 
     std::unique_ptr<world::gen::BiomeSource> biomes_;
     BiomeSpawnTables tables_;
-    std::uint32_t randomState_ = 0x9E3779B9U;
+    // The 48-bit mc::rng state (Java LegacyRandomSource core) the spawn batch
+    // advances. Session-only (rebuilt each run), so a fixed raw internal state.
+    std::uint64_t randomState_ = 0x0000'9E3779B9ULL;
 };
 
 } // namespace mc::gameplay

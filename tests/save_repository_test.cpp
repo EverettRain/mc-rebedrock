@@ -132,6 +132,65 @@ void writeLegacyVersion4Region(const std::filesystem::path& path, std::int32_t r
                  static_cast<std::streamsize>(writer.bytes.size()));
 }
 
+// RNG-0: a region file written by hand at CCNK version 4 carrying one entity,
+// whose `rngState` is a 32-bit field (the width before RNG-0 widened it to a
+// 48-bit state stored in a u64). Reading it back on this build must zero-extend
+// those low 32 bits into the wide field — a valid migrated state — rather than
+// mis-parse the record. Version 4 also predates CS-5's `populated` byte, so the
+// chunk stops right after the entity list.
+void writeLegacyVersion4RegionWithEntity(const std::filesystem::path& path,
+                                         std::int32_t regionX, std::int32_t regionZ,
+                                         std::int32_t chunkX, std::int32_t chunkZ,
+                                         std::uint32_t legacyRngState) {
+    LegacyWriter writer;
+    for (const char character : std::string_view{"MCRBREG"}) {
+        writer.bytes.push_back(static_cast<std::uint8_t>(character));
+    }
+    writer.bytes.push_back(0U);          // magic's 8th byte
+    writer.integer<std::uint32_t>(1U);   // kRegionFileVersion
+    writer.integer<std::int32_t>(regionX);
+    writer.integer<std::int32_t>(regionZ);
+    writer.integer<std::uint32_t>(1U);   // chunk count
+    // State palette: only air (no edits).
+    writer.integer<std::uint16_t>(1U);
+    writer.stringValue("air");
+    writer.integer<std::uint8_t>(0U);
+    // Species palette: one entry so the entity can reference it.
+    writer.integer<std::uint16_t>(1U);
+    writer.stringValue("cow");
+    writer.block(fourCC("CCNK"), 4U, [&] {
+        writer.integer<std::int32_t>(chunkX);
+        writer.integer<std::int32_t>(chunkZ);
+        writer.integer<std::uint32_t>(0U);  // edit count
+        writer.integer<std::uint32_t>(1U);  // entity count
+        // One version-4 entity record. Its chunk-local position must land inside
+        // chunk (chunkX, chunkZ) so the reader accepts it.
+        writer.integer<std::uint16_t>(0U);            // species index -> "cow"
+        writer.floating(static_cast<float>(chunkX) * 16.0F + 8.0F);  // x
+        writer.floating(64.0F);                        // y
+        writer.floating(static_cast<float>(chunkZ) * 16.0F + 8.0F);  // z
+        writer.floating(0.0F);                         // yaw
+        writer.floating(0.0F);                         // vx
+        writer.floating(0.0F);                         // vy
+        writer.floating(0.0F);                         // vz
+        writer.floating(10.0F);                        // health
+        writer.integer<std::int32_t>(0);               // angerTicks
+        writer.integer<std::uint32_t>(0U);             // ageTicks
+        writer.integer<std::uint32_t>(legacyRngState); // rngState — 32-bit (version < 6)
+        writer.integer<std::int32_t>(0);               // fireTicks (version >= 2)
+        writer.integer<std::uint8_t>(0U);              // flags
+        writer.integer<std::uint8_t>(0U);              // effect count (version >= 3)
+        writer.integer<std::int32_t>(0);               // age (version >= 4)
+        writer.integer<std::int32_t>(0);               // loveTicks (version >= 4)
+        // version 4 stops here — no populated byte.
+    });
+    writer.finish();
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output{path, std::ios::binary | std::ios::trunc};
+    output.write(reinterpret_cast<const char*>(writer.bytes.data()),
+                 static_cast<std::streamsize>(writer.bytes.size()));
+}
+
 } // namespace
 
 int main() {
@@ -1884,6 +1943,35 @@ int main() {
         // same region file's chunk record to version 5 in place.
         repository.saveChunk(id, 2, 3, {}, {}, /*populated=*/true);
         assert(repository.isChunkPopulated(id, 2, 3));
+    }
+
+    // --- RNG-0 backward compatibility: a region entity written at CCNK version 4
+    // stored `rngState` as a 32-bit field; this build reads it as a u64. The low
+    // 32 bits must survive and the high 32 bits must read back zero (the migrated
+    // state), and the record must parse without desyncing. ---
+    {
+        auto game = repository.create("RngLegacy", 48ULL);
+        const auto id = game.summary.identifier;
+        repository.save(game);
+        const auto regionPath = repository.dimensionRegionDirectory(id, world::DimensionId::Overworld) /
+            "r.0.0.cache";
+        constexpr std::uint32_t kLegacyRng = 0xDEADBEEFU;
+        writeLegacyVersion4RegionWithEntity(regionPath, 0, 0, 2, 3, kLegacyRng);
+
+        const auto entities = repository.loadChunkEntities(id, 2, 3);
+        assert(entities.size() == 1U);
+        // The widened field holds exactly the old 32-bit value, zero-extended:
+        // no high bits invented, no low bits lost.
+        assert(entities.front().rngState == static_cast<std::uint64_t>(kLegacyRng));
+        assert((entities.front().rngState >> 32U) == 0U);
+        assert(entities.front().species == "cow");
+
+        // Re-saving through this build rewrites the chunk at the current version,
+        // and the (now u64) rngState round-trips unchanged.
+        repository.saveChunk(id, 2, 3, {}, entities, /*populated=*/true);
+        const auto reloaded = repository.loadChunkEntities(id, 2, 3);
+        assert(reloaded.size() == 1U);
+        assert(reloaded.front().rngState == static_cast<std::uint64_t>(kLegacyRng));
     }
 
     return 0;

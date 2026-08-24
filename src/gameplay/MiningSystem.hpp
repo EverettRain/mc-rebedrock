@@ -67,7 +67,7 @@ struct MinedDrops final {
 // handler's, so a handler only rolls loot; `randomState`/`age`/`doubledSlab`
 // carry the same meaning they do for minedDrops below.
 using BlockDropFn =
-    MinedDrops (*)(world::Block block, const ItemStack& tool, std::uint32_t& randomState, int age,
+    MinedDrops (*)(world::Block block, const ItemStack& tool, std::uint64_t& randomState, int age,
                    bool doubledSlab);
 
 // The drop handler for `block`: its own if it has special loot, else the default
@@ -83,7 +83,7 @@ using BlockDropFn =
 // removed; the crop loot tables roll against it. `doubledSlab` is set when the
 // removed state was a double slab, which drops two slab items instead of one.
 [[nodiscard]] MinedDrops minedDrops(
-    world::Block block, const ItemStack& tool, std::uint32_t& randomState, int age = 0,
+    world::Block block, const ItemStack& tool, std::uint64_t& randomState, int age = 0,
     bool doubledSlab = false);
 
 // XP-2: an inclusive [minimum, maximum] experience roll, mirroring the vanilla
@@ -106,7 +106,7 @@ struct OreExperienceRange final {
 // A uniform point count in `range`, drawn from the caller's own deterministic
 // LCG stream (REGULAR.md's determinism rule: no wall clock, no global RNG —
 // the caller owns and replays the stream, the same shape minedDrops takes).
-[[nodiscard]] std::int32_t rollOreExperience(std::uint32_t& randomState,
+[[nodiscard]] std::int32_t rollOreExperience(std::uint64_t& randomState,
                                              OreExperienceRange range);
 
 } // namespace mc::gameplay

@@ -8,6 +8,7 @@
 #include "gameplay/ItemUse.hpp"
 #include "gameplay/MiningSystem.hpp"
 #include "gameplay/PlayerController.hpp"
+#include "gameplay/Random.hpp"
 #include "gameplay/ScreenHandler.hpp"
 #include "gameplay/entities/CowEntity.hpp"
 #include "world/Block.hpp"
@@ -1024,13 +1025,10 @@ void PlayerInteraction::performUseOnEntity(GameSession& session, world::World&,
         // deterministic per-tick stream every other world edit in this file
         // already draws from.
         auto& rng = session.lootRandomState();
-        rng = rng * 1664525U + 1013904223U;
-        const auto woolCount = static_cast<std::uint8_t>(1U + (rng >> 8) % 3U);
+        const auto woolCount = static_cast<std::uint8_t>(1U + mc::rng::nextInt(rng, 3U));
         const ItemStack woolStack{world::Block::WhiteWool, woolCount,
                                   blockItemFor(world::Block::WhiteWool)};
-        rng = rng * 1664525U + 1013904223U;
-        const float angle =
-            static_cast<float>(rng >> 8) / static_cast<float>(1U << 24) * 6.28318530718F;
+        const float angle = mc::rng::nextFloat(rng) * 6.28318530718F;
         session.spawnItemEntity(target->position + glm::vec3{0.0F, target->dimensions().height * 0.5F, 0.0F},
                                 woolStack,
                                 glm::vec3{std::cos(angle), 0.15F, std::sin(angle)} * 0.1F);

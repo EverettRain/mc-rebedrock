@@ -207,7 +207,11 @@ int main() {
         assert(digestA == digestB);  // two runs, same seed -> same herd
         // The golden value the current (correct) refactor produces. Captured from
         // this build; a behavioural regression (tick order / RNG stream) changes it.
-        assert(digestA == 0xB4525A6586129FEDULL);
+        // Recaptured for RNG-0: the wander stream moved to the Java
+        // LegacyRandomSource core (mc::rng) with a seed scramble, a deliberate
+        // one-time sequence drift (JC-registered), so the golden pose changed
+        // while determinism (digestA == digestB above) still holds.
+        assert(digestA == 0x45827289515DA6E2ULL);
         // The herd actually moved (the digest is not the empty/degenerate value).
         assert(digestA != 1469598103934665603ULL);
     }

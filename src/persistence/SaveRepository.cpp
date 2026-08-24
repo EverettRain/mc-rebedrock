@@ -69,7 +69,7 @@ constexpr std::array<std::uint8_t, 8> kMagic{'M', 'C', 'R', 'B', 'S', 'A', 'V', 
 // bumped there. The static_assert guards "bumped the format but forgot to sync
 // the manifest": the two must agree at compile time.
 constexpr std::uint32_t kFormatVersion = core::kVersion.worldVersion;
-static_assert(kFormatVersion == 19U,
+static_assert(kFormatVersion == 20U,
               "save format version must match kVersion.worldVersion; bump both together");
 constexpr std::uint32_t kFirstOwnerDrivenFormatVersion = 17U;
 constexpr std::uint32_t kOldestSupportedFormatVersion = 1U;
@@ -596,7 +596,7 @@ void readWeatherBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
 //     f32 health
 //     i32 angerTicks
 //     u32 ageTicks
-//     u32 rngState
+//     u64 rngState        // version >= 5; a version <5 record stores u32 (widened on read)
 //     i32 fireTicks       // version >= 2; absent (read as 0) in version 1
 //     u8  flags           // reserved
 //     u8  effectCount     // version >= 3; absent (read as 0) in versions 1-2
@@ -614,11 +614,16 @@ void readWeatherBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
 // Version 2 inserts `fireTicks` before the reserved flags byte so a creature
 // saved mid-burn reopens still ablaze. Version 3 appends the active MobEffects
 // after the flags byte (by name, not id). Version 4 appends AgeableMob age/love.
-// An older region omits the newer fields, which read back as their defaults, so
-// an old world migrates without a fixer.
+// Version 5 (RNG-0) widens `rngState` from a u32 to a u64 to hold the 48-bit
+// LegacyRandomSource state. A version <5 record carries only the low 32 bits,
+// read back and zero-extended into the wide field — a valid migrated state (the
+// stored sequence changed algorithm anyway, so the exact carried value only has
+// to round-trip, not reproduce the old draws). An older region omits the newer
+// fields, which read back as their defaults, so an old world migrates without a
+// fixer.
 constexpr std::uint32_t kEntityBlockTag =
     'E' | ('N' << 8) | ('T' << 16) | ('Y' << 24);
-constexpr std::uint16_t kEntityBlockVersion = 4U;
+constexpr std::uint16_t kEntityBlockVersion = 5U;
 
 // An entity's active MobEffects, shared by the world.dat ENTITY block and the
 // per-chunk region record (both grew effects in the same version bump). Effects
@@ -755,7 +760,12 @@ void readEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
         entity.health = readFloat(payload, cursor);
         entity.angerTicks = readInteger<std::int32_t>(payload, cursor);
         entity.ageTicks = readInteger<std::uint32_t>(payload, cursor);
-        entity.rngState = readInteger<std::uint32_t>(payload, cursor);
+        // rngState widened to a 48-bit state (u64) in version 5. A version <5
+        // record stored only the low 32 bits; read them and zero-extend.
+        entity.rngState = blockVersion >= 5U
+                              ? readInteger<std::uint64_t>(payload, cursor)
+                              : static_cast<std::uint64_t>(
+                                    readInteger<std::uint32_t>(payload, cursor));
         // fireTicks arrived in version 2; a version-1 record leaves it at its
         // default zero (not on fire), which is exactly a migrated old world.
         if (blockVersion >= 2U) {
@@ -1930,7 +1940,8 @@ void readChunkBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
 //         u32 editCount + edits[]:   { u8 packedXZ + i16 y + u16 stateIndex }
 //         u32 entityCount + entities[]: { u16 speciesIndex + f32 x,y,z,yaw + f32 vx,vy,vz
 //                                       + f32 health + i32 angerTicks + u32 ageTicks
-//                                       + u32 rngState + i32 fireTicks (ver >= 2) + u8 flags
+//                                       + u64 rngState (ver >= 6; u32 widened on read otherwise)
+//                                       + i32 fireTicks (ver >= 2) + u8 flags
 //                                       + effects (ver >= 3): u8 count,
 //                                         [u16 nameLen + name + i32 duration + u8 amplifier]*
 //                                       + i32 age + i32 loveTicks (ver >= 4) }
@@ -1946,11 +1957,12 @@ constexpr std::uint32_t kRegionChunkTag = blockTag("CCNK");
 // Version 2 appends fireTicks to each entity record; version 3 appends the
 // active MobEffects after the flags byte; version 4 appends AgeableMob age/love
 // (see the ENTITY block); version 5 appends the chunk-level `populated` byte
-// (CS-5) after the entity list. An older region omits the newer fields, which
-// read back as their defaults, migrating cleanly — version < 5 reads
-// `populated = false`, the correct "never marked" default for a save a
-// pre-CS-5 build wrote.
-constexpr std::uint16_t kRegionChunkVersion = 5U;
+// (CS-5) after the entity list; version 6 (RNG-0) widens each entity's
+// `rngState` from a u32 to a u64 (the 48-bit LegacyRandomSource state). An older
+// region omits the newer fields, which read back as their defaults, migrating
+// cleanly — version < 5 reads `populated = false`, and version < 6 reads the low
+// 32 bits of rngState and zero-extends them.
+constexpr std::uint16_t kRegionChunkVersion = 6U;
 constexpr std::uint32_t kRegionWidth = 32U;  // chunks per region side
 
 // Floor division of a chunk coordinate by the region width, exactly like the
@@ -2340,7 +2352,12 @@ void readRegionFile(std::span<const std::uint8_t> bytes, RegionData& region) {
             entity.health = readFloat(payload, cursor);
             entity.angerTicks = readInteger<std::int32_t>(payload, cursor);
             entity.ageTicks = readInteger<std::uint32_t>(payload, cursor);
-            entity.rngState = readInteger<std::uint32_t>(payload, cursor);
+            // rngState widened to a 48-bit state (u64) in region version 6. A
+            // version <6 region stored only the low 32 bits; zero-extend them.
+            entity.rngState = header.version >= 6U
+                                  ? readInteger<std::uint64_t>(payload, cursor)
+                                  : static_cast<std::uint64_t>(
+                                        readInteger<std::uint32_t>(payload, cursor));
             // fireTicks arrived in version 2; a version-1 region leaves it zero.
             if (header.version >= 2U) {
                 entity.fireTicks = readInteger<std::int32_t>(payload, cursor);

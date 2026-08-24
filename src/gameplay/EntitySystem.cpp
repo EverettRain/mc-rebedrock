@@ -1,6 +1,7 @@
 #include "gameplay/EntitySystem.hpp"
 
 #include "gameplay/EntityRenderSnapshot.hpp"
+#include "gameplay/Random.hpp"
 
 #include "world/Block.hpp"
 #include "world/BlockShape.hpp"
@@ -57,17 +58,10 @@ constexpr float kAccelerationToStepRatio = 2.2026F;
 // player.
 constexpr float kKnockbackStrength = 0.4F;
 
-// Small deterministic LCG (Numerical Recipes constants) so wander is
-// reproducible without pulling in <random> or a shared global generator.
-[[nodiscard]] std::uint32_t nextRandom(std::uint32_t& state) {
-    state = state * 1664525U + 1013904223U;
-    return state;
-}
-
-// A value in [0, 1) from the top 24 bits (the low bits of an LCG are weak).
-[[nodiscard]] float randomUnit(std::uint32_t& state) {
-    return static_cast<float>(nextRandom(state) >> 8) / static_cast<float>(1U << 24);
-}
+// Wander/AI draws run off the shared deterministic mc::rng (Java's
+// LegacyRandomSource core), advancing the entity's own 48-bit state — no
+// <random>, no shared global generator. A value in [0, 1) is nextFloat.
+[[nodiscard]] float randomUnit(std::uint64_t& state) { return mc::rng::nextFloat(state); }
 
 [[nodiscard]] int floorToInt(float value) { return static_cast<int>(std::floor(value)); }
 
@@ -415,15 +409,19 @@ void EntitySystem::installBreedingGoals(SimpleEntity& entity) {
     entity.brain.goals().add(4, std::make_unique<entities::FollowParentGoal>(1.1F));
 }
 
-void EntitySystem::spawn(glm::vec3 position, const entities::EntityType& type, std::uint32_t seed) {
+void EntitySystem::spawn(glm::vec3 position, const entities::EntityType& type, std::uint64_t seed) {
     SimpleEntity entity;
     entity.type = &type;
     entity.id = nextEntityId_++;
     entity.position = position;
     entity.previousPosition = position;
     entity.damage.health = entity.damage.maxHealth = type.attributes().maxHealth();
-    entity.rngState =
-        seed != 0U ? seed : (0x9E3779B9U ^ (static_cast<std::uint32_t>(entities_.size()) + 1U));
+    // Scramble the semantic seed into a 48-bit LegacyRandomSource state the way
+    // java.util.Random(seed) does, so the stream is well-mixed from the first
+    // draw instead of starting on a raw (and low-entropy) value.
+    const std::uint64_t rawSeed =
+        seed != 0U ? seed : (0x9E3779B9ULL ^ (static_cast<std::uint64_t>(entities_.size()) + 1U));
+    entity.rngState = mc::rng::seedFromValue(rawSeed);
     entity.yaw = randomUnit(entity.rngState) * kTwoPi;
     entity.previousYaw = entity.yaw;
     entity.lookYaw = entity.yaw;
@@ -434,7 +432,9 @@ void EntitySystem::spawn(glm::vec3 position, const entities::EntityType& type, s
     // egg scheduler is itself gated on laysEggs()).
     if (type.laysEggs()) {
         entity.eggLayTimer =
-            kEggLayBaseTicks + static_cast<int>(nextRandom(entity.rngState) % kEggLayRandomTicks);
+            kEggLayBaseTicks +
+            static_cast<int>(mc::rng::nextInt(entity.rngState,
+                                              static_cast<std::uint32_t>(kEggLayRandomTicks)));
     }
     // MobEntity#initGoals runs once at spawn.
     type.ai().configureBrain(entity.brain);
@@ -453,7 +453,7 @@ void EntitySystem::spawn(glm::vec3 position, const entities::EntityType& type, s
 std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityType& type,
                                     float yaw, glm::vec3 velocity, float health,
                                     int angerTicks, unsigned int ageTicks,
-                                    std::uint32_t rngState, int fireTicks,
+                                    std::uint64_t rngState, int fireTicks,
                                     const ActiveEffects& effects, int age, int loveTicks) {
     SimpleEntity entity;
     entity.type = &type;
@@ -488,7 +488,9 @@ std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityTy
     // never gets stuck at zero, and a non-laying species leaves it unused.
     if (type.laysEggs()) {
         entity.eggLayTimer =
-            kEggLayBaseTicks + static_cast<int>(nextRandom(entity.rngState) % kEggLayRandomTicks);
+            kEggLayBaseTicks +
+            static_cast<int>(mc::rng::nextInt(entity.rngState,
+                                              static_cast<std::uint32_t>(kEggLayRandomTicks)));
     }
     // MobEntity#initGoals runs once at spawn, exactly like a fresh spawn.
     type.ai().configureBrain(entity.brain);
@@ -763,8 +765,8 @@ void EntitySystem::processBreeding(
         // go on cooldown and fall out of love now (the vanilla anti-spam rule), so
         // a herd cannot breed every tick.
         const glm::vec3 midpoint = (first->position + second->position) * 0.5F;
-        const std::uint32_t babySeed =
-            (first->rngState ^ (second->rngState * 2654435761U)) | 1U;
+        const std::uint64_t babySeed =
+            (first->rngState ^ (second->rngState * 2654435761ULL)) | 1ULL;
         const entities::EntityType& species = *first->type;
         // Animal#finalizeSpawnChildFromBreeding: a successful breed always pays
         // 1-7 experience (getRandom().nextInt(7) + 1), independent of the
@@ -774,7 +776,7 @@ void EntitySystem::processBreeding(
         // the cooldown/love writes below and before spawn() can reallocate the
         // vector this loop iterates.
         const std::int32_t breedExperience =
-            1 + static_cast<std::int32_t>(nextRandom(first->rngState) % 7U);
+            1 + static_cast<std::int32_t>(mc::rng::nextInt(first->rngState, 7U));
         const glm::vec3 breedPosition = first->position;
         first->age = kBreedCooldownTicks;
         second->age = kBreedCooldownTicks;
@@ -1100,7 +1102,7 @@ EntityTickResult EntitySystem::tick(
         // than the pre-increment counter, so a freshly reset (negative) counter
         // can never fire — exactly like vanilla's nextInt(1000) < counter++.
         if (!entity.damage.dead() &&
-            static_cast<int>(nextRandom(entity.rngState) % 1000U) <
+            static_cast<int>(mc::rng::nextInt(entity.rngState, 1000U)) <
                 entity.ambientSoundChance++) {
             entity.ambientSoundChance = -kMinAmbientSoundDelay;
             pendingSounds_.push_back({entity.position, MobSoundEvent::Ambient, entity.type});
@@ -1119,7 +1121,9 @@ EntityTickResult EntitySystem::tick(
             drops.add(entity.type->eggLay().item);
             pendingDrops_.emplace_back(entity.position + glm::vec3{0.0F, 0.25F, 0.0F}, drops);
             entity.eggLayTimer =
-                kEggLayBaseTicks + static_cast<int>(nextRandom(entity.rngState) % kEggLayRandomTicks);
+                kEggLayBaseTicks +
+            static_cast<int>(mc::rng::nextInt(entity.rngState,
+                                              static_cast<std::uint32_t>(kEggLayRandomTicks)));
         }
 
         if (entity.damage.dead()) {

@@ -1,6 +1,7 @@
 #include "gameplay/entities/PigEntity.hpp"
 
 #include "gameplay/EntitySystem.hpp"
+#include "gameplay/Random.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/MobAi.hpp"
 
@@ -22,9 +23,9 @@ const PigAi kPigAi;
 
 // PigEntity's loot table: one to three raw porkchops. (Vanilla drops the cooked
 // cut when the pig dies on fire; that path is not modelled here.)
-EntityDrops rollPigLoot(std::uint32_t& rng) {
+EntityDrops rollPigLoot(std::uint64_t& rng) {
     EntityDrops drops;
-    const auto count = static_cast<std::uint8_t>(1U + (nextRandom(rng) >> 8) % 3U);
+    const auto count = static_cast<std::uint8_t>(1U + mc::rng::nextInt(rng, 3U));
     drops.add({world::Block::Air, count, &items::Porkchop});
     return drops;
 }

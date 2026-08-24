@@ -663,8 +663,8 @@ class GameSession final {
     [[nodiscard]] std::uint64_t dayTimeTicks() const {
         return clocks_.totalTicks(world::ClockId::Overworld);
     }
-    [[nodiscard]] std::uint32_t& lootRandomState() { return lootRandomState_; }
-    [[nodiscard]] std::uint32_t lootRandomState() const { return lootRandomState_; }
+    [[nodiscard]] std::uint64_t& lootRandomState() { return lootRandomState_; }
+    [[nodiscard]] std::uint64_t lootRandomState() const { return lootRandomState_; }
     [[nodiscard]] glm::vec3& worldSpawnPosition() { return worldSpawnPosition_; }
     [[nodiscard]] const glm::vec3& worldSpawnPosition() const { return worldSpawnPosition_; }
     // The player's personal spawn point (ServerPlayerEntity#spawnPointPosition):
@@ -798,7 +798,10 @@ class GameSession final {
     bool forwardPressed_ = false;
     std::uint64_t serverTick_ = 0U;
     world::ClockManager clocks_;
-    std::uint32_t lootRandomState_ = 0x9E3779B9U;
+    // The 48-bit mc::rng state (Java LegacyRandomSource core) the loot/trample
+    // draws advance. A fixed non-zero raw internal state; this stream is
+    // session-only (never persisted) so it needs determinism, not seed parity.
+    std::uint64_t lootRandomState_ = 0x0000'9E3779B9ULL;
     // AR-B3: the pressure-plate press/release diff state — see
     // PlayerInteraction.hpp's tickPressurePlates for why this lives here
     // (caller-owned, not hidden static state) rather than inside that

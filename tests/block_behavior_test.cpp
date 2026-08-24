@@ -174,7 +174,7 @@ void testHasDropsLockedToBehaviour() {
         for (std::uint32_t seed = 1U; seed <= 4096U && !canDrop; ++seed) {
             for (const int age : {0, 7}) {
                 for (const bool doubledSlab : {false, true}) {
-                    std::uint32_t state = seed;
+                    std::uint64_t state = seed;
                     if (!minedDrops(block, diamondPickaxe, state, age, doubledSlab).empty()) {
                         canDrop = true;
                     }
@@ -202,8 +202,8 @@ void testDropsDispatchEqualsSwitch() {
             for (const int age : {0, 3, 7}) {
                 for (const bool doubledSlab : {false, true}) {
                     for (std::uint32_t seed = 1U; seed <= 64U; ++seed) {
-                        std::uint32_t viaSwitch = seed;
-                        std::uint32_t viaTable = seed;
+                        std::uint64_t viaSwitch = seed;
+                        std::uint64_t viaTable = seed;
                         const auto expected =
                             minedDrops(block, tool, viaSwitch, age, doubledSlab);
                         const auto actual =
@@ -229,7 +229,7 @@ void testDropsAbsoluteValues() {
     const ItemStack pick{Block::Air, 1U, &mc::gameplay::items::DiamondPickaxe};
 
     const auto single = [&](Block block, const ItemStack& tool, int age, bool doubledSlab) {
-        std::uint32_t seed = 1U;
+        std::uint64_t seed = 1U;
         return minedDrops(block, tool, seed, age, doubledSlab);
     };
 
@@ -278,7 +278,7 @@ void testDispatchMechanism() {
     const auto glass = mc::world::blockId(Block::Glass);
     assert(!behaviorFor(glass).prefilter.has(BlockBehaviorBit::HasDrops));
     assert(behaviorFor(glass).getDrops == nullptr);
-    std::uint32_t glassSeed = 1U;
+    std::uint64_t glassSeed = 1U;
     assert(dispatchBlockDrops(glass, diamondPickaxe, glassSeed).empty());
 
     // Stone drops: bit set, slot wired to Stone's own drop handler (B1-3 split

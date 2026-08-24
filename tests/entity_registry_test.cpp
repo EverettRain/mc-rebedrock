@@ -42,7 +42,7 @@ int main() {
 
     // The loot table mirrors vanilla cow.json: 0-2 leather and 1-3 raw beef.
     // Roll enough times that both pools must have come up.
-    std::uint32_t rng = 0x1234ABCDU;
+    std::uint64_t rng = 0x1234ABCDULL;
     bool sawBeef = false;
     bool sawLeather = false;
     for (int roll = 0; roll < 200; ++roll) {

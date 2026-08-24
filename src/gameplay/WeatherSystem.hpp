@@ -51,7 +51,7 @@ class WeatherSystem final {
     // Seeds the auto-cycle RNG from the world seed, the way the session seeds
     // its loot RNG. The RNG only feeds the length rolls of the auto-cycle; the
     // result is not persisted (vanilla does not persist its Random either).
-    void seedRandom(std::uint32_t seed);
+    void seedRandom(std::uint64_t seed);
 
     // Test/perf harness helper: snaps the smoothed rain gradient (and the
     // raining flag) to a target in [0, 1] immediately, bypassing the 0.01/tick
@@ -109,7 +109,9 @@ class WeatherSystem final {
     float thunderGradient_ = 0.0F;
     float thunderGradientPrev_ = 0.0F;
 
-    std::uint32_t randomState_ = 0x57E4F10AU;
+    // The 48-bit mc::rng state (Java LegacyRandomSource core) the auto-cycle
+    // length rolls advance. Session-derived from the world seed, never persisted.
+    std::uint64_t randomState_ = 0x0000'57E4F10AULL;
 };
 
 } // namespace mc::gameplay

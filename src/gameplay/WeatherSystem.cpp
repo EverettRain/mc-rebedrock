@@ -1,5 +1,7 @@
 #include "gameplay/WeatherSystem.hpp"
 
+#include "gameplay/Random.hpp"
+
 #include <algorithm>
 #include <cstdint>
 
@@ -25,14 +27,6 @@ constexpr int kRainToClearMinTicks = 12'000;
 constexpr int kRainToClearSpan = 12'000;
 constexpr int kClearToRainMinTicks = 12'000;
 constexpr int kClearToRainSpan = 168'000;
-
-// The same xorshift WorldSimulation uses, so the codebase has one RNG shape.
-[[nodiscard]] std::uint32_t nextRandom(std::uint32_t& state) {
-    state ^= state << 13U;
-    state ^= state >> 17U;
-    state ^= state << 5U;
-    return state;
-}
 
 } // namespace
 
@@ -77,19 +71,19 @@ void WeatherSystem::tick(bool doWeatherCycle) {
             if (thunder > 0) {
                 if (--thunder == 0) thundering = !thundering;
             } else if (thundering) {
-                thunder = static_cast<int>(nextRandom(randomState_) % kThunderToClearSpan) +
+                thunder = static_cast<int>(mc::rng::nextInt(randomState_, static_cast<std::uint32_t>(kThunderToClearSpan))) +
                     kThunderToClearMinTicks;
             } else {
-                thunder = static_cast<int>(nextRandom(randomState_) % kClearToRainSpan) +
+                thunder = static_cast<int>(mc::rng::nextInt(randomState_, static_cast<std::uint32_t>(kClearToRainSpan))) +
                     kClearToRainMinTicks;
             }
             if (rain > 0) {
                 if (--rain == 0) raining = !raining;
             } else if (raining) {
-                rain = static_cast<int>(nextRandom(randomState_) % kRainToClearSpan) +
+                rain = static_cast<int>(mc::rng::nextInt(randomState_, static_cast<std::uint32_t>(kRainToClearSpan))) +
                     kRainToClearMinTicks;
             } else {
-                rain = static_cast<int>(nextRandom(randomState_) % kClearToRainSpan) +
+                rain = static_cast<int>(mc::rng::nextInt(randomState_, static_cast<std::uint32_t>(kClearToRainSpan))) +
                     kClearToRainMinTicks;
             }
         }
@@ -132,8 +126,11 @@ void WeatherSystem::restore(const WeatherState& state) {
     thunderGradient_ = thunderGradientPrev_ = thundering_ ? 1.0F : 0.0F;
 }
 
-void WeatherSystem::seedRandom(std::uint32_t seed) {
-    randomState_ = seed != 0U ? seed : 0x57E4F10AU;
+void WeatherSystem::seedRandom(std::uint64_t seed) {
+    // Scramble the world seed into a 48-bit LegacyRandomSource state so the
+    // auto-cycle stream is well-mixed. The state is session-derived (never
+    // persisted), so it is rebuilt from the world seed every load.
+    randomState_ = mc::rng::seedFromValue(seed != 0U ? seed : 0x57E4F10AULL);
 }
 
 WeatherState WeatherSystem::state() const {

@@ -1,6 +1,7 @@
 #include "gameplay/NaturalSpawner.hpp"
 
 #include "gameplay/EntitySystem.hpp"
+#include "gameplay/Random.hpp"
 #include "gameplay/SpawnPlacements.hpp"
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"
@@ -105,16 +106,10 @@ constexpr int kMaximumColumnSamples = 16;
     return world::kMinY - 1;
 }
 
-// Small deterministic LCG (same constants as the entity wander) so a spawn
-// batch is reproducible for a given world seed and tick sequence.
-[[nodiscard]] std::uint32_t nextRandom(std::uint32_t& state) {
-    state = state * 1664525U + 1013904223U;
-    return state;
-}
-
-[[nodiscard]] float randomUnit(std::uint32_t& state) {
-    return static_cast<float>(nextRandom(state) >> 8) / static_cast<float>(1U << 24);
-}
+// The shared deterministic generator (mc::rng, Java's LegacyRandomSource core,
+// same core the entity wander advances) so a spawn batch is reproducible for a
+// given world seed and tick sequence. A value in [0, 1) is nextFloat.
+[[nodiscard]] float randomUnit(std::uint64_t& state) { return mc::rng::nextFloat(state); }
 
 // How many live creatures of a category sit inside the spawn disc. Counting
 // only the nearby population (rather than the whole world) keeps the cap local:
@@ -339,7 +334,7 @@ void NaturalSpawner::spawnOnce(const world::World& world, EntitySystem& entities
     // ends, so the cell just above the terrain is drawn like any other.
     const auto columnHeight = static_cast<std::uint32_t>(surfaceY - world::kMinY + 2);
     const int spawnY =
-        world::kMinY + static_cast<int>(nextRandom(randomState_) % columnHeight);
+        world::kMinY + static_cast<int>(mc::rng::nextInt(randomState_, columnHeight));
     const SimulationPosition position{spawnX, spawnY, spawnZ};
 
     // --- distance to the player (isRightDistanceToPlayerAndSpawnPoint) ---
@@ -439,7 +434,8 @@ const SpawnerData& NaturalSpawner::pickWeighted(const std::vector<SpawnerData>& 
     if (total <= 0) {
         return entries.back();
     }
-    int roll = static_cast<int>(nextRandom(randomState_) % static_cast<std::uint32_t>(total));
+    int roll =
+        static_cast<int>(mc::rng::nextInt(randomState_, static_cast<std::uint32_t>(total)));
     for (const auto& entry : entries) {
         roll -= entry.weight;
         if (roll < 0) {

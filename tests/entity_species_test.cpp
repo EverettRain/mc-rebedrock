@@ -82,7 +82,7 @@ void testManifestSpeciesResolve() {
 void testChickenLoot() {
     const auto* chicken = entityTypeRegistry().byId("chicken");
     assert(chicken != nullptr);
-    std::uint32_t rng = 0xC0FFEEU;
+    std::uint64_t rng = 0xC0FFEEULL;
     bool sawFeather = false;
     for (int roll = 0; roll < 200; ++roll) {
         bool sawRawChicken = false;
@@ -109,7 +109,7 @@ void testChickenLoot() {
 void testSheepLoot() {
     const auto* sheep = entityTypeRegistry().byId("sheep");
     assert(sheep != nullptr);
-    std::uint32_t rng = 0xFEEDFACEU;
+    std::uint64_t rng = 0xFEEDFACEULL;
     bool sawMutton1 = false;
     bool sawMutton2 = false;
     for (int roll = 0; roll < 200; ++roll) {
@@ -143,7 +143,7 @@ void testSheepLoot() {
 void testHuskLoot() {
     const auto* husk = entityTypeRegistry().byId("husk");
     assert(husk != nullptr);
-    std::uint32_t rng = 0xABCDEF01U;
+    std::uint64_t rng = 0xABCDEF01ULL;
     bool sawOne = false;
     bool sawTwo = false;
     bool sawEmptyRoll = false;
@@ -169,7 +169,7 @@ void testHuskLoot() {
 void testZombieLoot() {
     const auto* zombie = entityTypeRegistry().byId("zombie");
     assert(zombie != nullptr);
-    std::uint32_t rng = 0x13572468U;
+    std::uint64_t rng = 0x13572468ULL;
     bool sawRottenFleshEver = false;
     for (int roll = 0; roll < 300; ++roll) {
         for (const auto& stack : zombie->rollLoot(rng).view()) {
