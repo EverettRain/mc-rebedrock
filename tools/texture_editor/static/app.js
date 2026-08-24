@@ -54,8 +54,8 @@ function faceRect(faceName, uv, size) {
   const u = uv[0], v = uv[1];
   const sx = size[0], sy = size[1], sz = size[2];
   switch (faceName) {
-    case "east": return [u + sz + sx, v + sz, sz, sy];        // +X
-    case "west": return [u, v + sz, sz, sy];                  // -X
+    case "east": return [u, v + sz, sz, sy];                  // +X mob-right -> vanilla WEST rect
+    case "west": return [u + sz + sx, v + sz, sz, sy];        // -X mob-left  -> vanilla EAST rect
     case "up": return [u + sz, v, sx, sz];                    // +Y
     case "down": return [u + sz + sx, v, sx, sz];             // -Y
     case "back": return [u + 2 * sz + sx, v + sz, sx, sy];    // +Z

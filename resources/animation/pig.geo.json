@@ -13,29 +13,7 @@
           "pivot": [0, 8, 2],
           "rotation": [90, 0, 0],
           "cubes": [
-            {
-              "origin": [-5, 0, -4],
-              "size": [10, 16, 8],
-              "uv": [28, 8],
-              "faces": {
-                "front": {
-                  "as": "back",
-                  "rotate": 0
-                },
-                "back": {
-                  "as": "front",
-                  "rotate": 0
-                },
-                "up": {
-                  "as": "down",
-                  "rotate": 0
-                },
-                "down": {
-                  "as": "up",
-                  "rotate": 180
-                }
-              }
-            }
+            { "origin": [-5, 0, -4], "size": [10, 16, 8], "uv": [28, 8] }
           ]
         },
         {
@@ -48,33 +26,34 @@
         },
         {
           "name": "legFrontRight",
-          "pivot": [-3, 6, -5],
-          "cubes": [
-            { "origin": [-5, 0, -7], "size": [4, 6, 4], "uv": [0, 16] }
-          ]
-        },
-        {
-          "name": "legFrontLeft",
           "pivot": [3, 6, -5],
           "cubes": [
             { "origin": [1, 0, -7], "size": [4, 6, 4], "uv": [0, 16] }
           ]
         },
         {
-          "name": "legBackRight",
-          "pivot": [-3, 6, 7],
+          "name": "legFrontLeft",
+          "pivot": [-3, 6, -5],
           "cubes": [
-            { "origin": [-5, 0, 5], "size": [4, 6, 4], "uv": [0, 16] }
+            { "origin": [-5, 0, -7], "size": [4, 6, 4], "uv": [0, 16] }
+          ]
+        },
+        {
+          "name": "legBackRight",
+          "pivot": [3, 6, 7],
+          "cubes": [
+            { "origin": [1, 0, 5], "size": [4, 6, 4], "uv": [0, 16] }
           ]
         },
         {
           "name": "legBackLeft",
-          "pivot": [3, 6, 7],
+          "pivot": [-3, 6, 7],
           "cubes": [
-            { "origin": [1, 0, 5], "size": [4, 6, 4], "uv": [0, 16] }
+            { "origin": [-5, 0, 5], "size": [4, 6, 4], "uv": [0, 16] }
           ]
         }
       ]
     }
   ]
 }
+

@@ -23,8 +23,10 @@ int main() {
     const glm::vec2 uv{28.0F, 8.0F};
     const glm::vec3 size{8.0F, 8.0F, 16.0F};
 
-    assert(rect(boxUvFaceRect(0, uv, size), 28.0F + 16.0F + 8.0F, 8.0F + 16.0F, 16.0F, 8.0F)); // +X
-    assert(rect(boxUvFaceRect(1, uv, size), 28.0F, 8.0F + 16.0F, 16.0F, 8.0F));                // -X
+    // Baker applies vanilla scale(-1,-1,1): geometric +X == vanilla WEST rect
+    // (leftmost middle), -X == EAST rect (third middle). See docs RN-0c.
+    assert(rect(boxUvFaceRect(0, uv, size), 28.0F, 8.0F + 16.0F, 16.0F, 8.0F));                // +X (WEST rect)
+    assert(rect(boxUvFaceRect(1, uv, size), 28.0F + 16.0F + 8.0F, 8.0F + 16.0F, 16.0F, 8.0F)); // -X (EAST rect)
     // +Y (up) is the left top-row rect, -Y (down) the right.
     assert(rect(boxUvFaceRect(2, uv, size), 28.0F + 16.0F, 8.0F, 8.0F, 16.0F));                // +Y up
     assert(rect(boxUvFaceRect(3, uv, size), 28.0F + 16.0F + 8.0F, 8.0F, 8.0F, 16.0F));         // -Y down
@@ -38,18 +40,20 @@ int main() {
     assert(near(up.origin.x + up.size.x, down.origin.x));
 
     // The four middle-row side faces tile without gaps or overlaps across the
-    // net width 2*(sx+sz): order is -X, -Z(front), +X, +Z(back).
-    const auto west = boxUvFaceRect(1, uv, size);
+    // net width 2*(sx+sz). Left-to-right by u: +X(WEST rect), -Z(front),
+    // -X(EAST rect), +Z(back) -- i.e. mob Right, Front, Left, Back.
+    const auto rightFace = boxUvFaceRect(0, uv, size);
     const auto front = boxUvFaceRect(5, uv, size);
-    const auto east = boxUvFaceRect(0, uv, size);
+    const auto leftFace = boxUvFaceRect(1, uv, size);
     const auto back = boxUvFaceRect(4, uv, size);
-    assert(near(west.origin.x + west.size.x, front.origin.x));
-    assert(near(front.origin.x + front.size.x, east.origin.x));
-    assert(near(east.origin.x + east.size.x, back.origin.x));
+    assert(near(rightFace.origin.x + rightFace.size.x, front.origin.x));
+    assert(near(front.origin.x + front.size.x, leftFace.origin.x));
+    assert(near(leftFace.origin.x + leftFace.size.x, back.origin.x));
     assert(near(back.origin.x + back.size.x - uv.x, 2.0F * (size.x + size.z)));
 
-    // A cube with a base uv of 0 keeps the net anchored at the origin.
-    const auto leg = boxUvFaceRect(1, {0.0F, 16.0F}, {4.0F, 6.0F, 4.0F});
+    // A cube with a base uv of 0 keeps the net anchored at the origin (+X is now
+    // the leftmost/WEST rect).
+    const auto leg = boxUvFaceRect(0, {0.0F, 16.0F}, {4.0F, 6.0F, 4.0F});
     assert(rect(leg, 0.0F, 16.0F + 4.0F, 4.0F, 6.0F));
 
     // Bedrock euler order is Z, then Y, then X (matrix Rz * Ry * Rx), so X is
