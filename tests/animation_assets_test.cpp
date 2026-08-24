@@ -129,9 +129,17 @@ int main() {
     // the walk clip swings the legs with the arms held forward.
     const AnimatedModel zombie = loadAnimatedModel(
         kDir / "zombie.geo.json", {kDir / "zombie.animation.json"});
-    assert(zombie.model.boneCount() == 6U);
+    // RN-1 (#15): body/head/2 arms/2 legs plus the head-child hat overlay.
+    assert(zombie.model.boneCount() == 7U);
     assert(zombie.animations.find("animation.zombie.walk") != nullptr);
     assert(zombie.animations.find("animation.zombie.idle") != nullptr);
+    // The hat is a head child with +0.5 inflate (26.1 HumanoidModel hat layer).
+    const int zombieHat = zombie.model.findBone("hat");
+    const int zombieHead = zombie.model.findBone("head");
+    assert(zombieHat >= 0 && zombieHead >= 0);
+    assert(zombie.model.bones()[static_cast<std::size_t>(zombieHat)].parent == zombieHead);
+    assert(std::abs(zombie.model.bones()[static_cast<std::size_t>(zombieHat)].cubes[0].inflate -
+                    0.5F) < 1e-3F);
     const int zombieRightArm = zombie.model.findBone("rightArm");
     const int zombieLeftArm = zombie.model.findBone("leftArm");
     const int zombieRightLeg = zombie.model.findBone("rightLeg");
@@ -162,31 +170,49 @@ int main() {
     assert(std::abs(zombiePose.bone(static_cast<std::size_t>(zombieLeftArm)).rotation.x - 90.0F) <
            1e-3F);
 
-    // AR-A1: Sheep. Derived from the cow's quadruped bone layout (body/head/
-    // four legs) with an extra "wool" bone parented to the body — the fleece
-    // overlay. Structure only is asserted here (schema loads, hierarchy
-    // resolves, walk cycle animates the legs); proportions/texture/look are
-    // 待 mac (see task report, not verifiable headless).
+    // RN-1 (#3): Sheep rebuilt as JE 26.1's two-layer model — a base
+    // SheepModel (legSize=12, right legs mirror) plus a SheepFurModel fleece
+    // overlay (head inflate 0.6, body "wool" inflate 1.75, legs inflate 0.5).
+    // The fur bones are children of their base counterparts so the fleece rides
+    // the animated body/legs. Structure + inflate asserted here; proportions/
+    // texture/look are 待 mac (not verifiable headless).
     const AnimatedModel sheep = loadAnimatedModel(
         kDir / "sheep.geo.json", {kDir / "sheep.animation.json"});
-    assert(sheep.model.boneCount() == 7U); // body, wool, head, 4 legs
+    // base: head, body, 4 legs (6) + fur: woolHead, wool, 4 wool legs (6) = 12.
+    assert(sheep.model.boneCount() == 12U);
     assert(sheep.animations.find("animation.sheep.walk") != nullptr);
     assert(sheep.animations.find("animation.sheep.idle") != nullptr);
     const int sheepWool = sheep.model.findBone("wool");
     const int sheepBody = sheep.model.findBone("body");
     const int sheepHead = sheep.model.findBone("head");
     assert(sheepWool >= 0 && sheepBody >= 0 && sheepHead >= 0);
-    // The wool bone is parented to the body, the way the fleece overlay rides
-    // the sheep's torso in vanilla — moving the body moves the wool with it.
+    // The wool (fur body) bone is parented to the body, so the fleece overlay
+    // rides the sheep's torso — moving the body moves the wool with it. It
+    // carries the 26.1 SheepFurModel body inflate (1.75), the fleece's thickness.
     assert(sheep.model.bones()[static_cast<std::size_t>(sheepWool)].parent == sheepBody);
+    assert(std::abs(sheep.model.bones()[static_cast<std::size_t>(sheepWool)].cubes[0].inflate -
+                    1.75F) < 1e-3F);
+    // The fur head/leg overlays exist and hang off their base bones.
+    const int sheepWoolHead = sheep.model.findBone("woolHead");
+    const int sheepWoolFrontRight = sheep.model.findBone("woolLegFrontRight");
+    assert(sheepWoolHead >= 0 && sheepWoolFrontRight >= 0);
+    assert(sheep.model.bones()[static_cast<std::size_t>(sheepWoolHead)].parent == sheepHead);
+    assert(std::abs(sheep.model.bones()[static_cast<std::size_t>(sheepWoolHead)].cubes[0].inflate -
+                    0.6F) < 1e-3F);
     const int sheepFrontRight = sheep.model.findBone("legFrontRight");
     const int sheepFrontLeft = sheep.model.findBone("legFrontLeft");
     const int sheepBackRight = sheep.model.findBone("legBackRight");
     const int sheepBackLeft = sheep.model.findBone("legBackLeft");
     assert(sheepFrontRight >= 0 && sheepFrontLeft >= 0 && sheepBackRight >= 0 &&
            sheepBackLeft >= 0);
-    assert(!sheep.model.bones()[static_cast<std::size_t>(sheepFrontRight)].cubes[0].mirror);
-    assert(sheep.model.bones()[static_cast<std::size_t>(sheepFrontLeft)].cubes[0].mirror);
+    // 26.1 SheepModel uses mirrorRightLeg=true, mirrorLeftLeg=false — the RIGHT
+    // legs mirror (opposite the cow), the fur legs never mirror.
+    assert(sheep.model.bones()[static_cast<std::size_t>(sheepFrontRight)].cubes[0].mirror);
+    assert(!sheep.model.bones()[static_cast<std::size_t>(sheepFrontLeft)].cubes[0].mirror);
+    assert(!sheep.model.bones()[static_cast<std::size_t>(sheepWoolFrontRight)].cubes[0].mirror);
+    // Base legs are legSize=12 (4x12x4), the 26.1 proportion (not 1.16.1's 10).
+    assert(std::abs(sheep.model.bones()[static_cast<std::size_t>(sheepFrontRight)].cubes[0].size.y -
+                    12.0F) < 1e-3F);
     Animator sheepMob;
     sheepMob.setModel(&sheep.model);
     sheepMob.context().setVariable("walk_amount", 1.0F);
@@ -205,17 +231,28 @@ int main() {
     // Structure only — see the sheep note above for what "待 mac" covers.
     const AnimatedModel chicken = loadAnimatedModel(
         kDir / "chicken.geo.json", {kDir / "chicken.animation.json"});
-    assert(chicken.model.boneCount() == 6U); // body, head, 2 legs, 2 wings
+    // RN-1 (#2): 26.1 AdultChickenModel — head + beak + redThing (head children)
+    // + body + 2 legs + 2 wings = 8 bones.
+    assert(chicken.model.boneCount() == 8U);
     assert(chicken.animations.find("animation.chicken.walk") != nullptr);
     assert(chicken.animations.find("animation.chicken.idle") != nullptr);
+    const int chickenBeak = chicken.model.findBone("beak");
+    const int chickenRedThing = chicken.model.findBone("redThing");
+    const int chickenHead = chicken.model.findBone("head");
+    assert(chickenBeak >= 0 && chickenRedThing >= 0 && chickenHead >= 0);
+    assert(chicken.model.bones()[static_cast<std::size_t>(chickenBeak)].parent == chickenHead);
     const int chickenRightLeg = chicken.model.findBone("rightLeg");
     const int chickenLeftLeg = chicken.model.findBone("leftLeg");
     const int chickenRightWing = chicken.model.findBone("rightWing");
     const int chickenLeftWing = chicken.model.findBone("leftWing");
     assert(chickenRightLeg >= 0 && chickenLeftLeg >= 0 && chickenRightWing >= 0 &&
            chickenLeftWing >= 0);
+    // 26.1 chicken legs share one un-mirrored builder (uv 26,0); neither mirrors.
+    assert(std::abs(chicken.model.bones()[static_cast<std::size_t>(chickenRightLeg)].cubes[0].uv.x -
+                    26.0F) < 1e-3F);
     assert(!chicken.model.bones()[static_cast<std::size_t>(chickenRightLeg)].cubes[0].mirror);
-    assert(chicken.model.bones()[static_cast<std::size_t>(chickenLeftLeg)].cubes[0].mirror);
+    assert(!chicken.model.bones()[static_cast<std::size_t>(chickenLeftLeg)].cubes[0].mirror);
+    assert(!chicken.model.bones()[static_cast<std::size_t>(chickenLeftWing)].cubes[0].mirror);
     Animator chickenMob;
     chickenMob.setModel(&chicken.model);
     chickenMob.context().setVariable("walk_amount", 1.0F);

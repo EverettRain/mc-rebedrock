@@ -37,8 +37,7 @@ constexpr const char* kBuiltinPigGeometry = R"({
       "bones": [
         {"name": "body", "pivot": [0,8,2], "rotation": [90,0,0],
          "cubes": [{"origin": [-5,0,-4], "size": [10,16,8], "uv": [28,8],
-                    "faces": {"front": {"as": "back"}, "back": {"as": "front"},
-                              "up": {"as": "down"}, "down": {"as": "up", "rotate": 180}}}]},
+                    "faces": {"front": {"as": "back"}, "back": {"as": "front"}}}]},
         {"name": "head", "pivot": [0,12,-6],
          "cubes": [{"origin": [-4,8,-14], "size": [8,8,8], "uv": [0,0]},
                    {"origin": [-2,9,-15], "size": [4,3,1], "uv": [16,16]}]},
@@ -80,8 +79,7 @@ constexpr const char* kBuiltinCowGeometry = R"({
       "bones": [
         {"name": "body", "pivot": [0,19,2], "rotation": [90,0,0],
          "cubes": [{"origin": [-6,9,-1], "size": [12,18,10], "uv": [18,4],
-                    "faces": {"front": {"as": "back"}, "back": {"as": "front"},
-                              "up": {"as": "down"}, "down": {"as": "up", "rotate": 180}}},
+                    "faces": {"front": {"as": "back"}, "back": {"as": "front"}}},
                    {"origin": [-2,21,9], "size": [4,6,1], "uv": [52,0]}]},
         {"name": "head", "pivot": [0,20,-8],
          "cubes": [{"origin": [-4,16,-14], "size": [8,8,6], "uv": [0,0]},
@@ -116,6 +114,8 @@ constexpr const char* kBuiltinCowAnimation = R"({
 // resources/animation/zombie.*.json. The geometry is the standard Bedrock
 // box-UV humanoid (64x64): the left arm/leg mirror the right limbs' texture,
 // matching the classic Java zombie skin the box-UV texture is converted from.
+// A `hat` overlay (head child, +0.5 inflate, UV 32,0) reproduces 26.1
+// HumanoidModel's hat layer (RN-1 #15).
 constexpr const char* kBuiltinZombieGeometry = R"({
   "format_version": "1.12.0",
   "minecraft:geometry": [
@@ -125,6 +125,8 @@ constexpr const char* kBuiltinZombieGeometry = R"({
          "cubes": [{"origin": [-4,12,-2], "size": [8,12,4], "uv": [16,16]}]},
         {"name": "head", "parent": "body", "pivot": [0,24,0],
          "cubes": [{"origin": [-4,24,-4], "size": [8,8,8], "uv": [0,0]}]},
+        {"name": "hat", "parent": "head", "pivot": [0,24,0],
+         "cubes": [{"origin": [-4,24,-4], "size": [8,8,8], "uv": [32,0], "inflate": 0.5}]},
         {"name": "rightArm", "parent": "body", "pivot": [-5,22,0],
          "cubes": [{"origin": [-8,12,-2], "size": [4,12,4], "uv": [40,16]}]},
         {"name": "leftArm", "parent": "body", "pivot": [5,22,0],

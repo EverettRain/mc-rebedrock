@@ -181,6 +181,269 @@ SkeletalModel buildHeadLegs() {
     return mesh.bake("geometry.headlegs", 64, 64);
 }
 
+// --- RN-1: species transcription guards ------------------------------------
+//
+// RN-1 aligns the shipped geo.json for cow/chicken/sheep/zombie to JE 26.1's
+// createBodyLayer(). These guards transcribe the relevant 26.1 mesh through the
+// same builder+baker and pin the load-bearing values RN-1 changed, so a
+// regression in the disk geo.json (or a mis-transcription) is caught headless.
+// The baker's Java->rebedrock transform is already proven exact above; here we
+// assert the *values* RN-1 depends on, plus the double-layer / hat structure.
+
+[[nodiscard]] const ModelCube* firstCube(const SkeletalModel& m, std::string_view bone) {
+    const int idx = m.findBone(bone);
+    if (idx < 0 || m.bones()[static_cast<std::size_t>(idx)].cubes.empty()) {
+        return nullptr;
+    }
+    return &m.bones()[static_cast<std::size_t>(idx)].cubes.front();
+}
+
+// JE 26.1 SheepModel (base layer): QuadrupedModel.createBodyMesh(12, false, true)
+// with head/body overridden. legSize=12 so legs are 4x12x4; the RIGHT legs mirror
+// (mirrorRightLeg=true), the LEFT do not.
+SkeletalModel buildSheepBase() {
+    PartDefinition mesh;
+    CubeListBuilder head;
+    head.texOffs(0, 0).addBox(-3.0F, -4.0F, -6.0F, 6.0F, 6.0F, 8.0F);
+    mesh.addOrReplaceChild("head", head, PartPose::offsetPose(0.0F, 6.0F, -8.0F));
+
+    // body is rotated +90 X; the disk geo.json authors it rotation-folded with a
+    // front<->back relabel (same situation as cow). Reproduce via addBakedCube so
+    // the comparison is against the authored torso the game ships.
+    CubeListBuilder body;
+    constexpr int kBack = 4;
+    constexpr int kFront = 5;
+    body.addBakedCube({-4.0F, 9.0F, 3.0F}, {8.0F, 16.0F, 6.0F}, {28.0F, 8.0F}, 28, 8, false, 0.0F,
+                      {FaceRelabel{kBack, kFront, false}, FaceRelabel{kFront, kBack, false}});
+    mesh.addOrReplaceChild("body", body, PartPose::offsetAndRotation(0.0F, 5.0F, 2.0F, 90.0F, 0.0F, 0.0F));
+
+    const auto leg = [](bool mirror) {
+        CubeListBuilder c;
+        c.mirror(mirror).texOffs(0, 16).addBox(-2.0F, 0.0F, -2.0F, 4.0F, 12.0F, 4.0F);
+        return c;
+    };
+    mesh.addOrReplaceChild("legFrontRight", leg(true), PartPose::offsetPose(-3.0F, 12.0F, -5.0F));
+    mesh.addOrReplaceChild("legFrontLeft", leg(false), PartPose::offsetPose(3.0F, 12.0F, -5.0F));
+    mesh.addOrReplaceChild("legBackRight", leg(true), PartPose::offsetPose(-3.0F, 12.0F, 7.0F));
+    mesh.addOrReplaceChild("legBackLeft", leg(false), PartPose::offsetPose(3.0F, 12.0F, 7.0F));
+    return mesh.bake("geometry.sheep", 64, 32);
+}
+
+// JE 26.1 SheepFurModel: head inflate 0.6, body inflate 1.75 (rotated), legs
+// 4x6x4 inflate 0.5. In the shipped single-model geo.json the fur bones are
+// children of their base counterparts; here we only pin the cube values.
+SkeletalModel buildSheepFur() {
+    PartDefinition mesh;
+    CubeListBuilder head;
+    head.texOffs(0, 0).addBox(-3.0F, -4.0F, -4.0F, 6.0F, 6.0F, 6.0F, mc::animation::CubeDeformation{0.6F});
+    mesh.addOrReplaceChild("woolHead", head, PartPose::offsetPose(0.0F, 6.0F, -8.0F));
+
+    CubeListBuilder body;
+    constexpr int kBack = 4;
+    constexpr int kFront = 5;
+    body.addBakedCube({-4.0F, 9.0F, 3.0F}, {8.0F, 16.0F, 6.0F}, {28.0F, 8.0F}, 28, 8, false, 1.75F,
+                      {FaceRelabel{kBack, kFront, false}, FaceRelabel{kFront, kBack, false}});
+    mesh.addOrReplaceChild("wool", body,
+                           PartPose::offsetAndRotation(0.0F, 5.0F, 2.0F, 90.0F, 0.0F, 0.0F));
+
+    const auto furLeg = []() {
+        CubeListBuilder c;
+        c.texOffs(0, 16).addBox(-2.0F, 0.0F, -2.0F, 4.0F, 6.0F, 4.0F, mc::animation::CubeDeformation{0.5F});
+        return c;
+    };
+    mesh.addOrReplaceChild("woolLegFrontRight", furLeg(), PartPose::offsetPose(-3.0F, 12.0F, -5.0F));
+    mesh.addOrReplaceChild("woolLegBackRight", furLeg(), PartPose::offsetPose(-3.0F, 12.0F, 7.0F));
+    return mesh.bake("geometry.sheepfur", 64, 32);
+}
+
+// JE 26.1 AdultChickenModel.createBaseChickenModel(): head + beak + redThing +
+// rotated body + two legs (uv 26,0, no mirror) + two wings (uv 24,13, no mirror).
+SkeletalModel buildChicken() {
+    PartDefinition mesh;
+    CubeListBuilder head;
+    head.texOffs(0, 0).addBox(-2.0F, -6.0F, -2.0F, 4.0F, 6.0F, 3.0F);
+    mesh.addOrReplaceChild("head", head, PartPose::offsetPose(0.0F, 15.0F, -4.0F));
+
+    CubeListBuilder beak;
+    beak.texOffs(14, 0).addBox(-2.0F, -4.0F, -4.0F, 4.0F, 2.0F, 2.0F);
+    mesh.addOrReplaceChild("beak", beak, PartPose::offsetPose(0.0F, 15.0F, -4.0F), "head");
+
+    CubeListBuilder red;
+    red.texOffs(14, 4).addBox(-1.0F, -2.0F, -3.0F, 2.0F, 2.0F, 2.0F);
+    mesh.addOrReplaceChild("redThing", red, PartPose::offsetPose(0.0F, 15.0F, -4.0F), "head");
+
+    CubeListBuilder body;
+    constexpr int kBack = 4;
+    constexpr int kFront = 5;
+    body.addBakedCube({-3.0F, 4.0F, -3.0F}, {6.0F, 8.0F, 6.0F}, {0.0F, 9.0F}, 0, 9, false, 0.0F,
+                      {FaceRelabel{kBack, kFront, false}, FaceRelabel{kFront, kBack, false}});
+    mesh.addOrReplaceChild("body", body, PartPose::offsetAndRotation(0.0F, 16.0F, 0.0F, 90.0F, 0.0F, 0.0F));
+
+    CubeListBuilder rl;
+    rl.texOffs(26, 0).addBox(-1.0F, 0.0F, -3.0F, 3.0F, 5.0F, 3.0F);
+    mesh.addOrReplaceChild("rightLeg", rl, PartPose::offsetPose(-2.0F, 19.0F, 1.0F));
+    CubeListBuilder ll;
+    ll.texOffs(26, 0).addBox(-1.0F, 0.0F, -3.0F, 3.0F, 5.0F, 3.0F);
+    mesh.addOrReplaceChild("leftLeg", ll, PartPose::offsetPose(1.0F, 19.0F, 1.0F));
+
+    CubeListBuilder rw;
+    rw.texOffs(24, 13).addBox(0.0F, 0.0F, -3.0F, 1.0F, 4.0F, 6.0F);
+    mesh.addOrReplaceChild("rightWing", rw, PartPose::offsetPose(-4.0F, 13.0F, 0.0F));
+    CubeListBuilder lw;
+    lw.texOffs(24, 13).addBox(-1.0F, 0.0F, -3.0F, 1.0F, 4.0F, 6.0F);
+    mesh.addOrReplaceChild("leftWing", lw, PartPose::offsetPose(4.0F, 13.0F, 0.0F));
+    return mesh.bake("geometry.chicken", 64, 32);
+}
+
+// JE 26.1 HumanoidModel.createMesh(NONE, 0): the zombie body/head/arms/legs plus
+// the head-child hat overlay (inflate 0.5, texOffs 32,0).
+SkeletalModel buildZombieHead() {
+    PartDefinition mesh;
+    CubeListBuilder head;
+    head.texOffs(0, 0).addBox(-4.0F, -8.0F, -4.0F, 8.0F, 8.0F, 8.0F);
+    mesh.addOrReplaceChild("head", head, PartPose::offsetPose(0.0F, 0.0F, 0.0F));
+    CubeListBuilder hat;
+    hat.texOffs(32, 0).addBox(-4.0F, -8.0F, -4.0F, 8.0F, 8.0F, 8.0F, mc::animation::CubeDeformation{0.5F});
+    mesh.addOrReplaceChild("hat", hat, PartPose::offsetPose(0.0F, 0.0F, 0.0F), "head");
+    return mesh.bake("geometry.zombie", 64, 64);
+}
+
+// The shipped resources/animation/sheep.geo.json (RN-1 double-layer rebuild),
+// embedded so the headless test stays self-contained.
+constexpr std::string_view kSheepGeoJson = R"({
+  "format_version": "1.12.0",
+  "minecraft:geometry": [
+    { "description": { "identifier": "geometry.sheep", "texture_width": 64, "texture_height": 32 },
+      "bones": [
+        { "name": "head", "pivot": [0,18,-8], "cubes": [ { "origin": [-3,16,-14], "size": [6,6,8], "uv": [0,0] } ] },
+        { "name": "body", "pivot": [0,19,2], "rotation": [90,0,0],
+          "cubes": [ { "origin": [-4,9,3], "size": [8,16,6], "uv": [28,8],
+                       "faces": { "front": {"as":"back"}, "back": {"as":"front"} } } ] },
+        { "name": "legFrontRight", "pivot": [-3,12,-5], "cubes": [ { "origin": [-5,0,-7], "size": [4,12,4], "uv": [0,16], "mirror": true } ] },
+        { "name": "legFrontLeft", "pivot": [3,12,-5], "cubes": [ { "origin": [1,0,-7], "size": [4,12,4], "uv": [0,16] } ] },
+        { "name": "legBackRight", "pivot": [-3,12,7], "cubes": [ { "origin": [-5,0,5], "size": [4,12,4], "uv": [0,16], "mirror": true } ] },
+        { "name": "legBackLeft", "pivot": [3,12,7], "cubes": [ { "origin": [1,0,5], "size": [4,12,4], "uv": [0,16] } ] },
+        { "name": "woolHead", "parent": "head", "pivot": [0,18,-8], "cubes": [ { "origin": [-3,16,-12], "size": [6,6,6], "uv": [0,0], "inflate": 0.6 } ] },
+        { "name": "wool", "parent": "body", "pivot": [0,19,2], "rotation": [90,0,0],
+          "cubes": [ { "origin": [-4,9,3], "size": [8,16,6], "uv": [28,8], "inflate": 1.75,
+                       "faces": { "front": {"as":"back"}, "back": {"as":"front"} } } ] },
+        { "name": "woolLegFrontRight", "parent": "legFrontRight", "pivot": [-3,12,-5], "cubes": [ { "origin": [-5,6,-7], "size": [4,6,4], "uv": [0,16], "inflate": 0.5 } ] },
+        { "name": "woolLegFrontLeft", "parent": "legFrontLeft", "pivot": [3,12,-5], "cubes": [ { "origin": [1,6,-7], "size": [4,6,4], "uv": [0,16], "inflate": 0.5 } ] },
+        { "name": "woolLegBackRight", "parent": "legBackRight", "pivot": [-3,12,7], "cubes": [ { "origin": [-5,6,5], "size": [4,6,4], "uv": [0,16], "inflate": 0.5 } ] },
+        { "name": "woolLegBackLeft", "parent": "legBackLeft", "pivot": [3,12,7], "cubes": [ { "origin": [1,6,5], "size": [4,6,4], "uv": [0,16], "inflate": 0.5 } ] }
+      ] } ] })";
+
+void assertSheepDisk() {
+    const SkeletalModel disk = SkeletalModel::parse(kSheepGeoJson, "geometry.sheep");
+    const SkeletalModel base = buildSheepBase();
+    const SkeletalModel fur = buildSheepFur();
+
+    // Base layer: legs are 4x12x4 (legSize=12, NOT the old 1.16.1 legSize=10).
+    for (const char* leg : {"legFrontRight", "legFrontLeft", "legBackRight", "legBackLeft"}) {
+        const ModelCube* d = firstCube(disk, leg);
+        const ModelCube* b = firstCube(base, leg);
+        assert(d != nullptr && b != nullptr);
+        assert(vecEq(d->size, glm::vec3{4.0F, 12.0F, 4.0F}));
+        assertCubeEqual(*b, *d);
+    }
+    // Base right legs mirror, left legs do not (26.1 SheepModel mirrorRightLeg=true).
+    assert(firstCube(disk, "legFrontRight")->mirror);
+    assert(firstCube(disk, "legBackRight")->mirror);
+    assert(!firstCube(disk, "legFrontLeft")->mirror);
+    assert(!firstCube(disk, "legBackLeft")->mirror);
+    // Base body/head match the transcription (head is 6x6x8, not the old二盒 form).
+    assertCubeEqual(*firstCube(disk, "head"), *firstCube(base, "head"));
+    assert(vecEq(firstCube(disk, "head")->size, glm::vec3{6.0F, 6.0F, 8.0F}));
+    assertCubeEqual(*firstCube(disk, "body"), *firstCube(base, "body"));
+
+    // Fur layer exists as a second set of bones with the 26.1 inflate values.
+    assert(disk.findBone("woolHead") >= 0);
+    assert(disk.findBone("wool") >= 0);
+    assert(near(firstCube(disk, "woolHead")->inflate, 0.6F));
+    assert(near(firstCube(disk, "wool")->inflate, 1.75F));
+    assertCubeEqual(*firstCube(disk, "woolHead"), *firstCube(fur, "woolHead"));
+    assertCubeEqual(*firstCube(disk, "wool"), *firstCube(fur, "wool"));
+    for (const char* leg :
+         {"woolLegFrontRight", "woolLegFrontLeft", "woolLegBackRight", "woolLegBackLeft"}) {
+        const ModelCube* d = firstCube(disk, leg);
+        assert(d != nullptr);
+        assert(vecEq(d->size, glm::vec3{4.0F, 6.0F, 4.0F})); // legSize=6 fur legs
+        assert(near(d->inflate, 0.5F));
+        assert(!d->mirror); // fur legs never mirror (single reused builder)
+    }
+    // Fur legs inherit their base leg's animation via a bone parent.
+    assert(disk.bones()[static_cast<std::size_t>(disk.findBone("woolLegFrontRight"))].parent ==
+           disk.findBone("legFrontRight"));
+}
+
+// The shipped resources/animation/chicken.geo.json (RN-1 26.1 transcription).
+constexpr std::string_view kChickenGeoJson = R"({
+  "format_version": "1.12.0",
+  "minecraft:geometry": [
+    { "description": { "identifier": "geometry.chicken", "texture_width": 64, "texture_height": 32 },
+      "bones": [
+        { "name": "head", "pivot": [0,9,-4], "cubes": [ { "origin": [-2,9,-6], "size": [4,6,3], "uv": [0,0] } ] },
+        { "name": "beak", "parent": "head", "pivot": [0,9,-4], "cubes": [ { "origin": [-2,11,-8], "size": [4,2,2], "uv": [14,0] } ] },
+        { "name": "redThing", "parent": "head", "pivot": [0,9,-4], "cubes": [ { "origin": [-1,9,-7], "size": [2,2,2], "uv": [14,4] } ] },
+        { "name": "body", "pivot": [0,8,0], "rotation": [90,0,0],
+          "cubes": [ { "origin": [-3,4,-3], "size": [6,8,6], "uv": [0,9],
+                       "faces": { "front": {"as":"back"}, "back": {"as":"front"} } } ] },
+        { "name": "rightLeg", "pivot": [-2,5,1], "cubes": [ { "origin": [-3,0,-2], "size": [3,5,3], "uv": [26,0] } ] },
+        { "name": "leftLeg", "pivot": [1,5,1], "cubes": [ { "origin": [0,0,-2], "size": [3,5,3], "uv": [26,0] } ] },
+        { "name": "rightWing", "pivot": [-4,11,0], "cubes": [ { "origin": [-4,7,-3], "size": [1,4,6], "uv": [24,13] } ] },
+        { "name": "leftWing", "pivot": [4,11,0], "cubes": [ { "origin": [3,7,-3], "size": [1,4,6], "uv": [24,13] } ] }
+      ] } ] })";
+
+void assertChickenDisk() {
+    const SkeletalModel disk = SkeletalModel::parse(kChickenGeoJson, "geometry.chicken");
+    const SkeletalModel baked = buildChicken();
+    // Every 26.1 bone present and value-equal to the builder transcription.
+    for (const char* bone : {"head", "beak", "redThing", "body", "rightLeg", "leftLeg",
+                             "rightWing", "leftWing"}) {
+        assert(disk.findBone(bone) >= 0);
+        assertCubeEqual(*firstCube(disk, bone), *firstCube(baked, bone));
+    }
+    // beak/redThing hang off head (26.1 makes them head children).
+    assert(disk.bones()[static_cast<std::size_t>(disk.findBone("beak"))].parent ==
+           disk.findBone("head"));
+    // 26.1 leg UV is (26,0), not the 1.16.1 (0,22); legs/wings never mirror.
+    assert(vecEq(firstCube(disk, "rightLeg")->uv, glm::vec2{26.0F, 0.0F}));
+    assert(!firstCube(disk, "leftLeg")->mirror);
+    assert(!firstCube(disk, "leftWing")->mirror);
+}
+
+// The shipped resources/animation/zombie.geo.json (RN-1 adds the hat overlay).
+constexpr std::string_view kZombieGeoJson = R"({
+  "format_version": "1.12.0",
+  "minecraft:geometry": [
+    { "description": { "identifier": "geometry.zombie", "texture_width": 64, "texture_height": 64 },
+      "bones": [
+        { "name": "body", "pivot": [0,24,0], "cubes": [ { "origin": [-4,12,-2], "size": [8,12,4], "uv": [16,16] } ] },
+        { "name": "head", "parent": "body", "pivot": [0,24,0], "cubes": [ { "origin": [-4,24,-4], "size": [8,8,8], "uv": [0,0] } ] },
+        { "name": "hat", "parent": "head", "pivot": [0,24,0], "cubes": [ { "origin": [-4,24,-4], "size": [8,8,8], "uv": [32,0], "inflate": 0.5 } ] },
+        { "name": "rightArm", "parent": "body", "pivot": [-5,22,0], "cubes": [ { "origin": [-8,12,-2], "size": [4,12,4], "uv": [40,16] } ] },
+        { "name": "leftArm", "parent": "body", "pivot": [5,22,0], "cubes": [ { "origin": [4,12,-2], "size": [4,12,4], "uv": [40,16], "mirror": true } ] },
+        { "name": "rightLeg", "pivot": [-1.9,12,0], "cubes": [ { "origin": [-3.9,0,-2], "size": [4,12,4], "uv": [0,16] } ] },
+        { "name": "leftLeg", "pivot": [1.9,12,0], "cubes": [ { "origin": [-0.1,0,-2], "size": [4,12,4], "uv": [0,16], "mirror": true } ] }
+      ] } ] })";
+
+void assertZombieDisk() {
+    const SkeletalModel disk = SkeletalModel::parse(kZombieGeoJson, "geometry.zombie");
+    const SkeletalModel bakedHead = buildZombieHead();
+    // The hat overlay exists, is a head child, and reproduces 26.1's values.
+    assert(disk.findBone("hat") >= 0);
+    assert(disk.bones()[static_cast<std::size_t>(disk.findBone("hat"))].parent ==
+           disk.findBone("head"));
+    const ModelCube* hat = firstCube(disk, "hat");
+    assert(hat != nullptr);
+    assert(near(hat->inflate, 0.5F));           // HumanoidModel hat = g.extend(0.5)
+    assert(vecEq(hat->uv, glm::vec2{32.0F, 0.0F}));
+    assert(vecEq(hat->size, glm::vec3{8.0F, 8.0F, 8.0F}));
+    assertCubeEqual(*hat, *firstCube(bakedHead, "hat"));
+    // The hat box coincides with the head box (only inflate/uv differ).
+    assert(vecEq(hat->origin, firstCube(disk, "head")->origin));
+}
+
 } // namespace
 
 int main() {
@@ -188,6 +451,12 @@ int main() {
     const SkeletalModel jsonCow = SkeletalModel::parse(kCowGeoJson, "geometry.cow");
     const SkeletalModel bakedCow = buildCow();
     assertModelsEqual(bakedCow, jsonCow);
+
+    // RN-1: species transcription guards (sheep double-layer, chicken 26.1
+    // structure, zombie hat overlay) against the same builder+baker.
+    assertSheepDisk();
+    assertChickenDisk();
+    assertZombieDisk();
 
     // Pure vanilla transform (no addBakedCube) still reproduces geo.json exactly.
     const SkeletalModel jsonHL = SkeletalModel::parse(kHeadLegsGeoJson, "geometry.headlegs");
