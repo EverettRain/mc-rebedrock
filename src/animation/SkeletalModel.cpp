@@ -27,16 +27,17 @@ BoxUvRect boxUvFaceRect(int face, glm::vec2 uv, glm::vec3 size) {
     // width (sx) faces front/back, and the top row holds the up/down caps:
     //
     //           +----+----+
-    //           | +Y | -Y |            (each sx x sz)
+    //           | -Y | +Y |            (each sx x sz)
     //      +----+----+----+----+
     //      | -X | -Z | +X | +Z |       (-X/+X: sz x sy, -Z/+Z: sx x sy)
     //      +----+----+----+----+
     // -Z is the model's front (Minecraft north / the face the mob looks toward),
-    // so it takes the second middle-row rect; +Z (back) takes the fourth. +Y (up)
-    // is the left top-row rect, -Y (down) the right. This matches the reference in
-    // tools/entity_uv_lib.py (which the texture editor mirrors) and the box-UV
-    // vertex shader. The rect is built from the cube's declared size; `inflate`
-    // grows the drawn box but never the net.
+    // so it takes the second middle-row rect; +Z (back) takes the fourth. Matching
+    // vanilla ModelPart.Cube (ModelPart.java:297-303): DOWN samples u1..u2 (the
+    // left top-row rect) and UP samples u2..u22 (the right top-row rect). This
+    // matches the reference in tools/entity_uv_lib.py (which the texture editor
+    // mirrors) and the box-UV vertex shader. The rect is built from the cube's
+    // declared size; `inflate` grows the drawn box but never the net.
     const float sx = size.x;
     const float sy = size.y;
     const float sz = size.z;
@@ -45,10 +46,10 @@ BoxUvRect boxUvFaceRect(int face, glm::vec2 uv, glm::vec3 size) {
         return {{uv.x + sz + sx, uv.y + sz}, {sz, sy}};
     case 1: // -X (west)
         return {{uv.x, uv.y + sz}, {sz, sy}};
-    case 2: // +Y (up)
-        return {{uv.x + sz, uv.y}, {sx, sz}};
-    case 3: // -Y (down)
+    case 2: // +Y (up) -> right top-row rect (vanilla UP)
         return {{uv.x + sz + sx, uv.y}, {sx, sz}};
+    case 3: // -Y (down) -> left top-row rect (vanilla DOWN)
+        return {{uv.x + sz, uv.y}, {sx, sz}};
     case 4: // +Z (back)
         return {{uv.x + 2.0F * sz + sx, uv.y + sz}, {sx, sy}};
     default: // 5: -Z (front)

@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <utility>
 
 namespace {
 
@@ -25,17 +26,19 @@ int main() {
 
     assert(rect(boxUvFaceRect(0, uv, size), 28.0F + 16.0F + 8.0F, 8.0F + 16.0F, 16.0F, 8.0F)); // +X
     assert(rect(boxUvFaceRect(1, uv, size), 28.0F, 8.0F + 16.0F, 16.0F, 8.0F));                // -X
-    // +Y (up) is the left top-row rect, -Y (down) the right.
-    assert(rect(boxUvFaceRect(2, uv, size), 28.0F + 16.0F, 8.0F, 8.0F, 16.0F));                // +Y up
-    assert(rect(boxUvFaceRect(3, uv, size), 28.0F + 16.0F + 8.0F, 8.0F, 8.0F, 16.0F));         // -Y down
+    // Vanilla ModelPart.Cube (ModelPart.java:297-303): -Y (down) is the LEFT
+    // top-row rect (u1..u2), +Y (up) the RIGHT (u2..u22).
+    assert(rect(boxUvFaceRect(2, uv, size), 28.0F + 16.0F + 8.0F, 8.0F, 8.0F, 16.0F));         // +Y up (right)
+    assert(rect(boxUvFaceRect(3, uv, size), 28.0F + 16.0F, 8.0F, 8.0F, 16.0F));                // -Y down (left)
     // -Z is the front (second middle-row rect); +Z is the back (fourth rect).
     assert(rect(boxUvFaceRect(4, uv, size), 28.0F + 32.0F + 8.0F, 8.0F + 16.0F, 8.0F, 8.0F));  // +Z back
     assert(rect(boxUvFaceRect(5, uv, size), 28.0F + 16.0F, 8.0F + 16.0F, 8.0F, 8.0F));         // -Z front
 
-    // Top-row caps (+Y, -Y) tile side by side above the middle row.
+    // Top-row caps (-Y, +Y) tile side by side above the middle row: down (left)
+    // sits immediately left of up (right), matching vanilla's u1..u2 / u2..u22.
     const auto up = boxUvFaceRect(2, uv, size);
     const auto down = boxUvFaceRect(3, uv, size);
-    assert(near(up.origin.x + up.size.x, down.origin.x));
+    assert(near(down.origin.x + down.size.x, up.origin.x));
 
     // The four middle-row side faces tile without gaps or overlaps across the
     // net width 2*(sx+sz): order is -X, -Z(front), +X, +Z(back).
@@ -51,6 +54,34 @@ int main() {
     // A cube with a base uv of 0 keeps the net anchored at the origin.
     const auto leg = boxUvFaceRect(1, {0.0F, 16.0F}, {4.0F, 6.0F, 4.0F});
     assert(rect(leg, 0.0F, 16.0F + 4.0F, 4.0F, 6.0F));
+
+    // Golden vanilla ModelPart.Cube cross-check (ModelPart.java:287-303). Compute
+    // the vanilla texel offsets directly from a transcribed cube's declared size
+    // and assert our up/down cap rects land on the same axis-aligned region.
+    // vanilla: u1 = x+depth, u2 = x+depth+width, u22 = x+depth+width+width;
+    //          v0 = y, v1 = y+depth.
+    //   DOWN polygon spans (u1..u2) x (v0..v1)  -> left cap.
+    //   UP   polygon spans (u2..u22) x (v1..v0) -> right cap (v flipped, same rect).
+    {
+        // Two differently-shaped transcribed cubes to pin the formula, not a
+        // single memorised constant.
+        const glm::vec2 goldenUv{18.0F, 4.0F};
+        const glm::vec3 goldenSize{12.0F, 18.0F, 10.0F}; // sx=12, sy=18, sz=10
+        for (const auto& [gUv, gSize] :
+             {std::pair{uv, size}, std::pair{goldenUv, goldenSize}}) {
+            const float gx = gUv.x, gy = gUv.y;
+            const float gsx = gSize.x, gsz = gSize.z; // width, depth
+            const float u1 = gx + gsz;
+            const float u2 = gx + gsz + gsx;
+            const float u22 = gx + gsz + gsx + gsx;
+            const float v0 = gy;
+            const float v1 = gy + gsz;
+            // DOWN == vanilla left cap (u1..u2, v0..v1).
+            assert(rect(boxUvFaceRect(3, gUv, gSize), u1, v0, u2 - u1, v1 - v0));
+            // UP == vanilla right cap (u2..u22, same height span).
+            assert(rect(boxUvFaceRect(2, gUv, gSize), u2, v0, u22 - u2, v1 - v0));
+        }
+    }
 
     // Bedrock euler order is Z, then Y, then X (matrix Rz * Ry * Rx), so X is
     // applied first: (90, 90, 0) sends +Z to -Y, and Y leaves it there. The

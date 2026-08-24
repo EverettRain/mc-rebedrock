@@ -178,10 +178,11 @@ def face_rects(uv, size):
 
     MUST stay identical to ``animation::boxUvFaceRect`` and the frontend
     ``faceRect()``. Net layout (u right, v down; depth sz faces on the sides,
-    width sx faces front/back, top row holds up/down caps):
+    width sx faces front/back, top row holds up/down caps). Matches vanilla
+    ModelPart.Cube: DOWN is the left cap, UP the right cap.
 
               +----+----+
-              | +Y | -Y |          (each sx x sz)
+              | -Y | +Y |          (each sx x sz)
          +----+----+----+----+
          | -X | -Z | +X | +Z |     (-X/+X: sz x sy, -Z/+Z: sx x sy)
          +----+----+----+----+
@@ -189,8 +190,8 @@ def face_rects(uv, size):
     u, v = uv
     w, h, d = (float(s) for s in size)  # sx, sy, sz
     return {
-        "up":    (u + d,          v,     w, d),
-        "down":  (u + d + w,      v,     w, d),
+        "up":    (u + d + w,      v,     w, d),
+        "down":  (u + d,          v,     w, d),
         "west":  (u,              v + d, d, h),
         "front": (u + d,          v + d, w, h),
         "east":  (u + d + w,      v + d, d, h),
@@ -442,8 +443,8 @@ def selftest():
     expected = {
         "east":  (28.0 + 16.0 + 8.0, 8.0 + 16.0, 16.0, 8.0),   # +X
         "west":  (28.0,              8.0 + 16.0, 16.0, 8.0),   # -X
-        "up":    (28.0 + 16.0,       8.0,       8.0, 16.0),    # +Y
-        "down":  (28.0 + 16.0 + 8.0, 8.0,       8.0, 16.0),    # -Y
+        "up":    (28.0 + 16.0 + 8.0, 8.0,       8.0, 16.0),    # +Y (right cap, vanilla UP)
+        "down":  (28.0 + 16.0,       8.0,       8.0, 16.0),    # -Y (left cap, vanilla DOWN)
         "back":  (28.0 + 32.0 + 8.0, 8.0 + 16.0, 8.0, 8.0),    # +Z
         "front": (28.0 + 16.0,       8.0 + 16.0, 8.0, 8.0),    # -Z
     }
@@ -453,9 +454,9 @@ def selftest():
             f"{name} rect {got} != {want}"
 
     # Top-row caps tile side by side; middle row is contiguous and totals
-    # 2 * (sx + sz) from the net origin.
+    # 2 * (sx + sz) from the net origin. Vanilla order: down (left) then up (right).
     up, down = rects["up"], rects["down"]
-    assert abs(up[0] + up[2] - down[0]) < 1e-4
+    assert abs(down[0] + down[2] - up[0]) < 1e-4
     west, front, east, back = (rects[k] for k in ("west", "front", "east", "back"))
     assert abs(west[0] + west[2] - front[0]) < 1e-4
     assert abs(front[0] + front[2] - east[0]) < 1e-4
