@@ -465,23 +465,27 @@ int main() {
         expectNear(maxZ, 1.0F, "door leaf far");
     }
     {
-        // An open fence gate is an empty box set (the gate swings clear), so it
-        // meshes nothing — pinning that a Boxes shape with no boxes emits no
-        // geometry rather than the old full cube.
+        // An open fence gate keeps its post-pair box as its outline / visual /
+        // pick shape (vanilla getShape ignores OPEN — the gate stays visible and
+        // selectable); only its *collision* shape empties so entities pass
+        // through. So an open gate meshes the same one box -> 24 vertices as a
+        // closed one, while its collisionShape is empty.
         mc::world::Chunk openGateChunk;
         const auto openGate =
             mc::world::BlockState{mc::world::Block::OakFenceGate}.withOpen(true);
         openGateChunk.setState(5, mc::world::kMinY + 1, 1, openGate);
         const auto openGateMesh = mc::world::ChunkMesher::build(openGateChunk);
-        assert(mc::world::blockShape(openGate).boxes.empty());
-        assert(openGateMesh.vertices.empty());
-        assert(openGateMesh.indices.empty());
-        // A closed gate is one post-pair box -> 24 vertices.
+        assert(mc::world::blockShape(openGate).boxes.size() == 1U);
+        assert(openGateMesh.vertices.size() == 24U);
+        assert(mc::world::collisionShape(openGate).boxes.empty());
+        // A closed gate meshes the same one post-pair box, and (unlike open) it
+        // still collides.
         const mc::world::BlockState closedGate{mc::world::Block::OakFenceGate};
         openGateChunk.setState(5, mc::world::kMinY + 1, 1, closedGate);
         const auto closedGateMesh = mc::world::ChunkMesher::build(openGateChunk);
         assert(mc::world::blockShape(closedGate).boxes.size() == 1U);
         assert(closedGateMesh.vertices.size() == 24U);
+        assert(mc::world::collisionShape(closedGate).boxes.size() == 1U);
     }
     {
         // A pressure plate is a Column shape (thin full-footprint box), meshed

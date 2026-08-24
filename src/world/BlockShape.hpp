@@ -448,9 +448,12 @@ inline constexpr std::array<ShapeBox, 4> kFenceGateBoxByFacing = [] {
 // AR-B2: FenceGateBlock's Boxes shape — the post-pair box on the Facing axis
 // when closed, empty when open (the gate swings fully clear, unlike a door).
 [[nodiscard]] constexpr BlockShape shapeFenceGate(BlockState state) {
-    if (state.open()) {
-        return {ShapeKind::Boxes, 0.0F, 0.0F, {}};
-    }
+    // The outline / visual / pick shape is the facing post-pair box whether the
+    // gate is open or closed: vanilla FenceGateBlock#getShape ignores OPEN, so an
+    // open gate is still drawn and still selectable. Only the *collision* shape
+    // empties when open (see `collisionShape`), which is what lets an entity walk
+    // through. Returning empty here — as this used to — made an open gate vanish
+    // from the mesh and the pick ray, so it could no longer be seen or broken.
     const auto index = static_cast<std::size_t>(state.orientation());
     const auto& box = kFenceGateBoxByFacing[index < 4U ? index : 0U];
     return {ShapeKind::Boxes, 0.0F, 0.0F, {&box, 1}};
@@ -578,8 +581,17 @@ struct BlockCollisionSpan final {
 // creature walk and the placement occupancy check read the one shape source
 // instead of each assuming a full cube. A torch or flower has a base shape but
 // no collision, so it filters to an empty span.
+
+// FenceGateBlock#getCollisionShape empties when the gate is open (entities pass
+// straight through) even though its outline / visual shape stays put. Both the
+// collision-span fast path and the full collisionShape below consult this so an
+// open gate is passable without also making it invisible or unpickable.
+[[nodiscard]] constexpr bool isOpenPassableGate(BlockState state) {
+    return blockDefinition(state.block()).model == BlockModel::FenceGate && state.open();
+}
+
 [[nodiscard]] constexpr BlockCollisionSpan collisionSpan(BlockState state) {
-    if (!hasCollision(state.block())) {
+    if (!hasCollision(state.block()) || isOpenPassableGate(state)) {
         return {};
     }
     return verticalSpanOf(blockShape(state));
@@ -590,6 +602,12 @@ struct BlockCollisionSpan final {
 // shape for the pick ray but collides with nothing.
 [[nodiscard]] constexpr BlockShape collisionShape(BlockState state) {
     if (!hasCollision(state.block())) {
+        return {ShapeKind::Empty, 0.0F, 0.0F, {}};
+    }
+    // An open fence gate collides with nothing (entities pass through) even
+    // though its outline / visual shape (blockShape, above) stays the post box
+    // so it is still drawn and selectable by the pick ray.
+    if (isOpenPassableGate(state)) {
         return {ShapeKind::Empty, 0.0F, 0.0F, {}};
     }
     return blockShape(state);

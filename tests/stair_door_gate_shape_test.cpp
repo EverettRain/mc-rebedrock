@@ -111,18 +111,19 @@ int main() {
         REQUIRE(hasCollision(Block::OakDoor)); // still solid while open, just relocated
     }
 
-    // --- Fence gate: closed spans the facing axis; open is Empty (no collision
-    // at all, unlike a door's thin sliver — the gate swings fully clear). ---
+    // --- Fence gate: closed and open share the same facing-axis outline / visual
+    // / pick box (vanilla getShape ignores OPEN — an open gate stays visible and
+    // selectable); only the *collision* empties when open, so the gate swings
+    // fully clear for entities without vanishing. ---
     {
         const auto closed = blockShape(BlockState{Block::OakFenceGate, BlockOrientation::North});
         REQUIRE(closed.kind == ShapeKind::Boxes && closed.boxes.size() == 1);
         const auto open =
             blockShape(BlockState{Block::OakFenceGate, BlockOrientation::North}.withOpen(true));
-        REQUIRE(open.boxes.empty());
-        REQUIRE(collisionSpan(BlockState{Block::OakFenceGate, BlockOrientation::North}.withOpen(true))
-                    .top <= collisionSpan(BlockState{Block::OakFenceGate, BlockOrientation::North}
-                                            .withOpen(true))
-                                .bottom); // no collision while open
+        REQUIRE(open.kind == ShapeKind::Boxes && open.boxes.size() == 1); // still visible/pickable
+        const auto openState = BlockState{Block::OakFenceGate, BlockOrientation::North}.withOpen(true);
+        REQUIRE(collisionShape(openState).boxes.empty());               // but no collision boxes
+        REQUIRE(collisionSpan(openState).top <= collisionSpan(openState).bottom); // and no span
     }
 
     // --- stairShapeFor: an isolated stair (no matching neighbour) is Straight,
