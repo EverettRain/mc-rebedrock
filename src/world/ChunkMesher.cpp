@@ -1,5 +1,6 @@
 #include "world/ChunkMesher.hpp"
 
+#include "world/BlockShape.hpp"
 #include "world/WorldConstants.hpp"
 #include "world/WorldLighting.hpp"
 #include "world/gen/JavaRandom.hpp"
@@ -795,11 +796,131 @@ void appendWaterFace(
     return neighborLayer != BlockRenderLayer::Opaque;
 }
 
+// The value on `box`'s min/max side of `axis` (dx/dy/dz of the face), picking the
+// max face for a +axis and the min face for a -axis: a cell-local coordinate the
+// caller compares against 0/1 to decide whether the face touches the cell wall.
+[[nodiscard]] constexpr float boxFaceCoordinate(const ShapeBox& box, const FaceDefinition& face) {
+    if (face.dx > 0) return box.maxX;
+    if (face.dx < 0) return box.minX;
+    if (face.dy > 0) return box.maxY;
+    if (face.dy < 0) return box.minY;
+    if (face.dz > 0) return box.maxZ;
+    return box.minZ;
+}
+
+// One arbitrary axis-aligned box's six faces, in cell-local 0..1 units — the
+// generalisation of a slab's [low, high] Y column to a full AABB, the mesh half
+// of consuming `BlockShape`'s box set (stairs, fences, doors, buttons…). Each
+// unit-cube corner is remapped into the box's bounds on all three axes rather
+// than the slab path's Y-only remap, and the two in-plane axes crop the texture
+// to the box's footprint the way the slab already crops V. A face on the cell
+// boundary (box reaches 0 or 1 on the face axis) culls against its neighbour;
+// an interior face (a stair step's riser, a wall arm's inner wall) is always
+// drawn, since no neighbour can occlude a face that does not touch the cell wall.
+template <typename Sampler>
+void appendBox(
+    render::MeshData& mesh,
+    const World& world,
+    Block block,
+    const ShapeBox& box,
+    int x,
+    int y,
+    int z,
+    const Sampler& lighting,
+    SmoothLightingQuality quality,
+    const glm::vec3& sectionOrigin,
+    BiomeTintCache& tints) {
+    const glm::vec3 origin{
+        static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
+    const glm::vec3 boxMin{box.minX, box.minY, box.minZ};
+    const glm::vec3 boxMax{box.maxX, box.maxY, box.maxZ};
+    for (const auto& face : kFaces) {
+        const float faceCoordinate = boxFaceCoordinate(box, face);
+        const bool positive = face.dx + face.dy + face.dz > 0;
+        // The face touches the cell wall only when it reaches 0 (min side) or 1
+        // (max side); otherwise it is an interior face, always shown.
+        const bool boundary = positive ? faceCoordinate >= 1.0F : faceCoordinate <= 0.0F;
+        if (boundary) {
+            const Block neighbor =
+                lighting.blockType(x + face.dx, y + face.dy, z + face.dz);
+            if (!shouldRenderFace(block, neighbor, face)) {
+                continue;
+            }
+        }
+        const auto firstVertex = static_cast<std::uint32_t>(mesh.vertices.size());
+        const auto outsideLight = lighting.level(
+            x + face.dx, y + face.dy, z + face.dz);
+        const float flatSky = static_cast<float>(outsideLight.sky) /
+            static_cast<float>(ChunkLightSampler::kMaximumLightLevel);
+        const bool selfLit = world.state(x, y, z).emittedLight() > 0U;
+        const float flatBlock = selfLit
+            ? 1.0F
+            : static_cast<float>(outsideLight.block) /
+                  static_cast<float>(ChunkLightSampler::kMaximumLightLevel);
+        const float layer = textureLayer(world, block, face.face, x, y, z);
+        std::array<float, 4> ambientOcclusion{};
+        for (std::size_t corner = 0; corner < face.corners.size(); ++corner) {
+            ambientOcclusion[corner] = vertexAmbientOcclusion(
+                lighting, quality, face, face.corners[corner], x, y, z);
+            auto smoothLight = vertexLight(
+                lighting, quality, face, face.corners[corner], x, y, z, outsideLight);
+            if (selfLit) smoothLight.block = 1.0F;
+            // Remap the unit-cube corner into the box's bounds on every axis:
+            // p = min + corner * (max - min). The texture crops to the box's
+            // footprint in the two in-plane axes (U along the horizontal axis,
+            // V measured from the cell floor with 1 at the bottom, matching the
+            // slab path and the existing UV convention).
+            const glm::vec3 unit = face.corners[corner];
+            const glm::vec3 positionCorner = boxMin + unit * (boxMax - boxMin);
+            glm::vec2 uv = kUvs[corner];
+            if (face.face == Face::PositiveY || face.face == Face::NegativeY) {
+                uv.x = positionCorner.x;
+                uv.y = 1.0F - positionCorner.z;
+            } else if (face.face == Face::PositiveX || face.face == Face::NegativeX) {
+                uv.x = positionCorner.z;
+                uv.y = 1.0F - positionCorner.y;
+            } else {
+                uv.x = positionCorner.x;
+                uv.y = 1.0F - positionCorner.y;
+            }
+            const std::uint8_t biomeMask = 0U;
+            const int cornerX = x + static_cast<int>(std::lround(positionCorner.x));
+            const int cornerZ = z + static_cast<int>(std::lround(positionCorner.z));
+            const auto tint = tints.tint(block, face.face, cornerX, cornerZ);
+            mesh.vertices.push_back(packVertex(
+                (origin + positionCorner) - sectionOrigin,
+                face.normal,
+                uv,
+                layer,
+                ambientOcclusion[corner],
+                1.0F,
+                smoothLight.sky,
+                smoothLight.block,
+                flatSky,
+                flatBlock,
+                tint[0],
+                tint[1],
+                tint[2],
+                biomeMask));
+        }
+        constexpr std::array<std::uint32_t, 6> kDefaultIndices{0, 1, 2, 2, 3, 0};
+        constexpr std::array<std::uint32_t, 6> kFlippedIndices{0, 1, 3, 1, 2, 3};
+        const auto& indices = ambientOcclusion[0] + ambientOcclusion[2] >
+                                      ambientOcclusion[1] + ambientOcclusion[3]
+                                  ? kFlippedIndices
+                                  : kDefaultIndices;
+        for (const auto index : indices) {
+            mesh.indices.push_back(firstVertex + index);
+        }
+    }
+}
+
 // SlabBlock geometry: a box filling [low, high] of the cell's height. A bottom
 // slab is [0, 0.5], a top slab [0.5, 1], a double slab [0, 1] (a full cube).
 // The two horizontal faces at the cell boundary cull against their neighbour;
 // the internal cut face (a slab's flat top/bottom) is always drawn, and the four
-// side faces cull like any other block's side.
+// side faces cull like any other block's side. A slab is now the full-footprint
+// Y column special case of `appendBox`, so the two share one box-mesh path.
 template <typename Sampler>
 void appendSlab(
     render::MeshData& mesh,
@@ -815,22 +936,29 @@ void appendSlab(
     BiomeTintCache& tints) {
     const float low = portion == SlabPortion::Top ? 0.5F : 0.0F;
     const float high = portion == SlabPortion::Bottom ? 0.5F : 1.0F;
-    for (const auto& face : kFaces) {
-        // A horizontal face is on the cell boundary only when the box reaches
-        // that boundary; otherwise it is the slab's internal cut, always shown.
-        bool boundary = true;
-        if (face.face == Face::PositiveY) {
-            boundary = high >= 1.0F;
-        } else if (face.face == Face::NegativeY) {
-            boundary = low <= 0.0F;
-        }
-        const Block neighbor =
-            lighting.blockType(x + face.dx, y + face.dy, z + face.dz);
-        if (boundary && !shouldRenderFace(block, neighbor, face)) {
-            continue;
-        }
-        appendFace(mesh, world, block, face, x, y, z, lighting, quality,
-                   sectionOrigin, tints, /*doubleSided=*/false, low, high);
+    appendBox(mesh, world, block, ShapeBox{0.0F, low, 0.0F, 1.0F, high, 1.0F}, x, y, z,
+              lighting, quality, sectionOrigin, tints);
+}
+
+// A shaped block's whole `BlockShape` box set (stairs/wall/fence-gate/door/
+// trapdoor/button — every Boxes-kind model), meshed from the one shape source
+// the pick ray and collision already read. `appendBox` draws each box; an open
+// fence gate's empty box list contributes nothing, exactly as its shape is empty.
+template <typename Sampler>
+void appendBoxes(
+    render::MeshData& mesh,
+    const World& world,
+    Block block,
+    const BlockShape& shape,
+    int x,
+    int y,
+    int z,
+    const Sampler& lighting,
+    SmoothLightingQuality quality,
+    const glm::vec3& sectionOrigin,
+    BiomeTintCache& tints) {
+    for (const ShapeBox& box : shape.boxes) {
+        appendBox(mesh, world, block, box, x, y, z, lighting, quality, sectionOrigin, tints);
     }
 }
 
@@ -1190,6 +1318,26 @@ bool buildSectionImpl(
                                chunk->state(localX, worldY, localZ).slabPortion(),
                                worldX, worldY, worldZ, lighting, quality,
                                sectionOrigin, tints);
+                    continue;
+                }
+                // Every shaped block (stairs/door/fence-gate/trapdoor/button/wall
+                // — the Boxes-kind models plus the PressurePlate Column) meshes
+                // from the one `BlockShape` source the pick ray and collision
+                // read, instead of the full-cube fallthrough below. A Column
+                // shape (pressure plate) reuses the slab's box path via its
+                // [bottom, top] Y span; a Boxes shape walks its box list.
+                if (isShapedBlockModel(definition.model)) {
+                    const BlockState state = chunk->state(localX, worldY, localZ);
+                    const BlockShape shape = blockShape(state);
+                    if (shape.kind == ShapeKind::Column) {
+                        appendBox(targetMesh, world, current,
+                                  ShapeBox{0.0F, shape.bottom, 0.0F, 1.0F, shape.top, 1.0F},
+                                  worldX, worldY, worldZ, lighting, quality, sectionOrigin,
+                                  tints);
+                    } else {
+                        appendBoxes(targetMesh, world, current, shape, worldX, worldY, worldZ,
+                                    lighting, quality, sectionOrigin, tints);
+                    }
                     continue;
                 }
                 const auto orientation = chunk->orientation(localX, worldY, localZ);

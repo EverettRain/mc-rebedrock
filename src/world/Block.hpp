@@ -320,6 +320,45 @@ enum class BlockModel : std::uint8_t {
     Wall,
 };
 
+// Whether a model is a shaped block — one whose real geometry is a `BlockShape`
+// box set (or the pressure plate's thin Column) rather than a full cube or a
+// plant/torch/chest special case. These are exactly the models the renderer
+// meshes from `BlockShape` (RN-2): stairs, doors, fence gates, trapdoors,
+// buttons, walls and the pressure plate. Cube/Cross/Crop/Torch/Chest/Slab keep
+// their own dedicated mesh and icon paths, so they are excluded here. A single
+// predicate keeps the world mesher and the HUD icon router reading the one list
+// instead of two switch statements that could drift.
+[[nodiscard]] constexpr bool isShapedBlockModel(BlockModel model) {
+    switch (model) {
+    case BlockModel::Stairs:
+    case BlockModel::Door:
+    case BlockModel::FenceGate:
+    case BlockModel::TrapDoor:
+    case BlockModel::PressurePlate:
+    case BlockModel::Button:
+    case BlockModel::Wall:
+        return true;
+    case BlockModel::Cube:
+    case BlockModel::Cross:
+    case BlockModel::Crop:
+    case BlockModel::Torch:
+    case BlockModel::Chest:
+    case BlockModel::Slab:
+        return false;
+    }
+    return false;
+}
+
+// Whether a shaped block's item icon is drawn as a flat item sprite rather than
+// a 3D block cube. Vanilla renders a door and trapdoor item as a flat sprite
+// (they are thin leaves with no useful 3D inventory silhouette), while a stair,
+// wall, fence gate, button and pressure plate item show a 3D block icon. This is
+// the HUD "thin leaf -> sprite" special case RN-2 carries; the world mesh always
+// draws the real 3D box for all of them.
+[[nodiscard]] constexpr bool isThinLeafIconModel(BlockModel model) {
+    return model == BlockModel::Door || model == BlockModel::TrapDoor;
+}
+
 // SlabBlock.TYPE, the value the SlabType property serialises as. Bottom is 0 so
 // a freshly placed slab (the block's default state) sits in the lower half, the
 // way vanilla's SlabType.BOTTOM is the default.

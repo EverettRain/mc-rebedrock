@@ -1,3 +1,5 @@
+#include "world/BlockShape.hpp"
+#include "world/BlockState.hpp"
 #include "world/ChunkMesher.hpp"
 #include "world/SurfaceGenerator.hpp"
 #include "world/World.hpp"
@@ -389,26 +391,150 @@ int main() {
     expectNear(worldPos(plantVertices[16]).z, 8.0F, "sapling z");
     expectNear(worldPos(plantVertices[16]).y, 2.0F, "sapling y");
 
-    // AR-B2 smoke test: stairs/doors/gates carry no dedicated mesh branch yet
-    // (ChunkMesher's per-shape geometry is deliberately deferred to mac, same
-    // scope line AR-B1 Slice D drew — see the AR-B2 landing notes). None of
-    // the three model branches exist here, so the mesher's catch-all cube
-    // path meshes them: visually a full block rather than the real partial
-    // shape, but the build must still complete without a crash or an
-    // out-of-bounds read, and produce real geometry rather than silently
-    // nothing. This pins today's known-wrong-but-safe fallback so a future
-    // mesher change is caught if it starts crashing on these models instead
-    // of quietly under- or over-meshing them.
+    // RN-2: every shaped block (stairs/door/fence-gate/trapdoor/button/pressure
+    // plate/wall) now meshes from the one `BlockShape` box set the pick ray and
+    // collision already read, instead of the old full-cube fallthrough. A lone
+    // shaped block sits on air, so no face culls: each box draws all six faces
+    // (24 vertices, 36 indices), so the mesh has exactly 24 vertices per box in
+    // the state's BlockShape. This pins the mesh geometry to the single source —
+    // if a box is dropped, or the block falls back to a single full cube, the
+    // per-box count no longer matches `blockShape(state).boxes.size()`.
+    const auto shapedVertexBudget = [](const mc::world::BlockState& state) -> std::size_t {
+        const auto shape = mc::world::blockShape(state);
+        if (shape.kind == mc::world::ShapeKind::Column) {
+            return 24U; // one full-footprint Y box (pressure plate)
+        }
+        return 24U * shape.boxes.size();
+    };
     {
-        mc::world::Chunk stairsAndFixtures;
-        stairsAndFixtures.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::OakStairs);
-        stairsAndFixtures.setBlock(3, mc::world::kMinY + 1, 1, mc::world::Block::OakDoor);
-        stairsAndFixtures.setBlock(3, mc::world::kMinY + 2, 1, mc::world::Block::OakDoor);
-        stairsAndFixtures.setBlock(5, mc::world::kMinY + 1, 1, mc::world::Block::OakFenceGate);
-        const auto mesh = mc::world::ChunkMesher::build(stairsAndFixtures);
-        assert(!mesh.vertices.empty());
-        assert(!mesh.indices.empty());
-        assert(mesh.indices.size() % 3U == 0U); // whole triangles only
+        // A straight stair is two boxes (full bottom half + one step), so its
+        // mesh is 48 vertices — provably not the 24-vertex single cube the old
+        // fallthrough produced.
+        mc::world::Chunk stairChunk;
+        const mc::world::BlockState stair{mc::world::Block::OakStairs};
+        stairChunk.setState(1, mc::world::kMinY + 1, 1, stair);
+        const auto stairMesh = mc::world::ChunkMesher::build(stairChunk);
+        assert(mc::world::blockShape(stair).boxes.size() == 2U);
+        assert(stairMesh.vertices.size() == shapedVertexBudget(stair));
+        assert(stairMesh.vertices.size() == 48U);
+        assert(stairMesh.indices.size() == 72U);
+        assert(stairMesh.indices.size() % 3U == 0U);
+        // The step box reaches above y+0.5, and the bottom box floors at y, so
+        // the mesh is a real partial shape spanning the whole cell height, not a
+        // flat half.
+        float minY = 1e9F;
+        float maxY = -1e9F;
+        for (const auto& vertex : stairMesh.vertices) {
+            minY = std::min(minY, worldPos(vertex).y);
+            maxY = std::max(maxY, worldPos(vertex).y);
+        }
+        expectNear(minY, 1.0F, "stair floor");
+        expectNear(maxY, 2.0F, "stair top");
     }
+    {
+        // An inner-shape stair is three boxes -> 72 vertices, catching a dropped
+        // third box that a two-box straight stair could not.
+        mc::world::Chunk innerStairChunk;
+        const auto inner =
+            mc::world::BlockState{mc::world::Block::OakStairs}.withStairShape(
+                mc::world::StairShape::InnerRight);
+        innerStairChunk.setState(1, mc::world::kMinY + 1, 1, inner);
+        const auto innerMesh = mc::world::ChunkMesher::build(innerStairChunk);
+        assert(mc::world::blockShape(inner).boxes.size() == 3U);
+        assert(innerMesh.vertices.size() == shapedVertexBudget(inner));
+        assert(innerMesh.vertices.size() == 72U);
+    }
+    {
+        // A door is a single thin leaf box: 24 vertices, and its box hugs one
+        // face rather than the whole cell — the mesh is a thin box, not a cube.
+        mc::world::Chunk doorChunk;
+        const mc::world::BlockState door{mc::world::Block::OakDoor};
+        doorChunk.setState(3, mc::world::kMinY + 1, 1, door);
+        const auto doorMesh = mc::world::ChunkMesher::build(doorChunk);
+        assert(mc::world::blockShape(door).boxes.size() == 1U);
+        assert(doorMesh.vertices.size() == 24U);
+        // The leaf is 3/16 thin on Z (0.8125..1), so every vertex's Z lies in
+        // that band — not the full 0..1 of a cube.
+        float minZ = 1e9F;
+        float maxZ = -1e9F;
+        for (const auto& vertex : doorMesh.vertices) {
+            minZ = std::min(minZ, worldPos(vertex).z - 1.0F);
+            maxZ = std::max(maxZ, worldPos(vertex).z - 1.0F);
+        }
+        expectNear(minZ, 0.8125F, "door leaf near");
+        expectNear(maxZ, 1.0F, "door leaf far");
+    }
+    {
+        // An open fence gate is an empty box set (the gate swings clear), so it
+        // meshes nothing — pinning that a Boxes shape with no boxes emits no
+        // geometry rather than the old full cube.
+        mc::world::Chunk openGateChunk;
+        const auto openGate =
+            mc::world::BlockState{mc::world::Block::OakFenceGate}.withOpen(true);
+        openGateChunk.setState(5, mc::world::kMinY + 1, 1, openGate);
+        const auto openGateMesh = mc::world::ChunkMesher::build(openGateChunk);
+        assert(mc::world::blockShape(openGate).boxes.empty());
+        assert(openGateMesh.vertices.empty());
+        assert(openGateMesh.indices.empty());
+        // A closed gate is one post-pair box -> 24 vertices.
+        const mc::world::BlockState closedGate{mc::world::Block::OakFenceGate};
+        openGateChunk.setState(5, mc::world::kMinY + 1, 1, closedGate);
+        const auto closedGateMesh = mc::world::ChunkMesher::build(openGateChunk);
+        assert(mc::world::blockShape(closedGate).boxes.size() == 1U);
+        assert(closedGateMesh.vertices.size() == 24U);
+    }
+    {
+        // A pressure plate is a Column shape (thin full-footprint box), meshed
+        // through the slab-style Y-box path: 24 vertices, and its top sits at
+        // 1/16 rather than a full cube's 1.
+        mc::world::Chunk plateChunk;
+        const mc::world::BlockState plate{mc::world::Block::StonePressurePlate};
+        plateChunk.setState(7, mc::world::kMinY + 1, 1, plate);
+        const auto plateMesh = mc::world::ChunkMesher::build(plateChunk);
+        assert(mc::world::blockShape(plate).kind == mc::world::ShapeKind::Column);
+        assert(plateMesh.vertices.size() == 24U);
+        float maxY = -1e9F;
+        for (const auto& vertex : plateMesh.vertices) {
+            maxY = std::max(maxY, worldPos(vertex).y);
+        }
+        expectNear(maxY, 1.0F + 1.0F / 16.0F, "pressure plate top");
+    }
+    {
+        // A connected wall is a post plus one arm per side. With one connection
+        // its shape is two boxes -> 48 vertices, tying the mesh to the wall's
+        // connection-mask box set.
+        mc::world::Chunk wallChunk;
+        const auto wall =
+            mc::world::BlockState{mc::world::Block::CobblestoneWall}.withWallConnected(
+                mc::world::BlockOrientation::North, true);
+        wallChunk.setState(9, mc::world::kMinY + 1, 1, wall);
+        const auto wallMesh = mc::world::ChunkMesher::build(wallChunk);
+        assert(mc::world::blockShape(wall).boxes.size() == 2U);
+        assert(wallMesh.vertices.size() == shapedVertexBudget(wall));
+        assert(wallMesh.vertices.size() == 48U);
+    }
+
+    // RN-2 HUD icon routing (the icon half of审计 #1), tested through the
+    // Vulkan-free predicates the HudRenderer's drawHudItemIcon consumes: a
+    // shaped block that is not a thin leaf draws a 3D block icon; a door or
+    // trapdoor stays a flat item sprite, matching vanilla's per-item render.
+    static_assert(mc::world::isShapedBlockModel(mc::world::BlockModel::Stairs));
+    static_assert(mc::world::isShapedBlockModel(mc::world::BlockModel::Wall));
+    static_assert(mc::world::isShapedBlockModel(mc::world::BlockModel::FenceGate));
+    static_assert(mc::world::isShapedBlockModel(mc::world::BlockModel::Button));
+    static_assert(mc::world::isShapedBlockModel(mc::world::BlockModel::PressurePlate));
+    static_assert(mc::world::isShapedBlockModel(mc::world::BlockModel::Door));
+    static_assert(mc::world::isShapedBlockModel(mc::world::BlockModel::TrapDoor));
+    static_assert(!mc::world::isShapedBlockModel(mc::world::BlockModel::Cube));
+    static_assert(!mc::world::isShapedBlockModel(mc::world::BlockModel::Slab));
+    static_assert(!mc::world::isShapedBlockModel(mc::world::BlockModel::Chest));
+    // Only door and trapdoor are drawn flat; the rest show a 3D block icon.
+    static_assert(mc::world::isThinLeafIconModel(mc::world::BlockModel::Door));
+    static_assert(mc::world::isThinLeafIconModel(mc::world::BlockModel::TrapDoor));
+    static_assert(!mc::world::isThinLeafIconModel(mc::world::BlockModel::Stairs));
+    static_assert(!mc::world::isThinLeafIconModel(mc::world::BlockModel::Wall));
+    static_assert(!mc::world::isThinLeafIconModel(mc::world::BlockModel::FenceGate));
+    static_assert(!mc::world::isThinLeafIconModel(mc::world::BlockModel::Button));
+    static_assert(!mc::world::isThinLeafIconModel(mc::world::BlockModel::PressurePlate));
     return 0;
 }

@@ -378,6 +378,14 @@ class HudRenderer final {
                 drawHudBlockIcon(commandBuffer, rectangle, stack.block, 1.0F);
                 return;
             }
+            // A shaped block (stairs/wall/fence gate/button/pressure plate) shows
+            // a 3D block icon like vanilla rather than falling through to the flat
+            // sprite below; only the thin-leaf door/trapdoor items stay flat
+            // sprites, matching vanilla's item render for each (RN-2).
+            if (world::isShapedBlockModel(model) && !world::isThinLeafIconModel(model)) {
+                drawHudBlockIcon(commandBuffer, rectangle, stack.block);
+                return;
+            }
         }
         drawHudQuad(commandBuffer, rectangle, {1.0F, 1.0F, 1.0F, 1.0F},
                     gameplay::itemTextureLayer(stack), true);
