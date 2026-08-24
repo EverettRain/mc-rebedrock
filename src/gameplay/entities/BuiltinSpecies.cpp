@@ -104,7 +104,7 @@ EntityDrops rollRottenFleshLoot(std::uint64_t& rng) {
 constexpr EntityRenderDescriptor kChickenRender{
     /*geometryPath=*/"animation/chicken.geo.json",
     /*animationPath=*/"animation/chicken.animation.json",
-    /*texturePath=*/"entity/chicken/chicken.png",
+    /*texturePath=*/"entity/chicken/chicken_temperate.png",
     /*geometryId=*/"geometry.chicken",
     /*walkAnimation=*/"animation.chicken.walk",
     /*idleAnimation=*/"animation.chicken.idle",

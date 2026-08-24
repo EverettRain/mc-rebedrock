@@ -16,6 +16,7 @@
 namespace {
 
 using mc::animation::CubeListBuilder;
+using mc::animation::FaceRelabel;
 using mc::animation::ModelBone;
 using mc::animation::ModelCube;
 using mc::animation::PartDefinition;
@@ -70,46 +71,60 @@ constexpr std::string_view kCowGeoJson = R"({
     {
       "description": { "identifier": "geometry.cow", "texture_width": 64, "texture_height": 64 },
       "bones": [
-        { "name": "body", "pivot": [0, 19, 2], "rotation": [-90, 0, 0],
+        { "name": "body", "pivot": [0, 19, 2], "rotation": [90, 0, 0],
           "cubes": [
-            { "origin": [-6, 9, -1], "size": [12, 18, 10], "uv": [18, 4] },
+            { "origin": [-6, 9, -1], "size": [12, 18, 10], "uv": [18, 4],
+              "faces": { "front": {"as": "back"}, "back": {"as": "front"},
+                         "up": {"as": "down"}, "down": {"as": "up", "rotate": 180} } },
             { "origin": [-2, 21, 9], "size": [4, 6, 1], "uv": [52, 0] }
           ] },
         { "name": "head", "pivot": [0, 20, -8],
           "cubes": [
             { "origin": [-4, 16, -14], "size": [8, 8, 6], "uv": [0, 0] },
             { "origin": [-3, 16, -15], "size": [6, 3, 1], "uv": [1, 33] },
-            { "origin": [4, 22, -13], "size": [1, 3, 1], "uv": [22, 0] },
-            { "origin": [-5, 22, -13], "size": [1, 3, 1], "uv": [22, 0] }
+            { "origin": [-5, 22, -13], "size": [1, 3, 1], "uv": [22, 0] },
+            { "origin": [4, 22, -13], "size": [1, 3, 1], "uv": [22, 0] }
           ] },
-        { "name": "legFrontRight", "pivot": [4, 12, -5],
-          "cubes": [ { "origin": [2, 0, -7], "size": [4, 12, 4], "uv": [0, 16] } ] },
-        { "name": "legFrontLeft", "pivot": [-4, 12, -5],
-          "cubes": [ { "origin": [-6, 0, -7], "size": [4, 12, 4], "uv": [0, 16], "mirror": true } ] },
-        { "name": "legBackRight", "pivot": [4, 12, 7],
-          "cubes": [ { "origin": [2, 0, 5], "size": [4, 12, 4], "uv": [0, 16] } ] },
-        { "name": "legBackLeft", "pivot": [-4, 12, 7],
-          "cubes": [ { "origin": [-6, 0, 5], "size": [4, 12, 4], "uv": [0, 16], "mirror": true } ] }
+        { "name": "legFrontRight", "pivot": [-4, 12, -5],
+          "cubes": [ { "origin": [-6, 0, -7], "size": [4, 12, 4], "uv": [0, 16] } ] },
+        { "name": "legFrontLeft", "pivot": [4, 12, -5],
+          "cubes": [ { "origin": [2, 0, -7], "size": [4, 12, 4], "uv": [0, 16], "mirror": true } ] },
+        { "name": "legBackRight", "pivot": [-4, 12, 7],
+          "cubes": [ { "origin": [-6, 0, 5], "size": [4, 12, 4], "uv": [0, 16] } ] },
+        { "name": "legBackLeft", "pivot": [4, 12, 7],
+          "cubes": [ { "origin": [2, 0, 5], "size": [4, 12, 4], "uv": [0, 16], "mirror": true } ] }
       ]
     }
   ]
 })";
 
+// box-UV face indices used by the "faces" relabels below (0..5 = +X,-X,+Y,-Y,+Z,-Z).
+constexpr int kUp = 2;
+constexpr int kDown = 3;
+constexpr int kBack = 4;
+constexpr int kFront = 5;
+
 // Transcribes today's cow.geo.json through the builder. head + four legs come
 // straight from vanilla CowModel.createBodyLayer() (Java model space); the baker
-// performs the full scale(-1,-1,1). The rotated torso is authored in rebedrock
-// space via addBakedCube; under RN-0c it carries no faces compensation.
+// performs the Y-flip. The rotation-folded, face-compensated body is authored in
+// rebedrock space via addBakedCube — that compensation is what RN-0b removes, so
+// RN-0a reproduces it verbatim to guarantee zero visual drift.
 SkeletalModel buildCow() {
     PartDefinition mesh;
 
     // Bone order must match the geo.json so index-by-index comparison holds.
-    // Under RN-0c the baker applies the full scale(-1,-1,1), so the rotated torso
-    // needs no per-face compensation: authored torso (no faces override) + udder.
-    // Origins are symmetric in X, so the flip leaves these baked values unchanged.
+    // body: cube 0 is the authored torso (faces relabel front<->back, up->down,
+    // down->up+180 = the current #2 compensation); cube 1 the udder.
     CubeListBuilder body;
     body.addBakedCube(/*origin*/ {-6.0F, 9.0F, -1.0F}, /*size*/ {12.0F, 18.0F, 10.0F},
                       /*uv*/ {18.0F, 4.0F}, /*texU*/ 18, /*texV*/ 4, /*mirror*/ false,
-                      /*inflate*/ 0.0F, /*faces*/ {});
+                      /*inflate*/ 0.0F,
+                      // geo.json "<key>": {"as": "<value>"} => target = index(value),
+                      // pos = index(key). front->back, back->front, up->down, down->up+180.
+                      {FaceRelabel{/*target=back*/ kBack, /*pos=front*/ kFront, false},
+                       FaceRelabel{/*target=front*/ kFront, /*pos=back*/ kBack, false},
+                       FaceRelabel{/*target=down*/ kDown, /*pos=up*/ kUp, false},
+                       FaceRelabel{/*target=up*/ kUp, /*pos=down*/ kDown, true}});
     body.addBakedCube({-2.0F, 21.0F, 9.0F}, {4.0F, 6.0F, 1.0F}, {52.0F, 0.0F}, 52, 0);
     mesh.addOrReplaceChild("body", body, PartPose::offsetAndRotation(0.0F, 5.0F, 2.0F, 90.0F, 0.0F, 0.0F));
 
@@ -152,8 +167,8 @@ constexpr std::string_view kHeadLegsGeoJson = R"({
       "bones": [
         { "name": "head", "pivot": [0, 20, -8],
           "cubes": [ { "origin": [-4, 16, -14], "size": [8, 8, 6], "uv": [0, 0] } ] },
-        { "name": "legFrontRight", "pivot": [4, 12, -5],
-          "cubes": [ { "origin": [2, 0, -7], "size": [4, 12, 4], "uv": [0, 16] } ] }
+        { "name": "legFrontRight", "pivot": [-4, 12, -5],
+          "cubes": [ { "origin": [-6, 0, -7], "size": [4, 12, 4], "uv": [0, 16] } ] }
       ]
     }
   ]
@@ -196,11 +211,14 @@ SkeletalModel buildSheepBase() {
     head.texOffs(0, 0).addBox(-3.0F, -4.0F, -6.0F, 6.0F, 6.0F, 8.0F);
     mesh.addOrReplaceChild("head", head, PartPose::offsetPose(0.0F, 6.0F, -8.0F));
 
-    // body is rotated +90 X; authored in rebedrock space via addBakedCube. Under
-    // RN-0c (full scale(-1,-1,1)) it needs no faces compensation. X-symmetric, so
-    // the flip leaves the baked origin unchanged.
+    // body is rotated +90 X; the disk geo.json authors it rotation-folded with a
+    // front<->back relabel (same situation as cow). Reproduce via addBakedCube so
+    // the comparison is against the authored torso the game ships.
     CubeListBuilder body;
-    body.addBakedCube({-4.0F, 9.0F, 3.0F}, {8.0F, 16.0F, 6.0F}, {28.0F, 8.0F}, 28, 8, false, 0.0F);
+    constexpr int kBack = 4;
+    constexpr int kFront = 5;
+    body.addBakedCube({-4.0F, 9.0F, 3.0F}, {8.0F, 16.0F, 6.0F}, {28.0F, 8.0F}, 28, 8, false, 0.0F,
+                      {FaceRelabel{kBack, kFront, false}, FaceRelabel{kFront, kBack, false}});
     mesh.addOrReplaceChild("body", body, PartPose::offsetAndRotation(0.0F, 5.0F, 2.0F, 90.0F, 0.0F, 0.0F));
 
     const auto leg = [](bool mirror) {
@@ -225,7 +243,10 @@ SkeletalModel buildSheepFur() {
     mesh.addOrReplaceChild("woolHead", head, PartPose::offsetPose(0.0F, 6.0F, -8.0F));
 
     CubeListBuilder body;
-    body.addBakedCube({-4.0F, 9.0F, 3.0F}, {8.0F, 16.0F, 6.0F}, {28.0F, 8.0F}, 28, 8, false, 1.75F);
+    constexpr int kBack = 4;
+    constexpr int kFront = 5;
+    body.addBakedCube({-4.0F, 9.0F, 3.0F}, {8.0F, 16.0F, 6.0F}, {28.0F, 8.0F}, 28, 8, false, 1.75F,
+                      {FaceRelabel{kBack, kFront, false}, FaceRelabel{kFront, kBack, false}});
     mesh.addOrReplaceChild("wool", body,
                            PartPose::offsetAndRotation(0.0F, 5.0F, 2.0F, 90.0F, 0.0F, 0.0F));
 
@@ -256,7 +277,10 @@ SkeletalModel buildChicken() {
     mesh.addOrReplaceChild("redThing", red, PartPose::offsetPose(0.0F, 15.0F, -4.0F), "head");
 
     CubeListBuilder body;
-    body.addBakedCube({-3.0F, 4.0F, -3.0F}, {6.0F, 8.0F, 6.0F}, {0.0F, 9.0F}, 0, 9, false, 0.0F);
+    constexpr int kBack = 4;
+    constexpr int kFront = 5;
+    body.addBakedCube({-3.0F, 4.0F, -3.0F}, {6.0F, 8.0F, 6.0F}, {0.0F, 9.0F}, 0, 9, false, 0.0F,
+                      {FaceRelabel{kBack, kFront, false}, FaceRelabel{kFront, kBack, false}});
     mesh.addOrReplaceChild("body", body, PartPose::offsetAndRotation(0.0F, 16.0F, 0.0F, 90.0F, 0.0F, 0.0F));
 
     CubeListBuilder rl;
@@ -296,19 +320,21 @@ constexpr std::string_view kSheepGeoJson = R"({
     { "description": { "identifier": "geometry.sheep", "texture_width": 64, "texture_height": 32 },
       "bones": [
         { "name": "head", "pivot": [0,18,-8], "cubes": [ { "origin": [-3,16,-14], "size": [6,6,8], "uv": [0,0] } ] },
-        { "name": "body", "pivot": [0,19,2], "rotation": [-90,0,0],
-          "cubes": [ { "origin": [-4,9,3], "size": [8,16,6], "uv": [28,8] } ] },
-        { "name": "legFrontRight", "pivot": [3,12,-5], "cubes": [ { "origin": [1,0,-7], "size": [4,12,4], "uv": [0,16], "mirror": true } ] },
-        { "name": "legFrontLeft", "pivot": [-3,12,-5], "cubes": [ { "origin": [-5,0,-7], "size": [4,12,4], "uv": [0,16] } ] },
-        { "name": "legBackRight", "pivot": [3,12,7], "cubes": [ { "origin": [1,0,5], "size": [4,12,4], "uv": [0,16], "mirror": true } ] },
-        { "name": "legBackLeft", "pivot": [-3,12,7], "cubes": [ { "origin": [-5,0,5], "size": [4,12,4], "uv": [0,16] } ] },
+        { "name": "body", "pivot": [0,19,2], "rotation": [90,0,0],
+          "cubes": [ { "origin": [-4,9,3], "size": [8,16,6], "uv": [28,8],
+                       "faces": { "front": {"as":"back"}, "back": {"as":"front"} } } ] },
+        { "name": "legFrontRight", "pivot": [-3,12,-5], "cubes": [ { "origin": [-5,0,-7], "size": [4,12,4], "uv": [0,16], "mirror": true } ] },
+        { "name": "legFrontLeft", "pivot": [3,12,-5], "cubes": [ { "origin": [1,0,-7], "size": [4,12,4], "uv": [0,16] } ] },
+        { "name": "legBackRight", "pivot": [-3,12,7], "cubes": [ { "origin": [-5,0,5], "size": [4,12,4], "uv": [0,16], "mirror": true } ] },
+        { "name": "legBackLeft", "pivot": [3,12,7], "cubes": [ { "origin": [1,0,5], "size": [4,12,4], "uv": [0,16] } ] },
         { "name": "woolHead", "parent": "head", "pivot": [0,18,-8], "cubes": [ { "origin": [-3,16,-12], "size": [6,6,6], "uv": [0,0], "inflate": 0.6 } ] },
-        { "name": "wool", "parent": "body", "pivot": [0,19,2], "rotation": [-90,0,0],
-          "cubes": [ { "origin": [-4,9,3], "size": [8,16,6], "uv": [28,8], "inflate": 1.75 } ] },
-        { "name": "woolLegFrontRight", "parent": "legFrontRight", "pivot": [3,12,-5], "cubes": [ { "origin": [1,6,-7], "size": [4,6,4], "uv": [0,16], "inflate": 0.5 } ] },
-        { "name": "woolLegFrontLeft", "parent": "legFrontLeft", "pivot": [-3,12,-5], "cubes": [ { "origin": [-5,6,-7], "size": [4,6,4], "uv": [0,16], "inflate": 0.5 } ] },
-        { "name": "woolLegBackRight", "parent": "legBackRight", "pivot": [3,12,7], "cubes": [ { "origin": [1,6,5], "size": [4,6,4], "uv": [0,16], "inflate": 0.5 } ] },
-        { "name": "woolLegBackLeft", "parent": "legBackLeft", "pivot": [-3,12,7], "cubes": [ { "origin": [-5,6,5], "size": [4,6,4], "uv": [0,16], "inflate": 0.5 } ] }
+        { "name": "wool", "parent": "body", "pivot": [0,19,2], "rotation": [90,0,0],
+          "cubes": [ { "origin": [-4,9,3], "size": [8,16,6], "uv": [28,8], "inflate": 1.75,
+                       "faces": { "front": {"as":"back"}, "back": {"as":"front"} } } ] },
+        { "name": "woolLegFrontRight", "parent": "legFrontRight", "pivot": [-3,12,-5], "cubes": [ { "origin": [-5,6,-7], "size": [4,6,4], "uv": [0,16], "inflate": 0.5 } ] },
+        { "name": "woolLegFrontLeft", "parent": "legFrontLeft", "pivot": [3,12,-5], "cubes": [ { "origin": [1,6,-7], "size": [4,6,4], "uv": [0,16], "inflate": 0.5 } ] },
+        { "name": "woolLegBackRight", "parent": "legBackRight", "pivot": [-3,12,7], "cubes": [ { "origin": [-5,6,5], "size": [4,6,4], "uv": [0,16], "inflate": 0.5 } ] },
+        { "name": "woolLegBackLeft", "parent": "legBackLeft", "pivot": [3,12,7], "cubes": [ { "origin": [1,6,5], "size": [4,6,4], "uv": [0,16], "inflate": 0.5 } ] }
       ] } ] })";
 
 void assertSheepDisk() {
@@ -363,12 +389,13 @@ constexpr std::string_view kChickenGeoJson = R"({
         { "name": "head", "pivot": [0,9,-4], "cubes": [ { "origin": [-2,9,-6], "size": [4,6,3], "uv": [0,0] } ] },
         { "name": "beak", "parent": "head", "pivot": [0,9,-4], "cubes": [ { "origin": [-2,11,-8], "size": [4,2,2], "uv": [14,0] } ] },
         { "name": "redThing", "parent": "head", "pivot": [0,9,-4], "cubes": [ { "origin": [-1,9,-7], "size": [2,2,2], "uv": [14,4] } ] },
-        { "name": "body", "pivot": [0,8,0], "rotation": [-90,0,0],
-          "cubes": [ { "origin": [-3,4,-3], "size": [6,8,6], "uv": [0,9] } ] },
-        { "name": "rightLeg", "pivot": [2,5,1], "cubes": [ { "origin": [0,0,-2], "size": [3,5,3], "uv": [26,0] } ] },
-        { "name": "leftLeg", "pivot": [-1,5,1], "cubes": [ { "origin": [-3,0,-2], "size": [3,5,3], "uv": [26,0] } ] },
-        { "name": "rightWing", "pivot": [4,11,0], "cubes": [ { "origin": [3,7,-3], "size": [1,4,6], "uv": [24,13] } ] },
-        { "name": "leftWing", "pivot": [-4,11,0], "cubes": [ { "origin": [-4,7,-3], "size": [1,4,6], "uv": [24,13] } ] }
+        { "name": "body", "pivot": [0,8,0], "rotation": [90,0,0],
+          "cubes": [ { "origin": [-3,4,-3], "size": [6,8,6], "uv": [0,9],
+                       "faces": { "front": {"as":"back"}, "back": {"as":"front"} } } ] },
+        { "name": "rightLeg", "pivot": [-2,5,1], "cubes": [ { "origin": [-3,0,-2], "size": [3,5,3], "uv": [26,0] } ] },
+        { "name": "leftLeg", "pivot": [1,5,1], "cubes": [ { "origin": [0,0,-2], "size": [3,5,3], "uv": [26,0] } ] },
+        { "name": "rightWing", "pivot": [-4,11,0], "cubes": [ { "origin": [-4,7,-3], "size": [1,4,6], "uv": [24,13] } ] },
+        { "name": "leftWing", "pivot": [4,11,0], "cubes": [ { "origin": [3,7,-3], "size": [1,4,6], "uv": [24,13] } ] }
       ] } ] })";
 
 void assertChickenDisk() {
@@ -398,10 +425,10 @@ constexpr std::string_view kZombieGeoJson = R"({
         { "name": "body", "pivot": [0,24,0], "cubes": [ { "origin": [-4,12,-2], "size": [8,12,4], "uv": [16,16] } ] },
         { "name": "head", "parent": "body", "pivot": [0,24,0], "cubes": [ { "origin": [-4,24,-4], "size": [8,8,8], "uv": [0,0] } ] },
         { "name": "hat", "parent": "head", "pivot": [0,24,0], "cubes": [ { "origin": [-4,24,-4], "size": [8,8,8], "uv": [32,0], "inflate": 0.5 } ] },
-        { "name": "rightArm", "parent": "body", "pivot": [5,22,0], "cubes": [ { "origin": [4,12,-2], "size": [4,12,4], "uv": [40,16] } ] },
-        { "name": "leftArm", "parent": "body", "pivot": [-5,22,0], "cubes": [ { "origin": [-8,12,-2], "size": [4,12,4], "uv": [40,16], "mirror": true } ] },
-        { "name": "rightLeg", "pivot": [1.9,12,0], "cubes": [ { "origin": [-0.1,0,-2], "size": [4,12,4], "uv": [0,16] } ] },
-        { "name": "leftLeg", "pivot": [-1.9,12,0], "cubes": [ { "origin": [-3.9,0,-2], "size": [4,12,4], "uv": [0,16], "mirror": true } ] }
+        { "name": "rightArm", "parent": "body", "pivot": [-5,22,0], "cubes": [ { "origin": [-8,12,-2], "size": [4,12,4], "uv": [40,16] } ] },
+        { "name": "leftArm", "parent": "body", "pivot": [5,22,0], "cubes": [ { "origin": [4,12,-2], "size": [4,12,4], "uv": [40,16], "mirror": true } ] },
+        { "name": "rightLeg", "pivot": [-1.9,12,0], "cubes": [ { "origin": [-3.9,0,-2], "size": [4,12,4], "uv": [0,16] } ] },
+        { "name": "leftLeg", "pivot": [1.9,12,0], "cubes": [ { "origin": [-0.1,0,-2], "size": [4,12,4], "uv": [0,16], "mirror": true } ] }
       ] } ] })";
 
 void assertZombieDisk() {

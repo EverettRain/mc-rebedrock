@@ -298,15 +298,11 @@ void main() {
             // textureLayersRotation.w): 6 faces x (3-bit source rect, 1-bit rotate).
             // The identity layout — each face samples its own rect — is the classic
             // box-UV mapping.
-            // Reproduces vanilla ModelPart's per-face UV directly, now that the
-            // geometry baker applies the full scale(-1,-1,1) (X flipped too). See
-            // docs RN-0c: physical +Y/-Y caps mirror U vs the old (partial-flip)
-            // mapping, and +X/-X sample the swapped side rects below.
             vec2 faceUv;
-            if (face == 0)         faceUv = vec2(1.0 - frac.z, 1.0 - frac.y);  // +X right
-            else if (face == 1)    faceUv = vec2(frac.z, 1.0 - frac.y);         // -X left
-            else if (face == 2)    faceUv = vec2(1.0 - frac.x, 1.0 - frac.z);   // +Y up
-            else if (face == 3)    faceUv = vec2(1.0 - frac.x, 1.0 - frac.z);   // -Y down (Vmin=back, same as +Y)
+            if (face == 0)         faceUv = vec2(1.0 - frac.z, 1.0 - frac.y);  // +X east
+            else if (face == 1)    faceUv = vec2(frac.z, 1.0 - frac.y);         // -X west
+            else if (face == 2)    faceUv = vec2(frac.x, 1.0 - frac.z);         // +Y up
+            else if (face == 3)    faceUv = vec2(frac.x, frac.z);               // -Y down
             else if (face == 4)    faceUv = vec2(frac.x, 1.0 - frac.y);         // +Z back
             else                   faceUv = vec2(1.0 - frac.x, 1.0 - frac.y);   // -Z front
             if (item.data.w > 0.5) {
@@ -314,21 +310,13 @@ void main() {
             }
             uint packed = floatBitsToUint(item.textureLayersRotation.w);
             uint src = (packed >> uint(face * 4)) & 7u;
-            // Vanilla mirror() reflects the cube in X: besides flipping U (above)
-            // it swaps which side rect the +X/-X faces sample (WEST<->EAST). The U
-            // flip alone leaves both limbs' outer faces on the same rect, so a
-            // mirrored left leg was not the mirror image of the right. Swap the
-            // two side rects for mirrored cubes.
-            if (item.data.w > 0.5 && src < 2u) {
-                src = 1u - src;
-            }
             if (((packed >> uint(face * 4 + 3)) & 1u) != 0u) {
                 faceUv = vec2(1.0 - faceUv.x, 1.0 - faceUv.y);   // rotate 180
             }
             vec2 rectOrigin;
             vec2 rectSize;
-            if (src == 0u)         { rectOrigin = vec2(u0, v0 + sz); rectSize = vec2(sz, sy); }          // +X right -> west rect
-            else if (src == 1u)    { rectOrigin = vec2(u0 + sz + sx, v0 + sz); rectSize = vec2(sz, sy); } // -X left  -> east rect
+            if (src == 0u)         { rectOrigin = vec2(u0 + sz + sx, v0 + sz); rectSize = vec2(sz, sy); }
+            else if (src == 1u)    { rectOrigin = vec2(u0, v0 + sz); rectSize = vec2(sz, sy); }
             else if (src == 2u)    { rectOrigin = vec2(u0 + sz, v0); rectSize = vec2(sx, sz); }
             else if (src == 3u)    { rectOrigin = vec2(u0 + sz + sx, v0); rectSize = vec2(sx, sz); }
             else if (src == 4u)    { rectOrigin = vec2(u0 + 2.0 * sz + sx, v0 + sz); rectSize = vec2(sx, sy); }

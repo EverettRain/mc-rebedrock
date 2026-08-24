@@ -177,24 +177,23 @@ def face_rects(uv, size):
     """The box-UV net for one cube: face name -> (u, v, w, h) texel rect.
 
     MUST stay identical to ``animation::boxUvFaceRect`` and the frontend
-    ``faceRect()``. Keys are GEOMETRIC faces. The baker applies vanilla's full
-    scale(-1,-1,1), so geometric +X("east") == vanilla WEST rect, -X("west") ==
-    EAST rect (see docs RN-0c). Net layout (u right, v down):
+    ``faceRect()``. Net layout (u right, v down; depth sz faces on the sides,
+    width sx faces front/back, top row holds up/down caps):
 
               +----+----+
-              | +Y | -Y |          top-row caps (+Y left, -Y right)
+              | +Y | -Y |          (each sx x sz)
          +----+----+----+----+
-         | +X | -Z | -X | +Z |     middle = vanilla WEST,NORTH,EAST,SOUTH
-         +----+----+----+----+     (mob Right, Front, Left, Back)
+         | -X | -Z | +X | +Z |     (-X/+X: sz x sy, -Z/+Z: sx x sy)
+         +----+----+----+----+
     """
     u, v = uv
     w, h, d = (float(s) for s in size)  # sx, sy, sz
     return {
         "up":    (u + d,          v,     w, d),
         "down":  (u + d + w,      v,     w, d),
-        "east":  (u,              v + d, d, h),  # +X mob-right -> vanilla WEST rect
+        "west":  (u,              v + d, d, h),
         "front": (u + d,          v + d, w, h),
-        "west":  (u + d + w,      v + d, d, h),  # -X mob-left  -> vanilla EAST rect
+        "east":  (u + d + w,      v + d, d, h),
         "back":  (u + 2 * d + w,  v + d, w, h),
     }
 

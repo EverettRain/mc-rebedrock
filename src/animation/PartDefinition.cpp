@@ -98,14 +98,12 @@ SkeletalModel PartDefinition::bake(std::string identifier, int textureWidth,
         bone.name = def.name;
         bone.parent = findBoneIndex(def.parent);
 
-        // Pose offset: Java -> rebedrock via the full vanilla scale(-1,-1,1)
-        // (X and Y flipped; see docs RN-0c). Pivot is a point, so mirror X and Y.
-        bone.pivot = {-def.pose.offset.x, kModelHeight - def.pose.offset.y, def.pose.offset.z};
-        // Rest rotation conjugated by scale(-1,-1,1) = diag(-1,-1,1). Because the
-        // baked geometry is pre-flipped, the runtime rotation must be S*R*S so that
-        // R'*(S*v) == S*(R*v). For the Z,Y,X euler that maps (rx,ry,rz) -> (-rx,
-        // -ry, rz): a +90 X body pose (Java) becomes -90 X in rebedrock.
-        bone.rotation = {-def.pose.rotation.x, -def.pose.rotation.y, def.pose.rotation.z};
+        // Pose offset: Java Y-down -> rebedrock Y-up pivot.
+        bone.pivot = {def.pose.offset.x, kModelHeight - def.pose.offset.y, def.pose.offset.z};
+        // Rest rotation carries through unchanged (cow's +90 X body pose matches
+        // today's geo.json +90 X); rebedrock and the offline tools share the
+        // Z,Y,X euler order.
+        bone.rotation = def.pose.rotation;
 
         bone.cubes.reserve(def.cubes.cubes_.size());
         for (const CubeListBuilder::Entry& entry : def.cubes.cubes_) {
@@ -124,12 +122,11 @@ SkeletalModel PartDefinition::bake(std::string identifier, int textureWidth,
                 }
                 cube.faceOverride = packed;
             } else {
-                // Java model space -> rebedrock model space via scale(-1,-1,1):
-                // mirror X and Y about the box's far corner (origin is the min
-                // corner, so both axes use box_min + size), keep Z.
+                // Java model space -> rebedrock model space. The box is declared
+                // part-local in Java (y0 the Y-down minimum corner); flip Y about
+                // kModelHeight and translate by the pose offset.
                 const glm::vec3 boxMin = def.pose.offset + entry.box;
-                cube.origin = {-(boxMin.x + entry.size.x),
-                               kModelHeight - (boxMin.y + entry.size.y), boxMin.z};
+                cube.origin = {boxMin.x, kModelHeight - (boxMin.y + entry.size.y), boxMin.z};
                 cube.faceOverride = kIdentityFaceOverride;
             }
             cube.pivot = cube.origin + cube.size * 0.5F;

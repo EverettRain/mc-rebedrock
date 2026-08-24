@@ -1919,12 +1919,22 @@ class WorldRenderer final {
             // of hurtTime, and stays on for the whole death animation.
             const float hurtFlash =
                 entity.hurtTicks > 0 || entity.deathTicks > 0 ? 1.0F : 0.0F;
+            // The geometry baker only folds vanilla's scale(-1,-1,1) Y half into
+            // the Y-up geo; the X half was missing, leaving every mob mirrored
+            // left/right vs vanilla (RN-0c). Apply that X flip here at the model
+            // root -- innermost, in the mob's own frame, exactly like vanilla's
+            // LivingEntityRenderer scale. Doing it at render (not in the geometry)
+            // keeps pivots, per-bone rotations and mirror flags in their natural
+            // frame, so rotated torsos stay connected and the checkpoint's face
+            // overrides keep working. cullMode is NONE so the flipped winding is
+            // fine; normals ride the world matrix and reflect correctly.
             const glm::mat4 modelRoot =
                 glm::translate(glm::mat4{1.0F}, position) *
                 glm::rotate(glm::mat4{1.0F}, yaw + kEntityFacingOffset,
                             glm::vec3{0.0F, 1.0F, 0.0F}) *
                 glm::rotate(glm::mat4{1.0F}, deathRoll, glm::vec3{0.0F, 0.0F, 1.0F}) *
-                glm::scale(glm::mat4{1.0F}, glm::vec3{kModelUnitsToBlocks});
+                glm::scale(glm::mat4{1.0F},
+                           glm::vec3{-kModelUnitsToBlocks, kModelUnitsToBlocks, kModelUnitsToBlocks});
 
             // One lightmap sample for the whole creature, so it darkens at dusk,
             // goes black in an unlit cave and picks up torchlight like the blocks
