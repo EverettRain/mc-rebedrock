@@ -101,10 +101,11 @@ SkeletalModel PartDefinition::bake(std::string identifier, int textureWidth,
         // Pose offset: Java -> rebedrock via the full vanilla scale(-1,-1,1)
         // (X and Y flipped; see docs RN-0c). Pivot is a point, so mirror X and Y.
         bone.pivot = {-def.pose.offset.x, kModelHeight - def.pose.offset.y, def.pose.offset.z};
-        // Rest rotation conjugated by scale(-1,-1,1): rotations about X are
-        // unchanged, Y/Z negate (Z,Y,X euler order preserved). cow's +90 X body
-        // pose stays +90 X, matching today's geo.json.
-        bone.rotation = {def.pose.rotation.x, -def.pose.rotation.y, -def.pose.rotation.z};
+        // Rest rotation conjugated by scale(-1,-1,1) = diag(-1,-1,1). Because the
+        // baked geometry is pre-flipped, the runtime rotation must be S*R*S so that
+        // R'*(S*v) == S*(R*v). For the Z,Y,X euler that maps (rx,ry,rz) -> (-rx,
+        // -ry, rz): a +90 X body pose (Java) becomes -90 X in rebedrock.
+        bone.rotation = {-def.pose.rotation.x, -def.pose.rotation.y, def.pose.rotation.z};
 
         bone.cubes.reserve(def.cubes.cubes_.size());
         for (const CubeListBuilder::Entry& entry : def.cubes.cubes_) {

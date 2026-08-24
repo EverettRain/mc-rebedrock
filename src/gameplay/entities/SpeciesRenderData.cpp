@@ -35,7 +35,7 @@ constexpr const char* kBuiltinPigGeometry = R"({
   "minecraft:geometry": [
     { "description": {"identifier": "geometry.pig", "texture_width": 64, "texture_height": 32},
       "bones": [
-        {"name": "body", "pivot": [0, 8, 2], "rotation": [90, 0, 0], "cubes": [{"origin": [-5, 0, -4], "size": [10, 16, 8], "uv": [28, 8]}]},
+        {"name": "body", "pivot": [0, 8, 2], "rotation": [-90, 0, 0], "cubes": [{"origin": [-5, 0, -4], "size": [10, 16, 8], "uv": [28, 8]}]},
         {"name": "head", "pivot": [0, 12, -6], "cubes": [{"origin": [-4, 8, -14], "size": [8, 8, 8], "uv": [0, 0]}, {"origin": [-2, 9, -15], "size": [4, 3, 1], "uv": [16, 16]}]},
         {"name": "legFrontRight", "pivot": [3, 6, -5], "cubes": [{"origin": [1, 0, -7], "size": [4, 6, 4], "uv": [0, 16]}]},
         {"name": "legFrontLeft", "pivot": [-3, 6, -5], "cubes": [{"origin": [-5, 0, -7], "size": [4, 6, 4], "uv": [0, 16]}]},
@@ -73,7 +73,7 @@ constexpr const char* kBuiltinCowGeometry = R"({
   "minecraft:geometry": [
     { "description": {"identifier": "geometry.cow", "texture_width": 64, "texture_height": 64},
       "bones": [
-        {"name": "body", "pivot": [0, 19, 2], "rotation": [90, 0, 0], "cubes": [{"origin": [-6, 9, -1], "size": [12, 18, 10], "uv": [18, 4]}, {"origin": [-2, 21, 9], "size": [4, 6, 1], "uv": [52, 0]}]},
+        {"name": "body", "pivot": [0, 19, 2], "rotation": [-90, 0, 0], "cubes": [{"origin": [-6, 9, -1], "size": [12, 18, 10], "uv": [18, 4]}, {"origin": [-2, 21, 9], "size": [4, 6, 1], "uv": [52, 0]}]},
         {"name": "head", "pivot": [0, 20, -8], "cubes": [{"origin": [-4, 16, -14], "size": [8, 8, 6], "uv": [0, 0]}, {"origin": [-3, 16, -15], "size": [6, 3, 1], "uv": [1, 33]}, {"origin": [4, 22, -13], "size": [1, 3, 1], "uv": [22, 0]}, {"origin": [-5, 22, -13], "size": [1, 3, 1], "uv": [22, 0]}]},
         {"name": "legFrontRight", "pivot": [4, 12, -5], "cubes": [{"origin": [2, 0, -7], "size": [4, 12, 4], "uv": [0, 16]}]},
         {"name": "legFrontLeft", "pivot": [-4, 12, -5], "cubes": [{"origin": [-6, 0, -7], "size": [4, 12, 4], "uv": [0, 16], "mirror": true}]},

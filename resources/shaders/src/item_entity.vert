@@ -306,7 +306,7 @@ void main() {
             if (face == 0)         faceUv = vec2(1.0 - frac.z, 1.0 - frac.y);  // +X right
             else if (face == 1)    faceUv = vec2(frac.z, 1.0 - frac.y);         // -X left
             else if (face == 2)    faceUv = vec2(1.0 - frac.x, 1.0 - frac.z);   // +Y up
-            else if (face == 3)    faceUv = vec2(1.0 - frac.x, frac.z);         // -Y down
+            else if (face == 3)    faceUv = vec2(1.0 - frac.x, 1.0 - frac.z);   // -Y down (Vmin=back, same as +Y)
             else if (face == 4)    faceUv = vec2(frac.x, 1.0 - frac.y);         // +Z back
             else                   faceUv = vec2(1.0 - frac.x, 1.0 - frac.y);   // -Z front
             if (item.data.w > 0.5) {
@@ -314,6 +314,14 @@ void main() {
             }
             uint packed = floatBitsToUint(item.textureLayersRotation.w);
             uint src = (packed >> uint(face * 4)) & 7u;
+            // Vanilla mirror() reflects the cube in X: besides flipping U (above)
+            // it swaps which side rect the +X/-X faces sample (WEST<->EAST). The U
+            // flip alone leaves both limbs' outer faces on the same rect, so a
+            // mirrored left leg was not the mirror image of the right. Swap the
+            // two side rects for mirrored cubes.
+            if (item.data.w > 0.5 && src < 2u) {
+                src = 1u - src;
+            }
             if (((packed >> uint(face * 4 + 3)) & 1u) != 0u) {
                 faceUv = vec2(1.0 - faceUv.x, 1.0 - faceUv.y);   // rotate 180
             }

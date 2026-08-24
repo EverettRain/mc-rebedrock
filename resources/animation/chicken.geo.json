@@ -34,7 +34,7 @@
         {
           "name": "body",
           "pivot": [0, 8, 0],
-          "rotation": [90, 0, 0],
+          "rotation": [-90, 0, 0],
           "cubes": [
             { "origin": [-3, 4, -3], "size": [6, 8, 6], "uv": [0, 9] }
           ]
