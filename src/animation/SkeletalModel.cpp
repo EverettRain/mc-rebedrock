@@ -27,15 +27,25 @@ BoxUvRect boxUvFaceRect(int face, glm::vec2 uv, glm::vec3 size) {
     // width (sx) faces front/back, and the top row holds the up/down caps:
     //
     //           +----+----+
-    //           | -Y | +Y |            (each sx x sz)
+    //           | +Y | -Y |            (each sx x sz)
     //      +----+----+----+----+
     //      | -X | -Z | +X | +Z |       (-X/+X: sz x sy, -Z/+Z: sx x sy)
     //      +----+----+----+----+
     // -Z is the model's front (Minecraft north / the face the mob looks toward),
-    // so it takes the second middle-row rect; +Z (back) takes the fourth. Matching
-    // vanilla ModelPart.Cube (ModelPart.java:297-303): DOWN samples u1..u2 (the
-    // left top-row rect) and UP samples u2..u22 (the right top-row rect). This
-    // matches the reference in tools/entity_uv_lib.py (which the texture editor
+    // so it takes the second middle-row rect; +Z (back) takes the fourth. +Y (up)
+    // is the left top-row rect, -Y (down) the right.
+    //
+    // DO NOT "fix" this by swapping +Y/-Y to match vanilla's enum names. Physical
+    // +Y maps to vanilla ModelPart's Direction.DOWN polygon, NOT UP: vanilla authors
+    // cubes in Y-down space and LivingEntityRenderer.java applies scale(-1,-1,1), so
+    // the minY (DOWN) polygon -- which samples the LEFT cap u1..u2 (ModelPart.java
+    // :297) -- is physically the top of the mob. Equating +Y with the enum literally
+    // named "UP" (the maxY / right cap u2..u22) inverts every cube's top/bottom caps.
+    // That was commit 146f7bd ("RN-0b"), reverted here; its golden test encoded the
+    // same inverted premise, so trust the skin (head scalp lives at the left cap),
+    // not the enum name.
+    //
+    // This matches the reference in tools/entity_uv_lib.py (which the texture editor
     // mirrors) and the box-UV vertex shader. The rect is built from the cube's
     // declared size; `inflate` grows the drawn box but never the net.
     const float sx = size.x;
@@ -46,10 +56,10 @@ BoxUvRect boxUvFaceRect(int face, glm::vec2 uv, glm::vec3 size) {
         return {{uv.x + sz + sx, uv.y + sz}, {sz, sy}};
     case 1: // -X (west)
         return {{uv.x, uv.y + sz}, {sz, sy}};
-    case 2: // +Y (up) -> right top-row rect (vanilla UP)
-        return {{uv.x + sz + sx, uv.y}, {sx, sz}};
-    case 3: // -Y (down) -> left top-row rect (vanilla DOWN)
+    case 2: // +Y (up)
         return {{uv.x + sz, uv.y}, {sx, sz}};
+    case 3: // -Y (down)
+        return {{uv.x + sz + sx, uv.y}, {sx, sz}};
     case 4: // +Z (back)
         return {{uv.x + 2.0F * sz + sx, uv.y + sz}, {sx, sy}};
     default: // 5: -Z (front)

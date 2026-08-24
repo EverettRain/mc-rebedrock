@@ -56,8 +56,8 @@ function faceRect(faceName, uv, size) {
   switch (faceName) {
     case "east": return [u + sz + sx, v + sz, sz, sy];        // +X
     case "west": return [u, v + sz, sz, sy];                  // -X
-    case "up": return [u + sz + sx, v, sx, sz];               // +Y (right cap, vanilla UP)
-    case "down": return [u + sz, v, sx, sz];                  // -Y (left cap, vanilla DOWN)
+    case "up": return [u + sz, v, sx, sz];                    // +Y
+    case "down": return [u + sz + sx, v, sx, sz];             // -Y
     case "back": return [u + 2 * sz + sx, v + sz, sx, sy];    // +Z
     default: return [u + sz, v + sz, sx, sy];                 // -Z (front)
   }

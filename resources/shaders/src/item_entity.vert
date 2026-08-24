@@ -317,8 +317,8 @@ void main() {
             vec2 rectSize;
             if (src == 0u)         { rectOrigin = vec2(u0 + sz + sx, v0 + sz); rectSize = vec2(sz, sy); }
             else if (src == 1u)    { rectOrigin = vec2(u0, v0 + sz); rectSize = vec2(sz, sy); }
-            else if (src == 2u)    { rectOrigin = vec2(u0 + sz + sx, v0); rectSize = vec2(sx, sz); } // +Y up -> right cap
-            else if (src == 3u)    { rectOrigin = vec2(u0 + sz, v0); rectSize = vec2(sx, sz); }      // -Y down -> left cap
+            else if (src == 2u)    { rectOrigin = vec2(u0 + sz, v0); rectSize = vec2(sx, sz); }
+            else if (src == 3u)    { rectOrigin = vec2(u0 + sz + sx, v0); rectSize = vec2(sx, sz); }
             else if (src == 4u)    { rectOrigin = vec2(u0 + 2.0 * sz + sx, v0 + sz); rectSize = vec2(sx, sy); }
             else                   { rectOrigin = vec2(u0 + sz, v0 + sz); rectSize = vec2(sx, sy); }
             // Declared texture_width/height, not the atlas pixel size: texels are

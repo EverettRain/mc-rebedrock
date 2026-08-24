@@ -25,6 +25,14 @@
                 "back": {
                   "as": "front",
                   "rotate": 0
+                },
+                "up": {
+                  "as": "down",
+                  "rotate": 0
+                },
+                "down": {
+                  "as": "up",
+                  "rotate": 180
                 }
               }
             }

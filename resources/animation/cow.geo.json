@@ -23,6 +23,13 @@
                 },
                 "back": {
                   "as": "front"
+                },
+                "up": {
+                  "as": "down"
+                },
+                "down": {
+                  "as": "up",
+                  "rotate": 180
                 }
               }
             },

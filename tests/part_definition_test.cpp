@@ -74,7 +74,8 @@ constexpr std::string_view kCowGeoJson = R"({
         { "name": "body", "pivot": [0, 19, 2], "rotation": [90, 0, 0],
           "cubes": [
             { "origin": [-6, 9, -1], "size": [12, 18, 10], "uv": [18, 4],
-              "faces": { "front": {"as": "back"}, "back": {"as": "front"} } },
+              "faces": { "front": {"as": "back"}, "back": {"as": "front"},
+                         "up": {"as": "down"}, "down": {"as": "up", "rotate": 180} } },
             { "origin": [-2, 21, 9], "size": [4, 6, 1], "uv": [52, 0] }
           ] },
         { "name": "head", "pivot": [0, 20, -8],
@@ -98,6 +99,8 @@ constexpr std::string_view kCowGeoJson = R"({
 })";
 
 // box-UV face indices used by the "faces" relabels below (0..5 = +X,-X,+Y,-Y,+Z,-Z).
+constexpr int kUp = 2;
+constexpr int kDown = 3;
 constexpr int kBack = 4;
 constexpr int kFront = 5;
 
@@ -110,17 +113,18 @@ SkeletalModel buildCow() {
     PartDefinition mesh;
 
     // Bone order must match the geo.json so index-by-index comparison holds.
-    // body: cube 0 is the authored torso (faces relabel front<->back only; RN-0b
-    // removed the up/down cap compensation now that boxUvFaceRect matches vanilla);
-    // cube 1 the udder.
+    // body: cube 0 is the authored torso (faces relabel front<->back, up->down,
+    // down->up+180 = the current #2 compensation); cube 1 the udder.
     CubeListBuilder body;
     body.addBakedCube(/*origin*/ {-6.0F, 9.0F, -1.0F}, /*size*/ {12.0F, 18.0F, 10.0F},
                       /*uv*/ {18.0F, 4.0F}, /*texU*/ 18, /*texV*/ 4, /*mirror*/ false,
                       /*inflate*/ 0.0F,
                       // geo.json "<key>": {"as": "<value>"} => target = index(value),
-                      // pos = index(key). front->back, back->front.
+                      // pos = index(key). front->back, back->front, up->down, down->up+180.
                       {FaceRelabel{/*target=back*/ kBack, /*pos=front*/ kFront, false},
-                       FaceRelabel{/*target=front*/ kFront, /*pos=back*/ kBack, false}});
+                       FaceRelabel{/*target=front*/ kFront, /*pos=back*/ kBack, false},
+                       FaceRelabel{/*target=down*/ kDown, /*pos=up*/ kUp, false},
+                       FaceRelabel{/*target=up*/ kUp, /*pos=down*/ kDown, true}});
     body.addBakedCube({-2.0F, 21.0F, 9.0F}, {4.0F, 6.0F, 1.0F}, {52.0F, 0.0F}, 52, 0);
     mesh.addOrReplaceChild("body", body, PartPose::offsetAndRotation(0.0F, 5.0F, 2.0F, 90.0F, 0.0F, 0.0F));
 
