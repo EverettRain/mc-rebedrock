@@ -157,14 +157,16 @@ int main() {
     {
         using mc::audio::cullByDistance;
         using mc::audio::linearAttenuationGain;
-        constexpr float minD = 4.0F;  // play()'s min_distance
-        constexpr float maxD = 48.0F; // ordinary max_distance
+        // These exercise the PURE linear formula with arbitrary explicit min/max
+        // inputs — they pin the curve shape itself, independent of whatever
+        // reference/ceiling play() feeds it at runtime (that is checked separately
+        // below with the vanilla min = 0 / max = 16 the runtime now uses).
+        constexpr float minD = 4.0F;  // arbitrary reference distance for the formula
+        constexpr float maxD = 48.0F; // arbitrary ceiling for the formula
         // Near field: full volume at and inside the reference distance.
         assert(nearlyEqual(linearAttenuationGain(0.0F, minD, maxD), 1.0F));
         assert(nearlyEqual(linearAttenuationGain(minD, minD, maxD), 1.0F));
-        // 4.5-block mining stays near full — with rolloff 1.0 the gain there is
-        // 1 − 0.5/44 ≈ 0.989, well within reach (inverse's near field was worse,
-        // which is exactly why min_distance = 4 was chosen).
+        // With rolloff 1.0 the gain at 4.5 is 1 − 0.5/44 ≈ 0.989, near full.
         assert(linearAttenuationGain(4.5F, minD, maxD) > 0.98F);
         // Exact expected values at two interior points (formula, rolloff 1.0).
         assert(nearlyEqual(linearAttenuationGain(26.0F, minD, maxD), 1.0F - 22.0F / 44.0F)); // 0.5
@@ -194,6 +196,42 @@ int main() {
         assert(cullByDistance(1000.0F, maxD));
         assert(!cullByDistance(47.9F, maxD));
         assert(!cullByDistance(0.0F, maxD));
+    }
+
+    // ---- AU-3 ⑦: audible range matches vanilla 16·max(vol,1) + reference dist 0.
+    // ServerWorld.playSound broadcasts to 16·max(volume,1) blocks (ordinary mob
+    // clip volume ≈ 1 → 16, record volume 4 → 64) and the client attenuates with
+    // AL_REFERENCE_DISTANCE = 0, rolloff 1. play() now derives its ceiling with
+    // vanillaBroadcastRadius and sets min_distance = 0, so the runtime curve is a
+    // clean 1 − d/16. Both are pinned here device-free so a drift back to the old
+    // fixed 48 / min 4 is caught. ----
+    {
+        using mc::audio::linearAttenuationGain;
+        using mc::audio::vanillaBroadcastRadius;
+        // The broadcast radius: ordinary sounds carry 16, quieter-than-1 still
+        // carry the full 16 (the max(vol,1) floor), louder scales linearly, a
+        // record's volume 4 lands exactly on its 64-block override.
+        assert(nearlyEqual(vanillaBroadcastRadius(1.0F), 16.0F));
+        assert(nearlyEqual(vanillaBroadcastRadius(0.5F), 16.0F));
+        assert(nearlyEqual(vanillaBroadcastRadius(2.0F), 32.0F));
+        assert(nearlyEqual(vanillaBroadcastRadius(4.0F), 64.0F));
+
+        // The runtime curve play() installs: min = 0, max = 16, rolloff = 1, i.e.
+        // gain = 1 − d/16 clamped [0,1]. Reference distance 0 means attenuation
+        // begins at the source (no flat near-field shelf), so the midpoint is 0.5.
+        constexpr float refD = 0.0F;
+        constexpr float ceil16 = 16.0F;
+        assert(nearlyEqual(linearAttenuationGain(0.0F, refD, ceil16), 1.0F));
+        assert(nearlyEqual(linearAttenuationGain(8.0F, refD, ceil16), 0.5F));
+        assert(nearlyEqual(linearAttenuationGain(16.0F, refD, ceil16), 0.0F));
+        assert(nearlyEqual(linearAttenuationGain(24.0F, refD, ceil16), 0.0F));
+        // Strictly monotonically decreasing across the whole audible range.
+        float prev = 2.0F;
+        for (float dist = 0.0F; dist <= ceil16; dist += 1.0F) {
+            const float g = linearAttenuationGain(dist, refD, ceil16);
+            assert(g <= prev + 1e-6F);
+            prev = g;
+        }
     }
 
     // ---- AU-2: ambient/music integration (no assets on this provider, so the
