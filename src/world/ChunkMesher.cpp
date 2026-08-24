@@ -413,6 +413,15 @@ class BiomeTintCache final {
         // moist face sits right after the dry one in the registry-built atlas.
         return textureLayers(Block::Farmland).top + 1.0F;
     }
+    if (blockDefinition(block).model == BlockModel::Door) {
+        // A door's two cells are textured by which HALF they are, not by which
+        // geometric face is drawn: the upper cell shows oak_door_top, the lower
+        // oak_door_bottom (vanilla DoorBlock keys the sprite on DoubleBlockHalf).
+        // The top/side texture slots were named for exactly this per-half lookup;
+        // reading them by face (below) is what left both cells on the "side"
+        // sprite, so the upper half repeated the bottom texture.
+        return state.isDoorUpperHalf() ? layers.top : layers.side;
+    }
     if (face == Face::PositiveY) {
         return layers.top;
     }

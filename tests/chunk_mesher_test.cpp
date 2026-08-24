@@ -540,5 +540,36 @@ int main() {
     static_assert(!mc::world::isThinLeafIconModel(mc::world::BlockModel::FenceGate));
     static_assert(!mc::world::isThinLeafIconModel(mc::world::BlockModel::Button));
     static_assert(!mc::world::isThinLeafIconModel(mc::world::BlockModel::PressurePlate));
+
+    {
+        // Door texture is chosen by HALF, not by geometric face: the upper cell
+        // shows oak_door_top, the lower oak_door_bottom. Before the fix both
+        // halves read the "side" slot, so the upper half repeated the bottom
+        // sprite (缺失上半纹理). The atlas is not baked headless (layers default
+        // to 0), so inject two distinct sprite layers for the door, then confirm
+        // the upper cell meshes with the top slot and the lower with the side.
+        mc::world::setBlockTextureLayers(mc::world::Block::OakDoor,
+            mc::world::BlockTextureLayers{/*top*/ 11.0F, /*side*/ 22.0F, /*bottom*/ 22.0F});
+        const auto& doorLayers = mc::world::textureLayers(mc::world::Block::OakDoor);
+        assert(doorLayers.top != doorLayers.side); // the two door sprites are distinct
+
+        mc::world::Chunk lowerChunk;
+        lowerChunk.setState(6, mc::world::kMinY + 1, 6,
+            mc::world::BlockState{mc::world::Block::OakDoor}.withDoorUpperHalf(false));
+        const auto lowerMesh = mc::world::ChunkMesher::build(lowerChunk);
+        assert(!lowerMesh.vertices.empty());
+        for (const auto& vertex : lowerMesh.vertices) {
+            assert(static_cast<float>(vertex.textureLayer) == doorLayers.side);
+        }
+
+        mc::world::Chunk upperChunk;
+        upperChunk.setState(6, mc::world::kMinY + 1, 6,
+            mc::world::BlockState{mc::world::Block::OakDoor}.withDoorUpperHalf(true));
+        const auto upperMesh = mc::world::ChunkMesher::build(upperChunk);
+        assert(!upperMesh.vertices.empty());
+        for (const auto& vertex : upperMesh.vertices) {
+            assert(static_cast<float>(vertex.textureLayer) == doorLayers.top);
+        }
+    }
     return 0;
 }
