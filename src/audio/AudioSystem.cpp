@@ -348,7 +348,7 @@ class AudioSystem::Impl final {
     }
 
     void play(const assets::SoundEntry& entry, SoundCategory category, const glm::vec3& position,
-              float volume, float pitch, float maxDistance = kDefaultMaxDistance) {
+              float volume, float pitch, float maxDistance = kDeriveMaxDistanceFromVolume) {
         if (!initialized || masterVolume <= 0.0F) {
             return;
         }
@@ -359,6 +359,15 @@ class AudioSystem::Impl final {
         if (gain <= 0.0F) {
             return;
         }
+        // ⑦ The audible ceiling is derived from the EMISSION volume (user ×
+        // entry->volume), captured before the category gain folds in — vanilla's
+        // ServerWorld.playSound broadcasts to 16·max(volume,1). A negative
+        // maxDistance is the sentinel asking for that derived radius; a positive
+        // value is an explicit override (a record passes 64, matching its own
+        // volume=4 derivation). categoryGain only scales loudness, never range.
+        const float emissionVolume = volume;
+        const float ceiling = maxDistance < 0.0F ? vanillaBroadcastRadius(emissionVolume)
+                                                 : maxDistance;
         volume *= gain;
         // ⑥ Distance cull: a linear-attenuated voice is silent past maxDistance,
         // so a sound whose source is already beyond the ceiling would decode only
@@ -368,7 +377,7 @@ class AudioSystem::Impl final {
         const glm::vec3 listener{listenerPositionX.load(std::memory_order_relaxed),
                                  listenerPositionY.load(std::memory_order_relaxed),
                                  listenerPositionZ.load(std::memory_order_relaxed)};
-        if (cullByDistance(glm::length(position - listener), maxDistance)) {
+        if (cullByDistance(glm::length(position - listener), ceiling)) {
             return;
         }
         const auto cached = soundAssets.find(entry.name);
@@ -424,15 +433,17 @@ class AudioSystem::Impl final {
         ma_sound_set_position(&active->sound, position.x, position.y, position.z);
         ma_sound_set_volume(&active->sound, std::max(volume, 0.0F));
         ma_sound_set_pitch(&active->sound, std::max(pitch, 0.1F));
-        // Block sounds in Java remain clearly audible across normal reach.
-        // A four-block reference distance also avoids the default inverse
-        // attenuation making a 4.5-block mining sound effectively inaudible.
-        ma_sound_set_min_distance(&active->sound, 4.0F);
-        // The attenuation ceiling, chosen per call: 48 blocks for ordinary
-        // sounds, wider for a record so it carries across the jukebox's whole
-        // radius. An explicit argument, not a mutable member, so play() cannot be
-        // perturbed by whatever ran before it.
-        ma_sound_set_max_distance(&active->sound, std::max(maxDistance, 0.0F));
+        // ⑦ Reference (min) distance 0, matching vanilla's OpenAL
+        // AL_REFERENCE_DISTANCE = 0: attenuation starts at the source itself, so
+        // the near-field curve is exactly 1 − d/ceiling. miniaudio's linear model
+        // stores min verbatim and divides by (max − min), so min = 0 is safe (no
+        // division by zero) and gives the vanilla point-for-point curve.
+        ma_sound_set_min_distance(&active->sound, 0.0F);
+        // ⑦ The attenuation ceiling = vanilla's audible radius 16·max(volume,1):
+        // an ordinary mob clip (volume ≈ 1) carries 16 blocks, a record (volume 4,
+        // passed as an explicit 64 override) carries 64. Derived from the emission
+        // volume for the default sentinel, otherwise the explicit per-call value.
+        ma_sound_set_max_distance(&active->sound, std::max(ceiling, 0.0F));
         // ⑥ Use the LINEAR attenuation model, not miniaudio's default inverse.
         // Inverse clamps distance to max_distance, so its gain flattens onto a
         // non-zero plateau (min/(min+rolloff·(max−min)) ≈ 0.108 here) and a sound
@@ -710,8 +721,9 @@ class AudioSystem::Impl final {
     }
 
     // Place a one-shot positioned event on `category` with a caller-chosen max
-    // distance (records carry further than the 48-block default). Mirrors play()
-    // but takes an explicit event id and attenuation ceiling.
+    // distance (a record passes an explicit 64, wider than the volume-derived
+    // 16·max(vol,1) default). Mirrors play() but takes an explicit event id and
+    // attenuation ceiling.
     void playPositioned(std::string_view event, SoundCategory category, const glm::vec3& position,
                         float volume, float maxDistance) {
         if (event.empty()) {
@@ -726,12 +738,18 @@ class AudioSystem::Impl final {
         }
         recordSubtitle(event);
         // play() applies the category gain, position, min distance and pan mode;
-        // the attenuation ceiling is passed through per call (records carry the
-        // wider 64-block radius, ordinary events the 48-block default).
+        // the attenuation ceiling is passed through per call (a record carries the
+        // wider 64-block radius; ordinary events would pass the sentinel to derive
+        // 16·max(vol,1), but every caller here passes an explicit distance).
         play(*entry, category, position, volume * entry->volume, entry->pitch, maxDistance);
     }
 
-    static constexpr float kDefaultMaxDistance = 48.0F;
+    // ⑦ Sentinel for play()'s maxDistance: a negative value asks play() to derive
+    // the audible ceiling from the emission volume (vanilla's 16·max(volume,1)),
+    // rather than imposing a fixed radius. A positive value is an explicit
+    // override (a record passes 64). Replaces the old fixed 48-block default,
+    // which made every mob audible three times too far.
+    static constexpr float kDeriveMaxDistanceFromVolume = -1.0F;
 
     void tickAmbientMusic(MusicSituation situation, std::string_view ambientLoopEventNow,
                           const MoodSample* moodSample, const glm::vec3& listenerPosition,

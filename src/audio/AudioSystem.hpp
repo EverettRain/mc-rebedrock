@@ -7,6 +7,7 @@
 #include "world/Block.hpp"
 
 #include <glm/vec3.hpp>
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -80,6 +81,17 @@ enum class BlockSoundFamily {
                                                    : distance;
     const float gain = 1.0F - rolloff * (clamped - minDistance) / (maxDistance - minDistance);
     return gain < 0.0F ? 0.0F : (gain > 1.0F ? 1.0F : gain);
+}
+
+// ⑦ Vanilla's audible ceiling for a positioned sound, derived from its emission
+// volume: ServerWorld.playSound broadcasts (and the client attenuates) out to
+// 16 · max(volume, 1) blocks. An ordinary mob ambient/hurt clip has volume ≈ 1.0
+// → 16 blocks; a record has volume 4.0 → 64 blocks (the same formula, not a
+// special case). The max(volume, 1) floor means quieter-than-1 sounds (footsteps
+// at 0.5, item pickup) still carry the full 16 rather than shrinking. Pure/
+// device-free so both play() and the regression share one source of truth.
+[[nodiscard]] constexpr float vanillaBroadcastRadius(float emissionVolume) {
+    return 16.0F * std::max(emissionVolume, 1.0F);
 }
 
 // ⑥ Whether play() should skip a positioned voice entirely: its source sits past
