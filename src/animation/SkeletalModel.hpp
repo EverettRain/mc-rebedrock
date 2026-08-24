@@ -104,6 +104,15 @@ class SkeletalModel final {
     [[nodiscard]] static SkeletalModel parse(std::string_view jsonText,
                                              std::string_view identifier = {});
 
+    // Assembles a model directly from a ready bone list (already in rebedrock
+    // model space). Parent references are resolved by name against declaration
+    // order. This is the programmatic (builder/baker) counterpart to
+    // loadGeometry — see PartDefinition.hpp — and applies the same validation
+    // (unique names, resolvable parents). Throws std::runtime_error on
+    // malformed input.
+    [[nodiscard]] static SkeletalModel assemble(std::string identifier, int textureWidth,
+                                                int textureHeight, std::vector<ModelBone> bones);
+
   private:
     std::string identifier_;
     int textureWidth_ = 16;

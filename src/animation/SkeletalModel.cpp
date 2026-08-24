@@ -222,4 +222,36 @@ SkeletalModel SkeletalModel::parse(std::string_view jsonText, std::string_view i
     return loadGeometry(core::Json::parse(jsonText), identifier);
 }
 
+SkeletalModel SkeletalModel::assemble(std::string identifier, int textureWidth, int textureHeight,
+                                      std::vector<ModelBone> bones) {
+    SkeletalModel model;
+    model.identifier_ = std::move(identifier);
+    model.textureWidth_ = textureWidth;
+    model.textureHeight_ = textureHeight;
+    model.bones_ = std::move(bones);
+
+    // Register names first so parents resolve regardless of declaration order,
+    // matching loadGeometry's two-pass behaviour. Bones already carry a resolved
+    // `parent` index (-1 for roots) from the baker; assemble only validates.
+    model.boneIndex_.reserve(model.bones_.size());
+    for (std::size_t i = 0U; i < model.bones_.size(); ++i) {
+        const ModelBone& bone = model.bones_[i];
+        if (bone.name.empty()) {
+            throw std::runtime_error("assembled geometry '" + model.identifier_ +
+                                     "' has an unnamed bone");
+        }
+        if (!model.boneIndex_.emplace(bone.name, static_cast<int>(i)).second) {
+            throw std::runtime_error("assembled geometry '" + model.identifier_ +
+                                     "' has a duplicate bone '" + bone.name + "'");
+        }
+    }
+    for (const ModelBone& bone : model.bones_) {
+        if (bone.parent >= static_cast<int>(model.bones_.size())) {
+            throw std::runtime_error("assembled geometry '" + model.identifier_ +
+                                     "' bone '" + bone.name + "' has an out-of-range parent");
+        }
+    }
+    return model;
+}
+
 } // namespace mc::animation

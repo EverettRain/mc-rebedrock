@@ -212,6 +212,7 @@ add_library(mc_rebedrock_animation STATIC
     src/core/Json.cpp
     src/animation/Molang.cpp
     src/animation/SkeletalModel.cpp
+    src/animation/PartDefinition.cpp
     src/animation/AnimationClip.cpp
     src/animation/Animator.cpp
     src/animation/BoneMask.cpp
@@ -2019,6 +2020,11 @@ if(BUILD_TESTING)
         tests/box_uv_test.cpp)
     target_link_libraries(mc_rebedrock_box_uv_test PRIVATE mc_rebedrock_animation)
     add_test(NAME box_uv COMMAND mc_rebedrock_box_uv_test)
+
+    add_executable(mc_rebedrock_part_definition_test
+        tests/part_definition_test.cpp)
+    target_link_libraries(mc_rebedrock_part_definition_test PRIVATE mc_rebedrock_animation)
+    add_test(NAME part_definition COMMAND mc_rebedrock_part_definition_test)
 
     add_executable(mc_rebedrock_json_test tests/json_test.cpp)
     target_link_libraries(mc_rebedrock_json_test PRIVATE mc_rebedrock_animation)
