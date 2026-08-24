@@ -298,18 +298,29 @@ void main() {
             // textureLayersRotation.w): 6 faces x (3-bit source rect, 1-bit rotate).
             // The identity layout — each face samples its own rect — is the classic
             // box-UV mapping.
+            // Reproduces vanilla ModelPart per face, for the RN-0c setup where the
+            // mob model root applies the X flip (WorldRenderer::drawWorldEntities:
+            // scale(-1/16,...)). frac is un-flipped, so the root's X mirror reverses
+            // U on the X-perpendicular faces -- these formulas pre-compensate it.
             vec2 faceUv;
-            if (face == 0)         faceUv = vec2(1.0 - frac.z, 1.0 - frac.y);  // +X east
-            else if (face == 1)    faceUv = vec2(frac.z, 1.0 - frac.y);         // -X west
-            else if (face == 2)    faceUv = vec2(frac.x, 1.0 - frac.z);         // +Y up
-            else if (face == 3)    faceUv = vec2(frac.x, frac.z);               // -Y down
+            if (face == 0)         faceUv = vec2(frac.z, 1.0 - frac.y);         // +X side (U flipped: fixes side front/back)
+            else if (face == 1)    faceUv = vec2(1.0 - frac.z, 1.0 - frac.y);   // -X side
+            else if (face == 2)    faceUv = vec2(frac.x, 1.0 - frac.z);         // +Y up (correct as-is under root flip)
+            else if (face == 3)    faceUv = vec2(frac.x, 1.0 - frac.z);         // -Y down (V flipped: fixes bottom front/back)
             else if (face == 4)    faceUv = vec2(frac.x, 1.0 - frac.y);         // +Z back
             else                   faceUv = vec2(1.0 - frac.x, 1.0 - frac.y);   // -Z front
-            if (item.data.w > 0.5) {
+            // Mirror (left limbs): an extra X reflection. On the X-perpendicular
+            // faces that flips U; on the two side faces (0,1) it instead swaps which
+            // side rect they sample (done below), so don't flip their U here.
+            bool mirrored = item.data.w > 0.5;
+            if (mirrored && face >= 2) {
                 faceUv.x = 1.0 - faceUv.x;
             }
             uint packed = floatBitsToUint(item.textureLayersRotation.w);
             uint src = (packed >> uint(face * 4)) & 7u;
+            if (mirrored && src < 2u) {
+                src = 1u - src;   // mirror swaps the +X/-X side rects
+            }
             if (((packed >> uint(face * 4 + 3)) & 1u) != 0u) {
                 faceUv = vec2(1.0 - faceUv.x, 1.0 - faceUv.y);   // rotate 180
             }
