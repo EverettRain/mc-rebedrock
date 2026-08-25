@@ -145,14 +145,16 @@ void testPlayerKillAwardsXpReward() {
     REQUIRE(system.pendingExperience().front().second == 5);
 }
 
-// The task's own "破 stone -> 0" bar for the mob side: a species with no
-// xpReward (every built-in passive animal) never queues anything, even when a
-// player kills it outright.
-void testZeroXpRewardSpeciesAwardsNothing() {
+// #4: a passive animal follows AnimalEntity#getBaseExperienceReward — a player
+// kill queues exactly one reward in the 1..3 range, never zero (the old, wrong
+// assumption that animals score 0 here). The environmental-death gate is proven
+// separately below; here the animal dies to the default player attacker.
+void testAnimalAwardsRolledExperience() {
     entities::registerBuiltinEntities();
     const auto* pigType = entities::entityTypeRegistry().byId("pig");
     REQUIRE(pigType != nullptr);
-    REQUIRE(pigType->xpReward() == 0);
+    REQUIRE(pigType->xpReward() == 1);
+    REQUIRE(pigType->xpRewardMax() == 3);
 
     const world::World world;
     EntitySystem system;
@@ -160,7 +162,9 @@ void testZeroXpRewardSpeciesAwardsNothing() {
     const std::uint64_t id = system.entities().front().id;
     REQUIRE(system.hurt(id, 1000.0F, {0.0F, 5.0F, 1.0F}));
     REQUIRE(system.byId(id)->dead());
-    REQUIRE(system.pendingExperience().empty());
+    REQUIRE(system.pendingExperience().size() == 1U);
+    const std::int32_t awarded = system.pendingExperience().front().second;
+    REQUIRE(awarded >= 1 && awarded <= 3);
 }
 
 // Sabotage ① anchor: a zombie that dies to fire (nobody's hurt() ever ran, so
@@ -678,7 +682,7 @@ void testOreRollIsDeterministicAcrossIndependentStreams() {
 
 int main() {
     testPlayerKillAwardsXpReward();
-    testZeroXpRewardSpeciesAwardsNothing();
+    testAnimalAwardsRolledExperience();
     testEnvironmentalDeathAwardsNoXp();
     testStaleAttackerWindowExpiresBeforeFireKill();
     testMobKillNeverAwardsXp();

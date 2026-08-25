@@ -209,6 +209,17 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // The fluid phase runs once per accumulator drain; the renderer never lets
     // more than one batch of overdue water updates stack up across frames.
     bool fluidUpdatePhaseConsumed = false;
+    // Confine random ticks to the simulation distance around the player, the way
+    // 26.1's ServerWorld does — the same window entity ticking and spawning above
+    // already use (simulationRadiusBlocks_), converted to a chunk radius with a
+    // one-chunk margin so blocks at the very edge still tick. Without this the
+    // random-tick pass walked every loaded chunk, so a high randomTickSpeed cost
+    // scaled with render distance and stalled the frame.
+    const auto simFeet = primaryPlayer().controller.position();
+    const int radiusChunks = static_cast<int>(simulationRadiusBlocks_) / 16 + 1;
+    worldSimulation_.setSimulationBounds(
+        floorDiv(static_cast<int>(std::floor(simFeet.x)), 16),
+        floorDiv(static_cast<int>(std::floor(simFeet.z)), 16), radiusChunks);
     for (const auto& change : worldSimulation_.tick(world, !fluidUpdatePhaseConsumed)) {
         // A simulated break previews too (it used to do so further down, just
         // before its sound), so the edit's immediacy is decided once, here.

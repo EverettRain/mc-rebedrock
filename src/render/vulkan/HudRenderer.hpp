@@ -1533,6 +1533,32 @@ class HudRenderer final {
                                 0, 1, &descriptorSet, 0, nullptr);
     }
 
+    // EQ-1: the four armour slots + offhand, drawn wherever the player inventory
+    // is (survival InventoryScreen and the creative Inventory tab). buildSlotLayout
+    // already produces these rects for the click router; the static draw pass used
+    // to omit them, so equipped armour was invisible even though it was stored and
+    // still removable by clicking the (blank) slot. Screen order → rect and screen
+    // order → EquipmentSlot enum use the same mapping ScreenHandler::appendEquipmentSlots
+    // does, so display and click agree. Returns the hovered stack, if any, so the
+    // caller's tooltip can cover armour slots too.
+    [[nodiscard]] std::optional<gameplay::ItemStack>
+    drawEquipmentSlots(VkCommandBuffer commandBuffer, const ui::HudLayout& layout, float cursorX,
+                       float cursorY, bool creative) const {
+        std::optional<gameplay::ItemStack> hovered;
+        for (std::size_t index = 0; index < gameplay::kEquipmentScreenSlotCount; ++index) {
+            const auto rect =
+                index < 4U ? layout.armorSlot(index, creative) : layout.offhandSlot(creative);
+            const auto& stack = clientMirror.world().equipmentSlots[static_cast<std::size_t>(
+                gameplay::equipmentSlotAt(index))];
+            const bool isHovered = rect.contains(cursorX, cursorY);
+            if (isHovered && !stack.empty()) {
+                hovered = stack;
+            }
+            drawHudSlot(commandBuffer, rect, stack, false, isHovered, true);
+        }
+        return hovered;
+    }
+
     void drawWorkContainer(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
                            const ui::HudLayout& layout) const {
         drawScreenDimOverlay(commandBuffer);
@@ -1674,6 +1700,13 @@ class HudRenderer final {
                 }
                 drawHudSlot(commandBuffer, slot, clientMirror.world().inventorySlots[index],
                             index == uiFrameData_.selectedHotbarSlot, hovered, true);
+            }
+            // The creative Inventory tab shows the same armour + offhand slots as
+            // survival, but anchored to the creative panel (creative=true) so they
+            // are not offset by the two panels' differing size/centre.
+            if (const auto hoveredEquipment = drawEquipmentSlots(commandBuffer, layout, cursor.x,
+                                                                 cursor.y, /*creative=*/true)) {
+                hoveredStack = hoveredEquipment;
             }
             const auto deleteSlot = layout.creativeDeleteSlot();
             if (deleteSlot.contains(cursor.x, cursor.y)) {
@@ -2142,6 +2175,8 @@ class HudRenderer final {
             }
             drawHudSlot(commandBuffer, layout.playerCraftingOutput(),
                         clientMirror.world().playerCraftingOutput, false, false, true);
+            const auto hoveredEquipment =
+                drawEquipmentSlots(commandBuffer, layout, cursorX, cursorY, /*creative=*/false);
             std::optional<std::size_t> hoveredSlot;
             for (std::size_t index = 0; index < gameplay::Inventory::kSlotCount; ++index) {
                 const bool hovered = layout.inventorySlot(index).contains(cursorX, cursorY);
@@ -2152,9 +2187,15 @@ class HudRenderer final {
                             clientMirror.world().inventorySlots[index],
                             index == uiFrameData_.selectedHotbarSlot, hovered, true);
             }
-            if (hoveredSlot.has_value() && !clientMirror.world().inventorySlots[*hoveredSlot].empty()) {
-                const auto snapshot = clientMirror.world();
-                const auto& hoveredStack = snapshot.inventorySlots[*hoveredSlot];
+            // Either a main-inventory slot or an armour/offhand slot may be under
+            // the cursor; the tooltip covers both.
+            std::optional<gameplay::ItemStack> tooltipStack = hoveredEquipment;
+            if (!tooltipStack.has_value() && hoveredSlot.has_value() &&
+                !clientMirror.world().inventorySlots[*hoveredSlot].empty()) {
+                tooltipStack = clientMirror.world().inventorySlots[*hoveredSlot];
+            }
+            if (tooltipStack.has_value()) {
+                const auto& hoveredStack = *tooltipStack;
                 std::string label{itemDisplayName(hoveredStack)};
                 label += " x" + std::to_string(hoveredStack.count);
                 const float labelWidth = hudTextWidth(label, textScale) + 8.0F * textScale;

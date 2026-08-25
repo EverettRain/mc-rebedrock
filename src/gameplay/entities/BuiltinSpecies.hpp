@@ -56,6 +56,11 @@ struct SpeciesDef final {
     // AR-A4: egg-laying parameters, stated as data exactly like breeding.
     // Default (laysEggs == false) costs a non-laying species nothing.
     EggLayProfile eggLay{};
+    // XP-2: the kill experience reward as an inclusive [min, max] range —
+    // AnimalEntity's 1..3, or a flat monster reward (min == max, e.g. husk 5).
+    // Default (max == 0) means the species never drops experience.
+    std::int32_t xpRewardMin = 0;
+    std::int32_t xpRewardMax = 0;
 };
 
 // The built-in new-species table. Dropping a row removes that species from the

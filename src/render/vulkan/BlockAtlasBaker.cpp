@@ -227,6 +227,13 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         assets::ImageData::loadRgba(resources, assets::textures("entity/chest/normal.png"));
     const auto furnaceFront = blockTex("furnace_front");
     const auto furnaceFrontOn = blockTex("furnace_front_on");
+    // One orb sprite out of the 4x4 experience_orb.png sheet (top-left 16x16
+    // cell), resized to the atlas tile. Loaded tolerant-of-missing so a pack
+    // without the entity texture bakes the checkerboard rather than aborting.
+    const auto experienceOrbSheet = assets::ImageData::loadRgbaOrMissing(
+        resources, assets::textures("entity/experience/experience_orb.png"), 64U, 64U);
+    const auto experienceOrb =
+        resizedRegion(experienceOrbSheet, 0, 0, 16, 16, top.width);
     auto chestParts = std::array{
         playerSkinCuboidFaces(chestTexture, 0, 19, 14, 10, 14, top.width),
         playerSkinCuboidFaces(chestTexture, 0, 0, 14, 5, 14, top.width),
@@ -348,8 +355,9 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
     append(furnaceFront);   // 167
     append(furnaceFrontOn); // 168
     for (const auto& tile : moonPhaseTiles)
-        append(tile);          // 169..176
-    append(sunFrames.front()); // 177
+        append(tile);            // 169..176
+    append(sunFrames.front());   // 177
+    append(experienceOrb);       // 178
 
     // ---- Dynamic block textures, name-driven from the block registry ----
     // Baked composites register by name so every block that reuses them finds

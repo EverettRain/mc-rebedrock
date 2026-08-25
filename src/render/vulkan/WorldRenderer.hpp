@@ -5,6 +5,7 @@
 // it is, all state stays owned by Impl and is reached here through same-named
 // reference members (bound once via Bindings); a few std::function hooks cover
 // camera/gameplay callbacks that stay in Impl. Header-only inline (as VulkanDevice).
+#include "render/vulkan/BlockAtlasLayout.hpp"
 #include "render/vulkan/HudRenderer.hpp"
 #include "render/vulkan/HudTypes.hpp"
 #include "render/vulkan/WorldRenderTypes.hpp"
@@ -1183,7 +1184,8 @@ class WorldRenderer final {
         const float itemAlpha = entityFrame.alpha;
         const auto& snapshotItems = snapshot.items();
         const auto& snapshotFallingBlocks = snapshot.fallingBlocks();
-        if (snapshotItems.empty() && snapshotFallingBlocks.empty()) {
+        const auto& snapshotOrbs = snapshot.experienceOrbs();
+        if (snapshotItems.empty() && snapshotFallingBlocks.empty() && snapshotOrbs.empty()) {
             return;
         }
         if (!snapshotItems.empty()) {
@@ -1324,6 +1326,25 @@ class WorldRenderer final {
             vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                sizeof(push), &push);
             vkCmdDraw(commandBuffer, 36, 1, 0, 0);
+        }
+        // Experience orbs: a small camera-facing billboard of the orb sprite, the
+        // same flat-billboard path (item_entity.vert data.x == -1) particles use.
+        // The whole reserved atlas layer is the sprite, so uvOrigin (0,0) / uvScale
+        // 1. Vanilla bobs and colour-cycles the orb; this is the static first cut
+        // (待 mac visual). Drawn under the itemPipeline already bound above.
+        for (const auto& orb : snapshotOrbs) {
+            const glm::vec3 renderedPosition =
+                orb.previousPosition + (orb.position - orb.previousPosition) * itemAlpha;
+            const glm::vec3 billboardCentre = renderedPosition + glm::vec3{0.0F, 0.25F, 0.0F};
+            const ItemPush push{
+                {billboardCentre.x, billboardCentre.y, billboardCentre.z, 0.3F},
+                {kExperienceOrbLayer, 0.0F, 0.0F, 1.0F},
+                {-1.0F, 0.0F, 0.0F, 1.0F},
+                {0.0F, 0.0F, 0.0F, packedSceneLight(billboardCentre)},
+            };
+            vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+                               sizeof(push), &push);
+            vkCmdDraw(commandBuffer, 6U, 1, 0, 0);
         }
     }
 

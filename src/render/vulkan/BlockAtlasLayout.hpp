@@ -30,8 +30,8 @@ inline constexpr std::uint32_t kLavaFlowLayer = 84U;
 // The first block-texture layer: everything before it is the fixed special
 // section (water 0-63, lava 64-99, player skin 100-135, destroy 136-145, chest
 // parts 146-163, chest item faces 164-166, furnace 167-168, moon 169-176,
-// sun 177).
-inline constexpr std::uint32_t kFirstBlockTextureLayer = 178U;
+// sun 177, experience orb 178).
+inline constexpr std::uint32_t kFirstBlockTextureLayer = 179U;
 inline constexpr float kPlayerHeadFirstLayer = 100.0F;
 inline constexpr float kPlayerBodyFirstLayer = 106.0F;
 inline constexpr float kPlayerRightArmFirstLayer = 112.0F;
@@ -51,5 +51,8 @@ inline constexpr float kFurnaceFrontLayer = 167.0F;
 // bases), so the two never drift when the atlas layout changes.
 inline constexpr float kMoonPhaseFirstLayer = 169.0F;
 inline constexpr float kSunLayer = 177.0F;
+// One 16x16 orb sprite lifted from entity/experience/experience_orb.png (a 4x4
+// sheet); the experience-orb billboards in WorldRenderer sample this whole layer.
+inline constexpr float kExperienceOrbLayer = 178.0F;
 
 } // namespace mc::render

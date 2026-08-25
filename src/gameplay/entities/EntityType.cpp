@@ -119,6 +119,13 @@ EntityType::Builder& EntityType::Builder::loot(LootRoll roll) {
 
 EntityType::Builder& EntityType::Builder::xpReward(std::int32_t amount) {
     draft_.xpReward_ = amount;
+    draft_.xpRewardMax_ = amount;
+    return *this;
+}
+
+EntityType::Builder& EntityType::Builder::xpReward(std::int32_t min, std::int32_t max) {
+    draft_.xpReward_ = min;
+    draft_.xpRewardMax_ = max < min ? min : max;
     return *this;
 }
 

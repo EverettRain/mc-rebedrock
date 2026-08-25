@@ -68,6 +68,9 @@ const EntityType& PigEntity::type() {
                                  .loot(&rollPigLoot)
                                  .renderer(kPigRender)
                                  .sounds(kPigSounds)
+                                 // AnimalEntity#getBaseExperienceReward: 1..3 on a
+                                 // player kill.
+                                 .xpReward(1, 3)
                                  .vanillaName("pig")
                                  .build("pig");
     // File it in the registry exactly once, passing the static's stable address.

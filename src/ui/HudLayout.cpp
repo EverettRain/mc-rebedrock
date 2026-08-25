@@ -135,18 +135,35 @@ UiRect HudLayout::inventorySlot(std::size_t index) const {
     };
 }
 
-UiRect HudLayout::armorSlot(std::size_t index) const {
+UiRect HudLayout::armorSlot(std::size_t index, bool creative) const {
     if (index >= 4U)
         throw std::out_of_range("armor slot index is outside 0..3");
+    if (creative) {
+        // 26.1 CreativeModeInventoryScreen's Inventory tab does NOT stack the
+        // armour in one column like the survival screen — it rebuilds the slots as
+        // a 2x2 block flanking the player model: for menu slots 5..8 (Head/Chest/
+        // Legs/Feet) `x = 54 + (pos/2)*54`, `y = 6 + (pos%2)*27` with pos = i-5.
+        // The screen draw order here (0=Head..3=Feet) is that same pos, so:
+        // Head (54,6) Chest (54,33) Legs (108,6) Feet (108,33).
+        const auto panel = creativePanel();
+        const float x = 54.0F + static_cast<float>(index / 2U) * 54.0F;
+        const float y = 6.0F + static_cast<float>(index % 2U) * 27.0F;
+        return {panel.x + x * scale_, panel.y + y * scale_, 16.0F * scale_, 16.0F * scale_};
+    }
     const auto panel = inventoryPanel();
     // GUI spec §10: (8,8) (8,26) (8,44) (8,62), top-to-bottom Head/Chest/Legs/
-    // Feet — the screen's own draw order, an 18px row pitch like every other
-    // slot grid.
+    // Feet — the survival InventoryScreen's own draw order, an 18px row pitch.
     return {panel.x + 8.0F * scale_, panel.y + (8.0F + static_cast<float>(index) * 18.0F) * scale_,
             16.0F * scale_, 16.0F * scale_};
 }
 
-UiRect HudLayout::offhandSlot() const {
+UiRect HudLayout::offhandSlot(bool creative) const {
+    if (creative) {
+        // 26.1 CreativeModeInventoryScreen puts the offhand (menu slot 45) at
+        // (35,20) on its own panel, not the survival (77,62).
+        const auto panel = creativePanel();
+        return {panel.x + 35.0F * scale_, panel.y + 20.0F * scale_, 16.0F * scale_, 16.0F * scale_};
+    }
     const auto panel = inventoryPanel();
     return {panel.x + 77.0F * scale_, panel.y + 62.0F * scale_, 16.0F * scale_, 16.0F * scale_};
 }

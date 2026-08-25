@@ -73,11 +73,14 @@ class HudLayout final {
     [[nodiscard]] UiRect inventorySlot(std::size_t index) const;
     // EQ-1: InventoryScreen's four armor slots and the offhand slot, GUI spec
     // §10's `(8,8)(8,26)(8,44)(8,62)` (index 0=Head..3=Feet, the screen's own
-    // top-to-bottom draw order) and `(77,62)`. Geometry only — the pixel
-    // rendering of these slots is PX/render (待 mac); this is the hit-test
-    // rectangle ScreenHandler needs to route a click at all.
-    [[nodiscard]] UiRect armorSlot(std::size_t index) const;
-    [[nodiscard]] UiRect offhandSlot() const;
+    // top-to-bottom draw order) and `(77,62)`. The same numeric offsets in the
+    // creative Inventory tab, but relative to the wider creativePanel() — 1.16.1
+    // CreativeInventoryScreen adds these slots at the same (8,8+row*18)/(77,62)
+    // against its own 195x136 background, so passing creative=true anchors them
+    // to that panel instead of the 176x166 survival one (the two panels are
+    // centred differently, which is the source of the creative-mode misplacement).
+    [[nodiscard]] UiRect armorSlot(std::size_t index, bool creative = false) const;
+    [[nodiscard]] UiRect offhandSlot(bool creative = false) const;
     [[nodiscard]] UiRect playerCraftingSlot(std::size_t index) const;
     [[nodiscard]] UiRect playerCraftingOutput() const;
     [[nodiscard]] PlayerPreviewLayout playerPreview(bool creative) const;

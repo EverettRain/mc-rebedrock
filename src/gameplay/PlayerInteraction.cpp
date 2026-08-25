@@ -22,6 +22,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
 #include <variant>
 
 namespace mc::gameplay {
@@ -1078,11 +1080,28 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
 
 void PlayerInteraction::performUseOnEntity(GameSession& session, world::World&,
                                            const UseItemOn& use) {
+    const bool interactDebug = std::getenv("MC_REBEDROCK_INTERACT_DEBUG") != nullptr;
     const SimpleEntity* target = session.worldEntities().byIdConst(use.entityId);
     if (target == nullptr || target->dead()) {
+        // The server half of the trace: the command arrived but named an entity
+        // the authoritative side no longer has (or already dead) — the interaction
+        // is dropped here, not in the shear/dye branches below.
+        if (interactDebug) {
+            std::cout << "[interact] server performUseOnEntity id=" << use.entityId
+                      << " -> NO TARGET (null or dead), interaction dropped" << std::endl;
+        }
         return;
     }
     const auto& selectedStack = session.inventory().selectedStack();
+    if (interactDebug) {
+        const std::string_view heldName =
+            selectedStack.item != nullptr ? std::string_view{selectedStack.item->identifier.path}
+                                          : std::string_view{"<block/empty>"};
+        std::cout << "[interact] server performUseOnEntity id=" << use.entityId
+                  << " species=" << target->kind().id().path << " held=" << heldName
+                  << " dyeable=" << (target->kind().dyeable() ? 1 : 0)
+                  << " sheared=" << (target->sheared ? 1 : 0) << std::endl;
+    }
 
     // Sheep#mobInteract: shears win over the tempt-feed branch below (a shears
     // stack is never a species' tempt item, so the two never actually compete,
@@ -1092,7 +1111,14 @@ void PlayerInteraction::performUseOnEntity(GameSession& session, world::World&,
         if (!session.worldEntities().shear(use.entityId)) {
             // Sabotage anchor ③: an already-sheared (or baby, or dead) sheep
             // must not drop wool or spend durability — bail before either.
+            if (interactDebug) {
+                std::cout << "[interact]   SHEARS branch: shear() refused (already "
+                             "sheared / baby / not shearable)" << std::endl;
+            }
             return;
+        }
+        if (interactDebug) {
+            std::cout << "[interact]   SHEARS branch: sheared OK, dropping wool" << std::endl;
         }
         // Sheep.json (26.1): 1-3 wool from a shear, tinted by the sheep's dye
         // colour (Sheep#dropFromShearing: `getColor()` selects the wool block).
@@ -1133,7 +1159,12 @@ void PlayerInteraction::performUseOnEntity(GameSession& session, world::World&,
     // only — one dye spent. A same-colour dye or a non-dyeable target no-ops
     // (nothing swung, nothing consumed), which is sabotage anchor ②'s contract.
     if (const auto dyeColor = dyeColorForItem(selectedStack.item)) {
-        if (session.worldEntities().dye(use.entityId, *dyeColor)) {
+        const bool changed = session.worldEntities().dye(use.entityId, *dyeColor);
+        if (interactDebug) {
+            std::cout << "[interact]   DYE branch: dye() " << (changed ? "recoloured" : "no-op")
+                      << " (non-dyeable species or same colour)" << std::endl;
+        }
+        if (changed) {
             session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
             // DyeItem: `if (!player.abilities.creativeMode) itemStack.decrement(1)`
             // — creative keeps its dye, survival spends exactly one. Sabotage

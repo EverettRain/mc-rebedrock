@@ -342,12 +342,14 @@ void WorldSimulation::randomTicks(world::World& world, std::vector<BlockChange>&
         return;
     }
     // ServerWorld#tickChunk: randomTickSpeed draws per non-empty 16x16x16
-    // section. World::positions returns a copy, so a streamed batch swapping a
-    // chunk in mid-pass never invalidates the snapshot.
-    for (const auto chunkPosition : world.positions()) {
+    // section, but only for chunks inside the simulation distance. The per-chunk
+    // body is shared by both the bounded walk (the live path, driven off the
+    // player's chunk) and the unbounded fallback (headless tests that never set
+    // a centre).
+    const auto tickChunkAt = [&](world::ChunkPosition chunkPosition) {
         const world::Chunk* chunk = world.chunk(chunkPosition);
         if (chunk == nullptr) {
-            continue;
+            return;
         }
         for (int sectionY = 0; sectionY < world::kSectionCount; ++sectionY) {
             const world::ChunkSection& section = chunk->section(sectionY);
@@ -381,6 +383,29 @@ void WorldSimulation::randomTicks(world::World& world, std::vector<BlockChange>&
                 randomTickBlock(world, position, drawn, changes);
             }
         }
+    };
+    if (simRadiusChunks_ >= 0) {
+        // Bounded: walk the (2r+1)^2 square around the player's chunk directly,
+        // resolving each chunk by position. This never allocates or sorts a
+        // position list (World::positions() did both, every tick, under the
+        // write lock), and it confines the cost to the simulation distance
+        // instead of the whole loaded/render volume — the fix for a high
+        // randomTickSpeed stalling the frame. The z-major / x-minor order is
+        // fixed, so the draw sequence stays deterministic for the tests.
+        for (int cz = simCenterChunkZ_ - simRadiusChunks_;
+             cz <= simCenterChunkZ_ + simRadiusChunks_; ++cz) {
+            for (int cx = simCenterChunkX_ - simRadiusChunks_;
+                 cx <= simCenterChunkX_ + simRadiusChunks_; ++cx) {
+                tickChunkAt(world::ChunkPosition{cx, cz});
+            }
+        }
+        return;
+    }
+    // Unbounded fallback (no simulation centre set — the headless tests).
+    // World::positions returns a copy, so a streamed batch swapping a chunk in
+    // mid-pass never invalidates the snapshot.
+    for (const auto chunkPosition : world.positions()) {
+        tickChunkAt(chunkPosition);
     }
 }
 

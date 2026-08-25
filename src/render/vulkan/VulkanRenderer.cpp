@@ -800,6 +800,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
                     // The use lifecycle: UseItemOn on press (with the target),
                     // UseItemStop on release so a held meal/repeat ends.
+                    if (std::getenv("MC_REBEDROCK_INTERACT_DEBUG") != nullptr) {
+                        std::cout << "[interact] mouse RIGHT "
+                                  << (action == GLFW_PRESS ? "press" : "release")
+                                  << " (inventoryOpen=" << renderer->inventoryOpen << ")"
+                                  << std::endl;
+                    }
                     if (action == GLFW_PRESS) {
                         renderer->enqueueUseStart();
                     } else if (action == GLFW_RELEASE) {
@@ -4112,18 +4118,24 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (!inventoryDragActive) {
             return;
         }
-        if (!inventoryDragSlots.empty()) {
-            // The drag swept real slots: QUICK_CRAFT distributes the cursor
-            // stack across them (left = evenly, right = one per slot), on the
-            // server tick.
+        if (inventoryDragSlots.size() > 1U) {
+            // The drag swept two or more real slots: QUICK_CRAFT distributes the
+            // cursor stack across them (left = evenly, right = one per slot), on
+            // the server tick.
             gameplay::DragDistribute drag;
             drag.button = inventoryDragButton;
             drag.targets = std::move(inventoryDragSlots);
             runtime.enqueueClientCommand(std::move(drag));
         } else {
-            // No movement: a plain press-release places the cursor stack into
-            // the released slot (vanilla's PICKUP on release). A full-cursor
-            // press began a drag, never a quick-move, so shift is irrelevant.
+            // Zero or one slot swept is a plain click, not a quick-craft — vanilla
+            // only quick-crafts across multiple slots and falls back to a normal
+            // PICKUP for a single slot. This matters because DragDistribute only
+            // fills empty-or-matching slots (dragPlacementCounts' accept test), so
+            // routing a one-slot "drag" through it silently refused to replace a
+            // slot that already held a *different* item — the creative
+            // pick-then-click-hotbar replacement that "sometimes needs several
+            // clicks". dispatchInventoryClick re-hit-tests the slot under the
+            // cursor and places the stack the way a real click does.
             dispatchInventoryClick(inventoryDragButton, false);
         }
         inventoryDragActive = false;
@@ -4538,8 +4550,37 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // Minecraft#startUseItem, packaged: the right-click carries the block target
     // (or none for an air use), and the release ends a held use.
     void enqueueUseStart() {
+        const bool interactDebug = std::getenv("MC_REBEDROCK_INTERACT_DEBUG") != nullptr;
         if (!(worldReady && !paused && !inventoryOpen && !chatOpen)) {
+            // The guard that silently swallows a right-click: if this fires we
+            // never send a use command at all, so the trace stops here rather
+            // than in the server handler.
+            if (interactDebug) {
+                std::cout << "[interact] use-start BLOCKED (worldReady=" << worldReady
+                          << " paused=" << paused << " inventoryOpen=" << inventoryOpen
+                          << " chatOpen=" << chatOpen << ")" << std::endl;
+            }
             return;
+        }
+        // MC_REBEDROCK_INTERACT_DEBUG: one line per right-click showing which of
+        // the three use targets (entity / block / empty) the crosshair resolved
+        // to and what the client thinks is in hand — the client half of tracing a
+        // creature interaction (shear/dye/feed) that never lands.
+        if (interactDebug) {
+            const auto& held = clientMirror_.player().heldStack;
+            const std::string_view heldName =
+                held.item != nullptr ? std::string_view{held.item->identifier.path}
+                : gameplay::isBlockStack(held) ? std::string_view{"<block>"}
+                                               : std::string_view{"<empty>"};
+            if (creatureHit.has_value()) {
+                std::cout << "[interact] use-start -> ENTITY id=" << creatureHit->entityId
+                          << " held=" << heldName << std::endl;
+            } else if (targetedBlock.has_value()) {
+                std::cout << "[interact] use-start -> BLOCK held=" << heldName << std::endl;
+            } else {
+                std::cout << "[interact] use-start -> EMPTY (no entity/block hit) held=" << heldName
+                          << std::endl;
+            }
         }
         // AR-A2: a creature under the crosshair takes the use button too (shears,
         // feeding), the same precedence the attack button already gives it —

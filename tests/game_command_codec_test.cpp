@@ -53,6 +53,13 @@ int main() {
     checkRoundTrip(gameplay::GameCommand{gameplay::UseItemOn{
         glm::ivec3{1, 2, 3}, glm::ivec3{1, 3, 3}, world::BlockOrientation::Up,
         glm::vec3{1.25F, 2.5F, 3.75F}, glm::vec3{0.0F, 0.0F, -1.0F}}});
+    // An entity-targeted UseItemOn (shear/dye/milk/feed): the entity flag and id
+    // must survive, or the server demotes it to a block/empty use and never runs
+    // performUseOnEntity.
+    checkRoundTrip(gameplay::GameCommand{gameplay::UseItemOn{
+        glm::ivec3{0, 0, 0}, glm::ivec3{0, 0, 0}, world::BlockOrientation::Up,
+        glm::vec3{0.0F, 0.0F, 0.0F}, glm::vec3{0.0F, 0.0F, -1.0F}, /*entity=*/true,
+        /*entityId=*/56U}});
     checkRoundTrip(gameplay::GameCommand{gameplay::UseItem{gameplay::InteractionHand::Off}});
     checkRoundTrip(gameplay::GameCommand{gameplay::UseItemStop{}});
     checkRoundTrip(gameplay::GameCommand{gameplay::SwapSlot{7U}});

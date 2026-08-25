@@ -195,7 +195,8 @@ const std::array<SpeciesDef, 3> kManifest{{
                                      /*babyScale=*/0.5F},
         /*behaviorFlags=*/static_cast<std::uint16_t>(EntityBehavior::FallImmune),
         /*eggLay=*/EggLayProfile{/*laysEggs=*/true,
-                                 ItemStack{world::Block::Air, 1U, &items::Egg}}},
+                                 ItemStack{world::Block::Air, 1U, &items::Egg}},
+        /*xpRewardMin=*/1, /*xpRewardMax=*/3},
     // Sheep (26.1): 8 health, MOVEMENT_SPEED 0.23, box 0.9 x 1.3, egg tint
     // 0xE7E7E7 / 0xFFB5B5. Drops mutton + white wool (rollSheepLoot). AR-A2:
     // breedable, tempted by wheat, lamb baby scale 0.5 (EM-3's default).
@@ -212,7 +213,8 @@ const std::array<SpeciesDef, 3> kManifest{{
         // (SheepEntity#mobInteract's DyeItem branch). The dye interaction reads
         // this bit off the type, so this row is the whole "sheep can be dyed"
         // wiring — no species check anywhere else.
-        /*behaviorFlags=*/static_cast<std::uint16_t>(EntityBehavior::Dyeable)},
+        /*behaviorFlags=*/static_cast<std::uint16_t>(EntityBehavior::Dyeable),
+        /*eggLay=*/EggLayProfile{}, /*xpRewardMin=*/1, /*xpRewardMax=*/3},
     // Husk (26.1): a desert zombie — 20 health, follow range 35, MOVEMENT_SPEED
     // 0.23, attack 3, box 0.6 x 1.95, egg tint 0x797061 / 0x66907B. Melee like
     // the zombie; AR-M1 wires its loot to the same 0-2 rotten flesh pool.
@@ -234,7 +236,8 @@ const std::array<SpeciesDef, 3> kManifest{{
         &rollRottenFleshLoot, /*breeding=*/BreedingProfile{},
         /*behaviorFlags=*/static_cast<std::uint16_t>(EntityBehavior::Undead |
                                                        EntityBehavior::SunImmune |
-                                                       EntityBehavior::HungerOnHit)},
+                                                       EntityBehavior::HungerOnHit),
+        /*eggLay=*/EggLayProfile{}, /*xpRewardMin=*/5, /*xpRewardMax=*/5},
 }};
 
 // Builds one manifest row into an immutable EntityType. The mechanical
@@ -263,6 +266,9 @@ const std::array<SpeciesDef, 3> kManifest{{
     }
     if (def.eggLay.laysEggs) {
         builder.eggLay(def.eggLay);
+    }
+    if (def.xpRewardMax > 0) {
+        builder.xpReward(def.xpRewardMin, def.xpRewardMax);
     }
     return builder.build(def.path);
 }

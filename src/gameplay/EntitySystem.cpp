@@ -1023,9 +1023,13 @@ bool EntitySystem::die(SimpleEntity& entity) {
     // still positive does that attribution count as "recent" the way vanilla's
     // memory timer does. A zero xpReward (the default; every passive animal)
     // costs nothing extra to check.
-    if (entity.type->xpReward() > 0 && entity.lastAttacker.kind == ActorReference::Kind::Player &&
+    if (entity.type->xpRewardMax() > 0 && entity.lastAttacker.kind == ActorReference::Kind::Player &&
         entity.recentAttackerTicks > 0) {
-        pendingExperience_.emplace_back(entity.position, entity.type->xpReward());
+        // AnimalEntity rolls 1..3, an ordinary Mob pays its flat reward; the roll
+        // draws from the same deterministic loot stream every other death-time
+        // drop in this file uses.
+        pendingExperience_.emplace_back(entity.position,
+                                        entity.type->rollExperienceReward(lootRandomState_));
     }
     return true;
 }

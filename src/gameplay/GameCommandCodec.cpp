@@ -46,6 +46,13 @@ std::vector<std::uint8_t> encodeGameCommand(const GameCommand& command) {
                                                static_cast<std::uint8_t>(specific.face));
                     codec::appendVec3(bytes, specific.hitPosition);
                     codec::appendVec3(bytes, specific.lookDirection);
+                    // The entity-target half: without these two the server always
+                    // decoded entity=false, so a UseItemOn aimed at a creature
+                    // (shear/dye/milk/feed) was demoted to a block/empty use and
+                    // performUseOnEntity was never reached over the loopback.
+                    persistence::appendInteger(
+                        bytes, static_cast<std::uint8_t>(specific.entity ? 1 : 0));
+                    persistence::appendInteger(bytes, specific.entityId);
                 } else if constexpr (std::is_same_v<T, UseItem>) {
                     persistence::appendInteger(bytes,
                                                static_cast<std::uint8_t>(specific.hand));
@@ -138,6 +145,8 @@ std::optional<GameCommand> decodeGameCommand(std::span<const std::uint8_t> bytes
                 persistence::readInteger<std::uint8_t>(bytes, cursor));
             use.hitPosition = codec::readVec3(bytes, cursor);
             use.lookDirection = codec::readVec3(bytes, cursor);
+            use.entity = persistence::readInteger<std::uint8_t>(bytes, cursor) != 0;
+            use.entityId = persistence::readInteger<std::uint64_t>(bytes, cursor);
             decoded = use;
             break;
         }

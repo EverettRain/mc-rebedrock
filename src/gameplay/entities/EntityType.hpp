@@ -376,14 +376,28 @@ class EntityType final {
         return loot_ != nullptr ? loot_(rng) : EntityDrops{};
     }
 
-    // Mob#xpReward (26.1): the experience a killed creature awards, before
-    // XP-2's lastHurtByPlayer gate is even checked. Zero (the default) is a
-    // creature that never drops experience regardless of who or what killed
-    // it — vanilla's passive animals (cow, pig) score 0 here; only a kill
-    // grants any, never a breed (that path is a flat 1-7 roll, not this
-    // field). A data field on the type rather than a per-species switch at
-    // the death call site, matching the fireImmune precedent.
+    // Mob#getBaseExperienceReward (26.1): the experience a killed creature
+    // awards, before XP-2's lastHurtByPlayer gate is even checked. Modelled as a
+    // [min, max] range: an ordinary Mob has a flat reward (min == max, e.g. the
+    // zombie's 5), but AnimalEntity#getBaseExperienceReward rolls `1 + random(3)`
+    // — a 1..3 range — so cow/pig/sheep/chicken carry min=1, max=3. Zero (the
+    // default, min == max == 0) is a creature that never drops experience. Only a
+    // kill grants any, never a breed (that path is a flat 1-7 roll, not this
+    // field). A data field on the type rather than a per-species switch at the
+    // death call site, matching the fireImmune precedent.
     [[nodiscard]] std::int32_t xpReward() const { return xpReward_; }
+    [[nodiscard]] std::int32_t xpRewardMax() const { return xpRewardMax_; }
+    // Rolls the kill reward in [xpReward_, xpRewardMax_]; a flat reward (the
+    // common case) never touches `rng`, so a deterministic stream is only
+    // advanced for the animals that actually randomise (1..3).
+    [[nodiscard]] std::int32_t rollExperienceReward(std::uint64_t& rng) const {
+        if (xpRewardMax_ <= xpReward_) {
+            return xpReward_;
+        }
+        return xpReward_ +
+               static_cast<std::int32_t>(mc::rng::nextInt(
+                   rng, static_cast<std::uint32_t>(xpRewardMax_ - xpReward_ + 1)));
+    }
 
   private:
     friend class Builder;
@@ -409,8 +423,11 @@ class EntityType final {
     audio::MobSoundProfile soundProfile_{};
     const EntityAi* ai_ = nullptr;
     LootRoll loot_ = nullptr;
-    // Mob#xpReward; 0 (never drops experience) unless the species states one.
+    // Mob#getBaseExperienceReward; 0 (never drops experience) unless the species
+    // states one. xpReward_ is the minimum (and the whole value for a flat
+    // reward); xpRewardMax_ is the inclusive upper bound of the roll.
     std::int32_t xpReward_ = 0;
+    std::int32_t xpRewardMax_ = 0;
     std::uint16_t networkId_ = 0U;
 };
 
@@ -474,10 +491,13 @@ class EntityType::Builder final {
     // Shorthand: lays `item` on the shared 6000-12000 tick interval.
     Builder& laysEggs(const ItemStack& item);
     Builder& loot(LootRoll roll);
-    // Mob#xpReward: the flat experience a kill of this species awards (XP-2's
-    // lastHurtByPlayer gate decides *whether* it is paid out, not how much).
-    // A species that states nothing keeps the zero default.
+    // Mob#getBaseExperienceReward: the flat experience a kill of this species
+    // awards (XP-2's lastHurtByPlayer gate decides *whether* it is paid out, not
+    // how much). A species that states nothing keeps the zero default.
     Builder& xpReward(std::int32_t amount);
+    // AnimalEntity#getBaseExperienceReward's `1 + random(3)`: a kill awards a
+    // value drawn uniformly from [min, max]. Passive animals use xpReward(1, 3).
+    Builder& xpReward(std::int32_t min, std::int32_t max);
     Builder& renderer(const EntityRenderDescriptor& descriptor);
     // The species' sound set; without it the creature is silent. Each species
     // states its own clips the way its Java class overrides the sound hooks.

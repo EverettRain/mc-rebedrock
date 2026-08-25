@@ -77,6 +77,9 @@ const EntityType& CowEntity::type() {
                                  .renderer(kCowRender)
                                  .sounds(kCowSounds)
                                  .breedableWith(ItemStack{world::Block::Air, 1U, &items::Wheat})
+                                 // AnimalEntity#getBaseExperienceReward: 1..3 on a
+                                 // player kill.
+                                 .xpReward(1, 3)
                                  .vanillaName("cow")
                                  .build("cow");
     // File it in the registry exactly once, passing the static's stable address.

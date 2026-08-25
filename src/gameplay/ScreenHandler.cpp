@@ -99,8 +99,11 @@ void appendEquipmentSlots(
     if (context.gameMode == GameMode::Creative && !context.creativeInventoryTab) {
         return;
     }
+    const bool creative =
+        context.gameMode == GameMode::Creative && context.creativeInventoryTab;
     for (std::size_t index = 0; index < kEquipmentScreenSlotCount; ++index) {
-        const auto rect = index < 4U ? layout.armorSlot(index) : layout.offhandSlot();
+        const auto rect =
+            index < 4U ? layout.armorSlot(index, creative) : layout.offhandSlot(creative);
         slots.push_back(
             {rect,
              session != nullptr ? &session->equipment().mutableSlot(equipmentSlotAt(index))

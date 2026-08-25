@@ -240,6 +240,16 @@ class WorldSimulation final {
     void setRandomTickSpeed(int speed) { randomTickSpeed_ = speed; }
     [[nodiscard]] int randomTickSpeed() const { return randomTickSpeed_; }
 
+    // Confine the random-tick pass to a `radiusChunks` window around the chunk
+    // at (centerChunkX, centerChunkZ) — the simulation distance, set from the
+    // player's chunk each tick (GameSession). A negative radius restores the
+    // unbounded walk over every loaded chunk (the headless-test default).
+    void setSimulationBounds(int centerChunkX, int centerChunkZ, int radiusChunks) {
+        simCenterChunkX_ = centerChunkX;
+        simCenterChunkZ_ = centerChunkZ;
+        simRadiusChunks_ = radiusChunks;
+    }
+
     // How the redstone component ticks due on a gametick are ordered before they
     // drain (W-6). Serial — the default and ground truth — drains the whole due
     // set in the single (dueTick, priority, subTickOrder) order Java uses. Island
@@ -420,6 +430,17 @@ class WorldSimulation final {
     EnvironmentSnapshot environment_{};
     std::uint32_t leafRandomState_ = 0x2545F491U;
     int randomTickSpeed_ = 3;
+    // The simulation-distance window random ticks are confined to, in chunks
+    // around simCenterChunk*. 26.1 only random-ticks chunks within the
+    // simulation distance (default 10), decoupled from render distance; without
+    // this, randomTicks walked *every* loaded chunk (World::positions()),
+    // multiplying the per-tick cost by the whole render volume and — because the
+    // pass runs under the world write lock — stalling the render thread at a high
+    // randomTickSpeed. A negative radius means "unbounded" (walk positions()),
+    // the default headless tests rely on so they need not place a player first.
+    int simCenterChunkX_ = 0;
+    int simCenterChunkZ_ = 0;
+    int simRadiusChunks_ = -1;
     std::uint32_t randomTickState_ = 0x2F6E2B1DU;
     std::size_t lastTreeGrowthsProcessed_ = 0U;
     std::size_t randomTickConversionsThisTick_ = 0U;
