@@ -318,7 +318,10 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
                 .setBlock(world, {cell.x, cell.y, cell.z}, next, world::MutationFlags::All,
                           world::MutationCause::Gravity, sink)
                 .changed) {
-            static_cast<void>(worldEntities().clearSheared(request.entityId));
+            // Sheep#ate: regrow wool and age a lamb up 60s. Replaces the older
+            // clearSheared-only relay so eating grass also speeds a lamb's
+            // growth, matching vanilla ate().
+            static_cast<void>(worldEntities().ate(request.entityId));
         }
     }
     // NaturalSpawner: creatures and monsters settle inside the simulation

@@ -1097,27 +1097,28 @@ namespace {
 } // namespace
 
 bool EatGrassGoal::canStart(SimpleEntity& self, MobAiContext& context, MobBrain&) {
-    // Only a sheared sheep is hungry for grass; a wooled one never starts this
-    // (sabotage ③'s twin — an already-sheared check belongs on the shearing
-    // side, this is the regrow side's own gate). EatBlockGoal#canUse rolls
-    // `random.nextInt(reducedTickDelay(1000)) == 0` every tick it is not
-    // already running; vanilla's reducedTickDelay halves the constant to
-    // compensate for goal canStart already being polled at a throttled
-    // cadence elsewhere in Brain — this engine's GoalSelector has no such
-    // throttle (every goal's canStart runs every simulation tick), so the
-    // raw un-halved 1000 is the correct equivalent rate here, not the halved
-    // 500 the throttled engine actually rolls against.
-    if (!self.sheared) {
-        return false;
-    }
-    if (mc::rng::nextInt(self.rngState, 1000U) != 0U) {
+    // AR-A5 #11: EatBlockGoal#canUse gates on nothing but the roll — any sheep,
+    // wooled or sheared, adult or lamb, eats grass. The earlier `!self.sheared`
+    // full-gate was a rebedrock deviation (it made grass-eating a wool-regrow-
+    // only behaviour); vanilla lets a fully-wooled sheep eat too, and the eat's
+    // Sheep#ate() is what clears `sheared` and ages up a lamb — so the gate
+    // belonged on ate()'s effects, never on whether the goal can run.
+    //
+    // The roll itself mirrors vanilla exactly: `nextInt(adjustedTickDelay(
+    // isBaby() ? 50 : 1000)) == 0`, so a lamb grazes ~20x more often than an
+    // adult. adjustedTickDelay is a difficulty-scaled no-op on the paths this
+    // engine models (it only stretches on HARD for a subset of goals; EatBlock
+    // is not one), so the raw 50/1000 is the correct rate here — the same
+    // reasoning the tempt/wander goals in this file already apply.
+    const std::uint32_t bound = self.baby() ? 50U : 1000U;
+    if (mc::rng::nextInt(self.rngState, bound) != 0U) {
         return false;
     }
     return findEdibleGrass(context.world(), self).has_value();
 }
 
 bool EatGrassGoal::shouldContinue(SimpleEntity& self, MobAiContext& context, MobBrain&) {
-    if (!self.sheared || remainingTicks_ <= 0) {
+    if (remainingTicks_ <= 0) {
         return false;
     }
     // The grass might have been eaten by another sheep, or broken, mid-animation

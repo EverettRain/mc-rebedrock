@@ -178,6 +178,22 @@ inline constexpr int kLoveTicks = 600;
 // AnimalMateGoal's contact distance: parents within this settle and breed.
 inline constexpr float kBreedingRange = 3.0F;
 
+// Sheep#ate (26.1): eating a grass block ages a lamb up by a flat 60 seconds
+// (SheepEntity.ate -> this.ageUp(60)), on top of clearing `sheared`. Adults are
+// unaffected — canAgeUp() gates it, mirrored by ageUp's own `age < 0` guard.
+inline constexpr int kSheepEatAgeUpSeconds = 60;
+
+// AgeableMob#getSpeedUpSecondsWhenFeeding (26.1): a feed that cannot start love
+// (a baby) instead speeds its growth. Vanilla:
+//   (int)(ticksUntilAdult / 20 * 0.1F)
+// where ticksUntilAdult is the positive distance to adulthood (== -age for a
+// baby). The result is a whole number of *seconds*; ageUp() multiplies it back
+// by 20 to reach ticks. Integer/float arithmetic order is preserved verbatim so
+// the growth grant matches JE to the tick.
+[[nodiscard]] constexpr int getSpeedUpSecondsWhenFeeding(int ticksUntilAdult) {
+    return static_cast<int>(static_cast<float>(ticksUntilAdult / 20) * 0.1F);
+}
+
 // AR-A4: ChickenEntity#eggTime (26.1): `random.nextInt(6000) + 6000`, so the
 // next lay is 6000-12000 ticks (5-10 minutes) after the last, redrawn every
 // time the timer elapses. Shared by every laysEggs() species, not chicken-only
@@ -402,6 +418,20 @@ class EntitySystem final {
     // egg can make a baby and a test can age one up. Ageing a baby to 0 turns it
     // into an adult with its full-size hitbox on the same call.
     bool setAge(std::uint64_t entityId, int age);
+    // AgeableMob#ageUp (26.1): grows a baby toward adulthood by `seconds` real
+    // seconds (clamped so it never overshoots past 0 into cooldown). A no-op on
+    // an adult (age >= 0) or a non-breedable species, matching vanilla's own
+    // clamp — the returned bool is true only when the age actually moved. This
+    // is the "feed a baby to speed its growth" half of Animal#mobInteract and
+    // the ageUp(60) inside Sheep#ate. (forcedAge/age-lock is not modelled here —
+    // this build has no age-lock feature; noted as a known simplification.)
+    bool ageUp(std::uint64_t entityId, int seconds);
+    // AR-A5: SheepEntity#ate (26.1) — the whole "just ate a grass block" event:
+    // clears `sheared` (regrows wool) and, if the sheep is a lamb, ages it up 60
+    // seconds. GameSession calls this once the grass write actually lands,
+    // replacing the older clearSheared-only relay so the lamb-growth half of
+    // vanilla's ate() is no longer dropped. Returns true if anything changed.
+    bool ate(std::uint64_t entityId);
     // AR-A2: SheepEntity#shear — sets `sheared` true. Returns false (a no-op)
     // if the creature is unknown or already sheared, which is sabotage anchor
     // ③'s contract: shearing an already-bald sheep must yield nothing, and the

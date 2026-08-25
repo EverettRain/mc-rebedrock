@@ -752,6 +752,54 @@ bool EntitySystem::setAge(std::uint64_t entityId, int age) {
     return true;
 }
 
+bool EntitySystem::ageUp(std::uint64_t entityId, int seconds) {
+    const auto found = idToIndex_.find(entityId);
+    if (found == idToIndex_.end()) {
+        return false;
+    }
+    SimpleEntity& entity = entities_[found->second];
+    // AgeableMob#ageUp: only a baby (age < 0) of a breedable species grows; an
+    // adult or a mob on breed cooldown is untouched. `type->breedable()` keeps a
+    // non-ageable species pinned at 0.
+    if (entity.dead() || !entity.type->breedable() || entity.age >= 0) {
+        return false;
+    }
+    // age += seconds * 20, clamped at 0 (never overshoot into cooldown), exactly
+    // as vanilla's ageUp does before it writes setAge.
+    int age = entity.age + seconds * 20;
+    if (age > 0) {
+        age = 0;
+    }
+    if (age == entity.age) {
+        return false;
+    }
+    entity.age = age;
+    return true;
+}
+
+bool EntitySystem::ate(std::uint64_t entityId) {
+    const auto found = idToIndex_.find(entityId);
+    if (found == idToIndex_.end()) {
+        return false;
+    }
+    SimpleEntity& entity = entities_[found->second];
+    if (entity.dead()) {
+        return false;
+    }
+    // Sheep#ate: clear the sheared flag (regrow wool) and, if this is a lamb,
+    // age it up 60 seconds. Both halves report a change; a wooled adult that
+    // somehow reached here is a no-op.
+    bool changed = false;
+    if (entity.sheared) {
+        entity.sheared = false;
+        changed = true;
+    }
+    if (ageUp(entityId, kSheepEatAgeUpSeconds)) {
+        changed = true;
+    }
+    return changed;
+}
+
 bool EntitySystem::shear(std::uint64_t entityId) {
     const auto found = idToIndex_.find(entityId);
     if (found == idToIndex_.end()) {

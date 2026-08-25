@@ -1119,8 +1119,29 @@ void PlayerInteraction::performUseOnEntity(GameSession& session, world::World&,
     // exact comparison.
     const auto& breeding = target->kind().breeding();
     if (target->kind().breedable() && !breeding.temptItem.empty() &&
-        sameItem(selectedStack, breeding.temptItem) && !target->baby()) {
-        if (session.worldEntities().setInLove(use.entityId)) {
+        sameItem(selectedStack, breeding.temptItem)) {
+        // Animal#mobInteract splits the feed into two exclusive halves (its own
+        // two if-blocks): an adult (age == 0) that can fall in love enters love;
+        // a baby (age < 0) instead has its growth sped up by
+        // getSpeedUpSecondsWhenFeeding(-age). Only one fires per feed, and each
+        // consumes one food item + swings the arm on success. A baby never
+        // enters love and an adult never "ages up" — the two branches never
+        // overlap. Whether it went into love or grew, on either success the item
+        // is spent (usePlayerItem in both vanilla arms).
+        const SimpleEntity& creature = *target;
+        bool fed = false;
+        if (creature.age == 0) {
+            // Adult half: setInLove (breed cooldown blocks a just-bred adult, so
+            // it returns false and no item is spent then).
+            fed = session.worldEntities().setInLove(use.entityId);
+        } else if (creature.baby()) {
+            // Baby half (#9): speed growth by the vanilla formula on the ticks
+            // still to go (-age). ageUp returns false if it somehow could not
+            // move (never for a real baby), so no item is wasted.
+            const int seconds = getSpeedUpSecondsWhenFeeding(-creature.age);
+            fed = session.worldEntities().ageUp(use.entityId, seconds);
+        }
+        if (fed) {
             session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
             if (session.gameMode() == GameMode::Survival) {
                 static_cast<void>(session.inventory().consumeSelected());

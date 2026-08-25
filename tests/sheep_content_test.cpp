@@ -368,6 +368,90 @@ void testFeedingWheatBreedsLamb() {
     REQUIRE(lambs == 1);
 }
 
+// AR-A5 #9: feeding a *lamb* its tempt item speeds its growth (ageUp) instead
+// of putting it in love — the baby half of Animal#mobInteract, driven end to
+// end through the use-on-entity interaction path (not the direct EntitySystem
+// API the aging test uses). One wheat is spent, the arm swings, the lamb is
+// meaningfully closer to adult, and it never enters love.
+void testFeedingLambSpeedsGrowth() {
+    TestHost host;
+    gameplay::GameSession session;
+    world::World world;
+    buildStoneFloor(world);
+    session.setGameMode(gameplay::GameMode::Survival);
+    session.teleportPlayer(gameplay::kPrimaryPlayerId, {0.5F, 5.0F, 0.5F});
+
+    const std::uint64_t lambId = spawnSheep(session, {5.5F, 2.0F, 5.5F}, 51U);
+    // Make it a full newborn so a single feed's 120s (2400 ticks) shows up well
+    // clear of the aiStep's own -1/tick natural growth over the handful of ticks
+    // useOnEntity spends.
+    REQUIRE(session.worldEntities().setAge(lambId, -24000));
+    REQUIRE(session.worldEntities().byId(lambId)->baby());
+    const int ageBefore = session.worldEntities().byId(lambId)->age;
+
+    session.inventory().mutableSlot(0) = {world::Block::Air, 8U, &gameplay::items::Wheat};
+    session.inventory().selectHotbar(0);
+
+    useOnEntity(session, world, host, lambId);
+
+    const auto* lamb = session.worldEntities().byId(lambId);
+    REQUIRE(lamb != nullptr);
+    // A lamb never enters love, and the feed did grow it: age jumped by the
+    // 120s * 20 ageUp grant (minus the few natural-growth ticks useOnEntity
+    // spends), so it is at least ~2000 ticks closer to adult than a lone feed's
+    // natural drift could account for.
+    REQUIRE(!lamb->inLove());
+    REQUIRE(lamb->age > ageBefore + 2000);
+    REQUIRE(lamb->baby());  // one feed does not fully raise a newborn
+    // One wheat spent (usePlayerItem), like the adult love feed.
+    REQUIRE(session.inventory().selectedStack().count == 7U);
+}
+
+// AR-A5 #11: a lamb (never sheared — Sheep#readyForShearing bars babies) still
+// eats grass, and Sheep#ate ages it up 60s. Proves the sheared full-gate is
+// gone (a wooled lamb can graze) and that ate()'s ageUp half fires through the
+// real eat-grass -> WorldMutationService -> ate() relay. A lamb rolls the
+// EatBlockGoal ~20x more often than an adult (bound 50 vs 1000), so this eats
+// quickly. Detection is by the age jump, not by sheared (a lamb has none).
+void testLambEatsGrassAndGrows() {
+    TestHost host;
+    gameplay::GameSession session;
+    world::World world;
+    buildGrassFloor(world);
+    session.teleportPlayer(gameplay::kPrimaryPlayerId, {0.5F, 5.0F, 0.5F});
+
+    const std::uint64_t lambId = spawnSheep(session, {5.5F, 2.0F, 5.5F}, 61U);
+    // A full newborn so the 60s (1200 tick) grant is unmistakable against the
+    // natural +1/tick drift over however long it takes to graze.
+    REQUIRE(session.worldEntities().setAge(lambId, -24000));
+    REQUIRE(!session.worldEntities().byId(lambId)->sheared);  // a lamb has no wool to shear
+    const int ageStart = session.worldEntities().byId(lambId)->age;
+
+    // A lamb's aiStep grows its age by exactly +1/tick naturally, so after N
+    // ticks an *unfed* lamb sits at ageStart + N. Sheep#ate adds a 1200-tick
+    // jump on top of that on the tick it grazes; the instant age exceeds the
+    // pure-natural baseline by more than a couple of ticks' slack, the ate()
+    // ageUp half must have landed. (Detected by the age jump, not a sheared
+    // flag — a lamb has none.)
+    bool grew = false;
+    for (int tick = 0; tick < 20000 && !grew; ++tick) {
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        const auto* sheep = session.worldEntities().byId(lambId);
+        if (sheep == nullptr) {
+            break;
+        }
+        const int naturalBaseline = ageStart + (tick + 1);
+        if (sheep->age > naturalBaseline + 100) {
+            grew = true;
+        }
+    }
+    REQUIRE(grew);
+    const auto* lamb = session.worldEntities().byId(lambId);
+    REQUIRE(lamb != nullptr);
+    REQUIRE(lamb->baby());  // still a lamb, just grown a bit
+}
+
 // Feeding seeds (not the sheep's tempt item) never starts love.
 void testFeedingSeedsDoesNothing() {
     TestHost host;
@@ -459,6 +543,8 @@ int main() {
     testEatGrassPlantVariant();
     testSheepBreedingParams();
     testFeedingWheatBreedsLamb();
+    testFeedingLambSpeedsGrowth();
+    testLambEatsGrassAndGrows();
     testFeedingSeedsDoesNothing();
     testTemptFollowsWheat();
     testDeterministicEatGrass();

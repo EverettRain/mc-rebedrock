@@ -170,6 +170,86 @@ void testBabyScaleInSnapshot() {
     REQUIRE(sawBaby && sawAdult);
 }
 
+// --- AR-A5: feeding a baby speeds its growth (ageUp), not love ---
+
+// getSpeedUpSecondsWhenFeeding matches JE's exact int/float arithmetic:
+// (int)(ticksUntilAdult / 20 * 0.1F). Checked at the newborn distance and a
+// couple of sample points, including the flooring at small values.
+void testSpeedUpFormula() {
+    // A full newborn is 24000 ticks from adult: 24000/20 = 1200, *0.1 = 120s.
+    REQUIRE(getSpeedUpSecondsWhenFeeding(24000) == 120);
+    // 1000/20 = 50, *0.1 = 5s.
+    REQUIRE(getSpeedUpSecondsWhenFeeding(1000) == 5);
+    // Below 200 ticks the whole thing floors to 0 seconds (19/20 -> 0 -> 0),
+    // so a feed at the very end grants nothing, exactly like vanilla.
+    REQUIRE(getSpeedUpSecondsWhenFeeding(100) == 0);
+}
+
+// ageUp grows a baby toward adulthood and clamps at 0; it is a no-op on an
+// adult, on cooldown, and on a non-breedable species. This is sabotage anchor
+// ① (a feed that only flipped the gate but never called ageUp leaves the baby's
+// age untouched).
+void testAgeUpGrowsBaby() {
+    const mc::world::World world = makeFlatWorld();
+    EntitySystem system;
+    system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, wheatAnimal(), 1U);
+    const std::uint64_t id = system.entities().front().id;
+
+    // A newborn: -24000. A single feed grants getSpeedUpSecondsWhenFeeding(24000)
+    // = 120 seconds = 2400 ticks of growth.
+    REQUIRE(system.setAge(id, -24000));
+    const int before = system.byId(id)->age;
+    REQUIRE(system.ageUp(id, getSpeedUpSecondsWhenFeeding(-before)));
+    REQUIRE(system.byId(id)->age == before + 120 * 20);
+    REQUIRE(system.byId(id)->baby());  // still a baby, just closer
+
+    // Feeding near the end clamps at 0 (adult) rather than overshooting into a
+    // positive breed cooldown.
+    REQUIRE(system.setAge(id, -100));
+    REQUIRE(system.ageUp(id, 60));  // 60s = 1200 ticks, well past -100
+    REQUIRE(system.byId(id)->age == 0);
+    REQUIRE(!system.byId(id)->baby());
+
+    // Now an adult: ageUp is a no-op (returns false, age unchanged).
+    REQUIRE(!system.ageUp(id, 60));
+    REQUIRE(system.byId(id)->age == 0);
+}
+
+void testAgeUpNonBreedableIsNoOp() {
+    EntitySystem system;
+    system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, plainAnimal(), 5U);
+    const std::uint64_t id = system.entities().front().id;
+    // A non-breedable species has no age axis and never grows.
+    REQUIRE(!system.ageUp(id, 60));
+    REQUIRE(system.byId(id)->age == 0);
+}
+
+// Sheep#ate: clears sheared and, only for a lamb, ages up 60s. This is the
+// mechanism the eat-grass relay calls. Sabotage anchor ② (ate that only cleared
+// sheared and skipped ageUp leaves a lamb's age untouched).
+void testAteClearsShearedAndAgesLamb() {
+    EntitySystem system;
+    // An adult, sheared: ate() only regrows wool, no age change.
+    system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, wheatAnimal(), 7U);
+    const std::uint64_t adult = system.entities().front().id;
+    REQUIRE(system.shear(adult));
+    REQUIRE(system.byId(adult)->sheared);
+    REQUIRE(system.ate(adult));
+    REQUIRE(!system.byId(adult)->sheared);
+    REQUIRE(system.byId(adult)->age == 0);  // adult unaffected
+
+    // A lamb: ate() ages it up 60s (1200 ticks). A lamb cannot be sheared
+    // (Sheep#readyForShearing bars babies), so sheared stays false and the
+    // change comes entirely from the ageUp half.
+    system.spawn(glm::vec3{2.5F, 1.0F, 0.5F}, wheatAnimal(), 8U);
+    const std::uint64_t lamb = system.entities().back().id;
+    REQUIRE(system.setAge(lamb, -24000));
+    const int lambBefore = system.byId(lamb)->age;
+    REQUIRE(system.ate(lamb));
+    REQUIRE(system.byId(lamb)->age == lambBefore + 60 * 20);
+    REQUIRE(system.byId(lamb)->baby());
+}
+
 // --- love + breeding ---
 
 // Two in-love adults of one species that stand together breed one baby, then go
@@ -347,6 +427,10 @@ void testDeterministicBreeding() {
 int main() {
     testAgeGrowsUp();
     testBabyScaleInSnapshot();
+    testSpeedUpFormula();
+    testAgeUpGrowsBaby();
+    testAgeUpNonBreedableIsNoOp();
+    testAteClearsShearedAndAgesLamb();
     testBreeding();
     testNoCrossSpeciesBreeding();
     testNonBreedable();
