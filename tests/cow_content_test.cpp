@@ -127,6 +127,38 @@ void holdUseFor(gameplay::GameSession& session, world::World& world, gameplay::S
     session.tick(world, host);
 }
 
+// AR-CX0: a same-tick milk click — press (UseItemOn) and release (UseItemStop)
+// collapsed into one server-tick command batch, then one tick(). Before the fix
+// the release cleared `using_` before the held-repeat use gate ran, dropping the
+// milking entirely; after the fix the interaction fires on the press edge. This
+// deliberately does NOT split the commands across ticks (that side-steps the
+// bug), and asserts exactly one bucket becomes exactly one milk bucket (no
+// double-fire).
+void testSameTickMilkFiresOnce() {
+    TestHost host;
+    gameplay::GameSession session;
+    world::World world;
+    buildStoneFloor(world);
+    session.setGameMode(gameplay::GameMode::Survival);
+    session.teleportPlayer(gameplay::kPrimaryPlayerId, {5.5F, 2.0F, 5.5F});
+
+    const std::uint64_t cowId = spawnCow(session, {5.5F, 2.0F, 6.0F});
+
+    session.inventory().mutableSlot(0) = {world::Block::Air, 1U, &gameplay::items::Bucket};
+    session.inventory().selectHotbar(0);
+
+    gameplay::UseItemOn use;
+    use.entity = true;
+    use.entityId = cowId;
+    session.enqueueCommand(use);
+    session.enqueueCommand(gameplay::UseItemStop{});
+    session.tick(world, host);
+
+    const auto& stack = session.inventory().selectedStack();
+    REQUIRE(stack.item == &gameplay::items::MilkBucket);
+    REQUIRE(stack.count == 1U);
+}
+
 // --- milking ---
 
 void testMilkingSurvivalConsumesBucket() {
@@ -491,6 +523,7 @@ void testDeterministicTempt() {
 int main() {
     gameplay::entities::registerBuiltinEntities();
 
+    testSameTickMilkFiresOnce();
     testMilkingSurvivalConsumesBucket();
     testMilkingCreativeKeepsBucket();
     testNonEmptyBucketYieldsNoMilk();

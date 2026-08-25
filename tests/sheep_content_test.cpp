@@ -149,6 +149,146 @@ void useOnEntity(gameplay::GameSession& session, world::World& world, gameplay::
     }
 }
 
+// AR-CX0 regression driver: a single fast right-click whose press (UseItemOn)
+// AND release (UseItemStop) land in the *same* server tick's command batch,
+// then one tick(). This reproduces the real-world single-player case (high
+// frame rate feeding a 20 TPS server tick) where the press-and-release edge
+// collapses into one batch. Before the fix the visitor set `using_=true` then
+// `=false` within the same tick, so the held-repeat use gate never fired and
+// the interaction was silently dropped; after the fix the interaction fires on
+// the press edge, independently of `using_`. Deliberately does NOT split the
+// two commands across ticks (that is `useOnEntity` above, which side-steps the
+// bug) — sabotage anchor ②'s contract.
+void useOnEntitySameTick(gameplay::GameSession& session, world::World& world,
+                         gameplay::SimulationHost& host, std::uint64_t entityId) {
+    gameplay::UseItemOn use;
+    use.entity = true;
+    use.entityId = entityId;
+    session.enqueueCommand(use);
+    session.enqueueCommand(gameplay::UseItemStop{});
+    session.tick(world, host);
+}
+
+// --- AR-CX0: same-tick click regression ---
+
+// The core regression: a same-tick shear click shears the sheep and drops
+// exactly one wool item entity (the press-edge dispatch fires once, no
+// double-fire that would drop two wool / spend two durability).
+void testSameTickShearFiresOnce() {
+    TestHost host;
+    gameplay::GameSession session;
+    world::World world;
+    buildStoneFloor(world);
+    session.setGameMode(gameplay::GameMode::Survival);
+    session.teleportPlayer(gameplay::kPrimaryPlayerId, {5.5F, 2.0F, 5.5F});
+
+    const std::uint64_t sheepId = spawnSheep(session, {5.5F, 2.0F, 6.0F});
+    REQUIRE(!session.worldEntities().byId(sheepId)->sheared);
+
+    session.inventory().mutableSlot(0) = {world::Block::Air, 1U, &gameplay::items::Shears};
+    session.inventory().selectHotbar(0);
+    const std::uint16_t damageBefore = session.inventory().selectedStack().damage;
+
+    useOnEntitySameTick(session, world, host, sheepId);
+
+    // Fixed: the sheep is sheared even though press+release collapsed into one
+    // tick (the pre-fix bug dropped this entirely).
+    REQUIRE(session.worldEntities().byId(sheepId)->sheared);
+    // Exactly one durability point spent — a single click, not two (sabotage
+    // anchor ①: an edge dispatch that also re-fired through the held gate would
+    // spend two).
+    REQUIRE(session.inventory().selectedStack().damage == damageBefore + 1U);
+    // Exactly one wool item entity dropped, 1-3 count — not doubled.
+    int woolStacks = 0;
+    for (const auto& item : session.itemEntities().entities()) {
+        if (gameplay::items::isWool(item.stack.block)) {
+            REQUIRE(item.stack.count >= 1U && item.stack.count <= 3U);
+            ++woolStacks;
+        }
+    }
+    REQUIRE(woolStacks == 1);
+}
+
+// A same-tick dye click recolours the sheep and spends exactly one dye.
+void testSameTickDyeFiresOnce() {
+    TestHost host;
+    gameplay::GameSession session;
+    world::World world;
+    buildStoneFloor(world);
+    session.setGameMode(gameplay::GameMode::Survival);
+    session.teleportPlayer(gameplay::kPrimaryPlayerId, {5.5F, 2.0F, 5.5F});
+
+    const std::uint64_t sheepId = spawnSheep(session, {5.5F, 2.0F, 6.0F});
+    REQUIRE(session.worldEntities().byId(sheepId)->color == gameplay::DyeColor::White);
+
+    session.inventory().mutableSlot(0) = {world::Block::Air, 3U,
+                                          gameplay::dyeItemFor(gameplay::DyeColor::Red)};
+    session.inventory().selectHotbar(0);
+
+    useOnEntitySameTick(session, world, host, sheepId);
+
+    REQUIRE(session.worldEntities().byId(sheepId)->color == gameplay::DyeColor::Red);
+    // Exactly one dye spent (3 -> 2), never two — the click fires once.
+    REQUIRE(session.inventory().selectedStack().count == 2U);
+}
+
+// A same-tick feed click puts an adult sheep in love and spends exactly one
+// wheat (the baby-growth / love halves are EM-3's; here only the dispatch edge
+// matters).
+void testSameTickFeedFiresOnce() {
+    TestHost host;
+    gameplay::GameSession session;
+    world::World world;
+    buildStoneFloor(world);
+    session.setGameMode(gameplay::GameMode::Survival);
+    session.teleportPlayer(gameplay::kPrimaryPlayerId, {0.5F, 5.0F, 0.5F});
+
+    const std::uint64_t sheepId = spawnSheep(session, {5.5F, 2.0F, 5.5F}, 21U);
+    session.inventory().mutableSlot(0) = {world::Block::Air, 8U, &gameplay::items::Wheat};
+    session.inventory().selectHotbar(0);
+
+    useOnEntitySameTick(session, world, host, sheepId);
+
+    REQUIRE(session.worldEntities().byId(sheepId)->inLove());
+    // Exactly one wheat spent (8 -> 7), never two.
+    REQUIRE(session.inventory().selectedStack().count == 7U);
+}
+
+// Holding the use button down for several ticks after a same-tick entity click
+// must not re-fire the interaction: a mob interaction is one-shot per press,
+// unlike block placement's held repeat. Feeding an already-in-love sheep by
+// holding the button spends no more wheat.
+void testHeldUseDoesNotRepeatEntityInteraction() {
+    TestHost host;
+    gameplay::GameSession session;
+    world::World world;
+    buildStoneFloor(world);
+    session.setGameMode(gameplay::GameMode::Survival);
+    session.teleportPlayer(gameplay::kPrimaryPlayerId, {0.5F, 5.0F, 0.5F});
+
+    const std::uint64_t sheepId = spawnSheep(session, {5.5F, 2.0F, 5.5F}, 21U);
+    session.inventory().mutableSlot(0) = {world::Block::Air, 8U, &gameplay::items::Wheat};
+    session.inventory().selectHotbar(0);
+
+    // Press once, then hold (no release) for many ticks — well past the 4-tick
+    // rightClickDelay a block placement would repeat on.
+    gameplay::UseItemOn use;
+    use.entity = true;
+    use.entityId = sheepId;
+    session.enqueueCommand(use);
+    session.tick(world, host);
+    REQUIRE(session.worldEntities().byId(sheepId)->inLove());
+    const std::uint8_t afterFirst = session.inventory().selectedStack().count;
+    REQUIRE(afterFirst == 7U);  // one wheat spent on the press edge
+
+    for (int tick = 0; tick < 12; ++tick) {
+        session.tick(world, host);  // button still held, no new UseItemOn edge
+    }
+    // Still only one wheat spent: the held gate never re-entered the entity
+    // interaction (sabotage anchor ③ / held-repeat exclusion).
+    REQUIRE(session.inventory().selectedStack().count == afterFirst);
+}
+
 // --- shearing ---
 
 void testShearDropsWoolAndMarksSheared() {
@@ -773,6 +913,10 @@ void testKillDefaultSheepDropsWhiteWool() {
 int main() {
     gameplay::entities::registerBuiltinEntities();
 
+    testSameTickShearFiresOnce();
+    testSameTickDyeFiresOnce();
+    testSameTickFeedFiresOnce();
+    testHeldUseDoesNotRepeatEntityInteraction();
     testShearDropsWoolAndMarksSheared();
     testShearAlreadyShearedIsNoOp();
     testEatGrassRegrowsWoolThroughMutationService();

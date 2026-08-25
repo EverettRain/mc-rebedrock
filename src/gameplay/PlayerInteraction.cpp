@@ -441,6 +441,19 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
             session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
         }
     }
+    // AR-CX0: a creature interaction (shear/dye/milk/feed) fires once on the
+    // press edge, exactly like vanilla's Entity#interact — one right-click, one
+    // mobInteract. Unlike block placement/bucket (the 4-tick held repeat gate
+    // at the bottom of this tick), a mob interaction must NOT depend on `using_`
+    // still being set: a fast click whose press and release land in the same
+    // server tick's command batch would clear `using_` before that gate runs,
+    // dropping the interaction entirely. Driving it off freshUsePress here (and
+    // excluding entity targets from the held repeat gate below) makes it a true
+    // one-shot: it fires this tick whether or not the release already arrived,
+    // and never double-fires or repeats while held.
+    if (freshUsePress && targetedEntity && !session.eating()) {
+        performUseOnEntity(session, world, *latestUse_);
+    }
     // RW-1: BowItem#use — a fresh right-click with a bow in hand starts the
     // draw, on the same press edge auto-equip uses (a bow held down must not
     // re-issue startUsing every tick — PlayerActionState::startUsing already
@@ -489,7 +502,14 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
     // rightClickDelay lives here now, not in the renderer). A bow draw owns
     // the use timeline exclusively — like eating, it must not also re-enter
     // the block-placement ladder below while held.
-    if (using_ && latestUse_.has_value() && session.serverTick() >= nextUseTick_ &&
+    //
+    // AR-CX0: entity targets are deliberately excluded — a mob interaction is a
+    // one-shot already dispatched on the press edge above, so re-entering it
+    // here would both double-fire the same click (two shears, two dye spent)
+    // and wrongly repeat it every 4 ticks the button stays down. Only block
+    // placement/bucket keep the held repeat semantics.
+    const bool heldEntity = latestUse_.has_value() && latestUse_->entity;
+    if (using_ && latestUse_.has_value() && !heldEntity && session.serverTick() >= nextUseTick_ &&
         !session.eating() && !drawingBow) {
         performUse(session, world, *latestUse_);
         nextUseTick_ = session.serverTick() + 4U;
