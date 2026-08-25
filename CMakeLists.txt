@@ -2168,6 +2168,14 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_loot_data_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME loot_data COMMAND mc_rebedrock_loot_data_test)
 
+    # DDC-1: JE-compatible enchantment content JSON schema + loader.
+    add_executable(mc_rebedrock_enchantment_content_test
+        tests/enchantment_content_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_enchantment_content_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_enchantment_content_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME enchantment_content COMMAND mc_rebedrock_enchantment_content_test)
+
     # D-5: Java-Edition data-side mapping — vanilla-name authority + JE ingestion.
     add_executable(mc_rebedrock_je_mapping_test
         tests/je_mapping_test.cpp
