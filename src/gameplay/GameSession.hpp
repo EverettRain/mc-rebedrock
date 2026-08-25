@@ -268,11 +268,17 @@ class GameSession final {
         // EQ-4: Thorns' own stream, salted differently again so it is independent
         // of the projectile / orb / enchantment streams above.
         thornsRandom_.setSeed(seed ^ 0x27D4EB2F165667C5ULL);
+        // ENCH-1b: Unbreaking's durability-skip stream, salted independently again.
+        toolDamageRandom_.setSeed(seed ^ 0x165667B19E3779F9ULL);
     }
     // EQ-4: the deterministic stream Thorns' random_chance draw and reflected-
     // damage roll take, so a test can seed it and replay an exact trigger
     // sequence (the "same seed ⇒ same Thorns sequence" acceptance assertion).
     [[nodiscard]] world::gen::JavaRandom& thornsRandom() { return thornsRandom_; }
+    // ENCH-1b: the deterministic stream Unbreaking's per-point durability-skip
+    // draws take, so a test can seed it and replay an exact spend sequence (the
+    // "same seed ⇒ same durability sequence" acceptance assertion).
+    [[nodiscard]] world::gen::JavaRandom& toolDamageRandom() { return toolDamageRandom_; }
     // XP-1's spawnExperienceOrbs(pos, amount): denomination-splits `amount` into
     // vanilla's fixed orb values and places each one, drawing every scatter
     // velocity from this session's own JavaRandom stream — never the wall
@@ -829,6 +835,13 @@ class GameSession final {
     // never perturbs (or is perturbed by) another system's draws. Never a wall
     // clock — the RNG rule EQ-DESIGN §3 carries.
     world::gen::JavaRandom thornsRandom_;
+    // ENCH-1b: Unbreaking's per-durability-point skip stream. The DDC-2 effect
+    // engine draws its random_chance (level/(level+1)) off this when a tool is
+    // damaged, salted independently off the world seed like every per-system
+    // stream here so the durability-spend sequence is replay-deterministic and
+    // never perturbs (or is perturbed by) loot / Thorns / orbs. Never a wall
+    // clock — REGULAR.md's determinism rule.
+    world::gen::JavaRandom toolDamageRandom_;
     // The authoritative interaction, run at the end of each tick.
     PlayerInteraction playerInteraction_;
     GameCommandQueue commandQueue_;

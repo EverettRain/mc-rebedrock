@@ -2214,6 +2214,16 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_armor_enchantment_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME armor_enchantment COMMAND mc_rebedrock_armor_enchantment_test)
 
+    # ENCH-1b: mining-tool enchantment effects — Efficiency / Unbreaking /
+    # Fortune / Silk Touch, driven through the DDC-2 effect engine and consumed by
+    # the mining speed / durability spend / drop roll call sites.
+    add_executable(mc_rebedrock_enchantment_mining_test
+        tests/enchantment_mining_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_enchantment_mining_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_enchantment_mining_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME enchantment_mining COMMAND mc_rebedrock_enchantment_mining_test)
+
     # DDC-3: legacy enchantment content migration — golden compare (constexpr
     # kEnchantmentTable <-> JE-schema datapack JSON, zero drift) + the shipped
     # internal datapack (resources/data/rebedrock/enchantment/*.json) loaded

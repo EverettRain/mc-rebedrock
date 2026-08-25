@@ -1,10 +1,13 @@
 #include "gameplay/MiningSystem.hpp"
 
 #include "gameplay/BlockTags.hpp"
+#include "gameplay/Enchantment.hpp"
+#include "gameplay/EnchantmentMining.hpp"
 #include "gameplay/ItemPlacement.hpp"
 #include "gameplay/LootTable.hpp"
 #include "gameplay/Random.hpp"
 #include "world/BlockRegistry.hpp" // kBuiltinBlockCount
+#include "world/gen/JavaRandom.hpp"
 
 #include <limits>
 #include <optional>
@@ -133,6 +136,13 @@ float miningSeconds(
     if (const auto wanted = mineableTool(block);
         wanted.has_value() && *wanted == toolType(tool)) {
         speed = attributes.miningSpeed;
+    }
+    // ENCH-1b Efficiency: PlayerEntity#getBlockBreakingSpeed adds `i*i + 1` to the
+    // tool speed, but only once the tool is already faster than a fist (`f > 1`)
+    // — a fist or wrong tool gets no bonus. efficiencyMiningSpeedBonus is 0 for a
+    // tool with no Efficiency, so an unenchanted break is unchanged (identity).
+    if (speed > 1.0F) {
+        speed += efficiencyMiningSpeedBonus(tool);
     }
     if (underwater) speed /= 5.0F;
     if (airborne) speed /= 5.0F;
@@ -325,7 +335,43 @@ MinedDrops minedDrops(world::Block block, const ItemStack& tool, std::uint64_t& 
                       int age, bool doubledSlab) {
     // Breaking a block with too weak a tool destroys it without any loot.
     if (!canHarvestBlock(block, tool)) return {};
-    return blockDropFn(block)(block, tool, randomState, age, doubledSlab);
+
+    // ENCH-1b Silk Touch: SilkTouchEnchantment makes a break drop the block
+    // itself rather than its normal loot (stone -> stone, an ore -> the ore
+    // block, glass -> glass). It takes precedence over Fortune (the pair is
+    // mutually exclusive in ENCH-0's isCompatibleWith, so a well-formed tool
+    // never carries both; checking Silk Touch first makes the exclusivity hold
+    // even on a hand-forced stack). Only blocks that actually have an item drop
+    // itself; a block with no block-item (fluids, fire) still drops nothing.
+    if (silkTouchYieldsSelf(tool)) {
+        MinedDrops drops;
+        if (world::blockDefinition(block).dropsItem) {
+            drops.add({block, static_cast<std::uint8_t>(doubledSlab ? 2 : 1), blockItemFor(block)});
+        }
+        return drops;
+    }
+
+    MinedDrops drops = blockDropFn(block)(block, tool, randomState, age, doubledSlab);
+
+    // ENCH-1b Fortune: ApplyBonusLootFunction.OreDrops multiplies the ore item
+    // count. Vanilla applies ore_drops to the ores that drop an item straight
+    // (coal/redstone/lapis/diamond/emerald/nether_quartz) — exactly the blocks
+    // oreExperienceRange names (iron/gold drop raw blocks and take no Fortune in
+    // 1.16.1, and oreExperienceRange already excludes them). The bonus ceiling is
+    // the DDC-2 value; the uniform-int draw is this loot stream's own mc::rng.
+    const std::uint8_t fortuneLevel = enchantmentLevel(tool, EnchantmentId::Fortune);
+    if (fortuneLevel > 0U && oreExperienceRange(block).has_value()) {
+        const std::int32_t ceiling = fortuneBonusCeiling(fortuneLevel);
+        if (ceiling > 0) {
+            const auto draw =
+                static_cast<std::int32_t>(mc::rng::nextInt(randomState,
+                                                           static_cast<std::uint32_t>(ceiling)));
+            for (std::size_t i = 0; i < drops.count; ++i) {
+                drops.entries[i].count = fortuneApply(drops.entries[i].count, draw);
+            }
+        }
+    }
+    return drops;
 }
 
 } // namespace mc::gameplay

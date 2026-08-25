@@ -2,6 +2,8 @@
 
 #include "gameplay/ArmorEnchantment.hpp"
 #include "gameplay/BlockEntityTicker.hpp"
+#include "gameplay/Enchantment.hpp"
+#include "gameplay/EnchantmentMining.hpp"
 #include "gameplay/DimensionTransfer.hpp"
 #include "gameplay/GameplayMutationSink.hpp"
 #include "gameplay/Random.hpp"
@@ -1167,8 +1169,19 @@ void GameSession::attachGameRuleHandlers() {
 
 bool GameSession::damageHeldTool(PlayerId playerId, ToolUse use, float blockHardness) {
     auto& player = players_.at(playerId);
-    const auto cost = toolDurabilityCost(player.inventory.selectedStack(), use, blockHardness);
-    return cost > 0 && player.inventory.damageSelected(cost);
+    const ItemStack& held = player.inventory.selectedStack();
+    const auto baseCost = toolDurabilityCost(held, use, blockHardness);
+    if (baseCost == 0U) {
+        return false;
+    }
+    // ENCH-1b Unbreaking: each of the base cost's durability points is
+    // probabilistically preserved (level/(level+1)) through the DDC-2 effect
+    // engine's random_chance, drawn off this session's deterministic
+    // toolDamageRandom_ stream. No Unbreaking ⇒ unbreakingDurabilityCost returns
+    // baseCost unchanged (identity), so an unenchanted tool wears exactly as before.
+    const auto cost = unbreakingDurabilityCost(
+        baseCost, enchantmentLevel(held, EnchantmentId::Unbreaking), toolDamageRandom_);
+    return cost > 0U && player.inventory.damageSelected(cost);
 }
 
 void GameSession::spawnBlockDrops(glm::ivec3 position, world::BlockState removed,
