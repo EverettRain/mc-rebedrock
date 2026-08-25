@@ -57,6 +57,12 @@ struct BlockEntityTypeIdTag final {};
 // hands these out; a per-entity EffectInstance holds one plus its duration and
 // amplifier.
 struct StatusEffectIdTag final {};
+// A registered enchantment type (sharpness, protection, …). DDC-0's runtime
+// EnchantmentRegistry hands these out; the dense id is the registry subscript,
+// distinct from gameplay's EnchantmentId enum (which is the fixed 1.16.1
+// ordinal an ItemStack stores). Both agree slot-for-slot for the built-ins so a
+// stored enum ordinal indexes the runtime table directly.
+struct EnchantmentTypeIdTag final {};
 // The dense id an Identifier interns to, for hot paths that want to compare
 // registry keys as integers instead of walking two string_views.
 struct IdentifierIdTag final {};
@@ -66,6 +72,7 @@ using ItemId = ContentId<ItemIdTag>;
 using EntityTypeId = ContentId<EntityTypeIdTag>;
 using BlockEntityTypeId = ContentId<BlockEntityTypeIdTag>;
 using StatusEffectId = ContentId<StatusEffectIdTag>;
+using EnchantmentTypeId = ContentId<EnchantmentTypeIdTag>;
 using IdentifierId = ContentId<IdentifierIdTag>;
 
 } // namespace mc::core

@@ -2340,6 +2340,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME enchantment_registry COMMAND mc_rebedrock_enchantment_registry_test)
 
+    add_executable(mc_rebedrock_enchantment_runtime_registry_test
+        tests/enchantment_runtime_registry_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_enchantment_runtime_registry_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_enchantment_runtime_registry_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME enchantment_runtime_registry COMMAND mc_rebedrock_enchantment_runtime_registry_test)
+
     add_executable(mc_rebedrock_enchantment_offers_test
         tests/enchantment_offers_test.cpp
     )
