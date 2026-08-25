@@ -75,6 +75,35 @@ inline constexpr BakedIngredient kCraftIng_56[] = {{IngredientDefKind::Item, "re
 inline constexpr BakedIngredient kCraftIng_57[] = {{IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:diamond"}};
 inline constexpr BakedIngredient kCraftIng_58[] = {{IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}};
 
+// AR-CX1:落地层配方补全。形状转写 Java 26.1 RecipesProvider。
+// bow: " #X" / "# X" / " #X"  (vanilla bow.json: # = string, X = stick)
+// row0: _ string stick / row1: string _ stick / row2: _ string stick
+inline constexpr BakedIngredient kCraftIng_59[] = {
+    {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:string"}, {IngredientDefKind::Item, "rebedrock:stick"},
+    {IngredientDefKind::Item, "rebedrock:string"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:stick"},
+    {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:string"}, {IngredientDefKind::Item, "rebedrock:stick"}};
+// arrow: "X" / "#" / "Y"  (X = flint, # = stick, Y = feather)，产 4
+inline constexpr BakedIngredient kCraftIng_60[] = {
+    {IngredientDefKind::Item, "rebedrock:flint"},
+    {IngredientDefKind::Item, "rebedrock:stick"},
+    {IngredientDefKind::Item, "rebedrock:feather"}};
+// shears: " #" / "# "  (# = iron_ingot)
+inline constexpr BakedIngredient kCraftIng_61[] = {
+    {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:iron_ingot"},
+    {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Empty, ""}};
+// bucket: "# #" / " # "  (# = iron_ingot)
+inline constexpr BakedIngredient kCraftIng_62[] = {
+    {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:iron_ingot"},
+    {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Empty, ""}};
+// paper: "###"  (# = sugar_cane BLOCK)，产 3 —— 依赖 AR-CX2 的 sugar_cane 方块，
+// 在方块落地前 resolveCrafting 静默跳过（配方就绪但暂不可craft），落地后自动激活。
+inline constexpr BakedIngredient kCraftIng_63[] = {
+    {IngredientDefKind::Block, "rebedrock:sugar_cane"}, {IngredientDefKind::Block, "rebedrock:sugar_cane"}, {IngredientDefKind::Block, "rebedrock:sugar_cane"}};
+// book: shapeless 3 paper + 1 leather（2×2 载体，shapeless 忽略位置）
+inline constexpr BakedIngredient kCraftIng_64[] = {
+    {IngredientDefKind::Item, "rebedrock:paper"}, {IngredientDefKind::Item, "rebedrock:paper"},
+    {IngredientDefKind::Item, "rebedrock:paper"}, {IngredientDefKind::Item, "rebedrock:leather"}};
+
 inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     {"minecraft:oak_planks", 1, 1, false, false, kCraftIng_0, "rebedrock:oak_planks", 4},
     {"minecraft:spruce_planks", 1, 1, false, false, kCraftIng_1, "rebedrock:spruce_planks", 4},
@@ -136,6 +165,13 @@ inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     {"minecraft:diamond_chestplate", 3, 3, false, false, kCraftIng_56, "rebedrock:diamond_chestplate", 1},
     {"minecraft:diamond_leggings", 3, 3, false, false, kCraftIng_57, "rebedrock:diamond_leggings", 1},
     {"minecraft:diamond_boots", 2, 2, false, false, kCraftIng_58, "rebedrock:diamond_boots", 1},
+    // AR-CX1: 落地层配方补全。
+    {"minecraft:bow",    3, 3, false, false, kCraftIng_59, "rebedrock:bow",    1},
+    {"minecraft:arrow",  1, 3, false, false, kCraftIng_60, "rebedrock:arrow",  4},
+    {"minecraft:shears", 2, 2, false, false, kCraftIng_61, "rebedrock:shears", 1},
+    {"minecraft:bucket", 3, 2, false, false, kCraftIng_62, "rebedrock:bucket", 1},
+    {"minecraft:paper",  3, 1, false, false, kCraftIng_63, "rebedrock:paper",  3},
+    {"minecraft:book",   2, 2, true,  false, kCraftIng_64, "rebedrock:book",   1},
 };
 
 inline constexpr BakedFurnaceRecipe kBakedFurnaceRecipes[] = {

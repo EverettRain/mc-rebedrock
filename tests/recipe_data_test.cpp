@@ -128,8 +128,11 @@ void testBuiltinFloorResolves() {
     const auto crafting = table.crafting();
     const auto furnace = table.furnace();
     // EQ-0 added 16 armor recipes (4 materials craftable x 4 slots; chainmail
-    // has no recipe) on top of the 43 that used to be hardcoded.
-    assert(crafting.size() == 43U + 16U);
+    // has no recipe) on top of the 43 that used to be hardcoded. AR-CX1 appended
+    // 6 utility recipes (bow/arrow/shears/bucket/paper/book) but paper names the
+    // not-yet-registered `sugar_cane` block, so resolveCrafting silently drops it
+    // — 5 of the 6 resolve.
+    assert(crafting.size() == 43U + 16U + 5U);
     assert(furnace.size() == 7U);
 
     // 1x1 log -> 4 planks, a block ingredient and a block output.
@@ -169,6 +172,120 @@ void testBuiltinFloorResolves() {
     assert(iron->cookTicks == 200 && iron->experience == 0.7F);
 }
 
+// 2b. AR-CX1: the six utility recipes resolve to their exact 26.1 shapes and
+// output counts, and paper stays inert until its sugar_cane block lands.
+void testArcx1UtilityRecipes() {
+    RecipeTable table;
+    table.loadBuiltinDefaults();
+    const auto crafting = table.crafting();
+
+    // bow: 3x3 shaped, one bow (string + stick, no mirror).
+    const CraftingRecipe* bow = findCrafting(crafting, "minecraft:bow");
+    assert(bow != nullptr && bow->width == 3U && bow->height == 3U && !bow->shapeless);
+    assert(bow->ingredients.size() == 9U);
+    assert(bow->ingredients[1].kind == IngredientKind::Item &&
+           bow->ingredients[1].item == &mc::gameplay::items::String);
+    assert(bow->ingredients[2].kind == IngredientKind::Item &&
+           bow->ingredients[2].item == &mc::gameplay::items::Stick);
+    assert(bow->ingredients[0].kind == IngredientKind::Empty);
+    assert(bow->output.item == &mc::gameplay::items::Bow && bow->output.count == 1U);
+
+    // arrow: 1x3, flint/stick/feather, yields 4 (pin the count — sabotage guard).
+    const CraftingRecipe* arrow = findCrafting(crafting, "minecraft:arrow");
+    assert(arrow != nullptr && arrow->width == 1U && arrow->height == 3U && !arrow->shapeless);
+    assert(arrow->ingredients.size() == 3U);
+    assert(arrow->ingredients[0].item == &mc::gameplay::items::Flint);
+    assert(arrow->ingredients[1].item == &mc::gameplay::items::Stick);
+    assert(arrow->ingredients[2].item == &mc::gameplay::items::Feather);
+    assert(arrow->output.item == &mc::gameplay::items::Arrow && arrow->output.count == 4U);
+
+    // shears: 2x2, two iron_ingot diagonally, one shears.
+    const CraftingRecipe* shears = findCrafting(crafting, "minecraft:shears");
+    assert(shears != nullptr && shears->width == 2U && shears->height == 2U && !shears->shapeless);
+    assert(shears->ingredients.size() == 4U);
+    assert(shears->ingredients[1].item == &mc::gameplay::items::IronIngot);
+    assert(shears->ingredients[2].item == &mc::gameplay::items::IronIngot);
+    assert(shears->ingredients[0].kind == IngredientKind::Empty);
+    assert(shears->output.item == &mc::gameplay::items::Shears && shears->output.count == 1U);
+
+    // bucket: 3x2, three iron_ingot, one bucket.
+    const CraftingRecipe* bucket = findCrafting(crafting, "minecraft:bucket");
+    assert(bucket != nullptr && bucket->width == 3U && bucket->height == 2U && !bucket->shapeless);
+    assert(bucket->ingredients.size() == 6U);
+    assert(bucket->ingredients[0].item == &mc::gameplay::items::IronIngot);
+    assert(bucket->ingredients[2].item == &mc::gameplay::items::IronIngot);
+    assert(bucket->ingredients[4].item == &mc::gameplay::items::IronIngot);
+    assert(bucket->output.item == &mc::gameplay::items::Bucket && bucket->output.count == 1U);
+
+    // book: 2x2 SHAPELESS (3 paper + 1 leather), one book. The shapeless flag and
+    // width/height <= 3 both matter (sabotage guard: a 1x4 book never matches).
+    const CraftingRecipe* book = findCrafting(crafting, "minecraft:book");
+    assert(book != nullptr && book->width == 2U && book->height == 2U && book->shapeless);
+    assert(book->ingredients.size() == 4U);
+    assert(book->output.item == &mc::gameplay::items::Book && book->output.count == 1U);
+
+    // paper: inert — sugar_cane block absent, so resolveCrafting drops the whole
+    // recipe (not resolved into a hole).
+    assert(findCrafting(crafting, "minecraft:paper") == nullptr);
+}
+
+// 2c. The utility recipes actually match a live grid and yield the pinned counts.
+void testArcx1CraftMatches() {
+    using mc::gameplay::CraftingSystem;
+    using mc::gameplay::ItemStack;
+    namespace items = mc::gameplay::items;
+
+    // arrow: 1x3 column in the 3x3 table grid (col 0), yields 4.
+    {
+        CraftingSystem crafting;
+        crafting.tableGridSlot(0) = {Block::Air, 1U, &items::Flint};
+        crafting.tableGridSlot(3) = {Block::Air, 1U, &items::Stick};
+        crafting.tableGridSlot(6) = {Block::Air, 1U, &items::Feather};
+        const ItemStack out = crafting.tableOutput();
+        assert(out.item == &items::Arrow && out.count == 4U);
+    }
+    // shears: 2x2 in the top-left of the table grid, yields 1.
+    {
+        CraftingSystem crafting;
+        crafting.tableGridSlot(1) = {Block::Air, 1U, &items::IronIngot};
+        crafting.tableGridSlot(3) = {Block::Air, 1U, &items::IronIngot};
+        const ItemStack out = crafting.tableOutput();
+        assert(out.item == &items::Shears && out.count == 1U);
+    }
+    // bucket: 3x2 "# #" / " # " in the table grid, yields 1.
+    {
+        CraftingSystem crafting;
+        crafting.tableGridSlot(0) = {Block::Air, 1U, &items::IronIngot};
+        crafting.tableGridSlot(2) = {Block::Air, 1U, &items::IronIngot};
+        crafting.tableGridSlot(4) = {Block::Air, 1U, &items::IronIngot};
+        const ItemStack out = crafting.tableOutput();
+        assert(out.item == &items::Bucket && out.count == 1U);
+    }
+    // bow: 3x3 in the table grid, yields 1.
+    {
+        CraftingSystem crafting;
+        crafting.tableGridSlot(1) = {Block::Air, 1U, &items::String};
+        crafting.tableGridSlot(2) = {Block::Air, 1U, &items::Stick};
+        crafting.tableGridSlot(3) = {Block::Air, 1U, &items::String};
+        crafting.tableGridSlot(5) = {Block::Air, 1U, &items::Stick};
+        crafting.tableGridSlot(7) = {Block::Air, 1U, &items::String};
+        crafting.tableGridSlot(8) = {Block::Air, 1U, &items::Stick};
+        const ItemStack out = crafting.tableOutput();
+        assert(out.item == &items::Bow && out.count == 1U);
+    }
+    // book: 2x2 shapeless (position-independent) 3 paper + 1 leather, yields 1.
+    // Match against the 2x2 player grid — shapeless with width/height<=2 fits.
+    {
+        CraftingSystem crafting;
+        crafting.playerGridSlot(0) = {Block::Air, 1U, &items::Paper};
+        crafting.playerGridSlot(1) = {Block::Air, 1U, &items::Paper};
+        crafting.playerGridSlot(2) = {Block::Air, 1U, &items::Leather};
+        crafting.playerGridSlot(3) = {Block::Air, 1U, &items::Paper};
+        const ItemStack out = crafting.playerOutput();
+        assert(out.item == &items::Book && out.count == 1U);
+    }
+}
+
 // 3. A datapack overlay adds a recipe, replaces a built-in by id, and adds a
 // smelting recipe.
 void testOverlayMerges() {
@@ -189,8 +306,9 @@ void testOverlayMerges() {
                  "output":"minecraft:stone","count":1,"cookTicks":123,"experience":0.5})");
 
     table.load(pack);
-    // 43+16 built-ins (EQ-0 added 16 armor recipes) + demo_combo (oak_planks replaced).
-    assert(table.crafting().size() == 43U + 16U + 1U);
+    // 43+16 built-ins (EQ-0 armor) + 5 AR-CX1 utility (paper dropped) + demo_combo
+    // (oak_planks replaced in place, not added).
+    assert(table.crafting().size() == 43U + 16U + 5U + 1U);
     assert(findCrafting(table.crafting(), "minecraft:demo_combo") != nullptr);
     assert(findCrafting(table.crafting(), "minecraft:oak_planks")->output.count == 8U);
     const FurnaceRecipe* smelt = findFurnace(table.furnace(), "minecraft:demo_smelt");
@@ -202,7 +320,7 @@ void testNoDataFallback() {
     RecipeTable table;
     MemoryProvider empty;
     table.load(empty);
-    assert(table.crafting().size() == 43U + 16U);
+    assert(table.crafting().size() == 43U + 16U + 5U);
     assert(table.furnace().size() == 7U);
     assert(findCrafting(table.crafting(), "minecraft:oak_planks")->output.count == 4U);
 }
@@ -219,7 +337,7 @@ void testUnknownIdentifierSkipped() {
              R"({"width":1,"height":1,"ingredients":[{"item":"minecraft:coal"}],
                  "output":"minecraft:no_such_block","count":1})");
     table.load(pack);
-    assert(table.crafting().size() == 43U + 16U); // neither bad recipe was added
+    assert(table.crafting().size() == 43U + 16U + 5U); // neither bad recipe was added
     assert(findCrafting(table.crafting(), "minecraft:bad_item") == nullptr);
     assert(findCrafting(table.crafting(), "minecraft:bad_output") == nullptr);
 }
@@ -229,6 +347,8 @@ void testUnknownIdentifierSkipped() {
 int main() {
     testCodecRoundTrip();
     testBuiltinFloorResolves();
+    testArcx1UtilityRecipes();
+    testArcx1CraftMatches();
     testOverlayMerges();
     testNoDataFallback();
     testUnknownIdentifierSkipped();
