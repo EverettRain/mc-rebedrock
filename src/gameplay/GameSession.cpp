@@ -1,5 +1,6 @@
 #include "gameplay/GameSession.hpp"
 
+#include "gameplay/ArmorEnchantment.hpp"
 #include "gameplay/BlockEntityTicker.hpp"
 #include "gameplay/DimensionTransfer.hpp"
 #include "gameplay/GameplayMutationSink.hpp"
@@ -76,6 +77,26 @@ void damageEquippedArmor(EquipmentSlots& equipment, float damage) {
         }
         piece.damage = static_cast<std::uint16_t>(piece.damage + cost);
     }
+}
+
+// EQ-4: ThornsEnchantment#onUserDamaged spends its durability on the SINGLE
+// enchanted piece that fired (ItemStack#damage(amount)), not divided across
+// every worn piece the way a hit's own armor wear (damageEquippedArmor above)
+// is — so this is a targeted variant: `cost` points of damage on `slot`,
+// breaking the piece if it crosses its maximum, exactly as
+// Inventory::damageSelected / damageEquippedArmor break a worn-out item.
+void damageThornsArmorPiece(EquipmentSlots& equipment, EquipmentSlot slot, float amount) {
+    ItemStack& piece = equipment.mutableSlot(slot);
+    const std::uint16_t maximumDamage = itemMaximumDamage(piece);
+    if (piece.empty() || maximumDamage == 0U) {
+        return;
+    }
+    const auto cost = static_cast<std::uint16_t>(std::max(1.0F, std::floor(amount)));
+    if (piece.damage + cost > maximumDamage) {
+        piece = {};
+        return;
+    }
+    piece.damage = static_cast<std::uint16_t>(piece.damage + cost);
 }
 } // namespace
 
@@ -278,6 +299,28 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
                     attacker->type->hungerOnHit()) {
                     static_cast<void>(primaryPlayer().vitals.applyEffect(
                         hungerEffect(), huskHungerDurationTicks(difficulty_), 0U));
+                }
+                // EQ-4: ThornsEnchantment#onUserDamaged — a landed hit gives the
+                // victim's worn Thorns armor a chance to reflect damage onto the
+                // attacker. The trigger chance (0.15*level) and the reflected
+                // damage roll (1..5) are both taken through the DDC-2 effect
+                // engine off this session's deterministic thornsRandom_ stream
+                // (never a wall clock), so the sequence replays identically for a
+                // given seed. When it fires, the reflected damage routes through
+                // the same EntitySystem::hurt pipeline any hit uses (so the
+                // attacker's own future armor/effects apply), and the enchanted
+                // piece spends its durability.
+                const ThornsReflection thorns =
+                    resolveThorns(primaryPlayer().equipment, thornsRandom_);
+                if (thorns.fired && thorns.attackerDamage > 0.0F) {
+                    static_cast<void>(primaryLevel().entities.hurt(
+                        attack.attackerId, thorns.attackerDamage,
+                        primaryPlayer().controller.position(), ActorReference::player(),
+                        DamageType::Generic));
+                    if (thorns.itemDamage > 0.0F) {
+                        damageThornsArmorPiece(primaryPlayer().equipment, thorns.slot,
+                                               thorns.itemDamage);
+                    }
                 }
             }
         }
@@ -806,10 +849,15 @@ bool GameSession::hurtPlayer(PlayerId playerId, DamageType source, float amount,
     // armor, summed fresh on every hit (armor can change between hits, so
     // this is not cached on the player).
     const ArmorTotals armor = sumEquippedArmor(player.equipment);
+    // EQ-4: the enchantment protection factor (EPF) the worn armor contributes
+    // against THIS damage type, summed through the DDC-2 effect engine (Fire
+    // Protection only counts on an IsFire hit, Feather Falling only on a fall,
+    // …). Zero for an unenchanted / unarmored player, a no-op fold downstream.
+    const float epf = enchantmentProtectionFactor(player.equipment, source);
     bool armorApplied = false;
     float preArmorDamage = 0.0F;
     if (!player.vitals.hurt(amount, source, causedByLivingNonPlayer, armor.armor,
-                            armor.toughness, &armorApplied, &preArmorDamage)) {
+                            armor.toughness, &armorApplied, &preArmorDamage, epf)) {
         return false;
     }
     // LivingEntity#applyArmorToDamage calls damageArmor() unconditionally

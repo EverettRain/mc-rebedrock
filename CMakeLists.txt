@@ -2205,6 +2205,15 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_effect_engine_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME effect_engine COMMAND mc_rebedrock_effect_engine_test)
 
+    # EQ-4: armor enchantment effects — Protection family EPF + Thorns, driven
+    # through the DDC-2 effect engine and folded into the Damage pipeline.
+    add_executable(mc_rebedrock_armor_enchantment_test
+        tests/armor_enchantment_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_armor_enchantment_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_armor_enchantment_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME armor_enchantment COMMAND mc_rebedrock_armor_enchantment_test)
+
     # DDC-3: legacy enchantment content migration — golden compare (constexpr
     # kEnchantmentTable <-> JE-schema datapack JSON, zero drift) + the shipped
     # internal datapack (resources/data/rebedrock/enchantment/*.json) loaded

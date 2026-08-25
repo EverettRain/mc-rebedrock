@@ -265,7 +265,14 @@ class GameSession final {
         // the orb scatter and enchantment seeds the same way every per-system
         // stream here is — one system's draw sequence never perturbs another's.
         projectileRandom_.setSeed(seed ^ 0x9E6B4A2D7F103C58ULL);
+        // EQ-4: Thorns' own stream, salted differently again so it is independent
+        // of the projectile / orb / enchantment streams above.
+        thornsRandom_.setSeed(seed ^ 0x27D4EB2F165667C5ULL);
     }
+    // EQ-4: the deterministic stream Thorns' random_chance draw and reflected-
+    // damage roll take, so a test can seed it and replay an exact trigger
+    // sequence (the "same seed ⇒ same Thorns sequence" acceptance assertion).
+    [[nodiscard]] world::gen::JavaRandom& thornsRandom() { return thornsRandom_; }
     // XP-1's spawnExperienceOrbs(pos, amount): denomination-splits `amount` into
     // vanilla's fixed orb values and places each one, drawing every scatter
     // velocity from this session's own JavaRandom stream — never the wall
@@ -815,6 +822,13 @@ class GameSession final {
     // RW-0: the projectile pool's own stream (reserved for RW-1+'s crit/scatter
     // draws), the same independent-per-system shape as experienceOrbRandom_.
     world::gen::JavaRandom projectileRandom_;
+    // EQ-4: Thorns' own deterministic stream — the random_chance draw (0.15*level)
+    // and the reflected-damage roll (1..5) the DDC-2 effect engine takes off it,
+    // salted independently off the world seed the same way every per-system stream
+    // here is, so the Thorns trigger/damage sequence is replay-deterministic and
+    // never perturbs (or is perturbed by) another system's draws. Never a wall
+    // clock — the RNG rule EQ-DESIGN §3 carries.
+    world::gen::JavaRandom thornsRandom_;
     // The authoritative interaction, run at the end of each tick.
     PlayerInteraction playerInteraction_;
     GameCommandQueue commandQueue_;

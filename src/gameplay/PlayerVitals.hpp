@@ -90,9 +90,18 @@ class PlayerVitals final {
     // worn); `preArmorDamage`, if given, receives the damage the stage was
     // handed (post-difficulty, pre-reduction). The caller sums both to decide
     // whether, and by how much, worn armor spends durability.
+    //
+    // EQ-4: `enchantProtectionFactor` is the summed enchantment protection
+    // factor (EPF) the defender's worn armor contributes against this hit,
+    // already gated per damage type by the caller through the DDC-2 effect
+    // engine (GameSession::hurtPlayer calls enchantmentProtectionFactor).
+    // Appended, defaulted to zero, so every internal caller (fall, drowning,
+    // fire, starvation, effect ticks) leaves it at zero — an unenchanted
+    // reduction, which is correct — and only the armor-aware player hit path
+    // supplies a real value.
     bool hurt(float amount, DamageType cause, bool causedByLivingNonPlayer = false,
              float armor = 0.0F, float armorToughness = 0.0F, bool* armorApplied = nullptr,
-             float* preArmorDamage = nullptr);
+             float* preArmorDamage = nullptr, float enchantProtectionFactor = 0.0F);
     // Entity#setSecondsOnFire: lights the player for `seconds` of burning, the
     // single entry every ignition source routes through. Vanilla only ever
     // lengthens a burn, so this takes the max; a dead player is not relit. The

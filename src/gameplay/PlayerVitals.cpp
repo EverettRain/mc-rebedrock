@@ -46,7 +46,7 @@ void PlayerVitals::heal(float amount) {
 
 bool PlayerVitals::hurt(float amount, DamageType cause, bool causedByLivingNonPlayer,
                         float armor, float armorToughness, bool* armorApplied,
-                        float* preArmorDamage) {
+                        float* preArmorDamage, float enchantProtectionFactor) {
     // Guards, the invulnerability window and the difficulty scaling all live in
     // the shared pipeline, so the player and every mob resolve a hit the same
     // way — and the difficulty is applied once, here, rather than by whichever
@@ -58,9 +58,13 @@ bool PlayerVitals::hurt(float amount, DamageType cause, bool causedByLivingNonPl
     // pure transform — the same "caller gathers, pipeline transforms" split the
     // armor field uses. A player with neither effect passes level 0 / not-immune
     // and the stages are no-ops.
+    // EQ-4: the enchantment protection fold reads the EPF the caller summed
+    // through the DDC-2 effect engine (per-type gated already), the same
+    // "caller gathers, pipeline transforms" split armor / resistance use.
     const DamageOutcome outcome = applyDamage(
         damage_, DamageContext{cause, amount, difficulty_, causedByLivingNonPlayer, armor,
-                               armorToughness, resistanceLevel(effects_), isFireImmune(effects_)});
+                               armorToughness, resistanceLevel(effects_), isFireImmune(effects_),
+                               enchantProtectionFactor});
     if (armorApplied != nullptr) {
         *armorApplied = outcome.armorApplied;
     }

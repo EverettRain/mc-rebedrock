@@ -117,7 +117,38 @@ struct DamageContext final {
     // `source.is(IS_FIRE) && hasEffect(FIRE_RESISTANCE)` short-circuit in
     // LivingEntity#hurt (before the invulnerability window).
     bool fireImmune = false;
+    // EQ-4: the total enchantment protection factor (EPF) the defender's worn
+    // armor contributes against THIS hit — already summed across the four armor
+    // pieces and gated per damage type (Fire Protection counts only on an IsFire
+    // hit, Feather Falling only on a fall, …) by the caller through the DDC-2
+    // effect engine (enchantmentProtectionFactor in ArmorEnchantment.hpp). Zero
+    // for an unenchanted or unarmored defender, which makes the stage below a
+    // no-op. The pipeline clamps and folds it exactly like vanilla's
+    // DamageUtil.getInflictedDamage; the "caller gathers, pipeline transforms"
+    // split EQ-2/EQ-3 use. Appended, defaulted, so every existing aggregate-init
+    // call site keeps compiling.
+    float enchantProtectionFactor = 0.0F;
 };
+
+// DamageUtil#getDamageLeft's sibling, DamageUtil#getInflictedDamage
+// (1.16.1/26.1), transcribed symbol-for-symbol:
+//
+//   float f = MathHelper.clamp(protection, 0.0F, 20.0F);
+//   return damageDealt * (1.0F - f / 25.0F);
+//
+// The summed EPF is clamped to [0,20] before the fold, so no amount of stacked
+// Protection removes more than 80% of a hit — the vanilla ceiling. A pure
+// function on the two numbers the formula needs, the same shape damageAfterArmor
+// / damageAfterResistance use for their stages. The EPF itself is produced by
+// the DDC-2 effect engine (ArmorEnchantment.hpp), not a hardcoded per-enchant
+// branch — this is only the final clamp-and-fold arithmetic.
+[[nodiscard]] constexpr float damageAfterEnchantmentProtection(float damage,
+                                                               float protectionFactor) {
+    const float clamped = protectionFactor < 0.0F
+                              ? 0.0F
+                              : (protectionFactor > 20.0F ? 20.0F : protectionFactor);
+    return damage * (1.0F - clamped / 25.0F);
+}
 
 // DamageUtil#getDamageLeft (1.16.1, `net.minecraft.entity.DamageUtil`),
 // transcribed symbol-for-symbol rather than reconstructed from the wiki:
@@ -233,12 +264,24 @@ inline DamageOutcome applyDamage(DamageState& state, const DamageContext& contex
     // level, unless the type opts out of effects entirely (BypassesEffects, e.g.
     // starving) or specifically out of Resistance (BypassesResistance, e.g. the
     // void and /kill). Vanilla checks BypassesEffects first, then Resistance
-    // alone; either tag leaves the damage untouched here. Enchantment protection
-    // (the second half of getDamageAfterMagicAbsorb) is EQ-4 and stays absent.
+    // alone; either tag leaves the damage untouched here.
     const bool bypassesEffects = hasDamageTag(context.type, DamageTag::BypassesEffects);
     const bool bypassesResistance = hasDamageTag(context.type, DamageTag::BypassesResistance);
     if (!bypassesEffects && !bypassesResistance) {
         applied = damageAfterResistance(applied, context.resistanceLevel);
+    }
+    // EQ-4: the second half of getDamageAfterMagicAbsorb — the armor enchantment
+    // protection fold (DamageUtil.getInflictedDamage). Vanilla applies it
+    // whenever the source is not BypassesEffects; the per-type gating (Fire
+    // Protection only on fire, Feather Falling only on a fall) already happened
+    // when the caller summed the EPF through the DDC-2 effect engine, so an
+    // inapplicable enchantment contributed zero and this fold is a no-op for it.
+    // BypassesResistance does NOT skip enchantment protection (vanilla only
+    // gates it on BypassesEffects — the void carries both, so it is covered
+    // either way, but a /kill-style BypassesResistance-only source would still
+    // be reduced by Protection in vanilla, so the guard is BypassesEffects only).
+    if (!bypassesEffects && context.enchantProtectionFactor > 0.0F) {
+        applied = damageAfterEnchantmentProtection(applied, context.enchantProtectionFactor);
     }
 
     // --- absorption ---
