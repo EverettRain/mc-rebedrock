@@ -2,12 +2,15 @@
 
 #include "core/CreativeCategory.hpp"
 #include "core/Identifier.hpp"
+#include "gameplay/DyeColor.hpp"
 #include "gameplay/EquipmentSlot.hpp"
 #include "gameplay/ItemUse.hpp"
 #include "world/Block.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -723,6 +726,65 @@ inline constexpr Item Bow = Item::of("bow")
                                 .single()
                                 .tool(ToolType::Bow, ToolTier::None);
 
+// DYE-1: the 16 DyeItems (1.16.1 Items.WHITE_DYE .. Items.BLACK_DYE). Each is an
+// ordinary stackable material whose id is `<colour>_dye` — the vanilla registry
+// name, so a give command resolving `minecraft:light_blue_dye` still works. A
+// dye item's texture is item/<colour>_dye.png (Item::of's default), matching the
+// vanilla asset layout; the renderer tints nothing (unlike a spawn egg) — each
+// dye already has its own coloured sprite. The colour a dye carries is not
+// stored on the Item; it is recovered from the item's position in kDyeItems
+// below (position == DyeColor id, white=0 .. black=15), the same "identity is
+// the array index" DOD rule DyeColor itself uses.
+//
+// The ids are string literals (static storage) rather than generated into a
+// buffer: an Item stores its id as a string_view, so the backing characters must
+// outlive every copy of the Item — a per-item buffer a copied aggregate points
+// back into is not constexpr-valid. The literals are kept in DyeColor id order
+// so their listing order below matches kDyeColors' names one-to-one.
+inline constexpr Item WhiteDye = Item::of("white_dye").category(CreativeCategory::Materials);
+inline constexpr Item OrangeDye = Item::of("orange_dye").category(CreativeCategory::Materials);
+inline constexpr Item MagentaDye = Item::of("magenta_dye").category(CreativeCategory::Materials);
+inline constexpr Item LightBlueDye =
+    Item::of("light_blue_dye").category(CreativeCategory::Materials);
+inline constexpr Item YellowDye = Item::of("yellow_dye").category(CreativeCategory::Materials);
+inline constexpr Item LimeDye = Item::of("lime_dye").category(CreativeCategory::Materials);
+inline constexpr Item PinkDye = Item::of("pink_dye").category(CreativeCategory::Materials);
+inline constexpr Item GrayDye = Item::of("gray_dye").category(CreativeCategory::Materials);
+inline constexpr Item LightGrayDye =
+    Item::of("light_gray_dye").category(CreativeCategory::Materials);
+inline constexpr Item CyanDye = Item::of("cyan_dye").category(CreativeCategory::Materials);
+inline constexpr Item PurpleDye = Item::of("purple_dye").category(CreativeCategory::Materials);
+inline constexpr Item BlueDye = Item::of("blue_dye").category(CreativeCategory::Materials);
+inline constexpr Item BrownDye = Item::of("brown_dye").category(CreativeCategory::Materials);
+inline constexpr Item GreenDye = Item::of("green_dye").category(CreativeCategory::Materials);
+inline constexpr Item RedDye = Item::of("red_dye").category(CreativeCategory::Materials);
+inline constexpr Item BlackDye = Item::of("black_dye").category(CreativeCategory::Materials);
+
+// Pointers to each dye Item, indexed by DyeColor id — the "position == colour"
+// lookup both directions of the mapping (dyeItemFor / dyeColorForItem) use. The
+// order here must match the DyeColor enum exactly (a mismatch would dye a sheep
+// the wrong colour); the static_assert below guards it against the id text.
+inline constexpr std::array<const Item*, gameplay::kDyeColorCount> kDyeItems{
+    &WhiteDye,  &OrangeDye, &MagentaDye,  &LightBlueDye, &YellowDye, &LimeDye,
+    &PinkDye,   &GrayDye,   &LightGrayDye, &CyanDye,     &PurpleDye, &BlueDye,
+    &BrownDye,  &GreenDye,  &RedDye,       &BlackDye,
+};
+
+// The dye at each index must be `<colour>_dye` for that index's DyeColor name,
+// so position-as-colour is honest — a reordering that put orange_dye at the
+// white slot is a compile error, not a silently mis-dyed sheep.
+static_assert([] {
+    for (std::size_t index = 0; index < gameplay::kDyeColorCount; ++index) {
+        const std::string_view id = kDyeItems[index]->identifier.path;
+        const std::string_view name = gameplay::kDyeColors[index].name;
+        if (id.size() != name.size() + 4U ||
+            id.substr(0, name.size()) != name || id.substr(name.size()) != "_dye") {
+            return false;
+        }
+    }
+    return true;
+}(), "kDyeItems must list <colour>_dye in DyeColor id order");
+
 // Armor: 5 materials (leather/chainmail/iron/gold/diamond) x 4 slots
 // (head/chest/legs/feet), Java 1.16.1 ArmorItem. Each is single-stacking,
 // carries its material + slot (armorAttributes below derives protection,
@@ -833,7 +895,7 @@ inline constexpr Item DiamondBoots =
 // their constructors need entity headers that sit above us in the include graph.
 // The order sets both the creative-catalog order within each tab and the item
 // texture-array layout the renderer appends. Grouped materials / food / tools.
-inline constexpr std::array<const Item*, 79> kItemRegistry{
+inline constexpr std::array<const Item*, 95> kItemRegistry{
     &items::Bucket,     &items::WaterBucket, &items::LavaBucket, &items::MilkBucket,
     &items::Coal,
     &items::IronIngot,
@@ -868,12 +930,20 @@ inline constexpr std::array<const Item*, 79> kItemRegistry{
     &items::GoldBoots,
     &items::DiamondHelmet,   &items::DiamondChestplate, &items::DiamondLeggings,
     &items::DiamondBoots,
+    // DYE-1: the 16 dyes, in DyeColor id order (white=0 .. black=15) — the same
+    // order kDyeItems indexes them, so the creative catalog lists them in the
+    // vanilla colour sequence.
+    items::kDyeItems[0],  items::kDyeItems[1],  items::kDyeItems[2],  items::kDyeItems[3],
+    items::kDyeItems[4],  items::kDyeItems[5],  items::kDyeItems[6],  items::kDyeItems[7],
+    items::kDyeItems[8],  items::kDyeItems[9],  items::kDyeItems[10], items::kDyeItems[11],
+    items::kDyeItems[12], items::kDyeItems[13], items::kDyeItems[14], items::kDyeItems[15],
 };
 
 // A forgotten count bump (adding an item without growing the array, or vice
 // versa) is a compile error, not a silent truncation: 57 pre-EQ-0 items + the
-// 20 armor items EQ-0 added + the 2 (arrow, bow) RW-1 adds here.
-static_assert(kItemRegistry.size() == 57U + 20U + 2U,
+// 20 armor items EQ-0 added + the 2 (arrow, bow) RW-1 adds + the 16 dyes DYE-1
+// adds here.
+static_assert(kItemRegistry.size() == 57U + 20U + 2U + 16U,
               "kItemRegistry size must track every entry listed above — bump "
               "this alongside the array when adding or removing items");
 
@@ -1147,6 +1217,29 @@ inline constexpr float kBowMinimumPullProgress = 0.1F;
 // (PlayerInteraction's eat/drink gate) — food to eat, or milk to drink.
 [[nodiscard]] constexpr bool startsUseTimeline(const Item* item) {
     return isFood(item) || isDrinkable(item);
+}
+
+// DYE-1: the DyeItem for a colour — DyeItem's own registry entry vanilla looks
+// up as `DyeItem.byColor(color)`. Position == colour id (items::kDyeItems), so
+// this is a bare array index, no scan.
+[[nodiscard]] constexpr const Item* dyeItemFor(DyeColor color) {
+    return items::kDyeItems[dyeColorId(color)];
+}
+
+// DYE-1: the colour a held item dyes with, or empty when the item is not one of
+// the 16 dyes — the `item instanceof DyeItem ? ((DyeItem)item).getColor() : —`
+// test SheepEntity#mobInteract runs. A linear match over 16 stable pointers; the
+// interaction path is cold (one right-click), so a table lookup is not warranted.
+[[nodiscard]] constexpr std::optional<DyeColor> dyeColorForItem(const Item* item) {
+    if (item == nullptr) {
+        return std::nullopt;
+    }
+    for (std::size_t index = 0; index < kDyeColorCount; ++index) {
+        if (items::kDyeItems[index] == item) {
+            return static_cast<DyeColor>(index);
+        }
+    }
+    return std::nullopt;
 }
 
 // The texture-array layer the renderer assigned an item's icon. gameplay only

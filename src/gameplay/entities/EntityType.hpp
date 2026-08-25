@@ -263,6 +263,13 @@ enum class EntityBehavior : std::uint16_t {
     // because no arthropod has been registered, not because the mechanic is
     // unimplemented) and so a future spider/silverfish needs only this one flag.
     Arthropod = 1U << 5U,
+    // DYE-1: the "a dye right-clicked on this creature recolours it" family.
+    // Vanilla's dye-on-mob branch lives on SheepEntity#mobInteract specifically
+    // (it is the only DyeableItem-recolourable mob in 1.16.1) — this bit
+    // reproduces that species-narrow gate without a `species == sheep` check at
+    // the interaction call site, exactly as Undead/Arthropod do for their own
+    // mechanics. A creature without this bit ignores a dye click entirely.
+    Dyeable = 1U << 6U,
 };
 
 [[nodiscard]] constexpr std::uint16_t operator|(EntityBehavior a, EntityBehavior b) {
@@ -332,6 +339,10 @@ class EntityType final {
     // consumers — so tagging a mob undead once serves both.
     [[nodiscard]] bool isUndead() const { return hasBehavior(EntityBehavior::Undead); }
     [[nodiscard]] bool isArthropod() const { return hasBehavior(EntityBehavior::Arthropod); }
+    // DYE-1: SheepEntity#mobInteract's dye-recolour gate — see
+    // EntityBehavior::Dyeable. The interaction call site reads this one bit off
+    // the target's type instead of naming the sheep species.
+    [[nodiscard]] bool dyeable() const { return hasBehavior(EntityBehavior::Dyeable); }
     // AgeableMob breeding parameters (EM-3). `breedable()` is the one-flag test
     // the AI/tick reads before installing or running any breeding logic.
     [[nodiscard]] const BreedingProfile& breeding() const { return breeding_; }

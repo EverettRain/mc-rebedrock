@@ -449,6 +449,15 @@ class EntitySystem final {
     // ③'s contract: shearing an already-bald sheep must yield nothing, and the
     // caller (PlayerInteraction) gates the wool drop on this return value.
     bool shear(std::uint64_t entityId);
+    // DYE-1: SheepEntity#mobInteract's DyeItem branch — recolours a dyeable
+    // creature. Returns true only when the colour actually changed (vanilla's
+    // `if (this.getColor() != dyeColor)` gate, so a redundant same-colour dye
+    // spends no item), false for an unknown/dead creature, a species with no
+    // dye semantics (!type->dyeable()), or a no-op same-colour dye. The item
+    // check (is the held stack a DyeItem, which colour) and its consumption
+    // stay with the caller — this owns only the colour state, the same
+    // division shear()/setInLove() keep.
+    bool dye(std::uint64_t entityId, DyeColor color);
     // AR-A2: the other half of EatGrassGoal's relay — GameSession calls this
     // once its WorldMutationService write actually lands, so a sheep whose
     // grass turned out to be already gone (races against another sheep, a

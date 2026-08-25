@@ -1075,6 +1075,30 @@ void PlayerInteraction::performUseOnEntity(GameSession& session, world::World&,
         return;
     }
 
+    // DYE-1: SheepEntity#mobInteract's DyeItem branch — a dye right-clicked on a
+    // dyeable creature recolours it. Runs after shears (vanilla checks shears
+    // first) and before the milk/feed branches below; a dye stack is never a
+    // milk bucket or a species' tempt item, so the branches never actually
+    // compete, but this mirrors vanilla's dispatch order. worldEntities().dye
+    // owns the gate (dyeable species, colour actually changing) and returns
+    // whether the colour changed; only then is the arm swung and — survival
+    // only — one dye spent. A same-colour dye or a non-dyeable target no-ops
+    // (nothing swung, nothing consumed), which is sabotage anchor ②'s contract.
+    if (const auto dyeColor = dyeColorForItem(selectedStack.item)) {
+        if (session.worldEntities().dye(use.entityId, *dyeColor)) {
+            session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
+            // DyeItem: `if (!player.abilities.creativeMode) itemStack.decrement(1)`
+            // — creative keeps its dye, survival spends exactly one. Sabotage
+            // anchor ③ is this consume gate.
+            if (session.gameMode() == GameMode::Survival) {
+                static_cast<void>(session.inventory().consumeSelected());
+            }
+        }
+        // A dye click never falls through to milking/feeding, whether or not the
+        // colour changed — the held item is a dye, not a bucket or tempt item.
+        return;
+    }
+
     // AbstractCow#mobInteract (26.1): an empty bucket right-clicked on a
     // non-baby cow returns a milk bucket. Gated on the target's species
     // (CowEntity::type(), compared by the EntityType's stable address, the

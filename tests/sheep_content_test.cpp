@@ -532,6 +532,123 @@ void testDeterministicEatGrass() {
     REQUIRE(std::fabs(firstPosition.z - secondPosition.z) < 0.0001F);
 }
 
+// --- DYE-1: dyeing ---
+
+// All 16 dyes are registered as `<colour>_dye` and the colour<->item mapping
+// round-trips both directions (dyeItemFor / dyeColorForItem) for every colour.
+void testSixteenDyesRegisteredAndMapped() {
+    for (std::size_t index = 0; index < gameplay::kDyeColorCount; ++index) {
+        const auto color = static_cast<gameplay::DyeColor>(index);
+        const gameplay::Item* item = gameplay::dyeItemFor(color);
+        REQUIRE(item != nullptr);
+        // The id is the vanilla `<colour>_dye` registry name.
+        const std::string expectedPath = std::string{gameplay::dyeColorName(color)} + "_dye";
+        REQUIRE(item->identifier.path == expectedPath);
+        REQUIRE(item->vanillaAlias.path == expectedPath);
+        // The reverse mapping recovers the same colour.
+        const auto recovered = gameplay::dyeColorForItem(item);
+        REQUIRE(recovered.has_value());
+        REQUIRE(*recovered == color);
+    }
+    // A non-dye item maps to no colour.
+    REQUIRE(!gameplay::dyeColorForItem(&gameplay::items::Wheat).has_value());
+    REQUIRE(!gameplay::dyeColorForItem(nullptr).has_value());
+}
+
+// Right-clicking a sheep with a dye sets its colour and (survival) spends one
+// dye. Sabotage anchor ① is the dispatch order: the dye branch must run for a
+// dye stack, not fall through to the milk/feed branches.
+void testDyeSheepSetsColourAndConsumes() {
+    TestHost host;
+    gameplay::GameSession session;
+    world::World world;
+    buildStoneFloor(world);
+    session.setGameMode(gameplay::GameMode::Survival);
+    session.teleportPlayer(gameplay::kPrimaryPlayerId, {5.5F, 2.0F, 5.5F});
+
+    const std::uint64_t sheepId = spawnSheep(session, {5.5F, 2.0F, 6.0F});
+    REQUIRE(session.worldEntities().byId(sheepId)->color == gameplay::DyeColor::White);
+
+    session.inventory().mutableSlot(0) = {world::Block::Air, 3U,
+                                          gameplay::dyeItemFor(gameplay::DyeColor::Red)};
+    session.inventory().selectHotbar(0);
+
+    useOnEntity(session, world, host, sheepId);
+
+    REQUIRE(session.worldEntities().byId(sheepId)->color == gameplay::DyeColor::Red);
+    // Survival spent exactly one dye (3 -> 2).
+    REQUIRE(session.inventory().selectedStack().count == 2U);
+}
+
+// Creative dyes the sheep but keeps the dye (DyeItem: only survival decrements).
+void testDyeSheepCreativeKeepsDye() {
+    TestHost host;
+    gameplay::GameSession session;
+    world::World world;
+    buildStoneFloor(world);
+    session.setGameMode(gameplay::GameMode::Creative);
+    session.teleportPlayer(gameplay::kPrimaryPlayerId, {5.5F, 2.0F, 5.5F});
+
+    const std::uint64_t sheepId = spawnSheep(session, {5.5F, 2.0F, 6.0F});
+    session.inventory().mutableSlot(0) = {world::Block::Air, 1U,
+                                          gameplay::dyeItemFor(gameplay::DyeColor::Blue)};
+    session.inventory().selectHotbar(0);
+
+    useOnEntity(session, world, host, sheepId);
+
+    REQUIRE(session.worldEntities().byId(sheepId)->color == gameplay::DyeColor::Blue);
+    REQUIRE(session.inventory().selectedStack().count == 1U);  // creative keeps it
+}
+
+// Sabotage anchor ② / ③: dyeing a sheep the colour it already is is a no-op —
+// no colour change and, crucially, no dye consumed (vanilla only decrements
+// inside the `getColor() != dyeColor` branch).
+void testDyeSameColourIsNoOp() {
+    TestHost host;
+    gameplay::GameSession session;
+    world::World world;
+    buildStoneFloor(world);
+    session.setGameMode(gameplay::GameMode::Survival);
+    session.teleportPlayer(gameplay::kPrimaryPlayerId, {5.5F, 2.0F, 5.5F});
+
+    const std::uint64_t sheepId = spawnSheep(session, {5.5F, 2.0F, 6.0F});
+    // A freshly-spawned sheep is white; dye it white again.
+    session.inventory().mutableSlot(0) = {world::Block::Air, 2U,
+                                          gameplay::dyeItemFor(gameplay::DyeColor::White)};
+    session.inventory().selectHotbar(0);
+
+    useOnEntity(session, world, host, sheepId);
+
+    REQUIRE(session.worldEntities().byId(sheepId)->color == gameplay::DyeColor::White);
+    REQUIRE(session.inventory().selectedStack().count == 2U);  // no dye spent
+}
+
+// Dyeing a non-dyeable creature (a cow) does nothing: no colour change, no dye
+// consumed. Proves the Dyeable behaviour bit gates the interaction, not a
+// hardcoded sheep check that would recolour any mob.
+void testDyeNonDyeableCreatureIsNoOp() {
+    TestHost host;
+    gameplay::GameSession session;
+    world::World world;
+    buildStoneFloor(world);
+    session.setGameMode(gameplay::GameMode::Survival);
+    session.teleportPlayer(gameplay::kPrimaryPlayerId, {5.5F, 2.0F, 5.5F});
+
+    const auto* cowType = gameplay::entities::entityTypeRegistry().byId("cow");
+    REQUIRE(cowType != nullptr);
+    session.worldEntities().spawn({5.5F, 2.0F, 6.0F}, *cowType, 1U);
+    const std::uint64_t cowId = session.worldEntities().entities().back().id;
+
+    session.inventory().mutableSlot(0) = {world::Block::Air, 4U,
+                                          gameplay::dyeItemFor(gameplay::DyeColor::Green)};
+    session.inventory().selectHotbar(0);
+
+    useOnEntity(session, world, host, cowId);
+
+    REQUIRE(session.worldEntities().byId(cowId)->color == gameplay::DyeColor::White);  // unchanged
+    REQUIRE(session.inventory().selectedStack().count == 4U);  // no dye spent
+}
+
 } // namespace
 
 int main() {
@@ -548,5 +665,10 @@ int main() {
     testFeedingSeedsDoesNothing();
     testTemptFollowsWheat();
     testDeterministicEatGrass();
+    testSixteenDyesRegisteredAndMapped();
+    testDyeSheepSetsColourAndConsumes();
+    testDyeSheepCreativeKeepsDye();
+    testDyeSameColourIsNoOp();
+    testDyeNonDyeableCreatureIsNoOp();
     return 0;
 }

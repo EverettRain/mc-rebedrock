@@ -206,7 +206,12 @@ const std::array<SpeciesDef, 3> kManifest{{
         &rollSheepLoot,
         /*breeding=*/BreedingProfile{/*breedable=*/true,
                                      /*temptItem=*/ItemStack{world::Block::Air, 1U, &items::Wheat},
-                                     /*babyScale=*/0.5F}},
+                                     /*babyScale=*/0.5F},
+        // DYE-1: EntityBehavior::Dyeable — the sheep is the one recolourable mob
+        // (SheepEntity#mobInteract's DyeItem branch). The dye interaction reads
+        // this bit off the type, so this row is the whole "sheep can be dyed"
+        // wiring — no species check anywhere else.
+        /*behaviorFlags=*/static_cast<std::uint16_t>(EntityBehavior::Dyeable)},
     // Husk (26.1): a desert zombie — 20 health, follow range 35, MOVEMENT_SPEED
     // 0.23, attack 3, box 0.6 x 1.95, egg tint 0x797061 / 0x66907B. Melee like
     // the zombie; AR-M1 wires its loot to the same 0-2 rotten flesh pool.

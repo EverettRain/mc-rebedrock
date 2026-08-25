@@ -827,6 +827,24 @@ bool EntitySystem::shear(std::uint64_t entityId) {
     return true;
 }
 
+bool EntitySystem::dye(std::uint64_t entityId, DyeColor color) {
+    const auto found = idToIndex_.find(entityId);
+    if (found == idToIndex_.end()) {
+        return false;
+    }
+    SimpleEntity& entity = entities_[found->second];
+    // SheepEntity#mobInteract's DyeItem gate: a live, dyeable creature whose
+    // colour would actually change. A dead creature, a species with no dye
+    // semantics, or a redundant same-colour dye all no-op (the caller then
+    // spends no item — vanilla only decrements the stack inside the
+    // colour-changed branch).
+    if (entity.dead() || !entity.type->dyeable() || entity.color == color) {
+        return false;
+    }
+    entity.color = color;
+    return true;
+}
+
 bool EntitySystem::clearSheared(std::uint64_t entityId) {
     const auto found = idToIndex_.find(entityId);
     if (found == idToIndex_.end()) {
