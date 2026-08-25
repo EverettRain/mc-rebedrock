@@ -4,6 +4,7 @@
 #include "core/Json.hpp"
 #include "core/VersionManifest.hpp"
 #include "core/VersionManifestJson.hpp"
+#include "gameplay/DyeColor.hpp"
 #include "gameplay/Enchantment.hpp"
 #include "world/BlockState.hpp"
 #include "world/DayNightCycle.hpp"
@@ -374,6 +375,11 @@ int main() {
     save.entities[0].age = -12000;   // pig: baby, halfway grown
     save.entities[1].age = 4000;     // zombie: breed cooldown
     save.entities[1].loveTicks = 300;
+    // DYE-0: the dye colour (entity block/region version 6/7). The pig carries a
+    // non-default colour (magenta = 2); the zombie is left at the default white
+    // (0) to prove the default round-trips as itself, not just non-defaults.
+    save.entities[0].color =
+        gameplay::dyeColorId(gameplay::DyeColor::Magenta);
     repository.save(save);
     const auto listed = repository.list();
     assert(listed.size() == 1U);
@@ -580,6 +586,10 @@ int main() {
     assert(pig->loveTicks == 0);
     assert(zombie->age == 4000);
     assert(zombie->loveTicks == 300);
+    // DYE-0: the dye colour survived. The pig kept its magenta; the zombie kept
+    // the default white (0), proving the default is a real round-trip value.
+    assert(pig->color == gameplay::dyeColorId(gameplay::DyeColor::Magenta));
+    assert(zombie->color == gameplay::dyeColorId(gameplay::DyeColor::White));
 
     // Blocks travel as namespaced identifiers now, so the payload literally
     // contains them and a renumbered enum cannot silently reinterpret an old
@@ -1965,6 +1975,11 @@ int main() {
         assert(entities.front().rngState == static_cast<std::uint64_t>(kLegacyRng));
         assert((entities.front().rngState >> 32U) == 0U);
         assert(entities.front().species == "cow");
+        // DYE-0 backward compatibility: a version-4 region predates the colour
+        // byte entirely, so the loaded creature must default to white (id 0),
+        // exactly like a naturally-spawned sheep — the old-save compat contract.
+        assert(entities.front().color ==
+               gameplay::dyeColorId(gameplay::DyeColor::White));
 
         // Re-saving through this build rewrites the chunk at the current version,
         // and the (now u64) rngState round-trips unchanged.
@@ -1972,6 +1987,68 @@ int main() {
         const auto reloaded = repository.loadChunkEntities(id, 2, 3);
         assert(reloaded.size() == 1U);
         assert(reloaded.front().rngState == static_cast<std::uint64_t>(kLegacyRng));
+        // The migrated-to-default colour survives a re-save at the current version.
+        assert(reloaded.front().color ==
+               gameplay::dyeColorId(gameplay::DyeColor::White));
+    }
+
+    // --- DYE-0: all 16 dye colours round-trip through the region chunk record.
+    // One entity per colour, saved and reloaded; every colour byte must come
+    // back exactly as written, proving the dense id survives the palette-encoded
+    // record end to end (not just the two colours the main save test carries). ---
+    {
+        auto game = repository.create("DyeAll16", 77ULL);
+        const auto id = game.summary.identifier;
+        repository.save(game);
+        std::vector<persistence::PersistentEntity> herd;
+        for (std::uint8_t colorId = 0; colorId < gameplay::kDyeColorCount; ++colorId) {
+            persistence::PersistentEntity sheep;
+            sheep.species = "sheep";
+            // Keep every creature inside chunk (2,3) so loadChunkEntities finds it.
+            sheep.x = 2.0F * 16.0F + 1.0F + static_cast<float>(colorId) * 0.1F;
+            sheep.y = 64.0F;
+            sheep.z = 3.0F * 16.0F + 1.0F;
+            sheep.health = 8.0F;
+            sheep.color = colorId;
+            herd.push_back(sheep);
+        }
+        repository.saveChunk(id, 2, 3, {}, herd, /*populated=*/true);
+        const auto loaded = repository.loadChunkEntities(id, 2, 3);
+        assert(loaded.size() == gameplay::kDyeColorCount);
+        // Match reloaded creatures to their written colour by x (colour order is
+        // not guaranteed preserved, so key off the position we spread them along).
+        for (std::uint8_t colorId = 0; colorId < gameplay::kDyeColorCount; ++colorId) {
+            const float expectedX =
+                2.0F * 16.0F + 1.0F + static_cast<float>(colorId) * 0.1F;
+            bool found = false;
+            for (const auto& sheep : loaded) {
+                if (std::abs(sheep.x - expectedX) < 0.001F) {
+                    assert(sheep.color == colorId);
+                    // The byte is a valid colour that names itself back to its id.
+                    assert(gameplay::isValidDyeColorId(sheep.color));
+                    assert(gameplay::dyeColorId(
+                               gameplay::dyeColorFromId(sheep.color)) == colorId);
+                    found = true;
+                    break;
+                }
+            }
+            assert(found);
+        }
+    }
+
+    // --- DYE-0: a corrupt colour byte (outside 0..15) clamps to the default
+    // white on the live side, so a bad record can never leave an entity in an
+    // invalid colour. This is the dyeColorFromId contract the restore path uses. ---
+    {
+        assert(!gameplay::isValidDyeColorId(16U));
+        assert(!gameplay::isValidDyeColorId(200U));
+        assert(gameplay::dyeColorFromId(16U) == gameplay::DyeColor::White);
+        assert(gameplay::dyeColorFromId(255U) == gameplay::DyeColor::White);
+        // A valid byte is honoured unchanged, ids dense and stable.
+        assert(gameplay::dyeColorFromId(15U) == gameplay::DyeColor::Black);
+        assert(gameplay::dyeColorName(gameplay::DyeColor::LightBlue) == "light_blue");
+        assert(gameplay::dyeColorFromName("light_blue") == gameplay::DyeColor::LightBlue);
+        assert(!gameplay::dyeColorFromName("not_a_colour").has_value());
     }
 
     return 0;

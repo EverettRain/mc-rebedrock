@@ -58,6 +58,8 @@ constexpr int kSpawnChunkRadius = 4;
     }
     record.age = entity.age;
     record.loveTicks = entity.loveTicks;
+    // DYE-0: the dye colour as its dense id (white=0..black=15).
+    record.color = gameplay::dyeColorId(entity.color);
     return record;
 }
 
@@ -802,7 +804,8 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
                                              {record.vx, record.vy, record.vz}, record.health,
                                              record.angerTicks, record.ageTicks, record.rngState,
                                              record.fireTicks, toActiveEffects(record.effects),
-                                             record.age, record.loveTicks);
+                                             record.age, record.loveTicks,
+                                             gameplay::dyeColorFromId(record.color));
     }
     // Format 16: dropped items and blocks mid-fall. Before it, everything a
     // player had thrown or mined but not picked up vanished on reload.
@@ -1323,7 +1326,8 @@ void GameRuntime::restoreLoadedChunk(world::ChunkPosition position) {
                 {record.x, record.y, record.z}, type, record.yaw,
                 {record.vx, record.vy, record.vz}, record.health, record.angerTicks,
                 record.ageTicks, record.rngState, record.fireTicks,
-                toActiveEffects(record.effects), record.age, record.loveTicks);
+                toActiveEffects(record.effects), record.age, record.loveTicks,
+                gameplay::dyeColorFromId(record.color));
         }
         // A chunk this session unloaded already had (or explicitly did not
         // have) its generation-time pass long before this unload — mark it so

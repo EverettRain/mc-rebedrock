@@ -455,7 +455,8 @@ std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityTy
                                     float yaw, glm::vec3 velocity, float health,
                                     int angerTicks, unsigned int ageTicks,
                                     std::uint64_t rngState, int fireTicks,
-                                    const ActiveEffects& effects, int age, int loveTicks) {
+                                    const ActiveEffects& effects, int age, int loveTicks,
+                                    DyeColor color) {
     SimpleEntity entity;
     entity.type = &type;
     entity.id = nextEntityId_++;
@@ -479,6 +480,10 @@ std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityTy
     // a permanent baby with no way to grow up.
     entity.age = type.breedable() ? age : 0;
     entity.loveTicks = type.breedable() ? std::max(loveTicks, 0) : 0;
+    // DYE-0: the dye colour travels with the save (a dyed sheep reopens the
+    // colour it was dyed). A coloured-species field on every creature; a species
+    // with no colour semantics simply idles at the restored default white.
+    entity.color = color;
     // The species owns the max; the save's health is the current value, clamped
     // so a corrupt record cannot restore a creature over its cap.
     entity.damage.maxHealth = type.attributes().maxHealth();

@@ -75,7 +75,7 @@ struct VersionManifest final {
 inline constexpr VersionManifest kVersion{
     .id = "26.1beta1",
     .name = "26.1beta1",
-    .worldVersion = 20U,
+    .worldVersion = 21U,
     .protocolVersion = 4U,
     .packVersion = PackVersion{.resource = 1U, .data = 1U},
     .seriesId = "main",

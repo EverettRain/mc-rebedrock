@@ -69,7 +69,7 @@ constexpr std::array<std::uint8_t, 8> kMagic{'M', 'C', 'R', 'B', 'S', 'A', 'V', 
 // bumped there. The static_assert guards "bumped the format but forgot to sync
 // the manifest": the two must agree at compile time.
 constexpr std::uint32_t kFormatVersion = core::kVersion.worldVersion;
-static_assert(kFormatVersion == 20U,
+static_assert(kFormatVersion == 21U,
               "save format version must match kVersion.worldVersion; bump both together");
 constexpr std::uint32_t kFirstOwnerDrivenFormatVersion = 17U;
 constexpr std::uint32_t kOldestSupportedFormatVersion = 1U;
@@ -606,6 +606,7 @@ void readWeatherBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
 //       u8  amplifier
 //     i32 age             // version >= 4; absent (read as 0) in versions 1-3
 //     i32 loveTicks       // version >= 4
+//     u8  color           // version >= 6; absent (read as 0 = white) in versions 1-5
 //
 // Species are palette-encoded the same way blocks/items are, so a species that
 // is removed in a future build skips cleanly on load (the unknown name becomes
@@ -618,12 +619,13 @@ void readWeatherBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
 // LegacyRandomSource state. A version <5 record carries only the low 32 bits,
 // read back and zero-extended into the wide field — a valid migrated state (the
 // stored sequence changed algorithm anyway, so the exact carried value only has
-// to round-trip, not reproduce the old draws). An older region omits the newer
-// fields, which read back as their defaults, so an old world migrates without a
-// fixer.
+// to round-trip, not reproduce the old draws). Version 6 (DYE-0) appends the
+// entity's dye colour id after age/love. An older region omits the newer fields,
+// which read back as their defaults (colour 0 = white), so an old world migrates
+// without a fixer.
 constexpr std::uint32_t kEntityBlockTag =
     'E' | ('N' << 8) | ('T' << 16) | ('Y' << 24);
-constexpr std::uint16_t kEntityBlockVersion = 5U;
+constexpr std::uint16_t kEntityBlockVersion = 6U;
 
 // An entity's active MobEffects, shared by the world.dat ENTITY block and the
 // per-chunk region record (both grew effects in the same version bump). Effects
@@ -700,6 +702,7 @@ void appendEntityBlock(std::vector<std::uint8_t>& bytes,
         appendEffectList(bytes, entity.effects);  // version 3
         appendInteger(bytes, entity.age);        // version 4
         appendInteger(bytes, entity.loveTicks);  // version 4
+        appendInteger(bytes, entity.color);      // version 6 (DYE-0)
     }
     const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
     for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
@@ -780,6 +783,13 @@ void readEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
         if (blockVersion >= 4U) {
             entity.age = readInteger<std::int32_t>(payload, cursor);
             entity.loveTicks = readInteger<std::int32_t>(payload, cursor);
+        }
+        // DYE-0: the dye colour arrived in version 6; earlier records have no
+        // colour byte and default to 0 (white), matching a natural sheep. A byte
+        // outside 0..15 (a corrupt record) is clamped to white on the live side
+        // via dyeColorFromId, so nothing downstream ever sees an invalid colour.
+        if (blockVersion >= 6U) {
+            entity.color = readInteger<std::uint8_t>(payload, cursor);
         }
         // A creature saved outside the world is a corrupt record.
         if (!(entity.y >= -64.0F && entity.y <= 384.0F)) {
@@ -1958,11 +1968,13 @@ constexpr std::uint32_t kRegionChunkTag = blockTag("CCNK");
 // active MobEffects after the flags byte; version 4 appends AgeableMob age/love
 // (see the ENTITY block); version 5 appends the chunk-level `populated` byte
 // (CS-5) after the entity list; version 6 (RNG-0) widens each entity's
-// `rngState` from a u32 to a u64 (the 48-bit LegacyRandomSource state). An older
+// `rngState` from a u32 to a u64 (the 48-bit LegacyRandomSource state);
+// version 7 (DYE-0) appends each entity's dye colour id after age/love. An older
 // region omits the newer fields, which read back as their defaults, migrating
-// cleanly — version < 5 reads `populated = false`, and version < 6 reads the low
-// 32 bits of rngState and zero-extends them.
-constexpr std::uint16_t kRegionChunkVersion = 6U;
+// cleanly — version < 5 reads `populated = false`, version < 6 reads the low
+// 32 bits of rngState and zero-extends them, and version < 7 reads colour 0
+// (white).
+constexpr std::uint16_t kRegionChunkVersion = 7U;
 constexpr std::uint32_t kRegionWidth = 32U;  // chunks per region side
 
 // Floor division of a chunk coordinate by the region width, exactly like the
@@ -2234,6 +2246,7 @@ void appendRegionFile(std::vector<std::uint8_t>& bytes, const RegionData& region
             appendEffectList(bytes, entity.effects);  // version 3
             appendInteger(bytes, entity.age);        // version 4
             appendInteger(bytes, entity.loveTicks);  // version 4
+            appendInteger(bytes, entity.color);      // version 7 (DYE-0)
         }
         // CS-5: version 5. A bare marker byte, independent of the edit/entity
         // counts above it — a chunk can be `populated == true` with both lists
@@ -2371,6 +2384,12 @@ void readRegionFile(std::span<const std::uint8_t> bytes, RegionData& region) {
             if (header.version >= 4U) {
                 entity.age = readInteger<std::int32_t>(payload, cursor);
                 entity.loveTicks = readInteger<std::int32_t>(payload, cursor);
+            }
+            // DYE-0: the dye colour arrived in version 7; earlier regions have no
+            // colour byte and default to 0 (white). An out-of-range byte is
+            // clamped to white on the live side via dyeColorFromId.
+            if (header.version >= 7U) {
+                entity.color = readInteger<std::uint8_t>(payload, cursor);
             }
             // A creature saved outside the world is a corrupt record.
             if (!(entity.y >= -64.0F && entity.y <= 384.0F)) {

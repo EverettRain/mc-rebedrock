@@ -91,6 +91,13 @@ struct PersistentEntity final {
     // read both as zero, i.e. an ordinary adult with no cooldown and no love.
     std::int32_t age = 0;
     std::int32_t loveTicks = 0;
+    // DYE-0: SheepEntity#getColor, the dense DyeColor id (white=0..black=15).
+    // Added in entity block version 6 / region chunk version 7; an earlier
+    // record has no colour byte and reads back as the default 0 (white), the
+    // colour a naturally-spawned sheep carries — the old-save compatibility
+    // contract. The stored representation is the dense id, not the name string;
+    // the name only surfaces at the JC boundary.
+    std::uint8_t color = 0U;
 };
 
 // A dropped item awaiting pickup. Position and velocity are the whole physical

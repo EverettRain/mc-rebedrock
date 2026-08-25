@@ -2,6 +2,7 @@
 
 #include "gameplay/Damage.hpp"
 #include "gameplay/Difficulty.hpp"
+#include "gameplay/DyeColor.hpp"
 #include "gameplay/EntitySection.hpp"
 #include "gameplay/EnvironmentSnapshot.hpp"
 #include "gameplay/Inventory.hpp"
@@ -119,6 +120,16 @@ struct SimpleEntity final {
     // grass block. Wool colour (dye, 26.1) is deferred — every sheep this build
     // spawns/regrows is white, see rollSheepLoot's note.
     bool sheared = false;
+
+    // DYE-0: SheepEntity#getColor. The creature's dye colour, a dense DyeColor
+    // id (white=0..black=15). Only meaningful for a coloured species (the sheep
+    // this build spawns) — every other creature simply leaves it at the default
+    // white, the same "shared struct, per-species field idles at its default"
+    // shape `sheared`/`eggLayTimer` use. One byte, so it does not break the
+    // SoA/snapshot POD-ness. Unlike `sheared`, colour IS persistent state (a
+    // dyed sheep reopens the colour it was dyed), so it travels in the save
+    // record — see PersistentEntity::color.
+    DyeColor color = kDefaultDyeColor;
 
     // AR-A4: ChickenEntity#eggTime. Only meaningful for a laysEggs() species
     // (the same "shared struct, per-species field idles at its default" shape
@@ -294,7 +305,8 @@ class EntitySystem final {
     std::uint64_t restore(glm::vec3 position, const entities::EntityType& type, float yaw,
                           glm::vec3 velocity, float health, int angerTicks,
                           unsigned int ageTicks, std::uint64_t rngState, int fireTicks = 0,
-                          const ActiveEffects& effects = {}, int age = 0, int loveTicks = 0);
+                          const ActiveEffects& effects = {}, int age = 0, int loveTicks = 0,
+                          DyeColor color = kDefaultDyeColor);
 
     // Advances every creature one 20 TPS tick against the world: target/action
     // selectors, land navigation, gravity, collision, pushing and damage timers.

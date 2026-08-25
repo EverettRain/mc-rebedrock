@@ -34,7 +34,7 @@ int main() {
         return 3;
     }
     // The current build's concrete numbers, so a silent drift trips the test.
-    if (kVersion.worldVersion != 20U || kVersion.protocolVersion != 4U) {
+    if (kVersion.worldVersion != 21U || kVersion.protocolVersion != 4U) {
         return 4;
     }
     // Prefix check, not equality: the id carries the game generation ("26.1")
