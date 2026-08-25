@@ -1068,36 +1068,54 @@ EntityTickResult EntitySystem::tick(
         }
         entity.movementSpeedMultiplier = 1.0F;
 
-        // AR-M2: Zombie#isSunBurnTick / AbstractSkeleton's own copy, generalised
-        // off the type rather than duplicated per hostile class. Gate is three
-        // data reads and no species switch: MobCategory::Monster (a passive cow
-        // never reaches this branch), EntityBehavior::Undead (the family vanilla
-        // actually wires this to — a creeper or spider never burns even though
-        // both are MONSTER), and !sunImmune() (husk's own bit skips it here,
-        // which is the entire reason AR-M1/EM1 reserved the bit). "Day" is
+        // AR-M2f: LivingEntity#isInDaylight, generalised off the type rather than
+        // duplicated per hostile class. Gate is three data reads and no species
+        // switch: MobCategory::Monster (a passive cow never reaches this branch),
+        // EntityBehavior::Undead (the family vanilla wires this to via
+        // Zombie#burnsInDaylight — a creeper or spider never burns even though
+        // both are MONSTER), and !sunImmune() (husk's own bit skips it here —
+        // the SunImmune bit was introduced alongside this ignition source in
+        // AR-M2, not reserved earlier by EM1/AR-M1). "Day" is
         // Level#isDay's own definition (skyDarken < 4), read off the same
         // per-tick EnvironmentSnapshot NaturalSpawner uses so this can never
-        // disagree with the spawner about what time it is. "Sky-exposed" is
-        // directSkyLight at the head cell reading full (15) — the stored
-        // static full-sun value the sky-light engine writes for a column with
-        // nothing between it and the sky, unaffected by the tick's ambient
-        // darkness the way the *stored* rain check just below also reads it
-        // raw. Not in water reuses the exact fireFootX/Y/Z cells and isFluid
-        // test the fire tick two blocks down performs, so both checks agree on
-        // what "underwater" means for this creature. Vanilla also skips a
-        // helmeted zombie; no mob armor exists yet (AR-M2 defers it, see task
-        // report), so nothing here reads one.
+        // disagree with the spawner about what time it is.
+        //
+        // The ignition itself is vanilla's probabilistic rule verbatim, not the
+        // AR-M2 placeholder that burned on any full-sun cell: a brightness band
+        // (f > 0.5), then a per-tick roll (random.nextFloat()*30 < (f-0.4)*2),
+        // then sky visibility. The roll draws off the entity's own reproducible
+        // stream (entity.rngState, Java's LegacyRandomSource core — the same
+        // this.random.nextFloat() vanilla uses), never the wall clock, so a
+        // fixed seed reproduces the exact ignition tick sequence. `f` is the
+        // eye-cell brightness with the tick's ambient darkness applied, so rain
+        // and thunder fold straight into the gate: heavier weather lowers f
+        // below the 0.5 band and the mob simply stops catching, no separate rain
+        // branch (Entity#baseTick's rain still extinguishes an already-lit one
+        // just below). Not in water reuses the fireFootX/Y/Z cells the fire tick
+        // performs, so both checks agree on what "underwater" means. Vanilla
+        // also skips a helmeted zombie; no mob armor exists yet (EQ-4 defers it),
+        // so nothing here reads one.
         if (!entity.damage.dead() && entity.type->category() == entities::MobCategory::Monster &&
             entity.type->undead() && !entity.type->sunImmune() &&
             environment.ambientDarkness < 4) {
+            const int footY = floorToInt(entity.position.y);
             const int headX = floorToInt(entity.position.x);
-            const int headY = floorToInt(entity.position.y) + 1;
+            const int headY = footY + 1;
             const int headZ = floorToInt(entity.position.z);
-            const bool skyExposed = world.directSkyLight(headX, headY, headZ) >= 15U;
-            const bool submerged =
-                world::isFluid(world.block(headX, floorToInt(entity.position.y), headZ)) ||
-                world::isFluid(world.block(headX, headY, headZ));
-            if (skyExposed && !submerged) {
+            const float brightness =
+                environment::eyeBrightness(world, headX, headY, headZ, environment);
+            // Draw the roll only inside the brightness band, matching vanilla's
+            // short-circuit order (f > 0.5F && random.nextFloat()*30 < ...): a
+            // dark cell never advances the entity's stream, so unlit mobs stay
+            // bit-for-bit aligned with the seed.
+            const bool bandPassed = brightness > 0.5F;
+            const bool rolled =
+                bandPassed &&
+                mc::rng::nextFloat(entity.rngState) * 30.0F < (brightness - 0.4F) * 2.0F;
+            const bool skyVisible = world.directSkyLight(headX, headY, headZ) >= 15U;
+            const bool submerged = world::isFluid(world.block(headX, footY, headZ)) ||
+                                   world::isFluid(world.block(headX, headY, headZ));
+            if (rolled && skyVisible && !submerged) {
                 entity.fireTicks = std::max(entity.fireTicks, 8 * kTicksPerSecond);
             }
         }

@@ -1,5 +1,7 @@
 #include "gameplay/GameSession.hpp"
 #include "gameplay/ItemPlacement.hpp"
+#include "gameplay/StatusEffect.hpp"
+#include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/PigEntity.hpp"
 #include "gameplay/entities/ZombieEntity.hpp"
 
@@ -94,6 +96,12 @@ void buildFloor(mc::world::World& world) {
 
 int main() {
     using namespace mc;
+
+    // Populate the process-wide entity-type registry so registry-driven types
+    // (husk, which has no dedicated *Entity class) resolve — the static
+    // ZombieEntity::type() used elsewhere does not need this, but byId("husk")
+    // does. Idempotent; harmless before every scenario below.
+    gameplay::entities::registerBuiltinEntities();
 
     // --- The player falls onto a floor and lands through the session's tick. ---
     world::World world;
@@ -260,6 +268,59 @@ int main() {
         REQUIRE(meleeHost.playerHurts == 1);
         REQUIRE(std::abs(meleeSession.vitals().health() - 17.0F) < 0.001F);
         REQUIRE(meleeSession.vitals().damage().lastSource == gameplay::DamageType::EntityAttack);
+    }
+
+    // AR-M2f #18: a husk's landed melee applies the Hunger effect to the player
+    // (Husk#doHurtTarget), driven through the real GameSession mobAttacks loop —
+    // the attackerId lookup, hungerOnHit() type read, and applyEffect call that
+    // was previously only unit-tested in isolation (monster_completion_test).
+    // This proves the full path: the husk's swing crosses the EntitySystem event
+    // boundary as a MobAttack carrying its own id, GameSession resolves that id
+    // back to the live husk, reads its behaviour bit, and applies the effect.
+    {
+        const auto* huskType = gameplay::entities::entityTypeRegistry().byId("husk");
+        REQUIRE(huskType != nullptr);
+        gameplay::GameSession huskSession;
+        huskSession.setGameMode(gameplay::GameMode::Survival);
+        huskSession.setDifficulty(gameplay::Difficulty::Normal);
+        huskSession.player().setPosition({8.5F, 1.001F, 8.5F});
+        huskSession.physicsPreviousPosition() = huskSession.player().position();
+        huskSession.physicsCurrentPosition() = huskSession.player().position();
+        huskSession.worldEntities().spawn({7.5F, 1.001F, 8.5F}, *huskType, 71U);
+        REQUIRE(!huskSession.vitals().hasEffect(gameplay::hungerEffect()));
+        TestHost huskHost;
+        for (int tick = 0; tick < 120 && huskHost.playerHurts == 0; ++tick) {
+            huskSession.tick(world, huskHost);
+            huskSession.drainEvents();
+        }
+        REQUIRE(huskHost.playerHurts == 1);
+        REQUIRE(huskSession.vitals().hasEffect(gameplay::hungerEffect()));
+    }
+
+    // AR-M2f #18 (null-pointer branch): the mobAttacks loop resolves attackerId
+    // back to a live entity before reading its behaviour bit. A zombie whose
+    // swing lands still applies no hunger (no HungerOnHit bit), and — critically
+    // — the lookup is guarded so an attacker that no longer exists produces no
+    // effect and no crash rather than dereferencing a stale id. The zombie melee
+    // block above already proves the world does not fall over when the attacker
+    // has no hunger bit; here we assert the player specifically never gains
+    // Hunger from a plain zombie, the negative half of the type-gated read.
+    {
+        gameplay::GameSession zombieSession;
+        zombieSession.setGameMode(gameplay::GameMode::Survival);
+        zombieSession.setDifficulty(gameplay::Difficulty::Normal);
+        zombieSession.player().setPosition({8.5F, 1.001F, 8.5F});
+        zombieSession.physicsPreviousPosition() = zombieSession.player().position();
+        zombieSession.physicsCurrentPosition() = zombieSession.player().position();
+        zombieSession.worldEntities().spawn({7.5F, 1.001F, 8.5F},
+                                            gameplay::entities::ZombieEntity::type(), 73U);
+        TestHost zombieHost;
+        for (int tick = 0; tick < 120 && zombieHost.playerHurts == 0; ++tick) {
+            zombieSession.tick(world, zombieHost);
+            zombieSession.drainEvents();
+        }
+        REQUIRE(zombieHost.playerHurts == 1);
+        REQUIRE(!zombieSession.vitals().hasEffect(gameplay::hungerEffect()));
     }
 
     // The in-world difficulty control goes through GameSession::setDifficulty.

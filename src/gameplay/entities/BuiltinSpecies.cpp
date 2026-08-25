@@ -211,8 +211,11 @@ const std::array<SpeciesDef, 3> kManifest{{
     // 0.23, attack 3, box 0.6 x 1.95, egg tint 0x797061 / 0x66907B. Melee like
     // the zombie; AR-M1 wires its loot to the same 0-2 rotten flesh pool.
     // AR-M2: undead() so the daylight-ignition rule considers it at all, plus
-    // sunImmune() so that same rule skips it — the whole reason the SunImmune
-    // bit exists (EM1). hungerOnHit(): Husk#doHurtTarget applies EM2's Hunger
+    // sunImmune() so that same rule skips it. The SunImmune EntityBehavior bit
+    // was introduced in AR-M2 (656d040) together with the ignition source that
+    // reads it — it was NOT reserved by an earlier EM1/AR-M1 pass; this is the
+    // first and only species that sets it. hungerOnHit(): Husk#doHurtTarget
+    // applies EM2's Hunger
     // effect to whatever it lands a melee hit on; the zombie beside it in this
     // manifest carries no such bit, so only husk's hit does. The same Undead bit
     // is ENCH-1's Smite target-category gate (getGroup() == UNDEAD, HuskEntity

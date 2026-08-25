@@ -139,6 +139,32 @@ inline constexpr float kThunderAlpha = 0.52734375F;
     return rawBrightness(world, x, y, z, environment.ambientDarkness);
 }
 
+// DimensionType#method_28515: the light-level -> brightness curve. For a light
+// level L in [0, 15], `g = L/15`, `h = g / (4 - 3g)`, and the dimension lerps
+// from its ambientLight floor toward h. The overworld's ambientLight is 0, so
+// the curve is exactly h — the same value LivingEntity#isInDaylight reads as
+// `getBrightnessAtEyes()`. Kept float-exact to Java's arithmetic so the
+// `f > 0.5` band and the `(f - 0.4) * 2` roll below cross at the same light
+// levels vanilla does (L == 12 is the first level with f > 0.5).
+[[nodiscard]] inline float lightLevelToBrightness(int lightLevel) {
+    const float g = static_cast<float>(lightLevel) / 15.0F;
+    return g / (4.0F - 3.0F * g);
+}
+
+// LivingEntity#getBrightnessAtEyes -> WorldView#getBrightness(pos): the
+// dimension brightness curve applied to the cell's max-local light with the
+// tick's ambient darkness taken off, so rain and thunder (which raise
+// ambientDarkness) fold straight into the value without a separate weather
+// branch — exactly how vanilla suppresses daylight burning in the rain.
+[[nodiscard]] inline float eyeBrightness(
+    const world::World& world,
+    int x,
+    int y,
+    int z,
+    const EnvironmentSnapshot& environment) {
+    return lightLevelToBrightness(maxLocalRawBrightness(world, x, y, z, environment));
+}
+
 // BlockAndLightGetter#canSeeSky: `getBrightness(SKY, pos) >= 15`. The stored
 // sky light is static full sun, so a cell that still reads 15 is one nothing
 // stands between and the sky.
