@@ -2379,6 +2379,20 @@ if(BUILD_TESTING)
     )
     add_test(NAME bow_arrow COMMAND mc_rebedrock_bow_arrow_test)
 
+    # RW-4: ranged (bow) enchantment effects — Power / Punch / Flame / Infinity,
+    # driven through the DDC-2 effect engine and consumed by the bow release site
+    # (Power damage / Infinity consume) and the projectile hit (Punch knockback /
+    # Flame ignite). Backfills the ENCH.gate remote half (bow shard).
+    add_executable(mc_rebedrock_ranged_enchantment_test
+        tests/ranged_enchantment_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_ranged_enchantment_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_ranged_enchantment_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME ranged_enchantment COMMAND mc_rebedrock_ranged_enchantment_test)
+
     add_executable(mc_rebedrock_experience_sources_test
         tests/experience_sources_test.cpp
     )

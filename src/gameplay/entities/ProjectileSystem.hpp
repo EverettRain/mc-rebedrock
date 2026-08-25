@@ -87,6 +87,18 @@ struct Projectile final {
     // 0-to-(i/2+1) bonus (RW-1a #13) and the render-only "sparkle" particles;
     // this field carries the flag, the tick rolls the bonus deterministically.
     bool critical = false;
+    // RW-4 — the bow's Punch/Flame enchantment effects baked in at launch (Power
+    // is folded straight into `damage` above, needing no field). `punchKnockback`
+    // is the extra knockback STRENGTH an entity hit passes into
+    // EntitySystem::hurt(extraKnockbackStrength); `flameIgniteSeconds` is the
+    // seconds of burning an entity hit inflicts via EntitySystem::setOnFire. Both
+    // default to zero (an unenchanted arrow adds no shove and no fire). Transient
+    // combat modifiers only: they are NOT part of the PJTL save block (a
+    // mid-flight Punch/Flame arrow reloaded from disk loses the enchant effect —
+    // a documented RW-4 simplification, kept so the persistence golden and codec
+    // stay untouched, since a stuck arrow never re-hits an entity anyway).
+    float punchKnockback = 0.0F;
+    int flameIgniteSeconds = 0;
     ProjectilePickupState pickupState = ProjectilePickupState::Pickupable;
     // What a successful pickup gives the player. Empty (the default) means
     // "nothing to give" — RW-0's generic mechanic, since no arrow ITEM exists
@@ -153,7 +165,8 @@ class ProjectileSystem final {
     void spawn(glm::vec3 position, glm::vec3 velocity, ActorReference shooterId, float damage,
               bool critical = false, ProjectilePickupState pickupState = ProjectilePickupState::Pickupable,
               ItemStack pickupItem = {}, world::gen::JavaRandom* rng = nullptr,
-              float inaccuracy = kProjectileDefaultInaccuracy);
+              float inaccuracy = kProjectileDefaultInaccuracy,
+              float punchKnockback = 0.0F, int flameIgniteSeconds = 0);
 
     // Reinstates a projectile from a save, keeping the fields a fresh spawn()
     // would reset (inGround/inBlockPos/lifeTicks) so a world reopens with its

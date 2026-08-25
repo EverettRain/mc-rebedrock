@@ -7,6 +7,7 @@
 #include "gameplay/DimensionTransfer.hpp"
 #include "gameplay/GameplayMutationSink.hpp"
 #include "gameplay/Random.hpp"
+#include "gameplay/RangedEnchantment.hpp"
 #include "gameplay/StatusEffect.hpp"
 
 #include "world/DayNightCycle.hpp"
@@ -987,11 +988,15 @@ void GameSession::releaseBow(PlayerId playerId, const glm::vec3& lookDirection,
         return;
     }
     const bool creative = player.gameMode == GameMode::Creative;
+    // RW-4 — read the firing bow's ranged enchantments once, off the held stack,
+    // through the DDC-2-driven RangedEnchantment helpers. Snapshot the stack first
+    // because the durability spend below mutates the selected slot.
+    const ItemStack bow = player.inventory.selectedStack();
+    const bool infinity = infinityKeepsArrow(bow);
     // PlayerEntity#getArrowType: creative always finds a (virtual) arrow;
-    // survival needs a real one somewhere in the inventory. Infinity's
-    // "survival player with the enchant also skips the scan" branch is RW-4's
-    // seam — not modeled here, so a non-creative shot always needs a real
-    // arrow stack today.
+    // survival needs a real one somewhere in the inventory. RW-4 Infinity does
+    // NOT remove that requirement (vanilla still needs one arrow in the quiver to
+    // fire) — it only skips the CONSUME below once the shot lands.
     const auto arrowSlot = player.inventory.findFirstArrowSlot();
     if (!creative && !arrowSlot.has_value()) {
         return;
@@ -1008,14 +1013,25 @@ void GameSession::releaseBow(PlayerId playerId, const glm::vec3& lookDirection,
     // flat, which meant a full-draw arrow hit for the same damage whether it
     // struck point-blank or after a long, slow fall. The projectile now carries
     // the true base and the tick reads the live speed.
-    const float damage = kArrowBaseDamage;
+    // RW-4 Power — the bow's Power enchant multiplies the arrow's BASE damage by
+    // `1 + 0.25*(level+1)` (RangedEnchantment.hpp), baked in here; the tick still
+    // scales it by the live impact speed at the hit (RW-1a #8). No Power = base.
+    const float damage = powerArrowBaseDamage(kArrowBaseDamage, bow);
     // AbstractArrow: only a FULLY drawn shot (pullProgress == 1.0F) crits —
     // not merely "a strong pull" — matching `if (f == 1.0F)` exactly.
     const bool critical = pullProgress >= 1.0F;
+    // RW-4 Punch/Flame — the extra knockback strength and ignite seconds the
+    // struck target takes, resolved off the bow through the DDC-2 helpers. Zero
+    // for an unenchanted bow, so the shot reduces to RW-1a's plain arrow.
+    const float punch = punchKnockbackStrength(bow);
+    const int flame = flameArrowIgniteSeconds(bow);
     const ItemStack arrowPickup{world::Block::Air, 1U, &items::Arrow};
     spawnProjectile(eye, direction * velocityLength, ActorReference::player(), damage, critical,
-                    ProjectilePickupState::Pickupable, arrowPickup);
-    if (!creative) {
+                    ProjectilePickupState::Pickupable, arrowPickup,
+                    kProjectileDefaultInaccuracy, punch, flame);
+    // RW-4 Infinity — a survival shot from an Infinity bow consumes no arrow
+    // (creative never consumes anyway). Any other survival shot spends one.
+    if (!creative && !infinity) {
         static_cast<void>(player.inventory.consumeSlot(*arrowSlot));
     }
     if (player.inventory.damageSelected(1U)) {

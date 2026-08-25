@@ -24,7 +24,7 @@ constexpr float kPickupContactRadiusSquared = 0.9F * 0.9F;
 void ProjectileSystem::spawn(glm::vec3 position, glm::vec3 velocity, ActorReference shooterId,
                              float damage, bool critical, ProjectilePickupState pickupState,
                              ItemStack pickupItem, world::gen::JavaRandom* rng,
-                             float inaccuracy) {
+                             float inaccuracy, float punchKnockback, int flameIgniteSeconds) {
     Projectile projectile;
     projectile.position = position;
     projectile.previousPosition = position;
@@ -56,6 +56,8 @@ void ProjectileSystem::spawn(glm::vec3 position, glm::vec3 velocity, ActorRefere
     projectile.shooterId = shooterId;
     projectile.damage = damage;
     projectile.critical = critical;
+    projectile.punchKnockback = punchKnockback;
+    projectile.flameIgniteSeconds = flameIgniteSeconds;
     projectile.pickupState = pickupState;
     projectile.pickupItem = pickupItem;
     entities_.push_back(projectile);
@@ -169,10 +171,20 @@ std::vector<ItemStack> ProjectileSystem::tick(const world::World& world, EntityS
                 appliedDamage += rng.nextInt(bonusBound);
             }
             const glm::vec3 hitPoint = origin + displacement * (entityHit->distance / travelled);
+            // RW-4 — Punch rides in as the hit's extraKnockbackStrength (the same
+            // knockback unit melee Knockback uses), and Flame ignites the struck
+            // target once the hit lands. Both are the deterministic per-shot values
+            // the firing bow baked in at spawn (RangedEnchantment.hpp); zero for an
+            // unenchanted arrow, so this reduces to RW-1a's plain hit.
             const bool landed = entities.hurt(entityHit->entityId,
                                               static_cast<float>(appliedDamage), hitPoint,
-                                              projectile.shooterId, DamageType::Projectile);
+                                              projectile.shooterId, DamageType::Projectile,
+                                              projectile.punchKnockback);
             static_cast<void>(landed);
+            if (projectile.flameIgniteSeconds > 0) {
+                static_cast<void>(
+                    entities.setOnFire(entityHit->entityId, projectile.flameIgniteSeconds));
+            }
             // AbstractArrow#onHitEntity: a spent arrow (non-piercing, RW-4's
             // future concern) is consumed on impact rather than sticking, the
             // way vanilla's `pierceLevel <= 0` branch removes it after the hit.

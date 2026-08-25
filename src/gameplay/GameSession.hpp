@@ -303,9 +303,11 @@ class GameSession final {
                          float damage, bool critical = false,
                          ProjectilePickupState pickupState = ProjectilePickupState::Pickupable,
                          ItemStack pickupItem = {},
-                         float inaccuracy = kProjectileDefaultInaccuracy) {
+                         float inaccuracy = kProjectileDefaultInaccuracy,
+                         float punchKnockback = 0.0F, int flameIgniteSeconds = 0) {
         primaryLevel().projectiles.spawn(position, velocity, shooterId, damage, critical,
-                                         pickupState, pickupItem, &projectileRandom_, inaccuracy);
+                                         pickupState, pickupItem, &projectileRandom_, inaccuracy,
+                                         punchKnockback, flameIgniteSeconds);
     }
     [[nodiscard]] ProjectileSystem& projectiles() { return primaryLevel().projectiles; }
     [[nodiscard]] const ProjectileSystem& projectiles() const { return primaryLevel().projectiles; }
