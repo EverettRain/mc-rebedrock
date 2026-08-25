@@ -35,16 +35,15 @@ constexpr const char* kBuiltinPigGeometry = R"({
   "minecraft:geometry": [
     { "description": {"identifier": "geometry.pig", "texture_width": 64, "texture_height": 32},
       "bones": [
-        {"name": "body", "pivot": [0,8,2], "rotation": [90,0,0],
-         "cubes": [{"origin": [-5,0,-4], "size": [10,16,8], "uv": [28,8],
-                    "faces": {"front": {"as": "back"}, "back": {"as": "front"}}}]},
+        {"name": "body", "pivot": [0,13,2], "rotation": [-90,0,0],
+         "cubes": [{"origin": [-5,7,-5], "size": [10,16,8], "uv": [28,8]}]},
         {"name": "head", "pivot": [0,12,-6],
          "cubes": [{"origin": [-4,8,-14], "size": [8,8,8], "uv": [0,0]},
                    {"origin": [-2,9,-15], "size": [4,3,1], "uv": [16,16]}]},
         {"name": "legFrontRight", "pivot": [-3,6,-5], "cubes": [{"origin": [-5,0,-7], "size": [4,6,4], "uv": [0,16]}]},
-        {"name": "legFrontLeft",  "pivot": [3,6,-5],  "cubes": [{"origin": [1,0,-7],  "size": [4,6,4], "uv": [0,16]}]},
+        {"name": "legFrontLeft",  "pivot": [3,6,-5],  "cubes": [{"origin": [1,0,-7],  "size": [4,6,4], "uv": [0,16], "mirror": true}]},
         {"name": "legBackRight",  "pivot": [-3,6,7],  "cubes": [{"origin": [-5,0,5],  "size": [4,6,4], "uv": [0,16]}]},
-        {"name": "legBackLeft",   "pivot": [3,6,7],   "cubes": [{"origin": [1,0,5],   "size": [4,6,4], "uv": [0,16]}]}
+        {"name": "legBackLeft",   "pivot": [3,6,7],   "cubes": [{"origin": [1,0,5],   "size": [4,6,4], "uv": [0,16], "mirror": true}]}
       ]
     }
   ]
@@ -70,17 +69,17 @@ constexpr const char* kBuiltinPigAnimation = R"({
 // CowModel ported to the engine's Y-up box-UV geometry: the 64x64 skin includes
 // a separate 6x3x1 muzzle at UV 1,33, the horns and udder share their vanilla
 // head/body parts, the front legs sit at z -5, and the left legs mirror the
-// right-leg UV net. The torso face overrides remain load-bearing because Java
-// draws the rotated body in a Y-flipped frame while this renderer does not.
+// right-leg UV net. The torso bone rotates -90 about X (not +90): baking vanilla's
+// Y-flip into the geometry negates X/Z rest rotations, so the rotated body lands
+// face-for-face on vanilla's UV net with no per-face overrides.
 constexpr const char* kBuiltinCowGeometry = R"({
   "format_version": "1.12.0",
   "minecraft:geometry": [
     { "description": {"identifier": "geometry.cow", "texture_width": 64, "texture_height": 64},
       "bones": [
-        {"name": "body", "pivot": [0,19,2], "rotation": [90,0,0],
-         "cubes": [{"origin": [-6,9,-1], "size": [12,18,10], "uv": [18,4],
-                    "faces": {"front": {"as": "back"}, "back": {"as": "front"}}},
-                   {"origin": [-2,21,9], "size": [4,6,1], "uv": [52,0]}]},
+        {"name": "body", "pivot": [0,19,2], "rotation": [-90,0,0],
+         "cubes": [{"origin": [-6,11,-5], "size": [12,18,10], "uv": [18,4]},
+                   {"origin": [-2,11,-6], "size": [4,6,1], "uv": [52,0]}]},
         {"name": "head", "pivot": [0,20,-8],
          "cubes": [{"origin": [-4,16,-14], "size": [8,8,6], "uv": [0,0]},
                    {"origin": [-3,16,-15], "size": [6,3,1], "uv": [1,33]},

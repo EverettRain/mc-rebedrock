@@ -302,24 +302,34 @@ void main() {
             // mob model root applies the X flip (WorldRenderer::drawWorldEntities:
             // scale(-1/16,...)). frac is un-flipped, so the root's X mirror reverses
             // U on the X-perpendicular faces -- these formulas pre-compensate it.
+            // Verified corner-for-corner against a port of ModelPart.Cube on the cow
+            // head/legs/body: only the +Z/-Z faces carry the X mirror.
             vec2 faceUv;
-            if (face == 0)         faceUv = vec2(frac.z, 1.0 - frac.y);         // +X side (U flipped: fixes side front/back)
+            if (face == 0)         faceUv = vec2(frac.z, 1.0 - frac.y);         // +X side
             else if (face == 1)    faceUv = vec2(1.0 - frac.z, 1.0 - frac.y);   // -X side
-            else if (face == 2)    faceUv = vec2(frac.x, 1.0 - frac.z);         // +Y up (correct as-is under root flip)
-            else if (face == 3)    faceUv = vec2(frac.x, 1.0 - frac.z);         // -Y down (V flipped: fixes bottom front/back)
-            else if (face == 4)    faceUv = vec2(frac.x, 1.0 - frac.y);         // +Z back
-            else                   faceUv = vec2(1.0 - frac.x, 1.0 - frac.y);   // -Z front
-            // Mirror (left limbs): an extra X reflection. On the X-perpendicular
-            // faces that flips U; on the two side faces (0,1) it instead swaps which
-            // side rect they sample (done below), so don't flip their U here.
+            else if (face == 2)    faceUv = vec2(frac.x, 1.0 - frac.z);         // +Y up
+            else if (face == 3)    faceUv = vec2(frac.x, 1.0 - frac.z);         // -Y down
+            else if (face == 4)    faceUv = vec2(1.0 - frac.x, 1.0 - frac.y);   // +Z back  (U mirrored by root X flip)
+            else                   faceUv = vec2(frac.x, 1.0 - frac.y);         // -Z front
+            // Mirror (left limbs): vanilla's mirror is a reflection of the cube
+            // across its own local X axis (it swaps minX<->maxX, keeping each
+            // vertex's UV). A reflection across X does two things, and both are
+            // needed to reproduce it face-for-face (verified against a clean port
+            // of ModelPart.Cube with mirror=true):
+            //   1. It reverses the horizontal (U) direction on every face -- so
+            //      flip faceUv.x on all six, not just the non-side faces. (Missing
+            //      this on the two side faces was the "inner/outer swapped" bug: a
+            //      reflection sends the +X face's texture to where the -X face was.)
+            //   2. It exchanges the two X-perpendicular faces, so each side face
+            //      samples the *other* side's rect: swap the +X/-X net rects below.
             bool mirrored = item.data.w > 0.5;
-            if (mirrored && face >= 2) {
+            if (mirrored) {
                 faceUv.x = 1.0 - faceUv.x;
             }
             uint packed = floatBitsToUint(item.textureLayersRotation.w);
             uint src = (packed >> uint(face * 4)) & 7u;
             if (mirrored && src < 2u) {
-                src = 1u - src;   // mirror swaps the +X/-X side rects
+                src = 1u - src;
             }
             if (((packed >> uint(face * 4 + 3)) & 1u) != 0u) {
                 faceUv = vec2(1.0 - faceUv.x, 1.0 - faceUv.y);   // rotate 180
