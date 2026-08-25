@@ -18,28 +18,9 @@
         {
           "name": "body",
           "pivot": [0, 19, 2],
-          "rotation": [90, 0, 0],
+          "rotation": [-90, 0, 0],
           "cubes": [
-            {
-              "origin": [-4, 9, 3],
-              "size": [8, 16, 6],
-              "uv": [28, 8],
-              "faces": {
-                "front": {
-                  "as": "back"
-                },
-                "back": {
-                  "as": "front"
-                },
-                "up": {
-                  "as": "down"
-                },
-                "down": {
-                  "as": "up",
-                  "rotate": 180
-                }
-              }
-            }
+            { "origin": [-4, 13, -5], "size": [8, 16, 6], "uv": [28, 8] }
           ]
         },
         {
@@ -82,29 +63,8 @@
           "name": "wool",
           "parent": "body",
           "pivot": [0, 19, 2],
-          "rotation": [90, 0, 0],
           "cubes": [
-            {
-              "origin": [-4, 9, 3],
-              "size": [8, 16, 6],
-              "uv": [28, 8],
-              "inflate": 1.75,
-              "faces": {
-                "front": {
-                  "as": "back"
-                },
-                "back": {
-                  "as": "front"
-                },
-                "up": {
-                  "as": "down"
-                },
-                "down": {
-                  "as": "up",
-                  "rotate": 180
-                }
-              }
-            }
+            { "origin": [-4, 13, -5], "size": [8, 16, 6], "uv": [28, 8], "inflate": 1.75 }
           ]
         },
         {

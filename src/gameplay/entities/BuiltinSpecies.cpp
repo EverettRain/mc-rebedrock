@@ -119,6 +119,10 @@ constexpr EntityRenderDescriptor kSheepRender{
     /*walkAnimation=*/"animation.sheep.walk",
     /*idleAnimation=*/"animation.sheep.idle",
     /*scale=*/1.0F,
+    // The fleece: "wool"-prefixed bones sample this second skin, so the wool
+    // reads as wool instead of an inflated copy of the body texture. White for
+    // now (dye tinting is a later step); loaded from the pack, never bundled.
+    /*secondaryTexturePath=*/"entity/sheep/sheep_wool.png",
 };
 
 // AR-M1 Tier B: husk reuses the zombie's own geometry/animation wholesale

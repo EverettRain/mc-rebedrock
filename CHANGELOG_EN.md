@@ -320,6 +320,14 @@ simple versioned history while it is in beta.
 
 ### Fixed
 
+- Fixed the box-UV texture mapping of the animal models so cows, pigs, sheep and
+  chickens match Java 26.1 face-for-face: corrected the left/right mirroring on cube
+  front/back faces, the swapped inner/outer faces on mirrored limbs, and the
+  front/back scrambling and misplacement of rotated torsos (cow/pig/sheep/chicken
+  bodies, the cow udder, the sheep fleece) caused by a wrong bone-rotation sign.
+  Sheep now render as proper white wool: the wool parts sample a dedicated fleece
+  texture layer instead of an inflated copy of the bare body, and the head no
+  longer smears the face across several sides.
 - Sound distance attenuation was fixed: the default inverse model previously
   stopped at about 0.1 volume past the maximum distance, so mobs at any depth were
   clearly audible at the surface; it now falls off linearly to silence at the

@@ -1956,6 +1956,12 @@ class WorldRenderer final {
                     continue;
                 }
                 const glm::mat4 boneWorld = pose.worldMatrix(static_cast<int>(index));
+                // Per-bone texture-array layer, precomputed at load time: a
+                // "wool"-prefixed bone samples the species' fleece layer, every
+                // other bone its body skin. No bone-name test in the hot loop.
+                const float boneLayer = index < species->boneTextureLayer.size()
+                                            ? species->boneTextureLayer[index]
+                                            : species->textureLayer;
                 for (const auto& cube : bone.cubes) {
                     // Per-cube rotation happens around the cube's own pivot,
                     // inside the bone; `inflate` then grows the box about its
@@ -1967,7 +1973,7 @@ class WorldRenderer final {
                                                 glm::translate(glm::mat4{1.0F}, cube.center());
                     pushBoxUvCuboid(commandBuffer, cubeWorld, cube.renderSize(), cube.size, cube.uv,
                                     cube.mirror, textureSize, cube.faceOverride,
-                                    species->textureLayer, packedLight, hurtFlash);
+                                    boneLayer, packedLight, hurtFlash);
                 }
             }
         }

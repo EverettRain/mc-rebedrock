@@ -26,6 +26,14 @@ struct SpeciesRenderModel final {
     const EntityType* type = nullptr;
     animation::AnimatedModel model;
     float textureLayer = 0.0F;
+    // The species' optional second entity-texture-array layer (the sheep fleece),
+    // or -1 when it has no secondary skin. Populated by createEntityTextureArray
+    // when render().secondaryTexturePath is set and loads.
+    float secondaryTextureLayer = -1.0F;
+    // Per-bone texture-array layer, indexed by bone order. Precomputed once at
+    // load time (a "wool"-prefixed bone resolves to secondaryTextureLayer, every
+    // other bone to textureLayer) so the draw loop never re-tests bone names.
+    std::vector<float> boneTextureLayer;
     bool loaded = false;
 };
 

@@ -122,6 +122,11 @@ struct EntityRenderDescriptor final {
     std::string_view walkAnimation{}; // "animation.pig.walk"
     std::string_view idleAnimation{}; // "animation.pig.idle"
     float scale = 1.0F;               // uniform model scale, 1.0 for most mobs
+    // Optional second skin sampled by "wool"-prefixed bones (the sheep fleece
+    // layer). Empty for the common single-texture creature; when set, the
+    // species gets a second entity-texture-array layer loaded from this path and
+    // its wool bones sample that layer instead of the body skin.
+    std::string_view secondaryTexturePath{}; // "entity/sheep/sheep_wool.png"
 };
 
 // AgeableMob's breeding parameters, as data on the type rather than a species

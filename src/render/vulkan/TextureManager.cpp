@@ -839,18 +839,39 @@ void TextureManager::createEntityTextureArray(
     }
     entityTextureWidth = atlasWidth;
     entityTextureHeight = atlasHeight;
-    const std::uint32_t layerCount = static_cast<std::uint32_t>(speciesModels.size());
+    // Assign texture-array layers: one per species, plus a second layer for each
+    // species that declares a secondary skin (the sheep fleece). Precompute the
+    // per-bone layer here too, so the draw loop never re-tests bone names: a
+    // "wool"-prefixed bone resolves to the secondary layer, everything else to
+    // the body layer.
+    std::uint32_t nextLayer = 0U;
+    for (auto& species : speciesModels) {
+        species.textureLayer = static_cast<float>(nextLayer++);
+        species.secondaryTextureLayer = -1.0F;
+        if (species.loaded && !species.type->render().secondaryTexturePath.empty()) {
+            species.secondaryTextureLayer = static_cast<float>(nextLayer++);
+        }
+        const auto& bones = species.model.model.bones();
+        species.boneTextureLayer.assign(bones.size(), species.textureLayer);
+        if (species.secondaryTextureLayer >= 0.0F) {
+            for (std::size_t b = 0; b < bones.size(); ++b) {
+                if (bones[b].name.rfind("wool", 0U) == 0U) {
+                    species.boneTextureLayer[b] = species.secondaryTextureLayer;
+                }
+            }
+        }
+    }
+    const std::uint32_t layerCount = nextLayer;
     std::vector<std::uint8_t> atlas(
         static_cast<std::size_t>(atlasWidth) * atlasHeight * 4U * layerCount, 0U);
-    for (std::size_t index = 0; index < speciesModels.size(); ++index) {
-        const auto& species = speciesModels[index];
-        if (!species.loaded) {
-            continue;
-        }
+    // Samples one skin (loaded from `texturePath` through the pack stack) into a
+    // given array layer, scaling the declared skin size up to the shared atlas.
+    const auto blitLayer = [&](std::uint32_t layer, std::string_view texturePath,
+                               const animation::SkeletalModel& model) {
         const auto skin = gameplay::entities::buildSpeciesSkin(
-            *resourceProvider_, species.model.model, species.type->render().texturePath,
+            *resourceProvider_, model, texturePath,
             {static_cast<float>(atlasWidth), static_cast<float>(atlasHeight)});
-        const glm::vec2 declared = declaredSize(species.model.model);
+        const glm::vec2 declared = declaredSize(model);
         const std::uint32_t skinWidth = static_cast<std::uint32_t>(declared.x);
         const std::uint32_t skinHeight = static_cast<std::uint32_t>(declared.y);
         for (std::uint32_t layerY = 0; layerY < atlasHeight; ++layerY) {
@@ -860,9 +881,22 @@ void TextureManager::createEntityTextureArray(
                     std::min(skinWidth - 1U, layerX * skinWidth / atlasWidth);
                 const std::size_t src = (static_cast<std::size_t>(srcY) * skinWidth + srcX) * 4U;
                 const std::size_t dst =
-                    (index * atlasWidth * atlasHeight + layerY * atlasWidth + layerX) * 4U;
+                    (static_cast<std::size_t>(layer) * atlasWidth * atlasHeight +
+                     static_cast<std::size_t>(layerY) * atlasWidth + layerX) *
+                    4U;
                 std::memcpy(&atlas[dst], &skin[src], 4U);
             }
+        }
+    };
+    for (const auto& species : speciesModels) {
+        if (!species.loaded) {
+            continue;
+        }
+        blitLayer(static_cast<std::uint32_t>(species.textureLayer),
+                  species.type->render().texturePath, species.model.model);
+        if (species.secondaryTextureLayer >= 0.0F) {
+            blitLayer(static_cast<std::uint32_t>(species.secondaryTextureLayer),
+                      species.type->render().secondaryTexturePath, species.model.model);
         }
     }
 
