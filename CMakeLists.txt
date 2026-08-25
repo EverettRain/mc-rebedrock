@@ -2176,6 +2176,14 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_enchantment_content_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME enchantment_content COMMAND mc_rebedrock_enchantment_content_test)
 
+    # DDC-2: effect-component engine — load-time compiler + run-time DOD executor.
+    add_executable(mc_rebedrock_effect_engine_test
+        tests/effect_engine_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_effect_engine_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_effect_engine_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME effect_engine COMMAND mc_rebedrock_effect_engine_test)
+
     # D-5: Java-Edition data-side mapping — vanilla-name authority + JE ingestion.
     add_executable(mc_rebedrock_je_mapping_test
         tests/je_mapping_test.cpp
