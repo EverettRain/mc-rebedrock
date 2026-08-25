@@ -30,6 +30,8 @@ void EntityRenderSnapshot::capture(const std::vector<SimpleEntity>& creatures,
             entity.damage.hurtTicks,
             entity.damage.deathTicks,
             entity.bodyScale(),
+            entity.color,
+            entity.sheared,
         });
     }
 }

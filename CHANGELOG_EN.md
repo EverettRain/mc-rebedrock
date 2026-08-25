@@ -9,6 +9,9 @@ simple versioned history while it is in beta.
 
 ### Added
 
+- Sheep now come in all 16 dyeable colours: the wool renders in the sheep's own
+  colour, right-clicking with a matching dye recolours it, and shearing exposes the
+  bare body as the wool layer disappears; the colour persists with the sheep.
 - A full experience system: levels, progress and total with the 26.1 curve, a HUD
   experience bar and level number, experience-orb entities (gravity, same-value
   merging, magnetic attraction and pickup), and four sources — mob kills (gated by

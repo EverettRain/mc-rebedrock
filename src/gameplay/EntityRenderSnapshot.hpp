@@ -18,6 +18,7 @@
 // The species pointer is safe to carry: EntityType instances are static
 // singletons, the same reason SoundEvent may hold one.
 
+#include "gameplay/DyeColor.hpp"
 #include "gameplay/ItemEntitySystem.hpp"
 #include "gameplay/WorldSimulation.hpp"
 #include "gameplay/entities/EntityType.hpp"
@@ -55,6 +56,13 @@ struct EntityRenderState final {
     // same species. 1.0 for adults and every non-ageable mob, so the draw pass
     // multiplies unconditionally without a branch.
     float scale = 1.0F;
+
+    // DYE-3: the creature's dye colour (only meaningful for the sheep fleece) and
+    // whether it has been sheared. The draw pass tints "wool" bones by `color`
+    // (white ~= identity, so non-sheep and undyed sheep need no special case) and
+    // skips the wool layer entirely when `sheared`.
+    DyeColor color = kDefaultDyeColor;
+    bool sheared = false;
 
     // EntityType instances are static singletons, so the pointer compares by
     // identity and round-trips by id — the codec can rebuild the same pointer.

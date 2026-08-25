@@ -46,6 +46,11 @@ layout(location = 10) flat out float fragmentHurtFlash;
 // the generic dropped-item light. Kept as a mode bit so ordinary item cubes and
 // articulated entity cuboids retain their existing presentation.
 layout(location = 11) flat out float fragmentFallingBlock;
+// DYE-3: per-cube wool tint (linear-ish 0..1 RGB, unpacked from a 0xRRGGBB the
+// CPU packs into positionSize.w on the box-UV path). White for every non-wool
+// cube and every non-box-UV mode, so the fragment shader multiplies
+// unconditionally.
+layout(location = 12) flat out vec3 fragmentWoolTint;
 
 const vec2 corners[6] = vec2[](
     vec2(-0.5, -0.5), vec2(0.5, -0.5), vec2(0.5, 0.5),
@@ -76,6 +81,7 @@ void main() {
     fragmentEntityTexture = 0.0;
     fragmentHurtFlash = 0.0;
     fragmentFallingBlock = 0.0;
+    fragmentWoolTint = vec3(1.0);
     fragmentSceneLight = decodeSceneLight(item.dimensions.w);
     fragmentWorldPosition = vec3(0.0);
     if (item.data.x > 6.5 && item.data.x < 7.5) {
@@ -276,9 +282,18 @@ void main() {
         // item is in view space, so it never opts into the scene light.
         fragmentWorldPosition = heldInViewSpace ? vec3(0.0) : worldPosition;
         if (boxUvEntity) {
-            // positionSize.w is unused by this path (the box extent lives in
-            // dimensions.xyz), so it carries the hurt overlay strength.
-            fragmentHurtFlash = item.positionSize.w;
+            // On this path positionSize.w carries the packed 0xRRGGBB wool tint,
+            // and dimensions.w packs the hurt-row strength (>= 512) above the
+            // scene lightmap (see WorldRenderer::pushBoxUvCuboid). Split them back
+            // apart and re-derive the scene light from the lightmap half, since
+            // the shared decode at the top of main() saw the packed value.
+            fragmentHurtFlash = item.dimensions.w >= 512.0 ? 1.0 : 0.0;
+            fragmentSceneLight =
+                decodeSceneLight(item.dimensions.w - fragmentHurtFlash * 512.0);
+            uint tintBits = floatBitsToUint(item.positionSize.w);
+            fragmentWoolTint = vec3(float((tintBits >> 16u) & 255u),
+                                    float((tintBits >> 8u) & 255u),
+                                    float(tintBits & 255u)) / 255.0;
             // Standard Minecraft box-UV net. This must stay identical to the
             // reference in tools/entity_uv_lib.py (mirrored by the texture
             // editor) and animation::boxUvFaceRect. Per face: pick the texel

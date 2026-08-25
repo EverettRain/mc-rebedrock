@@ -15,6 +15,9 @@ layout(location = 9) in vec3 fragmentWorldPosition;
 // OverlayTexture's hurt row, 1.0 while a creature is inside its hurtTime.
 layout(location = 10) flat in float fragmentHurtFlash;
 layout(location = 11) flat in float fragmentFallingBlock;
+// DYE-3: wool dye tint, white (1,1,1) for every non-wool cube so the multiply
+// below is an unconditional no-op there.
+layout(location = 12) flat in vec3 fragmentWoolTint;
 layout(location = 0) out vec4 outColor;
 
 // The full camera block: the tail (point lights, lighting settings) is the same
@@ -71,6 +74,9 @@ void main() {
     vec4 texel = fragmentEntityTexture > 0.5
         ? texture(entityTextures, vec3(fragmentUv, fragmentTextureLayer))
         : texture(blockTextures, vec3(fragmentUv, fragmentTextureLayer));
+    // DYE-3: wool dye tint. White for non-wool cubes, so this never touches the
+    // body skin, blocks or dropped items.
+    texel.rgb *= fragmentWoolTint;
     if (texel.a < 0.1) {
         discard;
     }

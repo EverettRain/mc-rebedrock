@@ -324,6 +324,8 @@ void appendCreature(std::vector<std::uint8_t>& bytes, const EntityRenderState& s
     persistence::appendInteger(bytes, static_cast<std::int32_t>(s.hurtTicks));
     persistence::appendInteger(bytes, static_cast<std::int32_t>(s.deathTicks));
     persistence::appendFloat(bytes, s.scale);
+    persistence::appendInteger(bytes, dyeColorId(s.color));
+    persistence::appendInteger(bytes, static_cast<std::uint8_t>(s.sheared ? 1 : 0));
 }
 
 void appendDrop(std::vector<std::uint8_t>& bytes, const ItemEntity& drop) {
@@ -408,6 +410,8 @@ void appendEntities(std::vector<std::uint8_t>& bytes, const EntityRenderSnapshot
         s.hurtTicks = persistence::readInteger<std::int32_t>(bytes, cursor);
         s.deathTicks = persistence::readInteger<std::int32_t>(bytes, cursor);
         s.scale = persistence::readFloat(bytes, cursor);
+        s.color = dyeColorFromId(persistence::readInteger<std::uint8_t>(bytes, cursor));
+        s.sheared = persistence::readInteger<std::uint8_t>(bytes, cursor) != 0U;
         // A creature of a species this build does not know is skipped, not drawn.
         if (s.type != nullptr) {
             creatures.push_back(s);

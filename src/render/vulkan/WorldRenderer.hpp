@@ -24,6 +24,7 @@
 #include "client/ClientMirror.hpp"
 #include "config/GameOptions.hpp"
 #include "gameplay/ChestSystem.hpp"
+#include "gameplay/DyeColor.hpp"
 #include "gameplay/GameSession.hpp"
 #include "gameplay/GameplayMutationSink.hpp"
 #include "gameplay/Inventory.hpp"
@@ -1811,18 +1812,23 @@ class WorldRenderer final {
     void pushBoxUvCuboid(VkCommandBuffer commandBuffer, const glm::mat4& worldMatrix,
                          glm::vec3 renderSize, glm::vec3 uvSize, glm::vec2 uv, bool mirror,
                          glm::vec2 textureSize, std::uint32_t faceOverride, float layer,
-                         float packedLight = 0.0F, float hurtFlash = 0.0F) const {
-        // textureLayersRotation.w is free in the box-UV path; it carries the
-        // per-face source/rotate override (ModelCube::faceOverride) as raw bits,
-        // which the shader recovers with floatBitsToUint. dimensions.w is the
-        // packed scene lightmap (see packedSceneLight); 0 keeps the fixed light.
-        // positionSize.w is likewise free here, so it carries OverlayTexture's
-        // hurt-row strength.
+                         std::uint32_t woolTint = 0xFFFFFFU, float packedLight = 0.0F,
+                         float hurtFlash = 0.0F) const {
+        // The push constant is already at Vulkan's guaranteed 128-byte limit, so
+        // the box-UV path packs its scalars tightly. textureLayersRotation.w holds
+        // the per-face source/rotate override (ModelCube::faceOverride) as raw
+        // bits (floatBitsToUint in the shader). positionSize.w carries the wool
+        // tint as a packed 0xRRGGBB (white == no-op). The hurt-row strength (0/1)
+        // has nowhere left of its own, so it rides in dimensions.w above the
+        // packed scene lightmap: light in [0, 256], hurt adds 512, and the shader
+        // splits them back apart (see item_entity.vert). dimensions.w == 0 still
+        // means "no scene light, keep the fixed light".
         const ItemPush push{
-            {uvSize.x, uvSize.y, uvSize.z, hurtFlash},
+            {uvSize.x, uvSize.y, uvSize.z, std::bit_cast<float>(woolTint)},
             {layer, textureSize.x, textureSize.y, std::bit_cast<float>(faceOverride)},
             {9.0F, uv.x, uv.y, mirror ? 1.0F : 0.0F},
-            {renderSize.x, renderSize.y, renderSize.z, packedLight},
+            {renderSize.x, renderSize.y, renderSize.z,
+             packedLight + (hurtFlash > 0.5F ? 512.0F : 0.0F)},
             worldMatrix,
         };
         vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
@@ -1962,6 +1968,18 @@ class WorldRenderer final {
                 const float boneLayer = index < species->boneTextureLayer.size()
                                             ? species->boneTextureLayer[index]
                                             : species->textureLayer;
+                // DYE-3: a wool bone (one that samples the species' fleece layer)
+                // is tinted by the creature's dye colour and vanishes once the
+                // sheep is sheared; every other bone renders untinted. White
+                // (the default colour) tints to ~identity, so non-sheep and undyed
+                // sheep cost only this compare.
+                const bool isWoolBone = species->secondaryTextureLayer >= 0.0F &&
+                                        boneLayer == species->secondaryTextureLayer;
+                if (isWoolBone && entity.sheared) {
+                    continue;
+                }
+                const std::uint32_t woolTint =
+                    isWoolBone ? gameplay::dyeColorTexture(entity.color) : 0xFFFFFFU;
                 for (const auto& cube : bone.cubes) {
                     // Per-cube rotation happens around the cube's own pivot,
                     // inside the bone; `inflate` then grows the box about its
@@ -1973,7 +1991,7 @@ class WorldRenderer final {
                                                 glm::translate(glm::mat4{1.0F}, cube.center());
                     pushBoxUvCuboid(commandBuffer, cubeWorld, cube.renderSize(), cube.size, cube.uv,
                                     cube.mirror, textureSize, cube.faceOverride,
-                                    boneLayer, packedLight, hurtFlash);
+                                    boneLayer, woolTint, packedLight, hurtFlash);
                 }
             }
         }

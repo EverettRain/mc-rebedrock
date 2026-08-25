@@ -137,6 +137,11 @@ void checkRoundTrip(const gameplay::PublishedSnapshot& snapshot) {
     pig.previousWalkDistance = 4.0F;
     pig.hurtTicks = 2;
     pig.deathTicks = 0;
+    // DYE-3: non-default colour + sheared so a codec that dropped either field
+    // would fail the whole-struct == below instead of silently round-tripping the
+    // defaults (White / not-sheared).
+    pig.color = gameplay::DyeColor::Cyan;
+    pig.sheared = true;
     creatures.push_back(pig);
 
     std::vector<gameplay::ItemEntity> drops;
