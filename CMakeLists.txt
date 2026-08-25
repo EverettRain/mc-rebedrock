@@ -1252,6 +1252,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME armor_mitigation COMMAND mc_rebedrock_armor_mitigation_test)
 
+    add_executable(mc_rebedrock_resistance_absorption_test
+        tests/resistance_absorption_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_resistance_absorption_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_resistance_absorption_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME resistance_absorption COMMAND mc_rebedrock_resistance_absorption_test)
+
     add_executable(mc_rebedrock_screen_handler_test
         tests/screen_handler_test.cpp
     )

@@ -48,6 +48,10 @@ struct BuiltinEffectIds final {
     core::StatusEffectId hunger{};
     core::StatusEffectId speed{};
     core::StatusEffectId slowness{};
+    // EQ-3: the two defensive effects. Registered after the original five so
+    // their dense ids append rather than renumber the existing ones.
+    core::StatusEffectId resistance{};
+    core::StatusEffectId fireResistance{};
 };
 
 BuiltinEffectIds gBuiltinIds;
@@ -70,6 +74,14 @@ StatusEffectRegistry buildRegistry() {
         "poison", {StatusEffectCategory::Harmful, 0x87A363U, EffectKind::Poison});
     gBuiltinIds.hunger = registry.registerBuiltin(
         "hunger", {StatusEffectCategory::Harmful, 0x587653U, EffectKind::Hunger});
+    // EQ-3: Resistance and Fire Resistance carry no per-tick behaviour
+    // (EffectKind::None) — the damage pipeline consults them directly through
+    // resistanceLevel()/isFireImmune(). Colours off MobEffects.java
+    // (RESISTANCE 0x99453A, FIRE_RESISTANCE 0xE49A3A), both Beneficial.
+    gBuiltinIds.resistance = registry.registerBuiltin(
+        "resistance", {StatusEffectCategory::Beneficial, 0x99453AU, EffectKind::None});
+    gBuiltinIds.fireResistance = registry.registerBuiltin(
+        "fire_resistance", {StatusEffectCategory::Beneficial, 0xE49A3AU, EffectKind::None});
     registry.freeze();
     return registry;
 }
@@ -120,6 +132,14 @@ core::StatusEffectId speedEffect() {
 core::StatusEffectId slownessEffect() {
     static_cast<void>(statusEffectRegistry());
     return gBuiltinIds.slowness;
+}
+core::StatusEffectId resistanceEffect() {
+    static_cast<void>(statusEffectRegistry());
+    return gBuiltinIds.resistance;
+}
+core::StatusEffectId fireResistanceEffect() {
+    static_cast<void>(statusEffectRegistry());
+    return gBuiltinIds.fireResistance;
 }
 
 int effectTickInterval(EffectKind kind, std::uint8_t amplifier) {
@@ -213,6 +233,19 @@ bool hasEffect(const ActiveEffects& effects, core::StatusEffectId id) {
 const EffectInstance* getEffect(const ActiveEffects& effects, core::StatusEffectId id) {
     const std::size_t index = indexOf(effects, id);
     return index < effects.count ? &effects.entries[index] : nullptr;
+}
+
+std::uint8_t resistanceLevel(const ActiveEffects& effects) {
+    const EffectInstance* const instance = getEffect(effects, resistanceEffect());
+    if (instance == nullptr) {
+        return 0U;
+    }
+    // Vanilla's `getAmplifier() + 1`: Resistance II (amplifier 1) is level 2.
+    return static_cast<std::uint8_t>(instance->amplifier + 1U);
+}
+
+bool isFireImmune(const ActiveEffects& effects) {
+    return hasEffect(effects, fireResistanceEffect());
 }
 
 EffectTickOutcome tickEffects(ActiveEffects& effects, float currentHealth) {

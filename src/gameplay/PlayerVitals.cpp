@@ -53,9 +53,14 @@ bool PlayerVitals::hurt(float amount, DamageType cause, bool causedByLivingNonPl
     // caller remembered to. EQ-2's armor/toughness stage lives in the same
     // shared pipeline, so a player hit is reduced exactly the way a future
     // armored mob's would be.
+    // EQ-3: the Resistance / Fire Resistance stages read numbers off the
+    // player's own effect store, gathered here so the shared pipeline stays a
+    // pure transform — the same "caller gathers, pipeline transforms" split the
+    // armor field uses. A player with neither effect passes level 0 / not-immune
+    // and the stages are no-ops.
     const DamageOutcome outcome = applyDamage(
         damage_, DamageContext{cause, amount, difficulty_, causedByLivingNonPlayer, armor,
-                               armorToughness});
+                               armorToughness, resistanceLevel(effects_), isFireImmune(effects_)});
     if (armorApplied != nullptr) {
         *armorApplied = outcome.armorApplied;
     }

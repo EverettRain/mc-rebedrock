@@ -145,6 +145,11 @@ class StatusEffectRegistry;
 [[nodiscard]] core::StatusEffectId hungerEffect();
 [[nodiscard]] core::StatusEffectId speedEffect();
 [[nodiscard]] core::StatusEffectId slownessEffect();
+// EQ-3: the two defensive effects the damage pipeline consults (no per-tick
+// behaviour of their own). Resistance removes a flat 20% per level; Fire
+// Resistance makes IsFire damage bounce off entirely.
+[[nodiscard]] core::StatusEffectId resistanceEffect();
+[[nodiscard]] core::StatusEffectId fireResistanceEffect();
 
 // --- The per-entity API (free functions over ActiveEffects) ---
 
@@ -169,6 +174,18 @@ std::size_t clearEffects(ActiveEffects& effects);
 // can read a remaining duration or (rarely) adjust one.
 [[nodiscard]] const EffectInstance* getEffect(const ActiveEffects& effects,
                                               core::StatusEffectId id);
+
+// EQ-3: the defender's Resistance level for the damage pipeline — the active
+// Resistance effect's amplifier plus one (Resistance II == 2), or zero when it
+// is absent. This is the number DamageContext::resistanceLevel wants, derived
+// by the caller from its own effect store so the pipeline stays a pure
+// transform. Deterministic, no allocation: one array scan over the tiny store.
+[[nodiscard]] std::uint8_t resistanceLevel(const ActiveEffects& effects);
+
+// EQ-3: whether the defender holds Fire Resistance, feeding
+// DamageContext::fireImmune. A thin wrapper over hasEffect(fireResistanceEffect)
+// so callers name intent rather than the id.
+[[nodiscard]] bool isFireImmune(const ActiveEffects& effects);
 
 // Advances every active effect one tick: fires each interval behaviour into the
 // returned outcome, decrements durations, and compacts out any that reached

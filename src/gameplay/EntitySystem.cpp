@@ -583,8 +583,15 @@ bool EntitySystem::hurt(std::uint64_t entityId, float amount, glm::vec3 knockbac
     auto& entity = entities_[found->second];
     // The guards and the invulnerability window live in the shared pipeline, so
     // the player and every mob resolve a hit the same way regardless of
-    // whether it came from a melee swing or (RW-0) a projectile.
-    const DamageOutcome outcome = applyDamage(entity.damage, type, amount);
+    // whether it came from a melee swing or (RW-0) a projectile. EQ-3: a mob's
+    // own Resistance / Fire Resistance effects feed the same defensive stages a
+    // player's do, gathered here off its effect store so the pipeline stays a
+    // pure transform. Mobs carry no armor yet, so those context fields stay
+    // defaulted.
+    DamageContext context{type, amount};
+    context.resistanceLevel = resistanceLevel(entity.effects);
+    context.fireImmune = isFireImmune(entity.effects);
+    const DamageOutcome outcome = applyDamage(entity.damage, context);
     if (!outcome.landed) {
         return false;
     }
@@ -1144,8 +1151,13 @@ EntityTickResult EntitySystem::tick(
                 // 100-tick burn hits at 100/80/60/40/20 — five points for five
                 // seconds — and the last decrement leaves it at zero.
                 if (entity.fireTicks % kFireDamageInterval == 0) {
-                    const DamageOutcome outcome =
-                        applyDamage(entity.damage, DamageType::OnFire, 1.0F);
+                    // EQ-3: Fire Resistance makes the per-second burn bounce off
+                    // (LivingEntity#hurt rejects any IsFire source when the
+                    // effect is held); the shared pipeline's fireImmune guard
+                    // does it, so an immune mob simply takes no burn tick.
+                    DamageContext burn{DamageType::OnFire, 1.0F};
+                    burn.fireImmune = isFireImmune(entity.effects);
+                    const DamageOutcome outcome = applyDamage(entity.damage, burn);
                     if (outcome.landed) {
                         entity.ambientSoundChance = -kMinAmbientSoundDelay;
                         pendingSounds_.push_back(

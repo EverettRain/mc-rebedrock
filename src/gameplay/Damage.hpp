@@ -20,6 +20,14 @@ struct DamageState {
     float lastDamage = 0.0F;    // LivingEntity#lastDamageTaken
     DamageType lastSource = DamageType::Generic;
     bool dying = false;         // onDeath already fired; guards a second death
+    // EQ-3: LivingEntity#absorptionAmount — the extra "shield" health an
+    // Absorption source (golden apple, the Absorption effect) grants, spent
+    // before real health in actuallyHurt (`dmg = max(dmg - absorption, 0)`).
+    // Purely in-memory: no source grants it yet (deferred to AR content), so it
+    // sits at zero for every entity today and the absorption stage is a no-op
+    // until then. Not part of the save format — persistence writes each field it
+    // keeps by name, and this one is not written, so old worlds load unchanged.
+    float absorptionAmount = 0.0F;
 
     [[nodiscard]] bool dead() const { return health <= 0.0F; }
 };
@@ -52,6 +60,12 @@ struct DamageOutcome final {
     float exhaustion = 0.0F;
     // What actually landed after scaling, for callers that report or animate it.
     float appliedDamage = 0.0F;
+    // EQ-3: how much of this hit the absorption pool soaked up before it reached
+    // real health, matching vanilla's `absorbedDamage = originalDamage - dmg`.
+    // Zero when the defender has no absorption. Reported so a HUD can flash the
+    // yellow absorption hearts draining; the pool itself is already decremented
+    // on `state` by the time this returns.
+    float absorbedDamage = 0.0F;
     // EQ-2: whether the armor/toughness stage actually ran on this hit — false
     // when the type carries BypassesArmor (the void, falling, drowning,
     // starving) or when the hit never reached that stage at all (swallowed by
@@ -89,6 +103,20 @@ struct DamageContext final {
     // keeps compiling unchanged.
     float armor = 0.0F;
     float armorToughness = 0.0F;
+    // EQ-3: the defender's Resistance level at the moment of the hit — the
+    // effect's amplifier plus one, so "Resistance II" (amplifier 1) is level 2,
+    // matching vanilla's `getAmplifier() + 1`. Zero means no Resistance and the
+    // stage is a no-op. The caller derives this from its ActiveEffects
+    // (resistanceLevel() below) rather than the pipeline reaching into an effect
+    // store it does not own — the same "caller gathers the numbers, the pure
+    // pipeline transforms them" split EQ-2's armor field uses. Appended,
+    // defaulted, so every existing aggregate-init call site keeps compiling.
+    std::uint8_t resistanceLevel = 0U;
+    // EQ-3: the defender holds Fire Resistance. When set, an IsFire hit is
+    // rejected outright at the head of the pipeline, mirroring vanilla's
+    // `source.is(IS_FIRE) && hasEffect(FIRE_RESISTANCE)` short-circuit in
+    // LivingEntity#hurt (before the invulnerability window).
+    bool fireImmune = false;
 };
 
 // DamageUtil#getDamageLeft (1.16.1, `net.minecraft.entity.DamageUtil`),
@@ -110,6 +138,31 @@ struct DamageContext final {
     return damage * (1.0F - reduction / 25.0F);
 }
 
+// LivingEntity#getDamageAfterMagicAbsorb's Resistance step (1.16.1/26.1),
+// transcribed symbol-for-symbol:
+//
+//   int absorbValue = (amplifier + 1) * 5;   // == level * 5 here
+//   int absorb = 25 - absorbValue;
+//   damage = max(damage * absorb / 25.0F, 0.0F);
+//
+// `level` is the effect amplifier plus one (Resistance II == level 2), so each
+// level removes a flat 20% and level 5 removes it all. Level 0 (no Resistance)
+// leaves the damage untouched. A pure function on the two numbers the formula
+// needs (EQ-DESIGN.md §3), unit-testable apart from the effect store that
+// supplies the level, and dropped into the pipeline's named effects stage as a
+// single call — the same shape damageAfterArmor uses for its stage.
+[[nodiscard]] constexpr float damageAfterResistance(float damage, std::uint8_t level) {
+    if (level == 0U) {
+        return damage;
+    }
+    // Clamp at five: six levels of Resistance would make `absorb` negative and
+    // flip the sign of the damage. Vanilla can never exceed amplifier 4 (level
+    // 5) in practice, but the formula must not reward a stacked overshoot.
+    const int clampedLevel = level < 5U ? static_cast<int>(level) : 5;
+    const int absorb = 25 - clampedLevel * 5;
+    return std::max(damage * static_cast<float>(absorb) / 25.0F, 0.0F);
+}
+
 // LivingEntity#hurt, as the fixed pipeline it is in vanilla rather than a
 // subtraction with the difficulty already folded in by whoever called it:
 //
@@ -127,6 +180,14 @@ struct DamageContext final {
 inline DamageOutcome applyDamage(DamageState& state, const DamageContext& context) {
     // --- guards ---
     if (state.dead() || context.type == DamageType::None || context.amount <= 0.0F) {
+        return {};
+    }
+
+    // Fire Resistance: LivingEntity#hurt rejects any IsFire source outright when
+    // the victim holds the effect (before the invulnerability window), so an
+    // immune creature standing in lava simply takes nothing — the hit never
+    // touches the window, the hurt flash, or health.
+    if (context.fireImmune && hasDamageTag(context.type, DamageTag::IsFire)) {
         return {};
     }
 
@@ -168,10 +229,49 @@ inline DamageOutcome applyDamage(DamageState& state, const DamageContext& contex
         armorApplied = true;
     }
     // --- status effects / enchantments ---  (BypassesEffects / BypassesResistance)
+    // getDamageAfterMagicAbsorb: the Resistance effect removes a flat 20% per
+    // level, unless the type opts out of effects entirely (BypassesEffects, e.g.
+    // starving) or specifically out of Resistance (BypassesResistance, e.g. the
+    // void and /kill). Vanilla checks BypassesEffects first, then Resistance
+    // alone; either tag leaves the damage untouched here. Enchantment protection
+    // (the second half of getDamageAfterMagicAbsorb) is EQ-4 and stays absent.
+    const bool bypassesEffects = hasDamageTag(context.type, DamageTag::BypassesEffects);
+    const bool bypassesResistance = hasDamageTag(context.type, DamageTag::BypassesResistance);
+    if (!bypassesEffects && !bypassesResistance) {
+        applied = damageAfterResistance(applied, context.resistanceLevel);
+    }
+
     // --- absorption ---
+    // actuallyHurt: the absorption pool soaks the hit before real health —
+    // `dmg = max(dmg - absorption, 0)`, then the pool loses exactly what it
+    // soaked (`absorption -= originalDamage - dmg`). No source grants absorption
+    // yet (deferred to AR), so the pool is zero and this is an identity, but the
+    // stage is wired in its vanilla place so a golden apple lands complete.
+    float absorbed = 0.0F;
+    if (state.absorptionAmount > 0.0F) {
+        const float afterAbsorb = std::max(applied - state.absorptionAmount, 0.0F);
+        absorbed = applied - afterAbsorb;
+        state.absorptionAmount -= absorbed;
+        applied = afterAbsorb;
+    }
+
     // --- shield ---                 (BypassesShield)
     if (applied <= 0.0F) {
-        return {};
+        // The hit was fully soaked (Resistance V, or absorption ate all of it):
+        // vanilla still counted the invulnerability window and the flash above,
+        // but deals no health damage. Report what absorption soaked so a HUD can
+        // show the shield draining even on a fully-blocked hit.
+        if (absorbed > 0.0F) {
+            state.hurtTicks = kHurtTicks;
+            state.lastSource = context.type;
+        }
+        DamageOutcome soaked;
+        soaked.landed = absorbed > 0.0F;
+        soaked.appliedDamage = 0.0F;
+        soaked.absorbedDamage = absorbed;
+        soaked.armorApplied = armorApplied;
+        soaked.preArmorDamage = preArmorDamage;
+        return soaked;
     }
 
     // --- health ---
@@ -185,6 +285,7 @@ inline DamageOutcome applyDamage(DamageState& state, const DamageContext& contex
     // --- exhaustion ---
     outcome.exhaustion = damageTypeData(context.type).exhaustion;
     outcome.appliedDamage = applied;
+    outcome.absorbedDamage = absorbed;
     outcome.armorApplied = armorApplied;
     outcome.preArmorDamage = preArmorDamage;
     return outcome;
