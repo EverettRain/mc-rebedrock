@@ -1444,6 +1444,19 @@ void GameRuntime::registerAuthoritativeCommands() {
                 } else if (requested.item != nullptr) {
                     identifier = requested.item->identifier.toString();
                 }
+            } else if (const auto realItemId = gameplay::itemRegistry().byName(*itemToken);
+                       realItemId.valid()) {
+                // A real registered item wins over a same-named block. This is the
+                // wheat case: the crop block and the wheat item share the id
+                // "wheat", and vanilla /give hands out the item (the crop block has
+                // no givable form). Resolving the block first handed back the crop
+                // block-item — a 2D "wheat plant" that cannot feed animals or craft
+                // bread. Only a *real* item (itemRegistry, not the block bridge)
+                // takes precedence, so pure blocks like stone still give a block
+                // stack below.
+                const auto* item = gameplay::itemFromId(realItemId);
+                requested = {world::Block::Air, 1U, item};
+                identifier = item->identifier.toString();
             } else if (const auto block = world::blockFromIdentifier(*itemToken); block.has_value()) {
                 requested = {*block, 1U, gameplay::blockItemFor(*block)};
                 identifier = world::blockDefinition(*block).identifier.toString();
