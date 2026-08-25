@@ -130,10 +130,10 @@ void testBuiltinFloorResolves() {
     // EQ-0 added 16 armor recipes (4 materials craftable x 4 slots; chainmail
     // has no recipe) on top of the 43 that used to be hardcoded. AR-CX1 appended
     // 6 utility recipes (bow/arrow/shears/bucket/paper/book); AR-CX2 landed the
-    // sugar_cane block (paper now resolves) and added yellow_dye — so all 7
-    // AR-CX crafting recipes (bow/arrow/shears/bucket/paper/book/yellow_dye)
-    // resolve.
-    assert(crafting.size() == 43U + 16U + 7U);
+    // sugar_cane block (paper now resolves) and added yellow_dye; AR-CX4-b added
+    // flint_and_steel — so all 8 AR-CX crafting recipes (bow/arrow/shears/bucket/
+    // paper/book/yellow_dye/flint_and_steel) resolve.
+    assert(crafting.size() == 43U + 16U + 8U);
     assert(furnace.size() == 7U);
 
     // 1x1 log -> 4 planks, a block ingredient and a block output.
@@ -243,6 +243,19 @@ void testArcx1UtilityRecipes() {
            yellowDye->ingredients[0].block == Block::Dandelion);
     assert(yellowDye->output.item == &mc::gameplay::items::YellowDye &&
            yellowDye->output.count == 1U);
+
+    // flint_and_steel (AR-CX4-b): shapeless iron_ingot + flint -> 1
+    // flint_and_steel. Both ingredients are items (iron from smelting, flint from
+    // gravel), so the recipe resolves the moment flint_and_steel registers.
+    const CraftingRecipe* flintAndSteel = findCrafting(crafting, "minecraft:flint_and_steel");
+    assert(flintAndSteel != nullptr && flintAndSteel->shapeless);
+    assert(flintAndSteel->ingredients.size() == 2U);
+    assert(flintAndSteel->ingredients[0].kind == IngredientKind::Item &&
+           flintAndSteel->ingredients[0].item == &mc::gameplay::items::IronIngot);
+    assert(flintAndSteel->ingredients[1].kind == IngredientKind::Item &&
+           flintAndSteel->ingredients[1].item == &mc::gameplay::items::Flint);
+    assert(flintAndSteel->output.item == &mc::gameplay::items::FlintAndSteel &&
+           flintAndSteel->output.count == 1U);
 }
 
 // 2c. The utility recipes actually match a live grid and yield the pinned counts.
@@ -322,9 +335,10 @@ void testOverlayMerges() {
                  "output":"minecraft:stone","count":1,"cookTicks":123,"experience":0.5})");
 
     table.load(pack);
-    // 43+16 built-ins (EQ-0 armor) + 7 AR-CX utility (paper resolves + yellow_dye
-    // added, AR-CX2) + demo_combo (oak_planks replaced in place, not added).
-    assert(table.crafting().size() == 43U + 16U + 7U + 1U);
+    // 43+16 built-ins (EQ-0 armor) + 8 AR-CX utility (paper resolves + yellow_dye
+    // (AR-CX2) + flint_and_steel (AR-CX4-b)) + demo_combo (oak_planks replaced in
+    // place, not added).
+    assert(table.crafting().size() == 43U + 16U + 8U + 1U);
     assert(findCrafting(table.crafting(), "minecraft:demo_combo") != nullptr);
     assert(findCrafting(table.crafting(), "minecraft:oak_planks")->output.count == 8U);
     const FurnaceRecipe* smelt = findFurnace(table.furnace(), "minecraft:demo_smelt");
@@ -336,7 +350,7 @@ void testNoDataFallback() {
     RecipeTable table;
     MemoryProvider empty;
     table.load(empty);
-    assert(table.crafting().size() == 43U + 16U + 7U);
+    assert(table.crafting().size() == 43U + 16U + 8U);
     assert(table.furnace().size() == 7U);
     assert(findCrafting(table.crafting(), "minecraft:oak_planks")->output.count == 4U);
 }
@@ -353,7 +367,7 @@ void testUnknownIdentifierSkipped() {
              R"({"width":1,"height":1,"ingredients":[{"item":"minecraft:coal"}],
                  "output":"minecraft:no_such_block","count":1})");
     table.load(pack);
-    assert(table.crafting().size() == 43U + 16U + 7U); // neither bad recipe was added
+    assert(table.crafting().size() == 43U + 16U + 8U); // neither bad recipe was added
     assert(findCrafting(table.crafting(), "minecraft:bad_item") == nullptr);
     assert(findCrafting(table.crafting(), "minecraft:bad_output") == nullptr);
 }

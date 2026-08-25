@@ -955,6 +955,87 @@ int main() {
         assert(droppedCane);
     }
 
+    // --- AR-CX4-b: fire ---
+
+    // Support rule (FireBlock#canSurvive): fire survives on a sturdy floor, or
+    // beside a flammable neighbour, and nowhere with neither.
+    {
+        using mc::world::Block;
+        using mc::world::BlockOrientation;
+        mc::world::Chunk fireChunk;
+        // A solid stone floor at y=1 across the chunk.
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                fireChunk.setBlock(x, 1, z, Block::Stone);
+            }
+        }
+        // A wooden plank pillar with air on top: fire at (8,3,8) has no floor
+        // below but a flammable plank beside it.
+        fireChunk.setBlock(9, 3, 8, Block::OakPlanks);
+        mc::world::World fireWorld;
+        fireWorld.setChunk({0, 0}, std::move(fireChunk));
+        // On top of stone: sturdy floor below.
+        assert(mc::world::canBlockSurvive(fireWorld, {4, 2, 4}, Block::Fire,
+                                          BlockOrientation::Up));
+        // Beside a plank, no floor: a flammable neighbour keeps it.
+        assert(mc::world::canBlockSurvive(fireWorld, {8, 3, 8}, Block::Fire,
+                                          BlockOrientation::Up));
+        // Mid-air over nothing flammable: cannot survive.
+        assert(!mc::world::canBlockSurvive(fireWorld, {4, 6, 4}, Block::Fire,
+                                           BlockOrientation::Up));
+    }
+
+    // Fire placed on a bare stone floor ages out to air on its own, driven only
+    // by random ticks (deterministic, 墙钟-free), with nothing flammable to eat.
+    {
+        using mc::world::Block;
+        mc::world::Chunk fireChunk;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                fireChunk.setBlock(x, 1, z, Block::Stone);
+            }
+        }
+        fireChunk.setBlock(4, 2, 4, Block::Fire);
+        mc::world::World fireWorld;
+        fireWorld.setChunk({0, 0}, std::move(fireChunk));
+        mc::gameplay::WorldSimulation fireSimulation;
+        fireSimulation.setRandomTickSpeed(1000);
+        assert(fireWorld.block(4, 2, 4) == Block::Fire);
+        bool burnedOut = false;
+        for (int tick = 0; tick < 20000 && !burnedOut; ++tick) {
+            static_cast<void>(fireSimulation.tick(fireWorld));
+            burnedOut = fireWorld.block(4, 2, 4) == Block::Air;
+        }
+        assert(burnedOut);
+    }
+
+    // Fire spreads to an adjacent flammable block: a plank next to the flame is
+    // eventually replaced by a fresh fire.
+    {
+        using mc::world::Block;
+        mc::world::Chunk fireChunk;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                fireChunk.setBlock(x, 1, z, Block::Stone);
+            }
+        }
+        // A row of planks the fire can walk along, so at least one neighbour is
+        // always flammable while the source burns.
+        fireChunk.setBlock(5, 2, 4, Block::OakPlanks);
+        fireChunk.setBlock(6, 2, 4, Block::OakPlanks);
+        fireChunk.setBlock(4, 2, 4, Block::Fire);
+        mc::world::World fireWorld;
+        fireWorld.setChunk({0, 0}, std::move(fireChunk));
+        mc::gameplay::WorldSimulation fireSimulation;
+        fireSimulation.setRandomTickSpeed(1000);
+        bool plankIgnited = false;
+        for (int tick = 0; tick < 20000 && !plankIgnited; ++tick) {
+            static_cast<void>(fireSimulation.tick(fireWorld));
+            plankIgnited = fireWorld.block(5, 2, 4) == Block::Fire;
+        }
+        assert(plankIgnited);
+    }
+
     // --- B1': the random-tick switch is now a table, and the draw loop rejects
     // a block with isRandomlyTicking before entering any call. The table and
     // the pre-filter are the same data, so they cannot drift — but the *set*
@@ -967,6 +1048,7 @@ int main() {
             Block::Carrots,       Block::Potatoes,      Block::OakSapling,
             Block::SpruceSapling, Block::BirchSapling,  Block::JungleSapling,
             Block::AcaciaSapling, Block::DarkOakSapling, Block::SugarCane,
+            Block::Fire,
         };
         for (const auto block : ticking) {
             assert(mc::gameplay::WorldSimulation::isRandomlyTicking(block));

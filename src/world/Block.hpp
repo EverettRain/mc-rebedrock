@@ -264,6 +264,14 @@ enum class Block : std::uint8_t {
     // growth to a stack of three. Carries the Age 0-15 property vanilla's
     // SugarCaneBlock.AGE uses to pace that growth.
     SugarCane,
+    // AR-CX4-b: fire, the block flint_and_steel places on a flammable/solid
+    // surface. Non-solid, no drops, emits full light (FireBlock's lightLevel
+    // 15), a cross-model plant-like block. Carries AGE 0-15 (FireBlock.AGE) to
+    // pace its random-tick burn-out; its own Fire support rule keeps it only
+    // where FireBlock#canSurvive would (a solid face below, or a flammable
+    // neighbour). Enum ordinal is irrelevant to saves (blocks serialise by
+    // stable name, format 5+), so appending it never touches an old save.
+    Fire,
     Count,
 };
 
@@ -448,6 +456,12 @@ enum class BlockSupport : std::uint8_t {
     // the four horizontal neighbours of the block *below*, which none of the
     // other support shapes do.
     SugarCane,
+    // AR-CX4-b: FireBlock#canSurvive — fire survives on a sturdy face below it
+    // (the ordinary case: fire lit on the top of a solid block) or when at least
+    // one of its six neighbours is flammable (fire clinging to a wooden wall).
+    // Its own category because it consults both the block below *and* the six
+    // neighbours' flammability tag, which no other support shape does.
+    Fire,
 };
 
 // Vanilla's AbstractBlock.OffsetType: whether the model is drawn with a
@@ -1756,6 +1770,21 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .support(BlockSupport::SugarCane)
         .state(StateProperty::Age, 16U)
         .creative(CreativeCategory::Decoration),
+    // AR-CX4-b: FireBlock. A non-solid, instantly-broken, light-15 block drawn
+    // with the cross-plant path (name-driven atlas: block/fire.png, a
+    // missing-texture placeholder until the asset lands — mac visual deferred).
+    // No collision, no drops (dropsItem false — you never pick fire up), placed
+    // by flint_and_steel. AGE 0-15 (FireBlock.AGE) paces its random-tick burn.
+    // Hidden from creative: fire is a technical block, obtained only by igniting
+    // a surface, exactly like vanilla lists no fire item in the creative tabs.
+    BlockProperties::of(Block::Fire, "fire", "Fire")
+        .texture("fire")
+        .instantBreak()
+        .cross()
+        .noDrops()
+        .light(15U)
+        .support(BlockSupport::Fire)
+        .state(StateProperty::Age, 16U),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {
@@ -1952,6 +1981,27 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
     return block == Block::WheatCrops || block == Block::Carrots || block == Block::Potatoes;
 }
 [[nodiscard]] constexpr bool isSugarCane(Block block) { return block == Block::SugarCane; }
+[[nodiscard]] constexpr bool isFire(Block block) { return block == Block::Fire; }
+
+// AR-CX4-b: whether fire catches on this block. 26.1 keeps per-block burn odds
+// on FireBlock; rebedrock derives the boolean from block traits so the answer
+// stays a single constexpr source both the world-layer FireBlock#canSurvive rule
+// and the gameplay random-tick (spread/burn-out) read, with no parallel list to
+// drift. The flammable set is the wooden family: leaves, logs, any `_planks` or
+// `_wool` block, and the bookshelf — exactly the subset of the current registry
+// FireBlock.registerFlammable would touch. A data-pack-widened set is a later
+// concern; this is the built-in floor.
+[[nodiscard]] constexpr bool isFlammable(Block block) {
+    const auto& definition = blockDefinition(block);
+    if (definition.leaves || definition.pillar) {
+        return true; // leaves and logs (pillar == RotatedPillarBlock)
+    }
+    if (block == Block::Bookshelf) {
+        return true;
+    }
+    const std::string_view path = definition.identifier.path;
+    return path.ends_with("_planks") || path.ends_with("_wool");
+}
 [[nodiscard]] constexpr bool isDestroyedByFluid(Block block) {
     // Sugar cane grows beside water on purpose, so — like a crop — it is not a
     // REPLACEABLE_PLANT and flowing water does not wash it away.

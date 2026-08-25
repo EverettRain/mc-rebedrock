@@ -257,6 +257,34 @@ int main() {
         assert(host.splashes == 1);
     }
 
+    // --- AR-CX4-b: flint_and_steel right-clicks the top of a solid block and
+    //     lights a Fire in the cell above it, spending one durability point per
+    //     ignite and never double-firing on the same tick (CX0 edge). ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        session.setGameMode(gameplay::GameMode::Survival);
+        world::World world;
+        buildFloor(world); // stone floor, top face at y=0
+        session.inventory().mutableSlot(0) =
+            {world::Block::Air, 1U, &gameplay::items::FlintAndSteel};
+        session.inventory().selectHotbar(0);
+        gameplay::UseItemOn ignite;
+        ignite.block = glm::ivec3{5, 0, 5};
+        ignite.adjacent = glm::ivec3{5, 1, 5};
+        ignite.face = world::BlockOrientation::Up;
+        ignite.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(ignite));
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        // A real Fire block now stands in the cell above the clicked floor.
+        assert(world.block(5, 1, 5) == world::Block::Fire);
+        // The lighter is still in hand (not consumed as a stack) but has spent
+        // exactly one durability point — a single edge, not a double trigger.
+        assert(session.inventory().selectedStack().item == &gameplay::items::FlintAndSteel);
+        assert(session.inventory().selectedStack().damage == 1U);
+    }
+
     // --- Attack: a StartDestroy at a creature hits it once. ---
     {
         TestHost host;

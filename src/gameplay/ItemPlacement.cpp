@@ -248,6 +248,24 @@ namespace {
     return {ItemUseAction::TilGround, world::BlockState{tilled}};
 }
 
+// AR-CX4-b: FlintAndSteelItem#useOn → BaseFireBlock.getState/setBlockState. Fire
+// is placed in the cell adjacent to the clicked face (the same replaceable cell
+// PlaceBlock targets), but only when a Fire block would actually survive there
+// (FireBlock#canSurvive: sturdy floor below, or a flammable neighbour) — a lit
+// tool clicked at empty air over nothing does nothing, exactly like vanilla.
+[[nodiscard]] ItemUseResult igniteWithFlintAndSteel(
+    const Item*, world::World& world, const world::PlacementContext& context) {
+    const auto target = context.placePosition;
+    if (!world::isReplaceable(world.block(target.x, target.y, target.z))) {
+        return {};
+    }
+    if (!world::canBlockSurvive(world, target, world::Block::Fire,
+                                world::BlockOrientation::Up)) {
+        return {};
+    }
+    return {ItemUseAction::PlaceFire, world::BlockState{world::Block::Fire}};
+}
+
 // The useOn handler for a registered item, classified once at table build. This
 // is the old itemUseOn `if`-chain, run at registration time so the runtime path
 // is a table lookup rather than a per-click scan. Block items and a custom
@@ -272,6 +290,9 @@ namespace {
     }
     if (item->toolType == ToolType::Hoe) {
         return tillBlockWithHoe;
+    }
+    if (item->toolType == ToolType::FlintAndSteel) {
+        return igniteWithFlintAndSteel;
     }
     return nullptr;
 }

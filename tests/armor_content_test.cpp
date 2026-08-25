@@ -201,12 +201,12 @@ void testEnchantability() {
 // The registry grew by exactly the 20 armor items, and every entry stays
 // unique/namespaced (itemRegistryIsWellFormed's static_assert already proves
 // this at compile time; this just double-checks the runtime view agrees).
-// RW-1 added 2 more (arrow, bow) after EQ-0 landed, and DYE-1 added the 16
-// dyes, so the registry total this test rechecks is EQ-0's own 77 + RW-1's 2
-// + DYE-1's 16 — the armor count below is unaffected (none of those 18 items
-// is armor).
+// RW-1 added 2 more (arrow, bow) after EQ-0 landed, DYE-1 added the 16 dyes,
+// and AR-CX4-b added flint_and_steel — so the registry total this test rechecks
+// is EQ-0's own 77 + RW-1's 2 + DYE-1's 16 + AR-CX4-b's 1 — the armor count
+// below is unaffected (none of those 19 items is armor).
 void testRegistryCount() {
-    static_assert(kItemRegistry.size() == 95U);
+    static_assert(kItemRegistry.size() == 96U);
     int armorCount = 0;
     for (const Item* item : kItemRegistry) {
         if (isArmor(item)) ++armorCount;

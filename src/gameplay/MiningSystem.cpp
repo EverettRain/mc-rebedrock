@@ -75,6 +75,10 @@ std::uint16_t toolDurabilityCost(
         // HoeItem#useOn always pays exactly one point.
         return 1U;
     }
+    if (use == ToolUse::Ignite) {
+        // FlintAndSteelItem#useOn pays exactly one point per ignite.
+        return 1U;
+    }
     // Both postMine overloads leave a zero-hardness block free.
     if (blockHardness == 0.0F) {
         return 0U;

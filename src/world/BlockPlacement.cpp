@@ -94,13 +94,34 @@ using SupportRuleFn = bool (*)(const World&, glm::ivec3, BlockOrientation);
     return false;
 }
 
-inline constexpr std::array<SupportRuleFn, 6> kSupportRules{{
+[[nodiscard]] bool supportFire(const World& world, glm::ivec3 position, BlockOrientation) {
+    // FireBlock#canSurvive: fire stays when the block below can hold it (a sturdy
+    // top face — the ordinary "lit on top of a solid block" case) or when any of
+    // its six neighbours is flammable (fire clinging to a wooden wall). This
+    // consults both the block below and all six neighbours, which no other
+    // support shape does, so it is its own category rather than reusing Ground.
+    if (isFaceSturdy(world.block(position.x, position.y - 1, position.z))) {
+        return true;
+    }
+    for (const auto direction : {BlockOrientation::North, BlockOrientation::East,
+                                 BlockOrientation::South, BlockOrientation::West,
+                                 BlockOrientation::Up, BlockOrientation::Down}) {
+        const glm::ivec3 side = position + orientationOffset(direction);
+        if (isFlammable(world.block(side.x, side.y, side.z))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline constexpr std::array<SupportRuleFn, 7> kSupportRules{{
     &supportAlways,    // BlockSupport::None
     &supportGround,    // BlockSupport::Ground
     &supportWall,      // BlockSupport::Wall
     &supportSoil,      // BlockSupport::Soil
     &supportFarmland,  // BlockSupport::Farmland
     &supportSugarCane, // BlockSupport::SugarCane
+    &supportFire,      // BlockSupport::Fire
 }};
 static_assert(static_cast<std::size_t>(BlockSupport::None) == 0U);
 static_assert(static_cast<std::size_t>(BlockSupport::Ground) == 1U);
@@ -108,6 +129,7 @@ static_assert(static_cast<std::size_t>(BlockSupport::Wall) == 2U);
 static_assert(static_cast<std::size_t>(BlockSupport::Soil) == 3U);
 static_assert(static_cast<std::size_t>(BlockSupport::Farmland) == 4U);
 static_assert(static_cast<std::size_t>(BlockSupport::SugarCane) == 5U);
+static_assert(static_cast<std::size_t>(BlockSupport::Fire) == 6U);
 
 } // namespace
 

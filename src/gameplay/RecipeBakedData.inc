@@ -107,6 +107,10 @@ inline constexpr BakedIngredient kCraftIng_64[] = {
 // 方块已在，打通 16 色染料里的黄色。
 inline constexpr BakedIngredient kCraftIng_65[] = {
     {IngredientDefKind::Block, "rebedrock:dandelion"}};
+// AR-CX4-b: flint_and_steel — shapeless 1 iron_ingot + 1 flint -> 1
+// flint_and_steel。两者皆已可得（iron 冶炼铁矿，flint 采 gravel），落地即可合成。
+inline constexpr BakedIngredient kCraftIng_66[] = {
+    {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:flint"}};
 
 inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     {"minecraft:oak_planks", 1, 1, false, false, kCraftIng_0, "rebedrock:oak_planks", 4},
@@ -178,6 +182,8 @@ inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     {"minecraft:book",   2, 2, true,  false, kCraftIng_64, "rebedrock:book",   1},
     // AR-CX2: 1 dandelion -> 1 yellow_dye (shapeless).
     {"minecraft:yellow_dye", 1, 1, true, false, kCraftIng_65, "rebedrock:yellow_dye", 1},
+    // AR-CX4-b: 1 iron_ingot + 1 flint -> 1 flint_and_steel (shapeless).
+    {"minecraft:flint_and_steel", 2, 1, true, false, kCraftIng_66, "rebedrock:flint_and_steel", 1},
 };
 
 inline constexpr BakedFurnaceRecipe kBakedFurnaceRecipes[] = {

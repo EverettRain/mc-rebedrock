@@ -26,6 +26,9 @@ enum class ToolUse : std::uint8_t {
     BreakBlock,
     AttackEntity,
     Till,
+    // AR-CX4-b: FlintAndSteelItem#useOn — igniting a block costs one durability
+    // point, the same flat cost the hoe's Till pays (ItemStack#damage(1, ...)).
+    Ignite,
 };
 
 // ToolItem#postMine / #postHit: how much durability one use costs. Blocks with

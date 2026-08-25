@@ -1042,6 +1042,31 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
             }
             break;
         }
+        case ItemUseAction::PlaceFire: {
+            // AR-CX4-b: FlintAndSteelItem#useOn — write Fire into the adjacent
+            // cell (already resolved to a replaceable, survivable target by
+            // igniteWithFlintAndSteel). Unlike PlaceBlock, the flint and steel is
+            // not consumed as a stack; in survival it pays one durability point,
+            // mirroring HoeItem's Till cost handling above.
+            const auto block = placeTarget;
+            GameplayMutationSink sink{world, session};
+            if (session.worldMutations()
+                    .setBlock(world, {block.x, block.y, block.z}, itemUse.state,
+                              world::MutationFlags::All, world::MutationCause::PlayerPlace, sink)
+                    .changed) {
+                session.events().publish(SoundEvent{SoundEventKind::BlockPlace,
+                                                    glm::vec3{block} + glm::vec3{0.5F},
+                                                    world::Block::Fire});
+                session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
+                if (session.gameMode() == GameMode::Survival) {
+                    if (session.damageHeldTool(kPrimaryPlayerId, ToolUse::Ignite, 0.0F)) {
+                        session.events().publish(SoundEvent{SoundEventKind::ItemBreak,
+                                                            session.player().eyePosition()});
+                    }
+                }
+            }
+            break;
+        }
         }
         break;
     }

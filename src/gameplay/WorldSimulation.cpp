@@ -405,6 +405,10 @@ void WorldSimulation::randomTickSugarCaneEntry(const RandomTickContext& context)
     context.simulation.randomTickSugarCane(context.world, context.position, context.changes);
 }
 
+void WorldSimulation::randomTickFireEntry(const RandomTickContext& context) {
+    context.simulation.randomTickFire(context.world, context.position, context.changes);
+}
+
 void WorldSimulation::randomTickBlock(
     world::World& world,
     SimulationPosition position,
@@ -687,6 +691,65 @@ void WorldSimulation::randomTickSugarCane(
     const auto reset = caneState.withAge(0);
     world.setState(position.x, position.y, position.z, reset);
     changes.push_back({position, reset});
+}
+
+void WorldSimulation::randomTickFire(
+    world::World& world,
+    SimulationPosition position,
+    std::vector<BlockChange>& changes) {
+    // FireBlock#randomTick, simplified. Vanilla weighs fire's fate against
+    // humidity, rain, an age roll and per-block burn odds; this build keeps the
+    // shape that matters for the落地 acceptance (place -> spreads a little ->
+    // burns out) and defers the full weighting to a later pass.
+    if (!world::isWorldYInRange(position.y)) {
+        return;
+    }
+    const auto fireState = world.state(position.x, position.y, position.z);
+    const int age = fireState.age();
+
+    // Losing its footing puts fire out at once (FireBlock#tick's canSurvive
+    // check), regardless of age — a floor that burned away leaves nothing to
+    // keep the flame.
+    if (!world::canBlockSurvive(world, {position.x, position.y, position.z},
+                                world::Block::Fire, world::BlockOrientation::Up)) {
+        if (!reserveCropStateWrite()) {
+            return;
+        }
+        setSimulatedBlock(world, position, world::Block::Air, changes);
+        return;
+    }
+
+    // Before it burns out, an aging fire tries to consume one adjacent flammable
+    // block: the neighbour it eats is replaced by a fresh fire (age 0), which is
+    // how a blaze walks across a wooden structure. One deterministic pick from
+    // the six neighbours per tick keeps the spread bounded and reproducible.
+    constexpr std::array<world::BlockOrientation, 6> kNeighbours{
+        world::BlockOrientation::North, world::BlockOrientation::East,
+        world::BlockOrientation::South, world::BlockOrientation::West,
+        world::BlockOrientation::Up,    world::BlockOrientation::Down};
+    const auto pick = kNeighbours[nextBounded(randomTickState_, kNeighbours.size())];
+    const auto offset = world::orientationOffset(pick);
+    const SimulationPosition target{position.x + offset.x, position.y + offset.y,
+                                    position.z + offset.z};
+    if (world::isWorldYInRange(target.y) &&
+        world::isFlammable(world.block(target.x, target.y, target.z)) &&
+        reserveCropStateWrite()) {
+        setSimulatedBlock(world, target, world::Block::Fire, changes);
+    }
+
+    // The AGE counter climbs one per random tick; once it saturates the flame
+    // burns out to air. A budget reservation guards the write so a field of fire
+    // dying in one tick cannot flood the change pipeline.
+    if (!reserveCropStateWrite()) {
+        return;
+    }
+    if (age < 15) {
+        const auto older = fireState.withAge(age + 1);
+        world.setState(position.x, position.y, position.z, older);
+        changes.push_back({position, older});
+        return;
+    }
+    setSimulatedBlock(world, position, world::Block::Air, changes);
 }
 
 void WorldSimulation::queueTreeGrowth(SimulationPosition position) {

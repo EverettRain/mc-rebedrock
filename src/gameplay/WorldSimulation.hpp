@@ -99,6 +99,7 @@ class WorldSimulation final {
     static void randomTickCropEntry(const RandomTickContext& context);
     static void randomTickFarmlandEntry(const RandomTickContext& context);
     static void randomTickSugarCaneEntry(const RandomTickContext& context);
+    static void randomTickFireEntry(const RandomTickContext& context);
 
     // The behaviour table, indexed by block: a null entry means the block has no
     // random tick. This replaces the switch this used to be — 26.1 dispatches
@@ -125,6 +126,7 @@ class WorldSimulation final {
         }
         entries[world::blockId(world::Block::Farmland).index()] = &randomTickFarmlandEntry;
         entries[world::blockId(world::Block::SugarCane).index()] = &randomTickSugarCaneEntry;
+        entries[world::blockId(world::Block::Fire).index()] = &randomTickFireEntry;
         return entries;
     }();
 
@@ -317,6 +319,14 @@ class WorldSimulation final {
     // so it shares the crop-write budget. Deterministic via mc::rng only.
     void randomTickSugarCane(world::World& world, SimulationPosition position,
                              std::vector<BlockChange>& changes);
+    // AR-CX4-b: FireBlock#randomTick (simplified). The AGE counter climbs one per
+    // random tick to 15; on each tick fire also tries to spread to a flammable
+    // neighbour, and once it is old (or loses its footing) it burns out to air.
+    // The burn budget is shared with the crop-write budget so a wildfire cannot
+    // flood one tick's change pipeline. Spread targets are chosen with the
+    // deterministic random-tick LCG (nextBounded), never a wall clock.
+    void randomTickFire(world::World& world, SimulationPosition position,
+                        std::vector<BlockChange>& changes);
     // CropsBlock#getAvailableMoisture: how much the farmland under and around a
     // crop speeds its growth (1.0 alone, up to ~10 when nine moist blocks ring
     // the plant). The crop's growth chance divides by this.

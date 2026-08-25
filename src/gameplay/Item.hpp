@@ -57,6 +57,13 @@ enum class ToolType : std::uint8_t {
     // durability-only slot in toolAttributes. ToolTier::None; a bow is not
     // materialed either.
     Bow,
+    // AR-CX4-b: FlintAndSteelItem (26.1) — no mining/harvest table (it never
+    // breaks blocks), but wears down one point per ignite (64 durability,
+    // Items.FLINT_AND_STEEL's maxDamage(64)), so it takes the same durability-
+    // only slot Shears/Bow use. Its right-click-on-block behaviour (place fire)
+    // is dispatched by this ToolType in itemUseOnSlot, the same way the hoe's is.
+    // ToolTier::None; flint and steel is not materialed.
+    FlintAndSteel,
 };
 
 enum class ToolTier : std::uint8_t {
@@ -708,6 +715,18 @@ inline constexpr Item Shears = Item::of("shears")
                                    .single()
                                    .tool(ToolType::Shears, ToolTier::None);
 
+// AR-CX4-b: FlintAndSteelItem (26.1). Single-stacking, 64 durability
+// (toolAttributes' FlintAndSteel case), one point spent per ignite. Its
+// right-click-on-block behaviour (place fire on the clicked face) is dispatched
+// by its ToolType in ItemPlacement.cpp, the same way the hoe's till is —
+// FlintAndSteelItem#useOn is a block-target use, not a mob interaction.
+// Craftable from 1 iron + 1 flint (both already obtainable), so it is reachable
+// the moment it registers.
+inline constexpr Item FlintAndSteel = Item::of("flint_and_steel")
+                                          .category(CreativeCategory::Tools)
+                                          .single()
+                                          .tool(ToolType::FlintAndSteel, ToolTier::None);
+
 // RW-1: ArrowItem (1.16.1) — ordinary stackable ammunition, 64 per stack
 // (Item.Settings' default maxCount, ArrowItem sets no override). Ranged
 // weapons scan the whole inventory for one (Inventory::findArrowSlot below),
@@ -946,7 +965,7 @@ inline constexpr Item DiamondBoots =
 // their constructors need entity headers that sit above us in the include graph.
 // The order sets both the creative-catalog order within each tab and the item
 // texture-array layout the renderer appends. Grouped materials / food / tools.
-inline constexpr std::array<const Item*, 95> kItemRegistry{
+inline constexpr std::array<const Item*, 96> kItemRegistry{
     &items::Bucket,     &items::WaterBucket, &items::LavaBucket, &items::MilkBucket,
     &items::Coal,
     &items::IronIngot,
@@ -968,6 +987,8 @@ inline constexpr std::array<const Item*, 95> kItemRegistry{
     &items::WoodenSword,    &items::StoneSword,    &items::IronSword,
     &items::DiamondSword,   &items::GoldSword,
     &items::Shears,
+    // AR-CX4-b: flint and steel (the ignite tool).
+    &items::FlintAndSteel,
     // RW-1: arrow (ammunition) + bow (the charge/draw ranged weapon).
     &items::Arrow,      &items::Bow,
     // EQ-0: armor, 5 materials x 4 slots (head, chest, legs, feet order).
@@ -994,9 +1015,10 @@ inline constexpr std::array<const Item*, 95> kItemRegistry{
 // versa) is a compile error, not a silent truncation: 57 pre-EQ-0 items + the
 // 20 armor items EQ-0 added + the 2 (arrow, bow) RW-1 adds + the 16 dyes DYE-1
 // adds here.
-static_assert(kItemRegistry.size() == 57U + 20U + 2U + 16U,
+static_assert(kItemRegistry.size() == 57U + 20U + 2U + 16U + 1U,
               "kItemRegistry size must track every entry listed above — bump "
-              "this alongside the array when adding or removing items");
+              "this alongside the array when adding or removing items "
+              "(the +1 is AR-CX4-b's flint_and_steel)");
 
 // The registry is well formed when every entry is in this project's namespace,
 // has a non-empty path, and no two entries share an identifier.
@@ -1086,6 +1108,11 @@ struct ToolAttributes final {
         // shape as Shears — no mining speed/harvest level/attack numbers a
         // bow ever consults.
         return {1.0F, 0U, 1.0F, 1.0F, 384U};
+    case ToolType::FlintAndSteel:
+        // FlintAndSteelItem (26.1): 64 durability (Items.FLINT_AND_STEEL's
+        // maxDamage(64)), one point per ignite. Same flat shape as Shears/Bow —
+        // no mining speed/harvest level/attack numbers a lighter ever consults.
+        return {1.0F, 0U, 1.0F, 1.0F, 64U};
     default:
         return {};
     }
