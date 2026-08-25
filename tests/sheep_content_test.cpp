@@ -649,6 +649,125 @@ void testDyeNonDyeableCreatureIsNoOp() {
     REQUIRE(session.inventory().selectedStack().count == 4U);  // no dye spent
 }
 
+// --- DYE-2: coloured wool drops ---
+
+// The DyeColor->wool-block table is complete and honest: every colour maps to a
+// registered `<colour>_wool` block, and the reverse predicate (isWool) accepts
+// exactly those 16 and nothing else. A pure data check, no world needed.
+void testWoolBlockTableCoversAllColours() {
+    for (std::size_t index = 0; index < gameplay::kDyeColorCount; ++index) {
+        const auto color = static_cast<gameplay::DyeColor>(index);
+        const world::Block wool = gameplay::items::woolBlockFor(color);
+        REQUIRE(gameplay::items::isWool(wool));
+        // The block's name is `<colour>_wool` for this colour.
+        const std::string expected = std::string{gameplay::dyeColorName(color)} + "_wool";
+        REQUIRE(world::blockDefinition(wool).identifier.path == expected);
+    }
+    // A non-wool block is not wool (guards against an over-broad isWool).
+    REQUIRE(!gameplay::items::isWool(world::Block::Stone));
+    REQUIRE(!gameplay::items::isWool(world::Block::Air));
+}
+
+// Shearing a dyed sheep drops that colour's wool, not white. Also proves the
+// count dimension is untouched (still 1-3) — sabotage anchor ② is a count that
+// regressed when the colour was added.
+void testShearDropsColouredWool() {
+    TestHost host;
+    gameplay::GameSession session;
+    world::World world;
+    buildStoneFloor(world);
+    session.setGameMode(gameplay::GameMode::Creative);  // creative so no shears wear
+    session.teleportPlayer(gameplay::kPrimaryPlayerId, {5.5F, 2.0F, 5.5F});
+
+    const std::uint64_t sheepId = spawnSheep(session, {5.5F, 2.0F, 6.0F});
+    // Dye the sheep cyan first (authoritative colour state).
+    REQUIRE(session.worldEntities().dye(sheepId, gameplay::DyeColor::Cyan));
+    REQUIRE(session.worldEntities().byId(sheepId)->color == gameplay::DyeColor::Cyan);
+
+    session.inventory().mutableSlot(0) = {world::Block::Air, 1U, &gameplay::items::Shears};
+    session.inventory().selectHotbar(0);
+
+    useOnEntity(session, world, host, sheepId);
+
+    bool sawCyanWool = false;
+    for (const auto& item : session.itemEntities().entities()) {
+        // No white wool must appear — the drop is retinted, not doubled.
+        REQUIRE(item.stack.block != world::Block::WhiteWool);
+        if (item.stack.block == world::Block::CyanWool) {
+            REQUIRE(item.stack.item == gameplay::blockItemFor(world::Block::CyanWool));
+            REQUIRE(item.stack.count >= 1U && item.stack.count <= 3U);  // count unchanged
+            sawCyanWool = true;
+        }
+    }
+    REQUIRE(sawCyanWool);
+}
+
+// Killing a dyed sheep drops that colour's wool through the loot path (the loot
+// fn emits a white placeholder, EntitySystem::die retints it). Every one of the
+// 16 colours is exercised so no slot in the table is silently wrong.
+void testKillDropsColouredWoolForEveryColour() {
+    for (std::size_t index = 0; index < gameplay::kDyeColorCount; ++index) {
+        const auto color = static_cast<gameplay::DyeColor>(index);
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildStoneFloor(world);
+        session.teleportPlayer(gameplay::kPrimaryPlayerId, {5.5F, 2.0F, 5.5F});
+
+        const std::uint64_t sheepId = spawnSheep(session, {5.5F, 2.0F, 6.0F});
+        if (color != gameplay::DyeColor::White) {
+            REQUIRE(session.worldEntities().dye(sheepId, color));
+        }
+        REQUIRE(session.worldEntities().byId(sheepId)->color == color);
+
+        REQUIRE(session.worldEntities().kill(sheepId));
+
+        const world::Block expectedWool = gameplay::items::woolBlockFor(color);
+        bool sawWool = false;
+        for (const auto& [position, drops] : session.worldEntities().pendingDrops()) {
+            static_cast<void>(position);
+            for (const auto& stack : drops.view()) {
+                // Any wool in the drop must be exactly this colour, never white
+                // (the placeholder) unless the colour actually is white.
+                if (gameplay::items::isWool(stack.block)) {
+                    REQUIRE(stack.block == expectedWool);
+                    REQUIRE(stack.item == gameplay::blockItemFor(expectedWool));
+                    REQUIRE(stack.count == 1U);  // Sheep.json: exactly one wool
+                    sawWool = true;
+                }
+            }
+        }
+        REQUIRE(sawWool);
+    }
+}
+
+// A default (undyed, white) sheep still drops white wool on kill — the default
+// path must not regress now that colouring exists.
+void testKillDefaultSheepDropsWhiteWool() {
+    TestHost host;
+    gameplay::GameSession session;
+    world::World world;
+    buildStoneFloor(world);
+    session.teleportPlayer(gameplay::kPrimaryPlayerId, {5.5F, 2.0F, 5.5F});
+
+    const std::uint64_t sheepId = spawnSheep(session, {5.5F, 2.0F, 6.0F});
+    REQUIRE(session.worldEntities().byId(sheepId)->color == gameplay::DyeColor::White);
+
+    REQUIRE(session.worldEntities().kill(sheepId));
+
+    bool sawWhiteWool = false;
+    for (const auto& [position, drops] : session.worldEntities().pendingDrops()) {
+        static_cast<void>(position);
+        for (const auto& stack : drops.view()) {
+            if (gameplay::items::isWool(stack.block)) {
+                REQUIRE(stack.block == world::Block::WhiteWool);
+                sawWhiteWool = true;
+            }
+        }
+    }
+    REQUIRE(sawWhiteWool);
+}
+
 } // namespace
 
 int main() {
@@ -670,5 +789,9 @@ int main() {
     testDyeSheepCreativeKeepsDye();
     testDyeSameColourIsNoOp();
     testDyeNonDyeableCreatureIsNoOp();
+    testWoolBlockTableCoversAllColours();
+    testShearDropsColouredWool();
+    testKillDropsColouredWoolForEveryColour();
+    testKillDefaultSheepDropsWhiteWool();
     return 0;
 }

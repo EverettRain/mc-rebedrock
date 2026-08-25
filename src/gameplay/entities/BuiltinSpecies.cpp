@@ -72,9 +72,10 @@ EntityDrops rollChickenLoot(std::uint64_t& rng) {
 }
 
 // Sheep.json (26.1): 1-2 mutton plus exactly one wool block, tinted by the
-// sheep's dye colour. Colour variants (dye/AR-A2 shearing) are out of scope
-// here — every sheep this manifest spawns drops white wool, the default a
-// freshly-spawned sheep carries before any dye interaction exists.
+// sheep's dye colour. DYE-2: the loot roll has no access to the dying entity, so
+// it emits a white-wool placeholder that EntitySystem::die retints to the mob's
+// authoritative DyeColor (woolBlockFor) before the drop spawns — the kill-path
+// mirror of the shear path in PlayerInteraction. A white sheep keeps white wool.
 EntityDrops rollSheepLoot(std::uint64_t& rng) {
     EntityDrops drops;
     const auto mutton = static_cast<std::uint8_t>(1U + mc::rng::nextInt(rng, 2U));

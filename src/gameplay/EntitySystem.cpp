@@ -2,6 +2,7 @@
 
 #include "gameplay/EnchantmentCombat.hpp"
 #include "gameplay/EntityRenderSnapshot.hpp"
+#include "gameplay/Item.hpp"
 #include "gameplay/Random.hpp"
 
 #include "world/Block.hpp"
@@ -995,8 +996,23 @@ bool EntitySystem::die(SimpleEntity& entity) {
     if (!beginDeath(entity.damage)) {
         return false;
     }
-    pendingDrops_.emplace_back(entity.position + glm::vec3{0.0F, 0.25F, 0.0F},
-                               entity.kind().rollLoot(lootRandomState_));
+    EntityDrops drops = entity.kind().rollLoot(lootRandomState_);
+    // DYE-2: Sheep.json's wool drop rolls a placeholder white wool (the loot fn
+    // has no access to the entity), so its colour is applied here where the
+    // dying entity's authoritative DyeColor is in scope — the kill-path analogue
+    // of the shear path's woolBlockFor. Any wool entry is retinted to the mob's
+    // colour and its BlockItem re-derived; a white sheep keeps white wool, a
+    // dyed one drops its colour. Wool-agnostic to every other species: non-wool
+    // drops (mutton, feathers, rotten flesh) fail isWool and pass through
+    // untouched, so this never needs a per-species check.
+    for (std::size_t entry = 0; entry < drops.count; ++entry) {
+        ItemStack& stack = drops.entries[entry];
+        if (items::isWool(stack.block)) {
+            stack.block = items::woolBlockFor(entity.color);
+            stack.item = blockItemFor(stack.block);
+        }
+    }
+    pendingDrops_.emplace_back(entity.position + glm::vec3{0.0F, 0.25F, 0.0F}, drops);
     // LivingEntity#dropExperience, gated by lastHurtByPlayerMemoryTime > 0
     // (Java's PLAYER_HURT_EXPERIENCE_TIME window, 100 ticks — the same 100
     // hurt() stamps into recentAttackerTicks). A creature that starved, burned,

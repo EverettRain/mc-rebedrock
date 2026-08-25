@@ -1049,16 +1049,19 @@ void PlayerInteraction::performUseOnEntity(GameSession& session, world::World&,
             // must not drop wool or spend durability — bail before either.
             return;
         }
-        // Sheep.json (26.1): 1-3 white wool from a shear. Colour variants (dye)
-        // are deferred — see rollSheepLoot's note; every sheep sheared here is
-        // white. The loot table's own RNG stream does not exist in this build,
-        // so the roll (and the drop's scatter angle) uses the same
-        // deterministic per-tick stream every other world edit in this file
-        // already draws from.
+        // Sheep.json (26.1): 1-3 wool from a shear, tinted by the sheep's dye
+        // colour (Sheep#dropFromShearing: `getColor()` selects the wool block).
+        // DYE-2: woolBlockFor maps the entity's authoritative DyeColor to its
+        // wool Block via a constexpr table — a white sheep still drops white
+        // wool (the default a freshly-spawned sheep carries), a dyed one drops
+        // its colour, with no per-colour branch here. The loot table's own RNG
+        // stream does not exist in this build, so the roll (and the drop's
+        // scatter angle) uses the same deterministic per-tick stream every other
+        // world edit in this file already draws from.
         auto& rng = session.lootRandomState();
         const auto woolCount = static_cast<std::uint8_t>(1U + mc::rng::nextInt(rng, 3U));
-        const ItemStack woolStack{world::Block::WhiteWool, woolCount,
-                                  blockItemFor(world::Block::WhiteWool)};
+        const world::Block woolBlock = items::woolBlockFor(target->color);
+        const ItemStack woolStack{woolBlock, woolCount, blockItemFor(woolBlock)};
         const float angle = mc::rng::nextFloat(rng) * 6.28318530718F;
         session.spawnItemEntity(target->position + glm::vec3{0.0F, target->dimensions().height * 0.5F, 0.0F},
                                 woolStack,

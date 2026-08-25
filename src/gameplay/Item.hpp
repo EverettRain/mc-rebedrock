@@ -785,6 +785,57 @@ static_assert([] {
     return true;
 }(), "kDyeItems must list <colour>_dye in DyeColor id order");
 
+// DYE-2: the wool Block each DyeColor drops, indexed by DyeColor id (position ==
+// colour, white=0 .. black=15), the same "identity is the array index" DOD rule
+// kDyeItems uses. A sheep's coloured shear/kill drop is one array read here — no
+// per-colour switch that grows a case each time a colour is added, and no
+// allocation on the drop's hot path. The mapping is constexpr .rodata, and the
+// static_assert below pins each slot to the `<colour>_wool` block named for that
+// index's DyeColor, so a reordering that dropped orange wool from a white sheep
+// is a compile error, not a shipped bug.
+inline constexpr std::array<world::Block, gameplay::kDyeColorCount> kWoolBlocks{
+    world::Block::WhiteWool,     world::Block::OrangeWool, world::Block::MagentaWool,
+    world::Block::LightBlueWool, world::Block::YellowWool, world::Block::LimeWool,
+    world::Block::PinkWool,      world::Block::GrayWool,   world::Block::LightGrayWool,
+    world::Block::CyanWool,      world::Block::PurpleWool, world::Block::BlueWool,
+    world::Block::BrownWool,     world::Block::GreenWool,  world::Block::RedWool,
+    world::Block::BlackWool,
+};
+
+// The wool Block a colour drops. A pure table lookup on the dense DyeColor id —
+// the single home for "which wool does this colour give" every drop path (shear
+// in PlayerInteraction, kill in the sheep loot roll) shares.
+[[nodiscard]] constexpr world::Block woolBlockFor(gameplay::DyeColor color) noexcept {
+    return kWoolBlocks[gameplay::dyeColorId(color)];
+}
+
+// True for any of the 16 wool blocks. Membership is tested against kWoolBlocks
+// (the authoritative set) rather than an enum-ordinal range, so the predicate
+// stays correct if the wool blocks are ever reordered. The single home the
+// colour-remap on a coloured mob's death drops (EntitySystem::die) consults to
+// find "which of these drops is wool" without hard-coding a wool identity there.
+[[nodiscard]] constexpr bool isWool(world::Block block) noexcept {
+    for (const world::Block wool : kWoolBlocks) {
+        if (wool == block) return true;
+    }
+    return false;
+}
+
+// The wool at each index must be `<colour>_wool` for that index's DyeColor name,
+// so position-as-colour is honest: a mismatch (wrong block at a colour slot, or
+// a renamed wool block) is a compile error, not a sheep dropping the wrong wool.
+static_assert([] {
+    for (std::size_t index = 0; index < gameplay::kDyeColorCount; ++index) {
+        const std::string_view id = world::blockDefinition(kWoolBlocks[index]).identifier.path;
+        const std::string_view name = gameplay::kDyeColors[index].name;
+        if (id.size() != name.size() + 5U || id.substr(0, name.size()) != name ||
+            id.substr(name.size()) != "_wool") {
+            return false;
+        }
+    }
+    return true;
+}(), "kWoolBlocks must list <colour>_wool in DyeColor id order");
+
 // Armor: 5 materials (leather/chainmail/iron/gold/diamond) x 4 slots
 // (head/chest/legs/feet), Java 1.16.1 ArmorItem. Each is single-stacking,
 // carries its material + slot (armorAttributes below derives protection,

@@ -76,6 +76,26 @@ enum class Block : std::uint8_t {
     WhiteWool,
     RedWool,
     BlackWool,
+    // DYE-2: the remaining 13 dyed wool colours, so every DyeColor has a wool
+    // block to drop. Grouped here with the three pre-existing wools; the exact
+    // enum ordinal does not matter to saves (blocks serialise by their stable
+    // name in the palette, format 5+), so inserting them mid-enum never touches
+    // an old save's block ids. The DyeColor->Block mapping is a constexpr table
+    // (woolBlockFor, below) so a per-colour drop is a table lookup, never a
+    // switch that grows a case per colour.
+    OrangeWool,
+    MagentaWool,
+    LightBlueWool,
+    YellowWool,
+    LimeWool,
+    PinkWool,
+    GrayWool,
+    LightGrayWool,
+    CyanWool,
+    PurpleWool,
+    BlueWool,
+    BrownWool,
+    GreenWool,
     StoneBricks,
     MossyCobblestone,
     Sandstone,
@@ -1059,6 +1079,62 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::BlackWool, "black_wool", "Black Wool")
         .texture("black_wool")
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
+    // DYE-2: the remaining 13 dyed wools. Same strength/category as the three
+    // above; each carries its stable "<colour>_wool" name (the save-palette /
+    // JC anchor) and its own texture. Registered in the same DyeColor palette
+    // order used by kDyeColors so woolBlockFor's table stays a straight zip.
+    BlockProperties::of(Block::OrangeWool, "orange_wool", "Orange Wool")
+        .texture("orange_wool")
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::MagentaWool, "magenta_wool", "Magenta Wool")
+        .texture("magenta_wool")
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::LightBlueWool, "light_blue_wool", "Light Blue Wool")
+        .texture("light_blue_wool")
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::YellowWool, "yellow_wool", "Yellow Wool")
+        .texture("yellow_wool")
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::LimeWool, "lime_wool", "Lime Wool")
+        .texture("lime_wool")
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::PinkWool, "pink_wool", "Pink Wool")
+        .texture("pink_wool")
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::GrayWool, "gray_wool", "Gray Wool")
+        .texture("gray_wool")
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::LightGrayWool, "light_gray_wool", "Light Gray Wool")
+        .texture("light_gray_wool")
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::CyanWool, "cyan_wool", "Cyan Wool")
+        .texture("cyan_wool")
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::PurpleWool, "purple_wool", "Purple Wool")
+        .texture("purple_wool")
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::BlueWool, "blue_wool", "Blue Wool")
+        .texture("blue_wool")
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::BrownWool, "brown_wool", "Brown Wool")
+        .texture("brown_wool")
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::GreenWool, "green_wool", "Green Wool")
+        .texture("green_wool")
         .strength(0.8F)
         .creative(CreativeCategory::BuildingBlocks),
     BlockProperties::of(Block::StoneBricks, "stone_bricks", "Stone Bricks")
