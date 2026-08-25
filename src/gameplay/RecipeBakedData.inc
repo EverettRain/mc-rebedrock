@@ -103,6 +103,10 @@ inline constexpr BakedIngredient kCraftIng_63[] = {
 inline constexpr BakedIngredient kCraftIng_64[] = {
     {IngredientDefKind::Item, "rebedrock:paper"}, {IngredientDefKind::Item, "rebedrock:paper"},
     {IngredientDefKind::Item, "rebedrock:paper"}, {IngredientDefKind::Item, "rebedrock:leather"}};
+// AR-CX2: yellow_dye — shapeless 1 dandelion (BLOCK) -> 1 yellow_dye。dandelion
+// 方块已在，打通 16 色染料里的黄色。
+inline constexpr BakedIngredient kCraftIng_65[] = {
+    {IngredientDefKind::Block, "rebedrock:dandelion"}};
 
 inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     {"minecraft:oak_planks", 1, 1, false, false, kCraftIng_0, "rebedrock:oak_planks", 4},
@@ -172,6 +176,8 @@ inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     {"minecraft:bucket", 3, 2, false, false, kCraftIng_62, "rebedrock:bucket", 1},
     {"minecraft:paper",  3, 1, false, false, kCraftIng_63, "rebedrock:paper",  3},
     {"minecraft:book",   2, 2, true,  false, kCraftIng_64, "rebedrock:book",   1},
+    // AR-CX2: 1 dandelion -> 1 yellow_dye (shapeless).
+    {"minecraft:yellow_dye", 1, 1, true, false, kCraftIng_65, "rebedrock:yellow_dye", 1},
 };
 
 inline constexpr BakedFurnaceRecipe kBakedFurnaceRecipes[] = {

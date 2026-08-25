@@ -69,19 +69,45 @@ using SupportRuleFn = bool (*)(const World&, glm::ivec3, BlockOrientation);
     // CropsBlock#canSurvive: only farmland (tilled soil) holds a crop.
     return isFarmland(world.block(position.x, position.y - 1, position.z));
 }
+[[nodiscard]] bool supportSugarCane(const World& world, glm::ivec3 position, BlockOrientation) {
+    // SugarCaneBlock#canSurvive. Another sugar cane directly below is always
+    // enough (it inherits the base cane's own valid footing), so a stack keeps
+    // itself up.
+    const glm::ivec3 below{position.x, position.y - 1, position.z};
+    const Block base = world.block(below.x, below.y, below.z);
+    if (isSugarCane(base)) {
+        return true;
+    }
+    // Otherwise the cell below must be a plantable soil/sand and have a water
+    // block orthogonally adjacent to *it* (SugarCaneBlock checks the four
+    // horizontal neighbours of the supporting block, not of the cane).
+    const bool plantable = isSoil(base) || base == Block::Sand || base == Block::RedSand;
+    if (!plantable) {
+        return false;
+    }
+    for (const auto direction : kClockwiseHorizontals) {
+        const glm::ivec3 side = below + orientationOffset(direction);
+        if (isFluid(world.block(side.x, side.y, side.z))) {
+            return true;
+        }
+    }
+    return false;
+}
 
-inline constexpr std::array<SupportRuleFn, 5> kSupportRules{{
-    &supportAlways,   // BlockSupport::None
-    &supportGround,   // BlockSupport::Ground
-    &supportWall,     // BlockSupport::Wall
-    &supportSoil,     // BlockSupport::Soil
-    &supportFarmland, // BlockSupport::Farmland
+inline constexpr std::array<SupportRuleFn, 6> kSupportRules{{
+    &supportAlways,    // BlockSupport::None
+    &supportGround,    // BlockSupport::Ground
+    &supportWall,      // BlockSupport::Wall
+    &supportSoil,      // BlockSupport::Soil
+    &supportFarmland,  // BlockSupport::Farmland
+    &supportSugarCane, // BlockSupport::SugarCane
 }};
 static_assert(static_cast<std::size_t>(BlockSupport::None) == 0U);
 static_assert(static_cast<std::size_t>(BlockSupport::Ground) == 1U);
 static_assert(static_cast<std::size_t>(BlockSupport::Wall) == 2U);
 static_assert(static_cast<std::size_t>(BlockSupport::Soil) == 3U);
 static_assert(static_cast<std::size_t>(BlockSupport::Farmland) == 4U);
+static_assert(static_cast<std::size_t>(BlockSupport::SugarCane) == 5U);
 
 } // namespace
 

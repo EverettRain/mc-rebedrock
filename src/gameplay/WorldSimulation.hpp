@@ -98,6 +98,7 @@ class WorldSimulation final {
     static void randomTickSaplingEntry(const RandomTickContext& context);
     static void randomTickCropEntry(const RandomTickContext& context);
     static void randomTickFarmlandEntry(const RandomTickContext& context);
+    static void randomTickSugarCaneEntry(const RandomTickContext& context);
 
     // The behaviour table, indexed by block: a null entry means the block has no
     // random tick. This replaces the switch this used to be — 26.1 dispatches
@@ -123,6 +124,7 @@ class WorldSimulation final {
             entries[world::blockId(crop).index()] = &randomTickCropEntry;
         }
         entries[world::blockId(world::Block::Farmland).index()] = &randomTickFarmlandEntry;
+        entries[world::blockId(world::Block::SugarCane).index()] = &randomTickSugarCaneEntry;
         return entries;
     }();
 
@@ -309,6 +311,12 @@ class WorldSimulation final {
     // dries one level, reverting to dirt at 0 once no crop stands on it.
     void randomTickFarmland(world::World& world, SimulationPosition position,
                             std::vector<BlockChange>& changes);
+    // SugarCaneBlock#randomTick: when the cell above is air and the stack is
+    // shorter than three, an AGE counter climbs to 15 and then places a new
+    // sugar cane above (resetting this cell's age). A crop-style state write,
+    // so it shares the crop-write budget. Deterministic via mc::rng only.
+    void randomTickSugarCane(world::World& world, SimulationPosition position,
+                             std::vector<BlockChange>& changes);
     // CropsBlock#getAvailableMoisture: how much the farmland under and around a
     // crop speeds its growth (1.0 alone, up to ~10 when nine moist blocks ring
     // the plant). The crop's growth chance divides by this.

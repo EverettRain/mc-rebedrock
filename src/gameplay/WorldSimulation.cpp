@@ -401,6 +401,10 @@ void WorldSimulation::randomTickFarmlandEntry(const RandomTickContext& context) 
     context.simulation.randomTickFarmland(context.world, context.position, context.changes);
 }
 
+void WorldSimulation::randomTickSugarCaneEntry(const RandomTickContext& context) {
+    context.simulation.randomTickSugarCane(context.world, context.position, context.changes);
+}
+
 void WorldSimulation::randomTickBlock(
     world::World& world,
     SimulationPosition position,
@@ -631,6 +635,60 @@ void WorldSimulation::randomTickFarmland(
     }
 }
 
+void WorldSimulation::randomTickSugarCane(
+    world::World& world,
+    SimulationPosition position,
+    std::vector<BlockChange>& changes) {
+    // SugarCaneBlock#randomTick. Only the top cane grows (the one with air
+    // above); a cane buried under another cane does nothing.
+    const SimulationPosition above{position.x, position.y + 1, position.z};
+    if (above.y >= world::kMaxY) {
+        return;
+    }
+    if (world.block(above.x, above.y, above.z) != world::Block::Air) {
+        return;
+    }
+    // Count how tall the stack already is (this cane plus the ones directly
+    // below). Vanilla caps a naturally grown stack at three, so a cane sitting
+    // on two others below it never adds a fourth.
+    int height = 1;
+    for (int offset = 1; offset < 3; ++offset) {
+        const int checkY = position.y - offset;
+        if (checkY < world::kMinY ||
+            world.block(position.x, checkY, position.z) != world::Block::SugarCane) {
+            break;
+        }
+        ++height;
+    }
+    if (height >= 3) {
+        return;
+    }
+    const auto caneState = world.state(position.x, position.y, position.z);
+    const int age = caneState.age();
+    // AGE climbs one per random tick until 15; only then does the cane grow a
+    // new block above and reset its own counter. The counter, not a random
+    // roll, is what paces the growth — deterministic and mc::rng-free.
+    if (age < 15) {
+        if (!reserveCropStateWrite()) {
+            return;
+        }
+        const auto older = caneState.withAge(age + 1);
+        world.setState(position.x, position.y, position.z, older);
+        changes.push_back({position, older});
+        return;
+    }
+    // A grow step is two state writes (the new cane above, this cane's reset),
+    // so it needs two of the crop-write budget to stay atomic.
+    if (cropStateWritesThisTick_ + 2U > kMaximumCropStateWritesPerTick) {
+        return;
+    }
+    cropStateWritesThisTick_ += 2U;
+    setSimulatedBlock(world, above, world::Block::SugarCane, changes);
+    const auto reset = caneState.withAge(0);
+    world.setState(position.x, position.y, position.z, reset);
+    changes.push_back({position, reset});
+}
+
 void WorldSimulation::queueTreeGrowth(SimulationPosition position) {
     if (!world::isWorldYInRange(position.y) ||
         ticks_.contains(TickTask::TreeGrowth, position)) {
@@ -797,14 +855,19 @@ void WorldSimulation::breakUnsupportedBlocks(
                                    world.orientation(position.x, position.y, position.z))) {
             return;
         }
-        // Crops do not drop themselves (blockDefinition.dropsItem is false), so
-        // their loot has to be requested explicitly, like decayLeaves does for a
-        // canopy. The whole state is captured before the cell is cleared so the
-        // rolled table reflects the stage the crop had reached.
+        // A block that popped off its support drops its own item, exactly like
+        // Java's dropStacks before removeBlock. Crops do not carry dropsItem
+        // (their loot is a species table keyed by age) so they always need the
+        // explicit request; an ordinary attached block (a torch, a flower, a
+        // sugar cane) does carry dropsItem and drops its own state. The whole
+        // state is captured before the cell is cleared so a crop's rolled table
+        // reflects the stage it had reached. setSimulatedBlock only fills the
+        // drop itself for fluid-washed blocks, so this support path fills it.
         const auto previousState = world.state(position.x, position.y, position.z);
         const std::size_t changeCount = changes.size();
         setSimulatedBlock(world, position, world::Block::Air, changes);
-        if (changes.size() > changeCount && world::isCrop(block)) {
+        if (changes.size() > changeCount &&
+            (world::isCrop(block) || world::blockDefinition(block).dropsItem)) {
             changes.back().dropped = previousState;
         }
         wakeWaterNeighbors(world, position);

@@ -257,6 +257,13 @@ enum class Block : std::uint8_t {
     OakTrapdoor,
     StonePressurePlate,
     CobblestoneWall,
+    // AR-CX2: sugar cane, the plant block that closes the paper -> book chain
+    // (the CX1 paper recipe names rebedrock:sugar_cane). A cross-model plant
+    // like a flower, but with SugarCaneBlock's own placement rule (soil/sand
+    // beside water, or another sugar cane below) and a vertical random-tick
+    // growth to a stack of three. Carries the Age 0-15 property vanilla's
+    // SugarCaneBlock.AGE uses to pace that growth.
+    SugarCane,
     Count,
 };
 
@@ -435,6 +442,12 @@ enum class BlockSupport : std::uint8_t {
     Soil,
     // Farmland below (crops, the way BushBlock#mayPlaceOn accepts FarmlandBlock).
     Farmland,
+    // AR-CX2: SugarCaneBlock#canSurvive: another sugar cane directly below, or
+    // grass/dirt/sand/podzol/coarse_dirt below with a water block orthogonally
+    // adjacent to that supporting cell. Its own category because the rule reads
+    // the four horizontal neighbours of the block *below*, which none of the
+    // other support shapes do.
+    SugarCane,
 };
 
 // Vanilla's AbstractBlock.OffsetType: whether the model is drawn with a
@@ -1731,6 +1744,18 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .strength(2.0F, 6.0F)
         .wall()
         .creative(CreativeCategory::BuildingBlocks),
+    // AR-CX2: SugarCaneBlock. A cross-model plant (no collision, cutout, instant
+    // break), dropping itself as its block item (dropsItem stays true), placed
+    // by its own SugarCane support rule. AGE 0-15 (SugarCaneBlock.AGE) paces the
+    // vertical random-tick growth in WorldSimulation. Filed under Decoration so
+    // it is reachable in creative like the other plants.
+    BlockProperties::of(Block::SugarCane, "sugar_cane", "Sugar Cane")
+        .texture("sugar_cane")
+        .instantBreak()
+        .cross()
+        .support(BlockSupport::SugarCane)
+        .state(StateProperty::Age, 16U)
+        .creative(CreativeCategory::Decoration),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {
@@ -1926,9 +1951,12 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
 [[nodiscard]] constexpr bool isCrop(Block block) {
     return block == Block::WheatCrops || block == Block::Carrots || block == Block::Potatoes;
 }
+[[nodiscard]] constexpr bool isSugarCane(Block block) { return block == Block::SugarCane; }
 [[nodiscard]] constexpr bool isDestroyedByFluid(Block block) {
+    // Sugar cane grows beside water on purpose, so — like a crop — it is not a
+    // REPLACEABLE_PLANT and flowing water does not wash it away.
     return isRenderable(block) && !isFluid(block) && !isCrop(block) &&
-           !blockDefinition(block).collision;
+           !isSugarCane(block) && !blockDefinition(block).collision;
 }
 
 [[nodiscard]] constexpr BlockSupport blockSupport(Block block) {

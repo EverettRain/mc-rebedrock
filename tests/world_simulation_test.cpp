@@ -1,6 +1,7 @@
 #include "gameplay/WorldSimulation.hpp"
 
 #include "world/Block.hpp"
+#include "world/BlockPlacement.hpp"
 #include "world/Chunk.hpp"
 #include "world/World.hpp"
 
@@ -859,6 +860,101 @@ int main() {
         assert(poppedWithAge);
     }
 
+    // --- AR-CX2: sugar cane ---
+
+    // Placement rule (SugarCaneBlock#canSurvive): a cane survives on soil/sand
+    // beside water, or on another cane, and nowhere else.
+    {
+        using mc::world::Block;
+        using mc::world::BlockOrientation;
+        mc::world::Chunk caneChunk;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                caneChunk.setBlock(x, 0, z, Block::Stone);
+            }
+        }
+        // Sand at (4,1,4) with water beside it: valid footing.
+        caneChunk.setBlock(4, 1, 4, Block::Sand);
+        caneChunk.setBlock(5, 1, 4, Block::Water);
+        // Dirt at (8,1,8) with no water nearby: invalid.
+        caneChunk.setBlock(8, 1, 8, Block::Dirt);
+        // Stone at (12,1,12): never valid.
+        caneChunk.setBlock(12, 1, 12, Block::Stone);
+        mc::world::World caneWorld;
+        caneWorld.setChunk({0, 0}, std::move(caneChunk));
+        assert(mc::world::canBlockSurvive(caneWorld, {4, 2, 4}, Block::SugarCane,
+                                          BlockOrientation::North));
+        assert(!mc::world::canBlockSurvive(caneWorld, {8, 2, 8}, Block::SugarCane,
+                                           BlockOrientation::North));
+        assert(!mc::world::canBlockSurvive(caneWorld, {12, 2, 12}, Block::SugarCane,
+                                           BlockOrientation::North));
+        // A cane placed on the valid cell supports another cane on top of it.
+        caneWorld.setBlock(4, 2, 4, Block::SugarCane);
+        assert(mc::world::canBlockSurvive(caneWorld, {4, 3, 4}, Block::SugarCane,
+                                          BlockOrientation::North));
+    }
+
+    // Growth: a single cane on watered sand grows up to a stack of three and no
+    // further, driven purely by random ticks (deterministic mc::rng,墙钟-free).
+    {
+        using mc::world::Block;
+        mc::world::Chunk caneChunk;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                caneChunk.setBlock(x, 0, z, Block::Stone);
+            }
+        }
+        caneChunk.setBlock(4, 1, 4, Block::Sand);
+        caneChunk.setBlock(5, 1, 4, Block::Water);
+        caneChunk.setBlock(4, 2, 4, Block::SugarCane);
+        mc::world::World caneWorld;
+        caneWorld.setChunk({0, 0}, std::move(caneChunk));
+        mc::gameplay::WorldSimulation caneSimulation;
+        caneSimulation.setRandomTickSpeed(1000);
+        for (int tick = 0; tick < 20000; ++tick) {
+            static_cast<void>(caneSimulation.tick(caneWorld));
+        }
+        assert(caneWorld.block(4, 2, 4) == Block::SugarCane);
+        assert(caneWorld.block(4, 3, 4) == Block::SugarCane);
+        assert(caneWorld.block(4, 4, 4) == Block::SugarCane);
+        // Never a fourth: the stack caps at three.
+        assert(caneWorld.block(4, 5, 4) == Block::Air);
+    }
+
+    // A cane breaks and drops itself when its footing is removed (support pass +
+    // dropsItem). Removing the base cane strands the stack above it.
+    {
+        using mc::world::Block;
+        mc::world::Chunk caneChunk;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                caneChunk.setBlock(x, 0, z, Block::Stone);
+            }
+        }
+        caneChunk.setBlock(4, 1, 4, Block::Sand);
+        caneChunk.setBlock(5, 1, 4, Block::Water);
+        caneChunk.setBlock(4, 2, 4, Block::SugarCane);
+        caneChunk.setBlock(4, 3, 4, Block::SugarCane);
+        mc::world::World caneWorld;
+        caneWorld.setChunk({0, 0}, std::move(caneChunk));
+        mc::gameplay::WorldSimulation caneSimulation;
+        caneSimulation.setRandomTickSpeed(0); // isolate the support pass
+        // Remove the sand: the whole cane column loses its footing.
+        caneWorld.setBlock(4, 1, 4, Block::Air);
+        caneSimulation.notifyNeighborChanged(caneWorld, {4, 1, 4});
+        bool droppedCane = false;
+        for (int tick = 0; tick < 8; ++tick) {
+            for (const auto& change : caneSimulation.tick(caneWorld)) {
+                if (change.dropped.block() == Block::SugarCane) {
+                    droppedCane = true;
+                }
+            }
+        }
+        assert(caneWorld.block(4, 2, 4) == Block::Air);
+        assert(caneWorld.block(4, 3, 4) == Block::Air);
+        assert(droppedCane);
+    }
+
     // --- B1': the random-tick switch is now a table, and the draw loop rejects
     // a block with isRandomlyTicking before entering any call. The table and
     // the pre-filter are the same data, so they cannot drift — but the *set*
@@ -870,7 +966,7 @@ int main() {
             Block::Grass,         Block::Farmland,      Block::WheatCrops,
             Block::Carrots,       Block::Potatoes,      Block::OakSapling,
             Block::SpruceSapling, Block::BirchSapling,  Block::JungleSapling,
-            Block::AcaciaSapling, Block::DarkOakSapling,
+            Block::AcaciaSapling, Block::DarkOakSapling, Block::SugarCane,
         };
         for (const auto block : ticking) {
             assert(mc::gameplay::WorldSimulation::isRandomlyTicking(block));
