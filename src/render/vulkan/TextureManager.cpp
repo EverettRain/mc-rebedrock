@@ -490,15 +490,19 @@ void TextureManager::createGuiTexture() {
     blit(hud, sprite("hud/experience_bar_progress"), 0, 69);
 
     auto tabs = emptyRgbaAtlas();
-    for (int tab = 0; tab < 6; ++tab) {
+    // B7-0: seven top-row tabs (BuildingBlocks..Combat) and four bottom-row tabs
+    // (FoodAndDrink..Inventory). 26.1 ships tab_top_1..7 and tab_bottom_1..7; the
+    // HUD samples them at x = column * 28 (top y 0/32 unselected/selected, bottom
+    // y 64/96), matching drawCreativeInventory's UV maths.
+    for (int tab = 0; tab < 7; ++tab) {
         const std::string suffix = std::to_string(tab + 1);
         blit(tabs, sprite("container/creative_inventory/tab_top_unselected_" + suffix),
              tab * 28 + 1, 0);
         blit(tabs, sprite("container/creative_inventory/tab_top_selected_" + suffix), tab * 28 + 1,
              32);
     }
-    for (int tab = 0; tab < 2; ++tab) {
-        const std::string suffix = std::to_string(tab + 6);
+    for (int tab = 0; tab < 4; ++tab) {
+        const std::string suffix = std::to_string(tab + 1);
         blit(tabs, sprite("container/creative_inventory/tab_bottom_unselected_" + suffix),
              tab * 28 + 1, 64);
         blit(tabs, sprite("container/creative_inventory/tab_bottom_selected_" + suffix),

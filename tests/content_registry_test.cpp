@@ -62,11 +62,11 @@ int main() {
     assert(std::ranges::any_of(building, [](const ItemStack& stack) {
         return stack.block == world::Block::SmoothStone;
     }));
-    const auto food = registry.catalog(CreativeCategory::Food);
+    const auto food = registry.catalog(CreativeCategory::FoodAndDrink);
     assert(std::ranges::any_of(food, [](const ItemStack& stack) {
         return stack.item == &items::Apple;
     }));
-    const auto materials = registry.catalog(CreativeCategory::Materials);
+    const auto materials = registry.catalog(CreativeCategory::Ingredients);
     assert(std::ranges::any_of(materials, [](const ItemStack& stack) {
         return stack.item == &items::LavaBucket;
     }));
@@ -125,10 +125,10 @@ int main() {
     assert(isolated.registerBlock(world::Block::Stone,
                                   CreativeCategory::BuildingBlocks));
     assert(!isolated.registerBlock(world::Block::Stone,
-                                   CreativeCategory::Decoration));
+                                   CreativeCategory::NaturalBlocks));
     assert(!isolated.registerBlock(world::Block::Air,
                                    CreativeCategory::BuildingBlocks));
-    assert(isolated.registerItem(&items::Book, CreativeCategory::Materials));
-    assert(!isolated.registerItem(&items::Book, CreativeCategory::Materials));
-    assert(!isolated.registerItem(nullptr, CreativeCategory::Materials));
+    assert(isolated.registerItem(&items::Book, CreativeCategory::Ingredients));
+    assert(!isolated.registerItem(&items::Book, CreativeCategory::Ingredients));
+    assert(!isolated.registerItem(nullptr, CreativeCategory::Ingredients));
 }

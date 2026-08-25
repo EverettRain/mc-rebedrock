@@ -316,31 +316,21 @@ UiRect HudLayout::creativeDeleteSlot() const {
 }
 
 UiRect HudLayout::creativeTab(std::size_t index) const {
-    if (index >= 8U) {
-        throw std::out_of_range("creative tab index is outside 0..7");
+    if (index >= 11U) {
+        throw std::out_of_range("creative tab index is outside 0..10");
     }
     const auto panel = creativePanel();
-    // Indices 6 (Spawn Eggs) and 7 (Inventory) share the bottom row: Spawn Eggs
-    // sits at the bottom-left, Inventory at the bottom-right.
-    if (index == 6U) {
-        return {
-            panel.x,
-            panel.y + panel.height - 4.0F * scale_,
-            28.0F * scale_,
-            32.0F * scale_,
-        };
-    }
-    if (index == 7U) {
-        return {
-            panel.x + panel.width - 28.0F * scale_,
-            panel.y + panel.height - 4.0F * scale_,
-            28.0F * scale_,
-            32.0F * scale_,
-        };
-    }
+    // B7-0: 26.1's tab strip — the first seven tabs sit on the top row above the
+    // panel, the remaining four on the bottom row below it, each 28px wide and
+    // laid out by its column. (Was six-top/two-bottom for the old eight-tab set.)
+    constexpr std::size_t kTopRowTabs = 7U;
+    const bool bottom = index >= kTopRowTabs;
+    const std::size_t column = bottom ? index - kTopRowTabs : index;
+    const float y =
+        bottom ? panel.y + panel.height - 4.0F * scale_ : panel.y - 28.0F * scale_;
     return {
-        panel.x + static_cast<float>(index) * 29.0F * scale_,
-        panel.y - 28.0F * scale_,
+        panel.x + static_cast<float>(column) * 28.0F * scale_,
+        y,
         28.0F * scale_,
         32.0F * scale_,
     };

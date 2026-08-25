@@ -13,13 +13,22 @@
 
 namespace mc::ui {
 
+// B7-0: mirrors core::CreativeCategory 1:1 for indices [0, Count), so a tab
+// index casts straight to its content category (activeCreativeCatalog), plus the
+// Inventory pseudo-tab (the survival inventory view, which is not a content
+// category). Keeping the two enums in the same order is what makes the cast
+// honest — the Redstone/Combat content used to be unreachable because this list
+// stopped at SpawnEggs and never named them.
 enum class CreativeTab : std::uint8_t {
     BuildingBlocks,
-    Decoration,
+    ColoredBlocks,
+    NaturalBlocks,
     Functional,
-    Materials,
-    Food,
+    Redstone,
     Tools,
+    Combat,
+    FoodAndDrink,
+    Ingredients,
     SpawnEggs,
     Inventory,
 };

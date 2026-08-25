@@ -275,7 +275,7 @@ class Item {
     // None for ordinary items; a block item's kind identifies its subclass so
     // asBlockItem can down-cast without RTTI (same marker trick as textureBuild).
     BlockItemKind blockItemKind = BlockItemKind::None;
-    CreativeCategory creativeCategory = CreativeCategory::Materials;
+    CreativeCategory creativeCategory = CreativeCategory::Ingredients;
     std::uint8_t maximumStackSize = 64U;
     // The tool role and material for tools; ToolType::None for everything else.
     ToolType toolType = ToolType::None;
@@ -494,12 +494,12 @@ namespace items {
 
 // Materials
 inline constexpr Item Bucket =
-    Item::of("bucket").category(CreativeCategory::Materials).stackSize(16U);
+    Item::of("bucket").category(CreativeCategory::Ingredients).stackSize(16U);
 inline constexpr Item WaterBucket = Item::of("water_bucket")
-                                        .category(CreativeCategory::Materials)
+                                        .category(CreativeCategory::Ingredients)
                                         .single();
 inline constexpr Item LavaBucket = Item::of("lava_bucket")
-                                       .category(CreativeCategory::Materials)
+                                       .category(CreativeCategory::Ingredients)
                                        .single();
 // MilkBucketItem (26.1): AR-A3's milking product. Vanilla files it under the
 // Food & Drinks creative tab (not Materials, unlike the water/lava buckets) —
@@ -511,94 +511,94 @@ inline constexpr Item LavaBucket = Item::of("lava_bucket")
 // is set — milk does not restore hunger, only status effects, so it is not
 // classified `isFood` and never enters the ordinary eating gate.
 inline constexpr Item MilkBucket = Item::of("milk_bucket")
-                                       .category(CreativeCategory::Food)
+                                       .category(CreativeCategory::FoodAndDrink)
                                        .single();
 inline constexpr Item Coal =
-    Item::of("coal").category(CreativeCategory::Materials);
+    Item::of("coal").category(CreativeCategory::Ingredients);
 inline constexpr Item IronIngot =
-    Item::of("iron_ingot").category(CreativeCategory::Materials);
+    Item::of("iron_ingot").category(CreativeCategory::Ingredients);
 inline constexpr Item GoldIngot =
-    Item::of("gold_ingot").category(CreativeCategory::Materials);
+    Item::of("gold_ingot").category(CreativeCategory::Ingredients);
 inline constexpr Item Diamond =
-    Item::of("diamond").category(CreativeCategory::Materials);
+    Item::of("diamond").category(CreativeCategory::Ingredients);
 inline constexpr Item Emerald =
-    Item::of("emerald").category(CreativeCategory::Materials);
+    Item::of("emerald").category(CreativeCategory::Ingredients);
 inline constexpr Item Stick =
-    Item::of("stick").category(CreativeCategory::Materials);
+    Item::of("stick").category(CreativeCategory::Ingredients);
 inline constexpr Item Flint =
-    Item::of("flint").category(CreativeCategory::Materials);
+    Item::of("flint").category(CreativeCategory::Ingredients);
 inline constexpr Item Feather =
-    Item::of("feather").category(CreativeCategory::Materials);
+    Item::of("feather").category(CreativeCategory::Ingredients);
 inline constexpr Item String =
-    Item::of("string").category(CreativeCategory::Materials);
+    Item::of("string").category(CreativeCategory::Ingredients);
 inline constexpr Item Leather =
-    Item::of("leather").category(CreativeCategory::Materials);
+    Item::of("leather").category(CreativeCategory::Ingredients);
 inline constexpr Item Sugar =
-    Item::of("sugar").category(CreativeCategory::Materials);
+    Item::of("sugar").category(CreativeCategory::Ingredients);
 // AR-A1: EggItem (26.1) files under the Food tab (it is throwable AND edible
 // via FoodComponents.EGG, but the creative catalog lists it under Foodstuffs,
 // not Materials — this was mis-tabbed before any chicken existed to drop it).
 inline constexpr Item Egg =
-    Item::of("egg").category(CreativeCategory::Food).stackSize(16U);
+    Item::of("egg").category(CreativeCategory::FoodAndDrink).stackSize(16U);
 inline constexpr Item Bone =
-    Item::of("bone").category(CreativeCategory::Materials);
+    Item::of("bone").category(CreativeCategory::Ingredients);
 inline constexpr Item Paper =
-    Item::of("paper").category(CreativeCategory::Materials);
+    Item::of("paper").category(CreativeCategory::Ingredients);
 inline constexpr Item Book =
-    Item::of("book").category(CreativeCategory::Materials);
+    Item::of("book").category(CreativeCategory::Ingredients);
 // WheatSeedsItem: right-clicking farmland plants the wheat crop. The behaviour
 // is dispatched by item identity in itemUseOn (ItemPlacement.cpp), the way the
 // buckets are, so the constexpr registrations stay free of function pointers.
 inline constexpr Item WheatSeeds = Item::of("wheat_seeds")
-                                       .category(CreativeCategory::Materials);
+                                       .category(CreativeCategory::Ingredients);
 inline constexpr Item Wheat =
-    Item::of("wheat").category(CreativeCategory::Materials);
+    Item::of("wheat").category(CreativeCategory::Ingredients);
 
 // Food
 inline constexpr Item Apple = Item::of("apple")
-                                  .category(CreativeCategory::Food)
+                                  .category(CreativeCategory::FoodAndDrink)
                                   .food({4, 0.3F});
 inline constexpr Item Bread = Item::of("bread")
-                                  .category(CreativeCategory::Food)
+                                  .category(CreativeCategory::FoodAndDrink)
                                   .food({5, 0.6F});
 inline constexpr Item Porkchop = Item::of("porkchop")
-                                     .category(CreativeCategory::Food)
+                                     .category(CreativeCategory::FoodAndDrink)
                                      .food({3, 0.3F});
 inline constexpr Item CookedPorkchop = Item::of("cooked_porkchop")
-                                           .category(CreativeCategory::Food)
+                                           .category(CreativeCategory::FoodAndDrink)
                                            .food({8, 0.8F});
 // Raw beef: the cow's meat drop. Vanilla food value 3 hunger / 0.3 saturation,
 // identical to raw porkchop.
 inline constexpr Item Beef = Item::of("beef")
-                                 .category(CreativeCategory::Food)
+                                 .category(CreativeCategory::FoodAndDrink)
                                  .food({3, 0.3F});
 // Raw chicken: the chicken's meat drop. Vanilla food value 2 hunger / 0.3
 // saturation (lower than the other raw meats — it also carries a hunger-effect
 // chance on eat raw in 26.1, which this build does not model yet: EM2 status
 // effects, not in scope here).
 inline constexpr Item RawChicken = Item::of("chicken")
-                                       .category(CreativeCategory::Food)
+                                       .category(CreativeCategory::FoodAndDrink)
                                        .food({2, 0.3F});
 // Mutton: the sheep's meat drop. Vanilla food value 2 hunger / 0.3 saturation.
 inline constexpr Item Mutton = Item::of("mutton")
-                                   .category(CreativeCategory::Food)
+                                   .category(CreativeCategory::FoodAndDrink)
                                    .food({2, 0.3F});
 // Rotten flesh: the zombie/husk melee drop. Vanilla food value 4 hunger / 0.1
 // saturation — edible, but AR-M1 defers the FoodComponents.ROTTEN_FLESH
 // "chance of Hunger effect on eat" behaviour (needs EM2 status effects, not in
 // scope here); the item still registers and feeds like any other food.
 inline constexpr Item RottenFlesh = Item::of("rotten_flesh")
-                                        .category(CreativeCategory::Food)
+                                        .category(CreativeCategory::FoodAndDrink)
                                         .food({4, 0.1F});
 // Carrot and potato are both food (1.16.1 FoodComponent) and the seed of their
 // own crop — a held carrot/potato plants itself on farmland, like the vanilla
 // items whose useOn is a SeedsItem subclass. Planting is dispatched by item
 // identity in itemUseOn; right-clicking empty ground still eats them.
 inline constexpr Item Carrot = Item::of("carrot")
-                                   .category(CreativeCategory::Food)
+                                   .category(CreativeCategory::FoodAndDrink)
                                    .food({3, 0.6F});
 inline constexpr Item Potato = Item::of("potato")
-                                   .category(CreativeCategory::Food)
+                                   .category(CreativeCategory::FoodAndDrink)
                                    .food({1, 0.3F});
 
 // Tools: pickaxes, axes, shovels, hoes, swords, each single-stacking.
@@ -760,24 +760,24 @@ inline constexpr Item Bow = Item::of("bow")
 // outlive every copy of the Item — a per-item buffer a copied aggregate points
 // back into is not constexpr-valid. The literals are kept in DyeColor id order
 // so their listing order below matches kDyeColors' names one-to-one.
-inline constexpr Item WhiteDye = Item::of("white_dye").category(CreativeCategory::Materials);
-inline constexpr Item OrangeDye = Item::of("orange_dye").category(CreativeCategory::Materials);
-inline constexpr Item MagentaDye = Item::of("magenta_dye").category(CreativeCategory::Materials);
+inline constexpr Item WhiteDye = Item::of("white_dye").category(CreativeCategory::Ingredients);
+inline constexpr Item OrangeDye = Item::of("orange_dye").category(CreativeCategory::Ingredients);
+inline constexpr Item MagentaDye = Item::of("magenta_dye").category(CreativeCategory::Ingredients);
 inline constexpr Item LightBlueDye =
-    Item::of("light_blue_dye").category(CreativeCategory::Materials);
-inline constexpr Item YellowDye = Item::of("yellow_dye").category(CreativeCategory::Materials);
-inline constexpr Item LimeDye = Item::of("lime_dye").category(CreativeCategory::Materials);
-inline constexpr Item PinkDye = Item::of("pink_dye").category(CreativeCategory::Materials);
-inline constexpr Item GrayDye = Item::of("gray_dye").category(CreativeCategory::Materials);
+    Item::of("light_blue_dye").category(CreativeCategory::Ingredients);
+inline constexpr Item YellowDye = Item::of("yellow_dye").category(CreativeCategory::Ingredients);
+inline constexpr Item LimeDye = Item::of("lime_dye").category(CreativeCategory::Ingredients);
+inline constexpr Item PinkDye = Item::of("pink_dye").category(CreativeCategory::Ingredients);
+inline constexpr Item GrayDye = Item::of("gray_dye").category(CreativeCategory::Ingredients);
 inline constexpr Item LightGrayDye =
-    Item::of("light_gray_dye").category(CreativeCategory::Materials);
-inline constexpr Item CyanDye = Item::of("cyan_dye").category(CreativeCategory::Materials);
-inline constexpr Item PurpleDye = Item::of("purple_dye").category(CreativeCategory::Materials);
-inline constexpr Item BlueDye = Item::of("blue_dye").category(CreativeCategory::Materials);
-inline constexpr Item BrownDye = Item::of("brown_dye").category(CreativeCategory::Materials);
-inline constexpr Item GreenDye = Item::of("green_dye").category(CreativeCategory::Materials);
-inline constexpr Item RedDye = Item::of("red_dye").category(CreativeCategory::Materials);
-inline constexpr Item BlackDye = Item::of("black_dye").category(CreativeCategory::Materials);
+    Item::of("light_gray_dye").category(CreativeCategory::Ingredients);
+inline constexpr Item CyanDye = Item::of("cyan_dye").category(CreativeCategory::Ingredients);
+inline constexpr Item PurpleDye = Item::of("purple_dye").category(CreativeCategory::Ingredients);
+inline constexpr Item BlueDye = Item::of("blue_dye").category(CreativeCategory::Ingredients);
+inline constexpr Item BrownDye = Item::of("brown_dye").category(CreativeCategory::Ingredients);
+inline constexpr Item GreenDye = Item::of("green_dye").category(CreativeCategory::Ingredients);
+inline constexpr Item RedDye = Item::of("red_dye").category(CreativeCategory::Ingredients);
+inline constexpr Item BlackDye = Item::of("black_dye").category(CreativeCategory::Ingredients);
 
 // Pointers to each dye Item, indexed by DyeColor id — the "position == colour"
 // lookup both directions of the mapping (dyeItemFor / dyeColorForItem) use. The

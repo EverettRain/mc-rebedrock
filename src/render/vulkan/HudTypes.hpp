@@ -26,8 +26,9 @@ inline constexpr float kMenuListBackgroundGuiLayer = 13.0F;
 // The 1.16.1 title screen ships six panorama faces that form the world behind
 // the logo; the title carousel cycles them as slides.
 inline constexpr std::size_t kPanoramaFaces = 6U;
-// Six category tabs on the top row, plus Spawn Eggs and Inventory on the bottom.
-inline constexpr std::size_t kCreativeTabCount = 8U;
+// B7-0: 26.1's ten content tabs plus the Inventory pseudo-tab. Seven sit on the
+// top row, the remaining four on the bottom row (tab_top_1..7 / tab_bottom_1..4).
+inline constexpr std::size_t kCreativeTabCount = 11U;
 
 // PX-4 removed the MenuButton enum: menu identity is now ui::WidgetId
 // (src/ui/PageBuilder.hpp), pages are built by ui::buildPage and drawn generically

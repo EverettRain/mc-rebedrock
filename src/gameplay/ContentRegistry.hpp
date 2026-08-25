@@ -19,7 +19,7 @@ struct RegisteredBlock final {
 
 struct RegisteredItem final {
     const Item* value = nullptr;
-    CreativeCategory category = CreativeCategory::Materials;
+    CreativeCategory category = CreativeCategory::Ingredients;
 };
 
 class ContentRegistry final {

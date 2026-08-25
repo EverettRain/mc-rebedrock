@@ -1,4 +1,5 @@
 // AR-CI: the creative-catalog reachability guard.
+#include <span>
 //
 // The whole point of AR-CI is that block catalog membership is data-driven off
 // each block's own BlockDefinition::creativeCategory (BlockProperties::
@@ -97,10 +98,11 @@ int main() {
     assert(catalogCountContaining(registry, world::Block::StickyPiston) == 1);
     assert(catalogCountContaining(registry, world::Block::TrappedChest) == 1);
 
-    // All eleven redstone components specifically landed in the new Redstone
-    // tab (bounded addition mirroring vanilla 26.1's REDSTONE_BLOCKS).
+    // B7-0: the Redstone tab holds the eleven redstone components plus the
+    // openables/actuators 26.1's REDSTONE_BLOCKS tab files there (doors, fence
+    // gate, trapdoor, pressure plate) and TNT — sixteen in all.
     const auto redstoneTab = registry.catalog(CreativeCategory::Redstone);
-    assert(redstoneTab.size() == 11);
+    assert(redstoneTab.size() == 16);
     assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::RedstoneBlock));
     assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::RedstoneTorch));
     assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::Lever));
@@ -112,10 +114,14 @@ int main() {
     assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::Piston));
     assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::StickyPiston));
     assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::TrappedChest));
-    // RedstoneOre is deliberately kept in its pre-existing Functional tab (no-
-    // regression rule), not moved into the new Redstone tab.
+    assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::Tnt));
+    assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::OakDoor));
+    assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::OakFenceGate));
+    assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::OakTrapdoor));
+    assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::StonePressurePlate));
+    // Ores are raw nature: RedstoneOre lives in Natural Blocks, not Redstone.
     assert(!inCatalog(registry, CreativeCategory::Redstone, world::Block::RedstoneOre));
-    assert(inCatalog(registry, CreativeCategory::Functional, world::Block::RedstoneOre));
+    assert(inCatalog(registry, CreativeCategory::NaturalBlocks, world::Block::RedstoneOre));
 
     // --- No technical leakage: a representative set of technical/hidden
     // blocks are not in any catalog. ---
@@ -134,66 +140,43 @@ int main() {
     assert(registry.block("rebedrock:water") == nullptr);
     assert(registry.block("rebedrock:farmland") == nullptr);
 
-    // --- No regression: every block that was in the old three hand-arrays is
-    // still in its same tab. ---
+    // --- B7-0: representative blocks land in their 26.1 tab. Building = processed
+    // materials, Natural = raw nature (stone/dirt/ore/log/leaf/plant), Colored =
+    // the 16-colour + glass families, Functional = utility blocks. ---
     const auto building = registry.catalog(CreativeCategory::BuildingBlocks);
-    const auto decoration = registry.catalog(CreativeCategory::Decoration);
+    const auto natural = registry.catalog(CreativeCategory::NaturalBlocks);
+    const auto colored = registry.catalog(CreativeCategory::ColoredBlocks);
     const auto functional = registry.catalog(CreativeCategory::Functional);
-    const world::Block kOldBuilding[] = {
-        world::Block::Grass, world::Block::Dirt, world::Block::Stone,
-        world::Block::Cobblestone, world::Block::OakPlanks,
-        world::Block::SprucePlanks, world::Block::BirchPlanks,
-        world::Block::JunglePlanks, world::Block::AcaciaPlanks,
-        world::Block::DarkOakPlanks,
-        world::Block::OakLog, world::Block::SpruceLog, world::Block::BirchLog,
-        world::Block::JungleLog, world::Block::AcaciaLog,
-        world::Block::DarkOakLog,
-        world::Block::Bricks, world::Block::StoneBricks,
-        world::Block::MossyStoneBricks, world::Block::ChiseledStoneBricks,
-        world::Block::MossyCobblestone, world::Block::Sand,
-        world::Block::Gravel, world::Block::Sandstone, world::Block::QuartzBlock,
-        world::Block::Obsidian, world::Block::Clay, world::Block::SnowBlock,
-        world::Block::Netherrack, world::Block::Granite, world::Block::Diorite,
-        world::Block::Andesite, world::Block::PolishedGranite,
-        world::Block::PolishedDiorite, world::Block::PolishedAndesite,
-        world::Block::SmoothStone,
-        world::Block::CoarseDirt, world::Block::Podzol,
-        world::Block::RedSand, world::Block::WhiteWool, world::Block::RedWool,
-        world::Block::BlackWool, world::Block::Bedrock,
-        world::Block::OakSlab, world::Block::SpruceSlab, world::Block::BirchSlab,
-        world::Block::JungleSlab, world::Block::AcaciaSlab, world::Block::DarkOakSlab,
-        world::Block::StoneSlab, world::Block::CobblestoneSlab,
-        world::Block::StoneBrickSlab, world::Block::SmoothStoneSlab,
+    const auto inTab = [](std::span<const ItemStack> tab, world::Block block) {
+        return std::ranges::any_of(tab,
+                                   [block](const ItemStack& s) { return s.block == block; });
     };
-    for (const auto block : kOldBuilding) {
-        assert(std::ranges::any_of(
-            building, [block](const ItemStack& stack) { return stack.block == block; }));
-    }
-    const world::Block kOldDecoration[] = {
-        world::Block::Glass, world::Block::OakLeaves, world::Block::SpruceLeaves,
-        world::Block::BirchLeaves, world::Block::JungleLeaves,
-        world::Block::AcaciaLeaves, world::Block::DarkOakLeaves,
-        world::Block::Bookshelf, world::Block::Pumpkin, world::Block::Melon,
-        world::Block::GrassPlant, world::Block::Dandelion, world::Block::OakSapling,
-        world::Block::SpruceSapling, world::Block::BirchSapling,
-        world::Block::JungleSapling, world::Block::AcaciaSapling,
-        world::Block::DarkOakSapling,
+    const world::Block kBuilding[] = {
+        world::Block::OakPlanks,     world::Block::Bricks,       world::Block::StoneBricks,
+        world::Block::QuartzBlock,   world::Block::SmoothStone,  world::Block::PolishedGranite,
+        world::Block::OakSlab,       world::Block::StoneSlab,    world::Block::OakStairs,
+        world::Block::CobblestoneWall, world::Block::NetherBricks, world::Block::PurpurBlock,
     };
-    for (const auto block : kOldDecoration) {
-        assert(std::ranges::any_of(
-            decoration, [block](const ItemStack& stack) { return stack.block == block; }));
-    }
-    const world::Block kOldFunctional[] = {
+    for (const auto block : kBuilding) assert(inTab(building, block));
+    const world::Block kNatural[] = {
+        world::Block::Dirt,    world::Block::Stone,     world::Block::Cobblestone,
+        world::Block::Sand,    world::Block::Gravel,    world::Block::OakLog,
+        world::Block::CoalOre, world::Block::IronOre,   world::Block::DiamondOre,
+        world::Block::OakLeaves, world::Block::OakSapling, world::Block::Dandelion,
+        world::Block::GrassPlant, world::Block::Pumpkin, world::Block::SugarCane,
+        world::Block::Glowstone, world::Block::Bedrock, world::Block::Granite,
+    };
+    for (const auto block : kNatural) assert(inTab(natural, block));
+    const world::Block kColored[] = {
+        world::Block::WhiteWool, world::Block::RedWool, world::Block::BlackWool,
+        world::Block::GreenWool, world::Block::Glass,
+    };
+    for (const auto block : kColored) assert(inTab(colored, block));
+    const world::Block kFunctional[] = {
         world::Block::CraftingTable, world::Block::Furnace, world::Block::Chest,
-        world::Block::Glowstone, world::Block::Tnt, world::Block::Torch,
-        world::Block::CoalOre, world::Block::IronOre, world::Block::GoldOre,
-        world::Block::DiamondOre, world::Block::LapisOre,
-        world::Block::RedstoneOre, world::Block::EmeraldOre,
+        world::Block::Torch,         world::Block::Bookshelf,
     };
-    for (const auto block : kOldFunctional) {
-        assert(std::ranges::any_of(
-            functional, [block](const ItemStack& stack) { return stack.block == block; }));
-    }
+    for (const auto block : kFunctional) assert(inTab(functional, block));
 
     // --- Determinism: catalog membership/order stable across two builds. ---
     ContentRegistry rebuilt;

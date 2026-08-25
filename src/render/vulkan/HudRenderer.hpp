@@ -1645,9 +1645,10 @@ class HudRenderer final {
         drawScreenDimOverlay(commandBuffer);
 
         const std::size_t selectedTabIndex = static_cast<std::size_t>(menuSystem.creativeTab);
-        // Tabs 0..5 sit on the top row; Spawn Eggs (6) and Inventory (7) share
-        // the bottom row and use the bottom tab sprite.
-        const std::size_t firstBottomTab = static_cast<std::size_t>(ui::CreativeTab::SpawnEggs);
+        // B7-0: the first seven tabs (BuildingBlocks..Combat) sit on the top row;
+        // FoodAndDrink, Ingredients, SpawnEggs and Inventory share the bottom row
+        // and use the bottom tab sprite.
+        const std::size_t firstBottomTab = static_cast<std::size_t>(ui::CreativeTab::FoodAndDrink);
         for (std::size_t tabIndex = 0; tabIndex < kCreativeTabCount; ++tabIndex) {
             const bool selected = tabIndex == selectedTabIndex;
             if (!selected) {
@@ -1671,15 +1672,19 @@ class HudRenderer final {
                            ? static_cast<float>(selectedTabIndex - firstBottomTab) * 28.0F
                            : static_cast<float>(selectedTabIndex) * 28.0F,
                        selectedBottomTab ? 96.0F : 32.0F, 28.0F, 32.0F});
+        // One representative icon per tab, in CreativeTab order.
         const std::array<gameplay::ItemStack, kCreativeTabCount> tabIcons{{
-            {world::Block::Bricks, 1U},
-            {world::Block::Dandelion, 1U},
-            {world::Block::Chest, 1U},
-            {world::Block::Air, 1U, &gameplay::items::IronIngot},
-            {world::Block::Air, 1U, &gameplay::items::Apple},
-            {world::Block::Air, 1U, &gameplay::items::DiamondPickaxe},
-            {world::Block::Air, 1U, &gameplay::items::PigSpawnEgg},
-            {world::Block::CraftingTable, 1U},
+            {world::Block::Bricks, 1U},                                 // BuildingBlocks
+            {world::Block::WhiteWool, 1U},                              // ColoredBlocks
+            {world::Block::Dirt, 1U},                                   // NaturalBlocks
+            {world::Block::CraftingTable, 1U},                          // Functional
+            {world::Block::RedstoneBlock, 1U},                          // Redstone
+            {world::Block::Air, 1U, &gameplay::items::DiamondPickaxe},  // Tools
+            {world::Block::Air, 1U, &gameplay::items::IronSword},       // Combat
+            {world::Block::Air, 1U, &gameplay::items::Apple},           // FoodAndDrink
+            {world::Block::Air, 1U, &gameplay::items::IronIngot},       // Ingredients
+            {world::Block::Air, 1U, &gameplay::items::PigSpawnEgg},     // SpawnEggs
+            {world::Block::Chest, 1U},                                  // Inventory
         }};
         for (std::size_t tabIndex = 0; tabIndex < tabIcons.size(); ++tabIndex) {
             const auto tab = layout.creativeTab(tabIndex);
@@ -1713,14 +1718,19 @@ class HudRenderer final {
                 drawHudQuad(commandBuffer, deleteSlot, {1.0F, 0.25F, 0.25F, 0.34F});
             }
         } else {
-            constexpr std::array<std::pair<std::string_view, std::string_view>, 7> titles{{
+            // B7-0: the ten 26.1 content tabs, in CreativeTab order (indices
+            // 0..9; the Inventory tab is handled by the branch above).
+            constexpr std::array<std::pair<std::string_view, std::string_view>, 10> titles{{
                 {"itemGroup.buildingBlocks", "Building Blocks"},
-                {"itemGroup.decorations", "Decoration Blocks"},
-                {"itemGroup.redstone", "Functional Blocks"},
-                {"itemGroup.materials", "Materials"},
-                {"itemGroup.food", "Foodstuffs"},
-                {"itemGroup.tools", "Tools"},
-                {"itemGroup.misc", "Spawn Eggs"},
+                {"itemGroup.coloredBlocks", "Colored Blocks"},
+                {"itemGroup.natural", "Natural Blocks"},
+                {"itemGroup.functional", "Functional Blocks"},
+                {"itemGroup.redstone", "Redstone Blocks"},
+                {"itemGroup.tools", "Tools & Utilities"},
+                {"itemGroup.combat", "Combat"},
+                {"itemGroup.foodAndDrink", "Food & Drinks"},
+                {"itemGroup.ingredients", "Ingredients"},
+                {"itemGroup.spawnEggs", "Spawn Eggs"},
             }};
             const auto title =
                 translated(titles[selectedTabIndex].first, titles[selectedTabIndex].second);

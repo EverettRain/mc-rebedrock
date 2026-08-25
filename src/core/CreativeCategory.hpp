@@ -32,16 +32,23 @@
 
 namespace mc::core {
 
+// B7-0: the ten player-facing creative tabs of 26.1 (CreativeModeTabs.java's
+// itemGroup.* set, minus the special Operator/Search/Inventory/Hotbar pages),
+// in the order they appear. This enum is the single source of truth: the UI's
+// CreativeTab mirrors it exactly (plus an Inventory pseudo-tab), so a block or
+// item's tab membership can never again drift out of sync with the tab the UI
+// actually draws — the desync that used to hide the Redstone and Combat content.
 enum class CreativeCategory : std::uint8_t {
-    BuildingBlocks,
-    Decoration,
-    Functional,
-    Materials,
-    Food,
-    Tools,
-    SpawnEggs,
-    Redstone,
-    Combat,
+    BuildingBlocks, // itemGroup.buildingBlocks
+    ColoredBlocks,  // itemGroup.coloredBlocks — wool/glass/the 16-colour families
+    NaturalBlocks,  // itemGroup.natural — raw stone/dirt/ore/log/leaf/plant
+    Functional,     // itemGroup.functional
+    Redstone,       // itemGroup.redstone
+    Tools,          // itemGroup.tools (Tools & Utilities)
+    Combat,         // itemGroup.combat
+    FoodAndDrink,   // itemGroup.foodAndDrink
+    Ingredients,    // itemGroup.ingredients (was "Materials")
+    SpawnEggs,      // itemGroup.spawnEggs
     Count,
     // Sentinel: deliberately not in [0, Count) so it can never alias a real
     // catalog slot. Every block defaults to this; declaring a tab via
