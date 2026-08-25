@@ -29,18 +29,29 @@ void ProjectileSystem::spawn(glm::vec3 position, glm::vec3 velocity, ActorRefere
     projectile.position = position;
     projectile.previousPosition = position;
     projectile.velocity = velocity;
-    // AbstractArrow#shootFromRotation / Projectile#shoot: a Gaussian scatter
-    // per axis, scaled by the shot's inaccuracy — drawn from the caller's
-    // deterministic stream only (never a wall clock, REGULAR.md #6). No `rng`
-    // means no scatter at all (a test's dead-reckoning launch, or a future
-    // Piercing continuation that must not re-roll).
-    if (rng != nullptr) {
-        projectile.velocity.x += static_cast<float>(rng->nextGaussian()) * inaccuracy /
-                                 kProjectileScatterDivisor;
-        projectile.velocity.y += static_cast<float>(rng->nextGaussian()) * inaccuracy /
-                                 kProjectileScatterDivisor;
-        projectile.velocity.z += static_cast<float>(rng->nextGaussian()) * inaccuracy /
-                                 kProjectileScatterDivisor;
+    // RW-1a #16 — Projectile#shoot's scatter, ported exactly: normalize the aim
+    // direction, add a per-axis triangular jitter `random.triangle(0.0,
+    // 0.0172275 * inaccuracy)`, THEN rescale to the original speed. Normalizing
+    // before the add makes the jitter a fixed angular spread (the RW-0 form
+    // added Gaussian noise after the scale, so a fast draw scattered wider than
+    // a slow one — wrong). Drawn from the caller's deterministic stream only
+    // (never a wall clock, REGULAR.md #6). No `rng`, or a degenerate (zero-
+    // length) velocity, means no scatter at all — a test's dead-reckoning
+    // launch, or a future Piercing continuation that must not re-roll.
+    const float speed = glm::length(projectile.velocity);
+    if (rng != nullptr && speed > 1e-6F) {
+        const double spread = kProjectileScatterSpread * static_cast<double>(inaccuracy);
+        // RandomSource#triangle(mode, deviation) = mode + deviation *
+        // (nextDouble() - nextDouble()): the difference of two uniforms is a
+        // symmetric triangular distribution centred on `mode`.
+        const auto triangle = [&]() {
+            return spread * (rng->nextDouble() - rng->nextDouble());
+        };
+        glm::vec3 direction = projectile.velocity / speed;
+        direction.x += static_cast<float>(triangle());
+        direction.y += static_cast<float>(triangle());
+        direction.z += static_cast<float>(triangle());
+        projectile.velocity = direction * speed;
     }
     projectile.shooterId = shooterId;
     projectile.damage = damage;
@@ -71,8 +82,9 @@ void ProjectileSystem::restore(glm::vec3 position, glm::vec3 velocity, ActorRefe
 
 std::vector<ItemStack> ProjectileSystem::tick(const world::World& world, EntitySystem& entities,
                                               glm::vec3 playerPosition, bool playerPresent,
-                                              world::gen::JavaRandom& rng) {
-    static_cast<void>(rng);  // reserved for RW-1+'s draw-dependent scatter roll
+                                              world::gen::JavaRandom& rng,
+                                              Inventory* pickupInventory) {
+    // `rng` now drives the RW-1a #13 integer crit roll below.
     std::vector<ItemStack> pickedUp;
 
     for (auto& projectile : entities_) {
@@ -85,19 +97,20 @@ std::vector<ItemStack> ProjectileSystem::tick(const world::World& world, EntityS
             continue;
         }
 
-        // --- physics: gravity, drag, water drag (AbstractArrow#tick) ---
+        // RW-1a #12 — physics ordering ported exactly from AbstractArrow#tick:
+        // apply the per-axis drag FIRST (0.6 in water, else 0.99), THEN subtract
+        // gravity from Y, THEN move. RW-0 subtracted gravity before drag, which
+        // damps the just-added gravity impulse and gives a subtly flatter arc
+        // than vanilla. Water drag is a full per-axis multiply (vanilla scales
+        // the whole delta by getWaterInertia before the gravity step).
         const glm::ivec3 foot{
             static_cast<int>(std::floor(projectile.position.x)),
             static_cast<int>(std::floor(projectile.position.y)),
             static_cast<int>(std::floor(projectile.position.z)),
         };
         const bool inWater = world::isFluid(world.block(foot.x, foot.y, foot.z));
+        projectile.velocity *= inWater ? kProjectileWaterDrag : kProjectileAirDrag;
         projectile.velocity.y -= kProjectileGravity;
-        if (inWater) {
-            projectile.velocity *= kProjectileWaterDrag;
-        } else {
-            projectile.velocity *= kProjectileAirDrag;
-        }
 
         const glm::vec3 origin = projectile.position;
         const glm::vec3 displacement = projectile.velocity;
@@ -135,14 +148,29 @@ std::vector<ItemStack> ProjectileSystem::tick(const world::World& world, EntityS
 
         if (hitEntityFirst) {
             // --- entity hit: through Damage.hpp, never bypassed (sabotage① target) ---
-            float appliedDamage = projectile.damage;
+            // RW-1a #8 — AbstractArrow#onHitEntity: the applied damage is
+            // `ceil(velocity.length() * baseDamage)`, derived HERE at hit time
+            // from the projectile's current (drag-decayed) speed, not baked in
+            // at launch. `travelled` is exactly this tick's speed (the length of
+            // the post-drag displacement), so a long, slow arc lands softer than
+            // a point-blank shot.
+            int appliedDamage = static_cast<int>(std::ceil(travelled * projectile.damage));
+            if (appliedDamage < 0) {
+                appliedDamage = 0;
+            }
             if (projectile.critical) {
-                // AbstractArrow#getBaseDamage: a fully-drawn crit shot deals
-                // strictly more than a non-crit shot of the same base damage.
-                appliedDamage *= kProjectileCriticalDamageMultiplier;
+                // RW-1a #13 — the crit bonus is an INTEGER roll `nextInt(i/2 +
+                // 2)` added to `i` (AbstractArrow#onHitEntity), drawn from the
+                // tick's deterministic stream (sabotage② target: a wall-clock or
+                // global-RNG draw breaks replay). A fully-drawn crit therefore
+                // deals strictly more than the same non-crit shot, but by a
+                // reproducible integer amount, not a flat 1.5x.
+                const int bonusBound = appliedDamage / 2 + kProjectileCriticalBonusBase;
+                appliedDamage += rng.nextInt(bonusBound);
             }
             const glm::vec3 hitPoint = origin + displacement * (entityHit->distance / travelled);
-            const bool landed = entities.hurt(entityHit->entityId, appliedDamage, hitPoint,
+            const bool landed = entities.hurt(entityHit->entityId,
+                                              static_cast<float>(appliedDamage), hitPoint,
                                               projectile.shooterId, DamageType::Projectile);
             static_cast<void>(landed);
             // AbstractArrow#onHitEntity: a spent arrow (non-piercing, RW-4's
@@ -171,7 +199,12 @@ std::vector<ItemStack> ProjectileSystem::tick(const world::World& world, EntityS
     }
 
     // --- pickup: a landed, pickupable projectile touched by the player is
-    // collected and its pickupItem handed back to the caller. ---
+    // collected and its pickupItem stowed. RW-1a #7 — the projectile is
+    // consumed ONLY once the item has somewhere to go: with a `pickupInventory`,
+    // a full backpack (Inventory::add returning false) leaves the arrow on the
+    // ground to be retried next tick instead of deleting it (the AbstractArrow#
+    // playerTouch dupe/loss bug RW-0 shipped). Without an inventory the RW-0
+    // collect-and-consume behaviour stands (a test asserting the raw mechanic).
     if (playerPresent) {
         for (auto& projectile : entities_) {
             if (!projectile.inGround || projectile.pickupState == ProjectilePickupState::NoPickup) {
@@ -181,7 +214,19 @@ std::vector<ItemStack> ProjectileSystem::tick(const world::World& world, EntityS
             if (glm::dot(delta, delta) > kPickupContactRadiusSquared) {
                 continue;
             }
-            if (!projectile.pickupItem.empty()) {
+            if (projectile.pickupItem.empty()) {
+                // Nothing to give (a NoPickup-item projectile) — still claimed.
+                projectile.consumed = true;
+                continue;
+            }
+            if (pickupInventory != nullptr) {
+                ItemStack toStow = projectile.pickupItem;
+                if (!pickupInventory->add(toStow)) {
+                    // Full inventory: the arrow stays on the ground, not lost.
+                    continue;
+                }
+                pickedUp.push_back(projectile.pickupItem);
+            } else {
                 pickedUp.push_back(projectile.pickupItem);
             }
             projectile.consumed = true;

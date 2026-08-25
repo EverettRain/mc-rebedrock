@@ -287,12 +287,15 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // despawn. Runs after the creature tick above so a hit this same tick
     // sees the herd's post-move positions, matching the ordering entityTick's
     // own mobAttacks already established.
-    for (auto& pickup : primaryLevel().projectiles.tick(
+    // RW-1a #7 — hand the projectile tick the player's inventory so a pickup is
+    // consumed only when the arrow actually fits; the returned stacks are just
+    // the ones that WERE stowed (already added inside tick), so here we only
+    // play the pickup sound rather than re-adding (a double-add would dupe).
+    for (const auto& pickup : primaryLevel().projectiles.tick(
              world, primaryLevel().entities, primaryPlayer().controller.position(),
-             !primaryPlayer().vitals.dead(), projectileRandom_)) {
-        if (primaryPlayer().inventory.add(pickup)) {
-            events_.publish(SoundEvent{SoundEventKind::ItemPickup, primaryPlayer().controller.position()});
-        }
+             !primaryPlayer().vitals.dead(), projectileRandom_, &primaryPlayer().inventory)) {
+        static_cast<void>(pickup);
+        events_.publish(SoundEvent{SoundEventKind::ItemPickup, primaryPlayer().controller.position()});
     }
     // AR-A2: EatGrassGoal filed these mid-tick, when it only held a
     // `const World&` and could not write the cell itself (see MobBrain's
@@ -948,12 +951,14 @@ void GameSession::releaseBow(PlayerId playerId, const glm::vec3& lookDirection,
         lengthSquared < 1e-9F ? glm::vec3{0.0F, 0.0F, -1.0F} : glm::normalize(lookDirection);
     const glm::vec3 eye = player.controller.eyePosition();
     const float velocityLength = pullProgress * kBowFullDrawVelocity;
-    // PersistentProjectileEntity#onEntityHit: `ceil(velocity.length() *
-    // damage)` is the damage actually applied on hit — baking the velocity
-    // multiplier into the stored `damage` field here (rather than at hit
-    // time) keeps ProjectileSystem's own hit path a single multiply-by-crit,
-    // unchanged since RW-0.
-    const float damage = std::ceil(velocityLength * kArrowBaseDamage);
+    // RW-1a #8 — store the arrow's BASE damage, NOT the velocity-scaled value.
+    // AbstractArrow#onHitEntity derives the applied damage at hit time as
+    // `ceil(velocity.length() * baseDamage)`, so a shot that decays over a long
+    // arc lands softer. RW-0 baked the launch velocity in here and applied it
+    // flat, which meant a full-draw arrow hit for the same damage whether it
+    // struck point-blank or after a long, slow fall. The projectile now carries
+    // the true base and the tick reads the live speed.
+    const float damage = kArrowBaseDamage;
     // AbstractArrow: only a FULLY drawn shot (pullProgress == 1.0F) crits —
     // not merely "a strong pull" — matching `if (f == 1.0F)` exactly.
     const bool critical = pullProgress >= 1.0F;

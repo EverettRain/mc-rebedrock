@@ -76,13 +76,16 @@ struct Projectile final {
     // ActorReference::player() for the player's own shots (RW-1's bow), or
     // ActorReference::entity(id) once a mob can fire one.
     ActorReference shooterId{};
-    // The damage this projectile deals on an entity hit, before the
-    // difficulty/armor stages Damage.hpp's applyDamage runs.
+    // RW-1a #8 — the projectile's BASE damage, NOT the final applied damage.
+    // AbstractArrow#onHitEntity computes the applied damage at hit time as
+    // `ceil(velocity.length() * baseDamage)`, so a shot that has bled off speed
+    // over a long arc hits softer than a point-blank one. RW-0 baked the launch
+    // velocity into this field and applied it flat; RW-1a stores the true base
+    // and derives the velocity term in the tick (see tick()).
     float damage = 2.0F;
-    // AbstractArrow#isCritArrow: a fully-drawn bow shot (RW-1's future
-    // concern) adds a random 0-to-half-damage bonus and the render-only
-    // "sparkle" particles; RW-0 just carries and applies the flag's damage
-    // bonus.
+    // AbstractArrow#isCritArrow: a fully-drawn bow shot adds a random integer
+    // 0-to-(i/2+1) bonus (RW-1a #13) and the render-only "sparkle" particles;
+    // this field carries the flag, the tick rolls the bonus deterministically.
     bool critical = false;
     ProjectilePickupState pickupState = ProjectilePickupState::Pickupable;
     // What a successful pickup gives the player. Empty (the default) means
@@ -121,23 +124,21 @@ inline constexpr std::uint32_t kProjectileLifetimeTicks = 1200U;  // tickDespawn
 // Punch/Knockback enchant support yet, RW-4) reduces to vanilla's baseline
 // shove, which every arrow already carries independent of the enchant bonus.
 inline constexpr float kProjectileBaseKnockback = 0.6F;
-// AbstractArrow#getBaseDamage's crit bonus: `random.nextDouble() * 0.75 +
-// 0.25` extra half-hearts multiplied into the crit roll (approximated here as
-// a flat additive bonus scaled by the base damage — RW-1 will refine this once
-// a real bow draws real projectiles; RW-0 only needs "crit deals strictly
-// more").
-inline constexpr float kProjectileCriticalDamageMultiplier = 1.5F;
+// RW-1a #13 — AbstractArrow#onHitEntity's crit bonus, ported verbatim as an
+// integer roll rather than the RW-0 flat multiply: once the base damage `i` is
+// `ceil(velocity.length() * baseDamage)`, a crit adds `random.nextInt(i / 2 +
+// 2)` extra half-hearts. Kept here as the `+ 2` addend so tests and the tick
+// reference the same number.
+inline constexpr int kProjectileCriticalBonusBase = 2;
 
-// AbstractArrow's own constructor scatter (`shootFromRotation`'s `inaccuracy`
-// term, folded into `Projectile#shoot`): even a "perfectly aimed" shot gets a
-// small Gaussian jitter on its velocity, vanilla's `random.nextGaussian() *
-// (double) inaccuracy` per axis. 1.0 here matches a bow's own default
-// inaccuracy constant (`BowItem` passes 1.0F to `shoot`), which RW-1 will
-// override once it has a real draw-strength-dependent value; RW-0 applies the
-// same constant to every spawn so the mechanism (and its determinism
-// obligation) exists before any weapon calls it.
+// RW-1a #16 — Projectile#shoot's per-axis divergence: the velocity's normalized
+// direction is jittered by `random.triangle(0.0, 0.0172275 * inaccuracy)` on
+// each axis BEFORE being rescaled to the shot's speed (so the scatter is a fixed
+// angular spread independent of draw strength), replacing RW-0's post-scale
+// Gaussian. 1.0 here matches a bow's own default inaccuracy (`BowItem` passes
+// 1.0F to `shoot`).
 inline constexpr float kProjectileDefaultInaccuracy = 1.0F;
-inline constexpr float kProjectileScatterDivisor = 20.0F;
+inline constexpr double kProjectileScatterSpread = 0.0172275;
 
 class ProjectileSystem final {
   public:
@@ -167,14 +168,22 @@ class ProjectileSystem final {
     // landed-arrow pickup contact test against the player, and the lifetime
     // despawn. `entities` is the world's creature pool the hit raycast tests
     // against (and the pipe the entity-hit damage is applied through);
-    // `playerPosition`/`playerCanPickUp` gate the player-contact pickup path
-    // the same way ItemEntitySystem's magnet is gated by an inventory
-    // reference. Returns the ItemStacks any pickups this tick produced, so the
-    // caller can hand each to Inventory::add the way ItemEntitySystem::tick's
-    // caller does.
+    // `playerPosition`/`playerPresent` gate the player-contact pickup path the
+    // same way ItemEntitySystem's magnet is gated by an inventory reference.
+    //
+    // RW-1a #7 — `pickupInventory`, when non-null, is where a collected
+    // pickupItem is actually stowed: the projectile is consumed ONLY when the
+    // stack fits (AbstractArrow#playerTouch's `player.getInventory().add(...)`
+    // guard — a full backpack leaves the arrow on the ground to try again next
+    // tick, never silently deleted). Any stacks that were stowed are still
+    // returned so the caller can play the pickup sound. `pickupInventory ==
+    // nullptr` keeps the RW-0 behaviour (collect + consume unconditionally,
+    // returning the stacks for a caller that stows them itself) — useful for
+    // tests that assert the raw pickup mechanic without an inventory.
     [[nodiscard]] std::vector<ItemStack> tick(const world::World& world, EntitySystem& entities,
                                               glm::vec3 playerPosition, bool playerPresent,
-                                              world::gen::JavaRandom& rng);
+                                              world::gen::JavaRandom& rng,
+                                              Inventory* pickupInventory = nullptr);
 
     [[nodiscard]] const std::vector<Projectile>& entities() const { return entities_; }
 

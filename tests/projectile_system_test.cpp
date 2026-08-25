@@ -176,19 +176,26 @@ void testProjectileDamageTypeDoesNotBypassArmor() {
     std::cout << "testProjectileDamageTypeDoesNotBypassArmor OK\n";
 }
 
-// --- Critical hit deals strictly more than a non-critical hit of the same
-// base damage. ---
+// --- Critical hits deal at least as much as, and on average MORE than, a
+// non-critical hit of the same base damage. RW-1a #13 makes the crit bonus an
+// integer `nextInt(i/2 + 2)` roll, so a single crit can roll +0 (vanilla lets
+// it too); the guarantee is over several shots the crit total strictly exceeds
+// the non-crit total, and no crit ever lands BELOW the non-crit base. ---
 void testCriticalHitDealsMoreDamage() {
     world::World world = buildTestWorld();
 
-    const auto runOnce = [&](bool critical) {
+    // A single hit's applied damage for the given crit flag, threading `rng` so
+    // successive crit shots draw distinct bonuses from one stream.
+    const auto runOnce = [&](bool critical, world::gen::JavaRandom& rng) {
         EntitySystem entities;
         entities.spawn({6.0F, 1.0F, 3.0F}, targetType(), /*seed=*/9U);
         const auto targetId = entities.entities().front().id;
         const float healthBefore = entities.byIdConst(targetId)->damage.health;
         ProjectileSystem projectiles;
-        world::gen::JavaRandom rng(3U);
-        projectiles.spawn({3.0F, 1.5F, 3.0F}, {3.2F, 0.0F, 0.0F}, ActorReference::player(), 6.0F,
+        // Base 2.0 at ~3.2 launch speed keeps even a max crit (base i = 7, bonus
+        // up to +4) below the 20-health target, so a kill never clamps the
+        // measured damage and hides the crit bonus.
+        projectiles.spawn({3.0F, 1.5F, 3.0F}, {3.2F, 0.0F, 0.0F}, ActorReference::player(), 2.0F,
                           critical);
         for (int tick = 0; tick < 10; ++tick) {
             static_cast<void>(projectiles.tick(world, entities, glm::vec3{100.0F, 100.0F, 100.0F},
@@ -198,10 +205,19 @@ void testCriticalHitDealsMoreDamage() {
         return healthBefore - entities.byIdConst(targetId)->damage.health;
     };
 
-    const float normalDamage = runOnce(false);
-    const float criticalDamage = runOnce(true);
+    world::gen::JavaRandom normalRng(3U);
+    const float normalDamage = runOnce(false, normalRng);
     REQUIRE(normalDamage > 0.0F);
-    REQUIRE(criticalDamage > normalDamage);
+
+    world::gen::JavaRandom critRng(3U);
+    float critTotal = 0.0F;
+    for (int shot = 0; shot < 8; ++shot) {
+        const float critDamage = runOnce(true, critRng);
+        REQUIRE(critDamage >= normalDamage);  // a crit is never weaker than the base
+        critTotal += critDamage;
+    }
+    // Averaged over the crit shots, the integer bonus adds real damage.
+    REQUIRE(critTotal > normalDamage * 8.0F);
     std::cout << "testCriticalHitDealsMoreDamage OK\n";
 }
 
@@ -257,6 +273,139 @@ void testPickupGivesItemAndRemovesProjectile() {
     REQUIRE(collected.size() == 1U);
     REQUIRE(collected.front().item == &items::Stick);
     std::cout << "testPickupGivesItemAndRemovesProjectile OK\n";
+}
+
+// --- RW-1a #7: a full inventory must NOT swallow a landed arrow. With a
+// pickupInventory whose every slot is occupied by a different, maxed stack, the
+// contact pickup fails to stow and the projectile stays on the ground (still
+// pickupable next tick), rather than being silently deleted. ---
+void testFullInventoryLeavesArrowOnGround() {
+    world::World world = buildTestWorld();
+    EntitySystem entities;
+    ProjectileSystem projectiles;
+    world::gen::JavaRandom rng(21U);
+    const ItemStack pickupStack{world::Block::Air, 1, &items::Stick};
+    projectiles.restore({3.0F, 1.5F, 3.0F}, {0.0F, 0.0F, 0.0F}, ActorReference::player(), 2.0F,
+                        false, ProjectilePickupState::Pickupable, pickupStack, /*inGround=*/true,
+                        {3, 1, 3}, /*lifeTicks=*/0U);
+    const glm::vec3 player{3.0F, 1.5F, 3.0F};
+
+    // Cram every slot with a maxed Arrow stack (a different item than the Stick
+    // pickup), so Inventory::add finds neither a matching stack with room nor an
+    // empty slot — a genuinely full backpack.
+    Inventory inventory;
+    for (std::size_t i = 0; i < Inventory::kSlotCount; ++i) {
+        inventory.mutableSlot(i) = ItemStack{world::Block::Air, 64U, &items::Arrow};
+    }
+
+    std::vector<ItemStack> collected;
+    for (int tick = 0; tick < 5; ++tick) {
+        auto pickedUp =
+            projectiles.tick(world, entities, player, /*playerPresent=*/true, rng, &inventory);
+        collected.insert(collected.end(), pickedUp.begin(), pickedUp.end());
+    }
+    // Nothing was stowed and the arrow is still there to be retrieved later.
+    REQUIRE(collected.empty());
+    REQUIRE(projectiles.entities().size() == 1U);
+    REQUIRE(projectiles.entities().front().inGround);
+
+    // Free one slot: now the very next tick collects it and removes it (proof
+    // the arrow was preserved, not lost, while the pack was full).
+    inventory.mutableSlot(0) = ItemStack{};
+    auto pickedUp = projectiles.tick(world, entities, player, true, rng, &inventory);
+    REQUIRE(pickedUp.size() == 1U);
+    REQUIRE(pickedUp.front().item == &items::Stick);
+    REQUIRE(projectiles.entities().empty());
+    // The Stick actually landed in the freed slot.
+    REQUIRE(inventory.slot(0).item == &items::Stick);
+    std::cout << "testFullInventoryLeavesArrowOnGround OK\n";
+}
+
+// --- RW-1a #8: a shot that strikes at high speed deals MORE than the same base
+// arrow striking at low speed, because the applied damage is
+// `ceil(velocity.length() * baseDamage)` read at hit time — the acceptance's
+// "far/slow shot < near/fast shot" case. ---
+void testRangeDamageScalesWithImpactSpeed() {
+    world::World world = buildTestWorld();
+
+    const auto damageAtLaunchSpeed = [&](float speed) {
+        EntitySystem entities;
+        // Target dead ahead, under a block away, so even the slow shot reaches
+        // it on the first tick before drag bleeds off much speed.
+        entities.spawn({4.0F, 1.5F, 3.0F}, targetType(), /*seed=*/33U);
+        const auto targetId = entities.entities().front().id;
+        const float healthBefore = entities.byIdConst(targetId)->damage.health;
+        ProjectileSystem projectiles;
+        world::gen::JavaRandom rng(34U);
+        // Same base damage (2.0) for both; only the launch speed differs. Spawn
+        // at y == 2.0 (inside the target's 1.5..2.4 box) so a tick's small
+        // gravity dip never drops the ray under the box.
+        projectiles.spawn({3.2F, 2.0F, 3.0F}, {speed, 0.0F, 0.0F}, ActorReference::player(), 2.0F);
+        for (int tick = 0; tick < 10; ++tick) {
+            static_cast<void>(projectiles.tick(world, entities,
+                                               glm::vec3{100.0F, 100.0F, 100.0F}, false, rng));
+            if (entities.byIdConst(targetId)->damage.health < healthBefore) break;
+        }
+        return healthBefore - entities.byIdConst(targetId)->damage.health;
+    };
+
+    const float fastDamage = damageAtLaunchSpeed(3.0F);   // a full-draw arrow
+    const float slowDamage = damageAtLaunchSpeed(1.0F);   // a weak, slow arrow
+    REQUIRE(slowDamage > 0.0F);
+    REQUIRE(fastDamage > slowDamage);  // faster impact = more damage
+    std::cout << "testRangeDamageScalesWithImpactSpeed OK\n";
+}
+
+// --- RW-1a #13: the critical bonus is an INTEGER draw `nextInt(i/2 + 2)` from
+// the tick's deterministic stream — the same seed reproduces the same crit
+// damage sequence (a wall-clock/global draw would not), and the bonus is a
+// whole number, never a flat 1.5x. ---
+void testCriticalBonusIsIntegerAndDeterministic() {
+    world::World world = buildTestWorld();
+
+    // The applied crit damage for a fixed base, seed and launch — captured over
+    // several fresh crit shots so the bonus roll actually varies.
+    const auto critDamageSequence = [&](std::uint64_t seed) {
+        std::vector<float> damages;
+        world::gen::JavaRandom rng(seed);
+        for (int shot = 0; shot < 6; ++shot) {
+            EntitySystem entities;
+            entities.spawn({4.0F, 1.5F, 3.0F}, targetType(), /*seed=*/40U);
+            const auto targetId = entities.entities().front().id;
+            const float healthBefore = entities.byIdConst(targetId)->damage.health;
+            ProjectileSystem projectiles;
+            // base 4.0, launched at ~1.0 speed so applied base i = ceil(1*4)=4,
+            // crit bonus bound = 4/2 + 2 = 4 -> nextInt(4) in {0,1,2,3}. Spawn
+            // at y == 2.0 (inside the 1.5..2.4 box) and x == 3.2 (under a block
+            // away) so the slow shot always lands on the first tick.
+            projectiles.spawn({3.2F, 2.0F, 3.0F}, {1.0F, 0.0F, 0.0F}, ActorReference::player(),
+                              4.0F, /*critical=*/true);
+            for (int tick = 0; tick < 10; ++tick) {
+                static_cast<void>(projectiles.tick(world, entities,
+                                                   glm::vec3{100.0F, 100.0F, 100.0F}, false, rng));
+                if (entities.byIdConst(targetId)->damage.health < healthBefore) break;
+            }
+            damages.push_back(healthBefore - entities.byIdConst(targetId)->damage.health);
+        }
+        return damages;
+    };
+
+    const auto runA = critDamageSequence(0xBEEFULL);
+    const auto runB = critDamageSequence(0xBEEFULL);
+    REQUIRE(runA.size() == 6U);
+    REQUIRE(runA == runB);  // same seed -> identical crit sequence (determinism)
+
+    // Every applied crit damage is a whole number (integer arithmetic, not a
+    // fractional 1.5x multiply), and at least one shot rolled a strictly
+    // positive bonus above the un-crit base of 4 (so the bonus roll is real).
+    bool sawBonusAboveBase = false;
+    for (const float damage : runA) {
+        REQUIRE(damage == std::floor(damage));  // integer half-hearts
+        REQUIRE(damage >= 4.0F);                 // never below the base i = 4
+        if (damage > 4.0F) sawBonusAboveBase = true;
+    }
+    REQUIRE(sawBonusAboveBase);
+    std::cout << "testCriticalBonusIsIntegerAndDeterministic OK\n";
 }
 
 // --- A NoPickup projectile is never collected even on direct contact. ---
@@ -494,6 +643,9 @@ int main() {
     testCriticalHitDealsMoreDamage();
     testHitBlockSticksInGround();
     testPickupGivesItemAndRemovesProjectile();
+    testFullInventoryLeavesArrowOnGround();
+    testRangeDamageScalesWithImpactSpeed();
+    testCriticalBonusIsIntegerAndDeterministic();
     testNoPickupStateIsNeverCollected();
     testLifetimeTimeoutDespawns();
     testDeterministicLaunchSequence();

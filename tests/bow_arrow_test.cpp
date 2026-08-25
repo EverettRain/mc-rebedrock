@@ -186,11 +186,15 @@ void testFullDrawSpawnsFullVelocityCriticalArrow() {
     REQUIRE(arrow.critical);
     REQUIRE(arrow.pickupItem.item == &items::Arrow);
     // 3.0 base velocity, scattered by the session's own deterministic
-    // projectileRandom_ (RW-0's spawn() Gaussian/20 jitter) — so the length is
+    // projectileRandom_ (RW-1a #16's spawn() triangle jitter) — so the length is
     // close to, not exactly, 3.0.
     const float speed = glm::length(arrow.velocity);
     REQUIRE(speed > 2.8F && speed < 3.2F);
-    REQUIRE(arrow.damage == 6.0F);
+    // RW-1a #8 — the projectile stores the arrow's BASE damage (2.0), not the
+    // velocity-scaled value; the hit-time `ceil(velocity.length() * base)` (~6
+    // at this ~3.0 launch speed) is derived in ProjectileSystem::tick, proven by
+    // projectile_system_test's range-damage case.
+    REQUIRE(arrow.damage == kArrowBaseDamage);
     REQUIRE(!session.playerActions().use.active);  // the draw ended
     std::cout << "testFullDrawSpawnsFullVelocityCriticalArrow OK\n";
 }
@@ -218,8 +222,11 @@ void testPartialDrawSpawnsWeakerNonCriticalArrow() {
     REQUIRE(!arrow.critical);
     const float speed = glm::length(arrow.velocity);
     REQUIRE(speed < 2.8F);  // strictly below the full-draw range
-    REQUIRE(arrow.damage < 6.0F);
-    REQUIRE(arrow.damage > 0.0F);
+    // RW-1a #8 — a weak draw is weaker through its LOWER launch VELOCITY (the
+    // hit-time `ceil(velocity.length() * base)` then lands softer), not through a
+    // shrunken stored base: the base damage field is the same 2.0 for every
+    // arrow now.
+    REQUIRE(arrow.damage == kArrowBaseDamage);
     std::cout << "testPartialDrawSpawnsWeakerNonCriticalArrow OK\n";
 }
 
