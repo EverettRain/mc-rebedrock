@@ -63,3 +63,6 @@ Desktop.ini
 # vendor/stb-src 是 nothings/stb 的完整克隆；忽略其内嵌 .git，
 # 否则 git 会把整个目录当 gitlink（子模块引用），克隆后无法构建
 vendor/stb-src/.git/
+
+# ── 本地诊断导出（六视图/问题截图/软件光栅预览，含 vanilla 派生美术，禁入库）──
+export/
