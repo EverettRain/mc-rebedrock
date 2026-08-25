@@ -1,0 +1,1 @@
+{"anvil_cost":1,"weight":2,"max_level":1,"min_cost":{"base":25,"per_level_above_first":25},"max_cost":{"base":75,"per_level_above_first":25},"slots":["any"],"supported_items":"#minecraft:enchantable/durability","rebedrock":{"treasure_only":true}}

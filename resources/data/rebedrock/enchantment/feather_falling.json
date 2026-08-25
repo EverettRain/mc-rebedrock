@@ -1,0 +1,1 @@
+{"anvil_cost":1,"weight":5,"max_level":4,"min_cost":{"base":5,"per_level_above_first":6},"max_cost":{"base":11,"per_level_above_first":6},"slots":["feet"],"supported_items":"#minecraft:enchantable/foot_armor"}

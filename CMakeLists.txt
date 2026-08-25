@@ -2110,6 +2110,17 @@ if(BUILD_TESTING)
             tests/migration_diag.cpp
         )
         target_link_libraries(mc_rebedrock_migration_diag PRIVATE mc_rebedrock_runtime)
+
+        # DDC-3: the built-in enchantment datapack generator. Projects the
+        # constexpr kEnchantmentTable into resources/data/rebedrock/enchantment/
+        # *.json (the internal datapack). Run once by hand after editing the
+        # table; the golden test re-derives and byte-compares, so the files can
+        # never drift. Writes files, so it is never a ctest entry.
+        add_executable(mc_rebedrock_enchantment_datapack_gen
+            tests/enchantment_datapack_gen.cpp
+        )
+        target_link_libraries(mc_rebedrock_enchantment_datapack_gen PRIVATE mc_rebedrock_runtime)
+        target_include_directories(mc_rebedrock_enchantment_datapack_gen PRIVATE src "${glm_SOURCE_DIR}")
     endif()
 
     add_executable(mc_rebedrock_game_rules_registry_test
@@ -2183,6 +2194,19 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_effect_engine_test PRIVATE mc_rebedrock_runtime)
     target_include_directories(mc_rebedrock_effect_engine_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME effect_engine COMMAND mc_rebedrock_effect_engine_test)
+
+    # DDC-3: legacy enchantment content migration — golden compare (constexpr
+    # kEnchantmentTable <-> JE-schema datapack JSON, zero drift) + the shipped
+    # internal datapack (resources/data/rebedrock/enchantment/*.json) loaded
+    # through the real StandardPackResourceProvider path.
+    add_executable(mc_rebedrock_enchantment_migration_test
+        tests/enchantment_migration_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_enchantment_migration_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_enchantment_migration_test PRIVATE src "${glm_SOURCE_DIR}")
+    target_compile_definitions(mc_rebedrock_enchantment_migration_test PRIVATE
+        MC_REBEDROCK_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources")
+    add_test(NAME enchantment_migration COMMAND mc_rebedrock_enchantment_migration_test)
 
     # D-5: Java-Edition data-side mapping — vanilla-name authority + JE ingestion.
     add_executable(mc_rebedrock_je_mapping_test

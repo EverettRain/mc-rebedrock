@@ -1,0 +1,1 @@
+{"anvil_cost":1,"weight":1,"max_level":3,"min_cost":{"base":10,"per_level_above_first":20},"max_cost":{"base":60,"per_level_above_first":20},"slots":["chest"],"supported_items":"#minecraft:enchantable/chest_armor"}

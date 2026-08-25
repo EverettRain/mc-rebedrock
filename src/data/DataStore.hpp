@@ -68,7 +68,14 @@ class DataStore final {
     std::size_t applyOverlay(const assets::ResourceProvider& resources, std::string_view space,
                              std::string_view prefix) {
         std::size_t applied = 0;
-        for (const auto& location : resources.list(space, prefix)) {
+        // Datapack content lives under `data/` — PackType::ServerData. The
+        // default list() type is ClientResources (assets/), so a real
+        // directory/standard-pack provider would enumerate the wrong tree and
+        // find nothing; the MemoryProvider tests use ignore the type. Ask for the
+        // server-data half explicitly so the shipped internal datapack (and any
+        // player datapack) is actually enumerated.
+        for (const auto& location :
+             resources.list(space, prefix, assets::PackType::ServerData)) {
             const auto bytes = resources.readBytes(location);
             if (bytes.empty()) {
                 continue;
