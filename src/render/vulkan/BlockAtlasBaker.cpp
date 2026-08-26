@@ -225,8 +225,6 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
     };
     const auto chestTexture =
         assets::ImageData::loadRgba(resources, assets::textures("entity/chest/normal.png"));
-    const auto furnaceFront = blockTex("furnace_front");
-    const auto furnaceFrontOn = blockTex("furnace_front_on");
     // One orb sprite out of the 4x4 experience_orb.png sheet (top-left 16x16
     // cell), resized to the atlas tile. Loaded tolerant-of-missing so a pack
     // without the entity texture bakes the checkerboard rather than aborting.
@@ -352,12 +350,13 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
     }
     for (const auto& texture : chestItemTextures)
         append(texture);    // 164..166
-    append(furnaceFront);   // 167
-    append(furnaceFrontOn); // 168
+    // The furnace front is no longer here: it is resolved through the normal
+    // name-driven path as a DirectionalCube slot (RN-4a follow-up), so the fixed
+    // section is two layers shorter and moon/sun/orb shifted down accordingly.
     for (const auto& tile : moonPhaseTiles)
-        append(tile);            // 169..176
-    append(sunFrames.front());   // 177
-    append(experienceOrb);       // 178
+        append(tile);            // 167..174
+    append(sunFrames.front());   // 175
+    append(experienceOrb);       // 176
 
     // ---- Dynamic block textures, name-driven from the block registry ----
     // Baked composites register by name so every block that reuses them finds
@@ -366,6 +365,9 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         throw std::runtime_error("Fixed texture section does not match kFirstBlockTextureLayer");
     }
     std::unordered_map<std::string, float> layerByName;
+    // RN-4b: animated non-fluid block textures, accumulated as `assign` bakes each
+    // multi-frame strip; forwarded to output.blockAnimations below.
+    std::vector<BlockTextureAnimation> blockAnimations;
     const auto assign = [&](const char* name) -> float {
         const auto existing = layerByName.find(name);
         if (existing != layerByName.end()) {
@@ -407,8 +409,39 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
             layerByName.emplace(name, first);
             return first;
         }
+        const auto image = blockTex(name);
+        if (image.width > 0 && image.height > image.width && image.height % image.width == 0) {
+            // RN-4b: a multi-frame block strip (magma, prismarine, …). Bake every
+            // frame contiguously and record the animation so the shader can cycle
+            // it, instead of the old "bake frame 0 only" cap. The .mcmeta frame
+            // order (if any) is honoured, matching the fluids.
+            auto frames = animatedSquareFrames(image, top.width);
+            const auto animation = assets::TextureAnimation::load(
+                resources, assets::textures("block/" + std::string{name} + ".png"));
+            std::vector<assets::ImageData> ordered;
+            if (animation.has_value() && !animation->frames.empty()) {
+                for (const auto& frame : animation->frames) {
+                    if (frame.index >= 0 &&
+                        static_cast<std::size_t>(frame.index) < frames.size()) {
+                        ordered.push_back(frames[static_cast<std::size_t>(frame.index)]);
+                    }
+                }
+            }
+            if (ordered.empty()) {
+                ordered = std::move(frames);
+            }
+            const float base = static_cast<float>(layers.size());
+            for (const auto& frame : ordered) {
+                layers.push_back(conformToAtlasLayer(top, frame, name));
+            }
+            blockAnimations.push_back(
+                {base, static_cast<std::uint32_t>(ordered.size()),
+                 animation.has_value() ? static_cast<float>(animation->frametime) : 1.0F});
+            layerByName.emplace(name, base);
+            return base;
+        }
         const float index = static_cast<float>(layers.size());
-        layers.push_back(conformBlockLayer(top, blockTex(name), name));
+        layers.push_back(conformToAtlasLayer(top, image, name));
         layerByName.emplace(name, index);
         return index;
     };
@@ -629,6 +662,38 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
                                                  static_cast<float>(kChestItemSideLayer)});
             continue;
         }
+        if (definition.model == world::BlockModel::DirectionalCube) {
+            // RN-4a: resolve the six named faces. backActive falls back to back
+            // when a block has no powered variant.
+            world::DirectionalTextureLayers dl;
+            dl.front = assign(definition.directional.front);
+            dl.frontActive = definition.directional.frontActive
+                ? assign(definition.directional.frontActive)
+                : dl.front;
+            dl.back = assign(definition.directional.back);
+            dl.backActive = definition.directional.backActive
+                ? assign(definition.directional.backActive)
+                : dl.back;
+            dl.top = assign(definition.directional.top);
+            dl.bottom = assign(definition.directional.bottom);
+            dl.side = assign(definition.directional.side);
+            world::setBlockDirectionalLayers(block, dl);
+            // The dropped-item / HUD cube still reads top/side/bottom; show the
+            // front sprite on the visible side face so the item reads as an observer.
+            world::setBlockTextureLayers(block, {dl.top, dl.front, dl.bottom});
+            continue;
+        }
+        if (definition.model == world::BlockModel::ElementModel ||
+            definition.model == world::BlockModel::RedstoneWire) {
+            // RN-4a-2/RN-6: resolve the per-block texture slots the mesher's element
+            // (or wire) transcription reads. The block keeps its `.texture()` too
+            // (resolved below), which the flat HUD/item icon and dropped item use.
+            std::array<float, world::kMaxModelTextureSlots> slots{};
+            for (std::size_t i = 0; i < slots.size(); ++i) {
+                slots[i] = definition.modelTextures[i] ? assign(definition.modelTextures[i]) : 0.0F;
+            }
+            world::setBlockModelSlotLayers(block, slots);
+        }
         world::BlockTextureLayers resolved;
         resolved.top = assign(definition.textures.top);
         resolved.side = assign(definition.textures.side);
@@ -644,6 +709,7 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
     output.width = static_cast<std::uint32_t>(top.width);
     output.height = static_cast<std::uint32_t>(top.height);
     output.fluidAnimationFrameTimes = fluidAnimationFrameTimes;
+    output.blockAnimations = std::move(blockAnimations);
     for (const auto& layer : layers) {
         output.rgba.insert(output.rgba.end(), layer.rgba.begin(), layer.rgba.end());
     }
@@ -657,6 +723,47 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         // the legacy shared shell/overlay tint composite no longer exists.
         icon = assets::ImageData::loadRgbaOrMissing(resources, assets::textures("item/" + std::string{item->textureName} + ".png"),
             top.width, top.height);
+        // Leather armour is a two-layer sprite (DyeableLeatherItem): a greyscale
+        // base tinted by the leather colour — default 0xA06540 — plus a
+        // full-colour `_overlay` (buckles/trim) drawn untinted on top. Without
+        // the tint the base reads white like iron; without the overlay the trim
+        // (the differently coloured parts) is missing. Only leather armour is
+        // dyeable, so only it takes this path.
+        if (item->armorMaterial == gameplay::ArmorMaterialId::Leather) {
+            constexpr std::uint32_t kDefaultLeather = 0xA06540U;
+            const auto tintChannel = [](std::uint8_t value, std::uint32_t channel) {
+                return static_cast<std::uint8_t>(static_cast<std::uint32_t>(value) * channel / 255U);
+            };
+            for (std::size_t p = 0; p + 3U < icon.rgba.size(); p += 4U) {
+                icon.rgba[p + 0U] = tintChannel(icon.rgba[p + 0U], (kDefaultLeather >> 16) & 0xFFU);
+                icon.rgba[p + 1U] = tintChannel(icon.rgba[p + 1U], (kDefaultLeather >> 8) & 0xFFU);
+                icon.rgba[p + 2U] = tintChannel(icon.rgba[p + 2U], kDefaultLeather & 0xFFU);
+            }
+            const auto overlayLocation =
+                assets::textures("item/" + std::string{item->textureName} + "_overlay.png");
+            if (resources.exists(overlayLocation)) {
+                const auto overlay =
+                    assets::ImageData::loadRgbaOrMissing(resources, overlayLocation, icon.width,
+                                                         icon.height);
+                if (overlay.width == icon.width && overlay.height == icon.height &&
+                    overlay.rgba.size() == icon.rgba.size()) {
+                    // Straight source-over: the overlay's trim sits on the tinted
+                    // base, its own alpha choosing where it shows.
+                    for (std::size_t p = 0; p + 3U < icon.rgba.size(); p += 4U) {
+                        const std::uint32_t a = overlay.rgba[p + 3U];
+                        if (a == 0U) continue;
+                        for (std::size_t c = 0; c < 3U; ++c) {
+                            icon.rgba[p + c] = static_cast<std::uint8_t>(
+                                (static_cast<std::uint32_t>(overlay.rgba[p + c]) * a +
+                                 static_cast<std::uint32_t>(icon.rgba[p + c]) * (255U - a)) /
+                                255U);
+                        }
+                        icon.rgba[p + 3U] = static_cast<std::uint8_t>(
+                            std::max<std::uint32_t>(icon.rgba[p + 3U], a));
+                    }
+                }
+            }
+        }
         const auto fitted = conformToAtlasLayer(top, icon, item->textureName);
         output.rgba.insert(output.rgba.end(), fitted.rgba.begin(), fitted.rgba.end());
         gameplay::setItemTextureLayer(item, static_cast<float>(baseLayerCount + itemIndex));

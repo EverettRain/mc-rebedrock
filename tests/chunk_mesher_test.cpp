@@ -194,6 +194,14 @@ int main() {
     static_assert(!mc::world::hasCollision(mc::world::Block::WallTorch));
     static_assert(mc::world::emittedLight(mc::world::Block::WallTorch) == 14U);
 
+    // RN-4a follow-up: the furnace is a DirectionalCube whose front faces FACING —
+    // the old fixed 167/168 furnace-front layers are gone. Inject known slot
+    // layers and confirm an East-facing furnace shows the front on its +X (east)
+    // face and the side on a perpendicular (south) face.
+    mc::world::setBlockDirectionalLayers(mc::world::Block::Furnace,
+                                         {/*front*/ 167.0F, /*frontActive*/ 168.0F, /*back*/ 9.0F,
+                                          /*backActive*/ 9.0F, /*top*/ 9.0F, /*bottom*/ 9.0F,
+                                          /*side*/ 9.0F});
     mc::world::World directionalWorld;
     mc::world::Chunk directionalChunk;
     directionalChunk.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::Furnace);
@@ -203,10 +211,11 @@ int main() {
     directionalWorld.setChunk({0, 0}, std::move(directionalChunk));
     const auto directionalMesh =
         mc::world::ChunkMesher::buildSection(directionalWorld, {0, 0}, 0);
+    // Face order is kFaces: +X first (vertices 0-3), +Z fifth (vertices 16-19).
     expectNear(mc::render::decodeTextureLayer(directionalMesh.mesh.vertices[0]), 167.0F,
-               "furnace front layer");
-    expectNear(mc::render::decodeTextureLayer(directionalMesh.mesh.vertices[32]), 9.0F,
-               "furnace side layer");
+               "furnace front layer (east face)");
+    expectNear(mc::render::decodeTextureLayer(directionalMesh.mesh.vertices[16]), 9.0F,
+               "furnace side layer (south face)");
     assert(directionalWorld.orientation(1, mc::world::kMinY + 1, 1) == mc::world::BlockOrientation::East);
 
     // Horizontal pillar models are baked after rotating the model, leaving UVs
@@ -465,26 +474,27 @@ int main() {
         expectNear(maxZ, 1.0F, "door leaf far");
     }
     {
-        // An open fence gate keeps its post-pair box as its outline / visual /
-        // pick shape (vanilla getShape ignores OPEN — the gate stays visible and
-        // selectable); only its *collision* shape empties so entities pass
-        // through. So an open gate meshes the same one box -> 24 vertices as a
-        // closed one, while its collisionShape is empty.
+        // RN-6: the fence gate now meshes its real two-post-and-bars geometry —
+        // eight boxes, so 8 * 6 faces * 4 = 192 vertices — instead of the old
+        // single plank-wall box. Its outline / pick SHAPE stays the one post-pair
+        // box (vanilla getShape ignores OPEN — the gate stays visible and
+        // selectable), and only its *collision* shape empties when open so entities
+        // pass through.
         mc::world::Chunk openGateChunk;
         const auto openGate =
             mc::world::BlockState{mc::world::Block::OakFenceGate}.withOpen(true);
         openGateChunk.setState(5, mc::world::kMinY + 1, 1, openGate);
         const auto openGateMesh = mc::world::ChunkMesher::build(openGateChunk);
         assert(mc::world::blockShape(openGate).boxes.size() == 1U);
-        assert(openGateMesh.vertices.size() == 24U);
+        assert(openGateMesh.vertices.size() == 192U);
         assert(mc::world::collisionShape(openGate).boxes.empty());
-        // A closed gate meshes the same one post-pair box, and (unlike open) it
+        // A closed gate meshes the same eight-box geometry, and (unlike open) it
         // still collides.
         const mc::world::BlockState closedGate{mc::world::Block::OakFenceGate};
         openGateChunk.setState(5, mc::world::kMinY + 1, 1, closedGate);
         const auto closedGateMesh = mc::world::ChunkMesher::build(openGateChunk);
         assert(mc::world::blockShape(closedGate).boxes.size() == 1U);
-        assert(closedGateMesh.vertices.size() == 24U);
+        assert(closedGateMesh.vertices.size() == 192U);
         assert(mc::world::collisionShape(closedGate).boxes.size() == 1U);
     }
     {

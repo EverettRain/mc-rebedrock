@@ -272,6 +272,13 @@ enum class Block : std::uint8_t {
     // neighbour). Enum ordinal is irrelevant to saves (blocks serialise by
     // stable name, format 5+), so appending it never touches an old save.
     Fire,
+    // RN-4b content: prismarine and sea lantern — full cubes whose textures are
+    // multi-frame .mcmeta strips (prismarine 4 frames, sea lantern 5), the first
+    // roster blocks to exercise the generalised block-texture animation. Sea
+    // lantern also emits full light. Appended before Count; saves serialise blocks
+    // by stable name, so the new ordinals never touch an old save.
+    Prismarine,
+    SeaLantern,
     Count,
 };
 
@@ -353,6 +360,35 @@ enum class BlockModel : std::uint8_t {
     // arm per connected side (WallNorth/East/South/West), the same
     // mask-indexed-table shape a fence's connection mechanism would use.
     Wall,
+    // RN-4a: a full cube whose six faces carry independent textures and rotate
+    // with the block's FACING (observer/piston style): the front face points along
+    // FACING, the back along its opposite (swapped to an "active" sprite while
+    // powered, e.g. observer_back_on), and top/bottom/side fill the rest. Unlike
+    // the ElementModel diodes it is still geometrically a full cube, so isFullCube()
+    // counts it (it occludes neighbours and is face-sturdy) — that is exactly what
+    // was wrong while observer sat on the Torch placeholder and leaked light. The
+    // furnace's *horizontal* (4-way) front is a different orientation semantics and
+    // keeps its own hardcoded path for now.
+    DirectionalCube,
+    // RN-4a-2: a small multi-box model whose elements each carry their own texture
+    // and UV rect, transcribed from a vanilla model json's `elements` — the diodes
+    // (repeater/comparator: a slab base plus redstone-torch nubs) and the lever
+    // (cobble base plus a 45°-tilted handle). Geometrically a decoration, never a
+    // full cube: isFullCube() must stay false for it (that is the fix for the lever,
+    // which used to default to Cube and be wrongly treated as a solid occluder).
+    ElementModel,
+    // RN-6: redstone dust — a flat wire meshed from a power-tinted centre dot plus
+    // one line arm per connected neighbour (and a climbing strip up a solid side),
+    // the multipart "connection mask" model. Its connections are derived from
+    // neighbours at mesh time (like a fence), not stored in the state; its POWER
+    // (AnalogSignal 0-15) drives the red gradient tint. Not a full cube.
+    RedstoneWire,
+    // RN-7: fire — neighbour-driven billowing planes (floor cross when a solid/
+    // flammable block is below, a wall-hugging sheet on each flammable side, an
+    // overhead sheet under a flammable ceiling), transcribed from vanilla's
+    // template_fire_floor/side/up. Replaces the Cross model that could only draw
+    // the two diagonal quads and never the side flames. Full-bright, no collision.
+    Fire,
 };
 
 // Whether a model is a shaped block — one whose real geometry is a `BlockShape`
@@ -379,6 +415,10 @@ enum class BlockModel : std::uint8_t {
     case BlockModel::Torch:
     case BlockModel::Chest:
     case BlockModel::Slab:
+    case BlockModel::DirectionalCube:
+    case BlockModel::ElementModel:
+    case BlockModel::RedstoneWire:
+    case BlockModel::Fire:
         return false;
     }
     return false;
@@ -492,6 +532,19 @@ struct BlockTextureLayers final {
     float bottom = 0.0F;
 };
 
+// RN-4a: the resolved atlas layers of a DirectionalCube's six faces, filled by
+// the atlas builder from DirectionalTextureNames the same way kBlockTextureLayers
+// is filled from BlockTextureNames.
+struct DirectionalTextureLayers final {
+    float front = 0.0F;
+    float frontActive = 0.0F;
+    float back = 0.0F;
+    float backActive = 0.0F;
+    float top = 0.0F;
+    float bottom = 0.0F;
+    float side = 0.0F;
+};
+
 // The block's textures by vanilla file name ("granite", "grass_block_top",
 // "dirt"), mirroring how 1.16.1 blocks reference sprites by ResourceLocation.
 // The renderer resolves the names into atlas layer indices once at startup and
@@ -502,6 +555,28 @@ struct BlockTextureNames final {
     const char* side = nullptr;
     const char* bottom = nullptr;
 };
+
+// RN-4a: the six texture faces of a BlockModel::DirectionalCube, by vanilla file
+// name. `front` points along FACING, `back` along its opposite (`backActive` is
+// the powered variant, e.g. observer_back_on — null falls back to `back`), and
+// `top`/`bottom`/`side` fill the other faces (which face is which rotates with
+// FACING, resolved by directionalCubeSlot). The renderer resolves the names to
+// atlas layers once at startup, exactly like BlockTextureNames.
+struct DirectionalTextureNames final {
+    const char* front = nullptr;
+    // The powered/lit variant of the front face (furnace_front_on). Null means the
+    // front never changes (observer, whose active state swaps the back instead).
+    const char* frontActive = nullptr;
+    const char* back = nullptr;
+    const char* backActive = nullptr;
+    const char* top = nullptr;
+    const char* bottom = nullptr;
+    const char* side = nullptr;
+};
+
+// RN-4a-2: the most texture slots any ElementModel block references (repeater and
+// comparator use four: slab/top/unlit/lit).
+inline constexpr std::size_t kMaxModelTextureSlots = 5;
 
 // A block's sound group — 26.1's BlockBehaviour.Properties.sound(SoundType), the
 // single identity every break/step/place/hit sound derives from. This is the
@@ -549,6 +624,13 @@ struct BlockDefinition final {
     // identifiers below produce; this is what shows when a key is missing.
     const char* displayName = "";
     BlockTextureNames textures{};
+    // RN-4a: the six named faces of a DirectionalCube. Empty for every other
+    // model, which reads `textures` instead.
+    DirectionalTextureNames directional{};
+    // RN-4a-2: an ElementModel block's texture slots by vanilla name, indexed by
+    // the transcription's slot constants (e.g. repeater 0=slab 1=top 2=unlit
+    // 3=lit). Empty for every other model.
+    std::array<const char*, kMaxModelTextureSlots> modelTextures{};
     float hardness = 0.0F;
     float blastResistance = 0.0F;
     std::uint8_t maximumStackSize = 64U;
@@ -680,6 +762,38 @@ class BlockProperties final {
     [[nodiscard]] constexpr BlockProperties model(BlockModel shape) const {
         BlockProperties copy = *this;
         copy.definition_.model = shape;
+        return copy;
+    }
+    // RN-4a: declare a BlockModel::DirectionalCube and its six texture faces in
+    // one call. `front` points along FACING, `back`/`backActive` along its
+    // opposite (backActive is the powered sprite), the rest fill top/bottom/side.
+    // Sets the model too, so no separate .model() call is needed.
+    [[nodiscard]] constexpr BlockProperties directionalCube(
+        const char* front, const char* frontActive, const char* back, const char* backActive,
+        const char* top, const char* bottom, const char* side) const {
+        BlockProperties copy = *this;
+        copy.definition_.model = BlockModel::DirectionalCube;
+        copy.definition_.directional = {front, frontActive, back, backActive, top, bottom, side};
+        return copy;
+    }
+    // RN-4a-2: declare a BlockModel::ElementModel and its texture slots (by vanilla
+    // name), indexed by the mesher's per-block transcription. Sets the model too.
+    [[nodiscard]] constexpr BlockProperties elementModel(
+        const char* slot0, const char* slot1 = nullptr, const char* slot2 = nullptr,
+        const char* slot3 = nullptr, const char* slot4 = nullptr) const {
+        BlockProperties copy = *this;
+        copy.definition_.model = BlockModel::ElementModel;
+        copy.definition_.modelTextures = {slot0, slot1, slot2, slot3, slot4};
+        return copy;
+    }
+    // RN-6: declare BlockModel::RedstoneWire and its two texture slots — 0 the
+    // centre dot, 1 the line arm — resolved to layers the same way ElementModel's
+    // slots are.
+    [[nodiscard]] constexpr BlockProperties redstoneWireModel(const char* dot,
+                                                              const char* line) const {
+        BlockProperties copy = *this;
+        copy.definition_.model = BlockModel::RedstoneWire;
+        copy.definition_.modelTextures = {dot, line, nullptr, nullptr, nullptr};
         return copy;
     }
     // Shrinks the block's solid box to the given height (vanilla farmland is a
@@ -1104,10 +1218,18 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .creative(CreativeCategory::Functional),
     // One furnace, lit or not: AbstractFurnaceBlock's LIT is a state, so a
     // burning furnace is the same block and keeps its block entity (and its
-    // smelt) across the swap. The lit front is picked by the mesher
-    // (kFurnaceFrontOnLayer); light 13 is what the burning state emits.
+    // smelt) across the swap. The lit front (furnace_front_on) is the
+    // DirectionalCube's frontActive slot; light 13 is what the burning state emits.
     BlockProperties::of(Block::Furnace, "furnace", "Furnace")
+        // RN-4a follow-up: a horizontal DirectionalCube — front faces FACING and
+        // LIT swaps it to furnace_front_on; the other five faces are furnace_side
+        // (back too) and furnace_top (top/bottom). This retires the furnace-front
+        // hardcode (the fixed atlas layers 167/168 and the textureLayer special
+        // case) so a horizontally-oriented cube is now general, not a furnace-only
+        // branch. Keeps .texture() for the flat item sprite / dropped item.
         .texture("furnace_top", "furnace_side", "furnace_top")
+        .directionalCube("furnace_front", "furnace_front_on", "furnace_side", nullptr,
+                         "furnace_top", "furnace_top", "furnace_side")
         .strength(3.5F)
         .horizontalFacing()
         .lit(13U)
@@ -1578,6 +1700,10 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("lever")
         .instantBreak()
         .renderLayer(BlockRenderLayer::Cutout)
+        // RN-4a-2: cobblestone base + a 45°-tilted handle, transcribed from vanilla
+        // models/block/lever(_on).json. Replaces the default Cube model, which had
+        // wrongly made the lever a full-cube occluder (isFullCube is now false).
+        .elementModel("cobblestone", "lever")
         .noCollision()
         .support(BlockSupport::Wall)
         .state(StateProperty::Facing, 6U)
@@ -1590,7 +1716,9 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("repeater")
         .instantBreak()
         .renderLayer(BlockRenderLayer::Cutout)
-        .model(BlockModel::Torch)
+        // RN-4a-2: real diode geometry (smooth-stone slab base + redstone-torch
+        // nubs), transcribed from vanilla models/block/repeater_*tick*.json.
+        .elementModel("smooth_stone", "repeater", "redstone_torch_off", "redstone_torch")
         .noCollision()
         .support(BlockSupport::Ground)
         .horizontalFacing()
@@ -1604,7 +1732,9 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("comparator")
         .instantBreak()
         .renderLayer(BlockRenderLayer::Cutout)
-        .model(BlockModel::Torch)
+        // RN-4a-2: slab base + three redstone-torch nubs, transcribed from vanilla
+        // models/block/comparator*.json.
+        .elementModel("smooth_stone", "comparator", "redstone_torch_off", "redstone_torch")
         .noCollision()
         .support(BlockSupport::Ground)
         .horizontalFacing()
@@ -1615,20 +1745,28 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     // Redstone dust: a flat wire carrying POWER 0-15 in its AnalogSignal. Torch
     // model placeholder keeps it non-full-cube; needs a sturdy floor.
     BlockProperties::of(Block::RedstoneWire, "redstone_wire", "Redstone Dust")
-        .texture("redstone_dust_line")
+        // RN-6: item icon is the flat redstone item sprite; the world model is a
+        // power-tinted flat wire (dot + line arms), transcribed from vanilla's
+        // redstone_dust_* models. The old `.texture("redstone_dust_line")` named a
+        // file that does not exist (the real sprites are redstone_dust_line0/dot).
+        .texture("redstone_dust_dot")
+        .redstoneWireModel("redstone_dust_dot", "redstone_dust_line0")
         .instantBreak()
         .renderLayer(BlockRenderLayer::Cutout)
-        .model(BlockModel::Torch)
         .noCollision()
         .support(BlockSupport::Ground)
         .state(StateProperty::AnalogSignal, 16U)
         .creative(CreativeCategory::Redstone),
-    // Observer: FACING is the six-way watched direction, POWERED the pulse. Torch
-    // model placeholder keeps it out of the redstone-conductor set.
+    // Observer: FACING is the six-way watched direction, POWERED the pulse. RN-4a:
+    // a real six-face DirectionalCube (front faces FACING, back = observer_back /
+    // _back_on by POWERED, top/bottom share observer_top, sides observer_side),
+    // transcribed from vanilla models/block/observer.json. As a full cube it now
+    // occludes and is face-sturdy — the Torch placeholder used to leak light.
     BlockProperties::of(Block::Observer, "observer", "Observer")
-        .texture("observer")
+        // front never changes; POWERED swaps the back to observer_back_on.
+        .directionalCube("observer_front", nullptr, "observer_back", "observer_back_on",
+                         "observer_top", "observer_top", "observer_side")
         .strength(3.0F)
-        .model(BlockModel::Torch)
         .state(StateProperty::Facing, 6U)
         .state(StateProperty::Powered, 2U)
         .creative(CreativeCategory::Redstone),
@@ -1642,14 +1780,24 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .button()
         .creative(CreativeCategory::Redstone),
     // Piston: a full-cube block with a six-way FACING and EXTENDED in POWERED.
+    // RN-4a follow-up: a six-way DirectionalCube (like the observer). FACING's
+    // face is the piston platform (piston_top); the opposite face is piston_bottom
+    // and the other four are piston_side, transcribed from vanilla template_piston.
+    // This retires the plain-Cube-of-piston_side that showed the same side texture
+    // on every face (no platform, no orientation) in both the world and the icon.
+    // The flat .texture() stays the piston_side item/dropped fallback.
     BlockProperties::of(Block::Piston, "piston", "Piston")
         .texture("piston_side")
+        .directionalCube("piston_top", nullptr, "piston_bottom", nullptr, "piston_side",
+                         "piston_side", "piston_side")
         .strength(1.5F)
         .state(StateProperty::Facing, 6U)
         .state(StateProperty::Powered, 2U)
         .creative(CreativeCategory::Redstone),
     BlockProperties::of(Block::StickyPiston, "sticky_piston", "Sticky Piston")
         .texture("piston_side")
+        .directionalCube("piston_top_sticky", nullptr, "piston_bottom", nullptr, "piston_side",
+                         "piston_side", "piston_side")
         .strength(1.5F)
         .state(StateProperty::Facing, 6U)
         .state(StateProperty::Powered, 2U)
@@ -1817,13 +1965,32 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     // Hidden from creative: fire is a technical block, obtained only by igniting
     // a surface, exactly like vanilla lists no fire item in the creative tabs.
     BlockProperties::of(Block::Fire, "fire", "Fire")
-        .texture("fire")
+        // RN-7: the real animated fire sprite is fire_0 (a 32-frame strip baked as
+        // a run by RN-4b), never "fire" (no such file — the old name loaded the
+        // magenta placeholder). BlockModel::Fire meshes the billowing planes.
+        .texture("fire_0")
         .instantBreak()
-        .cross()
+        .model(BlockModel::Fire)
+        .renderLayer(BlockRenderLayer::Cutout)
+        .noCollision()
         .noDrops()
         .light(15U)
         .support(BlockSupport::Fire)
         .state(StateProperty::Age, 16U),
+    // RN-4b content: prismarine — a full cube whose "prismarine" texture is a
+    // 4-frame animated strip (baked as a run by RN-4b, cycled by the terrain
+    // shader). Vanilla strength 1.5/6.0, pickaxe block.
+    BlockProperties::of(Block::Prismarine, "prismarine", "Prismarine")
+        .texture("prismarine")
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    // RN-4b content: sea lantern — a full-bright cube whose "sea_lantern" texture
+    // is a 5-frame animated strip. Emits light 15.
+    BlockProperties::of(Block::SeaLantern, "sea_lantern", "Sea Lantern")
+        .texture("sea_lantern")
+        .strength(0.3F)
+        .light(15U)
+        .creative(CreativeCategory::NaturalBlocks),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {
@@ -1991,8 +2158,8 @@ inline constexpr float kWallTorchInset = 0.5F;
     case BrownWool: case GreenWool: case RedWool: case BlackWool:
     case Fire:
         return SoundType::Wool;
-    // GLASS — glass and glowstone.
-    case Glass: case Glowstone:
+    // GLASS — glass, glowstone and sea lantern.
+    case Glass: case Glowstone: case SeaLantern:
         return SoundType::Glass;
     // CROP — wheat, carrots, potatoes.
     case WheatCrops: case Carrots: case Potatoes:
@@ -2089,8 +2256,11 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
 // and fluids are the "incomplete" blocks: they neither occlude a neighbour face
 // nor hand a full face to whatever wants to attach to them.
 [[nodiscard]] constexpr bool isFullCube(Block block) {
+    // A DirectionalCube (observer) fills its cell exactly like a Cube — it occludes
+    // and is face-sturdy — so it counts here; only its per-face texturing differs.
+    const auto model = blockDefinition(block).model;
     return isRenderable(block) && !isFluid(block) &&
-           blockDefinition(block).model == BlockModel::Cube;
+           (model == BlockModel::Cube || model == BlockModel::DirectionalCube);
 }
 
 // Java's BlockState#isFaceSturdy: only a full collision cube can carry an
@@ -2267,6 +2437,70 @@ inline constexpr float kFarmlandModelHeight = 15.0F / 16.0F;
     return oppositeOrientation(facing);
 }
 
+// RN-4a: which of a DirectionalCube's texture faces a given world face shows, for
+// a block whose FACING is `facing`. `faceDir` is the world face expressed as a
+// BlockOrientation (North=-Z … Up=+Y, the same one-to-one map the mesher's
+// faceMatchesOrientation uses). This mirrors vanilla ObserverBlock: the whole
+// model rotates with FACING, so front stays on the FACING face, back on its
+// opposite, and — for the remaining four faces — the top/bottom pair follows the
+// world's vertical axis when FACING is horizontal, but rotates onto the world Z
+// axis when FACING is vertical (up/down), exactly as observer.json's x/y
+// blockstate rotations carry the top sprite around. `back` vs its powered variant
+// is chosen by the caller, which knows the POWERED state.
+enum class DirectionalSlot : std::uint8_t { Front, Back, Top, Bottom, Side };
+
+[[nodiscard]] constexpr DirectionalSlot directionalCubeSlot(BlockOrientation facing,
+                                                            BlockOrientation faceDir) {
+    if (faceDir == facing) {
+        return DirectionalSlot::Front;
+    }
+    if (faceDir == oppositeOrientation(facing)) {
+        return DirectionalSlot::Back;
+    }
+    if (isHorizontal(facing)) {
+        // FACING horizontal: the world vertical faces carry top/bottom, the two
+        // horizontal faces perpendicular to FACING carry side.
+        if (faceDir == BlockOrientation::Up) return DirectionalSlot::Top;
+        if (faceDir == BlockOrientation::Down) return DirectionalSlot::Bottom;
+        return DirectionalSlot::Side;
+    }
+    // FACING vertical (up/down): the top sprite has rotated onto the world Z axis,
+    // leaving the X axis as side. (observer's top/bottom sprite are identical, so
+    // both Z faces map to Top.)
+    return (faceDir == BlockOrientation::North || faceDir == BlockOrientation::South)
+        ? DirectionalSlot::Top
+        : DirectionalSlot::Side;
+}
+
+// Observer's six-way faithfulness, pinned at compile time (vanilla
+// blockstates/observer.json + models/block/observer.json).
+static_assert(directionalCubeSlot(BlockOrientation::North, BlockOrientation::North) ==
+              DirectionalSlot::Front);
+static_assert(directionalCubeSlot(BlockOrientation::North, BlockOrientation::South) ==
+              DirectionalSlot::Back);
+static_assert(directionalCubeSlot(BlockOrientation::North, BlockOrientation::Up) ==
+              DirectionalSlot::Top);
+static_assert(directionalCubeSlot(BlockOrientation::North, BlockOrientation::East) ==
+              DirectionalSlot::Side);
+static_assert(directionalCubeSlot(BlockOrientation::East, BlockOrientation::East) ==
+              DirectionalSlot::Front);
+static_assert(directionalCubeSlot(BlockOrientation::East, BlockOrientation::West) ==
+              DirectionalSlot::Back);
+static_assert(directionalCubeSlot(BlockOrientation::East, BlockOrientation::Down) ==
+              DirectionalSlot::Bottom);
+static_assert(directionalCubeSlot(BlockOrientation::Up, BlockOrientation::Up) ==
+              DirectionalSlot::Front);
+static_assert(directionalCubeSlot(BlockOrientation::Up, BlockOrientation::Down) ==
+              DirectionalSlot::Back);
+static_assert(directionalCubeSlot(BlockOrientation::Up, BlockOrientation::North) ==
+              DirectionalSlot::Top);
+static_assert(directionalCubeSlot(BlockOrientation::Up, BlockOrientation::East) ==
+              DirectionalSlot::Side);
+
+// RN-4a: observer is now a full cube (occludes / face-sturdy). Regression guard
+// against ever regressing it onto a non-cube placeholder that leaks light.
+static_assert(isFullCube(Block::Observer));
+
 // Direction#getClockWise / getCounterClockWise, restricted to the horizontal
 // four (the only ones a stair/door/gate ever names). AR-B2's stair-shape and
 // door-hinge derivations both need "the direction 90 degrees left/right of
@@ -2330,6 +2564,39 @@ inline std::array<BlockTextureLayers, static_cast<std::size_t>(Block::Count)> kB
 // The renderer registers a block's resolved top/side/bottom atlas layers here.
 inline void setBlockTextureLayers(Block block, BlockTextureLayers layers) {
     kBlockTextureLayers[static_cast<std::size_t>(block)] = layers;
+}
+
+// RN-4a: the resolved six-face layers of every DirectionalCube, filled by the
+// atlas builder alongside kBlockTextureLayers. Non-directional blocks leave their
+// entry zeroed; only the mesher's DirectionalCube branch reads this.
+inline std::array<DirectionalTextureLayers, static_cast<std::size_t>(Block::Count)>
+    kBlockDirectionalLayers{};
+
+[[nodiscard]] inline const DirectionalTextureLayers& directionalLayers(Block block) {
+    const auto index = static_cast<std::size_t>(block);
+    return kBlockDirectionalLayers[index < kBlockDirectionalLayers.size() ? index : 0U];
+}
+
+inline void setBlockDirectionalLayers(Block block, DirectionalTextureLayers layers) {
+    kBlockDirectionalLayers[static_cast<std::size_t>(block)] = layers;
+}
+
+// RN-4a-2: the resolved atlas layers of every ElementModel block's texture slots,
+// filled by the atlas builder from BlockDefinition::modelTextures. Only the
+// mesher's per-block ElementModel transcription reads this.
+inline std::array<std::array<float, kMaxModelTextureSlots>,
+                  static_cast<std::size_t>(Block::Count)>
+    kBlockModelSlotLayers{};
+
+[[nodiscard]] inline float modelSlotLayer(Block block, std::size_t slot) {
+    const auto index = static_cast<std::size_t>(block);
+    const auto& slots = kBlockModelSlotLayers[index < kBlockModelSlotLayers.size() ? index : 0U];
+    return slots[slot < slots.size() ? slot : 0U];
+}
+
+inline void setBlockModelSlotLayers(Block block,
+                                    std::array<float, kMaxModelTextureSlots> layers) {
+    kBlockModelSlotLayers[static_cast<std::size_t>(block)] = layers;
 }
 
 // The atlas layer of `redstone_torch_off`, the sprite an unlit redstone torch

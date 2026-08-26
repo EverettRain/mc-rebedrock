@@ -448,6 +448,16 @@ class DoorBlockItem : public BlockItem {
                                                         world::Block::RedstoneWallTorch};
     if (block == world::Block::RedstoneTorch) return &redstoneTorch;
     if (!world::isValidBlock(block)) return nullptr;
+    // Crop blocks (wheat/carrots/potatoes — the BlockModel::Crop family) have no
+    // item form in vanilla: the harvested produce (Items.WHEAT/CARROT/POTATO) is
+    // a separate item and the crop is planted from its seed, never wielded. A
+    // null here keeps the 2D "wheat plant" block-item from ever being obtainable
+    // (pick-block, catalog index, a datapack) and stops the "wheat" block name
+    // from shadowing the wheat item — the root, not just the codec/give symptom.
+    // Model-driven like the Door/Leaves cases above, so a new crop needs no line.
+    if (world::blockDefinition(block).model == world::BlockModel::Crop) {
+        return nullptr;
+    }
     // AR-B2: a door is placed as two cells, so its BlockItem is a DoorBlockItem
     // — model-driven, not a per-species identity check, so a second door
     // species needs no line here.

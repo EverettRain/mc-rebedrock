@@ -122,9 +122,31 @@ inline void appendItemStack(std::vector<std::uint8_t>& bytes, const ItemStack& s
             ++storedCount;
         }
     }
+    // A real registered item wins over a same-named block — the mirror of
+    // /give's fix (GameRuntime) and the general "Items registry beats the block
+    // bridge" rule. Resolving the block first decoded an identifier like "wheat"
+    // (the crop block and the wheat item share the id) back into the crop
+    // block-item — a 2D "wheat plant" that cannot feed animals or craft bread —
+    // on *every* inventory sync that crosses the client/server channel, so the
+    // command-side /give fix alone never reached the client. This checks the
+    // Items registry directly (not itemFromIdentifier, whose block bridge would
+    // turn every plain block into an item stack and break the block-stack
+    // round-trip below): only a genuinely registered item takes the item path;
+    // a bare block name falls through to the block branch and stays a
+    // null-item block stack, exactly as before.
+    if (const core::ItemId id = itemRegistry().byName(identifier); id.valid()) {
+        const Item* item = itemFromId(id);
+        if (const auto* blockItem = asBlockItem(item); blockItem != nullptr) {
+            return ItemStack{blockItem->block(), count, item, damage, enchantments, storedCount};
+        }
+        return ItemStack{world::Block::Air, count, item, damage, enchantments, storedCount};
+    }
     if (const auto block = world::blockFromIdentifier(identifier); block.has_value()) {
         return ItemStack{*block, count, nullptr, damage, enchantments, storedCount};
     }
+    // A name only the block bridge knows (a block wielded as its BlockItem whose
+    // block id resolved above already, so this is just a safety net for any item
+    // that is neither a registry entry nor a block).
     if (const auto* item = itemFromIdentifier(identifier); item != nullptr) {
         if (const auto* blockItem = asBlockItem(item); blockItem != nullptr) {
             return ItemStack{blockItem->block(), count, item, damage, enchantments, storedCount};

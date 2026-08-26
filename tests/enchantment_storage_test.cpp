@@ -191,6 +191,37 @@ void testNetCodecRoundTripBlockStack() {
     std::cout << "testNetCodecRoundTripBlockStack OK\n";
 }
 
+// Regression (#6): the wheat item and the wheat crop block share the id
+// "wheat". A stack of the real Items.WHEAT must survive the wire codec as the
+// item, not be resolved back into the crop block-item (the unusable 2D "wheat
+// plant"). This is the client/server half of the same-name /give fix — every
+// inventory sync crosses this codec, so the command-side fix alone never
+// reached the client.
+void testNetCodecWheatItemNotCropBlock() {
+    ItemStack stack{world::Block::Air, 2U, &items::Wheat};
+    std::vector<std::uint8_t> bytes;
+    codec::appendItemStack(bytes, stack);
+    std::size_t cursor = 0;
+    const auto decoded = codec::readItemStack(bytes, cursor);
+    assert(decoded.has_value());
+    assert(decoded->item == &items::Wheat);
+    assert(decoded->block == world::Block::Air);
+    assert(decoded->count == 2U);
+    assert(cursor == bytes.size());
+    std::cout << "testNetCodecWheatItemNotCropBlock OK\n";
+}
+
+// The crop blocks have no item form at all now (blockItemFor -> nullptr),
+// matching vanilla's item-less Blocks.WHEAT/CARROTS/POTATOES: the crop can
+// never be wielded, picked, or catalogued — only its seed plants it and its
+// produce drops as a distinct item.
+void testCropBlockHasNoItemForm() {
+    assert(blockItemFor(world::Block::WheatCrops) == nullptr);
+    assert(blockItemFor(world::Block::Carrots) == nullptr);
+    assert(blockItemFor(world::Block::Potatoes) == nullptr);
+    std::cout << "testCropBlockHasNoItemForm OK\n";
+}
+
 }  // namespace
 
 int main() {
@@ -202,6 +233,8 @@ int main() {
     testNetCodecRoundTripEnchanted();
     testNetCodecRoundTripPlain();
     testNetCodecRoundTripBlockStack();
+    testNetCodecWheatItemNotCropBlock();
+    testCropBlockHasNoItemForm();
     std::cout << "enchantment_storage_test: all tests passed\n";
     return 0;
 }

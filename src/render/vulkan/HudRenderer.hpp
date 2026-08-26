@@ -349,14 +349,25 @@ class HudRenderer final {
         const auto clipRectangle = ui::framebufferToClip(rectangle, width, height);
         const auto textures = world::textureLayers(block);
         const bool chest = block == world::Block::Chest;
-        const bool furnace = block == world::Block::Furnace;
+        // A DirectionalCube (furnace/observer/piston) resolves its faces into a
+        // separate kBlockDirectionalLayers table, not the flat top/side slots —
+        // its `textures.side` is the plain side sprite, never the front. The icon
+        // must therefore read the real front layer for the face turned toward the
+        // camera; using textures.side left the furnace showing a blank side where
+        // its firebox belongs (the regression the "front baked into side" note
+        // wrongly assumed away).
+        const bool directional =
+            world::blockDefinition(block).model == world::BlockModel::DirectionalCube;
+        const auto& directionalFaces = world::directionalLayers(block);
+        const float frontLayer = directional ? directionalFaces.front : textures.side;
+        const float topLayer = directional ? directionalFaces.top : textures.top;
         const HudPush push{
             {clipRectangle.x, clipRectangle.y, clipRectangle.width, clipRectangle.height},
             {1.0F, 1.0F, 1.0F, 1.0F},
             {portion, 0.0F, 1.0F, 1.0F},
-            {(chest || furnace) ? 4.25F : 4.0F, chest ? kChestItemTopLayer : textures.top,
-             chest ? kChestItemFrontLayer : (furnace ? kFurnaceFrontLayer : textures.side),
-             chest ? kChestItemSideLayer : textures.side},
+            {(chest || directional) ? 4.25F : 4.0F, chest ? kChestItemTopLayer : topLayer,
+             chest ? kChestItemFrontLayer : frontLayer,
+             chest ? kChestItemSideLayer : (directional ? directionalFaces.side : textures.side)},
         };
         vkCmdPushConstants(commandBuffer, hudPipelineLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
@@ -368,7 +379,8 @@ class HudRenderer final {
                          const gameplay::ItemStack& stack) const {
         if (gameplay::isBlockStack(stack)) {
             const auto model = world::blockDefinition(stack.block).model;
-            if (model == world::BlockModel::Cube || model == world::BlockModel::Chest) {
+            if (model == world::BlockModel::Cube || model == world::BlockModel::Chest ||
+                model == world::BlockModel::DirectionalCube) {
                 drawHudBlockIcon(commandBuffer, rectangle, stack.block);
                 return;
             }
@@ -1202,6 +1214,31 @@ class HudRenderer final {
                     commandBuffer,
                     iconRect(right - static_cast<float>(index) * step - icon, top - 10.0F * scale),
                     1.0F, {index < full ? 16.0F : 25.0F, 18.0F, 9.0F, 9.0F});
+            }
+        }
+        // Gui#renderPlayerHealth armour row: worn armour points (0-20, two per
+        // icon) shown as ten icons one row above the hearts, left-aligned like
+        // them. Summed on the client from the mirrored equipment slots the same
+        // way LivingEntity#getArmor totals the four ArmorItem modifiers, so no
+        // wire-format change is needed — the equipment already crosses to the
+        // client for the inventory screen. The row is hidden at zero armour,
+        // exactly like vanilla.
+        int armorPoints = 0;
+        for (std::size_t slot = 0; slot < 4U; ++slot) {
+            const auto& piece = clientMirror.world().equipmentSlots[static_cast<std::size_t>(
+                gameplay::equipmentSlotAt(slot))];
+            armorPoints += static_cast<int>(gameplay::armorValue(piece.item));
+        }
+        if (armorPoints > 0) {
+            const float armorTop = top - 10.0F * scale;
+            for (int index = 0; index < 10; ++index) {
+                const auto rectangle = iconRect(left + static_cast<float>(index) * step, armorTop);
+                drawGuiSprite(commandBuffer, rectangle, 1.0F, {16.0F, 9.0F, 9.0F, 9.0F});
+                if (index * 2 + 1 < armorPoints) {
+                    drawGuiSprite(commandBuffer, rectangle, 1.0F, {34.0F, 9.0F, 9.0F, 9.0F});
+                } else if (index * 2 + 1 == armorPoints) {
+                    drawGuiSprite(commandBuffer, rectangle, 1.0F, {25.0F, 9.0F, 9.0F, 9.0F});
+                }
             }
         }
     }

@@ -26,6 +26,7 @@ layout(location = 1) in uvec2 inZNorm;  // positionZ, normalIndex | (biomeMask <
 layout(location = 2) in uvec2 inUv;     // uvX, uvY
 layout(location = 3) in uint inLayerAO; // textureLayer | (AO << 16) | (waterDepth << 24)
 layout(location = 4) in uvec4 inLights; // sky, block, flatSky, flatBlock
+layout(location = 5) in uvec4 inTint;   // tintR, tintG, tintB, tintPad
 
 layout(location = 0) out vec2 fragmentUv;
 layout(location = 1) out vec3 fragmentNormal;
@@ -38,6 +39,12 @@ layout(location = 7) out float fragmentBlockLight;
 layout(location = 8) flat out float fragmentFlatSkyLight;
 layout(location = 9) flat out float fragmentFlatBlockLight;
 layout(location = 10) flat out uint fragmentBiomeMask;
+// A literal per-vertex RGB tint the fragment multiplies when biomeMask == 3.
+// The biome-map tints (mask 1/2) sample a lookup texture by world position;
+// this instead carries a constant colour packed on the vertex, which is what a
+// power-tinted redstone dust (grey sprite, red gradient) needs — the sprite has
+// no biome, so without this path its stored tint was silently unused.
+layout(location = 11) out vec3 fragmentTint;
 
 const float kLocalScale = 17.0 / 65535.0;
 const float kUvScale = 2.0 / 65535.0;
@@ -76,4 +83,5 @@ void main() {
     fragmentFlatSkyLight = float(inLights.z) / 255.0;
     fragmentFlatBlockLight = float(inLights.w) / 255.0;
     fragmentBiomeMask = (inZNorm.y >> 8) & 0xFFu;
+    fragmentTint = vec3(inTint.xyz) / 255.0;
 }

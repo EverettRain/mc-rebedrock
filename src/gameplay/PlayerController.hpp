@@ -161,6 +161,20 @@ class PlayerController final {
     // so moveWithCollisions can retry the horizontal move from a step up.
     [[nodiscard]] bool moveAxis(const world::World& world, int axis, float distance);
     void moveWithCollisions(const world::World& world, glm::vec3 distance);
+    // When the body is embedded in solid geometry (a door closed onto the
+    // player, a teleport into a wall, being buried), the cells it is *already*
+    // inside stop colliding until it has moved clear of them — vanilla's
+    // collision ignores shapes the entity already overlaps, so a trapped player
+    // can walk (or fall) straight out and only the geometry it newly meets stops
+    // it. Without this, moveAxis bisects from the overlapping rest position and
+    // freezes every axis, trapping the player so they can only break free. The
+    // clip window is the cell range the body occupies, recomputed each move; the
+    // floor it merely rests on is below that window, so gravity still holds.
+    void updateClipWindow(const world::World& world);
+    [[nodiscard]] bool cellIsClipped(int x, int y, int z) const {
+        return clipActive_ && x >= clipMin_.x && x <= clipMax_.x && y >= clipMin_.y &&
+               y <= clipMax_.y && z >= clipMin_.z && z <= clipMax_.z;
+    }
     // LivingEntity#maxUpStep: re-attempt a wall-blocked horizontal move from a
     // step up, keeping the move only if the lifted body clears it and lands.
     // Returns whether the step recovered the move, so the caller can restore the
@@ -186,6 +200,12 @@ class PlayerController final {
     bool inWater_ = false;
     Pose pose_ = Pose::Standing;
     bool horizontalCollision_ = false;
+    // The cell window the body is currently embedded in (see updateClipWindow):
+    // collision ignores these cells so a trapped player can move out of them.
+    // Inactive whenever the body is not genuinely embedded.
+    bool clipActive_ = false;
+    glm::ivec3 clipMin_{0};
+    glm::ivec3 clipMax_{0};
     float fallDistance_ = 0.0F;
     bool jumpedThisTick_ = false;
     int flightToggleWindowTicks_ = 0;

@@ -500,12 +500,39 @@ inline constexpr std::array<ShapeBox, 4> kFenceGateBoxByFacing = [] {
     return {ShapeKind::Boxes, 0.0F, 0.0F, {set.boxes.data(), set.count}};
 }
 
+// RN-4a-2: the pick-ray / selection-outline shape of an ElementModel block. The
+// diodes (repeater/comparator) are a thin full-footprint slab — 2/16 tall, the
+// same as vanilla's collision — while the lever is a small centred nub. All three
+// are noCollision, so this is only the interaction box, never a physics box. This
+// also fixes the lever, which defaulted to Cube and so used a full-cube pick box.
+[[nodiscard]] constexpr BlockShape shapeElementModel(BlockState state) {
+    if (state.block() == Block::Lever) {
+        return {ShapeKind::Boxes, 0.0F, 0.0F, {&kFloorTorchBox, 1}};
+    }
+    return {ShapeKind::Column, 0.0F, 2.0F / 16.0F, {}};
+}
+// RN-6: redstone dust — a 1/16-thin full-footprint pick box on the floor
+// (RedStoneWireBlock's flat shape). noCollision, so this is only the pick ray.
+[[nodiscard]] constexpr BlockShape shapeRedstoneWire(BlockState) {
+    return {ShapeKind::Column, 0.0F, 1.0F / 16.0F, {}};
+}
+// RN-7: fire is noCollision (collisionShape filters it to Empty via hasCollision,
+// so the player walks straight through), but it still needs a *selection* box so
+// the pick ray can target it — that is what lets a left-click break it, i.e.
+// extinguish it, the way vanilla lets you punch fire out. The earlier Empty
+// shape made fire unselectable and therefore impossible to put out by hand. A
+// full-cell outline (the flames fill the cell footprint) is the simplest box the
+// ray can hit; collision stays off because Fire is declared noCollision().
+[[nodiscard]] constexpr BlockShape shapeFire(BlockState) {
+    return {ShapeKind::Column, 0.0F, 1.0F, {}};
+}
+
 using BlockShapeFn = BlockShape (*)(BlockState);
 
 // The per-model shape handlers indexed by BlockModel ordinal — shape dispatch as
 // data. `blockShape` loads the block's model and calls through this, so the shape
 // stays a single source with no switch(block...) to drift.
-inline constexpr std::array<BlockShapeFn, 13> kShapeByModel{{
+inline constexpr std::array<BlockShapeFn, 17> kShapeByModel{{
     &shapeCube,          // BlockModel::Cube
     &shapeCross,         // BlockModel::Cross
     &shapeCrop,          // BlockModel::Crop
@@ -519,6 +546,10 @@ inline constexpr std::array<BlockShapeFn, 13> kShapeByModel{{
     &shapePressurePlate, // BlockModel::PressurePlate
     &shapeButton,        // BlockModel::Button
     &shapeWall,          // BlockModel::Wall
+    &shapeCube,          // BlockModel::DirectionalCube (RN-4a: a full cube shape)
+    &shapeElementModel,  // BlockModel::ElementModel (RN-4a-2: diode slab / lever nub)
+    &shapeRedstoneWire,  // BlockModel::RedstoneWire (RN-6: flat 1/16 floor box)
+    &shapeFire,          // BlockModel::Fire (RN-7: empty — no interaction box)
 }};
 static_assert(static_cast<std::size_t>(BlockModel::Cube) == 0U);
 static_assert(static_cast<std::size_t>(BlockModel::Cross) == 1U);
@@ -533,6 +564,13 @@ static_assert(static_cast<std::size_t>(BlockModel::TrapDoor) == 9U);
 static_assert(static_cast<std::size_t>(BlockModel::PressurePlate) == 10U);
 static_assert(static_cast<std::size_t>(BlockModel::Button) == 11U);
 static_assert(static_cast<std::size_t>(BlockModel::Wall) == 12U);
+static_assert(static_cast<std::size_t>(BlockModel::DirectionalCube) == 13U);
+static_assert(static_cast<std::size_t>(BlockModel::ElementModel) == 14U);
+static_assert(static_cast<std::size_t>(BlockModel::RedstoneWire) == 15U);
+static_assert(static_cast<std::size_t>(BlockModel::Fire) == 16U);
+// Every BlockModel ordinal must have a shape handler; a missing entry is the
+// out-of-bounds function-pointer read (a SIGBUS) that a new model would cause.
+static_assert(kShapeByModel.size() == static_cast<std::size_t>(BlockModel::Fire) + 1U);
 
 } // namespace detail
 

@@ -261,6 +261,11 @@ struct PersistentEditPositionHash final {
     return CameraPerspective::FirstPerson;
 }
 
+// RN-4b: the terrain/entity shaders' fixed cap on how many animated non-fluid
+// block textures they cycle in one frame. The current roster uses one (magma);
+// 16 leaves ample room for prismarine/sea lantern/etc. as they are added.
+inline constexpr std::size_t kMaxBlockAnimations = 16;
+
 struct CameraUniform final {
     alignas(16) glm::mat4 model{1.0F};
     alignas(16) glm::mat4 view{1.0F};
@@ -293,6 +298,13 @@ struct CameraUniform final {
     // One frame behind the pre-pass's own matrix, which is the standard shadow
     // map lag.
     alignas(16) glm::mat4 lightViewProj{1.0F};
+    // RN-4b: animated non-fluid block textures the terrain/entity shaders cycle.
+    // blockAnimationSettings.x = the active count; each blockAnimations[i] =
+    // (base atlas layer, frame count, frame time, unused). Appended after
+    // lightViewProj so every existing UBO offset — and the shaders that read only
+    // earlier fields (shadow/cutout) — is untouched.
+    alignas(16) glm::vec4 blockAnimationSettings{0.0F};
+    alignas(16) std::array<glm::vec4, kMaxBlockAnimations> blockAnimations{};
 };
 
 // HudPush, PanoramaPush and ItemPush now live in render/vulkan/HudTypes.hpp
@@ -5563,16 +5575,19 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
         VkVertexInputBindingDescription binding{0, sizeof(VoxelVertex),
                                                 VK_VERTEX_INPUT_RATE_VERTEX};
-        // PackedVoxelVertex: five 4-byte-aligned integer attributes. The pad
+        // PackedVoxelVertex: six 4-byte-aligned integer attributes. The pad
         // byte inside location 1 carries the fragment's biome mask (which
-        // biome-colour lookup to apply); the 24-byte vertex keeps spare tint
-        // bytes after the lights that are simply not consumed.
-        const std::array<VkVertexInputAttributeDescription, 5> attributes{{
+        // biome-colour lookup to apply); location 5 is the per-vertex RGB tint
+        // the fragment multiplies when the mask selects the literal-tint path
+        // (redstone dust's power-derived red — previously the tint bytes sat
+        // unconsumed after the lights and the grey sprite rendered grey).
+        const std::array<VkVertexInputAttributeDescription, 6> attributes{{
             {0, 0, VK_FORMAT_R16G16_UINT, offsetof(VoxelVertex, positionX)},
             {1, 0, VK_FORMAT_R16G16_UINT, offsetof(VoxelVertex, positionZ)},
             {2, 0, VK_FORMAT_R16G16_UINT, offsetof(VoxelVertex, uvX)},
             {3, 0, VK_FORMAT_R32_UINT, offsetof(VoxelVertex, textureLayer)},
             {4, 0, VK_FORMAT_R8G8B8A8_UINT, offsetof(VoxelVertex, skyLight)},
+            {5, 0, VK_FORMAT_R8G8B8A8_UINT, offsetof(VoxelVertex, tintR)},
         }};
         auto vertexInput = vkStructure<VkPipelineVertexInputStateCreateInfo>(
             VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO);
@@ -6391,6 +6406,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             textures_.fluidAnimationFrameTimes[2], textures_.fluidAnimationFrameTimes[3]};
         uniform.fluidAnimationSettings.x =
             static_cast<float>(clientMirror_.world().serverTick) + renderInterpolationAlpha;
+        // RN-4b: forward the baked block-texture animations (magma, and future
+        // prismarine/sea lantern) so the shader cycles them from their base layer,
+        // capped at kMaxBlockAnimations.
+        const auto& bakedAnimations = textures_.blockAnimations;
+        const std::size_t animationCount =
+            std::min(bakedAnimations.size(), kMaxBlockAnimations);
+        uniform.blockAnimationSettings.x = static_cast<float>(animationCount);
+        for (std::size_t i = 0; i < animationCount; ++i) {
+            uniform.blockAnimations[i] = glm::vec4{bakedAnimations[i].baseLayer,
+                                                   static_cast<float>(bakedAnimations[i].frameCount),
+                                                   bakedAnimations[i].frameTime, 0.0F};
+        }
         std::size_t lightCount = 0U;
         const auto& heldStack = clientMirror_.player().heldStack;
         const bool holdingTorch = gameplay::emitsHeldLight(heldStack);

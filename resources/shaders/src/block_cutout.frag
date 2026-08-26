@@ -11,6 +11,7 @@ layout(location = 7) in float fragmentBlockLight;
 layout(location = 8) flat in float fragmentFlatSkyLight;
 layout(location = 9) flat in float fragmentFlatBlockLight;
 layout(location = 10) flat in uint fragmentBiomeMask;
+layout(location = 11) in vec3 fragmentTint;
 layout(location = 0) out vec4 outColor;
 
 layout(binding = 0) uniform CameraUniform {
@@ -26,7 +27,18 @@ layout(binding = 0) uniform CameraUniform {
     vec4 lightingSettings;
     vec4 celestialLayers;
     vec4 weatherSettings;
+    // These four were missing here while present in the C++ CameraUniform, so
+    // lightViewProj sat 64 bytes early — a latent std140 mismatch masked only
+    // because the shadow pass defaults off. Declaring them fixes the offset and
+    // gives the cutout path the animation clock (RN-7 makes fire animate).
+    vec4 fluidAnimationLayers;
+    vec4 fluidAnimationFrameCounts;
+    vec4 fluidAnimationFrameTimes;
+    vec4 fluidAnimationSettings;
     mat4 lightViewProj;
+    // RN-4b/RN-7: appended after lightViewProj, matching grass_block.frag.
+    vec4 blockAnimationSettings;      // x = active animation count
+    vec4 blockAnimations[16];         // x=base layer, y=frame count, z=frame time
 } camera;
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
@@ -48,7 +60,22 @@ vec3 weatherFogColor(vec3 color) {
 }
 
 void main() {
-    vec4 texel = texture(blockTextures, vec3(fragmentUv, fragmentTextureLayer));
+    // RN-7: cycle animated block textures (fire) the same way grass_block.frag
+    // does for the opaque path — advance the atlas layer from the animation's
+    // base by floor(tick/frameTime mod frameCount).
+    float animatedLayer = fragmentTextureLayer;
+    int blockAnimationCount = int(camera.blockAnimationSettings.x);
+    for (int animation = 0; animation < blockAnimationCount; ++animation) {
+        vec4 blockAnimation = camera.blockAnimations[animation];
+        if (abs(fragmentTextureLayer - blockAnimation.x) < 0.1) {
+            float frameCount = max(blockAnimation.y, 1.0);
+            float frameTime = max(blockAnimation.z, 1.0);
+            animatedLayer = blockAnimation.x +
+                floor(mod(camera.fluidAnimationSettings.x / frameTime, frameCount));
+            break;
+        }
+    }
+    vec4 texel = texture(blockTextures, vec3(fragmentUv, animatedLayer));
     if (texel.a < 0.5) {
         discard;
     }
@@ -107,6 +134,10 @@ void main() {
         biomeTint = texture(biomeGrassColors, (fragmentWorldPosition.xz + 1024.0) / 2048.0).rgb;
     } else if (fragmentBiomeMask == 2u) {
         biomeTint = texture(biomeFoliageColors, (fragmentWorldPosition.xz + 1024.0) / 2048.0).rgb;
+    } else if (fragmentBiomeMask == 3u) {
+        // Literal per-vertex tint: redstone dust multiplies its grey sprite by the
+        // power-derived red here (RedStoneWireBlock.getColorForPower).
+        biomeTint = fragmentTint;
     }
     vec3 litColor = texel.rgb * biomeTint * illumination * ao;
     bool cameraUnderwater = camera.renderSettings.y > 0.5;

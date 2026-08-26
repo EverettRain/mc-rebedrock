@@ -191,6 +191,12 @@ bool PlayerController::collidesAtHeight(const world::World& world, glm::vec3 pos
     for (int y = minY; y <= maxY; ++y) {
         for (int z = minZ; z <= maxZ; ++z) {
             for (int x = minX; x <= maxX; ++x) {
+                // A cell inside the clip window is geometry the body is already
+                // embedded in; ignore it so a trapped player can move out (the
+                // block it rests on sits below the window and still collides).
+                if (cellIsClipped(x, y, z)) {
+                    continue;
+                }
                 // A partial block only collides over its own boxes: a slab's half
                 // box (Column) lets the player stand in the empty half of the
                 // cell, and a fence post or stair step (Boxes) fills only part of
@@ -249,9 +255,49 @@ bool PlayerController::moveAxis(const world::World& world, int axis, float dista
     return false;
 }
 
+void PlayerController::updateClipWindow(const world::World& world) {
+    // Decide whether the body is genuinely embedded, and if so which cells to let
+    // it pass out of this move. clipActive_ must be false while we probe so the
+    // probe sees the real geometry, not an already-open window.
+    clipActive_ = false;
+    // A thin probe at the body's vertical middle is the discriminator: for a
+    // player merely standing on (or sunk a little into) a floor the middle is
+    // open air, so a normal spawn or a deep terrain seat never trips this — only
+    // a block that fills the body's mid-section (a door/wall closed onto it)
+    // does. Vertical-only floor penetration is left to the normal Y settling.
+    constexpr float kProbeHalf = 0.05F;
+    const float midHeight = collisionHeight() * 0.5F;
+    if (!collidesAtHeight(world, position_ + glm::vec3{0.0F, midHeight - kProbeHalf, 0.0F},
+                          2.0F * kProbeHalf)) {
+        return;
+    }
+    // Embedded: ignore exactly the cells the body currently occupies for the rest
+    // of this move. The Y floor uses floor(position_.y) (the feet cell), so the
+    // block the player rests *on* — one cell lower — stays solid and gravity is
+    // unaffected; only what the body is inside is clipped.
+    clipActive_ = true;
+    const float height = collisionHeight();
+    // Use the same epsilon insets collidesAtHeight uses to pick cells, so the
+    // window covers exactly the cells the body registers overlap in — and, in
+    // particular, the +eps on the Y floor keeps the cell the player merely rests
+    // on (one below the feet) out of the window even when a sub-pixel dip puts
+    // the feet fractionally under a cell boundary. Without it a resting player
+    // would clip its own floor and sink through.
+    clipMin_ = {static_cast<int>(std::floor(position_.x - kHalfWidth + kCollisionEpsilon)),
+                static_cast<int>(std::floor(position_.y + kCollisionEpsilon)),
+                static_cast<int>(std::floor(position_.z - kHalfWidth + kCollisionEpsilon))};
+    clipMax_ = {static_cast<int>(std::floor(position_.x + kHalfWidth - kCollisionEpsilon)),
+                static_cast<int>(std::floor(position_.y + height - kCollisionEpsilon)),
+                static_cast<int>(std::floor(position_.z + kHalfWidth - kCollisionEpsilon))};
+}
+
 void PlayerController::moveWithCollisions(const world::World& world, glm::vec3 distance) {
     onGround_ = false;
     horizontalCollision_ = false;
+    // Open a clip window over any geometry the body is already embedded in so
+    // this move can carry it out (see updateClipWindow); a free-standing player
+    // leaves it inactive and collides exactly as before.
+    updateClipWindow(world);
     // Vanilla resolves Y before the horizontal axes, which keeps landing stable.
     // The vertical result is folded into onGround_, so the return is discarded.
     static_cast<void>(moveAxis(world, 1, distance.y));
@@ -283,6 +329,10 @@ void PlayerController::moveWithCollisions(const world::World& world, glm::vec3 d
         velocity_.x = velocityBeforeHorizontal.x;
         velocity_.z = velocityBeforeHorizontal.z;
     }
+    // The clip window only relaxes collision for the duration of this move; every
+    // check after it (ground/pose probes, the next tick) sees solid geometry
+    // again, so the body re-solidifies the instant it is no longer embedded.
+    clipActive_ = false;
 }
 
 bool PlayerController::stepUp(const world::World& world, glm::vec3 distance,

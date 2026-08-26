@@ -11,6 +11,7 @@
 // writes the shared speciesModels list read by the world pass, and the font
 // array is coupled to the active language. Those are follow-on extractions.
 
+#include "render/vulkan/BlockAtlasBaker.hpp"
 #include "render/vulkan/GuiSpriteAtlas.hpp"
 #include "render/vulkan/VulkanResources.hpp"
 
@@ -110,6 +111,10 @@ class TextureManager final {
     VkImageView textureView = VK_NULL_HANDLE;
     VkSampler textureSampler = VK_NULL_HANDLE;
     std::array<float, 4> fluidAnimationFrameTimes{1.0F, 1.0F, 1.0F, 1.0F};
+    // RN-4b: animated non-fluid block textures (base layer / frame count / frame
+    // time), baked as contiguous runs; the renderer forwards these to the terrain
+    // shader so it cycles them the same way it cycles the fluids.
+    std::vector<BlockTextureAnimation> blockAnimations;
 
     // N-Mem (§7.4): total VMA-resident bytes of every texture/atlas image this
     // manager owns (block atlas, entity, GUI, font, panorama, rain, two biome

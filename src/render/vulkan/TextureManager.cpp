@@ -302,6 +302,7 @@ void readUnihexArchive(std::span<const std::byte> archiveBytes,
 void TextureManager::createTextureArray(int anisotropy) {
     const auto pixels = bakeBlockAtlas(*resourceProvider_);
     fluidAnimationFrameTimes = pixels.fluidAnimationFrameTimes;
+    blockAnimations = pixels.blockAnimations;
     const auto byteSize = static_cast<VkDeviceSize>(pixels.rgba.size());
     // The atlas layer count is whatever the name-driven build produced (fixed
     // special section + block textures + item icons), so it is derived from the
@@ -481,6 +482,9 @@ void TextureManager::createGuiTexture() {
     blit(hud, sprite("hud/heart/container_blinking"), 25, 0);
     blit(hud, sprite("hud/heart/full"), 52, 0);
     blit(hud, sprite("hud/heart/half"), 61, 0);
+    blit(hud, sprite("hud/armor_empty"), 16, 9);
+    blit(hud, sprite("hud/armor_half"), 25, 9);
+    blit(hud, sprite("hud/armor_full"), 34, 9);
     blit(hud, sprite("hud/air"), 16, 18);
     blit(hud, sprite("hud/air_empty"), 25, 18);
     blit(hud, sprite("hud/food_empty"), 16, 27);

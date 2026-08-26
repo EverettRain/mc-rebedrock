@@ -375,5 +375,41 @@ int main() {
         assert(sneakAmp > 0.0F && sneakAmp < walkAmp); // smaller gait than walking
     }
 
+    // #7 clip-out: a player embedded in solid geometry (a door closed onto them,
+    // a teleport into a wall, being buried) must be able to move straight out
+    // instead of freezing. The collision resolver alone bisects from the
+    // overlapping rest position and freezes every axis; the clip window lets the
+    // body pass out of the cells it is already inside. Bury the body in the
+    // (6,1,6)/(6,2,6) column with the +X neighbour open and walk +X.
+    {
+        mc::world::World buryWorld;
+        mc::world::Chunk floorChunk;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                floorChunk.setBlock(x, 0, z, mc::world::Block::Stone);
+            }
+        }
+        buryWorld.setChunk({0, 0}, std::move(floorChunk));
+        buryWorld.setBlock(6, 1, 6, mc::world::Block::Stone);
+        buryWorld.setBlock(6, 2, 6, mc::world::Block::Stone);
+        // A solid wall two cells past the open side proves collision re-engages
+        // the moment the body is no longer embedded: the escaped player is
+        // stopped by it instead of clipping through.
+        buryWorld.setBlock(9, 1, 6, mc::world::Block::Stone);
+        buryWorld.setBlock(9, 2, 6, mc::world::Block::Stone);
+        mc::gameplay::PlayerController buried({6.5F, 1.0F, 6.5F});
+        mc::gameplay::PlayerInput walkOut;
+        walkOut.forward = 1.0F;
+        walkOut.lookDirection = {1.0F, 0.0F, 0.0F};
+        for (int tick = 0; tick < 40; ++tick) {
+            buried.tick(buryWorld, walkOut);
+        }
+        // It walked clear of the (6,*,6) column through the open +X face (centre
+        // past ~7.3) but re-solidified and was stopped by the (9,*,6) wall, so it
+        // rests half a body-width short of x=9 rather than clipping through.
+        assert(buried.position().x > 7.0F);
+        assert(buried.position().x < 8.8F);
+    }
+
     return 0;
 }

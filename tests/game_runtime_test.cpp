@@ -196,9 +196,17 @@ int main() {
         // proving the source is threaded into the handler and the feedback routes
         // back to the chat result.
         {
-            const glm::vec3 playerPos = runtime.gameSession().player().position();
+            // GameRuntime::tick runs gameplay physics before processChatQueue, so
+            // `/spawnpoint ~ ~ ~` resolves against the player's position *after*
+            // this tick's move. The default spawn seats the player a few pixels
+            // inside this generated hill, so pushOutOfBlocks nudges it free on
+            // this tick — the correct un-trap behaviour. Reading the position
+            // after the tick (not before) therefore compares against the same
+            // authoritative position the command saw, without teleporting the
+            // player (which would perturb the herd's spawn simulation downstream).
             runtime.enqueueChat("/spawnpoint ~ ~ ~");
             runtime.tick();
+            const glm::vec3 playerPos = runtime.gameSession().player().position();
             const auto spawnResult = runtime.takeChatResult();
             assert(spawnResult.has_value() && spawnResult->success);
             const glm::vec3 spawn = runtime.gameSession().playerSpawnPosition();

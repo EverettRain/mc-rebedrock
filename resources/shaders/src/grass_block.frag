@@ -11,6 +11,7 @@ layout(location = 7) in float fragmentBlockLight;
 layout(location = 8) flat in float fragmentFlatSkyLight;
 layout(location = 9) flat in float fragmentFlatBlockLight;
 layout(location = 10) flat in uint fragmentBiomeMask;
+layout(location = 11) in vec3 fragmentTint;
 
 layout(location = 0) out vec4 outColor;
 
@@ -32,6 +33,9 @@ layout(binding = 0) uniform CameraUniform {
     vec4 fluidAnimationFrameTimes;
     vec4 fluidAnimationSettings;
     mat4 lightViewProj;
+    // RN-4b: appended after lightViewProj so earlier offsets are unchanged.
+    vec4 blockAnimationSettings;      // x = active animation count
+    vec4 blockAnimations[16];         // x=base layer, y=frame count, z=frame time
 } camera;
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
@@ -66,6 +70,19 @@ void main() {
             float frameCount = max(camera.fluidAnimationFrameCounts[animation], 1.0);
             float frameTime = max(camera.fluidAnimationFrameTimes[animation], 1.0);
             animatedLayer += floor(mod(camera.fluidAnimationSettings.x / frameTime, frameCount));
+            break;
+        }
+    }
+    // RN-4b: cycle animated non-fluid block textures the same way. A fluid base
+    // never equals a block-animation base, so running both loops is safe.
+    int blockAnimationCount = int(camera.blockAnimationSettings.x);
+    for (int animation = 0; animation < blockAnimationCount; ++animation) {
+        vec4 blockAnimation = camera.blockAnimations[animation];
+        if (abs(fragmentTextureLayer - blockAnimation.x) < 0.1) {
+            float frameCount = max(blockAnimation.y, 1.0);
+            float frameTime = max(blockAnimation.z, 1.0);
+            animatedLayer = blockAnimation.x +
+                floor(mod(camera.fluidAnimationSettings.x / frameTime, frameCount));
             break;
         }
     }
@@ -143,6 +160,9 @@ void main() {
         biomeTint = texture(biomeGrassColors, (fragmentWorldPosition.xz + 1024.0) / 2048.0).rgb;
     } else if (fragmentBiomeMask == 2u) {
         biomeTint = texture(biomeFoliageColors, (fragmentWorldPosition.xz + 1024.0) / 2048.0).rgb;
+    } else if (fragmentBiomeMask == 3u) {
+        // Literal per-vertex tint (redstone dust's power-derived red gradient).
+        biomeTint = fragmentTint;
     }
     vec3 litColor = texel.rgb * biomeTint * illumination * ambientOcclusion;
     float outputAlpha = texel.a;

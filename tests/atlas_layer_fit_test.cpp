@@ -15,7 +15,6 @@
 namespace {
 
 using mc::assets::ImageData;
-using mc::render::conformBlockLayer;
 using mc::render::conformToAtlasLayer;
 
 // A solid image filled with one RGBA colour, so a nearest-neighbour resize can
@@ -103,44 +102,12 @@ int main() {
         assert(pixelIs(fitted, 15, 15, 1, 2, 3));
     }
 
-    // --- conformBlockLayer: a vertical animation strip (magma is 16x48) must bake
-    //     FRAME 0, not vertically squash all frames into one blurred layer. Build a
-    //     16x48 strip whose three stacked frames are red/green/blue; frame 0 is red,
-    //     so a correct result is solid red at every pixel (a squash would sample the
-    //     green/blue rows too). ---
-    {
-        ImageData strip;
-        strip.width = 16;
-        strip.height = 48;
-        strip.rgba.resize(static_cast<std::size_t>(16 * 48 * 4));
-        for (int y = 0; y < 48; ++y) {
-            const std::uint8_t r = y < 16 ? 255U : 0U;   // frame 0 red
-            const std::uint8_t g = (y >= 16 && y < 32) ? 255U : 0U; // frame 1 green
-            const std::uint8_t b = y >= 32 ? 255U : 0U;  // frame 2 blue
-            for (int x = 0; x < 16; ++x) {
-                const std::size_t i = (static_cast<std::size_t>(y) * 16U + static_cast<std::size_t>(x)) * 4U;
-                strip.rgba[i] = r;
-                strip.rgba[i + 1U] = g;
-                strip.rgba[i + 2U] = b;
-                strip.rgba[i + 3U] = 255U;
-            }
-        }
-        const auto fitted = conformBlockLayer(reference, strip, "magma");
-        assert(matchesReference(fitted, reference));
-        // Frame 0 is pure red everywhere; no green/blue leaked in from a squash.
-        assert(pixelIs(fitted, 0, 0, 255, 0, 0));
-        assert(pixelIs(fitted, 8, 8, 255, 0, 0));
-        assert(pixelIs(fitted, 15, 15, 255, 0, 0));
-    }
-
-    // --- conformBlockLayer on a plain (non-strip) tile behaves exactly like
-    //     conformToAtlasLayer: a same-size layer passes through untouched. ---
-    {
-        const auto layer = solid(16, 16, 42, 43, 44, 255);
-        const auto fitted = conformBlockLayer(reference, layer, "plain");
-        assert(matchesReference(fitted, reference));
-        assert(fitted.rgba == layer.rgba);
-    }
+    // RN-4b removed conformBlockLayer's "bake frame 0" cap: a vertical animation
+    // strip (magma 16x48, prismarine, …) is now baked frame-by-frame into a
+    // contiguous atlas run by bakeBlockAtlas, which records a BlockTextureAnimation
+    // so the terrain shader cycles it. That path needs a full resource provider, so
+    // it is exercised at runtime (Mac-gated) rather than here; this file keeps its
+    // conformToAtlasLayer robustness coverage above.
 
     return 0;
 }

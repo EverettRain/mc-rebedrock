@@ -325,7 +325,14 @@ UiRect HudLayout::creativeTab(std::size_t index) const {
     // laid out by its column. (Was six-top/two-bottom for the old eight-tab set.)
     constexpr std::size_t kTopRowTabs = 7U;
     const bool bottom = index >= kTopRowTabs;
-    const std::size_t column = bottom ? index - kTopRowTabs : index;
+    // The Inventory tab is the survival-inventory entry — the last index (10) in
+    // the CreativeTab enum this strip is built for. Vanilla anchors it to the
+    // far-right column of the bottom row (right-aligned, under the last top tab),
+    // not clustered with Food/Ingredients/SpawnEggs on the left. Every other
+    // bottom tab keeps its natural left-to-right column.
+    constexpr std::size_t kInventoryTabIndex = 10U;
+    const std::size_t column = !bottom ? index
+        : (index == kInventoryTabIndex ? kTopRowTabs - 1U : index - kTopRowTabs);
     const float y =
         bottom ? panel.y + panel.height - 4.0F * scale_ : panel.y - 28.0F * scale_;
     return {

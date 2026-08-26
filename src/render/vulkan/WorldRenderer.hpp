@@ -2087,7 +2087,9 @@ class WorldRenderer final {
         const bool cubeModel =
             !emptyHand && gameplay::isBlockStack(stack) &&
             (world::blockDefinition(stack.block).model == world::BlockModel::Cube ||
-             world::blockDefinition(stack.block).model == world::BlockModel::Chest || heldSlab);
+             world::blockDefinition(stack.block).model == world::BlockModel::Chest ||
+             world::blockDefinition(stack.block).model == world::BlockModel::DirectionalCube ||
+             heldSlab);
         const auto layers =
             emptyHand
                 ? world::BlockTextureLayers{kPlayerRightArmFirstLayer, kPlayerRightArmFirstLayer,
@@ -2105,7 +2107,10 @@ class WorldRenderer final {
             !emptyHand && gameplay::isBlockStack(stack)
                 ? (stack.block == world::Block::Chest
                        ? kChestItemFrontLayer
-                       : (stack.block == world::Block::Furnace ? kFurnaceFrontLayer : 0.0F))
+                       : (world::blockDefinition(stack.block).model ==
+                                  world::BlockModel::DirectionalCube
+                              ? world::directionalLayers(stack.block).front
+                              : 0.0F))
                 : 0.0F;
         // The held hand/block follows the ambient light at the gameSession.player()'s eye so
         // it darkens at night instead of staying under the fixed legacy light.
@@ -2409,7 +2414,14 @@ class WorldRenderer final {
             drawParticles(frame.commandBuffer, frame.descriptorSet, appendAsyncRain);
         drawRain(frame.commandBuffer, frame.descriptorSet, particleRecordCount);
         drawMiningProgress(frame.commandBuffer, frame.descriptorSet);
-        if (!inventoryOpen && !paused && !chatOpen && targetedBlock.has_value()) {
+        // Fire is targetable (so a left-click can extinguish it) but, like
+        // vanilla, draws no selection outline — its getShape is empty even though
+        // it is interactable, so you aim at it without a box being shown.
+        const bool targetIsFire =
+            targetedBlock.has_value() &&
+            clientCache.block(targetedBlock->block.x, targetedBlock->block.y,
+                              targetedBlock->block.z) == world::Block::Fire;
+        if (!inventoryOpen && !paused && !chatOpen && targetedBlock.has_value() && !targetIsFire) {
             // The outline traces the block's actual shape, so sub-block blocks
             // (torch, plants, chest, slab) no longer show a full-cube marker.
             // The shape is read from the cell's state (slab half, crop age, ...).

@@ -39,13 +39,12 @@ constexpr std::array<FaceDefinition, 6> kFaces{{
 }};
 
 constexpr std::array<glm::vec2, 4> kUvs{{{0, 1}, {1, 1}, {1, 0}, {0, 0}}};
-// Fixed layers of the atlas's special section: water still 0-31 / flow 32-63,
-// furnace front 167 and the lit front 168. The block-texture layers after them
-// are resolved at startup from the registry (world::textureLayers).
+// Fixed layers of the atlas's special section: water still 0-31 / flow 32-63.
+// The block-texture layers after them are resolved at startup from the registry
+// (world::textureLayers) — the furnace front is now one of those normal block
+// textures (a DirectionalCube slot), no longer a fixed-section special case.
 constexpr float kWaterStillLayer = 0.0F;
 constexpr float kWaterFlowLayer = 32.0F;
-constexpr float kFurnaceFrontLayer = 167.0F;
-constexpr float kFurnaceFrontOnLayer = 168.0F;
 
 [[nodiscard]] constexpr bool faceMatchesOrientation(Face face, BlockOrientation orientation) {
     switch (orientation) {
@@ -57,6 +56,42 @@ constexpr float kFurnaceFrontOnLayer = 168.0F;
     case BlockOrientation::North: return face == Face::NegativeZ;
     }
     return false;
+}
+
+// RN-4a: the world face expressed as a BlockOrientation, the inverse of the map
+// faceMatchesOrientation encodes. Lets directionalCubeSlot (Block.hpp) answer
+// which of a DirectionalCube's six textures a world face shows.
+[[nodiscard]] constexpr BlockOrientation orientationOfFace(Face face) {
+    switch (face) {
+    case Face::PositiveX: return BlockOrientation::East;
+    case Face::NegativeX: return BlockOrientation::West;
+    case Face::PositiveY: return BlockOrientation::Up;
+    case Face::NegativeY: return BlockOrientation::Down;
+    case Face::PositiveZ: return BlockOrientation::South;
+    case Face::NegativeZ: return BlockOrientation::North;
+    }
+    return BlockOrientation::North;
+}
+
+// RN-4a: the atlas layer a DirectionalCube (observer) shows on a world face,
+// given its FACING and POWERED state. Maps the face to a texture slot with the
+// compile-time-verified directionalCubeSlot, then reads the block's resolved
+// six-face layers.
+[[nodiscard]] float directionalCubeLayer(Block block, Face worldFace, BlockOrientation facing,
+                                         bool active) {
+    // `active` is the block's on-state (observer POWERED, furnace LIT): it swaps
+    // the front to frontActive (furnace_front_on) or the back to backActive
+    // (observer_back_on). The baker fills the inactive variant to equal its base,
+    // so a block that changes neither face is unaffected.
+    const auto& layers = directionalLayers(block);
+    switch (directionalCubeSlot(facing, orientationOfFace(worldFace))) {
+    case DirectionalSlot::Front: return active ? layers.frontActive : layers.front;
+    case DirectionalSlot::Back: return active ? layers.backActive : layers.back;
+    case DirectionalSlot::Top: return layers.top;
+    case DirectionalSlot::Bottom: return layers.bottom;
+    case DirectionalSlot::Side: return layers.side;
+    }
+    return layers.side;
 }
 
 [[nodiscard]] constexpr bool faceSharesAxis(Face face, BlockOrientation orientation) {
@@ -400,9 +435,10 @@ class BiomeTintCache final {
     }
     const auto state = world.state(x, y, z);
     const auto orientation = state.orientation();
-    if (block == Block::Furnace && faceMatchesOrientation(face, orientation)) {
-        // One furnace block, two fronts: the lit face comes from the state.
-        return state.lit() ? kFurnaceFrontOnLayer : kFurnaceFrontLayer;
+    if (blockDefinition(block).model == BlockModel::DirectionalCube) {
+        // The active state is POWERED (observer) or LIT (furnace); a block has at
+        // most one of those properties, so the OR selects the right one.
+        return directionalCubeLayer(block, face, orientation, state.powered() || state.lit());
     }
     if (isLog(block)) {
         return faceSharesAxis(face, orientation) ? layers.top : layers.side;
@@ -1219,6 +1255,452 @@ void appendTorchModel(
         textureLayer, skyLight, blockLight, sectionOrigin);
 }
 
+// RN-4a-2: axis-aligned rotation of a point about an origin, in degrees. Only the
+// X/Y/Z axes the roster needs (lever handle tilt = X, blockstate facing = Y); a
+// general Rodrigues axis is deferred with the rest of RN-4a-2's scope.
+[[nodiscard]] glm::vec3 rotateAxis(const glm::vec3& p, const glm::vec3& origin, char axis,
+                                   float degrees) {
+    if (degrees == 0.0F) {
+        return p;
+    }
+    const float radians = degrees * 3.14159265358979F / 180.0F;
+    const float c = std::cos(radians);
+    const float s = std::sin(radians);
+    const glm::vec3 d = p - origin;
+    glm::vec3 out = d;
+    if (axis == 'x') {
+        out.y = d.y * c - d.z * s;
+        out.z = d.y * s + d.z * c;
+    } else if (axis == 'y') {
+        out.x = d.x * c + d.z * s;
+        out.z = -d.x * s + d.z * c;
+    } else {
+        out.x = d.x * c - d.y * s;
+        out.y = d.x * s + d.y * c;
+    }
+    return origin + out;
+}
+
+// RN-4a-2: the Y-rotation (degrees) turning a north-based horizontal model to face
+// `facing`, matching vanilla blockstate y: north 0, east 270, south 180, west 90.
+[[nodiscard]] float yawForHorizontalFacing(BlockOrientation facing) {
+    switch (facing) {
+    case BlockOrientation::East: return 270.0F;
+    case BlockOrientation::South: return 180.0F;
+    case BlockOrientation::West: return 90.0F;
+    default: return 0.0F; // North (non-horizontal facings are unused here)
+    }
+}
+
+// RN-4a-2: mesh a BlockModel::ElementModel block (the diodes; the lever follows).
+// Each element is a small box carrying its own texture slot and JE-model UV rect;
+// the box is meshed in 0..16 model units, rotated by the block's facing yaw, and
+// dropped into the cell — the general "elements from a vanilla model json" path,
+// transcribed rather than parsed at runtime.
+template <typename Sampler>
+void appendElementModel(render::MeshData& mesh, Block block, BlockState state, int x, int y, int z,
+                        const Sampler& lighting, const glm::vec3& sectionOrigin) {
+    const float skyLight = lighting.sky(x, y, z);
+    const float cellBlockLight = lighting.block(x, y, z);
+    const glm::vec3 cell{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
+
+    // The "attachment" rotation applied to the whole model (about the cell centre)
+    // after the 0..16 -> 0..1 scale: the diodes just yaw about Y to face their
+    // horizontal FACING; the lever tilts its floor-authored model onto whichever
+    // of the six faces its FACING attaches it to (floor/ceiling/wall).
+    char postAxis = 'y';
+    float postDeg = yawForHorizontalFacing(state.orientation());
+    if (block == Block::Lever) {
+        switch (state.orientation()) {
+        case BlockOrientation::Up: postAxis = 'x'; postDeg = 0.0F; break;    // floor
+        case BlockOrientation::Down: postAxis = 'x'; postDeg = 180.0F; break; // ceiling
+        case BlockOrientation::North: postAxis = 'x'; postDeg = -90.0F; break;
+        case BlockOrientation::South: postAxis = 'x'; postDeg = 90.0F; break;
+        case BlockOrientation::East: postAxis = 'z'; postDeg = -90.0F; break;
+        case BlockOrientation::West: postAxis = 'z'; postDeg = 90.0F; break;
+        }
+    }
+
+    // Emit one textured face of a [from,to] box (both in 0..16 model units), with
+    // an optional element rotation, then the block's facing yaw, then the cell.
+    const auto emitFace = [&](const glm::vec3& from16, const glm::vec3& to16, Face face,
+                              const std::array<float, 4>& uv, std::size_t slot, float glow,
+                              const glm::vec3& rotOrigin, char rotAxis, float rotDeg) {
+        const float layer = modelSlotLayer(block, slot);
+        const auto& fd = kFaces[static_cast<std::size_t>(face)];
+        std::array<glm::vec3, 4> positions;
+        for (std::size_t corner = 0; corner < 4; ++corner) {
+            glm::vec3 point = from16 + fd.corners[corner] * (to16 - from16);
+            point = rotateAxis(point, rotOrigin, rotAxis, rotDeg);
+            point *= (1.0F / 16.0F);
+            point = rotateAxis(point, glm::vec3{0.5F}, postAxis, postDeg);
+            positions[corner] = cell + point;
+        }
+        glm::vec3 normal = rotateAxis(fd.normal, glm::vec3{0.0F}, rotAxis, rotDeg);
+        normal = rotateAxis(normal, glm::vec3{0.0F}, postAxis, postDeg);
+        const std::array<glm::vec2, 4> uvs{{{uv[0] / 16.0F, uv[3] / 16.0F},
+                                            {uv[2] / 16.0F, uv[3] / 16.0F},
+                                            {uv[2] / 16.0F, uv[1] / 16.0F},
+                                            {uv[0] / 16.0F, uv[1] / 16.0F}}};
+        appendTorchQuad(mesh, positions, glm::normalize(normal), uvs, layer, skyLight,
+                        std::max(cellBlockLight, glow), sectionOrigin);
+    };
+
+    // The diode slab base (0,0,0)-(16,2,16): top uses #top, the four sides #slab.
+    // The down face always sits on the block's support, so it is never drawn.
+    const auto emitDiodeBase = [&]() {
+        emitFace({0, 0, 0}, {16, 2, 16}, Face::PositiveY, {0, 0, 16, 16}, 1, 0.0F, {}, 'y', 0.0F);
+        for (const auto side : {Face::NegativeZ, Face::PositiveZ, Face::NegativeX, Face::PositiveX}) {
+            emitFace({0, 0, 0}, {16, 2, 16}, side, {0, 14, 16, 16}, 0, 0.0F, {}, 'y', 0.0F);
+        }
+    };
+    // A redstone-torch nub: up face plus four sides, no down (it stands on the
+    // slab). `slot` is the lit or unlit sprite; a lit torch glows.
+    const std::size_t torchSlot = state.powered() ? 3U : 2U;
+    const float torchGlow = state.powered() ? 0.5F : 0.0F;
+    const auto emitTorch = [&](const glm::vec3& from16, const glm::vec3& to16) {
+        emitFace(from16, to16, Face::PositiveY, {7, 6, 9, 8}, torchSlot, torchGlow, {}, 'y', 0.0F);
+        for (const auto side : {Face::NegativeZ, Face::PositiveZ, Face::NegativeX, Face::PositiveX}) {
+            emitFace(from16, to16, side, {7, 6, 9, 11}, torchSlot, torchGlow, {}, 'y', 0.0F);
+        }
+    };
+
+    if (block == Block::Repeater) {
+        emitDiodeBase();
+        // The fixed output torch at the front (north) end, then the input torch
+        // that slides back with the DELAY (1..4), matching repeater_Ntick.json.
+        emitTorch({7, 2, 2}, {9, 7, 4});
+        const float movingZ = 6.0F + static_cast<float>(state.repeaterDelay() - 1) * 2.0F;
+        emitTorch({7, 2, movingZ}, {9, 7, movingZ + 2.0F});
+        return;
+    }
+    if (block == Block::Comparator) {
+        emitDiodeBase();
+        // Two rear torches flank the input; the front torch rises in SUBTRACT mode
+        // (comparator_subtract.json raises its top from 5 to 6).
+        emitTorch({4, 2, 11}, {6, 7, 13});
+        emitTorch({10, 2, 11}, {12, 7, 13});
+        const float frontTop = state.comparatorSubtract() ? 6.0F : 5.0F;
+        emitTorch({7, 2, 2}, {9, frontTop, 4});
+        return;
+    }
+    if (block == Block::Lever) {
+        // Cobblestone base (#base, slot 0) + a handle (#lever, slot 1) tilted 45°
+        // about its bottom, transcribed from lever(_on).json. Powered flips the
+        // tilt (lever.json -45 vs lever_on.json +45); the whole model is then
+        // attached to the FACING face by postAxis/postDeg above.
+        for (const auto face : {Face::NegativeY, Face::PositiveY, Face::NegativeZ,
+                                Face::PositiveZ, Face::NegativeX, Face::PositiveX}) {
+            const std::array<float, 4> uv = (face == Face::PositiveY || face == Face::NegativeY)
+                ? std::array<float, 4>{5, 4, 11, 12}
+                : std::array<float, 4>{4, 0, 12, 3};
+            emitFace({5, -0.02F, 4}, {11, 2.98F, 12}, face, uv, 0, 0.0F, {}, 'y', 0.0F);
+        }
+        const float tilt = state.powered() ? -45.0F : 45.0F;
+        const glm::vec3 handleFrom{7, 1, 7};
+        const glm::vec3 handleTo{9, 11, 9};
+        const glm::vec3 pivot{8, 1, 8};
+        emitFace(handleFrom, handleTo, Face::PositiveY, {7, 6, 9, 8}, 1, 0.0F, pivot, 'x', tilt);
+        for (const auto face : {Face::NegativeZ, Face::PositiveZ, Face::NegativeX, Face::PositiveX}) {
+            emitFace(handleFrom, handleTo, face, {7, 6, 9, 16}, 1, 0.0F, pivot, 'x', tilt);
+        }
+        return;
+    }
+}
+
+// RN-6: which blocks a redstone wire visually connects toward — another wire, a
+// redstone component, or a signal source. Approximates vanilla
+// RedStoneWireBlock.shouldConnectTo (the facing-precise diode/observer rules are
+// deferred; a permissive connect reads correctly for the common layouts).
+[[nodiscard]] bool wireConnectsTo(Block block) {
+    switch (block) {
+    case Block::RedstoneWire:
+    case Block::Repeater:
+    case Block::Comparator:
+    case Block::RedstoneTorch:
+    case Block::RedstoneBlock:
+    case Block::Lever:
+    case Block::StoneButton:
+    case Block::StonePressurePlate:
+    case Block::Observer:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// RN-6: mesh redstone dust — a flat, power-tinted wire. A centre dot is always
+// drawn; each neighbour the wire connects to grows a line arm toward it, and a
+// solid neighbour with wire on top grows a strip climbing its wall. Connections
+// are derived from neighbours here (like a fence), never stored in the state.
+template <typename Sampler>
+void appendRedstoneWire(render::MeshData& mesh, Block block, BlockState state, int x, int y, int z,
+                        const Sampler& lighting, const glm::vec3& sectionOrigin) {
+    const float dotLayer = modelSlotLayer(block, 0);
+    const float lineLayer = modelSlotLayer(block, 1);
+    // Vanilla RedStoneWireBlock.getColorForPower: a red gradient, dark at 0.
+    const int power = state.analogSignal();
+    const float f = static_cast<float>(power) / 15.0F;
+    const auto channel = [](float value) {
+        return static_cast<std::uint8_t>(
+            std::clamp(static_cast<int>(std::lround(value * 255.0F)), 0, 255));
+    };
+    const std::uint8_t tintR = channel(f * 0.6F + (power > 0 ? 0.4F : 0.3F));
+    const std::uint8_t tintG = channel(std::clamp(f * f * 0.7F - 0.5F, 0.0F, 1.0F));
+    const std::uint8_t tintB = channel(std::clamp(f * f * 0.6F - 0.7F, 0.0F, 1.0F));
+    const float skyLight = lighting.sky(x, y, z);
+    const float blockLight = lighting.block(x, y, z);
+    const glm::vec3 cell{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
+    constexpr float kWireY = 1.0F / 64.0F; // just above the support's top face
+
+    // biomeMask 3 selects the shader's literal per-vertex tint path, so the grey
+    // redstone sprite is multiplied by the power-derived red (RN-6 #1a).
+    constexpr std::uint8_t kLiteralTintMask = 3U;
+    const auto emitQuad = [&](const std::array<glm::vec3, 4>& corners, const glm::vec3& normal,
+                              float layer, bool rotateUv) {
+        // The line sprite (redstone_dust_line0) is a stripe running along texture
+        // V; an arm laid along the other world axis needs it rotated a quarter
+        // turn so its stripe still runs down the arm, rather than crossing it and
+        // reading as a break. Vanilla ships this as redstone_dust_line1; rotating
+        // the UV of the one line sprite is the same picture without a second
+        // atlas layer (RN-6 #1b).
+        const std::array<glm::vec2, 4> uvs = rotateUv
+            ? std::array<glm::vec2, 4>{{{0, 0}, {0, 1}, {1, 1}, {1, 0}}}
+            : std::array<glm::vec2, 4>{{{0, 1}, {1, 1}, {1, 0}, {0, 0}}};
+        const auto first = static_cast<std::uint32_t>(mesh.vertices.size());
+        for (std::size_t i = 0; i < 4; ++i) {
+            mesh.vertices.push_back(packVertex(cell + corners[i] - sectionOrigin, normal, uvs[i],
+                                               layer, 1.0F, 0.0F, skyLight, blockLight, skyLight,
+                                               blockLight, tintR, tintG, tintB, kLiteralTintMask));
+        }
+        for (const auto index : {0U, 1U, 2U, 2U, 3U, 0U}) {
+            mesh.indices.push_back(first + index);
+        }
+    };
+    // A flat rectangle on the floor plane, wound so its face points up. `rotateUv`
+    // turns the line sprite a quarter turn for arms running along X (east/west).
+    const auto emitFloor = [&](float x0, float z0, float x1, float z1, float layer,
+                               bool rotateUv = false) {
+        emitQuad({glm::vec3{x0, kWireY, z1}, glm::vec3{x1, kWireY, z1}, glm::vec3{x1, kWireY, z0},
+                  glm::vec3{x0, kWireY, z0}},
+                 glm::vec3{0.0F, 1.0F, 0.0F}, layer, rotateUv);
+    };
+
+    // Connection per horizontal direction: 0 none, 1 side (flat), 2 up (climb).
+    const auto connection = [&](int dx, int dz) -> int {
+        const Block side = lighting.blockType(x + dx, y, z + dz);
+        const bool sideConnects = wireConnectsTo(side);
+        if (isFullCube(side)) {
+            // A solid neighbour: the wire climbs it when wire sits on top and the
+            // block above this cell does not cap it in.
+            if (lighting.blockType(x + dx, y + 1, z + dz) == Block::RedstoneWire &&
+                !isFullCube(lighting.blockType(x, y + 1, z))) {
+                return 2;
+            }
+            return sideConnects ? 1 : 0;
+        }
+        // A non-solid neighbour: connect flat if it is a component, or if wire
+        // steps down to the cell below it.
+        if (sideConnects || lighting.blockType(x + dx, y - 1, z + dz) == Block::RedstoneWire) {
+            return 1;
+        }
+        return 0;
+    };
+    const int north = connection(0, -1);
+    const int east = connection(1, 0);
+    const int south = connection(0, 1);
+    const int west = connection(-1, 0);
+
+    // Centre dot (always) and one arm per connected side, 6/16 wide.
+    constexpr float lo = 5.0F / 16.0F;
+    constexpr float hi = 11.0F / 16.0F;
+    emitFloor(lo, lo, hi, hi, dotLayer);
+    // North/south arms run along Z, so the line sprite reads straight; east/west
+    // arms run along X and rotate the sprite a quarter turn (the line1 picture).
+    if (north > 0) emitFloor(lo, 0.0F, hi, lo, lineLayer);
+    if (south > 0) emitFloor(lo, hi, hi, 1.0F, lineLayer);
+    if (west > 0) emitFloor(0.0F, lo, lo, hi, lineLayer, /*rotateUv=*/true);
+    if (east > 0) emitFloor(hi, lo, 1.0F, hi, lineLayer, /*rotateUv=*/true);
+
+    // Climbing strips up a solid neighbour's wall, on the face turned toward this
+    // cell, offset a hair off the wall to avoid z-fighting. The sprite runs up
+    // the wall (no rotation) on every face.
+    constexpr float eps = 1.0F / 64.0F;
+    if (north == 2)
+        emitQuad({glm::vec3{lo, 1.0F, eps}, glm::vec3{hi, 1.0F, eps}, glm::vec3{hi, 0.0F, eps},
+                  glm::vec3{lo, 0.0F, eps}},
+                 glm::vec3{0.0F, 0.0F, 1.0F}, lineLayer, false);
+    if (south == 2)
+        emitQuad({glm::vec3{hi, 1.0F, 1.0F - eps}, glm::vec3{lo, 1.0F, 1.0F - eps},
+                  glm::vec3{lo, 0.0F, 1.0F - eps}, glm::vec3{hi, 0.0F, 1.0F - eps}},
+                 glm::vec3{0.0F, 0.0F, -1.0F}, lineLayer, false);
+    if (west == 2)
+        emitQuad({glm::vec3{eps, 1.0F, hi}, glm::vec3{eps, 1.0F, lo}, glm::vec3{eps, 0.0F, lo},
+                  glm::vec3{eps, 0.0F, hi}},
+                 glm::vec3{1.0F, 0.0F, 0.0F}, lineLayer, false);
+    if (east == 2)
+        emitQuad({glm::vec3{1.0F - eps, 1.0F, lo}, glm::vec3{1.0F - eps, 1.0F, hi},
+                  glm::vec3{1.0F - eps, 0.0F, hi}, glm::vec3{1.0F - eps, 0.0F, lo}},
+                 glm::vec3{-1.0F, 0.0F, 0.0F}, lineLayer, false);
+}
+
+// RN-6: mesh a fence gate with its real two-post-and-bars geometry, transcribed
+// from vanilla template_fence_gate(_open).json, replacing the old single-box mesh
+// that drew the gate as a solid plank wall. The collision/pick box stays the
+// FenceGate BlockShape; only the visual changes. A single plank texture skins
+// every box (position-derived UV keeps the grain continuous); the whole model
+// yaws to FACING and swaps to the open element set when OPEN.
+template <typename Sampler>
+void appendFenceGate(render::MeshData& mesh, Block block, BlockState state, int x, int y, int z,
+                     const Sampler& lighting, const glm::vec3& sectionOrigin) {
+    const float layer = textureLayers(block).side;
+    const float skyLight = lighting.sky(x, y, z);
+    const float blockLight = lighting.block(x, y, z);
+    const glm::vec3 cell{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
+    // The base model's gate faces south; the blockstate yaws it (south 0, west 90,
+    // north 180, east 270).
+    float yaw = 0.0F;
+    switch (state.orientation()) {
+    case BlockOrientation::West: yaw = 90.0F; break;
+    case BlockOrientation::North: yaw = 180.0F; break;
+    case BlockOrientation::East: yaw = 270.0F; break;
+    default: yaw = 0.0F; break; // South (and any non-horizontal, unused)
+    }
+    struct Box16 final {
+        std::array<float, 3> from;
+        std::array<float, 3> to;
+    };
+    static constexpr std::array<Box16, 8> kClosed{{
+        {{0, 5, 7}, {2, 16, 9}},   {{14, 5, 7}, {16, 16, 9}}, // outer posts
+        {{6, 6, 7}, {8, 15, 9}},   {{8, 6, 7}, {10, 15, 9}},  // inner door posts
+        {{2, 6, 7}, {6, 9, 9}},    {{2, 12, 7}, {6, 15, 9}},  // left door bars
+        {{10, 6, 7}, {14, 9, 9}},  {{10, 12, 7}, {14, 15, 9}}, // right door bars
+    }};
+    static constexpr std::array<Box16, 8> kOpen{{
+        {{0, 5, 7}, {2, 16, 9}},   {{14, 5, 7}, {16, 16, 9}},  // outer posts
+        {{0, 6, 13}, {2, 15, 15}}, {{14, 6, 13}, {16, 15, 15}}, // inner door posts (swung)
+        {{0, 6, 9}, {2, 9, 13}},   {{0, 12, 9}, {2, 15, 13}},   // left door bars (swung)
+        {{14, 6, 9}, {16, 9, 13}}, {{14, 12, 9}, {16, 15, 13}}, // right door bars (swung)
+    }};
+    const auto& boxes = state.open() ? kOpen : kClosed;
+
+    const auto emitFace = [&](const glm::vec3& from16, const glm::vec3& to16, Face face) {
+        const auto& fd = kFaces[static_cast<std::size_t>(face)];
+        std::array<glm::vec3, 4> positions;
+        std::array<glm::vec2, 4> uvs;
+        for (std::size_t i = 0; i < 4; ++i) {
+            const glm::vec3 model = (from16 + fd.corners[i] * (to16 - from16)) * (1.0F / 16.0F);
+            if (face == Face::PositiveY || face == Face::NegativeY) {
+                uvs[i] = {model.x, 1.0F - model.z};
+            } else if (face == Face::PositiveX || face == Face::NegativeX) {
+                uvs[i] = {model.z, 1.0F - model.y};
+            } else {
+                uvs[i] = {model.x, 1.0F - model.y};
+            }
+            positions[i] = cell + rotateAxis(model, glm::vec3{0.5F}, 'y', yaw);
+        }
+        const glm::vec3 normal = rotateAxis(fd.normal, glm::vec3{0.0F}, 'y', yaw);
+        const auto first = static_cast<std::uint32_t>(mesh.vertices.size());
+        for (std::size_t i = 0; i < 4; ++i) {
+            mesh.vertices.push_back(packVertex(positions[i] - sectionOrigin, glm::normalize(normal),
+                                               uvs[i], layer, 1.0F, 0.0F, skyLight, blockLight,
+                                               skyLight, blockLight));
+        }
+        for (const auto index : {0U, 1U, 2U, 2U, 3U, 0U}) {
+            mesh.indices.push_back(first + index);
+        }
+    };
+
+    for (const auto& box : boxes) {
+        const glm::vec3 from{box.from[0], box.from[1], box.from[2]};
+        const glm::vec3 to{box.to[0], box.to[1], box.to[2]};
+        for (const auto face : {Face::PositiveX, Face::NegativeX, Face::PositiveY, Face::NegativeY,
+                                Face::PositiveZ, Face::NegativeZ}) {
+            emitFace(from, to, face);
+        }
+    }
+}
+
+// RN-7: mesh fire — billowing full-bright planes driven by its neighbours, like
+// vanilla's template_fire_floor/side/up. A solid or flammable block below grows
+// the four tilted floor planes; each flammable horizontal neighbour grows a
+// wall-hugging sheet; a flammable ceiling grows an overhead sheet. Every plane is
+// double-sided and self-lit (FireBlock emits light 15). fire_0's atlas layer is
+// the animated strip's base (RN-4b); the opaque terrain shader cycles it, the
+// cutout path shows frame 0 until block_cutout.frag gains the same loop.
+template <typename Sampler>
+void appendFire(render::MeshData& mesh, Block block, int x, int y, int z, const Sampler& lighting,
+                const glm::vec3& sectionOrigin) {
+    const float layer = textureLayers(block).side;
+    const float skyLight = lighting.sky(x, y, z);
+    constexpr float blockLight = 1.0F; // FireBlock lightLevel 15
+    const glm::vec3 cell{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
+    constexpr float kFlameTop = 22.4F / 16.0F; // vanilla fire planes rise past the cell
+
+    // A double-sided quad (both winding orders share one vertex set), corners in
+    // 0..1 model space, optionally rotated about an axis, textured with fire.
+    const auto emitPlane = [&](const std::array<glm::vec3, 4>& corners, char axis, float degrees,
+                               const glm::vec3& origin) {
+        constexpr std::array<glm::vec2, 4> uvs{{{0, 1}, {1, 1}, {1, 0}, {0, 0}}};
+        std::array<glm::vec3, 4> positions;
+        for (std::size_t i = 0; i < 4; ++i) {
+            positions[i] = cell + rotateAxis(corners[i], origin, axis, degrees);
+        }
+        const glm::vec3 normal =
+            glm::normalize(glm::cross(positions[1] - positions[0], positions[3] - positions[0]));
+        const auto first = static_cast<std::uint32_t>(mesh.vertices.size());
+        for (std::size_t i = 0; i < 4; ++i) {
+            mesh.vertices.push_back(packVertex(positions[i] - sectionOrigin, normal, uvs[i], layer,
+                                               1.0F, 0.0F, skyLight, blockLight, skyLight,
+                                               blockLight));
+        }
+        for (const auto index : {0U, 1U, 2U, 2U, 3U, 0U, 0U, 3U, 2U, 2U, 1U, 0U}) {
+            mesh.indices.push_back(first + index);
+        }
+    };
+
+    const glm::vec3 centre{0.5F, 0.5F, 0.5F};
+    const Block below = lighting.blockType(x, y - 1, z);
+    if (isFullCube(below) || isFlammable(below)) {
+        // Four tilted planes billowing up from the floor (template_fire_floor).
+        emitPlane({glm::vec3{0, 0, 0.55F}, glm::vec3{1, 0, 0.55F}, glm::vec3{1, kFlameTop, 0.55F},
+                   glm::vec3{0, kFlameTop, 0.55F}},
+                  'x', -22.5F, centre);
+        emitPlane({glm::vec3{0, 0, 0.45F}, glm::vec3{1, 0, 0.45F}, glm::vec3{1, kFlameTop, 0.45F},
+                   glm::vec3{0, kFlameTop, 0.45F}},
+                  'x', 22.5F, centre);
+        emitPlane({glm::vec3{0.55F, 0, 0}, glm::vec3{0.55F, 0, 1}, glm::vec3{0.55F, kFlameTop, 1},
+                   glm::vec3{0.55F, kFlameTop, 0}},
+                  'z', -22.5F, centre);
+        emitPlane({glm::vec3{0.45F, 0, 0}, glm::vec3{0.45F, 0, 1}, glm::vec3{0.45F, kFlameTop, 1},
+                   glm::vec3{0.45F, kFlameTop, 0}},
+                  'z', 22.5F, centre);
+    }
+    // A wall-hugging sheet on each flammable side (template_fire_side).
+    constexpr float eps = 0.01F;
+    if (isFlammable(lighting.blockType(x, y, z - 1)))
+        emitPlane({glm::vec3{0, 0, eps}, glm::vec3{1, 0, eps}, glm::vec3{1, kFlameTop, eps},
+                   glm::vec3{0, kFlameTop, eps}},
+                  'x', 0.0F, centre);
+    if (isFlammable(lighting.blockType(x, y, z + 1)))
+        emitPlane({glm::vec3{0, 0, 1 - eps}, glm::vec3{1, 0, 1 - eps},
+                   glm::vec3{1, kFlameTop, 1 - eps}, glm::vec3{0, kFlameTop, 1 - eps}},
+                  'x', 0.0F, centre);
+    if (isFlammable(lighting.blockType(x - 1, y, z)))
+        emitPlane({glm::vec3{eps, 0, 0}, glm::vec3{eps, 0, 1}, glm::vec3{eps, kFlameTop, 1},
+                   glm::vec3{eps, kFlameTop, 0}},
+                  'x', 0.0F, centre);
+    if (isFlammable(lighting.blockType(x + 1, y, z)))
+        emitPlane({glm::vec3{1 - eps, 0, 0}, glm::vec3{1 - eps, 0, 1}, glm::vec3{1 - eps, kFlameTop, 1},
+                   glm::vec3{1 - eps, kFlameTop, 0}},
+                  'x', 0.0F, centre);
+    // An overhead sheet under a flammable ceiling (template_fire_up, simplified).
+    if (isFlammable(lighting.blockType(x, y + 1, z)))
+        emitPlane({glm::vec3{0, 1 - eps, 0}, glm::vec3{1, 1 - eps, 0}, glm::vec3{1, 1 - eps, 1},
+                   glm::vec3{0, 1 - eps, 1}},
+                  'x', 0.0F, centre);
+}
+
 void appendMesh(render::MeshData& destination, const render::MeshData& source) {
     const auto vertexOffset = static_cast<std::uint32_t>(destination.vertices.size());
     destination.vertices.insert(
@@ -1332,6 +1814,30 @@ bool buildSectionImpl(
                         lighting, sectionOrigin);
                     continue;
                 }
+                if (definition.model == BlockModel::ElementModel) {
+                    // RN-4a-2: the diodes and lever — small multi-box models meshed
+                    // from their transcribed elements, each with its own texture
+                    // slot and UV rect.
+                    appendElementModel(targetMesh, current,
+                                       chunk->state(localX, worldY, localZ), worldX, worldY,
+                                       worldZ, lighting, sectionOrigin);
+                    continue;
+                }
+                if (definition.model == BlockModel::RedstoneWire) {
+                    // RN-6: flat power-tinted wire, connections derived from
+                    // neighbours (through the lighting sampler's blockType).
+                    appendRedstoneWire(targetMesh, current,
+                                       chunk->state(localX, worldY, localZ), worldX, worldY,
+                                       worldZ, lighting, sectionOrigin);
+                    continue;
+                }
+                if (definition.model == BlockModel::Fire) {
+                    // RN-7: billowing fire planes, floor/side/up chosen from the
+                    // neighbours (through the lighting sampler's blockType).
+                    appendFire(targetMesh, current, worldX, worldY, worldZ, lighting,
+                               sectionOrigin);
+                    continue;
+                }
                 if (definition.model == BlockModel::Chest) {
                     // ChestBlockEntity owns the animated base/lid render.
                     continue;
@@ -1343,12 +1849,21 @@ bool buildSectionImpl(
                                sectionOrigin, tints);
                     continue;
                 }
-                // Every shaped block (stairs/door/fence-gate/trapdoor/button/wall
-                // — the Boxes-kind models plus the PressurePlate Column) meshes
-                // from the one `BlockShape` source the pick ray and collision
-                // read, instead of the full-cube fallthrough below. A Column
-                // shape (pressure plate) reuses the slab's box path via its
-                // [bottom, top] Y span; a Boxes shape walks its box list.
+                if (definition.model == BlockModel::FenceGate) {
+                    // RN-6: the fence gate draws its real posts-and-bars geometry
+                    // (a plank wall was the old single-box mesh) while keeping the
+                    // FenceGate BlockShape for collision/pick.
+                    appendFenceGate(targetMesh, current,
+                                    chunk->state(localX, worldY, localZ), worldX, worldY, worldZ,
+                                    lighting, sectionOrigin);
+                    continue;
+                }
+                // Every shaped block (stairs/door/trapdoor/button/wall — the
+                // Boxes-kind models plus the PressurePlate Column) meshes from the
+                // one `BlockShape` source the pick ray and collision read, instead
+                // of the full-cube fallthrough below. A Column shape (pressure
+                // plate) reuses the slab's box path via its [bottom, top] Y span; a
+                // Boxes shape walks its box list.
                 if (isShapedBlockModel(definition.model)) {
                     const BlockState state = chunk->state(localX, worldY, localZ);
                     const BlockShape shape = blockShape(state);

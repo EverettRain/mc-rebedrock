@@ -29,9 +29,11 @@ inline constexpr std::uint32_t kLavaStillLayer = 64U;
 inline constexpr std::uint32_t kLavaFlowLayer = 84U;
 // The first block-texture layer: everything before it is the fixed special
 // section (water 0-63, lava 64-99, player skin 100-135, destroy 136-145, chest
-// parts 146-163, chest item faces 164-166, furnace 167-168, moon 169-176,
-// sun 177, experience orb 178).
-inline constexpr std::uint32_t kFirstBlockTextureLayer = 179U;
+// parts 146-163, chest item faces 164-166, moon 167-174, sun 175, experience
+// orb 176). The furnace front used to sit at 167-168 but is now a normal
+// name-driven block texture (a DirectionalCube slot), so the section is two
+// layers shorter and everything after the chest items shifted down by two.
+inline constexpr std::uint32_t kFirstBlockTextureLayer = 177U;
 inline constexpr float kPlayerHeadFirstLayer = 100.0F;
 inline constexpr float kPlayerBodyFirstLayer = 106.0F;
 inline constexpr float kPlayerRightArmFirstLayer = 112.0F;
@@ -44,15 +46,14 @@ inline constexpr float kChestLidFirstLayer = 152.0F;
 inline constexpr float kChestItemTopLayer = 164.0F;
 inline constexpr float kChestItemFrontLayer = 165.0F;
 inline constexpr float kChestItemSideLayer = 166.0F;
-inline constexpr float kFurnaceFrontLayer = 167.0F;
 // Eight 26.1 environment/celestial/moon/<phase>.png sprites fill fixed layers
-// 169-176 and environment/celestial/sun.png sits at 177. The sky shader reads them through the
+// 167-174 and environment/celestial/sun.png sits at 175. The sky shader reads them through the
 // CameraUniform.celestialLayers uniform (which the renderer fills from these
 // bases), so the two never drift when the atlas layout changes.
-inline constexpr float kMoonPhaseFirstLayer = 169.0F;
-inline constexpr float kSunLayer = 177.0F;
+inline constexpr float kMoonPhaseFirstLayer = 167.0F;
+inline constexpr float kSunLayer = 175.0F;
 // One 16x16 orb sprite lifted from entity/experience/experience_orb.png (a 4x4
 // sheet); the experience-orb billboards in WorldRenderer sample this whole layer.
-inline constexpr float kExperienceOrbLayer = 178.0F;
+inline constexpr float kExperienceOrbLayer = 176.0F;
 
 } // namespace mc::render
