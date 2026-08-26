@@ -1108,10 +1108,10 @@ int main() {
         assert(!world.state(5, 1, 5).powered());
 
         // The player's own feet, tickPressurePlates' bounded set: standing on
-        // the plate presses it. The plate occupies cell y=1 (floor cell y=0
-        // holds the stone below it), so its top surface — where standing feet
-        // rest — is world y=2.0.
-        session.teleportPlayer(gameplay::kPrimaryPlayerId, {5.5F, 2.0F, 5.5F});
+        // the plate presses it. The plate has empty collision, so the player
+        // rests on the stone at cell y=0 (top at y=1) with feet inside the
+        // plate's own cell y=1 — the cell floor(feet.y) probes.
+        session.teleportPlayer(gameplay::kPrimaryPlayerId, {5.5F, 1.001F, 5.5F});
         session.tick(world, host);
         static_cast<void>(session.drainEvents());
         assert(world.state(5, 1, 5).powered());
@@ -1125,11 +1125,58 @@ int main() {
 
         // A creature (not the player) standing on the plate also presses it —
         // proves the check is not player-only.
-        session.primaryLevel().entities.spawn({5.5F, 2.001F, 5.5F},
+        session.primaryLevel().entities.spawn({5.5F, 1.001F, 5.5F},
                                               gameplay::entities::PigEntity::type());
         session.tick(world, host);
         static_cast<void>(session.drainEvents());
         assert(world.state(5, 1, 5).powered());
+    }
+
+    // --- #5 creative shift-click discard: with the survival inventory full, a
+    // Shift-click on a hotbar slot under an item-category tab deletes the stack
+    // into the infinite catalogue rather than attempting (and silently failing)
+    // a hotbar<->main swap. The active creative tab is client-only UI state, so
+    // the ClickSlot command carries it; the server must honour it rather than
+    // assuming the Inventory tab. ---
+    {
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        session.setGameMode(gameplay::GameMode::Creative);
+        // Fill every slot so a swap has nowhere to go — the exact "背包装满后"
+        // condition under which the old hardcoded-Inventory-tab context left the
+        // click a no-op.
+        for (std::size_t i = 0; i < gameplay::Inventory::kSlotCount; ++i) {
+            session.inventory().mutableSlot(i) = {world::Block::Stone, 64U};
+        }
+
+        // Item-category tab (creativeInventoryTab=false): the hotbar stack is
+        // discarded.
+        gameplay::ClickSlot discard;
+        discard.kind = gameplay::SlotKind::PlayerInventory;
+        discard.slotIndex = 0U;
+        discard.button = static_cast<int>(gameplay::InventoryMouseButton::Left);
+        discard.shiftHeld = true;
+        discard.creativeInventoryTab = false;
+        session.enqueueCommand(discard);
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(session.inventory().slot(0).empty());
+
+        // Inventory tab (creativeInventoryTab=true) with a full inventory: the
+        // ordinary swap has nowhere to go, so the stack stays put — proving the
+        // tab distinction is honoured server-side rather than always deleting.
+        gameplay::ClickSlot swap;
+        swap.kind = gameplay::SlotKind::PlayerInventory;
+        swap.slotIndex = 1U;
+        swap.button = static_cast<int>(gameplay::InventoryMouseButton::Left);
+        swap.shiftHeld = true;
+        swap.creativeInventoryTab = true;
+        session.enqueueCommand(swap);
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(!session.inventory().slot(1).empty());
     }
 
     return 0;

@@ -1149,11 +1149,14 @@ void appendTorchModel(
     int y,
     int z,
     float textureLayer,
+    std::uint8_t emitted,
     const Sampler& lighting,
     const glm::vec3& sectionOrigin) {
-    // A wall torch's lean is its FACING state now, not four separate blocks.
+    // A wall torch's lean is its FACING state now, not four separate blocks —
+    // the redstone wall torch hangs exactly the same way. The same isWallTorch
+    // trait the shape source keys on, so the mesh box and the pick box agree.
     glm::vec3 facing{0.0F};
-    const bool wall = block == Block::WallTorch;
+    const bool wall = isWallTorch(block);
     if (wall) {
         if (orientation == BlockOrientation::North) facing.z = -1.0F;
         if (orientation == BlockOrientation::East) facing.x = 1.0F;
@@ -1161,7 +1164,10 @@ void appendTorchModel(
         if (orientation == BlockOrientation::West) facing.x = -1.0F;
     }
     const float skyLight = lighting.sky(x, y, z);
-    const float blockLight = static_cast<float>(emittedLight(block)) / 15.0F;
+    // The torch's self-light comes from its state (a redstone torch emits 7 while
+    // lit, 0 while off; a plain torch 14), passed in by the caller rather than
+    // read from the block default — the block default for a redstone torch is 0.
+    const float blockLight = static_cast<float>(emitted) / 15.0F;
     const glm::vec3 origin{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
     const glm::vec3 base = wall
         ? origin + glm::vec3{0.5F, 0.18F, 0.5F} - facing * kWallTorchInset
@@ -1312,10 +1318,18 @@ bool buildSectionImpl(
                     // The torch's face texture (every wall facing shares the
                     // single "torch" sprite) resolves to its atlas layer at
                     // startup, like every other block — never a baked-in number.
+                    // A redstone torch swaps to its unlit sprite when its LIT
+                    // state is false (redstone_torch_off), and its self-light
+                    // comes from the state (7 lit / 0 off), the same LIT-driven
+                    // pair the furnace front already uses.
+                    const BlockState torchState = chunk->state(localX, worldY, localZ);
+                    const float torchLayer = (isRedstoneTorch(current) && !torchState.lit())
+                        ? redstoneTorchOffLayer()
+                        : textureLayers(current).side;
                     appendTorchModel(
                         targetMesh, current, chunk->orientation(localX, worldY, localZ),
-                        worldX, worldY, worldZ,
-                        textureLayers(current).side, lighting, sectionOrigin);
+                        worldX, worldY, worldZ, torchLayer, torchState.emittedLight(),
+                        lighting, sectionOrigin);
                     continue;
                 }
                 if (definition.model == BlockModel::Chest) {

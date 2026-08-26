@@ -176,7 +176,16 @@ bool canBlockSurvive(const World& world, glm::ivec3 position, Block block,
 
 std::optional<BlockState> standingAndWallPlacement(
     const World& world,
-    const PlacementContext& context) {
+    const PlacementContext& context,
+    Block standing,
+    Block wall) {
+    // RedstoneTorchBlock registers its default state with LIT=true, so a freshly
+    // placed redstone torch glows immediately (a redstone tick may then flip it
+    // off if it sits on a powered block). A plain torch has no LIT property, so
+    // this is a no-op for it.
+    const auto placed = [](BlockState state) {
+        return blockDefinition(state.block()).lit ? state.withLit(true) : state;
+    };
     // StandingAndWallBlockItem#getPlacementState: the wall variant wins on a
     // side face, then the floor variant, then any other wall that happens to be
     // available.
@@ -184,14 +193,12 @@ std::optional<BlockState> standingAndWallPlacement(
         // The clicked block's own wall first, exactly as Java's
         // getNearestLookingDirections starts at the clicked side, so the torch
         // leans off the wall the player aimed at.
-        if (canBlockSurvive(world, context.placePosition, Block::WallTorch,
-                            context.clickedFace)) {
-            return BlockState{Block::WallTorch, context.clickedFace};
+        if (canBlockSurvive(world, context.placePosition, wall, context.clickedFace)) {
+            return placed(BlockState{wall, context.clickedFace});
         }
     }
-    if (canBlockSurvive(world, context.placePosition, Block::Torch,
-                        BlockOrientation::North)) {
-        return BlockState{Block::Torch};
+    if (canBlockSurvive(world, context.placePosition, standing, BlockOrientation::North)) {
+        return placed(BlockState{standing});
     }
     // A torch placed at an angle — or onto a non-sturdy block — falls back to
     // the remaining walls nearest to where the player is looking, so it leans
@@ -203,8 +210,8 @@ std::optional<BlockState> standingAndWallPlacement(
         if (isHorizontal(context.clickedFace) && facing == context.clickedFace) {
             continue;
         }
-        if (canBlockSurvive(world, context.placePosition, Block::WallTorch, facing)) {
-            return BlockState{Block::WallTorch, facing};
+        if (canBlockSurvive(world, context.placePosition, wall, facing)) {
+            return placed(BlockState{wall, facing});
         }
     }
     return std::nullopt;
@@ -231,8 +238,15 @@ std::optional<BlockState> placementBlock(
     if (!isRenderable(selected)) {
         return std::nullopt;
     }
+    // A legacy block stack of a standing torch resolves its own wall variant
+    // here (the item path in ItemPlacement handles the normal case). Both the
+    // plain and the redstone torch stand or hang the same way.
     if (selected == Block::Torch) {
-        return standingAndWallPlacement(world, context);
+        return standingAndWallPlacement(world, context, Block::Torch, Block::WallTorch);
+    }
+    if (selected == Block::RedstoneTorch) {
+        return standingAndWallPlacement(world, context, Block::RedstoneTorch,
+                                        Block::RedstoneWallTorch);
     }
     if (!canBlockSurvive(world, context.placePosition, selected,
                          placementOrientation(selected, context))) {

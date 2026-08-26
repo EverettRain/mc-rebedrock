@@ -20,6 +20,7 @@ inline constexpr BakedLootDrop kDrop_diamond[] = {{"rebedrock:diamond", 1}};
 inline constexpr BakedLootDrop kDrop_emerald[] = {{"rebedrock:emerald", 1}};
 inline constexpr BakedLootDrop kDrop_book[] = {{"rebedrock:book", 3}};
 inline constexpr BakedLootDrop kDrop_torch[] = {{"rebedrock:torch", 1}};
+inline constexpr BakedLootDrop kDrop_redstone_torch[] = {{"rebedrock:redstone_torch", 1}};
 
 inline constexpr BakedLootTable kBakedLootTables[] = {
     {"rebedrock:stone", kDrop_cobblestone},
@@ -31,6 +32,9 @@ inline constexpr BakedLootTable kBakedLootTables[] = {
     {"rebedrock:emerald_ore", kDrop_emerald},
     {"rebedrock:bookshelf", kDrop_book},
     {"rebedrock:wall_torch", kDrop_torch},
+    // The redstone wall torch, like the wall torch, comes back as its standing
+    // item (there is no wall-variant item to hold).
+    {"rebedrock:redstone_wall_torch", kDrop_redstone_torch},
     {"rebedrock:glass", {}}, // silk-touch only: breaks into nothing
 };
 

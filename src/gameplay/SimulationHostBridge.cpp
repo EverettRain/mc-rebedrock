@@ -82,6 +82,21 @@ void applyTo(SimulationHost& target, const SoundEvent& event) {
     case SoundEventKind::Splash:
         target.playSplash(event.position, event.volume);
         break;
+    case SoundEventKind::BlockOpen:
+        target.playBlockOpen(event.block, event.position);
+        break;
+    case SoundEventKind::BlockClose:
+        target.playBlockClose(event.block, event.position);
+        break;
+    case SoundEventKind::BlockClick:
+        target.playBlockClick(event.block, event.position, event.heavy);
+        break;
+    case SoundEventKind::FlintAndSteelUse:
+        target.playFlintAndSteelUse(event.position);
+        break;
+    case SoundEventKind::Shear:
+        target.playShear(event.position);
+        break;
     }
 }
 

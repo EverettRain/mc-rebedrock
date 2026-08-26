@@ -440,6 +440,13 @@ class DoorBlockItem : public BlockItem {
     static const StandingAndWallBlockItem torch{world::Block::Torch,
                                                 world::Block::WallTorch};
     if (block == world::Block::Torch) return &torch;
+    // The redstone torch stands on the floor or hangs on a wall exactly as the
+    // plain torch does (RedstoneTorch/RedstoneWallTorch), so it is the same
+    // StandingAndWallBlockItem — without this it placed the standing variant
+    // only and could never be hung on a side face.
+    static const StandingAndWallBlockItem redstoneTorch{world::Block::RedstoneTorch,
+                                                        world::Block::RedstoneWallTorch};
+    if (block == world::Block::RedstoneTorch) return &redstoneTorch;
     if (!world::isValidBlock(block)) return nullptr;
     // AR-B2: a door is placed as two cells, so its BlockItem is a DoorBlockItem
     // — model-driven, not a per-species identity check, so a second door

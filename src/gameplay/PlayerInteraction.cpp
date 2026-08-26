@@ -179,9 +179,9 @@ bool tryAutoEquipArmor(GameSession& session) {
                                               world::MutationFlags::All,
                                               world::MutationCause::PlayerPlace, sink);
         }
-        session.events().publish(SoundEvent{SoundEventKind::BlockPlace,
-                                            glm::vec3{lower} + glm::vec3{0.5F, 1.0F, 0.5F},
-                                            clickedState.block()});
+        session.events().publish(
+            SoundEvent{open ? SoundEventKind::BlockOpen : SoundEventKind::BlockClose,
+                       glm::vec3{lower} + glm::vec3{0.5F, 1.0F, 0.5F}, clickedState.block()});
         return true;
     }
     if (model == world::BlockModel::FenceGate) {
@@ -201,20 +201,23 @@ bool tryAutoEquipArmor(GameSession& session) {
         session.worldMutations().setBlock(world, {clicked.x, clicked.y, clicked.z}, next,
                                           world::MutationFlags::All,
                                           world::MutationCause::PlayerPlace, sink);
-        session.events().publish(SoundEvent{SoundEventKind::BlockPlace,
-                                            glm::vec3{clicked} + glm::vec3{0.5F}, clickedState.block()});
+        session.events().publish(
+            SoundEvent{next.open() ? SoundEventKind::BlockOpen : SoundEventKind::BlockClose,
+                       glm::vec3{clicked} + glm::vec3{0.5F}, clickedState.block()});
         return true;
     }
     // AR-B3: TrapDoorBlock#useWithoutItem — a plain right-click flips OPEN,
     // one cell, no atomic partner to keep in sync (unlike the door above).
     if (model == world::BlockModel::TrapDoor) {
         GameplayMutationSink sink{world, session};
+        const bool open = !clickedState.open();
         session.worldMutations().setBlock(world, {clicked.x, clicked.y, clicked.z},
-                                          clickedState.withOpen(!clickedState.open()),
+                                          clickedState.withOpen(open),
                                           world::MutationFlags::All,
                                           world::MutationCause::PlayerPlace, sink);
-        session.events().publish(SoundEvent{SoundEventKind::BlockPlace,
-                                            glm::vec3{clicked} + glm::vec3{0.5F}, clickedState.block()});
+        session.events().publish(
+            SoundEvent{open ? SoundEventKind::BlockOpen : SoundEventKind::BlockClose,
+                       glm::vec3{clicked} + glm::vec3{0.5F}, clickedState.block()});
         return true;
     }
     return false;
@@ -241,8 +244,32 @@ bool tryAutoEquipArmor(GameSession& session) {
                                       clickedState.withPowered(true), world::MutationFlags::All,
                                       world::MutationCause::PlayerPlace, sink);
     session.worldSimulation().scheduleButtonRelease({clicked.x, clicked.y, clicked.z});
-    session.events().publish(SoundEvent{SoundEventKind::BlockPlace,
-                                        glm::vec3{clicked} + glm::vec3{0.5F}, clickedState.block()});
+    // ButtonBlock#playSound: a press is click_on. `heavy` carries the on state.
+    session.events().publish(SoundEvent{SoundEventKind::BlockClick,
+                                        glm::vec3{clicked} + glm::vec3{0.5F}, clickedState.block(),
+                                        nullptr, 1.0F, /*heavy(on)=*/true});
+    return true;
+}
+
+// LeverBlock#useWithoutItem: a right-click flips POWERED and notifies neighbours
+// (the redstone update fans out through MutationFlags::All, as the button's does)
+// — the lever previously had emission tables but no interaction to toggle it, so
+// it could never actually be thrown. The click sound's `heavy` carries the new
+// on state (LeverBlock#playSound picks the pitch from it). Returns whether a
+// toggle happened, matching pressButton/toggleDoorOrGate.
+[[nodiscard]] bool toggleLever(GameSession& session, world::World& world, glm::ivec3 clicked) {
+    const auto clickedState = world.state(clicked.x, clicked.y, clicked.z);
+    if (clickedState.block() != world::Block::Lever) {
+        return false;
+    }
+    const bool on = !clickedState.powered();
+    GameplayMutationSink sink{world, session};
+    session.worldMutations().setBlock(world, {clicked.x, clicked.y, clicked.z},
+                                      clickedState.withPowered(on), world::MutationFlags::All,
+                                      world::MutationCause::PlayerPlace, sink);
+    session.events().publish(SoundEvent{SoundEventKind::BlockClick,
+                                        glm::vec3{clicked} + glm::vec3{0.5F}, clickedState.block(),
+                                        nullptr, 1.0F, /*heavy(on)=*/on});
     return true;
 }
 
@@ -265,8 +292,17 @@ void tickPressurePlates(GameSession& session, world::World& world, glm::vec3 pla
                         std::span<const glm::vec3> creatureFeet,
                         std::vector<glm::ivec3>& pressedPlates) {
     const auto cellUnder = [](glm::vec3 feet) {
+        // The plate now has empty collision (BasePressurePlateBlock#
+        // getCollisionShape), so an entity standing on a plate rests on the
+        // block *below* the plate and its feet sit at the plate cell's floor
+        // (that support block's top) plus kGroundOffset — i.e. inside the plate
+        // cell. The plate is therefore the feet's own cell, floor(feet.y), the
+        // same cell BasePressurePlateBlock's TOUCH_AABB (a box at the plate
+        // position) tests entity boxes against. The old `feet.y - 0.05` probe
+        // assumed the plate lifted the entity 1/16 above the cell floor, which
+        // only held while the plate still had collision.
         return glm::ivec3{static_cast<int>(std::floor(feet.x)),
-                          static_cast<int>(std::floor(feet.y - 0.05F)), // just under the feet
+                          static_cast<int>(std::floor(feet.y)),
                           static_cast<int>(std::floor(feet.z))};
     };
     std::vector<glm::ivec3> covered;
@@ -302,6 +338,12 @@ void tickPressurePlates(GameSession& session, world::World& world, glm::vec3 pla
                                           world::MutationCause::PlayerPlace, sink);
         session.worldMutations().updateNeighborsAt({cell.x, cell.y, cell.z}, sink);
         session.worldMutations().updateNeighborsAt({cell.x, cell.y - 1, cell.z}, sink);
+        // BasePressurePlateBlock#playOnSound/playOffSound: a plate clicks on when
+        // pressed and off when released (block.<plate>.click_on/click_off), the
+        // same BlockClick event a button uses, `heavy` carrying the on state.
+        session.events().publish(SoundEvent{SoundEventKind::BlockClick,
+                                            glm::vec3{cell} + glm::vec3{0.5F}, state.block(),
+                                            nullptr, 1.0F, /*heavy(on)=*/powered});
     };
     for (const auto& cell : covered) {
         setPowered(cell, true);
@@ -361,7 +403,12 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
                     // tick, resolved against the open container (26.1's
                     // AbstractContainerMenu) and routed by ScreenHandler.
                     const auto& click = specific;
-                    const gameplay::ScreenContext context = buildScreenContext(session);
+                    gameplay::ScreenContext context = buildScreenContext(session);
+                    // The active creative tab is client-only UI state; the click
+                    // carries it so the creative delete-on-shift-click branch
+                    // (an item-category tab) is distinguishable from the
+                    // Inventory tab's ordinary hotbar<->main swap.
+                    context.creativeInventoryTab = click.creativeInventoryTab;
                     gameplay::SlotView slot;
                     slot.kind = click.kind;
                     slot.index = click.slotIndex;
@@ -724,7 +771,7 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
     if (!blockInteractionSuppressed(session.player().sneaking(),
                                     !session.inventory().selectedStack().empty()) &&
         (toggleDoorOrGate(session, world, use.block, world::horizontalFacing(use.lookDirection)) ||
-         pressButton(session, world, use.block))) {
+         pressButton(session, world, use.block) || toggleLever(session, world, use.block))) {
         session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
         return;
     }
@@ -1056,9 +1103,10 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
                     .setBlock(world, {block.x, block.y, block.z}, itemUse.state,
                               world::MutationFlags::All, world::MutationCause::PlayerPlace, sink)
                     .changed) {
-                session.events().publish(SoundEvent{SoundEventKind::BlockPlace,
-                                                    glm::vec3{block} + glm::vec3{0.5F},
-                                                    world::Block::Fire});
+                // FlintAndSteelItem#useOn plays item.flintandsteel.use (the fizz),
+                // not the fire block's place sound.
+                session.events().publish(SoundEvent{SoundEventKind::FlintAndSteelUse,
+                                                    glm::vec3{block} + glm::vec3{0.5F}});
                 session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
                 if (session.gameMode() == GameMode::Survival) {
                     if (session.damageHeldTool(kPrimaryPlayerId, ToolUse::Ignite, 0.0F)) {
@@ -1133,6 +1181,8 @@ void PlayerInteraction::performUseOnEntity(GameSession& session, world::World&,
         const auto woolCount = static_cast<std::uint8_t>(1U + mc::rng::nextInt(rng, 3U));
         const world::Block woolBlock = items::woolBlockFor(target->color);
         const ItemStack woolStack{woolBlock, woolCount, blockItemFor(woolBlock)};
+        // Sheep#shear plays entity.sheep.shear.
+        session.events().publish(SoundEvent{SoundEventKind::Shear, target->position});
         const float angle = mc::rng::nextFloat(rng) * 6.28318530718F;
         session.spawnItemEntity(target->position + glm::vec3{0.0F, target->dimensions().height * 0.5F, 0.0F},
                                 woolStack,

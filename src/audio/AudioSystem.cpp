@@ -82,25 +82,72 @@ constexpr std::array<std::string_view, static_cast<std::size_t>(BlockSoundAction
 
 const char* blockSoundFamilyName(BlockSoundFamily family) {
     switch (family) {
+    case BlockSoundFamily::Empty:
+        return ""; // plays nothing (fluids)
     case BlockSoundFamily::Stone:
         return "stone";
-    case BlockSoundFamily::Grass:
-        return "grass";
     case BlockSoundFamily::Wood:
         return "wood";
-    case BlockSoundFamily::Sand:
-        return "sand";
     case BlockSoundFamily::Gravel:
         return "gravel";
-    case BlockSoundFamily::Cloth:
+    case BlockSoundFamily::Grass:
+        return "grass";
+    case BlockSoundFamily::Sand:
+        return "sand";
+    case BlockSoundFamily::Wool:
         // 26.1's event family is block.wool.*, even though the legacy OGG
         // filenames selected by sounds.json are still step/cloth*.ogg.
         return "wool";
     case BlockSoundFamily::Glass:
         return "glass";
+    case BlockSoundFamily::Metal:
+        return "metal";
+    case BlockSoundFamily::Snow:
+        return "snow";
+    case BlockSoundFamily::Crop:
+        // Irregular: only block.crop.break exists; the other actions borrow
+        // grass, matching SoundType.CROP (GRASS_STEP/GRASS_HIT and, for place,
+        // CROP_PLANTED which ships no asset here). See eventNameFor below.
+        return "crop";
+    case BlockSoundFamily::WartBlock:
+        return "wart_block";
+    case BlockSoundFamily::NetherBricks:
+        return "nether_bricks";
+    case BlockSoundFamily::NetherOre:
+        return "nether_ore";
+    case BlockSoundFamily::Netherrack:
+        return "netherrack";
+    case BlockSoundFamily::SoulSand:
+        return "soul_sand";
+    case BlockSoundFamily::SoulSoil:
+        return "soul_soil";
+    case BlockSoundFamily::Basalt:
+        return "basalt";
+    case BlockSoundFamily::Nylium:
+        return "nylium";
+    case BlockSoundFamily::Count:
+        break;
     }
     return "stone";
 }
+
+namespace {
+// The event id for one (group, action). Regular groups are block.<name>.<action>;
+// SoundType.CROP only ships block.crop.break, so its other three actions fall
+// back to grass (exactly as SoundType.CROP borrows GRASS_STEP/GRASS_HIT); Empty
+// plays nothing. Building the string here — once per group at startup in
+// compileBlockEvents, never per play — keeps the hot path an array index.
+[[nodiscard]] std::string blockSoundEventName(BlockSoundFamily family, BlockSoundAction action) {
+    if (family == BlockSoundFamily::Empty) {
+        return {};
+    }
+    if (family == BlockSoundFamily::Crop && action != BlockSoundAction::Break) {
+        return "block.grass." + std::string{kBlockSoundActions[static_cast<std::size_t>(action)]};
+    }
+    return "block." + std::string{blockSoundFamilyName(family)} + "." +
+           std::string{kBlockSoundActions[static_cast<std::size_t>(action)]};
+}
+} // namespace
 
 class AudioSystem::Impl final {
   public:
@@ -537,11 +584,13 @@ class AudioSystem::Impl final {
     void compileBlockEvents() {
         for (std::size_t family = 0; family < blockEvents.size(); ++family) {
             for (std::size_t action = 0; action < blockEvents[family].size(); ++action) {
-                const std::string event =
-                    "block." + std::string{blockSoundFamilyName(
-                                    static_cast<BlockSoundFamily>(family))} +
-                    "." + std::string{kBlockSoundActions[action]};
-                blockEvents[family][action] = registry.idOf(event);
+                const std::string event = blockSoundEventName(
+                    static_cast<BlockSoundFamily>(family),
+                    static_cast<BlockSoundAction>(action));
+                // An Empty group (or an action that resolves to no event) stays
+                // kInvalidSoundEventId; playEvent no-ops on it.
+                blockEvents[family][action] =
+                    event.empty() ? assets::kInvalidSoundEventId : registry.idOf(event);
             }
         }
     }
@@ -581,7 +630,7 @@ class AudioSystem::Impl final {
         soundAssets;
     std::array<std::array<assets::SoundEventId,
                           static_cast<std::size_t>(BlockSoundAction::Count)>,
-               7>
+               static_cast<std::size_t>(world::SoundType::Count)>
         blockEvents{};
     std::vector<std::unique_ptr<ActiveSound>> activeSounds;
     std::vector<std::unique_ptr<ActiveSound>> freeSounds;
@@ -883,6 +932,86 @@ void AudioSystem::playBlockPlace(world::Block block, const glm::vec3& position) 
     implementation->playEvent(
         implementation->blockEventId(blockSoundFamily(block), BlockSoundAction::Place),
         SoundCategory::Block, position, 0.8F, 0.8F);
+}
+
+namespace {
+// The vanilla event family for a block's open/close/click interaction, from its
+// model (DoorBlock/TrapDoorBlock/FenceGateBlock#getOpenSound et al.). Chests use
+// "chest"; a lever and a (stone) button their own families. Returns "" for a
+// block that has no interaction sound.
+[[nodiscard]] std::string_view interactionSoundFamily(world::Block block) {
+    switch (world::blockDefinition(block).model) {
+    case world::BlockModel::Door:
+        return "wooden_door";
+    case world::BlockModel::TrapDoor:
+        return "wooden_trapdoor";
+    case world::BlockModel::FenceGate:
+        return "fence_gate";
+    case world::BlockModel::Button:
+        return "stone_button";
+    case world::BlockModel::PressurePlate:
+        // Only the stone plate exists in this roster; a wooden/weighted plate
+        // would pick its own family here.
+        return "stone_pressure_plate";
+    default:
+        break;
+    }
+    if (block == world::Block::Chest || block == world::Block::TrappedChest) {
+        return "chest";
+    }
+    if (block == world::Block::Lever) {
+        return "lever";
+    }
+    return {};
+}
+} // namespace
+
+void AudioSystem::playBlockOpen(world::Block block, const glm::vec3& position) {
+    const auto family = interactionSoundFamily(block);
+    if (family.empty()) {
+        return;
+    }
+    implementation->playEvent("block." + std::string{family} + ".open", SoundCategory::Block,
+                              position, 1.0F, 1.0F);
+}
+
+void AudioSystem::playBlockClose(world::Block block, const glm::vec3& position) {
+    const auto family = interactionSoundFamily(block);
+    if (family.empty()) {
+        return;
+    }
+    implementation->playEvent("block." + std::string{family} + ".close", SoundCategory::Block,
+                              position, 1.0F, 1.0F);
+}
+
+void AudioSystem::playBlockClick(world::Block block, const glm::vec3& position, bool on) {
+    // LeverBlock#playSound uses one click event with a pitch of 0.5 (off) / 0.6
+    // (on); ButtonBlock uses distinct click_on / click_off events. Both match
+    // 26.1's BlockBehaviour interaction sounds.
+    if (block == world::Block::Lever) {
+        implementation->playEvent("block.lever.click", SoundCategory::Block, position, 0.3F,
+                                  on ? 0.6F : 0.5F);
+        return;
+    }
+    const auto family = interactionSoundFamily(block);
+    if (family.empty()) {
+        return;
+    }
+    implementation->playEvent(
+        "block." + std::string{family} + (on ? ".click_on" : ".click_off"),
+        SoundCategory::Block, position, 0.3F, on ? 0.6F : 0.5F);
+}
+
+void AudioSystem::playFlintAndSteelUse(const glm::vec3& position) {
+    // FlintAndSteelItem#useOn: SoundEvents.FLINTANDSTEEL_USE on BLOCKS, pitch
+    // randomised ±0.4 around 0.8; a fixed 0.8 here (the deterministic sim has no
+    // per-play jitter for it, and the fizz reads fine without it).
+    implementation->playEvent("item.flintandsteel.use", SoundCategory::Block, position, 1.0F, 0.8F);
+}
+
+void AudioSystem::playShear(const glm::vec3& position) {
+    // Sheep#shear: SoundEvents.SHEEP_SHEAR on NEUTRAL (a passive mob).
+    implementation->playEvent("entity.sheep.shear", SoundCategory::Neutral, position, 1.0F, 1.0F);
 }
 
 void AudioSystem::playButtonClick(const glm::vec3& position) {

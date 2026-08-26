@@ -14,48 +14,19 @@
 
 namespace mc::audio {
 
-enum class BlockSoundFamily {
-    Stone,
-    Grass,
-    Wood,
-    Sand,
-    Gravel,
-    Cloth,
-    Glass,
-};
+// A block's sound group is now a block property (world::blockSoundType), the
+// single source both this system and any future JE-datapack sound mapping read.
+// The old ad-hoc whitelist here defaulted the great majority of blocks to Stone
+// (dirt to grass, only three wool colours, nothing nether); it has been retired
+// in favour of the complete, per-block SoundType transcribed from Blocks.java.
+using BlockSoundFamily = world::SoundType;
 
 [[nodiscard]] constexpr BlockSoundFamily blockSoundFamily(world::Block block) {
-    using enum world::Block;
-    // A block's step/break sound family, as grouped conditions rather than a
-    // switch on identity: the leaves and logs come from their traits (isLeaves /
-    // isLog are exactly the six leaf and six log blocks), the rest are the small
-    // named lists the vanilla sound groups hold. Anything else falls to Stone.
-    if (block == Grass || block == Dirt || block == CoarseDirt || block == Podzol ||
-        block == GrassPlant || block == Dandelion || block == OakSapling ||
-        world::isLeaves(block)) {
-        return BlockSoundFamily::Grass;
-    }
-    if (world::isLog(block) || block == OakPlanks || block == SprucePlanks ||
-        block == BirchPlanks || block == JunglePlanks || block == AcaciaPlanks ||
-        block == DarkOakPlanks || block == Bookshelf || block == CraftingTable ||
-        block == Pumpkin || block == Melon || block == Torch || block == WallTorch) {
-        return BlockSoundFamily::Wood;
-    }
-    if (block == Sand || block == RedSand) {
-        return BlockSoundFamily::Sand;
-    }
-    if (block == Gravel) {
-        return BlockSoundFamily::Gravel;
-    }
-    if (block == WhiteWool || block == RedWool || block == BlackWool) {
-        return BlockSoundFamily::Cloth;
-    }
-    if (block == Glass) {
-        return BlockSoundFamily::Glass;
-    }
-    return BlockSoundFamily::Stone;
+    return world::blockSoundType(block);
 }
 
+// The event-name prefix for a group ("block.<name>.<action>"), or "" for a group
+// that plays nothing (SoundType::Empty). Defined in the .cpp.
 [[nodiscard]] const char* blockSoundFamilyName(BlockSoundFamily family);
 
 // ⑥ The linear distance-attenuation gain a positioned voice receives, matching
@@ -151,6 +122,15 @@ class AudioSystem final {
     void playBlockBreak(world::Block block, const glm::vec3& position);
     void playBlockHit(world::Block block, const glm::vec3& position);
     void playBlockPlace(world::Block block, const glm::vec3& position);
+    // Block interaction sounds: door/trapdoor/fence gate/chest open+close and
+    // lever/button click. The block selects the vanilla event family; `on` picks
+    // the lever pitch / button click_on|click_off.
+    void playBlockOpen(world::Block block, const glm::vec3& position);
+    void playBlockClose(world::Block block, const glm::vec3& position);
+    void playBlockClick(world::Block block, const glm::vec3& position, bool on);
+    // Tool-use sounds: flint and steel igniting, shears shearing a sheep.
+    void playFlintAndSteelUse(const glm::vec3& position);
+    void playShear(const glm::vec3& position);
     // `ui.button.click`, the master-category sound every vanilla button plays
     // when pressed. Positioned at the listener so attenuation cannot hide it.
     void playButtonClick(const glm::vec3& position);

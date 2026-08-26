@@ -636,6 +636,10 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         world::setBlockTextureLayers(block, resolved);
     }
 
+    // The unlit redstone-torch sprite: a second texture the mesher swaps in for
+    // the LIT=false state (the block's own side texture is the lit sprite).
+    world::setRedstoneTorchOffLayer(assign("redstone_torch_off"));
+
     TextureArrayPixels output;
     output.width = static_cast<std::uint32_t>(top.width);
     output.height = static_cast<std::uint32_t>(top.height);

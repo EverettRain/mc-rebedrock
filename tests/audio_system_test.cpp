@@ -35,17 +35,34 @@ int main() {
     using mc::audio::SoundCategory;
     using mc::world::Block;
 
-    // ---- Block sound families (unchanged behaviour) ----
+    // ---- Block sound groups: the SoundType transcribed from Blocks.java, now
+    // complete (the old whitelist defaulted most of these to Stone) ----
     assert(blockSoundFamily(Block::Stone) == BlockSoundFamily::Stone);
     assert(blockSoundFamily(Block::OakLog) == BlockSoundFamily::Wood);
     assert(blockSoundFamily(Block::OakLeaves) == BlockSoundFamily::Grass);
     assert(blockSoundFamily(Block::RedSand) == BlockSoundFamily::Sand);
     assert(blockSoundFamily(Block::Gravel) == BlockSoundFamily::Gravel);
-    assert(blockSoundFamily(Block::RedWool) == BlockSoundFamily::Cloth);
+    assert(blockSoundFamily(Block::RedWool) == BlockSoundFamily::Wool);
     assert(blockSoundFamily(Block::Glass) == BlockSoundFamily::Glass);
+    // Blocks the whitelist used to wrongly bucket into Stone/Grass.
+    assert(blockSoundFamily(Block::Dirt) == BlockSoundFamily::Gravel); // was Grass
+    assert(blockSoundFamily(Block::Podzol) == BlockSoundFamily::Gravel);
+    assert(blockSoundFamily(Block::BlueWool) == BlockSoundFamily::Wool); // only 3 colours before
+    assert(blockSoundFamily(Block::Netherrack) == BlockSoundFamily::Netherrack);
+    assert(blockSoundFamily(Block::NetherBricks) == BlockSoundFamily::NetherBricks);
+    assert(blockSoundFamily(Block::Basalt) == BlockSoundFamily::Basalt);
+    assert(blockSoundFamily(Block::CrimsonNylium) == BlockSoundFamily::Nylium);
+    assert(blockSoundFamily(Block::SoulSand) == BlockSoundFamily::SoulSand);
+    assert(blockSoundFamily(Block::SnowBlock) == BlockSoundFamily::Snow);
+    assert(blockSoundFamily(Block::RedstoneBlock) == BlockSoundFamily::Metal);
+    assert(blockSoundFamily(Block::WheatCrops) == BlockSoundFamily::Crop);
+    assert(blockSoundFamily(Block::Water) == BlockSoundFamily::Empty);
     assert(std::string_view{mc::audio::blockSoundFamilyName(BlockSoundFamily::Glass)} == "glass");
     assert(std::string_view{mc::audio::blockSoundFamilyName(BlockSoundFamily::Wood)} == "wood");
-    assert(std::string_view{mc::audio::blockSoundFamilyName(BlockSoundFamily::Cloth)} == "wool");
+    assert(std::string_view{mc::audio::blockSoundFamilyName(BlockSoundFamily::Wool)} == "wool");
+    assert(std::string_view{mc::audio::blockSoundFamilyName(BlockSoundFamily::Netherrack)} ==
+           "netherrack");
+    assert(std::string_view{mc::audio::blockSoundFamilyName(BlockSoundFamily::Empty)}.empty());
 
     // ---- SoundCategory: 11 slots (10 vanilla categories + the Count sentinel),
     // names round-trip, unknown names reject ----

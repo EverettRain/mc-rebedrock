@@ -92,6 +92,14 @@ struct ClickSlot final {
     std::uint16_t slotIndex = 0U;
     int button = 0;
     bool shiftHeld = false;
+    // Which creative tab the click happened under, mirrored from the client's
+    // menu state. The active creative tab is client-only UI state, so the server
+    // cannot otherwise know whether a creative shift-click landed on the
+    // Inventory tab (an ordinary hotbar<->main swap) or an item-category tab
+    // (which deletes the stack into the infinite catalogue). Defaults to the
+    // Inventory tab so a non-creative click, which never reads this, is
+    // unaffected. See ScreenHandler::click's creative QUICK_MOVE branch.
+    bool creativeInventoryTab = true;
     [[nodiscard]] friend bool operator==(const ClickSlot&, const ClickSlot&) = default;
 };
 

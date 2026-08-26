@@ -66,6 +66,17 @@ enum class SoundEventKind : std::uint8_t {
     CreatureStep,
     Footstep,
     Splash,
+    // Block interactions (door/trapdoor/fence gate/chest open+close, lever/button/
+    // pressure-plate click). `block` selects the vanilla event family; for
+    // BlockClick, `heavy` carries the on/off state (lever pitch, button/plate
+    // click_on/click_off).
+    BlockOpen,
+    BlockClose,
+    BlockClick,
+    // Tool-use sounds not tied to a block break/place: flint and steel igniting
+    // (item.flintandsteel.use) and shears shearing a sheep (entity.sheep.shear).
+    FlintAndSteelUse,
+    Shear,
 };
 
 // One payload for every sound the simulation raises. A variant per kind would

@@ -500,6 +500,26 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         audioSystem.playBlockPlace(block, position);
         emitLastSubtitle();
     }
+    void playBlockOpen(world::Block block, glm::vec3 position) override {
+        audioSystem.playBlockOpen(block, position);
+        emitLastSubtitle();
+    }
+    void playBlockClose(world::Block block, glm::vec3 position) override {
+        audioSystem.playBlockClose(block, position);
+        emitLastSubtitle();
+    }
+    void playBlockClick(world::Block block, glm::vec3 position, bool on) override {
+        audioSystem.playBlockClick(block, position, on);
+        emitLastSubtitle();
+    }
+    void playFlintAndSteelUse(glm::vec3 position) override {
+        audioSystem.playFlintAndSteelUse(position);
+        emitLastSubtitle();
+    }
+    void playShear(glm::vec3 position) override {
+        audioSystem.playShear(position);
+        emitLastSubtitle();
+    }
     void playItemBreak(glm::vec3 position) override {
         audioSystem.playItemBreak(position);
         emitLastSubtitle();
@@ -3760,6 +3780,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             click.slotIndex = slot->index;
             click.button = static_cast<int>(button);
             click.shiftHeld = shiftHeld;
+            // The server cannot see the client's active creative tab, so the
+            // click carries it: a shift-click on an item-category tab deletes
+            // into the infinite catalogue, the Inventory tab does the ordinary
+            // swap. Matches screenContext()'s own creativeInventoryTab.
+            click.creativeInventoryTab = menuSystem.creativeTab == ui::CreativeTab::Inventory;
             runtime.enqueueClientCommand(std::move(click));
             return;
         }

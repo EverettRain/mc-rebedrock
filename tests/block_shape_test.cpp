@@ -80,6 +80,21 @@ int main() {
         assert(north.kind == ShapeKind::Boxes && north.boxes.size() == 1);
         assert(near(north.boxes.front().maxZ, 1.056284F)); // leans out past the cell
         assert(near(west.boxes.front().maxX, 1.056284F));
+
+        // The redstone wall torch is a wall torch too: it must get the same
+        // leaning box, not the upright floor box. Keying the shape on the block
+        // identity instead of the isWallTorch trait left it with a floor box in
+        // the wrong cell, so the pick ray missed it and it could not be broken.
+        const auto redstoneNorth =
+            blockShape(BlockState{Block::RedstoneWallTorch, BlockOrientation::North});
+        assert(redstoneNorth.kind == ShapeKind::Boxes && redstoneNorth.boxes.size() == 1);
+        assert(near(redstoneNorth.boxes.front().maxZ, north.boxes.front().maxZ));
+        assert(near(redstoneNorth.boxes.front().minX, north.boxes.front().minX));
+        // The standing redstone torch keeps the floor box (isWallTorch false).
+        const auto redstoneFloor = blockShape(BlockState{Block::RedstoneTorch});
+        const auto floor = blockShape(BlockState{Block::Torch});
+        assert(near(redstoneFloor.boxes.front().maxY, floor.boxes.front().maxY));
+        assert(near(redstoneFloor.boxes.front().minX, floor.boxes.front().minX));
     }
 
     // --- Boxes with collision: the chest is its 14/16 box now, so collision is

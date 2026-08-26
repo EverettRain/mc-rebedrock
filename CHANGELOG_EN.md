@@ -384,6 +384,36 @@ simple versioned history while it is in beta.
 - Sprinting onto a slab or another steppable height no longer causes a sudden
   stop or cancels sprint. A successful step-up preserves horizontal velocity and
   clears the collision it fully overcame; a true one-block wall still stops it.
+- Standing on a pressure plate no longer bounces the player up repeatedly. The
+  plate now has an empty collision shape (matching 26.1 `BasePressurePlateBlock#
+  getCollisionShape`), keeping only the thin box for its outline/pick ray, and the
+  trigger check probes the cell the feet stand in — removing the oscillation that
+  came from coupling collision, the pressed-height toggle and the probe depth.
+- In creative mode, Shift-clicking a hotbar item under an item-category tab now
+  discards it (back to the infinite catalogue) even when the survival inventory is
+  full. The active creative tab was client-only state that never reached the
+  server, so the server always assumed the Inventory tab and the delete branch was
+  dead code that degraded into a silent no-op swap once the inventory filled; the
+  click now carries its tab context.
+- A large number of block break/place/step/hit sounds now match 26.1. Blocks carry
+  a full sound group (SoundType, transcribed per block from the 26.1 source and
+  baked as a property, resolved once into event ids), retiring the ad-hoc whitelist
+  that only covered seven groups, treated dirt as grass, knew three wool colours,
+  and defaulted netherrack/nylium/basalt/soul blocks to stone.
+- Doors, trapdoors and fence gates (open/close) and levers, buttons and pressure
+  plates (trigger) now play their interaction sounds; the lever also gained the
+  right-click toggle it never actually had. Flint and steel plays
+  `item.flintandsteel.use` (instead of the fire block's place sound), and shearing
+  a sheep plays `entity.sheep.shear`.
+- The redstone torch is now fully aligned with the plain torch: it can be hung on
+  a wall (and renders leaning like a wall torch), drops a redstone torch when
+  broken (no longer ground-only); its LIT state swaps the lit/unlit sprite
+  (`redstone_torch`/`redstone_torch_off`), its self-light comes from the state (7
+  lit / 0 off, distinct from a torch's 14), and it is placed lit by default. This
+  also fixes the redstone wall torch losing its collision/selection box when hung
+  — its shape was keyed on block identity, so the redstone variant got a floor box
+  in the wrong cell that the pick ray could not hit (it could not be broken); shape
+  and mesh now both key on the "is a wall torch" trait so they can never disagree.
 
 ## ReBedrock beta5
 

@@ -43,12 +43,17 @@ struct PlacementContext final {
 [[nodiscard]] bool canBlockSurvive(const World& world, glm::ivec3 position, Block block,
                                    BlockOrientation facing);
 
-// StandingAndWallBlockItem#getPlacementState: the torch item's own policy. The
-// wall variant wins on a side face, then the floor variant, then any other wall
-// that happens to be available; nullopt when none can survive there.
+// StandingAndWallBlockItem#getPlacementState: the standing/wall item's own
+// policy. The wall variant wins on a side face, then the floor (standing)
+// variant, then any other wall that happens to be available; nullopt when none
+// can survive there. `standing`/`wall` are the block pair the item carries
+// (Torch/WallTorch, RedstoneTorch/RedstoneWallTorch, ...), so the one policy
+// serves every such item rather than hardcoding the torch.
 [[nodiscard]] std::optional<BlockState> standingAndWallPlacement(
     const World& world,
-    const PlacementContext& context);
+    const PlacementContext& context,
+    Block standing,
+    Block wall);
 
 // BlockItem#getPlacementState: resolves the state that will actually be placed,
 // or nullopt when nothing can survive there. It returns a whole state rather

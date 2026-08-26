@@ -116,6 +116,28 @@ struct SimulationHost {
     }
     // A tool broke from use; the item-break sound plays.
     virtual void playItemBreak(glm::vec3 position) { static_cast<void>(position); }
+    // A door/trapdoor/fence gate (or chest) was opened or closed by a right-
+    // click; the block selects the vanilla event family (wooden_door,
+    // wooden_trapdoor, fence_gate, chest). DoorBlock/TrapDoorBlock/
+    // FenceGateBlock#playSound.
+    virtual void playBlockOpen(world::Block block, glm::vec3 position) {
+        static_cast<void>(block);
+        static_cast<void>(position);
+    }
+    virtual void playBlockClose(world::Block block, glm::vec3 position) {
+        static_cast<void>(block);
+        static_cast<void>(position);
+    }
+    // A lever or button was toggled; `on` picks the pitch (lever) or the
+    // click_on/click_off variant (button). LeverBlock/ButtonBlock#playSound.
+    virtual void playBlockClick(world::Block block, glm::vec3 position, bool on) {
+        static_cast<void>(block);
+        static_cast<void>(position);
+        static_cast<void>(on);
+    }
+    // Tool-use sounds: flint and steel igniting, shears shearing a sheep.
+    virtual void playFlintAndSteelUse(glm::vec3 position) { static_cast<void>(position); }
+    virtual void playShear(glm::vec3 position) { static_cast<void>(position); }
     // A bucket scooped water; the splash particles play.
     virtual void spawnWaterSplash(glm::vec3 position) { static_cast<void>(position); }
     // A container the interaction decided to open (a crafting table, furnace or

@@ -31,6 +31,7 @@
 #include "gameplay/BlockBehavior.hpp"
 #include "gameplay/Inventory.hpp"
 #include "gameplay/Item.hpp"
+#include "gameplay/ItemPlacement.hpp"
 #include "gameplay/MiningSystem.hpp"
 #include "gameplay/WorldSimulation.hpp"
 #include "world/Block.hpp"
@@ -256,6 +257,11 @@ void testDropsAbsoluteValues() {
     const auto wallTorch = single(Block::WallTorch, ItemStack{}, 0, false);
     assert(wallTorch.count == 1 && wallTorch.entries[0].block == Block::Torch);
 
+    // The redstone wall torch likewise drops the standing redstone torch.
+    const auto redstoneWallTorch = single(Block::RedstoneWallTorch, ItemStack{}, 0, false);
+    assert(redstoneWallTorch.count == 1 &&
+           redstoneWallTorch.entries[0].block == Block::RedstoneTorch);
+
     // The default handler: a plain block drops itself; a double slab drops two.
     const auto cobble = single(Block::Cobblestone, pick, 0, false);
     assert(cobble.count == 1 && cobble.entries[0].block == Block::Cobblestone &&
@@ -416,6 +422,57 @@ void testTableSizedToRegistry() {
 
 }  // namespace
 
+// #3: the redstone torch is a StandingAndWallBlockItem like the plain torch, so
+// clicking a side face hangs the wall variant instead of only ever standing on
+// the floor. Exercised through the item placement path (itemPlacementBlock),
+// which is what a real right-click runs.
+void testRedstoneTorchStandingAndWall() {
+    using mc::world::BlockOrientation;
+    using mc::world::PlacementContext;
+
+    // The item carries the RedstoneTorch/RedstoneWallTorch pair.
+    const auto* item =
+        mc::gameplay::asStandingAndWallBlockItem(mc::gameplay::blockItemFor(Block::RedstoneTorch));
+    assert(item != nullptr);
+    assert(item->block() == Block::RedstoneTorch);
+    assert(item->wallBlock() == Block::RedstoneWallTorch);
+
+    mc::world::World world;
+    buildFloor(world);
+    const mc::gameplay::ItemStack stack{Block::RedstoneTorch, 1U,
+                                        mc::gameplay::blockItemFor(Block::RedstoneTorch)};
+
+    // Clicking the floor's top face stands the torch upright.
+    {
+        PlacementContext context;
+        context.clickedBlock = glm::ivec3{5, 0, 5};
+        context.placePosition = glm::ivec3{5, 1, 5};
+        context.clickedFace = BlockOrientation::Up;
+        context.hitPosition = glm::vec3{5.5F, 1.0F, 5.5F};
+        context.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        const auto placed = mc::gameplay::itemPlacementBlock(world, stack, context);
+        assert(placed.has_value() && placed->block() == Block::RedstoneTorch);
+        // RedstoneTorchBlock places LIT by default (glows immediately).
+        assert(placed->lit());
+    }
+
+    // Clicking a solid block's side face hangs the wall variant, facing off that
+    // wall (the state the old ground-only path could never produce).
+    {
+        world.setBlock(5, 3, 5, Block::Stone); // a wall to hang on
+        PlacementContext context;
+        context.clickedBlock = glm::ivec3{5, 3, 5};
+        context.placePosition = glm::ivec3{6, 3, 5};
+        context.clickedFace = BlockOrientation::East;
+        context.hitPosition = glm::vec3{6.0F, 3.5F, 5.5F};
+        context.lookDirection = glm::vec3{-1.0F, 0.0F, 0.0F};
+        const auto placed = mc::gameplay::itemPlacementBlock(world, stack, context);
+        assert(placed.has_value() && placed->block() == Block::RedstoneWallTorch);
+        assert(placed->orientation() == BlockOrientation::East);
+        assert(placed->lit()); // the wall variant places lit too
+    }
+}
+
 int main() {
     // Register external content *before* the registry or behaviour table is
     // first built, so both include it — the way a datapack loader would.
@@ -428,6 +485,7 @@ int main() {
     testDropsAbsoluteValues();
     testShapeDispatchEqualsSource();
     testPlacementDispatchEqualsSource();
+    testRedstoneTorchStandingAndWall();
     testDispatchMechanism();
     testTableSizedToRegistry();
     return 0;

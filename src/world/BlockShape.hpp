@@ -394,7 +394,13 @@ inline constexpr std::array<ShapeBox, 4> kFenceGateBoxByFacing = [] {
     return {ShapeKind::Boxes, 0.0F, 0.0F, {&kChestBox, 1}};
 }
 [[nodiscard]] constexpr BlockShape shapeTorch(BlockState state) {
-    if (state.block() == Block::WallTorch) {
+    // Any wall-mounted torch (WallTorch and RedstoneWallTorch alike) leans off
+    // its wall, so its pick/outline/collision box is the leaning wall box at its
+    // FACING; the upright floor box is for the ground torches. Keyed on the
+    // isWallTorch trait, not a block identity, so the redstone wall torch is not
+    // left with a floor box in the wrong cell (which made it unhittable by the
+    // pick ray — you could not break it).
+    if (isWallTorch(state.block())) {
         const auto index = static_cast<std::size_t>(state.orientation());
         const auto& box = kWallTorchBox[index < 4U ? index : 0U];
         return {ShapeKind::Boxes, 0.0F, 0.0F, {&box, 1}};

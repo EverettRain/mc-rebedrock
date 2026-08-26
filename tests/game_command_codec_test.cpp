@@ -65,6 +65,10 @@ int main() {
     checkRoundTrip(gameplay::GameCommand{gameplay::SwapSlot{7U}});
     checkRoundTrip(gameplay::GameCommand{gameplay::ClickSlot{
         gameplay::SlotKind::ChestStorage, 12U, 1, true}});
+    // creativeInventoryTab (the client's active creative tab, carried so the
+    // server can tell a delete from a swap) round-trips its non-default value.
+    checkRoundTrip(gameplay::GameCommand{gameplay::ClickSlot{
+        gameplay::SlotKind::PlayerInventory, 3U, 0, true, /*creativeInventoryTab=*/false}});
     checkRoundTrip(gameplay::GameCommand{gameplay::ChatCommand{"/give minecraft:diamond 3"}});
     // A block stack and a plain item stack both round-trip by their identifier.
     checkRoundTrip(gameplay::GameCommand{gameplay::ClickCreativeItem{

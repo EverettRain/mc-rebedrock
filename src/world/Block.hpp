@@ -503,6 +503,38 @@ struct BlockTextureNames final {
     const char* bottom = nullptr;
 };
 
+// A block's sound group — 26.1's BlockBehaviour.Properties.sound(SoundType), the
+// single identity every break/step/place/hit sound derives from. This is the
+// closed set of vanilla SoundType groups the current block roster actually uses;
+// it is a baked property, not a runtime-parsed table, so the audio hot path pays
+// one enum-indexed array lookup (compileBlockEvents resolves each group's event
+// ids once at startup) rather than a per-play string build or hash. `Empty` is a
+// block with no sound at all (fluids), matching SoundType.EMPTY. Order is
+// arbitrary except that Stone is the default a block falls back to, the same
+// default BlockBehaviour.Properties starts from.
+enum class SoundType : std::uint8_t {
+    Empty,
+    Stone,
+    Wood,
+    Gravel,
+    Grass,
+    Sand,
+    Wool,
+    Glass,
+    Metal,
+    Snow,
+    Crop,
+    WartBlock,
+    NetherBricks,
+    NetherOre,
+    Netherrack,
+    SoulSand,
+    SoulSoil,
+    Basalt,
+    Nylium,
+    Count,
+};
+
 // Everything the engine knows about one block. Instances are produced by
 // BlockProperties (below) and live in the registry table, never built by hand.
 struct BlockDefinition final {
@@ -867,12 +899,19 @@ class BlockProperties final {
     // A BasePressurePlateBlock (AR-B3): the PressurePlate model plus Powered,
     // read as the shape's raised/pressed column height and the mesher's
     // pressed-texture bit alike (BasePressurePlateBlock.SHAPE/SHAPE_PRESSED).
-    // Collision stays on; the plate itself does not require a wall/ground
+    // Collision is *empty*, matching BasePressurePlateBlock#getCollisionShape
+    // (`Shapes.empty()`): a plate never lifts or blocks an entity, so the raised
+    // Column shape is an outline/visual/pick shape only (blockShape), and
+    // collisionShape filters it out via hasCollision — the same visual-vs-
+    // collision split an open fence gate already uses. Keeping collision on made
+    // the raised(1/16)->pressed(0.5/16) height toggle oscillate against the
+    // feet-cell probe and bounced the player. The plate needs no wall/ground
     // flag here since canBlockSurvive routes a plain BlockSupport::Ground.
     [[nodiscard]] constexpr BlockProperties pressurePlate() const {
         BlockProperties copy = *this;
         return copy.model(BlockModel::PressurePlate)
             .renderLayer(BlockRenderLayer::Cutout)
+            .noCollision()
             .support(BlockSupport::Ground)
             .state(StateProperty::Powered, 2U);
     }
@@ -1879,6 +1918,25 @@ static_assert(blockRegistryIsWellFormed(),
 
 [[nodiscard]] constexpr bool isTorch(Block block) { return blockDefinition(block).torch; }
 
+// A wall-mounted torch (WallTorch, RedstoneWallTorch): a torch whose support is
+// a wall rather than the ground. This is the one trait every torch consumer
+// keys on to choose the leaning wall geometry over the upright floor one — the
+// mesh model, the pick/collision/outline shape (BlockShape::shapeTorch) and any
+// future torch behaviour — so a second wall-torch species (the redstone one)
+// never needs another `== Block::WallTorch` identity line that could be missed.
+// The floor torches (Torch, RedstoneTorch) are `isTorch && !isWallTorch`.
+[[nodiscard]] constexpr bool isWallTorch(Block block) {
+    return isTorch(block) && blockDefinition(block).support == BlockSupport::Wall;
+}
+
+// A redstone torch (standing or wall): a torch that carries a LIT state (the
+// plain torches do not). This is what the mesher keys on to swap in the unlit
+// `redstone_torch_off` sprite and to read the state's emitted light, so the two
+// redstone torch species share one path instead of two identity checks.
+[[nodiscard]] constexpr bool isRedstoneTorch(Block block) {
+    return isTorch(block) && blockDefinition(block).lit;
+}
+
 // Wall torches sit flush against their wall, the way 1.16.1's WallTorchBlock
 // AABB runs all the way to the block face (a north-facing torch spans z 11..16
 // of 16). This is the inset of the model's root from the cell centre toward the
@@ -1888,6 +1946,91 @@ inline constexpr float kWallTorchInset = 0.5F;
 [[nodiscard]] constexpr bool isLog(Block block) { return blockDefinition(block).pillar; }
 
 [[nodiscard]] constexpr bool isLeaves(Block block) { return blockDefinition(block).leaves; }
+
+// A block's SoundType — the 26.1 BlockBehaviour.Properties.sound(...) group each
+// block was registered with, transcribed from Blocks.java. Everything not named
+// here falls to Stone, exactly as BlockBehaviour.Properties defaults to
+// SoundType.STONE. Logs (isLog) and leaves (isLeaves) come from their traits;
+// the rest are the small named lists vanilla's sound groups hold. Kept a
+// constexpr switch over the closed Block enum (the compiler lowers it to a jump
+// table) so the audio path never touches a string or a hash — the DOD floor the
+// old ad-hoc audio-layer whitelist was reaching for, but complete and correct
+// (dirt/podzol are GRAVEL not GRASS; wool is all 16 colours not 3; netherrack,
+// nylium, basalt, the nether ores and soul blocks each get their own group
+// instead of silently defaulting to stone).
+[[nodiscard]] constexpr SoundType blockSoundType(Block block) {
+    using enum Block;
+    switch (block) {
+    // WOOD — planks, wooden slabs/stairs/door/gate/trapdoor, and the wood-sound
+    // decorations (torches, chests, crafting table, bookshelf, melon, pumpkin).
+    case OakPlanks: case SprucePlanks: case BirchPlanks: case JunglePlanks:
+    case AcaciaPlanks: case DarkOakPlanks:
+    case OakSlab: case SpruceSlab: case BirchSlab: case JungleSlab: case AcaciaSlab:
+    case DarkOakSlab:
+    case OakStairs: case OakDoor: case OakFenceGate: case OakTrapdoor:
+    case Bookshelf: case CraftingTable: case Chest: case TrappedChest:
+    case Melon: case Pumpkin:
+    case Torch: case WallTorch: case RedstoneTorch: case RedstoneWallTorch:
+        return SoundType::Wood;
+    // GRASS — the grass block, plants, saplings, sugar cane, and (per vanilla)
+    // TNT.
+    case Grass: case GrassPlant: case Dandelion: case SugarCane: case Tnt:
+    case OakSapling: case SpruceSapling: case BirchSapling: case JungleSapling:
+    case AcaciaSapling: case DarkOakSapling:
+        return SoundType::Grass;
+    // GRAVEL — dirt and its variants, clay, farmland, gravel.
+    case Dirt: case CoarseDirt: case Podzol: case Clay: case Farmland: case Gravel:
+        return SoundType::Gravel;
+    // SAND.
+    case Sand: case RedSand:
+        return SoundType::Sand;
+    // WOOL — all sixteen colours, and (per vanilla) fire.
+    case WhiteWool: case OrangeWool: case MagentaWool: case LightBlueWool:
+    case YellowWool: case LimeWool: case PinkWool: case GrayWool:
+    case LightGrayWool: case CyanWool: case PurpleWool: case BlueWool:
+    case BrownWool: case GreenWool: case RedWool: case BlackWool:
+    case Fire:
+        return SoundType::Wool;
+    // GLASS — glass and glowstone.
+    case Glass: case Glowstone:
+        return SoundType::Glass;
+    // CROP — wheat, carrots, potatoes.
+    case WheatCrops: case Carrots: case Potatoes:
+        return SoundType::Crop;
+    case RedstoneBlock:
+        return SoundType::Metal;
+    case SnowBlock:
+        return SoundType::Snow;
+    case Basalt:
+        return SoundType::Basalt;
+    case CrimsonNylium: case WarpedNylium:
+        return SoundType::Nylium;
+    case NetherBricks:
+        return SoundType::NetherBricks;
+    case NetherQuartzOre:
+        return SoundType::NetherOre;
+    case NetherWartBlock:
+        return SoundType::WartBlock;
+    case Netherrack:
+        return SoundType::Netherrack;
+    case SoulSand:
+        return SoundType::SoulSand;
+    case SoulSoil:
+        return SoundType::SoulSoil;
+    // Fluids make no block sound.
+    case Water: case Lava: case Air:
+        return SoundType::Empty;
+    default:
+        break;
+    }
+    // Trait fallbacks for the regular wood/leaves families: the six leaves and
+    // the six *logs* (a non-log pillar such as Basalt is handled in the switch
+    // above, so it never reaches here). Everything else is Stone, vanilla's
+    // Properties default.
+    if (isLeaves(block)) return SoundType::Grass;
+    if (isLog(block)) return SoundType::Wood;
+    return SoundType::Stone;
+}
 
 // Java's LeavesBlock.PERSISTENT is a declared property of every leaves block
 // (see the registry entries): leaves a player placed stay put, leaves that grew
@@ -2188,6 +2331,15 @@ inline std::array<BlockTextureLayers, static_cast<std::size_t>(Block::Count)> kB
 inline void setBlockTextureLayers(Block block, BlockTextureLayers layers) {
     kBlockTextureLayers[static_cast<std::size_t>(block)] = layers;
 }
+
+// The atlas layer of `redstone_torch_off`, the sprite an unlit redstone torch
+// shows. A redstone torch's own `.texture()` is the *lit* sprite (its side
+// layer); the off sprite is a second texture the mesher swaps in when the LIT
+// state is false, the same on/off swap the furnace front makes. Set once by the
+// atlas baker, like kBlockTextureLayers.
+inline float kRedstoneTorchOffLayer = 0.0F;
+inline void setRedstoneTorchOffLayer(float layer) { kRedstoneTorchOffLayer = layer; }
+[[nodiscard]] inline float redstoneTorchOffLayer() { return kRedstoneTorchOffLayer; }
 
 // The crop's stage textures are laid out contiguously from its stage-0 layer,
 // so the mesher reads stage0 + age.

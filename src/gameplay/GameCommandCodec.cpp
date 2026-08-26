@@ -67,6 +67,8 @@ std::vector<std::uint8_t> encodeGameCommand(const GameCommand& command) {
                     persistence::appendInteger(bytes, static_cast<std::int32_t>(specific.button));
                     persistence::appendInteger(
                         bytes, static_cast<std::uint8_t>(specific.shiftHeld ? 1 : 0));
+                    persistence::appendInteger(
+                        bytes, static_cast<std::uint8_t>(specific.creativeInventoryTab ? 1 : 0));
                 } else if constexpr (std::is_same_v<T, ChatCommand>) {
                     codec::appendString32(bytes, specific.line);
                 } else if constexpr (std::is_same_v<T, ClickCreativeItem>) {
@@ -170,6 +172,7 @@ std::optional<GameCommand> decodeGameCommand(std::span<const std::uint8_t> bytes
             click.slotIndex = persistence::readInteger<std::uint16_t>(bytes, cursor);
             click.button = persistence::readInteger<std::int32_t>(bytes, cursor);
             click.shiftHeld = persistence::readInteger<std::uint8_t>(bytes, cursor) != 0;
+            click.creativeInventoryTab = persistence::readInteger<std::uint8_t>(bytes, cursor) != 0;
             decoded = click;
             break;
         }

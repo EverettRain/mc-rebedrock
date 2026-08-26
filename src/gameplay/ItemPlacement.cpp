@@ -329,8 +329,10 @@ std::optional<world::BlockState> itemPlacementBlock(
         }
         blockItem = blockItemFor(stack.block);
     }
-    if (asStandingAndWallBlockItem(blockItem) != nullptr) {
-        return world::standingAndWallPlacement(world, context);
+    if (const auto* standingAndWall = asStandingAndWallBlockItem(blockItem);
+        standingAndWall != nullptr) {
+        return world::standingAndWallPlacement(world, context, standingAndWall->block(),
+                                               standingAndWall->wallBlock());
     }
     return world::placementBlock(world, blockItem->block(), context);
 }

@@ -110,7 +110,17 @@ int main() {
             blockShape(BlockState{Block::StonePressurePlate}.withPowered(true));
         REQUIRE(pressed.kind == ShapeKind::Column);
         REQUIRE(pressed.top < raised.top); // genuinely shorter while pressed
-        REQUIRE(hasCollision(Block::StonePressurePlate));
+        // BasePressurePlateBlock#getCollisionShape is Shapes.empty(): the raised
+        // Column is an outline/visual shape only, so the plate never lifts or
+        // blocks an entity (the fix for the step-on bounce). collisionSpan
+        // therefore filters to an empty span even though blockShape stays a
+        // Column above.
+        REQUIRE(!hasCollision(Block::StonePressurePlate));
+        const auto plateCollision = collisionSpan(BlockState{Block::StonePressurePlate});
+        REQUIRE(plateCollision.top <= plateCollision.bottom); // empty span
+        const auto pressedCollision =
+            collisionSpan(BlockState{Block::StonePressurePlate}.withPowered(true));
+        REQUIRE(pressedCollision.top <= pressedCollision.bottom); // empty in both states
     }
 
     // --- Wall: connection mask -> box-set table. No connections is post-only
