@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 #include <vector>
 
 // BlockState and MutationFlags exist so that WorldMutationService, the block
@@ -419,6 +420,27 @@ int main() {
         // 26.1 reclaimed that value for SuppressDrops, which is what it means
         // here too.
         static_assert(static_cast<std::uint16_t>(MutationFlags::SuppressDrops) == 32U);
+    }
+
+    // --- The raw id is a uint32 and round-trips values past the old u16 ceiling.
+    // The built-in roster does not reach 65536 states yet, so no ordinary state
+    // exercises the wide path; this pins that BlockState::rawId / fromRawId carry a
+    // full 32-bit id without truncation, which is the whole point of the widening
+    // (interned state space + UnknownBlock placeholders live above 0xFFFF). ---
+    {
+        static_assert(sizeof(BlockState{}.rawId()) == 4U);
+        static_assert(std::is_same_v<decltype(BlockState{}.rawId()), std::uint32_t>);
+        // A value that would have wrapped inside a uint16 survives verbatim.
+        for (const std::uint32_t id : {std::uint32_t{0x1'0000U}, std::uint32_t{0x12'3456U},
+                                       std::uint32_t{0xFFFF'FFFFU}}) {
+            assert(BlockState::fromRawId(id).rawId() == id);
+        }
+        // The interned-state ceiling and the UnknownBlock space above it are both
+        // 32-bit now (BlockStateTable), so a placeholder id past 0xFFFF is valid.
+        static_assert(kFirstUnknownStateId == kBlockStateCount);
+        static_assert(std::is_same_v<decltype(kBlockStateCount), const std::uint32_t>);
+        assert(isUnknownStateId(0xFFFF'0000U));
+        assert(!isUnknownStateId(0U));
     }
 
     return 0;

@@ -14,7 +14,7 @@
 #include "gameplay/GameSession.hpp"
 #include "gameplay/PlayerTickSnapshot.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
-#include "gameplay/entities/PigEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "render/player/PlayerRenderState.hpp"
 #include "ui/UiFrameData.hpp"
 #include "world/World.hpp"
@@ -108,7 +108,7 @@ int main() {
         std::vector<gameplay::SimpleEntity> live;
         for (std::uint64_t id = 1U; id <= 100U; ++id) {
             auto& entity = live.emplace_back();
-            entity.type = &gameplay::entities::PigEntity::type();
+            entity.type = &gameplay::entities::builtinSpecies("pig");
             entity.id = id;
             entity.position = {1.0F, 2.0F, 3.0F};
         }

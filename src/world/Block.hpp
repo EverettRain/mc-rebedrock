@@ -39,7 +39,17 @@ using core::BlockId;
 // and the six `switch(block)` chains are R1's to retire, not R0's. Until then
 // both spell the same identity, and this file keeps answering block questions by
 // enum for source compatibility.
-enum class Block : std::uint8_t {
+// The enum's underlying type is uint16_t, not uint8_t: the built-in roster has
+// grown past the 256 a byte could hold (STRUCT structure-block registration), and
+// the identity plumbing was already built for it — BlockId is a uint16 (see the
+// `using core::BlockId` note above), and BlockStateMetadataTable stores each
+// state's block as a BlockId "so a state's block can range past 256 once external
+// content exists" (BlockStateTable.hpp). Widening the handle to match is the last
+// piece. Blocks serialise by stable name (format 5+) and BlockState by its uint16
+// rawId, so the ordinal is never written to a save or the wire — the width change
+// is memory-layout only. The real remaining budget is the interned state-id space
+// (kBlockStateCount < 65536, asserted in BlockStateTable.hpp), not the enum.
+enum class Block : std::uint16_t {
     Air,
     Grass,
     Dirt,
@@ -279,6 +289,277 @@ enum class Block : std::uint8_t {
     // by stable name, so the new ordinals never touch an old save.
     Prismarine,
     SeaLantern,
+    // STRUCT content: ice — a translucent full cube (igloo floors, frozen
+    // surfaces). Appended before Count so existing ordinals are untouched.
+    Ice,
+    // STRUCT AR-B batch 1: plain full-cube (and pillar) building blocks the vanilla
+    // structure templates reference. Every one is a solid cube or a
+    // RotatedPillarBlock — no new BlockModel, no BlockShape/kShapeByModel change, so
+    // they carry zero SIGBUS risk (that guard fires only when a new model is added).
+    // Grouped by family for readability; enum order is irrelevant to saves (blocks
+    // serialise by stable name, format 5+), so appending never touches an old save.
+    //
+    // Stone-brick variants (igloo bottom): the cracked brick and the three infested
+    // silverfish blocks, which render exactly as their host brick (InfestedBlock
+    // reuses the host texture). Silverfish behaviour is not modelled — structure
+    // rendering only needs the cube.
+    CrackedStoneBricks,
+    InfestedStoneBricks,
+    InfestedMossyStoneBricks,
+    InfestedChiseledStoneBricks,
+    // Blackstone family (bastion/ruined-portal palettes).
+    PolishedBlackstoneBricks,
+    CrackedPolishedBlackstoneBricks,
+    PolishedBlackstone,
+    ChiseledPolishedBlackstone,
+    GildedBlackstone,
+    // Tuff family (trail ruins).
+    Tuff,
+    PolishedTuff,
+    TuffBricks,
+    ChiseledTuff,
+    ChiseledTuffBricks,
+    // Deepslate family (trial chambers / deep structures). Deepslate itself is a
+    // RotatedPillarBlock (axis), the rest are plain cubes.
+    Deepslate,
+    CobbledDeepslate,
+    PolishedDeepslate,
+    DeepslateBricks,
+    CrackedDeepslateBricks,
+    DeepslateTiles,
+    CrackedDeepslateTiles,
+    ChiseledDeepslate,
+    // Sandstone variants (desert structures) — smooth/cut/chiseled reuse the
+    // sandstone_top sprite for the faces vanilla's models do.
+    SmoothSandstone,
+    CutSandstone,
+    ChiseledSandstone,
+    // Mud family (trail ruins / mangrove).
+    Mud,
+    PackedMud,
+    MudBricks,
+    // Waxed copper full cubes (trail ruins). Only the full-cube members — the
+    // stairs/slab/grate/bulb variants are deferred (need their own models).
+    WaxedCopperBlock,
+    WaxedExposedCopper,
+    WaxedWeatheredCopper,
+    WaxedOxidizedCopper,
+    WaxedCutCopper,
+    WaxedExposedCutCopper,
+    WaxedWeatheredCutCopper,
+    WaxedOxidizedCutCopper,
+    WaxedChiseledCopper,
+    // Metal block.
+    GoldBlock,
+    // Terracotta — the plain block plus all 16 dyed colours (villages/structures
+    // use them heavily in aggregate). Each reuses its vanilla "*_terracotta" sprite.
+    Terracotta,
+    WhiteTerracotta,
+    OrangeTerracotta,
+    MagentaTerracotta,
+    LightBlueTerracotta,
+    YellowTerracotta,
+    LimeTerracotta,
+    PinkTerracotta,
+    GrayTerracotta,
+    LightGrayTerracotta,
+    CyanTerracotta,
+    PurpleTerracotta,
+    BlueTerracotta,
+    BrownTerracotta,
+    GreenTerracotta,
+    RedTerracotta,
+    BlackTerracotta,
+    // Pillar blocks (RotatedPillarBlock): a six-way FACING axis, top/side sprites.
+    BoneBlock,
+    PolishedBasalt,
+    PurpurPillar,
+    AcaciaWood,
+    StrippedSpruceWood,
+    StrippedSpruceLog,
+    // Dirt path — a 15/16-high cube (like farmland), its own top/side sprites.
+    DirtPath,
+    // STRUCT AR-B batch 2: the stair / slab / wall / door / trapdoor variants the
+    // structure templates reference, each reusing an existing BlockModel (Stairs /
+    // Slab / Wall / Door / TrapDoor) via the matching builder helper. Adding these
+    // touches no BlockModel enum and no kShapeByModel table, so — like batch 1 —
+    // there is no SIGBUS risk (that guard fires only for a new model). Textures
+    // reuse the parent block's sprites, exactly as OakStairs reuses oak_planks.
+    // Stairs:
+    AcaciaStairs,
+    BirchStairs,
+    DarkOakStairs,
+    SpruceStairs,
+    CobblestoneStairs,
+    MossyCobblestoneStairs,
+    StoneBrickStairs,
+    BrickStairs,
+    SandstoneStairs,
+    SmoothSandstoneStairs,
+    GraniteStairs,
+    DioriteStairs,
+    PurpurStairs,
+    BlackstoneStairs,
+    PolishedBlackstoneBrickStairs,
+    MudBrickStairs,
+    CobbledDeepslateStairs,
+    PolishedDeepslateStairs,
+    DeepslateBrickStairs,
+    DeepslateTileStairs,
+    WaxedCutCopperStairs,
+    WaxedOxidizedCutCopperStairs,
+    // Slabs:
+    SandstoneSlab,
+    SmoothSandstoneSlab,
+    BrickSlab,
+    MossyCobblestoneSlab,
+    DioriteSlab,
+    PurpurSlab,
+    SmoothQuartzSlab,
+    BlackstoneSlab,
+    MudBrickSlab,
+    CobbledDeepslateSlab,
+    PolishedDeepslateSlab,
+    DeepslateBrickSlab,
+    DeepslateTileSlab,
+    PolishedTuffSlab,
+    WaxedCutCopperSlab,
+    WaxedOxidizedCutCopperSlab,
+    // Walls:
+    MossyCobblestoneWall,
+    StoneBrickWall,
+    BrickWall,
+    SandstoneWall,
+    GraniteWall,
+    DioriteWall,
+    BlackstoneWall,
+    MudBrickWall,
+    CobbledDeepslateWall,
+    PolishedDeepslateWall,
+    DeepslateBrickWall,
+    DeepslateTileWall,
+    // Doors:
+    SpruceDoor,
+    JungleDoor,
+    AcaciaDoor,
+    DarkOakDoor,
+    IronDoor,
+    WaxedCopperDoor,
+    WaxedOxidizedCopperDoor,
+    // Trapdoors:
+    SpruceTrapdoor,
+    JungleTrapdoor,
+    IronTrapdoor,
+    OxidizedCopperTrapdoor,
+    WaxedOxidizedCopperTrapdoor,
+    // STRUCT AR-B batch 3: cross-model plants and decorations the structures
+    // reference. All reuse the existing BlockModel::Cross (via .cross()), so no new
+    // model and no kShapeByModel change. Flowers/grass take the same XZ per-position
+    // jitter and Soil support as the existing Dandelion/Short Grass; cobweb and the
+    // mushrooms sit centred (no offset). Fern/large_fern/tall_grass render untinted
+    // for now (foliage-colour tint is a later fidelity pass); the block still
+    // resolves and places. Double plants (tall_grass/large_fern) register once and
+    // resolve both the upper and lower palette halves.
+    Cobweb,
+    Poppy,
+    OxeyeDaisy,
+    Fern,
+    TallGrass,
+    LargeFern,
+    DeadBush,
+    RedMushroom,
+    BrownMushroom,
+    // STRUCT AR-B batch 4: more no-new-model blocks. Full cubes (glazed terracotta
+    // renders the pattern on every face — the facing rotation is a later fidelity
+    // pass; stained glass is a translucent cube like Glass), pillars, and
+    // pressure-plate/button variants reusing the existing PressurePlate/Button
+    // models. Still no new BlockModel / kShapeByModel entry, so no SIGBUS risk.
+    // Glazed terracotta (16 colours):
+    WhiteGlazedTerracotta,
+    OrangeGlazedTerracotta,
+    MagentaGlazedTerracotta,
+    LightBlueGlazedTerracotta,
+    YellowGlazedTerracotta,
+    LimeGlazedTerracotta,
+    PinkGlazedTerracotta,
+    GrayGlazedTerracotta,
+    LightGrayGlazedTerracotta,
+    CyanGlazedTerracotta,
+    PurpleGlazedTerracotta,
+    BlueGlazedTerracotta,
+    BrownGlazedTerracotta,
+    GreenGlazedTerracotta,
+    RedGlazedTerracotta,
+    BlackGlazedTerracotta,
+    // Stained glass (16 colours) — translucent cubes.
+    WhiteStainedGlass,
+    OrangeStainedGlass,
+    MagentaStainedGlass,
+    LightBlueStainedGlass,
+    YellowStainedGlass,
+    LimeStainedGlass,
+    PinkStainedGlass,
+    GrayStainedGlass,
+    LightGrayStainedGlass,
+    CyanStainedGlass,
+    PurpleStainedGlass,
+    BlueStainedGlass,
+    BrownStainedGlass,
+    GreenStainedGlass,
+    RedStainedGlass,
+    BlackStainedGlass,
+    // Misc full cubes.
+    PackedIce,
+    EndStoneBricks,
+    RedstoneLamp,
+    // Pillars.
+    HayBlock,
+    StrippedOakLog,
+    // Pressure plates / button reusing existing shaped models.
+    OakPressurePlate,
+    AcaciaPressurePlate,
+    JungleButton,
+    // STRUCT AR-B batch 5: family-completing cubes / pillars / leaves (all
+    // no-new-model). Rounds out the copper, deepslate, mangrove, wood and common
+    // building-block families the structures still reference.
+    SmoothBasalt,
+    BlueIce,
+    CopperBlock,
+    OxidizedCutCopper,
+    WaxedOxidizedChiseledCopper,
+    ReinforcedDeepslate,
+    Target,
+    DiamondBlock,
+    LapisBlock,
+    CoalBlock,
+    MossBlock,
+    SmoothQuartz,
+    WhiteConcrete,
+    RedConcrete,
+    InfestedCobblestone,
+    // Pillars.
+    SpruceWood,
+    StrippedOakWood,
+    StrippedAcaciaLog,
+    MangroveLog,
+    MangroveWood,
+    MuddyMangroveRoots,
+    MangroveRoots,
+    // Leaves.
+    MangroveLeaves,
+    // STRUCT/WG terrain: copper ore plus the full deepslate ore set. The deepslate
+    // variants are the y<0 deep-layer forms (harder than their stone counterparts);
+    // all are plain cubes. Registered so terrain generation / JC import / structures
+    // have the identities to place — same low-risk cube path as the other ores.
+    CopperOre,
+    DeepslateCoalOre,
+    DeepslateIronOre,
+    DeepslateCopperOre,
+    DeepslateGoldOre,
+    DeepslateRedstoneOre,
+    DeepslateEmeraldOre,
+    DeepslateLapisOre,
+    DeepslateDiamondOre,
     Count,
 };
 
@@ -631,6 +912,15 @@ struct BlockDefinition final {
     // the transcription's slot constants (e.g. repeater 0=slab 1=top 2=unlit
     // 3=lit). Empty for every other model.
     std::array<const char*, kMaxModelTextureSlots> modelTextures{};
+    // RN-4c: the per-model-face base UV rotation (quarter-turns 0..3), indexed by
+    // BlockOrientation — the direction of the face in the block's *own* model,
+    // before any FACING rotation. Transcribed straight from the block's JE model
+    // json face `rotation` (÷90). This is the single per-block source the cube
+    // mesher composes with the FACING-driven rotation, so a directional block's
+    // sprites turn with it faithfully instead of staying locked to world axes.
+    // Every entry defaults to 0 — a block whose model rotates no face (or does not
+    // rotate at all) needs nothing here.
+    std::array<std::uint8_t, 6> modelFaceUvTurns{};
     float hardness = 0.0F;
     float blastResistance = 0.0F;
     std::uint8_t maximumStackSize = 64U;
@@ -657,6 +947,11 @@ struct BlockDefinition final {
     bool pillar = false;
     // Reads a horizontal FACING property (furnaces, chests).
     bool horizontalFacing = false;
+    // DirectionalBlock: reads a full six-way FACING chosen at placement from the
+    // player's nearest looking direction (observer, piston). Distinct from
+    // horizontalFacing, which is the four-way HorizontalDirectionalBlock; a block
+    // owns at most one of the two.
+    bool directionalFacing = false;
     // Carries a LIT property, the way AbstractFurnaceBlock does: the same block
     // whether or not it is burning, with the lit front face and the light level
     // coming from the state rather than from a second block. `litLight` is what
@@ -786,6 +1081,20 @@ class BlockProperties final {
         copy.definition_.modelTextures = {slot0, slot1, slot2, slot3, slot4};
         return copy;
     }
+    // RN-4c: declare per-model-face base UV rotations (0..3 quarter-turns), by the
+    // six directions in BlockOrientation order — north, east, south, west, up,
+    // down — transcribed from the block's JE model json face `rotation` (÷90). The
+    // cube mesher composes these with the block's FACING rotation, so the sprites
+    // rotate with the block. Any face the model does not rotate stays 0. This is
+    // the general knob for facing-aware UV orientation; a block that needs none
+    // simply never calls it.
+    [[nodiscard]] constexpr BlockProperties modelFaceUvTurns(
+        std::uint8_t north, std::uint8_t east, std::uint8_t south, std::uint8_t west,
+        std::uint8_t up, std::uint8_t down) const {
+        BlockProperties copy = *this;
+        copy.definition_.modelFaceUvTurns = {north, east, south, west, up, down};
+        return copy;
+    }
     // RN-6: declare BlockModel::RedstoneWire and its two texture slots — 0 the
     // centre dot, 1 the line arm — resolved to layers the same way ElementModel's
     // slots are.
@@ -879,6 +1188,15 @@ class BlockProperties final {
         BlockProperties copy = *this;
         copy.definition_.horizontalFacing = true;
         return copy.state(StateProperty::Facing, 4U);
+    }
+    // DirectionalBlock: a full six-way FACING taken from the placer's nearest
+    // looking direction (see BlockPlacement's placementOrientation). Observer and
+    // the piston family use this; without it a six-way-FACING block would fall
+    // through to defaultOrientation and never rotate with placement.
+    [[nodiscard]] constexpr BlockProperties directionalFacing() const {
+        BlockProperties copy = *this;
+        copy.definition_.directionalFacing = true;
+        return copy.state(StateProperty::Facing, 6U);
     }
     // AbstractFurnaceBlock's LIT: one block, two states, and the light level
     // the burning one emits.
@@ -1767,7 +2085,7 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .directionalCube("observer_front", nullptr, "observer_back", "observer_back_on",
                          "observer_top", "observer_top", "observer_side")
         .strength(3.0F)
-        .state(StateProperty::Facing, 6U)
+        .directionalFacing()
         .state(StateProperty::Powered, 2U)
         .creative(CreativeCategory::Redstone),
     // Stone button: like the lever (attach + POWERED), but a press is timed.
@@ -1790,16 +2108,22 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("piston_side")
         .directionalCube("piston_top", nullptr, "piston_bottom", nullptr, "piston_side",
                          "piston_side", "piston_side")
+        // RN-4c: template_piston.json's per-face UV rotation (north,east,south,west,
+        // up,down): east 90°, west 270°, down 180° wrap piston_side's frame around
+        // the platform; the platform/bottom/top faces are unrotated.
+        .modelFaceUvTurns(0, 1, 0, 3, 0, 2)
         .strength(1.5F)
-        .state(StateProperty::Facing, 6U)
+        .directionalFacing()
         .state(StateProperty::Powered, 2U)
         .creative(CreativeCategory::Redstone),
     BlockProperties::of(Block::StickyPiston, "sticky_piston", "Sticky Piston")
         .texture("piston_side")
         .directionalCube("piston_top_sticky", nullptr, "piston_bottom", nullptr, "piston_side",
                          "piston_side", "piston_side")
+        // RN-4c: same template_piston.json face rotations as the plain piston.
+        .modelFaceUvTurns(0, 1, 0, 3, 0, 2)
         .strength(1.5F)
-        .state(StateProperty::Facing, 6U)
+        .directionalFacing()
         .state(StateProperty::Powered, 2U)
         .creative(CreativeCategory::Redstone),
     // Identical to the chest in every rendered and stored respect (same texture,
@@ -1991,10 +2315,800 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .strength(0.3F)
         .light(15U)
         .creative(CreativeCategory::NaturalBlocks),
+    // STRUCT content: ice — a translucent full cube, the way glass renders, so an
+    // igloo's ice floor resolves instead of leaving a hole. Vanilla strength 0.5.
+    BlockProperties::of(Block::Ice, "ice", "Ice")
+        .texture("ice")
+        .strength(0.5F)
+        .renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::NaturalBlocks),
+    // --- STRUCT AR-B batch 1: plain cubes + pillars (see enum comment) ---------
+    // Stone-brick variants. Infested blocks reuse the host brick's sprite.
+    BlockProperties::of(Block::CrackedStoneBricks, "cracked_stone_bricks", "Cracked Stone Bricks")
+        .texture("cracked_stone_bricks")
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::InfestedStoneBricks, "infested_stone_bricks", "Infested Stone Bricks")
+        .texture("stone_bricks")
+        .strength(0.0F, 0.75F)
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::InfestedMossyStoneBricks, "infested_mossy_stone_bricks",
+                        "Infested Mossy Stone Bricks")
+        .texture("mossy_stone_bricks")
+        .strength(0.0F, 0.75F)
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::InfestedChiseledStoneBricks, "infested_chiseled_stone_bricks",
+                        "Infested Chiseled Stone Bricks")
+        .texture("chiseled_stone_bricks")
+        .strength(0.0F, 0.75F)
+        .creative(CreativeCategory::NaturalBlocks),
+    // Blackstone family.
+    BlockProperties::of(Block::PolishedBlackstoneBricks, "polished_blackstone_bricks",
+                        "Polished Blackstone Bricks")
+        .texture("polished_blackstone_bricks")
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::CrackedPolishedBlackstoneBricks, "cracked_polished_blackstone_bricks",
+                        "Cracked Polished Blackstone Bricks")
+        .texture("cracked_polished_blackstone_bricks")
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::PolishedBlackstone, "polished_blackstone", "Polished Blackstone")
+        .texture("polished_blackstone")
+        .strength(2.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::ChiseledPolishedBlackstone, "chiseled_polished_blackstone",
+                        "Chiseled Polished Blackstone")
+        .texture("chiseled_polished_blackstone")
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::GildedBlackstone, "gilded_blackstone", "Gilded Blackstone")
+        .texture("gilded_blackstone")
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::NaturalBlocks),
+    // Tuff family.
+    BlockProperties::of(Block::Tuff, "tuff", "Tuff")
+        .texture("tuff")
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::PolishedTuff, "polished_tuff", "Polished Tuff")
+        .texture("polished_tuff")
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::TuffBricks, "tuff_bricks", "Tuff Bricks")
+        .texture("tuff_bricks")
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::ChiseledTuff, "chiseled_tuff", "Chiseled Tuff")
+        .texture("chiseled_tuff")
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::ChiseledTuffBricks, "chiseled_tuff_bricks", "Chiseled Tuff Bricks")
+        .texture("chiseled_tuff_bricks")
+        .strength(1.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    // Deepslate family. Deepslate is a pillar (axis); the rest are plain cubes.
+    BlockProperties::of(Block::Deepslate, "deepslate", "Deepslate")
+        .texture("deepslate_top", "deepslate", "deepslate_top")
+        .strength(3.0F, 6.0F)
+        .pillar()
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::CobbledDeepslate, "cobbled_deepslate", "Cobbled Deepslate")
+        .texture("cobbled_deepslate")
+        .strength(3.5F, 6.0F)
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::PolishedDeepslate, "polished_deepslate", "Polished Deepslate")
+        .texture("polished_deepslate")
+        .strength(3.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::DeepslateBricks, "deepslate_bricks", "Deepslate Bricks")
+        .texture("deepslate_bricks")
+        .strength(3.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::CrackedDeepslateBricks, "cracked_deepslate_bricks",
+                        "Cracked Deepslate Bricks")
+        .texture("cracked_deepslate_bricks")
+        .strength(3.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::DeepslateTiles, "deepslate_tiles", "Deepslate Tiles")
+        .texture("deepslate_tiles")
+        .strength(3.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::CrackedDeepslateTiles, "cracked_deepslate_tiles",
+                        "Cracked Deepslate Tiles")
+        .texture("cracked_deepslate_tiles")
+        .strength(3.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::ChiseledDeepslate, "chiseled_deepslate", "Chiseled Deepslate")
+        .texture("chiseled_deepslate")
+        .strength(3.5F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    // Sandstone variants — smooth/cut/chiseled reuse sandstone_top for the faces
+    // vanilla's models do.
+    BlockProperties::of(Block::SmoothSandstone, "smooth_sandstone", "Smooth Sandstone")
+        .texture("sandstone_top")
+        .strength(2.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::CutSandstone, "cut_sandstone", "Cut Sandstone")
+        .texture("sandstone_top", "cut_sandstone", "sandstone_top")
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::ChiseledSandstone, "chiseled_sandstone", "Chiseled Sandstone")
+        .texture("sandstone_top", "chiseled_sandstone", "sandstone_top")
+        .strength(0.8F)
+        .creative(CreativeCategory::BuildingBlocks),
+    // Mud family.
+    BlockProperties::of(Block::Mud, "mud", "Mud")
+        .texture("mud")
+        .strength(0.5F)
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::PackedMud, "packed_mud", "Packed Mud")
+        .texture("packed_mud")
+        .strength(1.0F, 3.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::MudBricks, "mud_bricks", "Mud Bricks")
+        .texture("mud_bricks")
+        .strength(1.5F, 3.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    // Waxed copper full cubes.
+    BlockProperties::of(Block::WaxedCopperBlock, "waxed_copper_block", "Waxed Block of Copper")
+        .texture("copper_block")
+        .strength(3.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::WaxedExposedCopper, "waxed_exposed_copper", "Waxed Exposed Copper")
+        .texture("exposed_copper")
+        .strength(3.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::WaxedWeatheredCopper, "waxed_weathered_copper",
+                        "Waxed Weathered Copper")
+        .texture("weathered_copper")
+        .strength(3.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::WaxedOxidizedCopper, "waxed_oxidized_copper", "Waxed Oxidized Copper")
+        .texture("oxidized_copper")
+        .strength(3.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::WaxedCutCopper, "waxed_cut_copper", "Waxed Cut Copper")
+        .texture("cut_copper")
+        .strength(3.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::WaxedExposedCutCopper, "waxed_exposed_cut_copper",
+                        "Waxed Exposed Cut Copper")
+        .texture("exposed_cut_copper")
+        .strength(3.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::WaxedWeatheredCutCopper, "waxed_weathered_cut_copper",
+                        "Waxed Weathered Cut Copper")
+        .texture("weathered_cut_copper")
+        .strength(3.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::WaxedOxidizedCutCopper, "waxed_oxidized_cut_copper",
+                        "Waxed Oxidized Cut Copper")
+        .texture("oxidized_cut_copper")
+        .strength(3.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::WaxedChiseledCopper, "waxed_chiseled_copper", "Waxed Chiseled Copper")
+        .texture("chiseled_copper")
+        .strength(3.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    // Metal.
+    BlockProperties::of(Block::GoldBlock, "gold_block", "Block of Gold")
+        .texture("gold_block")
+        .strength(3.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    // Terracotta — plain plus 16 colours.
+    BlockProperties::of(Block::Terracotta, "terracotta", "Terracotta")
+        .texture("terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::WhiteTerracotta, "white_terracotta", "White Terracotta")
+        .texture("white_terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::OrangeTerracotta, "orange_terracotta", "Orange Terracotta")
+        .texture("orange_terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::MagentaTerracotta, "magenta_terracotta", "Magenta Terracotta")
+        .texture("magenta_terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::LightBlueTerracotta, "light_blue_terracotta", "Light Blue Terracotta")
+        .texture("light_blue_terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::YellowTerracotta, "yellow_terracotta", "Yellow Terracotta")
+        .texture("yellow_terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::LimeTerracotta, "lime_terracotta", "Lime Terracotta")
+        .texture("lime_terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::PinkTerracotta, "pink_terracotta", "Pink Terracotta")
+        .texture("pink_terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::GrayTerracotta, "gray_terracotta", "Gray Terracotta")
+        .texture("gray_terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::LightGrayTerracotta, "light_gray_terracotta", "Light Gray Terracotta")
+        .texture("light_gray_terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::CyanTerracotta, "cyan_terracotta", "Cyan Terracotta")
+        .texture("cyan_terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::PurpleTerracotta, "purple_terracotta", "Purple Terracotta")
+        .texture("purple_terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::BlueTerracotta, "blue_terracotta", "Blue Terracotta")
+        .texture("blue_terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::BrownTerracotta, "brown_terracotta", "Brown Terracotta")
+        .texture("brown_terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::GreenTerracotta, "green_terracotta", "Green Terracotta")
+        .texture("green_terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::RedTerracotta, "red_terracotta", "Red Terracotta")
+        .texture("red_terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::BlackTerracotta, "black_terracotta", "Black Terracotta")
+        .texture("black_terracotta")
+        .strength(1.25F, 4.2F)
+        .creative(CreativeCategory::ColoredBlocks),
+    // Pillar blocks (RotatedPillarBlock: six-way FACING axis).
+    BlockProperties::of(Block::BoneBlock, "bone_block", "Bone Block")
+        .texture("bone_block_top", "bone_block_side", "bone_block_top")
+        .strength(2.0F)
+        .pillar()
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::PolishedBasalt, "polished_basalt", "Polished Basalt")
+        .texture("polished_basalt_top", "polished_basalt_side", "polished_basalt_top")
+        .strength(1.25F, 4.2F)
+        .pillar()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::PurpurPillar, "purpur_pillar", "Purpur Pillar")
+        .texture("purpur_pillar_top", "purpur_pillar", "purpur_pillar_top")
+        .strength(1.5F, 6.0F)
+        .pillar()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::AcaciaWood, "acacia_wood", "Acacia Wood")
+        .texture("acacia_log")
+        .strength(2.0F)
+        .pillar()
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::StrippedSpruceWood, "stripped_spruce_wood", "Stripped Spruce Wood")
+        .texture("stripped_spruce_log")
+        .strength(2.0F)
+        .pillar()
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::StrippedSpruceLog, "stripped_spruce_log", "Stripped Spruce Log")
+        .texture("stripped_spruce_log_top", "stripped_spruce_log", "stripped_spruce_log_top")
+        .strength(2.0F)
+        .pillar()
+        .creative(CreativeCategory::NaturalBlocks),
+    // Dirt path — a 15/16-high cube with its own top/side sprites (like farmland).
+    BlockProperties::of(Block::DirtPath, "dirt_path", "Dirt Path")
+        .texture("dirt_path_top", "dirt_path_side", "dirt")
+        .strength(0.65F)
+        .height(0.9375F)
+        .creative(CreativeCategory::NaturalBlocks),
+    // --- STRUCT AR-B batch 2: stairs / slabs / walls / doors / trapdoors --------
+    // Stairs (texture = parent block's sprites, .stairs() supplies the model+axes).
+    BlockProperties::of(Block::AcaciaStairs, "acacia_stairs", "Acacia Stairs")
+        .texture("acacia_planks").strength(2.0F, 3.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::BirchStairs, "birch_stairs", "Birch Stairs")
+        .texture("birch_planks").strength(2.0F, 3.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::DarkOakStairs, "dark_oak_stairs", "Dark Oak Stairs")
+        .texture("dark_oak_planks").strength(2.0F, 3.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::SpruceStairs, "spruce_stairs", "Spruce Stairs")
+        .texture("spruce_planks").strength(2.0F, 3.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::CobblestoneStairs, "cobblestone_stairs", "Cobblestone Stairs")
+        .texture("cobblestone").strength(2.0F, 6.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::MossyCobblestoneStairs, "mossy_cobblestone_stairs",
+                        "Mossy Cobblestone Stairs")
+        .texture("mossy_cobblestone").strength(2.0F, 6.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::StoneBrickStairs, "stone_brick_stairs", "Stone Brick Stairs")
+        .texture("stone_bricks").strength(1.5F, 6.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::BrickStairs, "brick_stairs", "Brick Stairs")
+        .texture("bricks").strength(2.0F, 6.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::SandstoneStairs, "sandstone_stairs", "Sandstone Stairs")
+        .texture("sandstone_top", "sandstone", "sandstone_bottom").strength(0.8F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::SmoothSandstoneStairs, "smooth_sandstone_stairs",
+                        "Smooth Sandstone Stairs")
+        .texture("sandstone_top").strength(2.0F, 6.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::GraniteStairs, "granite_stairs", "Granite Stairs")
+        .texture("granite").strength(1.5F, 6.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::DioriteStairs, "diorite_stairs", "Diorite Stairs")
+        .texture("diorite").strength(1.5F, 6.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::PurpurStairs, "purpur_stairs", "Purpur Stairs")
+        .texture("purpur_block").strength(1.5F, 6.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::BlackstoneStairs, "blackstone_stairs", "Blackstone Stairs")
+        .texture("blackstone_top", "blackstone", "blackstone_top").strength(1.5F, 6.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::PolishedBlackstoneBrickStairs, "polished_blackstone_brick_stairs",
+                        "Polished Blackstone Brick Stairs")
+        .texture("polished_blackstone_bricks").strength(1.5F, 6.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::MudBrickStairs, "mud_brick_stairs", "Mud Brick Stairs")
+        .texture("mud_bricks").strength(1.5F, 3.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::CobbledDeepslateStairs, "cobbled_deepslate_stairs",
+                        "Cobbled Deepslate Stairs")
+        .texture("cobbled_deepslate").strength(3.5F, 6.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::PolishedDeepslateStairs, "polished_deepslate_stairs",
+                        "Polished Deepslate Stairs")
+        .texture("polished_deepslate").strength(3.5F, 6.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::DeepslateBrickStairs, "deepslate_brick_stairs",
+                        "Deepslate Brick Stairs")
+        .texture("deepslate_bricks").strength(3.5F, 6.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::DeepslateTileStairs, "deepslate_tile_stairs", "Deepslate Tile Stairs")
+        .texture("deepslate_tiles").strength(3.5F, 6.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::WaxedCutCopperStairs, "waxed_cut_copper_stairs",
+                        "Waxed Cut Copper Stairs")
+        .texture("cut_copper").strength(3.0F, 6.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::WaxedOxidizedCutCopperStairs, "waxed_oxidized_cut_copper_stairs",
+                        "Waxed Oxidized Cut Copper Stairs")
+        .texture("oxidized_cut_copper").strength(3.0F, 6.0F).stairs()
+        .creative(CreativeCategory::BuildingBlocks),
+    // Slabs (texture = parent block, .slab() supplies model + SlabType axis).
+    BlockProperties::of(Block::SandstoneSlab, "sandstone_slab", "Sandstone Slab")
+        .texture("sandstone_top", "sandstone", "sandstone_bottom").strength(0.8F).slab()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::SmoothSandstoneSlab, "smooth_sandstone_slab", "Smooth Sandstone Slab")
+        .texture("sandstone_top").strength(2.0F, 6.0F).slab()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::BrickSlab, "brick_slab", "Brick Slab")
+        .texture("bricks").strength(2.0F, 6.0F).slab()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::MossyCobblestoneSlab, "mossy_cobblestone_slab",
+                        "Mossy Cobblestone Slab")
+        .texture("mossy_cobblestone").strength(2.0F, 6.0F).slab()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::DioriteSlab, "diorite_slab", "Diorite Slab")
+        .texture("diorite").strength(1.5F, 6.0F).slab()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::PurpurSlab, "purpur_slab", "Purpur Slab")
+        .texture("purpur_block").strength(1.5F, 6.0F).slab()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::SmoothQuartzSlab, "smooth_quartz_slab", "Smooth Quartz Slab")
+        .texture("quartz_block_bottom").strength(2.0F, 6.0F).slab()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::BlackstoneSlab, "blackstone_slab", "Blackstone Slab")
+        .texture("blackstone_top", "blackstone", "blackstone_top").strength(1.5F, 6.0F).slab()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::MudBrickSlab, "mud_brick_slab", "Mud Brick Slab")
+        .texture("mud_bricks").strength(1.5F, 3.0F).slab()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::CobbledDeepslateSlab, "cobbled_deepslate_slab",
+                        "Cobbled Deepslate Slab")
+        .texture("cobbled_deepslate").strength(3.5F, 6.0F).slab()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::PolishedDeepslateSlab, "polished_deepslate_slab",
+                        "Polished Deepslate Slab")
+        .texture("polished_deepslate").strength(3.5F, 6.0F).slab()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::DeepslateBrickSlab, "deepslate_brick_slab", "Deepslate Brick Slab")
+        .texture("deepslate_bricks").strength(3.5F, 6.0F).slab()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::DeepslateTileSlab, "deepslate_tile_slab", "Deepslate Tile Slab")
+        .texture("deepslate_tiles").strength(3.5F, 6.0F).slab()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::PolishedTuffSlab, "polished_tuff_slab", "Polished Tuff Slab")
+        .texture("polished_tuff").strength(1.5F, 6.0F).slab()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::WaxedCutCopperSlab, "waxed_cut_copper_slab", "Waxed Cut Copper Slab")
+        .texture("cut_copper").strength(3.0F, 6.0F).slab()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::WaxedOxidizedCutCopperSlab, "waxed_oxidized_cut_copper_slab",
+                        "Waxed Oxidized Cut Copper Slab")
+        .texture("oxidized_cut_copper").strength(3.0F, 6.0F).slab()
+        .creative(CreativeCategory::BuildingBlocks),
+    // Walls (texture = parent block, .wall() supplies model + connection axes).
+    BlockProperties::of(Block::MossyCobblestoneWall, "mossy_cobblestone_wall",
+                        "Mossy Cobblestone Wall")
+        .texture("mossy_cobblestone").strength(2.0F, 6.0F).wall()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::StoneBrickWall, "stone_brick_wall", "Stone Brick Wall")
+        .texture("stone_bricks").strength(1.5F, 6.0F).wall()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::BrickWall, "brick_wall", "Brick Wall")
+        .texture("bricks").strength(2.0F, 6.0F).wall()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::SandstoneWall, "sandstone_wall", "Sandstone Wall")
+        .texture("sandstone_top", "sandstone", "sandstone_bottom").strength(0.8F).wall()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::GraniteWall, "granite_wall", "Granite Wall")
+        .texture("granite").strength(1.5F, 6.0F).wall()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::DioriteWall, "diorite_wall", "Diorite Wall")
+        .texture("diorite").strength(1.5F, 6.0F).wall()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::BlackstoneWall, "blackstone_wall", "Blackstone Wall")
+        .texture("blackstone_top", "blackstone", "blackstone_top").strength(1.5F, 6.0F).wall()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::MudBrickWall, "mud_brick_wall", "Mud Brick Wall")
+        .texture("mud_bricks").strength(1.5F, 3.0F).wall()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::CobbledDeepslateWall, "cobbled_deepslate_wall",
+                        "Cobbled Deepslate Wall")
+        .texture("cobbled_deepslate").strength(3.5F, 6.0F).wall()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::PolishedDeepslateWall, "polished_deepslate_wall",
+                        "Polished Deepslate Wall")
+        .texture("polished_deepslate").strength(3.5F, 6.0F).wall()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::DeepslateBrickWall, "deepslate_brick_wall", "Deepslate Brick Wall")
+        .texture("deepslate_bricks").strength(3.5F, 6.0F).wall()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::DeepslateTileWall, "deepslate_tile_wall", "Deepslate Tile Wall")
+        .texture("deepslate_tiles").strength(3.5F, 6.0F).wall()
+        .creative(CreativeCategory::BuildingBlocks),
+    // Doors (.door() supplies model + Facing/Half/Open/Hinge; two-cell {top,bottom}
+    // sprites, as OakDoor uses).
+    BlockProperties::of(Block::SpruceDoor, "spruce_door", "Spruce Door")
+        .texture("spruce_door_top", "spruce_door_bottom", "spruce_door_bottom").strength(3.0F).door()
+        .creative(CreativeCategory::Redstone),
+    BlockProperties::of(Block::JungleDoor, "jungle_door", "Jungle Door")
+        .texture("jungle_door_top", "jungle_door_bottom", "jungle_door_bottom").strength(3.0F).door()
+        .creative(CreativeCategory::Redstone),
+    BlockProperties::of(Block::AcaciaDoor, "acacia_door", "Acacia Door")
+        .texture("acacia_door_top", "acacia_door_bottom", "acacia_door_bottom").strength(3.0F).door()
+        .creative(CreativeCategory::Redstone),
+    BlockProperties::of(Block::DarkOakDoor, "dark_oak_door", "Dark Oak Door")
+        .texture("dark_oak_door_top", "dark_oak_door_bottom", "dark_oak_door_bottom").strength(3.0F)
+        .door().creative(CreativeCategory::Redstone),
+    BlockProperties::of(Block::IronDoor, "iron_door", "Iron Door")
+        .texture("iron_door_top", "iron_door_bottom", "iron_door_bottom").strength(5.0F).door()
+        .creative(CreativeCategory::Redstone),
+    BlockProperties::of(Block::WaxedCopperDoor, "waxed_copper_door", "Waxed Copper Door")
+        .texture("copper_door_top", "copper_door_bottom", "copper_door_bottom").strength(3.0F).door()
+        .creative(CreativeCategory::Redstone),
+    BlockProperties::of(Block::WaxedOxidizedCopperDoor, "waxed_oxidized_copper_door",
+                        "Waxed Oxidized Copper Door")
+        .texture("oxidized_copper_door_top", "oxidized_copper_door_bottom",
+                 "oxidized_copper_door_bottom")
+        .strength(3.0F).door().creative(CreativeCategory::Redstone),
+    // Trapdoors (.trapdoor() supplies model + Facing/Half/Open/Powered; single sprite).
+    BlockProperties::of(Block::SpruceTrapdoor, "spruce_trapdoor", "Spruce Trapdoor")
+        .texture("spruce_trapdoor", "spruce_trapdoor", "spruce_trapdoor").strength(3.0F).trapdoor()
+        .creative(CreativeCategory::Redstone),
+    BlockProperties::of(Block::JungleTrapdoor, "jungle_trapdoor", "Jungle Trapdoor")
+        .texture("jungle_trapdoor", "jungle_trapdoor", "jungle_trapdoor").strength(3.0F).trapdoor()
+        .creative(CreativeCategory::Redstone),
+    BlockProperties::of(Block::IronTrapdoor, "iron_trapdoor", "Iron Trapdoor")
+        .texture("iron_trapdoor", "iron_trapdoor", "iron_trapdoor").strength(5.0F).trapdoor()
+        .creative(CreativeCategory::Redstone),
+    BlockProperties::of(Block::OxidizedCopperTrapdoor, "oxidized_copper_trapdoor",
+                        "Oxidized Copper Trapdoor")
+        .texture("oxidized_copper_trapdoor", "oxidized_copper_trapdoor", "oxidized_copper_trapdoor")
+        .strength(3.0F).trapdoor().creative(CreativeCategory::Redstone),
+    BlockProperties::of(Block::WaxedOxidizedCopperTrapdoor, "waxed_oxidized_copper_trapdoor",
+                        "Waxed Oxidized Copper Trapdoor")
+        .texture("oxidized_copper_trapdoor", "oxidized_copper_trapdoor", "oxidized_copper_trapdoor")
+        .strength(3.0F).trapdoor().creative(CreativeCategory::Redstone),
+    // --- STRUCT AR-B batch 3: cross-model plants (see enum comment) -------------
+    // Cobweb: a centred cross (no XZ jitter), no support requirement (it floats).
+    BlockProperties::of(Block::Cobweb, "cobweb", "Cobweb")
+        .texture("cobweb")
+        .strength(4.0F)
+        .cross()
+        .noDrops()
+        .creative(CreativeCategory::NaturalBlocks),
+    // Flowers — the Dandelion recipe (XZ jitter, Soil support).
+    BlockProperties::of(Block::Poppy, "poppy", "Poppy")
+        .texture("poppy")
+        .instantBreak()
+        .cross()
+        .offsetType(BlockOffsetType::XZ)
+        .support(BlockSupport::Soil)
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::OxeyeDaisy, "oxeye_daisy", "Oxeye Daisy")
+        .texture("oxeye_daisy")
+        .instantBreak()
+        .cross()
+        .offsetType(BlockOffsetType::XZ)
+        .support(BlockSupport::Soil)
+        .creative(CreativeCategory::NaturalBlocks),
+    // Fern and the double plants — Short Grass recipe (replaceable grass-like),
+    // rendered from the bottom sprite (untinted for now).
+    BlockProperties::of(Block::Fern, "fern", "Fern")
+        .texture("fern")
+        .instantBreak()
+        .cross()
+        .offsetType(BlockOffsetType::XZ)
+        .replaceable()
+        .noDrops()
+        .support(BlockSupport::Soil)
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::TallGrass, "tall_grass", "Tall Grass")
+        .texture("tall_grass_bottom")
+        .instantBreak()
+        .cross()
+        .offsetType(BlockOffsetType::XZ)
+        .replaceable()
+        .noDrops()
+        .support(BlockSupport::Soil)
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::LargeFern, "large_fern", "Large Fern")
+        .texture("large_fern_bottom")
+        .instantBreak()
+        .cross()
+        .offsetType(BlockOffsetType::XZ)
+        .replaceable()
+        .noDrops()
+        .support(BlockSupport::Soil)
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::DeadBush, "dead_bush", "Dead Bush")
+        .texture("dead_bush")
+        .instantBreak()
+        .cross()
+        .offsetType(BlockOffsetType::XZ)
+        .noDrops()
+        .support(BlockSupport::Soil)
+        .creative(CreativeCategory::NaturalBlocks),
+    // Mushrooms — centred cross, Soil support (structure placement only needs the
+    // render; the vanilla light/placement survival rules are not modelled here).
+    BlockProperties::of(Block::RedMushroom, "red_mushroom", "Red Mushroom")
+        .texture("red_mushroom")
+        .instantBreak()
+        .cross()
+        .support(BlockSupport::Soil)
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::BrownMushroom, "brown_mushroom", "Brown Mushroom")
+        .texture("brown_mushroom")
+        .instantBreak()
+        .cross()
+        .light(1U)
+        .support(BlockSupport::Soil)
+        .creative(CreativeCategory::NaturalBlocks),
+    // --- STRUCT AR-B batch 4: more no-new-model blocks (see enum comment) -------
+    // Glazed terracotta (16 colours) — full cubes, pattern on every face.
+    BlockProperties::of(Block::WhiteGlazedTerracotta, "white_glazed_terracotta",
+                        "White Glazed Terracotta")
+        .texture("white_glazed_terracotta").strength(1.4F).creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::OrangeGlazedTerracotta, "orange_glazed_terracotta",
+                        "Orange Glazed Terracotta")
+        .texture("orange_glazed_terracotta").strength(1.4F).creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::MagentaGlazedTerracotta, "magenta_glazed_terracotta",
+                        "Magenta Glazed Terracotta")
+        .texture("magenta_glazed_terracotta").strength(1.4F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::LightBlueGlazedTerracotta, "light_blue_glazed_terracotta",
+                        "Light Blue Glazed Terracotta")
+        .texture("light_blue_glazed_terracotta").strength(1.4F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::YellowGlazedTerracotta, "yellow_glazed_terracotta",
+                        "Yellow Glazed Terracotta")
+        .texture("yellow_glazed_terracotta").strength(1.4F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::LimeGlazedTerracotta, "lime_glazed_terracotta",
+                        "Lime Glazed Terracotta")
+        .texture("lime_glazed_terracotta").strength(1.4F).creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::PinkGlazedTerracotta, "pink_glazed_terracotta",
+                        "Pink Glazed Terracotta")
+        .texture("pink_glazed_terracotta").strength(1.4F).creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::GrayGlazedTerracotta, "gray_glazed_terracotta",
+                        "Gray Glazed Terracotta")
+        .texture("gray_glazed_terracotta").strength(1.4F).creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::LightGrayGlazedTerracotta, "light_gray_glazed_terracotta",
+                        "Light Gray Glazed Terracotta")
+        .texture("light_gray_glazed_terracotta").strength(1.4F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::CyanGlazedTerracotta, "cyan_glazed_terracotta",
+                        "Cyan Glazed Terracotta")
+        .texture("cyan_glazed_terracotta").strength(1.4F).creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::PurpleGlazedTerracotta, "purple_glazed_terracotta",
+                        "Purple Glazed Terracotta")
+        .texture("purple_glazed_terracotta").strength(1.4F)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::BlueGlazedTerracotta, "blue_glazed_terracotta",
+                        "Blue Glazed Terracotta")
+        .texture("blue_glazed_terracotta").strength(1.4F).creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::BrownGlazedTerracotta, "brown_glazed_terracotta",
+                        "Brown Glazed Terracotta")
+        .texture("brown_glazed_terracotta").strength(1.4F).creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::GreenGlazedTerracotta, "green_glazed_terracotta",
+                        "Green Glazed Terracotta")
+        .texture("green_glazed_terracotta").strength(1.4F).creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::RedGlazedTerracotta, "red_glazed_terracotta", "Red Glazed Terracotta")
+        .texture("red_glazed_terracotta").strength(1.4F).creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::BlackGlazedTerracotta, "black_glazed_terracotta",
+                        "Black Glazed Terracotta")
+        .texture("black_glazed_terracotta").strength(1.4F).creative(CreativeCategory::ColoredBlocks),
+    // Stained glass (16 colours) — translucent cubes, the Glass recipe.
+    BlockProperties::of(Block::WhiteStainedGlass, "white_stained_glass", "White Stained Glass")
+        .texture("white_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::OrangeStainedGlass, "orange_stained_glass", "Orange Stained Glass")
+        .texture("orange_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::MagentaStainedGlass, "magenta_stained_glass", "Magenta Stained Glass")
+        .texture("magenta_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::LightBlueStainedGlass, "light_blue_stained_glass",
+                        "Light Blue Stained Glass")
+        .texture("light_blue_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::YellowStainedGlass, "yellow_stained_glass", "Yellow Stained Glass")
+        .texture("yellow_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::LimeStainedGlass, "lime_stained_glass", "Lime Stained Glass")
+        .texture("lime_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::PinkStainedGlass, "pink_stained_glass", "Pink Stained Glass")
+        .texture("pink_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::GrayStainedGlass, "gray_stained_glass", "Gray Stained Glass")
+        .texture("gray_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::LightGrayStainedGlass, "light_gray_stained_glass",
+                        "Light Gray Stained Glass")
+        .texture("light_gray_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::CyanStainedGlass, "cyan_stained_glass", "Cyan Stained Glass")
+        .texture("cyan_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::PurpleStainedGlass, "purple_stained_glass", "Purple Stained Glass")
+        .texture("purple_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::BlueStainedGlass, "blue_stained_glass", "Blue Stained Glass")
+        .texture("blue_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::BrownStainedGlass, "brown_stained_glass", "Brown Stained Glass")
+        .texture("brown_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::GreenStainedGlass, "green_stained_glass", "Green Stained Glass")
+        .texture("green_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::RedStainedGlass, "red_stained_glass", "Red Stained Glass")
+        .texture("red_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::BlackStainedGlass, "black_stained_glass", "Black Stained Glass")
+        .texture("black_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .creative(CreativeCategory::ColoredBlocks),
+    // Misc full cubes.
+    BlockProperties::of(Block::PackedIce, "packed_ice", "Packed Ice")
+        .texture("packed_ice").strength(0.5F).creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::EndStoneBricks, "end_stone_bricks", "End Stone Bricks")
+        .texture("end_stone_bricks").strength(3.0F, 9.0F).creative(CreativeCategory::BuildingBlocks),
+    // Redstone lamp — rendered as its unlit cube for now (the lit-texture swap needs
+    // the Cube path to carry a lit variant; deferred).
+    BlockProperties::of(Block::RedstoneLamp, "redstone_lamp", "Redstone Lamp")
+        .texture("redstone_lamp").strength(0.3F).creative(CreativeCategory::Redstone),
+    // Pillars.
+    BlockProperties::of(Block::HayBlock, "hay_block", "Hay Bale")
+        .texture("hay_block_top", "hay_block_side", "hay_block_top").strength(0.5F).pillar()
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::StrippedOakLog, "stripped_oak_log", "Stripped Oak Log")
+        .texture("stripped_oak_log_top", "stripped_oak_log", "stripped_oak_log_top").strength(2.0F)
+        .pillar().creative(CreativeCategory::NaturalBlocks),
+    // Pressure plates / button reusing existing shaped models.
+    BlockProperties::of(Block::OakPressurePlate, "oak_pressure_plate", "Oak Pressure Plate")
+        .texture("oak_planks").strength(0.5F).pressurePlate().creative(CreativeCategory::Redstone),
+    BlockProperties::of(Block::AcaciaPressurePlate, "acacia_pressure_plate", "Acacia Pressure Plate")
+        .texture("acacia_planks").strength(0.5F).pressurePlate().creative(CreativeCategory::Redstone),
+    BlockProperties::of(Block::JungleButton, "jungle_button", "Jungle Button")
+        .texture("jungle_planks").instantBreak().button().creative(CreativeCategory::Redstone),
+    // --- STRUCT AR-B batch 5: family-completing cubes / pillars / leaves --------
+    BlockProperties::of(Block::SmoothBasalt, "smooth_basalt", "Smooth Basalt")
+        .texture("smooth_basalt").strength(1.25F, 4.2F).creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::BlueIce, "blue_ice", "Blue Ice")
+        .texture("blue_ice").strength(2.8F).creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::CopperBlock, "copper_block", "Block of Copper")
+        .texture("copper_block").strength(3.0F, 6.0F).creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::OxidizedCutCopper, "oxidized_cut_copper", "Oxidized Cut Copper")
+        .texture("oxidized_cut_copper").strength(3.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::WaxedOxidizedChiseledCopper, "waxed_oxidized_chiseled_copper",
+                        "Waxed Oxidized Chiseled Copper")
+        .texture("oxidized_chiseled_copper").strength(3.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::ReinforcedDeepslate, "reinforced_deepslate", "Reinforced Deepslate")
+        .texture("reinforced_deepslate_top", "reinforced_deepslate_side",
+                 "reinforced_deepslate_bottom")
+        .strength(55.0F, 1200.0F).creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::Target, "target", "Target")
+        .texture("target_top", "target_side", "target_top").strength(0.5F)
+        .creative(CreativeCategory::Redstone),
+    BlockProperties::of(Block::DiamondBlock, "diamond_block", "Block of Diamond")
+        .texture("diamond_block").strength(5.0F, 6.0F).creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::LapisBlock, "lapis_block", "Block of Lapis Lazuli")
+        .texture("lapis_block").strength(3.0F, 3.0F).creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::CoalBlock, "coal_block", "Block of Coal")
+        .texture("coal_block").strength(5.0F, 6.0F).creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::MossBlock, "moss_block", "Moss Block")
+        .texture("moss_block").strength(0.1F).creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::SmoothQuartz, "smooth_quartz", "Smooth Quartz Block")
+        .texture("quartz_block_bottom").strength(2.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::WhiteConcrete, "white_concrete", "White Concrete")
+        .texture("white_concrete").strength(1.8F).creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::RedConcrete, "red_concrete", "Red Concrete")
+        .texture("red_concrete").strength(1.8F).creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::InfestedCobblestone, "infested_cobblestone", "Infested Cobblestone")
+        .texture("cobblestone").strength(0.0F, 0.75F).creative(CreativeCategory::NaturalBlocks),
+    // Pillars.
+    BlockProperties::of(Block::SpruceWood, "spruce_wood", "Spruce Wood")
+        .texture("spruce_log").strength(2.0F).pillar().creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::StrippedOakWood, "stripped_oak_wood", "Stripped Oak Wood")
+        .texture("stripped_oak_log").strength(2.0F).pillar()
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::StrippedAcaciaLog, "stripped_acacia_log", "Stripped Acacia Log")
+        .texture("stripped_acacia_log_top", "stripped_acacia_log", "stripped_acacia_log_top")
+        .strength(2.0F).pillar().creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::MangroveLog, "mangrove_log", "Mangrove Log")
+        .texture("mangrove_log_top", "mangrove_log", "mangrove_log_top").strength(2.0F).pillar()
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::MangroveWood, "mangrove_wood", "Mangrove Wood")
+        .texture("mangrove_log").strength(2.0F).pillar().creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::MuddyMangroveRoots, "muddy_mangrove_roots", "Muddy Mangrove Roots")
+        .texture("muddy_mangrove_roots_top", "muddy_mangrove_roots_side",
+                 "muddy_mangrove_roots_top")
+        .strength(0.7F).pillar().creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::MangroveRoots, "mangrove_roots", "Mangrove Roots")
+        .texture("mangrove_roots_top", "mangrove_roots_side", "mangrove_roots_top")
+        .strength(0.7F).pillar().renderLayer(BlockRenderLayer::Cutout)
+        .creative(CreativeCategory::NaturalBlocks),
+    // Leaves.
+    BlockProperties::of(Block::MangroveLeaves, "mangrove_leaves", "Mangrove Leaves")
+        .texture("mangrove_leaves").leaves().creative(CreativeCategory::NaturalBlocks),
+    // --- STRUCT/WG terrain: copper ore + deepslate ore set ----------------------
+    BlockProperties::of(Block::CopperOre, "copper_ore", "Copper Ore")
+        .texture("copper_ore").strength(3.0F).creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::DeepslateCoalOre, "deepslate_coal_ore", "Deepslate Coal Ore")
+        .texture("deepslate_coal_ore").strength(4.5F, 3.0F).creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::DeepslateIronOre, "deepslate_iron_ore", "Deepslate Iron Ore")
+        .texture("deepslate_iron_ore").strength(4.5F, 3.0F).creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::DeepslateCopperOre, "deepslate_copper_ore", "Deepslate Copper Ore")
+        .texture("deepslate_copper_ore").strength(4.5F, 3.0F)
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::DeepslateGoldOre, "deepslate_gold_ore", "Deepslate Gold Ore")
+        .texture("deepslate_gold_ore").strength(4.5F, 3.0F).creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::DeepslateRedstoneOre, "deepslate_redstone_ore",
+                        "Deepslate Redstone Ore")
+        .texture("deepslate_redstone_ore").strength(4.5F, 3.0F)
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::DeepslateEmeraldOre, "deepslate_emerald_ore", "Deepslate Emerald Ore")
+        .texture("deepslate_emerald_ore").strength(4.5F, 3.0F)
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::DeepslateLapisOre, "deepslate_lapis_ore", "Deepslate Lapis Lazuli Ore")
+        .texture("deepslate_lapis_ore").strength(4.5F, 3.0F)
+        .creative(CreativeCategory::NaturalBlocks),
+    BlockProperties::of(Block::DeepslateDiamondOre, "deepslate_diamond_ore", "Deepslate Diamond Ore")
+        .texture("deepslate_diamond_ore").strength(4.5F, 3.0F)
+        .creative(CreativeCategory::NaturalBlocks),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {
-    return static_cast<std::uint8_t>(block) < static_cast<std::uint8_t>(Block::Count);
+    return static_cast<std::uint16_t>(block) < static_cast<std::uint16_t>(Block::Count);
 }
 
 [[nodiscard]] constexpr const BlockDefinition& blockDefinition(Block block) {
@@ -2227,6 +3341,34 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
     }
 }
 
+// The deepslate form of a stone ore, for the y<0 deepslate band. Vanilla 26.1's
+// ore configurations carry both a stone target and a deepslate target, so an ore
+// vein crossing into the deepslate layer becomes its deepslate variant. Returns
+// the block unchanged when it has no deepslate form, so the worldgen deepslate
+// pass can convert any cell unconditionally and only ores/stone actually change.
+[[nodiscard]] constexpr Block deepslateOreVariant(Block ore) {
+    switch (ore) {
+    case Block::CoalOre:
+        return Block::DeepslateCoalOre;
+    case Block::IronOre:
+        return Block::DeepslateIronOre;
+    case Block::CopperOre:
+        return Block::DeepslateCopperOre;
+    case Block::GoldOre:
+        return Block::DeepslateGoldOre;
+    case Block::RedstoneOre:
+        return Block::DeepslateRedstoneOre;
+    case Block::EmeraldOre:
+        return Block::DeepslateEmeraldOre;
+    case Block::LapisOre:
+        return Block::DeepslateLapisOre;
+    case Block::DiamondOre:
+        return Block::DeepslateDiamondOre;
+    default:
+        return ore;
+    }
+}
+
 [[nodiscard]] constexpr bool isReplaceable(Block block) {
     return blockDefinition(block).replaceable;
 }
@@ -2384,6 +3526,13 @@ inline constexpr float kFarmlandModelHeight = 15.0F / 16.0F;
 // Blocks whose model reads a horizontal FACING property (HorizontalDirectionalBlock).
 [[nodiscard]] constexpr bool hasHorizontalFacing(Block block) {
     return blockDefinition(block).horizontalFacing;
+}
+
+// DirectionalBlock: does this block take a full six-way FACING from the placer's
+// nearest looking direction? Observer and the piston family; everything else is
+// false.
+[[nodiscard]] constexpr bool hasDirectionalFacing(Block block) {
+    return blockDefinition(block).directionalFacing;
 }
 
 // The block-entity type this block hosts, invalid when it hosts none. deref =

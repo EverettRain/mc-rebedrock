@@ -12,7 +12,7 @@
 #include "gameplay/GameSession.hpp"
 #include "gameplay/ItemRegistry.hpp"
 #include "gameplay/StatusEffect.hpp"
-#include "gameplay/entities/CowEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"

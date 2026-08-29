@@ -169,6 +169,23 @@ BlockOrientation horizontalFacing(glm::vec3 lookDirection) {
     return lookDirection.z >= 0.0F ? BlockOrientation::South : BlockOrientation::North;
 }
 
+// Direction#getNearest / BlockPlaceContext#getNearestLookingDirection: the full
+// six-way version of horizontalFacing, picking the axis the view vector leans on
+// most (including the vertical one). Used by DirectionalBlock placement so an
+// observer or piston can point straight up or down, not only around the compass.
+BlockOrientation nearestLookingDirection(glm::vec3 lookDirection) {
+    const float ax = std::abs(lookDirection.x);
+    const float ay = std::abs(lookDirection.y);
+    const float az = std::abs(lookDirection.z);
+    if (ay >= ax && ay >= az) {
+        return lookDirection.y >= 0.0F ? BlockOrientation::Up : BlockOrientation::Down;
+    }
+    if (ax >= az) {
+        return lookDirection.x >= 0.0F ? BlockOrientation::East : BlockOrientation::West;
+    }
+    return lookDirection.z >= 0.0F ? BlockOrientation::South : BlockOrientation::North;
+}
+
 bool canBlockSurvive(const World& world, glm::ivec3 position, Block block,
                      BlockOrientation facing) {
     return kSupportRules[static_cast<std::size_t>(blockSupport(block))](world, position, facing);
@@ -339,6 +356,13 @@ BlockOrientation placementOrientation(Block placed, const PlacementContext& cont
     // clicking a wall's east face hangs the button facing east, off that wall.
     if (blockDefinition(placed).model == BlockModel::Button && isHorizontal(context.clickedFace)) {
         return context.clickedFace;
+    }
+    if (hasDirectionalFacing(placed)) {
+        // DirectionalBlock#getStateForPlacement (observer, piston):
+        // getNearestLookingDirection().getOpposite() — the block's front (the
+        // observed/pushed face) points away from the player, so the face turned
+        // toward the placer is the back, exactly like vanilla.
+        return oppositeOrientation(nearestLookingDirection(context.lookDirection));
     }
     if (hasHorizontalFacing(placed)) {
         // HorizontalDirectionalBlock: the front faces back at the player.

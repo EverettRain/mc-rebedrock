@@ -28,6 +28,7 @@
 #include "input/InputAction.hpp"
 #include "input/InputNaming.hpp"
 #include "ui/BitmapFontMetrics.hpp"
+#include "ui/OptionCycle.hpp"
 #include "ui/ButtonControl.hpp"
 #include "ui/ChatHistory.hpp"
 #include "ui/GuiNineSlice.hpp"
@@ -675,36 +676,6 @@ class HudRenderer final {
         }
     }
 
-    [[nodiscard]] std::string rainModeLabel(int mode) const {
-        switch (mode) {
-        case 0:
-            return translated("options.rebedrock.rainMode.texture", "Texture Rain");
-        case 1:
-            return translated("options.rebedrock.rainMode.particles", "Particle Rain");
-        default:
-            return translated("options.rebedrock.rainMode.async", "Asynchronous Particle Rain");
-        }
-    }
-
-    // The particle-level multiplier (粒子效果): 低 0.5x / 中 1.0x (the default) /
-    // 高 2x / 疯狂 3x. Scales the rain-drop budget and the particle system.
-
-    [[nodiscard]] std::string particleLevelLabel(int level) const {
-        switch (level) {
-        case 0:
-            return translated("options.rebedrock.particleLevel.low", "Low (0.5x)");
-        case 2:
-            return translated("options.rebedrock.particleLevel.high", "High (2x)");
-        case 3:
-            return translated("options.rebedrock.particleLevel.crazy", "Crazy (3x)");
-        default:
-            return translated("options.rebedrock.particleLevel.medium", "Medium (1x)");
-        }
-    }
-
-    // Applies the option to the live particle system (the spawn-count and
-    // live-cap scaling); the rain budget reads options.particleLevel directly.
-
     // PX-4: the localized, value-formatted label for a widget id. Wired into the
     // draw page as MenuBuildContext.labelFor, so a widget carries its own text and
     // the draw backend never re-derives it. Keyed on ui::WidgetId (the stable id);
@@ -726,6 +697,19 @@ class HudRenderer final {
             return ui::formatTranslation(
                 translated("options.percent_value", "%s: %s%%"), arguments);
         };
+        // Every cycling option's label comes from its table row (ui/OptionCycle.hpp)
+        // — the same row the click steps — so the two cannot disagree. Only the
+        // settings that are not GameOptions fields (the live window size, the GUI
+        // scale, the open save's difficulty) and the plain page buttons fall
+        // through to the switch below.
+        if (const ui::OptionDesc* option = ui::findCyclingOption(button); option != nullptr) {
+            return optionValue(
+                translated(option->nameKey, option->nameFallback),
+                ui::optionValueLabel(*option, ui::readOption(*option, options),
+                                     [this](std::string_view key, std::string_view fallback) {
+                                         return translated(key, fallback);
+                                     }));
+        }
         switch (button) {
         case ui::WidgetId::Resume:
             return translated("menu.returnToGame", "Back to Game");
@@ -771,45 +755,6 @@ class HudRenderer final {
             return translated("options.video", "Video Settings...");
         case ui::WidgetId::Controls:
             return translated("options.controls", "Controls...");
-        case ui::WidgetId::AutoJump:
-            return optionValue(translated("options.autoJump", "Auto-Jump"),
-                               toggle(options.autoJump));
-        case ui::WidgetId::FrameRateLimit:
-            return optionValue(
-                translated("options.framerateLimit", "Max Framerate"),
-                options.frameRateLimit == 0
-                    ? translated("options.framerateLimit.max", "Unlimited")
-                    : formatTemplate(translated("options.framerate", "%s fps"),
-                                     std::to_string(options.frameRateLimit)));
-        case ui::WidgetId::AntiAliasing:
-            return optionValue(
-                translated("options.rebedrock.antiAliasing", "Anti-Aliasing"),
-                toggle(options.antiAliasing));
-        case ui::WidgetId::Anisotropy:
-            return optionValue(translated("options.maxAnisotropy", "Anisotropic Filtering"),
-                               std::to_string(options.anisotropy) + "x");
-        case ui::WidgetId::ViewBobbing:
-            return optionValue(translated("options.viewBobbing", "View Bobbing"),
-                               toggle(options.viewBobbing));
-        case ui::WidgetId::SmoothLighting:
-            switch (options.smoothLightingQuality) {
-            case world::SmoothLightingQuality::Off:
-                return optionValue(translated("options.ao", "Smooth Lighting"),
-                                   translated("options.ao.off", "OFF"));
-            case world::SmoothLightingQuality::High:
-                return optionValue(translated("options.ao", "Smooth Lighting"),
-                                   translated("options.ao.max", "Maximum"));
-            case world::SmoothLightingQuality::Standard:
-                return optionValue(translated("options.ao", "Smooth Lighting"),
-                                   translated("options.ao.min", "Minimum"));
-            }
-            return {};
-        case ui::WidgetId::DynamicLight:
-            return optionValue(
-                translated("options.rebedrock.dynamicLights", "Dynamic Lighting"),
-                toggle(options.dynamicLight));
-        case ui::WidgetId::Vsync:
-            return optionValue(translated("options.vsync", "VSync"), toggle(options.vsync));
         case ui::WidgetId::Difficulty:
             // Only present on the in-world options page, where a save is open.
             return optionValue(
@@ -822,28 +767,8 @@ class HudRenderer final {
                                                         : gameplay::Difficulty::Normal)));
         case ui::WidgetId::Experimental:
             return translated("selectWorld.experimental", "Experimental") + "...";
-        case ui::WidgetId::RainMode:
-            return optionValue(translated("options.rebedrock.rainMode", "Rain Mode"),
-                               rainModeLabel(options.rainMode));
-        case ui::WidgetId::ParticleLevel:
-            return optionValue(translated("options.particles", "Particles"),
-                               particleLevelLabel(options.particleLevel));
-        case ui::WidgetId::SunShadows:
-            return optionValue(translated("options.rebedrock.sunShadows", "Sun Shadows"),
-                               toggle(options.sunShadows));
-        case ui::WidgetId::RainCollisionCache:
-            return optionValue(
-                translated("options.rebedrock.rainCollisionCache", "Rain Collision Cache"),
-                toggle(options.rainCollisionCache));
         case ui::WidgetId::Language:
             return translated("options.language", "Language...");
-        case ui::WidgetId::ForceUnicodeFont:
-            return optionValue(translated("options.forceUnicodeFont", "Force Unicode Font"),
-                               toggle(options.forceUnicodeFont));
-        case ui::WidgetId::Subtitles:
-            // PX-6 Bug3: the sound-subtitles accessibility toggle.
-            return optionValue(translated("options.showSubtitles", "Show Subtitles"),
-                               toggle(options.showSubtitles));
         case ui::WidgetId::Done:
             return translated("gui.done", "Done");
         case ui::WidgetId::Singleplayer:
@@ -882,6 +807,24 @@ class HudRenderer final {
             return translated("deathScreen.titleScreen", "Title Screen");
         case ui::WidgetId::ResetKeyBinds:
             return translated("controls.resetAll", "Reset Keys");
+        // Every cycling option returned above, from its table row. They are
+        // listed here so this switch stays exhaustive (-Wswitch): a widget id
+        // added later still has to be given a label somewhere, and the compiler
+        // says so.
+        case ui::WidgetId::AutoJump:
+        case ui::WidgetId::FrameRateLimit:
+        case ui::WidgetId::AntiAliasing:
+        case ui::WidgetId::Anisotropy:
+        case ui::WidgetId::SmoothLighting:
+        case ui::WidgetId::DynamicLight:
+        case ui::WidgetId::Vsync:
+        case ui::WidgetId::ViewBobbing:
+        case ui::WidgetId::ForceUnicodeFont:
+        case ui::WidgetId::Subtitles:
+        case ui::WidgetId::RainMode:
+        case ui::WidgetId::ParticleLevel:
+        case ui::WidgetId::SunShadows:
+        case ui::WidgetId::RainCollisionCache:
         case ui::WidgetId::None:
         case ui::WidgetId::WorldRow:
         case ui::WidgetId::LanguageRow:

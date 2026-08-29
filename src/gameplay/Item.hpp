@@ -295,8 +295,9 @@ class Item {
 // EntityType supplier here (rather than in a parallel mapping) lets the renderer
 // tint each egg with its species' colours and lets the interaction system spawn
 // the right creature — all without a hardcoded entity list. The supplier is a
-// function pointer because PigEntity::type() and friends return a static-local
-// reference; the pointer is known at link time so the instance stays constexpr.
+// function pointer because every species is looked up by name at call time
+// (SpawnEggItems.hpp); the pointer is known at link time so the instance stays
+// constexpr.
 class SpawnEggItem : public Item {
   public:
     using EntitySupplier = const entities::EntityType& (*)();
@@ -540,6 +541,21 @@ inline constexpr Item Diamond =
     Item::of("diamond").category(CreativeCategory::Ingredients);
 inline constexpr Item Emerald =
     Item::of("emerald").category(CreativeCategory::Ingredients);
+// The ores' 26.1 drops: iron/gold/copper drop a *raw* ore item (smelted to the
+// ingot), lapis/redstone/quartz drop their material directly. iron_ingot and
+// gold_ingot already exist as the smelting products; these are the mined form.
+inline constexpr Item RawIron =
+    Item::of("raw_iron").category(CreativeCategory::Ingredients);
+inline constexpr Item RawCopper =
+    Item::of("raw_copper").category(CreativeCategory::Ingredients);
+inline constexpr Item RawGold =
+    Item::of("raw_gold").category(CreativeCategory::Ingredients);
+inline constexpr Item LapisLazuli =
+    Item::of("lapis_lazuli").category(CreativeCategory::Ingredients);
+inline constexpr Item Redstone =
+    Item::of("redstone").category(CreativeCategory::Redstone);
+inline constexpr Item Quartz =
+    Item::of("quartz").category(CreativeCategory::Ingredients);
 inline constexpr Item Stick =
     Item::of("stick").category(CreativeCategory::Ingredients);
 inline constexpr Item Flint =
@@ -982,11 +998,15 @@ inline constexpr Item DiamondBoots =
 // their constructors need entity headers that sit above us in the include graph.
 // The order sets both the creative-catalog order within each tab and the item
 // texture-array layout the renderer appends. Grouped materials / food / tools.
-inline constexpr std::array<const Item*, 96> kItemRegistry{
+inline constexpr std::array<const Item*, 102> kItemRegistry{
     &items::Bucket,     &items::WaterBucket, &items::LavaBucket, &items::MilkBucket,
     &items::Coal,
     &items::IronIngot,
-    &items::GoldIngot,  &items::Diamond,     &items::Emerald,    &items::Stick,
+    &items::GoldIngot,  &items::Diamond,     &items::Emerald,
+    // The mined ore items (26.1 raw ores + lapis/redstone/quartz materials).
+    &items::RawIron,    &items::RawCopper,   &items::RawGold,
+    &items::LapisLazuli, &items::Redstone,   &items::Quartz,
+    &items::Stick,
     &items::Flint,      &items::Feather,     &items::String,     &items::Leather,
     &items::Sugar,      &items::Egg,         &items::Bone,       &items::Paper,
     &items::Book,       &items::WheatSeeds,  &items::Wheat,
@@ -1032,10 +1052,11 @@ inline constexpr std::array<const Item*, 96> kItemRegistry{
 // versa) is a compile error, not a silent truncation: 57 pre-EQ-0 items + the
 // 20 armor items EQ-0 added + the 2 (arrow, bow) RW-1 adds + the 16 dyes DYE-1
 // adds here.
-static_assert(kItemRegistry.size() == 57U + 20U + 2U + 16U + 1U,
+static_assert(kItemRegistry.size() == 57U + 20U + 2U + 16U + 1U + 6U,
               "kItemRegistry size must track every entry listed above — bump "
               "this alongside the array when adding or removing items "
-              "(the +1 is AR-CX4-b's flint_and_steel)");
+              "(the +1 is AR-CX4-b's flint_and_steel; the +6 are the mined ore "
+              "items raw_iron/raw_copper/raw_gold/lapis_lazuli/redstone/quartz)");
 
 // The registry is well formed when every entry is in this project's namespace,
 // has a non-empty path, and no two entries share an identifier.

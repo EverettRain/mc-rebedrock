@@ -1,7 +1,6 @@
 #include "gameplay/EntityRenderSnapshot.hpp"
 #include "gameplay/GameSession.hpp"
-#include "gameplay/entities/PigEntity.hpp"
-#include "gameplay/entities/ZombieEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"
@@ -82,9 +81,9 @@ int main() {
         gameplay::GameSession session;
         SilentHost host;
         session.worldEntities().spawn({4.5F, 1.0F, 4.5F},
-                                      gameplay::entities::PigEntity::type(), 7U);
+                                      gameplay::entities::builtinSpecies("pig"), 7U);
         session.worldEntities().spawn({6.5F, 1.0F, 6.5F},
-                                      gameplay::entities::ZombieEntity::type(), 9U);
+                                      gameplay::entities::builtinSpecies("zombie"), 9U);
         session.tick(world, host);
 
         // The snapshot is a by-value copy from the published bundle; bind it first
@@ -110,7 +109,7 @@ int main() {
         // state), which is itself a reason the renderer cannot just hold one.
         std::vector<gameplay::SimpleEntity> live;
         auto& pig = live.emplace_back();
-        pig.type = &gameplay::entities::PigEntity::type();
+        pig.type = &gameplay::entities::builtinSpecies("pig");
         pig.id = 41U;
         pig.position = {1.0F, 2.0F, 3.0F};
         pig.previousPosition = {1.0F, 2.0F, 2.0F};
@@ -126,7 +125,7 @@ int main() {
         REQUIRE(snapshot.entities().size() == 1U);
         const auto& state = snapshot.entities().at(0);
         REQUIRE(state.id == 41U);
-        REQUIRE(state.type == &gameplay::entities::PigEntity::type());
+        REQUIRE(state.type == &gameplay::entities::builtinSpecies("pig"));
         REQUIRE(state.position == glm::vec3(1.0F, 2.0F, 3.0F));
         REQUIRE(state.previousPosition == glm::vec3(1.0F, 2.0F, 2.0F));
         REQUIRE(state.yaw == 0.5F);
@@ -156,7 +155,7 @@ int main() {
         std::vector<gameplay::SimpleEntity> live;
         for (std::uint64_t id = 1U; id <= 3U; ++id) {
             auto& entity = live.emplace_back();
-            entity.type = &gameplay::entities::ZombieEntity::type();
+            entity.type = &gameplay::entities::builtinSpecies("zombie");
             entity.id = id;
         }
         snapshot.capture(live, noItems, noOrbs, noProjectiles, noFallingBlocks);
@@ -228,11 +227,11 @@ int main() {
         gameplay::EntityRenderSnapshot snapshot;
         std::vector<gameplay::SimpleEntity> live;
         auto& pig = live.emplace_back();
-        pig.type = &gameplay::entities::PigEntity::type();
+        pig.type = &gameplay::entities::builtinSpecies("pig");
         pig.id = 7U;
         pig.position = {10.0F, 4.0F, 10.0F}; // pig AABB spans y [4, 5.4], x/z ±0.45
         auto& zombie = live.emplace_back();
-        zombie.type = &gameplay::entities::ZombieEntity::type();
+        zombie.type = &gameplay::entities::builtinSpecies("zombie");
         zombie.id = 9U;
         zombie.position = {10.0F, 4.0F, 20.0F}; // beyond any reach used here
         snapshot.capture(live, {}, {}, {}, {});

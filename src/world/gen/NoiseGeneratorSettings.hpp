@@ -77,6 +77,19 @@ struct NoiseGeneratorSettings final {
     // minY so a dimension can opt out explicitly.
     bool fillBelowLatticeFloor = true;
 
+    // Vanilla 26.1's deepslate surface rule. Below `deepslateGradientTop` the
+    // default block grades into `deepslateBlock`: solid deepslate at and below
+    // `deepslateGradientBottom`, none at/above the top, and a positional-random
+    // speckle in between so the boundary is a natural transition rather than a flat
+    // seam. Applied as a post-pass *after* carving and ores (SurfaceGenerator), so
+    // only leftover default-block cells convert — caves (air), ores and bedrock are
+    // untouched, and the deepslate band still gets its caves. `Air` disables the
+    // pass (the nether/end have no deepslate). Overworld: Deepslate, top 0,
+    // bottom -8, matching vanilla's 0..-8 transition.
+    Block deepslateBlock = Block::Air;
+    int deepslateGradientTop = 0;
+    int deepslateGradientBottom = -8;
+
     // NoiseGeneratorSettings#getBedrockFloorPosition / #getBedrockRoofPosition:
     // the number of bedrock rows to lay at the floor and (for a ceilinged
     // dimension) the roof of the noise column. The overworld lays its bedrock in
@@ -104,6 +117,11 @@ struct NoiseGeneratorSettings final {
         settings.topSlide = NoiseSlide{-10.0, 3, 0};
         settings.bottomSlide = NoiseSlide{-30.0, 0, 0};
         settings.fillBelowLatticeFloor = true;
+        // The deepslate band below y=0 (vanilla 26.1). The nether/end leave
+        // deepslateBlock at Air and skip the pass.
+        settings.deepslateBlock = Block::Deepslate;
+        settings.deepslateGradientTop = 0;
+        settings.deepslateGradientBottom = -8;
         settings.bedrockFloorRows = 0;  // Features::buildSurface lays it
         settings.bedrockRoofRows = 0;
         return settings;

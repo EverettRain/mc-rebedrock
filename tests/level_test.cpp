@@ -10,7 +10,7 @@
 #include "gameplay/Difficulty.hpp"
 #include "gameplay/GameSession.hpp"  // SimulationHost lives here
 #include "gameplay/Level.hpp"
-#include "gameplay/entities/CowEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "runtime/GameRuntime.hpp"
 #include "world/Block.hpp"
@@ -182,8 +182,8 @@ int main() {
         auto worldA = makeFlatWorld();
         a.bindWorld(worldA);
         // Fixed spawn seeds -> reproducible wander RNG (mob_brain_test pattern).
-        a.entities.spawn({8.0F, 1.001F, 8.0F}, mc::gameplay::entities::CowEntity::type(), 11U);
-        a.entities.spawn({12.0F, 1.001F, 8.0F}, mc::gameplay::entities::CowEntity::type(), 12U);
+        a.entities.spawn({8.0F, 1.001F, 8.0F}, mc::gameplay::entities::builtinSpecies("cow"), 11U);
+        a.entities.spawn({12.0F, 1.001F, 8.0F}, mc::gameplay::entities::builtinSpecies("cow"), 12U);
         for (int t = 0; t < 40; ++t) {
             static_cast<void>(a.entities.tick(a.world(), glm::vec3{100.0F, 1.0F, 100.0F},
                                               0.6F, 1.8F, mc::gameplay::Difficulty::Normal));
@@ -196,8 +196,8 @@ int main() {
         b.id = DimensionId::Overworld;
         auto worldB = makeFlatWorld();
         b.bindWorld(worldB);
-        b.entities.spawn({8.0F, 1.001F, 8.0F}, mc::gameplay::entities::CowEntity::type(), 11U);
-        b.entities.spawn({12.0F, 1.001F, 8.0F}, mc::gameplay::entities::CowEntity::type(), 12U);
+        b.entities.spawn({8.0F, 1.001F, 8.0F}, mc::gameplay::entities::builtinSpecies("cow"), 11U);
+        b.entities.spawn({12.0F, 1.001F, 8.0F}, mc::gameplay::entities::builtinSpecies("cow"), 12U);
         for (int t = 0; t < 40; ++t) {
             static_cast<void>(b.entities.tick(b.world(), glm::vec3{100.0F, 1.0F, 100.0F},
                                               0.6F, 1.8F, mc::gameplay::Difficulty::Normal));

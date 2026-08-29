@@ -61,21 +61,19 @@ Application::Application(
 int Application::run() {
     // One provider owns where every asset lives; the renderer and its texture
     // manager ask it for files instead of rebuilding the layout from path
-    // arithmetic. The block-texture and sound roots below are derived from it too
-    // rather than being spelled out a second time.
+    // arithmetic. This one serves rebedrock's own assets and forms the base of
+    // the resource-pack stack built below.
     const assets::DirectoryResourceProvider bundled{resourceRoot_};
-    const auto vanillaRoot = bundled.vanillaRoot();
 
     std::cout << "MC Rebedrock Vulkan milestone\n";
     std::cout << "Chunk: " << world::kChunkWidth << 'x' << world::kChunkDepth << 'x'
               << world::kWorldHeight << "\n";
     std::cout << "Sections per chunk: " << world::kSectionCount << "\n";
     std::cout << "Sea level: " << world::kSeaLevel << "\n";
-    std::cout << "Resources: " << vanillaRoot << "\n";
-
-    if (!std::filesystem::is_directory(vanillaRoot)) {
-        std::cerr << "Warning: extracted Minecraft 1.16.1 resources were not found.\n";
-    }
+    // The built-in root carries this project's own assets only; every vanilla
+    // resource comes from the pack stack printed below, which the run refuses to
+    // start without.
+    std::cout << "Resources: " << resourceRoot_ << "\n";
 
     const auto optionsPath = configRoot_ / "options.properties";
     config::GameOptions options = config::GameOptions::load(optionsPath);

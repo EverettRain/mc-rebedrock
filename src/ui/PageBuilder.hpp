@@ -15,6 +15,7 @@
 // asserts that clicking widget N fires callback N. ui:: never touches Vulkan.
 
 #include "ui/PageStack.hpp"
+#include "ui/WidgetId.hpp"
 #include "input/InputAction.hpp"
 #include "input/InputNaming.hpp"
 #include "ui/Widget.hpp"
@@ -98,23 +99,16 @@ struct MenuCallbacks final {
     // Video / gameplay toggles + cycles
     std::function<void()> cycleResolution{};
     std::function<void()> cycleGuiScale{};
-    std::function<void()> cycleFrameRateLimit{};
-    std::function<void()> toggleAntiAliasing{};
-    std::function<void()> cycleAnisotropy{};
-    std::function<void()> toggleVsync{};
-    std::function<void()> toggleSmoothLighting{};
-    std::function<void()> toggleDynamicLight{};
-    std::function<void()> toggleViewBobbing{};
-    std::function<void()> toggleAutoJump{};
+    // Every option that steps through a fixed list of values goes through this
+    // one callback, keyed on the widget's id: the values, the field and the label
+    // all come from ui::OptionCycle's table, so a new option is a table row plus
+    // the addOptionButton line that places it — never another callback here.
+    // `direction` is +1 for the next value and -1 for the previous, so a two-way
+    // selector control needs no new plumbing.
+    std::function<void(WidgetId id, int direction)> cycleOption{};
     std::function<void()> cycleDifficulty{};
-    std::function<void()> toggleForceUnicodeFont{};
-    std::function<void()> toggleSubtitles{};  // PX-6 Bug3: sound subtitles on/off
 
     // Experimental page
-    std::function<void()> cycleRainMode{};
-    std::function<void()> cycleParticleLevel{};
-    std::function<void()> toggleSunShadows{};
-    std::function<void()> toggleRainCollisionCache{};
 
     // Language list row select (draft selection, committed on Done)
     std::function<void(std::size_t rowIndex)> selectLanguageRow{};
@@ -129,26 +123,6 @@ struct MenuCallbacks final {
     SliderBind viewDistance{};
     SliderBind simulationDistance{};
     SliderBind masterVolume{};
-};
-
-// Stable debug ids so tests/logging can name a widget without a behaviour switch.
-// These deliberately mirror the old MenuButton values by intent, but nothing
-// dispatches on them — they are labels only.
-enum class WidgetId : std::uint16_t {
-    None = 0,
-    Singleplayer, Options, Exit,
-    PlaySelected, CreateWorld, Edit, Back,
-    CreateGameMode, CreateAllowCommands, CreateConfirm,
-    SaveRename, DeleteWorld, DeleteConfirm, DeleteCancel,
-    Resume, SaveQuit, Respawn, TitleScreen,
-    MasterVolume, Difficulty, Controls, VideoSettings, Language, Experimental, Done,
-    Resolution, GuiScale, ViewDistance, SimulationDistance, FrameRateLimit,
-    AntiAliasing, Anisotropy, SmoothLighting, DynamicLight, Vsync,
-    ViewBobbing, AutoJump, ForceUnicodeFont,
-    RainMode, ParticleLevel, SunShadows, RainCollisionCache,
-    WorldRow, LanguageRow,
-    KeyBindRow, ResetKeyBinds,
-    Subtitles,  // PX-6 Bug3: the sound-subtitles accessibility toggle
 };
 
 namespace detail {
@@ -168,6 +142,20 @@ inline void addButton(Page& page, const RectProvider& rectFor, const MenuBuildCo
     w.enabled = enabled;
     w.onActivate = std::move(onActivate);
     page.push_back(std::move(w));
+}
+
+// A cycling option's button. Its action is always the same generic step, keyed
+// on the id — the values, the field and the label are the table's business
+// (ui/OptionCycle.hpp), never this call site's.
+inline void addOptionButton(Page& page, const RectProvider& rectFor, const MenuBuildContext& ctx,
+                            WidgetId id, const MenuCallbacks& cb) {
+    // The callback is COPIED into the widget, like every other action: a Page
+    // outlives the MenuCallbacks reference buildPage was handed.
+    addButton(page, rectFor, ctx, id, [cycle = cb.cycleOption, id] {
+        if (cycle) {
+            cycle(id, /*direction=*/1);
+        }
+    });
 }
 
 inline void addSlider(Page& page, const RectProvider& rectFor, const MenuBuildContext& ctx,
@@ -213,6 +201,7 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
 [[nodiscard]] inline Page buildPage(PageId id, const MenuBuildContext& ctx,
                                     const MenuCallbacks& cb, const RectProvider& rectFor) {
     using detail::addButton;
+    using detail::addOptionButton;
     using detail::addListRow;
     using detail::addSlider;
     Page page;
@@ -275,7 +264,7 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
             }
             addButton(page, rectFor, ctx, WidgetId::Controls, cb.openControls);
             addButton(page, rectFor, ctx, WidgetId::VideoSettings, cb.openVideoSettings);
-            addButton(page, rectFor, ctx, WidgetId::Subtitles, cb.toggleSubtitles);
+            addOptionButton(page, rectFor, ctx, WidgetId::Subtitles, cb);
             addButton(page, rectFor, ctx, WidgetId::Language, cb.openLanguage);
             addButton(page, rectFor, ctx, WidgetId::Experimental, cb.openExperimental);
             addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
@@ -286,12 +275,12 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
             addButton(page, rectFor, ctx, WidgetId::GuiScale, cb.cycleGuiScale);
             addSlider(page, rectFor, ctx, WidgetId::ViewDistance, cb.viewDistance);
             addSlider(page, rectFor, ctx, WidgetId::SimulationDistance, cb.simulationDistance);
-            addButton(page, rectFor, ctx, WidgetId::FrameRateLimit, cb.cycleFrameRateLimit);
-            addButton(page, rectFor, ctx, WidgetId::AntiAliasing, cb.toggleAntiAliasing);
-            addButton(page, rectFor, ctx, WidgetId::Anisotropy, cb.cycleAnisotropy);
-            addButton(page, rectFor, ctx, WidgetId::SmoothLighting, cb.toggleSmoothLighting);
-            addButton(page, rectFor, ctx, WidgetId::DynamicLight, cb.toggleDynamicLight);
-            addButton(page, rectFor, ctx, WidgetId::Vsync, cb.toggleVsync);
+            addOptionButton(page, rectFor, ctx, WidgetId::FrameRateLimit, cb);
+            addOptionButton(page, rectFor, ctx, WidgetId::AntiAliasing, cb);
+            addOptionButton(page, rectFor, ctx, WidgetId::Anisotropy, cb);
+            addOptionButton(page, rectFor, ctx, WidgetId::SmoothLighting, cb);
+            addOptionButton(page, rectFor, ctx, WidgetId::DynamicLight, cb);
+            addOptionButton(page, rectFor, ctx, WidgetId::Vsync, cb);
             addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
             break;
 
@@ -312,8 +301,8 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
                     if (cb.beginKeyCapture) cb.beginKeyCapture(action);
                 });
             }
-            addButton(page, rectFor, ctx, WidgetId::ViewBobbing, cb.toggleViewBobbing);
-            addButton(page, rectFor, ctx, WidgetId::AutoJump, cb.toggleAutoJump);
+            addOptionButton(page, rectFor, ctx, WidgetId::ViewBobbing, cb);
+            addOptionButton(page, rectFor, ctx, WidgetId::AutoJump, cb);
             addButton(page, rectFor, ctx, WidgetId::ResetKeyBinds, cb.resetKeyBinds);
             addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
             break;
@@ -324,15 +313,15 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
                 addListRow(page, rectFor, WidgetId::LanguageRow, row,
                            [cb, row]() { if (cb.selectLanguageRow) cb.selectLanguageRow(row); });
             }
-            addButton(page, rectFor, ctx, WidgetId::ForceUnicodeFont, cb.toggleForceUnicodeFont);
+            addOptionButton(page, rectFor, ctx, WidgetId::ForceUnicodeFont, cb);
             addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
             break;
 
         case PageId::Experimental:
-            addButton(page, rectFor, ctx, WidgetId::RainMode, cb.cycleRainMode);
-            addButton(page, rectFor, ctx, WidgetId::ParticleLevel, cb.cycleParticleLevel);
-            addButton(page, rectFor, ctx, WidgetId::SunShadows, cb.toggleSunShadows);
-            addButton(page, rectFor, ctx, WidgetId::RainCollisionCache, cb.toggleRainCollisionCache);
+            addOptionButton(page, rectFor, ctx, WidgetId::RainMode, cb);
+            addOptionButton(page, rectFor, ctx, WidgetId::ParticleLevel, cb);
+            addOptionButton(page, rectFor, ctx, WidgetId::SunShadows, cb);
+            addOptionButton(page, rectFor, ctx, WidgetId::RainCollisionCache, cb);
             addButton(page, rectFor, ctx, WidgetId::Back, cb.back);
             break;
 

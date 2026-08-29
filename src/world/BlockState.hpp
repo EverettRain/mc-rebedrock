@@ -256,7 +256,7 @@ class BlockState final {
     // The raw id, for the section palette and for hashing. Not stable across
     // builds — the save layer must map it through identifiers and property
     // names, exactly as it already does for Block.
-    [[nodiscard]] constexpr std::uint16_t rawId() const { return id_; }
+    [[nodiscard]] constexpr std::uint32_t rawId() const { return id_; }
     // Rebuilds a state from a raw id — a chunk section's palette entry, or the
     // save layer round-tripping a cell. An id at or above the built-in table
     // (isUnknownStateId) names an UnknownBlock placeholder: content this build's
@@ -264,7 +264,7 @@ class BlockState final {
     // name and properties back. Such an id is preserved rather than clamped here;
     // every metadata accessor already clamps it to block 0's air-like defaults
     // (see validatedBlockStateId), so the cell stays inert without a special case.
-    [[nodiscard]] static constexpr BlockState fromRawId(std::uint16_t value) {
+    [[nodiscard]] static constexpr BlockState fromRawId(std::uint32_t value) {
         BlockState state;
         state.id_ = value;
         return state;
@@ -282,7 +282,7 @@ class BlockState final {
         return static_cast<std::uint8_t>(requested > maximum ? maximum : requested);
     }
 
-    std::uint16_t id_ = 0U;
+    std::uint32_t id_ = 0U;
 };
 
 // The collision/selection shape a state carries lives in BlockShape.hpp
@@ -306,7 +306,13 @@ class BlockState final {
     return skyLightOpacity(state.block());
 }
 
-static_assert(sizeof(BlockState) == sizeof(std::uint16_t));
+// BlockState is exactly its raw id: a uint32 now (widened from uint16 so the
+// interned block-state space can grow past 65536 — see BlockStateTable.hpp). A
+// chunk cell never stores this directly; the section palette does, and each cell
+// holds only a small local index (ChunkSection), so the width change does not
+// grow world memory. The id is never serialised raw — saves and the wire carry
+// the block name + property names/values.
+static_assert(sizeof(BlockState) == sizeof(std::uint32_t));
 static_assert(BlockState{}.block() == Block::Air);
 // The schema's arithmetic, pinned at compile time: a crop's age is its own
 // property, and it no longer travels in the direction enum.

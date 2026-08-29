@@ -248,7 +248,7 @@ std::vector<ItemStack> ProjectileSystem::tick(const world::World& world, EntityS
     std::erase_if(entities_, [](const Projectile& projectile) {
         return projectile.consumed ||
                (projectile.inGround && projectile.lifeTicks >= kProjectileLifetimeTicks) ||
-               projectile.position.y < -64.0F;
+               projectile.position.y < world::kVoidDespawnY;
     });
 
     return pickedUp;

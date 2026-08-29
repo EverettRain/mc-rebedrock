@@ -9,7 +9,9 @@
 
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <deque>
+#include <iostream>
 #include <memory>
 
 namespace mc::gameplay::entities {
@@ -19,7 +21,9 @@ namespace {
 
 // Passive land animals reuse AnimalAi wholesale (Swim/EscapeDanger/Wander/Look),
 // exactly as Pig and Cow do; only the panic-speed multiplier differs per species.
-const AnimalAi kChickenAi{1.4F, 1.0F, 0}; // chicken PanicGoal runs at 1.4
+const AnimalAi kPigAi{1.25F, 1.0F, 1};     // pig PanicGoal runs at 1.25
+const AnimalAi kCowAi{2.0F, 1.0F, 0};      // cow PanicGoal runs at 2.0
+const AnimalAi kChickenAi{1.4F, 1.0F, 0};  // chicken PanicGoal runs at 1.4
 
 // AR-A2: the one thing sheep do that no other AnimalAi species does yet — a
 // sheared sheep regrows its wool by eating grass. This is exactly the
@@ -60,9 +64,29 @@ const MeleeMonsterAi kMeleeMonsterAi;
 
 // --- loot ----------------------------------------------------------------
 
+// Pig.json (26.1): one to three raw porkchops. (Vanilla drops the cooked cut
+// when the pig dies on fire; that path is not modelled here — the same
+// simplification every other meat drop in this table makes.)
+EntityDrops rollPigLoot(std::uint64_t& rng) {
+    EntityDrops drops;
+    const auto count = static_cast<std::uint8_t>(1U + mc::rng::nextInt(rng, 3U));
+    drops.add({world::Block::Air, count, &items::Porkchop});
+    return drops;
+}
+
+// Cow.json (26.1): one pool rolls 0-2 leather, the other 1-3 raw beef.
+EntityDrops rollCowLoot(std::uint64_t& rng) {
+    EntityDrops drops;
+    const auto beefCount = static_cast<std::uint8_t>(1U + mc::rng::nextInt(rng, 3U));
+    const auto leatherCount = static_cast<std::uint8_t>(mc::rng::nextInt(rng, 3U));
+    drops.add({world::Block::Air, beefCount, &items::Beef});
+    drops.add({world::Block::Air, leatherCount, &items::Leather});
+    return drops;
+}
+
 // Chicken.json (26.1): one raw chicken plus 0-2 feathers. (Vanilla swaps the
 // raw chicken for cooked when the chicken dies on fire; that path is not
-// modelled here, same simplification CowEntity's loot notes.)
+// modelled here, the same simplification the pig/cow rows above note.)
 EntityDrops rollChickenLoot(std::uint64_t& rng) {
     EntityDrops drops;
     const auto feathers = static_cast<std::uint8_t>(mc::rng::nextInt(rng, 3U));
@@ -84,10 +108,9 @@ EntityDrops rollSheepLoot(std::uint64_t& rng) {
     return drops;
 }
 
-// Husk.json (26.1): 0-2 rotten flesh, the same pool zombie.json rolls — a
-// husk drops nothing else (no armour/equipment table exists yet, AR-M2).
-// Shared with the zombie's own loot fn below since both tables are identical
-// in 26.1 (LootTables.ZOMBIE reused verbatim by Husk).
+// Zombie.json / Husk.json (26.1): 0-2 rotten flesh and nothing else (no
+// armour/equipment table exists yet, AR-M2). One function serves both rows —
+// 26.1's Husk reuses LootTables.ZOMBIE verbatim.
 EntityDrops rollRottenFleshLoot(std::uint64_t& rng) {
     EntityDrops drops;
     const auto count = static_cast<std::uint8_t>(mc::rng::nextInt(rng, 3U));
@@ -101,6 +124,38 @@ EntityDrops rollRottenFleshLoot(std::uint64_t& rng) {
 // the assets are not shipped yet, so these creatures do not appear in-game; the
 // descriptor is data proving the render interface carries them. String literals
 // have static storage, so the descriptor's views outlive the type.
+
+constexpr EntityRenderDescriptor kPigRender{
+    /*geometryPath=*/"animation/pig.geo.json",
+    /*animationPath=*/"animation/pig.animation.json",
+    /*texturePath=*/"entity/pig/pig_temperate.png",
+    /*geometryId=*/"geometry.pig",
+    /*walkAnimation=*/"animation.pig.walk",
+    /*idleAnimation=*/"animation.pig.idle",
+    /*scale=*/1.0F,
+};
+
+// Java 26.1 splits the old cow skin into biome variants; the plains/default
+// variant is the temperate texture.
+constexpr EntityRenderDescriptor kCowRender{
+    /*geometryPath=*/"animation/cow.geo.json",
+    /*animationPath=*/"animation/cow.animation.json",
+    /*texturePath=*/"entity/cow/cow_temperate.png",
+    /*geometryId=*/"geometry.cow",
+    /*walkAnimation=*/"animation.cow.walk",
+    /*idleAnimation=*/"animation.cow.idle",
+    /*scale=*/1.0F,
+};
+
+constexpr EntityRenderDescriptor kZombieRender{
+    /*geometryPath=*/"animation/zombie.geo.json",
+    /*animationPath=*/"animation/zombie.animation.json",
+    /*texturePath=*/"entity/zombie/zombie.png",
+    /*geometryId=*/"geometry.zombie",
+    /*walkAnimation=*/"animation.zombie.walk",
+    /*idleAnimation=*/"animation.zombie.idle",
+    /*scale=*/1.0F,
+};
 
 constexpr EntityRenderDescriptor kChickenRender{
     /*geometryPath=*/"animation/chicken.geo.json",
@@ -147,6 +202,18 @@ constexpr EntityRenderDescriptor kHuskRender{
 
 // --- sounds --------------------------------------------------------------
 
+constexpr audio::MobSoundProfile kPigSounds{
+    "entity.pig.ambient", "entity.pig.hurt", "entity.pig.death",
+    "entity.pig.step",    1.0F,              0.15F,
+};
+constexpr audio::MobSoundProfile kCowSounds{
+    "entity.cow.ambient", "entity.cow.hurt", "entity.cow.death",
+    "entity.cow.step",    0.4F,              0.15F,
+};
+constexpr audio::MobSoundProfile kZombieSounds{
+    "entity.zombie.ambient", "entity.zombie.hurt", "entity.zombie.death",
+    "entity.zombie.step",    1.0F,                 0.15F,
+};
 constexpr audio::MobSoundProfile kChickenSounds{
     "entity.chicken.ambient", "entity.chicken.hurt", "entity.chicken.death",
     "entity.chicken.step",    1.0F,                  0.15F,
@@ -176,7 +243,50 @@ constexpr audio::MobSoundProfile kHuskSounds{
 
 // --- the manifest --------------------------------------------------------
 
-const std::array<SpeciesDef, 3> kManifest{{
+const std::array<SpeciesDef, 6> kManifest{{
+    // Pig (26.1): 10 health, MOVEMENT_SPEED 0.25, box 0.9 x 0.9, egg tint
+    // 0xF0A5A5 / 0xDB635E. Drops 1-3 raw porkchops. Not breedable yet (26.1
+    // tempts a pig with a carrot, an item this build does not have).
+    SpeciesDef{
+        /*path=*/"pig", /*vanillaName=*/"pig", MobCategory::Creature,
+        SpawnPlacement::OnGround, EntityDimensions{0.9F, 0.9F},
+        attributesOf(10.0F, 0.25F, 0.0F, 16.0F), /*hasSpawnEgg=*/true,
+        SpawnEggColors{0xF0A5A5U, 0xDB635EU}, kPigRender, kPigSounds, &kPigAi, &rollPigLoot,
+        /*breeding=*/BreedingProfile{}, /*behaviorFlags=*/0U, /*eggLay=*/EggLayProfile{},
+        // AnimalEntity#getBaseExperienceReward: 1..3 on a player kill.
+        /*xpRewardMin=*/1, /*xpRewardMax=*/3},
+    // Cow (26.1): AbstractCow.createAttributes() gives 10 health and
+    // MOVEMENT_SPEED 0.2; box 0.9 x 1.4, egg tint 0xF3C9A3 / 0xFFFFFF. Drops
+    // beef + leather. AR-A3: breedable, tempted by wheat (Animal.TEMPT_INGREDIENT
+    // for cows), calf baby scale 0.5 (EM-3's default). EM-3's
+    // installBreedingGoals reads this generically off the type, so no
+    // cow-specific goal wiring exists anywhere.
+    SpeciesDef{
+        /*path=*/"cow", /*vanillaName=*/"cow", MobCategory::Creature,
+        SpawnPlacement::OnGround, EntityDimensions{0.9F, 1.4F},
+        attributesOf(10.0F, 0.20F, 0.0F, 16.0F), /*hasSpawnEgg=*/true,
+        SpawnEggColors{0xF3C9A3U, 0xFFFFFFU}, kCowRender, kCowSounds, &kCowAi, &rollCowLoot,
+        /*breeding=*/BreedingProfile{/*breedable=*/true,
+                                     /*temptItem=*/ItemStack{world::Block::Air, 1U, &items::Wheat},
+                                     /*babyScale=*/0.5F},
+        /*behaviorFlags=*/0U, /*eggLay=*/EggLayProfile{},
+        /*xpRewardMin=*/1, /*xpRewardMax=*/3},
+    // Zombie (26.1): Zombie.createAttributes() gives 20 health, follow range 35,
+    // MOVEMENT_SPEED 0.23 and attack damage 3; box 0.6 x 1.95, egg tint
+    // 0x00AFAF / 0x799C65, xpReward 5 (Mob's DEFAULT_XP_REWARD, which Zombie
+    // inherits unchanged). Melee like the husk below, so it shares
+    // kMeleeMonsterAi. AR-M2: Undead — the family the daylight-ignition rule
+    // (EntitySystem::tick) gates on, and ENCH-1's Smite target category
+    // (getGroup() == UNDEAD). It carries no SunImmune bit, so unlike the husk
+    // it burns.
+    SpeciesDef{
+        /*path=*/"zombie", /*vanillaName=*/"zombie", MobCategory::Monster,
+        SpawnPlacement::OnGround, EntityDimensions{0.6F, 1.95F},
+        attributesOf(20.0F, 0.23F, 3.0F, 35.0F), /*hasSpawnEgg=*/true,
+        SpawnEggColors{0x00AFAFU, 0x799C65U}, kZombieRender, kZombieSounds, &kMeleeMonsterAi,
+        &rollRottenFleshLoot, /*breeding=*/BreedingProfile{},
+        /*behaviorFlags=*/static_cast<std::uint16_t>(EntityBehavior::Undead),
+        /*eggLay=*/EggLayProfile{}, /*xpRewardMin=*/5, /*xpRewardMax=*/5},
     // Chicken (26.1): 4 health, MOVEMENT_SPEED 0.25, box 0.4 x 0.7, egg tint
     // 0xA1A1A1 / 0xFF0000. AR-A4: breedable, tempted by (and bred with) wheat
     // seeds, chick baby scale 0.5 (EM-3's default); fall-immune
@@ -227,7 +337,7 @@ const std::array<SpeciesDef, 3> kManifest{{
     // effect to whatever it lands a melee hit on; the zombie beside it in this
     // manifest carries no such bit, so only husk's hit does. The same Undead bit
     // is ENCH-1's Smite target-category gate (getGroup() == UNDEAD, HuskEntity
-    // extends ZombieEntity and never overrides getGroup).
+    // extends the zombie and never overrides getGroup).
     SpeciesDef{
         /*path=*/"husk", /*vanillaName=*/"husk", MobCategory::Monster,
         SpawnPlacement::OnGround, EntityDimensions{0.6F, 1.95F},
@@ -293,6 +403,16 @@ void registerBuiltinSpeciesManifest() {
         return true;
     }();
     static_cast<void>(registered);
+}
+
+const EntityType& builtinSpecies(std::string_view path) {
+    registerBuiltinSpeciesManifest();
+    const EntityType* type = entityTypeRegistry().byId(path);
+    if (type == nullptr) {
+        std::cerr << "No built-in species named '" << path << "' in the manifest\n";
+        std::abort();
+    }
+    return *type;
 }
 
 } // namespace mc::gameplay::entities

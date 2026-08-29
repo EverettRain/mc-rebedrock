@@ -212,7 +212,7 @@ namespace {
         return {};
     }
     const auto below = context.placePosition - glm::ivec3{0, 1, 0};
-    if (below.y < 0 ||
+    if (below.y < world::kMinY ||
         !world::isFarmland(world.block(below.x, below.y, below.z))) {
         return {};
     }

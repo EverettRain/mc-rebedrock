@@ -42,15 +42,16 @@
 #include "gameplay/command/GameplayArguments.hpp"
 #include "input/GlfwInputBackend.hpp"
 #include "input/InputActionRouting.hpp"
+#include "input/ScreenMode.hpp"
 #include "input/InputNaming.hpp"
 #include "input/InputSystem.hpp"
 #include "input/KeyBindingScreen.hpp"
-#include "gameplay/entities/CowEntity.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
-#include "gameplay/entities/PigEntity.hpp"
 #include "gameplay/entities/SpeciesRenderData.hpp"
 #include "persistence/SaveRepository.hpp"
 #include "render/Frustum.hpp"
+#include "render/SmokeScript.hpp"
+#include "render/vulkan/SmokeScriptSteps.hpp"
 #include "runtime/GameRuntime.hpp"
 #include "render/ParticleSystem.hpp"
 #include "render/PerspectiveCamera.hpp"
@@ -65,6 +66,7 @@
 #include "ui/MenuGeometry.hpp"
 #include "ui/MenuInteraction.hpp"
 #include "ui/MenuSystem.hpp"
+#include "ui/OptionCycle.hpp"
 #include "ui/PageBuilder.hpp"
 #include "ui/PageStack.hpp"
 #include "ui/SubtitleFeed.hpp"
@@ -172,18 +174,6 @@ creatureSoundCategory(const gameplay::entities::EntityType& type) {
 // kOcclusionQueriesPerFrame, kOcclusionQueryPoolSize, kOcclusionHysteresisFrames
 // now live in render/vulkan/WorldRenderTypes.hpp (shared).
 
-[[nodiscard]] world::SmoothLightingQuality
-nextSmoothLightingQuality(world::SmoothLightingQuality quality) {
-    switch (quality) {
-    case world::SmoothLightingQuality::Off:
-        return world::SmoothLightingQuality::Standard;
-    case world::SmoothLightingQuality::Standard:
-        return world::SmoothLightingQuality::High;
-    case world::SmoothLightingQuality::High:
-        return world::SmoothLightingQuality::Off;
-    }
-    return world::SmoothLightingQuality::Standard;
-}
 // Two-phase world entry: a world opens with a small chunk area around the gameSession.player()
 // (vanilla enters with a small initial area and streams the view distance in
 // during play), so a large render distance does not block the load screen on the
@@ -343,12 +333,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         : shaderRoot(std::move(shaderDirectory)),
           resourceProvider(&provider), languageLoader(provider),
           optionsPath(std::move(initialOptionsPath)),
-          // PACK-1: `provider` is the resource stack Application built over
-          // `bundled` — its `data/` half falls through to the same built-in
-          // floor a resource pack never overrides (no resource pack ships
-          // `data/`), so it doubles as the per-save data-pack base without
-          // pulling in a second provider. This is what makes loadWorld scan
-          // and rebuild each save's <save>/datapacks/ in single-player.
+          // PACK: `provider` is the resource stack Application built over
+          // `bundled`, and it doubles as the integrated runtime's data-pack base.
+          // A pack provider maps a query to `assets/` or `data/` by its PackType,
+          // so this one provider serves both halves: an assets-only resource pack
+          // contributes nothing to the data half (it falls through to the built-in
+          // floor), but a *combined* pack — one carrying both `assets/` and
+          // `data/`, e.g. a user's own extracted Minecraft — has its `data/`
+          // (structures, loot, recipes, tags) load through here too. That is
+          // deliberate: single-player users drop one pack into resourcepacks/ and
+          // get textures + server data together, no second import. Each save's
+          // <save>/datapacks/ still layers on top (per-save override). This is the
+          // integrated path only — the dedicated server takes a pure
+          // DirectoryResourceProvider base instead (DedicatedServer), so a client
+          // resource pack can never inject server data into a server. NB: this
+          // supersedes the old "resource half only" split (PACK #17) for
+          // single-player — do not hard-split the integrated data base away from
+          // the resource stack, or combined packs stop working.
           runtime(*this, streamer, std::move(saveRoot), &provider),
           saveRepository(runtime.saveRepository()),
           chunkStreamer(runtime.chunkStreamer()),
@@ -417,9 +418,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void registerGameCommands() {
-        // Every built-in species is registered up front, so entity-target
-        // commands resolve from the very first world (idempotent).
-        gameplay::entities::registerBuiltinEntities();
+        // Species registration is NOT done here: Application's
+        // PerSaveDataStack::rebuildBuiltinOnly already ran it before this
+        // renderer was constructed (and each per-save data-pack rebuild runs it
+        // again), so entity-target commands resolve from the very first world.
+        //
         // /tp is registered here rather than in the runtime because its rotation
         // sets the camera (the player's look is camera-owned until N2's player
         // state), which only the renderer has. The authoritative commands
@@ -606,243 +609,95 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             static_cast<Impl*>(glfwGetWindowUserPointer(callbackWindow))
                 ->noteWindowMaximizeChanged(maximized == GLFW_TRUE);
         });
+        // PX-1/#5: every window event asks screenMode() who owns the input, then
+        // hands the event to that mode's handler. The modal precedence lives in
+        // input/ScreenMode.hpp — once, as a pure function — instead of being
+        // re-derived by each callback's own chain of flag tests.
         glfwSetKeyCallback(window, [](GLFWwindow* callbackWindow, int key, int, int action, int) {
             auto* renderer = static_cast<Impl*>(glfwGetWindowUserPointer(callbackWindow));
-            const auto currentPage = renderer->menuSystem.pageStack.current();
-            // PX-5 Key Binds: while a Controls row is capturing, the next key press
-            // IS the rebind — consume it here (writing through the InputSystem
-            // single source) instead of letting it act as a menu/gameplay key.
-            // Escape cancels the capture rather than binding Escape.
-            if (renderer->keyBindScreen_.capturing() && action == GLFW_PRESS) {
-                if (key == GLFW_KEY_ESCAPE) {
-                    renderer->keyBindScreen_.cancelCapture();
-                } else {
-                    const input::Key captured = input::keyFromGlfw(key);
-                    if (captured != input::Key::Unknown) {
-                        renderer->keyBindScreen_.applyKey(captured);
-                        renderer->playUiClick();
-                    }
-                }
+            switch (renderer->screenMode()) {
+            case input::ScreenMode::KeyCapture:
+                renderer->handleKeyCaptureKey(key, action);
                 return;
-            }
-            if (currentPage == ui::PageId::ConfirmDelete) {
-                if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
-                    renderer->menuSystem.pageStack.pop();
-                }
+            case input::ScreenMode::TextField:
+                renderer->handleWorldNameKey(key, action);
                 return;
-            }
-            if (currentPage == ui::PageId::CreateWorld || currentPage == ui::PageId::EditWorld) {
-                auto& name = currentPage == ui::PageId::CreateWorld
-                                 ? renderer->menuSystem.createWorldName
-                                 : renderer->menuSystem.editWorldName;
-                if (key == GLFW_KEY_BACKSPACE && (action == GLFW_PRESS || action == GLFW_REPEAT) &&
-                    !name.empty()) {
-                    name.pop_back();
-                } else if ((key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) &&
-                           action == GLFW_PRESS) {
-                    renderer->playUiClick();
-                    if (currentPage == ui::PageId::CreateWorld) {
-                        renderer->startNewWorld();
-                    } else {
-                        renderer->applyRename();
-                    }
-                } else if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
-                    renderer->menuSystem.pageStack.pop();
-                }
+            case input::ScreenMode::Chat:
+                renderer->handleChatKey(key, action);
                 return;
-            }
-            if (renderer->chatOpen) {
-                if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
-                    renderer->setChatOpen(false);
-                } else if ((key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) &&
-                           action == GLFW_PRESS) {
-                    renderer->submitChatInput();
-                } else if (key == GLFW_KEY_TAB && action == GLFW_PRESS) {
-                    renderer->cycleChatSuggestion();
-                } else if (key == GLFW_KEY_BACKSPACE &&
-                           (action == GLFW_PRESS || action == GLFW_REPEAT) &&
-                           !renderer->chatInputText.empty()) {
-                    renderer->chatInputText.pop_back();
-                    renderer->refreshChatSuggestions();
-                }
-                return;
-            }
-            if ((key == GLFW_KEY_T || key == GLFW_KEY_SLASH) && action == GLFW_PRESS &&
-                !renderer->inventoryOpen && !renderer->paused) {
-                renderer->setChatOpen(true);
-                if (key == GLFW_KEY_SLASH) {
-                    renderer->chatInputText = "/";
-                    renderer->suppressedOpeningChatCodepoint = static_cast<unsigned int>('/');
-                } else {
-                    renderer->suppressedOpeningChatCodepoint = static_cast<unsigned int>('t');
-                }
-                return;
-            }
-            // PX-1: F3 (debug), F5 (perspective), W (sprint double-tap edge),
-            // E (inventory), Space (jump edge), 1-9 (hotbar) and Q (drop) are no
-            // longer read here — the InputSystem level-samples them in
-            // processInput() and dispatchGameplayInputEvents() applies the edges.
-            // Only the modal Back/Escape page-stack navigation (which must run
-            // while a screen is up, where processInput's gameplay poll is gated
-            // off) stays in the key callback; that is PX-4 menu territory.
-            if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
-                // Modal gameplay screens consume Back before the page stack.
-                // Inventory is an overlay on PageId::Game, so letting the page
-                // switch run first incorrectly opened Pause instead of closing
-                // the inventory and returning directly to play.
-                if (renderer->inventoryOpen) {
-                    renderer->setInventoryOpen(false);
-                    return;
-                }
-                const auto page = renderer->menuSystem.pageStack.current();
-                if (page == ui::PageId::VideoSettings) {
-                    renderer->menuSystem.pageStack.pop();
-                    renderer->pressedMenuButton = ui::WidgetId::None;
-                    renderer->menuSystem.viewDistanceSliderDragging = false;
-                    renderer->menuSystem.simulationDistanceSliderDragging = false;
-                } else if (page == ui::PageId::Experimental) {
-                    renderer->menuSystem.pageStack.pop();
-                    renderer->pressedMenuButton = ui::WidgetId::None;
-                } else if (page == ui::PageId::Language) {
-                    // Escape cancels the draft row selection. Only Done starts
-                    // the asynchronous language reload.
-                    renderer->menuSystem.pendingLanguageCode = renderer->options.language;
-                    renderer->menuSystem.languageScrollbarDragging = false;
-                    renderer->menuSystem.pageStack.pop();
-                    renderer->pressedMenuButton = ui::WidgetId::None;
-                } else if (page == ui::PageId::Options) {
-                    renderer->menuSystem.pageStack.pop();
-                    renderer->menuSystem.optionsOpen = false;
-                    renderer->pressedMenuButton = ui::WidgetId::None;
-                    renderer->menuSystem.viewDistanceSliderDragging = false;
-                    renderer->menuSystem.simulationDistanceSliderDragging = false;
-                    renderer->menuSystem.masterVolumeSliderDragging = false;
-                } else if (page == ui::PageId::Pause) {
-                    renderer->setPaused(false);
-                } else if (page == ui::PageId::WorldList) {
-                    renderer->menuSystem.pageStack.pop();
-                } else if (page == ui::PageId::Game) {
-                    renderer->setPaused(true);
-                }
+            case input::ScreenMode::Inventory:
+            case input::ScreenMode::Menu:
+            case input::ScreenMode::Play:
+                renderer->handleScreenKey(key, action);
                 return;
             }
         });
         glfwSetCharCallback(window, [](GLFWwindow* callbackWindow, unsigned int codepoint) {
             auto* renderer = static_cast<Impl*>(glfwGetWindowUserPointer(callbackWindow));
-            const auto currentPage = renderer->menuSystem.pageStack.current();
-            if (currentPage == ui::PageId::CreateWorld || currentPage == ui::PageId::EditWorld) {
-                auto& name = currentPage == ui::PageId::CreateWorld
-                                 ? renderer->menuSystem.createWorldName
-                                 : renderer->menuSystem.editWorldName;
-                if (codepoint >= 32U && codepoint <= 126U && name.size() < 32U) {
-                    name.push_back(static_cast<char>(codepoint));
-                }
+            switch (renderer->screenMode()) {
+            case input::ScreenMode::TextField:
+                renderer->appendWorldNameCodepoint(codepoint);
                 return;
-            }
-            if (!renderer->chatOpen) {
+            case input::ScreenMode::Chat:
+                renderer->appendChatCodepoint(codepoint);
                 return;
-            }
-            const bool suppressedT =
-                renderer->suppressedOpeningChatCodepoint == static_cast<unsigned int>('t') &&
-                (codepoint == static_cast<unsigned int>('t') ||
-                 codepoint == static_cast<unsigned int>('T'));
-            if (codepoint == renderer->suppressedOpeningChatCodepoint || suppressedT) {
-                renderer->suppressedOpeningChatCodepoint = 0U;
+            // Nothing else takes typed text. A key-capture row is waiting for a
+            // KEY, not a character.
+            case input::ScreenMode::KeyCapture:
+            case input::ScreenMode::Inventory:
+            case input::ScreenMode::Menu:
+            case input::ScreenMode::Play:
                 return;
-            }
-            renderer->suppressedOpeningChatCodepoint = 0U;
-            if (codepoint >= 32U && codepoint <= 126U && renderer->chatInputText.size() < 256U) {
-                renderer->chatInputText.push_back(static_cast<char>(codepoint));
-                renderer->refreshChatSuggestions();
             }
         });
         glfwSetScrollCallback(window, [](GLFWwindow* callbackWindow, double, double yOffset) {
             auto* renderer = static_cast<Impl*>(glfwGetWindowUserPointer(callbackWindow));
-            if (renderer->menuSystem.pageStack.current() == ui::PageId::WorldList &&
-                yOffset != 0.0) {
-                renderer->scrollWorldList(yOffset > 0.0 ? -1 : 1);
-            } else if (renderer->menuSystem.pageStack.current() == ui::PageId::Language &&
-                       yOffset != 0.0) {
-                renderer->scrollLanguageList(yOffset > 0.0 ? -1 : 1);
-            } else if (renderer->menuSystem.pageStack.current() == ui::PageId::Controls &&
-                       yOffset != 0.0) {
-                renderer->scrollControlsList(yOffset > 0.0 ? -1 : 1);
-            } else if (renderer->inventoryOpen &&
-                       renderer->uiFrameData_.gameMode == gameplay::GameMode::Creative &&
-                       yOffset != 0.0) {
-                renderer->scrollCreative(yOffset > 0.0 ? -1 : 1);
-            } else if (!renderer->inventoryOpen && !renderer->paused && !renderer->chatOpen &&
-                       yOffset != 0.0) {
-                {
-                    const auto& playerSnap = renderer->clientMirror_.player();
-                    const std::size_t current = playerSnap.selectedHotbarSlot;
-                    const std::size_t count = gameplay::Inventory::kHotbarSize;
-                    std::size_t target = (yOffset > 0.0)
-                                             ? (current + count - 1U) % count
-                                             : (current + 1U) % count;
-                    gameplay::SwapSlot swap;
-                    swap.index = target;
-                    renderer->runtime.enqueueClientCommand(std::move(swap));
+            if (yOffset == 0.0) {
+                return;
+            }
+            const int direction = yOffset > 0.0 ? -1 : 1;
+            const auto mode = renderer->screenMode();
+            // The wheel is pointer input, so a menu page keeps its scrolling lists
+            // even while one of its rows is capturing a key or its name field has
+            // the keyboard (isMenuScreen covers all three).
+            if (input::isMenuScreen(mode)) {
+                renderer->scrollMenuList(direction);
+                return;
+            }
+            switch (mode) {
+            case input::ScreenMode::Inventory:
+                if (renderer->uiFrameData_.gameMode == gameplay::GameMode::Creative) {
+                    renderer->scrollCreative(direction);
                 }
+                return;
+            case input::ScreenMode::Play:
+                renderer->scrollHotbar(direction);
+                return;
+            case input::ScreenMode::Chat:
+            default:
+                return;
             }
         });
         glfwSetMouseButtonCallback(
             window, [](GLFWwindow* callbackWindow, int button, int action, int modifiers) {
                 auto* renderer = static_cast<Impl*>(glfwGetWindowUserPointer(callbackWindow));
-                if (renderer->chatOpen) {
+                const auto mode = renderer->screenMode();
+                if (input::isMenuScreen(mode)) {
+                    renderer->handleMenuMouseButton(button, action);
                     return;
                 }
-                if (renderer->paused) {
-                    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
-                        renderer->handleMenuButtonPress();
-                    } else if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) {
-                        renderer->handleMenuButtonRelease();
-                    }
+                switch (mode) {
+                case input::ScreenMode::Inventory:
+                    renderer->handleInventoryMouseButton(button, action, modifiers);
                     return;
-                }
-                if (renderer->inventoryOpen) {
-                    if (action == GLFW_RELEASE) {
-                        // Both buttons end a drag; the release also stops the
-                        // creative scrollbar drag.
-                        renderer->handleInventoryButtonRelease();
-                        return;
-                    }
-                    if (action != GLFW_PRESS) {
-                        return;
-                    }
-                    if (button == GLFW_MOUSE_BUTTON_LEFT || button == GLFW_MOUSE_BUTTON_RIGHT) {
-                        renderer->handleInventoryClick(button == GLFW_MOUSE_BUTTON_RIGHT
-                                                           ? gameplay::InventoryMouseButton::Right
-                                                           : gameplay::InventoryMouseButton::Left,
-                                                       (modifiers & GLFW_MOD_SHIFT) != 0);
-                    }
+                case input::ScreenMode::Play:
+                    renderer->handlePlayMouseButton(button, action);
                     return;
-                }
-                if (button == GLFW_MOUSE_BUTTON_LEFT) {
-                    // The destroy lifecycle is a command: Start on press (with
-                    // the aimed target), Abort on release. The server ticks it.
-                    if (action == GLFW_PRESS) {
-                        renderer->destroyButtonHeld = true;
-                        renderer->enqueueDestroyStart();
-                    } else if (action == GLFW_RELEASE) {
-                        renderer->destroyButtonHeld = false;
-                        renderer->lastDestroyAimBlock.reset();
-                        renderer->enqueueDestroyAbort();
-                    }
-                } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-                    // The use lifecycle: UseItemOn on press (with the target),
-                    // UseItemStop on release so a held meal/repeat ends.
-                    if (std::getenv("MC_REBEDROCK_INTERACT_DEBUG") != nullptr) {
-                        std::cout << "[interact] mouse RIGHT "
-                                  << (action == GLFW_PRESS ? "press" : "release")
-                                  << " (inventoryOpen=" << renderer->inventoryOpen << ")"
-                                  << std::endl;
-                    }
-                    if (action == GLFW_PRESS) {
-                        renderer->enqueueUseStart();
-                    } else if (action == GLFW_RELEASE) {
-                        renderer->enqueueUseStop();
-                    }
+                // The chat line swallows clicks: 1.16.1's ChatScreen has no
+                // clickable content this build renders.
+                case input::ScreenMode::Chat:
+                default:
+                    return;
                 }
             });
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
@@ -851,44 +706,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         glfwSetCursorPosCallback(window, [](GLFWwindow* callbackWindow, double x, double y) {
             auto* renderer = static_cast<Impl*>(glfwGetWindowUserPointer(callbackWindow));
-            if (renderer->inventoryOpen) {
-                if (renderer->creativeScrollbarDragging) {
-                    renderer->updateCreativeScrollFromCursor();
-                }
-                if (renderer->inventoryDragActive) {
-                    renderer->collectInventoryDragSlot(x, y);
-                }
+            const auto mode = renderer->screenMode();
+            if (input::isMenuScreen(mode)) {
+                renderer->dragMenuControl();
                 return;
             }
-            if (renderer->paused && (renderer->menuSystem.languageScrollbarDragging ||
-                                     renderer->menuSystem.viewDistanceSliderDragging ||
-                                     renderer->menuSystem.simulationDistanceSliderDragging ||
-                                     renderer->menuSystem.masterVolumeSliderDragging)) {
-                if (renderer->menuSystem.languageScrollbarDragging) {
-                    renderer->updateLanguageScrollFromCursor();
-                } else if (renderer->menuSystem.viewDistanceSliderDragging) {
-                    renderer->updateViewDistanceFromCursor();
-                } else if (renderer->menuSystem.simulationDistanceSliderDragging) {
-                    renderer->updateSimulationDistanceFromCursor();
-                } else {
-                    renderer->updateMasterVolumeFromCursor();
-                }
+            switch (mode) {
+            case input::ScreenMode::Inventory:
+                renderer->dragInventory(x, y);
+                return;
+            case input::ScreenMode::Play:
+                renderer->applyLookDelta(x, y);
+                return;
+            case input::ScreenMode::Chat:
+            default:
                 return;
             }
-            if (renderer->paused || renderer->chatOpen) {
-                return;
-            }
-            if (renderer->firstMouseSample) {
-                renderer->lastMouseX = x;
-                renderer->lastMouseY = y;
-                renderer->firstMouseSample = false;
-                return;
-            }
-            const float deltaX = static_cast<float>(x - renderer->lastMouseX);
-            const float deltaY = static_cast<float>(renderer->lastMouseY - y);
-            renderer->lastMouseX = x;
-            renderer->lastMouseY = y;
-            renderer->camera.rotate(deltaX * 0.10F, deltaY * 0.10F);
         });
 
         vulkanDevice_.initialize(window);
@@ -1304,7 +1137,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void run() {
-        const bool smokeTest = std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr;
         // Stress mode: MC_REBEDROCK_STRESS_FRAMES overrides the smoke test's
         // 704-gameplay-frame cap and walks the gameSession.player() forward, churning chunk
         // streaming and the occlusion queries, so long-run memory/GPU faults
@@ -1315,26 +1147,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // One extra slot past the last scripted step (706) holds the return-to-
         // title gate.
         const std::size_t smokeFrameLimit = stressFrames > 0U ? stressFrames : 710U;
+        // MC_REBEDROCK_SMOKE_TEST drives a scripted session: menus, a world, the
+        // creative screen, chat commands, meals, weather, then a return to the
+        // title. That is a test harness, not gameplay, so it is a script the loop
+        // advances (render/SmokeScript.hpp; the steps themselves in
+        // render/vulkan/SmokeScriptSteps.hpp) rather than a frame-number chain
+        // spliced through the loop body. A normal run builds no script at all.
+        std::optional<SmokeScript> smokeScript;
+        if (std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr) {
+            smokeScript.emplace();
+            installSmokeScript(*this, *smokeScript, stressFrames,
+                               static_cast<std::uint64_t>(smokeFrameLimit));
+        }
         // P3 Step 2: the simulation moves off the render thread here. Smoke and
         // stress runs must exercise this path too; MC_REBEDROCK_SYNC_TICK keeps
         // the deterministic fallback available for diagnosing failures.
         startSimulationThread();
         std::size_t renderedFrames = 0;
-        std::size_t smokeGameplayFrames = 0;
-        std::size_t smokeReturnFrame = 0;
-        bool smokeWorldStarted = false;
-        bool smokeReturnedToTitle = false;
-        // A chat-command effect check that is waiting for the command's server
-        // tick to land (commands process on the next tick, up to ~50 ms after
-        // submit, so a same-frame check would be racy).
-        bool smokeWaitActive = false;
-        std::size_t smokeWaitDeadline = 0U;
-        std::function<bool()> smokeWaitCondition;
-        std::function<void()> smokeWaitAction;
-        std::string smokeWaitLabel;
-        // The apple count before the smoke test holds right-click to eat, used
-        // to verify the meal actually consumed one.
-        std::uint8_t smokeAppleCount = 0U;
         auto previousFrameTime = std::chrono::steady_clock::now();
         while (glfwWindowShouldClose(window) == GLFW_FALSE) {
             const auto frameCpuStart = std::chrono::steady_clock::now();
@@ -1376,7 +1205,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // Input preparation writes the staged PlayerInput (guarded by
                 // GameSession's own input mutex) and reads published snapshots and
                 // renderer-local state — nothing that needs the world lock.
-                processInput();
+                {
+                    const auto inputStart = std::chrono::steady_clock::now();
+                    processInput();
+                    if (diag::traceEnabled()) {
+                        diag::frameTrace().inputMs += diag::msSince(inputStart);
+                    }
+                }
                 // C-1b-2/1b-3: pump the channel at the very top of the frame.
                 // Snapshot frames refresh the client mirror (so every read below
                 // sees this frame's player/world); event frames apply the tick's
@@ -1671,9 +1506,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // outward spiral that keeps the streaming window loading fresh
                 // chunks the whole run.
                 camera.rotate(2.0F, -0.05F);
-                const std::size_t stressClock = std::getenv("MC_REBEDROCK_LOAD_SAVE") != nullptr
-                                                    ? renderedFrames
-                                                    : smokeGameplayFrames;
+                const std::size_t stressClock =
+                    std::getenv("MC_REBEDROCK_LOAD_SAVE") != nullptr || !smokeScript.has_value()
+                        ? renderedFrames
+                        : static_cast<std::size_t>(smokeScript->gameplayFrame());
                 const float flightAngle = static_cast<float>(stressClock) * 0.06F;
                 const float radius = 40.0F + static_cast<float>(stressClock) * 0.4F;
                 const glm::vec3 stressPos{
@@ -1716,7 +1552,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             // cache, sounds, particles, container/eating reactions) are applied
             // by the frame-top channel pump above, decoded from the server's
             // per-tick events instead of drained from the bridge here.
-            drawFrame();
+            {
+                const auto drawStart = std::chrono::steady_clock::now();
+                drawFrame();
+                if (diag::traceEnabled()) {
+                    diag::frameTrace().drawFrameMs += diag::msSince(drawStart);
+                }
+            }
             ++renderedFrames;
             if (diag::traceEnabled()) {
                 const double frameMs = diag::msSince(frameCpuStart);
@@ -1729,6 +1571,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                               << " lockHoldMs=" << t.lockHoldMs
                               << " drainMs=" << t.drainMs
                               << " fenceWaitMs=" << t.fenceWaitMs
+                              << " uploadMs=" << t.uploadMs
+                              << " recordMs=" << t.recordMs
+                              << " drawFrameMs=" << t.drawFrameMs
+                              << " inputMs=" << t.inputMs
+                              << " acquireMs=" << t.acquireMs
+                              << " presentMs=" << t.presentMs
+                              << " occReadMs=" << t.occlusionReadbackMs
+                              << " uniformMs=" << t.uniformMs
+                              << " imageWaitMs=" << t.imageWaitMs
+                              << " visible=" << t.visibleSections
                               << " unloaded=" << t.unloadedChunks
                               << " saveChunkCalls=" << t.saveChunkCalls
                               << " batches=" << t.queueBatchCount
@@ -1861,366 +1713,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 }
                 startWorld(saveRepository.load(summaries.front().identifier));
             }
-            if (smokeTest && !smokeWorldStarted && renderedFrames == 2U) {
-                if (menuSystem.pageStack.current() != ui::PageId::Title) {
-                    throw std::runtime_error("Smoke test did not start at title page");
-                }
-                menuSystem.optionsOpen = true;
-                menuSystem.pageStack.push(ui::PageId::Options);
-            } else if (smokeTest && !smokeWorldStarted && renderedFrames == 3U) {
-                menuSystem.pageStack.push(ui::PageId::VideoSettings);
-            } else if (smokeTest && !smokeWorldStarted && renderedFrames == 4U) {
-                if (menuSystem.pageStack.current() != ui::PageId::VideoSettings) {
-                    throw std::runtime_error("Smoke test did not open video settings");
-                }
-                menuSystem.pageStack.pop();
-                // The 实验性内容 sub-page must open as a menu page (not fall
-                // through to the terrain-loading screen) with its five options.
-                menuSystem.pageStack.push(ui::PageId::Experimental);
-                if (menuSystem.pageStack.current() != ui::PageId::Experimental ||
-                    menuButtonCount() != 5U) {
-                    throw std::runtime_error("Smoke test experimental content page failed");
-                }
-                menuSystem.pageStack.pop();
-                menuSystem.optionsOpen = false;
-                menuSystem.pageStack.pop();
-                menuSystem.pageStack.push(ui::PageId::WorldList);
-            } else if (smokeTest && !smokeWorldStarted && renderedFrames == 6U) {
-                menuSystem.pageStack.push(ui::PageId::CreateWorld);
-            } else if (smokeTest && !smokeWorldStarted && renderedFrames == 8U) {
-                persistence::SaveGame smokeWorld;
-                smokeWorld.summary.displayName = "Smoke Test";
-                smokeWorld.summary.seed = 0x5EEDULL;
-                gameplay::Inventory smokeInventory;
-                smokeWorld.inventory = smokeInventory.slots();
-                smokeWorld.selectedHotbarSlot = smokeInventory.selectedHotbarSlot();
-                startWorld(std::move(smokeWorld));
-                smokeWorldStarted = true;
-            }
-            if (smokeTest && worldReady && !smokeReturnedToTitle) {
-                ++smokeGameplayFrames;
-            }
-            // A chat-command effect may still be landing (commands process on the
-            // next server tick, up to ~50 ms after submit). Check it in parallel
-            // with the scripted steps, so the step sequence keeps its frame
-            // schedule while each check polls for its effect.
-            if (smokeTest && smokeWaitActive) {
-                if (smokeWaitCondition()) {
-                    smokeWaitActive = false;
-                    if (smokeWaitAction) {
-                        auto action = std::move(smokeWaitAction);
-                        smokeWaitAction = nullptr;
-                        action();
-                    }
-                } else if (smokeGameplayFrames >= smokeWaitDeadline) {
-                    throw std::runtime_error("Smoke test timed out: " + smokeWaitLabel);
-                }
-            }
-            if (smokeTest && smokeGameplayFrames == 16U) {
-                setInventoryOpen(true);
-            } else if (smokeTest && smokeGameplayFrames == 20U) {
-                // The creative catalogue click goes through the command queue so
-                // the smoke exercises the real interaction path.
-                gameplay::ClickCreativeItem creative;
-                creative.catalogStack = {world::Block::Air, 1U, &gameplay::items::Diamond};
-                creative.button = gameplay::InventoryMouseButton::Left;
-                runtime.enqueueClientCommand(std::move(creative));
-            } else if (smokeTest && smokeGameplayFrames == 24U) {
-                gameplay::ClickSlot click;
-                click.kind = gameplay::SlotKind::PlayerInventory;
-                click.slotIndex = 0U;
-                click.button = 0;
-                runtime.enqueueClientCommand(std::move(click));
-            } else if (smokeTest && smokeGameplayFrames == 28U) {
-                const auto smokeRead = worldLock.read();
-                scrollCreative(1);
-            } else if (smokeTest && smokeGameplayFrames == 32U) {
-                setInventoryOpen(false);
-            } else if (smokeTest && smokeGameplayFrames == 34U) {
-                setPaused(true);
-            } else if (smokeTest && smokeGameplayFrames == 36U) {
-                menuSystem.optionsOpen = true;
-                menuSystem.pageStack.push(ui::PageId::Options);
-            } else if (smokeTest && smokeGameplayFrames == 38U) {
-                menuSystem.optionsOpen = false;
-                menuSystem.pageStack.pop();
-                setPaused(false);
-            } else if (smokeTest && smokeGameplayFrames == 40U) {
-                const auto smokeWrite = worldLock.write();
-                gameSession.spawnItemEntity(
-                    clientMirror_.player().physicsCurrent + glm::vec3{1.8F, 1.0F, 0.0F},
-                    {world::Block::DiamondOre, 3}, {0.0F, 0.12F, 0.0F});
-            } else if (smokeTest && smokeGameplayFrames == 44U) {
-                debugOverlayOpen = true;
-            } else if (smokeTest && smokeGameplayFrames == 48U) {
-                debugOverlayOpen = false;
-            } else if (smokeTest && smokeGameplayFrames == 50U) {
-                setChatOpen(true);
-                chatInputText = "/gamemode survival";
-            } else if (smokeTest && smokeGameplayFrames == 54U) {
-                submitChatInput();
-            } else if (smokeTest && smokeGameplayFrames == 56U) {
-                // The /gamemode survival command lands on the next server tick.
-                smokeWaitActive = true;
-                smokeWaitDeadline = smokeGameplayFrames + 40U;
-                smokeWaitLabel = "enter survival mode";
-                smokeWaitCondition = [&] {
-                    const auto smokeRead = worldLock.read();
-                    return clientMirror_.player().gameMode == gameplay::GameMode::Survival;
-                };
-                if (clientMirror_.world().inventorySlots[0].item != &gameplay::items::Diamond) {
-                    throw std::runtime_error(
-                        "Smoke test lost the shared inventory during mode switch");
-                }
-            } else if (smokeTest && smokeGameplayFrames == 57U) {
-                // Exercise the damage-tint draw immediately after the held-item
-                // pass. This catches descriptor-set compatibility drift between
-                // itemPipelineLayout and hudPipelineLayout under validation.
-                const auto smokeWrite = worldLock.write();
-                if (!gameSession.hurtPlayer(gameplay::kPrimaryPlayerId,
-                                            gameplay::DamageType::Generic, 1.0F, *this)) {
-                    throw std::runtime_error("Smoke test could not trigger damage overlay");
-                }
-            } else if (smokeTest && smokeGameplayFrames == 59U && stressFrames == 0U) {
-                // Then run the rest of the script with the sun shadows *off*,
-                // which is the default every player actually uses. Forcing them
-                // on for the whole run left that path unvalidated, and it is
-                // the one where the shadow depth map is never rendered into:
-                // the descriptors still declare SHADER_READ_ONLY_OPTIMAL and
-                // three fragment shaders still sample it. A layout that only
-                // held because the pre-pass happened to run is exactly the bug
-                // this alternation exists to catch.
-                options.sunShadows = false;
-                shadowDisabled = true;
-            } else if (smokeTest && smokeGameplayFrames == 58U) {
-                setInventoryOpen(true);
-            } else if (smokeTest && smokeGameplayFrames == 60U) {
-                // Deterministically exercise the instanced particle path: a
-                // block-break burst next to the player produces hundreds of
-                // particles in a single vkCmdDraw.
-                const auto smokeRead = worldLock.read();
-                const glm::vec3 spawn = clientMirror_.player().physicsCurrent;
-                particleSystem.spawnBlockBreak({static_cast<int>(std::floor(spawn.x)),
-                                                static_cast<int>(std::floor(spawn.y)) - 2,
-                                                static_cast<int>(std::floor(spawn.z))},
-                                               world::Block::Dirt);
-            } else if (smokeTest && smokeGameplayFrames == 62U) {
-                setInventoryOpen(false);
-            } else if (smokeTest && smokeGameplayFrames == 66U) {
-                setChatOpen(true);
-                chatInputText = "/gamemode creative";
-            } else if (smokeTest && smokeGameplayFrames == 70U) {
-                submitChatInput();
-            } else if (smokeTest && smokeGameplayFrames == 72U) {
-                // The /gamemode command lands on the next server tick.
-                smokeWaitActive = true;
-                smokeWaitDeadline = smokeGameplayFrames + 40U;
-                smokeWaitLabel = "return to creative mode";
-                smokeWaitCondition = [&] {
-                    const auto smokeRead = worldLock.read();
-                    return clientMirror_.player().gameMode == gameplay::GameMode::Creative &&
-                           clientMirror_.world().inventorySlots[0].item ==
-                               &gameplay::items::Diamond;
-                };
-            } else if (smokeTest && smokeGameplayFrames == 74U) {
-                setChatOpen(true);
-                chatInputText = "/give 0 1";
-            } else if (smokeTest && smokeGameplayFrames == 76U) {
-                submitChatInput();
-            } else if (smokeTest && smokeGameplayFrames == 78U) {
-                // Catalog index 0 is the first registered building block (grass).
-                // The /give command lands on the next server tick.
-                smokeWaitActive = true;
-                smokeWaitDeadline = smokeGameplayFrames + 40U;
-                smokeWaitLabel = "/give by catalog index";
-                smokeWaitCondition = [&] {
-                    const auto smokeRead = worldLock.read();
-                    return std::ranges::any_of(
-                        clientMirror_.world().inventorySlots,
-                        [](const gameplay::ItemStack& stack) {
-                            return stack.block == world::Block::Grass && stack.count >= 1U;
-                        });
-                };
-            } else if (smokeTest && smokeGameplayFrames == 80U) {
-                setChatOpen(true);
-                chatInputText = "/give minecraft:acacia_planks 3";
-            } else if (smokeTest && smokeGameplayFrames == 82U) {
-                submitChatInput();
-            } else if (smokeTest && smokeGameplayFrames == 84U) {
-                smokeWaitActive = true;
-                smokeWaitDeadline = smokeGameplayFrames + 40U;
-                smokeWaitLabel = "/give by identifier";
-                smokeWaitCondition = [&] {
-                    const auto smokeRead = worldLock.read();
-                    return std::ranges::any_of(
-                        clientMirror_.world().inventorySlots,
-                        [](const gameplay::ItemStack& stack) {
-                            return stack.block == world::Block::AcaciaPlanks && stack.count >= 3U;
-                        });
-                };
-            } else if (smokeTest && smokeGameplayFrames == 86U) {
-                setChatOpen(true);
-                chatInputText = "/time set midnight";
-            } else if (smokeTest && smokeGameplayFrames == 88U) {
-                submitChatInput();
-            } else if (smokeTest && smokeGameplayFrames == 90U) {
-                smokeWaitActive = true;
-                smokeWaitDeadline = smokeGameplayFrames + 40U;
-                smokeWaitLabel = "set world time";
-                smokeWaitCondition = [&] {
-                    const auto smokeRead = worldLock.read();
-                    const auto perDay =
-                        static_cast<std::uint64_t>(world::DayNightCycle::kTicksPerDay);
-                    const auto tick = std::fmod(clientMirror_.world().dayTimeTicks, static_cast<double>(perDay));
-                    return std::abs(tick - 18000.0) <= 4.0;
-                };
-            } else if (smokeTest && smokeGameplayFrames == 92U) {
-                setInventoryOpen(true);
-            } else if (smokeTest && smokeGameplayFrames == 94U) {
-                // Put a full stack of apples into the last hotbar slot, then
-                // close the screen and select it — all through the command queue
-                // so the smoke exercises the real interaction path.
-                gameplay::ClickCreativeItem creative;
-                creative.catalogStack = {world::Block::Air, 1U, &gameplay::items::Apple};
-                creative.button = gameplay::InventoryMouseButton::Left;
-                runtime.enqueueClientCommand(std::move(creative));
-                gameplay::ClickSlot click;
-                click.kind = gameplay::SlotKind::PlayerInventory;
-                click.slotIndex = 8U;
-                click.button = 0;
-                runtime.enqueueClientCommand(std::move(click));
-                const auto smokeWrite = worldLock.write();
-                setInventoryOpenLocked(false);
-                gameplay::SwapSlot swap;
-                swap.index = 8U;
-                runtime.enqueueClientCommand(std::move(swap));
-            } else if (smokeTest && smokeGameplayFrames == 96U) {
-                const auto smokeRead = worldLock.read();
-                smokeAppleCount = clientMirror_.world()
-                                      .inventorySlots[clientMirror_.player()
-                                                          .selectedHotbarSlot]
-                                      .count;
-                if (smokeAppleCount == 0U) {
-                    throw std::runtime_error("Smoke test apple stack missing");
-                }
-                // In creative the meal must not spend the food (Java 1.16.1).
-                enqueueUseStart();
-            } else if (smokeTest && smokeGameplayFrames == 400U) {
-                enqueueUseStop();
-                const auto smokeRead = worldLock.read();
-                if (clientMirror_.world()
-                        .inventorySlots[clientMirror_.player().selectedHotbarSlot]
-                        .count != smokeAppleCount) {
-                    throw std::runtime_error("Smoke test creative eating consumed food");
-                }
-            } else if (smokeTest && smokeGameplayFrames == 402U) {
-                setChatOpen(true);
-                chatInputText = "/gamemode survival";
-            } else if (smokeTest && smokeGameplayFrames == 404U) {
-                submitChatInput();
-            } else if (smokeTest && smokeGameplayFrames == 406U) {
-                // The /gamemode survival command lands on the next server tick.
-                smokeWaitActive = true;
-                smokeWaitDeadline = smokeGameplayFrames + 40U;
-                smokeWaitLabel = "return to survival mode";
-                smokeWaitCondition = [&] {
-                    const auto smokeRead = worldLock.read();
-                    return clientMirror_.player().gameMode == gameplay::GameMode::Survival;
-                };
-                // Once the mode lands, arm the meal: the apple survived creative
-                // eating, survival should spend it.
-                smokeWaitAction = [&] {
-                    gameplay::SwapSlot swap;
-                    swap.index = 8U;
-                    runtime.enqueueClientCommand(std::move(swap));
-                    smokeAppleCount = clientMirror_.world()
-                                          .inventorySlots[8U]
-                                          .count;
-                    if (smokeAppleCount == 0U) {
-                        throw std::runtime_error("Smoke test apple stack missing in survival");
-                    }
-                    enqueueUseStart();
-                };
-            } else if (smokeTest && smokeGameplayFrames == 410U) {
-                // Snap the weather to full rain instantly (test helper, not
-                // chat) so the smoke exercises the rain path at full intensity
-                // regardless of frame rate; the three render modes compare
-                // identical drop counts.
-                const auto smokeWrite = worldLock.write();
-                gameSession.weatherSystem().forceRainGradient(1.0F);
-            } else if (smokeTest && smokeGameplayFrames == 420U) {
-                // Escalate to a full storm so the smoke also exercises the
-                // thunder-boosted rain volume and cross-wind.
-                const auto smokeWrite = worldLock.write();
-                gameSession.weatherSystem().forceThunderGradient(1.0F);
-            } else if (smokeTest && smokeGameplayFrames == 700U) {
-                enqueueUseStop();
-                const auto smokeRead = worldLock.read();
-                if (clientMirror_.world()
-                        .inventorySlots[clientMirror_.player().selectedHotbarSlot]
-                        .count >= smokeAppleCount) {
-                    throw std::runtime_error("Smoke test survival eating did not consume an apple");
-                }
-            } else if (smokeTest && smokeGameplayFrames == 702U) {
-                setChatOpen(true);
-                chatInputText = "/tp 8 200 8";
-            } else if (smokeTest && smokeGameplayFrames == 704U) {
-                submitChatInput();
-            } else if (smokeTest && smokeGameplayFrames == 706U) {
-                // The /tp command lands on the next server tick.
-                smokeWaitActive = true;
-                smokeWaitDeadline = smokeGameplayFrames + 40U;
-                smokeWaitLabel = "/tp teleport";
-                smokeWaitCondition = [&] {
-                    const auto smokeRead = worldLock.read();
-                    return clientMirror_.player().physicsCurrent.y >= 150.0F;
-                };
-            }
-            if (smokeTest && !smokeReturnedToTitle && smokeGameplayFrames >= smokeFrameLimit &&
-                completedStreamBatchCount >= 2U && completedBlockEditCount >= 1U &&
-                pendingSectionUpdates.empty()) {
-                // M-Chunk B-5: the spawn chunk must have reached the client
-                // cache — an empty cache means the dual-world split lost the
-                // chunks and every presentation read (raycast, light, mesh
-                // preview) would silently see air.
-                if (!clientCache.hasChunk(world::chunkPositionFromWorld(24.5F, 24.5F))) {
-                    throw std::runtime_error(
-                        "Smoke test: client cache lost the spawn chunk");
-                }
-                // M-Chunk B-5: the client cache must mirror the server world —
-                // same batches, same edits — so the spawn column agrees cell for
-                // cell. A broken edit-sync or a missed state delta would diverge
-                // them and the render would silently show the wrong world.
-                for (int syncY = world::kMinY; syncY < world::kMaxY; ++syncY) {
-                    if (clientCache.state(24, syncY, 24) !=
-                        interactionWorld.state(24, syncY, 24)) {
-                        throw std::runtime_error(
-                            "Smoke test: client cache diverged from the server world");
-                    }
-                }
-                // Side-split memory: the server world, the client cache AND the
-                // streamer worker world each own a chunk copy (three resident
-                // copies — the P1-2 debt). All three are measured and the sum is
-                // bounded — a gross leak on any side blows it.
-                const auto serverChunkBytes = interactionWorld.residentBytes();
-                const auto clientChunkBytes = clientCache.residentBytes();
-                const auto workerChunkBytes = chunkStreamer.workerWorldResidentBytes();
-                std::cout << "[memory] serverChunkResident=" << serverChunkBytes
-                          << " clientChunkResident=" << clientChunkBytes
-                          << " workerChunkResident=" << workerChunkBytes
-                          << " total=" << (serverChunkBytes + clientChunkBytes + workerChunkBytes)
-                          << "\n";
-                if (serverChunkBytes + clientChunkBytes + workerChunkBytes >
-                    512U * 1024U * 1024U) {
-                    throw std::runtime_error(
-                        "Smoke test: three-world resident exceeds the budget");
-                }
-                smokeReturnedToTitle = true;
-                smokeReturnFrame = renderedFrames;
-                returnToTitle(false);
-            }
-            if (smokeTest && smokeReturnedToTitle && renderedFrames >= smokeReturnFrame + 4U) {
-                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            if (smokeScript.has_value()) {
+                smokeScript->advance(renderedFrames, worldReady);
             }
             // DR repro: the LOAD_SAVE run ends after stressFrames rendered frames.
             if (std::getenv("MC_REBEDROCK_LOAD_SAVE") != nullptr && stressFrames > 0U &&
@@ -2571,6 +2065,304 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     }
 
+    // ---- Input ownership -------------------------------------------------
+    //
+    // Who owns the input right now. Every window callback asks this, then hands
+    // the event to that mode's handler below; the precedence itself is the pure
+    // function in input/ScreenMode.hpp, so it is stated once rather than
+    // re-derived (slightly differently) by each callback.
+    [[nodiscard]] input::ScreenMode screenMode() const {
+        const auto page = menuSystem.pageStack.current();
+        return input::screenModeOf(input::ScreenState{
+            /*keyCapturing=*/keyBindScreen_.capturing(),
+            /*textFieldOpen=*/page == ui::PageId::CreateWorld || page == ui::PageId::EditWorld,
+            /*chatOpen=*/chatOpen,
+            /*inventoryOpen=*/inventoryOpen,
+            /*paused=*/paused,
+        });
+    }
+
+    // PX-5 Key Binds: while a Controls row is capturing, the next key press IS
+    // the rebind — it is consumed here (writing through the InputSystem single
+    // source) instead of acting as a menu or gameplay key. Escape cancels the
+    // capture rather than binding Escape.
+    void handleKeyCaptureKey(int key, int action) {
+        if (action != GLFW_PRESS) {
+            return;
+        }
+        if (key == GLFW_KEY_ESCAPE) {
+            keyBindScreen_.cancelCapture();
+            return;
+        }
+        const input::Key captured = input::keyFromGlfw(key);
+        if (captured != input::Key::Unknown) {
+            keyBindScreen_.applyKey(captured);
+            playUiClick();
+        }
+    }
+
+    // The create/edit-world name field: the same editing keys 1.16.1's
+    // EditBox handles, with Enter committing the page and Escape leaving it.
+    void handleWorldNameKey(int key, int action) {
+        const auto page = menuSystem.pageStack.current();
+        auto& name = page == ui::PageId::CreateWorld ? menuSystem.createWorldName
+                                                     : menuSystem.editWorldName;
+        if (key == GLFW_KEY_BACKSPACE && (action == GLFW_PRESS || action == GLFW_REPEAT) &&
+            !name.empty()) {
+            name.pop_back();
+        } else if ((key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) && action == GLFW_PRESS) {
+            playUiClick();
+            if (page == ui::PageId::CreateWorld) {
+                startNewWorld();
+            } else {
+                applyRename();
+            }
+        } else if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
+            menuSystem.pageStack.pop();
+        }
+    }
+
+    void appendWorldNameCodepoint(unsigned int codepoint) {
+        auto& name = menuSystem.pageStack.current() == ui::PageId::CreateWorld
+                         ? menuSystem.createWorldName
+                         : menuSystem.editWorldName;
+        if (codepoint >= 32U && codepoint <= 126U && name.size() < 32U) {
+            name.push_back(static_cast<char>(codepoint));
+        }
+    }
+
+    void handleChatKey(int key, int action) {
+        if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
+            setChatOpen(false);
+        } else if ((key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) && action == GLFW_PRESS) {
+            submitChatInput();
+        } else if (key == GLFW_KEY_TAB && action == GLFW_PRESS) {
+            cycleChatSuggestion();
+        } else if (key == GLFW_KEY_BACKSPACE && (action == GLFW_PRESS || action == GLFW_REPEAT) &&
+                   !chatInputText.empty()) {
+            chatInputText.pop_back();
+            refreshChatSuggestions();
+        }
+    }
+
+    void appendChatCodepoint(unsigned int codepoint) {
+        // The key that opened the chat line also produces a character; swallow
+        // that one so "t" does not become the first letter typed.
+        const bool suppressedT = suppressedOpeningChatCodepoint == static_cast<unsigned int>('t') &&
+                                 (codepoint == static_cast<unsigned int>('t') ||
+                                  codepoint == static_cast<unsigned int>('T'));
+        if (codepoint == suppressedOpeningChatCodepoint || suppressedT) {
+            suppressedOpeningChatCodepoint = 0U;
+            return;
+        }
+        suppressedOpeningChatCodepoint = 0U;
+        if (codepoint >= 32U && codepoint <= 126U && chatInputText.size() < 256U) {
+            chatInputText.push_back(static_cast<char>(codepoint));
+            refreshChatSuggestions();
+        }
+    }
+
+    // Keys for the three modes that do not own the keyboard: opening chat (in
+    // play only) and Back/Escape navigation. Everything else a key does —
+    // movement, the hotbar, F3/F5, E, Q — is level-sampled by the InputSystem in
+    // processInput() and applied by dispatchInputEvents(); this callback path
+    // carries only what must run while a screen is up, where that poll is gated
+    // off.
+    void handleScreenKey(int key, int action) {
+        if (action != GLFW_PRESS) {
+            return;
+        }
+        if ((key == GLFW_KEY_T || key == GLFW_KEY_SLASH) &&
+            screenMode() == input::ScreenMode::Play) {
+            setChatOpen(true);
+            if (key == GLFW_KEY_SLASH) {
+                chatInputText = "/";
+                suppressedOpeningChatCodepoint = static_cast<unsigned int>('/');
+            } else {
+                suppressedOpeningChatCodepoint = static_cast<unsigned int>('t');
+            }
+            return;
+        }
+        if (key == GLFW_KEY_ESCAPE) {
+            handleBackKey();
+        }
+    }
+
+    // Back/Escape. The inventory is an overlay on PageId::Game, so it consumes
+    // Back before the page stack does — letting the page switch run first
+    // incorrectly opened Pause instead of closing the inventory and returning
+    // straight to play.
+    void handleBackKey() {
+        if (inventoryOpen) {
+            setInventoryOpen(false);
+            return;
+        }
+        switch (menuSystem.pageStack.current()) {
+        case ui::PageId::VideoSettings:
+            menuSystem.pageStack.pop();
+            pressedMenuButton = ui::WidgetId::None;
+            menuSystem.viewDistanceSliderDragging = false;
+            menuSystem.simulationDistanceSliderDragging = false;
+            break;
+        case ui::PageId::Experimental:
+            menuSystem.pageStack.pop();
+            pressedMenuButton = ui::WidgetId::None;
+            break;
+        case ui::PageId::Language:
+            // Escape cancels the draft row selection. Only Done starts the
+            // asynchronous language reload.
+            menuSystem.pendingLanguageCode = options.language;
+            menuSystem.languageScrollbarDragging = false;
+            menuSystem.pageStack.pop();
+            pressedMenuButton = ui::WidgetId::None;
+            break;
+        case ui::PageId::Options:
+            menuSystem.pageStack.pop();
+            menuSystem.optionsOpen = false;
+            pressedMenuButton = ui::WidgetId::None;
+            menuSystem.viewDistanceSliderDragging = false;
+            menuSystem.simulationDistanceSliderDragging = false;
+            menuSystem.masterVolumeSliderDragging = false;
+            break;
+        case ui::PageId::Pause:
+            setPaused(false);
+            break;
+        case ui::PageId::ConfirmDelete:
+        case ui::PageId::WorldList:
+            menuSystem.pageStack.pop();
+            break;
+        case ui::PageId::Game:
+            setPaused(true);
+            break;
+        default:
+            break;
+        }
+    }
+
+    // The wheel over a menu page: whichever list that page owns.
+    void scrollMenuList(int direction) {
+        switch (menuSystem.pageStack.current()) {
+        case ui::PageId::WorldList:
+            scrollWorldList(direction);
+            break;
+        case ui::PageId::Language:
+            scrollLanguageList(direction);
+            break;
+        case ui::PageId::Controls:
+            scrollControlsList(direction);
+            break;
+        default:
+            break;
+        }
+    }
+
+    // In play the wheel selects the hotbar slot, through the command queue like
+    // every other slot change.
+    void scrollHotbar(int direction) {
+        const std::size_t current = clientMirror_.player().selectedHotbarSlot;
+        const std::size_t count = gameplay::Inventory::kHotbarSize;
+        gameplay::SwapSlot swap;
+        swap.index = direction < 0 ? (current + count - 1U) % count : (current + 1U) % count;
+        runtime.enqueueClientCommand(std::move(swap));
+    }
+
+    void handleMenuMouseButton(int button, int action) {
+        if (button != GLFW_MOUSE_BUTTON_LEFT) {
+            return;
+        }
+        if (action == GLFW_PRESS) {
+            handleMenuButtonPress();
+        } else if (action == GLFW_RELEASE) {
+            handleMenuButtonRelease();
+        }
+    }
+
+    void handleInventoryMouseButton(int button, int action, int modifiers) {
+        if (action == GLFW_RELEASE) {
+            // Both buttons end a drag; the release also stops the creative
+            // scrollbar drag.
+            handleInventoryButtonRelease();
+            return;
+        }
+        if (action != GLFW_PRESS) {
+            return;
+        }
+        if (button == GLFW_MOUSE_BUTTON_LEFT || button == GLFW_MOUSE_BUTTON_RIGHT) {
+            handleInventoryClick(button == GLFW_MOUSE_BUTTON_RIGHT
+                                     ? gameplay::InventoryMouseButton::Right
+                                     : gameplay::InventoryMouseButton::Left,
+                                 (modifiers & GLFW_MOD_SHIFT) != 0);
+        }
+    }
+
+    void handlePlayMouseButton(int button, int action) {
+        if (button == GLFW_MOUSE_BUTTON_LEFT) {
+            // The destroy lifecycle is a command: Start on press (with the aimed
+            // target), Abort on release. The server ticks it.
+            if (action == GLFW_PRESS) {
+                destroyButtonHeld = true;
+                enqueueDestroyStart();
+            } else if (action == GLFW_RELEASE) {
+                destroyButtonHeld = false;
+                lastDestroyAimBlock.reset();
+                enqueueDestroyAbort();
+            }
+        } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+            // The use lifecycle: UseItemOn on press (with the target),
+            // UseItemStop on release so a held meal/repeat ends.
+            if (std::getenv("MC_REBEDROCK_INTERACT_DEBUG") != nullptr) {
+                std::cout << "[interact] mouse RIGHT "
+                          << (action == GLFW_PRESS ? "press" : "release")
+                          << " (inventoryOpen=" << inventoryOpen << ")" << std::endl;
+            }
+            if (action == GLFW_PRESS) {
+                enqueueUseStart();
+            } else if (action == GLFW_RELEASE) {
+                enqueueUseStop();
+            }
+        }
+    }
+
+    // Cursor motion over a menu page only matters to a control that is already
+    // being dragged; each drag flag is exclusive.
+    void dragMenuControl() {
+        if (menuSystem.languageScrollbarDragging) {
+            updateLanguageScrollFromCursor();
+        } else if (menuSystem.viewDistanceSliderDragging) {
+            updateViewDistanceFromCursor();
+        } else if (menuSystem.simulationDistanceSliderDragging) {
+            updateSimulationDistanceFromCursor();
+        } else if (menuSystem.masterVolumeSliderDragging) {
+            updateMasterVolumeFromCursor();
+        }
+    }
+
+    void dragInventory(double x, double y) {
+        if (creativeScrollbarDragging) {
+            updateCreativeScrollFromCursor();
+        }
+        if (inventoryDragActive) {
+            collectInventoryDragSlot(x, y);
+        }
+    }
+
+    // In play the cursor turns the camera. The first sample after the cursor is
+    // captured only seeds the reference position, so entering play does not
+    // snap the view by however far the pointer had travelled.
+    void applyLookDelta(double x, double y) {
+        if (firstMouseSample) {
+            lastMouseX = x;
+            lastMouseY = y;
+            firstMouseSample = false;
+            return;
+        }
+        const float deltaX = static_cast<float>(x - lastMouseX);
+        const float deltaY = static_cast<float>(lastMouseY - y);
+        lastMouseX = x;
+        lastMouseY = y;
+        camera.rotate(deltaX * 0.10F, deltaY * 0.10F);
+    }
+
     void processInput() {
         // D0: sample the keyboard/look once a frame and ship it as a MovementInput
         // over the channel — the server stages it on the authoritative player and
@@ -2584,7 +2376,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // gameplay actions gated, which yields a zeroed intent for the server.
         input::RawInputFrame frame;
         input::sampleGlfwWindow(window, camera.direction(), frame);
-        const bool gameplayEnabled = worldReady && !inventoryOpen && !paused && !chatOpen;
+        // The same screen-ownership rule the window callbacks use decides whether
+        // the world gets this frame's input, so the poll and the callbacks cannot
+        // disagree about what "a screen is up" means.
+        const input::InputDispatchGate gate = input::dispatchGateFor(screenMode(), worldReady);
+        const bool gameplayEnabled = gate.gameplayEnabled;
         const input::MovementIntent intent =
             inputSystem_.poll(frame, inputEvents_, gameplayEnabled);
         // The action edges are dispatched every frame, NOT only when gameplay is
@@ -2593,7 +2389,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // screen — the pre-PX-1 key callback fired those unconditionally. Only the
         // strictly in-play actions (hotbar swap, drop) stay gameplay-gated; the
         // dispatcher applies the right gate per action.
-        dispatchInputEvents(gameplayEnabled);
+        dispatchInputEvents(gate);
         if (!gameplayEnabled) {
             // A screen is up: send a zeroed intent so the server stops the player.
             runtime.sendClientMovement(gameplay::MovementInput{});
@@ -2640,11 +2436,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     //                          open — the reported regression). Chat swallows E as
     //                          a character instead.
     //   DropItem / Hotbar    — strictly in-play; gated on gameplayEnabled.
-    void dispatchInputEvents(bool gameplayEnabled) {
-        const input::InputDispatchGate gate{
-            gameplayEnabled,
-            /*inventoryToggleEnabled=*/worldReady && !paused && !chatOpen,
-        };
+    void dispatchInputEvents(const input::InputDispatchGate& gate) {
         for (std::size_t i = 0; i < inputEvents_.size(); ++i) {
             const auto& event = inputEvents_[i];
             if (event.phase != input::EventPhase::Pressed) {
@@ -3245,62 +3037,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
         cb.cycleResolution = [this] { cycleResolution(); };
         cb.cycleGuiScale = [this] { cycleGuiScale(); };
-        cb.cycleFrameRateLimit = [this] {
-            constexpr std::array limits{30, 60, 120, 144, 240, 0};
-            const auto found = std::ranges::find(limits, options.frameRateLimit);
-            const std::size_t current =
-                found == limits.end()
-                    ? 0U
-                    : static_cast<std::size_t>(std::distance(limits.begin(), found));
-            options.frameRateLimit = limits[(current + 1U) % limits.size()];
-            persistOptions();
-        };
-        cb.toggleAntiAliasing = [this] {
-            options.antiAliasing = !options.antiAliasing;
-            persistOptions();
-            recreateSwapchain();
-        };
-        cb.cycleAnisotropy = [this] {
-            options.anisotropy = options.anisotropy >= 16 ? 1 : options.anisotropy * 2;
-            persistOptions();
-            recreateTextureSampler();
-        };
-        cb.toggleVsync = [this] {
-            options.vsync = !options.vsync;
-            persistOptions();
-            recreateSwapchain();
-        };
-        cb.toggleSmoothLighting = [this] {
-            options.smoothLightingQuality =
-                nextSmoothLightingQuality(options.smoothLightingQuality);
-            persistOptions();
-            const auto baked = options.smoothLightingQuality == world::SmoothLightingQuality::Off
-                                   ? currentMeshQuality
-                                   : options.smoothLightingQuality;
-            if (baked != currentMeshQuality) {
-                targetMeshQuality = baked;
-                qualityRemeshPending.clear();
-                for (const auto& [position, mesh] : gpuMeshes) {
-                    qualityRemeshPending.insert(position);
-                }
-                for (const auto& [position, update] : pendingSectionUpdates) {
-                    qualityRemeshPending.insert(position);
-                }
-                chunkStreamer.setSmoothLightingQuality(baked);
-                chunkStreamer.requestFullRemesh();
+        // Every cycling option goes through one callback: ui::OptionCycle's table
+        // owns the values, the field and the label, so this seam carries no
+        // per-option knowledge at all — it steps the value, persists, and lets
+        // applyOptionChanged react.
+        cb.cycleOption = [this](ui::WidgetId id, int direction) {
+            const ui::OptionDesc* option = ui::findCyclingOption(id);
+            if (option == nullptr) {
+                return;
             }
-        };
-        cb.toggleDynamicLight = [this] {
-            options.dynamicLight = !options.dynamicLight;
+            ui::cycleOptionValue(*option, options, direction);
             persistOptions();
-        };
-        cb.toggleViewBobbing = [this] {
-            options.viewBobbing = !options.viewBobbing;
-            persistOptions();
-        };
-        cb.toggleAutoJump = [this] {
-            options.autoJump = !options.autoJump;
-            persistOptions();
+            applyOptionChanged(id);
         };
         cb.cycleDifficulty = [this] {
             if (currentSave.has_value()) {
@@ -3311,42 +3059,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 pushSystemToast("Difficulty",
                                 std::string{gameplay::difficultyName(currentSave->difficulty)});
             }
-        };
-        cb.toggleForceUnicodeFont = [this] {
-            options.forceUnicodeFont = !options.forceUnicodeFont;
-            textFont.setForceUnicode(options.forceUnicodeFont);
-            recreateFontTexture();
-            persistOptions();
-        };
-        // PX-6 Bug3: the sound-subtitles accessibility toggle gates the subtitle
-        // overlay feed. Persisted like every other option.
-        cb.toggleSubtitles = [this] {
-            options.showSubtitles = !options.showSubtitles;
-            if (!options.showSubtitles) {
-                subtitleFeed_.clear();
-            }
-            persistOptions();
-        };
-
-        cb.cycleRainMode = [this] {
-            options.rainMode = (options.rainMode + 1) % 3;
-            rainMode_ = static_cast<RainMode>(options.rainMode);
-            persistOptions();
-        };
-        cb.cycleParticleLevel = [this] {
-            options.particleLevel = (options.particleLevel + 1) % 4;
-            applyParticleLevel();
-            persistOptions();
-        };
-        cb.toggleSunShadows = [this] {
-            options.sunShadows = !options.sunShadows;
-            shadowDisabled = !options.sunShadows;
-            persistOptions();
-        };
-        cb.toggleRainCollisionCache = [this] {
-            options.rainCollisionCache = !options.rainCollisionCache;
-            rainSystem.setCollisionCache(options.rainCollisionCache);
-            persistOptions();
         };
         cb.selectLanguageRow = [this](std::size_t row) {
             if (row < menuSystem.languageCodes.size()) {
@@ -3462,6 +3174,73 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         };
         return ui::buildPage(menuSystem.pageStack.current(), ctx, buildMenuCallbacks(),
                              menuRectProvider());
+    }
+
+    // The ONE place a changed option is reacted to. ui::OptionCycle's table owns
+    // what an option's values are and what its label reads; the renderer owns
+    // what a change costs — recreating the swapchain or the sampler, remeshing
+    // the world, retuning a live subsystem. An option with no entry here simply
+    // takes effect through the field the next time something reads it, which is
+    // true of most of them.
+    void applyOptionChanged(ui::WidgetId id) {
+        switch (id) {
+        case ui::WidgetId::AntiAliasing:
+        case ui::WidgetId::Vsync:
+            recreateSwapchain();
+            break;
+        case ui::WidgetId::Anisotropy:
+            recreateTextureSampler();
+            break;
+        case ui::WidgetId::SmoothLighting:
+            applySmoothLightingQuality();
+            break;
+        case ui::WidgetId::ForceUnicodeFont:
+            textFont.setForceUnicode(options.forceUnicodeFont);
+            recreateFontTexture();
+            break;
+        case ui::WidgetId::Subtitles:
+            if (!options.showSubtitles) {
+                subtitleFeed_.clear();
+            }
+            break;
+        case ui::WidgetId::RainMode:
+            rainMode_ = static_cast<RainMode>(options.rainMode);
+            break;
+        case ui::WidgetId::ParticleLevel:
+            applyParticleLevel();
+            break;
+        case ui::WidgetId::SunShadows:
+            shadowDisabled = !options.sunShadows;
+            break;
+        case ui::WidgetId::RainCollisionCache:
+            rainSystem.setCollisionCache(options.rainCollisionCache);
+            break;
+        default:
+            break;
+        }
+    }
+
+    // The mesh is baked at the active smooth-lighting quality (the packed vertex
+    // carries one AO set), so changing it remeshes every resident section. Off
+    // keeps the bake it already has — the shader drops the AO instead — which is
+    // why Off does not trigger a remesh.
+    void applySmoothLightingQuality() {
+        const auto baked = options.smoothLightingQuality == world::SmoothLightingQuality::Off
+                               ? currentMeshQuality
+                               : options.smoothLightingQuality;
+        if (baked == currentMeshQuality) {
+            return;
+        }
+        targetMeshQuality = baked;
+        qualityRemeshPending.clear();
+        for (const auto& [position, mesh] : gpuMeshes) {
+            qualityRemeshPending.insert(position);
+        }
+        for (const auto& [position, update] : pendingSectionUpdates) {
+            qualityRemeshPending.insert(position);
+        }
+        chunkStreamer.setSmoothLightingQuality(baked);
+        chunkStreamer.requestFullRemesh();
     }
 
     void handleMenuButtonPress() {
@@ -5662,6 +5441,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         checkVk(result, "vkCreateGraphicsPipelines");
 
         depthStencil.depthWriteEnable = VK_FALSE;
+        // The translucent pass is double-sided (no back-face culling). A see-through
+        // block (stained glass, ice, water) must show its far interior faces even
+        // though they point away from the camera: looking through the near
+        // half-opaque face, you expect the back wall's colour behind it. With the
+        // opaque pass's VK_CULL_MODE_BACK_BIT those far faces get culled and you see
+        // straight through the block where the back wall should be. Plain glass hid
+        // this because its sprite is almost entirely alpha-0 (nothing to see through
+        // to), but a solid stained-glass fill shows the hole plainly. Opaque and
+        // cutout keep back-face culling (the cutout cross model emits both windings
+        // itself), so this NONE is scoped to the translucent pipeline and restored
+        // right after it is created.
+        rasterization.cullMode = VK_CULL_MODE_NONE;
         colorAttachment.blendEnable = VK_TRUE;
         colorAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
         colorAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
@@ -5672,6 +5463,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const auto translucentResult = vkCreateGraphicsPipelines(
             device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &translucentPipeline);
         checkVk(translucentResult, "vkCreateGraphicsPipelines(translucent)");
+        rasterization.cullMode = VK_CULL_MODE_BACK_BIT; // restore for the cutout pipeline
         depthStencil.depthWriteEnable = VK_TRUE;
         colorAttachment.blendEnable = VK_FALSE;
 
@@ -6589,11 +6381,19 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // Tell VMA which frame this is so it can reuse allocations released a
         // frame-index window ago instead of growing new blocks every burst.
         vmaSetCurrentFrameIndex(allocator, frameNumber_);
+        const auto occReadStart = std::chrono::steady_clock::now();
         world_.releaseFrameResources(frame);
         world_.readBackOcclusionQueries();
+        if (diag::traceEnabled()) {
+            diag::frameTrace().occlusionReadbackMs += diag::msSince(occReadStart);
+        }
         std::uint32_t imageIndex = 0;
+        const auto acquireStart = std::chrono::steady_clock::now();
         const auto acquire = vkAcquireNextImageKHR(
             device, swapchain, UINT64_MAX, frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
+        if (diag::traceEnabled()) {
+            diag::frameTrace().acquireMs += diag::msSince(acquireStart);
+        }
         if (acquire == VK_ERROR_OUT_OF_DATE_KHR) {
             recreateSwapchain();
             return;
@@ -6601,12 +6401,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR) {
             checkVk(acquire, "vkAcquireNextImageKHR");
         }
+        const auto imageWaitStart = std::chrono::steady_clock::now();
         if (imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
             checkVk(vkWaitForFences(device, 1, &imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX),
                     "vkWaitForFences(swapchain image)");
         }
+        if (diag::traceEnabled()) {
+            diag::frameTrace().imageWaitMs += diag::msSince(imageWaitStart);
+        }
         imagesInFlight[imageIndex] = frame.inFlight;
-        world_.prepareStreamingUpdates(frame);
+        {
+            const auto uploadStart = std::chrono::steady_clock::now();
+            world_.prepareStreamingUpdates(frame);
+            if (diag::traceEnabled()) {
+                diag::frameTrace().uploadMs += diag::msSince(uploadStart);
+            }
+        }
         if (worldSessionActive && !worldReady && completedStreamBatchCount > 0U &&
             spawnPositionInitialized && pendingSectionUpdates.empty()) {
             worldReady = true;
@@ -6627,11 +6437,20 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             chunkStreamer.setRadii(viewDistanceChunks,
                                    viewDistanceChunks + world::kUnloadHysteresisChunks);
         }
+        const auto uniformStart = std::chrono::steady_clock::now();
         world_.updateShadowMatrix();
         updateUniform(frame);
+        if (diag::traceEnabled()) {
+            diag::frameTrace().uniformMs += diag::msSince(uniformStart);
+        }
         checkVk(vkResetFences(device, 1, &frame.inFlight), "vkResetFences");
         checkVk(vkResetCommandBuffer(frame.commandBuffer, 0), "vkResetCommandBuffer");
+        const auto recordStart = std::chrono::steady_clock::now();
         const std::size_t visibleCount = world_.recordCommandBuffer(frame, imageIndex);
+        if (diag::traceEnabled()) {
+            diag::frameTrace().recordMs += diag::msSince(recordStart);
+            diag::frameTrace().visibleSections = static_cast<std::uint32_t>(visibleCount);
+        }
         const auto& titleSnap = clientMirror_.player();
         const std::string movementMode =
             titleSnap.flying ? (titleSnap.sprinting ? "FLY SPRINT" : "FLY")
@@ -6673,6 +6492,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         submit.pCommandBuffers = &frame.commandBuffer;
         submit.signalSemaphoreCount = 1;
         submit.pSignalSemaphores = &presentSemaphore;
+        const auto presentStart = std::chrono::steady_clock::now();
         checkVk(vkQueueSubmit(graphicsQueue, 1, &submit, frame.inFlight), "vkQueueSubmit");
         auto present = vkStructure<VkPresentInfoKHR>(VK_STRUCTURE_TYPE_PRESENT_INFO_KHR);
         present.waitSemaphoreCount = 1;
@@ -6687,6 +6507,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             recreateSwapchain();
         } else {
             checkVk(result, "vkQueuePresentKHR");
+        }
+        if (diag::traceEnabled()) {
+            diag::frameTrace().presentMs += diag::msSince(presentStart);
         }
         currentFrame = (currentFrame + 1U) % kFramesInFlight;
         ++frameNumber_;

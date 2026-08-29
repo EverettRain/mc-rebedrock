@@ -52,27 +52,30 @@ namespace mc::world {
 // the enum — only the id and its schema.
 inline constexpr std::size_t kBlockKindCount = kBuiltinBlockCount;
 
-// The first id of each block's range, plus a trailing total.
-[[nodiscard]] constexpr std::array<std::uint16_t, kBlockKindCount + 1U> buildStateRangeStarts() {
-    std::array<std::uint16_t, kBlockKindCount + 1U> starts{};
+// The first id of each block's range, plus a trailing total. The starts are
+// std::uint32_t: the interned state id (BlockState::rawId) is a uint32 now, so a
+// block's range can begin past 65535 once enough state-carrying blocks are
+// registered (the state-id budget is what widened, not BlockId — see BlockState).
+[[nodiscard]] constexpr std::array<std::uint32_t, kBlockKindCount + 1U> buildStateRangeStarts() {
+    std::array<std::uint32_t, kBlockKindCount + 1U> starts{};
     std::uint32_t next = 0U;
     for (std::size_t index = 0; index < kBlockKindCount; ++index) {
-        starts[index] = static_cast<std::uint16_t>(next);
+        starts[index] = next;
         next += blockStateCount(kBlockRegistry[index]);
     }
-    starts[kBlockKindCount] = static_cast<std::uint16_t>(next);
+    starts[kBlockKindCount] = next;
     return starts;
 }
 
 inline constexpr auto kBlockStateRangeStarts = buildStateRangeStarts();
 inline constexpr std::uint32_t kBlockStateCount = kBlockStateRangeStarts[kBlockKindCount];
 
-// The whole point of interning is that ids stay inside a u16. If a future
-// content drop ever pushes past this, the id type widens — it does not silently
-// wrap. Stairs and doors are what will move this number; the assertion is the
-// tripwire, not a claim that the budget is comfortable.
-static_assert(kBlockStateCount <= 65536U,
-              "the interned block-state table must fit in a std::uint16_t id");
+// The interned id is a uint32 (BlockState::rawId), so the practical ceiling moved
+// from 65536 to 2^32. This assertion stays as the tripwire that the built-in
+// table plus the UnknownBlock placeholder space above it still fit the id type;
+// the leading 0xFFFF0000 headroom is left for those placeholders (see below).
+static_assert(kBlockStateCount < 0xFFFF0000U,
+              "the interned block-state table must leave room above it for UnknownBlock ids");
 
 // State ids at or above the built-in table are not interned states at all: they
 // name an UnknownBlock placeholder — a block a removed datapack/mod once placed —
@@ -83,10 +86,10 @@ static_assert(kBlockStateCount <= 65536U,
 // BlockState::fromRawId keeps such an id verbatim rather than clamping it, which
 // is what lets the sentinel survive a chunk-section palette and reach the save
 // writer unchanged.
-static_assert(kBlockStateCount < 65536U,
+static_assert(kBlockStateCount < 0xFFFF0000U,
               "no id space is left above the built-in table for UnknownBlock placeholders");
-inline constexpr std::uint16_t kFirstUnknownStateId = static_cast<std::uint16_t>(kBlockStateCount);
-[[nodiscard]] constexpr bool isUnknownStateId(std::uint16_t id) {
+inline constexpr std::uint32_t kFirstUnknownStateId = kBlockStateCount;
+[[nodiscard]] constexpr bool isUnknownStateId(std::uint32_t id) {
     return id >= kFirstUnknownStateId;
 }
 
@@ -114,10 +117,10 @@ struct BlockStateMetadataTable final {
     for (std::size_t kind = 0; kind < kBlockKindCount; ++kind) {
         const auto& definition = kBlockRegistry[kind];
         const auto& schema = definition.states;
-        for (std::uint16_t id = kBlockStateRangeStarts[kind];
+        for (std::uint32_t id = kBlockStateRangeStarts[kind];
              id < kBlockStateRangeStarts[kind + 1U]; ++id) {
             const auto offset =
-                static_cast<std::uint16_t>(id - kBlockStateRangeStarts[kind]);
+                static_cast<std::uint32_t>(id - kBlockStateRangeStarts[kind]);
             result.blocks[id] = BlockId::of(static_cast<BlockId::Value>(kind));
             for (std::size_t axisIndex = 0; axisIndex < schema.size(); ++axisIndex) {
                 const auto axis = schema.axis(axisIndex);
@@ -135,13 +138,13 @@ struct BlockStateMetadataTable final {
 
 inline constexpr auto kBlockStateMetadata = buildBlockStateMetadata();
 
-[[nodiscard]] constexpr std::uint16_t validatedBlockStateId(std::uint16_t id) {
+[[nodiscard]] constexpr std::uint32_t validatedBlockStateId(std::uint32_t id) {
     return id < kBlockStateCount ? id : 0U;
 }
 
 // A block's default state: every property at value 0. This is what placing a
 // block with nothing further to say produces.
-[[nodiscard]] constexpr std::uint16_t defaultBlockStateId(Block block) {
+[[nodiscard]] constexpr std::uint32_t defaultBlockStateId(Block block) {
     const auto kind = isValidBlock(block) ? static_cast<std::size_t>(block) : 0U;
     return kBlockStateRangeStarts[kind];
 }
@@ -149,13 +152,13 @@ inline constexpr auto kBlockStateMetadata = buildBlockStateMetadata();
 // The BlockId-keyed form of the above, for identity-first callers. An id past
 // the built-in table (a future external block with no baked state range) falls
 // back to block 0's default, the same way an out-of-enum Block does.
-[[nodiscard]] constexpr std::uint16_t defaultBlockStateId(BlockId id) {
+[[nodiscard]] constexpr std::uint32_t defaultBlockStateId(BlockId id) {
     const auto kind = id.index() < kBlockKindCount ? id.index() : 0U;
     return kBlockStateRangeStarts[kind];
 }
 
 // One property's value, straight out of the cache.
-[[nodiscard]] constexpr std::uint8_t stateValueOf(std::uint16_t id, StateProperty property) {
+[[nodiscard]] constexpr std::uint8_t stateValueOf(std::uint32_t id, StateProperty property) {
     return kBlockStateMetadata
         .values[static_cast<std::size_t>(property)][validatedBlockStateId(id)];
 }
@@ -167,7 +170,7 @@ inline constexpr auto kBlockStateMetadata = buildBlockStateMetadata();
 // numberable. A value outside the property's range falls back to 0 for the same
 // reason — this mirrors what ChunkSection::setBlock already did when a cell's
 // block changed under its state.
-[[nodiscard]] constexpr std::uint16_t withStateValue(std::uint16_t id, StateProperty property,
+[[nodiscard]] constexpr std::uint32_t withStateValue(std::uint32_t id, StateProperty property,
                                                      std::uint8_t value) {
     const auto validId = validatedBlockStateId(id);
     const auto kind = kBlockStateMetadata.blocks[validId].index();
@@ -179,34 +182,34 @@ inline constexpr auto kBlockStateMetadata = buildBlockStateMetadata();
     const auto count = schema.valueCount(property);
     const std::uint8_t next = value < count ? value : 0U;
     const auto current = stateValueOf(validId, property);
-    return static_cast<std::uint16_t>(validId + (next - current) * stride);
+    return static_cast<std::uint32_t>(validId + (next - current) * stride);
 }
 
 // The block identity of an interned state, as the runtime BlockId.
-[[nodiscard]] constexpr BlockId blockIdOfState(std::uint16_t id) {
+[[nodiscard]] constexpr BlockId blockIdOfState(std::uint32_t id) {
     return kBlockStateMetadata.blocks[validatedBlockStateId(id)];
 }
 
-[[nodiscard]] constexpr Block blockOfState(std::uint16_t id) {
+[[nodiscard]] constexpr Block blockOfState(std::uint32_t id) {
     return blockFromId(blockIdOfState(id));
 }
 
-[[nodiscard]] constexpr BlockOrientation orientationOfState(std::uint16_t id) {
+[[nodiscard]] constexpr BlockOrientation orientationOfState(std::uint32_t id) {
     return static_cast<BlockOrientation>(stateValueOf(id, StateProperty::Facing));
 }
 
-[[nodiscard]] constexpr std::uint8_t fluidLevelOfState(std::uint16_t id) {
+[[nodiscard]] constexpr std::uint8_t fluidLevelOfState(std::uint32_t id) {
     return stateValueOf(id, StateProperty::FluidLevel);
 }
 
-[[nodiscard]] constexpr bool litOfState(std::uint16_t id) {
+[[nodiscard]] constexpr bool litOfState(std::uint32_t id) {
     return stateValueOf(id, StateProperty::Lit) != 0U;
 }
 
 // The light a state emits. This is why `lit` had to become a property rather
 // than a second block: the light engine reads it per cell, and a furnace's 13
 // only applies while it is burning.
-[[nodiscard]] constexpr std::uint8_t emittedLightOfState(std::uint16_t id) {
+[[nodiscard]] constexpr std::uint8_t emittedLightOfState(std::uint32_t id) {
     return kBlockStateMetadata.emittedLights[validatedBlockStateId(id)];
 }
 
@@ -214,7 +217,7 @@ inline constexpr auto kBlockStateMetadata = buildBlockStateMetadata();
 // the interned id. Kept because facing, fluid level and lit are the properties
 // most placement paths actually name; anything else goes through
 // `BlockState::with(StateProperty, value)`.
-[[nodiscard]] constexpr std::uint16_t blockStateId(Block block,
+[[nodiscard]] constexpr std::uint32_t blockStateId(Block block,
                                                    BlockOrientation orientation,
                                                    std::uint8_t fluidLevel, bool lit = false) {
     auto id = defaultBlockStateId(block);

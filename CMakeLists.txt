@@ -34,6 +34,27 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# --- constexpr evaluation budget --------------------------------------------
+# rebedrock bakes content into constexpr tables at compile time (DOD): the block
+# registry, the interned block-state metadata table (kBlockStateMetadata), and
+# the O(N^2) blockRegistryIsWellFormed() uniqueness check all evaluate at compile
+# time. Their cost grows with the block/state roster, and the compilers' default
+# constexpr step budgets are not uniform: GCC allows ~33M ops, but Clang defaults
+# to ~1M steps and MSVC lower still — so once the roster grew (STRUCT block
+# registration, ~2500 states) a Clang/MSVC build began failing with
+# "static assertion expression is not an integral constant expression" while GCC
+# still passed. Raise the ceiling far past current need on every compiler. This
+# only raises the *limit*; it does not change the actual evaluation cost, so it
+# has no effect on build time until the tables genuinely grow into it. Scoped to
+# C++ so the vendored C sources (miniz, glfw) do not get a C++-only flag.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fconstexpr-steps=1000000000>)
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fconstexpr-ops-limit=1000000000>)
+elseif(MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/constexpr:steps1000000000>)
+endif()
+
 # --- Build metadata for the single version manifest (META-0) -----------------
 # core/VersionManifest.hpp's kBuildTime / kBuildRef are baked in from the git
 # commit, NOT the wall clock: the commit's author date and short hash. Two
@@ -93,6 +114,26 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
 
 if(MC_REBEDROCK_MINGW_CROSS)
+    # A COFF object file can hold at most 32767 sections, and VulkanRenderer.cpp
+    # went past it: "too many sections (33362) ... file too big". It is a ~7k-line
+    # TU that also pulls in the header-only HudRenderer/WorldRenderer split, and
+    # every inline member, template instantiation and lambda in that pile lands in
+    # its own COMDAT section (plus .pdata/.xdata/.debug_* companions in a Debug
+    # build) — so the count tracks how much header-only code the renderer
+    # includes, and it had been sitting just under the cap.
+    #
+    # -mbig-obj switches the assembler to the extended COFF variant, raising the
+    # limit to 2^31; mingw-w64's ld, ar and nm read it natively, and it is a no-op
+    # for objects small enough not to need it. Applied to the whole cross build
+    # rather than the one file that overflowed first, so the next TU to cross the
+    # line does not repeat this failure. ELF (Linux) and Mach-O (macOS) have no
+    # such cap, which is why only the Windows companion build ever hit it.
+    #
+    # Here rather than in cmake/toolchains/mingw-x86_64.cmake because
+    # CMAKE_CXX_FLAGS_INIT is only consulted on a *fresh* configure, while editing
+    # this file re-runs cmake in the existing windows-x64 tree on the next build.
+    add_compile_options(-Wa,-mbig-obj)
+
     if(NOT Vulkan_INCLUDE_DIR OR NOT IS_DIRECTORY "${Vulkan_INCLUDE_DIR}/vulkan")
         message(FATAL_ERROR
             "A Vulkan SDK include directory is required for the Windows cross-build")
@@ -271,6 +312,7 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/ItemPlacement.cpp
     src/gameplay/MiningSystem.cpp
     src/gameplay/LootTable.cpp
+    src/gameplay/ChestLootTable.cpp
     src/gameplay/BlockTags.cpp
     src/gameplay/DataPackStack.cpp
     src/gameplay/FunctionManager.cpp
@@ -296,9 +338,6 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/entities/NeutralMob.cpp
     src/gameplay/entities/MobAi.cpp
     src/gameplay/entities/MobBrain.cpp
-    src/gameplay/entities/PigEntity.cpp
-    src/gameplay/entities/CowEntity.cpp
-    src/gameplay/entities/ZombieEntity.cpp
     src/gameplay/entities/ExperienceOrb.cpp
     src/gameplay/entities/ProjectileSystem.cpp
     src/world/BlockPlacement.cpp
@@ -311,6 +350,9 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/world/SurfaceGenerator.cpp
     src/world/NetherGenerator.cpp
     src/world/EndGenerator.cpp
+    src/world/StructureTemplate.cpp
+    src/world/StructurePlacer.cpp
+    src/world/StructureManager.cpp
     src/world/gen/Biome.cpp
     src/world/gen/BiomeSource.cpp
     src/world/gen/LayeredBiomeSource.cpp
@@ -318,6 +360,8 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/world/gen/TheEndBiomeSource.cpp
     src/world/gen/Carver.cpp
     src/world/gen/Features.cpp
+    src/world/gen/StructureGenerator.cpp
+    src/world/gen/JigsawExpansion.cpp
     src/world/gen/NoiseChunkGenerator.cpp
     src/world/gen/NoiseSampler.cpp
     src/world/gen/TreeGrower.cpp
@@ -330,6 +374,10 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     # the header/impl pull in nothing but World/BlockShape, so moving it here
     # costs the GL build nothing (mc_rebedrock already links mc_rebedrock_runtime).
     src/world/VoxelRaycast.cpp
+    # STRUCT-0: the vendored miniz decompressor moved here from the GL executable
+    # so StructureTemplate's gzip reader has it headless (the GL build still gets
+    # it by linking mc_rebedrock_runtime, and keeps its own vendor/miniz include).
+    vendor/miniz/miniz.c
 )
 # The runtime spawns threads (ChunkStreamer worker, the TCP IO thread). This is
 # looked up without REQUIRED because the MinGW cross build reconfigures this same
@@ -339,6 +387,8 @@ find_package(Threads)
 add_library(mc_rebedrock_runtime STATIC ${MC_REBEDROCK_RUNTIME_SOURCES})
 target_include_directories(mc_rebedrock_runtime PUBLIC
     src "${MC_REBEDROCK_GENERATED_INCLUDE_DIR}" "${glm_SOURCE_DIR}")
+# STRUCT-0: StructureTemplate.cpp (in the runtime lib) includes <miniz.h>.
+target_include_directories(mc_rebedrock_runtime PRIVATE vendor/miniz)
 if(TARGET Threads::Threads)
     target_link_libraries(mc_rebedrock_runtime PUBLIC Threads::Threads)
 endif()
@@ -363,7 +413,6 @@ add_executable(mc_rebedrock
     src/assets/SoundRegistry.cpp
     src/assets/TextureAnimation.cpp
     src/assets/ZipResourcePack.cpp
-    vendor/miniz/miniz.c
     src/config/GameOptions.cpp
     src/core/Application.cpp
     src/gameplay/entities/SpeciesRenderData.cpp
@@ -711,6 +760,26 @@ if(BUILD_TESTING)
     )
     add_test(NAME vertex_lighting COMMAND mc_rebedrock_vertex_lighting_test)
 
+    add_executable(mc_rebedrock_face_bakery_test
+        tests/face_bakery_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_face_bakery_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_face_bakery_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME face_bakery COMMAND mc_rebedrock_face_bakery_test)
+
+    add_executable(mc_rebedrock_element_model_baker_test
+        tests/element_model_baker_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_element_model_baker_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_element_model_baker_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME element_model_baker COMMAND mc_rebedrock_element_model_baker_test)
+
     add_executable(mc_rebedrock_chunk_streamer_test
         tests/chunk_streamer_test.cpp
     )
@@ -767,6 +836,14 @@ if(BUILD_TESTING)
         src
     )
     add_test(NAME streaming_budget COMMAND mc_rebedrock_streaming_budget_test)
+
+    add_executable(mc_rebedrock_smoke_script_test
+        tests/smoke_script_test.cpp
+    )
+    target_include_directories(mc_rebedrock_smoke_script_test PRIVATE
+        src
+    )
+    add_test(NAME smoke_script COMMAND mc_rebedrock_smoke_script_test)
 
     add_executable(mc_rebedrock_string_reader_test
         tests/string_reader_test.cpp
@@ -1922,6 +1999,31 @@ if(BUILD_TESTING)
     )
     add_test(NAME player_pose COMMAND mc_rebedrock_player_pose_test)
 
+    add_executable(mc_rebedrock_screen_mode_test
+        tests/screen_mode_test.cpp
+    )
+    target_include_directories(mc_rebedrock_screen_mode_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME screen_mode COMMAND mc_rebedrock_screen_mode_test)
+
+    add_executable(mc_rebedrock_option_cycle_test
+        tests/option_cycle_test.cpp
+        # The value labels go through ui::formatTranslation, which lives here
+        # rather than in the runtime library (and Language.cpp reaches
+        # TextFont's UTF-8 decoder).
+        src/ui/Language.cpp
+        src/ui/TextFont.cpp
+        src/ui/BitmapFontMetrics.cpp
+    )
+    target_link_libraries(mc_rebedrock_option_cycle_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_option_cycle_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME option_cycle COMMAND mc_rebedrock_option_cycle_test)
+
     add_executable(mc_rebedrock_menu_widget_test
         tests/menu_widget_test.cpp
     )
@@ -2188,6 +2290,78 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_loot_data_test PRIVATE mc_rebedrock_runtime)
     target_include_directories(mc_rebedrock_loot_data_test PRIVATE src "${glm_SOURCE_DIR}")
     add_test(NAME loot_data COMMAND mc_rebedrock_loot_data_test)
+
+    # STRUCT-0: the structure `.nbt` reader (schema-directed NBT cursor + gzip +
+    # palette resolution). Links the runtime (which now carries miniz) and pulls
+    # vendor/miniz so the test can gzip its own fixtures.
+    add_executable(mc_rebedrock_structure_template_test
+        tests/structure_template_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_structure_template_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_structure_template_test
+        PRIVATE src "${glm_SOURCE_DIR}" vendor/miniz)
+    add_test(NAME structure_template COMMAND mc_rebedrock_structure_template_test)
+
+    # STRUCT-1: the chest loot engine (pools/weighted entries/set_count) reduced
+    # from vanilla JE chest JSON, and its deterministic evaluator.
+    add_executable(mc_rebedrock_chest_loot_test
+        tests/chest_loot_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_chest_loot_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_chest_loot_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME chest_loot COMMAND mc_rebedrock_chest_loot_test)
+
+    # STRUCT-2 (engine): random_spread placement math, the rotation transform, and
+    # the template placer, ending in the STORAGE->PLACEMENT->LOOT slice.
+    add_executable(mc_rebedrock_structure_placement_test
+        tests/structure_placement_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_structure_placement_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_structure_placement_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME structure_placement COMMAND mc_rebedrock_structure_placement_test)
+
+    # STRUCT-2 (wiring, first half): the template registry + non-streamer flow.
+    add_executable(mc_rebedrock_structure_manager_test
+        tests/structure_manager_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_structure_manager_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_structure_manager_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME structure_manager COMMAND mc_rebedrock_structure_manager_test)
+
+    # STRUCT-3a: the jigsaw data layer — template pools + jigsaw blocks lifted from
+    # a template.
+    add_executable(mc_rebedrock_structure_pool_test
+        tests/structure_pool_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_structure_pool_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_structure_pool_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME structure_pool COMMAND mc_rebedrock_structure_pool_test)
+
+    # STRUCT-3b: the jigsaw expansion algorithm (connect / size / collision).
+    add_executable(mc_rebedrock_jigsaw_expansion_test
+        tests/jigsaw_expansion_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_jigsaw_expansion_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_jigsaw_expansion_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME jigsaw_expansion COMMAND mc_rebedrock_jigsaw_expansion_test)
+
+    # STRUCT-2 (wiring): the generation step placeStructures (no-op when empty,
+    # stamps + biome-gates + placement-selects when loaded).
+    add_executable(mc_rebedrock_structure_generation_test
+        tests/structure_generation_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_structure_generation_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_structure_generation_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME structure_generation COMMAND mc_rebedrock_structure_generation_test)
+
+    # PACK: a combined pack (assets/ + data/) feeds both stacks — one user-supplied
+    # pack yields textures + structures/loot, with the dedicated-server base isolated.
+    add_executable(mc_rebedrock_pack_combined_test
+        tests/pack_combined_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_pack_combined_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_pack_combined_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME pack_combined COMMAND mc_rebedrock_pack_combined_test)
 
     # DDC-1: JE-compatible enchantment content JSON schema + loader.
     add_executable(mc_rebedrock_enchantment_content_test

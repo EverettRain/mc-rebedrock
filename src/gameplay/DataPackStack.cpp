@@ -1,11 +1,13 @@
 #include "gameplay/DataPackStack.hpp"
 
 #include "gameplay/BlockTags.hpp"
+#include "gameplay/ChestLootTable.hpp"
 #include "gameplay/LootTable.hpp"
 #include "gameplay/MobSpawnSettings.hpp"
 #include "gameplay/RecipeTable.hpp"
 #include "gameplay/entities/EntityAttributeOverlay.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
+#include "world/StructureManager.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -121,6 +123,13 @@ void PerSaveDataStack::rebuild(const assets::ResourceProvider& base) const {
     recipeTable().load(dataStack);
     lootTable().load(dataStack);
     biomeSpawnTables().load(dataStack);
+    // STRUCT-1/2: chest loot tables + structure templates, then the built-in
+    // structure sets for whatever templates loaded (a no-op with no structure
+    // assets, keeping generation unchanged for a build without them).
+    gameplay::chestLootTable().load(dataStack);
+    world::structureManager().load(dataStack);
+    world::structureManager().loadPools(dataStack); // STRUCT-3: jigsaw template pools
+    world::registerBuiltinStructureSets(world::structureManager());
 }
 
 void PerSaveDataStack::rebuildBuiltinOnly(const assets::ResourceProvider& base) {
@@ -131,6 +140,10 @@ void PerSaveDataStack::rebuildBuiltinOnly(const assets::ResourceProvider& base) 
     recipeTable().load(empty);
     lootTable().load(empty);
     biomeSpawnTables().load(empty);
+    gameplay::chestLootTable().load(empty);
+    world::structureManager().load(empty);
+    world::structureManager().loadPools(empty);
+    world::registerBuiltinStructureSets(world::structureManager());
 }
 
 } // namespace mc::gameplay

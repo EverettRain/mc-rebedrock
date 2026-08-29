@@ -65,48 +65,37 @@ std::vector<ResourceLocation> ResourceProvider::list(std::string_view, std::stri
 
 std::vector<PackLanguage> ResourceProvider::languages() const { return {}; }
 
-DirectoryResourceProvider::DirectoryResourceProvider(std::filesystem::path resourceRoot,
-                                                     std::string vanillaVersion)
-    : resourceRoot_(std::move(resourceRoot)), vanillaVersion_(std::move(vanillaVersion)) {}
+DirectoryResourceProvider::DirectoryResourceProvider(std::filesystem::path resourceRoot)
+    : resourceRoot_(std::move(resourceRoot)) {}
 
 std::filesystem::path DirectoryResourceProvider::locate(const ResourceLocation& location) const {
-    // The bundled tree carries no server data: tags, loot tables and recipes
-    // come from the 26.1 data pack the player supplies, exactly like textures
-    // and sounds do. An empty path reads as "this provider cannot place it",
-    // and the layered stack falls through to a pack that can.
+    // This provider owns exactly one thing: rebedrock's own assets. Every
+    // Mojang-shaped resource — textures, sounds, the font and the `minecraft`
+    // translation tables — comes from the resource pack the player supplies, and
+    // so do tags, loot tables and recipes. An empty path reads as "this provider
+    // cannot place it", and the layered stack falls through to a pack that can.
+    //
+    // The bundled `<root>/vanilla/<version>/…` tree this used to map (with its
+    // three category renames) is gone, along with the extraction workflow that
+    // filled it; a pack is now the only source of vanilla content.
     if (location.type == PackType::ServerData) {
         return {};
     }
     const std::string_view category = firstSegment(location.path);
-    const std::string rest{afterFirstSegment(location.path)};
-    const auto vanilla = vanillaRoot();
-    // The current bundled layout is `<category>/<namespace>/<rest>`, with three
-    // historical renames of the category folder that a standard pack does not
-    // have. Each is spelled out once, here.
-    if (category == "textures") {
-        // textures/minecraft/<rest> — also covers gui, colormap, misc,
-        // environment and the bitmap font, which all live under textures/.
-        return vanilla / "textures" / location.space / rest;
-    }
-    if (category == "sounds") {
-        // The OGGs sit under `audio/minecraft/sounds/…`, not `sounds/…`.
-        return vanilla / "audio" / location.space / "sounds" / rest;
+    if (category == "textures" || category == "sounds" || category == "font") {
+        return {};
     }
     if (category == "lang") {
         // ReBedrock-authored translations are project resources, not Mojang
-        // assets. Keep them in their own namespace so a standard pack can
+        // assets. They keep their own namespace so a standard pack can
         // override/add `assets/rebedrock/lang/<code>.json` exactly like 26.1's
-        // resource manager merges every namespace for the active language.
+        // resource manager merges every namespace for the active language. The
+        // `minecraft` tables belong to the pack alone.
         if (location.space == "rebedrock") {
-            return resourceRoot_ / "lang" / "rebedrock" / rest;
+            return resourceRoot_ / "lang" / "rebedrock" /
+                   std::string{afterFirstSegment(location.path)};
         }
-        // Translation tables live under `localization/minecraft/…`.
-        return vanilla / "localization" / location.space / rest;
-    }
-    if (category == "font") {
-        // The glyph-width table is the lone tenant of the top-level `fonts/`
-        // dir; the bitmap font pages are textures and resolve above.
-        return vanilla / "fonts" / location.space / rest;
+        return {};
     }
     // Everything else is one of this project's own assets (animation clips,
     // entity models), which sit directly under the resources root.

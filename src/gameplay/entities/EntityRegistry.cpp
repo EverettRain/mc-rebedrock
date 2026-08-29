@@ -1,10 +1,7 @@
 #include "gameplay/entities/EntityRegistry.hpp"
 
 #include "gameplay/entities/BuiltinSpecies.hpp"
-#include "gameplay/entities/CowEntity.hpp"
-#include "gameplay/entities/PigEntity.hpp"
 #include "gameplay/entities/UnknownEntity.hpp"
-#include "gameplay/entities/ZombieEntity.hpp"
 
 namespace mc::gameplay::entities {
 
@@ -48,15 +45,9 @@ EntityTypeRegistry& entityTypeRegistry() {
 }
 
 void registerBuiltinEntities() {
-    // Each creature's type() accessor builds the type on first call and files it
-    // in the registry (registerBuiltin, Bootstrap phase). Touch every built-in
-    // species here in a fixed order so their dense ids stay stable across runs;
-    // re-running is a no-op because the per-species static is built only once.
-    static_cast<void>(PigEntity::type());
-    static_cast<void>(CowEntity::type());
-    static_cast<void>(ZombieEntity::type());
-    // New species are data, not classes: the manifest builds and files each row
-    // after the hand-written three, so their ids continue the same dense sequence.
+    // Species are data, not classes: the manifest builds and files every row in
+    // table order (Bootstrap phase), so the dense ids stay stable across runs.
+    // Re-running is a no-op — the manifest is filled exactly once.
     registerBuiltinSpeciesManifest();
 }
 

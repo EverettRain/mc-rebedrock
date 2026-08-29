@@ -7,7 +7,7 @@
 #include "gameplay/GameEventCodec.hpp"
 
 #include "gameplay/entities/EntityRegistry.hpp"
-#include "gameplay/entities/PigEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "persistence/SaveStream.hpp"
 #include "world/Block.hpp"
 #include "world/BlockState.hpp"
@@ -63,7 +63,7 @@ int main() {
     // --- A creature sound round-trips its species by identifier. ---
     checkRoundTrip(gameplay::GameEvent{gameplay::SoundEvent{
         gameplay::SoundEventKind::CreatureStep, {10.5F, 64.0F, -8.0F}, world::Block::Stone,
-        &gameplay::entities::PigEntity::type(), 0.8F, false}});
+        &gameplay::entities::builtinSpecies("pig"), 0.8F, false}});
     // A block sound with no species (null) round-trips as empty.
     checkRoundTrip(gameplay::GameEvent{gameplay::SoundEvent{
         gameplay::SoundEventKind::BlockBreak, {1.0F, 2.0F, 3.0F}, world::Block::OakLog, nullptr,

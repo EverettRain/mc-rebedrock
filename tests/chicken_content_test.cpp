@@ -14,7 +14,7 @@
 #include "gameplay/ItemRegistry.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/EntityType.hpp"
-#include "gameplay/entities/PigEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"
 #include "world/World.hpp"
@@ -334,7 +334,7 @@ float healthAfterFalling(gameplay::EntitySystem& entities, const world::World& w
 // reads a per-type flag, not a global "nobody takes fall damage" regression.
 void testChickenFallImmuneOthersDo() {
     REQUIRE(chickenType().fallImmune());
-    REQUIRE(!gameplay::entities::PigEntity::type().fallImmune());
+    REQUIRE(!gameplay::entities::builtinSpecies("pig").fallImmune());
 
     const world::World world = makeWideFlatWorld();
 
@@ -346,7 +346,7 @@ void testChickenFallImmuneOthersDo() {
     REQUIRE(chickenMinHealth == chickenMaxHealth);  // no damage at all
 
     gameplay::EntitySystem pigs;
-    pigs.spawn({8.0F, 20.0F, 8.0F}, gameplay::entities::PigEntity::type(), 52U);
+    pigs.spawn({8.0F, 20.0F, 8.0F}, gameplay::entities::builtinSpecies("pig"), 52U);
     const std::uint64_t pigId = pigs.entities().front().id;
     const float pigMaxHealth = pigs.byId(pigId)->damage.maxHealth;
     const float pigMinHealth = healthAfterFalling(pigs, world, pigId);

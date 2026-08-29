@@ -224,7 +224,8 @@ std::size_t ItemEntitySystem::tick(
     }
 
     std::erase_if(entities_, [](const ItemEntity& entity) {
-        return entity.stack.empty() || entity.ageTicks > 6'000U || entity.position.y < -8.0F;
+        return entity.stack.empty() || entity.ageTicks > 6'000U ||
+               entity.position.y < world::kVoidDespawnY;
     });
     // Rebuild the hash so the next tick's magnet and any cross-tick query see
     // only the surviving drops at their current positions and indices.

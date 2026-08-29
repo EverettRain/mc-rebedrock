@@ -40,7 +40,7 @@ constexpr std::array<std::string_view, kBlockTagCount> kBlockTagPaths{{
 //
 // Spelled as identifiers rather than enumerators so they read exactly like the
 // JSON they mirror, and so a block this build lacks is simply skipped.
-constexpr std::array<std::string_view, 26> kBuiltinPickaxe{
+constexpr std::array<std::string_view, 44> kBuiltinPickaxe{
     "stone",        "cobblestone",       "bricks",           "coal_ore",
     "iron_ore",     "gold_ore",          "diamond_ore",      "furnace",
     "obsidian",     "netherrack",        "stone_bricks",     "mossy_cobblestone",
@@ -48,6 +48,19 @@ constexpr std::array<std::string_view, 26> kBuiltinPickaxe{
     "lapis_ore",    "redstone_ore",      "emerald_ore",      "mossy_stone_bricks",
     "chiseled_stone_bricks",             "quartz_block",     "polished_granite",
     "polished_diorite",                  "polished_andesite", "smooth_stone",
+    // STRUCT/WG deep-layer blocks: copper ore and the whole deepslate family plus
+    // its ore variants are the stone-family blocks terrain now generates below y=0.
+    // Without a mineable/pickaxe tag a pickaxe gives no speed bonus (miningSpeed
+    // stays 1), so deepslate's hardness 3-4.5 felt unmineable. (The crafted stone
+    // building blocks — deepslate/tuff/blackstone stairs, slabs, walls, etc. — are
+    // not generated in terrain and are a separate tag backlog.)
+    "copper_ore",
+    "deepslate",           "cobbled_deepslate",   "polished_deepslate",
+    "deepslate_bricks",    "cracked_deepslate_bricks", "deepslate_tiles",
+    "cracked_deepslate_tiles", "chiseled_deepslate", "reinforced_deepslate",
+    "deepslate_coal_ore",  "deepslate_iron_ore",  "deepslate_copper_ore",
+    "deepslate_gold_ore",  "deepslate_redstone_ore", "deepslate_emerald_ore",
+    "deepslate_lapis_ore", "deepslate_diamond_ore",
 };
 constexpr std::array<std::string_view, 17> kBuiltinAxe{
     "oak_planks",    "oak_log",    "spruce_planks", "birch_planks",
@@ -67,9 +80,17 @@ constexpr std::array<std::string_view, 6> kBuiltinLeaves{
 constexpr std::array<std::string_view, 6> kBuiltinLogs{
     "oak_log", "spruce_log", "birch_log", "jungle_log", "acacia_log", "dark_oak_log",
 };
-constexpr std::array<std::string_view, 2> kBuiltinNeedsStone{"iron_ore", "lapis_ore"};
-constexpr std::array<std::string_view, 4> kBuiltinNeedsIron{
+// The tier gate (needs_*_tool): the deepslate ore variants mirror their stone
+// counterpart's tier, and copper needs a stone pickaxe (26.1). coal/deepslate
+// coal need only a wooden pickaxe, so they carry no needs_* tag.
+constexpr std::array<std::string_view, 6> kBuiltinNeedsStone{
+    "iron_ore", "lapis_ore", "copper_ore",
+    "deepslate_iron_ore", "deepslate_lapis_ore", "deepslate_copper_ore",
+};
+constexpr std::array<std::string_view, 8> kBuiltinNeedsIron{
     "gold_ore", "diamond_ore", "redstone_ore", "emerald_ore",
+    "deepslate_gold_ore", "deepslate_diamond_ore", "deepslate_redstone_ore",
+    "deepslate_emerald_ore",
 };
 constexpr std::array<std::string_view, 1> kBuiltinNeedsDiamond{"obsidian"};
 

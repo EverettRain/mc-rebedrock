@@ -10,8 +10,8 @@ namespace mc::assets {
 // `minecraft:textures/block/stone.png`. `path` is always the standard,
 // pack-relative content path (category first: textures/…, sounds/…, lang/…),
 // never a physical on-disk path. A ResourceProvider is what turns one of these
-// into bytes or a file — the standard pack layout and this project's current
-// `resources/vanilla/1.16.1/…` layout are two providers over the same names.
+// into bytes or a file — the standard pack layout and this project's own
+// `resources/` layout are two providers over the same names.
 // Which half of a pack a resource lives in. 26.1 packs carry client assets
 // under `assets/` and server data (tags, loot tables, recipes) under `data/`,
 // and they are two different roots for the same namespaced path. Defaulting to

@@ -1,18 +1,19 @@
 #pragma once
 
-// The batch-import path for species (E3): one table row per creature instead of
-// one C++ class plus a hand-written registration line. Once E1 gave every
-// species a registry identity and E2 moved its numbers into data, "add an
-// animal" collapses to "add a manifest row" — a value carrying the numbers, an
-// AI reference (a shared behaviour instance, or a new EntityAi only when the
-// creature does something genuinely new), a render descriptor and an optional
-// loot roll. Registration walks the table, so nothing dispatches by species.
+// The ONE way a species is defined (E3): one table row per creature. Once E1
+// gave every species a registry identity and E2 moved its numbers into data,
+// "add an animal" collapsed to "add a manifest row" — a value carrying the
+// numbers, an AI reference (a shared behaviour instance, or a new EntityAi only
+// when the creature does something genuinely new), a render descriptor and an
+// optional loot roll. Registration walks the table, so nothing dispatches by
+// species.
 //
-// The three original creatures (Pig/Cow/Zombie) keep their hand-written classes
-// — their type() accessors are referenced widely — and register the same way
-// they always have; the manifest is how *new* species are added. Adding one
-// touches this table and nothing else: no switch to extend, no accessor to
-// declare.
+// The three original creatures (Pig/Cow/Zombie) used to be hand-written classes
+// with their own `::type()` accessors, kept alive purely because callers held
+// those accessors. They are manifest rows like everything else now, in their
+// original registration order so the dense Bootstrap ids are unchanged. There is
+// no second way to define a species: a caller that needs one by name asks
+// builtinSpecies() below.
 
 #include "audio/MobSoundProfile.hpp"
 #include "gameplay/entities/EntityType.hpp"
@@ -70,7 +71,21 @@ struct SpeciesDef final {
 
 // Builds every manifest row through the Builder and registers it (Bootstrap
 // phase), keeping the built EntityTypes at stable addresses for the run. Called
-// once by registerBuiltinEntities() after the hand-written species.
+// once by registerBuiltinEntities(); idempotent, so calling it again is free.
 void registerBuiltinSpeciesManifest();
+
+// The registered EntityType for a built-in species path ("pig", "husk", …).
+//
+// This is how a caller names a species. A manifest row's EntityType lives in the
+// shared storage inside registerBuiltinSpeciesManifest() and is addressed only
+// through the registry, so there is no per-species accessor to hold — and adding
+// a species stays a one-row edit. Registration runs first (idempotent), so this
+// is safe to call before anything else has touched the registry.
+//
+// Aborts loudly on a path no manifest row declares: silently handing back a
+// placeholder would let a mistyped id spawn nothing and say nothing. Use
+// entityTypeRegistry().byId() instead when a miss is a legitimate outcome (a
+// save or peer naming a species this build does not have).
+[[nodiscard]] const EntityType& builtinSpecies(std::string_view path);
 
 } // namespace mc::gameplay::entities

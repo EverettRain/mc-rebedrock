@@ -72,11 +72,11 @@ class EntityTypeRegistry final {
 // The process-wide entity-type registry, populated by registerBuiltinEntities().
 [[nodiscard]] EntityTypeRegistry& entityTypeRegistry();
 
-// The single unified registration entry point. It touches every built-in
-// creature's type() accessor, which builds the type through the Builder and
-// files it in the registry in this fixed order (so the Bootstrap ids are stable
-// across runs). Adding a new creature is: write its class, then add one line
-// here — no switch to extend, no global table to edit.
+// The single unified registration entry point. It builds every row of the
+// built-in species manifest (BuiltinSpecies.hpp) through the Builder and files
+// it in the registry in table order, so the Bootstrap ids are stable across
+// runs. Adding a creature is one manifest row — no class to write, no switch to
+// extend, no line to add here.
 void registerBuiltinEntities();
 
 // Resolve a saved species name to a live EntityType for the restore path: the

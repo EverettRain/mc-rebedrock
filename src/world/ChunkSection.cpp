@@ -9,7 +9,7 @@ namespace {
 
 // Palette index 0 is always the air state, so a freshly expanded section reads
 // as air everywhere until something is written over it.
-inline constexpr std::uint16_t kAirStateId = 0U;
+inline constexpr std::uint32_t kAirStateId = 0U;
 
 static_assert(BlockState{}.rawId() == kAirStateId,
               "an all-zero section must read as air, or lazy allocation lies");
@@ -78,7 +78,7 @@ void ChunkSection::growBits(std::uint8_t newBits) {
     }
 }
 
-std::uint16_t ChunkSection::internState(std::uint16_t rawId) {
+std::uint16_t ChunkSection::internState(std::uint32_t rawId) {
     for (std::size_t i = 0; i < palette_.size(); ++i) {
         if (palette_[i] == rawId) {
             return static_cast<std::uint16_t>(i);
@@ -107,7 +107,7 @@ void ChunkSection::setState(int x, int y, int z, BlockState value) {
     if (!inBounds(x, y, z)) {
         throw std::out_of_range("ChunkSection coordinate is outside 16x16x16 bounds");
     }
-    const std::uint16_t rawId = value.rawId();
+    const std::uint32_t rawId = value.rawId();
     if (bitsPerEntry_ == 0U) {
         // The section is uniform air. Writing air leaves it uniform (and free);
         // the first real block expands it to { air, <state> } at one bit.
@@ -130,8 +130,27 @@ void ChunkSection::setState(int x, int y, int z, BlockState value) {
     }
 }
 
+void ChunkSection::remapBlock(Block from, Block to) {
+    if (bitsPerEntry_ == 0U) {
+        return; // uniform-air section: no palette to rewrite
+    }
+    // Match the state setBlock would have stored (default orientation, no fluid),
+    // so a section filled by setBlock(from) is fully caught. Rewriting the palette
+    // entry retargets every cell pointing at it at once; cell indices are untouched.
+    const std::uint32_t fromId = BlockState{from, defaultOrientation(from), 0U}.rawId();
+    const std::uint32_t toId = BlockState{to, defaultOrientation(to), 0U}.rawId();
+    if (fromId == toId) {
+        return;
+    }
+    for (auto& entry : palette_) {
+        if (entry == fromId) {
+            entry = toId;
+        }
+    }
+}
+
 std::size_t ChunkSection::stateHeapBytes() const {
-    return palette_.capacity() * sizeof(std::uint16_t) +
+    return palette_.capacity() * sizeof(std::uint32_t) +
            data_.capacity() * sizeof(std::uint64_t);
 }
 

@@ -13,7 +13,7 @@
 #include "gameplay/Difficulty.hpp"
 #include "gameplay/GameSession.hpp"  // SimulationHost lives here
 #include "gameplay/Level.hpp"
-#include "gameplay/entities/CowEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"
@@ -113,7 +113,7 @@ int main() {
         mc::world::World emptyNether;  // bound below; must outlive the tick calls
         session.bindWorld(DimensionId::Nether, emptyNether);
         session.level(DimensionId::Nether)
-            .entities.spawn({8.0F, 1.001F, 8.0F}, mc::gameplay::entities::CowEntity::type(), 3U);
+            .entities.spawn({8.0F, 1.001F, 8.0F}, mc::gameplay::entities::builtinSpecies("cow"), 3U);
         assert(emptyNether.chunkCount() == 0U);
         session.tick(overworld, host);
         const auto nid = static_cast<std::size_t>(DimensionId::Nether);
@@ -161,7 +161,7 @@ int main() {
         loadFlatChunk(nether, 0, 0);
         session.bindWorld(DimensionId::Nether, nether);
         session.level(DimensionId::Nether)
-            .entities.spawn({8.0F, 1.001F, 8.0F}, mc::gameplay::entities::CowEntity::type(), 7U);
+            .entities.spawn({8.0F, 1.001F, 8.0F}, mc::gameplay::entities::builtinSpecies("cow"), 7U);
 
         session.tick(overworld, host);
         const auto& reports = session.secondaryLevelReports();
@@ -185,7 +185,7 @@ int main() {
             lvl.id = DimensionId::Nether;
             lvl.bindWorld(nether);
             lvl.entities.spawn({8.0F, 1.001F, 8.0F},
-                               mc::gameplay::entities::CowEntity::type(), 21U);
+                               mc::gameplay::entities::builtinSpecies("cow"), 21U);
             for (int t = 0; t < 20; ++t) {
                 lvl.tickPassive(/*doWeatherCycle=*/true, mc::gameplay::Difficulty::Normal);
             }

@@ -16,8 +16,7 @@
 #include "gameplay/entities/EntityAttributes.hpp"
 #include "gameplay/entities/EntityAttributesCodec.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
-#include "gameplay/entities/PigEntity.hpp"
-#include "gameplay/entities/ZombieEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"
 #include "world/World.hpp"
@@ -34,8 +33,6 @@ namespace {
 
 using mc::gameplay::entities::Attribute;
 using mc::gameplay::entities::EntityAttributes;
-using mc::gameplay::entities::PigEntity;
-using mc::gameplay::entities::ZombieEntity;
 using mc::gameplay::entities::entityAttributeTable;
 
 namespace fs = std::filesystem;
@@ -76,11 +73,11 @@ void testCodecRoundTrip() {
     // A file listing only one attribute reads onto a floor, leaving the rest
     // untouched — per-attribute fallback, the ObjectReader::optionalField shape.
     const auto json = mc::core::Json::parse(R"({"max_health": 99.0})");
-    EntityAttributes merged = PigEntity::type().attributesFloor();
+    EntityAttributes merged = mc::gameplay::entities::builtinSpecies("pig").attributesFloor();
     assert(mc::data::Codec<EntityAttributes>::read(json, merged));
     assert(merged.maxHealth() == 99.0F);
-    assert(merged.movementSpeed() == PigEntity::type().attributesFloor().movementSpeed());
-    assert(merged.followRange() == PigEntity::type().attributesFloor().followRange());
+    assert(merged.movementSpeed() == mc::gameplay::entities::builtinSpecies("pig").attributesFloor().movementSpeed());
+    assert(merged.followRange() == mc::gameplay::entities::builtinSpecies("pig").attributesFloor().followRange());
 }
 
 // No `data/` at all: every species keeps its compiled-in floor and the overlay
@@ -92,12 +89,12 @@ void testNoDataFallback(const fs::path& scratch) {
     entityAttributeTable().load(pack);
     assert(entityAttributeTable().overrideCount() == 0U);
     // attributes() == floor for every species.
-    assert(PigEntity::type().attributes() == PigEntity::type().attributesFloor());
-    assert(ZombieEntity::type().attributes() == ZombieEntity::type().attributesFloor());
+    assert(mc::gameplay::entities::builtinSpecies("pig").attributes() == mc::gameplay::entities::builtinSpecies("pig").attributesFloor());
+    assert(mc::gameplay::entities::builtinSpecies("zombie").attributes() == mc::gameplay::entities::builtinSpecies("zombie").attributesFloor());
     // The pre-E2 pig numbers, proving the floor is byte-for-byte what it was.
-    assert(PigEntity::type().attributes().maxHealth() == 10.0F);
-    assert(PigEntity::type().attributes().movementSpeed() == 0.25F);
-    assert(PigEntity::type().attributes().followRange() == 16.0F);
+    assert(mc::gameplay::entities::builtinSpecies("pig").attributes().maxHealth() == 10.0F);
+    assert(mc::gameplay::entities::builtinSpecies("pig").attributes().movementSpeed() == 0.25F);
+    assert(mc::gameplay::entities::builtinSpecies("pig").attributes().followRange() == 16.0F);
 }
 
 // A pack overriding one attribute of one species changes exactly that, and only
@@ -111,16 +108,16 @@ void testOverlayIsScoped(const fs::path& scratch) {
 
     assert(entityAttributeTable().overrideCount() == 1U);
     // Pig's max health changed; its other attributes kept their floor.
-    assert(PigEntity::type().attributes().maxHealth() == 42.0F);
-    assert(PigEntity::type().attributes().movementSpeed() ==
-           PigEntity::type().attributesFloor().movementSpeed());
-    assert(PigEntity::type().attributes().followRange() ==
-           PigEntity::type().attributesFloor().followRange());
+    assert(mc::gameplay::entities::builtinSpecies("pig").attributes().maxHealth() == 42.0F);
+    assert(mc::gameplay::entities::builtinSpecies("pig").attributes().movementSpeed() ==
+           mc::gameplay::entities::builtinSpecies("pig").attributesFloor().movementSpeed());
+    assert(mc::gameplay::entities::builtinSpecies("pig").attributes().followRange() ==
+           mc::gameplay::entities::builtinSpecies("pig").attributesFloor().followRange());
     // Its floor accessor is unchanged: the override lives in the overlay, not in
     // the type.
-    assert(PigEntity::type().attributesFloor().maxHealth() == 10.0F);
+    assert(mc::gameplay::entities::builtinSpecies("pig").attributesFloor().maxHealth() == 10.0F);
     // Zombie was not mentioned, so it is entirely its floor.
-    assert(ZombieEntity::type().attributes() == ZombieEntity::type().attributesFloor());
+    assert(mc::gameplay::entities::builtinSpecies("zombie").attributes() == mc::gameplay::entities::builtinSpecies("zombie").attributesFloor());
 }
 
 // Every attribute maps to its own slot: a file that sets all five to distinct
@@ -139,7 +136,7 @@ void testAttributeSlotsAreDistinct(const fs::path& scratch) {
     mc::assets::StandardPackResourceProvider provider{pack};
     entityAttributeTable().load(provider);
 
-    const auto& attributes = PigEntity::type().attributes();
+    const auto& attributes = mc::gameplay::entities::builtinSpecies("pig").attributes();
     assert(attributes.maxHealth() == 1.0F);
     assert(attributes.movementSpeed() == 2.0F);
     assert(attributes.attackDamage() == 3.0F);
@@ -162,7 +159,7 @@ void testFollowRangeOverlayMovesAcquisitionRadius(const fs::path& scratch) {
     const auto acquires = [&]() {
         auto world = makeFlatWorld();
         EntitySystem entities;
-        entities.spawn(zombiePos, ZombieEntity::type(), 41U);
+        entities.spawn(zombiePos, mc::gameplay::entities::builtinSpecies("zombie"), 41U);
         const std::uint64_t zombieId = entities.entities()[0].id;
         for (int tick = 0; tick < 120; ++tick) {
             static_cast<void>(entities.tick(world, player, 0.6F, 1.8F, Difficulty::Normal, true,
@@ -187,7 +184,7 @@ void testFollowRangeOverlayMovesAcquisitionRadius(const fs::path& scratch) {
     const auto shrinkPack = scratch / "ai_shrink_pack";
     writeAttr(shrinkPack, "minecraft", "zombie", R"({"follow_range": 2.0})");
     entityAttributeTable().load(mc::assets::StandardPackResourceProvider{shrinkPack});
-    assert(ZombieEntity::type().attributes().followRange() == 2.0F);
+    assert(mc::gameplay::entities::builtinSpecies("zombie").attributes().followRange() == 2.0F);
     assert(!acquires());
 
     // Reset the process-wide table so nothing downstream inherits the shrink.

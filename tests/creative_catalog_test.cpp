@@ -100,9 +100,19 @@ int main() {
 
     // B7-0: the Redstone tab holds the eleven redstone components plus the
     // openables/actuators 26.1's REDSTONE_BLOCKS tab files there (doors, fence
-    // gate, trapdoor, pressure plate) and TNT — sixteen in all.
+    // gate, trapdoor, pressure plate) and TNT — sixteen originally. STRUCT AR-B
+    // batch 2 added the wooden/iron/copper door and trapdoor variants the vanilla
+    // structures reference; 26.1 files every door and trapdoor under REDSTONE_BLOCKS
+    // too, so they join this tab: +7 doors (spruce/jungle/acacia/dark_oak/iron/
+    // waxed_copper/waxed_oxidized_copper) and +5 trapdoors (spruce/jungle/iron/
+    // oxidized_copper/waxed_oxidized_copper) = 28. STRUCT AR-B batch 4 then added
+    // four more REDSTONE_BLOCKS members the structures reference — redstone_lamp,
+    // oak/acacia pressure plates and the jungle button — for 32. STRUCT AR-B batch
+    // 5 then added the target block (also a REDSTONE_BLOCKS member) for 33. The
+    // ore-drop pass then added the redstone *item* (redstone dust, the ore's drop)
+    // under this tab as well — 34 in all.
     const auto redstoneTab = registry.catalog(CreativeCategory::Redstone);
-    assert(redstoneTab.size() == 16);
+    assert(redstoneTab.size() == 34);
     assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::RedstoneBlock));
     assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::RedstoneTorch));
     assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::Lever));
@@ -185,6 +195,13 @@ int main() {
         const world::BlockDefinition& definition = blocks.get(id);
         if (definition.creativeCategory == CreativeCategory::Hidden) continue;
         rebuilt.registerBlock(definition.block, definition.creativeCategory);
+    }
+    // The real catalog (contentRegistry) files blocks first, then the item
+    // registry (ContentRegistry.cpp), so some tabs — Redstone now holds the
+    // redstone dust item, Ingredients holds the ore items — contain item entries.
+    // Mirror that here so the determinism check compares like with like.
+    for (const Item* item : kItemRegistry) {
+        rebuilt.registerItem(item, item->creativeCategory);
     }
     const auto rebuiltBuilding = rebuilt.catalog(CreativeCategory::BuildingBlocks);
     assert(rebuiltBuilding.size() == building.size());

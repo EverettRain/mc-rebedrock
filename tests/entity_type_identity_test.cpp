@@ -11,12 +11,10 @@
 #include "core/Identifier.hpp"
 #include "core/Registry.hpp"
 #include "gameplay/EntitySystem.hpp"
-#include "gameplay/entities/CowEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/EntityType.hpp"
-#include "gameplay/entities/PigEntity.hpp"
 #include "gameplay/entities/UnknownEntity.hpp"
-#include "gameplay/entities/ZombieEntity.hpp"
 #include "persistence/SaveRepository.hpp"
 
 #include <cassert>
@@ -30,13 +28,10 @@
 
 namespace {
 
-using mc::gameplay::entities::CowEntity;
 using mc::gameplay::entities::EntityType;
 using mc::gameplay::entities::EntityTypeRegistry;
 using mc::gameplay::entities::MobCategory;
-using mc::gameplay::entities::PigEntity;
 using mc::gameplay::entities::UnknownEntityAi;
-using mc::gameplay::entities::ZombieEntity;
 
 // Runs `body` in a child process and returns whether it aborted (SIGABRT).
 // Anything the child prints to stderr is dropped so a passing run stays quiet.
@@ -69,7 +64,7 @@ void testNameResolution() {
     assert(pig != nullptr);
     assert(registry.byId("minecraft:pig") == pig);
     assert(registry.byId("rebedrock:pig") == pig);
-    assert(pig == &PigEntity::type());
+    assert(pig == &mc::gameplay::entities::builtinSpecies("pig"));
     // A name no species owns is a miss, not an abort and not a placeholder.
     assert(registry.byId("not_a_species") == nullptr);
     assert(registry.byId("minecraft:enderdragon") == nullptr);
@@ -86,8 +81,8 @@ void testNetworkIdRoundTrip() {
     const auto* cow = registry.byId("cow");
     assert(cow != nullptr);
     assert(registry.byNetworkId(cow->networkId()) == cow);
-    assert(registry.byNetworkId(registry.byId("pig")->networkId()) == &PigEntity::type());
-    assert(registry.byNetworkId(registry.byId("zombie")->networkId()) == &ZombieEntity::type());
+    assert(registry.byNetworkId(registry.byId("pig")->networkId()) == &mc::gameplay::entities::builtinSpecies("pig"));
+    assert(registry.byNetworkId(registry.byId("zombie")->networkId()) == &mc::gameplay::entities::builtinSpecies("zombie"));
 
     // Rerunning the built-in registration does not renumber anyone: the statics
     // are built once, so the ids the first run assigned are final.
@@ -190,8 +185,8 @@ void testUnknownEntityRoundTrip() {
     // The known ones resolve to the real registry types; the unknown resolves to
     // an inert placeholder that still remembers its name, so a re-save writes
     // "dragon" back out unchanged.
-    assert(&mc::gameplay::entities::resolveEntityTypeForRestore("pig") == &PigEntity::type());
-    assert(&mc::gameplay::entities::resolveEntityTypeForRestore("cow") == &CowEntity::type());
+    assert(&mc::gameplay::entities::resolveEntityTypeForRestore("pig") == &mc::gameplay::entities::builtinSpecies("pig"));
+    assert(&mc::gameplay::entities::resolveEntityTypeForRestore("cow") == &mc::gameplay::entities::builtinSpecies("cow"));
     const auto& dragon = mc::gameplay::entities::resolveEntityTypeForRestore("dragon");
     assert(dragon.id().path == "dragon");
     assert(dragon.category() == MobCategory::Misc);

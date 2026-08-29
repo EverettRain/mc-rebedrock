@@ -1,9 +1,7 @@
 #include "gameplay/Difficulty.hpp"
 #include "gameplay/EntitySystem.hpp"
-#include "gameplay/entities/CowEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
-#include "gameplay/entities/PigEntity.hpp"
-#include "gameplay/entities/ZombieEntity.hpp"
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"
 #include "world/World.hpp"
@@ -81,9 +79,6 @@ int main() {
     using mc::gameplay::ActorReference;
     using mc::gameplay::Difficulty;
     using mc::gameplay::EntitySystem;
-    using mc::gameplay::entities::CowEntity;
-    using mc::gameplay::entities::PigEntity;
-    using mc::gameplay::entities::ZombieEntity;
 
     mc::gameplay::entities::registerBuiltinEntities();
     auto world = makeFlatWorld();
@@ -91,10 +86,10 @@ int main() {
     // Every spawn gets an independent stateful brain. Pig and cow share the
     // five ordinary land-animal goal definitions; zombie keeps its own profile.
     EntitySystem entities;
-    entities.spawn({8.0F, 1.001F, 8.0F}, CowEntity::type(), 11U);
-    entities.spawn({12.0F, 1.001F, 8.0F}, CowEntity::type(), 12U);
-    entities.spawn({8.0F, 1.001F, 12.0F}, PigEntity::type(), 13U);
-    entities.spawn({12.0F, 1.001F, 12.0F}, ZombieEntity::type(), 14U);
+    entities.spawn({8.0F, 1.001F, 8.0F}, mc::gameplay::entities::builtinSpecies("cow"), 11U);
+    entities.spawn({12.0F, 1.001F, 8.0F}, mc::gameplay::entities::builtinSpecies("cow"), 12U);
+    entities.spawn({8.0F, 1.001F, 12.0F}, mc::gameplay::entities::builtinSpecies("pig"), 13U);
+    entities.spawn({12.0F, 1.001F, 12.0F}, mc::gameplay::entities::builtinSpecies("zombie"), 14U);
     REQUIRE(entities.entities()[0].id != entities.entities()[1].id);
     // AR-A3: the cow is now breedable (tempt=wheat), so installBreedingGoals
     // adds AnimalMateGoal/TemptGoal/FollowParentGoal on top of AnimalAi's five
@@ -182,7 +177,7 @@ int main() {
     // than the 20-tick melee cooldown.
     auto combatWorld = makeFlatWorld();
     EntitySystem combatEntities;
-    combatEntities.spawn({4.5F, 1.001F, 8.5F}, ZombieEntity::type(), 41U);
+    combatEntities.spawn({4.5F, 1.001F, 8.5F}, mc::gameplay::entities::builtinSpecies("zombie"), 41U);
     const std::uint64_t combatZombieId = combatEntities.entities()[0].id;
     const glm::vec3 combatPlayer{10.5F, 1.001F, 8.5F};
     const float combatStartDistance =
@@ -213,7 +208,7 @@ int main() {
 
     // Creative/dead players are not valid hostile targets.
     EntitySystem creativeTargetEntities;
-    creativeTargetEntities.spawn({7.5F, 1.001F, 8.5F}, ZombieEntity::type(), 42U);
+    creativeTargetEntities.spawn({7.5F, 1.001F, 8.5F}, mc::gameplay::entities::builtinSpecies("zombie"), 42U);
     for (int tick = 0; tick < 80; ++tick) {
         const auto result = creativeTargetEntities.tick(combatWorld, combatPlayer, 0.6F, 1.8F,
                                                         Difficulty::Normal, true, true);
@@ -230,7 +225,7 @@ int main() {
         }
     }
     EntitySystem occludedEntities;
-    occludedEntities.spawn({6.5F, 1.001F, 8.5F}, ZombieEntity::type(), 43U);
+    occludedEntities.spawn({6.5F, 1.001F, 8.5F}, mc::gameplay::entities::builtinSpecies("zombie"), 43U);
     for (int tick = 0; tick < 80; ++tick) {
         const auto result = occludedEntities.tick(occludedWorld, combatPlayer, 0.6F, 1.8F,
                                                   Difficulty::Normal, true, false);
@@ -246,7 +241,7 @@ int main() {
         REQUIRE(unreachableWorld.setBlock(8, 0, z, mc::world::Block::Air));
     }
     EntitySystem unreachableEntities;
-    unreachableEntities.spawn({6.5F, 1.001F, 8.5F}, ZombieEntity::type(), 44U);
+    unreachableEntities.spawn({6.5F, 1.001F, 8.5F}, mc::gameplay::entities::builtinSpecies("zombie"), 44U);
     auto* unreachableZombie = unreachableEntities.byId(unreachableEntities.entities()[0].id);
     REQUIRE(unreachableZombie != nullptr);
     unreachableZombie->brain.setCombatTarget(ActorReference::player());
@@ -268,7 +263,7 @@ int main() {
     // walking its heading into the obstacle. A direct six-cell path would have
     // size 6, so the detour must contain more nodes.
     EntitySystem navigatorEntities;
-    navigatorEntities.spawn({5.5F, 1.001F, 8.5F}, CowEntity::type(), 21U);
+    navigatorEntities.spawn({5.5F, 1.001F, 8.5F}, mc::gameplay::entities::builtinSpecies("cow"), 21U);
     auto* navigator = navigatorEntities.byId(navigatorEntities.entities()[0].id);
     REQUIRE(navigator != nullptr);
     for (int z = 4; z <= 12; ++z) {
@@ -285,7 +280,7 @@ int main() {
     // staircase, and the search exposes deterministic diagnostics for profiling.
     auto diagonalWorld = makeFlatWorld();
     EntitySystem diagonalEntities;
-    diagonalEntities.spawn({2.5F, 1.001F, 2.5F}, CowEntity::type(), 24U);
+    diagonalEntities.spawn({2.5F, 1.001F, 2.5F}, mc::gameplay::entities::builtinSpecies("cow"), 24U);
     auto* diagonalCow = diagonalEntities.byId(diagonalEntities.entities()[0].id);
     REQUIRE(diagonalCow != nullptr);
     auto& diagonalNavigation = diagonalCow->brain.navigation();
@@ -309,7 +304,7 @@ int main() {
         REQUIRE(cornerWorld.setBlock(5, y, 6, mc::world::Block::Stone));
     }
     EntitySystem cornerEntities;
-    cornerEntities.spawn({5.5F, 1.001F, 5.5F}, CowEntity::type(), 25U);
+    cornerEntities.spawn({5.5F, 1.001F, 5.5F}, mc::gameplay::entities::builtinSpecies("cow"), 25U);
     auto* cornerCow = cornerEntities.byId(cornerEntities.entities()[0].id);
     REQUIRE(cornerCow != nullptr);
     REQUIRE(cornerCow->brain.navigation().startMovingTo(cornerWorld, *cornerCow,
@@ -358,7 +353,7 @@ int main() {
     // this engine's gravity pass.
     EntitySystem swimmerEntities;
     REQUIRE(world.setBlock(3, 1, 3, mc::world::Block::Water));
-    swimmerEntities.spawn({3.5F, 1.001F, 3.5F}, PigEntity::type(), 22U);
+    swimmerEntities.spawn({3.5F, 1.001F, 3.5F}, mc::gameplay::entities::builtinSpecies("pig"), 22U);
     const float swimmerStartY = swimmerEntities.entities()[0].position.y;
     static_cast<void>(swimmerEntities.tick(world));
     REQUIRE(swimmerEntities.entities()[0].brain.goals().isRunning("swim"));
@@ -376,7 +371,7 @@ int main() {
         }
     }
     EntitySystem plateauEntities;
-    plateauEntities.spawn({8.5F, 1.001F, 8.5F}, CowEntity::type(), 23U);
+    plateauEntities.spawn({8.5F, 1.001F, 8.5F}, mc::gameplay::entities::builtinSpecies("cow"), 23U);
     const std::uint64_t plateauCowId = plateauEntities.entities()[0].id;
     const glm::vec3 plateauAttacker{10.5F, 1.001F, 8.5F};
     static_cast<void>(plateauEntities.tick(plateauWorld, plateauAttacker));
@@ -401,8 +396,8 @@ int main() {
     // Stable ActorReference lookup survives vector compaction after an earlier
     // entity is removed; array indices would point at the wrong creature here.
     EntitySystem referenceEntities;
-    referenceEntities.spawn({2.0F, 1.001F, 2.0F}, PigEntity::type(), 31U);
-    referenceEntities.spawn({6.0F, 1.001F, 2.0F}, CowEntity::type(), 32U);
+    referenceEntities.spawn({2.0F, 1.001F, 2.0F}, mc::gameplay::entities::builtinSpecies("pig"), 31U);
+    referenceEntities.spawn({6.0F, 1.001F, 2.0F}, mc::gameplay::entities::builtinSpecies("cow"), 32U);
     const std::uint64_t referencedCowId = referenceEntities.entities()[1].id;
     REQUIRE(referenceEntities.kill(referenceEntities.entities()[0].id));
     for (int tick = 0; tick < 21; ++tick) {

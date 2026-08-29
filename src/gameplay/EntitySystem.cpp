@@ -36,7 +36,12 @@ constexpr int kMinAmbientSoundDelay = 80;
 // footfall the way Entity#checkBlockCollision triggers steps on block edges.
 constexpr float kMobStepStride = 1.0F;
 constexpr float kTwoPi = 6.28318530718F;
-constexpr float kDespawnBelowY = -64.0F;
+// The void line an entity is cleared below — vanilla's minY-64, shared with the
+// dropped-item/orb/falling-block despawn so every "fell out of the world" test
+// agrees (see world::kVoidDespawnY). Not kMinY itself: bedrock sits at kMinY, so
+// the clear line must be below the world, leaving the same 64-block void buffer
+// vanilla gives.
+constexpr float kDespawnBelowY = world::kVoidDespawnY;
 constexpr float kCollisionEpsilon = 0.0001F;
 // Entity#maxUpStep for a walking mob: it climbs a single block without jumping.
 constexpr float kStepHeight = 0.6F;

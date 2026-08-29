@@ -380,14 +380,30 @@ def find_geo(project_root, model):
     return project_root / "resources" / "animation" / f"{model}.geo.json"
 
 
+# Entity skins are Mojang content: the repo ships none, and the game reads them
+# from whatever standard resource pack the player installed. So does this tool —
+# it scans every installed pack's `assets/minecraft/textures/entity` in name
+# order. (The bundled `resources/vanilla/1.16.1/…` tree this used to read was
+# retired together with the extraction script that filled it.)
+def entity_texture_roots(project_root):
+    """The `textures/entity` roots of every installed resource pack."""
+    roots = []
+    for packs in (project_root / "resourcepacks", project_root / "build" / "resourcepacks"):
+        if not packs.is_dir():
+            continue
+        for pack in sorted(packs.iterdir()):
+            entity = pack / "assets" / "minecraft" / "textures" / "entity"
+            if entity.is_dir():
+                roots.append(entity)
+    return roots
+
+
 def find_texture(project_root, model):
     """Locate the model's entity skin PNG, or None if absent."""
-    entity = (project_root / "resources" / "vanilla" / "1.16.1" /
-              "textures" / "minecraft" / "entity")
-    for cand in [entity / model / f"{model}.png", entity / f"{model}.png"]:
-        if cand.exists():
-            return cand
-    if entity.is_dir():
+    for entity in entity_texture_roots(project_root):
+        for cand in [entity / model / f"{model}.png", entity / f"{model}.png"]:
+            if cand.exists():
+                return cand
         hits = sorted(entity.rglob(f"{model}.png"))
         if hits:
             return hits[0]
@@ -406,8 +422,8 @@ def resolve_geo(project_root, model):
 def resolve_texture(project_root, model):
     path = find_texture(project_root, model)
     if path is None:
-        sys.exit(f"No texture for '{model}' under "
-                 f"resources/vanilla/1.16.1/textures/minecraft/entity. "
+        sys.exit(f"No texture for '{model}' in any installed resource pack "
+                 f"(<game root>/resourcepacks/*/assets/minecraft/textures/entity). "
                  f"Pass one with --texture.")
     return path
 
@@ -480,11 +496,14 @@ def selftest():
         assert np.allclose(turned, [0.0, -1.0, 0.0], atol=1e-6), \
             f"rotation order drifted from Rz@Ry@Rx: {turned}"
 
-    # The shipped pig: geometry declares 64x32 and the PNG really is 64x32.
+    # The pig skin, when a resource pack supplies one: geometry declares 64x32
+    # and the PNG must really be 64x32. No pack installed means no skin to
+    # check — the box-UV math above is what this self-test exists for.
     root = repo_root()
-    w, h = png_dimensions(root / "resources" / "vanilla" / "1.16.1" /
-                          "textures" / "minecraft" / "entity" / "pig" / "pig.png")
-    assert (w, h) == (64, 32), f"pig.png is {w}x{h}, expected 64x32"
+    pig_png = find_texture(root, "pig")
+    if pig_png is not None:
+        w, h = png_dimensions(pig_png)
+        assert (w, h) == (64, 32), f"{pig_png} is {w}x{h}, expected 64x32"
 
     # The parsed pig geometry resolves through the box-UV net inside 64x32.
     geo, tw, th, ident = parse_geo(find_geo(root, "pig"))

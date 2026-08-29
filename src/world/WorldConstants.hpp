@@ -16,6 +16,13 @@ inline constexpr int kSectionCount = kWorldHeight / kSectionSize;
 inline constexpr int kSeaLevel = 63;
 // The first Y above the world (exclusive top).
 inline constexpr int kMaxY = kMinY + kWorldHeight;
+// The Y an entity (dropped item, experience orb, falling block) falls to before
+// the void removes it — vanilla's `minBuildHeight - 64`. Everything above kMinY is
+// solid world (bedrock sits at kMinY), so the despawn line must be *below* the
+// world, not at 0: with kMinY at -64 a hard-coded `y < -8` would delete every drop
+// mined below y=-8, which is most of the deepslate layer. Any drop/orb/entity Y
+// below this is genuinely in the void and cleared.
+inline constexpr float kVoidDespawnY = static_cast<float>(kMinY) - 64.0F;
 
 // World Y → the index of the section it falls in (0 = the chunk's bottom
 // section), and the local Y within that section. Both subtract kMinY first:

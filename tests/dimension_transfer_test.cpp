@@ -13,7 +13,7 @@
 #include "gameplay/DimensionTransfer.hpp"
 #include "gameplay/GameSession.hpp"  // SimulationHost lives here
 #include "gameplay/Level.hpp"
-#include "gameplay/entities/CowEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"
@@ -84,7 +84,7 @@ int main() {
         session.bindWorld(DimensionId::Nether, nether);
 
         session.level(DimensionId::Overworld)
-            .entities.spawn({8.0F, 1.001F, 8.0F}, mc::gameplay::entities::CowEntity::type(), 42U);
+            .entities.spawn({8.0F, 1.001F, 8.0F}, mc::gameplay::entities::builtinSpecies("cow"), 42U);
         const auto id = session.level(DimensionId::Overworld).entities.entities().front().id;
         // Capture pre-transfer scalar state for the RNG/state-preservation check
         // (SimpleEntity is non-copyable — it owns a MobBrain — so read fields, not
@@ -118,7 +118,7 @@ int main() {
         session.level(DimensionId::Nether).entities.clear();
         session.clearPendingCrossDimLoads();
         session.level(DimensionId::Overworld)
-            .entities.spawn({80.0F, 1.001F, 80.0F}, mc::gameplay::entities::CowEntity::type(), 7U);
+            .entities.spawn({80.0F, 1.001F, 80.0F}, mc::gameplay::entities::builtinSpecies("cow"), 7U);
         const auto id = session.level(DimensionId::Overworld).entities.entities().front().id;
 
         const auto result = session.transferEntity(id, DimensionId::Overworld, DimensionId::Nether);
@@ -152,7 +152,7 @@ int main() {
     // --- Transfer to a dimension with no world bound is a no-op, not a loss ----
     {
         session.level(DimensionId::Overworld)
-            .entities.spawn({8.0F, 1.001F, 8.0F}, mc::gameplay::entities::CowEntity::type(), 3U);
+            .entities.spawn({8.0F, 1.001F, 8.0F}, mc::gameplay::entities::builtinSpecies("cow"), 3U);
         const auto id = session.level(DimensionId::Overworld).entities.entities().back().id;
         const auto before = session.level(DimensionId::Overworld).entities.entities().size();
         // The End has no world bound in this test.

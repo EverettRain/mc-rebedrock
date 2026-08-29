@@ -17,6 +17,7 @@
 //   everything else      — not routed here (mouse attack/use, movement, chat).
 
 #include "input/InputAction.hpp"
+#include "input/ScreenMode.hpp"
 
 namespace mc::input {
 
@@ -30,6 +31,21 @@ struct InputDispatchGate final {
     // the inventory toggle can close it.
     bool inventoryToggleEnabled = false;
 };
+
+// The gate for a screen mode. This is the same rule the two flag expressions in
+// the renderer spelled out by hand (`worldReady && !inventoryOpen && !paused &&
+// !chatOpen`, and the same minus the inventory term) — derived from ScreenMode
+// instead, so the action gate and the event callbacks cannot drift apart about
+// what "a screen is up" means. The key-capture and text-field modes are menu
+// pages, so they gate exactly like Menu does.
+[[nodiscard]] constexpr InputDispatchGate dispatchGateFor(ScreenMode mode,
+                                                          bool worldReady) noexcept {
+    return InputDispatchGate{
+        /*gameplayEnabled=*/worldReady && mode == ScreenMode::Play,
+        /*inventoryToggleEnabled=*/worldReady &&
+            (mode == ScreenMode::Play || mode == ScreenMode::Inventory),
+    };
+}
 
 // Whether the given pressed action should take effect under this gate. Pure and
 // total: an unmapped-here action returns false, so the caller's switch only acts

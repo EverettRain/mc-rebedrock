@@ -223,8 +223,10 @@ using BlockPalette = DensePalette<world::BlockId>;
 // across builds — so the id is only ever the palette's key, never the thing
 // written. Each entry goes to disk as a block identifier plus its named
 // property values. Air's default state is id 0, which is the palette's empty
-// sentinel and therefore index 0, exactly like the block palette's air.
-using StatePalette = HashPalette<std::uint16_t, 0U>;
+// sentinel and therefore index 0, exactly like the block palette's air. The key
+// is uint32 (BlockState::rawId widened); the on-disk bytes are unchanged — the
+// palette still writes names+properties and each cell a u16 local index.
+using StatePalette = HashPalette<std::uint32_t, 0U>;
 // Items are keyed by their registered instance; nullptr is the block sentinel
 // and, as always, palette index 0.
 using ItemPalette = HashPalette<const gameplay::Item*, nullptr>;
@@ -791,9 +793,13 @@ void readEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
         if (blockVersion >= 6U) {
             entity.color = readInteger<std::uint8_t>(payload, cursor);
         }
-        // A creature saved outside the world is a corrupt record.
+        // A creature saved outside the world is legacy junk from a pre-fix build
+        // whose void line disagreed with the -64 world floor (a mob that fell below
+        // the world and persisted there). The record is fully consumed, so skip this
+        // one entry rather than fail the whole world load — it would be void-cleared
+        // on the first tick anyway.
         if (!(entity.y >= -64.0F && entity.y <= 384.0F)) {
-            throw std::runtime_error("world.dat entity block has an invalid position");
+            continue;
         }
         entities.push_back(std::move(entity));
     }
@@ -937,8 +943,13 @@ void readDropBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
         drop.vy = readFloat(payload, cursor);
         drop.vz = readFloat(payload, cursor);
         drop.ageTicks = readInteger<std::uint32_t>(payload, cursor);
+        // A drop outside the world is legacy junk: a pre-fix build (whose void
+        // line disagreed with the -64 world floor) let items fall below the world
+        // and persisted them there. The whole record has already been consumed, so
+        // skip this one entry rather than fail the entire world load — it would be
+        // void-cleared on the first tick anyway.
         if (!(drop.y >= -64.0F && drop.y <= 384.0F)) {
-            throw std::runtime_error("world.dat drop block has an invalid position");
+            continue;
         }
         // An empty stack would come back as an invisible, unpickable entity.
         if (!drop.stack.empty()) {
@@ -3475,7 +3486,8 @@ void loadLegacy(std::span<const std::uint8_t> payload, std::size_t& cursor,
         // slot, masking the low three bits, so the byte legitimately holds 6-7
         // for a mature crop or well-watered farmland — well past the six
         // enumerated facings. Accept the full 0-7 range; above it is corrupt.
-        if (edit.y < 0 || edit.y >= 256 || fluidLevel > 8U || orientation > 7U)
+        if (edit.y < world::kMinY || edit.y >= world::kMaxY || fluidLevel > 8U ||
+            orientation > 7U)
             throw std::runtime_error("world.dat contains an invalid block edit");
         bool lit = false;
         if (formatVersion >= 14U) {
@@ -3503,7 +3515,7 @@ void loadLegacy(std::span<const std::uint8_t> payload, std::size_t& cursor,
             chest.position.x = readInteger<std::int32_t>(payload, cursor);
             chest.position.y = readInteger<std::int32_t>(payload, cursor);
             chest.position.z = readInteger<std::int32_t>(payload, cursor);
-            if (chest.position.y < 0 || chest.position.y >= 256)
+            if (chest.position.y < world::kMinY || chest.position.y >= world::kMaxY)
                 throw std::runtime_error("world.dat contains an invalid chest position");
             for (auto& stack : chest.items) {
                 readStack(stack);
@@ -3546,7 +3558,7 @@ void loadLegacy(std::span<const std::uint8_t> payload, std::size_t& cursor,
             furnace.position.x = readInteger<std::int32_t>(payload, cursor);
             furnace.position.y = readInteger<std::int32_t>(payload, cursor);
             furnace.position.z = readInteger<std::int32_t>(payload, cursor);
-            if (furnace.position.y < 0 || furnace.position.y >= 256)
+            if (furnace.position.y < world::kMinY || furnace.position.y >= world::kMaxY)
                 throw std::runtime_error("world.dat contains an invalid furnace position");
             readStack(furnace.input);
             readStack(furnace.fuel);

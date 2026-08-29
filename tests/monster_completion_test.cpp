@@ -12,11 +12,9 @@
 #include "gameplay/PlayerVitals.hpp"
 #include "gameplay/StatusEffect.hpp"
 #include "gameplay/entities/BuiltinSpecies.hpp"
-#include "gameplay/entities/CowEntity.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/EntityType.hpp"
 #include "gameplay/entities/MobBrain.hpp"
-#include "gameplay/entities/ZombieEntity.hpp"
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"
 #include "world/World.hpp"
@@ -144,7 +142,7 @@ void testZombieIgnitesInDaylight() {
     mc::world::World world = makeFlatWorld();
     floodSkyAroundOrigin(world, /*radius=*/28);
     EntitySystem system;
-    system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::ZombieEntity::type(), /*seed=*/1U);
+    system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::builtinSpecies("zombie"), /*seed=*/1U);
     const std::uint64_t id = system.entities().front().id;
     REQUIRE(fireTicksOf(system, id) == 0);
 
@@ -160,7 +158,7 @@ void testZombieDoesNotIgniteAtNight() {
     mc::world::World world = makeFlatWorld();
     exposeHeadToSky(world, 0, 2, 0);
     EntitySystem system;
-    system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::ZombieEntity::type(), /*seed=*/2U);
+    system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::builtinSpecies("zombie"), /*seed=*/2U);
     const std::uint64_t id = system.entities().front().id;
 
     for (int tick = 0; tick < 10; ++tick) {
@@ -176,7 +174,7 @@ void testZombieDoesNotIgniteAtNight() {
 void testZombieDoesNotIgniteWhenSheltered() {
     mc::world::World world = makeFlatWorld(); // head cell never opened to sky
     EntitySystem system;
-    system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::ZombieEntity::type(), /*seed=*/3U);
+    system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::builtinSpecies("zombie"), /*seed=*/3U);
     const std::uint64_t id = system.entities().front().id;
 
     for (int tick = 0; tick < 10; ++tick) {
@@ -194,7 +192,7 @@ void testZombieDoesNotIgniteSubmerged() {
     world.setBlock(0, 1, 0, mc::world::Block::Water);
     world.setBlock(0, 2, 0, mc::world::Block::Water);
     EntitySystem system;
-    system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::ZombieEntity::type(), /*seed=*/4U);
+    system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::builtinSpecies("zombie"), /*seed=*/4U);
     const std::uint64_t id = system.entities().front().id;
 
     for (int tick = 0; tick < 10; ++tick) {
@@ -211,7 +209,7 @@ void testCowDoesNotIgniteInDaylight() {
     mc::world::World world = makeFlatWorld();
     exposeHeadToSky(world, 0, 2, 0);
     EntitySystem system;
-    system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::CowEntity::type(), /*seed=*/5U);
+    system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::builtinSpecies("cow"), /*seed=*/5U);
     const std::uint64_t id = system.entities().front().id;
     REQUIRE(system.byIdConst(id)->type->category() == MobCategory::Creature);
 
@@ -237,14 +235,14 @@ void testHuskDoesNotIgniteWhileZombieBesideItDoes() {
     REQUIRE(huskType != nullptr);
     REQUIRE(huskType->undead());
     REQUIRE(huskType->sunImmune());
-    REQUIRE(entities::ZombieEntity::type().undead());
-    REQUIRE(!entities::ZombieEntity::type().sunImmune());
+    REQUIRE(entities::builtinSpecies("zombie").undead());
+    REQUIRE(!entities::builtinSpecies("zombie").sunImmune());
 
     mc::world::World world = makeFlatWorld();
     floodSkyAroundOrigin(world, /*radius=*/28);
     EntitySystem system;
     system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, *huskType, /*seed=*/6U);
-    system.spawn(glm::vec3{2.5F, 1.0F, 0.5F}, entities::ZombieEntity::type(), /*seed=*/7U);
+    system.spawn(glm::vec3{2.5F, 1.0F, 0.5F}, entities::builtinSpecies("zombie"), /*seed=*/7U);
     const std::uint64_t huskId = system.entities()[0].id;
     const std::uint64_t zombieId = system.entities()[1].id;
 
@@ -288,7 +286,7 @@ void testZombieDoesNotIgniteInHeavyRain() {
         mc::world::World world = makeFlatWorld();
         floodSkyAroundOrigin(world, /*radius=*/28);
         EntitySystem system;
-        system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::ZombieEntity::type(), /*seed=*/8U);
+        system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::builtinSpecies("zombie"), /*seed=*/8U);
         const std::uint64_t id = system.entities().front().id;
         int maxFire = 0;
         for (int tick = 0; tick < 400; ++tick) {
@@ -310,7 +308,7 @@ void testZombieDoesNotIgniteInHeavyRain() {
         mc::world::World world = makeFlatWorld();
         floodSkyAroundOrigin(world, /*radius=*/28);
         EntitySystem system;
-        system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::ZombieEntity::type(), /*seed=*/8U);
+        system.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::builtinSpecies("zombie"), /*seed=*/8U);
         const std::uint64_t id = system.entities().front().id;
         int maxFire = 0;
         for (int tick = 0; tick < 400; ++tick) {
@@ -338,7 +336,7 @@ void testZombieDoesNotIgniteInHeavyRain() {
 void testChaseReacquiresAfterTargetLost() {
     mc::world::World world = makeFlatWorld();
     EntitySystem system;
-    system.spawn(glm::vec3{4.5F, 1.001F, 8.5F}, entities::ZombieEntity::type(), /*seed=*/41U);
+    system.spawn(glm::vec3{4.5F, 1.001F, 8.5F}, entities::builtinSpecies("zombie"), /*seed=*/41U);
     const std::uint64_t zombieId = system.entities().front().id;
 
     // Outside the zombie's 35-block follow range but inside MobEntity#
@@ -374,14 +372,14 @@ void testChaseReacquiresAfterTargetLost() {
 // Sabotage①/③ anchor for EM2 consumption: a husk's melee data flag
 // (EntityBehavior::HungerOnHit) is set, the zombie beside it is not — the
 // content rule GameSession applies is exercised directly against the two
-// EntityType objects, mirroring how ZombieEntity/BuiltinSpecies register
+// EntityType objects, mirroring how the BuiltinSpecies manifest registers
 // them (GameSession's own mobAttacks loop is integration-only, not
 // reachable headless without the full session).
 void testHungerOnHitFlagIsHuskOnly() {
     const auto* huskType = entityTypeRegistry().byId("husk");
     REQUIRE(huskType != nullptr);
     REQUIRE(huskType->hungerOnHit());
-    REQUIRE(!entities::ZombieEntity::type().hungerOnHit());
+    REQUIRE(!entities::builtinSpecies("zombie").hungerOnHit());
 
     // PlayerVitals is the same applyEffect the hunger-on-hit hook calls
     // (mc::gameplay::applyEffect(effects_, hungerEffect(), …)); apply it here
@@ -396,7 +394,7 @@ void testHungerOnHitFlagIsHuskOnly() {
     PlayerVitals zombieVictim;
     zombieVictim.reset();
     // No applyEffect call at all for a zombie hit — the content rule never
-    // fires because ZombieEntity::type().hungerOnHit() is false.
+    // fires because mc::gameplay::entities::builtinSpecies("zombie").hungerOnHit() is false.
     REQUIRE(!hasEffect(zombieVictim.effects(), hungerEffect()));
 }
 
@@ -460,8 +458,8 @@ void testDeterministicIgnitionAndBurn() {
     floodSkyAroundOrigin(worldB, /*radius=*/28);
     EntitySystem a;
     EntitySystem b;
-    a.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::ZombieEntity::type(), /*seed=*/42U);
-    b.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::ZombieEntity::type(), /*seed=*/42U);
+    a.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::builtinSpecies("zombie"), /*seed=*/42U);
+    b.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, entities::builtinSpecies("zombie"), /*seed=*/42U);
     const std::uint64_t idA = a.entities().front().id;
     const std::uint64_t idB = b.entities().front().id;
 

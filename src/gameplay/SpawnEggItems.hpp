@@ -2,47 +2,45 @@
 
 #include "gameplay/ContentRegistry.hpp"
 #include "gameplay/Item.hpp"
-#include "gameplay/entities/CowEntity.hpp"
-#include "gameplay/entities/EntityRegistry.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "gameplay/entities/EntityType.hpp"
-#include "gameplay/entities/PigEntity.hpp"
-#include "gameplay/entities/ZombieEntity.hpp"
 
-#include <cassert>
+#include <cstddef>
+#include <string_view>
 
 namespace mc::gameplay::entities {
 
-// Sheep and chicken are E3 manifest species (BuiltinSpecies.cpp), not
-// hand-written classes with their own `::type()` accessor — a manifest row's
-// EntityType lives in the shared `storage` deque inside
-// registerBuiltinSpeciesManifest(), addressed only through the registry. A
-// SpawnEggItem::EntitySupplier is a plain `const EntityType& (*)()`, so these
-// two functions give the manifest species that same call shape: a deferred
-// byId() lookup, resolved lazily (never at static-init time, only when a
-// spawn egg is actually used to spawn or drawn to render), by which point
-// registerBuiltinEntities() has already run registerBuiltinSpeciesManifest().
-// The abort on a missing id is deliberate and loud, the same posture
-// BiomeSpawnTables::loadBuiltinDefaults takes for a build with no species
-// registered yet: silently returning a placeholder would let a miscabled
-// manifest row (or a call before registration) spawn nothing and say nothing.
-[[nodiscard]] inline const EntityType& sheepTypeForSpawnEgg() {
-    const EntityType* type = entityTypeRegistry().byId("sheep");
-    assert(type != nullptr && "sheep spawn egg used before the species manifest registered");
-    return *type;
-}
+// Every species is a manifest row (BuiltinSpecies.cpp), and a row's EntityType
+// lives in the shared storage inside registerBuiltinSpeciesManifest(), addressed
+// only through the registry — there is no per-species `::type()` accessor to
+// take the address of. A SpawnEggItem::EntitySupplier is a plain
+// `const EntityType& (*)()`, so the supplier is this template instantiated on the
+// species name: one link-time function per egg, no hand-written accessor per
+// species, and adding an egg stays a single line below.
+//
+// The lookup is deferred — it runs when an egg is actually used to spawn or
+// drawn to render, never at static-init time — and builtinSpecies() registers
+// the manifest first, so it cannot be reached too early. Its abort on an unknown
+// name is deliberate and loud: a mistyped species would otherwise spawn nothing
+// and say nothing.
+template <std::size_t N>
+struct SpeciesName final {
+    char value[N]{};
 
-[[nodiscard]] inline const EntityType& chickenTypeForSpawnEgg() {
-    const EntityType* type = entityTypeRegistry().byId("chicken");
-    assert(type != nullptr && "chicken spawn egg used before the species manifest registered");
-    return *type;
-}
+    // NOLINTNEXTLINE(google-explicit-constructor) — a template parameter is
+    // written as a plain string literal, so this must convert implicitly.
+    constexpr SpeciesName(const char (&literal)[N]) {
+        for (std::size_t index = 0; index < N; ++index) {
+            value[index] = literal[index];
+        }
+    }
 
-// AR-M1: husk is likewise an E3 manifest species with no `::type()` accessor —
-// same deferred byId() lookup as sheep/chicken above.
-[[nodiscard]] inline const EntityType& huskTypeForSpawnEgg() {
-    const EntityType* type = entityTypeRegistry().byId("husk");
-    assert(type != nullptr && "husk spawn egg used before the species manifest registered");
-    return *type;
+    [[nodiscard]] constexpr std::string_view view() const { return {value, N - 1U}; }
+};
+
+template <SpeciesName name>
+[[nodiscard]] const EntityType& speciesForSpawnEgg() {
+    return builtinSpecies(name.view());
 }
 
 } // namespace mc::gameplay::entities
@@ -53,26 +51,22 @@ namespace mc::gameplay::items {
 // the constructor stores the EntityType supplier so the renderer can tint the
 // icon and the interaction system can spawn the right creature.
 inline constexpr SpawnEggItem PigSpawnEgg{
-    "pig_spawn_egg", &entities::PigEntity::type};
+    "pig_spawn_egg", &entities::speciesForSpawnEgg<"pig">};
 
 inline constexpr SpawnEggItem ZombieSpawnEgg{
-    "zombie_spawn_egg", &entities::ZombieEntity::type};
+    "zombie_spawn_egg", &entities::speciesForSpawnEgg<"zombie">};
 
 inline constexpr SpawnEggItem CowSpawnEgg{
-    "cow_spawn_egg", &entities::CowEntity::type};
+    "cow_spawn_egg", &entities::speciesForSpawnEgg<"cow">};
 
-// AR-A1: sheep and chicken are manifest species (BuiltinSpecies.cpp), so their
-// supplier is the deferred byId() lookup above rather than a `::type()`
-// static-storage accessor.
 inline constexpr SpawnEggItem SheepSpawnEgg{
-    "sheep_spawn_egg", &entities::sheepTypeForSpawnEgg};
+    "sheep_spawn_egg", &entities::speciesForSpawnEgg<"sheep">};
 
 inline constexpr SpawnEggItem ChickenSpawnEgg{
-    "chicken_spawn_egg", &entities::chickenTypeForSpawnEgg};
+    "chicken_spawn_egg", &entities::speciesForSpawnEgg<"chicken">};
 
-// AR-M1: husk, same deferred-lookup pattern as sheep/chicken.
 inline constexpr SpawnEggItem HuskSpawnEgg{
-    "husk_spawn_egg", &entities::huskTypeForSpawnEgg};
+    "husk_spawn_egg", &entities::speciesForSpawnEgg<"husk">};
 
 } // namespace mc::gameplay::items
 

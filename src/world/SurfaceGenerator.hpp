@@ -46,6 +46,11 @@ class SurfaceGenerator final {
         return biomeSource_.biomeAtBlock(worldX, worldZ);
     }
 
+    // The noise-only terrain surface height at a column (STRUCT structure Y).
+    [[nodiscard]] int terrainHeightAt(int worldX, int worldZ) const {
+        return noiseGenerator_.terrainHeightAt(worldX, worldZ);
+    }
+
   private:
     gen::BiomeSource biomeSource_;
     // The samplers are drawn once in the constructor and handed down, so the

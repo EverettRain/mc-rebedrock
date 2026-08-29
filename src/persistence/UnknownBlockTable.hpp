@@ -104,11 +104,14 @@ class UnknownBlockTable final {
     }
 
   private:
-    static constexpr std::uint32_t kMaxRawId = 0xFFFFU;
+    // The state id is a u32 now, so the placeholder space above the built-in
+    // table runs to the full 32-bit ceiling (BlockStateTable keeps 0xFFFF0000 of
+    // headroom below this for exactly these ids).
+    static constexpr std::uint32_t kMaxRawId = 0xFFFFFFFFU;
 
     [[nodiscard]] static world::BlockState sentinelOf(std::size_t index) {
         return world::BlockState::fromRawId(
-            static_cast<std::uint16_t>(world::kFirstUnknownStateId + index));
+            static_cast<std::uint32_t>(world::kFirstUnknownStateId + index));
     }
 
     mutable std::mutex mutex_;

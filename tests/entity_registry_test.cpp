@@ -1,10 +1,8 @@
 #include "gameplay/Difficulty.hpp"
 #include "gameplay/EntitySystem.hpp"
 #include "gameplay/Item.hpp"
-#include "gameplay/entities/CowEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
-#include "gameplay/entities/PigEntity.hpp"
-#include "gameplay/entities/ZombieEntity.hpp"
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"
 #include "world/World.hpp"
@@ -80,7 +78,7 @@ int main() {
     // a pig's side select it and hide a block behind it.
     {
         mc::gameplay::EntitySystem targets;
-        targets.spawn({0.0F, 0.0F, 3.0F}, mc::gameplay::entities::PigEntity::type(), 91U);
+        targets.spawn({0.0F, 0.0F, 3.0F}, mc::gameplay::entities::builtinSpecies("pig"), 91U);
         const auto direct = targets.raycast({0.0F, 0.45F, 0.0F}, {0.0F, 0.0F, 1.0F}, 5.0F);
         assert(direct.has_value());
         assert(std::abs(direct->distance - 2.55F) < 0.0001F);
@@ -91,7 +89,7 @@ int main() {
         // 16-block section boundary extends its upper body into the section
         // above; aiming there must still find the entity bucketed below.
         targets.clear();
-        targets.spawn({0.0F, 15.0F, 3.0F}, mc::gameplay::entities::CowEntity::type(), 92U);
+        targets.spawn({0.0F, 15.0F, 3.0F}, mc::gameplay::entities::builtinSpecies("cow"), 92U);
         const auto upperBody = targets.raycast({0.0F, 16.20F, 0.0F}, {0.0F, 0.0F, 1.0F}, 5.0F);
         assert(upperBody.has_value());
         assert(std::abs(upperBody->distance - 2.55F) < 0.0001F);
@@ -99,7 +97,7 @@ int main() {
         // The same rule applies at horizontal section faces: the ray may enter
         // the portion of the AABB in X+1 while the entity centre remains in X.
         targets.clear();
-        targets.spawn({15.8F, 0.0F, 3.0F}, mc::gameplay::entities::PigEntity::type(), 93U);
+        targets.spawn({15.8F, 0.0F, 3.0F}, mc::gameplay::entities::builtinSpecies("pig"), 93U);
         const auto acrossHorizontalBoundary =
             targets.raycast({16.10F, 0.45F, 0.0F}, {0.0F, 0.0F, 1.0F}, 5.0F);
         assert(acrossHorizontalBoundary.has_value());
@@ -133,8 +131,8 @@ int main() {
         mc::world::World collisionWorld;
         collisionWorld.setChunk({0, 0}, std::move(collisionChunk));
 
-        const auto& pigType = mc::gameplay::entities::PigEntity::type();
-        const auto& cowType = mc::gameplay::entities::CowEntity::type();
+        const auto& pigType = mc::gameplay::entities::builtinSpecies("pig");
+        const auto& cowType = mc::gameplay::entities::builtinSpecies("cow");
         const glm::vec3 lowCeilingPosition{4.5F, 1.001F, 4.5F};
         assert(mc::gameplay::EntitySystem::canOccupy(collisionWorld, lowCeilingPosition,
                                                      pigType.dimensions()));
@@ -161,7 +159,7 @@ int main() {
     // almost surely opens within a couple of hundred ticks. ---
     {
         mc::gameplay::EntitySystem barker;
-        barker.spawn({8.0F, 1.0F, 8.0F}, mc::gameplay::entities::PigEntity::type(), 99U);
+        barker.spawn({8.0F, 1.0F, 8.0F}, mc::gameplay::entities::builtinSpecies("pig"), 99U);
         bool heardAmbient = false;
         for (int tick = 0; tick < 200 && !heardAmbient; ++tick) {
             static_cast<void>(barker.tick(world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
@@ -175,9 +173,9 @@ int main() {
     }
 
     mc::gameplay::EntitySystem entities;
-    entities.spawn({8.0F, 1.0F, 8.0F}, mc::gameplay::entities::PigEntity::type(), 1U);
-    entities.spawn({9.0F, 1.0F, 8.0F}, mc::gameplay::entities::CowEntity::type(), 2U);
-    entities.spawn({10.0F, 1.0F, 8.0F}, mc::gameplay::entities::ZombieEntity::type(), 3U);
+    entities.spawn({8.0F, 1.0F, 8.0F}, mc::gameplay::entities::builtinSpecies("pig"), 1U);
+    entities.spawn({9.0F, 1.0F, 8.0F}, mc::gameplay::entities::builtinSpecies("cow"), 2U);
+    entities.spawn({10.0F, 1.0F, 8.0F}, mc::gameplay::entities::builtinSpecies("zombie"), 3U);
     static_cast<void>(entities.tick(world, glm::vec3{0.0F, -1000.0F, 0.0F}, 0.6F, 1.8F,
                                     mc::gameplay::Difficulty::Peaceful));
 
@@ -185,11 +183,11 @@ int main() {
     std::size_t pigCount = 0U;
     std::size_t zombieCount = 0U;
     for (const auto& entity : entities.entities()) {
-        if (entity.type == &mc::gameplay::entities::CowEntity::type()) {
+        if (entity.type == &mc::gameplay::entities::builtinSpecies("cow")) {
             ++cowCount;
-        } else if (entity.type == &mc::gameplay::entities::PigEntity::type()) {
+        } else if (entity.type == &mc::gameplay::entities::builtinSpecies("pig")) {
             ++pigCount;
-        } else if (entity.type == &mc::gameplay::entities::ZombieEntity::type()) {
+        } else if (entity.type == &mc::gameplay::entities::builtinSpecies("zombie")) {
             ++zombieCount;
         }
     }
@@ -203,7 +201,7 @@ int main() {
     // the vertical arc. ---
     {
         mc::gameplay::EntitySystem knockback;
-        knockback.spawn({8.0F, 1.001F, 8.0F}, mc::gameplay::entities::PigEntity::type(), 31U);
+        knockback.spawn({8.0F, 1.001F, 8.0F}, mc::gameplay::entities::builtinSpecies("pig"), 31U);
         const std::uint64_t pigId = knockback.entities().front().id;
         // Settle once so takeKnockback sees the same grounded state as a mob
         // standing in a running world.
@@ -244,7 +242,7 @@ int main() {
     // twenty-tick corpse animation (LivingEntity#onDeath drops immediately). ---
     {
         mc::gameplay::EntitySystem killers;
-        killers.spawn({7.0F, 1.0F, 7.0F}, mc::gameplay::entities::PigEntity::type(), 4U);
+        killers.spawn({7.0F, 1.0F, 7.0F}, mc::gameplay::entities::builtinSpecies("pig"), 4U);
         assert(killers.pendingDrops().empty());
         // A fatal hit rolls the pig's porkchops straight into pendingDrops_
         // inside hurt(), with no tick() advancing the animation. hurt() takes
@@ -269,12 +267,12 @@ int main() {
     {
         mc::gameplay::EntitySystem simulation;
         // Within the 16-block radius: gravity pulls it from y=10 to the floor.
-        simulation.spawn({8.0F, 10.0F, 8.0F}, mc::gameplay::entities::PigEntity::type(), 51U);
+        simulation.spawn({8.0F, 10.0F, 8.0F}, mc::gameplay::entities::builtinSpecies("pig"), 51U);
         // 32 blocks out (dx = 32 > 16): frozen — stays exactly where it spawned.
-        simulation.spawn({40.0F, 10.0F, 8.0F}, mc::gameplay::entities::PigEntity::type(), 52U);
+        simulation.spawn({40.0F, 10.0F, 8.0F}, mc::gameplay::entities::builtinSpecies("pig"), 52U);
         // 192 blocks out and a MONSTER: despawns when distant, independently of
         // the simulation radius.
-        simulation.spawn({200.0F, 1.0F, 200.0F}, mc::gameplay::entities::ZombieEntity::type(), 53U);
+        simulation.spawn({200.0F, 1.0F, 200.0F}, mc::gameplay::entities::builtinSpecies("zombie"), 53U);
         const std::uint64_t nearId = simulation.entities()[0].id;
         const std::uint64_t farId = simulation.entities()[1].id;
         const std::uint64_t monsterId = simulation.entities()[2].id;

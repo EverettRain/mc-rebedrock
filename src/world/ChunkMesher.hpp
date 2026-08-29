@@ -48,10 +48,16 @@ class MeshLightingSnapshot final {
     int height_ = 0;
     int depth_ = 0;
     // bit0 = opaque, bit1 = aoOccludes; blockTypes_ holds the Block enum value.
+    // blockTypes_ is uint16, not uint8: the Block enum widened past 256 (STRUCT
+    // registration), so a u8 here silently truncated any block id > 255 — e.g. a
+    // deepslate ore (id 336+) read back as a sapling/wheat (id & 0xFF), which is
+    // not a full cube, so the mesher stopped culling the faces of the deepslate
+    // around every deep ore and the deepslate layer's vertex count exploded. This
+    // must track the Block width.
     std::vector<std::uint8_t> flags_;
     std::vector<std::uint8_t> skyLevels_;
     std::vector<std::uint8_t> blockLevels_;
-    std::vector<std::uint8_t> blockTypes_;
+    std::vector<std::uint16_t> blockTypes_;
     SmoothLightingQuality quality_ = SmoothLightingQuality::Standard;
 };
 

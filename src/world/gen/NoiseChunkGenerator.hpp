@@ -62,6 +62,22 @@ class NoiseChunkGenerator final {
     // and the feature placement both need.
     [[nodiscard]] int surfaceHeight(const Chunk& chunk, int localX, int localZ) const;
 
+    // The terrain surface height at a world column, sampled straight from the noise
+    // without generating a chunk — vanilla's WORLD_SURFACE_WG heightmap. Structure
+    // placement (STRUCT) needs a piece's Y to be a deterministic function of its
+    // position, independent of which chunk generates first, so a jigsaw structure
+    // that spans chunks lays its pieces at one consistent height however the player
+    // approaches it. Returns kMinY when the column has no solid cell (open sky/void).
+    [[nodiscard]] int terrainHeightAt(int worldX, int worldZ) const;
+
+    // Vanilla 26.1's deepslate surface rule, run as a post-pass *after* carving and
+    // ores: converts the leftover default-block cells in the deepslate band (below
+    // settings.deepslateGradientTop) to settings.deepslateBlock. Solid deepslate at
+    // and below the gradient bottom, a positional-random speckle up to the top. Only
+    // default-block cells convert, so caves (air), ores and bedrock are preserved.
+    // A no-op when the dimension has no deepslate (settings.deepslateBlock == Air).
+    void applyDeepslateLayer(Chunk& chunk, int chunkX, int chunkZ) const;
+
   private:
     // The randomDensityOffset term: a very slow field sampled at a 200x stride
     // that lifts or drops whole regions by a fraction of a block.

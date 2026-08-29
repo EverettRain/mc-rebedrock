@@ -20,6 +20,10 @@ class World;
 // Direction#fromYRot: the cardinal direction the player is looking along.
 [[nodiscard]] BlockOrientation horizontalFacing(glm::vec3 lookDirection);
 
+// Six-way version of horizontalFacing (Direction#getNearest): the axis the view
+// vector leans on most, including up/down. Drives DirectionalBlock placement.
+[[nodiscard]] BlockOrientation nearestLookingDirection(glm::vec3 lookDirection);
+
 // Everything BlockItem#getPlacementState reads off a use-on-block interaction.
 struct PlacementContext final {
     // The block that was clicked and the cell the new block would occupy.

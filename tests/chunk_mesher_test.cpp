@@ -1,6 +1,7 @@
 #include "world/BlockShape.hpp"
 #include "world/BlockState.hpp"
 #include "world/ChunkMesher.hpp"
+#include "world/ElementModelBaker.hpp"
 #include "world/SurfaceGenerator.hpp"
 #include "world/World.hpp"
 #include "world/WorldConstants.hpp"
@@ -11,6 +12,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -579,6 +581,48 @@ int main() {
         assert(!upperMesh.vertices.empty());
         for (const auto& vertex : upperMesh.vertices) {
             assert(static_cast<float>(vertex.textureLayer) == doorLayers.top);
+        }
+    }
+
+    // RN-4 N2b: an ElementModel block (repeater) is meshed by wiring the mesher to
+    // the shared FaceBakery baker. This end-to-end check locks the wiring itself —
+    // the real mesh's vertex world-positions equal bakeElementModel's quad positions
+    // shifted into the cell, so every element face is emitted and translated
+    // correctly. (The UV orientation now follows the faithful-vanilla convention and
+    // is verified visually on Mac, not here; N2a locks the baker's own geometry/UV.)
+    {
+        using mc::world::Block;
+        using mc::world::BlockOrientation;
+        using mc::world::BlockState;
+        const BlockState repeater =
+            BlockState{Block::Repeater, BlockOrientation::East}.withRepeaterDelay(2);
+        mc::world::Chunk repeaterChunk;
+        repeaterChunk.setState(3, mc::world::kMinY + 1, 4, repeater);
+        const auto repeaterMesh = mc::world::ChunkMesher::build(repeaterChunk);
+
+        const auto bakedQuads = mc::world::bake::bakeElementModel(Block::Repeater, repeater);
+        assert(repeaterMesh.vertices.size() == bakedQuads.size() * 4U);
+
+        // Section 0's origin is the world origin at kMinY, so decoded local positions
+        // are cell-local + the cell offset (cell y = kMinY + 1 -> local y = 1).
+        const glm::vec3 cell{3.0F, 1.0F, 4.0F};
+        std::vector<glm::vec3> meshPositions;
+        for (const auto& vertex : repeaterMesh.vertices) {
+            meshPositions.push_back(worldPos(vertex));
+        }
+        for (const auto& baked : bakedQuads) {
+            for (const auto& corner : baked.quad.position) {
+                const glm::vec3 want = cell + corner;
+                bool found = false;
+                for (const auto& got : meshPositions) {
+                    if (std::abs(got.x - want.x) < 0.002F && std::abs(got.y - want.y) < 0.002F &&
+                        std::abs(got.z - want.z) < 0.002F) {
+                        found = true;
+                        break;
+                    }
+                }
+                assert(found);
+            }
         }
     }
     return 0;

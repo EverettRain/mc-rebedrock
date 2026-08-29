@@ -198,7 +198,7 @@ void testOptionsHasSubtitlesToggle() {
     ui::MenuBuildContext ctx;
     ui::MenuCallbacks cb;
     bool toggled = false;
-    cb.toggleSubtitles = [&] { toggled = true; };
+    cb.cycleOption = [&](ui::WidgetId id, int) { toggled = id == ui::WidgetId::Subtitles; };
     ui::Page opts = ui::buildPage(ui::PageId::Options, ctx, cb, rowLayout());
 
     std::size_t subIndex = ui::kNoWidget;

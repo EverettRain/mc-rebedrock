@@ -11,8 +11,12 @@
 #include "world/Block.hpp"
 #include "world/ChunkStreamer.hpp"
 #include "world/DayNightCycle.hpp"
+#include "gameplay/ChestLootTable.hpp"
+#include "gameplay/Random.hpp"
+#include "world/StructureManager.hpp"
 #include "world/WorldConstants.hpp"
 #include "world/gen/JavaRandom.hpp"
+#include "world/gen/StructureGenerator.hpp"
 
 #include "core/FrameTrace.hpp"
 
@@ -1368,6 +1372,55 @@ void GameRuntime::restoreLoadedChunk(world::ChunkPosition position) {
     gameSession_.naturalSpawner().spawnForChunkGeneration(
         serverWorld_, gameSession_.worldEntities(), currentSave_->summary.seed, position.x,
         position.z);
+    createStructureChests(position);
+}
+
+void GameRuntime::createStructureChests(world::ChunkPosition position) {
+    world::StructureManager& manager = world::structureManager();
+    if (manager.sets().empty()) {
+        return; // no structures registered: nothing to bind
+    }
+    const int originX = position.x * world::kChunkWidth;
+    const int originZ = position.z * world::kChunkDepth;
+    // The origin column's surface height. For a surface structure this matches the
+    // ground the block pass rested it on (the block pass read the same column
+    // before it placed anything; this replay derives the same chest Y from it).
+    int groundY = world::kMinY - 1;
+    for (int y = world::kMaxY - 1; y >= world::kMinY; --y) {
+        if (serverWorld_.block(originX, y, originZ) != world::Block::Air) {
+            groundY = y;
+            break;
+        }
+    }
+    if (groundY < world::kMinY) {
+        return;
+    }
+    const auto chests = world::gen::structureChestsForChunk(
+        position.x, position.z, static_cast<std::uint64_t>(currentSave_->summary.seed), manager,
+        groundY, [this](int worldX, int worldZ) { return serverWorld_.biomeAt(worldX, worldZ); });
+
+    for (const auto& chest : chests) {
+        if (chest.lootTable.empty()) {
+            continue; // a metadata-only marker (igloo basement): STRUCT-4 binds it
+        }
+        const gameplay::ChestPosition cell{chest.worldX, chest.worldY, chest.worldZ};
+        gameSession_.createChestBlockEntity(cell);
+        gameplay::ChestBlockEntity* entity = gameSession_.chestSystem().find(cell);
+        if (entity == nullptr) {
+            continue;
+        }
+        const data::ChestLootTableDef* table = gameplay::chestLootTable().find(chest.lootTable);
+        if (table == nullptr) {
+            continue; // this build has no such loot table: an empty chest
+        }
+        // Seed the roll from the chest's world position, so it is deterministic and
+        // needs no persisted loot state — the filled items are saved like any chest.
+        std::uint64_t rollState = mc::rng::seedFromValue(
+            static_cast<std::uint64_t>(static_cast<std::int64_t>(chest.worldX) * 3129871LL ^
+                                       static_cast<std::int64_t>(chest.worldZ) * 116129781LL ^
+                                       static_cast<std::int64_t>(chest.worldY) * 42317LL));
+        gameplay::chestLootTable().fillSlots(entity->items, *table, rollState);
+    }
 }
 
 void GameRuntime::registerAuthoritativeCommands() {

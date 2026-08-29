@@ -23,6 +23,10 @@ Chunk SurfaceGenerator::generate(
     features_.buildSurface(chunk, chunkX, chunkZ);
     features_.generateOres(chunk, chunkX, chunkZ);
     features_.generateVegetation(chunk, chunkX, chunkZ, borderBlocks);
+    // Deepslate band last: after carving and ores, so it only recolours the
+    // leftover stone below y=0 into deepslate (vanilla 26.1) and leaves the caves,
+    // ores and bedrock those passes placed intact.
+    noiseGenerator_.applyDeepslateLayer(chunk, chunkX, chunkZ);
     return chunk;
 }
 

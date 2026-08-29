@@ -1,5 +1,7 @@
 #include "gameplay/PlayerVitals.hpp"
 
+#include "world/WorldConstants.hpp"
+
 #include <algorithm>
 #include <cmath>
 
@@ -13,7 +15,10 @@ constexpr float kSwimExhaustionPerBlock = 0.01F;
 constexpr float kJumpExhaustion = 0.05F;
 constexpr float kSprintJumpExhaustion = 0.2F;
 constexpr float kRegenerationExhaustion = 6.0F;
-constexpr float kVoidHeight = -64.0F;
+// The Y a player takes void damage below — vanilla's minY-64, shared with the
+// entity/item void line (world::kVoidDespawnY). Below the world (bedrock is at
+// kMinY), not at it, so digging in the deepslate layer never triggers it.
+constexpr float kVoidHeight = world::kVoidDespawnY;
 constexpr float kVoidDamage = 4.0F;
 constexpr float kDrownDamage = 2.0F;
 // LivingEntity#decreaseAirSupply runs the counter to -20 before each hit.

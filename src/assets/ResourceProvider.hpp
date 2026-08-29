@@ -82,33 +82,31 @@ class ResourceProvider {
     [[nodiscard]] virtual std::filesystem::path resourceRoot() const = 0;
 };
 
-// Resolves resources against this project's current on-disk layout, which is not
-// yet a standard pack: vanilla assets live under `<root>/vanilla/1.16.1/…` with
-// the namespace folder *after* the category and a few historical quirks
-// (`sounds/…` sits under `audio/`, translations under `localization/`, the
-// bitmap font under `textures/font/` but its glyph widths under `fonts/`), while
-// this project's own assets (animation clips, entity skins) sit directly under
-// `<root>/`. All of that irregularity is captured here, in one function, so it
-// is stated once instead of thirty-four times.
+// Resolves this project's OWN assets against `resources/`: the animation clips
+// and entity models directly under the root, and the `rebedrock` translation
+// tables under `lang/rebedrock/`. That is the whole layout — a Mojang-shaped
+// resource (a texture, a sound, the font, a `minecraft` lang table, and every
+// ServerData resource) is not this provider's to place, so it returns an empty
+// path and the layered stack falls through to the resource pack the player
+// supplies.
+//
+// This used to also map a bundled `<root>/vanilla/<version>/…` tree with its own
+// category renames (`sounds/` under `audio/`, translations under
+// `localization/`, glyph widths under `fonts/`), filled by an extraction script
+// run against a local Minecraft install. Both are gone: a standard resource pack
+// is the only source of vanilla content, and the game refuses to start without
+// one.
 class DirectoryResourceProvider final : public ResourceProvider {
   public:
-    // `resourceRoot` is the `resources/` directory; `vanillaVersion` is the
-    // version segment under `vanilla/` (currently "1.16.1").
-    explicit DirectoryResourceProvider(std::filesystem::path resourceRoot,
-                                       std::string vanillaVersion = "1.16.1");
+    // `resourceRoot` is the `resources/` directory.
+    explicit DirectoryResourceProvider(std::filesystem::path resourceRoot);
 
     [[nodiscard]] std::filesystem::path locate(const ResourceLocation& location) const override;
     [[nodiscard]] bool exists(const ResourceLocation& location) const override;
     [[nodiscard]] std::filesystem::path resourceRoot() const override { return resourceRoot_; }
 
-    // `resources/vanilla/<version>`, the root of the bundled vanilla assets.
-    [[nodiscard]] std::filesystem::path vanillaRoot() const {
-        return resourceRoot_ / "vanilla" / vanillaVersion_;
-    }
-
   private:
     std::filesystem::path resourceRoot_;
-    std::string vanillaVersion_;
 };
 
 // Resolves resources against a standard resource pack laid out the way Minecraft

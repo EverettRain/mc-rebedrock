@@ -1,9 +1,12 @@
 #include "world/gen/NoiseChunkGenerator.hpp"
 
 #include "world/WorldConstants.hpp"
+#include "world/gen/JavaRandom.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <array>
 #include <utility>
 
 namespace mc::world::gen {
@@ -14,6 +17,22 @@ namespace {
 // NoiseGeneratorSettings so the nether/end can pass different values; the
 // overworld() value set carries the exact literals they held, so this file's
 // output is unchanged for the overworld.
+
+// A deterministic per-block value in [0, 1) for the deepslate vertical gradient —
+// positional like vanilla's verticalGradient random, so the speckled boundary is
+// stable across chunk borders and independent of the wall clock. Seeded from the
+// block coordinates in the style of Java's Mth.getSeed, then run through the
+// project's LegacyRandom. Not the exact xoroshiro vanilla 26.1 uses (the deepslate
+// band is a qualitative transition, not under the overworld逐格 parity guard), but
+// deterministic and seamless — which is all the gradient needs.
+[[nodiscard]] double positionalUnitRandom(int x, int y, int z) {
+    std::int64_t seed = (static_cast<std::int64_t>(x) * 3129871LL) ^
+                        (static_cast<std::int64_t>(z) * 116129781LL) ^
+                        static_cast<std::int64_t>(y);
+    seed = seed * seed * 42317861LL + seed * 11LL;
+    JavaRandom random(static_cast<std::uint64_t>(seed >> 16));
+    return random.nextDouble();
+}
 
 // NoiseChunkGenerator.BIOME_WEIGHT_TABLE, 10 / sqrt(x^2 + z^2 + 0.2) over the
 // 5x5 window. Nearby columns dominate, so a biome boundary is a slope rather
@@ -306,6 +325,116 @@ int NoiseChunkGenerator::surfaceHeight(const Chunk& chunk, int localX, int local
         }
     }
     return minY;
+}
+
+int NoiseChunkGenerator::terrainHeightAt(int worldX, int worldZ) const {
+    // The four noise-lattice columns around this world column, then the same
+    // Y->X->Z trilinear interpolation buildBaseTerrain does, scanned top-down for
+    // the highest cell whose density is solid (> 0). No chunk, no surface builder,
+    // no carving — the raw noise surface (WORLD_SURFACE_WG).
+    const auto floorDiv = [](int value, int divisor) {
+        const int quotient = value / divisor;
+        return (value % divisor != 0 && ((value < 0) != (divisor < 0))) ? quotient - 1 : quotient;
+    };
+    const int noiseX = floorDiv(worldX, kHorizontalNoiseResolution);
+    const int noiseZ = floorDiv(worldZ, kHorizontalNoiseResolution);
+    const double deltaX =
+        static_cast<double>(worldX - noiseX * kHorizontalNoiseResolution) / kHorizontalNoiseResolution;
+    const double deltaZ =
+        static_cast<double>(worldZ - noiseZ * kHorizontalNoiseResolution) / kHorizontalNoiseResolution;
+
+    std::array<double, kNoiseSizeY + 1> c00{};
+    std::array<double, kNoiseSizeY + 1> c10{};
+    std::array<double, kNoiseSizeY + 1> c01{};
+    std::array<double, kNoiseSizeY + 1> c11{};
+    fillNoiseColumn(c00, noiseX, noiseZ);
+    fillNoiseColumn(c10, noiseX + 1, noiseZ);
+    fillNoiseColumn(c01, noiseX, noiseZ + 1);
+    fillNoiseColumn(c11, noiseX + 1, noiseZ + 1);
+
+    const int buildLimit = settings_.minY + settings_.height;
+    for (int cellY = kNoiseSizeY - 1; cellY >= 0; --cellY) {
+        const auto cy = static_cast<std::size_t>(cellY);
+        for (int blockY = kVerticalNoiseResolution - 1; blockY >= 0; --blockY) {
+            const int worldY = cellY * kVerticalNoiseResolution + blockY;
+            if (worldY >= buildLimit) {
+                continue;
+            }
+            const double dy = static_cast<double>(blockY) / kVerticalNoiseResolution;
+            const double d00 = lerp(dy, c00[cy], c00[cy + 1]);
+            const double d10 = lerp(dy, c10[cy], c10[cy + 1]);
+            const double d01 = lerp(dy, c01[cy], c01[cy + 1]);
+            const double d11 = lerp(dy, c11[cy], c11[cy + 1]);
+            const double z0 = lerp(deltaX, d00, d10);
+            const double z1 = lerp(deltaX, d01, d11);
+            const double density = lerp(deltaZ, z0, z1);
+            if (density > 0.0) {
+                return worldY;
+            }
+        }
+    }
+    // Below the noise lattice the overworld is filled solid, so the surface is the
+    // lattice floor there; a dimension without that fill has no solid at all.
+    return settings_.fillBelowLatticeFloor ? -1 : settings_.minY;
+}
+
+void NoiseChunkGenerator::applyDeepslateLayer(Chunk& chunk, int chunkX, int chunkZ) const {
+    if (settings_.deepslateBlock == Block::Air) {
+        return; // a dimension with no deepslate band (nether/end)
+    }
+    const int top = settings_.deepslateGradientTop;       // at/above => never deepslate
+    const int bottom = settings_.deepslateGradientBottom; // at/below => always deepslate
+    const double span = static_cast<double>(top - bottom);
+    // The stone ores with a deepslate variant, converted alongside stone.
+    constexpr std::array<Block, 8> kStoneOres{
+        Block::CoalOre,    Block::IronOre,     Block::CopperOre, Block::GoldOre,
+        Block::RedstoneOre, Block::EmeraldOre, Block::LapisOre,  Block::DiamondOre};
+    for (int y = settings_.minY; y < top;) {
+        // Fast path: a section lying entirely in the always-convert zone (its top
+        // row is at/below `bottom`) is uniform — every stone/ore cell converts with
+        // certainty — so swap stone and each ore to their deepslate form at the
+        // *palette* level (O(palette)) and skip the whole 16-row section, instead of
+        // touching 4096 cells. remapBlock only rewrites the exact source block, so
+        // cave air, bedrock and blobs are preserved. This is the bulk of the band
+        // (sections fully below y=-8) and turns the post-pass from a per-cell sweep
+        // of the whole sub-world into a handful of palette rewrites.
+        const int sectionY = sectionIndexFromWorldY(y);
+        const int sectionTopY = kMinY + (sectionY + 1) * kSectionSize - 1;
+        if (sectionTopY <= bottom) {
+            ChunkSection& section = chunk.section(sectionY);
+            section.remapBlock(settings_.defaultBlock, settings_.deepslateBlock);
+            for (const Block ore : kStoneOres) {
+                section.remapBlock(ore, deepslateOreVariant(ore));
+            }
+            y = sectionTopY + 1;
+            continue;
+        }
+        // Boundary/gradient rows: the transition band needs a per-cell positional
+        // roll, and a section straddling y=bottom is not uniform, so walk cells.
+        const double chance = y <= bottom ? 1.0 : static_cast<double>(top - y) / span;
+        for (int localX = 0; localX < kChunkWidth; ++localX) {
+            for (int localZ = 0; localZ < kChunkDepth; ++localZ) {
+                const Block current = chunk.block(localX, y, localZ);
+                // The default block (stone) turns to deepslate, a stone ore to its
+                // deepslate variant, anything else (cave air, blobs, bedrock) maps to
+                // itself and is skipped. Ores convert on the same positional roll as
+                // the surrounding stone, so a vein crossing the band speckles into
+                // deepslate ore exactly where the stone does.
+                const Block converted = current == settings_.defaultBlock
+                                            ? settings_.deepslateBlock
+                                            : deepslateOreVariant(current);
+                if (converted == current) {
+                    continue;
+                }
+                const int worldX = chunkX * kChunkWidth + localX;
+                const int worldZ = chunkZ * kChunkDepth + localZ;
+                if (chance >= 1.0 || positionalUnitRandom(worldX, y, worldZ) < chance) {
+                    chunk.setBlock(localX, y, localZ, converted);
+                }
+            }
+        }
+        ++y;
+    }
 }
 
 } // namespace mc::world::gen

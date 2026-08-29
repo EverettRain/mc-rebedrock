@@ -1,6 +1,7 @@
 #include "world/ChunkMesher.hpp"
 
 #include "world/BlockShape.hpp"
+#include "world/ElementModelBaker.hpp"
 #include "world/WorldConstants.hpp"
 #include "world/WorldLighting.hpp"
 #include "world/gen/JavaRandom.hpp"
@@ -93,6 +94,189 @@ constexpr float kWaterFlowLayer = 32.0F;
     }
     return layers.side;
 }
+
+// RN-4c: a DirectionalCube's whole model rotates with FACING, so its per-face
+// textures must rotate too — otherwise the sprite stays locked to world axes and
+// the observer's arrow/piston's side frame point the wrong way for every facing
+// but one. The mesh keeps the block axis-aligned (a 90° rotation of a cube is
+// still a cube), so the rotation lives entirely in the UVs, as a per-face count
+// of 90° turns.
+//
+// The rotation reproducing vanilla's blockstate transform, in this engine's
+// right-handed (CCW-positive) coordinates. The base model is authored facing
+// north (-Z); horizontal facings are a yaw about Y, up/down a pitch about X.
+// (Vanilla's blockstate y is clockwise from above, so these are its engine-handed
+// equivalents.)
+[[nodiscard]] constexpr glm::ivec3 rotateVecByFacing(BlockOrientation facing, glm::ivec3 v) {
+    switch (facing) {
+    case BlockOrientation::North: return v;                 // identity
+    case BlockOrientation::South: return {-v.x, v.y, -v.z}; // Ry(180)
+    case BlockOrientation::East:  return {-v.z, v.y, v.x};  // Ry(270)
+    case BlockOrientation::West:  return {v.z, v.y, -v.x};  // Ry(90)
+    case BlockOrientation::Up:    return {v.x, -v.z, v.y};  // Rx(90)
+    case BlockOrientation::Down:  return {v.x, v.z, -v.y};  // Rx(270)
+    }
+    return v;
+}
+
+// The inverse rotation: East/West and Up/Down swap, North/South are self-inverse.
+[[nodiscard]] constexpr BlockOrientation inverseFacingRotation(BlockOrientation facing) {
+    switch (facing) {
+    case BlockOrientation::East: return BlockOrientation::West;
+    case BlockOrientation::West: return BlockOrientation::East;
+    case BlockOrientation::Up: return BlockOrientation::Down;
+    case BlockOrientation::Down: return BlockOrientation::Up;
+    default: return facing;
+    }
+}
+
+// The outward normal of a world face, and the direction the face's texture "up"
+// (its v=0 edge) points by default, both derived from kFaces/kUvs: the ±X/±Z side
+// faces put texture-up along +Y, the ±Y caps along +X.
+[[nodiscard]] constexpr glm::ivec3 faceNormalVec(Face face) {
+    switch (face) {
+    case Face::PositiveX: return {1, 0, 0};
+    case Face::NegativeX: return {-1, 0, 0};
+    case Face::PositiveY: return {0, 1, 0};
+    case Face::NegativeY: return {0, -1, 0};
+    case Face::PositiveZ: return {0, 0, 1};
+    case Face::NegativeZ: return {0, 0, -1};
+    }
+    return {0, 0, 0};
+}
+
+[[nodiscard]] constexpr glm::ivec3 faceDefaultUp(Face face) {
+    return (face == Face::PositiveY || face == Face::NegativeY) ? glm::ivec3{1, 0, 0}
+                                                                : glm::ivec3{0, 1, 0};
+}
+
+// 90° CCW turns (about +normal) taking direction `from` onto `to` (both unit and
+// perpendicular to normal). Same → 0, opposite → 2, else the cross product's sign
+// against the normal picks 1 (CCW) or 3.
+[[nodiscard]] constexpr int quarterTurnsBetween(glm::ivec3 from, glm::ivec3 to, glm::ivec3 normal) {
+    if (from == to) return 0;
+    if (from == -to) return 2;
+    const glm::ivec3 cross{from.y * to.z - from.z * to.y, from.z * to.x - from.x * to.z,
+                           from.x * to.y - from.y * to.x};
+    return (cross.x * normal.x + cross.y * normal.y + cross.z * normal.z) > 0 ? 1 : 3;
+}
+
+// How many 90° turns to rotate a DirectionalCube world face's UVs by, so its
+// texture rotates rigidly with FACING. Anchored so that facing=up needs zero
+// turns on every face (the orientation observed to already render correctly):
+// baseUp is defined as the up-orientation's own default, then any facing is the
+// rigid rotation of that. The whole thing collapses to comparing the face's
+// default texture-up against where the up-anchored texture-up lands under this
+// facing.
+[[nodiscard]] constexpr int directionalCubeUvTurns(BlockOrientation facing, Face worldFace) {
+    constexpr BlockOrientation kAnchor = BlockOrientation::Up;
+    const glm::ivec3 normal = faceNormalVec(worldFace);
+    // The base face this world face came from, and the base texture-up that makes
+    // the anchor orientation render with zero turns.
+    const glm::ivec3 baseNormal = rotateVecByFacing(inverseFacingRotation(facing), normal);
+    const Face baseFace = [&] {
+        for (const auto& fd : kFaces) {
+            if (faceNormalVec(fd.face) == baseNormal) return fd.face;
+        }
+        return worldFace;
+    }();
+    const glm::ivec3 anchorFaceNormal = rotateVecByFacing(kAnchor, baseNormal);
+    const Face anchorFace = [&] {
+        for (const auto& fd : kFaces) {
+            if (faceNormalVec(fd.face) == anchorFaceNormal) return fd.face;
+        }
+        return worldFace;
+    }();
+    const glm::ivec3 baseUp =
+        rotateVecByFacing(inverseFacingRotation(kAnchor), faceDefaultUp(anchorFace));
+    const glm::ivec3 targetUp = rotateVecByFacing(facing, baseUp);
+    return quarterTurnsBetween(faceDefaultUp(worldFace), targetUp, normal);
+}
+
+// The anchor: facing=up is the orientation observed to render correctly with the
+// naive (un-rotated) UVs, so it must stay zero-turn on every face.
+static_assert(directionalCubeUvTurns(BlockOrientation::Up, Face::PositiveX) == 0);
+static_assert(directionalCubeUvTurns(BlockOrientation::Up, Face::NegativeX) == 0);
+static_assert(directionalCubeUvTurns(BlockOrientation::Up, Face::PositiveY) == 0);
+static_assert(directionalCubeUvTurns(BlockOrientation::Up, Face::NegativeY) == 0);
+static_assert(directionalCubeUvTurns(BlockOrientation::Up, Face::PositiveZ) == 0);
+static_assert(directionalCubeUvTurns(BlockOrientation::Up, Face::NegativeZ) == 0);
+// Facing down flips the block end-for-end from up, so its four side faces turn
+// 180° (the observed "sides still point up when placed facing down" bug), while
+// the two caps (now the front/back platform faces) stay upright.
+static_assert(directionalCubeUvTurns(BlockOrientation::Down, Face::PositiveX) == 2);
+static_assert(directionalCubeUvTurns(BlockOrientation::Down, Face::NegativeX) == 2);
+static_assert(directionalCubeUvTurns(BlockOrientation::Down, Face::PositiveZ) == 2);
+static_assert(directionalCubeUvTurns(BlockOrientation::Down, Face::NegativeZ) == 2);
+static_assert(directionalCubeUvTurns(BlockOrientation::Down, Face::PositiveY) == 0);
+static_assert(directionalCubeUvTurns(BlockOrientation::Down, Face::NegativeY) == 0);
+// Every result is a valid quarter-turn count.
+static_assert(directionalCubeUvTurns(BlockOrientation::North, Face::PositiveY) >= 0 &&
+              directionalCubeUvTurns(BlockOrientation::North, Face::PositiveY) < 4);
+
+// RN-4c: the BlockOrientation naming a unit axis vector (the inverse of
+// faceNormalVec / orientationOfFace, over an already-normalised axis vector).
+[[nodiscard]] constexpr BlockOrientation orientationOfNormal(glm::ivec3 n) {
+    if (n.x > 0) return BlockOrientation::East;
+    if (n.x < 0) return BlockOrientation::West;
+    if (n.y > 0) return BlockOrientation::Up;
+    if (n.y < 0) return BlockOrientation::Down;
+    if (n.z > 0) return BlockOrientation::South;
+    return BlockOrientation::North;
+}
+
+// RN-4c: the model face a world face shows, given FACING — the inverse blockstate
+// rotation applied to the world normal, named back as a BlockOrientation.
+[[nodiscard]] constexpr std::size_t modelFaceShownOn(BlockOrientation facing, Face worldFace) {
+    return static_cast<std::size_t>(orientationOfNormal(
+        rotateVecByFacing(inverseFacingRotation(facing), faceNormalVec(worldFace))));
+}
+
+// template_piston.json's own per-face UV rotation, by model face (BlockOrientation
+// order north,east,south,west,up,down): east 90°, west 270°, down 180°, the rest
+// 0. directionalCubeUvTurns was calibrated to render that template correctly, so
+// it already bakes these in; subtracting them recovers the model-agnostic part.
+inline constexpr std::array<std::uint8_t, 6> kPistonTemplateQuadrant{{0, 1, 0, 3, 0, 2}};
+
+// The FACING-driven geometric UV rotation with the piston template's own face
+// rotations removed — the base-agnostic part every rotating cube shares. This
+// mirrors JE FaceBakery, where the rotation is not a computed per-face number but
+// falls out of rotating the vertices and rewinding them; the per-face json
+// `rotation` (a Quadrant) is a separate quarter-turn added on top.
+[[nodiscard]] constexpr int pureCubeUvTurns(BlockOrientation facing, Face worldFace) {
+    return (directionalCubeUvTurns(facing, worldFace) + 4 -
+            kPistonTemplateQuadrant[modelFaceShownOn(facing, worldFace)]) & 3;
+}
+
+// The complete per-face UV turn count for a cube whose model rotates with FACING:
+// the model-agnostic geometric rotation plus the block's own model-json face
+// rotation (modelFaceUvTurns = the JE face `rotation` Quadrant, ÷90), read on the
+// model face this world face currently shows. Because the piston template's
+// rotations are declared as its modelFaceUvTurns, the piston reproduces
+// directionalCubeUvTurns exactly; a block whose json rotates no face (the
+// observer) gets the pure geometric rotation, straight from its own json rather
+// than reverse-engineered.
+[[nodiscard]] int cubeFaceUvTurns(Block block, BlockOrientation facing, Face worldFace) {
+    const int base = blockDefinition(block).modelFaceUvTurns[modelFaceShownOn(facing, worldFace)];
+    return (pureCubeUvTurns(facing, worldFace) + base) & 3;
+}
+
+// The piston keeps rendering exactly as the verified directionalCubeUvTurns once
+// its own template rotations are declared: composing pureCubeUvTurns back with the
+// template quadrant recovers directionalCubeUvTurns on every face and facing.
+[[nodiscard]] constexpr bool pistonRoundTrips() {
+    for (const auto facing : {BlockOrientation::North, BlockOrientation::East,
+                              BlockOrientation::South, BlockOrientation::West,
+                              BlockOrientation::Up, BlockOrientation::Down}) {
+        for (const auto& fd : kFaces) {
+            const int composed = (pureCubeUvTurns(facing, fd.face) +
+                                  kPistonTemplateQuadrant[modelFaceShownOn(facing, fd.face)]) & 3;
+            if (composed != directionalCubeUvTurns(facing, fd.face)) return false;
+        }
+    }
+    return true;
+}
+static_assert(pistonRoundTrips());
 
 [[nodiscard]] constexpr bool faceSharesAxis(Face face, BlockOrientation orientation) {
     if (orientation == BlockOrientation::East || orientation == BlockOrientation::West) {
@@ -674,6 +858,17 @@ void appendFace(
     // Hoisted out of the corner loop: textureLayer probes world orientation,
     // so this reads it once per face instead of once per corner.
     const float layer = textureLayer(world, block, face.face, x, y, z);
+    // RN-4c: per-face UV rotation. A DirectionalCube composes the FACING rotation
+    // with its declared model-face rotations; any other cube applies its declared
+    // model-face rotation straight (a static per-face turn, no FACING). Both read
+    // the single modelFaceUvTurns source, so the default (all zero) leaves kUvs
+    // untouched. Hoisted so the count is computed once per face, not per corner.
+    const auto& definition = blockDefinition(block);
+    const int uvTurns =
+        definition.model == BlockModel::DirectionalCube
+            ? cubeFaceUvTurns(block, world.state(x, y, z).orientation(), face.face)
+            : definition.modelFaceUvTurns[static_cast<std::size_t>(
+                  orientationOfFace(face.face))] & 3;
     for (std::size_t corner = 0; corner < face.corners.size(); ++corner) {
         ambientOcclusion[corner] = vertexAmbientOcclusion(
             lighting, quality, face, face.corners[corner], x, y, z);
@@ -681,7 +876,9 @@ void appendFace(
             lighting, quality, face, face.corners[corner], x, y, z, outsideLight);
         if (selfLit) smoothLight.block = 1.0F;
         glm::vec3 positionCorner = face.corners[corner];
-        glm::vec2 uv = kUvs[corner];
+        // Rotating the UV assignment by `uvTurns` 90° steps turns the texture on
+        // the face; a +1 index shift is a −90° turn, so subtract to rotate CCW.
+        glm::vec2 uv = kUvs[(corner + 4U - static_cast<std::size_t>(uvTurns)) & 3U];
         if (slabBox) {
             const float height =
                 slabLow + positionCorner.y * (slabHigh - slabLow);
@@ -1281,130 +1478,27 @@ void appendTorchModel(
     return origin + out;
 }
 
-// RN-4a-2: the Y-rotation (degrees) turning a north-based horizontal model to face
-// `facing`, matching vanilla blockstate y: north 0, east 270, south 180, west 90.
-[[nodiscard]] float yawForHorizontalFacing(BlockOrientation facing) {
-    switch (facing) {
-    case BlockOrientation::East: return 270.0F;
-    case BlockOrientation::South: return 180.0F;
-    case BlockOrientation::West: return 90.0F;
-    default: return 0.0F; // North (non-horizontal facings are unused here)
-    }
-}
-
-// RN-4a-2: mesh a BlockModel::ElementModel block (the diodes; the lever follows).
-// Each element is a small box carrying its own texture slot and JE-model UV rect;
-// the box is meshed in 0..16 model units, rotated by the block's facing yaw, and
-// dropped into the cell — the general "elements from a vanilla model json" path,
-// transcribed rather than parsed at runtime.
+// RN-4a-2 / RN-4 N2b: mesh a BlockModel::ElementModel block (the diodes and lever)
+// by baking its transcribed vanilla-model elements through the shared FaceBakery
+// primitive (world/ElementModelBaker.hpp). Each baked quad carries cell-local
+// geometry, its layer-local UV and a texture slot; the mesher resolves the slot to
+// an atlas layer, folds the element's glow (a lit redstone torch) into the cell
+// light, and emits. The per-element geometry/UV maths now lives in the baker, so
+// the diodes and lever no longer open-code their own UV-corner convention here.
 template <typename Sampler>
 void appendElementModel(render::MeshData& mesh, Block block, BlockState state, int x, int y, int z,
                         const Sampler& lighting, const glm::vec3& sectionOrigin) {
     const float skyLight = lighting.sky(x, y, z);
     const float cellBlockLight = lighting.block(x, y, z);
     const glm::vec3 cell{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
-
-    // The "attachment" rotation applied to the whole model (about the cell centre)
-    // after the 0..16 -> 0..1 scale: the diodes just yaw about Y to face their
-    // horizontal FACING; the lever tilts its floor-authored model onto whichever
-    // of the six faces its FACING attaches it to (floor/ceiling/wall).
-    char postAxis = 'y';
-    float postDeg = yawForHorizontalFacing(state.orientation());
-    if (block == Block::Lever) {
-        switch (state.orientation()) {
-        case BlockOrientation::Up: postAxis = 'x'; postDeg = 0.0F; break;    // floor
-        case BlockOrientation::Down: postAxis = 'x'; postDeg = 180.0F; break; // ceiling
-        case BlockOrientation::North: postAxis = 'x'; postDeg = -90.0F; break;
-        case BlockOrientation::South: postAxis = 'x'; postDeg = 90.0F; break;
-        case BlockOrientation::East: postAxis = 'z'; postDeg = -90.0F; break;
-        case BlockOrientation::West: postAxis = 'z'; postDeg = 90.0F; break;
-        }
-    }
-
-    // Emit one textured face of a [from,to] box (both in 0..16 model units), with
-    // an optional element rotation, then the block's facing yaw, then the cell.
-    const auto emitFace = [&](const glm::vec3& from16, const glm::vec3& to16, Face face,
-                              const std::array<float, 4>& uv, std::size_t slot, float glow,
-                              const glm::vec3& rotOrigin, char rotAxis, float rotDeg) {
-        const float layer = modelSlotLayer(block, slot);
-        const auto& fd = kFaces[static_cast<std::size_t>(face)];
-        std::array<glm::vec3, 4> positions;
+    for (const bake::BakedElementQuad& baked : bake::bakeElementModel(block, state)) {
+        const float layer = modelSlotLayer(block, baked.quad.slot);
+        std::array<glm::vec3, 4> positions{};
         for (std::size_t corner = 0; corner < 4; ++corner) {
-            glm::vec3 point = from16 + fd.corners[corner] * (to16 - from16);
-            point = rotateAxis(point, rotOrigin, rotAxis, rotDeg);
-            point *= (1.0F / 16.0F);
-            point = rotateAxis(point, glm::vec3{0.5F}, postAxis, postDeg);
-            positions[corner] = cell + point;
+            positions[corner] = cell + baked.quad.position[corner];
         }
-        glm::vec3 normal = rotateAxis(fd.normal, glm::vec3{0.0F}, rotAxis, rotDeg);
-        normal = rotateAxis(normal, glm::vec3{0.0F}, postAxis, postDeg);
-        const std::array<glm::vec2, 4> uvs{{{uv[0] / 16.0F, uv[3] / 16.0F},
-                                            {uv[2] / 16.0F, uv[3] / 16.0F},
-                                            {uv[2] / 16.0F, uv[1] / 16.0F},
-                                            {uv[0] / 16.0F, uv[1] / 16.0F}}};
-        appendTorchQuad(mesh, positions, glm::normalize(normal), uvs, layer, skyLight,
-                        std::max(cellBlockLight, glow), sectionOrigin);
-    };
-
-    // The diode slab base (0,0,0)-(16,2,16): top uses #top, the four sides #slab.
-    // The down face always sits on the block's support, so it is never drawn.
-    const auto emitDiodeBase = [&]() {
-        emitFace({0, 0, 0}, {16, 2, 16}, Face::PositiveY, {0, 0, 16, 16}, 1, 0.0F, {}, 'y', 0.0F);
-        for (const auto side : {Face::NegativeZ, Face::PositiveZ, Face::NegativeX, Face::PositiveX}) {
-            emitFace({0, 0, 0}, {16, 2, 16}, side, {0, 14, 16, 16}, 0, 0.0F, {}, 'y', 0.0F);
-        }
-    };
-    // A redstone-torch nub: up face plus four sides, no down (it stands on the
-    // slab). `slot` is the lit or unlit sprite; a lit torch glows.
-    const std::size_t torchSlot = state.powered() ? 3U : 2U;
-    const float torchGlow = state.powered() ? 0.5F : 0.0F;
-    const auto emitTorch = [&](const glm::vec3& from16, const glm::vec3& to16) {
-        emitFace(from16, to16, Face::PositiveY, {7, 6, 9, 8}, torchSlot, torchGlow, {}, 'y', 0.0F);
-        for (const auto side : {Face::NegativeZ, Face::PositiveZ, Face::NegativeX, Face::PositiveX}) {
-            emitFace(from16, to16, side, {7, 6, 9, 11}, torchSlot, torchGlow, {}, 'y', 0.0F);
-        }
-    };
-
-    if (block == Block::Repeater) {
-        emitDiodeBase();
-        // The fixed output torch at the front (north) end, then the input torch
-        // that slides back with the DELAY (1..4), matching repeater_Ntick.json.
-        emitTorch({7, 2, 2}, {9, 7, 4});
-        const float movingZ = 6.0F + static_cast<float>(state.repeaterDelay() - 1) * 2.0F;
-        emitTorch({7, 2, movingZ}, {9, 7, movingZ + 2.0F});
-        return;
-    }
-    if (block == Block::Comparator) {
-        emitDiodeBase();
-        // Two rear torches flank the input; the front torch rises in SUBTRACT mode
-        // (comparator_subtract.json raises its top from 5 to 6).
-        emitTorch({4, 2, 11}, {6, 7, 13});
-        emitTorch({10, 2, 11}, {12, 7, 13});
-        const float frontTop = state.comparatorSubtract() ? 6.0F : 5.0F;
-        emitTorch({7, 2, 2}, {9, frontTop, 4});
-        return;
-    }
-    if (block == Block::Lever) {
-        // Cobblestone base (#base, slot 0) + a handle (#lever, slot 1) tilted 45°
-        // about its bottom, transcribed from lever(_on).json. Powered flips the
-        // tilt (lever.json -45 vs lever_on.json +45); the whole model is then
-        // attached to the FACING face by postAxis/postDeg above.
-        for (const auto face : {Face::NegativeY, Face::PositiveY, Face::NegativeZ,
-                                Face::PositiveZ, Face::NegativeX, Face::PositiveX}) {
-            const std::array<float, 4> uv = (face == Face::PositiveY || face == Face::NegativeY)
-                ? std::array<float, 4>{5, 4, 11, 12}
-                : std::array<float, 4>{4, 0, 12, 3};
-            emitFace({5, -0.02F, 4}, {11, 2.98F, 12}, face, uv, 0, 0.0F, {}, 'y', 0.0F);
-        }
-        const float tilt = state.powered() ? -45.0F : 45.0F;
-        const glm::vec3 handleFrom{7, 1, 7};
-        const glm::vec3 handleTo{9, 11, 9};
-        const glm::vec3 pivot{8, 1, 8};
-        emitFace(handleFrom, handleTo, Face::PositiveY, {7, 6, 9, 8}, 1, 0.0F, pivot, 'x', tilt);
-        for (const auto face : {Face::NegativeZ, Face::PositiveZ, Face::NegativeX, Face::PositiveX}) {
-            emitFace(handleFrom, handleTo, face, {7, 6, 9, 16}, 1, 0.0F, pivot, 'x', tilt);
-        }
-        return;
+        appendTorchQuad(mesh, positions, baked.quad.normal, baked.quad.uv, layer, skyLight,
+                        std::max(cellBlockLight, baked.glow), sectionOrigin);
     }
 }
 
@@ -1982,7 +2076,7 @@ MeshLightingSnapshot::MeshLightingSnapshot(const World& world, ChunkPosition pos
                     continue;
                 }
                 const Block value = chunk->block(chunkLocalX, y, chunkLocalZ);
-                blockTypes_[cell] = static_cast<std::uint8_t>(value);
+                blockTypes_[cell] = static_cast<std::uint16_t>(value);
                 if (mc::world::isOpaque(value)) flags_[cell] |= 0x01U;
                 if (mc::world::aoOccludes(value)) flags_[cell] |= 0x02U;
                 skyLevels_[cell] = chunk->skyLight(chunkLocalX, y, chunkLocalZ);

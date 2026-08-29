@@ -23,27 +23,38 @@ struct OreConfiguration final {
     int maximumY = 16;
 };
 
-constexpr std::array<OreConfiguration, 10> kOreConfigurations{{
+constexpr std::array<OreConfiguration, 11> kOreConfigurations{{
     // The stone variants and the dirt/gravel pockets come first, so an ore blob
-    // placed later can still overwrite them. The noise lattice spans 0..255, so
-    // the ore bands keep their historical depths there; the filled depth below
-    // is uniform stone.
+    // placed later can still overwrite them. These stay in their historical 0..
+    // depths (the dirt/gravel/granite pockets are a surface-layer feature, not a
+    // deep-layer one).
     {Block::Dirt, 33, 10, 0, 256},
     {Block::Gravel, 33, 8, 0, 256},
     {Block::Granite, 33, 10, 0, 80},
     {Block::Diorite, 33, 10, 0, 80},
     {Block::Andesite, 33, 10, 0, 80},
+    // The metal/gem ores. Their bands now extend below y=0 into the deepslate
+    // layer (the "minimal下探" toward 26.1 depths — same blob mechanism and blob
+    // counts, only the height band widened downward). Ores placed in the deepslate
+    // band are recoloured to their deepslate variant by the worldgen deepslate
+    // post-pass (deepslateOreVariant), so a vein crossing y=0 speckles from stone
+    // ore into deepslate ore. Copper is new (a 26.1 ore we now register), peaking
+    // in the mid-deep band. Coal stays shallow (26.1 keeps coal above the deepslate
+    // layer in practice).
     {Block::CoalOre, 17, 20, 0, 128},
-    {Block::IronOre, 9, 20, 0, 64},
-    {Block::GoldOre, 9, 2, 0, 32},
-    {Block::RedstoneOre, 8, 8, 0, 16},
-    {Block::DiamondOre, 8, 1, 0, 16},
+    {Block::IronOre, 9, 20, -24, 64},
+    {Block::CopperOre, 10, 16, -16, 96},
+    {Block::GoldOre, 9, 2, -32, 32},
+    {Block::RedstoneOre, 8, 8, -63, 16},
+    {Block::DiamondOre, 8, 1, -63, 16},
 }};
 
-// Lapis uses DEPTH_AVERAGE rather than a flat range: it clusters around y=16.
+// Lapis uses DEPTH_AVERAGE rather than a flat range: it clusters around a centre
+// depth. 26.1 moved that centre to y=0, so its cluster now straddles the top of
+// the deepslate band (y in [-16, 16]) and the lower half turns to deepslate lapis.
 constexpr int kLapisSize = 7;
 constexpr int kLapisCount = 1;
-constexpr int kLapisCentre = 16;
+constexpr int kLapisCentre = 0;
 constexpr int kLapisSpread = 16;
 
 // Emerald only generates in the mountain family, one to eleven single blocks
@@ -368,7 +379,11 @@ void Features::placeOreBlob(
         // nothing that way, because their blobs usually miss entirely.
         const int minX = std::max(floorToInt(x - radiusHalf), chunkOriginX);
         const int maxX = std::min(floorToInt(x + radiusHalf), chunkOriginX + 15);
-        const int minY = std::max(floorToInt(y - radiusHalf), 1);
+        // The floor is one row above the bedrock (kMinY): ore bands now reach into
+        // the deepslate layer (y<0), so the old hard `1` would have clipped every
+        // deep blob back to the surface. The bedrock floor itself is not
+        // oreReplaceable, so a blob touching it simply writes nothing there.
+        const int minY = std::max(floorToInt(y - radiusHalf), kMinY + 1);
         const int maxY = std::min(floorToInt(y + radiusHalf), kWorldHeight - 1);
         const int minZ = std::max(floorToInt(z - radiusHalf), chunkOriginZ);
         const int maxZ = std::min(floorToInt(z + radiusHalf), chunkOriginZ + 15);

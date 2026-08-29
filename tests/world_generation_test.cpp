@@ -118,9 +118,15 @@ int main() {
                 for (int x = 0; x < 16; ++x) {
                     // ChunkGenerator#buildBedrock always fills the bottom layer,
                     // and the extra depth above it stays solid so a fall never
-                    // drops into void between the bedrock and the terrain.
+                    // drops into void between the bedrock and the terrain. Below
+                    // y=0 that solid fill is deepslate now (vanilla 26.1's deepslate
+                    // band, applied as a post-pass); kMinY+5 is well inside the
+                    // always-deepslate zone. It is not plain stone or air — it is
+                    // deepslate, or (since ore bands now reach this deep) a deepslate
+                    // ore variant.
                     assert(chunk.block(x, kMinY, z) == Block::Bedrock);
-                    assert(chunk.block(x, kMinY + 5, z) == Block::Stone);
+                    const Block deep = chunk.block(x, kMinY + 5, z);
+                    assert(deep != Block::Stone && deep != Block::Air);
                     const int height = surfaceHeight(chunk, x, z);
                     assert(height > kMinY);
                     lowestSurface = std::min(lowestSurface, height);
@@ -179,12 +185,33 @@ int main() {
     const auto perChunk = [&](Block block) {
         return static_cast<double>(blocks[block]) / chunkCount;
     };
+    // The metal/gem ore bands now reach below y=0 into the deepslate layer, where
+    // the deepslate post-pass recolours a blob to its deepslate variant. Widening
+    // a band downward keeps the blob count (hence the total ore) about the same, so
+    // the yield check sums the stone and deepslate forms. Coal stays above the
+    // deepslate layer, so it keeps its single-form check.
+    const auto perChunkOre = [&](Block stone, Block deep) {
+        return perChunk(stone) + perChunk(deep);
+    };
     assert(perChunk(Block::CoalOre) > 70.0 && perChunk(Block::CoalOre) < 290.0);
-    assert(perChunk(Block::IronOre) > 39.0 && perChunk(Block::IronOre) < 160.0);
-    assert(perChunk(Block::GoldOre) > 4.0 && perChunk(Block::GoldOre) < 20.0);
-    assert(perChunk(Block::DiamondOre) > 1.0 && perChunk(Block::DiamondOre) < 8.0);
-    assert(perChunk(Block::LapisOre) > 1.0 && perChunk(Block::LapisOre) < 8.0);
-    assert(perChunk(Block::RedstoneOre) > 12.0 && perChunk(Block::RedstoneOre) < 60.0);
+    assert(perChunkOre(Block::IronOre, Block::DeepslateIronOre) > 39.0 &&
+           perChunkOre(Block::IronOre, Block::DeepslateIronOre) < 160.0);
+    assert(perChunkOre(Block::GoldOre, Block::DeepslateGoldOre) > 4.0 &&
+           perChunkOre(Block::GoldOre, Block::DeepslateGoldOre) < 20.0);
+    assert(perChunkOre(Block::DiamondOre, Block::DeepslateDiamondOre) > 1.0 &&
+           perChunkOre(Block::DiamondOre, Block::DeepslateDiamondOre) < 8.0);
+    assert(perChunkOre(Block::LapisOre, Block::DeepslateLapisOre) > 1.0 &&
+           perChunkOre(Block::LapisOre, Block::DeepslateLapisOre) < 8.0);
+    assert(perChunkOre(Block::RedstoneOre, Block::DeepslateRedstoneOre) > 12.0 &&
+           perChunkOre(Block::RedstoneOre, Block::DeepslateRedstoneOre) < 60.0);
+    // Copper is the newly added 26.1 ore; it appears in both stone and deepslate
+    // forms across its mid-deep band.
+    assert(perChunkOre(Block::CopperOre, Block::DeepslateCopperOre) > 0.0);
+    // Ore-deepening actually happened: the deep ores show their deepslate variant
+    // in the y<0 band, not the stone form.
+    assert(blocks[Block::DeepslateIronOre] > 0);
+    assert(blocks[Block::DeepslateRedstoneOre] > 0);
+    assert(blocks[Block::DeepslateDiamondOre] > 0);
     assert(blocks[Block::Granite] > 0);
     assert(blocks[Block::Diorite] > 0);
     assert(blocks[Block::Andesite] > 0);

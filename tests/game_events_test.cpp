@@ -1,7 +1,7 @@
 #include "gameplay/GameEvents.hpp"
 #include "gameplay/GameSession.hpp"
 #include "gameplay/GameplayMutationSink.hpp"
-#include "gameplay/entities/ZombieEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"

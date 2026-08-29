@@ -257,7 +257,8 @@ std::int32_t ExperienceOrbSystem::tick(const world::World& world, glm::vec3 play
     }
 
     std::erase_if(entities_, [](const ExperienceOrb& orb) {
-        return orb.count <= 0 || orb.ageTicks >= kLifetimeTicks || orb.position.y < -8.0F;
+        return orb.count <= 0 || orb.ageTicks >= kLifetimeTicks ||
+               orb.position.y < world::kVoidDespawnY;
     });
 
     return collectedPoints;

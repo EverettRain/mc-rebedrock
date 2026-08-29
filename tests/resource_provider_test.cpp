@@ -6,65 +6,54 @@
 #include <filesystem>
 #include <fstream>
 
-// The provider is a behaviour-preserving refactor: every consumer that used to
-// build a path by walking `blockTextureRoot.parent_path()` now asks the provider
-// instead, and must get the *same* file. So this pins each mapping to the exact
-// physical path the old code produced against the current
-// `resources/vanilla/1.16.1/…` layout. If a later change (or the P-B standard
-// pack provider) moves a file, the mismatch shows up here rather than as a blank
-// texture or a silent missing sound that only a GPU run would reveal.
+// Every consumer asks the provider for a file instead of rebuilding the layout
+// by hand, so this pins each mapping to the exact physical path it must produce.
+// If a later change moves a file, the mismatch shows up here rather than as a
+// blank texture or a silent missing sound that only a GPU run would reveal.
+//
+// The built-in provider now owns rebedrock's OWN assets only. Everything
+// Mojang-shaped — textures, sounds, the font, the `minecraft` lang tables — must
+// resolve to an empty path so the layered stack falls through to the player's
+// resource pack; the bundled `resources/vanilla/1.16.1/…` tree it used to map is
+// gone. Those empties are asserted below: a provider that starts placing vanilla
+// files again would shadow the pack.
 int main() {
     using namespace mc::assets;
     namespace fs = std::filesystem;
 
     const fs::path root{"resources"};
     const DirectoryResourceProvider provider{root};
-    const fs::path vanilla = root / "vanilla" / "1.16.1";
 
     assert(provider.resourceRoot() == root);
-    assert(provider.vanillaRoot() == vanilla);
 
-    // --- Vanilla textures: category folder, then namespace, then the rest. ---
-    // This is the whole `textures/minecraft/<sub>` family: block art, gui,
-    // colormap, misc, the environment sheet and the bitmap font pages.
-    assert(provider.locate(textures("block/stone.png")) ==
-           vanilla / "textures" / "minecraft" / "block" / "stone.png");
-    assert(provider.locate(textures("environment/rain.png")) ==
-           vanilla / "textures" / "minecraft" / "environment" / "rain.png");
-    assert(provider.locate(textures("colormap/grass.png")) ==
-           vanilla / "textures" / "minecraft" / "colormap" / "grass.png");
-    assert(provider.locate(textures("gui/widgets.png")) ==
-           vanilla / "textures" / "minecraft" / "gui" / "widgets.png");
-    assert(provider.locate(textures("misc/underwater.png")) ==
-           vanilla / "textures" / "minecraft" / "misc" / "underwater.png");
-    // The bitmap font pages are textures, so they carry the `textures/` category
-    // even though they name the `font/` subfolder.
-    assert(provider.locate(textures("font/ascii.png")) ==
-           vanilla / "textures" / "minecraft" / "font" / "ascii.png");
+    // --- Vanilla content belongs to the pack, never to the built-in root. ---
+    // The whole `textures/minecraft/<sub>` family (block art, gui, colormap,
+    // misc, the environment sheet, the bitmap font pages), the sounds and the
+    // `minecraft` translation tables all resolve to nothing here.
+    assert(provider.locate(textures("block/stone.png")).empty());
+    assert(provider.locate(textures("environment/rain.png")).empty());
+    assert(provider.locate(textures("colormap/grass.png")).empty());
+    assert(provider.locate(textures("gui/widgets.png")).empty());
+    assert(provider.locate(textures("misc/underwater.png")).empty());
+    assert(provider.locate(textures("font/ascii.png")).empty());
+    assert(provider.locate(sounds("dig/stone1.ogg")).empty());
+    assert(provider.locate(lang("en_us.json")).empty());
+    assert(provider.locate(font("glyph_sizes.bin")).empty());
+    // A namespace other than minecraft is still pack content, not ours.
+    assert(provider.locate(textures("block/custom.png", "examplemod")).empty());
+    // Nothing vanilla can be found through it either, so the layered stack's
+    // `exists()` probe always defers to the packs above it.
+    assert(!provider.exists(textures("block/stone.png")));
 
-    // --- Sounds live under `audio/…`, not `sounds/…`. ---
-    assert(provider.locate(sounds("dig/stone1.ogg")) ==
-           vanilla / "audio" / "minecraft" / "sounds" / "dig" / "stone1.ogg");
-
-    // --- Translations live under `localization/…`. ---
-    assert(provider.locate(lang("en_us.json")) ==
-           vanilla / "localization" / "minecraft" / "en_us.json");
+    // --- ReBedrock's own translations keep their namespace under lang/. ---
     assert(provider.locate(lang("en_us.json", "rebedrock")) ==
            root / "lang" / "rebedrock" / "en_us.json");
-
-    // --- The glyph-width table is the lone tenant of the top-level `fonts/`. ---
-    assert(provider.locate(font("glyph_sizes.bin")) ==
-           vanilla / "fonts" / "minecraft" / "glyph_sizes.bin");
 
     // --- This project's own assets sit directly under the resources root. ---
     assert(provider.locate(ResourceLocation{"rebedrock", "animation/pig.animation.json"}) ==
            root / "animation" / "pig.animation.json");
     assert(provider.locate(ResourceLocation{"rebedrock", "entity/zombie/zombie.png"}) ==
            root / "entity" / "zombie" / "zombie.png");
-
-    // --- A namespace other than minecraft threads through the layout. ---
-    assert(provider.locate(textures("block/custom.png", "examplemod")) ==
-           vanilla / "textures" / "examplemod" / "block" / "custom.png");
 
     // --- ResourceLocation parsing. ---
     assert((ResourceLocation::parse("minecraft:textures/block/stone.png") ==

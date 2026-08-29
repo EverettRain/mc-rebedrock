@@ -22,6 +22,14 @@ class ChunkSection final {
 
     [[nodiscard]] Block block(int x, int y, int z) const;
     void setBlock(int x, int y, int z, Block value);
+    // Palette-level batch replace: rewrite every cell currently holding `from`
+    // (in its default placement state, as setBlock stores it) to `to`, in
+    // O(palette) rather than O(4096). Only that exact block changes — air (caves),
+    // bedrock and other blocks are left alone — so the deepslate post-pass can
+    // convert a whole uniform sub-layer of stone/ore to its deepslate form without
+    // visiting each cell. Both blocks must be non-air; the non-air count is
+    // preserved (a solid block becomes another solid block), not recomputed.
+    void remapBlock(Block from, Block to);
     [[nodiscard]] BlockOrientation orientation(int x, int y, int z) const;
     void setOrientation(int x, int y, int z, BlockOrientation value);
     [[nodiscard]] std::uint8_t fluidLevel(int x, int y, int z) const;
@@ -75,14 +83,21 @@ class ChunkSection final {
     // with no entry straddling a word boundary, so a read is one shift-and-mask.
     // The palette only grows — a removed state may linger unreferenced, which
     // costs a couple of bytes and saves scanning 4096 cells on every break.
+    // readIndex/writeIndex speak the *local* palette index (a section holds at
+    // most 4096 cells, so ≤4096 palette entries) — it stays u16. internState takes
+    // a *global* rawId (BlockState::rawId, now u32) and returns its local index.
     [[nodiscard]] std::uint16_t readIndex(std::size_t cell) const;
     void writeIndex(std::size_t cell, std::uint16_t paletteIndex);
-    [[nodiscard]] std::uint16_t internState(std::uint16_t rawId);
+    [[nodiscard]] std::uint16_t internState(std::uint32_t rawId);
     void growBits(std::uint8_t newBits);
     [[nodiscard]] static std::uint8_t bitsFor(std::size_t paletteSize);
     [[nodiscard]] static std::size_t longsFor(std::uint8_t bits);
 
-    std::vector<std::uint16_t> palette_;
+    // The per-section palette maps a local index to a *global* BlockState rawId
+    // (u32). Each cell in `data_` stores the local index bit-packed, so widening
+    // the rawId to u32 costs +2 bytes per palette entry (a handful per section),
+    // not per cell — the section's memory footprint is effectively unchanged.
+    std::vector<std::uint32_t> palette_;
     std::vector<std::uint64_t> data_;
     std::uint8_t bitsPerEntry_ = 0U;
     NibbleArray skyLight_;

@@ -208,6 +208,13 @@ class GameRuntime final {
     //    never re-populated on top of what survived. The caller holds the
     //    world write section.
     void restoreLoadedChunk(world::ChunkPosition position);
+    // STRUCT-2: create the chest block entities a structure placed into a
+    // just-generated chunk and fill their loot. Runs once, alongside the CS-4
+    // generation-time pass in restoreLoadedChunk, by deterministically replaying
+    // the structure placement (structureChestsForChunk) — nothing is threaded out
+    // of the generation worker. A no-op with no structure sets, or a structure
+    // that places no chests.
+    void createStructureChests(world::ChunkPosition position);
     // Block until every queued chunk-unload write has reached disk. Chunk-unload
     // persistence is asynchronous (a background worker batches the region
     // rewrites off the render thread); save, world switch and restore flush

@@ -2,8 +2,7 @@
 #include "gameplay/ItemPlacement.hpp"
 #include "gameplay/StatusEffect.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
-#include "gameplay/entities/PigEntity.hpp"
-#include "gameplay/entities/ZombieEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"
@@ -99,7 +98,7 @@ int main() {
 
     // Populate the process-wide entity-type registry so registry-driven types
     // (husk, which has no dedicated *Entity class) resolve — the static
-    // ZombieEntity::type() used elsewhere does not need this, but byId("husk")
+    // mc::gameplay::entities::builtinSpecies("zombie") used elsewhere does not need this, but byId("husk")
     // does. Idempotent; harmless before every scenario below.
     gameplay::entities::registerBuiltinEntities();
 
@@ -256,7 +255,7 @@ int main() {
         meleeSession.physicsPreviousPosition() = meleeSession.player().position();
         meleeSession.physicsCurrentPosition() = meleeSession.player().position();
         meleeSession.worldEntities().spawn({7.5F, 1.001F, 8.5F},
-                                           gameplay::entities::ZombieEntity::type(), 51U);
+                                           gameplay::entities::builtinSpecies("zombie"), 51U);
         TestHost meleeHost;
         // The loop's exit condition reads the host, so each iteration has to
         // drain: events now queue until drained, and a stale count would run
@@ -313,7 +312,7 @@ int main() {
         zombieSession.physicsPreviousPosition() = zombieSession.player().position();
         zombieSession.physicsCurrentPosition() = zombieSession.player().position();
         zombieSession.worldEntities().spawn({7.5F, 1.001F, 8.5F},
-                                            gameplay::entities::ZombieEntity::type(), 73U);
+                                            gameplay::entities::builtinSpecies("zombie"), 73U);
         TestHost zombieHost;
         for (int tick = 0; tick < 120 && zombieHost.playerHurts == 0; ++tick) {
             zombieSession.tick(world, zombieHost);
@@ -333,9 +332,9 @@ int main() {
         peacefulSession.physicsPreviousPosition() = peacefulSession.player().position();
         peacefulSession.physicsCurrentPosition() = peacefulSession.player().position();
         peacefulSession.worldEntities().spawn({7.5F, 1.001F, 8.5F},
-                                              gameplay::entities::ZombieEntity::type(), 61U);
+                                              gameplay::entities::builtinSpecies("zombie"), 61U);
         peacefulSession.worldEntities().spawn({9.5F, 1.001F, 8.5F},
-                                              gameplay::entities::PigEntity::type(), 62U);
+                                              gameplay::entities::builtinSpecies("pig"), 62U);
         const std::uint64_t zombieId = peacefulSession.worldEntities().entities()[0].id;
         const std::uint64_t pigId = peacefulSession.worldEntities().entities()[1].id;
 

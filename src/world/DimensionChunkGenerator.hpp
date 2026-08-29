@@ -4,7 +4,9 @@
 #include "world/Dimension.hpp"
 #include "world/EndGenerator.hpp"
 #include "world/NetherGenerator.hpp"
+#include "world/StructureManager.hpp"
 #include "world/SurfaceGenerator.hpp"
+#include "world/gen/StructureGenerator.hpp"
 #include "world/gen/TreeGrower.hpp"
 
 #include <cstdint>
@@ -27,7 +29,7 @@ namespace mc::world {
 class DimensionChunkGenerator final {
   public:
     DimensionChunkGenerator(DimensionId dimension, std::uint64_t worldSeed)
-        : dimension_(dimension) {
+        : dimension_(dimension), worldSeed_(worldSeed) {
         switch (dimension) {
         case DimensionId::Overworld:
             overworld_.emplace(worldSeed);
@@ -52,8 +54,18 @@ class DimensionChunkGenerator final {
     [[nodiscard]] Chunk generate(int chunkX, int chunkZ,
                                  std::vector<gen::TreeBorderBlock>& borderBlocks) const {
         switch (dimension_) {
-        case DimensionId::Overworld:
-            return overworld_->generate(chunkX, chunkZ, borderBlocks);
+        case DimensionId::Overworld: {
+            Chunk chunk = overworld_->generate(chunkX, chunkZ, borderBlocks);
+            // STRUCT-2: stamp structures whose origin is this chunk. A no-op until
+            // structureManager() carries templates + sets, so an install with no
+            // structure content generates exactly as before.
+            gen::placeStructures(
+                chunk, chunkX, chunkZ, worldSeed_, structureManager(),
+                [this](int worldX, int worldZ) { return overworld_->biomeAt(worldX, worldZ); },
+                [this](int worldX, int worldZ) { return overworld_->terrainHeightAt(worldX, worldZ); },
+                borderBlocks);
+            return chunk;
+        }
         case DimensionId::Nether:
             return nether_->generate(chunkX, chunkZ);
         case DimensionId::End:
@@ -72,6 +84,7 @@ class DimensionChunkGenerator final {
 
   private:
     DimensionId dimension_ = DimensionId::Overworld;
+    std::uint64_t worldSeed_ = 0U;
     // Exactly one is engaged, per dimension_. Held by value in an optional so the
     // hot generate() path dereferences a member, not a heap pointer, and no vtable
     // is consulted.

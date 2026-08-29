@@ -1016,7 +1016,7 @@ bool WorldSimulation::waterCanReplace(
 bool WorldSimulation::hasDownwardFlowPath(
     const world::World& world,
     SimulationPosition position) const {
-    if (position.y <= 0) {
+    if (position.y <= world::kMinY) {
         return false;
     }
     const SimulationPosition below{position.x, position.y - 1, position.z};
@@ -1445,7 +1445,7 @@ std::vector<BlockChange> WorldSimulation::tick(
     ticks_.drainDue(TickTask::FallingBlock, tickCount_, kMaximumSandUpdates,
                     [&](SimulationPosition position) {
         const auto fallingBlock = world.block(position.x, position.y, position.z);
-        if (!world::isAffectedByGravity(fallingBlock) || position.y <= 0) {
+        if (!world::isAffectedByGravity(fallingBlock) || position.y <= world::kMinY) {
             return;
         }
         const SimulationPosition below{position.x, position.y - 1, position.z};
@@ -1562,7 +1562,7 @@ std::vector<BlockChange> WorldSimulation::tick(
             continue;
         }
         entity.position.y = nextY;
-        if (entity.position.y < -8.0F) {
+        if (entity.position.y < world::kVoidDespawnY) {
             entity.removed = true;
         }
     }

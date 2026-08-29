@@ -29,7 +29,17 @@ struct FrameTrace final {
     double lockHoldMs = 0.0;   // queueStreamBatch 内 worldLock.write 持有时长
     double drainMs = 0.0;      // drainEvents
     double fenceWaitMs = 0.0;  // drawFrame 的 vkWaitForFences
+    double uploadMs = 0.0;     // world_.prepareStreamingUpdates（新 mesh 上传/暂存拷贝）
+    double recordMs = 0.0;     // world_.recordCommandBuffer（遍历可见 section + 提交 draw call）
+    double drawFrameMs = 0.0;  // drawFrame() 整体（含 record + HUD + acquire/submit/present）
+    double inputMs = 0.0;      // processInput()（每帧输入准备）
+    double acquireMs = 0.0;    // vkAcquireNextImageKHR（呈现节流/vsync 可能在此阻塞）
+    double presentMs = 0.0;    // vkQueueSubmit + vkQueuePresentKHR
+    double occlusionReadbackMs = 0.0; // releaseFrameResources + readBackOcclusionQueries（按 section 数 scale）
+    double uniformMs = 0.0;    // updateShadowMatrix + updateUniform
+    double imageWaitMs = 0.0;  // vkWaitForFences(swapchain image)（呈现节流真正阻塞点）
     std::uint32_t unloadedChunks = 0;
+    std::uint32_t visibleSections = 0;  // recordCommandBuffer 本帧提交的可见 section 数
     std::uint32_t saveChunkCalls = 0;
     std::uint32_t queueBatchCount = 0;
     std::uint64_t editScan = 0;  // persistUnloadedChunk 累计扫描的 edits 条数
@@ -39,7 +49,9 @@ struct FrameTrace final {
 
     void reset() {
         persistMs = saveChunkMs = lockHoldMs = drainMs = fenceWaitMs = 0.0;
-        unloadedChunks = saveChunkCalls = queueBatchCount = 0;
+        uploadMs = recordMs = drawFrameMs = inputMs = acquireMs = presentMs = 0.0;
+        occlusionReadbackMs = uniformMs = imageWaitMs = 0.0;
+        unloadedChunks = visibleSections = saveChunkCalls = queueBatchCount = 0;
         editScan = 0;
         centerChanged = false;
     }

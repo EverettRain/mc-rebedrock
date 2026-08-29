@@ -5,7 +5,7 @@
 
 #include "gameplay/GameSession.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
-#include "gameplay/entities/PigEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "world/Block.hpp"
 #include "world/BlockShape.hpp"
 #include "world/BlockState.hpp"
@@ -1126,7 +1126,7 @@ int main() {
         // A creature (not the player) standing on the plate also presses it —
         // proves the check is not player-only.
         session.primaryLevel().entities.spawn({5.5F, 1.001F, 5.5F},
-                                              gameplay::entities::PigEntity::type());
+                                              gameplay::entities::builtinSpecies("pig"));
         session.tick(world, host);
         static_cast<void>(session.drainEvents());
         assert(world.state(5, 1, 5).powered());

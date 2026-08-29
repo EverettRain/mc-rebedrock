@@ -11,7 +11,7 @@
 #include "compat/VanillaMapping.hpp"
 
 #include "gameplay/ItemRegistry.hpp"
-#include "gameplay/entities/CowEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "world/Block.hpp"
 #include "world/BlockState.hpp"
@@ -57,7 +57,7 @@ void testEntityIdentity() {
 
     const auto* cow = compat::mapVanillaEntityTypeName("minecraft:cow");
     assert(cow != nullptr);
-    assert(cow == &mc::gameplay::entities::CowEntity::type());
+    assert(cow == &mc::gameplay::entities::builtinSpecies("cow"));
 
     assert(compat::mapVanillaEntityTypeName("minecraft:this_mob_does_not_exist") == nullptr);
 }

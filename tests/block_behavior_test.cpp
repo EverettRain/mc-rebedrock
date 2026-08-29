@@ -473,6 +473,44 @@ void testRedstoneTorchStandingAndWall() {
     }
 }
 
+// #1a: observer and piston are DirectionalBlocks — a full six-way FACING chosen
+// from the placer's nearest looking direction (getOpposite), including straight
+// up/down. Before .directionalFacing() they fell through to defaultOrientation
+// and always faced north no matter where the player aimed.
+void testDirectionalFacingPlacement() {
+    using mc::world::BlockOrientation;
+    using mc::world::PlacementContext;
+
+    mc::world::World world;
+    buildFloor(world);
+
+    // For each block, the placed FACING is the opposite of the direction the
+    // player looks — the observed/pushed face points away from the placer.
+    const auto placedFacing = [&world](Block block, glm::vec3 look) {
+        const mc::gameplay::ItemStack stack{block, 1U, mc::gameplay::blockItemFor(block)};
+        PlacementContext context;
+        context.clickedBlock = glm::ivec3{5, 0, 5};
+        context.placePosition = glm::ivec3{5, 1, 5};
+        context.clickedFace = BlockOrientation::Up;
+        context.hitPosition = glm::vec3{5.5F, 1.0F, 5.5F};
+        context.lookDirection = look;
+        const auto placed = mc::gameplay::itemPlacementBlock(world, stack, context);
+        assert(placed.has_value() && placed->block() == block);
+        return placed->orientation();
+    };
+
+    for (const Block block : {Block::Observer, Block::Piston, Block::StickyPiston}) {
+        assert(placedFacing(block, glm::vec3{0.0F, 0.0F, -1.0F}) == BlockOrientation::South);
+        assert(placedFacing(block, glm::vec3{0.0F, 0.0F, 1.0F}) == BlockOrientation::North);
+        assert(placedFacing(block, glm::vec3{1.0F, 0.0F, 0.0F}) == BlockOrientation::West);
+        assert(placedFacing(block, glm::vec3{-1.0F, 0.0F, 0.0F}) == BlockOrientation::East);
+        // The six-way part the old horizontal-only path could never produce:
+        // looking down points the block up, and looking up points it down.
+        assert(placedFacing(block, glm::vec3{0.0F, -1.0F, 0.0F}) == BlockOrientation::Up);
+        assert(placedFacing(block, glm::vec3{0.0F, 1.0F, 0.0F}) == BlockOrientation::Down);
+    }
+}
+
 int main() {
     // Register external content *before* the registry or behaviour table is
     // first built, so both include it — the way a datapack loader would.
@@ -486,6 +524,7 @@ int main() {
     testShapeDispatchEqualsSource();
     testPlacementDispatchEqualsSource();
     testRedstoneTorchStandingAndWall();
+    testDirectionalFacingPlacement();
     testDispatchMechanism();
     testTableSizedToRegistry();
     return 0;

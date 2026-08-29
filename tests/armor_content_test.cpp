@@ -206,7 +206,7 @@ void testEnchantability() {
 // is EQ-0's own 77 + RW-1's 2 + DYE-1's 16 + AR-CX4-b's 1 — the armor count
 // below is unaffected (none of those 19 items is armor).
 void testRegistryCount() {
-    static_assert(kItemRegistry.size() == 96U);
+    static_assert(kItemRegistry.size() == 102U); // +6 mined ore items (raw ores/lapis/redstone/quartz)
     int armorCount = 0;
     for (const Item* item : kItemRegistry) {
         if (isArmor(item)) ++armorCount;

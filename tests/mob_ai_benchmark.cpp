@@ -9,7 +9,7 @@
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/EntityType.hpp"
 #include "gameplay/entities/MobBrain.hpp"
-#include "gameplay/entities/ZombieEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"
 #include "world/World.hpp"
@@ -127,7 +127,7 @@ struct SearchStressMeasurement final {
         }
     }
     mc::gameplay::EntitySystem entities;
-    entities.spawn({-20.5F, 1.001F, 0.5F}, mc::gameplay::entities::ZombieEntity::type(), 9001U);
+    entities.spawn({-20.5F, 1.001F, 0.5F}, mc::gameplay::entities::builtinSpecies("zombie"), 9001U);
     const auto& entity = entities.entities().front();
     mc::gameplay::entities::GroundNavigation navigation;
     const auto started = std::chrono::steady_clock::now();
@@ -148,7 +148,7 @@ int main() {
     mc::gameplay::entities::registerBuiltinEntities();
     const auto world = makeFlatWorld(3);
     const Measurement baseline = runScenario(world, baselineType());
-    const Measurement pursuit = runScenario(world, mc::gameplay::entities::ZombieEntity::type());
+    const Measurement pursuit = runScenario(world, mc::gameplay::entities::builtinSpecies("zombie"));
     const SearchStressMeasurement stress = runBoundedSearchStress();
     const double aiCost = pursuit.millisecondsPerTick - baseline.millisecondsPerTick;
     const double ratio = baseline.millisecondsPerTick > 0.0

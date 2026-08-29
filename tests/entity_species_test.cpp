@@ -164,7 +164,7 @@ void testHuskLoot() {
     assert(sawOne && sawTwo && sawEmptyRoll);
 }
 
-// AR-M1: zombie's own loot fn (ZombieEntity.cpp's rollZombieLoot), wired in
+// AR-M1: the zombie manifest row's loot fn (rollRottenFleshLoot), wired in
 // this task for the first time, rolls the identical 0-2 rotten flesh range.
 void testZombieLoot() {
     const auto* zombie = entityTypeRegistry().byId("zombie");

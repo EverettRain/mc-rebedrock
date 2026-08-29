@@ -11,7 +11,7 @@
 #include "gameplay/PlayerController.hpp"
 #include "gameplay/Random.hpp"
 #include "gameplay/ScreenHandler.hpp"
-#include "gameplay/entities/CowEntity.hpp"
+#include "gameplay/entities/BuiltinSpecies.hpp"
 #include "world/Block.hpp"
 #include "world/BlockPlacement.hpp"
 #include "world/BlockShape.hpp"
@@ -1229,14 +1229,14 @@ void PlayerInteraction::performUseOnEntity(GameSession& session, world::World&,
     }
 
     // AbstractCow#mobInteract (26.1): an empty bucket right-clicked on a
-    // non-baby cow returns a milk bucket. Gated on the target's species
-    // (CowEntity::type(), compared by the EntityType's stable address, the
-    // same pointer-identity idiom the tempt/breeding check below uses for
-    // BreedingProfile) rather than a generic capability bit — milking has no
+    // non-baby cow returns a milk bucket. Gated on the target's species (the
+    // manifest row's EntityType, compared by its stable address — the same
+    // pointer-identity idiom the tempt/breeding check below uses for
+    // BreedingProfile) rather than a generic capability bit: milking has no
     // vanilla analogue on any other species, so unlike shear/tempt this stays
     // a one-species check instead of a data table entry.
-    if (selectedStack.item == &items::Bucket && &target->kind() == &entities::CowEntity::type() &&
-        !target->baby()) {
+    if (selectedStack.item == &items::Bucket &&
+        &target->kind() == &entities::builtinSpecies("cow") && !target->baby()) {
         // Sabotage anchor ①(non-empty-bucket half): only the plain empty
         // Bucket item reaches here — WaterBucket/LavaBucket are distinct Item
         // registrations, so a full bucket simply never matches this branch
