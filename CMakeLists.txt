@@ -2242,6 +2242,17 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_game_rules_registry_test PRIVATE src)
     add_test(NAME game_rules_registry COMMAND mc_rebedrock_game_rules_registry_test)
 
+    # The behaviour behind the rules the registry table declares: each gate is
+    # checked on and off, so a rule that reaches nothing fails here rather than
+    # silently reporting success to the player. Needs the shared runtime for the
+    # entity registry and the world the mob-drop half kills a cow in.
+    add_executable(mc_rebedrock_game_rule_effects_test
+        tests/game_rule_effects_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_game_rule_effects_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_game_rule_effects_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME game_rule_effects COMMAND mc_rebedrock_game_rule_effects_test)
+
     # AR-A1: now exercises spawn-egg creative-catalog reachability too, which
     # needs the entity registry/species manifest — linking the shared runtime
     # rather than re-listing just the two Content sources.

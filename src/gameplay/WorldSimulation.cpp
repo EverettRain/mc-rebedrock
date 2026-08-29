@@ -729,6 +729,13 @@ void WorldSimulation::randomTickFire(
     if (!world::isWorldYInRange(position.y)) {
         return;
     }
+    // ServerLevel#canSpreadFireAround gates FireBlock#tick as a whole, so fire
+    // outside the `fire_spread_radius_around_player` radius neither spreads nor
+    // ages nor burns out — it simply stands still, which is exactly what the
+    // retired doFireTick=false used to mean.
+    if (!canSpreadFireAround(position)) {
+        return;
+    }
     const auto fireState = world.state(position.x, position.y, position.z);
     const int age = fireState.age();
 

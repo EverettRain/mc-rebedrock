@@ -134,16 +134,21 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // The action timeline (swing arc, ongoing use) advances once per tick, so
     // an action consumes the same ticks at any frame rate.
     primaryPlayer().actions.tick();
-    // doDaylightCycle now means exactly "pause the overworld clock" rather than
-    // "stop the one clock everything shares" — 26.1 gates ServerClockManager
-    // the same way, with a per-clock paused flag under a global rule.
-    clocks_.setPaused(world::ClockId::Overworld,
-                      !gameRules_.get<bool>(GameRuleId::DoDaylightCycle));
-    clocks_.tick();
+    // advance_time is the *global* gate on the whole clock manager, exactly the
+    // shape ServerClockManager#tick has (`if (advanceTime) clocks.forEach(tick)`).
+    // It used to be written into the overworld clock's own `paused` flag
+    // instead, which conflated the two: a rule the player never touched would
+    // stomp whatever `/time pause` had set, every tick. They are separate
+    // states in vanilla — the effective pause is `paused || !advanceTime` — and
+    // now here too, which is what makes `/time pause` and `/time resume` mean
+    // anything.
+    if (gameRules_.get<bool>(GameRuleId::AdvanceTime)) {
+        clocks_.tick();
+    }
     // ServerWorld.tick runs its weather section first, before the world and
     // entities; the auto-cycle is gated on the doWeatherCycle gamerule the same
     // way doDaylightCycle gates the day.
-    primaryLevel().weather.tick(gameRules_.get<bool>(GameRuleId::DoWeatherCycle));
+    primaryLevel().weather.tick(gameRules_.get<bool>(GameRuleId::AdvanceWeather));
     // Level#updateSkyBrightness, right after the clock and the weather that
     // feed it and before anything reads light. Resolved once here and handed
     // down as a POD: growth, spreading and spawning all read the same fields
@@ -220,6 +225,11 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     worldSimulation_.setSimulationBounds(
         floorDiv(static_cast<int>(std::floor(simFeet.x)), 16),
         floorDiv(static_cast<int>(std::floor(simFeet.z)), 16), radiusChunks);
+    // The exact centre too: fire_spread_radius_around_player measures in blocks,
+    // which the chunk-granular bounds above cannot answer.
+    worldSimulation_.setSimulationCenterBlock(static_cast<int>(std::floor(simFeet.x)),
+                                              static_cast<int>(std::floor(simFeet.y)),
+                                              static_cast<int>(std::floor(simFeet.z)));
     for (const auto& change : worldSimulation_.tick(world, !fluidUpdatePhaseConsumed)) {
         // A simulated break previews too (it used to do so further down, just
         // before its sound), so the edit's immediacy is decided once, here.
@@ -389,8 +399,13 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // It reads the tick's ambient darkness off the same snapshot the growth
     // checks use, so "dark enough for a monster" and "too dark for grass to
     // spread" can no longer disagree about the time of day.
-    primaryLevel().spawner.tick(world, primaryLevel().entities, primaryPlayer().controller.position(), simulationRadiusBlocks_,
-                         difficulty_, environment_);
+    // NaturalSpawner#spawnCategoryForPosition reads spawn_mobs before it places
+    // anything; skipping the whole pass is the same thing one level up, and
+    // costs nothing when the rule is off.
+    if (gameRules_.get<bool>(GameRuleId::SpawnMobs)) {
+        primaryLevel().spawner.tick(world, primaryLevel().entities, primaryPlayer().controller.position(), simulationRadiusBlocks_,
+                             difficulty_, environment_);
+    }
     consumeEntityEvents();
     // The authoritative interaction: consume the render thread's queued commands
     // and apply the dig/use decisions once per tick, after every other system
@@ -423,7 +438,7 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
 }
 
 void GameSession::tickSecondaryLevels() {
-    const bool doWeatherCycle = gameRules_.get<bool>(GameRuleId::DoWeatherCycle);
+    const bool doWeatherCycle = gameRules_.get<bool>(GameRuleId::AdvanceWeather);
     // Fixed ascending DimensionId order: the loop must never depend on hash-map
     // iteration order, so the same seed produces the same per-tick sequence
     // across every dimension (determinism iron rule).
@@ -650,8 +665,8 @@ void GameSession::publishSnapshots() {
     for (std::size_t index = 0; index < world::kClockCount; ++index) {
         worldSnapshot_.clocks[index] = clocks_.state(static_cast<world::ClockId>(index));
     }
-    worldSnapshot_.doDaylightCycle = gameRules_.get<bool>(GameRuleId::DoDaylightCycle);
-    worldSnapshot_.doWeatherCycle = gameRules_.get<bool>(GameRuleId::DoWeatherCycle);
+    worldSnapshot_.doDaylightCycle = gameRules_.get<bool>(GameRuleId::AdvanceTime);
+    worldSnapshot_.doWeatherCycle = gameRules_.get<bool>(GameRuleId::AdvanceWeather);
     worldSnapshot_.worldSpawnPosition = worldSpawnPosition_;
     worldSnapshot_.playerSpawnPosition = primaryPlayer().spawnPosition;
     worldSnapshot_.playerSpawnYaw = primaryPlayer().spawnYaw;
@@ -1182,15 +1197,50 @@ void GameSession::spawnItemDrop(const glm::vec3& lookDirection, ItemStack stack)
 }
 
 void GameSession::attachGameRuleHandlers() {
-    // randomTickSpeed is the one rule with a runtime mirror (the simulation
-    // reads it every tick); doDaylightCycle and keepInventory are read straight
-    // from gameRules_ at their use sites instead.
+    // A rule is mirrored into a system only when the system has no business
+    // knowing about GameRules and reads the value deep inside a per-tick path:
+    // the random-tick speed and the fire radius (WorldSimulation), the four
+    // player damage/regeneration rules (PlayerVitals) and mob_drops
+    // (EntitySystem). Everything else — advance_time, advance_weather,
+    // keep_inventory, block_drops, spawn_mobs, send_command_feedback and the
+    // three command limits — is read straight from gameRules_ at its use site,
+    // which is one fewer copy to keep honest.
     gameRules_.setChangeHandler(
-        [this](GameRuleId id, const GameRuleValueData& value) {
-            if (id == GameRuleId::RandomTickSpeed) {
-                worldSimulation_.setRandomTickSpeed(std::get<std::int32_t>(value));
-            }
-        });
+        [this](GameRuleId id, const GameRuleValueData&) { applyGameRuleMirrors(id); });
+    // The mirrors also have to be pushed once up front: a world that loaded a
+    // save applied its rules through applyDecoded, which deliberately fires no
+    // handler, and a fresh world's systems must still start from the defaults
+    // this table declares rather than the ones they each hardcode.
+    applyGameRuleMirrors(std::nullopt);
+}
+
+void GameSession::applyGameRuleMirrors(std::optional<GameRuleId> changed) {
+    const auto touched = [&](GameRuleId id) { return !changed.has_value() || *changed == id; };
+    if (touched(GameRuleId::RandomTickSpeed)) {
+        worldSimulation_.setRandomTickSpeed(
+            gameRules_.get<std::int32_t>(GameRuleId::RandomTickSpeed));
+    }
+    if (touched(GameRuleId::FireSpreadRadiusAroundPlayer)) {
+        worldSimulation_.setFireSpreadRadius(
+            gameRules_.get<std::int32_t>(GameRuleId::FireSpreadRadiusAroundPlayer));
+    }
+    if (touched(GameRuleId::MobDrops)) {
+        for (auto& level : levels_) {
+            level.entities.setMobDropsEnabled(gameRules_.get<bool>(GameRuleId::MobDrops));
+        }
+    }
+    if (touched(GameRuleId::FallDamage) || touched(GameRuleId::FireDamage) ||
+        touched(GameRuleId::DrowningDamage) ||
+        touched(GameRuleId::NaturalHealthRegeneration)) {
+        const VitalsRules rules{
+            gameRules_.get<bool>(GameRuleId::FallDamage),
+            gameRules_.get<bool>(GameRuleId::FireDamage),
+            gameRules_.get<bool>(GameRuleId::DrowningDamage),
+            gameRules_.get<bool>(GameRuleId::NaturalHealthRegeneration)};
+        for (auto& entry : players_) {
+            entry.second.vitals.setRules(rules);
+        }
+    }
 }
 
 
@@ -1213,6 +1263,15 @@ bool GameSession::damageHeldTool(PlayerId playerId, ToolUse use, float blockHard
 
 void GameSession::spawnBlockDrops(glm::ivec3 position, world::BlockState removed,
                                   const ItemStack& tool) {
+    // Block#dropResources reads block_drops before it rolls anything, and this is
+    // the one funnel every broken block reaches — the mined ones through
+    // GameplayMutationSink, the simulated ones (an unsupported torch, a decayed
+    // leaf, a washed-away decoration) through the world-simulation loop above.
+    // Skipping the roll rather than discarding its result keeps the loot stream
+    // from advancing on a break that produced nothing.
+    if (!gameRules_.get<bool>(GameRuleId::BlockDrops)) {
+        return;
+    }
     // The whole state arrives, so the loot table can roll against the stage a
     // crop had grown to rather than against the bare block.
     const auto drops =

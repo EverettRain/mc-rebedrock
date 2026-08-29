@@ -276,6 +276,10 @@ class GameRuntime final {
   private:
     void registerAuthoritativeCommands();
     void processChatQueue();
+    // Pushes the two command-budget game rules (max_command_forks,
+    // max_command_sequence_length) onto the dispatcher and the function manager.
+    // Called at every entry point that is about to dispatch commands.
+    void applyCommandLimitRules();
     // Builds the command source for a chat line run this tick: the primary player
     // (op4 owner) with its current position/rotation and a feedback sink that
     // routes the result to the chat HUD, gated by the sendCommandFeedback
@@ -320,6 +324,26 @@ class GameRuntime final {
     // forks/gates the source set; `run` redirects to the root). registerExecute
     // wires it, so the runtime holds no hand parser — completion and value types
     // come from the tree like every other command.
+    // 26.1's `/time [of <clock>] set|add|pause|resume|rate|query`. Registered
+    // apart from the rest because its clause set is built twice — bare and under
+    // `of <clock>` — off one shared builder.
+    void registerTimeCommand();
+    // `/effect give|clear` and `/enchant`, over the shared selector resolution.
+    // Free of any per-target-kind effect code: players and creatures hold the
+    // same ActiveEffects store.
+    gameplay::CommandResult applyEffect(const gameplay::command::EntitySelector& selector,
+                                        const gameplay::command::CommandSource& source,
+                                        core::StatusEffectId effect, std::int32_t durationTicks,
+                                        std::uint8_t amplifier);
+    gameplay::CommandResult clearEffect(const gameplay::command::EntitySelector& selector,
+                                        const gameplay::command::CommandSource& source,
+                                        core::StatusEffectId effect);
+    gameplay::CommandResult applyEnchant(const gameplay::command::EntitySelector& selector,
+                                         const gameplay::command::CommandSource& source,
+                                         gameplay::EnchantmentId enchantment, std::uint8_t level);
+    // `/setworldspawn`, the world-wide counterpart to applySpawnPoint's
+    // per-player one.
+    gameplay::CommandResult applyWorldSpawn(const glm::vec3& position);
     void registerExecute(std::size_t executeNode);
     // A command's missing-argument feedback (CMD6 R1): the usage generated from
     // the node tree, so it never drifts from the command's actual shape.

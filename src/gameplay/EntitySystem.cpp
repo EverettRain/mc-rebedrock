@@ -1001,7 +1001,13 @@ bool EntitySystem::die(SimpleEntity& entity) {
     if (!beginDeath(entity.damage)) {
         return false;
     }
-    EntityDrops drops = entity.kind().rollLoot(lootRandomState_);
+    // LivingEntity#shouldDropLoot: with mob_drops off, the corpse leaves nothing
+    // — and, further down, pays no experience either (LivingEntity#dropExperience
+    // reads the same rule). The loot roll itself is skipped rather than rolled
+    // and discarded, so the deterministic loot stream is not advanced by a death
+    // that produced nothing.
+    EntityDrops drops =
+        mobDropsEnabled_ ? entity.kind().rollLoot(lootRandomState_) : EntityDrops{};
     // DYE-2: Sheep.json's wool drop rolls a placeholder white wool (the loot fn
     // has no access to the entity), so its colour is applied here where the
     // dying entity's authoritative DyeColor is in scope — the kill-path analogue
@@ -1028,7 +1034,8 @@ bool EntitySystem::die(SimpleEntity& entity) {
     // still positive does that attribution count as "recent" the way vanilla's
     // memory timer does. A zero xpReward (the default; every passive animal)
     // costs nothing extra to check.
-    if (entity.type->xpRewardMax() > 0 && entity.lastAttacker.kind == ActorReference::Kind::Player &&
+    if (mobDropsEnabled_ && entity.type->xpRewardMax() > 0 &&
+        entity.lastAttacker.kind == ActorReference::Kind::Player &&
         entity.recentAttackerTicks > 0) {
         // AnimalEntity rolls 1..3, an ordinary Mob pays its flat reward; the roll
         // draws from the same deterministic loot stream every other death-time

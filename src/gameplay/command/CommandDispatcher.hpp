@@ -109,6 +109,13 @@ class CommandDispatcher final {
     // return value only.
     [[nodiscard]] CommandResult execute(std::string_view input) const;
 
+    // `/gamerule max_command_forks`: the ceiling on the source set an `execute`
+    // chain may fork into. The runtime pushes the world's rule value here; the
+    // default is vanilla's, so a dispatcher nobody configures (every headless
+    // test) behaves exactly as it did before the rule existed.
+    void setMaximumForkedSources(std::size_t maximum) { maxForkedSources_ = maximum; }
+    [[nodiscard]] std::size_t maximumForkedSources() const { return maxForkedSources_; }
+
     // PACK-2: runs an already-parsed line against `source`, with zero re-parsing.
     // This is what makes a compiled `.mcfunction` line cheap to replay every time
     // `/function` (or a `#tick` member) fires: the loader calls parse() once per
@@ -182,9 +189,11 @@ class CommandDispatcher final {
     friend class CommandBuilder;
 
     // The ceiling on the forked source set an `execute` chain may build, so a
-    // fork bomb fails cleanly instead of exhausting memory (vanilla bounds its
-    // command chain analogously).
-    static constexpr std::size_t kMaxForkedSources = std::size_t{1} << 16U;
+    // fork bomb fails cleanly instead of exhausting memory. This is vanilla's
+    // `max_command_forks` game rule; the constant is its default, which the
+    // runtime overwrites with the world's rule value before it dispatches.
+    static constexpr std::size_t kDefaultMaxForkedSources = std::size_t{1} << 16U;
+    std::size_t maxForkedSources_ = kDefaultMaxForkedSources;
 
     struct Node {
         bool argument = false; // true: this node parses a value under `name`
@@ -426,7 +435,7 @@ inline CommandResult CommandDispatcher::executeParsed(ParseResults& parsed,
         // Guard against a fork bomb (`execute as @e run execute as @e …`): the
         // source set can multiply per clause, so cap it the way vanilla bounds the
         // command chain rather than letting it grow without limit.
-        if (next.size() > kMaxForkedSources) {
+        if (next.size() > maxForkedSources_) {
             return route({false, "Too many entities selected by execute"});
         }
         sources = std::move(next);

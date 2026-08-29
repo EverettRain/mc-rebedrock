@@ -236,7 +236,7 @@ CommandResult FunctionManager::runCompiledShared(const command::CommandDispatche
     std::size_t ran = 0;
     bool haltedOnBudget = false;
     for (auto& line : found->second.lines) {
-        if (budget.commandsRun >= kMaxCommandsPerInvocation) {
+        if (budget.commandsRun >= maxCommandsPerInvocation_) {
             haltedOnBudget = true;
             budget.haltedByGuardrail = true;
             break;
@@ -266,7 +266,7 @@ CommandResult FunctionManager::runCompiledShared(const command::CommandDispatche
 
     if (haltedOnBudget) {
         return {false, "/function " + id + " halted: exceeded the " +
-                           std::to_string(kMaxCommandsPerInvocation) + "-command chain limit"};
+                           std::to_string(maxCommandsPerInvocation_) + "-command chain limit"};
     }
     if (budget.haltedByGuardrail) {
         // A nested call (possibly several frames down) already hit a cap and

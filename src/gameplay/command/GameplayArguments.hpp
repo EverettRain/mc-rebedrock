@@ -5,16 +5,24 @@
 
 #include "gameplay/Difficulty.hpp"
 #include "gameplay/GameMode.hpp"
+#include "gameplay/EnchantmentRegistry.hpp"
 #include "gameplay/GameRules.hpp"
 #include "gameplay/Item.hpp"
 #include "gameplay/ItemRegistry.hpp"
+#include "gameplay/StatusEffect.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "world/Block.hpp"
+#include "world/WorldClock.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
+#include <cmath>
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace mc::gameplay::command {
 
@@ -28,21 +36,67 @@ namespace mc::gameplay::command {
     return result;
 }
 
-// The literal times vanilla's /time accepts plus a raw tick count taken
-// modulo a full day (so 24001 resolves to 1, matching the vanilla formatter).
-[[nodiscard]] inline std::optional<double> parseTimeOfDay(std::string_view value) {
+// `/time set`'s argument, which 26.1 splits across two sibling nodes: a numeric
+// `time` and a `timemarker` id. This tree gives a node one argument child, so
+// the two arrive as one discriminated value instead — and they have to stay
+// discriminated, because they do genuinely different things. A number is an
+// absolute tick to land on (TimeCommand#setTotalTicks); a marker moves the clock
+// *forward* to that point's next occurrence (#setTimeToTimeMarker), which is why
+// `/time set day` never winds the calendar back a day.
+struct TimeSpec final {
+    std::int64_t ticks = 0;
+    // Set when the token named a marker rather than a tick count.
+    std::optional<world::ClockTimeMarker> marker;
+};
+
+// The markers 26.1 registers for the overworld day (ClockTimeMarkers), by the
+// names `/time set` accepts. Kept here rather than in the argument class so the
+// completion and the parse read one list.
+inline constexpr std::array<std::pair<std::string_view, world::ClockTimeMarker>, 4>
+    kClockTimeMarkerNames{{
+        {"day", world::ClockTimeMarker::Day},
+        {"noon", world::ClockTimeMarker::Noon},
+        {"night", world::ClockTimeMarker::Night},
+        {"midnight", world::ClockTimeMarker::Midnight},
+    }};
+
+// 26.1's TimeArgument units: a bare number is ticks, `d` days, `s` seconds,
+// `t` ticks. The value before the unit may be fractional (`0.5d`), so the parse
+// runs through a double and rounds the way Mth.round does.
+inline constexpr std::array<std::pair<std::string_view, int>, 4> kTimeUnits{{
+    {"", 1}, {"t", 1}, {"s", 20}, {"d", 24'000},
+}};
+
+// Parses `/time`'s time token: a marker name, or a number with an optional unit
+// suffix. `minimum` is the floor the resulting tick count must clear — 0 for
+// `set`, negative for `add`, mirroring TimeArgument.time(int).
+[[nodiscard]] inline std::optional<TimeSpec> parseTimeOfDay(std::string_view value,
+                                                            std::int64_t minimum = 0) {
     const std::string normalized = lowercase(value);
-    if (normalized == "day") return 1'000.0;
-    if (normalized == "noon") return 6'000.0;
-    if (normalized == "night") return 13'000.0;
-    if (normalized == "midnight") return 18'000.0;
-    unsigned int ticks = 0U;
+    for (const auto& [name, marker] : kClockTimeMarkerNames) {
+        if (normalized == name) {
+            return TimeSpec{static_cast<std::int64_t>(world::timeMarkerTicks(marker)), marker};
+        }
+    }
+    double magnitude = 0.0;
     const auto [end, error] = std::from_chars(
-        normalized.data(), normalized.data() + normalized.size(), ticks);
-    if (error != std::errc{} || end != normalized.data() + normalized.size()) {
+        normalized.data(), normalized.data() + normalized.size(), magnitude);
+    if (error != std::errc{}) {
         return std::nullopt;
     }
-    return static_cast<double>(ticks % 24'000U);
+    const std::string_view suffix{end, static_cast<std::size_t>(
+                                           normalized.data() + normalized.size() - end)};
+    const auto unit = std::ranges::find_if(
+        kTimeUnits, [&](const auto& entry) { return entry.first == suffix; });
+    if (unit == kTimeUnits.end()) {
+        return std::nullopt;
+    }
+    const auto ticks = static_cast<std::int64_t>(
+        std::llround(magnitude * static_cast<double>(unit->second)));
+    if (ticks < minimum) {
+        return std::nullopt;
+    }
+    return TimeSpec{ticks, std::nullopt};
 }
 
 // ---- Table adapters ---------------------------------------------------------
@@ -135,6 +189,49 @@ class EntityTable final {
     [[nodiscard]] std::string_view kind() const { return "entity"; }
 };
 
+// `/effect give <targets> <effect>`: the registry is the single list, walked by
+// dense id so a datapack-registered effect completes with no extra wiring.
+class StatusEffectTable final {
+  public:
+    template <typename F>
+    void forEach(F&& visitor) const {
+        for (std::size_t index = 0; index < statusEffectCount(); ++index) {
+            const core::StatusEffectId id = statusEffectAt(index);
+            if (!id.valid()) continue;
+            visitor(TableEntry{std::string{core::kNamespace} + ":" +
+                                   std::string{statusEffectName(id)},
+                               ""});
+        }
+    }
+
+    [[nodiscard]] bool contains(std::string_view identifier) const {
+        return statusEffectByName(identifier).valid();
+    }
+
+    [[nodiscard]] std::string_view kind() const { return "effect"; }
+};
+
+// `/enchant <targets> <enchantment>`: same shape over the enchantment registry,
+// whose dense ids are likewise registry subscripts.
+class EnchantmentTable final {
+  public:
+    template <typename F>
+    void forEach(F&& visitor) const {
+        const auto& registry = enchantmentRegistry();
+        for (std::size_t index = 0; index < registry.size(); ++index) {
+            const auto id =
+                core::EnchantmentTypeId::of(static_cast<core::EnchantmentTypeId::Value>(index));
+            visitor(TableEntry{registry.identifier(id).toString(), ""});
+        }
+    }
+
+    [[nodiscard]] bool contains(std::string_view identifier) const {
+        return enchantmentTypeByName(identifier).valid();
+    }
+
+    [[nodiscard]] std::string_view kind() const { return "enchantment"; }
+};
+
 class GameRuleTable final {
   public:
     template <typename F>
@@ -178,24 +275,87 @@ class GameModeArgument final : public ArgumentType {
 // `/time set <day|noon|night|midnight|<ticks>>`, binding the resolved tick count.
 class TimeArgument final : public ArgumentType {
   public:
+    // `minimum` is TimeArgument.time(int)'s floor: `set` refuses a negative
+    // absolute time, `add` accepts one because winding a clock back is the
+    // point of an offset.
+    constexpr TimeArgument() = default;
+    constexpr explicit TimeArgument(std::int64_t minimum, bool markersAllowed = true)
+        : minimum_(minimum), markersAllowed_(markersAllowed) {}
+
     ArgumentParseResult parse(StringReader& reader) const override {
         const auto token = reader.readString();
         if (!token.has_value()) {
             return parseFail("Invalid time", reader);
         }
-        const auto ticks = parseTimeOfDay(*token);
-        if (!ticks.has_value()) {
+        const auto spec = parseTimeOfDay(*token, minimum_);
+        if (!spec.has_value() || (spec->marker.has_value() && !markersAllowed_)) {
             return parseFail("Invalid time: " + *token, reader);
         }
-        return parseOk(*ticks);
+        return parseOk(*spec);
     }
 
     void collectSuggestions(SuggestionSink& sink, const CommandContext&) const override {
-        sink.suggest("day", "1000");
-        sink.suggest("noon", "6000");
-        sink.suggest("night", "13000");
-        sink.suggest("midnight", "18000");
+        if (markersAllowed_) {
+            for (const auto& [name, marker] : kClockTimeMarkerNames) {
+                sink.suggest(std::string{name}, std::to_string(world::timeMarkerTicks(marker)));
+            }
+        }
+        // The units, shown against a magnitude so the hint reads as an example.
+        sink.suggest("1d", "24000 ticks");
+        sink.suggest("1s", "20 ticks");
+        sink.suggest("1t", "1 tick");
     }
+
+  private:
+    std::int64_t minimum_ = 0;
+    bool markersAllowed_ = true;
+};
+
+// `/time of <clock> …`: the named clock the rest of the line acts on. 26.1 keeps
+// these in Registries.WORLD_CLOCK; this build's ClockId enum is the same set,
+// index-aligned with DimensionId, so a clock name is a dimension name.
+class ClockArgument final : public ArgumentType {
+  public:
+    ArgumentParseResult parse(StringReader& reader) const override {
+        const auto token = reader.readString();
+        if (!token.has_value() || token->empty()) {
+            return parseFail("Expected a clock", reader);
+        }
+        const auto clock = clockFromName(*token);
+        if (!clock.has_value()) {
+            return parseFail("Unknown clock: " + *token, reader);
+        }
+        return parseOk(*clock);
+    }
+
+    void collectSuggestions(SuggestionSink& sink, const CommandContext&) const override {
+        for (const auto& [name, clock] : kClockNames) {
+            sink.suggest(std::string{name});
+        }
+    }
+
+    // Accepts the bare name and the `minecraft:` alias, case-insensitively, the
+    // way every other registry-backed argument here resolves a name.
+    [[nodiscard]] static std::optional<world::ClockId> clockFromName(std::string_view token) {
+        std::string normalized = lowercase(token);
+        constexpr std::string_view kVanillaNamespace = "minecraft:";
+        if (normalized.starts_with(kVanillaNamespace)) {
+            normalized.erase(0, kVanillaNamespace.size());
+        }
+        for (const auto& [name, clock] : kClockNames) {
+            if (normalized == name) {
+                return clock;
+            }
+        }
+        return std::nullopt;
+    }
+
+  private:
+    static constexpr std::array<std::pair<std::string_view, world::ClockId>, 3> kClockNames{{
+        {"overworld", world::ClockId::Overworld},
+        {"the_nether", world::ClockId::Nether},
+        {"the_end", world::ClockId::End},
+    }};
 };
 
 // `/give <item|index>`: a creative-catalog index (any digits) or an item/block
@@ -473,6 +633,25 @@ class GameRuleValueArgument final : public ArgumentType {
 // serves every command that uses a type (vanilla's ArgumentType.instance()).
 inline const GameModeArgument kGameModeArgument;
 inline const TimeArgument kTimeArgument;
+inline const ClockArgument kClockArgument;
+// `/time add <n>`: unlike `set`, this one takes a signed offset (26.1 hands its
+// TimeArgument a MIN_VALUE floor for exactly this node), so a clock can be wound
+// backwards as well as forwards. A marker is meaningless as an offset, so this
+// instance refuses one rather than silently reading `day` as +1000.
+inline const TimeArgument kTimeOffsetArgument{
+    -static_cast<std::int64_t>(1) << 40, /*markersAllowed=*/false};
+// `/time rate <r>`: 26.1's floatArg(1.0E-5F, 1000.0F). The floor is above zero
+// on purpose — a rate of 0 is what `pause` is for, and would otherwise be an
+// unstoppable clock that looks paused.
+inline const DoubleArgument kClockRateArgument{1.0e-5, 1000.0};
+// `/effect give <targets> <effect> [<seconds>] [<amplifier>]`: 26.1's
+// EffectCommand bounds (0..1000000 seconds, amplifier 0..255).
+inline const IntArgument kEffectSecondsArgument{0, 1'000'000};
+inline const IntArgument kEffectAmplifierArgument{0, 255};
+// `/enchant <targets> <enchantment> [<level>]`: the level is bounded loosely
+// here and checked against the enchantment's own maxLevel by the handler, which
+// is the only place that knows which enchantment was named.
+inline const IntArgument kEnchantmentLevelArgument{1, 255};
 inline const GiveItemArgument kGiveItemArgument;
 inline const TableArgument<GameRuleTable> kGameRuleArgument;
 inline const TeleportDestinationArgument kTeleportDestinationArgument;
@@ -484,6 +663,8 @@ inline const DimensionArgument kDimensionArgument;
 inline const GameRuleValueArgument kGameRuleValueArgument;
 // Block name (setblock/fill) and entity species name (summon): registry-backed,
 // so validation and completion follow the content tables with no hardcoded list.
+inline const TableArgument<StatusEffectTable> kStatusEffectArgument;
+inline const TableArgument<EnchantmentTable> kEnchantmentArgument;
 inline const TableArgument<BlockTable> kBlockArgument;
 inline const TableArgument<EntityTable> kSummonEntityArgument;
 // `/weather clear|rain [<duration>]`: the duration (seconds) is bounded by the

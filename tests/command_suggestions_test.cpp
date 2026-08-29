@@ -104,10 +104,10 @@ int main() {
 
     // Game rules complete from the GameRules table.
     suggestions = dispatcher.suggestions("/gamerule ", 10);
-    assert(hasSuggestion(suggestions, "doDaylightCycle"));
-    assert(hasSuggestion(suggestions, "randomTickSpeed"));
+    assert(hasSuggestion(suggestions, "advance_time"));
+    assert(hasSuggestion(suggestions, "random_tick_speed"));
     suggestions = dispatcher.suggestions("/gamerule keep", 14);
-    assert(suggestions.size() == 1 && suggestions[0].text == "keepInventory");
+    assert(suggestions.size() == 1 && suggestions[0].text == "keep_inventory");
 
     // Entity-target commands complete from the registered species table.
     suggestions = dispatcher.suggestions("/tp ", 4);

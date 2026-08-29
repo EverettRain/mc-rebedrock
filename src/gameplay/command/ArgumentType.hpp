@@ -281,6 +281,60 @@ class IntArgument final : public ArgumentType {
     std::optional<std::int64_t> maximum_;
 };
 
+// A bounded decimal, the counterpart to IntArgument for the commands vanilla
+// gives a FloatArgumentType (`/time rate`). Bound as a double so a handler reads
+// it out with the same `find<double>` every other decimal argument uses.
+class DoubleArgument final : public ArgumentType {
+  public:
+    DoubleArgument() = default;
+    DoubleArgument(double minimum, double maximum) : minimum_(minimum), maximum_(maximum) {}
+
+    ArgumentParseResult parse(StringReader& reader) const override {
+        const std::string token = reader.readUnquotedString();
+        double value = 0.0;
+        const auto [end, error] =
+            std::from_chars(token.data(), token.data() + token.size(), value);
+        if (error != std::errc{} || end != token.data() + token.size()) {
+            return parseFail("Expected a number, found \"" + token + "\"", reader);
+        }
+        if (minimum_.has_value() && value < *minimum_) {
+            return parseFail("Expected a number of at least " + formatBound(*minimum_), reader);
+        }
+        if (maximum_.has_value() && value > *maximum_) {
+            return parseFail("Expected a number of at most " + formatBound(*maximum_), reader);
+        }
+        return parseOk(value);
+    }
+
+    void collectSuggestions(SuggestionSink& sink, const CommandContext&) const override {
+        if (minimum_.has_value() && maximum_.has_value()) {
+            sink.suggest("1", "[" + formatBound(*minimum_) + ", " + formatBound(*maximum_) + "]");
+        } else {
+            sink.suggest("1", "a number");
+        }
+    }
+
+  private:
+    // std::to_string on a double pads six decimals onto every bound ("1000.000000"),
+    // which reads as noise in a completion hint; trim the trailing zeros.
+    [[nodiscard]] static std::string formatBound(double value) {
+        std::string text = std::to_string(value);
+        if (text.find('.') == std::string::npos) {
+            return text;
+        }
+        while (!text.empty() && text.back() == '0') {
+            text.pop_back();
+        }
+        if (!text.empty() && text.back() == '.') {
+            text.pop_back();
+        }
+        return text;
+    }
+
+    std::optional<double> minimum_;
+    std::optional<double> maximum_;
+};
+
 // Parses one coordinate token into a value and its `~`-relative flag: a plain
 // number, `~` alone (a zero offset), or `~<number>`. Returns false when the
 // token is not a coordinate.

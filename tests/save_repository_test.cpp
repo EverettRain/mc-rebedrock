@@ -622,7 +622,7 @@ int main() {
     assert(worldDat.find("rebedrock:feather") == std::string::npos);
     // The non-default randomTickSpeed travels as a named entry in the GameRules
     // block.
-    assert(worldDat.find("randomTickSpeed") != std::string::npos);
+    assert(worldDat.find("random_tick_speed") != std::string::npos);
 
     // Game rule storage is sparse: a brand-new world, whose rules are all at
     // their defaults, writes a GameRules block with zero entries and no rule
@@ -633,9 +633,9 @@ int main() {
         std::ifstream data{root / fresh.summary.identifier / "world.dat", std::ios::binary};
         const std::string bytes{std::istreambuf_iterator<char>{data},
                                 std::istreambuf_iterator<char>{}};
-        assert(bytes.find("randomTickSpeed") == std::string::npos);
-        assert(bytes.find("doDaylightCycle") == std::string::npos);
-        assert(bytes.find("keepInventory") == std::string::npos);
+        assert(bytes.find("random_tick_speed") == std::string::npos);
+        assert(bytes.find("advance_time") == std::string::npos);
+        assert(bytes.find("keep_inventory") == std::string::npos);
         const auto reloaded = repository.load(fresh.summary.identifier);
         assert(reloaded.gameRules.get<std::int32_t>(gameplay::GameRuleId::RandomTickSpeed) == 3);
     }

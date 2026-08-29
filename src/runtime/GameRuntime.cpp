@@ -131,6 +131,7 @@ void GameRuntime::tick() {
     // edit reaches the client in the same tick it happened, exactly like any
     // other in-tick mutation). A no-op when no function is tagged #tick — most
     // ticks, most worlds.
+    applyCommandLimitRules();
     functionManager_.runTick(commandDispatcher_, makeCommandSource());
     publishSnapshotsToChannel();
     processChatQueue();
@@ -237,6 +238,20 @@ std::optional<gameplay::CommandResult> GameRuntime::takeChatResult() {
     return result;
 }
 
+void GameRuntime::applyCommandLimitRules() {
+    // The two command-budget rules live on the dispatcher and the function
+    // manager, which sit outside GameSession and so are not reached by its
+    // gamerule change handler. Pushing them here — once per dispatch batch, on
+    // the same thread that is about to run the commands — is cheaper than a
+    // second change handler and cannot go stale: nothing dispatches a command
+    // without passing through one of these entry points first.
+    const auto& rules = gameSession_.gameRules();
+    commandDispatcher_.setMaximumForkedSources(static_cast<std::size_t>(
+        rules.get<std::int32_t>(gameplay::GameRuleId::MaxCommandForks)));
+    functionManager_.setMaximumCommandsPerInvocation(static_cast<std::size_t>(
+        rules.get<std::int32_t>(gameplay::GameRuleId::MaxCommandSequenceLength)));
+}
+
 void GameRuntime::processChatQueue() {
     // Swap the queue out under the lock so a line enqueued during execution is
     // not lost, then run the commands without holding it (a command may reach
@@ -246,6 +261,9 @@ void GameRuntime::processChatQueue() {
         const std::lock_guard<std::mutex> guard{chatMutex_};
         lines = std::move(chatQueue_);
         chatQueue_.clear();
+    }
+    if (!lines.empty()) {
+        applyCommandLimitRules();
     }
     for (auto& line : lines) {
         // Build the source fresh per line: a command may move the player, so a
@@ -315,9 +333,6 @@ namespace {
 [[nodiscard]] int floorToInt(float value) {
     return static_cast<int>(std::floor(value));
 }
-// vanilla's FillCommand fillLimit: a fill covering more cells than this is
-// rejected, so an accidental huge box cannot stall the tick.
-constexpr long long kFillLimit = 32768;
 } // namespace
 
 bool GameRuntime::commandSetBlock(glm::ivec3 cell, world::BlockState state, bool drop,
@@ -383,9 +398,15 @@ gameplay::CommandResult GameRuntime::runFill(const gameplay::command::CommandCon
     const long long volume = static_cast<long long>(hi.x - lo.x + 1) *
                              static_cast<long long>(hi.y - lo.y + 1) *
                              static_cast<long long>(hi.z - lo.z + 1);
-    if (volume > kFillLimit) {
+    // vanilla's FillCommand budget, now the `max_block_modifications` rule
+    // rather than the hardcoded 32768 that used to stand in for its default: a
+    // fill covering more cells than this is rejected, so an accidental huge box
+    // cannot stall the tick.
+    const auto fillLimit = static_cast<long long>(
+        gameSession_.gameRules().get<std::int32_t>(gameplay::GameRuleId::MaxBlockModifications));
+    if (volume > fillLimit) {
         return gameplay::CommandResult{
-            false, "Too many blocks in the specified area (maximum " + std::to_string(kFillLimit) +
+            false, "Too many blocks in the specified area (maximum " + std::to_string(fillLimit) +
                        ")"};
     }
     const world::BlockState state{*block, world::defaultOrientation(*block)};
@@ -523,6 +544,280 @@ gameplay::CommandResult GameRuntime::runExperience(const gameplay::command::Comm
 namespace {
 constexpr double kRadiansToDegrees = 57.295779513082323;
 } // namespace
+
+// 26.1's TimeCommand, whose whole shape is `time [of <clock>] <clause>`: the
+// clause set is registered twice off one builder — once at the bare `time` node
+// (acting on the source's own dimension clock) and once under `of <clock>` — so
+// the two can never drift. Every clause is a thin call onto ClockManager, which
+// has carried the matching entry points (addTicks / moveToTimeMarker /
+// setPaused / setRate) since the multi-clock split; only `set <n>` had a command
+// before this.
+// `/effect give|clear`, applied through the one selector resolution /kill
+// already uses. The effect store is shared: a player carries its ActiveEffects
+// on PlayerVitals, a creature on its SimpleEntity, and both go through the same
+// free functions in StatusEffect.hpp — so one loop serves both target kinds
+// with no per-kind effect code.
+gameplay::CommandResult GameRuntime::applyEffect(const gameplay::command::EntitySelector& selector,
+                                                 const gameplay::command::CommandSource& source,
+                                                 core::StatusEffectId effect,
+                                                 std::int32_t durationTicks,
+                                                 std::uint8_t amplifier) {
+    const auto candidates = gatherSelectorCandidates();
+    const auto targets = selector.resolve(source, candidates, nextCommandRandom());
+    std::size_t affected = 0U;
+    for (const auto& target : targets) {
+        if (target.player) {
+            auto player = gameSession_.players().find(target.playerId);
+            if (player == gameSession_.players().end()) continue;
+            if (player->second.vitals.applyEffect(effect, durationTicks, amplifier)) {
+                ++affected;
+            }
+        } else if (gameSession_.worldEntities().applyEffect(target.entityId, effect, durationTicks,
+                                                            amplifier)) {
+            ++affected;
+        }
+    }
+    if (affected == 0U) {
+        // Vanilla reports the same failure for "nobody matched" and "the effect
+        // could not be applied" (a stronger one is already held); so does this.
+        return gameplay::CommandResult{false, "Could not apply this effect"};
+    }
+    return gameplay::CommandResult{
+        true, "Applied effect " + std::string{gameplay::statusEffectName(effect)} + " to " +
+                  std::to_string(affected) + (affected == 1U ? " target" : " targets")};
+}
+
+// `/effect clear [<targets>] [<effect>]`: an invalid `effect` clears everything,
+// which is how EffectCommand distinguishes its two overloads.
+gameplay::CommandResult GameRuntime::clearEffect(const gameplay::command::EntitySelector& selector,
+                                                 const gameplay::command::CommandSource& source,
+                                                 core::StatusEffectId effect) {
+    const auto candidates = gatherSelectorCandidates();
+    const auto targets = selector.resolve(source, candidates, nextCommandRandom());
+    std::size_t affected = 0U;
+    for (const auto& target : targets) {
+        const bool cleared = [&] {
+            if (target.player) {
+                auto player = gameSession_.players().find(target.playerId);
+                if (player == gameSession_.players().end()) return false;
+                return effect.valid() ? player->second.vitals.removeEffect(effect)
+                                      : player->second.vitals.clearEffects() > 0U;
+            }
+            return effect.valid()
+                       ? gameSession_.worldEntities().removeEffect(target.entityId, effect)
+                       : gameSession_.worldEntities().clearEffects(target.entityId) > 0U;
+        }();
+        if (cleared) {
+            ++affected;
+        }
+    }
+    if (affected == 0U) {
+        return gameplay::CommandResult{false, "No effect was taken away"};
+    }
+    return gameplay::CommandResult{true, "Took away effects from " + std::to_string(affected) +
+                                             (affected == 1U ? " target" : " targets")};
+}
+
+// `/enchant <targets> <enchantment> [<level>]`: writes onto each target's
+// *held* stack, which is EnchantCommand's rule (getMainHandItem). Only players
+// hold items in this build, so a creature target is counted as a failure the
+// way vanilla's ERROR_NOT_LIVING_ENTITY does.
+gameplay::CommandResult GameRuntime::applyEnchant(
+    const gameplay::command::EntitySelector& selector,
+    const gameplay::command::CommandSource& source, gameplay::EnchantmentId enchantment,
+    std::uint8_t level) {
+    const auto& definition = gameplay::enchantmentDefinition(enchantment);
+    if (level > definition.maxLevel) {
+        return gameplay::CommandResult{
+            false, "Level " + std::to_string(static_cast<int>(level)) + " is higher than " +
+                       std::string{definition.vanillaName} + "'s maximum of " +
+                       std::to_string(static_cast<int>(definition.maxLevel))};
+    }
+    const auto candidates = gatherSelectorCandidates();
+    const auto targets = selector.resolve(source, candidates, nextCommandRandom());
+    std::size_t affected = 0U;
+    bool sawEmptyHand = false;
+    bool sawIncompatible = false;
+    for (const auto& target : targets) {
+        if (!target.player) {
+            continue; // no creature in this build holds an enchantable stack
+        }
+        auto player = gameSession_.players().find(target.playerId);
+        if (player == gameSession_.players().end()) {
+            continue;
+        }
+        auto& inventory = player->second.inventory;
+        gameplay::ItemStack& held = inventory.mutableSlot(inventory.selectedHotbarSlot());
+        if (held.empty()) {
+            sawEmptyHand = true;
+            continue;
+        }
+        // EnchantCommand refuses a stack the enchantment cannot go on, rather
+        // than writing a level nothing will ever read.
+        if (!gameplay::canEnchant(enchantment, held)) {
+            sawIncompatible = true;
+            continue;
+        }
+        gameplay::setEnchantmentLevel(held, enchantment, level);
+        ++affected;
+    }
+    if (affected == 0U) {
+        if (sawIncompatible) {
+            return gameplay::CommandResult{
+                false, "That enchantment cannot go on the item being held"};
+        }
+        if (sawEmptyHand) {
+            return gameplay::CommandResult{false, "The target has no item in their hand"};
+        }
+        return gameplay::CommandResult{false, "No matching player was found"};
+    }
+    return gameplay::CommandResult{true, "Applied enchantment " +
+                                             std::string{definition.vanillaName} + " to " +
+                                             std::to_string(affected) +
+                                             (affected == 1U ? " target" : " targets")};
+}
+
+void GameRuntime::registerTimeCommand() {
+    using gameplay::command::PermissionLevel;
+    namespace cmd = gameplay::command;
+
+    // Which clock a line acts on: the one `of <clock>` named, or — with no `of`
+    // clause — the clock of the dimension the source is standing in, mirroring
+    // TimeCommand#getDefaultClock reading the level's dimension type.
+    const auto clockOf = [](const cmd::CommandContext& context) {
+        if (const auto named = context.find<world::ClockId>("clock"); named.has_value()) {
+            return *named;
+        }
+        switch (context.source().dimension) {
+        case cmd::Dimension::Nether:
+            return world::ClockId::Nether;
+        case cmd::Dimension::End:
+            return world::ClockId::End;
+        case cmd::Dimension::Overworld:
+        case cmd::Dimension::Count:
+            break;
+        }
+        return world::ClockId::Overworld;
+    };
+    const auto clockName = [](world::ClockId clock) -> std::string_view {
+        switch (clock) {
+        case world::ClockId::Nether:
+            return "the_nether";
+        case world::ClockId::End:
+            return "the_end";
+        case world::ClockId::Overworld:
+        case world::ClockId::Count:
+            break;
+        }
+        return "overworld";
+    };
+
+    // Registers the whole clause set onto `base`. Called for the bare `time`
+    // node and again for the `of <clock>` argument node; the handlers are
+    // identical because clockOf resolves the difference at execution time.
+    const auto registerClauses = [&](std::size_t base) {
+        const auto at = [this, base] { return commandDispatcher_.builderAt(base); };
+
+        // set <time|marker>. A number lands on an absolute tick; a marker moves
+        // forward to its next occurrence, so `/time set day` advances the
+        // calendar rather than winding it back.
+        at().then("set")
+            .argument("time", cmd::kTimeArgument)
+            .executes([this, clockOf, clockName](const cmd::CommandContext& context) {
+                const auto spec = context.find<cmd::TimeSpec>("time");
+                if (!spec.has_value()) {
+                    return usageError("time", context.source());
+                }
+                const world::ClockId clock = clockOf(context);
+                auto& clocks = gameSession_.clocks();
+                if (spec->marker.has_value()) {
+                    clocks.moveToTimeMarker(clock, *spec->marker);
+                } else {
+                    clocks.setTotalTicks(clock, static_cast<std::uint64_t>(spec->ticks));
+                }
+                return gameplay::CommandResult{
+                    true, "Set the time on " + std::string{clockName(clock)} + " to " +
+                              std::to_string(clocks.totalTicks(clock))};
+            });
+
+        // add <offset>. Signed, and ClockManager floors the result at zero.
+        at().then("add")
+            .argument("time", cmd::kTimeOffsetArgument)
+            .executes([this, clockOf, clockName](const cmd::CommandContext& context) {
+                // kTimeOffsetArgument is a TimeArgument too, so it binds a
+                // TimeSpec — it differs from `set`'s only in accepting a
+                // negative floor and refusing markers.
+                const auto offset = context.find<cmd::TimeSpec>("time");
+                if (!offset.has_value()) {
+                    return usageError("time", context.source());
+                }
+                const world::ClockId clock = clockOf(context);
+                auto& clocks = gameSession_.clocks();
+                clocks.addTicks(clock, offset->ticks);
+                return gameplay::CommandResult{
+                    true, "Set the time on " + std::string{clockName(clock)} + " to " +
+                              std::to_string(clocks.totalTicks(clock))};
+            });
+
+        // pause / resume. This is the per-clock freeze the ClockId split exists
+        // for: pausing the sun leaves mining, cooldowns and every other tick
+        // running, because the server tick itself is never gated on a clock.
+        for (const bool paused : {true, false}) {
+            at().then(paused ? "pause" : "resume")
+                .executes([this, clockOf, clockName, paused](const cmd::CommandContext& context) {
+                    const world::ClockId clock = clockOf(context);
+                    gameSession_.clocks().setPaused(clock, paused);
+                    return gameplay::CommandResult{
+                        true, std::string{paused ? "Paused " : "Resumed "} +
+                                  std::string{clockName(clock)}};
+                });
+        }
+
+        // rate <r>. 1.0 is real time; 0.5 runs that clock at half speed without
+        // touching anything else.
+        at().then("rate")
+            .argument("rate", cmd::kClockRateArgument)
+            .executes([this, clockOf, clockName](const cmd::CommandContext& context) {
+                const auto rate = context.find<double>("rate");
+                if (!rate.has_value()) {
+                    return usageError("time", context.source());
+                }
+                const world::ClockId clock = clockOf(context);
+                gameSession_.clocks().setRate(clock, static_cast<float>(*rate));
+                return gameplay::CommandResult{true, "Set the rate of " +
+                                                         std::string{clockName(clock)} + " to " +
+                                                         std::to_string(*rate)};
+            });
+
+        // query time | gametime. `time` is the named clock's own total; `gametime`
+        // is the server tick, which no clock rule or pause can touch — the
+        // distinction is the whole point of having both.
+        at().then("query")
+            .then("time")
+            .executes([this, clockOf, clockName](const cmd::CommandContext& context) {
+                const world::ClockId clock = clockOf(context);
+                const auto& clocks = gameSession_.clocks();
+                return gameplay::CommandResult{
+                    true, "The time on " + std::string{clockName(clock)} + " is " +
+                              std::to_string(clocks.totalTicks(clock)) +
+                              (clocks.state(clock).paused ? " (paused)" : "")};
+            });
+        at().then("query")
+            .then("gametime")
+            .executes([this](const cmd::CommandContext&) {
+                return gameplay::CommandResult{
+                    true, "The game time is " + std::to_string(gameSession_.serverTick())};
+            });
+    };
+
+    const std::size_t timeRoot =
+        commandDispatcher_.literal("time").requiresLevel(PermissionLevel::GameMasters).nodeId();
+    registerClauses(timeRoot);
+    registerClauses(commandDispatcher_.builderAt(timeRoot)
+                        .then("of")
+                        .argument("clock", cmd::kClockArgument)
+                        .nodeId());
+}
 
 void GameRuntime::registerExecute(std::size_t executeNode) {
     namespace cmd = gameplay::command;
@@ -968,6 +1263,7 @@ void GameRuntime::rebuildFunctions() {
     // from tick() — covering both call sites this method has: a fresh
     // loadWorld (the world's own one-time #load) and /reload (its one-time
     // re-run of #load per the card's #3).
+    applyCommandLimitRules();
     functionManager_.runLoad(commandDispatcher_, makeCommandSource());
 }
 
@@ -1447,25 +1743,7 @@ void GameRuntime::registerAuthoritativeCommands() {
             return gameplay::CommandResult{
                 true, "Set own game mode to " + std::string{gameplay::gameModeName(*mode)}};
         });
-    commandDispatcher_.literal("time")
-        .requiresLevel(PermissionLevel::GameMasters)
-        .then("set")
-        .argument("time", gameplay::command::kTimeArgument)
-        .executes([this](const gameplay::command::CommandContext& context) {
-            const auto ticks = context.find<double>("time");
-            if (!ticks.has_value()) {
-                return usageError("time", context.source());
-            }
-            // Set the sun's clock, not the frame timer; the target is folded into
-            // the current day so the calendar does not jump back to day zero.
-            const auto perDay = static_cast<std::uint64_t>(world::DayNightCycle::kTicksPerDay);
-            const auto target = static_cast<std::uint64_t>(std::llround(*ticks)) % perDay;
-            auto& clocks = gameSession_.clocks();
-            const std::uint64_t current = clocks.totalTicks(world::ClockId::Overworld);
-            clocks.setTotalTicks(world::ClockId::Overworld, current - (current % perDay) + target);
-            return gameplay::CommandResult{true, "Set the time to " +
-                                                     std::to_string(static_cast<int>(*ticks))};
-        });
+    registerTimeCommand();
     commandDispatcher_.literal("give")
         .requiresLevel(PermissionLevel::GameMasters)
         .argument("item", gameplay::command::kGiveItemArgument)
@@ -1669,6 +1947,129 @@ void GameRuntime::registerAuthoritativeCommands() {
             }
             return killSelector(*selector, context.source());
         });
+    // `/setworldspawn [<pos>]`: the world spawn (where a player with no personal
+    // spawnpoint appears, and the compass target), as against /spawnpoint's
+    // per-player one. GameSession::setWorldSpawn has existed since the world
+    // bootstrap needed it; only the renderer could reach it before this.
+    commandDispatcher_.literal("setworldspawn")
+        .requiresLevel(PermissionLevel::GameMasters)
+        .executes([this](const gameplay::command::CommandContext& context) {
+            return applyWorldSpawn(context.source().position);
+        })
+        .argument("pos", gameplay::command::kTeleportDestinationArgument)
+        .executes([this](const gameplay::command::CommandContext& context) {
+            const auto position = context.find<gameplay::command::Position3>("pos");
+            if (!position.has_value()) {
+                return usageError("setworldspawn", context.source());
+            }
+            return applyWorldSpawn(gameplay::command::resolve(*position, context.source()));
+        });
+
+    // `/effect give <targets> <effect> [<seconds>] [<amplifier>]` and
+    // `/effect clear [<targets>] [<effect>]`. Both halves resolve their targets
+    // through the same selector /kill uses, so `@e[type=cow]` works here from
+    // the first line.
+    {
+        const auto giveBase = [this]() {
+            return commandDispatcher_.literal("effect")
+                .requiresLevel(PermissionLevel::GameMasters)
+                .then("give")
+                .argument("targets", gameplay::command::kEntitySelectorArgument)
+                .argument("effect", gameplay::command::kStatusEffectArgument);
+        };
+        // The handler is one function of three optionals, so the three arities
+        // (effect / +seconds / +amplifier) share it rather than drifting apart.
+        const auto runGive = [this](const gameplay::command::CommandContext& context) {
+            const auto selector =
+                context.find<gameplay::command::EntitySelector>("targets");
+            const auto name = context.find<std::string>("effect");
+            if (!selector.has_value() || !name.has_value()) {
+                return usageError("effect", context.source());
+            }
+            const core::StatusEffectId effect = gameplay::statusEffectByName(*name);
+            if (!effect.valid()) {
+                return gameplay::CommandResult{false, "Unknown effect: " + *name};
+            }
+            // EffectCommand's defaults: 30 seconds, amplifier 0.
+            const auto seconds = context.find<std::int64_t>("seconds").value_or(30);
+            const auto amplifier = context.find<std::int64_t>("amplifier").value_or(0);
+            return applyEffect(*selector, context.source(), effect,
+                               static_cast<std::int32_t>(seconds * 20),
+                               static_cast<std::uint8_t>(amplifier));
+        };
+        giveBase().executes(runGive);
+        giveBase().argument("seconds", gameplay::command::kEffectSecondsArgument).executes(runGive);
+        giveBase()
+            .argument("seconds", gameplay::command::kEffectSecondsArgument)
+            .argument("amplifier", gameplay::command::kEffectAmplifierArgument)
+            .executes(runGive);
+
+        const auto runClear = [this](const gameplay::command::CommandContext& context) {
+            gameplay::command::EntitySelector self;
+            self.variable = gameplay::command::SelectorVariable::Self;
+            const auto selector =
+                context.find<gameplay::command::EntitySelector>("targets").value_or(self);
+            // No `effect` on the line means "take everything away"; an invalid
+            // id is how clearEffect spells that.
+            core::StatusEffectId effect;
+            if (const auto name = context.find<std::string>("effect"); name.has_value()) {
+                effect = gameplay::statusEffectByName(*name);
+                if (!effect.valid()) {
+                    return gameplay::CommandResult{false, "Unknown effect: " + *name};
+                }
+            }
+            return clearEffect(selector, context.source(), effect);
+        };
+        const auto clearBase = [this]() {
+            return commandDispatcher_.literal("effect")
+                .requiresLevel(PermissionLevel::GameMasters)
+                .then("clear");
+        };
+        clearBase().executes(runClear);
+        clearBase()
+            .argument("targets", gameplay::command::kEntitySelectorArgument)
+            .executes(runClear);
+        clearBase()
+            .argument("targets", gameplay::command::kEntitySelectorArgument)
+            .argument("effect", gameplay::command::kStatusEffectArgument)
+            .executes(runClear);
+    }
+
+    // `/enchant <targets> <enchantment> [<level>]`: writes onto the target's
+    // held stack. The whole enchantment registry has been in place since ENCH-0;
+    // this is the command that was missing.
+    {
+        const auto runEnchant = [this](const gameplay::command::CommandContext& context) {
+            const auto selector =
+                context.find<gameplay::command::EntitySelector>("targets");
+            const auto name = context.find<std::string>("enchantment");
+            if (!selector.has_value() || !name.has_value()) {
+                return usageError("enchant", context.source());
+            }
+            const core::EnchantmentTypeId type = gameplay::enchantmentTypeByName(*name);
+            if (!type.valid() ||
+                type.index() >= static_cast<std::size_t>(gameplay::EnchantmentId::Count)) {
+                // A datapack enchantment past the baked table has no
+                // EnchantmentId ordinal, so an ItemStack has nowhere to store it.
+                return gameplay::CommandResult{false, "Unknown enchantment: " + *name};
+            }
+            const auto enchantment = static_cast<gameplay::EnchantmentId>(type.index());
+            const auto level = context.find<std::int64_t>("level").value_or(1);
+            return applyEnchant(*selector, context.source(), enchantment,
+                                static_cast<std::uint8_t>(level));
+        };
+        const auto enchantBase = [this]() {
+            return commandDispatcher_.literal("enchant")
+                .requiresLevel(PermissionLevel::GameMasters)
+                .argument("targets", gameplay::command::kEntitySelectorArgument)
+                .argument("enchantment", gameplay::command::kEnchantmentArgument);
+        };
+        enchantBase().executes(runEnchant);
+        enchantBase()
+            .argument("level", gameplay::command::kEnchantmentLevelArgument)
+            .executes(runEnchant);
+    }
+
     commandDispatcher_.literal("spawnpoint")
         .requiresLevel(PermissionLevel::GameMasters)
         .executes([this](const gameplay::command::CommandContext&) {
@@ -1930,6 +2331,17 @@ gameplay::CommandResult GameRuntime::usageError(std::string_view command,
     // The single source of a command's usage: generated from the node tree, so a
     // signature change moves the usage with it (no hand-written string drifts).
     return gameplay::CommandResult{false, "Usage: /" + commandDispatcher_.usage(command, source)};
+}
+
+gameplay::CommandResult GameRuntime::applyWorldSpawn(const glm::vec3& position) {
+    gameSession_.setWorldSpawn(position);
+    // Same reasoning as applySpawnPoint: the command runs inside the tick's
+    // write section, so the save takes the unlocked path.
+    static_cast<void>(saveLocked());
+    return gameplay::CommandResult{true, "Set the world spawn point to " +
+                                             std::to_string(static_cast<int>(position.x)) + " " +
+                                             std::to_string(static_cast<int>(position.y)) + " " +
+                                             std::to_string(static_cast<int>(position.z))};
 }
 
 gameplay::CommandResult GameRuntime::applySpawnPoint(const std::optional<glm::vec3>& position) {

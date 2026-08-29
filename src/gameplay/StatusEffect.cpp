@@ -113,6 +113,19 @@ std::string_view statusEffectName(core::StatusEffectId id) {
     return statusEffectRegistry().identifier(id).path;
 }
 
+std::size_t statusEffectCount() {
+    return statusEffectRegistry().size();
+}
+
+core::StatusEffectId statusEffectAt(std::size_t index) {
+    // A dense registry hands out its ids as subscripts, so the index *is* the
+    // id; the bound check keeps a caller iterating a stale count honest.
+    if (index >= statusEffectRegistry().size()) {
+        return core::StatusEffectId::invalid();
+    }
+    return core::StatusEffectId::of(static_cast<core::StatusEffectId::Value>(index));
+}
+
 core::StatusEffectId poisonEffect() {
     static_cast<void>(statusEffectRegistry());
     return gBuiltinIds.poison;

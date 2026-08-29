@@ -71,33 +71,57 @@ int main() {
     assert(!dispatcher.execute("/gamemode").success);               // incomplete
     assert(!dispatcher.execute("/gamemode survival extra").success); // extra token
 
-    // /time set <time> — TimeArgument binds the resolved ticks as a double.
-    double lastTicks = -1.0;
+    // /time set <time> — TimeArgument binds a TimeSpec: an absolute tick count,
+    // or a named marker the handler resolves by moving the clock forward.
+    std::int64_t lastTicks = -1;
+    bool lastWasMarker = false;
     dispatcher.literal("time")
         .then("set")
         .argument("time", kTimeArgument)
         .executes([&](const CommandContext& context) {
-            const auto ticks = context.find<double>("time");
-            if (!ticks.has_value()) {
+            const auto spec = context.find<mc::gameplay::command::TimeSpec>("time");
+            if (!spec.has_value()) {
                 return CommandResult{false, "Usage: /time set <day|noon|night|midnight|ticks>"};
             }
-            lastTicks = *ticks;
+            lastTicks = spec->ticks;
+            lastWasMarker = spec->marker.has_value();
             return CommandResult{true, "ok"};
         });
     assert(dispatcher.execute("/time set noon").success);
-    assert(lastTicks == 6000.0);
+    assert(lastTicks == 6000 && lastWasMarker);
+    // An absolute time is no longer folded into the current day: 26.1's
+    // setTotalTicks lands exactly where it was told, so 24001 stays 24001.
     assert(dispatcher.execute("/time set 24001").success);
-    assert(lastTicks == 1.0);
+    assert(lastTicks == 24001 && !lastWasMarker);
+    // TimeArgument's units: `d` days, `s` seconds, `t` ticks, bare number ticks.
+    assert(dispatcher.execute("/time set 2d").success);
+    assert(lastTicks == 48000);
+    assert(dispatcher.execute("/time set 3s").success);
+    assert(lastTicks == 60);
+    assert(dispatcher.execute("/time set 5t").success);
+    assert(lastTicks == 5);
     assert(!dispatcher.execute("/time day").success);          // missing the literal `set`
     assert(!dispatcher.execute("/time nope").success);         // unknown subcommand
     assert(!dispatcher.execute("/time set").success);          // incomplete
     assert(!dispatcher.execute("/time set tomorrow").success); // TimeArgument rejects
+    assert(!dispatcher.execute("/time set 5w").success);       // unknown unit
+    assert(!dispatcher.execute("/time set -5").success);       // below `set`'s floor of 0
 
-    // The old parseTimeOfDay contract survives on the command module.
-    assert(mc::gameplay::command::parseTimeOfDay("day") == 1'000.0);
-    assert(mc::gameplay::command::parseTimeOfDay("NOON") == 6'000.0);
-    assert(mc::gameplay::command::parseTimeOfDay("24001") == 1.0);
-    assert(!mc::gameplay::command::parseTimeOfDay("tomorrow").has_value());
+    // parseTimeOfDay's contract, direct: markers report themselves as markers,
+    // numbers do not, and the floor argument is what separates set from add.
+    {
+        namespace cmd = mc::gameplay::command;
+        const auto day = cmd::parseTimeOfDay("day");
+        assert(day.has_value() && day->ticks == 1'000 && day->marker.has_value());
+        const auto noon = cmd::parseTimeOfDay("NOON");
+        assert(noon.has_value() && noon->ticks == 6'000);
+        const auto plain = cmd::parseTimeOfDay("24001");
+        assert(plain.has_value() && plain->ticks == 24'001 && !plain->marker.has_value());
+        assert(!cmd::parseTimeOfDay("tomorrow").has_value());
+        assert(!cmd::parseTimeOfDay("-5").has_value());
+        const auto negative = cmd::parseTimeOfDay("-5", -1'000);
+        assert(negative.has_value() && negative->ticks == -5);
+    }
 
     // /give <item> <count> — GiveItemArgument validates the identifier up front.
     std::string givenItem;
@@ -143,7 +167,7 @@ int main() {
             if (!rule.has_value()) {
                 return CommandResult{false, "Usage"};
             }
-            queried = *rule == "keepInventory";
+            queried = *rule == "keep_inventory";
             return CommandResult{true, "query"};
         })
         .argument("value", kStringArgument)
@@ -153,13 +177,13 @@ int main() {
             if (!rule.has_value() || !value.has_value()) {
                 return CommandResult{false, "Usage"};
             }
-            set = *rule == "keepInventory" && *value == "true";
+            set = *rule == "keep_inventory" && *value == "true";
             return CommandResult{true, "set"};
         });
-    assert(dispatcher.execute("/gamerule keepInventory").success);
+    assert(dispatcher.execute("/gamerule keep_inventory").success);
     assert(queried);
     assert(!set);
-    assert(dispatcher.execute("/gamerule keepInventory true").success);
+    assert(dispatcher.execute("/gamerule keep_inventory true").success);
     assert(set);
     assert(!dispatcher.execute("/gamerule notARule").success); // GameRuleTable rejects
     assert(!dispatcher.execute("/gamerule").success);          // incomplete

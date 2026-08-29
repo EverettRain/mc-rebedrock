@@ -85,7 +85,15 @@ CommandResult GameRules::query(std::string_view name) const {
 
 bool GameRules::applyDecoded(std::string_view name, GameRuleType type,
                              const GameRuleValueData& decoded) {
-    const auto id = gameRuleIdFromName(name);
+    auto id = gameRuleIdFromName(name);
+    if (id == GameRuleId::Count) {
+        // A world written before this build adopted 26.1's snake_case registry
+        // keyed its entries by the old camelCase name. Resolving those here —
+        // and only here, never on the command surface — is what keeps a
+        // pre-rename save's non-default rules from silently reverting to their
+        // defaults on load. Vanilla does the same job in GameRuleRegistryFix.
+        id = legacyGameRuleIdFromName(name);
+    }
     if (id == GameRuleId::Count) {
         return false;
     }

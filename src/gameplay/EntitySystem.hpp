@@ -465,6 +465,14 @@ class EntitySystem final {
     bool clearSheared(std::uint64_t entityId);
     [[nodiscard]] const SimpleEntity* byIdConst(std::uint64_t id) const { return byId(id); }
 
+    // GameRules.MOB_DROPS, mirrored in the way PlayerVitals mirrors its own
+    // rules. Vanilla reads it in two places on the dying creature —
+    // LivingEntity#shouldDropLoot for the loot table and #dropExperience for the
+    // orbs — so both live behind this one flag inside die(). Defaults to
+    // vanilla's default, keeping every headless test that kills a mob unchanged.
+    void setMobDropsEnabled(bool enabled) { mobDropsEnabled_ = enabled; }
+    [[nodiscard]] bool mobDropsEnabled() const { return mobDropsEnabled_; }
+
     // The loot a creature that just finished dying leaves behind. Drained by
     // the caller after tick(); the same creature never reports twice.
     [[nodiscard]] std::span<const std::pair<glm::vec3, EntityDrops>> pendingDrops() const {
@@ -565,6 +573,7 @@ class EntitySystem final {
     std::uint64_t lootRandomState_ = 0x00001F123BB5ULL;
     std::uint64_t nextEntityId_ = 1U;
     std::uint64_t gameTick_ = 0U;
+    bool mobDropsEnabled_ = true;
 };
 
 } // namespace mc::gameplay

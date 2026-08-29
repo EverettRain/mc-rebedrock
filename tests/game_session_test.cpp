@@ -655,7 +655,7 @@ int main() {
         REQUIRE(startDay == static_cast<std::uint64_t>(world::DayNightCycle::kNewWorldTick));
 
         static_cast<void>(
-            clockSession.gameRules().set(gameplay::GameRuleId::DoDaylightCycle, false));
+            clockSession.gameRules().set(gameplay::GameRuleId::AdvanceTime, false));
         for (int tick = 0; tick < 40; ++tick) {
             clockSession.tick(world, host);
         }
@@ -665,7 +665,7 @@ int main() {
         // Turning the sun back on resumes it from where it stopped, while the
         // world tick simply carries on.
         static_cast<void>(
-            clockSession.gameRules().set(gameplay::GameRuleId::DoDaylightCycle, true));
+            clockSession.gameRules().set(gameplay::GameRuleId::AdvanceTime, true));
         for (int tick = 0; tick < 25; ++tick) {
             clockSession.tick(world, host);
         }

@@ -77,21 +77,21 @@ void writeFunctionPack(const std::filesystem::path& packRoot) {
     writeFile(packRoot / "data" / "minecraft" / "functions" / "hello.mcfunction",
               "# a comment line, skipped entirely\n"
               "\n"
-              "gamerule doDaylightCycle false\n"
-              "gamerule keepInventory true\n");
+              "gamerule advance_time false\n"
+              "gamerule keep_inventory true\n");
     // A #tick function: bumps the day/night toggle each tick in an observable,
     // order-sensitive way — two members, "a" and "b", so a stable sort is
     // provable (b runs, then a, if the ids were iterated in reverse/hash order
     // the net gamerule value would tell the two orders apart).
     writeFile(packRoot / "data" / "minecraft" / "functions" / "tick_a.mcfunction",
-              "gamerule doDaylightCycle false\n");
+              "gamerule advance_time false\n");
     writeFile(packRoot / "data" / "minecraft" / "functions" / "tick_b.mcfunction",
-              "gamerule doDaylightCycle true\n");
+              "gamerule advance_time true\n");
     writeFile(packRoot / "data" / "minecraft" / "tags" / "functions" / "tick.json",
               R"({"values": ["minecraft:tick_b", "minecraft:tick_a"]})");
     // A #load function: sets a distinguishable gamerule value once.
     writeFile(packRoot / "data" / "minecraft" / "functions" / "on_load.mcfunction",
-              "gamerule keepInventory false\n");
+              "gamerule keep_inventory false\n");
     writeFile(packRoot / "data" / "minecraft" / "tags" / "functions" / "load.json",
               R"({"values": ["minecraft:on_load"]})");
     // A self-recursive function: proves the guardrail halts it instead of
@@ -254,20 +254,20 @@ int main() {
         // tick_b then sets it true, so after any tick the net value is
         // whatever the LAST member in sorted order wrote: true (tick_b).
         rt.tick();
-        assert(rt.gameSession().gameRules().get<bool>(gameplay::GameRuleId::DoDaylightCycle));
+        assert(rt.gameSession().gameRules().get<bool>(gameplay::GameRuleId::AdvanceTime));
 
         // Guardrail-②-adjacent target: run several more ticks — the order must stay
         // identical every time (this would drift under hash-order iteration
         // across a container rehash/reinsertion).
         for (int i = 0; i < 10; ++i) {
             rt.tick();
-            assert(rt.gameSession().gameRules().get<bool>(gameplay::GameRuleId::DoDaylightCycle));
+            assert(rt.gameSession().gameRules().get<bool>(gameplay::GameRuleId::AdvanceTime));
         }
 
         // #load must NOT re-run per tick: flip keepInventory true by hand (not
         // through on_load), tick several times, and confirm it stays true —
         // if #load re-ran every tick it would stomp this back to false.
-        static_cast<void>(rt.gameSession().gameRules().setFromCommand("keepInventory", "true"));
+        static_cast<void>(rt.gameSession().gameRules().setFromCommand("keep_inventory", "true"));
         for (int i = 0; i < 5; ++i) {
             rt.tick();
         }
@@ -281,7 +281,7 @@ int main() {
         assert(!rt.gameSession().gameRules().get<bool>(gameplay::GameRuleId::KeepInventory));
         // And /reload's #load is exactly one run, not per tick, either: flip it
         // true again and confirm ticking alone does not touch it.
-        static_cast<void>(rt.gameSession().gameRules().setFromCommand("keepInventory", "true"));
+        static_cast<void>(rt.gameSession().gameRules().setFromCommand("keep_inventory", "true"));
         for (int i = 0; i < 5; ++i) {
             rt.tick();
         }
@@ -290,7 +290,7 @@ int main() {
         // --- /function minecraft:hello runs both lines. ----------------------------
         const auto helloResult = rt.commandDispatcher().execute("/function minecraft:hello");
         assert(helloResult.success);
-        assert(!rt.gameSession().gameRules().get<bool>(gameplay::GameRuleId::DoDaylightCycle));
+        assert(!rt.gameSession().gameRules().get<bool>(gameplay::GameRuleId::AdvanceTime));
         assert(rt.gameSession().gameRules().get<bool>(gameplay::GameRuleId::KeepInventory));
 
         // --- execute ... run function <id>: the execute redirect tree (CMD5/7)

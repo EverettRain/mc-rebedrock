@@ -61,18 +61,29 @@ class FunctionManager final {
     // Vanilla parity guardrails (Commands.java's maxCommandChainLength / the
     // /function recursion vanilla silently bounds the same way): a single
     // /function invocation (including everything it calls, transitively) may
-    // not run more than kMaxCommandsPerInvocation commands, and a nested
+    // not run more than the command budget below allows, and a nested
     // /function-inside-a-function chain may not exceed kMaxRecursionDepth
     // levels. Either cap halts the *offending* function call with a failure
     // result — it does not hang, recurse the C++ stack, or take the process
-    // down. 65536 mirrors vanilla's default maxCommandChainLength (also this
-    // project's CommandDispatcher::kMaxForkedSources ceiling); 256 is a
-    // generous but finite recursion ceiling no legitimate datapack script
+    // down. The command budget is now vanilla's `max_command_sequence_length`
+    // game rule (the renamed maxCommandChainLength); the constant below is its
+    // default, which the runtime overwrites with the world's rule value. 256 is
+    // a generous but finite recursion ceiling no legitimate datapack script
     // approaches (vanilla has no formal recursion limit but every real datapack
     // stays in the single digits — this exists purely to turn a runaway
-    // `function loop() -> function loop()` into a clean failure).
-    static constexpr std::size_t kMaxCommandsPerInvocation = 65536;
+    // `function loop() -> function loop()` into a clean failure), and stays a
+    // constant because vanilla has no rule for it.
+    static constexpr std::size_t kDefaultMaxCommandsPerInvocation = 65536;
     static constexpr std::size_t kMaxRecursionDepth = 256;
+
+    // `/gamerule max_command_sequence_length`. Defaults to vanilla's default, so
+    // a manager nobody configures (every headless test) is unchanged.
+    void setMaximumCommandsPerInvocation(std::size_t maximum) {
+        maxCommandsPerInvocation_ = maximum;
+    }
+    [[nodiscard]] std::size_t maximumCommandsPerInvocation() const {
+        return maxCommandsPerInvocation_;
+    }
 
     // Discovers and compiles every `.mcfunction` under this stack's
     // `data/minecraft/functions/**` (recursively — vanilla nests functions in
@@ -160,6 +171,7 @@ class FunctionManager final {
                                                   const command::CommandSource& source,
                                                   RunBudget& budget);
 
+    std::size_t maxCommandsPerInvocation_ = kDefaultMaxCommandsPerInvocation;
     std::unordered_map<std::string, CompiledFunction> functions_;
     std::vector<std::string> tickFunctions_;
     std::vector<std::string> loadFunctions_;

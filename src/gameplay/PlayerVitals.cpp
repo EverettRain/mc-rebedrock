@@ -156,8 +156,11 @@ void PlayerVitals::tickFood(VitalsTickResult& result) {
         }
     }
 
+    // FoodData#tick's `naturalRegen` local: both healing branches read it, the
+    // starvation branch below deliberately does not.
+    const bool naturalRegen = rules_.naturalHealthRegeneration;
     const bool hurtPlayer = damage_.health < kMaximumHealth;
-    if (saturation_ > 0.0F && hurtPlayer && foodLevel_ >= kMaximumFood) {
+    if (naturalRegen && saturation_ > 0.0F && hurtPlayer && foodLevel_ >= kMaximumFood) {
         ++foodTimer_;
         if (foodTimer_ >= 10) {
             const float healed = std::min(saturation_, 6.0F);
@@ -165,7 +168,7 @@ void PlayerVitals::tickFood(VitalsTickResult& result) {
             addExhaustion(healed);
             foodTimer_ = 0;
         }
-    } else if (foodLevel_ >= 18 && hurtPlayer) {
+    } else if (naturalRegen && foodLevel_ >= 18 && hurtPlayer) {
         ++foodTimer_;
         if (foodTimer_ >= 80) {
             heal(1.0F);
@@ -193,7 +196,10 @@ void PlayerVitals::tickFood(VitalsTickResult& result) {
 // PlayerEntity#tick's peaceful branch: a health point a second and a food point
 // every half second, for free.
 void PlayerVitals::tickPeacefulRegeneration() {
-    if (!regeneratesFreely(difficulty_)) {
+    // ServerPlayer#tick gates the peaceful branch on the difficulty *and* the
+    // natural-regeneration rule, so turning the rule off makes peaceful as
+    // unforgiving as any other difficulty.
+    if (!regeneratesFreely(difficulty_) || !rules_.naturalHealthRegeneration) {
         return;
     }
     if (damage_.health < kMaximumHealth && ageTicks_ % 20 == 0) {
@@ -224,7 +230,7 @@ VitalsTickResult PlayerVitals::tick(const VitalsInput& input) {
     } else if (input.onGround) {
         const float damage = std::ceil(fallDistance_ - kSafeFallDistance);
         fallDistance_ = 0.0F;
-        if (damage > 0.0F && hurt(damage, DamageType::Fall)) {
+        if (rules_.fallDamage && damage > 0.0F && hurt(damage, DamageType::Fall)) {
             result.damageTaken = damage;
             result.cause = DamageType::Fall;
         }
@@ -237,7 +243,9 @@ VitalsTickResult PlayerVitals::tick(const VitalsInput& input) {
         --airTicks_;
         if (airTicks_ <= kDrownDamageAirTicks) {
             airTicks_ = 0;
-            if (hurt(kDrownDamage, DamageType::Drown)) {
+            // The air supply still runs out with the rule off — only the damage
+            // it would cause is withheld, so the HUD's bubble bar stays honest.
+            if (rules_.drowningDamage && hurt(kDrownDamage, DamageType::Drown)) {
                 result.damageTaken = kDrownDamage;
                 result.cause = DamageType::Drown;
             }
@@ -260,7 +268,10 @@ VitalsTickResult PlayerVitals::tick(const VitalsInput& input) {
         if (input.inWater || input.rainedOn) {
             fireTicks_ = 0;
         } else {
-            if (fireTicks_ % kFireDamageInterval == 0 && hurt(1.0F, DamageType::OnFire)) {
+            // The burn still counts down with the rule off (the player stops
+            // being ablaze on schedule), it simply costs no health.
+            if (rules_.fireDamage && fireTicks_ % kFireDamageInterval == 0 &&
+                hurt(1.0F, DamageType::OnFire)) {
                 result.damageTaken = 1.0F;
                 result.cause = DamageType::OnFire;
             }

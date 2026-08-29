@@ -8,11 +8,24 @@
 
 ### 新增
 
+- 新增 11 条游戏规则，它们门控的机制本就已经在，只是一直没有开关：`fall_damage`、`fire_damage`、
+  `drowning_damage`、`natural_health_regeneration`（同时门控食物回血与和平难度回血，但不门控饿死）、
+  `block_drops`、`mob_drops`（战利品与经验一并）、`spawn_mobs`、`fire_spread_radius_around_player`
+  （26.1 用来取代已退休的 `doFireTick`：`-1` 表示任何地方、`0` 表示任何地方都不、正数则是玩家周围的
+  方块半径），以及三条命令预算 `max_block_modifications`、`max_command_forks`、
+  `max_command_sequence_length`——它们的取值原本就写死在这几个默认值上。
+- `/time` 补全为 26.1 的完整形态：`set`（绝对刻，或 `day`/`noon`/`night`/`midnight` 标记）、`add`、
+  `pause`、`resume`、`rate`、`query time|gametime`，且每一条都能用 `/time of <clock> …` 指定某一个
+  具名时钟。暂停一个时钟只冻结它自己——挖掘、冷却和其它计时照常运行。时间参数支持 `d`/`s`/`t`
+  单位后缀（`/time add 2d`）。
+- 新增 `/effect give <目标> <效果> [<秒>] [<等级>]` 与 `/effect clear [<目标>] [<效果>]`，玩家与生物通用。
+- 新增 `/enchant <目标> <附魔> [<等级>]`，附魔手持物品；超过该附魔自身上限、或物品不适用时拒绝。
+- 新增 `/setworldspawn [<坐标>]`，与 `/spawnpoint`（逐玩家）相对的世界出生点。
 - 羊现在带 16 种可染颜色：羊毛按羊自身的颜色渲染，用对应染料右键可改色，剪毛后露出无毛
   身体、羊毛层消失；颜色随羊持久保存。
 - 新增完整经验系统：等级/进度/总量与 26.1 升级曲线、HUD 经验条与等级数字、经验球实体（重力、
   同值合并、磁力吸附与拾取），以及击杀（受近期玩家伤害门控）、采矿、熔炼与繁育四类来源、死亡
-  掉落 `min(7·等级, 100)`（`keepInventory` 开启时保留）；同时新增 `/experience`（`/xp`）命令。
+  掉落 `min(7·等级, 100)`（`keep_inventory` 开启时保留）；同时新增 `/experience`（`/xp`）命令。
 - 新增下界与末地的世界生成：下界地形（多噪声群系、地表与特征）、末地地形（中心岛 + 外环浮岛），
   各维度带独立世界高度、逐维度独立 tick（未加载的维度零开销）与逐维度分区存档目录。
 - 新增更多形状方块：楼梯、门、栅栏门、活板门、按钮、压力板、墙与栅栏——多态形状、方块状态、
@@ -116,6 +129,12 @@
 
 ### 变更
 
+- 游戏规则名改为 26.1 的 `snake_case` 写法：`doDaylightCycle` → `advance_time`、
+  `doWeatherCycle` → `advance_weather`，`keepInventory`、`randomTickSpeed`、`sendCommandFeedback`
+  则改为 `keep_inventory`、`random_tick_speed`、`send_command_feedback`。旧版本存的世界不会丢设置：
+  读档时仍认得旧名，不会有规则悄悄回落到默认值。`/gamerule` 与补全只接受新名。
+- `/time set <n>` 改为按 26.1 的语义设置绝对时间，不再把数值折进当天。`/time set day`（及其余标记）
+  仍然是前移到该时刻的下一次出现，因此不会把日历倒回去。
 - 玩家动画迁移到骨骼遮罩 + 覆盖混合 + 动画控制器的分层栈，世界玩家与第一人称统一走该栈，
   并按 26.1 规格校准各动作剪辑。
 - 存档目录改按世界名 slug 命名，不再追加创建时间戳串；仅在重名时追加数字后缀。
@@ -189,6 +208,8 @@
 
 ### 修复
 
+- `advance_time` 不再覆盖 `/time pause` 暂停的时钟。该规则是所有时钟之上的全局开关，与每个时钟自身的
+  暂停状态相互独立，与 26.1 一致。
 - 修复动物模型的 Box-UV 纹理映射，使牛、猪、羊、鸡逐面对齐 Java 26.1：修正了立方体前/后
   面的左右镜像、左右对称肢体内外侧纹理被交换，以及旋转躯干（牛/猪/羊/鸡躯干、牛乳房、羊毛
   体）因骨骼旋转符号错误导致的前后错乱与错位。羊现在正确显示白色羊毛——羊毛部件采样独立的

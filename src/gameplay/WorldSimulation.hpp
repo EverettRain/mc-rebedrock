@@ -250,6 +250,34 @@ class WorldSimulation final {
         simRadiusChunks_ = radiusChunks;
     }
 
+    // The block the simulation is centred on — the player's feet. The chunk
+    // bounds above are the coarse window random ticks walk; this is the exact
+    // point the `fire_spread_radius_around_player` rule measures from, which is
+    // a block radius and so cannot be answered at chunk granularity.
+    void setSimulationCenterBlock(int x, int y, int z) {
+        simCenterBlockX_ = x;
+        simCenterBlockY_ = y;
+        simCenterBlockZ_ = z;
+    }
+
+    // The `/gamerule fire_spread_radius_around_player` value: -1 ticks fire
+    // anywhere, 0 nowhere (26.1's replacement for the retired doFireTick=false),
+    // and a positive value only within that many blocks of the simulation
+    // centre. Gates the whole fire tick — spread, aging and burning out — the
+    // way ServerLevel#canSpreadFireAround gates FireBlock#tick.
+    void setFireSpreadRadius(int radius) { fireSpreadRadius_ = radius; }
+    [[nodiscard]] int fireSpreadRadius() const { return fireSpreadRadius_; }
+    [[nodiscard]] bool canSpreadFireAround(SimulationPosition position) const {
+        if (fireSpreadRadius_ < 0) {
+            return true;
+        }
+        const std::int64_t dx = position.x - simCenterBlockX_;
+        const std::int64_t dy = position.y - simCenterBlockY_;
+        const std::int64_t dz = position.z - simCenterBlockZ_;
+        const std::int64_t radius = fireSpreadRadius_;
+        return dx * dx + dy * dy + dz * dz <= radius * radius;
+    }
+
     // How the redstone component ticks due on a gametick are ordered before they
     // drain (W-6). Serial — the default and ground truth — drains the whole due
     // set in the single (dueTick, priority, subTickOrder) order Java uses. Island
@@ -441,6 +469,14 @@ class WorldSimulation final {
     int simCenterChunkX_ = 0;
     int simCenterChunkZ_ = 0;
     int simRadiusChunks_ = -1;
+    // The exact centre block (the player's feet), for the block-radius fire
+    // rule. Headless tests never place a player, so the default sits at the
+    // origin — harmless, because fireSpreadRadius_ defaults to 128 and every
+    // such test builds its fire within a few blocks of it.
+    int simCenterBlockX_ = 0;
+    int simCenterBlockY_ = 0;
+    int simCenterBlockZ_ = 0;
+    int fireSpreadRadius_ = 128;
     std::uint32_t randomTickState_ = 0x2F6E2B1DU;
     std::size_t lastTreeGrowthsProcessed_ = 0U;
     std::size_t randomTickConversionsThisTick_ = 0U;

@@ -253,10 +253,16 @@ class GameSession final {
     // renderer's camera direction; gameplay picks the spawn point and velocity.
     void dropCursorStack(const glm::vec3& lookDirection);
     void dropSelectedStack(bool wholeStack, const glm::vec3& lookDirection);
-    // The one game rule with a runtime mirror (randomTickSpeed -> simulation) is
-    // mirrored by the session itself. The constructor attaches it; a save load
-    // replaces gameRules_ with a null-handler copy, so the loader re-attaches it.
+    // The game rules whose consumers sit too deep to read gameRules_ themselves
+    // are mirrored into those systems by the session. The constructor attaches
+    // the handler; a save load replaces gameRules_ with a null-handler copy, so
+    // the loader re-attaches it — and because attaching also pushes every mirror
+    // once, that re-attach is what carries a loaded world's rules into the
+    // systems (applyDecoded deliberately fires no handler).
     void attachGameRuleHandlers();
+    // Pushes the mirrored rules into their systems. With a rule id, only the
+    // mirrors that rule feeds; with nullopt, all of them (the initial push).
+    void applyGameRuleMirrors(std::optional<GameRuleId> changed);
 
     // ---- Actions (the interactive layer calls these) ----
     void setGameMode(GameMode mode);

@@ -1369,7 +1369,13 @@ int main() {
         assert(dispatcher.usage("spawnpoint", owner) == "spawnpoint [<x> <y> <z>]");
         assert(dispatcher.usage("kill", owner) == "kill [<targets>]");
         assert(dispatcher.usage("difficulty", owner) == "difficulty [<level>]");
-        assert(dispatcher.usage("time", owner) == "time set <time>");
+        // CMD: /time is 26.1's whole clause set now, and every clause is
+        // reachable both bare and under `of <clock>` — this string is what
+        // proves the two subtrees were built from the one shared builder.
+        assert(dispatcher.usage("time", owner) ==
+               "time (add <time>|of <clock> (add <time>|pause|query (gametime|time)|"
+               "rate <rate>|resume|set <time>)|pause|query (gametime|time)|rate <rate>|"
+               "resume|set <time>)");
         assert(dispatcher.usage("give", owner) == "give <item> <count>");
         // CMD-7: execute is a real redirect subtree now, so its usage is
         // generated from the clause nodes (sorted, grouped) instead of the old
@@ -1407,13 +1413,194 @@ int main() {
         // a boolean rule offers true/false, an int rule its range instead. The
         // value type reads the `rule` bound earlier on the line.
         {
-            const std::string boolLine = "/gamerule keepInventory ";
+            const std::string boolLine = "/gamerule keep_inventory ";
             const auto boolValue = dispatcher.suggestions(boolLine, boolLine.size());
             assert(textOf(boolValue, "true") && textOf(boolValue, "false"));
-            const std::string intLine = "/gamerule randomTickSpeed ";
+            const std::string intLine = "/gamerule random_tick_speed ";
             const auto intValue = dispatcher.suggestions(intLine, intLine.size());
             assert(textOf(intValue, "0"));
             assert(!textOf(intValue, "true")); // an int rule is not boolean-completed
+        }
+
+        // Every /time clause end to end against the live ClockManager. The
+        // clauses existed on ClockManager long before they had commands; this is
+        // what proves each one is now reachable from chat.
+        {
+            auto& clocks = runtime.gameSession().clocks();
+            const auto run = [&](const char* line) {
+                runtime.enqueueChat(line);
+                runtime.tick();
+                return runtime.takeChatResult();
+            };
+            const auto overworld = world::ClockId::Overworld;
+            // Freeze the clock for the arithmetic clauses, so the assertions
+            // read exact totals instead of racing the tick each `run` costs.
+            // advance_time is the global gate now, so this stops every clock
+            // without touching any clock's own `paused` flag — which is exactly
+            // what lets the pause/resume clauses below be tested at all.
+            assert(run("/gamerule advance_time false").value().success);
+
+            // set <n> is absolute (26.1 setTotalTicks), not folded into the
+            // current day: 30000 stays 30000 rather than becoming day-0 6000.
+            auto result = run("/time set 30000");
+            assert(result.has_value() && result->success);
+            assert(clocks.totalTicks(overworld) == 30000U);
+
+            // set <marker> moves *forward* to the marker's next occurrence, so
+            // it never winds the calendar back: from 30000 (day 1, 6000) the
+            // next `day` (1000) is day 2's, at 49000.
+            result = run("/time set day");
+            assert(result.has_value() && result->success);
+            assert(clocks.totalTicks(overworld) == 49000U);
+
+            // add takes a signed offset, and understands the unit suffixes.
+            assert(run("/time add 1000").value().success);
+            assert(clocks.totalTicks(overworld) == 50000U);
+            assert(run("/time add -500").value().success);
+            assert(clocks.totalTicks(overworld) == 49500U);
+            assert(run("/time add 1d").value().success);
+            assert(clocks.totalTicks(overworld) == 73500U);
+            // A marker is not an offset: `add day` is refused rather than
+            // silently read as +1000.
+            assert(!run("/time add day").value().success);
+
+            // The two states are independent, the way vanilla keeps them: with
+            // advance_time off the clock is stopped, yet its own `paused` flag
+            // is still whatever /time last set. Turning the rule back on
+            // resumes it, because nothing wrote into that flag.
+            assert(!clocks.state(overworld).paused);
+            assert(run("/gamerule advance_time true").value().success);
+            const std::uint64_t running = clocks.totalTicks(overworld);
+            runtime.tick();
+            assert(clocks.totalTicks(overworld) > running);
+
+            // pause freezes that clock and nothing else: the server tick keeps
+            // advancing, which is the whole reason the clocks were split off it.
+            result = run("/time pause");
+            assert(result.has_value() && result->success);
+            assert(clocks.state(overworld).paused);
+            const std::uint64_t frozen = clocks.totalTicks(overworld);
+            const std::uint64_t serverTickBefore = runtime.gameSession().serverTick();
+            for (int i = 0; i < 5; ++i) {
+                runtime.tick();
+            }
+            assert(clocks.totalTicks(overworld) == frozen);
+            assert(runtime.gameSession().serverTick() > serverTickBefore);
+
+            result = run("/time resume");
+            assert(result.has_value() && result->success);
+            assert(!clocks.state(overworld).paused);
+
+            // rate scales one clock against the server tick. Zero is refused —
+            // that is what pause is for, and a zero rate would look paused
+            // without being it.
+            assert(run("/time rate 0.5").value().success);
+            assert(std::abs(clocks.state(overworld).rate - 0.5F) < 1e-6F);
+            assert(!run("/time rate 0").value().success);
+            assert(!run("/time rate 2000").value().success);
+            assert(run("/time rate 1").value().success);
+            assert(std::abs(clocks.state(overworld).rate - 1.0F) < 1e-6F);
+
+            // query time reports the named clock; query gametime reports the
+            // server tick, which no pause or rate can touch.
+            assert(run("/time pause").value().success);
+            result = run("/time query time");
+            assert(result.has_value() && result->success);
+            assert(result->message.find(std::to_string(clocks.totalTicks(overworld))) !=
+                   std::string::npos);
+            result = run("/time query gametime");
+            assert(result.has_value() && result->success);
+            assert(result->message.find(
+                       std::to_string(runtime.gameSession().serverTick())) != std::string::npos);
+            assert(run("/time resume").value().success);
+
+            // `of <clock>` acts on that clock alone: pausing the End leaves the
+            // overworld sun running, the per-clock split's whole point.
+            const std::uint64_t overworldBefore = clocks.totalTicks(overworld);
+            result = run("/time of the_end pause");
+            assert(result.has_value() && result->success);
+            assert(clocks.state(world::ClockId::End).paused);
+            assert(!clocks.state(overworld).paused);
+            assert(clocks.totalTicks(overworld) > overworldBefore);
+            assert(run("/time of the_nether set 12000").value().success);
+            assert(clocks.totalTicks(world::ClockId::Nether) == 12000U);
+            assert(clocks.totalTicks(overworld) != 12000U);
+            // The `minecraft:` alias resolves, an unknown clock does not.
+            assert(run("/time of minecraft:the_end resume").value().success);
+            assert(!clocks.state(world::ClockId::End).paused);
+            result = run("/time of nowhere pause");
+            assert(result.has_value() && !result->success);
+        }
+
+        // /effect, /enchant and /setworldspawn: the systems behind all three
+        // have been in place for a while (StatusEffect's shared store, the
+        // ENCH-0 registry, GameSession::setWorldSpawn); these are the commands
+        // that reach them.
+        {
+            const auto run = [&](const char* line) {
+                runtime.enqueueChat(line);
+                runtime.tick();
+                return runtime.takeChatResult();
+            };
+            auto& vitals = runtime.gameSession().primaryPlayer().vitals;
+
+            // give, with the default 30s/amplifier-0 and with both explicit.
+            assert(run("/effect give @s speed").value().success);
+            assert(gameplay::hasEffect(vitals.effects(), gameplay::speedEffect()));
+            const auto* speed =
+                gameplay::getEffect(vitals.effects(), gameplay::speedEffect());
+            assert(speed != nullptr && speed->amplifier == 0U);
+            assert(run("/effect give @s speed 60 2").value().success);
+            speed = gameplay::getEffect(vitals.effects(), gameplay::speedEffect());
+            assert(speed != nullptr && speed->amplifier == 2U);
+            // A second effect coexists with the first (the store holds several).
+            assert(run("/effect give @s regeneration 10").value().success);
+            assert(gameplay::hasEffect(vitals.effects(), gameplay::regenerationEffect()));
+            // An unknown effect is refused at parse time by the registry-backed
+            // argument, so it never reaches the handler.
+            assert(!run("/effect give @s nosucheffect").value().success);
+
+            // clear <targets> <effect> takes one away; clear takes the rest.
+            assert(run("/effect clear @s speed").value().success);
+            assert(!gameplay::hasEffect(vitals.effects(), gameplay::speedEffect()));
+            assert(gameplay::hasEffect(vitals.effects(), gameplay::regenerationEffect()));
+            assert(run("/effect clear").value().success);
+            assert(vitals.effects().empty());
+            // Nothing left to take away is a failure, not a silent success.
+            assert(!run("/effect clear").value().success);
+
+            // /enchant writes onto the held stack, and refuses a level past the
+            // enchantment's own maximum or an item it cannot go on.
+            assert(run("/give diamond_sword 1").value().success);
+            assert(run("/enchant @s sharpness 3").value().success);
+            assert(gameplay::enchantmentLevel(
+                       runtime.gameSession().inventory().selectedStack(),
+                       gameplay::EnchantmentId::Sharpness) == 3U);
+            // Sharpness caps at V, so VI is refused and the stack keeps III.
+            assert(!run("/enchant @s sharpness 6").value().success);
+            assert(gameplay::enchantmentLevel(
+                       runtime.gameSession().inventory().selectedStack(),
+                       gameplay::EnchantmentId::Sharpness) == 3U);
+            // The `minecraft:` alias resolves through the registry like any
+            // other name; an unknown enchantment does not parse at all.
+            assert(run("/enchant @s minecraft:unbreaking").value().success);
+            assert(!run("/enchant @s nosuchenchantment").value().success);
+
+            // /setworldspawn moves the world spawn, which /spawnpoint (the
+            // per-player one) must not touch.
+            const glm::vec3 personalBefore = runtime.gameSession().playerSpawnPosition();
+            assert(run("/setworldspawn 100 70 -40").value().success);
+            const glm::vec3 worldSpawn = runtime.gameSession().worldSpawnPosition();
+            assert(std::abs(worldSpawn.x - 100.0F) < 0.01F);
+            assert(std::abs(worldSpawn.y - 70.0F) < 0.01F);
+            assert(std::abs(worldSpawn.z + 40.0F) < 0.01F);
+            assert(runtime.gameSession().playerSpawnPosition() == personalBefore);
+            // Relative coordinates resolve against the sender, and the no-argument
+            // form is the sender's own position — both through the one shared
+            // resolve() /spawnpoint uses.
+            assert(run("/setworldspawn").value().success);
+            const glm::vec3 atSender = runtime.gameSession().worldSpawnPosition();
+            assert(glm::length(atSender - runtime.gameSession().player().position()) < 0.01F);
         }
 
         // R2: an incomplete command reports its usage (via the same generator).

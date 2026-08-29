@@ -9,6 +9,26 @@ simple versioned history while it is in beta.
 
 ### Added
 
+- Eleven game rules that gate mechanics this build already had but never exposed:
+  `fall_damage`, `fire_damage`, `drowning_damage` and `natural_health_regeneration`
+  (the last gates both food-driven and peaceful healing, but never starvation),
+  `block_drops`, `mob_drops` (loot and experience alike), `spawn_mobs`,
+  `fire_spread_radius_around_player` (26.1's replacement for the retired
+  `doFireTick`: `-1` anywhere, `0` nowhere, otherwise a block radius around the
+  player), and the three command budgets `max_block_modifications`,
+  `max_command_forks` and `max_command_sequence_length`, whose values were
+  previously hardcoded at exactly these defaults.
+- `/time` is now 26.1's full command: `set` (an absolute tick, or a
+  `day`/`noon`/`night`/`midnight` marker), `add`, `pause`, `resume`, `rate` and
+  `query time|gametime`, each of which can be aimed at one named clock with
+  `/time of <clock> …`. Pausing a clock freezes only that clock — mining,
+  cooldowns and every other timer keep running. The time argument accepts the
+  `d`/`s`/`t` unit suffixes (`/time add 2d`).
+- `/effect give <targets> <effect> [<seconds>] [<amplifier>]` and
+  `/effect clear [<targets>] [<effect>]`, working on players and creatures alike.
+- `/enchant <targets> <enchantment> [<level>]`, which enchants the held item and
+  refuses a level past the enchantment's maximum or an item it cannot go on.
+- `/setworldspawn [<pos>]`, the world-wide counterpart to `/spawnpoint`.
 - Sheep now come in all 16 dyeable colours: the wool renders in the sheep's own
   colour, right-clicking with a matching dye recolours it, and shearing exposes the
   bare body as the wool layer disappears; the colour persists with the sheep.
@@ -16,7 +36,7 @@ simple versioned history while it is in beta.
   experience bar and level number, experience-orb entities (gravity, same-value
   merging, magnetic attraction and pickup), and four sources — mob kills (gated by
   recent player damage), ore mining, smelting and breeding — plus a death drop of
-  `min(7*level, 100)` (retained when `keepInventory` is on). The `/experience`
+  `min(7*level, 100)` (retained when `keep_inventory` is on). The `/experience`
   (`/xp`) command was added.
 - Nether and End world generation: nether terrain (multi-noise biomes, surface and
   features) and end terrain (a central island plus outer islands), each dimension
@@ -195,6 +215,18 @@ simple versioned history while it is in beta.
 
 ### Changed
 
+- Game rules are now named the way 26.1 names them, in `snake_case`:
+  `doDaylightCycle` became `advance_time`, `doWeatherCycle` became
+  `advance_weather`, and `keepInventory`, `randomTickSpeed` and
+  `sendCommandFeedback` became `keep_inventory`, `random_tick_speed` and
+  `send_command_feedback`. Worlds saved by an earlier build keep their settings:
+  the old names are still understood when a save is read, so nothing silently
+  reverts to a default. Only the new names are accepted by `/gamerule` and
+  offered in completion.
+- `/time set <n>` now sets the absolute time the way 26.1 does, instead of
+  folding the value into the current day. `/time set day` (and the other markers)
+  still moves forward to that point's next occurrence, so it never winds the
+  calendar backwards.
 - Player animation moved onto a layered bone-mask + override-blend +
   animation-controller stack, with the world player and first-person view sharing
   it, and its clips were calibrated to the 26.1 specification.
@@ -323,6 +355,9 @@ simple versioned history while it is in beta.
 
 ### Fixed
 
+- `advance_time` no longer overrides a clock paused by `/time pause`. The rule is
+  a global switch over every clock, kept separate from each clock's own paused
+  state, the way 26.1 keeps them.
 - Fixed the box-UV texture mapping of the animal models so cows, pigs, sheep and
   chickens match Java 26.1 face-for-face: corrected the left/right mirroring on cube
   front/back faces, the swapped inner/outer faces on mirrored limbs, and the

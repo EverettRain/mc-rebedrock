@@ -34,6 +34,30 @@ struct VitalsTickResult final {
     bool died = false;
 };
 
+// The game rules this tick honours, mirrored in rather than read out of a
+// GameRules the vitals have no business knowing about — the same shape
+// `difficulty_` already takes, and the same discipline WorldSimulation's
+// mirrored randomTickSpeed follows. Every field defaults to vanilla's default,
+// so a PlayerVitals nobody configures behaves exactly as it did before the
+// rules existed (which is what every headless test relies on).
+struct VitalsRules final {
+    // GameRules.FALL_DAMAGE / FIRE_DAMAGE / DROWNING_DAMAGE: each suppresses one
+    // environmental damage source. Suppressed damage is not merely healed back —
+    // the hit never lands, so no invulnerability window opens and no hurt sound
+    // plays, matching vanilla's `if (rule)` guards around each hurt() call.
+    bool fallDamage = true;
+    bool fireDamage = true;
+    bool drowningDamage = true;
+    // GameRules.NATURAL_HEALTH_REGENERATION: gates both halves of free healing —
+    // the food-driven regeneration in FoodData#tick and the peaceful-difficulty
+    // regeneration in ServerPlayer#tick. Starvation is deliberately *not* gated:
+    // vanilla's `else if (foodLevel <= 0)` branch sits outside the rule, so
+    // turning regeneration off leaves an empty belly just as lethal.
+    bool naturalHealthRegeneration = true;
+
+    [[nodiscard]] bool operator==(const VitalsRules&) const = default;
+};
+
 // vanilla health, hunger and environmental damage for a survival player.
 // Creative players simply do not tick this.
 class PlayerVitals final {
@@ -68,6 +92,9 @@ class PlayerVitals final {
 
     [[nodiscard]] Difficulty difficulty() const { return difficulty_; }
     void setDifficulty(Difficulty difficulty) { difficulty_ = difficulty; }
+
+    [[nodiscard]] const VitalsRules& rules() const { return rules_; }
+    void setRules(const VitalsRules& rules) { rules_ = rules; }
 
     VitalsTickResult tick(const VitalsInput& input);
     // Player#causeFoodExhaustion, for actions outside movement such as mining.
@@ -127,6 +154,7 @@ class PlayerVitals final {
     void tickPeacefulRegeneration();
 
     Difficulty difficulty_ = Difficulty::Normal;
+    VitalsRules rules_{};
     // PlayerEntity#age, only needed for the peaceful regeneration cadence.
     int ageTicks_ = 0;
 

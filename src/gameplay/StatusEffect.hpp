@@ -138,6 +138,14 @@ class StatusEffectRegistry;
 // name a save stores instead of the per-run id. Empty for an invalid id.
 [[nodiscard]] std::string_view statusEffectName(core::StatusEffectId id);
 
+// How many effects the registry holds, and the id at a dense index. The ids are
+// registry subscripts, so `statusEffectAt(i)` for i in [0, statusEffectCount())
+// enumerates every registered effect exactly once. This is what `/effect`'s
+// argument completes from — the registry stays the single list, with no second
+// copy of the effect names anywhere.
+[[nodiscard]] std::size_t statusEffectCount();
+[[nodiscard]] core::StatusEffectId statusEffectAt(std::size_t index);
+
 // The built-in ids, resolved once. These are the handles content nodes name
 // (AR-M's hunger, AR-A3's cleanse); holding the id avoids a name lookup per use.
 [[nodiscard]] core::StatusEffectId poisonEffect();
