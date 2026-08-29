@@ -14,7 +14,7 @@
 // The built-in provider now owns rebedrock's OWN assets only. Everything
 // Mojang-shaped — textures, sounds, the font, the `minecraft` lang tables — must
 // resolve to an empty path so the layered stack falls through to the player's
-// resource pack; the bundled `resources/vanilla/1.16.1/…` tree it used to map is
+// resource pack; the bundled `resources/vanilla/<version>/…` tree it used to map is
 // gone. Those empties are asserted below: a provider that starts placing vanilla
 // files again would shadow the pack.
 int main() {

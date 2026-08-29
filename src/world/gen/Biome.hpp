@@ -29,7 +29,7 @@ enum class Biome : std::uint8_t {
     Mountains,
     River,
     DeepOcean,
-    // WG-0 nether biomes (1.16.1's five). Identity only: the BiomeSource that
+    // WG-0 nether biomes (vanilla's five). Identity only: the BiomeSource that
     // selects between them by multi-noise is WG-2. Their surface palette and
     // colours are recorded here so the generator has a complete definition to
     // read; placement stays downstream.
@@ -48,7 +48,7 @@ enum class Biome : std::uint8_t {
     Count,
 };
 
-// The tree shapes ported from 1.16.1's ConfiguredFeatures. Each names a
+// The tree shapes ported from vanilla's ConfiguredFeatures. Each names a
 // trunk/foliage placer pair rather than a block palette, because the palette is
 // carried alongside it in the biome's tree list.
 enum class TreeKind : std::uint8_t {
@@ -94,7 +94,7 @@ struct BiomeDefinition final {
     float scale = 0.05F;
     // Only used to pick between the snow, sand and grass surface families.
     float temperature = 0.8F;
-    // Biome.Builder#downfall (1.16.1), which together with the temperature
+    // Biome.Builder#downfall, which together with the temperature
     // indexes the vanilla grass/foliage colour maps.
     float downfall = 0.4F;
     // SurfaceConfig: what the top block and the few below it become.

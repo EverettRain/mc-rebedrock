@@ -28,7 +28,7 @@ namespace mc::gameplay::command {
     return result;
 }
 
-// The literal times 1.16.1's TimeArgument accepts plus a raw tick count taken
+// The literal times vanilla's /time accepts plus a raw tick count taken
 // modulo a full day (so 24001 resolves to 1, matching the vanilla formatter).
 [[nodiscard]] inline std::optional<double> parseTimeOfDay(std::string_view value) {
     const std::string normalized = lowercase(value);
@@ -49,7 +49,7 @@ namespace mc::gameplay::command {
 // Each implements the visitor contract IdentifierTable.hpp documents. Commands
 // complete to the project's own `rebedrock:` namespace — the single outward
 // identity of the game's content. The `minecraft:` alias registries carry for
-// vanilla mirroring stays accepted at parse time (for 1.16.1-familiar input),
+// vanilla mirroring stays accepted at parse time (for familiar input),
 // but it is never suggested.
 
 class GameModeTable final {
@@ -226,7 +226,7 @@ class GiveItemArgument final : public ArgumentType {
 };
 
 // `/tp`'s destination: either a three-coordinate position (with `~`-relative
-// axes, mirroring 1.16.1's Vec3Argument) or a registered entity id to teleport
+// axes, mirroring vanilla's vec3 argument) or a registered entity id to teleport
 // onto. The coordinate form binds a Position3, the entity form a std::string;
 // the handler branches on whichever is present.
 class TeleportDestinationArgument final : public ArgumentType {
@@ -296,7 +296,7 @@ class EntityTargetArgument final : public ArgumentType {
     }
 };
 
-// `@s/@p/@a/@e/@r[filters]`: a real target selector (1.16.1's EntitySelector),
+// `@s/@p/@a/@e/@r[filters]`: a real target selector (vanilla's EntitySelector),
 // binding a parsed EntitySelector the handler resolves against its player/entity
 // pools. Completion is context-aware: the variable list at `@`, the option keys
 // inside `[`, and the species registry after `type=` (never a hardcoded list).
@@ -435,7 +435,7 @@ class DimensionArgument final : public ArgumentType {
 // `/gamerule <rule> <value>`: the value is parsed permissively (GameRules
 // validates it by the rule's type at execution time), but completed by that
 // type — a boolean rule offers true/false, an int rule its range — derived from
-// the `rule` bound earlier on the line. 1.16.1 registers a per-rule typed value
+// the `rule` bound earlier on the line. Vanilla registers a per-rule typed value
 // node; rebedrock keeps GameRules as the single rule engine and reads the same
 // completion off the parsed rule name, so no per-rule tree is duplicated.
 class GameRuleValueArgument final : public ArgumentType {
@@ -470,7 +470,7 @@ class GameRuleValueArgument final : public ArgumentType {
 };
 
 // Shared, stateless instances of the gameplay argument types. One instance
-// serves every command that uses a type (1.16.1's ArgumentType.instance()).
+// serves every command that uses a type (vanilla's ArgumentType.instance()).
 inline const GameModeArgument kGameModeArgument;
 inline const TimeArgument kTimeArgument;
 inline const GiveItemArgument kGiveItemArgument;
@@ -487,7 +487,7 @@ inline const GameRuleValueArgument kGameRuleValueArgument;
 inline const TableArgument<BlockTable> kBlockArgument;
 inline const TableArgument<EntityTable> kSummonEntityArgument;
 // `/weather clear|rain [<duration>]`: the duration (seconds) is bounded by the
-// same 0..1000000 1.16.1's WeatherCommand hands IntegerArgumentType; the
+// same 0..1000000 vanilla's /weather hands its integer argument; the
 // handler converts it to ticks at 20 per second. A bound is required so a
 // seconds value that would overflow when doubled is rejected at parse time.
 inline const IntArgument kWeatherDurationArgument{0, 1'000'000};

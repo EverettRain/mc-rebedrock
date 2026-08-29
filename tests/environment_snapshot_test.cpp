@@ -11,7 +11,7 @@ namespace {
 using mc::gameplay::EnvironmentSnapshot;
 namespace environment = mc::gameplay::environment;
 
-// 1.16.1's closed form for the same quantity, kept here as an independent
+// vanilla's closed form for the same quantity, kept here as an independent
 // oracle: Level#updateSkyBrightness computed
 //   d = 1 - rainLevel * 5/16
 //   e = 1 - thunderLevel * 5/16
@@ -70,7 +70,7 @@ void testAmbientDarkness() {
     assert(noon.ambientDarkness == 0);
     assert(nearly(midnight.skyLightLevel, 4.0F));
     assert(midnight.ambientDarkness == 11);
-    // Both agree with the 1.16.1 closed form on the plateaus.
+    // Both agree with the vanilla closed form on the plateaus.
     assert(noon.ambientDarkness == legacySkyDarken(0.0, 0.0F, 0.0F));
     assert(midnight.ambientDarkness == legacySkyDarken(0.5, 0.0F, 0.0F));
 
@@ -90,7 +90,7 @@ void testAmbientDarkness() {
 
 void testWeatherLayers() {
     // Rain and thunder blend SKY_LIGHT_LEVEL toward 4.0 with their own alphas.
-    // Both land on the same integer the 1.16.1 product form produced.
+    // Both land on the same integer the vanilla product form produced.
     const auto rainyNoon = EnvironmentSnapshot::resolve(6000.0, 1.0F, 0.0F);
     assert(rainyNoon.ambientDarkness == 3);
     assert(rainyNoon.ambientDarkness == legacySkyDarken(0.0, 1.0F, 0.0F));

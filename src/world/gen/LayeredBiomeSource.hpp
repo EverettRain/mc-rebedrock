@@ -7,10 +7,10 @@
 
 namespace mc::world::gen {
 
-// Java 1.16.1's VanillaLayeredBiomeSource: the ~30-pass GenLayer zoom pipeline
+// vanilla's VanillaLayeredBiomeSource: the ~30-pass GenLayer zoom pipeline
 // (ContinentLayer -> ScaleLayer zooms -> climate / edge / river layers) that
 // builds the overworld biome map at 1:4 (quart) resolution. Ported from the
-// 1.16.1 Yarn sources; the biome set is reduced to the ones Biome.hpp
+// vanilla Yarn sources; the biome set is reduced to the ones Biome.hpp
 // registers, with the hills and temperature variants collapsed onto their base
 // biome and the ocean-temperature variants onto Ocean/DeepOcean.
 class LayeredBiomeSource final {

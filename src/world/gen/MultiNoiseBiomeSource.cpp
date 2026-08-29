@@ -8,7 +8,7 @@
 namespace mc::world::gen {
 namespace {
 
-// The 1.16.1 nether biome parameter points (Biome.MixedNoisePoint). The distance
+// The vanilla nether biome parameter points (Biome.MixedNoisePoint). The distance
 // a column's climate sits from each point (plus the point's offset) picks the
 // biome, so a warp/crimson pocket forms where the humidity noise runs high/low
 // and the deltas where the temperature runs cold.
@@ -20,7 +20,7 @@ constexpr std::array<MultiNoiseBiomeSource::NoisePoint, 5> kNetherPoints{{
     {Biome::BasaltDeltas, -0.5F, 0.0F, 0.0F, 0.0F, 0.175F},
 }};
 
-// The octave range 1.16.1's nether climate noises use: a low-frequency stack so a
+// The octave range vanilla's nether climate noises use: a low-frequency stack so a
 // biome spans a broad region rather than flickering cell to cell.
 constexpr int kClimateOctaves = 4;
 

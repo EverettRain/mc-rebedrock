@@ -42,12 +42,12 @@ public:
 
     void spawnBlockBreak(const glm::ivec3& blockPosition, world::Block block);
     void spawnWaterSplash(const glm::vec3& position);
-    // One 1.16.1 RainSplashParticle at a sampled solid/fluid impact point.
+    // One vanilla RainSplashParticle at a sampled solid/fluid impact point.
     // Water impacts are slightly broader so they remain legible on the moving
     // water texture; ground impacts keep the original compact sprite.
     void spawnRainImpact(const glm::vec3& position, bool onWater);
     // A rain drop landing on a water surface or solid ground: a short-lived
-    // outward splash like 1.16.1's SplashParticle, kept small so the continuous
+    // outward splash like vanilla's SplashParticle, kept small so the continuous
     // rain never floods the particle list. A non-zero `direction` (a wall's
     // outward normal) sprays the droplets in a half-circle fan facing away from
     // the wall instead of radially.

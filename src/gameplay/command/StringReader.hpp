@@ -7,7 +7,7 @@
 
 namespace mc::gameplay::command {
 
-// 一个基于游标、在一行命令输入上向前滑动的分词器，对应 1.16.1 的
+// 一个基于游标、在一行命令输入上向前滑动的分词器，对应 vanilla 的
 // com.mojang.brigadier.StringReader。命令按空白分词，但以引号开头的 token
 // 会按带反斜杠转义的引号字符串读取，因此单个参数可以携带空格。reader 从不
 // 复制输入，只推进游标并对输入返回视图；只有引号解析需要一个 std::string
@@ -86,7 +86,7 @@ class StringReader final {
         return std::string{input_.substr(start)};
     }
 
-    // 读取一个坐标 token，对应 1.16.1 Vec3Argument 的 readRelativeDouble：
+    // 读取一个坐标 token，对应 vanilla Vec3Argument 的 readRelativeDouble：
     // 可选 `~` 相对前缀，后接有符号十进制数。`~` 刻意不在无引号字符串的
     // 允许字符集里，因此坐标需要自己的读取器。输入不以坐标开头时返回空串。
     [[nodiscard]] std::string readCoordinate() {
@@ -116,7 +116,7 @@ class StringReader final {
         return readStringUntil(quote);
     }
 
-    // 无引号 token 内允许的字符，与 1.16.1 StringReader#isAllowedInUnquotedString
+    // 无引号 token 内允许的字符，与 vanilla StringReader#isAllowedInUnquotedString
     // 的字符集一致（因此标识符、数字与命名空间都能在一个 token 里）。
     [[nodiscard]] static constexpr bool isAllowedInUnquotedString(char character) {
         return (character >= '0' && character <= '9') ||

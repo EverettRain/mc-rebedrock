@@ -51,7 +51,7 @@ namespace mc::data {
 // JE's LevelBasedValue in its `min_cost` / `max_cost` linear form: the affine
 // curve `base + (level - 1) * per_level_above_first`, evaluated per level. This
 // is the JSON source of ENCH-0's EnchantmentCostCurve — the numbers Enchantment.
-// hpp transcribed by hand from each 1.16.1 subclass now arrive from the file.
+// hpp transcribed by hand from each vanilla subclass now arrive from the file.
 // (26.1 `min_cost`/`max_cost` are always this linear shape; a richer value tree
 // only appears inside `effects`, which DDC-2 owns.)
 struct EnchantmentCostValue final {

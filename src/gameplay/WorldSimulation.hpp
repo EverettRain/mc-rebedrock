@@ -154,7 +154,7 @@ class WorldSimulation final {
     // 3/4096 of the time. That is a mean wait of 1365 ticks — 68 seconds — per
     // leaf: a canopy starts thinning within a second, but the last leaf of a
     // fifty-odd block crown takes about five minutes, and a chopped forest takes
-    // longer still. Slow, but that is what 1.16.1 does; this constant is the one
+    // longer still. Slow, but that is what vanilla does; this constant is the one
     // knob if the pacing needs to change.
     static constexpr double kLeafDecayChancePerTick = 3.0 / 4096.0;
     // How many crop-growth / farmland-moisture state writes one random-tick pass

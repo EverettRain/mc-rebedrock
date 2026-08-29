@@ -158,7 +158,7 @@ enum class Block : std::uint16_t {
     Potatoes,
     // The decorative stone variants added to round out the stone family: each
     // polished stone is the 2x2-crafted version of its parent, and smooth stone
-    // is smelted from stone in the furnace (no crafting recipe, like 1.16.1).
+    // is smelted from stone in the furnace (no crafting recipe, like vanilla).
     PolishedGranite,
     PolishedDiorite,
     PolishedAndesite,
@@ -234,7 +234,7 @@ enum class Block : std::uint16_t {
     // only. WG-2/3 place these; WG-0 gives them a BlockId, properties and a
     // `minecraft:*` alias so the generator has something to place and JC import
     // maps straight onto them. No new behaviour — they are plain solid cubes
-    // (Magma emits light 3, the rest inert), mirroring the 1.16.1 base blocks.
+    // (Magma emits light 3, the rest inert), mirroring the vanilla base blocks.
     //
     // Nether:
     SoulSand,
@@ -827,7 +827,7 @@ struct DirectionalTextureLayers final {
 };
 
 // The block's textures by vanilla file name ("granite", "grass_block_top",
-// "dirt"), mirroring how 1.16.1 blocks reference sprites by ResourceLocation.
+// "dirt"), mirroring how vanilla blocks reference sprites by ResourceLocation.
 // The renderer resolves the names into atlas layer indices once at startup and
 // writes the per-block layers into kBlockTextureLayers; the mesher and the GUI
 // read those precomputed floats, so the hot paths never touch a string.
@@ -898,7 +898,7 @@ struct BlockDefinition final {
     // The registry key, always in this project's namespace.
     Identifier identifier{};
     // The vanilla block this one mirrors, empty for original content. Drives
-    // translation keys and 1.16.1 asset lookups; several block states may share
+    // translation keys and vanilla asset lookups; several block states may share
     // one vanilla name, the way the four wall torches do.
     Identifier vanilla{};
     // Fallback English name. Localized text comes from the translation key the
@@ -2141,7 +2141,7 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .blockEntity(BlockEntityKind::TrappedChest)
         .creative(CreativeCategory::Redstone),
     // WG-0 nether base blocks. Strengths and the magma light level mirror
-    // 1.16.1/26.1 Blocks.java; textures name the vanilla sprites so the
+    // 26.1's Blocks.java; textures name the vanilla sprites so the
     // name-driven atlas build resolves them. These are identity only — placement
     // is WG-2, playable content (nether-brick building, nether wart farming)
     // is AR-B.
@@ -3179,7 +3179,7 @@ static_assert(blockRegistryIsWellFormed(),
 // material is neither opaque nor transparent) report 3, and everything else 0.
 // A water cell sitting above a grass block therefore makes SpreadableBlock's
 // `canSpread` fail (3 > 2) and the grass revert to dirt on its next random
-// tick — the vanilla 1.16.1 behaviour this project mirrors.
+// tick — the vanilla behaviour this project mirrors.
 [[nodiscard]] constexpr int opacity(Block block) {
     if (isOpaque(block))
         return 15;
@@ -3218,7 +3218,7 @@ static_assert(blockRegistryIsWellFormed(),
     return isTorch(block) && blockDefinition(block).lit;
 }
 
-// Wall torches sit flush against their wall, the way 1.16.1's WallTorchBlock
+// Wall torches sit flush against their wall, the way vanilla's WallTorchBlock
 // AABB runs all the way to the block face (a north-facing torch spans z 11..16
 // of 16). This is the inset of the model's root from the cell centre toward the
 // wall; the mesh and the selection box share it so clicking matches the look.
@@ -3420,7 +3420,7 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
     return blockDefinition(block).collision && !isLeaves(block);
 }
 
-// Whether the block darkens a smooth-lighting AO corner (vanilla 1.16.1
+// Whether the block darkens a smooth-lighting AO corner (vanilla
 // AbstractBlock#getAmbientOcclusionLightLevel: a full cube whose material is
 // opaque returns 0.2, everything else 1.0). isFullCube alone is wrong: leaves,
 // glass and glowstone are cube-shaped but their vanilla materials are not
@@ -3468,7 +3468,7 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
     return blockDefinition(block).support;
 }
 
-// BushBlock#mayPlaceOn in Java 1.16.1.
+// VegetationBlock#mayPlaceOn in 26.1 (BushBlock in earlier versions).
 [[nodiscard]] constexpr bool isSoil(Block block) { return blockDefinition(block).soil; }
 
 [[nodiscard]] constexpr bool isFarmland(Block block) { return block == Block::Farmland; }

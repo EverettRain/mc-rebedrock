@@ -36,7 +36,7 @@ void main() {
             color *= texture(blockTextures, vec3(fragmentUv, fragmentTextureLayer));
             color.rgb *= fragmentLight;
         } else {
-            // 1.16.1 multiplies the raw sRGB texel by the vertex colour and lets
+            // vanilla multiplies the raw sRGB texel by the vertex colour and lets
             // the (sRGB) framebuffer pass it through. Our sampler already decoded
             // to linear, so convert back, tint in sRGB space, then decode again;
             // tinting in linear space would leave every dark tint visibly

@@ -157,7 +157,7 @@ static_assert(std::is_trivially_copyable_v<ItemStack>,
     return itemMaximumDamage(stack) > 0U;
 }
 
-// EQ-1: EquipmentSlot#canEquip's filter (its actual home in 1.16.1 is
+// EQ-1: EquipmentSlot#canEquip's filter (its actual home in vanilla is
 // per-slot: LivingEntity#getEquipmentSlotForItem consults
 // EquipmentSlot.MAINHAND/OFFHAND/ARMOR's own canEquip predicate, and armor's
 // slot-matching test is ArmorItem#getSlotType == the target slot). The

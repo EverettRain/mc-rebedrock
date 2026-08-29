@@ -200,7 +200,7 @@ struct ItemUseResult final {
     world::BlockState state{};
 };
 
-// Item#useOn (1.16.1): one function pointer per item class, so the interaction
+// Item#useOn: one function pointer per item class, so the interaction
 // system calls the item instead of switching on it. Constexpr items cannot be
 // virtual, so the behaviour is a function pointer set by the useAction() chain
 // for ordinary items — the same pattern as SpawnEggItem's entity supplier.

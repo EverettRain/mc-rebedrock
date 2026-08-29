@@ -34,7 +34,7 @@ using core::kVanillaNamespace;
 using core::CreativeCategory;
 
 // The tool a stack is wielded as, and the material it is made from. Together
-// they carry Java 1.16.1's ToolMaterials: a tier's harvest level and mining
+// they carry vanilla's ToolMaterial tiers: a tier's harvest level and mining
 // speed, plus the attack damage/speed each tool type adds. Material and type
 // are both stored on the item so the mining system can read them from the
 // registry table instead of a parallel switch (see toolAttributes).
@@ -75,7 +75,7 @@ enum class ToolTier : std::uint8_t {
     Diamond,
 };
 
-// EQ-0: Java 1.16.1's ArmorMaterials enum — the five armor materials, kept as
+// 26.1's ArmorMaterials — the five armor materials this build models, kept as
 // its own enum rather than reusing ToolTier because leather and chainmail
 // have no tool-tier counterpart (and gold/iron/diamond's armor numbers do not
 // share ToolTier's mining-speed/harvest-level axis at all). None is the "not
@@ -89,7 +89,7 @@ enum class ArmorMaterialId : std::uint8_t {
     Diamond,
 };
 
-// What eating one item restores, following Java 1.16.1 FoodComponent.
+// What eating one item restores, following 26.1's FoodProperties.
 struct FoodValue final {
     int foodLevel = 0;
     float saturationModifier = 0.0F;
@@ -102,7 +102,7 @@ enum class TextureBuild : std::uint8_t {
     SpawnEggComposite,
 };
 
-// The kind of block item a block stack is wielded as, mirroring 1.16.1's
+// The kind of block item a block stack is wielded as, mirroring vanilla's
 // BlockItem subclasses. None for ordinary items, Plain for a block wielded
 // directly, StandingAndWall for the torch's two-variant item, and Leaves for
 // the LeavesBlockItem that marks hand-placed leaves as persistent.
@@ -211,7 +211,7 @@ class Item {
     }
 
     // EQ-0: marks the item as armor of the given material worn in the given
-    // slot — Java 1.16.1's ArmorItem constructor. Mirrors tool()'s shape: the
+    // slot — the armor half of 26.1's Item.Properties. Mirrors tool()'s shape: the
     // registry table (armorAttributes below) derives protection/toughness/
     // durability/enchantability from (material, slot) rather than storing
     // them redundantly on every one of the 20 items.
@@ -291,7 +291,7 @@ class Item {
     ItemUseFn useOn = nullptr;
 };
 
-// SpawnEggItem (1.16.1): an Item that knows which entity it spawns. Storing the
+// SpawnEggItem: an Item that knows which entity it spawns. Storing the
 // EntityType supplier here (rather than in a parallel mapping) lets the renderer
 // tint each egg with its species' colours and lets the interaction system spawn
 // the right creature — all without a hardcoded entity list. The supplier is a
@@ -327,7 +327,7 @@ class SpawnEggItem : public Item {
     return nullptr;
 }
 
-// BlockItem (1.16.1): the Item a block is wielded as. Where vanilla writes
+// BlockItem: the Item a block is wielded as. Where vanilla writes
 // `new BlockItem(block, props)` into its Items registry, a stack here points at
 // the block's own BlockItem. Identity, stack size and fallback name all come
 // from the block's registry entry, so a block and its item always agree. The
@@ -357,7 +357,7 @@ class BlockItem : public Item {
     world::BlockId block_ = world::blockId(world::Block::Air);
 };
 
-// StandingAndWallBlockItem (1.16.1): a block item that places one of two blocks
+// StandingAndWallBlockItem: a block item that places one of two blocks
 // — the wall variant wins on a side face, the standing variant otherwise. The
 // torch is the registered instance; its placement policy lives in
 // world::standingAndWallPlacement, which reads the clicked face.
@@ -392,7 +392,7 @@ class StandingAndWallBlockItem : public BlockItem {
     return nullptr;
 }
 
-// LeavesBlockItem (1.16.1): the block item leaves are wielded as. Its placement
+// The block item leaves are wielded as. Its placement
 // marks the leaves persistent so hand-placed leaves never decay; the flag is the
 // block's own PERSISTENT property, so the class carries the behaviour and
 // BlockState::withPersistent records it.
@@ -623,7 +623,7 @@ inline constexpr Item Mutton = Item::of("mutton")
 inline constexpr Item RottenFlesh = Item::of("rotten_flesh")
                                         .category(CreativeCategory::FoodAndDrink)
                                         .food({4, 0.1F});
-// Carrot and potato are both food (1.16.1 FoodComponent) and the seed of their
+// Carrot and potato are both food (vanilla FoodProperties) and the seed of their
 // own crop — a held carrot/potato plants itself on farmland, like the vanilla
 // items whose useOn is a SeedsItem subclass. Planting is dispatched by item
 // identity in itemUseOn; right-clicking empty ground still eats them.
@@ -760,14 +760,14 @@ inline constexpr Item FlintAndSteel = Item::of("flint_and_steel")
                                           .single()
                                           .tool(ToolType::FlintAndSteel, ToolTier::None);
 
-// RW-1: ArrowItem (1.16.1) — ordinary stackable ammunition, 64 per stack
+// ArrowItem — ordinary stackable ammunition, 64 per stack
 // (Item.Settings' default maxCount, ArrowItem sets no override). Ranged
 // weapons scan the whole inventory for one (Inventory::findArrowSlot below),
 // not just the selected hotbar slot, mirroring PlayerEntity#getArrowType's
 // inventory scan.
 inline constexpr Item Arrow =
     Item::of("arrow").category(CreativeCategory::Combat);
-// RW-1: BowItem (1.16.1) — a charge/startUsing item (UseAnimation::Bow,
+// BowItem — a charge/startUsing item (UseAnimation::Bow,
 // vanilla's UseAction.BOW), 384 durability (toolAttributes' Bow case), one
 // point spent per shot. No useOn: a bow is never aimed at a block placement
 // target — PlayerInteraction's release path (UseItemStop) drives the whole
@@ -778,7 +778,7 @@ inline constexpr Item Bow = Item::of("bow")
                                 .single()
                                 .tool(ToolType::Bow, ToolTier::None);
 
-// DYE-1: the 16 DyeItems (1.16.1 Items.WHITE_DYE .. Items.BLACK_DYE). Each is an
+// The 16 DyeItems (Items.WHITE_DYE .. Items.BLACK_DYE). Each is an
 // ordinary stackable material whose id is `<colour>_dye` — the vanilla registry
 // name, so a give command resolving `minecraft:light_blue_dye` still works. A
 // dye item's texture is item/<colour>_dye.png (Item::of's default), matching the
@@ -889,10 +889,10 @@ static_assert([] {
 }(), "kWoolBlocks must list <colour>_wool in DyeColor id order");
 
 // Armor: 5 materials (leather/chainmail/iron/gold/diamond) x 4 slots
-// (head/chest/legs/feet), Java 1.16.1 ArmorItem. Each is single-stacking,
+// (head/chest/legs/feet). Each is single-stacking,
 // carries its material + slot (armorAttributes below derives protection,
 // toughness, durability and enchantability from that pair), and files under
-// the Combat creative tab. Chainmail has no crafting recipe in 1.16.1 (see
+// the Combat creative tab. Chainmail has no crafting recipe in vanilla (see
 // RecipeBakedData.inc's comment) but its item identity still registers —
 // obtainable via /give, mob drops and (once loot is wired) trades, exactly
 // as vanilla.
@@ -1079,9 +1079,10 @@ static_assert(itemRegistryIsWellFormed(),
 // tables here. Item.hpp keeps only the constexpr definitions; the registry that
 // hands out ItemIds and resolves names is built from them one layer up.
 
-// The harvest and combat parameters Java 1.16.1 assigns to one tool. The
-// project does not consume durability yet, but the numbers are kept so the
-// registry answers the same values 1.16.1 does.
+// The harvest and combat parameters vanilla assigns to one tool. The numbers
+// below are 26.1's. `harvestLevel` is the one legacy concept kept here: 26.1
+// expresses the same gate as the incorrect-for-drops block tags, which this
+// build has not adopted yet, so the numeric tier stands in for them.
 struct ToolAttributes final {
     float miningSpeed = 1.0F;
     std::uint8_t harvestLevel = 0;
@@ -1103,9 +1104,12 @@ struct ToolAttributes final {
     return 0;
 }
 
-// Java 1.16.1 ToolMaterial + SwordItem/PickaxeItem/... constructors: per-tier
-// mining speed and harvest level, plus the attack damage and speed each tool
-// type carries. Material order below is Wood, Stone, Iron, Gold, Diamond.
+// 26.1's ToolMaterial plus the per-tool sword()/pickaxe()/... Item.Properties:
+// per-tier mining speed and durability, and the attack damage and speed each
+// tool type carries. Material order below is Wood, Stone, Iron, Gold, Diamond;
+// 26.1's Copper and Netherite tiers are not modelled. Verified against 26.1:
+// speed {2,4,6,12,8}, durability {59,131,250,32,1561}, and a sword's 4.0/1.6
+// (its properties add 3.0 damage over the base 1 and -2.4 to the base 4 speed).
 [[nodiscard]] constexpr ToolAttributes toolAttributes(ToolType type, ToolTier tier) {
     constexpr std::array<float, 5> kMiningSpeed{2.0F, 4.0F, 6.0F, 12.0F, 8.0F};
     constexpr std::array<std::uint8_t, 5> kHarvestLevel{0, 1, 2, 0, 3};
@@ -1141,8 +1145,7 @@ struct ToolAttributes final {
         // materialed) — a flat entry independent of `tier`/`material` above.
         return {15.0F, 0U, 1.0F, 1.0F, 238U};
     case ToolType::Bow:
-        // BowItem (1.16.1): 384 durability (Items.java's
-        // `new BowItem(new Item.Settings().maxDamage(384)...)`), same flat
+        // BowItem: 384 durability from its Items.java properties, same flat
         // shape as Shears — no mining speed/harvest level/attack numbers a
         // bow ever consults.
         return {1.0F, 0U, 1.0F, 1.0F, 384U};
@@ -1187,9 +1190,9 @@ struct ToolAttributes final {
     return 0;
 }
 
-// Java 1.16.1 ArmorMaterial: what one piece of armor (a material x slot pair)
-// carries. toughness/enchantability are per-material (every slot of the same
-// material shares them); protection and durability vary by slot too.
+// What one piece of armor (a material x slot pair) carries.
+// toughness/enchantability are per-material (every slot of the same material
+// shares them); protection and durability vary by slot too.
 struct ArmorAttributes final {
     std::uint8_t protection = 0;
     float toughness = 0.0F;
@@ -1197,12 +1200,12 @@ struct ArmorAttributes final {
     std::uint16_t durability = 0;
 };
 
-// Java 1.16.1 ArmorMaterials enum (net.minecraft.item.ArmorMaterials, yarn
-// 1.16.1) — transcribed from the decompiled source, not the wiki. Material
-// order below is Leather, Chainmail, Iron, Gold, Diamond (armorMaterialIndex
-// above); each PROTECTION_VALUES row is {feet, legs, chest, head}
-// (armorSlotIndex above) exactly as ArmorMaterials declares
-// `new int[]{feet, legs, chest, head}`:
+// 26.1's ArmorMaterials (net.minecraft.world.item.equipment.ArmorMaterials),
+// transcribed from the source, not the wiki. Material order below is Leather,
+// Chainmail, Iron, Gold, Diamond (armorMaterialIndex above); each row is
+// {feet, legs, chest, head}, the first four arguments of 26.1's
+// `makeDefense(boots, legs, chest, helm, body)`. Its fifth (BODY, for wolf
+// armor) and the Copper/Turtle/Netherite/Armadillo materials are not modelled:
 //   LEATHER   {1, 2, 3, 1}   durabilityMultiplier  5   toughness 0.0  ench 15
 //   CHAIN     {1, 4, 5, 2}   durabilityMultiplier 15   toughness 0.0  ench 12
 //   IRON      {2, 5, 6, 2}   durabilityMultiplier 15   toughness 0.0  ench  9
@@ -1286,7 +1289,7 @@ struct ArmorAttributes final {
     return item == &items::Bow;
 }
 
-// BowItem#getMaxUseTime (1.16.1): 72000 ticks — effectively "until released",
+// BowItem#getUseDuration (26.1): 72000 ticks — effectively "until released",
 // never a self-expiring countdown the way eating's fixed 32 ticks is. Passed
 // to PlayerActionState::startUsing as the draw's durationTicks so the shared
 // use timeline never auto-finishes a held bow out from under the player.

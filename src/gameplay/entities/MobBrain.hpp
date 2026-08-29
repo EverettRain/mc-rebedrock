@@ -129,7 +129,7 @@ class MobGoal {
     virtual void tick(SimpleEntity&, MobAiContext&, class MobBrain&) {}
 };
 
-// 1.16.1 GoalSelector semantics: lower numeric priorities may replace higher
+// vanilla GoalSelector semantics: lower numeric priorities may replace higher
 // numeric priorities when their MOVE/LOOK/JUMP/TARGET controls conflict.
 class GoalSelector final {
   public:

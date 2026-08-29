@@ -7,7 +7,7 @@
 
 namespace mc::world::gen {
 
-// Java 1.16.1's ChunkGeneratorEnd island-height field, shared by TheEndBiomeSource
+// vanilla's ChunkGeneratorEnd island-height field, shared by TheEndBiomeSource
 // (which reads it to pick a biome by distance/height) and EndGenerator (which
 // reads it to raise the floating islands). Kept in one header so the two can
 // never drift — the biome and the terrain agree on where an island is.

@@ -68,7 +68,7 @@ void testBlockIdentityAndAliases() {
 }
 
 // 1b. Properties are vanilla-faithful: the light emitters emit, the inert blocks
-// stay dark, and a couple of strengths match 1.16.1/26.1 Blocks.java.
+// stay dark, and a couple of strengths match 26.1's Blocks.java.
 void testBlockProperties() {
     // Glowstone (already present) emits 15; magma emits 3 — the two light values
     // the task calls out. A dropped `.light()` shows up here.

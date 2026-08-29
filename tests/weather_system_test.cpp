@@ -4,7 +4,7 @@
 #include <cmath>
 #include <iostream>
 
-// Exercises the weather system as a headless unit against the exact 1.16.1
+// Exercises the weather system as a headless unit against the exact vanilla
 // semantics the port mirrors: WeatherCommand's setWeather calls, the
 // ServerWorld auto-cycle (spell expiry flips the flags), and the gradient
 // smoothing that isRaining() thresholds at 0.2.
@@ -35,7 +35,7 @@ int main() {
     // --- /weather clear N: a forced clear spell that expires into the auto-cycle. ---
     // setWeather(5, 0, false, false) is WeatherCommand's clear with a 5-tick
     // spell. The clear branch idles the rain/thunder timers at 1, so the tick
-    // after the spell expires flips both flags on — the exact 1.16.1 behaviour.
+    // after the spell expires flips both flags on — the exact vanilla behaviour.
     {
         WeatherSystem weather;
         weather.setWeather(5, 0, false, false);

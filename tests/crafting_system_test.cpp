@@ -4,7 +4,7 @@
 #include <cassert>
 #include <cstddef>
 
-// Locks in the shift-click craft-result behaviour the player chose for 1.16.1:
+// Locks in the shift-click craft-result behaviour the player chose for vanilla:
 // one click = one craft, and the result goes to the player inventory's main
 // grid (slots 9..35) before the hotbar, stacking into existing stacks before
 // empty slots. (Vanilla's ScreenHandler#QUICK_MOVE actually crafts repeatedly

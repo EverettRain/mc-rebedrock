@@ -290,7 +290,7 @@ static_assert(pistonRoundTrips());
 
 [[nodiscard]] constexpr glm::vec3 rotateLogModelVector(
     glm::vec3 value, BlockOrientation orientation) {
-    // Mirror the blockstate model rotations used by 1.16.1 oak_log:
+    // Mirror the blockstate model rotations used by vanilla oak_log:
     // axis=x rotates the model's local Y pillar onto world X, and axis=z
     // rotates local Y onto world Z. East/West and North/South represent the
     // same undirected log axes.
@@ -520,7 +520,7 @@ static_assert(pistonRoundTrips());
         {0.5F + cosine - sine, 0.5F - cosine - sine},
     }};
     // FluidRenderer pulls all four coordinates 4/sourceTextureSize toward
-    // their average to avoid atlas bleeding. water_flow is 32x32 in 1.16.1.
+    // their average to avoid atlas bleeding. water_flow is 32x32 in vanilla.
     constexpr float centerPull = 4.0F / 32.0F;
     // The source sprite is 32x32, while each block-texture array layer is
     // 16x16. Compensate for that downsample or these centered coordinates
@@ -531,7 +531,7 @@ static_assert(pistonRoundTrips());
             (1.0F - centerPull) * sourceToArrayScale;
 }
 
-// SwampBiome's grass mottle, seeded exactly like 1.16.1's FOLIAGE_NOISE: a
+// SwampBiome's grass mottle, seeded exactly like vanilla's FOLIAGE_NOISE: a
 // swamp block whose noise drops below -0.1 uses the darker tone.
 [[nodiscard]] bool swampDarkTone(int x, int z) {
     static const gen::SimplexNoiseSampler sampler = [] {
@@ -629,7 +629,7 @@ class BiomeTintCache final {
     }
     if (block == Block::Farmland && face == Face::PositiveY && state.moisture() == 7) {
         // FarmlandBlock.MOISTURE: the wet texture appears only at moisture 7,
-        // exactly like the 1.16.1 blockstate (every lower level is dry). The
+        // exactly like the vanilla blockstate (every lower level is dry). The
         // moist face sits right after the dry one in the registry-built atlas.
         return textureLayers(Block::Farmland).top + 1.0F;
     }
@@ -706,7 +706,7 @@ struct CornerPositions final {
     };
 }
 
-// Vanilla 1.16.1 getAmbientOcclusionLightLevel: a full opaque cube darkens the
+// Vanilla vanilla getAmbientOcclusionLightLevel: a full opaque cube darkens the
 // corner to 0.2, everything else keeps full brightness. The corner averages the
 // four ring cells symmetrically — no per-block corner selection — so adjacent
 // blocks agree exactly on shared corners and the gradient stays smooth.

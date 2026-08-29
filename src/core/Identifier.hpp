@@ -8,7 +8,7 @@ namespace mc::core {
 
 // The registry namespace every piece of content in this project is filed under.
 // Content that mirrors vanilla keeps its `minecraft:` name as a separate alias
-// so translation keys and 1.16.1 assets still resolve.
+// so translation keys and vanilla assets still resolve.
 inline constexpr std::string_view kNamespace{"rebedrock"};
 inline constexpr std::string_view kVanillaNamespace{"minecraft"};
 

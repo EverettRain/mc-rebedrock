@@ -35,7 +35,7 @@ class Chunk final {
     bool setDirectSkyLight(int x, int y, int z, std::uint8_t value);
 
     // The biome that generated each column, filled by the surface pass. The
-    // mesher reads it to tint grass-family blocks the way 1.16.1's BiomeColors
+    // mesher reads it to tint grass-family blocks the way vanilla's BiomeColors
     // does; biomes never change after generation.
     [[nodiscard]] gen::Biome columnBiome(int localX, int localZ) const;
     void setColumnBiome(int localX, int localZ, gen::Biome biome);

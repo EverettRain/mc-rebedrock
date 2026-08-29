@@ -1,6 +1,6 @@
 // ENCH-0: the constexpr enchantment identity registry — max level, rarity
 // weight, category applicability, treasure/curse flags, cost curves and
-// exclusivity, transcribed from 1.16.1's Enchantments.java + each
+// exclusivity, transcribed from vanilla's Enchantments.java + each
 // Enchantment subclass. No gameplay effects, no table/UI/anvil — those are
 // ENCH-1+; this only covers the data table Enchantment.hpp owns.
 
@@ -102,7 +102,7 @@ void testEnchantability() {
     std::cout << "testEnchantability OK\n";
 }
 
-// The sabotage③ target: getMinCost/getMaxCost must match 1.16.1's worked
+// The sabotage③ target: getMinCost/getMaxCost must match vanilla's worked
 // examples exactly, including the per-level multiplier.
 void testCostFormulasWorkedExamples() {
     // Sharpness (DamageEnchantment typeIndex 0): minPower = 1 + (level-1)*11,

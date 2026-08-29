@@ -48,13 +48,13 @@ inline constexpr BakedIngredient kCraftIng_40[] = {{IngredientDefKind::Item, "re
 inline constexpr BakedIngredient kCraftIng_41[] = {{IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:gold_ingot"}, {IngredientDefKind::Item, "rebedrock:stick"}};
 inline constexpr BakedIngredient kCraftIng_42[] = {{IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Item, "rebedrock:stick"}};
 
-// EQ-0: armor recipes. Java 1.16.1 RecipesProvider shapes, transcribed
+// Armor recipes: vanilla's recipe-provider shapes, transcribed
 // exactly — helmet is a 3x2 "XXX / X X", chestplate a 3x3 "X X / XXX / XXX",
 // leggings a 3x3 "XXX / X X / X X", boots a 2x2 "X X / X X". Leather uses
 // `rebedrock:leather` for X, iron/gold/diamond use their ingot/gem item; each
 // material's four pieces reuse one ingredient row per shape (helmet/
 // chestplate/leggings/boots), just swapping the material identifier. No
-// chainmail recipe exists in 1.16.1 (RecipesProvider never calls
+// chainmail recipe exists in vanilla (its recipe provider never emits
 // ShapedRecipeJsonFactory.create for any CHAINMAIL_* item — obtainable only
 // via mob drop / trade / give, not crafting), so it is omitted here on
 // purpose, not a gap to fill in later.

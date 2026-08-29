@@ -398,7 +398,7 @@ void RainSystem::update(float deltaSeconds, const glm::vec3& cameraPosition, flo
                 drop.surfaceWater = surface.water;
             }
             if (drop.targetSurface >= 0.0F && drop.position.y <= drop.targetSurface) {
-                // 1.16.1's RainParticle dies on the surface it is headed for; the
+                // vanilla's RainParticle dies on the surface it is headed for; the
                 // splash is emitted at the block's top face. Only a random fraction
                 // of ground landings emit a visible splash so the continuous rain
                 // never floods the particle list; water, the more visible surface,

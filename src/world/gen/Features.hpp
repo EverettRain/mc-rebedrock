@@ -11,7 +11,7 @@
 
 namespace mc::world::gen {
 
-// Java 1.16.1's SurfaceBuilder.DEFAULT, plus the ore and vegetation features the
+// vanilla's SurfaceBuilder.DEFAULT, plus the ore and vegetation features the
 // overworld's GenerationStep runs after it.
 class Features final {
   public:

@@ -209,7 +209,7 @@ void Features::buildSurface(Chunk& chunk, int chunkX, int chunkZ) const {
             const int windowX = cellX - baseCellX;   // 0..3
             const int windowZ = cellZ - baseCellZ;   // 0..3
             // The raw 1:4 biome of the column's own cell, for the grass tint:
-            // 1.16.1's grass colour follows the biome map (sharp), while the
+            // vanilla's grass colour follows the biome map (sharp), while the
             // surface material above is the smoothed vote.
             chunk.setColumnBiome(localX, localZ,
                                  cellDefinitions[static_cast<std::size_t>(windowZ * 5 + windowX)]

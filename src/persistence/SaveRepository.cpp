@@ -58,7 +58,7 @@ constexpr std::array<std::uint8_t, 8> kMagic{'M', 'C', 'R', 'B', 'S', 'A', 'V', 
 // self-describing block now, the reader dispatches on the tag, and adding a
 // state owner needs neither a format bump nor a positional read.
 // Format 19 (DIM-4) adds per-dimension region subdirectories, mirroring vanilla's
-// 1.16.1 layout: the Overworld stays at `<world>/region` (byte-identical to
+// vanilla layout: the Overworld stays at `<world>/region` (byte-identical to
 // format 18, so an old flat world is read back unchanged as the Overworld), while
 // the Nether writes to `<world>/DIM-1/region` and the End to `<world>/DIM1/region`.
 // The bump only advertises the capability — an 18 (or older) world has no
@@ -211,7 +211,7 @@ using BlockPalette = DensePalette<world::BlockId>;
 // name and nothing for one this build does not carry. This replaces the direct
 // enum walk `blockFromIdentifier` did, so external content registered into the
 // registry resolves the same way built-ins do, and the `minecraft:` alias a
-// 1.16.1 save uses still lands on its block.
+// vanilla save uses still lands on its block.
 [[nodiscard]] std::optional<world::Block> blockByName(std::string_view text) {
     const world::BlockId id = world::blockRegistry().byName(text);
     if (!id.valid()) {
@@ -1558,7 +1558,7 @@ void readWorldBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
 }
 
 // The save's self-description (META-1): which build wrote this world. It mirrors
-// 1.16.1's level.dat `Version` compound + top-level `DataVersion`, but as a
+// vanilla's level.dat `Version` compound + top-level `DataVersion`, but as a
 // snapshot of the compile-time VersionManifest taken at write time — a world
 // always reports the version that produced it, which is what an upgrade or a JC
 // import reasons about. `worldVersion` here is the same number as the file's
@@ -2016,7 +2016,7 @@ struct RegionData final {
 }
 
 // DIM-4: the per-dimension subdirectory inside a world folder, mirroring vanilla
-// 1.16.1's layout so the JC import (JC3) finds each dimension where a vanilla
+// vanilla's layout so the JC import (JC3) finds each dimension where a vanilla
 // world keeps it — the Overworld at the world root (no subfolder, so an existing
 // flat world is unchanged), the Nether under DIM-1 and the End under DIM1. An
 // empty return means "the world root itself" (Overworld). Returning the vanilla

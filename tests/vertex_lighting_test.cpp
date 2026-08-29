@@ -250,7 +250,7 @@ int main() {
     }
 
     {
-        // High quality (vanilla 1.16.1 AO): an isolated cube stays full-bright.
+        // High quality (vanilla AO): an isolated cube stays full-bright.
         const auto vertices = topFaceVertices(buildLightingSceneHigh({}), 1, 1, 1);
         for (std::size_t corner = 0; corner < vertices.size(); ++corner) {
             expectNearAo(mc::render::decodeAmbientOcclusion(vertices[corner]), 1.0F,

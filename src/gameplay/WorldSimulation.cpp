@@ -162,7 +162,7 @@ void WorldSimulation::queueWater(SimulationPosition position, std::uint8_t level
     if (!world::isWorldYInRange(position.y)) {
         return;
     }
-    // WaterFluid#getTickRate is five game ticks in Java 1.16.1. Store the
+    // WaterFluid#getTickRate is five game ticks in vanilla. Store the
     // deadline per position instead of releasing the whole queue on one
     // global modulo tick.
     static_cast<void>(ticks_.schedule(TickTask::Fluid, position, tickCount_ + 5U));

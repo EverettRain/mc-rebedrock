@@ -63,7 +63,7 @@ void main() {
                 ? hud.data.z
                 : (hud.data.x > 4.1 ? hud.data.w : hud.data.z));
         // Direction#getLuminance per face, applied as a plain scalar the way
-        // vanilla 1.16.1's block item render does: up 1.0, west 0.6, east 0.8
+        // vanilla's block item render does: up 1.0, west 0.6, east 0.8
         // (no colour bias). A per-corner AO term darkens the silhouette edges
         // against the face centres so the cube reads rounded, like the smooth
         // lighting on vanilla item models.

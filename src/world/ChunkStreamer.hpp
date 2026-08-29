@@ -124,7 +124,7 @@ class ChunkStreamer final {
     void stop();
     void request(ChunkPosition center);
     void setRadii(int loadRadius, int unloadRadius);
-    // Marks a region that must never stream out, the way vanilla 1.16.1 keeps
+    // Marks a region that must never stream out, the way vanilla keeps
     // its spawn chunks loaded: every chunk within `radius` of `center` is
     // skipped by the unload pass. The world spawn registers itself here once it
     // is known, so the player's home base never despawns under them.

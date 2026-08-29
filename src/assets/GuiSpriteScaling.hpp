@@ -9,7 +9,7 @@ namespace mc::assets {
 class ResourceProvider;
 
 // How a GUI sprite fills a destination larger or smaller than its own art.
-// 26.1 declares this per sprite in `<sprite>.png.mcmeta`; 1.16.1 had no such
+// 26.1 declares this per sprite in `<sprite>.png.mcmeta`; older versions had no such
 // concept, which is why widget art used to be stretched (or split into halves
 // by hand) and its 1px borders blurred at odd sizes.
 enum class GuiSpriteScalingType {

@@ -34,7 +34,7 @@ struct VitalsTickResult final {
     bool died = false;
 };
 
-// Java 1.16.1 health, hunger and environmental damage for a survival player.
+// vanilla health, hunger and environmental damage for a survival player.
 // Creative players simply do not tick this.
 class PlayerVitals final {
   public:

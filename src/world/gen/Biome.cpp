@@ -5,7 +5,7 @@
 namespace mc::world::gen {
 namespace {
 
-// The tree lists are the RandomFeature selectors from 1.16.1's
+// The tree lists are the RandomFeature selectors from vanilla's
 // DefaultBiomeFeatures, flattened to weights. Where vanilla nests a selector
 // inside another (forests pick birch, then fancy oak, then plain oak) the
 // nested probabilities are multiplied out into one flat list.
@@ -102,7 +102,7 @@ const std::array<BiomeDefinition, static_cast<std::size_t>(Biome::Count)> kBiome
     // shallow-ocean floor.
     {Biome::DeepOcean, "deep_ocean", -1.8F, 0.1F, 0.5F, 0.5F, Block::Gravel, Block::Gravel, Block::Gravel,
      0, 0.0F, 1, {}, 0, 0},
-    // WG-0 nether biomes (1.16.1's five). depth/scale are the vanilla
+    // WG-0 nether biomes (vanilla's five). depth/scale are the vanilla
     // Biome.Builder values (0.1/0.2), temperature 2.0 / downfall 0.0 as every
     // nether biome carries. The surface palette records each biome's floor
     // block so WG-2 has a complete definition to read; no trees/grass (those

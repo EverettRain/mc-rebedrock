@@ -315,7 +315,7 @@ namespace {
 [[nodiscard]] int floorToInt(float value) {
     return static_cast<int>(std::floor(value));
 }
-// 1.16.1's FillCommand fillLimit: a fill covering more cells than this is
+// vanilla's FillCommand fillLimit: a fill covering more cells than this is
 // rejected, so an accidental huge box cannot stall the tick.
 constexpr long long kFillLimit = 32768;
 } // namespace
@@ -1430,7 +1430,7 @@ void GameRuntime::registerAuthoritativeCommands() {
     // commands on commandDispatcher() through the shared tree.
     //
     // Every command below changes the world or a player and so declares op level
-    // 2 (GAMEMASTERS), 1.16.1's requirement for gamemode/gamerule/kill/give/time/
+    // 2 (GAMEMASTERS), vanilla's requirement for gamemode/gamerule/kill/give/time/
     // weather/spawnpoint. Single-player runs as the owner (op4) and always
     // passes; the level exists so a multiplayer (S subtree) source below it is
     // refused server-side without any command touching the check.

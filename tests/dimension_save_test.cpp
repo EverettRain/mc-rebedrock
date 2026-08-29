@@ -1,7 +1,7 @@
 // DIM-4: per-dimension save (region subdirectories, vanilla layout) (headless).
 //
 // Proves the four DIM-4 invariants:
-//   1. Subdirectory layout mirrors vanilla 1.16.1 — the Overworld at the world
+//   1. Subdirectory layout mirrors vanilla — the Overworld at the world
 //      root, the Nether under DIM-1, the End under DIM1 — so JC3 import finds each
 //      dimension where a vanilla world keeps it (no new deviation).
 //   2. Round-trip isolation: a chunk saved to one dimension does not leak into
@@ -41,7 +41,7 @@ int main() {
     // The Overworld is the historical `<world>/region` (no subfolder), so old flat
     // worlds are byte-compatible. Sabotage ①/③'s guard.
     assert(owDir == root / id / "region");
-    // The Nether is DIM-1, the End is DIM1 — vanilla 1.16.1 folder names (the JC3
+    // The Nether is DIM-1, the End is DIM1 — vanilla folder names (the JC3
     // import target). Sabotage ③'s guard: any other spelling breaks this.
     assert(netherDir == root / id / "DIM-1" / "region");
     assert(endDir == root / id / "DIM1" / "region");
@@ -91,7 +91,7 @@ int main() {
     assert(defaultEntities.size() == 1U && defaultEntities[0].species == "pig");
 
     // --- JC alignment: path equals the vanilla-expected string ----------------
-    // A vanilla 1.16.1 world keeps the Nether region at "<world>/DIM-1/region";
+    // A vanilla world keeps the Nether region at "<world>/DIM-1/region";
     // JC3 import walks exactly this path. Assert the string, not just the enum.
     {
         const std::string netherStr = netherDir.generic_string();

@@ -13,7 +13,7 @@ namespace mc::world {
 
 // WG-3: the end's chunk generator. The end is not shaped like the overworld or
 // the nether — there is no single ground surface or solid column, only islands of
-// end_stone floating in the void. So its terrain is the 1.16.1 island height field
+// end_stone floating in the void. So its terrain is the vanilla island height field
 // (EndIslandHeight): a tall central plateau around (0,0), a void ring, and outer
 // islands seeded by a coarse noise, each a body of end_stone centred near y=64
 // with a 3D noise roughening its shell. A non-solid cell is the void (air), never

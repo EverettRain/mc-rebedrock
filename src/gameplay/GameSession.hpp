@@ -334,7 +334,7 @@ class GameSession final {
     [[nodiscard]] ProjectileSystem& projectiles() { return primaryLevel().projectiles; }
     [[nodiscard]] const ProjectileSystem& projectiles() const { return primaryLevel().projectiles; }
     [[nodiscard]] world::gen::JavaRandom& projectileRandom() { return projectileRandom_; }
-    // 1.16.1 entity.kill(): OutOfWorld damage at infinite magnitude.
+    // vanilla entity.kill(): OutOfWorld damage at infinite magnitude.
     void killPlayer(PlayerId playerId, SimulationHost& host);
     // `causedByLivingNonPlayer` gates the damage type's difficulty scaling: a
     // mob's swing scales with difficulty, the world's does not.

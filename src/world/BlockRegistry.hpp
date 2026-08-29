@@ -60,7 +60,7 @@ struct ExternalBlockDef final {
         if (id.index() != static_cast<std::size_t>(definition.block))
             core::registryAbort("block registered out of enum order");
         // The `minecraft:` name resolves to the same id, so vanilla content and
-        // 1.16.1 saves reach the block through either key.
+        // vanilla saves reach the block through either key.
         if (!definition.vanilla.empty() && definition.vanilla != definition.identifier)
             built.alias(definition.vanilla, id);
     }

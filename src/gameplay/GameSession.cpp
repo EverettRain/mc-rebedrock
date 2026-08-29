@@ -59,7 +59,7 @@ struct ArmorTotals final {
 // LivingEntity#damageArmor's default body deals `max(1, amount / 4)` to
 // EVERY equipped armor piece on a hit the armor stage actually reduced
 // (ArmorItem#damage is 1 per point of that shared cost, split across however
-// many armor pieces are worn — 1.16.1's own doc comment on the override:
+// many armor pieces are worn — vanilla's own doc comment on the override:
 // "each point of damage is randomly assigned to a piece"; the base
 // LivingEntity implementation this project follows applies it to all four
 // uniformly, `float f = amount / 4.0F; if (f < 1.0F) f = 1.0F;` then a call
@@ -173,7 +173,7 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // FarmlandBlock#onLandedUpon: on a landing, the player's fall distance
     // (Entity.fallDistance, tracked across frames in PlayerController) decides
     // whether the tilled soil under the feet tramples back to dirt. Vanilla
-    // 1.16.1 rolls nextFloat() < fallDistance - 0.5f, so a one-block fall breaks
+    // vanilla rolls nextFloat() < fallDistance - 0.5f, so a one-block fall breaks
     // farmland half the time and a taller one almost always; walking never
     // tramples.
     if (primaryPlayer().controller.onGround() && primaryPlayer().controller.fallDistance() > 0.5F) {
@@ -919,7 +919,7 @@ bool GameSession::die(PlayerId playerId, DamageType source, SimulationHost& host
 
 void GameSession::respawn(PlayerId playerId) {
     // PlayerManager#respawnPlayer prefers the player's personal spawn point and
-    // only falls back to the world spawn when none was set. 1.16.1 also respawns
+    // only falls back to the world spawn when none was set. vanilla also respawns
     // facing due north (yaw 0) regardless of the spawn point's stored angle.
     auto& player = players_.at(playerId);
     player.vitals.reset();
@@ -1327,7 +1327,7 @@ void GameSession::tickEating(SimulationHost& host) {
         return;
     }
     // Creative players run the full meal but neither gain hunger nor spend the
-    // food, exactly like Java 1.16.1 (creative never consumes food).
+    // food, exactly like vanilla (creative never consumes food).
     if (primaryPlayer().gameMode != GameMode::Creative) {
         const auto food = foodValue(primaryPlayer().eatingKind);
         primaryPlayer().vitals.eat(food.foodLevel, food.saturationModifier);
@@ -1389,7 +1389,7 @@ void GameSession::updateMovementAudio(const world::World& world,
     // and plays a sound whenever that accumulator crosses the next integer.
     // Keeping the multiplier here (rather than inventing separate walk/sprint
     // strides) makes sprint cadence rise naturally with its real movement
-    // speed while a normal walk stays at the 1.16.1 rhythm.
+    // speed while a normal walk stays at the vanilla rhythm.
     primaryPlayer().footstepDistance += glm::length(movement) * 0.6F;
     constexpr float kStepSoundDistance = 1.0F;
     if (primaryPlayer().footstepDistance < kStepSoundDistance) {

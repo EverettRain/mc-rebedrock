@@ -25,7 +25,7 @@ struct ModelPose final {
     float swingProgress = 0.0F;
 };
 
-// Camera-space transforms matching Minecraft Java 1.16.1's
+// Camera-space transforms matching vanilla's
 // HeldItemRenderer right-hand matrix stack.
 [[nodiscard]] glm::mat4 firstPersonArmTransform(const ModelPose& pose);
 [[nodiscard]] glm::mat4 firstPersonItemTransform(const ModelPose& pose, bool cubeModel);

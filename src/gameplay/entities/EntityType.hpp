@@ -25,7 +25,7 @@ namespace mc::gameplay::entities {
 
 class MobBrain;
 
-// SpawnGroup / MobCategory (1.16.1): what a creature counts as for spawn caps,
+// MobCategory: what a creature counts as for spawn caps,
 // despawn behaviour and which creative tab its egg lands in. Replaces the old
 // implicit "everything is a pig" assumption with an explicit classification.
 enum class MobCategory : std::uint8_t {
@@ -247,7 +247,7 @@ enum class EntityBehavior : std::uint16_t {
     // narrower family without a species switch at the ignition call site.
     // Zombie and husk both carry it; husk additionally carries SunImmune so
     // the ignition rule's `!sunImmune()` term skips it. Doubles as
-    // LivingEntity#getGroup() == EntityGroup.UNDEAD (1.16.1): the same undead
+    // The undead entity type tag: the same undead
     // family ENCH-1's Smite target-category gate reads
     // (DamageEnchantment#getAttackDamage's typeIndex==1 branch).
     Undead = 1U << 3U,
@@ -265,7 +265,7 @@ enum class EntityBehavior : std::uint16_t {
     Arthropod = 1U << 5U,
     // DYE-1: the "a dye right-clicked on this creature recolours it" family.
     // Vanilla's dye-on-mob branch lives on SheepEntity#mobInteract specifically
-    // (it is the only DyeableItem-recolourable mob in 1.16.1) — this bit
+    // (it is the only dye-recolourable mob in vanilla) — this bit
     // reproduces that species-narrow gate without a `species == sheep` check at
     // the interaction call site, exactly as Undead/Arthropod do for their own
     // mechanics. A creature without this bit ignores a dye click entirely.
@@ -284,7 +284,7 @@ enum class EntityBehavior : std::uint16_t {
     return static_cast<std::uint16_t>(a | static_cast<std::uint16_t>(b));
 }
 
-// EntityType<T> (1.16.1): the immutable, per-species control object. It owns the
+// EntityType<T>: the immutable, per-species control object. It owns the
 // creature's hitbox, classification, attribute caps, spawn-egg tint, renderer
 // descriptor, AI and loot. Every consumer — simulation, renderer, spawn egg,
 // commands — reads behaviour from this object, so there is no global species
@@ -355,7 +355,7 @@ class EntityType final {
     [[nodiscard]] const EntityRenderDescriptor& render() const { return render_; }
     [[nodiscard]] const EntityAi& ai() const { return *ai_; }
 
-    // The species' sound set (1.16.1 MobEntity getAmbientSound/getHurtSound/
+    // The species' sound set (vanilla Mob getAmbientSound/getHurtSound/
     // getDeathSound/playStepSound). Empty for a species that registered none.
     [[nodiscard]] const audio::MobSoundProfile& soundProfile() const { return soundProfile_; }
 
@@ -502,7 +502,7 @@ class EntityType::Builder final {
     // The species' sound set; without it the creature is silent. Each species
     // states its own clips the way its Java class overrides the sound hooks.
     Builder& sounds(const audio::MobSoundProfile& profile);
-    // The `minecraft:` alias so 1.16.1 assets and translation keys still resolve.
+    // The `minecraft:` alias so vanilla assets and translation keys still resolve.
     Builder& vanillaName(std::string_view path);
 
     // EntityType.Builder#build(id): finalises the immutable type under

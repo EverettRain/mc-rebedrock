@@ -44,7 +44,7 @@ inline constexpr float kVoidDespawnY = static_cast<float>(kMinY) - 64.0F;
 
 // The smooth-lighting algorithm the mesh was baked with. Off keeps the flat
 // light values; Standard is the current binary-AO algorithm; High is the
-// vanilla 1.16.1 per-block AO. Because VoxelVertex has no room for two AO
+// vanilla per-block AO. Because VoxelVertex has no room for two AO
 // sets, the quality is baked into the mesh and a change remeshes the world.
 enum class SmoothLightingQuality : std::uint8_t { Off, Standard, High };
 

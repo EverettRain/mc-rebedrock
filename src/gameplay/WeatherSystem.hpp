@@ -4,7 +4,7 @@
 
 namespace mc::gameplay {
 
-// The persistent weather state, the C++ mirror of 1.16.1's LevelProperties
+// The persistent weather state, the C++ mirror of vanilla's LevelProperties
 // weather fields (clearWeatherTime / rainTime / thunderTime / raining /
 // thundering). It travels in the save; the transient rain/thunder gradients do
 // not.
@@ -16,7 +16,7 @@ struct WeatherState final {
     bool thundering = false;
 };
 
-// The 20 TPS weather system, a faithful C++ port of 1.16.1's split between
+// The 20 TPS weather system, a faithful C++ port of vanilla's split between
 // ServerWorld (the timers and flags) and World (the smoothed gradients).
 // setWeather() installs a spell exactly like WeatherCommand; tick() runs the
 // auto-cycle from ServerWorld.tick's "weather" profiler section, then ramps

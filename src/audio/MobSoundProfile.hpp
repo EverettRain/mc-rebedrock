@@ -15,7 +15,7 @@ struct MobSoundProfile final {
     // MobEntity#getSoundVolume: cows 0.4, most mobs 1.0. Hurt/death/ambient
     // clips all play at this volume with the vanilla ±0.2 randomised pitch.
     float volume = 1.0F;
-    // MobEntity#playStepSound: every 1.16.1 mob steps at 0.15, pitch 1.0.
+    // MobEntity#playStepSound: every vanilla mob steps at 0.15, pitch 1.0.
     float stepVolume = 0.15F;
 };
 

@@ -206,7 +206,7 @@ UiRect HudLayout::playerCraftingOutput() const {
 PlayerPreviewLayout HudLayout::playerPreview(bool creative) const {
     const auto panel = creative ? creativePanel() : inventoryPanel();
     if (creative) {
-        // CreativeInventoryScreen 1.16.1 draws the player at x+88, y+45,
+        // CreativeInventoryScreen vanilla draws the player at x+88, y+45,
         // size 20.  The black preview well in tab_inventory.png occupies the
         // surrounding 34x39 logical-pixel rectangle.
         return {
@@ -216,7 +216,7 @@ PlayerPreviewLayout HudLayout::playerPreview(bool creative) const {
             20.0F,
         };
     }
-    // InventoryScreen 1.16.1 uses x+51, y+75, size 30.
+    // InventoryScreen vanilla uses x+51, y+75, size 30.
     return {
         {panel.x + 51.0F * scale_, panel.y + 75.0F * scale_},
         {panel.x + 51.0F * scale_, panel.y + 25.0F * scale_},
@@ -406,7 +406,7 @@ UiRect HudLayout::bottomMenuButton(std::size_t index, std::size_t buttonCount,
     const std::size_t column = index / rows;
     const std::size_t row = index % rows;
     // Columns sit next to each other with a basic gap and the whole block is
-    // centred as one unit, matching 1.16.1's adjacent button rows rather than
+    // centred as one unit, matching vanilla's adjacent button rows rather than
     // spreading the columns across their own screen halves. The width clamps
     // so a narrow canvas never pushes the block past the edges.
     const float maxScaledWidth = (width_ - 2.0F * screenMargin * scale_ -

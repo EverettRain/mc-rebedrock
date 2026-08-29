@@ -103,7 +103,7 @@ int main() {
     trailing.skipWhitespace();
     assert(trailing.readToEnd() == "spaced  "); // 保留内部与尾部空格
 
-    // 1.16.1 isAllowedInUnquotedString 的允许/拒绝字符集。
+    // vanilla isAllowedInUnquotedString 的允许/拒绝字符集。
     for (const char allowed : std::string{"abcdefghijklmnopqrstuvwxyz"
                                           "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
                                           "0123456789._-+;:@"}) {

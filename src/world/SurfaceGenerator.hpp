@@ -14,12 +14,12 @@
 
 namespace mc::world {
 
-// The world generator, running Java 1.16.1's overworld pipeline in its order:
+// The world generator, running vanilla's overworld pipeline in its order:
 // the noise generator lays a stone/water column down, the carvers cut caves and
 // ravines out of it, the surface builder paints the top few blocks per biome,
 // and the feature passes add ores and vegetation.
 //
-// The algorithms and their constants are ported from 1.16.1; the biome map that
+// The algorithms and their constants are ported from vanilla; the biome map that
 // decides which biome a column belongs to is a climate-noise stand-in for
 // vanilla's GenLayer stack (see gen::BiomeSource), so a given seed does not
 // reproduce the same world Java would — everything downstream of the biome map

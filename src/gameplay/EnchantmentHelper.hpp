@@ -2,7 +2,7 @@
 
 // ENCH-0 part 3: deterministic enchanting-table offer generation, headless —
 // no block, no UI, no XP spend, no applying the result to a stack. Mirrors
-// 1.16.1's EnchantmentScreenHandler#onContentChanged (the three-slot power/
+// vanilla's EnchantmentScreenHandler#onContentChanged (the three-slot power/
 // level computation) + EnchantmentHelper#calculateRequiredExperienceLevel +
 // EnchantmentHelper#generateEnchantments + #getPossibleEntries, and
 // EnchantmentScreenHandler#generateEnchantments (the private per-slot wrapper
@@ -14,7 +14,7 @@
 // that the offer computation must NOT see, so the offer step needs its own
 // fresh stream from the same seed, not a continuation of the first stream.
 //
-// Source: yarn-mapped 1.16.1 net.minecraft.screen.EnchantmentScreenHandler,
+// Source: vanilla net.minecraft.screen.EnchantmentScreenHandler,
 // net.minecraft.enchantment.EnchantmentHelper (see Enchantment.hpp's banner
 // for the jar location).
 

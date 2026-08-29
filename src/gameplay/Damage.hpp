@@ -77,7 +77,7 @@ struct DamageOutcome final {
     // EQ-2: the damage the armor/toughness stage was handed — after the
     // invulnerability window and difficulty scaling, but before the armor
     // reduction itself — zero unless armorApplied is true. This is the value
-    // PlayerInventory#damageArmor (1.16.1) divides by four for durability, so
+    // PlayerInventory#damageArmor divides by four for durability, so
     // the caller applying armor wear needs it rather than appliedDamage
     // (which is already-reduced) or the raw incoming amount (which is not
     // yet difficulty-scaled).
@@ -131,7 +131,7 @@ struct DamageContext final {
 };
 
 // DamageUtil#getDamageLeft's sibling, DamageUtil#getInflictedDamage
-// (1.16.1/26.1), transcribed symbol-for-symbol:
+// (26.1), transcribed symbol-for-symbol:
 //
 //   float f = MathHelper.clamp(protection, 0.0F, 20.0F);
 //   return damageDealt * (1.0F - f / 25.0F);
@@ -150,7 +150,7 @@ struct DamageContext final {
     return damage * (1.0F - clamped / 25.0F);
 }
 
-// DamageUtil#getDamageLeft (1.16.1, `net.minecraft.entity.DamageUtil`),
+// DamageUtil#getDamageLeft (vanilla, `net.minecraft.entity.DamageUtil`),
 // transcribed symbol-for-symbol rather than reconstructed from the wiki:
 //
 //   float f = 2.0F + armorToughness / 4.0F;
@@ -169,7 +169,7 @@ struct DamageContext final {
     return damage * (1.0F - reduction / 25.0F);
 }
 
-// LivingEntity#getDamageAfterMagicAbsorb's Resistance step (1.16.1/26.1),
+// LivingEntity#getDamageAfterMagicAbsorb's Resistance step (26.1),
 // transcribed symbol-for-symbol:
 //
 //   int absorbValue = (amplifier + 1) * 5;   // == level * 5 here

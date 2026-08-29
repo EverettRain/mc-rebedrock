@@ -18,7 +18,7 @@
 
 namespace mc::gameplay {
 
-// Java 1.16.1's net.minecraft.entity.EquipmentSlot enum, minus MAINHAND
+// vanilla's net.minecraft.entity.EquipmentSlot enum, minus MAINHAND
 // (which stays Inventory's selected hotbar slot — see Equipment.hpp's file
 // banner for why). The declaration order below mirrors vanilla's own enum
 // order exactly (MAINHAND, OFFHAND, FEET, LEGS, CHEST, HEAD) with MAINHAND

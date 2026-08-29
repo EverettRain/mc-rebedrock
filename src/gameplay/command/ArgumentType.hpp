@@ -66,7 +66,7 @@ struct ParseError final {
 // positioned error. parse() is a pure function of the reader — it neither needs
 // the argument's declared name nor writes into a context — which is what lets a
 // single ArgumentType instance be shared across commands and tested in
-// isolation, the way 1.16.1's ArgumentType<S, T> returns T.
+// isolation, the way vanilla's ArgumentType<S, T> returns T.
 struct ArgumentParseResult final {
     std::any value;
     std::optional<ParseError> error;
@@ -74,7 +74,7 @@ struct ArgumentParseResult final {
     [[nodiscard]] bool ok() const { return !error.has_value(); }
 };
 
-// Mirrors 1.16.1's CommandContext: parsed arguments are stored by name and read
+// Mirrors vanilla's CommandContext: parsed arguments are stored by name and read
 // out strongly typed at execution time. Values are type-erased (std::any) so a
 // new argument type never touches this class — the closed variant was the
 // extension bottleneck; `find<T>` fails softly on a missing or mistyped key.
@@ -171,7 +171,7 @@ class SuggestionSink final {
     std::string partial_;
 };
 
-// A typed argument parser, the 1.16.1 ArgumentType analogue. `parse` consumes
+// A typed argument parser, the vanilla ArgumentType analogue. `parse` consumes
 // one value from the reader (positioned after any whitespace), validates it and
 // returns the typed value; `collectSuggestions` feeds this type's completion
 // candidates to the sink. Both concerns living on one type is what lets a
@@ -329,7 +329,7 @@ class RotationArgument final : public ArgumentType {
 };
 
 // Shared, stateless instances of the generic argument types. The pure-function
-// parse makes one instance safe to reuse across every command, the way 1.16.1
+// parse makes one instance safe to reuse across every command, the way vanilla
 // registers a single ArgumentType and shares it between commands.
 inline const StringArgument kStringArgument;
 inline const GreedyStringArgument kGreedyStringArgument;

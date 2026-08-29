@@ -6,7 +6,7 @@
 
 namespace mc::gameplay::entities {
 
-// Angerable (1.16.1): the framework for neutral mobs — species that are calm
+// Angerable: the framework for neutral mobs — species that are calm
 // until provoked, then turn hostile toward whoever hit them for a random spell
 // (wolves, endermen, zombified piglins). Neutrality is a *behaviour*, orthogonal
 // to MobCategory: a neutral wolf is still a CREATURE, an angry zombified piglin

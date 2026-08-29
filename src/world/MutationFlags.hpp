@@ -7,8 +7,8 @@ namespace mc::world {
 
 // What a caller asks WorldMutationService to do besides writing the cell.
 //
-// The set mirrors 26.1's Block.UPDATE_* bits rather than 1.16.1's, and the
-// difference matters: 1.16.1 had a "do not update light" bit (32), which 26.1
+// The set mirrors 26.1's Block.UPDATE_* bits rather than vanilla's, and the
+// difference matters: older versions had a "do not update light" bit (32), which 26.1
 // reclaimed for UPDATE_SUPPRESS_DROPS. Light and mesh invalidation are no
 // longer a caller's decision at all — they are derived from whether the old and
 // new state actually differ. Leaving them out is the point: every "forgot to

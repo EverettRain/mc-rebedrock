@@ -37,7 +37,7 @@ struct VoxelVertex final {
     std::uint8_t blockLight;
     std::uint8_t flatSkyLight;
     std::uint8_t flatBlockLight;
-    // Per-vertex biome colour tint (1.16.1 BiomeColors): grass tops/plants and
+    // Per-vertex biome colour tint (vanilla BiomeColors): grass tops/plants and
     // foliage multiply their texture by this, so a biome boundary reads as a
     // smooth colour gradient instead of a hard switch. White (255,255,255)
     // means no tint.

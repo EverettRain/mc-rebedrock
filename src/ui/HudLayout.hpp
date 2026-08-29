@@ -64,7 +64,7 @@ class HudLayout final {
     [[nodiscard]] UiRect hotbarSlot(std::size_t index) const;
     [[nodiscard]] UiRect hotbarBackground() const;
     [[nodiscard]] UiRect hotbarSelection(std::size_t index) const;
-    // The 1.16.1 experience bar: a 182x5 bar centred on the hotbar, seven
+    // The vanilla experience bar: a 182x5 bar centred on the hotbar, seven
     // logical pixels above its top edge (Gui#renderExperienceBar draws it at
     // scaledHeight - 29 with the hotbar at scaledHeight - 22), so it sits in
     // the gap between the hotbar and the hearts row.
@@ -74,7 +74,7 @@ class HudLayout final {
     // EQ-1: InventoryScreen's four armor slots and the offhand slot, GUI spec
     // §10's `(8,8)(8,26)(8,44)(8,62)` (index 0=Head..3=Feet, the screen's own
     // top-to-bottom draw order) and `(77,62)`. The same numeric offsets in the
-    // creative Inventory tab, but relative to the wider creativePanel() — 1.16.1
+    // creative Inventory tab, but relative to the wider creativePanel() — vanilla
     // CreativeInventoryScreen adds these slots at the same (8,8+row*18)/(77,62)
     // against its own 195x136 background, so passing creative=true anchors them
     // to that panel instead of the 176x166 survival one (the two panels are
@@ -108,7 +108,7 @@ class HudLayout final {
     // collides with the world list as resolution or GUI scale change. Buttons
     // are packed column-first; with columnCount > 1 the columns sit side by
     // side with a basic gap and the whole block is centred as one unit (the
-    // world list uses two columns of two), like 1.16.1's adjacent button rows.
+    // world list uses two columns of two), like vanilla's adjacent button rows.
     [[nodiscard]] UiRect bottomMenuButton(
         std::size_t index,
         std::size_t buttonCount = 3U,

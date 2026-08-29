@@ -39,7 +39,7 @@ layout(binding = 0) uniform CameraUniform {
 } camera;
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
-// The 1.16.1 biome colour lookup textures, sampled with linear filtering so the
+// The biome colour lookup textures, sampled with linear filtering so the
 // grass/foliage colour blends smoothly across biome boundaries. The texture is
 // 512 texels at 4 blocks each, covering [-1024, 1024] blocks around the world
 // origin; the UV mapping must match kBiomeTextureSize/BlockSpan in the renderer.

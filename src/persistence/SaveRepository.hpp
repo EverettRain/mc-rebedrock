@@ -30,7 +30,7 @@ struct SaveSummary final {
 };
 
 // A save's self-description: which build wrote it (META-1, the equivalent of
-// 1.16.1's level.dat `Version { Id, Name, Snapshot }` compound plus the top-level
+// Vanilla's level.dat `Version { Id, Name, Snapshot }` compound plus the top-level
 // `DataVersion`). It records the VersionManifest snapshot taken at *write* time,
 // so a world always reports the version that produced it — not the one reading it
 // — which is exactly what an upgrade or a JC import needs to reason about the
@@ -181,7 +181,7 @@ struct SaveGame final {
     float playerX = 0.0F;
     float playerY = 0.0F;
     float playerZ = 0.0F;
-    // The player's personal spawn point, set by /spawnpoint the way 1.16.1 keeps
+    // The player's personal spawn point, set by /spawnpoint the way vanilla keeps
     // SpawnX/Y/Z on the player. Death respawns here before falling back to the
     // world spawn. Format 10 serialises it into its own self-describing block.
     bool hasSpawnPoint = false;
@@ -192,10 +192,10 @@ struct SaveGame final {
     double gameTimeSeconds = 0.0;
     gameplay::GameMode gameMode = gameplay::GameMode::Creative;
     gameplay::Difficulty difficulty = gameplay::Difficulty::Normal;
-    // Game rules travel with the world the way 1.16.1 keeps them in level.dat;
+    // Game rules travel with the world the way vanilla keeps them in level.dat;
     // format 9 serialises them into a sparse, self-describing block.
     gameplay::GameRules gameRules;
-    // Whether cheats are allowed in this world — 1.16.1's level.dat allowCommands
+    // Whether cheats are allowed in this world — vanilla's level.dat allowCommands
     // (CMD-8). It drives the command source's op level: on → the host is Owners
     // (op4, every command passes), off → All (only client-side level-0 commands
     // like /help work, gameplay commands are refused by the existing permission
@@ -236,7 +236,7 @@ struct SaveGame final {
     // so an older world simply loads with no furnaces and back-fills one the
     // first time each furnace block is opened.
     std::vector<gameplay::FurnaceBlockEntity> furnaces;
-    // The weather timers and flags, the way 1.16.1 keeps them in level.dat;
+    // The weather timers and flags, the way vanilla keeps them in level.dat;
     // format 11 serialises them into their own self-describing block. A fresh
     // world defaults to a clear spell.
     gameplay::WeatherState weather;
@@ -349,7 +349,7 @@ class SaveRepository final {
     // `dimension` selects the per-dimension region subdirectory (DIM-4): the
     // Overworld writes to `<world>/region/` (unchanged, so old flat worlds are
     // byte-compatible), the Nether to `<world>/DIM-1/region/` and the End to
-    // `<world>/DIM1/region/` — the vanilla 1.16.1 layout JC3 import targets, so
+    // `<world>/DIM1/region/` — the vanilla layout an import would target, so
     // the compat layer adds no new deviation. Defaulted to Overworld so every
     // existing single-dimension caller keeps its behaviour.
     void saveChunk(const std::string& identifier, int chunkX, int chunkZ,
@@ -379,7 +379,7 @@ class SaveRepository final {
         world::DimensionId dimension = world::DimensionId::Overworld) const;
 
     // The region directory for one dimension of a world, mirroring vanilla's
-    // 1.16.1 layout (Overworld at the world root, the Nether under DIM-1, the End
+    // vanilla layout (Overworld at the world root, the Nether under DIM-1, the End
     // under DIM1). Exposed so tests and the JC compat layer can cross-check the
     // on-disk path against what a vanilla import expects.
     [[nodiscard]] std::filesystem::path dimensionRegionDirectory(

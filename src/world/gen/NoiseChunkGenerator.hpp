@@ -11,7 +11,7 @@
 
 namespace mc::world::gen {
 
-// Java 1.16.1's NoiseChunkGenerator: one algorithm parameterised by a
+// vanilla's NoiseChunkGenerator: one algorithm parameterised by a
 // NoiseGeneratorSettings (WG-1), rather than the overworld baked into the code.
 //
 // The density field is sampled on a coarse lattice — every four blocks
@@ -25,7 +25,7 @@ namespace mc::world::gen {
 class NoiseChunkGenerator final {
   public:
     // GenerationShapeConfig noise resolutions. The horizontal ones are the same
-    // in every 1.16.1 dimension; the vertical lattice is 32 cells (256/8) for the
+    // in every vanilla dimension; the vertical lattice is 32 cells (256/8) for the
     // overworld, the nether and the end alike, so it stays a fixed size (which
     // keeps the noise column a stack array, no heap on the hot path). The
     // dimension's *build limit* comes from the settings' height/minY, not this.

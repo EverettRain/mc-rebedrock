@@ -55,7 +55,7 @@ float moonPhaseFromTime(float timeSeconds) {
     return mod(day, 8.0);
 }
 
-// ClientWorld#getSkyColor's 1.16.1 overcast treatment. Rain pulls the sky
+// The vanilla sky colour's overcast treatment. Rain pulls the sky
 // toward a dim luminance value; thunder repeats the operation with a much
 // darker target. This changes only the rendered sky colour.
 vec3 weatherSkyColor(vec3 color) {

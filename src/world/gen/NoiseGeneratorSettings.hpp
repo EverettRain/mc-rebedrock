@@ -6,7 +6,7 @@
 
 namespace mc::world::gen {
 
-// Java 1.16.1's NoiseGeneratorSettings / NoiseSettings, the *data* that turns the
+// vanilla's NoiseGeneratorSettings / NoiseSettings, the *data* that turns the
 // one NoiseChunkGenerator algorithm into a per-dimension generator without a
 // vtable. The overworld, the nether and the end differ only in the values below
 // (default block/fluid, sea level, the shape terms, the top/bottom slides that
@@ -135,7 +135,7 @@ struct NoiseGeneratorSettings final {
     // and a top slide both pull the column solid near the floor and the roof, and
     // the density bias keeps the middle mostly netherrack with hollows — the
     // characteristic nether "solid rock riddled with caverns" rather than a single
-    // ground surface. These are not a byte-for-byte 1.16.1 port (the nether is not
+    // ground surface. These are not a byte-for-byte vanilla port (the nether is not
     // under the overworld逐格 parity guard); they reproduce the qualitative
     // nether the acceptance checks.
     [[nodiscard]] static constexpr NoiseGeneratorSettings nether() {
@@ -143,7 +143,7 @@ struct NoiseGeneratorSettings final {
         NoiseGeneratorSettings settings;
         settings.minY = type.minY;              // 0
         // The nether *generates* into a 128-tall column with its bedrock roof at
-        // y=127 (1.16.1 logical height), even though the DimensionType's coordinate
+        // y=127 (vanilla logical height), even though the DimensionType's coordinate
         // ceiling (type.height) is taller: the playable nether is the 0..128 band
         // under the roof. Kept a literal here — a nether-specific logical height
         // rather than the DimensionType's coordinate limit — with a static_assert

@@ -73,7 +73,7 @@ int main() {
     assert(zombie->soundProfile().hurtEvent == "entity.zombie.hurt");
     assert(zombie->soundProfile().stepEvent == "entity.zombie.step");
 
-    // GameRenderer's crosshair pick uses the exact living-entity box in 1.16.1.
+    // GameRenderer's crosshair pick uses the exact living-entity box in vanilla.
     // The projectile-only 0.3 expansion must not make a ray 0.25 blocks outside
     // a pig's side select it and hide a block behind it.
     {

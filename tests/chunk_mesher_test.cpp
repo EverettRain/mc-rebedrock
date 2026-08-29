@@ -377,7 +377,7 @@ int main() {
     // AbstractBlock#getModelOffset: OffsetType.XZ plants are baked a few pixels
     // off their block centre, with the jitter taken from MathHelper.hashCode
     // so it is deterministic per position but looks random across a field.
-    // The reference values below were taken from the 1.16.1 Java source.
+    // The reference values below were taken from the vanilla Java source.
     mc::world::World plantWorld;
     mc::world::Chunk plantChunk;
     plantChunk.setBlock(0, mc::world::kMinY + 0, 0, mc::world::Block::GrassPlant);

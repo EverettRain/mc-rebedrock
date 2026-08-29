@@ -2,10 +2,10 @@
 
 // ENCH-1: outgoing melee weapon enchantment effects — the first ENCH effect
 // slice. ENCH-0 (Enchantment.hpp) gave every ItemStack an enchantment list and
-// the 1.16.1 identity/cost registry; nothing read those levels to change
+// the vanilla identity/cost registry; nothing read those levels to change
 // gameplay until this file. Scope here is exactly the five *outgoing* melee
 // weapon enchants a held weapon contributes at the attack site, transcribed
-// from yarn-mapped 1.16.1 sources (DamageEnchantment.java, KnockbackEnchantment
+// from vanilla sources (DamageEnchantment.java, KnockbackEnchantment
 // implicit via EnchantmentHelper#getKnockback, FireAspectEnchantment.java, and
 // PlayerEntity#attack's own arithmetic gluing them together):
 //

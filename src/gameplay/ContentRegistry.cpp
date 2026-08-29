@@ -23,7 +23,7 @@ bool ContentRegistry::registerBlock(world::Block blockValue, CreativeCategory ca
     if (blockIdentifiers_.contains(identifier)) return false;
     blockIdentifiers_.emplace(std::move(identifier), blocks_.size());
     blocks_.push_back({blockValue, definition, category});
-    // The catalog stack is wielded as the block's own BlockItem, the way 1.16.1
+    // The catalog stack is wielded as the block's own BlockItem, the way vanilla
     // registers each block into its Items registry.
     const ItemStack stack{blockValue, 1U, blockItemFor(blockValue)};
     catalogs_[static_cast<std::size_t>(category)].push_back(stack);

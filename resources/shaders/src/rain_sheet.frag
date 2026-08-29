@@ -1,7 +1,7 @@
 #version 450
 
 // Dedicated native-aspect vanilla rain texture. Scene light is sampled once
-// per precipitation column, matching the lightmap treatment of the 1.16.1
+// per precipitation column, matching the lightmap treatment of the vanilla
 // renderer without changing any world light value.
 
 layout(binding = 0) uniform CameraUniform {

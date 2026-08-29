@@ -17,7 +17,7 @@ namespace {
 }
 
 // The command accepts the bare name and the `minecraft:` alias; matching is
-// case-insensitive (see ruleNameEqual), the way 1.16.1's GameRuleCommand
+// case-insensitive (see ruleNameEqual), the way vanilla's GameRuleCommand
 // resolves namespaced rule names.
 [[nodiscard]] std::string normalizedRuleName(std::string_view name) {
     std::string normalized{name};

@@ -12,7 +12,7 @@ layout(push_constant) uniform PanoramaPush {
 
 const float PI = 3.14159265358979323846;
 
-// Mirrors 1.16.1's CubeMap render: an 85-degree perspective view from inside a
+// Mirrors vanilla's CubeMap render: an 85-degree perspective view from inside a
 // unit cube whose six faces carry panorama_0..panorama_5. The camera looks
 // straight at panorama_0 at yaw 0 (after the vanilla 180-degree X flip that
 // puts the sky on panorama_4), and slowly turns as yaw and pitch advance.

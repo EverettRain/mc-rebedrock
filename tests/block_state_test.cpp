@@ -416,7 +416,7 @@ int main() {
 
         // There is deliberately no "do not update light" and no "do not rebuild
         // mesh" bit: both are derived from whether the state actually changed,
-        // so a caller cannot forget them. 1.16.1's bit 32 meant "skip light";
+        // so a caller cannot forget them. vanilla's bit 32 meant "skip light";
         // 26.1 reclaimed that value for SuppressDrops, which is what it means
         // here too.
         static_assert(static_cast<std::uint16_t>(MutationFlags::SuppressDrops) == 32U);

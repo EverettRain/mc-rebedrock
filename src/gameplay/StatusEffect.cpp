@@ -15,7 +15,7 @@ class StatusEffectRegistry final {
     core::StatusEffectId registerBuiltin(std::string_view path, const StatusEffectDef& def) {
         const core::Identifier id{core::kNamespace, path};
         const core::StatusEffectId assigned = store_.registerBuiltin(id, def);
-        // The `minecraft:` name resolves to the same id so 1.16.1 potion/effect
+        // The `minecraft:` name resolves to the same id so vanilla potion/effect
         // data and translation keys still map.
         store_.alias(core::Identifier{core::kVanillaNamespace, path}, assigned);
         return assigned;

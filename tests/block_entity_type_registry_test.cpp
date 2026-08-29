@@ -78,7 +78,7 @@ int main() {
                furnace.index() == static_cast<std::size_t>(BlockEntityKind::Furnace));
 
         // The `minecraft:` alias and the bare path both resolve to the same id, so
-        // a 1.16.1 save's `minecraft:chest` reaches the type.
+        // a vanilla save's `minecraft:chest` reaches the type.
         assert(registry.byName("minecraft:chest") == chest);
         assert(registry.byName("chest") == chest);
         assert(registry.byName("minecraft:furnace") == furnace);

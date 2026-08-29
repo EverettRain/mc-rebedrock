@@ -777,7 +777,7 @@ void MeleeAttackGoal::tick(SimpleEntity& self, MobAiContext& context, MobBrain& 
                                                               *targetPosition, speedMultiplier_);
         lastTargetPosition_ = *targetPosition;
         repathCooldownTicks_ = 4 + static_cast<int>(mc::rng::nextInt(self.rngState, 7U));
-        // 1.16.1 adds fifteen ticks when navigation rejects the route, avoiding
+        // vanilla adds fifteen ticks when navigation rejects the route, avoiding
         // a cluster of unreachable mobs all rebuilding failed paths at 4–10 tick
         // cadence while still letting them retry if the world changes.
         if (!started) {

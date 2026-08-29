@@ -44,7 +44,7 @@ namespace mc::gameplay {
 using EnchantmentRegistry = core::Registry<EnchantmentDefinition, core::EnchantmentTypeId>;
 
 // Registers one enchantment under `rebedrock:<name>` with a `minecraft:<name>`
-// alias, so 1.16.1 data and vanilla names resolve to the same id. Kept as a free
+// alias, so vanilla data and vanilla names resolve to the same id. Kept as a free
 // helper so both the Bootstrap and External passes file the alias identically.
 inline core::EnchantmentTypeId registerEnchantment(EnchantmentRegistry& registry,
                                                    const EnchantmentDefinition& def,

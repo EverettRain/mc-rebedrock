@@ -35,18 +35,18 @@
 //
 // JE 26.1's enchantment JSON carries weight / max_level / min_cost / max_cost /
 // anvil_cost / slots / supported_items directly. It does NOT carry, as fields,
-// the four ENCH-0 attributes that 1.16.1 hardcoded on each Enchantment subclass
+// the four ENCH-0 attributes that vanilla hardcoded on each Enchantment subclass
 // and that 26.1 instead expresses through *registry tags*
 // (#minecraft:treasure, #minecraft:curse, #minecraft:non_treasure,
 // #minecraft:in_enchanting_table, and the enchantment's own EnchantmentTarget
 // -> category):
 //
-//   * rarity        — 1.16.1 Enchantment.Rarity; JE derives its weight from it,
+//   * rarity        — vanilla Enchantment.Rarity; JE derives its weight from it,
 //                     and the weight is the field that survives into JSON, so the
 //                     rarity round-trips *through* weight (weight 10/5/2/1 <->
 //                     Common/Uncommon/Rare/VeryRare, ENCH-0's own
 //                     enchantmentRarityWeight table, inverted).
-//   * category      — 1.16.1 EnchantmentTarget; JE expresses it as the
+//   * category      — vanilla EnchantmentTarget; JE expresses it as the
 //                     supported_items tag, so it round-trips through
 //                     supported_items + slots (a canonical tag per category).
 //   * treasureOnly  — a #minecraft:treasure tag membership in 26.1.
@@ -287,14 +287,14 @@ toGameplayDefinition(const data::EnchantmentDef& def, EnchantmentId id,
 
 // Folds a constexpr EnchantmentDefinition back into a JE-schema EnchantmentDef —
 // the exact data a built-in would ship as a datapack file. anvil_cost mirrors
-// 1.16.1's per-enchantment anvil multiplier is not part of ENCH-0's constexpr
+// vanilla's per-enchantment anvil multiplier is not part of ENCH-0's constexpr
 // table (ENCH-0 scope was identity + cost + exclusivity, no anvil), so we write
 // the vanilla base 1 (2 for durability-family) the same way 26.1 does; a future
 // anvil node can refine it. supported_items / slots / min_cost / max_cost /
 // weight / max_level reproduce the constexpr numbers exactly.
 [[nodiscard]] inline data::EnchantmentDef toContentDef(const EnchantmentDefinition& def) {
     data::EnchantmentDef out{};
-    // anvil_cost: 1.16.1's Enchantment default is 1; the durability/breakable
+    // anvil_cost: vanilla's Enchantment default is 1; the durability/breakable
     // family (Unbreaking, Mending) and the trident/crossbow rares cost 2 in
     // vanilla. ENCH-0 did not model it, so we mirror 26.1's own value: 1 for the
     // common case, 2 for Uncommon/Rare/VeryRare durability. This field is not

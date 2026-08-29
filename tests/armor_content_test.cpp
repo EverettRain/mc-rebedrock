@@ -70,7 +70,7 @@ void testEachArmorItemDeclaresItsMaterial() {
 }
 
 // --- Sabotage① target: full-set armor value/toughness sums must match
-// vanilla 1.16.1 exactly. ---
+// vanilla exactly. ---
 void testFullSetArmorValuesMatchVanilla() {
     // Diamond: 3+6+8+3 = 20 armor, toughness 2 per piece x 4 = 8.
     const std::uint32_t diamondSet =
@@ -110,7 +110,7 @@ void testFullSetArmorValuesMatchVanilla() {
     std::cout << "testFullSetArmorValuesMatchVanilla OK\n";
 }
 
-// Per-piece protection values, transcribed straight from yarn 1.16.1's
+// Per-piece protection values, transcribed straight from vanilla's
 // ArmorMaterials (PROTECTION_VALUES), independent of the full-set sums above
 // — catches a compensating error (e.g. two swapped pieces that still sum
 // right) the full-set test alone would miss.
@@ -152,7 +152,7 @@ void testPerPieceProtectionValues() {
 // --- Sabotage③ target: durability must scale by BOTH material multiplier
 // AND per-slot base — not a flat per-material number. ---
 void testDurabilityScalesByMaterialAndSlot() {
-    // BASE_DURABILITY = {feet:13, legs:15, chest:16, head:11} (yarn 1.16.1).
+    // BASE_DURABILITY = {feet:13, legs:15, chest:16, head:11} (vanilla).
     // durabilityMultiplier: leather 5, chainmail 15, iron 15, gold 7, diamond 33.
     const ItemStack leatherHelmet{world::Block::Air, 1U, &items::LeatherHelmet};
     const ItemStack leatherBoots{world::Block::Air, 1U, &items::LeatherBoots};
@@ -175,7 +175,7 @@ void testDurabilityScalesByMaterialAndSlot() {
     const ItemStack chainmailChestplate{world::Block::Air, 1U, &items::ChainmailChestplate};
     assert(itemMaximumDamage(chainmailChestplate) == 16U * 15U);  // 240
 
-    // Iron and chainmail share a durability multiplier (15) in 1.16.1, so
+    // Iron and chainmail share a durability multiplier (15) in vanilla, so
     // same-slot durability is expected to match between them — that shared
     // value itself is the assertion (a table that dropped the multiplier
     // would fail one of the per-material checks above instead). The
@@ -216,7 +216,7 @@ void testRegistryCount() {
 }
 
 // Crafting: leather/iron/gold/diamond armor is craftable; chainmail is not
-// (no recipe in 1.16.1).
+// (no recipe in vanilla).
 void testCraftingRecipesResolve() {
     RecipeTable table;
     table.loadBuiltinDefaults();
@@ -249,7 +249,7 @@ void testCraftingRecipesResolve() {
     assert(goldLeggings != nullptr);
     assert(goldLeggings->output.item == &items::GoldLeggings);
 
-    // Chainmail: no recipe exists anywhere in the table (1.16.1 parity).
+    // Chainmail: no recipe exists anywhere in the table (vanilla parity).
     assert(find("minecraft:chainmail_helmet") == nullptr);
     assert(find("minecraft:chainmail_chestplate") == nullptr);
     assert(find("minecraft:chainmail_leggings") == nullptr);

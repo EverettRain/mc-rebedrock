@@ -1,6 +1,6 @@
 #version 450
 
-// Vanilla 1.16.1 precipitation column. Each draw is one block-wide vertical
+// Vanilla precipitation column. Each draw is one block-wide vertical
 // strip whose horizontal tangent faces the camera radially. The original
 // 64x256 environment/rain.png repeats every four blocks and scrolls downward;
 // it is not a water tile stretched over a camera-facing square.

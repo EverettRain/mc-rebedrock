@@ -45,7 +45,7 @@ using ItemRegistry = core::Registry<const Item*, core::ItemId>;
 // buildBlockRegistry gives blocks. Extracted from itemRegistry() so a test can
 // drive the lifecycle with its own external content without the process
 // singleton. Each item's `minecraft:` alias is filed beside its `rebedrock:`
-// key so vanilla names and 1.16.1 saves resolve to the same id.
+// key, so a vanilla name and a vanilla save both resolve to the same id.
 [[nodiscard]] inline ItemRegistry buildItemRegistry(std::span<const Item* const> external) {
     ItemRegistry built;
     // Files the item's `minecraft:` alias beside the `rebedrock:` key just
@@ -93,7 +93,7 @@ using ItemRegistry = core::Registry<const Item*, core::ItemId>;
 // Resolves a registry key to its item. Accepts `rebedrock:book`, the vanilla
 // alias `minecraft:book`, and the bare `book`, through the registry's own name
 // resolution. A name that no real item claims falls through to the block bridge:
-// every block is also wielded as its BlockItem (1.16.1's `Items.STONE` beside
+// every block is also wielded as its BlockItem (vanilla's `Items.STONE` beside
 // `Blocks.STONE`), and that identity comes from the block registry. Returns
 // nullptr when nothing owns the name.
 [[nodiscard]] inline const Item* itemFromIdentifier(std::string_view text) {

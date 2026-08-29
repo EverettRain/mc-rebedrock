@@ -24,14 +24,13 @@ enum class GameRuleType : std::uint8_t {
 };
 
 // The typed value every rule stores, held in-place so a world's rules cost no
-// per-rule heap allocation. This is the C++ equivalent of 1.16.1's
-// `GameRules.Rule<T>` (Bedrock's `GameRules.Value<T>`): one generic value whose
-// exact type is fixed by the rule's registration.
+// per-rule heap allocation. This is the C++ equivalent of vanilla's generic
+// rule value: one value whose exact type is fixed by the rule's registration.
 using GameRuleValueData = std::variant<bool, std::int32_t>;
 
-// One rule's static identity, the way 1.16.1's `static final Key<T>` fields
-// name the rules. `values_` is indexed by this enum, so lookups are an array
-// subscript plus a `std::get` — no map, no virtual call.
+// One rule's static identity, the way vanilla's static rule keys name them.
+// `values_` is indexed by this enum, so lookups are an array subscript plus a
+// `std::get` — no map, no virtual call.
 enum class GameRuleId : std::uint8_t {
     DoDaylightCycle,
     DoWeatherCycle,
@@ -45,11 +44,11 @@ struct GameRuleDefinition final {
     std::string_view name;
     GameRuleType type;
     GameRuleValueData defaultValue;
-    // Int rules reject values below the floor and clamp above the ceiling
-    // (mirroring 1.16.1's `IntegerRule#validate`); Boolean rules ignore these.
+    // Int rules reject values below the floor and clamp above the ceiling,
+    // mirroring vanilla's integer-rule validation; Boolean rules ignore these.
     std::int32_t minimum = 0;
     std::int32_t maximum = 0;
-    // 1.16.1's GameRules.Category, kept for the future edit-gamerules screen.
+    // Vanilla's rule category, kept for the future edit-gamerules screen.
     std::string_view category;
 };
 
@@ -93,8 +92,13 @@ constexpr bool gameRuleDefinitionsAreWellFormed() {
 static_assert(gameRuleDefinitionsAreWellFormed(),
               "kGameRuleDefinitions must be sized, named, bounded, and uniquely identified");
 
-// 1.16.1 rule names are camelCase (`randomTickSpeed`), but the command should
-// not care how the player typed the name, so matching is case-insensitive.
+// The rule names in this build are camelCase (`randomTickSpeed`). 26.1 renamed
+// them: the style is snake_case and two of them changed word as well —
+// doDaylightCycle -> advance_time, doWeatherCycle -> advance_weather,
+// keepInventory -> keep_inventory, randomTickSpeed -> random_tick_speed,
+// sendCommandFeedback -> send_command_feedback. Renaming is a save-format and
+// command-surface change, so it has not been done here. Matching is
+// case-insensitive either way: the command should not care how it was typed.
 constexpr bool ruleNameEqual(std::string_view left, std::string_view right) {
     if (left.size() != right.size()) return false;
     for (std::size_t index = 0; index < left.size(); ++index) {
@@ -123,8 +127,8 @@ constexpr bool ruleNameEqual(std::string_view left, std::string_view right) {
 // Per-world game rules. Holds one typed value per registered rule in a flat
 // array, so reading a rule is an array subscript plus a `std::get` — cheap
 // enough to call on a frame boundary, and the hot random-tick loop stays on
-// WorldSimulation's mirrored int exactly as 1.16.1's `tickChunk(chunk, int)`
-// passes the value into the loop instead of querying it per block.
+// WorldSimulation's mirrored int, the same way vanilla passes the value into
+// the chunk tick instead of querying the rule per block.
 class GameRules final {
   public:
     // Invoked whenever a rule's value changes through `set`/`setFromCommand`.
@@ -134,9 +138,9 @@ class GameRules final {
 
     GameRules();
 
-    // Generic typed access — the C++ equivalent of 1.16.1's `GameRules.Rule<T>`.
-    // The value type is fixed by the rule's registration; requesting a rule
-    // through the wrong `T` is a programming error.
+    // Generic typed access. The value type is fixed by the rule's
+    // registration; requesting a rule through the wrong `T` is a programming
+    // error.
     template <typename T>
     [[nodiscard]] const T& get(GameRuleId id) const {
         return std::get<T>(values_[static_cast<std::size_t>(id)]);
@@ -166,7 +170,7 @@ class GameRules final {
 
     // `/gamerule <rule> <value>`: parses `valueText` by the rule's type and
     // applies it. Accepts the bare name, a `minecraft:` prefix, and any case,
-    // the way 1.16.1's GameRuleCommand resolves namespaced names.
+    // the way vanilla's /gamerule resolves namespaced names.
     [[nodiscard]] CommandResult setFromCommand(std::string_view name,
                                                std::string_view valueText);
 

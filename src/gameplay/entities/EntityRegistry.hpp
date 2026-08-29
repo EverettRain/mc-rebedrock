@@ -10,7 +10,7 @@
 
 namespace mc::gameplay::entities {
 
-// Registry.ENTITY_TYPE (1.16.1): the ordered list of registered species, hosted
+// Registry.ENTITY_TYPE: the ordered list of registered species, hosted
 // on the shared R0 core::Registry so entity types walk the same identity machine
 // as blocks and items — the three-phase Bootstrap/External/Freeze lifecycle, the
 // `minecraft:` alias beside the `rebedrock:` key, the freeze-then-abort guard,

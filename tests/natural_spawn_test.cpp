@@ -51,7 +51,7 @@ std::size_t countCategory(const mc::gameplay::EntitySystem& entities,
 }
 
 // The nearest spawned creature must sit at least 24 blocks from the player
-// (1.16.1's minimum spawn distance), never in the cleared ring.
+// (vanilla's minimum spawn distance), never in the cleared ring.
 std::size_t countInsideRing(const mc::gameplay::EntitySystem& entities, glm::vec3 center) {
     std::size_t count = 0U;
     constexpr float kRing = 24.0F * 24.0F;
@@ -208,7 +208,7 @@ int main() {
         assert(desertHasHusk && desertHasZombie);
     }
 
-    // A dark surface is monster territory. At a 64-block radius the 1.16.1 cap
+    // A dark surface is monster territory. At a 64-block radius the vanilla cap
     // of 70 scales down with the area (× (64/128)² ≈ 17); nothing may spawn in
     // the 24-block ring around the player.
     mc::gameplay::EntitySystem entities;
@@ -221,7 +221,7 @@ int main() {
     // Soft cap: a group is checked before it spawns, so it can overshoot by one
     // group size, but it must stay near the area-scaled ~17.
     assert(monsters <= 17U + 4U);
-    // 1.16.1 keeps the ring around the player clear.
+    // vanilla keeps the ring around the player clear.
     assert(countInsideRing(entities, player) == 0U);
     // Every group member was validated with its complete species AABB, not just
     // the first member's feet cell.

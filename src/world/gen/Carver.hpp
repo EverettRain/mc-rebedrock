@@ -8,7 +8,7 @@
 
 namespace mc::world::gen {
 
-// Java 1.16.1's ConfiguredCarvers.CAVE and .CANYON.
+// vanilla's ConfiguredCarvers.CAVE and .CANYON.
 //
 // Both work the same way: a carver is seeded from a chunk position, digs a
 // tunnel system that may run well past that chunk's own borders, and only ever

@@ -254,7 +254,7 @@ UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t inde
     if (page == PageId::EditWorld || page == PageId::ConfirmDelete) {
         return layout.bottomMenuButton(index, buttonCount);
     }
-    // 1.16.1's LanguageOptionsScreen places "Force Unicode Font" and "Done" side
+    // vanilla's LanguageOptionsScreen places "Force Unicode Font" and "Done" side
     // by side at the bottom, not stacked.
     if (page == PageId::Language) {
         return layout.bottomMenuButton(index, buttonCount, 2U);

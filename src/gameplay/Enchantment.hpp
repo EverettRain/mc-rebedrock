@@ -1,22 +1,19 @@
 #pragma once
 
-// ENCH-0: the enchantment identity registry — Java 1.16.1's fixed,
-// hardcoded-in-Java enchantment set (Enchantments.java's 34 constants), each
-// carrying the max level, rarity weight, applicability category, cost curve
-// and exclusivity rule its own 1.16.1 Enchantment subclass hardcoded. This
-// project targets 26.1 architecturally, but item/tool code in this file's
-// neighbourhood (Item.hpp's ToolMaterials comment) is explicitly modeled on
-// 1.16.1, and 26.1's data-driven enchantment JSON is a future PACK/D-subtree
-// concern (deferred, not started here) — so this table mirrors 1.16.1's
-// hardcoded Enchantment/EnchantmentTarget/Rarity shape exactly, one constexpr
-// entry per subclass, dense-indexed by EnchantmentId instead of virtual
-// dispatch (DOD: data table, not a class hierarchy).
+// The enchantment identity registry: one constexpr row per enchantment,
+// dense-indexed by EnchantmentId instead of virtual dispatch — a data table,
+// not a class hierarchy. Each row carries the max level, rarity weight,
+// applicability category, cost curve and exclusivity rule.
 //
-// Source: yarn-mapped 1.16.1 net.minecraft.enchantment.{Enchantment,
-// Enchantments,EnchantmentTarget,<EachSubclass>}.java (see
-// docs/vanilla-1161-sources for the jar location) plus
-// net.minecraft.item.ToolMaterials (per-material enchantability) and
-// BookItem#getEnchantability (books fix it at 1).
+// 26.1 defines enchantments as DATA: Enchantments.java holds only ResourceKeys
+// and the values live in the vanilla data pack's JSON. Reading them from a
+// pack is deferred to the data-pack subtree, so this table hardcodes them
+// instead. It covers 37 of 26.1's 43; breach, density, lunge, sweeping_edge,
+// swift_sneak and wind_burst are not modelled.
+//
+// Values are transcribed from vanilla's own definitions, not the wiki. Item
+// enchantability comes from ToolMaterial/ArmorMaterials (per material) and
+// from the book item, which fixes it at 1.
 //
 // Scope: identity + cost curves + exclusivity only. NO gameplay effects
 // (protection damage reduction, sharpness bonus damage, efficiency mining
@@ -103,7 +100,7 @@ enum class EnchantmentRarity : std::uint8_t {
     return 0U;
 }
 
-// EnchantmentTarget (1.16.1): what an enchantment is allowed to land on. Kept
+// What an enchantment is allowed to land on. Kept
 // as the full vanilla set even though this project has no armor/bow/fishing
 // rod/trident/crossbow/shears items yet (AR content gap, not an ENCH-0 gap) —
 // canEnchant() below answers false for those honestly rather than the table
@@ -157,9 +154,9 @@ struct EnchantmentDefinition final {
 
 namespace detail {
 
-// getMinPower(level) = base + (level-1)*perLevel; getMaxPower(level) =
-// getMinPower(level) + maxOffset. Mirrors every 1.16.1 Enchantment subclass's
-// override pair exactly (including the ones whose perLevel is 0, i.e.
+// minCost(level) = base + (level-1)*perLevel; maxCost(level) =
+// minCost(level) + maxOffset. Mirrors every vanilla enchantment's cost pair
+// exactly (including the ones whose perLevel is 0, i.e.
 // SilkTouch/Infinity/Flame/BindingCurse/VanishingCurse/Channeling/Mending's
 // level*25 case, which is base=0,perLevel=25 with minLevel==maxLevel==1 so
 // "per level" only ever evaluates at level 1).
@@ -175,9 +172,8 @@ namespace detail {
 } // namespace detail
 
 // The dense table, one row per EnchantmentId, in enum declaration order.
-// Every numeric field below is transcribed from the matching 1.16.1
-// Enchantment subclass's getMinPower/getMaxPower/getMaxLevel/isTreasure/
-// isCursed overrides (see the file banner for the exact source paths).
+// Every numeric field below is transcribed from the matching vanilla
+// enchantment's min/max cost, max level, treasure flag and curse flag.
 inline constexpr std::array<EnchantmentDefinition, kEnchantmentCount> kEnchantmentTable{{
     // Protection family: ProtectionEnchantment.Type(name, basePower, powerPerLevel),
     // maxOffset == powerPerLevel for every member of the family.
@@ -357,11 +353,10 @@ static_assert(enchantmentTableIsWellFormed(),
     return enchantmentDefinition(id).availableForRandomSelection;
 }
 
-// The ids whose vanilla getMaxPower is a flat 50 rather than
-// minPower(level)+maxOffset (Loyalty, Riptide, QuickCharge, Piercing — every
-// one of them a 1.16.1 override that returns the literal constant `50`
-// instead of calling into minPower at all). Every other enchantment's
-// maxOffset field already encodes minPower+offset==maxPower exactly.
+// The ids whose vanilla max cost is a flat 50 rather than
+// minCost(level)+maxOffset: Loyalty, Riptide, QuickCharge and Piercing all
+// state the literal 50 instead of deriving it from the minimum. Every other
+// enchantment's maxOffset field already encodes minCost+offset==maxCost.
 [[nodiscard]] constexpr bool enchantmentHasFlatMaxCostOf50(EnchantmentId id) {
     return id == EnchantmentId::Loyalty || id == EnchantmentId::Riptide ||
         id == EnchantmentId::QuickCharge || id == EnchantmentId::Piercing;
@@ -464,9 +459,9 @@ static_assert(enchantmentTableIsWellFormed(),
     return categoryAcceptsToolType(enchantmentDefinition(id).category, stack.item->toolType);
 }
 
-// Enchantment#canCombine (both directions must agree; every 1.16.1
-// canAccept() override is symmetric in practice — a pair either both refuse
-// each other or neither does — so a single symmetric table suffices). `id`
+// Whether two enchantments can sit on the same item (both directions must
+// agree; vanilla's compatibility rule is symmetric in practice — a pair either
+// both refuse each other or neither does — so one symmetric table suffices). `id`
 // combining with itself is not "compatible" in the applying sense (you cannot
 // stack two Sharpness entries as two separate enchantments — a second
 // application replaces/raises the level instead), so the identity case

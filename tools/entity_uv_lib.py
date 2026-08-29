@@ -383,7 +383,7 @@ def find_geo(project_root, model):
 # Entity skins are Mojang content: the repo ships none, and the game reads them
 # from whatever standard resource pack the player installed. So does this tool —
 # it scans every installed pack's `assets/minecraft/textures/entity` in name
-# order. (The bundled `resources/vanilla/1.16.1/…` tree this used to read was
+# order. (The bundled `resources/vanilla/<version>/…` tree this used to read was
 # retired together with the extraction script that filled it.)
 def entity_texture_roots(project_root):
     """The `textures/entity` roots of every installed resource pack."""

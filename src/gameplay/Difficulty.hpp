@@ -18,7 +18,7 @@ enum class Difficulty : std::uint8_t {
 
 inline constexpr std::uint8_t kDifficultyCount = 4U;
 
-// The vanilla translation keys, so the options button reads from the 1.16.1
+// The vanilla translation keys, so the options button reads from the vanilla
 // language files like every other label.
 [[nodiscard]] constexpr std::string_view difficultyTranslationKey(Difficulty difficulty) {
     switch (difficulty) {

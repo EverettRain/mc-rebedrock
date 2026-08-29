@@ -53,14 +53,14 @@ enum class BlockEntityKind : std::uint8_t {
 };
 
 // Everything the engine knows about one block-entity type. BE1 needs identity
-// only: the `rebedrock:` key and the `minecraft:` alias behind it (so a 1.16.1
+// only: the `rebedrock:` key and the `minecraft:` alias behind it (so a vanilla
 // save's `minecraft:chest` still resolves), plus a fallback name. Instances live
 // in the constexpr table below, never built by hand.
 struct BlockEntityTypeDefinition final {
     BlockEntityKind kind = BlockEntityKind::Chest;
     // The registry key, always in this project's namespace.
     Identifier identifier{};
-    // The vanilla block entity this one mirrors; drives 1.16.1 save/asset lookups.
+    // The vanilla block entity this one mirrors; drives vanilla save/asset lookups.
     Identifier vanilla{};
     // Fallback English name when a translation key is missing.
     const char* displayName = "";
@@ -161,7 +161,7 @@ struct ExternalBlockEntityTypeDef final {
         if (id != blockEntityTypeId(definition.kind)) {
             core::registryAbort("block entity type registered out of enum order");
         }
-        // The `minecraft:` name resolves to the same id, so 1.16.1 saves reach the
+        // The `minecraft:` name resolves to the same id, so vanilla saves reach the
         // type through either key.
         if (!definition.vanilla.empty() && definition.vanilla != definition.identifier) {
             built.alias(definition.vanilla, id);

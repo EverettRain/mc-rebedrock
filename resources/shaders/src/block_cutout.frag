@@ -42,7 +42,7 @@ layout(binding = 0) uniform CameraUniform {
 } camera;
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
-// The 1.16.1 biome colour lookup textures (see grass_block.frag).
+// The biome colour lookup textures (see grass_block.frag).
 layout(binding = 6) uniform sampler2D biomeGrassColors;
 layout(binding = 7) uniform sampler2D biomeFoliageColors;
 // The sun shadow depth map (see grass_block.frag).

@@ -328,7 +328,7 @@ using Factory = std::function<CachingSampler()>;
 }
 
 // ---------------------------------------------------------------------------
-// Layer operations. Each mirrors the vanilla 1.16.1 layer class of the same
+// Layer operations. Each mirrors the vanilla layer class of the same
 // name; the sampling coordinates are the CrossSamplingLayer / DiagonalCross /
 // Identity / SouthEast neighbourhoods.
 

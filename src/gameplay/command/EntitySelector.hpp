@@ -21,7 +21,7 @@
 
 namespace mc::gameplay::command {
 
-// A target selector variable, mirroring 1.16.1's EntitySelector base sets.
+// A target selector variable, mirroring vanilla's EntitySelector base sets.
 // @s is the executor, @p/@a/@r resolve over players, @e over every entity.
 enum class SelectorVariable : std::uint8_t {
     Self,          // @s
@@ -31,7 +31,7 @@ enum class SelectorVariable : std::uint8_t {
     Random,        // @r
 };
 
-// The order matched candidates are reduced to, 1.16.1's `sort=` (plus the
+// The order matched candidates are reduced to, vanilla's `sort=` (plus the
 // default each variable carries). Random draws from a deterministic stream, never
 // the wall clock, so `@r` picks the same target for the same seed and state.
 enum class SelectorSort : std::uint8_t {

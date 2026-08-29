@@ -8,12 +8,12 @@
 
 namespace mc::world::gen {
 
-// Java 1.16.1's MultiNoiseBiomeSource, the nether's biome map. Rather than the
+// vanilla's MultiNoiseBiomeSource, the nether's biome map. Rather than the
 // overworld's GenLayer zoom stack, the nether places its five biomes by climate:
 // four low-octave noise fields (temperature, humidity, altitude, weirdness) are
 // sampled at each quart column, and the biome whose parameter point sits nearest
 // (squared distance in the 4-space, plus its offset) wins. Ported in structure
-// from vanilla; the biome parameter points are the 1.16.1 nether values.
+// from vanilla; the biome parameter points are the vanilla nether values.
 //
 // A concrete value type, not a vtable: BiomeSource owns one of these or a
 // LayeredBiomeSource and dispatches on a stored tag, so the noise column reads a
@@ -25,7 +25,7 @@ class MultiNoiseBiomeSource final {
     // BiomeSource#getBiomeForNoiseGen: the biome at a quart (1:4) column.
     [[nodiscard]] Biome sample(int quartX, int quartZ) const;
 
-    // One biome's climate parameter point (Biome.MixedNoisePoint in 1.16.1). The
+    // One biome's climate parameter point (Biome.MixedNoisePoint in vanilla). The
     // fifth axis, offset, is a fixed bias added to the distance so a biome can be
     // rarer without moving its centre.
     struct NoisePoint final {

@@ -59,7 +59,7 @@ struct BlockEntityTypeIdTag final {};
 struct StatusEffectIdTag final {};
 // A registered enchantment type (sharpness, protection, …). DDC-0's runtime
 // EnchantmentRegistry hands these out; the dense id is the registry subscript,
-// distinct from gameplay's EnchantmentId enum (which is the fixed 1.16.1
+// distinct from gameplay's EnchantmentId enum (which is the fixed vanilla
 // ordinal an ItemStack stores). Both agree slot-for-slot for the built-ins so a
 // stored enum ordinal indexes the runtime table directly.
 struct EnchantmentTypeIdTag final {};

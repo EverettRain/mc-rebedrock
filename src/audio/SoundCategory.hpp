@@ -7,7 +7,7 @@
 
 namespace mc::audio {
 
-// SoundSource (1.16.1 net/minecraft/sound/SoundCategory): the fixed set of
+// SoundSource (vanilla net/minecraft/sound/SoundCategory): the fixed set of
 // volume buses a sound routes through, mirroring the vanilla enum one-for-one so
 // the options screen exposes the same sliders. Master is the global bus; every
 // other value is a sub-category whose slider multiplies on top of Master. The
@@ -27,7 +27,7 @@ enum class SoundCategory : std::uint8_t {
     Neutral, // passive/neutral creature sounds
     Player,  // the local player: hurt, eat, splash, footsteps
     Ambient, // cave / environment ambience
-    Voice,   // spoken lines (unused in 1.16.1 content, present for parity)
+    Voice,   // spoken lines (unused by this build's content, present for parity)
     Count,
 };
 

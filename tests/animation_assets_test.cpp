@@ -210,7 +210,7 @@ int main() {
     assert(sheep.model.bones()[static_cast<std::size_t>(sheepFrontRight)].cubes[0].mirror);
     assert(!sheep.model.bones()[static_cast<std::size_t>(sheepFrontLeft)].cubes[0].mirror);
     assert(!sheep.model.bones()[static_cast<std::size_t>(sheepWoolFrontRight)].cubes[0].mirror);
-    // Base legs are legSize=12 (4x12x4), the 26.1 proportion (not 1.16.1's 10).
+    // Base legs are legSize=12 (4x12x4), the 26.1 proportion (not vanilla's 10).
     assert(std::abs(sheep.model.bones()[static_cast<std::size_t>(sheepFrontRight)].cubes[0].size.y -
                     12.0F) < 1e-3F);
     Animator sheepMob;

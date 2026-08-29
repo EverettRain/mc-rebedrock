@@ -7,7 +7,7 @@
 
 namespace mc::world::gen {
 
-// Java 1.16.1's TheEndBiomeSource, the end's biome map. Not a climate or a
+// vanilla's TheEndBiomeSource, the end's biome map. Not a climate or a
 // GenLayer map: the biome at a column is decided by distance to the world origin
 // and the island-height field. The central 64-chunk disc is TheEnd (the main
 // island's biome); outside it, the same island height the terrain uses picks

@@ -7,7 +7,7 @@
 namespace mc::gameplay::entities {
 
 void AnimalAi::configureBrain(MobBrain& brain) const {
-    // The cow/pig 1.16.1 common land-animal core. Mating, temptation
+    // The cow/pig vanilla common land-animal core. Mating, temptation
     // and following parents can be inserted at priorities 2..4 later without
     // changing the selector or navigation contract.
     brain.goals().add(0, std::make_unique<SwimGoal>());

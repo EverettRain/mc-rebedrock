@@ -342,7 +342,7 @@ void assertSheepDisk() {
     const SkeletalModel base = buildSheepBase();
     const SkeletalModel fur = buildSheepFur();
 
-    // Base layer: legs are 4x12x4 (legSize=12, NOT the old 1.16.1 legSize=10).
+    // Base layer: legs are 4x12x4 (legSize=12, NOT the old vanilla legSize=10).
     for (const char* leg : {"legFrontRight", "legFrontLeft", "legBackRight", "legBackLeft"}) {
         const ModelCube* d = firstCube(disk, leg);
         const ModelCube* b = firstCube(base, leg);
@@ -410,7 +410,7 @@ void assertChickenDisk() {
     // beak/redThing hang off head (26.1 makes them head children).
     assert(disk.bones()[static_cast<std::size_t>(disk.findBone("beak"))].parent ==
            disk.findBone("head"));
-    // 26.1 leg UV is (26,0), not the 1.16.1 (0,22); legs/wings never mirror.
+    // 26.1 leg UV is (26,0), not the vanilla (0,22); legs/wings never mirror.
     assert(vecEq(firstCube(disk, "rightLeg")->uv, glm::vec2{26.0F, 0.0F}));
     assert(!firstCube(disk, "leftLeg")->mirror);
     assert(!firstCube(disk, "leftWing")->mirror);

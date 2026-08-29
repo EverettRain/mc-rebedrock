@@ -42,11 +42,11 @@ struct GameOptions final {
     bool antiAliasing = true;
     bool viewBobbing = true;
     // Bedrock-style auto-jump: walking forward into a one-block rise jumps
-    // automatically. Off by default, matching Java 1.16.1 (which has no
+    // automatically. Off by default, matching vanilla (which has no
     // auto-jump at all).
     bool autoJump = false;
     // Smooth lighting is a tri-state quality: Off keeps the flat light values,
-    // Standard is the binary-AO algorithm, High is the vanilla 1.16.1 AO. The
+    // Standard is the binary-AO algorithm, High is the vanilla AO. The
     // mesh is baked at the active quality (the packed vertex carries one AO
     // set), so changing it remeshes the world.
     mc::world::SmoothLightingQuality smoothLightingQuality =

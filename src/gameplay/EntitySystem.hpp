@@ -233,7 +233,7 @@ struct EntityRayHit final {
     glm::vec3 direction,
     float reach);
 
-// The four sound hooks a 1.16.1 LivingEntity raises. The caller plays the
+// The four sound hooks a vanilla LivingEntity raises. The caller plays the
 // matching clip for the creature's species (see entities::EntityType::soundProfile).
 enum class MobSoundEvent : std::uint8_t {
     Hurt,
@@ -346,7 +346,7 @@ class EntitySystem final {
         const EnvironmentSnapshot& environment = EnvironmentSnapshot{});
 
     // GameRenderer's crosshair pick: the nearest creature whose targeting box
-    // the ray enters within `reach`. Ordinary 1.16.1 living entities have a
+    // the ray enters within `reach`. Ordinary vanilla living entities have a
     // zero targeting margin, so this is their exact physical bounding box.
     [[nodiscard]] std::optional<EntityRayHit> raycast(
         glm::vec3 origin,

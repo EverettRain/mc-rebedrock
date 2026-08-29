@@ -43,7 +43,7 @@ struct ParseSegment final {
 };
 
 // The result of walking the tree over one input line — the single parse path
-// both execution and completion share (1.16.1's ParseResults analogue). The
+// both execution and completion share (vanilla's ParseResults analogue). The
 // fields describe where the walk stopped, so execute() and suggestions() never
 // reimplement the token-walk themselves.
 struct ParseResults final {
@@ -69,7 +69,7 @@ struct ParseResults final {
     PermissionLevel requiredLevel = PermissionLevel::All;
 };
 
-// The command tree, mirroring 1.16.1's Brigadier CommandDispatcher shape: a
+// The command tree, mirroring vanilla's Brigadier CommandDispatcher shape: a
 // root node, literal nodes (exact tokens) and argument nodes (parsed values),
 // dispatched one token at a time through per-node hash maps, so each step is an
 // O(1) lookup instead of a linear scan over every command. Every command the
@@ -182,7 +182,7 @@ class CommandDispatcher final {
     friend class CommandBuilder;
 
     // The ceiling on the forked source set an `execute` chain may build, so a
-    // fork bomb fails cleanly instead of exhausting memory (1.16.1 bounds its
+    // fork bomb fails cleanly instead of exhausting memory (vanilla bounds its
     // command chain analogously).
     static constexpr std::size_t kMaxForkedSources = std::size_t{1} << 16U;
 
@@ -424,7 +424,7 @@ inline CommandResult CommandDispatcher::executeParsed(ParseResults& parsed,
             }
         }
         // Guard against a fork bomb (`execute as @e run execute as @e …`): the
-        // source set can multiply per clause, so cap it the way 1.16.1 bounds the
+        // source set can multiply per clause, so cap it the way vanilla bounds the
         // command chain rather than letting it grow without limit.
         if (next.size() > kMaxForkedSources) {
             return route({false, "Too many entities selected by execute"});

@@ -19,12 +19,12 @@ namespace mc::gameplay {
 namespace {
 
 // The light threshold below which a position counts as darkness for the
-// MONSTER category (1.16.1 monsters need a light level under 7).
+// MONSTER category (vanilla monsters need a light level under 7).
 constexpr int kMonsterLightThreshold = 7;
-// No mob spawns closer than this to the player (1.16.1's 24-block minimum),
+// No mob spawns closer than this to the player (vanilla's 24-block minimum),
 // so a herd or a horde never materialises right on top of the camera.
 constexpr float kMinimumSpawnDistance = 24.0F;
-// The reference spawn region whose caps the 1.16.1 spawn settings name: the
+// The reference spawn region whose caps the vanilla spawn settings name: the
 // 128-block radius around the player. A smaller simulation radius scales the
 // cap down with the area so density matches vanilla instead of crowding.
 constexpr float kVanillaSpawnRadius = 128.0F;
@@ -338,7 +338,7 @@ void NaturalSpawner::spawnOnce(const world::World& world, EntitySystem& entities
     const SimulationPosition position{spawnX, spawnY, spawnZ};
 
     // --- distance to the player (isRightDistanceToPlayerAndSpawnPoint) ---
-    // 1.16.1 keeps the first ring around the player clear. Vanilla always
+    // vanilla keeps the first ring around the player clear. Vanilla always
     // measured this in three dimensions; it only looked two-dimensional here
     // because y was pinned to the surface the player stood on.
     const float nearX = static_cast<float>(spawnX) + 0.5F - center.x;
@@ -358,7 +358,7 @@ void NaturalSpawner::spawnOnce(const world::World& world, EntitySystem& entities
     const auto& entry = pickWeighted(entries);
 
     // --- category cap ---
-    // Scaled to the simulated area: the 1.16.1 caps are named for a 128-block
+    // Scaled to the simulated area: the vanilla caps are named for a 128-block
     // radius, so a smaller simulation radius keeps the same density instead of
     // crowding the same count into a quarter of the area. Only the creatures
     // inside the disc count, so a new area repopulates as the player walks on

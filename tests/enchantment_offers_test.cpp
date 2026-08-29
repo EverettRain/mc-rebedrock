@@ -1,4 +1,4 @@
-// ENCH-0: deterministic enchanting-table offer generation. Mirrors 1.16.1's
+// ENCH-0: deterministic enchanting-table offer generation. Mirrors vanilla's
 // EnchantmentScreenHandler#onContentChanged + EnchantmentHelper's
 // calculateRequiredExperienceLevel/generateEnchantments/getPossibleEntries,
 // headless — no block, no UI, no XP spend. The seam under test is

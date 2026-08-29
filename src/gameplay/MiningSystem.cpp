@@ -227,7 +227,7 @@ MinedDrops dropGravel(world::Block, const ItemStack&, std::uint64_t& randomState
     return drops;
 }
 
-// Tall grass drops a wheat seed 1/8 of the time (1.16.1's grass.json loot
+// Tall grass drops a wheat seed 1/8 of the time (vanilla's grass.json loot
 // table); the grass plant itself is only kept by shears.
 MinedDrops dropTallGrass(world::Block, const ItemStack&, std::uint64_t& randomState, int, bool) {
     MinedDrops drops;
@@ -361,7 +361,7 @@ MinedDrops minedDrops(world::Block block, const ItemStack& tool, std::uint64_t& 
     // count. Vanilla applies ore_drops to the ores that drop an item straight
     // (coal/redstone/lapis/diamond/emerald/nether_quartz) — exactly the blocks
     // oreExperienceRange names (iron/gold drop raw blocks and take no Fortune in
-    // 1.16.1, and oreExperienceRange already excludes them). The bonus ceiling is
+    // vanilla, and oreExperienceRange already excludes them). The bonus ceiling is
     // the DDC-2 value; the uniform-int draw is this loot stream's own mc::rng.
     const std::uint8_t fortuneLevel = enchantmentLevel(tool, EnchantmentId::Fortune);
     if (fortuneLevel > 0U && oreExperienceRange(block).has_value()) {

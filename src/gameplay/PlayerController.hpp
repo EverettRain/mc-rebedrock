@@ -27,7 +27,7 @@ struct PlayerInput final {
     bool sprintAllowed = true;
     // Bedrock-style auto-jump: while walking forward into a one-block rise the
     // player jumps on its own instead of jamming against the face. Off by
-    // default, mirroring Java 1.16.1.
+    // default, mirroring vanilla.
     bool autoJump = false;
 };
 
