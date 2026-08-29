@@ -2,6 +2,7 @@
 
 #include "world/WorldConstants.hpp"
 
+#include <algorithm>
 #include <optional>
 #include <string_view>
 
@@ -74,10 +75,25 @@ void placeStructure(Chunk& chunk, int chunkX, int chunkZ, const StructureTemplat
     // refinement.
     const int footprintX = rotatedSizeX(tmpl.sizeX, tmpl.sizeZ, rotation);
     const int footprintZ = rotatedSizeZ(tmpl.sizeX, tmpl.sizeZ, rotation);
+    // The footprint's intersection with this chunk, as local (dx, dz) offsets into
+    // the piece. The canopy sweep only ever touches these cells; the carve sweep is
+    // confined to them when clipping. A piece that only clips this chunk (most of a
+    // multi-chunk village) sweeps just its slice instead of its whole footprint.
+    const int inChunkDxLo = std::max(0, baseX - originX);
+    const int inChunkDxHi = std::min(footprintX, baseX + kChunkWidth - originX);
+    const int inChunkDzLo = std::max(0, baseZ - originZ);
+    const int inChunkDzHi = std::min(footprintZ, baseZ + kChunkDepth - originZ);
+    // Carve confines to the intersection when clipping; the non-clip path (the
+    // origin chunk stamping its own structure, out-of-chunk cells routed to the
+    // border stream by writeCell) still sweeps the full footprint.
+    const int carveDxLo = clip ? inChunkDxLo : 0;
+    const int carveDxHi = clip ? inChunkDxHi : footprintX;
+    const int carveDzLo = clip ? inChunkDzLo : 0;
+    const int carveDzHi = clip ? inChunkDzHi : footprintZ;
     const BlockState air{Block::Air};
     for (int dy = 1; dy < tmpl.sizeY; ++dy) {
-        for (int dz = 0; dz < footprintZ; ++dz) {
-            for (int dx = 0; dx < footprintX; ++dx) {
+        for (int dz = carveDzLo; dz < carveDzHi; ++dz) {
+            for (int dx = carveDxLo; dx < carveDxHi; ++dx) {
                 writeCell(originX + dx, originY + dy, originZ + dz, air);
             }
         }
@@ -94,8 +110,8 @@ void placeStructure(Chunk& chunk, int chunkX, int chunkZ, const StructureTemplat
         if (!isWorldYInRange(worldY)) {
             break;
         }
-        for (int dz = 0; dz < footprintZ; ++dz) {
-            for (int dx = 0; dx < footprintX; ++dx) {
+        for (int dz = inChunkDzLo; dz < inChunkDzHi; ++dz) {
+            for (int dx = inChunkDxLo; dx < inChunkDxHi; ++dx) {
                 const int localX = originX + dx - baseX;
                 const int localZ = originZ + dz - baseZ;
                 if (localX < 0 || localX >= kChunkWidth || localZ < 0 || localZ >= kChunkDepth) {

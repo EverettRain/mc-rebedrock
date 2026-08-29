@@ -1820,6 +1820,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         camera.setPosition(snapshotCameraEye());
         spawnPositionInitialized = currentSave->hasPlayerPosition;
         textures_.updateBiomeColorTextures(currentSave->summary.seed);
+        // Warm the stream buffer pools before the first chunk batch arrives, so the
+        // load burst pops pooled buffers instead of allocating on the render thread
+        // per uploaded section (idempotent — a no-op once the pools are warm).
+        world_.prewarmStreamBufferPools();
         worldSessionActive = true;
         paused = true;
         menuSystem.optionsOpen = false;

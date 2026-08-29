@@ -722,6 +722,41 @@ class WorldRenderer final {
         return result;
     }
 
+    // Cold-start the stream buffer pools so the first dense load burst reuses
+    // pooled buffers instead of calling createBuffer (a VMA allocation, and on
+    // MoltenVK a Metal buffer allocation) on the render thread for every section
+    // it uploads. That first-burst allocation storm is what shows up as the small
+    // MTL HUD spikes while a region streams in; once the pools are warm the same
+    // uploads are free-list pops, which is why the frame time settles after the
+    // load finishes. Prewarming moves that one-time cost to session start.
+    //
+    // Only the mid size classes are seeded: a typical section vertex/index buffer
+    // lands in 32 KiB..256 KiB, and each upload draws one vertex + one index buffer
+    // from both the staging (host-visible, TRANSFER_SRC) and device pools, so both
+    // pools are warmed with the exact usage/visibility their consumers request
+    // (the free list is not usage-checked on reuse). Idempotent: it only tops each
+    // class up to the target, so re-entering a world after the pools are already
+    // warm is a no-op. Resident cost is bounded and well under the pool trim cap
+    // (kMaxStreamBufferPoolBytes): ~(32+64+128+256) KiB * 24 * 2 pools ≈ 23 MiB.
+    void prewarmStreamBufferPools() {
+        static constexpr std::array<std::size_t, 4> kWarmClasses{1U, 2U, 3U, 4U}; // 32K..256K
+        static constexpr std::size_t kPerClass = 24U;
+        const auto warm = [&](StreamBufferPool& pool, VkBufferUsageFlags usage, bool hostVisible) {
+            for (const std::size_t classIndex : kWarmClasses) {
+                auto& freeList = pool.freeByClass[classIndex];
+                const VkDeviceSize classBytes = kStreamBufferClassSizes[classIndex];
+                while (freeList.size() < kPerClass) {
+                    AllocatedBuffer buffer = createBuffer(classBytes, usage, hostVisible);
+                    buffer.pooledSizeClass = static_cast<std::uint8_t>(classIndex + 1U);
+                    pool.totalBytes += classBytes;
+                    freeList.push_back(buffer);
+                }
+            }
+        };
+        warm(deviceBufferPool_, kStreamBufferDeviceUsage, false);
+        warm(stagingBufferPool_, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+    }
+
     // 立即归还空闲表；只有在设备空闲（世界重置）或该缓冲从未被提交时才安全
 
     void releaseStreamBufferNow(StreamBufferPool& pool, AllocatedBuffer& buffer) {

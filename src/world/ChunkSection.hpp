@@ -42,6 +42,13 @@ class ChunkSection final {
     bool setBlockLight(int x, int y, int z, std::uint8_t value);
     bool setDirectSkyLight(int x, int y, int z, std::uint8_t value);
 
+    // Set the whole section's sky light to a uniform value with no backing
+    // allocation (NibbleArray stays uniform). The lighting engine uses this for
+    // open-sky sections above the terrain, which are entirely 15: filling them
+    // cell by cell would allocate 2 KB per array only to hold one value.
+    void fillSkyLight(std::uint8_t value) { skyLight_.fill(value); }
+    void fillDirectSkyLight(std::uint8_t value) { directSkyLight_.fill(value); }
+
     // Heap bytes the state storage holds right now (palette + packed indices,
     // excluding the light arrays). Zero for an all-air section. Exposed so a
     // test can pin the memory contract: an empty section costs nothing and a

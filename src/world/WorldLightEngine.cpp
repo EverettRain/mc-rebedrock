@@ -283,10 +283,27 @@ void WorldLightEngine::initializeChunks(World& world,
             if (chunk == nullptr) return;
             const int originX = position.x * kChunkWidth;
             const int originZ = position.z * kChunkDepth;
+            // The topmost contiguous run of empty (all-air) sections is provably
+            // full-15 open sky: nothing above them attenuates. Fill their sky
+            // arrays uniformly (zero allocation) instead of writing 15 into every
+            // cell — the taller 26.1 world stacks several such empty sky sections
+            // above the terrain, and per-cell writes would allocate 2 KB per array.
+            // The column scan then starts at the top of the highest non-empty
+            // section (everything above is the just-filled uniform 15, entered with
+            // direct == 15), so it neither reallocates nor re-scans the open sky.
+            int scanTopY = kMinY - 1; // whole-air chunk: nothing left to scan
+            for (int sectionY = kSectionCount - 1; sectionY >= 0; --sectionY) {
+                if (!chunk->section(sectionY).empty()) {
+                    scanTopY = sectionOriginY(sectionY) + kSectionSize - 1;
+                    break;
+                }
+                chunk->section(sectionY).fillSkyLight(15U);
+                chunk->section(sectionY).fillDirectSkyLight(15U);
+            }
             for (int localZ = 0; localZ < kChunkDepth; ++localZ) {
                 for (int localX = 0; localX < kChunkWidth; ++localX) {
                     std::uint8_t direct = 15U;
-                    for (int y = kMaxY - 1; y >= kMinY; --y) {
+                    for (int y = scanTopY; y >= kMinY; --y) {
                         const BlockState value = chunk->state(localX, y, localZ);
                         // State-aware: a submerged slab dims like water (F2).
                         const std::uint8_t opacity = skyLightOpacity(value);
