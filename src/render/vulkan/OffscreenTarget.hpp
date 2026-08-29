@@ -6,12 +6,9 @@
 
 namespace mc::render {
 
-// A single-sample offscreen depth target (for shadow maps / depth-only passes)
-// plus the depth-only render pass and framebuffer that draw into it. Sized once
-// at a fixed resolution independent of the swapchain, so it survives swapchain
-// recreation. Also exposes the in-frame layout transition the renderer lacks: a
-// pass finished drawing into it must be barrier'd to SHADER_READ_ONLY before the
-// main pass can sample it.
+// 单采样的离屏深度目标（阴影贴图等纯深度通道用），连同往里画的纯深度渲染通道和帧缓冲
+// 尺寸固定、与交换链无关，因此交换链重建时它不受影响
+// 另外提供帧内布局转换：画完之后必须屏障到 SHADER_READ_ONLY，主通道才能采样它
 class OffscreenTarget final {
   public:
     struct Config final {
@@ -31,20 +28,17 @@ class OffscreenTarget final {
     [[nodiscard]] std::uint32_t width() const { return width_; }
     [[nodiscard]] std::uint32_t height() const { return height_; }
 
-    // In-frame barrier: DEPTH_STENCIL_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL,
-    // so the main pass can sample the depth map after the shadow pass.
+    // 帧内屏障把布局从 DEPTH_STENCIL_ATTACHMENT_OPTIMAL 转成 SHADER_READ_ONLY_OPTIMAL
+    // 主通道因此能在阴影通道之后采样这张深度图
     void transitionToShaderRead(VkCommandBuffer commandBuffer) const;
 
-    // Puts a freshly created target straight into SHADER_READ_ONLY_OPTIMAL,
-    // from UNDEFINED, on its own one-shot submit.
+    // 用一次性提交把刚创建的目标从 UNDEFINED 直接转成 SHADER_READ_ONLY_OPTIMAL
     //
-    // Every frame's descriptor set points at this image and declares that
-    // layout, and the shaders that sample it do so unconditionally as far as
-    // Vulkan is concerned — a runtime `if` does not make a statically used
-    // descriptor optional. So the layout has to hold even when nothing ever
-    // renders into the target, which is exactly what happens with the sun
-    // shadows switched off: the pre-pass returns early and the transition it
-    // would have done never runs.
+    // 每一帧的描述符集都指向这张图像并声明该布局
+    // 在 Vulkan 看来采样它的着色器是无条件采样的
+    // 运行期的一个 if 并不能让静态使用的描述符变成可选
+    // 所以即使从没有东西画进这张图，布局也必须成立
+    // 关掉太阳阴影时正是如此：预通道直接返回，它本该做的转换从未发生
     void initializeAsShaderRead() const;
 
   private:

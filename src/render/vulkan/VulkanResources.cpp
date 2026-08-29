@@ -44,14 +44,11 @@ AllocatedImage VulkanResources::createImage(std::uint32_t width, std::uint32_t h
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     VmaAllocationCreateInfo allocationInfo{};
     allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-    // A transient attachment (the MSAA colour/depth targets, usage
-    // TRANSIENT_ATTACHMENT + storeOp DONT_CARE) is written and resolved inside a
-    // single render pass and never read back from memory. On a tile-based GPU
-    // (Apple) a lazily-allocated / memoryless allocation keeps it on-tile and
-    // costs no real device memory. Prefer (not require) that memory property so a
-    // driver without lazily-allocated support falls back to a normal allocation
-    // with no correctness change. Measured impact: ~281MB of these targets that
-    // were being allocated in full (see docs/frame-trace-diagnostics.md, gpumem).
+    // 瞬态附件在单个渲染通道内写入并解析，从不从内存回读
+    // 指的是 MSAA 颜色与深度目标，usage 为 TRANSIENT_ATTACHMENT 且 storeOp 为 DONT_CARE
+    // 在片上式 GPU（Apple）上，lazily-allocated/memoryless 的分配让它常驻片上，不占真实显存
+    // 这里用"优先"而非 "必须"：不支持该特性的驱动会回落成普通分配，行为不变
+    // 实测这类目标原本要实打实占用约 281 MB
     if ((usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) != 0U) {
         allocationInfo.preferredFlags = VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
     }

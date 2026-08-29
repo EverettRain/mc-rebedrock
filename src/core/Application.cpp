@@ -1,3 +1,7 @@
+// 启动编排：读选项、装配区块流送、扫描并叠好资源包栈、备好数据驱动玩法表的内置底座
+// 最后构造 VulkanRenderer，并把线程交给它的主循环
+// 本文件不含玩法，只做"按什么顺序把各子系统搭起来"这一件事
+
 #include "core/Application.hpp"
 
 #include "assets/PackManager.hpp"
@@ -59,10 +63,8 @@ Application::Application(
       configRoot_(std::move(configRoot)), testScene_(testScene) {}
 
 int Application::run() {
-    // One provider owns where every asset lives; the renderer and its texture
-    // manager ask it for files instead of rebuilding the layout from path
-    // arithmetic. This one serves rebedrock's own assets and forms the base of
-    // the resource-pack stack built below.
+    // 资源位置只有一个知情者：渲染器和纹理管理器向 provider 要文件，而不是各自拼路径
+    // 这一个只服务 rebedrock 自持有的资源，同时充当下面资源包栈的最底层
     const assets::DirectoryResourceProvider bundled{resourceRoot_};
 
     std::cout << "MC Rebedrock Vulkan milestone\n";
@@ -70,18 +72,16 @@ int Application::run() {
               << world::kWorldHeight << "\n";
     std::cout << "Sections per chunk: " << world::kSectionCount << "\n";
     std::cout << "Sea level: " << world::kSeaLevel << "\n";
-    // The built-in root carries this project's own assets only; every vanilla
-    // resource comes from the pack stack printed below, which the run refuses to
-    // start without.
+    // 内置根只有本项目自己的资源；vanilla 内容全部来自下面打印的资源包栈，缺包直接拒绝启动
     std::cout << "Resources: " << resourceRoot_ << "\n";
 
     const auto optionsPath = configRoot_ / "options.properties";
     config::GameOptions options = config::GameOptions::load(optionsPath);
     const int loadRadius = testScene_.has_value()
         ? 0 : developmentLoadRadius(options.viewDistance);
-    // Unload a couple of rings past the load radius so a player sitting on a
-    // chunk boundary does not thrash the same ring load/unload (each unload is a
-    // region write). See world::kUnloadHysteresisChunks.
+    // 卸载半径比加载半径多留几圈迟滞，见 world::kUnloadHysteresisChunks
+    // 玩家骑在区块边界上时不会把同一圈反复加载卸载，每次卸载都是一次 region 写
+    // 见 world::kUnloadHysteresisChunks
     const int unloadRadius = loadRadius + world::kUnloadHysteresisChunks;
     world::ChunkStreamer chunkStreamer{
         0x5EEDULL,
@@ -93,21 +93,17 @@ int Application::run() {
               << " chunks (load radius " << loadRadius
               << ", unload radius " << unloadRadius << ")\n";
 
-    // User-imported standard resource packs sit in <game root>/resourcepacks,
-    // next to bin/, config/ and saves/, the way vanilla keeps its folder. The
-    // game root is the parent of config/ (saves/ lives there too). The folder is
-    // created on first run so it is there to drop packs into, and its full path
-    // is printed so it is easy to find. Each pack is a subdirectory holding
-    // pack.mcmeta at its root; enabled packs override the bundled assets file by
-    // file, and anything they omit still resolves from the built-in resources.
+    // 玩家导入的标准资源包放在 <游戏根>/resourcepacks，与 bin/、config/、saves/ 平级
+    // 游戏根即 config/ 的父目录
+    // 首次运行就建好这个目录并打印绝对路径，方便直接把包丢进去
+    // 启用的包逐文件覆盖内置资源，它没提供的仍回落到内置资源
     const auto packDirectory = configRoot_.parent_path() / "resourcepacks";
     std::error_code packError;
     std::filesystem::create_directories(packDirectory, packError);
     std::cout << "Resource packs: " << std::filesystem::weakly_canonical(packDirectory, packError)
               << "\n";
-    // A pack is either a directory holding pack.mcmeta at its root or a .zip
-    // archive of the same shape. Collect both, sorted by name so the enable order
-    // is stable.
+    // 一个包要么是根下带 pack.mcmeta 的目录，要么是同样结构的 .zip
+    // 两种都收，按名字排序以保证启用顺序稳定
     struct PackEntry final {
         std::filesystem::path path;
         bool isZip = false;
@@ -125,14 +121,10 @@ int Application::run() {
     std::sort(found.begin(), found.end(),
               [](const PackEntry& a, const PackEntry& b) { return a.path < b.path; });
 
-    // Nothing in the game asks a provider for a filesystem path any more —
-    // textures, fonts, sounds, tags and biome data all read bytes — so a zip
-    // pack is consumed entirely from memory and this cache stays empty. The
-    // path is still handed to the provider because `locate()` remains its
-    // documented fallback, but a build that populates it has regressed.
-    //
-    // Older builds did extract here, so a stale cache is swept once at startup
-    // rather than left to sit at a few hundred megabytes forever.
+    // 游戏里已没有任何地方向 provider 要文件系统路径，纹理声音标签群系数据一律读字节流
+    // 因此 zip 包全程在内存里消费，这个缓存目录应当始终为空，被建出来就是回归
+    // 路径仍传给 provider，因为 locate() 还是文档化的兜底
+    // 旧版本确实往这里解压过，因此启动时清一次，免得几百 MB 的陈旧缓存永远躺着
     const auto packCacheRoot = configRoot_.parent_path() / ".packcache";
     if (std::filesystem::exists(packCacheRoot)) {
         std::error_code cleanup;
@@ -142,14 +134,13 @@ int Application::run() {
                       << packCacheRoot.string() << "\n";
         }
     }
-    // A deque so pushing more providers (a pack's overlays) never invalidates the
-    // pointers already handed to `enabled`.
+    // 用 deque：继续压入 provider（某个包的 overlay）不会让已交给 `enabled` 的指针失效
     std::deque<assets::StandardPackResourceProvider> directoryPacks;
     std::deque<assets::ZipResourcePackProvider> zipPacks;
-    // Enable order, each with the provider that serves it (lowest priority first
-    // within a pack: main assets, then its version-gated overlays).
+    // 启用顺序，每项配一个 provider
+    // 同一个包内低优先级在前，先主 assets，再是版本门控的 overlay
     std::vector<const assets::ResourceProvider*> enabled;
-    // ReBedrock targets the 26.1 resource-pack format; overlays gated to it apply.
+    // ReBedrock 对齐 26.1 的资源包格式号，门控到该格式的 overlay 才生效
     constexpr int kTargetPackFormat = 84;
     const auto readMetadata = [](const std::filesystem::path& mcmeta) -> assets::PackMetadata {
         std::ifstream input{mcmeta, std::ios::binary};
@@ -178,16 +169,13 @@ int Application::run() {
             directoryPacks.emplace_back(entry.path);
             enabled.push_back(&directoryPacks.back());
             std::cout << "Resource pack: " << entry.path.filename().string() << "\n";
-            // pack.mcmeta overlays: version-gated subdirectories with their own
-            // assets/ that override the main assets, last-declared highest. Each
-            // becomes a provider stacked above the pack's main assets.
+            // pack.mcmeta 的 overlay 是带自己 assets/ 的版本门控子目录，声明越靠后优先级越高
+            // 每个都成为一个叠在主 assets 之上的 provider
             const auto metadata = readMetadata(entry.path / "pack.mcmeta");
-            // pack_format vs this build's packVersion (META): recorded, not a
-            // hard failure — vanilla loads an out-of-range pack behind a
-            // caution too (PACK REGULAR #9). Checked against the resource
-            // half's format number since this whole `found` scan is the
-            // resource-pack folder; PACK-1's per-save data packs get the same
-            // check against packVersion.data when they land.
+            // pack_format 与本 build 的 packVersion 只做比对记录，不硬失败
+            // vanilla 对超范围的包同样是给个警告照样加载
+            // 这里比的是资源半边的格式号，因为整个扫描针对的就是资源包目录
+            // 逐存档的数据包走 packVersion.data 做同样的检查
             const auto compat = assets::PackManager::checkCompatibility(
                 metadata, assets::PackStackKind::Resources, core::kVersion.packVersion);
             if (!compat.compatible) {
@@ -210,10 +198,8 @@ int Application::run() {
         }
     }
 
-    // A resource pack is required: this build ships no Mojang assets of its own,
-    // so without one there is nothing to draw or play. The folder was created
-    // above; tell the player exactly where to drop a pack and stop rather than
-    // launching into a world of missing-texture markers.
+    // 资源包是必需品：本 build 不含任何 Mojang 资源，没有包就没有东西可画可放
+    // 目录上面已经建好，这里直接告诉玩家往哪儿放并停下，而不是进到一个满屏缺失纹理的世界里
     if (enabled.empty()) {
         const auto where = std::filesystem::weakly_canonical(packDirectory, packError);
         std::cerr << "\n启动失败：缺少资源包 (Missing resource pack)\n"
@@ -223,19 +209,13 @@ int Application::run() {
         return 1;
     }
 
-    // PACK-0: the double-end split, resource half only. <gameroot>/resourcepacks
-    // stays app-startup, global, client-only (PACK-3 territory: user selection
-    // eventually persists in client options, not touched here). What used to
-    // also register every discovered pack onto a Data stack and rebuild the
-    // data-driven gameplay tables from it moved to PACK-1: that rebuild is now
-    // per-save, driven by GameRuntime::loadWorld from each save's own
-    // <save>/datapacks/, not from this app-global resourcepacks/ folder — see
-    // gameplay::PerSaveDataStack. App startup's only remaining job for the data
-    // half is preparing the built-in floor below, so a caller that reads
-    // blockTags()/recipeTable()/etc. before any world is loaded (or the
-    // in-process tests that construct these tables directly) still sees sane
-    // built-in defaults rather than whatever partial state the previous process
-    // run left statics in.
+    // 资源包与数据包是两条独立的线，这里只负责资源半边
+    // <游戏根>/resourcepacks 是启动期的、全局的、纯客户端的
+    // 数据半边是逐存档的，由 GameRuntime::loadWorld 从各存档自己的 <save>/datapacks/ 重建
+    // 见 gameplay::PerSaveDataStack，它不吃这个全局目录
+    // 启动期对数据半边唯一要做的就是备好下面那层内置默认值
+    // 于是在任何世界加载之前就读 blockTags()、recipeTable() 的调用方拿到的是干净的内置值
+    // 直接构造这些表的进程内测试同理，都不会读到上一次运行残留在静态变量里的半截状态
     assets::PackManager packManager;
     for (std::size_t index = 0; index < enabled.size(); ++index) {
         const std::string id = "pack" + std::to_string(index);
@@ -244,14 +224,13 @@ int Application::run() {
         packManager.enable(assets::PackStackKind::Resources, id);
     }
 
-    // The data-driven gameplay tables' built-in floor: no pack stack, so this
-    // is exactly the state a fresh save with no <save>/datapacks/ rebuilds to.
+    // 数据驱动玩法表的内置底座，不挂任何包栈
+    // 这就是一个没有 <save>/datapacks/ 的全新存档重建之后的状态
     gameplay::PerSaveDataStack::rebuildBuiltinOnly(bundled);
 
-    // The resource stack: render-only, `assets/` half. Render-only means the
-    // dedicated server (no VulkanRenderer) never calls this — the guardrail
-    // is structural: nothing above this line needs it, and dedicated_server_main.cpp
-    // never links render/vulkan in the first place, so it has no way to.
+    // 资源栈：只服务渲染，只含 assets/ 半边
+    // 专用服务器不会走到这里，这是结构性保证
+    // 本行以上没有任何东西需要它，而 dedicated_server_main.cpp 根本不链接 render/vulkan
     const assets::LayeredResourceProvider resourceStack =
         packManager.buildProvider(assets::PackStackKind::Resources, bundled);
 

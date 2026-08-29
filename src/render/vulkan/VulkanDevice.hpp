@@ -1,12 +1,9 @@
 #pragma once
 
-// Owns the Vulkan instance / surface / physical + logical device / VMA
-// allocator / queues / command pool and the one-time creation and teardown of
-// all of them. Extracted from VulkanRenderer's Impl so the device lifecycle
-// lives in one cohesive unit. The renderer keeps same-named non-owning copies
-// of these handles (assigned right after initialize) so its ~170 existing
-// `device`/`allocator`/... references stay unchanged; VulkanDevice remains the
-// sole owner and destroyer.
+// Vulkan 设备层的唯一所有者
+// instance、surface、物理与逻辑设备、VMA 分配器、队列、命令池，连同它们的创建与销毁都在这里
+// 渲染器只持有同名的非拥有副本，在 initialize 之后立即赋值
+// 它内部对 device、allocator 的引用写法因此不变，但销毁责任始终在本类
 
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
@@ -61,10 +58,8 @@ debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessa
                                 ? callbackData->pMessageIdName
                                 : "unknown VUID";
     std::cerr << prefix << " [" << messageId << "]: " << callbackData->pMessage << '\n';
-    // A smoke run is also the permanent Vulkan-validity gate. Validation
-    // callbacks cannot throw across the C ABI, so terminate after flushing the
-    // complete VUID/handle message. The explicit switch lets an interactive or
-    // focused repro opt into the same fail-fast behaviour.
+    // 校验层回调不能跨 C ABI 抛异常，所以打印完整的 VUID/句柄信息后直接终止进程
+    // 脚本化的烟测始终开着这道闸；交互运行或定点复现可以用这个开关手动打开同样的快速失败
     if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT &&
         (std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr ||
          std::getenv("MC_REBEDROCK_FATAL_VALIDATION") != nullptr)) {
@@ -94,8 +89,7 @@ class VulkanDevice final {
     VulkanDevice& operator=(const VulkanDevice&) = delete;
     ~VulkanDevice() { destroy(); }
 
-    // Creates instance -> surface -> physical device -> logical device ->
-    // allocator -> command pool, in the one order they depend on each other.
+    // 按依赖顺序依次创建：instance → surface → 物理设备 → 逻辑设备 → 分配器 → 命令池
     void initialize(GLFWwindow* window) {
         createInstance();
         checkVk(glfwCreateWindowSurface(instance, window, nullptr, &surface),
@@ -106,9 +100,8 @@ class VulkanDevice final {
         createCommandPool();
     }
 
-    // Idempotent teardown in reverse dependency order. Called explicitly by the
-    // renderer at shutdown (after every device-dependent resource is freed) and
-    // again by the destructor.
+    // 按依赖逆序销毁，可重复调用
+    // 渲染器关闭时（在所有依赖设备的资源都已释放之后）显式调一次，析构函数再调一次
     void destroy() noexcept {
         if (device != VK_NULL_HANDLE) {
             if (commandPool != VK_NULL_HANDLE) {
@@ -353,11 +346,10 @@ class VulkanDevice final {
         maximumSamplerAnisotropy = properties.limits.maxSamplerAnisotropy;
         const auto supportedSamples = properties.limits.framebufferColorSampleCounts &
                                       properties.limits.framebufferDepthSampleCounts;
-        // Capped at 2x: this MoltenVK build does not map transient attachments
-        // to on-tile memory, so 4x MSAA on the 2x-resolution framebuffer costs
-        // ~425 MB of real DRAM for no measurable fill win (the renderer is
-        // vertex-bound, never fill-bound). 2x keeps the silhouette smoothing at
-        // roughly half that memory cost.
+        // 上限压到 2x，因为当前 MoltenVK 不把 transient attachment 映射到片上内存
+        // 在 2 倍分辨率帧缓冲上开 4x MSAA 要吃掉约 425 MB 真实显存
+        // 而收益为零：本渲染器是顶点瓶颈，从来不是填充率瓶颈
+        // 2x 用一半的内存拿到同样的边缘平滑
         maximumMsaaSamples = (supportedSamples & VK_SAMPLE_COUNT_2_BIT) != 0U
                                  ? VK_SAMPLE_COUNT_2_BIT
                                  : VK_SAMPLE_COUNT_1_BIT;
@@ -385,9 +377,9 @@ class VulkanDevice final {
         }
         VkPhysicalDeviceFeatures features{};
         features.samplerAnisotropy = samplerAnisotropySupported ? VK_TRUE : VK_FALSE;
-        // The renderer normally needs only zero/non-zero visibility. Native
-        // Vulkan keeps precise counts for its diagnostic scene; Apple uses
-        // Boolean visibility when the normally-disabled MoltenVK path is forced.
+        // 渲染器平时只需要"可见/不可见"
+        // 原生 Vulkan 为诊断场景保留精确计数
+        // Apple 上只有强制打开那条默认关闭的 MoltenVK 路径时才用 Boolean 可见性
 #if defined(__APPLE__)
         features.occlusionQueryPrecise = VK_FALSE;
 #else
@@ -410,10 +402,8 @@ class VulkanDevice final {
         info.physicalDevice = physicalDevice;
         info.device = device;
         info.vulkanApiVersion = VK_API_VERSION_1_2;
-        // The default 256 MB block is far larger than any single allocation this
-        // renderer makes, so oversized blocks end up mostly slack and are never
-        // returned. A 32 MB block keeps the pool's granularity near the working
-        // set and lets emptied blocks be released to the driver.
+        // 默认 256 MB 的块远大于本渲染器的任何单次分配，块内大部分是空档且永远还不回去
+        // 改成 32 MB 让池的粒度贴近工作集，空出来的块才能真正还给驱动
         info.preferredLargeHeapBlockSize = 32U * 1024U * 1024U;
         checkVk(vmaCreateAllocator(&info, &allocator), "vmaCreateAllocator");
     }

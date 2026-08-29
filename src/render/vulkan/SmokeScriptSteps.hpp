@@ -1,28 +1,23 @@
 #pragma once
 
-// The scripted client session's STEPS: everything MC_REBEDROCK_SMOKE_TEST does,
-// in one place, registered on a SmokeScript (render/SmokeScript.hpp) that the
-// render loop then advances with a single call per frame.
+// 脚本化客户端会话的全部步骤，MC_REBEDROCK_SMOKE_TEST 要做的事都集中在这里
+// 它们注册到一个 SmokeScript 上，由渲染主循环每帧调一次推进，调度器见 render/SmokeScript.hpp
 //
-// This is a test harness, not gameplay. It used to be spliced into the middle of
-// VulkanRenderer's frame loop as a 175-line `else if (smokeTest && frame == N)`
-// chain, which is why it now lives behind its own door: a release run never
-// builds a script at all, and the loop reads as a loop.
+// 这是测试脚手架而非玩法，所以单独成文件：正式运行根本不会构造脚本，主循环也就还是一个纯粹的循环
+// 做成模板只是为了住在 VulkanRenderer.cpp 之外还能驱动渲染器自己的成员
+// 因为 Impl 是那个翻译单元的局部类型，实际只有一处实例化
 //
-// It is a template on the host purely so it can live outside VulkanRenderer.cpp
-// while still driving the renderer's own members (the Impl type is local to that
-// translation unit). There is exactly one instantiation.
-//
-// What the script covers, in order: the title → options → video → experimental →
-// world-list → create-world menu walk; opening a world; the creative catalogue,
-// slot clicks and scrolling; the pause menu; a dropped item entity; the debug
-// overlay; /gamemode into survival and back (checking the shared inventory
-// survives); the damage tint; sun shadows off for the remainder (the default
-// players actually run); a block-break particle burst; /give by catalog index and
-// by identifier; /time set; creative eating (must NOT spend the food) then
-// survival eating (must spend it); rain and then a full storm; /tp; and finally
-// the client-cache/world agreement and three-world memory checks before it
-// returns to the title and closes the window.
+// 剧本按以下顺序覆盖各条路径：
+//   * 标题 → 选项 → 视频设置 → 实验性内容 → 世界列表 → 创建世界的菜单走查
+//   * 开世界，然后是创造目录、槽位点击与滚动、暂停菜单
+//   * 掉落物实体与调试叠加层
+//   * /gamemode 切到生存再切回，顺带确认共享背包没丢
+//   * 受伤染色，此后关闭太阳阴影，那才是玩家的默认配置
+//   * 方块破坏粒子爆发
+//   * 按目录下标和按标识符两种 /give，以及 /time set
+//   * 创造模式进食不该消耗食物，生存模式进食必须消耗
+//   * 下雨再升级为雷暴，然后 /tp
+//   * 最后校验客户端缓存与服务端世界逐格一致、三份世界的常驻内存在预算内，再返回标题并关窗
 
 #include "gameplay/GameCommand.hpp"
 #include "gameplay/Item.hpp"
@@ -47,22 +42,20 @@
 
 namespace mc::render {
 
-// The one piece of state the steps pass between themselves: the apple stack size
-// recorded before a meal, so the next step can assert whether it was spent.
+// 步骤之间唯一需要传递的状态：进食前记下的苹果堆数量，供后续步骤断言它有没有被消耗
 struct SmokeScriptState final {
     std::uint8_t appleCount = 0;
 };
 
-// Registers every step of the scripted session on `script`.
-//
-// `stressFrames` is MC_REBEDROCK_STRESS_FRAMES (0 when unset) and `frameLimit`
-// the gameplay-frame count the run ends at. `host` is the renderer's Impl.
+// 把脚本会话的所有步骤注册到 `script` 上
+// `stressFrames` 即 MC_REBEDROCK_STRESS_FRAMES，未设置时为 0
+// `frameLimit` 是本次运行收尾的游戏帧数，`host` 是渲染器的 Impl
 template <typename Host>
 void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrames,
                         std::uint64_t frameLimit) {
     const auto state = std::make_shared<SmokeScriptState>();
 
-    // --- The menu walk, on the rendered-frame clock (no world yet). ---
+    // ---- 菜单走查，跑在渲染帧时钟上（此时还没有世界）----
 
     script.atRenderedFrame(2, [&host] {
         if (host.menuSystem.pageStack.current() != ui::PageId::Title) {
@@ -77,8 +70,7 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
             throw std::runtime_error("Smoke test did not open video settings");
         }
         host.menuSystem.pageStack.pop();
-        // The 实验性内容 sub-page must open as a menu page (not fall through to
-        // the terrain-loading screen) with its five options.
+        // 实验性内容子页必须作为菜单页打开（不能掉到地形加载画面），且带五个选项
         host.menuSystem.pageStack.push(ui::PageId::Experimental);
         if (host.menuSystem.pageStack.current() != ui::PageId::Experimental ||
             host.menuButtonCount() != 5U) {
@@ -101,12 +93,11 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
         script.markWorldStarted();
     });
 
-    // --- In-world, on the gameplay-frame clock. ---
+    // ---- 进入世界之后，跑在游戏帧时钟上 ----
 
     script.atGameplayFrame(16, [&host] { host.setInventoryOpen(true); });
     script.atGameplayFrame(20, [&host] {
-        // The creative catalogue click goes through the command queue so the
-        // smoke exercises the real interaction path.
+        // 创造目录的点击走命令队列，让烟测经过真实的交互路径
         gameplay::ClickCreativeItem creative;
         creative.catalogStack = {world::Block::Air, 1U, &gameplay::items::Diamond};
         creative.button = gameplay::InventoryMouseButton::Left;
@@ -148,7 +139,7 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
     });
     script.atGameplayFrame(54, [&host] { host.submitChatInput(); });
     script.atGameplayFrame(56, [&host, &script] {
-        // The /gamemode survival command lands on the next server tick.
+        // /gamemode survival 要到下一个服务端 tick 才生效
         script.waitFor("enter survival mode", 40U, [&host] {
             const auto smokeRead = host.worldLock.read();
             return host.clientMirror_.player().gameMode == gameplay::GameMode::Survival;
@@ -158,9 +149,8 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
         }
     });
     script.atGameplayFrame(57, [&host] {
-        // Exercise the damage-tint draw immediately after the held-item pass.
-        // This catches descriptor-set compatibility drift between
-        // itemPipelineLayout and hudPipelineLayout under validation.
+        // 紧接手持物品通道之后触发受伤染色绘制
+        // 用于在校验层下抓出 itemPipelineLayout 与 hudPipelineLayout 描述符集兼容性的漂移
         const auto smokeWrite = host.worldLock.write();
         if (!host.gameSession.hurtPlayer(gameplay::kPrimaryPlayerId,
                                          gameplay::DamageType::Generic, 1.0F, host)) {
@@ -172,20 +162,15 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
         if (stressFrames > 0U) {
             return;
         }
-        // Then run the rest of the script with the sun shadows *off*, which is
-        // the default every player actually uses. Forcing them on for the whole
-        // run left that path unvalidated, and it is the one where the shadow
-        // depth map is never rendered into: the descriptors still declare
-        // SHADER_READ_ONLY_OPTIMAL and three fragment shaders still sample it. A
-        // layout that only held because the pre-pass happened to run is exactly
-        // the bug this alternation exists to catch.
+        // 剩下的剧本改在太阳阴影*关闭*下跑——那才是玩家的默认配置
+        // 全程开着会漏掉这条路径，而恰恰是它没有任何东西画进阴影深度图
+        // 那时描述符仍声明 SHADER_READ_ONLY_OPTIMAL，三个片元着色器也仍在采样它
+        // "布局之所以成立只是因为预通道碰巧跑了"正是这次切换要抓的 bug
         host.options.sunShadows = false;
         host.shadowDisabled = true;
     });
     script.atGameplayFrame(60, [&host] {
-        // Deterministically exercise the instanced particle path: a block-break
-        // burst next to the player produces hundreds of particles in a single
-        // vkCmdDraw.
+        // 确定性地走一遍实例化粒子路径：玩家脚边的破坏粒子爆发会在单次 vkCmdDraw 里产出几百个粒子
         const auto smokeRead = host.worldLock.read();
         const glm::vec3 spawn = host.clientMirror_.player().physicsCurrent;
         host.particleSystem.spawnBlockBreak({static_cast<int>(std::floor(spawn.x)),
@@ -200,7 +185,7 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
     });
     script.atGameplayFrame(70, [&host] { host.submitChatInput(); });
     script.atGameplayFrame(72, [&host, &script] {
-        // The /gamemode command lands on the next server tick.
+        // /gamemode 要到下一个服务端 tick 才生效
         script.waitFor("return to creative mode", 40U, [&host] {
             const auto smokeRead = host.worldLock.read();
             return host.clientMirror_.player().gameMode == gameplay::GameMode::Creative &&
@@ -213,8 +198,8 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
     });
     script.atGameplayFrame(76, [&host] { host.submitChatInput(); });
     script.atGameplayFrame(78, [&host, &script] {
-        // Catalog index 0 is the first registered building block (grass). The
-        // /give command lands on the next server tick.
+        // 目录下标 0 是第一个注册的建筑方块（草方块）
+        // /give 要到下一个服务端 tick 才生效
         script.waitFor("/give by catalog index", 40U, [&host] {
             const auto smokeRead = host.worldLock.read();
             return std::ranges::any_of(host.clientMirror_.world().inventorySlots,
@@ -255,9 +240,8 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
     });
     script.atGameplayFrame(92, [&host] { host.setInventoryOpen(true); });
     script.atGameplayFrame(94, [&host] {
-        // Put a full stack of apples into the last hotbar slot, then close the
-        // screen and select it — all through the command queue so the smoke
-        // exercises the real interaction path.
+        // 往快捷栏最后一格放一整堆苹果，然后关界面并选中它
+        // 全程走命令队列，让烟测经过真实的交互路径
         gameplay::ClickCreativeItem creative;
         creative.catalogStack = {world::Block::Air, 1U, &gameplay::items::Apple};
         creative.button = gameplay::InventoryMouseButton::Left;
@@ -282,7 +266,7 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
         if (state->appleCount == 0U) {
             throw std::runtime_error("Smoke test apple stack missing");
         }
-        // In creative the meal must not spend the food (Java 1.16.1).
+        // 创造模式下进食不消耗食物
         host.enqueueUseStart();
     });
     script.atGameplayFrame(400, [&host, state] {
@@ -300,9 +284,8 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
     });
     script.atGameplayFrame(404, [&host] { host.submitChatInput(); });
     script.atGameplayFrame(406, [&host, &script, state] {
-        // The /gamemode survival command lands on the next server tick. Once the
-        // mode lands, arm the meal: the apple survived creative eating, survival
-        // should spend it.
+        // /gamemode survival 要到下一个服务端 tick 才生效
+        // 模式落地后再安排进食：苹果在创造模式下没被吃掉，生存模式必须吃掉它
         script.waitFor(
             "return to survival mode", 40U,
             [&host] {
@@ -321,15 +304,13 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
             });
     });
     script.atGameplayFrame(410, [&host] {
-        // Snap the weather to full rain instantly (test helper, not chat) so the
-        // smoke exercises the rain path at full intensity regardless of frame
-        // rate; the three render modes compare identical drop counts.
+        // 直接把天气拨到满雨（走测试接口而非聊天命令），使烟测无论帧率如何都以满强度走一遍降雨路径
+        // 三种渲染模式因此比较的是同样的雨滴数
         const auto smokeWrite = host.worldLock.write();
         host.gameSession.weatherSystem().forceRainGradient(1.0F);
     });
     script.atGameplayFrame(420, [&host] {
-        // Escalate to a full storm so the smoke also exercises the
-        // thunder-boosted rain volume and cross-wind.
+        // 再升级为雷暴，顺带覆盖雷暴加强后的雨量与横风
         const auto smokeWrite = host.worldLock.write();
         host.gameSession.weatherSystem().forceThunderGradient(1.0F);
     });
@@ -348,14 +329,14 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
     });
     script.atGameplayFrame(704, [&host] { host.submitChatInput(); });
     script.atGameplayFrame(706, [&host, &script] {
-        // The /tp command lands on the next server tick.
+        // /tp 要到下一个服务端 tick 才生效
         script.waitFor("/tp teleport", 40U, [&host] {
             const auto smokeRead = host.worldLock.read();
             return host.clientMirror_.player().physicsCurrent.y >= 150.0F;
         });
     });
 
-    // --- The finale: agreement + memory checks, then back to the title. ---
+    // ---- 收尾：一致性与内存校验，然后返回标题 ----
 
     script.finishWhen(
         [&host, &script, frameLimit] {
@@ -363,17 +344,14 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
                    host.completedBlockEditCount >= 1U && host.pendingSectionUpdates.empty();
         },
         [&host] {
-            // M-Chunk B-5: the spawn chunk must have reached the client cache —
-            // an empty cache means the dual-world split lost the chunks and every
-            // presentation read (raycast, light, mesh preview) would silently see
-            // air.
+            // 出生点区块必须已经进到客户端缓存
+            // 缓存为空说明双世界拆分把区块弄丢了
+            // 之后射线、光照、网格预览等所有表现侧读取都会静默地读到空气
             if (!host.clientCache.hasChunk(world::chunkPositionFromWorld(24.5F, 24.5F))) {
                 throw std::runtime_error("Smoke test: client cache lost the spawn chunk");
             }
-            // M-Chunk B-5: the client cache must mirror the server world — same
-            // batches, same edits — so the spawn column agrees cell for cell. A
-            // broken edit-sync or a missed state delta would diverge them and the
-            // render would silently show the wrong world.
+            // 客户端缓存必须与服务端世界一致（同样的批次、同样的编辑），出生点那一列因此逐格相同
+            // 编辑同步坏掉或漏了一次状态增量都会让两边分叉，而画面会毫无声息地显示一个错的世界
             for (int syncY = world::kMinY; syncY < world::kMaxY; ++syncY) {
                 if (host.clientCache.state(24, syncY, 24) !=
                     host.interactionWorld.state(24, syncY, 24)) {
@@ -381,10 +359,8 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
                         "Smoke test: client cache diverged from the server world");
                 }
             }
-            // Side-split memory: the server world, the client cache AND the
-            // streamer worker world each own a chunk copy (three resident copies
-            // — the P1-2 debt). All three are measured and the sum is bounded — a
-            // gross leak on any side blows it.
+            // 双端拆分下同一区块存在三份常驻副本：服务端世界、客户端缓存、流送工作线程的世界
+            // 三份都测量并对总量设上限，任一侧的大泄漏都会把它撑爆
             const auto serverChunkBytes = host.interactionWorld.residentBytes();
             const auto clientChunkBytes = host.clientCache.residentBytes();
             const auto workerChunkBytes = host.chunkStreamer.workerWorldResidentBytes();

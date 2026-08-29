@@ -1,30 +1,19 @@
 #pragma once
 
-// The scheduler behind the scripted client session (MC_REBEDROCK_SMOKE_TEST and
-// its MC_REBEDROCK_STRESS_FRAMES variant).
+// 脚本化客户端会话（MC_REBEDROCK_SMOKE_TEST，及其 MC_REBEDROCK_STRESS_FRAMES 变体）的调度器
+// 剧本是测试脚手架而不是玩法，所以它不住在渲染主循环里
+// 步骤在 SmokeScriptSteps.hpp 里一次性注册好，主循环每帧只调一次 advance
+// 不设环境变量时连脚本对象都不构造
 //
-// The script used to live inline in the render loop: ~175 lines of
-// `else if (smokeTest && smokeGameplayFrames == 40U) { … }` interleaved with the
-// frame's real work, plus five loose locals (`smokeWaitActive`,
-// `smokeWaitDeadline`, `smokeWaitCondition`, `smokeWaitAction`, `smokeWaitLabel`)
-// carried across every frame of every run — a test harness threaded through the
-// one loop that must stay readable. It is a scheduler, so it is one now: the
-// steps are registered up front (SmokeScriptSteps.hpp) and the loop advances
-// them with a single call, or never builds one at all when the env var is unset.
+// 不含 Vulkan 与 GLFW，所有效果都是调用方传进来的 std::function
+// 下面这套时序规则因此由 headless 单测覆盖，不必依赖一台有 GPU 的机器
 //
-// Vulkan-free and GLFW-free: every effect is a std::function the caller supplies,
-// so the ordering rules below are exercised by a headless unit test rather than
-// only by a GPU run that no CI machine has.
-//
-// Frame semantics, preserved exactly from the inline form:
-//   * menu steps run on the RENDERED-frame clock and stop once the world opens;
-//   * gameplay steps run on the GAMEPLAY-frame clock, which only advances while
-//     a world is ready and the run has not yet finished;
-//   * a step may arm a wait for an effect that lands on a later server tick; the
-//     wait is polled once per frame BEFORE that frame's steps, so a wait armed in
-//     one frame is first checked in the next, and a timeout throws;
-//   * the finale fires once its predicate holds, and the exit action follows a
-//     few rendered frames later so the last screen actually draws.
+// 帧时序：
+//   * 菜单步骤跑在"渲染帧"时钟上，世界一打开就不再触发
+//   * 游戏步骤跑在"游戏帧"时钟上，该时钟只在世界就绪且本次运行尚未收尾时前进
+//   * 步骤可以挂起一个等待，用于那些要到后续服务端 tick 才落地的效果
+//     等待在每帧的步骤之前轮询一次，本帧挂起的等待因此最早下一帧才检查，超时直接抛异常
+//   * 收尾条件成立时触发一次 finale，退出动作再延几帧执行，好让最后那屏真的画出来
 
 #include <cstddef>
 #include <cstdint>
@@ -41,30 +30,26 @@ class SmokeScript final {
     using Action = std::function<void()>;
     using Predicate = std::function<bool()>;
 
-    // Rendered frames between the finale and the exit action, so the screen the
-    // finale returned to is actually drawn before the window closes.
+    // finale 与退出动作之间相隔的渲染帧数，让 finale 返回到的那一屏在关窗前真的画出来
     static constexpr std::uint64_t kExitDelayFrames = 4;
 
-    // A step on the rendered-frame clock, run only while the world has not
-    // opened yet (the title/options/world-list walk).
+    // 渲染帧时钟上的一步，仅在世界尚未打开时执行（标题/选项/世界列表那一段流程）
     void atRenderedFrame(std::uint64_t frame, Action action) {
         menuSteps_.push_back({frame, std::move(action)});
     }
 
-    // A step on the gameplay-frame clock (frames with a ready world).
+    // 游戏帧时钟上的一步（世界已就绪的那些帧）
     void atGameplayFrame(std::uint64_t frame, Action action) {
         gameplaySteps_.push_back({frame, std::move(action)});
     }
 
-    // Called from a step body: stop treating the rendered-frame steps as due —
-    // the world is open and the gameplay clock takes over.
+    // 由某个步骤内部调用：世界已打开，渲染帧步骤不再触发，改由游戏帧时钟接管
     void markWorldStarted() noexcept { worldStarted_ = true; }
 
-    // Arm a wait for something that lands on a later server tick (a chat command
-    // taking effect, a mode switch). `condition` is polled once per frame until
-    // it holds — then `then` runs — or until `timeoutFrames` gameplay frames have
-    // passed, which throws with `label` in the message. Arming a second wait
-    // replaces the first, matching the single-slot form this replaces.
+    // 挂起一个等待，用于要到后续服务端 tick 才生效的事情（聊天命令落地、模式切换）
+    // `condition` 每帧轮询一次：成立则执行 `then`
+    // 超过 `timeoutFrames` 个游戏帧仍不成立就抛异常，消息里带上 `label`
+    // 只有一个等待槽，再挂一个会覆盖前一个
     void waitFor(std::string label, std::uint64_t timeoutFrames, Predicate condition,
                  Action then = {}) {
         waitLabel_ = std::move(label);
@@ -74,23 +59,21 @@ class SmokeScript final {
         waitActive_ = true;
     }
 
-    // The finale: once `ready` holds (checked after each frame's steps), `finish`
-    // runs, and `exit` follows kExitDelayFrames rendered frames later. Both are
-    // one-shot. `ready` is never polled again after it fires, and the gameplay
-    // clock stops advancing.
+    // 收尾：`ready` 在每帧的步骤之后检查，成立时执行 `finish`
+    // 再过 kExitDelayFrames 个渲染帧执行 `exit`
+    // 两者都只触发一次；`ready` 成立后不再轮询，游戏帧时钟也停止前进
     void finishWhen(Predicate ready, Action finish, Action exit) {
         ready_ = std::move(ready);
         finish_ = std::move(finish);
         exit_ = std::move(exit);
     }
 
-    // The gameplay-frame clock, for a caller that paces something else off it
-    // (the stress camera's spiral).
+    // 游戏帧时钟，供需要据此定拍的调用方使用（压测相机的螺旋轨迹）
     [[nodiscard]] std::uint64_t gameplayFrame() const noexcept { return gameplayFrame_; }
     [[nodiscard]] bool finished() const noexcept { return finished_; }
 
-    // One frame of the script. `renderedFrame` is the loop's own frame counter;
-    // `worldReady` is whether a world is loaded and streamed enough to play.
+    // 推进一帧
+    // `renderedFrame` 是主循环自己的帧计数；`worldReady` 表示世界是否已加载并流送到可玩状态
     void advance(std::uint64_t renderedFrame, bool worldReady) {
         if (!worldStarted_) {
             fireDue(menuSteps_, renderedFrame, nextMenuStep_);
@@ -120,9 +103,8 @@ class SmokeScript final {
         Action action{};
     };
 
-    // Steps are registered in ascending frame order and fired in that order, so
-    // a single cursor is the whole traversal. `<=` rather than `==` means a step
-    // is never silently skipped if the clock it rides ever jumps.
+    // 步骤按帧号升序注册、按同序触发，因此一个游标就是全部遍历状态
+    // 用 `<=` 而不是 `==`：万一它所依附的时钟跳变，也不会有步骤被悄悄跳过
     static void fireDue(std::vector<Step>& steps, std::uint64_t clock, std::size_t& cursor) {
         while (cursor < steps.size() && steps[cursor].frame <= clock) {
             Action action = std::move(steps[cursor].action);

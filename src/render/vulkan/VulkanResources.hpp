@@ -1,9 +1,7 @@
 #pragma once
 
-// The stateless VMA-backed resource helpers shared by the Vulkan renderer and
-// its offscreen/GPU modules. Extracted from VulkanRenderer.cpp so the new
-// infrastructure (GpuSceneBuffer, OffscreenTarget) can allocate buffers and
-// images without reaching into the renderer's implementation.
+// 基于 VMA 的无状态资源助手，供渲染器及其离屏/GPU 模块共用
+// 有了它，GpuSceneBuffer、OffscreenTarget 这类设施能自行分配缓冲与图像，不必反向依赖渲染器的实现
 
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
@@ -14,17 +12,15 @@
 
 namespace mc::render {
 
-// Minimal zero-initialized Vulkan structure helper: replaces the
-// `VkXxxCreateInfo info{}; info.sType = VK_STRUCTURE_TYPE_XXX;` boilerplate.
+// 零初始化 Vulkan 结构体的最小助手，替掉 `VkXxxCreateInfo info{}; info.sType = ...;` 这两行样板
 template <typename Structure> [[nodiscard]] Structure vkStructure(VkStructureType type) {
     Structure structure{};
     structure.sType = type;
     return structure;
 }
 
-// Throw on a failed Vulkan call with a readable message. Every checked call in
-// the renderer funnels through this so failures surface as exceptions instead
-// of silently continuing with a bad result code.
+// Vulkan 调用失败时带可读信息抛出
+// 渲染器里所有需要检查的调用都走这里，失败以异常暴露，而不是揣着错误码继续跑
 inline void checkVk(VkResult result, const char* operation) {
     if (result != VK_SUCCESS) {
         throw std::runtime_error(std::string(operation) + " failed with VkResult " +
@@ -32,14 +28,14 @@ inline void checkVk(VkResult result, const char* operation) {
     }
 }
 
-// A buffer plus its VMA allocation. `mapped` is non-null for host-visible
-// buffers (the VMA_MAPPED_BIT path in VulkanResources::createBuffer).
+// 一个缓冲连同它的 VMA 分配
+// 主机可见的缓冲（createBuffer 里走 VMA_MAPPED_BIT 的那条）其 `mapped` 非空
 struct AllocatedBuffer final {
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
     void* mapped = nullptr;
-    // 0 = not pooled (destroy on release); otherwise 1 + index into
-    // kStreamBufferClassSizes for the stream-mesh pools.
+    // 0 = 不来自池，释放即销毁
+    // 否则是 1 + kStreamBufferClassSizes 的下标，表示它属于流式网格池的哪一档
     std::uint8_t pooledSizeClass = 0;
 };
 
@@ -55,9 +51,8 @@ struct DepthTarget final {
 
 using ColorTarget = DepthTarget;
 
-// Owns the three handles every allocation needs so call sites pass none of
-// them. Created once after the VMA allocator exists (allocator depends on the
-// device, which depends on the physical device).
+// 持有每次分配都要用到的三个句柄，调用方因此一个都不用传
+// 在 VMA 分配器就绪后创建一次（分配器依赖逻辑设备，逻辑设备依赖物理设备）
 class VulkanResources final {
   public:
     VulkanResources() = default;
@@ -80,14 +75,12 @@ class VulkanResources final {
     [[nodiscard]] VkImageView createImageView(VkImage image, VkFormat format,
                                               VkImageAspectFlags aspect) const;
 
-    // One-shot command submission on the graphics queue, used by the staging
-    // uploads and layout transitions below. Needs the command pool and graphics
-    // queue, so it is only available when the resources were built with them.
+    // 图形队列上的一次性命令提交，供下面的暂存上传和布局转换使用
+    // 需要命令池和图形队列，所以只有带着它们构造出来的实例才提供这个能力
     [[nodiscard]] VkCommandBuffer beginSingleUseCommands() const;
     void endSingleUseCommands(VkCommandBuffer commandBuffer) const;
 
-    // Full-subresource image layout transition wrapped in a single-use command
-    // buffer; the caller supplies the access masks and pipeline stages.
+    // 整个子资源范围的图像布局转换，封在一次性命令缓冲里；访问掩码与管线阶段由调用方给
     void transitionTextureImage(const AllocatedImage& image, std::uint32_t layerCount,
                                 VkImageLayout oldLayout, VkImageLayout newLayout,
                                 VkAccessFlags sourceAccess, VkAccessFlags destinationAccess,
@@ -96,9 +89,8 @@ class VulkanResources final {
 
     [[nodiscard]] VkFormat chooseDepthFormat() const;
 
-    // A depth format that can also be sampled (for shadow maps): prefers
-    // D32_SFLOAT, then the depth-stencil formats MoltenVK reports as both depth
-    // attachments and samplable.
+    // 阴影贴图要用可采样的深度格式，优先取 D32_SFLOAT
+    // 其次取 MoltenVK 声明既能当深度附件又能采样的那几个深度模板格式
     [[nodiscard]] VkFormat chooseShadowDepthFormat() const;
 
     [[nodiscard]] static bool depthFormatHasStencil(VkFormat format) {

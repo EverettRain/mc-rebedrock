@@ -1,9 +1,8 @@
 #pragma once
-// HudRenderer: the HUD / front-end drawing subsystem extracted verbatim from
-// VulkanRenderer::Impl. It owns the small UI animation state and reaches the
-// renderer core through reference members (bound once in Bindings) plus a few
-// std::function hooks for world-render couplings; the draw bodies are unchanged.
-// Header-only inline, mirroring VulkanDevice.
+// HUD 与前端界面的绘制子系统
+// 它自持少量 UI 动画状态，其余一律通过引用成员访问渲染器内核，引用在 Bindings 里一次性绑定
+// 另有几个 std::function 钩子接世界渲染侧的耦合
+// 全部内联在头文件里，与 VulkanDevice 同一形态
 #include "render/vulkan/GuiSpriteAtlas.hpp"
 #include "render/vulkan/HudTypes.hpp"
 
@@ -83,14 +82,13 @@ class HudRenderer final {
         ui::MenuSystem& menuSystem;
         ui::UiFrameData& uiFrameData_;
         gameplay::GameSession& gameSession;
-        // Stage C slice 1b-2: HUD player/world reads come from the client mirror.
+        // HUD 对玩家与世界的读取一律取自客户端镜像
         const client::ClientMirror& clientMirror;
         ui::TextFont& textFont;
         ui::BitmapFontMetrics& fontMetrics;
         ui::Language& language;
-        // The world the HUD samples light from. This is the render-owned client
-        // chunk cache, never the server world — the HUD's light reads must not
-        // take the server lock.
+        // HUD 采样光照所用的世界是渲染侧自有的客户端区块缓存，绝不是服务端世界
+    // 因为 HUD 的光照读取不能去抢服务端锁
         world::World& lightWorld;
         GLFWwindow*& window;
         config::GameOptions& options;
@@ -130,14 +128,13 @@ class HudRenderer final {
         const std::unordered_map<world::SectionPosition, world::SectionMeshUpdate,
                                  world::SectionPositionHash>& pendingSectionUpdates;
         const std::optional<TestSceneOptions>& testScene;
-        // Atlas rectangles + 26.1 gui.scaling for the stretchable widgets,
-        // filled by TextureManager::createGuiTexture().
+        // 可拉伸控件的图集矩形与 26.1 gui.scaling，由 TextureManager::createGuiTexture() 填充
         const GuiWidgetSpriteTable& guiWidgetSprites;
         bool& paused;
         double& uiTimeSeconds;
         std::function<bool()> cameraSubmergedInWater;
-        // PX-6 Bug1: the Controls key-bind row label ("Action: Key") from the
-        // InputSystem single source, so the draw page shows live bindings.
+        // 按键设置里每行的标签形如"动作: 按键"，取自 InputSystem 这一唯一事实源
+        // 绘制页因此显示的是实时绑定
         std::function<std::string(input::InputAction)> keyBindLabel;
         std::function<void(VkCommandBuffer, VkDescriptorSet)> drawHeldItem;
         std::function<VkDescriptorSet()> currentFrameDescriptorSet;
@@ -187,9 +184,8 @@ class HudRenderer final {
     HudRenderer(const HudRenderer&) = delete;
     HudRenderer& operator=(const HudRenderer&) = delete;
 
-    // ---- helpers duplicated from the renderer core (pure reads over the bound
-    // references), so the moved draw code resolves them without reaching back
-    // into Impl. Impl keeps its own copies for the input path. ----
+    // ---- 与渲染器内核重复的一组助手，都是对已绑定引用的纯读取 ----
+    // 有了它们，搬过来的绘制代码不必反向调用 Impl，而 Impl 自己保留一份供输入路径使用
     [[nodiscard]] std::string_view translate(std::string_view key,
                                              std::string_view fallback) const {
         return language.translate(key, fallback);
@@ -240,11 +236,10 @@ class HudRenderer final {
         return ui::frontendButtonRect(layout, page, index, buttonCount);
     }
 
-    // PX-4: the current page as a ui::Page for DRAWING — the single source shared
-    // with dispatch (ui::buildPage), so the old per-page MenuButton arrays are
-    // gone. Wired with labels + slider display values (not action callbacks): the
-    // draw backend reads label/rect/kind/enabled/slider.value off each widget.
-    // Action callbacks are intentionally empty; drawing never fires them.
+    // 当前页面的 ui::Page，供**绘制**使用：与派发共用 ui::buildPage 这一唯一来源
+    // 这里只接上标签和滑块显示值，不接动作回调
+    // 绘制后端只读 widget 的 label、rect、kind、enabled 和 slider.value
+    // 回调故意留空，绘制永远不会触发它们
     [[nodiscard]] ui::Page buildDrawPage() const {
         const ui::PageId pageId = menuSystem.pageStack.current();
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
@@ -257,9 +252,9 @@ class HudRenderer final {
         ctx.labelFor = [this](std::uint16_t id) {
             return widgetLabel(static_cast<ui::WidgetId>(id));
         };
-        // PX-6 Bug1: on Controls, feed the scroll window + the live key-bind
-        // labels, and lay the visible rows out as list rows (controlsRow). The
-        // trailing four are the bottom button band. Everything else is unchanged.
+        // 按键设置页喂进滚动窗口与实时按键标签，可见行按 controlsRow 排版
+        // 末尾四个是底部按钮带，其余页面不受影响
+        // 其余页面不受影响
         const float fbWidth = static_cast<float>(swapchainExtent.width);
         std::size_t keyRows = 0U;
         if (pageId == ui::PageId::Controls) {
@@ -339,10 +334,9 @@ class HudRenderer final {
         vkCmdDraw(commandBuffer, 6, 1, 0, 0);
     }
 
-    // `portion` is the slab half the icon shows: 0 full cube, 1 bottom, 2 top;
-    // the shader reads it from uvRect.x (the block branch ignores uvRect) and
-    // folds the cube down to a half slab. It rides uvRect rather than data so the
-    // three texture-layer slots in data stay free for the chest/furnace fronts.
+    // `portion` 表示图标显示的是台阶的哪一半：0 整块、1 下半、2 上半
+    // 着色器从 uvRect.x 读它（方块分支本来就忽略 uvRect），据此把立方体压成半砖
+    // 之所以借道 uvRect 而不是 data，是要把 data 里那三个纹理层槽留给箱子/熔炉的正面
     void drawHudBlockIcon(VkCommandBuffer commandBuffer, const ui::UiRect& rectangle,
                           world::Block block, float portion = 0.0F) const {
         const float width = static_cast<float>(swapchainExtent.width);
@@ -350,13 +344,9 @@ class HudRenderer final {
         const auto clipRectangle = ui::framebufferToClip(rectangle, width, height);
         const auto textures = world::textureLayers(block);
         const bool chest = block == world::Block::Chest;
-        // A DirectionalCube (furnace/observer/piston) resolves its faces into a
-        // separate kBlockDirectionalLayers table, not the flat top/side slots —
-        // its `textures.side` is the plain side sprite, never the front. The icon
-        // must therefore read the real front layer for the face turned toward the
-        // camera; using textures.side left the furnace showing a blank side where
-        // its firebox belongs (the regression the "front baked into side" note
-        // wrongly assumed away).
+        // 熔炉、侦测器、活塞这类有朝向的立方体把六个面解析进独立的 kBlockDirectionalLayers 表
+        // 它们不用扁平的顶侧槽，`textures.side` 只是普通侧面贴图，绝不是正面
+        // 因此图标朝向相机的那个面必须取真正的正面层，否则熔炉本该是炉膛的位置会是一片空白侧面
         const bool directional =
             world::blockDefinition(block).model == world::BlockModel::DirectionalCube;
         const auto& directionalFaces = world::directionalLayers(block);
@@ -386,15 +376,12 @@ class HudRenderer final {
                 return;
             }
             if (model == world::BlockModel::Slab) {
-                // A slab item is wielded as the bottom half, so the inventory icon
-                // shows the bottom-half cube like vanilla's slab item render.
+                // 台阶物品按下半砖持握，因此背包图标显示下半砖立方体，与 vanilla 的台阶物品渲染一致
                 drawHudBlockIcon(commandBuffer, rectangle, stack.block, 1.0F);
                 return;
             }
-            // A shaped block (stairs/wall/fence gate/button/pressure plate) shows
-            // a 3D block icon like vanilla rather than falling through to the flat
-            // sprite below; only the thin-leaf door/trapdoor items stay flat
-            // sprites, matching vanilla's item render for each (RN-2).
+            // 楼梯、墙、栅栏门、按钮、压力板这类异形方块与 vanilla 一样显示 3D 方块图标
+            // 只有薄片状的门/活板门物品保持扁平贴图，同样对齐 vanilla 各自的物品渲染
             if (world::isShapedBlockModel(model) && !world::isThinLeafIconModel(model)) {
                 drawHudBlockIcon(commandBuffer, rectangle, stack.block);
                 return;
@@ -414,12 +401,11 @@ class HudRenderer final {
                     false, true);
     }
 
-    // Draws a widget sprite into `destination` honouring its 26.1 gui.scaling.
-    // `scale` is the GUI scale — framebuffer pixels per GUI pixel — which is
-    // what turns the sprite's declared pixel borders into destination lengths,
-    // so a 3px button frame stays 3 GUI pixels at any button width instead of
-    // smearing with the rest of the bitmap. The slicing itself lives in
-    // ui::forEachGuiSpriteQuad, which is Vulkan-free and unit-tested.
+    // 按精灵自己的 26.1 gui.scaling 把它画进 `destination`
+    // `scale` 是 GUI 缩放，表示每个 GUI 像素对应多少帧缓冲像素
+    // 正是它把精灵声明的像素边框换算成目标长度
+    // 于是 3px 的按钮边框在任何按钮宽度下都还是 3 个 GUI 像素，不会跟着位图一起糊开
+    // 切片算法本身在 ui::forEachGuiSpriteQuad 里，不含 Vulkan 且有单测
     void drawScaledGuiSprite(VkCommandBuffer commandBuffer, const ui::UiRect& destination,
                              float layer, const GuiAtlasSprite& sprite, float scale,
                              const glm::vec4& tint = {1.0F, 1.0F, 1.0F, 1.0F}) const {
@@ -460,9 +446,9 @@ class HudRenderer final {
                       6.0F, {0.0F, 0.0F, 256.0F, 256.0F}, {0.70F, 0.85F, 1.0F, 0.10F});
     }
 
-    // 1.16.1's Screen.renderBackground darkens every open in-game screen with a
-    // vertical gradient (top rgba(16,16,16,0xC0) -> bottom rgba(16,16,16,0xD0)),
-    // baked into kScreenDimGuiLayer in createGuiTexture().
+    // Screen.renderBackground 用一层竖直渐变压暗每个打开的游戏内界面
+    // 顶部为 rgba(16,16,16,0xC0)，底部为 rgba(16,16,16,0xD0)
+    // 该渐变在 createGuiTexture() 里烘进 kScreenDimGuiLayer
     void drawScreenDimOverlay(VkCommandBuffer commandBuffer) const {
         drawGuiSprite(commandBuffer,
                       {0.0F, 0.0F, static_cast<float>(swapchainExtent.width),
@@ -470,11 +456,8 @@ class HudRenderer final {
                       kScreenDimGuiLayer, {0.0F, 0.0F, 256.0F, 256.0F}, {1.0F, 1.0F, 1.0F, 1.0F});
     }
 
-    // 1.16.1's InGameHud renders the vignette texture with a multiplicative
-    // blend (dst * (1 - src)) so the dark corners darken the scene while the
-    // centre is left untouched. It must run on the dedicated vignette pipeline;
-    // the HUD pipeline is rebound afterwards so later HUD sprites keep their
-    // normal alpha blending.
+    // vanilla 的 HUD 用乘性混合（dst * (1 - src)）画暗角贴图：四角压暗画面，中心不受影响
+    // 它必须跑在专用的暗角管线上；画完立即重新绑回 HUD 管线，后续 HUD 精灵才保持常规的 alpha 混合
     void drawVignette(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
         if (vignetteDarkness_ <= 0.001F) {
             return;
@@ -494,10 +477,9 @@ class HudRenderer final {
     void drawMinecraftButton(VkCommandBuffer commandBuffer, const ui::UiRect& rectangle,
                              std::string_view label, ui::ButtonVisualState state, float scale,
                              glm::vec4 tint = glm::vec4{1.0F}) const {
-        // Snap to whole framebuffer pixels. On a maximised or odd-sized window a
-        // fractional button origin shifts the nearest-neighbour sprite sampling
-        // by a sub-texel, which can make the 1px border render unevenly or catch
-        // a neighbouring texel at the top edge.
+        // 对齐到整数帧缓冲像素
+        // 窗口最大化或尺寸为奇数时，按钮原点带小数会让最近邻采样偏移不到一个纹素
+        // 1px 边框会因此画得粗细不匀，甚至在顶边采到相邻纹素
         const ui::UiRect snapped{std::floor(rectangle.x), std::floor(rectangle.y),
                                  std::floor(rectangle.width + 0.5F),
                                  std::floor(rectangle.height + 0.5F)};
@@ -506,15 +488,13 @@ class HudRenderer final {
                 ? GuiWidgetSprite::ButtonDisabled
                 : (state == ui::ButtonVisualState::Normal ? GuiWidgetSprite::Button
                                                           : GuiWidgetSprite::ButtonHighlighted);
-        // Pressed darkens the caller's tint instead of hard-coding grey, so the
-        // red delete button keeps a coherent colour in every state.
+        // 按下态是把调用方给的色调压暗，而不是写死成灰色，红色的删除按钮因此在各状态下颜色都协调
         const glm::vec4 buttonTint =
             state == ui::ButtonVisualState::Pressed
                 ? glm::vec4{tint.r * 0.78F, tint.g * 0.78F, tint.b * 0.78F, 1.0F}
                 : tint;
-        // Nine-sliced: the frame keeps its declared pixel width whatever the
-        // layout does to the button, so a two-column settings page no longer
-        // stretches a 200px bitmap into a soft-edged rectangle.
+        // 九宫格保证无论排版把按钮拉成什么尺寸，边框都保持声明的像素宽度
+        // 两列布局的设置页因此不会把一张 200px 位图抻成边缘发虚的矩形
         drawScaledGuiSprite(commandBuffer, snapped, 0.0F,
                             guiWidgetSprite(guiWidgetSprites, face), scale, buttonTint);
         const glm::vec4 textColor = state == ui::ButtonVisualState::Disabled
@@ -539,9 +519,8 @@ class HudRenderer final {
         const glm::vec4 tint = state == ui::ButtonVisualState::Pressed
                                    ? glm::vec4{0.78F, 0.78F, 0.78F, 1.0F}
                                    : glm::vec4{1.0F};
-        // The track is nine-sliced like a button; the handle is drawn at its
-        // native 8x20, where nine-slicing is the identity, so it keeps landing
-        // exactly on its own art.
+        // 轨道像按钮一样做九宫格
+        // 滑块本体按原生 8x20 绘制，此时九宫格等同恒等变换，因此始终精确落在自己的美术上
         drawScaledGuiSprite(commandBuffer, snapped, 0.0F,
                             guiWidgetSprite(guiWidgetSprites, GuiWidgetSprite::Slider), scale,
                             tint);
@@ -610,8 +589,7 @@ class HudRenderer final {
                                   descriptionId.source.path, descriptionId.source.path);
     }
 
-    // blockTextureRoot is <vanilla>/1.16.1/textures/minecraft/block; the
-    // localization files live three parents up under localization/minecraft.
+    // 语言文件通过 provider 按 ResourceLocation 解析，不做路径推算
 
     void drawDurabilityBar(VkCommandBuffer commandBuffer, const ui::UiRect& icon,
                            const gameplay::ItemStack& stack) const {
@@ -625,8 +603,7 @@ class HudRenderer final {
         drawHudQuad(commandBuffer,
                     {icon.x + 2.0F * unit, icon.y + 13.0F * unit, 13.0F * unit, 2.0F * unit},
                     {0.0F, 0.0F, 0.0F, 1.0F});
-        // MathHelper.hsvToRgb((1 - spent) / 3, 1, 1) with full saturation and
-        // value, which only ever mixes red and green.
+        // 即饱和度与明度拉满的 hsvToRgb((1 - spent) / 3, 1, 1)，取值范围只在红绿之间
         const float hue = (1.0F - spent) / 3.0F * 6.0F;
         const glm::vec4 color = hue < 1.0F
                                     ? glm::vec4{1.0F, hue, 0.0F, 1.0F}
@@ -676,13 +653,10 @@ class HudRenderer final {
         }
     }
 
-    // PX-4: the localized, value-formatted label for a widget id. Wired into the
-    // draw page as MenuBuildContext.labelFor, so a widget carries its own text and
-    // the draw backend never re-derives it. Keyed on ui::WidgetId (the stable id);
-    // the old MenuButton enum is gone.
+    // 按 widget id 给出本地化并填好数值的标签
+    // 作为 MenuBuildContext.labelFor 接进绘制页，于是每个 widget 自带文本，绘制后端不必再推导一遍
     [[nodiscard]] std::string widgetLabel(ui::WidgetId button) const {
-        // Every label carries its English text as the fallback, so a language
-        // without the vanilla key still reads correctly.
+        // 每条标签都带英文兜底，缺少对应 vanilla 键的语言也能正常显示
         const auto toggle = [this](bool value) {
             return translated(value ? "options.on" : "options.off", value ? "ON" : "OFF");
         };
@@ -697,11 +671,10 @@ class HudRenderer final {
             return ui::formatTranslation(
                 translated("options.percent_value", "%s: %s%%"), arguments);
         };
-        // Every cycling option's label comes from its table row (ui/OptionCycle.hpp)
-        // — the same row the click steps — so the two cannot disagree. Only the
-        // settings that are not GameOptions fields (the live window size, the GUI
-        // scale, the open save's difficulty) and the plain page buttons fall
-        // through to the switch below.
+        // 循环选项的标签一律来自它在 ui/OptionCycle.hpp 中的表行
+        // 点击时步进的也是同一行，两者因此不可能不一致
+        // 只有不属于 GameOptions 字段的设置和普通页面按钮才落到下面的 switch
+        // 前者指实时窗口尺寸、GUI 缩放和当前存档的难度
         if (const ui::OptionDesc* option = ui::findCyclingOption(button); option != nullptr) {
             return optionValue(
                 translated(option->nameKey, option->nameFallback),
@@ -716,8 +689,8 @@ class HudRenderer final {
         case ui::WidgetId::Options:
             return translated("menu.options", "Options...");
         case ui::WidgetId::Resolution: {
-            // The label shows the live window size so a maximized or manually
-            // resized window reads correctly instead of echoing the last preset.
+            // 标签显示实时窗口尺寸，最大化或手动拖拽过的窗口因此读数正确
+            // 而不是回显上一次选中的预设
             const auto resolution = ui::kDisplayResolutions[menuSystem.resolutionIndex];
             int windowWidth = 0;
             int windowHeight = 0;
@@ -756,7 +729,7 @@ class HudRenderer final {
         case ui::WidgetId::Controls:
             return translated("options.controls", "Controls...");
         case ui::WidgetId::Difficulty:
-            // Only present on the in-world options page, where a save is open.
+            // 只出现在世界内的选项页，此时才有打开的存档
             return optionValue(
                 translated("options.difficulty", "Difficulty"),
                 translated(gameplay::difficultyTranslationKey(
@@ -807,10 +780,9 @@ class HudRenderer final {
             return translated("deathScreen.titleScreen", "Title Screen");
         case ui::WidgetId::ResetKeyBinds:
             return translated("controls.resetAll", "Reset Keys");
-        // Every cycling option returned above, from its table row. They are
-        // listed here so this switch stays exhaustive (-Wswitch): a widget id
-        // added later still has to be given a label somewhere, and the compiler
-        // says so.
+        // 循环选项在上面已按表行返回
+        // 这里仍逐个列出，是为了让这个 switch 在 -Wswitch 下保持穷尽
+        // 日后新增的 widget id 必须在某处得到标签，编译器会提醒
         case ui::WidgetId::AutoJump:
         case ui::WidgetId::FrameRateLimit:
         case ui::WidgetId::AntiAliasing:
@@ -840,15 +812,15 @@ class HudRenderer final {
                    : translated("selectWorld.gameMode.creative", "creative");
     }
 
-    // Formats the single-argument vanilla strings used outside option fields.
+    // 格式化选项字段之外用到的单参数 vanilla 字符串
     [[nodiscard]] static std::string formatTemplate(std::string text, std::string_view value) {
         const std::array<std::string_view, 1> arguments{value};
         return ui::formatTranslation(text, arguments);
     }
 
-    // Frontend screen titles. The edit page shows the selected world's name,
-    // matching 1.16.1's Edit World screen; the delete confirmation uses the
-    // vanilla delete question as its heading.
+    // 前端界面标题
+    // 编辑页显示所选世界的名字，与 vanilla 的"编辑世界"界面一致
+    // 删除确认页用 vanilla 的删除询问句作标题
     [[nodiscard]] std::string frontendTitle(ui::PageId page) const {
         if (page == ui::PageId::Title)
             return "MC Rebedrock";
@@ -881,22 +853,19 @@ class HudRenderer final {
                     {1.0F, 1.0F, 1.0F, 1.0F});
     }
 
-    // 26.1's menu background starts with an 85-degree perspective view from
-    // inside the panorama cube. The camera slowly turns — a full 360° yaw over
-    // kCycleSeconds so every one of the six faces gets a long turn in front of
-    // the view, a gentle pitch sweep dips down to panorama_4 and up to
-    // panorama_5, and a faint vanilla-style sine sway keeps it from feeling
-    // mechanical. The dark quad afterwards keeps the white title and the menu
-    // buttons readable over the scene.
+    // 26.1 的菜单背景是从全景立方体内部以 85 度透视看出去
+    // 相机缓慢转动：偏航在 kCycleSeconds 内转满 360°，六个面各自都有较长时间正对视野
+    // 俯仰做一次轻微扫掠，下探到 panorama_4、上仰到 panorama_5
+    // 再叠一点 vanilla 式的正弦微晃，免得太机械
+    // 之后那层暗色四边形保证白色标题和菜单按钮在场景上仍然清晰
     void drawTitleCarousel(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
                            bool blurred, float guiScale) const {
-        // One full 360° yaw turn every five minutes, so each of the four side
-        // faces stays centred for well over a minute. The pitch sweeps once per
-        // turn and the vanilla-style sway rate matches the slower pace.
+        // 每五分钟转满一圈，四个侧面各自正对视野一分多钟
+        // 俯仰每圈扫掠一次，vanilla 式微晃的速率也按这个较慢的节奏配
         constexpr double kCycleSeconds = 300.0;
         constexpr double kPi = 3.14159265358979323846;
         const double progress = uiTimeSeconds / kCycleSeconds;
-        // Full 360° turn plus a small sine sway; pitch oscillates once per turn.
+        // 整圈偏航加一点正弦微晃；俯仰每圈振荡一次
         const float yaw = static_cast<float>(progress * 2.0 * kPi) +
                           static_cast<float>(std::sin(uiTimeSeconds * 0.024) * 0.04);
         const float pitch = static_cast<float>(std::sin(progress * 2.0 * kPi)) * 0.44F;
@@ -906,12 +875,11 @@ class HudRenderer final {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, panoramaPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 panoramaPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
-        // PX-5: the menu background blur radius, in framebuffer pixels. 26.1's
-        // Screen.renderBlurredBackground drives its box blur from the
-        // `menuBackgroundBlurriness` option (default 0.5) scaled to a radius; the
-        // shipped default lands at a radius of 5. Kept as this named tunable so
-        // the mac visual pass can match vanilla by adjusting one value (the exact
-        // radius/kernel is a shader-visual call that cannot be judged headless).
+        // 菜单背景模糊半径，单位为帧缓冲像素
+        // 26.1 的 Screen.renderBlurredBackground 由 `menuBackgroundBlurriness` 选项换算出半径
+        // 该选项默认 0.5，出厂默认半径因此落在 5
+        // 留成具名常量，是因为确切的半径与卷积核属于要肉眼判定的视觉参数
+        // headless 判不了，调它时只需改这一个值
         constexpr float kMenuBlurRadius = 5.0F;
         const PanoramaPush push{{yaw, pitch, tanHalfFov, aspect},
                                 {blurred ? kMenuBlurRadius : 0.0F, 0.0F, 0.0F, 0.0F}};
@@ -925,9 +893,8 @@ class HudRenderer final {
         const ui::UiRect fullScreen{0.0F, 0.0F, static_cast<float>(swapchainExtent.width),
                                     static_cast<float>(swapchainExtent.height)};
         if (blurred) {
-            // Screen.extractMenuBackground follows the blur in 26.1. Keep this
-            // as the real pack-provided texture instead of baking its current
-            // translucent-black pixels into code.
+            // 26.1 里模糊之后紧跟 Screen.extractMenuBackground
+            // 这里坚持用资源包提供的真实纹理，而不是把它当前的半透明黑像素写死进代码
             drawGuiSprite(commandBuffer, fullScreen, 9.0F,
                           ui::tiledBackgroundSource(fullScreen.width, fullScreen.height, guiScale));
         } else {
@@ -935,20 +902,16 @@ class HudRenderer final {
         }
     }
 
-    // PX-4: the generic menu draw backend — paint one page's widgets by kind.
-    // Replaced the three near-identical per-page button loops (which each called
-    // menuButtonForIndex + menuButtonLabel). Each widget carries its own rect,
-    // label, enabled and (Slider) display value; the pressed highlight matches the
-    // widget whose id equals pressedMenuButton, and DeleteConfirm keeps its red
-    // tint. List rows are painted by the dedicated list path, not here.
+    // 通用的菜单绘制后端：按 widget 种类画出一页
+    // 每个 widget 自带矩形、标签、启用状态和（滑块的）显示值
+    // 按下高亮对应 id 等于 pressedMenuButton 的那个，删除确认按钮保留红色调
+    // 列表行走专门的列表路径，不在这里画
     void drawMenuWidgets(VkCommandBuffer commandBuffer, const ui::Page& widgets,
                          float scale) const {
         const auto cursor = currentFramebufferCursor();
         for (const auto& widget : widgets) {
-            // PX-6 Bug1: the Controls key-bind rows are ListRow widgets — the old
-            // draw skipped every non-Button/Slider kind, so the whole middle band
-            // was invisible. Draw a ListRow as a hover-highlighted "Action: Key"
-            // row (vanilla's EntryList look), not a full button frame.
+            // 按键设置的每一行都是 ListRow，画成带悬停高亮的"动作: 按键"行
+            // 样子对齐 vanilla 的列表项，而不是完整的按钮边框
             if (widget.kind == ui::WidgetKind::ListRow) {
                 drawKeyBindRow(commandBuffer, widget, cursor.x, cursor.y, scale);
                 continue;
@@ -976,9 +939,8 @@ class HudRenderer final {
         }
     }
 
-    // PX-6 Bug1: one Controls key-bind row — the "Action: Key" label on a subtle
-    // row background that brightens on hover, matching vanilla's key-bind
-    // EntryList (the row is clickable to begin the rebind capture).
+    // 按键设置的一行："动作: 按键"标签配一层淡背景，悬停时提亮，与 vanilla 的按键列表一致
+    // 点击该行即开始捕获新按键
     void drawKeyBindRow(VkCommandBuffer commandBuffer, const ui::Widget& widget, float cursorX,
                         float cursorY, float scale) const {
         const bool hovered = widget.rect.contains(cursorX, cursorY);
@@ -989,9 +951,8 @@ class HudRenderer final {
                     widget.rect.y + 1.5F * scale, scale, {1.0F, 1.0F, 1.0F, 1.0F}, false);
     }
 
-    // PX-6 Bug1: the Controls key-bind list scrollbar. Only drawn when there are
-    // more actions than the visible window; the thumb spans the visible fraction
-    // and slides with the scroll offset (the world/language lists do the same).
+    // 按键设置列表的滚动条：仅当动作数多于可见窗口时绘制
+    // 滑块长度对应可见比例，随滚动偏移移动（世界列表与语言列表同理）
     void drawControlsScrollbar(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         const float fbWidth = static_cast<float>(swapchainExtent.width);
         const std::size_t total = input::keyBindRows().size();
@@ -1017,9 +978,8 @@ class HudRenderer final {
     void drawFrontend(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
                       VkDescriptorSet descriptorSet) const {
         const auto page = menuSystem.pageStack.current();
-        // Like 26.1 Screen.extractBackground(): every no-world screen keeps the
-        // rotating panorama alive. Secondary screens blur only that background;
-        // their text, buttons and list rows are emitted afterwards and stay sharp.
+        // 与 26.1 的 Screen.extractBackground() 一致：所有无世界界面都保持全景在转
+        // 二级界面只模糊背景，其文本、按钮和列表行在之后绘制，保持清晰
         drawTitleCarousel(commandBuffer, descriptorSet, page != ui::PageId::Title, layout.scale());
         const float scale = layout.scale();
         const std::string title = frontendTitle(page);
@@ -1039,8 +999,7 @@ class HudRenderer final {
             const std::size_t remaining =
                 menuSystem.saveSummaries.size() - std::min(first, menuSystem.saveSummaries.size());
             const std::size_t visible = std::min(remaining, visibleRows);
-            // The 26.1 list background is independently pack-overridable from
-            // the surrounding menu background.
+            // 26.1 的列表背景与周围菜单背景是两张可各自被资源包覆盖的贴图
             const auto firstRow = worldListRow(0, layout);
             const float listBandHeight =
                 static_cast<float>(visibleRows) * 22.0F * scale + 8.0F * scale;
@@ -1111,8 +1070,7 @@ class HudRenderer final {
         }
     }
 
-    // Gui#renderPlayerHealth: hearts on the left of the hotbar, hunger on the
-    // right, and the air row above the hunger row while submerged.
+    // 快捷栏左侧的生命值、右侧的饥饿值，潜水时在饥饿行上方再加一行氧气
     void drawSurvivalStatusBars(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         const float scale = layout.scale();
         const auto hotbar = layout.hotbarBackground();
@@ -1122,7 +1080,7 @@ class HudRenderer final {
         const float icon = 9.0F * scale;
         const float step = 8.0F * scale;
         const auto iconRect = [&](float x, float y) { return ui::UiRect{x, y, icon, icon}; };
-        // A recent hit swaps the empty heart for the blinking white container.
+        // 刚受过伤时，空心用闪白的心形容器代替
         const bool flashing = uiFrameData_.ticksSinceDamage < 10;
         const int health = static_cast<int>(std::ceil(uiFrameData_.health));
         for (int index = 9; index >= 0; --index) {
@@ -1159,13 +1117,10 @@ class HudRenderer final {
                     1.0F, {index < full ? 16.0F : 25.0F, 18.0F, 9.0F, 9.0F});
             }
         }
-        // Gui#renderPlayerHealth armour row: worn armour points (0-20, two per
-        // icon) shown as ten icons one row above the hearts, left-aligned like
-        // them. Summed on the client from the mirrored equipment slots the same
-        // way LivingEntity#getArmor totals the four ArmorItem modifiers, so no
-        // wire-format change is needed — the equipment already crosses to the
-        // client for the inventory screen. The row is hidden at zero armour,
-        // exactly like vanilla.
+        // 护甲行：护甲点数（0-20，每图标两点）用十个图标画在生命值上一行，同样左对齐
+        // 数值由客户端从镜像过来的装备槽求和，与 LivingEntity#getArmor 累加四件护甲的修饰值同法
+        // 因此无需改动传输格式，装备本来就为背包界面同步到客户端
+        // 护甲为零时整行隐藏，与 vanilla 一致
         int armorPoints = 0;
         for (std::size_t slot = 0; slot < 4U; ++slot) {
             const auto& piece = clientMirror.world().equipmentSlots[static_cast<std::size_t>(
@@ -1186,38 +1141,34 @@ class HudRenderer final {
         }
     }
 
-    // Gui#renderExperienceBar: the 182x5 bar centred over the hotbar, seven
-    // logical pixels above it, filled by the player's real progress fraction
-    // (XP-0: uiFrameData_ carries it from the tick snapshot, ContextualBarRenderer's
-    // extractExperienceLevel green level number drawn just above it).
+    // 经验条为 182x5，居中于快捷栏上方 7 个逻辑像素处
+    // 填充比例取玩家真实的经验进度，由 uiFrameData_ 从 tick 快照带来
+    // 绿色等级数字画在它正上方
     void drawExperienceBar(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         const float scale = layout.scale();
         const auto bar = layout.experienceBar();
-        // 26.1's named experience-bar background, then its green progress sprite.
+        // 先画 26.1 具名的经验条背景，再画绿色进度贴图
         drawGuiSprite(commandBuffer, bar, 1.0F, {0.0F, 64.0F, 182.0F, 5.0F});
         const float progress = std::clamp(uiFrameData_.experienceProgress, 0.0F, 1.0F);
         if (progress > 0.0F) {
-            // A partial fill samples only the leading columns of the sprite,
-            // the way vanilla's blit(x, y, 0, 69, progressWidth, 5) does.
+            // 未满时只采样贴图前若干列，与 vanilla 的 blit(x, y, 0, 69, progressWidth, 5) 一致
             const float filledWidth = progress * 182.0F * scale;
             drawGuiSprite(commandBuffer, {bar.x, bar.y, filledWidth, bar.height}, 1.0F,
                           {0.0F, 69.0F, progress * 182.0F, 5.0F});
         }
-        // ContextualBarRenderer#extractExperienceLevel: the level number is
-        // only drawn once the player has actually left level 0 (26.1 gates on
-        // `hasExperience() && experienceLevel > 0`), so a fresh survival spawn
-        // shows an empty bar with no "0" floating above it.
+        // 等级数字只有在玩家真正离开 0 级后才绘制
+        // 26.1 的判据是 `hasExperience() && experienceLevel > 0`
+        // 生存模式刚出生时因此只有一条空经验条，上面不会飘一个 "0"
         if (uiFrameData_.experienceLevel > 0) {
             const std::string label = std::to_string(uiFrameData_.experienceLevel);
             const float textWidth = hudTextWidth(label, scale);
             const float textX = bar.x + (bar.width - textWidth) * 0.5F;
-            // 26.1's y = guiHeight - 24 - 9 - 2, six logical pixels above the
-            // bar's own top (guiHeight - 24 - 5); expressed relative to `bar`
-            // so it tracks the same anchor HudLayout::experienceBar() uses.
+            // 26.1 取 y = guiHeight - 24 - 9 - 2，即经验条顶边之上 6 个逻辑像素
+            // 经验条顶边本身是 guiHeight - 24 - 5
+            // 这里相对 `bar` 表达，与 HudLayout::experienceBar() 用同一个锚点
             const float textY = bar.y - 6.0F * scale;
-            // Vanilla draws the level number with a four-direction black
-            // outline (not the usual single offset drop shadow) before the
-            // green fill, so it reads over both the empty and filled bar.
+            // vanilla 在绿色字面之前先画四向黑色描边，而不是常见的单向投影阴影
+            // 数字因此压在空的和满的经验条上都看得清
             constexpr glm::vec4 kOutline{0.0F, 0.0F, 0.0F, 1.0F};
             drawHudText(commandBuffer, label, textX + scale, textY, scale, kOutline, false);
             drawHudText(commandBuffer, label, textX - scale, textY, scale, kOutline, false);
@@ -1228,11 +1179,9 @@ class HudRenderer final {
         }
     }
 
-    // 1.16.1's InGameHud#updateVignetteDarkness: darkness eases toward
-    // clamp(1 - brightnessAtEyes, 0, 1) at 1% per tick. Brightness is the
-    // overworld light-level curve g/(4 - 3g) with g = light / 15. Sky light is
-    // dimmed by the same daylight factor the sky shader uses, so the dark
-    // corners also appear at night and in caves.
+    // 暗角强度每 tick 以 1% 的速度趋近 clamp(1 - 眼部亮度, 0, 1)
+    // 亮度取主世界的光照曲线 g/(4 - 3g)，其中 g = 光照等级 / 15
+    // 天光按天空着色器同一个日照系数衰减，因此夜里和洞穴里同样会出现暗角
     void updateVignetteDarkness(float deltaSeconds) {
         const auto daylight =
             world::DayNightCycle::stateAtTick(clientMirror.world().dayTimeTicks);
@@ -1254,8 +1203,7 @@ class HudRenderer final {
         vignetteDarkness_ += (target - vignetteDarkness_) * std::min(1.0F, 0.2F * deltaSeconds);
     }
 
-    // ScreenEffectRenderer's damage tint, simplified to a full-screen red wash
-    // that fades over the invulnerability window.
+    // 受伤染色：简化成一层全屏红色，在无敌帧窗口内淡出
     void drawDamageOverlay(VkCommandBuffer commandBuffer) const {
         if (uiFrameData_.gameMode != gameplay::GameMode::Survival) {
             return;
@@ -1272,8 +1220,7 @@ class HudRenderer final {
                     {0.65F, 0.0F, 0.0F, 0.32F * fade});
     }
 
-    // 26.1-style language screen: rows update a draft selection and Done
-    // commits one asynchronous resource reload.
+    // 26.1 风格的语言界面：点击行只更新草稿选择，按 Done 才提交一次异步资源重载
     void drawLanguageScreen(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         const auto cursor = currentFramebufferCursor();
         const float scale = layout.scale();
@@ -1281,7 +1228,7 @@ class HudRenderer final {
         drawHudText(commandBuffer, title,
                     (static_cast<float>(swapchainExtent.width) - hudTextWidth(title, scale)) * 0.5F,
                     14.0F * scale, scale, {1.0F, 1.0F, 1.0F, 1.0F});
-        // The centred dark list box uses 26.1's independently replaceable list background.
+        // 居中的深色列表框用的是 26.1 中可被单独替换的列表背景
         const auto box = languageListBox(layout);
         drawGuiSprite(commandBuffer, box, kMenuListBackgroundGuiLayer,
                       ui::tiledBackgroundSource(box.width, box.height, scale),
@@ -1308,16 +1255,14 @@ class HudRenderer final {
             const std::string& name = index < menuSystem.languageDisplayNames.size()
                                           ? menuSystem.languageDisplayNames[index]
                                           : menuSystem.languageCodes[index];
-            // Centred inside the box, exactly like 1.16.1's LanguageEntry#render,
-            // which draws each name at width/2 - textWidth/2.
+            // 在框内居中，与 vanilla 语言项的绘制一致：每个名字画在 width/2 - 文本宽/2
             drawHudText(commandBuffer, name,
                         rectangle.x + (rectangle.width - hudTextWidth(name, scale)) * 0.5F,
                         rectangle.y + 2.0F * scale, scale,
                         selected ? glm::vec4{1.0F, 1.0F, 1.0F, 1.0F}
                                  : glm::vec4{0.85F, 0.85F, 0.85F, 1.0F});
         }
-        // A scrollbar thumb on the box's right edge when the list overflows,
-        // mirroring the vanilla EntryListWidget's grey track.
+        // 列表超出时在框右缘画滚动滑块，对应 vanilla 列表控件的灰色轨道
         if (menuSystem.languageCodes.size() > visible) {
             const auto thumb = ui::languageScrollbarThumb(
                 layout, static_cast<float>(swapchainExtent.width),
@@ -1325,8 +1270,7 @@ class HudRenderer final {
             drawHudQuad(commandBuffer, thumb,
                         {0.55F, 0.55F, 0.55F, 0.95F});
         }
-        // The grey warning line between the list and the buttons, as vanilla
-        // draws it at height - 56.
+        // 列表与按钮之间的灰色提示行，vanilla 把它画在 height - 56 处
         const std::string warning = translated("options.languageWarning", "");
         if (!warning.empty()) {
             const std::string label = "(" + warning + ")";
@@ -1341,11 +1285,8 @@ class HudRenderer final {
 
     void drawPauseMenu(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         const bool deathScreen = menuSystem.pageStack.current() == ui::PageId::Death;
-        // 1.16.1's PauseScreen calls Screen.renderBackground(), which paints the
-        // same dark gray gradient used by the gameSession.inventory() screens over the frozen
-        // world. The death screen keeps its dark red wash instead, and the
-        // options screen opened from the title (no world) shows the plain
-        // optimized dirt backdrop like every other menu screen.
+        // 暂停界面走 Screen.renderBackground()，在冻结的世界上铺一层与背包界面相同的深灰渐变
+        // 死亡界面改用暗红色底衬；从标题界面（无世界）打开的选项界面则与其它菜单一样显示普通底衬
         if (deathScreen) {
             drawHudQuad(commandBuffer,
                         {0.0F, 0.0F, static_cast<float>(swapchainExtent.width),
@@ -1370,10 +1311,9 @@ class HudRenderer final {
         const auto firstButton =
             frontendButtonRect(layout, menuSystem.pageStack.current(), 0, buttonCount);
         const float titleScale = deathScreen ? scale * 2.0F : scale;
-        // PX-6 Bug1: Controls is a three-band layout — the title is the TOP band,
-        // above the scrolling key-bind list, not 30px over the bottom button band
-        // (which is where firstButton sits). Other pages keep the historic
-        // above-the-first-button title.
+        // 按键设置是三段式布局，标题属于**顶部**段，位于滚动列表上方
+        // 它不在底部按钮带上方 30px 处，那里是 firstButton 所在的位置
+        // 其余页面仍把标题放在第一个按钮之上
         const float titleY =
             menuSystem.pageStack.current() == ui::PageId::Controls
                 ? ui::controlsListBox(layout, static_cast<float>(swapchainExtent.width)).y -
@@ -1384,8 +1324,7 @@ class HudRenderer final {
                         0.5F,
                     titleY, titleScale, {1.0F, 1.0F, 1.0F, 1.0F});
         drawMenuWidgets(commandBuffer, buildDrawPage(), scale);
-        // PX-6 Bug1: the Controls key-bind list scrollbar (middle band), drawn
-        // when the action count exceeds the visible window.
+        // 按键设置列表（中段）的滚动条，仅当动作数超出可见窗口时绘制
         if (menuSystem.pageStack.current() == ui::PageId::Controls) {
             drawControlsScrollbar(commandBuffer, layout);
         }
@@ -1401,11 +1340,10 @@ class HudRenderer final {
         const auto& pose = playerModelAnimator.pose();
         const auto preview =
             layout.playerPreview(uiFrameData_.gameMode == gameplay::GameMode::Creative);
-        // Vanilla's drawEntity Y coordinate is the feet anchor.  Our cuboid
-        // coordinate system spans -16..+16 around its origin, so convert the
-        // anchor to a model center before projecting it into view space.
-        // Vanilla model coordinates use 16 units per block. drawEntity's
-        // scale therefore maps one model unit to entityScale / 16 pixels.
+        // vanilla 绘制实体时的 Y 坐标是脚底锚点
+        // 而本项目的长方体坐标系以原点为中心向两侧展开 -16..+16
+        // 因此投影到视图空间之前要先把锚点换算成模型中心
+        // vanilla 模型每方块 16 单位，于是缩放系数把 1 个模型单位映射为 entityScale / 16 像素
         const float modelPixelsPerUnit = preview.entityScale / 16.0F;
         const float pixelX = preview.feetAnchor.x;
         const float pixelY = preview.feetAnchor.y - 16.0F * modelPixelsPerUnit * layout.scale();
@@ -1446,19 +1384,16 @@ class HudRenderer final {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, heldItemPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipelineLayout,
                                 0, 1, &descriptorSet, 0, nullptr);
-        // The preview now renders through the same skeletal pose as the world
-        // player (drawWorldPlayer): each bone's cube is drawn from
-        // modelRoot * boneWorld * cubeRotation * T(centre), so the bone
-        // hierarchy — head and arms as children of the body — composes, and the
-        // whole figure turns rigidly with the cursor look instead of every part
-        // spinning around its own centre. `origin` is in the camera's view
-        // space, so the matrix cuboid is the matrixViewModel mode (data.x=6)
-        // that projects through camera.projection without a second view pass.
+        // 预览与世界中的玩家走同一套骨骼姿态
+        // 每根骨骼的方块按 modelRoot * boneWorld * cubeRotation * T(中心) 绘制
+        // 头和手臂作为身体的子节点，骨骼层级因此能正确复合
+        // 整个人随光标视线整体转动，而不是各部件各转各的
+        // `origin` 位于相机视图空间，因此这里用矩阵长方体的 matrixViewModel 模式
+        // 即 data.x=6，直接经 camera.projection 投影，无需第二次视图变换
         const auto& previewModel = playerModelAnimator.model();
         const auto& skeletonPose = playerModelAnimator.skeletonPose();
-        // The geometry's feet sit at model y=0 while the previous hardcoded
-        // layout anchored them 16 units below `origin`; shift the model root so
-        // the figure lands in the same well.
+        // 几何体的脚位于模型 y=0，而版面锚点期望脚在 `origin` 下方 16 单位处
+        // 所以把模型根节点整体下移，让人物落在同一个位置
         const glm::mat4 modelRoot = glm::translate(glm::mat4{1.0F}, origin) *
                                     glm::scale(glm::mat4{1.0F}, glm::vec3{modelUnit}) *
                                     glm::translate(glm::mat4{1.0F}, glm::vec3{0.0F, -16.0F, 0.0F});
@@ -1513,14 +1448,10 @@ class HudRenderer final {
                                 0, 1, &descriptorSet, 0, nullptr);
     }
 
-    // EQ-1: the four armour slots + offhand, drawn wherever the player inventory
-    // is (survival InventoryScreen and the creative Inventory tab). buildSlotLayout
-    // already produces these rects for the click router; the static draw pass used
-    // to omit them, so equipped armour was invisible even though it was stored and
-    // still removable by clicking the (blank) slot. Screen order → rect and screen
-    // order → EquipmentSlot enum use the same mapping ScreenHandler::appendEquipmentSlots
-    // does, so display and click agree. Returns the hovered stack, if any, so the
-    // caller's tooltip can cover armour slots too.
+    // 四个护甲槽加副手，随玩家背包出现在哪里就画在哪里（生存背包界面与创造模式的背包页签）
+    // 屏幕顺序到矩形、屏幕顺序到 EquipmentSlot 两处映射与 ScreenHandler::appendEquipmentSlots 相同
+    // 显示与点击因此一致
+    // 返回鼠标悬停的物品堆（若有），好让调用方的提示框也覆盖护甲槽
     [[nodiscard]] std::optional<gameplay::ItemStack>
     drawEquipmentSlots(VkCommandBuffer commandBuffer, const ui::HudLayout& layout, float cursorX,
                        float cursorY, bool creative) const {
@@ -1571,8 +1502,7 @@ class HudRenderer final {
             drawHudSlot(commandBuffer, layout.tableCraftingOutput(),
                         clientMirror.world().tableCraftingOutput, false, false, true);
         } else {
-            // N3c-4d: the furnace screen draws from the container display
-            // snapshot; the block entity's position is not read here.
+            // 熔炉界面按容器显示快照绘制，这里不读方块实体的位置
             const auto& worldSnap = clientMirror.world();
             drawHudSlot(commandBuffer, layout.furnaceInputSlot(), worldSnap.furnaceInput, false,
                         false, true);
@@ -1606,8 +1536,7 @@ class HudRenderer final {
             drawHudSlot(commandBuffer, slot, clientMirror.world().inventorySlots[index],
                         index == uiFrameData_.selectedHotbarSlot, false, true);
         }
-        // An in-progress drag previews the would-be placement in every swept
-        // slot before the release, on top of the slots but under the cursor.
+        // 拖拽过程中在每个划过的槽位预览松手后的落位，画在槽位之上、光标之下
         drawDragPreview(commandBuffer, layout);
         if (!clientMirror.world().cursorStack.empty()) {
             const auto cursor = currentFramebufferCursor();
@@ -1625,9 +1554,7 @@ class HudRenderer final {
         drawScreenDimOverlay(commandBuffer);
 
         const std::size_t selectedTabIndex = static_cast<std::size_t>(menuSystem.creativeTab);
-        // B7-0: the first seven tabs (BuildingBlocks..Combat) sit on the top row;
-        // FoodAndDrink, Ingredients, SpawnEggs and Inventory share the bottom row
-        // and use the bottom tab sprite.
+        // 前七个页签（建筑方块…战斗）在上排；食物、原料、刷怪蛋和背包在下排，用下排页签贴图
         const std::size_t firstBottomTab = static_cast<std::size_t>(ui::CreativeTab::FoodAndDrink);
         for (std::size_t tabIndex = 0; tabIndex < kCreativeTabCount; ++tabIndex) {
             const bool selected = tabIndex == selectedTabIndex;
@@ -1652,7 +1579,7 @@ class HudRenderer final {
                            ? static_cast<float>(selectedTabIndex - firstBottomTab) * 28.0F
                            : static_cast<float>(selectedTabIndex) * 28.0F,
                        selectedBottomTab ? 96.0F : 32.0F, 28.0F, 32.0F});
-        // One representative icon per tab, in CreativeTab order.
+        // 每个页签一个代表图标，顺序同 CreativeTab
         const std::array<gameplay::ItemStack, kCreativeTabCount> tabIcons{{
             {world::Block::Bricks, 1U},                                 // BuildingBlocks
             {world::Block::WhiteWool, 1U},                              // ColoredBlocks
@@ -1686,9 +1613,8 @@ class HudRenderer final {
                 drawHudSlot(commandBuffer, slot, clientMirror.world().inventorySlots[index],
                             index == uiFrameData_.selectedHotbarSlot, hovered, true);
             }
-            // The creative Inventory tab shows the same armour + offhand slots as
-            // survival, but anchored to the creative panel (creative=true) so they
-            // are not offset by the two panels' differing size/centre.
+            // 创造模式的背包页签显示与生存相同的护甲与副手槽
+            // 但它锚定在创造面板上，免得被两种面板不同的尺寸与中心带偏
             if (const auto hoveredEquipment = drawEquipmentSlots(commandBuffer, layout, cursor.x,
                                                                  cursor.y, /*creative=*/true)) {
                 hoveredStack = hoveredEquipment;
@@ -1698,8 +1624,7 @@ class HudRenderer final {
                 drawHudQuad(commandBuffer, deleteSlot, {1.0F, 0.25F, 0.25F, 0.34F});
             }
         } else {
-            // B7-0: the ten 26.1 content tabs, in CreativeTab order (indices
-            // 0..9; the Inventory tab is handled by the branch above).
+            // 26.1 的十个内容页签，顺序同 CreativeTab（下标 0..9；背包页签由上面的分支处理）
             constexpr std::array<std::pair<std::string_view, std::string_view>, 10> titles{{
                 {"itemGroup.buildingBlocks", "Building Blocks"},
                 {"itemGroup.coloredBlocks", "Colored Blocks"},
@@ -1744,8 +1669,7 @@ class HudRenderer final {
             }
         }
 
-        // Real creative inventory/hotbar slots share QUICK_CRAFT with survival;
-        // show the same prospective per-slot counts before the button is released.
+        // 创造模式的真实背包/快捷栏槽位与生存共用快速合成拖拽，松手前同样显示每格的预计落位数量
         drawDragPreview(commandBuffer, layout);
 
         if (hoveredStack.has_value()) {
@@ -1785,12 +1709,10 @@ class HudRenderer final {
         const float scale = layout.scale();
         float messageY = chatOpen ? layout.chatInput().y - 12.0F * scale
                                   : static_cast<float>(swapchainExtent.height) - 28.0F * scale;
-        // Vanilla ChatHud wraps every message to a fixed 320 unscaled-GUI-pixel
-        // width (the default chat width) and stores one ChatHudLine per wrapped
-        // row. rebedrock keeps the store line-oriented per logical line and wraps
-        // to width here at draw time, so the wrap reflows for free when the GUI
-        // scale or window width changes. Measurement is in unscaled GUI pixels
-        // (scale 1) to match that width; the scale is applied only when drawing.
+        // vanilla 的聊天把每条消息按固定的 320 个未缩放 GUI 像素折行
+        // 并为每个折行后的行单独存一条记录
+        // 本项目的存储按逻辑行组织，折行放到绘制时做，于是 GUI 缩放或窗口宽度一变，折行自动重排
+        // 度量用未缩放 GUI 像素（scale 1）以对齐那个宽度，缩放只在绘制时施加
         constexpr float kChatWidth = 320.0F;
         const auto measure = [this](std::string_view piece) {
             return textFont.textWidth(piece, 1.0F);
@@ -1806,8 +1728,7 @@ class HudRenderer final {
             const glm::vec4 color = message->successful
                                         ? glm::vec4{1.0F, 1.0F, 1.0F, 1.0F}
                                         : glm::vec4{1.0F, 0.35F, 0.35F, 1.0F};
-            // Wrapped lines read top-to-bottom, so draw them bottom-up: the last
-            // visual line sits nearest the input and earlier lines stack above.
+            // 折行后的文本自上而下阅读，因此自下而上绘制：最后一行贴近输入框，更早的行依次往上堆
             const std::vector<std::string> lines =
                 ui::wrapText(message->text, kChatWidth, measure);
             for (auto line = lines.rbegin(); line != lines.rend(); ++line) {
@@ -1826,26 +1747,23 @@ class HudRenderer final {
         if (!chatOpen) {
             return;
         }
-        // Vanilla sizes the chat input to the whole screen width (GuiChat 1.16.1
-        // gives its EditBox a width of windowWidth - 8), so the dark backdrop
-        // always runs from the left edge to the right edge instead of hugging
-        // the typed text.
+        // vanilla 的聊天输入框占满屏幕宽度，其编辑框宽度为 windowWidth - 8
+        // 所以深色底衬始终从左缘拉到右缘，而不是紧贴已输入的文字
         const ui::UiRect input = layout.chatInput();
         drawHudQuad(commandBuffer, input, {0.0F, 0.0F, 0.0F, 0.72F});
         const bool cursorVisible = static_cast<int>(uiTimeSeconds * 2.0) % 2 == 0;
         const std::string visibleText = chatInputText + (cursorVisible ? "_" : "");
         drawHudText(commandBuffer, visibleText, input.x + 2.0F * scale, input.y + 2.0F * scale,
                     scale, {1.0F, 1.0F, 1.0F, 1.0F}, false);
-        // 26.1's CommandSuggestions draws the completion list in ONE opaque dark
-        // box (not per-row translucent strips), the selected row highlighted, the
-        // suggestion text white and its usage/hint in grey. Match that here: one
-        // background rect sized to the widest row, then the rows over it.
+        // 26.1 的命令补全把候选列表画在**一个**不透明深色框里，而不是逐行的半透明条
+        // 选中行高亮，候选文字为白色，用法提示为灰色
+        // 这里照此实现：先按最宽一行画一个背景矩形，再把各行画在其上
         const std::size_t maxRows = std::min<std::size_t>(chatSuggestions_.size(), 8U);
         if (maxRows > 0) {
             const float rowHeight = 11.0F * scale;
             const float boxLeft = 2.0F * scale;
-            // Width the box to the widest "text  hint" row so the opaque panel
-            // fully backs every row (vanilla sizes the tooltip to its content).
+            // 框宽取最宽的"候选 + 提示"行，保证不透明面板托住每一行
+            // vanilla 的提示框同样按内容定宽
             float widest = 0.0F;
             for (std::size_t row = 0; row < maxRows; ++row) {
                 std::string hint = chatSuggestions_[row].hint;
@@ -1858,7 +1776,7 @@ class HudRenderer final {
             }
             const float boxWidth = widest + 4.0F * scale;
             const float boxTop = input.y - static_cast<float>(maxRows) * rowHeight;
-            // 26.1's opaque tooltip background (a near-black panel, alpha ~0.95).
+            // 26.1 的不透明提示框底色（近黑面板，alpha 约 0.95）
             drawHudQuad(commandBuffer,
                         {boxLeft, boxTop, boxWidth, static_cast<float>(maxRows) * rowHeight},
                         {0.05F, 0.05F, 0.05F, 0.95F});
@@ -1866,7 +1784,7 @@ class HudRenderer final {
                 const auto& suggestion = chatSuggestions_[row];
                 const float rowY = input.y - (static_cast<float>(row) + 1.0F) * rowHeight;
                 if (row == chatSuggestionIndex_) {
-                    // The selected row's highlight bar.
+                    // 选中行的高亮条
                     drawHudQuad(commandBuffer, {boxLeft, rowY, boxWidth, rowHeight},
                                 {0.10F, 0.10F, 0.10F, 1.0F});
                 }
@@ -1874,13 +1792,13 @@ class HudRenderer final {
                 if (hint.starts_with("item.") || hint.starts_with("block.")) {
                     hint = translated(hint, hint);
                 }
-                // The suggestion text: white when selected, light grey otherwise.
+                // 候选文字：选中为白色，否则为浅灰
                 const glm::vec4 textColor = row == chatSuggestionIndex_
                                                 ? glm::vec4{1.0F, 1.0F, 1.0F, 1.0F}
                                                 : glm::vec4{0.66F, 0.66F, 0.66F, 1.0F};
                 drawHudText(commandBuffer, suggestion.text, boxLeft + 2.0F * scale, rowY + scale,
                             scale, textColor, false);
-                // The usage/hint trails in grey after the text (26.1 usage colour).
+                // 用法提示以灰色跟在候选文字之后（26.1 的用法提示配色）
                 if (!hint.empty()) {
                     const float hintX =
                         boxLeft + 2.0F * scale + hudTextWidth(suggestion.text + "  ", scale);
@@ -1891,11 +1809,10 @@ class HudRenderer final {
         }
     }
 
-    // PX-6: the top-right toast overlay (26.1 ToastComponent). Each visible toast
-    // is an opaque panel that slides in from the right by its slideFraction, with
-    // a white title and grey subtitle. The queue's lifetime/cap/animation is the
-    // Vulkan-free ui::ToastQueue; this only paints its current visibleToasts().
-    // Passed by parameter (not a builder member) so wiring it is one call site.
+    // 右上角的吐司提示叠加层（对应 26.1 的 ToastComponent）
+    // 每条可见提示是一块不透明面板，按 slideFraction 从右侧滑入，白色标题配灰色副标题
+    // 生命周期、条数上限和动画都在不含 Vulkan 的 ui::ToastQueue 里
+    // 这里只负责画出它当前的 visibleToasts()
     void drawToastOverlay(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         const float scale = layout.scale();
         const float toastWidth = 160.0F * scale;
@@ -1904,13 +1821,12 @@ class HudRenderer final {
         const float right = static_cast<float>(swapchainExtent.width);
         float slotY = margin;
         for (const ui::ActiveToast& active : toastQueue.visibleToasts()) {
-            // slideFraction 1 = fully in; 0 = off the right edge.
+            // slideFraction 为 1 表示完全滑入，0 表示还在右缘之外
             const float x = right - active.slideFraction * (toastWidth + margin);
-            // PX-6 Bug4: draw the toast on the GUI atlas's nine-sliced widget
-            // panel (the Button frame), not a flat grey quad — a proper 26.x
-            // bordered background. (Vanilla's dedicated toasts.png is not in the
-            // shipped assets; the widget panel is the closest real sprite. If a
-            // toasts sprite is ever added, swap the sprite here.)
+            // 提示画在 GUI 图集里九宫格的控件面板也就是按钮边框上，而不是一块纯灰四边形
+            // 这样才有真正的带边框背景
+            // vanilla 专用的 toasts.png 不在随包资源里，控件面板是最接近的现成贴图
+            // 将来若补上该贴图，换掉这里即可
             const ui::UiRect panel{std::floor(x), std::floor(slotY), std::floor(toastWidth),
                                    std::floor(toastHeight)};
             drawScaledGuiSprite(commandBuffer, panel, 0.0F,
@@ -1925,9 +1841,9 @@ class HudRenderer final {
         }
     }
 
-    // PX-6: the bottom-right sound-subtitle overlay (26.1 SubtitleOverlay). Each
-    // active caption is drawn right-aligned above the last, fading with its alpha.
-    // The list/cap/fade is the Vulkan-free ui::SubtitleFeed; this only paints it.
+    // 右下角的音效字幕叠加层（对应 26.1 的 SubtitleOverlay）
+    // 每条生效的字幕右对齐地叠在上一条之上，按各自 alpha 淡出
+    // 列表、上限与淡出都在不含 Vulkan 的 ui::SubtitleFeed 里，这里只负责画
     void drawSubtitleOverlay(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         const float scale = layout.scale();
         const float right = static_cast<float>(swapchainExtent.width);
@@ -1948,20 +1864,14 @@ class HudRenderer final {
         }
     }
 
-    // 1.16.1's InGameHud.render, consolidated into a single layer so every
-    // element that belongs to the HUD — the damage tint, vignette, first-person
-    // held item, hotbar, survival status bars, crosshair and the held-item name —
-    // is drawn together in vanilla order. drawHud then draws any open screen
-    // (gameSession.inventory(), container, pause) on top, so its renderBackground gradient
-    // darkens this whole layer uniformly instead of leaving individual elements
-    // floating bright over the overlay.
+    // 整个 HUD 收在同一层里按 vanilla 顺序绘制
+    // 依次是受伤染色、暗角、第一人称手持物、快捷栏、生存状态条、准星、手持物名称
+    // 之后 drawHud 才把背包、容器、暂停这些打开的界面画在上面
+    // 它的背景渐变因此能均匀压暗整层，不会让个别元素亮着浮在叠加层之上
     void drawInGameHudLayer(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
                             const ui::HudLayout& layout) const {
-        // 1.16.1's GameRenderer renders the hand right after the world, against
-        // a fresh depth buffer, and InGameHud.render (vignette, hotbar, ...)
-        // follows it. So the hand sits at the very bottom of the HUD layer: the
-        // damage tint, the vignette and any open screen's gradient are all drawn
-        // over it afterwards.
+        // vanilla 在世界之后、用一张干净的深度缓冲绘制手臂，随后才是 HUD（暗角、快捷栏等）
+        // 所以手臂位于 HUD 层的最底部：受伤染色、暗角以及任何打开界面的渐变都画在它之上
         VkClearAttachment heldDepthClear{};
         heldDepthClear.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
         heldDepthClear.clearValue.depthStencil = {1.0F, 0U};
@@ -1974,20 +1884,20 @@ class HudRenderer final {
         drawHeldItem(commandBuffer, descriptorSet);
         drawUnderwaterOverlay(commandBuffer, descriptorSet);
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipeline);
-        // drawHeldItem binds set 0 through itemPipelineLayout (128-byte vertex
-        // push range). Switching back to the HUD pipeline is not enough: its
-        // 64-byte vertex+fragment layout is incompatible, so the damage quad's
-        // first draw must re-bind the shared set through hudPipelineLayout.
-        // The underwater overlay does this itself, but it is conditional.
+        // drawHeldItem 是经 itemPipelineLayout（128 字节顶点推送区间）绑定 set 0 的
+        // 仅仅切回 HUD 管线不够，它 64 字节的顶点加片元布局与之不兼容
+        // 受伤四边形的第一次绘制因此必须经 hudPipelineLayout 重新绑定共享描述符集
+        // 水下叠加层自己会做这件事，但它是有条件才画的
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipelineLayout,
                                 0, 1, &descriptorSet, 0, nullptr);
 
         drawDamageOverlay(commandBuffer);
         drawVignette(commandBuffer, descriptorSet);
 
-        // HUD hotbar and the survival status bars. The gameSession.player() gameSession.inventory()
-        // keeps the HUD hotbar on screen in both survival and creative; container screens keep
-        // their previous look, and status bars stay survival-only.
+        // HUD 快捷栏与生存状态条
+        // 玩家背包界面在生存和创造下都保留屏幕上的快捷栏
+        // 容器界面维持原有外观
+        // 状态条仅生存模式显示
         const bool playerInventoryOpen =
             inventoryOpen && containerScreen == ContainerScreen::PlayerInventory;
         if (!inventoryOpen || playerInventoryOpen) {
@@ -2007,9 +1917,7 @@ class HudRenderer final {
 
         if (!inventoryOpen) {
             const float textScale = layout.scale();
-            // GuiIngame#renderSelectedItemName: the held item's name appears
-            // when the selection changes and fades out over two seconds, and an
-            // empty hand shows nothing at all (no "Air" label).
+            // 手持物名称：切换选中格时出现，两秒内淡出；空手什么都不显示（不会出现"空气"字样）
             const auto& selectedStack = uiFrameData_.selectedStack;
             if (!selectedStack.empty()) {
                 const std::size_t selectedSlot = uiFrameData_.selectedHotbarSlot;
@@ -2025,8 +1933,7 @@ class HudRenderer final {
                 const double elapsed = uiTimeSeconds - selectedNameShownAt_;
                 float alpha = 0.0F;
                 if (elapsed < 2.0) {
-                    // Full brightness for the first 1.5 s, then a half-second
-                    // fade, mirroring the vanilla highlight's tail.
+                    // 前 1.5 秒全亮，随后半秒淡出，与 vanilla 的高亮收尾一致
                     alpha = elapsed <= 1.5 ? 1.0F : static_cast<float>((2.0 - elapsed) / 0.5);
                 }
                 if (alpha > 0.0F) {
@@ -2049,8 +1956,7 @@ class HudRenderer final {
             }
         }
 
-        // Crosshair — vanilla InGameHud draws it every frame while in-game, and
-        // an open screen's gradient darkens it along with the rest of the layer.
+        // 准星：vanilla 在游戏中每帧绘制，打开界面时它和整层一起被渐变压暗
         const ui::HudLayout crosshairLayout{static_cast<float>(swapchainExtent.width),
                                             static_cast<float>(swapchainExtent.height),
                                             menuSystem.guiScaleSetting};
@@ -2145,10 +2051,9 @@ class HudRenderer final {
             glfwGetCursorPos(window, &cursorWindowX, &cursorWindowY);
             glfwGetWindowSize(window, &windowWidth, &windowHeight);
             glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
-            // Scale by the live framebuffer size, not the swapchain extent: right
-            // after a resize or maximize the extent is still the previous frame's,
-            // which would shift the cursor (and the white slot highlight) by a
-            // few pixels until the swapchain is recreated.
+            // 按实时帧缓冲尺寸换算，而不是交换链范围
+            // 窗口刚缩放或最大化时范围还停留在上一帧，直到交换链重建为止
+            // 那期间光标和白色槽位高亮会偏几个像素
             const auto framebufferCursor =
                 ui::windowToFramebuffer(cursorWindowX, cursorWindowY, windowWidth, windowHeight,
                                         framebufferWidth, framebufferHeight);
@@ -2177,8 +2082,7 @@ class HudRenderer final {
                             clientMirror.world().inventorySlots[index],
                             index == uiFrameData_.selectedHotbarSlot, hovered, true);
             }
-            // Either a main-inventory slot or an armour/offhand slot may be under
-            // the cursor; the tooltip covers both.
+            // 光标下既可能是主背包槽，也可能是护甲/副手槽，提示框两者都覆盖
             std::optional<gameplay::ItemStack> tooltipStack = hoveredEquipment;
             if (!tooltipStack.has_value() && hoveredSlot.has_value() &&
                 !clientMirror.world().inventorySlots[*hoveredSlot].empty()) {
@@ -2199,8 +2103,7 @@ class HudRenderer final {
                 drawHudText(commandBuffer, label, tooltip.x + 4.0F * textScale,
                             tooltip.y + 3.0F * textScale, textScale, {1.0F, 1.0F, 1.0F, 1.0F});
             }
-            // An in-progress drag previews the would-be placement in every swept
-            // slot before the release, on top of the slots but under the cursor.
+            // 拖拽过程中在每个划过的槽位预览松手后的落位，画在槽位之上、光标之下
             drawDragPreview(commandBuffer, layout);
             if (!clientMirror.world().cursorStack.empty()) {
                 const float cursorIconSize = 16.0F * layout.scale();
@@ -2229,21 +2132,17 @@ class HudRenderer final {
             coordinates << std::fixed << std::setprecision(3)
                         << "XYZ: " << debugSnap.physicsCurrent.x << " / "
                         << debugSnap.physicsCurrent.y << " / " << debugSnap.physicsCurrent.z;
-            // Vanilla DebugHud samples the block the gameSession.player()'s feet are in, and
-            // a resting gameSession.player()'s feet sit exactly on the integer boundary, so
-            // floor() lands on the air cell above the ground block. Rebedrock
-            // rests the feet a collision epsilon below that boundary, which
-            // would round down into the solid block (block light 0 by
-            // construction); nudging past the epsilon reproduces vanilla's
-            // sample point.
+            // vanilla 的调试信息采样玩家脚所在的方块，而静止玩家的脚正好落在整数边界上
+            // 于是 floor() 取到的是地面方块上方那格空气
+            // 本项目让脚停在该边界下方一个碰撞 epsilon 处，直接取整会落进实心方块
+            // 那格的方块光照按定义为 0
+            // 把这个 epsilon 补回去才能复现 vanilla 的采样点
             const glm::ivec3 playerBlock{
                 static_cast<int>(std::floor(debugSnap.physicsCurrent.x)),
                 static_cast<int>(std::floor(debugSnap.physicsCurrent.y + 0.001F)),
                 static_cast<int>(std::floor(debugSnap.physicsCurrent.z))};
-            // The version line reads the single build-identity source (core::kVersion,
-            // META's rodata manifest) rather than any persisted/hardcoded string, so
-            // F3 always shows the version this binary actually is, tagged with the
-            // git build ref for diagnostics.
+            // 版本行读的是构建身份的唯一来源 core::kVersion，而不是持久化或写死的字符串
+            // F3 显示的因此永远是这个二进制自己的版本，并带上 git 构建标识便于诊断
             const std::string versionLine = "ReBedrock " + std::string{core::kVersion.name} +
                                             " (" + std::string{core::kVersion.buildRef} + ")";
             const std::array labels{
@@ -2270,13 +2169,12 @@ class HudRenderer final {
             }
         }
         drawChatOverlay(commandBuffer, layout);
-        // PX-6: the game-in overlays sit above the chat/HUD: top-right toasts and
-        // bottom-right sound subtitles.
+        // 游戏内叠加层位于聊天/HUD 之上：右上角吐司提示与右下角音效字幕
         drawToastOverlay(commandBuffer, layout);
         drawSubtitleOverlay(commandBuffer, layout);
     }
 
-    // ---- bound references to renderer-core state ----
+    // ---- 绑定到渲染器内核状态的引用 ----
     ui::MenuSystem& menuSystem;
     ui::UiFrameData& uiFrameData_;
     gameplay::GameSession& gameSession;
@@ -2327,7 +2225,7 @@ class HudRenderer final {
     bool& paused;
     double& uiTimeSeconds;
 
-    // ---- world-render / per-frame couplings (bound to Impl lambdas) ----
+    // ---- 与世界渲染/逐帧状态的耦合（绑到 Impl 的 lambda 上）----
     std::function<bool()> cameraSubmergedInWater;
     std::function<std::string(input::InputAction)> keyBindLabel;
     std::function<void(VkCommandBuffer, VkDescriptorSet)> drawHeldItem;
@@ -2340,7 +2238,7 @@ class HudRenderer final {
     std::function<std::optional<ui::UiRect>(const ui::HudLayout&, const gameplay::SlotRef&)>
         dragSlotRectangle;
 
-    // ---- owned UI animation / selection state ----
+    // ---- 自持的 UI 动画与选择状态 ----
     float vignetteDarkness_ = 1.0F;
     mutable std::size_t selectedNameSlot_ = static_cast<std::size_t>(-1);
     mutable gameplay::ItemStack selectedNameStack_;

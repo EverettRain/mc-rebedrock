@@ -1,3 +1,9 @@
+// 进程入口
+// 只做三件事：定位三个根目录、接管标准流写日志、把控制权交给 Application
+// 资源、着色器、配置三个根目录在开发树里取编译期默认值
+// 在部署包里则改用 bin/ 旁边的 resources 与 config
+// 除此之外不含任何游戏逻辑
+
 #include "core/Application.hpp"
 #include "render/TestScene.hpp"
 
@@ -23,9 +29,8 @@
 
 namespace {
 
-// A streambuf that writes every character to a log file and the original
-// terminal stream alike. Installed over std::cout / std::cerr so a fatal error
-// or a crash that closes the console still leaves a record on disk.
+// 把每个字符同时写进日志文件和原终端流的 streambuf
+// 装在 std::cout / std::cerr 上，于是致命错误或崩溃关掉控制台之后，磁盘上仍留有现场
 class TeeBuffer final : public std::streambuf {
   public:
     TeeBuffer(std::streambuf* terminal, std::ofstream& file)
@@ -57,13 +62,10 @@ class TeeBuffer final : public std::streambuf {
     std::ofstream& file_;
 };
 
-// Tees both standard streams into `path` (appended per run, with a separator so
-// sessions are easy to tell apart). The streams keep writing to the terminal
-// too, so development output is unchanged. Every line is flushed to the file,
-// so even a hard crash does not lose the tail of the log. `active()` is false
-// when the file could not be opened, in which case the app simply keeps its
-// terminal-only behaviour. Restores the original streams on destruction so the
-// global iostream objects never flush through freed buffers during teardown.
+// 把两个标准流同时接到 `path`（按次追加，带分隔行便于区分场次），终端输出保持不变
+// 每行立即刷盘，硬崩溃也不会丢日志尾部
+// 文件打不开时 active() 为 false，程序退回纯终端行为
+// 析构时还原原始 streambuf，避免全局 iostream 在销毁期刷进已释放的缓冲区
 class FileLog final {
   public:
     explicit FileLog(std::filesystem::path path)
@@ -119,10 +121,9 @@ int main(int argc, char** argv) {
             const auto gameRoot = executable.parent_path().parent_path();
             const auto stagedResources = gameRoot / "resources";
             const auto stagedShaders = stagedResources / "shaders";
-            // The game ships no Mojang assets, so a staged runtime is recognised
-            // by ReBedrock's own resources — the compiled shaders and the staging
-            // marker — never by a bundled vanilla tree. Minecraft content comes
-            // from a resource pack the player supplies at runtime.
+            // 发行包不含任何 Mojang 资源，所以不能靠随包的 vanilla 资源树来判定
+            // 认出"已部署的运行时"只看 ReBedrock 自己的东西：编译好的着色器加部署标记文件
+            // Minecraft 内容一律由玩家自备的资源包在运行时提供
             std::error_code shaderError;
             std::error_code markerError;
             if (std::filesystem::is_directory(stagedShaders, shaderError) &&
@@ -134,10 +135,9 @@ int main(int argc, char** argv) {
             }
         }
     }
-    // Record every line of output in a file as well as the terminal, so a
-    // Vulkan initialisation failure that closes the console still leaves a
-    // diagnosable record in <config>/rebedrock.log. Lives for the whole run,
-    // which keeps the fatal error below inside the file too.
+    // 终端输出同时落盘到 <config>/rebedrock.log
+    // Vulkan 初始化失败会关掉控制台，那份日志是唯一能诊断的现场
+    // 生命周期覆盖整个 run()，所以下面 catch 到的致命错误也会进文件
     FileLog fileLog{configRoot / "rebedrock.log"};
     try {
         std::vector<std::string_view> arguments;

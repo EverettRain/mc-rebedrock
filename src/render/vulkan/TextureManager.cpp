@@ -32,7 +32,7 @@ namespace mc::render {
 
 namespace {
 
-// The six 1.16.1 title-screen panorama faces, one array layer each.
+// 标题界面的六张全景面，各占一个数组层
 constexpr std::size_t kPanoramaFaces = 6U;
 
 [[nodiscard]] assets::ImageData repeatTileToAtlas(const assets::ImageData& tile, int width,
@@ -181,9 +181,8 @@ loadBitmapProvider(const assets::ResourceProvider& resources,
     return -1;
 }
 
-// The unihex font ships as a zip *inside* the pack, so this reads the archive's
-// bytes and opens miniz over memory — a zipped pack would otherwise have to
-// extract the whole font archive to disk just to be opened again.
+// unihex 字体是打在资源包*内部*的一个 zip，所以这里取出归档的字节流让 miniz 直接在内存上打开
+// 否则一个 zip 资源包得先把整个字体归档解压到磁盘，只为再打开一次
 void readUnihexArchive(std::span<const std::byte> archiveBytes,
                        const assets::FontProviderDefinition& definition,
                        const std::set<int>& requiredPages, UnihexPages& output) {
@@ -290,8 +289,7 @@ void readUnihexArchive(std::span<const std::byte> archiveBytes,
             std::copy_n(source, static_cast<std::size_t>(generic.width * 4), destination);
         }
     };
-    // GenericContainerScreen stitches the upper chest rows to the lower
-    // player-inventory region. Bake the three-row variant into one atlas layer.
+    // 容器界面把上方箱子行与下方玩家背包区拼在一起；这里把三行的变体烘成一个图集层
     copyRows(0, 0, 71);
     copyRows(126, 71, 96);
     return result;
@@ -304,9 +302,8 @@ void TextureManager::createTextureArray(int anisotropy) {
     fluidAnimationFrameTimes = pixels.fluidAnimationFrameTimes;
     blockAnimations = pixels.blockAnimations;
     const auto byteSize = static_cast<VkDeviceSize>(pixels.rgba.size());
-    // The atlas layer count is whatever the name-driven build produced (fixed
-    // special section + block textures + item icons), so it is derived from the
-    // bytes rather than a compile-time constant.
+    // 图集层数由按名解析的构建结果决定，含固定特殊区、方块纹理和物品图标
+    // 因此从字节数反推，而不是写死成编译期常量
     const auto layerSize =
         static_cast<VkDeviceSize>(pixels.width) * static_cast<VkDeviceSize>(pixels.height) * 4U;
     if (byteSize % layerSize != 0U) {
@@ -385,10 +382,9 @@ void TextureManager::recreateTextureSampler(int anisotropy) {
     createTextureSampler(anisotropy);
 }
 
-// The vanilla precipitation texture is 64x256. Keep it in a dedicated 2D image
-// instead of the square block-texture array: resizing it into an atlas layer
-// would crush four vertical texels into one and turn its fine rain streaks back
-// into the broad water cards this renderer used previously.
+// vanilla 的降水纹理是 64x256
+// 它单独用一张 2D 图像，而不是塞进方形的方块纹理数组
+// 缩放进图集层会把竖直方向四个纹素压成一个，细密的雨丝会退回成早期那种粗大的水片
 void TextureManager::createRainTexture() {
     const auto pixels = assets::ImageData::loadRgba(*resourceProvider_, assets::textures("environment/rain.png"));
     const auto width = static_cast<std::uint32_t>(pixels.width);
@@ -426,10 +422,9 @@ void TextureManager::createRainTexture() {
 }
 
 void TextureManager::createGuiTexture() {
-    // 26.1 exposes HUD and widget art as named gui/sprites files. Pack the small
-    // set this renderer uses into compatibility layers at startup; draw code
-    // retains compact pixel rectangles while every source remains independently
-    // overrideable by its standard resource-pack name.
+    // 26.1 把 HUD 与控件美术拆成一个个具名的 gui/sprites 文件
+    // 启动时把本渲染器用到的那一小撮打进兼容层
+    // 绘制代码仍用紧凑的像素矩形，而每个源文件仍能按标准资源包的名字被单独覆盖
     const auto tex = [&](std::string_view sub) {
         return assets::ImageData::loadRgbaOrMissing(*resourceProvider_, assets::textures(sub));
     };
@@ -439,20 +434,16 @@ void TextureManager::createGuiTexture() {
     };
 
     auto widgets = emptyRgbaAtlas();
-    // Buttons and slider tracks are the elements drawn at runtime-decided
-    // sizes, so their 26.1 `gui.scaling` sidecar has to survive the trip into
-    // the atlas: record where each landed alongside its parsed metadata and the
-    // HUD can nine-slice it instead of stretching the whole bitmap. A sprite
-    // whose sidecar is absent or unreadable keeps the plain-stretch default,
-    // which is exactly the behaviour these draws had before.
+    // 按钮和滑条轨道的尺寸由运行期决定，它们的 26.1 `gui.scaling` 附属文件必须一起带进图集
+    // 记下每个精灵的落位和解析后的元数据，HUD 才能做九宫格而不是整张位图拉伸
+    // 没有附属文件或读不出来的精灵沿用纯拉伸的默认行为
     const auto blitWidget = [&](GuiWidgetSprite id, std::string_view name, int x, int y) {
         const std::string path = "gui/sprites/" + std::string{name} + ".png";
         const auto image = tex(path);
         blit(widgets, image, x, y);
         auto scaling =
             assets::GuiSpriteScaling::load(*resourceProvider_, assets::textures(path));
-        // A sidecar may omit the reference size; the art's own size is then what
-        // the borders are measured against.
+        // 附属文件可以不写参考尺寸，这时边框就以美术本身的尺寸为基准
         if (scaling.width <= 0) {
             scaling.width = image.width;
         }
@@ -494,10 +485,10 @@ void TextureManager::createGuiTexture() {
     blit(hud, sprite("hud/experience_bar_progress"), 0, 69);
 
     auto tabs = emptyRgbaAtlas();
-    // B7-0: seven top-row tabs (BuildingBlocks..Combat) and four bottom-row tabs
-    // (FoodAndDrink..Inventory). 26.1 ships tab_top_1..7 and tab_bottom_1..7; the
-    // HUD samples them at x = column * 28 (top y 0/32 unselected/selected, bottom
-    // y 64/96), matching drawCreativeInventory's UV maths.
+    // 上排七个页签（建筑方块…战斗）与下排四个页签（食物…背包）
+    // 26.1 提供 tab_top_1..7 与 tab_bottom_1..7
+    // HUD 按 x = 列号 * 28 采样，与 drawCreativeInventory 的 UV 计算一致
+    // 上排未选中与选中分别取 y 0 和 32，下排取 y 64 和 96
     for (int tab = 0; tab < 7; ++tab) {
         const std::string suffix = std::to_string(tab + 1);
         blit(tabs, sprite("container/creative_inventory/tab_top_unselected_" + suffix),
@@ -523,10 +514,9 @@ void TextureManager::createGuiTexture() {
     auto furnaceGui = guiTex("container/furnace.png");
     blit(furnaceGui, sprite("container/furnace/lit_progress"), 176, 0);
     blit(furnaceGui, sprite("container/furnace/burn_progress"), 176, 14);
-    // 1.16.1's Screen.renderBackground paints a vertical gradient from
-    // rgba(0x10,0x10,0x10,0xC0) at the top to rgba(0x10,0x10,0x10,0xD0) at the
-    // bottom over every in-game screen. Bake that into a 256x256 layer so each
-    // screen draws the exact vanilla backdrop with one sprite.
+    // Screen.renderBackground 会在每个游戏内界面上铺一层竖直渐变
+    // 顶部为 rgba(0x10,0x10,0x10,0xC0)，底部为 rgba(0x10,0x10,0x10,0xD0)
+    // 把它烘成一个 256x256 层，各界面用一次精灵绘制就能拿到与 vanilla 完全一致的底衬
     assets::ImageData screenDimGradient;
     screenDimGradient.width = 256;
     screenDimGradient.height = 256;
@@ -622,15 +612,13 @@ void TextureManager::createGuiTexture() {
               << kGuiLayerCount << '\n';
 }
 
-// The title-screen panorama faces are 1024x1024 photographs, so they get their
-// own array at native resolution instead of a layer in the 256px GUI array. One
-// layer per 1.16.1 panorama face.
+// 标题全景面是 1024x1024 的实拍图，因此单独用一个原生分辨率的数组，而不是挤进 256px 的 GUI 数组
+// 每个全景面一层
 void TextureManager::createPanoramaTexture() {
     std::array<assets::ImageData, kPanoramaFaces> faces{};
     for (std::size_t index = 0; index < kPanoramaFaces; ++index) {
-        // Resolved per file so a pack overriding some panorama faces (or none)
-        // still falls back to the bundled ones rather than the whole title/
-        // background folder being shadowed by the pack.
+        // 全景面逐文件解析，资源包只覆盖了一部分甚至没覆盖时，其余仍回落到内置资源
+        // 这样整个 title/background 目录不会被资源包整体遮蔽
         faces[index] = assets::ImageData::loadRgbaOrMissing(*resourceProvider_,
             assets::textures("gui/title/background/panorama_" + std::to_string(index) + ".png"));
     }
@@ -695,8 +683,7 @@ void TextureManager::createPanoramaTexture() {
 
 void TextureManager::createPanoramaSampler() {
     auto samplerInfo = vkStructure<VkSamplerCreateInfo>(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
-    // Panorama faces are upscaled photographs, so they need linear filtering
-    // instead of the nearest-neighbour pixel-art sampler.
+    // 全景面是放大的实拍图，需要线性过滤，而不是像素画用的最近邻采样器
     samplerInfo.magFilter = VK_FILTER_LINEAR;
     samplerInfo.minFilter = VK_FILTER_LINEAR;
     samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
@@ -717,8 +704,7 @@ void TextureManager::createBiomeTextureResources() {
         resources_->createImage(size, size, 1, VK_FORMAT_R8G8B8A8_SRGB,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     auto samplerInfo = vkStructure<VkSamplerCreateInfo>(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
-    // Linear filtering turns the per-cell biome colours into a smooth,
-    // hardware-interpolated per-pixel gradient across biome boundaries.
+    // 线性过滤把逐格的群系颜色变成跨群系边界的、由硬件插值出的逐像素平滑渐变
     samplerInfo.magFilter = VK_FILTER_LINEAR;
     samplerInfo.minFilter = VK_FILTER_LINEAR;
     samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
@@ -734,12 +720,10 @@ void TextureManager::createBiomeTextureResources() {
                                                    VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
-// Regenerates the biome colour lookup textures for a world seed: each texel
-// holds the grass/foliage colour (from the vanilla colour maps, with the
-// swamp/dark-forest overrides) of the biome at that 4-block cell. The fragment
-// shader samples them with linear filtering, so adjacent cells blend into a
-// per-pixel gradient — the GPU-side stand-in for 1.16.1's per-vertex
-// BiomeColors.
+// 按世界种子重建群系配色查找表
+// 每个纹素存放对应 4 方块格所属群系的草色与叶色，取自 vanilla 配色图
+// 沼泽和黑森林另有特例覆盖
+// 片元着色器用线性过滤采样，相邻格因此融成逐像素渐变——这是 BiomeColors 逐顶点着色在 GPU 侧的等价物
 void TextureManager::updateBiomeColorTextures(std::uint64_t seed) {
     constexpr int size = kBiomeTextureSize;
     constexpr int span = kBiomeTextureBlockSpan;
@@ -820,11 +804,9 @@ void TextureManager::updateBiomeColorTextures(std::uint64_t seed) {
     upload(biomeFoliageImage, foliagePixels);
 }
 
-// Loads every shipped species' model + skin into a dedicated 2D-array texture
-// (binding 4), one layer per species in speciesModels order. A new creature only
-// has to register an EntityType with a render descriptor; missing .png files
-// fall back to a procedural skin painted through the same box-UV mapping the
-// shader samples with.
+// 把每个已提供的物种模型与皮肤装进专用 2D 数组纹理（binding 4），按 speciesModels 顺序一物种一层
+// 新增生物只需注册一个带渲染描述的 EntityType
+// 缺 .png 时回落到程序化皮肤，它走的是着色器采样时同一套 box-UV 映射
 void TextureManager::createEntityTextureArray(
     std::vector<gameplay::entities::SpeciesRenderModel>& speciesModels) {
     const auto resourceRoot = resourceProvider_->resourceRoot();
@@ -847,11 +829,9 @@ void TextureManager::createEntityTextureArray(
     }
     entityTextureWidth = atlasWidth;
     entityTextureHeight = atlasHeight;
-    // Assign texture-array layers: one per species, plus a second layer for each
-    // species that declares a secondary skin (the sheep fleece). Precompute the
-    // per-bone layer here too, so the draw loop never re-tests bone names: a
-    // "wool"-prefixed bone resolves to the secondary layer, everything else to
-    // the body layer.
+    // 分配纹理数组层：每物种一层，声明了第二张皮肤的（羊毛）再多一层
+    // 逐骨骼的层号也在这里预先算好，绘制循环因此不必反复比对骨骼名
+    // "wool" 前缀的骨骼落到第二层，其余落到身体层
     std::uint32_t nextLayer = 0U;
     for (auto& species : speciesModels) {
         species.textureLayer = static_cast<float>(nextLayer++);
@@ -872,8 +852,8 @@ void TextureManager::createEntityTextureArray(
     const std::uint32_t layerCount = nextLayer;
     std::vector<std::uint8_t> atlas(
         static_cast<std::size_t>(atlasWidth) * atlasHeight * 4U * layerCount, 0U);
-    // Samples one skin (loaded from `texturePath` through the pack stack) into a
-    // given array layer, scaling the declared skin size up to the shared atlas.
+    // 把一张皮肤采样进指定数组层，皮肤经资源包栈从 `texturePath` 加载
+    // 同时把声明的皮肤尺寸放大到共享图集的尺寸
     const auto blitLayer = [&](std::uint32_t layer, std::string_view texturePath,
                                const animation::SkeletalModel& model) {
         const auto skin = gameplay::entities::buildSpeciesSkin(
@@ -953,14 +933,13 @@ void TextureManager::createEntityTextureArray(
               << layerCount << '\n';
 }
 
-// The font lives in one 256x256 R8 texture array. Layer 0 is the bitmap ASCII
-// provider, followed by any additional bitmap providers and then pages
-// rasterized from 26.1's unihex zip.
+// 字体放在一个 256x256 的 R8 纹理数组里
+// 第 0 层是位图 ASCII provider，其后是其它位图 provider
+// 再往后是从 26.1 的 unihex zip 光栅化出来的各页
 void TextureManager::createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::TextFont& textFont,
                                        const std::set<int>& requiredPages, bool forceUnicode) {
-    // Font pages resolve per file so an incomplete pack falls back to the
-    // bundled ascii sheet and unicode pages rather than losing them to a
-    // shadowed font/ folder.
+    // 字体页逐文件解析，不完整的资源包会回落到内置的 ascii 表与 unicode 页
+    // 这样它们不会因为 font/ 目录被整体遮蔽而丢失
     const auto ascii = assets::ImageData::loadRgbaOrMissing(*resourceProvider_, assets::textures("font/ascii.png"));
     fontMetrics = ui::BitmapFontMetrics::fromRgba(ascii.rgba, ascii.width, ascii.height);
     textFont.setAsciiMetrics(fontMetrics);
@@ -992,8 +971,7 @@ void TextureManager::createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::T
     constexpr std::size_t kFontLayerBytes = static_cast<std::size_t>(kFontPageSize) * kFontPageSize;
     std::vector<std::uint8_t> pixels;
     pixels.resize(kFontLayerBytes);
-    // Nearest-neighbour upscale of the 128x128 sheet keeps its normalized UVs
-    // and its on-screen pixels identical.
+    // 对 128x128 的表做最近邻放大，归一化 UV 和屏幕像素都保持不变
     for (std::uint32_t y = 0; y < kFontPageSize; ++y) {
         for (std::uint32_t x = 0; x < kFontPageSize; ++x) {
             const auto sourceX =

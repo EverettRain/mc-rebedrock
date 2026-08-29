@@ -7,6 +7,9 @@
 
 namespace mc {
 
+// 一次运行的编排者
+// 构造时只记下三个根目录（资源、着色器、配置）和可选的测试场景
+// 全部实际工作在 run() 里，返回值即进程退出码
 class Application final {
   public:
     Application(

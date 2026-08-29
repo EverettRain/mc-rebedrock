@@ -57,13 +57,11 @@ namespace {
     return frames;
 }
 
-// Fits an animated texture's source frames to the fixed number of atlas layers
-// reserved for it. The atlas layout and the animation shader are hardwired to a
-// frame count (32 water, 20/16 lava), so a pack whose texture has a different
-// count — or an explicit `.mcmeta` `frames` order — is reconciled here rather
-// than crashing: the frames are reordered per the metadata, then cycled or
-// truncated to fill exactly the reserved layers. The animation-wide `.mcmeta`
-// frametime is forwarded separately to the shader by bakeBlockAtlas().
+// 把动画纹理的源帧适配到图集为它预留的固定层数
+// 图集布局和动画着色器写死了帧数，水 32 帧、岩浆 20 或 16 帧
+// 帧数不同的资源包，或带显式 `.mcmeta` `frames` 顺序的，在这里被调和而不是崩掉
+// 做法是先按元数据重排，再循环或截断到恰好填满预留层
+// 整段动画的 `.mcmeta` frametime 由 bakeBlockAtlas() 另行转给着色器
 [[nodiscard]] std::vector<assets::ImageData>
 fitAnimationFrames(std::vector<assets::ImageData> source,
                    const std::optional<assets::TextureAnimation>& animation,
@@ -100,9 +98,8 @@ using PlayerSkinFaces = std::array<assets::ImageData, 6>;
 [[nodiscard]] PlayerSkinFaces playerSkinCuboidFaces(const assets::ImageData& skin, int textureX,
                                                     int textureY, int width, int height, int depth,
                                                     int targetSize) {
-    // Minecraft's cuboid unwrap is top/bottom in the first row, followed by
-    // right/front/left/back.  Store faces in the exact order emitted by
-    // item_entity.vert: +X, -X, +Y, -Y, +Z, -Z.
+    // Minecraft 的长方体展开图第一行是顶/底，其后是右/前/左/后
+    // 这里按 item_entity.vert 的输出顺序存放各面：+X、-X、+Y、-Y、+Z、-Z
     return {
         resizedRegion(skin, textureX + depth + width, textureY + depth, depth, height, targetSize),
         resizedRegion(skin, textureX, textureY + depth, depth, height, targetSize),
@@ -169,9 +166,8 @@ void overlayScaled(assets::ImageData& destination, const assets::ImageData& sour
 } // namespace
 
 TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
-    // Every block texture is resolved by name through the provider, so a layered
-    // pack overrides them one file at a time (an imported pack can replace just
-    // dirt without shipping every other block).
+    // 每张方块纹理都按名字经 provider 解析，叠加的资源包因此可以逐文件覆盖
+    // 导入的包只想换泥土，就不必提供其余所有方块
     const auto blockTex = [&](std::string_view name) {
         return assets::ImageData::loadRgbaOrMissing(resources, assets::textures("block/" + std::string{name} + ".png"));
     };
@@ -181,10 +177,8 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
     const auto dirt = blockTex("dirt");
     auto grassPlant = blockTex("short_grass");
     auto oakLeaves = blockTex("oak_leaves");
-    // The animated and entity frames that fill the fixed special section. Item
-    // icons no longer live here; they append after the block textures. Each is
-    // fitted to the layers the atlas reserves for it, honouring the texture's
-    // `.mcmeta` frame order and never crashing on an off-count pack.
+    // 填充固定特殊区的动画帧与实体帧（物品图标不在这里，它们接在方块纹理之后）
+    // 每项都适配到图集为其预留的层数，遵守纹理 `.mcmeta` 的帧顺序，帧数不符的资源包也不会崩
     std::array<float, 4> fluidAnimationFrameTimes{1.0F, 1.0F, 1.0F, 1.0F};
     const auto animatedFrames = [&](std::string_view name, std::uint32_t reserved,
                                     std::size_t animationIndex) {
@@ -225,9 +219,8 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
     };
     const auto chestTexture =
         assets::ImageData::loadRgba(resources, assets::textures("entity/chest/normal.png"));
-    // One orb sprite out of the 4x4 experience_orb.png sheet (top-left 16x16
-    // cell), resized to the atlas tile. Loaded tolerant-of-missing so a pack
-    // without the entity texture bakes the checkerboard rather than aborting.
+    // 从 4x4 的 experience_orb.png 里取左上角那个 16x16 格，缩放到图集瓦片尺寸
+    // 允许缺失：没有这张实体纹理的资源包烘出棋盘格而不是中止
     const auto experienceOrbSheet = assets::ImageData::loadRgbaOrMissing(
         resources, assets::textures("entity/experience/experience_orb.png"), 64U, 64U);
     const auto experienceOrb =
@@ -251,8 +244,7 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
     for (std::size_t stage = 0; stage < destroyStages.size(); ++stage) {
         destroyStages[stage] = blockTex("destroy_stage_" + std::to_string(stage));
     }
-    // The biome leaves and their tints (spruce/birch fixed, the rest the biome
-    // foliage colour), the same set the tree shapes grow.
+    // 各群系树叶及其着色（云杉/白桦为固定色，其余取群系叶色），与树形生成用的是同一套
     constexpr std::array<float, 3> foliageTint{0.49F, 0.74F, 0.32F};
     constexpr std::array<float, 3> spruceTint{0x61 / 255.0F, 0x99 / 255.0F, 0x61 / 255.0F};
     constexpr std::array<float, 3> birchTint{0x80 / 255.0F, 0xA7 / 255.0F, 0x55 / 255.0F};
@@ -262,8 +254,8 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
     };
     const std::array<std::array<float, 3>, 5> biomeLeafTints{spruceTint, birchTint, foliageTint,
                                                              foliageTint, foliageTint};
-    // Untinted leaf bases for the terrain (per-block biome tint happens per
-    // vertex in the mesher), while the tinted ones above stay for items/GUI.
+    // 地形用的是未着色叶片底图，逐方块的群系着色由网格化器在顶点上做
+    // 上面那批已着色的留给物品和 GUI
     const auto biomeLeafTexturesRaw = biomeLeafTextures;
     for (std::size_t leaf = 0; leaf < biomeLeafTextures.size(); ++leaf) {
         auto& pixels = biomeLeafTextures[leaf].rgba;
@@ -274,19 +266,18 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
             }
         }
     }
-    // water/lava frame counts are now reconciled by fitAnimationFrames above, so
-    // an off-count pack no longer aborts the bake. The sun is a single still
-    // frame; more than one means the wrong texture, which is still a hard error.
+    // 水/岩浆的帧数由上面的 fitAnimationFrames 调和，帧数不符的资源包不会中止烘焙
+    // 太阳只有一帧静止图，多于一帧说明拿错了纹理，这仍然是硬错误
     if (sunFrames.empty()) {
         throw std::runtime_error("Minecraft sun texture must contain at least one square frame");
     }
-    // Untinted grass family, kept for the per-biome colour variants below.
+    // 未着色的草方块家族，供下面的逐群系配色变体使用
     const auto grassTopRaw = top;
     const auto grassSideBase = side;
     const auto grassOverlay = overlay;
     const auto grassPlantRaw = grassPlant;
     const auto leavesRaw = oakLeaves;
-    // Tint the foliage and grass the vanilla colours before they enter the atlas.
+    // 叶片与草在进入图集之前先按 vanilla 配色着色
     const auto tintInPlace = [](assets::ImageData& image, const std::array<float, 3>& tint) {
         for (std::size_t index = 0; index + 3U < image.rgba.size(); index += 4U) {
             for (std::size_t channel = 0; channel < 3U; ++channel) {
@@ -325,7 +316,7 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
     tintWaterFrames(waterStillFrames);
     tintWaterFrames(waterFlowFrames);
 
-    // ---- Fixed special section, in a deterministic order ----
+    // ---- 固定特殊区，顺序确定 ----
     std::vector<assets::ImageData> layers;
     const auto append = [&](const assets::ImageData& image) {
         layers.push_back(conformToAtlasLayer(top, image, "fixed-section layer"));
@@ -350,31 +341,27 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
     }
     for (const auto& texture : chestItemTextures)
         append(texture);    // 164..166
-    // The furnace front is no longer here: it is resolved through the normal
-    // name-driven path as a DirectionalCube slot (RN-4a follow-up), so the fixed
-    // section is two layers shorter and moon/sun/orb shifted down accordingly.
     for (const auto& tile : moonPhaseTiles)
         append(tile);            // 167..174
     append(sunFrames.front());   // 175
     append(experienceOrb);       // 176
 
-    // ---- Dynamic block textures, name-driven from the block registry ----
-    // Baked composites register by name so every block that reuses them finds
-    // the same layer (grass_block_side, dirt, the tinted leaves, ...).
+    // ---- 动态方块纹理，按方块注册表的名字解析 ----
+    // 合成出来的图层按名字登记，复用它们的方块因此都指向同一层
+    // 比如 grass_block_side、dirt 和已着色的叶片
     if (layers.size() != kFirstBlockTextureLayer) {
         throw std::runtime_error("Fixed texture section does not match kFirstBlockTextureLayer");
     }
     std::unordered_map<std::string, float> layerByName;
-    // RN-4b: animated non-fluid block textures, accumulated as `assign` bakes each
-    // multi-frame strip; forwarded to output.blockAnimations below.
+    // 非流体动画方块纹理，`assign` 每烘一条多帧动画条就累积一项
+    // 最后统一转给 output.blockAnimations
     std::vector<BlockTextureAnimation> blockAnimations;
     const auto assign = [&](const char* name) -> float {
         const auto existing = layerByName.find(name);
         if (existing != layerByName.end()) {
             return existing->second;
         }
-        // The crop stages are a contiguous run from their stage-0 layer, so the
-        // mesher can read stage0 + age.
+        // 作物各生长阶段从第 0 阶层号起连续排列，网格化器直接用 stage0 + age 取层
         const std::string_view view{name};
         auto stageFor = [&](std::string_view prefix, int count) -> float {
             if (!view.starts_with(prefix)) {
@@ -400,7 +387,7 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
             layerByName.emplace(name, potato);
             return potato;
         }
-        // Farmland's moist variant sits right after its dry face.
+        // 耕地的湿润变体紧跟在干燥面之后
         if (view == "farmland") {
             const float first = static_cast<float>(layers.size());
             for (const char* file : {"farmland", "farmland_moist"}) {
@@ -411,10 +398,8 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         }
         const auto image = blockTex(name);
         if (image.width > 0 && image.height > image.width && image.height % image.width == 0) {
-            // RN-4b: a multi-frame block strip (magma, prismarine, …). Bake every
-            // frame contiguously and record the animation so the shader can cycle
-            // it, instead of the old "bake frame 0 only" cap. The .mcmeta frame
-            // order (if any) is honoured, matching the fluids.
+            // 多帧的方块动画条（岩浆块、海晶石等）：把每一帧连续烘入并记下动画信息，着色器据此轮播
+            // 若有 .mcmeta 帧顺序则遵守，与流体一致
             auto frames = animatedSquareFrames(image, top.width);
             const auto animation = assets::TextureAnimation::load(
                 resources, assets::textures("block/" + std::string{name} + ".png"));
@@ -445,7 +430,7 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         layerByName.emplace(name, index);
         return index;
     };
-    // The baked composites register first so reuses share their layer.
+    // 合成图层先登记，复用方能共享同一层
     layerByName.emplace("grass_block_top", static_cast<float>(layers.size()));
     layers.push_back(top);
     layerByName.emplace("grass_block_side", static_cast<float>(layers.size()));
@@ -463,13 +448,11 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         layers.push_back(biomeLeafTextures[leaf]);
     }
 
-    // ---- Per-biome grass/foliage colours (1.16.1 BiomeColors) ----
-    // The vanilla grass and foliage colour maps are 256x256 lookups indexed by
-    // temperature and rainfall. Each biome's grass and foliage colour comes
-    // from its own map; the mesher blends them bilinearly per block (the way
-    // 1.16.1's BlockView.getColor does) so a biome boundary reads as a smooth
-    // colour gradient instead of a hard switch. Swamp and dark forest carry
-    // their 1.16.1 overrides below.
+    // ---- 逐群系的草/叶配色（对应 vanilla BiomeColors）----
+    // vanilla 的草与叶配色图是按温度和湿度索引的 256x256 查找表，每个群系各取各的
+    // 网格化器逐方块做双线性混合，与 BlockGetter 的取色一致
+    // 群系边界因此是平滑的颜色渐变而不是硬切换
+    // 沼泽与黑森林有各自的特例，见下
     const auto loadColormap = [&](const char* name) {
         return assets::ImageData::loadRgba(resources, assets::textures(std::string{"colormap/"} + name));
     };
@@ -496,12 +479,9 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
             static_cast<float>(color & 0xFFU) / 255.0F,
         };
     };
-    // The terrain grass family and oak-family leaves render the UNTINTED
-    // textures and take their colour from the fragment shader's biome-colour
-    // lookup (a linear-filtered texture sample, so the biome boundary blends as
-    // a smooth per-pixel gradient). The grass SIDE keeps its baked per-biome
-    // layer so the dirt under a cliff stays dirt, and spruce/birch leaves keep
-    // their fixed 1.16.1 tones.
+    // 地形上的草方块家族与橡木系树叶渲染的是**未着色**纹理
+    // 颜色来自片元着色器的群系配色查找，线性过滤采样让边界成为逐像素的平滑渐变
+    // 草方块的**侧面**保留烘好的逐群系层，好让崖壁下的泥土仍是泥土；云杉/白桦树叶保留各自的固定色调
     const float terrainGrassTop = static_cast<float>(layers.size());
     layers.push_back(grassTopRaw);
     layerByName.emplace("grass_block_top:terrain", terrainGrassTop);
@@ -540,9 +520,8 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         layerByName.emplace(std::string("leaves:terrain:") + leafNames[leaf], layer);
         world::gen::setTerrainLeafLayer(leafBlocks[leaf], layer);
     }
-    // Baked per-biome grass family: the top/side/plant are tinted with the
-    // biome's grass colour at atlas build time, so the rendered colour never
-    // depends on per-vertex data reaching the fragment shader.
+    // 烘好的逐群系草方块家族，顶面、侧面和植株在建图集时就按该群系的草色着色
+    // 渲染颜色因此不依赖顶点数据传到片元着色器
     const auto buildBiomeGrass = [&](std::string_view suffix, std::uint32_t color) {
         auto biomeTop = grassTopRaw;
         auto biomeSide = grassSideBase;
@@ -581,7 +560,7 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         layerByName.emplace("grass:" + prefix, plantLayer);
         return world::BlockTextureLayers{topLayer, sideLayer, plantLayer};
     };
-    // Baked per-biome foliage layer for the oak family.
+    // 橡木系的逐群系叶片层
     const auto buildLeafLayer = [&](std::string_view suffix, const assets::ImageData& texture,
                                     std::uint32_t color) {
         auto pixels = texture;
@@ -604,26 +583,25 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         std::uint32_t grassColor =
             colormapColor(grassColormap, definition.temperature, definition.downfall);
         if (biome == world::gen::Biome::DarkForest) {
-            // DarkForestBiome#getGrassColorAt darkens the colormap colour.
+            // 黑森林把配色图取到的颜色再压暗
             grassColor = ((grassColor & 0xFEFEFEU) + 0x28340AU) >> 1U;
         }
         std::uint32_t foliageColor =
             colormapColor(foliageColormap, definition.temperature, definition.downfall);
         if (biome == world::gen::Biome::Swamp) {
-            // SwampBiome#getFoliageColor is the fixed 0x6A7039.
+            // 沼泽的叶色是固定的 0x6A7039
             foliageColor = 0x6A7039U;
         }
         if (biome == world::gen::Biome::Swamp) {
-            // SwampBiome#getGrassColorAt picks 0x6A7039 or 0x4C763C by noise;
-            // the mesher chooses the per-block tone from FOLIAGE_NOISE.
+            // 沼泽的草色按噪声在 0x6A7039 与 0x4C763C 之间二选一
+            // 逐方块的取值由网格化器从植被噪声决定
             world::gen::setBiomeGrassLayers(biome, buildBiomeGrass("swamp", 0x6A7039U));
             world::gen::setSwampDarkGrassLayers(buildBiomeGrass("swamp_dark", 0x4C763CU));
         } else {
             world::gen::setBiomeGrassLayers(biome,
                                             buildBiomeGrass(definition.identifier, grassColor));
         }
-        // Baked per-biome oak-family foliage; spruce/birch keep the fixed terrain
-        // layers built above.
+        // 烘好的逐群系橡木系叶片；云杉/白桦沿用上面建好的固定地形层
         const std::string prefix{definition.identifier};
         world::gen::setBiomeFoliageLayer(biome, world::Block::OakLeaves,
                                          buildLeafLayer(prefix + ":oak", leavesRaw, foliageColor));
@@ -656,15 +634,14 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
             continue;
         }
         if (block == world::Block::Chest) {
-            // The dropped chest item draws the baked chest-item faces.
+            // 掉落的箱子物品画的是烘好的箱子物品面
             world::setBlockTextureLayers(block, {static_cast<float>(kChestItemTopLayer),
                                                  static_cast<float>(kChestItemSideLayer),
                                                  static_cast<float>(kChestItemSideLayer)});
             continue;
         }
         if (definition.model == world::BlockModel::DirectionalCube) {
-            // RN-4a: resolve the six named faces. backActive falls back to back
-            // when a block has no powered variant.
+            // 解析六个具名面；方块没有通电变体时，backActive 回落到 back
             world::DirectionalTextureLayers dl;
             dl.front = assign(definition.directional.front);
             dl.frontActive = definition.directional.frontActive
@@ -678,16 +655,15 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
             dl.bottom = assign(definition.directional.bottom);
             dl.side = assign(definition.directional.side);
             world::setBlockDirectionalLayers(block, dl);
-            // The dropped-item / HUD cube still reads top/side/bottom; show the
-            // front sprite on the visible side face so the item reads as an observer.
+            // 掉落物与 HUD 的立方体仍只读顶、侧、底三个槽
+            // 因此把正面贴图放到可见的侧面上，物品才认得出是侦测器
             world::setBlockTextureLayers(block, {dl.top, dl.front, dl.bottom});
             continue;
         }
         if (definition.model == world::BlockModel::ElementModel ||
             definition.model == world::BlockModel::RedstoneWire) {
-            // RN-4a-2/RN-6: resolve the per-block texture slots the mesher's element
-            // (or wire) transcription reads. The block keeps its `.texture()` too
-            // (resolved below), which the flat HUD/item icon and dropped item use.
+            // 解析网格化器在逐元素（或红石线）转写时要读的逐方块纹理槽
+            // 方块自身的 `.texture()` 仍保留（在下面解析），供扁平的 HUD/物品图标和掉落物使用
             std::array<float, world::kMaxModelTextureSlots> slots{};
             for (std::size_t i = 0; i < slots.size(); ++i) {
                 slots[i] = definition.modelTextures[i] ? assign(definition.modelTextures[i]) : 0.0F;
@@ -701,8 +677,7 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         world::setBlockTextureLayers(block, resolved);
     }
 
-    // The unlit redstone-torch sprite: a second texture the mesher swaps in for
-    // the LIT=false state (the block's own side texture is the lit sprite).
+    // 熄灭的红石火把贴图：网格化器在 LIT=false 时换上的第二张纹理（方块自己的侧面纹理是点亮态那张）
     world::setRedstoneTorchOffLayer(assign("redstone_torch_off"));
 
     TextureArrayPixels output;
@@ -714,21 +689,18 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         output.rgba.insert(output.rgba.end(), layer.rgba.begin(), layer.rgba.end());
     }
     const std::uint32_t baseLayerCount = static_cast<std::uint32_t>(layers.size());
-    // Item icons: one appended layer per registered item, in registry order.
-    // Each resolves through the provider so a pack overrides item art per file.
+    // 物品图标按注册顺序逐个追加一层，各自经 provider 解析
+    // 资源包因此能逐文件覆盖物品美术
     std::uint32_t itemIndex = 0U;
     const auto appendItemIcon = [&](const gameplay::Item* item) {
         assets::ImageData icon;
-        // 26.1 ships one final sprite per spawn egg just like every other item;
-        // the legacy shared shell/overlay tint composite no longer exists.
+        // 26.1 的每个刷怪蛋和其它物品一样只有一张成品贴图，不再是共享外壳加叠加层着色的合成方式
         icon = assets::ImageData::loadRgbaOrMissing(resources, assets::textures("item/" + std::string{item->textureName} + ".png"),
             top.width, top.height);
-        // Leather armour is a two-layer sprite (DyeableLeatherItem): a greyscale
-        // base tinted by the leather colour — default 0xA06540 — plus a
-        // full-colour `_overlay` (buckles/trim) drawn untinted on top. Without
-        // the tint the base reads white like iron; without the overlay the trim
-        // (the differently coloured parts) is missing. Only leather armour is
-        // dyeable, so only it takes this path.
+        // 皮革护甲是两层贴图，灰度底图按皮革颜色着色，默认色为 0xA06540
+        // 上面再叠一张不着色的全彩 `_overlay`，画的是扣件与镶边
+        // 少了着色，底图会白得像铁；少了叠加层，镶边就没了
+        // 只有皮革护甲可染色，所以只有它走这条路径
         if (item->armorMaterial == gameplay::ArmorMaterialId::Leather) {
             constexpr std::uint32_t kDefaultLeather = 0xA06540U;
             const auto tintChannel = [](std::uint8_t value, std::uint32_t channel) {
@@ -747,8 +719,8 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
                                                          icon.height);
                 if (overlay.width == icon.width && overlay.height == icon.height &&
                     overlay.rgba.size() == icon.rgba.size()) {
-                    // Straight source-over: the overlay's trim sits on the tinted
-                    // base, its own alpha choosing where it shows.
+                    // 普通的 source-over 合成，叠加层的镶边压在已着色的底图上
+                    // 由它自己的 alpha 决定哪里显现
                     for (std::size_t p = 0; p + 3U < icon.rgba.size(); p += 4U) {
                         const std::uint32_t a = overlay.rgba[p + 3U];
                         if (a == 0U) continue;
@@ -773,8 +745,7 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         appendItemIcon(item);
     for (const gameplay::Item* item : gameplay::kSpawnEggItems)
         appendItemIcon(item);
-    // Lava's animation frames live in the fixed section (64..99); nothing trails
-    // the item icons, so the whole atlas is exactly the layers above.
+    // 岩浆的动画帧在固定区（64..99）；物品图标之后再无内容，整个图集就是上面这些层
     return output;
 }
 

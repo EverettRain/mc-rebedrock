@@ -129,10 +129,9 @@
 namespace mc::render {
 namespace {
 
-// Which volume bus a creature's sounds route through, derived from its
-// SpawnGroup: monsters use Hostile, bats (Ambient category) use the Ambient
-// bus, and every other animal uses Neutral — the same split vanilla applies in
-// MobEntity#getSoundCategory (HOSTILE vs NEUTRAL, with bats on AMBIENT).
+// 生物音效走哪条音量总线由它的刷怪分类决定
+// 怪物走 Hostile，Ambient 分类的蝙蝠走 Ambient，其余动物走 Neutral
+// 这对应 26.1 里 Entity#getSoundSource 默认 NEUTRAL、Monster 覆写为 HOSTILE 的划分
 [[nodiscard]] audio::SoundCategory
 creatureSoundCategory(const gameplay::entities::EntityType& type) {
     switch (type.category()) {
@@ -153,61 +152,19 @@ creatureSoundCategory(const gameplay::entities::EntityType& type) {
         return true;
     }
 #if defined(__APPLE__)
-    // macOS 27 + MoltenVK 1.4.2 can lose the Apple GPU after seconds or minutes
-    // of sustained occlusion-query traffic in either Boolean or precise mode.
-    // Vulkan validation and Metal API Validation remain clean; synchronous
-    // MoltenVK queue submission masks it, and disabling only the active queries
-    // eliminates it. Keep the path opt-in for controlled driver regression
-    // tests, never for players.
+    // macOS 27 加 MoltenVK 1.4.2 在持续的遮挡查询流量下会丢掉 Apple GPU
+    // Boolean 和精确模式都一样，几秒到几分钟内就会发生
+    // Vulkan 校验层和 Metal API 校验都是干净的；改成同步提交能掩盖，只关掉活动查询则能彻底消除
+    // 这条路径保持 opt-in，只给受控的驱动回归测试用，不给玩家
     return std::getenv("MC_REBEDROCK_FORCE_OCCLUSION") == nullptr;
 #else
     return false;
 #endif
 }
 
-// kFramesInFlight now lives in render/vulkan/WorldRenderTypes.hpp (shared).
-// Occlusion queries gate a section's opaque draw behind the depth the closer
-// terrain wrote earlier in the same frame. Each in-flight frame owns a
-// separate pool; results are read back after that frame's fence. macOS disables
-// active queries by default below; the split pools remain the safer layout for
-// native Vulkan and explicit MoltenVK driver regression runs.
-// kOcclusionQueriesPerFrame, kOcclusionQueryPoolSize, kOcclusionHysteresisFrames
-// now live in render/vulkan/WorldRenderTypes.hpp (shared).
-
-// Two-phase world entry: a world opens with a small chunk area around the gameSession.player()
-// (vanilla enters with a small initial area and streams the view distance in
-// during play), so a large render distance does not block the load screen on the
-// whole (2·radius+1)² area before the gameSession.player() can move.
+// 打开世界时先只加载出生点附近一小片区块，vanilla 同样是先进小片再边玩边流送视距
+// 这样大视距不会让加载画面卡在整个 (2·radius+1)² 片区上，玩家迟迟不能动
 constexpr int kSpawnChunkRadius = 4;
-// kVignetteGuiLayer, kScreenDimGuiLayer and kPanoramaFaces now live in
-// render/vulkan/HudTypes.hpp (shared with HudRenderer).
-
-// Streaming one batch of generated chunks can hand the render thread hundreds
-// of section meshes at once (each new chunk drags up to eight re-meshed
-// neighbours with it); uploading all of them the same frame spikes the GPU, so
-// the per-frame budget is spread adaptively (see render/StreamingBudget.hpp):
-// the budget member is raised when the GPU is idle and lowered when stressed.
-// The byte cap still bounds the absolute work per frame, and gameplay edits
-// (place/break, fluid/sand cascades) jump ahead of streaming on a separate,
-// budget-exempt bucket so a placed or broken block appears the same frame
-// instead of waiting behind a streaming backlog; that bucket is still capped
-// per frame so a large fluid cascade cannot stall the frame.
-// kMaxUploadBytesPerFrame, kMaxPrioritySectionUploadsPerFrame now in WorldRenderTypes.hpp.
-// Ceiling on the render thread's queued-but-not-yet-uploaded section meshes.
-// The worker generates far faster than the per-frame upload budget drains, and
-// an unbounded queue lets CPU-side mesh data pile up (peaks >4500 sections were
-// measured). The oldest low-priority entry is evicted beyond this.
-// kMaxPendingSectionUpdates now in WorldRenderTypes.hpp.
-// kStreamBufferClassSizes now lives in render/vulkan/WorldRenderTypes.hpp
-// (shared): stream-mesh buffers are pooled by power-of-two size class and
-// reused across section uploads instead of created/destroyed per mesh. MoltenVK
-// does not hand freed MTLBuffer memory back to the OS, so reusing a buffer beats
-// freeing it; the pool pins the graphics high-water mark at the working set.
-// Above this resident total the pool hands surplus free buffers back to the
-// driver instead of hoarding them.
-// kMaxStreamBufferPoolBytes now in WorldRenderTypes.hpp.
-// Vertex and index buffers share one pool (a buffer may carry both usage bits).
-// kStreamBufferDeviceUsage now in WorldRenderTypes.hpp.
 
 struct PersistentEditPosition final {
     int x;
@@ -226,19 +183,7 @@ struct PersistentEditPositionHash final {
     }
 };
 
-// The windowed resolutions the Resolution button cycles through. Vanilla 1.16.1
-// lists the monitor's fullscreen display modes; this app renders into a
-// resizable window, so the list is a generous spread of common window sizes
-// (from 4:3 laptops up to 16:9 desktop panels). The window itself may still be
-// resized or maximized to any size — the list only drives the menu cycle.
-
-// MenuButton, ContainerScreen and kCreativeTabCount now live in
-// render/vulkan/HudTypes.hpp (shared with HudRenderer).
-
-// Camera view mode, cycled with F5 like Java Edition: first person, third person
-// behind the gameSession.player(), then third person in front looking back.
-// CameraPerspective now in WorldRenderTypes.hpp.
-
+// F5 循环视角：第一人称 → 玩家背后第三人称 → 玩家前方回看第三人称
 [[nodiscard]] constexpr CameraPerspective nextPerspective(CameraPerspective perspective) {
     switch (perspective) {
     case CameraPerspective::FirstPerson:
@@ -251,9 +196,8 @@ struct PersistentEditPositionHash final {
     return CameraPerspective::FirstPerson;
 }
 
-// RN-4b: the terrain/entity shaders' fixed cap on how many animated non-fluid
-// block textures they cycle in one frame. The current roster uses one (magma);
-// 16 leaves ample room for prismarine/sea lantern/etc. as they are added.
+// 地形/实体着色器一帧内能轮播的非流体动画方块纹理数上限
+// 当前只用到一个（岩浆块），16 给后续的海晶石、海晶灯等留足余量
 inline constexpr std::size_t kMaxBlockAnimations = 16;
 
 struct CameraUniform final {
@@ -267,43 +211,31 @@ struct CameraUniform final {
     alignas(16) std::array<glm::vec4, 8> pointLights{};
     alignas(16) std::array<glm::vec4, 8> lightColors{};
     alignas(16) glm::vec4 lightingSettings{0.0F};
-    // x = the sun's atlas layer, y = the first moon-phase atlas layer. The
-    // fixed special section's layout is derived at startup, so the sky shader
-    // reads the real layers from the uniform instead of hardcoding stale
-    // numbers that drift when the atlas changes.
+    // x = 太阳所在图集层，y = 月相的首层
+    // 特殊区的布局在启动时算出，天空着色器从 uniform 读真实层号而不是写死数字
+    // 图集一改，写死的数字就过期了
     alignas(16) glm::vec4 celestialLayers{0.0F};
-    // x/y = frame-interpolated rain/thunder gradients, z = the vanilla visual
-    // sky-light multiplier, w = celestial visibility (1 - rain). These are
-    // presentation-only: the world and mesh light levels remain untouched.
+    // x/y = 逐帧插值后的雨/雷强度，z = vanilla 的视觉天光系数，w = 天体可见度 (1 - 雨)
+    // 纯表现量：世界与网格里的光照等级不受影响
     alignas(16) glm::vec4 weatherSettings{0.0F};
-    // Animated-fluid atlas contract. Keeping bases/counts in the CPU layout
-    // source of truth prevents GLSL literals from drifting after an atlas edit.
+    // 流体动画的图集契约
+    // 起始层与帧数由 CPU 侧布局这一唯一事实源提供，避免图集改动后 GLSL 里的字面量悄悄失配
     alignas(16) glm::vec4 fluidAnimationLayers{0.0F};
     alignas(16) glm::vec4 fluidAnimationFrameCounts{0.0F};
     alignas(16) glm::vec4 fluidAnimationFrameTimes{1.0F};
-    // x = simulation animation tick including the render interpolation fraction.
+    // x = 含渲染插值小数部分的模拟动画 tick
     alignas(16) glm::vec4 fluidAnimationSettings{0.0F};
-    // The sun-space view-projection the shadow pre-pass writes the depth map
-    // with; the terrain shader projects each fragment into it to sample the map.
-    // One frame behind the pre-pass's own matrix, which is the standard shadow
-    // map lag.
+    // 阴影预通道写深度图所用的太阳空间视图投影矩阵；地形着色器把每个片元投进去采样
+    // 它比预通道自己的矩阵晚一帧，这是阴影贴图的常规延迟
     alignas(16) glm::mat4 lightViewProj{1.0F};
-    // RN-4b: animated non-fluid block textures the terrain/entity shaders cycle.
-    // blockAnimationSettings.x = the active count; each blockAnimations[i] =
-    // (base atlas layer, frame count, frame time, unused). Appended after
-    // lightViewProj so every existing UBO offset — and the shaders that read only
-    // earlier fields (shadow/cutout) — is untouched.
+    // 地形/实体着色器轮播的非流体动画方块纹理
+    // blockAnimationSettings.x 是生效条数
+    // 每个 blockAnimations[i] 依次是首层、帧数、每帧 tick 和一个未用分量
+    // 追加在 lightViewProj 之后，已有的 UBO 偏移因此不受影响
+    // 只读取更早字段的阴影与 cutout 着色器同样不受影响
     alignas(16) glm::vec4 blockAnimationSettings{0.0F};
     alignas(16) std::array<glm::vec4, kMaxBlockAnimations> blockAnimations{};
 };
-
-// HudPush, PanoramaPush and ItemPush now live in render/vulkan/HudTypes.hpp
-// (shared with HudRenderer).
-
-// ShadowPush, RainMode, rainBaseCount, kParticleRainBaseCount, GpuMeshLayer,
-// GpuMesh, BufferCopyJob, FrameContext, StreamBufferPool, OcclusionState and
-// OcclusionQueryPushConstants now live in render/vulkan/WorldRenderTypes.hpp
-// (shared with the WorldRenderer extraction).
 
 [[nodiscard]] std::vector<std::uint32_t> readSpirv(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::ate | std::ios::binary);
@@ -333,23 +265,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         : shaderRoot(std::move(shaderDirectory)),
           resourceProvider(&provider), languageLoader(provider),
           optionsPath(std::move(initialOptionsPath)),
-          // PACK: `provider` is the resource stack Application built over
-          // `bundled`, and it doubles as the integrated runtime's data-pack base.
-          // A pack provider maps a query to `assets/` or `data/` by its PackType,
-          // so this one provider serves both halves: an assets-only resource pack
-          // contributes nothing to the data half (it falls through to the built-in
-          // floor), but a *combined* pack — one carrying both `assets/` and
-          // `data/`, e.g. a user's own extracted Minecraft — has its `data/`
-          // (structures, loot, recipes, tags) load through here too. That is
-          // deliberate: single-player users drop one pack into resourcepacks/ and
-          // get textures + server data together, no second import. Each save's
-          // <save>/datapacks/ still layers on top (per-save override). This is the
-          // integrated path only — the dedicated server takes a pure
-          // DirectoryResourceProvider base instead (DedicatedServer), so a client
-          // resource pack can never inject server data into a server. NB: this
-          // supersedes the old "resource half only" split (PACK #17) for
-          // single-player — do not hard-split the integrated data base away from
-          // the resource stack, or combined packs stop working.
+          // `provider` 是 Application 在 `bundled` 之上叠好的资源栈
+          // 它同时充当集成式运行时的数据包底座
+          // provider 按 PackType 把查询映射到 `assets/` 或 `data/`，一个 provider 同时服务两半
+          // 纯 assets 的资源包对数据半边毫无贡献，那一半落到内置默认值
+          // 而同时带 `assets/` 与 `data/` 的**合并包**，其结构、战利品、配方、标签也从这里加载
+          // 这是有意为之，单人玩家只需往 resourcepacks/ 放一个包就同时拿到纹理和服务端数据
+          // 各存档的 <save>/datapacks/ 仍叠在其上（逐存档覆盖）
+          // 这条路径仅限集成式运行，专用服务器改用纯 DirectoryResourceProvider 作底座
+          // 客户端资源包因此绝无可能把服务端数据注入服务器
+          // **不要**把集成式的数据底座与资源栈硬拆开，否则合并包就失效了
           runtime(*this, streamer, std::move(saveRoot), &provider),
           saveRepository(runtime.saveRepository()),
           chunkStreamer(runtime.chunkStreamer()),
@@ -371,9 +296,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                      : (initialTestScene.has_value() ? glm::vec3{8.5F, 64.5F, 8.5F}
                                                      : glm::vec3{8.0F, 61.0F, 8.0F}),
                  65.0F) {
-        // Push the persisted audio settings into the engine: the per-category
-        // sub-volumes (Master already went in through the constructor) and the
-        // Directional Audio toggle.
+        // 把持久化的音频设置推给引擎：各分类子音量（主音量已在构造时传入）和方向性音频开关
         audioSystem.setCategoryVolumes(options.soundCategoryVolumes);
         audioSystem.setDirectionalAudio(options.directionalAudio);
         viewDistanceChunks = chunkStreamer.loadRadius();
@@ -390,25 +313,20 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                          ? 0U
                                          : static_cast<std::size_t>(std::distance(
                                                ui::kDisplayResolutions.begin(), resolution));
-        // The command tree owns every command. Registering through it gives each
-        // command typed arguments, argument validation and tab completion — the
-        // tables behind the arguments (items, blocks, game modes, rules) feed
-        // completion and validation from one source of truth, so adding an entry
-        // to any table makes it appear in the command for free.
+        // 所有命令都归命令树所有
+        // 经它注册，每条命令自带类型化参数、参数校验和补全
+        // 物品、方块、游戏模式、规则这些参数背后的表以同一份来源同时供给补全与校验
+        // 往任何一张表加一项，命令里就自动出现
         registerGameCommands();
 
-        // Let the held-item and gameSession.player()-preview animators pick up any authored
-        // clips shipped under resources/animation. Both animators keep their
-        // built-in clips if the files are absent, so this is best-effort and
-        // never fatal.
+        // 让手持物与玩家预览的动画器加载 resources/animation 下作者提供的剪辑
+        // 文件缺失时两者都沿用内置剪辑，因此这里是尽力而为，绝不致命
         try {
             const auto animationRoot = resourceProvider->resourceRoot() / "animation";
             heldItemAnimation.load(animationRoot);
             playerModelAnimator.load(animationRoot);
-            // The gameSession.inventory()/creative preview turns its whole body toward the
-            // cursor (the look clip rotates the body at half the head's yaw).
-            // The world gameSession.player() keeps body-follow off: its body already follows
-            // the look direction through the renderer's separate body-yaw logic.
+            // 背包/创造界面的预览会整个身体朝光标转（看向剪辑让身体以头部偏航的一半跟随）
+            // 世界中的玩家关掉身体跟随：它的身体已由渲染器另一套身体偏航逻辑处理
             playerModelAnimator.setBodyFollowsLook(true);
             worldPlayerAnimator.load(animationRoot);
         } catch (const std::exception& exception) {
@@ -418,16 +336,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void registerGameCommands() {
-        // Species registration is NOT done here: Application's
-        // PerSaveDataStack::rebuildBuiltinOnly already ran it before this
-        // renderer was constructed (and each per-save data-pack rebuild runs it
-        // again), so entity-target commands resolve from the very first world.
+        // 物种注册**不在**这里做
+        // Application 的 PerSaveDataStack::rebuildBuiltinOnly 在本渲染器构造之前就已执行
+        // 每次逐存档数据包重建也会再执行一次，以实体为目标的命令从第一个世界起就能解析
         //
-        // /tp is registered here rather than in the runtime because its rotation
-        // sets the camera (the player's look is camera-owned until N2's player
-        // state), which only the renderer has. The authoritative commands
-        // (gamemode, time, give, gamerule, kill, spawnpoint, weather) live on the
-        // runtime's dispatcher so a headless server runs them too.
+        // /tp 注册在这里而不是运行时侧，因为它的旋转要设置相机，而相机只有渲染器有
+        // gamemode、time、give、gamerule、kill、spawnpoint、weather 都是权威命令
+        // 它们挂在运行时的派发器上
+        // headless 服务器才能同样执行它们
         auto& commandDispatcher = runtime.commandDispatcher();
         commandDispatcher.literal("tp")
             .argument("destination", gameplay::command::kTeleportDestinationArgument)
@@ -443,13 +359,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     ~Impl() { shutdown(); }
 
-    // SimulationHost: the render-side reactions the game session's tick drives.
-    // submitWorldEdit and previewBlockEdit are the Impl's own methods, marked
-    // override at their definitions; the remaining host methods are here.
-    // PX-6 Bug3: after each sound plays, feed its accessibility caption (if any)
-    // to the subtitle overlay when subtitles are enabled. audioSystem.lastSubtitle
-    // is the event just played; showSoundSubtitle no-ops on an empty caption or a
-    // disabled option, so sounds without a subtitle simply do not show one.
+    // SimulationHost：游戏会话的 tick 所驱动的渲染侧反应
+    // submitWorldEdit 与 previewBlockEdit 是 Impl 自己的方法，在各自定义处标了 override
+    // 其余宿主方法在这里
+    // 每次播放音效后，若开启了字幕就把它的无障碍字幕（如果有）送进字幕叠加层
+    // 字幕为空或选项关闭时该调用是空操作，没有字幕的音效自然不显示
     void emitLastSubtitle() { showSoundSubtitle(audioSystem.lastSubtitle()); }
 
     void playBlockBreak(world::Block block, glm::vec3 position) override {
@@ -505,8 +419,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void spawnBlockBreakParticles(glm::ivec3 position, world::Block block) override {
         particleSystem.spawnBlockBreak(position, block);
     }
-    // The interaction side effects the gameplay controller drives: these are the
-    // host's render-side half of the moved updateBlockInteraction.
+    // 玩法控制器驱动的交互副作用：这些是宿主在渲染侧承担的那一半
     void playBlockHit(world::Block block, glm::vec3 position) override {
         audioSystem.playBlockHit(block, position);
         emitLastSubtitle();
@@ -543,10 +456,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         particleSystem.spawnWaterSplash(position);
     }
     void onOpenContainer(ContainerScreen screen, std::optional<glm::ivec3> position) override {
-        // The simulation has already opened and bound the authoritative menu.
-        // This callback runs from the main-thread event drain and only raises
-        // the presentation; it must never write gameplay state or call GLFW
-        // from the simulation thread.
+        // 权威的界面已由模拟侧打开并绑定
+        // 本回调在主线程的事件排空中执行，只负责把表现层立起来
+        // 它绝不能写玩法状态，也绝不能从模拟线程调用 GLFW
         static_cast<void>(screen);
         static_cast<void>(position);
         setInventoryOpenLocked(true);
@@ -554,8 +466,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void onPlayerDied() override {
         std::cout << "Player died\n";
         if (inventoryOpen) {
-            // Gameplay already closed/stowed the authoritative menu in die().
-            // This callback owns presentation only.
+            // 玩法侧在死亡处理里已经关闭并收起权威界面，本回调只管表现层
             inventoryOpen = false;
             creativeScrollbarDragging = false;
             firstMouseSample = true;
@@ -567,8 +478,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         simulationActive.store(false, std::memory_order_release);
         paused = true;
         menuSystem.pageStack.reset(ui::PageId::Death);
-        // D0: the player stops via the zeroed MovementInput processInput sends
-        // while a screen is up; here we only drop the client-side edges.
+        // 有界面打开时，processInput 会发一份清零的 MovementInput 让玩家停下
+        // 这里只清掉客户端侧的边沿
         clearPendingInputEdges();
         releaseInteractionButtons();
         dropRequested = false;
@@ -578,9 +489,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
     void onFurnaceStateChanged() override {}
     void onEatingStarted() override {
-        // The meal lives on the item-use timeline now; beginEating already called
-        // playerActions().startUsing, and this frame's bridge samples it. The
-        // generic.eat sound is the chew loop GameSession::tickEating drives.
+        // 进食挂在物品使用时间线上：beginEating 已经调用过 startUsing，本帧的桥接会采样它
+        // 咀嚼音效由 GameSession::tickEating 的循环驱动
     }
     void onEatingCancelled() override {}
 
@@ -609,10 +519,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             static_cast<Impl*>(glfwGetWindowUserPointer(callbackWindow))
                 ->noteWindowMaximizeChanged(maximized == GLFW_TRUE);
         });
-        // PX-1/#5: every window event asks screenMode() who owns the input, then
-        // hands the event to that mode's handler. The modal precedence lives in
-        // input/ScreenMode.hpp — once, as a pure function — instead of being
-        // re-derived by each callback's own chain of flag tests.
+        // 每个窗口事件先问 screenMode() 谁拥有输入，再交给该模式的处理函数
+        // 模态优先级只在 input/ScreenMode.hpp 里作为纯函数写一次
+        // 它不由各回调各自的标志判断链重新推导
         glfwSetKeyCallback(window, [](GLFWwindow* callbackWindow, int key, int, int action, int) {
             auto* renderer = static_cast<Impl*>(glfwGetWindowUserPointer(callbackWindow));
             switch (renderer->screenMode()) {
@@ -641,8 +550,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             case input::ScreenMode::Chat:
                 renderer->appendChatCodepoint(codepoint);
                 return;
-            // Nothing else takes typed text. A key-capture row is waiting for a
-            // KEY, not a character.
+            // 其余模式都不接受输入文本
+            // 正在捕获按键的那一行等的是**按键**，不是字符
             case input::ScreenMode::KeyCapture:
             case input::ScreenMode::Inventory:
             case input::ScreenMode::Menu:
@@ -657,9 +566,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
             const int direction = yOffset > 0.0 ? -1 : 1;
             const auto mode = renderer->screenMode();
-            // The wheel is pointer input, so a menu page keeps its scrolling lists
-            // even while one of its rows is capturing a key or its name field has
-            // the keyboard (isMenuScreen covers all three).
+            // 滚轮属于指针输入，菜单页即便某行正在捕获按键、或名称输入框占着键盘
+            // 它的滚动列表依然可用，isMenuScreen 涵盖这三种情况
             if (input::isMenuScreen(mode)) {
                 renderer->scrollMenuList(direction);
                 return;
@@ -693,8 +601,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 case input::ScreenMode::Play:
                     renderer->handlePlayMouseButton(button, action);
                     return;
-                // The chat line swallows clicks: 1.16.1's ChatScreen has no
-                // clickable content this build renders.
+                // 聊天栏吞掉点击：本 build 渲染的聊天界面没有可点击内容
                 case input::ScreenMode::Chat:
                 default:
                     return;
@@ -725,8 +632,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         });
 
         vulkanDevice_.initialize(window);
-        // Copy the handles out so the renderer's existing references keep working;
-        // vulkanDevice_ stays the sole owner and destroyer.
+        // 把句柄复制出来，渲染器里已有的引用照常可用；所有权与销毁责任仍在 vulkanDevice_
         instance = vulkanDevice_.instance;
         debugMessenger = vulkanDevice_.debugMessenger;
         surface = vulkanDevice_.surface;
@@ -755,9 +661,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         loadLanguage();
         textures_.createFontTexture(fontMetrics, textFont, requiredUnicodePages(),
                                     options.forceUnicodeFont);
-        // Bind the event host once, so world edits raised outside the tick loop
-        // (the interaction path's mutation sink) reach the render/persistence
-        // pipeline too. tick() rebinds the same host harmlessly.
+        // 绑定一次事件宿主，让 tick 循环之外产生的世界编辑也能进入渲染与持久化流水线
+        // 这类编辑来自交互路径的变更汇
+        // tick() 会重复绑定同一个宿主，无副作用
         gameSession.setEventHost(*this);
         textures_.createGuiTexture();
         textures_.createPanoramaTexture();
@@ -774,10 +680,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         refreshSaveList();
         if (testScene.has_value())
             initializeTestScene();
-        // MC_REBEDROCK_RAIN_MODE=texture|particles|async selects the rain draw
-        // path; MC_REBEDROCK_RAIN_COUNT overrides the drop target count.
-        // The options menu is the canonical control (实验性内容 submenu); the
-        // env vars remain dev/perf-harness overrides for smoke runs.
+        // MC_REBEDROCK_RAIN_MODE 取 texture、particles 或 async，选择降雨绘制路径
+        // MC_REBEDROCK_RAIN_COUNT 覆盖雨滴目标数量
+        // 实验性内容子菜单才是权威控制，环境变量只是开发与性能测试时的覆盖手段
         if (const char* modeValue = std::getenv("MC_REBEDROCK_RAIN_MODE")) {
             const std::string_view mode{modeValue};
             if (mode == "texture") {
@@ -793,21 +698,20 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (const char* countValue = std::getenv("MC_REBEDROCK_RAIN_COUNT")) {
             rainCountOverride_ = std::strtoul(countValue, nullptr, 10);
         }
-        // MC_REBEDROCK_PARTICLE_LEVEL=0..3 selects the 粒子效果 level the same
-        // way the rain env vars override the menu; the menu is canonical.
+        // MC_REBEDROCK_PARTICLE_LEVEL 取 0 到 3 选择粒子效果等级，覆盖方式与降雨的环境变量相同
+        // 菜单选项才是权威来源
         if (const char* levelValue = std::getenv("MC_REBEDROCK_PARTICLE_LEVEL")) {
             options.particleLevel =
                 std::clamp(static_cast<int>(std::strtol(levelValue, nullptr, 10)), 0, 3);
         }
         applyParticleLevel();
-        // MC_REBEDROCK_RAIN_COLLISION_CACHE=0 forces the direct per-drop
-        // collision path headlessly; the menu option is the canonical control.
+        // MC_REBEDROCK_RAIN_COLLISION_CACHE=0 可在无界面情况下强制走逐雨滴直接碰撞路径
+        // 菜单选项才是权威控制
         rainSystem.setCollisionCache(options.rainCollisionCache);
         if (const char* cacheValue = std::getenv("MC_REBEDROCK_RAIN_COLLISION_CACHE")) {
             rainSystem.setCollisionCache(std::strcmp(cacheValue, "0") != 0);
         }
-        // The smoke test always exercises the sun-shadow path so the pre-pass
-        // and the terrain sampling are validated on every run.
+        // 烟测始终走一遍太阳阴影路径，使预通道与地形采样每次运行都被验证
         if (std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr) {
             options.sunShadows = true;
         }
@@ -823,26 +727,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // The CPU drop target: texture mode keeps a small population only for
-    // landing splashes/audio, while particle and async render the same full
-    // population. MC_REBEDROCK_RAIN_COUNT overrides all.
+    // CPU 雨滴目标数
+    // texture 模式只留很少的量用于落地水花和音效，particles 与 async 渲染同一份完整数量
+    // MC_REBEDROCK_RAIN_COUNT 覆盖以上全部
     [[nodiscard]] std::size_t rainTargetCount() const {
-        // A thunderstorm drenches the world: the rain volume scales with the
-        // thunder gradient up to double the plain-rain count, and the async
-        // path's capacity is what makes thousands of extra drops free to draw.
+        // 雷暴要把世界浇透：雨量随雷暴强度上浮，最多到普通降雨的两倍
+        // async 路径的容量使得多出来的数千雨滴几乎不增加绘制成本
         const float thunderBoost = 1.0F + clientMirror_.world().thunderGradient;
-        // The user-facing rain bump (plain and thunder rain both 1.5x of the
-        // pre-bump baseline) rides the 粒子效果 level: 中 (1x) yields the 1.5x
-        // budget, 高 doubles it, 疯狂 triples it, 低 halves it.
+        // 面向玩家的雨量提升跟随粒子效果等级，普通雨与雷雨都取基线的 1.5 倍
+        // 中档给 1.5 倍预算，高档翻倍，疯狂三倍，低档减半
         const float rainScale = 1.5F * particleLevelMultiplier(options.particleLevel);
         std::size_t base = 0U;
         if (rainCountOverride_ > 0U) {
             base = rainCountOverride_;
         } else {
             switch (rainMode_) {
-            // The wider rain box (±24 blocks) needs a denser population to
-            // read as rain across the whole field, so the bases rise a
-            // quarter over the old ±16-box values.
+            // ±24 格这样更宽的雨区需要更密的雨量才能整片看起来像下雨
+            // 基数因此比 ±16 的旧值提高四分之一
             case RainMode::Texture:
             case RainMode::Particles:
             case RainMode::Async:
@@ -853,12 +754,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return static_cast<std::size_t>(static_cast<float>(base) * rainScale * thunderBoost);
     }
 
-    // The topmost full-collision surface in a column (vanilla's MOTION_BLOCKING
-    // top position), restricted to a y window around the camera so the rain
-    // search and the roof probe never walk the whole 256-block column. Returns
-    // the resting position of a drop on that surface, or nothing when the window
-    // holds no collision. The scan walks top-down and stops at the first hit,
-    // which is the surface the rain drops land on.
+    // 一列中最高的完整碰撞面，对应 vanilla 的"阻挡运动"顶部高度
+    // 限定在相机附近的 y 窗口内，使降雨搜索和屋顶探测都不必遍历整列
+    // 返回雨滴落在该面上的静止位置；窗口内没有碰撞时返回空
+    // 扫描自上而下、命中即停，那就是雨滴落地的面
     [[nodiscard]] static std::optional<glm::vec3>
     weatherSurface(const world::World& world, int blockX, int blockZ, int lowestY, int highestY) {
         const int top = std::min(highestY, world::kMaxY - 1);
@@ -872,16 +771,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return std::nullopt;
     }
 
-    // WorldRenderer#tickRainSplashing's sound half, ported (1.16.1). While it
-    // rains the client fires a short weather.rain clip every frame or two at
-    // the surface the drops hit, so the storm is audible around the camera.
-    // When that surface is a roof above the camera — the player under cover —
-    // the muffled weather.rain.above clip (0.1 volume, 0.5 pitch) takes over:
-    // vanilla's "indoor" rain. Volume follows the smoothed rain gradient, so a
-    // drizzling sky stays faint and a full storm gets loud, and the thunder
-    // gradient boosts it another half again so 雷雨天 rains harder than plain
-    // rain (1.16.1 leaves the clip at a flat 0.2; the ramp is the adaptation
-    // the gradient-volume ask calls for).
+    // 降雨音效
+    // 下雨期间客户端每一两帧就在雨滴落点处播一小段 weather.rain，风雨声因此环绕相机
+    // 当那个落点是相机上方的屋顶时，也就是玩家在遮蔽物下
+    // 改用闷响的 weather.rain.above，音量 0.1、音高 0.5，即 vanilla 的"室内"雨声
+    // 音量跟随平滑后的降雨强度，毛毛雨很轻，大雨很响
+    // 雷暴强度再额外加半档，雷雨天因此比普通雨更猛
+    // vanilla 把该片段固定在 0.2，这里的渐变是本项目的调整
     void updateWeatherSound(world::World& world) {
         const float rainGradient = clientMirror_.world().rainGradient;
         if (rainGradient <= 0.0F) {
@@ -890,9 +786,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const glm::ivec3 cameraBlock{static_cast<int>(std::floor(camera.position().x)),
                                      static_cast<int>(std::floor(camera.position().y)),
                                      static_cast<int>(std::floor(camera.position().z))};
-        // Vanilla samples up to ten random columns in a ±10 radius and keeps the
-        // last surface no more than +10 blocks above the camera — exactly where
-        // a roof-above case lives — so the window hugs the camera the same way.
+        // vanilla 在 ±10 半径内随机采样至多十列，并保留最后一个不高于相机 +10 格的面
+        // 屋顶遮蔽的情形正好落在这个范围里，因此这里的 y 窗口同样贴着相机取
         std::optional<glm::vec3> surface;
         for (int sample = 0; sample < 10; ++sample) {
             weatherSoundRng_ = weatherSoundRng_ * 1664525U + 1013904223U;
@@ -908,18 +803,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (!surface.has_value()) {
             return;
         }
-        // Vanilla gates the clip on random.nextInt(3) < field_20793++: the
-        // counter starts at zero (never fires), then the gate opens 1-in-3,
-        // 2-in-3 and finally every frame until a clip resets it — a clip roughly
-        // every one to two frames.
+        // vanilla 用"随机数小于计数器"来放行，计数器每次判定后自增
+        // 它从零开始必不触发，随后放行概率依次为 1/3 和 2/3，最后每帧都放行
+        // 播放一次就把它重置，平均下来一两帧一段
         weatherSoundRng_ = weatherSoundRng_ * 1664525U + 1013904223U;
         if (static_cast<int>(weatherSoundRng_ % 3U) >= weatherSoundCadence_++) {
             return;
         }
         weatherSoundCadence_ = 0;
-        // Under cover: the camera's own column has a collision above it and the
-        // found surface is that roof, so the drops are landing overhead — play
-        // the muffled rain-above clip at the roof.
+        // 处于遮蔽下的判据是相机所在列上方有碰撞，且找到的面就是那个屋顶
+        // 这说明雨落在头顶，于是在屋顶处播放闷响的室内雨声
         const bool underRoof = weatherSurface(world, cameraBlock.x, cameraBlock.z,
                                               cameraBlock.y + 1, cameraBlock.y + 12)
                                    .has_value();
@@ -932,9 +825,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         } else {
             audioSystem.playWeatherRain(*surface, 0.2F * volumeScale);
         }
-        // One-time diagnostic: proves the weather-sound loop reaches the audio
-        // system at the gradient-scaled volume, and which clip the roof rule
-        // picked for the first clip of the storm.
+        // 一次性诊断，证明天气音效循环确实以按强度缩放的音量抵达音频系统
+        // 同时显示屋顶规则为这场雨的第一段选中了哪个片段
         static bool weatherSoundReported = false;
         if (!weatherSoundReported) {
             weatherSoundReported = true;
@@ -979,9 +871,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         auto depthStencil = vkStructure<VkPipelineDepthStencilStateCreateInfo>(
             VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO);
         depthStencil.depthTestEnable = VK_TRUE;
-        // Vanilla renders precipitation after translucent terrain with the
-        // depth mask disabled. Columns still test against roofs/terrain, but a
-        // near translucent strip must not punch holes in all strips behind it.
+        // vanilla 在半透明地形之后绘制降水，并关闭深度写入
+        // 雨列仍会与屋顶和地形做深度测试，但近处的一条半透明雨带不能在它后面所有雨带上打洞
         depthStencil.depthWriteEnable = VK_FALSE;
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
         VkPipelineColorBlendAttachmentState colorAttachment{};
@@ -1033,13 +924,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     void initializeTestScene() {
         if (testScene->occlusionScene) {
-            // A controlled occlusion scene: a flat stone platform with its
-            // surface at y=47. Section 1 (y 16-31) is hollowed out into a buried
-            // cave; section 2 (y 32-47) keeps a 2x2 surface opening. The camera
-            // sits at y=51, just above the surface, looking +Z along the
-            // platform, so the query results are predictable:
-            //   section 2 (surface) must stay visible (>0);
-            //   section 1 (buried cave) must be culled (0).
+            // 受控遮挡场景是一块表面在 y=47 的平整石台
+            // section 1 占 y 16-31，被掏成埋在地下的洞穴
+            // section 2 占 y 32-47，留一个 2x2 的地表开口
+            // 相机位于 y=51 刚好在地表之上，沿 +Z 望向石台，查询结果因此是可预期的：
+            //   section 2 是地表，必须保持可见，结果大于 0
+            //   section 1 是地下洞穴，必须被剔除，结果为 0
             world::Chunk chunk;
             for (int y = 0; y < 48; ++y) {
                 for (int z = 0; z < world::kChunkDepth; ++z) {
@@ -1048,8 +938,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     }
                 }
             }
-            // A buried 4x4x4 cave inside section 1 (its walls live in the same
-            // section, so the mesh is non-empty and the section stays testable).
+            // section 1 内部一个 4x4x4 的地下洞穴
+            // 洞壁也在同一 section 内，网格因此非空，该 section 仍可被测试
             for (int y = 20; y < 24; ++y) {
                 for (int z = 6; z < 10; ++z) {
                     for (int x = 6; x < 10; ++x) {
@@ -1080,8 +970,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 pendingSectionUpdates.insert_or_assign(update.position, std::move(update));
             }
             loadedCpuChunkCount = 1U;
-            // The camera follows the gameSession.player()'s eye, so pin the gameSession.player()
-            // just above the platform surface (y=47), looking along +Z at the scene.
+            // 相机跟随玩家眼点，所以把玩家钉在石台表面（y=47）之上一点，沿 +Z 望向场景
             gameSession.teleportPlayer(gameplay::kPrimaryPlayerId, {8.0F, 49.4F, -8.0F});
             camera.setPosition(snapshotCameraEye());
             worldReady = true;
@@ -1137,31 +1026,28 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void run() {
-        // Stress mode: MC_REBEDROCK_STRESS_FRAMES overrides the smoke test's
-        // 704-gameplay-frame cap and walks the gameSession.player() forward, churning chunk
-        // streaming and the occlusion queries, so long-run memory/GPU faults
-        // surface in a scripted run instead of after minutes at the keyboard.
+        // 压测模式由 MC_REBEDROCK_STRESS_FRAMES 打开，它覆盖烟测的 704 游戏帧上限
+        // 玩家会持续前进，不断搅动区块流送与遮挡查询
+        // 长时间运行才会暴露的内存与 GPU 故障因此能在脚本化运行中出现，不必在键盘前守几分钟
         const char* stressFramesValue = std::getenv("MC_REBEDROCK_STRESS_FRAMES");
         stressFrames =
             stressFramesValue != nullptr ? std::strtoull(stressFramesValue, nullptr, 10) : 0U;
-        // One extra slot past the last scripted step (706) holds the return-to-
-        // title gate.
+        // 比最后一个脚本步骤（706）多留一格，用于返回标题的判定
         const std::size_t smokeFrameLimit = stressFrames > 0U ? stressFrames : 710U;
-        // MC_REBEDROCK_SMOKE_TEST drives a scripted session: menus, a world, the
-        // creative screen, chat commands, meals, weather, then a return to the
-        // title. That is a test harness, not gameplay, so it is a script the loop
-        // advances (render/SmokeScript.hpp; the steps themselves in
-        // render/vulkan/SmokeScriptSteps.hpp) rather than a frame-number chain
-        // spliced through the loop body. A normal run builds no script at all.
+        // MC_REBEDROCK_SMOKE_TEST 驱动一次脚本化会话
+        // 依次走菜单、开世界、创造界面、聊天命令、进食、天气，最后返回标题
+        // 它是测试脚手架而非玩法，因此做成由主循环推进的脚本，而不是拼进循环体的帧号判断链
+        // 调度器在 render/SmokeScript.hpp，步骤在 render/vulkan/SmokeScriptSteps.hpp
+        // 正常运行根本不构造脚本
         std::optional<SmokeScript> smokeScript;
         if (std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr) {
             smokeScript.emplace();
             installSmokeScript(*this, *smokeScript, stressFrames,
                                static_cast<std::uint64_t>(smokeFrameLimit));
         }
-        // P3 Step 2: the simulation moves off the render thread here. Smoke and
-        // stress runs must exercise this path too; MC_REBEDROCK_SYNC_TICK keeps
-        // the deterministic fallback available for diagnosing failures.
+        // 模拟在这里离开渲染线程
+        // 烟测与压测同样要走这条路径
+        // MC_REBEDROCK_SYNC_TICK 保留了确定性的单线程回退，供排查故障时使用
         startSimulationThread();
         std::size_t renderedFrames = 0;
         auto previousFrameTime = std::chrono::steady_clock::now();
@@ -1177,19 +1063,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             const float deltaSeconds = std::min(
                 std::chrono::duration<float>(currentFrameTime - previousFrameTime).count(), 0.1F);
             previousFrameTime = currentFrameTime;
-            // Keep a short EMA of the frame time and adapt the streaming upload
-            // budget to it: when the GPU is being ground down by a streaming
-            // batch of dense sections, upload fewer per frame so the load damps;
-            // when the frame time recovers, upload faster and let the region
-            // fill in. The hysteresis in StreamingBudget.hpp keeps the budget
-            // from oscillating around a single threshold.
+            // 保持一段帧时间的短期指数平均，并据此调整流送上传预算
+            // GPU 被一批稠密 section 拖住时减少每帧上传量让负载回落
+            // 帧时间恢复后再加速把区域填满
+            // StreamingBudget.hpp 里的迟滞避免预算在单一阈值附近来回振荡
             smoothedFrameSeconds_ = smoothedFrameSeconds_ * 0.7F + deltaSeconds * 0.3F;
             streamingUploadBudget_ = mc::render::streamingUploadBudgetForFrameMs(
                 smoothedFrameSeconds_ * 1000.0F, streamingUploadBudget_);
             uiTimeSeconds += static_cast<double>(deltaSeconds);
-            // PX-6: advance the HUD overlays on the render clock (client
-            // presentation, never the world tick), so toasts slide/expire and
-            // subtitles fade at real time regardless of the sim rate.
+            // HUD 叠加层走渲染时钟，它属于客户端表现，绝不用世界 tick
+            // 吐司的滑入与过期、字幕的淡出因此都按真实时间进行，与模拟速率无关
             toastQueue_.advance(deltaSeconds);
             subtitleFeed_.advance(deltaSeconds);
             fpsSampleSeconds += deltaSeconds;
@@ -1202,9 +1085,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
             bool playerWalking = false;
             {
-                // Input preparation writes the staged PlayerInput (guarded by
-                // GameSession's own input mutex) and reads published snapshots and
-                // renderer-local state — nothing that needs the world lock.
+                // 输入准备写的是暂存的玩家输入，由 GameSession 自己的输入互斥量保护
+                // 读的是已发布的快照与渲染器本地状态，两者都不需要世界锁
                 {
                     const auto inputStart = std::chrono::steady_clock::now();
                     processInput();
@@ -1212,12 +1094,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                         diag::frameTrace().inputMs += diag::msSince(inputStart);
                     }
                 }
-                // C-1b-2/1b-3: pump the channel at the very top of the frame.
-                // Snapshot frames refresh the client mirror (so every read below
-                // sees this frame's player/world); event frames apply the tick's
-                // side effects (world edits to the client cache, sounds,
-                // particles, container/eating reactions) to this renderer as the
-                // host. Draining every frame keeps the channel from accumulating.
+                // 在一帧最开头排空通道
+                // 快照帧刷新客户端镜像，下面所有读取因此看到本帧的玩家与世界
+                // 事件帧把该 tick 的副作用作用到作为宿主的本渲染器上
+                // 副作用含对客户端缓存的世界编辑、音效、粒子、容器与进食反应
+                // 每帧都排空，通道才不会积压
                 {
                     const auto pumpStart = std::chrono::steady_clock::now();
                     static_cast<void>(clientMirror_.pump(runtime.clientChannel(), *this));
@@ -1237,20 +1118,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                         (cursor.x - preview.lookOrigin.x) / (40.0F * animationLayout.scale()),
                         (cursor.y - preview.lookOrigin.y) / (40.0F * animationLayout.scale()));
                 }
-                // The animator's gait inputs come from the per-tick player
-                // snapshot, not live gameplay objects. The snapshot is published
-                // atomically, so this copy needs no lock.
+                // 动画器的步态输入取自逐 tick 玩家快照，而不是实时玩法对象
+                // 快照是原子发布的，这次拷贝无需加锁
                 const auto playerSnap = clientMirror_.player();
-                // `speed` is the accumulated gait phase and therefore never
-                // returns to zero. The eased stride is the locomotion amount.
+                // `speed` 是累积的步态相位，因此永远不会回零；真正的位移量是缓动后的步幅
                 playerWalking = playerSnap.stride > 0.002F ||
                                 playerSnap.previousStride > 0.002F;
             }
             playerModelAnimator.update(deltaSeconds, playerWalking);
-            // Head leads, body follows: the head turns freely up to a limit, and
-            // only when it reaches that limit does it drag the body around. While
-            // walking, the body eases toward the look direction so movement stays
-            // forward-facing (vanilla behaviour).
+            // 头先动、身体跟：头在限度内自由转动，到达限度才拖着身体转
+            // 行走时身体缓慢转向视线方向，使移动保持面朝前方——与 vanilla 一致
             const glm::vec3 lookDir = camera.direction();
             const float lookYaw = std::atan2(lookDir.x, lookDir.z);
             const auto wrapAngle = [](float angle) {
@@ -1264,25 +1141,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 worldBodyYaw = lookYaw;
                 worldBodyYawInitialized = true;
             }
-            // ANIM A12 (26.1 §6/§7.3): the body follows the head with a dead zone
-            // and a hard clamp. head-relative yaw is free within +/-50 deg (dead
-            // zone); past that the body eases toward the look at ~30%/tick, plus an
-            // extra 20%/tick beyond the 50 deg edge; the head-relative angle is
-            // hard-clamped to +/-75 deg so the head never over-rotates. dt*20 maps
-            // the per-tick rates onto the frame. (Rebedrock +Y sign / exact feel
-            // is a mac visual-pass concern.)
+            // 身体跟随头部，带死区和硬钳位
+            // 头部相对偏航在 ±50° 的死区内自由转动
+            // 超出后身体以约每 tick 30% 的速度转向视线，越过 50° 边界再额外加每 tick 20%
+            // 头部相对角硬钳在 ±75°，头永远不会拧过头
+            // dt*20 把逐 tick 速率换算到当前帧
             constexpr float kHeadYawDeadZone = 0.8727F;  // 50 deg
             constexpr float kHeadYawClamp = 1.3090F;     // 75 deg hard clamp
             const float tickAlpha = std::min(1.0F, deltaSeconds * 20.0F);
             float lagDiff = wrapAngle(lookYaw - worldBodyYaw);
             const float absLag = std::fabs(lagDiff);
             if (absLag > kHeadYawDeadZone || playerWalking) {
-                // Base 30%/tick follow, plus 20%/tick more once past the dead zone.
+                // 基础每 tick 跟随 30%，越过死区后再加 20%
                 const float followRate = 0.30F + (absLag > kHeadYawDeadZone ? 0.20F : 0.0F);
                 worldBodyYaw += lagDiff * followRate * tickAlpha;
                 lagDiff = wrapAngle(lookYaw - worldBodyYaw);
             }
-            // Hard clamp: the head-relative yaw can never exceed 75 deg.
+            // 硬钳位：头部相对偏航不得超过 75°
             if (lagDiff > kHeadYawClamp) {
                 worldBodyYaw = lookYaw - kHeadYawClamp;
             } else if (lagDiff < -kHeadYawClamp) {
@@ -1291,14 +1166,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             constexpr float kMaxHeadYaw = kHeadYawClamp;
             const float headRelative = wrapAngle(lookYaw - worldBodyYaw);
             worldPlayerAnimator.setCursorLook(headRelative / kMaxHeadYaw, -lookDir.y);
-            // ANIM task2: the third-person world player now runs the SAME
-            // PlayerModelAnimator controller stack as the inventory preview
-            // (retiring HumanoidPoseSolver). It is fed the AUTHORITATIVE vanilla
-            // WalkAnimationState the snapshot carries — the gait amplitude
-            // (walkAmount, saturates to 1.0, decays to 0 on stop) and phase
-            // (walkPosition) — plus sneaking and the render age, so idle -> no
-            // swing and stopping returns the limbs to rest. body_look_amount stays
-            // 0 (the world body yaw is applied at the model root, not in the clip).
+            // 第三人称下世界中的玩家与背包预览跑**同一套** PlayerModelAnimator 控制器栈
+            // 输入是快照携带的权威行走动画状态，加上潜行标志和渲染时间
+            // 状态含步态幅度 walkAmount 与相位 walkPosition
+            // walkAmount 饱和到 1.0，停下时衰减到 0
+            // 因此静止不摆臂、停下时四肢回到静息
+            // body_look_amount 保持 0：世界中的身体偏航施加在模型根节点上，不在剪辑里
             {
                 const auto worldSnap = clientMirror_.player();
                 const float worldAlpha = clientMirror_.interpolationAlpha();
@@ -1309,9 +1182,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 const float walkPosition =
                     worldSnap.previousWalkPosition +
                     (worldSnap.walkPosition - worldSnap.previousWalkPosition) * worldAlpha;
-                // Item/Block arm poses would raise one arm with no held-item layer
-                // drawn yet, so ordinary holding stays at rest (matching the prior
-                // solver wiring); an active use is still shown.
+                // 物品/方块的手臂姿态会抬起一只手，但此时还没有绘制手持物层，所以普通持物保持静息
+                // 正在使用则照常表现
                 const auto worldState = render::player::extractPlayerRenderState(
                     worldSnap, worldAlpha, lastWorldSwingSequence_);
                 const bool holdingItem =
@@ -1324,17 +1196,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                       ageInTicks, worldSnap.sneaking);
             }
             if (!paused && worldReady) {
-                // The sun no longer rides real frames: the Overworld clock advances
-                // inside the fixed sim tick (gated there by doDaylightCycle), so all
-                // that is left here is the frame-local animation clock.
+                // 太阳不再跟着真实帧走，主世界时钟在固定的模拟 tick 内推进
+                // 它在那里受 doDaylightCycle 规则门控，这里只剩下帧局部的动画时钟
                 renderTimeSeconds += static_cast<double>(deltaSeconds);
-                // The held-item pose is sampled from the per-tick player snapshot
-                // (published atomically), interpolated with THIS frame's partial
-                // tick — never the previous frame's alpha. The extractor snaps
-                // across a swing restart (sequence change) so the arm never
-                // replays back from the apex.
+                // 手持物姿态取自原子发布的逐 tick 玩家快照
+                // 插值用**本帧**的 tick 小数，绝不用上一帧的系数
+                // 挥动重新开始（序号变化）时提取器直接跳变，手臂因此不会从顶点倒放一遍
                 {
-                    // Copy the coherent snapshot, then render purely from the copy.
+                    // 先拷一份自洽的快照，之后完全从这份拷贝渲染
                     const auto playerSnapshot = clientMirror_.player();
                     const float currentAlpha = clientMirror_.interpolationAlpha();
                     const auto frame =
@@ -1353,23 +1222,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                         heldItemAnimation.setAction(animation::ModelAction::None, 0.0F);
                     }
                 }
-                // One read section covers every world sample this frame's
-                // effects make: particles, rain collision and the weather
-                // ambience all raycast into the world.
+                // 一个读区间覆盖本帧各种特效对世界的全部采样
+                // 粒子、雨滴碰撞和天气氛围音都会向世界发射线
                 {
-                    // Everything here reads the render-owned client cache and the
-                    // atomically published world snapshot, so it needs no lock.
+                    // 这里读的都是渲染侧自有的客户端缓存和原子发布的世界快照，无需加锁
                     hud_.updateVignetteDarkness(deltaSeconds);
                     particleSystem.update(deltaSeconds, clientCache);
-                // CPU rain drops follow the smoothed weather gradient and drive
-                // landing splashes/audio in every mode. Particle and async also
-                // render these exact drops; texture mode independently draws the
-                // vanilla precipitation-column field.
+                // CPU 雨滴跟随平滑后的天气强度，在所有模式下都负责落地水花与音效
+                // particles 与 async 直接渲染这批雨滴；texture 模式则另行绘制 vanilla 的逐列降水
                 const float thunderGradient = clientMirror_.world().thunderGradient;
-                // The wind holds a heading for 10-20 s, then veers to a new
-                // one over a couple of seconds — an occasional, slow shift
-                // instead of the old constant rotation that kept the whole rain
-                // field spinning and never let it settle on a slant.
+                // 风向保持 10 到 20 秒，再用两三秒转到新方向
+                // 这是偶尔的缓慢改向，而不是持续旋转让整片雨域一直打转、定不下一个斜度
                 constexpr float kTwoPi = 6.28318530718F;
                 if (windShiftTimer_ <= 0.0F) {
                     weatherSoundRng_ = weatherSoundRng_ * 1664525U + 1013904223U;
@@ -1400,9 +1263,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                         particleSystem.spawnRainSplash(splash.position, splash.direction);
                     }
                 }
-                // tickRainSplashing also drives the rain *sound*: a weather.rain
-                // clip at the surface the drops hit, muffled when the player is
-                // under a roof, all scaled by the smoothed rain gradient.
+                // 同一处也驱动雨**声**，在雨滴落点播 weather.rain
+                // 玩家在屋顶下时改用闷响版本，音量统一按平滑后的降雨强度缩放
                     updateWeatherSound(clientCache);
                 static bool stormReported = false;
                 if (!stormReported && clientMirror_.world().thundering &&
@@ -1417,13 +1279,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     std::cout << "[rain] splash=" << rainSystem.splashes().size()
                               << " particles=" << particleSystem.particles().size() << "\n";
                 }
-                // One-time diagnostic: the per-frame world-lookup count the
-                // column surface cache reduced collision to (the old direct
-                // path did one world lookup per drop per frame). Sampled once
-                // the population is full AND the cache is
-                // warm (a warm frame makes far fewer world lookups than it has
-                // drops), so the number is the steady state, not the first
-                // frames' probe warmup.
+                // 一次性诊断，报出列表面缓存把碰撞降到了每帧多少次世界查询
+                // 旧的直接路径是每滴每帧一次
+                // 等雨量填满且缓存预热完成后才采样，预热后的一帧世界查询次数远少于雨滴数
+                // 这个数字因此是稳态值，不是最初几帧的探测预热
                 static bool collisionReported = false;
                 if (!collisionReported &&
                     rainSystem.drops().size() >= rainTargetCount() * 9U / 10U &&
@@ -1434,30 +1293,24 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 }
                     rainTime_ += deltaSeconds;
                 }
-                // D0: processInput() already shipped this frame's movement over
-                // the channel; the server stages it before the tick reads it, so
-                // there is no separate commitInput() publish step any more.
+                // processInput() 已经把本帧的移动经通道送出
+                // 服务端在 tick 读取之前把它暂存好，因此不再需要单独的提交发布步骤
                 if (!simulationDriver.threaded()) {
-                    // Synchronous fallback (MC_REBEDROCK_SYNC_TICK=1). Kept
-                    // because it is the only way to bisect a threading problem
-                    // against known-good behaviour.
+                    // 同步回退（MC_REBEDROCK_SYNC_TICK=1）
+                    // 保留它，因为这是把线程问题与已知正确行为做二分对照的唯一手段
                     static_cast<void>(
                         simulationDriver.advance(deltaSeconds, [this] { runtime.tick(); }));
                 }
             } else if (!simulationDriver.threaded()) {
                 simulationDriver.reset();
             }
-            // A chat command the player submitted was executed on the runtime's
-            // dispatcher inside the tick; append its result to the history once
-            // it lands.
+            // 玩家提交的聊天命令是在 tick 内由运行时派发器执行的；结果落地后追加进历史
             if (const auto chatResult = runtime.takeChatResult(); chatResult.has_value()) {
                 chatHistory.push(chatResult->message, chatResult->success, uiTimeSeconds);
             }
-            // The alpha comes from the published snapshot's own timestamp
-            // (gameSession) rather than SimulationDriver's separately-clocked
-            // accumulator, so it stays in step with the endpoints this frame
-            // reads instead of running a tick ahead of them at a tick boundary —
-            // the phase race that made moving drops and the swung hand jitter.
+            // 插值系数取自已发布快照自带的时间戳，而不是 SimulationDriver 另行计时的累加器
+            // 它因此与本帧读到的端点同步，不会在 tick 边界上比端点超前一拍
+            // 正是那个相位竞争让移动中的掉落物和挥动的手抖动
             const float physicsAlpha = clientMirror_.interpolationAlpha();
             renderInterpolationAlpha = physicsAlpha;
             glm::vec3 renderedFeetPosition{};
@@ -1468,8 +1321,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 renderedFeetPosition = playerSnap.physicsPrevious +
                                        (playerSnap.physicsCurrent - playerSnap.physicsPrevious) *
                                            physicsAlpha;
-                // Capture the HUD snapshot from the per-tick player snapshot
-                // (published under the sim's write lock), not live gameplay.
+                // HUD 快照取自逐 tick 玩家快照（在模拟的写锁下发布），不取实时玩法状态
                 uiFrameData_.health = playerSnap.health;
                 uiFrameData_.foodLevel = playerSnap.foodLevel;
                 uiFrameData_.airTicks = playerSnap.airTicks;
@@ -1492,19 +1344,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                     physicsAlpha;
             }
             camera.setPosition(renderedFeetPosition + glm::vec3{0.0F, playerEyeHeight, 0.0F});
-            // The occlusion test scene pins the camera above the platform's
-            // surface (y=47), looking down across it so both the surface and
-            // the buried cave section fall inside the frustum.
+            // 遮挡测试场景把相机钉在石台表面 y=47 之上俯视
+            // 地表与地下洞穴两个 section 因此都落在视锥内
             if (testScene.has_value() && testScene->occlusionScene) {
                 camera.setPosition({8.0F, 60.0F, -8.0F});
             }
-            // Stress mode turns the camera each frame, churning the occlusion
-            // queries as sections stream in and out of the frustum.
+            // 压测模式每帧转动相机，随着 section 进出视锥不断搅动遮挡查询
             if (stressFrames > 0U) {
-                // Yaw spin + a slow pitch-down so the view sweeps toward the
-                // ground like a flying player glancing around, and an expanding
-                // outward spiral that keeps the streaming window loading fresh
-                // chunks the whole run.
+                // 偏航旋转加缓慢俯视，让视野像飞行中四处张望的玩家那样扫向地面
+                // 同时沿向外扩张的螺旋移动，使流送窗口全程都在加载新区块
                 camera.rotate(2.0F, -0.05F);
                 const std::size_t stressClock =
                     std::getenv("MC_REBEDROCK_LOAD_SAVE") != nullptr || !smokeScript.has_value()
@@ -1518,18 +1366,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     std::sin(flightAngle) * radius,
                 };
                 camera.setPosition(stressPos);
-                // DR repro: fly the player along the spiral so chunk streaming
-                // follows the movement like real play (the real save is loaded
-                // in creative, so no fall damage).
+                // 让玩家沿螺旋飞行，区块流送因此像真实游玩那样跟随移动
+                // 存档以创造模式载入，不会摔伤
                 const auto stressWrite = worldLock.write();
                 gameSession.teleportPlayer(
                     gameplay::kPrimaryPlayerId,
                     stressPos - glm::vec3{0.0F, snapshotEyeHeight(), 0.0F});
             }
-            // GameRenderer#getFov: the base FOV times the gameSession.player()'s movement
-            // multiplier, interpolated across the physics tick the same way the
-            // eye position is. Sprinting widens it to 1.15x, creative flight to
-            // 1.1x, and both ease in over a few ticks.
+            // 视场角 = 基础 FOV 乘以玩家的移动系数，并像眼点一样在物理 tick 之间插值
+            // 疾跑放大到 1.15 倍，创造飞行 1.1 倍，两者都在几个 tick 内缓入
             camera.setFieldOfViewDegrees(baseFieldOfViewDegrees * fovMultiplier);
             audioSystem.updateListener(camera.position(), camera.direction(), {0.0F, 1.0F, 0.0F});
             audioSystem.update();
@@ -1537,21 +1382,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (worldSessionActive)
                 world_.processChunkStreaming();
             {
-                // The authoritative interaction now runs inside the simulation
-                // tick (which owns the world's write section); this frame only
-                // raycasts the aim target the input handlers package into
-                // commands, plus the separate Q-key drop. The ray tests the
-                // render-owned client cache, so no lock is needed.
+                // 权威交互跑在模拟 tick 内（那里持有世界写区间）
+                // 本帧只做瞄准目标的射线检测，供输入处理封装成命令，另加独立的 Q 丢弃
+                // 射线测的是渲染侧自有的客户端缓存，无需加锁
                 updateInteractionTarget();
             }
             {
                 const auto dropWrite = worldLock.write();
                 world_.updateItemDrop();
             }
-            // C-1b-3: the simulation's side effects (world edits to the client
-            // cache, sounds, particles, container/eating reactions) are applied
-            // by the frame-top channel pump above, decoded from the server's
-            // per-tick events instead of drained from the bridge here.
+            // 对客户端缓存的世界编辑、音效、粒子、容器与进食反应都是模拟的副作用
+            // 它们由上面帧开头那次通道排空施加，来源是服务端逐 tick 事件的解码结果
             {
                 const auto drawStart = std::chrono::steady_clock::now();
                 drawFrame();
@@ -1590,12 +1431,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                               << '\n';
                 }
             }
-            // N-Mem (P1-2 data): periodic three-world resident report. The smoke
-            // test only loads the spawn area, so its numbers understate the real
-            // occupancy — this samples the three chunk copies during real play/
-            // stress once every ~2s. Gated off by default. The server world is
-            // read under a short read lock (the sim thread mutates it); the
-            // client cache is render-owned; the worker world is an atomic sample.
+            // 三份世界常驻内存的周期性报告
+            // 烟测只加载出生点区域，数字偏小
+            // 因此这里在真实游玩与压测中每约 2 秒采样一次三份区块副本
+            // 默认关闭
+            // 服务端世界在短读锁下读取，因为模拟线程会改它
+            // 客户端缓存归渲染侧所有，工作线程的世界是原子采样
             if (worldReady) {
                 static const bool memoryReport =
                     std::getenv("MC_REBEDROCK_MEMORY_REPORT") != nullptr;
@@ -1617,20 +1458,19 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                         const auto workerUnique = chunkStreamer.workerWorldUniqueResidentBytes();
                         const auto total = serverBytes + clientBytes + workerBytes;
                         const auto uniqueTotal = serverUnique + clientUnique + workerUnique;
-                        // total = sum of the three logical views (shared chunks
-                        // counted once per holder). uniqueTotal = the exclusively
-                        // owned part; the gap (total-uniqueTotal) is the COW-shared
-                        // physical copy the P1-2 merge could reclaim.
+                        // total 是三个逻辑视图之和，共享的区块在每个持有者处各计一次
+                        // uniqueTotal 是独占部分
+                        // 两者之差即写时复制共享的物理副本，也就是合并三份世界后可以回收的量
                         std::cout << "[memory] server=" << serverBytes << "(u" << serverUnique
                                   << ") client=" << clientBytes << "(u" << clientUnique
                                   << ") worker=" << workerBytes << "(u" << workerUnique
                                   << ") total=" << total << " unique=" << uniqueTotal << " ("
                                   << (total / (1024U * 1024U)) << "MB/" << (uniqueTotal / (1024U * 1024U))
                                   << "MB)\n";
-                        // §7.4 GPU-side ownership: total VMA allocation vs the big
-                        // owners (world mesh vertex/index, staging, textures); the
-                        // rest (offscreen/shadow/uniform/particle/rain) falls into
-                        // `other`. cpuMeshPool is the CPU RenderMeshData reuse pool.
+                        // GPU 侧归属用 VMA 总分配量对比几个大户
+                        // 大户指世界网格顶点与索引、暂存和纹理
+                        // 离屏、阴影、uniform、粒子、雨归入 other
+                        // cpuMeshPool 是 CPU 侧 RenderMeshData 的复用池
                         VmaTotalStatistics vmaStats{};
                         vmaCalculateStatistics(allocator, &vmaStats);
                         const auto gpuAllocated = vmaStats.total.statistics.allocationBytes;
@@ -1641,11 +1481,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                         const auto gpuOther =
                             gpuAllocated > knownGpu ? gpuAllocated - knownGpu : 0U;
                         const auto cpuMeshPool = chunkStreamer.cpuMeshPoolBytes();
-                        // Break `other` open: the MSAA depth/color transient
-                        // targets are the suspected bulk. Also detect whether they
-                        // landed in lazily-allocated (memoryless) memory — VMA's
-                        // allocationBytes counts the logical size either way, so
-                        // this is how we tell the memoryless fix actually took.
+                        // 把 other 拆开：MSAA 的深度/颜色瞬态目标是主要嫌疑
+                        // 同时检测它们是否真的落进了 lazily-allocated 也就是 memoryless 内存
+                        // VMA 的 allocationBytes 两种情况都按逻辑大小计
+                        // 只有这样才能确认那项优化真正生效
                         const VkPhysicalDeviceMemoryProperties* memProps = nullptr;
                         vmaGetMemoryProperties(allocator, &memProps);
                         const auto targetBytes = [&](const auto& targets) {
@@ -1678,8 +1517,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     }
                 }
             }
-            // The occlusion test scene renders a few frames so the two-frame
-            // query latency resolves, then exits and dumps the diagnostics.
+            // 遮挡测试场景多渲染几帧，等两帧的查询延迟走完，然后退出并导出诊断数据
             if (testScene.has_value() && testScene->occlusionScene && renderedFrames >= 30U) {
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
             }
@@ -1690,21 +1528,19 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     currentFrameTime +
                     std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                         targetFrameDuration);
-                // sleep_until wakes 1-2ms late on macOS (the scheduler's timer
-                // resolution), which alone would pace a 120fps cap at ~100fps —
-                // every frame overshoots by the wake latency. Sleep most of the
-                // way there, then busy-wait the final two milliseconds so the
-                // pacing lands on the target instead of the OS wake granularity.
+                // macOS 上 sleep_until 会因调度器的定时精度晚醒 1 到 2ms
+                // 每帧都多出一个唤醒延迟，仅此一项就会把 120fps 的上限压到约 100fps
+                // 因此先睡到接近目标，最后两毫秒忙等，让节奏落在目标值上而不是操作系统的唤醒粒度上
                 const auto spinStart = deadline - std::chrono::milliseconds(2);
                 if (std::chrono::steady_clock::now() < spinStart) {
                     std::this_thread::sleep_until(spinStart);
                 }
                 while (std::chrono::steady_clock::now() < deadline) {
-                    // Busy-wait the tail for precise pacing.
+                    // 尾段忙等，换取精确的节奏
                 }
             }
-            // DR repro hook: MC_REBEDROCK_LOAD_SAVE auto-loads the first real save
-            // (bypassing the menu) and then stress-files via the stress camera.
+            // 复现用钩子 MC_REBEDROCK_LOAD_SAVE 跳过菜单直接载入第一个真实存档
+            // 随后由压测相机带着飞
             if (std::getenv("MC_REBEDROCK_LOAD_SAVE") != nullptr && !loadSaveStarted) {
                 loadSaveStarted = true;
                 const auto summaries = saveRepository.list();
@@ -1716,7 +1552,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (smokeScript.has_value()) {
                 smokeScript->advance(renderedFrames, worldReady);
             }
-            // DR repro: the LOAD_SAVE run ends after stressFrames rendered frames.
+            // LOAD_SAVE 运行在渲染满 stressFrames 帧后结束
             if (std::getenv("MC_REBEDROCK_LOAD_SAVE") != nullptr && stressFrames > 0U &&
                 renderedFrames >= smokeFrameLimit) {
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -1764,8 +1600,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             std::clamp<long long>(requested, 0LL, static_cast<long long>(maximumFirst)));
     }
 
-    // PX-6 Bug1: scroll the Controls key-bind list by the wheel, clamped to the
-    // last visible page (the same contract as the world/language lists).
+    // 用滚轮滚动按键设置列表，钳制到最后一页可见位置（与世界列表、语言列表同一约定）
     void scrollControlsList(int rows) {
         const std::size_t total = input::keyBindRows().size();
         const std::size_t visibleRows = ui::controlsVisibleRowCount(
@@ -1814,7 +1649,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         } catch (const std::exception& exception) {
             menuSystem.saveStatus = "Delete failed: " + std::string{exception.what()};
         }
-        // Leave both the confirmation and the edit page, back to the list.
+        // 同时退出确认页和编辑页，回到列表
         menuSystem.pageStack.pop();
         menuSystem.pageStack.pop();
     }
@@ -1838,40 +1673,33 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const auto resolvedOrientation = orientation.value_or(world::defaultOrientation(block));
         rememberWorldEdit({x, y, z, world::BlockState{block, resolvedOrientation, fluidLevel}});
         chunkStreamer.setBlock(x, y, z, block, fluidLevel, resolvedOrientation);
-        // M-Chunk B-5: the simulation already wrote interactionWorld; mirror the
-        // edit into the client cache so the render mesh reflects it this frame.
+        // 模拟侧已经写过 interactionWorld；把这次编辑镜像进客户端缓存，渲染网格本帧就能反映出来
         static_cast<void>(
             clientCache.setState(x, y, z, world::BlockState{block, resolvedOrientation, fluidLevel}));
     }
 
     void submitWorldStateEdit(int x, int y, int z, world::BlockState state) override {
-        // setState, not setBlock: LIT is exactly what the loose block/fluid/
-        // orientation triple cannot carry, so a furnace lighting would reach the
-        // render streamer unlit. The saved edit now carries the whole state as
-        // well — it used to decompose into the triple here, which silently
-        // dropped LIT on the way to disk.
+        // 用 setState 而不是 setBlock
+        // 点燃状态正是"方块加流体加朝向"这个松散三元组装不下的东西
+        // 用后者会让点着的熔炉以未点亮的样子送到渲染流送侧
+        // 存档记录的编辑同样带完整状态——它一旦在这里被拆成三元组，点燃状态就会在写盘途中悄悄丢失
         rememberWorldEdit({x, y, z, state});
         chunkStreamer.setState(x, y, z, state);
         static_cast<void>(clientCache.setState(x, y, z, state));
     }
 
-    // Rebuild the sections touched by a gameplay edit directly on the render
-    // thread using the already-updated interactionWorld, so a placed or broken
-    // block is visible the same frame instead of waiting for the background
-    // worker round-trip. The worker still performs the authoritative rebuild;
-    // its strictly higher revision replaces this transient preview through the
-    // normal revision guard in queueStreamBatch.
+    // 直接在渲染线程上用已更新的世界重建被玩法编辑影响到的 section
+    // 放置或破坏的方块因此当帧可见，不必等后台工作线程往返一趟
+    // 权威重建仍由工作线程完成
+    // 它严格更高的修订号会经 queueStreamBatch 里常规的修订号守卫替换掉这层临时预览
     //
-    // This mirrors ChunkStreamer::applyBlockEdits: edit batches from the worker
-    // only carry meshes, never light, so interactionWorld's stored light would
-    // otherwise stay frozen at the last generated snapshot. Running the same
-    // incremental light propagation here keeps the preview correctly lit (e.g.
-    // torches light up immediately instead of flashing dark) and self-consistent
-    // across successive edits. updateBlock is a bounded incremental BFS, not the
-    // full per-chunk propagation that previously stalled the render thread.
+    // 这与区块流送侧应用方块编辑的做法一致
+    // 工作线程的编辑批次只带网格不带光照，否则世界里存的光照会冻结在最后一次生成的快照上
+    // 在这里跑同样的增量光照传播，预览的光照才正确，火把会立刻发光而不是先黑一下
+    // 连续编辑之间也因此保持自洽
+    // 这里用的是有界的增量广度优先传播，不是先前会卡住渲染线程的整块传播
     void previewBlockEdit(int worldX, int y, int worldZ) override {
-        // The render-side light is maintained on the client cache, so an edit
-        // previews against what will actually be drawn.
+        // 渲染侧的光照维护在客户端缓存上，编辑预览因此对着真正要画的那份数据
         interactionLightEngine.updateBlock(clientCache, worldX, y, worldZ);
 
         std::vector<world::SectionPosition> sections;
@@ -1885,8 +1713,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
         };
 
-        // Geometry and vertex AO sample one voxel beyond a section boundary, so
-        // the edited voxel can dirty up to its 26 neighbours' sections.
+        // 几何与顶点 AO 会越过 section 边界采样一个体素
+        // 被编辑的体素因此最多能弄脏它 26 个邻居所在的 section
         for (int dz = -1; dz <= 1; ++dz) {
             for (int dy = -1; dy <= 1; ++dy) {
                 for (int dx = -1; dx <= 1; ++dx) {
@@ -1899,9 +1727,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 }
             }
         }
-        // Light changes can reach well beyond the edited voxel (a torch spreads
-        // up to 14 blocks). Remesh every section whose light actually changed,
-        // skipping empty ones that hold no vertices to relight.
+        // 光照变化能远超被编辑的体素（火把可扩散 14 格）
+        // 凡是光照真的变了的 section 都重新网格化，空的跳过——里面没有顶点需要重新照亮
         for (const auto position : interactionLightEngine.takeDirtySections()) {
             const world::Chunk* chunk = clientCache.chunk({position.chunkX, position.chunkZ});
             if (chunk != nullptr && !chunk->section(position.sectionY).empty()) {
@@ -1911,9 +1738,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
         if (sections.empty())
             return;
-        // Cheap sampler *view*: O(1) reads of the light we just propagated into
-        // the client cache above. (The per-chunk constructor re-propagates a
-        // ~48x384x48 region with two BFS passes and must not run per edit here.)
+        // 轻量的采样**视图**，对上面刚传播进客户端缓存的光照做 O(1) 读取
+        // 逐区块的那个构造函数会用两趟广度优先重新传播约 48x384x48 的区域
+        // 那种做法绝不能在每次编辑时跑
         const world::ChunkLightSampler lighting{clientCache};
         for (const auto position : sections) {
             world_.remeshSectionImmediate(position, lighting);
@@ -1923,9 +1750,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void clearRenderedWorld() {
         simulationActive.store(false, std::memory_order_release);
         checkVk(vkDeviceWaitIdle(device), "vkDeviceWaitIdle(world reset)");
-        // The device is idle, so every pooled buffer — including those still in
-        // the deferred slots — is safe to hand back to the free lists, letting
-        // the next world reuse the same buffers instead of reallocating.
+        // 设备已空闲，池里所有缓冲都能安全放回空闲表，包括仍在延迟归还槽里的
+        // 下一个世界因此复用同一批缓冲，不必重新分配
         for (auto& slot : deviceBufferPool_.deferred) {
             for (auto& buffer : slot) {
                 world_.releaseStreamBufferNow(deviceBufferPool_, buffer);
@@ -1949,12 +1775,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pendingSectionOrder.clear();
         pendingSectionUpdates.clear();
         latestSectionRevisions.clear();
-        // CS-1: keep the diagnostics ring side table in step with the pending
-        // section maps it shadows (empty when tracing is off, so free then).
+        // 让诊断用的环号旁表与它影射的待处理 section 表保持同步（关闭追踪时它为空，清理无代价）
         world_.pendingSectionEnqueueRing_.clear();
-        // Re-anchor the baked quality at the saved option: a fresh world starts
-        // meshing at the stored quality (Off keeps Standard-baked meshes, since
-        // the shader ignores the smooth light channels anyway).
+        // 把烘焙画质重新锚定到已保存的选项，新世界按存下来的画质开始网格化
+        // 选 Off 时仍按 Standard 烘焙，反正着色器会忽略平滑光照通道
         qualityRemeshPending.clear();
         currentMeshQuality = options.smoothLightingQuality != world::SmoothLightingQuality::Off
                                  ? options.smoothLightingQuality
@@ -1963,8 +1787,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         chunkStreamer.setSmoothLightingQuality(currentMeshQuality);
         interactionWorld = {};
         clientCache = {};
-        // Drop the mirror so the next world does not briefly show the previous
-        // one's player/world state before the first tick republishes.
+        // 丢弃镜像，免得下一个世界在首个 tick 重新发布之前，短暂显示上一个世界的玩家/世界状态
         clientMirror_.clear();
         gameSession.resetWorldState();
         particleSystem = {};
@@ -1980,13 +1803,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void startWorld(persistence::SaveGame save) {
         simulationActive.store(false, std::memory_order_release);
         clearRenderedWorld();
-        // A new world starts a fresh chat: commands and their results from the
-        // previous session must not leak into the bottom-left of the next map.
+        // 新世界从空聊天开始：上一场的命令与结果不能漏进下一张地图的左下角
         chatHistory.clear();
         lastSessionPeakPendingSectionCount = 0U;
-        // The authoritative restore — the session state, the chunk streamer and
-        // the seeds — lives in the runtime so a headless server loads the same
-        // world. The renderer's presentation (camera, textures, menus) follows.
+        // 会话状态、区块流送器和各类种子这些权威恢复都在运行时侧
+        // headless 服务器因此加载的是同一个世界
+        // 渲染器只负责随后的表现层（相机、纹理、菜单）
         runtime.loadWorld(std::move(save), viewDistanceChunks);
         savedEditIndices.reserve(currentSave->edits.size());
         for (std::size_t index = 0; index < currentSave->edits.size(); ++index) {
@@ -1994,8 +1816,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             savedEditIndices.insert_or_assign(PersistentEditPosition{edit.x, edit.y, edit.z},
                                               index);
         }
-        // Game rules travel with the world too; GameRuntime re-attaches the
-        // session's own change handler when it loads the save's rules.
+        // 游戏规则也随世界一起走；GameRuntime 加载存档规则时会重新挂上会话自己的变更处理器
         camera.setPosition(snapshotCameraEye());
         spawnPositionInitialized = currentSave->hasPlayerPosition;
         textures_.updateBiomeColorTextures(currentSave->summary.seed);
@@ -2021,11 +1842,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // Saving reads the world and the live entity list, so it needs a section.
-    // Split in two because /setworldspawn saves from *inside* the command write
-    // section and the mutex is not recursive: callers already holding a section
-    // use the Locked form, everyone else uses this one. The save itself is built
-    // and persisted by the runtime; this wrapper only adds the presentation.
+    // 保存要读世界和实时实体列表，因此需要一个临界区
+    // 拆成两个版本，是因为 /setworldspawn 在命令的写区间**内部**触发保存，而互斥量不可重入
+    // 已经持有临界区的调用方用 Locked 版本，其余用这个
+    // 存档的构建与落盘由运行时完成，这层包装只补上表现层
     void saveCurrentWorld() {
         const auto saveRead = worldLock.read();
         saveCurrentWorldLocked();
@@ -2033,8 +1853,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     void saveCurrentWorldLocked() {
         try {
-            // The save is built and persisted by the runtime; false means there
-            // is no save open, matching the old disabled-for-this-session path.
+            // 存档由运行时构建并落盘；返回 false 表示当前没有打开的存档
             if (!runtime.saveLocked()) {
                 menuSystem.saveStatus = "World saving is disabled for this session";
                 return;
@@ -2065,12 +1884,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     }
 
-    // ---- Input ownership -------------------------------------------------
+    // ---- 输入归属 ----------------------------------------------------------
     //
-    // Who owns the input right now. Every window callback asks this, then hands
-    // the event to that mode's handler below; the precedence itself is the pure
-    // function in input/ScreenMode.hpp, so it is stated once rather than
-    // re-derived (slightly differently) by each callback.
+    // 当前由谁拥有输入
+    // 每个窗口回调都先问它，再把事件交给对应模式的处理函数
+    // 优先级本身是 input/ScreenMode.hpp 里的纯函数，只写一次，不由各回调各自（略有出入地）重新推导
     [[nodiscard]] input::ScreenMode screenMode() const {
         const auto page = menuSystem.pageStack.current();
         return input::screenModeOf(input::ScreenState{
@@ -2082,10 +1900,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         });
     }
 
-    // PX-5 Key Binds: while a Controls row is capturing, the next key press IS
-    // the rebind — it is consumed here (writing through the InputSystem single
-    // source) instead of acting as a menu or gameplay key. Escape cancels the
-    // capture rather than binding Escape.
+    // 按键设置的某一行正在捕获时，下一次按键**就是**这次重绑
+    // 它在这里被消费并写进 InputSystem 这一唯一来源，不再充当菜单键或游戏键
+    // Escape 表示取消捕获，而不是把 Escape 绑上去
     void handleKeyCaptureKey(int key, int action) {
         if (action != GLFW_PRESS) {
             return;
@@ -2101,8 +1918,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // The create/edit-world name field: the same editing keys 1.16.1's
-    // EditBox handles, with Enter committing the page and Escape leaving it.
+    // 创建/编辑世界的名称输入框：编辑键与 vanilla 的文本框一致，回车提交该页，Escape 退出
     void handleWorldNameKey(int key, int action) {
         const auto page = menuSystem.pageStack.current();
         auto& name = page == ui::PageId::CreateWorld ? menuSystem.createWorldName
@@ -2146,8 +1962,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void appendChatCodepoint(unsigned int codepoint) {
-        // The key that opened the chat line also produces a character; swallow
-        // that one so "t" does not become the first letter typed.
+        // 打开聊天栏的那个按键同时也会产生一个字符；吞掉它，"t" 才不会变成输入的第一个字母
         const bool suppressedT = suppressedOpeningChatCodepoint == static_cast<unsigned int>('t') &&
                                  (codepoint == static_cast<unsigned int>('t') ||
                                   codepoint == static_cast<unsigned int>('T'));
@@ -2162,12 +1977,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // Keys for the three modes that do not own the keyboard: opening chat (in
-    // play only) and Back/Escape navigation. Everything else a key does —
-    // movement, the hotbar, F3/F5, E, Q — is level-sampled by the InputSystem in
-    // processInput() and applied by dispatchInputEvents(); this callback path
-    // carries only what must run while a screen is up, where that poll is gated
-    // off.
+    // 三种不占键盘的模式下的按键处理：打开聊天（仅游戏中）与返回/Escape 导航
+    // 移动、快捷栏、F3、F5、E、Q 这些按键作用都由 InputSystem 在 processInput() 里按电平采样
+    // 再由 dispatchInputEvents() 施加
+    // 回调这条路径只承载"有界面打开时仍必须生效"的部分，因为那时上述轮询是被门控关掉的
     void handleScreenKey(int key, int action) {
         if (action != GLFW_PRESS) {
             return;
@@ -2188,10 +2001,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // Back/Escape. The inventory is an overlay on PageId::Game, so it consumes
-    // Back before the page stack does — letting the page switch run first
-    // incorrectly opened Pause instead of closing the inventory and returning
-    // straight to play.
+    // 返回/Escape
+    // 背包是叠在游戏页上的覆盖层，因此它先于页栈消费返回键
+    // 让页面切换先跑会错误地打开暂停菜单，而不是关掉背包直接回到游戏
     void handleBackKey() {
         if (inventoryOpen) {
             setInventoryOpen(false);
@@ -2209,8 +2021,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             pressedMenuButton = ui::WidgetId::None;
             break;
         case ui::PageId::Language:
-            // Escape cancels the draft row selection. Only Done starts the
-            // asynchronous language reload.
+            // Escape 取消草稿选择；只有 Done 才启动异步的语言重载
             menuSystem.pendingLanguageCode = options.language;
             menuSystem.languageScrollbarDragging = false;
             menuSystem.pageStack.pop();
@@ -2239,7 +2050,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // The wheel over a menu page: whichever list that page owns.
+    // 菜单页上的滚轮：滚该页自己的那个列表
     void scrollMenuList(int direction) {
         switch (menuSystem.pageStack.current()) {
         case ui::PageId::WorldList:
@@ -2256,8 +2067,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // In play the wheel selects the hotbar slot, through the command queue like
-    // every other slot change.
+    // 游戏中滚轮选择快捷栏格位，和其它槽位变更一样走命令队列
     void scrollHotbar(int direction) {
         const std::size_t current = clientMirror_.player().selectedHotbarSlot;
         const std::size_t count = gameplay::Inventory::kHotbarSize;
@@ -2279,8 +2089,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     void handleInventoryMouseButton(int button, int action, int modifiers) {
         if (action == GLFW_RELEASE) {
-            // Both buttons end a drag; the release also stops the creative
-            // scrollbar drag.
+            // 两个键都能结束拖拽，松开同时也停掉创造页的滚动条拖拽
             handleInventoryButtonRelease();
             return;
         }
@@ -2297,8 +2106,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     void handlePlayMouseButton(int button, int action) {
         if (button == GLFW_MOUSE_BUTTON_LEFT) {
-            // The destroy lifecycle is a command: Start on press (with the aimed
-            // target), Abort on release. The server ticks it.
+            // 破坏是一条命令，按下时带着瞄准目标发 Start，松开发 Abort
+            // 实际推进由服务端在 tick 里完成
             if (action == GLFW_PRESS) {
                 destroyButtonHeld = true;
                 enqueueDestroyStart();
@@ -2308,8 +2117,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 enqueueDestroyAbort();
             }
         } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-            // The use lifecycle: UseItemOn on press (with the target),
-            // UseItemStop on release so a held meal/repeat ends.
+            // 使用同理，按下时带着目标发 UseItemOn，松开发 UseItemStop
+            // 这样长按进食或连续使用才会结束
             if (std::getenv("MC_REBEDROCK_INTERACT_DEBUG") != nullptr) {
                 std::cout << "[interact] mouse RIGHT "
                           << (action == GLFW_PRESS ? "press" : "release")
@@ -2323,8 +2132,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // Cursor motion over a menu page only matters to a control that is already
-    // being dragged; each drag flag is exclusive.
+    // 菜单页上的光标移动只对已经在拖拽的控件有意义，各个拖拽标志互斥
     void dragMenuControl() {
         if (menuSystem.languageScrollbarDragging) {
             updateLanguageScrollFromCursor();
@@ -2346,9 +2154,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // In play the cursor turns the camera. The first sample after the cursor is
-    // captured only seeds the reference position, so entering play does not
-    // snap the view by however far the pointer had travelled.
+    // 游戏中光标转动相机
+    // 捕获光标后的第一次采样只用来记下参考位置
+    // 这样进入游戏时视角不会按指针此前移动的距离猛地跳一下
     void applyLookDelta(double x, double y) {
         if (firstMouseSample) {
             lastMouseX = x;
@@ -2364,34 +2172,30 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void processInput() {
-        // D0: sample the keyboard/look once a frame and ship it as a MovementInput
-        // over the channel — the server stages it on the authoritative player and
-        // derives the gated fields (flightAllowed/sprintAllowed) itself. This is
-        // the same once-a-frame cadence commitInput() had; the client no longer
-        // writes gameSession.input() (it has no session across a real connection).
-        // PX-1: sample the window into a device-agnostic frame, then let the
-        // InputSystem derive the whole movement intent (WASD/space/shift/ctrl,
-        // gamepad left stick, jump/forward edges) from the rebindable table. When
-        // a screen is up we still poll (so edge history stays consistent) but with
-        // gameplay actions gated, which yields a zeroed intent for the server.
+        // 每帧采样一次键盘与视线，作为 MovementInput 经通道送出
+        // 服务端把它暂存到权威玩家上，并自行派生 flightAllowed、sprintAllowed 这些受控字段
+        // 客户端不再写 gameSession.input()，跨真实连接时它根本没有会话
+        //
+        // 采样先落到与设备无关的原始帧，再由 InputSystem 按可重绑定的表派生出完整移动意图
+        // 意图涵盖 WASD、空格、Shift、Ctrl、手柄左摇杆，以及跳跃与前进的边沿
+        // 有界面打开时仍然轮询，好让边沿历史保持连续，但玩法动作被门控掉
+        // 于是送给服务端的是一份清零的意图
         input::RawInputFrame frame;
         input::sampleGlfwWindow(window, camera.direction(), frame);
-        // The same screen-ownership rule the window callbacks use decides whether
-        // the world gets this frame's input, so the poll and the callbacks cannot
-        // disagree about what "a screen is up" means.
+        // 世界能否拿到本帧输入，用的是窗口回调那条同样的输入归属规则
+        // 轮询与回调因此不可能对"有界面打开"这件事产生分歧
         const input::InputDispatchGate gate = input::dispatchGateFor(screenMode(), worldReady);
         const bool gameplayEnabled = gate.gameplayEnabled;
         const input::MovementIntent intent =
             inputSystem_.poll(frame, inputEvents_, gameplayEnabled);
-        // The action edges are dispatched every frame, NOT only when gameplay is
-        // enabled: E must close the inventory (a screen that itself disables the
-        // gameplay poll), and F3/F5 toggle debug/perspective regardless of any
-        // screen — the pre-PX-1 key callback fired those unconditionally. Only the
-        // strictly in-play actions (hotbar swap, drop) stay gameplay-gated; the
-        // dispatcher applies the right gate per action.
+        // 动作边沿**每帧**都派发，而不是只在玩法启用时派发
+        // E 必须能关掉背包，而背包本身就会关掉玩法轮询
+        // F3 与 F5 切换调试与视角，不受任何界面影响
+        // 只有严格意义上的游戏中动作，比如切快捷栏和丢弃，才继续受玩法门控
+        // 具体哪条动作用哪个门，由派发器逐条决定
         dispatchInputEvents(gate);
         if (!gameplayEnabled) {
-            // A screen is up: send a zeroed intent so the server stops the player.
+            // 有界面打开时送一份清零的意图，让服务端把玩家停下
             runtime.sendClientMovement(gameplay::MovementInput{});
             clearPendingInputEdges();
             return;
@@ -2407,35 +2211,28 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (stressFrames > 0U) {
             pendingForwardPressed_ = true;
         }
-        // The jump edge toggles creative flight; the forward edge feeds the sprint
-        // double-tap window. The InputSystem derives both from the level bitmap;
-        // the key callback's pending flags are ORed in so a press that arrived as
-        // a GLFW event between polls (and the stress harness above) is not lost.
+        // 跳跃边沿切换创造飞行，前进边沿喂给疾跑的双击窗口
+        // 两者都由 InputSystem 从电平位图派生
+        // 键回调攒下的待处理标志会或进来，免得两次轮询之间到达的按键事件丢失
+        // 上面的压测装置产生的边沿同样靠这一步保住
         movement.jumpPressed = intent.jumpPressed || pendingJumpPressed_;
         movement.forwardPressed = intent.forwardPressed || pendingForwardPressed_;
-        // Bedrock-style auto-jump is a client option; the physics decides when the
-        // obstacle is actually jumpable. flightAllowed/sprintAllowed are NOT sent —
-        // the server derives them from the authoritative game mode and food level.
+        // 基岩风格的自动跳跃是客户端选项，障碍到底跳不跳得上由物理决定
+        // flightAllowed 与 sprintAllowed **不**发送，服务端按权威的游戏模式和饱食度自行派生
         movement.autoJump = options.autoJump;
         runtime.sendClientMovement(movement);
         clearPendingInputEdges();
     }
 
-    // PX-1: translate the InputSystem's discrete action edges into the renderer's
-    // existing side effects (inventory toggle, hotbar swap, drop, debug,
-    // perspective). Replaces the per-key GLFW_PRESS branches the key callback used
-    // to carry. Each action carries its own gate, mirroring the pre-PX-1 guards:
+    // 把 InputSystem 的离散动作边沿翻译成渲染器的既有副作用
+    // 涵盖开关背包、切快捷栏、丢弃、调试叠加层和视角切换
+    // 每条动作各带各的门：
     //
-    //   Debug / Perspective  — fired unconditionally (the old callback had no
-    //                          guard); toggling debug/perspective works from any
-    //                          screen state, matching vanilla F3/F5.
-    //   Inventory (E)        — fired while not paused and not typing in chat, so
-    //                          E BOTH opens play->inventory AND closes it again
-    //                          (the inventory screen disables the gameplay poll,
-    //                          so gating this on gameplayEnabled would strand it
-    //                          open — the reported regression). Chat swallows E as
-    //                          a character instead.
-    //   DropItem / Hotbar    — strictly in-play; gated on gameplayEnabled.
+    //   调试 / 视角     无条件触发，任何界面状态下都能切，与 vanilla 的 F3、F5 一致
+    //   背包（E）       未暂停且不在聊天输入时触发，因此 E 既能开背包也能关背包
+    //                   背包界面自身会关掉玩法轮询，若按 gameplayEnabled 门控就会关不掉
+    //                   聊天状态下 E 被当作字符吞掉
+    //   丢弃 / 快捷栏   严格限定在游戏中，受 gameplayEnabled 门控
     void dispatchInputEvents(const input::InputDispatchGate& gate) {
         for (std::size_t i = 0; i < inputEvents_.size(); ++i) {
             const auto& event = inputEvents_[i];
@@ -2471,25 +2268,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // Clears the client-side input edges, consumed once they have been folded into
-    // a sent MovementInput or discarded when a screen comes up. Replaces the old
-    // gameSession.clearInputEdges(), which reached into the session's accumulators.
+    // 清掉客户端侧的输入边沿
+    // 它们要么已经折进送出的 MovementInput，要么因为界面打开而被丢弃
     void clearPendingInputEdges() {
         pendingJumpPressed_ = false;
         pendingForwardPressed_ = false;
     }
 
-    // The gameSession.player()'s external damage entry: any hit the world deals to the
-    // gameSession.player() routes through the shared gameSession.vitals() pipeline, then raises the
-    // death screen on the tick it kills — the gameSession.player()'s own onDeath handler.
-
-    // Entity#kill / LivingEntity#kill for the gameSession.player(): OutOfWorld damage at
-    // infinite magnitude, the same path /kill <entity> routes a creature through.
-
-    // The mouse callback returns early while a screen is up, so a release that
-    // happens behind one never reaches the commands. Every transition into a
-    // screen therefore has to end the dig/use explicitly — the interaction state
-    // lives in gameplay now, so the abort/stop edges are queued for it.
+    // 有界面打开时鼠标回调直接返回，躲在界面后面发生的松开永远到不了命令层
+    // 因此每次进入界面都必须显式结束挖掘与使用
+    // 交互状态现在归玩法侧所有，所以这里排的是 abort 与 stop 两个边沿
     void releaseInteractionButtons() {
         destroyButtonHeld = false;
         lastDestroyAimBlock.reset();
@@ -2498,19 +2286,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void respawnPlayer() {
-        // D0: the respawn intent travels the channel; the runtime applies it now
-        // (the simulation is paused on the death screen, so no tick would drain it)
-        // and republishes the fresh spawn snapshot. Then pump it into the mirror
-        // so the camera and reads below see the spawn this frame instead of the
-        // stale death position a tick later. The client no longer calls
-        // GameSession::respawn directly — a cross-process client has no session.
+        // 重生意图经通道送出，运行时立刻应用并重新发布出生点快照
+        // 之所以立刻应用，是因为死亡界面下模拟已暂停，没有 tick 会去排空它
+        // 随后把快照泵进镜像，相机和下面的读取本帧就能看到出生点，而不是一个 tick 后才更新
+        // 客户端不再直接调用 GameSession::respawn，跨进程的客户端根本没有会话
         runtime.sendClientSessionCommand(gameplay::Respawn{});
         runtime.applyClientCommandsNow();
         static_cast<void>(clientMirror_.pump(runtime.clientChannel(), *this));
         camera.setPosition(snapshotCameraEye());
-        // PlayerManager#respawnPlayer snaps the new body to the spawn's stored
-        // angle (vanilla yaw 0) instead of carrying the death look over. The
-        // /tp conversion applies here: vanilla yaw 0 faces +Z.
+        // 重生把新身体对齐到出生点存下的角度，而不是沿用死亡时的视线，vanilla 的偏航为 0
+        // 这里同样适用 /tp 的换算：vanilla 偏航 0 面朝 +Z
         camera.setRotation(clientMirror_.world().playerSpawnYaw + 90.0F, 0.0F);
         const auto& worldSnap = clientMirror_.world();
         chunkStreamer.request(world::chunkPositionFromWorld(worldSnap.worldSpawnPosition.x,
@@ -2522,10 +2307,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (uiFrameData_.gameMode == mode) {
             return;
         }
-        // D0: the game-mode switch travels the channel and the runtime applies it
-        // authoritatively at once (working whether the sim is paused or ticking),
-        // republishing so the next mirror pump updates uiFrameData_.gameMode. The
-        // client no longer calls GameSession::setGameMode directly.
+        // 游戏模式切换经通道送出，运行时立刻权威地应用，模拟暂停或运行中都成立
+        // 应用后重新发布，下一次镜像泵送就会更新 uiFrameData_.gameMode
+        // 客户端不再直接调用 GameSession::setGameMode
         runtime.sendClientSessionCommand(gameplay::SetGameMode{mode});
         runtime.applyClientCommandsNow();
         std::cout << "Game mode: " << gameplay::gameModeName(mode) << '\n';
@@ -2534,10 +2318,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         lastPlayerMode.clear();
     }
 
-    // Vanilla recenters the cursor onto the screen when a menu takes over from
-    // the captured gameplay cursor, instead of leaving it where the virtual
-    // (captured) position had drifted. firstMouseSample is set before calling
-    // this so the recentering event is swallowed by the mouse callback.
+    // 菜单从被捕获的游戏光标手里接管时，vanilla 会把光标重新居中到屏幕上
+    // 而不是把它留在虚拟捕获位置漂到的地方
+    // 调用本函数前会置上 firstMouseSample，居中产生的那次移动事件因此被鼠标回调吞掉
     void unlockCursor() {
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
         int windowWidth = 0;
@@ -2570,9 +2353,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             return;
         }
         if (chatInputText.front() == '/') {
-            // The command runs server-side on the runtime's dispatcher inside
-            // the next tick (it owns the world write section); the result is
-            // read back in the frame loop and appended to the history.
+            // 命令在下一个 tick 里由运行时的派发器在服务端执行，那里持有世界写区间
+            // 结果由帧循环读回并追加进历史
             runtime.enqueueChat(chatInputText);
         } else {
             chatHistory.push("<Player> " + chatInputText, true, uiTimeSeconds);
@@ -2581,13 +2363,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         setChatOpen(false);
     }
 
-    // Recomputes the completion list for the token under the (end-of-input)
-    // cursor. Called whenever the input changes; Tab cycles without recomputing.
-    // Only command lines (a leading '/') are completed: plain chat is not a
-    // command, so it gets no suggestions. 1.16.1's ChatScreen builds its
-    // CommandSuggestor only for input beginning with '/'. The dispatcher keeps
-    // the '/' optional for programmatic callers; the gate lives here at the UI
-    // entry so a normal chat message never pops the command completion box.
+    // 为光标处的词重算补全列表，光标始终在输入末尾
+    // 输入一变就调用一次，Tab 只在已算好的列表里循环，不重算
+    // 只有以 '/' 开头的命令行才补全，普通聊天不是命令，不给建议
+    // vanilla 的聊天界面同样只为 '/' 开头的输入建补全器
+    // 派发器对程序化调用方允许省略 '/'，这道门设在 UI 入口，普通聊天因此不会弹出补全框
     void refreshChatSuggestions() {
         if (chatInputText.empty() || chatInputText.front() != '/') {
             chatSuggestions_.clear();
@@ -2599,10 +2379,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         chatSuggestionIndex_ = 0;
     }
 
-    // Tab: advances the highlighted suggestion and applies it. Applying replaces
-    // the partial token from suggestion.start to the end of the line, and the
-    // stored list keeps its offsets, so pressing Tab again swaps in the next
-    // candidate.
+    // Tab 把高亮移到下一个候选并应用它
+    // 应用时替换从 suggestion.start 到行尾的那半个词
+    // 已存的列表保留各自的偏移，因此再按一次 Tab 就换成下一个候选
     void cycleChatSuggestion() {
         if (chatSuggestions_.empty()) {
             refreshChatSuggestions();
@@ -2618,18 +2397,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // The two /tp forms share destination resolution: a Position3 resolves
-    // relative axes against the gameSession.player()'s feet and teleports there (applying the
-    // optional rotation); a std::string destination is an entity id to teleport
-    // onto. `withRotation` marks the `/tp <x> <y> <z> <yaw> <pitch>` form.
+    // /tp 的两种形式共用同一套目标解析
+    // Position3 形式把相对坐标轴按玩家脚底解析后传送过去，并应用可选的旋转
+    // std::string 形式是要传送到的实体 id
+    // `withRotation` 标记的是 `/tp <x> <y> <z> <yaw> <pitch>` 这一种
     gameplay::CommandResult teleportWithContext(const gameplay::command::CommandContext& context,
                                                 bool withRotation) {
         if (const auto position = context.find<gameplay::command::Position3>("destination");
             position.has_value()) {
-            // The relative /tp base is the authoritative feet (this teleports the
-            // server player), not the lagging client mirror. Resolve `~` axes
-            // through the one shared resolve() — the same function the
-            // authoritative commands use, so a coordinate never means two things.
+            // 相对坐标的基准取权威的脚底位置，因为这条命令传送的是服务端玩家
+            // 不能取滞后一拍的客户端镜像
+            // `~` 轴一律经共享的 resolve() 解析，权威命令用的也是它，坐标因此不会有两种含义
             gameplay::command::CommandSource base;
             base.position = gameSession.playerTickSnapshot().physicsCurrent;
             const glm::vec3 target = gameplay::command::resolve(*position, base);
@@ -2666,26 +2444,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return gameplay::CommandResult{true, "Teleported to the " + *entityId};
     }
 
-    // Entity#teleport without the render interpolation glitch: the gameSession.player(), the
-    // physics interpolation endpoints and the camera all snap together, and the
-    // chunk streamer recentres so the destination is loaded.
+    // 传送时不留渲染插值的瑕疵，玩家、物理插值的两个端点和相机一起跳到位
+    // 区块流送同时重新居中，目标位置因此已经加载好
     void teleportPlayerTo(glm::vec3 target) {
         gameSession.teleportPlayer(gameplay::kPrimaryPlayerId, target);
         camera.setPosition(snapshotCameraEye());
         chunkStreamer.request(world::chunkPositionFromWorld(target.x, target.z));
     }
 
-    // Vanilla's /tp yaw is 0 facing +Z; the camera's yaw uses atan2(z, x) with 0
-    // facing +X, and vanilla pitch is positive looking down while the camera's
-    // is positive looking up. Both convert here.
+    // vanilla 的 /tp 偏航以 0 面朝 +Z，而相机的偏航用 atan2(z, x)，0 面朝 +X
+    // vanilla 的俯仰向下为正，相机的向上为正，两者都在这里换算
     void setPlayerLook(const gameplay::command::Rotation2& rotation) {
         camera.setRotation(static_cast<float>(rotation.yaw) + 90.0F,
                            static_cast<float>(-rotation.pitch));
     }
 
-    // The first creature in the published entity snapshot whose registered id
-    // (either namespace) matches, as its stable entity id. The render side names
-    // entities for commands from what it draws, never from the live vector.
+    // 在已发布的实体快照里找第一个注册 id 匹配的生物，返回它的稳定实体 id，两种命名空间都接受
+    // 渲染侧为命令指名实体时只看自己画出来的东西，绝不读实时容器
     [[nodiscard]] std::optional<std::uint64_t> entityIdById(std::string_view id) const {
         const auto& snapshot = clientMirror_.entities();
         for (const auto& entity : snapshot.entities()) {
@@ -2699,7 +2474,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return std::nullopt;
     }
 
-    // The creature's render position from the published snapshot, by stable id.
+    // 按稳定 id 从已发布快照取该生物的渲染位置
     [[nodiscard]] std::optional<glm::vec3> snapshotEntityPosition(std::uint64_t entityId) const {
         const auto& snapshot = clientMirror_.entities();
         for (const auto& entity : snapshot.entities()) {
@@ -2768,8 +2543,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     void setInventoryOpenLocked(bool open) {
         if (!open) {
-            // The full menu close — stow the cursor and crafting grid, close
-            // the chest entity and the container — lives on the session.
+            // 完整的关界面流程归会话所有，含收起光标物品与合成栏、关闭箱子实体和容器
             gameSession.closeContainerMenu();
         }
         inventoryOpen = open;
@@ -2789,9 +2563,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         setInventoryOpenLocked(open);
     }
 
-    // Everything the ScreenHandler needs to know about the open screen. The
-    // renderer owns which screen that is and where the creative view sits; the
-    // slot layout and the click routing that follow from it do not belong here.
+    // ScreenHandler 需要知道的关于当前界面的全部信息
+    // 渲染器只拥有"开的是哪个界面"和"创造视图滚到哪里"
+    // 由此推导出的槽位排版与点击路由不属于这里
     [[nodiscard]] gameplay::ScreenContext screenContext() const {
         const auto snapshot = clientMirror_.world();
         const auto furnace = snapshot.openFurnace.has_value()
@@ -2803,18 +2577,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 uiFrameData_.gameMode, menuSystem.creativeTab == ui::CreativeTab::Inventory};
     }
 
-    // The eye height the published snapshot implies (the same sneaking-derived
-    // rule the per-frame camera uses), so a caller that needs just the height —
-    // a stress teleport's feet target, say — reads the snapshot too.
+    // 已发布快照所隐含的眼高，规则与逐帧相机用的那套潜行判定相同
+    // 只需要高度的调用方，比如压测传送要算脚底目标，也从快照读
     [[nodiscard]] float snapshotEyeHeight() const {
         return clientMirror_.player().sneaking
                    ? gameplay::PlayerController::kSneakingEyeHeight
                    : gameplay::PlayerController::kEyeHeight;
     }
-    // The camera's follow point from the published player snapshot: the physics
-    // endpoint plus the eye height. teleportPlayer and respawn mirror their
-    // snapped endpoints into the snapshot, so a synchronous teleport is visible
-    // the same frame — the camera never reads the live controller.
+    // 相机的跟随点取自已发布的玩家快照，即物理端点加上眼高
+    // 传送与重生都会把跳到位的端点同步镜像进快照，同步传送因此当帧可见
+    // 相机永远不读实时的控制器
     [[nodiscard]] glm::vec3 snapshotCameraEye() const {
         const auto& snap = clientMirror_.player();
         return snap.physicsCurrent + glm::vec3{0.0F, snapshotEyeHeight(), 0.0F};
@@ -2826,9 +2598,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (pause) {
             simulationActive.store(false, std::memory_order_release);
         }
-        // Publishing inactive prevents another tick from starting; the write
-        // section also waits for a tick already in flight before session state
-        // is snapped or menu transitions mutate it.
+        // 先发布"未激活"可以阻止新的 tick 开始
+        // 写区间还会等待已经在飞的那个 tick 结束，之后才快照会话状态或让界面切换改动它
         const auto pauseWrite = worldLock.write();
         if (pause && inventoryOpen) {
             setInventoryOpenLocked(false);
@@ -2854,11 +2625,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         releaseInteractionButtons();
         dropRequested = false;
-        // Re-anchor to the *authoritative* position, not the client mirror: this
-        // writes the server player, so it must read the session snapshot (which
-        // respawn/teleport update synchronously) — the channel mirror lags a
-        // tick, and after a respawn it still holds the death position, which would
-        // teleport the freshly respawned player back onto its corpse.
+        // 重新锚定到**权威**位置而不是客户端镜像，因为这里写的是服务端玩家
+        // 因此必须读会话快照，重生与传送会同步更新它
+        // 通道镜像滞后一个 tick，重生之后它还停在死亡位置
+        // 用它会把刚重生的玩家又传回自己的尸体上
         gameSession.teleportPlayer(gameplay::kPrimaryPlayerId,
                                    gameSession.playerTickSnapshot().physicsCurrent);
         if (pause) {
@@ -2886,60 +2656,56 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return ui::menuButtonCount(menuSystem.pageStack.current(), currentSave.has_value());
     }
 
-    // Save-screen list rows live in the band between the title and the
-    // bottom-anchored function buttons; saveListVisibleRowCount decides how
-    // many fit so the rows never collide with the buttons at any resolution.
+    // 存档界面的列表行位于标题与底部功能按钮之间的那条带内
+    // saveListVisibleRowCount 决定能放几行，任何分辨率下行都不会撞上按钮
     [[nodiscard]] ui::UiRect worldListRow(std::size_t index, const ui::HudLayout& layout) const {
         return ui::worldListRow(index, layout, static_cast<float>(swapchainExtent.width));
     }
 
-    // How many world rows fit in the list band at the current canvas size. The
-    // list fills the space between the title and the bottom buttons instead of
-    // a fixed three rows, mirroring 1.16.1's three-layer save screen.
+    // 当前画布尺寸下列表带里能放几行世界
+    // 列表填满标题与底部按钮之间的空间，而不是固定三行，形态对齐 vanilla 的存档界面
     [[nodiscard]] std::size_t saveListVisibleRowCount() const {
         return ui::saveListVisibleRowCount(static_cast<float>(swapchainExtent.width),
                                            static_cast<float>(swapchainExtent.height),
                                            menuSystem.guiScaleSetting);
     }
 
-    // The language screen's selection list: a full-width dark box that runs from
-    // the left to the right screen edge (the save-selection screen's band look).
-    // It is sized to its rows and centred vertically in the space between the
-    // title and the grey warning line, so the languages sit absolutely centred
-    // rather than packed against the top of a tall box.
+    // 语言界面的选择列表是一个从屏幕左缘拉到右缘的深色框，取存档选择界面那种通栏样式
+    // 框高按行数决定，并在标题与灰色提示行之间垂直居中
+    // 语言项因此是绝对居中的，而不是挤在一个高框的顶部
     [[nodiscard]] ui::UiRect languageListBox(const ui::HudLayout& layout) const {
         return ui::languageListBox(layout, static_cast<float>(swapchainExtent.width));
     }
 
-    // The grey "(" + options.languageWarning + ")" line below the list, exactly
-    // where 1.16.1's LanguageOptionsScreen draws it (between list and buttons).
+    // 列表下方那行灰色的 "(" + options.languageWarning + ")"
+    // 位置与 vanilla 的语言界面一致，落在列表与按钮之间
     [[nodiscard]] float languageWarningY(const ui::HudLayout& layout) const {
         return ui::languageWarningY(layout);
     }
 
-    // One row of the language list inside the full-width dark box.
+    // 通栏深色框内语言列表的一行
     [[nodiscard]] ui::UiRect languageRow(std::size_t index, const ui::HudLayout& layout) const {
         return ui::languageRow(index, layout, static_cast<float>(swapchainExtent.width));
     }
 
-    // How many language rows fit inside the black box at the current canvas.
+    // 当前画布尺寸下黑框里能放几行语言
     [[nodiscard]] std::size_t languageVisibleRowCount() const {
         return ui::languageVisibleRowCount(static_cast<float>(swapchainExtent.width),
                                            static_cast<float>(swapchainExtent.height),
                                            menuSystem.guiScaleSetting);
     }
 
-    // Shared button geometry for the frontend pages: the save screen and its
-    // edit/delete pages anchor their buttons to the bottom (the world list in
-    // two columns), while the title and create screens keep the centred menu.
+    // 前端各页共用的按钮几何
+    // 存档界面及其编辑与删除页把按钮锚在底部，世界列表页排成两列
+    // 标题页与创建页则保持居中的菜单排布
     [[nodiscard]] ui::UiRect frontendButtonRect(const ui::HudLayout& layout, ui::PageId page,
                                                 std::size_t index, std::size_t buttonCount) const {
         return ui::frontendButtonRect(layout, page, index, buttonCount);
     }
 
-    // PX-6: push a system toast (top-right notification). Only used for triggers
-    // that already exist (e.g. a setting change) — never a placeholder for an
-    // absent system (achievements/recipes have none, so none is pushed).
+    // 推一条系统吐司提示到右上角
+    // 只用于已经存在的触发点，比如设置变更
+    // 不为尚未实现的系统占位，成就与配方目前没有，因此一条也不推
     void pushSystemToast(std::string title, std::string subtitle) {
         ui::Toast toast;
         toast.kind = ui::ToastKind::System;
@@ -2948,9 +2714,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         toastQueue_.push(std::move(toast));
     }
 
-    // PX-6: show a sound's accessibility caption (SoundRegistry.subtitle) when
-    // subtitles are enabled. The client option gates it; until that toggle is
-    // wired the feed stays inert (no fake-on captions).
+    // 开启字幕时显示某个音效的无障碍字幕，取自 SoundRegistry.subtitle
+    // 由客户端选项门控，选项未接通之前整条字幕流保持静默，不伪造字幕
     void showSoundSubtitle(std::string_view subtitle) {
         if (!options.showSubtitles || subtitle.empty()) {
             return;
@@ -2958,10 +2723,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         subtitleFeed_.show(std::string{subtitle});
     }
 
-    // PX-4: the callback factory — binds every menu action to a renderer method,
-    // captured by `this`. buildPage() stamps these onto the page's widgets, so a
-    // click runs the same effect the old switch(MenuButton) case did. This is the
-    // single seam where Vulkan/save/audio state meets the Vulkan-free ui:: model.
+    // 回调工厂，把每个菜单动作绑到渲染器的方法上，捕获 `this`
+    // buildPage() 把它们盖到页面各 widget 上，点击因此直接跑到对应效果
+    // 这是 Vulkan、存档、音频状态与不含 Vulkan 的 ui:: 模型之间唯一的接缝
     [[nodiscard]] ui::MenuCallbacks buildMenuCallbacks() {
         ui::MenuCallbacks cb;
         cb.openSingleplayer = [this] {
@@ -3037,10 +2801,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
         cb.cycleResolution = [this] { cycleResolution(); };
         cb.cycleGuiScale = [this] { cycleGuiScale(); };
-        // Every cycling option goes through one callback: ui::OptionCycle's table
-        // owns the values, the field and the label, so this seam carries no
-        // per-option knowledge at all — it steps the value, persists, and lets
-        // applyOptionChanged react.
+        // 所有循环选项共用这一个回调
+        // 取值、字段和标签都归 ui::OptionCycle 的表所有，这道接缝不含任何逐选项知识
+        // 它只做三件事：步进取值、持久化、交给 applyOptionChanged 去反应
         cb.cycleOption = [this](ui::WidgetId id, int direction) {
             const ui::OptionDesc* option = ui::findCyclingOption(id);
             if (option == nullptr) {
@@ -3054,8 +2817,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (currentSave.has_value()) {
                 currentSave->difficulty = gameplay::nextDifficulty(currentSave->difficulty);
                 gameSession.setDifficulty(currentSave->difficulty);
-                // PX-6 system toast: a setting change (a trigger that already
-                // exists) confirms to the player via the top-right overlay.
+                // 设置变更是一个已经存在的触发点，用右上角的吐司提示向玩家确认
                 pushSystemToast("Difficulty",
                                 std::string{gameplay::difficultyName(currentSave->difficulty)});
             }
@@ -3067,9 +2829,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
         };
 
-        // PX-5 Key Binds: clicking a row begins capturing the next key for that
-        // action; Reset restores the vanilla defaults. Both act on the PX-1
-        // InputSystem single source (via keyBindScreen_), never a private copy.
+        // 点击某一行开始为该动作捕获下一次按键，Reset 恢复 vanilla 默认值
+        // 两者都经 keyBindScreen_ 作用在 InputSystem 这一唯一来源上，绝不改私有副本
         cb.beginKeyCapture = [this](input::InputAction action) {
             keyBindScreen_.beginCapture(action);
             playUiClick();
@@ -3109,8 +2870,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return cb;
     }
 
-    // PX-4: the current page's rects come from the existing HudLayout, indexed by
-    // widget ordinal — the exact frontendButtonRect contract the old draw used.
+    // 当前页面的矩形来自 HudLayout，按 widget 序号索引，遵循 frontendButtonRect 的约定
     [[nodiscard]] ui::RectProvider menuRectProvider() const {
         const ui::PageId page = menuSystem.pageStack.current();
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
@@ -3118,9 +2878,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                    menuSystem.guiScaleSetting};
         const std::size_t count = menuButtonCount();
         const float fbWidth = static_cast<float>(swapchainExtent.width);
-        // PX-6 Bug1: on Controls, the first `keyRows` widget indices are scrolling
-        // key-bind list rows (controlsRow); the trailing four are the bottom
-        // button band. Elsewhere every widget is a frontend button.
+        // 按键设置页里前 `keyRows` 个 widget 是可滚动的按键列表行，走 controlsRow 排版
+        // 末尾四个是底部按钮带，其余页面的每个 widget 都是普通前端按钮
         const std::size_t keyRows =
             page == ui::PageId::Controls ? controlsVisibleKeyBindRowCount() : 0U;
         return [layout, page, count, fbWidth, keyRows](std::size_t index) {
@@ -3132,8 +2891,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         };
     }
 
-    // PX-6 Bug1: how many key-bind rows are visible on the Controls list this
-    // frame — the visible window, clamped to the number of rebindable actions.
+    // 本帧按键设置列表上可见的行数，即可见窗口，钳制到可重绑定动作的总数
     [[nodiscard]] std::size_t controlsVisibleKeyBindRowCount() const {
         const std::size_t total = input::keyBindRows().size();
         const std::size_t window = ui::controlsVisibleRowCount(
@@ -3143,28 +2901,27 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return std::min(window, total - first);
     }
 
-    // PX-4: the widget index under the cursor on the given page (kNoWidget if
-    // none) — the model's hitTest against the page's laid-out rects.
+    // 给定页面上光标所在的 widget 下标，没有则返回 kNoWidget
+    // 它就是模型对该页已排版矩形做的命中测试
     [[nodiscard]] std::size_t hoveredMenuIndex(const ui::Page& page) const {
         const auto cursor = currentFramebufferCursor();
         return ui::hitTest(page, cursor.x, cursor.y);
     }
 
-    // PX-4: assemble the current page as a ui::Page value — the single build point.
+    // 把当前页面装配成一个 ui::Page 值，这是唯一的构建点
     [[nodiscard]] ui::Page buildCurrentPage() {
         ui::MenuBuildContext ctx;
         ctx.worldOpen = currentSave.has_value();
         ctx.worldSelectable = !menuSystem.saveSummaries.empty();
         ctx.worldRowCount = 0;       // list rows are drawn by the list path today
         ctx.languageRowCount = 0;
-        // PX-6 Bug1: the Controls key-bind list is scrolling — build only the
-        // visible window so the page never exceeds the layout button cap.
+        // 按键设置列表是可滚动的，只构建可见窗口，页面因此不会超出排版的按钮数上限
         if (menuSystem.pageStack.current() == ui::PageId::Controls) {
             ctx.keyBindFirstIndex = menuSystem.controlsListFirstIndex;
             ctx.keyBindRowCount = controlsVisibleKeyBindRowCount();
         }
-        // PX-5 Key Binds: each row's label is "Action: Key" from the InputSystem
-        // single source, or "Action: > ? <" while that row is capturing.
+        // 每行的标签形如"动作: 按键"，取自 InputSystem 这一唯一来源
+        // 该行正在捕获时改显示为"动作: > ? <"
         ctx.keyBindLabelFor = [this](input::InputAction action) -> std::string {
             const std::string name{input::actionDisplayName(action)};
             if (keyBindScreen_.capturing() && keyBindScreen_.capturingAction() == action) {
@@ -3176,12 +2933,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                              menuRectProvider());
     }
 
-    // The ONE place a changed option is reacted to. ui::OptionCycle's table owns
-    // what an option's values are and what its label reads; the renderer owns
-    // what a change costs — recreating the swapchain or the sampler, remeshing
-    // the world, retuning a live subsystem. An option with no entry here simply
-    // takes effect through the field the next time something reads it, which is
-    // true of most of them.
+    // 选项变更之后做出反应的**唯一**地方
+    // 选项有哪些取值、标签怎么读，归 ui::OptionCycle 的表所有
+    // 渲染器只管这次变更要付什么代价：重建交换链或采样器、重网格化世界、重调某个在跑的子系统
+    // 在这里没有条目的选项，下一次有人读那个字段时自然生效，大多数选项都是这样
     void applyOptionChanged(ui::WidgetId id) {
         switch (id) {
         case ui::WidgetId::AntiAliasing:
@@ -3220,10 +2975,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // The mesh is baked at the active smooth-lighting quality (the packed vertex
-    // carries one AO set), so changing it remeshes every resident section. Off
-    // keeps the bake it already has — the shader drops the AO instead — which is
-    // why Off does not trigger a remesh.
+    // 网格是按当前的平滑光照画质烘出来的，打包顶点只带一套 AO 数据
+    // 改画质因此要重网格化所有常驻 section
+    // 选 Off 时沿用已有的烘焙结果，由着色器丢掉 AO，所以 Off 不触发重网格化
     void applySmoothLightingQuality() {
         const auto baked = options.smoothLightingQuality == world::SmoothLightingQuality::Off
                                ? currentMeshQuality
@@ -3264,18 +3018,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 }
             }
         }
-        // PX-4: the pressed widget is resolved through the ui:: model (index into
-        // the current page); pressedMenuButton is kept only as the draw/debug id.
+        // 按下的 widget 经 ui:: 模型解析成当前页面里的下标
+        // pressedMenuButton 只作为绘制与调试用的 id 保留
         const ui::Page page = buildCurrentPage();
         pressedMenuIndex_ = hoveredMenuIndex(page);
-        // The pressed widget's stable id drives the draw highlight (which widget
-        // paints pressed); the index drives dispatch. None when the press missed.
+        // 稳定 id 驱动绘制高亮，决定哪个 widget 画成按下态，下标驱动派发
+        // 按空了则两者都为空
         pressedMenuButton = pressedMenuIndex_ != ui::kNoWidget
                                 ? static_cast<ui::WidgetId>(page[pressedMenuIndex_].debugId)
                                 : ui::WidgetId::None;
-        // A press on a Slider starts its drag; the drag effect runs through the
-        // slider's onDrag callback (never a traversal side effect). The dragging
-        // flags stay so the release path and draw highlight keep working.
+        // 按在滑块上即开始拖拽，拖拽效果一律经该滑块的 onDrag 回调，绝不是遍历的副作用
+        // 拖拽标志保留下来，松开路径与绘制高亮才继续可用
         if (pressedMenuIndex_ != ui::kNoWidget &&
             page[pressedMenuIndex_].kind == ui::WidgetKind::Slider) {
             const auto& slider = page[pressedMenuIndex_].slider;
@@ -3296,9 +3049,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 slider.onDrag(0.0F);  // the appliers read the cursor themselves
             }
         }
-        // 26.1 keeps a draft selection while the screen is open. Done commits
-        // it through one resource reload, so browsing several rows does not
-        // repeatedly parse translations and rebuild fonts.
+        // 26.1 在界面打开期间只维护一个草稿选择，按 Done 才用一次资源重载提交
+        // 于是连着浏览好几行不会反复解析翻译、反复重建字体
         if (menuSystem.pageStack.current() == ui::PageId::Language) {
             const auto cursor = currentFramebufferCursor();
             const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
@@ -3355,9 +3107,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                viewDistanceChunks + world::kUnloadHysteresisChunks);
     }
 
-    // Vanilla's Simulation Distance slider: the frozen-entity radius, in chunks,
-    // applied to the session's tick gate so it stays independent of the render
-    // distance. Range 2..12 chunks, the same units the view-distance slider uses.
+    // vanilla 的模拟距离滑块，单位为区块，表示实体被冻结之外的半径
+    // 它作用在会话的 tick 门控上，因此与渲染距离相互独立
+    // 取值范围 2 到 12 个区块，单位与视距滑块相同
     void updateSimulationDistanceFromCursor() {
         if (!menuSystem.optionsOpen) {
             return;
@@ -3402,9 +3154,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void noteWindowSizeChanged(int width, int height) noexcept {
-        // GLFW delivers maximize/restore before the accompanying size event on
-        // both Cocoa and Win32. This therefore captures even a quick resize-then-
-        // maximize sequence without ever recording the maximized client size.
+        // Cocoa 与 Win32 上 GLFW 都会先送最大化或还原事件，再送随之而来的尺寸事件
+        // 因此即便是"先拖动改大小、紧接着最大化"这种快速序列也能记对，不会把最大化后的尺寸存下来
         if (width > 0 && height > 0 &&
             glfwGetWindowAttrib(window, GLFW_MAXIMIZED) != GLFW_TRUE) {
             options.windowWidth = width;
@@ -3424,9 +3175,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         const bool maximized = glfwGetWindowAttrib(window, GLFW_MAXIMIZED) == GLFW_TRUE;
         options.windowMaximized = maximized;
-        // A maximized window reports the monitor-sized client area. Keep the
-        // last ordinary window size so restoring after this or the next launch
-        // returns to the user's actual windowed dimensions.
+        // 最大化的窗口报出的是整块显示器大小的客户区
+        // 这里保留最后一次普通窗口尺寸，本次还原或下次启动才能回到玩家真正的窗口大小
         if (!maximized && glfwGetWindowAttrib(window, GLFW_ICONIFIED) != GLFW_TRUE) {
             int width = 0;
             int height = 0;
@@ -3465,9 +3215,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         menuSystem.resolutionIndex =
             (menuSystem.resolutionIndex + 1U) % ui::kDisplayResolutions.size();
         const auto resolution = ui::kDisplayResolutions[menuSystem.resolutionIndex];
-        // On macOS a maximized window keeps its maximized flag when the client
-        // size is set directly, so the requested size never lands. Restore the
-        // window first, then apply the new resolution as a plain windowed size.
+        // macOS 上直接设置客户区尺寸不会清掉最大化标志，请求的尺寸因此永远落不下去
+        // 所以先还原窗口，再把新分辨率当作普通窗口尺寸应用
         if (glfwGetWindowAttrib(window, GLFW_MAXIMIZED) == GLFW_TRUE) {
             glfwRestoreWindow(window);
         }
@@ -3499,15 +3248,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (menuSystem.masterVolumeSliderDragging) {
             updateMasterVolumeFromCursor();
             persistOptions();
-            // Vanilla sliders play feedback on release. Keep the preview at
-            // the listener so attenuation cannot hide whether audio works.
+            // vanilla 的滑块在松开时给一声反馈
+            // 试听放在监听者位置，避免距离衰减把"音频到底通不通"给盖住
             if (options.masterVolume > 0.0F) {
                 audioSystem.playItemPickup(camera.position());
             }
         }
-        // PX-4: dispatch through the ui:: model. The pressed widget index was
-        // captured on press; if the release lands on the same enabled widget its
-        // onActivate runs the effect the old switch(MenuButton) case did.
+        // 经 ui:: 模型派发，按下时已记下 widget 下标
+        // 松开落在同一个且启用的 widget 上时，就跑它的 onActivate
         const ui::Page page = buildCurrentPage();
         const std::size_t released = hoveredMenuIndex(page);
         const std::size_t pressed = pressedMenuIndex_;
@@ -3517,13 +3265,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         menuSystem.simulationDistanceSliderDragging = false;
         menuSystem.masterVolumeSliderDragging = false;
         menuSystem.languageScrollbarDragging = false;
-        // A slider release commits (persist + feedback) through its callback.
+        // 滑块松开时经它自己的回调提交，含持久化与反馈音
         if (pressed != ui::kNoWidget && page[pressed].kind == ui::WidgetKind::Slider &&
             page[pressed].slider.onCommit) {
             page[pressed].slider.onCommit();
             return;
         }
-        // A button release over the same widget clicks and runs its onActivate.
+        // 按钮在同一个 widget 上松开即视为点击，执行它的 onActivate
         if (released != ui::kNoWidget && released == pressed) {
             playUiClick();
         }
@@ -3531,10 +3279,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         static_cast<void>(ui::dispatchActivate(page, pressed, cursor.x, cursor.y));
     }
 
-    // The slot and creative hit-testing shared by a press and by the release
-    // that ends a drag: resolve the cursor's position and act on whatever is
-    // under it (a container slot, a gameSession.player() slot, a creative tab, or drop the
-    // cursor stack on empty space).
+    // 按下与"结束拖拽的那次松开"共用的槽位与创造页命中测试
+    // 先解析光标位置，再对它下面的东西动作
+    // 那可能是容器槽、玩家背包槽、创造页签，或者是空白处——那就把光标上的物品堆丢出去
     void dispatchInventoryClick(gameplay::InventoryMouseButton button, bool shiftHeld) {
         double cursorX = 0.0;
         double cursorY = 0.0;
@@ -3553,36 +3300,31 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const ui::HudLayout layout{static_cast<float>(framebufferWidth),
                                    static_cast<float>(framebufferHeight),
                                    menuSystem.guiScaleSetting};
-        // Inventory and container slots are silent in vanilla: only actual
-        // buttons (AbstractButtonWidget) play ui.button.click, so picking up
-        // or moving an item never clicks. The menu buttons above are the only
-        // sound in this screen family.
+        // vanilla 里背包与容器的槽位是静音的，只有真正的按钮控件才播 ui.button.click
+        // 拿起或移动物品因此没有点击声，这一族界面里只有上面那些菜单按钮出声
         //
-        // One slot list, routed by what the slot is. This used to be a chain of
-        // `containerScreen ==` branches per screen, repeated for every question
-        // the screen was asked.
+        // 只有一张槽位表，按槽位自身的类型路由
         const auto slots = gameplay::ScreenHandler::buildSlotLayout(screenContext(), layout);
         if (const auto* slot = gameplay::ScreenHandler::slotAt(slots, framebufferCursor);
             slot != nullptr) {
-            // Command-ized: the click executes on the server tick through the
-            // interaction, which resolves the storage and routes it by slot kind.
+            // 点击被命令化，在服务端 tick 上经交互执行
+            // 由交互解析出实际存储并按槽位类型路由
             gameplay::ClickSlot click;
             click.kind = slot->kind;
             click.slotIndex = slot->index;
             click.button = static_cast<int>(button);
             click.shiftHeld = shiftHeld;
-            // The server cannot see the client's active creative tab, so the
-            // click carries it: a shift-click on an item-category tab deletes
-            // into the infinite catalogue, the Inventory tab does the ordinary
-            // swap. Matches screenContext()'s own creativeInventoryTab.
+            // 服务端看不到客户端当前选的创造页签，因此由点击自己带上
+            // 在物品分类页签上 Shift 点击等于丢进无限目录里销毁
+            // 在背包页签上则是普通的移动，行为与 screenContext() 里的 creativeInventoryTab 一致
             click.creativeInventoryTab = menuSystem.creativeTab == ui::CreativeTab::Inventory;
             runtime.enqueueClientCommand(std::move(click));
             return;
         }
         if (clientMirror_.world().openContainerScreen !=
             ContainerScreen::PlayerInventory) {
-            // Clicking outside every slot of an open container throws the held
-            // stack on the floor, but only outside the panel itself.
+            // 容器打开时点在所有槽位之外会把手上的物品堆扔到地上
+            // 但必须点在面板本身之外才算
             if (!layout.inventoryPanel().contains(framebufferCursor.x, framebufferCursor.y)) {
                 gameplay::DropCursor drop;
                 drop.lookDirection = camera.direction();
@@ -3608,9 +3350,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 }
             }
             if (menuSystem.creativeTab == ui::CreativeTab::Inventory) {
-                // The 36 inventory slots and the hotbar are real PlayerInventory
-                // slots routed by the slot hit-test above; only the delete box
-                // and the space outside the panel remain here.
+                // 36 个背包格与快捷栏都是真实的玩家背包槽，由上面的槽位命中测试路由
+                // 留到这里的只剩删除框和面板之外的空白
                 if (layout.creativeDeleteSlot().contains(framebufferCursor.x,
                                                          framebufferCursor.y)) {
                     runtime.enqueueClientCommand(gameplay::ClearCursor{});
@@ -3631,9 +3372,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 if (layout.creativeSlot(visibleIndex)
                         .contains(framebufferCursor.x, framebufferCursor.y)) {
                     if (catalogIndex >= catalog.size()) {
-                        // Empty cells in the creative catalogue are delete
-                        // targets. Only clicks outside the panel create an
-                        // item entity, matching the vanilla container.
+                        // 创造目录里的空格子是删除目标
+                        // 只有点在面板之外才会生成掉落物实体，与 vanilla 的容器一致
                         runtime.enqueueClientCommand(gameplay::ClearCursor{});
                         return;
                     }
@@ -3645,8 +3385,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     return;
                 }
             }
-            // The hotbar is routed by the slot hit-test above; only the space
-            // outside the panel throws the cursor stack.
+            // 快捷栏由上面的槽位命中测试路由，只有面板之外的空白才会把光标物品堆扔出去
             if (!layout.creativePanel().contains(framebufferCursor.x, framebufferCursor.y)) {
                 gameplay::DropCursor drop;
                 drop.lookDirection = camera.direction();
@@ -3654,8 +3393,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
             return;
         }
-        // Survival: the 36 inventory slots are routed by the slot hit-test; a
-        // click outside the panel throws the cursor stack.
+        // 生存模式下 36 个背包格由槽位命中测试路由，点在面板之外则扔出光标物品堆
         if (!layout.inventoryPanel().contains(framebufferCursor.x, framebufferCursor.y)) {
             gameplay::DropCursor drop;
             drop.lookDirection = camera.direction();
@@ -3663,15 +3401,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // SlotActionType.QUICK_CRAFT press. Vanilla splits the click into two
-    // phases: a press with an EMPTY cursor acts immediately (PICKUP, QUICK_MOVE
-    // or a creative click), while a press with a full cursor only begins a
-    // drag — the stack stays on the cursor until release distributes it across
-    // the swept slots or, with no movement, places it into the released slot.
+    // 快速合成拖拽的按下阶段
+    // vanilla 把一次点击拆成两段：光标为空时按下立即生效，走拿起、快速移动或创造点击
+    // 光标上有东西时按下只是开始拖拽，物品堆留在光标上
+    // 直到松开才把它分配到划过的各个槽位，若指针没动过就整堆放进松开处的那个槽
     void handleInventoryClick(gameplay::InventoryMouseButton button, bool shiftHeld) {
-        // HandledScreen#mouseClicked tracks the last slot/button/time so a
-        // second press of the same slot within 250 ms is a double-click, which
-        // the release turns into a PICKUP_ALL gather.
+        // 记下上一次的槽位、按键和时间，250 毫秒内再次按下同一槽位即算双击
+        // 松开时把双击变成"收拢全部同类物品"的动作
         const double now = glfwGetTime();
         std::optional<gameplay::SlotRef> clickedSlot = slotUnderCursor();
         isDoubleClicking = button == gameplay::InventoryMouseButton::Left &&
@@ -3692,11 +3428,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         inventoryDragSlots.clear();
     }
 
-    // Creative catalogue cells and controls act on the press itself: a catalogue
-    // click creates/adjusts the cursor stack, tabs switch immediately, the delete
-    // slot clears immediately, and the scrollbar starts its own drag. Real item
-    // slots are deliberately excluded so QUICK_CRAFT and PICKUP_ALL use the same
-    // state machine in both game modes and in creative-opened containers.
+    // 创造目录的格子与控件在按下那一刻就生效
+    // 目录点击创建或调整光标物品堆，页签立即切换，删除槽立即清空，滚动条开始自己的拖拽
+    // 真实物品槽被有意排除在外
+    // 这样快速合成拖拽与双击收拢在两种游戏模式下、以及创造模式打开的容器里都走同一套状态机
     [[nodiscard]] bool immediateCreativeControlUnderCursor() const {
         if (uiFrameData_.gameMode != gameplay::GameMode::Creative ||
             clientMirror_.world().openContainerScreen !=
@@ -3732,8 +3467,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return false;
     }
 
-    // The HUD layout for the current framebuffer. Slot geometry belongs to the
-    // screen, so anything that asks the ScreenHandler for slots needs one.
+    // 当前帧缓冲对应的 HUD 排版
+    // 槽位几何属于界面，凡是要向 ScreenHandler 要槽位的地方都得先有它
     [[nodiscard]] ui::HudLayout currentHudLayout() const {
         int framebufferWidth = 0;
         int framebufferHeight = 0;
@@ -3742,8 +3477,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                              static_cast<float>(framebufferHeight), menuSystem.guiScaleSetting};
     }
 
-    // The slot under the mouse as a (kind, index) value, for double-click
-    // tracking — never a storage pointer into gameplay.
+    // 鼠标下的槽位，表示为"类型加下标"的值，用于双击判定
+    // 它绝不是指向玩法侧存储的指针
     [[nodiscard]] std::optional<gameplay::SlotRef> slotUnderCursor() {
         double cursorX = 0.0;
         double cursorY = 0.0;
@@ -3765,9 +3500,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return dragSlotAt(layout, cursor);
     }
 
-    // Every slot the player can reach in the current screen, for the PICKUP_ALL
-    // gather: the container's input slots plus the whole player inventory. The
-    // output slots are excluded because they never hold storage of their own.
+    // 当前界面下玩家能够到的全部槽位，供双击收拢使用
+    // 含容器的输入槽和整个玩家背包
+    // 输出槽被排除，因为它们从不持有自己的存储
     [[nodiscard]] std::vector<gameplay::SlotRef> allScreenSlots() const {
         const auto layout = currentHudLayout();
         std::vector<gameplay::SlotRef> refs;
@@ -3780,9 +3515,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return refs;
     }
 
-    // The slot under the cursor as a (kind, index) value, or nullopt when there
-    // is none (a blank area, an output slot that cannot take items, or a
-    // creative tab). QUICK_CRAFT collects these.
+    // 光标下的槽位，表示为"类型加下标"的值，没有则返回 nullopt
+    // 空白区域、放不进物品的输出槽、创造页签都算没有
+    // 快速合成拖拽收集的就是这些值
     [[nodiscard]] std::optional<gameplay::SlotRef> dragSlotAt(const ui::HudLayout& layout,
                                                               const ui::UiPoint& cursor) const {
         const auto slots = gameplay::ScreenHandler::buildSlotLayout(screenContext(), layout);
@@ -3793,11 +3528,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return gameplay::SlotRef{slot->kind, slot->index};
     }
 
-    // The on-screen rectangle of a slot the cursor swept during a QUICK_CRAFT
-    // drag, or nullopt when the pointer no longer belongs to the current screen
-    // (a closed container, for example). The drag's (kind, index) identity is
-    // resolved back to its geometry, so the preview always lands on the slot
-    // the drag would write.
+    // 快速合成拖拽期间光标划过的某个槽位在屏幕上的矩形
+    // 若该指针已不属于当前界面，比如容器已关闭，则返回 nullopt
+    // 拖拽记下的"类型加下标"会被解析回几何，预览因此总是落在拖拽真正会写入的那个槽上
     [[nodiscard]] std::optional<ui::UiRect> dragSlotRectangle(const ui::HudLayout& layout,
                                                               const gameplay::SlotRef& ref) const {
         const auto slots = gameplay::ScreenHandler::buildSlotLayout(screenContext(), layout);
@@ -3809,12 +3542,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return std::nullopt;
     }
 
-    // The snapshot's current stack for a slot, so the drag preview and the
-    // placement counts read the same published display state the HUD draws.
+    // 从快照取某个槽位当前的物品堆
+    // 拖拽预览与落位数量因此读的是 HUD 正在画的同一份已发布显示状态
     [[nodiscard]] gameplay::ItemStack
     snapshotStackAt(gameplay::SlotKind kind, std::uint16_t index) const {
-        // The world snapshot is a by-value copy, so the stack is returned by
-        // value rather than as a reference into the copy.
+        // 世界快照是按值拷贝，因此这里按值返回物品堆，而不是返回指向那份拷贝的引用
         const auto snap = clientMirror_.world();
         switch (kind) {
         case gameplay::SlotKind::PlayerInventory:
@@ -3832,31 +3564,28 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case gameplay::SlotKind::FurnaceOutput:
             return snap.furnaceOutput;
         case gameplay::SlotKind::Equipment:
-            // EQ-1: the 4 armour slots + offhand the storage half publishes each
-            // tick (WorldSnapshot::equipmentSlots), indexed by EquipmentSlot's
-            // underlying value. RN-3: `index` here is the screen's own draw order
-            // ([Head,Chest,Legs,Feet,Offhand] = enum values [4,3,2,1,0], reversed),
-            // so map through equipmentSlotAt() — the same screen-order → enum
-            // conversion the click router (ScreenHandler::resolveSlotStorage) uses
-            // — instead of indexing the enum-keyed array with the draw-order index.
+            // 存储侧每 tick 发布的四个护甲槽加副手，即 WorldSnapshot::equipmentSlots
+            // 该数组按 EquipmentSlot 的底层值索引
+            // 而这里的 `index` 是界面自己的绘制顺序，头、胸、腿、脚、副手对应枚举值 4、3、2、1、0
+            // 因此要经 equipmentSlotAt() 转换，而不是拿绘制序号直接索引按枚举排列的数组
+            // 点击路由 ScreenHandler::resolveSlotStorage 用的也是这个转换
             return snap.equipmentSlots[static_cast<std::size_t>(
                 gameplay::equipmentSlotAt(index))];
         case gameplay::SlotKind::PlayerCraftingOutput:
         case gameplay::SlotKind::TableCraftingOutput:
-            // Output slots are not drag targets (acceptsItems is false), so the
-            // preview never asks for one; return a shared empty anyway.
+            // 输出槽不是拖拽目标，acceptsItems 为假，预览不会来问它
+            // 这里仍返回一个共享的空物品堆兜底
             break;
         }
         static const gameplay::ItemStack kEmptyPreviewStack;
         return kEmptyPreviewStack;
     }
 
-    // The amount the ongoing drag would place in each collected slot, mirroring
-    // Inventory::dragDistribute exactly: a left drag shares the cursor stack as
-    // evenly as the accepting slots allow, a right drag drops one item per slot.
-    // Zero marks a collected slot that cannot take the dragged item (its stack
-    // is full or a different item), which the preview skips just like the real
-    // distribution does. Reads the container display snapshot, never live slots.
+    // 当前拖拽会往每个已收集槽位放多少，与 Inventory::dragDistribute 完全一致
+    // 左键拖拽在能接收的槽位之间尽量均分光标物品堆，右键拖拽每格放一个
+    // 数量为 0 表示该槽位收不下拖拽中的物品，可能是堆满了，也可能是不同物品
+    // 预览会跳过这些槽，真正的分配同样如此
+    // 读的是容器显示快照，绝不读实时槽位
     [[nodiscard]] std::vector<std::uint8_t> dragPlacementCounts() const {
         std::vector<std::uint8_t> counts(inventoryDragSlots.size(), 0U);
         const auto& cursor = clientMirror_.world().cursorStack;
@@ -3904,25 +3633,21 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return counts;
     }
 
-    // Draws the would-be placement of an in-progress QUICK_CRAFT drag in the
-    // slots the cursor has swept, so the destination is visible before the
-    // button is released. Vanilla's HandledScreen.drawSlot tints the swept slot
-    // dark and paints a copy of the cursor stack with the amount that would land
-    // there; this reproduces that preview on top of the already-drawn slots.
+    // 在光标划过的槽位上画出拖拽松手后的落位，松开之前就能看到会放到哪
+    // vanilla 的做法是把划过的槽位压暗，再画一份光标物品堆并标上该格会落的数量
+    // 这里在已经画好的槽位之上复现同样的预览
     void handleInventoryButtonRelease() {
         creativeScrollbarDragging = false;
         if (cancelNextInventoryRelease) {
-            // A press that already acted (a pickup or quick-move from an empty
-            // cursor) leaves the release with nothing to do; the double-click
-            // flag is discarded so a later release cannot act on it.
+            // 按下时就已经生效的操作，比如空光标下的拿起或快速移动，松开时无事可做
+            // 顺便丢掉双击标志，后续的松开因此不会拿它做文章
             cancelNextInventoryRelease = false;
             isDoubleClicking = false;
             return;
         }
         if (isDoubleClicking) {
-            // SlotActionType.PICKUP_ALL: double-clicking a slot gathers every
-            // matching stack in the screen into the cursor, like vanilla. The
-            // second press already began a drag, so clear that state too.
+            // 双击某个槽位会把界面里所有同类物品堆收拢到光标上，与 vanilla 一致
+            // 第二次按下已经开始了一次拖拽，因此把那份状态一并清掉
             gameplay::PickupAll pickup;
             pickup.targets = allScreenSlots();
             runtime.enqueueClientCommand(std::move(pickup));
@@ -3935,33 +3660,28 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             return;
         }
         if (inventoryDragSlots.size() > 1U) {
-            // The drag swept two or more real slots: QUICK_CRAFT distributes the
-            // cursor stack across them (left = evenly, right = one per slot), on
-            // the server tick.
+            // 拖拽划过了两个以上真实槽位，于是在服务端 tick 上把光标物品堆分配下去
+            // 左键均分，右键每格一个
             gameplay::DragDistribute drag;
             drag.button = inventoryDragButton;
             drag.targets = std::move(inventoryDragSlots);
             runtime.enqueueClientCommand(std::move(drag));
         } else {
-            // Zero or one slot swept is a plain click, not a quick-craft — vanilla
-            // only quick-crafts across multiple slots and falls back to a normal
-            // PICKUP for a single slot. This matters because DragDistribute only
-            // fills empty-or-matching slots (dragPlacementCounts' accept test), so
-            // routing a one-slot "drag" through it silently refused to replace a
-            // slot that already held a *different* item — the creative
-            // pick-then-click-hotbar replacement that "sometimes needs several
-            // clicks". dispatchInventoryClick re-hit-tests the slot under the
-            // cursor and places the stack the way a real click does.
+            // 划过 0 个或 1 个槽位算普通点击，不算快速合成
+            // vanilla 也只在跨多个槽位时才快速合成，单槽退回普通的拿起放下
+            // 这一点很重要：分配逻辑只填空槽或同类槽，见 dragPlacementCounts 的接收判定
+            // 把单槽"拖拽"送进去，会静默地拒绝覆盖一个已经放着**别的**物品的槽
+            // 那正是创造模式里"选中物品再点快捷栏，有时要点好几下"的成因
+            // dispatchInventoryClick 会重新命中测试光标下的槽，并按真实点击的方式放置
             dispatchInventoryClick(inventoryDragButton, false);
         }
         inventoryDragActive = false;
         inventoryDragSlots.clear();
     }
 
-    // QUICK_CRAFT's add-slot pass: resolve the slot under the cursor and add it
-    // to the drag set, once, while the button stays held. Vanilla only collects
-    // a slot while the cursor holds more items than slots already collected, so
-    // a drag can never ask for more than the stack it carries.
+    // 快速合成拖拽的收集阶段，解析光标下的槽位并加进拖拽集合，按住期间每个槽只加一次
+    // vanilla 只在光标上的物品数多于已收集槽数时才继续收集
+    // 一次拖拽因此不会索要超过它所携带的数量
     void collectInventoryDragSlot(double windowX, double windowY) {
         if (!inventoryDragActive) {
             return;
@@ -3994,8 +3714,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void shutdown() noexcept {
-        // Before anything the tick touches is torn down. jthread would join on
-        // destruction anyway, but that happens after the Vulkan teardown below.
+        // 必须赶在 tick 会碰到的任何东西被销毁之前停下
+        // jthread 析构时本来也会 join，但那发生在下面的 Vulkan 销毁之后
         runtime.stopSimulation();
         if (window != nullptr) {
             captureWindowPlacement();
@@ -4118,9 +3838,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     void destroyImage(AllocatedImage& image) const noexcept { resources_.destroyImage(image); }
 
-    // Forwarders to VulkanResources, which owns the command pool + graphics
-    // queue these need; the call sites here and in the texture cluster stay
-    // unchanged, matching the createBuffer/createImage forwarders above.
+    // 转发到 VulkanResources，命令池与图形队列归它所有
+    // 这里和纹理一族的调用点因此写法不变，与上面 createBuffer、createImage 的转发同一形态
     [[nodiscard]] VkCommandBuffer beginSingleUseCommands() const {
         return resources_.beginSingleUseCommands();
     }
@@ -4150,9 +3869,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                             ground == world::Block::Dirt || ground == world::Block::Stone ||
                             ground == world::Block::Gravel || ground == world::Block::SnowBlock ||
                             ground == world::Block::CoarseDirt || ground == world::Block::Podzol;
-                        // Water blocks nothing, so the two cells the gameSession.player() would
-                        // stand in have to be checked for it directly: otherwise
-                        // the search happily picks a seabed.
+                        // 水不阻挡任何东西，所以玩家要站的那两格必须单独检查有没有水
+                        // 否则搜索会心安理得地选中一片海床
                         const bool submerged =
                             world::isFluid(interactionWorld.block(x, y + 1, z)) ||
                             world::isFluid(interactionWorld.block(x, y + 2, z));
@@ -4161,16 +3879,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                             world::hasCollision(interactionWorld.block(x, y + 2, z))) {
                             continue;
                         }
-                        // A cave floor satisfies every check above too — stone
-                        // with air overhead — so the candidate must also be
-                        // exposed to the sky: any solid block between the spawn
-                        // cells and the world top marks this as a cave and the
-                        // column is skipped. Vanilla spawns on the heightmap's
-                        // top block, which is exactly this surface. (y+1 and y+2
-                        // are the cells the 2-tall gameSession.player() occupies; the scan
-                        // therefore starts above them.) Leaves are passed over:
-                        // an overhanging canopy is still outdoors, unlike a cave
-                        // roof, so it must not reject a forest floor column.
+                        // 洞穴地板同样满足上面每一条检查，石头上面是空气
+                        // 因此候选点还必须对天空可见
+                        // 出生格与世界顶之间只要有实心方块，就判定为洞穴并跳过该列
+                        // vanilla 出生在高度图的顶层方块上，那正是这个表面
+                        // y+1 与 y+2 是两格高的玩家所占的格子，扫描因此从它们之上开始
+                        // 树叶不算遮挡，探出的树冠仍属户外，不像洞顶，不能让森林地面被否掉
                         bool exposedToSky = true;
                         for (int above = y + 3; above < world::kMaxY; ++above) {
                             const auto aboveBlock = interactionWorld.block(x, above, z);
@@ -4193,15 +3907,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
         }
         if (!best.has_value()) {
-            // The strict scan found nothing — a large sea or a fully covered
-            // area around the preferred centre. Vanilla's getSpawnPos never
-            // gives up, and neither may we: a world whose spawn search returns
-            // without a position leaves spawnPositionInitialized false and the
-            // loading screen forever, on this run and on every reload of the
-            // same seed. Fall back to the highest solid surface at the centre
-            // (a seabed is fine — the player can swim up), and if even that
-            // fails, to the default feet. Only once the centre chunk is loaded,
-            // so the fallback reads real terrain instead of empty air.
+            // 严格扫描一无所获，可能是首选中心附近全是大海或被完全覆盖
+            // vanilla 的出生点搜索从不放弃，这里也不能放弃
+            // 搜索若无位置返回，spawnPositionInitialized 会一直为假，加载画面就永远停着
+            // 本次运行如此，同一种子每次重新加载也如此
+            // 于是回落到中心处最高的实心表面，海床也没关系，玩家能游上来
+            // 若连这个也失败，再回落到默认脚底位置
+            // 回落只在中心区块加载完成后进行，这样读到的是真实地形而不是空气
             if (!interactionWorld.hasChunk(world::chunkPositionFromWorld(24.0F, 24.0F))) {
                 return;
             }
@@ -4223,9 +3935,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         gameSession.setWorldSpawn(feet);
         camera.setPosition(snapshotCameraEye());
         spawnPositionInitialized = true;
-        // Vanilla keeps its spawn chunks loaded for the server's lifetime; mark
-        // the world spawn's chunk neighbourhood so it never streams out under
-        // the player (ServerChunkManager#updateChunks).
+        // vanilla 在服务端整个生命周期内都保持出生区块常驻
+        // 这里同样标记世界出生点周围的区块，它们不会在玩家脚下被流送出去
         chunkStreamer.protectChunks(world::chunkPositionFromWorld(feet.x, feet.z),
                                     kSpawnChunkRadius);
         std::cout << "Spawn position: " << feet.x << "," << feet.y << "," << feet.z << '\n';
@@ -4233,20 +3944,19 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     void playUiClick() { audioSystem.playButtonClick(camera.position()); }
 
-    // AU-2: feed one tick of the ambient/music scheduler. Builds the situational
-    // context (menu vs overworld, creative vs game) and, when a world is loaded,
-    // a cave-mood brightness sample at a random block near the eye — the input
-    // BiomeAmbientSoundsHandler samples each tick. All scheduling/threshold logic
-    // lives in the audio system; this only gathers render-side context. Biome
-    // ambient loops are left empty until WG lands the nether/cave biomes that own
+    // 给环境音与音乐调度器喂一个 tick
+    // 这里构建情境上下文，区分菜单与主世界、创造与游戏中
+    // 世界已加载时还会在眼点附近随机取一格采样洞穴氛围亮度，那是 vanilla 每 tick 采的输入
+    // 调度与阈值逻辑全在音频系统里，这里只收集渲染侧的上下文
+    // 群系环境音循环暂时留空，等下界与洞穴群系落地后再补
     // them (记账).
     void driveAmbientMusic(float deltaSeconds) {
         audio::AudioSystem::AmbientMusicContext context;
         context.listenerPosition = camera.position();
-        // The scheduler counts in 20-tps game-ticks, not frames. Absorb this
-        // frame's real time and pass the whole ticks it crossed (0 on most frames,
-        // >1 only on a long frame), so song delays and the cave-mood rate stay
-        // FPS-decoupled instead of racing at the render frame rate.
+        // 调度器按 20 tps 的游戏 tick 计数，不按帧
+        // 这里吸收本帧的真实时间，并把它跨过的整 tick 数传下去
+        // 多数帧是 0，只有长帧才大于 1
+        // 于是音乐间隔与洞穴氛围的速率与帧率解耦，不会跟着渲染帧率狂奔
         context.ticks = ambientMusicTicks_.advance(deltaSeconds);
         if (!worldSessionActive) {
             context.situation = audio::MusicSituation::Menu;
@@ -4254,8 +3964,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             context.situation = uiFrameData_.gameMode == gameplay::GameMode::Creative
                                     ? audio::MusicSituation::Creative
                                     : audio::MusicSituation::Game;
-            // A random block within the mood search extent (8) of the eye. The
-            // per-frame LCG keeps the sampling cheap and needs no world RNG.
+            // 在眼点周围氛围搜索范围 8 格之内随机取一格
+            // 逐帧的线性同余发生器让采样很廉价，也不必动用世界的随机数
             ambientMusicRandom_ = ambientMusicRandom_ * 1664525U + 1013904223U;
             const auto roll = [this](int span) {
                 ambientMusicRandom_ = ambientMusicRandom_ * 1664525U + 1013904223U;
@@ -4280,36 +3990,31 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         audioSystem.tickAmbientMusic(context);
     }
     std::uint32_t ambientMusicRandom_ = 0x1F123BB5U;
-    // Fixed-step accumulator that turns frame time into whole 20-tps ticks for the
-    // ambient/music scheduler (FPS-decoupled), mirroring SimulationDriver.
+    // 定步长累加器，把帧时间换成 20 tps 的整 tick 供环境音与音乐调度器使用
+    // 它与帧率解耦，做法与 SimulationDriver 一致
     audio::TickAccumulator ambientMusicTicks_;
 
-    // Rolls a broken block's loot table and drops whatever came out on top of the
-    // cell it left behind. Several stacks fan out on the golden angle so they do
-    // not stack into one another.
-    // ToolItem#postMine / #postHit: spends the held tool's durability and plays
-    // the vanilla break sound when it gives out. Creative never wears a tool
-    // down, so callers only reach this in survival. `blockHardness` is ignored
-    // for an attack; pass the mined block's hardness otherwise, because vanilla
-    // charges nothing for a block that gives way instantly.
+    // 掷被破坏方块的战利品表，把掉出来的东西放在它原先那一格上
+    // 多个物品堆按黄金角散开，免得互相叠在一起
+    // 消耗手持工具的耐久，耐久耗尽时播放 vanilla 的损坏音效
+    // 创造模式不磨损工具，因此只有生存模式的调用方会走到这里
+    // 攻击时忽略 `blockHardness`，其余情况传入被挖方块的硬度
+    // 因为 vanilla 对瞬间就碎的方块不收耐久
 
-    // Minecraft#doAttack: one swing, and if the ray reaches a creature before it
-    // reaches a block, that creature takes the hit instead. Returns true when a
-    // creature was struck, so the caller skips the mining path for this click.
-    // The render thread's half of the interaction: package the aim target into
-    // value-type commands for the gameplay controller (which runs inside the
-    // server tick). Nothing here mutates the world.
+    // 一次挥击，若射线先碰到生物再碰到方块，则由该生物挨这一下
+    // 击中生物时返回 true，调用方因此在这次点击里跳过挖掘路径
+    // 交互中属于渲染线程的那一半，把瞄准目标打包成值类型的命令交给玩法控制器
+    // 控制器跑在服务端 tick 内，这里不改动世界的任何状态
     void enqueueInteractionCommand(gameplay::GameCommand command) {
-        // The abort/stop edges are always safe and always wanted (a release
-        // behind a screen must end the dig/use); the start edges are guarded by
-        // the caller so a press during a pause or a menu never queues stale.
+        // abort 与 stop 两个边沿永远安全也永远需要，躲在界面后面的松开必须结束挖掘与使用
+        // start 边沿由调用方门控，暂停或菜单期间的按下因此不会排进陈旧命令
         if (worldSessionActive) {
             runtime.enqueueClientCommand(std::move(command));
         }
     }
 
-    // Minecraft#doAttack, packaged: press carries the aimed creature or block,
-    // release ends the dig. The server decides and ticks it.
+    // 打包好的攻击动作，按下时带上瞄中的生物或方块，松开时结束挖掘
+    // 具体怎么判定、怎么推进由服务端在 tick 里决定
     void enqueueDestroyStart() {
         if (!(worldReady && !paused && !inventoryOpen && !chatOpen)) {
             return;
@@ -4334,11 +4039,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         enqueueInteractionCommand(std::move(action));
     }
 
-    // A held attack follows the live ray target. The press starts the first
-    // block; after it disappears (or the player looks elsewhere), the next
-    // frame sends one new StartDestroy for the newly reached cell. Without this
-    // hand-off the gameplay controller kept digging the first cell's Air state,
-    // so even instant blocks such as grass required another click.
+    // 按住攻击时目标跟随实时射线
+    // 按下先挖第一个方块，等它消失或玩家看向别处，下一帧就为新够到的那格再发一次 StartDestroy
+    // 没有这次交接，玩法控制器会一直挖第一格已经变成空气的状态
+    // 于是连草这种一碰就碎的方块也得再点一下
     void refreshHeldDestroyTarget() {
         if (!destroyButtonHeld || paused || inventoryOpen || chatOpen || !worldReady) {
             return;
@@ -4363,14 +4067,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         lastDestroyAimBlock = aimedBlock;
     }
 
-    // Minecraft#startUseItem, packaged: the right-click carries the block target
-    // (or none for an air use), and the release ends a held use.
+    // 打包好的使用动作，右键按下时带上方块目标，对空使用则不带
+    // 松开时结束长按使用
     void enqueueUseStart() {
         const bool interactDebug = std::getenv("MC_REBEDROCK_INTERACT_DEBUG") != nullptr;
         if (!(worldReady && !paused && !inventoryOpen && !chatOpen)) {
-            // The guard that silently swallows a right-click: if this fires we
-            // never send a use command at all, so the trace stops here rather
-            // than in the server handler.
+            // 这道门会静默吞掉右键，一旦触发就根本不会发出使用命令
+            // 追踪因此止步于此，而不是止步于服务端处理函数
             if (interactDebug) {
                 std::cout << "[interact] use-start BLOCKED (worldReady=" << worldReady
                           << " paused=" << paused << " inventoryOpen=" << inventoryOpen
@@ -4378,10 +4081,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
             return;
         }
-        // MC_REBEDROCK_INTERACT_DEBUG: one line per right-click showing which of
-        // the three use targets (entity / block / empty) the crosshair resolved
-        // to and what the client thinks is in hand — the client half of tracing a
-        // creature interaction (shear/dye/feed) that never lands.
+        // MC_REBEDROCK_INTERACT_DEBUG 让每次右键打一行
+        // 内容是准星解析到实体、方块、空这三种使用目标中的哪一种，以及客户端认为手上拿的是什么
+        // 这是追踪"剪毛、染色、喂食这类生物交互没生效"时属于客户端的那一半
         if (interactDebug) {
             const auto& held = clientMirror_.player().heldStack;
             const std::string_view heldName =
@@ -4398,9 +4100,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                           << std::endl;
             }
         }
-        // AR-A2: a creature under the crosshair takes the use button too (shears,
-        // feeding), the same precedence the attack button already gives it —
-        // creatureHit is only ever set when it is the nearer of the two hits.
+        // 准星下的生物同样接管使用键，比如剪毛和喂食，优先级与攻击键给它的一致
+        // creatureHit 只有在它是两个命中里更近的那个时才会被置上
         if (creatureHit.has_value()) {
             gameplay::UseItemOn use;
             use.entity = true;
@@ -4413,10 +4114,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             use.adjacent = targetedBlock->adjacent;
             use.face = world::orientationFromOffset(targetedBlock->adjacent -
                                                     targetedBlock->block);
-            // The precise point on the block's shape the ray struck, so placement
-            // can read the sub-cell hit height (SlabBlock#getStateForPlacement
-            // rests a slab on the half the player aimed at). The cell centre it
-            // used to carry threw that fraction away.
+            // 射线打在方块形状上的精确交点，放置逻辑因此能读到格内的命中高度
+            // 台阶就靠它决定放在玩家瞄准的那一半上，只带格心会把这个小数丢掉
             use.hitPosition =
                 camera.position() + camera.direction() * targetedBlock->distance;
             use.lookDirection = camera.direction();
@@ -4431,9 +4130,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         enqueueInteractionCommand(std::move(stop));
     }
 
-    // The per-frame aim target, a pure read: raycast the world and the creature
-    // herd from the camera. The interaction controller receives the result
-    // through the commands; the draw pass reads it for the selection outline.
+    // 逐帧的瞄准目标，纯读取，从相机向世界和生物群发射线
+    // 交互控制器经命令拿到结果，绘制通道则用它画选择框
     void updateInteractionTarget() {
         if (!worldSessionActive || !worldReady) {
             targetedBlock.reset();
@@ -4446,9 +4144,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             uiFrameData_.gameMode == gameplay::GameMode::Creative ? 5.0F : 4.5F;
         targetedBlock = world::raycastVoxels(clientCache, camera.position(),
                                              camera.direction(), blockReach, collectingWater);
-        // A creature's collision box blocks the ray exactly like a block's shape
-        // (vanilla's HitResult is the nearest of block-or-entity). Tested against
-        // the published entity snapshot, never the live vector.
+        // 生物的碰撞盒像方块形状一样挡住射线，vanilla 的命中结果取方块与实体里更近的那个
+        // 测试对象是已发布的实体快照，绝不是实时容器
         const auto hit = gameplay::raycastSnapshotEntities(
             clientMirror_.entities(), camera.position(), camera.direction(), blockReach);
         creatureHit = (hit.has_value() &&
@@ -4480,11 +4177,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         createDescriptorPoolAndSets();
     }
 
-    // Keep the complete BMP unihex set resident. 26.1 chooses and bakes glyphs
-    // lazily; this renderer uses page-array layers, so preloading the bounded
-    // 256-page equivalent gives the same language-switch property: switching
-    // never reparses unifont.zip, waits for the device, or rebuilds descriptor
-    // sets. Empty pages are omitted by TextureManager.
+    // 让整套 BMP unihex 常驻
+    // 26.1 是惰性挑选并烘焙字形的，而本渲染器用的是页数组层
+    // 预加载有界的 256 页等价物能得到同样的切换语言性质
+    // 切换时不会重新解析 unifont.zip，不必等设备，也不重建描述符集
+    // 空页由 TextureManager 略去
     [[nodiscard]] std::set<int> requiredUnicodePages() const {
         if (language.empty() && !options.forceUnicodeFont) {
             return {};
@@ -4496,7 +4193,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return pages;
     }
 
-    // Rebuilds the font array only when the force-unicode provider changes.
+    // 只有强制 Unicode 字体的 provider 变化时才重建字体数组
     void recreateFontTexture() {
         checkVk(vkDeviceWaitIdle(device), "vkDeviceWaitIdle(font)");
         if (descriptorPool != VK_NULL_HANDLE) {
@@ -4531,9 +4228,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         biomeGrassSamplerBinding.binding = 6;
         VkDescriptorSetLayoutBinding biomeFoliageSamplerBinding = samplerBinding;
         biomeFoliageSamplerBinding.binding = 7;
-        // The sun shadow depth map, sampled by the terrain fragment shader. A
-        // separate binding so only grass_block.frag (and future lit passes) see
-        // it; the other pipelines just leave it unwritten-safe.
+        // 太阳阴影深度图，由地形片元着色器采样
+        // 单独一个绑定点，只有 grass_block.frag 以及将来的受光通道看得到它
+        // 其它管线不写它也不会出问题
         VkDescriptorSetLayoutBinding shadowSamplerBinding{};
         shadowSamplerBinding.binding = 8;
         shadowSamplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -4683,15 +4380,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // The scene descriptor set (set 1) holds the per-frame storage buffer the
-    // instanced particle pipeline reads. A separate layout keeps the shared
-    // camera/texture set 0 untouched: none of the existing pipelines bind more
-    // than one set, and the storage-buffer stage flags can grow to COMPUTE later
-    // without disturbing them.
+    // 场景描述符集，即 set 1，持有实例化粒子管线要读的逐帧存储缓冲
+    // 单独一套布局能让共享的相机与纹理 set 0 保持原样
+    // 现有管线都只绑一个 set，而存储缓冲的阶段标志将来可以扩到 COMPUTE，互不干扰
     void createSceneDescriptorResources() {
         // 3 MiB holds ~65,536 ParticleRecords: the 疯狂 particle level's
-        // 18,000 rain drops plus the enlarged 24,000 shared particle pool fit
-        // together, including the gameplay reserve, in one per-frame buffer.
+        // 18000 个雨滴加上扩大后 24000 的共享粒子池，连同玩法预留量，一起装进单个逐帧缓冲
         constexpr std::size_t kSceneBufferBytes = 3U * 1024U * 1024U;
         gpuSceneBuffer.init({&resources_, kFramesInFlight, kSceneBufferBytes});
 
@@ -4741,10 +4435,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // The instanced particle pipeline reads per-particle records from the scene
-    // storage buffer (set 1) and expands the camera-facing quad in the vertex
-    // shader, replacing the old per-particle vkCmdDraw with a single draw. Empty
-    // vertex input: all particle data arrives through the SSBO + gl_InstanceIndex.
+    // 实例化粒子管线从场景存储缓冲 set 1 读逐粒子记录
+    // 面向相机的四边形在顶点着色器里展开
+    // 整批粒子只发一次绘制调用，取代过去逐粒子的 vkCmdDraw
+    // 顶点输入为空，粒子数据全部经 SSBO 加 gl_InstanceIndex 送达
     void createParticlePipeline() {
         const auto vertexCode = readSpirv(shaderRoot / "particle_instanced.vert.spv");
         const auto fragmentCode = readSpirv(shaderRoot / "particle_instanced.frag.spv");
@@ -4772,7 +4466,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         auto rasterization = vkStructure<VkPipelineRasterizationStateCreateInfo>(
             VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO);
         rasterization.polygonMode = VK_POLYGON_MODE_FILL;
-        // Camera-facing billboards have no meaningful back face.
+        // 面向相机的公告板没有有意义的背面
         rasterization.cullMode = VK_CULL_MODE_NONE;
         rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         rasterization.lineWidth = 1.0F;
@@ -4833,21 +4527,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         vkDestroyShaderModule(device, fragmentModule, nullptr);
     }
 
-    // The sun-space shadow pre-pass renders in-frustum terrain into an offscreen
-    // depth map (Step B's offscreen/multi-pass validation). The pass needs no
-    // descriptor sets: 80 bytes of push constants (light view-projection +
-    // section origin) plus the same VoxelVertex buffers as the main pass. The
-    // target, pipeline and layout are all swapchain-independent, created once.
+    // 太阳空间的阴影预通道把视锥内的地形渲染进一张离屏深度图
+    // 该通道不需要描述符集，只用 80 字节推送常量，即光源视图投影矩阵加 section 原点
+    // 顶点数据与主通道共用同一批 VoxelVertex 缓冲
+    // 目标、管线与布局都与交换链无关，只创建一次
     void createShadowResources() {
         shadowTarget.init({&resources_, device, 2048U, 2048U});
-        // The descriptors below declare SHADER_READ_ONLY_OPTIMAL and three
-        // terrain/entity fragment shaders sample binding 8 unconditionally as
-        // far as Vulkan is concerned. With the sun shadows off — the default —
-        // the pre-pass returns early and never transitions this image, so it
-        // would sit in UNDEFINED while every draw claimed otherwise. That is
-        // undefined behaviour, and the shape it takes on real hardware is a
-        // silent GPU fault: a magenta flash and VK_ERROR_DEVICE_LOST out of the
-        // next vkWaitForFences.
+        // 下面的描述符声明布局为 SHADER_READ_ONLY_OPTIMAL
+        // 在 Vulkan 看来，三个地形与实体片元着色器都无条件采样 binding 8
+        // 而太阳阴影默认是关的，预通道会提前返回，从不转换这张图像的布局
+        // 于是它停在 UNDEFINED，却有一堆绘制声称并非如此，这是未定义行为
+        // 它在真实硬件上的表现是一次静默的 GPU 故障
+        // 画面闪一下品红，随后下一次 vkWaitForFences 返回 VK_ERROR_DEVICE_LOST
         shadowTarget.initializeAsShaderRead();
 
         VkPushConstantRange push{};
@@ -4912,7 +4603,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         depthStencil.depthTestEnable = VK_TRUE;
         depthStencil.depthWriteEnable = VK_TRUE;
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
-        // No color attachment: the depth-only pass needs no blend state.
+        // 没有颜色附件，纯深度通道不需要混合状态
         auto blending = vkStructure<VkPipelineColorBlendStateCreateInfo>(
             VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO);
         blending.attachmentCount = 0;
@@ -4944,10 +4635,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
         createShadowDebugResources();
 
-        // Point every frame's set 0 at the shadow depth map (binding 8) so the
-        // terrain shader can sample it. The image view and sampler exist now;
-        // the map's contents are rewritten by the pre-pass each frame, which the
-        // descriptor's SHADER_READ_ONLY layout already matches.
+        // 把每一帧的 set 0 的 binding 8 指向阴影深度图，地形着色器才能采样它
+        // 图像视图与采样器此刻已存在
+        // 图的内容由预通道每帧重写，这与描述符声明的 SHADER_READ_ONLY 布局本就吻合
         for (std::size_t index = 0; index < kFramesInFlight; ++index) {
             VkDescriptorImageInfo shadowImageInfo{};
             shadowImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -4963,11 +4653,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // The shadow-map debug overlay samples the offscreen depth texture in a
-    // corner quad, so the pre-pass's output is visible during development. The
-    // set layout, sampler, descriptor set and pipeline layout are created once;
-    // only the pipeline is swapchain-bound (it renders into the main pass with
-    // the current MSAA sample count).
+    // 阴影图调试叠加层在屏幕一角用一个四边形采样离屏深度纹理，开发期因此能看到预通道的输出
+    // 集布局、采样器、描述符集和管线布局都只创建一次
+    // 只有管线与交换链绑定，因为它按当前 MSAA 采样数渲染进主通道
     void createShadowDebugResources() {
         VkDescriptorSetLayoutBinding binding{};
         binding.binding = 0;
@@ -5106,15 +4794,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         vkDestroyShaderModule(device, fragmentModule, nullptr);
     }
 
-    // Records the sun-space depth pre-pass ahead of the main render pass: cull
-    // the loaded sections against the light frustum, draw each caster's opaque
-    // layer with the shadow pipeline, then transition the depth image to
-    // shader-readable for the main pass (and the debug overlay) to sample.
-    // Recomputes the sun-space view-projection the shadow pre-pass writes and
-    // the terrain shader samples with. Called once per frame BEFORE updateUniform
-    // (which copies it into the UBO), so the matrix the shader projects with and
-    // the matrix the pre-pass renders the depth map with are the same frame's —
-    // no camera-movement lag between the two.
+    // 在主渲染通道之前录制太阳空间的深度预通道
+    // 先用光锥剔除已加载的 section，再用阴影管线画每个投射者的不透明层
+    // 最后把深度图像转成可采样布局，供主通道和调试叠加层读取
+    //
+    // 同时重算预通道写入、地形着色器采样时所用的太阳空间视图投影矩阵
+    // 它每帧调用一次，且排在把矩阵拷进 UBO 的 updateUniform **之前**
+    // 于是着色器投影用的矩阵与预通道渲染深度图用的矩阵来自同一帧，两者之间没有相机移动的滞后
     [[nodiscard]] VkSurfaceFormatKHR
     chooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) const {
         for (const auto& format : formats) {
@@ -5128,12 +4814,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     [[nodiscard]] VkPresentModeKHR choosePresentMode(const std::vector<VkPresentModeKHR>& modes,
                                                      bool vsync) const {
-        // FIFO is true vsync: the presentation engine waits for the display
-        // refresh, capping the frame rate at the monitor with no tearing, and
-        // costs no CPU (the swap blocks instead). Without it, MAILBOX presents
-        // the latest ready image as fast as the app submits, dropping frames —
-        // the "unlimited" path. MAILBOX is not universal, so FIFO is the
-        // fallback either way.
+        // FIFO 是真正的垂直同步，呈现引擎等显示器刷新，帧率因此被钉在屏幕刷新率且不撕裂
+        // 它不吃 CPU，代价是交换本身会阻塞
+        // 不开它则走 MAILBOX，应用提交多快就呈现多快，中间的帧被丢掉，也就是"不限帧"那条路径
+        // MAILBOX 并非所有设备都支持，因此无论如何 FIFO 都是兜底
         if (vsync) {
             return VK_PRESENT_MODE_FIFO_KHR;
         }
@@ -5240,13 +4924,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         depthFormat = chooseDepthFormat();
         depthTargets.resize(swapchainImages.size());
         for (auto& target : depthTargets) {
-            // The depth attachment is cleared, written and never read back
-            // within the pass, so marking it transient lets tile-based GPUs
-            // (Apple) keep it in on-tile memory instead of a ~250 MB
-            // multi-sampled render-target allocation. The render pass already
-            // uses loadOp CLEAR / storeOp DONT_CARE, which is the memoryless
-            // shape; drivers without memoryless support degrade to a normal
-            // allocation with no correctness change.
+            // 深度附件在通道内被清空、写入，且从不回读
+            // 标成瞬态之后，Apple 这类片上式 GPU 能把它留在片上内存里
+            // 否则就是一块约 250 MB 的多重采样渲染目标分配
+            // 渲染通道本来就用 loadOp CLEAR 加 storeOp DONT_CARE，正是 memoryless 的形态
+            // 不支持该特性的驱动退化成普通分配，行为不变
             target.image =
                 createImage(swapchainExtent.width, swapchainExtent.height, 1, depthFormat,
                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
@@ -5271,9 +4953,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         color.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         color.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        // Note: a resolved MSAA color attachment keeps COLOR_ATTACHMENT_OPTIMAL
-        // here; UNDEFINED is rejected by the validation layers and this MoltenVK
-        // build does not map transient attachments to on-tile memory anyway.
+        // 注意：解析过的 MSAA 颜色附件在这里保持 COLOR_ATTACHMENT_OPTIMAL
+        // 填 UNDEFINED 会被校验层拒绝，何况当前这版 MoltenVK 本来也不把瞬态附件放到片上内存
         color.finalLayout = renderSampleCount() == VK_SAMPLE_COUNT_1_BIT
                                 ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
                                 : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -5354,12 +5035,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
         VkVertexInputBindingDescription binding{0, sizeof(VoxelVertex),
                                                 VK_VERTEX_INPUT_RATE_VERTEX};
-        // PackedVoxelVertex: six 4-byte-aligned integer attributes. The pad
-        // byte inside location 1 carries the fragment's biome mask (which
-        // biome-colour lookup to apply); location 5 is the per-vertex RGB tint
-        // the fragment multiplies when the mask selects the literal-tint path
-        // (redstone dust's power-derived red — previously the tint bytes sat
-        // unconsumed after the lights and the grey sprite rendered grey).
+        // PackedVoxelVertex 有六个按 4 字节对齐的整型属性
+        // location 1 里那个填充字节携带片元的群系掩码，决定用哪张群系配色查找表
+        // location 5 是逐顶点 RGB 着色，掩码选中字面着色路径时由片元乘上去
+        // 红石粉按信号强度算出的红色走的就是这条路径
         const std::array<VkVertexInputAttributeDescription, 6> attributes{{
             {0, 0, VK_FORMAT_R16G16_UINT, offsetof(VoxelVertex, positionX)},
             {1, 0, VK_FORMAT_R16G16_UINT, offsetof(VoxelVertex, positionZ)},
@@ -5407,9 +5086,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO);
         dynamic.dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size());
         dynamic.pDynamicStates = dynamicStates.data();
-        // Terrain meshes store positions relative to their section origin; the
-        // origin is pushed per draw so the vertex shader can rebuild world
-        // coordinates. The sky pass shares this layout and ignores the range.
+        // 地形网格存的是相对 section 原点的坐标，原点逐次绘制推送，顶点着色器据此还原世界坐标
+        // 天空通道共用这套布局，只是忽略那段推送范围
         VkPushConstantRange terrainPushConstant{};
         terrainPushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
         terrainPushConstant.offset = 0;
@@ -5441,17 +5119,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         checkVk(result, "vkCreateGraphicsPipelines");
 
         depthStencil.depthWriteEnable = VK_FALSE;
-        // The translucent pass is double-sided (no back-face culling). A see-through
-        // block (stained glass, ice, water) must show its far interior faces even
-        // though they point away from the camera: looking through the near
-        // half-opaque face, you expect the back wall's colour behind it. With the
-        // opaque pass's VK_CULL_MODE_BACK_BIT those far faces get culled and you see
-        // straight through the block where the back wall should be. Plain glass hid
-        // this because its sprite is almost entirely alpha-0 (nothing to see through
-        // to), but a solid stained-glass fill shows the hole plainly. Opaque and
-        // cutout keep back-face culling (the cutout cross model emits both windings
-        // itself), so this NONE is scoped to the translucent pipeline and restored
-        // right after it is created.
+        // 半透明通道是双面的，不做背面剔除
+        // 染色玻璃、冰、水这类可透视方块必须显示远端的内壁，尽管那些面背对相机
+        // 透过近处的半透明面看过去，理应看到后墙的颜色
+        // 沿用不透明通道的 VK_CULL_MODE_BACK_BIT 会把远端面剔掉，那里就直接看穿了
+        // 普通玻璃掩盖了这个问题，因为它的贴图几乎全是 alpha 0，本来就没什么可看
+        // 但染色玻璃是实心填充，破洞一目了然
+        // 不透明与 cutout 通道保留背面剔除，cutout 的十字模型自己就输出了正反两种绕序
+        // 因此这里的 NONE 只作用于半透明管线，建完立刻恢复
         rasterization.cullMode = VK_CULL_MODE_NONE;
         colorAttachment.blendEnable = VK_TRUE;
         colorAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
@@ -5472,8 +5147,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         auto cutoutFragmentStage = fragmentStage;
         cutoutFragmentStage.module = cutoutFragmentModule;
         const std::array cutoutStages{vertexStage, cutoutFragmentStage};
-        // Cutout-mipped leaves in Java use normal back-face culling. Plants
-        // carry explicit reverse-winding triangles, so they stay two-sided.
+        // Java 里带 mipmap 的 cutout 树叶用的是普通背面剔除
+        // 植物自带反向绕序的三角形，因此保持双面
         rasterization.cullMode = VK_CULL_MODE_BACK_BIT;
         pipelineInfo.pStages = cutoutStages.data();
         const auto cutoutResult = vkCreateGraphicsPipelines(
@@ -5562,10 +5237,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                          nullptr, &hudPipeline);
         checkVk(hudResult, "vkCreateGraphicsPipelines(hud)");
 
-        // Title-screen panorama cube: a fullscreen triangle whose fragment
-        // shader ray-marches the six panorama faces (1.16.1's CubeMap). It
-        // only needs the panorama sampler from the shared descriptor set plus
-        // the yaw/pitch/FOV push constant.
+        // 标题全景立方体用一个全屏三角形，片元着色器对六张全景面做光线步进
+        // 它只需要共享描述符集里的全景采样器，加上偏航、俯仰、视场角这组推送常量
         const auto panoramaVertexCode = readSpirv(shaderRoot / "panorama.vert.spv");
         const auto panoramaFragmentCode = readSpirv(shaderRoot / "panorama.frag.spv");
         const auto panoramaVertexModule = createShaderModule(panoramaVertexCode);
@@ -5600,16 +5273,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         vkDestroyShaderModule(device, panoramaVertexModule, nullptr);
         checkVk(panoramaResult, "vkCreateGraphicsPipelines(panorama)");
 
-        // The crosshair and vignette pipelines below reuse the shared
-        // pipelineInfo, so put the hud layout and stage array back (the
-        // panorama block swapped them for its own 16-byte push-constant layout
-        // and a local stage array that is now out of scope).
+        // 下面的准星与暗角管线复用同一份 pipelineInfo，所以要把 HUD 的布局和着色器阶段数组放回去
+        // 全景那段把它们换成了自己 16 字节推送常量的布局和一个已经离开作用域的局部数组
         pipelineInfo.layout = hudPipelineLayout;
         pipelineInfo.pStages = hudStages.data();
 
-        // Minecraft 26.1 draws the 15x15 hud/crosshair sprite with an
-        // inversion blend so it remains visible over both bright and dark
-        // terrain. This is intentionally a separate blend-state pipeline.
+        // 26.1 用反色混合绘制 15x15 的准星贴图，明暗地形上都看得见
+        // 这里特意为它单开一条混合状态不同的管线
         colorAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
         colorAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
         colorAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
@@ -5618,9 +5288,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &crosshairPipeline);
         checkVk(crosshairResult, "vkCreateGraphicsPipelines(crosshair)");
 
-        // 1.16.1's InGameHud draws the vignette texture with a multiplicative
-        // blend (dst * (1 - src)) so dark corners darken the scene while the
-        // centre is untouched. Another dedicated blend-state pipeline.
+        // vanilla 的 HUD 用乘性混合绘制暗角贴图，四角压暗画面而中心不受影响
+        // 这同样是一条专用的混合状态管线
         colorAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
         colorAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
         colorAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
@@ -5670,9 +5339,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         vkDestroyShaderModule(device, itemVertexModule, nullptr);
     }
 
-    // Device-level occlusion-query resources: the query pool, the pipeline
-    // layout that carries the per-draw AABB push constants, and the unit-cube
-    // vertex/index buffers the query pass draws for every section.
+    // 设备级的遮挡查询资源
+    // 含查询池、携带逐次绘制包围盒推送常量的管线布局
+    // 还有查询通道为每个 section 绘制的单位立方体顶点与索引缓冲
     void createOcclusionQueryResources() {
         if (occlusionDisabled) {
             return;
@@ -5697,9 +5366,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &occlusionQueryLayout),
                 "vkCreatePipelineLayout(occlusion query)");
 
-        // A unit cube in [0,1]^3; the query vertex shader expands it to each
-        // section's AABB with per-draw push constants. Culling is off and the
-        // winding is irrelevant, so the box is tested from any viewpoint.
+        // 一个位于 [0,1]³ 的单位立方体
+        // 查询顶点着色器用逐次绘制的推送常量把它撑成各 section 的包围盒
+        // 剔除关闭且绕序无关，因此从任何视点都能测试这个盒子
         constexpr std::array<glm::vec3, 8> kUnitCubeCorners{{
             {0.0F, 0.0F, 0.0F},
             {1.0F, 0.0F, 0.0F},
@@ -5733,8 +5402,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 "vmaFlushAllocation(occlusion box indices)");
     }
 
-    // Swapchain-coupled: the query pipeline binds the current render pass, so
-    // it is rebuilt alongside the other pipelines when the swapchain changes.
+    // 与交换链耦合，查询管线绑定当前渲染通道，交换链一变就和其它管线一起重建
     void createOcclusionQueryPipeline() {
         if (occlusionQueryPools.front() == VK_NULL_HANDLE) {
             return;
@@ -6046,7 +5714,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return submergedInWater(camera.position());
     }
 
-    // Whether the point sits below the water surface of the cell it is in.
+    // 该点是否位于它所在那一格的水面之下
     [[nodiscard]] bool submergedInWater(glm::vec3 position) const {
         const int x = static_cast<int>(std::floor(position.x));
         const int y = static_cast<int>(std::floor(position.y));
@@ -6089,11 +5757,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return transform;
     }
 
-    // The actual eye the scene is rendered from. The camera object always sits
-    // at the gameSession.player()'s eye; third person pulls the render eye back (or pushes it
-    // in front, looking back) along the look direction. Both the view matrix and
-    // the culling frustum are derived from this so they always agree.
-    // RenderEye now lives in render/vulkan/WorldRenderTypes.hpp (shared).
+    // 场景实际渲染所用的眼点
+    // 相机对象始终位于玩家眼睛处，第三人称沿视线把渲染眼点往后拉，或推到前方回看
+    // 视图矩阵与剔除视锥都由它推导，两者因此永远一致
     [[nodiscard]] RenderEye renderEyeState() const {
         const glm::vec3 eyePivot = camera.position();
         const glm::vec3 forwardDir = camera.direction();
@@ -6104,8 +5770,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         constexpr float kThirdPersonDistance = 4.0F;
         const bool front = cameraPerspective == CameraPerspective::ThirdPersonFront;
         const glm::vec3 boomDirection = front ? forwardDir : -forwardDir;
-        // Pull the camera in when a solid block is between it and the gameSession.player() so it
-        // never clips through walls (a small margin keeps it off the surface).
+        // 相机与玩家之间有实心方块时把相机拉近，它因此不会穿墙
+        // 留一点余量让它别贴在面上
         float boom = kThirdPersonDistance;
         const auto hit = world::raycastVoxels(clientCache, eyePivot, boomDirection,
                                               kThirdPersonDistance + 0.3F);
@@ -6119,10 +5785,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return result;
     }
 
-    // View matrix for the scene, before view bobbing. Used for both the uniform
-    // and the culling frustum so terrain is culled against the view that is
-    // actually rendered (critical in third person, where the front view even
-    // looks the opposite way from the first-person camera direction).
+    // 场景的视图矩阵，尚未叠加视角摇晃
+    // uniform 与剔除视锥都用它，地形因此是按真正渲染出来的那个视角剔除的
+    // 这在第三人称下尤其关键，前视视角的朝向甚至与第一人称相机相反
     [[nodiscard]] glm::mat4 renderViewMatrix() const {
         const RenderEye eye = renderEyeState();
         return glm::lookAt(eye.position, eye.position + eye.forward, glm::vec3{0.0F, 1.0F, 0.0F});
@@ -6132,8 +5797,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         CameraUniform uniform;
         uniform.model = glm::mat4{1.0F};
         const RenderEye renderEye = renderEyeState();
-        // View bobbing bobs the whole scene in every perspective, matching the
-        // vanilla third-person camera shake.
+        // 视角摇晃在所有视角下都作用于整个场景，与 vanilla 第三人称的相机抖动一致
         const glm::mat4 baseView =
             glm::lookAt(renderEye.position, renderEye.position + renderEye.forward,
                         glm::vec3{0.0F, 1.0F, 0.0F});
@@ -6142,36 +5806,30 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                          static_cast<float>(swapchainExtent.height),
                                                      cameraFarPlane());
         uniform.cameraPosition = glm::vec4{renderEye.position, 1.0F};
-        // The sun and moon read the Overworld clock, not the frame timer: the
-        // sky advances with the world's ticks and freezes exactly when the clock
-        // does (doDaylightCycle off, or the game paused), instead of drifting on
-        // real frames. The 20 Hz tick is coarse enough only for fast-moving
-        // things; the sun barely moves per tick, so no sub-tick interpolation is
-        // needed here.
+        // 日月读主世界时钟而不是帧计时器
+        // 天空随世界 tick 推进，时钟一停它就停，比如关掉昼夜规则或游戏暂停，不会跟着真实帧漂移
+        // 20 Hz 的 tick 只对快速运动的东西才显得粗，太阳每 tick 几乎不动，这里不需要 tick 内插值
         const auto dayTick = clientMirror_.world().dayTimeTicks;
         const auto daylight = world::DayNightCycle::stateAtTick(dayTick);
         uniform.sunDirection = glm::vec4{daylight.sunDirection, daylight.skyBrightness};
-        // horizonFog.w drives only the moon phase. Fluid animation uses the
-        // server tick below, so disabling the daylight cycle no longer freezes
-        // water and lava. Wrapping the lunar clock also avoids float precision
-        // loss in long-running worlds.
+        // horizonFog.w 只驱动月相
+        // 流体动画改用下面的服务端 tick，关掉昼夜规则因此不再冻住水和岩浆
+        // 月相时钟取模回绕，长时间运行的世界也不会损失浮点精度
         constexpr double kLunarCycleSeconds = 8.0 * world::DayNightCycle::kSecondsPerDay;
         const double dayTimeSeconds = dayTick / world::DayNightCycle::kTicksPerSecond;
         uniform.horizonFog =
             glm::vec4{daylight.horizonColor,
                       static_cast<float>(std::fmod(dayTimeSeconds, kLunarCycleSeconds))};
-        // renderSettings.z is the underwater EXP2 fog density. Vanilla uses 0.05;
-        // a slightly denser 0.08 restores the murkier look (near-full fog by ~22
-        // blocks) after the old hard distance cap was removed.
+        // renderSettings.z 是水下 EXP2 雾的浓度，vanilla 取 0.05
+        // 这里略浓，取 0.08，在去掉旧的硬距离截断之后重新还原那种浑浊感
+        // 约 22 格处几乎已是满雾
         uniform.renderSettings =
             glm::vec4{renderDistanceBlocks(), cameraSubmergedInWater() ? 1.0F : 0.0F, 0.08F, 24.0F};
-        // The sky shader picks the sun sprite and the moon phase tiles from the
-        // atlas; the layers come from the derived special-section bases rather
-        // than hardcoded numbers so an atlas change cannot silently re-point
-        // them at a block texture.
+        // 天空着色器从图集里取太阳贴图和月相瓦片
+        // 层号来自推导出来的特殊区起始值而不是写死的数字
+        // 图集一变，它们也不会悄悄指到某张方块纹理上
         uniform.celestialLayers = glm::vec4{kSunLayer, kMoonPhaseFirstLayer, 0.0F, 0.0F};
-        // The sky's weather read comes from the per-tick snapshot, reproducing
-        // the frame interpolation the live system's rainGradientAt(alpha) gave.
+        // 天空的天气读数取自逐 tick 快照，复现实时系统按插值系数取降雨强度时的帧插值
         const auto& weather = clientMirror_.world();
         const float alpha = renderInterpolationAlpha;
         const float rainGradient = weather.previousRainGradient +
@@ -6198,9 +5856,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             textures_.fluidAnimationFrameTimes[2], textures_.fluidAnimationFrameTimes[3]};
         uniform.fluidAnimationSettings.x =
             static_cast<float>(clientMirror_.world().serverTick) + renderInterpolationAlpha;
-        // RN-4b: forward the baked block-texture animations (magma, and future
-        // prismarine/sea lantern) so the shader cycles them from their base layer,
-        // capped at kMaxBlockAnimations.
+        // 把烘好的方块纹理动画转给着色器，它从各自的首层开始轮播
+        // 目前是岩浆块，将来还有海晶石与海晶灯，条数上限为 kMaxBlockAnimations
         const auto& bakedAnimations = textures_.blockAnimations;
         const std::size_t animationCount =
             std::min(bakedAnimations.size(), kMaxBlockAnimations);
@@ -6223,8 +5880,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             options.smoothLightingQuality != world::SmoothLightingQuality::Off ? 1.0F : 0.0F;
         uniform.lightingSettings.z =
             currentMeshQuality == world::SmoothLightingQuality::High ? 1.0F : 0.0F;
-        // lightingSettings.w is the sun-shadow switch: 1.0 when the pre-pass ran
-        // this frame, so the terrain shader only samples the map when it is live.
+        // lightingSettings.w 是太阳阴影开关，本帧预通道跑过时为 1.0
+        // 地形着色器因此只在阴影图确实有效时才采样它
         uniform.lightingSettings.w = shadowDisabled ? 0.0F : 1.0F;
         uniform.lightViewProj = shadowLightViewProj;
         std::memcpy(frame.uniformBuffer.mapped, &uniform, sizeof(uniform));
@@ -6241,9 +5898,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return std::string{translate(key, fallback)};
     }
 
-    // 26.1's LanguageManager builds this catalog exclusively from pack.mcmeta.
-    // No translation JSON is opened here, regardless of how many languages a
-    // pack contains.
+    // 26.1 的语言管理器只从 pack.mcmeta 构建这份目录
+    // 无论资源包里有多少种语言，这里都不会打开任何翻译 JSON
     void loadLanguageCatalog() {
         const auto started = std::chrono::steady_clock::now();
         const auto catalog = ui::availableLanguages(*resourceProvider);
@@ -6327,10 +5983,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // ItemRenderer#renderGuiItemOverlay's damage bar: a black 13x2 strip along
-    // the bottom of the 16x16 icon, with a coloured strip on top whose length
-    // is the remaining durability and whose hue runs green to red across the
-    // tool's life. Undamaged items draw nothing, exactly like vanilla.
+    // 物品图标上的耐久条，在 16x16 图标底部画一条 13x2 的黑色底
+    // 底上那条彩色条的长度是剩余耐久，色相随工具寿命从绿走到红
+    // 未受损的物品什么都不画，与 vanilla 一致
     [[nodiscard]] static float particleLevelMultiplier(int level) {
         switch (level) {
         case 0:
@@ -6348,29 +6003,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         particleSystem.setLevelScale(particleLevelMultiplier(options.particleLevel));
     }
 
-    // Samples the world lightmap once for a whole entity, the way vanilla does
-    // (Entity#getLightmapCoordinates): one sky level and one block level taken at
-    // the block the entity's body occupies, not per bone or per fragment. The
-    // pair is packed into a single float because ItemPush already sits exactly on
-    // Vulkan's guaranteed 128-byte push-constant limit and dimensions.w is the
-    // only slot the cuboid modes leave free. 0 is reserved for "no scene light",
-    // so the encoding is biased by one; item_entity.vert decodes it.
-    // `samplePoint` is the point whose block is read, so each caller states where
-    // its entity's body actually is: a ground-anchored entity has to sample half
-    // a block up, because the feet sample rounds into the solid block underneath
-    // and reads as pitch black.
-    // Starts the simulation thread (unless MC_REBEDROCK_SYNC_TICK asks for the
-    // synchronous loop) and owns the tick/world-lock discipline; the runtime
-    // holds the driver, the world lock and the simulationActive gate.
+    // 整只实体只采样一次世界光照，做法与 vanilla 一致
+    // 在实体躯干所占的那格取一个天光等级和一个方块光等级，不逐骨骼也不逐片元采样
+    // 天光与方块光这一对被打包进一个 float，因为 ItemPush 已经正好用满 Vulkan 保证的 128 字节
+    // 长方体各模式里只剩 dimensions.w 这一个空位
+    // 0 保留给"没有场景光照"，因此编码整体偏移一，由 item_entity.vert 解回
+    // `samplePoint` 是要读取其方块的那个点，调用方据此说明自己实体的躯干到底在哪
+    // 贴地的实体必须往上抬半格采样，否则脚下的采样会取整落进实心方块，读出来一片漆黑
+    // 启动模拟线程，除非 MC_REBEDROCK_SYNC_TICK 要求走同步循环
+    // tick 与世界锁的纪律归它管，驱动器、世界锁和激活开关都在运行时里
     void startSimulationThread() {
         runtime.startSimulation();
     }
 
     void drawFrame() {
-        // No world lock is held here. Everything the draw pass samples — the
-        // render-owned client cache, the atomically published snapshots, the GPU
-        // mesh state — is lock-free, and the GPU fence wait, submit and present
-        // below must not block the simulation thread's write section.
+        // 这里不持有世界锁
+        // 绘制通道采样的东西都是无锁的：渲染侧自有的客户端缓存、原子发布的快照、GPU 网格状态
+        // 而下面的围栏等待、提交和呈现绝不能阻塞模拟线程的写区间
         auto& frame = frames[currentFrame];
         const auto fenceWaitStart = std::chrono::steady_clock::now();
         checkVk(vkWaitForFences(device, 1, &frame.inFlight, VK_TRUE, UINT64_MAX),
@@ -6378,8 +6027,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (diag::traceEnabled()) {
             diag::frameTrace().fenceWaitMs += diag::msSince(fenceWaitStart);
         }
-        // Tell VMA which frame this is so it can reuse allocations released a
-        // frame-index window ago instead of growing new blocks every burst.
+        // 告诉 VMA 当前是第几帧，它才能复用一个帧窗口之前释放的分配
+        // 否则每来一波突发就得新开内存块
         vmaSetCurrentFrameIndex(allocator, frameNumber_);
         const auto occReadStart = std::chrono::steady_clock::now();
         world_.releaseFrameResources(frame);
@@ -6422,18 +6071,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             worldReady = true;
             paused = false;
             menuSystem.pageStack.reset(ui::PageId::Game);
-            // Loading complete only starts the simulation. It must not re-teleport
-            // the player from render state: loadWorld already restored the saved
-            // coordinates into the live controller, the physics endpoints and the
-            // published snapshot, so any "re-anchor" here would write stale render
-            // state back over the authoritative position.
+            // 加载完成只负责启动模拟，绝不能拿渲染状态再传送一次玩家
+            // loadWorld 已经把存档坐标恢复进实时控制器、物理端点和已发布快照
+            // 这里再"重新锚定"会用陈旧的渲染状态盖掉权威位置
             simulationActive.store(true, std::memory_order_release);
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
             std::cout << "Terrain loading complete\n";
-            // The spawn area is in; widen to the full render distance. The
-            // per-frame streaming loop keeps requesting, so the rest of the view
-            // distance fills in progressively during play, the way vanilla
-            // streams chunks past its initial entry area.
+            // 出生点区域已就位，把半径放宽到完整渲染距离
+            // 逐帧的流送循环会持续请求，其余视距在游玩过程中逐步填满
+            // 这与 vanilla 进入世界后继续流送初始区域之外的区块是同一做法
             chunkStreamer.setRadii(viewDistanceChunks,
                                    viewDistanceChunks + world::kUnloadHysteresisChunks);
         }
@@ -6520,25 +6166,20 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     ui::AsyncLanguageLoader languageLoader;
     std::chrono::steady_clock::time_point languageLoadStarted{};
     std::filesystem::path optionsPath;
-    // The authoritative runtime owns the world, the save repository, the game
-    // session, the simulation driver and the world lock. The references below
-    // are convenience aliases so the many call sites keep reading them by their
-    // familiar names; the objects themselves live in the runtime, which is what
-    // a dedicated server links. Declaration order matters: the runtime is built
-    // first and the aliases point into it.
+    // 权威运行时拥有世界、存档仓库、游戏会话、模拟驱动器和世界锁
+    // 下面这些引用只是便利别名，让众多调用点仍以熟悉的名字读它们
+    // 对象本身住在运行时里，而运行时正是专用服务器所链接的那部分
+    // 声明顺序有意义：先构造运行时，别名再指进去
     runtime::GameRuntime runtime;
     persistence::SaveRepository& saveRepository;
     world::ChunkStreamer& chunkStreamer;
     world::World& interactionWorld;
-    // The client-side chunk cache the renderer meshes and samples from (M-Chunk
-    // B-5): a distinct world owned by the presentation side, fed by the same
-    // streamer batches and simulation edits that write the server world. The
-    // simulation keeps ticking interactionWorld; the renderer reads only this
-    // cache, so the two sides own their own chunk data.
+    // 渲染器做网格化和采样所用的客户端区块缓存
+    // 它是表现侧自己拥有的一个独立世界，数据来源与写服务端世界的流送批次和模拟编辑相同
+    // 模拟持续 tick 的是 interactionWorld，渲染器只读这份缓存，两边各自拥有自己的区块数据
     world::World clientCache;
-    // The client-side render mirror: filled each frame by pumping the loopback
-    // channel. Player, world and entity presentation all read the decoded views
-    // here instead of reaching into the authoritative session.
+    // 客户端渲染镜像，每帧靠泵送回环通道填充
+    // 玩家、世界与实体的表现都读这里解码出来的视图，不去碰权威会话
     client::ClientMirror clientMirror_;
     gameplay::GameSession& gameSession;
     gameplay::SimulationDriver& simulationDriver;
@@ -6549,18 +6190,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     config::GameOptions options;
     std::optional<TestSceneOptions> testScene;
     audio::AudioSystem audioSystem;
-    // Mirrors the worker's incremental lighting on the render thread so instant
-    // edit previews are built with correct light instead of stale stored values.
+    // 在渲染线程上复刻工作线程的增量光照，即时编辑预览因此用的是正确光照而不是陈旧的存值
     world::WorldLightEngine interactionLightEngine;
     std::unordered_map<world::SectionPosition, GpuMesh, world::SectionPositionHash> gpuMeshes;
     StreamBufferPool deviceBufferPool_;
     StreamBufferPool stagingBufferPool_;
-    // Per-section occlusion state, fed by the occlusion query results so an
-    // opaque mesh is skipped once its AABB stops passing the depth test.
+    // 逐 section 的遮挡状态，由遮挡查询结果驱动
+    // 某个包围盒不再通过深度测试时，它的不透明网格就被跳过
     std::unordered_map<world::SectionPosition, OcclusionState, world::SectionPositionHash>
         occlusionStates;
-    // Consecutive zero-count queries per section, so the Visible->Occluded edge
-    // needs a couple of failed queries instead of a single borderline one.
+    // 逐 section 连续为零的查询次数，用来给 Visible 转 Occluded 这条边加迟滞
+    // 需要连着好几次查询都不通过才切换，而不是凭一次擦边的结果
     std::unordered_map<world::SectionPosition, std::uint32_t, world::SectionPositionHash>
         occlusionMissCount;
     std::array<VkQueryPool, kFramesInFlight> occlusionQueryPools{};
@@ -6574,46 +6214,43 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pendingSectionUpdates;
     std::unordered_map<world::SectionPosition, std::uint64_t, world::SectionPositionHash>
         latestSectionRevisions;
-    // Smooth-lighting quality the meshes on the GPU were baked with, versus the
-    // one the worker is re-baking towards. uniform.lightingSettings.z follows
-    // currentMeshQuality so the shader never applies the High AO curve to a
-    // Standard mesh; the flip is gated on qualityRemeshPending draining.
+    // 前者是 GPU 上的网格当初烘焙时用的平滑光照画质，后者是工作线程正在重烘的目标画质
+    // uniform.lightingSettings.z 跟随 currentMeshQuality
+    // 着色器因此绝不会把 High 的 AO 曲线用在 Standard 网格上
+    // 这次切换要等 qualityRemeshPending 排空才放行
     world::SmoothLightingQuality currentMeshQuality = world::SmoothLightingQuality::Standard;
     world::SmoothLightingQuality targetMeshQuality = world::SmoothLightingQuality::Standard;
     std::unordered_set<world::SectionPosition, world::SectionPositionHash> qualityRemeshPending;
     ui::MenuSystem menuSystem;
-    // The HUD-facing gameplay state, captured once per frame so the draw
-    // passes read a consistent snapshot instead of live gameplay objects.
+    // 面向 HUD 的玩法状态，每帧捕获一次
+    // 各绘制通道因此读的是一份自洽的快照，而不是实时玩法对象
     mutable ui::UiFrameData uiFrameData_;
     PerspectiveCamera camera;
-    // The unmodified FOV the camera was built with. Every frame multiplies it by
-    // the gameSession.player()'s movement FOV multiplier, so the base has to be kept aside.
+    // 相机构造时的原始视场角
+    // 每帧都要乘上玩家的移动视场系数，因此基准值必须单独留一份
     float baseFieldOfViewDegrees = 65.0F;
-    // Health, hunger and environmental damage. Only ticked in survival.
-    // The world's game rules, owned here and mirrored into the systems that
-    // consume them; persisted as a sparse self-describing block in world.dat.
-    // Minimal free-roaming creatures and the pig skeleton they render with.
-    // The first consumer of the box-UV entity pipeline.
-    // The species the box-UV entity pipeline has bound: one entry per loaded
-    // creature (pig, zombie), each carrying its geometry + animations and its
-    // layer in the entity texture array. Filled by createEntityTextureArray.
+    // 生命、饥饿与环境伤害，只在生存模式下 tick
+    // 世界的游戏规则，所有权在这里，并镜像给消费它们的各系统
+    // 以稀疏的自描述块形式持久化在 world.dat 里
+    // 自由活动的生物，以及它们渲染所用的骨架
+    // box-UV 实体管线已绑定的物种，每个已加载生物一条
+    // 每条携带它的几何、动画，以及它在实体纹理数组里的层号
+    // 由 createEntityTextureArray 填充
     std::vector<gameplay::entities::SpeciesRenderModel> speciesModels;
     animation::ModelAnimationSystem heldItemAnimation;
-    // The gameSession.inventory() preview gameSession.player() and the in-world third-person
-    // gameSession.player() use separate animator instances driven by different inputs (cursor vs.
-    // the gameSession.player()'s own look/movement).
+    // 背包预览里的玩家与世界中第三人称的玩家各用一个独立的动画器实例
+    // 前者由光标驱动，后者由玩家自己的视线与移动驱动
     animation::PlayerModelAnimator playerModelAnimator;
-    // ANIM task2: the third-person world player runs this PlayerModelAnimator
-    // controller stack (shared with the inventory preview), fed the authoritative
-    // WalkAnimationState — HumanoidPoseSolver is retired, no separate solved pose.
+    // 世界中第三人称的玩家跑的就是这套 PlayerModelAnimator 控制器栈，与背包预览共用
+    // 输入是权威的行走动画状态，不再另算一份姿态
     animation::PlayerModelAnimator worldPlayerAnimator;
-    // Data-driven motion for the chest lid (Bezier ease-out hinge) and the
-    // dropped-item float/spin, evaluated through the animation library.
+    // 箱盖与掉落物运动的数据驱动定义，经动画库求值
+    // 箱盖是贝塞尔缓出的合页，掉落物是漂浮加旋转
     animation::HingeAnimation chestLidAnimation;
     animation::DisplayEntityAnimation itemDisplayAnimation;
     CameraPerspective cameraPerspective = CameraPerspective::FirstPerson;
-    // Third-person body yaw, which lags the look direction so the head leads the
-    // turn and only drags the body once it hits its rotation limit.
+    // 第三人称的身体偏航，它滞后于视线方向
+    // 头先转，转到限度才拖着身体一起转
     float worldBodyYaw = 0.0F;
     bool worldBodyYawInitialized = false;
     ParticleSystem particleSystem;
@@ -6628,107 +6265,98 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     bool inventoryOpen = false;
     bool spawnPositionInitialized = false;
     bool worldReady = false;
-    // DR repro hook: MC_REBEDROCK_LOAD_SAVE auto-loads the first real save.
+    // 复现用钩子，MC_REBEDROCK_LOAD_SAVE 会自动载入第一个真实存档
     bool loadSaveStarted = false;
     bool creativeScrollbarDragging = false;
-    // SlotActionType.QUICK_CRAFT drag state: the button held and the (kind,
-    // index) of every slot the cursor swept over — values, never storage
-    // pointers into gameplay. A drag starts when a press leaves a stack on the
-    // cursor, collects slots while the button is held, and ships the set to the
-    // interaction on release.
+    // 快速合成拖拽的状态：按住的是哪个键，以及光标划过的每个槽位的类型与下标
+    // 全都是值，绝不是指向玩法侧存储的指针
+    // 按下之后光标上还留着物品堆就算拖拽开始，按住期间持续收集槽位，松开时把整个集合交给交互
     bool inventoryDragActive = false;
     gameplay::InventoryMouseButton inventoryDragButton = gameplay::InventoryMouseButton::Left;
     std::vector<gameplay::SlotRef> inventoryDragSlots;
-    // Vanilla sets this on a press that already acted (a pickup or quick-move
-    // from an empty cursor) so the release does not place or distribute again.
+    // vanilla 在"按下时就已经生效"的操作上置这个标志，比如空光标下的拿起或快速移动
+    // 松开时因此不会再放置或分配一次
     bool cancelNextInventoryRelease = false;
-    // SlotActionType.PICKUP_ALL double-click state: the last slot pressed (by
-    // kind + index), when, and whether the press was the second within the
-    // vanilla 250 ms window. On release the same-type stacks gather into the
-    // cursor.
+    // 双击收拢的状态：上一次按下的槽位类型与下标、按下的时刻
+    // 以及这次按下是否落在 vanilla 那个 250 毫秒窗口内、算作第二次
+    // 松开时同类物品堆会收拢到光标上
     std::optional<gameplay::SlotRef> lastClickedSlot;
     double lastClickTime = 0.0;
     bool isDoubleClicking = false;
     bool paused = true;
     bool debugOverlayOpen = false;
-    // D0: the client-side jump and sprint-double-tap edges. The GLFW key callback
-    // sets them; processInput folds them into the frame's MovementInput and clears
-    // them on send. Before the client/server split these were GameSession's
-    // jumpPressed_/forwardPressed_ accumulators, which a cross-process client (no
-    // session) cannot touch — now the edge is the client's and travels the channel.
+    // 客户端侧的跳跃边沿与疾跑双击边沿
+    // 由 GLFW 键回调置上，processInput 把它们折进本帧的 MovementInput 并在发送后清掉
+    // 边沿归客户端所有并经通道送出，跨进程的客户端因此不必去碰会话的累加器
     bool pendingJumpPressed_ = false;
     bool pendingForwardPressed_ = false;
-    // PX-1: the single input collection point. Holds the rebindable action ->
-    // binding table and the previous-frame level bitmap for edge detection, so
-    // processInput() no longer reads raw GLFW keys and the key callback compares
-    // against bindings instead of hardcoded GLFW_KEY_* constants.
+    // 唯一的输入收集点
+    // 它持有可重绑定的"动作到按键"表，以及上一帧的电平位图用于边沿检测
+    // processInput() 因此不再直接读 GLFW 原始按键，键回调也改为比对绑定而不是写死的键值常量
     input::InputSystem inputSystem_;
     input::InputSystem::EventQueue inputEvents_;
-    // PX-5: the Key Binds screen's rebind state, over the InputSystem single
-    // source. Non-null capture means the next key press is consumed as a rebind
-    // rather than gameplay input.
+    // 按键设置界面的重绑状态，建立在 InputSystem 这一唯一来源之上
+    // 捕获目标非空时，下一次按键会被当作重绑消费掉，而不是游戏输入
     input::KeyBindingScreen keyBindScreen_{inputSystem_};
-    // PX-6: the game-in HUD overlays. The toast queue (top-right notifications)
-    // and the subtitle feed (bottom-right sound captions) are Vulkan-free client-
-    // presentation state, advanced on frame delta and drawn by HudRenderer.
+    // 游戏内的 HUD 叠加层
+    // 右上角的吐司队列与右下角的音效字幕流都是不含 Vulkan 的客户端表现状态
+    // 它们按帧间隔推进，由 HudRenderer 绘制
     ui::ToastQueue toastQueue_;
     ui::SubtitleFeed subtitleFeed_;
     bool dropRequested = false;
     bool dropWholeStack = false;
     bool chatOpen = false;
-    // 1.16.1's InGameHud vignette: starts at full darkness and lerps toward
-    // 1 - brightnessAtEyes at 1% per tick (see updateVignetteDarkness).
+    // HUD 暗角，从全黑起步，每 tick 以 1% 的速度趋近 1 减去眼部亮度
+    // 见 updateVignetteDarkness
     float vignetteDarkness_ = 1.0F;
     unsigned int suppressedOpeningChatCodepoint = 0U;
     int viewDistanceChunks = 4;
-    // Vanilla's Simulation Distance: how many chunks around the player stay
-    // simulated (entities beyond it are frozen but rendered). In chunks, so it
-    // reads like the view-distance slider next to it.
+    // vanilla 的模拟距离，表示玩家周围多少个区块保持被模拟
+    // 超出范围的实体会被冻结但仍然渲染
+    // 单位是区块，读法与旁边的视距滑块一致
     int simulationDistanceChunks = 4;
 
     ui::WidgetId pressedMenuButton = ui::WidgetId::None;
-    // PX-4: the pressed widget's index into the current ui::Page, so the release
-    // dispatches through the model (dispatchActivate) instead of a MenuButton
-    // switch. kNoWidget when no widget is pressed.
+    // 按下的 widget 在当前 ui::Page 中的下标，松开时据此经模型派发
+    // 没有按下任何 widget 时为 kNoWidget
     std::size_t pressedMenuIndex_ = ui::kNoWidget;
     std::optional<world::VoxelRaycastHit> targetedBlock;
 
-    // The furnace block the gameSession.player() last opened; while the shared furnace state
-    // is burning, that block swaps to the lit state (texture + light).
+    // 玩家最后打开的那个熔炉方块
+    // 共享的熔炉状态处于燃烧中时，该方块换成点亮态，纹理与发光一起变
 
-    // The aim ray's nearest creature, computed with the block target each frame;
-    // the input handlers package it into the destroy command.
+    // 瞄准射线上最近的生物，每帧与方块目标一同算出
+    // 输入处理把它打包进破坏命令
     std::optional<gameplay::EntityRayHit> creatureHit;
-    // The swing sequence the held-item bridge sampled last frame, so a restart
-    // (sequence change) snaps instead of interpolating the arm back.
+    // 手持物桥接上一帧采样到的挥动序号
+    // 序号变化即表示重新开始，此时直接跳变，而不是把手臂插值倒回去
     std::optional<std::uint64_t> lastSwingSequence_;
-    // PX-2 Bug2: the third-person world player's own swing-sequence memory, so its
-    // attack arc snaps on a restart independently of the first-person bridge.
+    // 世界中第三人称玩家自己的挥动序号记忆
+    // 它的攻击弧线因此能独立于第一人称桥接，在重新开始时跳变
     std::optional<std::uint64_t> lastWorldSwingSequence_;
     std::string chatInputText;
     ui::ChatHistory chatHistory;
-    // Tab completion state for the open chat line: the candidates for the token
-    // under the cursor, rebuilt when the input changes, and the currently
-    // highlighted row (Tab cycles through the stored list without recomputing).
+    // 打开着的聊天行的 Tab 补全状态
+    // 含光标处那个词的候选列表，输入一变就重建，以及当前高亮的行
+    // Tab 只在已存列表里循环，不重算
     std::vector<gameplay::command::Suggestion> chatSuggestions_;
     std::size_t chatSuggestionIndex_ = 0;
-    // GuiIngame's held-item name highlight: which hotbar slot and stack the name
-    // on screen belongs to, and when it started showing. The name fades out
-    // after two seconds and is cleared entirely while the hand is empty. Written
-    // from the (const) HUD pass, so mutable like the other UI animation state.
+    // 手持物名称高亮的状态：屏幕上那个名字属于哪个快捷栏格与哪个物品堆，以及它何时开始显示
+    // 名字在两秒后淡出，空手时整个清掉
+    // 它由常量的 HUD 通道写入，因此和其它 UI 动画状态一样标为 mutable
     mutable std::size_t selectedNameSlot_ = static_cast<std::size_t>(-1);
     mutable gameplay::ItemStack selectedNameStack_;
     mutable double selectedNameShownAt_ = -1.0;
-    // Menus, the cursor blink and chat expiry run on wall time and must keep
-    // running while the simulation is paused or the sun is frozen.
+    // 菜单、光标闪烁和聊天过期都按墙钟走
+    // 模拟暂停或太阳冻结期间它们必须继续运行
     double uiTimeSeconds = 0.0;
-    // Animation interpolation. Separate from uiTimeSeconds because it stops
-    // with the world: a paused game should not keep swinging arms. Both are
-    // frame-local and neither is persisted.
+    // 动画插值用的时钟，与 uiTimeSeconds 分开，因为它随世界一起停
+    // 暂停的游戏不该继续挥手臂
+    // 两者都是帧局部的，也都不持久化
     double renderTimeSeconds = 0.0;
-    // Eating state: right-click on food starts the vanilla 32-tick (1.6 s) eat,
-    // during which the held item is raised to the mouth; the meal lands when the
-    // timer expires. Release the button or swap items to cancel.
+    // 进食状态，右键食物开始 vanilla 那段 32 tick 即 1.6 秒的进食
+    // 期间手持物抬到嘴边，计时结束才真正吃下
+    // 松开按键或换物品即取消
     double lastMouseX = 0.0;
     double lastMouseY = 0.0;
     float renderInterpolationAlpha = 0.0F;
@@ -6736,8 +6364,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     std::size_t fpsSampleFrames = 0U;
     int displayedFps = 0;
     GLFWwindow* window = nullptr;
-    // Owns the device/instance/allocator/queues/command pool. The same-named
-    // members below are non-owning copies the renderer reads directly.
+    // 拥有设备、实例、分配器、队列和命令池
+    // 下面那些同名成员是渲染器直接读取的非拥有副本
     VulkanDevice vulkanDevice_;
     VkInstance instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
@@ -6749,12 +6377,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     VkDevice device = VK_NULL_HANDLE;
     VmaAllocator allocator = VK_NULL_HANDLE;
     VulkanResources resources_;
-    // Owns the rain/GUI/panorama/biome texture resources (see TextureManager);
-    // block/entity/font arrays still live here as flat members for now.
+    // 拥有雨幕、GUI、全景、群系这几类纹理资源，详见 TextureManager
+    // 方块、实体、字体三个数组仍以平铺成员的形式留在这里
     TextureManager textures_;
-    // The single path every block change this renderer makes flows through, so
-    // the block-entity, neighbour, section and drop consequences are dispatched
-    // from one place instead of being re-assembled at each call site.
+    // 本渲染器所做的每一次方块变更都走这一条路径
+    // 方块实体、邻居更新、section 脏标记和掉落物这些后果因此从一处派发，不必在每个调用点重新拼一遍
     world::WorldMutationService worldMutations;
     QueueFamilyIndices queueFamilies;
     VkQueue graphicsQueue = VK_NULL_HANDLE;
@@ -6782,42 +6409,34 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     bool shadowDisabled = std::getenv("MC_REBEDROCK_SHADOW_DISABLE") != nullptr;
     bool shadowDebugOverlay = std::getenv("MC_REBEDROCK_SHADOW_DEBUG") != nullptr;
     render::RainSystem rainSystem;
-    // Reused CPU staging for block-dust/splash particles plus async rain. It
-    // stays host-cached while records sample the world, then bulk-copies once
-    // into the current frame's sequential-write mapped storage buffer.
+    // 方块粉尘、水花粒子和异步雨共用的 CPU 暂存缓冲，可复用
+    // 记录采样世界期间它一直留在主机缓存里，最后一次性整体拷进本帧顺序写映射的存储缓冲
     std::vector<ParticleRecord> sceneParticleRecords_;
     RainMode rainMode_ = RainMode::Async;
     std::size_t rainCountOverride_ = 0U;
     float rainTime_ = 0.0F;
-    // The wind heading and its occasional shift: `rainWindAngle_` eases toward
-    // `windTargetAngle_`, and `windShiftTimer_` counts down to the next veer.
+    // 风向及其偶尔的改向
+    // `rainWindAngle_` 缓慢趋近 `windTargetAngle_`，`windShiftTimer_` 倒计时到下一次改向
     float rainWindAngle_ = 0.0F;
     float windTargetAngle_ = 0.0F;
     float windShiftTimer_ = 0.0F;
-    // The weather-sound scheduler, ported from WorldRenderer#tickRainSplashing's
-    // sound half: `weatherSoundCadence_` is vanilla's field_20793, the gate
-    // counter that makes the rain clip fire every frame or two, and the LCG
-    // feeds the column and gate rolls without touching the audio system's own
-    // random state.
+    // 天气音效的调度状态
+    // `weatherSoundCadence_` 是那个放行计数器，它让雨声大约每一两帧响一次
+    // 线性同余发生器供选列和放行两处掷点使用，不去动音频系统自己的随机状态
     int weatherSoundCadence_ = 0;
     std::uint32_t weatherSoundRng_ = 0x5EED11U;
     VkPipeline rainSheetPipeline = VK_NULL_HANDLE;
     VkPipelineLayout rainSheetPipelineLayout = VK_NULL_HANDLE;
-    // Native 64x256 environment/rain.png for the vanilla column rain pass.
-    // It cannot share the square block array without aspect-ratio distortion.
-    // The six 1.16.1 title-screen panorama faces, one array layer each, sampled
-    // with a dedicated linear sampler because they are photographs, not pixel
-    // art. Kept out of the 256px GUI array so they stay at native resolution.
-    // The 1.16.1 biome colour lookup textures (grass + foliage), sampled by the
-    // terrain fragment shader with a linear sampler so biome boundaries blend as
-    // a smooth per-pixel gradient — the GPU-side equivalent of Java's per-vertex
-    // BiomeColors, but robust because the colour comes from a texture fetch
-    // rather than a per-vertex attribute. Generated from the world seed and the
-    // vanilla colour maps when a world loads; the pixel data is regenerated per
-    // seed, the images/sampler are created once.
+    // 原生 64x256 的 environment/rain.png，供 vanilla 的逐列降雨通道使用
+    // 它不能挤进方形的方块数组，否则宽高比会被压坏
+    // 标题界面的六张全景面，各占一层，用专门的线性采样器采样
+    // 它们是实拍图而不是像素画，也因此不放进 256px 的 GUI 数组，好保持原生分辨率
+    // 群系配色查找表，含草色与叶色两张，由地形片元着色器用线性采样器采样
+    // 群系边界因此融成逐像素的平滑渐变，这是 Java 逐顶点着色在 GPU 侧的等价物
+    // 颜色来自一次纹理取样而不是逐顶点属性，因此更稳健
+    // 世界加载时按世界种子和 vanilla 配色图生成，像素数据逐种子重建，图像与采样器只创建一次
     ui::BitmapFontMetrics fontMetrics;
-    // ascii.png metrics plus the legacy unicode pages, and the translation
-    // table the interface reads its strings from.
+    // ascii.png 的字形度量、传统 unicode 页，以及界面读取文案所用的翻译表
     ui::TextFont textFont;
     ui::Language language;
     std::string queuedLanguageCode;
@@ -6853,29 +6472,25 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     std::array<FrameContext, kFramesInFlight> frames{};
     std::size_t currentFrame = 0;
     std::uint32_t frameNumber_ = 0;
-    // Stress-test frame cap; 0 disables it. Read from MC_REBEDROCK_STRESS_FRAMES.
+    // 压测的帧数上限，取自 MC_REBEDROCK_STRESS_FRAMES，为 0 表示不启用
     std::size_t stressFrames = 0;
-    // MC_REBEDROCK_DISABLE_OCCLUSION turns off the occlusion pass, so a crash
-    // that vanishes with it set can be attributed to the queries.
+    // MC_REBEDROCK_DISABLE_OCCLUSION 关掉遮挡通道
+    // 设上它之后崩溃就消失的话，就能把问题归到查询上
     bool occlusionDisabled = disableOcclusionQueries();
-    // The render eye of the previous frame, so the occlusion pass can tell when
-    // the view is moving fast enough that two-frame-old query results are stale.
+    // 上一帧的渲染眼点
+    // 遮挡通道据此判断视角是否快到让晚两帧的查询结果已经过期
     bool hasLastRenderEye = false;
     RenderEye lastRenderEye{};
-    // Rotation/translation accumulated since the last occlusion validation
-    // point. Two-frame-old "Occluded" results are only trustworthy while the
-    // eye is near-stationary; once the accumulated motion passes a small
-    // threshold the whole occlusionStates map is dropped so stale sections draw
-    // and re-query, even under a smooth fast pan that never trips the per-frame
-    // cameraMovingFast check.
+    // 自上一次遮挡校验点以来累计的旋转与平移
+    // 晚两帧的 Occluded 结果只在眼点接近静止时才可信
+    // 累计运动超过一个小阈值就把整张 occlusionStates 表丢掉，陈旧的 section 因此照画并重新查询
+    // 即使是一次始终触发不了逐帧快速运动判定的平滑快扫也照样失效重来
     bool occlusionValidityInitialized = false;
     float occlusionRotationAccumulatorDegrees = 0.0F;
     float occlusionTranslationAccumulator = 0.0F;
-    // The stream request centre leads toward the view direction as well as the
-    // movement direction, so turning reveals area is already generating. A
-    // dedicated forward (not the render eye) keeps the look-ahead independent of
-    // the first/third-person eye; the spin guard drops the lead while the view
-    // swings so the loaded disk does not thrash.
+    // 流送请求中心同时朝视线方向和移动方向前探，转过身时那片区域已经在生成
+    // 前探方向用独立的一份朝向而不是渲染眼点，好让它与第一或第三人称的眼点无关
+    // 视角摆动期间由旋转保护取消前探，已加载的区域因此不会来回颠簸
     bool hasLastStreamingForward = false;
     glm::vec3 lastStreamingForward{0.0F, 0.0F, 1.0F};
     std::size_t completedStreamBatchCount = 0;
@@ -6886,9 +6501,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     std::size_t lastSessionPeakPendingSectionCount = 0;
     VkDeviceSize uploadedBytesThisFrame = 0;
     VkDeviceSize totalUploadedBytes = 0;
-    // Streaming upload budget, adapted each frame from the smoothed frame time:
-    // idle (GPU headroom) raises it, stress (frame time climbing) lowers it. See
-    // render/StreamingBudget.hpp for the hysteresis.
+    // 流送上传预算，每帧按平滑后的帧时间调整
+    // GPU 有余量时抬高，帧时间往上走时压低，迟滞规则见 render/StreamingBudget.hpp
     float smoothedFrameSeconds_ = 0.0F;
     std::size_t streamingUploadBudget_ = mc::render::kMaxStreamingBudgetHigh;
     std::size_t lastVisibleMeshCount = std::numeric_limits<std::size_t>::max();
@@ -6898,14 +6512,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     gameplay::ItemStack lastSelectedItem{};
     std::unordered_map<PersistentEditPosition, std::size_t, PersistentEditPositionHash>
         savedEditIndices;
-    // The save being edited, captured when Edit is pressed so the edit/delete
-    // flow keeps working even if the list refreshes in between.
+    // 正在编辑的存档，在按下编辑时记下
+    // 即使中途列表刷新，编辑与删除流程也照常可用
     bool worldSessionActive = false;
 
-    // Wires the extracted HudRenderer to this Impl's state: reference fields
-    // bind directly to members (so resize-recreated pipelines and input-mutated
-    // UI flags stay visible), and a few std::function hooks keep the world-render
-    // couplings (held item, submerged test, model-preview descriptor) in Impl.
+    // 把 HudRenderer 接到本 Impl 的状态上
+    // 引用字段直接绑到成员，缩放后重建的管线和被输入改动的 UI 标志因此始终可见
+    // 另有几个 std::function 钩子把世界渲染侧的耦合留在 Impl 里
+    // 那几处是手持物、水下判定和模型预览的描述符
     [[nodiscard]] HudRenderer::Bindings makeHudBindings() {
         return HudRenderer::Bindings{
             .menuSystem = menuSystem,
@@ -6982,13 +6596,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         };
     }
 
-    // Declared last so its reference members bind to fully-constructed members
-    // above (NSDMI runs in declaration order); the HUD draw pass lives here.
+    // 放在最后声明，它的引用成员才能绑到上面已完全构造好的成员，成员初始化按声明顺序执行
+    // HUD 的绘制通道就在这里
     HudRenderer hud_{makeHudBindings()};
 
-    // Wires WorldRenderer to this Impl's state (references-only: all state stays
-    // owned here so the GPU-resource teardown ordering is untouched), plus a few
-    // std::function hooks for camera/gameplay callbacks that remain in Impl.
+    // 把 WorldRenderer 接到本 Impl 的状态上，只用引用
+    // 所有状态仍归这里所有，GPU 资源的销毁次序因此不受影响
+    // 另有几个 std::function 钩子承接留在 Impl 里的相机与玩法回调
     [[nodiscard]] WorldRenderer::Bindings makeWorldBindings() {
         return WorldRenderer::Bindings{
             .testScene = testScene,
@@ -7121,21 +6735,19 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 return savedEditIndices.contains(PersistentEditPosition{x, y, z});
             },
             .onChunkUnloaded = [this](world::ChunkPosition position) {
-                // M-3 C5: a chunk left the simulation radius. The runtime persists
-                // its edits and creatures to the chunk's region file and drops
-                // the creatures from the simulation, so a herd outside the radius
-                // survives on disk until its chunk streams back in.
+                // 有区块离开了模拟半径
+                // 运行时把它的编辑与生物写进该区块的 region 文件，并从模拟里移除这些生物
+                // 半径之外的兽群因此在磁盘上存活，直到它的区块被重新流送进来
                 runtime.persistUnloadedChunk(position);
             },
             .onChunkLoaded = [this](world::ChunkPosition position) {
-                // A chunk streamed back in — restore the creatures the unload
-                // path wrote for it, if any.
+                // 有区块重新流送进来，把卸载时为它写下的生物恢复回去，如果有的话
                 runtime.restoreLoadedChunk(position);
             },
         };
     }
 
-    // Declared after hud_ so its Bindings can reference hud_; world render pass.
+    // 声明在 hud_ 之后，它的 Bindings 才能引用 hud_，世界渲染通道在这里
     WorldRenderer world_{makeWorldBindings()};
 };
 

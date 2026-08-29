@@ -15,7 +15,7 @@ namespace {
         numeric < static_cast<unsigned int>(world::Block::Count)) {
         return static_cast<world::Block>(numeric);
     }
-    // The registry takes `rebedrock:stone`, the vanilla alias and the bare name.
+    // 注册表同时接受 `rebedrock:stone`、vanilla 别名和裸名字三种写法
     if (const auto block = world::blockFromIdentifier(value); block.has_value()) {
         return *block;
     }
