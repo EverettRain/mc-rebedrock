@@ -114,6 +114,16 @@ StructureManager& structureManager() {
 void registerBuiltinStructureSets(StructureManager& manager) {
     manager.clearSets();
 
+    // Master off switch: MC_REBEDROCK_NO_STRUCTURES leaves the set list empty, so
+    // placeStructures/createStructureChests iterate nothing and cost is zero — no
+    // per-chunk neighbourhood scan, no stamping, no meshing of structure geometry
+    // (the candidate scan lives inside the per-set loop, so an empty set list skips
+    // it outright). The world is otherwise generated identically. Doubles as an A/B
+    // probe for whether structure generation is a frame-rate sink near a village.
+    if (std::getenv("MC_REBEDROCK_NO_STRUCTURES") != nullptr) {
+        return;
+    }
+
     // Debug find-aid: MC_REBEDROCK_STRUCTURE_DEBUG makes structures dense and
     // biome-agnostic so one is always near the player in any world — for quickly
     // locating and inspecting them. Off by default; the shipped placement is vanilla.
