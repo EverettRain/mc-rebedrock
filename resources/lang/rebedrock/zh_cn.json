@@ -8,7 +8,6 @@
   "options.rebedrock.rainCollisionCache": "雨滴碰撞缓存",
   "options.rebedrock.rainMode": "雨效果模式",
   "options.rebedrock.rainMode.async": "异步粒子雨",
-  "options.rebedrock.rainMode.particles": "粒子雨",
   "options.rebedrock.rainMode.texture": "贴图雨",
   "options.rebedrock.resolution.windowed": "窗口化",
   "options.rebedrock.sunShadows": "太阳阴影"

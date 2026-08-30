@@ -72,7 +72,7 @@ void GameOptions::sanitize() {
     // authoritative masterVolume so a reader that indexes the array by
     // SoundCategory::Master sees the right value.
     soundCategoryVolumes[static_cast<std::size_t>(mc::audio::SoundCategory::Master)] = masterVolume;
-    rainMode = std::clamp(rainMode, 0, 2);
+    rainMode = std::clamp(rainMode, 0, 1);
     particleLevel = std::clamp(particleLevel, 0, 3);
     if (language.empty() ||
         language.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos) {

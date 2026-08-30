@@ -15,6 +15,8 @@ layout(binding = 0) uniform CameraUniform {
     vec4 renderSettings;
 } camera;
 
+// CPU 侧对应 render/vulkan/GpuSceneBuffer.hpp 的 RainColumnRecord，字段名逐一对应
+// 该结构与 ParticleRecord 共用同一个 48 字节槽位，布局由那边的 static_assert 钉住
 struct RainColumn {
     vec4 positionBottomWidth;
     vec4 topOpacityPhaseLight;

@@ -98,6 +98,28 @@ int main() {
     assert(sawWaterImpact);
     assert(sawGroundImpact);
 
+    // 世界底不是 0：列探测必须能一直扫到 kMinY
+    // 探测下界曾写死字面量 0，深板岩层（y < 0）里的任何表面都探测不到，
+    // 那里的雨滴只会一路自由落体，既不落地也不溅射
+    // 探测上界同样曾误用 kWorldHeight-1（那是行数 384，不是坐标上界 320）
+    {
+        mc::world::World deepWorld;
+        for (int chunkZ = -1; chunkZ <= 1; ++chunkZ) {
+            for (int chunkX = -1; chunkX <= 1; ++chunkX) {
+                deepWorld.setChunk({chunkX, chunkZ}, mc::world::Chunk{});
+            }
+        }
+        // 唯一的表面在 y = -20，整段在旧的探测下界之下
+        for (int z = -8; z <= 8; ++z) {
+            for (int x = -8; x <= 8; ++x) {
+                deepWorld.setBlock(x, -20, z, mc::world::Block::Stone);
+            }
+        }
+        mc::render::RainSystem deepRain;
+        const glm::vec3 deepCamera{0.0F, 5.0F, 0.0F};
+        assert(deepRain.precipitationSurfaceY(deepWorld, 0, 0, deepCamera.y + 32.0F) == -19.0F);
+    }
+
     // The wider field: with the ±24 box, drops reach beyond the old ±16 so the
     // rain (and its splashes) read at a distance.
     float farthest = 0.0F;

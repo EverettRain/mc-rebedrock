@@ -1,6 +1,8 @@
 #include "render/RainSystem.hpp"
 
+#include "gameplay/Random.hpp"
 #include "world/Block.hpp"
+#include "world/BlockShape.hpp"
 #include "world/World.hpp"
 #include "world/WorldConstants.hpp"
 
@@ -45,45 +47,6 @@ constexpr std::size_t kSurfaceCacheLimit = 4096U;
 // entry per height a drop crossed it at, so a long wall can accumulate).
 constexpr std::size_t kWallCacheLimit = 2048U;
 
-// java.util.Random, used here because WorldRenderer seeds tickRainSplashing
-// from the weather tick. Keeping its 48-bit sequence preserves the original's
-// stable impact distribution without coupling it to simulated-drop RNG state.
-class VanillaRandom final {
-public:
-    explicit VanillaRandom(std::uint64_t seed)
-        : state_((seed ^ kMultiplier) & kMask) {}
-
-    [[nodiscard]] int nextInt(int bound) {
-        const std::uint32_t bits = nextBits(31);
-        const std::uint32_t unsignedBound = static_cast<std::uint32_t>(bound);
-        std::uint32_t value = bits % unsignedBound;
-        std::uint32_t candidate = bits;
-        while (static_cast<std::uint64_t>(candidate - value) + unsignedBound - 1U >=
-               (1ULL << 31U)) {
-            candidate = nextBits(31);
-            value = candidate % unsignedBound;
-        }
-        return static_cast<int>(value);
-    }
-
-    [[nodiscard]] double nextDouble() {
-        const std::uint64_t high = nextBits(26);
-        const std::uint64_t low = nextBits(27);
-        return static_cast<double>((high << 27U) + low) / 9007199254740992.0;
-    }
-
-private:
-    [[nodiscard]] std::uint32_t nextBits(int bits) {
-        state_ = (state_ * kMultiplier + kAddend) & kMask;
-        return static_cast<std::uint32_t>(state_ >> (48 - bits));
-    }
-
-    static constexpr std::uint64_t kMultiplier = 0x5DEECE66DULL;
-    static constexpr std::uint64_t kAddend = 0xBULL;
-    static constexpr std::uint64_t kMask = (1ULL << 48U) - 1ULL;
-    std::uint64_t state_ = 0U;
-};
-
 } // namespace
 
 float RainSystem::randomUnit() {
@@ -122,8 +85,10 @@ RainSystem::ColumnSurface RainSystem::columnSurface(const world::World& world, i
     // Probe: the topmost collision or fluid block at-or-below the ceiling. Only
     // the first drop to enter a column pays this; the cache serves the rest.
     ColumnSurface surface;
-    const int top = std::min(static_cast<int>(ceiling), world::kWorldHeight - 1);
-    const int bottom = std::max(top - kProbeSpan, 0);
+    // kWorldHeight 是行数不是坐标上界，世界底也不是 0：两处都必须用 kMaxY/kMinY
+    // 写成 kWorldHeight-1 会让探测在世界顶上空扫 64 行，写成 0 则整段深板岩层永远探测不到
+    const int top = std::min(static_cast<int>(ceiling), world::kMaxY - 1);
+    const int bottom = std::max(top - kProbeSpan, world::kMinY);
     for (int y = top; y >= bottom; --y) {
         ++lastUpdateLookups_;
         const world::Block block = world.block(blockX, y, blockZ);
@@ -160,10 +125,14 @@ void RainSystem::emitTextureImpacts(float deltaSeconds, const glm::vec3& cameraP
         ++textureImpactTick_;
         const float gradient = std::clamp(intensity, 0.0F, 1.0F);
         const int sampleCount = static_cast<int>(100.0F * gradient * gradient);
-        VanillaRandom random{textureImpactTick_ * 312987231ULL};
+        // 采样序列用共享的 Java LCG（mc::rng），而不是本文件私有的第三份实现
+        // 它存在的理由本就是"复刻 vanilla tickRainSplashing 的落点分布"，属于序列奇偶性
+        // 诉求而非任意装饰性随机，因此正该走那份权威实现
+        // 旧的私有拷贝还漏了 Java nextInt 的 2 的幂快路径，换个 bound 就会静默偏离
+        std::uint64_t random = rng::seedFromValue(textureImpactTick_ * 312987231ULL);
         for (int sample = 0; sample < sampleCount; ++sample) {
-            const int blockX = cameraBlock.x + random.nextInt(21) - 10;
-            const int blockZ = cameraBlock.z + random.nextInt(21) - 10;
+            const int blockX = cameraBlock.x + static_cast<int>(rng::nextInt(random, 21U)) - 10;
+            const int blockZ = cameraBlock.z + static_cast<int>(rng::nextInt(random, 21U)) - 10;
             // A +32 probe finds a roof above the accepted +10 impact window;
             // that column is then rejected instead of incorrectly splashing on
             // an indoor floor beneath the roof.
@@ -175,20 +144,23 @@ void RainSystem::emitTextureImpacts(float deltaSeconds, const glm::vec3& cameraP
                 continue;
             }
             const int blockY = static_cast<int>(std::floor(surface.surfaceY)) - 1;
-            const float localX = static_cast<float>(random.nextDouble());
-            const float localZ = static_cast<float>(random.nextDouble());
-            const world::Block block = world.block(blockX, blockY, blockZ);
+            const float localX = static_cast<float>(rng::nextDouble(random));
+            const float localZ = static_cast<float>(rng::nextDouble(random));
             float localSurfaceHeight = 1.0F;
             if (surface.water) {
+                // 流体的水面高度由 level 决定，那是流体状态而不是方块形状
                 const std::uint8_t level = world.fluidLevel(blockX, blockY, blockZ);
                 localSurfaceHeight = level >= 8U
                     ? 1.0F
                     : static_cast<float>(8U - level) / 9.0F;
-            } else if (world::isFarmland(block)) {
-                localSurfaceHeight = world::kFarmlandModelHeight;
-            } else if (block == world::Block::Chest) {
-                // The vanilla chest collision box is 14/16 blocks high.
-                localSurfaceHeight = 14.0F / 16.0F;
+            } else {
+                // 固体表面高度一律问唯一的形状源 world::blockShape
+                // 这里曾手写 farmland 与箱子两条分支，箱子还写死成 14/16——那正是
+                // BlockShape 里 kChestBox.maxY 的第三份手抄拷贝
+                // 手写链同时漏掉了台阶、楼梯、压力板等一切非满方块，水花因此浮在它们上方
+                const world::BlockCollisionSpan span =
+                    world::verticalSpanOf(world::blockShape(world.state(blockX, blockY, blockZ)));
+                localSurfaceHeight = span.top > 0.0F ? span.top : 1.0F;
             }
             splashes_.push_back(RainSplash{
                 {static_cast<float>(blockX) + localX,

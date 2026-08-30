@@ -100,6 +100,63 @@ int main() {
         assert(threw);
     }
 
+    // --- Overlapping waits each keep their own assertion and their own clock. ---
+    // The single wait slot used to let a later waitFor silently overwrite an
+    // earlier, still-pending one: the dropped assertion never fired, never timed
+    // out, and the smoke run stayed green while testing nothing. Two waits armed
+    // a frame apart must both be polled and both resolve.
+    {
+        SmokeScript script;
+        bool firstReady = false;
+        bool secondReady = false;
+        bool firstLanded = false;
+        bool secondLanded = false;
+        script.atGameplayFrame(1, [&] {
+            script.waitFor(
+                "first", 20U, [&] { return firstReady; }, [&] { firstLanded = true; });
+        });
+        script.atGameplayFrame(2, [&] {
+            script.waitFor(
+                "second", 20U, [&] { return secondReady; }, [&] { secondLanded = true; });
+        });
+
+        script.advance(0, true);  // gameplay frame 1: arms "first"
+        script.advance(1, true);  // gameplay frame 2: arms "second"
+        assert(script.pendingWaitCount() == 2U);
+        // The second wait must not have displaced the first.
+        secondReady = true;
+        script.advance(2, true);
+        assert(secondLanded && !firstLanded);
+        assert(script.pendingWaitCount() == 1U);
+        firstReady = true;
+        script.advance(3, true);
+        assert(firstLanded);
+        assert(script.pendingWaitCount() == 0U);
+    }
+
+    // --- An overwritten wait used to vanish; now the stale one still times out. ---
+    // The failing half of the same bug: if the earlier wait never comes true, the
+    // run must fail with *its* label rather than silently passing.
+    {
+        SmokeScript script;
+        script.atGameplayFrame(1, [&] {
+            script.waitFor("stale assertion", 5U, [] { return false; });
+        });
+        script.atGameplayFrame(2, [&] {
+            script.waitFor("fresh assertion", 50U, [] { return true; });
+        });
+        bool threw = false;
+        try {
+            for (std::uint64_t frame = 0; frame < 20; ++frame) {
+                script.advance(frame, true);
+            }
+        } catch (const std::runtime_error& error) {
+            threw = true;
+            assert(std::string{error.what()}.find("stale assertion") != std::string::npos);
+        }
+        assert(threw);
+    }
+
     // --- The finale fires once, then the exit follows after the delay. ---
     {
         SmokeScript script;

@@ -1,5 +1,7 @@
 #include "render/ParticleSystem.hpp"
 
+#include "world/BlockShape.hpp"
+#include "world/BlockState.hpp"
 #include "world/World.hpp"
 
 #include <algorithm>
@@ -8,29 +10,34 @@
 namespace mc::render {
 namespace {
 
-// Vanilla ParticleManager#addBlockBreakParticles subdivides the broken block's
-// outline shape into 0.25-wide cells and spawns one dust per cell. The per-axis
-// counts come from the vanilla outline boxes: a full cube is 4x4x4, the torch's
-// 0.25 x 0.625 x 0.25 box is 2x3x2, and a cross plant's 0.75 x 1.0 x 0.75 box
-// is 3x4x3.
-struct PieceCount final {
-    int x;
-    int y;
-    int z;
-};
+// vanilla ClientLevel#addDestroyBlockEffect 的细分：轮廓形状的**每个**盒子各自
+// 按 0.25 切片，每轴至少两片，片心落在盒内而不是摊满整格
+//
+// 这里曾按 BlockModel 手抄一张轮廓盒表（Torch 2x3x2、Cross 3x4x3、其余 4x4x4）
+// 那是方块形状在仓库里的第 6 份拷贝：形状的唯一权威源是 world::blockShape
+// 手抄表既漏掉了台阶/楼梯/栅栏/门/作物（它们全部按满立方体撒粉尘，粉尘飘在空气里）
+// 也会随 BlockShape 的修正而静默失准。改为直接消费 blockShape 后，形状一改粒子自动跟上
+[[nodiscard]] int piecesAlong(float width) {
+    return std::max(2, static_cast<int>(std::ceil(width / 0.25F)));
+}
 
-[[nodiscard]] PieceCount breakPieceCount(world::Block block) {
-    // From the model's outline box, as a branch on the model field rather than a
-    // switch: the torch's slim box subdivides 2x3x2 and a cross plant's 3x4x3;
-    // every other model uses the full 4x4x4 cube grid.
-    const auto model = world::blockDefinition(block).model;
-    if (model == world::BlockModel::Torch) {
-        return {2, 3, 2};
+// 遍历形状的盒子，对应 vanilla 的 VoxelShape#forAllBoxes
+// Column 展开成填满 1x1 底面的那一个盒子，于是细分只有一条代码路径
+// Empty（目前只有 Fire）不产出任何盒子，与 vanilla 一样不撒地形粉尘
+template <typename Fn>
+void forEachShapeBox(const world::BlockShape& shape, Fn&& callback) {
+    switch (shape.kind) {
+    case world::ShapeKind::Empty:
+        return;
+    case world::ShapeKind::Column:
+        callback(world::ShapeBox{0.0F, shape.bottom, 0.0F, 1.0F, shape.top, 1.0F});
+        return;
+    case world::ShapeKind::Boxes:
+        for (const world::ShapeBox& box : shape.boxes) {
+            callback(box);
+        }
+        return;
     }
-    if (model == world::BlockModel::Cross) {
-        return {3, 4, 3};
-    }
-    return {4, 4, 4};
 }
 
 } // namespace
@@ -114,7 +121,11 @@ void ParticleSystem::spawnBlockBreak(
     const glm::ivec3& blockPosition,
     world::Block block) {
     const float layer = world::textureLayers(block).side;
-    const auto counts = breakPieceCount(block);
+    // 形状取自唯一权威源 world::blockShape
+    // ParticleEvent 目前只携带 Block，所以这里用该方块的**默认状态**
+    // 台阶上下半、楼梯朝向、作物生长阶段这些逐状态差异要等事件一并带上 BlockState 才能精确
+    // 在那之前，默认状态的形状已经严格优于原来那张按模型手抄的常数表
+    const world::BlockShape shape = world::blockShape(world::BlockState{block});
     // The 粒子效果 density knob: above 1.0 every cell spawns `copies` jittered
     // dust particles, below 1.0 cells drop out probabilistically — the
     // block-filling geometry survives while the long-run count tracks the
@@ -122,72 +133,107 @@ void ParticleSystem::spawnBlockBreak(
     const int copiesPerCell =
         levelScale_ >= 1.0F ? static_cast<int>(levelScale_) : 1;
     const float retainProbability = std::min(levelScale_, 1.0F);
-    reserveGameplayCapacity(
-        static_cast<std::size_t>(counts.x * counts.y * counts.z * copiesPerCell));
-    for (int y = 0; y < counts.y; ++y) {
-        for (int z = 0; z < counts.z; ++z) {
-            for (int x = 0; x < counts.x; ++x) {
-                if (particles_.size() >= particleLimit_) {
-                    return;
-                }
-                if (randomUnit() >= retainProbability) {
-                    continue;
-                }
-                for (int copy = 0; copy < copiesPerCell; ++copy) {
+
+    // 预留的是**打折后**的期望数量，且要把形状的每个盒子都算进去
+    // 低档（levelScale < 1）下格子会按 retainProbability 概率整格丢弃，实际只生成大约一半
+    // 若仍按满格数预留，每挖一格就会多驱逐约一半数量的天气粒子——低档下雨挖矿时雨会一阵阵变稀
+    float cellCount = 0.0F;
+    forEachShapeBox(shape, [&](const world::ShapeBox& box) {
+        const float widthX = std::min(1.0F, box.maxX - box.minX);
+        const float widthY = std::min(1.0F, box.maxY - box.minY);
+        const float widthZ = std::min(1.0F, box.maxZ - box.minZ);
+        cellCount += static_cast<float>(piecesAlong(widthX) * piecesAlong(widthY) *
+                                        piecesAlong(widthZ));
+    });
+    reserveGameplayCapacity(static_cast<std::size_t>(std::ceil(cellCount * retainProbability)) *
+                            static_cast<std::size_t>(copiesPerCell));
+
+    bool poolFull = false;
+    forEachShapeBox(shape, [&](const world::ShapeBox& box) {
+        if (poolFull) {
+            return;
+        }
+        const float widthX = std::min(1.0F, box.maxX - box.minX);
+        const float widthY = std::min(1.0F, box.maxY - box.minY);
+        const float widthZ = std::min(1.0F, box.maxZ - box.minZ);
+        const int countX = piecesAlong(widthX);
+        const int countY = piecesAlong(widthY);
+        const int countZ = piecesAlong(widthZ);
+        for (int y = 0; y < countY; ++y) {
+            for (int z = 0; z < countZ; ++z) {
+                for (int x = 0; x < countX; ++x) {
                     if (particles_.size() >= particleLimit_) {
+                        poolFull = true;
                         return;
                     }
-                    // Each dust particle starts at its cell centre and flies
-                    // away from the block centre (vanilla's direction is the
-                    // cell offset minus half a block); the extra copies share
-                    // the cell but jitter its origin so they do not stack.
-                    const glm::vec3 origin{
-                        (static_cast<float>(x) + 0.5F) / static_cast<float>(counts.x),
-                        (static_cast<float>(y) + 0.5F) / static_cast<float>(counts.y),
-                        (static_cast<float>(z) + 0.5F) / static_cast<float>(counts.z),
-                    };
-                    const glm::vec3 jitter{(randomUnit() - 0.5F) * 0.25F,
-                                           (randomUnit() - 0.5F) * 0.25F,
-                                           (randomUnit() - 0.5F) * 0.25F};
-                    glm::vec3 direction = origin + jitter - glm::vec3{0.5F};
-                    // Particle's velocity constructor: jitter each component by
-                    // +-0.4, renormalise, then scale by f * 0.4 per tick — the
-                    // factor of 20 converts blocks-per-tick to blocks-per-second,
-                    // and the +0.1/tick lift is +2.0/s.
-                    direction += glm::vec3{
-                        randomUnit() - 0.5F,
-                        randomUnit() - 0.5F,
-                        randomUnit() - 0.5F} * 0.8F;
-                    const float length =
-                        std::sqrt(direction.x * direction.x + direction.y * direction.y +
-                                  direction.z * direction.z);
-                    const float speed =
-                        (randomUnit() + randomUnit() + 1.0F) * 0.15F * 8.0F;
-                    const glm::vec3 velocity =
-                        direction / std::max(length, 1e-6F) * speed;
-                    // BlockDustParticle samples a random 16x16 sub-tile of the
-                    // 64x64 block texture; uvScale 0.25 is exactly that sub-tile.
-                    const glm::vec2 uvOrigin{
-                        static_cast<float>(static_cast<int>(randomUnit() * 4.0F)) * 0.25F,
-                        static_cast<float>(static_cast<int>(randomUnit() * 4.0F)) * 0.25F,
-                    };
-                    particles_.push_back({
-                        glm::vec3{blockPosition} + origin + jitter,
-                        velocity + glm::vec3{0.0F, 2.0F, 0.0F},
-                        layer,
-                        uvOrigin,
-                        0.25F,
-                        // SpriteBillboardParticle's scale divided by two: 0.05..0.1.
-                        0.05F + randomUnit() * 0.05F,
-                        0.0F,
-                        // Particle's maxAge: 4 / (rand*0.9 + 0.1) ticks.
-                        (4.0F / (0.1F + randomUnit() * 0.9F)) / 20.0F,
-                        1.0F,
-                    });
+                    if (randomUnit() >= retainProbability) {
+                        continue;
+                    }
+                    for (int copy = 0; copy < copiesPerCell; ++copy) {
+                        if (particles_.size() >= particleLimit_) {
+                            poolFull = true;
+                            return;
+                        }
+                        // vanilla 的片心是**盒内**的归一化偏移 rel，位置是 rel * 宽 + 盒下界
+                        // 速度方向直接取 rel - 0.5，即"从盒心向外"
+                        // 原来把 rel 当成整格坐标用，细瘦的火把盒因此把粉尘撒满了整格
+                        const glm::vec3 rel{
+                            (static_cast<float>(x) + 0.5F) / static_cast<float>(countX),
+                            (static_cast<float>(y) + 0.5F) / static_cast<float>(countY),
+                            (static_cast<float>(z) + 0.5F) / static_cast<float>(countZ),
+                        };
+                        const glm::vec3 local{
+                            rel.x * widthX + box.minX,
+                            rel.y * widthY + box.minY,
+                            rel.z * widthZ + box.minZ,
+                        };
+                        // 抖动取"半片"，让同一格的多份拷贝不叠在一起
+                        // 按片长而不是固定 0.25 缩放，细瘦的盒子才不会把粉尘甩到盒外
+                        const glm::vec3 jitter{
+                            (randomUnit() - 0.5F) * widthX / static_cast<float>(countX),
+                            (randomUnit() - 0.5F) * widthY / static_cast<float>(countY),
+                            (randomUnit() - 0.5F) * widthZ / static_cast<float>(countZ),
+                        };
+                        glm::vec3 direction = rel - glm::vec3{0.5F};
+                        // Particle's velocity constructor: jitter each component by
+                        // +-0.4, renormalise, then scale by f * 0.4 per tick — the
+                        // factor of 20 converts blocks-per-tick to blocks-per-second,
+                        // and the +0.1/tick lift is +2.0/s.
+                        direction += glm::vec3{
+                            randomUnit() - 0.5F,
+                            randomUnit() - 0.5F,
+                            randomUnit() - 0.5F} * 0.8F;
+                        const float length =
+                            std::sqrt(direction.x * direction.x + direction.y * direction.y +
+                                      direction.z * direction.z);
+                        const float speed =
+                            (randomUnit() + randomUnit() + 1.0F) * 0.15F * 8.0F;
+                        const glm::vec3 velocity =
+                            direction / std::max(length, 1e-6F) * speed;
+                        // BlockDustParticle samples a random 16x16 sub-tile of the
+                        // 64x64 block texture; uvScale 0.25 is exactly that sub-tile.
+                        const glm::vec2 uvOrigin{
+                            static_cast<float>(static_cast<int>(randomUnit() * 4.0F)) * 0.25F,
+                            static_cast<float>(static_cast<int>(randomUnit() * 4.0F)) * 0.25F,
+                        };
+                        particles_.push_back({
+                            glm::vec3{blockPosition} + local + jitter,
+                            velocity + glm::vec3{0.0F, 2.0F, 0.0F},
+                            layer,
+                            uvOrigin,
+                            0.25F,
+                            // SpriteBillboardParticle's scale divided by two: 0.05..0.1.
+                            0.05F + randomUnit() * 0.05F,
+                            0.0F,
+                            // Particle's maxAge: 4 / (rand*0.9 + 0.1) ticks.
+                            (4.0F / (0.1F + randomUnit() * 0.9F)) / 20.0F,
+                            1.0F,
+                        });
+                    }
                 }
             }
         }
-    }
+    });
 }
 
 void ParticleSystem::spawnWaterSplash(const glm::vec3& position) {
@@ -300,15 +346,30 @@ void ParticleSystem::update(float deltaSeconds, const world::World& world) {
         const int blockX = static_cast<int>(std::floor(next.x));
         const int blockY = static_cast<int>(std::floor(next.y));
         const int blockZ = static_cast<int>(std::floor(next.z));
-        const world::Block landedBlock = world.block(blockX, blockY, blockZ);
+        // 读的是状态而不是方块：状态既能给出方块身份，也能给出这一格的形状
+        // 因此落地面高度是"换掉"原来那次 world.block 查询，不是在它之上再加一次
+        const world::BlockState landedState = world.state(blockX, blockY, blockZ);
+        const world::Block landedBlock = landedState.block();
+        const bool landedFluid = world::isFluid(landedBlock);
+        // 落地面取该格形状的顶面，而不是恒定的格顶
+        // 写死 blockY + 1 是方块形状在本支线里的第三份手抄拷贝：粉尘会停在台阶、
+        // 压力板、农田的上方半空，甚至被从侧面进入的格子向上弹一截
+        // 流体的顶面仍是格顶，流体形状本身是 Empty
+        float surfaceTop = 1.0F;
+        if (!landedFluid && world::hasCollision(landedBlock)) {
+            const world::BlockCollisionSpan span =
+                world::verticalSpanOf(world::blockShape(landedState));
+            surfaceTop = span.top > 0.0F ? span.top : 1.0F;
+        }
+        const float surfaceY = static_cast<float>(blockY) + surfaceTop;
         // A fluid surface counts as a landing just like a solid block: a rain
         // splash drops onto the water's top face and sits there, instead of
         // sinking below it under gravity.
-        if ((world::hasCollision(landedBlock) || world::isFluid(landedBlock)) &&
-            particle.velocity.y < 0.0F) {
+        if ((world::hasCollision(landedBlock) || landedFluid) &&
+            particle.velocity.y < 0.0F && next.y <= surfaceY) {
             // Vanilla block dust stops dead on the floor instead of bouncing;
             // the ground drag then lets it slide a little and expire in place.
-            particle.position = {next.x, static_cast<float>(blockY) + 1.0F, next.z};
+            particle.position = {next.x, surfaceY, next.z};
             particle.velocity.y = 0.0F;
             particle.velocity.x *= groundDrag;
             particle.velocity.z *= groundDrag;

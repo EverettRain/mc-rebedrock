@@ -14,12 +14,35 @@ namespace mc::render {
 // 三个 16 字节 vec4 装下位置、尺寸、UV 原点与缩放、不透明度、纹理层和打包光照
 // 各字段按 std430 的 vec4 对齐补齐
 // CPU 每个粒子只写一条紧凑记录，面向相机的四边形由顶点着色器在 GPU 上展开
+// 由 particle_instanced.vert 解读
+// 方块粉尘与 async 雨滴都走这条：雨滴的 uvOrigin 取 (0,0)、uvScale 取 1，即整张水纹
 struct ParticleRecord final {
     alignas(16) glm::vec4 positionSize;   // xyz world position, w quad size
     alignas(16) glm::vec4 uvOriginScale;  // xy uvOrigin, z uvScale, w opacity
     alignas(16) glm::vec4 layerLight;     // x textureLayer, y packed scene light
 };
 static_assert(sizeof(ParticleRecord) == 48);
+
+// 贴图雨的逐列记录：与 ParticleRecord 共用同一块场景存储缓冲、同一个 48 字节槽位，
+// 但字段含义完全不同——它由 rain_sheet.vert 的 RainColumn 解读，不是 particle_instanced.vert
+//
+// 这三个 vec4 曾直接以 ParticleRecord 的名义写入，于是 uvOriginScale 里装的其实是
+// (列顶, 不透明度, 滚动相位, 光照)，与它自己的字段注释完全对不上
+// 改 ParticleRecord 注释的人不会知道还有第二个读者，GPU 侧的 RainColumn 又是独立声明的，
+// 两边只能靠人肉同步。给它一个自己的名字和字段名，布局用 static_assert 钉死
+struct RainColumnRecord final {
+    alignas(16) glm::vec4 positionBottomWidth;   // xz 列心, y 列底, w 半宽
+    alignas(16) glm::vec4 topOpacityPhaseLight;  // x 列顶, y 不透明度, z 滚动相位, w 打包光照
+    alignas(16) glm::vec4 tangent;               // xy 面向相机的水平切向
+};
+static_assert(sizeof(RainColumnRecord) == sizeof(ParticleRecord));
+static_assert(alignof(RainColumnRecord) == alignof(ParticleRecord));
+
+// 两种记录共享一条暂存队列，因此写入端显式转换
+// 这个转换点就是"我清楚这个槽位交给哪个着色器读"的书面声明
+[[nodiscard]] inline ParticleRecord asParticleRecord(const RainColumnRecord& column) {
+    return {column.positionBottomWidth, column.topOpacityPhaseLight, column.tangent};
+}
 
 // 主机可见存储缓冲的环，每个在飞帧一个，各自容量按粒子上限给足
 // 于是一帧只写自己的槽，不会和上一帧的 GPU 读竞争

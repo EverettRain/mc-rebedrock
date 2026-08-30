@@ -23,9 +23,14 @@
 // State model: the stored `std::uint64_t` is the raw 48-bit LCG state that a
 // call advances in place — it is NOT re-scrambled every call. To *initialise*
 // that state from a user seed the way `new java.util.Random(seed)` does, use
-// seedFromValue(), which applies Java's setSeed scramble. Decorative RNG
-// (particles, audio, renderer) is deliberately left on its own generator and is
-// out of this module's scope.
+// seedFromValue(), which applies Java's setSeed scramble.
+//
+// 判据是"要不要复刻 vanilla 的序列"，不是"调用方在哪一层"：
+//   * 任意装饰性随机（粒子抖动、雨滴大小、风向）自带便宜的 xorshift/LCG 即可，
+//     它们不复刻任何 vanilla 序列，也就无所谓偏离
+//   * 一旦某处的存在理由是"落点/分布要和 vanilla 一致"，它就必须用这份实现——
+//     哪怕它住在渲染层。RainSystem 的贴图雨落点采样就是这一类，它曾私有一份
+//     java.util.Random 拷贝，还漏掉了 nextInt 的 2 的幂快路径
 namespace mc::rng {
 
 inline constexpr std::uint64_t kMultiplier = 0x5DEECE66DULL;  // 25214903917

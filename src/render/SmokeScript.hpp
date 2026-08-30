@@ -11,8 +11,9 @@
 // 帧时序：
 //   * 菜单步骤跑在"渲染帧"时钟上，世界一打开就不再触发
 //   * 游戏步骤跑在"游戏帧"时钟上，该时钟只在世界就绪且本次运行尚未收尾时前进
-//   * 步骤可以挂起一个等待，用于那些要到后续服务端 tick 才落地的效果
-//     等待在每帧的步骤之前轮询一次，本帧挂起的等待因此最早下一帧才检查，超时直接抛异常
+//   * 步骤可以挂起等待，用于那些要到后续服务端 tick 才落地的效果
+//     等待可以同时挂多个、各自独立计时，在每帧的步骤之前轮询一次
+//     本帧挂起的等待因此最早下一帧才检查，超时直接抛异常
 //   * 收尾条件成立时触发一次 finale，退出动作再延几帧执行，好让最后那屏真的画出来
 
 #include <cstddef>
@@ -49,15 +50,19 @@ class SmokeScript final {
     // 挂起一个等待，用于要到后续服务端 tick 才生效的事情（聊天命令落地、模式切换）
     // `condition` 每帧轮询一次：成立则执行 `then`
     // 超过 `timeoutFrames` 个游戏帧仍不成立就抛异常，消息里带上 `label`
-    // 只有一个等待槽，再挂一个会覆盖前一个
+    //
+    // 等待可以同时挂多个，各自独立计时
+    // 这里曾经只有一个槽、后挂的静默覆盖前一个：剧本里相邻两个等待只隔几帧而超时给到 40 帧
+    // 一旦前一个没能在这几帧内成立，它那条断言就被无声丢弃——不报错、不超时、烟测照常绿
+    // 断言"看着在测其实没测"是最坏的一种失败，因此改为逐个保留、逐个超时
     void waitFor(std::string label, std::uint64_t timeoutFrames, Predicate condition,
                  Action then = {}) {
-        waitLabel_ = std::move(label);
-        waitDeadline_ = gameplayFrame_ + timeoutFrames;
-        waitCondition_ = std::move(condition);
-        waitAction_ = std::move(then);
-        waitActive_ = true;
+        waits_.push_back({std::move(label), gameplayFrame_ + timeoutFrames, gameplayFrame_,
+                          std::move(condition), std::move(then)});
     }
+
+    // 当前仍挂着的等待数，供单测断言"没有断言被悄悄丢掉"
+    [[nodiscard]] std::size_t pendingWaitCount() const noexcept { return waits_.size(); }
 
     // 收尾：`ready` 在每帧的步骤之后检查，成立时执行 `finish`
     // 再过 kExitDelayFrames 个渲染帧执行 `exit`
@@ -103,6 +108,15 @@ class SmokeScript final {
         Action action{};
     };
 
+    // 一个挂起的等待：它自己的标签、超时游戏帧、挂起时的游戏帧，以及条件与后续动作
+    struct Wait final {
+        std::string label{};
+        std::uint64_t deadline = 0;
+        std::uint64_t armedFrame = 0;
+        Predicate condition{};
+        Action then{};
+    };
+
     // 步骤按帧号升序注册、按同序触发，因此一个游标就是全部遍历状态
     // 用 `<=` 而不是 `==`：万一它所依附的时钟跳变，也不会有步骤被悄悄跳过
     static void fireDue(std::vector<Step>& steps, std::uint64_t clock, std::size_t& cursor) {
@@ -115,22 +129,29 @@ class SmokeScript final {
         }
     }
 
+    // 轮询全部挂起的等待
+    // 成立的先从表里摘掉再执行 `then`，因为 `then` 自己可能再挂一个等待
+    // 摘除在前，追加落到表尾，迭代因此始终看到一个自洽的表
+    // 同一帧内挂上的等待不在本帧检查（armedFrame 守卫），与"步骤挂的等待最早下一帧才检查"同一套时序
     void pollWait() {
-        if (!waitActive_) {
-            return;
-        }
-        if (waitCondition_ && waitCondition_()) {
-            waitActive_ = false;
-            waitCondition_ = nullptr;
-            if (waitAction_) {
-                Action action = std::move(waitAction_);
-                waitAction_ = nullptr;
-                action();
+        for (std::size_t index = 0; index < waits_.size();) {
+            Wait& wait = waits_[index];
+            if (wait.armedFrame == gameplayFrame_) {
+                ++index;
+                continue;
             }
-            return;
-        }
-        if (gameplayFrame_ >= waitDeadline_) {
-            throw std::runtime_error("Smoke test timed out: " + waitLabel_);
+            if (wait.condition && wait.condition()) {
+                Action action = std::move(wait.then);
+                waits_.erase(waits_.begin() + static_cast<std::ptrdiff_t>(index));
+                if (action) {
+                    action();
+                }
+                continue;
+            }
+            if (gameplayFrame_ >= wait.deadline) {
+                throw std::runtime_error("Smoke test timed out: " + wait.label);
+            }
+            ++index;
         }
     }
 
@@ -142,11 +163,7 @@ class SmokeScript final {
     std::uint64_t gameplayFrame_ = 0;
     bool worldStarted_ = false;
 
-    bool waitActive_ = false;
-    std::uint64_t waitDeadline_ = 0;
-    Predicate waitCondition_{};
-    Action waitAction_{};
-    std::string waitLabel_{};
+    std::vector<Wait> waits_{};
 
     Predicate ready_{};
     Action finish_{};

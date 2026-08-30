@@ -14,10 +14,9 @@ class World;
 
 namespace mc::render {
 
-// A falling rain drop, CPU-simulated. 粒子雨 and 异步粒子雨 consume these same
-// drops so their draw backends remain directly comparable. 贴图雨 follows the
-// vanilla column renderer instead; the drops still drive its impact splashes
-// and weather audio, but are not turned into giant billboards.
+// A falling rain drop, CPU-simulated. 异步粒子雨 实例化这批雨滴，一次绘制画完整片雨。
+// 贴图雨 follows the vanilla column renderer instead; the drops still drive its
+// impact splashes and weather audio, but are not turned into giant billboards.
 struct RainDrop final {
     glm::vec3 position{0.0F};
     float size = 0.03F;

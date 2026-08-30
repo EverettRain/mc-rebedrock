@@ -66,9 +66,14 @@ struct GameOptions final {
     // too, which keeps mixed Latin/CJK lines visually consistent.
     bool forceUnicodeFont = false;
     // Experimental Content (实验性内容) submenu — test-only render features.
-    // rainMode selects the rain draw path: 0 = 贴图雨 (texture sheets),
-    // 1 = 粒子雨 (per-particle legacy draws), 2 = 异步粒子雨 (instanced SSBO).
-    int rainMode = 2;
+    // rainMode 选择降雨绘制路径：0 = 贴图雨（逐列贴图），1 = 异步粒子雨（实例化 SSBO）
+    // 原来中间还夹着一档"粒子雨"：它与异步粒子雨用同一批雨滴、产出同一份视觉，
+    // 只是逐雨滴发一次 draw call，是为了和异步路径做直接对照才临时留下的绘制方式，
+    // 却被接进实验性内容子菜单成了玩家可选项（疯狂档满雨每帧 18000 次 draw call）
+    // 它已整条移除，异步粒子雨从第 2 档顶到第 1 档
+    // 设置里遗留的 2（异步粒子雨）被 clamp 回 1，仍然是它本人；遗留的 1（已删的粒子雨）
+    // 也落到 1，即改用视觉完全相同、绘制便宜得多的异步路径
+    int rainMode = 1;
     // Toggles the sun-space shadow depth pre-pass. Off by default: the pre-pass
     // is pure infrastructure until the terrain actually samples the shadow map
     // (the roadmap's P2), and re-rendering every opaque section each frame is

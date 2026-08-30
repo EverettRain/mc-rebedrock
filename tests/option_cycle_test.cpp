@@ -128,9 +128,12 @@ int main() {
     // --- The integer submenus keep their (x + 1) % N sequences. ---
     {
         GameOptions options;
+        // 雨模式只剩两档：0 = 贴图雨，1 = 异步粒子雨（实例化）
+        // 中间那档"粒子雨"与异步粒子雨产出同一份视觉、只差 draw call 数量，
+        // 是为做直接对照才临时留下的绘制方式，已整条移除
         options.rainMode = 0;
         const OptionDesc& rain = option(WidgetId::RainMode);
-        for (const int value : {1, 2, 0}) {
+        for (const int value : {1, 0}) {
             cycleOptionValue(rain, options);
             assert(options.rainMode == value);
         }

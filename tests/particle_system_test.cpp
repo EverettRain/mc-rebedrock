@@ -17,16 +17,47 @@ int main() {
     world.setChunk({0, 0}, std::move(chunk));
 
     mc::render::ParticleSystem particles;
-    // A full cube breaks into the vanilla 4x4x4 = 64 dust pieces, while the
-    // smaller outline shapes (torch 2x3x2, cross plant 3x4x3) shed fewer.
+    // 片数直接由 world::blockShape 推出，用的是 vanilla ClientLevel#addDestroyBlockEffect
+    // 的算法：形状的每个盒子、每轴 max(2, ceil(宽 / 0.25)) 片
+    // 这里断言的不是几个魔数，而是"粒子系统消费的确实是那份唯一的形状源"
+    //   满立方体   宽 1     -> 4x4x4 = 64
+    //   火把       kFloorTorchBox 0.125 x 0.625 x 0.125 -> 2x3x2 = 12
+    //   十字植物   kCrossBox 0.8^3                      -> 4x4x4 = 64
+    // 注：26.1 的 FlowerBlock 形状是 Block.column(6, 0, 10)（0.375 宽 x 0.625 高），
+    // 按同一算法应得 2x3x2 = 12。差异出在 kCrossBox 这份形状数据本身——它让 18 种
+    // cross 方块共用一个盒子——而不在本文件。形状一旦修正，粒子会自动跟上，这正是
+    // 收编到单一形状源的目的。
     particles.spawnBlockBreak({4, 2, 4}, mc::world::Block::Grass);
     assert(particles.particles().size() == 64U);
     particles.spawnBlockBreak({4, 2, 4}, mc::world::Block::Torch);
     assert(particles.particles().size() == 64U + 12U);
     particles.spawnBlockBreak({4, 2, 4}, mc::world::Block::Dandelion);
-    assert(particles.particles().size() == 64U + 12U + 36U);
+    assert(particles.particles().size() == 64U + 12U + 64U);
     particles.spawnWaterSplash({4.5F, 2.0F, 4.5F});
-    assert(particles.particles().size() == 64U + 12U + 36U + 10U);
+    assert(particles.particles().size() == 64U + 12U + 64U + 10U);
+
+    // 手抄的模型表漏掉的那一类：台阶只占下半格，因此只撒半数粉尘，且粉尘落在它自己
+    // 的半格里而不是摊满整格。这在按 BlockModel 硬判的旧实现里是拿不到的
+    {
+        mc::render::ParticleSystem slab;
+        slab.spawnBlockBreak({4, 2, 4}, mc::world::Block::StoneSlab);
+        assert(slab.particles().size() == 32U);
+        for (const auto& particle : slab.particles()) {
+            assert(particle.position.y >= 2.0F && particle.position.y <= 2.5F);
+        }
+    }
+
+    // 细瘦的盒子：火把粉尘必须落在火把那 2/16 宽的盒子里，不能撒满整格
+    // 旧实现把盒内归一化偏移当成整格坐标用，粉尘因此铺满了 1x1 的底面
+    {
+        mc::render::ParticleSystem torch;
+        torch.spawnBlockBreak({4, 2, 4}, mc::world::Block::Torch);
+        for (const auto& particle : torch.particles()) {
+            assert(particle.position.x >= 4.40F && particle.position.x <= 4.60F);
+            assert(particle.position.z >= 4.40F && particle.position.z <= 4.60F);
+            assert(particle.position.y >= 2.0F && particle.position.y <= 2.625F);
+        }
+    }
     // Vanilla block dust obeys gravity (0.04 blocks/tick^2 = 16 blocks/s^2):
     // the burst sheds its upward kick and settles on the floor rather than
     // flying away from the block in a straight line. A particle that ignored

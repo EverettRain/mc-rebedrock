@@ -8,7 +8,6 @@
   "options.rebedrock.rainCollisionCache": "Rain Collision Cache",
   "options.rebedrock.rainMode": "Rain Mode",
   "options.rebedrock.rainMode.async": "Asynchronous Particle Rain",
-  "options.rebedrock.rainMode.particles": "Particle Rain",
   "options.rebedrock.rainMode.texture": "Texture Rain",
   "options.rebedrock.resolution.windowed": "windowed",
   "options.rebedrock.sunShadows": "Sun Shadows"
