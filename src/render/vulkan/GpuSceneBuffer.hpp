@@ -23,13 +23,13 @@ struct ParticleRecord final {
 };
 static_assert(sizeof(ParticleRecord) == 48);
 
-// 贴图雨的逐列记录：与 ParticleRecord 共用同一块场景存储缓冲、同一个 48 字节槽位，
-// 但字段含义完全不同——它由 rain_sheet.vert 的 RainColumn 解读，不是 particle_instanced.vert
+// 贴图雨的逐列记录，与 ParticleRecord 共用同一块场景存储缓冲和同一个 48 字节槽位
+// 但两者字段含义完全不同，它由 rain_sheet.vert 里的 RainColumn 解读而不是 particle_instanced.vert
 //
-// 这三个 vec4 曾直接以 ParticleRecord 的名义写入，于是 uvOriginScale 里装的其实是
-// (列顶, 不透明度, 滚动相位, 光照)，与它自己的字段注释完全对不上
-// 改 ParticleRecord 注释的人不会知道还有第二个读者，GPU 侧的 RainColumn 又是独立声明的，
-// 两边只能靠人肉同步。给它一个自己的名字和字段名，布局用 static_assert 钉死
+// 这三个 vec4 曾直接以 ParticleRecord 的名义写入
+// 于是 uvOriginScale 里装的其实是列顶、不透明度、滚动相位与光照，与它自己的字段注释完全对不上
+// 改 ParticleRecord 注释的人不会知道还有第二个读者，GPU 侧的 RainColumn 又是独立声明的
+// 两边只能靠人肉同步，因此给它一个自己的名字和字段名，布局用 static_assert 钉死
 struct RainColumnRecord final {
     alignas(16) glm::vec4 positionBottomWidth;   // xz 列心, y 列底, w 半宽
     alignas(16) glm::vec4 topOpacityPhaseLight;  // x 列顶, y 不透明度, z 滚动相位, w 打包光照
@@ -38,8 +38,8 @@ struct RainColumnRecord final {
 static_assert(sizeof(RainColumnRecord) == sizeof(ParticleRecord));
 static_assert(alignof(RainColumnRecord) == alignof(ParticleRecord));
 
-// 两种记录共享一条暂存队列，因此写入端显式转换
-// 这个转换点就是"我清楚这个槽位交给哪个着色器读"的书面声明
+// 两种记录共享一条暂存队列，因此写入端显式做一次转换
+// 这个转换点就是写入者声明自己清楚该槽位要交给哪个着色器读
 [[nodiscard]] inline ParticleRecord asParticleRecord(const RainColumnRecord& column) {
     return {column.positionBottomWidth, column.topOpacityPhaseLight, column.tangent};
 }

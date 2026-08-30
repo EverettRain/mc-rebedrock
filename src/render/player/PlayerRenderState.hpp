@@ -1,15 +1,13 @@
 #pragma once
 
-// The frame's player pose, extracted once per frame from the tick-owned action
-// timeline and the player's physics endpoints, interpolated with the frame's
-// partial tick. This is the animation §13.1 rule made concrete: swing/use and
-// the walk stride advance on the server tick, and the intra-frame pose is
-// previous/current + partialTicks — so the arm no longer snaps at 20 TPS and
-// the same tick produces the same pose at any frame rate.
+// 本帧的玩家姿态，每帧从 tick 拥有的动作时间线与玩家的物理端点里提取一次
+// 提取时用本帧的 tick 小数做插值
+// 这把动画规范 §13.1 落到了实处，挥动、使用与行走步幅都在服务端 tick 上推进
+// 帧内姿态则由上一 tick 与当前 tick 加 partialTicks 插出来
+// 手臂因此不再以 20 TPS 跳变，同一个 tick 在任何帧率下都给出同一个姿态
 //
-// A plain value object: no references into gameplay, safe to copy across the
-// thread boundary, and identical for every consumer (first person, the world
-// player, the inventory preview).
+// 这是一个纯值对象，不持有任何指向玩法层的引用
+// 它可以安全地跨线程拷贝，且对每个消费者都是同一份，包括第一人称、世界中的玩家与背包预览
 
 #include "gameplay/Inventory.hpp"
 #include "gameplay/PlayerActionState.hpp"
@@ -26,7 +24,7 @@
 
 namespace mc::render::player {
 
-// A single arm swing, interpolated between its tick-quantized endpoints.
+// 一次手臂挥动，在它按 tick 量化的两个端点之间插值
 struct InterpolatedSwing final {
     bool active = false;
     gameplay::SwingAnimation animation = gameplay::SwingAnimation::Break;
@@ -34,26 +32,26 @@ struct InterpolatedSwing final {
     float progress = 0.0F;  // in [0, 1], smooth between ticks
 };
 
-// The ongoing item use, interpolated between its tick endpoints.
+// 正在进行的物品使用，在它的两个 tick 端点之间插值
 struct InterpolatedUse final {
     bool active = false;
     gameplay::UseAnimation animation = gameplay::UseAnimation::None;
     float progress = 0.0F;  // elapsed fraction of the use, in [0, 1]
 };
 
-// Everything the renderer draws a player from. `feetPosition`, `walkStride`
-// (the accumulated phase), and `walkSpeed` (the eased locomotion amplitude) are
-// interpolated between tick endpoints.
+// 渲染器画一个玩家所需的全部数据
+// feetPosition、walkStride 与 walkSpeed 都在两个 tick 端点之间插值
+// walkStride 是累积的步态相位，walkSpeed 是缓动后的运动幅度
 struct PlayerRenderState final {
     glm::vec3 feetPosition{0.0F};
     float walkStride = 0.0F;
     float walkSpeed = 0.0F;
 
-    // Rotation (degrees), interpolated from the tick endpoints. bodyYaw is the
-    // torso facing applied to the world root; headYaw is RELATIVE to the body
-    // (the head bone turns this much on top of the body); pitch is the head/eye
-    // pitch. Both solvers (third-person body, first-person hand) read these; the
-    // camera perspective never enters here (animation §5.2 / §19.4).
+    // 旋转量，单位是度，由两个 tick 端点插出
+    // bodyYaw 是躯干朝向，施加在世界根节点上
+    // headYaw 是相对于躯干的量，头骨骼在躯干之上再转这么多
+    // pitch 是头部与视线的俯仰
+    // 第三人称身体与第一人称手部两个求解器都读这几个值，相机视角绝不参与，见动画规范 §5.2 与 §19.4
     float bodyYawDegrees = 0.0F;
     float headYawDegrees = 0.0F;  // relative to the body
     float pitchDegrees = 0.0F;
@@ -64,18 +62,19 @@ struct PlayerRenderState final {
 
     InterpolatedSwing swing;
     InterpolatedUse use;
-    // The held stack's block/item, for the ArmPose and the item render.
+    // 持有物的方块或物品，供 ArmPose 推导与手持物渲染使用
     gameplay::ItemStack heldStack{};
 
-    // The arm poses, derived once here so every consumer agrees (Phase 4). The
-    // main hand renders on the main arm (right by default); the off arm is Empty
-    // until an off-hand slot exists.
+    // 手臂姿态在这里推导一次，所有消费者因此看到同一个结论
+    // 主手渲染在主手臂上，默认是右手
+    // 副手臂在副手槽位存在之前一律是 Empty
     ArmPose rightArmPose = ArmPose::Empty;
     ArmPose leftArmPose = ArmPose::Empty;
 };
 
-// Shortest-path angle lerp for degrees, so 179 -> -179 crosses the +180 seam by
-// 2 degrees instead of sweeping 358 the wrong way (animation §13.3). Pure.
+// 角度的最短路径插值，单位是度
+// 从 179 到 -179 会跨过正 180 的接缝走 2 度，而不是朝反方向扫过 358 度，见动画规范 §13.3
+// 这是一个纯函数
 [[nodiscard]] inline float wrapDegrees(float degrees) {
     float wrapped = std::fmod(degrees + 180.0F, 360.0F);
     if (wrapped < 0.0F) {
@@ -88,13 +87,11 @@ struct PlayerRenderState final {
     return from + wrapDegrees(to - from) * alpha;
 }
 
-// Interpolates the tick-owned swing against `partialTicks` in [0, 1). The
-// action's previous/current endpoints were captured by the simulation's tick;
-// the frame sits between them. `lastSequence` is the renderer's own memory of
-// the swing it sampled last frame: a sequence change means a NEW action (a
-// restart), and the progress must snap to the new swing's start rather than
-// lerp across the boundary — lerping from the previous apex back to 0 reads as
-// a visible replay of the arm.
+// 用落在 0 到 1 之间的 partialTicks 对 tick 拥有的挥动做插值
+// 动作的前后两个端点由模拟的 tick 采下，本帧位于它们之间
+// lastSequence 是渲染器自己记住的上一帧采到的挥动序号
+// 序号变化意味着这是一次全新的动作，进度必须直接跳到新挥动的起点而不是跨边界插值
+// 从上一次的顶点插回 0 会让手臂看起来倒放了一遍
 [[nodiscard]] inline InterpolatedSwing interpolateSwing(const gameplay::SwingState& state,
                                                         float partialTicks,
                                                         std::optional<std::uint64_t>& lastSequence) {
@@ -102,9 +99,8 @@ struct PlayerRenderState final {
     result.animation = state.animation;
     result.sequence = state.sequence;
     if (!state.active) {
-        // The action ended: the finished swing rests at the completion
-        // endpoint (progress 1.0 is the clip's rest pose, matching the None
-        // pose the renderer falls back to next frame).
+        // 动作已经结束，收尾的挥动停在完成端点上
+        // 进度 1.0 就是剪辑的静息姿态，与渲染器下一帧回落到的 None 姿态一致
         result.active = false;
         result.progress = 1.0F;
         lastSequence.reset();
@@ -112,7 +108,7 @@ struct PlayerRenderState final {
     }
     result.active = true;
     if (!lastSequence.has_value() || *lastSequence != state.sequence) {
-        result.progress = state.progress;  // a new swing starts at its own value
+        result.progress = state.progress;  // 新的挥动从它自己的值起步
     } else {
         result.progress =
             state.previousProgress + (state.progress - state.previousProgress) * partialTicks;
@@ -130,8 +126,7 @@ struct PlayerRenderState final {
         result.progress = 1.0F;
         return result;
     }
-    // previousRemainingTicks is the count before this tick's decrement, so the
-    // elapsed fraction rises smoothly across the tick boundary.
+    // previousRemainingTicks 是本 tick 递减之前的剩余量，已用比例因此能平滑跨过 tick 边界
     const float previousElapsed = state.durationTicks > 0U
                                       ? 1.0F - static_cast<float>(state.previousRemainingTicks) /
                                                     static_cast<float>(state.durationTicks)
@@ -144,21 +139,19 @@ struct PlayerRenderState final {
     return result;
 }
 
-// A full frame's player state from the per-tick snapshot, interpolated with the
-// frame's partial tick. `lastSwingSequence` is the renderer's per-frame memory
-// of the swing it last sampled, so a restart snaps instead of replaying.
+// 从逐 tick 快照提取出一整帧的玩家状态，用本帧的 tick 小数插值
+// lastSwingSequence 是渲染器逐帧记住的上一次采到的挥动序号，动作重开时直接跳变而不是倒放
 [[nodiscard]] inline PlayerRenderState extractPlayerRenderState(
     const gameplay::PlayerTickSnapshot& snapshot, float partialTicks,
     std::optional<std::uint64_t>& lastSwingSequence) {
     PlayerRenderState state;
     state.feetPosition = snapshot.physicsPrevious +
                          (snapshot.physicsCurrent - snapshot.physicsPrevious) * partialTicks;
-    // ANIM A1/A2: the gait is driven by the vanilla WalkAnimationState the
-    // controller now publishes directly — no bob-derived hack, no sprint
-    // multiplier. `walkStride` is the phase p (vanilla `position`); `walkSpeed` is
-    // the amplitude s (vanilla `speed`, min(4d,1) eased, saturating to 1.0 and
-    // decaying to 0 on stop). The walk clip reads them as walk_position /
-    // walk_amount; the solver applies cos(p * 0.6662) * A * s.
+    // 步态由控制器直接发布的 vanilla WalkAnimationState 驱动
+    // 这里没有从视点摆动反推的取巧做法，也没有疾跑倍率
+    // walkStride 是相位，对应 vanilla 的 position
+    // walkSpeed 是幅度，对应 vanilla 的 speed，取 min(4d,1) 缓动后饱和到 1.0，停下时衰减到 0
+    // 行走剪辑按 walk_position 与 walk_amount 读这两个值，求解器施加 cos(p * 0.6662) * A * s
     state.walkStride = snapshot.previousWalkPosition +
                        (snapshot.walkPosition - snapshot.previousWalkPosition) * partialTicks;
     state.walkSpeed = std::clamp(
@@ -169,10 +162,9 @@ struct PlayerRenderState final {
     state.flying = snapshot.flying;
     state.sprinting = snapshot.sprinting;
 
-    // Rotation: wrapped angle lerp so the seam at +/-180 never sweeps the long
-    // way. The head yaw stored in the snapshot is absolute; the render state
-    // wants it relative to the body, so the body yaw is subtracted after both are
-    // interpolated (each on its own shortest path).
+    // 旋转走带回绕的角度插值，正负 180 的接缝因此绝不会朝远端扫过去
+    // 快照里存的头部偏航是绝对量，而渲染状态要的是相对躯干的量
+    // 所以两者各自按最短路径插值之后再把躯干偏航减掉
     const float bodyYaw =
         lerpAngleDegrees(snapshot.previousBodyYawDegrees, snapshot.bodyYawDegrees, partialTicks);
     const float headYaw =
@@ -187,8 +179,9 @@ struct PlayerRenderState final {
     state.use = interpolateUse(snapshot.use, partialTicks);
     state.heldStack = snapshot.heldStack;
 
-    // Arm poses derived once (Phase 4). The main hand is the right arm by
-    // default; the use hand is the main hand today. The off arm has no slot yet.
+    // 手臂姿态在这里推导一次
+    // 主手默认是右臂，当前正在使用物品的那只手就是主手
+    // 副手臂还没有对应的槽位
     const bool usingMain = state.use.active && snapshot.use.hand == gameplay::InteractionHand::Main;
     state.rightArmPose = deriveArmPose(state.heldStack, usingMain, state.use.animation);
     state.leftArmPose = ArmPose::Empty;

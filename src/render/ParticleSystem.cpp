@@ -10,13 +10,14 @@
 namespace mc::render {
 namespace {
 
-// vanilla ClientLevel#addDestroyBlockEffect 的细分：轮廓形状的**每个**盒子各自
-// 按 0.25 切片，每轴至少两片，片心落在盒内而不是摊满整格
+// vanilla ClientLevel#addDestroyBlockEffect 的细分方式
+// 轮廓形状的每一个盒子各自按 0.25 切片，每轴至少两片，片心落在盒内而不是摊满整格
 //
-// 这里曾按 BlockModel 手抄一张轮廓盒表（Torch 2x3x2、Cross 3x4x3、其余 4x4x4）
-// 那是方块形状在仓库里的第 6 份拷贝：形状的唯一权威源是 world::blockShape
-// 手抄表既漏掉了台阶/楼梯/栅栏/门/作物（它们全部按满立方体撒粉尘，粉尘飘在空气里）
-// 也会随 BlockShape 的修正而静默失准。改为直接消费 blockShape 后，形状一改粒子自动跟上
+// 这里曾按 BlockModel 手抄一张轮廓盒表，火把 2x3x2、十字植物 3x4x3、其余一律 4x4x4
+// 那是方块形状在仓库里的第六份拷贝，而形状的唯一权威源是 world::blockShape
+// 手抄表漏掉了台阶、楼梯、栅栏、门与作物，它们全部按满立方体撒粉尘，粉尘因此飘在空气里
+// 它还会随 BlockShape 的修正而静默失准
+// 改为直接消费 blockShape 之后，形状一改粒子自动跟上
 [[nodiscard]] int piecesAlong(float width) {
     return std::max(2, static_cast<int>(std::ceil(width / 0.25F)));
 }
@@ -50,9 +51,8 @@ float ParticleSystem::randomUnit() {
 
 void ParticleSystem::setLevelScale(float scale) {
     levelScale_ = std::max(scale, 0.1F);
-    // The total ceiling rides the density knob, while ambient weather owns at
-    // most 75%. The remaining quarter is a hard reserve for mining, buckets
-    // and other immediate gameplay feedback.
+    // 总上限跟着密度旋钮走，环境天气最多占其中四分之三
+    // 剩下那四分之一是留给挖掘、水桶这类即时玩法反馈的硬预留
     particleLimit_ = static_cast<std::size_t>(8000U * levelScale_);
     weatherParticleLimit_ = particleLimit_ * 3U / 4U;
 
@@ -112,8 +112,8 @@ int ParticleSystem::scaledCount(int base) {
     }
     const float scaled = static_cast<float>(base) * levelScale_;
     const int whole = static_cast<int>(scaled);
-    // The fractional remainder: a level like 0.5 carries a coin flip so the
-    // long-run count is exactly base * scale, never a biased floor.
+    // 小数部分用一次掷币进位，低档 0.5 这样的系数因此长期期望正好是 base 乘以系数
+    // 直接截断会系统性偏低
     return whole + (randomUnit() < scaled - static_cast<float>(whole) ? 1 : 0);
 }
 
@@ -122,21 +122,21 @@ void ParticleSystem::spawnBlockBreak(
     world::Block block) {
     const float layer = world::textureLayers(block).side;
     // 形状取自唯一权威源 world::blockShape
-    // ParticleEvent 目前只携带 Block，所以这里用该方块的**默认状态**
+    // ParticleEvent 目前只携带 Block，所以这里用该方块的默认状态
     // 台阶上下半、楼梯朝向、作物生长阶段这些逐状态差异要等事件一并带上 BlockState 才能精确
     // 在那之前，默认状态的形状已经严格优于原来那张按模型手抄的常数表
     const world::BlockShape shape = world::blockShape(world::BlockState{block});
-    // The 粒子效果 density knob: above 1.0 every cell spawns `copies` jittered
-    // dust particles, below 1.0 cells drop out probabilistically — the
-    // block-filling geometry survives while the long-run count tracks the
-    // level (a 64-particle break becomes 128/192 at 高/疯狂, 32 at 低).
+    // 密度旋钮在这里不走 scaledCount，因为要保住粉尘填满方块体积的几何形态
+    // 系数大于一时每个格子生成多份带抖动的粉尘，小于一时按概率整格丢弃
+    // 一次 64 粒的破坏在高档与疯狂档变成 128 与 192 粒，低档约 32 粒
     const int copiesPerCell =
         levelScale_ >= 1.0F ? static_cast<int>(levelScale_) : 1;
     const float retainProbability = std::min(levelScale_, 1.0F);
 
-    // 预留的是**打折后**的期望数量，且要把形状的每个盒子都算进去
-    // 低档（levelScale < 1）下格子会按 retainProbability 概率整格丢弃，实际只生成大约一半
-    // 若仍按满格数预留，每挖一格就会多驱逐约一半数量的天气粒子——低档下雨挖矿时雨会一阵阵变稀
+    // 预留的是打折后的期望数量，并且要把形状的每一个盒子都算进去
+    // 低档下格子会按 retainProbability 概率整格丢弃，实际只生成大约一半
+    // 若仍按满格数预留，每挖一格就会多驱逐约一半数量的天气粒子
+    // 表现出来就是低档下雨挖矿时雨会一阵阵变稀
     float cellCount = 0.0F;
     forEachShapeBox(shape, [&](const world::ShapeBox& box) {
         const float widthX = std::min(1.0F, box.maxX - box.minX);
@@ -174,8 +174,8 @@ void ParticleSystem::spawnBlockBreak(
                             poolFull = true;
                             return;
                         }
-                        // vanilla 的片心是**盒内**的归一化偏移 rel，位置是 rel * 宽 + 盒下界
-                        // 速度方向直接取 rel - 0.5，即"从盒心向外"
+                        // vanilla 的片心是盒内的归一化偏移 rel，实际位置是 rel 乘以盒宽再加盒下界
+                        // 速度方向直接取 rel 减去 0.5，也就是从盒心向外
                         // 原来把 rel 当成整格坐标用，细瘦的火把盒因此把粉尘撒满了整格
                         const glm::vec3 rel{
                             (static_cast<float>(x) + 0.5F) / static_cast<float>(countX),
@@ -187,18 +187,17 @@ void ParticleSystem::spawnBlockBreak(
                             rel.y * widthY + box.minY,
                             rel.z * widthZ + box.minZ,
                         };
-                        // 抖动取"半片"，让同一格的多份拷贝不叠在一起
-                        // 按片长而不是固定 0.25 缩放，细瘦的盒子才不会把粉尘甩到盒外
+                        // 抖动幅度取半片，让同一格里的多份拷贝不至于完全重叠
+                        // 按片长而不是固定的 0.25 缩放，细瘦的盒子才不会把粉尘甩到盒外
                         const glm::vec3 jitter{
                             (randomUnit() - 0.5F) * widthX / static_cast<float>(countX),
                             (randomUnit() - 0.5F) * widthY / static_cast<float>(countY),
                             (randomUnit() - 0.5F) * widthZ / static_cast<float>(countZ),
                         };
                         glm::vec3 direction = rel - glm::vec3{0.5F};
-                        // Particle's velocity constructor: jitter each component by
-                        // +-0.4, renormalise, then scale by f * 0.4 per tick — the
-                        // factor of 20 converts blocks-per-tick to blocks-per-second,
-                        // and the +0.1/tick lift is +2.0/s.
+                        // 对应 vanilla Particle 的速度构造，逐分量抖动正负 0.4 后重新归一化
+                        // 再乘以每 tick 0.4 的系数，这里乘 20 把每 tick 换算成每秒
+                        // vanilla 每 tick 额外的 0.1 上抬在这里就是每秒 2.0
                         direction += glm::vec3{
                             randomUnit() - 0.5F,
                             randomUnit() - 0.5F,
@@ -210,8 +209,8 @@ void ParticleSystem::spawnBlockBreak(
                             (randomUnit() + randomUnit() + 1.0F) * 0.15F * 8.0F;
                         const glm::vec3 velocity =
                             direction / std::max(length, 1e-6F) * speed;
-                        // BlockDustParticle samples a random 16x16 sub-tile of the
-                        // 64x64 block texture; uvScale 0.25 is exactly that sub-tile.
+                        // BlockDustParticle 在 64x64 的方块纹理里随机取一块 16x16 的子图
+                        // uvScale 取 0.25 正好就是这一块子图
                         const glm::vec2 uvOrigin{
                             static_cast<float>(static_cast<int>(randomUnit() * 4.0F)) * 0.25F,
                             static_cast<float>(static_cast<int>(randomUnit() * 4.0F)) * 0.25F,
@@ -222,10 +221,10 @@ void ParticleSystem::spawnBlockBreak(
                             layer,
                             uvOrigin,
                             0.25F,
-                            // SpriteBillboardParticle's scale divided by two: 0.05..0.1.
+                            // SpriteBillboardParticle 的尺寸折半，落在 0.05 到 0.1 之间
                             0.05F + randomUnit() * 0.05F,
                             0.0F,
-                            // Particle's maxAge: 4 / (rand*0.9 + 0.1) ticks.
+                            // 对应 vanilla Particle 的 maxAge，即 4 除以 rand 乘 0.9 加 0.1 个 tick
                             (4.0F / (0.1F + randomUnit() * 0.9F)) / 20.0F,
                             1.0F,
                         });
@@ -263,11 +262,9 @@ void ParticleSystem::spawnWaterSplash(const glm::vec3& position) {
 }
 
 void ParticleSystem::spawnRainImpact(const glm::vec3& position, bool onWater) {
-    // RainSplashParticle starts with no horizontal motion, an upward velocity
-    // of 0.1..0.3 blocks/tick, and lives for 8/(random*0.8+0.2) ticks. Convert
-    // those values to this particle system's seconds/blocks-per-second units.
-    // Keep the per-impact density multiplier: higher particle levels increase
-    // both the rain columns and the visible surface response.
+    // vanilla 的 RainSplashParticle 没有水平速度，向上初速为每 tick 0.1 到 0.3 格
+    // 寿命是 8 除以 random 乘 0.8 加 0.2 个 tick，这里一律换算成秒与每秒格数
+    // 逐撞击的密度倍率保留，粒子等级调高时雨柱与地面反应会同时变密
     for (int index = 0; index < scaledCount(1); ++index) {
         if (!weatherCapacityAvailable()) {
             return;
@@ -291,18 +288,15 @@ void ParticleSystem::spawnRainImpact(const glm::vec3& position, bool onWater) {
 }
 
 void ParticleSystem::spawnRainSplash(const glm::vec3& position, const glm::vec2& direction) {
-    // Fewer, shorter-lived particles than the bucket's burst: a rain drop
-    // landing pushes a handful of droplets outward and upward that fade fast.
-    // Sized and timed a bit larger than a block-dust puff so the splash reads
-    // as the rain lands even a couple dozen blocks out. A non-zero direction
-    // (a wall the drop drifted into) sprays the droplets in a half-circle fan
-    // facing away from the wall; a zero direction sprays radially.
+    // 比水桶那一下的爆发更少也更短命，一滴雨落地只推出几颗很快消散的水珠
+    // 尺寸与时长比方块粉尘略大一点，隔着二三十格也还能看出雨确实落在地上
+    // direction 非零时表示雨滴飘进的墙面，水珠沿背离墙面的半圆扇形喷出
+    // direction 为零时四散喷出
     constexpr float kFullTurn = 6.28318530718F;
     constexpr float kHalfTurn = 3.14159265359F;
     const bool directional = direction.x * direction.x + direction.y * direction.y > 0.25F;
     const float baseAngle = directional ? std::atan2(direction.y, direction.x) : 0.0F;
-    // Preserve the landing-splash density multiplier in addition to the rain
-    // population multiplier; the enlarged weather budget absorbs the peak.
+    // 落地水花自己的密度倍率与雨滴总量的倍率同时生效，放大后的天气预算吃得下这个峰值
     for (int index = 0; index < scaledCount(4); ++index) {
         if (!weatherCapacityAvailable()) {
             return;
@@ -332,11 +326,9 @@ void ParticleSystem::spawnRainSplash(const glm::vec3& position, const glm::vec2&
 
 void ParticleSystem::update(float deltaSeconds, const world::World& world) {
     const float elapsed = std::max(deltaSeconds, 0.0F);
-    // Particle#tick, converted from the fixed 20 TPS base to a continuous
-    // frame time: gravity is 0.04 blocks/tick^2 (0.04 * 20^2 = 16 blocks/s^2;
-    // velocity is stored per-second, so the per-tick decrement of 0.04 blocks/tick
-    // is a 16-blocks/s-per-second acceleration), air drag is 0.98/tick, and the
-    // ground drag a further 0.7/tick on the horizontal axes.
+    // 对应 vanilla 的 Particle#tick，把固定 20 TPS 的基准换算成连续的帧时间
+    // 重力是每 tick 平方 0.04 格，速度按秒存储，因此这里是每秒平方 16 格
+    // 空气阻力是每 tick 乘 0.98，落地后水平两轴再额外每 tick 乘 0.7
     const float airDrag = std::pow(0.98F, elapsed * 20.0F);
     const float groundDrag = std::pow(0.7F, elapsed * 20.0F);
     for (auto& particle : particles_) {
@@ -346,15 +338,15 @@ void ParticleSystem::update(float deltaSeconds, const world::World& world) {
         const int blockX = static_cast<int>(std::floor(next.x));
         const int blockY = static_cast<int>(std::floor(next.y));
         const int blockZ = static_cast<int>(std::floor(next.z));
-        // 读的是状态而不是方块：状态既能给出方块身份，也能给出这一格的形状
-        // 因此落地面高度是"换掉"原来那次 world.block 查询，不是在它之上再加一次
+        // 读的是状态而不是方块，状态既能给出方块身份也能给出这一格的形状
+        // 落地面高度因此是换掉原来那次 world.block 查询，不是在它之上再加一次
         const world::BlockState landedState = world.state(blockX, blockY, blockZ);
         const world::Block landedBlock = landedState.block();
         const bool landedFluid = world::isFluid(landedBlock);
         // 落地面取该格形状的顶面，而不是恒定的格顶
-        // 写死 blockY + 1 是方块形状在本支线里的第三份手抄拷贝：粉尘会停在台阶、
-        // 压力板、农田的上方半空，甚至被从侧面进入的格子向上弹一截
-        // 流体的顶面仍是格顶，流体形状本身是 Empty
+        // 写死 blockY 加一是方块形状在本支线里的第三份手抄拷贝
+        // 那样粉尘会停在台阶、压力板与农田上方的半空，甚至被从侧面进入的格子向上弹一截
+        // 流体的顶面仍按格顶算，因为流体自身的形状是 Empty
         float surfaceTop = 1.0F;
         if (!landedFluid && world::hasCollision(landedBlock)) {
             const world::BlockCollisionSpan span =
@@ -362,13 +354,10 @@ void ParticleSystem::update(float deltaSeconds, const world::World& world) {
             surfaceTop = span.top > 0.0F ? span.top : 1.0F;
         }
         const float surfaceY = static_cast<float>(blockY) + surfaceTop;
-        // A fluid surface counts as a landing just like a solid block: a rain
-        // splash drops onto the water's top face and sits there, instead of
-        // sinking below it under gravity.
+        // 流体表面和固体一样算落地，雨水花因此停在水面上而不是在重力下继续沉下去
         if ((world::hasCollision(landedBlock) || landedFluid) &&
             particle.velocity.y < 0.0F && next.y <= surfaceY) {
-            // Vanilla block dust stops dead on the floor instead of bouncing;
-            // the ground drag then lets it slide a little and expire in place.
+            // vanilla 的方块粉尘落地即停不反弹，随后靠地面阻力滑一小段并在原地消亡
             particle.position = {next.x, surfaceY, next.z};
             particle.velocity.y = 0.0F;
             particle.velocity.x *= groundDrag;

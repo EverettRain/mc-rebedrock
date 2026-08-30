@@ -734,8 +734,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const float rainScale = 1.5F * particleLevelMultiplier(options.particleLevel);
         // ±24 格这样更宽的雨区需要更密的雨量才能整片看起来像下雨
         // 基数因此比 ±16 的旧值提高四分之一，逐模式的取值在 rainBaseCount 里
-        // 这里曾套一层 switch，三个 case 落到同一行——是"基数曾按模式分开"留下的化石
-        // 它零信息量，却让人以为三条路径在此处有分别
+        // 这里曾套一层 switch 而三个 case 落到同一行，那是基数曾按模式分开留下的化石
+        // 它零信息量，却让人以为几条路径在此处有分别
         const std::size_t base =
             rainCountOverride_ > 0U ? rainCountOverride_ : rainBaseCount(rainMode_);
         return static_cast<std::size_t>(static_cast<float>(base) * rainScale * thunderBoost);
@@ -1214,7 +1214,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 {
                     // 这里读的都是渲染侧自有的客户端缓存和原子发布的世界快照，无需加锁
                     hud_.updateVignetteDarkness(deltaSeconds);
+                    const auto particleSimStart = std::chrono::steady_clock::now();
                     particleSystem.update(deltaSeconds, clientCache);
+                    if (diag::traceEnabled()) {
+                        diag::frameTrace().particleSimMs += diag::msSince(particleSimStart);
+                        diag::frameTrace().particleCount =
+                            static_cast<std::uint32_t>(particleSystem.particles().size());
+                    }
                 // CPU 雨滴跟随平滑后的天气强度，在所有模式下都负责落地水花与音效
                 // particles 与 async 直接渲染这批雨滴；texture 模式则另行绘制 vanilla 的逐列降水
                 const float thunderGradient = clientMirror_.world().thunderGradient;
@@ -1235,6 +1241,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 const float windSpeed = 1.5F + thunderGradient * 4.5F;
                 const glm::vec2 wind{std::cos(rainWindAngle_) * windSpeed,
                                      std::sin(rainWindAngle_) * windSpeed};
+                const auto rainSimStart = std::chrono::steady_clock::now();
                 rainSystem.update(deltaSeconds, camera.position(),
                                   clientMirror_.world().rainGradient, rainTargetCount(),
                                   clientCache, wind);
@@ -1242,6 +1249,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     rainSystem.emitTextureImpacts(deltaSeconds, camera.position(),
                                                   clientMirror_.world().rainGradient,
                                                   clientCache);
+                }
+                if (diag::traceEnabled()) {
+                    diag::frameTrace().rainSimMs += diag::msSince(rainSimStart);
+                    diag::frameTrace().rainDropCount =
+                        static_cast<std::uint32_t>(rainSystem.drops().size());
+                    diag::frameTrace().rainLookups =
+                        static_cast<std::uint32_t>(rainSystem.lastUpdateLookups());
                 }
                 for (const auto& splash : rainSystem.splashes()) {
                     if (splash.sampledImpact) {
@@ -1408,6 +1422,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                               << " occReadMs=" << t.occlusionReadbackMs
                               << " uniformMs=" << t.uniformMs
                               << " imageWaitMs=" << t.imageWaitMs
+                              << " particleSimMs=" << t.particleSimMs
+                              << " rainSimMs=" << t.rainSimMs
+                              << " particleLightMs=" << t.particleLightMs
+                              << " particles=" << t.particleCount
+                              << " drops=" << t.rainDropCount
+                              << " rainLookups=" << t.rainLookups
                               << " visible=" << t.visibleSections
                               << " unloaded=" << t.unloadedChunks
                               << " saveChunkCalls=" << t.saveChunkCalls
@@ -5972,7 +5992,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // 粒子效果等级到密度倍率：低 0.5、中 1.0、高 2.0、疯狂 3.0
+    // 粒子效果等级到密度倍率的换算，低档 0.5、中档 1.0、高档 2.0、疯狂档 3.0
     // 生成数量与存活上限都乘这个系数，见 ParticleSystem::setLevelScale
     [[nodiscard]] static float particleLevelMultiplier(int level) {
         switch (level) {

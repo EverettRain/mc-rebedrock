@@ -12,46 +12,38 @@
 namespace mc::render {
 namespace {
 
-// The horizontal half-width of the rain box around the camera, in blocks. The
-// old field (±16) left drops and splashes absent just a few chunks out, which
-// is why splashes were invisible at a short distance; ±24 keeps the field
-// visible roughly twice as far while the cached collision keeps it cheap.
+// 相机周围雨域的水平半宽，单位是格
+// 旧的正负 16 只要出去几个区块就既没有雨滴也没有水花，近处看不到溅射就是这么来的
+// 正负 24 把可见范围拉远了约一倍，而缓存下来的碰撞让这个范围依然便宜
 constexpr float kSpawnHalfWidth = 24.0F;
-// The vertical spawn window above the camera eye. The ceiling (kSpawnMax) is
-// also the probe reference: the column scan starts there and finds the topmost
-// collision below it, so a roof up to ~24 blocks above the camera stops the
-// rain instead of passing it through. Spawn heights are spread at random across
-// the whole window (never a fixed height), so the field is a continuous fall —
-// a constant spawn height made every drop fall in one synchronized sheet.
+// 相机视点之上的竖直生成窗口
+// 天花板 kSpawnMax 同时是探测基准，列扫描从这里往下找最高的碰撞面
+// 因此相机上方约 24 格以内的屋顶能挡住雨，而不是让雨直接穿过去
+// 生成高度在整个窗口里随机铺开而不是固定一个高度，雨才是连续下落的
+// 固定生成高度会让所有雨滴排成一整幅同步下坠的帘子
 constexpr float kSpawnMin = 12.0F;
 constexpr float kSpawnMax = 32.0F;
-// A drop materialises at least this far above the surface it is falling onto,
-// so rain above a roof always has a visible fall before the splash instead of
-// popping into existence on the roof.
+// 雨滴至少要出现在它要落向的那个面之上这么远的地方
+// 屋顶上的雨因此总能看到一段下落再溅射，而不是凭空出现在屋顶上
 constexpr float kDropClearance = 8.0F;
 constexpr float kFallSpeed = 18.0F;
-// The column probe scans down from the ceiling at most this far before giving
-// up (deep void / camera far above the ground): the drop then free-falls and
-// respawns below the camera, the same as a drop that falls out of the box.
+// 列探测从天花板往下最多扫这么多行就放弃，对应深空以及相机远高于地面的情形
+// 放弃之后雨滴自由落体，落到相机下方就重生，和飞出盒子的雨滴走同一条路
 constexpr int kProbeSpan = 96;
-// A cached surface older than this is re-probed, so a block edit or a roof the
-// camera rose past eventually shows up. The interval is long (not a couple of
-// seconds) because re-probing every column every couple of seconds would
-// refund most of the collision win; camera movement already probes new columns
-// on entry, and edits are rare.
+// 缓存的面超过这个时长就重新探测，方块编辑与相机升过的屋顶因此最终都能反映出来
+// 这个间隔取得很长而不是几秒，因为每隔几秒重探所有列会把碰撞省下的开销还回去大半
+// 相机移动本来就会在进入新列时探测，而方块编辑本身很少见
 constexpr float kSurfaceProbeInterval = 30.0F;
-// The column cache clears when it outgrows this, keeping it bounded as the
-// camera streams across new terrain.
+// 列缓存超出这个容量就整表清空，相机在新地形上流送时它才不会无限增长
 constexpr std::size_t kSurfaceCacheLimit = 4096U;
-// The wall-face cache clears when it outgrows this (a wall column caches one
-// entry per height a drop crossed it at, so a long wall can accumulate).
+// 墙面缓存超出这个容量就整表清空
+// 一面墙每被雨滴穿过一个高度就多一条记录，长墙因此会不断累积
 constexpr std::size_t kWallCacheLimit = 2048U;
 
 } // namespace
 
 float RainSystem::randomUnit() {
-    // xorshift32 — cheap, no STL RNG state, seeded from a constant like the
-    // rest of the renderer's per-frame RNGs.
+    // xorshift32 足够便宜，不带 STL 的随机数状态，和渲染器里其它逐帧随机源一样用常量播种
     std::uint32_t value = randomState_;
     value ^= value << 13;
     value ^= value >> 17;
@@ -67,8 +59,7 @@ std::uint64_t RainSystem::columnKey(int blockX, int blockZ) {
 }
 
 std::uint64_t RainSystem::wallKey(int blockX, int blockZ, int blockY) {
-    // The box is ±24 and heights are 0..255, so 24 bits for each axis and 16
-    // for the height pack uniquely without colliding.
+    // 盒子是正负 24 格，高度按 16 位放得下，因此水平两轴各 24 位加高度 16 位即可无冲突打包
     return (static_cast<std::uint64_t>(blockX) & 0xFFFFFFU) |
            ((static_cast<std::uint64_t>(blockZ) & 0xFFFFFFU) << 24) |
            (static_cast<std::uint64_t>(blockY) << 48);
@@ -82,8 +73,8 @@ RainSystem::ColumnSurface RainSystem::columnSurface(const world::World& world, i
         timeSeconds_ - found->second.probedAt < kSurfaceProbeInterval) {
         return found->second;
     }
-    // Probe: the topmost collision or fluid block at-or-below the ceiling. Only
-    // the first drop to enter a column pays this; the cache serves the rest.
+    // 探测天花板及其以下最高的碰撞方块或流体
+    // 只有第一滴进入这一列的雨付出这个代价，其余雨滴由缓存供给
     ColumnSurface surface;
     // kWorldHeight 是行数不是坐标上界，世界底也不是 0：两处都必须用 kMaxY/kMinY
     // 写成 kWorldHeight-1 会让探测在世界顶上空扫 64 行，写成 0 则整段深板岩层永远探测不到
@@ -133,9 +124,8 @@ void RainSystem::emitTextureImpacts(float deltaSeconds, const glm::vec3& cameraP
         for (int sample = 0; sample < sampleCount; ++sample) {
             const int blockX = cameraBlock.x + static_cast<int>(rng::nextInt(random, 21U)) - 10;
             const int blockZ = cameraBlock.z + static_cast<int>(rng::nextInt(random, 21U)) - 10;
-            // A +32 probe finds a roof above the accepted +10 impact window;
-            // that column is then rejected instead of incorrectly splashing on
-            // an indoor floor beneath the roof.
+            // 探测放到相机上方 32 格，能发现高于被接受的 10 格撞击窗口的屋顶
+            // 这样那一列会被直接排除，而不是错误地在屋顶下方的室内地面上溅射
             const ColumnSurface surface =
                 columnSurface(world, blockX, blockZ, cameraPosition.y + kSpawnMax);
             if (surface.surfaceY <= 1.0F ||
@@ -177,9 +167,8 @@ void RainSystem::emitTextureImpacts(float deltaSeconds, const glm::vec3& cameraP
 void RainSystem::respawnDrop(RainDrop& drop, const glm::vec3& cameraPosition,
                              const world::World& world) {
     const float ceiling = cameraPosition.y + kSpawnMax;
-    // Pick a column whose surface the drop can spawn above. A column covered by
-    // a roof higher than the spawn window would materialise the drop indoors,
-    // so retry a few columns before falling back to free fall.
+    // 挑一列能让雨滴生成在其面之上的列
+    // 若某列被高于生成窗口的屋顶盖住，雨滴就会出现在室内，所以先换几列重试再退回自由落体
     for (int attempt = 0; attempt < 4; ++attempt) {
         const float x = cameraPosition.x + (randomUnit() - 0.5F) * (2.0F * kSpawnHalfWidth);
         const float z = cameraPosition.z + (randomUnit() - 0.5F) * (2.0F * kSpawnHalfWidth);
@@ -191,32 +180,28 @@ void RainSystem::respawnDrop(RainDrop& drop, const glm::vec3& cameraPosition,
         drop.surfaceWater = surface.water;
         if (surface.surfaceY >= 0.0F) {
             if (surface.surfaceY + kDropClearance > ceiling) {
-                continue; // covered by a roof taller than the spawn window
+                continue; // 被高于生成窗口的屋顶盖住
             }
-            // Spawn anywhere between just above the surface and the window top,
-            // spread at random so the field reads as continuous rain instead of
-            // a synchronized sheet.
+            // 在刚好高于该面到窗口顶部之间随机取一个高度
+            // 随机铺开雨才是连续下落的，否则整片会读成一幅同步下坠的帘子
             const float lowerBound =
                 std::max(cameraPosition.y + kSpawnMin, surface.surfaceY + kDropClearance);
             drop.targetSurface = surface.surfaceY;
             drop.position = {x, lowerBound + randomUnit() * (ceiling - lowerBound), z};
         } else {
-            // Nothing found in the probe span (deep void): free fall until the
-            // drop respawns below the camera.
+            // 探测范围内什么都没找到，对应深空，自由落体直到落到相机下方重生
             drop.targetSurface = -1.0F;
             drop.position = {
                 x, cameraPosition.y + kSpawnMin + randomUnit() * (kSpawnMax - kSpawnMin), z};
         }
         drop.size = 0.03F + randomUnit() * 0.02F;
-        // Each drop carries its own slight wind offset so the slant reads as a
-        // sheet of rain rather than a rigid parallel set.
+        // 每滴各带一点自己的风偏移，斜度因此像一片雨而不是一组刚性平行线
         drop.windJitter = {(randomUnit() - 0.5F) * 0.6F, (randomUnit() - 0.5F) * 0.6F};
         return;
     }
-    // Every nearby column is under cover (the player is indoors): free fall
-    // rather than rain materialising inside a building. The position is still
-    // random in the box — a fixed camera-point spawn made every fallback drop
-    // pile up in one spot and read as a solid water column at the player.
+    // 附近每一列都被遮住，也就是玩家在室内，此时自由落体而不是让雨出现在建筑里
+    // 位置仍然在盒子里随机取
+    // 固定在相机那一点生成会让所有回退的雨滴堆在同一处，看上去像玩家身上插了一根水柱
     drop.targetSurface = -1.0F;
     drop.surfaceWater = false;
     drop.position = {
@@ -255,13 +240,12 @@ void RainSystem::update(float deltaSeconds, const glm::vec3& cameraPosition, flo
         drops_.resize(desired);
     }
     splashes_.clear();
-    // Rain falls fast; a drop's position advances by `fall` each frame.
+    // 雨下得很快，每一帧雨滴的位置推进 fall 这么多
     const float fall = kFallSpeed * deltaSeconds;
     if (!useCollisionCache_) {
-        // Direct per-drop-per-frame collision — the original full-fidelity
-        // path, one world lookup per drop per frame. Every drop probes the
-        // block at its own position, so it catches roofs, walls and water
-        // exactly, at the price the cache exists to avoid.
+        // 逐滴逐帧的直接碰撞，是最初的全保真路径，每滴每帧一次世界查询
+        // 每滴都探测自己所在位置的方块，屋顶、墙面与水面因此都判得精确
+        // 代价正是列表面缓存要省掉的那一份
         for (auto& drop : drops_) {
             drop.position.x += (wind.x + drop.windJitter.x) * deltaSeconds;
             drop.position.z += (wind.y + drop.windJitter.y) * deltaSeconds;
@@ -273,7 +257,7 @@ void RainSystem::update(float deltaSeconds, const glm::vec3& cameraPosition, flo
             const world::Block block = world.block(blockX, blockY, blockZ);
             const bool water = world::isFluid(block);
             if (water || world::hasCollision(block)) {
-                // A solid hit sprays back off the wall; a water hit is radial.
+                // 撞固体时水珠沿墙弹回来，撞水面时四散喷出
                 const glm::vec2 drift{wind.x + drop.windJitter.x, wind.y + drop.windJitter.y};
                 const float driftLength = std::sqrt(drift.x * drift.x + drift.y * drift.y);
                 const glm::vec2 away =
@@ -290,13 +274,12 @@ void RainSystem::update(float deltaSeconds, const glm::vec3& cameraPosition, flo
             }
         }
     } else {
-        // Cached collision: the first drop to enter a column probes its surface
-        // once; the rest fall to the cached value with a cheap float compare, plus
-        // a cache re-read when wind drifts a drop into a new column.
+        // 缓存碰撞，第一滴进入某列的雨探测一次它的面
+        // 其余雨滴只用一次廉价的浮点比较落到缓存值上
+        // 风把雨滴吹进新的一列时再读一次缓存
         const float ceiling = cameraPosition.y + kSpawnMax;
         for (auto& drop : drops_) {
-            // Cross-wind: the whole field drifts downwind while each drop keeps its
-            // own jitter, so the rain falls at an angle instead of straight down.
+            // 侧风让整片雨顺风漂移，而每滴仍保留自己的抖动，雨因此是斜着下而不是直上直下
             drop.position.x += (wind.x + drop.windJitter.x) * deltaSeconds;
             drop.position.z += (wind.y + drop.windJitter.y) * deltaSeconds;
             drop.position.y -= fall;
@@ -306,11 +289,9 @@ void RainSystem::update(float deltaSeconds, const glm::vec3& cameraPosition, flo
             if (blockX != drop.columnX || blockZ != drop.columnZ) {
                 drop.columnX = blockX;
                 drop.columnZ = blockZ;
-                // Wind drift carries the drop sideways as it falls, so it can meet
-                // a wall at its own height. The wall-face direction is cached the
-                // first time a drop crosses a face; a later drop reaching the same
-                // face splashes in that same fixed direction with a cache read
-                // instead of re-probing the world.
+                // 风把下落中的雨滴横向带走，它因此可能在自己的高度上撞到墙
+                // 墙面方向在第一滴穿过该面时缓存下来
+                // 之后到达同一面的雨滴只读缓存并照同一个固定方向溅射，不再重新探测世界
                 const std::uint64_t wall = wallKey(blockX, blockZ, blockY);
                 const auto cachedWall = wallCache_.find(wall);
                 if (cachedWall != wallCache_.end()) {
@@ -327,16 +308,14 @@ void RainSystem::update(float deltaSeconds, const glm::vec3& cameraPosition, flo
                 if (world::hasCollision(current) || world::isFluid(current)) {
                     const bool water = world::isFluid(current);
                     if (water) {
-                        // A drop drifting into water splashes radially on the
-                        // surface, like any other water landing.
+                        // 飘进水里的雨滴在水面上四散溅射，和其它落水情形一致
                         splashes_.push_back(RainSplash{
                             {drop.position.x, static_cast<float>(blockY) + 1.0F, drop.position.z},
                             true,
                             glm::vec2{0.0F}});
                     } else {
-                        // The direction away from the wall is opposite the drift
-                        // that carried the drop into it, so the droplets bounce
-                        // back out; cache it for the drops that follow.
+                        // 背离墙面的方向就是把雨滴带过来的漂移的反方向，水珠因此往回弹
+                        // 顺便缓存下来给后面的雨滴用
                         const glm::vec2 drift{wind.x + drop.windJitter.x,
                                               wind.y + drop.windJitter.y};
                         const float driftLength = std::sqrt(drift.x * drift.x + drift.y * drift.y);
@@ -357,10 +336,9 @@ void RainSystem::update(float deltaSeconds, const glm::vec3& cameraPosition, flo
                     respawnDrop(drop, cameraPosition, world);
                     continue;
                 }
-                // Re-fetch the new column's surface (a cache read after the first
-                // drop there probed it). A drop that drifted under a newly-overhead
-                // roof is indoors now — respawn it quietly, the way vanilla rain
-                // particles die when they enter cover.
+                // 重新取新那一列的面，在第一滴探测过之后这只是一次缓存读取
+                // 飘到新出现的屋顶下方的雨滴现在算在室内，安静地让它重生
+                // vanilla 的雨粒子进入遮蔽时也是直接消亡
                 const ColumnSurface surface = columnSurface(world, blockX, blockZ, ceiling);
                 if (surface.surfaceY >= 0.0F && surface.surfaceY > drop.position.y) {
                     respawnDrop(drop, cameraPosition, world);
@@ -370,11 +348,9 @@ void RainSystem::update(float deltaSeconds, const glm::vec3& cameraPosition, flo
                 drop.surfaceWater = surface.water;
             }
             if (drop.targetSurface >= 0.0F && drop.position.y <= drop.targetSurface) {
-                // vanilla's RainParticle dies on the surface it is headed for; the
-                // splash is emitted at the block's top face. Only a random fraction
-                // of ground landings emit a visible splash so the continuous rain
-                // never floods the particle list; water, the more visible surface,
-                // splashes every time.
+                // vanilla 的 RainParticle 在它奔向的那个面上消亡，水花从方块顶面发出
+                // 地面落点只有随机一小部分真的产出可见水花，连续降雨才不会把粒子表撑满
+                // 水面是更显眼的落点，因此每次都溅射
                 if (drop.surfaceWater || randomUnit() < 0.25F) {
                     splashes_.push_back(
                         RainSplash{{drop.position.x, drop.targetSurface, drop.position.z},

@@ -1244,6 +1244,8 @@ class WorldRenderer final {
         // 在把该映射暴露为 write-combined 内存的 Windows 堆上，这样明显更快
         auto& buffer = gpuSceneBuffer.frame(currentFrame);
         sceneParticleRecords_.reserve(count);
+        // 逐粒子的 packedSceneLight 是两次区块查找，这一段单独计时以便归因
+        const auto particleLightStart = std::chrono::steady_clock::now();
         for (std::size_t index = 0; index < count; ++index) {
             const auto& particle = particles[index];
             sceneParticleRecords_.push_back(ParticleRecord{
@@ -1251,6 +1253,9 @@ class WorldRenderer final {
                 {particle.uvOrigin.x, particle.uvOrigin.y, particle.uvScale, particle.opacity},
                 {particle.textureLayer, packedSceneLight(particle.position), 0.0F, 0.0F},
             });
+        }
+        if (diag::traceEnabled()) {
+            diag::frameTrace().particleLightMs += diag::msSince(particleLightStart);
         }
         // 把记录写进本帧的存储缓冲槽并刷新
         // drawFrame 开头等待的逐帧围栏已经把这些主机写排在上一次提交对同槽的读之后，因此不需要屏障
@@ -1276,10 +1281,10 @@ class WorldRenderer final {
         return count;
     }
 
-    // 降雨绘制的两条路径，各自成函数
-    // 它们除了函数名与一个诊断标志之外没有任何共享逻辑：贴图路径连雨滴都不读
-    // 曾经三条分支缝在一个 180 行的函数里，还共用一个 static bool reported——
-    // 运行时切换雨模式后，另一条路径就永远不打诊断行了
+    // 降雨绘制的两条路径各自成函数
+    // 它们除了函数名之外没有任何共享逻辑，贴图路径连雨滴都不读
+    // 三条分支曾缝在一个一百八十行的函数里，还共用同一个 static bool reported
+    // 那样运行时一旦切换雨模式，另一条路径就永远不再打诊断行
     void drawRain(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
                   std::size_t baseRecordCount) {
         if (rainMode_ == RainMode::Texture) {
@@ -1289,8 +1294,8 @@ class WorldRenderer final {
         }
     }
 
-    // vanilla 的逐列降水：用 environment/rain.png 画窄长的竖直雨列
-    // 不消费 CPU 雨滴，那批雨滴此时只负责落地水花与天气音效
+    // vanilla 的逐列降水，用 environment/rain.png 画窄长的竖直雨列
+    // 它不消费 CPU 雨滴，那批雨滴此时只负责落地水花与天气音效
     void drawTextureRain(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
                          std::size_t baseRecordCount) {
         const float rainGradient = clientMirror.world().rainGradient;
@@ -1404,9 +1409,9 @@ class WorldRenderer final {
         }
     }
 
-    // 异步粒子雨：CPU 雨滴的实例化绘制
-    // 记录接在方块粉尘之后写进同一个场景存储缓冲，baseInstance 越过它们，
-    // 整片雨一次 vkCmdDraw 画完
+    // 异步粒子雨，把 CPU 雨滴实例化绘制
+    // 记录接在方块粉尘之后写进同一个场景存储缓冲，baseInstance 越过它们
+    // 整片雨因此一次 vkCmdDraw 画完
     void drawAsyncRain(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
                        std::size_t baseRecordCount) {
         const auto& drops = rainSystem.drops();
@@ -1417,6 +1422,8 @@ class WorldRenderer final {
         const std::size_t count = std::min(drops.size(), capacity - baseRecordCount);
         auto& buffer = gpuSceneBuffer.frame(currentFrame);
         sceneParticleRecords_.reserve(baseRecordCount + count);
+        // 与粒子同一性质，逐雨滴两次区块查找，累加进同一个 particleLightMs
+        const auto rainLightStart = std::chrono::steady_clock::now();
         for (std::size_t index = 0; index < count; ++index) {
             const auto& drop = drops[index];
             sceneParticleRecords_.push_back(ParticleRecord{
@@ -1424,6 +1431,9 @@ class WorldRenderer final {
                 {0.0F, 0.0F, 1.0F, 0.6F},
                 {static_cast<float>(kWaterStillLayer), packedSceneLight(drop.position), 0.0F, 0.0F},
             });
+        }
+        if (diag::traceEnabled()) {
+            diag::frameTrace().particleLightMs += diag::msSince(rainLightStart);
         }
         const std::size_t totalRecordCount = baseRecordCount + count;
         if (totalRecordCount > 0U) {

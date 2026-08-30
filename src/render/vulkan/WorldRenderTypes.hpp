@@ -81,11 +81,11 @@ enum class CameraPerspective : std::uint8_t {
 // Texture 走 vanilla 的逐列降水渲染，此时 CPU 雨滴只用于落地水花和天气音效
 // Async 把 CPU 雨滴实例化成公告板，整片雨一次 vkCmdDraw 画完
 //
-// 这里曾有第三档 Particles，它与 Async 用的是同一批雨滴、产出同一份视觉
+// 这里曾有第三档 Particles，它与 Async 用的是同一批雨滴并产出同一份视觉
 // 区别只在 Particles 逐雨滴发一次 draw call 而 Async 走实例化
-// 那是一条为了和 Async 做直接对照而临时留下的绘制方式，却被接进实验性内容子菜单
-// 成了玩家可选项——疯狂档满雨时它意味着每帧 18000 次 draw call
-// 对照数据已经拿到（见 CHANGELOG），因此把它整条移除，生产路径 Async 保留原名
+// 那是一条为了和 Async 做直接对照而临时留下的绘制方式，却被接进实验性内容子菜单成了玩家可选项
+// 疯狂档满雨时它意味着每帧一万八千次 draw call
+// 对照数据已经拿到并记在 CHANGELOG 里，因此把它整条移除，生产路径 Async 保留原名
 enum class RainMode { Texture, Async };
 
 constexpr std::size_t kParticleRainBaseCount = 2000U;
