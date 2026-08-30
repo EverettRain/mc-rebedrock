@@ -1,44 +1,32 @@
 #pragma once
 
-// CS-2: strict ring-ordered section delivery.
+// 严格按环号排序的 section 投递
 //
-// Evidence (docs/content-dev/CS-chunk-streaming/README.md, "真机证据与决策"):
-// the ~5s streaming long tail on a real run was not missing work or a single
-// frame's CPU cost — it was severe *reordering*. The pending-section backlog
-// was a plain FIFO (arrival order), so far-ring sections that finished
-// meshing first could sit ahead of near-centre sections in the same batch (a
-// 24-chunk generation batch already spans multiple Chebyshev rings), and the
-// eviction cap picked the *oldest* entry regardless of ring, which could
-// (and, per the trace, did) evict/starve near-centre work behind an already
-// long far-ring tail. Eight centre-adjacent chunks were observed starved to
-// 4.7s while distant chunks with no priority claim landed first.
+// 真机上约 5 秒的流送长尾并不是漏了工作，也不是某一帧的 CPU 开销，而是严重的乱序
+// 待处理 section 的积压原本是一条按到达顺序排的普通 FIFO
+// 于是同一批次里先完成网格化的远环 section 会排在近中心 section 前面
+// 而一个 24 区块的生成批次本就跨好几个切比雪夫环
+// 积压上限的淘汰又取最旧的那一项，完全不看环号
+// 这会把近中心的工作淘汰或饿死在一条已经很长的远环尾巴后面
+// 实测见到过紧邻中心的八个区块被饿到 4.7 秒，而毫无优先权的远处区块反倒先落地
 //
-// This container replaces the plain deque with a small array of per-ring
-// FIFO buckets:
-//   - within a ring, arrival order is preserved (no reordering of a batch's
-//     own internal completion order — "batch内保序");
-//   - across rings, the *lowest* non-empty ring is always drained first
-//     (strict centre-out delivery — "近中心优先" / "不跨环成批" at the
-//     consumer side, independent of how coarse the producer's batch was);
-//   - the eviction policy for the backlog cap now takes from the *farthest*
-//     non-empty ring, so a full backlog sheds distant work, never centre
-//     work — the direct fix for the 4.7s starve.
-//   - a separate priority lane is unchanged from the pre-CS-2 behaviour:
-//     gameplay edits still jump straight to the front of the whole queue,
-//     ahead of every ring bucket (edits are not part of the ring-fill
-//     picture at all).
+// 这个容器用一小组按环分桶的 FIFO 取代那条普通 deque：
+//   - 环内保持到达顺序，一个批次自身的完成顺序不被重排
+//   - 跨环时永远先排空环号最小的非空环，即严格的由近及远投递
+//     这一点在消费侧成立，与生产侧的批次划得多粗无关
+//   - 积压上限的淘汰改为从最远的非空环取，满积压因此甩掉远处的工作而绝不甩中心的工作
+//     这正是对那次 4.7 秒饿死的直接修复
+//   - 另有一条优先通道，行为与从前一致：玩法编辑仍然直接插到整个队列最前，排在所有环桶之前
+//     编辑本来就不属于环形填充这幅图景
 //
-// DOD shape: ring bucket count is small and bounded (loadRadius +
-// unload-hysteresis, on the order of ten), so `evictFarthest`'s reverse scan
-// for the first non-empty bucket is a handful of empty-check iterations, not
-// a hot-path cost; push/pop/erase touch only their own bucket, O(1)
-// amortised, same deque node cost the old single-deque backlog already paid.
-// No per-call heap allocation beyond what std::deque itself does.
+// 数据布局上，环桶的数量小且有界，等于 loadRadius 加上卸载迟滞，量级在十上下
+// evictFarthest 反向扫描第一个非空桶因此只是几次空检查，不构成热路径开销
+// push、pop、erase 都只碰自己那个桶，均摊 O(1)，deque 节点的开销与从前那条单 deque 积压完全相同
+// 除 std::deque 自身之外，没有逐次调用的堆分配
 //
-// Dependency-light like ChunkStreamingTrace.hpp: templated on the caller's
-// key/hash types instead of depending on world::SectionPosition directly, so
-// this header (and its test) never pulls in ChunkStreamer.cpp's generation/
-// meshing/persistence graph.
+// 依赖上与 ChunkStreamingTrace.hpp 一样轻
+// 它按调用方的键与哈希类型做模板，而不是直接依赖 world::SectionPosition
+// 这个头文件及其测试因此不会把 ChunkStreamer.cpp 的生成、网格化与持久化依赖图拉进来
 
 #include <cstddef>
 #include <deque>
@@ -51,14 +39,10 @@ namespace mc::render {
 template <typename Key, typename KeyHash>
 class SectionDeliveryQueue final {
   public:
-    // Inserts `key` at ring `ring` (negative rings clamp to 0).
-    // `highPriority` sections (gameplay edits) go to a priority lane that is
-    // always drained before any ring bucket, matching the pre-CS-2
-    // push_front-to-front behaviour for edits. Callers are expected to check
-    // `contains(key)` first (same discipline the old
-    // `!pendingSectionUpdates.contains(update.position)` guard already
-    // enforced) — pushing a key that is already queued would desync
-    // `location_` from the bucket it actually lives in.
+    // 把 key 插入到 ring 号所在的桶，负数环号夹到 0
+    // highPriority 的 section 也就是玩法编辑走优先通道，它永远先于任何环桶被排空
+    // 这与编辑一向插到最前的行为一致
+    // 调用方需要先查 contains(key)，压入一个已经在队列里的键会让 location_ 与它真正所在的桶失去同步
     void push(const Key& key, int ring, bool highPriority) {
         if (highPriority) {
             priority_.push_back(key);
@@ -77,10 +61,8 @@ class SectionDeliveryQueue final {
 
     [[nodiscard]] bool empty() const { return location_.empty(); }
 
-    // Next key to deliver: priority lane first (FIFO), then the lowest
-    // non-empty ring bucket (FIFO within the ring). Caller must check
-    // `empty()` first (mirrors the old `!pendingSectionOrder.empty()`
-    // while-loop guard at call sites).
+    // 下一个该投递的键：先取优先通道，再取环号最小的非空桶，两者内部都是 FIFO
+    // 调用方必须先查 empty()
     [[nodiscard]] const Key& front() const {
         if (!priority_.empty()) {
             return priority_.front();
@@ -99,15 +81,12 @@ class SectionDeliveryQueue final {
         bucket.pop_front();
     }
 
-    // Evicts one entry from the farthest non-empty ring bucket (never the
-    // priority lane — priority entries are not subject to the backlog cap,
-    // same as before) and returns it, or nullopt if there is nothing to
-    // evict. This is the CS-2 fix for the starve: the old policy evicted
-    // `pendingSectionOrder.back()`, which — because the queue was pure
-    // arrival-order FIFO — was frequently a near-centre section that simply
-    // arrived late in a batch that also carried a lot of far-ring work ahead
-    // of it in the deque. Evicting from the farthest ring instead guarantees
-    // the shed work is always at least as far as anything still queued.
+    // 从最远的非空环桶里淘汰一项并返回，没有可淘汰的则返回 nullopt
+    // 优先通道永远不淘汰，优先项不受积压上限约束
+    // 这是对饿死问题的修复：旧策略淘汰的是 pendingSectionOrder.back()
+    // 由于那条队列纯按到达顺序排，back() 常常是一个近中心 section，它只是在某个批次里到得晚
+    // 而那个批次在 deque 里还排着大量远环工作
+    // 改从最远环淘汰之后，被甩掉的工作永远至少和队列里剩下的任何一项一样远
     [[nodiscard]] std::optional<Key> evictFarthest() {
         for (std::size_t bucket = rings_.size(); bucket-- > 0U;) {
             if (rings_[bucket].empty()) {
@@ -121,10 +100,8 @@ class SectionDeliveryQueue final {
         return std::nullopt;
     }
 
-    // Removes a specific key wherever it is queued (priority lane or a ring
-    // bucket), without delivering it. Used when a caller invalidates a
-    // pending entry out of band (e.g. it is about to be re-inserted with
-    // fresher data at a possibly different ring).
+    // 把指定的键从它所在的位置移除而不投递，无论它在优先通道还是某个环桶里
+    // 调用方在带外作废一个待处理项时用它，比如那一项即将带着更新的数据、可能换一个环号重新插入
     void erase(const Key& key) {
         const auto found = location_.find(key);
         if (found == location_.end()) {
@@ -155,8 +132,8 @@ class SectionDeliveryQueue final {
         }
     }
 
-    // Scans from ring 0 upward for the first non-empty bucket. Bounded by
-    // the (small) ring-bucket count; see the DOD note above the class.
+    // 从 0 号环往上扫，找第一个非空桶
+    // 上界是环桶的数量，那个数很小，见类上方关于数据布局的说明
     [[nodiscard]] std::size_t lowestNonEmptyRing() const {
         for (std::size_t bucket = 0U; bucket < rings_.size(); ++bucket) {
             if (!rings_[bucket].empty()) {
@@ -164,7 +141,7 @@ class SectionDeliveryQueue final {
             }
         }
         return 0U; // Unreachable when front()/popFront() are only called on
-                   // a non-empty queue, per their documented precondition.
+                   // 队列非空，这是它们各自写明的前置条件
     }
 
     static void eraseFrom(std::deque<Key>& bucket, const Key& key) {
@@ -178,9 +155,8 @@ class SectionDeliveryQueue final {
 
     std::deque<Key> priority_;
     std::vector<std::deque<Key>> rings_;
-    // Which bucket (ring index) or the priority lane (-1) currently holds
-    // each queued key, so erase()/popFront() do not need to linear-scan
-    // every bucket to find it.
+    // 每个在队的键当前落在哪个桶，值是环号，-1 表示优先通道
+    // 有了它，erase() 与 popFront() 不必线性扫描每个桶去找
     std::unordered_map<Key, int, KeyHash> location_;
 };
 

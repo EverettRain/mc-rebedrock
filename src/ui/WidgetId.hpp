@@ -1,12 +1,11 @@
 #pragma once
 
-// Stable widget ids. They name a widget for tests, logging and — since the
-// option table (ui/OptionCycle.hpp) keys on them — for looking an option's data
-// up. Nothing dispatches BEHAVIOUR on them: a widget still carries its own
-// callback, and the option table turns an id into data rather than into a branch.
+// 稳定的控件 id
+// 它们给控件起名字，供测试与日志使用，也供选项表按 id 查数据，因为 ui/OptionCycle.hpp 就以它们为键
+// 没有任何行为按 id 派发：控件自带它的回调，选项表把 id 换成数据而不是换成一条分支
 //
-// Their own header so the option table can name them without pulling in the page
-// builder (which drags in the whole widget model and the input bindings).
+// 单独成一个头文件，选项表因此能指名这些 id 而不必拉进页面装配器
+// 后者会连整个控件模型和输入绑定一起带进来
 
 #include <cstdint>
 
@@ -28,8 +27,8 @@ enum class WidgetId : std::uint16_t {
     KeyBindRow, ResetKeyBinds,
     Subtitles,  // PX-6 Bug3: the sound-subtitles accessibility toggle
 
-    // Sentinel: the number of ids, so a table can assert it covers every one of
-    // them (ui/WidgetLabels.hpp does). Never a widget; always last.
+    // 哨兵，值等于 id 的个数，表因此能断言自己覆盖了每一个 id，ui/WidgetLabels.hpp 就是这么做的
+    // 它永远不是一个控件，也永远排在最后
     Count,
 };
 

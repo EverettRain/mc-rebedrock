@@ -660,9 +660,9 @@ void TextureManager::updateBiomeColorTextures(std::uint64_t seed) {
             foliagePixels.push_back(255U);
         }
     }
-    // 这两张表的 view 与采样器由 createBiomeTextureResources 建好，这里只重灌像素。
+    // 这两张表的 view 与采样器由 createBiomeTextureResources 建好，这里只重灌像素
     // 图像已经在 SHADER_READ_ONLY 上，而 uploadImageLayers 一律按 UNDEFINED 起手：
-    // 内容全量覆盖，丢弃旧内容正是想要的，换种子重建因此走同一条路径。
+    // 内容全量覆盖，丢弃旧内容正是想要的，换种子重建因此走同一条路径
     const auto uploadLookup = [&](AllocatedImage& image, const std::vector<std::uint8_t>& pixels) {
         resources_->uploadImageLayers(image, pixels.data(),
                                       static_cast<VkDeviceSize>(pixels.size()),

@@ -1,25 +1,26 @@
 #pragma once
 
-// 每个 WidgetId 的标签从哪来 —— 一张表，而不是一串 case。
+// 每个 WidgetId 的标签从哪来，答案是一张表而不是一串 case
 //
-// widgetLabel() 曾是一个 48 分支的 switch，其中二十来个分支只写着
-// `return translated("some.key", "Some Text");`——纯数据，却因为待在 switch 里而
-// 享受不到数据该有的待遇：不能被测试遍历，不能被别处复用，加一个按钮要先在
-// switch 中间找位置。它靠 -Wswitch 的穷尽性当护栏，等于用编译器兜住一个本该是
-// 表的东西。范式其实就在隔壁：ui/OptionCycle.hpp 早已把循环选项做成了表行。
+// widgetLabel() 曾是一个 48 分支的 switch
+// 其中二十来个分支只写着 return translated("some.key", "Some Text");
+// 那是纯数据，却因为待在 switch 里而享受不到数据该有的待遇
+// 它不能被测试遍历，不能被别处复用，加一个按钮还要先在 switch 中间找位置
+// 它靠 -Wswitch 的穷尽性当护栏，等于用编译器兜住一个本该是表的东西
+// 范式其实就在隔壁，ui/OptionCycle.hpp 早已把循环选项做成了表行
 //
-// 现在每个 id 都属于且只属于以下四类之一：
+// 现在每个 id 都属于且只属于以下四类之一
 //
-//   Cycling —— 循环选项。标签与点击时的步进都来自 OptionCycle 的同一行表数据，
-//              因此不可能出现「按钮写的和它做的不一致」。
-//   Static  —— 标签只由翻译键决定，可选一个后缀（vanilla 的省略号没有独立的键）。
-//   Runtime —— 标签要读运行期状态：实时窗口尺寸、当前存档的难度、滑块的数值。
-//              文本仍由渲染器算，这里只登记「它归渲染器管」。
-//   None    —— 不经 widgetLabel 取标签：列表行（世界/语言/按键）各自带文本。
+//   Cycling 是循环选项，标签与点击时的步进都来自 OptionCycle 的同一行表数据
+//   因此不可能出现按钮写的和它做的不一致
+//   Static 的标签只由翻译键决定，可以再带一个后缀，因为 vanilla 的省略号没有独立的键
+//   Runtime 的标签要读运行期状态，比如实时窗口尺寸、当前存档的难度、滑块的数值
+//   这类文本仍由渲染器算，这里只登记它归渲染器管
+//   None 不经 widgetLabel 取标签，世界、语言与按键这三种列表行各自带文本
 //
-// 覆盖性由文件末尾的 static_assert 保证：新增一个 WidgetId 而忘了归类，编译期
-// 就会停下。这与原先 -Wswitch 同等强度，但护的是「有没有明确归属」，而不是
-// 「有没有在 switch 里写一行」——后者用一个 `return {};` 就能敷衍过去。
+// 覆盖性由文件末尾的 static_assert 保证，新增一个 WidgetId 而忘了归类，编译期就会停下
+// 这与原先 -Wswitch 同等强度，但它护的是有没有明确归属，而不是有没有在 switch 里写一行
+// 后者用一个 return {}; 就能敷衍过去
 
 #include "ui/OptionCycle.hpp"
 #include "ui/WidgetId.hpp"
@@ -31,9 +32,9 @@
 
 namespace mc::ui {
 
-// 标签完全由一个翻译键决定的按钮。
-// `suffix` 原样追加在译文之后：vanilla 对 "Experimental..." 这类并没有单独的键，
-// 省略号是拼上去的，因此它是数据的一部分而不是一处特例分支。
+// 标签完全由一个翻译键决定的按钮
+// suffix 原样追加在译文之后，vanilla 对 "Experimental..." 这类并没有单独的键，省略号是拼上去的
+// 它因此是数据的一部分，而不是一处特例分支
 struct StaticWidgetLabel final {
     WidgetId id = WidgetId::None;
     std::string_view key{};
@@ -70,8 +71,8 @@ inline constexpr std::array<StaticWidgetLabel, 22> kStaticWidgetLabels{{
     {WidgetId::ResetKeyBinds, "controls.resetAll", "Reset Keys"},
 }};
 
-// 标签要读运行期状态，仍由渲染器的 widgetLabel 现算。
-// 登记在这里是为了让「它有归属」这件事可被编译期检查，而不是靠 switch 里恰好写了一行。
+// 标签要读运行期状态，仍由渲染器的 widgetLabel 现算
+// 登记在这里是为了让它有归属这件事可被编译期检查，而不是靠 switch 里恰好写了一行
 inline constexpr std::array<WidgetId, 8> kRuntimeWidgetLabels{{
     WidgetId::Resolution,          // 实时窗口尺寸（可能被拖拽或最大化过）
     WidgetId::GuiScale,            // 菜单状态里的缩放档位，0 表示 Auto
@@ -83,9 +84,9 @@ inline constexpr std::array<WidgetId, 8> kRuntimeWidgetLabels{{
     WidgetId::CreateAllowCommands, // 同上
 }};
 
-// 不经 widgetLabel 取标签的 id。
-// 三种列表行的文本各自在页面装配时给出（世界名、语言名、按键行），
-// None 则根本不是一个按钮。
+// 不经 widgetLabel 取标签的 id
+// 三种列表行的文本各自在页面装配时给出，分别是世界名、语言名与按键行
+// None 则根本不是一个按钮
 inline constexpr std::array<WidgetId, 4> kUnlabelledWidgets{{
     WidgetId::None,
     WidgetId::WorldRow,
@@ -122,9 +123,9 @@ inline constexpr std::array<WidgetId, 4> kUnlabelledWidgets{{
 
 // ---- 覆盖性护栏 ----
 
-// 每个 id 恰好属于一类：既不能没有归属（加了按钮忘了给标签），
-// 也不能同时属于两类（比如既登记成静态标签又留在循环选项表里，
-// 那样两处会各自演化出不同的文本）。
+// 每个 id 恰好属于一类
+// 既不能没有归属，那对应加了按钮却忘了给标签
+// 也不能同时属于两类，比如既登记成静态标签又留在循环选项表里，那样两处会各自演化出不同的文本
 [[nodiscard]] constexpr bool everyWidgetIdHasExactlyOneLabelSource() {
     for (std::uint16_t raw = 0; raw < static_cast<std::uint16_t>(WidgetId::Count); ++raw) {
         const auto id = static_cast<WidgetId>(raw);
@@ -142,7 +143,8 @@ static_assert(everyWidgetIdHasExactlyOneLabelSource(),
               "每个 WidgetId 必须恰好属于一类标签来源：循环选项表、静态标签表、"
               "运行期标签登记表，或明确的无标签表");
 
-// 四张表加起来正好覆盖枚举，没有多余的行（比如某个 id 被删掉之后表行还留着）。
+// 四张表加起来正好覆盖枚举，也没有多余的行
+// 多余的行指某个 id 被删掉之后它的表行还留着
 static_assert(kCyclingOptions.size() + kStaticWidgetLabels.size() +
                   kRuntimeWidgetLabels.size() + kUnlabelledWidgets.size() ==
               static_cast<std::size_t>(WidgetId::Count));

@@ -61,7 +61,7 @@ inline constexpr std::array<DisplayResolution, 16> kDisplayResolutions{{
 
 // 前端菜单状态的所有者，含页栈、世界列表、语言列表和选项界面的各项选择
 // 渲染器通过这些字段驱动它，把 Vulkan、GLFW、音频那套管线留在自己那边
-// 要碰渲染器的菜单**逻辑**仍住在渲染器的处理函数里，它们读写这里的状态
+// 要碰渲染器的那部分菜单逻辑仍住在渲染器的处理函数里，它们读写这里的状态
 // 那类逻辑包括存档读写、光标捕获和音频
 class MenuSystem final {
   public:

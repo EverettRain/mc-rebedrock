@@ -117,8 +117,8 @@ Language Language::fromJsonText(std::string_view text) {
         throw std::runtime_error("Language file is not a JSON object");
     }
     Language language;
-    // The code is set by the caller; a merged layer has no filename to take it
-    // from, which is the one thing the path form gave for free.
+    // 语言代码由调用方给出
+    // 合并出来的层没有文件名可供提取，而那正是走路径的形式白送的一样东西
     language.entries_.reserve(document.asObject().size());
     for (const auto& [key, value] : document.asObject()) {
         if (value.isString()) {
@@ -152,9 +152,9 @@ Language Language::fromProvider(const assets::ResourceProvider& provider, std::s
             }
         }
     };
-    // Vanilla always builds en_us first, then overlays the selected language.
-    // exists(), not locateAll(): asking for the paths makes a zipped pack
-    // extract every language file just to answer "is it there?".
+    // vanilla 总是先建好 en_us，再把选中的语言叠上去
+    // 这里用 exists() 而不是 locateAll()
+    // 要路径会让 zip 资源包把每个语言文件都解压一遍，只为回答它在不在
     if (!provider.exists(assets::lang("en_us.json"))) {
         throw std::runtime_error("The resource stack has no lang/en_us.json");
     }
@@ -167,11 +167,10 @@ Language Language::fromProvider(const assets::ResourceProvider& provider, std::s
         mergeStack(assets::lang(std::string{code} + ".json"));
     }
 
-    // ClientLanguage loads translations for every resource namespace. Project
-    // options therefore live under `rebedrock`, layered after vanilla so they
-    // can reuse the same selected locale without modifying Mojang's lang file.
-    // Only English is required; a locale without a project translation keeps
-    // the English project strings while all vanilla keys remain localized.
+    // ClientLanguage 会为每一个资源命名空间加载翻译
+    // 本项目自己的选项因此放在 rebedrock 命名空间下，叠在 vanilla 之后
+    // 这样它们能复用同一个选中的语言，而不必去改 Mojang 的语言文件
+    // 只有英文是必需的：某个语言若没有本项目的翻译，项目字符串保持英文，vanilla 的键仍然是本地化的
     const auto mergeProjectLanguage = [&](std::string_view languageCode) {
         const auto location = assets::lang(std::string{languageCode} + ".json", "rebedrock");
         if (provider.exists(location)) {
@@ -183,8 +182,7 @@ Language Language::fromProvider(const assets::ResourceProvider& provider, std::s
         mergeProjectLanguage(code);
     }
 
-    // 26.1 applies deprecated.json after loading: removed keys disappear and
-    // renamed keys move to their current IDs.
+    // 26.1 在加载之后套用 deprecated.json：被移除的键消失，被改名的键挪到它们现在的 ID 上
     for (const auto& bytes : provider.readAllBytes(
              assets::ResourceLocation{"minecraft", "lang/deprecated.json"})) {
         const auto document = core::Json::parse(

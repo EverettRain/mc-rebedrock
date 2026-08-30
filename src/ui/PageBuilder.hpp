@@ -1,18 +1,17 @@
 #pragma once
 
-// PX-4: the ONE place a menu page is assembled. buildPage(PageId, ctx, cb, rect)
-// returns the page's ui::Page (a vector<Widget>) with each widget's kind, label,
-// enabled flag, debugId and callback wired. This replaces both the per-page
-// constexpr MenuButton arrays (menuButtonForIndex) and the switch(MenuButton)
-// dispatch: the widget order IS the layout order, and each widget owns the action
-// the switch used to run.
+// 菜单页面唯一的装配处
+// buildPage(PageId, ctx, cb, rect) 返回该页面的 ui::Page，也就是一个 vector<Widget>
+// 其中每个控件的 kind、标签、是否可用、debugId 与回调都已接好
+// 它同时取代了每页一份的 constexpr MenuButton 数组与那个 switch 派发
+// 控件的顺序就是布局的顺序，而每个控件自己拥有从前由 switch 执行的那个动作
 //
-// Vulkan-free and testable: the renderer supplies
-//   - MenuCallbacks: every action as a std::function (capturing Vulkan/save/audio)
-//   - RectProvider:  index -> UiRect, from the renderer's HudLayout
-//   - MenuBuildContext: the read-only flags the page shape depends on
-// so a headless test builds a page with stub callbacks + a trivial row layout and
-// asserts that clicking widget N fires callback N. ui:: never touches Vulkan.
+// 不碰 Vulkan 且可测试，渲染器提供三样东西：
+//   - MenuCallbacks：每个动作都是一个 std::function，可捕获 Vulkan、存档与音频
+//   - RectProvider：由下标取 UiRect，来自渲染器的 HudLayout
+//   - MenuBuildContext：页面形状所依赖的那些只读标志
+// 无头测试因此能用桩回调加一套平凡的行布局搭出页面，再断言点击第 N 个控件触发第 N 个回调
+// ui 命名空间从不接触 Vulkan
 
 #include "ui/PageStack.hpp"
 #include "ui/WidgetId.hpp"
@@ -27,46 +26,41 @@
 
 namespace mc::ui {
 
-// index -> the widget's screen rect, from the caller's layout. The builder asks
-// for rects by the widget's ordinal on the page, matching frontendButtonRect's
-// existing index contract.
+// 由下标取控件的屏幕矩形，来自调用方的布局
+// 装配器按控件在页面上的序号来要矩形，这与 frontendButtonRect 既有的下标约定一致
 using RectProvider = std::function<UiRect(std::size_t index)>;
 
-// The read-only facts a page's shape depends on. Kept tiny and value-only so a
-// test can set them directly.
+// 页面形状所依赖的那些只读事实
+// 保持很小且只含值，测试因此能直接把它们设好
 struct MenuBuildContext final {
     bool worldOpen = false;  // a save is loaded: Options gains Difficulty, etc.
-    // At least one save exists: the WorldList's Play/Edit buttons are enabled only
-    // then (empty save list greys them, and a click must not fire). Draw and
-    // dispatch read the same flag, so a disabled button neither paints active nor
-    // activates.
+    // 至少存在一个存档，世界列表的进入与编辑按钮只有这时才可用
+    // 存档列表为空时它们变灰，且点击不得触发
+    // 绘制与派发读的是同一个标志，被禁用的按钮因此既不会画成可用的样子，也不会被激活
     bool worldSelectable = false;
-    // Label text the builder stamps onto option buttons (already localized +
-    // value-formatted by the renderer). Empty strings are fine for tests.
+    // 装配器盖在选项按钮上的标签文本，渲染器已经完成本地化与取值格式化
+    // 测试里给空串也没问题
     std::function<std::string(std::uint16_t debugId)> labelFor{};
-    // Row counts for the scrolling lists (worlds / languages). The renderer folds
-    // scroll offset + visible window into these before building.
+    // 世界列表与语言列表这两个滚动列表的行数
+    // 渲染器在装配之前已经把滚动偏移与可见窗口折算进这两个值
     std::size_t worldRowCount = 0;
     std::size_t languageRowCount = 0;
-    // PX-5 Key Binds: the label for an action's row ("Forward: W", or "Forward:
-    // > ? <" while that row is capturing). The renderer builds it from the
-    // InputSystem single source; a test can stub it. When set, the Controls page
-    // renders the key-bind table instead of the legacy toggle scaffold.
+    // 某个动作那一行的标签，比如"前进: W"，正在捕获按键时则是"前进: > ? <"
+    // 渲染器从 InputSystem 这个唯一来源构造它，测试可以打桩
+    // 设置了它，按键设置页就渲染绑定表而不是早先那套开关脚手架
     std::function<std::string(input::InputAction action)> keyBindLabelFor{};
-    // PX-6 Bug1: the Controls key-bind list is SCROLLING. Only the visible window
-    // is built (like the world/language lists), so the widget count stays bounded
-    // regardless of how many actions exist. keyBindFirstIndex is the scroll
-    // offset into input::keyBindRows(); keyBindRowCount is the visible window.
+    // 按键设置页的绑定列表是滚动的，只装配可见窗口，与世界列表和语言列表一样
+    // 无论有多少个动作，控件数量因此都有界
+    // keyBindFirstIndex 是在 input::keyBindRows() 中的滚动偏移，keyBindRowCount 是可见窗口的大小
     std::size_t keyBindFirstIndex = 0;
     std::size_t keyBindRowCount = 0;
 };
 
-// Every menu action the pages can fire, as injectable callbacks. The renderer
-// fills these from its member functions (setPaused, startWorld, cycleResolution,
-// ...). Any left null is simply a no-op when its widget is clicked (a test can
-// leave the ones it does not exercise unset).
+// 页面能触发的每一个菜单动作，以可注入的回调形式给出
+// 渲染器用它自己的成员函数填这些字段，比如 setPaused、startWorld、cycleResolution
+// 留空的那些在其控件被点击时就是空操作，测试可以只填自己要用的几个
 struct MenuCallbacks final {
-    // Title / world flow
+    // 标题页与世界流程
     std::function<void()> openSingleplayer{};
     std::function<void()> exitGame{};
     std::function<void()> playSelectedWorld{};
@@ -81,13 +75,13 @@ struct MenuCallbacks final {
     std::function<void()> cancelDelete{};
     std::function<void(std::size_t rowIndex)> selectWorldRow{};
 
-    // Pause / death
+    // 暂停与死亡界面
     std::function<void()> resume{};
     std::function<void()> saveAndQuit{};
     std::function<void()> respawn{};
     std::function<void()> returnToTitle{};
 
-    // Options navigation
+    // 选项页导航
     std::function<void()> openOptions{};
     std::function<void()> openVideoSettings{};
     std::function<void()> openControls{};
@@ -96,30 +90,28 @@ struct MenuCallbacks final {
     std::function<void()> doneOptions{};   // pop the current options sub-page
     std::function<void()> back{};          // generic page pop
 
-    // Video / gameplay toggles + cycles
+    // 视频与玩法的开关和循环选项
     std::function<void()> cycleResolution{};
     std::function<void()> cycleGuiScale{};
-    // Every option that steps through a fixed list of values goes through this
-    // one callback, keyed on the widget's id: the values, the field and the label
-    // all come from ui::OptionCycle's table, so a new option is a table row plus
-    // the addOptionButton line that places it — never another callback here.
-    // `direction` is +1 for the next value and -1 for the previous, so a two-way
-    // selector control needs no new plumbing.
+    // 每个在固定取值列表上步进的选项都走这一个回调，以控件 id 为键
+    // 取值、字段与标签全都来自 ui::OptionCycle 的表
+    // 新增一个选项因此只是一行表数据加一行放置它的 addOptionButton，绝不需要在这里再加一个回调
+    // direction 取 +1 表示下一个值、-1 表示上一个值，双向选择控件因此不需要任何新的接线
     std::function<void(WidgetId id, int direction)> cycleOption{};
     std::function<void()> cycleDifficulty{};
 
-    // Experimental page
+    // 实验性内容页
 
-    // Language list row select (draft selection, committed on Done)
+    // 语言列表的行选中，这只是暂选，按下完成才提交
     std::function<void(std::size_t rowIndex)> selectLanguageRow{};
 
-    // PX-5 Key Binds: clicking an action's row begins capturing its next key
-    // (KeyBindingScreen::beginCapture); Reset restores the vanilla defaults. Both
-    // act on the PX-1 InputSystem single source through the renderer's closures.
+    // 点击某个动作所在的行会开始捕获它的下一个按键，走 KeyBindingScreen::beginCapture
+    // 重置则恢复 vanilla 默认值
+    // 两者都经渲染器的闭包作用在 InputSystem 这个唯一来源上
     std::function<void(input::InputAction action)> beginKeyCapture{};
     std::function<void()> resetKeyBinds{};
 
-    // Sliders: value getters + drag/commit appliers (fraction in [0,1]).
+    // 滑块：取值函数，以及拖拽与提交时施加取值的函数，比例取 [0,1]
     SliderBind viewDistance{};
     SliderBind simulationDistance{};
     SliderBind masterVolume{};
@@ -131,7 +123,7 @@ namespace detail {
     return ctx.labelFor ? ctx.labelFor(static_cast<std::uint16_t>(id)) : std::string{};
 }
 
-// Append a plain button widget whose rect is the next ordinal from the provider.
+// 追加一个普通按钮控件，它的矩形取自提供器给出的下一个序号
 inline void addButton(Page& page, const RectProvider& rectFor, const MenuBuildContext& ctx,
                       WidgetId id, std::function<void()> onActivate, bool enabled = true) {
     Widget w;
@@ -144,13 +136,13 @@ inline void addButton(Page& page, const RectProvider& rectFor, const MenuBuildCo
     page.push_back(std::move(w));
 }
 
-// A cycling option's button. Its action is always the same generic step, keyed
-// on the id — the values, the field and the label are the table's business
-// (ui/OptionCycle.hpp), never this call site's.
+// 一个循环选项的按钮
+// 它的动作永远是那同一个通用步进，以 id 为键
+// 取值、字段与标签都归表管，见 ui/OptionCycle.hpp，绝不归这个调用点管
 inline void addOptionButton(Page& page, const RectProvider& rectFor, const MenuBuildContext& ctx,
                             WidgetId id, const MenuCallbacks& cb) {
-    // The callback is COPIED into the widget, like every other action: a Page
-    // outlives the MenuCallbacks reference buildPage was handed.
+    // 回调被拷贝进控件，与其它每个动作一样
+    // 因为 Page 的存活期长于 buildPage 收到的那个 MenuCallbacks 引用
     addButton(page, rectFor, ctx, id, [cycle = cb.cycleOption, id] {
         if (cycle) {
             cycle(id, /*direction=*/1);
@@ -180,9 +172,9 @@ inline void addListRow(Page& page, const RectProvider& rectFor, WidgetId id, std
     page.push_back(std::move(w));
 }
 
-// A key-bind row: an "Action: Key" ListRow whose click begins the rebind capture
-// for that action. The label comes from the InputSystem single source via the
-// context's keyBindLabelFor. `enabled` is always true (any row is rebindable).
+// 一个按键绑定行：形如"动作: 按键"的 ListRow，点击它就开始为该动作捕获新按键
+// 标签经上下文的 keyBindLabelFor 来自 InputSystem 这个唯一来源
+// enabled 恒为真，任何一行都可以重绑
 inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBuildContext& ctx,
                           input::InputAction action, std::function<void()> onActivate) {
     Widget w;
@@ -196,10 +188,10 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
 
 }  // namespace detail
 
-// Build the page for `id`. The widget order matches the historic per-page array;
-// each callback runs exactly what the old switch case did.
-// 把页面装配进调用方给的缓冲。`page` 先被清空，容量得以跨次复用——绘制侧每帧都要
-// 一份当前页，走这个重载就不必每帧向堆要一个新的 vector。
+// 把 id 对应的页面装配进调用方给的缓冲
+// 控件顺序与从前每页一份的数组一致，每个回调执行的正是旧 switch 分支所做的事
+// page 会先被清空，容量因此跨次复用
+// 绘制侧每帧都要一份当前页，走这个重载就不必每帧向堆要一个新的 vector
 inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
                           const MenuCallbacks& cb, const RectProvider& rectFor) {
     using detail::addButton;
@@ -227,8 +219,8 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             break;
 
         case PageId::WorldList:
-            // The scrolling save rows come first (list body), then the four action
-            // buttons in the historic order Play/Create/Edit/Back.
+            // 先是滚动的存档行，也就是列表主体，然后是四个动作按钮
+            // 按钮顺序沿用惯例：进入、创建、编辑、返回
             for (std::size_t row = 0; row < ctx.worldRowCount; ++row) {
                 addListRow(page, rectFor, WidgetId::WorldRow, row,
                            [cb, row]() { if (cb.selectWorldRow) cb.selectWorldRow(row); });
@@ -287,13 +279,11 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             break;
 
         case PageId::Controls: {
-            // PX-6 Bug1: the key-bind rows are a SCROLLING list — only the visible
-            // window [keyBindFirstIndex, +keyBindRowCount) is built, so the page
-            // never exceeds the layout capacity (24 fixed buttons would throw).
-            // Each row's rect comes from rectFor (the renderer maps these list
-            // indices to controlsRow rects); the trailing four are bottom buttons.
-            // PX-5: each row begins its rebind capture on click, label from the
-            // InputSystem single source.
+            // 按键绑定行是一个滚动列表，只装配可见窗口 [keyBindFirstIndex, +keyBindRowCount)
+            // 页面因此绝不会超出布局容量，24 个固定按钮会直接抛出
+            // 每行的矩形来自 rectFor，渲染器把这些列表下标映射到 controlsRow 的矩形上
+            // 末尾四个是底部按钮
+            // 每一行点击时开始它的重绑捕获，标签来自 InputSystem 这个唯一来源
             constexpr auto rows = input::keyBindRows();
             const std::size_t first = std::min(ctx.keyBindFirstIndex, rows.size());
             const std::size_t last = std::min(first + ctx.keyBindRowCount, rows.size());
@@ -333,7 +323,8 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
     }
 }
 
-// 返回一份新页面。派发路径（点击时构建一次）用它；每帧绘制走上面的缓冲重载。
+// 返回一份新页面
+// 派发路径用它，那里点击时才构建一次；每帧绘制则走上面那个写入缓冲的重载
 [[nodiscard]] inline Page buildPage(PageId id, const MenuBuildContext& ctx,
                                     const MenuCallbacks& cb, const RectProvider& rectFor) {
     Page page;

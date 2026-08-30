@@ -1,21 +1,19 @@
 #pragma once
 
-// PX-6: the game-in HUD toast infrastructure — a top-right notification queue
-// with slide-in / stay / slide-out phases, mirroring 26.1's ToastComponent. This
-// is Vulkan-free and GLFW-free: the queue, the visible-count cap and the per-
-// toast animation state machine are pure logic in mc_rebedrock_runtime, so they
-// are exercised by headless unit tests (push N over the cap -> visible <= cap;
-// advance past a toast's lifetime -> it leaves; the phase progression). The
-// renderer only reads visibleToasts() and paints each with GuiNineSlice/TextFont
-// at the returned slide fraction.
+// 游戏内 HUD 的弹出提示设施，一个右上角的通知队列
+// 它带滑入、停留、滑出三个阶段，对应 26.1 的 ToastComponent
+// 这里不碰 Vulkan 也不碰 GLFW
+// 队列、可见数量上限与逐条提示的动画状态机都是 mc_rebedrock_runtime 里的纯逻辑
+// 它们因此能被无头单测覆盖：压入超过上限的条数后可见数不超过上限
+// 越过一条的生命期后它离开，阶段推进本身也一样可测
+// 渲染器只读 visibleToasts()，再按返回的滑动比例用 GuiNineSlice 与 TextFont 把每条画出来
 //
-// Toasts are CLIENT PRESENTATION (accessibility/feedback), not simulation, so the
-// queue advances on frame delta-seconds, never on the world tick — matching
-// vanilla, whose ToastComponent runs on the render clock.
+// 弹出提示属于客户端呈现，是无障碍与反馈的一部分，不是模拟
+// 所以队列按帧的秒差推进，绝不按世界 tick，这与 vanilla 一致，它的 ToastComponent 跑在渲染时钟上
 //
-// Gating: only a ToastKind whose trigger system already exists is ever pushed.
-// Achievement / recipe-unlock / boss-bar toasts are intentionally absent (no such
-// systems) — the enum carries only System, the one kind with a real trigger.
+// 门控原则是：只有触发它的系统已经存在的 ToastKind 才会被压入
+// 成就、配方解锁、Boss 血条这几类刻意缺席，因为对应的系统还不存在
+// 枚举里因此只有 System 这一种，它是唯一有真实触发源的
 
 #include <cstddef>
 #include <cstdint>
@@ -24,17 +22,16 @@
 
 namespace mc::ui {
 
-// The category of a toast. Deliberately minimal: only System has a real trigger
-// today (e.g. an option/gamerule change confirming to the player). Achievement/
-// Recipe/etc. are NOT added until their systems exist — a placeholder kind would
-// be a dead component. A `default` in any consumer switch keeps -Wswitch quiet if
-// a kind is added later.
+// 提示的类别，刻意保持最小
+// 目前只有 System 有真实触发源，比如某个选项或游戏规则的改动向玩家确认
+// 成就、配方之类在它们的系统存在之前不会加进来，占位的类别只会是一个死掉的组件
+// 消费方的 switch 里留一个 default，日后新增类别时 -Wswitch 不会吵
 enum class ToastKind : std::uint8_t {
     System,
 };
 
-// One toast's content. A value: copyable, no heap graph beyond the two strings.
-// `durationSeconds` is the STAY time; the slide in/out are added around it.
+// 一条提示的内容，是个值：可拷贝，除两个字符串外没有别的堆上结构
+// durationSeconds 指的是停留时间，滑入与滑出各自加在它前后
 struct Toast final {
     ToastKind kind = ToastKind::System;
     std::string title{};
@@ -42,8 +39,8 @@ struct Toast final {
     float durationSeconds = 5.0F;
 };
 
-// A toast's animation phase. Appearing slides in from the right edge; Visible is
-// the steady stay; Disappearing slides back out; Done is removed next advance.
+// 一条提示的动画阶段
+// Appearing 从右边缘滑入，Visible 是稳定停留，Disappearing 滑回去，Done 会在下一次推进时被移除
 enum class ToastPhase : std::uint8_t {
     Appearing,
     Visible,
@@ -51,9 +48,9 @@ enum class ToastPhase : std::uint8_t {
     Done,
 };
 
-// A live toast: its content plus the animation clock. `slideFraction` is 0 fully
-// off-screen (right), 1 fully in — the renderer offsets the toast x by
-// (1 - slideFraction) * width.
+// 一条活着的提示：内容加上动画时钟
+// slideFraction 为 0 表示完全在屏幕右侧之外，为 1 表示完全滑入
+// 渲染器据此把提示的 x 偏移 (1 - slideFraction) * width
 struct ActiveToast final {
     Toast toast{};
     ToastPhase phase = ToastPhase::Appearing;
@@ -61,19 +58,19 @@ struct ActiveToast final {
     float slideFraction = 0.0F;   // 0 off-screen .. 1 fully shown
 };
 
-// The toast overlay's state. Holds the visible slots (capped) and a backlog of
-// queued toasts waiting for a free slot, exactly like ToastComponent's visible
-// grid + queue. Advancing on frame delta drives the phase machine and promotes
-// backlog toasts as slots free up.
+// 提示叠加层的状态
+// 它持有可见槽位（有上限）与一列等待空槽的积压提示，正如 ToastComponent 的可见网格加队列
+// 按帧差推进会驱动阶段机，并在槽位空出来时把积压的提示提上去
 class ToastQueue final {
   public:
-    // 26.1's ToastComponent shows a small fixed number at once; the rest wait.
+    // 26.1 的 ToastComponent 一次只显示固定的少数几条，其余等待
     static constexpr std::size_t kMaxVisible = 5;
-    // The slide in/out duration in seconds (vanilla's ~7 tick appear at 20 TPS).
+    // 滑入与滑出的时长，单位秒，对应 vanilla 在 20 TPS 下约 7 tick 的出现过程
     static constexpr float kSlideSeconds = 0.35F;
 
-    // Enqueue a toast. If a visible slot is free it starts appearing immediately;
-    // otherwise it waits in the backlog. Never drops or overflows a slot.
+    // 压入一条提示
+    // 有空闲的可见槽位就立刻开始出现，否则在积压里等
+    // 绝不丢弃，也绝不撑爆槽位
     void push(Toast toast) {
         if (visible_.size() < kMaxVisible) {
             visible_.push_back(ActiveToast{std::move(toast), ToastPhase::Appearing, 0.0F, 0.0F});
@@ -82,9 +79,10 @@ class ToastQueue final {
         }
     }
 
-    // Advance every visible toast by `deltaSeconds` (must be >= 0). Phase order:
-    // Appearing (slide in over kSlideSeconds) -> Visible (stay durationSeconds) ->
-    // Disappearing (slide out) -> Done (removed). Freed slots pull from backlog.
+    // 把每条可见提示推进 deltaSeconds，该值必须不小于零
+    // 阶段顺序是 Appearing 用 kSlideSeconds 滑入，Visible 停留 durationSeconds
+    // 然后 Disappearing 滑出，Done 被移除
+    // 空出来的槽位从积压里补
     void advance(float deltaSeconds) {
         if (deltaSeconds < 0.0F) {
             return;
@@ -92,7 +90,7 @@ class ToastQueue final {
         for (ActiveToast& active : visible_) {
             stepToast(active, deltaSeconds);
         }
-        // Remove finished toasts.
+        // 移除已经走完的提示
         std::size_t write = 0;
         for (std::size_t read = 0; read < visible_.size(); ++read) {
             if (visible_[read].phase != ToastPhase::Done) {
@@ -103,7 +101,7 @@ class ToastQueue final {
             }
         }
         visible_.resize(write);
-        // Promote backlog toasts into any freed slots.
+        // 把积压的提示提进任何空出来的槽位
         while (visible_.size() < kMaxVisible && !backlog_.empty()) {
             visible_.push_back(
                 ActiveToast{std::move(backlog_.front()), ToastPhase::Appearing, 0.0F, 0.0F});

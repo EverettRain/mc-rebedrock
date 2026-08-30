@@ -5,15 +5,13 @@
 namespace mc::ui {
 
 void ChatHistory::push(std::string text, bool successful, double createdAt) {
-    // Vanilla ChatHud stores one visual line per ChatHudLine: a message that
-    // spans several lines (e.g. /help's newline-joined listing) is broken into
-    // lines at insert time, each stored line sharing the source message's
-    // creation tick so they fade together. The HUD renderer draws exactly one
-    // stored entry per row and has no notion of an embedded '\n' — it would
-    // render the newline as a stray glyph on a single run-on line. So the split
-    // has to happen here, at the single seam where multi-line producer text
-    // enters the line-oriented store; every producer (command feedback, chat)
-    // reaches the HUD through this one method.
+    // vanilla 的 ChatHud 里一个 ChatHudLine 存一个视觉行
+    // 跨多行的消息在插入时就被拆开，比如 /help 那种用换行拼起来的清单
+    // 拆出的每一行共用源消息的创建 tick，它们因此一起淡出
+    // HUD 渲染器一行只画一条存储项，它根本不认识内嵌的 '\n'
+    // 那个换行会被当成一个孤零零的字形，画在一整条连成串的行上
+    // 所以拆分必须发生在这里，也就是多行文本进入这个按行组织的存储的唯一接缝
+    // 每一个产出方都经由这一个方法抵达 HUD，无论是命令回执还是聊天
     std::size_t start = 0;
     while (start <= text.size()) {
         const std::size_t newline = text.find('\n', start);

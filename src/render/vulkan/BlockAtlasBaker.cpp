@@ -501,9 +501,10 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
             static_cast<float>(color & 0xFFU) / 255.0F,
         };
     };
-    // 地形上的草方块家族与橡木系树叶渲染的是**未着色**纹理
+    // 地形上的草方块家族与橡木系树叶渲染的是未着色纹理
     // 颜色来自片元着色器的群系配色查找，线性过滤采样让边界成为逐像素的平滑渐变
-    // 草方块的**侧面**保留烘好的逐群系层，好让崖壁下的泥土仍是泥土；云杉/白桦树叶保留各自的固定色调
+    // 草方块的侧面保留烘好的逐群系层，好让崖壁下的泥土仍是泥土
+    // 云杉与白桦树叶保留各自的固定色调
     const float terrainGrassTop = static_cast<float>(layers.size());
     layers.push_back(grassTopRaw);
     layerByName.emplace("grass_block_top:terrain", terrainGrassTop);

@@ -6,9 +6,9 @@ namespace mc::ui {
 
 namespace {
 
-// Byte length of the UTF-8 sequence beginning at `lead`. Continuation and
-// malformed bytes count as one byte so a bad string still advances instead of
-// looping; wrapText only needs codepoint boundaries, not decoded values.
+// 以 lead 开头的那个 UTF-8 序列有多少字节
+// 续接字节与畸形字节一律算作一个字节，坏字符串因此仍能往前走而不会原地打转
+// wrapText 只需要码点边界，不需要解码出来的值
 std::size_t utf8SequenceLength(unsigned char lead) {
     if (lead < 0x80U) return 1U;
     if ((lead & 0xE0U) == 0xC0U) return 2U;
@@ -39,8 +39,8 @@ std::vector<std::string> wrapText(std::string_view text, float maxWidth,
         const std::string_view glyph = text.substr(cursor, length);
         const float glyphWidth = measure(glyph);
 
-        // Break before this glyph when it would overflow — but never on an empty
-        // line, so an oversized single glyph still gets its own row.
+        // 这个字形会溢出就在它之前断行
+        // 但空行上绝不断，超宽的单个字形因此仍能独占一行
         if (cursor > lineStart && lineWidth + glyphWidth > maxWidth) {
             if (lastSpace != std::string_view::npos) {
                 lines.emplace_back(text.substr(lineStart, lastSpace - lineStart));

@@ -66,11 +66,11 @@ inline constexpr float kExperienceOrbLayer = 176.0F;
 // 上面每个起始层号原本都是手算出来的字面量，段与段之间只靠注释和 BlockAtlasBaker
 // 里的行尾 `// 100..135` 对齐。唯一的护栏是烘焙末尾那句总数校验
 // （layers.size() != kFirstBlockTextureLayer），它只看总和：某一段少一层、另一段
-// 多一层时总数不变，校验照过，程序照常启动，但箱子会去采样破坏阶段的贴图。
+// 多一层时总数不变，校验照过，程序照常启动，但箱子会去采样破坏阶段的贴图
 //
 // 下面把每个起点重新表述成「上一段起点 + 上一段层数」。改动任何一段的层数而忘了
 // 顺移后面的起点，编译期就会停下来。范式同 world/BlockShape.hpp 用 static_assert
-// 钉住枚举序数与表下标。
+// 钉住枚举序数与表下标
 static_assert(kWaterStillLayer == 0U);
 static_assert(kWaterFlowLayer == kWaterStillLayer + kWaterAnimationFrameCount);
 static_assert(kLavaStillLayer == kWaterFlowLayer + kWaterAnimationFrameCount);

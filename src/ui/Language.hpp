@@ -17,9 +17,9 @@ class ResourceProvider;
 
 namespace mc::ui {
 
-// Non-owning composite lookup used by description ids. `entries_` still owns
-// ordinary JSON keys as strings; its transparent hash/equality can compare this
-// three-part view directly, avoiding a temporary concatenated std::string.
+// 描述 id 使用的非拥有型复合查找键
+// entries_ 仍以字符串的形式拥有普通的 JSON 键
+// 它那套透明的哈希与相等比较能直接比对这个三段式视图，因此不必拼出一个临时的 std::string
 struct TranslationKeyView final {
     std::string_view prefix;
     std::string_view space;
@@ -51,8 +51,8 @@ struct TranslationKeyEqual final {
     }
 };
 
-// The language codes the game ships translations for. en_us is the built-in
-// fallback and never needs a file on disk.
+// 游戏自带翻译的那些语言代码
+// en_us 是内置兜底，它永远不需要磁盘上有文件
 inline constexpr const char* kDefaultLanguageCode = "en_us";
 
 struct LanguageInfo final {
@@ -64,9 +64,8 @@ struct LanguageInfo final {
     [[nodiscard]] std::string displayName() const;
 };
 
-// Reads only the small language block in each pack.mcmeta. In particular this
-// does not enumerate or parse lang/*.json, so a language menu with hundreds of
-// translations remains effectively constant-time to open.
+// 只读每个 pack.mcmeta 里那一小段语言块
+// 它尤其不会枚举或解析 lang/*.json，因此哪怕有几百种翻译，语言菜单打开的耗时实际上仍是常数
 [[nodiscard]] std::vector<LanguageInfo>
 availableLanguages(const assets::ResourceProvider& provider);
 
@@ -76,16 +75,16 @@ availableLanguageCodes(const std::filesystem::path& localizationRoot);
 [[nodiscard]] std::vector<std::string>
 availableLanguageCodes(const assets::ResourceProvider& provider);
 
-// A flat Minecraft-style translation table: "block.minecraft.stone" -> "石头".
+// 一张扁平的 Minecraft 式翻译表，形如 "block.minecraft.stone" 映到 "石头"
 class Language final {
   public:
     Language() = default;
 
-    // Parses a vanilla <code>.json language file. Throws on unreadable or
-    // malformed input so the caller can fall back to English.
+    // 解析一个 vanilla 的 <code>.json 语言文件
+    // 读不出或格式不对时抛出，调用方因此能回落到英文
     [[nodiscard]] static Language fromFile(const std::filesystem::path& file);
-    // Parses language JSON already in memory. The merged path uses this so a
-    // zipped pack never has to materialise its language files on disk.
+    // 解析已经在内存里的语言 JSON
+    // 合并路径走它，zip 资源包因此永远不必把语言文件落到磁盘上
     [[nodiscard]] static Language fromJsonText(std::string_view text);
     [[nodiscard]] static Language fromProvider(const assets::ResourceProvider& provider,
                                                std::string_view code);
@@ -95,17 +94,15 @@ class Language final {
     [[nodiscard]] bool empty() const { return entries_.empty(); }
     [[nodiscard]] std::size_t size() const { return entries_.size(); }
 
-    // Returns the translation for the key, or the fallback when the key is
-    // missing. The fallback keeps English text visible for the handful of
-    // strings vanilla has no key for.
+    // 返回该键的翻译，键不存在时返回兜底文本
+    // 兜底让 vanilla 没有对应键的那少数几条字符串仍以英文可见
     [[nodiscard]] std::string_view translate(std::string_view key, std::string_view fallback) const;
     [[nodiscard]] std::string_view translate(std::string_view prefix, std::string_view space,
                                              std::string_view path,
                                              std::string_view fallback) const;
     [[nodiscard]] bool contains(std::string_view key) const;
 
-    // The 256-glyph unicode font pages every translated string needs, so the
-    // renderer can upload only those.
+    // 所有翻译文本用到的那些 256 字形的 unicode 字体页，渲染器因此只上传这些页
     [[nodiscard]] std::set<int> requiredUnicodePages() const;
 
   private:
@@ -113,10 +110,9 @@ class Language final {
     std::unordered_map<std::string, std::string, TranslationKeyHash, TranslationKeyEqual> entries_;
 };
 
-// Formats the `%s` / `%1$s` placeholders used by Java language JSON. `%%`
-// becomes one literal percent sign. Keeping this independent from rendering
-// lets option labels use `options.generic_value` and `options.percent_value`
-// instead of hard-coding English punctuation/order around translated pieces.
+// 格式化 Java 语言 JSON 使用的 %s 与 %1$s 占位符，%% 变成一个字面百分号
+// 让它独立于渲染，选项标签因此能直接用 options.generic_value 与 options.percent_value
+// 而不必围着被翻译的片段写死英文的标点与语序
 [[nodiscard]] std::string formatTranslation(
     std::string_view pattern, std::span<const std::string_view> arguments);
 
@@ -126,9 +122,8 @@ struct LanguageLoadResult final {
     std::string error;
 };
 
-// Prepares the selected translation stack off the render thread. The result is
-// applied by the caller at a frame boundary, keeping the old Language valid and
-// visible until the replacement is complete.
+// 在渲染线程之外准备好选中的翻译栈
+// 结果由调用方在帧边界处应用，替换完成之前旧的 Language 一直有效且可见
 class AsyncLanguageLoader final {
   public:
     explicit AsyncLanguageLoader(const assets::ResourceProvider& provider);
@@ -147,9 +142,9 @@ class AsyncLanguageLoader final {
     bool busy_ = false;
 };
 
-// The Minecraft translation key for a namespaced identifier, for example
-// ("block", "minecraft", "stone") -> "block.minecraft.stone". The two halves
-// come straight out of a registry entry's core::Identifier.
+// 带命名空间的标识符所对应的 Minecraft 翻译键
+// 例如 ("block", "minecraft", "stone") 得到 "block.minecraft.stone"
+// 后两段直接取自注册表条目的 core::Identifier
 [[nodiscard]] std::string translationKey(std::string_view prefix, std::string_view space,
                                          std::string_view path);
 

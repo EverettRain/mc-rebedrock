@@ -181,11 +181,12 @@ class HudRenderer final {
           creativeMaximumScrollRow(b.creativeMaximumScrollRow),
           dragPlacementCounts(b.dragPlacementCounts), cameraFarPlane(b.cameraFarPlane),
           dragSlotRectangle(b.dragSlotRectangle) {
-        // 绘制侧 Page 装配件里每帧都不变的部分，构造时装一次。
+        // 绘制侧 Page 装配件里每帧都不变的部分，构造时装一次
         // buildDrawPage 位于 drawFrontend / drawPauseMenu / drawLanguageScreen 三个
         // 每帧绘制函数的路径上，把这些留在函数里就是每帧重新构造一遍：一个含 31 个
         // std::function 的 MenuCallbacks、上下文里两个捕获 this 的 std::function，
-        // 以及一个新的 vector<Widget>。它们的取值逐帧完全相同。
+        // 以及一个新的 vector<Widget>
+        // 它们的取值逐帧完全相同
         drawContext_.labelFor = [this](std::uint16_t id) {
             return widgetLabel(static_cast<ui::WidgetId>(id));
         };
@@ -257,17 +258,17 @@ class HudRenderer final {
         return ui::frontendButtonRect(layout, page, index, buttonCount);
     }
 
-    // 当前页面的 ui::Page，供**绘制**使用：与派发共用 ui::buildPage 这一唯一来源
+    // 当前页面的 ui::Page，供绘制使用，与派发共用 ui::buildPage 这一唯一来源
     // 这里只接上标签和滑块显示值，不接动作回调
     // 绘制后端只读 widget 的 label、rect、kind、enabled 和 slider.value
     // 回调故意留空，绘制永远不会触发它们
-    // 页面本身仍逐帧装配，只是装配进常驻的 drawPage_，容量跨帧复用。
+    // 页面本身仍逐帧装配，只是装配进常驻的 drawPage_，容量因此跨帧复用
     // 这里刻意没有做「整页缓存 + 失效」：页面内容依赖 menuSystem 的十余个字段、
     // GameOptions 的每一个字段、实时窗口尺寸、语言表和按键捕获状态，手工维护这份
     // 失效清单漏掉任何一项，症状就是菜单显示陈旧内容——用一个静默 bug 换几十次分配
     // 并不划算。真正让它可缓存的前置是把 widgetLabel 的 switch 变成表（见
     // docs/CODE_PROBLEMS-branches.md §2.1）：标签依赖收敛到「表行 + 该选项的值」之后，
-    // 失效 key 才写得干净。
+    // 失效 key 才写得干净
     [[nodiscard]] const ui::Page& buildDrawPage() const {
         const ui::PageId pageId = menuSystem.pageStack.current();
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
@@ -761,7 +762,7 @@ class HudRenderer final {
             // 其余 id 的标签不出自这里：循环选项与静态标签已在上面两张表里返回，
             // 列表行（世界/语言/按键）各自带文本。穷尽性护栏因此不再由 -Wswitch 承担，
             // 而是 WidgetLabels.hpp 的 everyWidgetIdHasExactlyOneLabelSource()——
-            // 它检查的是「有没有明确归属」，而不是「有没有在 switch 里写一行」。
+            // 它检查的是「有没有明确归属」，而不是「有没有在 switch 里写一行」
             return {};
         }
     }
@@ -1271,7 +1272,7 @@ class HudRenderer final {
         const auto firstButton =
             frontendButtonRect(layout, menuSystem.pageStack.current(), 0, buttonCount);
         const float titleScale = deathScreen ? scale * 2.0F : scale;
-        // 按键设置是三段式布局，标题属于**顶部**段，位于滚动列表上方
+        // 按键设置是三段式布局，标题属于顶部那一段，位于滚动列表上方
         // 它不在底部按钮带上方 30px 处，那里是 firstButton 所在的位置
         // 其余页面仍把标题放在第一个按钮之上
         const float titleY =
@@ -1715,7 +1716,7 @@ class HudRenderer final {
         const std::string visibleText = chatInputText + (cursorVisible ? "_" : "");
         drawHudText(commandBuffer, visibleText, input.x + 2.0F * scale, input.y + 2.0F * scale,
                     scale, {1.0F, 1.0F, 1.0F, 1.0F}, false);
-        // 26.1 的命令补全把候选列表画在**一个**不透明深色框里，而不是逐行的半透明条
+        // 26.1 的命令补全把候选列表画在同一个不透明深色框里，而不是画成逐行的半透明条
         // 选中行高亮，候选文字为白色，用法提示为灰色
         // 这里照此实现：先按最宽一行画一个背景矩形，再把各行画在其上
         const std::size_t maxRows = std::min<std::size_t>(chatSuggestions_.size(), 8U);

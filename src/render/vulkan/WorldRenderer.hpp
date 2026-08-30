@@ -228,7 +228,7 @@ class WorldRenderer final {
   WorldRenderer& operator=(const WorldRenderer&) = delete;
 
   // 每个待上传 section 入队时的身份信息，供上传侧的投递顺序诊断使用
-  // 它必须按**真正请求它的那个中心**评分，而不是最新的请求中心
+  // 它必须按真正请求它的那个中心评分，而不是按最新的请求中心
   // 否则中心移动之后才上传的事件会报出落在 [0, loadRadius] 之外的环号
   // 同时记下入队时的中心、纪元和事件类型，类型分流送、优先、重网格三种
   // 顺序分析因此能排除优先与重网格事件，并在中心或纪元变化时重置环号基准
@@ -309,7 +309,7 @@ class WorldRenderer final {
         const bool chunkTrace = diag::chunkTraceEnabled();
         const auto queueBatchStart = diag::ChunkStreamingMetrics::Clock::now();
         if (chunkTrace) {
-            // 首次网格延迟在 processChunkStreaming 里、区块**进入请求半径**那一刻开始计时
+            // 首次网格延迟从区块进入请求半径那一刻起计，计时点在 processChunkStreaming 里
             // 对应的语义是"从进入请求半径到 GPU 可见"
             // 在这里 CPU 批次抵达时才起计会漏掉"进半径到排入生成队列"这一段，把长尾算小
             // 这里只推进半径填充进度
@@ -434,7 +434,7 @@ class WorldRenderer final {
             }
             latestSectionRevisions.insert_or_assign(update.position, update.revision);
             update.highPriority = batch.highPriority;
-            // 该 section 相对**本批次自己的**请求中心的切比雪夫环号
+            // 该 section 相对本批次自己那个请求中心的切比雪夫环号
             // 它是承重数据而非仅供诊断，投递队列以它为桶键
             // 上传顺序因此保持严格的由中心向外扩环，而不是单纯的到达顺序
             // 同样遵循"按本批次的中心记录，而不是最新的中心"
@@ -473,7 +473,7 @@ class WorldRenderer final {
                             // 因此重新请求一次重网格，让它在积压清空后再次投递
                             // 已经在 GPU 上的 section 只是少了一次重网格，无需重新请求
                             //
-                            // 补救请求用**普通**优先级，因为被淘汰的是排队环里**最远**的那个
+                            // 补救请求用普通优先级，因为被淘汰的本来就是排队环里最远的那个
                             // 走优先通道重投会让远环的补救工作抢在中心环桶前面
                             // 那正是破坏中心保护、让半径填充慢约 25% 的那次回归
                             // 普通优先级把它按自身环距重新排在中心之后
@@ -659,22 +659,21 @@ class WorldRenderer final {
         return result;
     }
 
-    // Cold-start the stream buffer pools so the first dense load burst reuses
-    // pooled buffers instead of calling createBuffer (a VMA allocation, and on
-    // MoltenVK a Metal buffer allocation) on the render thread for every section
-    // it uploads. That first-burst allocation storm is what shows up as the small
-    // MTL HUD spikes while a region streams in; once the pools are warm the same
-    // uploads are free-list pops, which is why the frame time settles after the
-    // load finishes. Prewarming moves that one-time cost to session start.
+    // 给流式缓冲池做冷启动，第一波密集加载因此复用池中缓冲
+    // 否则它每上传一个 section 就要在渲染线程上调一次 createBuffer
+    // 那是一次 VMA 分配，在 MoltenVK 上还额外是一次 Metal 缓冲分配
+    // 那是一次 VMA 分配，在 MoltenVK 上还额外是一次 Metal 缓冲分配
+    // 首波的这场分配风暴正是区域流入时 MTL HUD 上那些小尖峰的来源
+    // 池热起来之后同样的上传只是从空闲链表里弹一个，这也是加载结束后帧时间会稳下来的原因
+    // 预热把这份一次性开销挪到会话启动时
     //
-    // Only the mid size classes are seeded: a typical section vertex/index buffer
-    // lands in 32 KiB..256 KiB, and each upload draws one vertex + one index buffer
-    // from both the staging (host-visible, TRANSFER_SRC) and device pools, so both
-    // pools are warmed with the exact usage/visibility their consumers request
-    // (the free list is not usage-checked on reuse). Idempotent: it only tops each
-    // class up to the target, so re-entering a world after the pools are already
-    // warm is a no-op. Resident cost is bounded and well under the pool trim cap
-    // (kMaxStreamBufferPoolBytes): ~(32+64+128+256) KiB * 24 * 2 pools ≈ 23 MiB.
+    // 只播种中间几档尺寸：典型 section 的顶点与索引缓冲落在 32 KiB 到 256 KiB
+    // 每次上传要从暂存池与设备池各取一个顶点缓冲和一个索引缓冲
+    // 暂存池是主机可见、用途为 TRANSFER_SRC 的，两个池因此都按各自消费者要求的用途与可见性预热
+    // 空闲链表在复用时不再校验用途，所以这一点必须在预热时就对
+    // 这个操作幂等，它只把每一档补到目标数量，池已经热了之后再进世界就是空操作
+    // 常驻开销有界，远低于池的裁剪上限 kMaxStreamBufferPoolBytes
+    // 约为 (32+64+128+256) KiB 乘 24 再乘 2 个池，合计约 23 MiB
     void prewarmStreamBufferPools() {
         static constexpr std::array<std::size_t, 4> kWarmClasses{1U, 2U, 3U, 4U}; // 32K..256K
         static constexpr std::size_t kPerClass = 24U;
@@ -2354,11 +2353,11 @@ class WorldRenderer final {
 
   // ---- 本类自有的状态（不再绕经 Impl）----
   // 这些字段只有本类读写。它们曾以 T& 挂在 Bindings 上，而在 Impl 里除了「声明一次、
-  // 绑定一次」之外没有任何使用者——是 P6 拆分时把 Impl 的成员表整体复印过来留下的透传。
+  // 绑定一次」之外没有任何使用者，是把 Impl 的成员表整体复印过来留下的透传
   // 透传的代价有两层：每加一个状态都要在 Bindings 定义、成员声明、构造初始化列表三处同写；
-  // 更要紧的是它让「往 Impl 加成员再引用回来」看起来像是正常做法，债会自我复制。
+  // 更要紧的是它让「往 Impl 加成员再引用回来」看起来像是正常做法，债会自我复制
   // 判定标准是「Impl 自身是否读写它」，而不是「谁看起来该拥有它」：像 clientMirror 那样
-  // 被 HudRenderer 一并消费的，仍然留在 Bindings 上。
+  // 被 HudRenderer 一并消费的，仍然留在 Bindings 上
 
   // 箱盖与掉落物运动的数据驱动定义，经动画库求值
   // 箱盖是贝塞尔缓出的合页，掉落物是漂浮加旋转
@@ -2396,15 +2395,16 @@ class WorldRenderer final {
   std::unordered_map<world::SectionPosition, std::uint32_t, world::SectionPositionHash>
       occlusionMissCount;
 
-  // 只打一次的诊断行，各自一个「已打印」标志。
+  // 只打一次的诊断行，各自一个「已打印」标志
   //
   // 它们曾是各自函数体里的 `static bool reported`，有两个毛病：每次进入都要过一道
-  // 线程安全初始化的 guard（这些函数每帧都跑），而更实际的是状态挂在**进程**上——
-  // 退回标题界面换个世界重进，这批诊断就再也不打印了，而那正是最想看它们的时候。
+  // 线程安全初始化的 guard，而这些函数每帧都跑
+  // 更实际的毛病是状态挂在进程上，退回标题界面换个世界重进，这批诊断就再也不打印了
+  // 而那正是最想看它们的时候
   // 同一个坑在雨的绘制路径上真实发生过一次（见 drawRain 上方的注释：三条分支曾
-  // 共用一个 static，运行时切换雨模式后另一条就永远不报了）。
+  // 共用一个 static，运行时切换雨模式后另一条就永远不报了
   //
-  // 现在它们随世界纪元复位：每个新世界重新武装一次。
+  // 现在它们随世界纪元复位，每个新世界重新武装一次
   struct OneShotDiagnostics final {
       bool shadowCasters = false;
       bool instancedParticles = false;
@@ -2415,11 +2415,11 @@ class WorldRenderer final {
   OneShotDiagnostics diagnosticsOnce_{};
   std::uint64_t diagnosticsEpoch_ = 0;
 
-  // 世界重置（切换存档、重新生成）时，把只属于本类、且与旧世界绑定的表清空。
+  // 世界重置时把只属于本类、且与旧世界绑定的那些表清空，重置指切换存档或重新生成
   // 这些表原先摊在 Impl 的清理函数里逐张 clear——包括那张纯诊断的环号旁表，
-  // Impl 得知道本类内部有哪些表、哪些该清，正是引用透传留下的习惯。
+  // 那样 Impl 得知道本类内部有哪些表、哪些该清，正是引用透传留下的习惯
   // 一次性诊断标志不在这里：它们由 refreshDiagnosticsEpoch 按世界纪元复位，
-  // 两套机制并存只会让「到底谁负责复位」变得含糊。
+  // 两套机制并存只会让「到底谁负责复位」变得含糊
   void onWorldReset() {
       occlusionStates.clear();
       occlusionMissCount.clear();

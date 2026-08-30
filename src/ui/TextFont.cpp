@@ -7,7 +7,7 @@ namespace {
 
 constexpr char32_t kReplacementCharacter = 0xFFFD;
 
-// Widths vanilla uses when no glyph exists at all.
+// 完全没有字形时 vanilla 采用的宽度
 constexpr float kSpaceAdvance = 4.0F;
 constexpr float kMissingAdvance = 8.0F;
 
@@ -31,7 +31,7 @@ std::vector<char32_t> decodeUtf8(std::string_view text) {
             length = 2U;
             codepoint = lead & 0x1FU;
         } else if (lead >= 0x80U) {
-            // A stray continuation byte cannot start a sequence.
+            // 落单的续接字节不能作为一个序列的开头
             codepoints.push_back(kReplacementCharacter);
             ++index;
             continue;
@@ -89,7 +89,7 @@ bool TextFont::useUnicodeFor(char32_t codepoint) const {
     if (!pageLayersInitialized_ || pageLayers_[static_cast<std::size_t>(codepoint >> 8U)] < 0) {
         return false;
     }
-    // ASCII keeps its crisp 128x128 sheet unless the player forces unicode.
+    // 除非玩家强制 unicode，ASCII 一直用它那张锐利的 128x128 表
     return forceUnicode_ || codepoint > 0x7F;
 }
 
@@ -113,8 +113,8 @@ FontGlyph TextFont::asciiGlyph(char32_t codepoint) const {
 }
 
 FontGlyph TextFont::unicodeGlyph(char32_t codepoint) const {
-    // LegacyUnicodeBitmapFontProvider: the high nibble is the first column and
-    // the low nibble the last, and the glyph is drawn at half its pixel size.
+    // 对应 LegacyUnicodeBitmapFontProvider：高半字节是首列，低半字节是末列
+    // 字形按其像素尺寸的一半绘制
     const auto packed = sizes_[static_cast<std::size_t>(codepoint)];
     const auto left = static_cast<float>((packed >> 4U) & 0x0FU);
     const auto right = static_cast<float>((packed & 0x0FU) + 1U);
@@ -134,7 +134,7 @@ FontGlyph TextFont::unicodeGlyph(char32_t codepoint) const {
     result.uvHeight = kUnicodeCellSize / kUnicodePageSize;
     result.pixelWidth = (right - left) / kUnicodeOversample;
     result.pixelHeight = kUnicodeCellSize / kUnicodeOversample;
-    // Java advances by width / 2 + 1 using integer division.
+    // Java 的步进值是 width / 2 + 1，用的是整数除法
     result.advance = static_cast<float>(static_cast<int>(right - left) / 2 + 1);
     result.visible = result.pixelWidth > 0.0F;
     return result;
@@ -146,7 +146,7 @@ FontGlyph TextFont::glyph(char32_t codepoint) const {
         result.advance = advance->second;
         return result;
     }
-    // Keep the vanilla default even if a malformed definition omitted space.
+    // 即使畸形的定义漏掉了空格，也保留 vanilla 的默认值
     if (codepoint == U' ') {
         FontGlyph result;
         result.advance = kSpaceAdvance;

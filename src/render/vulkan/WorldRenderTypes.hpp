@@ -81,7 +81,7 @@ enum class CameraPerspective : std::uint8_t {
 // Texture 走 vanilla 的逐列降水渲染，此时 CPU 雨滴只用于落地水花和天气音效
 // Async 把 CPU 雨滴实例化成公告板，整片雨一次 vkCmdDraw 画完
 //
-// 这里曾有第三档 Particles：它与 Async 用**同一批**雨滴、产出**同一份**视觉，
+// 这里曾有第三档 Particles，它与 Async 用的是同一批雨滴、产出同一份视觉
 // 区别只在 Particles 逐雨滴发一次 draw call 而 Async 走实例化
 // 那是一条为了和 Async 做直接对照而临时留下的绘制方式，却被接进实验性内容子菜单
 // 成了玩家可选项——疯狂档满雨时它意味着每帧 18000 次 draw call
@@ -162,12 +162,12 @@ struct OcclusionQueryPushConstants final {
     alignas(16) glm::vec4 aabbMaximum;
 };
 
-// 遮挡查询用到的 GPU 资源与它的总开关。
+// 遮挡查询用到的 GPU 资源与它的总开关
 //
-// 与 WorldPipelines 同理：所有权在 VulkanRenderer::Impl（查询池与包围盒缓冲由它创建，
-// 查询管线随交换链销毁重建），WorldRenderer 持有引用。
-// 逐 section 的查询**结果**（occlusionStates / occlusionMissCount）不在这里——
-// 那是纯 CPU 状态，只有 WorldRenderer 读写，已经是它的自有成员。
+// 与 WorldPipelines 同理，所有权在 VulkanRenderer::Impl
+// 查询池与包围盒缓冲由它创建，查询管线随交换链销毁重建，WorldRenderer 只持有引用
+// 逐 section 的查询结果不在这里，指 occlusionStates 与 occlusionMissCount
+// 那是纯 CPU 状态，只有 WorldRenderer 读写，已经是它的自有成员
 struct OcclusionResources final {
     // 每帧一个查询池，因此槽位区间总是从零开始，不必跨帧对账
     std::array<VkQueryPool, kFramesInFlight> queryPools{};
@@ -180,15 +180,17 @@ struct OcclusionResources final {
     bool disabled = false;
 };
 
-// 世界通道用到的全部管线、管线布局与渲染通道，一处集中。
+// 世界通道用到的全部管线、管线布局与渲染通道，集中在一处
 //
-// 它们的所有权仍在 VulkanRenderer::Impl：由它创建，并在 cleanupSwapchain /
-// createSwapchainResources 里随交换链销毁重建。WorldRenderer 持有的是对这个结构体的
-// **引用**而不是拷贝——重建之后它必须看到新句柄，拿到一份旧值的拷贝就是一堆悬垂句柄。
+// 它们的所有权仍在 VulkanRenderer::Impl，由它创建
+// 并在 cleanupSwapchain 与 createSwapchainResources 里随交换链销毁重建
+// 并在 cleanupSwapchain 与 createSwapchainResources 里随交换链销毁重建
+// WorldRenderer 持有的是对这个结构体的引用而不是拷贝
+// 重建之后它必须看到新句柄，拿到一份旧值的拷贝就是一堆悬垂句柄
 //
-// 打包的理由是 Bindings：这 20 个句柄原先每个都是一条 `VkPipeline&` 绑定，
-// 于是每加一条管线就要在「Bindings 定义 / 成员声明 / 构造初始化列表」三处各写一遍。
-// 收成一个结构体之后是 1 条绑定，加管线只动这里一处。
+// 打包的理由是 Bindings：这 20 个句柄原先每个都是一条 VkPipeline& 绑定
+// 于是每加一条管线就要在 Bindings 定义、成员声明与构造初始化列表三处各写一遍
+// 收成一个结构体之后只剩 1 条绑定，加管线只动这里一处
 struct WorldPipelines final {
     VkRenderPass renderPass = VK_NULL_HANDLE;
     // 地形三条渲染层共用的布局与它们各自的管线

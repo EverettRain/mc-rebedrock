@@ -1,21 +1,19 @@
 #pragma once
 
-// PX-6: the sound-subtitle overlay feed (26.1 accessibility captions). When a
-// sound with a subtitle plays and captions are enabled, its caption is shown at
-// the bottom-right and fades over a few seconds; a repeated caption refreshes its
-// timer instead of stacking a duplicate row, and only the most recent few are
-// kept — exactly SubtitleOverlay's behaviour.
+// 音效字幕叠加层的数据源，对应 26.1 的无障碍字幕
+// 一个带字幕的音效播放且字幕开关打开时，它的字幕显示在右下角并在几秒内淡出
+// 重复的字幕刷新自己的计时器而不是再堆一行，且只保留最近的少数几条，这正是 SubtitleOverlay 的行为
 //
-// Vulkan-free and GLFW-free: the caption list, its cap, the fade timer and the
-// de-duplication are pure logic in mc_rebedrock_runtime, headless-testable. The
-// data source is SoundRegistry.subtitle (already present); the renderer feeds
-// captions in and reads activeCaptions() to draw. Client presentation — advances
-// on frame delta, not the world tick.
+// 不碰 Vulkan 也不碰 GLFW
+// 字幕列表、它的上限、淡出计时与去重都是 mc_rebedrock_runtime 里的纯逻辑，可无头测试
+// 数据来源是已经存在的 SoundRegistry.subtitle
+// 渲染器把字幕喂进来，再读 activeCaptions() 去画
+// 它属于客户端呈现，按帧差推进而不是按世界 tick
 //
-// Gating: 26.1 exposes subtitles as a CLIENT accessibility option (not a
-// gamerule; no showSubtitles gamerule exists here). The feed is inert until the
-// renderer passes enabled=true from that option, so nothing shows until the
-// toggle is wired — no fake-on component.
+// 门控原则上，26.1 把字幕作为客户端的无障碍选项暴露而不是游戏规则
+// 这里也没有 showSubtitles 这条规则
+// 渲染器从那个选项传进 enabled=true 之前，这个数据源始终是惰性的
+// 开关没接好就什么都不显示，不存在假装打开的组件
 
 #include <cstddef>
 #include <string>
@@ -37,12 +35,13 @@ struct SubtitleCaption final {
 
 class SubtitleFeed final {
   public:
-    // 26.1 shows the most recent handful of captions.
+    // 26.1 只显示最近的少数几条字幕
     static constexpr std::size_t kMaxCaptions = 4;
     static constexpr float kCaptionSeconds = 3.0F;
 
-    // Show a caption. If the same text is already active, its timer refreshes (no
-    // duplicate row); otherwise it is added, evicting the oldest past the cap.
+    // 显示一条字幕
+    // 同样的文本已经在显示时刷新它的计时器，不再多出一行
+    // 否则新增一条，超出上限时淘汰最旧的那条
     void show(std::string text) {
         for (SubtitleCaption& caption : captions_) {
             if (caption.text == text) {
@@ -57,7 +56,7 @@ class SubtitleFeed final {
         }
     }
 
-    // Age every caption by `deltaSeconds`, removing any that have expired.
+    // 把每条字幕推进 deltaSeconds，并移除已经到期的
     void advance(float deltaSeconds) {
         if (deltaSeconds < 0.0F) {
             return;

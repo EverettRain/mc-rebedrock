@@ -1,15 +1,13 @@
 #pragma once
 
-// Turns one "draw this sprite into that rectangle" into the quads that honour
-// the sprite's 26.1 `gui.scaling`. Kept free of Vulkan (and of the renderer
-// generally) so the geometry — which is where nine-slicing is easy to get
-// subtly wrong — can be asserted headlessly instead of only by eye.
+// 把一句"把这个精灵画进那个矩形"变成一组遵守该精灵 26.1 gui.scaling 的四边形
+// 这里不碰 Vulkan，也不碰渲染器，九宫格几何因此能被无头断言，而不是只能靠眼睛看
+// 九宫格恰恰是那种很容易错得不明显的东西
 //
-// Everything below works in *sprite pixels*: the units the mcmeta's borders and
-// reference size are written in. Two conversions happen once, on the way out —
-// `scale` (the GUI scale) to framebuffer pixels for the destination, and the
-// art's own resolution to atlas pixels for the source. A pack that ships the
-// art at 2x therefore keeps a 3-pixel border reading as 3 sprite pixels.
+// 下面的一切都以精灵像素为单位，也就是 mcmeta 里的边框与参考尺寸所用的单位
+// 两次换算都只在输出时发生一次：目标一侧按 scale（GUI 缩放）换成帧缓冲像素
+// 源一侧按美术自身的分辨率换成图集像素
+// 因此资源包即使把美术做成 2 倍分辨率，3 像素的边框读出来仍是 3 个精灵像素
 
 #include "assets/GuiSpriteScaling.hpp"
 #include "ui/HudLayout.hpp"
@@ -20,38 +18,34 @@
 
 namespace mc::ui {
 
-// One sub-rectangle draw: `destination` in framebuffer pixels, `source` in
-// atlas pixels.
+// 一次子矩形绘制，destination 以帧缓冲像素计，source 以图集像素计
 struct GuiSpriteQuad final {
     UiRect destination;
     UiRect source;
 };
 
-// A sprite whose repeating region is a pixel or two across would need thousands
-// of quads to cover a large window. Past this many repeats on an axis, that
-// axis stretches instead of flooding the command buffer.
+// 重复区只有一两个像素宽的精灵，铺满一个大窗口需要成千上万个四边形
+// 某个轴上的重复次数超过这个值时，该轴改为拉伸，而不是把命令缓冲淹掉
 inline constexpr int kMaximumGuiTilesPerAxis = 64;
 
 namespace detail {
 
-// One of the three bands along an axis: leading border, middle, trailing
-// border. Offsets and lengths are sprite pixels relative to the rectangle's
-// leading edge.
+// 一个轴上的三条带之一：前边框、中段、后边框
+// 偏移与长度都以精灵像素计，相对矩形的前缘
 struct GuiSpan final {
     float destinationOffset = 0.0F;
     float destinationLength = 0.0F;
     float sourceOffset = 0.0F;
     float sourceLength = 0.0F;
-    // The band that grows with the destination, rather than a fixed-size
-    // border. Only these tile or stretch.
+    // 随目标一起变大的那条带，区别于固定尺寸的边框
+    // 只有它们会平铺或拉伸
     bool inner = false;
 };
 
-// Splits one axis. Both borders clamp to half the destination, matching
-// vanilla: a widget drawn narrower than its own frame shows two half-borders
-// and no middle, rather than slices that overlap or invert. The source uses the
-// clamped insets too, so a border band is always sampled 1:1 in sprite space
-// and stays sharp.
+// 拆分一个轴
+// 两侧边框都被夹到目标的一半，与 vanilla 一致
+// 画得比自身边框还窄的控件因此显示两个半边框、没有中段，而不是切片互相重叠或翻转
+// 源一侧同样使用夹紧后的内缩量，边框带因此始终在精灵空间里 1:1 采样，保持锐利
 [[nodiscard]] inline std::array<GuiSpan, 3> guiSliceAxis(float destinationLength,
                                                          float referenceLength, int leadingBorder,
                                                          int trailingBorder) {
@@ -67,9 +61,8 @@ struct GuiSpan final {
     };
 }
 
-// How many times a band repeats, and how long one repeat is along the
-// destination. A non-repeating band is one step covering the whole band, which
-// makes it a plain stretch.
+// 一条带重复几次，以及一次重复在目标上有多长
+// 不重复的带就是一步覆盖整条带，那等于一次普通拉伸
 struct GuiRepeat final {
     int count = 1;
     float step = 0.0F;
@@ -80,8 +73,8 @@ struct GuiRepeat final {
     if (!repeat || sourceLength <= 0.0F) {
         return GuiRepeat{1, destinationLength};
     }
-    // The epsilon keeps an exact fit (a 194px middle over a 194px band) at one
-    // repeat instead of adding a zero-width second one.
+    // 这个 epsilon 让恰好整除的情况停在一次重复上，比如 194 像素的中段铺 194 像素的带
+    // 否则会多出一个零宽的第二次
     const int count =
         std::max(static_cast<int>(std::ceil(destinationLength / sourceLength - 1.0e-4F)), 1);
     if (count > kMaximumGuiTilesPerAxis) {
@@ -92,10 +85,9 @@ struct GuiRepeat final {
 
 } // namespace detail
 
-// Emits the quads that draw `source` (atlas pixels) into `destination`
-// (framebuffer pixels) under `scaling`, at GUI scale `scale`. `emit` is called
-// with one GuiSpriteQuad per quad, in row-major order; the destination quads
-// partition `destination` exactly, leaving no seams.
+// 按 scaling 与 GUI 缩放 scale，产出把 source（图集像素）画进 destination（帧缓冲像素）的那些四边形
+// emit 每个四边形调用一次，按行主序
+// 这些目标四边形恰好划分 destination，不留缝隙
 template <typename Emit>
 void forEachGuiSpriteQuad(const UiRect& destination, const UiRect& source,
                           const assets::GuiSpriteScaling& scaling, float scale, Emit&& emit) {
@@ -107,8 +99,7 @@ void forEachGuiSpriteQuad(const UiRect& destination, const UiRect& source,
         emit(GuiSpriteQuad{destination, source});
         return;
     }
-    // A sidecar may omit the reference size; the art's own size is then what
-    // the borders are measured against.
+    // 附属文件可以不写参考尺寸，这时边框就以美术自身的尺寸为基准来度量
     const float referenceWidth =
         scaling.width > 0 ? static_cast<float>(scaling.width) : source.width;
     const float referenceHeight =
@@ -116,8 +107,7 @@ void forEachGuiSpriteQuad(const UiRect& destination, const UiRect& source,
     const float atlasPerSpriteX = source.width / referenceWidth;
     const float atlasPerSpriteY = source.height / referenceHeight;
 
-    // `tile` is the borderless case of the same split: no frame, one middle
-    // band that repeats the whole sprite.
+    // tile 是同一套拆分的无边框情形：没有外框，只有一条重复整张精灵的中段
     const bool nineSlice = scaling.type == assets::GuiSpriteScalingType::NineSlice;
     const auto columns = detail::guiSliceAxis(destination.width / scale, referenceWidth,
                                               nineSlice ? scaling.border.left : 0,
@@ -125,8 +115,8 @@ void forEachGuiSpriteQuad(const UiRect& destination, const UiRect& source,
     const auto rows = detail::guiSliceAxis(destination.height / scale, referenceHeight,
                                            nineSlice ? scaling.border.top : 0,
                                            nineSlice ? scaling.border.bottom : 0);
-    // 26.1 tiles a nine-slice's middle bands unless the sprite asks for them to
-    // be stretched; a `tile` sprite always repeats.
+    // 26.1 默认平铺九宫格的中段，除非精灵自己要求拉伸
+    // tile 类型的精灵则总是重复
     const bool repeatInner = !nineSlice || !scaling.stretchInner;
 
     for (const auto& row : rows) {
@@ -156,9 +146,8 @@ void forEachGuiSpriteQuad(const UiRect& destination, const UiRect& source,
                     if (width <= 0.0F) {
                         break;
                     }
-                    // A repeat running past the end is clipped: it samples only
-                    // the leading part of the source instead of squashing all
-                    // of it into the remaining space.
+                    // 越过末端的那次重复会被裁掉，它只采样源的前一部分
+                    // 而不是把整个源压进剩下的那点空间里
                     emit(GuiSpriteQuad{
                         UiRect{destination.x + x * scale, destination.y + y * scale, width * scale,
                                height * scale},

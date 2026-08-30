@@ -26,8 +26,8 @@ UiRect framebufferToClip(const UiRect& rectangle, float framebufferWidth, float 
     if (framebufferWidth <= 0.0F || framebufferHeight <= 0.0F) {
         return {};
     }
-    // Vulkan's positive-height viewport maps NDC -1 to the framebuffer top and
-    // NDC +1 to the bottom. HUD layout coordinates also grow down from the top.
+    // Vulkan 的正高度视口把 NDC 的 -1 映到帧缓冲顶部、+1 映到底部
+    // HUD 的布局坐标同样从顶部往下增长
     return {
         rectangle.x / framebufferWidth * 2.0F - 1.0F,
         rectangle.y / framebufferHeight * 2.0F - 1.0F,
@@ -37,9 +37,9 @@ UiRect framebufferToClip(const UiRect& rectangle, float framebufferWidth, float 
 }
 
 UiRect tiledBackgroundSource(float framebufferWidth, float framebufferHeight, float guiScale) {
-    // The generated 26.1 menu atlas contains 16 px tiles. Sampling 1/guiScale
-    // maps one tile onto 16 * guiScale framebuffer pixels while
-    // keeping the pattern square and independent of the window aspect ratio.
+    // 生成的 26.1 菜单图集里是 16 像素的瓦片
+    // 按 1/guiScale 采样会把一个瓦片映到 16 * guiScale 个帧缓冲像素上
+    // 同时保持花纹是正方的，且与窗口宽高比无关
     const float sourceScale = 1.0F / std::max(guiScale, 1.0F);
     return {
         0.0F,
@@ -139,28 +139,29 @@ UiRect HudLayout::armorSlot(std::size_t index, bool creative) const {
     if (index >= 4U)
         throw std::out_of_range("armor slot index is outside 0..3");
     if (creative) {
-        // 26.1 CreativeModeInventoryScreen's Inventory tab does NOT stack the
-        // armour in one column like the survival screen — it rebuilds the slots as
-        // a 2x2 block flanking the player model: for menu slots 5..8 (Head/Chest/
-        // Legs/Feet) `x = 54 + (pos/2)*54`, `y = 6 + (pos%2)*27` with pos = i-5.
-        // The screen draw order here (0=Head..3=Feet) is that same pos, so:
-        // Head (54,6) Chest (54,33) Legs (108,6) Feet (108,33).
+        // 26.1 的 CreativeModeInventoryScreen 背包页签并不像生存界面那样把盔甲堆成一列
+        // 它把这些槽重排成一个 2x2 的块，分列在玩家模型两侧
+        // 对菜单槽 5 到 8，也就是头、胸、腿、脚
+        // 坐标是 x = 54 + (pos/2)*54 与 y = 6 + (pos%2)*27，其中 pos = i-5
+        // 坐标是 x = 54 + (pos/2)*54 与 y = 6 + (pos%2)*27，其中 pos = i-5
+        // 这里的界面绘制顺序，0 是头、3 是脚，正是同一个 pos
+        // 于是头在 (54,6)、胸在 (54,33)、腿在 (108,6)、脚在 (108,33)
         const auto panel = creativePanel();
         const float x = 54.0F + static_cast<float>(index / 2U) * 54.0F;
         const float y = 6.0F + static_cast<float>(index % 2U) * 27.0F;
         return {panel.x + x * scale_, panel.y + y * scale_, 16.0F * scale_, 16.0F * scale_};
     }
     const auto panel = inventoryPanel();
-    // GUI spec §10: (8,8) (8,26) (8,44) (8,62), top-to-bottom Head/Chest/Legs/
-    // Feet — the survival InventoryScreen's own draw order, an 18px row pitch.
+    // GUI 规格 §10 给的是 (8,8) (8,26) (8,44) (8,62)，自上而下依次是头、胸、腿、脚
+    // 这就是生存 InventoryScreen 自身的绘制顺序，行距 18 像素
     return {panel.x + 8.0F * scale_, panel.y + (8.0F + static_cast<float>(index) * 18.0F) * scale_,
             16.0F * scale_, 16.0F * scale_};
 }
 
 UiRect HudLayout::offhandSlot(bool creative) const {
     if (creative) {
-        // 26.1 CreativeModeInventoryScreen puts the offhand (menu slot 45) at
-        // (35,20) on its own panel, not the survival (77,62).
+        // 26.1 的 CreativeModeInventoryScreen 把副手槽，即菜单槽 45，放在它自己面板的 (35,20)
+        // 而不是生存界面的 (77,62)
         const auto panel = creativePanel();
         return {panel.x + 35.0F * scale_, panel.y + 20.0F * scale_, 16.0F * scale_, 16.0F * scale_};
     }
@@ -206,9 +207,8 @@ UiRect HudLayout::playerCraftingOutput() const {
 PlayerPreviewLayout HudLayout::playerPreview(bool creative) const {
     const auto panel = creative ? creativePanel() : inventoryPanel();
     if (creative) {
-        // CreativeInventoryScreen vanilla draws the player at x+88, y+45,
-        // size 20.  The black preview well in tab_inventory.png occupies the
-        // surrounding 34x39 logical-pixel rectangle.
+        // vanilla 的 CreativeInventoryScreen 把玩家画在 x+88, y+45，尺寸 20
+        // tab_inventory.png 里那口黑色的预览井占据周围 34x39 个逻辑像素的矩形
         return {
             {panel.x + 88.0F * scale_, panel.y + 45.0F * scale_},
             {panel.x + 88.0F * scale_, panel.y + 15.0F * scale_},
@@ -216,7 +216,7 @@ PlayerPreviewLayout HudLayout::playerPreview(bool creative) const {
             20.0F,
         };
     }
-    // InventoryScreen vanilla uses x+51, y+75, size 30.
+    // vanilla 的 InventoryScreen 用的是 x+51, y+75，尺寸 30
     return {
         {panel.x + 51.0F * scale_, panel.y + 75.0F * scale_},
         {panel.x + 51.0F * scale_, panel.y + 25.0F * scale_},
@@ -320,16 +320,14 @@ UiRect HudLayout::creativeTab(std::size_t index) const {
         throw std::out_of_range("creative tab index is outside 0..10");
     }
     const auto panel = creativePanel();
-    // B7-0: 26.1's tab strip — the first seven tabs sit on the top row above the
-    // panel, the remaining four on the bottom row below it, each 28px wide and
-    // laid out by its column. (Was six-top/two-bottom for the old eight-tab set.)
+    // 26.1 的页签条：前七个页签在面板上方的顶行，其余四个在下方的底行
+    // 每个宽 28 像素，按各自的列号排布
     constexpr std::size_t kTopRowTabs = 7U;
     const bool bottom = index >= kTopRowTabs;
-    // The Inventory tab is the survival-inventory entry — the last index (10) in
-    // the CreativeTab enum this strip is built for. Vanilla anchors it to the
-    // far-right column of the bottom row (right-aligned, under the last top tab),
-    // not clustered with Food/Ingredients/SpawnEggs on the left. Every other
-    // bottom tab keeps its natural left-to-right column.
+    // 背包页签是通往生存背包的入口，也是这条页签条所依据的 CreativeTab 枚举里的最后一个下标 10
+    // vanilla 把它锚在底行最右侧的列上，右对齐，正好落在顶行最后一个页签下方
+    // 它不跟左边的食物、原材料、刷怪蛋挤在一起
+    // 其余每个底行页签都保持自己天然的从左到右的列位
     constexpr std::size_t kInventoryTabIndex = 10U;
     const std::size_t column = !bottom ? index
         : (index == kInventoryTabIndex ? kTopRowTabs - 1U : index - kTopRowTabs);
@@ -405,10 +403,9 @@ UiRect HudLayout::bottomMenuButton(std::size_t index, std::size_t buttonCount,
     const std::size_t rows = (buttonCount + columnCount - 1U) / columnCount;
     const std::size_t column = index / rows;
     const std::size_t row = index % rows;
-    // Columns sit next to each other with a basic gap and the whole block is
-    // centred as one unit, matching vanilla's adjacent button rows rather than
-    // spreading the columns across their own screen halves. The width clamps
-    // so a narrow canvas never pushes the block past the edges.
+    // 各列并排、留一个基本间距，整块作为一个单位居中
+    // 这与 vanilla 相邻的按钮行一致，而不是把两列各自摊到半边屏幕上
+    // 宽度会被夹紧，窄画布因此绝不会把整块挤出边界
     const float maxScaledWidth = (width_ - 2.0F * screenMargin * scale_ -
                                   static_cast<float>(columnCount - 1U) * buttonGap * scale_) /
                                  static_cast<float>(columnCount);
@@ -436,13 +433,13 @@ UiRect HudLayout::videoSettingsButton(std::size_t index, std::size_t buttonCount
     constexpr float buttonStep = 24.0F;
     constexpr float buttonGap = 4.0F;
     constexpr float screenMargin = 16.0F; // min gap from the button block to the screen edge
-    // The last button is "Done", centred on its own row below the grid; the
-    // rest pack column-first into two columns like the save screen's buttons.
+    // 最后一个按钮是"完成"，单独居中占网格下方一行
+    // 其余的按列优先塞进两列，与存档界面的按钮一样
     const std::size_t settingCount = buttonCount - 1U;
     const std::size_t rows = (settingCount + 1U) / 2U;
     const std::size_t totalRows = rows + 1U;
-    // Vertically centre the whole block the way menuButton does (the first row
-    // sits the same half-block above centre the single column would place).
+    // 整块按 menuButton 的方式垂直居中
+    // 首行落在中线上方半块处，与单列布局会摆的位置相同
     const float blockTop = height_ * 0.5F - static_cast<float>(totalRows) * 12.0F * scale_;
     const float maxScaledWidth =
         (width_ - 2.0F * screenMargin * scale_ - buttonGap * scale_) * 0.5F;
@@ -450,7 +447,7 @@ UiRect HudLayout::videoSettingsButton(std::size_t index, std::size_t buttonCount
     const float blockWidth = 2.0F * scaledWidth + buttonGap * scale_;
     const float blockX = (width_ - blockWidth) * 0.5F;
     if (index == buttonCount - 1U) {
-        // Done spans its own full-width row, centred.
+        // 完成按钮独占一整行，居中
         return {
             (width_ - scaledWidth) * 0.5F,
             blockTop + static_cast<float>(rows) * buttonStep * scale_,

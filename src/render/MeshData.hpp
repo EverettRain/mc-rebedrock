@@ -12,14 +12,13 @@
 
 namespace mc::render {
 
-// 20-byte packed terrain vertex. Positions are stored relative to the section
-// origin in [-0.5, 16.5] (the half-block margin covers plant jitter and the
-// water surface); u16 gives 17/65535 ≈ 0.00026 block resolution, so shared
-// boundary coordinates between adjacent sections reconstruct within one LSB —
-// no cracks. Normals are an index into kVertexNormals, UVs are u16 over [0,1),
-// textureLayer is an exact u16 integer (animation checks and the
-// sampler2DArray layer index must be lossless), and the four light channels
-// are u8 (n/15 light levels map exactly: n*17/255 == n/15).
+// 20 字节的紧凑地形顶点
+// 位置相对 section 原点存储，范围 [-0.5, 16.5]，那半格余量用来容纳植物抖动与水面
+// u16 给出 17/65535 约 0.00026 格的分辨率
+// 相邻 section 共享的边界坐标因此在一个最低位内还原，不会开裂
+// 法线是 kVertexNormals 的下标，UV 是覆盖 [0,1) 的 u16
+// textureLayer 是精确的 u16 整数，因为动画判定与 sampler2DArray 的层号都不允许有损
+// 四个光照通道是 u8，n/15 的光照级别恰好映射，因为 n*17/255 等于 n/15
 struct VoxelVertex final {
     std::uint16_t positionX;
     std::uint16_t positionY;
@@ -29,18 +28,17 @@ struct VoxelVertex final {
     std::uint16_t uvX;
     std::uint16_t uvY;
     std::uint16_t textureLayer;
-    // Opaque faces: AO in [0,1]. Water faces instead carry the optical column
-    // depth (1..32, integer) in waterDepth, and the shader picks one per layer.
+    // 不透明面在这里放 [0,1] 的环境光遮蔽
+    // 水面改为在 waterDepth 里放光学柱深度，取 1 到 32 的整数，着色器按层各取其一
     std::uint8_t ambientOcclusion;
     std::uint8_t waterDepth;
     std::uint8_t skyLight;
     std::uint8_t blockLight;
     std::uint8_t flatSkyLight;
     std::uint8_t flatBlockLight;
-    // Per-vertex biome colour tint (vanilla BiomeColors): grass tops/plants and
-    // foliage multiply their texture by this, so a biome boundary reads as a
-    // smooth colour gradient instead of a hard switch. White (255,255,255)
-    // means no tint.
+    // 逐顶点的群系配色，对应 vanilla 的 BiomeColors
+    // 草方块顶面、植物与树叶把自己的纹理乘上它，群系边界因此呈现为平滑的颜色渐变而不是硬切换
+    // 白色 (255,255,255) 表示不着色
     std::uint8_t tintR;
     std::uint8_t tintG;
     std::uint8_t tintB;
@@ -52,29 +50,29 @@ static_assert(sizeof(VoxelVertex) == 24);
 inline constexpr float kLocalWindowBase = -0.5F;
 inline constexpr float kLocalWindowSize = 17.0F;
 inline constexpr float kLocalScale = kLocalWindowSize / 65535.0F;
-// UV window: flowing water scrolls its corners across [-0.375, 1.375], so the
-// fixed window covers that instead of wrapping (which would tear the quad).
+// UV 窗口：流动的水会把角点滚过 [-0.375, 1.375]
+// 固定窗口因此覆盖这个范围，而不是回绕，回绕会把四边形撕开
 inline constexpr float kUvWindowBase = -0.5F;
 inline constexpr float kUvWindowSize = 2.0F;
 inline constexpr float kUvScale = kUvWindowSize / 65535.0F;
 
-// Axis-aligned face normals plus the wall-torch diagonals (facing N/E/S/W ->
-// up, forward), in the same order the vertex shader's table lists them.
+// 轴对齐的面法线，外加墙上火把的斜向法线，朝向北东南西时分别指向上方与前方
+// 顺序与顶点着色器里那张表一致
 inline constexpr std::array<glm::vec3, 14> kVertexNormals{{
     {1.0F, 0.0F, 0.0F},   { -1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F},
     {0.0F, -1.0F, 0.0F},  {0.0F, 0.0F, 1.0F},  {0.0F, 0.0F, -1.0F},
-    // N torch
+    // 朝北的火把
     {0.0F, 0.900552F, -0.434749F}, {0.0F, -0.434749F, -0.900552F},
-    // E torch
+    // 朝东的火把
     {0.434749F, 0.900552F, 0.0F}, {0.900552F, -0.434749F, 0.0F},
-    // S torch
+    // 朝南的火把
     {0.0F, 0.900552F, 0.434749F}, {0.0F, -0.434749F, 0.900552F},
-    // W torch
+    // 朝西的火把
     {-0.434749F, 0.900552F, 0.0F}, {-0.900552F, -0.434749F, 0.0F},
 }};
 
-// The normal-table index closest to `normal` (max dot product). The mesher
-// emits axis-aligned face normals and the torch diagonals, both present above.
+// 法线表里与 normal 最接近的那个下标，按点积最大取
+// 网格化器产出的就是轴对齐的面法线与火把斜向法线，上面那张表两者都有
 [[nodiscard]] inline std::uint8_t nearestNormalIndex(const glm::vec3& normal) {
     std::uint8_t best = 0;
     float bestDot = -2.0F;
@@ -149,8 +147,7 @@ inline constexpr std::array<glm::vec3, 14> kVertexNormals{{
     };
 }
 
-// Decode helpers for tests and any CPU-side consumer; the vertex shader mirrors
-// these exactly.
+// 供测试与任何 CPU 侧消费者使用的解码助手，顶点着色器里是与之完全一致的一份
 [[nodiscard]] inline glm::vec3 decodeWorldPosition(const VoxelVertex& vertex,
                                                    const glm::vec3& sectionOrigin) {
     return sectionOrigin + decodeLocalPosition(vertex);
@@ -189,9 +186,8 @@ struct MeshData final {
     std::vector<std::uint32_t> indices;
 
     [[nodiscard]] bool empty() const { return indices.empty(); }
-    // Reserved heap bytes (capacity, not size) — the CPU mesh pool keeps these
-    // buffers around at their peak capacity for reuse, so N-Mem measures the
-    // capacity, which is the real resident cost.
+    // 预留的堆字节数，取 capacity 而不是 size
+    // CPU 网格池把这些缓冲按峰值容量留着复用，所以内存统计量的是 capacity，那才是真实的常驻开销
     [[nodiscard]] std::size_t capacityBytes() const {
         return vertices.capacity() * sizeof(VoxelVertex) +
                indices.capacity() * sizeof(std::uint32_t);

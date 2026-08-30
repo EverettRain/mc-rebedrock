@@ -1,23 +1,20 @@
 #pragma once
 
-// PX-4: the data-driven menu object model. A menu page is a flat (shape-wise
-// nestable) list of Widget VALUES — not a retained OO tree, not a vtable
-// hierarchy. Each widget carries its geometry, its label, whether it is enabled,
-// and a std::function callback fired on activation. This replaces the old triple
-// coupling (a MenuButton enum + a per-page constexpr array + a ~300-line
-// switch(MenuButton) dispatch): a page is now built in one place (PageBuilder),
-// hit-tested and dispatched generically (MenuInteraction), and drawn generically
-// by kind (the renderer's draw backend).
+// 数据驱动的菜单对象模型
+// 一个菜单页面是一列扁平的 Widget 值，形状上允许嵌套，但既不是常驻的面向对象树，也不是虚表继承体系
+// 每个控件自带几何、标签、是否可用，以及一个激活时触发的 std::function 回调
+// 它取代了从前那三者的耦合：一个 MenuButton 枚举、每页一份 constexpr 数组
+// 外加约 300 行的 switch 派发
+// 现在页面在 PageBuilder 一处装配，在 MenuInteraction 通用地命中与派发
+// 再由渲染器的绘制后端按 kind 通用地画出
 //
-// Vulkan-free and GLFW-free: this lives in mc_rebedrock_runtime so the model,
-// the hit test and the dispatch are exercised by headless unit tests (build a
-// page, click a coordinate, assert the callback fired). The callbacks capture
-// whatever Vulkan/save/audio state the renderer needs; ui:: never sees it.
+// 这里不碰 Vulkan 也不碰 GLFW，它住在 mc_rebedrock_runtime 里
+// 模型、命中测试与派发因此能被无头单测覆盖：搭一个页面，点一个坐标，断言对应的回调被触发
+// 回调可以捕获渲染器需要的任何 Vulkan、存档或音频状态，ui 命名空间从不接触这些
 //
-// The Widget is designed to be *nestable* (Panel can hold children) and to carry
-// simple relative-layout hints, so a future container UI (creative tabs + scroll
-// grid + search field) extends the same model instead of a rewrite. PX-4 only
-// uses flat pages — the nesting is shape kept, not framework built.
+// Widget 设计成可嵌套的，Panel 能装子控件，并携带简单的相对布局提示
+// 将来的容器界面，比如创造页签加滚动格加搜索框，因此是在同一个模型上扩展，而不是推倒重写
+// 目前所有页面都是扁平的，嵌套只是留好了形状，还没有搭成框架
 
 #include "ui/HudLayout.hpp"
 
@@ -38,22 +35,20 @@ enum class WidgetKind : std::uint8_t {
     TextField,  // an editable text line (create/edit world name)
 };
 
-// A slider's data + callbacks. `value()` reports the current normalized-or-raw
-// display value the draw backend paints the handle from; `onDrag(fraction)`
-// applies a new position (fraction in [0,1] across the track). Keeping the effect
-// in the callback (not in the traversal) is the rule: the traversal never carries
-// a `if (kind == Slider)` side effect — it just calls onDrag.
+// 滑块的数据与回调
+// value() 给出当前用于显示的值，绘制后端据此画滑块位置，该值可能是归一化的也可能是原始的
+// onDrag(fraction) 施加一个新位置，fraction 是轨道上 [0,1] 的比例
+// 规矩是把副作用留在回调里而不是留在遍历里
+// 遍历中绝不出现 if (kind == Slider) 这样的分支，它只负责调 onDrag
 struct SliderBind final {
     std::function<float()> value;             // current fraction in [0,1], for drawing
     std::function<void(float)> onDrag;        // apply a new fraction in [0,1]
     std::function<void()> onCommit;           // release: persist / play feedback
 };
 
-// A single menu element as a value. Copyable/movable; a page owns a vector of
-// these. `onActivate` is the click action (Button/Toggle/ListRow); Sliders use
-// `slider` instead. `debugId` is an optional stable identifier (the old
-// MenuButton value) kept only for tests/logging — never switched on for
-// behaviour.
+// 一个菜单元素，以值的形式存在，可拷贝可移动，一个页面持有它们的 vector
+// onActivate 是点击动作，供 Button、Toggle 与 ListRow 使用，Slider 改用 slider 字段
+// debugId 是可选的稳定标识，只留给测试与日志，绝不用来分派行为
 struct Widget final {
     WidgetKind kind = WidgetKind::Button;
     UiRect rect{};
@@ -64,7 +59,7 @@ struct Widget final {
     std::function<void()> onActivate{};  // Button/Toggle/ListRow click
     SliderBind slider{};                 // Slider only
 
-    // Nesting shape for a future container UI. Empty for every PX-4 flat page.
+    // 为将来的容器界面预留的嵌套形状，目前每个扁平页面里它都是空的
     std::vector<Widget> children{};
 
     [[nodiscard]] bool interactive() const noexcept {
@@ -72,8 +67,8 @@ struct Widget final {
     }
 };
 
-// A page is just a list of widget values, rebuilt each time the page opens. No
-// dirty tracking — the menu is a cold path and a rebuild is trivially cheap.
+// 一个页面就是一列控件值，每次打开页面时重建
+// 不做脏标记，菜单是冷路径，重建一次的代价微不足道
 using Page = std::vector<Widget>;
 
 }  // namespace mc::ui

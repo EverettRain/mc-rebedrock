@@ -48,12 +48,12 @@ class HudLayout final {
     static constexpr std::size_t kHotbarSlots = 9;
     static constexpr std::size_t kInventorySlots = 36;
     static constexpr std::size_t kCreativeVisibleSlots = 45;
-    // The largest menu a frontend page may carry. The video settings page runs
-    // ten entries; two-column layouts keep a larger set on screen.
+    // 一个前端页面最多能承载多大的菜单
+    // 视频设置页有十项，分两列的布局能在屏幕上放下更多
     static constexpr std::size_t kMaximumMenuButtons = 20U;
 
-    // A requested scale of zero is Minecraft's "Auto" setting. The effective
-    // scale is always an integer and keeps at least a 320x240 logical canvas.
+    // 请求的缩放为零表示 Minecraft 的"自动"档
+    // 实际生效的缩放永远是整数，并且至少保住 320x240 的逻辑画布
     HudLayout(float width, float height, int requestedScale = 0);
 
     [[nodiscard]] static int calculateGuiScale(
@@ -64,21 +64,20 @@ class HudLayout final {
     [[nodiscard]] UiRect hotbarSlot(std::size_t index) const;
     [[nodiscard]] UiRect hotbarBackground() const;
     [[nodiscard]] UiRect hotbarSelection(std::size_t index) const;
-    // The vanilla experience bar: a 182x5 bar centred on the hotbar, seven
-    // logical pixels above its top edge (Gui#renderExperienceBar draws it at
-    // scaledHeight - 29 with the hotbar at scaledHeight - 22), so it sits in
-    // the gap between the hotbar and the hearts row.
+    // vanilla 的经验条：182x5，以快捷栏为中心，位于其上边缘往上七个逻辑像素处
+    // Gui#renderExperienceBar 把它画在 scaledHeight - 29，而快捷栏在 scaledHeight - 22
+    // 它因此正好落在快捷栏与生命值行之间的空隙里
     [[nodiscard]] UiRect experienceBar() const;
     [[nodiscard]] UiRect inventoryPanel() const;
     [[nodiscard]] UiRect inventorySlot(std::size_t index) const;
-    // EQ-1: InventoryScreen's four armor slots and the offhand slot, GUI spec
-    // §10's `(8,8)(8,26)(8,44)(8,62)` (index 0=Head..3=Feet, the screen's own
-    // top-to-bottom draw order) and `(77,62)`. The same numeric offsets in the
-    // creative Inventory tab, but relative to the wider creativePanel() — vanilla
-    // CreativeInventoryScreen adds these slots at the same (8,8+row*18)/(77,62)
-    // against its own 195x136 background, so passing creative=true anchors them
-    // to that panel instead of the 176x166 survival one (the two panels are
-    // centred differently, which is the source of the creative-mode misplacement).
+    // InventoryScreen 的四个盔甲槽与副手槽
+    // 取自 GUI 规格 §10 的 (8,8)(8,26)(8,44)(8,62) 与 (77,62)
+    // 下标 0 是头、3 是脚，即界面自身的自上而下绘制顺序
+    // 创造模式背包页签用同一组数值偏移，但相对的是更宽的 creativePanel()
+    // vanilla 的 CreativeInventoryScreen 就是按同样的 (8,8+row*18) 与 (77,62) 摆这些槽
+    // 只不过它加在自己那张 195x136 的底图上
+    // 因此传 creative=true 会把它们锚到那个面板，而不是生存模式那个 176x166 的
+    // 两个面板的居中方式不同，创造模式下槽位错位的根源就在这里
     [[nodiscard]] UiRect armorSlot(std::size_t index, bool creative = false) const;
     [[nodiscard]] UiRect offhandSlot(bool creative = false) const;
     [[nodiscard]] UiRect playerCraftingSlot(std::size_t index) const;
@@ -103,20 +102,18 @@ class HudLayout final {
     [[nodiscard]] UiRect menuButton(
         std::size_t index,
         std::size_t buttonCount = 3U) const;
-    // Bottom-anchored variant for the save screen's function-button band: the
-    // block keeps a fixed gap from the canvas bottom, so it never drifts or
-    // collides with the world list as resolution or GUI scale change. Buttons
-    // are packed column-first; with columnCount > 1 the columns sit side by
-    // side with a basic gap and the whole block is centred as one unit (the
-    // world list uses two columns of two), like vanilla's adjacent button rows.
+    // 存档界面那条功能按钮带用的贴底变体
+    // 整块与画布底边保持固定间距，分辨率或 GUI 缩放变化时它既不会漂移，也不会撞上世界列表
+    // 按钮按列优先排布，columnCount 大于 1 时各列并排、留一个基本间距，整块作为一个单位居中
+    // 世界列表用的是两列各两个，与 vanilla 相邻的按钮行一致
     [[nodiscard]] UiRect bottomMenuButton(
         std::size_t index,
         std::size_t buttonCount = 3U,
         std::size_t columnCount = 1U) const;
-    // The video-settings page's two-column grid: every button but the last
-    // stacks in two centred columns (column-first, like the save screen), and
-    // the final "Done" button sits centred on its own row beneath the grid.
-    // The whole block is vertically centred like a menu, not bottom-anchored.
+    // 视频设置页的两列网格
+    // 除最后一个之外的每个按钮都堆进两个居中的列，按列优先，与存档界面一致
+    // 最后那个"完成"按钮单独居中占一行，落在网格下方
+    // 整块像菜单那样垂直居中，而不是贴底
     [[nodiscard]] UiRect videoSettingsButton(
         std::size_t index,
         std::size_t buttonCount) const;

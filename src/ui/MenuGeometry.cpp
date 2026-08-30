@@ -12,24 +12,23 @@ std::size_t menuButtonCount(PageId page, bool worldOpen) {
     case PageId::WorldList:
         return 4U;
     case PageId::CreateWorld:
-        // Game Mode, Allow Cheats (CMD-8), Create World, Back.
+        // 游戏模式、允许作弊、创建世界、返回
         return 4U;
     case PageId::EditWorld:
         return 3U;
     case PageId::ConfirmDelete:
         return 2U;
     case PageId::Options:
-        // One fewer button without a world open (no Difficulty entry). PX-6 Bug3
-        // added the Subtitles toggle, so the counts are one higher than before.
+        // 没有打开世界时少一个按钮，因为不显示难度项
+        // 字幕开关也在这一页，所以这里的计数比早先各多一个
         return worldOpen ? 8U : 7U;
     case PageId::Experimental:
         return 5U;
     case PageId::VideoSettings:
         return 11U;
     case PageId::Controls:
-        // PX-6 Bug1: the bottom button band only — View Bobbing / Auto Jump /
-        // Reset / Done. The 24 key-bind rows above are a scrolling list, not
-        // menu buttons, so they do not count toward the button cap.
+        // 只数底部那条按钮带，即视角摇晃、自动跳跃、重置、完成
+        // 上方那 24 个按键绑定行属于滚动列表而不是菜单按钮，因此不计入按钮上限
         return 4U;
     case PageId::Language:
         return 2U;
@@ -58,8 +57,7 @@ std::size_t saveListVisibleRowCount(float framebufferWidth, float framebufferHei
     const float scale = layout.scale();
     constexpr float kListTop = 34.0F; // first row's top edge, in scale units
     constexpr float kRowStep = 22.0F; // vertical distance between row tops
-    // The world list's four function buttons sit in two columns of two, so the
-    // block occupies exactly two rows on the bottom band.
+    // 世界列表那四个功能按钮排成两列各两个，整块因此在底部带上正好占两行
     constexpr float kButtonRows = 2.0F;
     constexpr float kButtonHeight = 20.0F;
     constexpr float kButtonStep = 24.0F;
@@ -86,7 +84,7 @@ UiRect languageListBox(const HudLayout& layout, float framebufferWidth) {
     const float warningY = languageWarningY(layout);
     const float bottomBound = warningY - 8.0F * scale;
     const float width = framebufferWidth;
-    // Content-sized height: as many rows as fit in the band.
+    // 高度按内容定：带里放得下几行就是几行
     const std::size_t rows = std::max<std::size_t>(
         static_cast<std::size_t>((bottomBound - topBound) / (kRowStep * scale)), 1U);
     const float height = static_cast<float>(rows) * kRowStep * scale;
@@ -98,10 +96,8 @@ UiRect languageRow(std::size_t index, const HudLayout& layout, float framebuffer
     const float scale = layout.scale();
     const auto box = languageListBox(layout, framebufferWidth);
     constexpr float kRowStep = 22.0F;
-    // LanguageSelectionList keeps its background full-width, but vanilla's
-    // entry selection rectangle is a centred 270 logical pixels. Treating the
-    // whole background strip as the entry made hover/selection run from edge
-    // to edge and also turned empty side gutters into click targets.
+    // LanguageSelectionList 的背景是整宽的，但 vanilla 的条目选中矩形只有居中的 270 个逻辑像素
+    // 把整条背景当作条目会让悬停与选中从一边拉到另一边，还会把两侧的空边槽变成可点击区域
     constexpr float kVanillaRowWidth = 270.0F;
     const float rowWidth = std::min(kVanillaRowWidth * scale,
                                     std::max(box.width - 32.0F * scale, 1.0F));
@@ -125,9 +121,8 @@ std::size_t languageVisibleRowCount(float framebufferWidth, float framebufferHei
 UiRect languageScrollbarTrack(const HudLayout& layout, float framebufferWidth) {
     const float scale = layout.scale();
     const auto box = languageListBox(layout, framebufferWidth);
-    // Vanilla places the scrollbar just outside the centred language entries,
-    // not against the full-width background edge. The visual thumb is centred
-    // 144 logical pixels to the right of screen centre.
+    // vanilla 把滚动条摆在居中的语言条目之外一点，而不是贴着整宽背景的边缘
+    // 可见的滑块中心位于屏幕中线右侧 144 个逻辑像素处
     const float desiredCenter = box.x + box.width * 0.5F + 144.0F * scale;
     const float center = std::clamp(desiredCenter, box.x + 5.0F * scale,
                                     box.x + box.width - 5.0F * scale);
@@ -170,17 +165,16 @@ std::size_t languageScrollIndexFromCursor(const HudLayout& layout, float framebu
         std::lround(normalized * static_cast<float>(maximumFirst)));
 }
 
-// PX-6 Bug1: the Controls key-bind list. The box sits between the title and the
-// bottom button band (View Bobbing / Auto Jump / Reset / Done). Mirrors the
-// language list, but leaves room for two rows of bottom buttons rather than one
-// warning line.
+// 按键设置页的绑定列表
+// 框体位于标题与底部按钮带之间，后者是视角摇晃、自动跳跃、重置、完成
+// 几何照搬语言列表，区别是这里要给两行底部按钮留位置，而不是给一行警告文字
 UiRect controlsListBox(const HudLayout& layout, float framebufferWidth) {
     const float scale = layout.scale();
     constexpr float kRowStep = 12.0F;
     const float topBound = 40.0F * scale;
-    // The list ends above the bottom button band. Derive the band's top row from
-    // the first of the four bottom buttons (2 columns -> 2 rows), the same way
-    // languageWarningY reads the band position without a height accessor.
+    // 列表在底部按钮带上方结束
+    // 带的顶行由四个底部按钮中的第一个推出来，两列即两行，与 languageWarningY 读取带位置的方式相同
+    // 两处都不需要一个专门的高度取值函数
     const float bandTop = layout.bottomMenuButton(0U, 4U, 2U).y;
     const float bottomBound = bandTop - 12.0F * scale;
     const std::size_t rows = std::max<std::size_t>(
@@ -240,22 +234,20 @@ UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t inde
     if (page == PageId::WorldList) {
         return layout.bottomMenuButton(index, buttonCount, 2U);
     }
-    // PX-6 Bug1: the Controls bottom band (View Bobbing / Auto Jump / Reset /
-    // Done) is two columns; the key-bind rows above use the scrolling list rects
-    // (controlsRow), never this button grid.
+    // 按键设置页的底部带分两列，即视角摇晃、自动跳跃、重置、完成
+    // 上方的按键绑定行走 controlsRow 那套滚动列表矩形，绝不走这个按钮网格
     if (page == PageId::Controls) {
         return layout.bottomMenuButton(index, buttonCount, 2U);
     }
-    // The video page grew past one column's worth of buttons: its settings stack
-    // in two centred columns with "Done" on its own row beneath.
+    // 视频页的按钮数已经超出一列能放下的量
+    // 它的各项设置堆进两个居中的列，"完成"单独占下方一行
     if (page == PageId::VideoSettings) {
         return layout.videoSettingsButton(index, buttonCount);
     }
     if (page == PageId::EditWorld || page == PageId::ConfirmDelete) {
         return layout.bottomMenuButton(index, buttonCount);
     }
-    // vanilla's LanguageOptionsScreen places "Force Unicode Font" and "Done" side
-    // by side at the bottom, not stacked.
+    // vanilla 的 LanguageOptionsScreen 把"强制 Unicode 字体"与"完成"并排放在底部，而不是上下堆叠
     if (page == PageId::Language) {
         return layout.bottomMenuButton(index, buttonCount, 2U);
     }
