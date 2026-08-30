@@ -72,13 +72,34 @@ class VulkanResources final {
     void destroyBuffer(AllocatedBuffer& buffer) const noexcept;
     void destroyImage(AllocatedImage& image) const noexcept;
 
-    [[nodiscard]] VkImageView createImageView(VkImage image, VkFormat format,
-                                              VkImageAspectFlags aspect) const;
+    // `layerCount` > 1 的数组纹理必须显式传 VK_IMAGE_VIEW_TYPE_2D_ARRAY——不按层数推断，
+    // 因为层数是运行期算出来的（实体图集按已注册物种数、字体图集按所需页数），
+    // 恰好只有一层时若自动退回 2D，采样端的 array sampler 就会对不上
+    [[nodiscard]] VkImageView
+    createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspect,
+                    std::uint32_t layerCount = 1U,
+                    VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D) const;
 
     // 图形队列上的一次性命令提交，供下面的暂存上传和布局转换使用
     // 需要命令池和图形队列，所以只有带着它们构造出来的实例才提供这个能力
     [[nodiscard]] VkCommandBuffer beginSingleUseCommands() const;
     void endSingleUseCommands(VkCommandBuffer commandBuffer) const;
+
+    // 把 CPU 侧像素灌进一张（可能多层的）图像，并留在着色器可读布局上。
+    //
+    // 这一整串——建暂存缓冲、memcpy、flush、转 TRANSFER_DST、逐层 copy、转
+    // SHADER_READ_ONLY、销毁暂存缓冲——原先在 TextureManager 里被逐字抄了 7 遍
+    // （方块图集、雨、GUI、全景、群系查找表、实体图集、字体），每遍只有层数、格式和
+    // 目标管线阶段不同。抄 7 遍的代价不止是行数：每遍都各自开三次一次性命令提交，
+    // 而 endSingleUseCommands 里是 vkQueueWaitIdle，于是一次上传要停三次整条队列。
+    // 收进来之后三步记录在同一个命令缓冲里，每次上传只同步一次。
+    //
+    // `byteSize` 必须是 `layerCount` 的整数倍，各层在缓冲里首尾相接。
+    // 图像的旧布局一律按 UNDEFINED 处理（内容全量覆盖），因此重复上传同一张图像
+    // （换种子时重建群系查找表）也走这里。
+    void uploadImageLayers(const AllocatedImage& image, const void* pixels, VkDeviceSize byteSize,
+                           std::uint32_t width, std::uint32_t height, std::uint32_t layerCount,
+                           VkPipelineStageFlags destinationStage) const;
 
     // 整个子资源范围的图像布局转换，封在一次性命令缓冲里；访问掩码与管线阶段由调用方给
     void transitionTextureImage(const AllocatedImage& image, std::uint32_t layerCount,

@@ -10,6 +10,7 @@
 #include "render/vulkan/WorldRenderTypes.hpp"
 #include "render/vulkan/WorldRenderer.hpp"
 
+#include "core/EnvFlags.hpp"
 #include "core/FrameTrace.hpp"
 
 #include "animation/AnimationAssets.hpp"
@@ -680,20 +681,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         refreshSaveList();
         if (testScene.has_value())
             initializeTestScene();
-        // MC_REBEDROCK_RAIN_MODE 取 texture、particles 或 async，选择降雨绘制路径
+        // MC_REBEDROCK_RAIN_MODE 取 texture 或 async，选择降雨绘制路径
         // MC_REBEDROCK_RAIN_COUNT 覆盖雨滴目标数量
         // 实验性内容子菜单才是权威控制，环境变量只是开发与性能测试时的覆盖手段
         if (const char* modeValue = std::getenv("MC_REBEDROCK_RAIN_MODE")) {
-            const std::string_view mode{modeValue};
-            if (mode == "texture") {
-                rainMode_ = RainMode::Texture;
-            } else if (mode == "particles") {
-                rainMode_ = RainMode::Particles;
-            } else {
-                rainMode_ = RainMode::Async;
-            }
+            rainMode_ = std::string_view{modeValue} == "texture" ? RainMode::Texture
+                                                                 : RainMode::Async;
         } else {
-            rainMode_ = static_cast<RainMode>(std::clamp(options.rainMode, 0, 2));
+            rainMode_ = static_cast<RainMode>(std::clamp(options.rainMode, 0, 1));
         }
         if (const char* countValue = std::getenv("MC_REBEDROCK_RAIN_COUNT")) {
             rainCountOverride_ = std::strtoul(countValue, nullptr, 10);
@@ -712,12 +707,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             rainSystem.setCollisionCache(std::strcmp(cacheValue, "0") != 0);
         }
         // 烟测始终走一遍太阳阴影路径，使预通道与地形采样每次运行都被验证
-        if (std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr) {
+        if (diag::smokeTestEnabled()) {
             options.sunShadows = true;
         }
         shadowDisabled =
             !options.sunShadows || std::getenv("MC_REBEDROCK_SHADOW_DISABLE") != nullptr;
-        if (occlusionDisabled) {
+        if (occlusion_.disabled) {
 #if defined(__APPLE__)
             std::cout << "GPU occlusion queries: disabled on macOS (set "
                          "MC_REBEDROCK_FORCE_OCCLUSION=1 for driver diagnostics)\n";
@@ -737,20 +732,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 面向玩家的雨量提升跟随粒子效果等级，普通雨与雷雨都取基线的 1.5 倍
         // 中档给 1.5 倍预算，高档翻倍，疯狂三倍，低档减半
         const float rainScale = 1.5F * particleLevelMultiplier(options.particleLevel);
-        std::size_t base = 0U;
-        if (rainCountOverride_ > 0U) {
-            base = rainCountOverride_;
-        } else {
-            switch (rainMode_) {
-            // ±24 格这样更宽的雨区需要更密的雨量才能整片看起来像下雨
-            // 基数因此比 ±16 的旧值提高四分之一
-            case RainMode::Texture:
-            case RainMode::Particles:
-            case RainMode::Async:
-                base = rainBaseCount(rainMode_);
-                break;
-            }
-        }
+        // ±24 格这样更宽的雨区需要更密的雨量才能整片看起来像下雨
+        // 基数因此比 ±16 的旧值提高四分之一，逐模式的取值在 rainBaseCount 里
+        // 这里曾套一层 switch，三个 case 落到同一行——是"基数曾按模式分开"留下的化石
+        // 它零信息量，却让人以为三条路径在此处有分别
+        const std::size_t base =
+            rainCountOverride_ > 0U ? rainCountOverride_ : rainBaseCount(rainMode_);
         return static_cast<std::size_t>(static_cast<float>(base) * rainScale * thunderBoost);
     }
 
@@ -899,7 +886,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const std::array layouts{descriptorSetLayout, sceneDescriptorSetLayout};
         layoutInfo.setLayoutCount = static_cast<std::uint32_t>(layouts.size());
         layoutInfo.pSetLayouts = layouts.data();
-        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &rainSheetPipelineLayout),
+        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &worldPipelines_.rainSheetPipelineLayout),
                 "vkCreatePipelineLayout(rain sheet)");
         auto pipelineInfo = vkStructure<VkGraphicsPipelineCreateInfo>(
             VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO);
@@ -913,10 +900,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pipelineInfo.pDepthStencilState = &depthStencil;
         pipelineInfo.pColorBlendState = &blending;
         pipelineInfo.pDynamicState = &dynamic;
-        pipelineInfo.layout = rainSheetPipelineLayout;
-        pipelineInfo.renderPass = renderPass;
+        pipelineInfo.layout = worldPipelines_.rainSheetPipelineLayout;
+        pipelineInfo.renderPass = worldPipelines_.renderPass;
         checkVk(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
-                                          &rainSheetPipeline),
+                                          &worldPipelines_.rainSheetPipeline),
                 "vkCreateGraphicsPipelines(rain sheet)");
         vkDestroyShaderModule(device, vertexModule, nullptr);
         vkDestroyShaderModule(device, fragmentModule, nullptr);
@@ -1040,7 +1027,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 调度器在 render/SmokeScript.hpp，步骤在 render/vulkan/SmokeScriptSteps.hpp
         // 正常运行根本不构造脚本
         std::optional<SmokeScript> smokeScript;
-        if (std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr) {
+        if (diag::smokeTestEnabled()) {
             smokeScript.emplace();
             installSmokeScript(*this, *smokeScript, stressFrames,
                                static_cast<std::uint64_t>(smokeFrameLimit));
@@ -1770,13 +1757,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             world_.releaseStreamBufferNow(deviceBufferPool_, mesh.indexBuffer);
         }
         gpuMeshes.clear();
-        occlusionStates.clear();
-        occlusionMissCount.clear();
+        world_.onWorldReset();
         pendingSectionOrder.clear();
         pendingSectionUpdates.clear();
         latestSectionRevisions.clear();
-        // 让诊断用的环号旁表与它影射的待处理 section 表保持同步（关闭追踪时它为空，清理无代价）
-        world_.pendingSectionEnqueueRing_.clear();
+
         // 把烘焙画质重新锚定到已保存的选项，新世界按存下来的画质开始网格化
         // 选 Off 时仍按 Standard 烘焙，反正着色器会忽略平滑光照通道
         qualityRemeshPending.clear();
@@ -2963,7 +2948,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
             break;
         case ui::WidgetId::RainMode:
-            rainMode_ = static_cast<RainMode>(options.rainMode);
+            rainMode_ = static_cast<RainMode>(std::clamp(options.rainMode, 0, 1));
             break;
         case ui::WidgetId::ParticleLevel:
             applyParticleLevel();
@@ -3790,29 +3775,29 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (shadowDebugSampler != VK_NULL_HANDLE) {
                 vkDestroySampler(device, shadowDebugSampler, nullptr);
             }
-            if (shadowDebugPipelineLayout != VK_NULL_HANDLE) {
-                vkDestroyPipelineLayout(device, shadowDebugPipelineLayout, nullptr);
+            if (worldPipelines_.shadowDebugPipelineLayout != VK_NULL_HANDLE) {
+                vkDestroyPipelineLayout(device, worldPipelines_.shadowDebugPipelineLayout, nullptr);
             }
-            if (shadowPipeline != VK_NULL_HANDLE) {
-                vkDestroyPipeline(device, shadowPipeline, nullptr);
+            if (worldPipelines_.shadowPipeline != VK_NULL_HANDLE) {
+                vkDestroyPipeline(device, worldPipelines_.shadowPipeline, nullptr);
             }
-            if (shadowPipelineLayout != VK_NULL_HANDLE) {
-                vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
+            if (worldPipelines_.shadowPipelineLayout != VK_NULL_HANDLE) {
+                vkDestroyPipelineLayout(device, worldPipelines_.shadowPipelineLayout, nullptr);
             }
-            for (auto& queryPool : occlusionQueryPools) {
+            for (auto& queryPool : occlusion_.queryPools) {
                 if (queryPool != VK_NULL_HANDLE) {
                     vkDestroyQueryPool(device, queryPool, nullptr);
                     queryPool = VK_NULL_HANDLE;
                 }
             }
-            if (occlusionQueryLayout != VK_NULL_HANDLE) {
-                vkDestroyPipelineLayout(device, occlusionQueryLayout, nullptr);
+            if (occlusion_.queryLayout != VK_NULL_HANDLE) {
+                vkDestroyPipelineLayout(device, occlusion_.queryLayout, nullptr);
             }
-            if (occlusionBoxVertexBuffer.buffer != VK_NULL_HANDLE) {
-                destroyBuffer(occlusionBoxVertexBuffer);
+            if (occlusion_.boxVertexBuffer.buffer != VK_NULL_HANDLE) {
+                destroyBuffer(occlusion_.boxVertexBuffer);
             }
-            if (occlusionBoxIndexBuffer.buffer != VK_NULL_HANDLE) {
-                destroyBuffer(occlusionBoxIndexBuffer);
+            if (occlusion_.boxIndexBuffer.buffer != VK_NULL_HANDLE) {
+                destroyBuffer(occlusion_.boxIndexBuffer);
             }
         }
         vulkanDevice_.destroy();
@@ -4507,7 +4492,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             vkStructure<VkPipelineLayoutCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
         layoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
         layoutInfo.pSetLayouts = setLayouts.data();
-        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &particlePipelineLayout),
+        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &worldPipelines_.particlePipelineLayout),
                 "vkCreatePipelineLayout(particle)");
 
         auto pipelineInfo = vkStructure<VkGraphicsPipelineCreateInfo>(
@@ -4522,10 +4507,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pipelineInfo.pDepthStencilState = &depthStencil;
         pipelineInfo.pColorBlendState = &blending;
         pipelineInfo.pDynamicState = &dynamic;
-        pipelineInfo.layout = particlePipelineLayout;
-        pipelineInfo.renderPass = renderPass;
+        pipelineInfo.layout = worldPipelines_.particlePipelineLayout;
+        pipelineInfo.renderPass = worldPipelines_.renderPass;
         checkVk(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
-                                          &particlePipeline),
+                                          &worldPipelines_.particlePipeline),
                 "vkCreateGraphicsPipelines(particle)");
         vkDestroyShaderModule(device, vertexModule, nullptr);
         vkDestroyShaderModule(device, fragmentModule, nullptr);
@@ -4554,7 +4539,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         layoutInfo.setLayoutCount = 0;
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &push;
-        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &shadowPipelineLayout),
+        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &worldPipelines_.shadowPipelineLayout),
                 "vkCreatePipelineLayout(shadow)");
 
         const auto vertexCode = readSpirv(shaderRoot / "shadow.vert.spv");
@@ -4629,10 +4614,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pipelineInfo.pDepthStencilState = &depthStencil;
         pipelineInfo.pColorBlendState = &blending;
         pipelineInfo.pDynamicState = &dynamic;
-        pipelineInfo.layout = shadowPipelineLayout;
+        pipelineInfo.layout = worldPipelines_.shadowPipelineLayout;
         pipelineInfo.renderPass = shadowTarget.renderPass();
         checkVk(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
-                                          &shadowPipeline),
+                                          &worldPipelines_.shadowPipeline),
                 "vkCreateGraphicsPipelines(shadow)");
         vkDestroyShaderModule(device, vertexModule, nullptr);
         vkDestroyShaderModule(device, fragmentModule, nullptr);
@@ -4718,7 +4703,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pushInfo.pSetLayouts = &shadowDebugSetLayout;
         pushInfo.pushConstantRangeCount = 1;
         pushInfo.pPushConstantRanges = &push;
-        checkVk(vkCreatePipelineLayout(device, &pushInfo, nullptr, &shadowDebugPipelineLayout),
+        checkVk(vkCreatePipelineLayout(device, &pushInfo, nullptr, &worldPipelines_.shadowDebugPipelineLayout),
                 "vkCreatePipelineLayout(shadow debug)");
     }
 
@@ -4789,10 +4774,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pipelineInfo.pDepthStencilState = &depthStencil;
         pipelineInfo.pColorBlendState = &blending;
         pipelineInfo.pDynamicState = &dynamic;
-        pipelineInfo.layout = shadowDebugPipelineLayout;
-        pipelineInfo.renderPass = renderPass;
+        pipelineInfo.layout = worldPipelines_.shadowDebugPipelineLayout;
+        pipelineInfo.renderPass = worldPipelines_.renderPass;
         checkVk(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
-                                          &shadowDebugPipeline),
+                                          &worldPipelines_.shadowDebugPipeline),
                 "vkCreateGraphicsPipelines(shadow debug)");
         vkDestroyShaderModule(device, vertexModule, nullptr);
         vkDestroyShaderModule(device, fragmentModule, nullptr);
@@ -5009,7 +4994,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         info.pSubpasses = &subpass;
         info.dependencyCount = 1;
         info.pDependencies = &dependency;
-        checkVk(vkCreateRenderPass(device, &info, nullptr, &renderPass), "vkCreateRenderPass");
+        checkVk(vkCreateRenderPass(device, &info, nullptr, &worldPipelines_.renderPass), "vkCreateRenderPass");
     }
 
     [[nodiscard]] VkShaderModule createShaderModule(const std::vector<std::uint32_t>& code) const {
@@ -5102,7 +5087,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         layoutInfo.pSetLayouts = &descriptorSetLayout;
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &terrainPushConstant;
-        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &pipelineLayout),
+        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &worldPipelines_.pipelineLayout),
                 "vkCreatePipelineLayout");
         auto pipelineInfo = vkStructure<VkGraphicsPipelineCreateInfo>(
             VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO);
@@ -5116,10 +5101,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pipelineInfo.pDepthStencilState = &depthStencil;
         pipelineInfo.pColorBlendState = &blending;
         pipelineInfo.pDynamicState = &dynamic;
-        pipelineInfo.layout = pipelineLayout;
-        pipelineInfo.renderPass = renderPass;
+        pipelineInfo.layout = worldPipelines_.pipelineLayout;
+        pipelineInfo.renderPass = worldPipelines_.renderPass;
         const auto result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo,
-                                                      nullptr, &graphicsPipeline);
+                                                      nullptr, &worldPipelines_.graphicsPipeline);
         checkVk(result, "vkCreateGraphicsPipelines");
 
         depthStencil.depthWriteEnable = VK_FALSE;
@@ -5140,7 +5125,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         colorAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         colorAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
         const auto translucentResult = vkCreateGraphicsPipelines(
-            device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &translucentPipeline);
+            device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &worldPipelines_.translucentPipeline);
         checkVk(translucentResult, "vkCreateGraphicsPipelines(translucent)");
         rasterization.cullMode = VK_CULL_MODE_BACK_BIT; // restore for the cutout pipeline
         depthStencil.depthWriteEnable = VK_TRUE;
@@ -5156,7 +5141,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         rasterization.cullMode = VK_CULL_MODE_BACK_BIT;
         pipelineInfo.pStages = cutoutStages.data();
         const auto cutoutResult = vkCreateGraphicsPipelines(
-            device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &cutoutPipeline);
+            device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &worldPipelines_.cutoutPipeline);
         vkDestroyShaderModule(device, cutoutFragmentModule, nullptr);
         vkDestroyShaderModule(device, fragmentModule, nullptr);
         vkDestroyShaderModule(device, vertexModule, nullptr);
@@ -5181,13 +5166,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pushConstant.size = sizeof(glm::vec4) * 3; // blockOrigin + boundsMin + boundsMax
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushConstant;
-        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &outlinePipelineLayout),
+        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &worldPipelines_.outlinePipelineLayout),
                 "vkCreatePipelineLayout(outline)");
         pipelineInfo.pStages = outlineStages.data();
         pipelineInfo.pVertexInputState = &outlineVertexInput;
-        pipelineInfo.layout = outlinePipelineLayout;
+        pipelineInfo.layout = worldPipelines_.outlinePipelineLayout;
         const auto outlineResult = vkCreateGraphicsPipelines(
-            device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &outlinePipeline);
+            device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &worldPipelines_.outlinePipeline);
         checkVk(outlineResult, "vkCreateGraphicsPipelines(outline)");
         depthStencil.depthTestEnable = VK_FALSE;
         vkDestroyShaderModule(device, outlineFragmentModule, nullptr);
@@ -5202,9 +5187,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const std::array skyStages{vertexStage, fragmentStage};
         inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         pipelineInfo.pStages = skyStages.data();
-        pipelineInfo.layout = pipelineLayout;
+        pipelineInfo.layout = worldPipelines_.pipelineLayout;
         const auto skyResult = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo,
-                                                         nullptr, &skyPipeline);
+                                                         nullptr, &worldPipelines_.skyPipeline);
         vkDestroyShaderModule(device, skyFragmentModule, nullptr);
         vkDestroyShaderModule(device, skyVertexModule, nullptr);
         checkVk(skyResult, "vkCreateGraphicsPipelines(sky)");
@@ -5322,22 +5307,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         itemPushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
         itemPushConstant.size = sizeof(ItemPush);
         layoutInfo.pPushConstantRanges = &itemPushConstant;
-        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &itemPipelineLayout),
+        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &worldPipelines_.itemPipelineLayout),
                 "vkCreatePipelineLayout(item)");
         pipelineInfo.pStages = itemStages.data();
-        pipelineInfo.layout = itemPipelineLayout;
+        pipelineInfo.layout = worldPipelines_.itemPipelineLayout;
         const auto itemResult = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo,
-                                                          nullptr, &itemPipeline);
+                                                          nullptr, &worldPipelines_.itemPipeline);
         checkVk(itemResult, "vkCreateGraphicsPipelines(item)");
         depthStencil.depthWriteEnable = VK_FALSE;
         const auto itemShadowResult = vkCreateGraphicsPipelines(
-            device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &itemShadowPipeline);
+            device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &worldPipelines_.itemShadowPipeline);
         checkVk(itemShadowResult, "vkCreateGraphicsPipelines(item shadow)");
         depthStencil.depthTestEnable = VK_TRUE;
         depthStencil.depthWriteEnable = VK_TRUE;
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
         const auto heldItemResult = vkCreateGraphicsPipelines(
-            device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &heldItemPipeline);
+            device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &worldPipelines_.heldItemPipeline);
         checkVk(heldItemResult, "vkCreateGraphicsPipelines(held item)");
         vkDestroyShaderModule(device, itemFragmentModule, nullptr);
         vkDestroyShaderModule(device, itemVertexModule, nullptr);
@@ -5347,14 +5332,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 含查询池、携带逐次绘制包围盒推送常量的管线布局
     // 还有查询通道为每个 section 绘制的单位立方体顶点与索引缓冲
     void createOcclusionQueryResources() {
-        if (occlusionDisabled) {
+        if (occlusion_.disabled) {
             return;
         }
         auto poolInfo =
             vkStructure<VkQueryPoolCreateInfo>(VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO);
         poolInfo.queryType = VK_QUERY_TYPE_OCCLUSION;
         poolInfo.queryCount = static_cast<std::uint32_t>(kOcclusionQueryPoolSize);
-        for (auto& queryPool : occlusionQueryPools) {
+        for (auto& queryPool : occlusion_.queryPools) {
             checkVk(vkCreateQueryPool(device, &poolInfo, nullptr, &queryPool),
                     "vkCreateQueryPool(occlusion frame)");
         }
@@ -5367,7 +5352,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         layoutInfo.pSetLayouts = &descriptorSetLayout;
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushRange;
-        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &occlusionQueryLayout),
+        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &occlusion_.queryLayout),
                 "vkCreatePipelineLayout(occlusion query)");
 
         // 一个位于 [0,1]³ 的单位立方体
@@ -5391,24 +5376,24 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             0, 1, 5, 0, 5, 4, // -z
             2, 3, 7, 2, 7, 6, // +z
         }};
-        occlusionBoxVertexBuffer =
+        occlusion_.boxVertexBuffer =
             createBuffer(sizeof(kUnitCubeCorners), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, true);
-        std::memcpy(occlusionBoxVertexBuffer.mapped, kUnitCubeCorners.data(),
+        std::memcpy(occlusion_.boxVertexBuffer.mapped, kUnitCubeCorners.data(),
                     sizeof(kUnitCubeCorners));
         checkVk(
-            vmaFlushAllocation(allocator, occlusionBoxVertexBuffer.allocation, 0, VK_WHOLE_SIZE),
+            vmaFlushAllocation(allocator, occlusion_.boxVertexBuffer.allocation, 0, VK_WHOLE_SIZE),
             "vmaFlushAllocation(occlusion box vertices)");
-        occlusionBoxIndexBuffer =
+        occlusion_.boxIndexBuffer =
             createBuffer(sizeof(kUnitCubeIndices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, true);
-        std::memcpy(occlusionBoxIndexBuffer.mapped, kUnitCubeIndices.data(),
+        std::memcpy(occlusion_.boxIndexBuffer.mapped, kUnitCubeIndices.data(),
                     sizeof(kUnitCubeIndices));
-        checkVk(vmaFlushAllocation(allocator, occlusionBoxIndexBuffer.allocation, 0, VK_WHOLE_SIZE),
+        checkVk(vmaFlushAllocation(allocator, occlusion_.boxIndexBuffer.allocation, 0, VK_WHOLE_SIZE),
                 "vmaFlushAllocation(occlusion box indices)");
     }
 
     // 与交换链耦合，查询管线绑定当前渲染通道，交换链一变就和其它管线一起重建
     void createOcclusionQueryPipeline() {
-        if (occlusionQueryPools.front() == VK_NULL_HANDLE) {
+        if (occlusion_.queryPools.front() == VK_NULL_HANDLE) {
             return;
         }
         const auto vertexCode = readSpirv(shaderRoot / "occlusion_query.vert.spv");
@@ -5479,10 +5464,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pipelineInfo.pDepthStencilState = &depthStencil;
         pipelineInfo.pColorBlendState = &blending;
         pipelineInfo.pDynamicState = &dynamic;
-        pipelineInfo.layout = occlusionQueryLayout;
-        pipelineInfo.renderPass = renderPass;
+        pipelineInfo.layout = occlusion_.queryLayout;
+        pipelineInfo.renderPass = worldPipelines_.renderPass;
         const auto result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo,
-                                                      nullptr, &occlusionQueryPipeline);
+                                                      nullptr, &occlusion_.queryPipeline);
         checkVk(result, "vkCreateGraphicsPipelines(occlusion query)");
         vkDestroyShaderModule(device, vertexModule, nullptr);
         vkDestroyShaderModule(device, fragmentModule, nullptr);
@@ -5504,7 +5489,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
             auto info =
                 vkStructure<VkFramebufferCreateInfo>(VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO);
-            info.renderPass = renderPass;
+            info.renderPass = worldPipelines_.renderPass;
             info.attachmentCount = attachmentCount;
             info.pAttachments = attachments.data();
             info.width = swapchainExtent.width;
@@ -5535,29 +5520,29 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             vkDestroyFramebuffer(device, framebuffer, nullptr);
         }
         framebuffers.clear();
-        if (graphicsPipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(device, graphicsPipeline, nullptr);
-            graphicsPipeline = VK_NULL_HANDLE;
+        if (worldPipelines_.graphicsPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, worldPipelines_.graphicsPipeline, nullptr);
+            worldPipelines_.graphicsPipeline = VK_NULL_HANDLE;
         }
-        if (translucentPipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(device, translucentPipeline, nullptr);
-            translucentPipeline = VK_NULL_HANDLE;
+        if (worldPipelines_.translucentPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, worldPipelines_.translucentPipeline, nullptr);
+            worldPipelines_.translucentPipeline = VK_NULL_HANDLE;
         }
-        if (cutoutPipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(device, cutoutPipeline, nullptr);
-            cutoutPipeline = VK_NULL_HANDLE;
+        if (worldPipelines_.cutoutPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, worldPipelines_.cutoutPipeline, nullptr);
+            worldPipelines_.cutoutPipeline = VK_NULL_HANDLE;
         }
-        if (skyPipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(device, skyPipeline, nullptr);
-            skyPipeline = VK_NULL_HANDLE;
+        if (worldPipelines_.skyPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, worldPipelines_.skyPipeline, nullptr);
+            worldPipelines_.skyPipeline = VK_NULL_HANDLE;
         }
-        if (outlinePipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(device, outlinePipeline, nullptr);
-            outlinePipeline = VK_NULL_HANDLE;
+        if (worldPipelines_.outlinePipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, worldPipelines_.outlinePipeline, nullptr);
+            worldPipelines_.outlinePipeline = VK_NULL_HANDLE;
         }
-        if (occlusionQueryPipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(device, occlusionQueryPipeline, nullptr);
-            occlusionQueryPipeline = VK_NULL_HANDLE;
+        if (occlusion_.queryPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, occlusion_.queryPipeline, nullptr);
+            occlusion_.queryPipeline = VK_NULL_HANDLE;
         }
         if (crosshairPipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device, crosshairPipeline, nullptr);
@@ -5575,45 +5560,45 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             vkDestroyPipeline(device, panoramaPipeline, nullptr);
             panoramaPipeline = VK_NULL_HANDLE;
         }
-        if (itemPipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(device, itemPipeline, nullptr);
-            itemPipeline = VK_NULL_HANDLE;
+        if (worldPipelines_.itemPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, worldPipelines_.itemPipeline, nullptr);
+            worldPipelines_.itemPipeline = VK_NULL_HANDLE;
         }
-        if (itemShadowPipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(device, itemShadowPipeline, nullptr);
-            itemShadowPipeline = VK_NULL_HANDLE;
+        if (worldPipelines_.itemShadowPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, worldPipelines_.itemShadowPipeline, nullptr);
+            worldPipelines_.itemShadowPipeline = VK_NULL_HANDLE;
         }
-        if (heldItemPipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(device, heldItemPipeline, nullptr);
-            heldItemPipeline = VK_NULL_HANDLE;
+        if (worldPipelines_.heldItemPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, worldPipelines_.heldItemPipeline, nullptr);
+            worldPipelines_.heldItemPipeline = VK_NULL_HANDLE;
         }
-        if (particlePipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(device, particlePipeline, nullptr);
-            particlePipeline = VK_NULL_HANDLE;
+        if (worldPipelines_.particlePipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, worldPipelines_.particlePipeline, nullptr);
+            worldPipelines_.particlePipeline = VK_NULL_HANDLE;
         }
-        if (particlePipelineLayout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(device, particlePipelineLayout, nullptr);
-            particlePipelineLayout = VK_NULL_HANDLE;
+        if (worldPipelines_.particlePipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, worldPipelines_.particlePipelineLayout, nullptr);
+            worldPipelines_.particlePipelineLayout = VK_NULL_HANDLE;
         }
-        if (shadowDebugPipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(device, shadowDebugPipeline, nullptr);
-            shadowDebugPipeline = VK_NULL_HANDLE;
+        if (worldPipelines_.shadowDebugPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, worldPipelines_.shadowDebugPipeline, nullptr);
+            worldPipelines_.shadowDebugPipeline = VK_NULL_HANDLE;
         }
-        if (rainSheetPipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(device, rainSheetPipeline, nullptr);
-            rainSheetPipeline = VK_NULL_HANDLE;
+        if (worldPipelines_.rainSheetPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, worldPipelines_.rainSheetPipeline, nullptr);
+            worldPipelines_.rainSheetPipeline = VK_NULL_HANDLE;
         }
-        if (rainSheetPipelineLayout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(device, rainSheetPipelineLayout, nullptr);
-            rainSheetPipelineLayout = VK_NULL_HANDLE;
+        if (worldPipelines_.rainSheetPipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, worldPipelines_.rainSheetPipelineLayout, nullptr);
+            worldPipelines_.rainSheetPipelineLayout = VK_NULL_HANDLE;
         }
-        if (pipelineLayout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-            pipelineLayout = VK_NULL_HANDLE;
+        if (worldPipelines_.pipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, worldPipelines_.pipelineLayout, nullptr);
+            worldPipelines_.pipelineLayout = VK_NULL_HANDLE;
         }
-        if (outlinePipelineLayout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(device, outlinePipelineLayout, nullptr);
-            outlinePipelineLayout = VK_NULL_HANDLE;
+        if (worldPipelines_.outlinePipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, worldPipelines_.outlinePipelineLayout, nullptr);
+            worldPipelines_.outlinePipelineLayout = VK_NULL_HANDLE;
         }
         if (hudPipelineLayout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device, hudPipelineLayout, nullptr);
@@ -5623,13 +5608,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             vkDestroyPipelineLayout(device, panoramaPipelineLayout, nullptr);
             panoramaPipelineLayout = VK_NULL_HANDLE;
         }
-        if (itemPipelineLayout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(device, itemPipelineLayout, nullptr);
-            itemPipelineLayout = VK_NULL_HANDLE;
+        if (worldPipelines_.itemPipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, worldPipelines_.itemPipelineLayout, nullptr);
+            worldPipelines_.itemPipelineLayout = VK_NULL_HANDLE;
         }
-        if (renderPass != VK_NULL_HANDLE) {
-            vkDestroyRenderPass(device, renderPass, nullptr);
-            renderPass = VK_NULL_HANDLE;
+        if (worldPipelines_.renderPass != VK_NULL_HANDLE) {
+            vkDestroyRenderPass(device, worldPipelines_.renderPass, nullptr);
+            worldPipelines_.renderPass = VK_NULL_HANDLE;
         }
         for (auto& target : depthTargets) {
             if (target.view != VK_NULL_HANDLE) {
@@ -5987,9 +5972,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // 物品图标上的耐久条，在 16x16 图标底部画一条 13x2 的黑色底
-    // 底上那条彩色条的长度是剩余耐久，色相随工具寿命从绿走到红
-    // 未受损的物品什么都不画，与 vanilla 一致
+    // 粒子效果等级到密度倍率：低 0.5、中 1.0、高 2.0、疯狂 3.0
+    // 生成数量与存活上限都乘这个系数，见 ParticleSystem::setLevelScale
     [[nodiscard]] static float particleLevelMultiplier(int level) {
         switch (level) {
         case 0:
@@ -6199,19 +6183,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     std::unordered_map<world::SectionPosition, GpuMesh, world::SectionPositionHash> gpuMeshes;
     StreamBufferPool deviceBufferPool_;
     StreamBufferPool stagingBufferPool_;
-    // 逐 section 的遮挡状态，由遮挡查询结果驱动
-    // 某个包围盒不再通过深度测试时，它的不透明网格就被跳过
-    std::unordered_map<world::SectionPosition, OcclusionState, world::SectionPositionHash>
-        occlusionStates;
-    // 逐 section 连续为零的查询次数，用来给 Visible 转 Occluded 这条边加迟滞
-    // 需要连着好几次查询都不通过才切换，而不是凭一次擦边的结果
-    std::unordered_map<world::SectionPosition, std::uint32_t, world::SectionPositionHash>
-        occlusionMissCount;
-    std::array<VkQueryPool, kFramesInFlight> occlusionQueryPools{};
-    VkPipeline occlusionQueryPipeline = VK_NULL_HANDLE;
-    VkPipelineLayout occlusionQueryLayout = VK_NULL_HANDLE;
-    AllocatedBuffer occlusionBoxVertexBuffer;
-    AllocatedBuffer occlusionBoxIndexBuffer;
     render::SectionDeliveryQueue<world::SectionPosition, world::SectionPositionHash>
         pendingSectionOrder;
     std::unordered_map<world::SectionPosition, world::SectionMeshUpdate, world::SectionPositionHash>
@@ -6248,10 +6219,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 世界中第三人称的玩家跑的就是这套 PlayerModelAnimator 控制器栈，与背包预览共用
     // 输入是权威的行走动画状态，不再另算一份姿态
     animation::PlayerModelAnimator worldPlayerAnimator;
-    // 箱盖与掉落物运动的数据驱动定义，经动画库求值
-    // 箱盖是贝塞尔缓出的合页，掉落物是漂浮加旋转
-    animation::HingeAnimation chestLidAnimation;
-    animation::DisplayEntityAnimation itemDisplayAnimation;
     CameraPerspective cameraPerspective = CameraPerspective::FirstPerson;
     // 第三人称的身体偏航，它滞后于视线方向
     // 头先转，转到限度才拖着身体一起转
@@ -6397,25 +6364,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     VkDescriptorPool sceneDescriptorPool = VK_NULL_HANDLE;
     std::array<VkDescriptorSet, kFramesInFlight> sceneDescriptorSets{};
     GpuSceneBuffer gpuSceneBuffer;
-    VkPipeline particlePipeline = VK_NULL_HANDLE;
-    VkPipelineLayout particlePipelineLayout = VK_NULL_HANDLE;
-    bool legacyParticles = std::getenv("MC_REBEDROCK_LEGACY_PARTICLES") != nullptr;
     OffscreenTarget shadowTarget;
-    VkPipelineLayout shadowPipelineLayout = VK_NULL_HANDLE;
-    VkPipeline shadowPipeline = VK_NULL_HANDLE;
     VkDescriptorSetLayout shadowDebugSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool shadowDebugPool = VK_NULL_HANDLE;
     VkDescriptorSet shadowDebugSet = VK_NULL_HANDLE;
     VkSampler shadowDebugSampler = VK_NULL_HANDLE;
-    VkPipelineLayout shadowDebugPipelineLayout = VK_NULL_HANDLE;
-    VkPipeline shadowDebugPipeline = VK_NULL_HANDLE;
     glm::mat4 shadowLightViewProj{1.0F};
     bool shadowDisabled = std::getenv("MC_REBEDROCK_SHADOW_DISABLE") != nullptr;
-    bool shadowDebugOverlay = std::getenv("MC_REBEDROCK_SHADOW_DEBUG") != nullptr;
     render::RainSystem rainSystem;
-    // 方块粉尘、水花粒子和异步雨共用的 CPU 暂存缓冲，可复用
-    // 记录采样世界期间它一直留在主机缓存里，最后一次性整体拷进本帧顺序写映射的存储缓冲
-    std::vector<ParticleRecord> sceneParticleRecords_;
     RainMode rainMode_ = RainMode::Async;
     std::size_t rainCountOverride_ = 0U;
     float rainTime_ = 0.0F;
@@ -6429,8 +6385,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 线性同余发生器供选列和放行两处掷点使用，不去动音频系统自己的随机状态
     int weatherSoundCadence_ = 0;
     std::uint32_t weatherSoundRng_ = 0x5EED11U;
-    VkPipeline rainSheetPipeline = VK_NULL_HANDLE;
-    VkPipelineLayout rainSheetPipelineLayout = VK_NULL_HANDLE;
     // 原生 64x256 的 environment/rain.png，供 vanilla 的逐列降雨通道使用
     // 它不能挤进方形的方块数组，否则宽高比会被压坏
     // 标题界面的六张全景面，各占一层，用专门的线性采样器采样
@@ -6452,24 +6406,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     VkFormat depthFormat = VK_FORMAT_UNDEFINED;
     std::vector<DepthTarget> depthTargets;
     std::vector<ColorTarget> colorTargets;
-    VkRenderPass renderPass = VK_NULL_HANDLE;
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkPipeline graphicsPipeline = VK_NULL_HANDLE;
-    VkPipeline translucentPipeline = VK_NULL_HANDLE;
-    VkPipeline cutoutPipeline = VK_NULL_HANDLE;
-    VkPipeline skyPipeline = VK_NULL_HANDLE;
-    VkPipelineLayout outlinePipelineLayout = VK_NULL_HANDLE;
-    VkPipeline outlinePipeline = VK_NULL_HANDLE;
     VkPipeline crosshairPipeline = VK_NULL_HANDLE;
     VkPipelineLayout hudPipelineLayout = VK_NULL_HANDLE;
     VkPipeline hudPipeline = VK_NULL_HANDLE;
     VkPipelineLayout panoramaPipelineLayout = VK_NULL_HANDLE;
     VkPipeline panoramaPipeline = VK_NULL_HANDLE;
     VkPipeline vignettePipeline = VK_NULL_HANDLE;
-    VkPipelineLayout itemPipelineLayout = VK_NULL_HANDLE;
-    VkPipeline itemPipeline = VK_NULL_HANDLE;
-    VkPipeline itemShadowPipeline = VK_NULL_HANDLE;
-    VkPipeline heldItemPipeline = VK_NULL_HANDLE;
+    // 世界通道的管线族，定义见 render/vulkan/WorldRenderTypes.hpp
+    // 所有权仍在这里（本类创建，并随交换链销毁重建），WorldRenderer 只持有它的引用
+    WorldPipelines worldPipelines_;
+    // 遮挡查询的 GPU 资源与开关，定义见 WorldRenderTypes.hpp
+    // 逐 section 的查询结果是纯 CPU 状态，已经归 WorldRenderer 自有
+    OcclusionResources occlusion_{.disabled = disableOcclusionQueries()};
     std::vector<VkFramebuffer> framebuffers;
     std::vector<VkFence> imagesInFlight;
     std::vector<VkSemaphore> presentSemaphores;
@@ -6480,30 +6428,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     std::size_t stressFrames = 0;
     // MC_REBEDROCK_DISABLE_OCCLUSION 关掉遮挡通道
     // 设上它之后崩溃就消失的话，就能把问题归到查询上
-    bool occlusionDisabled = disableOcclusionQueries();
-    // 上一帧的渲染眼点
-    // 遮挡通道据此判断视角是否快到让晚两帧的查询结果已经过期
-    bool hasLastRenderEye = false;
-    RenderEye lastRenderEye{};
-    // 自上一次遮挡校验点以来累计的旋转与平移
-    // 晚两帧的 Occluded 结果只在眼点接近静止时才可信
-    // 累计运动超过一个小阈值就把整张 occlusionStates 表丢掉，陈旧的 section 因此照画并重新查询
-    // 即使是一次始终触发不了逐帧快速运动判定的平滑快扫也照样失效重来
-    bool occlusionValidityInitialized = false;
-    float occlusionRotationAccumulatorDegrees = 0.0F;
-    float occlusionTranslationAccumulator = 0.0F;
-    // 流送请求中心同时朝视线方向和移动方向前探，转过身时那片区域已经在生成
-    // 前探方向用独立的一份朝向而不是渲染眼点，好让它与第一或第三人称的眼点无关
-    // 视角摆动期间由旋转保护取消前探，已加载的区域因此不会来回颠簸
-    bool hasLastStreamingForward = false;
-    glm::vec3 lastStreamingForward{0.0F, 0.0F, 1.0F};
     std::size_t completedStreamBatchCount = 0;
     std::size_t completedBlockEditCount = 0;
     std::size_t loadedCpuChunkCount = 0;
-    std::size_t uploadedSectionsThisFrame = 0;
     std::size_t peakPendingSectionCount = 0;
     std::size_t lastSessionPeakPendingSectionCount = 0;
-    VkDeviceSize uploadedBytesThisFrame = 0;
     VkDeviceSize totalUploadedBytes = 0;
     // 流送上传预算，每帧按平滑后的帧时间调整
     // GPU 有余量时抬高，帧时间往上走时压低，迟滞规则见 render/StreamingBudget.hpp
@@ -6544,8 +6473,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .crosshairPipeline = crosshairPipeline,
             .panoramaPipeline = panoramaPipeline,
             .panoramaPipelineLayout = panoramaPipelineLayout,
-            .heldItemPipeline = heldItemPipeline,
-            .itemPipelineLayout = itemPipelineLayout,
+            .heldItemPipeline = worldPipelines_.heldItemPipeline,
+            .itemPipelineLayout = worldPipelines_.itemPipelineLayout,
             .inventoryOpen = inventoryOpen,
             .containerScreen = uiFrameData_.containerScreen,
             .activeChest = uiFrameData_.activeChest,
@@ -6610,6 +6539,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     [[nodiscard]] WorldRenderer::Bindings makeWorldBindings() {
         return WorldRenderer::Bindings{
             .testScene = testScene,
+            .pipelines = worldPipelines_,
+            .occlusion = occlusion_,
             .chunkStreamer = chunkStreamer,
             .interactionWorld = interactionWorld,
             .clientCache = clientCache,
@@ -6617,11 +6548,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .gpuMeshes = gpuMeshes,
             .deviceBufferPool_ = deviceBufferPool_,
             .stagingBufferPool_ = stagingBufferPool_,
-            .occlusionQueryPools = occlusionQueryPools,
-            .occlusionQueryPipeline = occlusionQueryPipeline,
-            .occlusionQueryLayout = occlusionQueryLayout,
-            .occlusionBoxVertexBuffer = occlusionBoxVertexBuffer,
-            .occlusionBoxIndexBuffer = occlusionBoxIndexBuffer,
             .pendingSectionOrder = pendingSectionOrder,
             .currentMeshQuality = currentMeshQuality,
             .targetMeshQuality = targetMeshQuality,
@@ -6639,8 +6565,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .speciesModels = speciesModels,
             .heldItemAnimation = heldItemAnimation,
             .worldPlayerAnimator = worldPlayerAnimator,
-            .chestLidAnimation = chestLidAnimation,
-            .itemDisplayAnimation = itemDisplayAnimation,
             .cameraPerspective = cameraPerspective,
             .worldBodyYaw = worldBodyYaw,
             .particleSystem = particleSystem,
@@ -6663,52 +6587,21 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .textures_ = textures_,
             .sceneDescriptorSets = sceneDescriptorSets,
             .gpuSceneBuffer = gpuSceneBuffer,
-            .particlePipeline = particlePipeline,
-            .particlePipelineLayout = particlePipelineLayout,
-            .legacyParticles = legacyParticles,
             .shadowTarget = shadowTarget,
-            .shadowPipelineLayout = shadowPipelineLayout,
-            .shadowPipeline = shadowPipeline,
             .shadowDebugSet = shadowDebugSet,
-            .shadowDebugPipelineLayout = shadowDebugPipelineLayout,
-            .shadowDebugPipeline = shadowDebugPipeline,
             .shadowLightViewProj = shadowLightViewProj,
             .shadowDisabled = shadowDisabled,
-            .shadowDebugOverlay = shadowDebugOverlay,
             .rainSystem = rainSystem,
-            .sceneParticleRecords_ = sceneParticleRecords_,
             .rainMode_ = rainMode_,
             .rainTime_ = rainTime_,
-            .rainSheetPipeline = rainSheetPipeline,
-            .rainSheetPipelineLayout = rainSheetPipelineLayout,
             .language = language,
             .swapchainExtent = swapchainExtent,
-            .renderPass = renderPass,
-            .pipelineLayout = pipelineLayout,
-            .graphicsPipeline = graphicsPipeline,
-            .translucentPipeline = translucentPipeline,
-            .cutoutPipeline = cutoutPipeline,
-            .skyPipeline = skyPipeline,
-            .outlinePipelineLayout = outlinePipelineLayout,
-            .outlinePipeline = outlinePipeline,
-            .itemPipelineLayout = itemPipelineLayout,
-            .itemPipeline = itemPipeline,
-            .itemShadowPipeline = itemShadowPipeline,
-            .heldItemPipeline = heldItemPipeline,
             .framebuffers = framebuffers,
             .frames = frames,
             .currentFrame = currentFrame,
-            .occlusionDisabled = occlusionDisabled,
-            .hasLastRenderEye = hasLastRenderEye,
-            .lastRenderEye = lastRenderEye,
-            .occlusionValidityInitialized = occlusionValidityInitialized,
-            .occlusionRotationAccumulatorDegrees = occlusionRotationAccumulatorDegrees,
-            .occlusionTranslationAccumulator = occlusionTranslationAccumulator,
             .peakPendingSectionCount = peakPendingSectionCount,
             .smoothedFrameSeconds_ = smoothedFrameSeconds_,
             .streamingUploadBudget_ = streamingUploadBudget_,
-            .occlusionStates = occlusionStates,
-            .occlusionMissCount = occlusionMissCount,
             .pendingSectionUpdates = pendingSectionUpdates,
             .latestSectionRevisions = latestSectionRevisions,
             .worldEpoch = worldEpoch,
@@ -6717,10 +6610,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .completedStreamBatchCount = completedStreamBatchCount,
             .lastVisibleMeshCount = lastVisibleMeshCount,
             .worldSessionActive = worldSessionActive,
-            .hasLastStreamingForward = hasLastStreamingForward,
-            .lastStreamingForward = lastStreamingForward,
-            .uploadedSectionsThisFrame = uploadedSectionsThisFrame,
-            .uploadedBytesThisFrame = uploadedBytesThisFrame,
             .totalUploadedBytes = totalUploadedBytes,
             .hud_ = hud_,
             .rainTargetCount = [this] { return rainTargetCount(); },

@@ -13,6 +13,7 @@
 #include "render/vulkan/OffscreenTarget.hpp"
 #include "render/vulkan/TextureManager.hpp"
 
+#include "core/EnvFlags.hpp"
 #include "core/FrameTrace.hpp"
 
 #include "animation/AnimationAssets.hpp"
@@ -26,6 +27,7 @@
 #include "gameplay/ChestSystem.hpp"
 #include "gameplay/DyeColor.hpp"
 #include "gameplay/GameSession.hpp"
+#include "gameplay/Random.hpp"
 #include "gameplay/GameplayMutationSink.hpp"
 #include "gameplay/Inventory.hpp"
 #include "gameplay/ItemEntitySystem.hpp"
@@ -70,6 +72,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -83,6 +86,11 @@ class WorldRenderer final {
  public:
   struct Bindings final {
     std::optional<TestSceneOptions>& testScene;
+    // 世界通道的全部管线与管线布局，所有权在 Impl（随交换链销毁重建）
+    // 这里必须是引用：重建之后读到的得是新句柄，一份拷贝就是一堆悬垂句柄
+    WorldPipelines& pipelines;
+    // 遮挡查询的 GPU 资源与开关，所有权同样在 Impl
+    OcclusionResources& occlusion;
     world::ChunkStreamer& chunkStreamer;
     world::World& interactionWorld;
     // 客户端区块缓存：渲染器做网格化和采样所用的世界
@@ -92,11 +100,6 @@ class WorldRenderer final {
     std::unordered_map<world::SectionPosition, GpuMesh, world::SectionPositionHash>& gpuMeshes;
     StreamBufferPool& deviceBufferPool_;
     StreamBufferPool& stagingBufferPool_;
-    std::array<VkQueryPool, kFramesInFlight>& occlusionQueryPools;
-    VkPipeline& occlusionQueryPipeline;
-    VkPipelineLayout& occlusionQueryLayout;
-    AllocatedBuffer& occlusionBoxVertexBuffer;
-    AllocatedBuffer& occlusionBoxIndexBuffer;
     render::SectionDeliveryQueue<world::SectionPosition, world::SectionPositionHash>& pendingSectionOrder;
     world::SmoothLightingQuality& currentMeshQuality;
     world::SmoothLightingQuality& targetMeshQuality;
@@ -115,8 +118,6 @@ class WorldRenderer final {
     std::vector<gameplay::entities::SpeciesRenderModel>& speciesModels;
     animation::ModelAnimationSystem& heldItemAnimation;
     animation::PlayerModelAnimator& worldPlayerAnimator;
-    animation::HingeAnimation& chestLidAnimation;
-    animation::DisplayEntityAnimation& itemDisplayAnimation;
     CameraPerspective& cameraPerspective;
     float& worldBodyYaw;
     ParticleSystem& particleSystem;
@@ -139,52 +140,21 @@ class WorldRenderer final {
     TextureManager& textures_;
     std::array<VkDescriptorSet, kFramesInFlight>& sceneDescriptorSets;
     GpuSceneBuffer& gpuSceneBuffer;
-    VkPipeline& particlePipeline;
-    VkPipelineLayout& particlePipelineLayout;
-    bool& legacyParticles;
     OffscreenTarget& shadowTarget;
-    VkPipelineLayout& shadowPipelineLayout;
-    VkPipeline& shadowPipeline;
     VkDescriptorSet& shadowDebugSet;
-    VkPipelineLayout& shadowDebugPipelineLayout;
-    VkPipeline& shadowDebugPipeline;
     glm::mat4& shadowLightViewProj;
     bool& shadowDisabled;
-    bool& shadowDebugOverlay;
     render::RainSystem& rainSystem;
-    std::vector<ParticleRecord>& sceneParticleRecords_;
     RainMode& rainMode_;
     float& rainTime_;
-    VkPipeline& rainSheetPipeline;
-    VkPipelineLayout& rainSheetPipelineLayout;
     ui::Language& language;
     VkExtent2D& swapchainExtent;
-    VkRenderPass& renderPass;
-    VkPipelineLayout& pipelineLayout;
-    VkPipeline& graphicsPipeline;
-    VkPipeline& translucentPipeline;
-    VkPipeline& cutoutPipeline;
-    VkPipeline& skyPipeline;
-    VkPipelineLayout& outlinePipelineLayout;
-    VkPipeline& outlinePipeline;
-    VkPipelineLayout& itemPipelineLayout;
-    VkPipeline& itemPipeline;
-    VkPipeline& itemShadowPipeline;
-    VkPipeline& heldItemPipeline;
     std::vector<VkFramebuffer>& framebuffers;
     std::array<FrameContext, kFramesInFlight>& frames;
     std::size_t& currentFrame;
-    bool& occlusionDisabled;
-    bool& hasLastRenderEye;
-    RenderEye& lastRenderEye;
-    bool& occlusionValidityInitialized;
-    float& occlusionRotationAccumulatorDegrees;
-    float& occlusionTranslationAccumulator;
     std::size_t& peakPendingSectionCount;
     float& smoothedFrameSeconds_;
     std::size_t& streamingUploadBudget_;
-    std::unordered_map<world::SectionPosition, OcclusionState, world::SectionPositionHash>& occlusionStates;
-    std::unordered_map<world::SectionPosition, std::uint32_t, world::SectionPositionHash>& occlusionMissCount;
     std::unordered_map<world::SectionPosition, world::SectionMeshUpdate, world::SectionPositionHash>& pendingSectionUpdates;
     std::unordered_map<world::SectionPosition, std::uint64_t, world::SectionPositionHash>& latestSectionRevisions;
     std::uint64_t& worldEpoch;
@@ -193,10 +163,6 @@ class WorldRenderer final {
     std::size_t& completedStreamBatchCount;
     std::size_t& lastVisibleMeshCount;
     bool& worldSessionActive;
-    bool& hasLastStreamingForward;
-    glm::vec3& lastStreamingForward;
-    std::size_t& uploadedSectionsThisFrame;
-    VkDeviceSize& uploadedBytesThisFrame;
     VkDeviceSize& totalUploadedBytes;
     HudRenderer& hud_;
     std::function<std::size_t()> rainTargetCount;
@@ -216,68 +182,39 @@ class WorldRenderer final {
   };
 
   explicit WorldRenderer(const Bindings& b)
-      : testScene(b.testScene), chunkStreamer(b.chunkStreamer),
+      : testScene(b.testScene), pipelines(b.pipelines), occlusion(b.occlusion), chunkStreamer(b.chunkStreamer),
         interactionWorld(b.interactionWorld), clientCache(b.clientCache),
-        interactionLightEngine(b.interactionLightEngine),
-        gpuMeshes(b.gpuMeshes), deviceBufferPool_(b.deviceBufferPool_),
-        stagingBufferPool_(b.stagingBufferPool_), occlusionQueryPools(b.occlusionQueryPools),
-        occlusionQueryPipeline(b.occlusionQueryPipeline),
-        occlusionQueryLayout(b.occlusionQueryLayout),
-        occlusionBoxVertexBuffer(b.occlusionBoxVertexBuffer),
-        occlusionBoxIndexBuffer(b.occlusionBoxIndexBuffer),
+        interactionLightEngine(b.interactionLightEngine), gpuMeshes(b.gpuMeshes),
+        deviceBufferPool_(b.deviceBufferPool_), stagingBufferPool_(b.stagingBufferPool_),
         pendingSectionOrder(b.pendingSectionOrder), currentMeshQuality(b.currentMeshQuality),
         targetMeshQuality(b.targetMeshQuality), qualityRemeshPending(b.qualityRemeshPending),
         gameSession(b.gameSession), clientMirror(b.clientMirror),
-        enqueueClientCommand(b.enqueueClientCommand),
-        simulationHost(b.simulationHost), worldLock(b.worldLock), uiFrameData_(b.uiFrameData_),
-        camera(b.camera), speciesModels(b.speciesModels), heldItemAnimation(b.heldItemAnimation),
-        worldPlayerAnimator(b.worldPlayerAnimator),
-        chestLidAnimation(b.chestLidAnimation),
-        itemDisplayAnimation(b.itemDisplayAnimation), cameraPerspective(b.cameraPerspective),
+        enqueueClientCommand(b.enqueueClientCommand), simulationHost(b.simulationHost),
+        worldLock(b.worldLock), uiFrameData_(b.uiFrameData_), camera(b.camera),
+        speciesModels(b.speciesModels), heldItemAnimation(b.heldItemAnimation),
+        worldPlayerAnimator(b.worldPlayerAnimator), cameraPerspective(b.cameraPerspective),
         worldBodyYaw(b.worldBodyYaw), particleSystem(b.particleSystem),
-        inventoryOpen(b.inventoryOpen),
-        spawnPositionInitialized(b.spawnPositionInitialized), worldReady(b.worldReady),
-        paused(b.paused), dropRequested(b.dropRequested), dropWholeStack(b.dropWholeStack),
-        chatOpen(b.chatOpen), targetedBlock(b.targetedBlock),
+        inventoryOpen(b.inventoryOpen), spawnPositionInitialized(b.spawnPositionInitialized),
+        worldReady(b.worldReady), paused(b.paused), dropRequested(b.dropRequested),
+        dropWholeStack(b.dropWholeStack), chatOpen(b.chatOpen), targetedBlock(b.targetedBlock),
         renderTimeSeconds(b.renderTimeSeconds),
         renderInterpolationAlpha(b.renderInterpolationAlpha), window(b.window),
         instance(b.instance), surface(b.surface), device(b.device), allocator(b.allocator),
         resources_(b.resources_), textures_(b.textures_),
         sceneDescriptorSets(b.sceneDescriptorSets), gpuSceneBuffer(b.gpuSceneBuffer),
-        particlePipeline(b.particlePipeline), particlePipelineLayout(b.particlePipelineLayout),
-        legacyParticles(b.legacyParticles), shadowTarget(b.shadowTarget),
-        shadowPipelineLayout(b.shadowPipelineLayout), shadowPipeline(b.shadowPipeline),
-        shadowDebugSet(b.shadowDebugSet), shadowDebugPipelineLayout(b.shadowDebugPipelineLayout),
-        shadowDebugPipeline(b.shadowDebugPipeline), shadowLightViewProj(b.shadowLightViewProj),
-        shadowDisabled(b.shadowDisabled), shadowDebugOverlay(b.shadowDebugOverlay),
-        rainSystem(b.rainSystem), sceneParticleRecords_(b.sceneParticleRecords_),
-        rainMode_(b.rainMode_), rainTime_(b.rainTime_), rainSheetPipeline(b.rainSheetPipeline),
-        rainSheetPipelineLayout(b.rainSheetPipelineLayout), language(b.language),
-        swapchainExtent(b.swapchainExtent), renderPass(b.renderPass),
-        pipelineLayout(b.pipelineLayout), graphicsPipeline(b.graphicsPipeline),
-        translucentPipeline(b.translucentPipeline), cutoutPipeline(b.cutoutPipeline),
-        skyPipeline(b.skyPipeline), outlinePipelineLayout(b.outlinePipelineLayout),
-        outlinePipeline(b.outlinePipeline), itemPipelineLayout(b.itemPipelineLayout),
-        itemPipeline(b.itemPipeline), itemShadowPipeline(b.itemShadowPipeline),
-        heldItemPipeline(b.heldItemPipeline), framebuffers(b.framebuffers), frames(b.frames),
-        currentFrame(b.currentFrame), occlusionDisabled(b.occlusionDisabled),
-        hasLastRenderEye(b.hasLastRenderEye), lastRenderEye(b.lastRenderEye),
-        occlusionValidityInitialized(b.occlusionValidityInitialized),
-        occlusionRotationAccumulatorDegrees(b.occlusionRotationAccumulatorDegrees),
-        occlusionTranslationAccumulator(b.occlusionTranslationAccumulator),
-        peakPendingSectionCount(b.peakPendingSectionCount),
+        shadowTarget(b.shadowTarget), shadowDebugSet(b.shadowDebugSet),
+        shadowLightViewProj(b.shadowLightViewProj),
+        shadowDisabled(b.shadowDisabled), rainSystem(b.rainSystem), rainMode_(b.rainMode_),
+        rainTime_(b.rainTime_), language(b.language),
+        swapchainExtent(b.swapchainExtent), framebuffers(b.framebuffers), frames(b.frames),
+        currentFrame(b.currentFrame), peakPendingSectionCount(b.peakPendingSectionCount),
         smoothedFrameSeconds_(b.smoothedFrameSeconds_),
-        streamingUploadBudget_(b.streamingUploadBudget_), occlusionStates(b.occlusionStates),
-        occlusionMissCount(b.occlusionMissCount), pendingSectionUpdates(b.pendingSectionUpdates),
+        streamingUploadBudget_(b.streamingUploadBudget_), pendingSectionUpdates(b.pendingSectionUpdates),
         latestSectionRevisions(b.latestSectionRevisions), worldEpoch(b.worldEpoch),
         loadedCpuChunkCount(b.loadedCpuChunkCount),
         completedBlockEditCount(b.completedBlockEditCount),
         completedStreamBatchCount(b.completedStreamBatchCount),
         lastVisibleMeshCount(b.lastVisibleMeshCount), worldSessionActive(b.worldSessionActive),
-        hasLastStreamingForward(b.hasLastStreamingForward),
-        lastStreamingForward(b.lastStreamingForward),
-        uploadedSectionsThisFrame(b.uploadedSectionsThisFrame),
-        uploadedBytesThisFrame(b.uploadedBytesThisFrame),
         totalUploadedBytes(b.totalUploadedBytes), hud_(b.hud_), rainTargetCount(b.rainTargetCount),
         renderViewMatrix(b.renderViewMatrix), viewBobbingMatrix(b.viewBobbingMatrix),
         renderEyeState(b.renderEyeState), cameraFarPlane(b.cameraFarPlane),
@@ -443,7 +380,7 @@ class WorldRenderer final {
                 initializeSpawnPosition();
             }
             if (completedStreamBatchCount == 1U &&
-                std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr) {
+                diag::smokeTestEnabled()) {
                 const auto snap = clientMirror.player();
                 const glm::vec3 oldPosition = snap.physicsCurrent;
                 gameSession.teleportPlayer(gameplay::kPrimaryPlayerId,
@@ -454,7 +391,7 @@ class WorldRenderer final {
                 camera.setPosition(snap.physicsCurrent + glm::vec3{0.0F, eyeHeight, 0.0F});
             }
             if (completedStreamBatchCount == 2U &&
-                std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr) {
+                diag::smokeTestEnabled()) {
                 gameplay::GameplayMutationSink sink{interactionWorld, gameSession};
                 const auto place = [&](int x, int y, int z, world::Block block) {
                     static_cast<void>(gameSession.worldMutations().setBlock(
@@ -1073,13 +1010,13 @@ class WorldRenderer final {
         vkCmdSetViewport(frame.commandBuffer, 0, 1, &viewport);
         VkRect2D scissor{{0, 0}, {shadowTarget.width(), shadowTarget.height()}};
         vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
-        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
+        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.shadowPipeline);
         for (const auto* mesh : casters) {
             if (mesh->opaque.indexCount == 0U) {
                 continue;
             }
             const ShadowPush push{shadowLightViewProj, glm::vec4{mesh->sectionOrigin, 1.0F}};
-            vkCmdPushConstants(frame.commandBuffer, shadowPipelineLayout,
+            vkCmdPushConstants(frame.commandBuffer, pipelines.shadowPipelineLayout,
                                VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
             vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &mesh->vertexBuffer.buffer,
                                    &mesh->opaque.vertexOffset);
@@ -1089,9 +1026,8 @@ class WorldRenderer final {
         }
         vkCmdEndRenderPass(frame.commandBuffer);
         shadowTarget.transitionToShaderRead(frame.commandBuffer);
-        static bool reported = false;
-        if (!reported && !casters.empty()) {
-            reported = true;
+        if (!diagnosticsOnce_.shadowCasters && !casters.empty()) {
+            diagnosticsOnce_.shadowCasters = true;
             std::cout << "[shadow] pre-pass " << casters.size() << " casters\n";
         }
     }
@@ -1112,10 +1048,10 @@ class WorldRenderer final {
             2.0F * kSize / width,
             2.0F * kSize / height,
         };
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowDebugPipeline);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.shadowDebugPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                shadowDebugPipelineLayout, 0, 1, &shadowDebugSet, 0, nullptr);
-        vkCmdPushConstants(commandBuffer, shadowDebugPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+                                pipelines.shadowDebugPipelineLayout, 0, 1, &shadowDebugSet, 0, nullptr);
+        vkCmdPushConstants(commandBuffer, pipelines.shadowDebugPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                            sizeof(rect), &rect);
         vkCmdDraw(commandBuffer, 6U, 1, 0, 0);
     }
@@ -1138,9 +1074,9 @@ class WorldRenderer final {
             return;
         }
         if (!snapshotItems.empty()) {
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemShadowPipeline);
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemShadowPipeline);
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    itemPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+                                    pipelines.itemPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
             for (const auto& entity : snapshotItems) {
                 const glm::vec3 renderedPosition =
                     entity.previousPosition +
@@ -1169,13 +1105,13 @@ class WorldRenderer final {
                     {2.0F, opacity, 0.0F, 0.0F},
                     {0.0F, 0.0F, 0.0F, 0.0F},
                 };
-                vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+                vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                    sizeof(shadowPush), &shadowPush);
                 vkCmdDraw(commandBuffer, 36, 1, 0, 0);
             }
         }
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipelineLayout,
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipelineLayout,
                                 0, 1, &descriptorSet, 0, nullptr);
         // 手持物生成的 2.5D 薄片顶点数，对应 item_entity.vert 的 data.x 落在 (6.5,7.5) 模式
         // 计为正反面 12 个顶点，加上 16x16 的边缘四边形
@@ -1191,13 +1127,14 @@ class WorldRenderer final {
             // vanilla 画的是它的方块模型，一个平躺的半高盒子
             // 而不是 else 分支那种立着旋转的挤出贴图
             // 它走立方体路径，Y 向尺寸减半（见下面的 slabDrop）
+            // 走不走立方体路径由 world::rendersAsCubeItem 单点回答
+            // 掉落物、手持物、背包图标三条物品渲染面共用它
+            // 这里曾各自手写 `model == Cube || ...`，三处口径还不一样：
+            // 侦测器（DirectionalCube）只补进了手持与图标，掉在地上就退化成扁平贴图
             const bool slabDrop =
                 gameplay::isBlockStack(entity.stack) && world::isSlab(entity.stack.block);
-            const bool cubeModel =
-                gameplay::isBlockStack(entity.stack) &&
-                (world::blockDefinition(entity.stack.block).model == world::BlockModel::Cube ||
-                 world::blockDefinition(entity.stack.block).model == world::BlockModel::Chest ||
-                 slabDrop);
+            const bool cubeModel = gameplay::isBlockStack(entity.stack) &&
+                                   world::rendersAsCubeItem(entity.stack.block);
             const auto layers =
                 cubeModel ? world::textureLayers(entity.stack.block)
                           : world::BlockTextureLayers{gameplay::itemTextureLayer(entity.stack),
@@ -1228,7 +1165,7 @@ class WorldRenderer final {
                     {1.0F, 0.0F, slabDrop ? 1.0F : 0.0F, 0.0F},
                     dimensions,
                 };
-                vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+                vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                    sizeof(push), &push);
                 vkCmdDraw(commandBuffer, 36U, 1, 0, 0);
             } else {
@@ -1246,7 +1183,7 @@ class WorldRenderer final {
                     {7.0F, 0.0F, 0.0F, 0.0F},   {1.0F, 1.0F, 0.0625F, packedLight},
                     cameraView * dropTransform,
                 };
-                vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+                vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                    sizeof(push), &push);
                 vkCmdDraw(commandBuffer, kGeneratedItemVertexCount, 1, 0, 0);
             }
@@ -1265,7 +1202,7 @@ class WorldRenderer final {
                 {1.0F, 0.0F, 0.0F, 2.0F},
                 {0.0F, 0.0F, 0.0F, packedSceneLight(renderedPosition)},
             };
-            vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+            vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                sizeof(push), &push);
             vkCmdDraw(commandBuffer, 36, 1, 0, 0);
         }
@@ -1283,7 +1220,7 @@ class WorldRenderer final {
                 {-1.0F, 0.0F, 0.0F, 1.0F},
                 {0.0F, 0.0F, 0.0F, packedSceneLight(billboardCentre)},
             };
-            vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+            vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                sizeof(push), &push);
             vkCmdDraw(commandBuffer, 6U, 1, 0, 0);
         }
@@ -1296,24 +1233,6 @@ class WorldRenderer final {
         const auto& particles = particleSystem.particles();
         sceneParticleRecords_.clear();
         if (particles.empty()) {
-            return 0U;
-        }
-        // MC_REBEDROCK_LEGACY_PARTICLES 保留逐粒子推送常量的旧绘制方式，便于与实例化路径直接对比
-        if (legacyParticles) {
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline);
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    itemPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
-            for (const auto& particle : particles) {
-                const ItemPush push{
-                    {particle.position.x, particle.position.y, particle.position.z, particle.size},
-                    {particle.textureLayer, 0.0F, 0.0F, particle.opacity},
-                    {-1.0F, particle.uvOrigin.x, particle.uvOrigin.y, particle.uvScale},
-                    {0.0F, 0.0F, 0.0F, packedSceneLight(particle.position)},
-                };
-                vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
-                                   sizeof(push), &push);
-                vkCmdDraw(commandBuffer, 6U, 1, 0, 0);
-            }
             return 0U;
         }
         const std::size_t capacity = gpuSceneBuffer.capacityBytes() / sizeof(ParticleRecord);
@@ -1345,173 +1264,156 @@ class WorldRenderer final {
             checkVk(vmaFlushAllocation(allocator, buffer.allocation, 0, bytes),
                     "vmaFlushAllocation(particle scene buffer)");
         }
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, particlePipeline);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.particlePipeline);
         const std::array<VkDescriptorSet, 2> sets{descriptorSet, sceneDescriptorSets[currentFrame]};
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                particlePipelineLayout, 0, 2, sets.data(), 0, nullptr);
+                                pipelines.particlePipelineLayout, 0, 2, sets.data(), 0, nullptr);
         vkCmdDraw(commandBuffer, 6U, static_cast<std::uint32_t>(count), 0, 0);
-        static bool reported = false;
-        if (!reported) {
-            reported = true;
+        if (!diagnosticsOnce_.instancedParticles) {
+            diagnosticsOnce_.instancedParticles = true;
             std::cout << "[particles] instanced 1 draw for " << count
                       << " records (legacy = " << particles.size() << " draws)\n";
         }
         return count;
     }
 
-    // 三条路径之一绘制降雨
-    // Particles 与 Async 用同一批 CPU 雨滴，好让两个绘制后端可比
-    // Texture 走 vanilla 独立的逐列降水通道：
-    //   texture   -> 用 environment/rain.png 画窄长的竖直雨列
-    //   particles -> 旧的逐粒子物品管线公告板
-    //   async     -> 从场景存储缓冲发起一次实例化绘制，baseInstance 指到方块粉尘记录之后
-
+    // 降雨绘制的两条路径，各自成函数
+    // 它们除了函数名与一个诊断标志之外没有任何共享逻辑：贴图路径连雨滴都不读
+    // 曾经三条分支缝在一个 180 行的函数里，还共用一个 static bool reported——
+    // 运行时切换雨模式后，另一条路径就永远不打诊断行了
     void drawRain(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
                   std::size_t baseRecordCount) {
-        const auto& drops = rainSystem.drops();
-        static bool reported = false;
         if (rainMode_ == RainMode::Texture) {
-            const float rainGradient = clientMirror.world().rainGradient;
-            if (rainGradient <= 0.02F) {
-                return;
-            }
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, rainSheetPipeline);
-            const std::array<VkDescriptorSet, 2> sets{descriptorSet,
-                                                      sceneDescriptorSets[currentFrame]};
-            vkCmdBindDescriptorSets(
-                commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, rainSheetPipelineLayout, 0,
-                static_cast<std::uint32_t>(sets.size()), sets.data(), 0, nullptr);
+            drawTextureRain(commandBuffer, descriptorSet, baseRecordCount);
+        } else {
+            drawAsyncRain(commandBuffer, descriptorSet, baseRecordCount);
+        }
+    }
 
-            // vanilla 的降水渲染用 10 格的高画质半径，每个 x/z 列发出一条面向相机的竖直条带
-            // 条带从阻挡运动的表面高度起算，覆盖相机的局部竖直窗口，并向圆形边界淡出
-            constexpr int kRainRadius = 10;
-            const glm::vec3 cameraPosition = camera.position();
-            const int cameraX = static_cast<int>(std::floor(cameraPosition.x));
-            const int cameraY = static_cast<int>(std::floor(cameraPosition.y));
-            const int cameraZ = static_cast<int>(std::floor(cameraPosition.z));
-            std::size_t columnCount = 0U;
-            const std::size_t capacity = gpuSceneBuffer.capacityBytes() / sizeof(ParticleRecord);
-            sceneParticleRecords_.reserve(std::min(capacity, baseRecordCount + 441U));
-            for (int dz = -kRainRadius; dz <= kRainRadius; ++dz) {
-                for (int dx = -kRainRadius; dx <= kRainRadius; ++dx) {
-                    const int blockX = cameraX + dx;
-                    const int blockZ = cameraZ + dz;
-                    const float columnX = static_cast<float>(blockX) + 0.5F;
-                    const float columnZ = static_cast<float>(blockZ) + 0.5F;
-                    const float relativeX = columnX - cameraPosition.x;
-                    const float relativeZ = columnZ - cameraPosition.z;
-                    const float distance = std::sqrt(relativeX * relativeX + relativeZ * relativeZ);
-                    // 原版那两张表是按整数偏移索引的稳定 32x32 查找表，与相机的小数位置无关
-                    // 表的中心处会算出 0/0，因此不产生可用的四边形
-                    const float integerDistance = std::sqrt(static_cast<float>(dx * dx + dz * dz));
-                    if (integerDistance <= 1.0e-4F) {
-                        continue;
-                    }
-                    glm::vec2 tangent{1.0F, 0.0F};
-                    tangent = {-static_cast<float>(dz) / integerDistance,
-                               static_cast<float>(dx) / integerDistance};
-
-                    float bottom = static_cast<float>(cameraY - kRainRadius);
-                    float top = static_cast<float>(cameraY + kRainRadius);
-                    // 探测高度用与雨滴缓存相同的 +32 上限，附近的高屋顶因此也能把条带完全压没
-                    const float surface = rainSystem.precipitationSurfaceY(
-                        clientCache, blockX, blockZ, cameraPosition.y + 32.0F);
-                    if (surface >= 0.0F) {
-                        bottom = std::max(bottom, surface);
-                        top = std::max(top, surface);
-                    }
-                    if (top - bottom <= 1.0e-4F) {
-                        continue;
-                    }
-
-                    const float normalizedDistance = distance / static_cast<float>(kRainRadius);
-                    const float opacity =
-                        ((1.0F - normalizedDistance * normalizedDistance) * 0.5F + 0.5F) *
-                        rainGradient;
-                    if (opacity <= 0.01F || baseRecordCount + columnCount >= capacity) {
-                        continue;
-                    }
-                    // vanilla 用世界坐标给每一列播种
-                    // 相邻条带因此各有稳定但不同的滚动相位与速度，不会形成一整幅同步的雨帘
-                    const std::uint32_t xBits = static_cast<std::uint32_t>(blockX);
-                    const std::uint32_t zBits = static_cast<std::uint32_t>(blockZ);
-                    const std::uint32_t xSeed = xBits * xBits * 3121U + xBits * 45238971U;
-                    const std::uint32_t zSeed = zBits * zBits * 418711U + zBits * 13761U;
-                    const std::int32_t randomSeed = static_cast<std::int32_t>(xSeed ^ zSeed);
-                    constexpr std::uint64_t kJavaRandomMultiplier = 0x5DEECE66DULL;
-                    constexpr std::uint64_t kJavaRandomAddend = 0xBULL;
-                    constexpr std::uint64_t kJavaRandomMask = (1ULL << 48U) - 1ULL;
-                    std::uint64_t randomState =
-                        (static_cast<std::uint64_t>(static_cast<std::int64_t>(randomSeed)) ^
-                         kJavaRandomMultiplier) &
-                        kJavaRandomMask;
-                    randomState =
-                        (randomState * kJavaRandomMultiplier + kJavaRandomAddend) & kJavaRandomMask;
-                    const float randomFloat = static_cast<float>(randomState >> 24U) / 16777216.0F;
-                    const float tickTime = rainTime_ * 20.0F;
-                    const std::uint32_t phaseTick =
-                        (static_cast<std::uint32_t>(std::floor(tickTime)) + xSeed + zSeed) & 31U;
-                    const float partialTick = tickTime - std::floor(tickTime);
-                    const float scroll = -(static_cast<float>(phaseTick) + partialTick) / 32.0F *
-                                         (3.0F + randomFloat);
-                    const float packedLight = packedSceneLight(
-                        {columnX, std::max(surface, static_cast<float>(cameraY)) + 0.1F, columnZ});
-                    sceneParticleRecords_.push_back(ParticleRecord{
-                        {columnX, bottom, columnZ, 0.5F},
-                        {top, opacity, scroll, packedLight},
-                        {tangent.x, tangent.y, 0.0F, 0.0F},
-                    });
-                    ++columnCount;
-                }
-            }
-            if (columnCount == 0U) {
-                return;
-            }
-            const std::size_t totalRecordCount = baseRecordCount + columnCount;
-            auto& buffer = gpuSceneBuffer.frame(currentFrame);
-            std::memcpy(buffer.mapped, sceneParticleRecords_.data(),
-                        totalRecordCount * sizeof(ParticleRecord));
-            checkVk(vmaFlushAllocation(allocator, buffer.allocation, 0,
-                                       totalRecordCount * sizeof(ParticleRecord)),
-                    "vmaFlushAllocation(particle/texture-rain scene buffer)");
-            // 原版降水是一整批网格
-            // 这里的存储记录保持同一性质：一次实例化绘制，而不是每列一次 Vulkan 绘制调用
-            vkCmdDraw(commandBuffer, 6U, static_cast<std::uint32_t>(columnCount), 0,
-                      static_cast<std::uint32_t>(baseRecordCount));
-            if (!reported) {
-                reported = true;
-                std::cout << "[rain] mode=texture vanilla-columns=" << columnCount
-                          << " texture=environment/rain.png draws=1\n";
-            }
+    // vanilla 的逐列降水：用 environment/rain.png 画窄长的竖直雨列
+    // 不消费 CPU 雨滴，那批雨滴此时只负责落地水花与天气音效
+    void drawTextureRain(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
+                         std::size_t baseRecordCount) {
+        const float rainGradient = clientMirror.world().rainGradient;
+        if (rainGradient <= 0.02F) {
             return;
         }
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.rainSheetPipeline);
+        const std::array<VkDescriptorSet, 2> sets{descriptorSet,
+                                                  sceneDescriptorSets[currentFrame]};
+        vkCmdBindDescriptorSets(
+            commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.rainSheetPipelineLayout, 0,
+            static_cast<std::uint32_t>(sets.size()), sets.data(), 0, nullptr);
+
+        // vanilla 的降水渲染用 10 格的高画质半径，每个 x/z 列发出一条面向相机的竖直条带
+        // 条带从阻挡运动的表面高度起算，覆盖相机的局部竖直窗口，并向圆形边界淡出
+        constexpr int kRainRadius = 10;
+        const glm::vec3 cameraPosition = camera.position();
+        const int cameraX = static_cast<int>(std::floor(cameraPosition.x));
+        const int cameraY = static_cast<int>(std::floor(cameraPosition.y));
+        const int cameraZ = static_cast<int>(std::floor(cameraPosition.z));
+        std::size_t columnCount = 0U;
+        const std::size_t capacity = gpuSceneBuffer.capacityBytes() / sizeof(ParticleRecord);
+        sceneParticleRecords_.reserve(std::min(capacity, baseRecordCount + 441U));
+        for (int dz = -kRainRadius; dz <= kRainRadius; ++dz) {
+            for (int dx = -kRainRadius; dx <= kRainRadius; ++dx) {
+                const int blockX = cameraX + dx;
+                const int blockZ = cameraZ + dz;
+                const float columnX = static_cast<float>(blockX) + 0.5F;
+                const float columnZ = static_cast<float>(blockZ) + 0.5F;
+                const float relativeX = columnX - cameraPosition.x;
+                const float relativeZ = columnZ - cameraPosition.z;
+                const float distance = std::sqrt(relativeX * relativeX + relativeZ * relativeZ);
+                // 原版那两张表是按整数偏移索引的稳定 32x32 查找表，与相机的小数位置无关
+                // 表的中心处会算出 0/0，因此不产生可用的四边形
+                const float integerDistance = std::sqrt(static_cast<float>(dx * dx + dz * dz));
+                if (integerDistance <= 1.0e-4F) {
+                    continue;
+                }
+                glm::vec2 tangent{1.0F, 0.0F};
+                tangent = {-static_cast<float>(dz) / integerDistance,
+                           static_cast<float>(dx) / integerDistance};
+
+                float bottom = static_cast<float>(cameraY - kRainRadius);
+                float top = static_cast<float>(cameraY + kRainRadius);
+                // 探测高度用与雨滴缓存相同的 +32 上限，附近的高屋顶因此也能把条带完全压没
+                const float surface = rainSystem.precipitationSurfaceY(
+                    clientCache, blockX, blockZ, cameraPosition.y + 32.0F);
+                if (surface >= 0.0F) {
+                    bottom = std::max(bottom, surface);
+                    top = std::max(top, surface);
+                }
+                if (top - bottom <= 1.0e-4F) {
+                    continue;
+                }
+
+                const float normalizedDistance = distance / static_cast<float>(kRainRadius);
+                const float opacity =
+                    ((1.0F - normalizedDistance * normalizedDistance) * 0.5F + 0.5F) *
+                    rainGradient;
+                if (opacity <= 0.01F || baseRecordCount + columnCount >= capacity) {
+                    continue;
+                }
+                // vanilla 用世界坐标给每一列播种
+                // 相邻条带因此各有稳定但不同的滚动相位与速度，不会形成一整幅同步的雨帘
+                const std::uint32_t xBits = static_cast<std::uint32_t>(blockX);
+                const std::uint32_t zBits = static_cast<std::uint32_t>(blockZ);
+                const std::uint32_t xSeed = xBits * xBits * 3121U + xBits * 45238971U;
+                const std::uint32_t zSeed = zBits * zBits * 418711U + zBits * 13761U;
+                const std::int32_t randomSeed = static_cast<std::int32_t>(xSeed ^ zSeed);
+                // 用共享的 Java LCG（mc::rng），不再在这里内联手写第四份 LCG 步进
+                // seedFromValue + nextFloat 与原来那两行按位展开完全等价
+                std::uint64_t randomState = rng::seedFromValue(
+                    static_cast<std::uint64_t>(static_cast<std::int64_t>(randomSeed)));
+                const float randomFloat = rng::nextFloat(randomState);
+                const float tickTime = rainTime_ * 20.0F;
+                const std::uint32_t phaseTick =
+                    (static_cast<std::uint32_t>(std::floor(tickTime)) + xSeed + zSeed) & 31U;
+                const float partialTick = tickTime - std::floor(tickTime);
+                const float scroll = -(static_cast<float>(phaseTick) + partialTick) / 32.0F *
+                                     (3.0F + randomFloat);
+                const float packedLight = packedSceneLight(
+                    {columnX, std::max(surface, static_cast<float>(cameraY)) + 0.1F, columnZ});
+                // 显式以 RainColumnRecord 的字段名写入，再转成共享槽位
+                // 它由 rain_sheet.vert 解读，与方块粉尘的 ParticleRecord 语义无关
+                sceneParticleRecords_.push_back(asParticleRecord(RainColumnRecord{
+                    {columnX, bottom, columnZ, 0.5F},
+                    {top, opacity, scroll, packedLight},
+                    {tangent.x, tangent.y, 0.0F, 0.0F},
+                }));
+                ++columnCount;
+            }
+        }
+        if (columnCount == 0U) {
+            return;
+        }
+        const std::size_t totalRecordCount = baseRecordCount + columnCount;
+        auto& buffer = gpuSceneBuffer.frame(currentFrame);
+        std::memcpy(buffer.mapped, sceneParticleRecords_.data(),
+                    totalRecordCount * sizeof(ParticleRecord));
+        checkVk(vmaFlushAllocation(allocator, buffer.allocation, 0,
+                                   totalRecordCount * sizeof(ParticleRecord)),
+                "vmaFlushAllocation(particle/texture-rain scene buffer)");
+        // 原版降水是一整批网格
+        // 这里的存储记录保持同一性质：一次实例化绘制，而不是每列一次 Vulkan 绘制调用
+        vkCmdDraw(commandBuffer, 6U, static_cast<std::uint32_t>(columnCount), 0,
+                  static_cast<std::uint32_t>(baseRecordCount));
+        if (!diagnosticsOnce_.textureRain) {
+            diagnosticsOnce_.textureRain = true;
+            std::cout << "[rain] mode=texture vanilla-columns=" << columnCount
+                      << " texture=environment/rain.png draws=1\n";
+        }
+    }
+
+    // 异步粒子雨：CPU 雨滴的实例化绘制
+    // 记录接在方块粉尘之后写进同一个场景存储缓冲，baseInstance 越过它们，
+    // 整片雨一次 vkCmdDraw 画完
+    void drawAsyncRain(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
+                       std::size_t baseRecordCount) {
+        const auto& drops = rainSystem.drops();
         if (drops.empty()) {
             return;
         }
-        if (rainMode_ == RainMode::Particles) {
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline);
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    itemPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
-            for (const auto& drop : drops) {
-                const ItemPush push{
-                    {drop.position.x, drop.position.y, drop.position.z, drop.size},
-                    {static_cast<float>(kWaterStillLayer), 0.0F, 0.0F, 0.6F},
-                    {-1.0F, 0.0F, 0.0F, 1.0F},
-                    {0.0F, 0.0F, 0.0F, packedSceneLight(drop.position)},
-                };
-                vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
-                                   sizeof(push), &push);
-                vkCmdDraw(commandBuffer, 6U, 1, 0, 0);
-            }
-            if (!reported && drops.size() >= rainTargetCount() * 9U / 10U) {
-                reported = true;
-                std::cout << "[rain] mode=particles drops=" << drops.size()
-                          << " draws=" << drops.size() << "\n";
-            }
-            return;
-        }
-        // 异步路径把雨的记录接在方块粉尘记录之后，写进同一个场景缓冲
-        // 再用越过它们的 baseInstance 一次画完
         const std::size_t capacity = gpuSceneBuffer.capacityBytes() / sizeof(ParticleRecord);
         const std::size_t count = std::min(drops.size(), capacity - baseRecordCount);
         auto& buffer = gpuSceneBuffer.frame(currentFrame);
@@ -1537,14 +1439,14 @@ class WorldRenderer final {
         if (count == 0U) {
             return;
         }
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, particlePipeline);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.particlePipeline);
         const std::array<VkDescriptorSet, 2> sets{descriptorSet, sceneDescriptorSets[currentFrame]};
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                particlePipelineLayout, 0, 2, sets.data(), 0, nullptr);
+                                pipelines.particlePipelineLayout, 0, 2, sets.data(), 0, nullptr);
         vkCmdDraw(commandBuffer, 6U, static_cast<std::uint32_t>(count), 0,
                   static_cast<std::uint32_t>(baseRecordCount));
-        if (!reported && count >= rainTargetCount() * 9U / 10U) {
-            reported = true;
+        if (!diagnosticsOnce_.asyncRain && count >= rainTargetCount() * 9U / 10U) {
+            diagnosticsOnce_.asyncRain = true;
             std::cout << "[rain] mode=async drops=" << count << " draws=1\n";
         }
     }
@@ -1564,7 +1466,7 @@ class WorldRenderer final {
             {dimensions.x, dimensions.y, dimensions.z, packedLight},
             worldMatrix,
         };
-        vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+        vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                            sizeof(push), &push);
         vkCmdDraw(commandBuffer, 36U, 1, 0, 0);
     }
@@ -1574,8 +1476,8 @@ class WorldRenderer final {
         const auto& chests = clientMirror.world().chests;
         if (chests.empty())
             return;
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipelineLayout,
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipelineLayout,
                                 0, 1, &descriptorSet, 0, nullptr);
         const auto drawWorldCuboid = [&](const glm::mat4& worldMatrix, glm::vec3 dimensions,
                                          float textureLayer, float packedLight) {
@@ -1637,8 +1539,8 @@ class WorldRenderer final {
         if (cameraPerspective == CameraPerspective::FirstPerson || !worldReady) {
             return;
         }
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipelineLayout,
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipelineLayout,
                                 0, 1, &descriptorSet, 0, nullptr);
 
         // 相机位于插值后的眼点；模型以脚为锚点
@@ -1759,7 +1661,7 @@ class WorldRenderer final {
              packedLight + (hurtFlash > 0.5F ? 512.0F : 0.0F)},
             worldMatrix,
         };
-        vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+        vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                            sizeof(push), &push);
         vkCmdDraw(commandBuffer, 36U, 1, 0, 0);
     }
@@ -1775,8 +1677,8 @@ class WorldRenderer final {
         if (!worldReady || snapshotEntities.empty()) {
             return;
         }
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipelineLayout,
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipelineLayout,
                                 0, 1, &descriptorSet, 0, nullptr);
         constexpr float kPi = 3.14159265358979323846F;
         constexpr float kModelUnitsToBlocks = 1.0F / 16.0F;
@@ -1943,10 +1845,10 @@ class WorldRenderer final {
             {1.0F, 0.0F, 0.0F, 0.0F},
             {0.0F, 0.0F, 0.0F, 0.0F},
         };
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipelineLayout,
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipelineLayout,
                                 0, 1, &descriptorSet, 0, nullptr);
-        vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+        vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                            sizeof(push), &push);
         vkCmdDraw(commandBuffer, 36U, 1U, 0U, 0U);
     }
@@ -1964,12 +1866,9 @@ class WorldRenderer final {
         // 它走立方体路径，Y 向尺寸减半（见下面的 heldDimensions）
         const bool heldSlab =
             !emptyHand && gameplay::isBlockStack(stack) && world::isSlab(stack.block);
-        const bool cubeModel =
-            !emptyHand && gameplay::isBlockStack(stack) &&
-            (world::blockDefinition(stack.block).model == world::BlockModel::Cube ||
-             world::blockDefinition(stack.block).model == world::BlockModel::Chest ||
-             world::blockDefinition(stack.block).model == world::BlockModel::DirectionalCube ||
-             heldSlab);
+        // 与掉落物、背包图标共用 world::rendersAsCubeItem，不再各自列举 BlockModel
+        const bool cubeModel = !emptyHand && gameplay::isBlockStack(stack) &&
+                               world::rendersAsCubeItem(stack.block);
         const auto layers =
             emptyHand
                 ? world::BlockTextureLayers{kPlayerRightArmFirstLayer, kPlayerRightArmFirstLayer,
@@ -2004,10 +1903,10 @@ class WorldRenderer final {
                                    : glm::vec4{1.0F, 1.0F, 0.0625F, heldLight}),
             heldTransform,
         };
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, heldItemPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipelineLayout,
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.heldItemPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipelineLayout,
                                 0, 1, &descriptorSet, 0, nullptr);
-        vkCmdPushConstants(commandBuffer, itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+        vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                            sizeof(push), &push);
         constexpr std::uint32_t generatedItemVertexCount = 12U + 16U * 16U * 4U * 6U;
         vkCmdDraw(commandBuffer, !emptyHand && !cubeModel ? generatedItemVertexCount : 36U, 1, 0,
@@ -2016,6 +1915,7 @@ class WorldRenderer final {
 
 
     [[nodiscard]] std::size_t recordCommandBuffer(FrameContext& frame, std::uint32_t imageIndex) {
+        refreshDiagnosticsEpoch();
         auto beginInfo =
             vkStructure<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
         checkVk(vkBeginCommandBuffer(frame.commandBuffer, &beginInfo), "vkBeginCommandBuffer");
@@ -2033,7 +1933,7 @@ class WorldRenderer final {
                                  VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1, &barrier, 0, nullptr, 0,
                                  nullptr);
         }
-        const VkQueryPool frameQueryPool = occlusionQueryPools[currentFrame];
+        const VkQueryPool frameQueryPool = occlusion.queryPools[currentFrame];
         if (frameQueryPool != VK_NULL_HANDLE) {
             // 复用前先清空本帧的槽位区间
             // 上一次提交的结果已在本次 drawFrame 里读回
@@ -2046,7 +1946,7 @@ class WorldRenderer final {
         clears[1].depthStencil = {1.0F, 0};
         auto passInfo =
             vkStructure<VkRenderPassBeginInfo>(VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
-        passInfo.renderPass = renderPass;
+        passInfo.renderPass = pipelines.renderPass;
         passInfo.framebuffer = framebuffers[imageIndex];
         passInfo.renderArea.extent = swapchainExtent;
         passInfo.clearValueCount = static_cast<std::uint32_t>(clears.size());
@@ -2062,9 +1962,9 @@ class WorldRenderer final {
         vkCmdSetViewport(frame.commandBuffer, 0, 1, &viewport);
         VkRect2D scissor{{0, 0}, swapchainExtent};
         vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
-        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
+        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.skyPipeline);
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipelineLayout, 0, 1, &frame.descriptorSet, 0, nullptr);
+                                pipelines.pipelineLayout, 0, 1, &frame.descriptorSet, 0, nullptr);
         vkCmdDraw(frame.commandBuffer, 3, 1, 0, 0);
 
         const float aspect =
@@ -2136,9 +2036,8 @@ class WorldRenderer final {
                           });
 
         // 诊断用：把场景的网格/视锥状态报告一次
-        static bool reported = false;
-        if (!reported && testScene.has_value() && testScene->occlusionScene) {
-            reported = true;
+        if (!diagnosticsOnce_.occlusionScene && testScene.has_value() && testScene->occlusionScene) {
+            diagnosticsOnce_.occlusionScene = true;
             const glm::vec3 camPos = camera.position();
             const glm::vec3 camDir = camera.direction();
             std::cerr << "[scene] gpuMeshes=" << gpuMeshes.size()
@@ -2170,22 +2069,22 @@ class WorldRenderer final {
             // 视锥内的每个 section 都会重新查询
             // 被挡住的洞穴一被看到就立刻显现，可见的一被遮住就立刻剔除
             // 查询结果在两帧后才用于门控绘制
-            if (!occlusionDisabled && frameQueryPool != VK_NULL_HANDLE && withinQueryBudget) {
+            if (!occlusion.disabled && frameQueryPool != VK_NULL_HANDLE && withinQueryBudget) {
                 vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                  occlusionQueryPipeline);
+                                  occlusion.queryPipeline);
                 vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        occlusionQueryLayout, 0, 1, &frame.descriptorSet, 0,
+                                        occlusion.queryLayout, 0, 1, &frame.descriptorSet, 0,
                                         nullptr);
                 const VkDeviceSize boxOffset = 0;
-                vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &occlusionBoxVertexBuffer.buffer,
+                vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &occlusion.boxVertexBuffer.buffer,
                                        &boxOffset);
-                vkCmdBindIndexBuffer(frame.commandBuffer, occlusionBoxIndexBuffer.buffer, 0,
+                vkCmdBindIndexBuffer(frame.commandBuffer, occlusion.boxIndexBuffer.buffer, 0,
                                      VK_INDEX_TYPE_UINT32);
                 const OcclusionQueryPushConstants push{
                     glm::vec4{mesh.bounds.minimum, 1.0F},
                     glm::vec4{mesh.bounds.maximum, 1.0F},
                 };
-                vkCmdPushConstants(frame.commandBuffer, occlusionQueryLayout,
+                vkCmdPushConstants(frame.commandBuffer, occlusion.queryLayout,
                                    VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
                 const std::uint32_t slot = frame.occlusionQueryCount;
                 vkCmdBeginQuery(frame.commandBuffer, frameQueryPool, slot,
@@ -2201,16 +2100,16 @@ class WorldRenderer final {
             // 例外是查询预算已用尽，那时陈旧状态会让它们永久隐藏
             // 另一个例外是视角正在快速移动，那时它们的状态来自旧眼点
             // 这两种情况下它们照画并同时重新查询
-            if (!occlusionDisabled && withinQueryBudget && !cameraMovingFast &&
+            if (!occlusion.disabled && withinQueryBudget && !cameraMovingFast &&
                 state == OcclusionState::Occluded) {
                 continue;
             }
             if (mesh.opaque.indexCount > 0U) {
                 vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                  graphicsPipeline);
+                                  pipelines.graphicsPipeline);
                 vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        pipelineLayout, 0, 1, &frame.descriptorSet, 0, nullptr);
-                vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
+                                        pipelines.pipelineLayout, 0, 1, &frame.descriptorSet, 0, nullptr);
+                vkCmdPushConstants(frame.commandBuffer, pipelines.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
                                    0, sizeof(glm::vec4), &mesh.sectionOrigin);
                 vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &mesh.vertexBuffer.buffer,
                                        &mesh.opaque.vertexOffset);
@@ -2227,12 +2126,12 @@ class WorldRenderer final {
             }
         }
         if (!visibleCutoutMeshes.empty()) {
-            vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, cutoutPipeline);
+            vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.cutoutPipeline);
             // 遮挡通道可能把查询管线的描述符集留在绑定状态，因此 cutout 管线在绘制前重新绑定自己的
             vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    pipelineLayout, 0, 1, &frame.descriptorSet, 0, nullptr);
+                                    pipelines.pipelineLayout, 0, 1, &frame.descriptorSet, 0, nullptr);
             for (const auto* mesh : visibleCutoutMeshes) {
-                vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
+                vkCmdPushConstants(frame.commandBuffer, pipelines.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
                                    0, sizeof(glm::vec4), &mesh->sectionOrigin);
                 vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &mesh->vertexBuffer.buffer,
                                        &mesh->cutout.vertexOffset);
@@ -2259,11 +2158,11 @@ class WorldRenderer final {
         });
         if (!visibleTranslucentMeshes.empty()) {
             vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              translucentPipeline);
+                              pipelines.translucentPipeline);
             vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    pipelineLayout, 0, 1, &frame.descriptorSet, 0, nullptr);
+                                    pipelines.pipelineLayout, 0, 1, &frame.descriptorSet, 0, nullptr);
             for (const auto* mesh : visibleTranslucentMeshes) {
-                vkCmdPushConstants(frame.commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
+                vkCmdPushConstants(frame.commandBuffer, pipelines.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
                                    0, sizeof(glm::vec4), &mesh->sectionOrigin);
                 vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &mesh->vertexBuffer.buffer,
                                        &mesh->translucent.vertexOffset);
@@ -2273,7 +2172,10 @@ class WorldRenderer final {
             }
         }
         // 粒子排在半透明地形通道之后，与 vanilla 的绘制位置一致
-        const bool appendAsyncRain = rainMode_ == RainMode::Async && !rainSystem.drops().empty();
+        // 雨的记录会追加进同一块场景缓冲，因此粒子通道此时推迟刷新，两段合并成一次刷新
+        // 贴图雨在无雨时会直接 return，绝不能对它推迟——那样粒子已经发了 draw 却没人写缓冲
+        const bool appendAsyncRain =
+            rainMode_ == RainMode::Async && !rainSystem.drops().empty();
         const std::size_t particleRecordCount =
             drawParticles(frame.commandBuffer, frame.descriptorSet, appendAsyncRain);
         drawRain(frame.commandBuffer, frame.descriptorSet, particleRecordCount);
@@ -2290,9 +2192,9 @@ class WorldRenderer final {
             const world::BlockBounds bounds =
                 world::blockSelectionBounds(clientCache, targetedBlock->block);
             vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              outlinePipeline);
+                              pipelines.outlinePipeline);
             vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    outlinePipelineLayout, 0, 1, &frame.descriptorSet, 0, nullptr);
+                                    pipelines.outlinePipelineLayout, 0, 1, &frame.descriptorSet, 0, nullptr);
             const std::array<glm::vec4, 3> outlinePush{
                 glm::vec4{static_cast<float>(targetedBlock->block.x),
                           static_cast<float>(targetedBlock->block.y),
@@ -2300,7 +2202,7 @@ class WorldRenderer final {
                 glm::vec4{bounds.minimum, 0.0F},
                 glm::vec4{bounds.maximum, 0.0F},
             };
-            vkCmdPushConstants(frame.commandBuffer, outlinePipelineLayout,
+            vkCmdPushConstants(frame.commandBuffer, pipelines.outlinePipelineLayout,
                                VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(outlinePush),
                                outlinePush.data());
             vkCmdDraw(frame.commandBuffer, 24, 1, 0, 0);
@@ -2319,7 +2221,7 @@ class WorldRenderer final {
     // 在本帧槽位区间被重置复用之前于此读取，逐 section 的绘制门控就恰好保持两帧延迟
 
     void readBackOcclusionQueries() {
-        const VkQueryPool frameQueryPool = occlusionQueryPools[currentFrame];
+        const VkQueryPool frameQueryPool = occlusion.queryPools[currentFrame];
         if (frameQueryPool == VK_NULL_HANDLE) {
             return;
         }
@@ -2366,6 +2268,8 @@ class WorldRenderer final {
 
   // ---- 绑定到渲染器内核状态的引用（所有权在 Impl）----
   std::optional<TestSceneOptions>& testScene;
+  WorldPipelines& pipelines;
+  OcclusionResources& occlusion;
   world::ChunkStreamer& chunkStreamer;
   world::World& interactionWorld;
   world::World& clientCache;
@@ -2373,11 +2277,6 @@ class WorldRenderer final {
   std::unordered_map<world::SectionPosition, GpuMesh, world::SectionPositionHash>& gpuMeshes;
   StreamBufferPool& deviceBufferPool_;
   StreamBufferPool& stagingBufferPool_;
-  std::array<VkQueryPool, kFramesInFlight>& occlusionQueryPools;
-  VkPipeline& occlusionQueryPipeline;
-  VkPipelineLayout& occlusionQueryLayout;
-  AllocatedBuffer& occlusionBoxVertexBuffer;
-  AllocatedBuffer& occlusionBoxIndexBuffer;
   render::SectionDeliveryQueue<world::SectionPosition, world::SectionPositionHash>& pendingSectionOrder;
   world::SmoothLightingQuality& currentMeshQuality;
   world::SmoothLightingQuality& targetMeshQuality;
@@ -2392,8 +2291,6 @@ class WorldRenderer final {
   std::vector<gameplay::entities::SpeciesRenderModel>& speciesModels;
   animation::ModelAnimationSystem& heldItemAnimation;
   animation::PlayerModelAnimator& worldPlayerAnimator;
-  animation::HingeAnimation& chestLidAnimation;
-  animation::DisplayEntityAnimation& itemDisplayAnimation;
   CameraPerspective& cameraPerspective;
   float& worldBodyYaw;
   ParticleSystem& particleSystem;
@@ -2416,52 +2313,21 @@ class WorldRenderer final {
   TextureManager& textures_;
   std::array<VkDescriptorSet, kFramesInFlight>& sceneDescriptorSets;
   GpuSceneBuffer& gpuSceneBuffer;
-  VkPipeline& particlePipeline;
-  VkPipelineLayout& particlePipelineLayout;
-  bool& legacyParticles;
   OffscreenTarget& shadowTarget;
-  VkPipelineLayout& shadowPipelineLayout;
-  VkPipeline& shadowPipeline;
   VkDescriptorSet& shadowDebugSet;
-  VkPipelineLayout& shadowDebugPipelineLayout;
-  VkPipeline& shadowDebugPipeline;
   glm::mat4& shadowLightViewProj;
   bool& shadowDisabled;
-  bool& shadowDebugOverlay;
   render::RainSystem& rainSystem;
-  std::vector<ParticleRecord>& sceneParticleRecords_;
   RainMode& rainMode_;
   float& rainTime_;
-  VkPipeline& rainSheetPipeline;
-  VkPipelineLayout& rainSheetPipelineLayout;
   ui::Language& language;
   VkExtent2D& swapchainExtent;
-  VkRenderPass& renderPass;
-  VkPipelineLayout& pipelineLayout;
-  VkPipeline& graphicsPipeline;
-  VkPipeline& translucentPipeline;
-  VkPipeline& cutoutPipeline;
-  VkPipeline& skyPipeline;
-  VkPipelineLayout& outlinePipelineLayout;
-  VkPipeline& outlinePipeline;
-  VkPipelineLayout& itemPipelineLayout;
-  VkPipeline& itemPipeline;
-  VkPipeline& itemShadowPipeline;
-  VkPipeline& heldItemPipeline;
   std::vector<VkFramebuffer>& framebuffers;
   std::array<FrameContext, kFramesInFlight>& frames;
   std::size_t& currentFrame;
-  bool& occlusionDisabled;
-  bool& hasLastRenderEye;
-  RenderEye& lastRenderEye;
-  bool& occlusionValidityInitialized;
-  float& occlusionRotationAccumulatorDegrees;
-  float& occlusionTranslationAccumulator;
   std::size_t& peakPendingSectionCount;
   float& smoothedFrameSeconds_;
   std::size_t& streamingUploadBudget_;
-  std::unordered_map<world::SectionPosition, OcclusionState, world::SectionPositionHash>& occlusionStates;
-  std::unordered_map<world::SectionPosition, std::uint32_t, world::SectionPositionHash>& occlusionMissCount;
   std::unordered_map<world::SectionPosition, world::SectionMeshUpdate, world::SectionPositionHash>& pendingSectionUpdates;
   std::unordered_map<world::SectionPosition, std::uint64_t, world::SectionPositionHash>& latestSectionRevisions;
   std::uint64_t& worldEpoch;
@@ -2470,10 +2336,6 @@ class WorldRenderer final {
   std::size_t& completedStreamBatchCount;
   std::size_t& lastVisibleMeshCount;
   bool& worldSessionActive;
-  bool& hasLastStreamingForward;
-  glm::vec3& lastStreamingForward;
-  std::size_t& uploadedSectionsThisFrame;
-  VkDeviceSize& uploadedBytesThisFrame;
   VkDeviceSize& totalUploadedBytes;
   HudRenderer& hud_;
 
@@ -2489,6 +2351,88 @@ class WorldRenderer final {
   std::function<bool(int, int, int)> hasPersistentEditFn;
   std::function<void(world::ChunkPosition)> onChunkUnloaded;
   std::function<void(world::ChunkPosition)> onChunkLoaded;
+
+  // ---- 本类自有的状态（不再绕经 Impl）----
+  // 这些字段只有本类读写。它们曾以 T& 挂在 Bindings 上，而在 Impl 里除了「声明一次、
+  // 绑定一次」之外没有任何使用者——是 P6 拆分时把 Impl 的成员表整体复印过来留下的透传。
+  // 透传的代价有两层：每加一个状态都要在 Bindings 定义、成员声明、构造初始化列表三处同写；
+  // 更要紧的是它让「往 Impl 加成员再引用回来」看起来像是正常做法，债会自我复制。
+  // 判定标准是「Impl 自身是否读写它」，而不是「谁看起来该拥有它」：像 clientMirror 那样
+  // 被 HudRenderer 一并消费的，仍然留在 Bindings 上。
+
+  // 箱盖与掉落物运动的数据驱动定义，经动画库求值
+  // 箱盖是贝塞尔缓出的合页，掉落物是漂浮加旋转
+  animation::HingeAnimation chestLidAnimation;
+  animation::DisplayEntityAnimation itemDisplayAnimation;
+  bool shadowDebugOverlay = std::getenv("MC_REBEDROCK_SHADOW_DEBUG") != nullptr;
+  // 方块粉尘、水花粒子和异步雨共用的 CPU 暂存缓冲，可复用
+  // 记录采样世界期间它一直留在主机缓存里，最后一次性整体拷进本帧顺序写映射的存储缓冲
+  std::vector<ParticleRecord> sceneParticleRecords_;
+  // 上一帧的渲染眼点
+  // 遮挡通道据此判断视角是否快到让晚两帧的查询结果已经过期
+  bool hasLastRenderEye = false;
+  RenderEye lastRenderEye{};
+  // 自上一次遮挡校验点以来累计的旋转与平移
+  // 晚两帧的 Occluded 结果只在眼点接近静止时才可信
+  // 累计运动超过一个小阈值就把整张 occlusionStates 表丢掉，陈旧的 section 因此照画并重新查询
+  // 即使是一次始终触发不了逐帧快速运动判定的平滑快扫也照样失效重来
+  bool occlusionValidityInitialized = false;
+  float occlusionRotationAccumulatorDegrees = 0.0F;
+  float occlusionTranslationAccumulator = 0.0F;
+  // 流送请求中心同时朝视线方向和移动方向前探，转过身时那片区域已经在生成
+  // 前探方向用独立的一份朝向而不是渲染眼点，好让它与第一或第三人称的眼点无关
+  // 视角摆动期间由旋转保护取消前探，已加载的区域因此不会来回颠簸
+  bool hasLastStreamingForward = false;
+  glm::vec3 lastStreamingForward{0.0F, 0.0F, 1.0F};
+  std::size_t uploadedSectionsThisFrame = 0;
+  VkDeviceSize uploadedBytesThisFrame = 0;
+
+  // 逐 section 的遮挡状态，由遮挡查询结果驱动
+  // 某个包围盒不再通过深度测试时，它的不透明网格就被跳过
+  std::unordered_map<world::SectionPosition, OcclusionState, world::SectionPositionHash>
+      occlusionStates;
+  // 逐 section 连续为零的查询次数，用来给 Visible 转 Occluded 这条边加迟滞
+  // 需要连着好几次查询都不通过才切换，而不是凭一次擦边的结果
+  std::unordered_map<world::SectionPosition, std::uint32_t, world::SectionPositionHash>
+      occlusionMissCount;
+
+  // 只打一次的诊断行，各自一个「已打印」标志。
+  //
+  // 它们曾是各自函数体里的 `static bool reported`，有两个毛病：每次进入都要过一道
+  // 线程安全初始化的 guard（这些函数每帧都跑），而更实际的是状态挂在**进程**上——
+  // 退回标题界面换个世界重进，这批诊断就再也不打印了，而那正是最想看它们的时候。
+  // 同一个坑在雨的绘制路径上真实发生过一次（见 drawRain 上方的注释：三条分支曾
+  // 共用一个 static，运行时切换雨模式后另一条就永远不报了）。
+  //
+  // 现在它们随世界纪元复位：每个新世界重新武装一次。
+  struct OneShotDiagnostics final {
+      bool shadowCasters = false;
+      bool instancedParticles = false;
+      bool textureRain = false;
+      bool asyncRain = false;
+      bool occlusionScene = false;
+  };
+  OneShotDiagnostics diagnosticsOnce_{};
+  std::uint64_t diagnosticsEpoch_ = 0;
+
+  // 世界重置（切换存档、重新生成）时，把只属于本类、且与旧世界绑定的表清空。
+  // 这些表原先摊在 Impl 的清理函数里逐张 clear——包括那张纯诊断的环号旁表，
+  // Impl 得知道本类内部有哪些表、哪些该清，正是引用透传留下的习惯。
+  // 一次性诊断标志不在这里：它们由 refreshDiagnosticsEpoch 按世界纪元复位，
+  // 两套机制并存只会让「到底谁负责复位」变得含糊。
+  void onWorldReset() {
+      occlusionStates.clear();
+      occlusionMissCount.clear();
+      pendingSectionEnqueueRing_.clear();
+  }
+
+  // 每帧记录命令前调一次：一次整数比较，纪元没变就什么都不做
+  void refreshDiagnosticsEpoch() {
+      if (diagnosticsEpoch_ != worldEpoch) {
+          diagnosticsEpoch_ = worldEpoch;
+          diagnosticsOnce_ = {};
+      }
+  }
 };
 
 } // namespace mc::render

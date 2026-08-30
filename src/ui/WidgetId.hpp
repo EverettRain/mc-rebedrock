@@ -27,6 +27,10 @@ enum class WidgetId : std::uint16_t {
     WorldRow, LanguageRow,
     KeyBindRow, ResetKeyBinds,
     Subtitles,  // PX-6 Bug3: the sound-subtitles accessibility toggle
+
+    // Sentinel: the number of ids, so a table can assert it covers every one of
+    // them (ui/WidgetLabels.hpp does). Never a widget; always last.
+    Count,
 };
 
 }  // namespace mc::ui

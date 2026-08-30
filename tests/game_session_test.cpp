@@ -205,6 +205,14 @@ int main() {
             lastTick = snap.serverTick;
         }
         publisher.join();
+        // 读循环有可能一次都没执行：发布线程完全可能在读线程进到 while 之前就跑完
+        // 200 次 tick 并置位 stop，那时 lastTick 停在 0。这与「快照能不能被无锁读到」
+        // 无关，纯粹是两个线程的起跑顺序，在 `ctest -j` 满载时会真的发生
+        // （约 1 次/10 轮，症状是这条断言炸掉，却什么也没说明）。
+        //
+        // 并发读循环本身保留——TSan 构建要验证的正是它与发布侧的 acquire/release 定序。
+        // 变的只是断言的依据：join 之后再读一次，此时发布已结束，快照必然是最终值。
+        lastTick = concurrent.playerTickSnapshot().serverTick;
         assert(lastTick > 0U);
     }
 

@@ -292,8 +292,11 @@ int main() {
         // (no render allocation exists here) and pin an upper bound.
         serverResident = runtime.serverResidentBytes();
         const auto chunks = runtime.world().chunkCount();
+        const auto worldResident = runtime.world().residentBytes();
         std::cout << "serverResidentBytes=" << serverResident << " over " << chunks << " chunks "
-                  << "(~" << (chunks > 0U ? serverResident / chunks : 0U) << " B/chunk)\n";
+                  << "(~" << (chunks > 0U ? serverResident / chunks : 0U) << " B/chunk), "
+                  << "worldResidentBytes=" << worldResident << " (~"
+                  << (chunks > 0U ? worldResident / chunks : 0U) << " B/chunk)\n";
         assert(serverResident > 0U);
         assert(chunks >= 1U);
         // Per chunk, not in total: how many chunks the streaming worker has
@@ -331,8 +334,18 @@ int main() {
         // M-2b side-split memory: the world's resident measures its chunk data
         // (states + light + biomes), and the client cache fed from the same
         // batches and edits mirrors the server's chunk budget exactly.
-        assert(runtime.world().residentBytes() > 64U * 1024U);
-        assert(runtime.world().residentBytes() < 8U * 1024U * 1024U);
+        //
+        // Per chunk, not in total — for the same reason the ceiling above is per
+        // chunk. How many chunks the streaming worker has finished by this line is
+        // a race, and a 64 KB *total* floor quietly assumed it had produced at
+        // least three (a chunk is ~29 KB here). Under `ctest -j` the worker
+        // sometimes had produced one, and the test aborted ~1 run in 8 — a failure
+        // that said nothing about the thing being measured. Bounding the per-chunk
+        // size keeps what this assertion is actually for (residentBytes measures
+        // real chunk data rather than returning zero or a stub) and drops the
+        // dependency on the worker's timing.
+        assert(worldResident / chunks > 8U * 1024U);
+        assert(worldResident / chunks < 256U * 1024U);
         {
             world::World mirrorProbe;
             // Every chunk the server holds, not a hardcoded 3x3 window: how far

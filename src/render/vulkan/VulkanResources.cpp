@@ -2,6 +2,8 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
+#include <vector>
 
 namespace mc::render {
 
@@ -74,17 +76,84 @@ void VulkanResources::destroyImage(AllocatedImage& image) const noexcept {
 }
 
 VkImageView VulkanResources::createImageView(VkImage image, VkFormat format,
-                                             VkImageAspectFlags aspect) const {
+                                             VkImageAspectFlags aspect, std::uint32_t layerCount,
+                                             VkImageViewType viewType) const {
     auto info = vkStructure<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
     info.image = image;
-    info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    info.viewType = viewType;
     info.format = format;
     info.subresourceRange.aspectMask = aspect;
     info.subresourceRange.levelCount = 1;
-    info.subresourceRange.layerCount = 1;
+    info.subresourceRange.layerCount = layerCount;
     VkImageView view = VK_NULL_HANDLE;
     checkVk(vkCreateImageView(device_, &info, nullptr, &view), "vkCreateImageView");
     return view;
+}
+
+namespace {
+
+// 整层范围的图像内存屏障，记录进调用方给的命令缓冲
+// transitionTextureImage 与 uploadImageLayers 共用它：前者为它单开一次提交，
+// 后者把三步记进同一个命令缓冲，因此只在末尾同步一次
+void recordImageBarrier(VkCommandBuffer commandBuffer, VkImage image, std::uint32_t layerCount,
+                        VkImageLayout oldLayout, VkImageLayout newLayout,
+                        VkAccessFlags sourceAccess, VkAccessFlags destinationAccess,
+                        VkPipelineStageFlags sourceStage,
+                        VkPipelineStageFlags destinationStage) {
+    auto barrier = vkStructure<VkImageMemoryBarrier>(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.layerCount = layerCount;
+    barrier.srcAccessMask = sourceAccess;
+    barrier.dstAccessMask = destinationAccess;
+    vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1,
+                         &barrier);
+}
+
+} // namespace
+
+void VulkanResources::uploadImageLayers(const AllocatedImage& image, const void* pixels,
+                                        VkDeviceSize byteSize, std::uint32_t width,
+                                        std::uint32_t height, std::uint32_t layerCount,
+                                        VkPipelineStageFlags destinationStage) const {
+    if (layerCount == 0U || byteSize % layerCount != 0U) {
+        throw std::runtime_error("Image upload size is not a whole number of layers");
+    }
+    auto staging = createBuffer(byteSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+    std::memcpy(staging.mapped, pixels, static_cast<std::size_t>(byteSize));
+    checkVk(vmaFlushAllocation(allocator_, staging.allocation, 0, VK_WHOLE_SIZE),
+            "vmaFlushAllocation(image upload)");
+
+    const VkDeviceSize layerBytes = byteSize / layerCount;
+    std::vector<VkBufferImageCopy> regions(layerCount);
+    for (std::uint32_t layer = 0; layer < layerCount; ++layer) {
+        regions[layer].bufferOffset = layerBytes * layer;
+        regions[layer].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        regions[layer].imageSubresource.mipLevel = 0;
+        regions[layer].imageSubresource.baseArrayLayer = layer;
+        regions[layer].imageSubresource.layerCount = 1;
+        regions[layer].imageExtent = {width, height, 1};
+    }
+
+    const auto commandBuffer = beginSingleUseCommands();
+    recordImageBarrier(commandBuffer, image.image, layerCount, VK_IMAGE_LAYOUT_UNDEFINED,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    vkCmdCopyBufferToImage(commandBuffer, staging.buffer, image.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           static_cast<std::uint32_t>(regions.size()), regions.data());
+    recordImageBarrier(commandBuffer, image.image, layerCount,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                       VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       destinationStage);
+    endSingleUseCommands(commandBuffer);
+    destroyBuffer(staging);
 }
 
 VkFormat VulkanResources::chooseShadowDepthFormat() const {
@@ -149,19 +218,8 @@ void VulkanResources::transitionTextureImage(const AllocatedImage& image, std::u
                                              VkPipelineStageFlags sourceStage,
                                              VkPipelineStageFlags destinationStage) const {
     const auto commandBuffer = beginSingleUseCommands();
-    auto barrier = vkStructure<VkImageMemoryBarrier>(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
-    barrier.oldLayout = oldLayout;
-    barrier.newLayout = newLayout;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = image.image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.layerCount = layerCount;
-    barrier.srcAccessMask = sourceAccess;
-    barrier.dstAccessMask = destinationAccess;
-    vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1,
-                         &barrier);
+    recordImageBarrier(commandBuffer, image.image, layerCount, oldLayout, newLayout, sourceAccess,
+                       destinationAccess, sourceStage, destinationStage);
     endSingleUseCommands(commandBuffer);
 }
 

@@ -1579,6 +1579,20 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_atlas_layer_fit_test PRIVATE src "${stb_SOURCE_DIR}")
     add_test(NAME atlas_layer_fit COMMAND mc_rebedrock_atlas_layer_fit_test)
 
+    add_executable(mc_rebedrock_item_cube_render_test
+        tests/item_cube_render_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_item_cube_render_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_item_cube_render_test PRIVATE src)
+    add_test(NAME item_cube_render COMMAND mc_rebedrock_item_cube_render_test)
+
+    add_executable(mc_rebedrock_widget_labels_test
+        tests/widget_labels_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_widget_labels_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_widget_labels_test PRIVATE src)
+    add_test(NAME widget_labels COMMAND mc_rebedrock_widget_labels_test)
+
     add_executable(mc_rebedrock_sound_registry_test
         tests/sound_registry_test.cpp
         src/assets/PackMetadata.cpp

@@ -96,10 +96,9 @@ inline constexpr std::array<OptionValue, 3> kSmoothLightingValues{{
 
 // The rain draw path (实验性内容): texture sheets, per-particle legacy draws,
 // instanced SSBO particles.
-inline constexpr std::array<OptionValue, 3> kRainModeValues{{
+inline constexpr std::array<OptionValue, 2> kRainModeValues{{
     {0, "options.rebedrock.rainMode.texture", "Texture Rain"},
-    {1, "options.rebedrock.rainMode.particles", "Particle Rain"},
-    {2, "options.rebedrock.rainMode.async", "Asynchronous Particle Rain"},
+    {1, "options.rebedrock.rainMode.async", "Asynchronous Particle Rain"},
 }};
 
 // Particle density (粒子效果), scaling the rain budget and the particle system's
@@ -152,7 +151,9 @@ inline constexpr std::array<OptionDesc, 14> kCyclingOptions{{
 
 // The option `id` names, or null when it is not a cycling option (a slider, a
 // page button, or one of the three settings that live outside GameOptions).
-[[nodiscard]] inline const OptionDesc* findCyclingOption(WidgetId id) {
+// constexpr：ui/WidgetLabels.hpp 的覆盖性 static_assert 要在编译期问「这个 id
+// 是不是一个循环选项」，因此这个查找必须能在常量求值里跑。
+[[nodiscard]] constexpr const OptionDesc* findCyclingOption(WidgetId id) {
     for (const OptionDesc& desc : kCyclingOptions) {
         if (desc.id == id) {
             return &desc;

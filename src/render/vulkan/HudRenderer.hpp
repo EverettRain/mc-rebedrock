@@ -28,6 +28,7 @@
 #include "input/InputNaming.hpp"
 #include "ui/BitmapFontMetrics.hpp"
 #include "ui/OptionCycle.hpp"
+#include "ui/WidgetLabels.hpp"
 #include "ui/ButtonControl.hpp"
 #include "ui/ChatHistory.hpp"
 #include "ui/GuiNineSlice.hpp"
@@ -179,7 +180,27 @@ class HudRenderer final {
           creativeScrollPosition(b.creativeScrollPosition),
           creativeMaximumScrollRow(b.creativeMaximumScrollRow),
           dragPlacementCounts(b.dragPlacementCounts), cameraFarPlane(b.cameraFarPlane),
-          dragSlotRectangle(b.dragSlotRectangle) {}
+          dragSlotRectangle(b.dragSlotRectangle) {
+        // 绘制侧 Page 装配件里每帧都不变的部分，构造时装一次。
+        // buildDrawPage 位于 drawFrontend / drawPauseMenu / drawLanguageScreen 三个
+        // 每帧绘制函数的路径上，把这些留在函数里就是每帧重新构造一遍：一个含 31 个
+        // std::function 的 MenuCallbacks、上下文里两个捕获 this 的 std::function，
+        // 以及一个新的 vector<Widget>。它们的取值逐帧完全相同。
+        drawContext_.labelFor = [this](std::uint16_t id) {
+            return widgetLabel(static_cast<ui::WidgetId>(id));
+        };
+        drawContext_.keyBindLabelFor = [this](input::InputAction action) {
+            return keyBindLabel ? keyBindLabel(action)
+                                : std::string{input::actionDisplayName(action)};
+        };
+        drawCallbacks_.viewDistance.value = [this] {
+            return static_cast<float>(viewDistanceChunks - 2) / 34.0F;
+        };
+        drawCallbacks_.simulationDistance.value = [this] {
+            return static_cast<float>(simulationDistanceChunks - 2) / 10.0F;
+        };
+        drawCallbacks_.masterVolume.value = [this] { return options.masterVolume; };
+    }
 
     HudRenderer(const HudRenderer&) = delete;
     HudRenderer& operator=(const HudRenderer&) = delete;
@@ -240,53 +261,47 @@ class HudRenderer final {
     // 这里只接上标签和滑块显示值，不接动作回调
     // 绘制后端只读 widget 的 label、rect、kind、enabled 和 slider.value
     // 回调故意留空，绘制永远不会触发它们
-    [[nodiscard]] ui::Page buildDrawPage() const {
+    // 页面本身仍逐帧装配，只是装配进常驻的 drawPage_，容量跨帧复用。
+    // 这里刻意没有做「整页缓存 + 失效」：页面内容依赖 menuSystem 的十余个字段、
+    // GameOptions 的每一个字段、实时窗口尺寸、语言表和按键捕获状态，手工维护这份
+    // 失效清单漏掉任何一项，症状就是菜单显示陈旧内容——用一个静默 bug 换几十次分配
+    // 并不划算。真正让它可缓存的前置是把 widgetLabel 的 switch 变成表（见
+    // docs/CODE_PROBLEMS-branches.md §2.1）：标签依赖收敛到「表行 + 该选项的值」之后，
+    // 失效 key 才写得干净。
+    [[nodiscard]] const ui::Page& buildDrawPage() const {
         const ui::PageId pageId = menuSystem.pageStack.current();
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
                                    static_cast<float>(swapchainExtent.height),
                                    menuSystem.guiScaleSetting};
         const std::size_t count = menuButtonCount();
-        ui::MenuBuildContext ctx;
-        ctx.worldOpen = currentSave.has_value();
-        ctx.worldSelectable = !menuSystem.saveSummaries.empty();
-        ctx.labelFor = [this](std::uint16_t id) {
-            return widgetLabel(static_cast<ui::WidgetId>(id));
-        };
+        drawContext_.worldOpen = currentSave.has_value();
+        drawContext_.worldSelectable = !menuSystem.saveSummaries.empty();
         // 按键设置页喂进滚动窗口与实时按键标签，可见行按 controlsRow 排版
         // 末尾四个是底部按钮带，其余页面不受影响
-        // 其余页面不受影响
+        // 上下文是常驻的，因此这两个字段每帧先归零，非按键页看到的仍是「没有按键行」
         const float fbWidth = static_cast<float>(swapchainExtent.width);
         std::size_t keyRows = 0U;
+        drawContext_.keyBindFirstIndex = 0U;
+        drawContext_.keyBindRowCount = 0U;
         if (pageId == ui::PageId::Controls) {
             const std::size_t total = input::keyBindRows().size();
             const std::size_t window = ui::controlsVisibleRowCount(
                 fbWidth, static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting);
             const std::size_t first = std::min(menuSystem.controlsListFirstIndex, total);
             keyRows = std::min(window, total - first);
-            ctx.keyBindFirstIndex = first;
-            ctx.keyBindRowCount = keyRows;
-            ctx.keyBindLabelFor = [this](input::InputAction action) {
-                return keyBindLabel ? keyBindLabel(action)
-                                    : std::string{input::actionDisplayName(action)};
-            };
+            drawContext_.keyBindFirstIndex = first;
+            drawContext_.keyBindRowCount = keyRows;
         }
-        ui::MenuCallbacks callbacks;
-        callbacks.viewDistance.value = [this] {
-            return static_cast<float>(viewDistanceChunks - 2) / 34.0F;
-        };
-        callbacks.simulationDistance.value = [this] {
-            return static_cast<float>(simulationDistanceChunks - 2) / 10.0F;
-        };
-        callbacks.masterVolume.value = [this] { return options.masterVolume; };
-        return ui::buildPage(pageId, ctx, callbacks,
-                             [layout, pageId, count, fbWidth, keyRows](std::size_t index) {
-                                 if (pageId == ui::PageId::Controls && index < keyRows) {
-                                     return ui::controlsRow(index, layout, fbWidth);
-                                 }
-                                 const std::size_t buttonIndex =
-                                     pageId == ui::PageId::Controls ? index - keyRows : index;
-                                 return ui::frontendButtonRect(layout, pageId, buttonIndex, count);
-                             });
+        ui::buildPageInto(drawPage_, pageId, drawContext_, drawCallbacks_,
+                          [layout, pageId, count, fbWidth, keyRows](std::size_t index) {
+                              if (pageId == ui::PageId::Controls && index < keyRows) {
+                                  return ui::controlsRow(index, layout, fbWidth);
+                              }
+                              const std::size_t buttonIndex =
+                                  pageId == ui::PageId::Controls ? index - keyRows : index;
+                              return ui::frontendButtonRect(layout, pageId, buttonIndex, count);
+                          });
+        return drawPage_;
     }
 
     void drawDragPreview(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
@@ -370,18 +385,17 @@ class HudRenderer final {
                          const gameplay::ItemStack& stack) const {
         if (gameplay::isBlockStack(stack)) {
             const auto model = world::blockDefinition(stack.block).model;
-            if (model == world::BlockModel::Cube || model == world::BlockModel::Chest ||
-                model == world::BlockModel::DirectionalCube) {
-                drawHudBlockIcon(commandBuffer, rectangle, stack.block);
-                return;
-            }
-            if (model == world::BlockModel::Slab) {
-                // 台阶物品按下半砖持握，因此背包图标显示下半砖立方体，与 vanilla 的台阶物品渲染一致
-                drawHudBlockIcon(commandBuffer, rectangle, stack.block, 1.0F);
+            // 走不走立方体图标由 world::rendersAsCubeItem 单点回答
+            // 掉落物、手持物、背包图标三条物品渲染面共用它，不再各自列举 BlockModel
+            // 台阶也在集合内，只是按下半砖显示，与 vanilla 的台阶物品渲染一致
+            if (world::rendersAsCubeItem(stack.block)) {
+                drawHudBlockIcon(commandBuffer, rectangle, stack.block,
+                                 world::isSlab(stack.block) ? 1.0F : 0.0F);
                 return;
             }
             // 楼梯、墙、栅栏门、按钮、压力板这类异形方块与 vanilla 一样显示 3D 方块图标
             // 只有薄片状的门/活板门物品保持扁平贴图，同样对齐 vanilla 各自的物品渲染
+            // 这一层目前是图标独有的：掉落物与手持物没有对应处理，异形方块在那两处仍是扁平贴图
             if (world::isShapedBlockModel(model) && !world::isThinLeafIconModel(model)) {
                 drawHudBlockIcon(commandBuffer, rectangle, stack.block);
                 return;
@@ -671,10 +685,11 @@ class HudRenderer final {
             return ui::formatTranslation(
                 translated("options.percent_value", "%s: %s%%"), arguments);
         };
-        // 循环选项的标签一律来自它在 ui/OptionCycle.hpp 中的表行
-        // 点击时步进的也是同一行，两者因此不可能不一致
-        // 只有不属于 GameOptions 字段的设置和普通页面按钮才落到下面的 switch
-        // 前者指实时窗口尺寸、GUI 缩放和当前存档的难度
+        // 标签来源分三处，归类见 ui/WidgetLabels.hpp，那里的 static_assert 保证
+        // 每个 WidgetId 恰好属于一类：
+        //   循环选项 → OptionCycle 表；点击时步进的是同一行，标签与行为不可能不一致
+        //   静态标签 → WidgetLabels 表；只由翻译键决定
+        //   运行期标签 → 下面的 switch；要读实时窗口尺寸、当前存档难度或滑块数值
         if (const ui::OptionDesc* option = ui::findCyclingOption(button); option != nullptr) {
             return optionValue(
                 translated(option->nameKey, option->nameFallback),
@@ -683,11 +698,13 @@ class HudRenderer final {
                                          return translated(key, fallback);
                                      }));
         }
+        if (const ui::StaticWidgetLabel* label = ui::findStaticLabel(button); label != nullptr) {
+            std::string text = translated(label->key, label->fallback);
+            text += label->suffix;
+            return text;
+        }
+
         switch (button) {
-        case ui::WidgetId::Resume:
-            return translated("menu.returnToGame", "Back to Game");
-        case ui::WidgetId::Options:
-            return translated("menu.options", "Options...");
         case ui::WidgetId::Resolution: {
             // 标签显示实时窗口尺寸，最大化或手动拖拽过的窗口因此读数正确
             // 而不是回显上一次选中的预设
@@ -724,10 +741,6 @@ class HudRenderer final {
             return percentValue(
                 translated("soundCategory.master", "Master Volume"),
                 static_cast<int>(std::lround(options.masterVolume * 100.0F)));
-        case ui::WidgetId::VideoSettings:
-            return translated("options.video", "Video Settings...");
-        case ui::WidgetId::Controls:
-            return translated("options.controls", "Controls...");
         case ui::WidgetId::Difficulty:
             // 只出现在世界内的选项页，此时才有打开的存档
             return optionValue(
@@ -738,72 +751,19 @@ class HudRenderer final {
                            gameplay::difficultyName(currentSave.has_value()
                                                         ? currentSave->difficulty
                                                         : gameplay::Difficulty::Normal)));
-        case ui::WidgetId::Experimental:
-            return translated("selectWorld.experimental", "Experimental") + "...";
-        case ui::WidgetId::Language:
-            return translated("options.language", "Language...");
-        case ui::WidgetId::Done:
-            return translated("gui.done", "Done");
-        case ui::WidgetId::Singleplayer:
-            return translated("menu.singleplayer", "Singleplayer");
-        case ui::WidgetId::Exit:
-            return translated("menu.quit", "Quit Game");
-        case ui::WidgetId::PlaySelected:
-            return translated("selectWorld.select", "Play Selected World");
-        case ui::WidgetId::CreateWorld:
-            return translated("selectWorld.create", "Create New World");
-        case ui::WidgetId::Edit:
-            return translated("selectWorld.edit", "Edit");
-        case ui::WidgetId::SaveRename:
-            return translated("gui.done", "Done");
-        case ui::WidgetId::DeleteWorld:
-            return translated("selectWorld.delete", "Delete");
-        case ui::WidgetId::DeleteConfirm:
-            return translated("selectWorld.deleteButton", "Delete");
-        case ui::WidgetId::DeleteCancel:
-            return translated("gui.cancel", "Cancel");
-        case ui::WidgetId::Back:
-            return translated("gui.back", "Back");
-        case ui::WidgetId::CreateConfirm:
-            return translated("selectWorld.create", "Create World");
         case ui::WidgetId::CreateGameMode:
             return optionValue(translated("selectWorld.gameMode", "Game Mode"),
                                gameModeLabel(menuSystem.createWorldGameMode));
         case ui::WidgetId::CreateAllowCommands:
             return optionValue(translated("selectWorld.allowCommands", "Allow Cheats"),
                                toggle(menuSystem.createWorldAllowCommands));
-        case ui::WidgetId::SaveQuit:
-            return translated("menu.returnToMenu", "Save and Quit to Title");
-        case ui::WidgetId::Respawn:
-            return translated("deathScreen.respawn", "Respawn");
-        case ui::WidgetId::TitleScreen:
-            return translated("deathScreen.titleScreen", "Title Screen");
-        case ui::WidgetId::ResetKeyBinds:
-            return translated("controls.resetAll", "Reset Keys");
-        // 循环选项在上面已按表行返回
-        // 这里仍逐个列出，是为了让这个 switch 在 -Wswitch 下保持穷尽
-        // 日后新增的 widget id 必须在某处得到标签，编译器会提醒
-        case ui::WidgetId::AutoJump:
-        case ui::WidgetId::FrameRateLimit:
-        case ui::WidgetId::AntiAliasing:
-        case ui::WidgetId::Anisotropy:
-        case ui::WidgetId::SmoothLighting:
-        case ui::WidgetId::DynamicLight:
-        case ui::WidgetId::Vsync:
-        case ui::WidgetId::ViewBobbing:
-        case ui::WidgetId::ForceUnicodeFont:
-        case ui::WidgetId::Subtitles:
-        case ui::WidgetId::RainMode:
-        case ui::WidgetId::ParticleLevel:
-        case ui::WidgetId::SunShadows:
-        case ui::WidgetId::RainCollisionCache:
-        case ui::WidgetId::None:
-        case ui::WidgetId::WorldRow:
-        case ui::WidgetId::LanguageRow:
-        case ui::WidgetId::KeyBindRow:  // per-action label comes from keyBindLabelFor
+        default:
+            // 其余 id 的标签不出自这里：循环选项与静态标签已在上面两张表里返回，
+            // 列表行（世界/语言/按键）各自带文本。穷尽性护栏因此不再由 -Wswitch 承担，
+            // 而是 WidgetLabels.hpp 的 everyWidgetIdHasExactlyOneLabelSource()——
+            // 它检查的是「有没有明确归属」，而不是「有没有在 switch 里写一行」。
             return {};
         }
-        return {};
     }
 
     [[nodiscard]] std::string gameModeLabel(gameplay::GameMode mode) const {
@@ -2239,6 +2199,11 @@ class HudRenderer final {
         dragSlotRectangle;
 
     // ---- 自持的 UI 动画与选择状态 ----
+    // 绘制侧的 Page 装配件，构造时装配一次（见构造函数体与 buildDrawPage）
+    // drawPage_ 是每帧重装的输出缓冲，留成成员是为了让它的容量跨帧活下来
+    mutable ui::Page drawPage_;
+    mutable ui::MenuBuildContext drawContext_;
+    ui::MenuCallbacks drawCallbacks_;
     float vignetteDarkness_ = 1.0F;
     mutable std::size_t selectedNameSlot_ = static_cast<std::size_t>(-1);
     mutable gameplay::ItemStack selectedNameStack_;

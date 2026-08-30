@@ -77,17 +77,21 @@ enum class CameraPerspective : std::uint8_t {
     ThirdPersonFront,
 };
 
-// 三条降雨渲染路径（MC_REBEDROCK_RAIN_MODE）
-// Particles 与 Async 消费同一批 CPU 模拟的雨滴，好让两个后端可比
+// 雨的两条绘制路径（MC_REBEDROCK_RAIN_MODE）
 // Texture 走 vanilla 的逐列降水渲染，此时 CPU 雨滴只用于落地水花和天气音效
-enum class RainMode { Texture, Particles, Async };
+// Async 把 CPU 雨滴实例化成公告板，整片雨一次 vkCmdDraw 画完
+//
+// 这里曾有第三档 Particles：它与 Async 用**同一批**雨滴、产出**同一份**视觉，
+// 区别只在 Particles 逐雨滴发一次 draw call 而 Async 走实例化
+// 那是一条为了和 Async 做直接对照而临时留下的绘制方式，却被接进实验性内容子菜单
+// 成了玩家可选项——疯狂档满雨时它意味着每帧 18000 次 draw call
+// 对照数据已经拿到（见 CHANGELOG），因此把它整条移除，生产路径 Async 保留原名
+enum class RainMode { Texture, Async };
 
-// Particles 与 Async 是同一视觉效果的两个渲染后端，因此同一粒子等级下的数量必须一致
 constexpr std::size_t kParticleRainBaseCount = 2000U;
 [[nodiscard]] constexpr std::size_t rainBaseCount(RainMode mode) {
     return mode == RainMode::Texture ? 30U : kParticleRainBaseCount;
 }
-static_assert(rainBaseCount(RainMode::Particles) == rainBaseCount(RainMode::Async));
 static_assert(kParticleRainBaseCount * 3U == 6000U);  // medium: 1.5x, thunder: 2x
 static_assert(kParticleRainBaseCount * 6U == 12000U); // high: 2x medium
 static_assert(kParticleRainBaseCount * 9U == 18000U); // crazy: 3x medium
@@ -156,6 +160,62 @@ enum class OcclusionState : std::uint8_t { Unknown, Visible, Occluded };
 struct OcclusionQueryPushConstants final {
     alignas(16) glm::vec4 aabbMinimum;
     alignas(16) glm::vec4 aabbMaximum;
+};
+
+// 遮挡查询用到的 GPU 资源与它的总开关。
+//
+// 与 WorldPipelines 同理：所有权在 VulkanRenderer::Impl（查询池与包围盒缓冲由它创建，
+// 查询管线随交换链销毁重建），WorldRenderer 持有引用。
+// 逐 section 的查询**结果**（occlusionStates / occlusionMissCount）不在这里——
+// 那是纯 CPU 状态，只有 WorldRenderer 读写，已经是它的自有成员。
+struct OcclusionResources final {
+    // 每帧一个查询池，因此槽位区间总是从零开始，不必跨帧对账
+    std::array<VkQueryPool, kFramesInFlight> queryPools{};
+    VkPipeline queryPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout queryLayout = VK_NULL_HANDLE;
+    // 查询绘制用的单位立方体，逐 section 通过推常量拉伸到它的包围盒
+    AllocatedBuffer boxVertexBuffer;
+    AllocatedBuffer boxIndexBuffer;
+    // 整条遮挡通道的开关（平台判定与 MC_REBEDROCK_DISABLE_OCCLUSION）
+    bool disabled = false;
+};
+
+// 世界通道用到的全部管线、管线布局与渲染通道，一处集中。
+//
+// 它们的所有权仍在 VulkanRenderer::Impl：由它创建，并在 cleanupSwapchain /
+// createSwapchainResources 里随交换链销毁重建。WorldRenderer 持有的是对这个结构体的
+// **引用**而不是拷贝——重建之后它必须看到新句柄，拿到一份旧值的拷贝就是一堆悬垂句柄。
+//
+// 打包的理由是 Bindings：这 20 个句柄原先每个都是一条 `VkPipeline&` 绑定，
+// 于是每加一条管线就要在「Bindings 定义 / 成员声明 / 构造初始化列表」三处各写一遍。
+// 收成一个结构体之后是 1 条绑定，加管线只动这里一处。
+struct WorldPipelines final {
+    VkRenderPass renderPass = VK_NULL_HANDLE;
+    // 地形三条渲染层共用的布局与它们各自的管线
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipeline graphicsPipeline = VK_NULL_HANDLE;
+    VkPipeline translucentPipeline = VK_NULL_HANDLE;
+    VkPipeline cutoutPipeline = VK_NULL_HANDLE;
+    VkPipeline skyPipeline = VK_NULL_HANDLE;
+    // 选择框轮廓
+    VkPipelineLayout outlinePipelineLayout = VK_NULL_HANDLE;
+    VkPipeline outlinePipeline = VK_NULL_HANDLE;
+    // 掉落物、下落方块、经验球与第一人称手持物共用一套推常量布局
+    VkPipelineLayout itemPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline itemPipeline = VK_NULL_HANDLE;
+    VkPipeline itemShadowPipeline = VK_NULL_HANDLE;
+    VkPipeline heldItemPipeline = VK_NULL_HANDLE;
+    // 粒子（实例化）
+    VkPipeline particlePipeline = VK_NULL_HANDLE;
+    VkPipelineLayout particlePipelineLayout = VK_NULL_HANDLE;
+    // 太阳空间阴影预通道，以及它的调试叠加层
+    VkPipeline shadowPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout shadowPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline shadowDebugPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout shadowDebugPipelineLayout = VK_NULL_HANDLE;
+    // 贴图雨的逐列雨幕
+    VkPipeline rainSheetPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout rainSheetPipelineLayout = VK_NULL_HANDLE;
 };
 
 // 沿视线方向算出的相机眼点，视图矩阵和剔除视锥都用它，两者因此永远一致

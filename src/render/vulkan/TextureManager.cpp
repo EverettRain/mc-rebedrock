@@ -310,48 +310,17 @@ void TextureManager::createTextureArray(int anisotropy) {
         throw std::runtime_error("Block texture array data is not whole layers");
     }
     const std::uint32_t layerCount = static_cast<std::uint32_t>(byteSize / layerSize);
-    auto staging = resources_->createBuffer(byteSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
-    std::memcpy(staging.mapped, pixels.rgba.data(), pixels.rgba.size());
-    checkVk(vmaFlushAllocation(allocator_, staging.allocation, 0, VK_WHOLE_SIZE),
-            "vmaFlushAllocation(texture staging)");
     textureImage =
         resources_->createImage(pixels.width, pixels.height, layerCount, VK_FORMAT_R8G8B8A8_SRGB,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    resources_->transitionTextureImage(
-        textureImage, layerCount, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT);
-
-    std::vector<VkBufferImageCopy> regions(layerCount);
-    for (std::uint32_t layer = 0; layer < layerCount; ++layer) {
-        regions[layer].bufferOffset = layerSize * layer;
-        regions[layer].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        regions[layer].imageSubresource.mipLevel = 0;
-        regions[layer].imageSubresource.baseArrayLayer = layer;
-        regions[layer].imageSubresource.layerCount = 1;
-        regions[layer].imageExtent = {pixels.width, pixels.height, 1};
-    }
-    const auto commandBuffer = resources_->beginSingleUseCommands();
-    vkCmdCopyBufferToImage(commandBuffer, staging.buffer, textureImage.image,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           static_cast<std::uint32_t>(regions.size()), regions.data());
-    resources_->endSingleUseCommands(commandBuffer);
-    resources_->transitionTextureImage(
-        textureImage, layerCount, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    resources_->destroyBuffer(staging);
-
-    auto viewInfo = vkStructure<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
-    viewInfo.image = textureImage.image;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.layerCount = layerCount;
-    checkVk(vkCreateImageView(device_, &viewInfo, nullptr, &textureView),
-            "vkCreateImageView(texture)");
+    // 地形着色器在顶点阶段就要读方块层（面朝向选层），因此目标阶段含 VERTEX
+    resources_->uploadImageLayers(textureImage, pixels.rgba.data(), byteSize, pixels.width,
+                                  pixels.height, layerCount,
+                                  VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    textureView = resources_->createImageView(textureImage.image, VK_FORMAT_R8G8B8A8_SRGB,
+                                              VK_IMAGE_ASPECT_COLOR_BIT, layerCount,
+                                              VK_IMAGE_VIEW_TYPE_2D_ARRAY);
 
     createTextureSampler(anisotropy);
     std::cout << "Loaded block texture array: " << pixels.width << 'x' << pixels.height << " x "
@@ -390,32 +359,13 @@ void TextureManager::createRainTexture() {
     const auto width = static_cast<std::uint32_t>(pixels.width);
     const auto height = static_cast<std::uint32_t>(pixels.height);
     const VkDeviceSize byteSize = static_cast<VkDeviceSize>(pixels.rgba.size());
-    auto staging = resources_->createBuffer(byteSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
-    std::memcpy(staging.mapped, pixels.rgba.data(), pixels.rgba.size());
-    checkVk(vmaFlushAllocation(allocator_, staging.allocation, 0, VK_WHOLE_SIZE),
-            "vmaFlushAllocation(rain texture)");
-
     rainTextureImage =
         resources_->createImage(width, height, 1U, VK_FORMAT_R8G8B8A8_SRGB,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    resources_->transitionTextureImage(
-        rainTextureImage, 1U, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
-        VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT);
-    VkBufferImageCopy region{};
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.layerCount = 1U;
-    region.imageExtent = {width, height, 1U};
-    const auto commandBuffer = resources_->beginSingleUseCommands();
-    vkCmdCopyBufferToImage(commandBuffer, staging.buffer, rainTextureImage.image,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1U, &region);
-    resources_->endSingleUseCommands(commandBuffer);
-    resources_->transitionTextureImage(
-        rainTextureImage, 1U, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    resources_->destroyBuffer(staging);
+    resources_->uploadImageLayers(rainTextureImage, pixels.rgba.data(), byteSize, width, height, 1U,
+                                  VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    // 单张 2D 图像，不是数组层：雨幕是 64x256 的竖直贴图，见函数头的说明
     rainTextureView = resources_->createImageView(rainTextureImage.image, VK_FORMAT_R8G8B8A8_SRGB,
                                                   VK_IMAGE_ASPECT_COLOR_BIT);
     std::cout << "Loaded vanilla rain texture: " << pixels.width << 'x' << pixels.height << '\n';
@@ -563,51 +513,16 @@ void TextureManager::createGuiTexture() {
         pixels.insert(pixels.end(), image.rgba.begin(), image.rgba.end());
     }
     const auto byteSize = static_cast<VkDeviceSize>(pixels.size());
-    auto staging = resources_->createBuffer(byteSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
-    std::memcpy(staging.mapped, pixels.data(), pixels.size());
-    checkVk(vmaFlushAllocation(allocator_, staging.allocation, 0, VK_WHOLE_SIZE),
-            "vmaFlushAllocation(gui staging)");
     guiTextureImage = resources_->createImage(
         static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), kGuiLayerCount,
         VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    resources_->transitionTextureImage(
-        guiTextureImage, kGuiLayerCount, VK_IMAGE_LAYOUT_UNDEFINED,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-
-    std::array<VkBufferImageCopy, kGuiLayerCount> regions{};
-    for (std::uint32_t layer = 0; layer < kGuiLayerCount; ++layer) {
-        regions[layer].bufferOffset = static_cast<VkDeviceSize>(layerBytes) * layer;
-        regions[layer].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        regions[layer].imageSubresource.baseArrayLayer = layer;
-        regions[layer].imageSubresource.layerCount = 1;
-        regions[layer].imageExtent = {
-            static_cast<std::uint32_t>(width),
-            static_cast<std::uint32_t>(height),
-            1,
-        };
-    }
-    const auto commandBuffer = resources_->beginSingleUseCommands();
-    vkCmdCopyBufferToImage(commandBuffer, staging.buffer, guiTextureImage.image,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           static_cast<std::uint32_t>(regions.size()), regions.data());
-    resources_->endSingleUseCommands(commandBuffer);
-    resources_->transitionTextureImage(
-        guiTextureImage, kGuiLayerCount, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    resources_->destroyBuffer(staging);
-
-    auto viewInfo = vkStructure<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
-    viewInfo.image = guiTextureImage.image;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.layerCount = kGuiLayerCount;
-    checkVk(vkCreateImageView(device_, &viewInfo, nullptr, &guiTextureView),
-            "vkCreateImageView(gui)");
+    resources_->uploadImageLayers(guiTextureImage, pixels.data(), byteSize,
+                                  static_cast<std::uint32_t>(width),
+                                  static_cast<std::uint32_t>(height), kGuiLayerCount,
+                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    guiTextureView = resources_->createImageView(guiTextureImage.image, VK_FORMAT_R8G8B8A8_SRGB,
+                                                 VK_IMAGE_ASPECT_COLOR_BIT, kGuiLayerCount,
+                                                 VK_IMAGE_VIEW_TYPE_2D_ARRAY);
     std::cout << "Loaded Minecraft GUI texture array: " << width << 'x' << height << " x "
               << kGuiLayerCount << '\n';
 }
@@ -636,47 +551,18 @@ void TextureManager::createPanoramaTexture() {
         pixels.insert(pixels.end(), face.rgba.begin(), face.rgba.end());
     }
     const auto byteSize = static_cast<VkDeviceSize>(pixels.size());
-    auto staging = resources_->createBuffer(byteSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
-    std::memcpy(staging.mapped, pixels.data(), pixels.size());
-    checkVk(vmaFlushAllocation(allocator_, staging.allocation, 0, VK_WHOLE_SIZE),
-            "vmaFlushAllocation(panorama staging)");
     panoramaTextureImage = resources_->createImage(
         static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
         static_cast<std::uint32_t>(kPanoramaFaces), VK_FORMAT_R8G8B8A8_SRGB,
         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    resources_->transitionTextureImage(
-        panoramaTextureImage, static_cast<std::uint32_t>(kPanoramaFaces), VK_IMAGE_LAYOUT_UNDEFINED,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    std::array<VkBufferImageCopy, kPanoramaFaces> regions{};
-    for (std::size_t layer = 0; layer < kPanoramaFaces; ++layer) {
-        regions[layer].bufferOffset = static_cast<VkDeviceSize>(layerBytes) * layer;
-        regions[layer].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        regions[layer].imageSubresource.baseArrayLayer = static_cast<std::uint32_t>(layer);
-        regions[layer].imageSubresource.layerCount = 1;
-        regions[layer].imageExtent = {static_cast<std::uint32_t>(width),
-                                      static_cast<std::uint32_t>(height), 1};
-    }
-    const auto commandBuffer = resources_->beginSingleUseCommands();
-    vkCmdCopyBufferToImage(commandBuffer, staging.buffer, panoramaTextureImage.image,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           static_cast<std::uint32_t>(regions.size()), regions.data());
-    resources_->endSingleUseCommands(commandBuffer);
-    resources_->transitionTextureImage(
-        panoramaTextureImage, static_cast<std::uint32_t>(kPanoramaFaces),
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    resources_->destroyBuffer(staging);
-    auto viewInfo = vkStructure<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
-    viewInfo.image = panoramaTextureImage.image;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.layerCount = static_cast<std::uint32_t>(kPanoramaFaces);
-    checkVk(vkCreateImageView(device_, &viewInfo, nullptr, &panoramaTextureView),
-            "vkCreateImageView(panorama)");
+    resources_->uploadImageLayers(panoramaTextureImage, pixels.data(), byteSize,
+                                  static_cast<std::uint32_t>(width),
+                                  static_cast<std::uint32_t>(height),
+                                  static_cast<std::uint32_t>(kPanoramaFaces),
+                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    panoramaTextureView = resources_->createImageView(
+        panoramaTextureImage.image, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT,
+        static_cast<std::uint32_t>(kPanoramaFaces), VK_IMAGE_VIEW_TYPE_2D_ARRAY);
     std::cout << "Loaded Minecraft title panorama: " << width << 'x' << height << " x "
               << kPanoramaFaces << " faces\n";
 }
@@ -774,34 +660,18 @@ void TextureManager::updateBiomeColorTextures(std::uint64_t seed) {
             foliagePixels.push_back(255U);
         }
     }
-    const auto upload = [&](AllocatedImage& image, const std::vector<std::uint8_t>& pixels) {
-        const VkDeviceSize byteSize = pixels.size();
-        auto staging = resources_->createBuffer(byteSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
-        std::memcpy(staging.mapped, pixels.data(), static_cast<std::size_t>(byteSize));
-        checkVk(vmaFlushAllocation(allocator_, staging.allocation, 0, VK_WHOLE_SIZE),
-                "vmaFlushAllocation(biome texture)");
-        resources_->transitionTextureImage(
-            image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
-            VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT);
-        VkBufferImageCopy region{};
-        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        region.imageSubresource.layerCount = 1;
-        region.imageExtent = {static_cast<std::uint32_t>(size), static_cast<std::uint32_t>(size),
-                              1};
-        const auto commandBuffer = resources_->beginSingleUseCommands();
-        vkCmdCopyBufferToImage(commandBuffer, staging.buffer, image.image,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-        resources_->endSingleUseCommands(commandBuffer);
-        resources_->transitionTextureImage(image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                           VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-                                           VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-        resources_->destroyBuffer(staging);
+    // 这两张表的 view 与采样器由 createBiomeTextureResources 建好，这里只重灌像素。
+    // 图像已经在 SHADER_READ_ONLY 上，而 uploadImageLayers 一律按 UNDEFINED 起手：
+    // 内容全量覆盖，丢弃旧内容正是想要的，换种子重建因此走同一条路径。
+    const auto uploadLookup = [&](AllocatedImage& image, const std::vector<std::uint8_t>& pixels) {
+        resources_->uploadImageLayers(image, pixels.data(),
+                                      static_cast<VkDeviceSize>(pixels.size()),
+                                      static_cast<std::uint32_t>(size),
+                                      static_cast<std::uint32_t>(size), 1U,
+                                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     };
-    upload(biomeGrassImage, grassPixels);
-    upload(biomeFoliageImage, foliagePixels);
+    uploadLookup(biomeGrassImage, grassPixels);
+    uploadLookup(biomeFoliageImage, foliagePixels);
 }
 
 // 把每个已提供的物种模型与皮肤装进专用 2D 数组纹理（binding 4），按 speciesModels 顺序一物种一层
@@ -889,46 +759,18 @@ void TextureManager::createEntityTextureArray(
     }
 
     const VkDeviceSize byteSize = static_cast<VkDeviceSize>(atlas.size());
-    auto staging = resources_->createBuffer(byteSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
-    std::memcpy(staging.mapped, atlas.data(), atlas.size());
-    checkVk(vmaFlushAllocation(allocator_, staging.allocation, 0, VK_WHOLE_SIZE),
-            "vmaFlushAllocation(entity staging)");
     entityTextureImage =
         resources_->createImage(atlasWidth, atlasHeight, layerCount, VK_FORMAT_R8G8B8A8_SRGB,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    resources_->transitionTextureImage(
-        entityTextureImage, layerCount, VK_IMAGE_LAYOUT_UNDEFINED,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    std::vector<VkBufferImageCopy> regions(layerCount);
-    for (std::uint32_t layer = 0; layer < layerCount; ++layer) {
-        regions[layer].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        regions[layer].imageSubresource.baseArrayLayer = layer;
-        regions[layer].imageSubresource.layerCount = 1U;
-        regions[layer].imageExtent = {atlasWidth, atlasHeight, 1U};
-        regions[layer].bufferOffset =
-            static_cast<VkDeviceSize>(layer) * atlasWidth * atlasHeight * 4U;
-    }
-    const auto commandBuffer = resources_->beginSingleUseCommands();
-    vkCmdCopyBufferToImage(commandBuffer, staging.buffer, entityTextureImage.image,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, layerCount, regions.data());
-    resources_->endSingleUseCommands(commandBuffer);
-    resources_->transitionTextureImage(
-        entityTextureImage, layerCount, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    resources_->destroyBuffer(staging);
-
-    auto viewInfo = vkStructure<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
-    viewInfo.image = entityTextureImage.image;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.layerCount = layerCount;
-    checkVk(vkCreateImageView(device_, &viewInfo, nullptr, &entityTextureView),
-            "vkCreateImageView(entity)");
+    // 骨骼的层号在顶点阶段选层，因此目标阶段含 VERTEX
+    resources_->uploadImageLayers(entityTextureImage, atlas.data(), byteSize, atlasWidth,
+                                  atlasHeight, layerCount,
+                                  VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    entityTextureView = resources_->createImageView(entityTextureImage.image,
+                                                    VK_FORMAT_R8G8B8A8_SRGB,
+                                                    VK_IMAGE_ASPECT_COLOR_BIT, layerCount,
+                                                    VK_IMAGE_VIEW_TYPE_2D_ARRAY);
     std::cout << "Loaded entity texture atlas: " << atlasWidth << 'x' << atlasHeight << " x "
               << layerCount << '\n';
 }
@@ -1009,47 +851,15 @@ void TextureManager::createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::T
     }
 
     const auto byteSize = static_cast<VkDeviceSize>(pixels.size());
-    auto staging = resources_->createBuffer(byteSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
-    std::memcpy(staging.mapped, pixels.data(), pixels.size());
-    checkVk(vmaFlushAllocation(allocator_, staging.allocation, 0, VK_WHOLE_SIZE),
-            "vmaFlushAllocation(font staging)");
     fontTextureImage =
         resources_->createImage(kFontPageSize, kFontPageSize, layerCount, VK_FORMAT_R8_UNORM,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    resources_->transitionTextureImage(
-        fontTextureImage, layerCount, VK_IMAGE_LAYOUT_UNDEFINED,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-
-    std::vector<VkBufferImageCopy> regions(layerCount);
-    for (std::uint32_t layer = 0; layer < layerCount; ++layer) {
-        regions[layer].bufferOffset = static_cast<VkDeviceSize>(kFontLayerBytes) * layer;
-        regions[layer].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        regions[layer].imageSubresource.baseArrayLayer = layer;
-        regions[layer].imageSubresource.layerCount = 1;
-        regions[layer].imageExtent = {kFontPageSize, kFontPageSize, 1};
-    }
-    const auto commandBuffer = resources_->beginSingleUseCommands();
-    vkCmdCopyBufferToImage(commandBuffer, staging.buffer, fontTextureImage.image,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           static_cast<std::uint32_t>(regions.size()), regions.data());
-    resources_->endSingleUseCommands(commandBuffer);
-    resources_->transitionTextureImage(
-        fontTextureImage, layerCount, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    resources_->destroyBuffer(staging);
-
-    auto viewInfo = vkStructure<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
-    viewInfo.image = fontTextureImage.image;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    viewInfo.format = VK_FORMAT_R8_UNORM;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.layerCount = layerCount;
-    checkVk(vkCreateImageView(device_, &viewInfo, nullptr, &fontTextureView),
-            "vkCreateImageView(font)");
+    resources_->uploadImageLayers(fontTextureImage, pixels.data(), byteSize, kFontPageSize,
+                                  kFontPageSize, layerCount,
+                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    fontTextureView = resources_->createImageView(fontTextureImage.image, VK_FORMAT_R8_UNORM,
+                                                  VK_IMAGE_ASPECT_COLOR_BIT, layerCount,
+                                                  VK_IMAGE_VIEW_TYPE_2D_ARRAY);
     std::cout << "Loaded Minecraft font array: " << kFontPageSize << 'x' << kFontPageSize << " x "
               << layerCount << " (" << (1U + bitmapLayers.size()) << " bitmap layers + "
               << (layerCount - 1U - static_cast<std::uint32_t>(bitmapLayers.size()))

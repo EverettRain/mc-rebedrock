@@ -321,37 +321,59 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
     const auto append = [&](const assets::ImageData& image) {
         layers.push_back(conformToAtlasLayer(top, image, "fixed-section layer"));
     };
+    // 每段开始之前核对写入位置正好落在 BlockAtlasLayout 声明的起始层号上
+    // 从前只在最末尾校验一次总数，某段少一层、另一段多一层就会互相抵消：
+    // 总数对得上，采样侧却整段错位（箱子去读破坏阶段的贴图），而且没有任何征兆
+    // 现在每段起点都被钉住，错位在启动时当场报出是哪一段偏了、偏了多少
+    const auto beginSegment = [&](float firstLayer, const char* segment) {
+        if (static_cast<float>(layers.size()) != firstLayer) {
+            throw std::runtime_error(
+                std::string{"Block atlas fixed section drifted before \""} + segment +
+                "\": at layer " + std::to_string(layers.size()) + ", BlockAtlasLayout expects " +
+                std::to_string(static_cast<int>(firstLayer)));
+        }
+    };
+
+    beginSegment(static_cast<float>(kWaterStillLayer), "water_still");
     for (const auto& frame : waterStillFrames)
         append(frame); // 0..31
+    beginSegment(static_cast<float>(kWaterFlowLayer), "water_flow");
     for (const auto& frame : waterFlowFrames)
         append(frame); // 32..63
+    beginSegment(static_cast<float>(kLavaStillLayer), "lava_still");
     for (const auto& frame : lavaStillFrames)
         append(frame); // 64..83
+    beginSegment(static_cast<float>(kLavaFlowLayer), "lava_flow");
     for (const auto& frame : lavaFlowFrames)
         append(frame); // 84..99
+    beginSegment(kPlayerHeadFirstLayer, "player skin parts");
     for (const auto& part : playerParts) {
         for (const auto& face : part)
             append(face); // 100..135
     }
+    beginSegment(kDestroyStageFirstLayer, "destroy stages");
     for (const auto& stage : destroyStages)
         append(stage); // 136..145
+    beginSegment(kChestBaseFirstLayer, "chest parts");
     for (const auto& part : chestParts) {
         for (const auto& face : part)
             append(face); // 146..163
     }
+    beginSegment(kChestItemTopLayer, "chest item faces");
     for (const auto& texture : chestItemTextures)
         append(texture);    // 164..166
+    beginSegment(kMoonPhaseFirstLayer, "moon phases");
     for (const auto& tile : moonPhaseTiles)
         append(tile);            // 167..174
+    beginSegment(kSunLayer, "sun");
     append(sunFrames.front());   // 175
+    beginSegment(kExperienceOrbLayer, "experience orb");
     append(experienceOrb);       // 176
 
     // ---- 动态方块纹理，按方块注册表的名字解析 ----
     // 合成出来的图层按名字登记，复用它们的方块因此都指向同一层
     // 比如 grass_block_side、dirt 和已着色的叶片
-    if (layers.size() != kFirstBlockTextureLayer) {
-        throw std::runtime_error("Fixed texture section does not match kFirstBlockTextureLayer");
-    }
+    beginSegment(static_cast<float>(kFirstBlockTextureLayer), "dynamic block textures");
     std::unordered_map<std::string, float> layerByName;
     // 非流体动画方块纹理，`assign` 每烘一条多帧动画条就累积一项
     // 最后统一转给 output.blockAnimations

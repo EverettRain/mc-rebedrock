@@ -198,13 +198,15 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
 
 // Build the page for `id`. The widget order matches the historic per-page array;
 // each callback runs exactly what the old switch case did.
-[[nodiscard]] inline Page buildPage(PageId id, const MenuBuildContext& ctx,
-                                    const MenuCallbacks& cb, const RectProvider& rectFor) {
+// 把页面装配进调用方给的缓冲。`page` 先被清空，容量得以跨次复用——绘制侧每帧都要
+// 一份当前页，走这个重载就不必每帧向堆要一个新的 vector。
+inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
+                          const MenuCallbacks& cb, const RectProvider& rectFor) {
     using detail::addButton;
     using detail::addOptionButton;
     using detail::addListRow;
     using detail::addSlider;
-    Page page;
+    page.clear();
 
     switch (id) {
         case PageId::Title:
@@ -329,6 +331,13 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
         case PageId::Game:
             break;  // no menu widgets (in-world HUD / loading are not menu pages)
     }
+}
+
+// 返回一份新页面。派发路径（点击时构建一次）用它；每帧绘制走上面的缓冲重载。
+[[nodiscard]] inline Page buildPage(PageId id, const MenuBuildContext& ctx,
+                                    const MenuCallbacks& cb, const RectProvider& rectFor) {
+    Page page;
+    buildPageInto(page, id, ctx, cb, rectFor);
     return page;
 }
 

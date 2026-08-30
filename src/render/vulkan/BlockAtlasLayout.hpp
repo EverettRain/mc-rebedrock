@@ -14,6 +14,18 @@ inline constexpr std::uint32_t kWaterAnimationFrameCount = 32;
 inline constexpr std::uint32_t kLavaStillFrameCount = 20;
 inline constexpr std::uint32_t kLavaFlowFrameCount = 16;
 
+// 固定特殊区里其余各段的层数
+// 下面的 static_assert 用它们把每个起始层号推回去，起始层号因此不再是手算出来的字面量
+// 烘焙侧（BlockAtlasBaker）在 append 每一段之前也用同一批常量校验一次实际写入位置
+inline constexpr std::uint32_t kCuboidFaceCount = 6;   // 一个长方体展开成 6 个面
+inline constexpr std::uint32_t kPlayerPartCount = 6;   // 头/身/左右臂/左右腿
+inline constexpr std::uint32_t kDestroyStageCount = 10;
+inline constexpr std::uint32_t kChestPartCount = 3;    // 底座/盖/搭扣
+inline constexpr std::uint32_t kChestItemFaceCount = 3; // 箱子物品的顶/正/侧
+inline constexpr std::uint32_t kMoonPhaseCount = 8;
+inline constexpr std::uint32_t kSunFrameCount = 1;
+inline constexpr std::uint32_t kExperienceOrbLayerCount = 1;
+
 // 图集开头是一段顺序确定的固定特殊区，网格化器和天空着色器因此能用 constexpr 起始层号
 // 特殊区含水与岩浆动画帧、玩家皮肤各面、箱子部件、破坏阶段、太阳与月相
 // 特殊区之后是方块纹理，启动时按名字从方块注册表解析，没有占位层，每层都是真纹理
@@ -48,5 +60,46 @@ inline constexpr float kSunLayer = 175.0F;
 // 从 entity/experience/experience_orb.png（4x4 的表）里取出的一张 16x16 球体精灵
 // WorldRenderer 里的经验球公告板直接采样这整层
 inline constexpr float kExperienceOrbLayer = 176.0F;
+
+// ---- 段间关系的编译期校验 ----
+//
+// 上面每个起始层号原本都是手算出来的字面量，段与段之间只靠注释和 BlockAtlasBaker
+// 里的行尾 `// 100..135` 对齐。唯一的护栏是烘焙末尾那句总数校验
+// （layers.size() != kFirstBlockTextureLayer），它只看总和：某一段少一层、另一段
+// 多一层时总数不变，校验照过，程序照常启动，但箱子会去采样破坏阶段的贴图。
+//
+// 下面把每个起点重新表述成「上一段起点 + 上一段层数」。改动任何一段的层数而忘了
+// 顺移后面的起点，编译期就会停下来。范式同 world/BlockShape.hpp 用 static_assert
+// 钉住枚举序数与表下标。
+static_assert(kWaterStillLayer == 0U);
+static_assert(kWaterFlowLayer == kWaterStillLayer + kWaterAnimationFrameCount);
+static_assert(kLavaStillLayer == kWaterFlowLayer + kWaterAnimationFrameCount);
+static_assert(kLavaFlowLayer == kLavaStillLayer + kLavaStillFrameCount);
+
+static_assert(kPlayerHeadFirstLayer ==
+              static_cast<float>(kLavaFlowLayer + kLavaFlowFrameCount));
+static_assert(kPlayerBodyFirstLayer == kPlayerHeadFirstLayer + kCuboidFaceCount);
+static_assert(kPlayerRightArmFirstLayer == kPlayerBodyFirstLayer + kCuboidFaceCount);
+static_assert(kPlayerLeftArmFirstLayer == kPlayerRightArmFirstLayer + kCuboidFaceCount);
+static_assert(kPlayerRightLegFirstLayer == kPlayerLeftArmFirstLayer + kCuboidFaceCount);
+static_assert(kPlayerLeftLegFirstLayer == kPlayerRightLegFirstLayer + kCuboidFaceCount);
+
+static_assert(kDestroyStageFirstLayer ==
+              kPlayerHeadFirstLayer + static_cast<float>(kPlayerPartCount * kCuboidFaceCount));
+static_assert(kChestBaseFirstLayer ==
+              kDestroyStageFirstLayer + static_cast<float>(kDestroyStageCount));
+static_assert(kChestLidFirstLayer == kChestBaseFirstLayer + kCuboidFaceCount);
+// 搭扣是第三个箱子部件，占 158..163，没有具名起点：物品面紧跟在三个部件之后
+static_assert(kChestItemTopLayer ==
+              kChestBaseFirstLayer + static_cast<float>(kChestPartCount * kCuboidFaceCount));
+static_assert(kChestItemFrontLayer == kChestItemTopLayer + 1.0F);
+static_assert(kChestItemSideLayer == kChestItemFrontLayer + 1.0F);
+
+static_assert(kMoonPhaseFirstLayer ==
+              kChestItemTopLayer + static_cast<float>(kChestItemFaceCount));
+static_assert(kSunLayer == kMoonPhaseFirstLayer + static_cast<float>(kMoonPhaseCount));
+static_assert(kExperienceOrbLayer == kSunLayer + static_cast<float>(kSunFrameCount));
+static_assert(kFirstBlockTextureLayer ==
+              static_cast<std::uint32_t>(kExperienceOrbLayer) + kExperienceOrbLayerCount);
 
 } // namespace mc::render

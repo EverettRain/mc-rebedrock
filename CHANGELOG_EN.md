@@ -215,6 +215,13 @@ simple versioned history while it is in beta.
 
 ### Changed
 
+- Removed the "Particle Rain" rain mode; rain is now either "Texture Rain" or
+  "Asynchronous Particle Rain". The removed mode consumed the same raindrops and
+  produced the same visuals as the asynchronous one — it only issued one draw call
+  per drop, a path kept purely to benchmark against the instanced one, and at the
+  highest particle level in heavy rain that meant 18,000 draw calls per frame.
+  Saves that selected it migrate to Asynchronous Particle Rain.
+
 - Game rules are now named the way 26.1 names them, in `snake_case`:
   `doDaylightCycle` became `advance_time`, `doWeatherCycle` became
   `advance_weather`, and `keepInventory`, `randomTickSpeed` and
@@ -354,6 +361,14 @@ simple versioned history while it is in beta.
   can be re-checked on any real save.
 
 ### Fixed
+
+- Fixed **dropped items** of six-way directional blocks (the observer and friends)
+  rendering as a flat 2.5D sprite: the same block was a cube in the hand and in the
+  inventory, but a sprite on the ground. "Does this item draw as a cube" was spelled
+  out separately in each of the three item render paths (drop, first-person held,
+  inventory icon) and the three spellings disagreed — adding six-way directional
+  blocks only updated two of them. All three now share one answer, so a new block
+  model has exactly one place to declare itself.
 
 - `advance_time` no longer overrides a clock paused by `/time pause`. The rule is
   a global switch over every clock, kept separate from each clock's own paused

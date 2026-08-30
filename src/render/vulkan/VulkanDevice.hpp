@@ -12,6 +12,8 @@
 
 #include "render/vulkan/VulkanResources.hpp"
 
+#include "core/EnvFlags.hpp"
+
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
 
@@ -60,9 +62,10 @@ debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessa
     std::cerr << prefix << " [" << messageId << "]: " << callbackData->pMessage << '\n';
     // 校验层回调不能跨 C ABI 抛异常，所以打印完整的 VUID/句柄信息后直接终止进程
     // 脚本化的烟测始终开着这道闸；交互运行或定点复现可以用这个开关手动打开同样的快速失败
+    // 两个开关都走 core/EnvFlags.hpp 的一次性求值：这个回调可能在任意线程上被调起，
+    // 而 getenv 与 setenv 并发是未定义行为
     if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT &&
-        (std::getenv("MC_REBEDROCK_SMOKE_TEST") != nullptr ||
-         std::getenv("MC_REBEDROCK_FATAL_VALIDATION") != nullptr)) {
+        (diag::smokeTestEnabled() || diag::fatalValidationEnabled())) {
         std::cerr << "Fatal Vulkan validation error; aborting validation-gated run.\n"
                   << std::flush;
         std::abort();

@@ -3405,6 +3405,29 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
            (model == BlockModel::Cube || model == BlockModel::DirectionalCube);
 }
 
+// Whether this block, drawn as an ITEM, uses the cube geometry rather than the
+// extruded 2.5D icon sheet. The three item surfaces — the dropped ItemEntity,
+// the first-person held item, and the HUD/inventory icon — all ask this one
+// question, so they must ask it in one place.
+//
+// They used to each spell it out inline as `model == Cube || model == Chest ||
+// ...`, and the three spellings disagreed: DirectionalCube (the observer) was
+// added to the held and icon paths but missed on the drop path, so an observer
+// lying on the ground rendered as a flat sprite while the same item in the hand
+// and in the inventory rendered as a cube. Keying on the model set here is what
+// makes a new BlockModel impossible to half-register.
+//
+// A Slab is in the set: it takes the same cube path, only with its Y extent
+// halved — the caller reads isSlab() to decide that, exactly as before.
+// Deliberately NOT the same set as isFullCube(): that one answers "does it fill
+// its cell" (occlusion, face-sturdiness) and so excludes a chest and a slab,
+// both of which nevertheless draw as boxes when held.
+[[nodiscard]] constexpr bool rendersAsCubeItem(Block block) {
+    const auto model = blockDefinition(block).model;
+    return model == BlockModel::Cube || model == BlockModel::DirectionalCube ||
+           model == BlockModel::Chest || model == BlockModel::Slab;
+}
+
 // Java's BlockState#isFaceSturdy: only a full collision cube can carry an
 // attached block. Glass qualifies, leaves deliberately do not.
 [[nodiscard]] constexpr bool isFaceSturdy(Block block) {
