@@ -72,6 +72,17 @@ struct ItemStack final {
     // observable. The doubling sequence reaches that wall on the sixth
     // operation (0,1,3,7,15,31,63) — long before the byte does.
     std::uint8_t repairCost = 0U;
+    // I-3: the anvil's rename (and, later, a name tag's). A u16 index into the
+    // session's CustomNameTable rather than the string itself — ItemStack had
+    // exactly four bytes of tail padding, so this costs NOTHING: sizeof stays
+    // 48. A 32-byte inline array would have made it 80 (+67% on every stack in
+    // every inventory and chest) and still could not hold vanilla's 50-character
+    // limit. See docs/content-dev/I-item/I-3-custom-name-storage-decision.md.
+    //
+    // Deliberately NOT resolved here: Inventory.hpp is a value type and must not
+    // depend on a session service. gameplay/CustomNames.hpp turns the id back
+    // into a string.
+    std::uint16_t customNameId = 0U;
 
     [[nodiscard]] constexpr bool empty() const {
         return count == 0 || (item == nullptr && block == world::Block::Air);
@@ -136,6 +147,10 @@ struct ItemStack final {
 [[nodiscard]] constexpr bool operator==(const ItemStack& first, const ItemStack& second) {
     if (first.count != second.count || first.damage != second.damage) return false;
     if (first.repairCost != second.repairCost) return false;
+    // The name is part of the stack's value: a renamed sword is not the same
+    // stack as its unnamed twin (and, through canCombine, does not merge with
+    // it — matching vanilla's component-inclusive ItemStack#matches).
+    if (first.customNameId != second.customNameId) return false;
     if (!enchantmentsEqual(first, second)) return false;
     if (isBlockStack(first) && isBlockStack(second)) return first.block == second.block;
     return first.item == second.item && first.block == second.block;

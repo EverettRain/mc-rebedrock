@@ -49,6 +49,12 @@ enum class TooltipStyle : std::uint8_t {
 struct TooltipLine final {
     std::string text;
     TooltipStyle style = TooltipStyle::Detail;
+    // I-3: vanilla 的 `getStyledHoverName` 给**自定义名**加 ITALIC，那是"这东西被
+    // 改过名"的唯一视觉线索。这里把它作为数据表达出来并被测试钉住；
+    // ⚠ **渲染侧目前不斜体**——`drawHudText` 没有斜体（vanilla 是对字形做剪切
+    // 变换），补它是一条渲染改动，已登记欠账。数据先正确，别为了"看起来对"
+    // 而在这一层撒谎说没有斜体。
+    bool italic = false;
 };
 
 // `Item.TooltipContext` + `TooltipFlag` 的本项目等价物。

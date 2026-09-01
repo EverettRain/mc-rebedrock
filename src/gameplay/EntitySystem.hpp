@@ -71,6 +71,12 @@ struct SimpleEntity final {
     glm::vec3 lastAttackerPosition{0.0F};
     int recentAttackerTicks = 0;
     std::uint64_t lastHurtSequence = 0U;
+    // I-3: a name tag's name, as a CustomNameId into the session table — the
+    // SAME table and the same u16 an ItemStack carries, because vanilla's name
+    // tag is literally an anvil-renamed item whose name moves onto the mob.
+    // Storage only in I-3: the right-click interaction and the floating
+    // nameplate are AR-CX4-c's, and building either here would be a shell.
+    std::uint16_t customNameId = 0U;
 
     // MobEntity#ambientSoundChance: the idle-sound scheduler's counter. Each
     // tick baseTick rolls nextInt(1000) against it while it climbs; a roll that
@@ -306,7 +312,8 @@ class EntitySystem final {
                           glm::vec3 velocity, float health, int angerTicks,
                           unsigned int ageTicks, std::uint64_t rngState, int fireTicks = 0,
                           const ActiveEffects& effects = {}, int age = 0, int loveTicks = 0,
-                          DyeColor color = kDefaultDyeColor);
+                          DyeColor color = kDefaultDyeColor,
+                          std::uint16_t customNameId = 0U);
 
     // Advances every creature one 20 TPS tick against the world: target/action
     // selectors, land navigation, gravity, collision, pushing and damage timers.

@@ -242,6 +242,9 @@ class GameSession final {
     [[nodiscard]] AnvilMenu& anvilMenu();
     [[nodiscard]] const AnvilMenu& anvilMenu() const;
     void refreshAnvilResult();
+    // I-3: the rename box's current text. Stored on the menu and re-derived
+    // immediately, because the price shown depends on it.
+    void setAnvilName(std::string name);
     bool takeAnvilResult(bool shiftHeld);
     // Menu#removed: closes the open container and returns everything the cursor
     // and crafting grid were holding to the inventory. The renderer's inventory

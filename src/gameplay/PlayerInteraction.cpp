@@ -432,6 +432,8 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
                     // the enchantments, rerolling the seed — is gameplay, so the
                     // client only ever says which of the three bars was pressed.
                     static_cast<void>(session.purchaseEnchantment(specific.optionIndex));
+                } else if constexpr (std::is_same_v<T, SetAnvilName>) {
+                    session.setAnvilName(specific.name);
                 } else if constexpr (std::is_same_v<T, ClickCreativeItem>) {
                     session.inventory().clickCreativeItem(
                         specific.catalogStack, specific.button, specific.shiftHeld);

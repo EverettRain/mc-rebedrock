@@ -101,6 +101,8 @@ std::vector<std::uint8_t> encodeGameCommand(const GameCommand& command) {
                 } else if constexpr (std::is_same_v<T, ClickEnchantOption>) {
                     persistence::appendInteger(bytes,
                                                static_cast<std::int32_t>(specific.optionIndex));
+                } else if constexpr (std::is_same_v<T, SetAnvilName>) {
+                    codec::appendString32(bytes, specific.name);
                 }
             },
             command);
@@ -234,6 +236,12 @@ std::optional<GameCommand> decodeGameCommand(std::span<const std::uint8_t> bytes
             ClickEnchantOption click;
             click.optionIndex = persistence::readInteger<std::int32_t>(bytes, cursor);
             decoded = click;
+            break;
+        }
+        case 14: {  // SetAnvilName
+            SetAnvilName rename;
+            rename.name = codec::readString32(bytes, cursor);
+            decoded = std::move(rename);
             break;
         }
         default:

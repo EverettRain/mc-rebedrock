@@ -130,6 +130,16 @@ struct ClickEnchantOption final {
         default;
 };
 
+// I-3: the anvil's rename box changed. The analogue of 26.1's
+// ServerboundRenameItemPacket — the client owns the text field, the server owns
+// what the rename costs and whether it applies at all. Sent on every edit (the
+// price has to update as you type, exactly as vanilla's screen does), so it is
+// deliberately cheap: one short string.
+struct SetAnvilName final {
+    std::string name;
+    [[nodiscard]] friend bool operator==(const SetAnvilName&, const SetAnvilName&) = default;
+};
+
 // A creative-catalogue cell click. The renderer resolves the catalogue stack (a
 // presentation read of the catalogue) and carries the value; gameplay decides
 // how the cursor changes.
@@ -209,7 +219,8 @@ struct MovementInput final {
 // the chat string and the two drag vectors.
 using GameCommand = std::variant<PlayerAction, UseItemOn, UseItem, UseItemStop, SwapSlot, ClickSlot,
                                  ChatCommand, ClickCreativeItem, ClearCursor, DropCursor,
-                                 DropSelected, DragDistribute, PickupAll, ClickEnchantOption>;
+                                 DropSelected, DragDistribute, PickupAll, ClickEnchantOption,
+                                 SetAnvilName>;
 
 // The input queue between the render thread and the simulation tick.
 class GameCommandQueue final {

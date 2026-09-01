@@ -20,6 +20,7 @@
 #include "gameplay/Item.hpp"
 #include "gameplay/PlayerExperience.hpp"
 #include "gameplay/ContentRegistry.hpp"
+#include "gameplay/CustomNames.hpp"
 #include "gameplay/CraftingSystem.hpp"
 #include "gameplay/GameSession.hpp"
 #include "gameplay/GameSnapshotCodec.hpp"
@@ -597,6 +598,176 @@ void testSnapshotCarriesTheAnvilScreen() {
     std::cout << "snapshot: the anvil screen, prior-work penalty included, crosses the codec\n";
 }
 
+// ---- I-3: the custom name ----
+
+void testCustomNameTable() {
+    CustomNameTable table;
+    // An empty name is not a name — that is how "clear it" is spelled.
+    assert(table.intern("") == kNoCustomName);
+    const CustomNameId sting = table.intern("Sting");
+    assert(sting != kNoCustomName);
+    // Interning is idempotent: the same string is the same id, so two stacks
+    // named alike compare equal.
+    assert(table.intern("Sting") == sting);
+    assert(table.nameOf(sting) == "Sting");
+    // A different name is a different id.
+    assert(table.intern("Glamdring") != sting);
+    // Unknown ids read back empty rather than throwing — a display path must
+    // never have to guard.
+    assert(table.nameOf(kNoCustomName).empty());
+    assert(table.nameOf(60000U).empty());
+    // Over-long names are refused, not truncated mid-codepoint.
+    assert(table.intern(std::string(kMaximumCustomNameBytes + 1U, 'x')) == kNoCustomName);
+    // A world switch invalidates every id.
+    table.clear();
+    assert(table.nameOf(sting).empty());
+    std::cout << "names: intern is idempotent, empty is no name, clear invalidates\n";
+}
+
+void testNameIsPartOfTheStacksValue() {
+    ItemStack plain = tool(&items::IronPickaxe);
+    ItemStack named = plain;
+    named.customNameId = customNames().intern("Digger");
+    // A renamed stack is not the same value as its unnamed twin — which is what
+    // keeps them from stacking.
+    assert(!(plain == named));
+    assert(plain.customNameId == kNoCustomName);
+    // And the id costs nothing: it lives in tail padding that was already there.
+    static_assert(sizeof(ItemStack) == 48U,
+                  "I-3 chose the id BECAUSE it fits the existing padding; if this "
+                  "trips, the measurement the decision rested on no longer holds");
+    std::cout << "names: part of the stack's value, and free (sizeof still 48)\n";
+}
+
+void testAnvilRenames() {
+    const CustomNameId digger = customNames().intern("Digger");
+
+    // A rename with nothing else costs exactly one level.
+    {
+        AnvilMenu menu;
+        menu.left = tool(&items::IronPickaxe, 50U);
+        menu.name = "Digger";
+        refreshAnvilResult(menu, false);
+        assert(menu.cost == 1);
+        assert(menu.result.customNameId == digger);
+        assert(menu.result.damage == 50U); // a rename repairs nothing
+    }
+    // Typing the name it already has is not a rename: nothing to sell.
+    {
+        AnvilMenu menu;
+        menu.left = tool(&items::IronPickaxe, 50U);
+        menu.left.customNameId = digger;
+        menu.name = "Digger";
+        refreshAnvilResult(menu, false);
+        assert(menu.result.empty() && menu.cost == 0);
+    }
+    // An empty box over a named item STRIPS the name, and that also costs one.
+    {
+        AnvilMenu menu;
+        menu.left = tool(&items::IronPickaxe, 50U);
+        menu.left.customNameId = digger;
+        menu.name.clear();
+        refreshAnvilResult(menu, false);
+        assert(menu.cost == 1);
+        assert(menu.result.customNameId == kNoCustomName);
+    }
+    // Renaming works on things that are not enchantable at all — vanilla lets
+    // you name a stack of dirt, because canStoreEnchantments is true for
+    // everything (every item carries an empty ENCHANTMENTS component).
+    {
+        AnvilMenu menu;
+        menu.left = ItemStack{mc::world::Block::Cobblestone, 12U,
+                              blockItemFor(mc::world::Block::Cobblestone)};
+        menu.name = "Rubble";
+        refreshAnvilResult(menu, false);
+        assert(!menu.result.empty());
+        assert(menu.cost == 1);
+        assert(customNameOf(menu.result.customNameId) == "Rubble");
+    }
+    // A rename rides on top of a repair, adding its one level.
+    {
+        AnvilMenu menu;
+        menu.left = tool(&items::IronPickaxe, 200U);
+        menu.right = stackOf(&items::IronIngot, 3U);
+        menu.name = "Digger";
+        refreshAnvilResult(menu, false);
+        assert(menu.cost == 4); // 3 ingots + 1 naming
+        assert(menu.result.customNameId == digger);
+    }
+    std::cout << "anvil: rename costs one, stripping costs one, same name costs nothing\n";
+}
+
+// A pure rename must not raise the prior-work penalty, or naming a tool would
+// quietly make it dearer to repair forever. Everything else must.
+void testRenameDoesNotRaiseThePenalty() {
+    PlayerExperience experience;
+    experience.setExperienceLevel(60);
+    mc::world::gen::JavaRandom unused;
+    static_cast<void>(unused);
+
+    AnvilMenu rename;
+    rename.left = tool(&items::IronPickaxe, 50U);
+    rename.name = "Digger";
+    refreshAnvilResult(rename, false);
+    ItemStack renamed;
+    assert(takeAnvilResult(rename, experience, false, renamed).applied);
+    assert(customNameOf(renamed.customNameId) == "Digger");
+    assert(renamed.repairCost == 0U); // NOT raised
+
+    AnvilMenu repair;
+    repair.left = tool(&items::IronPickaxe, 200U);
+    repair.right = stackOf(&items::IronIngot, 3U);
+    refreshAnvilResult(repair, false);
+    ItemStack repaired;
+    assert(takeAnvilResult(repair, experience, false, repaired).applied);
+    assert(repaired.repairCost == 1U); // raised, as every real operation does
+
+    // A rename ON TOP of a repair is not a pure rename, so the penalty rises.
+    AnvilMenu both;
+    both.left = tool(&items::IronPickaxe, 200U);
+    both.right = stackOf(&items::IronIngot, 3U);
+    both.name = "Digger";
+    refreshAnvilResult(both, false);
+    ItemStack mixed;
+    assert(takeAnvilResult(both, experience, false, mixed).applied);
+    assert(mixed.repairCost == 1U);
+    std::cout << "anvil: a pure rename leaves the prior-work penalty alone\n";
+}
+
+// A pure rename is capped one below the wall, so an item worked to death can
+// still be renamed (AnvilMenu's `onlyRenaming` clamp).
+void testRenameEscapesTheWall() {
+    AnvilMenu menu;
+    menu.left = tool(&items::IronPickaxe, 50U);
+    menu.left.repairCost = 255U;
+    menu.name = "Digger";
+    refreshAnvilResult(menu, false);
+    assert(menu.cost == kAnvilMaximumCost - 1);
+    assert(!menu.result.empty());
+    assert(customNameOf(menu.result.customNameId) == "Digger");
+    std::cout << "anvil: a pure rename is clamped below the wall, never refused by it\n";
+}
+
+void testNameSurvivesTheWire() {
+    WorldSnapshot sent;
+    sent.openContainerScreen = ContainerScreen::Anvil;
+    sent.anvilLeft = tool(&items::DiamondPickaxe, 20U);
+    sent.anvilLeft.customNameId = customNames().intern("\xe6\x8c\x96\xe6\x8e\x98\xe8\x80\x85");
+    sent.anvilResult = sent.anvilLeft;
+    sent.anvilCost = 3;
+
+    const auto bytes = encodeSnapshot(PublishedSnapshot{sent});
+    const auto decoded = decodeSnapshot(bytes);
+    assert(decoded.has_value());
+    const auto* received = std::get_if<WorldSnapshot>(&*decoded);
+    assert(received != nullptr);
+    // The STRING crosses, not the id — so a non-ASCII name arrives intact even
+    // though the receiver's table is its own.
+    assert(customNameOf(received->anvilLeft.customNameId) ==
+           "\xe6\x8c\x96\xe6\x8e\x98\xe8\x80\x85");
+    std::cout << "names: the string crosses the wire, not the session id\n";
+}
+
 } // namespace
 
 int main() {
@@ -617,6 +788,12 @@ int main() {
     testSessionWiring();
     testWallRefusesThroughTheSession();
     testSnapshotCarriesTheAnvilScreen();
+    testCustomNameTable();
+    testNameIsPartOfTheStacksValue();
+    testAnvilRenames();
+    testRenameDoesNotRaiseThePenalty();
+    testRenameEscapesTheWall();
+    testNameSurvivesTheWire();
     std::cout << "anvil: all checks passed\n";
     return 0;
 }

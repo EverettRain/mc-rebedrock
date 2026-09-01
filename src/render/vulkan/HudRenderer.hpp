@@ -1619,11 +1619,10 @@ class HudRenderer final {
     // cost centred at the bottom, and — when the price is at or past the wall —
     // vanilla's error marker over the output slot instead of a result.
     //
-    // The rename EditBox is present but NOT editable: renaming needs a custom
-    // name ON THE STACK, which this build has no storage for (see ENCH-3's and
-    // UI-1's cards). UI-1 wires the box to the one text field layer so the day
-    // that storage lands it is a one-line flip; until then ui::kAnvilNameFieldRules
-    // keeps editable == false and the greyed-out vanilla art says so.
+    // I-3 landed the custom-name storage, so the rename box is live. It still
+    // goes dead when the left slot is empty, which is vanilla's own rule
+    // (`slotChanged` -> `setEditable(!itemStack.isEmpty())`), and the field art
+    // switches to the greyed variant with it.
     template <typename SlotDrawer>
     void drawAnvilScreen(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
                          const ui::UiRect& panel, const SlotDrawer& slotWithHover) const {
@@ -1641,27 +1640,29 @@ class HudRenderer final {
         // "you must cover me" marker. Skipping the blit is why the screen showed
         // a red bar where the name box belongs.
         //
-        // The DISABLED variant is drawn even when the left slot is occupied,
-        // where vanilla would draw the enabled one: renaming has nowhere to
-        // store a custom name yet (see ENCH-3's card), and vanilla's own
-        // greyed-out art is the honest way to say "you cannot type here" — a
-        // lit field the player can click into and get nothing from is worse.
+        // Which variant, exactly as vanilla picks it: lit while there is
+        // something in the left slot to rename, greyed when there is not.
+        const bool renameEnabled = !snap.anvilLeft.empty();
         drawGuiSprite(commandBuffer,
                       {panel.x + 59.0F * scale, panel.y + 20.0F * scale, 110.0F * scale,
                        16.0F * scale},
                       kAnvilGuiLayer,
-                      {0.0F, static_cast<float>(kAnvilTextFieldSpriteY + 17), 110.0F, 16.0F});
+                      {0.0F,
+                       static_cast<float>(kAnvilTextFieldSpriteY + (renameEnabled ? 0 : 17)),
+                       110.0F, 16.0F});
         // GUI spec §10 as corrected in §13.3: the field art sits at (59,20)
         // 110x16 and the EditBox itself at (62,24) 103x12 — AnvilScreen.java:37.
         // The art is already blitted above, so the field itself is borderless.
         TextFieldStyle anvilNameStyle;
         anvilNameStyle.bordered = false;
-        anvilNameStyle.focused = false;
+        anvilNameStyle.focused = renameEnabled;
         anvilNameStyle.shadow = false;
         drawTextField(commandBuffer,
                       {panel.x + 62.0F * scale, panel.y + 24.0F * scale, 103.0F * scale,
                        12.0F * scale},
-                      scale, anvilName_, ui::kAnvilNameFieldRules, anvilNameStyle);
+                      scale, anvilName_,
+                      renameEnabled ? ui::kAnvilNameFieldRules : ui::kAnvilNameFieldDisabled,
+                      anvilNameStyle);
         slotWithHover(layout.anvilLeftSlot(), snap.anvilLeft, false);
         slotWithHover(layout.anvilRightSlot(), snap.anvilRight, false);
         slotWithHover(layout.anvilOutputSlot(), snap.anvilResult, false);
@@ -2688,6 +2689,15 @@ class HudRenderer final {
     // conjured at the draw site so the day that storage lands has one place to
     // change.
     ui::TextFieldState anvilName_;
+
+  public:
+    // I-3: the renderer drives this field (keys and characters) and the anvil
+    // screen draws it, so it is the one piece of text-field state the HUD hands
+    // out rather than owning privately.
+    [[nodiscard]] ui::TextFieldState& anvilName() { return anvilName_; }
+    [[nodiscard]] const ui::TextFieldState& anvilName() const { return anvilName_; }
+
+  private:
     mutable ui::MenuBuildContext drawContext_;
     ui::MenuCallbacks drawCallbacks_;
     float vignetteDarkness_ = 1.0F;

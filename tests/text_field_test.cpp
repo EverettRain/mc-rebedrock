@@ -430,10 +430,15 @@ int main() {
         assert(mc::ui::kWorldNameFieldRules.maxLength == 32U);
         assert(mc::ui::kWorldNameFieldRules.editable);
         assert(mc::ui::kChatFieldRules.maxLength == 256U);
-        // The anvil's box is wired to this layer but stays inert until an
-        // ItemStack has somewhere to store a custom name.
-        assert(!mc::ui::kAnvilNameFieldRules.editable);
+        // I-3 landed the custom-name storage, so the anvil's box is live —
+        // but only with something in the left slot, which is why there are two
+        // rule sets and the screen picks between them (vanilla's
+        // AnvilScreen#slotChanged -> setEditable(!itemStack.isEmpty())).
+        assert(mc::ui::kAnvilNameFieldRules.editable);
+        assert(!mc::ui::kAnvilNameFieldDisabled.editable);
         assert(mc::ui::kAnvilNameFieldRules.maxLength == 50U); // AnvilScreen.java:43
+        assert(mc::ui::kAnvilNameFieldDisabled.maxLength ==
+               mc::ui::kAnvilNameFieldRules.maxLength);
         // Open-to-LAN's port box: five digits, nothing else.
         assert(mc::ui::kLanPortFieldRules.maxLength == 5U);
         TextFieldState port =

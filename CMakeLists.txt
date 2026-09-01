@@ -295,6 +295,7 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/ChestSystem.cpp
     src/gameplay/FurnaceSystem.cpp
     src/gameplay/ContentRegistry.cpp
+    src/gameplay/CustomNames.cpp
     src/gameplay/CraftingSystem.cpp
     src/gameplay/RecipeTable.cpp
     src/gameplay/EntitySystem.cpp
@@ -1161,6 +1162,8 @@ if(BUILD_TESTING)
     add_executable(mc_rebedrock_game_command_codec_test
         tests/game_command_codec_test.cpp
         src/gameplay/GameCommandCodec.cpp
+        # I-3: the stack codec resolves a custom name through the session table.
+        src/gameplay/CustomNames.cpp
     )
     target_include_directories(mc_rebedrock_game_command_codec_test PRIVATE
         src

@@ -15,6 +15,7 @@
 // assertable headless. Only `takeResult` mutates, and only the two things it is
 // allowed to: the player's levels and the menu's own slots.
 
+#include "gameplay/CustomNames.hpp"
 #include "gameplay/Enchantment.hpp"
 #include "gameplay/Inventory.hpp"
 #include "gameplay/Item.hpp"
@@ -24,6 +25,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string>
 
 namespace mc::gameplay {
 
@@ -60,10 +62,18 @@ inline constexpr std::int32_t kAnvilMaximumCost = 40;
 }
 
 // EnchantmentHelper#canStoreEnchantments: what the anvil will work on at all.
-// An enchanted book qualifies even though it is not itself enchantable.
+//
+// In 26.1 that is `stack.has(ENCHANTMENTS)`, and every item carries an (empty)
+// ENCHANTMENTS component by default — so the answer is "anything non-empty",
+// which is why vanilla lets you rename a stack of dirt. This used to require
+// enchantability, which silently made renaming an ordinary block impossible;
+// I-3 (renaming) is what exposed it.
+//
+// Loosening it does not loosen COMBINING: that branch still demands the same
+// damageable item on both sides (or a book), so two stacks of dirt reach it and
+// bounce straight back out.
 [[nodiscard]] inline bool acceptsAnvilWork(const ItemStack& stack) {
-    return !stack.empty() &&
-           (itemEnchantability(stack) > 0 || stack.item == &items::EnchantedBook);
+    return !stack.empty();
 }
 
 // Item#isValidRepairItem: the material that repairs a tool or a piece of armor.
@@ -108,6 +118,11 @@ struct AnvilMenu final {
     glm::ivec3 position{};
     ItemStack left{};
     ItemStack right{};
+    // I-3: what the rename box holds. Empty means "no rename typed"; vanilla
+    // distinguishes that from "typed the item's own name" (both cost nothing)
+    // and from "typed something else" (costs one level), and from an EMPTY box
+    // over an already-renamed item, which STRIPS the name and also costs one.
+    std::string name{};
 
     // Derived by refreshResult; never written from outside.
     ItemStack result{};
@@ -233,10 +248,33 @@ inline void refreshAnvilResult(AnvilMenu& menu, bool infiniteMaterials) {
         }
     }
 
+    // The naming branch, in vanilla's order: a name that differs from what the
+    // item already shows costs one level and applies; an empty box over a named
+    // item costs one level and strips it. Anything else is not a rename.
+    std::int32_t namingCost = 0;
+    const std::string_view currentName = customNameOf(result.customNameId);
+    if (!menu.name.empty()) {
+        if (menu.name != currentName) {
+            namingCost = 1;
+            price += namingCost;
+            result.customNameId = customNames().intern(menu.name);
+        }
+    } else if (!currentName.empty()) {
+        namingCost = 1;
+        price += namingCost;
+        result.customNameId = kNoCustomName;
+    }
+
     if (price <= 0) {
         return; // the anvil has nothing to do (two pristine items, say)
     }
     menu.cost = tax + price;
+    // AnvilMenu's `onlyRenaming`: a pure rename is capped one below the wall, so
+    // renaming an item that has been worked to death is still possible. Note it
+    // is the COST that is clamped, not the penalty.
+    if (namingCost == price && namingCost > 0 && menu.cost >= kAnvilMaximumCost) {
+        menu.cost = kAnvilMaximumCost - 1;
+    }
     if (menu.cost >= kAnvilMaximumCost && !infiniteMaterials) {
         // "Too expensive!": the price is shown, the result is not.
         menu.result = {};
@@ -273,7 +311,14 @@ struct AnvilTake final {
     taken = menu.result;
     // The result inherits the higher of the two inputs' penalties, then doubles
     // it — so the item that comes out is strictly more expensive to work again.
-    taken.repairCost = increasedRepairCost(std::max(menu.left.repairCost, menu.right.repairCost));
+    // A PURE rename is the exception vanilla carves out (`namingCost != price`):
+    // renaming does not raise the penalty, or naming a tool would quietly make
+    // it dearer to repair forever.
+    const bool pureRename = !menu.left.empty() && menu.right.empty() &&
+                            customNameOf(menu.left.customNameId) != customNameOf(taken.customNameId);
+    taken.repairCost =
+        pureRename ? std::max(menu.left.repairCost, menu.right.repairCost)
+                   : increasedRepairCost(std::max(menu.left.repairCost, menu.right.repairCost));
 
     menu.left = {};
     if (menu.repairItemCountCost > 0U && menu.right.count > menu.repairItemCountCost) {

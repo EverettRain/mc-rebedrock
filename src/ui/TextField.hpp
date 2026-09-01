@@ -180,7 +180,12 @@ inline constexpr TextFieldRules kChatFieldRules{256U, nullptr, true};
 // stored on the ItemStack, and this build has nowhere to put one. See UI-1's
 // card. Flipping this to true without that storage would let a player type a
 // name the game then throws away.
-inline constexpr TextFieldRules kAnvilNameFieldRules{50U, nullptr, false};
+// I-3 landed the storage, so the box is live: 50 characters, vanilla's
+// `AnvilScreen` `setMaxLength(50)`. It still goes dead when the left slot is
+// empty (vanilla's `slotChanged` calls `setEditable(!itemStack.isEmpty())`) —
+// the caller picks between this and kAnvilNameFieldDisabled.
+inline constexpr TextFieldRules kAnvilNameFieldRules{50U, nullptr, true};
+inline constexpr TextFieldRules kAnvilNameFieldDisabled{50U, nullptr, false};
 // Open-to-LAN's port box (GUI spec §9.2). The screen itself does not exist yet —
 // LAN hosting is a deferred decision, not part of UI-1 — but the field's rules
 // belong in this table now, so that screen has nothing to invent when it lands.

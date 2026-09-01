@@ -1,5 +1,7 @@
 #include "gameplay/GameSession.hpp"
 
+#include "gameplay/CustomNames.hpp"
+
 #include "gameplay/ArmorEnchantment.hpp"
 #include "gameplay/BlockEntityTicker.hpp"
 #include "gameplay/Enchantment.hpp"
@@ -1215,6 +1217,11 @@ void GameSession::openAnvilContainer(glm::ivec3 anvil) {
     openAnvil_ = anvil;
 }
 
+void GameSession::setAnvilName(std::string name) {
+    anvilMenu().name = std::move(name);
+    refreshAnvilResult();
+}
+
 void GameSession::refreshAnvilResult() {
     // Qualified: the member and the free function share a name on purpose
     // (this is the session's wrapper around Anvil.hpp's pure one), and
@@ -1290,6 +1297,7 @@ void GameSession::resetWorldState() {
         player.enchanting = {};
         player.anvil = {};
     }
+    customNames().clear();
     worldSimulation_ = {};
     primaryLevel().items = {};
     primaryLevel().experienceOrbs = {};

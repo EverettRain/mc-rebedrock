@@ -36,6 +36,13 @@ simple versioned history while it is in beta.
 
 ### Added
 
+- The anvil can rename things now. Put an item in the left slot, type in the box,
+  and it costs one level; clearing the box strips the name for the same one. A
+  renamed item shows its new name in tooltips and above the hotbar, and no longer
+  stacks with unnamed ones. A pure rename does NOT raise what the item costs to
+  work again, and is not subject to the Too Expensive wall — gear repaired to
+  death can still be named. Names are up to 50 characters and take non-ASCII.
+
 - Text boxes are now real text boxes. Until now the two places you could type —
   the world name on the create/edit world screen, and the chat and command line —
   each had their own half-finished handler that could only append a character or

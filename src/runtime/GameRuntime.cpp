@@ -1,5 +1,7 @@
 #include "runtime/GameRuntime.hpp"
 
+#include "gameplay/CustomNames.hpp"
+
 #include "assets/ResourceProvider.hpp"
 #include "gameplay/ContentRegistry.hpp"
 #include "gameplay/EntitySystem.hpp"
@@ -64,6 +66,10 @@ constexpr int kSpawnChunkRadius = 4;
     record.loveTicks = entity.loveTicks;
     // DYE-0: the dye colour as its dense id (white=0..black=15).
     record.color = gameplay::dyeColorId(entity.color);
+    // I-3: the name as the STRING — a CustomNameId is session-scoped and means
+    // nothing to a save file, so the boundary resolves it here and the loader
+    // re-interns whatever it reads.
+    record.customName = std::string{gameplay::customNameOf(entity.customNameId)};
     return record;
 }
 
@@ -1104,7 +1110,8 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
                                              record.angerTicks, record.ageTicks, record.rngState,
                                              record.fireTicks, toActiveEffects(record.effects),
                                              record.age, record.loveTicks,
-                                             gameplay::dyeColorFromId(record.color));
+                                             gameplay::dyeColorFromId(record.color),
+                                             gameplay::customNames().intern(record.customName));
     }
     // Format 16: dropped items and blocks mid-fall. Before it, everything a
     // player had thrown or mined but not picked up vanished on reload.
@@ -1627,7 +1634,8 @@ void GameRuntime::restoreLoadedChunk(world::ChunkPosition position) {
                 {record.vx, record.vy, record.vz}, record.health, record.angerTicks,
                 record.ageTicks, record.rngState, record.fireTicks,
                 toActiveEffects(record.effects), record.age, record.loveTicks,
-                gameplay::dyeColorFromId(record.color));
+                gameplay::dyeColorFromId(record.color),
+                gameplay::customNames().intern(record.customName));
         }
         // A chunk this session unloaded already had (or explicitly did not
         // have) its generation-time pass long before this unload — mark it so

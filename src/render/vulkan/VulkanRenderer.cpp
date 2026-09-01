@@ -536,6 +536,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 renderer->handleChatKey(key, action);
                 return;
             case input::ScreenMode::Inventory:
+                // I-3: the anvil's rename box takes the keyboard while that
+                // screen is open and something is in the left slot. Anything it
+                // does not claim (Escape, E) falls through to the screen.
+                if (renderer->handleAnvilNameKey(key, action)) {
+                    return;
+                }
+                renderer->handleScreenKey(key, action);
+                return;
             case input::ScreenMode::Menu:
             case input::ScreenMode::Play:
                 renderer->handleScreenKey(key, action);
@@ -553,8 +561,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 return;
             // 其余模式都不接受输入文本
             // 正在捕获按键的那一行等的是**按键**，不是字符
-            case input::ScreenMode::KeyCapture:
             case input::ScreenMode::Inventory:
+                renderer->appendAnvilNameCodepoint(codepoint);
+                return;
+            // 其余模式都不接受输入文本
+            case input::ScreenMode::KeyCapture:
             case input::ScreenMode::Menu:
             case input::ScreenMode::Play:
                 return;
@@ -1336,6 +1347,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 const auto worldSnap = clientMirror_.world();
                 uiFrameData_.containerScreen = worldSnap.openContainerScreen;
                 uiFrameData_.activeChest = worldSnap.openChest;
+                // I-3 / AnvilScreen#slotChanged: whenever the left slot changes,
+                // the box is reset to whatever that item is currently called —
+                // its custom name if it has one, otherwise empty. Without this
+                // the box would keep the previous item's text and silently
+                // rename the new one.
+                if (!(worldSnap.anvilLeft == previousAnvilLeft_)) {
+                    previousAnvilLeft_ = worldSnap.anvilLeft;
+                    hud_.anvilName() = ui::textFieldWithValue(
+                        gameplay::customNameOf(worldSnap.anvilLeft.customNameId),
+                        ui::kAnvilNameFieldRules, anvilNameMetrics());
+                }
                 playerEyeHeight =
                     playerSnap.sneaking ? gameplay::PlayerController::kSneakingEyeHeight
                                         : gameplay::PlayerController::kEyeHeight;
@@ -2042,6 +2064,60 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
         } else if (key == GLFW_KEY_ESCAPE) {
             menuSystem.pageStack.pop();
+        }
+    }
+
+    // I-3: the anvil rename box. Live only while the anvil screen is open with
+    // something in the left slot — vanilla's own `setEditable(!empty)` rule.
+    [[nodiscard]] bool anvilRenameActive() const {
+        const auto snapshot = clientMirror_.world();
+        return snapshot.openContainerScreen == ContainerScreen::Anvil &&
+               !snapshot.anvilLeft.empty();
+    }
+
+    [[nodiscard]] ui::TextFieldMetrics anvilNameMetrics() const {
+        const auto layout = currentHudLayout();
+        const auto panel = layout.inventoryPanel();
+        return textFieldMetricsFor({panel.x + 62.0F * layout.scale(),
+                                    panel.y + 24.0F * layout.scale(),
+                                    103.0F * layout.scale(), 12.0F * layout.scale()},
+                                   layout.scale(), false);
+    }
+
+    // The server owns what a rename costs and whether it applies, so every edit
+    // is shipped — the price has to move as you type, exactly as vanilla's
+    // screen does.
+    void publishAnvilName() {
+        gameplay::SetAnvilName rename;
+        rename.name = hud_.anvilName().value;
+        runtime.enqueueClientCommand(std::move(rename));
+    }
+
+    [[nodiscard]] bool handleAnvilNameKey(int key, int action) {
+        if (!anvilRenameActive()) {
+            return false;
+        }
+        const std::string before = hud_.anvilName().value;
+        if (!editTextField(hud_.anvilName(), ui::kAnvilNameFieldRules, anvilNameMetrics(), key,
+                           action)) {
+            return false;
+        }
+        if (hud_.anvilName().value != before) {
+            publishAnvilName();
+        }
+        return true;
+    }
+
+    void appendAnvilNameCodepoint(unsigned int codepoint) {
+        if (!anvilRenameActive()) {
+            return;
+        }
+        const std::string before = hud_.anvilName().value;
+        hud_.anvilName() = ui::textFieldApplyChar(std::move(hud_.anvilName()),
+                                                 ui::kAnvilNameFieldRules, anvilNameMetrics(),
+                                                 static_cast<char32_t>(codepoint));
+        if (hud_.anvilName().value != before) {
+            publishAnvilName();
         }
     }
 
@@ -6364,6 +6440,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     world::SmoothLightingQuality targetMeshQuality = world::SmoothLightingQuality::Standard;
     std::unordered_set<world::SectionPosition, world::SectionPositionHash> qualityRemeshPending;
     ui::MenuSystem menuSystem;
+    // I-3: the left slot as of the last frame, so the rename box knows when to
+    // reseed itself (AnvilScreen#slotChanged's trigger).
+    gameplay::ItemStack previousAnvilLeft_{};
     // 面向 HUD 的玩法状态，每帧捕获一次
     // 各绘制通道因此读的是一份自洽的快照，而不是实时玩法对象
     mutable ui::UiFrameData uiFrameData_;

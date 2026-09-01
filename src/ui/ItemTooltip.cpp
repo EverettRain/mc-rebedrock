@@ -1,5 +1,7 @@
 #include "ui/ItemTooltip.hpp"
 
+#include "gameplay/CustomNames.hpp"
+
 #include "ui/Language.hpp"
 
 #include <algorithm>
@@ -253,6 +255,14 @@ std::string enchantmentLabel(gameplay::EnchantmentId id, int level,
 }
 
 TooltipLine itemNameLine(const gameplay::ItemStack& stack, const TooltipContext& context) {
+    // I-3 / `getHoverName`：自定义名压过翻译名，且**不再翻译**——它是玩家逐字
+    // 敲进去的字符串。稀有度着色照旧（vanilla 的 ITALIC 叠在稀有度色之上，
+    // 不替换它）。
+    const std::string_view custom = gameplay::customNameOf(stack.customNameId);
+    if (!custom.empty()) {
+        return TooltipLine{std::string{custom}, nameStyle(gameplay::itemRarity(stack)),
+                           /*italic=*/true};
+    }
     return TooltipLine{itemDisplayName(stack, context),
                        nameStyle(gameplay::itemRarity(stack))};
 }

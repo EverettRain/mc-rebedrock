@@ -1,5 +1,7 @@
 #include "persistence/SaveRepository.hpp"
 
+#include "gameplay/CustomNames.hpp"
+
 #include "core/VersionManifest.hpp"
 #include "gameplay/Enchantment.hpp"
 #include "gameplay/ItemRegistry.hpp"
@@ -627,7 +629,7 @@ void readWeatherBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
 // without a fixer.
 constexpr std::uint32_t kEntityBlockTag =
     'E' | ('N' << 8) | ('T' << 16) | ('Y' << 24);
-constexpr std::uint16_t kEntityBlockVersion = 6U;
+constexpr std::uint16_t kEntityBlockVersion = 7U;
 
 // An entity's active MobEffects, shared by the world.dat ENTITY block and the
 // per-chunk region record (both grew effects in the same version bump). Effects
@@ -705,6 +707,7 @@ void appendEntityBlock(std::vector<std::uint8_t>& bytes,
         appendInteger(bytes, entity.age);        // version 4
         appendInteger(bytes, entity.loveTicks);  // version 4
         appendInteger(bytes, entity.color);      // version 6 (DYE-0)
+        appendString(bytes, entity.customName);  // version 7 (I-3)
     }
     const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
     for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
@@ -792,6 +795,11 @@ void readEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
         // via dyeColorFromId, so nothing downstream ever sees an invalid colour.
         if (blockVersion >= 6U) {
             entity.color = readInteger<std::uint8_t>(payload, cursor);
+        }
+        // I-3: the custom name arrived in version 7; earlier records have no
+        // name field and read back unnamed.
+        if (blockVersion >= 7U) {
+            entity.customName = readString(payload, cursor);
         }
         // A creature saved outside the world is legacy junk from a pre-fix build
         // whose void line disagreed with the -64 world floor (a mob that fell below
@@ -1452,6 +1460,16 @@ void appendStack(std::vector<std::uint8_t>& bytes, const SaveWriteContext& conte
     // is gated on the owning block/section version, exactly as the enchantment
     // tail above is, so a pre-ENCH-3 save keeps its old version and skips it.
     appendInteger(bytes, stack.repairCost);
+    // I-3: the custom name, as the STRING behind a flag byte. Serialising the
+    // session id would have needed a fourth palette and a remap on load; the
+    // string needs neither — loading interns whatever it reads, so an id never
+    // has to be stable across sessions. Unnamed stacks (nearly all of them) pay
+    // one zero byte, the same deal the enchantment tail above offers.
+    const std::string_view customName = gameplay::customNameOf(stack.customNameId);
+    appendInteger(bytes, static_cast<std::uint8_t>(customName.empty() ? 0 : 1));
+    if (!customName.empty()) {
+        appendString(bytes, std::string{customName});
+    }
 }
 
 // `includeEnchantments` is false only for a block/section version written
@@ -1461,7 +1479,8 @@ void appendStack(std::vector<std::uint8_t>& bytes, const SaveWriteContext& conte
 // enchantments" rather than "no damage").
 void readStackRecord(std::span<const std::uint8_t> payload, std::size_t& cursor,
                      const SaveReadContext& context, gameplay::ItemStack& stack,
-                     bool includeEnchantments = true, bool includeRepairCost = true) {
+                     bool includeEnchantments = true, bool includeRepairCost = true,
+                     bool includeCustomName = true) {
     stack.block = resolveBlock(context, readInteger<std::uint16_t>(payload, cursor));
     stack.count = readInteger<std::uint8_t>(payload, cursor);
     stack.item = resolveItem(context, readInteger<std::uint16_t>(payload, cursor));
@@ -1472,6 +1491,7 @@ void readStackRecord(std::span<const std::uint8_t> payload, std::size_t& cursor,
     stack.enchantmentCount = 0U;
     stack.enchantments = {};
     stack.repairCost = 0U;
+    stack.customNameId = gameplay::kNoCustomName;
     if (!includeEnchantments) {
         return;
     }
@@ -1492,6 +1512,12 @@ void readStackRecord(std::span<const std::uint8_t> payload, std::size_t& cursor,
         return; // a pre-ENCH-3 owner: the stack has never seen an anvil
     }
     stack.repairCost = readInteger<std::uint8_t>(payload, cursor);
+    if (!includeCustomName) {
+        return; // a pre-I-3 owner: nothing on that save was ever renamed
+    }
+    if (readInteger<std::uint8_t>(payload, cursor) != 0U) {
+        stack.customNameId = gameplay::customNames().intern(readString(payload, cursor));
+    }
 }
 
 // A slot array written sparsely: only the occupied slots travel, each behind its
@@ -1520,7 +1546,7 @@ void appendSlots(std::vector<std::uint8_t>& bytes, const SaveWriteContext& conte
 template <typename Slots>
 void readSlots(std::span<const std::uint8_t> payload, std::size_t& cursor,
                const SaveReadContext& context, Slots& slots, bool includeEnchantments = true,
-               bool includeRepairCost = true) {
+               bool includeRepairCost = true, bool includeCustomName = true) {
     slots = Slots{};
     const auto used = readInteger<std::uint16_t>(payload, cursor);
     if (used > slots.size()) {
@@ -1532,7 +1558,7 @@ void readSlots(std::span<const std::uint8_t> payload, std::size_t& cursor,
             throw std::runtime_error("world.dat container references a slot it has not got");
         }
         readStackRecord(payload, cursor, context, slots[index], includeEnchantments,
-                        includeRepairCost);
+                        includeRepairCost, includeCustomName);
     }
 }
 
@@ -1639,7 +1665,7 @@ void readVersionBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
 // was ever worn", the same backward-compatibility shape XP-0's experience
 // fields and ENCH-0's enchantment tail use one version earlier each.
 constexpr std::uint32_t kPlayerBlockTag = blockTag("PLYR");
-constexpr std::uint16_t kPlayerBlockVersion = 5U;
+constexpr std::uint16_t kPlayerBlockVersion = 6U;
 
 void appendPlayerBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
     const auto& game = context.game;
@@ -1693,7 +1719,8 @@ void readPlayerBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
     // back plain (enchantmentCount==0), the ENCH-0 backward-compatibility
     // case kPlayerBlockVersion's comment describes.
     readSlots(payload, cursor, context, game.inventory, /*includeEnchantments=*/header.version >= 3U,
-              /*includeRepairCost=*/header.version >= 5U);
+              /*includeRepairCost=*/header.version >= 5U,
+              /*includeCustomName=*/header.version >= 6U);
     // Experience arrived in version 2; a version-1 world leaves the
     // SaveGame's zero defaults (level 0, no progress, no history).
     if (header.version >= 2U) {
@@ -1713,7 +1740,8 @@ void readPlayerBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
     // yet as of this node either).
     if (header.version >= 4U) {
         readSlots(payload, cursor, context, game.equipment, /*includeEnchantments=*/true,
-                  /*includeRepairCost=*/header.version >= 5U);
+                  /*includeRepairCost=*/header.version >= 5U,
+                  /*includeCustomName=*/header.version >= 6U);
     } else {
         game.equipment = {};
     }
@@ -2000,7 +2028,7 @@ constexpr std::uint32_t kRegionChunkTag = blockTag("CCNK");
 // cleanly — version < 5 reads `populated = false`, version < 6 reads the low
 // 32 bits of rngState and zero-extends them, and version < 7 reads colour 0
 // (white).
-constexpr std::uint16_t kRegionChunkVersion = 7U;
+constexpr std::uint16_t kRegionChunkVersion = 8U;
 constexpr std::uint32_t kRegionWidth = 32U;  // chunks per region side
 
 // Floor division of a chunk coordinate by the region width, exactly like the
@@ -2273,6 +2301,7 @@ void appendRegionFile(std::vector<std::uint8_t>& bytes, const RegionData& region
             appendInteger(bytes, entity.age);        // version 4
             appendInteger(bytes, entity.loveTicks);  // version 4
             appendInteger(bytes, entity.color);      // version 7 (DYE-0)
+            appendString(bytes, entity.customName);  // version 8 (I-3)
         }
         // CS-5: version 5. A bare marker byte, independent of the edit/entity
         // counts above it — a chunk can be `populated == true` with both lists
@@ -2416,6 +2445,10 @@ void readRegionFile(std::span<const std::uint8_t> bytes, RegionData& region) {
             // clamped to white on the live side via dyeColorFromId.
             if (header.version >= 7U) {
                 entity.color = readInteger<std::uint8_t>(payload, cursor);
+            }
+            // I-3: the custom name arrived in version 8.
+            if (header.version >= 8U) {
+                entity.customName = readString(payload, cursor);
             }
             // A creature saved outside the world is a corrupt record.
             if (!(entity.y >= -64.0F && entity.y <= 384.0F)) {
@@ -2635,9 +2668,9 @@ constexpr std::uint32_t kTrappedChestSectionTag = blockTag("TCST");
 // same backward-compatible shape as kPlayerBlockVersion 3 (a version-1
 // section's stacks read back with enchantmentCount==0, exactly the "no
 // enchantment ever existed to lose" case).
-constexpr std::uint16_t kChestSectionVersion = 3U;
-constexpr std::uint16_t kFurnaceSectionVersion = 3U;
-constexpr std::uint16_t kTrappedChestSectionVersion = 3U;
+constexpr std::uint16_t kChestSectionVersion = 4U;
+constexpr std::uint16_t kFurnaceSectionVersion = 4U;
+constexpr std::uint16_t kTrappedChestSectionVersion = 4U;
 
 void appendBlockEntityBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
     const auto& game = context.game;
@@ -2708,7 +2741,8 @@ void readBlockEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cu
                 }
                 readSlots(payload, cursor, context, chest.items,
                           /*includeEnchantments=*/section.version >= 2U,
-                          /*includeRepairCost=*/section.version >= 3U);
+                          /*includeRepairCost=*/section.version >= 3U,
+                          /*includeCustomName=*/section.version >= 4U);
                 game.chests.push_back(std::move(chest));
             }
         } else if (section.tag == kTrappedChestSectionTag &&
@@ -2728,7 +2762,8 @@ void readBlockEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cu
                 }
                 readSlots(payload, cursor, context, chest.items,
                           /*includeEnchantments=*/section.version >= 2U,
-                          /*includeRepairCost=*/section.version >= 3U);
+                          /*includeRepairCost=*/section.version >= 3U,
+                          /*includeCustomName=*/section.version >= 4U);
                 game.trappedChests.push_back(std::move(chest));
             }
         } else if (section.tag == kFurnaceSectionTag &&
@@ -2748,12 +2783,13 @@ void readBlockEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cu
                 }
                 const bool includeEnchantments = section.version >= 2U;
                 const bool includeRepairCost = section.version >= 3U;
+                const bool includeCustomName = section.version >= 4U;
                 readStackRecord(payload, cursor, context, furnace.input, includeEnchantments,
-                                includeRepairCost);
+                                includeRepairCost, includeCustomName);
                 readStackRecord(payload, cursor, context, furnace.fuel, includeEnchantments,
-                                includeRepairCost);
+                                includeRepairCost, includeCustomName);
                 readStackRecord(payload, cursor, context, furnace.output, includeEnchantments,
-                                includeRepairCost);
+                                includeRepairCost, includeCustomName);
                 furnace.burnTicks = readInteger<std::int32_t>(payload, cursor);
                 furnace.initialBurnTicks = readInteger<std::int32_t>(payload, cursor);
                 furnace.cookTicks = readInteger<std::int32_t>(payload, cursor);

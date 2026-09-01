@@ -462,8 +462,9 @@ std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityTy
                                     int angerTicks, unsigned int ageTicks,
                                     std::uint64_t rngState, int fireTicks,
                                     const ActiveEffects& effects, int age, int loveTicks,
-                                    DyeColor color) {
+                                    DyeColor color, std::uint16_t customNameId) {
     SimpleEntity entity;
+    entity.customNameId = customNameId;
     entity.type = &type;
     entity.id = nextEntityId_++;
     entity.position = position;

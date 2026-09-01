@@ -98,6 +98,12 @@ struct PersistentEntity final {
     // contract. The stored representation is the dense id, not the name string;
     // the name only surfaces at the JC boundary.
     std::uint8_t color = 0U;
+    // I-3: a name tag's name, as the STRING (an id means nothing across
+    // sessions). Empty for every creature until AR-CX4-c lands the name tag —
+    // the storage is here so that node does not have to reopen the save format.
+    // Added in entity block version 7 / region chunk version 8; an earlier
+    // record has no name field and reads back unnamed.
+    std::string customName;
 };
 
 // A dropped item awaiting pickup. Position and velocity are the whole physical
