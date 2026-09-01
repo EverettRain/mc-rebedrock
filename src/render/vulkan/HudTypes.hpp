@@ -38,6 +38,10 @@ inline constexpr float kAnvilGuiLayer = 15.0F;
 inline constexpr int kAnvilTextFieldSpriteY = 168;
 inline constexpr int kAnvilErrorSpriteX = 176;
 inline constexpr int kAnvilErrorSpriteY = 0;
+// I-2: gui/sprites/tooltip/background.png 与 tooltip/frame.png，两张 100x100
+// 并排放在同一层（背景在左、边框在右）。它们是提示框的全部底衬，画法见
+// HudRenderer::drawTooltipBox。
+inline constexpr float kTooltipGuiLayer = 16.0F;
 // 标题界面的六张全景面，拼成 logo 背后的那个世界；标题轮播把它们当幻灯片循环
 // 也是 TextureManager 上传全景数组层时的层数（此前两处各写一份，ENCH-2 并到这里）
 inline constexpr std::size_t kPanoramaFaces = 6U;

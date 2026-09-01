@@ -52,6 +52,10 @@ simple versioned history while it is in beta.
 - Fixed hotbar items showing no tooltip in creative mode once any content tab was
   open (the inventory tab was always fine): that row of slots only computed its
   highlight and never handed the hovered item to the tooltip.
+- Tooltips now use vanilla's two backdrop sprites (the translucent dark fill and
+  its gradient border) instead of a flat coloured rectangle, with vanilla's line
+  spacing, padding and above-right placement. Both sprites are read from the
+  resource pack, so a pack can restyle them.
 
 ### Added
 

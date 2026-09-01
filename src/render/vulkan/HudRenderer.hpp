@@ -33,6 +33,7 @@
 #include "ui/ButtonControl.hpp"
 #include "ui/ChatHistory.hpp"
 #include "ui/GuiNineSlice.hpp"
+#include "ui/TooltipLayout.hpp"
 #include "ui/SubtitleFeed.hpp"
 #include "ui/Toast.hpp"
 #include "ui/HudLayout.hpp"
@@ -1554,17 +1555,30 @@ class HudRenderer final {
         return {1.0F, 1.0F, 1.0F, 1.0F};
     }
 
-    // The one tooltip box every screen draws: a panel sized to the widest line,
-    // each line coloured by its own TooltipStyle. Callers must draw it AFTER
-    // everything else on the screen — a tooltip painted mid-pass gets covered by
-    // whatever is drawn next, which is exactly the bug that made the enchanting
-    // bars' clues invisible on every bar except the last one.
+    // The one tooltip box every screen draws — 26.1 的 TooltipRenderUtil，
+    // 每个界面都问它。Callers must draw it AFTER everything else on the screen —
+    // a tooltip painted mid-pass gets covered by whatever is drawn next, which is
+    // exactly the bug that made the enchanting bars' clues invisible on every bar
+    // except the last one.（vanilla 不需要这条纪律：它把提示框推迟到
+    // `extractDeferredElements` 的一个新 stratum 里画，天生在最上层。）
     //
-    // I-2 补上了此前没有的两件事：
-    //   · 长行换行：走 ui::wrapText，上限取 vanilla 的 170 GUI 像素；
-    //   · 屏幕边缘夹取：`renderTooltipInternal` 的 `x + width > screenWidth →
-    //     x -= 24 + width`（翻到光标另一侧），纵向则夹回屏幕内。此前贴着右/下
-    //     边缘悬停会把框直接画出屏幕。
+    // 底衬是**两张九宫格精灵**而不是一块纯色矩形，与 vanilla 一致：
+    // `tooltip/background`（0xF0100010 的填充）先画，`tooltip/frame`
+    // （1px 竖直渐变边框 #5000FF → #28007F，alpha 0x50）叠在同一个矩形上。
+    // 两张都从资源包读，于是换材质包就能换掉提示框的样子。
+    //
+    // 几何全部照抄 `GuiGraphics#tooltip` + `TooltipRenderUtil`，单位是未缩放的
+    // GUI 像素：
+    //   · 内容宽 = 最宽的一行；内容高 = 单行 8、多行 10n（`lines.size() == 1
+    //     ? -2 : 0` 那句）；
+    //   · 第一行之后多 2px——名称与其余行之间的那道缝；
+    //   · 精灵画在内容矩形外扩 12（PADDING 3 + MARGIN 9），于是可见的填充正好
+    //     是内容 +4，边框那 1px 落在内容 +3；
+    //   · 定位是 DefaultTooltipPositioner：光标 +12/**-12**（不是 +12/+12），
+    //     右边放不下就翻到光标左侧、至少留 4px，下边放不下就顶到
+    //     `screenHeight - height - 3`。
+    // 长行换行（170 GUI 像素）不是物品提示框的 vanilla 行为，是本项目沿用
+    // `Tooltip.splitTooltip` 的那条上限，避免超长名字把框拉出屏幕。
     void drawTooltipBox(VkCommandBuffer commandBuffer, float scale,
                         const std::vector<ui::TooltipLine>& lines) const {
         if (lines.empty()) {
@@ -1589,34 +1603,38 @@ class HudRenderer final {
         if (visual.empty()) {
             return;
         }
-        float widest = 0.0F;
+        // 以下一律是未缩放的 GUI 像素，最后一步才乘 scale——精灵的边框宽度也按
+        // 这套单位度量，两边混用会让 1px 的边框在不同 GUI 缩放下变粗变细。
+        float contentWidth = 0.0F;
         for (const auto& line : visual) {
-            widest = std::max(widest, hudTextWidth(line.text, scale));
+            contentWidth = std::max(contentWidth, hudTextWidth(line.text, 1.0F));
         }
-        const float width = widest + 8.0F * scale;
-        const float height = (4.0F + 10.0F * static_cast<float>(visual.size())) * scale;
+        const float contentHeight = ui::tooltipContentHeight(visual.size());
         const auto cursor = currentFramebufferCursor();
-        const auto screenWidth = static_cast<float>(swapchainExtent.width);
-        const auto screenHeight = static_cast<float>(swapchainExtent.height);
-        float x = cursor.x + 12.0F * scale;
-        float y = cursor.y + 12.0F * scale;
-        if (x + width > screenWidth) {
-            x -= (24.0F * scale) + width;
-        }
-        if (y + height > screenHeight) {
-            y -= (24.0F * scale) + height;
-        }
-        // 一个比屏幕还宽/高的框（超小窗口）夹回原点，宁可截断也不画到屏幕外。
-        x = std::max(x, 0.0F);
-        y = std::max(y, 0.0F);
-        const ui::UiRect box{x, y, width, height};
-        drawHudQuad(commandBuffer, box, {0.05F, 0.03F, 0.08F, 0.94F});
+        // 几何本身在 ui/TooltipLayout 里，纯值且有单测；这里只负责换算单位、
+        // 取光标和屏幕，然后把结果画出来。
+        const auto origin = ui::positionTooltip(
+            static_cast<float>(swapchainExtent.width) / scale,
+            static_cast<float>(swapchainExtent.height) / scale, cursor.x / scale, cursor.y / scale,
+            contentWidth, contentHeight);
+        const ui::UiRect content{origin.x * scale, origin.y * scale, contentWidth * scale,
+                                 contentHeight * scale};
+        const ui::UiRect unscaledBackdrop =
+            ui::tooltipBackdrop(ui::UiRect{origin.x, origin.y, contentWidth, contentHeight});
+        const ui::UiRect backdrop{unscaledBackdrop.x * scale, unscaledBackdrop.y * scale,
+                                  unscaledBackdrop.width * scale, unscaledBackdrop.height * scale};
+        drawScaledGuiSprite(commandBuffer, backdrop, kTooltipGuiLayer,
+                            guiWidgetSprite(guiWidgetSprites, GuiWidgetSprite::TooltipBackground),
+                            scale);
+        drawScaledGuiSprite(commandBuffer, backdrop, kTooltipGuiLayer,
+                            guiWidgetSprite(guiWidgetSprites, GuiWidgetSprite::TooltipFrame),
+                            scale);
         for (std::size_t line = 0; line < visual.size(); ++line) {
             if (visual[line].text.empty()) {
                 continue;
             }
-            drawHudText(commandBuffer, visual[line].text, box.x + 4.0F * scale,
-                        box.y + (3.0F + 10.0F * static_cast<float>(line)) * scale, scale,
+            drawHudText(commandBuffer, visual[line].text, content.x,
+                        content.y + ui::tooltipLineOffset(line) * scale, scale,
                         tooltipLineColor(visual[line].style));
         }
     }

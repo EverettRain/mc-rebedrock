@@ -26,7 +26,7 @@ struct GuiAtlasSprite final {
     assets::GuiSpriteScaling scaling{};
 };
 
-// 前端会在运行期决定尺寸的那些控件精灵
+// 前端会在运行期决定尺寸的那些精灵：控件，以及提示框的底衬
 // 其余 GUI 精灵沿用写死的图集矩形——它们按原始尺寸绘制，这时九宫格和直接拉伸没有区别
 enum class GuiWidgetSprite : std::size_t {
     Button,
@@ -35,6 +35,10 @@ enum class GuiWidgetSprite : std::size_t {
     Slider,
     SliderHandle,
     SliderHandleHighlighted,
+    // 26.1 的 TooltipRenderUtil 画的两张：填充在下、边框在上，同一个矩形叠两遍
+    // 它们的尺寸完全由内容决定，因此必须走九宫格而不是整张拉伸
+    TooltipBackground,
+    TooltipFrame,
     Count,
 };
 

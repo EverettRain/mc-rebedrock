@@ -385,10 +385,11 @@ void TextureManager::createGuiTexture() {
     // 按钮和滑条轨道的尺寸由运行期决定，它们的 26.1 `gui.scaling` 附属文件必须一起带进图集
     // 记下每个精灵的落位和解析后的元数据，HUD 才能做九宫格而不是整张位图拉伸
     // 没有附属文件或读不出来的精灵沿用纯拉伸的默认行为
-    const auto blitWidget = [&](GuiWidgetSprite id, std::string_view name, int x, int y) {
+    const auto blitWidget = [&](assets::ImageData& atlas, GuiWidgetSprite id,
+                                std::string_view name, int x, int y) {
         const std::string path = "gui/sprites/" + std::string{name} + ".png";
         const auto image = tex(path);
-        blit(widgets, image, x, y);
+        blit(atlas, image, x, y);
         auto scaling =
             assets::GuiSpriteScaling::load(*resourceProvider_, assets::textures(path));
         // 附属文件可以不写参考尺寸，这时边框就以美术本身的尺寸为基准
@@ -406,14 +407,14 @@ void TextureManager::createGuiTexture() {
     };
     blit(widgets, sprite("hud/hotbar"), 0, 0);
     blit(widgets, sprite("hud/hotbar_selection"), 0, 22);
-    blitWidget(GuiWidgetSprite::ButtonDisabled, "widget/button_disabled", 0, 46);
-    blitWidget(GuiWidgetSprite::Button, "widget/button", 0, 66);
-    blitWidget(GuiWidgetSprite::ButtonHighlighted, "widget/button_highlighted", 0, 86);
-    blitWidget(GuiWidgetSprite::Slider, "widget/slider", 0, 106);
+    blitWidget(widgets, GuiWidgetSprite::ButtonDisabled, "widget/button_disabled", 0, 46);
+    blitWidget(widgets, GuiWidgetSprite::Button, "widget/button", 0, 66);
+    blitWidget(widgets, GuiWidgetSprite::ButtonHighlighted, "widget/button_highlighted", 0, 86);
+    blitWidget(widgets, GuiWidgetSprite::Slider, "widget/slider", 0, 106);
     blit(widgets, sprite("widget/slider_highlighted"), 0, 126);
-    blitWidget(GuiWidgetSprite::SliderHandle, "widget/slider_handle", 0, 146);
-    blitWidget(GuiWidgetSprite::SliderHandleHighlighted, "widget/slider_handle_highlighted", 0,
-               166);
+    blitWidget(widgets, GuiWidgetSprite::SliderHandle, "widget/slider_handle", 0, 146);
+    blitWidget(widgets, GuiWidgetSprite::SliderHandleHighlighted,
+               "widget/slider_handle_highlighted", 0, 166);
 
     auto hud = emptyRgbaAtlas();
     blit(hud, sprite("hud/crosshair"), 0, 0);
@@ -453,6 +454,15 @@ void TextureManager::createGuiTexture() {
     }
     blit(tabs, sprite("container/creative_inventory/scroller"), 232, 0);
     blit(tabs, sprite("container/creative_inventory/scroller_disabled"), 244, 0);
+
+    // I-2: 26.1 的提示框底衬是两张九宫格精灵，不是一块纯色矩形——
+    // tooltip/background 是 0xF0100010 的填充，tooltip/frame 是一圈 1px 的竖直
+    // 渐变边框（#5000FF → #28007F，alpha 0x50）。两张都是 100x100，并排放进
+    // 同一层；带着各自的 gui.scaling（背景 border 9，边框 border 10 且
+    // stretch_inner）进来，HudRenderer 才能按内容尺寸切片而不是整张拉伸。
+    auto tooltipGui = emptyRgbaAtlas();
+    blitWidget(tooltipGui, GuiWidgetSprite::TooltipBackground, "tooltip/background", 0, 0);
+    blitWidget(tooltipGui, GuiWidgetSprite::TooltipFrame, "tooltip/frame", 100, 0);
 
     const auto underwater = repeatTileToAtlas(tex("misc/underwater.png"), 256, 256, 4);
     const auto menuBackground = repeatTileToAtlas(guiTex("menu_background.png"), 256, 256, 16);
@@ -523,8 +533,13 @@ void TextureManager::createGuiTexture() {
         menuListBackground,
         enchantingGui,
         anvilGui,
+        tooltipGui,
     };
-    constexpr std::uint32_t kGuiLayerCount = 16U;
+    constexpr std::uint32_t kGuiLayerCount = 17U;
+    // 层号是写死在 HudTypes.hpp 里的常量（kTooltipGuiLayer 等），而层内容是上面
+    // 这个数组的顺序。加一层却漏改这个数，上传就会按错误的层数切分整块像素，
+    // 于是每一层都错位——编译期钉住它。
+    static_assert(images.size() == kGuiLayerCount, "GUI atlas layer count must match the images");
     const int width = images.front().width;
     const int height = images.front().height;
     for (const auto& image : images) {

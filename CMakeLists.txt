@@ -1567,6 +1567,14 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_gui_sprite_scaling_test PRIVATE src)
     add_test(NAME gui_sprite_scaling COMMAND mc_rebedrock_gui_sprite_scaling_test)
 
+    add_executable(mc_rebedrock_tooltip_layout_test
+        tests/tooltip_layout_test.cpp
+        src/ui/HudLayout.cpp
+    )
+    target_include_directories(mc_rebedrock_tooltip_layout_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_tooltip_layout_test PRIVATE glm::glm)
+    add_test(NAME tooltip_layout COMMAND mc_rebedrock_tooltip_layout_test)
+
     add_executable(mc_rebedrock_menu_geometry_test
         tests/menu_geometry_test.cpp
         src/ui/MenuGeometry.cpp
