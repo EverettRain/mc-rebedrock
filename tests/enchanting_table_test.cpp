@@ -26,10 +26,13 @@
 #include "world/BlockShape.hpp"
 #include "world/World.hpp"
 #include "gameplay/ContentRegistry.hpp"
+#include "gameplay/GameSession.hpp"
+#include "gameplay/GameSnapshotCodec.hpp"
 #include "gameplay/CraftingSystem.hpp"
 #include "world/gen/JavaRandom.hpp"
 
 #include <cassert>
+#include <variant>
 #include <string_view>
 #include <iostream>
 
@@ -489,6 +492,115 @@ void testEnchantedBooksAreInTheCatalog() {
               << " enchanted books in Ingredients, one per enchantment at max level\n";
 }
 
+// The lapis gate again, but through GameSession this time — the pure function
+// is only half the answer. purchaseEnchantment is what decides whether the
+// creative bypass applies, by reading the player's game mode, and a wiring slip
+// there (a hardcoded `true`, the wrong player) would hand out free enchantments
+// in survival while every unit test on purchase() still passed.
+void testGameModeGateIsWiredThroughTheSession() {
+    const auto arm = [](GameSession& session, std::uint8_t lapisCount) {
+        session.primaryPlayer().experience.setExperienceLevel(60);
+        EnchantingMenu& menu = session.enchantingMenu();
+        menu.item = diamondPickaxe();
+        menu.lapis = lapisCount == 0U ? ItemStack{} : lapis(lapisCount);
+        menu.bookshelfPower = 15;
+        menu.derived = false;
+        refreshOffers(menu, session.primaryPlayer().experience.enchantmentSeed());
+        session.openContainer(ContainerScreen::EnchantingTable);
+    };
+
+    // Survival, no lapis in the slot: refused, and nothing moves.
+    {
+        GameSession session;
+        session.primaryPlayer().gameMode = GameMode::Survival;
+        arm(session, 0U);
+        assert(!session.purchaseEnchantment(2));
+        assert(session.primaryPlayer().experience.level() == 60);
+        assert(session.enchantingMenu().item.enchantmentCount == 0U);
+    }
+    // Survival, two lapis but the third bar wants three: still refused.
+    {
+        GameSession session;
+        session.primaryPlayer().gameMode = GameMode::Survival;
+        arm(session, 2U);
+        assert(!session.purchaseEnchantment(2));
+        assert(session.enchantingMenu().lapis.count == 2U);
+        assert(session.enchantingMenu().item.enchantmentCount == 0U);
+    }
+    // Survival with three lapis: goes through, and spends both currencies.
+    {
+        GameSession session;
+        session.primaryPlayer().gameMode = GameMode::Survival;
+        arm(session, 3U);
+        assert(session.purchaseEnchantment(2));
+        assert(session.primaryPlayer().experience.level() == 57);
+        assert(session.enchantingMenu().lapis.empty());
+        assert(session.enchantingMenu().item.enchantmentCount > 0U);
+    }
+    // Creative with neither lapis nor levels: allowed and free — vanilla's
+    // hasInfiniteMaterials bypass, not a bug.
+    {
+        GameSession session;
+        session.primaryPlayer().gameMode = GameMode::Creative;
+        arm(session, 0U);
+        session.primaryPlayer().experience.setExperienceLevel(0);
+        assert(session.purchaseEnchantment(2));
+        assert(session.primaryPlayer().experience.level() == 0);
+        assert(session.enchantingMenu().item.enchantmentCount > 0U);
+    }
+    // A closed screen refuses regardless: the button cannot be pressed from a
+    // screen that is not open.
+    {
+        GameSession session;
+        session.primaryPlayer().gameMode = GameMode::Survival;
+        arm(session, 3U);
+        session.closeContainer();
+        assert(!session.purchaseEnchantment(2));
+        assert(session.primaryPlayer().experience.level() == 60);
+    }
+    std::cout << "session: survival needs the lapis, creative bypasses, closed screen refuses\n";
+}
+
+// The tooltip can only show what reaches the client. The renderer draws from the
+// published WorldSnapshot, which crosses the codec even in single player (the
+// integrated server talks over a loopback), so a field the codec drops is a
+// field the screen can never show. Filled with NON-DEFAULT values throughout —
+// a codec that silently writes nothing still round-trips all-zeroes.
+void testSnapshotCarriesTheEnchantingScreen() {
+    WorldSnapshot sent;
+    sent.openContainerScreen = ContainerScreen::EnchantingTable;
+    sent.enchantingItem = diamondPickaxe();
+    setEnchantmentLevel(sent.enchantingItem, EnchantmentId::Efficiency, 4U);
+    setEnchantmentLevel(sent.enchantingItem, EnchantmentId::Unbreaking, 2U);
+    sent.enchantingLapis = lapis(7);
+    sent.enchantingRequiredLevels = {3, 0, 27};
+    sent.enchantingClueIds = {static_cast<std::uint8_t>(EnchantmentId::Efficiency), 0U,
+                              static_cast<std::uint8_t>(EnchantmentId::Fortune)};
+    sent.enchantingClueLevels = {1U, 0U, 3U};
+    sent.enchantingBookshelfPower = 22;
+    sent.enchantingSeed = -1234567;
+
+    const auto bytes = encodeSnapshot(PublishedSnapshot{sent});
+    const auto decoded = decodeSnapshot(bytes);
+    assert(decoded.has_value());
+    const auto* received = std::get_if<WorldSnapshot>(&*decoded);
+    assert(received != nullptr);
+
+    assert(received->openContainerScreen == ContainerScreen::EnchantingTable);
+    assert(received->enchantingItem.item == sent.enchantingItem.item);
+    // The enchantments themselves, not just the item: this is exactly what the
+    // tooltip lists, and what tells a player the enchant worked.
+    assert(enchantmentLevel(received->enchantingItem, EnchantmentId::Efficiency) == 4U);
+    assert(enchantmentLevel(received->enchantingItem, EnchantmentId::Unbreaking) == 2U);
+    assert(received->enchantingLapis.count == 7U);
+    assert(received->enchantingRequiredLevels == sent.enchantingRequiredLevels);
+    assert(received->enchantingClueIds == sent.enchantingClueIds);
+    assert(received->enchantingClueLevels == sent.enchantingClueLevels);
+    assert(received->enchantingBookshelfPower == 22);
+    assert(received->enchantingSeed == -1234567);
+    std::cout << "snapshot: the whole enchanting screen (enchantments included) crosses the codec\n";
+}
+
 } // namespace
 
 int main() {
@@ -505,6 +617,8 @@ int main() {
     testTableIsInTheCreativeCatalog();
     testBookBecomesAnEnchantedBook();
     testEnchantedBooksAreInTheCatalog();
+    testGameModeGateIsWiredThroughTheSession();
+    testSnapshotCarriesTheEnchantingScreen();
     std::cout << "enchanting table: all checks passed\n";
     return 0;
 }

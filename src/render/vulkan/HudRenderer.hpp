@@ -1432,6 +1432,55 @@ class HudRenderer final {
         return hovered;
     }
 
+    // ENCH-2: an enchantment's display name — the vanilla translation key plus
+    // its level numeral. Enchantment.getFullname omits the numeral for a level-1
+    // enchantment whose maximum is also 1 (Silk Touch is "Silk Touch", never
+    // "Silk Touch I").
+    [[nodiscard]] std::string enchantmentLabel(gameplay::EnchantmentId id, int level) const {
+        const std::string vanilla{gameplay::enchantmentVanillaName(id)};
+        std::string label{translated("enchantment.minecraft." + vanilla, vanilla)};
+        if (level > 1 || gameplay::enchantmentDefinition(id).maxLevel > 1) {
+            label += ' ';
+            label += translated("enchantment.level." + std::to_string(level),
+                                romanNumeral(level));
+        }
+        return label;
+    }
+
+    // ENCH-2: what an item's hover tooltip says. Vanilla's ItemStack#getTooltipLines
+    // opens with the item's name and then lists one line per enchantment — which
+    // is the ONLY way a player can tell an enchanted tool from a plain one, since
+    // nothing else about the stack looks different. Before this, every tooltip in
+    // the game was the bare name, so a successful enchant was invisible.
+    [[nodiscard]] std::vector<std::string> itemTooltipLines(
+        const gameplay::ItemStack& stack) const {
+        std::vector<std::string> lines;
+        std::string name{itemDisplayName(stack)};
+        if (stack.count > 1U) {
+            name += " x" + std::to_string(stack.count);
+        }
+        lines.push_back(std::move(name));
+        for (std::uint8_t index = 0; index < stack.enchantmentCount; ++index) {
+            const auto id = static_cast<gameplay::EnchantmentId>(stack.enchantments[index].id);
+            lines.push_back(enchantmentLabel(id, stack.enchantments[index].level));
+        }
+        return lines;
+    }
+
+    // The one tooltip box every screen draws: a panel sized to the widest line,
+    // the first line white and the rest grey (vanilla's name-then-detail
+    // colouring). Callers must draw it AFTER everything else on the screen — a
+    // tooltip painted mid-pass gets covered by whatever is drawn next, which is
+    // exactly the bug that made the enchanting bars' clues invisible on every
+    // bar except the last one.
+    void drawTooltipBox(VkCommandBuffer commandBuffer, float scale,
+                        const std::vector<std::string>& lines) const {
+        if (lines.empty()) {
+            return;
+        }
+        drawTooltipBox(commandBuffer, scale, lines);
+    }
+
     // ENCH-2: EnchantmentScreen#extractBackground, transcribed. Every offset here
     // is vanilla's, panel-relative: the two slots at (15,47)/(35,47), the three
     // 108x19 option bars at (60, 14+19i), the 16x16 level numeral at
@@ -1443,8 +1492,13 @@ class HudRenderer final {
     // snapshot (level, lapis count, game mode) purely so the bar can grey out;
     // the authority is GameSession::purchaseEnchantment, which re-checks all of
     // it. A client that drew a bar bright would still be refused.
-    void drawEnchantingScreen(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
-                              const ui::UiRect& panel) const {
+    // Returns the option whose clue tooltip the caller must draw last, if the
+    // cursor is over one — the tooltip cannot be drawn from inside the bar loop
+    // (see drawTooltipBox).
+    template <typename SlotDrawer>
+    [[nodiscard]] std::optional<std::size_t> drawEnchantingScreen(
+        VkCommandBuffer commandBuffer, const ui::HudLayout& layout, const ui::UiRect& panel,
+        const SlotDrawer& slotWithHover) const {
         const auto& snap = clientMirror.world();
         const float scale = layout.scale();
         const auto cursor = currentFramebufferCursor();
@@ -1454,10 +1508,8 @@ class HudRenderer final {
         drawHudText(commandBuffer, translated("container.inventory", "Inventory"),
                     panel.x + 8.0F * scale, panel.y + 73.0F * scale, scale,
                     {0.25F, 0.25F, 0.25F, 1.0F}, false);
-        drawHudSlot(commandBuffer, layout.enchantingItemSlot(), snap.enchantingItem, false, false,
-                    true);
-        drawHudSlot(commandBuffer, layout.enchantingLapisSlot(), snap.enchantingLapis, false,
-                    false, true);
+        slotWithHover(layout.enchantingItemSlot(), snap.enchantingItem, false);
+        slotWithHover(layout.enchantingLapisSlot(), snap.enchantingLapis, false);
 
         const bool infiniteMaterials = uiFrameData_.gameMode == gameplay::GameMode::Creative;
         const int lapisCount = static_cast<int>(snap.enchantingLapis.count);
@@ -1466,6 +1518,7 @@ class HudRenderer final {
         // initSeed + the `cost == 0` early-out, in that exact order, so the
         // three phrases match vanilla's for the same seed.
         world::gen::JavaRandom nameRandom(static_cast<std::uint64_t>(snap.enchantingSeed));
+        std::optional<std::size_t> hoveredClue;
         for (std::size_t option = 0; option < 3U; ++option) {
             const auto bar = layout.enchantingOption(option);
             const std::int32_t cost = snap.enchantingRequiredLevels[option];
@@ -1520,10 +1573,15 @@ class HudRenderer final {
             const ui::UiRect clueBand{bar.x, bar.y, bar.width, 17.0F * scale};
             if (snap.enchantingClueLevels[option] > 0U &&
                 clueBand.contains(cursor.x, cursor.y)) {
-                drawEnchantingClueTooltip(commandBuffer, scale, option, cost, lapisCost,
-                                          infiniteMaterials);
+                // Recorded, NOT drawn: the two bars after this one are still to
+                // be painted, and the tooltip sits 12px down-right of the cursor
+                // — squarely inside the next bar's rectangle. Drawing it here is
+                // what made bar 0's and bar 1's clues invisible while bar 2's,
+                // drawn last, survived.
+                hoveredClue = option;
             }
         }
+        return hoveredClue;
     }
 
     // The hover tooltip over a live option bar. Kept out of the loop above
@@ -1534,18 +1592,8 @@ class HudRenderer final {
         const auto& snap = clientMirror.world();
         const auto clueId =
             static_cast<gameplay::EnchantmentId>(snap.enchantingClueIds[option]);
-        std::string clueName{translated(
-            "enchantment.minecraft." + std::string{gameplay::enchantmentVanillaName(clueId)},
-            std::string{gameplay::enchantmentVanillaName(clueId)})};
-        const auto clueLevel = static_cast<int>(snap.enchantingClueLevels[option]);
-        // Enchantment.getFullname: the level numeral is omitted for a level-1
-        // enchantment whose maximum is also 1 (Silk Touch is "Silk Touch", not
-        // "Silk Touch I"), and drawn for every other.
-        if (clueLevel > 1 || gameplay::enchantmentDefinition(clueId).maxLevel > 1) {
-            clueName += ' ';
-            clueName += translated("enchantment.level." + std::to_string(clueLevel),
-                                   romanNumeral(clueLevel));
-        }
+        const std::string clueName =
+            enchantmentLabel(clueId, static_cast<int>(snap.enchantingClueLevels[option]));
         std::vector<std::string> lines;
         lines.push_back(formatTemplate(translated("container.enchant.clue", "%s . . . ?"),
                                        clueName));
@@ -1630,6 +1678,22 @@ class HudRenderer final {
             : containerScreen == ContainerScreen::EnchantingTable     ? kEnchantingGuiLayer
                                                                       : 8.0F;
         drawGuiSprite(commandBuffer, panel, panelLayer, {0.0F, 0.0F, 176.0F, 166.0F});
+        // Every container screen was drawing its slots with no hover tooltip at
+        // all — the tooltip only existed on the standalone inventory screen. So
+        // a tool sitting in a chest, a furnace or the enchanting table had no
+        // name, and an enchanted one no way to show it. Collected while drawing
+        // and painted last, after every slot.
+        const auto hoverCursor = currentFramebufferCursor();
+        std::optional<gameplay::ItemStack> hoveredStack;
+        std::optional<std::size_t> hoveredClue;
+        const auto slotWithHover = [&](const ui::UiRect& rect, const gameplay::ItemStack& stack,
+                                       bool selected) {
+            const bool hovered = rect.contains(hoverCursor.x, hoverCursor.y);
+            if (hovered && !stack.empty()) {
+                hoveredStack = stack;
+            }
+            drawHudSlot(commandBuffer, rect, stack, selected, hovered, true);
+        };
         if (chestScreen) {
             drawHudText(commandBuffer, translated("container.chest", "Chest"),
                         panel.x + 8.0F * layout.scale(), panel.y + 6.0F * layout.scale(),
@@ -1641,28 +1705,24 @@ class HudRenderer final {
                 const auto& chestItems = clientMirror.world().chestItems;
                 for (std::size_t index = 0; index < gameplay::ChestBlockEntity::kSlotCount;
                      ++index) {
-                    drawHudSlot(commandBuffer, layout.chestSlot(index), chestItems[index], false,
-                                false, true);
+                    slotWithHover(layout.chestSlot(index), chestItems[index], false);
                 }
             }
         } else if (containerScreen == ContainerScreen::CraftingTable) {
             for (std::size_t index = 0; index < 9U; ++index) {
-                drawHudSlot(commandBuffer, layout.tableCraftingSlot(index),
-                            clientMirror.world().tableCraftingGrid[index], false, false, true);
+                slotWithHover(layout.tableCraftingSlot(index),
+                              clientMirror.world().tableCraftingGrid[index], false);
             }
-            drawHudSlot(commandBuffer, layout.tableCraftingOutput(),
-                        clientMirror.world().tableCraftingOutput, false, false, true);
+            slotWithHover(layout.tableCraftingOutput(),
+                          clientMirror.world().tableCraftingOutput, false);
         } else if (containerScreen == ContainerScreen::EnchantingTable) {
-            drawEnchantingScreen(commandBuffer, layout, panel);
+            hoveredClue = drawEnchantingScreen(commandBuffer, layout, panel, slotWithHover);
         } else {
             // 熔炉界面按容器显示快照绘制，这里不读方块实体的位置
             const auto& worldSnap = clientMirror.world();
-            drawHudSlot(commandBuffer, layout.furnaceInputSlot(), worldSnap.furnaceInput, false,
-                        false, true);
-            drawHudSlot(commandBuffer, layout.furnaceFuelSlot(), worldSnap.furnaceFuel, false,
-                        false, true);
-            drawHudSlot(commandBuffer, layout.furnaceOutputSlot(), worldSnap.furnaceOutput, false,
-                        false, true);
+            slotWithHover(layout.furnaceInputSlot(), worldSnap.furnaceInput, false);
+            slotWithHover(layout.furnaceFuelSlot(), worldSnap.furnaceFuel, false);
+            slotWithHover(layout.furnaceOutputSlot(), worldSnap.furnaceOutput, false);
             const float scale = layout.scale();
             const float fuel =
                 std::clamp(clientMirror.world().furnaceFuelProgress, 0.0F, 1.0F);
@@ -1686,12 +1746,24 @@ class HudRenderer final {
         for (std::size_t index = 0; index < gameplay::Inventory::kSlotCount; ++index) {
             const auto slot =
                 chestScreen ? layout.chestInventorySlot(index) : layout.inventorySlot(index);
-            drawHudSlot(commandBuffer, slot, clientMirror.world().inventorySlots[index],
-                        index == uiFrameData_.selectedHotbarSlot, false, true);
+            slotWithHover(slot, clientMirror.world().inventorySlots[index],
+                          index == uiFrameData_.selectedHotbarSlot);
         }
         // 拖拽过程中在每个划过的槽位预览松手后的落位，画在槽位之上、光标之下
         drawDragPreview(commandBuffer, layout);
-        if (!clientMirror.world().cursorStack.empty()) {
+        // Tooltips last, once every slot and bar is down. A dragged stack on the
+        // cursor suppresses them, as in vanilla.
+        if (clientMirror.world().cursorStack.empty()) {
+            if (hoveredStack.has_value()) {
+                drawTooltipBox(commandBuffer, layout.scale(), itemTooltipLines(*hoveredStack));
+            } else if (hoveredClue.has_value()) {
+                drawEnchantingClueTooltip(
+                    commandBuffer, layout.scale(), *hoveredClue,
+                    clientMirror.world().enchantingRequiredLevels[*hoveredClue],
+                    static_cast<int>(*hoveredClue) + 1,
+                    uiFrameData_.gameMode == gameplay::GameMode::Creative);
+            }
+        } else {
             const auto cursor = currentFramebufferCursor();
             const float size = 16.0F * layout.scale();
             drawHudSlot(commandBuffer, {cursor.x - size * 0.5F, cursor.y - size * 0.5F, size, size},
@@ -1826,16 +1898,10 @@ class HudRenderer final {
         drawDragPreview(commandBuffer, layout);
 
         if (hoveredStack.has_value()) {
-            const std::string_view label = itemDisplayName(*hoveredStack);
-            const ui::UiRect tooltip{
-                cursor.x + 12.0F * scale,
-                cursor.y + 12.0F * scale,
-                hudTextWidth(label, scale) + 8.0F * scale,
-                14.0F * scale,
-            };
-            drawHudQuad(commandBuffer, tooltip, {0.05F, 0.03F, 0.08F, 0.94F});
-            drawHudText(commandBuffer, label, tooltip.x + 4.0F * scale, tooltip.y + 3.0F * scale,
-                        scale, {1.0F, 1.0F, 1.0F, 1.0F});
+            // Enchantment lines included: the creative catalogue now carries 38
+            // enchanted books, and without them every one of those cells reads
+            // as the same nameless "Enchanted Book".
+            drawTooltipBox(commandBuffer, scale, itemTooltipLines(*hoveredStack));
         }
         if (!clientMirror.world().cursorStack.empty()) {
             const float iconSize = 16.0F * scale;
@@ -2074,10 +2140,17 @@ class HudRenderer final {
             const auto& selectedStack = uiFrameData_.selectedStack;
             if (!selectedStack.empty()) {
                 const std::size_t selectedSlot = uiFrameData_.selectedHotbarSlot;
+                // Gui#tick compares the highlighted stack with ItemStack.matches,
+                // which includes the components — so a held item that GAINS an
+                // enchantment re-shows its name. sameItem() ignores enchantments
+                // and damage, so it never noticed: enchanting the tool in your
+                // hand changed nothing on screen. Full equality restores the
+                // vanilla cue (and re-shows on a durability change, as vanilla
+                // does).
                 const bool selectionChanged =
                     selectedNameSlot_ == static_cast<std::size_t>(-1) ||
                     selectedSlot != selectedNameSlot_ ||
-                    !gameplay::sameItem(selectedStack, selectedNameStack_);
+                    !(selectedStack == selectedNameStack_);
                 if (selectionChanged) {
                     selectedNameSlot_ = selectedSlot;
                     selectedNameStack_ = selectedStack;
@@ -2242,19 +2315,7 @@ class HudRenderer final {
                 tooltipStack = clientMirror.world().inventorySlots[*hoveredSlot];
             }
             if (tooltipStack.has_value()) {
-                const auto& hoveredStack = *tooltipStack;
-                std::string label{itemDisplayName(hoveredStack)};
-                label += " x" + std::to_string(hoveredStack.count);
-                const float labelWidth = hudTextWidth(label, textScale) + 8.0F * textScale;
-                const ui::UiRect tooltip{
-                    cursorX + 12.0F * textScale,
-                    cursorY + 12.0F * textScale,
-                    labelWidth,
-                    14.0F * textScale,
-                };
-                drawHudQuad(commandBuffer, tooltip, {0.05F, 0.03F, 0.08F, 0.94F});
-                drawHudText(commandBuffer, label, tooltip.x + 4.0F * textScale,
-                            tooltip.y + 3.0F * textScale, textScale, {1.0F, 1.0F, 1.0F, 1.0F});
+                drawTooltipBox(commandBuffer, textScale, itemTooltipLines(*tooltipStack));
             }
             // 拖拽过程中在每个划过的槽位预览松手后的落位，画在槽位之上、光标之下
             drawDragPreview(commandBuffer, layout);

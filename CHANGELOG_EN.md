@@ -7,6 +7,18 @@ simple versioned history while it is in beta.
 
 ## ReBedrock 26.1beta1
 
+### Fixed
+
+- Item tooltips now list enchantments. Until now a tooltip was just the item's
+  name, so there was no way to tell an enchanted tool from a plain one — or to
+  see whether an enchant had worked at all. Container screens (chest, furnace,
+  crafting table, enchanting table) also had no item tooltip whatsoever, so a
+  tool hovered inside one did not even show its name. A held item that gains an
+  enchantment re-shows its name above the hotbar, too.
+- Fixed the enchanting table's option tooltips, of which only the last was ever
+  visible: they were drawn inside the per-option loop, so the first two were
+  painted over by the options drawn after them.
+
 ### Added
 
 - The enchanting table. Craft it (four obsidian, two diamonds and a book),
