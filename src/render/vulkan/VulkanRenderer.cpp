@@ -1354,9 +1354,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // rename the new one.
                 if (!(worldSnap.anvilLeft == previousAnvilLeft_)) {
                     previousAnvilLeft_ = worldSnap.anvilLeft;
+                    // `getHoverName()`: the CUSTOM name if it has one, otherwise
+                    // the item's ordinary translated name. Seeding with only the
+                    // custom name left the box blank for an unnamed item, which
+                    // is not what vanilla shows.
                     hud_.anvilName() = ui::textFieldWithValue(
-                        gameplay::customNameOf(worldSnap.anvilLeft.customNameId),
-                        ui::kAnvilNameFieldRules, anvilNameMetrics());
+                        hud_.itemHoverName(worldSnap.anvilLeft), ui::kAnvilNameFieldRules,
+                        anvilNameMetrics());
                 }
                 playerEyeHeight =
                     playerSnap.sneaking ? gameplay::PlayerController::kSneakingEyeHeight
@@ -2087,9 +2091,28 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // The server owns what a rename costs and whether it applies, so every edit
     // is shipped — the price has to move as you type, exactly as vanilla's
     // screen does.
+    // The server decides what a rename costs, but it cannot decide whether the
+    // box still holds the item's DEFAULT name: that name is translated, and
+    // translation is client-side in this build (a dedicated server ships no
+    // assets). So the client blanks the text in exactly the case where the
+    // server could not tell — an unnamed item whose box still reads as its
+    // ordinary name — and sends it verbatim otherwise. The four cases then all
+    // land on vanilla's own server-side rule, which compares against the
+    // custom name:
+    //
+    //   unnamed + untouched box  -> "" -> no rename, no cost
+    //   unnamed + edited box     -> text -> rename, one level
+    //   named   + untouched box  -> the custom name -> equal, no cost
+    //   named   + cleared box    -> "" -> strip the name, one level
     void publishAnvilName() {
+        const auto snapshot = clientMirror_.world();
+        const std::string& typed = hud_.anvilName().value;
+        const bool unnamed =
+            gameplay::customNameOf(snapshot.anvilLeft.customNameId).empty();
         gameplay::SetAnvilName rename;
-        rename.name = hud_.anvilName().value;
+        rename.name = (unnamed && typed == hud_.itemHoverName(snapshot.anvilLeft))
+                          ? std::string{}
+                          : typed;
         runtime.enqueueClientCommand(std::move(rename));
     }
 

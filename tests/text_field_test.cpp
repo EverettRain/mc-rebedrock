@@ -423,6 +423,22 @@ int main() {
         assert(sameState(state, before));
     }
 
+    // ---- Bare vs bordered geometry (EditBox.java:486-487) ----
+    // A bordered field insets its text by 4 and centres it in its own box; a
+    // BARE one does neither — its frame is the screen's art, which already
+    // contains the padding, and the widget rect it is handed IS the line box.
+    // Both used to be treated alike, which put the anvil's rename text low and
+    // to the right of where vanilla draws it.
+    {
+        assert(mc::ui::kTextFieldBorderedInset == 4.0F);
+        assert(mc::ui::kTextFieldBareInset == 0.0F);
+        assert(mc::ui::textFieldTextInset(1.0F, /*bordered=*/false) == 0.0F);
+        assert(mc::ui::textFieldTextInset(2.0F, /*bordered=*/true) == 8.0F);
+        // getInnerWidth(): `bordered ? width - 8 : width`.
+        assert(mc::ui::textFieldInnerWidth(103.0F, 1.0F, /*bordered=*/false) == 103.0F);
+        assert(mc::ui::textFieldInnerWidth(103.0F, 1.0F, /*bordered=*/true) == 95.0F);
+    }
+
     // ---- The field registry says what each place in the game accepts ----
     // The single-source rule of UI-1 lives in this table; a new typeable screen
     // adds a line to it rather than inventing its own limits.
@@ -448,10 +464,11 @@ int main() {
 
     // ---- The inner width rule is shared by the editing and drawing sides ----
     {
-        // A bordered box insets 4 GUI px on each side, a bare one 2.
+        // A bordered box insets 4 GUI px on each side; a bare one insets
+        // nothing (EditBox#getInnerWidth is `bordered ? width - 8 : width`).
         assert(mc::ui::textFieldInnerWidth(200.0F, 1.0F, true) == 192.0F);
         assert(mc::ui::textFieldInnerWidth(200.0F, 2.0F, true) == 184.0F);
-        assert(mc::ui::textFieldInnerWidth(200.0F, 1.0F, false) == 196.0F);
+        assert(mc::ui::textFieldInnerWidth(200.0F, 1.0F, false) == 200.0F);
         assert(mc::ui::textFieldTextInset(3.0F, true) == 12.0F);
     }
 

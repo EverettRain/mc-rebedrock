@@ -671,6 +671,17 @@ void testAnvilRenames() {
         assert(menu.cost == 1);
         assert(menu.result.customNameId == kNoCustomName);
     }
+    // An unnamed item with an empty box is the "seeded and untouched" case the
+    // client sends as a blank: nothing to sell, nothing charged. (The client is
+    // what blanks it — the server cannot tell a translated default name from a
+    // rename, because translation is client-side in this build.)
+    {
+        AnvilMenu menu;
+        menu.left = tool(&items::IronPickaxe, 50U);
+        menu.name.clear();
+        refreshAnvilResult(menu, false);
+        assert(menu.result.empty() && menu.cost == 0);
+    }
     // Renaming works on things that are not enchantable at all — vanilla lets
     // you name a stack of dirt, because canStoreEnchantments is true for
     // everything (every item carries an empty ENCHANTMENTS component).

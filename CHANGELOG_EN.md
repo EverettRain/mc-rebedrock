@@ -9,6 +9,14 @@ simple versioned history while it is in beta.
 
 ### Fixed
 
+- The anvil's rename box now shows the item's current name (it used to be blank
+  for anything that had never been renamed), and taking the result without
+  touching the box no longer charges a level for a rename that did not happen.
+- Fixed text sitting low and to the right in borderless input boxes. Vanilla's
+  borderless fields neither inset nor centre their text — their frame comes from
+  the screen's own art. The anvil's rename box and the chat line are both of
+  that kind, so both are fixed.
+
 - Fixed the anvil screen's name box showing as a red bar. The red is a
   placeholder in the background texture that the screen is supposed to cover
   with the text-field sprite, and the screen was not drawing it. The field shows

@@ -156,8 +156,15 @@ struct TextFieldView final {
 // displayStart is stored in the state, so a mismatch shows up as a window that
 // scrolls to the wrong place — which is why the padding rule lives here rather
 // than in either caller.
+// EditBox.java:486 — `textX = getX() + (bordered ? 4 : 0)`, and :487's
+// getInnerWidth() is `bordered ? width - 8 : width`. A BARE field insets by
+// nothing at all: its frame comes from the screen's own art (the anvil's name
+// plate, the chat backdrop), and that art already includes the padding, so
+// insetting again pushes the text right of where vanilla puts it. This used to
+// be 2, which showed up in play as the anvil's rename text sitting too far
+// right.
 inline constexpr float kTextFieldBorderedInset = 4.0F;
-inline constexpr float kTextFieldBareInset = 2.0F;
+inline constexpr float kTextFieldBareInset = 0.0F;
 
 [[nodiscard]] constexpr float textFieldTextInset(float scale, bool bordered) {
     return (bordered ? kTextFieldBorderedInset : kTextFieldBareInset) * scale;

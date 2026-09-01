@@ -849,7 +849,14 @@ class HudRenderer final {
             ui::textFieldInnerWidth(field.width, scale, style.bordered)};
         const auto view = ui::textFieldView(state, rules, metrics);
         const float textX = field.x + inset;
-        const float textY = field.y + (field.height - 8.0F * scale) * 0.5F;
+        // EditBox.java:487 — `textY = bordered ? getY() + (height - 8) / 2 : getY()`.
+        // Only a BORDERED field centres its text in its own box; a bare one
+        // draws at exactly its y, because the widget rect it was given is
+        // already the text's line box (the anvil's is (62,24) 103x12, and
+        // vanilla puts the glyphs at y=24, not y=26). Centring unconditionally
+        // is what made the rename text sit low.
+        const float textY =
+            style.bordered ? field.y + (field.height - 8.0F * scale) * 0.5F : field.y;
         // vanilla's DEFAULT_TEXT_COLOR / textColorUneditable.
         const glm::vec4 colour =
             rules.editable ? style.textColor : glm::vec4{0.439F, 0.388F, 0.439F, 1.0F};
@@ -2694,6 +2701,17 @@ class HudRenderer final {
     // I-3: the renderer drives this field (keys and characters) and the anvil
     // screen draws it, so it is the one piece of text-field state the HUD hands
     // out rather than owning privately.
+    // `ItemStack#getHoverName`: the custom name if the stack has one, otherwise
+    // its ordinary translated name. The tooltip's name line already answers
+    // exactly this (I-2 made it the single source), so this is a thin read of
+    // that rather than a second answer.
+    [[nodiscard]] std::string itemHoverName(const gameplay::ItemStack& stack) const {
+        if (stack.empty()) {
+            return {};
+        }
+        return ui::itemNameLine(stack, tooltipContext()).text;
+    }
+
     [[nodiscard]] ui::TextFieldState& anvilName() { return anvilName_; }
     [[nodiscard]] const ui::TextFieldState& anvilName() const { return anvilName_; }
 
