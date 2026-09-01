@@ -541,6 +541,37 @@ void testSessionWiring() {
     std::cout << "session: takes through XP-4, refuses when closed, hands inputs back\n";
 }
 
+// The reported scenario, end to end: a heavily-worked item whose price has run
+// away. In survival the anvil must refuse — no result, the price still shown so
+// the screen can say "Too Expensive!" — and the take must cost nothing.
+void testWallRefusesThroughTheSession() {
+    GameSession session;
+    session.primaryPlayer().gameMode = GameMode::Survival;
+    session.primaryPlayer().experience.setExperienceLevel(300);
+    session.openAnvilContainer(glm::ivec3{1, 2, 3});
+    AnvilMenu& menu = session.anvilMenu();
+    menu.left = tool(&items::DiamondPickaxe, 100U);
+    menu.left.repairCost = 255U; // saturated: worked far past the wall
+    menu.right = enchantedBook(EnchantmentId::Efficiency, 1U);
+    session.refreshAnvilResult();
+
+    assert(menu.cost >= kAnvilMaximumCost);
+    // Both halves matter: the price is reported (the screen needs it) AND the
+    // result is withheld (the operation is refused).
+    assert(menu.result.empty());
+    assert(!session.takeAnvilResult(/*shiftHeld=*/true));
+    assert(session.primaryPlayer().experience.level() == 300);
+    assert(!menu.left.empty());
+
+    // Creative ignores the wall entirely, which is why a creative player sees a
+    // climbing price and never a refusal — vanilla's own behaviour.
+    session.primaryPlayer().gameMode = GameMode::Creative;
+    session.refreshAnvilResult();
+    assert(!menu.result.empty());
+    assert(session.takeAnvilResult(true));
+    std::cout << "wall: survival refuses and keeps the price, creative bypasses\n";
+}
+
 void testSnapshotCarriesTheAnvilScreen() {
     WorldSnapshot sent;
     sent.openContainerScreen = ContainerScreen::Anvil;
@@ -584,6 +615,7 @@ int main() {
     testAnvilBlockIdentity();
     testAnvilIsReachable();
     testSessionWiring();
+    testWallRefusesThroughTheSession();
     testSnapshotCarriesTheAnvilScreen();
     std::cout << "anvil: all checks passed\n";
     return 0;

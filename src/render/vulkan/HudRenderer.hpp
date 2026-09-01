@@ -1538,16 +1538,31 @@ class HudRenderer final {
         drawHudText(commandBuffer, translated("container.inventory", "Inventory"),
                     panel.x + 8.0F * scale, panel.y + 73.0F * scale, scale,
                     {0.25F, 0.25F, 0.25F, 1.0F}, false);
+        // AnvilScreen#extractBackground blits the name field UNCONDITIONALLY —
+        // it is part of the background, not an optional decoration, and the base
+        // anvil.png paints that whole 110x16 region pure red (255,0,0) as a
+        // "you must cover me" marker. Skipping the blit is why the screen showed
+        // a red bar where the name box belongs.
+        //
+        // The DISABLED variant is drawn even when the left slot is occupied,
+        // where vanilla would draw the enabled one: renaming has nowhere to
+        // store a custom name yet (see ENCH-3's card), and vanilla's own
+        // greyed-out art is the honest way to say "you cannot type here" — a
+        // lit field the player can click into and get nothing from is worse.
+        drawGuiSprite(commandBuffer,
+                      {panel.x + 59.0F * scale, panel.y + 20.0F * scale, 110.0F * scale,
+                       16.0F * scale},
+                      kAnvilGuiLayer,
+                      {0.0F, static_cast<float>(kAnvilTextFieldSpriteY + 17), 110.0F, 16.0F});
         slotWithHover(layout.anvilLeftSlot(), snap.anvilLeft, false);
         slotWithHover(layout.anvilRightSlot(), snap.anvilRight, false);
         slotWithHover(layout.anvilOutputSlot(), snap.anvilResult, false);
 
-        if (snap.anvilCost <= 0) {
-            return;
-        }
-        const bool tooExpensive = snap.anvilResult.empty();
-        if (tooExpensive) {
-            // AnvilScreen's ERROR_SPRITE, drawn over the output slot.
+        // ItemCombinerScreen#extractErrorIcon: shown whenever there is input but
+        // no result — including the cost-0 cases (two items that cannot be
+        // combined at all), which is why the condition is about the SLOTS and
+        // not about the price.
+        if ((!snap.anvilLeft.empty() || !snap.anvilRight.empty()) && snap.anvilResult.empty()) {
             drawGuiSprite(commandBuffer,
                           {panel.x + 99.0F * scale, panel.y + 45.0F * scale, 28.0F * scale,
                            21.0F * scale},
@@ -1555,18 +1570,41 @@ class HudRenderer final {
                           {static_cast<float>(kAnvilErrorSpriteX),
                            static_cast<float>(kAnvilErrorSpriteY), 28.0F, 21.0F});
         }
-        // AnvilScreen#renderLabels: "Enchantment Cost: N", right-aligned in the
-        // panel's lower strip, green when affordable and red when not.
-        const std::string label = formatTemplate(
-            translated("container.repair.cost", "Enchantment Cost: %s"),
-            std::to_string(snap.anvilCost));
-        const bool affordable = uiFrameData_.gameMode == gameplay::GameMode::Creative ||
-                                (!tooExpensive && uiFrameData_.experienceLevel >= snap.anvilCost);
-        const glm::vec4 colour = affordable ? glm::vec4{0.502F, 1.0F, 0.125F, 1.0F}
-                                            : glm::vec4{1.0F, 0.373F, 0.373F, 1.0F};
-        drawHudText(commandBuffer, label,
-                    panel.x + (8.0F + 160.0F) * scale - hudTextWidth(label, scale),
-                    panel.y + 62.0F * scale, scale, colour, false);
+
+        if (snap.anvilCost <= 0) {
+            return;
+        }
+        // AnvilScreen#renderLabels' three branches, in order. The first is the
+        // one that was missing: past the wall the line is "Too Expensive!", not
+        // a price — a player looking at a cost of 277 with no other feedback has
+        // no way to know the anvil has refused rather than merely become dear.
+        const bool infiniteMaterials = uiFrameData_.gameMode == gameplay::GameMode::Creative;
+        constexpr glm::vec4 kAffordable{0.502F, 1.0F, 0.125F, 1.0F};   // -8323296
+        constexpr glm::vec4 kRefused{1.0F, 0.376F, 0.376F, 1.0F};      // -40864
+        std::string label;
+        glm::vec4 colour = kAffordable;
+        if (snap.anvilCost >= gameplay::kAnvilMaximumCost && !infiniteMaterials) {
+            label = translated("container.repair.expensive", "Too Expensive!");
+            colour = kRefused;
+        } else if (snap.anvilResult.empty()) {
+            return; // an operation with no result and no wall: no line at all
+        } else {
+            label = formatTemplate(translated("container.repair.cost", "Enchantment Cost: %s"),
+                                   std::to_string(snap.anvilCost));
+            if (!infiniteMaterials && uiFrameData_.experienceLevel < snap.anvilCost) {
+                colour = kRefused;
+            }
+        }
+        // The translucent strip vanilla fills behind the line so it stays
+        // readable over the inventory art.
+        const float labelWidth = hudTextWidth(label, scale);
+        const float labelX = panel.x + (176.0F - 8.0F) * scale - labelWidth - 2.0F * scale;
+        drawHudQuad(commandBuffer,
+                    {labelX - 2.0F * scale, panel.y + 67.0F * scale,
+                     panel.x + (176.0F - 8.0F) * scale - (labelX - 2.0F * scale),
+                     12.0F * scale},
+                    {0.0F, 0.0F, 0.0F, 0.31F});
+        drawHudText(commandBuffer, label, labelX, panel.y + 69.0F * scale, scale, colour, false);
     }
 
     // ENCH-2: EnchantmentScreen#extractBackground, transcribed. Every offset here

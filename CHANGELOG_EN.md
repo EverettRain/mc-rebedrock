@@ -9,6 +9,15 @@ simple versioned history while it is in beta.
 
 ### Fixed
 
+- Fixed the anvil screen's name box showing as a red bar. The red is a
+  placeholder in the background texture that the screen is supposed to cover
+  with the text-field sprite, and the screen was not drawing it. The field shows
+  greyed out: renaming is not implemented yet.
+- Past 40 levels the anvil now says "Too Expensive!" the way vanilla does,
+  instead of going on showing a price that can never be paid. (Creative is not
+  subject to the wall, as in vanilla.) The red cross over the output slot now
+  also appears when two items simply cannot be combined.
+
 - Item tooltips were not drawn at all: the previous batch factored the box
   drawing into a stub that did nothing but call itself, so hovering an item on
   the inventory, creative and container screens showed nothing. The box is now
