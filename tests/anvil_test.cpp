@@ -573,6 +573,51 @@ void testWallRefusesThroughTheSession() {
     std::cout << "wall: survival refuses and keeps the price, creative bypasses\n";
 }
 
+// End to end through GameSession, because the reported symptom is about what a
+// player is actually charged: a FRESH item renames for exactly one level, and
+// exactly one level leaves the player.
+//
+// The other half of the same rule is why a rename can cost more than one: the
+// price is `priorWork + 1` (AnvilMenu.java:238 `clamp(tax + price)`, where tax
+// is both inputs' REPAIR_COST). An item that has already been through the anvil
+// carries a penalty, and renaming pays it like every other operation — while a
+// pure rename does not RAISE it, so the number then stays put however many
+// times you rename. Both halves are vanilla, and both are pinned here because
+// together they look like a bug ("renaming costs 8 and never changes").
+void testRenameChargesExactlyOneLevelOnAFreshItem() {
+    {
+        GameSession session;
+        session.primaryPlayer().gameMode = GameMode::Survival;
+        session.primaryPlayer().experience.setExperienceLevel(30);
+        session.openAnvilContainer(glm::ivec3{0, 0, 0});
+        session.anvilMenu().left = tool(&items::DiamondPickaxe);
+        session.setAnvilName("Digger");
+        assert(session.anvilMenu().cost == 1);
+        assert(session.takeAnvilResult(/*shiftHeld=*/true));
+        assert(session.primaryPlayer().experience.level() == 29);
+    }
+    // The same item after one repair carries a penalty of 1, so the rename is 2
+    // — not a bug, and not something a second rename makes worse.
+    {
+        GameSession session;
+        session.primaryPlayer().gameMode = GameMode::Survival;
+        session.primaryPlayer().experience.setExperienceLevel(30);
+        session.openAnvilContainer(glm::ivec3{0, 0, 0});
+        session.anvilMenu().left = tool(&items::DiamondPickaxe, 100U);
+        session.anvilMenu().left.repairCost = 7U;
+        session.setAnvilName("Digger");
+        assert(session.anvilMenu().cost == 8); // 7 prior work + 1 naming
+        assert(session.takeAnvilResult(true));
+        assert(session.primaryPlayer().experience.level() == 22);
+        // Renaming again costs the same 8: a pure rename never raises the tax.
+        session.anvilMenu().left = tool(&items::DiamondPickaxe, 100U);
+        session.anvilMenu().left.repairCost = 7U;
+        session.setAnvilName("Delver");
+        assert(session.anvilMenu().cost == 8);
+    }
+    std::cout << "anvil: a fresh rename is one level; prior work adds to it and stays put\n";
+}
+
 void testSnapshotCarriesTheAnvilScreen() {
     WorldSnapshot sent;
     sent.openContainerScreen = ContainerScreen::Anvil;
@@ -804,6 +849,7 @@ int main() {
     testAnvilRenames();
     testRenameDoesNotRaiseThePenalty();
     testRenameEscapesTheWall();
+    testRenameChargesExactlyOneLevelOnAFreshItem();
     testNameSurvivesTheWire();
     std::cout << "anvil: all checks passed\n";
     return 0;
