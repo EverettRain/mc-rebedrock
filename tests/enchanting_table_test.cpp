@@ -118,11 +118,19 @@ void testBookshelfPower() {
     assert(bookshelfPower(world, table) == 1);
     assert(world.setBlock(9, 2, 8, Block::Air));
 
-    // A replaceable block in the gap still transmits — the tag is
-    // `#minecraft:replaceable`, not "is air", so grass growing between the
-    // table and the shelf must not cost power.
-    assert(world.setBlock(9, 1, 8, Block::GrassPlant));
-    assert(bookshelfPower(world, table) == 2);
+    // Every member of vanilla's `#minecraft:enchantment_power_transmitter`
+    // (= `#minecraft:replaceable`) that this build has still transmits — the
+    // rule is tag membership, not "is air", and notably NOT this project's own
+    // `replaceable` flag, which excludes fire and lava.
+    for (const Block gap : {Block::GrassPlant, Block::Fern, Block::TallGrass,
+                            Block::LargeFern, Block::DeadBush, Block::Fire, Block::Water,
+                            Block::Lava}) {
+        assert(world.setBlock(9, 1, 8, gap));
+        assert(bookshelfPower(world, table) == 2);
+    }
+    // ...while a solid block in the same cell still blocks it.
+    assert(world.setBlock(9, 1, 8, Block::OakPlanks));
+    assert(bookshelfPower(world, table) == 1);
     assert(world.setBlock(9, 1, 8, Block::Air));
 
     // Fill the whole ring: 32 shelves, reported unclamped.

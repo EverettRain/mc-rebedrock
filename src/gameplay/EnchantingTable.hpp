@@ -66,16 +66,36 @@ inline constexpr std::size_t kBookshelfOffsetCount = 32U;
 
 // The `#minecraft:enchantment_power_transmitter` tag, which 26.1 defines as
 // `#minecraft:replaceable` — the gap between the table and the shelf must be
-// air (or another replaceable, e.g. grass). This is the rule that makes a shelf
-// behind a wall not count.
+// air (or another replaceable, e.g. grass or fire). This is the rule that makes
+// a shelf behind a wall not count.
 //
-// Known narrowing: this project's `replaceable` flag covers air/water/the four
-// grass-family plants, while vanilla's #replaceable also holds fire, snow,
-// vines and the rest. So a table with fire in the gap reads one shelf short of
-// vanilla. That gap is the block roster's, not this node's — widening it means
-// auditing every replaceable block, which belongs in B/BlockTags.
+// Spelled out as tag membership rather than as `world::isReplaceable(block)`,
+// which is what it used to be. The two are NOT the same thing here: this
+// project's `replaceable` FLAG is the "can I build into this cell" predicate and
+// deliberately excludes lava and fire (placing into them is a separate
+// behavioural question owned by B), while vanilla's `#replaceable` TAG — the one
+// the enchanting table actually reads — includes both. Aliasing the flag made a
+// table with fire or lava in the gap read a shelf short of vanilla.
+//
+// The list is vanilla's tag filtered to the blocks this build has; the entries
+// it lacks (soul_fire, snow layers, vines, seagrass, the nether roots, …) are
+// content gaps, not omissions here, and a block that lands later simply joins
+// this switch.
 [[nodiscard]] constexpr bool isEnchantmentPowerTransmitter(world::Block block) {
-    return world::isReplaceable(block);
+    switch (block) {
+    case world::Block::Air:
+    case world::Block::Water:
+    case world::Block::Lava:
+    case world::Block::GrassPlant:
+    case world::Block::Fern:
+    case world::Block::TallGrass:
+    case world::Block::LargeFern:
+    case world::Block::DeadBush:
+    case world::Block::Fire:
+        return true;
+    default:
+        return false;
+    }
 }
 
 // EnchantingTableBlock#isValidBookShelf: the offset cell holds a provider AND
