@@ -1,5 +1,6 @@
 #include "gameplay/ContentRegistry.hpp"
 
+#include "gameplay/Enchantment.hpp"
 #include "gameplay/ItemRegistry.hpp"
 #include "world/BlockRegistry.hpp"
 
@@ -75,6 +76,29 @@ const RegisteredItem* ContentRegistry::item(std::string_view identifier) const {
     return &items_[found->second];
 }
 
+bool ContentRegistry::registerItemVariant(const Item* itemValue, CreativeCategory category,
+                                          ItemStack stack) {
+    if (itemValue == nullptr || category == CreativeCategory::Count ||
+        category == CreativeCategory::Hidden) {
+        return false;
+    }
+    if (stack.item != itemValue || stack.empty()) {
+        return false;
+    }
+    // An item whose only catalog presence is its variants (the enchanted book
+    // declares Hidden, so the bare pass registered no identity for it) gets its
+    // identity here, on the first variant — `item()` lookups and the items()
+    // view must still find it.
+    if (!itemIndex_.contains(itemValue)) {
+        itemIndex_.emplace(itemValue, items_.size());
+        items_.push_back({itemValue, category});
+    }
+    catalogs_[static_cast<std::size_t>(category)].push_back(stack);
+    allCatalog_.push_back(stack);
+    itemCatalog_.push_back(stack);
+    return true;
+}
+
 std::span<const ItemStack> ContentRegistry::catalog(CreativeCategory category) const {
     // Count is the array-size sentinel and Hidden sits deliberately outside
     // [0, Count) (see core/CreativeCategory.hpp) — neither indexes a real slot.
@@ -111,6 +135,24 @@ const ContentRegistry& contentRegistry() {
         // every test that links ContentRegistry.cpp.
         for (const Item* item : kItemRegistry)
             result.registerItem(item, item->creativeCategory);
+
+        // ENCH-2: the enchanted books. `items::EnchantedBook` declares Hidden so
+        // the pass above registers its identity without listing a bare,
+        // unenchanted copy — the tab entries are these, one per enchantment at
+        // its maximum level, matching 26.1's
+        // generateEnchantmentBookTypesOnlyMaxLevel (the all-levels variant is
+        // SEARCH_TAB_ONLY there, and this build has no search tab). Registered
+        // here rather than in Item.hpp because an ItemStack carrying data is not
+        // a constexpr registry entry.
+        for (std::size_t index = 0; index < kEnchantmentCount; ++index) {
+            const auto id = static_cast<EnchantmentId>(index);
+            ItemStack book{world::Block::Air, 1U, &items::EnchantedBook};
+            setEnchantmentLevel(book, id,
+                                static_cast<std::uint8_t>(enchantmentDefinition(id).maxLevel));
+            static_cast<void>(
+                result.registerItemVariant(&items::EnchantedBook, CreativeCategory::Ingredients,
+                                           book));
+        }
         return result;
     }();
     return registry;

@@ -227,6 +227,14 @@ struct EnchantPurchase final {
         }
         result.lapisSpent = cost;
     }
+    // EnchantmentMenu#clickMenuButton's `transmuteCopy(Items.ENCHANTED_BOOK)`:
+    // a book that goes through the table comes out as a DIFFERENT item, not as
+    // a book carrying enchantments. That is what keeps an enchanted book from
+    // stacking with plain books and from being read as a crafting ingredient.
+    // Done before the enchantments are written, as vanilla does.
+    if (menu.item.item == &items::Book) {
+        menu.item.item = &items::EnchantedBook;
+    }
     for (const EnchantmentLevelEntry& entry : offer.enchantments) {
         setEnchantmentLevel(menu.item, entry.id, static_cast<std::uint8_t>(entry.level));
     }

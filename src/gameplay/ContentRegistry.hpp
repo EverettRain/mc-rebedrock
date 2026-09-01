@@ -26,6 +26,17 @@ class ContentRegistry final {
   public:
     bool registerBlock(world::Block block, CreativeCategory category);
     bool registerItem(const Item* item, CreativeCategory category);
+    // ENCH-2: an EXTRA catalog stack for an item that is already registered —
+    // the same item shown several times with different data. The enchanted book
+    // is the first: one per enchantment at its maximum level, the way 26.1's
+    // generateEnchantmentBookTypesOnlyMaxLevel fills the Ingredients tab, since
+    // a bare unenchanted enchanted_book is a meaningless catalog entry.
+    //
+    // Deliberately separate from registerItem: identity is registered once (one
+    // name, one Item, one texture), and this only appends to the tab views. A
+    // caller must have registered the item first; the variant's `item` pointer
+    // must match.
+    bool registerItemVariant(const Item* item, CreativeCategory category, ItemStack stack);
 
     [[nodiscard]] const RegisteredBlock* block(std::string_view identifier) const;
     [[nodiscard]] const RegisteredItem* item(std::string_view identifier) const;

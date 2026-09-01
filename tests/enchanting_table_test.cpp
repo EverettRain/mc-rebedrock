@@ -25,6 +25,7 @@
 #include "world/Block.hpp"
 #include "world/BlockShape.hpp"
 #include "world/World.hpp"
+#include "gameplay/ContentRegistry.hpp"
 #include "gameplay/CraftingSystem.hpp"
 #include "world/gen/JavaRandom.hpp"
 
@@ -381,6 +382,113 @@ void testRecipeIsReachable() {
     std::cout << "recipe: enchanting_table crafts from vanilla's 3x3 shape\n";
 }
 
+// ---- reachability: creative catalog + the enchanted book ----
+
+// A block that is registered but not in a tab is not obtainable in creative,
+// and the tab has to be the right one (26.1 puts ENCHANTING_TABLE in
+// functionalBlocks). Assert the whole shape: present, present ONCE, and present
+// in no other tab.
+void testTableIsInTheCreativeCatalog() {
+    const auto& registry = contentRegistry();
+    std::size_t inFunctional = 0;
+    std::size_t inOtherTabs = 0;
+    for (std::size_t tab = 0; tab < static_cast<std::size_t>(CreativeCategory::Count); ++tab) {
+        const auto category = static_cast<CreativeCategory>(tab);
+        for (const auto& stack : registry.catalog(category)) {
+            if (stack.block != Block::EnchantingTable || stack.item == nullptr) {
+                continue;
+            }
+            if (category == CreativeCategory::Functional) {
+                ++inFunctional;
+            } else {
+                ++inOtherTabs;
+            }
+        }
+    }
+    assert(inFunctional == 1U);
+    assert(inOtherTabs == 0U);
+    // And it is a real, wieldable item stack — pick-block, /give and the
+    // mined drop all resolve through this.
+    assert(blockItemFor(Block::EnchantingTable) != nullptr);
+    assert(registry.block("rebedrock:enchanting_table") != nullptr);
+    std::cout << "catalog: enchanting_table is in Functional, once, and obtainable\n";
+}
+
+// A book is enchantable, and enchanting one TRANSMUTES it: vanilla's
+// clickMenuButton swaps Items.BOOK for Items.ENCHANTED_BOOK before applying
+// anything. Without that swap an "enchanted book" would stack with plain books
+// and still read as a crafting ingredient.
+void testBookBecomesAnEnchantedBook() {
+    ItemStack book;
+    book.item = &items::Book;
+    book.count = 1U;
+    assert(isEnchantable(book));
+
+    EnchantingMenu menu;
+    menu.item = book;
+    menu.lapis = lapis(3);
+    menu.bookshelfPower = 15;
+    refreshOffers(menu, 4242);
+    // A book accepts every enchantment, so all three bars must be live.
+    for (std::size_t slot = 0; slot < 3U; ++slot) {
+        assert(menu.offers.slots[slot].requiredLevel > 0);
+        // EnchantmentScreenHandler's private wrapper drops a book's extra rolls:
+        // a book offer is always exactly one enchantment.
+        assert(menu.offers.slots[slot].enchantments.size() == 1U);
+    }
+
+    PlayerExperience experience;
+    experience.setExperienceLevel(60);
+    mc::world::gen::JavaRandom seedRandom;
+    seedRandom.setSeed(20260831ULL);
+    const auto expected = menu.offers.slots[2].enchantments.front();
+    const auto result = purchase(menu, experience, 2, false, seedRandom);
+    assert(result.applied);
+    assert(menu.item.item == &items::EnchantedBook);
+    assert(menu.item.item != &items::Book);
+    assert(enchantmentLevel(menu.item, expected.id) ==
+           static_cast<std::uint8_t>(expected.level));
+    // An enchanted book is not stackable with a plain book, and cannot go
+    // straight back into the table.
+    assert(!sameItem(menu.item, book));
+    assert(!isEnchantable(menu.item));
+    std::cout << "book: enchants, and comes out as a real enchanted_book\n";
+}
+
+// 26.1 fills the Ingredients tab with one enchanted book per enchantment at its
+// maximum level (generateEnchantmentBookTypesOnlyMaxLevel). A bare unenchanted
+// enchanted_book is never listed — it would be a meaningless entry.
+void testEnchantedBooksAreInTheCatalog() {
+    const auto& registry = contentRegistry();
+    std::size_t booksInIngredients = 0;
+    std::size_t bareBooks = 0;
+    std::array<bool, kEnchantmentCount> seen{};
+    for (const auto& stack : registry.catalog(CreativeCategory::Ingredients)) {
+        if (stack.item != &items::EnchantedBook) {
+            continue;
+        }
+        ++booksInIngredients;
+        if (stack.enchantmentCount == 0U) {
+            ++bareBooks;
+            continue;
+        }
+        assert(stack.enchantmentCount == 1U);
+        const auto id = static_cast<EnchantmentId>(stack.enchantments[0].id);
+        assert(stack.enchantments[0].level == enchantmentDefinition(id).maxLevel);
+        assert(!seen[static_cast<std::size_t>(id)]); // no duplicates
+        seen[static_cast<std::size_t>(id)] = true;
+    }
+    assert(bareBooks == 0U);
+    assert(booksInIngredients == kEnchantmentCount);
+    for (const bool present : seen) {
+        assert(present);
+    }
+    // Identity is still registered exactly once despite the many tab entries.
+    assert(registry.item("rebedrock:enchanted_book") != nullptr);
+    std::cout << "catalog: " << kEnchantmentCount
+              << " enchanted books in Ingredients, one per enchantment at max level\n";
+}
+
 } // namespace
 
 int main() {
@@ -394,6 +502,9 @@ int main() {
     testSpendNeverGoesNegative();
     testBlockIdentity();
     testRecipeIsReachable();
+    testTableIsInTheCreativeCatalog();
+    testBookBecomesAnEnchantedBook();
+    testEnchantedBooksAreInTheCatalog();
     std::cout << "enchanting table: all checks passed\n";
     return 0;
 }

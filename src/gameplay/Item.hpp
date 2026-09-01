@@ -579,6 +579,20 @@ inline constexpr Item Paper =
     Item::of("paper").category(CreativeCategory::Ingredients);
 inline constexpr Item Book =
     Item::of("book").category(CreativeCategory::Ingredients);
+// ENCH-2: EnchantedBookItem. A book that has been through the table is a
+// DIFFERENT item, not a book carrying enchantments — vanilla's
+// EnchantmentMenu#clickMenuButton transmutes Items.BOOK into
+// Items.ENCHANTED_BOOK before applying anything, which is what stops an
+// enchanted book from stacking with plain books and from being read as a
+// craftable ingredient. Stack size 1 for the same reason vanilla uses (each
+// carries its own enchantments, so two are never interchangeable).
+//
+// It is deliberately NOT in `kItemRegistry`'s creative pass with one bare
+// entry: an unenchanted enchanted_book is meaningless. The catalog lists one
+// per enchantment at max level instead — ContentRegistry's enchanted-book
+// expansion, mirroring 26.1's generateEnchantmentBookTypesOnlyMaxLevel.
+inline constexpr Item EnchantedBook =
+    Item::of("enchanted_book").stackSize(1U).category(CreativeCategory::Hidden);
 // WheatSeedsItem: right-clicking farmland plants the wheat crop. The behaviour
 // is dispatched by item identity in itemUseOn (ItemPlacement.cpp), the way the
 // buckets are, so the constexpr registrations stay free of function pointers.
@@ -998,7 +1012,7 @@ inline constexpr Item DiamondBoots =
 // their constructors need entity headers that sit above us in the include graph.
 // The order sets both the creative-catalog order within each tab and the item
 // texture-array layout the renderer appends. Grouped materials / food / tools.
-inline constexpr std::array<const Item*, 102> kItemRegistry{
+inline constexpr std::array<const Item*, 103> kItemRegistry{
     &items::Bucket,     &items::WaterBucket, &items::LavaBucket, &items::MilkBucket,
     &items::Coal,
     &items::IronIngot,
@@ -1009,7 +1023,7 @@ inline constexpr std::array<const Item*, 102> kItemRegistry{
     &items::Stick,
     &items::Flint,      &items::Feather,     &items::String,     &items::Leather,
     &items::Sugar,      &items::Egg,         &items::Bone,       &items::Paper,
-    &items::Book,       &items::WheatSeeds,  &items::Wheat,
+    &items::Book,       &items::EnchantedBook, &items::WheatSeeds,  &items::Wheat,
     &items::Apple,      &items::Bread,       &items::Porkchop,   &items::CookedPorkchop,
     &items::Beef,       &items::RawChicken,  &items::Mutton,     &items::RottenFlesh,
     &items::Carrot,     &items::Potato,
@@ -1052,11 +1066,12 @@ inline constexpr std::array<const Item*, 102> kItemRegistry{
 // versa) is a compile error, not a silent truncation: 57 pre-EQ-0 items + the
 // 20 armor items EQ-0 added + the 2 (arrow, bow) RW-1 adds + the 16 dyes DYE-1
 // adds here.
-static_assert(kItemRegistry.size() == 57U + 20U + 2U + 16U + 1U + 6U,
+static_assert(kItemRegistry.size() == 57U + 20U + 2U + 16U + 1U + 6U + 1U,
               "kItemRegistry size must track every entry listed above — bump "
               "this alongside the array when adding or removing items "
               "(the +1 is AR-CX4-b's flint_and_steel; the +6 are the mined ore "
-              "items raw_iron/raw_copper/raw_gold/lapis_lazuli/redstone/quartz)");
+              "items raw_iron/raw_copper/raw_gold/lapis_lazuli/redstone/quartz; "
+              "the last +1 is ENCH-2's enchanted_book)");
 
 // The registry is well formed when every entry is in this project's namespace,
 // has a non-empty path, and no two entries share an identifier.

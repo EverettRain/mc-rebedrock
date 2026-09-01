@@ -21,6 +21,11 @@ simple versioned history while it is in beta.
   count, and only when the cell between the shelf and the table is clear, so a
   shelf behind a wall is worth nothing. Whatever is left in the two slots comes
   back when the screen closes.
+- Enchanted books. Put a book in the enchanting table and what comes out is an
+  enchanted *book* — a different item, which no longer stacks with plain books
+  or reads as a crafting ingredient. Creative's Ingredients tab carries one per
+  enchantment, each at that enchantment's maximum level. (Nothing consumes an
+  enchanted book yet; spending one on gear waits for the anvil.)
 - Eleven game rules that gate mechanics this build already had but never exposed:
   `fall_damage`, `fire_damage`, `drowning_damage` and `natural_health_regeneration`
   (the last gates both food-driven and peaceful healing, but never starvation),
