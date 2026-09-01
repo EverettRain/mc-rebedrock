@@ -56,6 +56,11 @@ simple versioned history while it is in beta.
   its gradient border) instead of a flat coloured rectangle, with vanilla's line
   spacing, padding and above-right placement. Both sprites are read from the
   resource pack, so a pack can restyle them.
+- Fixed tooltips (and their border) reading as far more transparent than vanilla
+  over light screens, which made the text harder to read: our translucent blending
+  happens in linear space where vanilla's happens in sRGB space, so the same
+  opacity lets through much more of the background (0.215 against vanilla's 0.105
+  over the inventory panel). The opacity is now converted for the blend space.
 
 ### Added
 

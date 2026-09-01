@@ -33,6 +33,7 @@
 #include "ui/ButtonControl.hpp"
 #include "ui/ChatHistory.hpp"
 #include "ui/GuiNineSlice.hpp"
+#include "ui/SrgbBlend.hpp"
 #include "ui/TooltipLayout.hpp"
 #include "ui/SubtitleFeed.hpp"
 #include "ui/Toast.hpp"
@@ -1555,6 +1556,38 @@ class HudRenderer final {
         return {1.0F, 1.0F, 1.0F, 1.0F};
     }
 
+    // 提示框底衬的混合空间补偿，见 ui/SrgbBlend.hpp。
+    //
+    // 两张精灵自带的 alpha 是 vanilla 在 **sRGB 编码值**上混合时用的；我们的交换链
+    // 是 sRGB 格式，硬件在**线性**空间混合，同一个 alpha 会放走多得多的背景：填充
+    // 压在浅灰界面上原版给 0.105，我们给 0.215——正是"比原版更透、字更难看清"。
+    // 这里按各自实际压着的底解一次方程，得到线性混合下等效的 alpha，再除以美术
+    // 自带的 alpha 换成传给着色器的倍率（着色器做的是 `texel.a * tint.a`）。
+    //
+    // 两个底色都是量出来的、不是拍的：填充压的是界面背景，最亮的情形是原版背包
+    // 面板的浅灰；边框压的是刚画完的填充本身。倍率大于 1 是有意的——它要把 alpha
+    // 往上抬，`texel.a * tint.a` 仍然落在 [0,1] 内。
+    //
+    // 留下的偏差已知且被 srgb_blend 测试钉住：填充在全域内误差 ≤0.012，边框按蓝
+    // 通道对齐、红通道略低（0.135 vs 0.160），因此那 1px 描边比原版略偏蓝一点点。
+    // 一个改了这两张图 alpha 的资源包不会重新解这道方程，那是二阶问题。
+    [[nodiscard]] static glm::vec4 tooltipBackgroundTint() {
+        constexpr float kArtAlpha = 240.0F / 255.0F;  // tooltip/background 的 0xF0
+        constexpr float kArtColor = 16.0F / 255.0F;   // 它的 R/B 通道 0x10
+        constexpr float kPanelBackdrop = 0.776F;      // 原版背包面板的浅灰 0xC6
+        return {1.0F, 1.0F, 1.0F,
+                ui::linearBlendAlphaMatchingSrgb(kArtColor, kPanelBackdrop, kArtAlpha) /
+                    kArtAlpha};
+    }
+
+    [[nodiscard]] static glm::vec4 tooltipFrameTint() {
+        constexpr float kArtAlpha = 80.0F / 255.0F;   // tooltip/frame 的 0x50
+        constexpr float kArtColor = 1.0F;             // 渐变最亮处的蓝通道 0xFF
+        constexpr float kFillBackdrop = 0.09F;        // 它压着的填充，见上
+        return {1.0F, 1.0F, 1.0F,
+                ui::linearBlendAlphaMatchingSrgb(kArtColor, kFillBackdrop, kArtAlpha) / kArtAlpha};
+    }
+
     // The one tooltip box every screen draws — 26.1 的 TooltipRenderUtil，
     // 每个界面都问它。Callers must draw it AFTER everything else on the screen —
     // a tooltip painted mid-pass gets covered by whatever is drawn next, which is
@@ -1625,10 +1658,10 @@ class HudRenderer final {
                                   unscaledBackdrop.width * scale, unscaledBackdrop.height * scale};
         drawScaledGuiSprite(commandBuffer, backdrop, kTooltipGuiLayer,
                             guiWidgetSprite(guiWidgetSprites, GuiWidgetSprite::TooltipBackground),
-                            scale);
+                            scale, tooltipBackgroundTint());
         drawScaledGuiSprite(commandBuffer, backdrop, kTooltipGuiLayer,
                             guiWidgetSprite(guiWidgetSprites, GuiWidgetSprite::TooltipFrame),
-                            scale);
+                            scale, tooltipFrameTint());
         for (std::size_t line = 0; line < visual.size(); ++line) {
             if (visual[line].text.empty()) {
                 continue;

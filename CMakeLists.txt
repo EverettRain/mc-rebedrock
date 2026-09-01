@@ -1567,6 +1567,12 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_gui_sprite_scaling_test PRIVATE src)
     add_test(NAME gui_sprite_scaling COMMAND mc_rebedrock_gui_sprite_scaling_test)
 
+    add_executable(mc_rebedrock_srgb_blend_test
+        tests/srgb_blend_test.cpp
+    )
+    target_include_directories(mc_rebedrock_srgb_blend_test PRIVATE src)
+    add_test(NAME srgb_blend COMMAND mc_rebedrock_srgb_blend_test)
+
     add_executable(mc_rebedrock_tooltip_layout_test
         tests/tooltip_layout_test.cpp
         src/ui/HudLayout.cpp
