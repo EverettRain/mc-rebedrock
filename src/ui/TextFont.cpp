@@ -13,6 +13,25 @@ constexpr float kMissingAdvance = 8.0F;
 
 } // namespace
 
+void appendUtf8(std::string& out, char32_t codepoint) {
+    const auto value = static_cast<std::uint32_t>(codepoint);
+    if (value < 0x80U) {
+        out.push_back(static_cast<char>(value));
+    } else if (value < 0x800U) {
+        out.push_back(static_cast<char>(0xC0U | (value >> 6U)));
+        out.push_back(static_cast<char>(0x80U | (value & 0x3FU)));
+    } else if (value < 0x10000U) {
+        out.push_back(static_cast<char>(0xE0U | (value >> 12U)));
+        out.push_back(static_cast<char>(0x80U | ((value >> 6U) & 0x3FU)));
+        out.push_back(static_cast<char>(0x80U | (value & 0x3FU)));
+    } else {
+        out.push_back(static_cast<char>(0xF0U | (value >> 18U)));
+        out.push_back(static_cast<char>(0x80U | ((value >> 12U) & 0x3FU)));
+        out.push_back(static_cast<char>(0x80U | ((value >> 6U) & 0x3FU)));
+        out.push_back(static_cast<char>(0x80U | (value & 0x3FU)));
+    }
+}
+
 std::vector<char32_t> decodeUtf8(std::string_view text) {
     std::vector<char32_t> codepoints;
     codepoints.reserve(text.size());

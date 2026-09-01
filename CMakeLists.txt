@@ -2692,6 +2692,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME enchantment_combat COMMAND mc_rebedrock_enchantment_combat_test)
 
+    add_executable(mc_rebedrock_enchanting_table_test
+        tests/enchanting_table_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_enchanting_table_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_enchanting_table_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME enchanting_table COMMAND mc_rebedrock_enchanting_table_test)
+
     endif()
 
 install(TARGETS mc_rebedrock RUNTIME DESTINATION bin)

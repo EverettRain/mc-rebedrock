@@ -18,7 +18,20 @@ namespace mc::render {
 inline constexpr float kVignetteGuiLayer = 11.0F;
 inline constexpr float kScreenDimGuiLayer = 12.0F;
 inline constexpr float kMenuListBackgroundGuiLayer = 13.0F;
+// ENCH-2: gui/container/enchanting_table.png, with the level numerals and the
+// three option-bar states packed into the space its 176x166 panel leaves. The
+// pack positions below are shared by the baker (TextureManager::createGuiTexture)
+// and the reader (HudRenderer's enchanting screen) so neither can drift.
+inline constexpr float kEnchantingGuiLayer = 14.0F;
+// The 3x2 grid of 16x16 level numerals: enabled on the first row, disabled on
+// the second, to the right of the panel.
+inline constexpr int kEnchantingLevelSpriteX = 176;
+inline constexpr int kEnchantingLevelSpriteY = 0;
+// The three 108x19 option-bar states, stacked 20px apart below the panel:
+// normal, disabled, highlighted.
+inline constexpr int kEnchantingBarSpriteY = 168;
 // 标题界面的六张全景面，拼成 logo 背后的那个世界；标题轮播把它们当幻灯片循环
+// 也是 TextureManager 上传全景数组层时的层数（此前两处各写一份，ENCH-2 并到这里）
 inline constexpr std::size_t kPanoramaFaces = 6U;
 // 26.1 的十个内容页签加上"背包"伪页签，七个在上排、四个在下排
 // 对应 tab_top_1..7 与 tab_bottom_1..4

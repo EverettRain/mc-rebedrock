@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -14,6 +15,13 @@ namespace mc::ui {
 // 把 UTF-8 解码成码点
 // 非法字节变成 U+FFFD，畸形字符串因此仍能画出些东西，而不是把后面每个字形都错位
 [[nodiscard]] std::vector<char32_t> decodeUtf8(std::string_view text);
+
+// The inverse, for the one caller that builds a string out of codepoints rather
+// than reading one: the enchanting screen's galactic preview, whose glyphs live
+// in the Private Use Area (see galacticCodepoint below). Every text primitive
+// here takes UTF-8, so a codepoint that is not ASCII has to be encoded before it
+// can be drawn.
+void appendUtf8(std::string& out, char32_t codepoint);
 
 // 一个已在字体纹理数组上解析好的字形
 struct FontGlyph final {
@@ -36,6 +44,23 @@ struct FontGlyph final {
 // 位图表提供它自己声明的那些码点，空格提供器提供步进值
 // unihex 提供器从内嵌的 .hex 归档里填充 BMP 各页
 // 打开 forceUnicode 会改选 font/uniform.json
+// ENCH-2: the Standard Galactic Alphabet font (`minecraft:alt`) draws the same
+// A-Z/a-z codepoints as the default font, so its glyphs cannot simply be added
+// to the one glyph map — they would collide with the Latin letters. They are
+// registered in the Private Use Area instead, one fixed offset above their own
+// codepoint, and a caller that wants galactic text (only the enchanting screen's
+// gibberish preview does) translates its string through this.
+//
+// A codepoint with no galactic form maps to itself, so a translated string is
+// always drawable: the missing-glyph path stays the font's, not the caller's.
+inline constexpr char32_t kGalacticCodepointBase = U'\uE000';
+
+[[nodiscard]] constexpr char32_t galacticCodepoint(char32_t codepoint) {
+    const bool letter = (codepoint >= U'A' && codepoint <= U'Z') ||
+                        (codepoint >= U'a' && codepoint <= U'z');
+    return letter ? static_cast<char32_t>(kGalacticCodepointBase + codepoint) : codepoint;
+}
+
 class TextFont final {
   public:
     static constexpr std::size_t kUnicodePageCount = 256U;

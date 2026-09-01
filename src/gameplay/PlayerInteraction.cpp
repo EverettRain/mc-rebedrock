@@ -41,10 +41,17 @@ bool isContainerBlock(world::World& world, const glm::ivec3& pos) {
 // rebuilt from the session's container state for each command.
 gameplay::ScreenContext buildScreenContext(GameSession& session) {
     const auto& furnace = session.openFurnace();
-    return {session.openContainerScreen(), session.openChest(),
-            furnace.has_value() ? gameplay::FurnacePosition{furnace->x, furnace->y, furnace->z}
-                                : gameplay::FurnacePosition{},
-            session.gameMode(), /*creativeInventoryTab*/ true};
+    const auto& enchanting = session.openEnchantingTable();
+    gameplay::ScreenContext context;
+    context.screen = session.openContainerScreen();
+    context.chest = session.openChest();
+    context.furnace = furnace.has_value()
+                          ? gameplay::FurnacePosition{furnace->x, furnace->y, furnace->z}
+                          : gameplay::FurnacePosition{};
+    context.enchantingTable = enchanting.value_or(glm::ivec3{0});
+    context.gameMode = session.gameMode();
+    context.creativeInventoryTab = true;
+    return context;
 }
 
 // Carrot and potato are both food and seed: right-clicking farmland with one
@@ -418,6 +425,12 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
                         session, context, slot,
                         static_cast<gameplay::InventoryMouseButton>(click.button),
                         click.shiftHeld);
+                } else if constexpr (std::is_same_v<T, ClickEnchantOption>) {
+                    // EnchantmentMenu#clickMenuButton. Everything it decides —
+                    // the level threshold, the level and lapis spend, applying
+                    // the enchantments, rerolling the seed — is gameplay, so the
+                    // client only ever says which of the three bars was pressed.
+                    static_cast<void>(session.purchaseEnchantment(specific.optionIndex));
                 } else if constexpr (std::is_same_v<T, ClickCreativeItem>) {
                     session.inventory().clickCreativeItem(
                         specific.catalogStack, specific.button, specific.shiftHeld);
@@ -795,6 +808,17 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
         session.openContainer(ContainerScreen::Furnace, std::nullopt, use.block);
         session.events().publish(ClientActionEvent{ClientActionEventKind::OpenContainer,
                                                    ContainerScreen::Furnace, use.block, true});
+        break;
+    case BlockInteraction::OpenEnchantingTable:
+        // ENCH-2: no block entity to back-fill (the menu is on the player), so
+        // opening is just "remember which table, scan its shelves, derive the
+        // three offers". The scan happens here rather than on the tick loop's
+        // first pass so the very first frame of the screen already shows real
+        // costs instead of three blanks.
+        session.openEnchantingContainer(world, use.block);
+        session.events().publish(ClientActionEvent{ClientActionEventKind::OpenContainer,
+                                                   ContainerScreen::EnchantingTable, use.block,
+                                                   true});
         break;
     case BlockInteraction::OpenChest:
         if (session.openChestContainer(

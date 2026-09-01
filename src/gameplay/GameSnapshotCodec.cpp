@@ -1,5 +1,6 @@
 #include "gameplay/GameSnapshotCodec.hpp"
 
+#include "gameplay/GameCommandCodec.hpp"
 #include "gameplay/StreamCodec.hpp"
 
 #include <cstdint>
@@ -8,13 +9,15 @@
 namespace mc::gameplay {
 namespace {
 
-// Snapshot tags, kept separate from the command tags (0..12) so a mixed stream
-// never routes a snapshot to the command decoder or vice versa.
-constexpr std::uint8_t kPlayerTickTag = 13U;
-constexpr std::uint8_t kWorldTag = 14U;
-// After the event tags (15..19) so the entity snapshot rides the same mixed
-// stream without colliding — see NetMessage's tag ranges.
-constexpr std::uint8_t kEntitySnapshotTag = 20U;
+// Snapshot tags, kept separate from the command tags so a mixed stream never
+// routes a snapshot to the command decoder or vice versa. Derived from the
+// shared layout in GameCommandCodec.hpp rather than written as literals — see
+// its banner for why (a literal here silently collided with a command tag the
+// moment the command variant grew).
+constexpr std::uint8_t kPlayerTickTag = kSnapshotTagBase;
+constexpr std::uint8_t kWorldTag = static_cast<std::uint8_t>(kSnapshotTagBase + 1U);
+// After the event tags, so the entity snapshot rides the same mixed stream
+// without colliding — see NetMessage's tag ranges.
 
 void appendBool(std::vector<std::uint8_t>& bytes, bool value) {
     persistence::appendInteger(bytes, static_cast<std::uint8_t>(value ? 1 : 0));
@@ -225,6 +228,17 @@ void appendWorld(std::vector<std::uint8_t>& bytes, const WorldSnapshot& snap) {
     for (const auto& stack : snap.equipmentSlots) {
         codec::appendItemStack(bytes, stack);
     }
+    // ENCH-2: the enchanting screen's display state. Same live-wire rule as the
+    // arrays above — this message is never persisted, so no version gate.
+    codec::appendItemStack(bytes, snap.enchantingItem);
+    codec::appendItemStack(bytes, snap.enchantingLapis);
+    for (std::size_t slot = 0; slot < snap.enchantingRequiredLevels.size(); ++slot) {
+        persistence::appendInteger(bytes, snap.enchantingRequiredLevels[slot]);
+        persistence::appendInteger(bytes, snap.enchantingClueIds[slot]);
+        persistence::appendInteger(bytes, snap.enchantingClueLevels[slot]);
+    }
+    persistence::appendInteger(bytes, snap.enchantingBookshelfPower);
+    persistence::appendInteger(bytes, snap.enchantingSeed);
 }
 
 [[nodiscard]] std::optional<WorldSnapshot> readWorld(std::span<const std::uint8_t> bytes,
@@ -304,6 +318,15 @@ void appendWorld(std::vector<std::uint8_t>& bytes, const WorldSnapshot& snap) {
     for (auto& stack : snap.equipmentSlots) {
         if (!readStack(stack)) return std::nullopt;
     }
+    if (!readStack(snap.enchantingItem)) return std::nullopt;
+    if (!readStack(snap.enchantingLapis)) return std::nullopt;
+    for (std::size_t slot = 0; slot < snap.enchantingRequiredLevels.size(); ++slot) {
+        snap.enchantingRequiredLevels[slot] = persistence::readInteger<std::int32_t>(bytes, cursor);
+        snap.enchantingClueIds[slot] = persistence::readInteger<std::uint8_t>(bytes, cursor);
+        snap.enchantingClueLevels[slot] = persistence::readInteger<std::uint8_t>(bytes, cursor);
+    }
+    snap.enchantingBookshelfPower = persistence::readInteger<std::int32_t>(bytes, cursor);
+    snap.enchantingSeed = persistence::readInteger<std::int32_t>(bytes, cursor);
     return snap;
 }
 

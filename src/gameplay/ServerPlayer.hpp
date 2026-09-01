@@ -12,6 +12,7 @@
 // `playerInput` the simulation's own snapshot at the top of each tick.
 
 #include "gameplay/CraftingSystem.hpp"
+#include "gameplay/EnchantingTable.hpp"
 #include "gameplay/Equipment.hpp"
 #include "gameplay/GameMode.hpp"
 #include "gameplay/Inventory.hpp"
@@ -49,6 +50,12 @@ struct ServerPlayer final {
     // Mainhand stays inventory.selectedStack() — not duplicated here.
     EquipmentSlots equipment;
     CraftingSystem crafting;
+    // ENCH-2: the open enchanting screen's two input slots and derived offers.
+    // A sibling of `crafting` for the same reason: vanilla's EnchantmentMenu,
+    // like the crafting grid, is menu-scoped state the PLAYER carries and hands
+    // back on close — not block-entity state, so it needs no per-table storage
+    // and no save-format change.
+    EnchantingMenu enchanting;
     GameMode gameMode = GameMode::Creative;
 
     // The tick-owned swing/use timeline (N1), advanced with the world tick.

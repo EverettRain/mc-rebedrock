@@ -109,6 +109,7 @@ enum class BlockInteraction : std::uint8_t {
     OpenCraftingTable,
     OpenFurnace,
     OpenChest,
+    OpenEnchantingTable,
 };
 
 // ServerPlayerGameMode#useItemOn's ordering, as a pure decision:
@@ -140,6 +141,8 @@ struct BlockInteractionDecision final {
         return {BlockInteraction::OpenFurnace, InteractionResult::successWithoutItem()};
     case world::ContainerType::Chest:
         return {BlockInteraction::OpenChest, InteractionResult::successWithoutItem()};
+    case world::ContainerType::EnchantingTable:
+        return {BlockInteraction::OpenEnchantingTable, InteractionResult::successWithoutItem()};
     case world::ContainerType::None:
         break;
     }

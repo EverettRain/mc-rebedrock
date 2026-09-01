@@ -119,6 +119,17 @@ struct SlotRef final {
     [[nodiscard]] friend bool operator==(const SlotRef&, const SlotRef&) = default;
 };
 
+// ENCH-2: one of the enchanting table's three option bars was pressed. The
+// analogue of 26.1's ServerboundContainerButtonClickPacket — the client sends
+// only the button id and the server decides everything else (whether the offer
+// exists, whether the levels and lapis are there, what lands on the item, and
+// the new enchantment seed). `optionIndex` is 0..2, top bar first.
+struct ClickEnchantOption final {
+    int optionIndex = 0;
+    [[nodiscard]] friend bool operator==(const ClickEnchantOption&, const ClickEnchantOption&) =
+        default;
+};
+
 // A creative-catalogue cell click. The renderer resolves the catalogue stack (a
 // presentation read of the catalogue) and carries the value; gameplay decides
 // how the cursor changes.
@@ -198,7 +209,7 @@ struct MovementInput final {
 // the chat string and the two drag vectors.
 using GameCommand = std::variant<PlayerAction, UseItemOn, UseItem, UseItemStop, SwapSlot, ClickSlot,
                                  ChatCommand, ClickCreativeItem, ClearCursor, DropCursor,
-                                 DropSelected, DragDistribute, PickupAll>;
+                                 DropSelected, DragDistribute, PickupAll, ClickEnchantOption>;
 
 // The input queue between the render thread and the simulation tick.
 class GameCommandQueue final {

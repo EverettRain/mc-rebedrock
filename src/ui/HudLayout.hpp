@@ -88,6 +88,14 @@ class HudLayout final {
     [[nodiscard]] UiRect furnaceInputSlot() const;
     [[nodiscard]] UiRect furnaceFuelSlot() const;
     [[nodiscard]] UiRect furnaceOutputSlot() const;
+    // ENCH-2: the enchanting table's two inputs and its three option bars.
+    // Straight from GUI spec §10's table row: panel 176x166, item slot (15,47),
+    // lapis slot (35,47), and three 108x19 option bars at (60,14) / (60,33) /
+    // (60,52). The bars are the clickable buttons, not just decoration, so they
+    // are geometry the click router shares with the drawing code.
+    [[nodiscard]] UiRect enchantingItemSlot() const;
+    [[nodiscard]] UiRect enchantingLapisSlot() const;
+    [[nodiscard]] UiRect enchantingOption(std::size_t index) const;
     [[nodiscard]] UiRect chestSlot(std::size_t index) const;
     [[nodiscard]] UiRect chestInventorySlot(std::size_t index) const;
     [[nodiscard]] UiRect creativePanel() const;

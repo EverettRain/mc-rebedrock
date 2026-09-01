@@ -509,6 +509,14 @@ inline constexpr std::array<ShapeBox, 4> kFenceGateBoxByFacing = [] {
     if (state.block() == Block::Lever) {
         return {ShapeKind::Boxes, 0.0F, 0.0F, {&kFloorTorchBox, 1}};
     }
+    // ENCH-2: EnchantingTableBlock's SHAPE is `Block.column(16.0, 0.0, 12.0)` —
+    // the full footprint, 12/16 tall. Unlike the diodes and the lever it is a
+    // collidable block, so this Column is both the pick box and the box the
+    // player stands on; walking onto a table steps up 3/4 of a block, as in
+    // vanilla.
+    if (state.block() == Block::EnchantingTable) {
+        return {ShapeKind::Column, 0.0F, 12.0F / 16.0F, {}};
+    }
     return {ShapeKind::Column, 0.0F, 2.0F / 16.0F, {}};
 }
 // RN-6: redstone dust — a 1/16-thin full-footprint pick box on the floor

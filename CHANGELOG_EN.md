@@ -9,6 +9,18 @@ simple versioned history while it is in beta.
 
 ### Added
 
+- The enchanting table. Craft it (four obsidian, two diamonds and a book),
+  place it, and right-click to open a screen with an item slot, a lapis lazuli
+  slot and three offers. Each offer shows its level requirement, a
+  Standard-Galactic phrase and — on hover — one of the enchantments it would
+  apply plus what it costs. Buying an offer takes `slot + 1` levels and
+  `slot + 1` lapis (the number on the bar is the level you must HAVE, not what
+  you pay), applies every enchantment that offer rolled, and rerolls your
+  enchantment seed so the next three offers differ. Bookshelves raise what the
+  table can offer: the two 5x5 rings at the table's level and one above it
+  count, and only when the cell between the shelf and the table is clear, so a
+  shelf behind a wall is worth nothing. Whatever is left in the two slots comes
+  back when the screen closes.
 - Eleven game rules that gate mechanics this build already had but never exposed:
   `fall_damage`, `fire_damage`, `drowning_damage` and `natural_health_regeneration`
   (the last gates both food-driven and peaceful healing, but never starvation),

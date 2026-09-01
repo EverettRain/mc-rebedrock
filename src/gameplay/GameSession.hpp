@@ -217,6 +217,24 @@ class GameSession final {
     // Opens a chest block entity and its container in one step; returns false
     // when the chest has no entity. Gameplay owns the chest's open/lid state.
     bool openChestContainer(ChestPosition position);
+    // ENCH-2: opens the enchanting screen on a table cell. Unlike a chest there
+    // is nothing to fail on — the menu belongs to the player, not the block —
+    // so this cannot refuse. Scans the table's bookshelves and derives the
+    // three offers immediately, so the first frame already shows real costs.
+    void openEnchantingContainer(const world::World& world, glm::ivec3 table);
+    // The open enchanting menu (the two input slots + the derived offers). Lives
+    // on the primary ServerPlayer; a screen that is not open still has a menu,
+    // it is simply empty.
+    [[nodiscard]] EnchantingMenu& enchantingMenu();
+    [[nodiscard]] const EnchantingMenu& enchantingMenu() const;
+    // EnchantmentMenu#slotsChanged, driven from the tick: rescan the table's
+    // shelves and re-derive the offers while the screen is open, so walling the
+    // table in with bookshelves updates the preview live. A no-op when the
+    // screen is closed or nothing changed.
+    void refreshEnchantingOffers(const world::World& world);
+    // EnchantmentMenu#clickMenuButton: buy option `optionIndex` (0..2). Returns
+    // whether anything was actually bought.
+    bool purchaseEnchantment(int optionIndex);
     // Menu#removed: closes the open container and returns everything the cursor
     // and crafting grid were holding to the inventory. The renderer's inventory
     // close and world switch both end here, so it never reaches into the
@@ -227,6 +245,9 @@ class GameSession final {
     }
     [[nodiscard]] const std::optional<ChestPosition>& openChest() const { return openChest_; }
     [[nodiscard]] const std::optional<glm::ivec3>& openFurnace() const { return openFurnace_; }
+    [[nodiscard]] const std::optional<glm::ivec3>& openEnchantingTable() const {
+        return openEnchantingTable_;
+    }
     // The current dig (for the renderer's crack overlay).
     [[nodiscard]] const PlayerInteraction& interaction() const { return playerInteraction_; }
 
@@ -298,6 +319,8 @@ class GameSession final {
         thornsRandom_.setSeed(seed ^ 0x27D4EB2F165667C5ULL);
         // ENCH-1b: Unbreaking's durability-skip stream, salted independently again.
         toolDamageRandom_.setSeed(seed ^ 0x165667B19E3779F9ULL);
+        // ENCH-2: the enchantment-seed reroll stream, salted independently again.
+        enchantmentSeedRandom_.setSeed(seed ^ 0x7F4A7C15D1B54A32ULL);
     }
     // EQ-4: the deterministic stream Thorns' random_chance draw and reflected-
     // damage roll take, so a test can seed it and replay an exact trigger
@@ -865,6 +888,12 @@ class GameSession final {
     // never perturbs (or is perturbed by) another system's draws. Never a wall
     // clock — the RNG rule EQ-DESIGN §3 carries.
     world::gen::JavaRandom thornsRandom_;
+    // ENCH-2: the enchantment-seed reroll stream (Player#onEnchantmentPerformed's
+    // `enchantmentSeed = random.nextInt()`), salted independently off the world
+    // seed like every other per-system stream here — so buying an enchantment
+    // never perturbs the orb scatter or the Thorns sequence, and the same save
+    // replayed with the same purchases always lands on the same offers.
+    world::gen::JavaRandom enchantmentSeedRandom_;
     // ENCH-1b: Unbreaking's per-durability-point skip stream. The DDC-2 effect
     // engine draws its random_chance (level/(level+1)) off this when a tool is
     // damaged, salted independently off the world seed like every per-system
@@ -881,6 +910,10 @@ class GameSession final {
     ContainerScreen openContainerScreen_ = ContainerScreen::PlayerInventory;
     std::optional<ChestPosition> openChest_;
     std::optional<glm::ivec3> openFurnace_;
+    // ENCH-2: the table cell the open enchanting screen belongs to. The menu
+    // state itself is on the ServerPlayer (see EnchantingTable.hpp); this is
+    // only "which cell do I rescan for bookshelves".
+    std::optional<glm::ivec3> openEnchantingTable_;
 };
 
 } // namespace mc::gameplay

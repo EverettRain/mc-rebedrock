@@ -111,6 +111,24 @@ struct WorldSnapshot final {
     ItemStack furnaceOutput{};
     float furnaceFuelProgress = 0.0F;
     float furnaceCookProgress = 0.0F;
+    // ENCH-2: the enchanting screen's display state. The three bars each show a
+    // required level, a "clue" enchantment id + level (revealed on hover, the
+    // rest of the offer stays hidden as in vanilla) and nothing else; a
+    // requiredLevel of 0 is a dead bar. `enchantingBookshelfPower` is the
+    // scanned shelf count, unclamped, so the UI can also say "more shelves than
+    // the table can use".
+    ItemStack enchantingItem{};
+    ItemStack enchantingLapis{};
+    std::array<std::int32_t, 3> enchantingRequiredLevels{};
+    // The clue's raw EnchantmentId storage value, and its level. A level of 0
+    // means the bar has no clue to show.
+    std::array<std::uint8_t, 3> enchantingClueIds{};
+    std::array<std::uint8_t, 3> enchantingClueLevels{};
+    std::int32_t enchantingBookshelfPower = 0;
+    // The player's enchantment seed. Presentation only: the screen seeds its
+    // Standard-Galactic gibberish name generator from it, exactly as vanilla's
+    // EnchantmentNames#initSeed does with EnchantmentMenu's own seed DataSlot.
+    std::int32_t enchantingSeed = 0;
 };
 
 } // namespace mc::gameplay

@@ -560,6 +560,13 @@ enum class Block : std::uint16_t {
     DeepslateEmeraldOre,
     DeepslateLapisOre,
     DeepslateDiamondOre,
+    // ENCH-2: the enchanting table. Appended at the tail because the properties
+    // table below is indexed by this enum's ordinal — a value inserted in the
+    // middle would silently hand every later block another block's definition
+    // (blockRegistryIsWellFormed catches it, but at compile time only). Ordinals
+    // never reach a save (states persist by name + properties), so the tail is
+    // free.
+    EnchantingTable,
     Count,
 };
 
@@ -803,6 +810,11 @@ enum class ContainerType : std::uint8_t {
     CraftingTable,
     Furnace,
     Chest,
+    // ENCH-2. Unlike the three above, this container holds no block entity: its
+    // two slots (item + lapis) live on the player's open menu and are handed
+    // back when the screen closes, exactly the way EnchantmentMenu owns a
+    // `SimpleContainer(2)` and clears it in removed().
+    EnchantingTable,
 };
 
 // The resolved atlas layer for each face of a block, filled by the renderer's
@@ -3105,6 +3117,21 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     BlockProperties::of(Block::DeepslateDiamondOre, "deepslate_diamond_ore", "Deepslate Diamond Ore")
         .texture("deepslate_diamond_ore").strength(4.5F, 3.0F)
         .creative(CreativeCategory::NaturalBlocks),
+    // ENCH-2: EnchantingTableBlock. A 16x12x16 box (its VoxelShape is literally
+    // `Block.column(16, 0, 12)`), so it is an ElementModel rather than a Cube —
+    // which also keeps it out of isFullCube(), matching vanilla's
+    // useShapeForLightOcclusion: a table does not seal a hole in a roof. Strength
+    // 5/1200 is BlockBehaviour.Properties' `.strength(5.0F, 1200.0F)`. The book
+    // that hovers above it is an entity-model block-entity renderer in vanilla
+    // (EnchantTableRenderer) and is deliberately NOT faked with a static quad
+    // here — registered as RN debt instead.
+    BlockProperties::of(Block::EnchantingTable, "enchanting_table", "Enchanting Table")
+        .texture("enchanting_table_top", "enchanting_table_side", "enchanting_table_bottom")
+        .elementModel("enchanting_table_top", "enchanting_table_side",
+                      "enchanting_table_bottom")
+        .strength(5.0F, 1'200.0F)
+        .container(ContainerType::EnchantingTable)
+        .creative(CreativeCategory::Functional),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {

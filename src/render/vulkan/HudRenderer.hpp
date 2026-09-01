@@ -27,6 +27,7 @@
 #include "input/InputAction.hpp"
 #include "input/InputNaming.hpp"
 #include "ui/BitmapFontMetrics.hpp"
+#include "ui/EnchantmentNames.hpp"
 #include "ui/OptionCycle.hpp"
 #include "ui/WidgetLabels.hpp"
 #include "ui/ButtonControl.hpp"
@@ -1431,15 +1432,204 @@ class HudRenderer final {
         return hovered;
     }
 
+    // ENCH-2: EnchantmentScreen#extractBackground, transcribed. Every offset here
+    // is vanilla's, panel-relative: the two slots at (15,47)/(35,47), the three
+    // 108x19 option bars at (60, 14+19i), the 16x16 level numeral at
+    // (61, 15+19i), the galactic phrase at (80, 16+19i) clipped to
+    // `86 - costTextWidth`, and the cost number right-aligned at
+    // (80+86, 16+19i+7).
+    //
+    // Whether a bar reads as affordable is a *client* judgement drawn from the
+    // snapshot (level, lapis count, game mode) purely so the bar can grey out;
+    // the authority is GameSession::purchaseEnchantment, which re-checks all of
+    // it. A client that drew a bar bright would still be refused.
+    void drawEnchantingScreen(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
+                              const ui::UiRect& panel) const {
+        const auto& snap = clientMirror.world();
+        const float scale = layout.scale();
+        const auto cursor = currentFramebufferCursor();
+        drawHudText(commandBuffer, translated("container.enchant", "Enchant"),
+                    panel.x + 8.0F * scale, panel.y + 6.0F * scale, scale,
+                    {0.25F, 0.25F, 0.25F, 1.0F}, false);
+        drawHudText(commandBuffer, translated("container.inventory", "Inventory"),
+                    panel.x + 8.0F * scale, panel.y + 73.0F * scale, scale,
+                    {0.25F, 0.25F, 0.25F, 1.0F}, false);
+        drawHudSlot(commandBuffer, layout.enchantingItemSlot(), snap.enchantingItem, false, false,
+                    true);
+        drawHudSlot(commandBuffer, layout.enchantingLapisSlot(), snap.enchantingLapis, false,
+                    false, true);
+
+        const bool infiniteMaterials = uiFrameData_.gameMode == gameplay::GameMode::Creative;
+        const int lapisCount = static_cast<int>(snap.enchantingLapis.count);
+        // One RandomSource for the whole screen, seeded from the enchantment
+        // seed and advanced only by the bars that are live — EnchantmentNames'
+        // initSeed + the `cost == 0` early-out, in that exact order, so the
+        // three phrases match vanilla's for the same seed.
+        world::gen::JavaRandom nameRandom(static_cast<std::uint64_t>(snap.enchantingSeed));
+        for (std::size_t option = 0; option < 3U; ++option) {
+            const auto bar = layout.enchantingOption(option);
+            const std::int32_t cost = snap.enchantingRequiredLevels[option];
+            const auto lapisCost = static_cast<int>(option) + 1;
+            if (cost == 0) {
+                drawGuiSprite(commandBuffer, bar, kEnchantingGuiLayer,
+                              {0.0F, static_cast<float>(kEnchantingBarSpriteY + 20), 108.0F,
+                               19.0F});
+                continue;
+            }
+            const std::string costText = std::to_string(cost);
+            const float costWidth = hudTextWidth(costText, scale);
+            const float phraseWidth = 86.0F * scale - costWidth;
+            const std::string phrase = ui::toGalactic(ui::randomEnchantmentName(nameRandom));
+            const bool affordable =
+                infiniteMaterials ||
+                (lapisCount >= lapisCost && uiFrameData_.experienceLevel >= cost &&
+                 uiFrameData_.experienceLevel >= lapisCost);
+            const bool hovered = affordable && bar.contains(cursor.x, cursor.y);
+            // Bar state, level numeral row and the two text colours all follow
+            // from affordable/hovered — vanilla's three branches, one table.
+            const float barSpriteY = static_cast<float>(
+                kEnchantingBarSpriteY + (affordable ? (hovered ? 40 : 0) : 20));
+            const float numeralRow =
+                static_cast<float>(kEnchantingLevelSpriteY + (affordable ? 0 : 16));
+            const glm::vec4 phraseColor =
+                affordable ? (hovered ? glm::vec4{1.0F, 1.0F, 0.502F, 1.0F}
+                                      : glm::vec4{0.408F, 0.369F, 0.290F, 1.0F})
+                           : glm::vec4{0.204F, 0.184F, 0.145F, 1.0F};
+            const glm::vec4 costColor = affordable ? glm::vec4{0.502F, 1.0F, 0.125F, 1.0F}
+                                                   : glm::vec4{0.251F, 0.498F, 0.063F, 1.0F};
+            drawGuiSprite(commandBuffer, bar, kEnchantingGuiLayer,
+                          {0.0F, barSpriteY, 108.0F, 19.0F});
+            drawGuiSprite(commandBuffer,
+                          {panel.x + 61.0F * scale, panel.y + (15.0F + 19.0F * static_cast<float>(option)) * scale,
+                           16.0F * scale, 16.0F * scale},
+                          kEnchantingGuiLayer,
+                          {static_cast<float>(kEnchantingLevelSpriteX + 16 * static_cast<int>(option)),
+                           numeralRow, 16.0F, 16.0F});
+            drawHudText(commandBuffer, clipTextToWidth(phrase, scale, phraseWidth),
+                        panel.x + 80.0F * scale,
+                        panel.y + (16.0F + 19.0F * static_cast<float>(option)) * scale, scale,
+                        phraseColor, false);
+            drawHudText(commandBuffer, costText, panel.x + (80.0F + 86.0F) * scale - costWidth,
+                        panel.y + (23.0F + 19.0F * static_cast<float>(option)) * scale, scale,
+                        costColor, false);
+            // EnchantmentScreen#extractRenderState's hover tooltip: the ONE
+            // revealed enchantment ("Sharpness . . . ?" — vanilla never shows
+            // the level of the clue's siblings, and neither do we), then the
+            // two price lines. Vanilla hovers a 17px-tall band, one shorter
+            // than the bar it draws.
+            const ui::UiRect clueBand{bar.x, bar.y, bar.width, 17.0F * scale};
+            if (snap.enchantingClueLevels[option] > 0U &&
+                clueBand.contains(cursor.x, cursor.y)) {
+                drawEnchantingClueTooltip(commandBuffer, scale, option, cost, lapisCost,
+                                          infiniteMaterials);
+            }
+        }
+    }
+
+    // The hover tooltip over a live option bar. Kept out of the loop above
+    // because it draws on top of every bar, not inside one.
+    void drawEnchantingClueTooltip(VkCommandBuffer commandBuffer, float scale, std::size_t option,
+                                   std::int32_t cost, int lapisCost,
+                                   bool infiniteMaterials) const {
+        const auto& snap = clientMirror.world();
+        const auto clueId =
+            static_cast<gameplay::EnchantmentId>(snap.enchantingClueIds[option]);
+        std::string clueName{translated(
+            "enchantment.minecraft." + std::string{gameplay::enchantmentVanillaName(clueId)},
+            std::string{gameplay::enchantmentVanillaName(clueId)})};
+        const auto clueLevel = static_cast<int>(snap.enchantingClueLevels[option]);
+        // Enchantment.getFullname: the level numeral is omitted for a level-1
+        // enchantment whose maximum is also 1 (Silk Touch is "Silk Touch", not
+        // "Silk Touch I"), and drawn for every other.
+        if (clueLevel > 1 || gameplay::enchantmentDefinition(clueId).maxLevel > 1) {
+            clueName += ' ';
+            clueName += translated("enchantment.level." + std::to_string(clueLevel),
+                                   romanNumeral(clueLevel));
+        }
+        std::vector<std::string> lines;
+        lines.push_back(formatTemplate(translated("container.enchant.clue", "%s . . . ?"),
+                                       clueName));
+        if (!infiniteMaterials) {
+            if (uiFrameData_.experienceLevel < cost) {
+                lines.push_back(
+                    formatTemplate(translated("container.enchant.level.requirement",
+                                              "Level Requirement: %s"),
+                                   std::to_string(cost)));
+            } else {
+                lines.push_back(lapisCost == 1
+                                    ? translated("container.enchant.lapis.one", "1 Lapis Lazuli")
+                                    : formatTemplate(
+                                          translated("container.enchant.lapis.many",
+                                                     "%s Lapis Lazuli"),
+                                          std::to_string(lapisCost)));
+                lines.push_back(
+                    lapisCost == 1
+                        ? translated("container.enchant.level.one", "1 Enchantment Level")
+                        : formatTemplate(translated("container.enchant.level.many",
+                                                    "%s Enchantment Levels"),
+                                         std::to_string(lapisCost)));
+            }
+        }
+        const auto cursor = currentFramebufferCursor();
+        float widest = 0.0F;
+        for (const auto& line : lines) {
+            widest = std::max(widest, hudTextWidth(line, scale));
+        }
+        const ui::UiRect box{cursor.x + 12.0F * scale, cursor.y + 12.0F * scale,
+                             widest + 8.0F * scale,
+                             (4.0F + 10.0F * static_cast<float>(lines.size())) * scale};
+        drawHudQuad(commandBuffer, box, {0.05F, 0.03F, 0.08F, 0.94F});
+        for (std::size_t line = 0; line < lines.size(); ++line) {
+            drawHudText(commandBuffer, lines[line], box.x + 4.0F * scale,
+                        box.y + (3.0F + 10.0F * static_cast<float>(line)) * scale, scale,
+                        line == 0U ? glm::vec4{1.0F, 1.0F, 1.0F, 1.0F}
+                                   : glm::vec4{0.667F, 0.667F, 0.667F, 1.0F});
+        }
+    }
+
+    // enchantment.level.<n>'s fallback when the language file has no entry: the
+    // Roman numeral vanilla's own keys spell out. Only 1..10 are ever needed
+    // (no enchantment goes higher), and anything past that falls back to the
+    // decimal so a datapack level can still be read.
+    [[nodiscard]] static std::string romanNumeral(int level) {
+        static constexpr std::array<std::string_view, 10> kNumerals{
+            "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"};
+        if (level >= 1 && level <= static_cast<int>(kNumerals.size())) {
+            return std::string{kNumerals[static_cast<std::size_t>(level - 1)]};
+        }
+        return std::to_string(level);
+    }
+
+    // Font#getSplitter().headByWidth: the longest prefix of `text` that fits, cut
+    // on whole codepoints so a multi-byte glyph is never sliced in half.
+    [[nodiscard]] std::string clipTextToWidth(std::string_view text, float scale,
+                                              float maxWidth) const {
+        if (hudTextWidth(text, scale) <= maxWidth) {
+            return std::string{text};
+        }
+        std::string fitted;
+        for (const char32_t codepoint : ui::decodeUtf8(text)) {
+            std::string candidate = fitted;
+            ui::appendUtf8(candidate, codepoint);
+            if (hudTextWidth(candidate, scale) > maxWidth) {
+                break;
+            }
+            fitted = std::move(candidate);
+        }
+        return fitted;
+    }
+
     void drawWorkContainer(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
                            const ui::HudLayout& layout) const {
         drawScreenDimOverlay(commandBuffer);
         const auto panel = layout.inventoryPanel();
         const bool chestScreen = containerScreen == ContainerScreen::Chest;
-        drawGuiSprite(
-            commandBuffer, panel,
-            chestScreen ? 10.0F : (containerScreen == ContainerScreen::CraftingTable ? 7.0F : 8.0F),
-            {0.0F, 0.0F, 176.0F, 166.0F});
+        const float panelLayer =
+            chestScreen                                              ? 10.0F
+            : containerScreen == ContainerScreen::CraftingTable       ? 7.0F
+            : containerScreen == ContainerScreen::EnchantingTable     ? kEnchantingGuiLayer
+                                                                      : 8.0F;
+        drawGuiSprite(commandBuffer, panel, panelLayer, {0.0F, 0.0F, 176.0F, 166.0F});
         if (chestScreen) {
             drawHudText(commandBuffer, translated("container.chest", "Chest"),
                         panel.x + 8.0F * layout.scale(), panel.y + 6.0F * layout.scale(),
@@ -1462,6 +1652,8 @@ class HudRenderer final {
             }
             drawHudSlot(commandBuffer, layout.tableCraftingOutput(),
                         clientMirror.world().tableCraftingOutput, false, false, true);
+        } else if (containerScreen == ContainerScreen::EnchantingTable) {
+            drawEnchantingScreen(commandBuffer, layout, panel);
         } else {
             // 熔炉界面按容器显示快照绘制，这里不读方块实体的位置
             const auto& worldSnap = clientMirror.world();

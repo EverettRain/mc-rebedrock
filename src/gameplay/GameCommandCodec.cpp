@@ -98,6 +98,9 @@ std::vector<std::uint8_t> encodeGameCommand(const GameCommand& command) {
                     for (const auto& ref : specific.targets) {
                         appendSlotRef(bytes, ref);
                     }
+                } else if constexpr (std::is_same_v<T, ClickEnchantOption>) {
+                    persistence::appendInteger(bytes,
+                                               static_cast<std::int32_t>(specific.optionIndex));
                 }
             },
             command);
@@ -225,6 +228,12 @@ std::optional<GameCommand> decodeGameCommand(std::span<const std::uint8_t> bytes
                 pickup.targets.push_back(readSlotRef(bytes, cursor));
             }
             decoded = std::move(pickup);
+            break;
+        }
+        case 13: {  // ClickEnchantOption
+            ClickEnchantOption click;
+            click.optionIndex = persistence::readInteger<std::int32_t>(bytes, cursor);
+            decoded = click;
             break;
         }
         default:

@@ -168,6 +168,15 @@ inline ModelElement torchElement(const glm::vec3& from16, const glm::vec3& to16,
 // six faces its FACING attaches it to. Mirrors appendElementModel's postAxis/
 // postDeg selection.
 [[nodiscard]] inline ModelTransform attachTransform(Block block, BlockState state) {
+    // ENCH-2: the table has no FACING at all, so it must not fall through to the
+    // diode yaw below — which reads `state.orientation()` and would rotate the
+    // model by whatever the default orientation happens to be. Visually the box
+    // is 4-way symmetric so a yaw is invisible today, but "invisible today"
+    // is exactly how a model bug survives until someone gives a face its own
+    // sprite.
+    if (block == Block::EnchantingTable) {
+        return {axisMatrix('y', 0.0F)};
+    }
     if (block == Block::Lever) {
         switch (state.orientation()) {
         case BlockOrientation::Up: return {axisMatrix('x', 0.0F)};      // floor
@@ -181,6 +190,25 @@ inline ModelElement torchElement(const glm::vec3& from16, const glm::vec3& to16,
     return {axisMatrix('y', diodeYaw(state.orientation()))};
 }
 
+// ENCH-2: the enchanting table, transcribed verbatim from vanilla
+// models/block/enchanting_table.json — ONE box (0,0,0)-(16,12,16) whose down
+// face takes #bottom over the full 16x16 sprite, whose up face takes #top, and
+// whose four sides take #side over the sprite's LOWER 12 rows (uv 0,4..16,16):
+// the model is 12 units tall, so it samples the bottom three quarters of the
+// side texture, not a stretched full sprite. Texture slots follow the block's
+// .elementModel() order: 0 = top, 1 = side, 2 = bottom.
+inline ModelElement enchantingTableElement() {
+    ModelElement e;
+    e.from16 = {0.0F, 0.0F, 0.0F};
+    e.to16 = {16.0F, 12.0F, 16.0F};
+    detail::putFace(e, Facing::Down, 2, detail::rect(0, 0, 16, 16));
+    detail::putFace(e, Facing::Up, 0, detail::rect(0, 0, 16, 16));
+    for (const Facing side : {Facing::North, Facing::South, Facing::West, Facing::East}) {
+        detail::putFace(e, side, 1, detail::rect(0, 4, 16, 16));
+    }
+    return e;
+}
+
 // The elements of an ElementModel block by kind (empty for a block that is not
 // one of the transcribed models).
 [[nodiscard]] inline std::vector<ModelElement> elementsFor(Block block, BlockState state) {
@@ -188,6 +216,7 @@ inline ModelElement torchElement(const glm::vec3& from16, const glm::vec3& to16,
     case Block::Repeater: return repeaterElements(state);
     case Block::Comparator: return comparatorElements(state);
     case Block::Lever: return leverElements(state);
+    case Block::EnchantingTable: return {enchantingTableElement()};
     default: return {};
     }
 }

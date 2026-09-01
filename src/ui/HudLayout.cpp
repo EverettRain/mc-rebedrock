@@ -252,6 +252,24 @@ UiRect HudLayout::furnaceOutputSlot() const {
     return {panel.x + 116.0F * scale_, panel.y + 35.0F * scale_, 16.0F * scale_, 16.0F * scale_};
 }
 
+UiRect HudLayout::enchantingItemSlot() const {
+    const auto panel = inventoryPanel();
+    return {panel.x + 15.0F * scale_, panel.y + 47.0F * scale_, 16.0F * scale_, 16.0F * scale_};
+}
+UiRect HudLayout::enchantingLapisSlot() const {
+    const auto panel = inventoryPanel();
+    return {panel.x + 35.0F * scale_, panel.y + 47.0F * scale_, 16.0F * scale_, 16.0F * scale_};
+}
+UiRect HudLayout::enchantingOption(std::size_t index) const {
+    if (index >= 3U) {
+        throw std::out_of_range("enchanting option index is outside 0..2");
+    }
+    const auto panel = inventoryPanel();
+    return {panel.x + 60.0F * scale_,
+            panel.y + (14.0F + static_cast<float>(index) * 19.0F) * scale_, 108.0F * scale_,
+            19.0F * scale_};
+}
+
 UiRect HudLayout::creativePanel() const {
     const float panelWidth = 195.0F * scale_;
     const float panelHeight = 136.0F * scale_;

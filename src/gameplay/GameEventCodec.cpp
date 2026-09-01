@@ -1,5 +1,6 @@
 #include "gameplay/GameEventCodec.hpp"
 
+#include "gameplay/GameCommandCodec.hpp"
 #include "gameplay/StreamCodec.hpp"
 
 #include <cstdint>
@@ -8,13 +9,14 @@
 namespace mc::gameplay {
 namespace {
 
-// Event tags, kept after the snapshot tags (13/14) so a mixed stream never
-// routes an event to the wrong decoder.
-constexpr std::uint8_t kWorldEditTag = 15U;
-constexpr std::uint8_t kSoundTag = 16U;
-constexpr std::uint8_t kParticleTag = 17U;
-constexpr std::uint8_t kPlayerDiedTag = 18U;
-constexpr std::uint8_t kClientActionTag = 19U;
+// Event tags, kept after the snapshot tags so a mixed stream never routes an
+// event to the wrong decoder. Derived from the shared layout in
+// GameCommandCodec.hpp (see its banner) rather than written as literals.
+constexpr std::uint8_t kWorldEditTag = kEventTagBase;
+constexpr std::uint8_t kSoundTag = static_cast<std::uint8_t>(kEventTagBase + 1U);
+constexpr std::uint8_t kParticleTag = static_cast<std::uint8_t>(kEventTagBase + 2U);
+constexpr std::uint8_t kPlayerDiedTag = static_cast<std::uint8_t>(kEventTagBase + 3U);
+constexpr std::uint8_t kClientActionTag = static_cast<std::uint8_t>(kEventTagBase + 4U);
 
 void appendBool(std::vector<std::uint8_t>& bytes, bool value) {
     persistence::appendInteger(bytes, static_cast<std::uint8_t>(value ? 1 : 0));

@@ -279,6 +279,13 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // this tick owns the server-world write section; the mutation event carries
     // the client mesh/light update later.
     syncFurnaceLitStates(world);
+    // ENCH-2: EnchantmentMenu#slotsChanged, driven from the tick rather than
+    // from the click — vanilla recomputes through ContainerLevelAccess whenever
+    // the container changes, and a rescan is also the only way a bookshelf
+    // placed while the screen is open can raise the offers. Cheap and
+    // self-guarding: it returns immediately unless the enchanting screen is
+    // open, and re-derives only when (seed, shelf count, item) actually moved.
+    refreshEnchantingOffers(world);
     if (primaryLevel().items.tick(world, primaryPlayer().controller.position(), primaryPlayer().inventory) > 0U) {
         events_.publish(SoundEvent{SoundEventKind::ItemPickup, primaryPlayer().controller.position()});
     }
@@ -722,6 +729,30 @@ void GameSession::publishSnapshots() {
         worldSnapshot_.furnaceFuelProgress = furnaceSystem_.fuelProgress(furnace);
         worldSnapshot_.furnaceCookProgress = furnaceSystem_.cookProgress(furnace);
     }
+    if (openEnchantingTable_.has_value()) {
+        const EnchantingMenu& menu = primaryPlayer().enchanting;
+        worldSnapshot_.enchantingItem = menu.item;
+        worldSnapshot_.enchantingLapis = menu.lapis;
+        worldSnapshot_.enchantingBookshelfPower = static_cast<std::int32_t>(menu.bookshelfPower);
+        worldSnapshot_.enchantingSeed = primaryPlayer().experience.enchantmentSeed();
+        for (std::size_t slot = 0; slot < 3U; ++slot) {
+            const auto& offer = menu.offers.slots[slot];
+            worldSnapshot_.enchantingRequiredLevels[slot] = offer.requiredLevel;
+            // EnchantmentMenu's enchantClue/levelClue: only the FIRST rolled
+            // enchantment is revealed, and only when the bar is live. The rest
+            // of the offer stays hidden until the purchase lands — that hidden
+            // remainder is the whole point of the preview.
+            if (offer.requiredLevel > 0 && !offer.enchantments.empty()) {
+                worldSnapshot_.enchantingClueIds[slot] =
+                    static_cast<std::uint8_t>(offer.enchantments.front().id);
+                worldSnapshot_.enchantingClueLevels[slot] =
+                    static_cast<std::uint8_t>(offer.enchantments.front().level);
+            } else {
+                worldSnapshot_.enchantingClueIds[slot] = 0U;
+                worldSnapshot_.enchantingClueLevels[slot] = 0U;
+            }
+        }
+    }
     // Last, once every system has settled: what the renderer will draw from
     // until the next tick replaces it.
     entitySnapshot_.capture(primaryLevel().entities.entities(), primaryLevel().items.entities(),
@@ -1091,12 +1122,62 @@ void GameSession::openContainer(ContainerScreen screen, std::optional<ChestPosit
     openContainerScreen_ = screen;
     openChest_ = chest;
     openFurnace_ = furnace;
+    // Opening any other container ends the enchanting screen's binding, so the
+    // tick stops rescanning a table nobody is looking at. The menu's two stacks
+    // are NOT cleared here — closeContainerMenu is what hands them back, and it
+    // runs on every real close.
+    openEnchantingTable_.reset();
 }
 
 void GameSession::closeContainer() {
     openContainerScreen_ = ContainerScreen::PlayerInventory;
     openChest_.reset();
     openFurnace_.reset();
+    openEnchantingTable_.reset();
+}
+
+EnchantingMenu& GameSession::enchantingMenu() { return primaryPlayer().enchanting; }
+
+const EnchantingMenu& GameSession::enchantingMenu() const { return primaryPlayer().enchanting; }
+
+void GameSession::openEnchantingContainer(const world::World& world, glm::ivec3 table) {
+    EnchantingMenu& menu = enchantingMenu();
+    menu.position = table;
+    menu.bookshelfPower = bookshelfPower(world, table);
+    // Force a derivation even if the (seed, power, item) triple happens to
+    // match the one a previous session at another table left behind.
+    menu.derived = false;
+    refreshOffers(menu, primaryPlayer().experience.enchantmentSeed());
+    openContainerScreen_ = ContainerScreen::EnchantingTable;
+    openChest_.reset();
+    openFurnace_.reset();
+    openEnchantingTable_ = table;
+}
+
+void GameSession::refreshEnchantingOffers(const world::World& world) {
+    if (!openEnchantingTable_.has_value()) {
+        return;
+    }
+    EnchantingMenu& menu = enchantingMenu();
+    menu.bookshelfPower = bookshelfPower(world, *openEnchantingTable_);
+    refreshOffers(menu, primaryPlayer().experience.enchantmentSeed());
+}
+
+bool GameSession::purchaseEnchantment(int optionIndex) {
+    if (openContainerScreen_ != ContainerScreen::EnchantingTable) {
+        return false;
+    }
+    EnchantingMenu& menu = enchantingMenu();
+    const bool infiniteMaterials = restoresHeldStack(gameMode());
+    const auto outcome = purchase(menu, primaryPlayer().experience, optionIndex,
+                                  infiniteMaterials, enchantmentSeedRandom_);
+    if (!outcome.applied) {
+        return false;
+    }
+    // The seed changed, so the preview must be re-derived from it before anyone
+    // (the snapshot publish this tick included) reads the three offers again.
+    refreshOffers(menu, primaryPlayer().experience.enchantmentSeed());
+    return true;
 }
 
 bool GameSession::openChestContainer(ChestPosition position) {
@@ -1111,6 +1192,18 @@ void GameSession::closeContainerMenu() {
     auto& inventory = primaryPlayer().inventory;
     inventory.stowCursorStack();
     primaryPlayer().crafting.stowAll(inventory);
+    // EnchantmentMenu#removed -> clearContainer: the two input slots go back to
+    // the player. Unconditional, like the crafting grid above — a menu that was
+    // never opened is empty, and a table that was mined while its screen was
+    // open must still not eat the item.
+    for (ItemStack* slot : {&primaryPlayer().enchanting.item, &primaryPlayer().enchanting.lapis}) {
+        if (!inventory.add(*slot) && !slot->empty()) {
+            // clearContainer's fallback: what the inventory could not take is
+            // dropped in front of the player rather than deleted.
+            spawnItemDrop(primaryPlayer().playerInput.lookDirection, *slot);
+        }
+    }
+    primaryPlayer().enchanting = {};
     if (openChest_.has_value()) {
         chestSystem_.close(*openChest_);
     }
@@ -1122,6 +1215,7 @@ void GameSession::resetWorldState() {
     // empties every player's grid, not just the primary's.
     for (auto& [playerId, player] : players_) {
         player.crafting = {};
+        player.enchanting = {};
     }
     worldSimulation_ = {};
     primaryLevel().items = {};

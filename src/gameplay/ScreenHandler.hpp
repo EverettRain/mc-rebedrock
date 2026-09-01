@@ -7,6 +7,8 @@
 #include "gameplay/Inventory.hpp"
 #include "ui/HudLayout.hpp"
 
+#include <glm/vec3.hpp>
+
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -24,6 +26,10 @@ enum class ContainerScreen : std::uint8_t {
     CraftingTable,
     Furnace,
     Chest,
+    // ENCH-2. Appended at the tail: this enum crosses the client/server wire in
+    // the snapshot and the open-container event, so an inserted value would
+    // renumber the four screens a running client already knows.
+    EnchantingTable,
 };
 
 // What a slot is, which is all the click router needs to know. 26.1 expresses
@@ -45,6 +51,11 @@ enum class SlotKind : std::uint8_t {
     // The smelted result. Like a crafting output, it only ever gives.
     FurnaceOutput,
     ChestStorage,
+    // ENCH-2: the enchanting table's two inputs. Neither has a block entity
+    // behind it — both live on the player's own EnchantingMenu, which is why
+    // they are their own kinds rather than a reuse of the furnace's.
+    EnchantingItem,
+    EnchantingLapis,
     // EQ-1: one of the player's five equipment slots. `index` is the screen's
     // own draw order (0..3 = Head/Chest/Legs/Feet, 4 = Offhand — see
     // equipmentSlotAt below), not gameplay::EquipmentSlot's underlying value;
@@ -98,6 +109,12 @@ struct ScreenContext final {
     // The creative screen shows either the full inventory tab or just the
     // hotbar under an item tab, and the two are drawn in different places.
     bool creativeInventoryTab = true;
+    // ENCH-2: the table's cell. Unlike `chest`/`furnace` this addresses no
+    // storage (the menu is on the player) — it is carried so the bookshelf
+    // rescan knows which cell to scan around. Deliberately LAST: several call
+    // sites build this aggregate positionally, and a field inserted above
+    // `gameMode` silently shifts every one of them.
+    glm::ivec3 enchantingTable{};
 };
 
 // The screens' slot layout and click routing in one place.

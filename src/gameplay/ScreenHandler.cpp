@@ -2,6 +2,7 @@
 
 #include "gameplay/CraftingSystem.hpp"
 #include "gameplay/GameSession.hpp"
+#include "gameplay/Item.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -57,6 +58,19 @@ void appendContainerSlots(
                          furnace != nullptr ? &furnace->fuel : nullptr,
                          SlotKind::FurnaceFuel, 0U});
         slots.push_back({layout.furnaceOutputSlot(), nullptr, SlotKind::FurnaceOutput, 0U});
+        return;
+    }
+    case ContainerScreen::EnchantingTable: {
+        // ENCH-2: both slots live on the player's own menu, so unlike the chest
+        // and the furnace there is nothing to look up and nothing that can be
+        // missing — a table whose block was mined out from under the open
+        // screen still shows the two stacks it holds, and closing hands them
+        // back.
+        auto* menu = session != nullptr ? &session->enchantingMenu() : nullptr;
+        slots.push_back({layout.enchantingItemSlot(), menu != nullptr ? &menu->item : nullptr,
+                         SlotKind::EnchantingItem, 0U});
+        slots.push_back({layout.enchantingLapisSlot(), menu != nullptr ? &menu->lapis : nullptr,
+                         SlotKind::EnchantingLapis, 0U});
         return;
     }
     case ContainerScreen::PlayerInventory: {
@@ -198,6 +212,10 @@ ItemStack* ScreenHandler::resolveSlotStorage(GameSession& session,
         auto* furnace = session.furnaceSystem().find(context.furnace);
         return furnace != nullptr ? &furnace->fuel : nullptr;
     }
+    case SlotKind::EnchantingItem:
+        return &session.enchantingMenu().item;
+    case SlotKind::EnchantingLapis:
+        return &session.enchantingMenu().lapis;
     case SlotKind::PlayerCraftingOutput:
     case SlotKind::TableCraftingOutput:
     case SlotKind::FurnaceOutput:
@@ -328,6 +346,29 @@ void ScreenHandler::click(
             cashInFurnaceExperience(session, context.furnace);
         }
         break;
+    case SlotKind::EnchantingItem:
+    case SlotKind::EnchantingLapis: {
+        // Both are plain storage slots owned by the player's menu, so an
+        // ordinary external-slot click (pickup / place / half-stack / merge) is
+        // the whole behaviour — except that the lapis slot refuses anything but
+        // lapis, the way vanilla's `mayPlace` does. Shift-click sends the stack
+        // back to the player's own inventory (Slot#mayPlace never gates a
+        // takeaway).
+        ItemStack& storage = slot.kind == SlotKind::EnchantingItem
+                                 ? session.enchantingMenu().item
+                                 : session.enchantingMenu().lapis;
+        if (shiftHeld) {
+            session.inventory().quickMoveInto(storage);
+            break;
+        }
+        const ItemStack& cursor = session.inventory().cursorStack();
+        if (slot.kind == SlotKind::EnchantingLapis && !cursor.empty() &&
+            cursor.item != &items::LapisLazuli) {
+            break;
+        }
+        session.inventory().clickExternalSlot(storage, button);
+        break;
+    }
     case SlotKind::Equipment:
         if (slot.index >= kEquipmentScreenSlotCount) break;
         if (shiftHeld) {
@@ -395,6 +436,29 @@ void ScreenHandler::quickMoveToContainer(
         break;
     case ContainerScreen::Furnace:
         static_cast<void>(session.furnaceSystem().moveInto(context.furnace, stack));
+        break;
+    case ContainerScreen::EnchantingTable:
+        // ENCH-2: only lapis has a home here. Anything else shift-clicked from
+        // the player's inventory stays put (vanilla's quickMoveStack refuses
+        // the item slot for a stack it cannot enchant, and this project has no
+        // per-slot stack limit to make a size-1 item slot safe — see
+        // isEnchantable's note). The item slot is filled by an ordinary click.
+        if (!stack.empty() && stack.item == &items::LapisLazuli) {
+            ItemStack& lapis = session.enchantingMenu().lapis;
+            if (lapis.empty()) {
+                lapis = stack;
+                stack = {};
+            } else if (sameItem(lapis, stack)) {
+                const std::uint8_t room =
+                    static_cast<std::uint8_t>(itemMaximumStackSize(lapis) - lapis.count);
+                const std::uint8_t moved = std::min<std::uint8_t>(room, stack.count);
+                lapis.count = static_cast<std::uint8_t>(lapis.count + moved);
+                stack.count = static_cast<std::uint8_t>(stack.count - moved);
+                if (stack.count == 0U) {
+                    stack = {};
+                }
+            }
+        }
         break;
     case ContainerScreen::PlayerInventory:
         break;

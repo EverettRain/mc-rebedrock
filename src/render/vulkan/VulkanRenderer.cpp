@@ -2582,8 +2582,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                              snapshot.openFurnace->y,
                                                              snapshot.openFurnace->z}
                                  : gameplay::FurnacePosition{};
-        return {snapshot.openContainerScreen, snapshot.openChest, furnace,
-                uiFrameData_.gameMode, menuSystem.creativeTab == ui::CreativeTab::Inventory};
+        gameplay::ScreenContext context;
+        context.screen = snapshot.openContainerScreen;
+        context.chest = snapshot.openChest;
+        context.furnace = furnace;
+        context.gameMode = uiFrameData_.gameMode;
+        context.creativeInventoryTab = menuSystem.creativeTab == ui::CreativeTab::Inventory;
+        return context;
     }
 
     // 已发布快照所隐含的眼高，规则与逐帧相机用的那套潜行判定相同
@@ -3312,6 +3317,20 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // vanilla 里背包与容器的槽位是静音的，只有真正的按钮控件才播 ui.button.click
         // 拿起或移动物品因此没有点击声，这一族界面里只有上面那些菜单按钮出声
         //
+        // ENCH-2：附魔台的三条选项条是真按钮而不是槽位，所以先于槽位表命中测试
+        // 客户端只报"按了第几条"，能不能买、扣多少级和青金石、上什么附魔全在服务端判
+        if (clientMirror_.world().openContainerScreen == ContainerScreen::EnchantingTable) {
+            for (std::size_t option = 0; option < 3U; ++option) {
+                if (!layout.enchantingOption(option).contains(framebufferCursor.x,
+                                                              framebufferCursor.y)) {
+                    continue;
+                }
+                gameplay::ClickEnchantOption click;
+                click.optionIndex = static_cast<int>(option);
+                runtime.enqueueClientCommand(std::move(click));
+                return;
+            }
+        }
         // 只有一张槽位表，按槽位自身的类型路由
         const auto slots = gameplay::ScreenHandler::buildSlotLayout(screenContext(), layout);
         if (const auto* slot = gameplay::ScreenHandler::slotAt(slots, framebufferCursor);
@@ -3572,6 +3591,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             return snap.furnaceFuel;
         case gameplay::SlotKind::FurnaceOutput:
             return snap.furnaceOutput;
+        case gameplay::SlotKind::EnchantingItem:
+            return snap.enchantingItem;
+        case gameplay::SlotKind::EnchantingLapis:
+            return snap.enchantingLapis;
         case gameplay::SlotKind::Equipment:
             // 存储侧每 tick 发布的四个护甲槽加副手，即 WorldSnapshot::equipmentSlots
             // 该数组按 EquipmentSlot 的底层值索引

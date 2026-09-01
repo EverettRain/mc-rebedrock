@@ -1,6 +1,7 @@
 #include "render/vulkan/TextureManager.hpp"
 
 #include "render/vulkan/BlockAtlasBaker.hpp"
+#include "render/vulkan/HudTypes.hpp"
 
 #include "animation/SkeletalModel.hpp"
 #include "assets/FontProviders.hpp"
@@ -31,9 +32,6 @@
 namespace mc::render {
 
 namespace {
-
-// 标题界面的六张全景面，各占一个数组层
-constexpr std::size_t kPanoramaFaces = 6U;
 
 [[nodiscard]] assets::ImageData repeatTileToAtlas(const assets::ImageData& tile, int width,
                                                   int height, int repeats) {
@@ -464,6 +462,27 @@ void TextureManager::createGuiTexture() {
     auto furnaceGui = guiTex("container/furnace.png");
     blit(furnaceGui, sprite("container/furnace/lit_progress"), 176, 0);
     blit(furnaceGui, sprite("container/furnace/burn_progress"), 176, 14);
+    // ENCH-2: the enchanting table's screen. Its 176x166 panel already fills the
+    // top-left of the 256x256 file, so the six level numerals (16x16 each) and
+    // the three option-bar states (108x19 each) are packed into the space the
+    // panel leaves — the numerals in the strip to its right, the bars below it.
+    // Every one of them is read from the pack (gui/container/enchanting_table.png
+    // + gui/sprites/container/enchanting_table/*), never drawn by hand, so a
+    // resource pack that restyles the table restyles this screen.
+    auto enchantingGui = guiTex("container/enchanting_table.png");
+    for (int level = 0; level < 3; ++level) {
+        const std::string suffix = std::to_string(level + 1);
+        blit(enchantingGui, sprite("container/enchanting_table/level_" + suffix),
+             kEnchantingLevelSpriteX + level * 16, kEnchantingLevelSpriteY);
+        blit(enchantingGui, sprite("container/enchanting_table/level_" + suffix + "_disabled"),
+             kEnchantingLevelSpriteX + level * 16, kEnchantingLevelSpriteY + 16);
+    }
+    blit(enchantingGui, sprite("container/enchanting_table/enchantment_slot"), 0,
+         kEnchantingBarSpriteY);
+    blit(enchantingGui, sprite("container/enchanting_table/enchantment_slot_disabled"), 0,
+         kEnchantingBarSpriteY + 20);
+    blit(enchantingGui, sprite("container/enchanting_table/enchantment_slot_highlighted"), 0,
+         kEnchantingBarSpriteY + 40);
     // Screen.renderBackground 会在每个游戏内界面上铺一层竖直渐变
     // 顶部为 rgba(0x10,0x10,0x10,0xC0)，底部为 rgba(0x10,0x10,0x10,0xD0)
     // 把它烘成一个 256x256 层，各界面用一次精灵绘制就能拿到与 vanilla 完全一致的底衬
@@ -497,8 +516,9 @@ void TextureManager::createGuiTexture() {
         tex("misc/vignette.png"),
         screenDimGradient,
         menuListBackground,
+        enchantingGui,
     };
-    constexpr std::uint32_t kGuiLayerCount = 14U;
+    constexpr std::uint32_t kGuiLayerCount = 15U;
     const int width = images.front().width;
     const int height = images.front().height;
     for (const auto& image : images) {
@@ -807,6 +827,25 @@ void TextureManager::createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::T
             readUnihexArchive(resourceProvider_->readBytes(provider.file), provider,
                               requiredPages, unihex);
         }
+    }
+
+    // ENCH-2: the Standard Galactic Alphabet page (`minecraft:alt` ->
+    // font/ascii_sga.png). It is not part of the default stack — nothing types
+    // galactic — so it is resolved as its own font id and its glyphs are moved
+    // into the Private Use Area (ui::galacticCodepoint) before they join the
+    // shared map, where they would otherwise collide with the Latin letters they
+    // are drawn for. Read from the pack like every other font page: a resource
+    // pack that restyles ascii_sga.png restyles the enchanting preview.
+    for (const auto& provider :
+         assets::loadFontProviders(*resourceProvider_, "minecraft:alt", false, false)) {
+        if (provider.kind != assets::FontProviderKind::Bitmap) {
+            continue;
+        }
+        auto galactic = loadBitmapProvider(*resourceProvider_, provider);
+        for (auto& [codepoint, glyph] : galactic.glyphs) {
+            codepoint = ui::galacticCodepoint(codepoint);
+        }
+        bitmapLayers.push_back(std::move(galactic));
     }
 
     constexpr std::uint32_t kFontPageSize = 256U;

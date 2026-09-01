@@ -58,6 +58,17 @@ inline constexpr std::uint8_t kMovementTagEnd = static_cast<std::uint8_t>(kEntit
 // The session commands are a variant occupying the tags right after movement
 // (22.. today); its codec bases its frame tags at gameplay::kSessionCommandTagBase,
 // which must equal where movement ends.
+// Each category's boundary, cross-checked against the derived bases the codecs
+// actually frame with. Only the last of these existed before, which is why a
+// command variant could grow onto the snapshot codec's first tag unnoticed.
+static_assert(kCommandTagEnd == gameplay::kSnapshotTagBase,
+              "snapshot tag base must follow the command tags");
+static_assert(kSnapshotTagEnd == gameplay::kEventTagBase,
+              "event tag base must follow the snapshot tags");
+static_assert(kEventTagEnd == gameplay::kEntitySnapshotTag,
+              "the entity snapshot tag must follow the event tags");
+static_assert(kEntityTagEnd == gameplay::kMovementInputTag,
+              "the movement tag must follow the entity snapshot tag");
 static_assert(kMovementTagEnd == gameplay::kSessionCommandTagBase,
               "SessionCommand tag base must follow the movement tag");
 inline constexpr std::uint8_t kSessionTagEnd = static_cast<std::uint8_t>(

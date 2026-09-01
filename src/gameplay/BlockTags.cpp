@@ -40,7 +40,7 @@ constexpr std::array<std::string_view, kBlockTagCount> kBlockTagPaths{{
 //
 // Spelled as identifiers rather than enumerators so they read exactly like the
 // JSON they mirror, and so a block this build lacks is simply skipped.
-constexpr std::array<std::string_view, 44> kBuiltinPickaxe{
+constexpr std::array<std::string_view, 45> kBuiltinPickaxe{
     "stone",        "cobblestone",       "bricks",           "coal_ore",
     "iron_ore",     "gold_ore",          "diamond_ore",      "furnace",
     "obsidian",     "netherrack",        "stone_bricks",     "mossy_cobblestone",
@@ -61,6 +61,10 @@ constexpr std::array<std::string_view, 44> kBuiltinPickaxe{
     "deepslate_coal_ore",  "deepslate_iron_ore",  "deepslate_copper_ore",
     "deepslate_gold_ore",  "deepslate_redstone_ore", "deepslate_emerald_ore",
     "deepslate_lapis_ore", "deepslate_diamond_ore",
+    // ENCH-2: 26.1 lists enchanting_table in mineable/pickaxe and in no
+    // needs_*_tool tag — any pickaxe mines it, and a bare hand still drops it
+    // (there is no harvest tier), it is only slow.
+    "enchanting_table",
 };
 constexpr std::array<std::string_view, 17> kBuiltinAxe{
     "oak_planks",    "oak_log",    "spruce_planks", "birch_planks",
