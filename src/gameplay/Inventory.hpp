@@ -157,6 +157,36 @@ static_assert(std::is_trivially_copyable_v<ItemStack>,
     return itemMaximumDamage(stack) > 0U;
 }
 
+// ItemStack#isEnchanted: 栈上带着至少一条**已生效**的附魔。
+// 附魔书是 vanilla 里唯一的例外，见 itemRarity 的注释。
+[[nodiscard]] constexpr bool isEnchanted(const ItemStack& stack) {
+    return stack.enchantmentCount > 0U;
+}
+
+// I-2 / ItemStack#getRarity(:968)：名称行的着色档 = 物品的基础档，附魔再升一档
+// （COMMON/UNCOMMON → RARE，RARE → EPIC，EPIC 封顶）。
+//
+// 附魔书不升档：vanilla 的附魔书把附魔存在 STORED_ENCHANTMENTS 而不是
+// ENCHANTMENTS 上，`isEnchanted()` 因此对它为假，它停在自己的 RARE（青色）而
+// 不会变成 EPIC。本项目只有一个附魔字段，所以这条区别落在这里的身份判断上——
+// 这是"不为对齐凭空造组件系统"的代价，也是它唯一的落点。
+[[nodiscard]] inline Rarity itemRarity(const ItemStack& stack) {
+    const Rarity base = stack.item == nullptr ? Rarity::Common : stack.item->itemRarity;
+    if (!isEnchanted(stack) || stack.item == &items::EnchantedBook) {
+        return base;
+    }
+    switch (base) {
+    case Rarity::Common:
+    case Rarity::Uncommon:
+        return Rarity::Rare;
+    case Rarity::Rare:
+        return Rarity::Epic;
+    case Rarity::Epic:
+        return Rarity::Epic;
+    }
+    return base;
+}
+
 // EQ-1: EquipmentSlot#canEquip's filter (its actual home in vanilla is
 // per-slot: LivingEntity#getEquipmentSlotForItem consults
 // EquipmentSlot.MAINHAND/OFFHAND/ARMOR's own canEquip predicate, and armor's

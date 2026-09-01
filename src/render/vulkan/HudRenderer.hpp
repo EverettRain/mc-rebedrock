@@ -36,6 +36,7 @@
 #include "ui/SubtitleFeed.hpp"
 #include "ui/Toast.hpp"
 #include "ui/HudLayout.hpp"
+#include "ui/ItemTooltip.hpp"
 #include "ui/Language.hpp"
 #include "ui/MenuGeometry.hpp"
 #include "ui/MenuSystem.hpp"
@@ -596,13 +597,6 @@ class HudRenderer final {
             }
             cursorX += metrics.advance * scale;
         }
-    }
-
-    [[nodiscard]] std::string_view itemDisplayName(const gameplay::ItemStack& stack) const {
-        const gameplay::DescriptionId descriptionId = gameplay::itemDescriptionId(stack);
-        if (descriptionId.empty()) return {};
-        return language.translate(descriptionId.prefix(), descriptionId.source.space,
-                                  descriptionId.source.path, descriptionId.source.path);
     }
 
     // 语言文件通过 provider 按 ResourceLocation 解析，不做路径推算
@@ -1432,53 +1426,97 @@ class HudRenderer final {
         return hovered;
     }
 
-    // ENCH-2: an enchantment's display name — the vanilla translation key plus
-    // its level numeral. Enchantment.getFullname omits the numeral for a level-1
-    // enchantment whose maximum is also 1 (Silk Touch is "Silk Touch", never
-    // "Silk Touch I").
-    [[nodiscard]] std::string enchantmentLabel(gameplay::EnchantmentId id, int level) const {
-        const std::string vanilla{gameplay::enchantmentVanillaName(id)};
-        std::string label{translated("enchantment.minecraft." + vanilla, vanilla)};
-        if (level > 1 || gameplay::enchantmentDefinition(id).maxLevel > 1) {
-            label += ' ';
-            label += translated("enchantment.level." + std::to_string(level),
-                                romanNumeral(level));
-        }
-        return label;
+    // I-2：提示框的行**组装**已整体搬进 ui/ItemTooltip（纯值、headless 可测），
+    // 渲染器这边只剩"画盒子"。这个上下文是两者之间唯一的接线。
+    //
+    // advanced 在 vanilla 是 F3+H 的 `Options.advancedItemTooltips`；本项目还没
+    // 有那个开关，暂以"F3 调试屏是否打开"充当，等真开关落地时只改这一处。
+    [[nodiscard]] ui::TooltipContext tooltipContext() const {
+        return ui::TooltipContext{debugOverlayOpen, &language};
     }
 
-    // ENCH-2: what an item's hover tooltip says. Vanilla's ItemStack#getTooltipLines
-    // opens with the item's name and then lists one line per enchantment — which
-    // is the ONLY way a player can tell an enchanted tool from a plain one, since
-    // nothing else about the stack looks different. Before this, every tooltip in
-    // the game was the bare name, so a successful enchant was invisible.
-    [[nodiscard]] std::vector<std::string> itemTooltipLines(
-        const gameplay::ItemStack& stack) const {
-        std::vector<std::string> lines;
-        std::string name{itemDisplayName(stack)};
-        if (stack.count > 1U) {
-            name += " x" + std::to_string(stack.count);
+    // 颜色语义 → RGBA 的那张表。组装层只给 TooltipStyle，颜色值全在这里，
+    // 资源包换主题时也只动这里。取值即 vanilla 的 ChatFormatting 原色。
+    [[nodiscard]] static glm::vec4 tooltipLineColor(ui::TooltipStyle style) {
+        switch (style) {
+        case ui::TooltipStyle::NameCommon: return {1.0F, 1.0F, 1.0F, 1.0F};          // WHITE
+        case ui::TooltipStyle::NameUncommon: return {1.0F, 1.0F, 0.333F, 1.0F};      // YELLOW
+        case ui::TooltipStyle::NameRare: return {0.333F, 1.0F, 1.0F, 1.0F};          // AQUA
+        case ui::TooltipStyle::NameEpic: return {1.0F, 0.333F, 1.0F, 1.0F};          // LIGHT_PURPLE
+        case ui::TooltipStyle::Detail: return {0.667F, 0.667F, 0.667F, 1.0F};        // GRAY
+        case ui::TooltipStyle::Curse: return {1.0F, 0.333F, 0.333F, 1.0F};           // RED
+        case ui::TooltipStyle::AttributeBase: return {0.0F, 0.667F, 0.0F, 1.0F};     // DARK_GREEN
+        case ui::TooltipStyle::AttributeBonus: return {0.333F, 0.333F, 1.0F, 1.0F};  // BLUE
+        case ui::TooltipStyle::Advanced: return {0.333F, 0.333F, 0.333F, 1.0F};      // DARK_GRAY
         }
-        lines.push_back(std::move(name));
-        for (std::uint8_t index = 0; index < stack.enchantmentCount; ++index) {
-            const auto id = static_cast<gameplay::EnchantmentId>(stack.enchantments[index].id);
-            lines.push_back(enchantmentLabel(id, stack.enchantments[index].level));
-        }
-        return lines;
+        return {1.0F, 1.0F, 1.0F, 1.0F};
     }
 
     // The one tooltip box every screen draws: a panel sized to the widest line,
-    // the first line white and the rest grey (vanilla's name-then-detail
-    // colouring). Callers must draw it AFTER everything else on the screen — a
-    // tooltip painted mid-pass gets covered by whatever is drawn next, which is
-    // exactly the bug that made the enchanting bars' clues invisible on every
-    // bar except the last one.
+    // each line coloured by its own TooltipStyle. Callers must draw it AFTER
+    // everything else on the screen — a tooltip painted mid-pass gets covered by
+    // whatever is drawn next, which is exactly the bug that made the enchanting
+    // bars' clues invisible on every bar except the last one.
+    //
+    // I-2 补上了此前没有的两件事：
+    //   · 长行换行：走 ui::wrapText，上限取 vanilla 的 170 GUI 像素；
+    //   · 屏幕边缘夹取：`renderTooltipInternal` 的 `x + width > screenWidth →
+    //     x -= 24 + width`（翻到光标另一侧），纵向则夹回屏幕内。此前贴着右/下
+    //     边缘悬停会把框直接画出屏幕。
     void drawTooltipBox(VkCommandBuffer commandBuffer, float scale,
-                        const std::vector<std::string>& lines) const {
+                        const std::vector<ui::TooltipLine>& lines) const {
         if (lines.empty()) {
             return;
         }
-        drawTooltipBox(commandBuffer, scale, lines);
+        // 换行按未缩放的 GUI 像素量，于是 GUI 缩放改变时每行的断点不变。
+        static constexpr float kMaxLineWidth = 170.0F;
+        std::vector<ui::TooltipLine> visual;
+        visual.reserve(lines.size());
+        for (const auto& line : lines) {
+            if (line.text.empty()) {
+                visual.push_back(line);
+                continue;
+            }
+            for (auto& piece : ui::wrapText(line.text, kMaxLineWidth,
+                                            [this](std::string_view text) {
+                                                return hudTextWidth(text, 1.0F);
+                                            })) {
+                visual.push_back({std::move(piece), line.style});
+            }
+        }
+        if (visual.empty()) {
+            return;
+        }
+        float widest = 0.0F;
+        for (const auto& line : visual) {
+            widest = std::max(widest, hudTextWidth(line.text, scale));
+        }
+        const float width = widest + 8.0F * scale;
+        const float height = (4.0F + 10.0F * static_cast<float>(visual.size())) * scale;
+        const auto cursor = currentFramebufferCursor();
+        const auto screenWidth = static_cast<float>(swapchainExtent.width);
+        const auto screenHeight = static_cast<float>(swapchainExtent.height);
+        float x = cursor.x + 12.0F * scale;
+        float y = cursor.y + 12.0F * scale;
+        if (x + width > screenWidth) {
+            x -= (24.0F * scale) + width;
+        }
+        if (y + height > screenHeight) {
+            y -= (24.0F * scale) + height;
+        }
+        // 一个比屏幕还宽/高的框（超小窗口）夹回原点，宁可截断也不画到屏幕外。
+        x = std::max(x, 0.0F);
+        y = std::max(y, 0.0F);
+        const ui::UiRect box{x, y, width, height};
+        drawHudQuad(commandBuffer, box, {0.05F, 0.03F, 0.08F, 0.94F});
+        for (std::size_t line = 0; line < visual.size(); ++line) {
+            if (visual[line].text.empty()) {
+                continue;
+            }
+            drawHudText(commandBuffer, visual[line].text, box.x + 4.0F * scale,
+                        box.y + (3.0F + 10.0F * static_cast<float>(line)) * scale, scale,
+                        tooltipLineColor(visual[line].style));
+        }
     }
 
     // ENCH-2: EnchantmentScreen#extractBackground, transcribed. Every offset here
@@ -1592,60 +1630,39 @@ class HudRenderer final {
         const auto& snap = clientMirror.world();
         const auto clueId =
             static_cast<gameplay::EnchantmentId>(snap.enchantingClueIds[option]);
-        const std::string clueName =
-            enchantmentLabel(clueId, static_cast<int>(snap.enchantingClueLevels[option]));
-        std::vector<std::string> lines;
-        lines.push_back(formatTemplate(translated("container.enchant.clue", "%s . . . ?"),
-                                       clueName));
+        // 附魔名走展示层同一份 Enchantment#getFullname，线索行与提示框的附魔行
+        // 因此不可能给同一条附魔两个写法。
+        const std::string clueName = ui::enchantmentLabel(
+            clueId, static_cast<int>(snap.enchantingClueLevels[option]), tooltipContext());
+        std::vector<ui::TooltipLine> lines;
+        lines.push_back({formatTemplate(translated("container.enchant.clue", "%s . . . ?"),
+                                        clueName),
+                         ui::TooltipStyle::NameCommon});
         if (!infiniteMaterials) {
             if (uiFrameData_.experienceLevel < cost) {
                 lines.push_back(
-                    formatTemplate(translated("container.enchant.level.requirement",
-                                              "Level Requirement: %s"),
-                                   std::to_string(cost)));
+                    {formatTemplate(translated("container.enchant.level.requirement",
+                                               "Level Requirement: %s"),
+                                    std::to_string(cost)),
+                     ui::TooltipStyle::Detail});
             } else {
-                lines.push_back(lapisCost == 1
-                                    ? translated("container.enchant.lapis.one", "1 Lapis Lazuli")
-                                    : formatTemplate(
-                                          translated("container.enchant.lapis.many",
-                                                     "%s Lapis Lazuli"),
-                                          std::to_string(lapisCost)));
                 lines.push_back(
-                    lapisCost == 1
-                        ? translated("container.enchant.level.one", "1 Enchantment Level")
-                        : formatTemplate(translated("container.enchant.level.many",
-                                                    "%s Enchantment Levels"),
-                                         std::to_string(lapisCost)));
+                    {lapisCost == 1
+                         ? translated("container.enchant.lapis.one", "1 Lapis Lazuli")
+                         : formatTemplate(translated("container.enchant.lapis.many",
+                                                     "%s Lapis Lazuli"),
+                                          std::to_string(lapisCost)),
+                     ui::TooltipStyle::Detail});
+                lines.push_back(
+                    {lapisCost == 1
+                         ? translated("container.enchant.level.one", "1 Enchantment Level")
+                         : formatTemplate(translated("container.enchant.level.many",
+                                                     "%s Enchantment Levels"),
+                                          std::to_string(lapisCost)),
+                     ui::TooltipStyle::Detail});
             }
         }
-        const auto cursor = currentFramebufferCursor();
-        float widest = 0.0F;
-        for (const auto& line : lines) {
-            widest = std::max(widest, hudTextWidth(line, scale));
-        }
-        const ui::UiRect box{cursor.x + 12.0F * scale, cursor.y + 12.0F * scale,
-                             widest + 8.0F * scale,
-                             (4.0F + 10.0F * static_cast<float>(lines.size())) * scale};
-        drawHudQuad(commandBuffer, box, {0.05F, 0.03F, 0.08F, 0.94F});
-        for (std::size_t line = 0; line < lines.size(); ++line) {
-            drawHudText(commandBuffer, lines[line], box.x + 4.0F * scale,
-                        box.y + (3.0F + 10.0F * static_cast<float>(line)) * scale, scale,
-                        line == 0U ? glm::vec4{1.0F, 1.0F, 1.0F, 1.0F}
-                                   : glm::vec4{0.667F, 0.667F, 0.667F, 1.0F});
-        }
-    }
-
-    // enchantment.level.<n>'s fallback when the language file has no entry: the
-    // Roman numeral vanilla's own keys spell out. Only 1..10 are ever needed
-    // (no enchantment goes higher), and anything past that falls back to the
-    // decimal so a datapack level can still be read.
-    [[nodiscard]] static std::string romanNumeral(int level) {
-        static constexpr std::array<std::string_view, 10> kNumerals{
-            "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"};
-        if (level >= 1 && level <= static_cast<int>(kNumerals.size())) {
-            return std::string{kNumerals[static_cast<std::size_t>(level - 1)]};
-        }
-        return std::to_string(level);
+        drawTooltipBox(commandBuffer, scale, lines);
     }
 
     // Font#getSplitter().headByWidth: the longest prefix of `text` that fits, cut
@@ -1755,7 +1772,8 @@ class HudRenderer final {
         // cursor suppresses them, as in vanilla.
         if (clientMirror.world().cursorStack.empty()) {
             if (hoveredStack.has_value()) {
-                drawTooltipBox(commandBuffer, layout.scale(), itemTooltipLines(*hoveredStack));
+                drawTooltipBox(commandBuffer, layout.scale(),
+                               ui::itemTooltipLines(*hoveredStack, tooltipContext()));
             } else if (hoveredClue.has_value()) {
                 drawEnchantingClueTooltip(
                     commandBuffer, layout.scale(), *hoveredClue,
@@ -1901,7 +1919,8 @@ class HudRenderer final {
             // Enchantment lines included: the creative catalogue now carries 38
             // enchanted books, and without them every one of those cells reads
             // as the same nameless "Enchanted Book".
-            drawTooltipBox(commandBuffer, scale, itemTooltipLines(*hoveredStack));
+            drawTooltipBox(commandBuffer, scale,
+                           ui::itemTooltipLines(*hoveredStack, tooltipContext()));
         }
         if (!clientMirror.world().cursorStack.empty()) {
             const float iconSize = 16.0F * scale;
@@ -2163,17 +2182,21 @@ class HudRenderer final {
                     alpha = elapsed <= 1.5 ? 1.0F : static_cast<float>((2.0 - elapsed) / 0.5);
                 }
                 if (alpha > 0.0F) {
-                    const std::string_view selectedName = itemDisplayName(selectedStack);
-                    drawHudText(commandBuffer, selectedName,
+                    // I-2：名字与稀有度色都取展示层的名称行，不再自己解析一遍
+                    // ——弹出的名字与提示框的第一行从此是同一个答案。
+                    const ui::TooltipLine name = ui::itemNameLine(selectedStack, tooltipContext());
+                    glm::vec4 color = tooltipLineColor(name.style);
+                    color.a = alpha;
+                    drawHudText(commandBuffer, name.text,
                                 (static_cast<float>(swapchainExtent.width) -
-                                 hudTextWidth(selectedName, textScale)) *
+                                 hudTextWidth(name.text, textScale)) *
                                     0.5F,
                                 layout.hotbarBackground().y -
                                     (uiFrameData_.gameMode == gameplay::GameMode::Survival
                                          ? 30.0F
                                          : 12.0F) *
                                         textScale,
-                                textScale, {1.0F, 1.0F, 1.0F, alpha});
+                                textScale, color);
                 }
             } else {
                 selectedNameSlot_ = static_cast<std::size_t>(-1);
@@ -2315,7 +2338,8 @@ class HudRenderer final {
                 tooltipStack = clientMirror.world().inventorySlots[*hoveredSlot];
             }
             if (tooltipStack.has_value()) {
-                drawTooltipBox(commandBuffer, textScale, itemTooltipLines(*tooltipStack));
+                drawTooltipBox(commandBuffer, textScale,
+                               ui::itemTooltipLines(*tooltipStack, tooltipContext()));
             }
             // 拖拽过程中在每个划过的槽位预览松手后的落位，画在槽位之上、光标之下
             drawDragPreview(commandBuffer, layout);

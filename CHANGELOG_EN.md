@@ -9,6 +9,12 @@ simple versioned history while it is in beta.
 
 ### Fixed
 
+- Item tooltips were not drawn at all: the previous batch factored the box
+  drawing into a stub that did nothing but call itself, so hovering an item on
+  the inventory, creative and container screens showed nothing. The box is now
+  actually drawn.
+- Tooltips no longer run off the screen: hovering near the right or bottom edge
+  flips the box to the other side of the cursor, and long lines now wrap.
 - Item tooltips now list enchantments. Until now a tooltip was just the item's
   name, so there was no way to tell an enchanted tool from a plain one — or to
   see whether an enchant had worked at all. Container screens (chest, furnace,
@@ -20,6 +26,19 @@ simple versioned history while it is in beta.
   painted over by the options drawn after them.
 
 ### Added
+
+- Item tooltips now say what an item actually is:
+  - the **name is coloured by rarity**, and an enchanted item moves up one step
+    (a plain tool's name turns aqua once enchanted);
+  - **attribute lines** — attack damage and attack speed in the main hand for
+    weapons and tools, armor and armor toughness for armor;
+  - **curses are listed in red** (Binding, Vanishing), so they stand apart from
+    ordinary enchantments at a glance;
+  - with the F3 debug screen open, two more lines: **durability** (only once the
+    item is actually damaged, remaining / maximum) and the item id.
+  The " xN" that used to follow the name is gone — the count is already drawn in
+  the corner of the slot itself. The held-item name popup picks up the rarity
+  colour too.
 
 - The enchanting table. Craft it (four obsidian, two diamonds and a book),
   place it, and right-click to open a screen with an item slot, a lapis lazuli

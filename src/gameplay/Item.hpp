@@ -33,6 +33,19 @@ using core::kVanillaNamespace;
 // keeps every existing `gameplay::CreativeCategory` call site unchanged.
 using core::CreativeCategory;
 
+// I-2: `net.minecraft.world.item.Rarity` —— 名称行的着色档，四档与 vanilla 逐档
+// 对齐（COMMON 白 / UNCOMMON 黄 / RARE 青 / EPIC 淡紫）。数值序即"升档"序：
+// `itemRarity` 的附魔升档就是往后挪一格。
+//
+// 只是一个着色档，不是"品质"系统：除了附魔升档，本项目里唯一有非 Common 基础
+// 档的物品是附魔书（vanilla Items.ENCHANTED_BOOK 的 `.rarity(Rarity.RARE)`）。
+enum class Rarity : std::uint8_t {
+    Common,
+    Uncommon,
+    Rare,
+    Epic,
+};
+
 // The tool a stack is wielded as, and the material it is made from. Together
 // they carry vanilla's ToolMaterial tiers: a tier's harvest level and mining
 // speed, plus the attack damage/speed each tool type adds. Material and type
@@ -202,6 +215,13 @@ class Item {
     // Tools and buckets of liquid go one to a slot.
     [[nodiscard]] constexpr Item single() const { return stackSize(1U); }
 
+    // Item.Properties#rarity: 名称行的着色档。默认 Common，与 vanilla 一致。
+    [[nodiscard]] constexpr Item rarity(Rarity value) const {
+        Item copy = *this;
+        copy.itemRarity = value;
+        return copy;
+    }
+
     // Marks the item as a tool of the given role and material.
     [[nodiscard]] constexpr Item tool(ToolType type, ToolTier tier) const {
         Item copy = *this;
@@ -277,6 +297,9 @@ class Item {
     BlockItemKind blockItemKind = BlockItemKind::None;
     CreativeCategory creativeCategory = CreativeCategory::Ingredients;
     std::uint8_t maximumStackSize = 64U;
+    // I-2: 名称行的基础着色档（附魔的升档在 itemRarity(stack) 里叠加，
+    // 不写回这里——同一个物品的附魔与未附魔两份栈共用这一条注册）。
+    Rarity itemRarity = Rarity::Common;
     // The tool role and material for tools; ToolType::None for everything else.
     ToolType toolType = ToolType::None;
     ToolTier toolTier = ToolTier::None;
@@ -591,8 +614,12 @@ inline constexpr Item Book =
 // entry: an unenchanted enchanted_book is meaningless. The catalog lists one
 // per enchantment at max level instead — ContentRegistry's enchanted-book
 // expansion, mirroring 26.1's generateEnchantmentBookTypesOnlyMaxLevel.
-inline constexpr Item EnchantedBook =
-    Item::of("enchanted_book").stackSize(1U).category(CreativeCategory::Hidden);
+inline constexpr Item EnchantedBook = Item::of("enchanted_book")
+                                          .stackSize(1U)
+                                          .category(CreativeCategory::Hidden)
+                                          // Items.ENCHANTED_BOOK 的 .rarity(Rarity.RARE)：
+                                          // 它是本项目唯一基础档非 Common 的物品。
+                                          .rarity(Rarity::Rare);
 // WheatSeedsItem: right-clicking farmland plants the wheat crop. The behaviour
 // is dispatched by item identity in itemUseOn (ItemPlacement.cpp), the way the
 // buckets are, so the constexpr registrations stay free of function pointers.

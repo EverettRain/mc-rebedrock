@@ -433,6 +433,7 @@ add_executable(mc_rebedrock
     src/ui/TextFont.cpp
     src/ui/TextWrap.cpp
     src/ui/ChatHistory.cpp
+    src/ui/ItemTooltip.cpp
     src/ui/PageStack.cpp
 )
 
@@ -924,6 +925,25 @@ if(BUILD_TESTING)
     )
     target_include_directories(mc_rebedrock_text_wrap_test PRIVATE src)
     add_test(NAME text_wrap COMMAND mc_rebedrock_text_wrap_test)
+
+    # I-2: the item presentation layer is pure value assembly (no Vulkan, no
+    # font), so its whole surface is asserted headless.
+    add_executable(mc_rebedrock_item_tooltip_test
+        tests/item_tooltip_test.cpp
+        # The layer resolves its text through ui::Language, which lives outside
+        # the runtime library (it reaches TextFont's UTF-8 decoder) — same three
+        # sources option_cycle_test lists for the same reason.
+        src/ui/ItemTooltip.cpp
+        src/ui/Language.cpp
+        src/ui/TextFont.cpp
+        src/ui/BitmapFontMetrics.cpp
+    )
+    target_link_libraries(mc_rebedrock_item_tooltip_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_item_tooltip_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME item_tooltip COMMAND mc_rebedrock_item_tooltip_test)
 
     add_executable(mc_rebedrock_command_suggestions_test
         tests/command_suggestions_test.cpp
