@@ -567,6 +567,16 @@ enum class Block : std::uint16_t {
     // never reach a save (states persist by name + properties), so the tail is
     // free.
     EnchantingTable,
+    // ENCH-3: the anvil's three damage states. Vanilla models them as three
+    // separate blocks (not a state axis) because each has its own item, its own
+    // loot and its own model, and using one degrades to the next; the roster
+    // follows that rather than inventing a DAMAGE property vanilla does not have.
+    Anvil,
+    ChippedAnvil,
+    DamagedAnvil,
+    // ENCH-3: the anvil's recipe needs it, and its absence is why the anvil
+    // would otherwise be another uncraftable block. A plain cube.
+    IronBlock,
     Count,
 };
 
@@ -815,6 +825,8 @@ enum class ContainerType : std::uint8_t {
     // back when the screen closes, exactly the way EnchantmentMenu owns a
     // `SimpleContainer(2)` and clears it in removed().
     EnchantingTable,
+    // ENCH-3: likewise menu-scoped (ItemCombinerMenu owns its inputs).
+    Anvil,
 };
 
 // The resolved atlas layer for each face of a block, filled by the renderer's
@@ -3132,6 +3144,35 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .strength(5.0F, 1'200.0F)
         .container(ContainerType::EnchantingTable)
         .creative(CreativeCategory::Functional),
+    // ENCH-3: the anvil, in its three wear states. All three share one model
+    // (template_anvil's four boxes) and differ only in the top texture, so the
+    // roster entries differ only there. FallingBlock in vanilla; this build has
+    // no falling-anvil damage yet (registered as debt, not faked).
+    BlockProperties::of(Block::Anvil, "anvil", "Anvil")
+        .texture("anvil_top", "anvil", "anvil")
+        .elementModel("anvil", "anvil_top")
+        .strength(5.0F, 1'200.0F)
+        .horizontalFacing()
+        .container(ContainerType::Anvil)
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::ChippedAnvil, "chipped_anvil", "Chipped Anvil")
+        .texture("chipped_anvil_top", "anvil", "anvil")
+        .elementModel("anvil", "chipped_anvil_top")
+        .strength(5.0F, 1'200.0F)
+        .horizontalFacing()
+        .container(ContainerType::Anvil)
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::DamagedAnvil, "damaged_anvil", "Damaged Anvil")
+        .texture("damaged_anvil_top", "anvil", "anvil")
+        .elementModel("anvil", "damaged_anvil_top")
+        .strength(5.0F, 1'200.0F)
+        .horizontalFacing()
+        .container(ContainerType::Anvil)
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::IronBlock, "iron_block", "Block of Iron")
+        .texture("iron_block")
+        .strength(5.0F, 6.0F)
+        .creative(CreativeCategory::BuildingBlocks),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {

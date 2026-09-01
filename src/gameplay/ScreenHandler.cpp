@@ -73,6 +73,19 @@ void appendContainerSlots(
                          SlotKind::EnchantingLapis, 0U});
         return;
     }
+    case ContainerScreen::Anvil: {
+        // ENCH-3: two inputs plus a result the player can only take from. Like
+        // the enchanting table's, all three live on the player's own menu.
+        auto* menu = session != nullptr ? &session->anvilMenu() : nullptr;
+        slots.push_back({layout.anvilLeftSlot(), menu != nullptr ? &menu->left : nullptr,
+                         SlotKind::AnvilLeft, 0U});
+        slots.push_back({layout.anvilRightSlot(), menu != nullptr ? &menu->right : nullptr,
+                         SlotKind::AnvilRight, 0U});
+        // Null storage, like the crafting and furnace outputs: the result is
+        // derived, and taking it is an operation rather than a pickup.
+        slots.push_back({layout.anvilOutputSlot(), nullptr, SlotKind::AnvilOutput, 0U});
+        return;
+    }
     case ContainerScreen::PlayerInventory: {
         // The 2x2 grid only exists in the survival screen; creative has no
         // crafting at all.
@@ -216,6 +229,11 @@ ItemStack* ScreenHandler::resolveSlotStorage(GameSession& session,
         return &session.enchantingMenu().item;
     case SlotKind::EnchantingLapis:
         return &session.enchantingMenu().lapis;
+    case SlotKind::AnvilLeft:
+        return &session.anvilMenu().left;
+    case SlotKind::AnvilRight:
+        return &session.anvilMenu().right;
+    case SlotKind::AnvilOutput:
     case SlotKind::PlayerCraftingOutput:
     case SlotKind::TableCraftingOutput:
     case SlotKind::FurnaceOutput:
@@ -369,6 +387,24 @@ void ScreenHandler::click(
         session.inventory().clickExternalSlot(storage, button);
         break;
     }
+    case SlotKind::AnvilLeft:
+    case SlotKind::AnvilRight: {
+        // Plain storage slots; the result is re-derived after every change.
+        ItemStack& storage = slot.kind == SlotKind::AnvilLeft ? session.anvilMenu().left
+                                                              : session.anvilMenu().right;
+        if (shiftHeld) {
+            session.inventory().quickMoveInto(storage);
+        } else {
+            session.inventory().clickExternalSlot(storage, button);
+        }
+        session.refreshAnvilResult();
+        break;
+    }
+    case SlotKind::AnvilOutput:
+        // ItemCombinerMenu's result slot: taking it is the operation — it pays
+        // the levels, consumes the inputs and stamps the prior-work penalty.
+        session.takeAnvilResult(shiftHeld);
+        break;
     case SlotKind::Equipment:
         if (slot.index >= kEquipmentScreenSlotCount) break;
         if (shiftHeld) {
@@ -436,6 +472,21 @@ void ScreenHandler::quickMoveToContainer(
         break;
     case ContainerScreen::Furnace:
         static_cast<void>(session.furnaceSystem().moveInto(context.furnace, stack));
+        break;
+    case ContainerScreen::Anvil:
+        // ENCH-3: a shift-click from the inventory fills the first free input,
+        // left before right (ItemCombinerMenu#quickMoveStack's 0..2 range).
+        if (!stack.empty()) {
+            AnvilMenu& menu = session.anvilMenu();
+            if (menu.left.empty()) {
+                menu.left = stack;
+                stack = {};
+            } else if (menu.right.empty()) {
+                menu.right = stack;
+                stack = {};
+            }
+            session.refreshAnvilResult();
+        }
         break;
     case ContainerScreen::EnchantingTable:
         // ENCH-2: only lapis has a home here. Anything else shift-clicked from

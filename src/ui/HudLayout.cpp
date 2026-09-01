@@ -270,6 +270,19 @@ UiRect HudLayout::enchantingOption(std::size_t index) const {
             19.0F * scale_};
 }
 
+UiRect HudLayout::anvilLeftSlot() const {
+    const auto panel = inventoryPanel();
+    return {panel.x + 27.0F * scale_, panel.y + 47.0F * scale_, 16.0F * scale_, 16.0F * scale_};
+}
+UiRect HudLayout::anvilRightSlot() const {
+    const auto panel = inventoryPanel();
+    return {panel.x + 76.0F * scale_, panel.y + 47.0F * scale_, 16.0F * scale_, 16.0F * scale_};
+}
+UiRect HudLayout::anvilOutputSlot() const {
+    const auto panel = inventoryPanel();
+    return {panel.x + 134.0F * scale_, panel.y + 47.0F * scale_, 16.0F * scale_, 16.0F * scale_};
+}
+
 UiRect HudLayout::creativePanel() const {
     const float panelWidth = 195.0F * scale_;
     const float panelHeight = 136.0F * scale_;

@@ -129,6 +129,14 @@ struct WorldSnapshot final {
     // Standard-Galactic gibberish name generator from it, exactly as vanilla's
     // EnchantmentNames#initSeed does with EnchantmentMenu's own seed DataSlot.
     std::int32_t enchantingSeed = 0;
+    // ENCH-3: the anvil screen's display state — the two inputs, the derived
+    // result and its price. `anvilCost` is shown even when the result is empty:
+    // that is exactly the "Too Expensive!" case, where vanilla shows the number
+    // and withholds the item.
+    ItemStack anvilLeft{};
+    ItemStack anvilRight{};
+    ItemStack anvilResult{};
+    std::int32_t anvilCost = 0;
 };
 
 } // namespace mc::gameplay

@@ -1519,6 +1519,56 @@ class HudRenderer final {
         }
     }
 
+    // ENCH-3: AnvilScreen, transcribed. GUI spec §10's anvil row: the three
+    // slots at (27,47)/(76,47)/(134,47) on the same 176x166 panel, the level
+    // cost centred at the bottom, and — when the price is at or past the wall —
+    // vanilla's error marker over the output slot instead of a result.
+    //
+    // The rename EditBox is deliberately absent: renaming needs a custom name
+    // ON THE STACK, which this build has no storage for (see ENCH-3's card).
+    // Drawing an inert text field would be worse than leaving the space blank.
+    template <typename SlotDrawer>
+    void drawAnvilScreen(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
+                         const ui::UiRect& panel, const SlotDrawer& slotWithHover) const {
+        const auto& snap = clientMirror.world();
+        const float scale = layout.scale();
+        drawHudText(commandBuffer, translated("container.repair", "Repair & Name"),
+                    panel.x + 8.0F * scale, panel.y + 6.0F * scale, scale,
+                    {0.25F, 0.25F, 0.25F, 1.0F}, false);
+        drawHudText(commandBuffer, translated("container.inventory", "Inventory"),
+                    panel.x + 8.0F * scale, panel.y + 73.0F * scale, scale,
+                    {0.25F, 0.25F, 0.25F, 1.0F}, false);
+        slotWithHover(layout.anvilLeftSlot(), snap.anvilLeft, false);
+        slotWithHover(layout.anvilRightSlot(), snap.anvilRight, false);
+        slotWithHover(layout.anvilOutputSlot(), snap.anvilResult, false);
+
+        if (snap.anvilCost <= 0) {
+            return;
+        }
+        const bool tooExpensive = snap.anvilResult.empty();
+        if (tooExpensive) {
+            // AnvilScreen's ERROR_SPRITE, drawn over the output slot.
+            drawGuiSprite(commandBuffer,
+                          {panel.x + 99.0F * scale, panel.y + 45.0F * scale, 28.0F * scale,
+                           21.0F * scale},
+                          kAnvilGuiLayer,
+                          {static_cast<float>(kAnvilErrorSpriteX),
+                           static_cast<float>(kAnvilErrorSpriteY), 28.0F, 21.0F});
+        }
+        // AnvilScreen#renderLabels: "Enchantment Cost: N", right-aligned in the
+        // panel's lower strip, green when affordable and red when not.
+        const std::string label = formatTemplate(
+            translated("container.repair.cost", "Enchantment Cost: %s"),
+            std::to_string(snap.anvilCost));
+        const bool affordable = uiFrameData_.gameMode == gameplay::GameMode::Creative ||
+                                (!tooExpensive && uiFrameData_.experienceLevel >= snap.anvilCost);
+        const glm::vec4 colour = affordable ? glm::vec4{0.502F, 1.0F, 0.125F, 1.0F}
+                                            : glm::vec4{1.0F, 0.373F, 0.373F, 1.0F};
+        drawHudText(commandBuffer, label,
+                    panel.x + (8.0F + 160.0F) * scale - hudTextWidth(label, scale),
+                    panel.y + 62.0F * scale, scale, colour, false);
+    }
+
     // ENCH-2: EnchantmentScreen#extractBackground, transcribed. Every offset here
     // is vanilla's, panel-relative: the two slots at (15,47)/(35,47), the three
     // 108x19 option bars at (60, 14+19i), the 16x16 level numeral at
@@ -1693,6 +1743,7 @@ class HudRenderer final {
             chestScreen                                              ? 10.0F
             : containerScreen == ContainerScreen::CraftingTable       ? 7.0F
             : containerScreen == ContainerScreen::EnchantingTable     ? kEnchantingGuiLayer
+            : containerScreen == ContainerScreen::Anvil               ? kAnvilGuiLayer
                                                                       : 8.0F;
         drawGuiSprite(commandBuffer, panel, panelLayer, {0.0F, 0.0F, 176.0F, 166.0F});
         // Every container screen was drawing its slots with no hover tooltip at
@@ -1734,6 +1785,8 @@ class HudRenderer final {
                           clientMirror.world().tableCraftingOutput, false);
         } else if (containerScreen == ContainerScreen::EnchantingTable) {
             hoveredClue = drawEnchantingScreen(commandBuffer, layout, panel, slotWithHover);
+        } else if (containerScreen == ContainerScreen::Anvil) {
+            drawAnvilScreen(commandBuffer, layout, panel, slotWithHover);
         } else {
             // 熔炉界面按容器显示快照绘制，这里不读方块实体的位置
             const auto& worldSnap = clientMirror.world();

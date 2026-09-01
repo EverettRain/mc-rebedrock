@@ -96,6 +96,11 @@ class HudLayout final {
     [[nodiscard]] UiRect enchantingItemSlot() const;
     [[nodiscard]] UiRect enchantingLapisSlot() const;
     [[nodiscard]] UiRect enchantingOption(std::size_t index) const;
+    // ENCH-3: the anvil's three slots, from GUI spec §10's anvil row — left
+    // (27,47), right (76,47), output (134,47) on the same 176x166 panel.
+    [[nodiscard]] UiRect anvilLeftSlot() const;
+    [[nodiscard]] UiRect anvilRightSlot() const;
+    [[nodiscard]] UiRect anvilOutputSlot() const;
     [[nodiscard]] UiRect chestSlot(std::size_t index) const;
     [[nodiscard]] UiRect chestInventorySlot(std::size_t index) const;
     [[nodiscard]] UiRect creativePanel() const;

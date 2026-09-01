@@ -49,6 +49,7 @@ gameplay::ScreenContext buildScreenContext(GameSession& session) {
                           ? gameplay::FurnacePosition{furnace->x, furnace->y, furnace->z}
                           : gameplay::FurnacePosition{};
     context.enchantingTable = enchanting.value_or(glm::ivec3{0});
+    context.anvil = session.openAnvil().value_or(glm::ivec3{0});
     context.gameMode = session.gameMode();
     context.creativeInventoryTab = true;
     return context;
@@ -819,6 +820,11 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
         session.events().publish(ClientActionEvent{ClientActionEventKind::OpenContainer,
                                                    ContainerScreen::EnchantingTable, use.block,
                                                    true});
+        break;
+    case BlockInteraction::OpenAnvil:
+        session.openAnvilContainer(use.block);
+        session.events().publish(ClientActionEvent{ClientActionEventKind::OpenContainer,
+                                                   ContainerScreen::Anvil, use.block, true});
         break;
     case BlockInteraction::OpenChest:
         if (session.openChestContainer(

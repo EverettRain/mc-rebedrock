@@ -30,6 +30,14 @@ inline constexpr int kEnchantingLevelSpriteY = 0;
 // The three 108x19 option-bar states, stacked 20px apart below the panel:
 // normal, disabled, highlighted.
 inline constexpr int kEnchantingBarSpriteY = 168;
+// ENCH-3: gui/container/anvil.png, with its text-field and error sprites packed
+// into the space its 176x166 panel leaves — same arrangement, same reason.
+inline constexpr float kAnvilGuiLayer = 15.0F;
+// The 110x16 text field (normal then disabled) below the panel, and the 28x21
+// "too expensive" error marker to the right of them.
+inline constexpr int kAnvilTextFieldSpriteY = 168;
+inline constexpr int kAnvilErrorSpriteX = 176;
+inline constexpr int kAnvilErrorSpriteY = 0;
 // 标题界面的六张全景面，拼成 logo 背后的那个世界；标题轮播把它们当幻灯片循环
 // 也是 TextureManager 上传全景数组层时的层数（此前两处各写一份，ENCH-2 并到这里）
 inline constexpr std::size_t kPanoramaFaces = 6U;

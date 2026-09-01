@@ -30,6 +30,9 @@ enum class ContainerScreen : std::uint8_t {
     // the snapshot and the open-container event, so an inserted value would
     // renumber the four screens a running client already knows.
     EnchantingTable,
+    // ENCH-3. Appended at the tail for the same reason: this enum crosses the
+    // wire.
+    Anvil,
 };
 
 // What a slot is, which is all the click router needs to know. 26.1 expresses
@@ -56,6 +59,12 @@ enum class SlotKind : std::uint8_t {
     // they are their own kinds rather than a reuse of the furnace's.
     EnchantingItem,
     EnchantingLapis,
+    // ENCH-3: the anvil's two inputs and its output. Like the enchanting
+    // table's, they live on the player's own menu, not a block entity. The
+    // output never accepts an item — taking it is what pays the levels.
+    AnvilLeft,
+    AnvilRight,
+    AnvilOutput,
     // EQ-1: one of the player's five equipment slots. `index` is the screen's
     // own draw order (0..3 = Head/Chest/Legs/Feet, 4 = Offhand — see
     // equipmentSlotAt below), not gameplay::EquipmentSlot's underlying value;
@@ -95,7 +104,7 @@ struct SlotView final {
     // Output slots are not drag targets, and QUICK_CRAFT skips them.
     [[nodiscard]] bool acceptsItems() const {
         return kind != SlotKind::PlayerCraftingOutput && kind != SlotKind::TableCraftingOutput &&
-               kind != SlotKind::FurnaceOutput;
+               kind != SlotKind::FurnaceOutput && kind != SlotKind::AnvilOutput;
     }
 };
 
@@ -115,6 +124,9 @@ struct ScreenContext final {
     // sites build this aggregate positionally, and a field inserted above
     // `gameMode` silently shifts every one of them.
     glm::ivec3 enchantingTable{};
+    // ENCH-3: the anvil's cell, carried for the same reason — the menu is on
+    // the player, this only says which block the screen belongs to.
+    glm::ivec3 anvil{};
 };
 
 // The screens' slot layout and click routing in one place.

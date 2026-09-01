@@ -116,6 +116,11 @@ inline constexpr BakedIngredient kCraftIng_66[] = {
 // diamond), transcribed from 26.1 data/minecraft/recipe/enchanting_table.json.
 inline constexpr BakedIngredient kCraftIng_67[] = {{IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:book"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Block, "rebedrock:obsidian"}, {IngredientDefKind::Item, "rebedrock:diamond"}, {IngredientDefKind::Block, "rebedrock:obsidian"}, {IngredientDefKind::Block, "rebedrock:obsidian"}, {IngredientDefKind::Block, "rebedrock:obsidian"}};
 
+// ENCH-3: block of iron (9 ingots) and the anvil ("III"/" i "/"iii", I = block
+// of iron, i = iron ingot), transcribed from 26.1's recipe/anvil.json.
+inline constexpr BakedIngredient kCraftIng_68[] = {{IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}};
+inline constexpr BakedIngredient kCraftIng_69[] = {{IngredientDefKind::Block, "rebedrock:iron_block"}, {IngredientDefKind::Block, "rebedrock:iron_block"}, {IngredientDefKind::Block, "rebedrock:iron_block"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}};
+
 inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     {"minecraft:oak_planks", 1, 1, false, false, kCraftIng_0, "rebedrock:oak_planks", 4},
     {"minecraft:spruce_planks", 1, 1, false, false, kCraftIng_1, "rebedrock:spruce_planks", 4},
@@ -191,6 +196,9 @@ inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     // ENCH-2: the enchanting table itself — without it the whole subtree is
     // survival-unreachable.
     {"minecraft:enchanting_table", 3, 3, false, false, kCraftIng_67, "rebedrock:enchanting_table", 1},
+    // ENCH-3: without the block of iron the anvil is uncraftable.
+    {"minecraft:iron_block", 3, 3, false, false, kCraftIng_68, "rebedrock:iron_block", 1},
+    {"minecraft:anvil", 3, 3, false, false, kCraftIng_69, "rebedrock:anvil", 1},
 };
 
 inline constexpr BakedFurnaceRecipe kBakedFurnaceRecipes[] = {

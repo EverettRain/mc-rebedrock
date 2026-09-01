@@ -505,6 +505,25 @@ inline constexpr std::array<ShapeBox, 4> kFenceGateBoxByFacing = [] {
 // same as vanilla's collision — while the lever is a small centred nub. All three
 // are noCollision, so this is only the interaction box, never a physics box. This
 // also fixes the lever, which defaulted to Cube and so used a full-cube pick box.
+// ENCH-3: AnvilBlock's four stacked boxes, in the Z-facing orientation
+// (`Shapes.or(column(12,0,4), column(8,10,4,5), column(4,8,5,10),
+// column(10,16,10,16))`). Vanilla rotates the whole set by the facing's AXIS
+// only — the anvil is symmetric front-to-back — so two arrays cover all four
+// facings.
+inline constexpr std::array<ShapeBox, 4> kAnvilBoxesZ{{
+    {2.0F / 16.0F, 0.0F, 2.0F / 16.0F, 14.0F / 16.0F, 4.0F / 16.0F, 14.0F / 16.0F},
+    {4.0F / 16.0F, 4.0F / 16.0F, 3.0F / 16.0F, 12.0F / 16.0F, 5.0F / 16.0F, 13.0F / 16.0F},
+    {6.0F / 16.0F, 5.0F / 16.0F, 4.0F / 16.0F, 10.0F / 16.0F, 10.0F / 16.0F, 12.0F / 16.0F},
+    {3.0F / 16.0F, 10.0F / 16.0F, 0.0F, 13.0F / 16.0F, 1.0F, 1.0F},
+}};
+// The same four boxes with x and z swapped, for a block facing east or west.
+inline constexpr std::array<ShapeBox, 4> kAnvilBoxesX{{
+    {2.0F / 16.0F, 0.0F, 2.0F / 16.0F, 14.0F / 16.0F, 4.0F / 16.0F, 14.0F / 16.0F},
+    {3.0F / 16.0F, 4.0F / 16.0F, 4.0F / 16.0F, 13.0F / 16.0F, 5.0F / 16.0F, 12.0F / 16.0F},
+    {4.0F / 16.0F, 5.0F / 16.0F, 6.0F / 16.0F, 12.0F / 16.0F, 10.0F / 16.0F, 10.0F / 16.0F},
+    {0.0F, 10.0F / 16.0F, 3.0F / 16.0F, 1.0F, 1.0F, 13.0F / 16.0F},
+}};
+
 [[nodiscard]] constexpr BlockShape shapeElementModel(BlockState state) {
     if (state.block() == Block::Lever) {
         return {ShapeKind::Boxes, 0.0F, 0.0F, {&kFloorTorchBox, 1}};
@@ -516,6 +535,14 @@ inline constexpr std::array<ShapeBox, 4> kFenceGateBoxByFacing = [] {
     // vanilla.
     if (state.block() == Block::EnchantingTable) {
         return {ShapeKind::Column, 0.0F, 12.0F / 16.0F, {}};
+    }
+    if (state.block() == Block::Anvil || state.block() == Block::ChippedAnvil ||
+        state.block() == Block::DamagedAnvil) {
+        const bool alongX = state.orientation() == BlockOrientation::East ||
+                            state.orientation() == BlockOrientation::West;
+        return {ShapeKind::Boxes, 0.0F, 0.0F,
+                alongX ? std::span<const ShapeBox>{kAnvilBoxesX}
+                       : std::span<const ShapeBox>{kAnvilBoxesZ}};
     }
     return {ShapeKind::Column, 0.0F, 2.0F / 16.0F, {}};
 }

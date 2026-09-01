@@ -742,6 +742,13 @@ void GameSession::publishSnapshots() {
         worldSnapshot_.furnaceFuelProgress = furnaceSystem_.fuelProgress(furnace);
         worldSnapshot_.furnaceCookProgress = furnaceSystem_.cookProgress(furnace);
     }
+    if (openAnvil_.has_value()) {
+        const AnvilMenu& menu = primaryPlayer().anvil;
+        worldSnapshot_.anvilLeft = menu.left;
+        worldSnapshot_.anvilRight = menu.right;
+        worldSnapshot_.anvilResult = menu.result;
+        worldSnapshot_.anvilCost = menu.cost;
+    }
     if (openEnchantingTable_.has_value()) {
         const EnchantingMenu& menu = primaryPlayer().enchanting;
         worldSnapshot_.enchantingItem = menu.item;
@@ -1147,6 +1154,7 @@ void GameSession::closeContainer() {
     openChest_.reset();
     openFurnace_.reset();
     openEnchantingTable_.reset();
+    openAnvil_.reset();
 }
 
 EnchantingMenu& GameSession::enchantingMenu() { return primaryPlayer().enchanting; }
@@ -1193,6 +1201,55 @@ bool GameSession::purchaseEnchantment(int optionIndex) {
     return true;
 }
 
+AnvilMenu& GameSession::anvilMenu() { return primaryPlayer().anvil; }
+
+const AnvilMenu& GameSession::anvilMenu() const { return primaryPlayer().anvil; }
+
+void GameSession::openAnvilContainer(glm::ivec3 anvil) {
+    anvilMenu().position = anvil;
+    refreshAnvilResult();
+    openContainerScreen_ = ContainerScreen::Anvil;
+    openChest_.reset();
+    openFurnace_.reset();
+    openEnchantingTable_.reset();
+    openAnvil_ = anvil;
+}
+
+void GameSession::refreshAnvilResult() {
+    // Qualified: the member and the free function share a name on purpose
+    // (this is the session's wrapper around Anvil.hpp's pure one), and
+    // unqualified lookup would find the member and recurse.
+    ::mc::gameplay::refreshAnvilResult(anvilMenu(), restoresHeldStack(gameMode()));
+}
+
+bool GameSession::takeAnvilResult(bool shiftHeld) {
+    if (openContainerScreen_ != ContainerScreen::Anvil) {
+        return false;
+    }
+    const bool infiniteMaterials = restoresHeldStack(gameMode());
+    // Vanilla's result slot refuses the click outright when the cursor is
+    // holding something the result cannot join — checked BEFORE anything is
+    // spent, so a refused take costs no levels and consumes no inputs.
+    if (!shiftHeld && !inventory().cursorStack().empty()) {
+        return false;
+    }
+    ItemStack taken;
+    if (!::mc::gameplay::takeAnvilResult(anvilMenu(), primaryPlayer().experience,
+                                        infiniteMaterials, taken)
+             .applied) {
+        return false;
+    }
+    // Shift-click sends the result to the inventory, a plain click to the
+    // cursor — the same two destinations every other result slot uses. What the
+    // inventory cannot take is dropped rather than deleted.
+    if (!shiftHeld) {
+        static_cast<void>(inventory().mergeIntoCursor(taken));
+    } else if (!inventory().add(taken) && !taken.empty()) {
+        spawnItemDrop(primaryPlayer().playerInput.lookDirection, taken);
+    }
+    return true;
+}
+
 bool GameSession::openChestContainer(ChestPosition position) {
     if (!chestSystem_.open(position)) {
         return false;
@@ -1209,7 +1266,8 @@ void GameSession::closeContainerMenu() {
     // the player. Unconditional, like the crafting grid above — a menu that was
     // never opened is empty, and a table that was mined while its screen was
     // open must still not eat the item.
-    for (ItemStack* slot : {&primaryPlayer().enchanting.item, &primaryPlayer().enchanting.lapis}) {
+    for (ItemStack* slot : {&primaryPlayer().enchanting.item, &primaryPlayer().enchanting.lapis,
+                           &primaryPlayer().anvil.left, &primaryPlayer().anvil.right}) {
         if (!inventory.add(*slot) && !slot->empty()) {
             // clearContainer's fallback: what the inventory could not take is
             // dropped in front of the player rather than deleted.
@@ -1217,6 +1275,7 @@ void GameSession::closeContainerMenu() {
         }
     }
     primaryPlayer().enchanting = {};
+    primaryPlayer().anvil = {};
     if (openChest_.has_value()) {
         chestSystem_.close(*openChest_);
     }
@@ -1229,6 +1288,7 @@ void GameSession::resetWorldState() {
     for (auto& [playerId, player] : players_) {
         player.crafting = {};
         player.enchanting = {};
+        player.anvil = {};
     }
     worldSimulation_ = {};
     primaryLevel().items = {};

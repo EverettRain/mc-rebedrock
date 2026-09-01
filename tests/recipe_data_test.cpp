@@ -133,8 +133,9 @@ void testBuiltinFloorResolves() {
     // sugar_cane block (paper now resolves) and added yellow_dye; AR-CX4-b added
     // flint_and_steel — so all 8 AR-CX crafting recipes (bow/arrow/shears/bucket/
     // paper/book/yellow_dye/flint_and_steel) resolve. ENCH-2 added the
-    // enchanting table itself (1).
-    assert(crafting.size() == 43U + 16U + 8U + 1U);
+    // enchanting table itself (1); ENCH-3 added the block of iron and the anvil
+    // it is crafted from (2).
+    assert(crafting.size() == 43U + 16U + 8U + 1U + 2U);
     assert(furnace.size() == 7U);
 
     // 1x1 log -> 4 planks, a block ingredient and a block output.
@@ -339,7 +340,7 @@ void testOverlayMerges() {
     // 43+16 built-ins (EQ-0 armor) + 8 AR-CX utility (paper resolves + yellow_dye
     // (AR-CX2) + flint_and_steel (AR-CX4-b)) + 1 ENCH-2 (enchanting_table) +
     // demo_combo (oak_planks replaced in place, not added).
-    assert(table.crafting().size() == 43U + 16U + 8U + 1U + 1U);
+    assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U + 1U);
     assert(findCrafting(table.crafting(), "minecraft:demo_combo") != nullptr);
     assert(findCrafting(table.crafting(), "minecraft:oak_planks")->output.count == 8U);
     const FurnaceRecipe* smelt = findFurnace(table.furnace(), "minecraft:demo_smelt");
@@ -351,7 +352,7 @@ void testNoDataFallback() {
     RecipeTable table;
     MemoryProvider empty;
     table.load(empty);
-    assert(table.crafting().size() == 43U + 16U + 8U + 1U);
+    assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U);
     assert(table.furnace().size() == 7U);
     assert(findCrafting(table.crafting(), "minecraft:oak_planks")->output.count == 4U);
 }
@@ -368,7 +369,7 @@ void testUnknownIdentifierSkipped() {
              R"({"width":1,"height":1,"ingredients":[{"item":"minecraft:coal"}],
                  "output":"minecraft:no_such_block","count":1})");
     table.load(pack);
-    assert(table.crafting().size() == 43U + 16U + 8U + 1U); // neither bad recipe was added
+    assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U); // neither bad recipe was added
     assert(findCrafting(table.crafting(), "minecraft:bad_item") == nullptr);
     assert(findCrafting(table.crafting(), "minecraft:bad_output") == nullptr);
 }

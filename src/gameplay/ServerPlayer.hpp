@@ -12,6 +12,7 @@
 // `playerInput` the simulation's own snapshot at the top of each tick.
 
 #include "gameplay/CraftingSystem.hpp"
+#include "gameplay/Anvil.hpp"
 #include "gameplay/EnchantingTable.hpp"
 #include "gameplay/Equipment.hpp"
 #include "gameplay/GameMode.hpp"
@@ -56,6 +57,10 @@ struct ServerPlayer final {
     // back on close — not block-entity state, so it needs no per-table storage
     // and no save-format change.
     EnchantingMenu enchanting;
+    // ENCH-3: the open anvil's two inputs and derived result. Menu-scoped for
+    // the same reason `enchanting` is — vanilla's ItemCombinerMenu owns its
+    // inputs and returns them in removed(), so the anvil block stores nothing.
+    AnvilMenu anvil;
     GameMode gameMode = GameMode::Creative;
 
     // The tick-owned swing/use timeline (N1), advanced with the world tick.

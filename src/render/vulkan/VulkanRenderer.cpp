@@ -3595,6 +3595,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             return snap.enchantingItem;
         case gameplay::SlotKind::EnchantingLapis:
             return snap.enchantingLapis;
+        case gameplay::SlotKind::AnvilLeft:
+            return snap.anvilLeft;
+        case gameplay::SlotKind::AnvilRight:
+            return snap.anvilRight;
+        case gameplay::SlotKind::AnvilOutput:
+            return snap.anvilResult;
         case gameplay::SlotKind::Equipment:
             // 存储侧每 tick 发布的四个护甲槽加副手，即 WorldSnapshot::equipmentSlots
             // 该数组按 EquipmentSlot 的底层值索引

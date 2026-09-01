@@ -209,6 +209,67 @@ inline ModelElement enchantingTableElement() {
     return e;
 }
 
+// ENCH-3: the anvil, transcribed from vanilla models/block/template_anvil.json —
+// four stacked boxes (base, waist, neck, top plate) with the literal per-face uv
+// rects the model carries. Slot 0 is #body (block/anvil), slot 1 is #top, which
+// is what the three wear states differ in. The `west`/`east` faces whose uv runs
+// backwards (e.g. [4,2,0,14]) are vanilla's own mirrored rects and are kept
+// as-is: flipping them "to look right" is how a model stops matching vanilla.
+inline std::vector<ModelElement> anvilElements() {
+    std::vector<ModelElement> elements;
+    {
+        ModelElement base;
+        base.from16 = {2.0F, 0.0F, 2.0F};
+        base.to16 = {14.0F, 4.0F, 14.0F};
+        detail::putFace(base, Facing::Down, 0, detail::rect(2, 2, 14, 14));
+        detail::putFace(base, Facing::Up, 0, detail::rect(2, 2, 14, 14));
+        detail::putFace(base, Facing::North, 0, detail::rect(2, 12, 14, 16));
+        detail::putFace(base, Facing::South, 0, detail::rect(2, 12, 14, 16));
+        detail::putFace(base, Facing::West, 0, detail::rect(0, 2, 4, 14));
+        detail::putFace(base, Facing::East, 0, detail::rect(4, 2, 0, 14));
+        elements.push_back(base);
+    }
+    {
+        ModelElement waist;
+        waist.from16 = {4.0F, 4.0F, 3.0F};
+        waist.to16 = {12.0F, 5.0F, 13.0F};
+        detail::putFace(waist, Facing::Up, 0, detail::rect(4, 3, 12, 13));
+        detail::putFace(waist, Facing::North, 0, detail::rect(4, 11, 12, 12));
+        detail::putFace(waist, Facing::South, 0, detail::rect(4, 11, 12, 12));
+        detail::putFace(waist, Facing::West, 0, detail::rect(4, 3, 5, 13));
+        detail::putFace(waist, Facing::East, 0, detail::rect(5, 3, 4, 13));
+        elements.push_back(waist);
+    }
+    {
+        ModelElement neck;
+        neck.from16 = {6.0F, 5.0F, 4.0F};
+        neck.to16 = {10.0F, 10.0F, 12.0F};
+        detail::putFace(neck, Facing::North, 0, detail::rect(6, 6, 10, 11));
+        detail::putFace(neck, Facing::South, 0, detail::rect(6, 6, 10, 11));
+        detail::putFace(neck, Facing::West, 0, detail::rect(5, 4, 10, 12));
+        detail::putFace(neck, Facing::East, 0, detail::rect(10, 4, 5, 12));
+        elements.push_back(neck);
+    }
+    {
+        ModelElement top;
+        top.from16 = {3.0F, 10.0F, 0.0F};
+        top.to16 = {13.0F, 16.0F, 16.0F};
+        detail::putFace(top, Facing::Down, 0, detail::rect(3, 0, 13, 16));
+        detail::putFace(top, Facing::Up, 1, detail::rect(3, 0, 13, 16));
+        detail::putFace(top, Facing::North, 0, detail::rect(3, 0, 13, 6));
+        detail::putFace(top, Facing::South, 0, detail::rect(3, 0, 13, 6));
+        detail::putFace(top, Facing::West, 0, detail::rect(10, 0, 16, 16));
+        detail::putFace(top, Facing::East, 0, detail::rect(16, 0, 10, 16));
+        elements.push_back(top);
+    }
+    return elements;
+}
+
+[[nodiscard]] constexpr bool isAnvil(Block block) {
+    return block == Block::Anvil || block == Block::ChippedAnvil ||
+           block == Block::DamagedAnvil;
+}
+
 // The elements of an ElementModel block by kind (empty for a block that is not
 // one of the transcribed models).
 [[nodiscard]] inline std::vector<ModelElement> elementsFor(Block block, BlockState state) {
@@ -217,6 +278,9 @@ inline ModelElement enchantingTableElement() {
     case Block::Comparator: return comparatorElements(state);
     case Block::Lever: return leverElements(state);
     case Block::EnchantingTable: return {enchantingTableElement()};
+    case Block::Anvil:
+    case Block::ChippedAnvil:
+    case Block::DamagedAnvil: return anvilElements();
     default: return {};
     }
 }

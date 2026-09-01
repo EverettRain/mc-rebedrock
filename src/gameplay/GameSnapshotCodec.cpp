@@ -239,6 +239,10 @@ void appendWorld(std::vector<std::uint8_t>& bytes, const WorldSnapshot& snap) {
     }
     persistence::appendInteger(bytes, snap.enchantingBookshelfPower);
     persistence::appendInteger(bytes, snap.enchantingSeed);
+    codec::appendItemStack(bytes, snap.anvilLeft);
+    codec::appendItemStack(bytes, snap.anvilRight);
+    codec::appendItemStack(bytes, snap.anvilResult);
+    persistence::appendInteger(bytes, snap.anvilCost);
 }
 
 [[nodiscard]] std::optional<WorldSnapshot> readWorld(std::span<const std::uint8_t> bytes,
@@ -327,6 +331,10 @@ void appendWorld(std::vector<std::uint8_t>& bytes, const WorldSnapshot& snap) {
     }
     snap.enchantingBookshelfPower = persistence::readInteger<std::int32_t>(bytes, cursor);
     snap.enchantingSeed = persistence::readInteger<std::int32_t>(bytes, cursor);
+    if (!readStack(snap.anvilLeft)) return std::nullopt;
+    if (!readStack(snap.anvilRight)) return std::nullopt;
+    if (!readStack(snap.anvilResult)) return std::nullopt;
+    snap.anvilCost = persistence::readInteger<std::int32_t>(bytes, cursor);
     return snap;
 }
 

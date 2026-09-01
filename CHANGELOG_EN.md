@@ -27,6 +27,21 @@ simple versioned history while it is in beta.
 
 ### Added
 
+- The anvil, in its three wear states, and the block of iron it is crafted from.
+  Place it, right-click, and you get two input slots and an output: repair a tool
+  with its own material (a quarter of its durability per ingot, charging only the
+  ingots it actually uses), combine two of the same item (durability adds plus a
+  12% bonus, and their enchantments merge — equal levels step up by one, unequal
+  ones take the higher, and a conflicting one is refused but still charged for),
+  or spend an enchanted book on a piece of gear. Every trip through the anvil
+  makes the next one more expensive, until at 40 levels the item is Too
+  Expensive and can never be worked again. Renaming is **not** in yet: it needs
+  somewhere to keep a custom name on the item, which is a storage decision of its
+  own.
+- Mending. A damaged item carrying Mending, worn or held, takes experience orbs
+  before your level bar does — two durability per point — and only what is left
+  over becomes experience.
+
 - Item tooltips now say what an item actually is:
   - the **name is coloured by rarity**, and an enchanted item moves up one step
     (a plain tool's name turns aqua once enchanted);

@@ -235,6 +235,14 @@ class GameSession final {
     // EnchantmentMenu#clickMenuButton: buy option `optionIndex` (0..2). Returns
     // whether anything was actually bought.
     bool purchaseEnchantment(int optionIndex);
+    // ENCH-3: the open anvil's menu, and the two operations on it. `refresh`
+    // re-derives the result after any slot change (ItemCombinerMenu#slotsChanged);
+    // `take` is the result-slot click that actually pays.
+    void openAnvilContainer(glm::ivec3 anvil);
+    [[nodiscard]] AnvilMenu& anvilMenu();
+    [[nodiscard]] const AnvilMenu& anvilMenu() const;
+    void refreshAnvilResult();
+    bool takeAnvilResult(bool shiftHeld);
     // Menu#removed: closes the open container and returns everything the cursor
     // and crafting grid were holding to the inventory. The renderer's inventory
     // close and world switch both end here, so it never reaches into the
@@ -248,6 +256,7 @@ class GameSession final {
     [[nodiscard]] const std::optional<glm::ivec3>& openEnchantingTable() const {
         return openEnchantingTable_;
     }
+    [[nodiscard]] const std::optional<glm::ivec3>& openAnvil() const { return openAnvil_; }
     // The current dig (for the renderer's crack overlay).
     [[nodiscard]] const PlayerInteraction& interaction() const { return playerInteraction_; }
 
@@ -918,6 +927,9 @@ class GameSession final {
     // state itself is on the ServerPlayer (see EnchantingTable.hpp); this is
     // only "which cell do I rescan for bookshelves".
     std::optional<glm::ivec3> openEnchantingTable_;
+    // ENCH-3: the anvil cell the open screen belongs to; the menu itself is on
+    // the ServerPlayer.
+    std::optional<glm::ivec3> openAnvil_;
 };
 
 } // namespace mc::gameplay

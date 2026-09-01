@@ -19,10 +19,17 @@
 #include "gameplay/Enchantment.hpp"
 #include "gameplay/Item.hpp"
 #include "gameplay/PlayerExperience.hpp"
+#include "gameplay/ContentRegistry.hpp"
+#include "gameplay/CraftingSystem.hpp"
+#include "gameplay/GameSession.hpp"
+#include "gameplay/GameSnapshotCodec.hpp"
+#include "gameplay/ItemUse.hpp"
 #include "gameplay/entities/ExperienceOrb.hpp"
+#include "world/BlockShape.hpp"
 
 #include <cassert>
 #include <utility>
+#include <variant>
 #include <iostream>
 
 namespace {
@@ -407,6 +414,158 @@ void testMendingIsDeterministic() {
     std::cout << "mending: same seed, same item picked\n";
 }
 
+// ---- the block, and reachability ----
+
+void testAnvilBlockIdentity() {
+    for (const mc::world::Block block :
+         {mc::world::Block::Anvil, mc::world::Block::ChippedAnvil,
+          mc::world::Block::DamagedAnvil}) {
+        const auto& definition = mc::world::blockDefinition(block);
+        assert(definition.container == mc::world::ContainerType::Anvil);
+        assert(definition.model == mc::world::BlockModel::ElementModel);
+        // Four stacked boxes, not a cube: it must not occlude or be face-sturdy.
+        assert(!mc::world::isFullCube(block));
+        const auto shape = mc::world::blockShape(mc::world::BlockState{block});
+        assert(shape.kind == mc::world::ShapeKind::Boxes);
+        assert(shape.boxes.size() == 4U);
+        assert(mc::world::hasCollision(block));
+        // Right-clicking opens the screen rather than using the held item.
+        const auto decision = decideBlockInteraction(mc::world::ContainerType::Anvil, false, false);
+        assert(decision.interaction == BlockInteraction::OpenAnvil);
+    }
+    // The shape rotates with the facing axis: the top plate runs along z when
+    // the anvil faces north/south and along x when it faces east/west.
+    const mc::world::BlockState facingNorth{mc::world::Block::Anvil,
+                                            mc::world::BlockOrientation::North};
+    const mc::world::BlockState facingEast{mc::world::Block::Anvil,
+                                           mc::world::BlockOrientation::East};
+    const auto north = mc::world::blockShape(facingNorth);
+    const auto east = mc::world::blockShape(facingEast);
+    assert(north.boxes[3].minZ == 0.0F && north.boxes[3].maxZ == 1.0F);
+    assert(east.boxes[3].minX == 0.0F && east.boxes[3].maxX == 1.0F);
+    std::cout << "block: three wear states, four-box shape that turns with the facing\n";
+}
+
+void testAnvilIsReachable() {
+    const auto& registry = contentRegistry();
+    std::size_t inFunctional = 0;
+    for (const auto& stack : registry.catalog(CreativeCategory::Functional)) {
+        if (stack.block == mc::world::Block::Anvil && stack.item != nullptr) {
+            ++inFunctional;
+        }
+    }
+    assert(inFunctional == 1U);
+    assert(blockItemFor(mc::world::Block::Anvil) != nullptr);
+
+    // And craftable: "III" / " i " / "iii" over a block of iron that is itself
+    // craftable, so the whole chain closes.
+    CraftingSystem crafting;
+    const auto put = [&](std::size_t index, const Item* item, mc::world::Block block) {
+        ItemStack& slot = crafting.tableGridSlot(index);
+        slot = {};
+        slot.item = item;
+        slot.block = block;
+        slot.count = 1U;
+    };
+    for (std::size_t index = 0; index < 9U; ++index) {
+        put(index, &items::IronIngot, mc::world::Block::Air);
+    }
+    assert(crafting.tableOutput().block == mc::world::Block::IronBlock);
+
+    const auto* ironBlockItem = blockItemFor(mc::world::Block::IronBlock);
+    for (std::size_t index = 0; index < 3U; ++index) {
+        put(index, ironBlockItem, mc::world::Block::IronBlock);
+    }
+    crafting.tableGridSlot(3) = {};
+    put(4, &items::IronIngot, mc::world::Block::Air);
+    crafting.tableGridSlot(5) = {};
+    for (std::size_t index = 6; index < 9U; ++index) {
+        put(index, &items::IronIngot, mc::world::Block::Air);
+    }
+    assert(crafting.tableOutput().block == mc::world::Block::Anvil);
+    std::cout << "reachability: in Functional, craftable, and its iron block is too\n";
+}
+
+// ---- the session wiring ----
+
+void testSessionWiring() {
+    const auto arm = [](GameSession& session, GameMode mode) {
+        session.primaryPlayer().gameMode = mode;
+        session.primaryPlayer().experience.setExperienceLevel(30);
+        session.openAnvilContainer(glm::ivec3{4, 5, 6});
+        AnvilMenu& menu = session.anvilMenu();
+        menu.left = tool(&items::IronPickaxe, 200U);
+        menu.right = stackOf(&items::IronIngot, 3U);
+        session.refreshAnvilResult();
+    };
+    {
+        GameSession session;
+        arm(session, GameMode::Survival);
+        assert(session.anvilMenu().cost == 3);
+        assert(session.takeAnvilResult(/*shiftHeld=*/true));
+        assert(session.primaryPlayer().experience.level() == 27);
+        assert(session.anvilMenu().left.empty());
+        // The repaired pickaxe went to the inventory and carries its penalty.
+        bool found = false;
+        for (const auto& stack : session.inventory().slots()) {
+            if (stack.item == &items::IronPickaxe) {
+                assert(stack.damage == 14U);
+                assert(stack.repairCost == 1U);
+                found = true;
+            }
+        }
+        assert(found);
+    }
+    // A closed screen refuses.
+    {
+        GameSession session;
+        arm(session, GameMode::Survival);
+        session.closeContainer();
+        assert(!session.takeAnvilResult(true));
+        assert(session.primaryPlayer().experience.level() == 30);
+    }
+    // Closing the menu hands the inputs back rather than eating them.
+    {
+        GameSession session;
+        arm(session, GameMode::Survival);
+        session.closeContainerMenu();
+        assert(session.anvilMenu().left.empty() && session.anvilMenu().right.empty());
+        int returned = 0;
+        for (const auto& stack : session.inventory().slots()) {
+            if (stack.item == &items::IronPickaxe || stack.item == &items::IronIngot) {
+                ++returned;
+            }
+        }
+        assert(returned == 2);
+    }
+    std::cout << "session: takes through XP-4, refuses when closed, hands inputs back\n";
+}
+
+void testSnapshotCarriesTheAnvilScreen() {
+    WorldSnapshot sent;
+    sent.openContainerScreen = ContainerScreen::Anvil;
+    sent.anvilLeft = tool(&items::DiamondPickaxe, 120U);
+    sent.anvilLeft.repairCost = 7U;
+    setEnchantmentLevel(sent.anvilLeft, EnchantmentId::Efficiency, 3U);
+    sent.anvilRight = enchantedBook(EnchantmentId::Unbreaking, 2U);
+    sent.anvilResult = tool(&items::DiamondPickaxe, 100U);
+    sent.anvilResult.repairCost = 15U;
+    sent.anvilCost = 17;
+
+    const auto bytes = encodeSnapshot(PublishedSnapshot{sent});
+    const auto decoded = decodeSnapshot(bytes);
+    assert(decoded.has_value());
+    const auto* received = std::get_if<WorldSnapshot>(&*decoded);
+    assert(received != nullptr);
+    assert(received->anvilCost == 17);
+    // The prior-work penalty has to cross too — the screen's price includes it.
+    assert(received->anvilLeft.repairCost == 7U);
+    assert(received->anvilResult.repairCost == 15U);
+    assert(enchantmentLevel(received->anvilLeft, EnchantmentId::Efficiency) == 3U);
+    assert(received->anvilRight.item == &items::EnchantedBook);
+    std::cout << "snapshot: the anvil screen, prior-work penalty included, crosses the codec\n";
+}
+
 } // namespace
 
 int main() {
@@ -422,6 +581,10 @@ int main() {
     testNonAnvilInputsDoNothing();
     testMendingDivertsOrbPoints();
     testMendingIsDeterministic();
+    testAnvilBlockIdentity();
+    testAnvilIsReachable();
+    testSessionWiring();
+    testSnapshotCarriesTheAnvilScreen();
     std::cout << "anvil: all checks passed\n";
     return 0;
 }

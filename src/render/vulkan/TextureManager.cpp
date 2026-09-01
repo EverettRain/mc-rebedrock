@@ -483,6 +483,11 @@ void TextureManager::createGuiTexture() {
          kEnchantingBarSpriteY + 20);
     blit(enchantingGui, sprite("container/enchanting_table/enchantment_slot_highlighted"), 0,
          kEnchantingBarSpriteY + 40);
+    // ENCH-3: the anvil's screen, packed the same way.
+    auto anvilGui = guiTex("container/anvil.png");
+    blit(anvilGui, sprite("container/anvil/text_field"), 0, kAnvilTextFieldSpriteY);
+    blit(anvilGui, sprite("container/anvil/text_field_disabled"), 0, kAnvilTextFieldSpriteY + 17);
+    blit(anvilGui, sprite("container/anvil/error"), kAnvilErrorSpriteX, kAnvilErrorSpriteY);
     // Screen.renderBackground 会在每个游戏内界面上铺一层竖直渐变
     // 顶部为 rgba(0x10,0x10,0x10,0xC0)，底部为 rgba(0x10,0x10,0x10,0xD0)
     // 把它烘成一个 256x256 层，各界面用一次精灵绘制就能拿到与 vanilla 完全一致的底衬
@@ -517,8 +522,9 @@ void TextureManager::createGuiTexture() {
         screenDimGradient,
         menuListBackground,
         enchantingGui,
+        anvilGui,
     };
-    constexpr std::uint32_t kGuiLayerCount = 15U;
+    constexpr std::uint32_t kGuiLayerCount = 16U;
     const int width = images.front().width;
     const int height = images.front().height;
     for (const auto& image : images) {
