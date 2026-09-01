@@ -49,6 +49,9 @@ simple versioned history while it is in beta.
 - Fixed the enchanting table's option tooltips, of which only the last was ever
   visible: they were drawn inside the per-option loop, so the first two were
   painted over by the options drawn after them.
+- Fixed hotbar items showing no tooltip in creative mode once any content tab was
+  open (the inventory tab was always fine): that row of slots only computed its
+  highlight and never handed the hovered item to the tooltip.
 
 ### Added
 

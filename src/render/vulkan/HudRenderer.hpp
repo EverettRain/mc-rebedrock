@@ -2113,9 +2113,14 @@ class HudRenderer final {
             }
             for (std::size_t index = 0; index < gameplay::Inventory::kHotbarSize; ++index) {
                 const auto slot = layout.creativeHotbarSlot(index);
+                const bool hovered = slot.contains(cursor.x, cursor.y);
+                // 目录页签下的快捷栏此前只算高亮、不记提示框，于是同一把剑在
+                // 背包页签有名字，切到任一内容页签悬停就什么都不显示。
+                if (hovered && !clientMirror.world().inventorySlots[index].empty()) {
+                    hoveredStack = clientMirror.world().inventorySlots[index];
+                }
                 drawHudSlot(commandBuffer, slot, clientMirror.world().inventorySlots[index],
-                            index == uiFrameData_.selectedHotbarSlot,
-                            slot.contains(cursor.x, cursor.y), true);
+                            index == uiFrameData_.selectedHotbarSlot, hovered, true);
             }
         }
 
