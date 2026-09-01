@@ -293,9 +293,22 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // contact pickup credits primaryPlayer().experience directly (no loot/
     // inventory indirection, unlike item drops). Reuses ItemPickup for the
     // collect sound; XP has no dedicated orb sound event yet (AU scope).
+    // ENCH-3: what Mending can repair — the four armor slots, the offhand and
+    // the held item, which is vanilla's own candidate set (getRandomItemWith
+    // walks the equipment slots, and the main hand is one of them). Rebuilt per
+    // tick because a slot's stack can move between ticks; six pointers on the
+    // stack, no allocation.
+    std::array<ItemStack*, kEquipmentSlotCount + 1U> mendingCandidates{};
+    for (std::size_t slot = 0; slot < kEquipmentSlotCount; ++slot) {
+        mendingCandidates[slot] =
+            &primaryPlayer().equipment.mutableSlot(static_cast<EquipmentSlot>(slot));
+    }
+    mendingCandidates[kEquipmentSlotCount] =
+        &primaryPlayer().inventory.mutableSlot(primaryPlayer().inventory.selectedHotbarSlot());
+    const MendingTargets mending{mendingCandidates, &mendingRandom_};
     if (primaryLevel().experienceOrbs.tick(world, primaryPlayer().controller.position(),
                                            !primaryPlayer().vitals.dead(),
-                                           primaryPlayer().experience) > 0) {
+                                           primaryPlayer().experience, mending) > 0) {
         events_.publish(SoundEvent{SoundEventKind::ItemPickup, primaryPlayer().controller.position()});
     }
     // The herd pushes back: Entity#pushAwayFrom moves both parties, so a pig

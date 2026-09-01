@@ -2722,6 +2722,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME enchanting_table COMMAND mc_rebedrock_enchanting_table_test)
 
+    add_executable(mc_rebedrock_anvil_test
+        tests/anvil_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_anvil_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_anvil_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME anvil COMMAND mc_rebedrock_anvil_test)
+
     endif()
 
 install(TARGETS mc_rebedrock RUNTIME DESTINATION bin)

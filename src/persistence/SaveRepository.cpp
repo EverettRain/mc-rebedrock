@@ -1446,6 +1446,12 @@ void appendStack(std::vector<std::uint8_t>& bytes, const SaveWriteContext& conte
         appendInteger(bytes, stack.enchantments[index].id);
         appendInteger(bytes, stack.enchantments[index].level);
     }
+    // ENCH-3: the anvil's prior-work penalty, one more byte on the same sparse
+    // tail — zero for every stack that has never been through an anvil, which
+    // is nearly all of them. Written unconditionally by this build; the READER
+    // is gated on the owning block/section version, exactly as the enchantment
+    // tail above is, so a pre-ENCH-3 save keeps its old version and skips it.
+    appendInteger(bytes, stack.repairCost);
 }
 
 // `includeEnchantments` is false only for a block/section version written
@@ -1455,7 +1461,7 @@ void appendStack(std::vector<std::uint8_t>& bytes, const SaveWriteContext& conte
 // enchantments" rather than "no damage").
 void readStackRecord(std::span<const std::uint8_t> payload, std::size_t& cursor,
                      const SaveReadContext& context, gameplay::ItemStack& stack,
-                     bool includeEnchantments = true) {
+                     bool includeEnchantments = true, bool includeRepairCost = true) {
     stack.block = resolveBlock(context, readInteger<std::uint16_t>(payload, cursor));
     stack.count = readInteger<std::uint8_t>(payload, cursor);
     stack.item = resolveItem(context, readInteger<std::uint16_t>(payload, cursor));
@@ -1465,6 +1471,7 @@ void readStackRecord(std::span<const std::uint8_t> payload, std::size_t& cursor,
     }
     stack.enchantmentCount = 0U;
     stack.enchantments = {};
+    stack.repairCost = 0U;
     if (!includeEnchantments) {
         return;
     }
@@ -1481,6 +1488,10 @@ void readStackRecord(std::span<const std::uint8_t> payload, std::size_t& cursor,
             stack.setEnchantmentRaw(id, level);
         }
     }
+    if (!includeRepairCost) {
+        return; // a pre-ENCH-3 owner: the stack has never seen an anvil
+    }
+    stack.repairCost = readInteger<std::uint8_t>(payload, cursor);
 }
 
 // A slot array written sparsely: only the occupied slots travel, each behind its
@@ -1508,7 +1519,8 @@ void appendSlots(std::vector<std::uint8_t>& bytes, const SaveWriteContext& conte
 
 template <typename Slots>
 void readSlots(std::span<const std::uint8_t> payload, std::size_t& cursor,
-               const SaveReadContext& context, Slots& slots, bool includeEnchantments = true) {
+               const SaveReadContext& context, Slots& slots, bool includeEnchantments = true,
+               bool includeRepairCost = true) {
     slots = Slots{};
     const auto used = readInteger<std::uint16_t>(payload, cursor);
     if (used > slots.size()) {
@@ -1519,7 +1531,8 @@ void readSlots(std::span<const std::uint8_t> payload, std::size_t& cursor,
         if (index >= slots.size()) {
             throw std::runtime_error("world.dat container references a slot it has not got");
         }
-        readStackRecord(payload, cursor, context, slots[index], includeEnchantments);
+        readStackRecord(payload, cursor, context, slots[index], includeEnchantments,
+                        includeRepairCost);
     }
 }
 
@@ -1626,7 +1639,7 @@ void readVersionBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
 // was ever worn", the same backward-compatibility shape XP-0's experience
 // fields and ENCH-0's enchantment tail use one version earlier each.
 constexpr std::uint32_t kPlayerBlockTag = blockTag("PLYR");
-constexpr std::uint16_t kPlayerBlockVersion = 4U;
+constexpr std::uint16_t kPlayerBlockVersion = 5U;
 
 void appendPlayerBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
     const auto& game = context.game;
@@ -1679,7 +1692,8 @@ void readPlayerBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
     // Enchantments arrived in version 3; a version 1 or 2 block's stacks read
     // back plain (enchantmentCount==0), the ENCH-0 backward-compatibility
     // case kPlayerBlockVersion's comment describes.
-    readSlots(payload, cursor, context, game.inventory, /*includeEnchantments=*/header.version >= 3U);
+    readSlots(payload, cursor, context, game.inventory, /*includeEnchantments=*/header.version >= 3U,
+              /*includeRepairCost=*/header.version >= 5U);
     // Experience arrived in version 2; a version-1 world leaves the
     // SaveGame's zero defaults (level 0, no progress, no history).
     if (header.version >= 2U) {
@@ -1698,7 +1712,8 @@ void readPlayerBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
     // there was never any equipment data to lose (armor items do not exist
     // yet as of this node either).
     if (header.version >= 4U) {
-        readSlots(payload, cursor, context, game.equipment, /*includeEnchantments=*/true);
+        readSlots(payload, cursor, context, game.equipment, /*includeEnchantments=*/true,
+                  /*includeRepairCost=*/header.version >= 5U);
     } else {
         game.equipment = {};
     }
@@ -2620,9 +2635,9 @@ constexpr std::uint32_t kTrappedChestSectionTag = blockTag("TCST");
 // same backward-compatible shape as kPlayerBlockVersion 3 (a version-1
 // section's stacks read back with enchantmentCount==0, exactly the "no
 // enchantment ever existed to lose" case).
-constexpr std::uint16_t kChestSectionVersion = 2U;
-constexpr std::uint16_t kFurnaceSectionVersion = 2U;
-constexpr std::uint16_t kTrappedChestSectionVersion = 2U;
+constexpr std::uint16_t kChestSectionVersion = 3U;
+constexpr std::uint16_t kFurnaceSectionVersion = 3U;
+constexpr std::uint16_t kTrappedChestSectionVersion = 3U;
 
 void appendBlockEntityBlock(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
     const auto& game = context.game;
@@ -2691,7 +2706,9 @@ void readBlockEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cu
                 if (!world::isWorldYInRange(chest.position.y)) {
                     throw std::runtime_error("world.dat contains an invalid chest position");
                 }
-                readSlots(payload, cursor, context, chest.items, /*includeEnchantments=*/section.version >= 2U);
+                readSlots(payload, cursor, context, chest.items,
+                          /*includeEnchantments=*/section.version >= 2U,
+                          /*includeRepairCost=*/section.version >= 3U);
                 game.chests.push_back(std::move(chest));
             }
         } else if (section.tag == kTrappedChestSectionTag &&
@@ -2709,7 +2726,9 @@ void readBlockEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cu
                 if (!world::isWorldYInRange(chest.position.y)) {
                     throw std::runtime_error("world.dat contains an invalid trapped chest position");
                 }
-                readSlots(payload, cursor, context, chest.items, /*includeEnchantments=*/section.version >= 2U);
+                readSlots(payload, cursor, context, chest.items,
+                          /*includeEnchantments=*/section.version >= 2U,
+                          /*includeRepairCost=*/section.version >= 3U);
                 game.trappedChests.push_back(std::move(chest));
             }
         } else if (section.tag == kFurnaceSectionTag &&
@@ -2728,9 +2747,13 @@ void readBlockEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cu
                     throw std::runtime_error("world.dat contains an invalid furnace position");
                 }
                 const bool includeEnchantments = section.version >= 2U;
-                readStackRecord(payload, cursor, context, furnace.input, includeEnchantments);
-                readStackRecord(payload, cursor, context, furnace.fuel, includeEnchantments);
-                readStackRecord(payload, cursor, context, furnace.output, includeEnchantments);
+                const bool includeRepairCost = section.version >= 3U;
+                readStackRecord(payload, cursor, context, furnace.input, includeEnchantments,
+                                includeRepairCost);
+                readStackRecord(payload, cursor, context, furnace.fuel, includeEnchantments,
+                                includeRepairCost);
+                readStackRecord(payload, cursor, context, furnace.output, includeEnchantments,
+                                includeRepairCost);
                 furnace.burnTicks = readInteger<std::int32_t>(payload, cursor);
                 furnace.initialBurnTicks = readInteger<std::int32_t>(payload, cursor);
                 furnace.cookTicks = readInteger<std::int32_t>(payload, cursor);

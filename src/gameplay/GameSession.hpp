@@ -894,6 +894,10 @@ class GameSession final {
     // never perturbs the orb scatter or the Thorns sequence, and the same save
     // replayed with the same purchases always lands on the same offers.
     world::gen::JavaRandom enchantmentSeedRandom_;
+    // ENCH-3: which damaged Mending item a collected experience orb repairs
+    // (vanilla's getRandomItemWith pick), on its own stream so a repair never
+    // perturbs the orb scatter or any other system's draws.
+    world::gen::JavaRandom mendingRandom_;
     // ENCH-1b: Unbreaking's per-durability-point skip stream. The DDC-2 effect
     // engine draws its random_chance (level/(level+1)) off this when a tool is
     // damaged, salted independently off the world seed like every per-system

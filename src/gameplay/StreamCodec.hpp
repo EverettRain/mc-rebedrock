@@ -101,6 +101,11 @@ inline void appendItemStack(std::vector<std::uint8_t>& bytes, const ItemStack& s
         persistence::appendInteger(bytes, stack.enchantments[index].id);
         persistence::appendInteger(bytes, stack.enchantments[index].level);
     }
+    // ENCH-3: the anvil's prior-work penalty. Live protocol, so no version gate
+    // (this message shape is never persisted across builds — see the banner).
+    // The client needs it because the anvil screen shows the price, and the
+    // price includes both inputs' penalties.
+    persistence::appendInteger(bytes, stack.repairCost);
 }
 
 [[nodiscard]] inline std::optional<ItemStack> readItemStack(std::span<const std::uint8_t> bytes,
@@ -122,6 +127,7 @@ inline void appendItemStack(std::vector<std::uint8_t>& bytes, const ItemStack& s
             ++storedCount;
         }
     }
+    const auto repairCost = persistence::readInteger<std::uint8_t>(bytes, cursor);
     // A real registered item wins over a same-named block — the mirror of
     // /give's fix (GameRuntime) and the general "Items registry beats the block
     // bridge" rule. Resolving the block first decoded an identifier like "wheat"
@@ -137,21 +143,21 @@ inline void appendItemStack(std::vector<std::uint8_t>& bytes, const ItemStack& s
     if (const core::ItemId id = itemRegistry().byName(identifier); id.valid()) {
         const Item* item = itemFromId(id);
         if (const auto* blockItem = asBlockItem(item); blockItem != nullptr) {
-            return ItemStack{blockItem->block(), count, item, damage, enchantments, storedCount};
+            return ItemStack{blockItem->block(), count, item, damage, enchantments, storedCount, repairCost};
         }
-        return ItemStack{world::Block::Air, count, item, damage, enchantments, storedCount};
+        return ItemStack{world::Block::Air, count, item, damage, enchantments, storedCount, repairCost};
     }
     if (const auto block = world::blockFromIdentifier(identifier); block.has_value()) {
-        return ItemStack{*block, count, nullptr, damage, enchantments, storedCount};
+        return ItemStack{*block, count, nullptr, damage, enchantments, storedCount, repairCost};
     }
     // A name only the block bridge knows (a block wielded as its BlockItem whose
     // block id resolved above already, so this is just a safety net for any item
     // that is neither a registry entry nor a block).
     if (const auto* item = itemFromIdentifier(identifier); item != nullptr) {
         if (const auto* blockItem = asBlockItem(item); blockItem != nullptr) {
-            return ItemStack{blockItem->block(), count, item, damage, enchantments, storedCount};
+            return ItemStack{blockItem->block(), count, item, damage, enchantments, storedCount, repairCost};
         }
-        return ItemStack{world::Block::Air, count, item, damage, enchantments, storedCount};
+        return ItemStack{world::Block::Air, count, item, damage, enchantments, storedCount, repairCost};
     }
     return std::nullopt;
 }

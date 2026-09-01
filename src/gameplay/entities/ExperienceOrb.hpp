@@ -34,6 +34,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace mc::world {
@@ -70,6 +71,29 @@ struct ExperienceOrb final {
     [[nodiscard]] friend bool operator==(const ExperienceOrb&, const ExperienceOrb&) = default;
 };
 
+// ENCH-3: where a collected orb goes BEFORE the player's level bar. An orb
+// touched while a damaged Mending item is worn or held repairs it instead
+// (2 durability per point), and only what is left over becomes experience —
+// ExperienceOrb#repairPlayerItems.
+//
+// The candidates are passed in as bare pointers rather than the orb system
+// reaching into a player: this pool has no business knowing what a ServerPlayer
+// is, and a test wants to hand it two stacks and nothing else. `rng` picks which
+// eligible item gets the points (vanilla's getRandomItemWith), so it must be a
+// caller-owned deterministic stream — never a wall clock.
+struct MendingTargets final {
+    std::span<ItemStack* const> candidates{};
+    world::gen::JavaRandom* rng = nullptr;
+};
+
+// ExperienceOrb#repairPlayerItems, transcribed: repair one randomly chosen
+// damaged Mending item, then recurse with the leftover points. Returns the
+// points that survive to become experience (all of them when nothing is
+// eligible). Exposed for its own test — the orb tick is not the only way to
+// reach it, and the arithmetic is the part worth pinning.
+[[nodiscard]] std::int32_t repairWithExperience(const MendingTargets& targets,
+                                                std::int32_t points);
+
 class ExperienceOrbSystem final {
   public:
     // Places one orb of exactly `value` points (no denomination splitting —
@@ -100,7 +124,8 @@ class ExperienceOrbSystem final {
     // nothing was picked up), so the caller can gate a pickup sound the way
     // ItemEntitySystem::tick's return value gates ItemPickup.
     [[nodiscard]] std::int32_t tick(const world::World& world, glm::vec3 playerPosition,
-                                    bool playerAlive, PlayerExperience& experience);
+                                    bool playerAlive, PlayerExperience& experience,
+                                    MendingTargets mending = {});
 
     [[nodiscard]] const std::vector<ExperienceOrb>& entities() const { return entities_; }
 

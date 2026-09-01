@@ -1,5 +1,9 @@
 #include "gameplay/entities/ExperienceOrb.hpp"
 
+#include "gameplay/Enchantment.hpp"
+
+#include <array>
+
 #include "gameplay/PlayerExperience.hpp"
 #include "world/Block.hpp"
 #include "world/World.hpp"
@@ -117,8 +121,52 @@ void ExperienceOrbSystem::restore(glm::vec3 position, glm::vec3 velocity, std::i
     entities_.push_back({position, position, velocity, value, count, ageTicks, pickupDelayTicks});
 }
 
+// ExperienceOrb#repairPlayerItems, transcribed including its recursion: repair
+// one randomly chosen damaged Mending item by 2 durability per point, then feed
+// whatever the repair did not consume to the next one. The leftover arithmetic
+// is vanilla's own `amount - repair * amount / toRepair`, which is proportional
+// rather than a plain subtraction — a nearly-whole item takes only the points it
+// needed and the rest travels on.
+std::int32_t repairWithExperience(const MendingTargets& targets, std::int32_t points) {
+    if (points <= 0 || targets.rng == nullptr || targets.candidates.empty()) {
+        return points;
+    }
+    // getRandomItemWith: uniformly among the items that BOTH carry Mending and
+    // are actually damaged. An undamaged Mending item is not a candidate, which
+    // is why a fully repaired kit stops absorbing experience.
+    std::array<ItemStack*, 8U> eligible{};
+    std::size_t eligibleCount = 0U;
+    for (ItemStack* const candidate : targets.candidates) {
+        if (candidate == nullptr || candidate->empty() || candidate->damage == 0U) {
+            continue;
+        }
+        if (enchantmentLevel(*candidate, EnchantmentId::Mending) == 0U) {
+            continue;
+        }
+        if (eligibleCount < eligible.size()) {
+            eligible[eligibleCount++] = candidate;
+        }
+    }
+    if (eligibleCount == 0U) {
+        return points;
+    }
+    ItemStack& chosen = *eligible[static_cast<std::size_t>(
+        targets.rng->nextInt(static_cast<std::int32_t>(eligibleCount)))];
+    // EnchantmentHelper#modifyDurabilityToRepairFromXp: Mending mends two
+    // durability per experience point.
+    const std::int32_t repairable = points * 2;
+    const std::int32_t repaired = std::min(repairable, static_cast<std::int32_t>(chosen.damage));
+    chosen.damage = static_cast<std::uint16_t>(chosen.damage - repaired);
+    if (repaired <= 0) {
+        return points;
+    }
+    const std::int32_t remaining = points - repaired * points / repairable;
+    return remaining > 0 ? repairWithExperience(targets, remaining) : 0;
+}
+
 std::int32_t ExperienceOrbSystem::tick(const world::World& world, glm::vec3 playerPosition,
-                                       bool playerAlive, PlayerExperience& experience) {
+                                       bool playerAlive, PlayerExperience& experience,
+                                       MendingTargets mending) {
     std::int32_t collectedPoints = 0;
 
     // followNearbyPlayer: within 8 blocks of the nearest ALIVE player (there is
@@ -249,7 +297,11 @@ std::int32_t ExperienceOrbSystem::tick(const world::World& world, glm::vec3 play
             // widened slightly for the orb's larger 0.5-wide box.
             if (glm::dot(delta, delta) <= 0.6F * 0.6F) {
                 const std::int32_t points = orb.value * orb.count;
-                experience.addExperience(points);
+                // ENCH-3: Mending takes its cut first. What is left over — all
+                // of it when nothing damaged is worn — becomes experience.
+                // `collectedPoints` still reports the FULL amount, because it
+                // only gates the pickup sound, which plays either way.
+                experience.addExperience(repairWithExperience(mending, points));
                 collectedPoints += points;
                 orb.count = 0;
             }

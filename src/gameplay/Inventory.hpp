@@ -60,6 +60,18 @@ struct ItemStack final {
     // stack — see enchantmentsEqual below, used by operator== and sameItem).
     std::array<EnchantmentInstance, kMaxEnchantmentsPerStack> enchantments{};
     std::uint8_t enchantmentCount = 0U;
+    // ENCH-3: DataComponents.REPAIR_COST — the anvil's "prior work penalty".
+    // Every anvil operation doubles it (2n+1), and it is added on top of the
+    // next operation's price, which is what makes repeatedly anvilling one item
+    // get exponentially more expensive until the 40-level wall refuses it
+    // outright. Without it an item could be combined without limit.
+    //
+    // A byte, saturating at 255, is exact rather than a compromise: the anvil
+    // refuses any operation costing 40 or more levels, so once this passes 40
+    // the item is permanently too expensive and no larger value is ever
+    // observable. The doubling sequence reaches that wall on the sixth
+    // operation (0,1,3,7,15,31,63) — long before the byte does.
+    std::uint8_t repairCost = 0U;
 
     [[nodiscard]] constexpr bool empty() const {
         return count == 0 || (item == nullptr && block == world::Block::Air);
@@ -123,6 +135,7 @@ struct ItemStack final {
 // the general-purpose value comparison callers such as tests reach for).
 [[nodiscard]] constexpr bool operator==(const ItemStack& first, const ItemStack& second) {
     if (first.count != second.count || first.damage != second.damage) return false;
+    if (first.repairCost != second.repairCost) return false;
     if (!enchantmentsEqual(first, second)) return false;
     if (isBlockStack(first) && isBlockStack(second)) return first.block == second.block;
     return first.item == second.item && first.block == second.block;
