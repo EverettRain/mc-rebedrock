@@ -19,7 +19,9 @@ namespace {
 
 using render::packVertex;
 
-enum class Face : std::uint8_t { PositiveX, NegativeX, PositiveY, NegativeY, PositiveZ, NegativeZ };
+// `Face` and `oppositeFace` moved to world/BlockShape.hpp with RN-8a: the cull
+// criterion is a question about shapes now, so the shape source and the mesher
+// have to name the six directions through one enum, not two.
 
 struct FaceDefinition final {
     Face face;
@@ -1001,41 +1003,69 @@ void appendWaterFace(
     }
 }
 
-[[nodiscard]] bool shouldRenderFace(
-    Block current, Block neighbor, const FaceDefinition& face) {
-    if (!isRenderable(neighbor)) {
-        return true;
-    }
-    const auto currentLayer = blockDefinition(current).renderLayer;
-    const auto neighborLayer = blockDefinition(neighbor).renderLayer;
-    // A truncated neighbor (farmland's 15/16 box) does not fill the whole cell,
-    // so it leaves a sliver of the shared face exposed above its top. Culling
-    // the face against it would leave a see-through gap at that sliver; keep the
-    // face so the neighbour's side stays visible above the farmland surface.
-    if (blockDefinition(neighbor).modelHeight < 1.0F) {
-        return true;
-    }
-    // A slab neighbour only fills half the cell (a double slab fills it, but the
-    // mesher sees the block, not the state), so it cannot occlude the shared
-    // face without knowing the neighbour's SlabType. Keep the face rather than
-    // risk culling against an open half; the extra faces against a double slab
-    // are the same conservative overdraw farmland already takes above.
-    if (isSlab(neighbor)) {
-        return true;
-    }
-    if (currentLayer == BlockRenderLayer::Translucent) {
-        return neighborLayer == BlockRenderLayer::Translucent && neighbor != current;
-    }
-    if (currentLayer == BlockRenderLayer::Cutout) {
-        if (isLeaves(current) && neighbor == current) {
+// RN-8a: everything the *current* cell contributes to the cull decision, read
+// once per cell instead of once per face. The old criterion asked
+// `blockDefinition(...).renderLayer` twice for every one of the six faces —
+// two random probes into a 92 KB, 272-byte-stride table that cannot sit in L1.
+// Hoisting the current side here and reducing the neighbour side to one bit of
+// the snapshot's flags_ is what makes the new criterion cheaper than the old
+// one, not merely more correct.
+struct CellCullContext final {
+    Block block = Block::Air;
+    // A non-Opaque bucket is the port of 26.1's `skipRendering` overrides: glass
+    // against the same glass, water against water, one pane against its twin.
+    bool skipsAgainstSame = false;
+    bool leaves = false;
+};
+
+[[nodiscard]] CellCullContext cellCullContext(Block block) {
+    return {block,
+            blockDefinition(block).renderLayer != BlockRenderLayer::Opaque,
+            isLeaves(block)};
+}
+
+// RN-8a: 26.1's `Block.shouldRenderFace` (Block.java:304), in the three steps
+// RN-8's design doc pins down — skipRendering, then "can the neighbour occlude
+// at all", then "does the neighbour's shape seal the shared face". The last two
+// are folded into `neighborSealsShared`, the neighbour's precomputed occlusion
+// bit: `faceOcclusionMask` already returns zero for a block whose `canOcclude`
+// is false, so a single bit answers both.
+//
+// What this replaces: a renderLayer three-way guess plus two hand-written
+// exemptions (a `modelHeight < 1` one for farmland and an `isSlab` one for the
+// state the old signature could not see). Both are gone — the shape answers
+// them, and answers them for every future block without a third exemption.
+[[nodiscard]] bool shouldRenderFace(const CellCullContext& current, Block neighbor,
+                                    bool neighborSealsShared, const FaceDefinition& face) {
+    if (current.skipsAgainstSame && neighbor == current.block) {
+        if (current.leaves) {
             // Keep one deterministic, double-sided internal sheet. Keeping
             // both produces coplanar z-fighting; removing both makes the
             // canopy as hollow as glass.
             return face.dx + face.dy + face.dz > 0;
         }
-        return neighbor != current && neighborLayer != BlockRenderLayer::Opaque;
+        return false;
     }
-    return neighborLayer != BlockRenderLayer::Opaque;
+    return !neighborSealsShared;
+}
+
+// Where the neighbour's BlockState went. RN-8's root cause was that this
+// judgement only ever saw the neighbour's *Block*, so it could not tell a double
+// slab from a half one and had to keep every face against either. The state now
+// reaches it — resolved into `neighborSealsShared` by
+// `MeshLightingSnapshot`'s fill, which is the one place that reads
+// `chunk->state()` and `blockShape()`. Handing this function a `BlockState`
+// instead would put both of those back on the per-face path, six times a cell,
+// which is the one thing RN-8's performance section forbids.
+
+// Reads the neighbour's precomputed seal bit for the shared face out of whichever
+// sampler the caller has. The face the *neighbour* has to seal is the opposite of
+// the one being drawn.
+template <typename Sampler>
+[[nodiscard]] bool neighborSealsSharedFace(const Sampler& lighting, int x, int y, int z,
+                                           const FaceDefinition& face) {
+    return lighting.faceOccludes(x + face.dx, y + face.dy, z + face.dz,
+                                 oppositeFace(face.face));
 }
 
 // The value on `box`'s min/max side of `axis` (dx/dy/dz of the face), picking the
@@ -1063,7 +1093,7 @@ template <typename Sampler>
 void appendBox(
     render::MeshData& mesh,
     const World& world,
-    Block block,
+    const CellCullContext& current,
     const ShapeBox& box,
     int x,
     int y,
@@ -1085,7 +1115,8 @@ void appendBox(
         if (boundary) {
             const Block neighbor =
                 lighting.blockType(x + face.dx, y + face.dy, z + face.dz);
-            if (!shouldRenderFace(block, neighbor, face)) {
+            if (!shouldRenderFace(current, neighbor,
+                                  neighborSealsSharedFace(lighting, x, y, z, face), face)) {
                 continue;
             }
         }
@@ -1099,7 +1130,7 @@ void appendBox(
             ? 1.0F
             : static_cast<float>(outsideLight.block) /
                   static_cast<float>(ChunkLightSampler::kMaximumLightLevel);
-        const float layer = textureLayer(world, block, face.face, x, y, z);
+        const float layer = textureLayer(world, current.block, face.face, x, y, z);
         std::array<float, 4> ambientOcclusion{};
         for (std::size_t corner = 0; corner < face.corners.size(); ++corner) {
             ambientOcclusion[corner] = vertexAmbientOcclusion(
@@ -1128,7 +1159,7 @@ void appendBox(
             const std::uint8_t biomeMask = 0U;
             const int cornerX = x + static_cast<int>(std::lround(positionCorner.x));
             const int cornerZ = z + static_cast<int>(std::lround(positionCorner.z));
-            const auto tint = tints.tint(block, face.face, cornerX, cornerZ);
+            const auto tint = tints.tint(current.block, face.face, cornerX, cornerZ);
             mesh.vertices.push_back(packVertex(
                 (origin + positionCorner) - sectionOrigin,
                 face.normal,
@@ -1167,7 +1198,7 @@ template <typename Sampler>
 void appendSlab(
     render::MeshData& mesh,
     const World& world,
-    Block block,
+    const CellCullContext& current,
     SlabPortion portion,
     int x,
     int y,
@@ -1178,7 +1209,7 @@ void appendSlab(
     BiomeTintCache& tints) {
     const float low = portion == SlabPortion::Top ? 0.5F : 0.0F;
     const float high = portion == SlabPortion::Bottom ? 0.5F : 1.0F;
-    appendBox(mesh, world, block, ShapeBox{0.0F, low, 0.0F, 1.0F, high, 1.0F}, x, y, z,
+    appendBox(mesh, world, current, ShapeBox{0.0F, low, 0.0F, 1.0F, high, 1.0F}, x, y, z,
               lighting, quality, sectionOrigin, tints);
 }
 
@@ -1190,7 +1221,7 @@ template <typename Sampler>
 void appendBoxes(
     render::MeshData& mesh,
     const World& world,
-    Block block,
+    const CellCullContext& current,
     const BlockShape& shape,
     int x,
     int y,
@@ -1200,7 +1231,7 @@ void appendBoxes(
     const glm::vec3& sectionOrigin,
     BiomeTintCache& tints) {
     for (const ShapeBox& box : shape.boxes) {
-        appendBox(mesh, world, block, box, x, y, z, lighting, quality, sectionOrigin, tints);
+        appendBox(mesh, world, current, box, x, y, z, lighting, quality, sectionOrigin, tints);
     }
 }
 
@@ -1485,13 +1516,46 @@ void appendTorchModel(
 // an atlas layer, folds the element's glow (a lit redstone torch) into the cell
 // light, and emits. The per-element geometry/UV maths now lives in the baker, so
 // the diodes and lever no longer open-code their own UV-corner convention here.
+// RN-8b: a baked quad's `cullface` direction as one of the mesher's six faces.
+// bake::Facing is JE Direction order (Down, Up, North, South, West, East); North
+// is -Z and West is -X, exactly as bake::facingUnit says.
+[[nodiscard]] constexpr Face faceOfBakeFacing(bake::Facing facing) {
+    switch (facing) {
+    case bake::Facing::Down: return Face::NegativeY;
+    case bake::Facing::Up: return Face::PositiveY;
+    case bake::Facing::North: return Face::NegativeZ;
+    case bake::Facing::South: return Face::PositiveZ;
+    case bake::Facing::West: return Face::NegativeX;
+    case bake::Facing::East: return Face::PositiveX;
+    }
+    return Face::PositiveY;
+}
+
 template <typename Sampler>
-void appendElementModel(render::MeshData& mesh, Block block, BlockState state, int x, int y, int z,
-                        const Sampler& lighting, const glm::vec3& sectionOrigin) {
+void appendElementModel(render::MeshData& mesh, const CellCullContext& current, BlockState state,
+                        int x, int y, int z, const Sampler& lighting,
+                        const glm::vec3& sectionOrigin) {
+    const Block block = current.block;
     const float skyLight = lighting.sky(x, y, z);
     const float cellBlockLight = lighting.block(x, y, z);
     const glm::vec3 cell{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
     for (const bake::BakedElementQuad& baked : bake::bakeElementModel(block, state)) {
+        // RN-8b: the JE getQuads(direction) / getQuads(null) split. A quad the
+        // model left undeclared is unconditional; a quad with a `cullface` asks
+        // RN-8a's one criterion about that direction, so an anvil's base plate
+        // disappears against the block below exactly when a stone face would.
+        if (baked.quad.cull != bake::kNoCull) {
+            const auto& cullFace =
+                kFaces[static_cast<std::size_t>(
+                    faceOfBakeFacing(static_cast<bake::Facing>(baked.quad.cull)))];
+            const Block neighbor = lighting.blockType(x + cullFace.dx, y + cullFace.dy,
+                                                      z + cullFace.dz);
+            if (!shouldRenderFace(current, neighbor,
+                                  neighborSealsSharedFace(lighting, x, y, z, cullFace),
+                                  cullFace)) {
+                continue;
+            }
+        }
         const float layer = modelSlotLayer(block, baked.quad.slot);
         std::array<glm::vec3, 4> positions{};
         for (std::size_t corner = 0; corner < 4; ++corner) {
@@ -1855,6 +1919,9 @@ bool buildSectionImpl(
                     continue;
                 }
                 const auto& definition = blockDefinition(current);
+                // RN-8a: the current cell's half of the cull criterion, read once
+                // here for all six faces instead of once per face.
+                const CellCullContext cull = cellCullContext(current);
                 auto& targetMesh = definition.renderLayer == BlockRenderLayer::Translucent
                     ? result.translucentMesh
                     : (definition.renderLayer == BlockRenderLayer::Cutout
@@ -1912,7 +1979,7 @@ bool buildSectionImpl(
                     // RN-4a-2: the diodes and lever — small multi-box models meshed
                     // from their transcribed elements, each with its own texture
                     // slot and UV rect.
-                    appendElementModel(targetMesh, current,
+                    appendElementModel(targetMesh, cull,
                                        chunk->state(localX, worldY, localZ), worldX, worldY,
                                        worldZ, lighting, sectionOrigin);
                     continue;
@@ -1937,7 +2004,7 @@ bool buildSectionImpl(
                     continue;
                 }
                 if (definition.model == BlockModel::Slab) {
-                    appendSlab(targetMesh, world, current,
+                    appendSlab(targetMesh, world, cull,
                                chunk->state(localX, worldY, localZ).slabPortion(),
                                worldX, worldY, worldZ, lighting, quality,
                                sectionOrigin, tints);
@@ -1962,12 +2029,12 @@ bool buildSectionImpl(
                     const BlockState state = chunk->state(localX, worldY, localZ);
                     const BlockShape shape = blockShape(state);
                     if (shape.kind == ShapeKind::Column) {
-                        appendBox(targetMesh, world, current,
+                        appendBox(targetMesh, world, cull,
                                   ShapeBox{0.0F, shape.bottom, 0.0F, 1.0F, shape.top, 1.0F},
                                   worldX, worldY, worldZ, lighting, quality, sectionOrigin,
                                   tints);
                     } else {
-                        appendBoxes(targetMesh, world, current, shape, worldX, worldY, worldZ,
+                        appendBoxes(targetMesh, world, cull, shape, worldX, worldY, worldZ,
                                     lighting, quality, sectionOrigin, tints);
                     }
                     continue;
@@ -1994,9 +2061,10 @@ bool buildSectionImpl(
                     // the neighbour through the sampler (O(1) on the production
                     // path) instead of a World hash lookup per face.
                     if (shouldRenderFace(
-                            current,
+                            cull,
                             lighting.blockType(
                                 worldX + face.dx, worldY + face.dy, worldZ + face.dz),
+                            neighborSealsSharedFace(lighting, worldX, worldY, worldZ, face),
                             face)) {
                         if (isFluid(current)) {
                             appendWaterFace(
@@ -2019,6 +2087,33 @@ bool buildSectionImpl(
     }
     return true;
 }
+
+// RN-8a: one byte of `MeshLightingSnapshot::flags_` per block, plus whether the
+// occlusion half of it has to be re-asked of the state. This is the snapshot's
+// own packing (bit0 opaque, bit1 aoOccludes, bits 2..7 the face mask), so it
+// lives here rather than beside `kOcclusionMaskByBlock`, which answers the
+// geometry question and knows nothing about flag bits.
+struct CellFlagEntry final {
+    std::uint8_t flags = 0U;
+    bool stateDependent = false;
+};
+
+inline constexpr std::array<CellFlagEntry, static_cast<std::size_t>(Block::Count)>
+    kCellFlagsByBlock = [] {
+        std::array<CellFlagEntry, static_cast<std::size_t>(Block::Count)> table{};
+        for (std::size_t index = 0; index < table.size(); ++index) {
+            const auto block = static_cast<Block>(index);
+            std::uint8_t flags = 0U;
+            if (mc::world::isOpaque(block)) flags |= 0x01U;
+            if (mc::world::aoOccludes(block)) flags |= 0x02U;
+            const std::uint8_t occlusion = kOcclusionMaskByBlock[index];
+            const bool stateDependent = (occlusion & kOcclusionStateDependent) != 0U;
+            table[index] = {static_cast<std::uint8_t>(
+                                flags | (stateDependent ? 0U : (occlusion << 2U))),
+                            stateDependent};
+        }
+        return table;
+    }();
 
 } // namespace
 
@@ -2077,8 +2172,24 @@ MeshLightingSnapshot::MeshLightingSnapshot(const World& world, ChunkPosition pos
                 }
                 const Block value = chunk->block(chunkLocalX, y, chunkLocalZ);
                 blockTypes_[cell] = static_cast<std::uint16_t>(value);
-                if (mc::world::isOpaque(value)) flags_[cell] |= 0x01U;
-                if (mc::world::aoOccludes(value)) flags_[cell] |= 0x02U;
+                // RN-8a: the whole flags byte — opaque, aoOccludes and the
+                // six-face occlusion mask — comes out of one L1-resident entry.
+                // The two predicates used to be a pair of random probes into the
+                // 92 KB block registry per cell; folding them in with the mask
+                // means adding the mask costs the fill a load *fewer* than
+                // before, not one more. Only a block whose shape reads its state
+                // (a slab's SlabType, an anvil's FACING) is worth a
+                // `chunk->state()`, and even that is once per cell, never per
+                // face — which is what lets the mesher's cull test be a single
+                // bit test on an array the AO path already pulls into cache.
+                const CellFlagEntry entry = kCellFlagsByBlock[static_cast<std::size_t>(value)];
+                std::uint8_t cellFlags = entry.flags;
+                if (entry.stateDependent) {
+                    cellFlags = static_cast<std::uint8_t>(
+                        (cellFlags & 0x03U) |
+                        (faceOcclusionMask(chunk->state(chunkLocalX, y, chunkLocalZ)) << 2U));
+                }
+                flags_[cell] = cellFlags;
                 skyLevels_[cell] = chunk->skyLight(chunkLocalX, y, chunkLocalZ);
                 blockLevels_[cell] = chunk->blockLight(chunkLocalX, y, chunkLocalZ);
             }
@@ -2130,6 +2241,13 @@ bool MeshLightingSnapshot::isOpaque(int x, int y, int z) const {
                mc::world::isOpaque(world_.block(x, y, z));
     }
     return (flags_[index(x, y, z)] & 0x01U) != 0U;
+}
+
+bool MeshLightingSnapshot::faceOccludes(int x, int y, int z, Face face) const {
+    if (!contains(x, y, z)) return false;
+    const std::uint8_t bit =
+        static_cast<std::uint8_t>(1U << (2U + static_cast<unsigned>(face)));
+    return (flags_[index(x, y, z)] & bit) != 0U;
 }
 
 bool MeshLightingSnapshot::aoOccludes(int x, int y, int z) const {

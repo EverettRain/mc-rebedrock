@@ -193,6 +193,12 @@ bool ChunkLightSampler::aoOccludes(int x, int y, int z) const {
     return mc::world::aoOccludes(world_.block(x, y, z));
 }
 
+bool ChunkLightSampler::faceOccludes(int x, int y, int z, Face face) const {
+    if (!isWorldYInRange(y)) return false;
+    return (faceOcclusionMask(world_.state(x, y, z)) &
+            static_cast<std::uint8_t>(1U << static_cast<std::size_t>(face))) != 0U;
+}
+
 int ChunkLightSampler::opacity(int x, int y, int z) const {
     if (!isWorldYInRange(y)) return 0;
     return mc::world::opacity(world_.block(x, y, z));

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "world/BlockShape.hpp"
 #include "world/World.hpp"
 
 #include <atomic>
@@ -35,6 +36,11 @@ class ChunkLightSampler final {
     // the others fall back to a World read (only used on the test/build paths).
     [[nodiscard]] bool isOpaque(int x, int y, int z) const;
     [[nodiscard]] bool aoOccludes(int x, int y, int z) const;
+    // RN-8a's face-occlusion question, the same one MeshLightingSnapshot answers
+    // from its precomputed mask. This variant has no mask array, so it resolves
+    // the cell's shape through World on every call — acceptable only because
+    // this sampler is the test/build path, never the meshing worker.
+    [[nodiscard]] bool faceOccludes(int x, int y, int z, Face face) const;
     [[nodiscard]] int opacity(int x, int y, int z) const;
     [[nodiscard]] Block blockType(int x, int y, int z) const;
 

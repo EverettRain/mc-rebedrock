@@ -47,12 +47,23 @@ struct BakedElementQuad final {
 
 namespace detail {
 
-// Set one face of an element by facing.
-inline void putFace(ModelElement& element, Facing facing, std::uint8_t slot, const FaceUv& uv) {
+// Set one face of an element by facing. `cull` is the model json's `cullface`
+// declaration (RN-8b) — the direction whose neighbour, if it seals that whole
+// cell wall, hides this quad. Faces vanilla leaves undeclared stay kNoCull and
+// are drawn unconditionally, which is JE's getQuads(null) half of the split.
+inline void putFace(ModelElement& element, Facing facing, std::uint8_t slot, const FaceUv& uv,
+                    std::uint8_t cull = kNoCull) {
     ElementFace& f = element.faces[static_cast<std::size_t>(facing)];
     f.present = true;
     f.slot = slot;
     f.uv = uv;
+    f.cull = cull;
+}
+
+// `cullface: "<that same side>"`, the shape every declaration in the models this
+// file transcribes happens to take.
+[[nodiscard]] inline std::uint8_t cullToward(Facing facing) {
+    return static_cast<std::uint8_t>(facing);
 }
 
 inline FaceUv rect(float minU, float minV, float maxU, float maxV) {
@@ -68,7 +79,12 @@ inline ModelElement diodeBaseElement() {
     e.to16 = {16.0F, 2.0F, 16.0F};
     putFace(e, Facing::Up, 1, rect(0, 0, 16, 16));
     for (const Facing side : {Facing::North, Facing::South, Facing::West, Facing::East}) {
-        putFace(e, side, 0, rect(0, 14, 16, 16));
+        // repeater_*.json / comparator.json: each side face carries
+        // `"cullface": "<that side>"`. (Their down face, which carries
+        // `"cullface": "down"`, is not transcribed here at all — the slab sits on
+        // its support, so the quad would never be visible; that omission predates
+        // RN-8b and is left as it was.)
+        putFace(e, side, 0, rect(0, 14, 16, 16), cullToward(side));
     }
     return e;
 }
@@ -128,9 +144,12 @@ inline ModelElement torchElement(const glm::vec3& from16, const glm::vec3& to16,
     ModelElement base;
     base.from16 = {5.0F, -0.02F, 4.0F};
     base.to16 = {11.0F, 2.98F, 12.0F};
-    for (const Facing f : {Facing::Down, Facing::Up}) {
-        detail::putFace(base, f, 0, detail::rect(5, 4, 11, 12));
-    }
+    // lever.json: the base's down face carries `"cullface": "down"`, its up face
+    // none. The cullface rides through attachTransform with the model, so a
+    // ceiling lever culls against the block above it.
+    detail::putFace(base, Facing::Down, 0, detail::rect(5, 4, 11, 12),
+                    detail::cullToward(Facing::Down));
+    detail::putFace(base, Facing::Up, 0, detail::rect(5, 4, 11, 12));
     for (const Facing f : {Facing::North, Facing::South, Facing::West, Facing::East}) {
         detail::putFace(base, f, 0, detail::rect(4, 0, 12, 3));
     }
@@ -201,10 +220,13 @@ inline ModelElement enchantingTableElement() {
     ModelElement e;
     e.from16 = {0.0F, 0.0F, 0.0F};
     e.to16 = {16.0F, 12.0F, 16.0F};
-    detail::putFace(e, Facing::Down, 2, detail::rect(0, 0, 16, 16));
+    // enchanting_table.json declares `cullface` on the down face and all four
+    // sides; the up face (the table is only 12 units tall) has none.
+    detail::putFace(e, Facing::Down, 2, detail::rect(0, 0, 16, 16),
+                    detail::cullToward(Facing::Down));
     detail::putFace(e, Facing::Up, 0, detail::rect(0, 0, 16, 16));
     for (const Facing side : {Facing::North, Facing::South, Facing::West, Facing::East}) {
-        detail::putFace(e, side, 1, detail::rect(0, 4, 16, 16));
+        detail::putFace(e, side, 1, detail::rect(0, 4, 16, 16), detail::cullToward(side));
     }
     return e;
 }
@@ -221,7 +243,10 @@ inline std::vector<ModelElement> anvilElements() {
         ModelElement base;
         base.from16 = {2.0F, 0.0F, 2.0F};
         base.to16 = {14.0F, 4.0F, 14.0F};
-        detail::putFace(base, Facing::Down, 0, detail::rect(2, 2, 14, 14));
+        // template_anvil.json: the base's down face is the model's only
+        // `"cullface"` declaration.
+        detail::putFace(base, Facing::Down, 0, detail::rect(2, 2, 14, 14),
+                        detail::cullToward(Facing::Down));
         detail::putFace(base, Facing::Up, 0, detail::rect(2, 2, 14, 14));
         detail::putFace(base, Facing::North, 0, detail::rect(2, 12, 14, 16));
         detail::putFace(base, Facing::South, 0, detail::rect(2, 12, 14, 16));

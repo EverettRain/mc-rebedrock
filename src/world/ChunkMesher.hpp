@@ -2,6 +2,7 @@
 
 #include "render/MeshData.hpp"
 #include "world/Block.hpp"
+#include "world/BlockShape.hpp"
 #include "world/Chunk.hpp"
 #include "world/World.hpp"
 #include "world/WorldConstants.hpp"
@@ -32,6 +33,10 @@ class MeshLightingSnapshot final {
     [[nodiscard]] float block(int x, int y, int z) const;
     [[nodiscard]] bool isOpaque(int x, int y, int z) const;
     [[nodiscard]] bool aoOccludes(int x, int y, int z) const;
+    // RN-8a: does the cell's state seal that one face? Precomputed into flags_
+    // at fill time, so the mesher's per-face cull test is a single bit read out
+    // of an array the AO path has already pulled into cache.
+    [[nodiscard]] bool faceOccludes(int x, int y, int z, Face face) const;
     [[nodiscard]] int opacity(int x, int y, int z) const;
     [[nodiscard]] Block blockType(int x, int y, int z) const;
     [[nodiscard]] SmoothLightingQuality quality() const { return quality_; }
@@ -47,7 +52,13 @@ class MeshLightingSnapshot final {
     int width_ = 0;
     int height_ = 0;
     int depth_ = 0;
-    // bit0 = opaque, bit1 = aoOccludes; blockTypes_ holds the Block enum value.
+    // bit0 = opaque, bit1 = aoOccludes, bits 2..7 = the RN-8a face-occlusion mask
+    // (bit 2+i seals Face(i), the BlockShape.hpp order). The mask rides in this
+    // array's spare bits rather than in one of its own on purpose: it is six bits
+    // per cell either way, but a seventh array would be +20% snapshot memory and
+    // a second cacheline stream, while the AO path already touches flags_ — so
+    // the cull test costs the same load twice over.
+    // blockTypes_ holds the Block enum value.
     // blockTypes_ is uint16, not uint8: the Block enum widened past 256 (STRUCT
     // registration), so a u8 here silently truncated any block id > 255 — e.g. a
     // deepslate ore (id 336+) read back as a sapling/wheat (id & 0xFF), which is

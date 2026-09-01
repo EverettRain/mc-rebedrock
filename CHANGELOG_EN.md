@@ -9,6 +9,14 @@ simple versioned history while it is in beta.
 
 ### Fixed
 
+- Whether a face between two blocks gets drawn is now decided by the neighbour's
+  actual shape instead of guessed from its render category. Four artefacts go
+  away together: a torch (or stairs, wall, door, grass) beside water no longer
+  opens a see-through hole at the boundary, an anvil no longer sits over a ring
+  of holes, the seam beside an enchanting table is closed, and the hidden faces
+  under a double slab or farmland are no longer drawn for nothing.
+- A dirt path is 15/16 tall again, as in vanilla: walking onto one and aiming at
+  one no longer treat it as a full block.
 - The anvil's rename box now shows the item's current name (it used to be blank
   for anything that had never been renamed), and taking the result without
   touching the box no longer charges a level for a rename that did not happen.

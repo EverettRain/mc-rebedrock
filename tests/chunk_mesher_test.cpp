@@ -31,6 +31,60 @@ void expectNear(float actual, float expected, std::string_view context) {
     return mc::render::decodeLocalPosition(vertex);
 }
 
+// RN-8a: how many vertices of `mesh` carry `normal` and sit exactly on the plane
+// `axis` (0=x, 1=y, 2=z) == `coordinate`. A drawn face contributes its 4 corners,
+// a culled one contributes none — which is the whole question the RN-8a
+// criterion answers, asked at the mesh instead of at the predicate.
+[[nodiscard]] int faceVertices(const mc::render::MeshData& mesh, const glm::vec3& normal,
+                               int axis, float coordinate) {
+    int count = 0;
+    for (const auto& vertex : mesh.vertices) {
+        const auto actual = mc::render::decodeNormal(vertex);
+        if (std::abs(actual.x - normal.x) > 0.01F || std::abs(actual.y - normal.y) > 0.01F ||
+            std::abs(actual.z - normal.z) > 0.01F) {
+            continue;
+        }
+        const auto position = worldPos(vertex);
+        const float value = axis == 0 ? position.x : (axis == 1 ? position.y : position.z);
+        if (std::abs(value - coordinate) < 0.001F) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+// Meshes section 0 of a one-chunk world holding exactly `current` at (1, y, 1)
+// and `neighbour` at (2, y, 1) — an X-adjacent pair, so `current`'s +X face lies
+// on the plane x = 2.
+[[nodiscard]] mc::render::RenderMeshData meshPair(mc::world::BlockState current,
+                                                  mc::world::BlockState neighbour) {
+    mc::world::World world;
+    mc::world::Chunk chunk;
+    chunk.setState(1, mc::world::kMinY + 1, 1, current);
+    chunk.setState(2, mc::world::kMinY + 1, 1, neighbour);
+    if (current.block() == mc::world::Block::Water) {
+        chunk.setFluidLevel(1, mc::world::kMinY + 1, 1, 0U);
+    }
+    if (neighbour.block() == mc::world::Block::Water) {
+        chunk.setFluidLevel(2, mc::world::kMinY + 1, 1, 0U);
+    }
+    world.setChunk({0, 0}, std::move(chunk));
+    return mc::world::ChunkMesher::buildSection(world, {0, 0}, 0);
+}
+
+// The same pair stacked instead: `current` at (1, y, 1), `neighbour` directly
+// above it, so `current`'s +Y face lies on the plane y = 2 (section 0's origin is
+// kMinY, so the cell at kMinY + 1 has its ceiling at local y = 2).
+[[nodiscard]] mc::render::RenderMeshData meshStack(mc::world::BlockState current,
+                                                   mc::world::BlockState neighbour) {
+    mc::world::World world;
+    mc::world::Chunk chunk;
+    chunk.setState(1, mc::world::kMinY + 1, 1, current);
+    chunk.setState(1, mc::world::kMinY + 2, 1, neighbour);
+    world.setChunk({0, 0}, std::move(chunk));
+    return mc::world::ChunkMesher::buildSection(world, {0, 0}, 0);
+}
+
 } // namespace
 
 int main() {
@@ -623,6 +677,165 @@ int main() {
                 }
                 assert(found);
             }
+        }
+    }
+
+    // --- RN-8a / RN-8b: the face-cull criterion, row by row --------------------
+    //
+    // Every row of RN-8's zero-regression table, asserted at the mesh. The
+    // question each row asks is the same one: does `current` still emit the quad
+    // facing `neighbour`? The three rows this round exists for are marked; the
+    // rest are the ones that must NOT move, because the criterion changed from
+    // "what render bucket is the neighbour in" to "does the neighbour's shape
+    // seal this face", and only one cell of that table was supposed to flip.
+    {
+        using mc::world::Block;
+        using mc::world::BlockOrientation;
+        using mc::world::BlockState;
+        using mc::world::SlabPortion;
+        using mc::world::StateProperty;
+
+        constexpr glm::vec3 plusX{1.0F, 0.0F, 0.0F};
+        constexpr glm::vec3 plusY{0.0F, 1.0F, 0.0F};
+
+        // `current`'s +X face against `neighbour`, in the mesh bucket named.
+        const auto opaqueSideFace = [&](Block current, BlockState neighbour) {
+            return faceVertices(meshPair(BlockState{current}, neighbour).mesh, plusX, 0, 2.0F);
+        };
+        const auto waterSideFace = [&](BlockState neighbour) {
+            return faceVertices(meshPair(BlockState{Block::Water}, neighbour).translucentMesh,
+                                plusX, 0, 2.0F);
+        };
+        const auto glassSideFace = [&](Block current, Block neighbour) {
+            return faceVertices(meshPair(BlockState{current}, BlockState{neighbour}).translucentMesh,
+                                plusX, 0, 2.0F);
+        };
+
+        // 1. stone / stone — culled, as it always was. If this row ever draws,
+        //    the criterion is inverted and every solid surface doubles.
+        assert(opaqueSideFace(Block::Stone, BlockState{Block::Stone}) == 0);
+        // 2. stone / glass — drawn (glass cannot occlude).
+        assert(opaqueSideFace(Block::Stone, BlockState{Block::Glass}) == 4);
+        // 3. stone / leaves — drawn (Cutout cannot occlude).
+        assert(opaqueSideFace(Block::Stone, BlockState{Block::OakLeaves}) == 4);
+        // 4. stone / stairs — drawn. Overdraw that RN-8e may reclaim; not here.
+        assert(opaqueSideFace(Block::Stone, BlockState{Block::OakStairs}) == 4);
+        // 5. *** stone top / anvil above — drawn. Defect B: the anvil is in the
+        //    Opaque bucket, so the old renderLayer criterion culled the stone's
+        //    top face and left a 2px ring of holes around the anvil's 12x12 base.
+        //    Nothing about the anvil's tags changed; its four boxes simply seal
+        //    no face. This is one of the three acceptance rows. ***
+        assert(faceVertices(meshStack(BlockState{Block::Stone}, BlockState{Block::Anvil}).mesh,
+                            plusY, 1, 2.0F) == 4);
+        // 6. *** water / torch — drawn. Defect A: a Cutout neighbour used to cull
+        //    a translucent face, so a torch beside water opened a see-through
+        //    hole. Second acceptance row. ***
+        assert(waterSideFace(BlockState{Block::Torch}) == 4);
+        // 7. water / stairs, wall, door, grass — the rest of defect A's family.
+        assert(waterSideFace(BlockState{Block::OakStairs}) == 4);
+        assert(waterSideFace(BlockState{Block::MossyCobblestoneWall}) == 4);
+        assert(waterSideFace(BlockState{Block::OakDoor}) == 4);
+        assert(waterSideFace(BlockState{Block::GrassPlant}) == 4);
+        // 8. water / water — culled (skipRendering, same fluid).
+        assert(waterSideFace(BlockState{Block::Water}) == 0);
+        // 9. water / stone — culled.
+        assert(waterSideFace(BlockState{Block::Stone}) == 0);
+        // 10. glass / the same glass — culled (skipRendering).
+        assert(glassSideFace(Block::Glass, Block::Glass) == 0);
+        assert(glassSideFace(Block::WhiteStainedGlass, Block::WhiteStainedGlass) == 0);
+        // 11. glass / a different glass — drawn.
+        assert(glassSideFace(Block::WhiteStainedGlass, Block::OrangeStainedGlass) == 4);
+        // 12. stone / farmland — drawn. The old `modelHeight` exemption is gone;
+        //     farmland's 15/16 column seals only its own floor, which is the same
+        //     answer without the exemption existing.
+        assert(opaqueSideFace(Block::Stone, BlockState{Block::Farmland}) == 4);
+        // 13. stone / double slab — now culled. The old signature could not see
+        //     SlabType and had to keep the face against every slab; the snapshot
+        //     resolves the state, so a double slab occludes like the full cube it
+        //     is. A bottom slab still cannot seal a side face.
+        assert(opaqueSideFace(Block::Stone,
+                              BlockState{Block::StoneSlab}.with(
+                                  StateProperty::SlabType,
+                                  static_cast<std::uint8_t>(SlabPortion::Double))) == 0);
+        assert(opaqueSideFace(Block::Stone,
+                              BlockState{Block::StoneSlab}.with(
+                                  StateProperty::SlabType,
+                                  static_cast<std::uint8_t>(SlabPortion::Bottom))) == 4);
+        // 14. *** stone / dirt path — drawn. The regression gate for reading the
+        //     declared modelHeight instead of asking "is this Farmland": with the
+        //     identity check, dirt path was a full cube, and deleting the
+        //     modelHeight exemption would have culled this face and opened a 1/16
+        //     see-through seam above the path. Third acceptance row. ***
+        assert(opaqueSideFace(Block::Stone, BlockState{Block::DirtPath}) == 4);
+        // 15. stone / enchanting table — the side is drawn (Column{0,12/16} seals
+        //     no side face), while the table stacked on stone does cull the
+        //     stone's top, exactly as vanilla does. Neither needed a tag change.
+        assert(opaqueSideFace(Block::Stone, BlockState{Block::EnchantingTable}) == 4);
+        assert(faceVertices(
+                   meshStack(BlockState{Block::Stone}, BlockState{Block::EnchantingTable}).mesh,
+                   plusY, 1, 2.0F) == 0);
+
+        // RN-8b: a cullface declaration is consumed, not ignored. The enchanting
+        // table's west face carries `"cullface": "west"` in
+        // models/block/enchanting_table.json, so against stone it goes away and
+        // against air it stays. Its up face declares no cullface and is drawn
+        // either way — the getQuads(null) half of JE's split.
+        {
+            constexpr glm::vec3 minusX{-1.0F, 0.0F, 0.0F};
+            const auto againstStone = meshPair(BlockState{Block::Stone},
+                                               BlockState{Block::EnchantingTable});
+            assert(faceVertices(againstStone.mesh, minusX, 0, 2.0F) == 0);
+            const auto againstAir = meshPair(BlockState{Block::Air},
+                                             BlockState{Block::EnchantingTable});
+            assert(faceVertices(againstAir.mesh, minusX, 0, 2.0F) == 4);
+            // The table is 12/16 tall, so its up face sits at y = 1 + 12/16.
+            assert(faceVertices(againstStone.mesh, plusY, 1, 1.0F + 12.0F / 16.0F) == 4);
+        }
+        // RN-8b: the anvil base's down face is template_anvil.json's only
+        // cullface. Over stone it is culled; over air it is drawn.
+        {
+            constexpr glm::vec3 minusY{0.0F, -1.0F, 0.0F};
+            const auto overStone = meshStack(BlockState{Block::Stone}, BlockState{Block::Anvil});
+            assert(faceVertices(overStone.mesh, minusY, 1, 2.0F) == 0);
+            const auto overAir = meshStack(BlockState{Block::Air}, BlockState{Block::Anvil});
+            assert(faceVertices(overAir.mesh, minusY, 1, 2.0F) == 4);
+        }
+
+        // The overdraw guard RN-8's design doc asks for by name: a solid volume
+        // of one block must not gain a single vertex from the new criterion. A
+        // 4x4x4 cube of stone shows only its 6 outer 4x4 faces; a pool of water
+        // shows only its own surface and walls. If the criterion were inverted,
+        // both would explode by the interior faces.
+        {
+            mc::world::World solidWorld;
+            mc::world::Chunk solidChunk;
+            for (int y = 0; y < 4; ++y) {
+                for (int z = 0; z < 4; ++z) {
+                    for (int x = 0; x < 4; ++x) {
+                        solidChunk.setBlock(4 + x, mc::world::kMinY + 1 + y, 4 + z,
+                                            Block::Stone);
+                    }
+                }
+            }
+            solidWorld.setChunk({0, 0}, std::move(solidChunk));
+            const auto solid = mc::world::ChunkMesher::buildSection(solidWorld, {0, 0}, 0);
+            // 6 sides x 16 quads x 4 vertices, and nothing else.
+            assert(solid.mesh.vertices.size() == 6U * 16U * 4U);
+            assert(solid.cutoutMesh.empty() && solid.translucentMesh.empty());
+
+            mc::world::World poolWorld;
+            mc::world::Chunk poolChunk;
+            for (int y = 0; y < 4; ++y) {
+                for (int z = 0; z < 4; ++z) {
+                    for (int x = 0; x < 4; ++x) {
+                        poolChunk.setBlock(4 + x, mc::world::kMinY + 1 + y, 4 + z, Block::Water);
+                        poolChunk.setFluidLevel(4 + x, mc::world::kMinY + 1 + y, 4 + z, 0U);
+                    }
+                }
+            }
+            poolWorld.setChunk({0, 0}, std::move(poolChunk));
+            const auto pool = mc::world::ChunkMesher::buildSection(poolWorld, {0, 0}, 0);
+            assert(pool.translucentMesh.vertices.size() == 6U * 16U * 4U);
         }
     }
     return 0;

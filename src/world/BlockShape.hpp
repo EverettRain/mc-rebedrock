@@ -10,6 +10,25 @@
 
 namespace mc::world {
 
+// The six cell faces, in the mesher's own order. This lives here, next to the
+// shape source, because RN-8a made face occlusion a question about geometry:
+// `faceOccludesFully` below and the mesher's `shouldRenderFace` have to name the
+// same six directions, and a second enum is how the two would drift apart.
+enum class Face : std::uint8_t { PositiveX, NegativeX, PositiveY, NegativeY, PositiveZ, NegativeZ };
+inline constexpr std::size_t kFaceCount = 6;
+
+[[nodiscard]] constexpr Face oppositeFace(Face face) {
+    switch (face) {
+    case Face::PositiveX: return Face::NegativeX;
+    case Face::NegativeX: return Face::PositiveX;
+    case Face::PositiveY: return Face::NegativeY;
+    case Face::NegativeY: return Face::PositiveY;
+    case Face::PositiveZ: return Face::NegativeZ;
+    case Face::NegativeZ: return Face::PositiveZ;
+    }
+    return face;
+}
+
 // The one place a block's shape is answered.
 //
 // What this replaces, and why it exists: a block's geometry used to be re-stated
@@ -425,8 +444,16 @@ inline constexpr std::array<ShapeBox, 4> kFenceGateBoxByFacing = [] {
 // shape, or a solid full cube.
 [[nodiscard]] constexpr BlockShape shapeCube(BlockState state) {
     const Block block = state.block();
-    if (isFarmland(block)) {
-        return {ShapeKind::Column, 0.0F, kFarmlandModelHeight, {}};
+    // A truncated cube is whatever declared `.height()` — read the property, do
+    // not ask which block this is. The identity check this replaces named only
+    // Farmland, so DirtPath (Block.hpp, `.height(0.9375F)`) got a full-cube shape
+    // and stood 1/16 too tall under the pick ray and the walk. Reading the
+    // declaration fixes both blocks at once and makes the next `.height()` block
+    // correct on arrival — the same "no identity check, read the declared
+    // property" rule `canBeSubmerged` is built on.
+    const float declaredHeight = blockDefinition(block).modelHeight;
+    if (declaredHeight < 1.0F) {
+        return {ShapeKind::Column, 0.0F, declaredHeight, {}};
     }
     // A cube-model block: a solid full cube, or air/fluid which has no shape.
     if (!isSelectable(block) && !hasCollision(block)) {
@@ -617,6 +644,143 @@ static_assert(kShapeByModel.size() == static_cast<std::size_t>(BlockModel::Fire)
     const auto model = static_cast<std::size_t>(blockDefinition(state.block()).model);
     return detail::kShapeByModel[model](state);
 }
+
+namespace detail {
+
+// Does this one box cover the whole 1x1 cell wall on `face`? It must reach that
+// wall on the face's own axis and span the cell edge-to-edge on the other two.
+[[nodiscard]] constexpr bool boxSealsFace(const ShapeBox& box, Face face) {
+    const bool fullX = box.minX <= 0.0F && box.maxX >= 1.0F;
+    const bool fullY = box.minY <= 0.0F && box.maxY >= 1.0F;
+    const bool fullZ = box.minZ <= 0.0F && box.maxZ >= 1.0F;
+    switch (face) {
+    case Face::PositiveX: return box.maxX >= 1.0F && fullY && fullZ;
+    case Face::NegativeX: return box.minX <= 0.0F && fullY && fullZ;
+    case Face::PositiveY: return box.maxY >= 1.0F && fullX && fullZ;
+    case Face::NegativeY: return box.minY <= 0.0F && fullX && fullZ;
+    case Face::PositiveZ: return box.maxZ >= 1.0F && fullX && fullY;
+    case Face::NegativeZ: return box.minZ <= 0.0F && fullX && fullY;
+    }
+    return false;
+}
+
+} // namespace detail
+
+// RN-8a: does this shape seal `face` — cover that whole cell wall, so a
+// neighbour's facing quad can never be seen through it? This is 26.1's
+// `getFaceOcclusionShape(dir) == Shapes.block()` test (Block.shouldRenderFace,
+// Block.java:304), and it is what replaces the mesher's old renderLayer guess.
+//
+// It deliberately does not port 26.1's `Shapes.join` union algebra, for the
+// reason this header's preamble already gives: a face counts as sealed when a
+// *single* box in the set covers it. Today's roster has exactly one shape where
+// that differs from the union answer — a straight stair's back face, sealed by
+// its lower slab plus its step together — and that costs nothing, because a
+// stair's render layer is Cutout, so `canOcclude` is false and its mask is zero
+// either way. RN-8e, which is where stairs would gain an `occludes` bit, is
+// where the union has to arrive with it; the call sites do not change when it
+// does, only this function's Boxes arm.
+[[nodiscard]] constexpr bool faceOccludesFully(const BlockShape& shape, Face face) {
+    switch (shape.kind) {
+    case ShapeKind::Empty:
+        return false;
+    case ShapeKind::Column:
+        // A Column always fills its whole 1x1 footprint, so each cap only has to
+        // reach its own end of the cell, while a side face needs the full height.
+        switch (face) {
+        case Face::PositiveY:
+            return shape.top >= 1.0F;
+        case Face::NegativeY:
+            return shape.bottom <= 0.0F;
+        default:
+            return shape.bottom <= 0.0F && shape.top >= 1.0F;
+        }
+    case ShapeKind::Boxes:
+        for (const ShapeBox& box : shape.boxes) {
+            if (detail::boxSealsFace(box, face)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    return false;
+}
+
+// The six faces this state seals, as a bit per `Face` (bit i = Face(i)). A block
+// that cannot occlude at all masks to zero, so the mesher's per-face test is one
+// bit and never has to ask the block registry a second question.
+[[nodiscard]] constexpr std::uint8_t faceOcclusionMask(BlockState state) {
+    if (!canOcclude(state.block())) {
+        return 0U;
+    }
+    const BlockShape shape = blockShape(state);
+    std::uint8_t mask = 0U;
+    for (std::size_t f = 0; f < kFaceCount; ++f) {
+        if (faceOccludesFully(shape, static_cast<Face>(f))) {
+            mask |= static_cast<std::uint8_t>(1U << f);
+        }
+    }
+    return mask;
+}
+
+// The sentinel bit `kOcclusionMaskByBlock` sets for a block whose mask the state
+// decides (a slab's SlabType, an anvil's FACING). Bit 7, clear of the six face
+// bits, so a resolved mask still fits the snapshot's six spare flag bits.
+inline constexpr std::uint8_t kOcclusionStateDependent = 0x80U;
+
+namespace detail {
+
+// Whether a model's shape handler reads the state at all. Derived from the
+// handler set rather than hand-listed per block, so that when RN-8e gives the
+// geometrically-solid Cutout models an `occludes` bit, their sentinel appears
+// with it instead of having to be remembered.
+[[nodiscard]] constexpr bool shapeVariesWithState(BlockModel model) {
+    switch (model) {
+    case BlockModel::Slab:
+    case BlockModel::Stairs:
+    case BlockModel::Door:
+    case BlockModel::FenceGate:
+    case BlockModel::TrapDoor:
+    case BlockModel::PressurePlate:
+    case BlockModel::Button:
+    case BlockModel::Wall:
+    case BlockModel::Torch:
+    case BlockModel::Crop:
+    case BlockModel::ElementModel:
+        return true;
+    default:
+        return false;
+    }
+}
+
+} // namespace detail
+
+// RN-8a's main table: one byte per block, resolved at compile time. The
+// overwhelming majority of blocks answer the same six-face mask for every state
+// (a Cube seals all six, a Cross or a torch seals none), so the mesher's
+// snapshot fill reads this and is done; only a state-dependent block spends a
+// `chunk->state()` + `blockShape()` to resolve its sentinel, once per cell at
+// fill time and never on the per-face path.
+//
+// At ~350 bytes the whole table is L1-resident, unlike the 92 KB / 272 B-stride
+// block registry the old per-face `renderLayer` lookups were randomly indexing.
+inline constexpr std::array<std::uint8_t, static_cast<std::size_t>(Block::Count)>
+    kOcclusionMaskByBlock = [] {
+        std::array<std::uint8_t, static_cast<std::size_t>(Block::Count)> table{};
+        for (std::size_t index = 0; index < table.size(); ++index) {
+            const auto block = static_cast<Block>(index);
+            if (!canOcclude(block)) {
+                table[index] = 0U;
+                continue;
+            }
+            if (detail::shapeVariesWithState(blockDefinition(block).model)) {
+                table[index] = kOcclusionStateDependent;
+                continue;
+            }
+            table[index] = faceOcclusionMask(BlockState{block});
+        }
+        return table;
+    }();
 
 // The vertical span [bottom, top] of a collision box within its cell, in 0..1
 // cell-local units. An empty span (top <= bottom) means no collision.

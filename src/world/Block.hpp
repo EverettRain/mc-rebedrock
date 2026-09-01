@@ -3235,6 +3235,23 @@ static_assert(blockRegistryIsWellFormed(),
     return isRenderable(block) && blockDefinition(block).renderLayer == BlockRenderLayer::Opaque;
 }
 
+// RN-8a: whether this block occludes a neighbour's face at all — 26.1's
+// `BlockBehaviour.Properties.canOcclude` (the flag `noOcclusion()` clears), the
+// gate in front of `Block.shouldRenderFace`'s shape test. It is a *separate*
+// axis from the render bucket and from light opacity; those three are one field
+// here today, which is precisely the conflation RN-8 exists to unpick.
+//
+// The initial value is deliberately `renderLayer == Opaque` and nothing else.
+// Writing it as `isFullCube` would make glass (a Cube model) start occluding its
+// neighbours — a bigger regression than the bug being fixed — so this stays the
+// conservative reading of today's behaviour, and the only behaviour change RN-8a
+// makes comes from the *shape* half of the criterion. Giving Cutout blocks that
+// are geometrically solid (stairs, walls, double slabs) their own `occludes`
+// bit is RN-8e's, gated on FrameTrace evidence.
+[[nodiscard]] constexpr bool canOcclude(Block block) {
+    return isRenderable(block) && blockDefinition(block).renderLayer == BlockRenderLayer::Opaque;
+}
+
 [[nodiscard]] constexpr std::uint8_t skyLightOpacity(Block block) {
     if (isOpaque(block))
         return 15U;

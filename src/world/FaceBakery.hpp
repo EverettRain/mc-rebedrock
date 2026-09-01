@@ -189,6 +189,32 @@ namespace detail {
 
 inline constexpr float kPi = 3.14159265358979323846F;
 
+// The facing whose unit vector `v` points most nearly along — JE
+// Direction.getApproximateNearest, used to carry a cullface through a model
+// rotation.
+[[nodiscard]] inline Facing nearestFacing(const glm::vec3& v) {
+    Facing best = Facing::Up;
+    float bestDot = -2.0F;
+    for (std::uint8_t f = 0; f < kFacingCount; ++f) {
+        const float dot = glm::dot(v, facingUnit(static_cast<Facing>(f)));
+        if (dot > bestDot) {
+            bestDot = dot;
+            best = static_cast<Facing>(f);
+        }
+    }
+    return best;
+}
+
+// The cullface declaration carried through a model-state rotation. kNoCull
+// (a face vanilla left undeclared) stays kNoCull.
+[[nodiscard]] inline std::uint8_t rotateCull(std::uint8_t cull, const glm::mat3& rotation) {
+    if (cull == kNoCull) {
+        return cull;
+    }
+    return static_cast<std::uint8_t>(
+        nearestFacing(rotation * facingUnit(static_cast<Facing>(cull))));
+}
+
 // A right-handed single-axis rotation as a glm::mat3, matching ChunkMesher's
 // rotateAxis convention exactly (so wired content behaves identically).
 [[nodiscard]] inline glm::mat3 singleAxisMatrix(char axis, float degrees) {
@@ -322,7 +348,13 @@ inline void recalculateWinding(std::array<glm::vec3, 4>& positions,
     BakedQuad quad;
     quad.slot = face.slot;
     quad.tintIndex = face.tintIndex;
-    quad.cull = face.cull;
+    // RN-8b: JE BlockModel.bakeFace rotates the cullface with the model state
+    // (`Direction.rotate(state.getRotation().getMatrix(), face.cullface())`), so
+    // a lever bolted to the ceiling culls against the block above rather than the
+    // one below. Element rotation deliberately does not enter here: JE only
+    // carries the *state* rotation into the cullface, and an element-rotated face
+    // is no longer axis-aligned anyway.
+    quad.cull = detail::rotateCull(face.cull, state.rotation);
 
     const FaceUv uv = face.uv.absent ? defaultFaceUv(from16, to16, dir) : face.uv;
 
