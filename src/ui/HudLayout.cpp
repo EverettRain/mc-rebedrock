@@ -393,6 +393,16 @@ UiRect HudLayout::creativeScrollbarThumb(float scrollPosition) const {
     };
 }
 
+UiRect HudLayout::worldNameField() const {
+    const float width = 200.0F * scale_;
+    return {
+        (width_ - width) * 0.5F,
+        height_ * 0.5F - 58.0F * scale_,
+        width,
+        20.0F * scale_,
+    };
+}
+
 UiRect HudLayout::chatInput() const {
     return {
         2.0F * scale_,

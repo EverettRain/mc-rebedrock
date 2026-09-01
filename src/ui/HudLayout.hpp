@@ -112,6 +112,10 @@ class HudLayout final {
     [[nodiscard]] UiRect creativeScrollbarTrack() const;
     [[nodiscard]] UiRect creativeScrollbarThumb(float scrollPosition) const;
     [[nodiscard]] UiRect chatInput() const;
+    // 创建/编辑世界那个名称输入框，GUI spec §2.4 的 200x20 常用尺寸
+    // 几何从 HudRenderer 搬到这里，是因为 UI-1 之后有两个消费者：画它的一侧，
+    // 和驱动编辑的一侧——后者要用同一个宽度算横向滚动
+    [[nodiscard]] UiRect worldNameField() const;
     [[nodiscard]] UiRect menuButton(
         std::size_t index,
         std::size_t buttonCount = 3U) const;

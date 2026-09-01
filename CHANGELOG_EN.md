@@ -36,6 +36,20 @@ simple versioned history while it is in beta.
 
 ### Added
 
+- Text boxes are now real text boxes. Until now the two places you could type —
+  the world name on the create/edit world screen, and the chat and command line —
+  each had their own half-finished handler that could only append a character or
+  backspace one off the end, and neither would accept anything outside plain
+  ASCII, so an accented letter or a Chinese character simply did not arrive even
+  though the font could draw it. Both now share one widget with a real cursor:
+  arrow keys, Home and End, Shift+arrows and Ctrl+A to select, Ctrl+C/V/X for the
+  clipboard, Delete, Ctrl+arrow to jump a word and Ctrl+Backspace to delete one,
+  and horizontal scrolling so a long name no longer runs out of its box. A
+  backspace removes a whole character rather than one byte of it, so multi-byte
+  text edits correctly. The anvil's rename box is wired to the same widget but
+  stays greyed out — renaming still needs somewhere to store a custom name on the
+  item.
+
 - The anvil, in its three wear states, and the block of iron it is crafted from.
   Place it, right-click, and you get two input slots and an output: repair a tool
   with its own material (a quarter of its durability per ingot, charging only the

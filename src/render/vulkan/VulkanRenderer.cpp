@@ -473,7 +473,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             firstMouseSample = true;
         }
         if (chatOpen) {
-            chatInputText.clear();
+            chatInput = {};
             chatOpen = false;
         }
         simulationActive.store(false, std::memory_order_release);
@@ -1640,7 +1640,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             return;
         }
         try {
-            saveRepository.rename(menuSystem.editWorldIdentifier, menuSystem.editWorldName);
+            saveRepository.rename(menuSystem.editWorldIdentifier, menuSystem.editWorldName.value);
             refreshSaveList();
         } catch (const std::exception& exception) {
             menuSystem.saveStatus = "Rename failed: " + std::string{exception.what()};
@@ -1841,7 +1841,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         try {
             const auto seed = static_cast<std::uint64_t>(
                 std::chrono::high_resolution_clock::now().time_since_epoch().count());
-            auto save = runtime.createWorld(menuSystem.createWorldName, seed,
+            auto save = runtime.createWorld(menuSystem.createWorldName.value, seed,
                                             menuSystem.createWorldGameMode,
                                             menuSystem.createWorldAllowCommands);
             refreshSaveList();
@@ -1927,45 +1927,148 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
+    // UI-1: the two hand-rolled input handlers that used to live here — one per
+    // field, each with its own backspace, its own append and its own
+    // `codepoint >= 32 && <= 126` filter — are gone. What is left is a driver:
+    // it translates GLFW into ui::TextField's vocabulary, reaches the clipboard
+    // (the one thing the pure layer cannot), and owns the per-screen keys
+    // (Enter, Escape, Tab) that are the SCREEN's business, not the widget's.
+    //
+    // Editing itself happens in src/ui/TextField.cpp, where it is asserted.
+
+    // The measure/width pair for a field, built once per event so the editing
+    // side scrolls the window exactly where the painter will draw it.
+    [[nodiscard]] ui::TextFieldMetrics textFieldMetricsFor(const ui::UiRect& field, float scale,
+                                                           bool bordered) const {
+        return ui::TextFieldMetrics{
+            [this, scale](std::string_view piece) { return textFont.textWidth(piece, scale); },
+            ui::textFieldInnerWidth(field.width, scale, bordered)};
+    }
+
+    [[nodiscard]] ui::TextFieldMetrics worldNameMetrics() const {
+        const auto layout = currentHudLayout();
+        return textFieldMetricsFor(layout.worldNameField(), layout.scale(), true);
+    }
+
+    [[nodiscard]] ui::TextFieldMetrics chatMetrics() const {
+        const auto layout = currentHudLayout();
+        return textFieldMetricsFor(layout.chatInput(), layout.scale(), false);
+    }
+
+    [[nodiscard]] ui::TextFieldState& focusedWorldName() {
+        return menuSystem.pageStack.current() == ui::PageId::CreateWorld
+                   ? menuSystem.createWorldName
+                   : menuSystem.editWorldName;
+    }
+
+    // Clipboard round-trip. GLFW owns the system clipboard, so it stops here.
+    void copyToClipboard(const std::string& text) const {
+        if (!text.empty()) {
+            glfwSetClipboardString(window, text.c_str());
+        }
+    }
+
+    [[nodiscard]] std::string clipboardText() const {
+        const char* text = glfwGetClipboardString(window);
+        return text != nullptr ? std::string{text} : std::string{};
+    }
+
+    // The editing half of a key press, shared by every field. Returns true when
+    // the key belonged to the widget, so the caller only has to handle the keys
+    // that are its screen's.
+    bool editTextField(ui::TextFieldState& state, const ui::TextFieldRules& rules,
+                       const ui::TextFieldMetrics& metrics, int key, int action) {
+        if (action != GLFW_PRESS && action != GLFW_REPEAT) {
+            return false;
+        }
+        const ui::TextFieldModifiers modifiers{
+            (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+             glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS),
+            (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+             glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS)};
+
+        // Ctrl+A/C/X/V first: they are chords on letter keys, not editing keys.
+        if (modifiers.control) {
+            switch (key) {
+            case GLFW_KEY_A:
+                state = ui::textFieldApplyKey(std::move(state), rules, metrics,
+                                              ui::TextFieldKey::SelectAll, modifiers);
+                return true;
+            case GLFW_KEY_C:
+                copyToClipboard(ui::textFieldSelectedText(state));
+                return true;
+            case GLFW_KEY_X:
+                copyToClipboard(ui::textFieldSelectedText(state));
+                state = ui::textFieldApplyText(std::move(state), rules, metrics, "");
+                return true;
+            case GLFW_KEY_V:
+                state = ui::textFieldApplyText(std::move(state), rules, metrics, clipboardText());
+                return true;
+            default:
+                break;
+            }
+        }
+
+        ui::TextFieldKey editKey{};
+        switch (key) {
+        case GLFW_KEY_BACKSPACE: editKey = ui::TextFieldKey::Backspace; break;
+        case GLFW_KEY_DELETE:    editKey = ui::TextFieldKey::Delete;    break;
+        case GLFW_KEY_LEFT:      editKey = ui::TextFieldKey::Left;      break;
+        case GLFW_KEY_RIGHT:     editKey = ui::TextFieldKey::Right;     break;
+        case GLFW_KEY_HOME:      editKey = ui::TextFieldKey::Home;      break;
+        case GLFW_KEY_END:       editKey = ui::TextFieldKey::End;       break;
+        default:                 return false;
+        }
+        state = ui::textFieldApplyKey(std::move(state), rules, metrics, editKey, modifiers);
+        return true;
+    }
+
     // 创建/编辑世界的名称输入框：编辑键与 vanilla 的文本框一致，回车提交该页，Escape 退出
     void handleWorldNameKey(int key, int action) {
+        if (editTextField(focusedWorldName(), ui::kWorldNameFieldRules, worldNameMetrics(), key,
+                          action)) {
+            return;
+        }
+        if (action != GLFW_PRESS) {
+            return;
+        }
         const auto page = menuSystem.pageStack.current();
-        auto& name = page == ui::PageId::CreateWorld ? menuSystem.createWorldName
-                                                     : menuSystem.editWorldName;
-        if (key == GLFW_KEY_BACKSPACE && (action == GLFW_PRESS || action == GLFW_REPEAT) &&
-            !name.empty()) {
-            name.pop_back();
-        } else if ((key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) && action == GLFW_PRESS) {
+        if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) {
             playUiClick();
             if (page == ui::PageId::CreateWorld) {
                 startNewWorld();
             } else {
                 applyRename();
             }
-        } else if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
+        } else if (key == GLFW_KEY_ESCAPE) {
             menuSystem.pageStack.pop();
         }
     }
 
     void appendWorldNameCodepoint(unsigned int codepoint) {
-        auto& name = menuSystem.pageStack.current() == ui::PageId::CreateWorld
-                         ? menuSystem.createWorldName
-                         : menuSystem.editWorldName;
-        if (codepoint >= 32U && codepoint <= 126U && name.size() < 32U) {
-            name.push_back(static_cast<char>(codepoint));
-        }
+        auto& name = focusedWorldName();
+        name = ui::textFieldApplyChar(std::move(name), ui::kWorldNameFieldRules, worldNameMetrics(),
+                                      static_cast<char32_t>(codepoint));
     }
 
     void handleChatKey(int key, int action) {
-        if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
-            setChatOpen(false);
-        } else if ((key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) && action == GLFW_PRESS) {
-            submitChatInput();
-        } else if (key == GLFW_KEY_TAB && action == GLFW_PRESS) {
-            cycleChatSuggestion();
-        } else if (key == GLFW_KEY_BACKSPACE && (action == GLFW_PRESS || action == GLFW_REPEAT) &&
-                   !chatInputText.empty()) {
-            chatInputText.pop_back();
+        // Tab completion and the screen's own keys stay here; the editing keys
+        // are the widget's. The suggestion list is rebuilt after any edit that
+        // changed the line, exactly as the old handler did on backspace.
+        if (action == GLFW_PRESS && (key == GLFW_KEY_ESCAPE || key == GLFW_KEY_ENTER ||
+                                     key == GLFW_KEY_KP_ENTER || key == GLFW_KEY_TAB)) {
+            if (key == GLFW_KEY_ESCAPE) {
+                setChatOpen(false);
+            } else if (key == GLFW_KEY_TAB) {
+                cycleChatSuggestion();
+            } else {
+                submitChatInput();
+            }
+            return;
+        }
+        const std::string before = chatInput.value;
+        if (editTextField(chatInput, ui::kChatFieldRules, chatMetrics(), key, action) &&
+            chatInput.value != before) {
             refreshChatSuggestions();
         }
     }
@@ -1980,8 +2083,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             return;
         }
         suppressedOpeningChatCodepoint = 0U;
-        if (codepoint >= 32U && codepoint <= 126U && chatInputText.size() < 256U) {
-            chatInputText.push_back(static_cast<char>(codepoint));
+        const std::string before = chatInput.value;
+        chatInput = ui::textFieldApplyChar(std::move(chatInput), ui::kChatFieldRules, chatMetrics(),
+                                           static_cast<char32_t>(codepoint));
+        if (chatInput.value != before) {
             refreshChatSuggestions();
         }
     }
@@ -1998,7 +2103,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             screenMode() == input::ScreenMode::Play) {
             setChatOpen(true);
             if (key == GLFW_KEY_SLASH) {
-                chatInputText = "/";
+                chatInput = ui::textFieldWithValue("/", ui::kChatFieldRules, chatMetrics());
                 suppressedOpeningChatCodepoint = static_cast<unsigned int>('/');
             } else {
                 suppressedOpeningChatCodepoint = static_cast<unsigned int>('t');
@@ -2357,39 +2462,42 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void submitChatInput() {
-        if (chatInputText.empty()) {
+        const std::string line = chatInput.value;
+        if (line.empty()) {
             setChatOpen(false);
             return;
         }
-        if (chatInputText.front() == '/') {
+        if (line.front() == '/') {
             // 命令在下一个 tick 里由运行时的派发器在服务端执行，那里持有世界写区间
             // 结果由帧循环读回并追加进历史
-            runtime.enqueueChat(chatInputText);
+            runtime.enqueueChat(line);
         } else {
-            chatHistory.push("<Player> " + chatInputText, true, uiTimeSeconds);
+            chatHistory.push("<Player> " + line, true, uiTimeSeconds);
         }
-        chatInputText.clear();
+        chatInput = {};
         setChatOpen(false);
     }
 
-    // 为光标处的词重算补全列表，光标始终在输入末尾
+    // 为光标处的词重算补全列表
+    // UI-1 之前光标只可能在末尾，于是这里传的是整行长度；现在光标能停在行中间，
+    // 传的就是光标的**字节**偏移——派发器的 suggestion.start 与它同一坐标系
     // 输入一变就调用一次，Tab 只在已算好的列表里循环，不重算
     // 只有以 '/' 开头的命令行才补全，普通聊天不是命令，不给建议
     // vanilla 的聊天界面同样只为 '/' 开头的输入建补全器
     // 派发器对程序化调用方允许省略 '/'，这道门设在 UI 入口，普通聊天因此不会弹出补全框
     void refreshChatSuggestions() {
-        if (chatInputText.empty() || chatInputText.front() != '/') {
+        if (chatInput.value.empty() || chatInput.value.front() != '/') {
             chatSuggestions_.clear();
             chatSuggestionIndex_ = 0;
             return;
         }
-        chatSuggestions_ =
-            runtime.commandDispatcher().suggestions(chatInputText, chatInputText.size());
+        chatSuggestions_ = runtime.commandDispatcher().suggestions(
+            chatInput.value, ui::textFieldByteOffset(chatInput.value, chatInput.cursor));
         chatSuggestionIndex_ = 0;
     }
 
     // Tab 把高亮移到下一个候选并应用它
-    // 应用时替换从 suggestion.start 到行尾的那半个词
+    // 应用时替换从 suggestion.start 到**光标**的那半个词，替换完把光标放在插入内容之后
     // 已存的列表保留各自的偏移，因此再按一次 Tab 就换成下一个候选
     void cycleChatSuggestion() {
         if (chatSuggestions_.empty()) {
@@ -2400,10 +2508,19 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         chatSuggestionIndex_ = (chatSuggestionIndex_ + 1U) % chatSuggestions_.size();
         const auto& suggestion = chatSuggestions_[chatSuggestionIndex_];
-        if (suggestion.start <= chatInputText.size()) {
-            chatInputText.replace(suggestion.start, chatInputText.size() - suggestion.start,
-                                  suggestion.text);
+        const std::size_t cursorByte =
+            ui::textFieldByteOffset(chatInput.value, chatInput.cursor);
+        if (suggestion.start > cursorByte) {
+            return;
         }
+        std::string line = chatInput.value;
+        line.replace(suggestion.start, cursorByte - suggestion.start, suggestion.text);
+        const std::size_t cursorChars = ui::textFieldCharCount(
+            std::string_view{line}.substr(0, suggestion.start + suggestion.text.size()));
+        const auto metrics = chatMetrics();
+        chatInput = ui::textFieldWithValue(line, ui::kChatFieldRules, metrics);
+        chatInput = ui::textFieldMoveCursorTo(std::move(chatInput), ui::kChatFieldRules, metrics,
+                                              cursorChars, false);
     }
 
     // /tp 的两种形式共用同一套目标解析
@@ -2619,7 +2736,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             setInventoryOpenLocked(false);
         }
         if (pause && chatOpen) {
-            chatInputText.clear();
+            chatInput = {};
             chatOpen = false;
         }
         paused = pause;
@@ -2758,7 +2875,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
         };
         cb.createWorld = [this] {
-            menuSystem.createWorldName.clear();
+            menuSystem.createWorldName = {};
             menuSystem.createWorldGameMode = gameplay::GameMode::Survival;
             menuSystem.pageStack.push(ui::PageId::CreateWorld);
         };
@@ -2766,8 +2883,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (menuSystem.selectedWorldIndex < menuSystem.saveSummaries.size()) {
                 menuSystem.editWorldIdentifier =
                     menuSystem.saveSummaries[menuSystem.selectedWorldIndex].identifier;
-                menuSystem.editWorldName =
-                    menuSystem.saveSummaries[menuSystem.selectedWorldIndex].displayName;
+                menuSystem.editWorldName = ui::textFieldWithValue(
+                    menuSystem.saveSummaries[menuSystem.selectedWorldIndex].displayName,
+                    ui::kWorldNameFieldRules, worldNameMetrics());
                 menuSystem.pageStack.push(ui::PageId::EditWorld);
             }
         };
@@ -6354,7 +6472,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 世界中第三人称玩家自己的挥动序号记忆
     // 它的攻击弧线因此能独立于第一人称桥接，在重新开始时跳变
     std::optional<std::uint64_t> lastWorldSwingSequence_;
-    std::string chatInputText;
+    ui::TextFieldState chatInput;
     ui::ChatHistory chatHistory;
     // 打开着的聊天行的 Tab 补全状态
     // 含光标处那个词的候选列表，输入一变就重建，以及当前高亮的行
@@ -6532,7 +6650,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .inventoryDragSlots = inventoryDragSlots,
             .chatOpen = chatOpen,
             .chatHistory = chatHistory,
-            .chatInputText = chatInputText,
+            .chatInput = chatInput,
             .chatSuggestions_ = chatSuggestions_,
             .chatSuggestionIndex_ = chatSuggestionIndex_,
             .toastQueue = toastQueue_,

@@ -42,6 +42,7 @@
 #include "ui/MenuSystem.hpp"
 #include "ui/PageBuilder.hpp"
 #include "ui/PageStack.hpp"
+#include "ui/TextField.hpp"
 #include "ui/TextFont.hpp"
 #include "ui/TextWrap.hpp"
 #include "ui/UiFrameData.hpp"
@@ -81,6 +82,23 @@
 namespace mc::render {
 class HudRenderer final {
   public:
+    // The per-field look of a text box. Everything about WHAT the field holds
+    // lives in ui::TextFieldState/Rules; this is only how it is painted.
+    struct TextFieldStyle final {
+        // vanilla's bordered EditBox. Chat draws a full-width strip instead, and
+        // the anvil's field art comes with the container background — both pass
+        // false and supply their own background.
+        bool bordered = true;
+        glm::vec4 background{0.0F, 0.0F, 0.0F, 0.0F};
+        glm::vec4 textColor{0.878F, 0.878F, 0.878F, 1.0F}; // vanilla DEFAULT_TEXT_COLOR
+        bool shadow = true;
+        // An unfocused field shows its text but no blinking cursor.
+        bool focused = true;
+        // Grey text drawn after an appending cursor (the command completion's
+        // ghost text). Ignored where the cursor is mid-string, as in vanilla.
+        std::string suggestion;
+    };
+
     struct Bindings final {
         ui::MenuSystem& menuSystem;
         ui::UiFrameData& uiFrameData_;
@@ -113,7 +131,7 @@ class HudRenderer final {
         std::vector<gameplay::SlotRef>& inventoryDragSlots;
         bool& chatOpen;
         ui::ChatHistory& chatHistory;
-        std::string& chatInputText;
+        ui::TextFieldState& chatInput;
         std::vector<gameplay::command::Suggestion>& chatSuggestions_;
         std::size_t& chatSuggestionIndex_;
         ui::ToastQueue& toastQueue;
@@ -163,7 +181,7 @@ class HudRenderer final {
           containerScreen(b.containerScreen), activeChest(b.activeChest),
           debugOverlayOpen(b.debugOverlayOpen),
           inventoryDragActive(b.inventoryDragActive), inventoryDragSlots(b.inventoryDragSlots),
-          chatOpen(b.chatOpen), chatHistory(b.chatHistory), chatInputText(b.chatInputText),
+          chatOpen(b.chatOpen), chatHistory(b.chatHistory), chatInput(b.chatInput),
           chatSuggestions_(b.chatSuggestions_), chatSuggestionIndex_(b.chatSuggestionIndex_),
           toastQueue(b.toastQueue), subtitleFeed(b.subtitleFeed),
           currentSave(b.currentSave), displayedFps(b.displayedFps),
@@ -792,21 +810,102 @@ class HudRenderer final {
     }
 
     void drawWorldNameField(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
-                            const std::string& value) const {
+                            const ui::TextFieldState& state) const {
         const float scale = layout.scale();
-        const float width = 200.0F * scale;
-        const ui::UiRect field{(static_cast<float>(swapchainExtent.width) - width) * 0.5F,
-                               static_cast<float>(swapchainExtent.height) * 0.5F - 58.0F * scale,
-                               width, 20.0F * scale};
+        const ui::UiRect field = layout.worldNameField();
         drawHudText(commandBuffer, translated("selectWorld.enterName", "World Name"), field.x,
                     field.y - 12.0F * scale, scale, {0.85F, 0.85F, 0.85F, 1.0F});
-        drawHudQuad(commandBuffer, field, {0.02F, 0.02F, 0.02F, 0.95F});
-        drawHudQuad(commandBuffer,
-                    {field.x + scale, field.y + scale, field.width - 2.0F * scale,
-                     field.height - 2.0F * scale},
-                    {0.12F, 0.12F, 0.12F, 0.98F});
-        drawHudText(commandBuffer, value, field.x + 4.0F * scale, field.y + 6.0F * scale, scale,
-                    {1.0F, 1.0F, 1.0F, 1.0F});
+        drawTextField(commandBuffer, field, scale, state, ui::kWorldNameFieldRules,
+                      TextFieldStyle{});
+    }
+
+    // UI-1: the one text field painter. Everything typeable in the game goes
+    // through here, so the cursor, the selection and the horizontal scroll look
+    // and behave the same in all three places rather than in none of them.
+    //
+    // Geometry is GUI spec §2.4: a 1px 0xFFA0A0A0 border over a 0xFF000000 fill,
+    // text inset 4px and vertically centred on the box. The blink phase is
+    // computed HERE, from the UI clock, and never enters the state — that is
+    // what keeps the editing layer a pure function.
+    void drawTextField(VkCommandBuffer commandBuffer, const ui::UiRect& field, float scale,
+                       const ui::TextFieldState& state, const ui::TextFieldRules& rules,
+                       const TextFieldStyle& style) const {
+        if (style.bordered) {
+            drawHudQuad(commandBuffer, field, {0.627F, 0.627F, 0.627F, 1.0F});
+            drawHudQuad(commandBuffer,
+                        {field.x + scale, field.y + scale, field.width - 2.0F * scale,
+                         field.height - 2.0F * scale},
+                        {0.0F, 0.0F, 0.0F, 1.0F});
+        } else if (style.background.a > 0.0F) {
+            drawHudQuad(commandBuffer, field, style.background);
+        }
+
+        // The same inner width the driver measured with: displayStart lives in
+        // the state, so the two sides disagreeing would scroll the window to a
+        // place the text is not.
+        const float inset = ui::textFieldTextInset(scale, style.bordered);
+        const ui::TextFieldMetrics metrics{
+            [this, scale](std::string_view piece) { return hudTextWidth(piece, scale); },
+            ui::textFieldInnerWidth(field.width, scale, style.bordered)};
+        const auto view = ui::textFieldView(state, rules, metrics);
+        const float textX = field.x + inset;
+        const float textY = field.y + (field.height - 8.0F * scale) * 0.5F;
+        // vanilla's DEFAULT_TEXT_COLOR / textColorUneditable.
+        const glm::vec4 colour =
+            rules.editable ? style.textColor : glm::vec4{0.439F, 0.388F, 0.439F, 1.0F};
+
+        const std::size_t selectionFirst =
+            ui::textFieldByteOffset(view.visible, view.selectionStart);
+        const std::size_t selectionLast = ui::textFieldByteOffset(view.visible, view.selectionEnd);
+        const std::string before = view.visible.substr(0, selectionFirst);
+        const std::string selected =
+            view.visible.substr(selectionFirst, selectionLast - selectionFirst);
+        const std::string after = view.visible.substr(selectionLast);
+        const float selectionX = textX + hudTextWidth(before, scale);
+        const float selectionEndX = selectionX + hudTextWidth(selected, scale);
+
+        // The selection is a filled block with the text redrawn dark on top —
+        // the readable stand-in for vanilla's inverting blend, which this HUD
+        // pipeline has no equivalent of.
+        if (!selected.empty()) {
+            drawHudQuad(commandBuffer,
+                        {selectionX, textY - scale, selectionEndX - selectionX, 10.0F * scale},
+                        {0.85F, 0.85F, 0.95F, 1.0F});
+        }
+        if (!before.empty()) {
+            drawHudText(commandBuffer, before, textX, textY, scale, colour, style.shadow);
+        }
+        if (!selected.empty()) {
+            drawHudText(commandBuffer, selected, selectionX, textY, scale,
+                        {0.05F, 0.05F, 0.10F, 1.0F}, false);
+        }
+        if (!after.empty()) {
+            drawHudText(commandBuffer, after, selectionEndX, textY, scale, colour, style.shadow);
+        }
+
+        const float cursorX =
+            view.cursorOnScreen
+                ? textX + hudTextWidth(view.visible.substr(0, ui::textFieldByteOffset(
+                                                                    view.visible,
+                                                                    view.cursorOffset)),
+                                       scale)
+                : textX + field.width;
+        // EditBox draws the suggestion only where the cursor is appending, so it
+        // never collides with text the player is standing in the middle of.
+        if (!style.suggestion.empty() && !view.insertCursor) {
+            drawHudText(commandBuffer, style.suggestion, cursorX, textY, scale,
+                        {0.5F, 0.5F, 0.5F, 1.0F}, style.shadow);
+        }
+        // TextCursorUtils.isCursorVisible: a 300ms blink interval.
+        const bool blinkOn = static_cast<long long>(uiTimeSeconds * 1000.0) / 300LL % 2LL == 0LL;
+        if (style.focused && rules.editable && blinkOn && view.cursorOnScreen) {
+            if (view.insertCursor) {
+                drawHudQuad(commandBuffer, {cursorX - scale, textY - scale, scale, 10.0F * scale},
+                            colour);
+            } else {
+                drawHudText(commandBuffer, "_", cursorX, textY, scale, colour, style.shadow);
+            }
+        }
     }
 
     // 26.1 的菜单背景是从全景立方体内部以 85 度透视看出去
@@ -995,13 +1094,9 @@ class HudRenderer final {
                             {0.70F, 0.70F, 0.70F, 1.0F});
             }
         } else if (page == ui::PageId::CreateWorld) {
-            const std::string value = menuSystem.createWorldName +
-                                      (static_cast<int>(uiTimeSeconds * 2.0) % 2 == 0 ? "_" : "");
-            drawWorldNameField(commandBuffer, layout, value);
+            drawWorldNameField(commandBuffer, layout, menuSystem.createWorldName);
         } else if (page == ui::PageId::EditWorld) {
-            const std::string value = menuSystem.editWorldName +
-                                      (static_cast<int>(uiTimeSeconds * 2.0) % 2 == 0 ? "_" : "");
-            drawWorldNameField(commandBuffer, layout, value);
+            drawWorldNameField(commandBuffer, layout, menuSystem.editWorldName);
         } else if (page == ui::PageId::ConfirmDelete) {
             const std::string worldName =
                 menuSystem.selectedWorldIndex < menuSystem.saveSummaries.size()
@@ -1524,9 +1619,11 @@ class HudRenderer final {
     // cost centred at the bottom, and — when the price is at or past the wall —
     // vanilla's error marker over the output slot instead of a result.
     //
-    // The rename EditBox is deliberately absent: renaming needs a custom name
-    // ON THE STACK, which this build has no storage for (see ENCH-3's card).
-    // Drawing an inert text field would be worse than leaving the space blank.
+    // The rename EditBox is present but NOT editable: renaming needs a custom
+    // name ON THE STACK, which this build has no storage for (see ENCH-3's and
+    // UI-1's cards). UI-1 wires the box to the one text field layer so the day
+    // that storage lands it is a one-line flip; until then ui::kAnvilNameFieldRules
+    // keeps editable == false and the greyed-out vanilla art says so.
     template <typename SlotDrawer>
     void drawAnvilScreen(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
                          const ui::UiRect& panel, const SlotDrawer& slotWithHover) const {
@@ -1554,6 +1651,17 @@ class HudRenderer final {
                        16.0F * scale},
                       kAnvilGuiLayer,
                       {0.0F, static_cast<float>(kAnvilTextFieldSpriteY + 17), 110.0F, 16.0F});
+        // GUI spec §10 as corrected in §13.3: the field art sits at (59,20)
+        // 110x16 and the EditBox itself at (62,24) 103x12 — AnvilScreen.java:37.
+        // The art is already blitted above, so the field itself is borderless.
+        TextFieldStyle anvilNameStyle;
+        anvilNameStyle.bordered = false;
+        anvilNameStyle.focused = false;
+        anvilNameStyle.shadow = false;
+        drawTextField(commandBuffer,
+                      {panel.x + 62.0F * scale, panel.y + 24.0F * scale, 103.0F * scale,
+                       12.0F * scale},
+                      scale, anvilName_, ui::kAnvilNameFieldRules, anvilNameStyle);
         slotWithHover(layout.anvilLeftSlot(), snap.anvilLeft, false);
         slotWithHover(layout.anvilRightSlot(), snap.anvilRight, false);
         slotWithHover(layout.anvilOutputSlot(), snap.anvilResult, false);
@@ -2079,11 +2187,12 @@ class HudRenderer final {
         // vanilla 的聊天输入框占满屏幕宽度，其编辑框宽度为 windowWidth - 8
         // 所以深色底衬始终从左缘拉到右缘，而不是紧贴已输入的文字
         const ui::UiRect input = layout.chatInput();
-        drawHudQuad(commandBuffer, input, {0.0F, 0.0F, 0.0F, 0.72F});
-        const bool cursorVisible = static_cast<int>(uiTimeSeconds * 2.0) % 2 == 0;
-        const std::string visibleText = chatInputText + (cursorVisible ? "_" : "");
-        drawHudText(commandBuffer, visibleText, input.x + 2.0F * scale, input.y + 2.0F * scale,
-                    scale, {1.0F, 1.0F, 1.0F, 1.0F}, false);
+        TextFieldStyle chatStyle;
+        chatStyle.bordered = false;
+        chatStyle.background = {0.0F, 0.0F, 0.0F, 0.72F};
+        chatStyle.textColor = {1.0F, 1.0F, 1.0F, 1.0F};
+        chatStyle.shadow = false;
+        drawTextField(commandBuffer, input, scale, chatInput, ui::kChatFieldRules, chatStyle);
         // 26.1 的命令补全把候选列表画在同一个不透明深色框里，而不是画成逐行的半透明条
         // 选中行高亮，候选文字为白色，用法提示为灰色
         // 这里照此实现：先按最宽一行画一个背景矩形，再把各行画在其上
@@ -2532,7 +2641,7 @@ class HudRenderer final {
     std::vector<gameplay::SlotRef>& inventoryDragSlots;
     bool& chatOpen;
     ui::ChatHistory& chatHistory;
-    std::string& chatInputText;
+    ui::TextFieldState& chatInput;
     std::vector<gameplay::command::Suggestion>& chatSuggestions_;
     std::size_t& chatSuggestionIndex_;
     ui::ToastQueue& toastQueue;
@@ -2571,6 +2680,14 @@ class HudRenderer final {
     // 绘制侧的 Page 装配件，构造时装配一次（见构造函数体与 buildDrawPage）
     // drawPage_ 是每帧重装的输出缓冲，留成成员是为了让它的容量跨帧活下来
     mutable ui::Page drawPage_;
+    // UI-1: the anvil's rename field. It goes through the one text field layer
+    // like every other typeable place, but its rules keep editable == false and
+    // its value stays empty — an ItemStack has nowhere to store a custom name in
+    // this build, and a box that accepts a name the game then throws away is
+    // worse than a greyed-out one. The state lives here rather than being
+    // conjured at the draw site so the day that storage lands has one place to
+    // change.
+    ui::TextFieldState anvilName_;
     mutable ui::MenuBuildContext drawContext_;
     ui::MenuCallbacks drawCallbacks_;
     float vignetteDarkness_ = 1.0F;

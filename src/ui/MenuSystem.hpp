@@ -4,6 +4,7 @@
 #include "persistence/SaveRepository.hpp"
 #include "ui/Language.hpp"
 #include "ui/PageStack.hpp"
+#include "ui/TextField.hpp"
 
 #include <array>
 #include <cstddef>
@@ -69,12 +70,14 @@ class MenuSystem final {
     std::vector<persistence::SaveSummary> saveSummaries;
     std::size_t selectedWorldIndex = 0U;
     std::size_t worldListFirstIndex = 0U;
-    std::string createWorldName = "New World";
+    // UI-1: 名称输入框的完整状态（值 + 光标 + 选区 + 横向滚动），不再是一个裸串
+    TextFieldState createWorldName =
+        textFieldWithValue("New World", kWorldNameFieldRules, TextFieldMetrics{});
     gameplay::GameMode createWorldGameMode = gameplay::GameMode::Survival;
     // 正在创建的世界是否允许作弊
     // vanilla 在创建界面上默认关闭，由玩家在创建前自行打开
     bool createWorldAllowCommands = false;
-    std::string editWorldName;
+    TextFieldState editWorldName;
     std::string editWorldIdentifier;
     std::string saveStatus;
     std::vector<std::string> languageCodes{std::string{kDefaultLanguageCode}};

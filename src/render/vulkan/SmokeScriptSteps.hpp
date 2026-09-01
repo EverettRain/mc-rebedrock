@@ -25,6 +25,7 @@
 #include "persistence/SaveRepository.hpp"
 #include "render/SmokeScript.hpp"
 #include "ui/PageStack.hpp"
+#include "ui/TextField.hpp"
 #include "world/Block.hpp"
 #include "world/ChunkStreamer.hpp"
 #include "world/WorldConstants.hpp"
@@ -135,7 +136,8 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
     script.atGameplayFrame(48, [&host] { host.debugOverlayOpen = false; });
     script.atGameplayFrame(50, [&host] {
         host.setChatOpen(true);
-        host.chatInputText = "/gamemode survival";
+        host.chatInput =
+            mc::ui::textFieldWithValue("/gamemode survival", mc::ui::kChatFieldRules, {});
     });
     script.atGameplayFrame(54, [&host] { host.submitChatInput(); });
     script.atGameplayFrame(56, [&host, &script] {
@@ -181,7 +183,8 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
     script.atGameplayFrame(62, [&host] { host.setInventoryOpen(false); });
     script.atGameplayFrame(66, [&host] {
         host.setChatOpen(true);
-        host.chatInputText = "/gamemode creative";
+        host.chatInput =
+            mc::ui::textFieldWithValue("/gamemode creative", mc::ui::kChatFieldRules, {});
     });
     script.atGameplayFrame(70, [&host] { host.submitChatInput(); });
     script.atGameplayFrame(72, [&host, &script] {
@@ -194,7 +197,8 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
     });
     script.atGameplayFrame(74, [&host] {
         host.setChatOpen(true);
-        host.chatInputText = "/give 0 1";
+        host.chatInput =
+            mc::ui::textFieldWithValue("/give 0 1", mc::ui::kChatFieldRules, {});
     });
     script.atGameplayFrame(76, [&host] { host.submitChatInput(); });
     script.atGameplayFrame(78, [&host, &script] {
@@ -211,7 +215,8 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
     });
     script.atGameplayFrame(80, [&host] {
         host.setChatOpen(true);
-        host.chatInputText = "/give minecraft:acacia_planks 3";
+        host.chatInput =
+            mc::ui::textFieldWithValue("/give minecraft:acacia_planks 3", mc::ui::kChatFieldRules, {});
     });
     script.atGameplayFrame(82, [&host] { host.submitChatInput(); });
     script.atGameplayFrame(84, [&host, &script] {
@@ -226,7 +231,8 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
     });
     script.atGameplayFrame(86, [&host] {
         host.setChatOpen(true);
-        host.chatInputText = "/time set midnight";
+        host.chatInput =
+            mc::ui::textFieldWithValue("/time set midnight", mc::ui::kChatFieldRules, {});
     });
     script.atGameplayFrame(88, [&host] { host.submitChatInput(); });
     script.atGameplayFrame(90, [&host, &script] {
@@ -280,7 +286,8 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
     });
     script.atGameplayFrame(402, [&host] {
         host.setChatOpen(true);
-        host.chatInputText = "/gamemode survival";
+        host.chatInput =
+            mc::ui::textFieldWithValue("/gamemode survival", mc::ui::kChatFieldRules, {});
     });
     script.atGameplayFrame(404, [&host] { host.submitChatInput(); });
     script.atGameplayFrame(406, [&host, &script, state] {
@@ -325,7 +332,8 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
     });
     script.atGameplayFrame(702, [&host] {
         host.setChatOpen(true);
-        host.chatInputText = "/tp 8 200 8";
+        host.chatInput =
+            mc::ui::textFieldWithValue("/tp 8 200 8", mc::ui::kChatFieldRules, {});
     });
     script.atGameplayFrame(704, [&host] { host.submitChatInput(); });
     script.atGameplayFrame(706, [&host, &script] {

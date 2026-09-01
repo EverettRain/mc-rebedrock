@@ -432,6 +432,7 @@ add_executable(mc_rebedrock
     src/ui/Language.cpp
     src/ui/TextFont.cpp
     src/ui/TextWrap.cpp
+    src/ui/TextField.cpp
     src/ui/ChatHistory.cpp
     src/ui/ItemTooltip.cpp
     src/ui/PageStack.cpp
@@ -925,6 +926,20 @@ if(BUILD_TESTING)
     )
     target_include_directories(mc_rebedrock_text_wrap_test PRIVATE src)
     add_test(NAME text_wrap COMMAND mc_rebedrock_text_wrap_test)
+
+    # UI-1: the text input widget's editing semantics are pure values with an
+    # injected width function, so the whole surface is asserted with no font and
+    # no window. TextFont/BitmapFontMetrics come along only for decodeUtf8 and
+    # appendUtf8 — the project's one UTF-8 codec, which the layer refuses to
+    # hand-copy.
+    add_executable(mc_rebedrock_text_field_test
+        tests/text_field_test.cpp
+        src/ui/TextField.cpp
+        src/ui/TextFont.cpp
+        src/ui/BitmapFontMetrics.cpp
+    )
+    target_include_directories(mc_rebedrock_text_field_test PRIVATE src)
+    add_test(NAME text_field COMMAND mc_rebedrock_text_field_test)
 
     # I-2: the item presentation layer is pure value assembly (no Vulkan, no
     # font), so its whole surface is asserted headless.
