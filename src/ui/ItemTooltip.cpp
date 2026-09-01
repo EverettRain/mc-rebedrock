@@ -23,8 +23,11 @@ namespace {
     return std::string{context.language->translate(key, fallback)};
 }
 
-[[nodiscard]] std::string format(std::string_view pattern, std::string_view first,
-                                 std::string_view second) {
+// 名字不叫 `format`：实参是 std::string，ADL 会把 `std::format` 一并拉进重载集，
+// 而它的第一个形参是 consteval 的 `format_string`，于是"用运行期字符串当模式"在
+// libc++（mac）上直接编译不过。libstdc++ 只是碰巧没传递包含 <format> 才没报。
+[[nodiscard]] std::string fillTemplate(std::string_view pattern, std::string_view first,
+                                       std::string_view second) {
     const std::array<std::string_view, 2> arguments{first, second};
     return formatTranslation(pattern, arguments);
 }
@@ -97,9 +100,9 @@ namespace {
                                      std::string_view attributePath,
                                      std::string_view attributeFallback) {
     return TooltipLine{
-        " " + format(translate(context, "attribute.modifier.equals.0", "%s %s"),
-                     formatAttributeAmount(amount),
-                     attributeName(context, attributePath, attributeFallback)),
+        " " + fillTemplate(translate(context, "attribute.modifier.equals.0", "%s %s"),
+                           formatAttributeAmount(amount),
+                           attributeName(context, attributePath, attributeFallback)),
         TooltipStyle::AttributeBase};
 }
 
@@ -109,9 +112,9 @@ namespace {
                                    std::string_view attributePath,
                                    std::string_view attributeFallback) {
     return TooltipLine{
-        format(translate(context, "attribute.modifier.plus.0", "+%s %s"),
-               formatAttributeAmount(amount),
-               attributeName(context, attributePath, attributeFallback)),
+        fillTemplate(translate(context, "attribute.modifier.plus.0", "+%s %s"),
+                     formatAttributeAmount(amount),
+                     attributeName(context, attributePath, attributeFallback)),
         TooltipStyle::AttributeBonus};
 }
 
@@ -272,9 +275,10 @@ std::vector<TooltipLine> itemTooltipLines(const gameplay::ItemStack& stack,
     const std::uint16_t maximumDamage = gameplay::itemMaximumDamage(stack);
     if (maximumDamage > 0U && stack.damage > 0U) {
         const auto remaining = static_cast<std::uint16_t>(maximumDamage - stack.damage);
-        lines.push_back({format(translate(context, "item.durability", "Durability: %s / %s"),
-                                std::to_string(remaining), std::to_string(maximumDamage)),
-                         TooltipStyle::Advanced});
+        lines.push_back(
+            {fillTemplate(translate(context, "item.durability", "Durability: %s / %s"),
+                          std::to_string(remaining), std::to_string(maximumDamage)),
+             TooltipStyle::Advanced});
     }
     // 物品 id。vanilla 这行是 `BuiltInRegistries.ITEM.getKey(...)`，本项目的等价
     // 物是描述 id 的那个 Identifier（方块栈已由 itemDescriptionId 归一到它的
