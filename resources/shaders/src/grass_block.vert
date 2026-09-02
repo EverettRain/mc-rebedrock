@@ -46,6 +46,15 @@ layout(location = 10) flat out uint fragmentBiomeMask;
 // no biome, so without this path its stored tint was silently unused.
 layout(location = 11) out vec3 fragmentTint;
 
+// The opaque and cutout pipelines share this shader, and a grass block's side
+// is drawn once by each: the dirt base, then the tinted overlay quad on exactly
+// the same four corners. The cutout pipeline compares LESS_OR_EQUAL, so the
+// overlay only wins when both pipelines compute bit-identical clip coordinates
+// for those corners. `invariant` is what pins that down — without it a driver
+// may schedule the same arithmetic differently per pipeline and the two depths
+// can land one ULP apart, which puts the flickering grass edge straight back.
+invariant gl_Position;
+
 const float kLocalScale = 17.0 / 65535.0;
 const float kUvScale = 2.0 / 65535.0;
 

@@ -985,12 +985,24 @@ void appendFace(
             tint[2],
             biomeMask));
         if (grassOverlayMesh != nullptr) {
-            // The same corner, nudged a thousandth of a block along the face
-            // normal so it wins the depth test against the quad underneath
-            // without a visible gap (1/16 of a texel).
+            // Exactly the same corner — no nudge along the normal. A geometric
+            // offset cannot win a depth test at range: the depth resolvable at
+            // distance d falls off as d^2, so with the D32_SFLOAT buffer and a
+            // 0.1 near plane the 0.001-block offset this used to carry is below
+            // one float ULP past roughly 40 blocks. Beyond that the two quads
+            // quantise to the same depth, VK_COMPARE_OP_LESS rejects the
+            // overlay, and the grass edge flickers back to the dirt texture's
+            // baked-in green as the camera moves.
+            //
+            // Coplanar is the fix, not a bigger number: identical positions go
+            // through the same vertex shader (`invariant gl_Position`) to an
+            // identical depth, and the cutout pipeline compares LESS_OR_EQUAL,
+            // so the overlay wins at every distance. That is also how vanilla
+            // draws the two elements of grass_block.json — one render type, one
+            // depth function, the later element on top.
             const auto overlayTint = tints.tint(TintKind::Grass, cornerX, cornerZ);
             grassOverlayMesh->vertices.push_back(packVertex(
-                (origin + positionCorner) - sectionOrigin + face.normal * 0.001F,
+                (origin + positionCorner) - sectionOrigin,
                 face.normal,
                 uv,
                 gen::terrainGrassOverlayLayer(),

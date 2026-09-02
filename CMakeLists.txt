@@ -1768,6 +1768,15 @@ if(BUILD_TESTING)
     )
     add_test(NAME environment_attribute COMMAND mc_rebedrock_environment_attribute_test)
 
+    add_executable(mc_rebedrock_grass_overlay_depth_test
+        tests/grass_overlay_depth_test.cpp
+    )
+    target_include_directories(mc_rebedrock_grass_overlay_depth_test PRIVATE src)
+    target_compile_definitions(mc_rebedrock_grass_overlay_depth_test PRIVATE
+        "MC_REBEDROCK_SHADER_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src\""
+        "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
+    add_test(NAME grass_overlay_depth COMMAND mc_rebedrock_grass_overlay_depth_test)
+
     add_executable(mc_rebedrock_biome_climate_test
         tests/biome_climate_test.cpp
     )

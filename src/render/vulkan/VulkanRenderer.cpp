@@ -5491,9 +5491,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // Java 里带 mipmap 的 cutout 树叶用的是普通背面剔除
         // 植物自带反向绕序的三角形，因此保持双面
         rasterization.cullMode = VK_CULL_MODE_BACK_BIT;
+        // 草方块侧面的 overlay 与它下面的不透明底面**完全共面**（BM-1 的第二个
+        // element）。共面的后画者必须能通过深度测试，所以 cutout 用
+        // LESS_OR_EQUAL 而不是 LESS。
+        // 别改回 LESS，也别退回"沿法线推出去一点"：可解析的深度差随距离按 d^2
+        // 衰减，任何固定的世界空间偏移在远处都会掉到一个 ULP 以下，于是草边在
+        // 远景里随镜头移动闪回泥土贴图烘死的那抹绿。共面 + LESS_OR_EQUAL 与距离无关。
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
         pipelineInfo.pStages = cutoutStages.data();
         const auto cutoutResult = vkCreateGraphicsPipelines(
             device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &worldPipelines_.cutoutPipeline);
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS; // 恢复给后面的管线
         vkDestroyShaderModule(device, cutoutFragmentModule, nullptr);
         vkDestroyShaderModule(device, fragmentModule, nullptr);
         vkDestroyShaderModule(device, vertexModule, nullptr);

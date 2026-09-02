@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <set>
 #include <stdexcept>
 #include <string>
 
@@ -321,6 +322,36 @@ void checkGrassSideOverlay() {
     }
     REQUIRE(overlayVertices == 16);  // four sides, four corners each
     REQUIRE(built.cutoutMesh.indices.size() == 24U);
+
+    // The overlay must be EXACTLY coplanar with the dirt quad underneath it —
+    // the same packed corner positions, to the bit.
+    //
+    // It used to be pushed 0.001 blocks along the face normal to win the depth
+    // test. That cannot work at range: resolvable depth falls off as d^2, so on
+    // a D32_SFLOAT buffer with a 0.1 near plane the offset drops below one float
+    // ULP past roughly 40 blocks, the two quads quantise to the same depth, and
+    // VK_COMPARE_OP_LESS then rejects the overlay — the grass edge on every
+    // distant slope flickers back to the green baked into grass_block_side.png
+    // as the camera moves. Coplanar geometry plus the cutout pipeline's
+    // LESS_OR_EQUAL is distance-independent; grass_overlay_depth_test guards the
+    // pipeline half, this guards the geometry half.
+    std::multiset<std::array<std::uint16_t, 3>> basePositions;
+    for (const auto& vertex : built.mesh.vertices) {
+        // 13.0F is the terrain grass side layer set above; skip the top/bottom.
+        if (std::abs(static_cast<float>(vertex.textureLayer) - 13.0F) > 0.01F) {
+            continue;
+        }
+        basePositions.insert({vertex.positionX, vertex.positionY, vertex.positionZ});
+    }
+    std::multiset<std::array<std::uint16_t, 3>> overlayPositions;
+    for (const auto& vertex : built.cutoutMesh.vertices) {
+        if (std::abs(static_cast<float>(vertex.textureLayer) - 14.0F) > 0.01F) {
+            continue;
+        }
+        overlayPositions.insert({vertex.positionX, vertex.positionY, vertex.positionZ});
+    }
+    REQUIRE(basePositions.size() == 16U);
+    REQUIRE(overlayPositions == basePositions);
     mc::world::gen::setTerrainGrassLayers(0.0F, 0.0F, 0.0F, 0.0F);
 }
 
