@@ -166,5 +166,11 @@ void main() {
         texel.rgb = mix(texel.rgb, weatherFogColor(camera.horizonFog.rgb),
                         clamp(fog, 0.0, 1.0));
     }
+#ifdef ENCODE_SRGB_OUTPUT
+    // 同一份着色器编两次：世界那趟写进 sRGB 附件（硬件编码，混合在线性空间），
+    // GUI 那趟写进 UNORM 附件，得自己编码。第一人称手持物与背包里的玩家预览走后者。
+    texel.rgb = mix(texel.rgb * 12.92, 1.055 * pow(texel.rgb, vec3(1.0 / 2.4)) - 0.055,
+                    step(vec3(0.0031308), texel.rgb));
+#endif
     outColor = texel;
 }

@@ -150,6 +150,10 @@ class WorldRenderer final {
     ui::Language& language;
     VkExtent2D& swapchainExtent;
     std::vector<VkFramebuffer>& framebuffers;
+    // GUI 那趟的帧缓冲（场景图的 UNORM 视图 + 它自己的深度），以及把画完的场景图
+    // 逐字节 copy 进交换链图像的那一步——图像的所有权在 VulkanRenderer，这里只调用
+    std::vector<VkFramebuffer>& guiFramebuffers;
+    std::function<void(VkCommandBuffer, std::uint32_t)> copySceneToSwapchain;
     std::array<FrameContext, kFramesInFlight>& frames;
     std::size_t& currentFrame;
     std::size_t& peakPendingSectionCount;
@@ -206,7 +210,9 @@ class WorldRenderer final {
         shadowLightViewProj(b.shadowLightViewProj),
         shadowDisabled(b.shadowDisabled), rainSystem(b.rainSystem), rainMode_(b.rainMode_),
         rainTime_(b.rainTime_), language(b.language),
-        swapchainExtent(b.swapchainExtent), framebuffers(b.framebuffers), frames(b.frames),
+        swapchainExtent(b.swapchainExtent), framebuffers(b.framebuffers),
+          guiFramebuffers(b.guiFramebuffers), copySceneToSwapchain(b.copySceneToSwapchain),
+          frames(b.frames),
         currentFrame(b.currentFrame), peakPendingSectionCount(b.peakPendingSectionCount),
         smoothedFrameSeconds_(b.smoothedFrameSeconds_),
         streamingUploadBudget_(b.streamingUploadBudget_), pendingSectionUpdates(b.pendingSectionUpdates),
@@ -1251,7 +1257,9 @@ class WorldRenderer final {
             sceneParticleRecords_.push_back(ParticleRecord{
                 {particle.position.x, particle.position.y, particle.position.z, particle.size},
                 {particle.uvOrigin.x, particle.uvOrigin.y, particle.uvScale, particle.opacity},
-                {particle.textureLayer, packedSceneLight(particle.position), 0.0F, 0.0F},
+                // RN-9b：后两槽是粒子自己的颜色与自发光，见 GpuSceneBuffer.hpp
+                {particle.textureLayer, packedSceneLight(particle.position),
+                 static_cast<float>(particle.tint), particle.emission},
             });
         }
         if (diag::traceEnabled()) {
@@ -2216,11 +2224,40 @@ class WorldRenderer final {
                                outlinePush.data());
             vkCmdDraw(frame.commandBuffer, 24, 1, 0, 0);
         }
+        vkCmdEndRenderPass(frame.commandBuffer);
+
+        // 界面单独一趟。世界那趟的颜色附件是场景图的 **sRGB 视图**（着色器写线性值、
+        // 硬件编码、混合因此发生在线性空间）；这一趟绑的是同一张图的 **UNORM 视图**，
+        // 着色器直接写 sRGB 编码值、固定功能混合也在编码值上做——正是 vanilla 合成
+        // 界面的空间。分开的代价是一次 render pass 切换，换来的是提示框的半透明、
+        // 准星的反色、暗角的乘性混合以及所有界面文字的颜色都与原版逐字节一致。
+        //
+        // 深度是这一趟自己的、每帧清空：第一人称手持物与背包里的 3D 玩家预览要深度
+        // 测试，而世界的深度可能是多重采样的；顺带对齐 vanilla——它也在画手之前清一次
+        // 深度，所以贴脸的方块不会把手切掉。
+        std::array<VkClearValue, 2> guiClears{};
+        guiClears[1].depthStencil = {1.0F, 0};
+        auto guiPassInfo =
+            vkStructure<VkRenderPassBeginInfo>(VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
+        guiPassInfo.renderPass = pipelines.guiRenderPass;
+        guiPassInfo.framebuffer = guiFramebuffers[imageIndex];
+        guiPassInfo.renderArea.extent = swapchainExtent;
+        guiPassInfo.clearValueCount = static_cast<std::uint32_t>(guiClears.size());
+        guiPassInfo.pClearValues = guiClears.data();
+        vkCmdBeginRenderPass(frame.commandBuffer, &guiPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        // 视口与裁剪是命令缓冲级的动态状态，跨 pass 仍然有效；这里重设一次是为了
+        // 让这一趟自己成立，不依赖上一趟留下了什么
+        vkCmdSetViewport(frame.commandBuffer, 0, 1, &viewport);
+        vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
         // 游戏内 HUD 层以及叠在它上面的各种界面，都由 drawHud 按 vanilla 的层序绘制
         // HUD 层含手持物、水下叠加、暗角、快捷栏、状态条、准星和手持物名称
         hud_.drawHud(frame.commandBuffer, frame.descriptorSet);
         drawShadowDebugOverlay(frame.commandBuffer);
         vkCmdEndRenderPass(frame.commandBuffer);
+
+        // 画完的场景图逐字节搬进交换链图像。两者都是 B8G8R8A8，copy 不做任何转换，
+        // 于是交换链取 UNORM 还是 SRGB 都不影响呈现结果
+        copySceneToSwapchain(frame.commandBuffer, imageIndex);
         checkVk(vkEndCommandBuffer(frame.commandBuffer), "vkEndCommandBuffer");
         return visibleCount;
     }
@@ -2332,6 +2369,8 @@ class WorldRenderer final {
   ui::Language& language;
   VkExtent2D& swapchainExtent;
   std::vector<VkFramebuffer>& framebuffers;
+  std::vector<VkFramebuffer>& guiFramebuffers;
+  std::function<void(VkCommandBuffer, std::uint32_t)> copySceneToSwapchain;
   std::array<FrameContext, kFramesInFlight>& frames;
   std::size_t& currentFrame;
   std::size_t& peakPendingSectionCount;

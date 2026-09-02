@@ -647,6 +647,21 @@ if(MC_REBEDROCK_STAGE_RUNTIME AND GLSLC_EXECUTABLE)
         list(APPEND MC_REBEDROCK_SHADER_OUTPUTS "${shader_output}")
     endforeach()
 
+    # item_entity.frag 编两份：世界那趟写 sRGB 附件（硬件编码），GUI 那趟（第一人称
+    # 手持物与背包里的玩家预览）写 UNORM 附件，得自己出编码值。同一份源码、一个宏之差，
+    # 避免把同一段光照/雾计算抄成两份。
+    set(item_entity_gui_output "${MC_REBEDROCK_SHADER_OUTPUT_DIR}/item_entity_gui.frag.spv")
+    add_custom_command(
+        OUTPUT "${item_entity_gui_output}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${MC_REBEDROCK_SHADER_OUTPUT_DIR}"
+        COMMAND "${GLSLC_EXECUTABLE}" -DENCODE_SRGB_OUTPUT=1
+                "${MC_REBEDROCK_SHADER_SOURCE_DIR}/item_entity.frag" -o "${item_entity_gui_output}"
+        DEPENDS "${MC_REBEDROCK_SHADER_SOURCE_DIR}/item_entity.frag"
+        COMMENT "Compiling shader item_entity.frag (sRGB output variant)"
+        VERBATIM
+    )
+    list(APPEND MC_REBEDROCK_SHADER_OUTPUTS "${item_entity_gui_output}")
+
     add_custom_target(mc_rebedrock_shaders ALL DEPENDS ${MC_REBEDROCK_SHADER_OUTPUTS})
     add_dependencies(mc_rebedrock mc_rebedrock_shaders)
 elseif(MC_REBEDROCK_STAGE_RUNTIME)
@@ -1566,12 +1581,6 @@ if(BUILD_TESTING)
     )
     target_include_directories(mc_rebedrock_gui_sprite_scaling_test PRIVATE src)
     add_test(NAME gui_sprite_scaling COMMAND mc_rebedrock_gui_sprite_scaling_test)
-
-    add_executable(mc_rebedrock_srgb_blend_test
-        tests/srgb_blend_test.cpp
-    )
-    target_include_directories(mc_rebedrock_srgb_blend_test PRIVATE src)
-    add_test(NAME srgb_blend COMMAND mc_rebedrock_srgb_blend_test)
 
     add_executable(mc_rebedrock_tooltip_layout_test
         tests/tooltip_layout_test.cpp

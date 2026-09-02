@@ -9,6 +9,13 @@ simple versioned history while it is in beta.
 
 ### Fixed
 
+- Anvil renames now survive a save. Renaming worked for the rest of the session and then
+  reverted on the next load — the bytes on disk were always correct; the name table was
+  being cleared *after* the save had been parsed, which wiped the names it had just read.
+- Anvils, enchanting tables and slabs no longer turn the grass block under them to dirt.
+  Whether a block smothers grass now follows its actual shape (does it fill the cell —
+  vanilla's test) rather than its render category. An anvil is a small base, a slab is
+  half a cell, and vanilla lets grass live under both. A double slab still kills it.
 - Whether a face between two blocks gets drawn is now decided by the neighbour's
   actual shape instead of guessed from its render category. Four artefacts go
   away together: a torch (or stairs, wall, door, grass) beside water no longer
@@ -56,14 +63,21 @@ simple versioned history while it is in beta.
   its gradient border) instead of a flat coloured rectangle, with vanilla's line
   spacing, padding and above-right placement. Both sprites are read from the
   resource pack, so a pack can restyle them.
-- Fixed tooltips (and their border) reading as far more transparent than vanilla
-  over light screens, which made the text harder to read: our translucent blending
-  happens in linear space where vanilla's happens in sRGB space, so the same
-  opacity lets through much more of the background (0.215 against vanilla's 0.105
-  over the inventory panel). The opacity is now converted for the blend space.
+- The interface is now composited in the same colour space as vanilla: the whole HUD
+  layer gets its own pass, drawn into a target with no gamma conversion. Every
+  non-white piece of interface text used to come out a step brighter than vanilla
+  (a container title's dark grey 0x404040 showed as a light 0x89, an enchantment
+  line's 0xAA as 0xD5), and translucent dark overlays — tooltip backdrops, the dim
+  behind an open screen — came out more transparent. One root cause, both fixed.
+- The item in your hand is no longer clipped by a block right in front of your face
+  (the interface pass has its own depth buffer, as in vanilla).
 
 ### Added
 
+- The enchanting table now sends Standard Galactic Alphabet glyphs flying in from nearby
+  bookshelves — more shelves, more glyphs — converging on the book on top and brightening
+  as they arrive. Vanilla has always done this; this build did not. The glyph textures are
+  read from the resource pack, so a texture pack can replace them.
 - The anvil can rename things now. Put an item in the left slot, type in the box,
   and it costs one level; clearing the box strips the name for the same one. A
   renamed item shows its new name in tooltips and above the hotbar, and no longer

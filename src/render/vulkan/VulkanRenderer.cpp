@@ -54,6 +54,7 @@
 #include "render/SmokeScript.hpp"
 #include "render/vulkan/SmokeScriptSteps.hpp"
 #include "runtime/GameRuntime.hpp"
+#include "render/BlockAnimateTick.hpp"
 #include "render/ParticleSystem.hpp"
 #include "render/PerspectiveCamera.hpp"
 #include "render/player/PlayerRenderState.hpp"
@@ -1226,6 +1227,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     // 这里读的都是渲染侧自有的客户端缓存和原子发布的世界快照，无需加锁
                     hud_.updateVignetteDarkness(deltaSeconds);
                     const auto particleSimStart = std::chrono::steady_clock::now();
+                    // 先派发环境 tick 再推进粒子：这一帧新生成的粒子当帧就参与模拟，
+                    // 与服务端 ParticleEvent 灌进来的那批同一待遇
+                    blockAnimateTicker.update(deltaSeconds, camera.position(), clientCache,
+                                              particleSystem);
                     particleSystem.update(deltaSeconds, clientCache);
                     if (diag::traceEnabled()) {
                         diag::frameTrace().particleSimMs += diag::msSince(particleSimStart);
@@ -1822,6 +1827,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         clientMirror_.clear();
         gameSession.resetWorldState();
         particleSystem = {};
+        blockAnimateTicker.reset();
         savedEditIndices.clear();
         completedStreamBatchCount = 0U;
         completedBlockEditCount = 0U;
@@ -4084,9 +4090,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     [[nodiscard]] AllocatedImage
     createImage(std::uint32_t width, std::uint32_t height, std::uint32_t layers, VkFormat format,
-                VkImageUsageFlags usage,
-                VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT) const {
-        return resources_.createImage(width, height, layers, format, usage, samples);
+                VkImageUsageFlags usage, VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
+                VkImageCreateFlags flags = 0) const {
+        return resources_.createImage(width, height, layers, format, usage, samples, flags);
     }
 
     void destroyBuffer(AllocatedBuffer& buffer) const noexcept { resources_.destroyBuffer(buffer); }
@@ -5041,7 +5047,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pipelineInfo.pColorBlendState = &blending;
         pipelineInfo.pDynamicState = &dynamic;
         pipelineInfo.layout = worldPipelines_.shadowDebugPipelineLayout;
-        pipelineInfo.renderPass = worldPipelines_.renderPass;
+        // 阴影调试叠加层跟 HUD 一起画，因此归 GUI 那趟（单采样、编码值）
+        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        pipelineInfo.renderPass = worldPipelines_.guiRenderPass;
         checkVk(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
                                           &worldPipelines_.shadowDebugPipeline),
                 "vkCreateGraphicsPipelines(shadow debug)");
@@ -5056,6 +5064,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 同时重算预通道写入、地形着色器采样时所用的太阳空间视图投影矩阵
     // 它每帧调用一次，且排在把矩阵拷进 UBO 的 updateUniform **之前**
     // 于是着色器投影用的矩阵与预通道渲染深度图用的矩阵来自同一帧，两者之间没有相机移动的滞后
+    // 帧的最后一步是把场景图逐字节 copy 进交换链图像，因此只接受 8 位四通道的表面格式
+    // ——它与场景图必须字节兼容，通道序也必须一致（见 sceneUnormFormat）
+    [[nodiscard]] static bool isSupportedSurfaceFormat(VkFormat format) {
+        return format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM ||
+               format == VK_FORMAT_R8G8B8A8_SRGB || format == VK_FORMAT_R8G8B8A8_UNORM;
+    }
+
     [[nodiscard]] VkSurfaceFormatKHR
     chooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) const {
         for (const auto& format : formats) {
@@ -5064,7 +5079,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 return format;
             }
         }
-        return formats.front();
+        for (const auto& format : formats) {
+            if (isSupportedSurfaceFormat(format.format) &&
+                format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+                return format;
+            }
+        }
+        if (!formats.empty() && isSupportedSurfaceFormat(formats.front().format)) {
+            return formats.front();
+        }
+        throw std::runtime_error(
+            "No 8-bit RGBA/BGRA surface format: the GUI pass composites into a byte-compatible "
+            "scene image and the frame is copied out verbatim");
     }
 
     [[nodiscard]] VkPresentModeKHR choosePresentMode(const std::vector<VkPresentModeKHR>& modes,
@@ -5143,14 +5169,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return resources_.createImageView(image, format, aspect);
     }
 
-    void createSwapchainImageViews() {
-        swapchainImageViews.reserve(swapchainImages.size());
-        for (const auto image : swapchainImages) {
-            swapchainImageViews.push_back(
-                createImageView(image, swapchainFormat, VK_IMAGE_ASPECT_COLOR_BIT));
-        }
-    }
-
     [[nodiscard]] VkFormat chooseDepthFormat() const { return resources_.chooseDepthFormat(); }
 
     [[nodiscard]] bool depthFormatHasStencil(VkFormat format) const {
@@ -5167,11 +5185,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         colorTargets.resize(swapchainImages.size());
         for (auto& target : colorTargets) {
             target.image = createImage(
-                swapchainExtent.width, swapchainExtent.height, 1, swapchainFormat,
+                swapchainExtent.width, swapchainExtent.height, 1, sceneSrgbFormat(),
                 VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                 renderSampleCount());
             target.view =
-                createImageView(target.image.image, swapchainFormat, VK_IMAGE_ASPECT_COLOR_BIT);
+                createImageView(target.image.image, sceneSrgbFormat(), VK_IMAGE_ASPECT_COLOR_BIT);
         }
     }
 
@@ -5197,9 +5215,107 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
+    // 场景图：世界与 GUI 的共同画布，两个视图各自解释同一批字节
+    // 格式取 UNORM 为基，SRGB 只是它的另一个视图；copy 到交换链图像是逐字节的，
+    // 因此交换链是 UNORM 还是 SRGB 都不影响最终呈现
+    void createSceneTargets() {
+        sceneTargets.resize(swapchainImages.size());
+        for (auto& target : sceneTargets) {
+            target.image = createImage(swapchainExtent.width, swapchainExtent.height, 1,
+                                       sceneUnormFormat(),
+                                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                           VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                       VK_SAMPLE_COUNT_1_BIT,
+                                       VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT);
+            target.srgbView =
+                createImageView(target.image.image, sceneSrgbFormat(), VK_IMAGE_ASPECT_COLOR_BIT);
+            target.unormView =
+                createImageView(target.image.image, sceneUnormFormat(), VK_IMAGE_ASPECT_COLOR_BIT);
+        }
+    }
+
+    void createGuiDepthTargets() {
+        guiDepthTargets.resize(swapchainImages.size());
+        for (auto& target : guiDepthTargets) {
+            // 与世界的深度同理：通道内清空、写入、不回读，标成瞬态就能留在片上内存
+            target.image =
+                createImage(swapchainExtent.width, swapchainExtent.height, 1, depthFormat,
+                            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                                VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+                            VK_SAMPLE_COUNT_1_BIT);
+            VkImageAspectFlags aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+            if (depthFormatHasStencil(depthFormat)) {
+                aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+            }
+            target.view = createImageView(target.image.image, depthFormat, aspect);
+        }
+    }
+
+    // GUI 那趟：单采样、载入世界那趟的结果、画完留给 copy
+    // 颜色附件的格式是 UNORM，于是固定功能混合读写的是 sRGB 编码值——这正是 vanilla
+    // 的合成空间，也是"提示框比原版更透""界面文字比原版亮一档"两个缺陷的收口
+    void createGuiRenderPass() {
+        VkAttachmentDescription color{};
+        color.format = sceneUnormFormat();
+        color.samples = VK_SAMPLE_COUNT_1_BIT;
+        color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        color.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        color.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        VkAttachmentDescription depth{};
+        depth.format = depthFormat;
+        depth.samples = VK_SAMPLE_COUNT_1_BIT;
+        depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        const std::array attachments{color, depth};
+        VkAttachmentReference colorReference{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkAttachmentReference depthReference{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &colorReference;
+        subpass.pDepthStencilAttachment = &depthReference;
+        // 世界那趟写完颜色，这趟才能载入它
+        VkSubpassDependency dependency{};
+        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependency.dstSubpass = 0;
+        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                  VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        // 这一趟画完立刻被 copy 读走。隐式的尾部依赖只到 BOTTOM_OF_PIPE、不带访问掩码，
+        // 保证不了颜色写入对 transfer 读可见，所以显式写一条
+        VkSubpassDependency presentDependency{};
+        presentDependency.srcSubpass = 0;
+        presentDependency.dstSubpass = VK_SUBPASS_EXTERNAL;
+        presentDependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        presentDependency.dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        presentDependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        presentDependency.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        const std::array dependencies{dependency, presentDependency};
+        auto info = vkStructure<VkRenderPassCreateInfo>(VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO);
+        info.attachmentCount = static_cast<std::uint32_t>(attachments.size());
+        info.pAttachments = attachments.data();
+        info.subpassCount = 1;
+        info.pSubpasses = &subpass;
+        info.dependencyCount = static_cast<std::uint32_t>(dependencies.size());
+        info.pDependencies = dependencies.data();
+        checkVk(vkCreateRenderPass(device, &info, nullptr, &worldPipelines_.guiRenderPass),
+                "vkCreateRenderPass(gui)");
+    }
+
     void createRenderPass() {
         VkAttachmentDescription color{};
-        color.format = swapchainFormat;
+        color.format = sceneSrgbFormat();
         color.samples = renderSampleCount();
         color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color.storeOp = renderSampleCount() == VK_SAMPLE_COUNT_1_BIT
@@ -5210,9 +5326,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         color.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         // 注意：解析过的 MSAA 颜色附件在这里保持 COLOR_ATTACHMENT_OPTIMAL
         // 填 UNDEFINED 会被校验层拒绝，何况当前这版 MoltenVK 本来也不把瞬态附件放到片上内存
-        color.finalLayout = renderSampleCount() == VK_SAMPLE_COUNT_1_BIT
-                                ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-                                : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        // 世界这趟的结果不再直接呈现：GUI 那趟要按 UNORM 视图把它载入并继续画
+        color.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         VkAttachmentDescription depth{};
         depth.format = depthFormat;
         depth.samples = renderSampleCount();
@@ -5223,14 +5338,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         VkAttachmentDescription resolve{};
-        resolve.format = swapchainFormat;
+        resolve.format = sceneSrgbFormat();
         resolve.samples = VK_SAMPLE_COUNT_1_BIT;
         resolve.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         resolve.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         resolve.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         resolve.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         resolve.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        resolve.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        resolve.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         const std::array attachments{color, depth, resolve};
         VkAttachmentReference colorReference{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
         VkAttachmentReference depthReference{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
@@ -5460,6 +5575,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         vkDestroyShaderModule(device, skyVertexModule, nullptr);
         checkVk(skyResult, "vkCreateGraphicsPipelines(sky)");
 
+        // 从这里往下的 hud / 全景 / 准星 / 暗角 / 手持物都画在 **GUI 那趟**：
+        // 单采样（vanilla 的界面本来也不做 MSAA），且颜色附件是 UNORM 视图，
+        // 于是这些着色器输出的是 sRGB 编码值、混合也发生在编码值上
+        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        pipelineInfo.renderPass = worldPipelines_.guiRenderPass;
         const auto hudVertexCode = readSpirv(shaderRoot / "hud.vert.spv");
         const auto hudFragmentCode = readSpirv(shaderRoot / "hud.frag.spv");
         const auto hudVertexModule = createShaderModule(hudVertexCode);
@@ -5560,6 +5680,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         vkDestroyShaderModule(device, hudFragmentModule, nullptr);
         vkDestroyShaderModule(device, hudVertexModule, nullptr);
 
+        // 掉落物与下落方块回到世界那趟
+        multisampling.rasterizationSamples = renderSampleCount();
+        pipelineInfo.renderPass = worldPipelines_.renderPass;
         const auto itemVertexCode = readSpirv(shaderRoot / "item_entity.vert.spv");
         const auto itemFragmentCode = readSpirv(shaderRoot / "item_entity.frag.spv");
         const auto itemVertexModule = createShaderModule(itemVertexCode);
@@ -5587,9 +5710,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         depthStencil.depthTestEnable = VK_TRUE;
         depthStencil.depthWriteEnable = VK_TRUE;
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+        // 第一人称手持物与背包里的玩家预览画在 GUI 那趟，因此要用同一份着色器的
+        // "输出编码值"变体（item_entity_gui.frag.spv，由 item_entity.frag 加
+        // -DENCODE_SRGB_OUTPUT 编出），否则它会比世界里的同一个模型暗一大截
+        const auto heldItemFragmentCode = readSpirv(shaderRoot / "item_entity_gui.frag.spv");
+        const auto heldItemFragmentModule = createShaderModule(heldItemFragmentCode);
+        fragmentStage.module = heldItemFragmentModule;
+        const std::array heldItemStages{vertexStage, fragmentStage};
+        pipelineInfo.pStages = heldItemStages.data();
+        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        pipelineInfo.renderPass = worldPipelines_.guiRenderPass;
         const auto heldItemResult = vkCreateGraphicsPipelines(
             device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &worldPipelines_.heldItemPipeline);
+        multisampling.rasterizationSamples = renderSampleCount();
+        pipelineInfo.renderPass = worldPipelines_.renderPass;
         checkVk(heldItemResult, "vkCreateGraphicsPipelines(held item)");
+        vkDestroyShaderModule(device, heldItemFragmentModule, nullptr);
         vkDestroyShaderModule(device, itemFragmentModule, nullptr);
         vkDestroyShaderModule(device, itemVertexModule, nullptr);
     }
@@ -5739,18 +5875,69 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         vkDestroyShaderModule(device, fragmentModule, nullptr);
     }
 
+    // 场景图 → 交换链图像。两者同属 B8G8R8A8 的尺寸类，vkCmdCopyImage 因此是逐字节
+    // 搬运、不做任何色彩转换——场景图里存的已经是最终要呈现的 sRGB 编码值。
+    // GUI 那趟的 finalLayout 已经把场景图交在 TRANSFER_SRC_OPTIMAL 上，这里只需要
+    // 把交换链图像从 UNDEFINED 带到 TRANSFER_DST，再带到 PRESENT_SRC。
+    void copySceneToSwapchain(VkCommandBuffer commandBuffer, std::uint32_t imageIndex) const {
+        auto barrier = vkStructure<VkImageMemoryBarrier>(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = swapchainImages[imageIndex];
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                             &barrier);
+        VkImageCopy region{};
+        region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.dstSubresource = region.srcSubresource;
+        region.extent = {swapchainExtent.width, swapchainExtent.height, 1};
+        vkCmdCopyImage(commandBuffer, sceneTargets[imageIndex].image.image,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchainImages[imageIndex],
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = 0;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                             &barrier);
+    }
+
+    void createGuiFramebuffers() {
+        guiFramebuffers.resize(sceneTargets.size());
+        for (std::size_t index = 0; index < guiFramebuffers.size(); ++index) {
+            const std::array attachments{sceneTargets[index].unormView,
+                                         guiDepthTargets[index].view};
+            auto info =
+                vkStructure<VkFramebufferCreateInfo>(VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO);
+            info.renderPass = worldPipelines_.guiRenderPass;
+            info.attachmentCount = static_cast<std::uint32_t>(attachments.size());
+            info.pAttachments = attachments.data();
+            info.width = swapchainExtent.width;
+            info.height = swapchainExtent.height;
+            info.layers = 1;
+            checkVk(vkCreateFramebuffer(device, &info, nullptr, &guiFramebuffers[index]),
+                    "vkCreateFramebuffer(gui)");
+        }
+    }
+
     void createFramebuffers() {
-        framebuffers.resize(swapchainImageViews.size());
+        framebuffers.resize(sceneTargets.size());
         for (std::size_t index = 0; index < framebuffers.size(); ++index) {
             std::array<VkImageView, 3> attachments{};
             std::uint32_t attachmentCount = 2U;
             if (renderSampleCount() == VK_SAMPLE_COUNT_1_BIT) {
-                attachments[0] = swapchainImageViews[index];
+                attachments[0] = sceneTargets[index].srgbView;
                 attachments[1] = depthTargets[index].view;
             } else {
                 attachments[0] = colorTargets[index].view;
                 attachments[1] = depthTargets[index].view;
-                attachments[2] = swapchainImageViews[index];
+                attachments[2] = sceneTargets[index].srgbView;
                 attachmentCount = 3U;
             }
             auto info =
@@ -5769,19 +5956,51 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void createSwapchainResources() {
         createSwapchain();
         createPresentSemaphores();
-        createSwapchainImageViews();
         createColorTargets();
         createDepthTargets();
+        createSceneTargets();
+        createGuiDepthTargets();
         createRenderPass();
+        createGuiRenderPass();
         createGraphicsPipeline();
         createOcclusionQueryPipeline();
         createParticlePipeline();
         createShadowDebugPipeline();
         createRainSheetPipeline();
         createFramebuffers();
+        createGuiFramebuffers();
     }
 
     void cleanupSwapchain() noexcept {
+        for (const auto framebuffer : guiFramebuffers) {
+            vkDestroyFramebuffer(device, framebuffer, nullptr);
+        }
+        guiFramebuffers.clear();
+        for (auto& target : sceneTargets) {
+            if (target.unormView != VK_NULL_HANDLE) {
+                vkDestroyImageView(device, target.unormView, nullptr);
+            }
+            if (target.srgbView != VK_NULL_HANDLE) {
+                vkDestroyImageView(device, target.srgbView, nullptr);
+            }
+            if (allocator != VK_NULL_HANDLE) {
+                destroyImage(target.image);
+            }
+        }
+        sceneTargets.clear();
+        for (auto& target : guiDepthTargets) {
+            if (target.view != VK_NULL_HANDLE) {
+                vkDestroyImageView(device, target.view, nullptr);
+            }
+            if (allocator != VK_NULL_HANDLE) {
+                destroyImage(target.image);
+            }
+        }
+        guiDepthTargets.clear();
+        if (worldPipelines_.guiRenderPass != VK_NULL_HANDLE) {
+            vkDestroyRenderPass(device, worldPipelines_.guiRenderPass, nullptr);
+            worldPipelines_.guiRenderPass = VK_NULL_HANDLE;
+        }
         for (const auto framebuffer : framebuffers) {
             vkDestroyFramebuffer(device, framebuffer, nullptr);
         }
@@ -5903,10 +6122,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             vkDestroySemaphore(device, semaphore, nullptr);
         }
         presentSemaphores.clear();
-        for (const auto view : swapchainImageViews) {
-            vkDestroyImageView(device, view, nullptr);
-        }
-        swapchainImageViews.clear();
         swapchainImages.clear();
         if (swapchain != VK_NULL_HANDLE) {
             vkDestroySwapchainKHR(device, swapchain, nullptr);
@@ -6382,7 +6597,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             glfwSetWindowTitle(window, title.c_str());
         }
 
-        const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        // 交换链图像现在最早是被 copy 写（GUI 那趟画在场景图上），因此等待阶段要含 TRANSFER
+        const VkPipelineStageFlags waitStage =
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
         const auto presentSemaphore = presentSemaphores[imageIndex];
         auto submit = vkStructure<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
         submit.waitSemaphoreCount = 1;
@@ -6494,6 +6711,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     float worldBodyYaw = 0.0F;
     bool worldBodyYawInitialized = false;
     ParticleSystem particleSystem;
+    // RN-9d：客户端环境 tick。vanilla 的 ClientLevel.animateTick——方块自己冒的
+    // 粒子（附魔台的银河字母，后续的火把火焰/岩浆冒泡）全部由它派发，
+    // 与服务端 ParticleEvent 那条来路互不相干
+    render::BlockAnimateTicker blockAnimateTicker;
     bool glfwInitialized = false;
     bool framebufferResized = false;
     bool windowPlacementDirty = false;
@@ -6669,12 +6890,42 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     std::string queuedLanguageCode;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     std::vector<VkImage> swapchainImages;
-    std::vector<VkImageView> swapchainImageViews;
     VkFormat swapchainFormat = VK_FORMAT_UNDEFINED;
+    // 场景图的两个面孔。世界那趟按 SRGB 视图写（着色器出线性值，硬件编码，混合在
+    // 线性空间），GUI 那趟按 UNORM 视图写（着色器直接出编码值，混合也在编码值上）；
+    // 同一批字节，两种解释。
+    // 通道序必须跟交换链一致——最后那步是 vkCmdCopyImage，逐字节搬运不做任何转换，
+    // BGRA 的场景图 copy 进 RGBA 的交换链会把红蓝对调。
+    [[nodiscard]] VkFormat sceneUnormFormat() const {
+        return swapchainFormat == VK_FORMAT_R8G8B8A8_UNORM ||
+                       swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB
+                   ? VK_FORMAT_R8G8B8A8_UNORM
+                   : VK_FORMAT_B8G8R8A8_UNORM;
+    }
+    [[nodiscard]] VkFormat sceneSrgbFormat() const {
+        return sceneUnormFormat() == VK_FORMAT_R8G8B8A8_UNORM ? VK_FORMAT_R8G8B8A8_SRGB
+                                                              : VK_FORMAT_B8G8R8A8_SRGB;
+    }
     VkExtent2D swapchainExtent{};
     VkFormat depthFormat = VK_FORMAT_UNDEFINED;
     std::vector<DepthTarget> depthTargets;
     std::vector<ColorTarget> colorTargets;
+    // 世界与 GUI 都画进这张场景图，最后整屏 copy 进交换链图像
+    // 它带 MUTABLE_FORMAT，因此能有两个视图：世界那趟用 SRGB 视图（着色器写线性值、
+    // 硬件编码、混合在线性空间），GUI 那趟用 UNORM 视图（着色器直接写编码值、
+    // 混合也在编码值上，与 vanilla 同一套）
+    // 每个交换链图像一份，帧间不会互相踩
+    struct SceneTarget final {
+        AllocatedImage image;
+        VkImageView srgbView = VK_NULL_HANDLE;
+        VkImageView unormView = VK_NULL_HANDLE;
+    };
+    std::vector<SceneTarget> sceneTargets;
+    // GUI 那趟自己的深度：背包里的 3D 玩家预览和第一人称手持物要深度测试，
+    // 而世界的深度可能是多重采样的。顺带对齐 vanilla——它在画手之前清一次深度，
+    // 所以手不会被贴脸的方块切掉
+    std::vector<DepthTarget> guiDepthTargets;
+    std::vector<VkFramebuffer> guiFramebuffers;
     VkPipeline crosshairPipeline = VK_NULL_HANDLE;
     VkPipelineLayout hudPipelineLayout = VK_NULL_HANDLE;
     VkPipeline hudPipeline = VK_NULL_HANDLE;
@@ -6866,6 +7117,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .language = language,
             .swapchainExtent = swapchainExtent,
             .framebuffers = framebuffers,
+            .guiFramebuffers = guiFramebuffers,
+            .copySceneToSwapchain =
+                [this](VkCommandBuffer c, std::uint32_t index) { copySceneToSwapchain(c, index); },
             .frames = frames,
             .currentFrame = currentFrame,
             .peakPendingSectionCount = peakPendingSectionCount,

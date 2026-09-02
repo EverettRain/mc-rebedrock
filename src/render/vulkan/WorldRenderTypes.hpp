@@ -193,6 +193,10 @@ struct OcclusionResources final {
 // 收成一个结构体之后只剩 1 条绑定，加管线只动这里一处
 struct WorldPipelines final {
     VkRenderPass renderPass = VK_NULL_HANDLE;
+    // GUI 单独一趟。vanilla 在**未经伽马转换**的帧缓冲上合成界面，混合因此发生在
+    // sRGB 编码值上；世界这趟仍写线性值、由 sRGB 附件编码。两者不能共用一个视图，
+    // 于是 GUI 这趟绑同一张场景图的 UNORM 视图，全程直接读写编码值。
+    VkRenderPass guiRenderPass = VK_NULL_HANDLE;
     // 地形三条渲染层共用的布局与它们各自的管线
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipeline graphicsPipeline = VK_NULL_HANDLE;
