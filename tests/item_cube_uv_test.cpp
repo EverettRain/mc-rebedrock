@@ -201,5 +201,88 @@ int main() {
         assert(blockDefinition(Block::Furnace).cubeUvModel == CubeUvModel::Default);
     }
 
+    // --- RN-8c-D: the five layers a block item's cube needs -------------------
+    //
+    // Before this, the dropped and held cube got only top/side/bottom, so every
+    // DirectionalCube was a uniform side-texture box: a dropped piston had no
+    // platform, a dropped observer no face. The front sits on the model's north
+    // face and the back on its south one, because a block item is the block's own
+    // model with no blockstate rotation.
+    {
+        // The layer table is filled by the renderer at startup; give the two
+        // blocks under test known values so the routing is what is being checked,
+        // not the atlas.
+        setBlockTextureLayers(Block::Stone, {11.0F, 12.0F, 13.0F});
+        setBlockDirectionalLayers(Block::Observer,
+                                  {/*front*/ 21.0F, /*frontActive*/ 22.0F, /*back*/ 23.0F,
+                                   /*backActive*/ 24.0F, /*top*/ 25.0F, /*bottom*/ 26.0F,
+                                   /*side*/ 27.0F});
+        setBlockTextureLayers(Block::Observer, {31.0F, 32.0F, 33.0F});
+
+        // A plain cube has no front of its own: both fall back to side, which is
+        // exactly what every item cube used to do for every block.
+        const auto stone = cubeItemLayers(Block::Stone);
+        assert(stone.top == 11.0F && stone.side == 12.0F && stone.bottom == 13.0F);
+        assert(stone.front == 12.0F && stone.back == 12.0F);
+
+        // A DirectionalCube answers its own six faces, and takes the UNLIT front:
+        // a block item has no state, and vanilla's item model is the unlit one.
+        const auto observer = cubeItemLayers(Block::Observer);
+        assert(observer.top == 25.0F && observer.bottom == 26.0F && observer.side == 27.0F);
+        assert(observer.front == 21.0F && observer.back == 23.0F);
+        assert(observer.front != 22.0F);
+
+        // The packing the shader decodes: `1 + front + back * stride`, with zero
+        // reserved for "not supplied" so the block-breaking overlay and falling
+        // blocks keep side on every side face.
+        const float packed = packItemFrontBackLayers(observer.front, observer.back);
+        assert(packed > 0.5F);
+        const float value = packed - 1.0F;
+        const float decodedFront = std::fmod(value, kItemLayerPackStride);
+        const float decodedBack = std::floor(value / kItemLayerPackStride);
+        assert(decodedFront == observer.front);
+        assert(decodedBack == observer.back);
+
+        // The encoding has to survive a float32 round trip for every layer the
+        // atlas can hold, which is what bounds the stride: every integer up to
+        // 2^24 is exact in a float32, and the widest packed value is
+        // 1 + (stride-1) + (stride-1)*stride = stride^2. So 4096 is the largest
+        // stride that is exact, and it sits exactly on the boundary rather than
+        // over it.
+        const float widest =
+            packItemFrontBackLayers(kItemLayerPackStride - 1.0F, kItemLayerPackStride - 1.0F);
+        assert(widest == kItemLayerPackStride * kItemLayerPackStride);
+        assert(widest <= 16777216.0F);
+        assert(std::fmod(widest - 1.0F, kItemLayerPackStride) == kItemLayerPackStride - 1.0F);
+        assert(std::floor((widest - 1.0F) / kItemLayerPackStride) == kItemLayerPackStride - 1.0F);
+
+        // The shader has to agree about the stride AND about which half of the
+        // packed value is which. A headless test cannot run GLSL, so this checks
+        // the source's shape: the two decode expressions, each bound to the right
+        // face. It is a literal match on purpose — if the shader is reformatted
+        // the test fails loudly and whoever reformatted it re-reads this, which is
+        // the same contract the UV tables above are held to.
+        const std::string source = readFile(kShaderDir / "item_entity.vert");
+        std::ostringstream stride;
+        stride << static_cast<int>(kItemLayerPackStride) << ".0";
+        assert(source.find(stride.str()) != std::string::npos);
+        assert(source.find("frontLayer = mod(packedFaces, " + stride.str() + ")") !=
+               std::string::npos);
+        assert(source.find("backLayer = floor(packedFaces / " + stride.str() + ")") !=
+               std::string::npos);
+        // And that the front lands on the model's north face (-Z, face 5), not on
+        // its south one — the swap the old held-item hack had. Matched with the
+        // whitespace stripped, so reformatting the shader does not fail this.
+        std::string dense;
+        for (const char character : source) {
+            if (character != ' ' && character != '\n' && character != '\t' &&
+                character != '\r') {
+                dense.push_back(character);
+            }
+        }
+        assert(dense.find("face==5?frontLayer") != std::string::npos);
+        assert(dense.find("face==4?backLayer") != std::string::npos);
+    }
+
     return 0;
 }

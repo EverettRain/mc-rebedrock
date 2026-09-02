@@ -3848,6 +3848,52 @@ inline std::array<DirectionalTextureLayers, static_cast<std::size_t>(Block::Coun
     return kBlockDirectionalLayers[index < kBlockDirectionalLayers.size() ? index : 0U];
 }
 
+// RN-8c-D: the five distinct texture layers a block ITEM needs. A dropped or held
+// block is the block's own model with no blockstate rotation (vanilla's `ground`
+// display transform is rotation [0,0,0]), so its front sits on the model's NORTH
+// face and its back on the south one — the same faces the inventory icon reads.
+//
+// A plain cube has no front or back of its own, so both fall back to `side`,
+// which is exactly what the item surfaces were doing for every block before this
+// existed: a dropped piston was a uniform piston_side cube because the drop path
+// only ever had top/side/bottom to give the shader.
+//
+// `front`, not `frontActive`: a block item has no state, and vanilla's item model
+// is the unlit variant.
+struct CubeItemLayers final {
+    float top = 0.0F;
+    float bottom = 0.0F;
+    float side = 0.0F;
+    float front = 0.0F;
+    float back = 0.0F;
+};
+
+[[nodiscard]] inline CubeItemLayers cubeItemLayers(Block block) {
+    const auto flat = textureLayers(block);
+    if (blockDefinition(block).model != BlockModel::DirectionalCube) {
+        return {flat.top, flat.bottom, flat.side, flat.side, flat.side};
+    }
+    const auto& faces = directionalLayers(block);
+    return {faces.top, faces.bottom, faces.side, faces.front, faces.back};
+}
+
+// The item shader has one spare float for the two faces `textureLayersRotation`
+// has no room for, so the front and back layers travel packed into it: two
+// integers below kItemLayerPackStride, as `1 + front + back * stride`. The +1
+// keeps zero meaning "not supplied", which is what every item-cube draw that is
+// not a block (the block-breaking overlay, a falling block) leaves it at, and
+// what makes those keep their old side-on-every-face behaviour untouched.
+//
+// The stride bounds the atlas at 4095 layers, against a sprite section that starts
+// at 203 and grows with the block roster. It is also the largest stride that can
+// be exact: the widest packed value is stride^2, every integer up to 2^24 is exact
+// in a float32, and 4096^2 is exactly 2^24.
+inline constexpr float kItemLayerPackStride = 4096.0F;
+
+[[nodiscard]] inline float packItemFrontBackLayers(float front, float back) {
+    return 1.0F + front + back * kItemLayerPackStride;
+}
+
 inline void setBlockDirectionalLayers(Block block, DirectionalTextureLayers layers) {
     kBlockDirectionalLayers[static_cast<std::size_t>(block)] = layers;
 }

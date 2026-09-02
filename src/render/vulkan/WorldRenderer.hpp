@@ -1145,6 +1145,11 @@ class WorldRenderer final {
                           : world::BlockTextureLayers{gameplay::itemTextureLayer(entity.stack),
                                                       gameplay::itemTextureLayer(entity.stack),
                                                       gameplay::itemTextureLayer(entity.stack)};
+            // RN-8c-D: the front/back faces the flat top/side/bottom triple has no
+            // room for. Without them a dropped piston was a uniform piston_side
+            // cube and a dropped observer had no face.
+            const float cubeFrontBack =
+                cubeModel ? cubeItemFrontBackLayers(entity.stack.block) : 0.0F;
             const float previousAge =
                 entity.ageTicks == 0U ? 0.0F : static_cast<float>(entity.ageTicks - 1U);
             const float age = previousAge + itemAlpha;
@@ -1167,7 +1172,8 @@ class WorldRenderer final {
                     {layers.top, layers.side, layers.bottom, rotation},
                     // data.z 是滚转角，在立方体路径上没用，这里借来标记台阶
                     // 着色器据此在侧面显示纹理的下半条
-                    {1.0F, 0.0F, slabDrop ? 1.0F : 0.0F, 0.0F},
+                    // data.y 是俯仰角，立方体掉落物只绕 Y 转，因此空出来装前/后两面的层号
+                    {1.0F, cubeFrontBack, slabDrop ? 1.0F : 0.0F, 0.0F},
                     dimensions,
                 };
                 vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
@@ -1466,6 +1472,26 @@ class WorldRenderer final {
             diagnosticsOnce_.asyncRain = true;
             std::cout << "[rain] mode=async drops=" << count << " draws=1\n";
         }
+    }
+
+    // RN-8c-D: the two faces a block item's cube needs beyond the flat
+    // top/side/bottom triple, packed into the one spare float the item push
+    // constant has (see world::packItemFrontBackLayers). Front sits on the
+    // model's NORTH face and back on its south one, because a block item is the
+    // block's model with no blockstate rotation — the same faces the inventory
+    // icon resolves. A block with no front of its own answers side for both, so
+    // this is safe to ask of any cube.
+    //
+    // The chest is the one block drawn from its own atlas section rather than
+    // from its texture triple, so its front comes from there; everything else
+    // about its cube is left exactly as it was.
+    [[nodiscard]] static float cubeItemFrontBackLayers(world::Block block) {
+        if (block == world::Block::Chest) {
+            return world::packItemFrontBackLayers(kChestItemFrontLayer,
+                                                  world::textureLayers(block).side);
+        }
+        const auto faces = world::cubeItemLayers(block);
+        return world::packItemFrontBackLayers(faces.front, faces.back);
     }
 
     // 用一个完整世界矩阵变换、经物品着色器的世界空间蒙皮长方体模式（data.x = 8）画一个轴对齐长方体
@@ -1899,21 +1925,21 @@ class WorldRenderer final {
                                    : uiFrameData_.eating
                                        ? animation::firstPersonEatTransform(pose, cubeModel)
                                        : animation::firstPersonItemTransform(pose, cubeModel));
-        const float heldFrontLayer =
-            !emptyHand && gameplay::isBlockStack(stack)
-                ? (stack.block == world::Block::Chest
-                       ? kChestItemFrontLayer
-                       : (world::blockDefinition(stack.block).model ==
-                                  world::BlockModel::DirectionalCube
-                              ? world::directionalLayers(stack.block).front
-                              : 0.0F))
-                : 0.0F;
+        // RN-8c-D: the held block's front and back faces, packed into data.y the
+        // same way the dropped block's are. This replaces a hack that put the
+        // front layer on the model's SOUTH face (the one the old transform
+        // happened to point at the player) — front and back were effectively
+        // swapped, so a held observer showed its face where vanilla shows its
+        // back. The chest keeps its dedicated front layer, since its item is not
+        // drawn from the block's own texture triple.
+        const float heldFrontBack =
+            !emptyHand && cubeModel ? cubeItemFrontBackLayers(stack.block) : 0.0F;
         // 手与手持方块跟随玩家眼部的环境光，夜里会变暗，而不是永远处在固定光照下
         const float heldLight = packedSceneLight(camera.position());
         const ItemPush push{
             {0.0F, 0.0F, 0.0F, 1.0F},
-            {layers.top, layers.side, layers.bottom, heldFrontLayer},
-            {(!emptyHand && !cubeModel) ? 7.0F : 6.0F, 0.0F,
+            {layers.top, layers.side, layers.bottom, 0.0F},
+            {(!emptyHand && !cubeModel) ? 7.0F : 6.0F, heldFrontBack,
              emptyHand ? 1.0F : (heldSlab ? 1.0F : 0.0F), emptyHand ? 1.0F : 0.0F},
             emptyHand ? glm::vec4{0.25F, 0.75F, 0.25F, heldLight}
                       : (cubeModel ? glm::vec4{1.0F, heldSlab ? 0.5F : 1.0F, 1.0F, heldLight}

@@ -8,6 +8,13 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- A block dropped on the ground or held in hand finally uses the right texture on
+  each of its six faces. Both only ever received top/side/bottom, so a dropped
+  piston was a solid block of piston_side and a dropped observer had no face; the
+  held item additionally had a patch that put the front on the model's back. The
+  front now sits on the model's north face and the back on its south one, exactly
+  as the inventory icon and the world do. (A held block shows its south face and
+  one side, as in vanilla, so the front is usually not the one you see.)
 - Block icons, dropped blocks and the held block now match vanilla's texture
   orientation too. Those three draw their cube in a shader with their own copy of
   the old layout, so they stayed wrong after the world was fixed: the top face was

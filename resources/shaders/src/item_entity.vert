@@ -411,15 +411,31 @@ void main() {
             fragmentUv = playerSkinCuboid
                 ? (item.data.z > 0.5 ? vec2(uv.x, 1.0 - uv.y) : uv)
                 : cubeUv;
+            // RN-8c-D: a block item shows the block's own model with no
+            // blockstate rotation, so its front is on the model's NORTH face
+            // (-Z, face 5) and its back on the south one (+Z, face 4).
+            // textureLayersRotation carries top/side/bottom; the two remaining
+            // faces travel packed in data.y, which every block-cube draw leaves
+            // free (the drop cube only yaws, the held cube is matrix-driven).
+            // Zero means "not supplied" — the block-breaking overlay and falling
+            // blocks leave it there and keep side on all four sides, as before.
+            float sideLayer = item.textureLayersRotation.y;
+            float frontLayer = sideLayer;
+            float backLayer = sideLayer;
+            if (item.data.y > 0.5) {
+                float packedFaces = item.data.y - 1.0;
+                frontLayer = mod(packedFaces, 4096.0);
+                backLayer = floor(packedFaces / 4096.0);
+            }
             fragmentTextureLayer = playerSkinCuboid
                 ? item.textureLayersRotation.x + float(face)
-                : (matrixViewModel && item.textureLayersRotation.w > 10.0 && face == 4
-                    ? item.textureLayersRotation.w
                 : (face == 2
                     ? item.textureLayersRotation.x
-                    : (face == 3
-                        ? item.textureLayersRotation.z
-                        : item.textureLayersRotation.y)));
+                : (face == 3
+                    ? item.textureLayersRotation.z
+                : (face == 5
+                    ? frontLayer
+                : (face == 4 ? backLayer : sideLayer))));
         }
         fragmentNormal = normal;
         fragmentFallingBlock =
