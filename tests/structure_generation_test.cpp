@@ -101,13 +101,13 @@ void testBiomeGate() {
     Chunk chunk = flatChunk();
     StructureManager manager;
     manager.add("minecraft:test/marker", furnaceMarker());
-    manager.addSet(everyChunkSet({Biome::SnowyTundra})); // only snowy
+    manager.addSet(everyChunkSet({Biome::SnowyPlains})); // only snowy
     std::vector<TreeBorderBlock> border;
     // A plains origin biome fails the gate -> not stamped.
     placeStructures(chunk, 0, 0, 999, manager, [](int, int) { return Biome::Plains; }, [](int, int) { return kGround; }, border);
     assert(chunk.state(0, kGround, 0).block() == Block::Stone);
     // The allowed biome stamps it.
-    placeStructures(chunk, 0, 0, 999, manager, [](int, int) { return Biome::SnowyTundra; }, [](int, int) { return kGround; }, border);
+    placeStructures(chunk, 0, 0, 999, manager, [](int, int) { return Biome::SnowyPlains; }, [](int, int) { return kGround; }, border);
     assert(chunk.state(0, kGround, 0).block() == Block::Furnace);
 }
 
@@ -174,7 +174,7 @@ void testChestReplay() {
                .empty());
     StructureManager gated;
     gated.add("minecraft:test/vault", chestTemplate());
-    gated.addSet(everyChunkSetFor("minecraft:test/vault", {Biome::SnowyTundra}));
+    gated.addSet(everyChunkSetFor("minecraft:test/vault", {Biome::SnowyPlains}));
     assert(structureChestsForChunk(0, 0, 4242, gated, kGround,
                                    [](int, int) { return Biome::Plains; })
                .empty());

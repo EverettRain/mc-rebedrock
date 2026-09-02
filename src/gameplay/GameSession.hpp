@@ -312,14 +312,16 @@ class GameSession final {
     // the simulated herd close to the player; 0 disables the gate.
     void setSimulationRadius(float blocks) { simulationRadiusBlocks_ = blocks; }
     [[nodiscard]] float simulationRadius() const { return simulationRadiusBlocks_; }
-    // The world seed drives the spawner's biome map; a new save or /reload
-    // rebuilds it so natural spawns follow the terrain being generated.
-    // It also reseeds the experience orb scatter stream (XP-1) — every world
+    // A new save or /reload has the spawner pick up the process-wide spawn
+    // tables. It used to hand it the seed as well, to rebuild a biome map of its
+    // own; the spawner reads the biome off the world now, so the world's own
+    // terrain is what natural spawns follow, in every dimension.
+    // This also reseeds the experience orb scatter stream (XP-1) — every world
     // gets its own deterministic orb-velocity sequence, the same way the
     // enchantment seed roll and the weather RNG are each salted off this seed
     // but kept in their own independent stream.
     void setWorldSeed(std::uint64_t seed) {
-        primaryLevel().spawner.setSeed(seed);
+        primaryLevel().spawner.refreshTables();
         experienceOrbRandom_.setSeed(seed ^ 0xE3B0C44298FC1C14ULL);
         // RW-0: the projectile pool's own deterministic stream (reserved for
         // RW-1+'s draw-dependent crit/scatter rolls), salted independently of

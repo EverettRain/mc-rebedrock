@@ -10,6 +10,14 @@ namespace mc::world::gen {
 // Which biome sits at a given point — the shared front over the per-dimension
 // biome maps (WG-DESIGN §2: "生物群系源按维度…共享 BiomeSource 接口").
 //
+// **Only a chunk generator constructs one of these.** A BiomeSource answers what
+// the generator *would* put somewhere, which is not the same question as what the
+// world actually holds, and it answers it for one dimension only — the natural
+// spawner used to keep a source of its own and so read overworld biomes while
+// standing in the nether. Everything downstream of generation reads the biome off
+// the world (`World::biomeAt`), which is both the single source of truth and a
+// plain array lookup rather than thirty layers of GenLayer. See BM-DESIGN 判断 2.
+//
 // The overworld answers with VanillaLayeredBiomeSource, a stack of ~30 GenLayer
 // passes zooming a 1:256 continent grid up to a 1:4 biome grid (ported in
 // LayeredBiomeSource). The nether answers with MultiNoiseBiomeSource, four

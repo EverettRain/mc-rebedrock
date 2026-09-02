@@ -199,7 +199,7 @@ int main() {
         lightLayers(caveWorld, 25, 26, 15U, 0U);
 
         gameplay::EntitySystem entities;
-        gameplay::NaturalSpawner spawner(0x1234ABCDU);
+        gameplay::NaturalSpawner spawner;
         for (int tick = 0; tick < 1200; ++tick) {
             spawner.tick(caveWorld, entities, player, kRadius, gameplay::Difficulty::Normal, noon);
         }
@@ -224,7 +224,7 @@ int main() {
         lightLayers(litCaveWorld, 12, 13, 0U, 15U);
 
         gameplay::EntitySystem litEntities;
-        gameplay::NaturalSpawner litSpawner(0x1234ABCDU);
+        gameplay::NaturalSpawner litSpawner;
         for (int tick = 0; tick < 1200; ++tick) {
             litSpawner.tick(litCaveWorld, litEntities, player, kRadius,
                             gameplay::Difficulty::Normal, noon);
@@ -242,7 +242,7 @@ int main() {
 
         const glm::vec3 swimmer{0.0F, 12.0F, 0.0F};
         gameplay::EntitySystem entities;
-        gameplay::NaturalSpawner spawner(0x5EED5EEDU);
+        gameplay::NaturalSpawner spawner;
         installEverywhere(spawner, MobCategory::WaterCreature, {&waterSpecies(), 10, 4, 4});
         for (int tick = 0; tick < 1200; ++tick) {
             spawner.tick(seaWorld, entities, swimmer, kRadius, gameplay::Difficulty::Normal, noon);
@@ -272,7 +272,7 @@ int main() {
 
         const glm::vec3 walker{0.0F, 1.0F, 0.0F};
         gameplay::EntitySystem entities;
-        gameplay::NaturalSpawner spawner(0x0BADF00DU);
+        gameplay::NaturalSpawner spawner;
         installEverywhere(spawner, MobCategory::Creature,
                           {gameplay::entities::entityTypeRegistry().byId("pig"), 10, 4, 4});
         for (int tick = 0; tick < 1200; ++tick) {

@@ -159,13 +159,11 @@ constexpr int kMaximumColumnSamples = 16;
 
 } // namespace
 
-NaturalSpawner::NaturalSpawner(std::uint64_t seed)
-    : biomes_(std::make_unique<world::gen::BiomeSource>(seed)) {
+NaturalSpawner::NaturalSpawner() {
     tables_.loadBuiltinDefaults();
 }
 
-void NaturalSpawner::setSeed(std::uint64_t seed) {
-    biomes_ = std::make_unique<world::gen::BiomeSource>(seed);
+void NaturalSpawner::refreshTables() {
     // The tables name species through the registry, which can still be empty
     // when the GameSession is built at startup. A world load always comes after
     // registration *and* after the pack stack has been read, so this is where
@@ -186,8 +184,8 @@ void NaturalSpawner::spawnForChunkGeneration(const world::World& world, EntitySy
     // getRandomSpawnMobAt reads the biome at the chunk's own centre column in
     // vanilla's spawnOriginalMobs (worldGenRegion.getCenter()), not per-member —
     // one biome lookup governs the whole chunk's generation-time population.
-    const auto biome = biomes_->biomeAtBlock(chunkX * world::kChunkWidth + 8,
-                                             chunkZ * world::kChunkDepth + 8);
+    const auto biome = world.biomeAt(chunkX * world::kChunkWidth + 8,
+                                     chunkZ * world::kChunkDepth + 8);
     const auto& mobs = tables_.settings(biome).forCategory(entities::MobCategory::Creature);
     if (mobs.empty()) {
         return;
@@ -350,7 +348,7 @@ void NaturalSpawner::spawnOnce(const world::World& world, EntitySystem& entities
     }
 
     // --- biome table (getRandomSpawnMobAt) ---
-    const auto& table = tables_.settings(biomes_->biomeAtBlock(spawnX, spawnZ));
+    const auto& table = tables_.settings(world.biomeAt(spawnX, spawnZ));
     const auto& entries = table.forCategory(category);
     if (entries.empty()) {
         return;

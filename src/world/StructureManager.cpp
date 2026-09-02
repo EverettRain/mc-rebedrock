@@ -150,7 +150,7 @@ void registerBuiltinStructureSets(StructureManager& manager) {
         igloo.placement = debug ? gen::StructurePlacement{48, 0, 14357618, gen::SpreadType::Linear}
                                 : gen::StructurePlacement{32, 8, 14357618, gen::SpreadType::Linear};
         igloo.templateId = "minecraft:igloo/top";
-        igloo.biomes = debug ? std::vector<gen::Biome>{} : std::vector<gen::Biome>{gen::Biome::SnowyTundra};
+        igloo.biomes = debug ? std::vector<gen::Biome>{} : std::vector<gen::Biome>{gen::Biome::SnowyPlains};
         manager.addSet(igloo);
     }
 

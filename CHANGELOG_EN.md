@@ -8,6 +8,28 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- The nether and the end no longer spawn mobs from the overworld's biome map.
+  Natural spawning kept a biome map of its own, built from the world seed and so
+  always the *overworld's*, while each dimension has its own spawner — standing in
+  the nether, it picked species from an overworld biome's table. It now reads the
+  biome the world itself holds, so every dimension reads its own. That lookup also
+  went from recomputing a thirty-layer biome map to one array index (14.4 µs to
+  7.6 ns in a microbenchmark), and it had been about 98% of the whole spawn rule
+  chain's cost.
+- Nether and end biomes no longer spawn plain zombies. Their hostile tables were
+  "anything that isn't the invalid value", which swept the overworld's zombie in.
+  Vanilla's nether tables are zombified piglins, ghasts and magma cubes, and its
+  end tables are endermen; none of those species exist in this build yet, so the
+  correct table is an empty one — an empty list is the honest answer, a zombie is
+  not.
+- Biome registry ids now match 26.1: `snowy_tundra` became `snowy_plains` and
+  `mountains` became `windswept_hills`. Those two names had been written down in
+  two places that disagreed — the registry used the 1.16 names while the spawn
+  tables used the 26.1 ones — so a data pack could match one and not the other.
+  The old names still resolve, so a save or pack written against them still loads.
+  A biome's data-pack path is now derived from its own id instead of a second
+  hand-copied list, which also means a pack can override the nether and end
+  biomes' spawn tables for the first time.
 - The face you look at when a chest opens finally shows the texture with the
   chest mouth in it. It was showing plain planks — pixel for pixel the same region
   as the chest's outer top — which is why it read as the top texture pasted inside

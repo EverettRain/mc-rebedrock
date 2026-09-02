@@ -15,27 +15,6 @@ using world::gen::Biome;
 
 constexpr std::size_t kBiomeCount = static_cast<std::size_t>(Biome::Count);
 
-// The biome ids vanilla names these by. Two of ours have no exact vanilla
-// counterpart under the same name (`mountains` is `windswept_hills` since 1.18);
-// the id here is what a 26.1 pack would ship, so an override actually matches.
-constexpr std::array<std::string_view, kBiomeCount> kBiomeIds{
-    "worldgen/biome/ocean.json",
-    "worldgen/biome/beach.json",
-    "worldgen/biome/plains.json",
-    "worldgen/biome/forest.json",
-    "worldgen/biome/birch_forest.json",
-    "worldgen/biome/taiga.json",
-    "worldgen/biome/snowy_plains.json",
-    "worldgen/biome/desert.json",
-    "worldgen/biome/savanna.json",
-    "worldgen/biome/jungle.json",
-    "worldgen/biome/dark_forest.json",
-    "worldgen/biome/swamp.json",
-    "worldgen/biome/windswept_hills.json",
-    "worldgen/biome/river.json",
-    "worldgen/biome/deep_ocean.json",
-};
-
 // The category names vanilla writes inside `spawners`.
 [[nodiscard]] std::string_view categoryId(entities::MobCategory category) {
     switch (category) {
@@ -66,7 +45,7 @@ constexpr std::array<std::string_view, kBiomeCount> kBiomeIds{
     case Biome::Savanna:
     case Biome::DarkForest:
     case Biome::Swamp:
-    case Biome::Mountains:
+    case Biome::WindsweptHills:
         return true;
     // Vanilla gives none of these farm animals: a desert has no grass to graze,
     // a jungle has its own list, the snowy plains only get polar bears and
@@ -77,7 +56,7 @@ constexpr std::array<std::string_view, kBiomeCount> kBiomeIds{
     case Biome::Beach:
     case Biome::Desert:
     case Biome::Jungle:
-    case Biome::SnowyTundra:
+    case Biome::SnowyPlains:
     // The nether and end have no farm animals (their spawns are the WG/AR mob
     // tables); WG-0 registers their identity, so they join the "none" arm to
     // keep this switch exhaustive.
@@ -97,10 +76,48 @@ constexpr std::array<std::string_view, kBiomeCount> kBiomeIds{
     return false;
 }
 
-// BiomeDefaultFeatures.monsters: hostiles spawn everywhere, including over
-// water — vanilla's ocean tables call commonSpawns too.
+// BiomeDefaultFeatures.monsters: hostiles spawn everywhere in the overworld,
+// including over water — vanilla's ocean tables call commonSpawns too.
+//
+// The nether and the end are deliberately absent. They used to be included by
+// accident (the test was `biome != Count`), which put a plain overworld zombie
+// in the nether — vanilla's nether tables are zombified piglins, ghasts and
+// magma cubes, and its end tables are endermen. None of those species exist in
+// this build yet, so the correct table here is an empty one: an empty list is
+// the honest answer, a zombie is a wrong one. AR fills these in when the
+// species land; the table shape is already waiting for them.
 [[nodiscard]] bool hasMonsters(Biome biome) {
-    return biome != Biome::Count;
+    switch (biome) {
+    case Biome::Ocean:
+    case Biome::Beach:
+    case Biome::Plains:
+    case Biome::Forest:
+    case Biome::BirchForest:
+    case Biome::Taiga:
+    case Biome::SnowyPlains:
+    case Biome::Desert:
+    case Biome::Savanna:
+    case Biome::Jungle:
+    case Biome::DarkForest:
+    case Biome::Swamp:
+    case Biome::WindsweptHills:
+    case Biome::River:
+    case Biome::DeepOcean:
+        return true;
+    case Biome::NetherWastes:
+    case Biome::SoulSandValley:
+    case Biome::CrimsonForest:
+    case Biome::WarpedForest:
+    case Biome::BasaltDeltas:
+    case Biome::TheEnd:
+    case Biome::EndHighlands:
+    case Biome::EndMidlands:
+    case Biome::EndBarrens:
+    case Biome::SmallEndIslands:
+    case Biome::Count:
+        break;
+    }
+    return false;
 }
 
 // BiomeDefaultFeatures.desertSpawns (26.1): husk replaces zombie's usual slot
@@ -127,9 +144,15 @@ constexpr std::array<std::string_view, kBiomeCount> kBiomeIds{
 
 } // namespace
 
-std::string_view biomeDataPath(Biome biome) {
-    const auto index = static_cast<std::size_t>(biome);
-    return index < kBiomeIds.size() ? kBiomeIds[index] : std::string_view{};
+std::string biomeDataPath(Biome biome) {
+    // Derived from the biome's own id rather than listed a second time here. The
+    // list that used to sit in this file was a second hand-copied set of biome
+    // ids, and it had already drifted from the first: it said `snowy_plains`
+    // while the registry still said `snowy_tundra`, so a pack could match one and
+    // not the other. One table, and the nether/end biomes get a real path too.
+    return std::string{"worldgen/biome/"}
+        .append(world::gen::biomeDefinition(biome).identifier)
+        .append(".json");
 }
 
 bool BiomeSpawnTables::anySpecies(entities::MobCategory category) const {
@@ -203,7 +226,7 @@ void BiomeSpawnTables::load(const assets::ResourceProvider& resources) {
     loadBuiltinDefaults();
     for (std::size_t index = 0; index < kBiomeCount; ++index) {
         const auto biome = static_cast<Biome>(index);
-        const auto location = assets::data(std::string{biomeDataPath(biome)});
+        const auto location = assets::data(biomeDataPath(biome));
         if (!resources.exists(location)) {
             continue; // no pack supplies this biome: keep the built-in table
         }

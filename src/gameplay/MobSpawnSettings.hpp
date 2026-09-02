@@ -22,6 +22,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -95,8 +96,10 @@ class BiomeSpawnTables final {
 };
 
 // The pack-relative path a biome's data lives at, e.g.
-// "worldgen/biome/plains.json". Exposed so the loader and its test agree.
-[[nodiscard]] std::string_view biomeDataPath(world::gen::Biome biome);
+// "worldgen/biome/plains.json". Derived from the biome's own 26.1 id, so this is
+// not a second place where biome ids are written down. Exposed so the loader and
+// its test agree.
+[[nodiscard]] std::string biomeDataPath(world::gen::Biome biome);
 
 // The process-wide tables, the same shape blockTags() has and for the same
 // reason: the pack stack is read once at startup, and everything that spawns

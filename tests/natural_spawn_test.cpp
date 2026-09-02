@@ -8,7 +8,6 @@
 #include "world/World.hpp"
 #include "world/WorldConstants.hpp"
 #include "world/gen/Biome.hpp"
-#include "world/gen/BiomeSource.hpp"
 
 #include <cassert>
 #include <cstdint>
@@ -74,17 +73,17 @@ int main() {
     // built at startup, ahead of registerBuiltinEntities) must rebuild its
     // tables when a world seed is set on load — regression for the empty-table
     // bug that kept natural spawns silent in the actual game.
-    mc::gameplay::NaturalSpawner earlySpawner(0x1234ABCDU);
+    mc::gameplay::NaturalSpawner earlySpawner;
     assert(earlySpawner.table(world::gen::Biome::Plains)
                .empty(gameplay::entities::MobCategory::Creature));
 
     mc::gameplay::entities::registerBuiltinEntities();
-    // The process-wide tables are what setSeed copies from, so they have to be
+    // The process-wide tables are what refreshTables copies from, so they have to be
     // rebuilt after registration too. Before this, Application loaded them
     // ahead of the registry and every spawner inherited an empty table — a
     // world that never spawned a single mob, with nothing in the logs.
     mc::gameplay::biomeSpawnTables().loadBuiltinDefaults();
-    earlySpawner.setSeed(0x1234ABCDU);
+    earlySpawner.refreshTables();
     assert(!earlySpawner.table(world::gen::Biome::Plains)
                 .empty(gameplay::entities::MobCategory::Creature));
 
@@ -92,7 +91,7 @@ int main() {
 
     // The tables derive from the registry: land biomes host the passive species,
     // oceans never do, and every biome can host a MONSTER.
-    mc::gameplay::NaturalSpawner spawner(0x1234ABCDU);
+    mc::gameplay::NaturalSpawner spawner;
     using gameplay::entities::MobCategory;
     assert(!spawner.table(world::gen::Biome::Plains).empty(MobCategory::Creature));
     assert(spawner.table(world::gen::Biome::Ocean).empty(MobCategory::Creature));
@@ -139,7 +138,7 @@ int main() {
     {
         auto genFloor = makeFlatWorld();
         const auto herdOf = [&](std::uint64_t worldSeed, int chunkX, int chunkZ) {
-            mc::gameplay::NaturalSpawner herdSpawner(worldSeed);
+            mc::gameplay::NaturalSpawner herdSpawner;
             mc::gameplay::EntitySystem herd;
             herdSpawner.spawnForChunkGeneration(genFloor, herd, worldSeed, chunkX, chunkZ);
             return herd;
@@ -147,14 +146,14 @@ int main() {
         // Scan a handful of (seed, chunk) pairs for one that actually lands a
         // farm herd on a Plains chunk — spawnForChunkGeneration is a
         // probability draw, so not every position spawns anything.
+        // Every chunk of genFloor carries the default Plains biome and the pass
+        // reads the biome off the world, so any position it lands on is a plains
+        // one. This used to filter positions through a BiomeSource of its own,
+        // which described a different world than the one being spawned into.
         bool foundHerd = false;
         for (std::uint64_t seedTrial = 1U; seedTrial < 64U && !foundHerd; ++seedTrial) {
-            world::gen::BiomeSource biomes{seedTrial};
             for (int cx = -3; cx <= 3 && !foundHerd; ++cx) {
                 for (int cz = -3; cz <= 3 && !foundHerd; ++cz) {
-                    if (biomes.biomeAtBlock(cx * 16 + 8, cz * 16 + 8) != world::gen::Biome::Plains) {
-                        continue;
-                    }
                     const auto first = herdOf(seedTrial, cx, cz);
                     if (first.entities().empty()) {
                         continue;
@@ -233,7 +232,7 @@ int main() {
     // Peaceful worlds never host natural hostiles, so the same dark surface
     // stays empty.
     mc::gameplay::EntitySystem peacefulEntities;
-    mc::gameplay::NaturalSpawner peacefulSpawner(0x0BADF00DU);
+    mc::gameplay::NaturalSpawner peacefulSpawner;
     for (int tick = 0; tick < 400; ++tick) {
         peacefulSpawner.tick(world, peacefulEntities, player, 64.0F,
                              mc::gameplay::Difficulty::Peaceful);
@@ -270,7 +269,7 @@ int main() {
             }
         }
         mc::gameplay::EntitySystem dayEntities;
-        mc::gameplay::NaturalSpawner daySpawner(0x5EED5EEDU);
+        mc::gameplay::NaturalSpawner daySpawner;
         for (int tick = 0; tick < 400; ++tick) {
             daySpawner.tick(litWorld, dayEntities, player, 64.0F,
                             mc::gameplay::Difficulty::Normal, noon);
@@ -278,7 +277,7 @@ int main() {
         assert(countCategory(dayEntities, gameplay::entities::MobCategory::Monster) == 0U);
 
         mc::gameplay::EntitySystem nightEntities;
-        mc::gameplay::NaturalSpawner nightSpawner(0x0BADF00DU);
+        mc::gameplay::NaturalSpawner nightSpawner;
         for (int tick = 0; tick < 400; ++tick) {
             nightSpawner.tick(litWorld, nightEntities, player, 64.0F,
                               mc::gameplay::Difficulty::Normal, midnight);
@@ -314,7 +313,7 @@ int main() {
         assert(huskType != nullptr);
 
         mc::gameplay::EntitySystem darkHuskEntities;
-        mc::gameplay::NaturalSpawner darkHuskSpawner(0x0BADF00DU);
+        mc::gameplay::NaturalSpawner darkHuskSpawner;
         for (int index = 0; index < static_cast<int>(world::gen::Biome::Count); ++index) {
             darkHuskSpawner.spawnTables().set(static_cast<world::gen::Biome>(index),
                                               MobCategory::Monster, {{huskType, 80, 4, 4}});
@@ -326,7 +325,7 @@ int main() {
         assert(countCategory(darkHuskEntities, MobCategory::Monster) > 0U);
 
         mc::gameplay::EntitySystem litHuskEntities;
-        mc::gameplay::NaturalSpawner litHuskSpawner(0x5EED5EEDU);
+        mc::gameplay::NaturalSpawner litHuskSpawner;
         for (int index = 0; index < static_cast<int>(world::gen::Biome::Count); ++index) {
             litHuskSpawner.spawnTables().set(static_cast<world::gen::Biome>(index),
                                              MobCategory::Monster, {{huskType, 80, 4, 4}});
@@ -350,7 +349,7 @@ int main() {
             }
         }
         mc::gameplay::EntitySystem canopyEntities;
-        mc::gameplay::NaturalSpawner canopySpawner(0x51AFC0DEU);
+        mc::gameplay::NaturalSpawner canopySpawner;
         // This case is about the surface scan finding the floor rather than the
         // canopy, so it must not also depend on which biome the seed lands in:
         // vanilla's tables give a desert or a beach no farm animals at all.
@@ -376,7 +375,7 @@ int main() {
     // canopy case above sidesteps it.
     {
         auto genWorld = makeFlatWorld();
-        mc::gameplay::NaturalSpawner genSpawner(0x9E3779B9U);
+        mc::gameplay::NaturalSpawner genSpawner;
         for (int index = 0; index < static_cast<int>(world::gen::Biome::Count); ++index) {
             genSpawner.spawnTables().set(
                 static_cast<world::gen::Biome>(index), MobCategory::Creature,
@@ -447,7 +446,7 @@ int main() {
         // biome, before this test's override above) spawns nothing — the pass
         // is a no-op rather than falling back to some default species, even at
         // a chunk position that would otherwise pass the probability draw.
-        mc::gameplay::NaturalSpawner emptySpawner(0x9E3779B9U);
+        mc::gameplay::NaturalSpawner emptySpawner;
         for (int index = 0; index < static_cast<int>(world::gen::Biome::Count); ++index) {
             emptySpawner.spawnTables().set(static_cast<world::gen::Biome>(index),
                                            MobCategory::Creature, {});
@@ -460,44 +459,22 @@ int main() {
         // getRandomSpawnMobAt reading worldGenRegion.getCenter()), not a
         // hardcoded one and not a neighbour's: give exactly one biome a table
         // and confirm the pass only produces something at chunk positions
-        // whose real biome (queried independently through BiomeSource, the
-        // same source spawnForChunkGeneration itself is built on — see
-        // NaturalSpawner::NaturalSpawner) is that biome, and never elsewhere.
-        // This is the test the "every biome forced to the same table" cases
-        // above cannot catch: with a uniform table, spawning the wrong
-        // biome's list is indistinguishable from spawning the right one.
-        // Seed 16 is a fixed point (confirmed offline) whose ±4-chunk window
-        // contains both a Plains and an Ocean chunk, so both arms of the
-        // comparison below are reachable without widening the search.
-        world::gen::BiomeSource independentBiomes{16U};
-        int landChunkX = 0;
-        int landChunkZ = 0;
-        int oceanChunkX = 0;
-        int oceanChunkZ = 0;
-        bool haveLand = false;
-        bool haveOcean = false;
-        for (int cx = -4; cx <= 4 && !(haveLand && haveOcean); ++cx) {
-            for (int cz = -4; cz <= 4 && !(haveLand && haveOcean); ++cz) {
-                const auto found = independentBiomes.biomeAtBlock(cx * 16 + 8, cz * 16 + 8);
-                if (!haveLand && found == world::gen::Biome::Plains) {
-                    landChunkX = cx;
-                    landChunkZ = cz;
-                    haveLand = true;
-                } else if (!haveOcean &&
-                          (found == world::gen::Biome::Ocean ||
-                           found == world::gen::Biome::DeepOcean)) {
-                    oceanChunkX = cx;
-                    oceanChunkZ = cz;
-                    haveOcean = true;
-                }
-            }
-        }
-        // Both a Plains and an Ocean chunk must exist within the probed
-        // window for this seed, or the test cannot tell "right biome" from
-        // "wrong biome" — widen the window rather than silently pass.
-        assert(haveLand && haveOcean);
+        // whose biome — the one the world itself holds, which is what the pass
+        // reads — is that biome, and never elsewhere. This is the test the
+        // "every biome forced to the same table" cases above cannot catch: with
+        // a uniform table, spawning the wrong biome's list is indistinguishable
+        // from spawning the right one.
+        // The two chunks are painted below rather than searched for in a noise
+        // map. Searching a BiomeSource was only ever meaningful while the
+        // spawner carried a second biome source of its own; the world under the
+        // test said "plains" at both positions, so the ocean arm passed for the
+        // wrong reason.
+        constexpr int landChunkX = 1;
+        constexpr int landChunkZ = 1;
+        constexpr int oceanChunkX = -2;
+        constexpr int oceanChunkZ = 2;
 
-        mc::gameplay::NaturalSpawner plainsOnlySpawner(16U);
+        mc::gameplay::NaturalSpawner plainsOnlySpawner;
         for (int index = 0; index < static_cast<int>(world::gen::Biome::Count); ++index) {
             plainsOnlySpawner.spawnTables().set(static_cast<world::gen::Biome>(index),
                                                 MobCategory::Creature, {});
@@ -513,20 +490,32 @@ int main() {
         for (int chunkZ = -5; chunkZ <= 5; ++chunkZ) {
             for (int chunkX = -5; chunkX <= 5; ++chunkX) {
                 mc::world::Chunk chunk;
+                // The chunk under test carries its biome in the world, which is
+                // where the pass reads it from.
+                const auto painted = (chunkX == oceanChunkX && chunkZ == oceanChunkZ)
+                    ? world::gen::Biome::Ocean
+                    : world::gen::Biome::Plains;
                 for (int z = 0; z < 16; ++z) {
                     for (int x = 0; x < 16; ++x) {
                         chunk.setBlock(x, 0, z, mc::world::Block::Stone);
+                        chunk.setColumnBiome(x, z, painted);
                     }
                 }
                 biomeTestWorld.setChunk({chunkX, chunkZ}, std::move(chunk));
             }
         }
 
-        // At the Ocean chunk, only Plains carries a species: nothing spawns.
-        mc::gameplay::EntitySystem oceanAttempt;
-        plainsOnlySpawner.spawnForChunkGeneration(biomeTestWorld, oceanAttempt, 0xC0FFEEULL,
-                                                  oceanChunkX, oceanChunkZ);
-        assert(oceanAttempt.entities().empty());
+        // At the Ocean chunk, only Plains carries a species: nothing spawns, for
+        // any seed. Sweeping the same seeds the Plains arm below sweeps is what
+        // makes this arm mean something — a single seed can come up empty
+        // because its probability draw was zero, which says nothing at all about
+        // whether the biome gate works.
+        for (std::uint64_t trialSeed = 1U; trialSeed < 40U; ++trialSeed) {
+            mc::gameplay::EntitySystem oceanAttempt;
+            plainsOnlySpawner.spawnForChunkGeneration(biomeTestWorld, oceanAttempt, trialSeed,
+                                                      oceanChunkX, oceanChunkZ);
+            assert(oceanAttempt.entities().empty());
+        }
 
         // At the Plains chunk (same seed, same table), the pass can spawn —
         // scan a handful of world seeds so the assertion is not itself at the

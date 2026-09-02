@@ -249,6 +249,14 @@ struct LayerContext final {
 
 // A CachingLayerSampler: caches (x, z) cells, sharing the LayerContext's cache
 // with every other sampler the same context created.
+//
+// Two known departures from vanilla, both deliberately left alone: `sample` is
+// const but writes the cache (safe only because each chunk streamer runs one
+// worker and owns its generator), and `trim` clears the whole map instead of
+// evicting one entry, so a shared 25-cell budget thrashes. Vanilla gives each
+// sampler its own 25-entry LRU. This is 1.16's GenLayer stack, which 26.1 no
+// longer has at all — BM-7 deletes this file rather than tuning it, so don't
+// spend effort here (BM-DESIGN 判断 1).
 class CachingSampler final {
   public:
     CachingSampler(std::shared_ptr<LayerCache> cache, int capacity,
@@ -864,7 +872,7 @@ int applyOceanTemperatureSample(LayerContext& c, const CachingSampler& biome,
     case kBadlandsPlateau:
         return Biome::Desert;
     case kMountains:
-        return Biome::Mountains;
+        return Biome::WindsweptHills;
     case kForest:
         return Biome::Forest;
     case kTaiga:
@@ -874,7 +882,7 @@ int applyOceanTemperatureSample(LayerContext& c, const CachingSampler& biome,
     case kSwamp:
         return Biome::Swamp;
     case kSnowyTundra:
-        return Biome::SnowyTundra;
+        return Biome::SnowyPlains;
     case kBirchForest:
         return Biome::BirchForest;
     case kDarkForest:

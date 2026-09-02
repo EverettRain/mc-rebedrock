@@ -6,13 +6,11 @@
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/EntityType.hpp"
 #include "world/gen/Biome.hpp"
-#include "world/gen/BiomeSource.hpp"
 
 #include <glm/vec3.hpp>
 
 #include <array>
 #include <cstdint>
-#include <memory>
 #include <vector>
 
 namespace mc::world {
@@ -35,7 +33,7 @@ class EntitySystem;
 // into.
 class NaturalSpawner final {
   public:
-    explicit NaturalSpawner(std::uint64_t seed);
+    NaturalSpawner();
 
     // Advances one 20 TPS tick, sampling a few columns per category the way
     // vanilla's spawner runs every tick. It used to bank a second's worth of
@@ -51,8 +49,11 @@ class NaturalSpawner final {
               float radius, Difficulty difficulty,
               const EnvironmentSnapshot& environment = EnvironmentSnapshot{});
 
-    // Rebuilds the biome source for a new world seed (a new save or /reload).
-    void setSeed(std::uint64_t seed);
+    // Picks up the process-wide spawn tables (a new save or /reload). The
+    // spawner used to own a BiomeSource of its own, rebuilt here from the world
+    // seed; it reads the biome off the world now, so a seed is no longer any of
+    // its business — see BM-DESIGN 判断 2, single source of truth.
+    void refreshTables();
 
     // NaturalSpawner.spawnMobsForChunkGeneration (26.1): the world-generation-
     // time population pass, run once when a chunk is first generated rather
@@ -96,7 +97,6 @@ class NaturalSpawner final {
                    entities::MobCategory category);
     [[nodiscard]] const SpawnerData& pickWeighted(const std::vector<SpawnerData>& entries);
 
-    std::unique_ptr<world::gen::BiomeSource> biomes_;
     BiomeSpawnTables tables_;
     // The 48-bit mc::rng state (Java LegacyRandomSource core) the spawn batch
     // advances. Session-only (rebuilt each run), so a fixed raw internal state.

@@ -20,13 +20,13 @@ enum class Biome : std::uint8_t {
     Forest,
     BirchForest,
     Taiga,
-    SnowyTundra,
+    SnowyPlains,
     Desert,
     Savanna,
     Jungle,
     DarkForest,
     Swamp,
-    Mountains,
+    WindsweptHills,
     River,
     DeepOcean,
     // WG-0 nether biomes (vanilla's five). Identity only: the BiomeSource that
@@ -87,7 +87,10 @@ struct TreeChoice final {
 // Java's Biome plus the two ConfiguredFeature slots the generator reads.
 struct BiomeDefinition final {
     Biome biome = Biome::Plains;
-    // The registry path, matching the vanilla biome id.
+    // The registry path: the biome's **26.1** vanilla id, which is the one
+    // authoritative name for it. Two biomes were renamed after 1.16
+    // (snowy_tundra -> snowy_plains, mountains -> windswept_hills); the old ids
+    // live on only as aliases inside biomeFromIdentifier, never here.
     std::string_view identifier;
     // Biome.Builder#depth / #scale, which drive the noise column's shape.
     float depth = 0.125F;
@@ -115,9 +118,11 @@ struct BiomeDefinition final {
 [[nodiscard]] const BiomeDefinition& biomeDefinition(Biome biome);
 
 // Resolves a biome registry key to its Biome. A biome's `identifier` path is its
-// vanilla id, so this accepts the bare name (`nether_wastes`), the `minecraft:`
-// alias (`minecraft:nether_wastes`) and the `rebedrock:` key alike — the JC
-// import anchor, mirroring blockFromIdentifier. Returns Count for an unknown key.
+// 26.1 vanilla id, so this accepts the bare name (`nether_wastes`), the
+// `minecraft:` alias (`minecraft:nether_wastes`) and the `rebedrock:` key alike —
+// the JC import anchor, mirroring blockFromIdentifier. The two 1.16 ids vanilla
+// has since renamed (`snowy_tundra`, `mountains`) resolve too, so an older save or
+// pack is read rather than dropped. Returns Count for an unknown key.
 [[nodiscard]] Biome biomeFromIdentifier(std::string_view text);
 
 // The grass-family atlas layers (top / side / plant) tinted with this biome's

@@ -469,7 +469,7 @@ void Features::generateOresFrom(
     // blocks never cross a border, so only the chunk's own pass ever writes one
     // — the neighbours still run it to keep the code one shape.
     random.setDecoratorSeed(populationSeed, featureIndex, 6);
-    if (biomeSource_->biomeAtBlock(originBlockX + 8, originBlockZ + 8) == Biome::Mountains) {
+    if (biomeSource_->biomeAtBlock(originBlockX + 8, originBlockZ + 8) == Biome::WindsweptHills) {
         const int count = 3 + random.nextInt(6);
         for (int index = 0; index < count; ++index) {
             const int localX = originBlockX + random.nextInt(16) - chunkX * 16;

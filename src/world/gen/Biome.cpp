@@ -76,7 +76,7 @@ const std::array<BiomeDefinition, static_cast<std::size_t>(Biome::Count)> kBiome
      Block::Gravel, 10, 0.1F, 1, kBirchForestTrees, 2, 1},
     {Biome::Taiga, "taiga", 0.2F, 0.2F, 0.25F, 0.8F, Block::Grass, Block::Dirt, Block::Gravel,
      10, 0.1F, 1, kTaigaTrees, 1, 1},
-    {Biome::SnowyTundra, "snowy_tundra", 0.125F, 0.05F, 0.0F, 0.5F, Block::SnowBlock, Block::Dirt,
+    {Biome::SnowyPlains, "snowy_plains", 0.125F, 0.05F, 0.0F, 0.5F, Block::SnowBlock, Block::Dirt,
      Block::Gravel, 0, 0.1F, 1, kSnowyTrees, 0, 0},
     {Biome::Desert, "desert", 0.125F, 0.05F, 2.0F, 0.0F, Block::Sand, Block::Sand, Block::Gravel,
      0, 0.0F, 1, {}, 0, 0},
@@ -93,7 +93,7 @@ const std::array<BiomeDefinition, static_cast<std::size_t>(Biome::Count)> kBiome
     // can root in the shallows as well as on the dry patches.
     {Biome::Swamp, "swamp", -0.25F, 0.1F, 0.8F, 0.9F, Block::Grass, Block::Dirt, Block::Dirt,
      2, 0.1F, 1, kSwampTrees, 5, 1},
-    {Biome::Mountains, "mountains", 1.0F, 0.5F, 0.2F, 0.3F, Block::Grass, Block::Dirt, Block::Gravel,
+    {Biome::WindsweptHills, "windswept_hills", 1.0F, 0.5F, 0.2F, 0.3F, Block::Grass, Block::Dirt, Block::Gravel,
      0, 0.1F, 1, kMountainTrees, 2, 1},
     // River: a shallow water channel a couple of blocks below sea level.
     {Biome::River, "river", -0.5F, 0.0F, 0.5F, 0.5F, Block::Sand, Block::Gravel, Block::Gravel,
@@ -133,6 +133,20 @@ const std::array<BiomeDefinition, static_cast<std::size_t>(Biome::Count)> kBiome
      Block::EndStone, 0, 0.0F, 1, {}, 0, 0},
 }};
 
+// The 1.16 ids two of these biomes carried before vanilla renamed them. The 26.1
+// id is the authoritative one and the only thing `identifier` holds; these keep a
+// save, a data pack or a command written against the old name resolving instead of
+// silently reading as "unknown biome".
+struct LegacyAlias final {
+    std::string_view identifier;
+    Biome biome;
+};
+
+constexpr std::array<LegacyAlias, 2> kLegacyAliases{{
+    {"snowy_tundra", Biome::SnowyPlains},
+    {"mountains", Biome::WindsweptHills},
+}};
+
 } // namespace
 
 const BiomeDefinition& biomeDefinition(Biome biome) {
@@ -148,6 +162,11 @@ Biome biomeFromIdentifier(std::string_view text) {
     for (const auto& definition : kBiomeRegistry) {
         if (definition.identifier == path) {
             return definition.biome;
+        }
+    }
+    for (const auto& alias : kLegacyAliases) {
+        if (alias.identifier == path) {
+            return alias.biome;
         }
     }
     return Biome::Count;

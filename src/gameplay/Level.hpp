@@ -62,7 +62,7 @@ struct Level final {
     // it never touches EntitySystem's SimpleEntity columns.
     ProjectileSystem projectiles;
     WeatherSystem weather;
-    NaturalSpawner spawner{0U};
+    NaturalSpawner spawner;
 
     // Points the level at the World that GameRuntime owns for this dimension.
     // Called once when the level table is set up; a level whose world is never
