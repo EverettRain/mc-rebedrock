@@ -41,7 +41,98 @@ constexpr std::array<FaceDefinition, 6> kFaces{{
     {Face::NegativeZ, 0, 0, -1, {0, 0, -1}, {{{1, 0, 0}, {0, 0, 0}, {0, 1, 0}, {1, 1, 0}}}},
 }};
 
-constexpr std::array<glm::vec2, 4> kUvs{{{0, 1}, {1, 1}, {1, 0}, {0, 0}}};
+// --- RN-8c: the one bridge between the mesher's face/corner order and the
+// bakery's. Every UV in this file is derived through it from here on, so
+// "which corner of the sprite does this vertex sample" has one answer instead of
+// the four conventions that used to disagree (kUvs for cubes, a position-derived
+// formula for shaped blocks, literal rect arrays for the billboards, and
+// FaceBakery for the element models).
+
+[[nodiscard]] constexpr bake::Facing bakeFacingOf(Face face) {
+    switch (face) {
+    case Face::PositiveX: return bake::Facing::East;
+    case Face::NegativeX: return bake::Facing::West;
+    case Face::PositiveY: return bake::Facing::Up;
+    case Face::NegativeY: return bake::Facing::Down;
+    case Face::PositiveZ: return bake::Facing::South;
+    case Face::NegativeZ: return bake::Facing::North;
+    }
+    return bake::Facing::Up;
+}
+
+// For each mesher face and each of its four corners, the JE FaceInfo vertex index
+// standing at the same box corner. Derived by matching positions rather than
+// written down: the two orders agree on the caps and differ by one step on the
+// four sides, and a hand-copied permutation is exactly the table that rots when
+// either order is touched. The static_assert below is the guard.
+inline constexpr std::array<std::array<std::uint8_t, 4>, 6> kFaceInfoCorner = [] {
+    std::array<std::array<std::uint8_t, 4>, 6> table{};
+    constexpr glm::vec3 unitFrom{0.0F, 0.0F, 0.0F};
+    constexpr glm::vec3 unitTo{1.0F, 1.0F, 1.0F};
+    for (std::size_t f = 0; f < kFaces.size(); ++f) {
+        const auto dir = bakeFacingOf(kFaces[f].face);
+        const auto& info = bake::kFaceInfo[static_cast<std::size_t>(dir)];
+        for (std::size_t c = 0; c < 4; ++c) {
+            const glm::vec3 want = kFaces[f].corners[c];
+            std::uint8_t found = 4U;
+            for (std::size_t i = 0; i < 4; ++i) {
+                const glm::vec3 got = bake::faceVertex(info[i], unitFrom, unitTo);
+                if (got.x == want.x && got.y == want.y && got.z == want.z) {
+                    found = static_cast<std::uint8_t>(i);
+                }
+            }
+            table[f][c] = found;
+        }
+    }
+    return table;
+}();
+// Every mesher corner must have found a FaceInfo twin; a 4 here means the two
+// vertex layouts stopped describing the same box.
+static_assert([] {
+    for (const auto& row : kFaceInfoCorner) {
+        for (const auto index : row) {
+            if (index > 3U) return false;
+        }
+    }
+    return true;
+}());
+
+// The UV of a box face's four corners, in the mesher's corner order: JE's
+// `defaultFaceUV` rect for the box (or an explicit rect a model json declares),
+// sampled through FaceInfo and rotated by the face's Quadrant. `from16`/`to16`
+// are the box in 0..16 model units.
+[[nodiscard]] constexpr std::array<glm::vec2, 4> faceUvCorners(const bake::FaceUv& rect,
+                                                               Face face,
+                                                               std::uint8_t quadrant = 0) {
+    std::array<glm::vec2, 4> out{};
+    const auto& perm = kFaceInfoCorner[static_cast<std::size_t>(face)];
+    for (std::size_t c = 0; c < 4; ++c) {
+        const int index = bake::rotateVertexIndex(static_cast<int>(perm[c]), quadrant);
+        out[c] = {bake::vertexU(rect, index) / 16.0F, bake::vertexV(rect, index) / 16.0F};
+    }
+    return out;
+}
+
+[[nodiscard]] constexpr std::array<glm::vec2, 4> boxFaceUv(const glm::vec3& from16,
+                                                           const glm::vec3& to16, Face face,
+                                                           std::uint8_t quadrant = 0) {
+    return faceUvCorners(bake::defaultFaceUv(from16, to16, bakeFacingOf(face)), face, quadrant);
+}
+
+// The whole-cell box, the one every full cube and every plane-sized sprite uses.
+inline constexpr glm::vec3 kCellFrom16{0.0F, 0.0F, 0.0F};
+inline constexpr glm::vec3 kCellTo16{16.0F, 16.0F, 16.0F};
+
+// A plane sprite's four corners in the (bottom-left, bottom-right, top-right,
+// top-left) winding the billboard emitters use, sampling the whole sprite. This
+// is what `kUvs` was: the same numbers, now derived from the bakery's rect rules
+// for a west-facing plane rather than written out as four literals.
+inline constexpr std::array<glm::vec2, 4> kPlaneUv =
+    boxFaceUv({0.0F, 0.0F, 0.0F}, {0.0F, 16.0F, 16.0F}, Face::NegativeX);
+static_assert(kPlaneUv[0].x == 0.0F && kPlaneUv[0].y == 1.0F);
+static_assert(kPlaneUv[1].x == 1.0F && kPlaneUv[1].y == 1.0F);
+static_assert(kPlaneUv[2].x == 1.0F && kPlaneUv[2].y == 0.0F);
+static_assert(kPlaneUv[3].x == 0.0F && kPlaneUv[3].y == 0.0F);
 // Fixed layers of the atlas's special section: water still 0-31 / flow 32-63.
 // The block-texture layers after them are resolved at startup from the registry
 // (world::textureLayers) — the furnace front is now one of those normal block
@@ -510,7 +601,7 @@ static_assert(pistonRoundTrips());
     glm::vec2 direction) {
     const float lengthSquared = direction.x * direction.x + direction.y * direction.y;
     if (lengthSquared < 0.0001F) {
-        return kUvs[cornerIndex];
+        return kPlaneUv[cornerIndex];
     }
     const float angle = std::atan2(direction.y, direction.x) - 1.57079632679F;
     const float sine = std::sin(angle) * 0.25F;
@@ -880,7 +971,7 @@ void appendFace(
         glm::vec3 positionCorner = face.corners[corner];
         // Rotating the UV assignment by `uvTurns` 90° steps turns the texture on
         // the face; a +1 index shift is a −90° turn, so subtract to rotate CCW.
-        glm::vec2 uv = kUvs[(corner + 4U - static_cast<std::size_t>(uvTurns)) & 3U];
+        glm::vec2 uv = kPlaneUv[(corner + 4U - static_cast<std::size_t>(uvTurns)) & 3U];
         if (slabBox) {
             const float height =
                 slabLow + positionCorner.y * (slabHigh - slabLow);
@@ -969,7 +1060,7 @@ void appendWaterFace(
                 static_cast<int>(std::lround(corner.x)),
                 static_cast<int>(std::lround(corner.z)));
         }
-        glm::vec2 uv = kUvs[cornerIndex];
+        glm::vec2 uv = kPlaneUv[cornerIndex];
         if (topFace && flowing) {
             uv = flowingWaterUv(cornerIndex, flowDirection);
         }
@@ -1106,6 +1197,13 @@ void appendBox(
         static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
     const glm::vec3 boxMin{box.minX, box.minY, box.minZ};
     const glm::vec3 boxMax{box.maxX, box.maxY, box.maxZ};
+    // RN-8c: the box in the bakery's 0..16 model units, so each face's UV rect is
+    // JE's `defaultFaceUV` of this box — the same rule a model json face with no
+    // explicit `uv` gets. This replaces the position-derived formula below it,
+    // which agreed with vanilla on -X/+Z/-Y and disagreed on the other three (+X
+    // and -Z were mirrored in U, the top face in V).
+    const glm::vec3 from16 = boxMin * 16.0F;
+    const glm::vec3 to16 = boxMax * 16.0F;
     for (const auto& face : kFaces) {
         const float faceCoordinate = boxFaceCoordinate(box, face);
         const bool positive = face.dx + face.dy + face.dz > 0;
@@ -1131,6 +1229,7 @@ void appendBox(
             : static_cast<float>(outsideLight.block) /
                   static_cast<float>(ChunkLightSampler::kMaximumLightLevel);
         const float layer = textureLayer(world, current.block, face.face, x, y, z);
+        const std::array<glm::vec2, 4> faceUv = boxFaceUv(from16, to16, face.face);
         std::array<float, 4> ambientOcclusion{};
         for (std::size_t corner = 0; corner < face.corners.size(); ++corner) {
             ambientOcclusion[corner] = vertexAmbientOcclusion(
@@ -1139,23 +1238,11 @@ void appendBox(
                 lighting, quality, face, face.corners[corner], x, y, z, outsideLight);
             if (selfLit) smoothLight.block = 1.0F;
             // Remap the unit-cube corner into the box's bounds on every axis:
-            // p = min + corner * (max - min). The texture crops to the box's
-            // footprint in the two in-plane axes (U along the horizontal axis,
-            // V measured from the cell floor with 1 at the bottom, matching the
-            // slab path and the existing UV convention).
+            // p = min + corner * (max - min). The UV crop that goes with it is
+            // `defaultFaceUV` of the same box, hoisted out of this loop.
             const glm::vec3 unit = face.corners[corner];
             const glm::vec3 positionCorner = boxMin + unit * (boxMax - boxMin);
-            glm::vec2 uv = kUvs[corner];
-            if (face.face == Face::PositiveY || face.face == Face::NegativeY) {
-                uv.x = positionCorner.x;
-                uv.y = 1.0F - positionCorner.z;
-            } else if (face.face == Face::PositiveX || face.face == Face::NegativeX) {
-                uv.x = positionCorner.z;
-                uv.y = 1.0F - positionCorner.y;
-            } else {
-                uv.x = positionCorner.x;
-                uv.y = 1.0F - positionCorner.y;
-            }
+            const glm::vec2 uv = faceUv[corner];
             const std::uint8_t biomeMask = 0U;
             const int cornerX = x + static_cast<int>(std::lround(positionCorner.x));
             const int cornerZ = z + static_cast<int>(std::lround(positionCorner.z));
@@ -1279,7 +1366,7 @@ void appendPlantQuad(
         mesh.vertices.push_back(packVertex(
             (origin + corners[corner]) - sectionOrigin,
             {0.0F, 1.0F, 0.0F},
-            kUvs[corner],
+            kPlaneUv[corner],
             layer,
             1.0F,
             0.0F,
@@ -1746,15 +1833,13 @@ void appendFenceGate(render::MeshData& mesh, Block block, BlockState state, int 
         const auto& fd = kFaces[static_cast<std::size_t>(face)];
         std::array<glm::vec3, 4> positions;
         std::array<glm::vec2, 4> uvs;
+        // RN-8c: the same `defaultFaceUV` rule appendBox now uses — this emitter
+        // carried a second copy of the position-derived formula, which is how a
+        // gate post and a stair riser could disagree about which way their plank
+        // grain ran.
+        uvs = boxFaceUv(from16, to16, face);
         for (std::size_t i = 0; i < 4; ++i) {
             const glm::vec3 model = (from16 + fd.corners[i] * (to16 - from16)) * (1.0F / 16.0F);
-            if (face == Face::PositiveY || face == Face::NegativeY) {
-                uvs[i] = {model.x, 1.0F - model.z};
-            } else if (face == Face::PositiveX || face == Face::NegativeX) {
-                uvs[i] = {model.z, 1.0F - model.y};
-            } else {
-                uvs[i] = {model.x, 1.0F - model.y};
-            }
             positions[i] = cell + rotateAxis(model, glm::vec3{0.5F}, 'y', yaw);
         }
         const glm::vec3 normal = rotateAxis(fd.normal, glm::vec3{0.0F}, 'y', yaw);

@@ -43,7 +43,7 @@ inline constexpr std::size_t kFacingCount = 6;
 inline constexpr std::uint8_t kNoCull = 0xFFU;
 
 // The outward unit vector of a facing (JE Direction.getUnitVec3f).
-[[nodiscard]] inline glm::vec3 facingUnit(Facing facing) {
+[[nodiscard]] constexpr glm::vec3 facingUnit(Facing facing) {
     switch (facing) {
     case Facing::Down: return {0.0F, -1.0F, 0.0F};
     case Facing::Up: return {0.0F, 1.0F, 0.0F};
@@ -89,8 +89,8 @@ inline constexpr std::array<std::array<VertexInfo, 4>, kFacingCount> kFaceInfo{{
 
 // The vertex position for a box [from,to] under a VertexInfo (JE
 // VertexInfo.select): each axis takes from (Min) or to (Max).
-[[nodiscard]] inline glm::vec3 faceVertex(const VertexInfo& info, const glm::vec3& from,
-                                          const glm::vec3& to) {
+[[nodiscard]] constexpr glm::vec3 faceVertex(const VertexInfo& info, const glm::vec3& from,
+                                             const glm::vec3& to) {
     return {info.x == Extent::Max ? to.x : from.x, info.y == Extent::Max ? to.y : from.y,
             info.z == Extent::Max ? to.z : from.z};
 }
@@ -108,8 +108,8 @@ struct FaceUv final {
 // JE FaceBakery.defaultFaceUV: project the element's from/to onto the face plane.
 // This is the model-local-space -> UV binding that was reimplemented ad hoc in
 // each shaped-block mesher.
-[[nodiscard]] inline FaceUv defaultFaceUv(const glm::vec3& from, const glm::vec3& to,
-                                          Facing facing) {
+[[nodiscard]] constexpr FaceUv defaultFaceUv(const glm::vec3& from, const glm::vec3& to,
+                                             Facing facing) {
     switch (facing) {
     case Facing::Down:
         return {from.x, 16.0F - to.z, to.x, 16.0F - from.z, false};
@@ -129,16 +129,16 @@ struct FaceUv final {
 
 // JE CuboidFace.UVs.getVertexU/getVertexV: which of the rect's corners a rect-
 // local vertex index (0..3) samples.
-[[nodiscard]] inline float vertexU(const FaceUv& uv, int index) {
+[[nodiscard]] constexpr float vertexU(const FaceUv& uv, int index) {
     return (index != 0 && index != 1) ? uv.maxU : uv.minU;
 }
-[[nodiscard]] inline float vertexV(const FaceUv& uv, int index) {
+[[nodiscard]] constexpr float vertexV(const FaceUv& uv, int index) {
     return (index != 0 && index != 3) ? uv.maxV : uv.minV;
 }
 
 // JE Quadrant.rotateVertexIndex: the per-face `rotation` (quarter-turns 0..3)
 // as a cyclic shift of the sampled corner.
-[[nodiscard]] inline int rotateVertexIndex(int vertex, std::uint8_t quarterTurns) {
+[[nodiscard]] constexpr int rotateVertexIndex(int vertex, std::uint8_t quarterTurns) {
     return (vertex + static_cast<int>(quarterTurns)) & 3;
 }
 

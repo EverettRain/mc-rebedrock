@@ -85,6 +85,39 @@ void expectNear(float actual, float expected, std::string_view context) {
     return mc::world::ChunkMesher::buildSection(world, {0, 0}, 0);
 }
 
+// RN-8c: the UV a single vertex carries, found by its normal and its exact
+// position. Asserts the position is unambiguous, so a moved quad shows up as a
+// failure rather than as a silently different vertex.
+[[nodiscard]] glm::vec2 uvAt(const mc::render::MeshData& mesh, const glm::vec3& normal,
+                             const glm::vec3& position) {
+    bool found = false;
+    glm::vec2 uv{};
+    for (const auto& vertex : mesh.vertices) {
+        const auto actual = mc::render::decodeNormal(vertex);
+        if (std::abs(actual.x - normal.x) > 0.01F || std::abs(actual.y - normal.y) > 0.01F ||
+            std::abs(actual.z - normal.z) > 0.01F) {
+            continue;
+        }
+        const auto p = worldPos(vertex);
+        if (std::abs(p.x - position.x) > 0.002F || std::abs(p.y - position.y) > 0.002F ||
+            std::abs(p.z - position.z) > 0.002F) {
+            continue;
+        }
+        assert(!found); // the position must name exactly one vertex of this face
+        found = true;
+        uv = mc::render::decodeUv(vertex);
+    }
+    assert(found);
+    return uv;
+}
+
+void expectUv(const mc::render::MeshData& mesh, const glm::vec3& normal,
+              const glm::vec3& position, float u, float v, std::string_view context) {
+    const glm::vec2 got = uvAt(mesh, normal, position);
+    expectNear(got.x, u, context);
+    expectNear(got.y, v, context);
+}
+
 } // namespace
 
 int main() {
@@ -678,6 +711,75 @@ int main() {
                 assert(found);
             }
         }
+    }
+
+    // --- RN-8c: shaped blocks take their UV from the bakery's rect rules --------
+    //
+    // A shaped block's faces used to derive their UV from the vertex position
+    // inline (u along the horizontal axis, v measured down from the cell top).
+    // That agreed with vanilla on -X, +Z and -Y and disagreed on the other three.
+    // Every value below is hand-computed from JE's FaceBakery.defaultFaceUV for
+    // the box the block actually occupies, sampled through FaceInfo — NOT read
+    // back out of the mesher.
+    //
+    // The block is a bottom slab at cell (1, kMinY+1, 1), so its box is
+    // from16 = (0,0,0), to16 = (16,8,16) and its world span is x 1..2, y 1..1.5,
+    // z 1..2.
+    {
+        using mc::world::Block;
+        using mc::world::BlockState;
+        using mc::world::SlabPortion;
+        mc::world::World world;
+        mc::world::Chunk chunk;
+        chunk.setState(1, mc::world::kMinY + 1, 1,
+                       BlockState{Block::OakSlab}.withSlabPortion(SlabPortion::Bottom));
+        world.setChunk({0, 0}, std::move(chunk));
+        const auto& slab = mc::world::ChunkMesher::buildSection(world, {0, 0}, 0).mesh;
+
+        // Up: defaultFaceUV = (from.x, from.z, to.x, to.z) = (0,0,16,16), so
+        // u = x and v = z across the cell. This is the face that used to come out
+        // V-mirrored.
+        constexpr glm::vec3 up{0.0F, 1.0F, 0.0F};
+        expectUv(slab, up, {1.0F, 1.5F, 1.0F}, 0.0F, 0.0F, "slab top uv at (x0,z0)");
+        expectUv(slab, up, {1.0F, 1.5F, 2.0F}, 0.0F, 1.0F, "slab top uv at (x0,z1)");
+        expectUv(slab, up, {2.0F, 1.5F, 2.0F}, 1.0F, 1.0F, "slab top uv at (x1,z1)");
+        expectUv(slab, up, {2.0F, 1.5F, 1.0F}, 1.0F, 0.0F, "slab top uv at (x1,z0)");
+
+        // Down: (from.x, 16-to.z, to.x, 16-from.z) = (0,0,16,16) -> u = x,
+        // v = 1-z. Unchanged by RN-8c; here as the control that the rect rules
+        // reproduce what was already right.
+        constexpr glm::vec3 down{0.0F, -1.0F, 0.0F};
+        expectUv(slab, down, {1.0F, 1.0F, 2.0F}, 0.0F, 0.0F, "slab bottom uv at (x0,z1)");
+        expectUv(slab, down, {2.0F, 1.0F, 1.0F}, 1.0F, 1.0F, "slab bottom uv at (x1,z0)");
+
+        // East: (16-to.z, 16-to.y, 16-from.z, 16-from.y) = (0, 8, 16, 16), so the
+        // rect is the sprite's LOWER half (v 0.5..1, the slab is the cell's lower
+        // half) and u runs 0 at z=1 to 1 at z=0. The u direction is what used to
+        // be mirrored.
+        constexpr glm::vec3 east{1.0F, 0.0F, 0.0F};
+        expectUv(slab, east, {2.0F, 1.0F, 2.0F}, 0.0F, 1.0F, "slab +x uv at (z1,bottom)");
+        expectUv(slab, east, {2.0F, 1.0F, 1.0F}, 1.0F, 1.0F, "slab +x uv at (z0,bottom)");
+        expectUv(slab, east, {2.0F, 1.5F, 1.0F}, 1.0F, 0.5F, "slab +x uv at (z0,top)");
+        expectUv(slab, east, {2.0F, 1.5F, 2.0F}, 0.0F, 0.5F, "slab +x uv at (z1,top)");
+
+        // West: (from.z, 16-to.y, to.z, 16-from.y) = (0, 8, 16, 16) -> u runs 0 at
+        // z=0 to 1 at z=1, the opposite way round from +X, which is exactly the
+        // asymmetry one shared formula could not express. Also unchanged.
+        constexpr glm::vec3 west{-1.0F, 0.0F, 0.0F};
+        expectUv(slab, west, {1.0F, 1.0F, 1.0F}, 0.0F, 1.0F, "slab -x uv at (z0,bottom)");
+        expectUv(slab, west, {1.0F, 1.5F, 2.0F}, 1.0F, 0.5F, "slab -x uv at (z1,top)");
+
+        // North: (16-to.x, 16-to.y, 16-from.x, 16-from.y) = (0, 8, 16, 16) -> u
+        // runs 0 at x=1 to 1 at x=0. The second face that used to be mirrored.
+        constexpr glm::vec3 north{0.0F, 0.0F, -1.0F};
+        expectUv(slab, north, {2.0F, 1.0F, 1.0F}, 0.0F, 1.0F, "slab -z uv at (x1,bottom)");
+        expectUv(slab, north, {1.0F, 1.0F, 1.0F}, 1.0F, 1.0F, "slab -z uv at (x0,bottom)");
+
+        // South: (from.x, 16-to.y, to.x, 16-from.y) = (0, 8, 16, 16) -> u = x.
+        // Unchanged.
+        constexpr glm::vec3 south{0.0F, 0.0F, 1.0F};
+        expectUv(slab, south, {1.0F, 1.0F, 2.0F}, 0.0F, 1.0F, "slab +z uv at (x0,bottom)");
+        expectUv(slab, south, {2.0F, 1.0F, 2.0F}, 1.0F, 1.0F, "slab +z uv at (x1,bottom)");
     }
 
     // --- RN-8a / RN-8b: the face-cull criterion, row by row --------------------
