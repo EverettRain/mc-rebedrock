@@ -1749,6 +1749,15 @@ if(BUILD_TESTING)
     )
     add_test(NAME face_occlusion COMMAND mc_rebedrock_face_occlusion_test)
 
+    add_executable(mc_rebedrock_shader_descriptor_bindings_test
+        tests/shader_descriptor_bindings_test.cpp
+    )
+    target_include_directories(mc_rebedrock_shader_descriptor_bindings_test PRIVATE src)
+    target_compile_definitions(mc_rebedrock_shader_descriptor_bindings_test PRIVATE
+        "MC_REBEDROCK_SHADER_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src\""
+        "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
+    add_test(NAME shader_descriptor_bindings COMMAND mc_rebedrock_shader_descriptor_bindings_test)
+
     add_executable(mc_rebedrock_biome_climate_test
         tests/biome_climate_test.cpp
     )

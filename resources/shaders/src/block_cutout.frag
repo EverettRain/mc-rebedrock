@@ -42,9 +42,6 @@ layout(binding = 0) uniform CameraUniform {
 } camera;
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
-// The biome colour lookup textures (see grass_block.frag).
-layout(binding = 6) uniform sampler2D biomeGrassColors;
-layout(binding = 7) uniform sampler2D biomeFoliageColors;
 // The sun shadow depth map (see grass_block.frag).
 layout(binding = 8) uniform sampler2D shadowDepth;
 
@@ -129,16 +126,13 @@ void main() {
             ? clamp(fragmentAmbientOcclusion, 0.2, 1.0)
             : mix(0.72, 1.0, smoothstep(0.0, 1.0, fragmentAmbientOcclusion)))
         : 1.0;
-    vec3 biomeTint = vec3(1.0);
-    if (fragmentBiomeMask == 1u) {
-        biomeTint = texture(biomeGrassColors, (fragmentWorldPosition.xz + 1024.0) / 2048.0).rgb;
-    } else if (fragmentBiomeMask == 2u) {
-        biomeTint = texture(biomeFoliageColors, (fragmentWorldPosition.xz + 1024.0) / 2048.0).rgb;
-    } else if (fragmentBiomeMask == 3u) {
-        // Literal per-vertex tint: redstone dust multiplies its grey sprite by the
-        // power-derived red here (RedStoneWireBlock.getColorForPower).
-        biomeTint = fragmentTint;
-    }
+    // Mask 3 is the per-vertex tint: the biome colour the mesher resolved per
+    // column (grass, foliage, the grass block's side overlay), and redstone
+    // dust's power-derived red on its grey sprite
+    // (RedStoneWireBlock.getColorForPower). Masks 1 and 2 used to sample a
+    // biome lookup texture by world position; that texture is gone (BM-1), and
+    // so are its descriptor bindings.
+    vec3 biomeTint = fragmentBiomeMask == 3u ? fragmentTint : vec3(1.0);
     vec3 litColor = texel.rgb * biomeTint * illumination * ao;
     bool cameraUnderwater = camera.renderSettings.y > 0.5;
     float fog;
