@@ -330,6 +330,12 @@ class WorldSimulation final {
     // dispatching each drawn block to the blocks that have a random tick
     // (grass spread and sapling growth today, crops later).
     void randomTicks(world::World& world, std::vector<BlockChange>& changes);
+    // ServerLevel#tickPrecipitation, run once per chunk per tick at one draw in
+    // sixteen — vanilla runs it in tickChunk ahead of the random ticks, and it is
+    // not one of them, so randomTickSpeed does not gate it.
+    void precipitationTick(world::World& world, const world::Chunk& chunk,
+                           world::ChunkPosition chunkPosition,
+                           std::vector<BlockChange>& changes);
     void randomTickBlock(world::World& world, SimulationPosition position,
                          world::Block block, std::vector<BlockChange>& changes);
 
@@ -478,6 +484,8 @@ class WorldSimulation final {
     int simCenterBlockZ_ = 0;
     int fireSpreadRadius_ = 128;
     std::uint32_t randomTickState_ = 0x2F6E2B1DU;
+    // Its own stream, so changing randomTickSpeed does not shift where ice forms.
+    std::uint32_t precipitationRandomState_ = 0x7F4A7C15U;
     std::size_t lastTreeGrowthsProcessed_ = 0U;
     std::size_t randomTickConversionsThisTick_ = 0U;
     std::size_t leafDecayChecksThisTick_ = 0U;

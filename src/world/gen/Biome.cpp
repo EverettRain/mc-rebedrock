@@ -80,9 +80,9 @@ const std::array<BiomeDefinition, static_cast<std::size_t>(Biome::Count)> kBiome
     {Biome::SnowyPlains, "snowy_plains", 0.125F, 0.05F, 0.0F, 0.5F, Block::SnowBlock, Block::Dirt,
      Block::Gravel, 0, 0.1F, 1, kSnowyTrees, 0, 0},
     {Biome::Desert, "desert", 0.125F, 0.05F, 2.0F, 0.0F, Block::Sand, Block::Sand, Block::Gravel,
-     0, 0.0F, 1, {}, 0, 0},
+     0, 0.0F, 1, {}, 0, 0, 0x3F76E4U, 0U, 0U, 0U, GrassColorModifier::None, false},
     {Biome::Savanna, "savanna", 0.125F, 0.05F, 2.0F, 0.0F, Block::Grass, Block::Dirt, Block::Gravel,
-     1, 0.1F, 1, kSavannaTrees, 8, 2},
+     1, 0.1F, 1, kSavannaTrees, 8, 2, 0x3F76E4U, 0U, 0U, 0U, GrassColorModifier::None, false},
     {Biome::Jungle, "jungle", 0.1F, 0.2F, 0.95F, 0.9F, Block::Grass, Block::Dirt, Block::Gravel,
      50, 0.1F, 1, kJungleTrees, 12, 4},
     // 26.1's dark forest keeps the default water and darkens its grass through a
@@ -116,28 +116,28 @@ const std::array<BiomeDefinition, static_cast<std::size_t>(Biome::Count)> kBiome
     // are nether vegetal features, WG-2/5). Underwater surface is the floor
     // block itself since the nether has no seas.
     {Biome::NetherWastes, "nether_wastes", 0.1F, 0.2F, 2.0F, 0.0F, Block::Netherrack, Block::Netherrack,
-     Block::Netherrack, 0, 0.0F, 1, {}, 0, 0},
+     Block::Netherrack, 0, 0.0F, 1, {}, 0, 0, 0x3F76E4U, 0U, 0U, 0U, GrassColorModifier::None, false},
     {Biome::SoulSandValley, "soul_sand_valley", 0.1F, 0.2F, 2.0F, 0.0F, Block::SoulSand, Block::SoulSoil,
-     Block::SoulSand, 0, 0.0F, 1, {}, 0, 0},
+     Block::SoulSand, 0, 0.0F, 1, {}, 0, 0, 0x3F76E4U, 0U, 0U, 0U, GrassColorModifier::None, false},
     {Biome::CrimsonForest, "crimson_forest", 0.1F, 0.2F, 2.0F, 0.0F, Block::CrimsonNylium, Block::Netherrack,
-     Block::CrimsonNylium, 0, 0.0F, 1, {}, 0, 0},
+     Block::CrimsonNylium, 0, 0.0F, 1, {}, 0, 0, 0x3F76E4U, 0U, 0U, 0U, GrassColorModifier::None, false},
     {Biome::WarpedForest, "warped_forest", 0.1F, 0.2F, 2.0F, 0.0F, Block::WarpedNylium, Block::Netherrack,
-     Block::WarpedNylium, 0, 0.0F, 1, {}, 0, 0},
+     Block::WarpedNylium, 0, 0.0F, 1, {}, 0, 0, 0x3F76E4U, 0U, 0U, 0U, GrassColorModifier::None, false},
     {Biome::BasaltDeltas, "basalt_deltas", 0.1F, 0.2F, 2.0F, 0.0F, Block::Basalt, Block::Blackstone,
-     Block::Basalt, 0, 0.0F, 1, {}, 0, 0},
+     Block::Basalt, 0, 0.0F, 1, {}, 0, 0, 0x3F76E4U, 0U, 0U, 0U, GrassColorModifier::None, false},
     // WG-0 end biomes. All end_stone surfaced; temperature 0.5 / downfall 0.5 as
     // the vanilla end biomes carry. Placement (centre island vs outer ring vs
     // void) is WG-3's TheEndBiomeSource, driven by distance to origin.
     {Biome::TheEnd, "the_end", 0.1F, 0.2F, 0.5F, 0.5F, Block::EndStone, Block::EndStone, Block::EndStone,
-     0, 0.0F, 1, {}, 0, 0},
+     0, 0.0F, 1, {}, 0, 0, 0x3F76E4U, 0U, 0U, 0U, GrassColorModifier::None, false},
     {Biome::EndHighlands, "end_highlands", 0.1F, 0.2F, 0.5F, 0.5F, Block::EndStone, Block::EndStone,
-     Block::EndStone, 0, 0.0F, 1, {}, 0, 0},
+     Block::EndStone, 0, 0.0F, 1, {}, 0, 0, 0x3F76E4U, 0U, 0U, 0U, GrassColorModifier::None, false},
     {Biome::EndMidlands, "end_midlands", 0.1F, 0.2F, 0.5F, 0.5F, Block::EndStone, Block::EndStone,
-     Block::EndStone, 0, 0.0F, 1, {}, 0, 0},
+     Block::EndStone, 0, 0.0F, 1, {}, 0, 0, 0x3F76E4U, 0U, 0U, 0U, GrassColorModifier::None, false},
     {Biome::EndBarrens, "end_barrens", 0.1F, 0.2F, 0.5F, 0.5F, Block::EndStone, Block::EndStone,
-     Block::EndStone, 0, 0.0F, 1, {}, 0, 0},
+     Block::EndStone, 0, 0.0F, 1, {}, 0, 0, 0x3F76E4U, 0U, 0U, 0U, GrassColorModifier::None, false},
     {Biome::SmallEndIslands, "small_end_islands", 0.1F, 0.2F, 0.5F, 0.5F, Block::EndStone, Block::EndStone,
-     Block::EndStone, 0, 0.0F, 1, {}, 0, 0},
+     Block::EndStone, 0, 0.0F, 1, {}, 0, 0, 0x3F76E4U, 0U, 0U, 0U, GrassColorModifier::None, false},
 }};
 
 // The 1.16 ids two of these biomes carried before vanilla renamed them. The 26.1
@@ -238,6 +238,53 @@ void setTerrainLeafLayer(world::Block leaves, float layer) {
     if (index < kTerrainLeafLayers.size()) {
         kTerrainLeafLayers[index] = layer;
     }
+}
+
+namespace {
+// Biome.TEMPERATURE_NOISE: PerlinSimplexNoise(WorldgenRandom(LegacyRandomSource(1234)),
+// octaves {0}) — one simplex layer, the same shape the swamp mottle uses.
+[[nodiscard]] const SimplexNoiseSampler& temperatureNoise() {
+    static const SimplexNoiseSampler sampler = [] {
+        JavaRandom random{1234ULL};
+        return SimplexNoiseSampler{random};
+    }();
+    return sampler;
+}
+} // namespace
+
+float heightAdjustedTemperature(Biome biome, int x, int y, int z, int seaLevel) {
+    // TemperatureModifier.FROZEN is registered but not implemented: it belongs to
+    // the frozen oceans, which this build has no biome for. Reaching it with a
+    // biome that claims it would silently return the unmodified temperature, so
+    // the definition table is the place that must not claim it yet.
+    const float base = biomeDefinition(biome).temperature;
+    const int snowLevel = seaLevel + 17;
+    if (y <= snowLevel) {
+        return base;
+    }
+    // Java: adjusted - (noise * 8 + y - snowLevel) * 0.05F / 40.0F, with the
+    // noise sampled at (x / 8, z / 8).
+    const auto variation = static_cast<float>(
+        temperatureNoise().sample(static_cast<double>(x) / 8.0, static_cast<double>(z) / 8.0) *
+        8.0);
+    return base - (variation + static_cast<float>(y - snowLevel)) * 0.05F / 40.0F;
+}
+
+bool warmEnoughToRain(Biome biome, int x, int y, int z, int seaLevel) {
+    return heightAdjustedTemperature(biome, x, y, z, seaLevel) >= 0.15F;
+}
+
+bool coldEnoughToSnow(Biome biome, int x, int y, int z, int seaLevel) {
+    return !warmEnoughToRain(biome, x, y, z, seaLevel);
+}
+
+Precipitation precipitationAt(Biome biome, int x, int y, int z, int seaLevel) {
+    // The biome-level gate comes first and short-circuits: a desert never pays
+    // for a noise sample to be told it is dry.
+    if (!biomeDefinition(biome).hasPrecipitation) {
+        return Precipitation::None;
+    }
+    return coldEnoughToSnow(biome, x, y, z, seaLevel) ? Precipitation::Snow : Precipitation::Rain;
 }
 
 std::uint32_t applyGrassColorModifier(GrassColorModifier modifier, std::uint32_t baseColor,

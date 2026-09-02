@@ -1,6 +1,8 @@
 #pragma once
 
 #include "world/World.hpp"
+#include "world/WorldConstants.hpp"
+#include "world/gen/Biome.hpp"
 
 #include <algorithm>
 #include <array>
@@ -208,18 +210,24 @@ inline EnvironmentSnapshot EnvironmentSnapshot::resolve(
     return snapshot;
 }
 
-// Level#isRainingAt: rain reaches a cell only where it is actually raining and
-// the sky is open above it. Vanilla also rejects positions under the
-// motion-blocking heightmap and biomes that get snow instead; the heightmap
-// test is what canSeeSky stands in for here, and every biome in the game so far
-// takes rain.
+// Level#isRainingAt: rain reaches a cell only where it is actually raining, the
+// sky is open above it, and the biome there is one that rain falls on at all —
+// a desert, a savanna, the nether and the end get nothing, and a cold enough
+// position gets snow instead. Vanilla also rejects positions under the
+// motion-blocking heightmap; canSeeSky stands in for that test here.
+//
+// The biome gate used to be missing entirely, with a comment saying every biome
+// in the game took rain — by then the game had deserts, snowy plains, the nether
+// and the end.
 [[nodiscard]] inline bool isRainingAt(
     const world::World& world,
     int x,
     int y,
     int z,
     const EnvironmentSnapshot& environment) {
-    return environment.raining && environment::canSeeSky(world, x, y, z);
+    return environment.raining && environment::canSeeSky(world, x, y, z) &&
+           world::gen::precipitationAt(world.biomeAt(x, z), x, y, z, world::kSeaLevel) ==
+               world::gen::Precipitation::Rain;
 }
 
 } // namespace mc::gameplay

@@ -8,6 +8,17 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- Deserts and savannas no longer get rained on, and the nether and the end have no
+  precipitation at all. Rain used to fall on every biome in the game, because
+  nothing ever asked the biome — which is why farmland in a desert stayed moist
+  through a storm.
+- Snowy biomes get snow rather than rain, and cold water now freezes from the
+  shore inward. As in vanilla, a cell with water on all four sides does not
+  freeze first, so an open sea does not ice over from the middle. Freezing is not
+  gated by randomTickSpeed.
+- There is a snow line: the same biome rains at the foot of a mountain and snows
+  at its peak. Temperature falls with height by vanilla's own lapse rate,
+  starting 17 blocks above sea level.
 - Grass and foliage colours blend smoothly across a biome border again instead of
   switching in one step. The tint is per-vertex once more, taken from vanilla's
   blend window — the average of the biome colours in the 5x5 block square around

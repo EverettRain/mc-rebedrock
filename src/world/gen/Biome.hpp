@@ -72,6 +72,22 @@ enum class TreeKind : std::uint8_t {
     SwampOak,
 };
 
+// Biome.ClimateSettings#temperatureModifier (26.1). FROZEN carves warm patches
+// out of a frozen ocean through three noise fields; the only biomes that use it
+// are the frozen oceans, which this build does not have yet, so it is registered
+// and left unimplemented rather than guessed at.
+enum class TemperatureModifier : std::uint8_t {
+    None,
+    Frozen,
+};
+
+// Biome.Precipitation: what falls on a position, if anything.
+enum class Precipitation : std::uint8_t {
+    None,
+    Rain,
+    Snow,
+};
+
 // BiomeSpecialEffects.GrassColorModifier (26.1): a per-position adjustment on top
 // of whatever the grass colour map gave. Applied where the colour is resolved —
 // SWAMP reads a noise field at the block position, so it cannot be folded into
@@ -139,6 +155,15 @@ struct BiomeDefinition final {
     std::uint32_t dryFoliageColorOverride = 0U;
     std::uint32_t grassColorOverride = 0U;
     GrassColorModifier grassColorModifier = GrassColorModifier::None;
+
+    // Biome.ClimateSettings (26.1). `temperature` and `downfall` are above, with
+    // the colour-map inputs they double as.
+    //
+    // A desert, a savanna, the nether and the end all set hasPrecipitation
+    // false: no rain reaches them however hard it is raining elsewhere. Rain
+    // used to fall on every biome in the game, because nothing asked.
+    bool hasPrecipitation = true;
+    TemperatureModifier temperatureModifier = TemperatureModifier::None;
 };
 
 [[nodiscard]] const BiomeDefinition& biomeDefinition(Biome biome);
@@ -179,6 +204,21 @@ void setBiomeSurfaceColors(Biome biome, BiomeSurfaceColors colors);
 // position on top of the biome's own grass colour.
 [[nodiscard]] std::uint32_t applyGrassColorModifier(GrassColorModifier modifier,
                                                     std::uint32_t baseColor, int x, int z);
+
+// Biome#getHeightAdjustedTemperature: the biome's base temperature, cooled with
+// height above the snow line (sea level + 17) by a noise-perturbed lapse rate.
+// This is what puts snow on a mountain that stands in a temperate biome — the
+// same biome is rainy at its foot and snowy at its peak.
+[[nodiscard]] float heightAdjustedTemperature(Biome biome, int x, int y, int z, int seaLevel);
+
+// Biome#warmEnoughToRain / #coldEnoughToSnow: the 0.15 threshold on the
+// height-adjusted temperature.
+[[nodiscard]] bool warmEnoughToRain(Biome biome, int x, int y, int z, int seaLevel);
+[[nodiscard]] bool coldEnoughToSnow(Biome biome, int x, int y, int z, int seaLevel);
+
+// Biome#getPrecipitationAt: NONE where the biome has no precipitation at all,
+// otherwise SNOW or RAIN by temperature at this position.
+[[nodiscard]] Precipitation precipitationAt(Biome biome, int x, int y, int z, int seaLevel);
 
 // The UNTINTED terrain atlas layers for the two texture families the biome
 // colours multiply into. The atlas also holds tinted copies of these for items

@@ -337,10 +337,28 @@ int WorldSimulation::localBrightnessAt(
                                               environment_);
 }
 
-void WorldSimulation::randomTicks(world::World& world, std::vector<BlockChange>& changes) {
-    if (randomTickSpeed_ <= 0) {
-        return;
+// The highest non-air cell of a column — the heightmap this build does not keep.
+// Empty sections are skipped, so an ordinary column costs one or two section
+// probes rather than a scan of the whole world height.
+[[nodiscard]] int topNonAirY(const world::Chunk& chunk, int localX, int localZ) {
+    for (int sectionY = world::kSectionCount - 1; sectionY >= 0; --sectionY) {
+        const world::ChunkSection& section = chunk.section(sectionY);
+        if (section.empty()) {
+            continue;
+        }
+        for (int localY = world::kSectionSize - 1; localY >= 0; --localY) {
+            if (section.block(localX, localY, localZ) != world::Block::Air) {
+                return world::sectionOriginY(sectionY) + localY;
+            }
+        }
     }
+    return world::kMinY - 1;
+}
+
+void WorldSimulation::randomTicks(world::World& world, std::vector<BlockChange>& changes) {
+    // No early return on randomTickSpeed here any more: freezing is part of
+    // vanilla's tickChunk but not one of its random ticks, so /gamerule
+    // randomTickSpeed 0 must not also stop water from icing over.
     // ServerWorld#tickChunk: randomTickSpeed draws per non-empty 16x16x16
     // section, but only for chunks inside the simulation distance. The per-chunk
     // body is shared by both the bounded walk (the live path, driven off the
@@ -349,6 +367,10 @@ void WorldSimulation::randomTicks(world::World& world, std::vector<BlockChange>&
     const auto tickChunkAt = [&](world::ChunkPosition chunkPosition) {
         const world::Chunk* chunk = world.chunk(chunkPosition);
         if (chunk == nullptr) {
+            return;
+        }
+        precipitationTick(world, *chunk, chunkPosition, changes);
+        if (randomTickSpeed_ <= 0) {
             return;
         }
         for (int sectionY = 0; sectionY < world::kSectionCount; ++sectionY) {
@@ -407,6 +429,58 @@ void WorldSimulation::randomTicks(world::World& world, std::vector<BlockChange>&
     for (const auto chunkPosition : world.positions()) {
         tickChunkAt(chunkPosition);
     }
+}
+
+void WorldSimulation::precipitationTick(
+    world::World& world,
+    const world::Chunk& chunk,
+    world::ChunkPosition chunkPosition,
+    std::vector<BlockChange>& changes) {
+    // ServerLevel#tickChunk draws one column in sixteen per chunk per tick.
+    //
+    // Only the freezing half of vanilla's tickPrecipitation is here. Snow
+    // accumulation is the other half and needs a snow *layer* block — vanilla's
+    // Blocks.SNOW with its LAYERS property — which this build does not have (it
+    // has a full snow block, which is a different thing). Registering one is
+    // block identity work and belongs to B/AR, not to the biome subtree: a snowy
+    // biome classifies its precipitation as SNOW and freezes its water correctly
+    // now, but nothing settles on the ground yet.
+    if (nextBounded(precipitationRandomState_, 16U) != 0U) {
+        return;
+    }
+    const int localX =
+        static_cast<int>(nextBounded(precipitationRandomState_, world::kChunkWidth));
+    const int localZ =
+        static_cast<int>(nextBounded(precipitationRandomState_, world::kChunkDepth));
+    const int worldX = chunkPosition.x * world::kChunkWidth + localX;
+    const int worldZ = chunkPosition.z * world::kChunkDepth + localZ;
+    const int surfaceY = topNonAirY(chunk, localX, localZ);
+    if (!world::isWorldYInRange(surfaceY)) {
+        return;
+    }
+    // Biome#shouldFreeze, asked at the column's own top cell (vanilla's belowPos).
+    const auto biome = world.biomeAt(worldX, worldZ);
+    if (world::gen::warmEnoughToRain(biome, worldX, surfaceY, worldZ, world::kSeaLevel)) {
+        return;
+    }
+    if (world.block(worldX, surfaceY, worldZ) != world::Block::Water ||
+        world.fluidLevel(worldX, surfaceY, worldZ) != 0U) {
+        return;  // a source block only, never flowing water
+    }
+    if (world.blockLight(worldX, surfaceY, worldZ) >= 10U) {
+        return;  // a torch beside the pond keeps it liquid
+    }
+    // Vanilla freezes only a cell that is NOT water on all four sides, so ice
+    // forms at the shore and creeps inward as each new sheet stops counting as
+    // water. An open sea does not freeze over from the middle outward.
+    const auto isWater = [&](int x, int z) {
+        return world.block(x, surfaceY, z) == world::Block::Water;
+    };
+    if (isWater(worldX - 1, worldZ) && isWater(worldX + 1, worldZ) &&
+        isWater(worldX, worldZ - 1) && isWater(worldX, worldZ + 1)) {
+        return;
+    }
+    setSimulatedBlock(world, {worldX, surfaceY, worldZ}, world::Block::Ice, changes);
 }
 
 void WorldSimulation::randomTickGrassEntry(const RandomTickContext& context) {

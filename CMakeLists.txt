@@ -1749,6 +1749,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME face_occlusion COMMAND mc_rebedrock_face_occlusion_test)
 
+    add_executable(mc_rebedrock_biome_climate_test
+        tests/biome_climate_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_biome_climate_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_biome_climate_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME biome_climate COMMAND mc_rebedrock_biome_climate_test)
+
     add_executable(mc_rebedrock_biome_colors_test
         tests/biome_colors_test.cpp
     )
@@ -2070,6 +2080,9 @@ if(BUILD_TESTING)
         src/world/Chunk.cpp
         src/world/ChunkSection.cpp
         src/world/World.cpp
+        # isRainingAt asks the biome whether rain falls there at all (BM-2).
+        src/world/gen/Biome.cpp
+        src/world/gen/NoiseSampler.cpp
     )
     target_include_directories(mc_rebedrock_environment_snapshot_test PRIVATE
         src
