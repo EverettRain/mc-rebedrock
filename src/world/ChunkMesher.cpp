@@ -123,12 +123,40 @@ static_assert([] {
 inline constexpr glm::vec3 kCellFrom16{0.0F, 0.0F, 0.0F};
 inline constexpr glm::vec3 kCellTo16{16.0F, 16.0F, 16.0F};
 
-// A plane sprite's four corners in the (bottom-left, bottom-right, top-right,
-// top-left) winding the billboard emitters use, sampling the whole sprite. This
-// is what `kUvs` was: the same numbers, now derived from the bakery's rect rules
-// for a west-facing plane rather than written out as four literals.
+// The corner order a quad is emitted in. A box face uses FaceInfo's order, which
+// `kFaceInfoCorner` bridges; the billboard emitters in this file wind their own
+// quads, and naming the two orders they use is what lets their UVs come from a
+// `bake::FaceUv` rect sampled by JE's rules instead of a literal array of four
+// pairs. In texture space (v downward) a rect's own four corners are
+// i0 = top-left, i1 = bottom-left, i2 = bottom-right, i3 = top-right.
+enum class QuadWinding : std::uint8_t {
+    BottomLeftFirst, // bl, br, tr, tl — the plane emitters and the torch caps
+    ColumnFirst,     // bl, tl, tr, br — the torch's four side quads
+};
+
+[[nodiscard]] constexpr std::array<glm::vec2, 4> rectUv(const bake::FaceUv& rect,
+                                                        QuadWinding winding,
+                                                        std::uint8_t quadrant = 0) {
+    constexpr std::array<std::uint8_t, 4> kBottomLeftFirst{1, 2, 3, 0};
+    constexpr std::array<std::uint8_t, 4> kColumnFirst{1, 0, 3, 2};
+    const auto& order =
+        winding == QuadWinding::ColumnFirst ? kColumnFirst : kBottomLeftFirst;
+    std::array<glm::vec2, 4> out{};
+    for (std::size_t c = 0; c < 4; ++c) {
+        const int index = bake::rotateVertexIndex(static_cast<int>(order[c]), quadrant);
+        out[c] = {bake::vertexU(rect, index) / 16.0F, bake::vertexV(rect, index) / 16.0F};
+    }
+    return out;
+}
+
+// The whole sprite, in 0..16 model units — the rect a model json face gets when
+// it declares `"uv": [0, 0, 16, 16]`.
+inline constexpr bake::FaceUv kWholeSpriteRect{0.0F, 0.0F, 16.0F, 16.0F, /*absent=*/false};
+
+// A plane sprite's four corners. This is what `kUvs` was: the same numbers, now
+// derived from the rect rules rather than written out as four literals.
 inline constexpr std::array<glm::vec2, 4> kPlaneUv =
-    boxFaceUv({0.0F, 0.0F, 0.0F}, {0.0F, 16.0F, 16.0F}, Face::NegativeX);
+    rectUv(kWholeSpriteRect, QuadWinding::BottomLeftFirst);
 static_assert(kPlaneUv[0].x == 0.0F && kPlaneUv[0].y == 1.0F);
 static_assert(kPlaneUv[1].x == 1.0F && kPlaneUv[1].y == 1.0F);
 static_assert(kPlaneUv[2].x == 1.0F && kPlaneUv[2].y == 0.0F);
@@ -1520,19 +1548,17 @@ void appendTorchModel(
         base - r - f, base + r - f, base + r + f, base - r + f};
     const std::array<glm::vec3, 4> top{
         bottom[0] + axis, bottom[1] + axis, bottom[2] + axis, bottom[3] + axis};
-    constexpr float pixel = 1.0F / 16.0F;
-    constexpr std::array<glm::vec2, 4> sideUvs{{
-        {7.0F * pixel, 1.0F}, {7.0F * pixel, 6.0F * pixel},
-        {9.0F * pixel, 6.0F * pixel}, {9.0F * pixel, 1.0F},
-    }};
-    constexpr std::array<glm::vec2, 4> topUvs{{
-        {7.0F * pixel, 8.0F * pixel}, {9.0F * pixel, 8.0F * pixel},
-        {9.0F * pixel, 6.0F * pixel}, {7.0F * pixel, 6.0F * pixel},
-    }};
-    constexpr std::array<glm::vec2, 4> bottomUvs{{
-        {7.0F * pixel, 15.0F * pixel}, {9.0F * pixel, 15.0F * pixel},
-        {9.0F * pixel, 13.0F * pixel}, {7.0F * pixel, 13.0F * pixel},
-    }};
+    // RN-8c: the three rects template_torch.json declares — side [7,6,9,16], up
+    // [7,6,9,8], down [7,13,9,15] — sampled through the same rect rules every
+    // other path in this file now uses. These were three literal corner arrays,
+    // which is how a rect and its winding got welded together and neither could
+    // be checked against the json.
+    constexpr std::array<glm::vec2, 4> sideUvs =
+        rectUv({7.0F, 6.0F, 9.0F, 16.0F, false}, QuadWinding::ColumnFirst);
+    constexpr std::array<glm::vec2, 4> topUvs =
+        rectUv({7.0F, 6.0F, 9.0F, 8.0F, false}, QuadWinding::BottomLeftFirst);
+    constexpr std::array<glm::vec2, 4> bottomUvs =
+        rectUv({7.0F, 13.0F, 9.0F, 15.0F, false}, QuadWinding::BottomLeftFirst);
     appendTorchQuad(
         mesh, {bottom[0], bottom[1], bottom[2], bottom[3]}, -up, bottomUvs,
         textureLayer, skyLight, blockLight, sectionOrigin);
@@ -1691,9 +1717,12 @@ void appendRedstoneWire(render::MeshData& mesh, Block block, BlockState state, i
         // reading as a break. Vanilla ships this as redstone_dust_line1; rotating
         // the UV of the one line sprite is the same picture without a second
         // atlas layer (RN-6 #1b).
-        const std::array<glm::vec2, 4> uvs = rotateUv
-            ? std::array<glm::vec2, 4>{{{0, 0}, {0, 1}, {1, 1}, {1, 0}}}
-            : std::array<glm::vec2, 4>{{{0, 1}, {1, 1}, {1, 0}, {0, 0}}};
+        // RN-8c: the quarter turn is a Quadrant — JE's own name for a rotated face
+        // — applied to the whole-sprite rect, not a second hand-written corner
+        // array that has to be kept in step with the first.
+        const std::array<glm::vec2, 4> uvs =
+            rectUv(kWholeSpriteRect, QuadWinding::BottomLeftFirst,
+                   rotateUv ? bake::kQuadrant270 : 0U);
         const auto first = static_cast<std::uint32_t>(mesh.vertices.size());
         for (std::size_t i = 0; i < 4; ++i) {
             mesh.vertices.push_back(packVertex(cell + corners[i] - sectionOrigin, normal, uvs[i],
@@ -1866,7 +1895,7 @@ void appendFire(render::MeshData& mesh, Block block, int x, int y, int z, const 
     // 0..1 model space, optionally rotated about an axis, textured with fire.
     const auto emitPlane = [&](const std::array<glm::vec3, 4>& corners, char axis, float degrees,
                                const glm::vec3& origin) {
-        constexpr std::array<glm::vec2, 4> uvs{{{0, 1}, {1, 1}, {1, 0}, {0, 0}}};
+        constexpr std::array<glm::vec2, 4> uvs = kPlaneUv;
         std::array<glm::vec3, 4> positions;
         for (std::size_t i = 0; i < 4; ++i) {
             positions[i] = cell + rotateAxis(corners[i], origin, axis, degrees);
