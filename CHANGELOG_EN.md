@@ -9,6 +9,28 @@ simple versioned history while it is in beta.
 
 ### Fixed
 
+- Block textures are laid out from the vanilla model files face by face. Top and
+  bottom faces used to be a quarter turn off, and shaped blocks (slabs, stairs,
+  walls, doors, trapdoors, buttons, pressure plates, fence gates) had their top
+  face flipped and their +X and -Z sides mirrored. Directional sprites — the
+  crafting table top, hay bales, pumpkins, log end grain, the brick courses on a
+  brick slab — now match vanilla.
+- Blocks that turn with their facing (observer, piston, furnace) now carry their
+  textures rigidly as they turn. The old rotation was calibrated so that facing
+  up looked right, but vanilla's reference orientation is facing north, so every
+  other facing was a quarter turn out.
+- The observer's top texture is no longer upside down (its model declares that
+  face with an inverted uv rect).
+- The anvil's base, waist, neck and striking face: vanilla's model rotates 13 of
+  its 21 faces and all 13 were being dropped, so the metal ran the wrong way on
+  the sides and both caps.
+- The comparator's front redstone torch is no longer stretched vertically (it is
+  shorter than the two behind it and was using the taller torches' sprite range).
+- The narrow pair of faces on a lever's base is no longer stretched sideways.
+- Repeaters, comparators, levers, enchanting tables and anvils are baked once at
+  startup instead of once per block per chunk rebuild, which removes an invisible
+  hitch when placing or breaking blocks near them (about 25% off the rebuild in
+  an equivalent test).
 - Anvil renames now survive a save. Renaming worked for the rest of the session and then
   reverted on the next load — the bytes on disk were always correct; the name table was
   being cleared *after* the save had been parsed, which wiped the names it had just read.
