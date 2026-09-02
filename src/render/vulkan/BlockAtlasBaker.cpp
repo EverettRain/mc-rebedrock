@@ -694,9 +694,13 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
             dl.bottom = assign(definition.directional.bottom);
             dl.side = assign(definition.directional.side);
             world::setBlockDirectionalLayers(block, dl);
-            // 掉落物与 HUD 的立方体仍只读顶、侧、底三个槽
-            // 因此把正面贴图放到可见的侧面上，物品才认得出是侦测器
-            world::setBlockTextureLayers(block, {dl.top, dl.front, dl.bottom});
+            // 这个三元组曾经在 `side` 槽里放**正面**：当时掉落物与 HUD 的立方体只读顶/侧/底
+            // 三个槽，把正面塞进侧面，物品才认得出是侦测器。三处立方体现在都从上面这份 dl
+            // 取真正的六个面（world::cubeItemLayers），那个变通不再有消费者，而它自己是个陷阱：
+            // RN-8c-D 给掉落物补上正面时，侧面仍从这里读，于是熔炉有三个面是炉口。
+            // 现在 side 就是 side。剩下的唯一消费者是破坏/落地粒子（ParticleSystem 读 .side），
+            // 而它读到真正的侧面才对——vanilla 的 furnace.json 声明的 particle 正是 furnace_side。
+            world::setBlockTextureLayers(block, {dl.top, dl.side, dl.bottom});
             continue;
         }
         if (definition.model == world::BlockModel::ElementModel ||

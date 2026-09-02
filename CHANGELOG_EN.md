@@ -8,6 +8,14 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- Fixes what the previous entry got wrong: a dropped furnace showed its opening on
+  three or four faces and a dropped piston its platform on three. The atlas baker
+  used to put a directional block's FRONT into the "side" slot, so that an item
+  cube with only three textures was still recognisable as a furnace; supplying the
+  real front as well then painted it on three faces at once. Item cubes now take
+  all six faces from one place and that workaround is gone. As a knock-on, break
+  particles for furnaces, observers and pistons use the real side texture, as in
+  vanilla.
 - A block dropped on the ground or held in hand finally uses the right texture on
   each of its six faces. Both only ever received top/side/bottom, so a dropped
   piston was a solid block of piston_side and a dropped observer had no face; the

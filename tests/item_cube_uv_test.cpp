@@ -284,5 +284,55 @@ int main() {
         assert(dense.find("face==4?backLayer") != std::string::npos);
     }
 
+    // --- RN-8c-D regression: exactly one face carries the front ---------------
+    //
+    // Reported from a real run: a dropped furnace showed its opening on three or
+    // four faces and a dropped piston its platform on three. The cause was not the
+    // packing but where the OTHER three layers came from — the dropped cube took
+    // top/side/bottom from `textureLayers`, and the atlas baker deliberately puts
+    // a DirectionalCube's FRONT layer in that triple's `side` slot so a
+    // three-slot item cube is still recognisable (BlockAtlasBaker.cpp). Feeding
+    // the real front in as well then painted it on +X, -X and -Z at once.
+    //
+    // This walks all six faces the way item_entity.vert selects them and counts.
+    {
+        setBlockDirectionalLayers(Block::Furnace,
+                                  {/*front*/ 41.0F, /*frontActive*/ 42.0F, /*back*/ 43.0F,
+                                   /*backActive*/ 44.0F, /*top*/ 45.0F, /*bottom*/ 46.0F,
+                                   /*side*/ 47.0F});
+        // What the baker leaves behind for a DirectionalCube. It used to put the
+        // FRONT in this triple's middle slot, which is what made the dropped
+        // furnace show its opening on three faces once the real front arrived as
+        // well; the slot is the side now, and nothing that draws a per-face cube
+        // reads it either way.
+        setBlockTextureLayers(Block::Furnace, {45.0F, 47.0F, 46.0F});
+
+        const auto faces = cubeItemLayers(Block::Furnace);
+        constexpr std::array<Face, 6> kAll{Face::PositiveX, Face::NegativeX, Face::PositiveY,
+                                           Face::NegativeY, Face::PositiveZ, Face::NegativeZ};
+        int frontFaces = 0;
+        int backFaces = 0;
+        int sideFaces = 0;
+        for (const Face face : kAll) {
+            const float layer = cubeItemFaceLayer(faces, face);
+            if (layer == 41.0F) ++frontFaces;
+            if (layer == 43.0F) ++backFaces;
+            if (layer == 47.0F) ++sideFaces;
+        }
+        assert(frontFaces == 1);
+        assert(backFaces == 1);
+        assert(sideFaces == 2);
+        assert(cubeItemFaceLayer(faces, Face::NegativeZ) == 41.0F); // front on north
+        assert(cubeItemFaceLayer(faces, Face::PositiveZ) == 43.0F); // back on south
+        assert(cubeItemFaceLayer(faces, Face::PositiveY) == 45.0F);
+        assert(cubeItemFaceLayer(faces, Face::NegativeY) == 46.0F);
+
+        // A per-face cube takes every layer from cubeItemLayers, never from the
+        // flat triple — the triple has no front or back to give, which is the
+        // whole reason the dropped cube had none.
+        assert(faces.front != faces.side);
+        assert(faces.back != faces.side);
+    }
+
     return 0;
 }

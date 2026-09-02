@@ -1140,16 +1140,24 @@ class WorldRenderer final {
                 gameplay::isBlockStack(entity.stack) && world::isSlab(entity.stack.block);
             const bool cubeModel = gameplay::isBlockStack(entity.stack) &&
                                    world::rendersAsCubeItem(entity.stack.block);
+            // RN-8c-D: every layer of a block item's cube comes from
+            // world::cubeItemLayers, NOT from the flat top/side/bottom triple.
+            // The atlas baker deliberately puts a DirectionalCube's FRONT in that
+            // triple's `side` slot, so that a three-slot item cube would at least
+            // be recognisable as a furnace; reading it here as a real side put the
+            // front on three faces at once.
+            const world::CubeItemLayers itemFaces =
+                cubeModel ? cubeItemCubeLayers(entity.stack.block)
+                          : world::CubeItemLayers{};
             const auto layers =
-                cubeModel ? world::textureLayers(entity.stack.block)
+                cubeModel ? world::BlockTextureLayers{itemFaces.top, itemFaces.side,
+                                                      itemFaces.bottom}
                           : world::BlockTextureLayers{gameplay::itemTextureLayer(entity.stack),
                                                       gameplay::itemTextureLayer(entity.stack),
                                                       gameplay::itemTextureLayer(entity.stack)};
-            // RN-8c-D: the front/back faces the flat top/side/bottom triple has no
-            // room for. Without them a dropped piston was a uniform piston_side
-            // cube and a dropped observer had no face.
             const float cubeFrontBack =
-                cubeModel ? cubeItemFrontBackLayers(entity.stack.block) : 0.0F;
+                cubeModel ? world::packItemFrontBackLayers(itemFaces.front, itemFaces.back)
+                          : 0.0F;
             const float previousAge =
                 entity.ageTicks == 0U ? 0.0F : static_cast<float>(entity.ageTicks - 1U);
             const float age = previousAge + itemAlpha;
@@ -1485,13 +1493,16 @@ class WorldRenderer final {
     // The chest is the one block drawn from its own atlas section rather than
     // from its texture triple, so its front comes from there; everything else
     // about its cube is left exactly as it was.
-    [[nodiscard]] static float cubeItemFrontBackLayers(world::Block block) {
+    [[nodiscard]] static world::CubeItemLayers cubeItemCubeLayers(world::Block block) {
+        auto faces = world::cubeItemLayers(block);
         if (block == world::Block::Chest) {
-            return world::packItemFrontBackLayers(kChestItemFrontLayer,
-                                                  world::textureLayers(block).side);
+            // The chest item is drawn from its own baked atlas faces rather than
+            // from the block's textures, so its front comes from there. Its flat
+            // triple already holds the chest item's top/side, so only the front
+            // has to be named.
+            faces.front = kChestItemFrontLayer;
         }
-        const auto faces = world::cubeItemLayers(block);
-        return world::packItemFrontBackLayers(faces.front, faces.back);
+        return faces;
     }
 
     // 用一个完整世界矩阵变换、经物品着色器的世界空间蒙皮长方体模式（data.x = 8）画一个轴对齐长方体
@@ -1912,11 +1923,17 @@ class WorldRenderer final {
         // 与掉落物、背包图标共用 world::rendersAsCubeItem，不再各自列举 BlockModel
         const bool cubeModel = !emptyHand && gameplay::isBlockStack(stack) &&
                                world::rendersAsCubeItem(stack.block);
+        // RN-8c-D: same as the dropped block — all five layers from
+        // world::cubeItemLayers, never from the flat triple whose `side` slot
+        // holds a DirectionalCube's front.
+        const world::CubeItemLayers heldFaces =
+            !emptyHand && cubeModel ? cubeItemCubeLayers(stack.block) : world::CubeItemLayers{};
         const auto layers =
             emptyHand
                 ? world::BlockTextureLayers{kPlayerRightArmFirstLayer, kPlayerRightArmFirstLayer,
                                             kPlayerRightArmFirstLayer}
-            : cubeModel ? world::textureLayers(stack.block)
+            : cubeModel ? world::BlockTextureLayers{heldFaces.top, heldFaces.side,
+                                                    heldFaces.bottom}
                         : world::BlockTextureLayers{gameplay::itemTextureLayer(stack),
                                                     gameplay::itemTextureLayer(stack),
                                                     gameplay::itemTextureLayer(stack)};
@@ -1933,7 +1950,9 @@ class WorldRenderer final {
         // back. The chest keeps its dedicated front layer, since its item is not
         // drawn from the block's own texture triple.
         const float heldFrontBack =
-            !emptyHand && cubeModel ? cubeItemFrontBackLayers(stack.block) : 0.0F;
+            !emptyHand && cubeModel
+                ? world::packItemFrontBackLayers(heldFaces.front, heldFaces.back)
+                : 0.0F;
         // 手与手持方块跟随玩家眼部的环境光，夜里会变暗，而不是永远处在固定光照下
         const float heldLight = packedSceneLight(camera.position());
         const ItemPush push{

@@ -230,4 +230,27 @@ inline constexpr std::array<std::array<std::array<glm::vec2, 4>, 6>, kCubeUvMode
 inline constexpr auto& kCubeItemFaceUv =
     kCubeModelFaceUv[static_cast<std::size_t>(CubeUvModel::Default)];
 
+// Which of a block item's five layers a given face of its cube shows — the
+// CPU-side statement of what item_entity.vert selects, so the routing can be
+// asserted without a GPU. A block item is the block's own model unrotated, so the
+// front is on the model's north face and the back on its south one.
+//
+// This exists because the routing HAD a bug a headless test could not see: the
+// dropped cube took top/side/bottom from `textureLayers`, and the atlas baker
+// deliberately puts a DirectionalCube's FRONT layer in that triple's `side` slot
+// (so the old three-slot item cube would at least be recognisable). Feeding the
+// real front in as well then put it on three faces. The fix is to take every
+// layer from `cubeItemLayers`; this function is what pins it.
+[[nodiscard]] inline float cubeItemFaceLayer(const CubeItemLayers& layers, Face face) {
+    switch (face) {
+    case Face::PositiveY: return layers.top;
+    case Face::NegativeY: return layers.bottom;
+    case Face::NegativeZ: return layers.front; // the model's north face
+    case Face::PositiveZ: return layers.back;  // its south face
+    case Face::PositiveX:
+    case Face::NegativeX: return layers.side;
+    }
+    return layers.side;
+}
+
 } // namespace mc::world
