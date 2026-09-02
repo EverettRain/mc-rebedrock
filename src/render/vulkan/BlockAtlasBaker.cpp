@@ -95,20 +95,26 @@ fitAnimationFrames(std::vector<assets::ImageData> source,
 
 using PlayerSkinFaces = std::array<assets::ImageData, 6>;
 
+// 按 item_entity.vert 的面序（+X、-X、+Y、-Y、+Z、-Z）从展开图裁出六个面
+// `entityYFlip` 见 AtlasLayerFit.hpp 的 cuboidNetRects：生物/玩家经实体根节点的 Y 翻转绘制，
+// 方块实体（箱子）没有，两者的上下面在展开图里正好互换
+[[nodiscard]] PlayerSkinFaces cuboidFaces(const assets::ImageData& skin, int textureX, int textureY,
+                                          int width, int height, int depth, int targetSize,
+                                          bool entityYFlip) {
+    const auto rects = cuboidNetRects(textureX, textureY, width, height, depth, entityYFlip);
+    PlayerSkinFaces faces;
+    for (std::size_t face = 0; face < faces.size(); ++face) {
+        faces[face] = resizedRegion(skin, rects[face].x, rects[face].y, rects[face].width,
+                                    rects[face].height, targetSize);
+    }
+    return faces;
+}
+
 [[nodiscard]] PlayerSkinFaces playerSkinCuboidFaces(const assets::ImageData& skin, int textureX,
                                                     int textureY, int width, int height, int depth,
                                                     int targetSize) {
-    // Minecraft 的长方体展开图第一行是顶/底，其后是右/前/左/后
-    // 这里按 item_entity.vert 的输出顺序存放各面：+X、-X、+Y、-Y、+Z、-Z
-    return {
-        resizedRegion(skin, textureX + depth + width, textureY + depth, depth, height, targetSize),
-        resizedRegion(skin, textureX, textureY + depth, depth, height, targetSize),
-        resizedRegion(skin, textureX + depth, textureY, width, depth, targetSize),
-        resizedRegion(skin, textureX + depth + width, textureY, width, depth, targetSize),
-        resizedRegion(skin, textureX + depth, textureY + depth, width, height, targetSize),
-        resizedRegion(skin, textureX + depth * 2 + width, textureY + depth, width, height,
-                      targetSize),
-    };
+    return cuboidFaces(skin, textureX, textureY, width, height, depth, targetSize,
+                       /*entityYFlip=*/true);
 }
 
 void overlayScaled(assets::ImageData& destination, const assets::ImageData& source,
@@ -238,12 +244,15 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
                 resizedRegion(sheet, 0, 0, sheet.width, sheet.height, top.width));
         }
     }
+    // 箱子是方块实体：`ChestRenderer` 只按 FACING 偏航，没有生物那层根节点 Y 翻转，
+    // 所以三个部件的上下面都取展开图里与玩家相反的那一块（entityYFlip=false）
+    // 从前这里只给盖子手工 swap 了一次，底座没管，开盖后看到的箱口那一面
+    // 显示的是木板——和箱子顶面同一块像素——而不是 (28,19) 那块带箱口的
     auto chestParts = std::array{
-        playerSkinCuboidFaces(chestTexture, 0, 19, 14, 10, 14, top.width),
-        playerSkinCuboidFaces(chestTexture, 0, 0, 14, 5, 14, top.width),
-        playerSkinCuboidFaces(chestTexture, 0, 0, 2, 4, 1, top.width),
+        cuboidFaces(chestTexture, 0, 19, 14, 10, 14, top.width, /*entityYFlip=*/false),
+        cuboidFaces(chestTexture, 0, 0, 14, 5, 14, top.width, /*entityYFlip=*/false),
+        cuboidFaces(chestTexture, 0, 0, 2, 4, 1, top.width, /*entityYFlip=*/false),
     };
-    std::swap(chestParts[1][2], chestParts[1][3]);
     const auto latchUpper = resizedRegion(chestTexture, 1, 1, 2, 2, top.width);
     const auto latchLower = resizedRegion(chestTexture, 1, 3, 2, 2, top.width);
     overlayScaled(chestParts[1][4], latchUpper, 7, 10, 2, 6);

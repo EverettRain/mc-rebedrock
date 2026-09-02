@@ -12,11 +12,52 @@
 #include "assets/ImageData.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <iostream>
 #include <string_view>
 
 namespace mc::render {
+
+// --- vanilla ModelPart.Cube 的展开图（box-UV net）--------------------------------
+//
+// 一个 (w,h,d) 的方体在 (u0,v0) 处展开成六块矩形：
+//
+//        [ DOWN ][  UP  ]                 v0 .. v0+d
+//   [-X][  -Z  ][  +X  ][  +Z  ]          v0+d .. v0+d+h
+//
+// 逐字取自 `ModelPart.Cube`：**DOWN 在 (u0+d, v0)、UP 在 (u0+d+w, v0)**。
+//
+// ⚠ 世界里的上下面对应哪一块，取决于调用者画这个方体时**有没有实体根节点的 Y 翻转**。
+// vanilla 的 `EntityRenderer` 对生物/玩家做 `scale(-1,-1,1)`，模型的 Y 朝下，
+// 所以生物**世界朝上**的那一面读的是 net 的 DOWN 块——皮肤里头顶在 (8,0) 正是这么来的。
+// 方块实体没有这个翻转（`ChestRenderer` 只做偏航），所以箱子**世界朝上**的一面读 net 的 UP 块。
+//
+// 这两条曾经混在一起：箱子复用了为玩家写的展开函数，只给盖子手工 swap 了一次上下面，
+// 底座没管，于是开盖后箱口那一面显示的是木板（与箱子顶面同一块像素），而不是有箱口的那一块。
+struct NetRect final {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+};
+
+// 六块矩形，按物品着色器的面序：+X、-X、+Y、-Y、+Z、-Z。
+// `entityYFlip` = 调用者是否经实体根节点的 Y 翻转绘制（生物/玩家为 true，方块实体为 false）。
+[[nodiscard]] constexpr std::array<NetRect, 6> cuboidNetRects(int textureX, int textureY, int width,
+                                                             int height, int depth,
+                                                             bool entityYFlip) {
+    const NetRect down{textureX + depth, textureY, width, depth};
+    const NetRect up{textureX + depth + width, textureY, width, depth};
+    return {
+        NetRect{textureX + depth + width, textureY + depth, depth, height}, // +X
+        NetRect{textureX, textureY + depth, depth, height},                 // -X
+        entityYFlip ? down : up,                                            // +Y
+        entityYFlip ? up : down,                                            // -Y
+        NetRect{textureX + depth, textureY + depth, width, height},         // +Z
+        NetRect{textureX + depth * 2 + width, textureY + depth, width, height}, // -Z
+    };
+}
 
 // 把图像的一块区域最近邻缩放进目标矩形
 // 下面那个方形目标的便捷重载，覆盖实体/GUI 展开图缩进方形图集瓦片的场景

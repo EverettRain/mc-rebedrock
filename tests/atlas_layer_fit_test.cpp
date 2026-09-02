@@ -49,7 +49,88 @@ bool pixelIs(const ImageData& image, int x, int y, std::uint8_t r, std::uint8_t 
 
 } // namespace
 
+// RN-8c-E: the ModelPart box-UV net, and which of its two cap rects is the
+// world's up face.
+//
+// vanilla `ModelPart.Cube` lays a (w,h,d) box out at (u0,v0) as
+//
+//        [ DOWN ][  UP  ]
+//   [-X][  -Z  ][  +X  ][  +Z  ]
+//
+// with DOWN at (u0+d, v0) and UP at (u0+d+w, v0). Which one a face shows in the
+// WORLD depends on whether the caller draws through the entity root's Y flip:
+// vanilla's EntityRenderer does `scale(-1,-1,1)` for mobs and players, so their
+// world-up face reads the DOWN rect — that is why a skin's head top sits at
+// (8,0). A block entity has no such flip (ChestRenderer only yaws), so a chest's
+// world-up face reads the UP rect.
+//
+// The two were conflated: the chest reused the player's unpacking and hand-swapped
+// only its lid, leaving the base's up face on the wrong rect. The numbers below
+// were checked against entity/chest/normal.png pixel by pixel — the rect this
+// says is the base's world-up is the one with the transparent chest mouth in it,
+// and the one it says is the base's world-down is solid planks. (The texture is a
+// vanilla asset and is not in this repo, so the check lives in the values here
+// rather than in a fixture.)
+void checkCuboidNet() {
+    using mc::render::cuboidNetRects;
+    using mc::render::NetRect;
+    const auto same = [](const NetRect& a, const NetRect& b) {
+        return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
+    };
+    constexpr std::size_t kPlusX = 0;
+    constexpr std::size_t kMinusX = 1;
+    constexpr std::size_t kPlusY = 2;
+    constexpr std::size_t kMinusY = 3;
+    constexpr std::size_t kPlusZ = 4;
+    constexpr std::size_t kMinusZ = 5;
+
+    // A player head: texOffs(0,0), 8x8x8, drawn through the entity Y flip. Its
+    // world-up face is the skin's head top, which every skin puts at (8,0) —
+    // i.e. the net's DOWN rect.
+    {
+        const auto head = cuboidNetRects(0, 0, 8, 8, 8, /*entityYFlip=*/true);
+        assert(same(head[kPlusY], {8, 0, 8, 8}));
+        assert(same(head[kMinusY], {16, 0, 8, 8}));
+        assert(same(head[kMinusX], {0, 8, 8, 8}));
+        assert(same(head[kMinusZ], {24, 8, 8, 8}));
+    }
+
+    // The chest base: texOffs(0,19), 14x10x14, drawn with no flip. Its world-up
+    // face — the one you look into when the lid opens — is the net's UP rect at
+    // (28,19), the one carrying the chest mouth. (14,19) is solid planks, pixel
+    // for pixel the same as the chest's outer top, which is exactly what the
+    // wrong one looked like.
+    {
+        const auto base = cuboidNetRects(0, 19, 14, 10, 14, /*entityYFlip=*/false);
+        assert(same(base[kPlusY], {28, 19, 14, 14}));
+        assert(same(base[kMinusY], {14, 19, 14, 14}));
+        assert(same(base[kPlusZ], {14, 33, 14, 10}));
+        assert(same(base[kPlusX], {28, 33, 14, 10}));
+    }
+
+    // The chest lid: texOffs(0,0), 14x5x14, no flip. Its world-up is the chest's
+    // outer top at (28,0); its world-down is the dark inside of the lid at (14,0).
+    {
+        const auto lid = cuboidNetRects(0, 0, 14, 5, 14, /*entityYFlip=*/false);
+        assert(same(lid[kPlusY], {28, 0, 14, 14}));
+        assert(same(lid[kMinusY], {14, 0, 14, 14}));
+    }
+
+    // The flip changes the two cap faces and nothing else — if it ever starts
+    // moving a side face, the net itself has been rewritten.
+    {
+        const auto flipped = cuboidNetRects(3, 5, 14, 10, 14, true);
+        const auto plain = cuboidNetRects(3, 5, 14, 10, 14, false);
+        assert(same(flipped[kPlusY], plain[kMinusY]));
+        assert(same(flipped[kMinusY], plain[kPlusY]));
+        for (const std::size_t face : {kPlusX, kMinusX, kPlusZ, kMinusZ}) {
+            assert(same(flipped[face], plain[face]));
+        }
+    }
+}
+
 int main() {
+    checkCuboidNet();
     const auto reference = solid(16, 16, 10, 20, 30, 255);
 
     // --- Same size: returned untouched, byte-for-byte. ---

@@ -8,6 +8,13 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- The face you look at when a chest opens finally shows the texture with the
+  chest mouth in it. It was showing plain planks — pixel for pixel the same region
+  as the chest's outer top — which is why it read as the top texture pasted inside
+  the chest. A chest reused the unpacking written for player skins, and mob models
+  are drawn through a vertical flip while a chest is not, so their up and down
+  faces sit in opposite halves of the texture net; only the lid had been patched
+  for it, never the base.
 - One layer deeper: a piston's platform belongs on the TOP of its item (vanilla's
   piston item is a different model, block/piston_inventory, not the block's), and
   it was ending up on a side; and a dropped observer's top arrow ran opposite to a
