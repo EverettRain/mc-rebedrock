@@ -1539,7 +1539,7 @@ void appendElementModel(render::MeshData& mesh, const CellCullContext& current, 
     const float skyLight = lighting.sky(x, y, z);
     const float cellBlockLight = lighting.block(x, y, z);
     const glm::vec3 cell{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
-    for (const bake::BakedElementQuad& baked : bake::bakeElementModel(block, state)) {
+    for (const bake::BakedElementQuad& baked : bake::bakedElementModel(block, state)) {
         // RN-8b: the JE getQuads(direction) / getQuads(null) split. A quad the
         // model left undeclared is unconditional; a quad with a `cullface` asks
         // RN-8a's one criterion about that direction, so an anvil's base plate

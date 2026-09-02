@@ -248,7 +248,88 @@ void checkTranscription() {
 
 } // namespace
 
+// RN-8c-0: every state the mesher can hand the store must land on the variant
+// that bakes that exact state, and the store's quads must equal what
+// bakeElementModel would have produced per cell. This is the whole contract of
+// moving the bake to startup: same numbers, computed once.
+void checkStore() {
+    const ElementModelStore& store = elementModelStore();
+
+    struct Case final {
+        Block block;
+        ElementModelKind kind;
+    };
+    const std::array<Case, 7> blocks{{
+        {Block::Repeater, ElementModelKind::Repeater},
+        {Block::Comparator, ElementModelKind::Comparator},
+        {Block::Lever, ElementModelKind::Lever},
+        {Block::EnchantingTable, ElementModelKind::EnchantingTable},
+        {Block::Anvil, ElementModelKind::Anvil},
+        {Block::ChippedAnvil, ElementModelKind::Anvil},
+        {Block::DamagedAnvil, ElementModelKind::Anvil},
+    }};
+
+    for (const Case& c : blocks) {
+        assert(elementModelKind(c.block) == c.kind);
+        for (const auto facing :
+             {BlockOrientation::North, BlockOrientation::East, BlockOrientation::South,
+              BlockOrientation::West, BlockOrientation::Up, BlockOrientation::Down}) {
+            for (int delay = 1; delay <= 4; ++delay) {
+                for (const bool powered : {false, true}) {
+                    for (const bool subtract : {false, true}) {
+                        const BlockState state = BlockState{c.block, facing}
+                                                     .withRepeaterDelay(delay)
+                                                     .withPowered(powered)
+                                                     .withComparatorSubtract(subtract);
+                        const auto stored = bakedElementModel(c.block, state);
+                        const auto fresh = bakeElementModel(c.block, state);
+                        assert(stored.size() == fresh.size());
+                        for (std::size_t q = 0; q < fresh.size(); ++q) {
+                            assert(stored[q].quad.facing == fresh[q].quad.facing);
+                            assert(stored[q].quad.slot == fresh[q].quad.slot);
+                            assert(stored[q].quad.cull == fresh[q].quad.cull);
+                            assert(near(stored[q].glow, fresh[q].glow));
+                            for (std::size_t i = 0; i < 4; ++i) {
+                                assert(eqVec3(stored[q].quad.position[i], fresh[q].quad.position[i]));
+                                assert(eqVec2(stored[q].quad.uv[i], fresh[q].quad.uv[i]));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // A block with no ElementModel gets an empty span, never a stray range.
+    assert(elementModelKind(Block::Stone) == ElementModelKind::None);
+    assert(bakedElementModel(Block::Stone, BlockState{Block::Stone}).empty());
+
+    // The three anvil wear states share one geometry table: the store is keyed by
+    // model kind, and only the texture slot (resolved per block by the mesher)
+    // separates them. If this ever fails, the store was keyed per block, which is
+    // the ~2 MB mistake RN-8's performance section names.
+    {
+        const BlockState facing{Block::Anvil, BlockOrientation::East};
+        const auto plain = bakedElementModel(Block::Anvil, facing);
+        const auto chipped =
+            bakedElementModel(Block::ChippedAnvil, BlockState{Block::ChippedAnvil,
+                                                              BlockOrientation::East});
+        assert(plain.data() == chipped.data() && plain.size() == chipped.size());
+    }
+
+    // Size guardrail: geometry per model, texture layer per block. Keyed per
+    // block instead, this table would be megabytes.
+    assert(store.byteSize() < 500U * 1024U);
+    assert(store.rangeCount() ==
+           elementModelVariantCount(ElementModelKind::Repeater) +
+               elementModelVariantCount(ElementModelKind::Comparator) +
+               elementModelVariantCount(ElementModelKind::Lever) +
+               elementModelVariantCount(ElementModelKind::EnchantingTable) +
+               elementModelVariantCount(ElementModelKind::Anvil));
+}
+
 int main() {
+    checkStore();
     checkTranscription();
 
     // Repeater: base(5) + two torches(5+5) = 15; torch sprite unlit=2 / lit=3.

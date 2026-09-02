@@ -18,6 +18,9 @@
 #include "world/BlockState.hpp"
 #include "world/FaceBakery.hpp"
 
+#include <array>
+#include <cstdint>
+#include <span>
 #include <vector>
 
 namespace mc::world::bake {
@@ -330,6 +333,219 @@ inline std::vector<ModelElement> anvilElements() {
         }
     }
     return quads;
+}
+
+// --- RN-8c-0: the baked store -------------------------------------------------
+//
+// `bakeElementModel` above allocates twice (elementsFor's vector, then its own)
+// and runs cos/sin per rotated quad. That is JE's "bake once into a BakedModel"
+// transcribed into "bake per cell": every remesh re-baked every repeater, lever
+// and anvil cell in the section, which is exactly the kind of cost that hides
+// until a player breaks one block and the whole section rebuilds.
+//
+// This is the bake-once half. The store is one flat `std::vector<BakedElementQuad>`
+// plus a `{offset, count}` index — not a `vector<vector>` and not JE's
+// `List<BakedQuad>` object graph, which is a reference in Java and a pointer
+// chase in C++. The hot path becomes "index the range, walk contiguous memory,
+// translate into the cell": zero allocation, zero trig.
+//
+// Keyed by (model kind, state variant), never by block: the three anvil wear
+// states share one geometry table and differ only in the texture slot the mesher
+// resolves per block, which is the "geometry per model, texture layer per block"
+// split RN-8's performance section pins down.
+
+enum class ElementModelKind : std::uint8_t {
+    Repeater,
+    Comparator,
+    Lever,
+    EnchantingTable,
+    Anvil,
+    None,
+};
+
+[[nodiscard]] constexpr ElementModelKind elementModelKind(Block block) {
+    switch (block) {
+    case Block::Repeater: return ElementModelKind::Repeater;
+    case Block::Comparator: return ElementModelKind::Comparator;
+    case Block::Lever: return ElementModelKind::Lever;
+    case Block::EnchantingTable: return ElementModelKind::EnchantingTable;
+    case Block::Anvil:
+    case Block::ChippedAnvil:
+    case Block::DamagedAnvil: return ElementModelKind::Anvil;
+    default: return ElementModelKind::None;
+    }
+}
+
+namespace detail {
+
+// The four horizontal facings, with Up/Down folded onto South exactly as
+// `diodeYaw`'s default arm does — so a diode or anvil that somehow holds a
+// vertical orientation bakes the same model it renders.
+[[nodiscard]] constexpr std::size_t horizontalIndex(BlockOrientation facing) {
+    switch (facing) {
+    case BlockOrientation::North: return 0;
+    case BlockOrientation::East: return 1;
+    case BlockOrientation::West: return 3;
+    default: return 2; // South, and the vertical pair diodeYaw treats as South
+    }
+}
+[[nodiscard]] constexpr BlockOrientation horizontalOf(std::size_t index) {
+    switch (index) {
+    case 0: return BlockOrientation::North;
+    case 1: return BlockOrientation::East;
+    case 3: return BlockOrientation::West;
+    default: return BlockOrientation::South;
+    }
+}
+
+} // namespace detail
+
+// How many baked variants a kind has, and which one a state selects. The two
+// must agree; `elementModelStore()` asserts the round trip when it fills.
+[[nodiscard]] constexpr std::size_t elementModelVariantCount(ElementModelKind kind) {
+    switch (kind) {
+    case ElementModelKind::Repeater: return 4U * 4U * 2U;   // facing x delay x powered
+    case ElementModelKind::Comparator: return 4U * 2U * 2U; // facing x mode x powered
+    case ElementModelKind::Lever: return 6U * 2U;           // facing (all six) x powered
+    case ElementModelKind::EnchantingTable: return 1U;
+    case ElementModelKind::Anvil: return 4U; // facing
+    case ElementModelKind::None: return 0U;
+    }
+    return 0U;
+}
+
+[[nodiscard]] constexpr std::size_t elementModelVariant(ElementModelKind kind, BlockState state) {
+    switch (kind) {
+    case ElementModelKind::Repeater:
+        return (detail::horizontalIndex(state.orientation()) * 4U +
+                static_cast<std::size_t>(state.repeaterDelay() - 1)) *
+                   2U +
+               (state.powered() ? 1U : 0U);
+    case ElementModelKind::Comparator:
+        return (detail::horizontalIndex(state.orientation()) * 2U +
+                (state.comparatorSubtract() ? 1U : 0U)) *
+                   2U +
+               (state.powered() ? 1U : 0U);
+    case ElementModelKind::Lever:
+        return static_cast<std::size_t>(state.orientation()) * 2U + (state.powered() ? 1U : 0U);
+    case ElementModelKind::EnchantingTable:
+        return 0U;
+    case ElementModelKind::Anvil:
+        return detail::horizontalIndex(state.orientation());
+    case ElementModelKind::None:
+        return 0U;
+    }
+    return 0U;
+}
+
+namespace detail {
+
+// The state a variant index stands for — the inverse of `elementModelVariant`,
+// used only when filling the store.
+[[nodiscard]] inline BlockState elementModelVariantState(ElementModelKind kind, Block block,
+                                                         std::size_t variant) {
+    switch (kind) {
+    case ElementModelKind::Repeater:
+        return BlockState{block, horizontalOf(variant / 8U)}
+            .withRepeaterDelay(static_cast<int>((variant / 2U) % 4U) + 1)
+            .withPowered((variant & 1U) != 0U);
+    case ElementModelKind::Comparator:
+        return BlockState{block, horizontalOf(variant / 4U)}
+            .withComparatorSubtract(((variant / 2U) & 1U) != 0U)
+            .withPowered((variant & 1U) != 0U);
+    case ElementModelKind::Lever:
+        return BlockState{block, static_cast<BlockOrientation>(variant / 2U)}.withPowered(
+            (variant & 1U) != 0U);
+    case ElementModelKind::EnchantingTable:
+        return BlockState{block};
+    case ElementModelKind::Anvil:
+        return BlockState{block, horizontalOf(variant)};
+    case ElementModelKind::None:
+        return BlockState{block};
+    }
+    return BlockState{block};
+}
+
+// One kind's representative block — the one whose geometry the whole kind shares.
+[[nodiscard]] constexpr Block elementModelKindBlock(ElementModelKind kind) {
+    switch (kind) {
+    case ElementModelKind::Repeater: return Block::Repeater;
+    case ElementModelKind::Comparator: return Block::Comparator;
+    case ElementModelKind::Lever: return Block::Lever;
+    case ElementModelKind::EnchantingTable: return Block::EnchantingTable;
+    case ElementModelKind::Anvil: return Block::Anvil;
+    case ElementModelKind::None: return Block::Air;
+    }
+    return Block::Air;
+}
+
+} // namespace detail
+
+struct QuadRange final {
+    std::uint32_t offset = 0;
+    std::uint32_t count = 0;
+};
+
+class ElementModelStore final {
+  public:
+    ElementModelStore() {
+        constexpr std::size_t kKindCount = static_cast<std::size_t>(ElementModelKind::None);
+        std::size_t base = 0;
+        for (std::size_t k = 0; k < kKindCount; ++k) {
+            const auto kind = static_cast<ElementModelKind>(k);
+            kindBase_[k] = static_cast<std::uint32_t>(base);
+            const std::size_t variants = elementModelVariantCount(kind);
+            const Block block = detail::elementModelKindBlock(kind);
+            for (std::size_t variant = 0; variant < variants; ++variant) {
+                const BlockState state =
+                    detail::elementModelVariantState(kind, block, variant);
+                const auto baked = bakeElementModel(block, state);
+                ranges_.push_back({static_cast<std::uint32_t>(quads_.size()),
+                                   static_cast<std::uint32_t>(baked.size())});
+                quads_.insert(quads_.end(), baked.begin(), baked.end());
+            }
+            base += variants;
+        }
+    }
+
+    [[nodiscard]] std::span<const BakedElementQuad> quads(Block block, BlockState state) const {
+        const auto kind = elementModelKind(block);
+        if (kind == ElementModelKind::None) {
+            return {};
+        }
+        const std::size_t index = kindBase_[static_cast<std::size_t>(kind)] +
+                                  elementModelVariant(kind, state);
+        const QuadRange range = ranges_[index];
+        return {quads_.data() + range.offset, range.count};
+    }
+
+    [[nodiscard]] std::size_t quadCount() const { return quads_.size(); }
+    [[nodiscard]] std::size_t rangeCount() const { return ranges_.size(); }
+    // Bytes the whole store occupies, for the size guardrail: a table that grows
+    // per block rather than per model would show up here.
+    [[nodiscard]] std::size_t byteSize() const {
+        return quads_.size() * sizeof(BakedElementQuad) + ranges_.size() * sizeof(QuadRange) +
+               sizeof(kindBase_);
+    }
+
+  private:
+    std::vector<BakedElementQuad> quads_;
+    std::vector<QuadRange> ranges_;
+    std::array<std::uint32_t, static_cast<std::size_t>(ElementModelKind::None)> kindBase_{};
+};
+
+// The one store. A function-local static so it is built once, on first use, with
+// the thread-safe initialisation the meshing workers need — the mesher is the
+// only caller and it runs off the main thread.
+[[nodiscard]] inline const ElementModelStore& elementModelStore() {
+    static const ElementModelStore store;
+    return store;
+}
+
+// The hot-path entry point: a view into contiguous baked quads, no allocation.
+[[nodiscard]] inline std::span<const BakedElementQuad> bakedElementModel(Block block,
+                                                                        BlockState state) {
+    return elementModelStore().quads(block, state);
 }
 
 } // namespace mc::world::bake
