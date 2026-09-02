@@ -4,6 +4,7 @@
 #include "core/Json.hpp"
 #include "core/VersionManifest.hpp"
 #include "core/VersionManifestJson.hpp"
+#include "gameplay/CustomNames.hpp"
 #include "gameplay/DyeColor.hpp"
 #include "gameplay/Enchantment.hpp"
 #include "world/BlockState.hpp"
@@ -238,6 +239,15 @@ int main() {
     // byte-identically to a pre-ENCH-0 save's expectations: nothing new to
     // assert here beyond the existing `loaded.inventory == save.inventory`
     // whole-array comparison already below, which now also covers slot 5.
+    // I-3: an anvil-renamed stack. The bytes were always written and read
+    // correctly; what broke the feature was the SESSION table being cleared
+    // AFTER the parse (resetWorldState ran inside startWorld, whose argument —
+    // this load — had already interned the names), so every id came back
+    // dangling and nameOf() returned empty. Nothing covered the round trip, so
+    // nothing caught it. This does: the assert below reads the NAME, not the id.
+    save.inventory[6] = {world::Block::Air, 1U, &gameplay::items::IronPickaxe, 0U};
+    save.inventory[6].customNameId = gameplay::customNames().intern("Digger");
+    assert(save.inventory[6].customNameId != gameplay::kNoCustomName);
     save.selectedHotbarSlot = inventory.selectedHotbarSlot();
     save.edits = {
         // A burning furnace is the same block with LIT set; format 14 carries
@@ -424,6 +434,14 @@ int main() {
     // compatibility contract holds even when a *different* slot in the same
     // array is enchanted.
     assert(loaded.inventory[0].enchantmentCount == 0U);
+    // I-3: the renamed pickaxe reopens with its name. Asserted by name rather
+    // than by id because an id is session-scoped by design — load() resets the
+    // table and re-interns what it reads, so the id is only incidentally the
+    // same one the pre-save copy held.
+    assert(gameplay::customNameOf(loaded.inventory[6].customNameId) == "Digger");
+    // ...and an untouched stack stays unnamed rather than picking up a
+    // neighbour's id.
+    assert(loaded.inventory[0].customNameId == gameplay::kNoCustomName);
     assert(loaded.edits == save.edits);
     assert(loaded.edits[0].state.lit());
     // Every property survives the round trip by name, not by column.

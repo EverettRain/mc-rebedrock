@@ -1,5 +1,6 @@
 #pragma once
 
+#include "render/ParticleTypes.hpp"
 #include "world/Block.hpp"
 
 #include <glm/vec2.hpp>
@@ -15,18 +16,21 @@ class World;
 
 namespace mc::render {
 
-// 粒子的来源分类，决定它在池子满时的优先级
-// 玩法反馈优先于环境天气，天气最多只能占用池子的四分之三
-enum class ParticleCategory : std::uint8_t {
-    Gameplay,
-    Weather,
-};
-
-// 一个 CPU 模拟的粒子，方块粉尘、水花与雨滴溅射共用这一种表示
+// 一个 CPU 模拟的粒子，所有种类共用这一种表示
 // 速度与寿命都换算成秒，vanilla 的每 tick 量在生成处乘以 20 转过来
+//
+// 「这一颗是什么种类」是 `type`，外观与运动的其余部分从 kParticleTypes 查
+// （ParticleTypes.hpp）。分类不再是这里的一个字段：它是种类的属性，
+// 存两份就会有两份的不一致
 struct BlockParticle final {
+    ParticleType type = ParticleType::BlockDust;
     glm::vec3 position{0.0F};
+    // Ballistic：速度，格/秒。
+    // FlyTowards：起点相对 anchor 的偏移（vanilla 的 xd/yd/zd），不是速度
     glm::vec3 velocity{0.0F};
+    // FlyTowards 的终点，也就是 vanilla 的 (xStart, yStart, zStart)。
+    // Ballistic 不读它
+    glm::vec3 anchor{0.0F};
     float textureLayer = 0.0F;
     glm::vec2 uvOrigin{0.0F};
     float uvScale = 0.25F;
@@ -34,7 +38,27 @@ struct BlockParticle final {
     float ageSeconds = 0.0F;
     float lifetimeSeconds = 0.8F;
     float opacity = 1.0F;
-    ParticleCategory category = ParticleCategory::Gameplay;
+    // 打包的 RGB（见 packParticleTint）；0 = 不着色
+    std::uint32_t tint = kNoParticleTint;
+    // 本帧的自发光 0..1，由 emissionPower 逐帧算出
+    float emission = 0.0F;
+};
+
+// 一次生成请求 —— vanilla 的 `Level#addParticle(type, x,y,z, xd,yd,zd)`。
+// 这是粒子进入系统的**唯一**入口：新粒子是 kParticleTypes 的一行加一处发射，
+// 不是 ParticleSystem 上一个新方法
+struct ParticleSpawn final {
+    ParticleType type = ParticleType::BlockDust;
+    glm::vec3 position{0.0F};
+    // Ballistic：初速，格/秒。FlyTowards：起点相对 position 的偏移
+    glm::vec3 motion{0.0F};
+    float size = 0.10F;
+    float lifetimeSeconds = 0.8F;
+    // 只在类型没有精灵集（kNoParticleSprite）时使用：方块粉尘取被挖方块自己的
+    // 贴图，水花取水的贴图。有精灵集的类型从集里随机取一张，这三项被忽略
+    float textureLayer = 0.0F;
+    glm::vec2 uvOrigin{0.0F};
+    float uvScale = 1.0F;
 };
 
 class ParticleSystem final {
@@ -54,6 +78,11 @@ public:
     // 数量刻意压小，否则连续降雨会把粒子表撑满
     // direction 非零时表示雨滴撞上的墙面外法线，水滴沿背离墙面的半圆扇形喷出而不是四散
     void spawnRainSplash(const glm::vec3& position, const glm::vec2& direction = {0.0F, 0.0F});
+
+    // 唯一的生成入口。返回是否真的加进了池子（满了或天气预算用尽时返回 false，
+    // 调用方据此中断自己的生成循环）
+    bool add(const ParticleSpawn& spawn);
+
     void update(float deltaSeconds, const world::World& world);
 
     [[nodiscard]] const std::vector<BlockParticle>& particles() const {
@@ -69,6 +98,11 @@ private:
     [[nodiscard]] int scaledCount(int base);
 
     [[nodiscard]] float randomUnit();
+
+    // 按种类推进一颗粒子。两条运动模型各一个分支，这是整层唯一的分派点
+    void advanceBallistic(BlockParticle& particle, float elapsed, float airDrag,
+                          float groundDrag, const world::World& world);
+    static void advanceFlyTowards(BlockParticle& particle);
 
     // 玩法反馈优先于环境天气，天气最多只能占用池子的四分之三
     // 剩下那四分之一是留给挖掘、水桶这类即时反馈的硬预留

@@ -1,7 +1,5 @@
 #include "gameplay/GameSession.hpp"
 
-#include "gameplay/CustomNames.hpp"
-
 #include "gameplay/ArmorEnchantment.hpp"
 #include "gameplay/BlockEntityTicker.hpp"
 #include "gameplay/Enchantment.hpp"
@@ -1297,7 +1295,13 @@ void GameSession::resetWorldState() {
         player.enchanting = {};
         player.anvil = {};
     }
-    customNames().clear();
+    // I-3 的自定义名字表**不**在这里清。
+    // 它是会话内的 intern 表，而一次存档解析（SaveRepository::load）会在
+    // readStackRecord 里把名字 intern 进去、只在 ItemStack 上留下 id。
+    // 换世界的调用顺序是「先解析存档、再 startWorld/resetWorldState」，
+    // 在这里清等于把刚读出来的 id 全部清成悬空值，铁砧命名过的物品因此
+    // 一进存档就变回原名。清空的职责归解析侧（load/createWorld 各清一次），
+    // 也就是「谁 intern，谁负责重置」。
     worldSimulation_ = {};
     primaryLevel().items = {};
     primaryLevel().experienceOrbs = {};

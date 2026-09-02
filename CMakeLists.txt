@@ -375,6 +375,13 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     # the header/impl pull in nothing but World/BlockShape, so moving it here
     # costs the GL build nothing (mc_rebedrock already links mc_rebedrock_runtime).
     src/world/VoxelRaycast.cpp
+    # RN-9: the particle library and the client-side animateTick dispatcher moved
+    # here from the GL executable list. Neither touches Vulkan (BlockAtlasLayout
+    # is a pure constexpr layout contract), and putting them in the runtime lib is
+    # what lets their tests link the library instead of re-listing sources — the
+    # same trade VoxelRaycast.cpp took just above.
+    src/render/ParticleSystem.cpp
+    src/render/BlockAnimateTick.cpp
     # STRUCT-0: the vendored miniz decompressor moved here from the GL executable
     # so StructureTemplate's gzip reader has it headless (the GL build still gets
     # it by linking mc_rebedrock_runtime, and keeps its own vendor/miniz include).
@@ -418,7 +425,6 @@ add_executable(mc_rebedrock
     src/core/Application.cpp
     src/gameplay/entities/SpeciesRenderData.cpp
     src/render/Frustum.cpp
-    src/render/ParticleSystem.cpp
     src/render/RainSystem.cpp
     src/render/PerspectiveCamera.cpp
     src/render/TestScene.cpp
@@ -2253,14 +2259,20 @@ if(BUILD_TESTING)
 
     add_executable(mc_rebedrock_particle_system_test
         tests/particle_system_test.cpp
-        src/render/ParticleSystem.cpp
-        src/world/Chunk.cpp
-        src/world/ChunkSection.cpp
-        src/world/World.cpp
     )
+    target_link_libraries(mc_rebedrock_particle_system_test PRIVATE mc_rebedrock_runtime)
     target_include_directories(mc_rebedrock_particle_system_test PRIVATE
         src "${glm_SOURCE_DIR}")
     add_test(NAME particle_system COMMAND mc_rebedrock_particle_system_test)
+
+    # RN-9d: the client-side animateTick dispatcher and its first consumer.
+    add_executable(mc_rebedrock_block_animate_tick_test
+        tests/block_animate_tick_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_block_animate_tick_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_block_animate_tick_test PRIVATE
+        src "${glm_SOURCE_DIR}")
+    add_test(NAME block_animate_tick COMMAND mc_rebedrock_block_animate_tick_test)
 
     add_executable(mc_rebedrock_rain_system_test
         tests/rain_system_test.cpp

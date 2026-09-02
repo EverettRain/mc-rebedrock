@@ -1276,6 +1276,10 @@ void GameRuntime::rebuildFunctions() {
 
 persistence::SaveGame GameRuntime::createWorld(std::string name, std::uint64_t seed,
                                                gameplay::GameMode mode, bool allowCommands) {
+    // I-3：与 SaveRepository::load 对称的另一半 —— 新世界没有任何名字，
+    // 上一个世界的 intern 表在这里交还。清空的职责统一归「获取一份 SaveGame」
+    // 这一侧，而不是 resetWorldState（它跑在解析之后，见那里的注释）。
+    gameplay::customNames().clear();
     auto save = saveRepository_.create(name, seed);
     save.gameMode = mode;
     // A new world starts on Normal difficulty, exactly like vanilla; each world

@@ -3258,21 +3258,6 @@ static_assert(blockRegistryIsWellFormed(),
     return blockDefinition(block).lightFilter;
 }
 
-// Java's AbstractBlockState#getOpacity, the amount a block "shields" the cell
-// above it in eyes of the spreadable-block checks. This is *not* the light
-// filter used for propagation: opaque blocks report 15, water and lava (whose
-// material is neither opaque nor transparent) report 3, and everything else 0.
-// A water cell sitting above a grass block therefore makes SpreadableBlock's
-// `canSpread` fail (3 > 2) and the grass revert to dirt on its next random
-// tick — the vanilla behaviour this project mirrors.
-[[nodiscard]] constexpr int opacity(Block block) {
-    if (isOpaque(block))
-        return 15;
-    if (block == Block::Water || block == Block::Lava)
-        return 3;
-    return 0;
-}
-
 [[nodiscard]] constexpr bool hasCollision(Block block) { return blockDefinition(block).collision; }
 
 // The light a block emits in its *default* state. Blocks whose emission depends
@@ -3488,6 +3473,27 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
     const auto model = blockDefinition(block).model;
     return isRenderable(block) && !isFluid(block) &&
            (model == BlockModel::Cube || model == BlockModel::DirectionalCube);
+}
+
+// Java's BlockBehaviour#getLightDampening, the amount a block "shields" the cell
+// above it in the eyes of the spreadable-block checks. This is *not* the light
+// filter used for propagation (that is skyLightOpacity/lightFilter): vanilla
+// reports 15 only when `isSolidRender` — i.e. when the block's OCCLUSION SHAPE
+// is a full cube — and 0 otherwise, plus 3 here for water and lava so a fluid
+// above a grass block still reverts it (vanilla spells that case out separately,
+// as `getFluidState().isFull()`).
+//
+// The criterion is deliberately the SHAPE and not the render layer. Keying on
+// isOpaque() made every Opaque-layer block that does not fill its cell report
+// 15: the 26 slabs, the enchanting table and the three anvils, all of which
+// vanilla lets grass live under. A slab is still a special case in the other
+// direction — a DOUBLE slab *does* fill its cell — which is why the
+// state-aware overload in BlockState.hpp is what the grass tick actually calls;
+// this block-level one answers for the default state.
+[[nodiscard]] constexpr int opacity(Block block) {
+    if (block == Block::Water || block == Block::Lava)
+        return 3;
+    return isFullCube(block) && canOcclude(block) ? 15 : 0;
 }
 
 // Whether this block, drawn as an ITEM, uses the cube geometry rather than the

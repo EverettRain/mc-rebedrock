@@ -3727,6 +3727,16 @@ SaveGame SaveRepository::load(const std::string& identifier) const {
         .stable = false,
         .derived = true,
     };
+    // I-3：自定义名字的 id 是会话内的，而一次解析就是一个会话的开始。
+    // 下面的 readStackRecord 会把读到的名字 intern 进这张全局表、只在 ItemStack
+    // 上留下 id，所以清空必须发生在解析**之前**。它曾放在
+    // GameSession::resetWorldState 里，而换世界的顺序是「先解析、后 reset」，
+    // 于是每次进存档都把刚读出来的 id 清成悬空值，命名过的物品全部变回原名。
+    //
+    // 放在这里而不是函数开头：文件缺失、截断、magic/校验和不符、版本不支持这几类
+    // 失败都在上面就抛了，此时上一个世界的名字表还没被动过。真正的 intern 从下一行
+    // 才开始。
+    gameplay::customNames().clear();
     if (formatVersion >= kFirstOwnerDrivenFormatVersion) {
         loadOwnerBlocks(payload, cursor, game);
         // M-3 region files: a save made since the region layout carries its edits

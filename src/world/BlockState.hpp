@@ -306,6 +306,27 @@ class BlockState final {
     return skyLightOpacity(state.block());
 }
 
+// The spreadable-block shielding term, state-aware — the counterpart to
+// skyLightOpacity above, and the overload the grass tick actually calls.
+// opacity(Block) in Block.hpp answers by identity, which reads a slab as
+// "does not fill its cell" for every slab; vanilla's `isSolidRender` is a
+// per-STATE question and a DOUBLE slab does fill it, so a double slab must
+// keep killing the grass under it while a bottom/top slab must not.
+//
+// The submerged case stands in for vanilla's separate
+// `aboveState.getFluidState().isFull()` branch: a waterlogged cell above grass
+// reverts it exactly as a plain water cell does.
+[[nodiscard]] constexpr int opacity(BlockState state) {
+    if (state.submergedFluid() == SubmergedFluid::Water) {
+        return opacity(Block::Water);
+    }
+    const Block block = state.block();
+    if (block == Block::Water || block == Block::Lava) {
+        return opacity(block);
+    }
+    return state.isFullCubeState() && canOcclude(block) ? 15 : 0;
+}
+
 // BlockState is exactly its raw id: a uint32 now (widened from uint16 so the
 // interned block-state space can grow past 65536 — see BlockStateTable.hpp). A
 // chunk cell never stores this directly; the section palette does, and each cell

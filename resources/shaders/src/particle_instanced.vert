@@ -30,6 +30,8 @@ layout(location = 5) flat out float fragmentOpacity;
 layout(location = 6) out float fragmentCameraDistance;
 layout(location = 8) flat out vec2 fragmentSceneLight;
 layout(location = 9) out vec3 fragmentWorldPosition;
+layout(location = 10) flat out vec3 fragmentTint;
+layout(location = 11) flat out float fragmentEmission;
 
 // Camera-facing billboard corners, same winding as item_entity.vert's
 // billboard path so the particles keep matching the world.
@@ -37,6 +39,19 @@ const vec2 corners[6] = vec2[](
     vec2(-0.5, -0.5), vec2(0.5, -0.5), vec2(0.5, 0.5),
     vec2(-0.5, -0.5), vec2(0.5, 0.5), vec2(-0.5, 0.5)
 );
+
+// RN-9b: the packed RGB tint written into layerLight.z. Zero means "no tint",
+// which is why white is the fallback rather than the black a literal decode of
+// 0 would give.
+vec3 decodeTint(float packedTint) {
+    if (packedTint < 0.5) {
+        return vec3(1.0);
+    }
+    float red = floor(packedTint / 65536.0);
+    float green = floor(mod(packedTint, 65536.0) / 256.0);
+    float blue = mod(packedTint, 256.0);
+    return vec3(red, green, blue) / 255.0;
+}
 
 vec2 decodeSceneLight(float packedLight) {
     if (packedLight < 0.5) {
@@ -61,4 +76,6 @@ void main() {
     fragmentOpacity = uv.w;
     fragmentCameraDistance = distance(worldPosition, camera.cameraPosition.xyz);
     fragmentSceneLight = decodeSceneLight(ll.y);
+    fragmentTint = decodeTint(ll.z);
+    fragmentEmission = ll.w;
 }

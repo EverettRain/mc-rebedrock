@@ -225,6 +225,19 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         resources, assets::textures("entity/experience/experience_orb.png"), 64U, 64U);
     const auto experienceOrb =
         resizedRegion(experienceOrbSheet, 0, 0, 16, 16, top.width);
+    // RN-9a：粒子精灵集。一集对应 vanilla 的 particles/<id>.json，名字表就是它的
+    // textures 数组，顺序即层序。允许缺失：没有这些贴图的资源包烘出棋盘格而不是中止
+    // ——它们不入库，只从用户自备资源包读
+    std::vector<assets::ImageData> particleSprites;
+    for (const auto& set : kParticleSpriteSets) {
+        for (const std::string_view texture : set.textures) {
+            const auto sheet = assets::ImageData::loadRgbaOrMissing(
+                resources, assets::textures("particle/" + std::string{texture} + ".png"),
+                16U, 16U);
+            particleSprites.push_back(
+                resizedRegion(sheet, 0, 0, sheet.width, sheet.height, top.width));
+        }
+    }
     auto chestParts = std::array{
         playerSkinCuboidFaces(chestTexture, 0, 19, 14, 10, 14, top.width),
         playerSkinCuboidFaces(chestTexture, 0, 0, 14, 5, 14, top.width),
@@ -369,6 +382,9 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
     append(sunFrames.front());   // 175
     beginSegment(kExperienceOrbLayer, "experience orb");
     append(experienceOrb);       // 176
+    beginSegment(kParticleSpriteFirstLayer, "particle sprites");
+    for (const auto& sprite : particleSprites)
+        append(sprite);          // 177..202
 
     // ---- 动态方块纹理，按方块注册表的名字解析 ----
     // 合成出来的图层按名字登记，复用它们的方块因此都指向同一层

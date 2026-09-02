@@ -1,6 +1,7 @@
 #include "gameplay/WorldSimulation.hpp"
 
 #include "world/Block.hpp"
+#include "world/BlockState.hpp"
 #include "world/BlockPlacement.hpp"
 #include "world/Chunk.hpp"
 #include "world/World.hpp"
@@ -502,6 +503,51 @@ int main() {
     }
     assert(waterGrassWorld.block(8, 2, 8) == mc::world::Block::Dirt);
     assert(waterGrassWorld.block(8, 3, 8) == mc::world::Block::Water);
+
+    // 遮挡判据是**形状**不是渲染层（Java 的 BlockBehaviour#getLightDampening：
+    // 只有 isSolidRender 才报 15，也就是遮挡形状是满立方体）。
+    // 这里曾按 isOpaque() 判，于是所有「Opaque 渲染层但不填满格子」的方块
+    // ——26 种台阶、附魔台、三种铁砧——统统压死了下面的草。
+    // 四种覆盖各取一例，正反都钉住：
+    mc::world::Chunk coverChunk;
+    for (int z = 0; z < 16; ++z) {
+        for (int x = 0; x < 16; ++x) {
+            coverChunk.setBlock(x, 0, z, mc::world::Block::Stone);
+            coverChunk.setBlock(x, 1, z, mc::world::Block::Dirt);
+        }
+    }
+    mc::world::World coverWorld;
+    coverWorld.setChunk({0, 0}, std::move(coverChunk));
+    // 每根柱子隔 3 格，免得彼此的扩散探测（±1 格水平）互相干扰
+    constexpr int kAnvilX = 2;
+    constexpr int kSlabX = 5;
+    constexpr int kTableX = 8;
+    constexpr int kStoneX = 11;
+    constexpr int kDoubleSlabX = 14;
+    for (const int x : {kAnvilX, kSlabX, kTableX, kStoneX, kDoubleSlabX}) {
+        coverWorld.setBlock(x, 2, 8, mc::world::Block::Grass);
+    }
+    coverWorld.setBlock(kAnvilX, 3, 8, mc::world::Block::Anvil);
+    coverWorld.setBlock(kSlabX, 3, 8, mc::world::Block::OakSlab);
+    coverWorld.setBlock(kTableX, 3, 8, mc::world::Block::EnchantingTable);
+    coverWorld.setBlock(kStoneX, 3, 8, mc::world::Block::Stone);
+    coverWorld.setState(kDoubleSlabX, 3, 8,
+                        mc::world::BlockState{mc::world::Block::OakSlab}.withSlabPortion(
+                            mc::world::SlabPortion::Double));
+    mc::gameplay::WorldSimulation coverSimulation;
+    coverSimulation.setRandomTickSpeed(1000);
+    for (int tick = 0; tick < 200; ++tick) {
+        static_cast<void>(coverSimulation.tick(coverWorld));
+    }
+    // 铁砧的遮挡形状是四个盒子（底座只有 12x12x4），附魔台只有 0.75 高，
+    // 下半砖只占半格 —— vanilla 里这三种下面的草都活着
+    assert(coverWorld.block(kAnvilX, 2, 8) == mc::world::Block::Grass);
+    assert(coverWorld.block(kSlabX, 2, 8) == mc::world::Block::Grass);
+    assert(coverWorld.block(kTableX, 2, 8) == mc::world::Block::Grass);
+    // 反向：真正填满格子的仍然要压死草。双层台阶是逐**状态**才能答对的那一例
+    // ——只问 Block 的话它和下半砖没有区别
+    assert(coverWorld.block(kStoneX, 2, 8) == mc::world::Block::Dirt);
+    assert(coverWorld.block(kDoubleSlabX, 2, 8) == mc::world::Block::Dirt);
 
     // A lit grass block spreads onto plain dirt in light: the random tick
     // probes a 3x3x5 volume around the grass and converts dirt cells that could

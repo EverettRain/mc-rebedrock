@@ -6,6 +6,8 @@ layout(location = 5) flat in float fragmentOpacity;
 layout(location = 6) in float fragmentCameraDistance;
 layout(location = 8) flat in vec2 fragmentSceneLight;
 layout(location = 9) in vec3 fragmentWorldPosition;
+layout(location = 10) flat in vec3 fragmentTint;
+layout(location = 11) flat in float fragmentEmission;
 layout(location = 0) out vec4 outColor;
 
 // The full camera block: the tail (point lights, lighting settings) is the same
@@ -48,6 +50,10 @@ void main() {
     if (texel.a < 0.1) {
         discard;
     }
+    // RN-9b: the particle's own colour, vanilla's rCol/gCol/bCol. Untinted
+    // particles carry white here, so this multiply is a no-op for every
+    // particle that existed before the channel did.
+    texel.rgb *= fragmentTint;
     if (fragmentSceneLight.x >= 0.0) {
         // Same curve, colours and moving point lights as grass_block.frag, so a
         // particle reads as part of the scene it stands in: sky light follows
@@ -67,6 +73,11 @@ void main() {
             illumination += camera.lightColors[lightIndex].rgb * attenuation *
                 camera.lightColors[lightIndex].a;
         }
+        // Self-emission is a FLOOR on the scene light, not an addition: vanilla's
+        // addSmoothBlockEmission raises the particle's block-light coordinate,
+        // so a glyph arriving at the enchanting table stays readable in a dark
+        // room without blowing out one that is already lit.
+        illumination = max(illumination, vec3(fragmentEmission));
         illumination = clamp(illumination, vec3(0.035), vec3(1.25));
         texel.rgb *= illumination;
     }

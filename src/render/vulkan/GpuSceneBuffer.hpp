@@ -16,10 +16,17 @@ namespace mc::render {
 // CPU 每个粒子只写一条紧凑记录，面向相机的四边形由顶点着色器在 GPU 上展开
 // 由 particle_instanced.vert 解读
 // 方块粉尘与 async 雨滴都走这条：雨滴的 uvOrigin 取 (0,0)、uvScale 取 1，即整张水纹
+// RN-9b：layerLight 的后两槽是粒子的外观通道
+//   z = 打包的 RGB tint（r<<16|g<<8|b，各 0..255；0 表示不着色）
+//       fp32 精确到 2^24，0xFFFFFF 正好落在边界内，往返无损
+//   w = 自发光 0..1，着色器把它当作方块光的下限（vanilla
+//       FlyTowardsPositionParticle#getLightCoords 的 addSmoothBlockEmission）
+// 两槽从前恒为 0，现有粒子照样填 0，逐像素结果不变
 struct ParticleRecord final {
     alignas(16) glm::vec4 positionSize;   // xyz world position, w quad size
     alignas(16) glm::vec4 uvOriginScale;  // xy uvOrigin, z uvScale, w opacity
-    alignas(16) glm::vec4 layerLight;     // x textureLayer, y packed scene light
+    alignas(16) glm::vec4 layerLight;     // x textureLayer, y packed scene light,
+                                          // z packed tint, w emission
 };
 static_assert(sizeof(ParticleRecord) == 48);
 

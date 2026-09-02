@@ -456,8 +456,10 @@ void WorldSimulation::randomTickGrass(
     // brightness here made leaves-filtered sky light fall from 14 to 3 at
     // midnight and turned perfectly healthy grass into dirt until sunrise.
     const SimulationPosition above{position.x, position.y + 1, position.z};
-    const auto aboveBlock = world.block(above.x, above.y, above.z);
-    if (world::opacity(aboveBlock) > 2) {
+    // 读状态而不是方块：遮挡是逐状态的问题，双层台阶填满格子而上下半砖不填，
+    // 只问 Block 的话两者一律按「不填」处理，双层台阶下的草就不会枯死了
+    const auto aboveState = world.state(above.x, above.y, above.z);
+    if (world::opacity(aboveState) > 2) {
         reserveConversionAndApply(world, position, world::Block::Dirt, changes);
         return;
     }
@@ -490,7 +492,7 @@ void WorldSimulation::randomTickGrass(
         // opacity/fluid state rather than the current day/night brightness.
         const SimulationPosition targetAbove{target.x, target.y + 1, target.z};
         if (targetAbove.y >= world::kMaxY ||
-            world::opacity(world.block(targetAbove.x, targetAbove.y, targetAbove.z)) > 2) {
+            world::opacity(world.state(targetAbove.x, targetAbove.y, targetAbove.z)) > 2) {
             continue;
         }
         if (!world::canBlockSurvive(world, {target.x, target.y, target.z},
