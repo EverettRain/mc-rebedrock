@@ -28,14 +28,54 @@ const vec2 blockCorners[18] = vec2[](
     vec2(0.50, 0.46), vec2(0.94, 0.73), vec2(0.50, 0.94)
 );
 
-const vec2 blockUvs[18] = vec2[](
+// RN-8c: the icon is a 3D render of the block's own model, so each visible face
+// must sample the sprite exactly as that world face does. vanilla's `gui` item
+// transform is rotation [30, 225, 0], which shows three faces: the up face as the
+// top diamond, the model's NORTH face as the left parallelogram and its WEST face
+// as the right one. (That pairing is why vanilla's crafting_table.json puts
+// #front on north *and* west — the icon shows the front on both visible sides.)
+//
+// Working the projection through, the diamond's four vertices are the cube's four
+// top corners: bottom = (0,1,0) (the nearest one), right = (0,1,1),
+// top = (1,1,1) (the farthest), left = (1,1,0). With the up face reading
+// u = x, v = z (JE defaultFaceUV), that fixes the diamond's UVs.
+//
+// The two side faces were already right. The top diamond was 180 degrees out,
+// which is invisible on a symmetric sprite and plain on a crafting table, an
+// observer or a hay bale — the "directional blocks' thumbnails are still
+// rotated" report. These 18 values are checked against mc::world::kCubeItemFaceUv
+// by item_cube_uv_test.
+// ---- kCubeItemFaceUv icon begin ----
+// Three tables of 18, one per cube model, indexed [model * 18 + vertex]. Which
+// one a block uses is its declared CubeUvModel, pushed in hud.uvRect.y:
+// 0 = Default (block/cube), 1 = PistonTemplate (template_piston.json rotates its
+// down/west/east faces), 2 = Observer (observer.json declares an inverted rect on
+// its up face). Generated from mc::world::kCubeModelFaceUv and checked against it
+// by item_cube_uv_test.
+const vec2 blockUvs[54] = vec2[](
+    // --- Default
+    vec2(1.0, 1.0), vec2(0.0, 1.0), vec2(0.0, 0.0),
+    vec2(1.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 0.0),
     vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
     vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
+    vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
+    vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
+    // --- PistonTemplate
+    vec2(1.0, 1.0), vec2(0.0, 1.0), vec2(0.0, 0.0),
+    vec2(1.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 0.0),
+    vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
+    vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
+    vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
+    vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, 0.0),
+    // --- Observer
+    vec2(1.0, 0.0), vec2(0.0, 0.0), vec2(0.0, 1.0),
+    vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0),
     vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
     vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
     vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
     vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0)
 );
+// ---- kCubeItemFaceUv icon end ----
 
 void main() {
     if (hud.data.x > 3.5 && hud.data.x < 4.5) {
@@ -56,7 +96,20 @@ void main() {
             corner.y -= halfBlock; // top slab: lift the bottom edge to mid height
         }
         gl_Position = vec4(hud.rect.xy + corner * hud.rect.zw, 0.0, 1.0);
-        fragmentUv = blockUvs[gl_VertexIndex];
+        // A slab icon's two side faces show only the lower half strip of the side
+        // sprite (v in [0.5, 1]), the way vanilla's slab model maps a 16x8 side —
+        // the same crop the dropped and held slab already do in item_entity.vert.
+        // Without it the whole texture was squeezed into the half-height box.
+        int uvModel = int(hud.uvRect.y + 0.5);
+        vec2 iconUv = blockUvs[uvModel * 18 + gl_VertexIndex];
+        if (gl_VertexIndex >= 6) {
+            if (portion > 0.5 && portion < 1.5) {
+                iconUv.y = 0.5 + iconUv.y * 0.5; // bottom slab: lower half
+            } else if (portion > 1.5) {
+                iconUv.y = iconUv.y * 0.5;       // top slab: upper half
+            }
+        }
+        fragmentUv = iconUv;
         fragmentTextureLayer = gl_VertexIndex < 6
             ? hud.data.y
             : (gl_VertexIndex < 12

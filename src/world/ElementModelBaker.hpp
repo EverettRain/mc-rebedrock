@@ -72,14 +72,6 @@ inline void putFace(ModelElement& element, Facing facing, std::uint8_t slot, con
 
 } // namespace detail
 
-// RN-8d: a model json face `"rotation"` divided by 90 — the JE Quadrant the
-// bakery applies as a cyclic shift of the sampled UV corner. Named rather than
-// spelled 1/2/3 at 33 call sites, so a transcription reads back against the json
-// it came from.
-inline constexpr std::uint8_t kQuadrant90 = 1;
-inline constexpr std::uint8_t kQuadrant180 = 2;
-inline constexpr std::uint8_t kQuadrant270 = 3;
-
 namespace detail {
 
 inline FaceUv rect(float minU, float minV, float maxU, float maxV) {

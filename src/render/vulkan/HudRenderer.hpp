@@ -389,10 +389,16 @@ class HudRenderer final {
         const auto& directionalFaces = world::directionalLayers(block);
         const float frontLayer = directional ? directionalFaces.front : textures.side;
         const float topLayer = directional ? directionalFaces.top : textures.top;
+        // RN-8c: which cube model json the icon's three visible faces sample —
+        // the same declaration the world mesh reads. The piston's own face
+        // rotations and the observer's inverted top rect reach the icon through
+        // this; without it every block icon sampled one generic table.
+        const float uvModel =
+            static_cast<float>(world::blockDefinition(block).cubeUvModel);
         const HudPush push{
             {clipRectangle.x, clipRectangle.y, clipRectangle.width, clipRectangle.height},
             {1.0F, 1.0F, 1.0F, 1.0F},
-            {portion, 0.0F, 1.0F, 1.0F},
+            {portion, chest ? 0.0F : uvModel, 1.0F, 1.0F},
             {(chest || directional) ? 4.25F : 4.0F, chest ? kChestItemTopLayer : topLayer,
              chest ? kChestItemFrontLayer : frontLayer,
              chest ? kChestItemSideLayer : (directional ? directionalFaces.side : textures.side)},

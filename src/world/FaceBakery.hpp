@@ -42,6 +42,14 @@ inline constexpr std::size_t kFacingCount = 6;
 
 inline constexpr std::uint8_t kNoCull = 0xFFU;
 
+// RN-8d: a model json face `"rotation"` divided by 90 — the JE Quadrant the
+// bakery applies as a cyclic shift of the sampled UV corner. Named rather than
+// spelled 1/2/3 at the transcription sites, so a model reads back against the
+// json it came from.
+inline constexpr std::uint8_t kQuadrant90 = 1;
+inline constexpr std::uint8_t kQuadrant180 = 2;
+inline constexpr std::uint8_t kQuadrant270 = 3;
+
 // The outward unit vector of a facing (JE Direction.getUnitVec3f).
 [[nodiscard]] constexpr glm::vec3 facingUnit(Facing facing) {
     switch (facing) {

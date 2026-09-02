@@ -8,7 +8,12 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
-
+- Block icons, dropped blocks and the held block now match vanilla's texture
+  orientation too. Those three draw their cube in a shader with their own copy of
+  the old layout, so they stayed wrong after the world was fixed: the top face was
+  180 degrees out, and neither the piston's own model face rotations nor the
+  observer's inverted top ever reached an icon. A slab icon's sides also stop
+  squeezing the whole texture into half a block.
 - Block textures are laid out from the vanilla model files face by face. Top and
   bottom faces used to be a quarter turn off, and shaped blocks (slabs, stairs,
   walls, doors, trapdoors, buttons, pressure plates, fence gates) had their top

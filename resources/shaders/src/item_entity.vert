@@ -58,10 +58,33 @@ const vec2 corners[6] = vec2[](
 );
 
 const int quadIndices[6] = int[](0, 1, 2, 2, 3, 0);
+// The entity/player box-UV net's per-quad corners. Skinned cuboids orient their
+// own rect from `frac`, so this stays a plain full-quad sample for them.
 const vec2 faceUvs[4] = vec2[](
     vec2(0.0, 1.0), vec2(1.0, 1.0),
     vec2(1.0, 0.0), vec2(0.0, 0.0)
 );
+
+// RN-8c: a block item's UV, per face and corner, indexed [face * 4 + corner] in
+// the same face order and corner order the cube positions below use (which is
+// the chunk mesher's kFaces order). A block item is the block's own model with no
+// blockstate rotation, so these are exactly the world cube's UVs at the identity
+// FACING, i.e. mc::world::kCubeItemFaceUv in src/world/CubeUv.hpp.
+//
+// This array used to be `faceUvs` for all six faces — the pre-RN-8c convention,
+// which put the two caps a quarter turn off vanilla. The four side faces are
+// unchanged; only +Y and -Y move. A shader cannot include the C++ header, so
+// item_cube_uv_test parses this array and checks it against kCubeItemFaceUv.
+// ---- kCubeItemFaceUv begin ----
+const vec2 blockCubeUvs[24] = vec2[](
+    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // +X
+    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // -X
+    vec2(0.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), // +Y
+    vec2(0.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), // -Y
+    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // +Z
+    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0)  // -Z
+);
+// ---- kCubeItemFaceUv end ----
 
 // dimensions.w carries the per-entity scene lightmap sample: 0.0 means "no
 // scene light", otherwise 1.0 + skyLevel + blockLevel * 16.0 with both levels
@@ -379,12 +402,14 @@ void main() {
             // way vanilla's slab model maps a 16x8 side, instead of the whole
             // texture squeezed into half height. Top and bottom faces keep full
             // UVs. The held arm keeps its own V mirror (it is playerSkinCuboid).
-            vec2 cubeUv = uv;
+            // RN-8c: a block cube samples the per-face table; a skinned cuboid
+            // keeps the flat net it has always used.
+            vec2 cubeUv = blockCubeUvs[face * 4 + corner];
             if (!playerSkinCuboid && item.data.z > 0.5 && face != 2 && face != 3) {
                 cubeUv.y = 0.5 + cubeUv.y * 0.5;
             }
-            fragmentUv = playerSkinCuboid && item.data.z > 0.5
-                ? vec2(uv.x, 1.0 - uv.y)
+            fragmentUv = playerSkinCuboid
+                ? (item.data.z > 0.5 ? vec2(uv.x, 1.0 - uv.y) : uv)
                 : cubeUv;
             fragmentTextureLayer = playerSkinCuboid
                 ? item.textureLayersRotation.x + float(face)

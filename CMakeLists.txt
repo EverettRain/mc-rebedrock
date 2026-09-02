@@ -1749,6 +1749,18 @@ if(BUILD_TESTING)
     )
     add_test(NAME face_occlusion COMMAND mc_rebedrock_face_occlusion_test)
 
+    add_executable(mc_rebedrock_item_cube_uv_test
+        tests/item_cube_uv_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_item_cube_uv_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_item_cube_uv_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    target_compile_definitions(mc_rebedrock_item_cube_uv_test PRIVATE
+        "MC_REBEDROCK_SHADER_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src\"")
+    add_test(NAME item_cube_uv COMMAND mc_rebedrock_item_cube_uv_test)
+
     if(MC_REBEDROCK_BUILD_TOOLS)
         # Informational: us-per-step of the shape-derivation hot path
         # (collisionShape -> shapeOverlaps) the physics collision walk hits every
