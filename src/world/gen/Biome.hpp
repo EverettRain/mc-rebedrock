@@ -1,6 +1,7 @@
 #pragma once
 
 #include "world/Block.hpp"
+#include "world/attribute/EnvironmentAttribute.hpp"
 
 #include <array>
 #include <cstdint>
@@ -204,6 +205,13 @@ void setBiomeSurfaceColors(Biome biome, BiomeSurfaceColors colors);
 // position on top of the biome's own grass colour.
 [[nodiscard]] std::uint32_t applyGrassColorModifier(GrassColorModifier modifier,
                                                     std::uint32_t baseColor, int x, int z);
+
+// The biome's attribute layer (26.1's `Biome#attributes`), which overrides the
+// dimension's. The overworld biomes carry the sky colour their temperature
+// derives (OverworldBiomes.baseBiome); the nether biomes each carry their own
+// fog. Attributes carrying a reference (music, ambient sounds, ambient
+// particles) are absent until the audio wiring gives them a side table.
+[[nodiscard]] const attribute::EnvAttrLayer& biomeAttributes(Biome biome);
 
 // Biome#getHeightAdjustedTemperature: the biome's base temperature, cooled with
 // height above the snow line (sea level + 17) by a noise-perturbed lapse rate.

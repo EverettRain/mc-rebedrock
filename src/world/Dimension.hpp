@@ -1,5 +1,7 @@
 #pragma once
 
+#include "world/attribute/EnvironmentAttribute.hpp"
+
 #include "world/WorldClock.hpp"  // ClockId — one clock per dimension, index-aligned
 
 #include <array>
@@ -157,6 +159,84 @@ inline constexpr std::array<DimensionType, kDimensionCount> kDimensionTypes = {{
 // is a caller's own enum value, so an out-of-range one is a programming bug the
 // bounds assert catches, never a lookup miss (DimensionId::Count is a sentinel,
 // not a real dimension).
+// The per-dimension attribute layer (26.1's DimensionType#attributes).
+//
+// These overlap DimensionType's own booleans on purpose and for now: the fields
+// above have callers all over the codebase, so they stay, and this layer is the
+// 26.1-shaped statement of the same facts plus the ones the fields never
+// carried (fog, sky, the light colours). A test asserts the two agree, which is
+// the guard while both exist; folding the duplicated booleans into the layer is
+// a follow-up, not something to do halfway.
+//
+// Values are vanilla's own, from DimensionTypes.java. Attributes carrying a
+// reference (music, ambient sounds, the dripstone particle) are deliberately
+// absent until BM-3's audio wiring gives them a side table to point into.
+[[nodiscard]] constexpr attribute::EnvAttrLayer overworldAttributes() {
+    using attribute::AttrValue;
+    using attribute::EnvAttr;
+    attribute::EnvAttrLayer layer{};
+    layer.set(EnvAttr::FogColor, AttrValue::ofColor(-4138753))
+        .set(EnvAttr::SkyColor, AttrValue::ofColor(attribute::calculateSkyColor(0.8F)))
+        .set(EnvAttr::AmbientLightColor, AttrValue::ofColor(-16119286))
+        .set(EnvAttr::CloudColor,
+             AttrValue::ofColor(attribute::packArgbFromFloat(0.8F, 1.0F, 1.0F, 1.0F)))
+        .set(EnvAttr::CloudHeight, AttrValue::ofFloat(192.33F))
+        .set(EnvAttr::BedRule,
+             AttrValue::ofEnum(static_cast<std::int32_t>(attribute::BedRule::CanSleepWhenDark)))
+        .set(EnvAttr::RespawnAnchorWorks, AttrValue::ofBool(false))
+        .set(EnvAttr::NetherPortalSpawnsPiglin, AttrValue::ofBool(true));
+    return layer;
+}
+
+[[nodiscard]] constexpr attribute::EnvAttrLayer netherAttributes() {
+    using attribute::AttrValue;
+    using attribute::EnvAttr;
+    attribute::EnvAttrLayer layer{};
+    layer.set(EnvAttr::FogStartDistance, AttrValue::ofFloat(10.0F))
+        .set(EnvAttr::FogEndDistance, AttrValue::ofFloat(96.0F))
+        // Timelines.NIGHT_SKY_LIGHT_COLOR
+        .set(EnvAttr::SkyLightColor,
+             AttrValue::ofColor(attribute::packArgbFromFloat(1.0F, 0.48F, 0.48F, 1.0F)))
+        .set(EnvAttr::SkyLightLevel, AttrValue::ofFloat(4.0F))
+        .set(EnvAttr::SkyLightFactor, AttrValue::ofFloat(0.0F))
+        .set(EnvAttr::AmbientLightColor, AttrValue::ofColor(-13621215))
+        .set(EnvAttr::BedRule,
+             AttrValue::ofEnum(static_cast<std::int32_t>(attribute::BedRule::Explodes)))
+        .set(EnvAttr::RespawnAnchorWorks, AttrValue::ofBool(true))
+        .set(EnvAttr::WaterEvaporates, AttrValue::ofBool(true))
+        .set(EnvAttr::FastLava, AttrValue::ofBool(true))
+        .set(EnvAttr::PiglinsZombify, AttrValue::ofBool(false))
+        .set(EnvAttr::CanStartRaid, AttrValue::ofBool(false))
+        .set(EnvAttr::SnowGolemMelts, AttrValue::ofBool(true));
+    return layer;
+}
+
+[[nodiscard]] constexpr attribute::EnvAttrLayer endAttributes() {
+    using attribute::AttrValue;
+    using attribute::EnvAttr;
+    attribute::EnvAttrLayer layer{};
+    layer.set(EnvAttr::FogColor, AttrValue::ofColor(-15199464))
+        .set(EnvAttr::SkyLightColor, AttrValue::ofColor(-5480243))
+        .set(EnvAttr::SkyColor, AttrValue::ofColor(-16777216))
+        .set(EnvAttr::SkyLightFactor, AttrValue::ofFloat(0.0F))
+        .set(EnvAttr::AmbientLightColor, AttrValue::ofColor(-12630209))
+        .set(EnvAttr::BedRule,
+             AttrValue::ofEnum(static_cast<std::int32_t>(attribute::BedRule::Explodes)))
+        .set(EnvAttr::RespawnAnchorWorks, AttrValue::ofBool(false));
+    return layer;
+}
+
+inline constexpr std::array<attribute::EnvAttrLayer, kDimensionCount> kDimensionAttributes{{
+    overworldAttributes(),
+    netherAttributes(),
+    endAttributes(),
+}};
+
+[[nodiscard]] constexpr const attribute::EnvAttrLayer& dimensionAttributes(DimensionId id) {
+    const auto index = static_cast<std::size_t>(id);
+    return kDimensionAttributes[index < kDimensionAttributes.size() ? index : 0U];
+}
+
 [[nodiscard]] constexpr const DimensionType& dimensionType(DimensionId dimension) {
     assert(static_cast<std::size_t>(dimension) < kDimensionCount);
     return kDimensionTypes[static_cast<std::size_t>(dimension)];

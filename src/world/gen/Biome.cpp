@@ -154,7 +154,47 @@ constexpr std::array<LegacyAlias, 2> kLegacyAliases{{
     {"mountains", Biome::WindsweptHills},
 }};
 
+// The per-biome attribute layers, built at compile time off the registry above.
+//
+// Every overworld biome sets the sky colour its own temperature derives, which is
+// what OverworldBiomes.baseBiome does for all of them; the nether biomes each
+// override the fog with vanilla's value. The end biomes set nothing — their look
+// comes from the dimension layer, exactly as in 26.1.
+[[nodiscard]] constexpr std::array<attribute::EnvAttrLayer, static_cast<std::size_t>(Biome::Count)>
+buildBiomeAttributes() {
+    using attribute::AttrValue;
+    using attribute::EnvAttr;
+    std::array<attribute::EnvAttrLayer, static_cast<std::size_t>(Biome::Count)> layers{};
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        const auto biome = static_cast<Biome>(index);
+        // The nether and end biomes are built from their own builders in vanilla
+        // and never call baseBiome, so they get no sky colour of their own.
+        if (biome < Biome::NetherWastes) {
+            layers[index].set(EnvAttr::SkyColor,
+                              AttrValue::ofColor(attribute::calculateSkyColor(
+                                  kBiomeRegistry[index].temperature)));
+        }
+    }
+    const auto fog = [&layers](Biome biome, std::int32_t color) {
+        layers[static_cast<std::size_t>(biome)].set(EnvAttr::FogColor,
+                                                    AttrValue::ofColor(color));
+    };
+    fog(Biome::NetherWastes, -13432824);
+    fog(Biome::SoulSandValley, -14989499);
+    fog(Biome::CrimsonForest, -13434109);
+    fog(Biome::WarpedForest, -15071974);
+    fog(Biome::BasaltDeltas, -9937040);
+    return layers;
+}
+
+constexpr auto kBiomeAttributes = buildBiomeAttributes();
+
 } // namespace
+
+const attribute::EnvAttrLayer& biomeAttributes(Biome biome) {
+    const auto index = static_cast<std::size_t>(biome);
+    return kBiomeAttributes[index < kBiomeAttributes.size() ? index : 0U];
+}
 
 const BiomeDefinition& biomeDefinition(Biome biome) {
     const auto index = static_cast<std::size_t>(biome);

@@ -1758,6 +1758,16 @@ if(BUILD_TESTING)
         "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
     add_test(NAME shader_descriptor_bindings COMMAND mc_rebedrock_shader_descriptor_bindings_test)
 
+    add_executable(mc_rebedrock_environment_attribute_test
+        tests/environment_attribute_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_environment_attribute_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_environment_attribute_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME environment_attribute COMMAND mc_rebedrock_environment_attribute_test)
+
     add_executable(mc_rebedrock_biome_climate_test
         tests/biome_climate_test.cpp
     )
