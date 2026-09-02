@@ -8,6 +8,22 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- Grass and foliage colours blend smoothly across a biome border again instead of
+  switching in one step. The tint is per-vertex once more, taken from vanilla's
+  blend window — the average of the biome colours in the 5x5 block square around
+  a column — so the transition happens across the face rather than at a cell
+  edge. Each biome used to get its own baked atlas layers for grass and leaves
+  (175 layers for 25 biomes); a discrete layer cannot blend, and 26.1 has 66
+  biomes, so that road ended. Tinting now costs the same whatever the biome count.
+- Water finally carries its biome's own water colour — a swamp's murky green, and
+  each other biome's value. It had been tinted with a fixed blue in three places
+  at once (the atlas frames and the fragment shader among them), so the biomes
+  that do have a water colour of their own were always wrong.
+- A grass block's sides are drawn the way vanilla draws them: the plain dirt
+  texture with a tinted grass-shaped overlay on top. The grassy edge on the side
+  now follows the biome, and the dirt stays dirt.
+- The savanna's temperature matches 26.1 (1.2 to 2.0). It was still carrying the
+  1.16 value, which indexes a different cell of the grass colour map.
 - The nether and the end no longer spawn mobs from the overworld's biome map.
   Natural spawning kept a biome map of its own, built from the world seed and so
   always the *overworld's*, while each dimension has its own spawner — standing in

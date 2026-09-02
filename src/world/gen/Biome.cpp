@@ -1,6 +1,7 @@
 #include "world/gen/Biome.hpp"
 
-#include <unordered_map>
+#include "world/gen/JavaRandom.hpp"
+#include "world/gen/NoiseSampler.hpp"
 
 namespace mc::world::gen {
 namespace {
@@ -80,19 +81,25 @@ const std::array<BiomeDefinition, static_cast<std::size_t>(Biome::Count)> kBiome
      Block::Gravel, 0, 0.1F, 1, kSnowyTrees, 0, 0},
     {Biome::Desert, "desert", 0.125F, 0.05F, 2.0F, 0.0F, Block::Sand, Block::Sand, Block::Gravel,
      0, 0.0F, 1, {}, 0, 0},
-    {Biome::Savanna, "savanna", 0.125F, 0.05F, 1.2F, 0.0F, Block::Grass, Block::Dirt, Block::Gravel,
+    {Biome::Savanna, "savanna", 0.125F, 0.05F, 2.0F, 0.0F, Block::Grass, Block::Dirt, Block::Gravel,
      1, 0.1F, 1, kSavannaTrees, 8, 2},
     {Biome::Jungle, "jungle", 0.1F, 0.2F, 0.95F, 0.9F, Block::Grass, Block::Dirt, Block::Gravel,
      50, 0.1F, 1, kJungleTrees, 12, 4},
+    // 26.1's dark forest keeps the default water and darkens its grass through a
+    // modifier rather than an override, so the colour still follows the colour map.
     {Biome::DarkForest, "dark_forest", 0.1F, 0.2F, 0.7F, 0.8F, Block::Grass, Block::Dirt,
-     Block::Gravel, 10, 0.1F, 1, kDarkForestTrees, 2, 2},
+     Block::Gravel, 10, 0.1F, 1, kDarkForestTrees, 2, 2,
+     0x3F76E4U, 0U, 0x7B5334U, 0U, GrassColorModifier::DarkForest},
     // Vanilla's swamp is a flat wetland that sits at or just below sea level so
     // standing water covers most of it; the depth keeps it flooded while the
     // low scale keeps it flat.
     // Vanilla's swamp floor stays dirt under the standing water, so its trees
     // can root in the shallows as well as on the dry patches.
+    // The swamp is the one overworld biome that overrides water and foliage
+    // outright (murky green), and its grass is the two-tone noise modifier.
     {Biome::Swamp, "swamp", -0.25F, 0.1F, 0.8F, 0.9F, Block::Grass, Block::Dirt, Block::Dirt,
-     2, 0.1F, 1, kSwampTrees, 5, 1},
+     2, 0.1F, 1, kSwampTrees, 5, 1,
+     0x617B64U, 0x6A7039U, 0x7B5334U, 0U, GrassColorModifier::Swamp},
     {Biome::WindsweptHills, "windswept_hills", 1.0F, 0.5F, 0.2F, 0.3F, Block::Grass, Block::Dirt, Block::Gravel,
      0, 0.1F, 1, kMountainTrees, 2, 1},
     // River: a shallow water channel a couple of blocks below sea level.
@@ -173,66 +180,83 @@ Biome biomeFromIdentifier(std::string_view text) {
 }
 
 namespace {
-// Per-biome grass atlas layers, filled at atlas build time. Defaults are empty;
-// the mesher only uses them once the renderer has tinted and registered them.
-std::array<world::BlockTextureLayers, static_cast<std::size_t>(Biome::Count)>
-    kBiomeGrassLayers{};
-world::BlockTextureLayers kSwampDarkGrassLayers{};
-std::unordered_map<std::uint64_t, float> kBiomeFoliageLayers{};
-float kTerrainGrassTopLayer = 0.0F;
-float kTerrainGrassPlantLayer = 0.0F;
-std::unordered_map<world::Block, float> kTerrainLeafLayers{};
+// Resolved per-biome surface colours. White until the renderer reads the colour
+// maps and fills them in — a white tint multiplies to the raw texture, so a
+// headless build (and the frames before the atlas is ready) renders untinted
+// rather than black.
+std::array<BiomeSurfaceColors, static_cast<std::size_t>(Biome::Count)> kBiomeColors{};
+
+// SwampBiome's grass mottle, seeded exactly like vanilla's BIOME_INFO_NOISE.
+[[nodiscard]] const SimplexNoiseSampler& swampGrassNoise() {
+    static const SimplexNoiseSampler sampler = [] {
+        JavaRandom random{2345ULL};
+        return SimplexNoiseSampler{random};
+    }();
+    return sampler;
+}
 } // namespace
 
-const world::BlockTextureLayers& biomeGrassLayers(Biome biome) {
+const BiomeSurfaceColors& biomeSurfaceColors(Biome biome) {
     const auto index = static_cast<std::size_t>(biome);
-    return kBiomeGrassLayers[index < kBiomeGrassLayers.size() ? index : 0U];
+    return kBiomeColors[index < kBiomeColors.size() ? index : 0U];
 }
 
-void setBiomeGrassLayers(Biome biome, world::BlockTextureLayers layers) {
-    kBiomeGrassLayers[static_cast<std::size_t>(biome)] = layers;
+void setBiomeSurfaceColors(Biome biome, BiomeSurfaceColors colors) {
+    const auto index = static_cast<std::size_t>(biome);
+    if (index < kBiomeColors.size()) {
+        kBiomeColors[index] = colors;
+    }
 }
 
-const world::BlockTextureLayers& swampDarkGrassLayers() {
-    return kSwampDarkGrassLayers;
-}
+namespace {
+float kTerrainGrassTop = 0.0F;
+float kTerrainGrassPlant = 0.0F;
+float kTerrainGrassSide = 0.0F;
+float kTerrainGrassOverlay = 0.0F;
+std::array<float, static_cast<std::size_t>(world::Block::Count)> kTerrainLeafLayers{};
+} // namespace
 
-void setSwampDarkGrassLayers(world::BlockTextureLayers layers) {
-    kSwampDarkGrassLayers = layers;
-}
+float terrainGrassTopLayer() { return kTerrainGrassTop; }
+float terrainGrassPlantLayer() { return kTerrainGrassPlant; }
+float terrainGrassSideLayer() { return kTerrainGrassSide; }
+float terrainGrassOverlayLayer() { return kTerrainGrassOverlay; }
 
-float biomeFoliageLayer(Biome biome, world::Block leaves) {
-    const auto biomeIndex = static_cast<std::size_t>(biome);
-    const auto found = kBiomeFoliageLayers.find(
-        biomeIndex * 64U + static_cast<std::uint32_t>(leaves));
-    return found != kBiomeFoliageLayers.end() ? found->second : 0.0F;
-}
-
-void setBiomeFoliageLayer(Biome biome, world::Block leaves, float layer) {
-    kBiomeFoliageLayers[static_cast<std::size_t>(biome) * 64U +
-                        static_cast<std::uint32_t>(leaves)] = layer;
-}
-
-float terrainGrassTopLayer() {
-    return kTerrainGrassTopLayer;
-}
-
-float terrainGrassPlantLayer() {
-    return kTerrainGrassPlantLayer;
+void setTerrainGrassLayers(float top, float plant, float side, float overlay) {
+    kTerrainGrassTop = top;
+    kTerrainGrassPlant = plant;
+    kTerrainGrassSide = side;
+    kTerrainGrassOverlay = overlay;
 }
 
 float terrainLeafLayer(world::Block leaves) {
-    const auto found = kTerrainLeafLayers.find(leaves);
-    return found != kTerrainLeafLayers.end() ? found->second : 0.0F;
-}
-
-void setTerrainGrassLayers(float top, float plant) {
-    kTerrainGrassTopLayer = top;
-    kTerrainGrassPlantLayer = plant;
+    const auto index = static_cast<std::size_t>(leaves);
+    return index < kTerrainLeafLayers.size() ? kTerrainLeafLayers[index] : 0.0F;
 }
 
 void setTerrainLeafLayer(world::Block leaves, float layer) {
-    kTerrainLeafLayers[leaves] = layer;
+    const auto index = static_cast<std::size_t>(leaves);
+    if (index < kTerrainLeafLayers.size()) {
+        kTerrainLeafLayers[index] = layer;
+    }
+}
+
+std::uint32_t applyGrassColorModifier(GrassColorModifier modifier, std::uint32_t baseColor,
+                                      int x, int z) {
+    switch (modifier) {
+    case GrassColorModifier::None:
+        break;
+    case GrassColorModifier::DarkForest:
+        // ARGB.opaque((base & 0xFEFEFE) + 0x28340A >> 1) — vanilla's own
+        // arithmetic, including the shift binding looser than the addition.
+        return (((baseColor & 0xFEFEFEU) + 0x28340AU) >> 1U) & 0xFFFFFFU;
+    case GrassColorModifier::Swamp:
+        // Two fixed tones, not a tint of the colour map: -11766212 / -9801671.
+        return swampGrassNoise().sample(static_cast<double>(x) * 0.0225,
+                                        static_cast<double>(z) * 0.0225) < -0.1
+            ? 0x4C763CU
+            : 0x6A7039U;
+    }
+    return baseColor;
 }
 
 } // namespace mc::world::gen

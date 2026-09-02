@@ -479,90 +479,204 @@ const CubeUvTable kCubeUv = makeCubeUvTable();
             (1.0F - centerPull) * sourceToArrayScale;
 }
 
-// SwampBiome's grass mottle, seeded exactly like vanilla's FOLIAGE_NOISE: a
-// swamp block whose noise drops below -0.1 uses the darker tone.
-[[nodiscard]] bool swampDarkTone(int x, int z) {
-    static const gen::SimplexNoiseSampler sampler = [] {
-        gen::JavaRandom random{1234ULL};
-        return gen::SimplexNoiseSampler{random};
-    }();
-    return sampler.sample(static_cast<double>(x) * 0.0225,
-                          static_cast<double>(z) * 0.0225) < -0.1;
-}
+// Which of vanilla's four ColorResolvers a surface reads (BiomeColors), plus the
+// two leaf tones that are fixed constants rather than a biome lookup.
+enum class TintKind : std::uint8_t {
+    None,
+    Grass,
+    Foliage,
+    Water,
+};
 
-// The biome whose grass/foliage colour dominates at a block position, chosen
-// bilinearly over the four surrounding 1:4 cells. The terrain grass and foliage
-// pick their BAKED atlas layer from this biome, so the colour boundary follows
-// the same smooth line the surface-material pass uses — no per-vertex tint is
-// involved, so the rendered colour cannot wash out into the raw grey texture.
-[[nodiscard]] gen::Biome dominantBiome(const World& world, int x, int z) {
-    const int cellX = floorDiv(x, 4);
-    const int cellZ = floorDiv(z, 4);
-    const float fractionalX = static_cast<float>(x - cellX * 4) * 0.25F;
-    const float fractionalZ = static_cast<float>(z - cellZ * 4) * 0.25F;
-    const std::array<gen::Biome, 4> cells{{
-        world.biomeAt(cellX * 4 + 2, cellZ * 4 + 2),
-        world.biomeAt((cellX + 1) * 4 + 2, cellZ * 4 + 2),
-        world.biomeAt(cellX * 4 + 2, (cellZ + 1) * 4 + 2),
-        world.biomeAt((cellX + 1) * 4 + 2, (cellZ + 1) * 4 + 2),
-    }};
-    const std::array<float, 4> weights{{
-        (1.0F - fractionalX) * (1.0F - fractionalZ),
-        fractionalX * (1.0F - fractionalZ),
-        (1.0F - fractionalX) * fractionalZ,
-        fractionalX * fractionalZ,
-    }};
-    int best = 0;
-    for (int index = 1; index < 4; ++index) {
-        if (weights[static_cast<std::size_t>(index)] >
-            weights[static_cast<std::size_t>(best)]) {
-            best = index;
-        }
+[[nodiscard]] TintKind tintKindFor(Block block, Face face) {
+    if (block == Block::Grass) {
+        // The top is tinted; the side is not. Vanilla's grass_block model draws
+        // the sides twice — the plain dirt-and-grey-edge texture untinted, and a
+        // second overlay quad on top of it that carries the tintindex — which is
+        // what appendGrassSideOverlay reproduces.
+        return face == Face::PositiveY ? TintKind::Grass : TintKind::None;
     }
-    return cells[static_cast<std::size_t>(best)];
+    if (isLeaves(block)) {
+        // Spruce and birch keep a fixed tinted atlas layer: their colour is the
+        // same constant in every biome, so a per-vertex tint would spend
+        // bandwidth to arrive at the same pixel.
+        return (block == Block::SpruceLeaves || block == Block::BirchLeaves)
+            ? TintKind::None
+            : TintKind::Foliage;
+    }
+    if (block == Block::Water) {
+        return TintKind::Water;
+    }
+    return TintKind::None;
 }
 
-// The per-vertex biome tint is disabled: grass and foliage colours are baked
-// into their atlas layers at build time, so every vertex tint is white. The
-// class stays as the parameter appendFace and appendCrossedPlant carry.
+// The biome tints of one chunk's columns, resolved once for the section build.
+//
+// Vanilla resolves a block's tint as the average of the biome colours over a
+// (2r+1)^2 square of blocks around it, r = the biomeBlendRadius option, default
+// 2 (ClientLevel#calculateBlockTint). That average is the whole reason a biome
+// border is a gradient and not a step. Vanilla computes it per block on demand
+// behind a BlockTintCache; a mesher visits every column of a section anyway, so
+// the window is cheaper resolved up front: the biome ids are read once into a
+// 22x22 array and every colour averaged out of that, instead of repeating the
+// world lookup 25 times per column.
+//
+// The colour is per column, not per biome, which is what lets it be an average
+// at all — it is why this replaced a scheme that baked one atlas layer per
+// (biome x tintable texture). That scheme could not blend across a border, could
+// not tint water, and cost 175 atlas layers for 25 biomes.
 class BiomeTintCache final {
   public:
-    explicit BiomeTintCache(const World&) {}
-
-    [[nodiscard]] std::array<std::uint8_t, 3> tint(Block, Face, int, int) {
-        return {255U, 255U, 255U};
+    BiomeTintCache(const World& world, int originX, int originZ)
+        : originX_(originX), originZ_(originZ) {
+        auto* cursor = biomes_.data();
+        for (int z = 0; z < kSampleSpan; ++z) {
+            for (int x = 0; x < kSampleSpan; ++x) {
+                *cursor++ = world.biomeAt(originX + x - kSampleBase,
+                                          originZ + z - kSampleBase);
+            }
+        }
+        uniformBiome_ = biomes_.front();
+        uniform_ = std::all_of(biomes_.begin(), biomes_.end(),
+                               [this](gen::Biome biome) { return biome == uniformBiome_; });
     }
+
+    [[nodiscard]] std::array<std::uint8_t, 3> tint(Block block, Face face, int x, int z) {
+        return tint(tintKindFor(block, face), x, z);
+    }
+
+    [[nodiscard]] std::array<std::uint8_t, 3> tint(TintKind kind, int x, int z) {
+        switch (kind) {
+        case TintKind::None:
+            return kWhite;
+        case TintKind::Grass:
+        case TintKind::Foliage:
+        case TintKind::Water:
+            break;
+        }
+        auto& table = tables_[static_cast<std::size_t>(kind)];
+        if (!table.built) {
+            build(kind, table);
+        }
+        const int localX = std::clamp(x - originX_ + kHalo, 0, kSpan - 1);
+        const int localZ = std::clamp(z - originZ_ + kHalo, 0, kSpan - 1);
+        return table.colors[static_cast<std::size_t>(localZ * kSpan + localX)];
+    }
+
+  private:
+    // Vanilla's default biomeBlendRadius. Faces sit on block boundaries, so a
+    // corner can name the column one past the section; the halo covers it.
+    static constexpr int kBlend = 2;
+    static constexpr int kHalo = 1;
+    static constexpr int kSpan = kChunkWidth + 2 * kHalo;             // 18
+    static constexpr int kSampleBase = kHalo + kBlend;                // 3
+    static constexpr int kSampleSpan = kChunkWidth + 2 * kSampleBase; // 22
+    static constexpr std::array<std::uint8_t, 3> kWhite{255U, 255U, 255U};
+
+    struct Table final {
+        std::array<std::array<std::uint8_t, 3>, kSpan * kSpan> colors{};
+        bool built = false;
+    };
+
+    [[nodiscard]] static std::array<std::uint8_t, 3> unpack(std::uint32_t color) {
+        return {static_cast<std::uint8_t>((color >> 16U) & 0xFFU),
+                static_cast<std::uint8_t>((color >> 8U) & 0xFFU),
+                static_cast<std::uint8_t>(color & 0xFFU)};
+    }
+
+    // One sample's colour for this resolver, at the block it was sampled from —
+    // the grass modifier is per position, so it belongs here and not in the
+    // biome's own colour.
+    [[nodiscard]] static std::uint32_t sampleColor(TintKind kind, gen::Biome biome, int x,
+                                                   int z) {
+        const auto& colors = gen::biomeSurfaceColors(biome);
+        switch (kind) {
+        case TintKind::Grass:
+            return gen::applyGrassColorModifier(gen::biomeDefinition(biome).grassColorModifier,
+                                                colors.grass, x, z);
+        case TintKind::Foliage:
+            return colors.foliage;
+        case TintKind::Water:
+            return colors.water;
+        case TintKind::None:
+            break;
+        }
+        return 0xFFFFFFU;
+    }
+
+    void build(TintKind kind, Table& table) {
+        table.built = true;
+        // Nearly every chunk sits inside one biome, and then every column of it
+        // has the same colour: one sample answers the whole window. A biome whose
+        // grass is position-dependent (the swamp's two-tone noise) has to be
+        // averaged like any other.
+        if (uniform_ &&
+            (kind != TintKind::Grass ||
+             gen::biomeDefinition(uniformBiome_).grassColorModifier ==
+                 gen::GrassColorModifier::None)) {
+            table.colors.fill(unpack(sampleColor(kind, uniformBiome_, originX_, originZ_)));
+            return;
+        }
+        for (int z = 0; z < kSpan; ++z) {
+            for (int x = 0; x < kSpan; ++x) {
+                std::uint32_t red = 0U;
+                std::uint32_t green = 0U;
+                std::uint32_t blue = 0U;
+                for (int dz = -kBlend; dz <= kBlend; ++dz) {
+                    for (int dx = -kBlend; dx <= kBlend; ++dx) {
+                        const int sampleX = x + kBlend + dx;
+                        const int sampleZ = z + kBlend + dz;
+                        const auto biome =
+                            biomes_[static_cast<std::size_t>(sampleZ * kSampleSpan + sampleX)];
+                        const std::uint32_t color =
+                            sampleColor(kind, biome, originX_ + x - kHalo + dx,
+                                        originZ_ + z - kHalo + dz);
+                        red += (color >> 16U) & 0xFFU;
+                        green += (color >> 8U) & 0xFFU;
+                        blue += color & 0xFFU;
+                    }
+                }
+                constexpr std::uint32_t kCount = (2U * kBlend + 1U) * (2U * kBlend + 1U);
+                table.colors[static_cast<std::size_t>(z * kSpan + x)] = {
+                    static_cast<std::uint8_t>(red / kCount),
+                    static_cast<std::uint8_t>(green / kCount),
+                    static_cast<std::uint8_t>(blue / kCount)};
+            }
+        }
+    }
+
+    int originX_ = 0;
+    int originZ_ = 0;
+    std::array<gen::Biome, kSampleSpan * kSampleSpan> biomes_{};
+    gen::Biome uniformBiome_ = gen::Biome::Plains;
+    bool uniform_ = true;
+    // Indexed by TintKind; the constant kinds never touch their slot.
+    std::array<Table, 4> tables_{};
 };
+
+// A pure white tint multiplies to nothing, so it rides the cheaper untinted
+// path; anything else selects the shader's literal per-vertex tint (mask 3),
+// the same path redstone dust's power gradient uses.
+[[nodiscard]] inline std::uint8_t tintMask(const std::array<std::uint8_t, 3>& tint) {
+    return (tint[0] == 255U && tint[1] == 255U && tint[2] == 255U) ? 0U : 3U;
+}
 
 [[nodiscard]] float textureLayer(const World& world, Block block, Face face,
                                  int x, int y, int z) {
+    // Terrain reads the UNTINTED atlas layers and takes its colour from the
+    // vertex tint; the block roster's own layers are the tinted copies items and
+    // the GUI use, where there is no biome to ask.
     auto layers = textureLayers(block);
     if (block == Block::Grass) {
-        // The grass family's BAKED per-biome layers: the top/plant/side are
-        // tinted with the biome's colour at build time, so the colour never
-        // depends on per-vertex data reaching the fragment shader.
-        const auto biome = dominantBiome(world, x, z);
-        const auto& biomeLayers = (biome == gen::Biome::Swamp && swampDarkTone(x, z))
-            ? gen::swampDarkGrassLayers()
-            : gen::biomeGrassLayers(biome);
-        if (biomeLayers.top != 0.0F) {
-            layers.top = biomeLayers.top;
-            layers.side = biomeLayers.side;
+        const float top = gen::terrainGrassTopLayer();
+        if (top != 0.0F) {
+            layers.top = top;
+            layers.side = gen::terrainGrassSideLayer();
         }
     } else if (isLeaves(block)) {
-        // Oak-family leaves use the baked per-biome foliage layer; spruce/birch
-        // keep their fixed tinted terrain layer.
-        if (block != Block::SpruceLeaves && block != Block::BirchLeaves) {
-            const float foliage =
-                gen::biomeFoliageLayer(dominantBiome(world, x, z), block);
-            if (foliage != 0.0F) {
-                layers.top = layers.side = layers.bottom = foliage;
-            }
-        } else {
-            const float terrain = gen::terrainLeafLayer(block);
-            if (terrain != 0.0F) {
-                layers.top = layers.side = layers.bottom = terrain;
-            }
+        const float leaf = gen::terrainLeafLayer(block);
+        if (leaf != 0.0F) {
+            layers.top = layers.side = layers.bottom = leaf;
         }
     }
     const auto state = world.state(x, y, z);
@@ -773,7 +887,13 @@ void appendFace(
     const glm::vec3& sectionOrigin,
     BiomeTintCache& tints,
     const std::array<glm::vec2, 4>& faceUv,
-    bool doubleSided = false) {
+    bool doubleSided = false,
+    // Vanilla's grass_block model draws its sides twice: the plain dirt texture,
+    // then a grass-shaped overlay carrying the tint. A single pre-composited
+    // texture cannot do that — tinting it turns the dirt green — so the overlay
+    // is a second quad, and it needs the cutout mesh because its texture has
+    // alpha. Null for every other block.
+    render::MeshData* grassOverlayMesh = nullptr) {
     const auto firstVertex = static_cast<std::uint32_t>(mesh.vertices.size());
     const glm::vec3 origin{
         static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
@@ -817,18 +937,14 @@ void appendFace(
         if (modelHeight < 1.0F) {
             positionCorner.y *= modelHeight;
         }
-        // Which biome-colour lookup the fragment shader should apply: 1 for the
-        // grass top/plant (grass colour map), 2 for oak-family leaves (foliage
-        // colour map), 0 otherwise (the side keeps its baked layer, spruce/birch
-        // their fixed tones, everything else is untouched). The mask rides the
-        // vertex pad byte, which shares an attribute with the normal index that
-        // is proven to round-trip.
-        // The per-vertex biome mask is disabled: grass/leaf colours are baked
-        // into their atlas layers, so the fragment shader's lookup is unused.
-        const std::uint8_t biomeMask = 0U;
         const int cornerX = x + static_cast<int>(std::lround(positionCorner.x));
         const int cornerZ = z + static_cast<int>(std::lround(positionCorner.z));
+        // The tint is resolved at the corner, so the four vertices of a face
+        // straddling a biome border carry different colours and the fragment
+        // shader interpolates between them — the border is a gradient across the
+        // face rather than a step at its edge.
         const auto tint = tints.tint(block, face.face, cornerX, cornerZ);
+        const std::uint8_t biomeMask = tintMask(tint);
         mesh.vertices.push_back(packVertex(
             (origin + positionCorner) - sectionOrigin,
             face.normal,
@@ -844,6 +960,27 @@ void appendFace(
             tint[1],
             tint[2],
             biomeMask));
+        if (grassOverlayMesh != nullptr) {
+            // The same corner, nudged a thousandth of a block along the face
+            // normal so it wins the depth test against the quad underneath
+            // without a visible gap (1/16 of a texel).
+            const auto overlayTint = tints.tint(TintKind::Grass, cornerX, cornerZ);
+            grassOverlayMesh->vertices.push_back(packVertex(
+                (origin + positionCorner) - sectionOrigin + face.normal * 0.001F,
+                face.normal,
+                uv,
+                gen::terrainGrassOverlayLayer(),
+                ambientOcclusion[corner],
+                1.0F,
+                smoothLight.sky,
+                smoothLight.block,
+                flatSky,
+                flatBlock,
+                overlayTint[0],
+                overlayTint[1],
+                overlayTint[2],
+                tintMask(overlayTint)));
+        }
     }
     constexpr std::array<std::uint32_t, 6> kDefaultIndices{0, 1, 2, 2, 3, 0};
     constexpr std::array<std::uint32_t, 6> kFlippedIndices{0, 1, 3, 1, 2, 3};
@@ -853,6 +990,13 @@ void appendFace(
                               : kDefaultIndices;
     for (const auto index : indices) {
         mesh.indices.push_back(firstVertex + index);
+    }
+    if (grassOverlayMesh != nullptr) {
+        const auto overlayFirst =
+            static_cast<std::uint32_t>(grassOverlayMesh->vertices.size() - 4U);
+        for (const auto index : indices) {
+            grassOverlayMesh->indices.push_back(overlayFirst + index);
+        }
     }
     if (doubleSided) {
         for (auto iterator = indices.rbegin(); iterator != indices.rend(); ++iterator) {
@@ -871,7 +1015,8 @@ void appendWaterFace(
     int z,
     const Sampler& lighting,
     SmoothLightingQuality quality,
-    const glm::vec3& sectionOrigin) {
+    const glm::vec3& sectionOrigin,
+    BiomeTintCache& tints) {
     const auto firstVertex = static_cast<std::uint32_t>(mesh.vertices.size());
     const glm::vec3 origin{
         static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
@@ -882,6 +1027,14 @@ void appendWaterFace(
         : waterDepthBelowSurface(world, x, y, z);
     const bool flowing = world.fluidLevel(x, y, z) != 0U ||
         flowDirection.x * flowDirection.x + flowDirection.y * flowDirection.y > 0.000001F;
+    // BiomeColors.WATER_COLOR_RESOLVER. Water used to be tinted into its atlas
+    // frames with one fixed blue, so a swamp's murky green and a cold ocean's
+    // deep blue did not exist. Asking by block rather than for TintKind::Water
+    // is what keeps lava — which takes this same path — untinted.
+    // One tint for the whole face: water spans the cell and its surface reads
+    // flat, unlike grass where the corner gradient is the point.
+    const auto waterTint = tints.tint(world.block(x, y, z), Face::PositiveY, x, z);
+    const std::uint8_t waterTintMask = tintMask(waterTint);
     const auto flatLight = lighting.level(
         x + face.dx, y + face.dy, z + face.dz);
     for (std::size_t cornerIndex = 0; cornerIndex < face.corners.size(); ++cornerIndex) {
@@ -921,7 +1074,11 @@ void appendWaterFace(
             smoothLight.sky,
             smoothLight.block,
             static_cast<float>(flatLight.sky) / 15.0F,
-            static_cast<float>(flatLight.block) / 15.0F));
+            static_cast<float>(flatLight.block) / 15.0F,
+            waterTint[0],
+            waterTint[1],
+            waterTint[2],
+            waterTintMask));
     }
     constexpr std::array<std::uint32_t, 6> indices{0, 1, 2, 2, 3, 0};
     for (const auto index : indices) {
@@ -1078,10 +1235,10 @@ void appendBox(
             const glm::vec3 unit = face.corners[corner];
             const glm::vec3 positionCorner = boxMin + unit * (boxMax - boxMin);
             const glm::vec2 uv = faceUv[corner];
-            const std::uint8_t biomeMask = 0U;
             const int cornerX = x + static_cast<int>(std::lround(positionCorner.x));
             const int cornerZ = z + static_cast<int>(std::lround(positionCorner.z));
             const auto tint = tints.tint(current.block, face.face, cornerX, cornerZ);
+            const std::uint8_t biomeMask = tintMask(tint);
             mesh.vertices.push_back(packVertex(
                 (origin + positionCorner) - sectionOrigin,
                 face.normal,
@@ -1264,8 +1421,9 @@ void appendCrossedPlant(
     // keep white. The thin crossed quads span the block, so one tint per block
     // reads the same as per corner.
     const auto tint = tints.tint(block, Face::PositiveY, x, z);
-    appendPlantQuad(mesh, layer, shiftedFirst, x, y, z, lighting, sectionOrigin, tint);
-    appendPlantQuad(mesh, layer, shiftedSecond, x, y, z, lighting, sectionOrigin, tint);
+    const std::uint8_t mask = tintMask(tint);
+    appendPlantQuad(mesh, layer, shiftedFirst, x, y, z, lighting, sectionOrigin, tint, mask);
+    appendPlantQuad(mesh, layer, shiftedSecond, x, y, z, lighting, sectionOrigin, tint, mask);
 }
 
 // The vanilla `crop` blockstate model (crop.json): four orthogonal thin planes
@@ -1809,12 +1967,12 @@ bool buildSectionImpl(
         result.bounds = {};
         return false;
     }
-    // Per-corner biome colour cache, scoped to this section build.
-    BiomeTintCache tints{world};
-
     const int originX = position.x * kChunkWidth;
     const int originY = sectionOriginY(sectionY);
     const int originZ = position.z * kChunkDepth;
+
+    // Per-column biome colours, resolved once for this section's window.
+    BiomeTintCache tints{world, originX, originZ};
 
     result.bounds = {
         {static_cast<float>(originX), static_cast<float>(originY), static_cast<float>(originZ)},
@@ -1849,18 +2007,12 @@ bool buildSectionImpl(
                            ? result.cutoutMesh
                            : result.mesh);
                 if (definition.model == BlockModel::Cross) {
-                    // Tall grass uses the dominant biome's baked plant layer;
-                    // flowers keep their own texture.
+                    // Tall grass takes the biome grass tint per vertex (through
+                    // appendCrossedPlant); flowers keep white. Both draw their own
+                    // untinted texture.
                     float plantLayer = static_cast<float>(textureLayers(current).side);
-                    if (current == Block::GrassPlant) {
-                        const auto biome = dominantBiome(world, worldX, worldZ);
-                        const auto& biomeLayers =
-                            (biome == gen::Biome::Swamp && swampDarkTone(worldX, worldZ))
-                                ? gen::swampDarkGrassLayers()
-                                : gen::biomeGrassLayers(biome);
-                        if (biomeLayers.top != 0.0F) {
-                            plantLayer = biomeLayers.bottom;
-                        }
+                    if (current == Block::GrassPlant && gen::terrainGrassPlantLayer() != 0.0F) {
+                        plantLayer = gen::terrainGrassPlantLayer();
                     }
                     appendCrossedPlant(
                         targetMesh, world, current, worldX, worldY, worldZ, lighting,
@@ -1990,7 +2142,7 @@ bool buildSectionImpl(
                         if (isFluid(current)) {
                             appendWaterFace(
                                 targetMesh, world, face, worldX, worldY, worldZ,
-                                lighting, quality, sectionOrigin);
+                                lighting, quality, sectionOrigin, tints);
                         } else {
                             appendFace(
                                 targetMesh, world, current, face, worldX, worldY, worldZ,
@@ -2004,7 +2156,16 @@ bool buildSectionImpl(
                                     lighting.blockType(
                                         worldX + face.dx,
                                         worldY + face.dy,
-                                        worldZ + face.dz) == current);
+                                        worldZ + face.dz) == current,
+                                // Only a grass block's four sides carry the
+                                // tinted overlay quad; its top is tinted
+                                // directly and its bottom is plain dirt.
+                                (current == Block::Grass &&
+                                 face.face != Face::PositiveY &&
+                                 face.face != Face::NegativeY &&
+                                 gen::terrainGrassOverlayLayer() != 0.0F)
+                                    ? &result.cutoutMesh
+                                    : nullptr);
                         }
                     }
                 }

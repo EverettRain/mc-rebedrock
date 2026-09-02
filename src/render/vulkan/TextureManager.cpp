@@ -8,7 +8,6 @@
 #include "assets/ImageData.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "world/gen/Biome.hpp"
-#include "world/gen/LayeredBiomeSource.hpp"
 
 #include <glm/glm.hpp>
 #include <miniz.h>
@@ -631,98 +630,6 @@ void TextureManager::createPanoramaSampler() {
             "vkCreateSampler(panorama)");
 }
 
-void TextureManager::createBiomeTextureResources() {
-    const std::uint32_t size = static_cast<std::uint32_t>(kBiomeTextureSize);
-    biomeGrassImage =
-        resources_->createImage(size, size, 1, VK_FORMAT_R8G8B8A8_UNORM,
-                                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    biomeFoliageImage =
-        resources_->createImage(size, size, 1, VK_FORMAT_R8G8B8A8_UNORM,
-                                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    auto samplerInfo = vkStructure<VkSamplerCreateInfo>(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
-    // 线性过滤把逐格的群系颜色变成跨群系边界的、由硬件插值出的逐像素平滑渐变
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.maxLod = 0.0F;
-    checkVk(vkCreateSampler(device_, &samplerInfo, nullptr, &biomeSampler),
-            "vkCreateSampler(biome)");
-    biomeGrassView = resources_->createImageView(biomeGrassImage.image, VK_FORMAT_R8G8B8A8_UNORM,
-                                                 VK_IMAGE_ASPECT_COLOR_BIT);
-    biomeFoliageView = resources_->createImageView(biomeFoliageImage.image, VK_FORMAT_R8G8B8A8_UNORM,
-                                                   VK_IMAGE_ASPECT_COLOR_BIT);
-}
-
-// 按世界种子重建群系配色查找表
-// 每个纹素存放对应 4 方块格所属群系的草色与叶色，取自 vanilla 配色图
-// 沼泽和黑森林另有特例覆盖
-// 片元着色器用线性过滤采样，相邻格因此融成逐像素渐变——这是 BiomeColors 逐顶点着色在 GPU 侧的等价物
-void TextureManager::updateBiomeColorTextures(std::uint64_t seed) {
-    constexpr int size = kBiomeTextureSize;
-    constexpr int span = kBiomeTextureBlockSpan;
-    constexpr int halfBlocks = size * span / 2;
-    const auto grassColormap = assets::ImageData::loadRgba(*resourceProvider_, assets::textures("colormap/grass.png"));
-    const auto foliageColormap = assets::ImageData::loadRgba(*resourceProvider_, assets::textures("colormap/foliage.png"));
-    const auto colorAt = [](const assets::ImageData& colormap, float temperature,
-                            float downfall) -> std::uint32_t {
-        const float clampedTemperature = std::clamp(temperature, 0.0F, 1.0F);
-        const float humidity = std::clamp(downfall, 0.0F, 1.0F) * clampedTemperature;
-        const int xIndex = static_cast<int>((1.0 - clampedTemperature) * 255.0);
-        const int yIndex = static_cast<int>((1.0 - humidity) * 255.0);
-        const std::size_t pixel = static_cast<std::size_t>(yIndex * 256 + xIndex) * 4U;
-        if (pixel + 3U >= colormap.rgba.size()) {
-            return 0x00FF00U;
-        }
-        return (static_cast<std::uint32_t>(colormap.rgba[pixel]) << 16U) |
-               (static_cast<std::uint32_t>(colormap.rgba[pixel + 1U]) << 8U) |
-               static_cast<std::uint32_t>(colormap.rgba[pixel + 2U]);
-    };
-    world::gen::LayeredBiomeSource biomes{seed};
-    std::vector<std::uint8_t> grassPixels;
-    std::vector<std::uint8_t> foliagePixels;
-    grassPixels.reserve(static_cast<std::size_t>(size) * size * 4U);
-    foliagePixels.reserve(static_cast<std::size_t>(size) * size * 4U);
-    for (int texelZ = 0; texelZ < size; ++texelZ) {
-        for (int texelX = 0; texelX < size; ++texelX) {
-            const int worldX = texelX * span - halfBlocks;
-            const int worldZ = texelZ * span - halfBlocks;
-            const auto biome = biomes.sample(worldX >> 2, worldZ >> 2);
-            const auto& definition = world::gen::biomeDefinition(biome);
-            std::uint32_t grassColor =
-                colorAt(grassColormap, definition.temperature, definition.downfall);
-            if (biome == world::gen::Biome::DarkForest) {
-                grassColor = ((grassColor & 0xFEFEFEU) + 0x28340AU) >> 1U;
-            }
-            std::uint32_t foliageColor =
-                colorAt(foliageColormap, definition.temperature, definition.downfall);
-            if (biome == world::gen::Biome::Swamp) {
-                foliageColor = 0x6A7039U;
-            }
-            for (int channel = 2; channel >= 0; --channel) {
-                const auto shift = static_cast<std::uint32_t>(channel) * 8U;
-                grassPixels.push_back(static_cast<std::uint8_t>((grassColor >> shift) & 0xFFU));
-                foliagePixels.push_back(static_cast<std::uint8_t>((foliageColor >> shift) & 0xFFU));
-            }
-            grassPixels.push_back(255U);
-            foliagePixels.push_back(255U);
-        }
-    }
-    // 这两张表的 view 与采样器由 createBiomeTextureResources 建好，这里只重灌像素
-    // 图像已经在 SHADER_READ_ONLY 上，而 uploadImageLayers 一律按 UNDEFINED 起手：
-    // 内容全量覆盖，丢弃旧内容正是想要的，换种子重建因此走同一条路径
-    const auto uploadLookup = [&](AllocatedImage& image, const std::vector<std::uint8_t>& pixels) {
-        resources_->uploadImageLayers(image, pixels.data(),
-                                      static_cast<VkDeviceSize>(pixels.size()),
-                                      static_cast<std::uint32_t>(size),
-                                      static_cast<std::uint32_t>(size), 1U,
-                                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    };
-    uploadLookup(biomeGrassImage, grassPixels);
-    uploadLookup(biomeFoliageImage, foliagePixels);
-}
 
 // 把每个已提供的物种模型与皮肤装进专用 2D 数组纹理（binding 4），按 speciesModels 顺序一物种一层
 // 新增生物只需注册一个带渲染描述的 EntityType
@@ -962,18 +869,6 @@ void TextureManager::destroy(bool allocatorAlive) noexcept {
         vkDestroySampler(device_, panoramaSampler, nullptr);
         panoramaSampler = VK_NULL_HANDLE;
     }
-    if (biomeGrassView != VK_NULL_HANDLE) {
-        vkDestroyImageView(device_, biomeGrassView, nullptr);
-        biomeGrassView = VK_NULL_HANDLE;
-    }
-    if (biomeFoliageView != VK_NULL_HANDLE) {
-        vkDestroyImageView(device_, biomeFoliageView, nullptr);
-        biomeFoliageView = VK_NULL_HANDLE;
-    }
-    if (biomeSampler != VK_NULL_HANDLE) {
-        vkDestroySampler(device_, biomeSampler, nullptr);
-        biomeSampler = VK_NULL_HANDLE;
-    }
     if (fontTextureView != VK_NULL_HANDLE) {
         vkDestroyImageView(device_, fontTextureView, nullptr);
         fontTextureView = VK_NULL_HANDLE;
@@ -994,8 +889,6 @@ void TextureManager::destroy(bool allocatorAlive) noexcept {
         resources_->destroyImage(rainTextureImage);
         resources_->destroyImage(guiTextureImage);
         resources_->destroyImage(panoramaTextureImage);
-        resources_->destroyImage(biomeGrassImage);
-        resources_->destroyImage(biomeFoliageImage);
         resources_->destroyImage(fontTextureImage);
         resources_->destroyImage(entityTextureImage);
         resources_->destroyImage(textureImage);
@@ -1005,7 +898,7 @@ void TextureManager::destroy(bool allocatorAlive) noexcept {
 std::size_t TextureManager::residentImageBytes() const {
     const AllocatedImage* const images[] = {
         &textureImage,      &entityTextureImage, &guiTextureImage,  &fontTextureImage,
-        &rainTextureImage,  &panoramaTextureImage, &biomeGrassImage, &biomeFoliageImage};
+        &rainTextureImage,  &panoramaTextureImage};
     std::size_t bytes = 0;
     for (const auto* image : images) {
         if (image->allocation != VK_NULL_HANDLE) {

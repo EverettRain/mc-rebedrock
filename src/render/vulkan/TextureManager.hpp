@@ -49,8 +49,6 @@ class TextureManager final {
     void createGuiTexture();
     void createPanoramaTexture();
     void createPanoramaSampler();
-    void createBiomeTextureResources();
-    void updateBiomeColorTextures(std::uint64_t seed);
 
     // 建实体皮肤数组，并按玩法实体注册表填充 `speciesModels`
     // 该列表归渲染器所有，因为世界通道要读它
@@ -70,9 +68,6 @@ class TextureManager final {
     void destroy(bool allocatorAlive) noexcept;
 
     // 群系配色纹理按 1:4 的群系图取样，这两个常量是每纹素覆盖的方块数与边长纹素数
-    // 合计覆盖 kBiomeTextureBlockSpan * kBiomeTextureSize 个方块
-    static constexpr int kBiomeTextureBlockSpan = 4;
-    static constexpr int kBiomeTextureSize = 512;
 
     // 公开：渲染器的描述符装配与各绘制通道直接平铺读取这些句柄
     AllocatedImage rainTextureImage;
@@ -84,11 +79,6 @@ class TextureManager final {
     AllocatedImage panoramaTextureImage;
     VkImageView panoramaTextureView = VK_NULL_HANDLE;
     VkSampler panoramaSampler = VK_NULL_HANDLE;
-    AllocatedImage biomeGrassImage;
-    VkImageView biomeGrassView = VK_NULL_HANDLE;
-    AllocatedImage biomeFoliageImage;
-    VkImageView biomeFoliageView = VK_NULL_HANDLE;
-    VkSampler biomeSampler = VK_NULL_HANDLE;
     AllocatedImage fontTextureImage;
     VkImageView fontTextureView = VK_NULL_HANDLE;
     AllocatedImage entityTextureImage;

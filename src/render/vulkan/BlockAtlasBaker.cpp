@@ -323,20 +323,19 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
     }
     tintInPlace(grassPlant, foliageTint);
     tintInPlace(oakLeaves, foliageTint);
-    const auto tintWaterFrames = [&](std::vector<assets::ImageData>& frames) {
-        constexpr std::array<float, 3> waterTint{0.25F, 0.48F, 0.92F};
+    // 水的帧只定不透明度，颜色留给顶点上的群系水色
+    // 从前这里按一个固定的蓝色着色，于是沼泽的浑绿与寒冷海洋的深蓝根本不存在；
+    // 那个常量恰好接近 vanilla 的默认水色 4159204，所以多数群系看起来没差，
+    // 唯独真正有自己水色的那几个群系一直是错的
+    const auto setWaterAlpha = [&](std::vector<assets::ImageData>& frames) {
         for (auto& frame : frames) {
             for (std::size_t index = 0; index + 3U < frame.rgba.size(); index += 4U) {
-                for (std::size_t channel = 0; channel < 3U; ++channel) {
-                    frame.rgba[index + channel] =
-                        tintedChannel(frame.rgba[index + channel], waterTint[channel]);
-                }
                 frame.rgba[index + 3U] = 155U;
             }
         }
     };
-    tintWaterFrames(waterStillFrames);
-    tintWaterFrames(waterFlowFrames);
+    setWaterAlpha(waterStillFrames);
+    setWaterAlpha(waterFlowFrames);
 
     // ---- 固定特殊区，顺序确定 ----
     std::vector<assets::ImageData> layers;
@@ -526,17 +525,28 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
             static_cast<float>(color & 0xFFU) / 255.0F,
         };
     };
-    // 地形上的草方块家族与橡木系树叶渲染的是未着色纹理
-    // 颜色来自片元着色器的群系配色查找，线性过滤采样让边界成为逐像素的平滑渐变
-    // 草方块的侧面保留烘好的逐群系层，好让崖壁下的泥土仍是泥土
-    // 云杉与白桦树叶保留各自的固定色调
+    // 地形读的是未着色的草方块家族与橡木系树叶，颜色由网格化器逐列解析后写进顶点
+    // 图集里另有一份已着色的副本，给没有群系可问的物品与 GUI 用
+    //
+    // 草方块侧面存两层：泥土底图，以及画在它上面的草形状 overlay
+    // vanilla 的 grass_block 模型正是为此把侧面画两遍——预先合成好的单张纹理一旦着色，
+    // 连泥土也会跟着变绿
+    //
+    // 云杉与白桦树叶保留固定色层：它们在每个群系里都是同一个常量色
     const float terrainGrassTop = static_cast<float>(layers.size());
     layers.push_back(grassTopRaw);
     layerByName.emplace("grass_block_top:terrain", terrainGrassTop);
     const float terrainGrassPlant = static_cast<float>(layers.size());
     layers.push_back(grassPlantRaw);
     layerByName.emplace("grass:terrain", terrainGrassPlant);
-    world::gen::setTerrainGrassLayers(terrainGrassTop, terrainGrassPlant);
+    const float terrainGrassSide = static_cast<float>(layers.size());
+    layers.push_back(grassSideBase);
+    layerByName.emplace("grass_block_side:terrain", terrainGrassSide);
+    const float terrainGrassOverlay = static_cast<float>(layers.size());
+    layers.push_back(grassOverlay);
+    layerByName.emplace("grass_block_side_overlay:terrain", terrainGrassOverlay);
+    world::gen::setTerrainGrassLayers(terrainGrassTop, terrainGrassPlant, terrainGrassSide,
+                                      terrainGrassOverlay);
     const std::array<world::Block, 6> leafBlocks{
         world::Block::OakLeaves,    world::Block::SpruceLeaves, world::Block::BirchLeaves,
         world::Block::JungleLeaves, world::Block::AcaciaLeaves, world::Block::DarkOakLeaves,
@@ -568,100 +578,29 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         layerByName.emplace(std::string("leaves:terrain:") + leafNames[leaf], layer);
         world::gen::setTerrainLeafLayer(leafBlocks[leaf], layer);
     }
-    // 烘好的逐群系草方块家族，顶面、侧面和植株在建图集时就按该群系的草色着色
-    // 渲染颜色因此不依赖顶点数据传到片元着色器
-    const auto buildBiomeGrass = [&](std::string_view suffix, std::uint32_t color) {
-        auto biomeTop = grassTopRaw;
-        auto biomeSide = grassSideBase;
-        auto biomePlant = grassPlantRaw;
-        const auto tint = colorTint(color);
-        for (std::size_t index = 0; index + 3U < biomeTop.rgba.size(); index += 4U) {
-            for (std::size_t channel = 0; channel < 3U; ++channel) {
-                biomeTop.rgba[index + channel] =
-                    tintedChannel(biomeTop.rgba[index + channel], tint[channel]);
-                biomePlant.rgba[index + channel] =
-                    tintedChannel(biomePlant.rgba[index + channel], tint[channel]);
-            }
-        }
-        for (std::size_t index = 0; index + 3U < biomeSide.rgba.size(); index += 4U) {
-            const float alpha = static_cast<float>(grassOverlay.rgba[index + 3U]) / 255.0F;
-            for (std::size_t channel = 0; channel < 3U; ++channel) {
-                const auto overlayColor =
-                    tintedChannel(grassOverlay.rgba[index + channel], tint[channel]);
-                const float blended =
-                    static_cast<float>(grassSideBase.rgba[index + channel]) * (1.0F - alpha) +
-                    static_cast<float>(overlayColor) * alpha;
-                biomeSide.rgba[index + channel] = static_cast<std::uint8_t>(
-                    std::clamp(static_cast<int>(std::lround(blended)), 0, 255));
-            }
-            biomeSide.rgba[index + 3U] = 255U;
-        }
-        const std::string prefix{suffix};
-        const float topLayer = static_cast<float>(layers.size());
-        layers.push_back(biomeTop);
-        layerByName.emplace("grass_block_top:" + prefix, topLayer);
-        const float sideLayer = static_cast<float>(layers.size());
-        layers.push_back(biomeSide);
-        layerByName.emplace("grass_block_side:" + prefix, sideLayer);
-        const float plantLayer = static_cast<float>(layers.size());
-        layers.push_back(biomePlant);
-        layerByName.emplace("grass:" + prefix, plantLayer);
-        return world::BlockTextureLayers{topLayer, sideLayer, plantLayer};
-    };
-    // 橡木系的逐群系叶片层
-    const auto buildLeafLayer = [&](std::string_view suffix, const assets::ImageData& texture,
-                                    std::uint32_t color) {
-        auto pixels = texture;
-        const auto tint = colorTint(color);
-        for (std::size_t index = 0; index + 3U < pixels.rgba.size(); index += 4U) {
-            for (std::size_t channel = 0; channel < 3U; ++channel) {
-                pixels.rgba[index + channel] =
-                    tintedChannel(pixels.rgba[index + channel], tint[channel]);
-            }
-        }
-        const float layer = static_cast<float>(layers.size());
-        layers.push_back(pixels);
-        layerByName.emplace(std::string("leaves:") + std::string{suffix}, layer);
-        return layer;
-    };
+    // 群系配色解析成颜色值，不再烘成图集层
+    //
+    // 从前这里给每个群系烘 3 个草层加 4 个叶层——25 个群系就是 175 层，26.1 的 66 个群系
+    // 会是 462 层，数据包再加还要涨；而离散的层既混不出边界渐变，也没法给水上色
+    // 现在每个群系解析出四个颜色，网格化器按 vanilla 的 5x5 方块窗口逐列取平均
     for (int biomeIndex = 0; biomeIndex < static_cast<int>(world::gen::Biome::Count);
          ++biomeIndex) {
         const auto biome = static_cast<world::gen::Biome>(biomeIndex);
         const auto& definition = world::gen::biomeDefinition(biome);
-        std::uint32_t grassColor =
-            colormapColor(grassColormap, definition.temperature, definition.downfall);
-        if (biome == world::gen::Biome::DarkForest) {
-            // 黑森林把配色图取到的颜色再压暗
-            grassColor = ((grassColor & 0xFEFEFEU) + 0x28340AU) >> 1U;
-        }
-        std::uint32_t foliageColor =
-            colormapColor(foliageColormap, definition.temperature, definition.downfall);
-        if (biome == world::gen::Biome::Swamp) {
-            // 沼泽的叶色是固定的 0x6A7039
-            foliageColor = 0x6A7039U;
-        }
-        if (biome == world::gen::Biome::Swamp) {
-            // 沼泽的草色按噪声在 0x6A7039 与 0x4C763C 之间二选一
-            // 逐方块的取值由网格化器从植被噪声决定
-            world::gen::setBiomeGrassLayers(biome, buildBiomeGrass("swamp", 0x6A7039U));
-            world::gen::setSwampDarkGrassLayers(buildBiomeGrass("swamp_dark", 0x4C763CU));
-        } else {
-            world::gen::setBiomeGrassLayers(biome,
-                                            buildBiomeGrass(definition.identifier, grassColor));
-        }
-        // 烘好的逐群系橡木系叶片；云杉/白桦沿用上面建好的固定地形层
-        const std::string prefix{definition.identifier};
-        world::gen::setBiomeFoliageLayer(biome, world::Block::OakLeaves,
-                                         buildLeafLayer(prefix + ":oak", leavesRaw, foliageColor));
-        world::gen::setBiomeFoliageLayer(
-            biome, world::Block::JungleLeaves,
-            buildLeafLayer(prefix + ":jungle", biomeLeafTexturesRaw[2], foliageColor));
-        world::gen::setBiomeFoliageLayer(
-            biome, world::Block::AcaciaLeaves,
-            buildLeafLayer(prefix + ":acacia", biomeLeafTexturesRaw[3], foliageColor));
-        world::gen::setBiomeFoliageLayer(
-            biome, world::Block::DarkOakLeaves,
-            buildLeafLayer(prefix + ":dark_oak", biomeLeafTexturesRaw[4], foliageColor));
+        // 有 override 就用 override，否则按 (temperature, downfall) 查配色图
+        // grassColorModifier 不在这里应用：沼泽那档取决于方块坐标，属于网格化器
+        world::gen::BiomeSurfaceColors colors;
+        colors.grass = definition.grassColorOverride != 0U
+            ? definition.grassColorOverride
+            : colormapColor(grassColormap, definition.temperature, definition.downfall);
+        colors.foliage = definition.foliageColorOverride != 0U
+            ? definition.foliageColorOverride
+            : colormapColor(foliageColormap, definition.temperature, definition.downfall);
+        colors.dryFoliage = definition.dryFoliageColorOverride != 0U
+            ? definition.dryFoliageColorOverride
+            : colors.foliage;
+        colors.water = definition.waterColor;
+        world::gen::setBiomeSurfaceColors(biome, colors);
     }
 
     for (const auto& definition : world::kBlockRegistry) {

@@ -72,6 +72,18 @@ enum class TreeKind : std::uint8_t {
     SwampOak,
 };
 
+// BiomeSpecialEffects.GrassColorModifier (26.1): a per-position adjustment on top
+// of whatever the grass colour map gave. Applied where the colour is resolved —
+// SWAMP reads a noise field at the block position, so it cannot be folded into
+// the biome's own colour.
+enum class GrassColorModifier : std::uint8_t {
+    None,
+    // ARGB.opaque((base & 0xFEFEFE) + 0x28340A >> 1)
+    DarkForest,
+    // Two fixed tones chosen by BIOME_INFO_NOISE at (x * 0.0225, z * 0.0225).
+    Swamp,
+};
+
 struct TreeChoice final {
     TreeKind kind = TreeKind::Oak;
     Block log = Block::OakLog;
@@ -113,6 +125,20 @@ struct BiomeDefinition final {
     // DefaultBiomeFeatures grass/flower rates, expressed per chunk.
     int grassCount = 2;
     int flowerCount = 1;
+
+    // BiomeSpecialEffects (26.1). The whole record is five colour fields now —
+    // fog, sky, cloud, ambient particles, music and the ambient sounds all moved
+    // to EnvironmentAttribute in 26.x, and land in BM-3 rather than here.
+    //
+    // An override of 0 means "no override": resolve the colour through the
+    // grass/foliage colour map by (temperature, downfall), the way vanilla does
+    // for a biome that names none. No vanilla biome overrides to pure black, so
+    // zero is free to mean absent.
+    std::uint32_t waterColor = 0x3F76E4U;  // 4159204, BiomeSpecialEffects' default
+    std::uint32_t foliageColorOverride = 0U;
+    std::uint32_t dryFoliageColorOverride = 0U;
+    std::uint32_t grassColorOverride = 0U;
+    GrassColorModifier grassColorModifier = GrassColorModifier::None;
 };
 
 [[nodiscard]] const BiomeDefinition& biomeDefinition(Biome biome);
@@ -125,27 +151,54 @@ struct BiomeDefinition final {
 // pack is read rather than dropped. Returns Count for an unknown key.
 [[nodiscard]] Biome biomeFromIdentifier(std::string_view text);
 
-// The grass-family atlas layers (top / side / plant) tinted with this biome's
-// vanilla grass colour (BiomeColors.getGrassColor through the grass colour map,
-// plus the swamp/dark-forest overrides). The renderer fills the table at atlas
-// build time; the mesher reads it for grass blocks. Swamp returns the lighter
-// tone; swampDarkGrassLayers() carries the darker per-block noise tone.
-[[nodiscard]] const world::BlockTextureLayers& biomeGrassLayers(Biome biome);
-void setBiomeGrassLayers(Biome biome, world::BlockTextureLayers layers);
-[[nodiscard]] const world::BlockTextureLayers& swampDarkGrassLayers();
-void setSwampDarkGrassLayers(world::BlockTextureLayers layers);
+// A biome's four resolved surface colours, 0xRRGGBB — the four ColorResolvers
+// vanilla's BiomeColors declares. `grass` and `foliage` are the colour-map
+// lookups (or the biome's override); `grassColorModifier` is NOT applied here,
+// because SWAMP depends on the block position and so belongs where the mesher
+// resolves a column.
+//
+// This replaces a table of per-biome *atlas layers*: grass and leaf textures used
+// to be tinted at atlas build time and given a layer of their own per biome. That
+// cost one atlas layer per (biome x tintable texture) — which does not survive
+// 26.1's 66 biomes, let alone a data pack adding more — and being a discrete
+// layer it could neither blend across a biome border nor tint water at all.
+struct BiomeSurfaceColors final {
+    std::uint32_t grass = 0xFFFFFFU;
+    std::uint32_t foliage = 0xFFFFFFU;
+    std::uint32_t dryFoliage = 0xFFFFFFU;
+    std::uint32_t water = 0xFFFFFFU;
+};
 
-// The baked per-biome foliage atlas layer for a leaf block: the untinted leaf
-// texture tinted with the biome's foliage colour at build time, so the terrain
-// colour never depends on per-vertex data reaching the fragment shader. Spruce
-// and birch keep fixed tones via terrainLeafLayer.
-[[nodiscard]] float biomeFoliageLayer(Biome biome, world::Block leaves);
-void setBiomeFoliageLayer(Biome biome, world::Block leaves, float layer);
-// The untinted terrain grass/leaf atlas layers, kept as fallbacks.
+// White until the renderer resolves the colour maps, which is also what a
+// headless build sees: a white tint multiplies to the raw texture, so terrain
+// without a resource pack renders untinted rather than black.
+[[nodiscard]] const BiomeSurfaceColors& biomeSurfaceColors(Biome biome);
+void setBiomeSurfaceColors(Biome biome, BiomeSurfaceColors colors);
+
+// BiomeSpecialEffects.GrassColorModifier#modifyColor, applied at a block
+// position on top of the biome's own grass colour.
+[[nodiscard]] std::uint32_t applyGrassColorModifier(GrassColorModifier modifier,
+                                                    std::uint32_t baseColor, int x, int z);
+
+// The UNTINTED terrain atlas layers for the two texture families the biome
+// colours multiply into. The atlas also holds tinted copies of these for items
+// and the GUI, where there is no biome to ask; terrain reads these and takes its
+// colour from the vertex tint instead.
+//
+// grassBlockSide is the plain dirt-and-grey-edge texture and grassBlockOverlay
+// the grass-shaped mask drawn over it — vanilla's grass_block model draws the
+// sides twice for exactly this reason, and the mesher does the same, because a
+// single pre-composited texture cannot be tinted without turning the dirt green.
+//
+// Spruce and birch leaves keep a fixed tinted layer: their colour is a constant
+// in every biome (FoliageColor's evergreen and birch tones), so tinting them per
+// vertex would only spend bandwidth to reach the same pixel.
 [[nodiscard]] float terrainGrassTopLayer();
 [[nodiscard]] float terrainGrassPlantLayer();
+[[nodiscard]] float terrainGrassSideLayer();
+[[nodiscard]] float terrainGrassOverlayLayer();
 [[nodiscard]] float terrainLeafLayer(world::Block leaves);
-void setTerrainGrassLayers(float top, float plant);
+void setTerrainGrassLayers(float top, float plant, float side, float overlay);
 void setTerrainLeafLayer(world::Block leaves, float layer);
 
 // The log/leaves pair a sapling of this block would grow, so the loot tables and

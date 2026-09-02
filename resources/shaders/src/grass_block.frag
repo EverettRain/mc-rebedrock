@@ -39,12 +39,6 @@ layout(binding = 0) uniform CameraUniform {
 } camera;
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
-// The biome colour lookup textures, sampled with linear filtering so the
-// grass/foliage colour blends smoothly across biome boundaries. The texture is
-// 512 texels at 4 blocks each, covering [-1024, 1024] blocks around the world
-// origin; the UV mapping must match kBiomeTextureSize/BlockSpan in the renderer.
-layout(binding = 6) uniform sampler2D biomeGrassColors;
-layout(binding = 7) uniform sampler2D biomeFoliageColors;
 // The sun shadow depth map written by the pre-pass (binding 8). lightingSettings.w
 // is 1.0 only when the pre-pass ran this frame, so the sample is skipped when
 // the shadow feature is off.
@@ -155,26 +149,19 @@ void main() {
     // oak-family leaves the foliage map, everything else is white. The lookup
     // texture is linear-filtered, so the colour gradients across biome
     // boundaries instead of switching per block.
-    vec3 biomeTint = vec3(1.0);
-    if (fragmentBiomeMask == 1u) {
-        biomeTint = texture(biomeGrassColors, (fragmentWorldPosition.xz + 1024.0) / 2048.0).rgb;
-    } else if (fragmentBiomeMask == 2u) {
-        biomeTint = texture(biomeFoliageColors, (fragmentWorldPosition.xz + 1024.0) / 2048.0).rgb;
-    } else if (fragmentBiomeMask == 3u) {
-        // Literal per-vertex tint (redstone dust's power-derived red gradient).
-        biomeTint = fragmentTint;
-    }
+    // The biome colour is a per-vertex tint now: the mesher resolves each column
+    // as the average of the biome colours in the 5x5 block window around it —
+    // vanilla's biomeBlendRadius — so a biome border interpolates across the
+    // face. It used to sample a lookup texture baked from the *overworld* biome
+    // map by world position, which meant the nether and end read overworld
+    // colours, and it could not tint water at all.
+    vec3 biomeTint = fragmentBiomeMask == 3u ? fragmentTint : vec3(1.0);
     vec3 litColor = texel.rgb * biomeTint * illumination * ambientOcclusion;
     float outputAlpha = texel.a;
     // The depth-based surface tint approximates looking down through water from
     // above. When the camera is submerged the volumetric EXP2 fog below governs
     // visibility instead, so skip the tint to avoid double-darkening.
     if (waterSurface && !cameraUnderwater) {
-        // The vanilla water_still texture is grayscale — the blue comes from a
-        // biome water-colour tint applied here. Without it the surface reads as
-        // a murky grey sheet, whitest at night.
-        const vec3 kWaterColor = vec3(0.25, 0.45, 0.85);
-        litColor *= kWaterColor;
         // Top-down water transparency driven by the water-column depth the mesher
         // stores in the water AO channel (>= 1 block, interpolated per corner).
         // Shallow water stays clear so the seabed reads through; deeper water

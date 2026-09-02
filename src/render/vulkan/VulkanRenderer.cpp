@@ -85,7 +85,6 @@
 #include "world/WorldLightEngine.hpp"
 #include "world/WorldLock.hpp"
 #include "world/gen/Biome.hpp"
-#include "world/gen/LayeredBiomeSource.hpp"
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -670,7 +669,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         createDescriptorSetLayout();
         textures_.createTextureArray(options.anisotropy);
         textures_.createRainTexture();
-        textures_.createBiomeTextureResources();
         loadLanguage();
         textures_.createFontTexture(fontMetrics, textFont, requiredUnicodePages(),
                                     options.forceUnicodeFont);
@@ -1856,7 +1854,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 游戏规则也随世界一起走；GameRuntime 加载存档规则时会重新挂上会话自己的变更处理器
         camera.setPosition(snapshotCameraEye());
         spawnPositionInitialized = currentSave->hasPlayerPosition;
-        textures_.updateBiomeColorTextures(currentSave->summary.seed);
         // Warm the stream buffer pools before the first chunk batch arrives, so the
         // load burst pops pooled buffers instead of allocating on the render thread
         // per uploaded section (idempotent — a no-op once the pools are warm).
@@ -4485,10 +4482,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         entitySamplerBinding.binding = 4;
         VkDescriptorSetLayoutBinding panoramaSamplerBinding = samplerBinding;
         panoramaSamplerBinding.binding = 5;
-        VkDescriptorSetLayoutBinding biomeGrassSamplerBinding = samplerBinding;
-        biomeGrassSamplerBinding.binding = 6;
-        VkDescriptorSetLayoutBinding biomeFoliageSamplerBinding = samplerBinding;
-        biomeFoliageSamplerBinding.binding = 7;
         // 太阳阴影深度图，由地形片元着色器采样
         // 单独一个绑定点，只有 grass_block.frag 以及将来的受光通道看得到它
         // 其它管线不写它也不会出问题
@@ -4500,11 +4493,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         VkDescriptorSetLayoutBinding rainSamplerBinding = samplerBinding;
         rainSamplerBinding.binding = 9;
         rainSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        const std::array bindings{uniformBinding,           samplerBinding,
-                                  fontSamplerBinding,       guiSamplerBinding,
-                                  entitySamplerBinding,     panoramaSamplerBinding,
-                                  biomeGrassSamplerBinding, biomeFoliageSamplerBinding,
-                                  shadowSamplerBinding,     rainSamplerBinding};
+        // 绑定点 6/7 曾是按世界位置烘好的群系草色/叶色查找纹理
+        // 群系配色改成了顶点上的 tint（BM-1），那两张纹理与它们的绑定点一并撤掉
+        // 绑定号不必连续：阴影仍是 8，雨仍是 9，着色器不用改号
+        const std::array bindings{uniformBinding,       samplerBinding,
+                                  fontSamplerBinding,   guiSamplerBinding,
+                                  entitySamplerBinding, panoramaSamplerBinding,
+                                  shadowSamplerBinding, rainSamplerBinding};
         auto info = vkStructure<VkDescriptorSetLayoutCreateInfo>(
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
         info.bindingCount = static_cast<std::uint32_t>(bindings.size());
@@ -4569,19 +4564,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             panoramaImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             panoramaImageInfo.imageView = textures_.panoramaTextureView;
             panoramaImageInfo.sampler = textures_.panoramaSampler;
-            VkDescriptorImageInfo biomeGrassImageInfo{};
-            biomeGrassImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            biomeGrassImageInfo.imageView = textures_.biomeGrassView;
-            biomeGrassImageInfo.sampler = textures_.biomeSampler;
-            VkDescriptorImageInfo biomeFoliageImageInfo{};
-            biomeFoliageImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            biomeFoliageImageInfo.imageView = textures_.biomeFoliageView;
-            biomeFoliageImageInfo.sampler = textures_.biomeSampler;
             VkDescriptorImageInfo rainImageInfo{};
             rainImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             rainImageInfo.imageView = textures_.rainTextureView;
             rainImageInfo.sampler = textures_.textureSampler;
-            std::array<VkWriteDescriptorSet, 9> writes{};
+            std::array<VkWriteDescriptorSet, 7> writes{};
             writes[0] = vkStructure<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
             writes[0].dstSet = sets[index];
             writes[0].dstBinding = 0;
@@ -4620,22 +4607,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             writes[5].pImageInfo = &panoramaImageInfo;
             writes[6] = vkStructure<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
             writes[6].dstSet = sets[index];
-            writes[6].dstBinding = 6;
+            writes[6].dstBinding = 9;
             writes[6].descriptorCount = 1;
             writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[6].pImageInfo = &biomeGrassImageInfo;
-            writes[7] = vkStructure<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
-            writes[7].dstSet = sets[index];
-            writes[7].dstBinding = 7;
-            writes[7].descriptorCount = 1;
-            writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[7].pImageInfo = &biomeFoliageImageInfo;
-            writes[8] = vkStructure<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
-            writes[8].dstSet = sets[index];
-            writes[8].dstBinding = 9;
-            writes[8].descriptorCount = 1;
-            writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[8].pImageInfo = &rainImageInfo;
+            writes[6].pImageInfo = &rainImageInfo;
             vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(),
                                    0, nullptr);
         }
