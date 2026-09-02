@@ -64,14 +64,11 @@ class VulkanResources final {
 
     [[nodiscard]] AllocatedBuffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                                                bool hostVisible) const;
-    // `flags` 目前只用于 VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT：场景图要同时被
-    // sRGB 视图（世界那趟，线性混合）和 UNORM 视图（GUI 那趟，编码值混合）引用
     [[nodiscard]] AllocatedImage createImage(std::uint32_t width, std::uint32_t height,
                                              std::uint32_t layers, VkFormat format,
                                              VkImageUsageFlags usage,
                                              VkSampleCountFlagBits samples =
-                                                 VK_SAMPLE_COUNT_1_BIT,
-                                             VkImageCreateFlags flags = 0) const;
+                                                 VK_SAMPLE_COUNT_1_BIT) const;
     void destroyBuffer(AllocatedBuffer& buffer) const noexcept;
     void destroyImage(AllocatedImage& image) const noexcept;
 

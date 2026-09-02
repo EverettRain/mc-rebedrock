@@ -63,12 +63,18 @@ simple versioned history while it is in beta.
   its gradient border) instead of a flat coloured rectangle, with vanilla's line
   spacing, padding and above-right placement. Both sprites are read from the
   resource pack, so a pack can restyle them.
-- The interface is now composited in the same colour space as vanilla: the whole HUD
-  layer gets its own pass, drawn into a target with no gamma conversion. Every
-  non-white piece of interface text used to come out a step brighter than vanilla
-  (a container title's dark grey 0x404040 showed as a light 0x89, an enchantment
-  line's 0xAA as 0xD5), and translucent dark overlays — tooltip backdrops, the dim
-  behind an open screen — came out more transparent. One root cause, both fixed.
+- **The whole picture is now composited in vanilla's colour space.** Colours across
+  the world and the interface were systematically too bright and too washed out:
+  · Dyed sheep and other dyed things return to vanilla's colours. The darker the dye
+    the worse it was — a black sheep rendered as #5F5F65 instead of #1D1D21, a grey
+    one as #90979A instead of #474F52 (up to 73/255 off per channel); white was
+    almost exact, which is why it only showed once something was dyed.
+  · Per-face block shading returns to vanilla: bottom faces 0x80 (was 0xBC), east/west
+    0xAD (was 0xD7), so blocks read as solid again instead of flat. Biome tint, fog
+    and the warm cast of block light likewise.
+  · Every non-white piece of interface text returns to vanilla's value (a container
+    title's dark grey 0x404040 showed as a light 0x89, an enchantment line's 0xAA as
+    0xD5), and translucent dark overlays no longer read as more transparent.
 - The item in your hand is no longer clipped by a block right in front of your face
   (the interface pass has its own depth buffer, as in vanilla).
 

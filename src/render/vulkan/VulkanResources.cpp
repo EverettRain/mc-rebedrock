@@ -32,8 +32,7 @@ AllocatedBuffer VulkanResources::createBuffer(VkDeviceSize size, VkBufferUsageFl
 AllocatedImage VulkanResources::createImage(std::uint32_t width, std::uint32_t height,
                                             std::uint32_t layers, VkFormat format,
                                             VkImageUsageFlags usage,
-                                            VkSampleCountFlagBits samples,
-                                            VkImageCreateFlags flags) const {
+                                            VkSampleCountFlagBits samples) const {
     auto imageInfo = vkStructure<VkImageCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
     imageInfo.extent = {width, height, 1};
@@ -44,7 +43,6 @@ AllocatedImage VulkanResources::createImage(std::uint32_t width, std::uint32_t h
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = usage;
     imageInfo.samples = samples;
-    imageInfo.flags = flags;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     VmaAllocationCreateInfo allocationInfo{};
     allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;

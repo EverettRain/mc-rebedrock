@@ -46,7 +46,7 @@ layout(location = 10) flat out float fragmentHurtFlash;
 // the generic dropped-item light. Kept as a mode bit so ordinary item cubes and
 // articulated entity cuboids retain their existing presentation.
 layout(location = 11) flat out float fragmentFallingBlock;
-// DYE-3: per-cube wool tint (linear-ish 0..1 RGB, unpacked from a 0xRRGGBB the
+// DYE-3: per-cube wool tint (sRGB-encoded 0..1 RGB, unpacked from a 0xRRGGBB the
 // CPU packs into positionSize.w on the box-UV path). White for every non-wool
 // cube and every non-box-UV mode, so the fragment shader multiplies
 // unconditionally.

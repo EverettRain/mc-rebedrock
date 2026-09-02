@@ -309,14 +309,14 @@ void TextureManager::createTextureArray(int anisotropy) {
     }
     const std::uint32_t layerCount = static_cast<std::uint32_t>(byteSize / layerSize);
     textureImage =
-        resources_->createImage(pixels.width, pixels.height, layerCount, VK_FORMAT_R8G8B8A8_SRGB,
+        resources_->createImage(pixels.width, pixels.height, layerCount, VK_FORMAT_R8G8B8A8_UNORM,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     // 地形着色器在顶点阶段就要读方块层（面朝向选层），因此目标阶段含 VERTEX
     resources_->uploadImageLayers(textureImage, pixels.rgba.data(), byteSize, pixels.width,
                                   pixels.height, layerCount,
                                   VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
                                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    textureView = resources_->createImageView(textureImage.image, VK_FORMAT_R8G8B8A8_SRGB,
+    textureView = resources_->createImageView(textureImage.image, VK_FORMAT_R8G8B8A8_UNORM,
                                               VK_IMAGE_ASPECT_COLOR_BIT, layerCount,
                                               VK_IMAGE_VIEW_TYPE_2D_ARRAY);
 
@@ -358,17 +358,26 @@ void TextureManager::createRainTexture() {
     const auto height = static_cast<std::uint32_t>(pixels.height);
     const VkDeviceSize byteSize = static_cast<VkDeviceSize>(pixels.rgba.size());
     rainTextureImage =
-        resources_->createImage(width, height, 1U, VK_FORMAT_R8G8B8A8_SRGB,
+        resources_->createImage(width, height, 1U, VK_FORMAT_R8G8B8A8_UNORM,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     resources_->uploadImageLayers(rainTextureImage, pixels.rgba.data(), byteSize, width, height, 1U,
                                   VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
                                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     // 单张 2D 图像，不是数组层：雨幕是 64x256 的竖直贴图，见函数头的说明
-    rainTextureView = resources_->createImageView(rainTextureImage.image, VK_FORMAT_R8G8B8A8_SRGB,
+    rainTextureView = resources_->createImageView(rainTextureImage.image, VK_FORMAT_R8G8B8A8_UNORM,
                                                   VK_IMAGE_ASPECT_COLOR_BIT);
     std::cout << "Loaded vanilla rain texture: " << pixels.width << 'x' << pixels.height << '\n';
 }
 
+// 所有被采样的颜色纹理都是 **UNORM**，不是 SRGB。
+//
+// vanilla 从不做伽马转换：纹素采到什么值就拿什么值乘顶点色、乘亮度、混雾，
+// 帧缓冲里存的也正是这些值。本项目的世界着色器逐条转写的就是那套算式，里面的
+// 每个系数（面明暗 0.8/0.68/0.5、雾色 0x050533、方块光暖色、生物群系色、羊毛
+// 染料色）都是 vanilla 的 sRGB 编码值。用 SRGB 格式的图像意味着采样器先把纹素
+// 解码成线性，于是"编码值 × 线性值"——算式没错，两边却不在一个空间：黑羊会渲染
+// 成 #5F5F65 而不是 #1D1D21，方块底面是 0xBC 而不是 0x80。
+// 采样器返回原始字节，那套转写才成立。
 void TextureManager::createGuiTexture() {
     // 26.1 把 HUD 与控件美术拆成一个个具名的 gui/sprites 文件
     // 启动时把本渲染器用到的那一小撮打进兼容层
@@ -556,12 +565,12 @@ void TextureManager::createGuiTexture() {
     const auto byteSize = static_cast<VkDeviceSize>(pixels.size());
     guiTextureImage = resources_->createImage(
         static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), kGuiLayerCount,
-        VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+        VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     resources_->uploadImageLayers(guiTextureImage, pixels.data(), byteSize,
                                   static_cast<std::uint32_t>(width),
                                   static_cast<std::uint32_t>(height), kGuiLayerCount,
                                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    guiTextureView = resources_->createImageView(guiTextureImage.image, VK_FORMAT_R8G8B8A8_SRGB,
+    guiTextureView = resources_->createImageView(guiTextureImage.image, VK_FORMAT_R8G8B8A8_UNORM,
                                                  VK_IMAGE_ASPECT_COLOR_BIT, kGuiLayerCount,
                                                  VK_IMAGE_VIEW_TYPE_2D_ARRAY);
     std::cout << "Loaded Minecraft GUI texture array: " << width << 'x' << height << " x "
@@ -594,7 +603,7 @@ void TextureManager::createPanoramaTexture() {
     const auto byteSize = static_cast<VkDeviceSize>(pixels.size());
     panoramaTextureImage = resources_->createImage(
         static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
-        static_cast<std::uint32_t>(kPanoramaFaces), VK_FORMAT_R8G8B8A8_SRGB,
+        static_cast<std::uint32_t>(kPanoramaFaces), VK_FORMAT_R8G8B8A8_UNORM,
         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     resources_->uploadImageLayers(panoramaTextureImage, pixels.data(), byteSize,
                                   static_cast<std::uint32_t>(width),
@@ -602,7 +611,7 @@ void TextureManager::createPanoramaTexture() {
                                   static_cast<std::uint32_t>(kPanoramaFaces),
                                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     panoramaTextureView = resources_->createImageView(
-        panoramaTextureImage.image, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT,
+        panoramaTextureImage.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT,
         static_cast<std::uint32_t>(kPanoramaFaces), VK_IMAGE_VIEW_TYPE_2D_ARRAY);
     std::cout << "Loaded Minecraft title panorama: " << width << 'x' << height << " x "
               << kPanoramaFaces << " faces\n";
@@ -625,10 +634,10 @@ void TextureManager::createPanoramaSampler() {
 void TextureManager::createBiomeTextureResources() {
     const std::uint32_t size = static_cast<std::uint32_t>(kBiomeTextureSize);
     biomeGrassImage =
-        resources_->createImage(size, size, 1, VK_FORMAT_R8G8B8A8_SRGB,
+        resources_->createImage(size, size, 1, VK_FORMAT_R8G8B8A8_UNORM,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     biomeFoliageImage =
-        resources_->createImage(size, size, 1, VK_FORMAT_R8G8B8A8_SRGB,
+        resources_->createImage(size, size, 1, VK_FORMAT_R8G8B8A8_UNORM,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     auto samplerInfo = vkStructure<VkSamplerCreateInfo>(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
     // 线性过滤把逐格的群系颜色变成跨群系边界的、由硬件插值出的逐像素平滑渐变
@@ -641,9 +650,9 @@ void TextureManager::createBiomeTextureResources() {
     samplerInfo.maxLod = 0.0F;
     checkVk(vkCreateSampler(device_, &samplerInfo, nullptr, &biomeSampler),
             "vkCreateSampler(biome)");
-    biomeGrassView = resources_->createImageView(biomeGrassImage.image, VK_FORMAT_R8G8B8A8_SRGB,
+    biomeGrassView = resources_->createImageView(biomeGrassImage.image, VK_FORMAT_R8G8B8A8_UNORM,
                                                  VK_IMAGE_ASPECT_COLOR_BIT);
-    biomeFoliageView = resources_->createImageView(biomeFoliageImage.image, VK_FORMAT_R8G8B8A8_SRGB,
+    biomeFoliageView = resources_->createImageView(biomeFoliageImage.image, VK_FORMAT_R8G8B8A8_UNORM,
                                                    VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
@@ -801,7 +810,7 @@ void TextureManager::createEntityTextureArray(
 
     const VkDeviceSize byteSize = static_cast<VkDeviceSize>(atlas.size());
     entityTextureImage =
-        resources_->createImage(atlasWidth, atlasHeight, layerCount, VK_FORMAT_R8G8B8A8_SRGB,
+        resources_->createImage(atlasWidth, atlasHeight, layerCount, VK_FORMAT_R8G8B8A8_UNORM,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     // 骨骼的层号在顶点阶段选层，因此目标阶段含 VERTEX
     resources_->uploadImageLayers(entityTextureImage, atlas.data(), byteSize, atlasWidth,
@@ -809,7 +818,7 @@ void TextureManager::createEntityTextureArray(
                                   VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
                                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     entityTextureView = resources_->createImageView(entityTextureImage.image,
-                                                    VK_FORMAT_R8G8B8A8_SRGB,
+                                                    VK_FORMAT_R8G8B8A8_UNORM,
                                                     VK_IMAGE_ASPECT_COLOR_BIT, layerCount,
                                                     VK_IMAGE_VIEW_TYPE_2D_ARRAY);
     std::cout << "Loaded entity texture atlas: " << atlasWidth << 'x' << atlasHeight << " x "

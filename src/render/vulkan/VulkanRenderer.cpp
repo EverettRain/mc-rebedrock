@@ -4090,9 +4090,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     [[nodiscard]] AllocatedImage
     createImage(std::uint32_t width, std::uint32_t height, std::uint32_t layers, VkFormat format,
-                VkImageUsageFlags usage, VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
-                VkImageCreateFlags flags = 0) const {
-        return resources_.createImage(width, height, layers, format, usage, samples, flags);
+                VkImageUsageFlags usage,
+                VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT) const {
+        return resources_.createImage(width, height, layers, format, usage, samples);
     }
 
     void destroyBuffer(AllocatedBuffer& buffer) const noexcept { resources_.destroyBuffer(buffer); }
@@ -5185,11 +5185,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         colorTargets.resize(swapchainImages.size());
         for (auto& target : colorTargets) {
             target.image = createImage(
-                swapchainExtent.width, swapchainExtent.height, 1, sceneSrgbFormat(),
+                swapchainExtent.width, swapchainExtent.height, 1, sceneUnormFormat(),
                 VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                 renderSampleCount());
             target.view =
-                createImageView(target.image.image, sceneSrgbFormat(), VK_IMAGE_ASPECT_COLOR_BIT);
+                createImageView(target.image.image, sceneUnormFormat(), VK_IMAGE_ASPECT_COLOR_BIT);
         }
     }
 
@@ -5224,12 +5224,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             target.image = createImage(swapchainExtent.width, swapchainExtent.height, 1,
                                        sceneUnormFormat(),
                                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                           VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                                       VK_SAMPLE_COUNT_1_BIT,
-                                       VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT);
-            target.srgbView =
-                createImageView(target.image.image, sceneSrgbFormat(), VK_IMAGE_ASPECT_COLOR_BIT);
-            target.unormView =
+                                           VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+            target.view =
                 createImageView(target.image.image, sceneUnormFormat(), VK_IMAGE_ASPECT_COLOR_BIT);
         }
     }
@@ -5315,7 +5311,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     void createRenderPass() {
         VkAttachmentDescription color{};
-        color.format = sceneSrgbFormat();
+        color.format = sceneUnormFormat();
         color.samples = renderSampleCount();
         color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color.storeOp = renderSampleCount() == VK_SAMPLE_COUNT_1_BIT
@@ -5338,7 +5334,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         VkAttachmentDescription resolve{};
-        resolve.format = sceneSrgbFormat();
+        resolve.format = sceneUnormFormat();
         resolve.samples = VK_SAMPLE_COUNT_1_BIT;
         resolve.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         resolve.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -5710,14 +5706,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         depthStencil.depthTestEnable = VK_TRUE;
         depthStencil.depthWriteEnable = VK_TRUE;
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
-        // 第一人称手持物与背包里的玩家预览画在 GUI 那趟，因此要用同一份着色器的
-        // "输出编码值"变体（item_entity_gui.frag.spv，由 item_entity.frag 加
-        // -DENCODE_SRGB_OUTPUT 编出），否则它会比世界里的同一个模型暗一大截
-        const auto heldItemFragmentCode = readSpirv(shaderRoot / "item_entity_gui.frag.spv");
-        const auto heldItemFragmentModule = createShaderModule(heldItemFragmentCode);
-        fragmentStage.module = heldItemFragmentModule;
-        const std::array heldItemStages{vertexStage, fragmentStage};
-        pipelineInfo.pStages = heldItemStages.data();
+        // 第一人称手持物与背包里的玩家预览画在 GUI 那趟（单采样、自己的深度），
+        // 但用的是与世界里同一份着色器——整帧都在编码值上工作，不再需要两个变体
         multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
         pipelineInfo.renderPass = worldPipelines_.guiRenderPass;
         const auto heldItemResult = vkCreateGraphicsPipelines(
@@ -5725,7 +5715,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         multisampling.rasterizationSamples = renderSampleCount();
         pipelineInfo.renderPass = worldPipelines_.renderPass;
         checkVk(heldItemResult, "vkCreateGraphicsPipelines(held item)");
-        vkDestroyShaderModule(device, heldItemFragmentModule, nullptr);
         vkDestroyShaderModule(device, itemFragmentModule, nullptr);
         vkDestroyShaderModule(device, itemVertexModule, nullptr);
     }
@@ -5911,7 +5900,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void createGuiFramebuffers() {
         guiFramebuffers.resize(sceneTargets.size());
         for (std::size_t index = 0; index < guiFramebuffers.size(); ++index) {
-            const std::array attachments{sceneTargets[index].unormView,
+            const std::array attachments{sceneTargets[index].view,
                                          guiDepthTargets[index].view};
             auto info =
                 vkStructure<VkFramebufferCreateInfo>(VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO);
@@ -5932,12 +5921,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             std::array<VkImageView, 3> attachments{};
             std::uint32_t attachmentCount = 2U;
             if (renderSampleCount() == VK_SAMPLE_COUNT_1_BIT) {
-                attachments[0] = sceneTargets[index].srgbView;
+                attachments[0] = sceneTargets[index].view;
                 attachments[1] = depthTargets[index].view;
             } else {
                 attachments[0] = colorTargets[index].view;
                 attachments[1] = depthTargets[index].view;
-                attachments[2] = sceneTargets[index].srgbView;
+                attachments[2] = sceneTargets[index].view;
                 attachmentCount = 3U;
             }
             auto info =
@@ -5977,11 +5966,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         guiFramebuffers.clear();
         for (auto& target : sceneTargets) {
-            if (target.unormView != VK_NULL_HANDLE) {
-                vkDestroyImageView(device, target.unormView, nullptr);
-            }
-            if (target.srgbView != VK_NULL_HANDLE) {
-                vkDestroyImageView(device, target.srgbView, nullptr);
+            if (target.view != VK_NULL_HANDLE) {
+                vkDestroyImageView(device, target.view, nullptr);
             }
             if (allocator != VK_NULL_HANDLE) {
                 destroyImage(target.image);
@@ -6891,9 +6877,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     std::vector<VkImage> swapchainImages;
     VkFormat swapchainFormat = VK_FORMAT_UNDEFINED;
-    // 场景图的两个面孔。世界那趟按 SRGB 视图写（着色器出线性值，硬件编码，混合在
-    // 线性空间），GUI 那趟按 UNORM 视图写（着色器直接出编码值，混合也在编码值上）；
-    // 同一批字节，两种解释。
+    // 整帧都画在**未经伽马转换**的目标上，与 vanilla 一致：着色器写的就是最终字节，
+    // 混合也发生在这些 sRGB 编码值上。所有被采样的颜色纹理同样是 UNORM，因此纹素
+    // 一路不经过任何传输函数——世界着色器里逐条转写自 vanilla 的算式于是成立。
     // 通道序必须跟交换链一致——最后那步是 vkCmdCopyImage，逐字节搬运不做任何转换，
     // BGRA 的场景图 copy 进 RGBA 的交换链会把红蓝对调。
     [[nodiscard]] VkFormat sceneUnormFormat() const {
@@ -6901,10 +6887,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                        swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB
                    ? VK_FORMAT_R8G8B8A8_UNORM
                    : VK_FORMAT_B8G8R8A8_UNORM;
-    }
-    [[nodiscard]] VkFormat sceneSrgbFormat() const {
-        return sceneUnormFormat() == VK_FORMAT_R8G8B8A8_UNORM ? VK_FORMAT_R8G8B8A8_SRGB
-                                                              : VK_FORMAT_B8G8R8A8_SRGB;
     }
     VkExtent2D swapchainExtent{};
     VkFormat depthFormat = VK_FORMAT_UNDEFINED;
@@ -6917,8 +6899,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 每个交换链图像一份，帧间不会互相踩
     struct SceneTarget final {
         AllocatedImage image;
-        VkImageView srgbView = VK_NULL_HANDLE;
-        VkImageView unormView = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
     };
     std::vector<SceneTarget> sceneTargets;
     // GUI 那趟自己的深度：背包里的 3D 玩家预览和第一人称手持物要深度测试，

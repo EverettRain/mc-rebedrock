@@ -65,12 +65,6 @@ vec4 samplePanorama(vec3 ray) {
     return texture(panoramaTextures, vec3(uv, layer));
 }
 
-// GUI 那趟画在场景图的 UNORM 视图上（世界那趟画在同一张图的 SRGB 视图上），
-// 因此这里要自己把线性值编码成 sRGB——vanilla 的界面也正是在编码值上合成的。
-vec3 guiEncode(vec3 value) {
-    return mix(value * 12.92, 1.055 * pow(value, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, value));
-}
-
 void main() {
     vec4 texel;
     if (pano.blur.x < 0.5) {
@@ -92,5 +86,5 @@ void main() {
         }
         texel *= 1.0 / 25.0;
     }
-    outColor = vec4(guiEncode(texel.rgb), 1.0);
+    outColor = vec4(texel.rgb, 1.0);
 }
