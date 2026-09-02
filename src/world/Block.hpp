@@ -610,6 +610,21 @@ enum class BlockOrientation : std::uint8_t {
     Down,
 };
 
+// RN-8c: which cube model json a Cube/DirectionalCube block is drawn from — the
+// per-face `uv` rects and `rotation` quadrants that model declares. This replaces
+// a per-block array of six hand-written quarter-turns: a turn count is only half
+// of what a json face says, and the observer proves it, since its up face carries
+// an inverted rect (`"uv": [0,16,16,0]`) that no rotation can express.
+//
+// It names a MODEL, not a block: every plain cube in the roster shares Default,
+// both pistons share PistonTemplate. The rects themselves live with the mesher,
+// which is the only thing that needs them.
+enum class CubeUvModel : std::uint8_t {
+    Default,        // block/cube: every face uv [0,0,16,16], no rotation
+    PistonTemplate, // template_piston.json: down 180, west 270, east 90
+    Observer,       // observer.json: up face uv [0,16,16,0], no rotation
+};
+
 enum class BlockRenderLayer : std::uint8_t {
     Opaque,
     Cutout,
@@ -937,14 +952,10 @@ struct BlockDefinition final {
     // 3=lit). Empty for every other model.
     std::array<const char*, kMaxModelTextureSlots> modelTextures{};
     // RN-4c: the per-model-face base UV rotation (quarter-turns 0..3), indexed by
-    // BlockOrientation — the direction of the face in the block's *own* model,
-    // before any FACING rotation. Transcribed straight from the block's JE model
-    // json face `rotation` (÷90). This is the single per-block source the cube
-    // mesher composes with the FACING-driven rotation, so a directional block's
-    // sprites turn with it faithfully instead of staying locked to world axes.
-    // Every entry defaults to 0 — a block whose model rotates no face (or does not
-    // rotate at all) needs nothing here.
-    std::array<std::uint8_t, 6> modelFaceUvTurns{};
+    // RN-8c: which cube model json this block is drawn from, i.e. what its six
+    // faces declare for `uv` and `rotation`. The mesher bakes those, plus the
+    // FACING transform, into the block's UVs once at startup.
+    CubeUvModel cubeUvModel = CubeUvModel::Default;
     float hardness = 0.0F;
     float blastResistance = 0.0F;
     std::uint8_t maximumStackSize = 64U;
@@ -1105,18 +1116,12 @@ class BlockProperties final {
         copy.definition_.modelTextures = {slot0, slot1, slot2, slot3, slot4};
         return copy;
     }
-    // RN-4c: declare per-model-face base UV rotations (0..3 quarter-turns), by the
-    // six directions in BlockOrientation order — north, east, south, west, up,
-    // down — transcribed from the block's JE model json face `rotation` (÷90). The
-    // cube mesher composes these with the block's FACING rotation, so the sprites
-    // rotate with the block. Any face the model does not rotate stays 0. This is
-    // the general knob for facing-aware UV orientation; a block that needs none
-    // simply never calls it.
-    [[nodiscard]] constexpr BlockProperties modelFaceUvTurns(
-        std::uint8_t north, std::uint8_t east, std::uint8_t south, std::uint8_t west,
-        std::uint8_t up, std::uint8_t down) const {
+    // RN-8c: which cube model json this block is drawn from. Declaring the model
+    // rather than six turn counts is what lets a face carry an inverted uv rect
+    // as well as a rotation.
+    [[nodiscard]] constexpr BlockProperties cubeUvModel(CubeUvModel model) const {
         BlockProperties copy = *this;
-        copy.definition_.modelFaceUvTurns = {north, east, south, west, up, down};
+        copy.definition_.cubeUvModel = model;
         return copy;
     }
     // RN-6: declare BlockModel::RedstoneWire and its two texture slots — 0 the
@@ -2108,6 +2113,10 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // front never changes; POWERED swaps the back to observer_back_on.
         .directionalCube("observer_front", nullptr, "observer_back", "observer_back_on",
                          "observer_top", "observer_top", "observer_side")
+        // RN-8c: observer.json declares its UP face with an inverted rect
+        // ("uv": [0,16,16,0]) — the registered "observer top uv-rect flipped"
+        // defect, which is a property of the model, not of the renderer.
+        .cubeUvModel(CubeUvModel::Observer)
         .strength(3.0F)
         .directionalFacing()
         .state(StateProperty::Powered, 2U)
@@ -2132,10 +2141,9 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("piston_side")
         .directionalCube("piston_top", nullptr, "piston_bottom", nullptr, "piston_side",
                          "piston_side", "piston_side")
-        // RN-4c: template_piston.json's per-face UV rotation (north,east,south,west,
-        // up,down): east 90°, west 270°, down 180° wrap piston_side's frame around
-        // the platform; the platform/bottom/top faces are unrotated.
-        .modelFaceUvTurns(0, 1, 0, 3, 0, 2)
+        // RN-8c: template_piston.json's own per-face rotations (down 180, west
+        // 270, east 90) wrap piston_side's frame around the platform.
+        .cubeUvModel(CubeUvModel::PistonTemplate)
         .strength(1.5F)
         .directionalFacing()
         .state(StateProperty::Powered, 2U)
@@ -2144,8 +2152,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("piston_side")
         .directionalCube("piston_top_sticky", nullptr, "piston_bottom", nullptr, "piston_side",
                          "piston_side", "piston_side")
-        // RN-4c: same template_piston.json face rotations as the plain piston.
-        .modelFaceUvTurns(0, 1, 0, 3, 0, 2)
+        // RN-8c: the same template_piston.json face rotations as the plain piston.
+        .cubeUvModel(CubeUvModel::PistonTemplate)
         .strength(1.5F)
         .directionalFacing()
         .state(StateProperty::Powered, 2U)

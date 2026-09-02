@@ -782,6 +782,100 @@ int main() {
         expectUv(slab, south, {2.0F, 1.0F, 2.0F}, 1.0F, 1.0F, "slab +z uv at (x1,bottom)");
     }
 
+    // --- RN-8c: a cube's UV comes from its model json, baked with FACING -------
+    //
+    // Every number below is hand-derived from the vanilla model json through JE's
+    // FaceBakery rules (defaultFaceUV / an explicit rect, sampled in FaceInfo
+    // order, with the blockstate rotation applied to the vertices), NOT read back
+    // out of the mesher.
+    {
+        using mc::world::Block;
+        using mc::world::BlockOrientation;
+        using mc::world::BlockState;
+        const auto meshOf = [](BlockState state) {
+            mc::world::World world;
+            mc::world::Chunk chunk;
+            chunk.setState(1, mc::world::kMinY + 1, 1, state);
+            world.setChunk({0, 0}, std::move(chunk));
+            return mc::world::ChunkMesher::buildSection(world, {0, 0}, 0);
+        };
+        constexpr glm::vec3 up{0.0F, 1.0F, 0.0F};
+        constexpr glm::vec3 down{0.0F, -1.0F, 0.0F};
+        constexpr glm::vec3 north{0.0F, 0.0F, -1.0F};
+        constexpr glm::vec3 east{1.0F, 0.0F, 0.0F};
+
+        // A plain cube: block/cube gives every face uv [0,0,16,16] with no
+        // rotation, so defaultFaceUV's up rule (from.x, from.z, to.x, to.z) makes
+        // the top read u = x, v = z. The old kUvs assignment gave u = z, v = 1-x —
+        // the top face turned a quarter turn, which is invisible on stone and
+        // plain on a crafting table or a hay bale.
+        {
+            const auto& cube = meshOf(BlockState{Block::Stone}).mesh;
+            expectUv(cube, up, {1.0F, 2.0F, 1.0F}, 0.0F, 0.0F, "cube top uv (x0,z0)");
+            expectUv(cube, up, {1.0F, 2.0F, 2.0F}, 0.0F, 1.0F, "cube top uv (x0,z1)");
+            expectUv(cube, up, {2.0F, 2.0F, 2.0F}, 1.0F, 1.0F, "cube top uv (x1,z1)");
+            expectUv(cube, up, {2.0F, 2.0F, 1.0F}, 1.0F, 0.0F, "cube top uv (x1,z0)");
+            // Down: (from.x, 16-to.z, to.x, 16-from.z) -> u = x, v = 1-z.
+            expectUv(cube, down, {1.0F, 1.0F, 2.0F}, 0.0F, 0.0F, "cube bottom uv (x0,z1)");
+            expectUv(cube, down, {2.0F, 1.0F, 1.0F}, 1.0F, 1.0F, "cube bottom uv (x1,z0)");
+            // A side is unchanged: north reads u = 1-x, v = 1-y.
+            expectUv(cube, north, {2.0F, 1.0F, 1.0F}, 0.0F, 1.0F, "cube -z uv (x1,bottom)");
+            expectUv(cube, north, {1.0F, 2.0F, 1.0F}, 1.0F, 0.0F, "cube -z uv (x0,top)");
+        }
+
+        // The observer, facing north — vanilla's identity variant
+        // (blockstates/observer.json has no rotation on facing=north), so its
+        // faces come out of the model unturned. This is what the old empirical
+        // anchor got wrong: it pinned facing=up as the zero-turn orientation, so
+        // every other facing, the identity one included, was a quarter turn off.
+        {
+            const auto& observer = meshOf(BlockState{Block::Observer,
+                                                     BlockOrientation::North}).mesh;
+            expectUv(observer, north, {2.0F, 1.0F, 1.0F}, 0.0F, 1.0F, "observer front (x1,bot)");
+            expectUv(observer, north, {1.0F, 1.0F, 1.0F}, 1.0F, 1.0F, "observer front (x0,bot)");
+            expectUv(observer, north, {1.0F, 2.0F, 1.0F}, 1.0F, 0.0F, "observer front (x0,top)");
+            // observer.json's up face declares "uv": [0,16,16,0] — V runs
+            // backwards, so the top reads u = x, v = 1-z where a plain cube reads
+            // v = z. This is the registered "observer top uv-rect flipped" defect,
+            // and no per-face quarter-turn count can express it.
+            expectUv(observer, up, {1.0F, 2.0F, 1.0F}, 0.0F, 1.0F, "observer top (x0,z0)");
+            expectUv(observer, up, {1.0F, 2.0F, 2.0F}, 0.0F, 0.0F, "observer top (x0,z1)");
+            expectUv(observer, up, {2.0F, 2.0F, 2.0F}, 1.0F, 0.0F, "observer top (x1,z1)");
+            expectUv(observer, up, {2.0F, 2.0F, 1.0F}, 1.0F, 1.0F, "observer top (x1,z0)");
+        }
+
+        // The piston, facing north: template_piston.json puts "rotation": 90 on
+        // its east face, which is a Quadrant, i.e. a cyclic shift of the sampled
+        // UV corner. Vertex (x1,y0,z1) samples the rect corner one step on.
+        {
+            const auto& piston = meshOf(BlockState{Block::Piston,
+                                                   BlockOrientation::North}).mesh;
+            expectUv(piston, east, {2.0F, 1.0F, 2.0F}, 1.0F, 1.0F, "piston +x uv (z1,bot)");
+            expectUv(piston, east, {2.0F, 1.0F, 1.0F}, 1.0F, 0.0F, "piston +x uv (z0,bot)");
+            expectUv(piston, east, {2.0F, 2.0F, 1.0F}, 0.0F, 0.0F, "piston +x uv (z0,top)");
+            expectUv(piston, east, {2.0F, 2.0F, 2.0F}, 0.0F, 1.0F, "piston +x uv (z1,top)");
+            // Its north face declares no rotation, so it reads like a plain cube's.
+            expectUv(piston, north, {2.0F, 1.0F, 1.0F}, 0.0F, 1.0F, "piston -z uv (x1,bot)");
+        }
+
+        // Rotating the block rotates its UVs rigidly, because the bake rotates the
+        // vertices and re-winds them. Facing east is vanilla's y=90 variant, which
+        // takes the model's north face onto the world's east face carrying its
+        // texture with it — so the observer's front, now on +X, reads exactly as
+        // the facing=north front did on -Z.
+        {
+            const auto& turned = meshOf(BlockState{Block::Observer,
+                                                   BlockOrientation::East}).mesh;
+            // Rotating the model's north face onto +X by y=90 maps its four
+            // vertices (1,1,0),(1,0,0),(0,0,0),(0,1,0) — carrying uv (0,0),(0,1),
+            // (1,1),(1,0) — onto (1,1,1),(1,0,1),(1,0,0),(1,1,0).
+            expectUv(turned, east, {2.0F, 1.0F, 2.0F}, 0.0F, 1.0F, "observer east front (bot,z1)");
+            expectUv(turned, east, {2.0F, 1.0F, 1.0F}, 1.0F, 1.0F, "observer east front (bot,z0)");
+            expectUv(turned, east, {2.0F, 2.0F, 1.0F}, 1.0F, 0.0F, "observer east front (top,z0)");
+            expectUv(turned, east, {2.0F, 2.0F, 2.0F}, 0.0F, 0.0F, "observer east front (top,z1)");
+        }
+    }
+
     // --- RN-8a / RN-8b: the face-cull criterion, row by row --------------------
     //
     // Every row of RN-8's zero-regression table, asserted at the mesh. The

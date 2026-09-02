@@ -238,138 +238,140 @@ constexpr float kWaterFlowLayer = 32.0F;
     return {0, 0, 0};
 }
 
-[[nodiscard]] constexpr glm::ivec3 faceDefaultUp(Face face) {
-    return (face == Face::PositiveY || face == Face::NegativeY) ? glm::ivec3{1, 0, 0}
-                                                                : glm::ivec3{0, 1, 0};
+// RN-8c: four constructs used to live here — `faceDefaultUp` and
+// `quarterTurnsBetween` (the geometry of "how far has this face's texture-up
+// turned"), `directionalCubeUvTurns` (a per-face quarter-turn count anchored
+// empirically on facing=up, because nothing had derived it), and
+// `kPistonTemplateQuadrant` + `pureCubeUvTurns` + `cubeFaceUvTurns` (which
+// subtracted the piston template's own face rotations back out of that empirical
+// anchor so a second model could reuse it).
+//
+// All of it existed to reconstruct as a number what JE gets for free: rotate the
+// model's vertices onto FACING, re-wind them, and the UV rotation falls out.
+// `kCubeUv` below does that, through the same bakery every other path in this
+// file now goes through.
+
+// The RN-4c rotation as a matrix, for the bakery's ModelTransform — the same six
+// cases `rotateVecByFacing` spells as integer permutations, pinned against it by
+// a test rather than trusted to stay in step.
+[[nodiscard]] inline glm::mat3 facingMatrix(BlockOrientation facing) {
+    switch (facing) {
+    case BlockOrientation::North: return glm::mat3(1.0F);          // identity
+    case BlockOrientation::South: return bake::axisMatrix('y', 180.0F);
+    case BlockOrientation::East: return bake::axisMatrix('y', -90.0F);
+    case BlockOrientation::West: return bake::axisMatrix('y', 90.0F);
+    case BlockOrientation::Up: return bake::axisMatrix('x', 90.0F);
+    case BlockOrientation::Down: return bake::axisMatrix('x', -90.0F);
+    }
+    return glm::mat3(1.0F);
 }
 
-// 90° CCW turns (about +normal) taking direction `from` onto `to` (both unit and
-// perpendicular to normal). Same → 0, opposite → 2, else the cross product's sign
-// against the normal picks 1 (CCW) or 3.
-[[nodiscard]] constexpr int quarterTurnsBetween(glm::ivec3 from, glm::ivec3 to, glm::ivec3 normal) {
-    if (from == to) return 0;
-    if (from == -to) return 2;
-    const glm::ivec3 cross{from.y * to.z - from.z * to.y, from.z * to.x - from.x * to.z,
-                           from.x * to.y - from.y * to.x};
-    return (cross.x * normal.x + cross.y * normal.y + cross.z * normal.z) > 0 ? 1 : 3;
+// The mesher face a bakery facing names — the inverse of `bakeFacingOf`.
+[[nodiscard]] constexpr Face mesherFaceOf(bake::Facing facing) {
+    switch (facing) {
+    case bake::Facing::Down: return Face::NegativeY;
+    case bake::Facing::Up: return Face::PositiveY;
+    case bake::Facing::North: return Face::NegativeZ;
+    case bake::Facing::South: return Face::PositiveZ;
+    case bake::Facing::West: return Face::NegativeX;
+    case bake::Facing::East: return Face::PositiveX;
+    }
+    return Face::PositiveY;
 }
 
-// How many 90° turns to rotate a DirectionalCube world face's UVs by, so its
-// texture rotates rigidly with FACING. Anchored so that facing=up needs zero
-// turns on every face (the orientation observed to already render correctly):
-// baseUp is defined as the up-orientation's own default, then any facing is the
-// rigid rotation of that. The whole thing collapses to comparing the face's
-// default texture-up against where the up-anchored texture-up lands under this
-// facing.
-[[nodiscard]] constexpr int directionalCubeUvTurns(BlockOrientation facing, Face worldFace) {
-    constexpr BlockOrientation kAnchor = BlockOrientation::Up;
-    const glm::ivec3 normal = faceNormalVec(worldFace);
-    // The base face this world face came from, and the base texture-up that makes
-    // the anchor orientation render with zero turns.
-    const glm::ivec3 baseNormal = rotateVecByFacing(inverseFacingRotation(facing), normal);
-    const Face baseFace = [&] {
-        for (const auto& fd : kFaces) {
-            if (faceNormalVec(fd.face) == baseNormal) return fd.face;
-        }
-        return worldFace;
-    }();
-    const glm::ivec3 anchorFaceNormal = rotateVecByFacing(kAnchor, baseNormal);
-    const Face anchorFace = [&] {
-        for (const auto& fd : kFaces) {
-            if (faceNormalVec(fd.face) == anchorFaceNormal) return fd.face;
-        }
-        return worldFace;
-    }();
-    const glm::ivec3 baseUp =
-        rotateVecByFacing(inverseFacingRotation(kAnchor), faceDefaultUp(anchorFace));
-    const glm::ivec3 targetUp = rotateVecByFacing(facing, baseUp);
-    return quarterTurnsBetween(faceDefaultUp(worldFace), targetUp, normal);
+// A cube model json's six faces as it declares them: a `uv` rect and a
+// `rotation` quadrant each, in bake::Facing order. Three models cover the whole
+// roster, which is the point — this is keyed by model, not by block.
+struct CubeUvModelDesc final {
+    std::array<bake::FaceUv, bake::kFacingCount> rect{};
+    std::array<std::uint8_t, bake::kFacingCount> quadrant{};
+};
+
+[[nodiscard]] inline CubeUvModelDesc cubeUvModelDesc(CubeUvModel model) {
+    constexpr bake::FaceUv kWholeSprite{0.0F, 0.0F, 16.0F, 16.0F, /*absent=*/false};
+    CubeUvModelDesc desc;
+    desc.rect.fill(kWholeSprite);
+    const auto index = [](bake::Facing facing) { return static_cast<std::size_t>(facing); };
+    switch (model) {
+    case CubeUvModel::Default:
+        // block/cube: every face takes the whole sprite, unrotated.
+        break;
+    case CubeUvModel::PistonTemplate:
+        // template_piston.json: "rotation" 180 on down, 270 on west, 90 on east;
+        // up/north/south carry none. These wrap piston_side's frame around the
+        // platform.
+        desc.quadrant[index(bake::Facing::Down)] = bake::kQuadrant180;
+        desc.quadrant[index(bake::Facing::West)] = bake::kQuadrant270;
+        desc.quadrant[index(bake::Facing::East)] = bake::kQuadrant90;
+        break;
+    case CubeUvModel::Observer:
+        // observer.json: the up face declares "uv": [0,16,16,0] — a rect whose V
+        // runs backwards. That is the registered "observer top uv-rect flipped"
+        // defect, and it is a property of the model, which is why a per-face
+        // quarter-turn count could never express it.
+        desc.rect[index(bake::Facing::Up)] = {0.0F, 16.0F, 16.0F, 0.0F, /*absent=*/false};
+        break;
+    }
+    return desc;
 }
 
-// The anchor: facing=up is the orientation observed to render correctly with the
-// naive (un-rotated) UVs, so it must stay zero-turn on every face.
-static_assert(directionalCubeUvTurns(BlockOrientation::Up, Face::PositiveX) == 0);
-static_assert(directionalCubeUvTurns(BlockOrientation::Up, Face::NegativeX) == 0);
-static_assert(directionalCubeUvTurns(BlockOrientation::Up, Face::PositiveY) == 0);
-static_assert(directionalCubeUvTurns(BlockOrientation::Up, Face::NegativeY) == 0);
-static_assert(directionalCubeUvTurns(BlockOrientation::Up, Face::PositiveZ) == 0);
-static_assert(directionalCubeUvTurns(BlockOrientation::Up, Face::NegativeZ) == 0);
-// Facing down flips the block end-for-end from up, so its four side faces turn
-// 180° (the observed "sides still point up when placed facing down" bug), while
-// the two caps (now the front/back platform faces) stay upright.
-static_assert(directionalCubeUvTurns(BlockOrientation::Down, Face::PositiveX) == 2);
-static_assert(directionalCubeUvTurns(BlockOrientation::Down, Face::NegativeX) == 2);
-static_assert(directionalCubeUvTurns(BlockOrientation::Down, Face::PositiveZ) == 2);
-static_assert(directionalCubeUvTurns(BlockOrientation::Down, Face::NegativeZ) == 2);
-static_assert(directionalCubeUvTurns(BlockOrientation::Down, Face::PositiveY) == 0);
-static_assert(directionalCubeUvTurns(BlockOrientation::Down, Face::NegativeY) == 0);
-// Every result is a valid quarter-turn count.
-static_assert(directionalCubeUvTurns(BlockOrientation::North, Face::PositiveY) >= 0 &&
-              directionalCubeUvTurns(BlockOrientation::North, Face::PositiveY) < 4);
+inline constexpr std::size_t kCubeUvModelCount = 3;
 
-// RN-4c: the BlockOrientation naming a unit axis vector (the inverse of
-// faceNormalVec / orientationOfFace, over an already-normalised axis vector).
-[[nodiscard]] constexpr BlockOrientation orientationOfNormal(glm::ivec3 n) {
-    if (n.x > 0) return BlockOrientation::East;
-    if (n.x < 0) return BlockOrientation::West;
-    if (n.y > 0) return BlockOrientation::Up;
-    if (n.y < 0) return BlockOrientation::Down;
-    if (n.z > 0) return BlockOrientation::South;
-    return BlockOrientation::North;
-}
+// RN-8c: every cube's UVs, baked once at startup. Indexed
+// [cube model][FACING][world face][corner]: 3 x 6 x 6 x 4 vec2 = 3456 bytes, L1
+// resident, and the whole thing is derived by putting a 16-unit box through
+// `bakeElementFace` with the FACING transform — the same primitive the element
+// models go through. The FACING-driven UV rotation is not computed here at all;
+// it falls out of rotating the vertices and re-winding them, exactly as it does
+// in JE.
+struct CubeUvTable final {
+    std::array<std::array<std::array<std::array<glm::vec2, 4>, 6>, 6>, kCubeUvModelCount> uv{};
+};
 
-// RN-4c: the model face a world face shows, given FACING — the inverse blockstate
-// rotation applied to the world normal, named back as a BlockOrientation.
-[[nodiscard]] constexpr std::size_t modelFaceShownOn(BlockOrientation facing, Face worldFace) {
-    return static_cast<std::size_t>(orientationOfNormal(
-        rotateVecByFacing(inverseFacingRotation(facing), faceNormalVec(worldFace))));
-}
-
-// template_piston.json's own per-face UV rotation, by model face (BlockOrientation
-// order north,east,south,west,up,down): east 90°, west 270°, down 180°, the rest
-// 0. directionalCubeUvTurns was calibrated to render that template correctly, so
-// it already bakes these in; subtracting them recovers the model-agnostic part.
-inline constexpr std::array<std::uint8_t, 6> kPistonTemplateQuadrant{{0, 1, 0, 3, 0, 2}};
-
-// The FACING-driven geometric UV rotation with the piston template's own face
-// rotations removed — the base-agnostic part every rotating cube shares. This
-// mirrors JE FaceBakery, where the rotation is not a computed per-face number but
-// falls out of rotating the vertices and rewinding them; the per-face json
-// `rotation` (a Quadrant) is a separate quarter-turn added on top.
-[[nodiscard]] constexpr int pureCubeUvTurns(BlockOrientation facing, Face worldFace) {
-    return (directionalCubeUvTurns(facing, worldFace) + 4 -
-            kPistonTemplateQuadrant[modelFaceShownOn(facing, worldFace)]) & 3;
-}
-
-// The complete per-face UV turn count for a cube whose model rotates with FACING:
-// the model-agnostic geometric rotation plus the block's own model-json face
-// rotation (modelFaceUvTurns = the JE face `rotation` Quadrant, ÷90), read on the
-// model face this world face currently shows. Because the piston template's
-// rotations are declared as its modelFaceUvTurns, the piston reproduces
-// directionalCubeUvTurns exactly; a block whose json rotates no face (the
-// observer) gets the pure geometric rotation, straight from its own json rather
-// than reverse-engineered.
-[[nodiscard]] int cubeFaceUvTurns(Block block, BlockOrientation facing, Face worldFace) {
-    const int base = blockDefinition(block).modelFaceUvTurns[modelFaceShownOn(facing, worldFace)];
-    return (pureCubeUvTurns(facing, worldFace) + base) & 3;
-}
-
-// The piston keeps rendering exactly as the verified directionalCubeUvTurns once
-// its own template rotations are declared: composing pureCubeUvTurns back with the
-// template quadrant recovers directionalCubeUvTurns on every face and facing.
-[[nodiscard]] constexpr bool pistonRoundTrips() {
-    for (const auto facing : {BlockOrientation::North, BlockOrientation::East,
-                              BlockOrientation::South, BlockOrientation::West,
-                              BlockOrientation::Up, BlockOrientation::Down}) {
-        for (const auto& fd : kFaces) {
-            const int composed = (pureCubeUvTurns(facing, fd.face) +
-                                  kPistonTemplateQuadrant[modelFaceShownOn(facing, fd.face)]) & 3;
-            if (composed != directionalCubeUvTurns(facing, fd.face)) return false;
+[[nodiscard]] inline CubeUvTable makeCubeUvTable() {
+    CubeUvTable table;
+    for (std::size_t m = 0; m < kCubeUvModelCount; ++m) {
+        const CubeUvModelDesc desc = cubeUvModelDesc(static_cast<CubeUvModel>(m));
+        for (std::size_t o = 0; o < 6; ++o) {
+            const bake::ModelTransform transform{
+                facingMatrix(static_cast<BlockOrientation>(o))};
+            for (std::uint8_t d = 0; d < bake::kFacingCount; ++d) {
+                bake::ElementFace face;
+                face.present = true;
+                face.uv = desc.rect[d];
+                face.quadrant = desc.quadrant[d];
+                const bake::BakedQuad quad =
+                    bake::bakeElementFace(kCellFrom16, kCellTo16, static_cast<bake::Facing>(d),
+                                          face, bake::ElementRotation{}, transform);
+                const auto worldFace = static_cast<std::size_t>(mesherFaceOf(quad.facing));
+                const auto& perm = kFaceInfoCorner[worldFace];
+                for (std::size_t c = 0; c < 4; ++c) {
+                    table.uv[m][o][worldFace][c] = quad.uv[perm[c]];
+                }
+            }
         }
     }
-    return true;
+    return table;
 }
-static_assert(pistonRoundTrips());
+
+// Built once, before main, out of pure header-only maths — so the hot path is a
+// plain array read with no initialisation guard.
+const CubeUvTable kCubeUv = makeCubeUvTable();
+
+// The four UVs of one cube face. `modelFace` is the face in the block's OWN
+// model, before any geometric rotation: a horizontal log rotates its whole
+// FaceDefinition (corners included), so its UV has to stay attached to the model
+// face it came from, while a DirectionalCube stays axis-aligned and carries
+// FACING in the UV instead.
+[[nodiscard]] inline const std::array<glm::vec2, 4>& cubeFaceUv(const BlockDefinition& definition,
+                                                                BlockOrientation facing,
+                                                                Face modelFace) {
+    const auto model = static_cast<std::size_t>(definition.cubeUvModel);
+    const auto orientation = definition.model == BlockModel::DirectionalCube
+                                 ? static_cast<std::size_t>(facing)
+                                 : static_cast<std::size_t>(BlockOrientation::North);
+    return kCubeUv.uv[model][orientation][static_cast<std::size_t>(modelFace)];
+}
 
 [[nodiscard]] constexpr bool faceSharesAxis(Face face, BlockOrientation orientation) {
     if (orientation == BlockOrientation::East || orientation == BlockOrientation::West) {
@@ -917,19 +919,16 @@ void appendFace(
     SmoothLightingQuality quality,
     const glm::vec3& sectionOrigin,
     BiomeTintCache& tints,
-    bool doubleSided = false,
-    float slabLow = -1.0F,
-    float slabHigh = 1.0F) {
+    const std::array<glm::vec2, 4>& faceUv,
+    bool doubleSided = false) {
     const auto firstVertex = static_cast<std::uint32_t>(mesh.vertices.size());
     const glm::vec3 origin{
         static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
-    // A slab occupies a vertical sub-range [slabLow, slabHigh] of the cell; its
-    // side faces map the matching sub-strip of the texture (v = 1 at the floor)
-    // so the half box shows the block's lower or upper half rather than the whole
-    // texture squeezed into half the height.
-    const bool slabBox = slabLow >= 0.0F;
-    const bool horizontalFace =
-        face.face == Face::PositiveY || face.face == Face::NegativeY;
+    // RN-8c: the slab sub-range parameters this function carried are gone. Nobody
+    // passed them — a slab has meshed through appendBox from its BlockShape since
+    // RN-2 — and the V-crop they performed was a fifth UV convention on top of the
+    // four the design doc counted.
+    //
     // A truncated block (farmland) lowers the top of its solid box. The AO and
     // light samples keep the canonical corner (they only read the surrounding
     // cells, which a 1/16 drop does not change); only the mesh position drops.
@@ -951,17 +950,6 @@ void appendFace(
     // Hoisted out of the corner loop: textureLayer probes world orientation,
     // so this reads it once per face instead of once per corner.
     const float layer = textureLayer(world, block, face.face, x, y, z);
-    // RN-4c: per-face UV rotation. A DirectionalCube composes the FACING rotation
-    // with its declared model-face rotations; any other cube applies its declared
-    // model-face rotation straight (a static per-face turn, no FACING). Both read
-    // the single modelFaceUvTurns source, so the default (all zero) leaves kUvs
-    // untouched. Hoisted so the count is computed once per face, not per corner.
-    const auto& definition = blockDefinition(block);
-    const int uvTurns =
-        definition.model == BlockModel::DirectionalCube
-            ? cubeFaceUvTurns(block, world.state(x, y, z).orientation(), face.face)
-            : definition.modelFaceUvTurns[static_cast<std::size_t>(
-                  orientationOfFace(face.face))] & 3;
     for (std::size_t corner = 0; corner < face.corners.size(); ++corner) {
         ambientOcclusion[corner] = vertexAmbientOcclusion(
             lighting, quality, face, face.corners[corner], x, y, z);
@@ -969,17 +957,11 @@ void appendFace(
             lighting, quality, face, face.corners[corner], x, y, z, outsideLight);
         if (selfLit) smoothLight.block = 1.0F;
         glm::vec3 positionCorner = face.corners[corner];
-        // Rotating the UV assignment by `uvTurns` 90° steps turns the texture on
-        // the face; a +1 index shift is a −90° turn, so subtract to rotate CCW.
-        glm::vec2 uv = kPlaneUv[(corner + 4U - static_cast<std::size_t>(uvTurns)) & 3U];
-        if (slabBox) {
-            const float height =
-                slabLow + positionCorner.y * (slabHigh - slabLow);
-            if (!horizontalFace) {
-                uv.y = 1.0F - height;
-            }
-            positionCorner.y = height;
-        } else if (modelHeight < 1.0F) {
+        // RN-8c: the UV comes from the block's cube model, baked once at startup
+        // through the same primitive the element models use. There is no per-face
+        // turn count any more — the FACING rotation is in the bake.
+        const glm::vec2 uv = faceUv[corner];
+        if (modelHeight < 1.0F) {
             positionCorner.y *= modelHeight;
         }
         // Which biome-colour lookup the fragment shader should apply: 1 for the
@@ -2159,6 +2141,11 @@ bool buildSectionImpl(
                             appendFace(
                                 targetMesh, world, current, face, worldX, worldY, worldZ,
                                 lighting, quality, sectionOrigin, tints,
+                                // The UV belongs to the face of the block's OWN
+                                // model, before orientedModelFace turned a
+                                // horizontal log; a DirectionalCube is not turned
+                                // geometrically and carries FACING in the UV.
+                                cubeFaceUv(definition, orientation, modelFace.face),
                                 isLeaves(current) &&
                                     lighting.blockType(
                                         worldX + face.dx,
