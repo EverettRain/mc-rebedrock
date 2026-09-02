@@ -55,12 +55,13 @@ namespace detail {
 // cell wall, hides this quad. Faces vanilla leaves undeclared stay kNoCull and
 // are drawn unconditionally, which is JE's getQuads(null) half of the split.
 inline void putFace(ModelElement& element, Facing facing, std::uint8_t slot, const FaceUv& uv,
-                    std::uint8_t cull = kNoCull) {
+                    std::uint8_t cull = kNoCull, std::uint8_t quadrant = 0) {
     ElementFace& f = element.faces[static_cast<std::size_t>(facing)];
     f.present = true;
     f.slot = slot;
     f.uv = uv;
     f.cull = cull;
+    f.quadrant = quadrant;
 }
 
 // `cullface: "<that same side>"`, the shape every declaration in the models this
@@ -68,6 +69,18 @@ inline void putFace(ModelElement& element, Facing facing, std::uint8_t slot, con
 [[nodiscard]] inline std::uint8_t cullToward(Facing facing) {
     return static_cast<std::uint8_t>(facing);
 }
+
+} // namespace detail
+
+// RN-8d: a model json face `"rotation"` divided by 90 — the JE Quadrant the
+// bakery applies as a cyclic shift of the sampled UV corner. Named rather than
+// spelled 1/2/3 at 33 call sites, so a transcription reads back against the json
+// it came from.
+inline constexpr std::uint8_t kQuadrant90 = 1;
+inline constexpr std::uint8_t kQuadrant180 = 2;
+inline constexpr std::uint8_t kQuadrant270 = 3;
+
+namespace detail {
 
 inline FaceUv rect(float minU, float minV, float maxU, float maxV) {
     return FaceUv{minU, minV, maxU, maxV, false};
@@ -101,8 +114,14 @@ inline ModelElement torchElement(const glm::vec3& from16, const glm::vec3& to16,
     e.to16 = to16;
     e.glow = glow;
     putFace(e, Facing::Up, slot, rect(7, 6, 9, 8));
+    // RN-8d: vanilla gives each nub a side rect that starts at v=6 and runs as
+    // many rows as the box is tall — the 5-tall repeater torches take [7,6,9,11]
+    // (repeater_1tick.json), the 3-tall comparator front torch [7,6,9,9]
+    // (comparator.json). This used to be a fixed 11 for every nub, which
+    // stretched five rows of the sprite over the short one.
+    const float sideBottomV = 6.0F + (to16.y - from16.y);
     for (const Facing side : {Facing::North, Facing::South, Facing::West, Facing::East}) {
-        putFace(e, side, slot, rect(7, 6, 9, 11));
+        putFace(e, side, slot, rect(7, 6, 9, sideBottomV));
     }
     return e;
 }
@@ -153,7 +172,13 @@ inline ModelElement torchElement(const glm::vec3& from16, const glm::vec3& to16,
     detail::putFace(base, Facing::Down, 0, detail::rect(5, 4, 11, 12),
                     detail::cullToward(Facing::Down));
     detail::putFace(base, Facing::Up, 0, detail::rect(5, 4, 11, 12));
-    for (const Facing f : {Facing::North, Facing::South, Facing::West, Facing::East}) {
+    // RN-8d: lever.json's four side rects are not all the same — north/south take
+    // [5,0,11,3] (the base is 6 wide on X) and west/east [4,0,12,3] (8 deep on Z).
+    // Transcribing one rect for all four stretched the narrow pair.
+    for (const Facing f : {Facing::North, Facing::South}) {
+        detail::putFace(base, f, 0, detail::rect(5, 0, 11, 3));
+    }
+    for (const Facing f : {Facing::West, Facing::East}) {
         detail::putFace(base, f, 0, detail::rect(4, 0, 12, 3));
     }
     elements.push_back(base);
@@ -247,25 +272,28 @@ inline std::vector<ModelElement> anvilElements() {
         base.from16 = {2.0F, 0.0F, 2.0F};
         base.to16 = {14.0F, 4.0F, 14.0F};
         // template_anvil.json: the base's down face is the model's only
-        // `"cullface"` declaration.
+        // `"cullface"` declaration. RN-8d: the trailing argument is the face's
+        // own `"rotation"` / 90 — 13 of this model's 21 faces carry one, and all
+        // 13 were being dropped, which is why the anvil's body texture ran the
+        // wrong way round on its sides and caps.
         detail::putFace(base, Facing::Down, 0, detail::rect(2, 2, 14, 14),
-                        detail::cullToward(Facing::Down));
-        detail::putFace(base, Facing::Up, 0, detail::rect(2, 2, 14, 14));
+                        detail::cullToward(Facing::Down), kQuadrant180);
+        detail::putFace(base, Facing::Up, 0, detail::rect(2, 2, 14, 14), kNoCull, kQuadrant180);
         detail::putFace(base, Facing::North, 0, detail::rect(2, 12, 14, 16));
         detail::putFace(base, Facing::South, 0, detail::rect(2, 12, 14, 16));
-        detail::putFace(base, Facing::West, 0, detail::rect(0, 2, 4, 14));
-        detail::putFace(base, Facing::East, 0, detail::rect(4, 2, 0, 14));
+        detail::putFace(base, Facing::West, 0, detail::rect(0, 2, 4, 14), kNoCull, kQuadrant90);
+        detail::putFace(base, Facing::East, 0, detail::rect(4, 2, 0, 14), kNoCull, kQuadrant270);
         elements.push_back(base);
     }
     {
         ModelElement waist;
         waist.from16 = {4.0F, 4.0F, 3.0F};
         waist.to16 = {12.0F, 5.0F, 13.0F};
-        detail::putFace(waist, Facing::Up, 0, detail::rect(4, 3, 12, 13));
+        detail::putFace(waist, Facing::Up, 0, detail::rect(4, 3, 12, 13), kNoCull, kQuadrant180);
         detail::putFace(waist, Facing::North, 0, detail::rect(4, 11, 12, 12));
         detail::putFace(waist, Facing::South, 0, detail::rect(4, 11, 12, 12));
-        detail::putFace(waist, Facing::West, 0, detail::rect(4, 3, 5, 13));
-        detail::putFace(waist, Facing::East, 0, detail::rect(5, 3, 4, 13));
+        detail::putFace(waist, Facing::West, 0, detail::rect(4, 3, 5, 13), kNoCull, kQuadrant90);
+        detail::putFace(waist, Facing::East, 0, detail::rect(5, 3, 4, 13), kNoCull, kQuadrant270);
         elements.push_back(waist);
     }
     {
@@ -274,20 +302,20 @@ inline std::vector<ModelElement> anvilElements() {
         neck.to16 = {10.0F, 10.0F, 12.0F};
         detail::putFace(neck, Facing::North, 0, detail::rect(6, 6, 10, 11));
         detail::putFace(neck, Facing::South, 0, detail::rect(6, 6, 10, 11));
-        detail::putFace(neck, Facing::West, 0, detail::rect(5, 4, 10, 12));
-        detail::putFace(neck, Facing::East, 0, detail::rect(10, 4, 5, 12));
+        detail::putFace(neck, Facing::West, 0, detail::rect(5, 4, 10, 12), kNoCull, kQuadrant90);
+        detail::putFace(neck, Facing::East, 0, detail::rect(10, 4, 5, 12), kNoCull, kQuadrant270);
         elements.push_back(neck);
     }
     {
         ModelElement top;
         top.from16 = {3.0F, 10.0F, 0.0F};
         top.to16 = {13.0F, 16.0F, 16.0F};
-        detail::putFace(top, Facing::Down, 0, detail::rect(3, 0, 13, 16));
-        detail::putFace(top, Facing::Up, 1, detail::rect(3, 0, 13, 16));
+        detail::putFace(top, Facing::Down, 0, detail::rect(3, 0, 13, 16), kNoCull, kQuadrant180);
+        detail::putFace(top, Facing::Up, 1, detail::rect(3, 0, 13, 16), kNoCull, kQuadrant180);
         detail::putFace(top, Facing::North, 0, detail::rect(3, 0, 13, 6));
         detail::putFace(top, Facing::South, 0, detail::rect(3, 0, 13, 6));
-        detail::putFace(top, Facing::West, 0, detail::rect(10, 0, 16, 16));
-        detail::putFace(top, Facing::East, 0, detail::rect(16, 0, 10, 16));
+        detail::putFace(top, Facing::West, 0, detail::rect(10, 0, 16, 16), kNoCull, kQuadrant90);
+        detail::putFace(top, Facing::East, 0, detail::rect(16, 0, 10, 16), kNoCull, kQuadrant270);
         elements.push_back(top);
     }
     return elements;

@@ -134,8 +134,9 @@ void checkBlock(Block block, BlockState state, std::size_t expectedQuads) {
     assert(qi == quads.size());
 }
 
-// An independent golden transcription of the element geometry/UV, hand-copied
-// from ChunkMesher's appendElementModel — NOT read from elementsFor. This is the
+// An independent golden transcription of the element geometry/UV, taken face by
+// face from the vanilla model jsons (template_anvil / enchanting_table /
+// repeater_Ntick / comparator / lever) — NOT read from elementsFor. This is the
 // second, independent copy that catches a drift in the description table itself
 // (the geometry/UV set checks above share elementsFor with their oracle, so they
 // only lock the primitive's logic, not the transcription's numbers).
@@ -143,6 +144,7 @@ struct FaceExp final {
     bool present = false;
     std::uint8_t slot = 0;
     float minU = 0, minV = 0, maxU = 0, maxV = 0;
+    std::uint8_t quadrant = 0; // the json face `"rotation"` / 90 (RN-8d)
 };
 struct ElemExp final {
     glm::vec3 from{}, to{};
@@ -153,8 +155,8 @@ struct ElemExp final {
     float rotAngle = 0.0F;
 };
 
-FaceExp F(std::uint8_t slot, float a, float b, float c, float d) {
-    return {true, slot, a, b, c, d};
+FaceExp F(std::uint8_t slot, float a, float b, float c, float d, std::uint8_t quadrant = 0) {
+    return {true, slot, a, b, c, d, quadrant};
 }
 
 // Diode base golden: up=#top slot1, four sides=#slab slot0, no down.
@@ -166,12 +168,17 @@ ElemExp goldenDiodeBase() {
     for (std::size_t s : {2, 3, 4, 5}) e.faces[s] = F(0, 0, 14, 16, 16); // N/S/W/E
     return e;
 }
+// RN-8d: a nub's side rect starts at v=6 and runs as many rows as the box is
+// tall — [7,6,9,11] for the 5-tall repeater torches (repeater_1tick.json),
+// [7,6,9,9] for the 3-tall comparator front torch (comparator.json). The golden
+// derives it the same way the model json states it, so a nub of a new height
+// cannot silently take the wrong rect.
 ElemExp goldenTorch(glm::vec3 from, glm::vec3 to, std::uint8_t slot) {
     ElemExp e;
     e.from = from;
     e.to = to;
     e.faces[1] = F(slot, 7, 6, 9, 8);                          // Up
-    for (std::size_t s : {2, 3, 4, 5}) e.faces[s] = F(slot, 7, 6, 9, 11);
+    for (std::size_t s : {2, 3, 4, 5}) e.faces[s] = F(slot, 7, 6, 9, 6.0F + (to.y - from.y));
     return e;
 }
 
@@ -193,6 +200,9 @@ void compareElements(const std::vector<ModelElement>& actual,
                 continue;
             }
             assert(a.faces[f].slot == e.faces[f].slot);
+            // RN-8d: the face's own json `"rotation"` / 90. Dropping these is
+            // invisible on a symmetric sprite and glaring on the anvil's body.
+            assert(a.faces[f].quadrant == e.faces[f].quadrant);
             assert(near(a.faces[f].uv.minU, e.faces[f].minU) &&
                    near(a.faces[f].uv.minV, e.faces[f].minV) &&
                    near(a.faces[f].uv.maxU, e.faces[f].maxU) &&
@@ -232,7 +242,12 @@ void checkTranscription() {
     base.to = {11, 2.98F, 12};
     base.faces[0] = F(0, 5, 4, 11, 12); // Down
     base.faces[1] = F(0, 5, 4, 11, 12); // Up
-    for (std::size_t s : {2, 3, 4, 5}) base.faces[s] = F(0, 4, 0, 12, 3);
+    // lever.json's side rects are not all equal: north/south [5,0,11,3] (the base
+    // is 6 wide on X), west/east [4,0,12,3] (8 deep on Z).
+    base.faces[2] = F(0, 5, 0, 11, 3); // North
+    base.faces[3] = F(0, 5, 0, 11, 3); // South
+    base.faces[4] = F(0, 4, 0, 12, 3); // West
+    base.faces[5] = F(0, 4, 0, 12, 3); // East
     ElemExp handle;
     handle.from = {7, 1, 7};
     handle.to = {9, 11, 9};
@@ -244,6 +259,79 @@ void checkTranscription() {
     for (std::size_t s : {2, 3, 4, 5}) handle.faces[s] = F(1, 7, 6, 9, 16);
     compareElements(elementsFor(Block::Lever, BlockState{Block::Lever, BlockOrientation::Up}),
                     {base, handle});
+
+    // RN-8d: the enchanting table declares no face rotation at all
+    // (enchanting_table.json), so every quadrant here must stay 0 — the control
+    // for the anvil golden below.
+    {
+        ElemExp table;
+        table.from = {0, 0, 0};
+        table.to = {16, 12, 16};
+        table.faces[0] = F(2, 0, 0, 16, 16);                          // Down  #bottom
+        table.faces[1] = F(0, 0, 0, 16, 16);                          // Up    #top
+        for (std::size_t s : {2, 3, 4, 5}) table.faces[s] = F(1, 0, 4, 16, 16); // #side
+        compareElements(elementsFor(Block::EnchantingTable, BlockState{Block::EnchantingTable}),
+                        {table});
+    }
+
+    // RN-8d: template_anvil.json, transcribed face for face INCLUDING the
+    // `"rotation"` field — 13 of its 21 faces carry one (down/up 180, west 90,
+    // east 270), and all 13 were previously dropped. The uv rects that run
+    // backwards (east [4,2,0,14]) are vanilla's own mirrored rects, kept as-is.
+    {
+        ElemExp anvilBase;
+        anvilBase.from = {2, 0, 2};
+        anvilBase.to = {14, 4, 14};
+        anvilBase.faces[0] = F(0, 2, 2, 14, 14, 2);   // Down  rotation 180
+        anvilBase.faces[1] = F(0, 2, 2, 14, 14, 2);   // Up    rotation 180
+        anvilBase.faces[2] = F(0, 2, 12, 14, 16);     // North rotation 0
+        anvilBase.faces[3] = F(0, 2, 12, 14, 16);     // South rotation 0
+        anvilBase.faces[4] = F(0, 0, 2, 4, 14, 1);    // West  rotation 90
+        anvilBase.faces[5] = F(0, 4, 2, 0, 14, 3);    // East  rotation 270
+
+        ElemExp waist;
+        waist.from = {4, 4, 3};
+        waist.to = {12, 5, 13};
+        waist.faces[1] = F(0, 4, 3, 12, 13, 2);       // Up    180
+        waist.faces[2] = F(0, 4, 11, 12, 12);
+        waist.faces[3] = F(0, 4, 11, 12, 12);
+        waist.faces[4] = F(0, 4, 3, 5, 13, 1);        // West  90
+        waist.faces[5] = F(0, 5, 3, 4, 13, 3);        // East  270
+
+        ElemExp neck;
+        neck.from = {6, 5, 4};
+        neck.to = {10, 10, 12};
+        neck.faces[2] = F(0, 6, 6, 10, 11);
+        neck.faces[3] = F(0, 6, 6, 10, 11);
+        neck.faces[4] = F(0, 5, 4, 10, 12, 1);        // West  90
+        neck.faces[5] = F(0, 10, 4, 5, 12, 3);        // East  270
+
+        ElemExp top;
+        top.from = {3, 10, 0};
+        top.to = {13, 16, 16};
+        top.faces[0] = F(0, 3, 0, 13, 16, 2);         // Down  180
+        top.faces[1] = F(1, 3, 0, 13, 16, 2);         // Up    180  #top slot
+        top.faces[2] = F(0, 3, 0, 13, 6);
+        top.faces[3] = F(0, 3, 0, 13, 6);
+        top.faces[4] = F(0, 10, 0, 16, 16, 1);        // West  90
+        top.faces[5] = F(0, 16, 0, 10, 16, 3);        // East  270
+
+        for (const Block anvil : {Block::Anvil, Block::ChippedAnvil, Block::DamagedAnvil}) {
+            compareElements(elementsFor(anvil, BlockState{anvil}),
+                            {anvilBase, waist, neck, top});
+        }
+
+        // 13 rotated faces, no more and no less — a count, so a future
+        // transcription that drops one or invents one is caught even if it lands
+        // on a face this golden happens to spell the same way.
+        int rotated = 0;
+        for (const ModelElement& element : elementsFor(Block::Anvil, BlockState{Block::Anvil})) {
+            for (const ElementFace& face : element.faces) {
+                if (face.present && face.quadrant != 0) ++rotated;
+            }
+        }
+        assert(rotated == 13);
+    }
 }
 
 } // namespace
