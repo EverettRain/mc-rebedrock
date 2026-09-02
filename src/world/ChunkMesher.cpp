@@ -504,6 +504,15 @@ enum class TintKind : std::uint8_t {
             ? TintKind::None
             : TintKind::Foliage;
     }
+    // Vanilla tints these through the grass colour map too (tintindex 0 in
+    // short_grass.json, tall_grass.json, fern.json, large_fern.json,
+    // sugar_cane.json). They are the plants a player actually walks through, so
+    // leaving them out is not a subtle miss: every blade renders as the raw
+    // greyscale texture, which reads as white.
+    if (block == Block::GrassPlant || block == Block::TallGrass || block == Block::Fern ||
+        block == Block::LargeFern || block == Block::SugarCane) {
+        return TintKind::Grass;
+    }
     if (block == Block::Water) {
         return TintKind::Water;
     }
@@ -529,11 +538,26 @@ class BiomeTintCache final {
   public:
     BiomeTintCache(const World& world, int originX, int originZ)
         : originX_(originX), originZ_(originZ) {
+        // The window reaches three blocks past the chunk, so it can land on a
+        // neighbour that has not streamed in yet. World::biomeAt answers Plains
+        // for an absent chunk, and averaging that in paints a band of plains
+        // green along the edge of the loaded area — which then *changes* when
+        // the neighbour arrives and the section is remeshed, so the bands crawl
+        // across the ground as the player moves. Clamping into this chunk
+        // instead repeats its own edge column, which is both stable and close to
+        // right. This is the same hazard waterSampleLoaded guards above, for the
+        // same reason.
         auto* cursor = biomes_.data();
         for (int z = 0; z < kSampleSpan; ++z) {
             for (int x = 0; x < kSampleSpan; ++x) {
-                *cursor++ = world.biomeAt(originX + x - kSampleBase,
-                                          originZ + z - kSampleBase);
+                const int sampleX = originX + x - kSampleBase;
+                const int sampleZ = originZ + z - kSampleBase;
+                const bool loaded = world.hasChunk(
+                    {floorDiv(sampleX, kChunkWidth), floorDiv(sampleZ, kChunkDepth)});
+                *cursor++ = loaded
+                    ? world.biomeAt(sampleX, sampleZ)
+                    : world.biomeAt(std::clamp(sampleX, originX, originX + kChunkWidth - 1),
+                                    std::clamp(sampleZ, originZ, originZ + kChunkDepth - 1));
             }
         }
         uniformBiome_ = biomes_.front();

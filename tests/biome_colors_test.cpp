@@ -7,6 +7,7 @@
 #include "world/gen/Biome.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -238,6 +239,123 @@ void checkWaterTint() {
     REQUIRE(sawSwampWater);
 }
 
+// Every plant vanilla tints through the grass colour map has to be tinted here
+// too. Leaving them out is not subtle: the mesher now reads the *untinted* atlas
+// layers, so an untinted blade of grass renders as its raw greyscale texture,
+// which on screen is white.
+void checkPlantsAreTinted() {
+    constexpr std::uint32_t kGrass = 0x91BD59U;
+    mc::world::gen::setBiomeSurfaceColors(Biome::Plains, {kGrass, 0U, 0U, 0U});
+    // Give the terrain grass layers non-zero ids so the mesher takes the
+    // untinted-layer path the renderer takes.
+    mc::world::gen::setTerrainGrassLayers(11.0F, 12.0F, 13.0F, 14.0F);
+
+    constexpr std::array<Block, 5> kPlants{Block::GrassPlant, Block::TallGrass, Block::Fern,
+                                           Block::LargeFern, Block::SugarCane};
+    for (const auto plant : kPlants) {
+        World world;
+        for (int chunkZ = -1; chunkZ <= 1; ++chunkZ) {
+            for (int chunkX = -1; chunkX <= 1; ++chunkX) {
+                Chunk chunk;
+                for (int z = 0; z < 16; ++z) {
+                    for (int x = 0; x < 16; ++x) {
+                        chunk.setBlock(x, mc::world::kMinY + 1, z, Block::Grass);
+                        chunk.setBlock(x, mc::world::kMinY + 2, z, plant);
+                        chunk.setColumnBiome(x, z, Biome::Plains);
+                    }
+                }
+                world.setChunk({chunkX, chunkZ}, std::move(chunk));
+            }
+        }
+        const auto built = mc::world::ChunkMesher::buildSection(world, {0, 0}, 0);
+        bool sawTintedPlant = false;
+        for (const auto& mesh : {built.mesh, built.cutoutMesh, built.translucentMesh}) {
+            for (const auto& vertex : mesh.vertices) {
+                // The plant's own layer, not the grass block's faces.
+                if (std::abs(static_cast<float>(vertex.textureLayer) - 12.0F) > 0.01F) {
+                    continue;
+                }
+                REQUIRE(vertex.tintR == ((kGrass >> 16U) & 0xFFU));
+                REQUIRE(vertex.tintG == ((kGrass >> 8U) & 0xFFU));
+                REQUIRE(vertex.tintB == (kGrass & 0xFFU));
+                sawTintedPlant = true;
+            }
+        }
+        // short_grass is the one that uses the dedicated plant layer; the others
+        // carry their own texture, so only assert reach for that one.
+        if (plant == Block::GrassPlant) {
+            REQUIRE(sawTintedPlant);
+        }
+        // Whatever layer they ended up on, no vertex of a tinted plant may be
+        // left white — that is exactly the bug this test exists for.
+        for (const auto& vertex : built.cutoutMesh.vertices) {
+            const bool white = vertex.tintR == 255U && vertex.tintG == 255U &&
+                               vertex.tintB == 255U;
+            REQUIRE(!white);
+        }
+    }
+    mc::world::gen::setTerrainGrassLayers(0.0F, 0.0F, 0.0F, 0.0F);
+}
+
+// A grass block's four sides carry a second, tinted quad — vanilla's overlay
+// element. Without it the sides render as the plain dirt texture and the ground
+// reads much darker from a distance.
+void checkGrassSideOverlay() {
+    mc::world::gen::setBiomeSurfaceColors(Biome::Plains, {0x91BD59U, 0U, 0U, 0U});
+    mc::world::gen::setTerrainGrassLayers(11.0F, 12.0F, 13.0F, 14.0F);
+    World world;
+    Chunk chunk;
+    // One grass block with air all round, so all four sides are drawn.
+    chunk.setBlock(8, mc::world::kMinY + 4, 8, Block::Grass);
+    chunk.setColumnBiome(8, 8, Biome::Plains);
+    world.setChunk({0, 0}, std::move(chunk));
+    const auto built = mc::world::ChunkMesher::buildSection(world, {0, 0}, 0);
+    int overlayVertices = 0;
+    for (const auto& vertex : built.cutoutMesh.vertices) {
+        if (std::abs(static_cast<float>(vertex.textureLayer) - 14.0F) < 0.01F) {
+            ++overlayVertices;
+            REQUIRE(vertex.tintR == 0x91U);
+            // The overlay never sits on the top or bottom face.
+            REQUIRE(vertex.normalIndex != 2U && vertex.normalIndex != 3U);
+        }
+    }
+    REQUIRE(overlayVertices == 16);  // four sides, four corners each
+    REQUIRE(built.cutoutMesh.indices.size() == 24U);
+    mc::world::gen::setTerrainGrassLayers(0.0F, 0.0F, 0.0F, 0.0F);
+}
+
+// A chunk at the edge of the loaded area must not average in the "Plains"
+// default World::biomeAt answers for an absent chunk: that paints a band of
+// plains green along the edge, and the band moves as chunks stream in.
+void checkUnloadedNeighbourDoesNotBleed() {
+    mc::world::gen::setBiomeSurfaceColors(Biome::Plains, {0x00FF00U, 0U, 0U, 0U});
+    mc::world::gen::setBiomeSurfaceColors(Biome::Desert, {0xBFB755U, 0U, 0U, 0U});
+    // One chunk, no neighbours at all.
+    World lonely;
+    Chunk chunk;
+    for (int z = 0; z < 16; ++z) {
+        for (int x = 0; x < 16; ++x) {
+            chunk.setBlock(x, mc::world::kMinY + 1, z, Block::Grass);
+            chunk.setColumnBiome(x, z, Biome::Desert);
+        }
+    }
+    lonely.setChunk({0, 0}, std::move(chunk));
+    const auto mesh = mc::world::ChunkMesher::buildSection(lonely, {0, 0}, 0).mesh;
+    // Every up-facing vertex, including the ones on the chunk border, must be
+    // the desert's own colour — no plains green averaged in from the void.
+    int checked = 0;
+    for (const auto& vertex : mesh.vertices) {
+        if (vertex.normalIndex != 2U) {
+            continue;
+        }
+        REQUIRE(vertex.tintR == 0xBFU);
+        REQUIRE(vertex.tintG == 0xB7U);
+        REQUIRE(vertex.tintB == 0x55U);
+        ++checked;
+    }
+    REQUIRE(checked > 0);
+}
+
 } // namespace
 
 int main() {
@@ -246,5 +364,8 @@ int main() {
     checkBorderBlend();
     checkHaloAcrossChunkSeam();
     checkWaterTint();
+    checkPlantsAreTinted();
+    checkGrassSideOverlay();
+    checkUnloadedNeighbourDoesNotBleed();
     return 0;
 }
