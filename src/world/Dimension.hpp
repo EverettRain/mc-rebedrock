@@ -232,6 +232,14 @@ inline constexpr std::array<attribute::EnvAttrLayer, kDimensionCount> kDimension
     endAttributes(),
 }};
 
+// Same guard the biome layer carries: force the constant-evaluation path so a
+// change that quietly drops out of constexpr fails on every compiler, not only
+// the one that checks hardest.
+static_assert(kDimensionAttributes[static_cast<std::size_t>(DimensionId::Nether)].at(
+                  attribute::EnvAttr::FogEndDistance).asFloat() == 96.0F);
+static_assert(!kDimensionAttributes[static_cast<std::size_t>(DimensionId::Nether)].at(
+    attribute::EnvAttr::PiglinsZombify).asBool());
+
 [[nodiscard]] constexpr const attribute::EnvAttrLayer& dimensionAttributes(DimensionId id) {
     const auto index = static_cast<std::size_t>(id);
     return kDimensionAttributes[index < kDimensionAttributes.size() ? index : 0U];

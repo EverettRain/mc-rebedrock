@@ -64,7 +64,11 @@ constexpr std::array<TreeChoice, 1> kSwampTrees{{
 // the tree counts are its Decorator.COUNT_EXTRA arguments. temperature and
 // downfall are the vanilla Biome.Builder values, which index the grass/foliage
 // colour maps (the surface-family pick only reads the temperature).
-const std::array<BiomeDefinition, static_cast<std::size_t>(Biome::Count)> kBiomeRegistry{{
+// constexpr, not const: buildBiomeAttributes reads temperatures out of this at
+// compile time, and reading a `const` object of class type inside a constant
+// expression is not allowed. GCC folds it anyway; Clang follows the standard and
+// rejects it, so the Linux build passed and the macOS build did not.
+constexpr std::array<BiomeDefinition, static_cast<std::size_t>(Biome::Count)> kBiomeRegistry{{
     {Biome::Ocean, "ocean", -1.0F, 0.1F, 0.5F, 0.5F, Block::Gravel, Block::Gravel, Block::Gravel,
      0, 0.0F, 1, {}, 0, 0},
     {Biome::Beach, "beach", 0.0F, 0.025F, 0.8F, 0.4F, Block::Sand, Block::Sand, Block::Sand,
@@ -188,6 +192,16 @@ buildBiomeAttributes() {
 }
 
 constexpr auto kBiomeAttributes = buildBiomeAttributes();
+
+// Pin the compile-time path down: these read the table through the same constant
+// evaluation the initialiser above performs, so a change that quietly drops out
+// of constexpr fails here rather than only on the compiler that checks harder.
+static_assert(kBiomeAttributes[static_cast<std::size_t>(Biome::Plains)].has(
+    attribute::EnvAttr::SkyColor));
+static_assert(kBiomeAttributes[static_cast<std::size_t>(Biome::NetherWastes)]
+                  .at(attribute::EnvAttr::FogColor)
+                  .asColor() == -13432824);
+static_assert(kBiomeAttributes[static_cast<std::size_t>(Biome::TheEnd)].present == 0ULL);
 
 } // namespace
 
