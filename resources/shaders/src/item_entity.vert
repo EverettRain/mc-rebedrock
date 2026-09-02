@@ -76,13 +76,40 @@ const vec2 faceUvs[4] = vec2[](
 // unchanged; only +Y and -Y move. A shader cannot include the C++ header, so
 // item_cube_uv_test parses this array and checks it against kCubeItemFaceUv.
 // ---- kCubeItemFaceUv begin ----
-const vec2 blockCubeUvs[24] = vec2[](
+// Three tables of 24, one per cube UV model, indexed [model * 24 + face * 4 +
+// corner], in the same face and corner order the cube positions below use (the
+// chunk mesher's kFaces order). A block item is the block's own model with no
+// blockstate rotation, so these are the world cube's UVs at the identity FACING,
+// i.e. mc::world::kCubeModelFaceUv in src/world/CubeUv.hpp.
+//
+// Which table a draw uses is the block's declared cube UV model, arriving packed
+// in data.y. It has to be per model, not one generic table: template_piston.json
+// rotates three of its faces and observer.json declares an inverted rect on its
+// up face, and with one table the dropped observer's top arrow came out mirrored
+// against the placed one. A shader cannot include the C++ header, so
+// item_cube_uv_test parses this array and checks it against kCubeModelFaceUv.
+const vec2 blockCubeUvs[72] = vec2[](
+    // --- Default
     vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // +X
     vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // -X
     vec2(0.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), // +Y
     vec2(0.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), // -Y
     vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // +Z
-    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0)  // -Z
+    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // -Z
+    // --- PistonTemplate
+    vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), vec2(0.0, 1.0), // +X
+    vec2(0.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), // -X
+    vec2(0.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), // +Y
+    vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), vec2(0.0, 1.0), // -Y
+    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // +Z
+    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // -Z
+    // --- Observer
+    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // +X
+    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // -X
+    vec2(0.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), // +Y
+    vec2(0.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), // -Y
+    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // +Z
+    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0) // -Z
 );
 // ---- kCubeItemFaceUv end ----
 
@@ -402,9 +429,21 @@ void main() {
             // way vanilla's slab model maps a 16x8 side, instead of the whole
             // texture squeezed into half height. Top and bottom faces keep full
             // UVs. The held arm keeps its own V mirror (it is playerSkinCuboid).
+            // RN-8c-D: the front and back layers and the cube UV model all travel
+            // packed in data.y, which every block-cube draw leaves free (the drop
+            // cube only yaws, the held cube is matrix-driven). Zero means "not
+            // supplied" — the block-breaking overlay and falling blocks leave it
+            // there and keep the plain cube table and side on all four sides.
+            int itemUvModel = 0;
+            float packedFaces = 0.0;
+            if (item.data.y > 0.5) {
+                float packedItem = item.data.y - 1.0;
+                itemUvModel = int(floor(packedItem / 4194304.0));
+                packedFaces = packedItem - float(itemUvModel) * 4194304.0;
+            }
             // RN-8c: a block cube samples the per-face table; a skinned cuboid
             // keeps the flat net it has always used.
-            vec2 cubeUv = blockCubeUvs[face * 4 + corner];
+            vec2 cubeUv = blockCubeUvs[itemUvModel * 24 + face * 4 + corner];
             if (!playerSkinCuboid && item.data.z > 0.5 && face != 2 && face != 3) {
                 cubeUv.y = 0.5 + cubeUv.y * 0.5;
             }
@@ -423,9 +462,8 @@ void main() {
             float frontLayer = sideLayer;
             float backLayer = sideLayer;
             if (item.data.y > 0.5) {
-                float packedFaces = item.data.y - 1.0;
-                frontLayer = mod(packedFaces, 4096.0);
-                backLayer = floor(packedFaces / 4096.0);
+                frontLayer = mod(packedFaces, 2048.0);
+                backLayer = floor(packedFaces / 2048.0);
             }
             fragmentTextureLayer = playerSkinCuboid
                 ? item.textureLayersRotation.x + float(face)

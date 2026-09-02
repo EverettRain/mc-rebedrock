@@ -379,29 +379,28 @@ class HudRenderer final {
         const float width = static_cast<float>(swapchainExtent.width);
         const float height = static_cast<float>(swapchainExtent.height);
         const auto clipRectangle = ui::framebufferToClip(rectangle, width, height);
-        const auto textures = world::textureLayers(block);
         const bool chest = block == world::Block::Chest;
-        // 熔炉、侦测器、活塞这类有朝向的立方体把六个面解析进独立的 kBlockDirectionalLayers 表
-        // 它们不用扁平的顶侧槽，`textures.side` 只是普通侧面贴图，绝不是正面
-        // 因此图标朝向相机的那个面必须取真正的正面层，否则熔炉本该是炉膛的位置会是一片空白侧面
-        const bool directional =
-            world::blockDefinition(block).model == world::BlockModel::DirectionalCube;
-        const auto& directionalFaces = world::directionalLayers(block);
-        const float frontLayer = directional ? directionalFaces.front : textures.side;
-        const float topLayer = directional ? directionalFaces.top : textures.top;
-        // RN-8c: which cube model json the icon's three visible faces sample —
-        // the same declaration the world mesh reads. The piston's own face
-        // rotations and the observer's inverted top rect reach the icon through
-        // this; without it every block icon sampled one generic table.
-        const float uvModel =
-            static_cast<float>(world::blockDefinition(block).cubeUvModel);
+        // RN-8c-D: the icon's three visible faces come from world::cubeItemLayers,
+        // the same source the dropped and held cube read. That is what makes a
+        // piston icon show its platform on top (its item model is a plain
+        // cube_bottom_top) while a furnace icon shows its front on the left (its
+        // item model is the block's own).
+        const auto itemFaces = world::cubeItemLayers(block);
+        const float frontLayer = itemFaces.front;
+        const float topLayer = itemFaces.top;
+        const float sideLayer = itemFaces.side;
+        // RN-8c: which cube model json the icon's three visible faces sample. A
+        // plain-cube item is a cube_bottom_top, which rotates no face, so the
+        // piston's own template rotations stay out of its icon while the
+        // observer's inverted top rect reaches it.
+        const float uvModel = static_cast<float>(world::cubeItemUvModel(block));
         const HudPush push{
             {clipRectangle.x, clipRectangle.y, clipRectangle.width, clipRectangle.height},
             {1.0F, 1.0F, 1.0F, 1.0F},
             {portion, chest ? 0.0F : uvModel, 1.0F, 1.0F},
-            {(chest || directional) ? 4.25F : 4.0F, chest ? kChestItemTopLayer : topLayer,
+            {4.25F, chest ? kChestItemTopLayer : topLayer,
              chest ? kChestItemFrontLayer : frontLayer,
-             chest ? kChestItemSideLayer : (directional ? directionalFaces.side : textures.side)},
+             chest ? kChestItemSideLayer : sideLayer},
         };
         vkCmdPushConstants(commandBuffer, hudPipelineLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,

@@ -102,10 +102,14 @@ int main() {
         const std::string source = readFile(kShaderDir / "item_entity.vert");
         const auto parsed = parseVec2Block(source, "---- kCubeItemFaceUv begin ----",
                                            "---- kCubeItemFaceUv end ----");
-        assert(parsed.size() == 24);
-        for (std::size_t face = 0; face < 6; ++face) {
-            for (std::size_t corner = 0; corner < 4; ++corner) {
-                assert(same(parsed[face * 4 + corner], kCubeItemFaceUv[face][corner]));
+        // One table of 24 per cube UV model, in CubeUvModel order.
+        assert(parsed.size() == 24 * kCubeUvModelCount);
+        for (std::size_t model = 0; model < kCubeUvModelCount; ++model) {
+            for (std::size_t face = 0; face < 6; ++face) {
+                for (std::size_t corner = 0; corner < 4; ++corner) {
+                    assert(same(parsed[model * 24 + face * 4 + corner],
+                                kCubeModelFaceUv[model][face][corner]));
+                }
             }
         }
     }
@@ -232,16 +236,20 @@ int main() {
         assert(observer.front == 21.0F && observer.back == 23.0F);
         assert(observer.front != 22.0F);
 
-        // The packing the shader decodes: `1 + front + back * stride`, with zero
+        // The packing the shader decodes:
+        // `1 + front + back * layerStride + uvModel * uvModelStride`, with zero
         // reserved for "not supplied" so the block-breaking overlay and falling
-        // blocks keep side on every side face.
-        const float packed = packItemFrontBackLayers(observer.front, observer.back);
+        // blocks keep the plain table and side on every side face.
+        const CubeUvModel observerUv = cubeItemUvModel(Block::Observer);
+        assert(observerUv == CubeUvModel::Observer); // its item IS the block model
+        const float packed = packItemCubeFaces(observer.front, observer.back, observerUv);
         assert(packed > 0.5F);
         const float value = packed - 1.0F;
-        const float decodedFront = std::fmod(value, kItemLayerPackStride);
-        const float decodedBack = std::floor(value / kItemLayerPackStride);
-        assert(decodedFront == observer.front);
-        assert(decodedBack == observer.back);
+        const float decodedModel = std::floor(value / kItemUvModelPackStride);
+        const float rest = value - decodedModel * kItemUvModelPackStride;
+        assert(decodedModel == static_cast<float>(observerUv));
+        assert(std::fmod(rest, kItemLayerPackStride) == observer.front);
+        assert(std::floor(rest / kItemLayerPackStride) == observer.back);
 
         // The encoding has to survive a float32 round trip for every layer the
         // atlas can hold, which is what bounds the stride: every integer up to
@@ -249,12 +257,11 @@ int main() {
         // 1 + (stride-1) + (stride-1)*stride = stride^2. So 4096 is the largest
         // stride that is exact, and it sits exactly on the boundary rather than
         // over it.
-        const float widest =
-            packItemFrontBackLayers(kItemLayerPackStride - 1.0F, kItemLayerPackStride - 1.0F);
-        assert(widest == kItemLayerPackStride * kItemLayerPackStride);
+        const float widest = packItemCubeFaces(
+            kItemLayerPackStride - 1.0F, kItemLayerPackStride - 1.0F,
+            static_cast<CubeUvModel>(kCubeUvModelCount - 1));
         assert(widest <= 16777216.0F);
         assert(std::fmod(widest - 1.0F, kItemLayerPackStride) == kItemLayerPackStride - 1.0F);
-        assert(std::floor((widest - 1.0F) / kItemLayerPackStride) == kItemLayerPackStride - 1.0F);
 
         // The shader has to agree about the stride AND about which half of the
         // packed value is which. A headless test cannot run GLSL, so this checks
@@ -270,6 +277,9 @@ int main() {
                std::string::npos);
         assert(source.find("backLayer = floor(packedFaces / " + stride.str() + ")") !=
                std::string::npos);
+        std::ostringstream uvStride;
+        uvStride << static_cast<int>(kItemUvModelPackStride) << ".0";
+        assert(source.find(uvStride.str()) != std::string::npos);
         // And that the front lands on the model's north face (-Z, face 5), not on
         // its south one — the swap the old held-item hack had. Matched with the
         // whitespace stripped, so reformatting the shader does not fail this.
@@ -332,6 +342,59 @@ int main() {
         // whole reason the dropped cube had none.
         assert(faces.front != faces.side);
         assert(faces.back != faces.side);
+    }
+
+    // --- RN-8c-D: a block's ITEM model is not always the block's model ---------
+    //
+    // Second real-run report: the dropped piston still showed its platform on a
+    // side while the piston_side frame around it pointed up, and the dropped
+    // observer's top arrow ran opposite to the placed one.
+    //
+    // Both come from the same place. vanilla keeps a block item's model in
+    // assets/minecraft/items/<block>.json, and it is NOT always the block's own:
+    //   items/piston.json   -> block/piston_inventory, a plain cube_bottom_top
+    //                          with piston_top on TOP and no face rotations
+    //   items/observer.json -> block/observer, the block's own model, whose up
+    //                          face declares an inverted uv rect
+    // The item cube was drawing every block as if the second case applied and
+    // with the plain UV table, so the piston got its platform on the north face
+    // (its BLOCK model's front) and the observer lost its inverted top.
+    {
+        setBlockTextureLayers(Block::Piston, {51.0F, 52.0F, 53.0F});
+        setBlockDirectionalLayers(Block::Piston,
+                                  {/*front*/ 51.0F, /*frontActive*/ 51.0F, /*back*/ 53.0F,
+                                   /*backActive*/ 53.0F, /*top*/ 52.0F, /*bottom*/ 52.0F,
+                                   /*side*/ 52.0F});
+
+        // The piston's item is a plain cube: platform on TOP, side on all four
+        // sides, no front or back of its own — and, because a cube_bottom_top
+        // declares no face rotation, the Default UV table however much the
+        // piston's own model rotates.
+        assert(blockDefinition(Block::Piston).cubeItemModel == CubeItemModel::PlainCube);
+        assert(blockDefinition(Block::StickyPiston).cubeItemModel == CubeItemModel::PlainCube);
+        assert(!cubeItemUsesBlockModel(Block::Piston));
+        assert(blockDefinition(Block::Piston).cubeUvModel == CubeUvModel::PistonTemplate);
+        assert(cubeItemUvModel(Block::Piston) == CubeUvModel::Default);
+
+        const auto piston = cubeItemLayers(Block::Piston);
+        assert(cubeItemFaceLayer(piston, Face::PositiveY) == 51.0F); // the platform, on top
+        assert(cubeItemFaceLayer(piston, Face::NegativeY) == 53.0F);
+        for (const Face side : {Face::PositiveX, Face::NegativeX, Face::PositiveZ,
+                                Face::NegativeZ}) {
+            assert(cubeItemFaceLayer(piston, side) == 52.0F);
+        }
+
+        // The observer's item IS the block model, so it keeps both its own faces
+        // and its own inverted top rect.
+        assert(blockDefinition(Block::Observer).cubeItemModel == CubeItemModel::BlockModel);
+        assert(cubeItemUsesBlockModel(Block::Observer));
+        assert(cubeItemUvModel(Block::Observer) == CubeUvModel::Observer);
+        assert(cubeItemUvModel(Block::Furnace) == CubeUvModel::Default);
+        assert(cubeItemUsesBlockModel(Block::Furnace));
+
+        // A plain cube is a plain cube either way.
+        assert(!cubeItemUsesBlockModel(Block::Stone));
+        assert(cubeItemUvModel(Block::Stone) == CubeUvModel::Default);
     }
 
     return 0;

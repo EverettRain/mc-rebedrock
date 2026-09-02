@@ -625,6 +625,22 @@ enum class CubeUvModel : std::uint8_t {
     Observer,       // observer.json: up face uv [0,16,16,0], no rotation
 };
 
+// RN-8c-D: which model a block's ITEM is drawn from. vanilla keeps this in
+// assets/minecraft/items/<block>.json, and it is not always the block's own
+// model: items/observer.json and items/furnace.json point at block/observer and
+// block/furnace, but items/piston.json points at block/piston_inventory — a plain
+// `cube_bottom_top` with the platform on TOP, because a piston item is not a
+// piston in the world.
+//
+// The distinction only matters for a block whose model has faces the flat
+// top/side/bottom triple cannot express. A PlainCube item takes that triple and
+// nothing else; a BlockModel item takes the block's own six faces and its own
+// face rotations.
+enum class CubeItemModel : std::uint8_t {
+    BlockModel, // items/<block>.json points at the block's own model
+    PlainCube,  // it points at a cube_bottom_top variant (the pistons)
+};
+
 enum class BlockRenderLayer : std::uint8_t {
     Opaque,
     Cutout,
@@ -956,6 +972,7 @@ struct BlockDefinition final {
     // faces declare for `uv` and `rotation`. The mesher bakes those, plus the
     // FACING transform, into the block's UVs once at startup.
     CubeUvModel cubeUvModel = CubeUvModel::Default;
+    CubeItemModel cubeItemModel = CubeItemModel::BlockModel;
     float hardness = 0.0F;
     float blastResistance = 0.0F;
     std::uint8_t maximumStackSize = 64U;
@@ -1122,6 +1139,15 @@ class BlockProperties final {
     [[nodiscard]] constexpr BlockProperties cubeUvModel(CubeUvModel model) const {
         BlockProperties copy = *this;
         copy.definition_.cubeUvModel = model;
+        return copy;
+    }
+    // RN-8c-D: declare that this block's ITEM is drawn from a plain cube rather
+    // than from the block's own model, the way items/piston.json points at
+    // block/piston_inventory. The item then shows the block's `.texture()`
+    // triple — which is what that inventory model's top/side/bottom are.
+    [[nodiscard]] constexpr BlockProperties cubeItemModel(CubeItemModel model) const {
+        BlockProperties copy = *this;
+        copy.definition_.cubeItemModel = model;
         return copy;
     }
     // RN-6: declare BlockModel::RedstoneWire and its two texture slots — 0 the
@@ -2110,6 +2136,10 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     // transcribed from vanilla models/block/observer.json. As a full cube it now
     // occludes and is face-sturdy — the Torch placeholder used to leak light.
     BlockProperties::of(Block::Observer, "observer", "Observer")
+        // RN-8c-D: the flat triple every block declares — break particles read its
+        // side, and until now the observer had none, so the atlas baker had to
+        // invent one out of the directional faces.
+        .texture("observer_top", "observer_side", "observer_top")
         // front never changes; POWERED swaps the back to observer_back_on.
         .directionalCube("observer_front", nullptr, "observer_back", "observer_back_on",
                          "observer_top", "observer_top", "observer_side")
@@ -2138,7 +2168,11 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     // on every face (no platform, no orientation) in both the world and the icon.
     // The flat .texture() stays the piston_side item/dropped fallback.
     BlockProperties::of(Block::Piston, "piston", "Piston")
-        .texture("piston_side")
+        // RN-8c-D: items/piston.json points at block/piston_inventory, a plain
+        // cube_bottom_top whose top is piston_top — a piston ITEM shows its
+        // platform upward, not on a side. This triple IS that inventory model.
+        .texture("piston_top", "piston_side", "piston_bottom")
+        .cubeItemModel(CubeItemModel::PlainCube)
         .directionalCube("piston_top", nullptr, "piston_bottom", nullptr, "piston_side",
                          "piston_side", "piston_side")
         // RN-8c: template_piston.json's own per-face rotations (down 180, west
@@ -2149,7 +2183,9 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .state(StateProperty::Powered, 2U)
         .creative(CreativeCategory::Redstone),
     BlockProperties::of(Block::StickyPiston, "sticky_piston", "Sticky Piston")
-        .texture("piston_side")
+        // RN-8c-D: block/sticky_piston_inventory, the same plain cube_bottom_top.
+        .texture("piston_top_sticky", "piston_side", "piston_bottom")
+        .cubeItemModel(CubeItemModel::PlainCube)
         .directionalCube("piston_top_sticky", nullptr, "piston_bottom", nullptr, "piston_side",
                          "piston_side", "piston_side")
         // RN-8c: the same template_piston.json face rotations as the plain piston.
@@ -3868,30 +3904,54 @@ struct CubeItemLayers final {
     float back = 0.0F;
 };
 
+[[nodiscard]] inline bool cubeItemUsesBlockModel(Block block) {
+    const auto& definition = blockDefinition(block);
+    return definition.model == BlockModel::DirectionalCube &&
+           definition.cubeItemModel == CubeItemModel::BlockModel;
+}
+
 [[nodiscard]] inline CubeItemLayers cubeItemLayers(Block block) {
-    const auto flat = textureLayers(block);
-    if (blockDefinition(block).model != BlockModel::DirectionalCube) {
+    if (!cubeItemUsesBlockModel(block)) {
+        // A plain cube item: the block's own texture triple, which is exactly what
+        // a `cube_bottom_top` inventory model's top/side/bottom are. No front or
+        // back of its own, so both answer side.
+        const auto flat = textureLayers(block);
         return {flat.top, flat.bottom, flat.side, flat.side, flat.side};
     }
     const auto& faces = directionalLayers(block);
     return {faces.top, faces.bottom, faces.side, faces.front, faces.back};
 }
 
-// The item shader has one spare float for the two faces `textureLayersRotation`
-// has no room for, so the front and back layers travel packed into it: two
-// integers below kItemLayerPackStride, as `1 + front + back * stride`. The +1
-// keeps zero meaning "not supplied", which is what every item-cube draw that is
-// not a block (the block-breaking overlay, a falling block) leaves it at, and
-// what makes those keep their old side-on-every-face behaviour untouched.
-//
-// The stride bounds the atlas at 4095 layers, against a sprite section that starts
-// at 203 and grows with the block roster. It is also the largest stride that can
-// be exact: the widest packed value is stride^2, every integer up to 2^24 is exact
-// in a float32, and 4096^2 is exactly 2^24.
-inline constexpr float kItemLayerPackStride = 4096.0F;
+// The UV model a block ITEM is drawn with. A plain cube item is a
+// `cube_bottom_top`, which declares no face rotations, so it is Default whatever
+// the block's own model does — the piston's world model rotates three of its
+// faces, its inventory model rotates none.
+[[nodiscard]] inline CubeUvModel cubeItemUvModel(Block block) {
+    return cubeItemUsesBlockModel(block) ? blockDefinition(block).cubeUvModel
+                                         : CubeUvModel::Default;
+}
 
-[[nodiscard]] inline float packItemFrontBackLayers(float front, float back) {
-    return 1.0F + front + back * kItemLayerPackStride;
+// The item shader has one spare float for everything `textureLayersRotation` has
+// no room for: the front and back layers, and which cube UV model to sample. They
+// travel packed into it as
+//
+//     1 + front + back * kItemLayerPackStride + uvModel * kItemUvModelPackStride
+//
+// The +1 keeps zero meaning "not supplied", which is what every item-cube draw
+// that is not a block (the block-breaking overlay, a falling block) leaves it at,
+// and what makes those keep their old side-on-every-face behaviour untouched.
+//
+// The stride bounds the atlas at 2047 layers, against a sprite section that starts
+// at 203 and grows with the block roster; BlockAtlasBaker checks it. Everything
+// stays exact in a float32 — every integer up to 2^24 is, and the widest value
+// here is 2 * 2^22 + (2^22 - 1) = 12582911.
+inline constexpr float kItemLayerPackStride = 2048.0F;
+inline constexpr float kItemUvModelPackStride =
+    kItemLayerPackStride * kItemLayerPackStride;
+
+[[nodiscard]] inline float packItemCubeFaces(float front, float back, CubeUvModel uvModel) {
+    return 1.0F + front + back * kItemLayerPackStride +
+           static_cast<float>(uvModel) * kItemUvModelPackStride;
 }
 
 inline void setBlockDirectionalLayers(Block block, DirectionalTextureLayers layers) {

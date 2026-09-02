@@ -110,11 +110,13 @@ void main() {
             }
         }
         fragmentUv = iconUv;
+        // Top diamond = the up face, left = the model's north face, right = its
+        // west face. RN-8c-D: all three arrive from world::cubeItemLayers, so a
+        // block with no front of its own sends its side in the front slot and the
+        // two parallelograms match, as they always did.
         fragmentTextureLayer = gl_VertexIndex < 6
             ? hud.data.y
-            : (gl_VertexIndex < 12
-                ? hud.data.z
-                : (hud.data.x > 4.1 ? hud.data.w : hud.data.z));
+            : (gl_VertexIndex < 12 ? hud.data.z : hud.data.w);
         // Direction#getLuminance per face, applied as a plain scalar the way
         // vanilla's block item render does: up 1.0, west 0.6, east 0.8
         // (no colour bias). A per-corner AO term darkens the silhouette edges

@@ -694,14 +694,12 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
             dl.bottom = assign(definition.directional.bottom);
             dl.side = assign(definition.directional.side);
             world::setBlockDirectionalLayers(block, dl);
-            // 这个三元组曾经在 `side` 槽里放**正面**：当时掉落物与 HUD 的立方体只读顶/侧/底
-            // 三个槽，把正面塞进侧面，物品才认得出是侦测器。三处立方体现在都从上面这份 dl
-            // 取真正的六个面（world::cubeItemLayers），那个变通不再有消费者，而它自己是个陷阱：
-            // RN-8c-D 给掉落物补上正面时，侧面仍从这里读，于是熔炉有三个面是炉口。
-            // 现在 side 就是 side。剩下的唯一消费者是破坏/落地粒子（ParticleSystem 读 .side），
-            // 而它读到真正的侧面才对——vanilla 的 furnace.json 声明的 particle 正是 furnace_side。
-            world::setBlockTextureLayers(block, {dl.top, dl.side, dl.bottom});
-            continue;
+            // 不 continue：扁平三元组照常由下面的通用分支从 `.texture()` 解析
+            // 这里曾经再填一次扁平三元组，还刻意把**正面**放进 `side` 槽——当时物品立方体只读
+            // 顶/侧/底三个槽，塞正面进去才认得出是熔炉。那是个陷阱：RN-8c-D 给掉落物补上真正的
+            // 正面之后，侧面仍从这里读，于是熔炉有三个面是炉口。
+            // 现在每个 DirectionalCube 都自己声明 `.texture()`（活塞声明的正是它的 inventory
+            // 模型三张图），三元组走下面的通用解析，没有特例。
         }
         if (definition.model == world::BlockModel::ElementModel ||
             definition.model == world::BlockModel::RedstoneWire) {
@@ -718,6 +716,14 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         resolved.side = assign(definition.textures.side);
         resolved.bottom = assign(definition.textures.bottom);
         world::setBlockTextureLayers(block, resolved);
+    }
+
+    // RN-8c-D: 物品立方体把前/后面的层号与 UV 模型打包进一个 float 传给着色器
+    // （world::packItemCubeFaces），层号必须小于 kItemLayerPackStride 才能保证精确
+    // 这里在图集建好后硬校验一次：与其让层号在着色器里静默串位，不如启动就炸
+    if (static_cast<float>(layers.size()) >= world::kItemLayerPackStride) {
+        throw std::runtime_error(
+            "block atlas has more layers than the item cube face packing can carry");
     }
 
     // 熄灭的红石火把贴图：网格化器在 LIT=false 时换上的第二张纹理（方块自己的侧面纹理是点亮态那张）

@@ -8,6 +8,13 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- One layer deeper: a piston's platform belongs on the TOP of its item (vanilla's
+  piston item is a different model, block/piston_inventory, not the block's), and
+  it was ending up on a side; and a dropped observer's top arrow ran opposite to a
+  placed one, because its item IS the block model and so has to carry that model's
+  inverted top. Which model a block's item is drawn from is now declared in the
+  roster the way vanilla declares it in items/<block>.json, and all three item
+  surfaces read the one answer.
 - Fixes what the previous entry got wrong: a dropped furnace showed its opening on
   three or four faces and a dropped piston its platform on three. The atlas baker
   used to put a directional block's FRONT into the "side" slot, so that an item

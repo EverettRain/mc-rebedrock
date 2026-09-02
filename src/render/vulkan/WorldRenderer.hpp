@@ -1156,7 +1156,8 @@ class WorldRenderer final {
                                                       gameplay::itemTextureLayer(entity.stack),
                                                       gameplay::itemTextureLayer(entity.stack)};
             const float cubeFrontBack =
-                cubeModel ? world::packItemFrontBackLayers(itemFaces.front, itemFaces.back)
+                cubeModel ? world::packItemCubeFaces(itemFaces.front, itemFaces.back,
+                                                     world::cubeItemUvModel(entity.stack.block))
                           : 0.0F;
             const float previousAge =
                 entity.ageTicks == 0U ? 0.0F : static_cast<float>(entity.ageTicks - 1U);
@@ -1951,7 +1952,8 @@ class WorldRenderer final {
         // drawn from the block's own texture triple.
         const float heldFrontBack =
             !emptyHand && cubeModel
-                ? world::packItemFrontBackLayers(heldFaces.front, heldFaces.back)
+                ? world::packItemCubeFaces(heldFaces.front, heldFaces.back,
+                                           world::cubeItemUvModel(stack.block))
                 : 0.0F;
         // 手与手持方块跟随玩家眼部的环境光，夜里会变暗，而不是永远处在固定光照下
         const float heldLight = packedSceneLight(camera.position());
