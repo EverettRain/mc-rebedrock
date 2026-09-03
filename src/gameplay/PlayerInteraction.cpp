@@ -170,6 +170,15 @@ bool tryAutoEquipArmor(GameSession& session) {
                                     glm::ivec3 clicked, world::BlockOrientation playerFacing) {
     const auto clickedState = world.state(clicked.x, clicked.y, clicked.z);
     const auto model = world::blockDefinition(clickedState.block()).model;
+    // AR-B4-5 / BlockSetType.canOpenByHand: an iron door or iron trapdoor does
+    // not answer a hand at all — only a redstone signal moves it, which is what
+    // makes iron doors worth building. Checked before every branch below rather
+    // than inside each, since it is a property of the material and not of the
+    // shape. A fence gate has no BlockSetType in vanilla (it is built from a
+    // WoodType), and there is no iron one, so it is unaffected either way.
+    if (!world::blockSetTypeOf(clickedState.block()).canOpenByHand) {
+        return false;
+    }
     if (model == world::BlockModel::Door) {
         const bool upper = clickedState.isDoorUpperHalf();
         const glm::ivec3 lower{clicked.x, clicked.y - (upper ? 1 : 0), clicked.z};

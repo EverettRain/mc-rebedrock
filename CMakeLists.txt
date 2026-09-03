@@ -2183,6 +2183,17 @@ if(BUILD_TESTING)
     )
     add_test(NAME redstone_item_placement COMMAND mc_rebedrock_redstone_item_placement_test)
 
+    add_executable(mc_rebedrock_block_set_type_test
+        tests/block_set_type_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_block_set_type_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_block_set_type_test PRIVATE
+        src
+        tests
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME block_set_type COMMAND mc_rebedrock_block_set_type_test)
+
     add_executable(mc_rebedrock_redstone_island_partition_test
         tests/redstone_island_partition_test.cpp
     )

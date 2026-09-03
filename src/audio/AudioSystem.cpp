@@ -1,5 +1,7 @@
 #include "audio/AudioSystem.hpp"
 
+#include "audio/BlockInteractionSounds.hpp"
+
 #include "assets/SoundRegistry.hpp"
 
 #include <miniaudio.h>
@@ -939,31 +941,6 @@ namespace {
 // model (DoorBlock/TrapDoorBlock/FenceGateBlock#getOpenSound et al.). Chests use
 // "chest"; a lever and a (stone) button their own families. Returns "" for a
 // block that has no interaction sound.
-[[nodiscard]] std::string_view interactionSoundFamily(world::Block block) {
-    switch (world::blockDefinition(block).model) {
-    case world::BlockModel::Door:
-        return "wooden_door";
-    case world::BlockModel::TrapDoor:
-        return "wooden_trapdoor";
-    case world::BlockModel::FenceGate:
-        return "fence_gate";
-    case world::BlockModel::Button:
-        return "stone_button";
-    case world::BlockModel::PressurePlate:
-        // Only the stone plate exists in this roster; a wooden/weighted plate
-        // would pick its own family here.
-        return "stone_pressure_plate";
-    default:
-        break;
-    }
-    if (block == world::Block::Chest || block == world::Block::TrappedChest) {
-        return "chest";
-    }
-    if (block == world::Block::Lever) {
-        return "lever";
-    }
-    return {};
-}
 } // namespace
 
 void AudioSystem::playBlockOpen(world::Block block, const glm::vec3& position) {

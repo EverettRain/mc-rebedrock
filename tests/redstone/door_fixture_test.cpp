@@ -23,6 +23,13 @@ using namespace mc::test::redstone;
 using mc::gameplay::redstone::Direction;
 using mc::world::BlockPos;
 
+void require(bool condition, const char* what) {
+    if (!condition) {
+        std::fprintf(stderr, "door fixture: %s\n", what);
+        std::abort();
+    }
+}
+
 void requireHalves(RedstoneCircuit& circuit, BlockPos lower, bool open, const char* when) {
     const BlockPos upper{lower.x, lower.y + 1, lower.z};
     const auto lowerState = circuit.state(lower);
@@ -236,6 +243,38 @@ int main() {
     // W-signal and predates every door change. That is a gap in the diode's
     // output propagation, not in this sink, and it is registered as such rather
     // than asserted here where it would read as a door defect.
+
+    // AR-B4-5: an iron door refuses a hand and answers redstone, which is the
+    // whole reason to build one. Both halves of that are asserted together —
+    // "cannot be opened by hand" alone would also be satisfied by a door that
+    // cannot be opened at all.
+    {
+        RedstoneCircuit iron;
+        iron.solid({-1, 0, -1});
+        iron.lever({-1, 0, 0}, Direction::South, false)
+            .door({0, 0, 0}, Direction::North, mc::world::Block::IronDoor);
+        require(!iron.openByHand(lowerPos), "an iron door must not answer a hand");
+        require(!iron.state(lowerPos).open(), "and stays shut after the click");
+        iron.setLever(leverPos, true);
+        require(iron.state(lowerPos).open() && iron.state(upperPos).open(),
+                "but redstone opens it, both halves");
+
+        // The control: an oak door in the same place does answer a hand, so the
+        // assertion above is about the material and not about the click path.
+        RedstoneCircuit oak;
+        oak.solid({-1, 0, -1});
+        oak.lever({-1, 0, 0}, Direction::South, false).door({0, 0, 0}, Direction::North);
+        require(oak.openByHand(lowerPos), "an oak door answers a hand");
+        require(oak.state(lowerPos).open() && oak.state(upperPos).open(),
+                "and both halves move");
+
+        // Copper is not iron: metal, but hand-openable (BlockSetType.COPPER).
+        RedstoneCircuit copper;
+        copper.solid({-1, 0, -1});
+        copper.lever({-1, 0, 0}, Direction::South, false)
+            .door({0, 0, 0}, Direction::North, mc::world::Block::WaxedCopperDoor);
+        require(copper.openByHand(lowerPos), "a copper door answers a hand");
+    }
 
     // A door is a sink, never a source: it must not have entered the emission
     // tables along the way.

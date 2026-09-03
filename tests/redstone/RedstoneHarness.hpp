@@ -272,6 +272,25 @@ class RedstoneCircuit final {
         return false;
     }
     void clearTickedCells() { tickedCells_.clear(); }
+    // AR-B4-5: a bare-handed right-click on the block, through the real
+    // interaction path (the same UseItemOn command a player sends). Returns
+    // whether the block's state changed at all, which is what "the hand did
+    // something" means — an iron door must answer no.
+    [[nodiscard]] bool openByHand(mc::world::BlockPos rel) {
+        const auto pos = absolute(rel);
+        const auto before = world_.state(pos.x, pos.y, pos.z);
+        mc::gameplay::UseItemOn use;
+        use.block = glm::ivec3{pos.x, pos.y, pos.z};
+        use.adjacent = glm::ivec3{pos.x, pos.y, pos.z - 1};
+        use.face = mc::world::BlockOrientation::North;
+        use.lookDirection = glm::vec3{0.0F, 0.0F, 1.0F};
+        session_.enqueueCommand(std::move(use));
+        session_.tick(world_, host_);
+        session_.enqueueCommand(mc::gameplay::UseItemStop{});
+        session_.tick(world_, host_);
+        session_.drainEvents();
+        return world_.state(pos.x, pos.y, pos.z) != before;
+    }
     // W-x-1: place and break through the real mutation path (MutationFlags::All
     // + GameplayMutationSink), rather than the raw `place` above which writes
     // the cell and tells nobody. These are the two entries besides the tick that

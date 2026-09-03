@@ -948,6 +948,40 @@ enum class SoundType : std::uint8_t {
 
 // Everything the engine knows about one block. Instances are produced by
 // BlockProperties (below) and live in the registry table, never built by hand.
+// AR-B4-5: vanilla's BlockSetType, the record a door/trapdoor/button/pressure
+// plate is constructed with. It answers the questions that depend on what the
+// thing is *made of* rather than on what shape it is: can a hand open it, and
+// which sound family does it belong to. An iron door is the whole reason it
+// exists — it opens only to redstone, and it does not sound like oak.
+//
+// DOD: a dense id on the block's definition plus a constexpr table, so a lookup
+// is one array subscript. Not a record graph and not a virtual — vanilla's own
+// shape is a record precisely because it is data.
+enum class BlockSetTypeId : std::uint8_t {
+    Wood,   // oak/spruce/jungle/acacia/dark_oak
+    Iron,   // BlockSetType.IRON: canOpenByHand = false
+    Copper, // BlockSetType.COPPER: openable by hand, its own sounds
+    Count,
+};
+
+struct BlockSetType final {
+    std::string_view name;
+    // BlockSetType.canOpenByHand. False for iron: a hand does nothing, only a
+    // redstone signal moves it.
+    bool canOpenByHand = true;
+    // The `block.<family>.open|close` event families. Two of them because a door
+    // and a trapdoor have separate events in every set type.
+    std::string_view doorSounds;
+    std::string_view trapdoorSounds;
+};
+
+inline constexpr std::array<BlockSetType, static_cast<std::size_t>(BlockSetTypeId::Count)>
+    kBlockSetTypes{{
+        {"wood", true, "wooden_door", "wooden_trapdoor"},
+        {"iron", false, "iron_door", "iron_trapdoor"},
+        {"copper", true, "copper_door", "copper_trapdoor"},
+    }};
+
 struct BlockDefinition final {
     Block block = Block::Air;
     // The registry key, always in this project's namespace.
@@ -990,6 +1024,10 @@ struct BlockDefinition final {
     std::uint8_t light = 0U;
     std::uint8_t lightFilter = 0U;
     BlockSupport support = BlockSupport::None;
+    // AR-B4-5: which BlockSetType this block belongs to. Only meaningful for the
+    // openables (door/trapdoor); everything else keeps the wood default and
+    // never asks.
+    BlockSetTypeId setType = BlockSetTypeId::Wood;
     // AbstractBlock.OffsetType: None for a model pinned to its block centre,
     // XZ/XYZ for the deterministic per-position jitter described above.
     BlockOffsetType offsetType = BlockOffsetType::None;
@@ -1207,6 +1245,13 @@ class BlockProperties final {
     [[nodiscard]] constexpr BlockProperties support(BlockSupport requirement) const {
         BlockProperties copy = *this;
         copy.definition_.support = requirement;
+        return copy;
+    }
+    // AR-B4-5: the block's BlockSetType (see the table above). Wood is the
+    // default, so only iron and copper openables say anything.
+    [[nodiscard]] constexpr BlockProperties setType(BlockSetTypeId id) const {
+        BlockProperties copy = *this;
+        copy.definition_.setType = id;
         return copy;
     }
     [[nodiscard]] constexpr BlockProperties soil() const {
@@ -2872,15 +2917,18 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .door().creative(CreativeCategory::Redstone),
     BlockProperties::of(Block::IronDoor, "iron_door", "Iron Door")
         .texture("iron_door_top", "iron_door_bottom", "iron_door_bottom").strength(5.0F).door()
+        .setType(BlockSetTypeId::Iron)
         .creative(CreativeCategory::Redstone),
     BlockProperties::of(Block::WaxedCopperDoor, "waxed_copper_door", "Waxed Copper Door")
         .texture("copper_door_top", "copper_door_bottom", "copper_door_bottom").strength(3.0F).door()
+        .setType(BlockSetTypeId::Copper)
         .creative(CreativeCategory::Redstone),
     BlockProperties::of(Block::WaxedOxidizedCopperDoor, "waxed_oxidized_copper_door",
                         "Waxed Oxidized Copper Door")
         .texture("oxidized_copper_door_top", "oxidized_copper_door_bottom",
                  "oxidized_copper_door_bottom")
-        .strength(3.0F).door().creative(CreativeCategory::Redstone),
+        .strength(3.0F).door().setType(BlockSetTypeId::Copper)
+        .creative(CreativeCategory::Redstone),
     // Trapdoors (.trapdoor() supplies model + Facing/Half/Open/Powered; single sprite).
     BlockProperties::of(Block::SpruceTrapdoor, "spruce_trapdoor", "Spruce Trapdoor")
         .texture("spruce_trapdoor", "spruce_trapdoor", "spruce_trapdoor").strength(3.0F).trapdoor()
@@ -2890,15 +2938,18 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .creative(CreativeCategory::Redstone),
     BlockProperties::of(Block::IronTrapdoor, "iron_trapdoor", "Iron Trapdoor")
         .texture("iron_trapdoor", "iron_trapdoor", "iron_trapdoor").strength(5.0F).trapdoor()
+        .setType(BlockSetTypeId::Iron)
         .creative(CreativeCategory::Redstone),
     BlockProperties::of(Block::OxidizedCopperTrapdoor, "oxidized_copper_trapdoor",
                         "Oxidized Copper Trapdoor")
         .texture("oxidized_copper_trapdoor", "oxidized_copper_trapdoor", "oxidized_copper_trapdoor")
-        .strength(3.0F).trapdoor().creative(CreativeCategory::Redstone),
+        .strength(3.0F).trapdoor().setType(BlockSetTypeId::Copper)
+        .creative(CreativeCategory::Redstone),
     BlockProperties::of(Block::WaxedOxidizedCopperTrapdoor, "waxed_oxidized_copper_trapdoor",
                         "Waxed Oxidized Copper Trapdoor")
         .texture("oxidized_copper_trapdoor", "oxidized_copper_trapdoor", "oxidized_copper_trapdoor")
-        .strength(3.0F).trapdoor().creative(CreativeCategory::Redstone),
+        .strength(3.0F).trapdoor().setType(BlockSetTypeId::Copper)
+        .creative(CreativeCategory::Redstone),
     // --- STRUCT AR-B batch 3: cross-model plants (see enum comment) -------------
     // Cobweb: a centred cross (no XZ jitter), no support requirement (it floats).
     BlockProperties::of(Block::Cobweb, "cobweb", "Cobweb")
@@ -3242,6 +3293,11 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
 
 [[nodiscard]] constexpr const BlockDefinition& blockDefinition(Block block) {
     return kBlockRegistry[isValidBlock(block) ? static_cast<std::size_t>(block) : 0U];
+}
+
+// AR-B4-5: the block's BlockSetType row. One subscript, no branch on identity.
+[[nodiscard]] constexpr const BlockSetType& blockSetTypeOf(Block block) {
+    return kBlockSetTypes[static_cast<std::size_t>(blockDefinition(block).setType)];
 }
 
 // The table is indexed by the enum value, so a misplaced line would silently
