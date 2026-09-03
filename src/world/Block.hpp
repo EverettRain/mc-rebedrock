@@ -2148,7 +2148,17 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-4a-2: real diode geometry (smooth-stone slab base + redstone-torch
         // nubs), transcribed from vanilla models/block/repeater_*tick*.json.
         .elementModel("smooth_stone", "repeater", "redstone_torch_off", "redstone_torch")
-        .noCollision()
+        // AR-B4-6: collision is ON. DiodeBlock's SHAPE is `Block.column(16, 0, 2)`
+        // and DiodeBlock never overrides getCollisionShape, so vanilla's 2px
+        // base plate is a real box you stand on — the "diodes have no collision"
+        // this build had was our own, not 26.1's. shapeElementModel already
+        // answers that Column, so nothing on the shape side changes.
+        //
+        // The pressure plate is the cautionary case (Block.hpp's plate comment):
+        // turning its collision on made it oscillate. That was because its height
+        // moves with POWERED, 1/16 to 0.5/16, and fought the feet-cell probe. A
+        // diode's 2px never moves, so the coupling does not exist — checked, not
+        // assumed (redstone_diode_test stands a player on one for a hundred ticks).
         .support(BlockSupport::Ground)
         .horizontalFacing()
         .state(StateProperty::Delay, 4U)
@@ -2170,7 +2180,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-4a-2: slab base + three redstone-torch nubs, transcribed from vanilla
         // models/block/comparator*.json.
         .elementModel("smooth_stone", "comparator", "redstone_torch_off", "redstone_torch")
-        .noCollision()
+        // AR-B4-6: collision is ON, as for the repeater above — same DiodeBlock
+        // base, same 2px plate, same reasoning.
         .support(BlockSupport::Ground)
         .horizontalFacing()
         .state(StateProperty::ComparatorMode, 2U)

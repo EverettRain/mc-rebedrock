@@ -59,5 +59,65 @@ int main() {
         runFixture(circuit, script);
     }
 
+    // --- AR-B4-6: a comparator reading a container, end to end. Not just the
+    // conversion function — the whole chain a player would build, chest into
+    // comparator into wire into a door, which only became testable once W-x-1
+    // let a diode wake anything downstream of it at all. ---
+    {
+        RedstoneCircuit circuit;
+        for (int x = 0; x <= 2; ++x) {
+            circuit.solid({x, -1, 0});
+        }
+        // Chest at x=2, comparator at x=1 reading it (FACING East = its input
+        // side), wire at x=0 carrying the output, door beside the wire.
+        circuit.chest({2, 0, 0}, /*items=*/0)
+            .comparator({1, 0, 0}, Direction::East, /*subtract=*/false)
+            .wire({0, 0, 0})
+            .solid({0, -1, 1})
+            .door({0, 0, 1}, Direction::North);
+        const BlockPos comparator{1, 0, 0};
+        const BlockPos wire{0, 0, 0};
+        const BlockPos door{0, 0, 1};
+
+        circuit.advance(4);
+        if (circuit.power(wire) != 0 || circuit.state(door).open()) {
+            std::fprintf(stderr, "comparator container: an empty chest must drive nothing\n");
+            std::abort();
+        }
+
+        // Fill it and poke the comparator the way putting an item in would.
+        circuit.setChestContents({2, 0, 0}, 27 * 64);
+        circuit.notifyRedstone(comparator);
+        circuit.advance(8);
+        if (circuit.power(wire) != 15) {
+            std::fprintf(stderr, "comparator container: a full chest should read 15, got %d\n",
+                         circuit.power(wire));
+            std::abort();
+        }
+        if (!circuit.state(door).open() || !circuit.state({0, 1, 1}).open()) {
+            std::fprintf(stderr, "comparator container: the door past the wire must open\n");
+            std::abort();
+        }
+
+        // Halfway is 8, and the chain follows it down rather than latching.
+        circuit.setChestContents({2, 0, 0}, 27 * 32);
+        circuit.notifyRedstone(comparator);
+        circuit.advance(8);
+        if (circuit.power(wire) != 8) {
+            std::fprintf(stderr, "comparator container: a half-full chest should read 8, got %d\n",
+                         circuit.power(wire));
+            std::abort();
+        }
+
+        // Emptying it closes the door again.
+        circuit.setChestContents({2, 0, 0}, 0);
+        circuit.notifyRedstone(comparator);
+        circuit.advance(8);
+        if (circuit.power(wire) != 0 || circuit.state(door).open()) {
+            std::fprintf(stderr, "comparator container: emptying the chest must reset the chain\n");
+            std::abort();
+        }
+    }
+
     return 0;
 }

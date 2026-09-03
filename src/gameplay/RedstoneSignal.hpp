@@ -25,6 +25,7 @@
 #include "world/World.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <cstdint>
 
@@ -199,6 +200,43 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
         input = std::max(input, targetState.analogSignal());
     }
     return input;
+}
+
+// AR-B4-6 / AbstractContainerMenu.getRedstoneSignalFromContainer: how full a
+// container reads as a 0-15 signal.
+//
+//   totalPercent = sum(count / maxStackSize) / slotCount
+//   signal       = Mth.lerpDiscrete(totalPercent, 0, 15)
+//                = floor(totalPercent * 14) + (totalPercent > 0 ? 1 : 0)
+//
+// The `+1` is why a single item in a double chest still reads 1 rather than
+// rounding away to 0: any content at all is at least one level of signal, and
+// only a completely full container reaches 15. Taking the sum and the slot count
+// rather than the container keeps this a pure function the test can walk through
+// every step of.
+[[nodiscard]] inline int redstoneSignalFromContainer(float fillSum, int slotCount) {
+    if (slotCount <= 0) {
+        return 0;
+    }
+    const float totalPercent = fillSum / static_cast<float>(slotCount);
+    return static_cast<int>(std::floor(totalPercent * 14.0F)) + (totalPercent > 0.0F ? 1 : 0);
+}
+
+// AR-B4-6 / ComparatorBlock#getInputSignal. A container behind the comparator
+// *replaces* the ordinary diode input rather than adding to it — vanilla assigns
+// `i = blockState.getAnalogOutputSignal(...)` — so a half-full chest reads 7 even
+// with a lit redstone block beside it.
+//
+// `analogOutput` is < 0 when the block behind has no analog output at all
+// (vanilla's `hasAnalogOutputSignal() == false`), which is not the same as an
+// empty container reading 0: an empty chest overrides a signal, a stone block
+// does not.
+[[nodiscard]] inline int comparatorInputSignal(const world::World& world, world::BlockPos pos,
+                                               world::BlockState state, int analogOutput) {
+    if (analogOutput >= 0) {
+        return analogOutput;
+    }
+    return diodeInputSignal(world, pos, state);
 }
 
 // DiodeBlock.getAlternateSignal: the strongest control input from the two

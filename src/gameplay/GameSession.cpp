@@ -118,6 +118,46 @@ GameSession::GameSession() {
     clocks_.setTotalTicks(world::ClockId::Overworld,
                           static_cast<std::uint64_t>(world::DayNightCycle::kNewWorldTick));
     attachGameRuleHandlers();
+    // AR-B4-6: teach the redstone simulation how to read a container. The
+    // block entities live here, not in the simulation, so this is the one place
+    // that can answer it — and the simulation stays free of any notion of what a
+    // chest is (WorldSimulation::AnalogOutputFn).
+    worldSimulation_.setAnalogOutputSource(&GameSession::analogOutputAt, this);
+}
+
+int GameSession::analogOutputAt(const void* context, world::BlockPos pos) {
+    const auto* session = static_cast<const GameSession*>(context);
+    // A "fill fraction" summed over the container's slots, exactly Java's
+    // `sum(count / maxStackSize)`; redstoneSignalFromContainer then divides by
+    // the slot count and discretises. -1 means "not a container at all", which
+    // is what lets an *empty* chest still override the comparator's other input
+    // while a stone block does not.
+    if (const auto* chest = session->chestSystem_.find(pos); chest != nullptr) {
+        float fill = 0.0F;
+        for (const auto& slot : chest->items) {
+            if (slot.count == 0U) {
+                continue;
+            }
+            fill += static_cast<float>(slot.count) /
+                    static_cast<float>(itemMaximumStackSize(slot));
+        }
+        return redstone::redstoneSignalFromContainer(
+            fill, static_cast<int>(ChestBlockEntity::kSlotCount));
+    }
+    if (const auto* furnace = session->furnaceSystem_.find(pos); furnace != nullptr) {
+        // AbstractFurnaceBlockEntity is a three-slot Container (input, fuel,
+        // output), read by the same formula.
+        float fill = 0.0F;
+        for (const auto* slot : {&furnace->input, &furnace->fuel, &furnace->output}) {
+            if (slot->count == 0U) {
+                continue;
+            }
+            fill += static_cast<float>(slot->count) /
+                    static_cast<float>(itemMaximumStackSize(*slot));
+        }
+        return redstone::redstoneSignalFromContainer(fill, 3);
+    }
+    return -1;
 }
 
 // Every public entry that takes a SimulationHost binds it before doing

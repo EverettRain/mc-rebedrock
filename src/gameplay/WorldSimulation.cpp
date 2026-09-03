@@ -1339,7 +1339,10 @@ void WorldSimulation::notifyRedstoneComponent(world::World& world,
 
     if (block == world::Block::Comparator) {
         const auto eval = redstone::comparatorEvaluate(
-            redstone::diodeInputSignal(world, pos, state),
+            // AR-B4-6: a container behind the comparator replaces its input.
+            redstone::comparatorInputSignal(
+                world, pos, state,
+                analogOutputAt(redstone::relative(pos, redstone::facingOf(state)))),
             redstone::diodeAlternateSignal(world, pos, state, /*onlyDiodes=*/false),
             state.comparatorSubtract());
         const auto schedule = redstone::comparatorCheckTick(
@@ -1618,7 +1621,10 @@ void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPositi
 
     if (block == world::Block::Comparator) {
         const auto eval = redstone::comparatorEvaluate(
-            redstone::diodeInputSignal(world, pos, state),
+            // AR-B4-6: a container behind the comparator replaces its input.
+            redstone::comparatorInputSignal(
+                world, pos, state,
+                analogOutputAt(redstone::relative(pos, redstone::facingOf(state)))),
             redstone::diodeAlternateSignal(world, pos, state, /*onlyDiodes=*/false),
             state.comparatorSubtract());
         const auto result = redstone::comparatorTick(state, eval);

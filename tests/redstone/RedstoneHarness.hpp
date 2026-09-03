@@ -272,6 +272,50 @@ class RedstoneCircuit final {
         return false;
     }
     void clearTickedCells() { tickedCells_.clear(); }
+    // Refills a chest already placed by `chest` above.
+    void setChestContents(mc::world::BlockPos rel, int items) {
+        const auto pos = absolute(rel);
+        auto* entity = session_.chestSystem().find(pos);
+        if (entity == nullptr) {
+            return;
+        }
+        int remaining = items;
+        for (auto& slot : entity->items) {
+            const int take = remaining > 64 ? 64 : (remaining > 0 ? remaining : 0);
+            slot = take > 0 ? mc::gameplay::ItemStack{mc::world::Block::Stone,
+                                                      static_cast<std::uint8_t>(take), nullptr}
+                            : mc::gameplay::ItemStack{};
+            remaining -= take;
+        }
+    }
+    // Tells one cell its input may have changed, the way putting an item into a
+    // chest would (vanilla's setChanged -> updateNeighbourForOutputSignal).
+    void notifyRedstone(mc::world::BlockPos rel) {
+        const auto pos = absolute(rel);
+        session_.worldSimulation().notifyRedstoneComponent(world_, {pos.x, pos.y, pos.z});
+        session_.drainEvents();
+    }
+    // AR-B4-6: a chest with `stacks` worth of 64-stacking content in it, so a
+    // comparator behind it has something to read. Placed through the chest
+    // system the session owns, which is where the block entity actually lives.
+    RedstoneCircuit& chest(mc::world::BlockPos rel, int items) {
+        const auto pos = absolute(rel);
+        place(rel, mc::world::BlockState{mc::world::Block::Chest});
+        static_cast<void>(session_.chestSystem().place(pos));
+        if (auto* entity = session_.chestSystem().find(pos); entity != nullptr) {
+            int remaining = items;
+            for (auto& slot : entity->items) {
+                if (remaining <= 0) {
+                    break;
+                }
+                const int take = remaining > 64 ? 64 : remaining;
+                slot = mc::gameplay::ItemStack{mc::world::Block::Stone,
+                                               static_cast<std::uint8_t>(take), nullptr};
+                remaining -= take;
+            }
+        }
+        return *this;
+    }
     // AR-B4-5: a bare-handed right-click on the block, through the real
     // interaction path (the same UseItemOn command a player sends). Returns
     // whether the block's state changed at all, which is what "the hand did

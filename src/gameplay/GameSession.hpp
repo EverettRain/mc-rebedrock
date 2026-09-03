@@ -866,6 +866,11 @@ class GameSession final {
             }
         }
     }
+    // AR-B4-6: WorldSimulation::AnalogOutputFn — what a comparator reads from
+    // the block behind it. Static, taking the session as the opaque context, so
+    // the simulation can hold it as a plain function pointer.
+    static int analogOutputAt(const void* context, world::BlockPos pos);
+
     gameplay::ChestSystem chestSystem_;
     gameplay::ChestSystem trappedChestSystem_;
     gameplay::FurnaceSystem furnaceSystem_;

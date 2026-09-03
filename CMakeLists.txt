@@ -2194,6 +2194,17 @@ if(BUILD_TESTING)
     )
     add_test(NAME block_set_type COMMAND mc_rebedrock_block_set_type_test)
 
+    add_executable(mc_rebedrock_comparator_container_test
+        tests/comparator_container_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_comparator_container_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_comparator_container_test PRIVATE
+        src
+        tests
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME comparator_container COMMAND mc_rebedrock_comparator_container_test)
+
     add_executable(mc_rebedrock_redstone_island_partition_test
         tests/redstone_island_partition_test.cpp
     )

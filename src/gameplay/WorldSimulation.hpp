@@ -182,6 +182,29 @@ class WorldSimulation final {
     // scheduling anything — a trapdoor has no delay, unlike a torch's 2gt toggle.
     void notifyRedstoneComponent(world::World& world, SimulationPosition position);
 
+    // AR-B4-6: where a comparator's container reading comes from.
+    //
+    // ComparatorBlock#getInputSignal asks the block behind it for an analog
+    // output — a chest's fill level, a furnace's. Those live in the session's
+    // block-entity store, which the simulation deliberately does not own, so the
+    // session hands this in. A plain function pointer plus an opaque context
+    // rather than a std::function: this is read on the redstone path, and the
+    // simulation should not learn what a chest is to call it.
+    //
+    // Returns < 0 for "the block there has no analog output at all", which is
+    // not the same as an empty container returning 0 — an empty chest still
+    // overrides whatever signal is reaching the comparator, a stone block does
+    // not. Unset means every block answers "no analog output", which is what the
+    // headless redstone fixtures see.
+    using AnalogOutputFn = int (*)(const void* context, world::BlockPos pos);
+    void setAnalogOutputSource(AnalogOutputFn function, const void* context) {
+        analogOutput_ = function;
+        analogOutputContext_ = context;
+    }
+    [[nodiscard]] int analogOutputAt(world::BlockPos pos) const {
+        return analogOutput_ == nullptr ? -1 : analogOutput_(analogOutputContext_, pos);
+    }
+
     // W-x-1: DiodeBlock#updateNeighborsInFront (DiodeBlock.java:177-183), shared
     // by the repeater and the comparator — it is base-class behaviour in vanilla,
     // not something one of them does specially.
@@ -380,6 +403,8 @@ class WorldSimulation final {
   private:
     // AR-B4-3: see synchronousWriteMark() above.
     std::vector<world::BlockPos> synchronousWrites_;
+    AnalogOutputFn analogOutput_ = nullptr;
+    const void* analogOutputContext_ = nullptr;
     void queueSand(SimulationPosition position);
     void queueWater(SimulationPosition position, std::uint8_t level);
     void queueSupportCheck(SimulationPosition position);
