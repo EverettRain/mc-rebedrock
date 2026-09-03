@@ -1,5 +1,7 @@
 #version 450
 
+#include "include/lightmap.glsl"
+
 layout(location = 0) in vec2 fragmentUv;
 layout(location = 1) in vec3 fragmentNormal;
 layout(location = 2) flat in float fragmentTextureLayer;
@@ -44,11 +46,6 @@ layout(binding = 1) uniform sampler2DArray blockTextures;
 // the shadow feature is off.
 layout(binding = 8) uniform sampler2D shadowDepth;
 
-float lightBrightness(float normalizedLevel) {
-    float darkness = 1.0 - clamp(normalizedLevel, 0.0, 1.0);
-    return normalizedLevel / (darkness * 3.0 + 1.0);
-}
-
 vec3 weatherFogColor(vec3 color) {
     color.rg *= 1.0 - camera.weatherSettings.x * 0.50;
     color.b *= 1.0 - camera.weatherSettings.x * 0.40;
@@ -81,9 +78,7 @@ void main() {
         }
     }
     vec4 texel = texture(blockTextures, vec3(animatedUv, animatedLayer));
-    vec3 sunDirection = normalize(camera.sunDirection.xyz);
     vec3 normal = normalize(fragmentNormal);
-    float diffuse = max(dot(normal, sunDirection), 0.0);
     // Sun shadow: project the fragment into the light space the pre-pass wrote
     // the depth map with, and darken the sun term where a closer surface blocks
     // it. The comparison uses a small depth bias to avoid self-shadow acne, and
@@ -101,30 +96,23 @@ void main() {
             }
         }
     }
-    float upward = max(normal.y, 0.0);
-    float downward = max(-normal.y, 0.0);
-    float side = 1.0 - abs(normal.y);
-    float horizontalShade = mix(0.68, 0.80, abs(normal.z));
-    float faceShade = upward + downward * 0.50 + side * horizontalShade;
+    // CardinalLighting.DEFAULT, from the shared lightmap include.
+    float faceShade = cardinalShade(normal);
     bool smoothLighting = camera.lightingSettings.y > 0.5;
     bool highLighting = camera.lightingSettings.z > 0.5;
     float skyLevel = smoothLighting ? fragmentSkyLight : fragmentFlatSkyLight;
     float blockLevel = smoothLighting ? fragmentBlockLight : fragmentFlatBlockLight;
-    // Weather reduces only the visual contribution sampled from sky light. The
-    // skyLevel itself remains the mesh/world value, so gameplay light checks do
-    // not change and block light can still win the max() below.
-    float skyBrightness = lightBrightness(skyLevel) * camera.sunDirection.w *
-        camera.weatherSettings.z;
-    float blockBrightness = lightBrightness(blockLevel);
-    // Vanilla tints the sky light by the time of day — cool blue moonlight at
-    // night, warm sunlight by day. That is why desert sand reads pale at night
-    // instead of keeping its yellow cast under achromatic light.
+    // SKY_LIGHT_FACTOR for this tick (sunDirection.w), times the weather dimming,
+    // times the sun-shadow term. Weather and shadow scale only the sky half; the
+    // levels themselves stay the mesh/world values, so gameplay light checks are
+    // untouched and block light still adds at full strength inside a shadow.
+    float skyFactor = camera.sunDirection.w * camera.weatherSettings.z * shadowFactor;
+    vec3 lightmap = sampleLightmap(skyLevel, blockLevel, skyFactor);
+    // The sky half carries the time-of-day tint: cool blue moonlight, warm
+    // sunlight. Block light brings its own tint inside the lightmap.
     vec3 skyTint = mix(vec3(0.50, 0.62, 0.95), vec3(1.0, 0.97, 0.90),
                        camera.sunDirection.w);
-    vec3 skyIllumination = skyTint *
-        (faceShade * (0.72 + diffuse * shadowFactor * 0.28) * skyBrightness);
-    vec3 blockIllumination = vec3(1.0, 0.72, 0.38) * blockBrightness * 0.92;
-    vec3 illumination = max(skyIllumination, blockIllumination);
+    vec3 illumination = lightmap * mix(vec3(1.0), skyTint, skyFactor) * faceShade;
     for (int lightIndex = 0; lightIndex < int(camera.lightingSettings.x); ++lightIndex) {
         vec3 delta = camera.pointLights[lightIndex].xyz - fragmentWorldPosition;
         float radius = camera.pointLights[lightIndex].w;

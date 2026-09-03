@@ -22,6 +22,7 @@
 #include "gameplay/command/CommandDispatcher.hpp"
 #include "gameplay/entities/SpeciesRenderData.hpp"
 #include "persistence/SaveRepository.hpp"
+#include "render/SkyLight.hpp"
 #include "render/PerspectiveCamera.hpp"
 #include "render/TestScene.hpp"
 #include "input/InputAction.hpp"
@@ -1243,14 +1244,24 @@ class HudRenderer final {
         }
     }
 
-    // 暗角强度每 tick 以 1% 的速度趋近 clamp(1 - 眼部亮度, 0, 1)
-    // 亮度取主世界的光照曲线 g/(4 - 3g)，其中 g = 光照等级 / 15
-    // 天光按天空着色器同一个日照系数衰减，因此夜里和洞穴里同样会出现暗角
+    // vanilla `Gui.updateVignetteBrightness`:
+    //   levelBrightness = Lightmap.getBrightness(dim, getMaxLocalRawBrightness(eye))
+    //   target          = clamp(1 - levelBrightness, 0, 1)
+    //
+    // The load-bearing detail is `getMaxLocalRawBrightness`, which is
+    // `max(blockLight, skyLight - skyDarken)` — an INTEGER darkening SUBTRACTED
+    // from an integer sky level. `skyDarken` is `(int)(15 - SKY_LIGHT_LEVEL)`,
+    // and that track is flat 1.0 from tick 133 to 11867, so it is 0 for the
+    // whole day: outdoors in daylight vanilla reads level 15, brightness 1, and
+    // the vignette is exactly off.
+    //
+    // This used to MULTIPLY the sky level by the sun-elevation curve instead.
+    // That curve is fractional for most of the day, so a player standing in open
+    // daylight got, say, 0.6 -> brightness 0.27 -> a vignette at 73% strength.
+    // The corners were crushed in broad daylight, which is what "the vignette is
+    // much stronger than it used to be" was.
     void updateVignetteDarkness(float deltaSeconds) {
-        const auto daylight =
-            world::DayNightCycle::stateAtTick(clientMirror.world().dayTimeTicks);
-        const float daylightFactor =
-            std::clamp((daylight.skyBrightness - 0.08F) / 0.92F, 0.0F, 1.0F);
+        const int skyDarken = SkyLight::skyDarken(clientMirror.world().dayTimeTicks);
         const auto& playerSnap = clientMirror.player();
         const float eyeHeight = playerSnap.sneaking ? gameplay::PlayerController::kSneakingEyeHeight
                                                     : gameplay::PlayerController::kEyeHeight;
@@ -1258,10 +1269,9 @@ class HudRenderer final {
         const int eyeX = static_cast<int>(std::floor(eye.x));
         const int eyeY = static_cast<int>(std::floor(eye.y));
         const int eyeZ = static_cast<int>(std::floor(eye.z));
-        const float sky = static_cast<float>(lightWorld.skyLight(eyeX, eyeY, eyeZ)) / 15.0F;
-        const float block =
-            static_cast<float>(lightWorld.blockLight(eyeX, eyeY, eyeZ)) / 15.0F;
-        const float light = std::max(block, sky * daylightFactor);
+        const int sky = static_cast<int>(lightWorld.skyLight(eyeX, eyeY, eyeZ)) - skyDarken;
+        const int block = static_cast<int>(lightWorld.blockLight(eyeX, eyeY, eyeZ));
+        const float light = static_cast<float>(std::max(0, std::max(block, sky))) / 15.0F;
         const float brightness = light / (4.0F - 3.0F * light);
         const float target = std::clamp(1.0F - brightness, 0.0F, 1.0F);
         vignetteDarkness_ += (target - vignetteDarkness_) * std::min(1.0F, 0.2F * deltaSeconds);

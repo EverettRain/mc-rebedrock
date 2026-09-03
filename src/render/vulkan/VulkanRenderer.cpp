@@ -59,6 +59,7 @@
 #include "render/PerspectiveCamera.hpp"
 #include "render/player/PlayerRenderState.hpp"
 #include "render/RainSystem.hpp"
+#include "render/SkyLight.hpp"
 #include "render/StreamingBudget.hpp"
 #include "ui/BitmapFontMetrics.hpp"
 #include "ui/ButtonControl.hpp"
@@ -6250,7 +6251,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 20 Hz 的 tick 只对快速运动的东西才显得粗，太阳每 tick 几乎不动，这里不需要 tick 内插值
         const auto dayTick = clientMirror_.world().dayTimeTicks;
         const auto daylight = world::DayNightCycle::stateAtTick(dayTick);
-        uniform.sunDirection = glm::vec4{daylight.sunDirection, daylight.skyBrightness};
+        // sunDirection.w is the lightmap's SkyFactor. 26.1 drives it from the
+        // SKY_LIGHT_FACTOR track (1.0 through the day, 0.24 at night), not from
+        // the sun-elevation cosine `skyBrightness` — that curve is for sky and
+        // fog COLOUR, and using it here left every surface reading a fractional
+        // sky factor for most of the day.
+        uniform.sunDirection =
+            glm::vec4{daylight.sunDirection, SkyLight::skyLightFactor(dayTick)};
         // horizonFog.w 只驱动月相
         // 流体动画改用下面的服务端 tick，关掉昼夜规则因此不再冻住水和岩浆
         // 月相时钟取模回绕，长时间运行的世界也不会损失浮点精度

@@ -1,5 +1,7 @@
 #version 450
 
+#include "include/lightmap.glsl"
+
 // Dedicated native-aspect vanilla rain texture. Scene light is sampled once
 // per precipitation column, matching the lightmap treatment of the vanilla
 // renderer without changing any world light value.
@@ -26,11 +28,6 @@ layout(location = 1) flat in float fragmentOpacity;
 layout(location = 2) flat in vec2 fragmentSceneLight;
 layout(location = 0) out vec4 outColor;
 
-float lightBrightness(float normalizedLevel) {
-    float darkness = 1.0 - clamp(normalizedLevel, 0.0, 1.0);
-    return normalizedLevel / (darkness * 3.0 + 1.0);
-}
-
 void main() {
     vec4 texel = texture(rainTexture, fragmentUv);
     texel.a *= fragmentOpacity;
@@ -38,13 +35,13 @@ void main() {
         discard;
     }
 
+    // The same lightmap the terrain samples, so the sheet sits in the scene's
+    // light rather than in its own.
     vec3 skyTint = mix(vec3(0.50, 0.62, 0.95), vec3(1.0, 0.97, 0.90),
                        camera.sunDirection.w);
-    float skyBrightness = lightBrightness(fragmentSceneLight.x) * camera.sunDirection.w *
-        camera.weatherSettings.z;
-    float blockBrightness = lightBrightness(fragmentSceneLight.y);
-    vec3 illumination = max(skyTint * skyBrightness,
-                            vec3(1.0, 0.72, 0.38) * blockBrightness * 0.92);
+    float skyFactor = camera.sunDirection.w * camera.weatherSettings.z;
+    vec3 illumination = sampleLightmap(fragmentSceneLight.x, fragmentSceneLight.y, skyFactor) *
+        mix(vec3(1.0), skyTint, skyFactor);
     texel.rgb *= clamp(illumination, vec3(0.035), vec3(1.25));
     outColor = texel;
 }

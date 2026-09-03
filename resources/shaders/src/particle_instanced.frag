@@ -1,5 +1,7 @@
 #version 450
 
+#include "include/lightmap.glsl"
+
 layout(location = 0) in vec2 fragmentUv;
 layout(location = 1) flat in float fragmentTextureLayer;
 layout(location = 5) flat in float fragmentOpacity;
@@ -31,11 +33,6 @@ layout(binding = 0) uniform CameraUniform {
 layout(binding = 1) uniform sampler2DArray blockTextures;
 
 // Vanilla's light curve, identical to grass_block.frag / item_entity.frag.
-float lightBrightness(float normalizedLevel) {
-    float darkness = 1.0 - clamp(normalizedLevel, 0.0, 1.0);
-    return normalizedLevel / (darkness * 3.0 + 1.0);
-}
-
 vec3 weatherFogColor(vec3 color) {
     color.rg *= 1.0 - camera.weatherSettings.x * 0.50;
     color.b *= 1.0 - camera.weatherSettings.x * 0.40;
@@ -55,17 +52,13 @@ void main() {
     // particle that existed before the channel did.
     texel.rgb *= fragmentTint;
     if (fragmentSceneLight.x >= 0.0) {
-        // Same curve, colours and moving point lights as grass_block.frag, so a
-        // particle reads as part of the scene it stands in: sky light follows
-        // the day/night cycle, block light keeps the warm torch tint, and the
-        // two combine with max() rather than summing.
+        // The same lightmap the terrain samples, so a particle reads as part of
+        // the scene it drifts through.
         vec3 skyTint = mix(vec3(0.50, 0.62, 0.95), vec3(1.0, 0.97, 0.90),
                            camera.sunDirection.w);
-        float skyBrightness = lightBrightness(fragmentSceneLight.x) * camera.sunDirection.w *
-            camera.weatherSettings.z;
-        float blockBrightness = lightBrightness(fragmentSceneLight.y);
-        vec3 illumination = max(skyTint * vec3(skyBrightness),
-                                vec3(1.0, 0.72, 0.38) * blockBrightness * 0.92);
+        float skyFactor = camera.sunDirection.w * camera.weatherSettings.z;
+        vec3 illumination = sampleLightmap(fragmentSceneLight.x, fragmentSceneLight.y, skyFactor) *
+            mix(vec3(1.0), skyTint, skyFactor);
         for (int lightIndex = 0; lightIndex < int(camera.lightingSettings.x); ++lightIndex) {
             vec3 delta = camera.pointLights[lightIndex].xyz - fragmentWorldPosition;
             float radius = camera.pointLights[lightIndex].w;

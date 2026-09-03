@@ -1,5 +1,7 @@
 #version 450
 
+#include "include/lightmap.glsl"
+
 layout(location = 0) in vec2 fragmentUv;
 layout(location = 1) flat in float fragmentTextureLayer;
 layout(location = 2) in vec3 fragmentNormal;
@@ -50,11 +52,6 @@ layout(binding = 8) uniform sampler2D shadowDepth;
 
 // Vanilla's light curve, identical to grass_block.frag: level 15 is full
 // brightness and the falloff steepens toward darkness.
-float lightBrightness(float normalizedLevel) {
-    float darkness = 1.0 - clamp(normalizedLevel, 0.0, 1.0);
-    return normalizedLevel / (darkness * 3.0 + 1.0);
-}
-
 vec3 weatherFogColor(vec3 color) {
     color.rg *= 1.0 - camera.weatherSettings.x * 0.50;
     color.b *= 1.0 - camera.weatherSettings.x * 0.40;
@@ -88,10 +85,7 @@ void main() {
     if (fragmentIsCube > 0.5) {
         vec3 normal = normalize(fragmentNormal);
         if (fragmentFallingBlock > 0.5) {
-            float upward = max(normal.y, 0.0);
-            float downward = max(-normal.y, 0.0);
-            float side = 1.0 - abs(normal.y);
-            faceShade = upward + downward * 0.50 + side * mix(0.68, 0.80, abs(normal.z));
+            faceShade = cardinalShade(normal);
             float shadowFactor = 1.0;
             if (camera.lightingSettings.w > 0.5) {
                 vec4 lightPosition = camera.lightViewProj * vec4(fragmentWorldPosition, 1.0);
@@ -115,23 +109,17 @@ void main() {
     if (fragmentSceneLight.x < 0.0) {
         texel.rgb *= faceShade;
     } else {
-        // Same curve, colours and moving point lights as grass_block.frag, so a
-        // creature reads as part of the scene it stands in: sky light follows the
-        // day/night cycle, block light keeps the warm torch tint, and the two
-        // combine with max() rather than summing.
-        // Cool blue moonlight by night, warm sunlight by day — matches the
-        // terrain shader so a creature or held block reads as part of the scene.
+        // The same lightmap the terrain samples, so a creature reads as part of
+        // the scene it stands in. Sharing the include is the point: this used to
+        // be a fourth hand-copy of the terrain lighting and drifted from it.
         vec3 skyTint = mix(vec3(0.50, 0.62, 0.95), vec3(1.0, 0.97, 0.90),
                            camera.sunDirection.w);
-        float skyBrightness = lightBrightness(fragmentSceneLight.x) * camera.sunDirection.w *
-            camera.weatherSettings.z;
-        float blockBrightness = lightBrightness(fragmentSceneLight.y);
-        vec3 skyIllumination = skyTint * vec3(skyBrightness);
+        float skyFactor = camera.sunDirection.w * camera.weatherSettings.z;
         if (fragmentFallingBlock > 0.5) {
-            skyIllumination *= faceShade * terrainSunFactor;
+            skyFactor *= terrainSunFactor;
         }
-        vec3 illumination = max(skyIllumination,
-                                vec3(1.0, 0.72, 0.38) * blockBrightness * 0.92);
+        vec3 illumination = sampleLightmap(fragmentSceneLight.x, fragmentSceneLight.y, skyFactor) *
+            mix(vec3(1.0), skyTint, skyFactor);
         for (int lightIndex = 0; lightIndex < int(camera.lightingSettings.x); ++lightIndex) {
             vec3 delta = camera.pointLights[lightIndex].xyz - fragmentWorldPosition;
             float radius = camera.pointLights[lightIndex].w;

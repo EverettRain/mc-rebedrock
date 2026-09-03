@@ -636,6 +636,15 @@ if(MC_REBEDROCK_STAGE_RUNTIME AND GLSLC_EXECUTABLE)
         rain_sheet.frag
     )
     set(MC_REBEDROCK_SHADER_OUTPUTS)
+    # Shared GLSL, the way vanilla lays its own out (assets/minecraft/shaders/include).
+    # The terrain lighting used to be hand-copied into grass_block.frag and
+    # block_cutout.frag; the two copies drifting is what shipped a MoltenVK
+    # pipeline-creation crash once already. Every one of these MUST be listed in
+    # DEPENDS below — glslc will not tell CMake what it included, so an unlisted
+    # header edits without rebuilding anything.
+    set(MC_REBEDROCK_SHADER_INCLUDES
+        "${MC_REBEDROCK_SHADER_SOURCE_DIR}/include/lightmap.glsl"
+    )
 
     foreach(shader IN LISTS MC_REBEDROCK_SHADER_SOURCES)
         set(shader_source "${MC_REBEDROCK_SHADER_SOURCE_DIR}/${shader}")
@@ -644,8 +653,9 @@ if(MC_REBEDROCK_STAGE_RUNTIME AND GLSLC_EXECUTABLE)
         add_custom_command(
             OUTPUT "${shader_output}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${MC_REBEDROCK_SHADER_OUTPUT_DIR}"
-            COMMAND "${GLSLC_EXECUTABLE}" "${shader_source}" -o "${shader_output}"
-            DEPENDS "${shader_source}"
+            COMMAND "${GLSLC_EXECUTABLE}" -I "${MC_REBEDROCK_SHADER_SOURCE_DIR}"
+                    "${shader_source}" -o "${shader_output}"
+            DEPENDS "${shader_source}" ${MC_REBEDROCK_SHADER_INCLUDES}
             COMMENT "Compiling shader ${shader}"
             VERBATIM
         )
@@ -1795,6 +1805,20 @@ if(BUILD_TESTING)
         "${stb_SOURCE_DIR}"
     )
     add_test(NAME biome_tint_layers COMMAND mc_rebedrock_biome_tint_layers_test)
+
+    add_executable(mc_rebedrock_sky_light_test
+        tests/sky_light_test.cpp
+    )
+    target_include_directories(mc_rebedrock_sky_light_test PRIVATE src)
+    add_test(NAME sky_light COMMAND mc_rebedrock_sky_light_test)
+
+    add_executable(mc_rebedrock_terrain_lightmap_test
+        tests/terrain_lightmap_test.cpp
+    )
+    target_include_directories(mc_rebedrock_terrain_lightmap_test PRIVATE src)
+    target_compile_definitions(mc_rebedrock_terrain_lightmap_test PRIVATE
+        "MC_REBEDROCK_SHADER_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src\"")
+    add_test(NAME terrain_lightmap COMMAND mc_rebedrock_terrain_lightmap_test)
 
     add_executable(mc_rebedrock_biome_climate_test
         tests/biome_climate_test.cpp
