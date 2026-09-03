@@ -109,10 +109,22 @@ int main() {
     // four more REDSTONE_BLOCKS members the structures reference — redstone_lamp,
     // oak/acacia pressure plates and the jungle button — for 32. STRUCT AR-B batch
     // 5 then added the target block (also a REDSTONE_BLOCKS member) for 33. The
-    // ore-drop pass then added the redstone *item* (redstone dust, the ore's drop)
-    // under this tab as well — 34 in all.
+    // ore-drop pass then added the redstone *item* (redstone dust, the ore's
+    // drop) under this tab as well — 34 in all.
+    //
+    // AR-CX took it back to 33, and that is the fix rather than a loss: the
+    // redstone item and the redstone_wire block used to be two separate catalog
+    // entries, one called "redstone" that could not be placed and one called
+    // "redstone_wire" that could. They are one item now, exactly as vanilla has
+    // one (Items.REDSTONE is redstone_wire's BlockItem), so the tab holds one
+    // entry for it and that entry both stacks and places.
     const auto redstoneTab = registry.catalog(CreativeCategory::Redstone);
-    assert(redstoneTab.size() == 34);
+    assert(redstoneTab.size() == 33);
+    // The single entry is reachable under the block, and its item is the one
+    // players hold — named `redstone`, placing `redstone_wire`.
+    assert(gameplay::blockItemFor(world::Block::RedstoneWire) == &gameplay::items::Redstone);
+    assert(gameplay::items::Redstone.identifier.path == "redstone");
+    assert(gameplay::items::Redstone.block() == world::Block::RedstoneWire);
     assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::RedstoneBlock));
     assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::RedstoneTorch));
     assert(inCatalog(registry, CreativeCategory::Redstone, world::Block::Lever));

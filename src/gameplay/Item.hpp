@@ -370,6 +370,22 @@ class BlockItem : public Item {
         blockItemKind = BlockItemKind::Plain;
     }
 
+    // AR-CX: the same, for a block whose item is *not* named after it. Vanilla
+    // registers such an item under its own name and points it at the block
+    // (`Items.REDSTONE = new BlockItem(Blocks.REDSTONE_WIRE)`), which the
+    // constructor above cannot express — it takes the identifier straight off
+    // the block, so item name and block name were forced to agree and redstone
+    // dust simply had no block item at all.
+    //
+    // Only the *name* comes from the caller. Stack size, texture and the block
+    // it places still come from the block's registry entry, so this cannot drift
+    // into a second, differently-behaved item for the same block.
+    constexpr BlockItem(world::Block block, std::string_view name) : BlockItem(block) {
+        identifier = {kNamespace, name};
+        vanillaAlias = {kVanillaNamespace, name};
+        textureName = name;
+    }
+
     // The block this item places, held as a dense BlockId (the DOD "holder = id"
     // rule) rather than the Block enum: a block item references block identity by
     // id, and block() converts back for the callers that still speak in Block.
@@ -455,6 +471,23 @@ class DoorBlockItem : public BlockItem {
     return nullptr;
 }
 
+namespace items {
+// Redstone dust: `Items.REDSTONE = new BlockItem(Blocks.REDSTONE_WIRE)`, an item
+// called `redstone` that places `redstone_wire`. It is defined up here, apart
+// from the other ingredients, because blockItemFor below has to return *this*
+// object: a block must have exactly one item, and generating a second one from
+// the block's registry entry would put an item literally called "redstone_wire"
+// into the creative catalog and on the end of pick-block.
+//
+// It is the only block in this roster whose item is named differently. The
+// crops are the other shape of the same idea (wheat/carrots/potatoes are
+// planted from wheat_seeds/carrot/potato) and are already handled the way
+// vanilla handles them: blockItemFor returns null for a Crop model and the
+// seeds plant through their own useOn, because a seed is not simply a block
+// item — it needs farmland, and two of the three are food as well.
+inline constexpr BlockItem Redstone{world::Block::RedstoneWire, "redstone"};
+} // namespace items
+
 // The one BlockItem a block is wielded as, mirroring the entry every block gets
 // in vanilla's Items registry. The pointer is stable, so two stacks of the same
 // block always point at the same item. The torch is a StandingAndWallBlockItem,
@@ -471,6 +504,11 @@ class DoorBlockItem : public BlockItem {
     static const StandingAndWallBlockItem redstoneTorch{world::Block::RedstoneTorch,
                                                         world::Block::RedstoneWallTorch};
     if (block == world::Block::RedstoneTorch) return &redstoneTorch;
+    // AR-CX: redstone dust's item is `redstone`, not `redstone_wire` (see the
+    // definition above). Returning it here is what keeps the block to one item —
+    // drops, pick-block, the creative catalog and a held stack all land on the
+    // same object.
+    if (block == world::Block::RedstoneWire) return &items::Redstone;
     if (!world::isValidBlock(block)) return nullptr;
     // Crop blocks (wheat/carrots/potatoes — the BlockModel::Crop family) have no
     // item form in vanilla: the harvested produce (Items.WHEAT/CARROT/POTATO) is
@@ -575,8 +613,8 @@ inline constexpr Item RawGold =
     Item::of("raw_gold").category(CreativeCategory::Ingredients);
 inline constexpr Item LapisLazuli =
     Item::of("lapis_lazuli").category(CreativeCategory::Ingredients);
-inline constexpr Item Redstone =
-    Item::of("redstone").category(CreativeCategory::Redstone);
+// Redstone dust is defined above blockItemFor (it is a BlockItem placing
+// redstone_wire, and that function has to be able to name it).
 inline constexpr Item Quartz =
     Item::of("quartz").category(CreativeCategory::Ingredients);
 inline constexpr Item Stick =

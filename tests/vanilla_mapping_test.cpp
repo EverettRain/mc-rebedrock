@@ -50,6 +50,24 @@ void testItemIdentity() {
     assert(gameplay::itemId(stick) == gameplay::itemId(gameplay::itemFromIdentifier("stick")));
 
     assert(compat::mapVanillaItemName("minecraft:this_item_does_not_exist") == nullptr);
+
+    // AR-CX: redstone dust is the roster's one item whose name differs from the
+    // block it places (`Items.REDSTONE` places `Blocks.REDSTONE_WIRE`). JE spells
+    // the *item* `minecraft:redstone` — in recipes, in loot tables, in `/give` —
+    // and the *block* `minecraft:redstone_wire`. Making the item a BlockItem must
+    // not have quietly renamed it to the block's name, which is the tempting way
+    // to "fix" placement and would break the import of every recipe and drop that
+    // mentions it.
+    const auto* redstone = compat::mapVanillaItemName("minecraft:redstone");
+    assert(redstone != nullptr);
+    assert(redstone == &gameplay::items::Redstone);
+    assert(gameplay::items::Redstone.identifier.path == "redstone");
+    // ...and the two names stay distinct: the block keeps its own.
+    assert(compat::mapVanillaBlockName("minecraft:redstone_wire").has_value());
+    assert(*compat::mapVanillaBlockName("minecraft:redstone_wire") == world::Block::RedstoneWire);
+    // The item that block is wielded as is this same one, so there is no second
+    // item called `redstone_wire` for a JE name to land on.
+    assert(gameplay::blockItemFor(world::Block::RedstoneWire) == &gameplay::items::Redstone);
 }
 
 void testEntityIdentity() {

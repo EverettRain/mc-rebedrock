@@ -370,7 +370,18 @@ BlockOrientation placementOrientation(Block placed, const PlacementContext& cont
     // comment). Its FACING is the side it protrudes away from, exactly
     // WallTorch's convention: the clicked face directly, not its opposite —
     // clicking a wall's east face hangs the button facing east, off that wall.
-    if (blockDefinition(placed).model == BlockModel::Button && isHorizontal(context.clickedFace)) {
+    //
+    // AR-CX: the lever takes the identical branch, and always should have. When
+    // the button's was written its comment said it matched "Lever's existing
+    // simplification" — there was no such branch, and there never had been. A
+    // lever declares a bare `state(Facing, 6)`, so it is neither
+    // hasDirectionalFacing nor hasHorizontalFacing and fell through to
+    // defaultOrientation: every lever came out facing the same way whichever
+    // wall was clicked, its Wall support then checked one fixed wrong cell, and
+    // placement failed for all four walls. Not a regression — it had simply
+    // never worked.
+    if (isHorizontal(context.clickedFace) &&
+        (blockDefinition(placed).model == BlockModel::Button || placed == Block::Lever)) {
         return context.clickedFace;
     }
     if (hasDirectionalFacing(placed)) {
