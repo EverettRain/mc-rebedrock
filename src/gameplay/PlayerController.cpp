@@ -212,6 +212,35 @@ bool PlayerController::collidesAtHeight(const world::World& world, glm::vec3 pos
             }
         }
     }
+
+    // AR-B4-0: one row below the query box. A collision shape may reach above
+    // its own cell (26.1's fence gate is 24px tall), and the loop above only
+    // visits the cells the body itself occupies, so that overhang would go
+    // unseen. The row is gated on `hasTallCollision`, a byte-table load per
+    // cell, rather than by widening minY — the roster has one tall block and
+    // the wider range would cost every probe a whole extra x*z row of shape
+    // evaluations. Reading through world::block means an out-of-world or
+    // unloaded cell answers Air and is skipped before blockCollisionShape's
+    // "unloaded reads as solid" rule could turn it into a phantom overhang.
+    const int underY = minY - 1;
+    if (world::isWorldYInRange(underY)) {
+        for (int z = minZ; z <= maxZ; ++z) {
+            for (int x = minX; x <= maxX; ++x) {
+                if (cellIsClipped(x, underY, z)) {
+                    continue;
+                }
+                if (!world::hasTallCollision(world.block(x, underY, z))) {
+                    continue;
+                }
+                if (world::shapeOverlaps(blockCollisionShape(world, x, underY, z),
+                                         static_cast<float>(x), static_cast<float>(underY),
+                                         static_cast<float>(z), qMinX, qMinY, qMinZ, qMaxX, qMaxY,
+                                         qMaxZ)) {
+                    return true;
+                }
+            }
+        }
+    }
     return false;
 }
 

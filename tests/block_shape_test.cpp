@@ -4,6 +4,8 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 
 // BlockShape is the single shape source the mechanism-fix plan calls for: one
 // `blockShape(state)` — the block's base geometry — that the pick ray, the
@@ -171,6 +173,40 @@ int main() {
 
         // Empty never collides.
         assert(!shapeOverlaps(BlockShape{}, ox, oy, oz, ox, oy, oz, ox + 1, oy + 1, oz + 1));
+    }
+
+    // --- AR-B4-0: the tall-collision prefilter. One bit per block, true only
+    // where some state's collision shape reaches above its own cell, so the
+    // collision walk's extra row-below scan costs a byte-table load per cell
+    // instead of a shape evaluation. ---
+    {
+        // The table is exactly Block::Count wide, so the accessor's bounds check
+        // is the only thing standing between an out-of-enum handle and a read
+        // past the end.
+        static_assert(kTallCollisionByBlock.size() == kBuiltinBlockCount);
+        assert(!hasTallCollision(Block::Count)); // out of enum, not a read past the end
+
+        // Ordinary geometry stops at its own cell: a full cube exactly reaches
+        // 1.0 and must NOT be marked (a `>=` here would mark every solid block
+        // in the roster and hand the walk back the whole extra row it is
+        // avoiding), a slab and a chest stop below it, air has no collision.
+        assert(!hasTallCollision(Block::Stone));
+        assert(!hasTallCollision(Block::OakSlab));
+        assert(!hasTallCollision(Block::Chest));
+        assert(!hasTallCollision(Block::Air));
+
+        // The bit agrees with the shapes it is derived from, checked here
+        // against the states rather than trusted from the table's own loop: for
+        // every block, no state may exceed 1.0 unless the block is marked.
+        for (std::size_t index = 0; index < kBuiltinBlockCount; ++index) {
+            const auto block = static_cast<Block>(index);
+            bool tall = false;
+            for (std::uint32_t id = kBlockStateRangeStarts[index];
+                 id < kBlockStateRangeStarts[index + 1U]; ++id) {
+                tall = tall || verticalSpanOf(collisionShape(BlockState::fromRawId(id))).top > 1.0F;
+            }
+            assert(tall == hasTallCollision(block));
+        }
     }
 
     return 0;

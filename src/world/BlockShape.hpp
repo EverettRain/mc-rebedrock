@@ -856,6 +856,71 @@ struct BlockCollisionSpan final {
     return blockShape(state);
 }
 
+// AR-B4-0: one bit per block — whether *any* of its states has a collision
+// shape reaching above its own cell (`top > 1.0`). Vanilla VoxelShapes are free
+// to leave the cell they belong to (26.1's FenceGateBlock.SHAPE_COLLISION is
+// `Block.column(16, 4, 0, 24)` — 24px, a cell and a half), but a collision walk
+// only iterates the cells its own query box covers, so the part above 1.0 is
+// invisible to it: the body sails over a closed gate from the cell above.
+//
+// The fix is a single extra row scanned one cell below the query, and this
+// table is what keeps that row nearly free. Widening `minY` by one
+// unconditionally would add a whole x*z row to every probe — 25-33% more cells
+// on a 2x2-footprint body — to find the one block in the roster that needs it.
+// With the bit, a cell in that row costs one block read plus one byte-table
+// load, and only a hit pays for a shape evaluation. Same constexpr-lambda build
+// and same ~350 B .rodata footprint as kOcclusionMaskByBlock above; it lives
+// down here rather than beside it only because it has to see `collisionShape`.
+//
+// "Any state" is deliberate: the row scan reads the block before it knows the
+// state (that is the whole point of the prefilter), so the bit has to be the
+// union over the block's interned state range. A block whose tall states are
+// rare simply pays the shape evaluation on the rare cells.
+inline constexpr std::array<bool, kBuiltinBlockCount> kTallCollisionByBlock = [] {
+    std::array<bool, kBuiltinBlockCount> table{};
+    for (std::size_t index = 0; index < table.size(); ++index) {
+        const auto block = static_cast<Block>(index);
+        if (!hasCollision(block)) {
+            continue;
+        }
+        for (std::uint32_t id = kBlockStateRangeStarts[index];
+             id < kBlockStateRangeStarts[index + 1U]; ++id) {
+            if (verticalSpanOf(collisionShape(BlockState::fromRawId(id))).top > 1.0F) {
+                table[index] = true;
+                break;
+            }
+        }
+    }
+    return table;
+}();
+
+// Whether the block's collision shape can reach above its own cell, i.e.
+// whether the cell one row below a collision query still has to be tested.
+// Out-of-enum handles (an external block with no baked shape) answer false, the
+// same way the occlusion mask treats them.
+[[nodiscard]] constexpr bool hasTallCollision(Block block) {
+    const auto index = static_cast<std::size_t>(block);
+    return index < kTallCollisionByBlock.size() && kTallCollisionByBlock[index];
+}
+
+// The seam guard between AR-B4-0 (the capability) and AR-B4-1 (its first
+// consumer). The row scan is only worth its byte-table load while the set of
+// tall blocks stays tiny and deliberate, so the exact membership is asserted
+// rather than merely documented: a shape edit that accidentally pushes some
+// other block's collision past 1.0 — or an off-by-one `>=` in the table's own
+// predicate, which would mark every full cube — fails the build here instead of
+// silently doubling the collision walk's cell count.
+[[nodiscard]] constexpr std::size_t tallCollisionBlockCount() {
+    std::size_t count = 0;
+    for (const bool tall : kTallCollisionByBlock) {
+        count += tall ? 1U : 0U;
+    }
+    return count;
+}
+static_assert(tallCollisionBlockCount() == 0U,
+              "AR-B4-0 lands the row scan with no tall block in the roster yet; AR-B4-1 is what "
+              "gives the fence gate its 1.5-cell collision box");
+
 // Whether an axis-aligned query box overlaps a shape whose cell origin is
 // (ox,oy,oz), all in world coordinates. A Column is tested on Y only — it fills
 // its whole 1x1 footprint, so a caller that already iterates the cells the query

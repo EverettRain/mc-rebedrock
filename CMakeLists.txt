@@ -1874,6 +1874,19 @@ if(BUILD_TESTING)
             src
             "${glm_SOURCE_DIR}"
         )
+
+        # Informational: us-per-probe of the two collision-probe loops AR-B4-0
+        # touches (PlayerController::collidesAtHeight and
+        # EntitySystem::boxIntersectsWorld), the A/B baseline for the
+        # row-below tall-collision scan.
+        add_executable(mc_rebedrock_collision_probe_benchmark
+            tests/collision_probe_benchmark.cpp
+        )
+        target_link_libraries(mc_rebedrock_collision_probe_benchmark PRIVATE mc_rebedrock_runtime)
+        target_include_directories(mc_rebedrock_collision_probe_benchmark PRIVATE
+            src
+            "${glm_SOURCE_DIR}"
+        )
     endif()
 
     add_executable(mc_rebedrock_world_mutation_service_test
