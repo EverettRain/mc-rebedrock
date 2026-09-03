@@ -480,13 +480,9 @@ const CubeUvTable kCubeUv = makeCubeUvTable();
 }
 
 // Which of vanilla's four ColorResolvers a surface reads (BiomeColors), plus the
-// two leaf tones that are fixed constants rather than a biome lookup.
-enum class TintKind : std::uint8_t {
-    None,
-    Grass,
-    Foliage,
-    Water,
-};
+// two leaf tones that are fixed constants rather than a biome lookup. The enum
+// is declared in the header so the double-tint guard can name these kinds.
+using TintKind = BiomeTintKind;
 
 [[nodiscard]] TintKind tintKindFor(Block block, Face face) {
     if (block == Block::Grass) {
@@ -685,11 +681,11 @@ class BiomeTintCache final {
     return (tint[0] == 255U && tint[1] == 255U && tint[2] == 255U) ? 0U : 3U;
 }
 
-[[nodiscard]] float textureLayer(const World& world, Block block, Face face,
-                                 int x, int y, int z) {
-    // Terrain reads the UNTINTED atlas layers and takes its colour from the
-    // vertex tint; the block roster's own layers are the tinted copies items and
-    // the GUI use, where there is no biome to ask.
+// Terrain reads the UNTINTED atlas layers and takes its colour from the vertex
+// tint; the block roster's own layers are the tinted copies items and the GUI
+// use, where there is no biome to ask. Sole owner of that substitution — the
+// double-tint guard reads it back through terrainAtlasLayer().
+[[nodiscard]] BlockTextureLayers terrainTextureLayers(Block block) {
     auto layers = textureLayers(block);
     if (block == Block::Grass) {
         const float top = gen::terrainGrassTopLayer();
@@ -703,6 +699,22 @@ class BiomeTintCache final {
             layers.top = layers.side = layers.bottom = leaf;
         }
     }
+    return layers;
+}
+
+// The layer a Cross-model plant samples. Short grass has an untinted terrain
+// copy; every other plant carries its own already-untinted texture. Sole owner,
+// for the same reason as terrainTextureLayers.
+[[nodiscard]] float crossPlantLayer(Block block) {
+    if (block == Block::GrassPlant && gen::terrainGrassPlantLayer() != 0.0F) {
+        return gen::terrainGrassPlantLayer();
+    }
+    return static_cast<float>(textureLayers(block).side);
+}
+
+[[nodiscard]] float textureLayer(const World& world, Block block, Face face,
+                                 int x, int y, int z) {
+    auto layers = terrainTextureLayers(block);
     const auto state = world.state(x, y, z);
     const auto orientation = state.orientation();
     if (blockDefinition(block).model == BlockModel::DirectionalCube) {
@@ -2046,10 +2058,7 @@ bool buildSectionImpl(
                     // Tall grass takes the biome grass tint per vertex (through
                     // appendCrossedPlant); flowers keep white. Both draw their own
                     // untinted texture.
-                    float plantLayer = static_cast<float>(textureLayers(current).side);
-                    if (current == Block::GrassPlant && gen::terrainGrassPlantLayer() != 0.0F) {
-                        plantLayer = gen::terrainGrassPlantLayer();
-                    }
+                    const float plantLayer = crossPlantLayer(current);
                     appendCrossedPlant(
                         targetMesh, world, current, worldX, worldY, worldZ, lighting,
                         sectionOrigin, plantLayer, tints);
@@ -2239,6 +2248,27 @@ inline constexpr std::array<CellFlagEntry, static_cast<std::size_t>(Block::Count
     }();
 
 } // namespace
+
+BiomeTintKind biomeTintKind(Block block, Face face) {
+    return tintKindFor(block, face);
+}
+
+float terrainAtlasLayer(Block block, Face face) {
+    // The Cross path picks its layer separately from the cube path, so this has
+    // to branch the same way the mesher does. Both branches call the same two
+    // helpers the mesher calls, so the guard cannot drift from the real choice.
+    if (blockDefinition(block).model == BlockModel::Cross) {
+        return crossPlantLayer(block);
+    }
+    const auto layers = terrainTextureLayers(block);
+    if (face == Face::PositiveY) {
+        return layers.top;
+    }
+    if (face == Face::NegativeY) {
+        return layers.bottom;
+    }
+    return layers.side;
+}
 
 MeshLightingSnapshot::MeshLightingSnapshot(const World& world, ChunkPosition position,
                                            int minimumSectionY, int maximumSectionY,

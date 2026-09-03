@@ -1777,6 +1777,25 @@ if(BUILD_TESTING)
         "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
     add_test(NAME grass_overlay_depth COMMAND mc_rebedrock_grass_overlay_depth_test)
 
+    # Joins the atlas bake's pre-tinted layer set against the mesher's per-face
+    # tint kinds, so no surface can end up multiplied by a biome colour twice.
+    # Needs the baker itself (it lives in the executable target, not the runtime
+    # library, so name its translation unit here) and stb for PNG encoding.
+    add_executable(mc_rebedrock_biome_tint_layers_test
+        tests/biome_tint_layers_test.cpp
+        src/render/vulkan/BlockAtlasBaker.cpp
+        src/assets/ImageData.cpp
+        src/assets/TextureAnimation.cpp
+        src/assets/StbImageImplementation.cpp
+    )
+    target_link_libraries(mc_rebedrock_biome_tint_layers_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_biome_tint_layers_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+        "${stb_SOURCE_DIR}"
+    )
+    add_test(NAME biome_tint_layers COMMAND mc_rebedrock_biome_tint_layers_test)
+
     add_executable(mc_rebedrock_biome_climate_test
         tests/biome_climate_test.cpp
     )

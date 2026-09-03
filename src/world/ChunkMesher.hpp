@@ -72,6 +72,31 @@ class MeshLightingSnapshot final {
     SmoothLightingQuality quality_ = SmoothLightingQuality::Standard;
 };
 
+// Which of vanilla's biome colour resolvers a face reads — 26.1's
+// BlockColors.createDefault() registers one BlockTintSource per block, and these
+// are the three that vary by biome (`grass()`, `foliage()`, `water()`) plus "no
+// tint". A face whose kind is not None multiplies its texel by a per-vertex
+// colour the mesher resolved from the biome.
+enum class BiomeTintKind : std::uint8_t {
+    None,
+    Grass,
+    Foliage,
+    Water,
+};
+
+[[nodiscard]] BiomeTintKind biomeTintKind(Block block, Face face);
+
+// The atlas layer that face samples in the terrain mesh, in the block's default
+// state, with the untinted-terrain overrides applied — the same choice the
+// mesher itself makes.
+//
+// These two exist together for one reason: a face that takes a vertex tint must
+// sample an UNTINTED layer. Sampling a layer the atlas bake already multiplied
+// by a colour tints it twice, which squares the colour and reads as "everything
+// is too dark". `biome_tint_layers` joins this against
+// `render::TextureArrayPixels::preTintedLayers` to keep the two halves honest.
+[[nodiscard]] float terrainAtlasLayer(Block block, Face face);
+
 class ChunkMesher final {
   public:
     [[nodiscard]] static render::MeshData build(const Chunk& chunk);

@@ -35,6 +35,15 @@ struct TextureArrayPixels final {
     std::array<float, 4> fluidAnimationFrameTimes{1.0F, 1.0F, 1.0F, 1.0F};
     // 全部非流体动画方块纹理，顺序与烘焙顺序一致
     std::vector<BlockTextureAnimation> blockAnimations;
+    // 烘焙期就被乘过颜色的层号（升序）。
+    //
+    // 这些是给**物品与 GUI** 用的副本——那里没有群系可问，只能烘死一个色——
+    // 外加云杉/白桦树叶那两个 vanilla 本就是常量色的地形层。
+    // 地形取用的层必须是**未着色**的原图，颜色来自顶点 tint；
+    // 一个既吃顶点 tint 又落在这张表里的方块就是**双重着色**（颜色平方，明显偏暗）。
+    // 该不变式由 `biome_tint_layers` 测试守着，它把这张表与
+    // `world::biomeTintKind` / `world::terrainAtlasLayer` 对照求交集。
+    std::vector<std::uint32_t> preTintedLayers;
 };
 
 [[nodiscard]] TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources);

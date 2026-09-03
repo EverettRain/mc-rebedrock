@@ -339,6 +339,12 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
 
     // ---- 固定特殊区，顺序确定 ----
     std::vector<assets::ImageData> layers;
+    // 烘焙期被乘过颜色的层号。地形只能取未着色的层（颜色走顶点 tint），
+    // 这张表让 biome_tint_layers 测试能把「谁被预着色」与「谁吃顶点 tint」对起来。
+    std::vector<std::uint32_t> preTintedLayers;
+    const auto markPreTinted = [&preTintedLayers](std::size_t layer) {
+        preTintedLayers.push_back(static_cast<std::uint32_t>(layer));
+    };
     const auto append = [&](const assets::ImageData& image) {
         layers.push_back(conformToAtlasLayer(top, image, "fixed-section layer"));
     };
@@ -477,19 +483,24 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         return index;
     };
     // 合成图层先登记，复用方能共享同一层
+    markPreTinted(layers.size());  // 物品/GUI 副本，烘死了 foliage 色
     layerByName.emplace("grass_block_top", static_cast<float>(layers.size()));
     layers.push_back(top);
+    markPreTinted(layers.size());  // 物品/GUI 副本，烘死了 foliage 色
     layerByName.emplace("grass_block_side", static_cast<float>(layers.size()));
     layers.push_back(side);
     layerByName.emplace("dirt", static_cast<float>(layers.size()));
     layers.push_back(dirt);
+    markPreTinted(layers.size());  // 物品/GUI 副本，烘死了 foliage 色
     layerByName.emplace("short_grass", static_cast<float>(layers.size()));
     layers.push_back(grassPlant);
+    markPreTinted(layers.size());  // 物品/GUI 副本，烘死了 foliage 色
     layerByName.emplace("oak_leaves", static_cast<float>(layers.size()));
     layers.push_back(oakLeaves);
     const std::array<const char*, 5> biomeLeafNames{
         "spruce_leaves", "birch_leaves", "jungle_leaves", "acacia_leaves", "dark_oak_leaves"};
     for (std::size_t leaf = 0; leaf < biomeLeafNames.size(); ++leaf) {
+        markPreTinted(layers.size());  // 同上：物品/GUI 用的已着色副本
         layerByName.emplace(biomeLeafNames[leaf], static_cast<float>(layers.size()));
         layers.push_back(biomeLeafTextures[leaf]);
     }
@@ -574,6 +585,11 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
             }
         }
         const float layer = static_cast<float>(layers.size());
+        if (leafFixedTints[leaf] != 0U) {
+            // 云杉/白桦是 vanilla 自己的常量色（BlockColors 的 constant(...)），
+            // 烘死是对的——它们在 tintKindFor 里也确实拿 TintKind::None。
+            markPreTinted(layers.size());
+        }
         layers.push_back(pixels);
         layerByName.emplace(std::string("leaves:terrain:") + leafNames[leaf], layer);
         world::gen::setTerrainLeafLayer(leafBlocks[leaf], layer);
@@ -682,6 +698,8 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
     output.height = static_cast<std::uint32_t>(top.height);
     output.fluidAnimationFrameTimes = fluidAnimationFrameTimes;
     output.blockAnimations = std::move(blockAnimations);
+    std::ranges::sort(preTintedLayers);
+    output.preTintedLayers = std::move(preTintedLayers);
     for (const auto& layer : layers) {
         output.rgba.insert(output.rgba.end(), layer.rgba.begin(), layer.rgba.end());
     }
