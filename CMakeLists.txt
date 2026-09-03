@@ -2183,6 +2183,17 @@ if(BUILD_TESTING)
     )
     add_test(NAME fence_gate_in_wall COMMAND mc_rebedrock_fence_gate_in_wall_test)
 
+    add_executable(mc_rebedrock_shaped_block_model_test
+        tests/shaped_block_model_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_shaped_block_model_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_shaped_block_model_test PRIVATE
+        src
+        tests
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME shaped_block_model COMMAND mc_rebedrock_shaped_block_model_test)
+
     add_executable(mc_rebedrock_placement_redstone_init_fixture_test
         tests/redstone/placement_redstone_init_fixture_test.cpp
     )

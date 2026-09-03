@@ -38,6 +38,12 @@ struct ModelElement final {
     // into the cell block light, so it stays a wiring concern the baker just
     // carries per element.
     float glow = 0.0F;
+    // RN-10a: the model json's per-element `"shade"`. False means the element
+    // does not take the directional light falloff a face's normal would give it —
+    // JE's own use is a lit redstone torch's glow halo, whose six billboards
+    // would otherwise be four different brightnesses. Parallel to `glow` above:
+    // the baker carries it, the mesher decides what it means at emit time.
+    bool shade = true;
 };
 
 // A baked quad plus the wiring-layer light hint (glow) its element carries. The
@@ -46,6 +52,7 @@ struct ModelElement final {
 struct BakedElementQuad final {
     BakedQuad quad{};
     float glow = 0.0F;
+    bool shade = true; // RN-10a, from the element
 };
 
 namespace detail {
@@ -148,6 +155,291 @@ inline ModelElement torchElement(const glm::vec3& from16, const glm::vec3& to16,
     return elements;
 }
 
+// --- RN-10a: door / trapdoor / fence gate, transcribed rect for rect ---------
+//
+// These three are still meshed by ChunkMesher's appendBoxes/appendFenceGate;
+// RN-10a only brings their model *descriptions* in, so they can be locked
+// against the json before anything renders from them (RN-10b/10c wire them).
+// Every `uv` below is the literal rect from the vanilla model, including the
+// ones that run backwards — `[3,0,0,16]`, `[0,16,16,13]` and friends are
+// vanilla's own mirrored/flipped rects, and "fixing" them is precisely how a
+// model stops matching vanilla. The projected `defaultFaceUV` these blocks get
+// today disagrees with most of them (audit R1/R2/R4/R6/R8).
+
+// A door leaf: one box, [0,0,0]-[3,16,16], its identity variant standing against
+// the cell's west wall — which is `facing=east` in the blockstate (oak_door.json
+// gives facing=east,hinge=left,open=false no `"y"`), and `rotatedBy(
+// kDoorClosedBox, East)` in BlockShape's terms. Slot 0 is the half's sprite:
+// vanilla splits it as two models over `#bottom`/`#top` rather than as two faces
+// of one, so the mesher picks the layer per HALF, not per face.
+//
+// Sources: door_bottom_{left,right}{,_open}.json, door_top_{left,right}{,_open}.json.
+[[nodiscard]] inline ModelElement doorElement(bool upperHalf, bool rightHinge, bool open) {
+    ModelElement e;
+    e.from16 = {0.0F, 0.0F, 0.0F};
+    e.to16 = {3.0F, 16.0F, 16.0F};
+
+    // The horizontal four. Both halves carry the same rects for a given
+    // (hinge, open) — the two models differ only in their cap face and their
+    // texture — so they are written once here and the cap is added below.
+    const FaceUv narrowForward = detail::rect(3, 0, 0, 16);  // [3,0,0,16]
+    const FaceUv narrowBackward = detail::rect(0, 0, 3, 16); // [0,0,3,16]
+    const FaceUv wideForward = detail::rect(0, 0, 16, 16);   // [0,0,16,16]
+    const FaceUv wideBackward = detail::rect(16, 0, 0, 16);  // [16,0,0,16]
+
+    // north/south: closed is (narrowForward, narrowBackward) for both hinges;
+    // open mirrors one of the two — left-open takes narrowForward on *south*
+    // too, right-open takes narrowBackward's mirror on both. Read straight off
+    // the four json files rather than derived.
+    FaceUv north = narrowForward;
+    FaceUv south = narrowBackward;
+    if (open) {
+        north = rightHinge ? narrowForward : narrowBackward;
+        south = rightHinge ? narrowForward : narrowBackward;
+    }
+    // west/east: this is R1 — the hinge mirror. A right-hinged door reverses the
+    // U of its two wide faces against a left-hinged one, which is what puts the
+    // handle on the correct side; sharing one projected rect (what happens today)
+    // draws both hinges identically and is most obvious on a double door.
+    const bool wideReversed = rightHinge != open;
+    const FaceUv west = wideReversed ? wideBackward : wideForward;
+    const FaceUv east = wideReversed ? wideForward : wideBackward;
+
+    detail::putFace(e, Facing::North, 0, north, detail::cullToward(Facing::North));
+    detail::putFace(e, Facing::South, 0, south, detail::cullToward(Facing::South));
+    detail::putFace(e, Facing::West, 0, west, detail::cullToward(Facing::West));
+    // The east face is the only one of the six with no `cullface` in any of the
+    // eight models: it is the leaf's inward face, never flush with a cell wall.
+    detail::putFace(e, Facing::East, 0, east);
+
+    // The cap. The lower half caps down, the upper half up, and each carries a
+    // `"rotation"` — R5, which the appendBoxes path cannot express at all.
+    if (upperHalf) {
+        const FaceUv up = rightHinge ? detail::rect(0, 0, 16, 3) : detail::rect(0, 3, 16, 0);
+        const std::uint8_t quadrant = (rightHinge != open) ? kQuadrant270 : kQuadrant90;
+        detail::putFace(e, Facing::Up, 0, up, detail::cullToward(Facing::Up), quadrant);
+    } else {
+        FaceUv down = detail::rect(16, 13, 0, 16); // left, closed
+        if (rightHinge && !open) {
+            down = detail::rect(0, 13, 16, 16);
+        } else if (!rightHinge && open) {
+            down = detail::rect(0, 16, 16, 13);
+        } else if (rightHinge && open) {
+            down = detail::rect(16, 16, 0, 13);
+        }
+        detail::putFace(e, Facing::Down, 0, down, detail::cullToward(Facing::Down), kQuadrant90);
+    }
+    return e;
+}
+
+// The swing side a door leaf actually stands on — DoorBlock#getShape's
+// `doorDirection`, the same derivation kDoorBoxTable uses (right hinge turns
+// counter-clockwise, left hinge clockwise). Both the shape and the model rotate
+// by this, which is why the two agree box for box.
+[[nodiscard]] constexpr BlockOrientation doorSwingOrientation(BlockOrientation facing, bool open,
+                                                              bool rightHinge) {
+    if (!open) {
+        return facing;
+    }
+    return rightHinge ? counterClockwiseOrientation(facing) : clockwiseOrientation(facing);
+}
+
+[[nodiscard]] inline std::vector<ModelElement> doorElements(BlockState state) {
+    return {doorElement(state.isDoorUpperHalf(), state.hinge() == DoorHinge::Right, state.open())};
+}
+
+// A trapdoor leaf: one box, from template_trapdoor_{bottom,top,open}.json.
+// Closed it lies flat against the floor or ceiling and its model carries no
+// rotation at all (every `open=false` row of oak_trapdoor.json has no `"y"`);
+// open it stands against the cell's south wall — the identity `facing=north`
+// variant — which is the same `kDoorClosedBox` the door's shape is built from.
+//
+// The side rects are `[0,16,16,13]`: V runs *backwards*, which is audit R6. The
+// projected UV this block gets today is `[0,13,16,16]`, i.e. the plank grain
+// upside down on all four sides and on the open leaf's cap.
+[[nodiscard]] inline ModelElement trapdoorElement(bool topHalf, bool open) {
+    ModelElement e;
+    const FaceUv flat = detail::rect(0, 0, 16, 16);
+    if (open) {
+        e.from16 = {0.0F, 0.0F, 13.0F};
+        e.to16 = {16.0F, 16.0F, 16.0F};
+        detail::putFace(e, Facing::Down, 0, detail::rect(0, 13, 16, 16),
+                        detail::cullToward(Facing::Down));
+        detail::putFace(e, Facing::Up, 0, detail::rect(0, 16, 16, 13),
+                        detail::cullToward(Facing::Up));
+        detail::putFace(e, Facing::North, 0, flat); // the inward face: no cullface
+        detail::putFace(e, Facing::South, 0, flat, detail::cullToward(Facing::South));
+        detail::putFace(e, Facing::West, 0, detail::rect(16, 0, 13, 16),
+                        detail::cullToward(Facing::West));
+        detail::putFace(e, Facing::East, 0, detail::rect(13, 0, 16, 16),
+                        detail::cullToward(Facing::East));
+        return e;
+    }
+    const FaceUv side = detail::rect(0, 16, 16, 13);
+    if (topHalf) {
+        e.from16 = {0.0F, 13.0F, 0.0F};
+        e.to16 = {16.0F, 16.0F, 16.0F};
+        detail::putFace(e, Facing::Down, 0, flat); // template_trapdoor_top: no cullface
+        detail::putFace(e, Facing::Up, 0, flat, detail::cullToward(Facing::Up));
+    } else {
+        e.from16 = {0.0F, 0.0F, 0.0F};
+        e.to16 = {16.0F, 3.0F, 16.0F};
+        detail::putFace(e, Facing::Down, 0, flat, detail::cullToward(Facing::Down));
+        detail::putFace(e, Facing::Up, 0, flat); // template_trapdoor_bottom: no cullface
+    }
+    for (const Facing f : {Facing::North, Facing::South, Facing::West, Facing::East}) {
+        detail::putFace(e, f, 0, side, detail::cullToward(f));
+    }
+    return e;
+}
+
+[[nodiscard]] inline std::vector<ModelElement> trapdoorElements(BlockState state) {
+    return {trapdoorElement(state.isDoorUpperHalf(), state.open())};
+}
+
+// A fence gate: eight boxes from template_fence_gate{,_open,_wall,_wall_open}.json.
+//
+// Three things here that the hand-written appendFenceGate does not do:
+//  * the four horizontal bars declare FOUR faces, not six (audit R7). Closed they
+//    are down/up/north/south; open they are down/up/west/east, because the whole
+//    leaf has swung a quarter turn. The two faces vanilla omits are the ones
+//    buried inside the neighbouring post — the bar's east face at x=6 and the
+//    inner post's west face at x=6 are the same plane, drawn twice today.
+//  * every rect is explicit (audit R8). The left post's north face is `[0,0,2,11]`;
+//    the projection this block uses today gives `[14,0,16,11]`, mirrored.
+//  * `in_wall` is the same model lowered three pixels (posts 5..16 -> 2..13, inner
+//    posts 6..15 -> 3..12, bars 6..9 -> 3..6 and 12..15 -> 9..12) with every uv
+//    byte unchanged — that is literally what the _wall jsons are, and the golden
+//    test transcribes their boxes independently to keep this shortcut honest.
+[[nodiscard]] inline std::vector<ModelElement> fenceGateElements(bool open, bool inWall) {
+    const float drop = inWall ? 3.0F : 0.0F;
+    std::vector<ModelElement> elements;
+    const auto box = [&](float x0, float y0, float z0, float x1, float y1, float z1) {
+        ModelElement e;
+        e.from16 = {x0, y0 - drop, z0};
+        e.to16 = {x1, y1 - drop, z1};
+        return e;
+    };
+
+    // Left-hand post and right-hand post: identical in both models, and the only
+    // two elements with a `cullface` (west on the left post, east on the right).
+    {
+        ModelElement e = box(0, 5, 7, 2, 16, 9);
+        detail::putFace(e, Facing::Down, 0, detail::rect(0, 7, 2, 9));
+        detail::putFace(e, Facing::Up, 0, detail::rect(0, 7, 2, 9));
+        detail::putFace(e, Facing::North, 0, detail::rect(0, 0, 2, 11));
+        detail::putFace(e, Facing::South, 0, detail::rect(0, 0, 2, 11));
+        detail::putFace(e, Facing::West, 0, detail::rect(7, 0, 9, 11),
+                        detail::cullToward(Facing::West));
+        detail::putFace(e, Facing::East, 0, detail::rect(7, 0, 9, 11));
+        elements.push_back(e);
+    }
+    {
+        ModelElement e = box(14, 5, 7, 16, 16, 9);
+        detail::putFace(e, Facing::Down, 0, detail::rect(14, 7, 16, 9));
+        detail::putFace(e, Facing::Up, 0, detail::rect(14, 7, 16, 9));
+        detail::putFace(e, Facing::North, 0, detail::rect(14, 0, 16, 11));
+        detail::putFace(e, Facing::South, 0, detail::rect(14, 0, 16, 11));
+        detail::putFace(e, Facing::West, 0, detail::rect(7, 0, 9, 11));
+        detail::putFace(e, Facing::East, 0, detail::rect(7, 0, 9, 11),
+                        detail::cullToward(Facing::East));
+        elements.push_back(e);
+    }
+
+    if (!open) {
+        // Inner vertical posts of the two leaves, meeting in the middle.
+        {
+            ModelElement e = box(6, 6, 7, 8, 15, 9);
+            detail::putFace(e, Facing::Down, 0, detail::rect(6, 7, 8, 9));
+            detail::putFace(e, Facing::Up, 0, detail::rect(6, 7, 8, 9));
+            detail::putFace(e, Facing::North, 0, detail::rect(6, 1, 8, 10));
+            detail::putFace(e, Facing::South, 0, detail::rect(6, 1, 8, 10));
+            detail::putFace(e, Facing::West, 0, detail::rect(7, 1, 9, 10));
+            detail::putFace(e, Facing::East, 0, detail::rect(7, 1, 9, 10));
+            elements.push_back(e);
+        }
+        {
+            ModelElement e = box(8, 6, 7, 10, 15, 9);
+            detail::putFace(e, Facing::Down, 0, detail::rect(8, 7, 10, 9));
+            detail::putFace(e, Facing::Up, 0, detail::rect(8, 7, 10, 9));
+            detail::putFace(e, Facing::North, 0, detail::rect(8, 1, 10, 10));
+            detail::putFace(e, Facing::South, 0, detail::rect(8, 1, 10, 10));
+            detail::putFace(e, Facing::West, 0, detail::rect(7, 1, 9, 10));
+            detail::putFace(e, Facing::East, 0, detail::rect(7, 1, 9, 10));
+            elements.push_back(e);
+        }
+        // The four horizontal bars: down/up/north/south only.
+        struct Bar final {
+            float x0, y0, x1, y1;
+            FaceUv cap;
+            FaceUv side;
+        };
+        const std::array<Bar, 4> bars{{
+            {2, 6, 6, 9, detail::rect(2, 7, 6, 9), detail::rect(2, 7, 6, 10)},
+            {2, 12, 6, 15, detail::rect(2, 7, 6, 9), detail::rect(2, 1, 6, 4)},
+            {10, 6, 14, 9, detail::rect(10, 7, 14, 9), detail::rect(10, 7, 14, 10)},
+            {10, 12, 14, 15, detail::rect(10, 7, 14, 9), detail::rect(10, 1, 14, 4)},
+        }};
+        for (const Bar& bar : bars) {
+            ModelElement e = box(bar.x0, bar.y0, 7, bar.x1, bar.y1, 9);
+            detail::putFace(e, Facing::Down, 0, bar.cap);
+            detail::putFace(e, Facing::Up, 0, bar.cap);
+            detail::putFace(e, Facing::North, 0, bar.side);
+            detail::putFace(e, Facing::South, 0, bar.side);
+            elements.push_back(e);
+        }
+        return elements;
+    }
+
+    // Open: the two leaves have swung back against the cell's north-east and
+    // north-west corners, so the inner posts move to z 13..15 and the bars turn a
+    // quarter turn — their two drawn side faces are now west/east.
+    {
+        ModelElement e = box(0, 6, 13, 2, 15, 15);
+        detail::putFace(e, Facing::Down, 0, detail::rect(0, 13, 2, 15));
+        detail::putFace(e, Facing::Up, 0, detail::rect(0, 13, 2, 15));
+        detail::putFace(e, Facing::North, 0, detail::rect(0, 1, 2, 10));
+        detail::putFace(e, Facing::South, 0, detail::rect(0, 1, 2, 10));
+        detail::putFace(e, Facing::West, 0, detail::rect(13, 1, 15, 10));
+        detail::putFace(e, Facing::East, 0, detail::rect(13, 1, 15, 10));
+        elements.push_back(e);
+    }
+    {
+        ModelElement e = box(14, 6, 13, 16, 15, 15);
+        detail::putFace(e, Facing::Down, 0, detail::rect(14, 13, 16, 15));
+        detail::putFace(e, Facing::Up, 0, detail::rect(14, 13, 16, 15));
+        detail::putFace(e, Facing::North, 0, detail::rect(14, 1, 16, 10));
+        detail::putFace(e, Facing::South, 0, detail::rect(14, 1, 16, 10));
+        detail::putFace(e, Facing::West, 0, detail::rect(13, 1, 15, 10));
+        detail::putFace(e, Facing::East, 0, detail::rect(13, 1, 15, 10));
+        elements.push_back(e);
+    }
+    struct OpenBar final {
+        float x0, y0, z0, x1, y1, z1;
+        FaceUv cap;
+        FaceUv side;
+    };
+    const std::array<OpenBar, 4> bars{{
+        {0, 6, 9, 2, 9, 13, detail::rect(0, 9, 2, 13), detail::rect(13, 7, 15, 10)},
+        {0, 12, 9, 2, 15, 13, detail::rect(0, 9, 2, 13), detail::rect(13, 1, 15, 4)},
+        {14, 6, 9, 16, 9, 13, detail::rect(14, 9, 16, 13), detail::rect(13, 7, 15, 10)},
+        {14, 12, 9, 16, 15, 13, detail::rect(14, 9, 16, 13), detail::rect(13, 1, 15, 4)},
+    }};
+    for (const OpenBar& bar : bars) {
+        ModelElement e = box(bar.x0, bar.y0, bar.z0, bar.x1, bar.y1, bar.z1);
+        detail::putFace(e, Facing::Down, 0, bar.cap);
+        detail::putFace(e, Facing::Up, 0, bar.cap);
+        detail::putFace(e, Facing::West, 0, bar.side);
+        detail::putFace(e, Facing::East, 0, bar.side);
+        elements.push_back(e);
+    }
+    return elements;
+}
+
+[[nodiscard]] inline std::vector<ModelElement> fenceGateElements(BlockState state) {
+    return fenceGateElements(state.open(), state.inWall());
+}
+
 // The elements of a lever: a cobblestone base (#base, slot 0) plus a handle
 // (#lever, slot 1) tilted 45° about its bottom (powered flips the tilt). Mirrors
 // appendElementModel's lever branch. The whole model is then attached to its
@@ -191,16 +483,59 @@ inline ModelElement torchElement(const glm::vec3& from16, const glm::vec3& to16,
     return elements;
 }
 
-// The FACING yaw for a horizontally-attached diode (south is vanilla identity).
-// Mirrors ChunkMesher::yawForHorizontalFacing.
-[[nodiscard]] inline float diodeYaw(BlockOrientation facing) {
+// --- RN-10a: the yaw convention, stated once ---------------------------------
+//
+// Two rotation conventions meet in this file and they run opposite ways, which
+// is the single easiest thing here to get backwards:
+//
+//   * a vanilla blockstate's `"y"` turns the model CLOCKWISE seen from above;
+//   * `axisMatrix('y', d)` — and ChunkMesher's rotateAxis, which it matches
+//     term for term — turns COUNTER-clockwise (at +90 it takes +Z to +X, i.e.
+//     south to east).
+//
+// So `engine yaw = 360 - vanilla y`, and every number below is in engine
+// degrees. `yawFromModelBase` says it structurally instead: a model authored
+// with its identity variant at `base` is carried onto `target`.
+//
+// This is not taken on faith. BlockShape's `rotatedBy` is the same quarter-turn
+// family (`rotatedClockwise` is (x,z) -> (1-z,x)), so a baked model's bounding
+// box has to equal the block's BlockShape box state for state — and for the door
+// and the trapdoor it does, exactly, because their model box *is* their shape
+// box. shaped_block_model_test asserts that for every variant, which pins this
+// table without needing a screenshot. (The fence gate cannot be pinned that way:
+// its model is a lattice inside the shape box and is 180-degree symmetric when
+// closed, so only an open gate can show a wrong half-turn. See the note on
+// `fenceGateYaw`.)
+[[nodiscard]] constexpr std::size_t horizontalQuarterTurns(BlockOrientation facing) {
     switch (facing) {
-    case BlockOrientation::East: return 90.0F;
-    case BlockOrientation::North: return 180.0F;
-    case BlockOrientation::West: return 270.0F;
-    default: return 0.0F; // South
+    case BlockOrientation::North: return 0;
+    case BlockOrientation::East: return 1;
+    case BlockOrientation::South: return 2;
+    case BlockOrientation::West: return 3;
+    default: return 2; // the vertical pair, folded onto South as diodeYaw does
     }
 }
+
+[[nodiscard]] constexpr float yawFromModelBase(BlockOrientation base, BlockOrientation target) {
+    const std::size_t turns =
+        (horizontalQuarterTurns(target) + 4U - horizontalQuarterTurns(base)) % 4U;
+    // clockwise^turns == engine yaw (4 - turns) * 90.
+    return static_cast<float>((4U - turns) % 4U) * 90.0F;
+}
+
+// The FACING yaw for a horizontally-attached diode (south is vanilla identity).
+// Mirrors ChunkMesher::yawForHorizontalFacing.
+[[nodiscard]] constexpr float diodeYaw(BlockOrientation facing) {
+    // A diode's json identity variant is `facing=south` (repeater.json /
+    // comparator.json give south no `"y"` at all), so it is the base-South case
+    // of the rule above. Kept as its own name because three call sites read it,
+    // and static_asserted against the general form so the two cannot drift.
+    return yawFromModelBase(BlockOrientation::South, facing);
+}
+static_assert(diodeYaw(BlockOrientation::South) == 0.0F);
+static_assert(diodeYaw(BlockOrientation::East) == 90.0F);
+static_assert(diodeYaw(BlockOrientation::North) == 180.0F);
+static_assert(diodeYaw(BlockOrientation::West) == 270.0F);
 
 // The whole-model attachment transform (JE ModelState): the diodes yaw about Y to
 // their FACING; the lever tilts its floor-authored model onto whichever of the
@@ -215,6 +550,33 @@ inline ModelElement torchElement(const glm::vec3& from16, const glm::vec3& to16,
     // sprite.
     if (block == Block::EnchantingTable) {
         return {axisMatrix('y', 0.0F)};
+    }
+    // RN-10a: the three model families whose identity variant is not the diode's
+    // `facing=south`. Each cites the blockstate json it was read off.
+    switch (blockDefinition(block).model) {
+    case BlockModel::Door:
+        // oak_door.json: facing=east,hinge=left,open=false carries no `"y"`, so
+        // the door's identity variant stands against the west wall — East in
+        // BlockShape's terms. Its rotation follows DoorBlock#getShape's
+        // doorDirection, so model and shape turn together by construction.
+        return {axisMatrix('y', yawFromModelBase(BlockOrientation::East,
+                                                 doorSwingOrientation(
+                                                     state.orientation(), state.open(),
+                                                     state.hinge() == DoorHinge::Right)))};
+    case BlockModel::TrapDoor:
+        // oak_trapdoor.json: every open=false row has no `"y"` at all — a closed
+        // trapdoor lies flat and its facing is invisible — and the open rows are
+        // keyed off facing=north, the identity.
+        return {axisMatrix('y', state.open()
+                                    ? yawFromModelBase(BlockOrientation::North,
+                                                       state.orientation())
+                                    : 0.0F)};
+    case BlockModel::FenceGate:
+        // oak_fence_gate.json: facing=south carries no `"y"`.
+        return {axisMatrix('y',
+                           yawFromModelBase(BlockOrientation::South, state.orientation()))};
+    default:
+        break;
     }
     if (block == Block::Lever) {
         switch (state.orientation()) {
@@ -329,6 +691,17 @@ inline std::vector<ModelElement> anvilElements() {
     case Block::Anvil:
     case Block::ChippedAnvil:
     case Block::DamagedAnvil: return anvilElements();
+    default:
+        break;
+    }
+    // RN-10a: door / trapdoor / fence gate are whole model *families* — eight
+    // door species, six trapdoors — that share one geometry and differ only in
+    // the sprite, so they dispatch on the model rather than being listed block by
+    // block the way the five singletons above are.
+    switch (blockDefinition(block).model) {
+    case BlockModel::Door: return doorElements(state);
+    case BlockModel::TrapDoor: return trapdoorElements(state);
+    case BlockModel::FenceGate: return fenceGateElements(state);
     default: return {};
     }
 }
@@ -337,9 +710,8 @@ inline std::vector<ModelElement> anvilElements() {
 // through the N1 primitive, with the block's attachment transform applied. Quad
 // order is elements in build order, faces in Facing order (Down..East), so a
 // consumer/test can pair quads by index with the element description.
-[[nodiscard]] inline std::vector<BakedElementQuad> bakeElementModel(Block block, BlockState state) {
-    const std::vector<ModelElement> elements = elementsFor(block, state);
-    const ModelTransform attach = attachTransform(block, state);
+[[nodiscard]] inline std::vector<BakedElementQuad> bakeElements(
+    std::span<const ModelElement> elements, const ModelTransform& attach) {
     std::vector<BakedElementQuad> quads;
     for (const ModelElement& element : elements) {
         for (std::uint8_t f = 0; f < kFacingCount; ++f) {
@@ -349,10 +721,15 @@ inline std::vector<ModelElement> anvilElements() {
             }
             quads.push_back({bakeElementFace(element.from16, element.to16, static_cast<Facing>(f),
                                              face, element.rotation, attach),
-                             element.glow});
+                             element.glow, element.shade});
         }
     }
     return quads;
+}
+
+[[nodiscard]] inline std::vector<BakedElementQuad> bakeElementModel(Block block, BlockState state) {
+    const std::vector<ModelElement> elements = elementsFor(block, state);
+    return bakeElements(elements, attachTransform(block, state));
 }
 
 // --- RN-8c-0: the baked store -------------------------------------------------
@@ -380,6 +757,13 @@ enum class ElementModelKind : std::uint8_t {
     Lever,
     EnchantingTable,
     Anvil,
+    // RN-10a: keyed by model family, not by block — the eight door species and
+    // six trapdoors share one geometry table and differ only in the atlas layer
+    // the mesher resolves, which is the same "geometry per model, texture per
+    // block" split the three anvil wear states already take.
+    Door,
+    TrapDoor,
+    FenceGate,
     None,
 };
 
@@ -392,6 +776,13 @@ enum class ElementModelKind : std::uint8_t {
     case Block::Anvil:
     case Block::ChippedAnvil:
     case Block::DamagedAnvil: return ElementModelKind::Anvil;
+    default:
+        break;
+    }
+    switch (blockDefinition(block).model) {
+    case BlockModel::Door: return ElementModelKind::Door;
+    case BlockModel::TrapDoor: return ElementModelKind::TrapDoor;
+    case BlockModel::FenceGate: return ElementModelKind::FenceGate;
     default: return ElementModelKind::None;
     }
 }
@@ -429,6 +820,9 @@ namespace detail {
     case ElementModelKind::Lever: return 6U * 2U;           // facing (all six) x powered
     case ElementModelKind::EnchantingTable: return 1U;
     case ElementModelKind::Anvil: return 4U; // facing
+    case ElementModelKind::Door: return 4U * 2U * 2U * 2U;  // facing x half x hinge x open
+    case ElementModelKind::TrapDoor: return 4U * 2U * 2U;   // facing x half x open
+    case ElementModelKind::FenceGate: return 4U * 2U * 2U;  // facing x open x in_wall
     case ElementModelKind::None: return 0U;
     }
     return 0U;
@@ -452,6 +846,22 @@ namespace detail {
         return 0U;
     case ElementModelKind::Anvil:
         return detail::horizontalIndex(state.orientation());
+    case ElementModelKind::Door:
+        return ((detail::horizontalIndex(state.orientation()) * 2U +
+                 (state.isDoorUpperHalf() ? 1U : 0U)) *
+                    2U +
+                (state.hinge() == DoorHinge::Right ? 1U : 0U)) *
+                   2U +
+               (state.open() ? 1U : 0U);
+    case ElementModelKind::TrapDoor:
+        return (detail::horizontalIndex(state.orientation()) * 2U +
+                (state.isDoorUpperHalf() ? 1U : 0U)) *
+                   2U +
+               (state.open() ? 1U : 0U);
+    case ElementModelKind::FenceGate:
+        return (detail::horizontalIndex(state.orientation()) * 2U + (state.open() ? 1U : 0U)) *
+                   2U +
+               (state.inWall() ? 1U : 0U);
     case ElementModelKind::None:
         return 0U;
     }
@@ -480,6 +890,19 @@ namespace detail {
         return BlockState{block};
     case ElementModelKind::Anvil:
         return BlockState{block, horizontalOf(variant)};
+    case ElementModelKind::Door:
+        return BlockState{block, horizontalOf(variant / 8U)}
+            .withDoorUpperHalf(((variant / 4U) & 1U) != 0U)
+            .withHinge(((variant / 2U) & 1U) != 0U ? DoorHinge::Right : DoorHinge::Left)
+            .withOpen((variant & 1U) != 0U);
+    case ElementModelKind::TrapDoor:
+        return BlockState{block, horizontalOf(variant / 4U)}
+            .withDoorUpperHalf(((variant / 2U) & 1U) != 0U)
+            .withOpen((variant & 1U) != 0U);
+    case ElementModelKind::FenceGate:
+        return BlockState{block, horizontalOf(variant / 4U)}
+            .withOpen(((variant / 2U) & 1U) != 0U)
+            .withInWall((variant & 1U) != 0U);
     case ElementModelKind::None:
         return BlockState{block};
     }
@@ -494,6 +917,9 @@ namespace detail {
     case ElementModelKind::Lever: return Block::Lever;
     case ElementModelKind::EnchantingTable: return Block::EnchantingTable;
     case ElementModelKind::Anvil: return Block::Anvil;
+    case ElementModelKind::Door: return Block::OakDoor;
+    case ElementModelKind::TrapDoor: return Block::OakTrapdoor;
+    case ElementModelKind::FenceGate: return Block::OakFenceGate;
     case ElementModelKind::None: return Block::Air;
     }
     return Block::Air;

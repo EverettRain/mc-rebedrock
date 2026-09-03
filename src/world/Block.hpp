@@ -1048,6 +1048,14 @@ struct BlockDefinition final {
     // it emits while lit; unlit it emits `light` like anything else.
     bool lit = false;
     std::uint8_t litLight = 0U;
+    // RN-10a: the model json's `ambientocclusion` field. JE reads it per model
+    // and it is not a stylistic knob — a door declares `false` because its
+    // 3-pixel leaf standing in a doorway would otherwise pick up corner shading
+    // from the frame it is flush against, which vanilla does not draw. True is
+    // the json default (models with no such field, and every `block/block`
+    // child), so only the models that opt out say so: door, lever, repeater,
+    // comparator. Trapdoor, fence gate, anvil and enchanting table inherit true.
+    bool ambientOcclusion = true;
     // The container screen this block opens on right-click, None otherwise.
     ContainerType container = ContainerType::None;
     // The block entity this block hosts, invalid when it hosts none. Placing or
@@ -1298,6 +1306,15 @@ class BlockProperties final {
         copy.definition_.directionalFacing = true;
         return copy.state(StateProperty::Facing, 6U);
     }
+    // RN-10a: the model json's `"ambientocclusion": false`. Declared here rather
+    // than derived from the model kind because it is a per-model fact, not a
+    // per-shape one — the door and the trapdoor share BlockModel-family geometry
+    // and disagree about it.
+    [[nodiscard]] constexpr BlockProperties noAmbientOcclusion() const {
+        BlockProperties copy = *this;
+        copy.definition_.ambientOcclusion = false;
+        return copy;
+    }
     // AbstractFurnaceBlock's LIT: one block, two states, and the light level
     // the burning one emits.
     [[nodiscard]] constexpr BlockProperties lit(std::uint8_t litLightLevel) const {
@@ -1396,6 +1413,9 @@ class BlockProperties final {
         BlockProperties copy = *this;
         return copy.model(BlockModel::Door)
             .renderLayer(BlockRenderLayer::Cutout)
+            // door_bottom_left.json and its seven siblings all open with
+            // `"ambientocclusion": false` (RN-10a / audit R3).
+            .noAmbientOcclusion()
             .horizontalFacing()
             .state(StateProperty::Half, 2U)
             .state(StateProperty::Open, 2U)
@@ -2133,6 +2153,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // models/block/lever(_on).json. Replaces the default Cube model, which had
         // wrongly made the lever a full-cube occluder (isFullCube is now false).
         .elementModel("cobblestone", "lever")
+        // RN-10a: lever.json declares `"ambientocclusion": false`.
+        .noAmbientOcclusion()
         .noCollision()
         .support(BlockSupport::Wall)
         .state(StateProperty::Facing, 6U)
@@ -2148,6 +2170,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-4a-2: real diode geometry (smooth-stone slab base + redstone-torch
         // nubs), transcribed from vanilla models/block/repeater_*tick*.json.
         .elementModel("smooth_stone", "repeater", "redstone_torch_off", "redstone_torch")
+        // RN-10a: repeater_*tick*.json declares `"ambientocclusion": false`.
+        .noAmbientOcclusion()
         // AR-B4-6: collision is ON. DiodeBlock's SHAPE is `Block.column(16, 0, 2)`
         // and DiodeBlock never overrides getCollisionShape, so vanilla's 2px
         // base plate is a real box you stand on — the "diodes have no collision"
@@ -2180,6 +2204,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-4a-2: slab base + three redstone-torch nubs, transcribed from vanilla
         // models/block/comparator*.json.
         .elementModel("smooth_stone", "comparator", "redstone_torch_off", "redstone_torch")
+        // RN-10a: comparator*.json declares `"ambientocclusion": false`.
+        .noAmbientOcclusion()
         // AR-B4-6: collision is ON, as for the repeater above — same DiodeBlock
         // base, same 2px plate, same reasoning.
         .support(BlockSupport::Ground)

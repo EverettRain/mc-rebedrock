@@ -18,6 +18,7 @@ using namespace mc::world::bake;
 using mc::world::Block;
 using mc::world::BlockOrientation;
 using mc::world::BlockState;
+using mc::world::DoorHinge;
 
 [[nodiscard]] bool near(float a, float b) { return std::fabs(a - b) < 1.0e-4F; }
 [[nodiscard]] bool eqVec3(const glm::vec3& a, const glm::vec3& b) {
@@ -413,7 +414,10 @@ void checkStore() {
                elementModelVariantCount(ElementModelKind::Comparator) +
                elementModelVariantCount(ElementModelKind::Lever) +
                elementModelVariantCount(ElementModelKind::EnchantingTable) +
-               elementModelVariantCount(ElementModelKind::Anvil));
+               elementModelVariantCount(ElementModelKind::Anvil) +
+               elementModelVariantCount(ElementModelKind::Door) +
+               elementModelVariantCount(ElementModelKind::TrapDoor) +
+               elementModelVariantCount(ElementModelKind::FenceGate));
 }
 
 int main() {
