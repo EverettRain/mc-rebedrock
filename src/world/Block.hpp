@@ -3146,10 +3146,15 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("packed_ice").strength(0.5F).creative(CreativeCategory::NaturalBlocks),
     BlockProperties::of(Block::EndStoneBricks, "end_stone_bricks", "End Stone Bricks")
         .texture("end_stone_bricks").strength(3.0F, 9.0F).creative(CreativeCategory::BuildingBlocks),
-    // Redstone lamp — rendered as its unlit cube for now (the lit-texture swap needs
-    // the Cube path to carry a lit variant; deferred).
+    // Redstone lamp. W-9 gives it the LIT axis RedstoneLampBlock registers, so it
+    // is a real redstone sink: lit reads the signal and emits light level 15
+    // (RedstoneLampBlock's Properties.lightLevel(litBlockEmission(15))).
+    // Still rendered as its unlit cube — the lit-texture swap needs the plain
+    // Cube path to carry a lit variant the way directionalCube already does;
+    // deferred, and the light level is the half that is gameplay-visible.
     BlockProperties::of(Block::RedstoneLamp, "redstone_lamp", "Redstone Lamp")
-        .texture("redstone_lamp").strength(0.3F).creative(CreativeCategory::Redstone),
+        .texture("redstone_lamp").strength(0.3F).lit(15U)
+        .creative(CreativeCategory::Redstone),
     // Pillars.
     BlockProperties::of(Block::HayBlock, "hay_block", "Hay Bale")
         .texture("hay_block_top", "hay_block_side", "hay_block_top").strength(0.5F).pillar()

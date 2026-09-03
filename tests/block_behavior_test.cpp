@@ -327,20 +327,31 @@ void testDispatchMechanism() {
         } else {
             assert(behavior.updateShape == nullptr);
         }
-        // W-8: the onPlace slot is wired for the diodes (a placed diode starts
-        // itself, DiodeBlock#setPlacedBy) and null for everything else.
-        // onRemove still has no user, so it stays null everywhere — a slot
-        // dispatched to nobody would be worse than an empty one.
+        // W-8/W-9: the onPlace slot is wired for the diodes (a placed diode
+        // starts itself) and for redstone dust (placed dust solves its own
+        // POWER), and null for everything else. onRemove still has no user, so
+        // it stays null everywhere — a slot dispatched to nobody would be worse
+        // than an empty one.
         assert((behavior.onPlace != nullptr) ==
-               mc::gameplay::redstone::isDiode(static_cast<Block>(i)));
+               (mc::gameplay::redstone::isDiode(static_cast<Block>(i)) ||
+                mc::gameplay::detail::rechecksRedstoneOnPlacement(static_cast<Block>(i))));
         assert(behavior.onRemove == nullptr);
     }
-    // ...and that really is both diodes and nothing else, spelled out so a third
-    // diode arriving without the slot is a failure here.
+    // ...and that really is both diodes plus the wire and the two pistons and
+    // nothing else, spelled out so a third diode arriving without the slot is a
+    // failure here.
     assert(behaviorFor(mc::world::blockId(Block::Repeater)).onPlace != nullptr);
     assert(behaviorFor(mc::world::blockId(Block::Comparator)).onPlace != nullptr);
+    assert(behaviorFor(mc::world::blockId(Block::RedstoneWire)).onPlace != nullptr);
+    assert(behaviorFor(mc::world::blockId(Block::Piston)).onPlace != nullptr);
+    assert(behaviorFor(mc::world::blockId(Block::StickyPiston)).onPlace != nullptr);
     assert(behaviorFor(mc::world::blockId(Block::Lever)).onPlace == nullptr);
     assert(behaviorFor(mc::world::blockId(Block::Stone)).onPlace == nullptr);
+    // The lamp is a redstone *sink*, not a lifecycle user: its placement value
+    // is a getStateForPlacement write (ItemPlacement's applyPlacementRedstoneState),
+    // so it must NOT take this slot. Pinned so the two mechanisms do not quietly
+    // become one.
+    assert(behaviorFor(mc::world::blockId(Block::RedstoneLamp)).onPlace == nullptr);
     // The declaration-driven wiring really is narrower than the model would be:
     // the repeater gets the slot, and the comparator/lever/anvil that share its
     // BlockModel::ElementModel do not.

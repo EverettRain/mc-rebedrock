@@ -35,6 +35,14 @@ namespace {
 //   FenceGateBlock:134,139  isOpen = hasNeighborSignal(pos); OPEN = POWERED = isOpen
 //   DoorBlock:149-155       powered = hasNeighborSignal(pos) || hasNeighborSignal(pos.above())
 //                           OPEN = POWERED = powered
+//   RedstoneLampBlock:31-33 LIT = hasNeighborSignal(pos)                        (W-9)
+//
+// This is every block in 26.1 whose getStateForPlacement reads the signal and
+// that this build has: the rest of that list (AbstractSkullBlock, CrafterBlock,
+// ShelfBlock) is not in the roster, and RepeaterBlock's LOCKED is handled just
+// below. Redstone dust is the one that is *not* here — its initialisation is an
+// onPlace, not a placement state, so it hangs on the behaviour table's onPlace
+// slot instead (see BlockBehavior.hpp's wirePlacedSlot).
 //
 // Without it a door or gate placed inside an already-powered region lands shut,
 // and — because nothing around it is going to change — *stays* shut until the
@@ -61,6 +69,20 @@ namespace {
     // comparator, the lever and the anvil.
     if (definition.states.has(world::StateProperty::Locked)) {
         placed = placed.withRepeaterLocked(redstone::repeaterIsLocked(world, pos, placed));
+    }
+    // W-9: RedstoneLampBlock#getStateForPlacement:31-33 —
+    //
+    //     LIT = context.getLevel().hasNeighborSignal(context.getClickedPos())
+    //
+    // A lamp built inside an already-powered region has to land lit. Unlike the
+    // trapdoor below this one writes LIT both ways, because that is what vanilla
+    // writes: the whole state is `defaultBlockState().setValue(LIT, signal)`, so
+    // the unpowered case is an explicit false and not a fall-through. It matters
+    // for the same reason POWERED does — LIT is the lamp's edge memory, and
+    // RedstoneLampBlock#neighborChanged finds its next edge by comparing the
+    // signal against it.
+    if (placed.block() == world::Block::RedstoneLamp) {
+        return placed.withLit(redstone::getBestNeighborSignal(world, pos) > 0);
     }
     const auto model = definition.model;
     if (model != world::BlockModel::TrapDoor && model != world::BlockModel::FenceGate) {

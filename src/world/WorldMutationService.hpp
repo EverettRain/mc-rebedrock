@@ -74,16 +74,24 @@ class MutationSink {
     virtual void onDropsRequested(BlockPos pos, BlockState removed,
                                   MutationCause cause) = 0;
 
-    // W-8: a block newly *arrived* in this cell — Java's
-    // Block#setPlacedBy, not Block#onPlace.
+    // W-8/W-9: a block newly *arrived* in this cell — Java's Block#onPlace under
+    // the `!oldState.is(state.getBlock())` guard its redstone overrides open
+    // with (RedStoneWireBlock:296, TntBlock, ObserverBlock, LightningRodBlock).
     //
-    // The distinction is the whole point and is easy to get backwards. Java's
-    // onPlace runs on every setBlockState, a diode's POWERED flip included; that
-    // is the semantics W-7's updateNeighborsInFront wants, and it reaches it
-    // through the tick/place/remove calls it makes itself rather than through
-    // this. setPlacedBy runs only when the block genuinely turned up, which is
-    // the one a diode's self-start can hang on: a repeater scheduling its own
-    // turn-on from onPlace would reschedule on every flip and never settle.
+    // The distinction that matters is against the *unguarded* onPlace, which
+    // runs on every setBlockState, a diode's POWERED flip included. That is what
+    // W-7's updateNeighborsInFront wants, and it reaches it through the
+    // tick/place/remove calls it makes itself rather than through this — a
+    // repeater scheduling its own turn-on from the unguarded hook would
+    // reschedule on every flip and never settle.
+    //
+    // W-8 called this setPlacedBy; W-9 corrects the name. setPlacedBy is
+    // narrower than what fires here: Java calls it from BlockItem#place, so it
+    // reaches an entity placing an item and nothing else, while this fires for a
+    // command fill and a piston move as well. The gate is unchanged and
+    // deliberate — those really are placements as far as a diode or a wire is
+    // concerned — it is a strict superset of setPlacedBy and an exact match for
+    // the guarded onPlace.
     //
     // Raised when the block *kind* at the cell changed and the caller did not
     // set MutationFlags::SkipOnPlace — worldgen sets it, since a chunk being

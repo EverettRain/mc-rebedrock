@@ -222,11 +222,27 @@ struct BlockBehavior final {
     // Reserved, null until their owning task fills them.
     UseItemOnFn useItemOn = nullptr;                        // B1-3
     UpdateShapeFn updateShape = nullptr;                    // W-3
-    // W-8: Block#setPlacedBy — the block newly arrived here. Not Java's
-    // onPlace, which runs on every state write; see MutationSink::onBlockPlaced
-    // for why a diode's self-start must hang on the former. Wired for the
-    // diodes; null for everything else.
-    BlockLifecycleFn onPlace = nullptr;                     // W-8
+    // W-8/W-9: the block newly *arrived* here — Java's Block#onPlace under the
+    // `!oldState.is(state.getBlock())` guard that most of its overrides carry
+    // (RedStoneWireBlock, TntBlock, ObserverBlock, LightningRodBlock all open
+    // with it). That guard is the slot's trigger, exactly: MutationSink::
+    // onBlockPlaced fires when the block *kind* at the cell changed, and not on a
+    // state-only write.
+    //
+    // W-8 named this setPlacedBy, which W-9 corrects. The distinction W-8 was
+    // drawing is real and load-bearing — a hook on *every* setBlockState would
+    // see a diode's own POWERED flip — but Java's name for the kind-changed
+    // variant is onPlace, and setPlacedBy is something narrower still: BlockItem
+    // #place calls it, so it fires only for an entity placing an item and never
+    // for a command fill, a piston move or worldgen. This slot deliberately
+    // covers all of those, so it is a strict superset of setPlacedBy and an
+    // exact match for the guarded onPlace. Nothing about the gate changed; only
+    // the name it goes by. A diode created by a command self-starting is a
+    // consequence of the superset, and the right answer anyway.
+    //
+    // Wired for the diodes (self-start), redstone dust (solve its own POWER) and
+    // the pistons (extend if they landed in a powered region); null otherwise.
+    BlockLifecycleFn onPlace = nullptr;                     // W-8, W-9
     // Still unwired: it has no user yet, and a slot dispatched to nobody is
     // worse than an empty one. Its semantics will be Java's
     // affectNeighborsAfterRemoval, the mirror of onPlace above.
@@ -290,6 +306,55 @@ wallUpdateShapeSlot(const NeighborUpdateContext& context) {
 // powered wire sat dark until an unrelated edit happened to wake it.
 inline void diodePlacedSlot(const BlockLifecycleContext& context) {
     context.simulation.scheduleDiodeSelfStart(context.world, context.pos, context.state);
+}
+
+// W-9's slot: RedStoneWireBlock#onPlace (RedStoneWireBlock.java:296-304) —
+//
+//     if (!oldState.is(state.getBlock()) && !level.isClientSide()) {
+//         this.updatePowerStrength(level, pos, state, null, true);
+//         for (Direction d : Direction.Plane.VERTICAL) level.updateNeighborsAt(pos.relative(d), this);
+//         this.updateNeighborsOfNeighboringWires(level, pos);
+//     }
+//
+// Dust dropped into a cell that is already being powered has to solve its own
+// POWER. Nothing else will — the placement's fan-out tells the *neighbours*
+// something appeared, and a block of redstone or a lever told about a new
+// neighbour has nothing to recompute — so dust laid against a live source sat at
+// 0 until something else nearby happened to be edited. The second dust cell of a
+// run is quietly saved by the first one's island re-solve, which is why only the
+// cell touching the source ever shows the defect.
+//
+// Only the `updatePowerStrength` line is ported. The two fan-out lines below it
+// exist in Java to service *corner* (step-up/step-down) wire connections, which
+// this build's wire model does not have: WireNetworkEvaluator::floodNetwork
+// connects wires through the six orthogonal neighbours only (RedstoneWire.hpp
+// says as much — the conductor step rules are a later refinement), and a wire
+// tick re-solves the entire connected island in one pass and then wakes every
+// changed cell's non-wire neighbours. That is strictly more than Java's
+// incremental propagation reaches, so copying the two fan-outs would add a
+// notification storm with nothing to notify. When the step rules do land, the
+// island flood gains those edges and this stays unnecessary — but that is the
+// change that must revisit this comment.
+//
+// W-9 also hangs the piston here, from the other Java hook —
+// PistonBaseBlock#setPlacedBy (PistonBaseBlock.java:75-78) calls the same
+// `checkIfExtend` its neighborChanged does, so a piston placed into a powered
+// region extends on the spot instead of waiting for an edit that may never
+// come. The body is the same one line for both: "this cell has arrived, read
+// what is reaching it" is exactly what notifyRedstoneComponent means, and
+// writing it twice would only let the two copies drift.
+inline void redstoneRecheckPlacedSlot(const BlockLifecycleContext& context) {
+    context.simulation.notifyRedstoneComponent(
+        context.world, {context.pos.x, context.pos.y, context.pos.z});
+}
+
+// The blocks on that slot: dust and the two pistons. Not a model or a tag test —
+// the wire is one block, and the pistons share BlockModel::Cube with most of the
+// roster — so it is spelled out, the way the LOCKED-declaring repeater test above
+// is, and the block_behavior slot-ownership assertion holds it to this list.
+[[nodiscard]] inline constexpr bool rechecksRedstoneOnPlacement(world::Block block) {
+    return block == world::Block::RedstoneWire || block == world::Block::Piston ||
+           block == world::Block::StickyPiston;
 }
 
 [[nodiscard]] inline std::optional<world::BlockState>
@@ -356,11 +421,13 @@ repeaterLockedUpdateShapeSlot(const NeighborUpdateContext& context) {
                 entry.updateShape = &repeaterLockedUpdateShapeSlot;
             }
         }
-        // W-8: the diodes are the onPlace slot's first (and so far only) users.
-        // Keyed on redstone::isDiode rather than the model, which they share
-        // with the lever and the anvil.
+        // W-8/W-9: the onPlace slot's users. The diodes are keyed on
+        // redstone::isDiode rather than the model, which they share with the
+        // lever and the anvil; dust and the pistons are named outright.
         if (redstone::isDiode(static_cast<world::Block>(i))) {
             entry.onPlace = &diodePlacedSlot;
+        } else if (rechecksRedstoneOnPlacement(static_cast<world::Block>(i))) {
+            entry.onPlace = &redstoneRecheckPlacedSlot;
         }
         if (entry.prefilter.has(BlockBehaviorBit::IsSignalSource)) {
             // The block's own weak/strong emission handler (redstone::weakPowerFn),

@@ -3,6 +3,7 @@
 #include "gameplay/BlockBehavior.hpp" // AR-B4-4: dispatchUpdateShape for the shape pass
 
 #include "gameplay/RedstoneDiode.hpp"
+#include "gameplay/RedstoneLamp.hpp"
 #include "gameplay/RedstoneObserver.hpp"
 #include "gameplay/RedstoneSignal.hpp"
 #include "gameplay/RedstoneWire.hpp"
@@ -1423,6 +1424,41 @@ void WorldSimulation::notifyRedstoneComponent(world::World& world,
         return;
     }
 
+    // W-9: RedstoneLampBlock#neighborChanged:35-46. The lamp is a redstone sink
+    // like the openable blocks below, with one asymmetry worth stating: it
+    // brightens on the spot and darkens four gameticks later. Vanilla writes the
+    // ON edge straight away (setBlock flags 2) and *schedules* the OFF edge, so a
+    // signal that flickers off and back on inside four ticks never blinks the
+    // lamp. LIT is both the output and the edge memory, exactly as POWERED is for
+    // a trapdoor: the `isLit != signal` guard is the edge test.
+    if (block == world::Block::RedstoneLamp) {
+        const bool signal = redstone::getBestNeighborSignal(world, pos) > 0;
+        switch (redstone::lampEdge(state.lit(), signal)) {
+        case redstone::LampEdge::None:
+            return;
+        case redstone::LampEdge::ScheduleOff:
+            // Going out: re-checked when the delay expires, and the tick re-reads
+            // the signal then, so a source that comes back cancels the extinction.
+            if (!alreadyScheduled) {
+                static_cast<void>(ticks_.schedule(
+                    TickTask::RedstoneComponent, position,
+                    tickCount_ + static_cast<std::uint64_t>(redstone::kLampOffDelay), false,
+                    TickPriority::Normal));
+            }
+            return;
+        case redstone::LampEdge::LightNow:
+            break;
+        }
+        // Lighting up: immediate, flags 2 (clients only) — neighborChanged does
+        // not itself fan out a neighbour pass, and the lamp is not a source, so
+        // nothing downstream needs telling.
+        RedstoneReactionSink sink{world, *this};
+        static_cast<void>(mutations_.setBlock(world, pos, state.withLit(true),
+                                              world::MutationFlags::NotifyClients,
+                                              world::MutationCause::ScheduledTick, sink));
+        return;
+    }
+
     // AR-B4-3: the openable redstone SINKS — door, trapdoor and fence gate.
     // Vanilla writes all three from the same shape of neighborChanged
     // (DoorBlock / TrapDoorBlock / FenceGateBlock): read the strongest signal
@@ -1726,6 +1762,24 @@ void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPositi
                     notifyRedstoneComponent(world, {neighbor.x, neighbor.y, neighbor.z});
                 }
             }
+        }
+        return;
+    }
+
+    if (block == world::Block::RedstoneLamp) {
+        // RedstoneLampBlock#tick:52-54: the delayed OFF edge, and it re-reads the
+        // signal rather than trusting the schedule — a source that came back
+        // during the four ticks leaves the lamp lit and this does nothing.
+        if (!redstone::lampTickTurnsOff(state.lit(),
+                                        redstone::getBestNeighborSignal(world, pos) > 0)) {
+            return;
+        }
+        const auto next = state.withLit(false);
+        const auto applied =
+            mutations_.setBlock(world, pos, next, world::MutationFlags::NotifyClients,
+                                world::MutationCause::ScheduledTick, sink);
+        if (applied.changed) {
+            changes.push_back({position, next});
         }
         return;
     }

@@ -335,6 +335,33 @@ class RedstoneCircuit final {
         session_.drainEvents();
         return world_.state(pos.x, pos.y, pos.z) != before;
     }
+    // W-9: placement through the *real item path* — a stack in the hotbar and
+    // the UseItemOn a player actually sends. Every other placement helper in
+    // this file (place/wire/torch/placeBlock) goes straight to
+    // WorldMutationService and therefore never runs gameplay::ItemPlacement,
+    // which is where getStateForPlacement's redstone initialisation lives. A
+    // block that lands with the wrong initial POWERED/LIT/signal is invisible to
+    // all of them, so it needs this one.
+    //
+    // Clicks the top face of the cell below `rel`; that cell must already hold
+    // something sturdy. Returns whether a block actually arrived.
+    bool placeByItem(mc::world::BlockPos rel, mc::world::Block block) {
+        const auto pos = absolute(rel);
+        session_.inventory().mutableSlot(0) = {block, 1U, nullptr};
+        session_.inventory().selectHotbar(0);
+        mc::gameplay::UseItemOn use;
+        use.block = glm::ivec3{pos.x, pos.y - 1, pos.z};
+        use.adjacent = glm::ivec3{pos.x, pos.y, pos.z};
+        use.face = mc::world::BlockOrientation::Up;
+        use.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session_.enqueueCommand(std::move(use));
+        session_.tick(world_, host_);
+        session_.enqueueCommand(mc::gameplay::UseItemStop{});
+        session_.tick(world_, host_);
+        session_.drainEvents();
+        return world_.block(pos.x, pos.y, pos.z) == block;
+    }
+
     // W-x-1: place and break through the real mutation path (MutationFlags::All
     // + GameplayMutationSink), rather than the raw `place` above which writes
     // the cell and tells nobody. These are the two entries besides the tick that
