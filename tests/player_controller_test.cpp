@@ -4,6 +4,7 @@
 #include "world/Chunk.hpp"
 #include "world/World.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <utility>
@@ -409,6 +410,102 @@ int main() {
         // rests half a body-width short of x=9 rather than clipping through.
         assert(buried.position().x > 7.0F);
         assert(buried.position().x < 8.8F);
+    }
+
+    // #8 AR-B4-0/B4-1: a collision box may reach above its own cell. 26.1's
+    // FenceGateBlock.SHAPE_COLLISION is `Block.column(16, 4, 0, 24)` — 24px, a
+    // cell and a half tall — which is why a closed gate can be neither jumped
+    // nor stepped over from an adjoining ledge. The cell walk only visits the
+    // cells the query box itself occupies, so without the one-row-below scan
+    // (kTallCollisionByBlock) the upper half of that box is invisible and the
+    // player sails straight through it.
+    {
+        const auto closedGate =
+            mc::world::BlockState{mc::world::Block::OakFenceGate,
+                                  mc::world::BlockOrientation::North};
+        // Facing North keeps the gate's post pair on the Z axis (z 6/16..10/16),
+        // i.e. squarely across a +Z walk. Its cell is y=2 (it stands on the y=1
+        // floor), so it occupies world y 2.0 .. 3.5.
+        const auto buildGateWorld = [&](bool open, bool ledge) {
+            mc::world::World world;
+            mc::world::Chunk ground;
+            for (int z = 0; z < 16; ++z) {
+                for (int x = 0; x < 16; ++x) {
+                    ground.setBlock(x, 0, z, mc::world::Block::Stone);
+                    ground.setBlock(x, 1, z, mc::world::Block::Stone);
+                }
+            }
+            world.setChunk({0, 0}, std::move(ground));
+            for (int x = 4; x < 12; ++x) {
+                world.setState(x, 2, 8, closedGate.withOpen(open));
+                if (ledge) {
+                    // A shelf on the near side only, so an open gate leaves the
+                    // walker nothing to stop against: it steps off, drops one
+                    // cell and keeps going.
+                    for (int z = 4; z < 8; ++z) {
+                        world.setBlock(x, 2, z, mc::world::Block::Stone);
+                    }
+                }
+            }
+            return world;
+        };
+        // Returns where the walk ended up and the highest the feet ever got: a
+        // gate that is seen at all either stops the body or (from a ledge, via
+        // the 0.6 step) lifts it onto the 3.5 top, and a gate that is not seen
+        // does neither.
+        struct WalkResult final {
+            float endZ = 0.0F;
+            float peakY = 0.0F;
+        };
+        const auto walkSouth = [](const mc::world::World& world, float feetY, bool jump) {
+            mc::gameplay::PlayerController walker({8.5F, feetY, 5.5F});
+            mc::gameplay::PlayerInput input;
+            input.forward = 1.0F;
+            input.lookDirection = {0.0F, 0.0F, 1.0F};
+            input.sprintAllowed = true;
+            input.jumpHeld = jump;
+            float peakY = feetY;
+            for (int tick = 0; tick < 60; ++tick) {
+                walker.tick(world, input);
+                peakY = std::max(peakY, walker.position().y);
+            }
+            return WalkResult{walker.position().z, peakY};
+        };
+        // The 0.6-wide body stops half a width short of the gate's near face
+        // (8 + 6/16 - 0.3 = 8.075).
+        constexpr float kStoppedShortOfGate = 8.1F;
+
+        // (a) Level with the gate: already blocked before B4-0, since the gate's
+        // own cell is one the body occupies. The regression floor for the rest.
+        const auto closedFlat = buildGateWorld(false, false);
+        assert(walkSouth(closedFlat, 2.0F, false).endZ < kStoppedShortOfGate);
+
+        // (b) Jumping does not clear it: the ~1.25 apex leaves the feet below
+        // the box's 3.5 top, but from that apex the body no longer occupies the
+        // gate's own cell — only the row-below scan still sees the gate. This is
+        // the vanilla fact players know a fence line by, and before AR-B4-0 the
+        // jump sailed clean over.
+        assert(walkSouth(closedFlat, 2.0F, true).endZ < kStoppedShortOfGate);
+
+        // (c) From a ledge one whole cell above the gate's cell (feet at 3.0)
+        // the body is a full cell clear of it, yet the box still rises to 3.5 —
+        // half a block above the feet — so vanilla's 0.6 step lifts the walker
+        // onto the gate's top rather than letting it walk through at 3.0. The
+        // lift is the observable: before AR-B4-0 the feet never left 3.0.
+        const auto closedLedge = buildGateWorld(false, true);
+        const auto overLedge = walkSouth(closedLedge, 3.0F, false);
+        assert(overLedge.peakY > 3.4F);
+
+        // (d) An open gate stays fully passable at both heights — vanilla
+        // getCollisionShape answers Shapes.empty() on OPEN, and the row-below
+        // scan must not resurrect it. From the ledge the walker steps into the
+        // now-empty cell, drops to the floor and carries on, never rising.
+        const auto openFlat = buildGateWorld(true, false);
+        assert(walkSouth(openFlat, 2.0F, false).endZ > 12.0F);
+        const auto openLedge = buildGateWorld(true, true);
+        const auto throughLedge = walkSouth(openLedge, 3.0F, false);
+        assert(throughLedge.endZ > 12.0F);
+        assert(throughLedge.peakY <= 3.0F);
     }
 
     return 0;

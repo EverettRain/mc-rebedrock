@@ -401,6 +401,28 @@ inline constexpr std::array<ShapeBox, 4> kFenceGateBoxByFacing = [] {
     return table;
 }();
 
+// AR-B4-1 / D3: the gate's *collision* box is not its visual box. 26.1
+// FenceGateBlock.java:51 keeps them apart deliberately:
+//     SHAPE           = Block.cube(16, 16, 4)            // y 0..16
+//     SHAPE_COLLISION = Block.column(16, 4, 0.0, 24.0)   // y 0..24
+// Same post pair on the same axis, but a cell and a half tall, which is what
+// makes a closed gate unjumpable — the one visible consequence players know a
+// fence line by. This is the first block in the roster whose two shapes differ
+// numerically, so it is where `blockShape` = getShape and `collisionShape` =
+// getCollisionShape stop being the same function (see the wiki's shape chapter).
+//
+// `rotatedBy` only permutes x/z and leaves y alone, which is exactly what a box
+// taller than its cell needs, so this builds identically to the visual table
+// above rather than needing a rotation of its own.
+inline constexpr ShapeBox kFenceGateCollisionBox{0.0F, 0.0F, 0.375F, 1.0F, 1.5F, 0.625F};
+inline constexpr std::array<ShapeBox, 4> kFenceGateCollisionByFacing = [] {
+    std::array<ShapeBox, 4> table{};
+    for (std::size_t f = 0; f < 4U; ++f) {
+        table[f] = rotatedBy(kFenceGateCollisionBox, static_cast<BlockOrientation>(f));
+    }
+    return table;
+}();
+
 // One shape handler per BlockModel. B1-2 replaces the shape's `switch(model)`
 // with a table indexed by the block's model, the same DOD move kRandomTickTable
 // makes for random ticks: the model is a definition field, so a block selects
@@ -833,13 +855,6 @@ struct BlockCollisionSpan final {
     return blockDefinition(state.block()).model == BlockModel::FenceGate && state.open();
 }
 
-[[nodiscard]] constexpr BlockCollisionSpan collisionSpan(BlockState state) {
-    if (!hasCollision(state.block()) || isOpenPassableGate(state)) {
-        return {};
-    }
-    return verticalSpanOf(blockShape(state));
-}
-
 // The state's collision shape: its base shape if it collides, else Empty. This
 // is what the walk and placement test against — a torch or flower has a base
 // shape for the pick ray but collides with nothing.
@@ -847,13 +862,38 @@ struct BlockCollisionSpan final {
     if (!hasCollision(state.block())) {
         return {ShapeKind::Empty, 0.0F, 0.0F, {}};
     }
-    // An open fence gate collides with nothing (entities pass through) even
-    // though its outline / visual shape (blockShape, above) stays the post box
-    // so it is still drawn and selectable by the pick ray.
-    if (isOpenPassableGate(state)) {
-        return {ShapeKind::Empty, 0.0F, 0.0F, {}};
+    // Both gate branches share the one model read. The registry row is 272 bytes
+    // and this runs per cell of every collision walk, so asking `isOpenPassableGate`
+    // and then asking the definition again for the closed case measured as a
+    // real cost on the shape path — the open/closed split belongs inside the
+    // single lookup, not across two.
+    if (blockDefinition(state.block()).model == BlockModel::FenceGate) {
+        // An open fence gate collides with nothing (entities pass through) even
+        // though its outline / visual shape (blockShape, above) stays the post
+        // box so it is still drawn and selectable by the pick ray.
+        if (state.open()) {
+            return {ShapeKind::Empty, 0.0F, 0.0F, {}};
+        }
+        // AR-B4-1: a *closed* gate is the one shape in the roster that collides
+        // differently from how it draws — 1.5 cells tall, so it cannot be
+        // jumped. Only this getter changes: the mesher, the pick ray, the
+        // selection outline and faceOcclusionMask all read `blockShape`, and a
+        // 1.5-tall visual box would break every one of them.
+        const auto index = static_cast<std::size_t>(state.orientation());
+        return {ShapeKind::Boxes, 0.0F, 0.0F,
+                {&detail::kFenceGateCollisionByFacing[index < 4U ? index : 0U], 1}};
     }
     return blockShape(state);
+}
+
+[[nodiscard]] constexpr BlockCollisionSpan collisionSpan(BlockState state) {
+    // The vertical projection of `collisionShape`, not of `blockShape`: since
+    // AR-B4-1 the two differ for a closed fence gate (1.5 vs 1.0), and the
+    // placement-occupancy callers that read this have to see the box entities
+    // will actually be stopped by. Both of the early returns collisionShape
+    // makes — no collision, open gate — project to an empty span, so this stays
+    // exactly what it was for every other block.
+    return verticalSpanOf(collisionShape(state));
 }
 
 // AR-B4-0: one bit per block — whether *any* of its states has a collision
@@ -903,6 +943,28 @@ inline constexpr std::array<bool, kBuiltinBlockCount> kTallCollisionByBlock = []
     return index < kTallCollisionByBlock.size() && kTallCollisionByBlock[index];
 }
 
+// How far above its own cell the tallest collision shape in the roster reaches.
+// A query whose bottom is already at or above `cellTop + this` cannot be
+// touched by anything in the row below however tall, so the row scan can be
+// skipped on arithmetic alone — no world read at all. That is the airborne and
+// mid-step case; a body resting flat on a cell boundary is at the overhang's
+// very bottom and still has to look.
+[[nodiscard]] constexpr float maximumCollisionOverhang() {
+    float highest = 1.0F;
+    for (std::size_t index = 0; index < kTallCollisionByBlock.size(); ++index) {
+        if (!kTallCollisionByBlock[index]) {
+            continue;
+        }
+        for (std::uint32_t id = kBlockStateRangeStarts[index];
+             id < kBlockStateRangeStarts[index + 1U]; ++id) {
+            const float top = verticalSpanOf(collisionShape(BlockState::fromRawId(id))).top;
+            highest = top > highest ? top : highest;
+        }
+    }
+    return highest - 1.0F;
+}
+inline constexpr float kMaximumCollisionOverhang = maximumCollisionOverhang();
+
 // The seam guard between AR-B4-0 (the capability) and AR-B4-1 (its first
 // consumer). The row scan is only worth its byte-table load while the set of
 // tall blocks stays tiny and deliberate, so the exact membership is asserted
@@ -917,9 +979,11 @@ inline constexpr std::array<bool, kBuiltinBlockCount> kTallCollisionByBlock = []
     }
     return count;
 }
-static_assert(tallCollisionBlockCount() == 0U,
-              "AR-B4-0 lands the row scan with no tall block in the roster yet; AR-B4-1 is what "
-              "gives the fence gate its 1.5-cell collision box");
+static_assert(tallCollisionBlockCount() == 1U,
+              "exactly one block in the roster collides above its own cell; adding a second "
+              "(a wall's 1.5 post, iron bars) is a deliberate widening of the row scan's cost");
+static_assert(hasTallCollision(Block::OakFenceGate),
+              "and that block is the fence gate, whose SHAPE_COLLISION is 24px tall");
 
 // Whether an axis-aligned query box overlaps a shape whose cell origin is
 // (ox,oy,oz), all in world coordinates. A Column is tested on Y only — it fills

@@ -887,6 +887,11 @@ int main() {
         assert(!world.state(5, 1, 5).open());
         const auto closedSpan = world::collisionSpan(world.state(5, 1, 5));
         assert(closedSpan.top > closedSpan.bottom); // solid while closed
+        // AR-B4-1: and 1.5 cells of it (FenceGateBlock.SHAPE_COLLISION is 24px).
+        // This span is what the placement-occupancy check reads, so a gate can
+        // no longer be dropped into a body standing half a block above the cell
+        // — vanilla asks getCollisionShape here too.
+        assert(std::abs(closedSpan.top - 1.5F) < 1.0e-6F);
 
         // Stopped the instant the toggle lands (see the door test's comment):
         // one click, not a held button the 4-tick repeat would keep re-firing.

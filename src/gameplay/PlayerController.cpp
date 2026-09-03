@@ -216,26 +216,33 @@ bool PlayerController::collidesAtHeight(const world::World& world, glm::vec3 pos
     // AR-B4-0: one row below the query box. A collision shape may reach above
     // its own cell (26.1's fence gate is 24px tall), and the loop above only
     // visits the cells the body itself occupies, so that overhang would go
-    // unseen. The row is gated on `hasTallCollision`, a byte-table load per
-    // cell, rather than by widening minY — the roster has one tall block and
-    // the wider range would cost every probe a whole extra x*z row of shape
-    // evaluations. Reading through world::block means an out-of-world or
-    // unloaded cell answers Air and is skipped before blockCollisionShape's
-    // "unloaded reads as solid" rule could turn it into a phantom overhang.
+    // unseen. The row is skipped outright when the query's bottom is already
+    // clear of the tallest overhang in the roster — free, and it covers every
+    // airborne and mid-step probe — and otherwise gated per cell on
+    // `hasTallCollision`, which is a byte-table load once the state is in hand.
+    // Widening minY instead would put a whole extra row of *shape* work on
+    // every probe for the single tall block the roster has.
+    //
+    // One world read per cell, through the state rather than the block: the
+    // state carries the block, so the prefilter and the shape share the read.
+    // Out-of-world and unloaded cells read as air and drop out here, which is
+    // deliberately not blockCollisionShape's "unloaded is solid" rule — a seam
+    // must not sprout a phantom overhang into the cell above it.
     const int underY = minY - 1;
-    if (world::isWorldYInRange(underY)) {
+    if (world::isWorldYInRange(underY) &&
+        qMinY < static_cast<float>(underY) + 1.0F + world::kMaximumCollisionOverhang) {
         for (int z = minZ; z <= maxZ; ++z) {
             for (int x = minX; x <= maxX; ++x) {
                 if (cellIsClipped(x, underY, z)) {
                     continue;
                 }
-                if (!world::hasTallCollision(world.block(x, underY, z))) {
+                const world::BlockState state = world.state(x, underY, z);
+                if (!world::hasTallCollision(state.block())) {
                     continue;
                 }
-                if (world::shapeOverlaps(blockCollisionShape(world, x, underY, z),
-                                         static_cast<float>(x), static_cast<float>(underY),
-                                         static_cast<float>(z), qMinX, qMinY, qMinZ, qMaxX, qMaxY,
-                                         qMaxZ)) {
+                if (world::shapeOverlaps(world::collisionShape(state), static_cast<float>(x),
+                                         static_cast<float>(underY), static_cast<float>(z), qMinX,
+                                         qMinY, qMinZ, qMaxX, qMaxY, qMaxZ)) {
                     return true;
                 }
             }

@@ -230,20 +230,24 @@ bool EntitySystem::boxIntersectsWorld(
     // AR-B4-0: one row below the query box, for the collision shapes that reach
     // above their own cell (26.1's fence gate is 24px tall). The loop above only
     // visits the cells the creature's box covers, so that overhang is invisible
-    // to it. Gated on `hasTallCollision` — a byte-table load per cell — rather
-    // than on a blanket minY-1, which would cost every creature move a whole
-    // extra x*z row of shape evaluations for the one tall block in the roster.
+    // to it. Skipped on arithmetic alone whenever the box's bottom is already
+    // clear of the tallest overhang in the roster, and otherwise gated per cell
+    // on `hasTallCollision` — one world read, shared by the prefilter and the
+    // shape — rather than on a blanket minY-1, which would cost every creature
+    // move a whole extra row of shape work for the one tall block there is.
     const int underY = minY - 1;
-    if (world::isWorldYInRange(underY)) {
+    if (world::isWorldYInRange(underY) &&
+        minimum.y < static_cast<float>(underY) + 1.0F + world::kMaximumCollisionOverhang) {
         for (int z = minZ; z <= maxZ; ++z) {
             for (int x = minX; x <= maxX; ++x) {
-                if (!world::hasTallCollision(world.block(x, underY, z))) {
+                const world::BlockState state = world.state(x, underY, z);
+                if (!world::hasTallCollision(state.block())) {
                     continue;
                 }
-                if (world::shapeOverlaps(world::collisionShape(world.state(x, underY, z)),
-                                         static_cast<float>(x), static_cast<float>(underY),
-                                         static_cast<float>(z), minimum.x, minimum.y, minimum.z,
-                                         maximum.x, maximum.y, maximum.z)) {
+                if (world::shapeOverlaps(world::collisionShape(state), static_cast<float>(x),
+                                         static_cast<float>(underY), static_cast<float>(z),
+                                         minimum.x, minimum.y, minimum.z, maximum.x, maximum.y,
+                                         maximum.z)) {
                     return true;
                 }
             }

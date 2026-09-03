@@ -209,5 +209,72 @@ int main() {
         }
     }
 
+    // --- AR-B4-1: the fence gate is the first block whose collision shape and
+    // visual shape differ. 26.1 FenceGateBlock.java:47-53 declares them apart:
+    //     SHAPE           = Block.cube(16, 16, 4)          -> y 0..16
+    //     SHAPE_COLLISION = Block.column(16, 4, 0.0, 24.0) -> y 0..24
+    // The expected boxes below are transcribed straight from those two vanilla
+    // calls rather than read back through `rotatedBy`, so a rotation that broke
+    // would not quietly agree with itself. ---
+    {
+        // 4/16 wide on the facing axis, centred: 6/16 .. 10/16. The gate's post
+        // pair is symmetric about the cell, so North and South (and East and
+        // West) land on the same band.
+        struct GateCase final {
+            BlockOrientation facing;
+            ShapeBox visual;
+            ShapeBox collision;
+        };
+        static constexpr std::array<GateCase, 4> kCases{{
+            {BlockOrientation::North,
+             {0.0F, 0.0F, 0.375F, 1.0F, 1.0F, 0.625F},
+             {0.0F, 0.0F, 0.375F, 1.0F, 1.5F, 0.625F}},
+            {BlockOrientation::East,
+             {0.375F, 0.0F, 0.0F, 0.625F, 1.0F, 1.0F},
+             {0.375F, 0.0F, 0.0F, 0.625F, 1.5F, 1.0F}},
+            {BlockOrientation::South,
+             {0.0F, 0.0F, 0.375F, 1.0F, 1.0F, 0.625F},
+             {0.0F, 0.0F, 0.375F, 1.0F, 1.5F, 0.625F}},
+            {BlockOrientation::West,
+             {0.375F, 0.0F, 0.0F, 0.625F, 1.0F, 1.0F},
+             {0.375F, 0.0F, 0.0F, 0.625F, 1.5F, 1.0F}},
+        }};
+        const auto sameBox = [](const ShapeBox& a, const ShapeBox& b) {
+            return near(a.minX, b.minX) && near(a.minY, b.minY) && near(a.minZ, b.minZ) &&
+                   near(a.maxX, b.maxX) && near(a.maxY, b.maxY) && near(a.maxZ, b.maxZ);
+        };
+        for (const auto& gateCase : kCases) {
+            const BlockState closed{Block::OakFenceGate, gateCase.facing};
+            const BlockState open = closed.withOpen(true);
+
+            // The regression lock the whole design rests on: the *visual* shape
+            // is byte-for-byte what it was, open or closed, so the mesher, the
+            // pick ray, the selection outline and faceOcclusionMask — all of
+            // which read blockShape — see no change at all from B4-1.
+            const auto visual = blockShape(closed);
+            assert(visual.kind == ShapeKind::Boxes && visual.boxes.size() == 1);
+            assert(sameBox(visual.boxes.front(), gateCase.visual));
+            assert(near(visual.boxes.front().maxY, 1.0F)); // never the 1.5 box
+            const auto openVisual = blockShape(open);
+            assert(openVisual.kind == ShapeKind::Boxes && openVisual.boxes.size() == 1);
+            assert(sameBox(openVisual.boxes.front(), gateCase.visual));
+
+            // Closed: the 24px collision column, on the same axis as the visual
+            // box and reaching half a cell above it.
+            const auto collision = collisionShape(closed);
+            assert(collision.kind == ShapeKind::Boxes && collision.boxes.size() == 1);
+            assert(sameBox(collision.boxes.front(), gateCase.collision));
+            assert(near(collisionSpan(closed).top, 1.5F));
+
+            // Open: nothing at all, so the taller box can never trap an entity
+            // in a gate someone opened around it.
+            assert(collisionShape(open).boxes.empty());
+            assert(collisionSpan(open).top <= collisionSpan(open).bottom);
+        }
+
+        // And it is the tall block the row scan exists for.
+        assert(hasTallCollision(Block::OakFenceGate));
+    }
+
     return 0;
 }
