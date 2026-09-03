@@ -9,15 +9,6 @@
 namespace mc::world {
 namespace {
 
-[[nodiscard]] int floorDiv(int value, int divisor) {
-    int quotient = value / divisor;
-    const int remainder = value % divisor;
-    if (remainder < 0) {
-        --quotient;
-    }
-    return quotient;
-}
-
 } // namespace
 
 std::size_t ChunkPositionHash::operator()(const ChunkPosition& position) const noexcept {

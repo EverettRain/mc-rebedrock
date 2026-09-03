@@ -113,13 +113,6 @@ struct GenerationResult final {
     return results;
 }
 
-[[nodiscard]] int floorDiv(int value, int divisor) {
-    int quotient = value / divisor;
-    if (value % divisor < 0)
-        --quotient;
-    return quotient;
-}
-
 [[nodiscard]] std::vector<SectionMeshUpdate>
 buildChunkMeshesParallel(const World& world, std::span<const ChunkMeshRequest> requests,
                          const std::atomic<bool>& stopping, const ChunkStreamer& self,

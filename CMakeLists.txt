@@ -2194,6 +2194,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME player_controller COMMAND mc_rebedrock_player_controller_test)
 
+    add_executable(mc_rebedrock_collision_walk_test
+        tests/collision_walk_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_collision_walk_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_collision_walk_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME collision_walk COMMAND mc_rebedrock_collision_walk_test)
+
     add_executable(mc_rebedrock_player_pose_test
         tests/player_pose_test.cpp
     )

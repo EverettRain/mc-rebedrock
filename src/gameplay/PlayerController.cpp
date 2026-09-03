@@ -2,6 +2,7 @@
 
 #include "world/Block.hpp"
 #include "world/BlockShape.hpp"
+#include "world/Chunk.hpp"
 #include "world/World.hpp"
 #include "world/WorldConstants.hpp"
 
@@ -46,38 +47,19 @@ constexpr float kInputScale = 0.98F;
 constexpr float kStepHeight = 0.6F;
 constexpr float kGroundOffset = 0.001F;
 
-[[nodiscard]] int floorDiv(int value, int divisor) {
-    int quotient = value / divisor;
-    if (value % divisor < 0) {
-        --quotient;
-    }
-    return quotient;
-}
-
 [[nodiscard]] bool columnLoaded(const world::World& world, int x, int z) {
     return world.hasChunk({
-        floorDiv(x, world::kChunkWidth),
-        floorDiv(z, world::kChunkDepth),
+        world::floorDiv(x, world::kChunkWidth),
+        world::floorDiv(z, world::kChunkDepth),
     });
 }
 
-// The collision shape of the cell at (x, y, z), reading the block through the
-// shared world::collisionShape. Out-of-range and unloaded cells stay a solid
-// full cube so the player never falls through a chunk seam; above the world is
-// empty air.
-[[nodiscard]] world::BlockShape blockCollisionShape(const world::World& world, int x, int y,
-                                                    int z) {
-    if (y < world::kMinY) {
-        return {world::ShapeKind::Column, 0.0F, 1.0F, {}};
-    }
-    if (y >= world::kMaxY) {
-        return {world::ShapeKind::Empty, 0.0F, 0.0F, {}};
-    }
-    if (!columnLoaded(world, x, z)) {
-        return {world::ShapeKind::Column, 0.0F, 1.0F, {}};
-    }
-    return world::collisionShape(world.state(x, y, z));
-}
+// A cell the collision walk never got to read: below the world, or in a column
+// that has not streamed in. Both stay a solid full cube so the player never
+// falls through a chunk seam or out the bottom.
+inline constexpr world::BlockShape kUnreadableCellShape{world::ShapeKind::Column, 0.0F, 1.0F, {}};
+// Above the world there is nothing to stand on.
+inline constexpr world::BlockShape kAboveWorldShape{world::ShapeKind::Empty, 0.0F, 0.0F, {}};
 
 [[nodiscard]] bool pointInWater(const world::World& world, glm::vec3 point) {
     const int x = static_cast<int>(std::floor(point.x));
@@ -188,61 +170,89 @@ bool PlayerController::collidesAtHeight(const world::World& world, glm::vec3 pos
     const float qMaxZ = position.z + kHalfWidth;
     const float qMinY = position.y;
     const float qMaxY = position.y + height;
-    for (int y = minY; y <= maxY; ++y) {
-        for (int z = minZ; z <= maxZ; ++z) {
-            for (int x = minX; x <= maxX; ++x) {
+    // AR-B4-0b: the walk is column-major — (z, x) outside, y inside — so the
+    // chunk a cell lives in is resolved once per column instead of once per
+    // cell. Chunks are full-height, so every y of a column shares one chunk
+    // pointer, and the per-cell read collapses from a `World::state` hash
+    // lookup to a section subscript. That lookup was measured (AR-B4-0) to be
+    // essentially the entire cost of this walk, which is also what made the
+    // row below cost 35-45%: with the pointer hoisted it is one more turn of a
+    // loop that already has everything it needs.
+    //
+    // AR-B4-0: that row below is the cell range's `minY - 1`, folded into the
+    // same y loop rather than swept separately. A collision shape may reach
+    // above its own cell (26.1's fence gate is 24px tall) and the body's own
+    // cells cannot see the overhang. It is skipped outright when the query's
+    // bottom already clears the tallest overhang in the roster — free, and it
+    // covers every airborne and mid-step probe — and otherwise gated per cell
+    // on `hasTallCollision`, a byte-table load once the state is in hand.
+    const int underY = minY - 1;
+    const bool scanUnder =
+        world::isWorldYInRange(underY) &&
+        qMinY < static_cast<float>(underY) + 1.0F + world::kMaximumCollisionOverhang;
+    const int fromY = scanUnder ? underY : minY;
+
+    // Consecutive columns almost always share a chunk (a 0.6-wide body spans at
+    // most two cells per axis), so remember the last one resolved instead of
+    // asking the map again per column.
+    const world::Chunk* owner = nullptr;
+    int ownerChunkX = 0;
+    int ownerChunkZ = 0;
+    bool ownerResolved = false;
+
+    for (int z = minZ; z <= maxZ; ++z) {
+        const int chunkZ = world::floorDiv(z, world::kChunkDepth);
+        const int localZ = z - chunkZ * world::kChunkDepth;
+        for (int x = minX; x <= maxX; ++x) {
+            const int chunkX = world::floorDiv(x, world::kChunkWidth);
+            const int localX = x - chunkX * world::kChunkWidth;
+            if (!ownerResolved || chunkX != ownerChunkX || chunkZ != ownerChunkZ) {
+                owner = world.chunk({chunkX, chunkZ});
+                ownerChunkX = chunkX;
+                ownerChunkZ = chunkZ;
+                ownerResolved = true;
+            }
+            for (int y = fromY; y <= maxY; ++y) {
                 // A cell inside the clip window is geometry the body is already
                 // embedded in; ignore it so a trapped player can move out (the
                 // block it rests on sits below the window and still collides).
                 if (cellIsClipped(x, y, z)) {
                     continue;
                 }
-                // A partial block only collides over its own boxes: a slab's half
-                // box (Column) lets the player stand in the empty half of the
-                // cell, and a fence post or stair step (Boxes) fills only part of
-                // the footprint. The cell iteration already established the
-                // horizontal overlap for a full-footprint Column, so that path
-                // stays a plain vertical-span test; Boxes are tested in 3D.
-                if (world::shapeOverlaps(blockCollisionShape(world, x, y, z),
-                                         static_cast<float>(x), static_cast<float>(y),
+                world::BlockShape shape;
+                if (y < minY) {
+                    // The row below. An unloaded or out-of-world cell reads as
+                    // air here, deliberately *not* as the solid cube the body's
+                    // own rows below use: a chunk seam must not sprout a
+                    // phantom overhang into the cell above it. scanUnder has
+                    // already established this row is inside the world.
+                    if (owner == nullptr) {
+                        continue;
+                    }
+                    const world::BlockState state = owner->state(localX, y, localZ);
+                    if (!world::hasTallCollision(state.block())) {
+                        continue;
+                    }
+                    shape = world::collisionShape(state);
+                } else if (y < world::kMinY) {
+                    shape = kUnreadableCellShape;
+                } else if (y >= world::kMaxY) {
+                    shape = kAboveWorldShape;
+                } else if (owner == nullptr) {
+                    shape = kUnreadableCellShape;
+                } else {
+                    // A partial block only collides over its own boxes: a slab's
+                    // half box (Column) lets the player stand in the empty half
+                    // of the cell, and a fence post or stair step (Boxes) fills
+                    // only part of the footprint. The cell iteration already
+                    // established the horizontal overlap for a full-footprint
+                    // Column, so that path stays a plain vertical-span test;
+                    // Boxes are tested in 3D.
+                    shape = world::collisionShape(owner->state(localX, y, localZ));
+                }
+                if (world::shapeOverlaps(shape, static_cast<float>(x), static_cast<float>(y),
                                          static_cast<float>(z), qMinX, qMinY, qMinZ, qMaxX, qMaxY,
                                          qMaxZ)) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    // AR-B4-0: one row below the query box. A collision shape may reach above
-    // its own cell (26.1's fence gate is 24px tall), and the loop above only
-    // visits the cells the body itself occupies, so that overhang would go
-    // unseen. The row is skipped outright when the query's bottom is already
-    // clear of the tallest overhang in the roster — free, and it covers every
-    // airborne and mid-step probe — and otherwise gated per cell on
-    // `hasTallCollision`, which is a byte-table load once the state is in hand.
-    // Widening minY instead would put a whole extra row of *shape* work on
-    // every probe for the single tall block the roster has.
-    //
-    // One world read per cell, through the state rather than the block: the
-    // state carries the block, so the prefilter and the shape share the read.
-    // Out-of-world and unloaded cells read as air and drop out here, which is
-    // deliberately not blockCollisionShape's "unloaded is solid" rule — a seam
-    // must not sprout a phantom overhang into the cell above it.
-    const int underY = minY - 1;
-    if (world::isWorldYInRange(underY) &&
-        qMinY < static_cast<float>(underY) + 1.0F + world::kMaximumCollisionOverhang) {
-        for (int z = minZ; z <= maxZ; ++z) {
-            for (int x = minX; x <= maxX; ++x) {
-                if (cellIsClipped(x, underY, z)) {
-                    continue;
-                }
-                const world::BlockState state = world.state(x, underY, z);
-                if (!world::hasTallCollision(state.block())) {
-                    continue;
-                }
-                if (world::shapeOverlaps(world::collisionShape(state), static_cast<float>(x),
-                                         static_cast<float>(underY), static_cast<float>(z), qMinX,
-                                         qMinY, qMinZ, qMaxX, qMaxY, qMaxZ)) {
                     return true;
                 }
             }

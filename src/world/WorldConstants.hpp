@@ -42,6 +42,17 @@ inline constexpr float kVoidDespawnY = static_cast<float>(kMinY) - 64.0F;
     return y >= kMinY && y < kMaxY;
 }
 
+// World coordinate -> the chunk index containing it. C++'s `/` truncates toward
+// zero, so a plain `x / kChunkWidth` puts x = -1 in chunk 0 instead of chunk -1
+// and the whole negative half of the world reads one chunk off. `>> 4` happens
+// to be correct for a power-of-two width but silently hard-codes it; this stays
+// honest about the divisor. Several call sites carry a private copy of this —
+// the collision walk's is what pulled it up here.
+[[nodiscard]] inline constexpr int floorDiv(int value, int divisor) {
+    const int quotient = value / divisor;
+    return (value % divisor < 0) ? quotient - 1 : quotient;
+}
+
 // The smooth-lighting algorithm the mesh was baked with. Off keeps the flat
 // light values; Standard is the current binary-AO algorithm; High is the
 // vanilla per-block AO. Because VoxelVertex has no room for two AO

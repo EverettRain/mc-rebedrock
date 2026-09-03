@@ -18,12 +18,6 @@ constexpr std::array<std::array<int, 3>, 6> kNeighbors{{
     {{0, -1, 0}}, {{0, 0, 1}}, {{0, 0, -1}},
 }};
 
-[[nodiscard]] int floorDiv(int value, int divisor) {
-    int quotient = value / divisor;
-    if (value % divisor < 0) --quotient;
-    return quotient;
-}
-
 [[nodiscard]] int floorMod(int value, int divisor) {
     const int result = value % divisor;
     return result < 0 ? result + divisor : result;

@@ -7,6 +7,7 @@
 
 #include "world/Block.hpp"
 #include "world/BlockShape.hpp"
+#include "world/Chunk.hpp"
 #include "world/World.hpp"
 #include "world/WorldConstants.hpp"
 
@@ -206,48 +207,62 @@ bool EntitySystem::boxIntersectsWorld(
     const int maxY = floorToInt(maximum.y - kCollisionEpsilon);
     const int minZ = floorToInt(minimum.z + kCollisionEpsilon);
     const int maxZ = floorToInt(maximum.z - kCollisionEpsilon);
-    for (int y = minY; y <= maxY; ++y) {
-        if (!world::isWorldYInRange(y)) {
-            continue;
-        }
-        for (int z = minZ; z <= maxZ; ++z) {
-            for (int x = minX; x <= maxX; ++x) {
-                // A partial block only fills part of its cell, so a creature rests
-                // on a slab and walks through its open half, and a fence post or
-                // stair step blocks only its own boxes rather than a phantom full
-                // cube. The cell iteration covers the horizontal overlap for a
-                // full-footprint Column; Boxes are tested in 3D.
-                if (world::shapeOverlaps(world::collisionShape(world.state(x, y, z)),
-                                         static_cast<float>(x), static_cast<float>(y),
-                                         static_cast<float>(z), minimum.x, minimum.y, minimum.z,
-                                         maximum.x, maximum.y, maximum.z)) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    // AR-B4-0: one row below the query box, for the collision shapes that reach
-    // above their own cell (26.1's fence gate is 24px tall). The loop above only
-    // visits the cells the creature's box covers, so that overhang is invisible
-    // to it. Skipped on arithmetic alone whenever the box's bottom is already
-    // clear of the tallest overhang in the roster, and otherwise gated per cell
-    // on `hasTallCollision` — one world read, shared by the prefilter and the
-    // shape — rather than on a blanket minY-1, which would cost every creature
-    // move a whole extra row of shape work for the one tall block there is.
+    // AR-B4-0b: column-major — (z, x) outside, y inside. Chunks are full-height,
+    // so one chunk pointer serves every y of a column and the per-cell read
+    // drops from a `World::state` hash lookup to a section subscript. AR-B4-0
+    // measured that lookup to be essentially the whole cost of this walk.
+    //
+    // AR-B4-0: the cell range's `minY - 1` row rides in the same y loop. A
+    // collision shape may reach above its own cell (26.1's fence gate is 24px
+    // tall) and the creature's own cells cannot see the overhang. Skipped on
+    // arithmetic alone when the box's bottom already clears the tallest
+    // overhang in the roster, and otherwise gated per cell on
+    // `hasTallCollision` — a byte-table load once the state is in hand.
     const int underY = minY - 1;
-    if (world::isWorldYInRange(underY) &&
-        minimum.y < static_cast<float>(underY) + 1.0F + world::kMaximumCollisionOverhang) {
-        for (int z = minZ; z <= maxZ; ++z) {
-            for (int x = minX; x <= maxX; ++x) {
-                const world::BlockState state = world.state(x, underY, z);
-                if (!world::hasTallCollision(state.block())) {
+    const bool scanUnder =
+        world::isWorldYInRange(underY) &&
+        minimum.y < static_cast<float>(underY) + 1.0F + world::kMaximumCollisionOverhang;
+    const int fromY = scanUnder ? underY : minY;
+
+    const world::Chunk* owner = nullptr;
+    int ownerChunkX = 0;
+    int ownerChunkZ = 0;
+    bool ownerResolved = false;
+
+    for (int z = minZ; z <= maxZ; ++z) {
+        const int chunkZ = world::floorDiv(z, world::kChunkDepth);
+        const int localZ = z - chunkZ * world::kChunkDepth;
+        for (int x = minX; x <= maxX; ++x) {
+            const int chunkX = world::floorDiv(x, world::kChunkWidth);
+            const int localX = x - chunkX * world::kChunkWidth;
+            if (!ownerResolved || chunkX != ownerChunkX || chunkZ != ownerChunkZ) {
+                owner = world.chunk({chunkX, chunkZ});
+                ownerChunkX = chunkX;
+                ownerChunkZ = chunkZ;
+                ownerResolved = true;
+            }
+            // An unloaded column reads as air for every y, which is what
+            // World::state answered before — a creature is not stopped by a
+            // chunk seam the way the player is.
+            if (owner == nullptr) {
+                continue;
+            }
+            for (int y = fromY; y <= maxY; ++y) {
+                if (!world::isWorldYInRange(y)) {
                     continue;
                 }
+                const world::BlockState state = owner->state(localX, y, localZ);
+                if (y < minY && !world::hasTallCollision(state.block())) {
+                    continue;
+                }
+                // A partial block only fills part of its cell, so a creature
+                // rests on a slab and walks through its open half, and a fence
+                // post or stair step blocks only its own boxes rather than a
+                // phantom full cube. The cell iteration covers the horizontal
+                // overlap for a full-footprint Column; Boxes are tested in 3D.
                 if (world::shapeOverlaps(world::collisionShape(state), static_cast<float>(x),
-                                         static_cast<float>(underY), static_cast<float>(z),
-                                         minimum.x, minimum.y, minimum.z, maximum.x, maximum.y,
-                                         maximum.z)) {
+                                         static_cast<float>(y), static_cast<float>(z), minimum.x,
+                                         minimum.y, minimum.z, maximum.x, maximum.y, maximum.z)) {
                     return true;
                 }
             }
