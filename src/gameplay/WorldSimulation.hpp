@@ -182,6 +182,37 @@ class WorldSimulation final {
     // scheduling anything — a trapdoor has no delay, unlike a torch's 2gt toggle.
     void notifyRedstoneComponent(world::World& world, SimulationPosition position);
 
+    // W-x-1: DiodeBlock#updateNeighborsInFront (DiodeBlock.java:177-183), shared
+    // by the repeater and the comparator — it is base-class behaviour in vanilla,
+    // not something one of them does specially.
+    //
+    // A diode's own write goes out with flags 2, so it fans out nothing; without
+    // this, *nothing downstream of a diode is ever woken*. Not just the sinks —
+    // a wire two cells past a repeater stayed dark, so every multi-stage circuit
+    // with a diode in the middle was broken.
+    //
+    // Two steps, and both are load-bearing:
+    //   1. the output cell itself, so a trapdoor or a door hung directly on the
+    //      diode's face reacts at all;
+    //   2. that cell's own neighbours (minus the diode, Java's
+    //      `ExceptFromFacing`), so a wire there re-solves and carries the change
+    //      onward.
+    //
+    // `front` is `opposite(FACING)`: in this build a diode's FACING names its
+    // *input* side (see RedstoneSignal's diodeInputSignal), so its output is the
+    // cell behind that.
+    void updateNeighborsInFront(world::World& world, world::BlockPos pos,
+                                world::BlockState state, world::MutationSink& sink);
+    // The three entry points JE reaches updateNeighborsInFront through: its tick
+    // (via LevelChunk.setBlockState -> onPlace, which runs even for a flags-2
+    // write), onPlace proper, and affectNeighborsAfterRemoval. This is the
+    // place/remove pair, called by the gameplay mutation sink once per edit;
+    // `previous` is what the cell held before, so a diode that was just broken
+    // still wakes what it used to feed.
+    void notifyDiodePlacedOrRemoved(world::World& world, world::BlockPos pos,
+                                    world::BlockState previous, world::BlockState current,
+                                    world::MutationSink& sink);
+
     // The cells a synchronous neighborChanged sink actually wrote.
     //
     // `notifyRedstoneComponent` may write more cells than the one it was asked

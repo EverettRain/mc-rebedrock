@@ -272,6 +272,26 @@ class RedstoneCircuit final {
         return false;
     }
     void clearTickedCells() { tickedCells_.clear(); }
+    // W-x-1: place and break through the real mutation path (MutationFlags::All
+    // + GameplayMutationSink), rather than the raw `place` above which writes
+    // the cell and tells nobody. These are the two entries besides the tick that
+    // vanilla reaches updateNeighborsInFront from.
+    void placeBlock(mc::world::BlockPos rel, mc::world::BlockState state) {
+        const auto pos = absolute(rel);
+        mc::gameplay::GameplayMutationSink sink{world_, session_};
+        static_cast<void>(session_.worldMutations().setBlock(
+            world_, pos, state, mc::world::MutationFlags::All,
+            mc::world::MutationCause::PlayerPlace, sink));
+        session_.drainEvents();
+    }
+    void breakBlock(mc::world::BlockPos rel) {
+        const auto pos = absolute(rel);
+        mc::gameplay::GameplayMutationSink sink{world_, session_};
+        static_cast<void>(session_.worldMutations().setBlock(
+            world_, pos, mc::world::BlockState{mc::world::Block::Air},
+            mc::world::MutationFlags::All, mc::world::MutationCause::PlayerBreak, sink));
+        session_.drainEvents();
+    }
     [[nodiscard]] const mc::world::World& worldRef() const { return world_; }
     [[nodiscard]] mc::world::BlockPos absoluteOf(mc::world::BlockPos rel) const {
         return absolute(rel);

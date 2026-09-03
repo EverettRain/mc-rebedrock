@@ -40,6 +40,13 @@ void GameplayMutationSink::scatterContents(world::BlockPos pos, const ItemStack&
 
 void GameplayMutationSink::onBlockEntityReplaced(world::BlockPos pos, world::BlockState previous,
                                                  world::BlockState current) {
+    // W-x-1: this is the mutation service's first callback and the only one
+    // carrying the old state, so it is where a block kind change is recorded for
+    // the diode place/remove wake below. It fires exactly when
+    // `previous.block() != newState.block()`, which is exactly "placed or
+    // broken" — a diode merely flipping POWERED does not come through here, and
+    // does not need to: its own tick already wakes its front.
+    sourcePrevious_ = std::pair{pos, previous};
     // The unified lifecycle entry (A3b): the decision to destroy or create is
     // gated on the block's own `hasBlockEntity` pre-filter (one indexed bit test)
     // and dispatched by the BlockEntityTypeId it maps to — never a per-block
@@ -181,6 +188,17 @@ void GameplayMutationSink::onNeighborChanged(world::BlockPos neighbor, world::Bl
     const auto state = world_->state(source.x, source.y, source.z);
     session_->worldSimulation().notifyPlaced({source.x, source.y, source.z}, state.block());
     session_->worldSimulation().notifyNeighborChanged(*world_, {source.x, source.y, source.z});
+    // W-x-1: DiodeBlock's other two entries into updateNeighborsInFront —
+    // onPlace and affectNeighborsAfterRemoval. The ordinary six-neighbour
+    // fan-out this call sits inside already reaches the cell directly in front
+    // of a placed or broken diode, but not that cell's own neighbours, so a wire
+    // one step past a freshly placed repeater would stay dark until something
+    // else woke it. `sourcePrevious_` is what the cell held before this edit.
+    const world::BlockState previousAtSource =
+        (sourcePrevious_.has_value() && sourcePrevious_->first == source) ? sourcePrevious_->second
+                                                                          : state;
+    session_->worldSimulation().notifyDiodePlacedOrRemoved(*world_, source, previousAtSource,
+                                                           state, *this);
 }
 
 void GameplayMutationSink::onSectionDirty(world::BlockPos pos) {

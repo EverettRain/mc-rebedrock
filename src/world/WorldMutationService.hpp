@@ -22,8 +22,21 @@ struct BlockMutationResult final {
 // is what lets the whole mutation *flow* live in world/ — deciding when a block
 // entity is destroyed, when neighbours are told, when a section relights — while
 // the concrete systems (chests, furnaces, the mesher, the loot roller) are
-// wired in by whoever implements this. Every method defaults to a no-op so a
-// caller that only cares about some effects overrides only those.
+// wired in by whoever implements this.
+//
+// W-x-2: every method is pure. They used to default to a no-op, on the reasoning
+// that a caller who only cares about some effects should override only those —
+// and that is exactly how two bugs got in. RedstoneReactionSink silently dropped
+// onSectionDirty, so a door opened in the world and half opened on screen
+// (AR-B4-3a); it silently dropped onNeighborShapeUpdate too, so no redstone
+// write ever reached an updateShape derivation and a repeater's LOCKED went
+// stale (AR-B4-4). Neither was a wrong implementation. Both were an absent one,
+// and an absent one looked exactly like a deliberate no-op.
+//
+// So: an implementer must write every method out, and the ones it genuinely does
+// not want are empty bodies *with a reason*. Same guard kShapeByModel's
+// static_assert gives the shape table — a missing entry is a build failure, not
+// a bug report.
 class MutationSink {
   public:
     virtual ~MutationSink() = default;
@@ -32,8 +45,8 @@ class MutationSink {
     // destroyed and any the new block needs created. A change that keeps the
     // same block (a furnace lighting, a log re-facing) does NOT call this — the
     // entity, and its smelt, survives. Suppressed by MutationFlags::SkipBlockEntity.
-    virtual void onBlockEntityReplaced(BlockPos /*pos*/, BlockState /*previous*/,
-                                       BlockState /*current*/) {}
+    virtual void onBlockEntityReplaced(BlockPos pos, BlockState previous,
+                                       BlockState current) = 0;
 
     // A neighbour of the edited cell should recompute its *shape* against the
     // change: a fence grows or drops a connection arm, a redstone wire re-points,
@@ -42,24 +55,24 @@ class MutationSink {
     // reaction pass, mirroring Java's updateNeighbourShapes → neighborChanged
     // order. Called once per orthogonal neighbour in kShapeUpdateOrder unless
     // MutationFlags::KnownShape says the caller already knows no shape changed.
-    virtual void onNeighborShapeUpdate(BlockPos /*neighbor*/, BlockPos /*source*/) {}
+    virtual void onNeighborShapeUpdate(BlockPos neighbor, BlockPos source) = 0;
 
     // A neighbour of the edited cell should re-evaluate: sand falls, a torch
     // pops off, a comparator re-reads. Called once per orthogonal neighbour,
     // only when MutationFlags::NotifyNeighbors is set.
-    virtual void onNeighborChanged(BlockPos /*neighbor*/, BlockPos /*source*/) {}
+    virtual void onNeighborChanged(BlockPos neighbor, BlockPos source) = 0;
 
     // The cell's section needs relight and remesh. Called whenever the state
     // actually changed, unconditionally — light and mesh invalidation are
     // derived from the state diff, never a caller's choice, so "forgot to
     // relight after editing" is unrepresentable.
-    virtual void onSectionDirty(BlockPos /*pos*/) {}
+    virtual void onSectionDirty(BlockPos pos) = 0;
 
     // A non-air block was removed or replaced and should roll its drops. The
     // cause selects the loot context (a player break vs a command). Suppressed
     // by MutationFlags::SuppressDrops or MovedByPiston.
-    virtual void onDropsRequested(BlockPos /*pos*/, BlockState /*removed*/,
-                                  MutationCause /*cause*/) {}
+    virtual void onDropsRequested(BlockPos pos, BlockState removed,
+                                  MutationCause cause) = 0;
 };
 
 // The single path every block change flows through, mirroring 26.1's
@@ -83,6 +96,14 @@ class WorldMutationService final {
     // though it is not the lever's own neighbour.
     void updateNeighborsAt(BlockPos pos, MutationSink& sink,
                            int updateLimit = kDefaultUpdateLimit);
+
+    // W-x-1: the same fan-out with one cell held back, Java's
+    // `updateNeighborsAtExceptFromFacing`. A diode waking the cell in front of
+    // it must not have that cell's fan-out come straight back at the diode; JE
+    // excludes exactly that neighbour and so does this. `skip` names the cell
+    // rather than a direction because every caller already holds the position.
+    void updateNeighborsAtExcept(BlockPos pos, BlockPos skip, MutationSink& sink,
+                                 int updateLimit = kDefaultUpdateLimit);
 
   private:
     // The queue that carries neighbour reactions. Persisting it on the service

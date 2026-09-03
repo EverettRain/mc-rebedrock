@@ -16,6 +16,7 @@
 #include "world/WorldMutationService.hpp"
 
 #include <optional>
+#include <utility>
 
 namespace mc::world {
 class World;
@@ -76,6 +77,12 @@ class GameplayMutationSink final : public world::MutationSink {
     // loop, which is what resets this and makes the collapse exact rather than
     // merely deduplicating consecutive edits at the same cell.
     std::optional<world::BlockPos> notifiedSource_;
+    // W-x-1: what the edited cell held before this edit, recorded when the block
+    // kind actually changed (onBlockEntityReplaced, the first callback the
+    // mutation service raises and the one that already carries the old state).
+    // A diode that was just broken has to wake what it used to feed, and by the
+    // time the neighbour pass runs the cell is air.
+    std::optional<std::pair<world::BlockPos, world::BlockState>> sourcePrevious_;
 };
 
 } // namespace mc::gameplay

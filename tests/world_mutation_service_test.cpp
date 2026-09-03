@@ -197,5 +197,28 @@ int main() {
         assert(sink.sectionDirty == 0 && sink.neighborChanged == 0);
     }
 
+    // --- W-x-1: updateNeighborsAtExcept — the same fan-out with one cell held
+    // back, Java's updateNeighborsAtExceptFromFacing. A diode waking the cell in
+    // front of it uses this so that cell's fan-out does not come straight back
+    // at the diode. ---
+    {
+        auto world = loadedWorld();
+        WorldMutationService service;
+
+        RecordingSink all;
+        service.updateNeighborsAt({4, 64, 4}, all);
+        assert(all.neighborChanged == 6);
+
+        RecordingSink except;
+        service.updateNeighborsAtExcept({4, 64, 4}, {5, 64, 4}, except);
+        assert(except.neighborChanged == 5); // exactly one held back
+
+        // A `skip` that is not one of the six neighbours holds nothing back, so
+        // the exclusion is by position and not an off-by-one on the order.
+        RecordingSink elsewhere;
+        service.updateNeighborsAtExcept({4, 64, 4}, {9, 9, 9}, elsewhere);
+        assert(elsewhere.neighborChanged == 6);
+    }
+
     return 0;
 }

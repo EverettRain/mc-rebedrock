@@ -81,4 +81,15 @@ void WorldMutationService::updateNeighborsAt(BlockPos pos, MutationSink& sink, i
     });
 }
 
+void WorldMutationService::updateNeighborsAtExcept(BlockPos pos, BlockPos skip, MutationSink& sink,
+                                                   int updateLimit) {
+    neighborUpdater_.updateNeighborsAt(
+        pos, updateLimit, [&sink, skip](BlockPos neighbor, BlockPos source) {
+            if (neighbor.x == skip.x && neighbor.y == skip.y && neighbor.z == skip.z) {
+                return;
+            }
+            sink.onNeighborChanged(neighbor, source);
+        });
+}
+
 } // namespace mc::world

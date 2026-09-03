@@ -108,7 +108,33 @@ constexpr std::array<SimulationPosition, 26> kLeafFloodNeighbors = makeLeafFlood
 // BlockChange stream the host already drains, so nothing is dispatched here —
 // what the service is used for is the single, shared decision about *whether*
 // a cell changed, and the block-entity rule that rides on it.
-class RecordingMutationSink final : public world::MutationSink {};
+//
+// W-x-2: every callback is written out with its reason rather than inherited as
+// a no-op, so the next one added has to be considered here too. All three
+// callers (a sapling consuming itself, a random-tick conversion, a scheduled
+// block swap) pass MutationFlags::KnownShape with no NotifyNeighbors, so most of
+// these cannot fire at all; the ones that can are covered by the BlockChange.
+class RecordingMutationSink final : public world::MutationSink {
+  public:
+    // Not wanted: these writes are block-kind changes (a sapling becoming air,
+    // one block converting into another), but the simulation has no block
+    // entities to hand off — every container edit goes through the gameplay
+    // sink, which does implement this.
+    void onBlockEntityReplaced(world::BlockPos, world::BlockState, world::BlockState) override {}
+    // Cannot fire: every caller passes KnownShape.
+    void onNeighborShapeUpdate(world::BlockPos, world::BlockPos) override {}
+    // Cannot fire: no caller sets NotifyNeighbors. The simulation drives its own
+    // follow-up work through its queues (queueSand, queueWater, the support
+    // checks), not through the mutation service's fan-out.
+    void onNeighborChanged(world::BlockPos, world::BlockPos) override {}
+    // Deliberately dropped: the caller pushes a BlockChange for this same cell,
+    // and that is what carries the mesh and save update.
+    void onSectionDirty(world::BlockPos) override {}
+    // Cannot fire: it is raised only for PlayerBreak and Explosion, and these
+    // writes are RandomTick and ScheduledTick. A simulated break that *should*
+    // drop carries its loot in the BlockChange's `dropped` field instead.
+    void onDropsRequested(world::BlockPos, world::BlockState, world::MutationCause) override {}
+};
 
 // The sink a redstone component's own tick writes through. Unlike the recording
 // sink above, this one *does* react to the neighbour fan-out: a torch going out
@@ -123,6 +149,24 @@ class RedstoneReactionSink final : public world::MutationSink {
     void onNeighborChanged(world::BlockPos neighbor, world::BlockPos /*source*/) override {
         simulation_.notifyRedstoneComponent(world_, {neighbor.x, neighbor.y, neighbor.z});
     }
+
+    // W-x-2: not wanted, with reasons.
+    //
+    // A redstone component's write never changes the block *kind* — a diode
+    // flips POWERED, a trapdoor flips OPEN, a piston flips EXTENDED, all on the
+    // same block — so this cannot fire. If a redstone write ever does swap a
+    // block, whoever writes it has to decide what happens to the old block's
+    // entity, and deleting this line is how they will be made to.
+    void onBlockEntityReplaced(world::BlockPos, world::BlockState, world::BlockState) override {}
+    // Cannot fire: raised only for MutationCause::PlayerBreak and Explosion,
+    // and every write through this sink is ScheduledTick. Worth stating because
+    // vanilla's DiodeBlock#neighborChanged *does* have a destroying branch —
+    // canSurvive failing means dropResources + removeBlock — but this build
+    // routes support failures through the simulation's own queued support
+    // checks (queueNeighborSupportChecks), which drop through the BlockChange
+    // stream, not through this sink. A redstone write that starts breaking
+    // blocks directly must revisit this.
+    void onDropsRequested(world::BlockPos, world::BlockState, world::MutationCause) override {}
 
     // AR-B4-4: the shape pass. WorldMutationService raises this for every real
     // change that did not promise KnownShape, which is vanilla's rule too —
@@ -1226,6 +1270,37 @@ bool WorldSimulation::setSimulatedBlock(
     return result.changed;
 }
 
+void WorldSimulation::updateNeighborsInFront(world::World& world, world::BlockPos pos,
+                                             world::BlockState state,
+                                             world::MutationSink& sink) {
+    static_cast<void>(world);
+    const world::BlockPos front =
+        redstone::relative(pos, redstone::opposite(redstone::facingOf(state)));
+    // (1) The output cell itself. `updateNeighborsAt` means "the six neighbours
+    // of", never the cell named, so this step cannot be folded into it — which
+    // is exactly why a trapdoor hung on a repeater's face never heard anything.
+    sink.onNeighborChanged(front, pos);
+    // (2) The output cell's neighbours, minus the diode. Java holds that one
+    // back (updateNeighborsAtExceptFromFacing) and so do we: letting it through
+    // would have the diode immediately re-evaluate itself off its own write.
+    mutations_.updateNeighborsAtExcept(front, pos, sink);
+}
+
+void WorldSimulation::notifyDiodePlacedOrRemoved(world::World& world, world::BlockPos pos,
+                                                 world::BlockState previous,
+                                                 world::BlockState current,
+                                                 world::MutationSink& sink) {
+    // onPlace fires for the block that is now there; affectNeighborsAfterRemoval
+    // for the one that was. A diode replaced by another diode is both, and the
+    // two calls differ (their FACING may differ), so neither is skipped.
+    if (redstone::isDiode(current.block())) {
+        updateNeighborsInFront(world, pos, current, sink);
+    }
+    if (redstone::isDiode(previous.block()) && previous.block() != current.block()) {
+        updateNeighborsInFront(world, pos, previous, sink);
+    }
+}
+
 void WorldSimulation::notifyRedstoneComponent(world::World& world,
                                               SimulationPosition position) {
     const auto block = world.block(position.x, position.y, position.z);
@@ -1526,6 +1601,11 @@ void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPositi
                                 world::MutationCause::ScheduledTick, sink);
         if (applied.changed) {
             changes.push_back({position, result.newState});
+            // W-x-1: DiodeBlock#updateNeighborsInFront. Vanilla reaches this
+            // through onPlace, which LevelChunk.setBlockState runs for every
+            // server write including this flags-2 one; here it is called
+            // outright. Without it the repeater's output change reaches nothing.
+            updateNeighborsInFront(world, pos, result.newState, sink);
         }
         if (result.pulseReschedule.has_value()) {
             static_cast<void>(ticks_.schedule(
@@ -1553,11 +1633,15 @@ void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPositi
             }
         }
         if (result.notifyFront) {
-            // ComparatorBlock.updateNeighborsInFront: unlike a repeater, a
-            // comparator explicitly wakes the block its output faces (one step
-            // opposite FACING) so downstream re-reads the changed analog signal.
-            const auto front = redstone::relative(pos, redstone::opposite(redstone::facingOf(state)));
-            mutations_.updateNeighborsAt(front, sink);
+            // W-x-1: the same DiodeBlock#updateNeighborsInFront the repeater
+            // uses. This branch used to call updateNeighborsAt(front) alone,
+            // under a comment claiming the comparator does this and the repeater
+            // does not — in vanilla it is DiodeBlock base-class behaviour, both
+            // share it, and one call is only half of it: `updateNeighborsAt`
+            // notifies the six neighbours *of* the front cell, never the front
+            // cell itself, so a sink hung directly on the comparator's face was
+            // as deaf as it was on a repeater's.
+            updateNeighborsInFront(world, pos, state, sink);
         }
         return;
     }

@@ -102,18 +102,13 @@ int main() {
         circuit.setLever(kSideLever, false);
         circuit.advance(8);
         require(!circuit.state(kMain).repeaterLocked(), "unlocked once the side diode falls");
-        // Then nudge the main input so the repeater re-evaluates: unlocking on
-        // its own does not wake it here, because a diode's scheduled write never
-        // notifies the block in front of it (the pre-existing gap registered
-        // with AR-B4-3a — measured with a trapdoor, so it predates every diode
-        // change here). Driving the input is what an unlocked repeater must
-        // follow, and that is what this asserts.
-        circuit.setLever(kMainLever, true);
-        circuit.advance(8);
-        require(circuit.lit(kMain), "an unlocked repeater follows a rising input");
-        circuit.setLever(kMainLever, false);
-        circuit.advance(8);
-        require(!circuit.lit(kMain), "...and a falling one");
+        // And the held output is released with nobody touching the input. This
+        // used to need the main lever nudged, because a diode's write woke
+        // nothing in front of it; W-x-1 gave DiodeBlock#updateNeighborsInFront
+        // its two steps, so the side diode falling now reaches this repeater on
+        // its own and it drops the output it had been holding.
+        require(!circuit.lit(kMain),
+                "unlocking must release the held output with no further input change");
     }
 
     // --- The axis rule itself, exercised at the slot rather than through a
