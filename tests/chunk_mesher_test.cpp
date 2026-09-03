@@ -543,14 +543,31 @@ int main() {
         assert(innerMesh.vertices.size() == 72U);
     }
     {
-        // A door is a single thin leaf box: 24 vertices, and its box hugs one
-        // face rather than the whole cell — the mesh is a thin box, not a cube.
+        // RN-10b: a door leaf now draws from its baked vanilla model, which
+        // declares FIVE faces, not six — door_bottom_left.json has no `up` face,
+        // because the upper half of the door is standing on it. So 20 vertices,
+        // where the BlockShape box path drew 24 and put a quad inside the door.
+        // The geometry is otherwise identical: the leaf still occupies exactly
+        // the shape's box, which is what makes this a face-count change and not
+        // a model change (shaped_block_model_test pins bounds == shape for all
+        // 48 variants; here it is checked once through the real mesher).
         mc::world::Chunk doorChunk;
         const mc::world::BlockState door{mc::world::Block::OakDoor};
         doorChunk.setState(3, mc::world::kMinY + 1, 1, door);
         const auto doorMesh = mc::world::ChunkMesher::build(doorChunk);
         assert(mc::world::blockShape(door).boxes.size() == 1U);
-        assert(doorMesh.vertices.size() == 24U);
+        assert(doorMesh.vertices.size() == 20U);
+        // The upper half caps up instead of down, and is likewise five faces.
+        mc::world::Chunk upperChunk;
+        upperChunk.setState(3, mc::world::kMinY + 1, 1,
+                            mc::world::BlockState{mc::world::Block::OakDoor}.withDoorUpperHalf(
+                                true));
+        assert(mc::world::ChunkMesher::build(upperChunk).vertices.size() == 20U);
+        // A trapdoor keeps all six (template_trapdoor_bottom.json declares six).
+        mc::world::Chunk trapChunk;
+        trapChunk.setState(3, mc::world::kMinY + 1, 1,
+                           mc::world::BlockState{mc::world::Block::OakTrapdoor});
+        assert(mc::world::ChunkMesher::build(trapChunk).vertices.size() == 24U);
         // The leaf is 3/16 thin on Z (0.8125..1), so every vertex's Z lies in
         // that band — not the full 0..1 of a cube.
         float minZ = 1e9F;
@@ -711,6 +728,115 @@ int main() {
                 assert(found);
             }
         }
+    }
+
+    // RN-10b: the same end-to-end wiring lock for the door and the trapdoor, now
+    // that they draw from the baked store rather than from their BlockShape box.
+    // Position AND uv are compared against the baker, because the whole point of
+    // migrating them is the uv: a mesh that kept the old projected rects would
+    // pass a position-only check while still drawing R1/R2/R4/R6.
+    {
+        using mc::world::Block;
+        using mc::world::BlockOrientation;
+        using mc::world::BlockState;
+        using mc::world::DoorHinge;
+        struct Case final {
+            Block block;
+            BlockState state;
+            int cx, cz;
+        };
+        const std::array<Case, 4> cases{{
+            {Block::OakDoor,
+             BlockState{Block::OakDoor, BlockOrientation::East}.withHinge(DoorHinge::Right), 2, 2},
+            {Block::OakDoor,
+             BlockState{Block::OakDoor, BlockOrientation::North}.withOpen(true).withDoorUpperHalf(
+                 true),
+             4, 2},
+            {Block::OakTrapdoor, BlockState{Block::OakTrapdoor, BlockOrientation::West}, 6, 2},
+            {Block::OakTrapdoor,
+             BlockState{Block::OakTrapdoor, BlockOrientation::South}.withOpen(true), 8, 2},
+        }};
+        for (const Case& c : cases) {
+            mc::world::Chunk chunk;
+            chunk.setState(c.cx, mc::world::kMinY + 1, c.cz, c.state);
+            const auto mesh = mc::world::ChunkMesher::build(chunk);
+            const auto baked = mc::world::bake::bakedElementModel(c.block, c.state);
+            assert(!baked.empty());
+            assert(mesh.vertices.size() == baked.size() * 4U);
+            const glm::vec3 cell{static_cast<float>(c.cx), 1.0F, static_cast<float>(c.cz)};
+            for (const auto& quad : baked) {
+                for (std::size_t i = 0; i < 4U; ++i) {
+                    const glm::vec3 wantPosition = cell + quad.quad.position[i];
+                    const glm::vec2 wantUv = quad.quad.uv[i];
+                    bool found = false;
+                    for (const auto& vertex : mesh.vertices) {
+                        const glm::vec3 got = worldPos(vertex);
+                        if (std::abs(got.x - wantPosition.x) < 0.002F &&
+                            std::abs(got.y - wantPosition.y) < 0.002F &&
+                            std::abs(got.z - wantPosition.z) < 0.002F &&
+                            std::abs(mc::render::decodeUv(vertex).x - wantUv.x) < 0.002F &&
+                            std::abs(mc::render::decodeUv(vertex).y - wantUv.y) < 0.002F) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    assert(found);
+                }
+            }
+        }
+    }
+
+    // RN-10a/10b: the model's `ambientocclusion` bit, checked where it is
+    // actually observable — a leaf standing in a doorway, with stone on both
+    // sides and above. On a lone block every corner samples air and every AO
+    // value is 1.0, so a bench without the frame proves nothing about the bit.
+    //
+    // A door declares false (door_bottom_left.json) and must come out flat; the
+    // stair beside it declares nothing, inherits true, and must come out shaded.
+    // The control is what makes this a test of the bit rather than of the bench.
+    {
+        using mc::world::Block;
+        using mc::world::BlockState;
+        // The leaf is picked out of the mesh by its atlas layer, not by position:
+        // the frame's own quads touch the very corners the leaf stands on, so a
+        // positional filter reads stone vertices as the door's and the test says
+        // nothing. Layers are 0 headless, so two distinct ones are injected.
+        mc::world::setBlockTextureLayers(Block::OakDoor,
+                                         mc::world::BlockTextureLayers{11.0F, 22.0F, 22.0F});
+        mc::world::setBlockTextureLayers(Block::OakStairs,
+                                         mc::world::BlockTextureLayers{33.0F, 33.0F, 33.0F});
+        const auto framed = [](BlockState leaf, float leafLayer) {
+            mc::world::Chunk chunk;
+            const int y = mc::world::kMinY + 1;
+            chunk.setState(4, y, 4, leaf);
+            // A real doorway: jambs two deep on both sides, so the ring of cells
+            // an AO corner samples around the leaf's large faces is occupied. A
+            // frame only in the leaf's own z-plane leaves every one of those
+            // samples on air and shades nothing, which is the version of this
+            // bench that quietly passed for the wrong reason.
+            for (const int jambZ : {3, 4, 5}) {
+                chunk.setState(3, y, jambZ, BlockState{Block::Stone});
+                chunk.setState(5, y, jambZ, BlockState{Block::Stone});
+            }
+            chunk.setState(4, y - 1, 4, BlockState{Block::Stone});
+            const auto mesh = mc::world::ChunkMesher::build(chunk);
+            std::uint8_t darkest = 255U;
+            std::size_t seen = 0;
+            for (const auto& vertex : mesh.vertices) {
+                if (std::abs(static_cast<float>(vertex.textureLayer) - leafLayer) > 0.5F) {
+                    continue;
+                }
+                ++seen;
+                darkest = std::min(darkest, vertex.ambientOcclusion);
+            }
+            assert(seen > 0U); // the bench must actually contain the leaf
+            return darkest;
+        };
+        // Control first: the same frame does darken something that opts in.
+        assert(framed(BlockState{Block::OakStairs}, 33.0F) < 255U);
+        // The door does not.
+        assert(framed(BlockState{Block::OakDoor}, 22.0F) == 255U);
+        assert(framed(BlockState{Block::OakDoor}.withDoorUpperHalf(true), 11.0F) == 255U);
     }
 
     // --- RN-8c: shaped blocks take their UV from the bakery's rect rules --------

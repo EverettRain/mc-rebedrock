@@ -1692,6 +1692,86 @@ void appendElementModel(render::MeshData& mesh, const CellCullContext& current, 
     }
 }
 
+// RN-10b/10c: mesh a block straight from its baked model store entry, with the
+// same lighting treatment appendBox gives a shaped block's boxes.
+//
+// This is the second consumer of the RN-8c-0 store and it is deliberately not
+// appendElementModel. That one is the diodes' and the lever's path: they are
+// small self-lit props that take one flat cell light for the whole model, which
+// is a simplification predating this node and out of its scope to change. A door
+// or a fence gate is architecture — it sits in walls and doorways — so it needs
+// the per-face neighbour light and the corner AO the boxes path already gave it,
+// or migrating would trade a UV bug for a lighting regression.
+//
+// The two differences from appendBox, both of them the point of migrating:
+//
+//  * culling asks the model's own `cullface` declarations (RN-8b) rather than
+//    inferring "is this face flush with a cell wall" from the box. That is what
+//    lets a door leaf simply not have an up face — door_bottom_left.json declares
+//    five — instead of drawing one into the half above it.
+//  * AO is gated on the model's `ambientocclusion` bit (RN-10a). A door declares
+//    false, which is audit R3: the corner shading a doorway's frame casts onto
+//    the leaf is something this build drew and vanilla does not.
+template <typename Sampler>
+void appendBakedModel(render::MeshData& mesh, const World& world, const CellCullContext& current,
+                      BlockState state, int x, int y, int z, const Sampler& lighting,
+                      SmoothLightingQuality quality, const glm::vec3& sectionOrigin) {
+    const Block block = current.block;
+    const bool ambientOcclusion = blockDefinition(block).ambientOcclusion;
+    const glm::vec3 origin{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
+    for (const bake::BakedElementQuad& baked : bake::bakedElementModel(block, state)) {
+        if (baked.quad.cull != bake::kNoCull) {
+            const auto& cullFace = kFaces[static_cast<std::size_t>(
+                faceOfBakeFacing(static_cast<bake::Facing>(baked.quad.cull)))];
+            const Block neighbor =
+                lighting.blockType(x + cullFace.dx, y + cullFace.dy, z + cullFace.dz);
+            if (!shouldRenderFace(current, neighbor,
+                                  neighborSealsSharedFace(lighting, x, y, z, cullFace),
+                                  cullFace)) {
+                continue;
+            }
+        }
+        // The quad's own facing after the model rotation, which is what decides
+        // both the sprite (a door's is per HALF, and textureLayer owns that rule)
+        // and which neighbour cell the light comes from.
+        const Face worldFace = faceOfBakeFacing(baked.quad.facing);
+        const auto& faceDefinition = kFaces[static_cast<std::size_t>(worldFace)];
+        const float layer = textureLayer(world, block, worldFace, x, y, z);
+        const auto outsideLight = lighting.level(x + faceDefinition.dx, y + faceDefinition.dy,
+                                                 z + faceDefinition.dz);
+        const float flatSky = static_cast<float>(outsideLight.sky) /
+                              static_cast<float>(ChunkLightSampler::kMaximumLightLevel);
+        const float flatBlock = static_cast<float>(outsideLight.block) /
+                                static_cast<float>(ChunkLightSampler::kMaximumLightLevel);
+        const auto firstVertex = static_cast<std::uint32_t>(mesh.vertices.size());
+        std::array<float, 4> ambient{1.0F, 1.0F, 1.0F, 1.0F};
+        for (std::size_t corner = 0; corner < 4; ++corner) {
+            // The corner in cell-local 0..1, which is all cornerPositions wants
+            // (it only compares each in-plane axis against 0.5 to pick a side).
+            const glm::vec3 local = baked.quad.position[corner];
+            if (ambientOcclusion) {
+                ambient[corner] =
+                    vertexAmbientOcclusion(lighting, quality, faceDefinition, local, x, y, z);
+            }
+            const auto smoothLight =
+                vertexLight(lighting, quality, faceDefinition, local, x, y, z, outsideLight);
+            mesh.vertices.push_back(packVertex(
+                (origin + local) - sectionOrigin, baked.quad.normal, baked.quad.uv[corner], layer,
+                ambient[corner], 0.0F, smoothLight.sky, smoothLight.block, flatSky, flatBlock));
+        }
+        // The same AO-driven diagonal flip appendBox uses, so a shaded corner does
+        // not read as a crease across the quad. With AO off the four values are
+        // equal and the default winding always wins.
+        constexpr std::array<std::uint32_t, 6> kDefaultIndices{0, 1, 2, 2, 3, 0};
+        constexpr std::array<std::uint32_t, 6> kFlippedIndices{0, 1, 3, 1, 2, 3};
+        const auto& indices =
+            ambient[0] + ambient[2] > ambient[1] + ambient[3] ? kFlippedIndices : kDefaultIndices;
+        for (const auto index : indices) {
+            mesh.indices.push_back(firstVertex + index);
+        }
+    }
+}
+
 // RN-6: which blocks a redstone wire visually connects toward — another wire, a
 // redstone component, or a signal source. Approximates vanilla
 // RedStoneWireBlock.shouldConnectTo (the facing-precise diode/observer rules are
@@ -2137,8 +2217,22 @@ bool buildSectionImpl(
                                     lighting, sectionOrigin);
                     continue;
                 }
-                // Every shaped block (stairs/door/trapdoor/button/wall — the
-                // Boxes-kind models plus the PressurePlate Column) meshes from the
+                if (definition.model == BlockModel::Door ||
+                    definition.model == BlockModel::TrapDoor) {
+                    // RN-10b: the door and trapdoor leaves draw from their baked
+                    // vanilla model (explicit uv rects, the hinge mirror, the down
+                    // face's quarter turn, and five faces on a door rather than
+                    // six) instead of from their BlockShape box. The shape itself
+                    // is untouched and still owns pick, outline and collision —
+                    // the two agree box for box, which shaped_block_model_test
+                    // asserts for every variant.
+                    appendBakedModel(targetMesh, world, cull,
+                                     chunk->state(localX, worldY, localZ), worldX, worldY, worldZ,
+                                     lighting, quality, sectionOrigin);
+                    continue;
+                }
+                // Every shaped block (stairs/button/wall — the Boxes-kind models
+                // plus the PressurePlate Column) meshes from the
                 // one `BlockShape` source the pick ray and collision read, instead
                 // of the full-cube fallthrough below. A Column shape (pressure
                 // plate) reuses the slab's box path via its [bottom, top] Y span; a
