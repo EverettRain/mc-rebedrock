@@ -2,6 +2,7 @@
 
 #include "gameplay/ItemBehavior.hpp"
 #include "gameplay/ItemRegistry.hpp"
+#include "gameplay/RedstoneSignal.hpp" // AR-B4-4: getBestNeighborSignal at placement
 #include "gameplay/WorldSimulation.hpp"
 #include "world/World.hpp"
 
@@ -27,6 +28,53 @@ namespace {
 
 // BlockItem#useOn → place: resolves the state to place, or Nothing when nothing
 // can survive there.
+// AR-B4-4 / part C: the redstone half of getStateForPlacement, which every
+// openable block does in vanilla and none of them did here.
+//
+//   TrapDoorBlock:161-166   if (hasNeighborSignal(pos)) OPEN = POWERED = true
+//   FenceGateBlock:134,139  isOpen = hasNeighborSignal(pos); OPEN = POWERED = isOpen
+//   DoorBlock:149-155       powered = hasNeighborSignal(pos) || hasNeighborSignal(pos.above())
+//                           OPEN = POWERED = powered
+//
+// Without it a door or gate placed inside an already-powered region lands shut,
+// and — because nothing around it is going to change — *stays* shut until the
+// signal itself moves. That is not a missing polish detail: POWERED is the sink's
+// edge memory, so a block placed powered-but-recorded-unpowered also mis-reads
+// the next edge. AR-B4-2 gave these blocks the axis; this is what keeps its
+// initial value honest.
+//
+// It lives here rather than in world::placementBlock because "is this cell
+// powered" is a redstone question and that file is the world layer. The door
+// does not come through here at all (it places two cells through
+// doorPlaceResult); it applies the same rule itself, over both halves.
+[[nodiscard]] world::BlockState applyPlacementRedstoneState(
+    const world::World& world, const world::PlacementContext& context,
+    world::BlockState placed) {
+    const auto& definition = world::blockDefinition(placed.block());
+    const world::BlockPos pos{context.placePosition.x, context.placePosition.y,
+                              context.placePosition.z};
+    // AR-B4-4 part B: RepeaterBlock#getStateForPlacement:59-62 — a repeater
+    // dropped beside an already-powered side diode is locked the instant it
+    // lands, not on some later notification that may never come. Keyed on the
+    // declared LOCKED property rather than the model, for the same reason the
+    // updateShape slot is: BlockModel::ElementModel is shared with the
+    // comparator, the lever and the anvil.
+    if (definition.states.has(world::StateProperty::Locked)) {
+        placed = placed.withRepeaterLocked(redstone::repeaterIsLocked(world, pos, placed));
+    }
+    const auto model = definition.model;
+    if (model != world::BlockModel::TrapDoor && model != world::BlockModel::FenceGate) {
+        return placed;
+    }
+    if (redstone::getBestNeighborSignal(world, pos) <= 0) {
+        // Deliberately a no-op rather than an explicit `false`: vanilla's
+        // trapdoor branch only writes on signal, and OPEN/POWERED already
+        // default to false, so this keeps the two shapes identical.
+        return placed;
+    }
+    return placed.withOpen(true).withPowered(true);
+}
+
 [[nodiscard]] ItemUseResult placeBlockResult(
     const Item* item,
     world::Block block,
@@ -117,7 +165,18 @@ namespace {
     }
     const auto facing = world::horizontalFacing(context.lookDirection);
     const auto hinge = doorHingeFor(world, context);
-    const auto lower = world::BlockState{block, facing}.withHinge(hinge).withDoorUpperHalf(false);
+    // AR-B4-4 / part C: DoorBlock#getStateForPlacement reads the signal over
+    // *both* halves — the same union rule the sink uses — and opens on the spot,
+    // so a door built into a powered doorway is already open. The caller writes
+    // the upper half from this state, so setting it here covers both cells.
+    const bool powered =
+        redstone::getBestNeighborSignal(world, {pos.x, pos.y, pos.z}) > 0 ||
+        redstone::getBestNeighborSignal(world, {above.x, above.y, above.z}) > 0;
+    const auto lower = world::BlockState{block, facing}
+                           .withHinge(hinge)
+                           .withDoorUpperHalf(false)
+                           .withOpen(powered)
+                           .withPowered(powered);
     return {ItemUseAction::PlaceDoor, lower};
 }
 
@@ -334,7 +393,11 @@ std::optional<world::BlockState> itemPlacementBlock(
         return world::standingAndWallPlacement(world, context, standingAndWall->block(),
                                                standingAndWall->wallBlock());
     }
-    return world::placementBlock(world, blockItem->block(), context);
+    const auto placed = world::placementBlock(world, blockItem->block(), context);
+    if (!placed.has_value()) {
+        return placed;
+    }
+    return applyPlacementRedstoneState(world, context, *placed);
 }
 
 const std::vector<ItemBehavior>& itemBehaviorTable() {

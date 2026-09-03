@@ -137,12 +137,18 @@ void testPrefilterParity() {
         // AR-B2: a stair recomputes its join shape and a door's upper half
         // tracks its lower half, both model-driven alongside the existing
         // support-based reaction. AR-B3: a wall recomputes its four
-        // connection bits the same model-driven way.
+        // connection bits the same model-driven way. AR-B4-4: a fence gate
+        // recomputes IN_WALL (model-driven like the rest) and a repeater
+        // recomputes LOCKED — that one keyed on the *declared property*, since
+        // BlockModel::ElementModel is shared with the comparator, the lever,
+        // the anvil and the enchanting table and would drag all of them in.
         assert(runtime.has(BlockBehaviorBit::HasNeighborReaction) ==
                (definition.support != mc::world::BlockSupport::None ||
                 definition.model == mc::world::BlockModel::Stairs ||
                 definition.model == mc::world::BlockModel::Door ||
-                definition.model == mc::world::BlockModel::Wall));
+                definition.model == mc::world::BlockModel::Wall ||
+                definition.model == mc::world::BlockModel::FenceGate ||
+                definition.states.has(mc::world::StateProperty::Locked)));
         assert(runtime.has(BlockBehaviorBit::HasRandomTick) ==
                WorldSimulation::isRandomlyTicking(block));
         assert(runtime.has(BlockBehaviorBit::HasDrops) == blockYieldsLoot(block));
@@ -304,14 +310,19 @@ void testDispatchMechanism() {
     }
 
     // The slots later tasks own are null for every block, except AR-B2's
-    // stair/door and AR-B3's wall updateShape (wired by model, see
-    // testPrefilterParity above).
+    // stair/door, AR-B3's wall and AR-B4-4's fence-gate/repeater updateShape
+    // (see testPrefilterParity above for why the repeater is keyed on its
+    // declared LOCKED property rather than on its shared model).
     for (std::size_t i = 0; i < mc::world::kBuiltinBlockCount; ++i) {
-        const auto& behavior = behaviorFor(mc::world::blockId(static_cast<Block>(i)));
+        const auto block = static_cast<Block>(i);
+        const auto& behavior = behaviorFor(mc::world::blockId(block));
         assert(behavior.useItemOn == nullptr);
-        const auto model = mc::world::blockDefinition(static_cast<Block>(i)).model;
+        const auto& definition = mc::world::blockDefinition(block);
+        const auto model = definition.model;
         if (model == mc::world::BlockModel::Stairs || model == mc::world::BlockModel::Door ||
-            model == mc::world::BlockModel::Wall) {
+            model == mc::world::BlockModel::Wall ||
+            model == mc::world::BlockModel::FenceGate ||
+            definition.states.has(mc::world::StateProperty::Locked)) {
             assert(behavior.updateShape != nullptr);
         } else {
             assert(behavior.updateShape == nullptr);
@@ -319,6 +330,14 @@ void testDispatchMechanism() {
         assert(behavior.onPlace == nullptr);
         assert(behavior.onRemove == nullptr);
     }
+    // The declaration-driven wiring really is narrower than the model would be:
+    // the repeater gets the slot, and the comparator/lever/anvil that share its
+    // BlockModel::ElementModel do not.
+    assert(behaviorFor(mc::world::blockId(Block::Repeater)).updateShape != nullptr);
+    assert(behaviorFor(mc::world::blockId(Block::Comparator)).updateShape == nullptr);
+    assert(behaviorFor(mc::world::blockId(Block::Lever)).updateShape == nullptr);
+    assert(mc::world::blockDefinition(Block::Repeater).model ==
+           mc::world::blockDefinition(Block::Comparator).model);
 }
 
 // Dispatching a block's shape through the getShape slot yields exactly what

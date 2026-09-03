@@ -4,6 +4,7 @@
 // timeline is tick-owned, so there is no frame path left to drift).
 
 #include "gameplay/GameSession.hpp"
+#include "gameplay/GameplayMutationSink.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/BuiltinSpecies.hpp"
 #include "world/Block.hpp"
@@ -863,6 +864,131 @@ int main() {
         static_cast<void>(session.drainEvents());
         assert(world.block(5, 1, 5) == world::Block::Air);
         assert(world.block(5, 2, 5) == world::Block::Air);
+    }
+
+    // --- AR-B4-4 part C: getStateForPlacement's redstone half. Every openable
+    // block does this in vanilla and none of them did it here, so a door, gate
+    // or trapdoor built inside an already-powered doorway landed shut — and,
+    // since nothing around it was going to change, stayed shut until the signal
+    // itself moved. POWERED is also the sink's edge memory, so the block was
+    // left mis-remembering the signal it was standing in. ---
+    {
+        // A redstone block is a constant source: placing next to it is exactly
+        // the "already powered when it lands" case.
+        const auto placeNextToPower = [](world::Block placed, glm::ivec3 at) {
+            TestHost host;
+            gameplay::GameSession session;
+            world::World world;
+            buildFloor(world);
+            world.setState(at.x - 1, at.y, at.z, world::BlockState{world::Block::RedstoneBlock});
+            session.inventory().mutableSlot(0) = {placed, 1U, nullptr};
+            session.inventory().selectHotbar(0);
+            gameplay::UseItemOn place;
+            place.block = glm::ivec3{at.x, at.y - 1, at.z};
+            place.adjacent = at;
+            place.face = world::BlockOrientation::Up;
+            place.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+            session.enqueueCommand(std::move(place));
+            session.tick(world, host);
+            static_cast<void>(session.drainEvents());
+            return world.state(at.x, at.y, at.z);
+        };
+
+        // Trapdoor (TrapDoorBlock.java:164-166).
+        const auto trapdoor = placeNextToPower(world::Block::OakTrapdoor, {5, 1, 5});
+        assert(trapdoor.block() == world::Block::OakTrapdoor);
+        assert(trapdoor.open());
+        // ...and POWERED with it, not just OPEN. Setting only OPEN would look
+        // right on screen and still be wrong: the sink compares the next signal
+        // against POWERED, so an unpowered-but-open block reads the *next* rise
+        // as a fresh edge and slams shut.
+        assert(trapdoor.powered());
+
+        // POWERED is not decoration, and the assertion above is not just about a
+        // second flag being set. It is the sink's edge memory: cut the signal and
+        // the trapdoor must see a *falling* edge and shut. A block placed open
+        // but recorded unpowered reads signal=false against POWERED=false, finds
+        // no edge at all, and hangs open under no power for the rest of the
+        // world's life. That is the failure a state-only assertion would let
+        // through, so it is worth reaching through the real mutation path.
+        {
+            TestHost host;
+            gameplay::GameSession session;
+            world::World world;
+            buildFloor(world);
+            world.setState(4, 1, 5, world::BlockState{world::Block::RedstoneBlock});
+            session.inventory().mutableSlot(0) = {world::Block::OakTrapdoor, 1U, nullptr};
+            session.inventory().selectHotbar(0);
+            gameplay::UseItemOn place;
+            place.block = glm::ivec3{5, 0, 5};
+            place.adjacent = glm::ivec3{5, 1, 5};
+            place.face = world::BlockOrientation::Up;
+            place.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+            session.enqueueCommand(std::move(place));
+            session.tick(world, host);
+            static_cast<void>(session.drainEvents());
+            assert(world.state(5, 1, 5).open());
+
+            // Cut the power the ordinary way, so the trapdoor is notified.
+            gameplay::GameplayMutationSink sink{world, session};
+            static_cast<void>(session.worldMutations().setBlock(
+                world, {4, 1, 5}, world::BlockState{world::Block::Air},
+                world::MutationFlags::All, world::MutationCause::Command, sink));
+            static_cast<void>(session.drainEvents());
+            assert(!world.state(5, 1, 5).open());    // saw the falling edge
+            assert(!world.state(5, 1, 5).powered());
+        }
+
+        // Fence gate (FenceGateBlock.java:134,139).
+        const auto gate = placeNextToPower(world::Block::OakFenceGate, {5, 1, 5});
+        assert(gate.block() == world::Block::OakFenceGate);
+        assert(gate.open() && gate.powered());
+
+        // Door (DoorBlock.java:149-155) — both halves, and the signal is read
+        // over both cells, so power reaching only the *upper* half opens it too.
+        {
+            TestHost host;
+            gameplay::GameSession session;
+            world::World world;
+            buildFloor(world);
+            world.setState(4, 2, 5, world::BlockState{world::Block::RedstoneBlock});
+            session.inventory().mutableSlot(0) = {world::Block::OakDoor, 1U, nullptr};
+            session.inventory().selectHotbar(0);
+            gameplay::UseItemOn place;
+            place.block = glm::ivec3{5, 0, 5};
+            place.adjacent = glm::ivec3{5, 1, 5};
+            place.face = world::BlockOrientation::Up;
+            place.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+            session.enqueueCommand(std::move(place));
+            session.tick(world, host);
+            static_cast<void>(session.drainEvents());
+            const auto lower = world.state(5, 1, 5);
+            const auto upper = world.state(5, 2, 5);
+            assert(lower.block() == world::Block::OakDoor);
+            assert(upper.block() == world::Block::OakDoor);
+            assert(lower.open() && lower.powered());
+            assert(upper.open() && upper.powered()); // both halves, never one
+        }
+
+        // The unpowered control: the same placements land shut, so the
+        // assertions above are about the signal and not about a default flip.
+        TestHost host;
+        gameplay::GameSession session;
+        world::World world;
+        buildFloor(world);
+        session.inventory().mutableSlot(0) = {world::Block::OakTrapdoor, 1U, nullptr};
+        session.inventory().selectHotbar(0);
+        gameplay::UseItemOn quiet;
+        quiet.block = glm::ivec3{9, 0, 9};
+        quiet.adjacent = glm::ivec3{9, 1, 9};
+        quiet.face = world::BlockOrientation::Up;
+        quiet.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
+        session.enqueueCommand(std::move(quiet));
+        session.tick(world, host);
+        static_cast<void>(session.drainEvents());
+        assert(world.block(9, 1, 9) == world::Block::OakTrapdoor);
+        assert(!world.state(9, 1, 9).open());
+        assert(!world.state(9, 1, 9).powered());
     }
 
     // --- AR-B2 fence gate: placement (single cell, Facing only), right-click

@@ -272,6 +272,10 @@ class RedstoneCircuit final {
         return false;
     }
     void clearTickedCells() { tickedCells_.clear(); }
+    [[nodiscard]] const mc::world::World& worldRef() const { return world_; }
+    [[nodiscard]] mc::world::BlockPos absoluteOf(mc::world::BlockPos rel) const {
+        return absolute(rel);
+    }
     // The simulation's pending synchronous-write list. It has to be empty
     // between operations: every path that lets a sink append is responsible for
     // draining it, and a path that forgets turns a per-tick append into an

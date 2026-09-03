@@ -1,5 +1,7 @@
 #include "gameplay/WorldSimulation.hpp"
 
+#include "gameplay/BlockBehavior.hpp" // AR-B4-4: dispatchUpdateShape for the shape pass
+
 #include "gameplay/RedstoneDiode.hpp"
 #include "gameplay/RedstoneObserver.hpp"
 #include "gameplay/RedstoneSignal.hpp"
@@ -120,6 +122,37 @@ class RedstoneReactionSink final : public world::MutationSink {
 
     void onNeighborChanged(world::BlockPos neighbor, world::BlockPos /*source*/) override {
         simulation_.notifyRedstoneComponent(world_, {neighbor.x, neighbor.y, neighbor.z});
+    }
+
+    // AR-B4-4: the shape pass. WorldMutationService raises this for every real
+    // change that did not promise KnownShape, which is vanilla's rule too —
+    // markAndNotifyBlock runs updateNeighbourShapes unless UPDATE_KNOWN_SHAPE
+    // (16) is set, so a diode's `setBlock(pos, state, 2)` still reshapes its
+    // neighbours. This sink dropped it, which meant a redstone write never
+    // reached any updateShape derivation: a repeater beside a diode that had
+    // just powered up kept a stale LOCKED, because the only thing that could
+    // have recomputed it never ran.
+    void onNeighborShapeUpdate(world::BlockPos neighbor, world::BlockPos source) override {
+        const world::BlockState state = world_.state(neighbor.x, neighbor.y, neighbor.z);
+        const NeighborUpdateContext context{
+            world_,
+            neighbor,
+            state,
+            {source.x - neighbor.x, source.y - neighbor.y, source.z - neighbor.z},
+            world_.state(source.x, source.y, source.z),
+        };
+        const std::optional<world::BlockState> updated =
+            dispatchUpdateShape(world::blockId(state.block()), context);
+        if (!updated.has_value()) {
+            return;
+        }
+        // A pure property rewrite of the same block, written straight rather
+        // than through the mutation service (which would re-enter this pass).
+        // It is recorded as a synchronous write so the caller publishes it, the
+        // same route the sink's own setBlock changes take.
+        if (world_.setState(neighbor.x, neighbor.y, neighbor.z, *updated)) {
+            simulation_.recordSynchronousWrite(neighbor);
+        }
     }
 
     // AR-B4-3: every cell this sink's writes actually changed. The mutation

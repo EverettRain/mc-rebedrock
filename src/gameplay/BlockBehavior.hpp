@@ -25,6 +25,7 @@
 #include "gameplay/Inventory.hpp"       // ItemStack
 #include "gameplay/MiningSystem.hpp"    // MinedDrops, minedDrops
 #include "gameplay/RedstoneEmission.hpp" // redstone::PowerFn, weakPowerFn, isSignalSource
+#include "gameplay/RedstoneSignal.hpp"  // AR-B4-4: redstone::repeaterIsLocked
 #include "gameplay/WorldSimulation.hpp" // WorldSimulation::isRandomlyTicking
 #include "world/Block.hpp"
 #include "world/BlockPlacement.hpp" // PlacementContext, placementBlock (World fwd)
@@ -122,11 +123,21 @@ struct BlockBehaviorPrefilter final {
     // AR-B3: a wall recomputes its four connection bits from a changed
     // horizontal neighbour (WallBlock#updateShape), the identical
     // model-driven updateShape reaction stairs/doors already declare here.
+    // AR-B4-4: a fence gate re-derives IN_WALL from the two neighbours across
+    // its axis (FenceGateBlock#updateShape), and a repeater re-derives LOCKED
+    // from the diodes at its sides (RepeaterBlock#updateShape). The gate is
+    // model-driven like the three above; the repeater is *declaration*-driven —
+    // it shares BlockModel::ElementModel with the comparator, the lever, the
+    // anvil and the enchanting table, so keying on the model would drag all of
+    // them onto this path. "Does this block declare LOCKED" is the honest
+    // question, and it wires the next diode automatically.
     prefilter.set(BlockBehaviorBit::HasNeighborReaction,
                   definition.support != world::BlockSupport::None ||
                       definition.model == world::BlockModel::Stairs ||
                       definition.model == world::BlockModel::Door ||
-                      definition.model == world::BlockModel::Wall);
+                      definition.model == world::BlockModel::Wall ||
+                      definition.model == world::BlockModel::FenceGate ||
+                      definition.states.has(world::StateProperty::Locked));
     prefilter.set(BlockBehaviorBit::HasRandomTick, WorldSimulation::isRandomlyTicking(block));
     prefilter.set(BlockBehaviorBit::HasDrops, blockYieldsLoot(block));
     prefilter.set(BlockBehaviorBit::IsSignalSource, redstone::isSignalSource(block));
@@ -248,6 +259,31 @@ doorUpdateShapeSlot(const NeighborUpdateContext& context) {
 wallUpdateShapeSlot(const NeighborUpdateContext& context) {
     return world::wallUpdateShape(context.world, context.pos, context.state, context.fromOffset);
 }
+// AR-B4-4's slots. The gate's derivation is world-layer (it only asks whether a
+// neighbour is a wall); the repeater's is not, because "locked" is a redstone
+// question, so it lives here and calls the one existing predicate rather than
+// restating it.
+[[nodiscard]] inline std::optional<world::BlockState>
+fenceGateUpdateShapeSlot(const NeighborUpdateContext& context) {
+    return world::fenceGateUpdateShape(context.world, context.pos, context.state,
+                                       context.fromOffset);
+}
+[[nodiscard]] inline std::optional<world::BlockState>
+repeaterLockedUpdateShapeSlot(const NeighborUpdateContext& context) {
+    // RepeaterBlock#updateShape: recompute LOCKED unless the neighbour that
+    // changed lies on the repeater's own FACING axis. FACING is horizontal, so
+    // the vertical neighbours (axis Y) are *not* excluded — a diode placed above
+    // or below still triggers the recompute, and reading this as "only the two
+    // horizontal sides" is the easy way to get it wrong.
+    const world::BlockOrientation from = world::orientationFromOffset(
+        glm::ivec3{context.fromOffset.x, context.fromOffset.y, context.fromOffset.z});
+    if (world::sameHorizontalAxis(from, context.state.orientation()) &&
+        world::isHorizontal(from)) {
+        return context.state;
+    }
+    return context.state.withRepeaterLocked(
+        redstone::repeaterIsLocked(context.world, context.pos, context.state));
+}
 
 // Builds the runtime table. Sized to the *registry* (blockCount()), not to the
 // built-in constant, so it grows with external blocks (R0-5) instead of topping
@@ -284,6 +320,11 @@ wallUpdateShapeSlot(const NeighborUpdateContext& context) {
                 entry.updateShape = &doorUpdateShapeSlot;
             } else if (model == world::BlockModel::Wall) {
                 entry.updateShape = &wallUpdateShapeSlot;
+            } else if (model == world::BlockModel::FenceGate) {
+                entry.updateShape = &fenceGateUpdateShapeSlot;
+            } else if (world::blockDefinition(static_cast<world::Block>(i))
+                           .states.has(world::StateProperty::Locked)) {
+                entry.updateShape = &repeaterLockedUpdateShapeSlot;
             }
         }
         if (entry.prefilter.has(BlockBehaviorBit::IsSignalSource)) {

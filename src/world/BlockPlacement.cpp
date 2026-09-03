@@ -332,6 +332,22 @@ std::optional<BlockState> placementBlock(
             .withTrapdoorHalf(half)
             .withSubmergedFluid(submerged);
     }
+    if (blockDefinition(selected).model == BlockModel::FenceGate) {
+        // AR-B4-4 / FenceGateBlock#getStateForPlacement: IN_WALL is known the
+        // instant the gate lands, like a stair's SHAPE and a wall's connection
+        // mask — not left for the first neighbour notification, which may never
+        // come if the walls were already there.
+        //
+        // OPEN/POWERED are the other half of vanilla's getStateForPlacement and
+        // are *not* set here: "is this cell powered" is a redstone question and
+        // this file is the world layer. The gameplay placement seam
+        // (ItemPlacement) applies it, for the gate and the trapdoor alike.
+        const BlockPos placePos{context.placePosition.x, context.placePosition.y,
+                                context.placePosition.z};
+        const BlockState oriented{selected, placementOrientation(selected, context)};
+        return oriented.withInWall(fenceGateInWallFor(world, placePos, oriented))
+            .withSubmergedFluid(submerged);
+    }
     if (blockDefinition(selected).model == BlockModel::Wall) {
         // WallBlock#getStateForPlacement: the connection mask is known the
         // instant the wall lands, not left for the first neighbour

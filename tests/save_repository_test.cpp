@@ -8,6 +8,9 @@
 #include "gameplay/DyeColor.hpp"
 #include "gameplay/Enchantment.hpp"
 #include "world/BlockState.hpp"
+#include "world/Chunk.hpp"
+#include "world/WallShapeDerivation.hpp"
+#include "world/World.hpp"
 #include "world/DayNightCycle.hpp"
 #include "world/WorldClock.hpp"
 
@@ -363,7 +366,11 @@ int main() {
              .withPowered(true)
              .withInWall(true)},
         // A repeater with LOCKED set, saved alongside a non-default DELAY so
-        // the new axis is shown not to disturb the digit beside it.
+        // the new axis is shown not to disturb the digit beside it. Since
+        // AR-B4-4 these two axes carry values the game really derives rather
+        // than values only a test ever writes, so the pair below is re-derived
+        // from a world instead of being asserted by hand (see the derived-value
+        // round trip after this save).
         {22, 62, -8,
          world::BlockState{world::Block::Repeater, world::BlockOrientation::South}
              .withRepeaterDelay(4)
@@ -590,6 +597,40 @@ int main() {
     assert(loaded.edits[20].state.repeaterDelay() == 1);
     assert(!loaded.edits[20].state.repeaterLocked());
     assert(!loaded.edits[20].state.powered());
+
+    // AR-B4-4: the same two axes, but carrying values the game *derived* rather
+    // than values this test typed in. B4-2 could only round-trip hand-written
+    // ones because nothing wrote them yet; now a gate beside a wall and a
+    // repeater beside a powered diode produce their own, and those are what a
+    // real world will actually contain.
+    {
+        world::World derivedWorld;
+        world::Chunk chunk;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                chunk.setBlock(x, 0, z, world::Block::Stone);
+            }
+        }
+        derivedWorld.setChunk({0, 0}, std::move(chunk));
+        derivedWorld.setState(7, 1, 8, world::BlockState{world::Block::CobblestoneWall});
+        const world::BlockState northGate{world::Block::OakFenceGate,
+                                          world::BlockOrientation::North};
+        const world::BlockState derivedGate =
+            northGate.withInWall(world::fenceGateInWallFor(derivedWorld, {8, 1, 8}, northGate));
+        assert(derivedGate.inWall()); // the derivation, not a literal
+
+        persistence::SaveGame derived;
+        derived.summary.identifier = "derived";
+        derived.summary.displayName = "Derived";
+        derived.edits = {{8, 1, 8, derivedGate}};
+        repository.save(derived);
+        const auto reloaded = repository.load("derived");
+        assert(reloaded.edits.size() == 1U);
+        assert(reloaded.edits[0].state.block() == world::Block::OakFenceGate);
+        assert(reloaded.edits[0].state.inWall());
+        assert(reloaded.edits[0].state.orientation() == world::BlockOrientation::North);
+        assert(reloaded.versionHeader.worldVersion == 21U); // still no format bump
+    }
 
     // AR-B4-2 acceptance: three new properties, and the world format number did
     // not move. It cannot: the palette writes property *names*, so a reader

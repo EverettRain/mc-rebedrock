@@ -80,6 +80,43 @@ inline constexpr std::array<BlockOrientation, 4> kWallHorizontals{
     return result;
 }
 
+// AR-B4-4: FenceGateBlock's IN_WALL, the property that drops the gate from 16px
+// to 13px so its top lines up with a wall's. `isWall` is vanilla's
+// `state.is(BlockTags.WALLS)` — only a wall, never a fence, which is what keeps
+// this independent of the fence family this build does not have yet.
+//
+// The axis: FenceGateBlock#updateShape only reacts when the changed neighbour's
+// axis equals `FACING.getClockWise().getAxis()`, i.e. the axis running *across*
+// the gate — a north/south gate is walled by neighbours to its west and east.
+// Both sides are re-read from the world rather than taking the changed one and
+// looking up only its opposite, the same convergent shape wallConnectionsFor
+// uses: whichever side triggered the notification, the answer is the same, so
+// repeated notification is a fixed point.
+[[nodiscard]] inline bool fenceGateInWallFor(const World& world, BlockPos pos, BlockState state) {
+    const auto across = clockwiseOrientation(state.orientation());
+    const auto offset = orientationOffset(across);
+    const auto isWallAt = [&](int dx, int dy, int dz) {
+        return blockDefinition(world.block(pos.x + dx, pos.y + dy, pos.z + dz)).model ==
+               BlockModel::Wall;
+    };
+    return isWallAt(offset.x, offset.y, offset.z) ||
+           isWallAt(-offset.x, -offset.y, -offset.z);
+}
+
+// The updateShape slot for BlockModel::FenceGate. A neighbour on any other axis
+// (including vertical) leaves the state alone, which is vanilla's `!= axis ->
+// super` branch and also the fixed point this contract needs.
+[[nodiscard]] inline BlockState fenceGateUpdateShape(const World& world, BlockPos pos,
+                                                     BlockState state, BlockPos fromOffset) {
+    const glm::ivec3 offset{fromOffset.x, fromOffset.y, fromOffset.z};
+    const auto direction = orientationFromOffset(offset);
+    if (!isHorizontal(direction) ||
+        !sameHorizontalAxis(direction, clockwiseOrientation(state.orientation()))) {
+        return state;
+    }
+    return state.withInWall(fenceGateInWallFor(world, pos, state));
+}
+
 // The updateShape slot for BlockModel::Wall. Only a horizontal neighbour (or
 // the cell the wall itself sits on/against) can change its connections; a
 // vertical neighbour above is ignored here the same way a stair's shape
