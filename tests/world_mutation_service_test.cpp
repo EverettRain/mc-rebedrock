@@ -18,6 +18,7 @@ struct RecordingSink final : MutationSink {
     int shapeUpdated = 0;
     int sectionDirty = 0;
     int dropsRequested = 0;
+    int blockPlaced = 0;
     BlockState lastRemoved{};
     MutationCause lastCause = MutationCause::PlayerBreak;
     std::vector<BlockPos> shapeOrder;
@@ -34,6 +35,7 @@ struct RecordingSink final : MutationSink {
         lastRemoved = removed;
         lastCause = cause;
     }
+    void onBlockPlaced(BlockPos, BlockState, BlockState) override { ++blockPlaced; }
 };
 
 [[nodiscard]] World loadedWorld() {
@@ -218,6 +220,51 @@ int main() {
         RecordingSink elsewhere;
         service.updateNeighborsAtExcept({4, 64, 4}, {9, 9, 9}, elsewhere);
         assert(elsewhere.neighborChanged == 6);
+    }
+
+    // --- W-8: onBlockPlaced is Java's setPlacedBy, not its onPlace. It fires
+    // when the block *kind* at the cell changes and not on a state-only write.
+    //
+    // This is the only place the distinction is directly observable. In the
+    // behaviour it currently drives — a diode's self-start — widening it to
+    // every write does not change any output: the schedule is deduplicated, the
+    // `shouldTurnOn` guard rejects most of it, and a redundant diode tick writes
+    // nothing. The cost is wasted scheduled ticks rather than a wrong answer,
+    // which is exactly why it needs pinning here instead of being left to a
+    // circuit fixture that cannot tell the two apart. The next user of the slot
+    // may well not be so forgiving.
+    {
+        auto world = loadedWorld();
+        WorldMutationService service;
+        const BlockPos pos{4, 64, 4};
+
+        RecordingSink placing;
+        static_cast<void>(service.setBlock(world, pos, BlockState{Block::Furnace},
+                                           MutationFlags::All, MutationCause::PlayerPlace,
+                                           placing));
+        assert(placing.blockPlaced == 1); // air -> furnace: a real placement
+
+        RecordingSink stateOnly;
+        static_cast<void>(service.setBlock(world, pos,
+                                           BlockState{Block::Furnace}.withLit(true),
+                                           MutationFlags::All, MutationCause::ScheduledTick,
+                                           stateOnly));
+        assert(stateOnly.sectionDirty == 1);  // it really did change something...
+        assert(stateOnly.blockPlaced == 0);   // ...but nothing was placed
+
+        RecordingSink breaking;
+        static_cast<void>(service.setBlock(world, pos, BlockState{Block::Air},
+                                           MutationFlags::All, MutationCause::PlayerBreak,
+                                           breaking));
+        assert(breaking.blockPlaced == 1); // furnace -> air is a kind change too
+
+        // Worldgen opts out through SkipOnPlace: a chunk being built has nobody
+        // to run placement behaviour for.
+        RecordingSink generated;
+        static_cast<void>(service.setBlock(world, pos, BlockState{Block::Stone},
+                                           MutationFlags::Generation,
+                                           MutationCause::Generation, generated));
+        assert(generated.blockPlaced == 0);
     }
 
     return 0;

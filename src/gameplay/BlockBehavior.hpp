@@ -164,7 +164,17 @@ inline constexpr std::array<BlockBehaviorPrefilter, world::kBuiltinBlockCount>
 // pre-commits no context layout.
 struct InteractionBehaviorContext; // B1-3 (useItemOn)
 struct NeighborUpdateContext;      // W-3 (updateShape)
-struct BlockLifecycleContext;      // onPlace / onRemove owner
+// W-8: what the onPlace slot reads. `state` is the block that just arrived;
+// `previous` is what it replaced, for a future onRemove user. The simulation is
+// here because the one thing a placement behaviour does so far is schedule a
+// tick, and only the simulation owns the scheduler.
+struct BlockLifecycleContext final {
+    world::World& world;
+    world::BlockPos pos;
+    world::BlockState state;
+    world::BlockState previous;
+    WorldSimulation& simulation;
+};
 
 // Everything the getStateForPlacement slot reads (B1-2). It carries the world,
 // the block being placed and the use-on interaction, and forwards to
@@ -212,7 +222,14 @@ struct BlockBehavior final {
     // Reserved, null until their owning task fills them.
     UseItemOnFn useItemOn = nullptr;                        // B1-3
     UpdateShapeFn updateShape = nullptr;                    // W-3
-    BlockLifecycleFn onPlace = nullptr;                     // lifecycle
+    // W-8: Block#setPlacedBy — the block newly arrived here. Not Java's
+    // onPlace, which runs on every state write; see MutationSink::onBlockPlaced
+    // for why a diode's self-start must hang on the former. Wired for the
+    // diodes; null for everything else.
+    BlockLifecycleFn onPlace = nullptr;                     // W-8
+    // Still unwired: it has no user yet, and a slot dispatched to nobody is
+    // worse than an empty one. Its semantics will be Java's
+    // affectNeighborsAfterRemoval, the mirror of onPlace above.
     BlockLifecycleFn onRemove = nullptr;                    // lifecycle
     // Redstone signal emission (RedstoneEmission.hpp): weak power (getSignal) and
     // strong/direct power (getDirectSignal) a block state pushes out of a face.
@@ -263,6 +280,18 @@ wallUpdateShapeSlot(const NeighborUpdateContext& context) {
 // neighbour is a wall); the repeater's is not, because "locked" is a redstone
 // question, so it lives here and calls the one existing predicate rather than
 // restating it.
+// W-8's slot: DiodeBlock#setPlacedBy (DiodeBlock.java:159-163) —
+//
+//     if (this.shouldTurnOn(level, pos, state)) level.scheduleTick(pos, this, 1);
+//
+// A diode dropped into a line that is already live has to start itself. Nothing
+// else will: the ordinary placement fan-out tells the diode's *neighbours* that
+// something appeared, never the new cell about itself, so a repeater placed on a
+// powered wire sat dark until an unrelated edit happened to wake it.
+inline void diodePlacedSlot(const BlockLifecycleContext& context) {
+    context.simulation.scheduleDiodeSelfStart(context.world, context.pos, context.state);
+}
+
 [[nodiscard]] inline std::optional<world::BlockState>
 fenceGateUpdateShapeSlot(const NeighborUpdateContext& context) {
     return world::fenceGateUpdateShape(context.world, context.pos, context.state,
@@ -326,6 +355,12 @@ repeaterLockedUpdateShapeSlot(const NeighborUpdateContext& context) {
                            .states.has(world::StateProperty::Locked)) {
                 entry.updateShape = &repeaterLockedUpdateShapeSlot;
             }
+        }
+        // W-8: the diodes are the onPlace slot's first (and so far only) users.
+        // Keyed on redstone::isDiode rather than the model, which they share
+        // with the lever and the anvil.
+        if (redstone::isDiode(static_cast<world::Block>(i))) {
+            entry.onPlace = &diodePlacedSlot;
         }
         if (entry.prefilter.has(BlockBehaviorBit::IsSignalSource)) {
             // The block's own weak/strong emission handler (redstone::weakPowerFn),
@@ -467,6 +502,15 @@ dispatchUpdateShape(const BlockBehavior& behavior, const NeighborUpdateContext& 
 [[nodiscard]] inline std::optional<world::BlockState>
 dispatchUpdateShape(core::BlockId id, const NeighborUpdateContext& context) {
     return dispatchUpdateShape(behaviorFor(id), context);
+}
+
+// W-8: run a block's placement behaviour, if it has one. A null slot is the
+// overwhelming majority and costs one predictable branch.
+inline void dispatchOnPlace(core::BlockId id, const BlockLifecycleContext& context) {
+    const BlockBehavior& behavior = behaviorFor(id);
+    if (behavior.onPlace != nullptr) {
+        behavior.onPlace(context);
+    }
 }
 
 } // namespace mc::gameplay

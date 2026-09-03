@@ -2161,6 +2161,17 @@ if(BUILD_TESTING)
     )
     add_test(NAME diode_output_wake_fixture COMMAND mc_rebedrock_diode_output_wake_fixture_test)
 
+    add_executable(mc_rebedrock_diode_self_start_fixture_test
+        tests/redstone/diode_self_start_fixture_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_diode_self_start_fixture_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_diode_self_start_fixture_test PRIVATE
+        src
+        tests
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME diode_self_start_fixture COMMAND mc_rebedrock_diode_self_start_fixture_test)
+
     add_executable(mc_rebedrock_fence_gate_in_wall_test
         tests/fence_gate_in_wall_test.cpp
     )

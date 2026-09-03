@@ -281,6 +281,18 @@ class WorldSimulation final {
     // A button was just pressed (POWERED set by the caller): schedule its
     // release tick the fixed number of gameticks later.
     void scheduleButtonRelease(SimulationPosition position);
+
+    // W-8: DiodeBlock#setPlacedBy (DiodeBlock.java:159-163). A diode placed into
+    // a line that is already live starts itself, scheduled one gametick out —
+    // note `1`, not the diode's own delay, which is what vanilla writes here and
+    // what makes a freshly placed repeater catch up quickly.
+    //
+    // It hangs on *placement* and nothing else. Java's onPlace, which runs on
+    // every state write, would reschedule this on every POWERED flip and the
+    // diode would never settle; MutationSink::onBlockPlaced is the callback that
+    // keeps the two apart.
+    void scheduleDiodeSelfStart(const world::World& world, world::BlockPos pos,
+                                world::BlockState state);
     // Whether a block has a random tick at all — the draw loop's pre-filter, and
     // the cheapest possible statement of "does this block do anything on a
     // random tick". Public because it is a property of the block set, and a

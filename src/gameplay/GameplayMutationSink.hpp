@@ -51,6 +51,10 @@ class GameplayMutationSink final : public world::MutationSink {
     void onSectionDirty(world::BlockPos pos) override;
     void onDropsRequested(world::BlockPos pos, world::BlockState removed,
                           world::MutationCause cause) override;
+    // W-8: Block#setPlacedBy — dispatched through the behaviour table's onPlace
+    // slot, so a block's placement behaviour is a slot rather than a switch here.
+    void onBlockPlaced(world::BlockPos pos, world::BlockState previous,
+                       world::BlockState current) override;
 
   private:
     // Destroys the block entity a broken/replaced block owned, spilling its

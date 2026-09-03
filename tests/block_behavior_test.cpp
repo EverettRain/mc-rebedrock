@@ -327,9 +327,20 @@ void testDispatchMechanism() {
         } else {
             assert(behavior.updateShape == nullptr);
         }
-        assert(behavior.onPlace == nullptr);
+        // W-8: the onPlace slot is wired for the diodes (a placed diode starts
+        // itself, DiodeBlock#setPlacedBy) and null for everything else.
+        // onRemove still has no user, so it stays null everywhere — a slot
+        // dispatched to nobody would be worse than an empty one.
+        assert((behavior.onPlace != nullptr) ==
+               mc::gameplay::redstone::isDiode(static_cast<Block>(i)));
         assert(behavior.onRemove == nullptr);
     }
+    // ...and that really is both diodes and nothing else, spelled out so a third
+    // diode arriving without the slot is a failure here.
+    assert(behaviorFor(mc::world::blockId(Block::Repeater)).onPlace != nullptr);
+    assert(behaviorFor(mc::world::blockId(Block::Comparator)).onPlace != nullptr);
+    assert(behaviorFor(mc::world::blockId(Block::Lever)).onPlace == nullptr);
+    assert(behaviorFor(mc::world::blockId(Block::Stone)).onPlace == nullptr);
     // The declaration-driven wiring really is narrower than the model would be:
     // the repeater gets the slot, and the comparator/lever/anvil that share its
     // BlockModel::ElementModel do not.

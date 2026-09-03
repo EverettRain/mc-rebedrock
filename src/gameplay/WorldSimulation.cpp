@@ -134,6 +134,14 @@ class RecordingMutationSink final : public world::MutationSink {
     // writes are RandomTick and ScheduledTick. A simulated break that *should*
     // drop carries its loot in the BlockChange's `dropped` field instead.
     void onDropsRequested(world::BlockPos, world::BlockState, world::MutationCause) override {}
+    // W-8: deliberately dropped. These writes *are* block-kind changes (a
+    // sapling becoming a tree, a crop popping), so this does fire — but the
+    // simulation's own follow-up already runs through notifyPlaced and its
+    // queues, and routing it here as well would run a block's placement
+    // behaviour twice. The one placement behaviour that exists (a diode's
+    // self-start) is reached from the gameplay sink, which is where a player's
+    // placement goes.
+    void onBlockPlaced(world::BlockPos, world::BlockState, world::BlockState) override {}
 };
 
 // The sink a redstone component's own tick writes through. Unlike the recording
@@ -167,6 +175,10 @@ class RedstoneReactionSink final : public world::MutationSink {
     // stream, not through this sink. A redstone write that starts breaking
     // blocks directly must revisit this.
     void onDropsRequested(world::BlockPos, world::BlockState, world::MutationCause) override {}
+    // W-8: cannot fire — a redstone component's write never changes the block
+    // kind (same reason onBlockEntityReplaced above cannot), and a placement is
+    // by definition a kind change.
+    void onBlockPlaced(world::BlockPos, world::BlockState, world::BlockState) override {}
 
     // AR-B4-4: the shape pass. WorldMutationService raises this for every real
     // change that did not promise KnownShape, which is vanilla's rule too —
@@ -1268,6 +1280,35 @@ bool WorldSimulation::setSimulatedBlock(
                            immediateRenderUpdate});
     }
     return result.changed;
+}
+
+void WorldSimulation::scheduleDiodeSelfStart(const world::World& world, world::BlockPos pos,
+                                             world::BlockState state) {
+    const SimulationPosition at{pos.x, pos.y, pos.z};
+    // The dedup guard every component write shares: a toggle already pending
+    // must not queue a second one.
+    if (ticks_.contains(TickTask::RedstoneComponent, at)) {
+        return;
+    }
+    // `shouldTurnOn` is virtual in Java — the comparator's is its own signal
+    // evaluation, not the repeater's "is my input live". Getting this wrong
+    // would only cost a wasted tick (the scheduled tick re-decides everything
+    // anyway), but the point of the guard is not to schedule one.
+    const bool shouldTurnOn =
+        state.block() == world::Block::Comparator
+            ? redstone::comparatorEvaluate(
+                  redstone::comparatorInputSignal(
+                      world, pos, state,
+                      analogOutputAt(redstone::relative(pos, redstone::facingOf(state)))),
+                  redstone::diodeAlternateSignal(world, pos, state, /*onlyDiodes=*/false),
+                  state.comparatorSubtract())
+                  .shouldTurnOn
+            : redstone::repeaterShouldTurnOn(world, pos, state);
+    if (!shouldTurnOn) {
+        return;
+    }
+    static_cast<void>(ticks_.schedule(TickTask::RedstoneComponent, at, tickCount_ + 1U, false,
+                                      TickPriority::Normal));
 }
 
 void WorldSimulation::updateNeighborsInFront(world::World& world, world::BlockPos pos,

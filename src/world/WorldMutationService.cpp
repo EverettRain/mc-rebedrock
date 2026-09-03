@@ -49,6 +49,13 @@ BlockMutationResult WorldMutationService::setBlock(World& world, BlockPos pos, B
     // every real change regardless of the notify flags.
     sink.onSectionDirty(pos);
 
+    // W-8: setPlacedBy. Gated on the block kind changing, so a state-only write
+    // (a diode flipping POWERED, a furnace lighting) is not a placement — see
+    // MutationSink::onBlockPlaced for why that distinction is load-bearing.
+    if (!hasFlag(flags, MutationFlags::SkipOnPlace) && previous.block() != newState.block()) {
+        sink.onBlockPlaced(pos, previous, newState);
+    }
+
     // Shape pass, before the reaction pass — Java's markAndNotifyBlock order.
     // Each of the six neighbours recomputes its shape against this change (a
     // fence connection, a wire re-point), a pure property rewrite. KnownShape is

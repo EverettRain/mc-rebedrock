@@ -111,6 +111,13 @@ void GameplayMutationSink::createBlockEntity(core::BlockEntityTypeId type, world
     }
 }
 
+void GameplayMutationSink::onBlockPlaced(world::BlockPos pos, world::BlockState previous,
+                                         world::BlockState current) {
+    dispatchOnPlace(world::blockId(current.block()),
+                    BlockLifecycleContext{*world_, pos, current, previous,
+                                          session_->worldSimulation()});
+}
+
 void GameplayMutationSink::onNeighborShapeUpdate(world::BlockPos neighbor, world::BlockPos source) {
     // An observer watches for a block-state change on its FACING side; the shape
     // pass is exactly "a neighbour's state changed", so this is where it detects.
