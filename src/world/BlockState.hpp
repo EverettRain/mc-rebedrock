@@ -197,6 +197,21 @@ class BlockState final {
     [[nodiscard]] constexpr BlockState withWallConnected(BlockOrientation side, bool connected) const {
         return with(wallAxis(side), connected ? 1U : 0U);
     }
+    // AR-B4-2: FenceGateBlock.IN_WALL. False for anything that has not declared
+    // the axis, so a caller reads it without asking what block this is.
+    [[nodiscard]] constexpr bool inWall() const { return value(StateProperty::InWall) != 0U; }
+    [[nodiscard]] constexpr BlockState withInWall(bool value) const {
+        return with(StateProperty::InWall, value ? 1U : 0U);
+    }
+    // AR-B4-2: RepeaterBlock.LOCKED. Named for the block rather than spelled
+    // `locked()`, matching repeaterDelay() above — "locked" alone would read as
+    // a property of any block, and only a repeater has one.
+    [[nodiscard]] constexpr bool repeaterLocked() const {
+        return value(StateProperty::Locked) != 0U;
+    }
+    [[nodiscard]] constexpr BlockState withRepeaterLocked(bool value) const {
+        return with(StateProperty::Locked, value ? 1U : 0U);
+    }
 
     [[nodiscard]] constexpr BlockState with(BlockOrientation orientation) const {
         return with(StateProperty::Facing, static_cast<std::uint8_t>(orientation));

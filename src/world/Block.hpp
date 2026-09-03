@@ -1342,6 +1342,11 @@ class BlockProperties final {
     // real collision box, not a full cube — noCollision() would zero out
     // collisionSpan entirely (hasCollision(block) gates it before the shape is
     // even read), which is wrong for a solid leaf a creature must walk around.
+    // AR-B4-2 adds POWERED, for the same reason trapdoor() already carries it:
+    // DoorBlock#neighborChanged's edge check is `hasNeighborSignal != POWERED`,
+    // so the last signal seen has to live somewhere. It is also a real JE
+    // blockstate property (`oak_door[powered=true]`), which is what makes it an
+    // axis rather than a derivation — see the plan's §2 D1.
     [[nodiscard]] constexpr BlockProperties door() const {
         BlockProperties copy = *this;
         return copy.model(BlockModel::Door)
@@ -1349,7 +1354,8 @@ class BlockProperties final {
             .horizontalFacing()
             .state(StateProperty::Half, 2U)
             .state(StateProperty::Open, 2U)
-            .state(StateProperty::Hinge, 2U);
+            .state(StateProperty::Hinge, 2U)
+            .state(StateProperty::Powered, 2U);
     }
 
     // A FenceGateBlock (AR-B2): the FenceGate model plus Facing x Open.
@@ -1357,12 +1363,17 @@ class BlockProperties final {
     // Open, which is the correct way to represent "swung fully clear" (a
     // per-state fact collisionSpan can see), not a per-block noCollision that
     // would leave a *closed* gate equally walkable.
+    // AR-B4-2 adds POWERED (the redstone edge memory, as on the door) and
+    // IN_WALL (the 13px variant beside a wall, written by AR-B4-4's
+    // updateShape). Both are JE blockstate properties by these names.
     [[nodiscard]] constexpr BlockProperties fenceGate() const {
         BlockProperties copy = *this;
         return copy.model(BlockModel::FenceGate)
             .renderLayer(BlockRenderLayer::Cutout)
             .horizontalFacing()
-            .state(StateProperty::Open, 2U);
+            .state(StateProperty::Open, 2U)
+            .state(StateProperty::Powered, 2U)
+            .state(StateProperty::InWall, 2U);
     }
 
     // A TrapDoorBlock (AR-B3, redstone sink wired in W-signal): the TrapDoor
@@ -2097,6 +2108,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .horizontalFacing()
         .state(StateProperty::Delay, 4U)
         .state(StateProperty::Powered, 2U)
+        // AR-B4-2: LOCKED, RepeaterBlock's fourth vanilla property. The
+        // simulation still derives it from the flanking diodes
+        // (repeaterIsLocked); the axis is what lets a JE save round-trip
+        // `repeater[locked=true]` and what the mesher will read for the
+        // locked bar, since a mesher has no view of a neighbour's state.
+        .state(StateProperty::Locked, 2U)
         .creative(CreativeCategory::Redstone),
     // Comparator: horizontal FACING, a MODE (compare/subtract), a POWERED
     // boolean output and a 0-15 AnalogSignal output. Torch-model placeholder as
@@ -3247,6 +3264,37 @@ constexpr bool blockRegistryIsWellFormed() {
 }
 static_assert(blockRegistryIsWellFormed(),
               "kBlockRegistry must list every Block once, in enum order, with unique identifiers");
+
+// AR-B4-2's construction guard. `StateSchema::add` **silently drops** anything
+// past kMaximumStateProperties (StateSchema.hpp) — no error, no truncation
+// warning, just a block quietly missing an axis and every state of it collapsed
+// onto the default. A property added one builder over budget would therefore
+// look like it worked and fail only as a save that loses a value.
+//
+// Checked over every block of a model rather than on the helper itself, because
+// what has to fit is the *composed* schema: a block is free to chain more onto
+// door()/fenceGate(), and the helper cannot see that.
+constexpr bool everyBlockOfModelDeclares(BlockModel model, std::size_t propertyCount) {
+    for (const auto& definition : kBlockRegistry) {
+        if (definition.model == model && definition.states.size() != propertyCount) {
+            return false;
+        }
+    }
+    return true;
+}
+static_assert(everyBlockOfModelDeclares(BlockModel::Door, 5U),
+              "a door is facing x half x open x hinge x powered");
+static_assert(everyBlockOfModelDeclares(BlockModel::FenceGate, 4U),
+              "a fence gate is facing x open x powered x in_wall");
+static_assert(everyBlockOfModelDeclares(BlockModel::TrapDoor, 4U),
+              "a trapdoor is facing x half x open x powered");
+static_assert(blockDefinition(Block::Repeater).states.size() == 4U,
+              "a repeater is facing x delay x powered x locked");
+static_assert(blockDefinition(Block::Comparator).states.size() == 4U,
+              "a comparator is facing x mode x powered x signal");
+// The budget these live inside. Six is the cap StateSchema enforces, and the
+// widest block here now sits one under it.
+static_assert(blockDefinition(Block::OakDoor).states.size() < kMaximumStateProperties + 1U);
 
 // Resolves a registry key to its block. Accepts `rebedrock:stone`, the vanilla
 // alias `minecraft:stone`, and the bare `stone`.

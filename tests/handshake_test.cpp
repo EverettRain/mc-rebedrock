@@ -261,6 +261,55 @@ void testWireBlockRemap() {
     const auto state = gameplay::codec::readBlockState(stateBytes, stateCursor, nullptr);
     REQUIRE(state.has_value());
     REQUIRE(*state == furnace);
+
+    // AR-B4-2: the codec is schema-driven — appendBlockState walks
+    // kStatePropertyCount and emits whatever the block declares — so a new
+    // property rides the wire with no codec change at all. This is the
+    // assertion the SlabType miss earns: back then a hand-listed codec dropped
+    // a newly added axis silently, and the only thing standing between that and
+    // a repeat is a test that adds the newest properties and checks they came
+    // back. Every axis AR-B4-2 introduced is set to a non-default value here,
+    // because a default would round-trip even through a codec that dropped it.
+    for (const world::BlockState sent :
+         {world::BlockState{world::Block::OakDoor, world::BlockOrientation::North}
+              .withOpen(true)
+              .withPowered(true)
+              .withHinge(world::DoorHinge::Right)
+              .withDoorUpperHalf(true),
+          world::BlockState{world::Block::OakFenceGate, world::BlockOrientation::South}
+              .withOpen(true)
+              .withPowered(true)
+              .withInWall(true),
+          world::BlockState{world::Block::Repeater, world::BlockOrientation::East}
+              .withRepeaterDelay(3)
+              .withPowered(true)
+              .withRepeaterLocked(true)}) {
+        std::vector<std::uint8_t> wire;
+        gameplay::codec::appendBlockState(wire, sent);
+        std::size_t cursorBack = 0;
+        const auto back = gameplay::codec::readBlockState(wire, cursorBack, nullptr);
+        REQUIRE(back.has_value());
+        REQUIRE(*back == sent);
+    }
+    // Read the new axes back by name as well as by state equality, so a codec
+    // that happened to preserve the raw id while losing a property still fails.
+    {
+        const auto gate = world::BlockState{world::Block::OakFenceGate}.withInWall(true);
+        std::vector<std::uint8_t> wire;
+        gameplay::codec::appendBlockState(wire, gate);
+        std::size_t cursorBack = 0;
+        const auto back = gameplay::codec::readBlockState(wire, cursorBack, nullptr);
+        REQUIRE(back.has_value());
+        REQUIRE(back->inWall());
+        const auto repeater = world::BlockState{world::Block::Repeater}.withRepeaterLocked(true);
+        std::vector<std::uint8_t> repeaterWire;
+        gameplay::codec::appendBlockState(repeaterWire, repeater);
+        std::size_t repeaterCursor = 0;
+        const auto repeaterBack =
+            gameplay::codec::readBlockState(repeaterWire, repeaterCursor, nullptr);
+        REQUIRE(repeaterBack.has_value());
+        REQUIRE(repeaterBack->repeaterLocked());
+    }
 }
 
 }  // namespace

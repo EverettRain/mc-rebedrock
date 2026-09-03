@@ -964,6 +964,13 @@ inline constexpr std::array<bool, kBuiltinBlockCount> kTallCollisionByBlock = []
     return highest - 1.0F;
 }
 inline constexpr float kMaximumCollisionOverhang = maximumCollisionOverhang();
+// Both collision walks scan exactly one row below their cell range, so an
+// overhang taller than a whole cell would be missed silently: a 2.5-cell box
+// would still reach the query from `minY - 2`, which nothing looks at. Widening
+// the scan to `ceil(overhang)` rows is a real change to both loops — this makes
+// the day it becomes necessary a build failure rather than a bug report.
+static_assert(kMaximumCollisionOverhang <= 1.0F,
+              "the walk scans exactly one row below; a taller overhang needs ceil(overhang) rows");
 
 // The seam guard between AR-B4-0 (the capability) and AR-B4-1 (its first
 // consumer). The row scan is only worth its byte-table load while the set of

@@ -339,6 +339,38 @@ int main() {
         // reopen every side disconnected, the schema's "absent property reads
         // back as 0" contract.
         {19, 62, -8, world::BlockState{world::Block::CobblestoneWall}},
+        // AR-B4-2's three new axes. Nothing here is a new *mechanism* — that is
+        // the point: door/gate POWERED, gate IN_WALL and repeater LOCKED travel
+        // by name through the same palette entry every property above uses, and
+        // the world format number does not move (asserted below).
+        //
+        // A door saved held open by redstone: POWERED alongside OPEN, which is
+        // the state DoorBlock#neighborChanged actually leaves behind. Edit 13
+        // above stays deliberately Powered-free — that is this axis's
+        // "old edit predates the property" migration case, and it must reopen
+        // powered=false rather than picking up a neighbour's value.
+        {20, 62, -8,
+         world::BlockState{world::Block::OakDoor, world::BlockOrientation::North}
+             .withHinge(world::DoorHinge::Left)
+             .withOpen(true)
+             .withPowered(true)},
+        // A gate carrying all three of its non-facing axes at once, so none of
+        // them can be riding on another's digit. Edit 14 above is the untouched
+        // gate, the migration case for both of the gate's new axes.
+        {21, 62, -8,
+         world::BlockState{world::Block::OakFenceGate, world::BlockOrientation::East}
+             .withOpen(true)
+             .withPowered(true)
+             .withInWall(true)},
+        // A repeater with LOCKED set, saved alongside a non-default DELAY so
+        // the new axis is shown not to disturb the digit beside it.
+        {22, 62, -8,
+         world::BlockState{world::Block::Repeater, world::BlockOrientation::South}
+             .withRepeaterDelay(4)
+             .withPowered(true)
+             .withRepeaterLocked(true)},
+        // ...and one that predates LOCKED entirely.
+        {23, 62, -8, world::BlockState{world::Block::Repeater, world::BlockOrientation::West}},
     };
     gameplay::ChestBlockEntity chest;
     chest.position = {8, 65, -4};
@@ -525,6 +557,47 @@ int main() {
     assert(!loaded.edits[16].state.wallConnected(world::BlockOrientation::East));
     assert(!loaded.edits[16].state.wallConnected(world::BlockOrientation::South));
     assert(!loaded.edits[16].state.wallConnected(world::BlockOrientation::West));
+
+    // AR-B4-2: door/gate POWERED, gate IN_WALL, repeater LOCKED.
+    assert(loaded.edits[17].state.block() == world::Block::OakDoor);
+    assert(loaded.edits[17].state.orientation() == world::BlockOrientation::North);
+    assert(loaded.edits[17].state.open());
+    assert(loaded.edits[17].state.powered());
+    assert(loaded.edits[17].state.hinge() == world::DoorHinge::Left);
+    // ...and the door written *before* POWERED existed (edit 13 above, index
+    // 10) reopens unpowered rather than inheriting anything. This is the whole
+    // migration story for a name-driven palette: an axis the writer never named
+    // reads back as the schema's zero.
+    assert(!loaded.edits[10].state.powered());
+
+    assert(loaded.edits[18].state.block() == world::Block::OakFenceGate);
+    assert(loaded.edits[18].state.orientation() == world::BlockOrientation::East);
+    assert(loaded.edits[18].state.open());
+    assert(loaded.edits[18].state.powered());
+    assert(loaded.edits[18].state.inWall());
+    // The untouched gate (index 11) reopens with both new axes at zero.
+    assert(!loaded.edits[11].state.powered());
+    assert(!loaded.edits[11].state.inWall());
+
+    assert(loaded.edits[19].state.block() == world::Block::Repeater);
+    assert(loaded.edits[19].state.orientation() == world::BlockOrientation::South);
+    assert(loaded.edits[19].state.repeaterDelay() == 4);
+    assert(loaded.edits[19].state.powered());
+    assert(loaded.edits[19].state.repeaterLocked());
+    // LOCKED did not disturb DELAY's digit, and a repeater that predates the
+    // axis reopens unlocked with its own delay default.
+    assert(loaded.edits[20].state.block() == world::Block::Repeater);
+    assert(loaded.edits[20].state.repeaterDelay() == 1);
+    assert(!loaded.edits[20].state.repeaterLocked());
+    assert(!loaded.edits[20].state.powered());
+
+    // AR-B4-2 acceptance: three new properties, and the world format number did
+    // not move. It cannot: the palette writes property *names*, so a reader
+    // skips what it does not know and defaults what it was not told. If this
+    // ever fails, someone bumped the format for a reason that is not a format
+    // change.
+    assert(core::kVersion.worldVersion == 21U);
+    assert(loaded.versionHeader.worldVersion == 21U);
     // The palette names the block, not the state: `lit_furnace` is gone.
     {
         std::ifstream data{root / save.summary.identifier / "world.dat", std::ios::binary};

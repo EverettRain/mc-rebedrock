@@ -443,5 +443,67 @@ int main() {
         assert(!isUnknownStateId(0U));
     }
 
+    // --- AR-B4-2: door/gate POWERED, gate IN_WALL, repeater LOCKED. Three
+    // vanilla blockstate properties that were missing, added as real axes
+    // rather than runtime derivations because a JE save spells them out and a
+    // format bridge has to round-trip them (plan §2 D1). ---
+    {
+        // The axes exist on the blocks that declare them...
+        assert(BlockState{Block::OakDoor}.has(StateProperty::Powered));
+        assert(BlockState{Block::OakFenceGate}.has(StateProperty::Powered));
+        assert(BlockState{Block::OakFenceGate}.has(StateProperty::InWall));
+        assert(BlockState{Block::Repeater}.has(StateProperty::Locked));
+        // ...and nowhere else, so `inWall()` on a stone block is not a lie the
+        // caller has to guard against, it is the schema's zero.
+        assert(!BlockState{Block::Stone}.has(StateProperty::InWall));
+        assert(!BlockState{Block::Stone}.has(StateProperty::Locked));
+        assert(!BlockState{Block::OakDoor}.has(StateProperty::InWall));
+        assert(!BlockState{Block::Stone}.inWall());
+        assert(!BlockState{Block::Stone}.repeaterLocked());
+
+        // Every axis defaults to zero, which is what makes an old save that
+        // never named them load as an ordinary closed, unpowered, unlocked one.
+        assert(!BlockState{Block::OakDoor}.powered());
+        assert(!BlockState{Block::OakFenceGate}.powered());
+        assert(!BlockState{Block::OakFenceGate}.inWall());
+        assert(!BlockState{Block::Repeater}.repeaterLocked());
+
+        // The accessors round-trip, and each axis is independent of the ones
+        // beside it — a mixed-radix digit that shared a stride with its
+        // neighbour would show up here as one setter clobbering another.
+        const auto gate = BlockState{Block::OakFenceGate, BlockOrientation::West}
+                              .withOpen(true)
+                              .withPowered(true)
+                              .withInWall(true);
+        assert(gate.orientation() == BlockOrientation::West);
+        assert(gate.open() && gate.powered() && gate.inWall());
+        assert(!gate.withInWall(false).inWall());
+        assert(gate.withInWall(false).open() && gate.withInWall(false).powered());
+
+        const auto repeater = BlockState{Block::Repeater, BlockOrientation::South}
+                                  .withRepeaterDelay(4)
+                                  .withPowered(true)
+                                  .withRepeaterLocked(true);
+        assert(repeater.repeaterDelay() == 4);
+        assert(repeater.powered() && repeater.repeaterLocked());
+        assert(repeater.withRepeaterLocked(false).repeaterDelay() == 4);
+
+        const auto door = BlockState{Block::OakDoor, BlockOrientation::East}
+                              .withHinge(DoorHinge::Right)
+                              .withDoorUpperHalf(true)
+                              .withOpen(true)
+                              .withPowered(true);
+        assert(door.hinge() == DoorHinge::Right && door.isDoorUpperHalf());
+        assert(door.open() && door.powered());
+
+        // The cardinalities the new axes produce. These are the numbers the
+        // +312-state budget was computed from, pinned so a stray extra axis on
+        // one of these blocks is a test failure rather than a memory surprise.
+        assert(blockStateCount(blockDefinition(Block::OakDoor)) == 64U);        // 4*2*2*2*2
+        assert(blockStateCount(blockDefinition(Block::OakFenceGate)) == 32U);   // 4*2*2*2
+        assert(blockStateCount(blockDefinition(Block::Repeater)) == 64U);       // 4*4*2*2
+        assert(blockStateCount(blockDefinition(Block::OakTrapdoor)) == 32U);    // unchanged
+    }
+
     return 0;
 }

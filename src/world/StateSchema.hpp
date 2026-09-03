@@ -85,6 +85,19 @@ enum class StateProperty : std::uint8_t {
     WallEast,
     WallSouth,
     WallWest,
+    // AR-B4-2: FenceGateBlock.IN_WALL — the gate sits in a wall and drops from
+    // 16px to 13px so its top lines up with the wall's. Derived from the two
+    // neighbours perpendicular to the gate's axis (FenceGateBlock#updateShape,
+    // AR-B4-4 writes it); an axis rather than a runtime derivation because a JE
+    // save spells it out as `oak_fence_gate[in_wall=true]` and a format bridge
+    // that cannot round-trip it is not a bridge.
+    InWall,
+    // AR-B4-2: RepeaterBlock.LOCKED — a repeater held by a powered diode on
+    // either side ignores its input. `repeaterIsLocked` derives this from the
+    // neighbours today and will keep doing so for the simulation; the axis
+    // exists because the mesher cannot see neighbours (it has a Block, not a
+    // BlockState of the cells around it) and because JE saves it by name.
+    Locked,
     Count,
 };
 
@@ -141,6 +154,10 @@ inline constexpr std::size_t kStatePropertyCount = static_cast<std::size_t>(Stat
         return "wall_south";
     case StateProperty::WallWest:
         return "wall_west";
+    case StateProperty::InWall:
+        return "in_wall";
+    case StateProperty::Locked:
+        return "locked";
     case StateProperty::Count:
         break;
     }

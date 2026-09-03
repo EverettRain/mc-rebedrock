@@ -211,6 +211,26 @@ void testOverrideTableOnlyListsDeviations() {
     assert(compat::findOverride("lit") == nullptr);
     assert(compat::findOverride("age") == nullptr);
     assert(compat::findOverride("moisture") == nullptr);
+
+    // AR-B4-2's three new axes, registered on this axis as required: all three
+    // are *identity* mappings, so registration means proving they need no
+    // override rather than adding a row. Each is a plain vanilla boolean spelled
+    // by the vanilla name (`oak_door[powered=true]`, `oak_fence_gate[in_wall=true]`,
+    // `repeater[locked=true]`), which is exactly what defaultValueLookup handles.
+    // Recorded here so that adding a fourth property with a *different* shape
+    // has to come past this list and say so.
+    for (const auto* name : {"powered", "in_wall", "locked"}) {
+        assert(compat::findOverride(name) == nullptr);
+        // ...and the name really does resolve to a property this build has, so
+        // "no override" means "identity", not "silently unknown and skipped".
+        assert(world::statePropertyFromName(name) != world::StateProperty::Count);
+        // A vanilla boolean maps through the default path in both directions.
+        assert(compat::defaultValueLookup("true") == std::uint8_t{1U});
+        assert(compat::defaultValueLookup("false") == std::uint8_t{0U});
+    }
+    assert(world::statePropertyFromName("in_wall") == world::StateProperty::InWall);
+    assert(world::statePropertyFromName("locked") == world::StateProperty::Locked);
+    assert(compat::kOverrides.size() == 1); // still just waterlogged
 }
 
 // --- Layer 4: reverse-mapping placeholder (JC4 seam), existence only ------
