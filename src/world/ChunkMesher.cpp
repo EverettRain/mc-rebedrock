@@ -712,10 +712,14 @@ class BiomeTintCache final {
     return static_cast<float>(textureLayers(block).side);
 }
 
-[[nodiscard]] float textureLayer(const World& world, Block block, Face face,
-                                 int x, int y, int z) {
+// The atlas layer a block face shows, given the cell's state. Split out of the
+// world-reading form below because the callers that already hold the state were
+// paying a World::state hash lookup per *face* to get it back — RN-10c's baked
+// models ask 40 times for one fence gate, which is 40 map probes for a value the
+// mesher had in hand (the "every cell access is a map lookup" cost this codebase
+// has measured before).
+[[nodiscard]] float textureLayerOf(Block block, BlockState state, Face face) {
     auto layers = terrainTextureLayers(block);
-    const auto state = world.state(x, y, z);
     const auto orientation = state.orientation();
     if (blockDefinition(block).model == BlockModel::DirectionalCube) {
         // The active state is POWERED (observer) or LIT (furnace); a block has at
@@ -747,6 +751,11 @@ class BiomeTintCache final {
         return layers.bottom;
     }
     return layers.side;
+}
+
+[[nodiscard]] float textureLayer(const World& world, Block block, Face face,
+                                 int x, int y, int z) {
+    return textureLayerOf(block, world.state(x, y, z), face);
 }
 
 [[nodiscard]] float cornerCoordinate(
@@ -1612,6 +1621,12 @@ void appendTorchModel(
 // RN-4a-2: axis-aligned rotation of a point about an origin, in degrees. Only the
 // X/Y/Z axes the roster needs (lever handle tilt = X, blockstate facing = Y); a
 // general Rodrigues axis is deferred with the rest of RN-4a-2's scope.
+//
+// RN-10c: the fence gate used to call this once per vertex — 8 boxes x 6 faces x
+// 4 corners = 192 sin/cos pairs per gate cell, per remesh, for a yaw that only
+// ever takes four values. It is baked into the store's per-variant matrix now,
+// and the only caller left is appendFire's tilted planes, whose angles are not
+// a small fixed set.
 [[nodiscard]] glm::vec3 rotateAxis(const glm::vec3& p, const glm::vec3& origin, char axis,
                                    float degrees) {
     if (degrees == 0.0F) {
@@ -1713,8 +1728,8 @@ void appendElementModel(render::MeshData& mesh, const CellCullContext& current, 
 //    false, which is audit R3: the corner shading a doorway's frame casts onto
 //    the leaf is something this build drew and vanilla does not.
 template <typename Sampler>
-void appendBakedModel(render::MeshData& mesh, const World& world, const CellCullContext& current,
-                      BlockState state, int x, int y, int z, const Sampler& lighting,
+void appendBakedModel(render::MeshData& mesh, const CellCullContext& current, BlockState state,
+                      int x, int y, int z, const Sampler& lighting,
                       SmoothLightingQuality quality, const glm::vec3& sectionOrigin) {
     const Block block = current.block;
     const bool ambientOcclusion = blockDefinition(block).ambientOcclusion;
@@ -1736,7 +1751,7 @@ void appendBakedModel(render::MeshData& mesh, const World& world, const CellCull
         // and which neighbour cell the light comes from.
         const Face worldFace = faceOfBakeFacing(baked.quad.facing);
         const auto& faceDefinition = kFaces[static_cast<std::size_t>(worldFace)];
-        const float layer = textureLayer(world, block, worldFace, x, y, z);
+        const float layer = textureLayerOf(block, state, worldFace);
         const auto outsideLight = lighting.level(x + faceDefinition.dx, y + faceDefinition.dy,
                                                  z + faceDefinition.dz);
         const float flatSky = static_cast<float>(outsideLight.sky) /
@@ -1909,81 +1924,6 @@ void appendRedstoneWire(render::MeshData& mesh, Block block, BlockState state, i
         emitQuad({glm::vec3{1.0F - eps, 1.0F, lo}, glm::vec3{1.0F - eps, 1.0F, hi},
                   glm::vec3{1.0F - eps, 0.0F, hi}, glm::vec3{1.0F - eps, 0.0F, lo}},
                  glm::vec3{-1.0F, 0.0F, 0.0F}, lineLayer, false);
-}
-
-// RN-6: mesh a fence gate with its real two-post-and-bars geometry, transcribed
-// from vanilla template_fence_gate(_open).json, replacing the old single-box mesh
-// that drew the gate as a solid plank wall. The collision/pick box stays the
-// FenceGate BlockShape; only the visual changes. A single plank texture skins
-// every box (position-derived UV keeps the grain continuous); the whole model
-// yaws to FACING and swaps to the open element set when OPEN.
-template <typename Sampler>
-void appendFenceGate(render::MeshData& mesh, Block block, BlockState state, int x, int y, int z,
-                     const Sampler& lighting, const glm::vec3& sectionOrigin) {
-    const float layer = textureLayers(block).side;
-    const float skyLight = lighting.sky(x, y, z);
-    const float blockLight = lighting.block(x, y, z);
-    const glm::vec3 cell{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
-    // The base model's gate faces south; the blockstate yaws it (south 0, west 90,
-    // north 180, east 270).
-    float yaw = 0.0F;
-    switch (state.orientation()) {
-    case BlockOrientation::West: yaw = 90.0F; break;
-    case BlockOrientation::North: yaw = 180.0F; break;
-    case BlockOrientation::East: yaw = 270.0F; break;
-    default: yaw = 0.0F; break; // South (and any non-horizontal, unused)
-    }
-    struct Box16 final {
-        std::array<float, 3> from;
-        std::array<float, 3> to;
-    };
-    static constexpr std::array<Box16, 8> kClosed{{
-        {{0, 5, 7}, {2, 16, 9}},   {{14, 5, 7}, {16, 16, 9}}, // outer posts
-        {{6, 6, 7}, {8, 15, 9}},   {{8, 6, 7}, {10, 15, 9}},  // inner door posts
-        {{2, 6, 7}, {6, 9, 9}},    {{2, 12, 7}, {6, 15, 9}},  // left door bars
-        {{10, 6, 7}, {14, 9, 9}},  {{10, 12, 7}, {14, 15, 9}}, // right door bars
-    }};
-    static constexpr std::array<Box16, 8> kOpen{{
-        {{0, 5, 7}, {2, 16, 9}},   {{14, 5, 7}, {16, 16, 9}},  // outer posts
-        {{0, 6, 13}, {2, 15, 15}}, {{14, 6, 13}, {16, 15, 15}}, // inner door posts (swung)
-        {{0, 6, 9}, {2, 9, 13}},   {{0, 12, 9}, {2, 15, 13}},   // left door bars (swung)
-        {{14, 6, 9}, {16, 9, 13}}, {{14, 12, 9}, {16, 15, 13}}, // right door bars (swung)
-    }};
-    const auto& boxes = state.open() ? kOpen : kClosed;
-
-    const auto emitFace = [&](const glm::vec3& from16, const glm::vec3& to16, Face face) {
-        const auto& fd = kFaces[static_cast<std::size_t>(face)];
-        std::array<glm::vec3, 4> positions;
-        std::array<glm::vec2, 4> uvs;
-        // RN-8c: the same `defaultFaceUV` rule appendBox now uses — this emitter
-        // carried a second copy of the position-derived formula, which is how a
-        // gate post and a stair riser could disagree about which way their plank
-        // grain ran.
-        uvs = boxFaceUv(from16, to16, face);
-        for (std::size_t i = 0; i < 4; ++i) {
-            const glm::vec3 model = (from16 + fd.corners[i] * (to16 - from16)) * (1.0F / 16.0F);
-            positions[i] = cell + rotateAxis(model, glm::vec3{0.5F}, 'y', yaw);
-        }
-        const glm::vec3 normal = rotateAxis(fd.normal, glm::vec3{0.0F}, 'y', yaw);
-        const auto first = static_cast<std::uint32_t>(mesh.vertices.size());
-        for (std::size_t i = 0; i < 4; ++i) {
-            mesh.vertices.push_back(packVertex(positions[i] - sectionOrigin, glm::normalize(normal),
-                                               uvs[i], layer, 1.0F, 0.0F, skyLight, blockLight,
-                                               skyLight, blockLight));
-        }
-        for (const auto index : {0U, 1U, 2U, 2U, 3U, 0U}) {
-            mesh.indices.push_back(first + index);
-        }
-    };
-
-    for (const auto& box : boxes) {
-        const glm::vec3 from{box.from[0], box.from[1], box.from[2]};
-        const glm::vec3 to{box.to[0], box.to[1], box.to[2]};
-        for (const auto face : {Face::PositiveX, Face::NegativeX, Face::PositiveY, Face::NegativeY,
-                                Face::PositiveZ, Face::NegativeZ}) {
-            emitFace(from, to, face);
-        }
-    }
 }
 
 // RN-7: mesh fire — billowing full-bright planes driven by its neighbours, like
@@ -2208,27 +2148,20 @@ bool buildSectionImpl(
                                sectionOrigin, tints);
                     continue;
                 }
-                if (definition.model == BlockModel::FenceGate) {
-                    // RN-6: the fence gate draws its real posts-and-bars geometry
-                    // (a plank wall was the old single-box mesh) while keeping the
-                    // FenceGate BlockShape for collision/pick.
-                    appendFenceGate(targetMesh, current,
-                                    chunk->state(localX, worldY, localZ), worldX, worldY, worldZ,
-                                    lighting, sectionOrigin);
-                    continue;
-                }
                 if (definition.model == BlockModel::Door ||
-                    definition.model == BlockModel::TrapDoor) {
-                    // RN-10b: the door and trapdoor leaves draw from their baked
-                    // vanilla model (explicit uv rects, the hinge mirror, the down
-                    // face's quarter turn, and five faces on a door rather than
-                    // six) instead of from their BlockShape box. The shape itself
-                    // is untouched and still owns pick, outline and collision —
-                    // the two agree box for box, which shaped_block_model_test
-                    // asserts for every variant.
-                    appendBakedModel(targetMesh, world, cull,
-                                     chunk->state(localX, worldY, localZ), worldX, worldY, worldZ,
-                                     lighting, quality, sectionOrigin);
+                    definition.model == BlockModel::TrapDoor ||
+                    definition.model == BlockModel::FenceGate) {
+                    // RN-10b/10c: the door, trapdoor and fence gate draw from
+                    // their baked vanilla model (explicit uv rects, the hinge
+                    // mirror, the down face's quarter turn, five faces on a door
+                    // rather than six, and the gate's forty rather than
+                    // forty-eight) instead of from their BlockShape box or, for
+                    // the gate, a hand-written emitter. The shape itself is
+                    // untouched and still owns pick, outline and collision — for
+                    // the two leaves the two agree box for box, which
+                    // shaped_block_model_test asserts for every variant.
+                    appendBakedModel(targetMesh, cull, chunk->state(localX, worldY, localZ),
+                                     worldX, worldY, worldZ, lighting, quality, sectionOrigin);
                     continue;
                 }
                 // Every shaped block (stairs/button/wall — the Boxes-kind models

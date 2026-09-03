@@ -160,13 +160,30 @@ FaceExp F(std::uint8_t slot, float a, float b, float c, float d, std::uint8_t qu
     return {true, slot, a, b, c, d, quadrant};
 }
 
-// Diode base golden: up=#top slot1, four sides=#slab slot0, no down.
+// Diode base golden: down=#slab slot0 (RN-10d / R15 — it was omitted, so a
+// repeater on glass or a slab showed the world through its own plate),
+// up=#top slot1, four sides=#slab slot0.
 ElemExp goldenDiodeBase() {
     ElemExp e;
     e.from = {0, 0, 0};
     e.to = {16, 2, 16};
+    e.faces[0] = F(0, 0, 0, 16, 16);                          // Down
     e.faces[1] = F(1, 0, 0, 16, 16);                          // Up
     for (std::size_t s : {2, 3, 4, 5}) e.faces[s] = F(0, 0, 14, 16, 16); // N/S/W/E
+    return e;
+}
+
+// RN-10d: one halo billboard — a 3x3 box showing a single face, textured with
+// one pixel of the lit sprite. `faceIndex` is Down..East. The six boxes per lit
+// torch are written out LITERALLY at the call sites from the vanilla json, not
+// derived, because the production side derives them from a rule and an oracle
+// that shared the rule would prove nothing.
+ElemExp goldenHalo(std::size_t faceIndex, glm::vec3 from, glm::vec3 to, float u0, float v0,
+                   float u1, float v1) {
+    ElemExp e;
+    e.from = from;
+    e.to = to;
+    e.faces[faceIndex] = F(3, u0, v0, u1, v1);
     return e;
 }
 // RN-8d: a nub's side rect starts at v=6 and runs as many rows as the box is
@@ -180,6 +197,21 @@ ElemExp goldenTorch(glm::vec3 from, glm::vec3 to, std::uint8_t slot) {
     e.to = to;
     e.faces[1] = F(slot, 7, 6, 9, 8);                          // Up
     for (std::size_t s : {2, 3, 4, 5}) e.faces[s] = F(slot, 7, 6, 9, 6.0F + (to.y - from.y));
+    return e;
+}
+
+// RN-10e golden: the locked repeater's bar, transcribed from
+// repeater_*tick_locked.json. Slot 4 is `#lock` (block/bedrock). Five faces, no
+// down, and the up face carries `"rotation": 90`.
+ElemExp goldenLockBar(float z) {
+    ElemExp e;
+    e.from = {2, 2, z};
+    e.to = {14, 4, z + 2.0F};
+    e.faces[1] = F(4, 7, 2, 9, 14, 1); // Up, quadrant 1 == rotation 90
+    e.faces[2] = F(4, 2, 7, 14, 9);    // North
+    e.faces[3] = F(4, 2, 7, 14, 9);    // South
+    e.faces[4] = F(4, 6, 7, 8, 9);     // West
+    e.faces[5] = F(4, 6, 7, 8, 9);     // East
     return e;
 }
 
@@ -213,30 +245,159 @@ void compareElements(const std::vector<ModelElement>& actual,
 }
 
 void checkTranscription() {
-    // Repeater delay 1, unpowered: torch slot 2, second torch at movingZ=6.
+    // Repeater delay 1, unpowered: torch slot 2, second torch at movingZ=6, and
+    // no halo — repeater_1tick.json has three elements.
     compareElements(
         elementsFor(Block::Repeater, BlockState{Block::Repeater, BlockOrientation::South}),
         {goldenDiodeBase(), goldenTorch({7, 2, 2}, {9, 7, 4}, 2),
          goldenTorch({7, 2, 6}, {9, 7, 8}, 2)});
-    // Repeater delay 4 powered: torch slot 3, second torch at movingZ=6+3*2=12.
+    // Repeater delay 1, powered: repeater_1tick_on.json — both torches lit and
+    // SIX halo boxes each, transcribed literally from the file.
     compareElements(
         elementsFor(Block::Repeater,
-                    BlockState{Block::Repeater, BlockOrientation::South}.withRepeaterDelay(4)
-                        .withPowered(true)),
+                    BlockState{Block::Repeater, BlockOrientation::South}.withPowered(true)),
         {goldenDiodeBase(), goldenTorch({7, 2, 2}, {9, 7, 4}, 3),
-         goldenTorch({7, 2, 12}, {9, 7, 14}, 3)});
-    // Comparator, normal: front torch top=5.
-    compareElements(
-        elementsFor(Block::Comparator, BlockState{Block::Comparator, BlockOrientation::South}),
-        {goldenDiodeBase(), goldenTorch({4, 2, 11}, {6, 7, 13}, 2),
-         goldenTorch({10, 2, 11}, {12, 7, 13}, 2), goldenTorch({7, 2, 2}, {9, 5, 4}, 2)});
-    // Comparator, subtract: front torch top rises to 6.
-    compareElements(
-        elementsFor(Block::Comparator,
-                    BlockState{Block::Comparator, BlockOrientation::South}.withComparatorSubtract(
-                        true)),
-        {goldenDiodeBase(), goldenTorch({4, 2, 11}, {6, 7, 13}, 2),
-         goldenTorch({10, 2, 11}, {12, 7, 13}, 2), goldenTorch({7, 2, 2}, {9, 6, 4}, 2)});
+         goldenTorch({7, 2, 6}, {9, 7, 8}, 3),
+         // halos of the fixed torch [7,2,2]-[9,7,4]
+         goldenHalo(1, {6.5F, 1.5F, 1.5F}, {9.5F, 4.5F, 4.5F}, 8, 5, 9, 6),
+         goldenHalo(0, {6.5F, 7.5F, 1.5F}, {9.5F, 10.5F, 4.5F}, 7, 5, 8, 6),
+         goldenHalo(3, {6.5F, 4.5F, -1.5F}, {9.5F, 7.5F, 1.5F}, 9, 6, 10, 7),
+         goldenHalo(2, {6.5F, 4.5F, 4.5F}, {9.5F, 7.5F, 7.5F}, 6, 6, 7, 7),
+         goldenHalo(5, {3.5F, 4.5F, 1.5F}, {6.5F, 7.5F, 4.5F}, 9, 7, 10, 8),
+         goldenHalo(4, {9.5F, 4.5F, 1.5F}, {12.5F, 7.5F, 4.5F}, 6, 7, 7, 8),
+         // halos of the moving torch [7,2,6]-[9,7,8]
+         goldenHalo(1, {6.5F, 1.5F, 5.5F}, {9.5F, 4.5F, 8.5F}, 8, 5, 9, 6),
+         goldenHalo(0, {6.5F, 7.5F, 5.5F}, {9.5F, 10.5F, 8.5F}, 7, 5, 8, 6),
+         goldenHalo(3, {6.5F, 4.5F, 2.5F}, {9.5F, 7.5F, 5.5F}, 9, 6, 10, 7),
+         goldenHalo(2, {6.5F, 4.5F, 8.5F}, {9.5F, 7.5F, 11.5F}, 6, 6, 7, 7),
+         goldenHalo(5, {3.5F, 4.5F, 5.5F}, {6.5F, 7.5F, 8.5F}, 9, 7, 10, 8),
+         goldenHalo(4, {9.5F, 4.5F, 5.5F}, {12.5F, 7.5F, 8.5F}, 6, 7, 7, 8)});
+    // Repeater delay 4 powered: torch slot 3, second torch at movingZ=6+3*2=12.
+    // Only the element count is checked here; the halo geometry is pinned above.
+    assert(elementsFor(Block::Repeater,
+                       BlockState{Block::Repeater, BlockOrientation::South}
+                           .withRepeaterDelay(4)
+                           .withPowered(true))
+               .size() == 15U);
+
+    // RN-10e: a LOCKED repeater. repeater_2tick_locked.json has THREE elements —
+    // base, the bar at the delay torch's own z, and the fixed output torch. The
+    // moving torch is not in the model at all: locked replaces it, it does not
+    // decorate it.
+    compareElements(elementsFor(Block::Repeater,
+                                BlockState{Block::Repeater, BlockOrientation::South}
+                                    .withRepeaterDelay(2)
+                                    .withRepeaterLocked(true)),
+                    {goldenDiodeBase(), goldenLockBar(8.0F),
+                     goldenTorch({7, 2, 2}, {9, 7, 4}, 2)});
+    // repeater_4tick_locked.json: the bar tracks DELAY, at 6 + (delay-1)*2.
+    compareElements(elementsFor(Block::Repeater,
+                                BlockState{Block::Repeater, BlockOrientation::South}
+                                    .withRepeaterDelay(4)
+                                    .withRepeaterLocked(true)),
+                    {goldenDiodeBase(), goldenLockBar(12.0F),
+                     goldenTorch({7, 2, 2}, {9, 7, 4}, 2)});
+    // repeater_1tick_on_locked.json: nine elements — the fixed torch lit with its
+    // six halos, and still no moving torch (so six halos, not twelve).
+    assert(elementsFor(Block::Repeater, BlockState{Block::Repeater, BlockOrientation::South}
+                                            .withRepeaterLocked(true)
+                                            .withPowered(true))
+               .size() == 9U);
+
+    // The defence assertion RN-10e exists for: the bar's presence comes from the
+    // LOCKED state bit and from nothing else. `elementsFor` takes a BlockState
+    // and no world — it *cannot* be given one — so a future "save the state axis,
+    // just look at the neighbouring diode" would have to open a neighbour-state
+    // channel into the mesher's hot path to do it, which is what AR-B4-2c's D1
+    // decided against. Two repeaters differing only in that bit must differ here.
+    {
+        const BlockState base =
+            BlockState{Block::Repeater, BlockOrientation::East}.withRepeaterDelay(3);
+        const auto unlocked = elementsFor(Block::Repeater, base);
+        const auto locked = elementsFor(Block::Repeater, base.withRepeaterLocked(true));
+        assert(unlocked.size() == 3U && locked.size() == 3U);
+        // Same count, different content: the bar stands where the torch stood.
+        assert(unlocked[1].faces[1].slot != locked[1].faces[1].slot);
+        assert(!eqVec3(unlocked[1].from16, locked[1].from16));
+    }
+
+    // --- The comparator truth table (RN-10d / audit R11+R12), one case per
+    // vanilla model file. The rear pair follows POWERED, the front torch follows
+    // MODE, and the front torch's box never moves. ---
+    const auto comparator = [](bool subtract, bool powered) {
+        return elementsFor(Block::Comparator,
+                           BlockState{Block::Comparator, BlockOrientation::South}
+                               .withComparatorSubtract(subtract)
+                               .withPowered(powered));
+    };
+    // comparator.json: 4 elements, everything unlit (slot 2).
+    compareElements(comparator(false, false),
+                    {goldenDiodeBase(), goldenTorch({4, 2, 11}, {6, 7, 13}, 2),
+                     goldenTorch({10, 2, 11}, {12, 7, 13}, 2),
+                     goldenTorch({7, 2, 2}, {9, 5, 4}, 2)});
+    // comparator_subtract.json: 10 elements — front torch LIT, rear pair unlit,
+    // and the front torch's six halos. Same box as unlit: [7,2,2]-[9,5,4].
+    compareElements(comparator(true, false),
+                    {goldenDiodeBase(), goldenTorch({4, 2, 11}, {6, 7, 13}, 2),
+                     goldenTorch({10, 2, 11}, {12, 7, 13}, 2),
+                     goldenTorch({7, 2, 2}, {9, 5, 4}, 3),
+                     goldenHalo(1, {6.5F, -0.5F, 1.5F}, {9.5F, 2.5F, 4.5F}, 6, 5, 7, 6),
+                     goldenHalo(0, {6.5F, 5.5F, 1.5F}, {9.5F, 8.5F, 4.5F}, 6, 5, 7, 6),
+                     goldenHalo(3, {6.5F, 2.5F, -1.5F}, {9.5F, 5.5F, 1.5F}, 6, 5, 7, 6),
+                     goldenHalo(2, {6.5F, 2.5F, 4.5F}, {9.5F, 5.5F, 7.5F}, 6, 5, 7, 6),
+                     goldenHalo(5, {3.5F, 2.5F, 1.5F}, {6.5F, 5.5F, 4.5F}, 6, 5, 7, 6),
+                     goldenHalo(4, {9.5F, 2.5F, 1.5F}, {12.5F, 5.5F, 4.5F}, 6, 5, 7, 6)});
+    // comparator_on.json: 16 elements — rear pair LIT with twelve halos, front
+    // torch unlit.
+    compareElements(comparator(false, true),
+                    {goldenDiodeBase(), goldenTorch({4, 2, 11}, {6, 7, 13}, 3),
+                     goldenTorch({10, 2, 11}, {12, 7, 13}, 3),
+                     goldenTorch({7, 2, 2}, {9, 5, 4}, 2),
+                     goldenHalo(1, {3.5F, 1.5F, 10.5F}, {6.5F, 4.5F, 13.5F}, 6, 5, 7, 6),
+                     goldenHalo(0, {3.5F, 7.5F, 10.5F}, {6.5F, 10.5F, 13.5F}, 6, 5, 7, 6),
+                     goldenHalo(3, {3.5F, 4.5F, 7.5F}, {6.5F, 7.5F, 10.5F}, 6, 5, 7, 6),
+                     goldenHalo(2, {3.5F, 4.5F, 13.5F}, {6.5F, 7.5F, 16.5F}, 6, 5, 7, 6),
+                     goldenHalo(5, {0.5F, 4.5F, 10.5F}, {3.5F, 7.5F, 13.5F}, 6, 5, 7, 6),
+                     goldenHalo(4, {6.5F, 4.5F, 10.5F}, {9.5F, 7.5F, 13.5F}, 6, 5, 7, 6),
+                     goldenHalo(1, {9.5F, 1.5F, 10.5F}, {12.5F, 4.5F, 13.5F}, 6, 5, 7, 6),
+                     goldenHalo(0, {9.5F, 7.5F, 10.5F}, {12.5F, 10.5F, 13.5F}, 6, 5, 7, 6),
+                     goldenHalo(3, {9.5F, 4.5F, 7.5F}, {12.5F, 7.5F, 10.5F}, 6, 5, 7, 6),
+                     goldenHalo(2, {9.5F, 4.5F, 13.5F}, {12.5F, 7.5F, 16.5F}, 6, 5, 7, 6),
+                     goldenHalo(5, {6.5F, 4.5F, 10.5F}, {9.5F, 7.5F, 13.5F}, 6, 5, 7, 6),
+                     goldenHalo(4, {12.5F, 4.5F, 10.5F}, {15.5F, 7.5F, 13.5F}, 6, 5, 7, 6)});
+    // comparator_on_subtract.json: 22 elements — all three torches lit.
+    assert(comparator(true, true).size() == 22U);
+    // The whole point, stated as a difference rather than as a count: switching
+    // MODE alone must change the front torch's sprite. Before RN-10d it did not,
+    // and the only thing that moved was a 1px height this build invented.
+    {
+        const auto compare = comparator(false, false);
+        const auto subtract = comparator(true, false);
+        // element 3 is the front torch in both
+        assert(compare[3].faces[1].slot != subtract[3].faces[1].slot);
+        assert(eqVec3(compare[3].to16, subtract[3].to16)); // and its box does NOT move
+        assert(near(compare[3].to16.y, 5.0F));
+    }
+    // ...and switching POWERED alone must change the rear pair, not the front.
+    {
+        const auto off = comparator(true, false);
+        const auto on = comparator(true, true);
+        assert(off[1].faces[1].slot != on[1].faces[1].slot);
+        assert(off[2].faces[1].slot != on[2].faces[1].slot);
+        assert(off[3].faces[1].slot == on[3].faces[1].slot);
+    }
+    // Vanilla marks a lit torch element `"shade": false` and leaves an unlit one
+    // shaded; every halo is unshaded.
+    {
+        const auto on = comparator(true, true);
+        assert(!on[1].shade && !on[2].shade && !on[3].shade);
+        for (std::size_t i = 4; i < on.size(); ++i) {
+            assert(!on[i].shade);
+        }
+        assert(comparator(false, false)[1].shade);
+        assert(on[0].shade); // the slab base is shaded in every variant
+    }
+
     // Lever, unpowered: base #base slot0, handle #lever slot1 tilted +45 about x.
     ElemExp base;
     base.from = {5, -0.02F, 4};
@@ -348,7 +509,7 @@ void checkStore() {
         Block block;
         ElementModelKind kind;
     };
-    const std::array<Case, 7> blocks{{
+    const std::array<Case, 10> blocks{{
         {Block::Repeater, ElementModelKind::Repeater},
         {Block::Comparator, ElementModelKind::Comparator},
         {Block::Lever, ElementModelKind::Lever},
@@ -356,6 +517,10 @@ void checkStore() {
         {Block::Anvil, ElementModelKind::Anvil},
         {Block::ChippedAnvil, ElementModelKind::Anvil},
         {Block::DamagedAnvil, ElementModelKind::Anvil},
+        // RN-10a/10b/10c: the three model families the store gained.
+        {Block::OakDoor, ElementModelKind::Door},
+        {Block::OakTrapdoor, ElementModelKind::TrapDoor},
+        {Block::OakFenceGate, ElementModelKind::FenceGate},
     }};
 
     for (const Case& c : blocks) {
@@ -366,10 +531,22 @@ void checkStore() {
             for (int delay = 1; delay <= 4; ++delay) {
                 for (const bool powered : {false, true}) {
                     for (const bool subtract : {false, true}) {
+                        // The axes the newer kinds select on ride along: a
+                        // setter for a property the block does not declare is a
+                        // no-op, so one loop covers every kind's whole variant
+                        // space (LOCKED included — RN-10e added it to the
+                        // repeater's, and a variant index that disagreed with
+                        // the state decode would show up right here).
                         const BlockState state = BlockState{c.block, facing}
                                                      .withRepeaterDelay(delay)
                                                      .withPowered(powered)
-                                                     .withComparatorSubtract(subtract);
+                                                     .withComparatorSubtract(subtract)
+                                                     .withRepeaterLocked(subtract)
+                                                     .withDoorUpperHalf(powered)
+                                                     .withOpen(subtract)
+                                                     .withInWall(powered)
+                                                     .withHinge(subtract ? DoorHinge::Right
+                                                                         : DoorHinge::Left);
                         const auto stored = bakedElementModel(c.block, state);
                         const auto fresh = bakeElementModel(c.block, state);
                         assert(stored.size() == fresh.size());
@@ -424,17 +601,29 @@ int main() {
     checkStore();
     checkTranscription();
 
-    // Repeater: base(5) + two torches(5+5) = 15; torch sprite unlit=2 / lit=3.
-    checkBlock(Block::Repeater, BlockState{Block::Repeater, BlockOrientation::South}, 15);
+    // Repeater unpowered: base(6, RN-10d added the down face) + two torches(5+5)
+    // = 16; torch sprite unlit=2 / lit=3. Powered adds twelve one-face halo
+    // billboards: 16 + 12 = 28.
+    checkBlock(Block::Repeater, BlockState{Block::Repeater, BlockOrientation::South}, 16);
     checkBlock(Block::Repeater,
                BlockState{Block::Repeater, BlockOrientation::East}.withRepeaterDelay(4).withPowered(
                    true),
-               15);
-    // Comparator: base(5) + three torches = 20.
-    checkBlock(Block::Comparator, BlockState{Block::Comparator, BlockOrientation::North}, 20);
+               28);
+    // Comparator: base(6) + three torches(5 each) = 21, plus six halo quads per
+    // LIT torch — and which torches are lit is the RN-10d truth table: rear pair
+    // = POWERED, front = MODE.
+    checkBlock(Block::Comparator, BlockState{Block::Comparator, BlockOrientation::North}, 21);
     checkBlock(
         Block::Comparator,
-        BlockState{Block::Comparator, BlockOrientation::East}.withComparatorSubtract(true), 20);
+        BlockState{Block::Comparator, BlockOrientation::East}.withComparatorSubtract(true),
+        21 + 6);
+    checkBlock(Block::Comparator,
+               BlockState{Block::Comparator, BlockOrientation::East}.withPowered(true), 21 + 12);
+    checkBlock(Block::Comparator,
+               BlockState{Block::Comparator, BlockOrientation::East}
+                   .withComparatorSubtract(true)
+                   .withPowered(true),
+               21 + 18);
     // Lever: base(6) + handle(5) = 11.
     checkBlock(Block::Lever, BlockState{Block::Lever, BlockOrientation::Up}, 11);
     checkBlock(Block::Lever, BlockState{Block::Lever, BlockOrientation::West}.withPowered(true), 11);
@@ -446,7 +635,8 @@ int main() {
         const auto on = bakeElementModel(
             Block::Repeater,
             BlockState{Block::Repeater, BlockOrientation::South}.withPowered(true));
-        assert(off[5].quad.slot == 2 && on[5].quad.slot == 3); // first torch's up face (after base's 5)
+        // the first torch's up face, after the base's six.
+        assert(off[6].quad.slot == 2 && on[6].quad.slot == 3);
     }
 
     // Attachment lock #1 (identity, South): the diode base up face carries the
@@ -454,7 +644,8 @@ int main() {
     {
         const auto quads = bakeElementModel(Block::Repeater,
                                             BlockState{Block::Repeater, BlockOrientation::South});
-        const BakedQuad& baseUp = quads[0].quad; // base, Up is first present face
+        // RN-10d gave the base a down face, so Up is now the second present one.
+        const BakedQuad& baseUp = quads[1].quad;
         assert(contains(baseUp.position, glm::vec3{0.0F, 0.125F, 0.0F}));
         assert(contains(baseUp.position, glm::vec3{1.0F, 0.125F, 1.0F}));
     }
@@ -464,7 +655,7 @@ int main() {
     {
         const auto quads = bakeElementModel(Block::Repeater,
                                             BlockState{Block::Repeater, BlockOrientation::East});
-        const BakedQuad& baseUp = quads[0].quad;
+        const BakedQuad& baseUp = quads[1].quad;
         assert(contains(baseUp.position, glm::vec3{0.0F, 0.125F, 1.0F}));
     }
 

@@ -2169,7 +2169,11 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .renderLayer(BlockRenderLayer::Cutout)
         // RN-4a-2: real diode geometry (smooth-stone slab base + redstone-torch
         // nubs), transcribed from vanilla models/block/repeater_*tick*.json.
-        .elementModel("smooth_stone", "repeater", "redstone_torch_off", "redstone_torch")
+        // Slot 4 is `#lock` — RN-10e's locked bar, which vanilla skins with
+        // block/bedrock (repeater_*tick_locked.json's own texture binding, odd
+        // as it reads).
+        .elementModel("smooth_stone", "repeater", "redstone_torch_off", "redstone_torch",
+                      "bedrock")
         // RN-10a: repeater_*tick*.json declares `"ambientocclusion": false`.
         .noAmbientOcclusion()
         // AR-B4-6: collision is ON. DiodeBlock's SHAPE is `Block.column(16, 0, 2)`

@@ -93,12 +93,15 @@ inline ModelElement diodeBaseElement() {
     e.from16 = {0.0F, 0.0F, 0.0F};
     e.to16 = {16.0F, 2.0F, 16.0F};
     putFace(e, Facing::Up, 1, rect(0, 0, 16, 16));
+    // RN-10d / audit R15: the down face, `[0,0,16,16]` with `"cullface": "down"`.
+    // It used to be left out on the grounds that a diode sits on its support so
+    // the quad is never seen — but that is what the cullface declaration is for,
+    // and it is only true while the support is opaque. A repeater on a slab, a
+    // fence, a hopper or glass showed the world through its own base.
+    putFace(e, Facing::Down, 0, rect(0, 0, 16, 16), cullToward(Facing::Down));
     for (const Facing side : {Facing::North, Facing::South, Facing::West, Facing::East}) {
         // repeater_*.json / comparator.json: each side face carries
-        // `"cullface": "<that side>"`. (Their down face, which carries
-        // `"cullface": "down"`, is not transcribed here at all — the slab sits on
-        // its support, so the quad would never be visible; that omission predates
-        // RN-8b and is left as it was.)
+        // `"cullface": "<that side>"`.
         putFace(e, side, 0, rect(0, 14, 16, 16), cullToward(side));
     }
     return e;
@@ -107,11 +110,14 @@ inline ModelElement diodeBaseElement() {
 // A redstone-torch nub: up face plus four sides, no down (it stands on the slab).
 // `slot` is the lit or unlit sprite. Transcribed from emitTorch.
 inline ModelElement torchElement(const glm::vec3& from16, const glm::vec3& to16,
-                                 std::uint8_t slot, float glow) {
+                                 std::uint8_t slot, float glow, bool shade = true) {
     ModelElement e;
     e.from16 = from16;
     e.to16 = to16;
     e.glow = glow;
+    // RN-10d: vanilla marks a *lit* torch element `"shade": false` (see any
+    // repeater_*_on.json), and leaves an unlit one shaded.
+    e.shade = shade;
     putFace(e, Facing::Up, slot, rect(7, 6, 9, 8));
     // RN-8d: vanilla gives each nub a side rect that starts at v=6 and runs as
     // many rows as the box is tall — the 5-tall repeater torches take [7,6,9,11]
@@ -125,33 +131,175 @@ inline ModelElement torchElement(const glm::vec3& from16, const glm::vec3& to16,
     return e;
 }
 
+// RN-10d: the six billboards vanilla hangs around a LIT redstone torch — the
+// glow this build had none of at all (audit R13). Each is a 3x3x3 box offset
+// three pixels off the torch along one axis, showing only the single face that
+// points back at the torch, textured with one pixel of the lit sprite
+// (`uv [6,5,7,6]`), and marked `"shade": false`.
+//
+// The BOX rule is regular across all four comparator models and all eight lit
+// repeater ones, so it is written once rather than as ninety transcribed boxes:
+// centre the core box on the torch's own x/z and on `to.y - 1`, then push a copy
+// three pixels along each of the six axes and keep the one face pointing back.
+//
+// The RECTS are not regular and are passed in. The comparator's six halos all
+// take `[6,5,7,6]`; the repeater's take six *different* single-pixel rects (up
+// `[8,5,9,6]`, down `[7,5,8,6]`, ...). Assuming one rule for both is the mistake
+// this comment exists to stop — a halo is one pixel of the torch sprite, and
+// vanilla picks a different pixel per direction on the repeater.
+//
+// The element order (up, down, south, north, east, west) is vanilla's own within
+// each torch's group. Order is not observable in a mesh; it is kept so a reader
+// can diff this against the json line by line.
+using HaloRects = std::array<FaceUv, kFacingCount>; // indexed by Facing
+
+inline void appendTorchHalo(std::vector<ModelElement>& out, const glm::vec3& from16,
+                            const glm::vec3& to16, std::uint8_t litSlot, float glow,
+                            const HaloRects& rects) {
+    const glm::vec3 centre{(from16.x + to16.x) * 0.5F, to16.y - 1.0F,
+                           (from16.z + to16.z) * 0.5F};
+    constexpr float kHalfExtent = 1.5F;
+    constexpr float kOffset = 3.0F;
+    for (const Facing facing : {Facing::Up, Facing::Down, Facing::South, Facing::North,
+                                Facing::East, Facing::West}) {
+        const glm::vec3 shift = facingUnit(facing) * -kOffset;
+        ModelElement e;
+        e.from16 = centre - glm::vec3{kHalfExtent} + shift;
+        e.to16 = centre + glm::vec3{kHalfExtent} + shift;
+        e.glow = glow;
+        e.shade = false;
+        putFace(e, facing, litSlot, rects[static_cast<std::size_t>(facing)]);
+        out.push_back(e);
+    }
+}
+
+// repeater_*tick_on.json, in Facing order (Down, Up, North, South, West, East).
+inline HaloRects repeaterHaloRects() {
+    return {rect(7, 5, 8, 6),  rect(8, 5, 9, 6), rect(6, 6, 7, 7),
+            rect(9, 6, 10, 7), rect(6, 7, 7, 8), rect(9, 7, 10, 8)};
+}
+
+// comparator_on*.json: one rect for all six.
+inline HaloRects comparatorHaloRects() {
+    HaloRects rects{};
+    rects.fill(rect(6, 5, 7, 6));
+    return rects;
+}
+
 } // namespace detail
 
 // The elements of a repeater, delay 1..4 and powered decide torch position/sprite
 // (repeater_Ntick.json). Mirrors appendElementModel's repeater branch.
+// RN-10e: the bar a LOCKED repeater shows in place of its delay torch
+// (repeater_*tick_locked.json). It sits exactly where that torch would have been
+// — `[2,2,z]-[14,4,z+2]` for the same z the torch takes — and vanilla skins it
+// with `#lock` = block/bedrock, which is slot 4. Five faces; no down.
+//
+// Note what the locked models do NOT contain: the moving torch. Locked is not
+// "the same model plus a bar", it is "the bar instead of the torch", so a locked
+// repeater has three elements where an unlocked one has three of its own.
+[[nodiscard]] inline ModelElement repeaterLockElement(float z) {
+    ModelElement e;
+    e.from16 = {2.0F, 2.0F, z};
+    e.to16 = {14.0F, 4.0F, z + 2.0F};
+    detail::putFace(e, Facing::Up, 4, detail::rect(7, 2, 9, 14), kNoCull, kQuadrant90);
+    detail::putFace(e, Facing::North, 4, detail::rect(2, 7, 14, 9));
+    detail::putFace(e, Facing::South, 4, detail::rect(2, 7, 14, 9));
+    detail::putFace(e, Facing::West, 4, detail::rect(6, 7, 8, 9));
+    detail::putFace(e, Facing::East, 4, detail::rect(6, 7, 8, 9));
+    return e;
+}
+
 [[nodiscard]] inline std::vector<ModelElement> repeaterElements(BlockState state) {
-    const std::uint8_t torchSlot = state.powered() ? 3U : 2U;
-    const float glow = state.powered() ? 0.5F : 0.0F;
+    // Both of a repeater's torches follow POWERED together (repeater_Ntick_on.json
+    // marks both `#on` and `"shade": false`), so unlike the comparator below there
+    // is one switch here, not two.
+    const bool lit = state.powered();
+    const std::uint8_t torchSlot = lit ? 3U : 2U;
+    const float glow = lit ? 0.5F : 0.0F;
+    const glm::vec3 fixedFrom{7.0F, 2.0F, 2.0F};
+    const glm::vec3 fixedTo{9.0F, 7.0F, 4.0F};
+    const float movingZ = 6.0F + static_cast<float>(state.repeaterDelay() - 1) * 2.0F;
+    const glm::vec3 movingFrom{7.0F, 2.0F, movingZ};
+    const glm::vec3 movingTo{9.0F, 7.0F, movingZ + 2.0F};
+
+    // RN-10e: LOCKED is read off the STATE, never derived here. It has to be:
+    // the mesher has no neighbour-state channel at all (it sees a `Block`, not a
+    // `BlockState`, for the cells around the one it is drawing), so a locked bar
+    // that asked "is a diode beside me powered" would need one opened for it —
+    // a runtime graph walk on the remesh path, per repeater. AR-B4-2c put LOCKED
+    // in the state and AR-B4-4 writes it; this reads the bit. The bar is checked
+    // against that in element_model_baker_test.
+    const bool locked = state.repeaterLocked();
+
     std::vector<ModelElement> elements;
     elements.push_back(detail::diodeBaseElement());
-    elements.push_back(detail::torchElement({7, 2, 2}, {9, 7, 4}, torchSlot, glow)); // fixed output
-    const float movingZ = 6.0F + static_cast<float>(state.repeaterDelay() - 1) * 2.0F;
-    elements.push_back(
-        detail::torchElement({7, 2, movingZ}, {9, 7, movingZ + 2.0F}, torchSlot, glow));
+    if (locked) {
+        elements.push_back(repeaterLockElement(movingZ));
+    }
+    elements.push_back(detail::torchElement(fixedFrom, fixedTo, torchSlot, glow, !lit));
+    if (!locked) {
+        elements.push_back(detail::torchElement(movingFrom, movingTo, torchSlot, glow, !lit));
+    }
+    if (lit) {
+        const detail::HaloRects rects = detail::repeaterHaloRects();
+        detail::appendTorchHalo(elements, fixedFrom, fixedTo, torchSlot, glow, rects);
+        if (!locked) {
+            detail::appendTorchHalo(elements, movingFrom, movingTo, torchSlot, glow, rects);
+        }
+    }
     return elements;
 }
 
-// The elements of a comparator: two rear torches flank the input, the front torch
-// rises in SUBTRACT mode. Mirrors appendElementModel's comparator branch.
+// The elements of a comparator. RN-10d / audit R11+R12: a comparator has TWO
+// independent lamps, and this build had one.
+//
+// Read off the four models (comparator / _on / _subtract / _on_subtract):
+//
+//   variant                  rear pair (z 11..13)   front torch (z 2..4)
+//   compare,  unpowered      unlit                  unlit
+//   compare,  powered        LIT                    unlit
+//   subtract, unpowered      unlit                  LIT
+//   subtract, powered        LIT                    LIT
+//
+// i.e. the rear pair is POWERED and the front one is MODE. Driving all three off
+// POWERED — which is what happened here — meant right-clicking a comparator
+// changed nothing a player could see, because the only other difference was a
+// 1-pixel height this build invented: the front torch's box is `[7,2,2]` to
+// `[9,5,4]` in all four models, subtract included. Its geometry never moves; the
+// sprite under it does.
 [[nodiscard]] inline std::vector<ModelElement> comparatorElements(BlockState state) {
-    const std::uint8_t torchSlot = state.powered() ? 3U : 2U;
-    const float glow = state.powered() ? 0.5F : 0.0F;
+    const bool rearLit = state.powered();
+    const bool frontLit = state.comparatorSubtract();
+    const auto slotOf = [](bool lit) { return lit ? 3U : 2U; };
+    const auto glowOf = [](bool lit) { return lit ? 0.5F : 0.0F; };
+
+    const glm::vec3 rearLeftFrom{4.0F, 2.0F, 11.0F};
+    const glm::vec3 rearLeftTo{6.0F, 7.0F, 13.0F};
+    const glm::vec3 rearRightFrom{10.0F, 2.0F, 11.0F};
+    const glm::vec3 rearRightTo{12.0F, 7.0F, 13.0F};
+    const glm::vec3 frontFrom{7.0F, 2.0F, 2.0F};
+    const glm::vec3 frontTo{9.0F, 5.0F, 4.0F};
+
     std::vector<ModelElement> elements;
     elements.push_back(detail::diodeBaseElement());
-    elements.push_back(detail::torchElement({4, 2, 11}, {6, 7, 13}, torchSlot, glow));
-    elements.push_back(detail::torchElement({10, 2, 11}, {12, 7, 13}, torchSlot, glow));
-    const float frontTop = state.comparatorSubtract() ? 6.0F : 5.0F;
-    elements.push_back(detail::torchElement({7, 2, 2}, {9, frontTop, 4}, torchSlot, glow));
+    elements.push_back(detail::torchElement(rearLeftFrom, rearLeftTo,
+                                            static_cast<std::uint8_t>(slotOf(rearLit)),
+                                            glowOf(rearLit), !rearLit));
+    elements.push_back(detail::torchElement(rearRightFrom, rearRightTo,
+                                            static_cast<std::uint8_t>(slotOf(rearLit)),
+                                            glowOf(rearLit), !rearLit));
+    elements.push_back(detail::torchElement(frontFrom, frontTo,
+                                            static_cast<std::uint8_t>(slotOf(frontLit)),
+                                            glowOf(frontLit), !frontLit));
+    const detail::HaloRects rects = detail::comparatorHaloRects();
+    if (rearLit) {
+        detail::appendTorchHalo(elements, rearLeftFrom, rearLeftTo, 3U, glowOf(true), rects);
+        detail::appendTorchHalo(elements, rearRightFrom, rearRightTo, 3U, glowOf(true), rects);
+    }
+    if (frontLit) {
+        detail::appendTorchHalo(elements, frontFrom, frontTo, 3U, glowOf(true), rects);
+    }
     return elements;
 }
 
@@ -815,7 +963,7 @@ namespace detail {
 // must agree; `elementModelStore()` asserts the round trip when it fills.
 [[nodiscard]] constexpr std::size_t elementModelVariantCount(ElementModelKind kind) {
     switch (kind) {
-    case ElementModelKind::Repeater: return 4U * 4U * 2U;   // facing x delay x powered
+    case ElementModelKind::Repeater: return 4U * 4U * 2U * 2U; // facing x delay x powered x locked
     case ElementModelKind::Comparator: return 4U * 2U * 2U; // facing x mode x powered
     case ElementModelKind::Lever: return 6U * 2U;           // facing (all six) x powered
     case ElementModelKind::EnchantingTable: return 1U;
@@ -831,10 +979,12 @@ namespace detail {
 [[nodiscard]] constexpr std::size_t elementModelVariant(ElementModelKind kind, BlockState state) {
     switch (kind) {
     case ElementModelKind::Repeater:
-        return (detail::horizontalIndex(state.orientation()) * 4U +
-                static_cast<std::size_t>(state.repeaterDelay() - 1)) *
+        return ((detail::horizontalIndex(state.orientation()) * 4U +
+                 static_cast<std::size_t>(state.repeaterDelay() - 1)) *
+                    2U +
+                (state.powered() ? 1U : 0U)) *
                    2U +
-               (state.powered() ? 1U : 0U);
+               (state.repeaterLocked() ? 1U : 0U);
     case ElementModelKind::Comparator:
         return (detail::horizontalIndex(state.orientation()) * 2U +
                 (state.comparatorSubtract() ? 1U : 0U)) *
@@ -876,9 +1026,10 @@ namespace detail {
                                                          std::size_t variant) {
     switch (kind) {
     case ElementModelKind::Repeater:
-        return BlockState{block, horizontalOf(variant / 8U)}
-            .withRepeaterDelay(static_cast<int>((variant / 2U) % 4U) + 1)
-            .withPowered((variant & 1U) != 0U);
+        return BlockState{block, horizontalOf(variant / 16U)}
+            .withRepeaterDelay(static_cast<int>((variant / 4U) % 4U) + 1)
+            .withPowered(((variant / 2U) & 1U) != 0U)
+            .withRepeaterLocked((variant & 1U) != 0U);
     case ElementModelKind::Comparator:
         return BlockState{block, horizontalOf(variant / 4U)}
             .withComparatorSubtract(((variant / 2U) & 1U) != 0U)

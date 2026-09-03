@@ -580,19 +580,22 @@ int main() {
         expectNear(maxZ, 1.0F, "door leaf far");
     }
     {
-        // RN-6: the fence gate now meshes its real two-post-and-bars geometry —
-        // eight boxes, so 8 * 6 faces * 4 = 192 vertices — instead of the old
-        // single plank-wall box. Its outline / pick SHAPE stays the one post-pair
-        // box (vanilla getShape ignores OPEN — the gate stays visible and
-        // selectable), and only its *collision* shape empties when open so entities
-        // pass through.
+        // RN-10c: the fence gate draws from its baked vanilla model — eight boxes
+        // still, but FORTY faces, not forty-eight, so 160 vertices where the
+        // hand-written emitter made 192. The eight it stops drawing are the two
+        // buried faces of each horizontal bar: the bar's face at x=6 and the
+        // inner post's at x=6 are the same plane, drawn twice (audit R7).
+        //
+        // Its outline / pick SHAPE stays the one post-pair box (vanilla getShape
+        // ignores OPEN — the gate stays visible and selectable), and only its
+        // *collision* shape empties when open so entities pass through.
         mc::world::Chunk openGateChunk;
         const auto openGate =
             mc::world::BlockState{mc::world::Block::OakFenceGate}.withOpen(true);
         openGateChunk.setState(5, mc::world::kMinY + 1, 1, openGate);
         const auto openGateMesh = mc::world::ChunkMesher::build(openGateChunk);
         assert(mc::world::blockShape(openGate).boxes.size() == 1U);
-        assert(openGateMesh.vertices.size() == 192U);
+        assert(openGateMesh.vertices.size() == 160U);
         assert(mc::world::collisionShape(openGate).boxes.empty());
         // A closed gate meshes the same eight-box geometry, and (unlike open) it
         // still collides.
@@ -600,8 +603,24 @@ int main() {
         openGateChunk.setState(5, mc::world::kMinY + 1, 1, closedGate);
         const auto closedGateMesh = mc::world::ChunkMesher::build(openGateChunk);
         assert(mc::world::blockShape(closedGate).boxes.size() == 1U);
-        assert(closedGateMesh.vertices.size() == 192U);
+        assert(closedGateMesh.vertices.size() == 160U);
         assert(mc::world::collisionShape(closedGate).boxes.size() == 1U);
+        // AR-B4-4's IN_WALL variant is a real, different model now: the same
+        // forty faces, lowered three pixels, so the face count is unchanged and
+        // the geometry is not.
+        const auto wallGate = closedGate.withInWall(true);
+        openGateChunk.setState(5, mc::world::kMinY + 1, 1, wallGate);
+        const auto wallMesh = mc::world::ChunkMesher::build(openGateChunk);
+        assert(wallMesh.vertices.size() == 160U);
+        float plainTop = -1e9F;
+        float wallTop = -1e9F;
+        for (const auto& vertex : closedGateMesh.vertices) {
+            plainTop = std::max(plainTop, worldPos(vertex).y);
+        }
+        for (const auto& vertex : wallMesh.vertices) {
+            wallTop = std::max(wallTop, worldPos(vertex).y);
+        }
+        expectNear(plainTop - wallTop, 3.0F / 16.0F, "in_wall lowers the gate three pixels");
     }
     {
         // A pressure plate is a Column shape (thin full-footprint box), meshed

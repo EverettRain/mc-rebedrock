@@ -1129,6 +1129,17 @@ if(BUILD_TESTING)
             "${glm_SOURCE_DIR}"
         )
 
+        # Informational: RN-10c's remesh cost — the fence gate through the baked
+        # store (no per-vertex trig, 40 faces) against the emitter it replaced.
+        add_executable(mc_rebedrock_chunk_mesh_benchmark
+            tests/chunk_mesh_benchmark.cpp
+        )
+        target_link_libraries(mc_rebedrock_chunk_mesh_benchmark PRIVATE mc_rebedrock_runtime)
+        target_include_directories(mc_rebedrock_chunk_mesh_benchmark PRIVATE
+            src
+            "${glm_SOURCE_DIR}"
+        )
+
         # Informational: the W-5 AC wire wavefront vs the naive serial relaxation.
         add_executable(mc_rebedrock_redstone_wire_benchmark
             tests/redstone_wire_benchmark.cpp

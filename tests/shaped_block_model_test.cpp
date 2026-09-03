@@ -30,6 +30,7 @@
 // was verified independently in the AR-B2/B3 audit.
 
 #include "world/Block.hpp"
+#include "world/BlockPlacement.hpp"
 #include "world/BlockShape.hpp"
 #include "world/BlockState.hpp"
 #include "world/ElementModelBaker.hpp"
@@ -634,6 +635,61 @@ int main() {
                                           .withOpen(open),
                                       "a trapdoor's baked bounds must equal its BlockShape box");
             }
+        }
+    }
+
+    // --- 5b. The fence gate's half-turn, the one orientation the bounds anchor
+    // cannot reach. Its model is a lattice inside the shape box and is
+    // 180-degree symmetric when closed, so a wrong half-turn is invisible there;
+    // only an OPEN gate shows it, because its two leaves have swung to one side.
+    //
+    // The rule comes from the model itself, not from taste:
+    // template_fence_gate_open.json puts the swung leaves at z 9..15, and that
+    // model is oak_fence_gate.json's `facing=south` variant (the one with no
+    // `"y"`). +Z is south. So an open gate's leaves lie on its FACING side,
+    // always — which is also what FenceGateBlock#useWithoutItem arranges by
+    // turning FACING to the player's own direction before opening, so a gate
+    // always swings away from whoever opened it.
+    //
+    // This is what the hand-written appendFenceGate got wrong: it yawed west to
+    // 90 and east to 270, i.e. a half turn off on both, and only an open gate
+    // facing east or west could show it.
+    {
+        for (const BlockOrientation facing : kFacings) {
+            const auto quads = bakeElementModel(
+                Block::OakFenceGate,
+                BlockState{Block::OakFenceGate, facing}.withOpen(true));
+            require(!quads.empty(), "an open gate bakes quads");
+            glm::vec3 centroid{0.0F};
+            float n = 0.0F;
+            for (const BakedElementQuad& q : quads) {
+                for (const glm::vec3& p : q.quad.position) {
+                    centroid += p;
+                    n += 1.0F;
+                }
+            }
+            centroid /= n;
+            const glm::ivec3 offset = mc::world::orientationOffset(facing);
+            const float along = (centroid.x - 0.5F) * static_cast<float>(offset.x) +
+                                (centroid.z - 0.5F) * static_cast<float>(offset.z);
+            require(along > 0.05F, "an open gate's leaves must lie on its FACING side");
+        }
+        // ...and a closed gate is centred, so the same probe cannot pass by
+        // accident on a model that never moved.
+        for (const BlockOrientation facing : kFacings) {
+            const auto quads = bakeElementModel(Block::OakFenceGate,
+                                                BlockState{Block::OakFenceGate, facing});
+            glm::vec3 centroid{0.0F};
+            float n = 0.0F;
+            for (const BakedElementQuad& q : quads) {
+                for (const glm::vec3& p : q.quad.position) {
+                    centroid += p;
+                    n += 1.0F;
+                }
+            }
+            centroid /= n;
+            require(near(centroid.x, 0.5F) && near(centroid.z, 0.5F),
+                    "a closed gate is centred in its cell");
         }
     }
 
