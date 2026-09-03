@@ -28,11 +28,43 @@ using mc::world::isFullCube;
 using mc::world::isSlab;
 using mc::world::rendersAsCubeItem;
 
-// 集合的定义本身：立方体路径收下整格立方体、六面立方体、箱子和台阶
-// 台阶在内是因为它走同一条立方体路径，只是 Y 向减半，减半与否由调用方读 isSlab 决定
+// 集合的定义本身，逐 model 列举而不是复述实现里的谓词
+// 这里刻意用**穷举 switch 且不写 default**：新增一个 BlockModel 会在这里触发
+// -Wswitch，逼它表态，而抄一份 `isShapedBlockModel(...) && !isThinLeafIcon(...)`
+// 只会跟着实现一起错
+//
+// RN-10f 把楼梯/墙/栅栏门/按钮/压力板收进来了。它们本来就被画成 3D 图标，
+// 只不过那条规则**只写在 HUD 图标那一面**，掉落物与手持物没有，于是同一个栅栏门
+// 掉在地上是扁平贴图、拿在背包里是方块。本文件旧注释说"要推广就改那一层，别悄悄
+// 塞进这个集合"——推广的正确做法就是把那条规则并回单点、删掉图标那一面的例外，
+// 而这里同步表态，所以它既不悄悄也没留下第二处口径
 [[nodiscard]] constexpr bool expectedForModel(BlockModel model) {
-    return model == BlockModel::Cube || model == BlockModel::DirectionalCube ||
-           model == BlockModel::Chest || model == BlockModel::Slab;
+    switch (model) {
+    // 立方体几何：整格立方体、六面立方体、箱子、台阶（Y 向减半由调用方读 isSlab）
+    case BlockModel::Cube:
+    case BlockModel::DirectionalCube:
+    case BlockModel::Chest:
+    case BlockModel::Slab:
+    // 异形但有 3D 轮廓的：vanilla 的物品渲染同样画方块图标
+    case BlockModel::Stairs:
+    case BlockModel::Wall:
+    case BlockModel::FenceGate:
+    case BlockModel::Button:
+    case BlockModel::PressurePlate:
+        return true;
+    // 薄片：vanilla 的门/活板门物品是扁平贴图
+    case BlockModel::Door:
+    case BlockModel::TrapDoor:
+    // 本来就不是盒子的
+    case BlockModel::Cross:
+    case BlockModel::Crop:
+    case BlockModel::Torch:
+    case BlockModel::ElementModel:
+    case BlockModel::RedstoneWire:
+    case BlockModel::Fire:
+        return false;
+    }
+    return false;
 }
 
 // 每个方块的判断都只由它的 model 决定，没有任何按方块身份开的后门
@@ -70,20 +102,34 @@ void testCubeChestSlabStayIn() {
     assert(sawSlab);  // 台阶存在，上面那圈断言不是空转
 }
 
-// 明确留在集合外的那些：十字植物、火把、作物，以及楼梯与门这类异形方块
-// HUD 图标另有一层 isShapedBlockModel 近似，把楼梯之类也画成 3D 方块图标
-// 那一层是图标独有的，不属于本判断
-// 哪天要把它推广到掉落物与手持物，该改的是那一层，而不是悄悄把它们塞进这个集合
+// 明确留在集合外的那些：十字植物、火把、作物，以及薄片状的门与活板门
+// RN-10f 之后楼梯不在此列——它进了集合，见 expectedForModel 的注释
 void testNonCubeModelsStayOut() {
     for (std::size_t index = 0; index < static_cast<std::size_t>(Block::Count); ++index) {
         const auto block = static_cast<Block>(index);
         const auto model = blockDefinition(block).model;
         if (model == BlockModel::Cross || model == BlockModel::Crop ||
-            model == BlockModel::Torch || model == BlockModel::Stairs ||
-            model == BlockModel::Door || model == BlockModel::TrapDoor) {
+            model == BlockModel::Torch || model == BlockModel::Door ||
+            model == BlockModel::TrapDoor) {
             assert(!rendersAsCubeItem(block));
         }
     }
+}
+
+// RN-10f 的回归点，也是本文件存在的那个 bug 的第二次发作：异形方块的 3D 图标规则
+// 只写在 HUD 那一面，掉落物与手持物没有。三条面共用单点之后，这些必须在集合内
+void testShapedBlocksAreCubeItemsToo() {
+    assert(blockDefinition(Block::OakStairs).model == BlockModel::Stairs);
+    assert(rendersAsCubeItem(Block::OakStairs));
+    assert(blockDefinition(Block::OakFenceGate).model == BlockModel::FenceGate);
+    assert(rendersAsCubeItem(Block::OakFenceGate));
+    assert(blockDefinition(Block::StonePressurePlate).model == BlockModel::PressurePlate);
+    assert(rendersAsCubeItem(Block::StonePressurePlate));
+    // 而薄片仍然在外：vanilla 的门/活板门物品是扁平贴图
+    assert(blockDefinition(Block::OakDoor).model == BlockModel::Door);
+    assert(!rendersAsCubeItem(Block::OakDoor));
+    assert(blockDefinition(Block::OakTrapdoor).model == BlockModel::TrapDoor);
+    assert(!rendersAsCubeItem(Block::OakTrapdoor));
 }
 
 // 与 isFullCube 的关系：那个谓词回答的是填不填满自己那一格，服务于遮挡与面稳固
@@ -110,6 +156,7 @@ int main() {
     testDirectionalCubeIsACubeItem();
     testCubeChestSlabStayIn();
     testNonCubeModelsStayOut();
+    testShapedBlocksAreCubeItemsToo();
     testIsFullCubeIsAStrictSubset();
     return 0;
 }

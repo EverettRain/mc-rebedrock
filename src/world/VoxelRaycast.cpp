@@ -210,37 +210,34 @@ std::optional<VoxelRaycastHit> raycastVoxels(
     return std::nullopt;
 }
 
-BlockBounds blockSelectionBounds(const World& world, glm::ivec3 position) {
+BlockSelectionBoxes blockSelectionBoxes(const World& world, glm::ivec3 position) {
     // The outline is the block's base shape — the same source the pick ray tests
-    // — so the highlight can never again hug a shape the ray does not hit. A
-    // Column is its footprint at its height; Boxes shows the boxes' bounding box
-    // (a single box for a torch, chest or plant today).
+    // — so the highlight can never hug a shape the ray does not hit. RN-10f: it
+    // is now the shape's boxes, one outline each, matching vanilla's per-voxel
+    // edge drawing. A Column is its footprint at its height (one box).
     const BlockShape shape = blockShape(world.state(position.x, position.y, position.z));
+    BlockSelectionBoxes result;
     switch (shape.kind) {
     case ShapeKind::Empty:
         break;
     case ShapeKind::Column:
-        return {{0.0F, shape.bottom, 0.0F}, {1.0F, shape.top, 1.0F}};
-    case ShapeKind::Boxes: {
-        if (shape.boxes.empty()) {
-            break;
-        }
-        glm::vec3 minimum{shape.boxes.front().minX, shape.boxes.front().minY,
-                          shape.boxes.front().minZ};
-        glm::vec3 maximum{shape.boxes.front().maxX, shape.boxes.front().maxY,
-                          shape.boxes.front().maxZ};
+        result.boxes[0] = {{0.0F, shape.bottom, 0.0F}, {1.0F, shape.top, 1.0F}};
+        result.count = 1;
+        break;
+    case ShapeKind::Boxes:
         for (const ShapeBox& box : shape.boxes) {
-            minimum.x = std::min(minimum.x, box.minX);
-            minimum.y = std::min(minimum.y, box.minY);
-            minimum.z = std::min(minimum.z, box.minZ);
-            maximum.x = std::max(maximum.x, box.maxX);
-            maximum.y = std::max(maximum.y, box.maxY);
-            maximum.z = std::max(maximum.z, box.maxZ);
+            if (result.count >= kMaxSelectionBoxes) {
+                // Never silently drop the rest: a shape wider than the cap is a
+                // change to the roster, and voxel_raycast_test fails on it before
+                // a player ever sees a half-outlined block.
+                break;
+            }
+            result.boxes[result.count++] = {{box.minX, box.minY, box.minZ},
+                                            {box.maxX, box.maxY, box.maxZ}};
         }
-        return {minimum, maximum};
+        break;
     }
-    }
-    return {};
+    return result;
 }
 
 } // namespace mc::world

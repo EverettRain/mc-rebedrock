@@ -2253,23 +2253,32 @@ class WorldRenderer final {
         if (!inventoryOpen && !paused && !chatOpen && targetedBlock.has_value() && !targetIsFire) {
             // 选择框描的是方块的真实形状，火把、植物、箱子、台阶这类非满方块不再显示成整格框
             // 形状取自该格的状态（台阶上下半、作物生长阶段等）
-            const world::BlockBounds bounds =
-                world::blockSelectionBounds(clientCache, targetedBlock->block);
-            vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              pipelines.outlinePipeline);
-            vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    pipelines.outlinePipelineLayout, 0, 1, &frame.descriptorSet, 0, nullptr);
-            const std::array<glm::vec4, 3> outlinePush{
-                glm::vec4{static_cast<float>(targetedBlock->block.x),
-                          static_cast<float>(targetedBlock->block.y),
-                          static_cast<float>(targetedBlock->block.z), 0.0F},
-                glm::vec4{bounds.minimum, 0.0F},
-                glm::vec4{bounds.maximum, 0.0F},
-            };
-            vkCmdPushConstants(frame.commandBuffer, pipelines.outlinePipelineLayout,
-                               VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(outlinePush),
-                               outlinePush.data());
-            vkCmdDraw(frame.commandBuffer, 24, 1, 0, 0);
+            // RN-10f：**逐盒**描边，与 vanilla 画 VoxelShape 的棱一致。此前只画整个
+            // 形状的包围盒，于是楼梯、墙、栅栏门都被一个大方框圈住——框住的是射线打不到、
+            // 人也站不上去的空气。盒数上限见 world::kMaxSelectionBoxes。
+            const world::BlockSelectionBoxes outlineBoxes =
+                world::blockSelectionBoxes(clientCache, targetedBlock->block);
+            if (outlineBoxes.count > 0) {
+                vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  pipelines.outlinePipeline);
+                vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        pipelines.outlinePipelineLayout, 0, 1,
+                                        &frame.descriptorSet, 0, nullptr);
+                for (std::size_t i = 0; i < outlineBoxes.count; ++i) {
+                    const world::BlockBounds& bounds = outlineBoxes.boxes[i];
+                    const std::array<glm::vec4, 3> outlinePush{
+                        glm::vec4{static_cast<float>(targetedBlock->block.x),
+                                  static_cast<float>(targetedBlock->block.y),
+                                  static_cast<float>(targetedBlock->block.z), 0.0F},
+                        glm::vec4{bounds.minimum, 0.0F},
+                        glm::vec4{bounds.maximum, 0.0F},
+                    };
+                    vkCmdPushConstants(frame.commandBuffer, pipelines.outlinePipelineLayout,
+                                       VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(outlinePush),
+                                       outlinePush.data());
+                    vkCmdDraw(frame.commandBuffer, 24, 1, 0, 0);
+                }
+            }
         }
         vkCmdEndRenderPass(frame.commandBuffer);
 

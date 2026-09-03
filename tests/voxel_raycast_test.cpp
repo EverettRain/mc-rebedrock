@@ -1,6 +1,10 @@
+#include "world/BlockShape.hpp"
+#include "world/BlockState.hpp"
 #include "world/VoxelRaycast.hpp"
 
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
 
 int main() {
     mc::world::World world;
@@ -157,5 +161,86 @@ int main() {
         world, {0.5F, 8.75F, 3.5F}, {1.0F, 0.0F, 0.0F}, 8.0F);
     assert(hitsTopSlab.has_value());
     assert(hitsTopSlab->block == (glm::ivec3{4, 8, 3}));
+
+    // --- RN-10f / audit R17: the selection outline is drawn BOX BY BOX. ---
+    //
+    // It used to be the shape's bounding box, so a stair, a wall and a fence gate
+    // were all outlined by a full cube — a marker around air the ray does not hit
+    // and the player cannot stand on. The counts below are the shapes themselves:
+    // a straight stair is two boxes and an inner-corner one three, a wall is its
+    // post plus one arm per connection, a fence gate is one, and a full cube is
+    // one. Read off blockShape, which is the same source the ray tests.
+    {
+        using mc::world::Block;
+        using mc::world::BlockState;
+        using mc::world::blockShape;
+        mc::world::World outlineWorld;
+        mc::world::Chunk outlineChunk;
+        const auto boxesAt = [&](int x, int y, int z, BlockState state) {
+            outlineChunk.setState(x, y, z, state);
+            outlineWorld.setChunk({0, 0}, outlineChunk);
+            return mc::world::blockSelectionBoxes(outlineWorld, {x, y, z});
+        };
+
+        // Cube: one box, the whole cell.
+        {
+            const auto boxes = boxesAt(2, 20, 2, BlockState{Block::Stone});
+            assert(boxes.count == 1U);
+            assert(boxes.boxes[0].minimum == glm::vec3{0.0F});
+            assert(boxes.boxes[0].maximum == glm::vec3{1.0F});
+        }
+        // Straight stair: two. Inner corner: three. Both equal the shape.
+        {
+            const BlockState straight{Block::OakStairs};
+            const auto boxes = boxesAt(3, 20, 2, straight);
+            assert(blockShape(straight).boxes.size() == 2U);
+            assert(boxes.count == 2U);
+            const auto inner = BlockState{Block::OakStairs}.withStairShape(
+                mc::world::StairShape::InnerRight);
+            const auto innerBoxes = boxesAt(4, 20, 2, inner);
+            assert(blockShape(inner).boxes.size() == 3U);
+            assert(innerBoxes.count == 3U);
+            // Not the bounding box: no single outline may span the whole cell,
+            // which is exactly what the old code drew.
+            bool anySpansCell = false;
+            for (std::size_t i = 0; i < innerBoxes.count; ++i) {
+                anySpansCell = anySpansCell || (innerBoxes.boxes[i].minimum == glm::vec3{0.0F} &&
+                                                innerBoxes.boxes[i].maximum == glm::vec3{1.0F});
+            }
+            assert(!anySpansCell);
+        }
+        // Fence gate: one box, and it is the gate's slab, not the cell.
+        {
+            const auto boxes = boxesAt(5, 20, 2, BlockState{Block::OakFenceGate});
+            assert(boxes.count == 1U);
+            assert(boxes.boxes[0].maximum.z < 0.7F);
+        }
+        // A pressure plate is a Column: one synthesised box at its height.
+        {
+            const auto boxes = boxesAt(6, 20, 2, BlockState{Block::StonePressurePlate});
+            assert(boxes.count == 1U);
+            assert(boxes.boxes[0].maximum.y < 0.2F);
+        }
+        // Air outlines nothing at all.
+        {
+            const auto boxes = boxesAt(7, 20, 2, BlockState{Block::Air});
+            assert(boxes.count == 0U);
+        }
+    }
+
+    // The cap is not a guess: no state of any block in the roster has more boxes
+    // than kMaxSelectionBoxes, so nothing is ever silently half-outlined. A wall
+    // with four arms is the widest, at five.
+    {
+        std::size_t widest = 0;
+        for (std::uint32_t id = 0; id < mc::world::kBlockStateCount; ++id) {
+            const auto shape = mc::world::blockShape(mc::world::BlockState::fromRawId(id));
+            if (shape.kind == mc::world::ShapeKind::Boxes) {
+                widest = std::max(widest, shape.boxes.size());
+            }
+        }
+        assert(widest > 1U); // the sweep actually saw multi-box shapes
+        assert(widest <= mc::world::kMaxSelectionBoxes);
+    }
     return 0;
 }

@@ -3709,8 +3709,22 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
 // both of which nevertheless draw as boxes when held.
 [[nodiscard]] constexpr bool rendersAsCubeItem(Block block) {
     const auto model = blockDefinition(block).model;
-    return model == BlockModel::Cube || model == BlockModel::DirectionalCube ||
-           model == BlockModel::Chest || model == BlockModel::Slab;
+    if (model == BlockModel::Cube || model == BlockModel::DirectionalCube ||
+        model == BlockModel::Chest || model == BlockModel::Slab) {
+        return true;
+    }
+    // RN-10f / audit R16: the shaped blocks that are not thin leaves — stairs,
+    // walls, fence gates, buttons, pressure plates. The HUD icon already drew
+    // these as a 3D block (matching vanilla's item render) through a SECOND
+    // branch of its own, which the dropped-item and held-item paths did not
+    // have: a dropped fence gate was a flat sprite while the same gate in the
+    // inventory was a block. That second branch is gone and the rule lives here,
+    // which is the whole reason this predicate exists — the comment above about
+    // the observer describes the identical failure one BlockModel earlier.
+    //
+    // The door and the trapdoor stay out: vanilla renders those two items flat,
+    // and isThinLeafIconModel is where that is said.
+    return isShapedBlockModel(model) && !isThinLeafIconModel(model);
 }
 
 // Java's BlockState#isFaceSturdy: only a full collision cube can carry an

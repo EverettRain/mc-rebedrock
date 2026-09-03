@@ -412,20 +412,17 @@ class HudRenderer final {
     void drawHudItemIcon(VkCommandBuffer commandBuffer, const ui::UiRect& rectangle,
                          const gameplay::ItemStack& stack) const {
         if (gameplay::isBlockStack(stack)) {
-            const auto model = world::blockDefinition(stack.block).model;
             // 走不走立方体图标由 world::rendersAsCubeItem 单点回答
             // 掉落物、手持物、背包图标三条物品渲染面共用它，不再各自列举 BlockModel
             // 台阶也在集合内，只是按下半砖显示，与 vanilla 的台阶物品渲染一致
+            //
+            // RN-10f：这里曾经在单点之外**再写一条**分支，把楼梯/墙/栅栏门/按钮/压力板
+            // 也画成 3D 图标。那条分支只存在于图标这一面，于是掉在地上和拿在手里的
+            // 栅栏门仍是扁平贴图——同一件物品三处三个样。规则已并回 rendersAsCubeItem，
+            // 三条渲染面因此自动一致，这一层不再有自己的例外。
             if (world::rendersAsCubeItem(stack.block)) {
                 drawHudBlockIcon(commandBuffer, rectangle, stack.block,
                                  world::isSlab(stack.block) ? 1.0F : 0.0F);
-                return;
-            }
-            // 楼梯、墙、栅栏门、按钮、压力板这类异形方块与 vanilla 一样显示 3D 方块图标
-            // 只有薄片状的门/活板门物品保持扁平贴图，同样对齐 vanilla 各自的物品渲染
-            // 这一层目前是图标独有的：掉落物与手持物没有对应处理，异形方块在那两处仍是扁平贴图
-            if (world::isShapedBlockModel(model) && !world::isThinLeafIconModel(model)) {
-                drawHudBlockIcon(commandBuffer, rectangle, stack.block);
                 return;
             }
         }
