@@ -144,19 +144,27 @@ void GameplayMutationSink::onNeighborChanged(world::BlockPos neighbor, world::Bl
     //
     // Most components only schedule a later tick here (a torch's 2gt toggle),
     // whose own write travels through dispatchRedstoneTick's own sink/changes
-    // path at drain time — but a trapdoor's neighborChanged (W-signal) writes
-    // synchronously, in this same call, exactly as vanilla's TrapDoorBlock does
-    // (no scheduled delay). The before/after compare is what makes that write
-    // visible without a second special-cased publish path: cheap (one extra
-    // state read) even on the overwhelming majority of neighbours where nothing
-    // changed, and correct for exactly the one case that does.
-    const auto before = world_->state(neighbor.x, neighbor.y, neighbor.z);
-    session_->worldSimulation().notifyRedstoneComponent(
-        *world_, {neighbor.x, neighbor.y, neighbor.z});
-    const auto after = world_->state(neighbor.x, neighbor.y, neighbor.z);
-    if (after != before) {
-        session_->events().publish(WorldEditEvent{neighbor.x, neighbor.y, neighbor.z, after, true});
+    // path at drain time — but an openable sink's neighborChanged (a trapdoor,
+    // a fence gate, a door) writes synchronously, in this same call, exactly as
+    // vanilla does (no scheduled delay). Those writes have to be published or
+    // nothing on screen moves.
+    //
+    // This used to compare the notified cell before and after, which was exactly
+    // right while the trapdoor was the only synchronous sink and wrote exactly
+    // one cell. A door writes *both halves*, and the far half is not the cell
+    // anyone was asked about: it changed in the world and was never published,
+    // so the simulation held an open door while the screen showed it half open
+    // (AR-B4-3 field report). Asking the simulation which cells it actually
+    // wrote removes the assumption instead of widening it — the next sink that
+    // writes two cells needs nothing here.
+    auto& simulation = session_->worldSimulation();
+    const auto writeMark = simulation.synchronousWriteMark();
+    simulation.notifyRedstoneComponent(*world_, {neighbor.x, neighbor.y, neighbor.z});
+    for (const world::BlockPos& cell : simulation.synchronousWritesSince(writeMark)) {
+        session_->events().publish(WorldEditEvent{
+            cell.x, cell.y, cell.z, world_->state(cell.x, cell.y, cell.z), true});
     }
+    simulation.releaseSynchronousWrites(writeMark);
 
     // Everything below is source-centric — the falling-block/fluid/support/leaf
     // fan-out that WorldSimulation drives from the changed cell — so it collapses

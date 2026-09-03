@@ -160,6 +160,83 @@ int main() {
         std::abort();
     }
 
+    // Both halves have to be *published*, not merely written. The world and the
+    // client are two different questions here: a redstone sink writes through
+    // its own sink inside notifyRedstoneComponent, and what reaches the renderer
+    // is whatever a WorldEditEvent was published for. When the only synchronous
+    // sink was the trapdoor — one cell — the publish site could get away with a
+    // before/after compare of the one notified cell. A door writes two, and the
+    // partner half is not the cell anyone was asked about, so it went
+    // unpublished: correct in the world, half-open on screen.
+    {
+        RedstoneCircuit published;
+        published.solid({-1, 0, -1});
+        published.lever({-1, 0, 0}, Direction::South, false).door({0, 0, 0}, Direction::North);
+        published.recordWorldEdits();
+        published.clearPublishedEdits();
+        published.setLever(leverPos, true);
+        requireHalves(published, lowerPos, true, "published: lever on");
+        if (!published.publishedEdit(lowerPos)) {
+            std::fprintf(stderr, "door fixture: the lower half's change was never published\n");
+            std::abort();
+        }
+        if (!published.publishedEdit(upperPos)) {
+            std::fprintf(stderr,
+                         "door fixture: the upper half changed in the world but no WorldEditEvent "
+                         "was published for it — the client would render a half-open door\n");
+            std::abort();
+        }
+        // ...and the same on the way back down, so the door does not get stuck
+        // half-open on screen when it closes either.
+        published.clearPublishedEdits();
+        published.setLever(leverPos, false);
+        requireHalves(published, lowerPos, false, "published: lever off");
+        if (!published.publishedEdit(lowerPos) || !published.publishedEdit(upperPos)) {
+            std::fprintf(stderr, "door fixture: closing published only one half\n");
+            std::abort();
+        }
+    }
+
+    // The synchronous-write list the fix above reads must not accumulate. Every
+    // path that lets a sink append to it drains it; a path that forgets turns a
+    // per-tick append into a vector that grows for the life of the session. A
+    // scheduled component appends its own write there on every tick, so this is
+    // exercised constantly rather than only by doors.
+    {
+        RedstoneCircuit busy;
+        busy.solid({-1, 0, -1});
+        busy.lever({-1, 0, 0}, Direction::South, false).door({0, 0, 0}, Direction::North);
+        // A torch inverter as well as the door: the door exercises the
+        // synchronous publish path, and the torch is a *scheduled* component, so
+        // its 2gt toggle runs through dispatchRedstoneTick — the other drain,
+        // and the one a purely synchronous circuit never reaches. The bench is
+        // torch_inverter_fixture_test's, driven by its own lever.
+        busy.solid({4, 0, 0})
+            .torch({4, 1, 0}, /*lit=*/true)
+            .lever({5, 0, 0}, Direction::East, /*on=*/false);
+        const BlockPos torchLever{5, 0, 0};
+        for (int i = 0; i < 8; ++i) {
+            busy.setLever(leverPos, i % 2 == 0);
+            busy.setLever(torchLever, i % 2 == 0);
+            busy.advance(3); // long enough for the torch's 2gt toggle to fire
+        }
+        if (busy.pendingSynchronousWrites() != 0U) {
+            std::fprintf(stderr,
+                         "door fixture: %zu synchronous writes were recorded and never drained\n",
+                         busy.pendingSynchronousWrites());
+            std::abort();
+        }
+        requireHalves(busy, lowerPos, false, "after the drain loop");
+    }
+
+    // NOT covered here, deliberately: driving a door through a *repeater*. A
+    // diode's scheduled write goes out with flags 2 and this build never wakes
+    // the block in front of it, so no sink downstream of a repeater is ever
+    // notified — measured with a trapdoor too, which has been a sink since
+    // W-signal and predates every door change. That is a gap in the diode's
+    // output propagation, not in this sink, and it is registered as such rather
+    // than asserted here where it would read as a door defect.
+
     // A door is a sink, never a source: it must not have entered the emission
     // tables along the way.
     using mc::gameplay::redstone::isSignalSource;

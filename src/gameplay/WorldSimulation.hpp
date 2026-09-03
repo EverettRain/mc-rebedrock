@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <array>
 #include <deque>
 #include <optional>
@@ -181,6 +182,40 @@ class WorldSimulation final {
     // scheduling anything — a trapdoor has no delay, unlike a torch's 2gt toggle.
     void notifyRedstoneComponent(world::World& world, SimulationPosition position);
 
+    // The cells a synchronous neighborChanged sink actually wrote.
+    //
+    // `notifyRedstoneComponent` may write more cells than the one it was asked
+    // about: a door's neighborChanged writes both of its halves. A caller that
+    // has to tell the client what changed therefore cannot recover the set by
+    // comparing the notified cell before and after — that was fine while the
+    // trapdoor was the only synchronous sink, and it silently dropped the
+    // door's far half the moment there were two (a door open in the world and
+    // half-open on screen).
+    //
+    // The list is a mark/release stack so it survives re-entrancy: a sink write
+    // fans out to more components, which may write again. Take a mark, run the
+    // notification, publish everything appended past the mark, then truncate
+    // back to it. The vector keeps its capacity, so a steady state allocates
+    // nothing.
+    [[nodiscard]] std::size_t synchronousWriteMark() const { return synchronousWrites_.size(); }
+    [[nodiscard]] std::span<const world::BlockPos> synchronousWritesSince(std::size_t mark) const {
+        return std::span<const world::BlockPos>{synchronousWrites_}.subspan(
+            mark < synchronousWrites_.size() ? mark : synchronousWrites_.size());
+    }
+    void releaseSynchronousWrites(std::size_t mark) {
+        if (mark < synchronousWrites_.size()) {
+            synchronousWrites_.resize(mark);
+        }
+    }
+    // Raised by RedstoneReactionSink for every real change the mutation service
+    // reports (its onSectionDirty), which is the one callback that already fires
+    // per changed cell regardless of the notify flags.
+    void recordSynchronousWrite(world::BlockPos pos) { synchronousWrites_.push_back(pos); }
+    // Appends every synchronous write since `mark` to `changes` (skipping cells
+    // already listed there) and releases the mark.
+    void collectSynchronousWrites(const world::World& world, std::size_t mark,
+                                  std::vector<BlockChange>& changes);
+
     // An observer at `observerPos` saw a block-state change at `changedPos`
     // (the updateShape pass reports every neighbour a write touched). If that is
     // the block on its FACING side and it is not already pulsing, it schedules
@@ -312,6 +347,8 @@ class WorldSimulation final {
     }
 
   private:
+    // AR-B4-3: see synchronousWriteMark() above.
+    std::vector<world::BlockPos> synchronousWrites_;
     void queueSand(SimulationPosition position);
     void queueWater(SimulationPosition position, std::uint8_t level);
     void queueSupportCheck(SimulationPosition position);

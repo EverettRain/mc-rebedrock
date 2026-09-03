@@ -122,6 +122,18 @@ class RedstoneReactionSink final : public world::MutationSink {
         simulation_.notifyRedstoneComponent(world_, {neighbor.x, neighbor.y, neighbor.z});
     }
 
+    // AR-B4-3: every cell this sink's writes actually changed. The mutation
+    // service raises onSectionDirty once per real change regardless of the
+    // notify flags, which makes it the one honest answer to "what moved" — and
+    // a synchronous sink can move more than the cell it was asked about (a
+    // door writes both halves). Whoever drives the notification drains this and
+    // tells the client; without it the far half changes in the world and is
+    // never published, which is a door that is open in the simulation and half
+    // open on screen.
+    void onSectionDirty(world::BlockPos pos) override {
+        simulation_.recordSynchronousWrite(pos);
+    }
+
   private:
     world::World& world_;
     WorldSimulation& simulation_;
@@ -1322,6 +1334,41 @@ void WorldSimulation::notifyRedstoneComponent(world::World& world,
     }
 }
 
+// AR-B4-3: append every cell a synchronous sink wrote since `mark` to the
+// tick's change list, then release the mark. Cells the caller already listed
+// are skipped — a component pushes its own write itself, and this exists for
+// the *other* cells a sink touched.
+void WorldSimulation::collectSynchronousWrites(const world::World& world, std::size_t mark,
+                                               std::vector<BlockChange>& changes) {
+    for (const world::BlockPos& cell : synchronousWritesSince(mark)) {
+        const SimulationPosition at{cell.x, cell.y, cell.z};
+        bool listed = false;
+        for (const BlockChange& change : changes) {
+            if (change.position.x == at.x && change.position.y == at.y &&
+                change.position.z == at.z) {
+                listed = true;
+                break;
+            }
+        }
+        if (!listed) {
+            changes.push_back({at, world.state(cell.x, cell.y, cell.z)});
+        }
+    }
+    releaseSynchronousWrites(mark);
+}
+
+namespace {
+// dispatchRedstoneTick returns from a dozen places, so the drain rides a scope
+// guard rather than being repeated before each one.
+struct ScopedSynchronousWriteDrain final {
+    WorldSimulation& simulation;
+    const world::World& world;
+    std::size_t mark;
+    std::vector<BlockChange>& changes;
+    ~ScopedSynchronousWriteDrain() { simulation.collectSynchronousWrites(world, mark, changes); }
+};
+} // namespace
+
 void WorldSimulation::settlePistonEvent(world::World& world, const BlockEvent& event,
                                         std::vector<BlockChange>& changes) {
     if (event.type != kPistonEventType) {
@@ -1341,12 +1388,17 @@ void WorldSimulation::settlePistonEvent(world::World& world, const BlockEvent& e
     // a separate large task; this flips the extension state, which is what the
     // reference's fixtures probe.
     RedstoneReactionSink sink{world, *this};
+    const auto writeMark = synchronousWriteMark();
     const auto applied =
         mutations_.setBlock(world, {pos.x, pos.y, pos.z}, next, world::MutationFlags::NotifyClients,
                             world::MutationCause::ScheduledTick, sink);
     if (applied.changed) {
         changes.push_back({pos, next});
     }
+    // AR-B4-3: the fan-out above can reach a synchronous sink that writes cells
+    // this function never names — a door opened by a piston's own update writes
+    // both halves. Those changes are real and have to reach the mesh.
+    collectSynchronousWrites(world, writeMark, changes);
 }
 
 void WorldSimulation::notifyObserverShapeChange(const world::World& world,
@@ -1389,6 +1441,11 @@ void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPositi
     const world::BlockPos pos{position.x, position.y, position.z};
     const auto state = world.state(position.x, position.y, position.z);
     RedstoneReactionSink sink{world, *this};
+    const auto writeMark = synchronousWriteMark();
+    // AR-B4-3: whatever a synchronous sink writes during this tick's fan-out
+    // (a repeater feeding a door writes both halves) has to reach the mesh
+    // too, and none of the `changes.push_back` calls below name those cells.
+    const ScopedSynchronousWriteDrain drainWrites{*this, world, writeMark, changes};
 
     if (block == world::Block::RedstoneTorch || block == world::Block::RedstoneWallTorch) {
         // Age out toggles older than the burnout window before this tick counts,

@@ -247,10 +247,37 @@ class RedstoneCircuit final {
     // scheduler drain.
     void advance(int gameticks = 1) {
         for (int i = 0; i < gameticks; ++i) {
-            static_cast<void>(session_.worldSimulation().tick(world_, true));
+            // The tick's BlockChange list is what the real GameSession turns
+            // into WorldEditEvents (GameSession.cpp's drain loop), so a change
+            // missing from it is a change the client never sees. Recorded here
+            // so a fixture can assert on it the same way it asserts on the
+            // synchronous publish path.
+            for (const auto& change : session_.worldSimulation().tick(world_, true)) {
+                if (change.worldChanged) {
+                    tickedCells_.push_back(
+                        {change.position.x, change.position.y, change.position.z});
+                }
+            }
             session_.drainEvents();
             ++gameTime_;
         }
+    }
+    [[nodiscard]] bool tickedCell(mc::world::BlockPos rel) const {
+        const auto pos = absolute(rel);
+        for (const auto& cell : tickedCells_) {
+            if (cell.x == pos.x && cell.y == pos.y && cell.z == pos.z) {
+                return true;
+            }
+        }
+        return false;
+    }
+    void clearTickedCells() { tickedCells_.clear(); }
+    // The simulation's pending synchronous-write list. It has to be empty
+    // between operations: every path that lets a sink append is responsible for
+    // draining it, and a path that forgets turns a per-tick append into an
+    // unbounded vector.
+    [[nodiscard]] std::size_t pendingSynchronousWrites() const {
+        return session_.worldSimulation().synchronousWriteMark();
     }
     [[nodiscard]] std::uint64_t gameTime() const { return gameTime_; }
 
@@ -289,6 +316,26 @@ class RedstoneCircuit final {
         return world_.state(pos.x, pos.y, pos.z);
     }
 
+    // The cells this circuit has published a WorldEditEvent for — i.e. what a
+    // client (or the mesher) is actually told changed. The world and this list
+    // are two different questions: a write that lands in the world but is never
+    // published is invisible to everyone looking at the game.
+    void recordWorldEdits() {
+        session_.events().subscribeWorldEdit([this](const mc::gameplay::WorldEditEvent& event) {
+            publishedEdits_.push_back({event.x, event.y, event.z});
+        });
+    }
+    [[nodiscard]] bool publishedEdit(mc::world::BlockPos rel) const {
+        const auto pos = absolute(rel);
+        for (const auto& edit : publishedEdits_) {
+            if (edit.x == pos.x && edit.y == pos.y && edit.z == pos.z) {
+                return true;
+            }
+        }
+        return false;
+    }
+    void clearPublishedEdits() { publishedEdits_.clear(); }
+
   private:
     [[nodiscard]] mc::world::BlockPos absolute(mc::world::BlockPos rel) const {
         return {origin_.x + rel.x, origin_.y + rel.y, origin_.z + rel.z};
@@ -299,6 +346,8 @@ class RedstoneCircuit final {
     RecordingHost host_;
     mc::world::BlockPos origin_;
     std::uint64_t gameTime_ = 0;
+    std::vector<mc::world::BlockPos> publishedEdits_;
+    std::vector<mc::world::BlockPos> tickedCells_;
 };
 
 // A fixture = a source-derived table made executable.
