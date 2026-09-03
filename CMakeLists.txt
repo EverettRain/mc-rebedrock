@@ -2117,6 +2117,28 @@ if(BUILD_TESTING)
     )
     add_test(NAME trapdoor_fixture COMMAND mc_rebedrock_trapdoor_fixture_test)
 
+    add_executable(mc_rebedrock_door_fixture_test
+        tests/redstone/door_fixture_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_door_fixture_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_door_fixture_test PRIVATE
+        src
+        tests
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME door_fixture COMMAND mc_rebedrock_door_fixture_test)
+
+    add_executable(mc_rebedrock_fence_gate_fixture_test
+        tests/redstone/fence_gate_fixture_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_fence_gate_fixture_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_fence_gate_fixture_test PRIVATE
+        src
+        tests
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME fence_gate_fixture COMMAND mc_rebedrock_fence_gate_fixture_test)
+
     add_executable(mc_rebedrock_redstone_island_partition_test
         tests/redstone_island_partition_test.cpp
     )

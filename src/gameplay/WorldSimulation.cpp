@@ -1259,26 +1259,65 @@ void WorldSimulation::notifyRedstoneComponent(world::World& world,
         return;
     }
 
-    if (block == world::Block::OakTrapdoor) {
-        // TrapDoorBlock.neighborChanged: a redstone SINK, not a source (never
-        // in isSignalSource/the emission tables) — it reacts to the strongest
-        // signal reaching it and writes synchronously, in this same block-update
-        // pass, unlike a torch's scheduled 2gt toggle. `hasNeighborSignal` reads
-        // level.hasNeighborSignal(pos) == getBestNeighborSignal(pos) > 0.
-        const bool signal = redstone::getBestNeighborSignal(world, pos) > 0;
+    // AR-B4-3: the openable redstone SINKS — door, trapdoor and fence gate.
+    // Vanilla writes all three from the same shape of neighborChanged
+    // (DoorBlock / TrapDoorBlock / FenceGateBlock): read the strongest signal
+    // reaching the block, compare it against POWERED to find the edge, and on an
+    // edge write OPEN and POWERED together with flags 2. None of them is a
+    // signal *source* (they are absent from isSignalSource and the emission
+    // tables); they react synchronously in this same block-update pass, unlike a
+    // torch's scheduled 2gt toggle.
+    //
+    // Dispatched on the block's model, not its identity. This used to be
+    // `block == Block::OakTrapdoor` — one hardcoded block — so the other five
+    // trapdoors were inert and doors and fence gates had no redstone behaviour
+    // at all. Going through `blockDefinition(block).model` means a new wood's
+    // trapdoor is wired the moment it is registered, with nothing to remember
+    // here (the W axis's "kill the identity switch" direction).
+    const auto model = world::blockDefinition(block).model;
+    if (model == world::BlockModel::Door || model == world::BlockModel::TrapDoor ||
+        model == world::BlockModel::FenceGate) {
+        // DoorBlock#neighborChanged reads the signal at *both* halves —
+        // `hasNeighborSignal(pos) || hasNeighborSignal(pos.relative(UP/DOWN))` —
+        // so a lever beside either half opens the whole door. The other two are
+        // single-cell and just ask about themselves.
+        const bool isDoor = model == world::BlockModel::Door;
+        const world::BlockPos partner{pos.x, pos.y + (state.isDoorUpperHalf() ? -1 : 1), pos.z};
+        const bool signal = redstone::getBestNeighborSignal(world, pos) > 0 ||
+                            (isDoor && redstone::getBestNeighborSignal(world, partner) > 0);
         if (signal == state.powered()) {
             return; // no edge: vanilla's `signal != state.getValue(POWERED)` guard
         }
-        // OPEN tracks the signal 1:1 (a disagreement toggles it to match); the
-        // sound event vanilla plays here is presentation and is intentionally
-        // omitted, per this node's scope.
-        const auto next = state.withOpen(signal).withPowered(signal);
+        // OPEN tracks the signal 1:1, and POWERED remembers it so the next
+        // notification can find the next edge. The sound event vanilla plays
+        // alongside is presentation and stays out of scope here, as it already
+        // did for the trapdoor.
         RedstoneReactionSink sink{world, *this};
-        // Flags 2 (clients only), matching vanilla's level.setBlock(pos, state, 2)
-        // — TrapDoorBlock.neighborChanged does not itself fan out a neighbour
-        // pass; only the write that caused the input change already did that.
-        static_cast<void>(mutations_.setBlock(world, pos, next, world::MutationFlags::NotifyClients,
-                                              world::MutationCause::ScheduledTick, sink));
+        const auto write = [&](world::BlockPos at, world::BlockState previous) {
+            // Flags 2 (clients only), matching vanilla's level.setBlock(pos,
+            // state, 2): neighborChanged does not itself fan out a neighbour
+            // pass; the write that caused the input change already did.
+            static_cast<void>(mutations_.setBlock(
+                world, at, previous.withOpen(signal).withPowered(signal),
+                world::MutationFlags::NotifyClients, world::MutationCause::ScheduledTick, sink));
+        };
+        write(pos, state);
+        if (isDoor) {
+            // Both halves are written from the one notification. Vanilla gets
+            // away with writing only the notified cell because its two halves
+            // mirror each other through DoorBlock#updateShape; this build's
+            // neighbour fan-out never reaches the far half (a lever beside the
+            // lower half is two cells from the upper one), and a door with one
+            // half open and one shut is the visible bug. The cell convention is
+            // PlayerInteraction's own two-cell write: resolve the lower half
+            // from the notified one, and only touch the partner if it really is
+            // the same door.
+            const auto partnerState = world.state(partner.x, partner.y, partner.z);
+            if (partnerState.block() == state.block() &&
+                partnerState.isDoorUpperHalf() != state.isDoorUpperHalf()) {
+                write(partner, partnerState);
+            }
+        }
         return;
     }
 }

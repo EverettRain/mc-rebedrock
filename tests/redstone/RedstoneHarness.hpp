@@ -159,8 +159,25 @@ class RedstoneCircuit final {
     // A trapdoor, closed by default. `facing` only matters for its shape/mesh —
     // its redstone reaction (W-signal) is direction-independent, reading
     // getBestNeighborSignal like any other sink.
-    RedstoneCircuit& trapdoor(mc::world::BlockPos rel, gameplay::redstone::Direction facing) {
-        return place(rel, mc::world::BlockState{mc::world::Block::OakTrapdoor, orientationOf(facing)});
+    RedstoneCircuit& trapdoor(mc::world::BlockPos rel, gameplay::redstone::Direction facing,
+                              mc::world::Block kind = mc::world::Block::OakTrapdoor) {
+        return place(rel, mc::world::BlockState{kind, orientationOf(facing)});
+    }
+    // AR-B4-3: a fence gate, closed. Like the trapdoor its redstone reaction is
+    // direction-independent; `facing` is its shape/mesh axis.
+    RedstoneCircuit& fenceGate(mc::world::BlockPos rel, gameplay::redstone::Direction facing,
+                               mc::world::Block kind = mc::world::Block::OakFenceGate) {
+        return place(rel, mc::world::BlockState{kind, orientationOf(facing)});
+    }
+    // AR-B4-3: a door, placed as the two cells it really is — `rel` is the lower
+    // half and `rel + up` the upper, sharing FACING and HINGE, exactly the pair
+    // DoorBlock#setPlacedBy leaves behind. Placing only one half would make the
+    // two-cell write untestable, since there would be no partner to keep in sync.
+    RedstoneCircuit& door(mc::world::BlockPos rel, gameplay::redstone::Direction facing,
+                          mc::world::Block kind = mc::world::Block::OakDoor) {
+        const mc::world::BlockState lower{kind, orientationOf(facing)};
+        place(rel, lower);
+        return place({rel.x, rel.y + 1, rel.z}, lower.withDoorUpperHalf(true));
     }
 
     // The deterministic input primitive for a pressure plate ==

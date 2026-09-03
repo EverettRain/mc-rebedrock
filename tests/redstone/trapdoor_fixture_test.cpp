@@ -61,5 +61,46 @@ int main() {
     using mc::gameplay::redstone::isSignalSource;
     static_assert(!isSignalSource(mc::world::Block::OakTrapdoor));
 
+    // AR-B4-3: every trapdoor in the roster, not just the oak one. The sink used
+    // to be `block == Block::OakTrapdoor`, so these five were inert — a lever
+    // beside a spruce or iron trapdoor did nothing. Dispatch is on the model
+    // now, so this list is a regression guard against sliding back to a single
+    // identity, and it is parameterised precisely so a seventh trapdoor is
+    // covered by adding one line rather than by remembering to.
+    for (const mc::world::Block kind :
+         {mc::world::Block::OakTrapdoor, mc::world::Block::SpruceTrapdoor,
+          mc::world::Block::JungleTrapdoor, mc::world::Block::IronTrapdoor,
+          mc::world::Block::OxidizedCopperTrapdoor,
+          mc::world::Block::WaxedOxidizedCopperTrapdoor}) {
+        // Every one of them really is a TrapDoor model — otherwise this loop
+        // would be asserting nothing about the dispatch it is guarding.
+        if (mc::world::blockDefinition(kind).model != mc::world::BlockModel::TrapDoor) {
+            std::fprintf(stderr, "trapdoor fixture: %s is not a TrapDoor model\n",
+                         mc::world::blockDefinition(kind).identifier.path.data());
+            std::abort();
+        }
+        RedstoneCircuit each;
+        each.solid({-1, 0, -1});
+        each.lever({-1, 0, 0}, Direction::South, false).trapdoor({0, 0, 0}, Direction::North, kind);
+        const BlockPos pos{0, 0, 0};
+        if (each.state(pos).open()) {
+            std::fprintf(stderr, "trapdoor fixture: %s started open\n",
+                         mc::world::blockDefinition(kind).identifier.path.data());
+            std::abort();
+        }
+        each.setLever({-1, 0, 0}, true);
+        if (!each.state(pos).open() || !each.state(pos).powered()) {
+            std::fprintf(stderr, "trapdoor fixture: %s ignored its redstone signal\n",
+                         mc::world::blockDefinition(kind).identifier.path.data());
+            std::abort();
+        }
+        each.setLever({-1, 0, 0}, false);
+        if (each.state(pos).open()) {
+            std::fprintf(stderr, "trapdoor fixture: %s stayed open after the lever fell\n",
+                         mc::world::blockDefinition(kind).identifier.path.data());
+            std::abort();
+        }
+    }
+
     return 0;
 }
