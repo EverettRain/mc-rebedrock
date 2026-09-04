@@ -36,6 +36,7 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iostream>

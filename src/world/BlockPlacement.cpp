@@ -6,6 +6,7 @@
 #include "world/World.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cmath>
 
 namespace mc::world {

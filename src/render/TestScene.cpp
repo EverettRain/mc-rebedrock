@@ -4,6 +4,7 @@
 #include "world/StateSchema.hpp"
 
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
