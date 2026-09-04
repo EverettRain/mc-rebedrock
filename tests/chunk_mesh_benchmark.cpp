@@ -160,5 +160,13 @@ int main() {
     report("stairs (box path, control)",
            measure(makeWorld(BlockState{Block::OakStairs}, kLayers), sectionIndex, kRepetitions),
            floor, cells);
+    // RN-18 adds the row this file was missing: the plain cube path
+    // (`appendFace`), which is what almost every cell in a real world takes and
+    // where the corner-value/blend rework lands hardest. Isolated cubes on the
+    // same stride, so all six faces of each are drawn and none is culled — the
+    // measurement is the mesher's per-face work, not the cull's.
+    report("solid cube (appendFace)",
+           measure(makeWorld(BlockState{Block::Stone}, kLayers), sectionIndex, kRepetitions),
+           floor, cells);
     return 0;
 }

@@ -788,28 +788,45 @@ struct CornerPositions final {
     glm::ivec3 diagonal;
 };
 
-[[nodiscard]] CornerPositions cornerPositions(
-    const FaceDefinition& face, const glm::vec3& corner, int x, int y, int z) {
-    glm::ivec3 tangentA;
-    glm::ivec3 tangentB;
+// The face plane's two in-plane axes. Fixed per normal so that the same
+// world-space cell corner resolves to the same pair whichever of the two blocks
+// sharing it is being meshed.
+struct FaceTangents final {
+    glm::ivec3 a;
+    glm::ivec3 b;
+};
+
+[[nodiscard]] constexpr FaceTangents faceTangents(const FaceDefinition& face) {
     if (face.dx != 0) {
-        tangentA = {0, 1, 0};
-        tangentB = {0, 0, 1};
-    } else if (face.dy != 0) {
-        tangentA = {1, 0, 0};
-        tangentB = {0, 0, 1};
-    } else {
-        tangentA = {1, 0, 0};
-        tangentB = {0, 1, 0};
+        return {{0, 1, 0}, {0, 0, 1}};
     }
-    const int signA = cornerCoordinate(corner, tangentA) < 0.5F ? -1 : 1;
-    const int signB = cornerCoordinate(corner, tangentB) < 0.5F ? -1 : 1;
+    if (face.dy != 0) {
+        return {{1, 0, 0}, {0, 0, 1}};
+    }
+    return {{1, 0, 0}, {0, 1, 0}};
+}
+
+// The 2×2 ring around one CELL corner of the face — `highA`/`highB` name which
+// of the cell's four in-plane corners, not where a vertex happens to sit.
+//
+// RN-18: that distinction is the whole node. This used to take the vertex's
+// position and pick the ring by `coordinate < 0.5F ? -1 : 1`, so a vertex at
+// y=0.5 sampled the ring as if it were at y=1 and a half-height face ran a
+// whole cell's gradient across half a cell. Now the four cell corners are
+// sampled once per face and a vertex is a BLEND of them (see
+// `blendedFaceAmbientOcclusion`), which is what 26.1's
+// `BlockModelLighter.prepareQuadAmbientOcclusion` does.
+[[nodiscard]] CornerPositions cornerPositions(
+    const FaceDefinition& face, const FaceTangents& tangents, bool highA, bool highB,
+    int x, int y, int z) {
+    const int signA = highA ? 1 : -1;
+    const int signB = highB ? 1 : -1;
     const glm::ivec3 outside{x + face.dx, y + face.dy, z + face.dz};
     return {
         outside,
-        outside + tangentA * signA,
-        outside + tangentB * signB,
-        outside + tangentA * signA + tangentB * signB,
+        outside + tangents.a * signA,
+        outside + tangents.b * signB,
+        outside + tangents.a * signA + tangents.b * signB,
     };
 }
 
@@ -895,27 +912,101 @@ template <typename Sampler>
     };
 }
 
+// RN-18: the AO and smooth light at the face's four CELL corners, resolved once
+// per face.
+//
+// This is 26.1's `BlockModelLighter.prepareQuadAmbientOcclusion`: it computes
+// four corner values (`lightLevel1..4`, one ring average each) from the cell's
+// four in-plane corners, independent of where the quad's vertices actually sit,
+// and only then weights them per vertex. Doing it in that order is what makes a
+// partial face pick up the MIDDLE of the cell's gradient instead of running a
+// whole gradient of its own — which is the banding a stair showed at y=0.5,
+// where its lower box ended one gradient and its upper box started another.
+//
+// Index = (highA << 1) | highB over the face's two in-plane axes, so index 0 is
+// the (low, low) corner.
+struct FaceCornerLighting final {
+    std::array<float, 4> ambient{1.0F, 1.0F, 1.0F, 1.0F};
+    std::array<VertexLight, 4> light{};
+};
+
+// Sample count is unchanged from the per-vertex version this replaces: four
+// corners × four ring cells, where it used to be four vertices × four ring
+// cells. What moves is only WHERE the four rings are anchored.
 template <typename Sampler>
-[[nodiscard]] float vertexAmbientOcclusion(
-    const Sampler& lighting, SmoothLightingQuality quality,
-    const FaceDefinition& face, const glm::vec3& corner, int x, int y, int z) {
-    const auto positions = cornerPositions(face, corner, x, y, z);
-    if (quality == SmoothLightingQuality::High) {
-        return vertexAmbientOcclusionHigh(lighting, positions);
+[[nodiscard]] FaceCornerLighting faceCornerLighting(
+    const Sampler& lighting, SmoothLightingQuality quality, const FaceDefinition& face,
+    int x, int y, int z, VoxelLightLevel outsideLight, bool wantAmbientOcclusion) {
+    FaceCornerLighting corners;
+    // Resolved once: the two in-plane axes are a property of the normal, and
+    // asking for them per corner and again per vertex was eight branchy lookups
+    // a face for one answer.
+    const FaceTangents tangents = faceTangents(face);
+    for (std::size_t index = 0; index < 4U; ++index) {
+        const bool highA = (index & 0b10U) != 0U;
+        const bool highB = (index & 0b01U) != 0U;
+        const auto positions = cornerPositions(face, tangents, highA, highB, x, y, z);
+        if (wantAmbientOcclusion) {
+            corners.ambient[index] = quality == SmoothLightingQuality::High
+                ? vertexAmbientOcclusionHigh(lighting, positions)
+                : vertexAmbientOcclusionStandard(lighting, positions);
+        }
+        corners.light[index] = quality == SmoothLightingQuality::High
+            ? vertexLightHigh(lighting, positions)
+            : vertexLightStandard(lighting, positions, outsideLight);
     }
-    return vertexAmbientOcclusionStandard(lighting, positions);
+    return corners;
 }
 
-template <typename Sampler>
-[[nodiscard]] VertexLight vertexLight(
-    const Sampler& lighting, SmoothLightingQuality quality,
-    const FaceDefinition& face, const glm::vec3& corner, int x, int y, int z,
-    VoxelLightLevel outsideLight) {
-    const auto positions = cornerPositions(face, corner, x, y, z);
-    if (quality == SmoothLightingQuality::High) {
-        return vertexLightHigh(lighting, positions);
+// The bilinear weights of a vertex sitting at `corner` (cell-local 0..1) over
+// the face's four cell corners.
+//
+// 26.1 spells this as sixteen `faceShape[..] * faceShape[..]` products picked
+// through per-direction `vertNWeights` tables (`BlockModelLighter:132-147`).
+// Those tables exist because a Java BakedQuad's vertices arrive in a
+// direction-dependent winding and the weights are read off the QUAD's bounding
+// box; every quad this mesher emits is an axis-aligned box face whose vertex is
+// at a corner of that box, so `(1-u, u) x (1-v, v)` at the vertex's own position
+// is the same arithmetic without the tables. Clamped because a baked element
+// model may put a vertex outside the cell — a lit repeater's halo runs from
+// -1.5/16 to 17.5/16 — and an extrapolated weight would push a corner value out
+// of range instead of holding it at the cell edge.
+// A vertex's share of the four corner values: `(1-u, u) x (1-v, v)` at its own
+// fractional position in the face plane.
+//
+// Deliberately NOT branched on 26.1's `facePartial` short-circuit
+// (`BlockModelLighter:127`), which skips the arithmetic when a vertex sits
+// exactly on a cell corner — the common case. That variant was written and
+// measured on the release benchmark: the per-vertex branch cost MORE than the
+// twelve multiply-adds it saved (stairs 2618 ns/cell with it, 2416 without,
+// against 2335 for the code it replaces). Java gets that flag for free from a
+// baker that already walked the quad; here it is a test on the hot path that
+// buys nothing. Recorded so the next reader does not re-derive it.
+//
+// Clamped because a baked element model may put a vertex outside the cell — a
+// lit repeater's halo runs from -1.5/16 to 17.5/16 — and an extrapolated weight
+// would push a corner value out of range instead of holding it at the cell edge.
+[[nodiscard]] std::array<float, 4> faceCornerWeights(const FaceTangents& tangents,
+                                                     const glm::vec3& corner) {
+    const float u = std::clamp(cornerCoordinate(corner, tangents.a), 0.0F, 1.0F);
+    const float v = std::clamp(cornerCoordinate(corner, tangents.b), 0.0F, 1.0F);
+    return {(1.0F - u) * (1.0F - v), (1.0F - u) * v, u * (1.0F - v), u * v};
+}
+
+[[nodiscard]] float blendedAmbientOcclusion(const FaceCornerLighting& corners,
+                                            const std::array<float, 4>& weights) {
+    return corners.ambient[0] * weights[0] + corners.ambient[1] * weights[1] +
+           corners.ambient[2] * weights[2] + corners.ambient[3] * weights[3];
+}
+
+[[nodiscard]] VertexLight blendedLight(const FaceCornerLighting& corners,
+                                       const std::array<float, 4>& weights) {
+    VertexLight blended{0.0F, 0.0F};
+    for (std::size_t index = 0; index < 4U; ++index) {
+        blended.sky += corners.light[index].sky * weights[index];
+        blended.block += corners.light[index].block * weights[index];
     }
-    return vertexLightStandard(lighting, positions, outsideLight);
+    return blended;
 }
 
 template <typename Sampler>
@@ -968,20 +1059,28 @@ void appendFace(
     // Hoisted out of the corner loop: textureLayer probes world orientation,
     // so this reads it once per face instead of once per corner.
     const float layer = textureLayer(world, block, face.face, x, y, z);
+    // RN-18: the cell's four corner values, once per face.
+    const auto cornerLighting = faceCornerLighting(lighting, quality, face, x, y, z,
+                                                   outsideLight, /*wantAmbientOcclusion=*/true);
+    const FaceTangents tangents = faceTangents(face);
     for (std::size_t corner = 0; corner < face.corners.size(); ++corner) {
-        ambientOcclusion[corner] = vertexAmbientOcclusion(
-            lighting, quality, face, face.corners[corner], x, y, z);
-        auto smoothLight = vertexLight(
-            lighting, quality, face, face.corners[corner], x, y, z, outsideLight);
-        if (selfLit) smoothLight.block = 1.0F;
         glm::vec3 positionCorner = face.corners[corner];
+        if (modelHeight < 1.0F) {
+            // A truncated block (farmland) lowers the top of its box, and the
+            // lighting is blended at the vertex's REAL position — so the drop
+            // has to happen before the blend, not after. Before RN-18 the two
+            // orders were indistinguishable: 15/16 and 1 both landed on the same
+            // side of the old `< 0.5F` test.
+            positionCorner.y *= modelHeight;
+        }
+        const auto weights = faceCornerWeights(tangents, positionCorner);
+        ambientOcclusion[corner] = blendedAmbientOcclusion(cornerLighting, weights);
+        auto smoothLight = blendedLight(cornerLighting, weights);
+        if (selfLit) smoothLight.block = 1.0F;
         // RN-8c: the UV comes from the block's cube model, baked once at startup
         // through the same primitive the element models use. There is no per-face
         // turn count any more — the FACING rotation is in the bake.
         const glm::vec2 uv = faceUv[corner];
-        if (modelHeight < 1.0F) {
-            positionCorner.y *= modelHeight;
-        }
         const int cornerX = x + static_cast<int>(std::lround(positionCorner.x));
         const int cornerZ = z + static_cast<int>(std::lround(positionCorner.z));
         // The tint is resolved at the corner, so the four vertices of a face
@@ -1094,6 +1193,13 @@ void appendWaterFace(
     const std::uint8_t waterTintMask = tintMask(waterTint);
     const auto flatLight = lighting.level(
         x + face.dx, y + face.dy, z + face.dz);
+    // RN-18: the cell's four corner values, once per face. The blend below uses
+    // the CANONICAL corner, not the surface-lowered one: a water surface's y is
+    // a per-column height and the in-plane axes of a top face are x/z, which the
+    // lowering does not touch — so the weights are the same either way, and
+    // spelling the canonical corner keeps that fact visible.
+    const auto waterCornerLighting = faceCornerLighting(
+        lighting, quality, face, x, y, z, flatLight, /*wantAmbientOcclusion=*/false);
     for (std::size_t cornerIndex = 0; cornerIndex < face.corners.size(); ++cornerIndex) {
         glm::vec3 corner = face.corners[cornerIndex];
         if (corner.y > 0.5F) {
@@ -1118,8 +1224,9 @@ void appendWaterFace(
                   static_cast<int>(std::lround(corner.x)),
                   static_cast<int>(std::lround(corner.z)))
             : opticalDepth;
-        const auto smoothLight = vertexLight(
-            lighting, quality, face, face.corners[cornerIndex], x, y, z, flatLight);
+        const auto smoothLight =
+            blendedLight(waterCornerLighting,
+                         faceCornerWeights(faceTangents(face), face.corners[cornerIndex]));
         mesh.vertices.push_back(packVertex(
             (origin + corner) - sectionOrigin,
             face.normal,
@@ -1280,17 +1387,26 @@ void appendBox(
         const float layer = textureLayer(world, current.block, face.face, x, y, z);
         const std::array<glm::vec2, 4> faceUv = boxFaceUv(from16, to16, face.face);
         std::array<float, 4> ambientOcclusion{};
+        // RN-18: this loop is where the banding lived. It asked for the lighting
+        // at the UNIT cube corner (0 or 1) and only afterwards remapped the
+        // vertex into the box — so a stair's lower box ran a full cell gradient
+        // over its bottom half and its upper box ran another full one over the
+        // top, meeting at y=0.5 as a hard step. The corner values are now the
+        // cell's, and the vertex is blended at the position it is actually
+        // emitted at.
+        const auto cornerLighting = faceCornerLighting(
+            lighting, quality, face, x, y, z, outsideLight, /*wantAmbientOcclusion=*/true);
+        const FaceTangents tangents = faceTangents(face);
         for (std::size_t corner = 0; corner < face.corners.size(); ++corner) {
-            ambientOcclusion[corner] = vertexAmbientOcclusion(
-                lighting, quality, face, face.corners[corner], x, y, z);
-            auto smoothLight = vertexLight(
-                lighting, quality, face, face.corners[corner], x, y, z, outsideLight);
-            if (selfLit) smoothLight.block = 1.0F;
             // Remap the unit-cube corner into the box's bounds on every axis:
             // p = min + corner * (max - min). The UV crop that goes with it is
             // `defaultFaceUV` of the same box, hoisted out of this loop.
             const glm::vec3 unit = face.corners[corner];
             const glm::vec3 positionCorner = boxMin + unit * (boxMax - boxMin);
+            const auto weights = faceCornerWeights(tangents, positionCorner);
+            ambientOcclusion[corner] = blendedAmbientOcclusion(cornerLighting, weights);
+            auto smoothLight = blendedLight(cornerLighting, weights);
+            if (selfLit) smoothLight.block = 1.0F;
             const glm::vec2 uv = faceUv[corner];
             const int cornerX = x + static_cast<int>(std::lround(positionCorner.x));
             const int cornerZ = z + static_cast<int>(std::lround(positionCorner.z));
@@ -1771,16 +1887,19 @@ void appendBakedModel(render::MeshData& mesh, const CellCullContext& current, Bl
                                 static_cast<float>(ChunkLightSampler::kMaximumLightLevel);
         const auto firstVertex = static_cast<std::uint32_t>(mesh.vertices.size());
         std::array<float, 4> ambient{1.0F, 1.0F, 1.0F, 1.0F};
+        const auto cornerLighting = faceCornerLighting(lighting, quality, faceDefinition, x, y, z,
+                                                       outsideLight, ambientOcclusion);
+        const FaceTangents tangents = faceTangents(faceDefinition);
         for (std::size_t corner = 0; corner < 4; ++corner) {
-            // The corner in cell-local 0..1, which is all cornerPositions wants
-            // (it only compares each in-plane axis against 0.5 to pick a side).
+            // The corner in cell-local 0..1. RN-18 reads it as a fractional
+            // position now, not as a side of the cell, so an element model's
+            // inset quads sit on the same gradient as the cell around them.
             const glm::vec3 local = baked.quad.position[corner];
+            const auto weights = faceCornerWeights(tangents, local);
             if (ambientOcclusion) {
-                ambient[corner] =
-                    vertexAmbientOcclusion(lighting, quality, faceDefinition, local, x, y, z);
+                ambient[corner] = blendedAmbientOcclusion(cornerLighting, weights);
             }
-            const auto smoothLight =
-                vertexLight(lighting, quality, faceDefinition, local, x, y, z, outsideLight);
+            const auto smoothLight = blendedLight(cornerLighting, weights);
             mesh.vertices.push_back(packVertex(
                 (origin + local) - sectionOrigin, baked.quad.normal, baked.quad.uv[corner], layer,
                 ambient[corner], 0.0F, smoothLight.sky, smoothLight.block, flatSky, flatBlock,
