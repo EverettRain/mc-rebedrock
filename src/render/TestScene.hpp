@@ -5,8 +5,11 @@
 // 场景可以是单个方块的各生长阶段，也可以是受控的遮挡场景
 // 正常游戏不经过这里
 
+#include "render/BlockPreviewCamera.hpp"
 #include "world/Block.hpp"
 #include "world/BlockState.hpp"
+
+#include <glm/vec3.hpp>
 
 #include <cstdint>
 #include <filesystem>
@@ -17,6 +20,17 @@
 #include <vector>
 
 namespace mc::render {
+
+// The pattern's layers map to y (first layer is the bottom), its rows to z (first
+// row is the north edge, so a written scene reads like a map seen from above),
+// and its columns to x. `SceneCell` itself is declared with the camera that
+// frames it (BlockPreviewCamera.hpp) — one declaration, so the parser and the
+// camera cannot disagree about which axis is which.
+
+// The scene's extent, in cells, on each axis. Small on purpose: the preview
+// world is a single chunk and the camera frames the whole structure, so a scene
+// larger than this is not a preview any more.
+inline constexpr int kMaxSceneExtent = 8;
 
 struct TestSceneOptions final {
     world::Block block = world::Block::Stone;
@@ -38,6 +52,23 @@ struct TestSceneOptions final {
     // 这样遮挡查询的结果是可预期的
     bool occlusionScene = false;
 
+    // RN-17: the structured multi-block scene, empty for the single-block form.
+    //
+    // The single-block form is left exactly as it was, down to its directory
+    // name, because RN-15's stored baselines are keyed on that name and the
+    // whole value of this tool is that two runs are comparable.
+    std::vector<SceneCell> sceneCells;
+    // Extent in cells: x = columns, y = layers, z = rows.
+    glm::ivec3 sceneSize{0, 0, 0};
+    // The `--scene` pattern and the `--key` legend entries as they were spelled,
+    // in order. Only used to name the output directory — which must therefore be
+    // a function of the command line and nothing else (RN-15 §4's determinism
+    // rule reaches the file names too).
+    std::string scenePattern;
+    std::vector<std::string> sceneLegend;
+
+    [[nodiscard]] bool isScene() const { return !sceneCells.empty(); }
+
     // RN-15d: render the block from the eight corner viewpoints, write one PNG
     // each under `previewRoot`, and exit. Non-zero exit if any one of them fails
     // — seven images out of eight, silently, is the worst outcome for something
@@ -52,16 +83,34 @@ struct TestSceneOptions final {
     [[nodiscard]] bool operator==(const TestSceneOptions&) const = default;
 };
 
-// The directory one export writes into: the block's identifier with `:` replaced
-// by `_`, plus one `__<property>-<value>` segment per property the spec named, in
-// the order it named them.
+// The directory one export writes into.
+//
+// SINGLE BLOCK (unchanged since RN-15b, and it must stay unchanged — the stored
+// baselines are keyed on it): the block's identifier with `:` replaced by `_`,
+// plus one `__<property>-<value>` segment per property the spec named, in the
+// order it named them.
 //
 // `:` is legal in a POSIX path and not on Windows, and this project ships both;
 // replacing it is the choice RN-15b records rather than dropping the namespace,
 // because a datapack block one day sharing a path with a built-in would otherwise
 // overwrite its pictures.
+//
+// SCENE (C): `scene__<pattern>__<legend>...`, where the pattern is the `--scene`
+// string with `/` -> `-`, `;` -> `+` and space -> `.`, and each legend entry is
+// `<char>-<identifier>` followed by `.<property>-<value>` per property. The
+// PATTERN is part of the name, not just the size: `sg/gs` and `gs/sg` are two
+// different pictures and must not share a directory. A name longer than
+// `kMaxPreviewDirectoryName` is cut and given an 8-hex FNV-1a suffix of the full
+// name, so it stays both short enough for every filesystem and unique.
+inline constexpr std::size_t kMaxPreviewDirectoryName = 120;
+
 [[nodiscard]] std::string previewDirectoryName(const TestSceneOptions& options);
 
+// RN-17 追加 --scene <图案> --key <字符>=<方块规格>（可重复）
+//   图案：层用 `;` 分隔（第一层在底部，y 向上），层内的行用 `/` 分隔（第一行在北边，
+//   z 向南递增），行内每个字符是一格（x 向东递增）。空格 = 空气，其余字符必须在
+//   --key 里出现。**不做任何空白裁剪** —— 空格就是空气，裁掉它就没法在边上留空。
+//   例：--scene "  s/ss/ggg" --key s=oak_stairs[facing=north] --key g=grass_block
 // 命令行形式为 --test-scene <方块规格> [--stage <0..9>]
 // 方块规格是 `<数字 id|minecraft:id|裸名>`，可选带 `[属性=值,...]`
 // 另有 --occlusion-scene 选受控遮挡场景

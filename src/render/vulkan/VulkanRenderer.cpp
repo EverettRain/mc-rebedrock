@@ -1012,6 +1012,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             world::BlockOrientation::South, world::BlockOrientation::West,
             world::BlockOrientation::Up,    world::BlockOrientation::Down};
         world::Chunk chunk;
+        // RN-17: a structured scene places every cell of the pattern; the
+        // single-block form below is the one-cell case of the same thing, kept
+        // as its own branch only because `--stage` still rotates it.
+        if (testScene->isScene()) {
+            initializeSceneCells(chunk);
+            return;
+        }
         // RN-15c: the scene spec carries the whole state now, not just the block.
         // `--stage` still spins the six orientations for the callers that have
         // always used it — but only when the spec did not name `facing` itself,
@@ -1056,28 +1063,92 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             static_cast<std::uint64_t>(world::DayNightCycle::kNewWorldTick));
         previewState_ = blockState;
         if (testScene->exportPreview) {
-            // The rest of the determinism knobs, set explicitly rather than
-            // inherited from whatever the options file happens to hold: an export
-            // that depends on the user's video settings cannot be diffed against
-            // one taken on another machine, and comparison is the whole point.
-            // Only the export sets these — an interactive test scene stays the
-            // interactive test scene it has always been.
-            gameSession.weatherSystem().setWeather(/*clearTicks=*/1'000'000,
-                                                   /*rainTicks=*/0, /*raining=*/false,
-                                                   /*thundering=*/false);
-            options.viewBobbing = false;
-            options.sunShadows = false;
-            baseFieldOfViewDegrees = kPreviewFieldOfViewDegrees;
-            camera.setFieldOfViewDegrees(kPreviewFieldOfViewDegrees);
-            // The one thing that would otherwise still vary frame to frame: the
-            // world is static, but the interpolation weight is not, and it feeds
-            // the view matrix. Pin it. The export loop never touches it again.
-            renderInterpolationAlpha = 0.0F;
+            applyPreviewDeterminism();
         }
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
         std::cout << "Test scene: "
                   << world::blockDefinition(testScene->block).identifier.toString() << " stage "
                   << testScene->stage << '\n';
+    }
+
+    // The determinism knobs an export sets, shared by the single-block scene and
+    // the structured one. Split out when C added the second caller: two copies of
+    // "which settings are pinned" is two answers to the only question this tool
+    // has to get right.
+    void applyPreviewDeterminism() {
+        // Set explicitly rather than inherited from whatever the options file
+        // happens to hold: an export that depends on the user's video settings
+        // cannot be diffed against one taken on another machine, and comparison
+        // is the whole point. Only the export sets these — an interactive test
+        // scene stays the interactive test scene it has always been.
+        gameSession.weatherSystem().setWeather(/*clearTicks=*/1'000'000,
+                                               /*rainTicks=*/0, /*raining=*/false,
+                                               /*thundering=*/false);
+        options.viewBobbing = false;
+        options.sunShadows = false;
+        baseFieldOfViewDegrees = kPreviewFieldOfViewDegrees;
+        camera.setFieldOfViewDegrees(kPreviewFieldOfViewDegrees);
+        // The one thing that would otherwise still vary frame to frame: the
+        // world is static, but the interpolation weight is not, and it feeds the
+        // view matrix. Pin it. The export loop never touches it again.
+        renderInterpolationAlpha = 0.0F;
+    }
+
+    // RN-17: the structured scene. Same world, same determinism, same eight-corner
+    // camera — the only difference is that the pattern writes many cells and the
+    // camera is framed on the bounding box of all of them.
+    void initializeSceneCells(world::Chunk& chunk) {
+        int lowestY = kPreviewBlockPosition.y;
+        int highestY = kPreviewBlockPosition.y;
+        for (const SceneCell& cell : testScene->sceneCells) {
+            const glm::ivec3 position = kPreviewBlockPosition + cell.offset;
+            chunk.setState(position.x, position.y, position.z, cell.state);
+            lowestY = std::min(lowestY, position.y);
+            highestY = std::max(highestY, position.y);
+        }
+        interactionWorld.setChunk({0, 0}, chunk);
+        clientCache.setChunk({0, 0}, std::move(chunk));
+        world::WorldLightEngine lighting;
+        const std::array positions{world::ChunkPosition{0, 0}};
+        lighting.initializeChunks(interactionWorld, positions);
+        lighting.initializeChunks(clientCache, positions);
+        // Every section the scene reaches into, not just the origin's: a scene
+        // that straddles a section boundary would otherwise have its upper half
+        // simply missing from the picture, and nothing would say so.
+        const int firstSection = world::sectionIndexFromWorldY(lowestY);
+        const int lastSection = world::sectionIndexFromWorldY(highestY);
+        std::uint64_t revision = 1U;
+        for (int sectionY = firstSection; sectionY <= lastSection; ++sectionY) {
+            world::SectionMeshUpdate update;
+            update.position = {0, sectionY, 0};
+            update.mesh = world::ChunkMesher::buildSection(clientCache, {0, 0}, sectionY);
+            update.revision = revision++;
+            pendingSectionOrder.push(update.position, 0, false);
+            latestSectionRevisions.insert_or_assign(update.position, update.revision);
+            pendingSectionUpdates.insert_or_assign(update.position, std::move(update));
+        }
+        for (const SceneCell& cell : testScene->sceneCells) {
+            if (cell.state.block() != world::Block::Chest) {
+                continue;
+            }
+            const glm::ivec3 position = kPreviewBlockPosition + cell.offset;
+            gameSession.createChestBlockEntity({position.x, position.y, position.z});
+        }
+        loadedCpuChunkCount = 1U;
+        worldReady = true;
+        paused = true;
+        menuSystem.pageStack.reset(ui::PageId::Game);
+        gameSession.clocks().setTotalTicks(
+            world::ClockId::Overworld,
+            static_cast<std::uint64_t>(world::DayNightCycle::kNewWorldTick));
+        previewState_ = testScene->sceneCells.front().state;
+        if (testScene->exportPreview) {
+            applyPreviewDeterminism();
+        }
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        std::cout << "Test scene: structure " << testScene->sceneSize.x << 'x'
+                  << testScene->sceneSize.y << 'x' << testScene->sceneSize.z << " cells, "
+                  << testScene->sceneCells.size() << " blocks\n";
     }
 
     // RN-15d: the eight-corner export, written as its own loop rather than as a
@@ -1104,10 +1175,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const glm::vec3 cellOrigin{static_cast<float>(kPreviewBlockPosition.x),
                                    static_cast<float>(kPreviewBlockPosition.y),
                                    static_cast<float>(kPreviewBlockPosition.z)};
+        // RN-17: a scene is framed on the union of its cells' shapes, a single block
+        // on its own. Both are the same PreviewBounds fed to the same pose
+        // solver, so the eight corners, the fill fraction and the model overhang
+        // are one implementation rather than two that drift.
+        const PreviewBounds previewBounds =
+            testScene->isScene()
+                ? previewBoundsOfScene(std::span<const SceneCell>{testScene->sceneCells})
+                : previewBoundsOf(world::blockShape(previewState_));
         std::size_t failures = 0;
         for (std::size_t index = 0; index < kPreviewCornerCount; ++index) {
             const auto corner = static_cast<PreviewCorner>(index);
-            const auto pose = previewCameraPose(previewState_, cellOrigin, corner,
+            const auto pose = previewCameraPose(previewBounds, cellOrigin, corner,
                                                 kPreviewFieldOfViewDegrees, aspectRatio);
             camera.setPosition(pose.eye);
             camera.setRotation(pose.yawDegrees, pose.pitchDegrees);

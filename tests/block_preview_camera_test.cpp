@@ -23,6 +23,7 @@
 #include <glm/vec4.hpp>
 
 #include <array>
+#include <span>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -177,6 +178,90 @@ int main() {
                 assert(glm::length(pose.eye - centre) > 0.9F);
             }
         }
+    }
+
+    // --- RN-17: a structured scene is framed on the whole structure. ---
+    //
+    // The two scenes this was built for: a stair standing on a grass block, and
+    // two stairs stacked. What must hold is that the SAME camera solver frames
+    // them — every corner of the whole structure in shot, camera outside it, one
+    // scale shared by all eight viewpoints — because the single-block path's
+    // value came entirely from those properties and a second, scene-only camera
+    // would have to re-earn them.
+    {
+        using mc::render::previewBoundsOfScene;
+        using mc::render::SceneCell;
+
+        const std::array onGrass{
+            SceneCell{{0, 0, 0}, BlockState{Block::Grass}},
+            SceneCell{{0, 1, 0}, BlockState{Block::OakStairs}},
+        };
+        const auto bounds = previewBoundsOfScene(onGrass);
+        // Two cells tall, one wide and one deep: the union of the cells' own
+        // shapes, offset. A bounds that ignored the offset would be one cell tall
+        // and the stair would sit outside the frame it was solved for.
+        assert(bounds.minimum.y == 0.0F);
+        assert(std::fabs(bounds.maximum.y - 2.0F) < 1.0e-4F);
+        assert(std::fabs(bounds.extent().x - 1.0F) < 1.0e-4F);
+        assert(std::fabs(bounds.extent().z - 1.0F) < 1.0e-4F);
+
+        // It is the SHAPES that are unioned, not the cells: a plate on a cube is
+        // 2 cells tall and 1+1/16 blocks of matter, and framing the empty cell
+        // above it would push the subject into a corner.
+        const std::array plateOnCube{
+            SceneCell{{0, 0, 0}, BlockState{Block::Stone}},
+            SceneCell{{0, 1, 0}, BlockState{Block::StonePressurePlate}},
+        };
+        const auto thin = previewBoundsOfScene(plateOnCube);
+        assert(thin.maximum.y > 1.0F && thin.maximum.y < 1.2F);
+
+        // Every corner of the structure, from every viewpoint, in frame — the
+        // same assertion the single-block sweep makes, through the same solver.
+        for (const auto& scene : {std::span<const SceneCell>{onGrass},
+                                  std::span<const SceneCell>{plateOnCube}}) {
+            const auto sceneBounds = previewBoundsOfScene(scene);
+            for (std::size_t c = 0; c < kPreviewCornerCount; ++c) {
+                const auto corner = static_cast<PreviewCorner>(c);
+                const auto pose =
+                    previewCameraPose(sceneBounds, kCell, corner, kFov, kAspect);
+                assertFitsInFrame(paddedBounds(sceneBounds), kCell, pose, 0.05F, "scene");
+                const glm::vec3 centre = kCell + sceneBounds.centre();
+                assert(glm::length(pose.eye - centre) > 0.9F);
+            }
+        }
+
+        // A taller structure is photographed from further away — the adaptive
+        // part, on scenes. A fixed distance would crop the second stair.
+        const std::array stacked{
+            SceneCell{{0, 0, 0}, BlockState{Block::OakStairs}},
+            SceneCell{{0, 1, 0}, BlockState{Block::OakStairs}},
+        };
+        const auto oneStair = previewCameraPose(
+            previewBoundsOfScene(std::span<const SceneCell>{stacked}.first(1)), kCell,
+            PreviewCorner::SouthEastUp, kFov, kAspect);
+        const auto twoStairs =
+            previewCameraPose(previewBoundsOfScene(stacked), kCell,
+                              PreviewCorner::SouthEastUp, kFov, kAspect);
+        assert(twoStairs.distance > oneStair.distance);
+
+        // Determinism, as for a single block: the same scene must solve to the
+        // same pose bit for bit, or two exports of it are not comparable.
+        for (std::size_t c = 0; c < kPreviewCornerCount; ++c) {
+            const auto corner = static_cast<PreviewCorner>(c);
+            const auto first = previewCameraPose(previewBoundsOfScene(onGrass), kCell, corner,
+                                                 kFov, kAspect);
+            const auto again = previewCameraPose(previewBoundsOfScene(onGrass), kCell, corner,
+                                                 kFov, kAspect);
+            assert(first.eye == again.eye);
+            assert(first.yawDegrees == again.yawDegrees);
+            assert(first.pitchDegrees == again.pitchDegrees);
+            assert(first.distance == again.distance);
+        }
+
+        // An empty scene must still give a usable box rather than a point, for
+        // the same reason an Empty shape does.
+        const auto none = previewBoundsOfScene(std::span<const SceneCell>{});
+        assert(none.extent().x == 1.0F && none.extent().y == 1.0F && none.extent().z == 1.0F);
     }
 
     // --- The adaptive part, stated as a comparison: a thin block is photographed

@@ -10,6 +10,8 @@
 #include "core/PackArguments.hpp"
 #include "render/TestScene.hpp"
 
+#include <glm/vec3.hpp>
+
 #include <array>
 #include <cassert>
 #include <span>
@@ -172,6 +174,174 @@ int main() {
         // Same command, same directory — every time.
         assert(mc::render::previewDirectoryName(
                    accept({"--test-scene"sv, "oak_trapdoor[open=true,half=top]"sv})) == name);
+    }
+
+    // --- RN-17: the structured scene. ---
+    //
+    // The pattern is the crafting table's shape: layers separated by `;`, rows by
+    // `/`, one character per cell, and a legend of `--key`s. Everything the
+    // single-block spec accepts, a legend entry accepts — because it is the same
+    // parser, which is the point of the refactor that made it return a value
+    // instead of writing into the options.
+    {
+        // The first use case this exists for: a stair standing on grass. One
+        // column, one row, two layers — grass at the bottom, stair on top.
+        const auto onGrass = accept({"--scene"sv, "g;s"sv, "--key"sv, "g=grass_block"sv,
+                                     "--key"sv, "s=oak_stairs[facing=north,half=bottom]"sv});
+        assert(onGrass.isScene());
+        assert(onGrass.sceneSize == glm::ivec3(1, 2, 1));
+        assert(onGrass.sceneCells.size() == 2U);
+        // Layer 0 is the BOTTOM. A scene written bottom-up that photographed
+        // top-down would put the stair underground and nothing would say so.
+        assert(onGrass.sceneCells[0].offset == glm::ivec3(0, 0, 0));
+        assert(onGrass.sceneCells[0].state.block() == Block::Grass);
+        assert(onGrass.sceneCells[1].offset == glm::ivec3(0, 1, 0));
+        assert(onGrass.sceneCells[1].state.block() == Block::OakStairs);
+        // The legend's blockstate spec is the single-block spec, in full.
+        assert(onGrass.sceneCells[1].state.orientation() == BlockOrientation::North);
+        assert(onGrass.sceneCells[1].state.stairHalf() == SlabPortion::Bottom);
+
+        // The second: two stairs stacked. One key, used twice.
+        const auto stacked = accept({"--scene"sv, "s;s"sv, "--key"sv, "s=oak_stairs"sv});
+        assert(stacked.sceneCells.size() == 2U);
+        assert(stacked.sceneCells[0].offset == glm::ivec3(0, 0, 0));
+        assert(stacked.sceneCells[1].offset == glm::ivec3(0, 1, 0));
+
+        // Axes, all three at once, on a scene where every cell is distinguishable.
+        // Columns run east (+x), rows run south (+z), layers run up (+y). Getting
+        // any pair of these swapped produces a picture that looks plausible and is
+        // of a different structure.
+        const auto axes = accept({"--scene"sv, "ab/cd;e /  "sv, "--key"sv, "a=stone"sv, "--key"sv,
+                                  "b=dirt"sv, "--key"sv, "c=sand"sv, "--key"sv, "d=gravel"sv,
+                                  "--key"sv, "e=cobblestone"sv});
+        assert(axes.sceneSize == glm::ivec3(2, 2, 2));
+        assert(axes.sceneCells.size() == 5U); // the trailing space is air
+        const auto cellAt = [&axes](glm::ivec3 offset) {
+            for (const auto& cell : axes.sceneCells) {
+                if (cell.offset == offset) return cell.state.block();
+            }
+            return Block::Air;
+        };
+        assert(cellAt({0, 0, 0}) == Block::Stone);      // layer 0, row 0, column 0
+        assert(cellAt({1, 0, 0}) == Block::Dirt);       // one column east
+        assert(cellAt({0, 0, 1}) == Block::Sand);       // one row south
+        assert(cellAt({1, 0, 1}) == Block::Gravel);
+        assert(cellAt({0, 1, 0}) == Block::Cobblestone); // one layer up
+        assert(cellAt({1, 1, 0}) == Block::Air);         // the space
+
+        // `--key` may be written before OR after `--scene`: a command line whose
+        // meaning depends on flag order is one people will get wrong.
+        const auto keyFirst = accept({"--key"sv, "s=oak_stairs"sv, "--scene"sv, "s"sv});
+        assert(keyFirst.sceneCells.size() == 1U);
+    }
+
+    // --- RN-17: everything malformed about a scene throws, too. ---
+    {
+        // A symbol with no key, and a key no symbol uses. The second one matters
+        // as much as the first: it is what a typo in the pattern looks like, and
+        // without it the picture would simply be missing a block.
+        assert(rejects({"--scene"sv, "sx"sv, "--key"sv, "s=stone"sv}));
+        assert(rejects({"--scene"sv, "s"sv, "--key"sv, "s=stone"sv, "--key"sv, "g=dirt"sv}));
+        // A ragged pattern. This is the one mistake that would otherwise shift a
+        // whole row sideways and still render.
+        //
+        // Both directions, and the LONGER one is the case that matters: a row
+        // shorter than the first would be read past its end and (by luck) hit a
+        // character no key defines, so it throws even with the check gone. A row
+        // that is longer simply loses its tail — no error, no sign, a picture of
+        // a structure nobody asked for. Removing the length check has to fail
+        // HERE, or the check is only being tested by undefined behaviour.
+        assert(rejects({"--scene"sv, "ss/s"sv, "--key"sv, "s=stone"sv}));
+        assert(rejects({"--scene"sv, "s/ss"sv, "--key"sv, "s=stone"sv}));
+        assert(rejects({"--scene"sv, "s;ss"sv, "--key"sv, "s=stone"sv}));
+        assert(rejects({"--scene"sv, "s/s;s"sv, "--key"sv, "s=stone"sv}));
+        // Nothing to photograph.
+        assert(rejects({"--scene"sv, "   "sv}));
+        assert(rejects({"--scene"sv, ""sv}));
+        assert(rejects({"--scene"sv, "/"sv, "--key"sv, "s=stone"sv}));
+        // Malformed keys.
+        assert(rejects({"--scene"sv, "s"sv, "--key"sv, "stone"sv}));      // no '='
+        assert(rejects({"--scene"sv, "s"sv, "--key"sv, "ss=stone"sv}));   // two-char symbol
+        assert(rejects({"--scene"sv, "s"sv, "--key"sv, "s="sv}));         // no block
+        assert(rejects({"--scene"sv, "s"sv, "--key"sv, "*=stone"sv}));    // not path-safe
+        assert(rejects({"--scene"sv, "s"sv, "--key"sv, "s=stone"sv, "--key"sv, "s=dirt"sv}));
+        // The legend inherits every blockstate rejection the single spec has.
+        assert(rejects({"--scene"sv, "s"sv, "--key"sv, "s=stone[open=false]"sv}));
+        assert(rejects({"--scene"sv, "s"sv, "--key"sv, "s=furnace[facing=down]"sv}));
+        // `--key` without `--scene` is a legend for nothing.
+        assert(rejects({"--key"sv, "s=stone"sv}));
+        // Two answers to "what am I photographing".
+        assert(rejects({"--scene"sv, "s"sv, "--key"sv, "s=stone"sv, "--test-scene"sv, "dirt"sv}));
+        assert(rejects({"--scene"sv, "s"sv, "--key"sv, "s=stone"sv, "--occlusion-scene"sv}));
+        // `--stage` spins a block through six orientations; every cell of a scene
+        // already names its own state, so the two could only fight.
+        assert(rejects({"--scene"sv, "s"sv, "--key"sv, "s=stone"sv, "--stage"sv, "2"sv}));
+        assert(rejects({"--scene"sv, "s"sv, "--key"sv, "s=stone"sv, "--scene"sv, "ss"sv}));
+        // Bigger than the preview world allows.
+        assert(rejects({"--scene"sv, "sssssssss"sv, "--key"sv, "s=stone"sv}));
+        assert(rejects({"--scene"sv, "s;s;s;s;s;s;s;s;s"sv, "--key"sv, "s=stone"sv}));
+    }
+
+    // --- RN-17: the scene's directory name. ---
+    {
+        const auto onGrass = accept({"--scene"sv, "g;s"sv, "--key"sv, "g=grass_block"sv,
+                                     "--key"sv, "s=oak_stairs[facing=north]"sv});
+        const std::string name = mc::render::previewDirectoryName(onGrass);
+        assert(name == "scene__g+s__g-rebedrock_grass_block__s-rebedrock_oak_stairs.facing-north");
+        assert(name.find(':') == std::string::npos);
+        // Same command, same directory.
+        assert(mc::render::previewDirectoryName(
+                   accept({"--scene"sv, "g;s"sv, "--key"sv, "g=grass_block"sv, "--key"sv,
+                           "s=oak_stairs[facing=north]"sv})) == name);
+        // The PATTERN is in the name, not just its size and legend. These two
+        // scenes have the same size and the same legend and are different
+        // pictures; sharing a directory would have the second run overwrite the
+        // first with nothing to show that it had.
+        const auto ab = accept({"--scene"sv, "sd"sv, "--key"sv, "s=stone"sv, "--key"sv,
+                                "d=dirt"sv});
+        const auto ba = accept({"--scene"sv, "ds"sv, "--key"sv, "s=stone"sv, "--key"sv,
+                                "d=dirt"sv});
+        assert(mc::render::previewDirectoryName(ab) != mc::render::previewDirectoryName(ba));
+        // A space is air and shows in the name as `.`, so a gap is part of the
+        // identity too.
+        const auto gap = accept({"--scene"sv, "s s"sv, "--key"sv, "s=stone"sv});
+        assert(mc::render::previewDirectoryName(gap) == "scene__s.s__s-rebedrock_stone");
+        // And a long one is cut and hashed rather than refused — but stays unique.
+        const auto longA =
+            accept({"--scene"sv, "abcdefg;abcdefg"sv, "--key"sv, "a=oak_stairs[facing=north]"sv,
+                    "--key"sv, "b=oak_stairs[facing=south]"sv, "--key"sv,
+                    "c=oak_stairs[facing=east]"sv, "--key"sv, "d=oak_stairs[facing=west]"sv,
+                    "--key"sv, "e=oak_trapdoor[open=true]"sv, "--key"sv,
+                    "f=oak_trapdoor[open=false]"sv, "--key"sv, "g=grass_block"sv});
+        const auto longB =
+            accept({"--scene"sv, "abcdefg;abcdefg"sv, "--key"sv, "a=oak_stairs[facing=north]"sv,
+                    "--key"sv, "b=oak_stairs[facing=south]"sv, "--key"sv,
+                    "c=oak_stairs[facing=east]"sv, "--key"sv, "d=oak_stairs[facing=west]"sv,
+                    "--key"sv, "e=oak_trapdoor[open=true]"sv, "--key"sv,
+                    "f=oak_trapdoor[open=false]"sv, "--key"sv, "g=dirt"sv});
+        const std::string cutA = mc::render::previewDirectoryName(longA);
+        const std::string cutB = mc::render::previewDirectoryName(longB);
+        assert(cutA.size() <= mc::render::kMaxPreviewDirectoryName);
+        assert(cutB.size() <= mc::render::kMaxPreviewDirectoryName);
+        // They share every character up to the cut; only the hash separates them,
+        // which is exactly the case a plain truncation would collide on.
+        assert(cutA != cutB);
+    }
+
+    // --- RN-17: the single-block form is untouched. ---
+    //
+    // RN-15's stored baselines (export/blocks-preview-verify) are keyed on the
+    // single-block directory name. Adding the scene form must not rename them.
+    {
+        const auto plain = accept({"--test-scene"sv, "oak_stairs"sv});
+        assert(!plain.isScene());
+        assert(plain.sceneCells.empty());
+        assert(mc::render::previewDirectoryName(plain) == "rebedrock_oak_stairs");
+        const auto stated = accept({"--test-scene"sv, "oak_trapdoor[open=true,half=top]"sv});
+        assert(mc::render::previewDirectoryName(stated) ==
+               "rebedrock_oak_trapdoor__open-true__half-top");
+        // And `--stage` still works on it.
+        assert(accept({"--test-scene"sv, "furnace"sv, "--stage"sv, "3"sv}).stage == 3);
     }
 
     // --- RN-15d: `--pack`. This build ships no Mojang assets, so an export with

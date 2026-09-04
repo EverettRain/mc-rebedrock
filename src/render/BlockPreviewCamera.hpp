@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 namespace mc::render {
@@ -114,6 +115,59 @@ struct PreviewBounds final {
         break;
     }
     return {};
+}
+
+// RN-17: the bounds of a whole structured scene, in cells from the scene's origin.
+//
+// The union of each cell's own outline box, offset by that cell's position. Not
+// simply the scene's cell extent: a scene of one pressure plate on one grass
+// block is 1x2x1 cells but only 1x1.0625x1 blocks of actual matter, and framing
+// the empty cell above the plate would push the thing being looked at into a
+// corner of the picture. Everything the eight-corner camera does with a single
+// block's bounds it does with these, unchanged — which is the point of feeding
+// it a box rather than a block.
+//
+// `cells` is a span so this stays testable without a world; the exporter hands it
+// the scene it actually placed. `SceneCell` is declared here rather than beside
+// the command line that produces it, because this is the layer that gives it
+// meaning — and one declaration is the difference between the parser and the
+// camera agreeing about which axis is which and merely appearing to.
+//
+// `offset` is in whole cells from the scene's origin, on the world's own axes:
+// +x east, +y up, +z south.
+struct SceneCell final {
+    glm::ivec3 offset{0, 0, 0};
+    world::BlockState state{};
+
+    [[nodiscard]] bool operator==(const SceneCell&) const = default;
+};
+
+[[nodiscard]] inline PreviewBounds previewBoundsOfScene(std::span<const SceneCell> cells) {
+    if (cells.empty()) {
+        return {};
+    }
+    bool any = false;
+    PreviewBounds bounds{};
+    for (const SceneCell& cell : cells) {
+        const PreviewBounds local = previewBoundsOf(world::blockShape(cell.state));
+        const glm::vec3 offset{static_cast<float>(cell.offset.x),
+                               static_cast<float>(cell.offset.y),
+                               static_cast<float>(cell.offset.z)};
+        const glm::vec3 minimum = local.minimum + offset;
+        const glm::vec3 maximum = local.maximum + offset;
+        if (!any) {
+            bounds = {minimum, maximum};
+            any = true;
+            continue;
+        }
+        bounds.minimum.x = std::min(bounds.minimum.x, minimum.x);
+        bounds.minimum.y = std::min(bounds.minimum.y, minimum.y);
+        bounds.minimum.z = std::min(bounds.minimum.z, minimum.z);
+        bounds.maximum.x = std::max(bounds.maximum.x, maximum.x);
+        bounds.maximum.y = std::max(bounds.maximum.y, maximum.y);
+        bounds.maximum.z = std::max(bounds.maximum.z, maximum.z);
+    }
+    return bounds;
 }
 
 // How far a block's MODEL may stick out past its shape, in cell units.

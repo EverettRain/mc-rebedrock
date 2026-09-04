@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 # RN-15d：把一个方块渲成八张图，并（可选）验证它们是可复现的。
 #
+# RN-17：也可以拍**多方块结构**。图案照合成表的 pattern + key：
+#   层用 `;` 分隔（第一层在底部，y 向上），层内的行用 `/` 分隔（第一行在北边，z 向南），
+#   行内每个字符是一格（x 向东）。空格 = 空气，其余字符必须有对应的 --key。
+#   **不裁空白** —— 空格就是空气。
+#
 # 用法：
 #   tools/export_block_preview.sh <方块规格> [--pack <资源包>] [--size N] [--out <目录>]
-#   tools/export_block_preview.sh --verify <方块规格> [同上]
+#   tools/export_block_preview.sh --scene <图案> --key <字符>=<方块规格> ... [同上]
+#   tools/export_block_preview.sh --verify <方块规格|--scene ...> [同上]
 #
 # 例：
 #   tools/export_block_preview.sh 'oak_trapdoor[open=true,half=top]' --pack ~/packs/vanilla
 #   tools/export_block_preview.sh --verify oak_stairs --pack ~/packs/vanilla
+#   # 楼梯放在草方块上
+#   tools/export_block_preview.sh --scene 'g;s' \
+#       --key 'g=grass_block' --key 's=oak_stairs[facing=north,half=bottom]' \
+#       --pack ~/packs/vanilla
+#   # 两个楼梯叠放
+#   tools/export_block_preview.sh --scene 's;s' \
+#       --key 's=oak_stairs[facing=north,half=bottom]' --pack ~/packs/vanilla
 #
 # --verify 跑两遍、写进两个目录、逐字节比对。
 # 这个工具的全部价值在于"可比"：一张不可复现的漂亮图片毫无价值，所以"两次运行逐字节
@@ -20,13 +33,17 @@ set -euo pipefail
 BINARY="${MC_REBEDROCK_BINARY:-}"
 VERIFY=0
 SPEC=""
+SCENE=""
 SIZE=""
 OUT=""
 PACKS=()
+KEYS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --verify) VERIFY=1; shift ;;
+        --scene)  SCENE="$2"; shift 2 ;;
+        --key)    KEYS+=(--key "$2"); shift 2 ;;
         --pack)   PACKS+=(--pack "$2"); shift 2 ;;
         --size)   SIZE="$2"; shift 2 ;;
         --out)    OUT="$2"; shift 2 ;;
@@ -36,8 +53,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z "$SPEC" ]]; then
+if [[ -z "$SPEC" && -z "$SCENE" ]]; then
     echo "用法：$0 [--verify] <方块规格> [--pack <资源包>] [--size N] [--out <目录>]" >&2
+    echo "  或：$0 [--verify] --scene <图案> --key <字符>=<方块规格> ... [同上]" >&2
+    exit 2
+fi
+if [[ -n "$SPEC" && -n "$SCENE" ]]; then
+    echo "只能给其中一个：单个方块规格，或 --scene 图案" >&2
     exit 2
 fi
 # 本机能不能执行这个文件 —— 靠头四个魔数字节判，不靠目录名也不靠 `file`
@@ -89,7 +111,13 @@ fi
 echo "使用可执行文件：${BINARY}"
 
 run_export() {  # $1 = 输出根目录
-    local args=(--test-scene "$SPEC" --export-preview --preview-out "$1")
+    local args=()
+    if [[ -n "$SCENE" ]]; then
+        args=(--scene "$SCENE" ${KEYS[@]+"${KEYS[@]}"})
+    else
+        args=(--test-scene "$SPEC")
+    fi
+    args+=(--export-preview --preview-out "$1")
     if [[ -n "$SIZE" ]]; then
         args+=(--preview-size "$SIZE")
     fi
