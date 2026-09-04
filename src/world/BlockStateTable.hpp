@@ -182,7 +182,13 @@ inline constexpr auto kBlockStateMetadata = buildBlockStateMetadata();
     const auto count = schema.valueCount(property);
     const std::uint8_t next = value < count ? value : 0U;
     const auto current = stateValueOf(validId, property);
-    return static_cast<std::uint32_t>(validId + (next - current) * stride);
+    // The delta is signed (the new value can be below the current one), so it is
+    // computed in signed arithmetic and converted once at the end. Multiplying an
+    // int delta by an unsigned stride would convert the delta first, which is a
+    // sign-changing conversion the compiler is right to warn about.
+    const auto delta = (static_cast<std::int32_t>(next) - static_cast<std::int32_t>(current)) *
+                       static_cast<std::int32_t>(stride);
+    return static_cast<std::uint32_t>(static_cast<std::int32_t>(validId) + delta);
 }
 
 // The block identity of an interned state, as the runtime BlockId.

@@ -210,11 +210,98 @@ void testUnknownPropertySkips() {
 }
 
 void testUnknownValueShapeSkips() {
-    // "facing" mirrors vanilla's DirectionProperty but vanilla spells its
-    // values as words ("north"), which defaultValueLookup deliberately does
-    // not guess at (see the comment on defaultValueLookup) — a property that
-    // needs enum-word values is a future override, not a silent 0.
-    assert(!compat::mapVanillaState("facing", "north").valid());
+    // defaultValueLookup reads two vanilla value *shapes* — a boolean and a
+    // plain integer — and refuses to guess at anything else rather than
+    // silently mapping it to 0. A word it has no table for is still a skip.
+    assert(!compat::mapVanillaState("age", "seven").valid());
+    assert(!compat::mapVanillaState("age", "-1").valid());
+    assert(!compat::mapVanillaState("lit", "yes").valid());
+    // The enum-word properties are no longer in that bucket: RN-15 registered
+    // the six of them as overrides (that was always the documented answer for
+    // them — see defaultValueLookup's own comment naming facing). A word the
+    // override does not know is still a skip, which is the property that stops
+    // an override from becoming a silent 0.
+    assert(compat::mapVanillaState("facing", "north").valid());
+    assert(!compat::mapVanillaState("facing", "sideways").valid());
+    assert(!compat::mapVanillaState("hinge", "middle").valid());
+}
+
+// --- The six enum-word overrides: vanilla's word -> this build's ordinal.
+//     Each ordinal is fixed by an enumerator's declaration order, so these
+//     assertions are the seam between the two and would catch a reordering of
+//     either. -------------------------------------------------------------
+
+void testEnumWordOverrides() {
+    const auto value = [](std::string_view property, std::string_view word) {
+        const auto mapped = compat::mapVanillaState(property, word);
+        assert(mapped.valid());
+        return mapped.value;
+    };
+    // BlockOrientation: North, East, South, West, Up, Down.
+    assert(value("facing", "north") == 0U);
+    assert(value("facing", "east") == 1U);
+    assert(value("facing", "south") == 2U);
+    assert(value("facing", "west") == 3U);
+    assert(value("facing", "up") == 4U);
+    assert(value("facing", "down") == 5U);
+    assert(compat::mapVanillaState("facing", "north").property == world::StateProperty::Facing);
+
+    // Half carries three vanilla properties whose two values are spelled
+    // differently: a stair and a trapdoor say top/bottom, a door upper/lower.
+    assert(value("half", "bottom") == 0U);
+    assert(value("half", "lower") == 0U);
+    assert(value("half", "top") == 1U);
+    assert(value("half", "upper") == 1U);
+
+    // SlabPortion: Bottom, Top, Double.
+    assert(value("type", "bottom") == 0U);
+    assert(value("type", "top") == 1U);
+    assert(value("type", "double") == 2U);
+
+    // DoorHinge: Left, Right.
+    assert(value("hinge", "left") == 0U);
+    assert(value("hinge", "right") == 1U);
+
+    // StairShape: Straight, InnerLeft, InnerRight, OuterLeft, OuterRight.
+    assert(value("shape", "straight") == 0U);
+    assert(value("shape", "inner_left") == 1U);
+    assert(value("shape", "inner_right") == 2U);
+    assert(value("shape", "outer_left") == 3U);
+    assert(value("shape", "outer_right") == 4U);
+
+    // ComparatorMode: compare is the zero, as BlockState::comparatorSubtract
+    // reads it.
+    assert(value("mode", "compare") == 0U);
+    assert(value("mode", "subtract") == 1U);
+
+    // RepeaterBlock.DELAY: vanilla spells 1..4, this build stores 0..3. It looks
+    // like an identity integer and is not — the whole reason the override table
+    // exists. Without the row, `delay=3` would silently be a four-tick repeater.
+    assert(value("delay", "1") == 0U);
+    assert(value("delay", "4") == 3U);
+    assert(!compat::mapVanillaState("delay", "0").valid());
+    assert(!compat::mapVanillaState("delay", "5").valid());
+    assert(compat::defaultValueLookup("3") == std::uint8_t{3U});  // the trap, named
+
+    // Applied onto a state, the ordinals mean what the accessors say they mean
+    // — the assertion that would catch an off-by-one in any table above.
+    using world::Block;
+    using world::BlockState;
+    const auto apply = [](BlockState state, std::string_view property, std::string_view word) {
+        return compat::applyMappedState(state, compat::mapVanillaState(property, word));
+    };
+    assert(apply(BlockState{Block::Furnace}, "facing", "west").orientation() ==
+           world::BlockOrientation::West);
+    assert(apply(BlockState{Block::OakDoor}, "half", "upper").isDoorUpperHalf());
+    assert(!apply(BlockState{Block::OakDoor}, "half", "lower").isDoorUpperHalf());
+    assert(apply(BlockState{Block::OakDoor}, "hinge", "right").hinge() ==
+           world::DoorHinge::Right);
+    assert(apply(BlockState{Block::OakSlab}, "type", "top").slabPortion() ==
+           world::SlabPortion::Top);
+    assert(apply(BlockState{Block::Comparator}, "mode", "subtract").comparatorSubtract());
+    assert(!apply(BlockState{Block::Comparator}, "mode", "compare").comparatorSubtract());
+    assert(apply(BlockState{Block::Repeater}, "delay", "3").repeaterDelay() == 3);
+    assert(apply(BlockState{Block::Repeater}, "delay", "1").repeaterDelay() == 1);
 }
 
 // --- Ledger sanity: the override table is exactly the registered deviation,
@@ -222,7 +309,9 @@ void testUnknownValueShapeSkips() {
 //     path costs zero override lookups). ----------------------------------
 
 void testOverrideTableOnlyListsDeviations() {
-    assert(compat::kOverrides.size() == 1);
+    // waterlogged (shape deviation: a vanilla bool, an enum here) plus the six
+    // enum-word properties (same meaning, values spelled as words).
+    assert(compat::kOverrides.size() == 8);
     assert(compat::kOverrides[0].vanillaProperty == "waterlogged");
     // A property with no deviation is simply absent from the table — the
     // table is not an exhaustive property list, only exceptions to identity.
@@ -248,7 +337,8 @@ void testOverrideTableOnlyListsDeviations() {
     }
     assert(world::statePropertyFromName("in_wall") == world::StateProperty::InWall);
     assert(world::statePropertyFromName("locked") == world::StateProperty::Locked);
-    assert(compat::kOverrides.size() == 1); // still just waterlogged
+    // Still no row for any of those three: they are identity mappings.
+    assert(compat::kOverrides.size() == 8);
 }
 
 // --- Layer 4: reverse-mapping placeholder (JC4 seam), existence only ------
@@ -292,6 +382,7 @@ int main() {
     testWaterloggedOverrideUnknownValueSkips();
     testUnknownPropertySkips();
     testUnknownValueShapeSkips();
+    testEnumWordOverrides();
     testOverrideTableOnlyListsDeviations();
     testReverseSeamShape();
     return 0;

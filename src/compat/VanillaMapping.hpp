@@ -154,19 +154,113 @@ namespace detail {
     return std::nullopt;
 }
 
+// --- The enum-word properties -----------------------------------------------
+//
+// defaultValueLookup below reads vanilla's two *shapes* — a boolean and a plain
+// integer — and its comment names the gap it deliberately leaves: "a property
+// whose vanilla values are enum words (facing's north/south/...) is exactly the
+// kind of thing that needs an override". These are those overrides.
+//
+// They are not a new parser: each is the same "vanilla word -> this build's
+// enumerator ordinal" table the enumerator's own declaration already fixes, and
+// each cites where that ordinal comes from. Registering them here rather than in
+// a caller is what keeps one answer to "what does facing=north mean" for the JC
+// save bridge and for RN-15's `--test-scene oak_trapdoor[half=top]` alike.
+
+// BlockOrientation's declaration order (Block.hpp): North, East, South, West,
+// Up, Down. Vanilla's Direction names are the same six words.
+[[nodiscard]] constexpr std::optional<std::uint8_t> facingWord(std::string_view value) {
+    if (value == "north") return std::uint8_t{0U};
+    if (value == "east") return std::uint8_t{1U};
+    if (value == "south") return std::uint8_t{2U};
+    if (value == "west") return std::uint8_t{3U};
+    if (value == "up") return std::uint8_t{4U};
+    if (value == "down") return std::uint8_t{5U};
+    return std::nullopt;
+}
+
+// StateProperty::Half carries three vanilla properties at once, and they spell
+// their two values differently: a stair and a trapdoor say top/bottom
+// (Half.TOP/BOTTOM), a door says upper/lower (DoubleBlockHalf.UPPER/LOWER).
+// BlockState reads the same bit for all three (isDoorUpperHalf, trapdoorHalf),
+// so all four words resolve here: 0 is the lower one, matching SlabPortion's
+// Bottom == 0.
+[[nodiscard]] constexpr std::optional<std::uint8_t> halfWord(std::string_view value) {
+    if (value == "bottom" || value == "lower") return std::uint8_t{0U};
+    if (value == "top" || value == "upper") return std::uint8_t{1U};
+    return std::nullopt;
+}
+
+// SlabBlock.TYPE -> SlabPortion: Bottom, Top, Double (Block.hpp's declaration).
+[[nodiscard]] constexpr std::optional<std::uint8_t> slabTypeWord(std::string_view value) {
+    if (value == "bottom") return std::uint8_t{0U};
+    if (value == "top") return std::uint8_t{1U};
+    if (value == "double") return std::uint8_t{2U};
+    return std::nullopt;
+}
+
+// DoorBlock.HINGE -> DoorHinge: Left, Right.
+[[nodiscard]] constexpr std::optional<std::uint8_t> hingeWord(std::string_view value) {
+    if (value == "left") return std::uint8_t{0U};
+    if (value == "right") return std::uint8_t{1U};
+    return std::nullopt;
+}
+
+// StairBlock.SHAPE -> StairShape: Straight, InnerLeft, InnerRight, OuterLeft,
+// OuterRight.
+[[nodiscard]] constexpr std::optional<std::uint8_t> stairShapeWord(std::string_view value) {
+    if (value == "straight") return std::uint8_t{0U};
+    if (value == "inner_left") return std::uint8_t{1U};
+    if (value == "inner_right") return std::uint8_t{2U};
+    if (value == "outer_left") return std::uint8_t{3U};
+    if (value == "outer_right") return std::uint8_t{4U};
+    return std::nullopt;
+}
+
+// RepeaterBlock.DELAY is spelled 1..4 in a vanilla blockstate and stored 0..3
+// here (BlockState::repeaterDelay adds the one back). The name and the shape both
+// look like an identity integer, which is exactly why this needs a row: without
+// it `repeater[delay=3]` maps to the stored 3, i.e. a FOUR-tick repeater, and
+// nothing anywhere says so. The only off-by-one of its kind in the schema —
+// every other integer property (age, moisture, level, signal) is a true identity.
+[[nodiscard]] constexpr std::optional<std::uint8_t> repeaterDelayValue(std::string_view value) {
+    if (value == "1") return std::uint8_t{0U};
+    if (value == "2") return std::uint8_t{1U};
+    if (value == "3") return std::uint8_t{2U};
+    if (value == "4") return std::uint8_t{3U};
+    return std::nullopt;
+}
+
+// ComparatorBlock.MODE -> BlockState::comparatorSubtract's bit: compare is 0.
+[[nodiscard]] constexpr std::optional<std::uint8_t> comparatorModeWord(std::string_view value) {
+    if (value == "compare") return std::uint8_t{0U};
+    if (value == "subtract") return std::uint8_t{1U};
+    return std::nullopt;
+}
+
 } // namespace detail
 
 // The override table. constexpr array, built once at namespace scope: no
-// heap, no runtime construction order to reason about. Small today (one
-// entry) by REGULAR.md rule 5 ("override 表 constexpr/静态；导入是查表+下标，
-// 量增再迁 D 数据化") — grows by appending a row, not by restructuring.
-inline constexpr std::array<StateOverride, 1> kOverrides{{
+// heap, no runtime construction order to reason about. Grows by appending a
+// row, not by restructuring (REGULAR.md rule 5, "override 表 constexpr/静态；
+// 导入是查表+下标，量增再迁 D 数据化").
+inline constexpr std::array<StateOverride, 8> kOverrides{{
     StateOverride{
         /*vanillaBlock=*/{},
         /*vanillaProperty=*/"waterlogged",
         /*rebedrockProperty=*/world::statePropertyFromName("submerged_in"),
         /*valueFn=*/&detail::waterloggedToSubmergedIn,
     },
+    // The six enum-word properties. Same name on both sides, different value
+    // *spelling* — which is precisely what an override entry is for.
+    StateOverride{{}, "facing", world::StateProperty::Facing, &detail::facingWord},
+    StateOverride{{}, "half", world::StateProperty::Half, &detail::halfWord},
+    StateOverride{{}, "type", world::StateProperty::SlabType, &detail::slabTypeWord},
+    StateOverride{{}, "hinge", world::StateProperty::Hinge, &detail::hingeWord},
+    StateOverride{{}, "shape", world::StateProperty::StairShape, &detail::stairShapeWord},
+    StateOverride{{}, "mode", world::StateProperty::ComparatorMode, &detail::comparatorModeWord},
+    // Not an enum word — an integer whose origin differs. See repeaterDelayValue.
+    StateOverride{{}, "delay", world::StateProperty::Delay, &detail::repeaterDelayValue},
 }};
 
 // Finds the override for a vanilla property name (optionally scoped to a
