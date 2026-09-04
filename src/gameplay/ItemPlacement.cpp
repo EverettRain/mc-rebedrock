@@ -185,7 +185,13 @@ namespace {
     if (!world::isFaceSturdy(world.block(pos.x, pos.y - 1, pos.z))) {
         return {}; // DoorBlock#canSurvive: the lower half needs sturdy ground
     }
-    const auto facing = world::horizontalFacing(context.lookDirection);
+    // AR-CX8: through the shared rule rather than spelling `horizontalFacing` out
+    // here. The two agreed by accident before — DoorBlock.java:151 takes the
+    // bare `getHorizontalDirection()` and this line did too — but "which way a
+    // horizontal block turns at placement" now has one writer
+    // (BlockPlacement's kHorizontalPlacementRules, fed by the block's own
+    // declaration), and a second copy of the answer is how the two drift.
+    const auto facing = world::placementOrientation(block, context);
     const auto hinge = doorHingeFor(world, context);
     // AR-B4-4 / part C: DoorBlock#getStateForPlacement reads the signal over
     // *both* halves — the same union rule the sink uses — and opens on the spot,

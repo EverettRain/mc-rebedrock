@@ -830,6 +830,34 @@ enum class BlockSupport : std::uint8_t {
     Fire,
 };
 
+// Which way a HorizontalDirectionalBlock turns when a player places it.
+//
+// AR-CX8: `HorizontalDirectionalBlock` names the PROPERTY, not the placement rule —
+// it has no `getStateForPlacement` of its own, so every subclass writes its own
+// and they do not agree. Treating "reads a horizontal FACING" as "faces back at
+// the placer" turned every stair, door and fence gate 180 degrees away from
+// 26.1, and every anvil 90. The rule is per block, so it is declared per block,
+// beside the property it drives; `kHorizontalPlacementRules` in
+// BlockPlacement.cpp is the one place it is applied.
+//
+// `getHorizontalDirection()` is the direction the placer is LOOKING, i.e. the
+// one pointing from the player toward the block.
+enum class HorizontalPlacement : std::uint8_t {
+    // `.getOpposite()`: the block's FACING points back at the placer, so its
+    // authored front is the face turned toward them. AbstractFurnaceBlock:51,
+    // ChestBlock:218, DiodeBlock:155 (repeater and comparator alike),
+    // TrapDoorBlock:161's vertical-face branch.
+    TowardPlayer,
+    // The bare `getHorizontalDirection()`: FACING points the way the placer is
+    // looking, away from them. StairBlock:103, DoorBlock:151, FenceGateBlock:135
+    // — the three shapes whose "front" is the direction you walk INTO.
+    AwayFromPlayer,
+    // `.getClockWise()`: AnvilBlock:54 stores the axis its face runs along, a
+    // quarter turn off the look direction, so the anvil you place is broadside
+    // to you.
+    Clockwise,
+};
+
 // Vanilla's AbstractBlock.OffsetType: whether the model is drawn with a
 // deterministic per-position jitter (AbstractBlock#getModelOffset). XZ shifts
 // the plant a few pixels off its block centre in both horizontal axes, the way
@@ -1047,6 +1075,12 @@ struct BlockDefinition final {
     bool pillar = false;
     // Reads a horizontal FACING property (furnaces, chests).
     bool horizontalFacing = false;
+    // AR-CX8: and which way that FACING is turned at placement. Only meaningful when
+    // `horizontalFacing` is set; the default is the common
+    // `getHorizontalDirection().getOpposite()` that furnaces, chests and diodes
+    // use, so a block only names this when vanilla's own getStateForPlacement
+    // does something else.
+    HorizontalPlacement horizontalPlacement = HorizontalPlacement::TowardPlayer;
     // DirectionalBlock: reads a full six-way FACING chosen at placement from the
     // player's nearest looking direction (observer, piston). Distinct from
     // horizontalFacing, which is the four-way HorizontalDirectionalBlock; a block
@@ -1310,9 +1344,18 @@ class BlockProperties final {
         copy.definition_.pillar = true;
         return copy.state(StateProperty::Facing, 6U);
     }
-    [[nodiscard]] constexpr BlockProperties horizontalFacing() const {
+    // HorizontalDirectionalBlock's FACING axis, plus which way placement turns
+    // it. The argument is not optional guesswork: `HorizontalDirectionalBlock`
+    // itself declares no getStateForPlacement, so "reads a horizontal FACING"
+    // says nothing about placement, and assuming it did is what turned every
+    // stair 180 degrees. The default is the majority rule (furnace/chest/diode),
+    // and each block that differs names its own with the vanilla file it comes
+    // from cited beside it.
+    [[nodiscard]] constexpr BlockProperties horizontalFacing(
+        HorizontalPlacement placement = HorizontalPlacement::TowardPlayer) const {
         BlockProperties copy = *this;
         copy.definition_.horizontalFacing = true;
+        copy.definition_.horizontalPlacement = placement;
         return copy.state(StateProperty::Facing, 4U);
     }
     // DirectionalBlock: a full six-way FACING taken from the placer's nearest
@@ -1409,7 +1452,10 @@ class BlockProperties final {
         BlockProperties copy = *this;
         return copy.model(BlockModel::Stairs)
             .renderLayer(BlockRenderLayer::Cutout)
-            .horizontalFacing()
+            // StairBlock.java:103 — `setValue(FACING, context.getHorizontalDirection())`,
+            // with no `.getOpposite()`: a stair's front is the low step you walk
+            // up, so it points the way the placer is facing.
+            .horizontalFacing(HorizontalPlacement::AwayFromPlayer)
             .state(StateProperty::Half, 2U)
             .state(StateProperty::StairShape, 5U);
     }
@@ -1434,7 +1480,12 @@ class BlockProperties final {
             // door_bottom_left.json and its seven siblings all open with
             // `"ambientocclusion": false` (RN-10a / audit R3).
             .noAmbientOcclusion()
-            .horizontalFacing()
+            // DoorBlock.java:151 — the bare `getHorizontalDirection()`, like the
+            // stair: a door's FACING is the way it is walked through, so it
+            // points away from the placer. (ItemPlacement's doorPlaceResult
+            // already spells that out itself; declaring it here keeps the two
+            // paths reading one rule.)
+            .horizontalFacing(HorizontalPlacement::AwayFromPlayer)
             .state(StateProperty::Half, 2U)
             .state(StateProperty::Open, 2U)
             .state(StateProperty::Hinge, 2U)
@@ -1453,7 +1504,10 @@ class BlockProperties final {
         BlockProperties copy = *this;
         return copy.model(BlockModel::FenceGate)
             .renderLayer(BlockRenderLayer::Cutout)
-            .horizontalFacing()
+            // FenceGateBlock.java:135/139 — `Direction direction =
+            // context.getHorizontalDirection()` written straight into FACING. A
+            // gate faces the way you walk through it, as the door and stair do.
+            .horizontalFacing(HorizontalPlacement::AwayFromPlayer)
             .state(StateProperty::Open, 2U)
             .state(StateProperty::Powered, 2U)
             .state(StateProperty::InWall, 2U);
@@ -1471,7 +1525,12 @@ class BlockProperties final {
         BlockProperties copy = *this;
         return copy.model(BlockModel::TrapDoor)
             .renderLayer(BlockRenderLayer::Cutout)
-            .horizontalFacing()
+            // TrapDoorBlock.java:161 DOES take `.getOpposite()` on its
+            // vertical-face branch, so the default is right here — checked
+            // against the file, not inferred from the door beside it. (The
+            // horizontal-face branch uses the clicked face and is handled in
+            // placementBlock's own trapdoor arm, which never reaches this rule.)
+            .horizontalFacing(HorizontalPlacement::TowardPlayer)
             .state(StateProperty::Half, 2U)
             .state(StateProperty::Open, 2U)
             .state(StateProperty::Powered, 2U);
@@ -1698,6 +1757,10 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .directionalCube("furnace_front", "furnace_front_on", "furnace_side", nullptr,
                          "furnace_top", "furnace_top", "furnace_side")
         .strength(3.5F)
+        // AR-CX8: the default TowardPlayer is correct here and was checked, not
+        // assumed — AbstractFurnaceBlock.java:51 really is
+        // `getHorizontalDirection().getOpposite()`, so the lit front looks back
+        // at whoever placed it.
         .horizontalFacing()
         .lit(13U)
         .container(ContainerType::Furnace)
@@ -1881,6 +1944,11 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .noCollision()
         .light(14U)
         .support(BlockSupport::Wall)
+        // AR-CX8: WallTorchBlock has no getStateForPlacement at all — the torch item
+        // picks the wall (StandingAndWallBlockItem), so FACING is the clicked
+        // face and this never reaches placementOrientation's rule. The value
+        // below is therefore inert for this block; standingAndWallPlacement owns
+        // it.
         .horizontalFacing()
         .torch(),
     BlockProperties::of(Block::Chest, "chest", "Chest")
@@ -1888,6 +1956,10 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .strength(2.5F)
         .renderLayer(BlockRenderLayer::Cutout)
         .model(BlockModel::Chest)
+        // AR-CX8: ChestBlock.java:218 — `getHorizontalDirection().getOpposite()`.
+        // The default is right; the double-chest branch that follows it in
+        // vanilla only overrides FACING when a partner is found, which this
+        // build does not model yet.
         .horizontalFacing()
         .container(ContainerType::Chest)
         .blockEntity(BlockEntityKind::Chest)
@@ -2157,6 +2229,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .model(BlockModel::Torch)
         .noCollision()
         .support(BlockSupport::Wall)
+        // AR-CX8: as WallTorch above — placed by the item's wall/floor choice, never
+        // by placementOrientation's horizontal rule.
         .horizontalFacing()
         .torch()
         .lit(7U),
@@ -2213,6 +2287,9 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // diode's 2px never moves, so the coupling does not exist — checked, not
         // assumed (redstone_diode_test stands a player on one for a hundred ticks).
         .support(BlockSupport::Ground)
+        // AR-CX8: DiodeBlock.java:155 — `getHorizontalDirection().getOpposite()`, so
+        // the repeater's output points away from the placer and its input faces
+        // them. Default is correct.
         .horizontalFacing()
         .state(StateProperty::Delay, 4U)
         .state(StateProperty::Powered, 2U)
@@ -2246,6 +2323,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // AR-B4-6: collision is ON, as for the repeater above — same DiodeBlock
         // base, same 2px plate, same reasoning.
         .support(BlockSupport::Ground)
+        // AR-CX8: ComparatorBlock declares no getStateForPlacement — it inherits
+        // DiodeBlock.java:155's `.getOpposite()`, same as the repeater.
         .horizontalFacing()
         .state(StateProperty::ComparatorMode, 2U)
         .state(StateProperty::Powered, 2U)
@@ -2340,6 +2419,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .strength(2.5F)
         .renderLayer(BlockRenderLayer::Cutout)
         .model(BlockModel::Chest)
+        // AR-CX8: TrappedChestBlock extends ChestBlock and adds no
+        // getStateForPlacement, so ChestBlock.java:218's `.getOpposite()` again.
         .horizontalFacing()
         .container(ContainerType::Chest)
         .blockEntity(BlockEntityKind::TrappedChest)
@@ -3354,21 +3435,33 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("anvil_top", "anvil", "anvil")
         .elementModel("anvil", "anvil_top")
         .strength(5.0F, 1'200.0F)
-        .horizontalFacing()
+        // AnvilBlock.java:54 — `getHorizontalDirection().getClockWise()`, the one
+        // block in the roster that is neither the majority rule nor its inverse:
+        // FACING stores the axis the anvil's horn runs along, so it lands
+        // broadside to the placer.
+        .horizontalFacing(HorizontalPlacement::Clockwise)
         .container(ContainerType::Anvil)
         .creative(CreativeCategory::Functional),
     BlockProperties::of(Block::ChippedAnvil, "chipped_anvil", "Chipped Anvil")
         .texture("chipped_anvil_top", "anvil", "anvil")
         .elementModel("anvil", "chipped_anvil_top")
         .strength(5.0F, 1'200.0F)
-        .horizontalFacing()
+        // AnvilBlock.java:54 — `getHorizontalDirection().getClockWise()`, the one
+        // block in the roster that is neither the majority rule nor its inverse:
+        // FACING stores the axis the anvil's horn runs along, so it lands
+        // broadside to the placer.
+        .horizontalFacing(HorizontalPlacement::Clockwise)
         .container(ContainerType::Anvil)
         .creative(CreativeCategory::Functional),
     BlockProperties::of(Block::DamagedAnvil, "damaged_anvil", "Damaged Anvil")
         .texture("damaged_anvil_top", "anvil", "anvil")
         .elementModel("anvil", "damaged_anvil_top")
         .strength(5.0F, 1'200.0F)
-        .horizontalFacing()
+        // AnvilBlock.java:54 — `getHorizontalDirection().getClockWise()`, the one
+        // block in the roster that is neither the majority rule nor its inverse:
+        // FACING stores the axis the anvil's horn runs along, so it lands
+        // broadside to the placer.
+        .horizontalFacing(HorizontalPlacement::Clockwise)
         .container(ContainerType::Anvil)
         .creative(CreativeCategory::Functional),
     BlockProperties::of(Block::IronBlock, "iron_block", "Block of Iron")
@@ -3862,6 +3955,13 @@ inline constexpr float kFarmlandModelHeight = 15.0F / 16.0F;
 // Blocks whose model reads a horizontal FACING property (HorizontalDirectionalBlock).
 [[nodiscard]] constexpr bool hasHorizontalFacing(Block block) {
     return blockDefinition(block).horizontalFacing;
+}
+
+// AR-CX8: and which way placement turns that FACING. One indexed load, like every
+// other placement question — the alternative is a `switch(block)` in
+// BlockPlacement, which is exactly the parallel-list shape R1 is retiring.
+[[nodiscard]] constexpr HorizontalPlacement horizontalPlacementOf(Block block) {
+    return blockDefinition(block).horizontalPlacement;
 }
 
 // DirectionalBlock: does this block take a full six-way FACING from the placer's

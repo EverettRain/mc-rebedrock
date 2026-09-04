@@ -1256,6 +1256,15 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME player_interaction COMMAND mc_rebedrock_player_interaction_test)
+    add_executable(mc_rebedrock_block_placement_facing_test
+        tests/block_placement_facing_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_block_placement_facing_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_block_placement_facing_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME block_placement_facing COMMAND mc_rebedrock_block_placement_facing_test)
     add_executable(mc_rebedrock_multi_player_test
         tests/multi_player_test.cpp
     )

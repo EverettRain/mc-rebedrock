@@ -570,9 +570,11 @@ int main() {
         assert(session.inventory().selectedStack().item == &gameplay::items::WaterBucket);
     }
 
-    // --- AR-B2 stairs: placement resolves Facing (opposite the player's look,
-    // HorizontalDirectionalBlock's rule) and Half (from the sub-cell hit
-    // height, the same slab rule) in one UseItemOn; the join Shape is already
+    // --- AR-B2 stairs: placement resolves Facing (AR-CX8: the placer's look
+    // direction ITSELF — StairBlock.java:103 writes `getHorizontalDirection()`
+    // with no `.getOpposite()`, unlike the furnace/chest majority this file
+    // used to assume) and Half (from the sub-cell hit height, the same slab
+    // rule) in one UseItemOn; the join Shape is already
     // computed against the world at placement time, and a later neighbour
     // placement recomputes it through updateShape rather than a second
     // placement-time compute. ---
@@ -587,36 +589,36 @@ int main() {
         place.block = glm::ivec3{5, 0, 5};
         place.adjacent = glm::ivec3{5, 1, 5};
         place.face = world::BlockOrientation::Up;
-        // Looking North (-Z): HorizontalDirectionalBlock faces the placer, so
-        // the stair's FACING resolves to the opposite, South.
+        // Looking North (-Z): a stair faces the way you are looking, so FACING
+        // resolves to North.
         place.lookDirection = glm::vec3{0.0F, 0.0F, -1.0F};
         session.enqueueCommand(std::move(place));
         session.tick(world, host);
         static_cast<void>(session.drainEvents());
         assert(world.block(5, 1, 5) == world::Block::OakStairs);
         const auto placed = world.state(5, 1, 5);
-        assert(placed.orientation() == world::BlockOrientation::South);
+        assert(placed.orientation() == world::BlockOrientation::North);
         assert(placed.stairHalf() == world::SlabPortion::Bottom);
         // No stair neighbour yet on either facing-axis side: Straight.
         assert(placed.stairShape() == world::StairShape::Straight);
 
-        // A South-facing stair's "behind" cell is pos + offset(South) =
-        // (5,1,6) (one *more* in Z). Placing a matching stair there, facing
+        // A North-facing stair's "behind" cell is pos + offset(North) =
+        // (5,1,4) (one *less* in Z). Placing a matching stair there, facing
         // off-axis, corner-joins (5,1,5) through updateShape — not a second
         // placement-time compute on the already-placed cell.
         session.inventory().mutableSlot(0) = {world::Block::OakStairs, 1U, nullptr};
         gameplay::UseItemOn second;
-        second.block = glm::ivec3{5, 0, 6};
-        second.adjacent = glm::ivec3{5, 1, 6};
+        second.block = glm::ivec3{5, 0, 4};
+        second.adjacent = glm::ivec3{5, 1, 4};
         second.face = world::BlockOrientation::Up;
-        second.lookDirection = glm::vec3{1.0F, 0.0F, 0.0F}; // facing resolves to West
+        second.lookDirection = glm::vec3{1.0F, 0.0F, 0.0F}; // facing resolves to East
         session.enqueueCommand(std::move(second));
         for (int tick = 0; tick < 6; ++tick) {
             session.tick(world, host);
         }
         static_cast<void>(session.drainEvents());
-        assert(world.block(5, 1, 6) == world::Block::OakStairs);
-        assert(world.state(5, 1, 6).orientation() == world::BlockOrientation::West);
+        assert(world.block(5, 1, 4) == world::Block::OakStairs);
+        assert(world.state(5, 1, 4).orientation() == world::BlockOrientation::East);
         // (5,1,5)'s own shape recomputed once its behind-neighbour appeared —
         // sabotage target ②'s subject: if updateShape used the wrong offset or
         // direction, this would stay Straight instead of joining.
@@ -647,7 +649,7 @@ int main() {
         assert(world.state(5, 1, 5).submergedFluid() == world::SubmergedFluid::Water);
         // Its Facing/Half/StairShape axes still resolved normally, unaffected
         // by the extra wet axis.
-        assert(world.state(5, 1, 5).orientation() == world::BlockOrientation::South);
+        assert(world.state(5, 1, 5).orientation() == world::BlockOrientation::North);
         assert(world.state(5, 1, 5).stairHalf() == world::SlabPortion::Bottom);
 
         // A stair placed on dry land stays dry.

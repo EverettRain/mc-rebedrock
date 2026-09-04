@@ -114,6 +114,35 @@ using SupportRuleFn = bool (*)(const World&, glm::ivec3, BlockOrientation);
     return false;
 }
 
+// AR-CX8: HorizontalDirectionalBlock's placement turn as data, one entry per
+// `HorizontalPlacement`. `HorizontalDirectionalBlock` in 26.1 declares only the
+// FACING property — it has no `getStateForPlacement` — so there is no single
+// rule to hard-code here, and hard-coding one anyway is what turned every stair,
+// door and fence gate 180 degrees from vanilla and every anvil 90. Which turn a
+// block takes is now declared on the block (Block.hpp's `horizontalFacing(...)`,
+// each with the vanilla file and line it came from), and this is the only place
+// it is applied.
+using HorizontalTurnFn = BlockOrientation (*)(BlockOrientation);
+
+[[nodiscard]] BlockOrientation turnTowardPlayer(BlockOrientation looking) {
+    return oppositeOrientation(looking);
+}
+[[nodiscard]] BlockOrientation turnAwayFromPlayer(BlockOrientation looking) {
+    return looking;
+}
+[[nodiscard]] BlockOrientation turnClockwise(BlockOrientation looking) {
+    return clockwiseOrientation(looking);
+}
+
+inline constexpr std::array<HorizontalTurnFn, 3> kHorizontalPlacementRules{{
+    &turnTowardPlayer,   // HorizontalPlacement::TowardPlayer
+    &turnAwayFromPlayer, // HorizontalPlacement::AwayFromPlayer
+    &turnClockwise,      // HorizontalPlacement::Clockwise
+}};
+static_assert(static_cast<std::size_t>(HorizontalPlacement::TowardPlayer) == 0U);
+static_assert(static_cast<std::size_t>(HorizontalPlacement::AwayFromPlayer) == 1U);
+static_assert(static_cast<std::size_t>(HorizontalPlacement::Clockwise) == 2U);
+
 inline constexpr std::array<SupportRuleFn, 7> kSupportRules{{
     &supportAlways,    // BlockSupport::None
     &supportGround,    // BlockSupport::Ground
@@ -392,8 +421,14 @@ BlockOrientation placementOrientation(Block placed, const PlacementContext& cont
         return oppositeOrientation(nearestLookingDirection(context.lookDirection));
     }
     if (hasHorizontalFacing(placed)) {
-        // HorizontalDirectionalBlock: the front faces back at the player.
-        return oppositeOrientation(horizontalFacing(context.lookDirection));
+        // AR-CX8: the turn is the block's own, not the property's. Most of the
+        // roster faces back at the player (furnace, chest, diodes — vanilla's
+        // `.getOpposite()`), the stair/door/fence-gate family faces the way the
+        // player looks, and the anvil takes a quarter turn. See
+        // `kHorizontalPlacementRules` above and the citations in Block.hpp.
+        const auto looking = horizontalFacing(context.lookDirection);
+        return kHorizontalPlacementRules[static_cast<std::size_t>(
+            horizontalPlacementOf(placed))](looking);
     }
     // Leaves' PERSISTENT state is set by the LeavesBlockItem at the gameplay
     // layer (see itemPlacementOrientation); the block properties default here.
