@@ -5,6 +5,7 @@
 // 除此之外不含任何游戏逻辑
 
 #include "core/Application.hpp"
+#include "core/PackArguments.hpp"
 #include "render/TestScene.hpp"
 
 #include <exception>
@@ -13,6 +14,7 @@
 #include <iostream>
 #include <memory>
 #include <streambuf>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -143,11 +145,16 @@ int main(int argc, char** argv) {
         std::vector<std::string_view> arguments;
         for (int index = 1; index < argc; ++index) arguments.emplace_back(argv[index]);
         const auto testScene = mc::render::parseTestSceneArguments(arguments);
+        std::vector<std::filesystem::path> commandLinePacks;
+        for (const std::string& pack : mc::parsePackArguments(arguments)) {
+            commandLinePacks.emplace_back(pack);
+        }
         mc::Application application{
             std::move(resourceRoot),
             std::move(shaderRoot),
             std::move(configRoot),
-            testScene};
+            testScene,
+            std::move(commandLinePacks)};
         return application.run();
     } catch (const std::exception& exception) {
         std::cerr << "Fatal error: " << exception.what() << '\n';

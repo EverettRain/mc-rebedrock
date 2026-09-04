@@ -4,11 +4,14 @@
 #include "render/vulkan/HudRenderer.hpp"
 #include "render/vulkan/HudTypes.hpp"
 #include "render/vulkan/OffscreenTarget.hpp"
+#include "render/vulkan/SceneReadback.hpp"
 #include "render/vulkan/TextureManager.hpp"
 #include "render/vulkan/VulkanDevice.hpp"
 #include "render/vulkan/VulkanResources.hpp"
 #include "render/vulkan/WorldRenderTypes.hpp"
 #include "render/vulkan/WorldRenderer.hpp"
+
+#include "render/BlockPreviewCamera.hpp"
 
 #include "core/EnvFlags.hpp"
 #include "core/FrameTrace.hpp"
@@ -496,15 +499,38 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
     void onEatingCancelled() override {}
 
+    // RN-15: the block-preview export's fixed scene constants. The block sits in
+    // the middle of an otherwise empty chunk — no ground, so nothing but sky
+    // behind it — and the camera's field of view is pinned here rather than taken
+    // from the options file, because the options file is a user setting and this
+    // is a measurement.
+    static constexpr glm::ivec3 kPreviewBlockPosition{8, 64, 8};
+    static constexpr float kPreviewFieldOfViewDegrees = 60.0F;
+    // Frames to render before capturing. The first frames of a scene upload the
+    // section mesh and settle the streaming state; capturing frame one would
+    // photograph an empty chunk.
+    static constexpr int kPreviewWarmupFrames = 8;
+
     void initialize() {
         if (glfwInit() != GLFW_TRUE) {
             throw std::runtime_error("GLFW initialization failed");
         }
         glfwInitialized = true;
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-        glfwWindowHint(GLFW_MAXIMIZED, options.windowMaximized ? GLFW_TRUE : GLFW_FALSE);
-        window = glfwCreateWindow(options.windowWidth, options.windowHeight,
+        // RN-15d：导出模式的窗口是固定尺寸的隐藏窗口
+        // 尺寸必须固定：一张随显示器大小变化的导出图没法和另一台机器上的比对，
+        // 而"可比"正是这个工具的全部价值。当前架构下 surface 仍要 GLFW，
+        // 所以窗口还是要建，只是不显示、不许改大小。
+        const bool exportingPreview = testScene.has_value() && testScene->exportPreview;
+        const int windowWidth = exportingPreview ? static_cast<int>(testScene->previewSize)
+                                                 : options.windowWidth;
+        const int windowHeight = exportingPreview ? static_cast<int>(testScene->previewSize)
+                                                  : options.windowHeight;
+        glfwWindowHint(GLFW_RESIZABLE, exportingPreview ? GLFW_FALSE : GLFW_TRUE);
+        glfwWindowHint(GLFW_VISIBLE, exportingPreview ? GLFW_FALSE : GLFW_TRUE);
+        glfwWindowHint(GLFW_MAXIMIZED,
+                       !exportingPreview && options.windowMaximized ? GLFW_TRUE : GLFW_FALSE);
+        window = glfwCreateWindow(windowWidth, windowHeight,
                                   "MC Rebedrock - Vulkan 3D Grass Block", nullptr, nullptr);
         if (window == nullptr) {
             throw std::runtime_error("GLFW window creation failed");
@@ -981,16 +1007,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             std::cout << "Test scene: occlusion (platform + buried cave)\n";
             return;
         }
-        constexpr glm::ivec3 blockPosition{8, 64, 8};
         constexpr std::array orientations{
             world::BlockOrientation::North, world::BlockOrientation::East,
             world::BlockOrientation::South, world::BlockOrientation::West,
             world::BlockOrientation::Up,    world::BlockOrientation::Down};
         world::Chunk chunk;
-        chunk.setBlock(blockPosition.x, blockPosition.y, blockPosition.z, testScene->block);
-        chunk.setOrientation(
-            blockPosition.x, blockPosition.y, blockPosition.z,
-            orientations[static_cast<std::size_t>(testScene->stage) % orientations.size()]);
+        // RN-15c: the scene spec carries the whole state now, not just the block.
+        // `--stage` still spins the six orientations for the callers that have
+        // always used it — but only when the spec did not name `facing` itself,
+        // because two things driving one property is how a picture ends up not
+        // being the state that was asked for.
+        world::BlockState blockState = testScene->state;
+        if (!testScene->stateSetsFacing) {
+            blockState = blockState.with(
+                orientations[static_cast<std::size_t>(testScene->stage) % orientations.size()]);
+        }
+        chunk.setState(kPreviewBlockPosition.x, kPreviewBlockPosition.y, kPreviewBlockPosition.z,
+                       blockState);
         interactionWorld.setChunk({0, 0}, chunk);
         clientCache.setChunk({0, 0}, std::move(chunk));
         world::WorldLightEngine lighting;
@@ -998,7 +1031,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         lighting.initializeChunks(interactionWorld, positions);
         lighting.initializeChunks(clientCache, positions);
         world::SectionMeshUpdate update;
-        update.position = {0, world::sectionIndexFromWorldY(blockPosition.y), 0};
+        update.position = {0, world::sectionIndexFromWorldY(kPreviewBlockPosition.y), 0};
         update.mesh =
             world::ChunkMesher::buildSection(clientCache, {0, 0}, update.position.sectionY);
         update.revision = 1U;
@@ -1007,23 +1040,125 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pendingSectionUpdates.insert_or_assign(update.position, std::move(update));
         if (testScene->block == world::Block::Chest) {
             gameSession.createChestBlockEntity(
-                {blockPosition.x, blockPosition.y, blockPosition.z});
+                {kPreviewBlockPosition.x, kPreviewBlockPosition.y, kPreviewBlockPosition.z});
         }
         loadedCpuChunkCount = 1U;
         worldReady = true;
         paused = true;
         menuSystem.pageStack.reset(ui::PageId::Game);
+        // RN-15a: the day time is FIXED, and `--stage` no longer touches it.
+        // It used to be `stage * kTicksPerDay / 10`, so changing the viewpoint
+        // also changed the lighting and no two stages were comparable — which for
+        // a tool whose whole value is comparison is fatal. kNewWorldTick is the
+        // same midday the occlusion scene pins itself to.
         gameSession.clocks().setTotalTicks(
             world::ClockId::Overworld,
-            static_cast<std::uint64_t>(static_cast<double>(testScene->stage) *
-                                       (world::DayNightCycle::kTicksPerDay / 10.0)));
+            static_cast<std::uint64_t>(world::DayNightCycle::kNewWorldTick));
+        previewState_ = blockState;
+        if (testScene->exportPreview) {
+            // The rest of the determinism knobs, set explicitly rather than
+            // inherited from whatever the options file happens to hold: an export
+            // that depends on the user's video settings cannot be diffed against
+            // one taken on another machine, and comparison is the whole point.
+            // Only the export sets these — an interactive test scene stays the
+            // interactive test scene it has always been.
+            gameSession.weatherSystem().setWeather(/*clearTicks=*/1'000'000,
+                                                   /*rainTicks=*/0, /*raining=*/false,
+                                                   /*thundering=*/false);
+            options.viewBobbing = false;
+            options.sunShadows = false;
+            baseFieldOfViewDegrees = kPreviewFieldOfViewDegrees;
+            camera.setFieldOfViewDegrees(kPreviewFieldOfViewDegrees);
+            // The one thing that would otherwise still vary frame to frame: the
+            // world is static, but the interpolation weight is not, and it feeds
+            // the view matrix. Pin it. The export loop never touches it again.
+            renderInterpolationAlpha = 0.0F;
+        }
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
         std::cout << "Test scene: "
                   << world::blockDefinition(testScene->block).identifier.toString() << " stage "
                   << testScene->stage << '\n';
     }
 
-    void run() {
+    // RN-15d: the eight-corner export, written as its own loop rather than as a
+    // branch inside run().
+    //
+    // Two reasons, and the first is a rule for this node: no preview branch lands
+    // on the render hot path. The second is that it could not work as a branch
+    // anyway — run() rewrites the camera from the player snapshot every single
+    // frame, so a pose set before the frame would be overwritten during it.
+    //
+    // Nothing here starts the simulation thread. The scene is one block that does
+    // not move, nothing in it ticks, and a thread ticking nothing is one more
+    // source of the frame-to-frame variation this whole node exists to remove.
+    [[nodiscard]] int runPreviewExport() {
+        const auto directory = testScene->previewRoot / previewDirectoryName(*testScene);
+        const float aspectRatio =
+            swapchainExtent.height == 0U
+                ? 1.0F
+                : static_cast<float>(swapchainExtent.width) /
+                      static_cast<float>(swapchainExtent.height);
+        // The cell the block was placed in, in world coordinates. The camera math
+        // works in cell-local units and is handed the origin, so the two never
+        // disagree about where the block is.
+        const glm::vec3 cellOrigin{static_cast<float>(kPreviewBlockPosition.x),
+                                   static_cast<float>(kPreviewBlockPosition.y),
+                                   static_cast<float>(kPreviewBlockPosition.z)};
+        std::size_t failures = 0;
+        for (std::size_t index = 0; index < kPreviewCornerCount; ++index) {
+            const auto corner = static_cast<PreviewCorner>(index);
+            const auto pose = previewCameraPose(previewState_, cellOrigin, corner,
+                                                kPreviewFieldOfViewDegrees, aspectRatio);
+            camera.setPosition(pose.eye);
+            camera.setRotation(pose.yawDegrees, pose.pitchDegrees);
+            // The first frames of a scene upload the section mesh and settle the
+            // frames-in-flight ring; capturing frame one would photograph an
+            // empty chunk. Poll events too, or a compositor waiting on the window
+            // can stall the queue.
+            std::optional<std::uint32_t> imageIndex;
+            for (int warmup = 0; warmup < kPreviewWarmupFrames; ++warmup) {
+                glfwPollEvents();
+                imageIndex = drawFrame();
+            }
+            // The readback issues its own one-shot submit and does not
+            // synchronise against in-flight work, so the wait belongs here.
+            checkVk(vkDeviceWaitIdle(device), "vkDeviceWaitIdle(preview export)");
+            const auto file =
+                directory / (std::string{kPreviewCornerNames[index]} + ".png");
+            if (!imageIndex.has_value()) {
+                std::cerr << "Block preview: the swapchain was recreated instead of drawing "
+                          << file.string() << "\n";
+                ++failures;
+                continue;
+            }
+            // The GUI pass's finalLayout leaves the scene image in
+            // TRANSFER_SRC_OPTIMAL — that is where copySceneToSwapchain picks it
+            // up, and where this picks it up too.
+            if (!writeSceneImagePng(resources_, device, sceneTargets[*imageIndex].image.image,
+                                    sceneUnormFormat(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                    swapchainExtent.width, swapchainExtent.height, file)) {
+                ++failures;
+                continue;
+            }
+            std::cout << "Wrote " << file.string() << "\n";
+        }
+        // Seven images out of eight, silently, is the worst outcome for something
+        // an automation diffs: it looks like a successful run whose baseline just
+        // happens to be short. Say which, and exit non-zero.
+        if (failures != 0U) {
+            std::cerr << "Block preview export: " << failures << " of " << kPreviewCornerCount
+                      << " images failed\n";
+            return 1;
+        }
+        std::cout << "Block preview export: " << kPreviewCornerCount << " images in "
+                  << directory.string() << "\n";
+        return 0;
+    }
+
+    int run() {
+        if (testScene.has_value() && testScene->exportPreview) {
+            return runPreviewExport();
+        }
         // 压测模式由 MC_REBEDROCK_STRESS_FRAMES 打开，它覆盖烟测的 704 游戏帧上限
         // 玩家会持续前进，不断搅动区块流送与遮挡查询
         // 长时间运行才会暴露的内存与 GPU 故障因此能在脚本化运行中出现，不必在键盘前守几分钟
@@ -1426,7 +1561,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             // 它们由上面帧开头那次通道排空施加，来源是服务端逐 tick 事件的解码结果
             {
                 const auto drawStart = std::chrono::steady_clock::now();
-                drawFrame();
+                static_cast<void>(drawFrame());
                 if (diag::traceEnabled()) {
                     diag::frameTrace().drawFrameMs += diag::msSince(drawStart);
                 }
@@ -1601,6 +1736,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                   << static_cast<double>(totalUploadedBytes) / (1024.0 * 1024.0)
                   << " MiB total | peak pending sections: "
                   << std::max(peakPendingSectionCount, lastSessionPeakPendingSectionCount) << '\n';
+        return 0;
     }
 
     void refreshSaveList() {
@@ -6478,7 +6614,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         runtime.startSimulation();
     }
 
-    void drawFrame() {
+    // Returns the swapchain image index the frame was drawn into, so a caller
+    // that wants the pixels knows which scene target holds them (RN-15d). A
+    // nullopt means the swapchain was recreated instead of a frame being drawn.
+    std::optional<std::uint32_t> drawFrame() {
         // 这里不持有世界锁
         // 绘制通道采样的东西都是无锁的：渲染侧自有的客户端缓存、原子发布的快照、GPU 网格状态
         // 而下面的围栏等待、提交和呈现绝不能阻塞模拟线程的写区间
@@ -6507,7 +6646,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         if (acquire == VK_ERROR_OUT_OF_DATE_KHR) {
             recreateSwapchain();
-            return;
+            return std::nullopt;
         }
         if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR) {
             checkVk(acquire, "vkAcquireNextImageKHR");
@@ -6623,6 +6762,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         currentFrame = (currentFrame + 1U) % kFramesInFlight;
         ++frameNumber_;
+        return imageIndex;
     }
 
     std::filesystem::path shaderRoot;
@@ -6653,6 +6793,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     std::uint64_t& worldEpoch;
     config::GameOptions options;
     std::optional<TestSceneOptions> testScene;
+    // The state initializeTestScene actually placed, after `--stage` had its
+    // say. The exporter sizes the camera off this rather than off
+    // testScene->state, so the picture and the box around it are the same block.
+    world::BlockState previewState_{world::Block::Stone};
     audio::AudioSystem audioSystem;
     // 在渲染线程上复刻工作线程的增量光照，即时编辑预览因此用的是正确光照而不是陈旧的存值
     world::WorldLightEngine interactionLightEngine;
@@ -7170,6 +7314,6 @@ VulkanRenderer::VulkanRenderer(std::filesystem::path shaderRoot,
 
 VulkanRenderer::~VulkanRenderer() = default;
 
-void VulkanRenderer::run() { impl_->run(); }
+int VulkanRenderer::run() { return impl_->run(); }
 
 } // namespace mc::render

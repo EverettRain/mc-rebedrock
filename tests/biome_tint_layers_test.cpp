@@ -26,7 +26,7 @@
 #include "world/ChunkMesher.hpp"
 #include "world/gen/Biome.hpp"
 
-#define STB_IMAGE_WRITE_IMPLEMENTATION
+// 实现体在 src/assets/StbImageImplementation.cpp（RN-15b 起共用），这里只要声明
 #include <stb_image_write.h>
 
 #include <algorithm>

@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <optional>
+#include <vector>
 
 #include "render/TestScene.hpp"
 
@@ -16,7 +17,8 @@ class Application final {
         std::filesystem::path resourceRoot,
         std::filesystem::path shaderRoot,
         std::filesystem::path configRoot,
-        std::optional<render::TestSceneOptions> testScene = std::nullopt);
+        std::optional<render::TestSceneOptions> testScene = std::nullopt,
+        std::vector<std::filesystem::path> commandLinePacks = {});
 
     [[nodiscard]] int run();
 
@@ -25,6 +27,8 @@ class Application final {
     std::filesystem::path shaderRoot_;
     std::filesystem::path configRoot_;
     std::optional<render::TestSceneOptions> testScene_;
+    // `--pack` 点名的资源包，排在 <游戏根>/resourcepacks 扫描结果之后（优先级最高）
+    std::vector<std::filesystem::path> commandLinePacks_;
 };
 
 } // namespace mc

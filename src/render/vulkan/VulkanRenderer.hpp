@@ -31,7 +31,7 @@ class VulkanRenderer final {
     VulkanRenderer(VulkanRenderer&&) = delete;
     VulkanRenderer& operator=(VulkanRenderer&&) = delete;
 
-    void run();
+    [[nodiscard]] int run();
 
   private:
     struct Impl;

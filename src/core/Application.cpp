@@ -57,10 +57,12 @@ Application::Application(
     std::filesystem::path resourceRoot,
     std::filesystem::path shaderRoot,
     std::filesystem::path configRoot,
-    std::optional<render::TestSceneOptions> testScene)
+    std::optional<render::TestSceneOptions> testScene,
+    std::vector<std::filesystem::path> commandLinePacks)
     : resourceRoot_(std::move(resourceRoot)),
       shaderRoot_(std::move(shaderRoot)),
-      configRoot_(std::move(configRoot)), testScene_(testScene) {}
+      configRoot_(std::move(configRoot)), testScene_(testScene),
+      commandLinePacks_(std::move(commandLinePacks)) {}
 
 int Application::run() {
     // 资源位置只有一个知情者：渲染器和纹理管理器向 provider 要文件，而不是各自拼路径
@@ -120,6 +122,25 @@ int Application::run() {
     }
     std::sort(found.begin(), found.end(),
               [](const PackEntry& a, const PackEntry& b) { return a.path < b.path; });
+
+    // `--pack` 点名的包接在排序结果之后，因此优先级最高：一条命令说了用哪个包，
+    // 就该是那个包，而不是被 resourcepacks/ 里恰好同名的另一份盖掉
+    // 路径不存在直接停下，不静默跳过——否则自动化会用错资源渲完整批图还报成功
+    for (const auto& pack : commandLinePacks_) {
+        std::error_code lookup;
+        if (std::filesystem::is_directory(pack, lookup) &&
+            std::filesystem::exists(pack / "pack.mcmeta", lookup)) {
+            found.push_back({pack, false});
+        } else if (std::filesystem::is_regular_file(pack, lookup) &&
+                   pack.extension() == ".zip") {
+            found.push_back({pack, true});
+        } else {
+            std::cerr << "\n启动失败：--pack 指向的不是资源包 (Not a resource pack)\n  "
+                      << pack.string() << "\n"
+                      << "它必须是一个含 pack.mcmeta 的目录，或一个同样结构的 .zip。\n";
+            return 1;
+        }
+    }
 
     // 游戏里已没有任何地方向 provider 要文件系统路径，纹理声音标签群系数据一律读字节流
     // 因此 zip 包全程在内存里消费，这个缓存目录应当始终为空，被建出来就是回归
@@ -205,7 +226,12 @@ int Application::run() {
         std::cerr << "\n启动失败：缺少资源包 (Missing resource pack)\n"
                   << "请将一个标准资源包（目录或 .zip，含 pack.mcmeta 与 assets/）放入：\n  "
                   << where.string() << "\n"
-                  << "然后重新启动。\n";
+                  << "或用 --pack <目录或 .zip> 直接点名一个，然后重新启动。\n";
+        // 方块预览导出尤其不能在缺包的情况下往下走：它会产出八张缺失纹理的图片，
+        // 而那正好是自动化最难发现的失败——文件都在，内容全错
+        if (testScene_.has_value() && testScene_->exportPreview) {
+            std::cerr << "（--export-preview 需要 vanilla 资源；本 build 不含任何 Mojang 资源。）\n";
+        }
         return 1;
     }
 
@@ -242,10 +268,12 @@ int Application::run() {
         optionsPath,
         configRoot_.parent_path() / "saves",
         testScene_};
-    renderer.run();
+    // 退出码从渲染器一路带出来：预览导出少出一张图就必须是非零退出，
+    // 否则自动化会把七张图的基线当成一次成功
+    const int exitCode = renderer.run();
     chunkStreamer.stop();
 
-    return 0;
+    return exitCode;
 }
 
 } // namespace mc

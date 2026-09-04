@@ -434,6 +434,7 @@ add_executable(mc_rebedrock
     src/render/vulkan/BlockAtlasBaker.cpp
     src/render/vulkan/GpuSceneBuffer.cpp
     src/render/vulkan/OffscreenTarget.cpp
+    src/render/vulkan/SceneReadback.cpp
     src/ui/MenuGeometry.cpp
     src/ui/BitmapFontMetrics.cpp
     src/ui/Language.cpp
@@ -1861,6 +1862,30 @@ if(BUILD_TESTING)
     )
     add_test(NAME biome_identity COMMAND mc_rebedrock_biome_identity_test)
 
+    # RN-15a: the eight preview viewpoints — the only part of the block-preview
+    # export that is verifiable without a GPU. Links PerspectiveCamera.cpp on
+    # purpose: the poses are asserted through the camera the exporter really
+    # configures, so a yaw/pitch convention mismatch fails here.
+    add_executable(mc_rebedrock_block_preview_camera_test
+        tests/block_preview_camera_test.cpp
+        src/render/PerspectiveCamera.cpp
+    )
+    target_link_libraries(mc_rebedrock_block_preview_camera_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_block_preview_camera_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME block_preview_camera COMMAND mc_rebedrock_block_preview_camera_test)
+
+    # RN-15b: the readback's byte transform. Header-only and Vulkan-free on
+    # purpose — the export itself needs a GPU, this part does not, and a
+    # red/blue swap is exactly the kind of bug that produces a plausible picture.
+    add_executable(mc_rebedrock_preview_image_bytes_test
+        tests/preview_image_bytes_test.cpp
+    )
+    target_include_directories(mc_rebedrock_preview_image_bytes_test PRIVATE src)
+    add_test(NAME preview_image_bytes COMMAND mc_rebedrock_preview_image_bytes_test)
+
     # RN-14: what a block item is, as geometry (the item model table).
     add_executable(mc_rebedrock_block_item_model_test
         tests/block_item_model_test.cpp
@@ -2516,7 +2541,11 @@ if(BUILD_TESTING)
         tests/test_scene_test.cpp
         src/render/TestScene.cpp
     )
-    target_include_directories(mc_rebedrock_test_scene_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_test_scene_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_test_scene_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
     add_test(NAME test_scene COMMAND mc_rebedrock_test_scene_test)
 
     add_executable(mc_rebedrock_audio_system_test
