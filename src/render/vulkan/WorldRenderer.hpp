@@ -70,6 +70,7 @@
 
 #include <algorithm>
 #include <array>
+#include <span>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -2278,34 +2279,39 @@ class WorldRenderer final {
         if (!inventoryOpen && !paused && !chatOpen && targetedBlock.has_value() && !targetIsFire) {
             // 选择框描的是方块的真实形状，火把、植物、箱子、台阶这类非满方块不再显示成整格框
             // 形状取自该格的状态（台阶上下半、作物生长阶段等）
-            // RN-10f：**逐盒**描边，与 vanilla 画 VoxelShape 的棱一致。此前只画整个
-            // 形状的包围盒，于是楼梯、墙、栅栏门都被一个大方框圈住——框住的是射线打不到、
-            // 人也站不上去的空气。盒数上限见 world::kMaxSelectionBoxes。
+            // RN-10f：描边取自形状的盒集，而不是整个形状的包围盒——此前楼梯、墙、
+            // 栅栏门都被一个大方框圈住，框住的是射线打不到、人也站不上去的空气。
+            // RN-16：但也不是**逐盒**各描一圈。vanilla 的 ShapeRenderer.renderShape
+            // 走 VoxelShape.forAllEdges，而那是 Shapes.or 合并后的离散网格：两个盒
+            // 共面的内部接缝**不发边**。逐盒描边会把楼梯背面与两个侧面在 y=0.5 处各多
+            // 画一条横线（正面那条是真边界，合并后仍在）。合并与发边在
+            // render::outlineEdgesOf，一次 draw 画一条线段。
             const world::BlockSelectionBoxes outlineBoxes =
                 world::blockSelectionBoxes(clientCache, targetedBlock->block);
-            if (outlineBoxes.count > 0) {
+            std::array<render::OutlineBox, world::kMaxSelectionBoxes> outlineShape{};
+            for (std::size_t i = 0; i < outlineBoxes.count; ++i) {
+                outlineShape[i] = {outlineBoxes.boxes[i].minimum, outlineBoxes.boxes[i].maximum};
+            }
+            const render::OutlineEdges outlineEdges = render::outlineEdgesOf(
+                std::span<const render::OutlineBox>{outlineShape.data(), outlineBoxes.count});
+            if (outlineEdges.count > 0) {
                 vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                   pipelines.outlinePipeline);
                 vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                         pipelines.outlinePipelineLayout, 0, 1,
                                         &frame.descriptorSet, 0, nullptr);
-                for (std::size_t i = 0; i < outlineBoxes.count; ++i) {
-                    const world::BlockBounds& bounds = outlineBoxes.boxes[i];
-                    const std::array<glm::vec4, 3> outlinePush{
-                        glm::vec4{static_cast<float>(targetedBlock->block.x),
-                                  static_cast<float>(targetedBlock->block.y),
-                                  static_cast<float>(targetedBlock->block.z), 0.0F},
-                        glm::vec4{bounds.minimum, 0.0F},
-                        glm::vec4{bounds.maximum, 0.0F},
-                    };
+                for (std::size_t i = 0; i < outlineEdges.count; ++i) {
+                    // 推送常量只有一个写点（HudTypes.hpp 的 makeOutlineSegmentPush）：
+                    // 就地拼一个 vec4 数组正是「声明分散到每个调用点」的形状，
+                    // hud_push_constant_test 拦的就是它
+                    const render::OutlinePush outlinePush = render::makeOutlineSegmentPush(
+                        targetedBlock->block, outlineEdges.segments[i]);
                     vkCmdPushConstants(frame.commandBuffer, pipelines.outlinePipelineLayout,
                                        VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(outlinePush),
-                                       outlinePush.data());
-                    // RN-13-2：12 条棱 × 2 个端点，端点表在 BlockOutlineGeometry.hpp
-                    // （着色器按 gl_VertexIndex 生成顶点，没有顶点缓冲，所以这个数与
-                    //  那张表必须同源）
-                    vkCmdDraw(frame.commandBuffer,
-                              static_cast<std::uint32_t>(render::kOutlineVertexCount), 1, 0, 0);
+                                       &outlinePush);
+                    // 一条线段两个端点；着色器按 gl_VertexIndex 取，没有顶点缓冲，
+                    // 所以这个数与 BlockOutlineGeometry.hpp 必须同源
+                    vkCmdDraw(frame.commandBuffer, render::kOutlineSegmentVertexCount, 1, 0, 0);
                 }
             }
         }

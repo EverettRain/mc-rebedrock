@@ -4,6 +4,7 @@
 // 放在 mc::render 而不是某个 .cpp 的匿名命名空间里，两边才能指同一份定义
 
 #include "gameplay/ScreenHandler.hpp"
+#include "render/BlockOutlineGeometry.hpp"
 #include "ui/HudLayout.hpp"
 #include "world/ItemModel.hpp"
 
@@ -12,6 +13,7 @@
 #include <cstdint>
 
 #include <glm/mat4x4.hpp>
+#include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
 namespace mc::render {
@@ -149,6 +151,39 @@ struct ItemPush final {
 };
 
 static_assert(sizeof(ItemPush) <= 128U, "Item push constants must fit Vulkan's guaranteed minimum");
+
+// RN-16: the selection wireframe's push block. One draw is one LINE now, not one
+// box — see BlockOutlineGeometry.hpp for why the outline is the merged shape's
+// edges rather than each box's twelve.
+//
+// It lives here, beside HudPush and ItemPush, for the reason this file's header
+// comment gives: a push block that is assembled at its call site is a push block
+// with as many declarations as call sites. The renderer used to build this one as
+// a bare `std::array<glm::vec4, 3>` — the fields had no names on the C++ side at
+// all, so nothing could hold them against the shader's.
+struct OutlinePush final {
+    // The block's cell corner, in world coordinates.
+    glm::vec4 blockOrigin;
+    // The line's two endpoints, in block-local (0..1) coordinates.
+    glm::vec4 segmentStart;
+    glm::vec4 segmentEnd;
+};
+
+static_assert(sizeof(OutlinePush) <= 128U,
+              "Outline push constants must fit Vulkan's guaranteed minimum");
+
+// The one writer. `blockPosition` is the targeted cell; the segment comes from
+// `outlineEdgesOf` in block-local coordinates and is not transformed here — the
+// shader adds the origin, exactly as the box form did.
+[[nodiscard]] inline OutlinePush makeOutlineSegmentPush(glm::ivec3 blockPosition,
+                                                        const OutlineSegment& segment) {
+    return OutlinePush{
+        glm::vec4{static_cast<float>(blockPosition.x), static_cast<float>(blockPosition.y),
+                  static_cast<float>(blockPosition.z), 0.0F},
+        glm::vec4{segment.start, 0.0F},
+        glm::vec4{segment.end, 0.0F},
+    };
+}
 
 // --- item_entity.vert's draw modes, and the categories over them
 //

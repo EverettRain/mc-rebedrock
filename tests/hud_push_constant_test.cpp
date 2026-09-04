@@ -347,6 +347,51 @@ int main() {
         assert(std::is_sorted(modes.begin(), modes.end()));
     }
 
+    // --- OutlinePush, the third block, held the same way. ---
+    //
+    // RN-16 changed what one outline draw IS: from a box (origin + min + max,
+    // twelve edges generated in the shader) to a single LINE of the merged
+    // shape's edge list. Same three vec4s, entirely different meaning for two of
+    // them — which is the exact shape of the regression this file exists for. A
+    // shader left reading `boundsMin`/`boundsMax` while the renderer pushed
+    // segment endpoints would still compile, still draw, and draw a wireframe of
+    // a box stretched between two arbitrary corners of the shape.
+    //
+    // block_outline.frag reads no push block, so as with ItemPush there is no
+    // second consumer to disagree; the two declarations that DO exist are held
+    // together here, and the sole producer below.
+    {
+        const auto shaderFields = parseFields(blockAfter(
+            readFile(kShaderDir / "block_outline.vert"), "layout(push_constant) uniform OutlinePush"));
+        const auto cxxFields = normalizeCxx(parseFields(blockAfter(
+            readFile(kSourceDir / "src/render/vulkan/HudTypes.hpp"), "struct OutlinePush final")));
+        assert(!shaderFields.empty());
+        if (shaderFields != cxxFields) {
+            std::cerr << "block_outline.vert declares [" << describe(shaderFields) << "]\n"
+                      << "OutlinePush declares [" << describe(cxxFields) << "]\n";
+        }
+        assert(shaderFields == cxxFields);
+        assert(sizeof(mc::render::OutlinePush) == shaderFields.size() * sizeof(glm::vec4));
+        assert(sizeof(mc::render::OutlinePush) <= 128U);
+        assert(!contains(readFile(kShaderDir / "block_outline.frag"), "push_constant") &&
+               "block_outline.frag reads no push constants; if it starts to, it joins the "
+               "comparison above");
+
+        // The producer, on the CPU: the endpoints go through untouched and the
+        // origin is the block. Nothing here may transform the segment — the
+        // shader adds the origin, and doing it on both sides would double it.
+        const mc::render::OutlineSegment segment{{0.25F, 0.5F, 0.75F}, {0.25F, 1.0F, 0.75F}};
+        const mc::render::OutlinePush push =
+            mc::render::makeOutlineSegmentPush(glm::ivec3{12, -34, 56}, segment);
+        assert(glm::vec3(push.blockOrigin) == glm::vec3(12.0F, -34.0F, 56.0F));
+        assert(glm::vec3(push.segmentStart) == segment.start);
+        assert(glm::vec3(push.segmentEnd) == segment.end);
+        // A start and an end that came out equal is a zero-length line: the two
+        // fields have to stay two fields, which is what a copy-paste in the maker
+        // would undo.
+        assert(push.segmentStart != push.segmentEnd);
+    }
+
     // --- ItemPush, the sibling block, held the same way. ---
     //
     // The dropped-item and held-item path that RN-14 also rewrote. It is
@@ -641,7 +686,8 @@ int main() {
         }
         // Each maker is called from exactly one place.
         for (const std::string_view maker :
-             {"makeDroppedBlockItemFacePush", "makeHeldBlockItemFacePush"}) {
+             {"makeDroppedBlockItemFacePush", "makeHeldBlockItemFacePush",
+              "makeOutlineSegmentPush"}) {
             const std::size_t uses = occurrences(source, maker);
             if (uses != 1) {
                 std::cerr << "WorldRenderer.hpp calls " << maker << ' ' << uses
@@ -657,6 +703,18 @@ int main() {
                       << " time(s); the rect has one writer\n";
         }
         assert(handWritten == 0);
+
+        // RN-16: nor does anyone assemble the outline push by hand. It used to be
+        // a bare `std::array<glm::vec4, 3>` right at the draw call — three
+        // unnamed fields, which is why nothing could hold them against the
+        // shader's three named ones until now.
+        const std::size_t looseOutlinePush = occurrences(source, "std::array<glm::vec4, 3>");
+        if (looseOutlinePush != 0) {
+            std::cerr << "WorldRenderer.hpp builds an unnamed three-vec4 push " << looseOutlinePush
+                      << " time(s); OutlinePush has one writer\n";
+        }
+        assert(looseOutlinePush == 0);
+        assert(occurrences(types, "makeOutlineSegmentPush") > 0);
     }
 
     // --- The varyings between each pair of stages, likewise. ---

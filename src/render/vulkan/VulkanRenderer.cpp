@@ -5660,7 +5660,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
         VkPushConstantRange pushConstant{};
         pushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        pushConstant.size = sizeof(glm::vec4) * 3; // blockOrigin + boundsMin + boundsMax
+        // RN-16: the range is the struct's size, not a hand-counted vec4 tally.
+        // The struct is the declaration hud_push_constant_test holds against the
+        // shader's, so sizing off it is one fewer number to keep in step.
+        pushConstant.size = sizeof(OutlinePush);
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushConstant;
         checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &worldPipelines_.outlinePipelineLayout),
