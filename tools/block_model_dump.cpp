@@ -25,6 +25,7 @@
 #include "world/BlockState.hpp"
 #include "world/ElementModelBaker.hpp"
 #include "world/FaceBakery.hpp"
+#include "world/ItemModel.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -115,10 +116,109 @@ using mc::world::bake::Facing;
     return name != nullptr ? name : "";
 }
 
+// RN-14: which vanilla sprite each of a block ITEM's five layers is. The item
+// paths resolve these to atlas layers (world::cubeItemLayers); the preview tool
+// wants the names, for the same reason the world dump does — it opens no atlas.
+[[nodiscard]] const char* itemSlotSprite(Block block, mc::world::ItemLayerSlot slot) {
+    const auto& definition = mc::world::blockDefinition(block);
+    const bool directional = mc::world::cubeItemUsesBlockModel(block);
+    const char* name = nullptr;
+    switch (slot) {
+    case mc::world::ItemLayerSlot::Top:
+        name = directional ? definition.directional.top : definition.textures.top;
+        break;
+    case mc::world::ItemLayerSlot::Bottom:
+        name = directional ? definition.directional.bottom : definition.textures.bottom;
+        break;
+    case mc::world::ItemLayerSlot::Front:
+        name = directional ? definition.directional.front : definition.textures.side;
+        break;
+    case mc::world::ItemLayerSlot::Back:
+        name = directional ? definition.directional.back : definition.textures.side;
+        break;
+    case mc::world::ItemLayerSlot::Side:
+        name = directional ? definition.directional.side : definition.textures.side;
+        break;
+    }
+    return name != nullptr ? name : "";
+}
+
+void printItemModel(Block block) {
+    using mc::world::kIconFaces;
+    using mc::world::kItemIconBoxes;
+    using mc::world::kItemModelBoxes;
+    const auto range = mc::world::itemModelRange(block);
+    const auto& definition = mc::world::blockDefinition(block);
+    std::printf("{\n");
+    std::printf("  \"block\": \"%s\",\n", definition.identifier.toString().c_str());
+    std::printf("  \"vanilla\": \"%s\",\n",
+                definition.vanilla.empty() ? "" : definition.vanilla.toString().c_str());
+    std::printf("  \"itemSprite\": \"%s\",\n",
+                definition.itemSprite != nullptr ? definition.itemSprite : "");
+    std::printf("  \"boxCount\": %u,\n", static_cast<unsigned>(range.count));
+    std::printf("  \"iconTurn\": %u,\n", static_cast<unsigned>(range.turn));
+    // The boxes as the dropped and held item draw them: model units, per-face uv
+    // rect, per-face sprite.
+    std::printf("  \"boxes\": [\n");
+    for (std::size_t b = 0; b < range.count; ++b) {
+        const auto& box = kItemModelBoxes[static_cast<std::size_t>(range.first) + b];
+        std::printf("    {\"from\": [%.4f, %.4f, %.4f], \"to\": [%.4f, %.4f, %.4f],\n",
+                    box.from16.x, box.from16.y, box.from16.z, box.to16.x, box.to16.y,
+                    box.to16.z);
+        std::printf("     \"faces\": [");
+        bool first = true;
+        for (std::uint8_t f = 0; f < mc::world::bake::kFacingCount; ++f) {
+            const auto& face = box.face[f];
+            if (!face.present) {
+                continue;
+            }
+            std::printf("%s{\"facing\": \"%s\", \"sprite\": \"%s\", \"quadrant\": %u, "
+                        "\"uv\": [%.4f, %.4f, %.4f, %.4f]}",
+                        first ? "" : ",\n               ", facingName(static_cast<Facing>(f)),
+                        itemSlotSprite(block, face.slot), static_cast<unsigned>(face.quadrant),
+                        face.uv.minU, face.uv.minV, face.uv.maxU, face.uv.maxV);
+            first = false;
+        }
+        std::printf("]}%s\n", b + 1 == range.count ? "" : ",");
+    }
+    std::printf("  ],\n");
+    // And the icon form: turned into the inventory pose, three visible faces,
+    // corner UVs already resolved — exactly the numbers the HUD pushes.
+    std::printf("  \"iconBoxes\": [\n");
+    for (std::size_t b = 0; b < range.count; ++b) {
+        const auto& icon = kItemIconBoxes[static_cast<std::size_t>(range.first) + b];
+        const auto& box = kItemModelBoxes[static_cast<std::size_t>(range.first) + b];
+        std::printf("    {\"from\": [%.5f, %.5f, %.5f], \"to\": [%.5f, %.5f, %.5f],\n",
+                    icon.from.x, icon.from.y, icon.from.z, icon.to.x, icon.to.y, icon.to.z);
+        std::printf("     \"faces\": [");
+        bool first = true;
+        for (std::size_t f = 0; f < kIconFaces.size(); ++f) {
+            if (!icon.present[f]) {
+                continue;
+            }
+            std::printf("%s{\"icon\": \"%s\", \"sprite\": \"%s\", \"uv\": "
+                        "[[%.5f, %.5f], [%.5f, %.5f], [%.5f, %.5f], [%.5f, %.5f]]}",
+                        first ? "" : ",\n               ",
+                        f == 0 ? "up" : (f == 1 ? "north" : "west"),
+                        itemSlotSprite(block, icon.slot[f]), icon.uvCorner[f][0].x,
+                        icon.uvCorner[f][0].y, icon.uvCorner[f][1].x, icon.uvCorner[f][1].y,
+                        icon.uvCorner[f][2].x, icon.uvCorner[f][2].y, icon.uvCorner[f][3].x,
+                        icon.uvCorner[f][3].y);
+            first = false;
+        }
+        static_cast<void>(box);
+        std::printf("]}%s\n", b + 1 == range.count ? "" : ",");
+    }
+    std::printf("  ]\n}\n");
+}
+
 void usage() {
     std::fprintf(stderr,
                  "usage: mc_rebedrock_block_model_dump --block <name> "
-                 "[--state key=value]...\n"
+                 "[--item] [--state key=value]...\n"
+                 "  --item dumps the block's ITEM model (RN-14) instead of its\n"
+                 "         world model: the boxes the dropped/held item draws and\n"
+                 "         the icon boxes the inventory draws.\n"
                  "  states: facing=<direction> open=<bool> half=<top|bottom> "
                  "powered=<bool>\n"
                  "          hinge=<left|right> in_wall=<bool> locked=<bool> "
@@ -134,11 +234,14 @@ void usage() {
 
 int main(int argc, char** argv) {
     std::string blockName;
+    bool itemModel = false;
     std::vector<std::pair<std::string, std::string>> states;
     for (int i = 1; i < argc; ++i) {
         const std::string_view argument{argv[i]};
         if (argument == "--block" && i + 1 < argc) {
             blockName = argv[++i];
+        } else if (argument == "--item") {
+            itemModel = true;
         } else if (argument == "--state" && i + 1 < argc) {
             const std::string entry{argv[++i]};
             const auto equals = entry.find('=');
@@ -160,6 +263,11 @@ int main(int argc, char** argv) {
     if (!block.has_value()) {
         std::fprintf(stderr, "no such block: %s\n", blockName.c_str());
         return 1;
+    }
+
+    if (itemModel) {
+        printItemModel(*block);
+        return 0;
     }
 
     BlockState state{*block};

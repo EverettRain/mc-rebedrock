@@ -175,6 +175,53 @@ def state_for_vanilla(block, state):
     return resolved
 
 
+def icon_case(args, dumper, pack, out_dir):
+    """RN-14: the inventory icon — ours beside the vanilla item model."""
+    result = subprocess.run([str(dumper), "--block", args.block, "--item"],
+                            capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        sys.exit(f"{dumper} --item failed: {result.stderr.strip()}")
+    dump = json.loads(result.stdout)
+    if dump["itemSprite"]:
+        print(f"  {args.block}'s item is a flat sprite (item/{dump['itemSprite']}.png), "
+              f"not a model — nothing to draw here")
+        return
+    if dump["boxCount"] == 0:
+        print(f"  {args.block}'s item is a flat sprite — nothing to draw here")
+        return
+
+    sprites = {}
+    for box in dump["iconBoxes"]:
+        for face in box["faces"]:
+            sprites.setdefault(face["sprite"], lib.load_sprite(pack, face["sprite"]))
+    missing = [n for n, v in sprites.items() if v is None]
+    if missing:
+        print(f"  ! no texture in the pack for: {', '.join(sorted(missing))}", file=sys.stderr)
+
+    ours = lib.render_icon(dump["iconBoxes"], sprites, args.res, shaded=not args.no_shade)
+    rows = [(f"rebedrock  {args.block} icon  ({dump['boxCount']} box(es), "
+             f"turn {dump['iconTurn']})", [("gui", ours)])]
+
+    vanilla_name = dump["vanilla"].split(":")[-1] or args.block
+    if not args.no_vanilla:
+        try:
+            quads, model = lib.quads_from_item_model(pack, vanilla_name)
+            reference_sprites = collect_sprites(pack, quads)
+            # vanilla's gui display transform is rotation [30, 225, 0]; in this
+            # renderer's orbit that is yaw 135 / pitch 30 (it looks along -Z, the
+            # transform turns the model).
+            tile = lib.render(quads, reference_sprites, 135.0, 30.0, args.res,
+                              shaded=not args.no_shade)
+            rows.append((f"vanilla    {model}  gui [30, 225, 0]", [("gui", tile)]))
+        except (SystemExit, FileNotFoundError, json.JSONDecodeError) as exc:
+            print(f"  ! vanilla side unavailable: {exc}", file=sys.stderr)
+
+    sheet = build_sheet(rows, args.res)
+    out = out_dir / f"{args.block}_icon.png"
+    sheet.save(out)
+    print(f"wrote {out}")
+
+
 def one_case(args, dumper, pack, state, out_dir, tag):
     dump = run_dumper(dumper, args.block, state)
     ours = lib.quads_from_dump(dump)
@@ -252,6 +299,8 @@ def main():
                         help="a blockstate property, e.g. --state open=true (repeatable)")
     parser.add_argument("--sweep", action="store_true",
                         help="render open=false/true x the four facings")
+    parser.add_argument("--icon", action="store_true",
+                        help="render the INVENTORY ICON (RN-14) instead of the world model")
     parser.add_argument("--pack", default=os.environ.get("MC_REBEDROCK_RESOURCE_PACK"),
                         help="root of YOUR resource pack (the folder holding assets/)")
     parser.add_argument("--dumper", help="path to mc_rebedrock_block_model_dump")
@@ -281,6 +330,9 @@ def main():
     out_dir = Path(args.out) if args.out else repo_root() / "tools" / "preview-out"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.icon:
+        icon_case(args, dumper, pack, out_dir)
+        return
     if args.sweep:
         for opened in ("false", "true"):
             for facing in ("north", "east", "south", "west"):

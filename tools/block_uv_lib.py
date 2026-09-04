@@ -443,3 +443,77 @@ def render_net(quads, sprites, scale=14):
         out.paste(tile, (x, 20))
         x += tile.width + 8
     return out
+
+
+# --- the inventory icon (RN-14) -----------------------------------------------
+#
+# Mirrors mc::world::iconProject / iconDepth and the shader's iconCorners, so the
+# picture this draws is the one hud.vert draws. The icon is an orthographic
+# isometric — vanilla's `gui` display transform, rotation [30, 225, 0] — and our
+# HUD draws it as three faces of each box of the block's item model.
+
+ICON_CORNERS = [
+    (1, 1, 1), (0, 1, 1), (0, 1, 0), (1, 1, 1), (0, 1, 0), (1, 1, 0),
+    (1, 1, 0), (0, 1, 0), (0, 0, 0), (1, 1, 0), (0, 0, 0), (1, 0, 0),
+    (0, 1, 0), (0, 1, 1), (0, 0, 1), (0, 1, 0), (0, 0, 1), (0, 0, 0),
+]
+ICON_QUAD_CORNER = [0, 1, 2, 0, 2, 3]
+# Direction#getLuminance, the flat per-face scalar vanilla's block item render
+# applies: up 1.0, the left (north) face 0.6, the right (west) one 0.8.
+ICON_FACE_LIGHT = [1.0, 0.6, 0.8]
+
+
+def icon_project(p):
+    return (0.5 + 0.44 * (p[2] - p[0]),
+            0.46 - 0.21 * (p[0] + p[2]) + 0.48 * (1.0 - p[1]))
+
+
+def icon_depth(p):
+    return (p[0] - p[1] + p[2] + 1.0) / 3.0
+
+
+def render_icon(icon_boxes, sprites, res=256, bg=(26, 28, 34), shaded=True):
+    """Rasterise the icon boxes a `--item` dump lists, exactly as hud.vert does.
+
+    `icon_boxes` is the dump's `iconBoxes`: each box gives its turned extent in
+    0..1 and, per visible face, the four corner UVs the CPU already resolved.
+    """
+    from PIL import Image
+    image = np.zeros((res, res, 3), float)
+    image[:] = bg
+    zbuf = np.full((res, res), np.inf)
+    order = {"up": 0, "north": 1, "west": 2}
+    for box in icon_boxes:
+        frm = box["from"]
+        to = box["to"]
+        for face in box["faces"]:
+            texture = sprites.get(face["sprite"])
+            if texture is None:
+                continue
+            index = order[face["icon"]]
+            shade = ICON_FACE_LIGHT[index] if shaded else 1.0
+            screen = []
+            depth = []
+            for v in range(6):
+                unit = ICON_CORNERS[index * 6 + v]
+                p = [frm[a] + (to[a] - frm[a]) * unit[a] for a in range(3)]
+                sx, sy = icon_project(p)
+                screen.append((sx * res, sy * res))
+                depth.append(icon_depth(p))
+            uv = [face["uv"][ICON_QUAD_CORNER[v]] for v in range(6)]
+            for tri in ((0, 1, 2), (3, 4, 5)):
+                _raster(image, zbuf, np.array([screen[i] for i in tri], float),
+                        np.array([depth[i] for i in tri], float),
+                        np.array([uv[i] for i in tri], float), texture, shade)
+    return Image.fromarray(np.clip(image, 0, 255).astype(np.uint8))
+
+
+def quads_from_item_model(pack_root, block_name):
+    """The quads vanilla's `items/<name>.json` names, for the side-by-side."""
+    path = Path(pack_root) / "assets" / "minecraft" / "items" / (block_name + ".json")
+    if not path.exists():
+        raise SystemExit(f"no items/{block_name}.json in the pack")
+    entry = json.loads(path.read_text())["model"]
+    if entry.get("type") != "minecraft:model":
+        raise SystemExit(f"items/{block_name}.json is a {entry.get('type')}, not a plain model")
+    return quads_from_vanilla(pack_root, entry["model"]), entry["model"]
