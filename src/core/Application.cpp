@@ -128,6 +128,21 @@ int Application::run() {
     // 路径不存在直接停下，不静默跳过——否则自动化会用错资源渲完整批图还报成功
     for (const auto& pack : commandLinePacks_) {
         std::error_code lookup;
+        // 指的可能正是 resourcepacks/ 里那一个（最常见的用法就是把已装好的包再点一次名）
+        // 同一个包装两遍只是白解析一次 zip，按规范化路径去重
+        const auto canonical = std::filesystem::weakly_canonical(pack, lookup);
+        const auto alreadyFound = std::find_if(
+            found.begin(), found.end(), [&](const PackEntry& entry) {
+                std::error_code compare;
+                return std::filesystem::weakly_canonical(entry.path, compare) == canonical;
+            });
+        if (alreadyFound != found.end()) {
+            // 已在扫描结果里，但命令行点了名 → 移到末尾，优先级最高
+            const PackEntry moved = *alreadyFound;
+            found.erase(alreadyFound);
+            found.push_back(moved);
+            continue;
+        }
         if (std::filesystem::is_directory(pack, lookup) &&
             std::filesystem::exists(pack / "pack.mcmeta", lookup)) {
             found.push_back({pack, false});
