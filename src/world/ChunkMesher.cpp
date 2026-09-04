@@ -1259,16 +1259,21 @@ void appendWaterFace(
 // one, not merely more correct.
 struct CellCullContext final {
     Block block = Block::Air;
-    // A non-Opaque bucket is the port of 26.1's `skipRendering` overrides: glass
-    // against the same glass, water against water, one pane against its twin.
+    // RN-8e: 26.1's `skipRendering` override, read off the block instead of
+    // guessed from its render bucket.
+    //
+    // It used to be `renderLayer != Opaque`, on the reasoning that a non-Opaque
+    // bucket meant glass/water/panes. It also meant every stair, wall, door,
+    // trapdoor, fence gate, button, plate and diode — none of which override
+    // skipRendering in vanilla — and so two stacked stairs deleted the faces
+    // they shared, including the parts of the upper one that are plainly visible
+    // through the notch in the lower one.
     bool skipsAgainstSame = false;
     bool leaves = false;
 };
 
 [[nodiscard]] CellCullContext cellCullContext(Block block) {
-    return {block,
-            blockDefinition(block).renderLayer != BlockRenderLayer::Opaque,
-            isLeaves(block)};
+    return {block, skipsRenderingAgainstSelf(block), isLeaves(block)};
 }
 
 // RN-8a: 26.1's `Block.shouldRenderFace` (Block.java:304), in the three steps

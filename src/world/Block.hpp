@@ -805,6 +805,29 @@ enum class SubmergedFluid : std::uint8_t {
     Lava,
 };
 
+// RN-8e: whether this block occludes a neighbour's face at all — 26.1's
+// `BlockBehaviour.Properties.canOcclude`, the flag `noOcclusion()` clears.
+//
+// Its own axis, because in vanilla it IS its own axis: `canOcclude` defaults to
+// true and a block opts OUT of it, while the render bucket is a separate
+// decision made in the client. Deriving one from the other is what gave this
+// build a stair that occludes nothing — geometrically a solid block, but filed
+// under Cutout because its model has holes, and therefore silently exempted from
+// the whole shape criterion RN-8a built.
+enum class BlockOcclusion : std::uint8_t {
+    // The historical reading, and still the right default for the ~400 blocks
+    // nobody has checked against vanilla: the Opaque bucket occludes, the other
+    // two do not. Every block that leaves this value keeps exactly the behaviour
+    // it had before RN-8e.
+    FromRenderLayer,
+    // Geometrically solid though not in the Opaque bucket — vanilla leaves
+    // `canOcclude` at its default true. Which of its six faces it actually seals
+    // is then the shape's answer (`faceOcclusionMask`), never this flag's.
+    Solid,
+    // vanilla's explicit `noOcclusion()`.
+    None,
+};
+
 // What a block needs underneath or beside it in order to stay in the world.
 enum class BlockSupport : std::uint8_t {
     None,
@@ -1049,6 +1072,16 @@ struct BlockDefinition final {
     float blastResistance = 0.0F;
     std::uint8_t maximumStackSize = 64U;
     BlockRenderLayer renderLayer = BlockRenderLayer::Opaque;
+    // RN-8e: see BlockOcclusion. Separate from `renderLayer` on purpose.
+    BlockOcclusion occlusion = BlockOcclusion::FromRenderLayer;
+    // RN-8e: 26.1's `BlockBehaviour.skipRendering` override — "do not draw the
+    // face I share with another block of my own kind". In vanilla this is a
+    // METHOD a handful of blocks override (HalfTransparentBlock for glass and
+    // ice, LiquidBlock for water, IronBarsBlock for panes, LeavesBlock,
+    // MangroveRootsBlock), NOT something derived from the render bucket. This
+    // build derived it from `renderLayer != Opaque`, which quietly enrolled every
+    // Cutout block — and made two stacked stairs cull each other's shared faces.
+    bool skipsRenderingAgainstSelf = false;
     bool collision = true;
     BlockModel model = BlockModel::Cube;
     // The height of the block's solid box, in [0, 1]. Full cubes are 1.0; a
@@ -1414,11 +1447,48 @@ class BlockProperties final {
     }
     // A LeavesBlock: cutout, one level of light filtering, subject to decay, and
     // carrying the PERSISTENT flag that exempts player-placed leaves from it.
+    // RN-8e: vanilla's `canOcclude` default (true) for a block this build files
+    // under a non-Opaque bucket. Says only "this block can occlude"; WHICH faces
+    // it seals stays the shape's answer.
+    [[nodiscard]] constexpr BlockProperties occludes() const {
+        BlockProperties copy = *this;
+        copy.definition_.occlusion = BlockOcclusion::Solid;
+        return copy;
+    }
+
+    // RN-8e: vanilla's `noOcclusion()`, spelled explicitly for a block whose
+    // bucket would otherwise imply it occludes.
+    [[nodiscard]] constexpr BlockProperties noOcclusion() const {
+        BlockProperties copy = *this;
+        copy.definition_.occlusion = BlockOcclusion::None;
+        return copy;
+    }
+
+    // RN-8e: vanilla's `skipRendering` override. Name the vanilla class it comes
+    // from at every call site — this is a per-block decision in 26.1 and the
+    // whole point of the bit is that it stops being guessed from the bucket.
+    [[nodiscard]] constexpr BlockProperties skipsRenderingAgainstSelf() const {
+        BlockProperties copy = *this;
+        copy.definition_.skipsRenderingAgainstSelf = true;
+        return copy;
+    }
+
     [[nodiscard]] constexpr BlockProperties leaves() const {
         BlockProperties copy = *this;
         copy.definition_.leaves = true;
         return copy.strength(0.2F)
             .renderLayer(BlockRenderLayer::Cutout)
+            // LeavesBlock.java:48 overrides skipRendering. The mesher keeps one
+            // deterministic internal sheet rather than vanilla's all-or-nothing
+            // fancy/fast switch; that choice is the mesher's and predates this
+            // flag, which only says leaves are one of the blocks that HAS the
+            // override.
+            .skipsRenderingAgainstSelf()
+            // LeavesBlock's properties call `noOcclusion()` (Blocks.java:6775).
+            // Leaves are a full cube whose model is full of holes, so without
+            // this the Opaque-derived default would be wrong the moment anyone
+            // moved them out of Cutout.
+            .noOcclusion()
             .lightFilter(1U)
             .state(StateProperty::Persistent, 2U);
     }
@@ -1452,6 +1522,11 @@ class BlockProperties final {
         BlockProperties copy = *this;
         return copy.model(BlockModel::Stairs)
             .renderLayer(BlockRenderLayer::Cutout)
+            // RN-8e: `registerLegacyStair` copies the base block's properties
+            // (Blocks.java:6831) and none of the stair bases call
+            // `noOcclusion()`, so a vanilla stair occludes. Its lower slab seals
+            // the cell's bottom face; the rest is the shape's answer.
+            .occludes()
             // StairBlock.java:103 — `setValue(FACING, context.getHorizontalDirection())`,
             // with no `.getOpposite()`: a stair's front is the low step you walk
             // up, so it points the way the placer is facing.
@@ -1504,6 +1579,11 @@ class BlockProperties final {
         BlockProperties copy = *this;
         return copy.model(BlockModel::FenceGate)
             .renderLayer(BlockRenderLayer::Cutout)
+            // RN-8e: `Blocks.OAK_FENCE_GATE` is `.forceSolidOn()` with no
+            // `noOcclusion()` (Blocks.java:2385-2393). Its shape seals nothing,
+            // so this changes no face today — it is declared because leaving it
+            // to the bucket is what made the stair wrong.
+            .occludes()
             // FenceGateBlock.java:135/139 — `Direction direction =
             // context.getHorizontalDirection()` written straight into FACING. A
             // gate faces the way you walk through it, as the door and stair do.
@@ -1567,6 +1647,9 @@ class BlockProperties final {
         BlockProperties copy = *this;
         return copy.model(BlockModel::Button)
             .renderLayer(BlockRenderLayer::Cutout)
+            // RN-8e: `buttonProperties()` (Blocks.java:6809) calls no
+            // `noOcclusion()`. Seals nothing either, same as the gate.
+            .occludes()
             .support(BlockSupport::Wall)
             .state(StateProperty::Facing, 6U)
             .state(StateProperty::Powered, 2U);
@@ -1581,6 +1664,10 @@ class BlockProperties final {
         BlockProperties copy = *this;
         return copy.model(BlockModel::Wall)
             .renderLayer(BlockRenderLayer::Cutout)
+            // RN-8e: `wallVariant`/`ofLegacyCopy(COBBLESTONE).forceSolidOn()`
+            // (Blocks.java:2601) — no `noOcclusion()`. A wall's post never spans
+            // a whole cell wall, so its mask is zero today.
+            .occludes()
             .state(StateProperty::WallNorth, 2U)
             .state(StateProperty::WallEast, 2U)
             .state(StateProperty::WallSouth, 2U)
@@ -1655,6 +1742,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("glass")
         .strength(0.3F)
         .renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: `TransparentBlock` extends HalfTransparentBlock, whose
+        // skipRendering (HalfTransparentBlock.java:27) is `neighborState.is(this)`.
+        // Blocks.java:559 also calls `noOcclusion()` — a full cube you can see
+        // through must not cull its neighbours.
+        .skipsRenderingAgainstSelf()
+        .noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::CoalOre, "coal_ore", "Coal Ore")
         .texture("coal_ore")
@@ -1703,6 +1796,10 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("water_still", "water_flow", "water_flow")
         .strength(100.0F)
         .renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: `LiquidBlock.skipRendering` (LiquidBlock.java:136) is
+        // "the neighbour is the same fluid".
+        .skipsRenderingAgainstSelf()
+        .noOcclusion()
         .noCollision()
         .replaceable()
         .noDrops()
@@ -2610,6 +2707,10 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("ice")
         .strength(0.5F)
         .renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: `IceBlock` is a HalfTransparentBlock too — same skipRendering,
+        // same `noOcclusion()` (Blocks.java:824).
+        .skipsRenderingAgainstSelf()
+        .noOcclusion()
         .creative(CreativeCategory::NaturalBlocks),
     // --- STRUCT AR-B batch 1: plain cubes + pillars (see enum comment) ---------
     // Stone-brick variants. Infested blocks reuse the host brick's sprite.
@@ -3248,53 +3349,101 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     // Stained glass (16 colours) — translucent cubes, the Glass recipe.
     BlockProperties::of(Block::WhiteStainedGlass, "white_stained_glass", "White Stained Glass")
         .texture("white_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
+        // the same colour) and Blocks.java:2944+ calls noOcclusion().
+        .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::OrangeStainedGlass, "orange_stained_glass", "Orange Stained Glass")
         .texture("orange_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
+        // the same colour) and Blocks.java:2944+ calls noOcclusion().
+        .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::MagentaStainedGlass, "magenta_stained_glass", "Magenta Stained Glass")
         .texture("magenta_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
+        // the same colour) and Blocks.java:2944+ calls noOcclusion().
+        .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::LightBlueStainedGlass, "light_blue_stained_glass",
                         "Light Blue Stained Glass")
         .texture("light_blue_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
+        // the same colour) and Blocks.java:2944+ calls noOcclusion().
+        .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::YellowStainedGlass, "yellow_stained_glass", "Yellow Stained Glass")
         .texture("yellow_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
+        // the same colour) and Blocks.java:2944+ calls noOcclusion().
+        .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::LimeStainedGlass, "lime_stained_glass", "Lime Stained Glass")
         .texture("lime_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
+        // the same colour) and Blocks.java:2944+ calls noOcclusion().
+        .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::PinkStainedGlass, "pink_stained_glass", "Pink Stained Glass")
         .texture("pink_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
+        // the same colour) and Blocks.java:2944+ calls noOcclusion().
+        .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::GrayStainedGlass, "gray_stained_glass", "Gray Stained Glass")
         .texture("gray_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
+        // the same colour) and Blocks.java:2944+ calls noOcclusion().
+        .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::LightGrayStainedGlass, "light_gray_stained_glass",
                         "Light Gray Stained Glass")
         .texture("light_gray_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
+        // the same colour) and Blocks.java:2944+ calls noOcclusion().
+        .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::CyanStainedGlass, "cyan_stained_glass", "Cyan Stained Glass")
         .texture("cyan_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
+        // the same colour) and Blocks.java:2944+ calls noOcclusion().
+        .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::PurpleStainedGlass, "purple_stained_glass", "Purple Stained Glass")
         .texture("purple_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
+        // the same colour) and Blocks.java:2944+ calls noOcclusion().
+        .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::BlueStainedGlass, "blue_stained_glass", "Blue Stained Glass")
         .texture("blue_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
+        // the same colour) and Blocks.java:2944+ calls noOcclusion().
+        .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::BrownStainedGlass, "brown_stained_glass", "Brown Stained Glass")
         .texture("brown_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
+        // the same colour) and Blocks.java:2944+ calls noOcclusion().
+        .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::GreenStainedGlass, "green_stained_glass", "Green Stained Glass")
         .texture("green_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
+        // the same colour) and Blocks.java:2944+ calls noOcclusion().
+        .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::RedStainedGlass, "red_stained_glass", "Red Stained Glass")
         .texture("red_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
+        // the same colour) and Blocks.java:2944+ calls noOcclusion().
+        .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::BlackStainedGlass, "black_stained_glass", "Black Stained Glass")
         .texture("black_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
+        // the same colour) and Blocks.java:2944+ calls noOcclusion().
+        .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     // Misc full cubes.
     BlockProperties::of(Block::PackedIce, "packed_ice", "Packed Ice")
@@ -3383,6 +3532,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     BlockProperties::of(Block::MangroveRoots, "mangrove_roots", "Mangrove Roots")
         .texture("mangrove_roots_top", "mangrove_roots_side", "mangrove_roots_top")
         .strength(0.7F).pillar().renderLayer(BlockRenderLayer::Cutout)
+        // RN-8e: `MangroveRootsBlock.skipRendering` (MangroveRootsBlock.java:40)
+        // hides only the Y faces against another roots block; this build's bit is
+        // all-or-nothing, and hiding all six is what it already did. Registered
+        // as a known simplification rather than silently dropped.
+        .skipsRenderingAgainstSelf()
+        .noOcclusion()
         .creative(CreativeCategory::NaturalBlocks),
     // Leaves.
     BlockProperties::of(Block::MangroveLeaves, "mangrove_leaves", "Mangrove Leaves")
@@ -3572,15 +3727,36 @@ static_assert(blockDefinition(Block::OakDoor).states.size() < kMaximumStatePrope
 // axis from the render bucket and from light opacity; those three are one field
 // here today, which is precisely the conflation RN-8 exists to unpick.
 //
-// The initial value is deliberately `renderLayer == Opaque` and nothing else.
-// Writing it as `isFullCube` would make glass (a Cube model) start occluding its
-// neighbours — a bigger regression than the bug being fixed — so this stays the
-// conservative reading of today's behaviour, and the only behaviour change RN-8a
-// makes comes from the *shape* half of the criterion. Giving Cutout blocks that
-// are geometrically solid (stairs, walls, double slabs) their own `occludes`
-// bit is RN-8e's, gated on FrameTrace evidence.
+// RN-8e: it is now a declared axis (`BlockOcclusion`), not a reading of the
+// render bucket. The default still answers `renderLayer == Opaque`, so a block
+// that says nothing keeps exactly the behaviour it had; a block that IS
+// geometrically solid while bucketed Cutout says `.occludes()` and its shape
+// then decides which faces it seals.
+//
+// Writing this as `isFullCube` would make glass (a Cube model) occlude its
+// neighbours, which is why it never was that and why glass says `noOcclusion()`
+// out loud instead.
 [[nodiscard]] constexpr bool canOcclude(Block block) {
-    return isRenderable(block) && blockDefinition(block).renderLayer == BlockRenderLayer::Opaque;
+    if (!isRenderable(block)) {
+        return false;
+    }
+    switch (blockDefinition(block).occlusion) {
+    case BlockOcclusion::Solid:
+        return true;
+    case BlockOcclusion::None:
+        return false;
+    case BlockOcclusion::FromRenderLayer:
+        break;
+    }
+    return blockDefinition(block).renderLayer == BlockRenderLayer::Opaque;
+}
+
+// RN-8e: 26.1's `BlockBehaviour.skipRendering` — whether this block hides the
+// face it shares with another of its own kind. A per-block override in vanilla,
+// a per-block bit here; see the field's comment for why it is not the render
+// bucket.
+[[nodiscard]] constexpr bool skipsRenderingAgainstSelf(Block block) {
+    return isRenderable(block) && blockDefinition(block).skipsRenderingAgainstSelf;
 }
 
 [[nodiscard]] constexpr std::uint8_t skyLightOpacity(Block block) {

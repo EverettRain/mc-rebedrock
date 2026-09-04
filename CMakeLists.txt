@@ -1274,6 +1274,15 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME smooth_lighting_gradient COMMAND mc_rebedrock_smooth_lighting_gradient_test)
+    add_executable(mc_rebedrock_shaped_block_occlusion_test
+        tests/shaped_block_occlusion_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_shaped_block_occlusion_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_shaped_block_occlusion_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME shaped_block_occlusion COMMAND mc_rebedrock_shaped_block_occlusion_test)
     add_executable(mc_rebedrock_multi_player_test
         tests/multi_player_test.cpp
     )

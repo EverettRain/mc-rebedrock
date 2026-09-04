@@ -26,6 +26,10 @@ constexpr std::array<Face, 6> kAllFaces{Face::PositiveX, Face::NegativeX, Face::
 // The six faces as a bitmask, so a whole row of the truth table is one literal.
 constexpr std::uint8_t kNone = 0U;
 constexpr std::uint8_t kAll = 0b111111U;
+// Single-face masks, named so an expectation reads as the face it means.
+constexpr std::uint8_t kUp = 1U << static_cast<std::uint8_t>(Face::PositiveY);
+constexpr std::uint8_t kDown = 1U << static_cast<std::uint8_t>(Face::NegativeY);
+constexpr std::uint8_t kNorth = 1U << static_cast<std::uint8_t>(Face::NegativeZ);
 constexpr std::uint8_t bit(Face face) {
     return static_cast<std::uint8_t>(1U << static_cast<unsigned>(face));
 }
@@ -143,10 +147,44 @@ int main() {
     assert(sealedFaces(BlockState{Block::Glass}) == kAll);
     assert(faceOcclusionMask(BlockState{Block::Glass}) == kNone);
     assert(faceOcclusionMask(BlockState{Block::Stone}) == kAll);
-    // Cutout geometry never occludes yet — this is what makes the stair union
-    // deviation above inert, and it is RN-8e's to change.
-    assert(faceOcclusionMask(BlockState{Block::OakStairs}) == kNone);
+    // RN-8e: geometrically solid Cutout blocks now declare `.occludes()`, so the
+    // shape criterion actually runs for them. A bottom-half stair's lower slab
+    // fills the cell's whole footprint from y=0 to y=0.5 and therefore seals the
+    // cell's DOWN face; flip it to the top half and it seals UP instead. That
+    // state dependence is why its table entry below is the sentinel.
+    assert(faceOcclusionMask(BlockState{Block::OakStairs}) == kDown);
+    assert(faceOcclusionMask(BlockState{Block::OakStairs}.withStairHalf(SlabPortion::Top)) == kUp);
+    // And no more than that: the stair's BACK face is sealed by its slab plus its
+    // step together, which the single-box criterion deliberately does not see
+    // (this header's comment calls that deviation out). It used to be inert
+    // because the mask was zero; now it is a real, registered under-report —
+    // safe, because under-reporting occlusion only ever draws a face nobody can
+    // see, never removes one.
+    assert((faceOcclusionMask(BlockState{Block::OakStairs}) & kNorth) == 0U);
+    // Leaves say `noOcclusion()` out loud now instead of inheriting it from the
+    // bucket: a full cube whose model is full of holes must never cull.
     assert(faceOcclusionMask(BlockState{Block::OakLeaves}) == kNone);
+    // A wall, a gate and a button all occlude in vanilla and seal nothing here —
+    // the flag and the shape are separate answers and this is what that looks
+    // like when they disagree.
+    assert(canOcclude(Block::CobblestoneWall));
+    assert(faceOcclusionMask(BlockState{Block::CobblestoneWall}) == kNone);
+    assert(canOcclude(Block::OakFenceGate));
+    assert(faceOcclusionMask(BlockState{Block::OakFenceGate}) == kNone);
+    assert(canOcclude(Block::StoneButton));
+    assert(faceOcclusionMask(BlockState{Block::StoneButton}) == kNone);
+    // Doors and trapdoors are `noOcclusion()` in vanilla (Blocks.java:1403,
+    // 2115): a closed door's 3px leaf spans a whole cell wall, so without the
+    // flag the shape would happily seal the face behind it.
+    assert(!canOcclude(Block::OakDoor));
+    assert(faceOcclusionMask(BlockState{Block::OakDoor}) == kNone);
+    assert(!canOcclude(Block::OakTrapdoor));
+    assert(faceOcclusionMask(BlockState{Block::OakTrapdoor}) == kNone);
+    // The pressure plate is the one eligible block deliberately left out: vanilla
+    // occludes it, but vanilla's shape is `Block.column(14, 0, 1)` — inset a
+    // pixel on each side — while this build's is a full-footprint Column, so
+    // `.occludes()` would seal a face vanilla does not. Fix the shape first.
+    assert(!canOcclude(Block::StonePressurePlate));
 
     // --- The per-block table and its sentinel. ---
     {
@@ -157,7 +195,9 @@ int main() {
         assert(entry(Block::Air) == kNone);
         assert(entry(Block::Glass) == kNone);
         assert(entry(Block::Torch) == kNone);
-        assert(entry(Block::OakStairs) == kNone);
+        // RN-8e: a stair occludes and its sealed face moves with HALF, which is
+        // exactly the pair of conditions the sentinel exists for.
+        assert(entry(Block::OakStairs) == kOcclusionStateDependent);
         // Only a block that both occludes and reshapes with its state is worth a
         // `chunk->state()` at snapshot-fill time.
         assert((entry(Block::StoneSlab) & kOcclusionStateDependent) != 0U);
