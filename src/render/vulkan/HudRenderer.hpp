@@ -1530,7 +1530,7 @@ class HudRenderer final {
             const ItemPush push{
                 {0.0F, 0.0F, 0.0F, 1.0F},
                 {layer, 0.0F, 0.0F, 1.0F},
-                {6.0F, 0.0F, 0.0F, 1.0F},
+                {kItemModeMatrixViewModel, 0.0F, 0.0F, 1.0F},
                 {dimensions.x, dimensions.y, dimensions.z, 0.0F},
                 cubeWorld,
             };

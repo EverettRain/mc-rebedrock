@@ -1108,7 +1108,7 @@ class WorldRenderer final {
                 const ItemPush shadowPush{
                     {renderedPosition.x, *groundY, renderedPosition.z, 0.15F},
                     {0.0F, 0.0F, 0.0F, 0.0F},
-                    {2.0F, opacity, 0.0F, 0.0F},
+                    {kItemModeEntityShadow, opacity, 0.0F, 0.0F},
                     {0.0F, 0.0F, 0.0F, 0.0F},
                 };
                 vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
@@ -1214,7 +1214,8 @@ class WorldRenderer final {
                 const float spriteLayer = gameplay::itemTextureLayer(entity.stack);
                 const ItemPush push{
                     {0.0F, 0.0F, 0.0F, 0.30F},  {spriteLayer, spriteLayer, spriteLayer, 0.0F},
-                    {7.0F, 0.0F, 0.0F, 0.0F},   {1.0F, 1.0F, 0.0625F, packedLight},
+                    {kItemModeGeneratedItem, 0.0F, 0.0F, 0.0F},
+                    {1.0F, 1.0F, 0.0625F, packedLight},
                     cameraView * dropTransform,
                 };
                 vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
@@ -1233,7 +1234,7 @@ class WorldRenderer final {
                 {layers.top, layers.side, layers.bottom, 0.0F},
                 // data.w 在 item_entity.frag 里选中"与地形等价"的下落方块光照
                 // 普通掉落方块物品保持为零
-                {1.0F, 0.0F, 0.0F, 2.0F},
+                {kItemModeBlockCube, 0.0F, 0.0F, 2.0F},
                 {0.0F, 0.0F, 0.0F, packedSceneLight(renderedPosition)},
             };
             vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
@@ -1251,7 +1252,7 @@ class WorldRenderer final {
             const ItemPush push{
                 {billboardCentre.x, billboardCentre.y, billboardCentre.z, 0.3F},
                 {kExperienceOrbLayer, 0.0F, 0.0F, 1.0F},
-                {-1.0F, 0.0F, 0.0F, 1.0F},
+                {kItemModeAtlasBillboard, 0.0F, 0.0F, 1.0F},
                 {0.0F, 0.0F, 0.0F, packedSceneLight(billboardCentre)},
             };
             vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
@@ -1531,7 +1532,7 @@ class WorldRenderer final {
         const ItemPush push{
             {0.0F, 0.0F, 0.0F, 1.0F},
             {textureLayer, 0.0F, 0.0F, 0.0F},
-            {8.0F, 0.0F, 0.0F, 0.0F},
+            {kItemModeWorldMatrixCuboid, 0.0F, 0.0F, 0.0F},
             {dimensions.x, dimensions.y, dimensions.z, packedLight},
             worldMatrix,
         };
@@ -1725,7 +1726,7 @@ class WorldRenderer final {
         const ItemPush push{
             {uvSize.x, uvSize.y, uvSize.z, std::bit_cast<float>(woolTint)},
             {layer, textureSize.x, textureSize.y, std::bit_cast<float>(faceOverride)},
-            {9.0F, uv.x, uv.y, mirror ? 1.0F : 0.0F},
+            {kItemModeBoxUvEntity, uv.x, uv.y, mirror ? 1.0F : 0.0F},
             {renderSize.x, renderSize.y, renderSize.z,
              packedLight + (hurtFlash > 0.5F ? 512.0F : 0.0F)},
             worldMatrix,
@@ -1911,7 +1912,7 @@ class WorldRenderer final {
             {static_cast<float>(block.x) + 0.5F, static_cast<float>(block.y) + 0.5F,
              static_cast<float>(block.z) + 0.5F, 1.006F},
             {layer, layer, layer, 0.0F},
-            {1.0F, 0.0F, 0.0F, 0.0F},
+            {kItemModeBlockCube, 0.0F, 0.0F, 0.0F},
             {0.0F, 0.0F, 0.0F, 0.0F},
         };
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipeline);
@@ -1990,7 +1991,8 @@ class WorldRenderer final {
         const ItemPush push{
             {0.0F, 0.0F, 0.0F, 1.0F},
             {layers.top, layers.side, layers.bottom, 0.0F},
-            {emptyHand ? 6.0F : 7.0F, 0.0F, emptyHand ? 1.0F : 0.0F, emptyHand ? 1.0F : 0.0F},
+            {emptyHand ? kItemModeMatrixViewModel : kItemModeGeneratedItem, 0.0F,
+             emptyHand ? 1.0F : 0.0F, emptyHand ? 1.0F : 0.0F},
             emptyHand ? glm::vec4{0.25F, 0.75F, 0.25F, heldLight}
                       : glm::vec4{1.0F, 1.0F, 0.0625F, heldLight},
             heldTransform,

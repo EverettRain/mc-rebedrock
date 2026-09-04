@@ -7,6 +7,7 @@
 #include "ui/HudLayout.hpp"
 #include "world/ItemModel.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
@@ -149,21 +150,148 @@ struct ItemPush final {
 
 static_assert(sizeof(ItemPush) <= 128U, "Item push constants must fit Vulkan's guaranteed minimum");
 
-// item_entity.vert's draw modes, as `data.x`. The shader dispatches on ranges
-// (`> 9.5`, `> 10.5`), so these are whole numbers spaced one apart.
-inline constexpr float kItemModeFlatSprite = 0.0F;   // a flat item texture
-inline constexpr float kItemModeCube = 1.0F;         // block-break overlay, falling block
-inline constexpr float kItemModeShadow = 2.0F;       // the round entity shadow
-inline constexpr float kItemModeHeldSprite = 3.0F;   // a flat item in view space
-inline constexpr float kItemModePlayerSkin = 4.0F;   // a skinned cuboid in view space
-inline constexpr float kItemModeArticulatedCuboid = 5.0F; // world-space skinned cuboid
-inline constexpr float kItemModeMatrixViewModel = 6.0F;   // view matrix carries the pose
-inline constexpr float kItemModeBreakingQuad = 7.0F;      // the breaking overlay's quads
-inline constexpr float kItemModeWorldMatrixCuboid = 8.0F; // chest lid, articulated bones
-inline constexpr float kItemModeBoxUvEntity = 9.0F;       // mobs and NPCs
-// RN-14: one box of a block ITEM's model, one draw per face.
-inline constexpr float kItemModeBlockItemDropped = 10.0F; // world space, yaw-rotated
-inline constexpr float kItemModeBlockItemHeld = 11.0F;    // the view matrix carries the pose
+// --- item_entity.vert's draw modes, and the categories over them
+//
+// One pipeline serves fifteen kinds of draw, selected by `data.x`. Two things
+// live here and they are NOT the same thing:
+//
+//   * a MODE SELECTOR. A draw is exactly one mode. The set is exclusive and, over
+//     the modes that have producers, complete.
+//   * a CATEGORY. A property several modes share — "is placed by a matrix", "is a
+//     block item's box". A category covers several modes ON PURPOSE.
+//
+// Conflating them is not hypothetical. `blockItemBox` deliberately covers both 10
+// and 11: a held block IS a block-item box and has to reach the branch that
+// resolves the UV rect. Rewriting that predicate as exclusive would put the
+// regression this file's history is about straight back.
+//
+// What is removed instead is the THRESHOLD as a way of expressing membership.
+// `data.x > 9.5` covers 10 and 11 today and would silently swallow a mode 12
+// tomorrow — a new draw kind changing an existing branch's meaning by arithmetic
+// accident. Every category below lists its members.
+//
+// The shader mirrors this block between its own begin/end markers and derives its
+// comparison bounds from the constants (it keeps float `> m - 0.5 && < m + 0.5`
+// comparisons — that is the right way to compare floats, and `==` is not).
+// `hud_push_constant_test` parses both and holds them together.
+//
+// ---- item draw modes: begin ----
+inline constexpr float kItemModeWorldBillboard = 0.0F;      // camera-facing, whole layer
+inline constexpr float kItemModeBlockCube = 1.0F;           // falling block, breaking overlay
+inline constexpr float kItemModeEntityShadow = 2.0F;        // the round shadow blob
+inline constexpr float kItemModeHeldSprite = 3.0F;          // flat sprite in view space
+inline constexpr float kItemModeViewSkinCuboid = 4.0F;      // skinned cuboid in view space
+inline constexpr float kItemModeArticulatedCuboid = 5.0F;   // skinned cuboid in world space
+inline constexpr float kItemModeMatrixViewModel = 6.0F;     // the view matrix carries the pose
+inline constexpr float kItemModeGeneratedItem = 7.0F;       // extruded flat-sprite item model
+inline constexpr float kItemModeWorldMatrixCuboid = 8.0F;   // chest lid, articulated bones
+inline constexpr float kItemModeBoxUvEntity = 9.0F;         // mobs and NPCs
+inline constexpr float kItemModeBlockItemDropped = 10.0F;   // RN-14: one face of one box
+inline constexpr float kItemModeBlockItemHeld = 11.0F;      // the same, placed by the matrix
+inline constexpr float kItemModeAtlasBillboard = -1.0F;     // sub-rect UV + opacity (xp orb)
+inline constexpr float kItemModeHeldBillboard = -2.0F;      // billboard in view space
+inline constexpr float kItemModeMatrixHeldBillboard = -3.0F; // billboard placed by the matrix
+// ---- item draw modes: end ----
+
+inline constexpr std::array kItemModes{
+    kItemModeMatrixHeldBillboard, kItemModeHeldBillboard,    kItemModeAtlasBillboard,
+    kItemModeWorldBillboard,      kItemModeBlockCube,        kItemModeEntityShadow,
+    kItemModeHeldSprite,          kItemModeViewSkinCuboid,   kItemModeArticulatedCuboid,
+    kItemModeMatrixViewModel,     kItemModeGeneratedItem,    kItemModeWorldMatrixCuboid,
+    kItemModeBoxUvEntity,         kItemModeBlockItemDropped, kItemModeBlockItemHeld,
+};
+
+// Modes the shader still recognises that nothing pushes. Recorded rather than
+// deleted: removing a branch of a shader that cannot be run in this container is
+// a change to make with eyes on a screen. Each is a shape the renderer once had
+// or was built toward; the test asserts this list is exactly the difference
+// between what the shader knows and what the renderer sends, so a new orphan
+// cannot appear quietly.
+inline constexpr std::array kItemModesWithoutProducer{
+    kItemModeWorldBillboard,   // every billboard today carries a sub-rect (mode -1)
+    kItemModeHeldSprite,       // held flat items go through the extruded model (7)
+    kItemModeViewSkinCuboid,   // no view-space skinned cuboid is drawn
+    kItemModeArticulatedCuboid,// articulated bones use the world matrix (8)
+    kItemModeHeldBillboard,    // no view-space billboard is drawn
+    kItemModeMatrixHeldBillboard,
+};
+
+// The float comparison the shader makes, mirrored. Ranges, not equality: the mode
+// arrives as a float and `==` on floats is how a mode silently stops matching.
+[[nodiscard]] inline constexpr bool isItemMode(float value, float mode) {
+    return value > mode - 0.5F && value < mode + 0.5F;
+}
+
+// --- The three top-level dispatch branches. Every mode takes exactly one. ---
+[[nodiscard]] inline constexpr bool itemBranchGeneratedItem(float mode) {
+    return isItemMode(mode, kItemModeGeneratedItem);
+}
+[[nodiscard]] inline constexpr bool itemBranchShadow(float mode) {
+    return isItemMode(mode, kItemModeEntityShadow);
+}
+[[nodiscard]] inline constexpr bool itemBranchCuboid(float mode) {
+    return isItemMode(mode, kItemModeBlockCube) || isItemMode(mode, kItemModeHeldSprite) ||
+           isItemMode(mode, kItemModeViewSkinCuboid) ||
+           isItemMode(mode, kItemModeArticulatedCuboid) ||
+           isItemMode(mode, kItemModeMatrixViewModel) ||
+           isItemMode(mode, kItemModeWorldMatrixCuboid) ||
+           isItemMode(mode, kItemModeBoxUvEntity) ||
+           isItemMode(mode, kItemModeBlockItemDropped) ||
+           isItemMode(mode, kItemModeBlockItemHeld);
+}
+// The shader reaches this one by falling through, but it is written here as its
+// own member list on purpose. Defined as the complement it would make the
+// partition assertion vacuous — every mode would take exactly one branch by
+// construction, including a mode that had just been dropped from the cuboid list
+// and was now being drawn as a billboard.
+[[nodiscard]] inline constexpr bool itemBranchBillboard(float mode) {
+    return isItemMode(mode, kItemModeWorldBillboard) ||
+           isItemMode(mode, kItemModeAtlasBillboard) ||
+           isItemMode(mode, kItemModeHeldBillboard) ||
+           isItemMode(mode, kItemModeMatrixHeldBillboard);
+}
+
+// --- Categories: several modes on purpose, each member named. ---
+[[nodiscard]] inline constexpr bool itemBlockItemBox(float mode) {
+    // 10 and 11 together, deliberately: a held block is a block-item box and must
+    // reach the UV-rect resolution. This one is load-bearing history.
+    return isItemMode(mode, kItemModeBlockItemDropped) ||
+           isItemMode(mode, kItemModeBlockItemHeld);
+}
+[[nodiscard]] inline constexpr bool itemUsesMatrix(float mode) {
+    return isItemMode(mode, kItemModeMatrixViewModel) ||
+           isItemMode(mode, kItemModeWorldMatrixCuboid) ||
+           isItemMode(mode, kItemModeBoxUvEntity) ||
+           isItemMode(mode, kItemModeBlockItemHeld);
+}
+[[nodiscard]] inline constexpr bool itemHeldInViewSpace(float mode) {
+    return isItemMode(mode, kItemModeHeldSprite) ||
+           isItemMode(mode, kItemModeViewSkinCuboid) ||
+           isItemMode(mode, kItemModeMatrixViewModel) ||
+           isItemMode(mode, kItemModeBlockItemHeld);
+}
+// The one category with a condition beyond membership: mode 6 joins only when
+// `data.w` says the draw is a skin. Kept as it is; the members are still listed.
+[[nodiscard]] inline constexpr bool itemPlayerSkinCuboid(float mode, float dataW) {
+    return isItemMode(mode, kItemModeViewSkinCuboid) ||
+           isItemMode(mode, kItemModeArticulatedCuboid) ||
+           isItemMode(mode, kItemModeWorldMatrixCuboid) ||
+           (isItemMode(mode, kItemModeMatrixViewModel) && !itemBlockItemBox(mode) &&
+            dataW > 0.5F);
+}
+// The billboard tail's own categories. `itemAtlasBillboard` was written out twice
+// in the shader (the UV and the opacity each spelled the compound condition), and
+// two copies of a condition is one of them drifting.
+[[nodiscard]] inline constexpr bool itemHeldBillboard(float mode) {
+    return isItemMode(mode, kItemModeHeldBillboard) ||
+           isItemMode(mode, kItemModeMatrixHeldBillboard);
+}
+[[nodiscard]] inline constexpr bool itemMatrixHeldBillboard(float mode) {
+    return isItemMode(mode, kItemModeMatrixHeldBillboard);
+}
+[[nodiscard]] inline constexpr bool itemAtlasBillboard(float mode) {
+    return isItemMode(mode, kItemModeAtlasBillboard);
+}
 
 // --- Where a block-item face's UV rect lives, and why it is written in one place
 //

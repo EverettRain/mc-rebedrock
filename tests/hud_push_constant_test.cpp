@@ -42,6 +42,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #ifndef MC_REBEDROCK_SHADER_SRC_DIR
@@ -138,6 +139,70 @@ struct Field final {
 
 [[nodiscard]] bool contains(std::string_view haystack, std::string_view needle) {
     return haystack.find(needle) != std::string_view::npos;
+}
+
+// `name = value;` pairs out of a `---- <label>: begin ----` / `end` block. The
+// marker-block shape is this repo's existing way of holding a shader constant
+// against a C++ one (kFaceInfoCorner set the precedent).
+[[nodiscard]] std::vector<std::pair<std::string, float>> markedConstants(
+    const std::string& source, std::string_view label) {
+    const std::string begin = std::string{"---- "} + std::string{label} + ": begin ----";
+    const std::string end = std::string{"---- "} + std::string{label} + ": end ----";
+    const auto from = source.find(begin);
+    const auto to = source.find(end);
+    assert(from != std::string::npos && to != std::string::npos && from < to);
+    const std::string body = source.substr(from + begin.size(), to - from - begin.size());
+    std::vector<std::pair<std::string, float>> out;
+    std::size_t cursor = 0;
+    while ((cursor = body.find("kItemMode", cursor)) != std::string::npos) {
+        const auto nameEnd = body.find_first_not_of(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", cursor);
+        const std::string name = body.substr(cursor, nameEnd - cursor);
+        const auto equals = body.find('=', nameEnd);
+        const auto semicolon = body.find(';', equals);
+        assert(equals != std::string::npos && semicolon != std::string::npos);
+        out.emplace_back(name, std::stof(body.substr(equals + 1, semicolon - equals - 1)));
+        cursor = semicolon;
+    }
+    return out;
+}
+
+// Which named modes a predicate's body lists, in the shader source. The predicate
+// is a disjunction of `isItemMode(kItemModeX)`, so its membership is readable.
+[[nodiscard]] std::vector<std::string> predicateMembers(const std::string& source,
+                                                        std::string_view declaration) {
+    const auto from = source.find(declaration);
+    assert(from != std::string::npos && "the predicate must exist with this spelling");
+    const auto to = source.find(';', from);
+    assert(to != std::string::npos);
+    const std::string body = source.substr(from, to - from);
+    std::vector<std::string> members;
+    std::size_t cursor = 0;
+    while ((cursor = body.find("isItemMode(kItemMode", cursor)) != std::string::npos) {
+        cursor += std::string_view{"isItemMode("}.size();
+        const auto nameEnd = body.find(')', cursor);
+        members.push_back(body.substr(cursor, nameEnd - cursor));
+        cursor = nameEnd;
+    }
+    std::sort(members.begin(), members.end());
+    return members;
+}
+
+[[nodiscard]] std::size_t occurrencesIn(const std::string& text, std::string_view needle) {
+    std::size_t count = 0;
+    std::size_t cursor = 0;
+    while ((cursor = text.find(needle, cursor)) != std::string::npos) {
+        ++count;
+        cursor += needle.size();
+    }
+    return count;
+}
+
+[[nodiscard]] std::vector<std::string> sortedNames(std::initializer_list<std::string_view> names) {
+    std::vector<std::string> out;
+    for (const auto name : names) out.emplace_back(name);
+    std::sort(out.begin(), out.end());
+    return out;
 }
 
 [[nodiscard]] std::string describe(const std::vector<Field>& fields) {
@@ -304,6 +369,184 @@ int main() {
                "comparison above");
     }
 
+    // --- The draw modes: one list, and a real partition over it. ---
+    //
+    // C block. `data.x` selects one of fifteen kinds of draw, and the shader used
+    // to express both "which mode is this" and "which modes share this property"
+    // with bare thresholds. The two are different things and only the first is
+    // exclusive — `blockItemBox` covers modes 10 and 11 deliberately, and making
+    // it exclusive would restore the regression above. What is asserted here is
+    // that the modes partition, that each category's membership is a list someone
+    // wrote, and that the shader and C++ agree about both.
+    {
+        const std::string shader = stripComments(readFile(kShaderDir / "item_entity.vert"));
+        const std::string types =
+            stripComments(readFile(kSourceDir / "src/render/vulkan/HudTypes.hpp"));
+
+        // (a) One list of modes, two declarations of it.
+        // Raw, not stripped: the begin/end markers themselves live in comments.
+        const auto shaderModes =
+            markedConstants(readFile(kShaderDir / "item_entity.vert"), "item draw modes");
+        const auto cxxModes = markedConstants(
+            readFile(kSourceDir / "src/render/vulkan/HudTypes.hpp"), "item draw modes");
+        if (shaderModes != cxxModes) {
+            std::cerr << "item draw modes disagree between item_entity.vert and HudTypes.hpp\n";
+            for (const auto& [name, value] : shaderModes)
+                std::cerr << "  shader: " << name << " = " << value << "\n";
+            for (const auto& [name, value] : cxxModes)
+                std::cerr << "  c++:    " << name << " = " << value << "\n";
+        }
+        assert(shaderModes == cxxModes);
+        assert(shaderModes.size() == mc::render::kItemModes.size());
+        // Distinct values, at least 1.0 apart — the comparison is a +/-0.5 window
+        // around each, so anything closer makes two modes ambiguous.
+        for (std::size_t i = 0; i < shaderModes.size(); ++i) {
+            for (std::size_t j = i + 1; j < shaderModes.size(); ++j) {
+                assert(std::abs(shaderModes[i].second - shaderModes[j].second) >= 1.0F);
+            }
+        }
+        // And every raw threshold is gone: the only comparison against data.x
+        // left in the shader is the one inside isItemMode.
+        assert(occurrencesIn(shader, "item.data.x >") + occurrencesIn(shader, "item.data.x <") == 2);
+
+        // (b) COMPLETE and (c) EXCLUSIVE: every mode takes exactly one top-level
+        // branch. A mode that fell into two, or into none, is a draw that renders
+        // twice or not at all.
+        for (const float mode : mc::render::kItemModes) {
+            const int branches = static_cast<int>(mc::render::itemBranchGeneratedItem(mode)) +
+                                 static_cast<int>(mc::render::itemBranchShadow(mode)) +
+                                 static_cast<int>(mc::render::itemBranchCuboid(mode)) +
+                                 static_cast<int>(mc::render::itemBranchBillboard(mode));
+            if (branches != 1) {
+                std::cerr << "mode " << mode << " takes " << branches
+                          << " top-level branches; expected exactly 1\n";
+            }
+            assert(branches == 1);
+        }
+        // A value BETWEEN two modes must not be claimed by the cuboid branch's
+        // membership list — that is what an inserted mode looks like before anyone
+        // adds it to a category on purpose.
+        assert(!mc::render::itemBranchCuboid(11.5F));
+        assert(!mc::render::itemBranchGeneratedItem(7.5F));
+
+        // (d) NO ORPHANS. What the shader knows, minus what the renderer sends,
+        // must be exactly the list that says why each one is still there.
+        {
+            std::vector<std::string> produced;
+            for (const auto& file : {"src/render/vulkan/WorldRenderer.hpp",
+                                     "src/render/vulkan/HudRenderer.hpp"}) {
+                const std::string body = stripComments(readFile(kSourceDir / file));
+                for (const auto& [name, value] : cxxModes) {
+                    static_cast<void>(value);
+                    if (contains(body, name) &&
+                        std::find(produced.begin(), produced.end(), name) == produced.end()) {
+                        produced.push_back(name);
+                    }
+                }
+            }
+            // The two block-item modes are produced through their makers, which
+            // the section below asserts are called exactly once each.
+            produced.emplace_back("kItemModeBlockItemDropped");
+            produced.emplace_back("kItemModeBlockItemHeld");
+            std::vector<std::string> orphans;
+            for (const auto& [name, value] : cxxModes) {
+                static_cast<void>(value);
+                if (std::find(produced.begin(), produced.end(), name) == produced.end()) {
+                    orphans.push_back(name);
+                }
+            }
+            std::sort(orphans.begin(), orphans.end());
+            std::vector<std::string> accounted;
+            for (const float mode : mc::render::kItemModesWithoutProducer) {
+                for (const auto& [name, value] : cxxModes) {
+                    if (value == mode) accounted.push_back(name);
+                }
+            }
+            std::sort(accounted.begin(), accounted.end());
+            if (orphans != accounted) {
+                std::cerr << "modes the shader knows but nothing pushes have changed:\n";
+                for (const auto& name : orphans) std::cerr << "  found:    " << name << "\n";
+                for (const auto& name : accounted) std::cerr << "  accounted: " << name << "\n";
+            }
+            // Not "there are none" — there are six, and they are listed with a
+            // reason in kItemModesWithoutProducer. What must not happen is a new
+            // one appearing without anyone saying why.
+            assert(orphans == accounted);
+            std::cout << "item modes: " << cxxModes.size() << " known, "
+                      << produced.size() << " produced, " << orphans.size()
+                      << " accounted as unused\n";
+        }
+
+        // (e) CATEGORIES: membership is a list, asserted mode by mode, in both
+        // declarations. Inserting a mode is then a decision about every category
+        // rather than a side effect of where a threshold sits.
+        struct CategoryCase final {
+            std::string_view declaration;
+            std::vector<std::string> members;
+            bool (*mirror)(float);
+        };
+        const std::vector<CategoryCase> categories{
+            {"bool blockItemBox =",
+             sortedNames({"kItemModeBlockItemDropped", "kItemModeBlockItemHeld"}),
+             &mc::render::itemBlockItemBox},
+            {"bool heldInViewSpace =",
+             sortedNames({"kItemModeHeldSprite", "kItemModeViewSkinCuboid"}),
+             nullptr}, // matrixViewModel and blockItemHeld arrive via named bools
+            {"bool heldBillboard =", sortedNames({"kItemModeHeldBillboard"}), nullptr},
+            {"bool atlasBillboard =", sortedNames({"kItemModeAtlasBillboard"}),
+             &mc::render::itemAtlasBillboard},
+        };
+        for (const CategoryCase& category : categories) {
+            const auto members = predicateMembers(shader, category.declaration);
+            if (members != category.members) {
+                std::cerr << "category " << category.declaration << " lists:\n";
+                for (const auto& m : members) std::cerr << "  shader: " << m << "\n";
+                for (const auto& m : category.members) std::cerr << "  expected: " << m << "\n";
+            }
+            assert(members == category.members);
+        }
+        // And the C++ mirrors, mode by mode rather than by threshold. This is the
+        // assertion that would fail if anyone "tidied" blockItemBox into an
+        // exclusive test: it must be true for BOTH block-item modes.
+        assert(mc::render::itemBlockItemBox(mc::render::kItemModeBlockItemDropped));
+        assert(mc::render::itemBlockItemBox(mc::render::kItemModeBlockItemHeld));
+        for (const float mode : mc::render::kItemModes) {
+            const bool expected = mode == mc::render::kItemModeBlockItemDropped ||
+                                  mode == mc::render::kItemModeBlockItemHeld;
+            assert(mc::render::itemBlockItemBox(mode) == expected);
+        }
+        for (const float mode : mc::render::kItemModes) {
+            const bool expected = mode == mc::render::kItemModeMatrixViewModel ||
+                                  mode == mc::render::kItemModeWorldMatrixCuboid ||
+                                  mode == mc::render::kItemModeBoxUvEntity ||
+                                  mode == mc::render::kItemModeBlockItemHeld;
+            assert(mc::render::itemUsesMatrix(mode) == expected);
+        }
+        for (const float mode : mc::render::kItemModes) {
+            const bool expected = mode == mc::render::kItemModeHeldSprite ||
+                                  mode == mc::render::kItemModeViewSkinCuboid ||
+                                  mode == mc::render::kItemModeMatrixViewModel ||
+                                  mode == mc::render::kItemModeBlockItemHeld;
+            assert(mc::render::itemHeldInViewSpace(mode) == expected);
+        }
+        for (const float mode : mc::render::kItemModes) {
+            const bool expected = mode == mc::render::kItemModeHeldBillboard ||
+                                  mode == mc::render::kItemModeMatrixHeldBillboard;
+            assert(mc::render::itemHeldBillboard(mode) == expected);
+        }
+        // playerSkinCuboid's fourth member is conditional on data.w, which is why
+        // it takes two arguments. Both halves asserted.
+        for (const float mode : mc::render::kItemModes) {
+            const bool unconditional = mode == mc::render::kItemModeViewSkinCuboid ||
+                                       mode == mc::render::kItemModeArticulatedCuboid ||
+                                       mode == mc::render::kItemModeWorldMatrixCuboid;
+            assert(mc::render::itemPlayerSkinCuboid(mode, 0.0F) == unconditional);
+            const bool withFlag =
+                unconditional || mode == mc::render::kItemModeMatrixViewModel;
+            assert(mc::render::itemPlayerSkinCuboid(mode, 1.0F) == withFlag);
+        }
+    }
+
     // --- Both block-item producers put the face's UV rect in the same fields. ---
     //
     // The observation surface of the second regression, on the CPU: build each
@@ -383,22 +626,13 @@ int main() {
             stripComments(readFile(kSourceDir / "src/render/vulkan/WorldRenderer.hpp"));
         const std::string types =
             stripComments(readFile(kSourceDir / "src/render/vulkan/HudTypes.hpp"));
-        const auto occurrences = [](const std::string& text, std::string_view needle) {
-            std::size_t count = 0;
-            std::size_t cursor = 0;
-            while ((cursor = text.find(needle, cursor)) != std::string::npos) {
-                ++count;
-                cursor += needle.size();
-            }
-            return count;
-        };
-        // The two block-item modes are written down in exactly one place each —
-        // inside their maker — and nowhere else in the renderer. A mode number
-        // appearing at a call site is someone about to assemble a push by hand.
+        const auto occurrences = occurrencesIn;
+        // The two block-item modes appear nowhere in the renderer: their pushes
+        // are assembled in HudTypes.hpp. A mode name at a call site is someone
+        // about to assemble one by hand.
         for (const std::string_view mode :
              {"kItemModeBlockItemDropped", "kItemModeBlockItemHeld"}) {
-            assert(occurrences(types, mode) == 2 &&
-                   "each block-item mode: its definition and its one use in the maker");
+            assert(occurrences(types, mode) > 0);
             if (occurrences(source, mode) != 0) {
                 std::cerr << "WorldRenderer.hpp names " << mode
                           << "; the block-item push is assembled in HudTypes.hpp\n";

@@ -216,8 +216,12 @@ int main() {
         assert(contains(source, "(index != 0 && index != 1) ? rect.z : rect.x"));
         assert(contains(source, "(index != 0 && index != 3) ? rect.w : rect.y"));
         // The block-item modes, and the fields they read the rect out of.
-        assert(contains(source, "bool blockItemBox = item.data.x > 9.5;"));
-        assert(contains(source, "bool blockItemHeld = item.data.x > 10.5;"));
+        // The two are named now instead of being a threshold that covers "10 and
+        // up"; `hud_push_constant_test` owns the membership assertion, this one
+        // only needs the rect to still come from the same four components.
+        assert(contains(source, "isItemMode(kItemModeBlockItemDropped) || "
+                                "isItemMode(kItemModeBlockItemHeld)"));
+        assert(contains(source, "bool blockItemHeld = isItemMode(kItemModeBlockItemHeld);"));
         assert(contains(source,
                         "vec4(item.data.y, item.data.z, item.data.w, item.positionSize.w)"));
         // The slab's hard-coded half-height V crop is gone: a slab is a box of a

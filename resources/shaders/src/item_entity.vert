@@ -20,6 +20,36 @@ layout(push_constant) uniform ItemPush {
     mat4 viewModelTransform;
 } item;
 
+// Mirrors mc::render's block of the same markers, which carries the reasoning:
+// a MODE is what one draw is (exclusive), a CATEGORY is a property several modes
+// share (covering them on purpose). `hud_push_constant_test` parses both blocks
+// and asserts the names and values agree, and asserts each category's member list
+// agrees with the C++ mirror — so adding a mode is a decision about every
+// category, not an arithmetic side effect of where a threshold happens to sit.
+// ---- item draw modes: begin ----
+const float kItemModeWorldBillboard = 0.0;
+const float kItemModeBlockCube = 1.0;
+const float kItemModeEntityShadow = 2.0;
+const float kItemModeHeldSprite = 3.0;
+const float kItemModeViewSkinCuboid = 4.0;
+const float kItemModeArticulatedCuboid = 5.0;
+const float kItemModeMatrixViewModel = 6.0;
+const float kItemModeGeneratedItem = 7.0;
+const float kItemModeWorldMatrixCuboid = 8.0;
+const float kItemModeBoxUvEntity = 9.0;
+const float kItemModeBlockItemDropped = 10.0;
+const float kItemModeBlockItemHeld = 11.0;
+const float kItemModeAtlasBillboard = -1.0;
+const float kItemModeHeldBillboard = -2.0;
+const float kItemModeMatrixHeldBillboard = -3.0;
+// ---- item draw modes: end ----
+
+// A range, not `==`: the mode arrives as a float. The bounds come off the
+// constant rather than being written out, so a mode's number lives in one place.
+bool isItemMode(float mode) {
+    return item.data.x > mode - 0.5 && item.data.x < mode + 0.5;
+}
+
 layout(location = 0) out vec2 fragmentUv;
 layout(location = 1) flat out float fragmentTextureLayer;
 layout(location = 2) out vec3 fragmentNormal;
@@ -120,7 +150,7 @@ void main() {
     fragmentWoolTint = vec3(1.0);
     fragmentSceneLight = decodeSceneLight(item.dimensions.w);
     fragmentWorldPosition = vec3(0.0);
-    if (item.data.x > 6.5 && item.data.x < 7.5) {
+    if (isItemMode(kItemModeGeneratedItem)) {
         int layer = int(item.textureLayersRotation.x + 0.5);
         vec3 local = vec3(0.0);
         vec3 normal = vec3(0.0, 0.0, 1.0);
@@ -186,7 +216,7 @@ void main() {
         fragmentCameraDistance = length(worldPosition);
         return;
     }
-    if (item.data.x > 1.5 && item.data.x < 2.5) {
+    if (isItemMode(kItemModeEntityShadow)) {
         int triangle = gl_VertexIndex / 3;
         int vertex = gl_VertexIndex % 3;
         float startAngle = float(triangle) * 6.28318530718 / 12.0;
@@ -208,19 +238,26 @@ void main() {
         fragmentCameraDistance = distance(worldPosition, camera.cameraPosition.xyz);
         return;
     }
-    if ((item.data.x > 0.5 && item.data.x < 1.5) || item.data.x > 2.5) {
-        bool matrixViewModel = item.data.x > 5.5 && item.data.x < 6.5;
+    // Every cuboid mode, listed. It used to read `(> 0.5 && < 1.5) || > 2.5`,
+    // which meant a new mode number joined this branch by arithmetic rather than
+    // by anyone deciding it should.
+    if (isItemMode(kItemModeBlockCube) || isItemMode(kItemModeHeldSprite) ||
+        isItemMode(kItemModeViewSkinCuboid) || isItemMode(kItemModeArticulatedCuboid) ||
+        isItemMode(kItemModeMatrixViewModel) || isItemMode(kItemModeWorldMatrixCuboid) ||
+        isItemMode(kItemModeBoxUvEntity) || isItemMode(kItemModeBlockItemDropped) ||
+        isItemMode(kItemModeBlockItemHeld)) {
+        bool matrixViewModel = isItemMode(kItemModeMatrixViewModel);
         // World-space skinned cuboid: viewModelTransform is a world matrix, drawn
         // through the camera view with world-space normals (so the fixed light is
         // orientation-correct). Used for the chest lid and articulated mob bones.
-        bool worldMatrixCuboid = item.data.x > 7.5 && item.data.x < 8.5;
+        bool worldMatrixCuboid = isItemMode(kItemModeWorldMatrixCuboid);
         // Box-UV skinned entity cuboid (mobs/NPCs): a world matrix carries the
         // bone transform, dimensions.xyz is the drawn cube extent (size +
         // 2*inflate), positionSize.xyz the uninflated size the UV net is built
         // from, data.yz is the cube's UV net origin, data.w mirrors the net, and
         // textureLayersRotation.xyz holds the entity texture layer plus the
         // model's declared texture_width/height.
-        bool boxUvEntity = item.data.x > 8.5 && item.data.x < 9.5;
+        bool boxUvEntity = isItemMode(kItemModeBoxUvEntity);
         // RN-14: one box of a block ITEM's model — mode 10 dropped (world space,
         // yaw-rotated), mode 11 held (the view matrix carries the pose). A block
         // item used to be a single cube on modes 1 and 6; it is now a list of
@@ -228,14 +265,19 @@ void main() {
         // exist rather than more flags on 1/6 because they repurpose fields those
         // modes use for other things (see the push-constant map below), and the
         // block-breaking overlay and the falling block still ride mode 1.
-        bool blockItemBox = item.data.x > 9.5;
-        bool blockItemHeld = item.data.x > 10.5;
+        // A CATEGORY, covering two modes deliberately: a held block IS a
+        // block-item box and has to reach the UV-rect resolution below. Making
+        // this exclusive would restore a P0. What is gone is the THRESHOLD —
+        // `> 9.5` would have swallowed a mode 12 without anyone choosing that.
+        bool blockItemBox =
+            isItemMode(kItemModeBlockItemDropped) || isItemMode(kItemModeBlockItemHeld);
+        bool blockItemHeld = isItemMode(kItemModeBlockItemHeld);
         bool useMatrix = matrixViewModel || worldMatrixCuboid || boxUvEntity || blockItemHeld;
-        bool heldInViewSpace =
-            (item.data.x > 2.5 && item.data.x < 4.5) || matrixViewModel || blockItemHeld;
-        bool articulatedWorldCuboid = item.data.x > 4.5 && item.data.x < 5.5;
+        bool heldInViewSpace = isItemMode(kItemModeHeldSprite) ||
+            isItemMode(kItemModeViewSkinCuboid) || matrixViewModel || blockItemHeld;
+        bool articulatedWorldCuboid = isItemMode(kItemModeArticulatedCuboid);
         bool playerSkinCuboid =
-            (item.data.x > 3.5 && item.data.x < 4.5) ||
+            isItemMode(kItemModeViewSkinCuboid) ||
             articulatedWorldCuboid ||
             worldMatrixCuboid ||
             (matrixViewModel && !blockItemBox && item.data.w > 0.5);
@@ -469,8 +511,7 @@ void main() {
                     : item.textureLayersRotation.y)));
         }
         fragmentNormal = normal;
-        fragmentFallingBlock =
-            item.data.x > 0.5 && item.data.x < 1.5 && item.data.w > 1.5 ? 1.0 : 0.0;
+        fragmentFallingBlock = isItemMode(kItemModeBlockCube) && item.data.w > 1.5 ? 1.0 : 0.0;
         fragmentIsCube = 1.0;
         fragmentShadowOpacity = 0.0;
         fragmentOpacity = 1.0;
@@ -480,8 +521,13 @@ void main() {
         return;
     }
     vec2 corner = corners[gl_VertexIndex];
-    bool heldBillboard = item.data.x < -1.5;
-    bool matrixHeldBillboard = item.data.x < -2.5;
+    // The tail is what nothing above claimed: the billboards. Members listed,
+    // same reason as above.
+    bool matrixHeldBillboard = isItemMode(kItemModeMatrixHeldBillboard);
+    bool heldBillboard = isItemMode(kItemModeHeldBillboard) || matrixHeldBillboard;
+    // Written out twice before — once for the UV and once for the opacity — and
+    // two copies of a condition is one of them drifting.
+    bool atlasBillboard = isItemMode(kItemModeAtlasBillboard);
     vec3 cameraRight = vec3(camera.view[0][0], camera.view[1][0], camera.view[2][0]);
     vec3 cameraUp = vec3(camera.view[0][1], camera.view[1][1], camera.view[2][1]);
     float heldRoll = radians(-15.0);
@@ -502,7 +548,7 @@ void main() {
     // point lights too; the held billboard is in view space and never lit.
     fragmentWorldPosition = heldBillboard ? vec3(0.0) : worldPosition;
     vec2 baseUv = corner + vec2(0.5);
-    fragmentUv = item.data.x < -0.5 && !heldBillboard
+    fragmentUv = atlasBillboard
         ? item.data.yz + baseUv * item.data.w
         : vec2(baseUv.x, 1.0 - baseUv.y);
     fragmentTextureLayer = item.textureLayersRotation.x;
@@ -513,9 +559,7 @@ void main() {
         : normalize(camera.cameraPosition.xyz - item.positionSize.xyz);
     fragmentIsCube = 0.0;
     fragmentShadowOpacity = 0.0;
-    fragmentOpacity = item.data.x < -0.5 && !heldBillboard
-        ? item.textureLayersRotation.w
-        : 1.0;
+    fragmentOpacity = atlasBillboard ? item.textureLayersRotation.w : 1.0;
     fragmentCameraDistance = heldBillboard
         ? length(worldPosition)
         : distance(worldPosition, camera.cameraPosition.xyz);
