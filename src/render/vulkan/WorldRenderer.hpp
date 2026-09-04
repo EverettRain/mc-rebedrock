@@ -35,6 +35,7 @@
 #include "gameplay/SpawnEggItems.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "gameplay/entities/SpeciesRenderData.hpp"
+#include "render/BlockOutlineGeometry.hpp"
 #include "render/Frustum.hpp"
 #include "render/MeshData.hpp"
 #include "render/ParticleSystem.hpp"
@@ -2276,7 +2277,11 @@ class WorldRenderer final {
                     vkCmdPushConstants(frame.commandBuffer, pipelines.outlinePipelineLayout,
                                        VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(outlinePush),
                                        outlinePush.data());
-                    vkCmdDraw(frame.commandBuffer, 24, 1, 0, 0);
+                    // RN-13-2：12 条棱 × 2 个端点，端点表在 BlockOutlineGeometry.hpp
+                    // （着色器按 gl_VertexIndex 生成顶点，没有顶点缓冲，所以这个数与
+                    //  那张表必须同源）
+                    vkCmdDraw(frame.commandBuffer,
+                              static_cast<std::uint32_t>(render::kOutlineVertexCount), 1, 0, 0);
                 }
             }
         }
