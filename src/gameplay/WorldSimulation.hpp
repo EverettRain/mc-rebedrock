@@ -226,6 +226,28 @@ class WorldSimulation final {
     // cell behind that.
     void updateNeighborsInFront(world::World& world, world::BlockPos pos,
                                 world::BlockState state, world::MutationSink& sink);
+
+    // ComparatorBlock#refreshOutputState (ComparatorBlock.java:157-176) — the
+    // whole body of a comparator's scheduled tick, and the second half of its
+    // useWithoutItem.
+    //
+    // It exists as one named thing because vanilla calls it from both places and
+    // the second caller is not optional: switching MODE changes the OUTPUT at
+    // once (compare 15 against a 15 side input, subtract 0), so a mode click that
+    // only wrote MODE would leave everything downstream on the old signal until
+    // some unrelated edit happened to wake it. Re-deriving the analog output, the
+    // POWERED flip and the front wake at the interaction site would be a second
+    // copy of the same three steps — AR-B4-7 calls this instead.
+    //
+    // Writes flags 2 (clients only) like every other diode write, then wakes the
+    // output cell through updateNeighborsInFront.
+    struct ComparatorRefresh final {
+        bool changed = false;
+        world::BlockState newState{};
+    };
+    ComparatorRefresh refreshComparatorOutputState(world::World& world, world::BlockPos pos,
+                                                   world::BlockState state,
+                                                   world::MutationSink& sink);
     // The three entry points JE reaches updateNeighborsInFront through: its tick
     // (via LevelChunk.setBlockState -> onPlace, which runs even for a flags-2
     // write), onPlace proper, and affectNeighborsAfterRemoval. This is the

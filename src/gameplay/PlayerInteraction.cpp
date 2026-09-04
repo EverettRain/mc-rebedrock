@@ -290,6 +290,66 @@ bool tryAutoEquipArmor(GameSession& session) {
     return true;
 }
 
+// AR-B4-7: RepeaterBlock#useWithoutItem (RepeaterBlock.java:43-51) and
+// ComparatorBlock#useWithoutItem (ComparatorBlock.java:130-141) — the two
+// handlers this file simply never had, which is why a right-click on either
+// diode did nothing at all. Neither needs a new state axis: DELAY and MODE have
+// been on the state since AR-B4-2, with nothing to write them.
+//
+// Both begin with `if (!player.getAbilities().mayBuild) return PASS` in vanilla.
+// This build's GameMode is Survival|Creative and both may build, so there is no
+// representable false case to gate on; the check is deliberately not faked with
+// some other flag. It comes back with an adventure/spectator mode, not before.
+//
+// Three details are vanilla's and are easy to get wrong:
+//
+//  * The two writes use DIFFERENT flags. The repeater writes 3
+//    (MutationFlags::All = NotifyNeighbors|NotifyClients), the comparator writes
+//    2 (NotifyClients alone). That is not a typo in the source: a repeater's
+//    delay change is an ordinary edit whose neighbours re-evaluate, while a
+//    comparator hand-drives its own output through refreshOutputState below and
+//    must not also fan out — the same flags-2 discipline every other diode write
+//    in this build follows.
+//  * The comparator's `refreshOutputState` is the whole point. A mode flip
+//    changes the output immediately, and the flags-2 write tells nobody, so
+//    without it the sprite and the mode change while every downstream sink keeps
+//    the stale signal indefinitely. It is the simulation's own function (the
+//    body of a comparator's scheduled tick), not a second copy.
+//  * The sound is a comparator-only `block.comparator.click` whose pitch carries
+//    the new mode (0.55 subtract / 0.5 compare). A repeater's delay click has no
+//    sound in vanilla at all — RepeaterBlock#useWithoutItem plays none — so none
+//    is invented here.
+//
+// Returns whether a click was consumed, matching pressButton/toggleLever.
+[[nodiscard]] bool cycleDiode(GameSession& session, world::World& world, glm::ivec3 clicked) {
+    const auto clickedState = world.state(clicked.x, clicked.y, clicked.z);
+    const world::BlockPos pos{clicked.x, clicked.y, clicked.z};
+    if (clickedState.block() == world::Block::Repeater) {
+        // `state.cycle(DELAY)` over the property's 1..4 range.
+        const int delay = clickedState.repeaterDelay() % 4 + 1;
+        GameplayMutationSink sink{world, session};
+        session.worldMutations().setBlock(world, pos, clickedState.withRepeaterDelay(delay),
+                                          world::MutationFlags::All,
+                                          world::MutationCause::PlayerPlace, sink);
+        return true;
+    }
+    if (clickedState.block() == world::Block::Comparator) {
+        const auto next =
+            clickedState.withComparatorSubtract(!clickedState.comparatorSubtract());
+        GameplayMutationSink sink{world, session};
+        session.events().publish(SoundEvent{SoundEventKind::BlockClick,
+                                            glm::vec3{clicked} + glm::vec3{0.5F},
+                                            clickedState.block(), nullptr, 1.0F,
+                                            /*heavy(subtract)=*/next.comparatorSubtract()});
+        session.worldMutations().setBlock(world, pos, next, world::MutationFlags::NotifyClients,
+                                          world::MutationCause::PlayerPlace, sink);
+        static_cast<void>(
+            session.worldSimulation().refreshComparatorOutputState(world, pos, next, sink));
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 // AR-B3: BasePressurePlateBlock's tick/entityInside collapsed into one
@@ -787,7 +847,8 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
     // being replaced.
     const bool infiniteMaterials = restoresHeldStack(session.gameMode());
     const auto preservedStack = session.inventory().selectedStack();
-    // AR-B2/AR-B3: DoorBlock/FenceGateBlock/TrapDoorBlock/ButtonBlock#
+    // AR-B2/AR-B3/AR-B4-7: DoorBlock/FenceGateBlock/TrapDoorBlock/ButtonBlock/
+    // LeverBlock/RepeaterBlock/ComparatorBlock#
     // useWithoutItem all run ahead of the container decision below (each is
     // "the block itself answers the click, no item involved"), gated by the
     // identical sneaking-with-item-in-hand suppression a container obeys —
@@ -796,7 +857,8 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
     if (!blockInteractionSuppressed(session.player().sneaking(),
                                     !session.inventory().selectedStack().empty()) &&
         (toggleDoorOrGate(session, world, use.block, world::horizontalFacing(use.lookDirection)) ||
-         pressButton(session, world, use.block) || toggleLever(session, world, use.block))) {
+         pressButton(session, world, use.block) || toggleLever(session, world, use.block) ||
+         cycleDiode(session, world, use.block))) {
         session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
         return;
     }

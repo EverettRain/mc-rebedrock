@@ -1328,6 +1328,41 @@ void WorldSimulation::updateNeighborsInFront(world::World& world, world::BlockPo
     mutations_.updateNeighborsAtExcept(front, pos, sink);
 }
 
+WorldSimulation::ComparatorRefresh WorldSimulation::refreshComparatorOutputState(
+    world::World& world, world::BlockPos pos, world::BlockState state,
+    world::MutationSink& sink) {
+    const auto eval = redstone::comparatorEvaluate(
+        // AR-B4-6: a container behind the comparator replaces its input.
+        redstone::comparatorInputSignal(
+            world, pos, state,
+            analogOutputAt(redstone::relative(pos, redstone::facingOf(state)))),
+        redstone::diodeAlternateSignal(world, pos, state, /*onlyDiodes=*/false),
+        state.comparatorSubtract());
+    const auto result = redstone::comparatorTick(state, eval);
+    ComparatorRefresh refreshed;
+    if (result.changed) {
+        // Flags 2 (clients only), like a repeater — the analog/POWERED write
+        // does not itself fan out neighbour updates.
+        const auto applied =
+            mutations_.setBlock(world, pos, result.newState, world::MutationFlags::NotifyClients,
+                                world::MutationCause::ScheduledTick, sink);
+        refreshed.changed = applied.changed;
+        refreshed.newState = result.newState;
+    }
+    if (result.notifyFront) {
+        // W-7: the same DiodeBlock#updateNeighborsInFront the repeater uses. This
+        // branch used to call updateNeighborsAt(front) alone, under a comment
+        // claiming the comparator does this and the repeater does not — in
+        // vanilla it is DiodeBlock base-class behaviour, both share it, and one
+        // call is only half of it: `updateNeighborsAt` notifies the six
+        // neighbours *of* the front cell, never the front cell itself, so a sink
+        // hung directly on the comparator's face was as deaf as it was on a
+        // repeater's.
+        updateNeighborsInFront(world, pos, state, sink);
+    }
+    return refreshed;
+}
+
 void WorldSimulation::notifyDiodePlacedOrRemoved(world::World& world, world::BlockPos pos,
                                                  world::BlockState previous,
                                                  world::BlockState current,
@@ -1697,34 +1732,10 @@ void WorldSimulation::dispatchRedstoneTick(world::World& world, SimulationPositi
     }
 
     if (block == world::Block::Comparator) {
-        const auto eval = redstone::comparatorEvaluate(
-            // AR-B4-6: a container behind the comparator replaces its input.
-            redstone::comparatorInputSignal(
-                world, pos, state,
-                analogOutputAt(redstone::relative(pos, redstone::facingOf(state)))),
-            redstone::diodeAlternateSignal(world, pos, state, /*onlyDiodes=*/false),
-            state.comparatorSubtract());
-        const auto result = redstone::comparatorTick(state, eval);
-        if (result.changed) {
-            // Flags 2 (clients only), like a repeater — the analog/POWERED write
-            // does not itself fan out neighbour updates.
-            const auto applied =
-                mutations_.setBlock(world, pos, result.newState, world::MutationFlags::NotifyClients,
-                                    world::MutationCause::ScheduledTick, sink);
-            if (applied.changed) {
-                changes.push_back({position, result.newState});
-            }
-        }
-        if (result.notifyFront) {
-            // W-x-1: the same DiodeBlock#updateNeighborsInFront the repeater
-            // uses. This branch used to call updateNeighborsAt(front) alone,
-            // under a comment claiming the comparator does this and the repeater
-            // does not — in vanilla it is DiodeBlock base-class behaviour, both
-            // share it, and one call is only half of it: `updateNeighborsAt`
-            // notifies the six neighbours *of* the front cell, never the front
-            // cell itself, so a sink hung directly on the comparator's face was
-            // as deaf as it was on a repeater's.
-            updateNeighborsInFront(world, pos, state, sink);
+        // ComparatorBlock#tick is one line: `this.refreshOutputState(...)`.
+        const auto refreshed = refreshComparatorOutputState(world, pos, state, sink);
+        if (refreshed.changed) {
+            changes.push_back({position, refreshed.newState});
         }
         return;
     }

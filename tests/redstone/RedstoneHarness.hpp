@@ -332,6 +332,15 @@ class RedstoneCircuit final {
         session_.tick(world_, host_);
         session_.enqueueCommand(mc::gameplay::UseItemStop{});
         session_.tick(world_, host_);
+        // Vanilla's 4-tick rightClickDelay (PlayerInteraction's nextUseTick_)
+        // counts server ticks, not clicks: two right-clicks inside the same four
+        // ticks are one click, whether or not the button was released between
+        // them. A caller that clicks twice means twice, so let the cooldown
+        // elapse here — otherwise the second call would silently do nothing and
+        // read as "the block does not answer a hand".
+        for (int i = 0; i < 4; ++i) {
+            session_.tick(world_, host_);
+        }
         session_.drainEvents();
         return world_.state(pos.x, pos.y, pos.z) != before;
     }

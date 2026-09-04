@@ -970,6 +970,16 @@ void AudioSystem::playBlockClick(world::Block block, const glm::vec3& position, 
                                   on ? 0.6F : 0.5F);
         return;
     }
+    // AR-B4-7: ComparatorBlock#useWithoutItem plays SoundEvents.COMPARATOR_CLICK
+    // on BLOCKS at volume 0.3 with a pitch of 0.55 in SUBTRACT and 0.5 in
+    // COMPARE — one event, not the button's click_on/click_off pair, so it
+    // cannot go through the generic family path below. `on` carries the new
+    // mode.
+    if (block == world::Block::Comparator) {
+        implementation->playEvent("block.comparator.click", SoundCategory::Block, position, 0.3F,
+                                  on ? 0.55F : 0.5F);
+        return;
+    }
     const auto family = interactionSoundFamily(block);
     if (family.empty()) {
         return;

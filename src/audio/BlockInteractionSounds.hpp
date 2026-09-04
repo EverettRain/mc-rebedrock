@@ -43,6 +43,15 @@ namespace mc::audio {
     if (block == world::Block::Lever) {
         return "lever";
     }
+    // AR-B4-7: SoundEvents.COMPARATOR_CLICK ("block.comparator.click"), played by
+    // ComparatorBlock#useWithoutItem when the mode is switched. Like the lever's,
+    // this family has ONE click event whose pitch carries the state rather than
+    // the button's click_on/click_off pair, so AudioSystem::playBlockClick reads
+    // it through its own branch; the family lives here anyway so the mapping is
+    // testable in one place with the rest.
+    if (block == world::Block::Comparator) {
+        return "comparator";
+    }
     return {};
 }
 
