@@ -14,6 +14,8 @@ layout(location = 8) flat in float fragmentFlatSkyLight;
 layout(location = 9) flat in float fragmentFlatBlockLight;
 layout(location = 10) flat in uint fragmentBiomeMask;
 layout(location = 11) in vec3 fragmentTint;
+// RN-13: the model json's per-element `"shade"` (see grass_block.vert).
+layout(location = 12) flat in float fragmentShade;
 
 layout(location = 0) out vec4 outColor;
 
@@ -96,8 +98,12 @@ void main() {
             }
         }
     }
-    // CardinalLighting.DEFAULT, from the shared lightmap include.
-    float faceShade = cardinalShade(normal);
+    // CardinalLighting.DEFAULT, from the shared lightmap include — skipped for a
+    // face whose model element declares `"shade": false` (RN-13). Vanilla's
+    // BlockModelPart carries that flag per quad and the block renderer feeds
+    // shade=1 for those, which is why a lit repeater's six glow billboards read
+    // as one even brightness rather than four dim sides and two bright caps.
+    float faceShade = fragmentShade < 0.5 ? 1.0 : cardinalShade(normal);
     bool smoothLighting = camera.lightingSettings.y > 0.5;
     bool highLighting = camera.lightingSettings.z > 0.5;
     float skyLevel = smoothLighting ? fragmentSkyLight : fragmentFlatSkyLight;

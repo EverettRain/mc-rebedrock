@@ -910,9 +910,11 @@ struct DirectionalTextureNames final {
     const char* side = nullptr;
 };
 
-// RN-4a-2: the most texture slots any ElementModel block references (repeater and
-// comparator use four: slab/top/unlit/lit).
-inline constexpr std::size_t kMaxModelTextureSlots = 5;
+// RN-4a-2: the most texture slots any ElementModel block references. The
+// repeater uses all six: slab / top / unlit torch / lit torch / #lock bar
+// (RN-10e) / lit top (RN-13-1 — vanilla's `_on` models differ from the unlit
+// ones in exactly one texture binding, `#top`).
+inline constexpr std::size_t kMaxModelTextureSlots = 6;
 
 // A block's sound group — 26.1's BlockBehaviour.Properties.sound(SoundType), the
 // single identity every break/step/place/hit sound derives from. This is the
@@ -1173,10 +1175,11 @@ class BlockProperties final {
     // name), indexed by the mesher's per-block transcription. Sets the model too.
     [[nodiscard]] constexpr BlockProperties elementModel(
         const char* slot0, const char* slot1 = nullptr, const char* slot2 = nullptr,
-        const char* slot3 = nullptr, const char* slot4 = nullptr) const {
+        const char* slot3 = nullptr, const char* slot4 = nullptr,
+        const char* slot5 = nullptr) const {
         BlockProperties copy = *this;
         copy.definition_.model = BlockModel::ElementModel;
-        copy.definition_.modelTextures = {slot0, slot1, slot2, slot3, slot4};
+        copy.definition_.modelTextures = {slot0, slot1, slot2, slot3, slot4, slot5};
         return copy;
     }
     // RN-8c: which cube model json this block is drawn from. Declaring the model
@@ -2172,8 +2175,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // Slot 4 is `#lock` — RN-10e's locked bar, which vanilla skins with
         // block/bedrock (repeater_*tick_locked.json's own texture binding, odd
         // as it reads).
+        // Slot 5 is the LIT top plate (RN-13-1): repeater_*tick_on.json binds
+        // `#top` to block/repeater_on, and the difference is the red line
+        // between the torches going from dark to bright — a large part of what
+        // "a powered repeater looks different" means, and it was missing.
         .elementModel("smooth_stone", "repeater", "redstone_torch_off", "redstone_torch",
-                      "bedrock")
+                      "bedrock", "repeater_on")
         // RN-10a: repeater_*tick*.json declares `"ambientocclusion": false`.
         .noAmbientOcclusion()
         // AR-B4-6: collision is ON. DiodeBlock's SHAPE is `Block.column(16, 0, 2)`
@@ -2207,7 +2214,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .renderLayer(BlockRenderLayer::Cutout)
         // RN-4a-2: slab base + three redstone-torch nubs, transcribed from vanilla
         // models/block/comparator*.json.
-        .elementModel("smooth_stone", "comparator", "redstone_torch_off", "redstone_torch")
+        // Slot 5 is the LIT top plate, as on the repeater: comparator_on.json
+        // and comparator_on_subtract.json both bind `#top` to
+        // block/comparator_on, and the unpowered pair both bind block/comparator
+        // — so the top sprite follows POWERED alone, never MODE.
+        .elementModel("smooth_stone", "comparator", "redstone_torch_off", "redstone_torch",
+                      nullptr, "comparator_on")
         // RN-10a: comparator*.json declares `"ambientocclusion": false`.
         .noAmbientOcclusion()
         // AR-B4-6: collision is ON, as for the repeater above — same DiodeBlock

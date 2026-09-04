@@ -42,7 +42,13 @@ struct VoxelVertex final {
     std::uint8_t tintR;
     std::uint8_t tintG;
     std::uint8_t tintB;
-    std::uint8_t tintPad;
+    // RN-13: 模型 json 的逐元素 `"shade"`，255 = 参与方向衰减，0 = 不参与
+    // vanilla 对 `"shade": false` 的元素跳过 CardinalLighting，中继器/比较器点亮火把
+    // 外面那六片朝向各异的光晕因此亮度一致；按面法线衰减会把其中四片压暗，正是
+    // 「通电中继器看不出发光」的成因
+    // 它占的是 tint 属性的第四个字节（此前恒为 255 的填充位），所以顶点还是 24 字节、
+    // 顶点属性表一个字节没动：着色器读 inTint.w
+    std::uint8_t shade;
 };
 
 static_assert(sizeof(VoxelVertex) == 24);
@@ -102,7 +108,8 @@ inline constexpr std::array<glm::vec3, 14> kVertexNormals{{
     std::uint8_t tintR = 255U,
     std::uint8_t tintG = 255U,
     std::uint8_t tintB = 255U,
-    std::uint8_t biomeMask = 0U) {
+    std::uint8_t biomeMask = 0U,
+    bool shade = true) {
     const auto quantizePosition = [](float value) {
         return static_cast<std::uint16_t>(std::clamp(
             static_cast<long>(std::lround((value - kLocalWindowBase) / kLocalScale)), 0L,
@@ -135,7 +142,7 @@ inline constexpr std::array<glm::vec3, 14> kVertexNormals{{
         tintR,
         tintG,
         tintB,
-        255U,
+        shade ? std::uint8_t{255U} : std::uint8_t{0U},
     };
 }
 
@@ -180,6 +187,8 @@ inline constexpr std::array<glm::vec3, 14> kVertexNormals{{
 [[nodiscard]] inline float decodeWaterDepth(const VoxelVertex& vertex) {
     return static_cast<float>(vertex.waterDepth);
 }
+// RN-13: 顶点是否参与方向衰减（模型 json 的 `"shade"`）
+[[nodiscard]] inline bool decodeShade(const VoxelVertex& vertex) { return vertex.shade != 0U; }
 
 struct MeshData final {
     std::vector<VoxelVertex> vertices;

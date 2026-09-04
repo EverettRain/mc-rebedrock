@@ -1522,6 +1522,10 @@ void appendCropPlant(
     appendPlantQuad(mesh, layer, planeZHigh, x, y, z, lighting, sectionOrigin);
 }
 
+// RN-13: `shade` is the model json's per-element `"shade"`, carried to the
+// fragment shader so it can skip the cardinal falloff for the elements vanilla
+// marks false. Defaulted true so every caller that is not drawing a model
+// element keeps the ordinary directional shading.
 void appendTorchQuad(
     render::MeshData& mesh,
     const std::array<glm::vec3, 4>& positions,
@@ -1530,12 +1534,13 @@ void appendTorchQuad(
     float textureLayer,
     float skyLight,
     float blockLight,
-    const glm::vec3& sectionOrigin) {
+    const glm::vec3& sectionOrigin,
+    bool shade = true) {
     const auto firstVertex = static_cast<std::uint32_t>(mesh.vertices.size());
     for (std::size_t corner = 0; corner < positions.size(); ++corner) {
         mesh.vertices.push_back(packVertex(
             positions[corner] - sectionOrigin, normal, uvs[corner], textureLayer, 1.0F, 0.0F,
-            skyLight, blockLight, skyLight, blockLight));
+            skyLight, blockLight, skyLight, blockLight, 255U, 255U, 255U, 0U, shade));
     }
     constexpr std::array<std::uint32_t, 6> indices{0, 1, 2, 2, 3, 0};
     for (const auto index : indices) mesh.indices.push_back(firstVertex + index);
@@ -1653,10 +1658,10 @@ void appendTorchModel(
 // RN-4a-2 / RN-4 N2b: mesh a BlockModel::ElementModel block (the diodes and lever)
 // by baking its transcribed vanilla-model elements through the shared FaceBakery
 // primitive (world/ElementModelBaker.hpp). Each baked quad carries cell-local
-// geometry, its layer-local UV and a texture slot; the mesher resolves the slot to
-// an atlas layer, folds the element's glow (a lit redstone torch) into the cell
-// light, and emits. The per-element geometry/UV maths now lives in the baker, so
-// the diodes and lever no longer open-code their own UV-corner convention here.
+// geometry, its layer-local UV, a texture slot and RN-10a's `shade` bit; the
+// mesher resolves the slot to an atlas layer and emits. The per-element
+// geometry/UV maths now lives in the baker, so the diodes and lever no longer
+// open-code their own UV-corner convention here.
 // RN-8b: a baked quad's `cullface` direction as one of the mesher's six faces.
 // bake::Facing is JE Direction order (Down, Up, North, South, West, East); North
 // is -Z and West is -X, exactly as bake::facingUnit says.
@@ -1678,6 +1683,12 @@ void appendElementModel(render::MeshData& mesh, const CellCullContext& current, 
                         const glm::vec3& sectionOrigin) {
     const Block block = current.block;
     const float skyLight = lighting.sky(x, y, z);
+    // RN-13: the cell's own block light, and nothing else. A lit diode torch used
+    // to be raised to a floor of 0.5 here off a fabricated per-element `glow`
+    // field — but Blocks.REPEATER (Blocks.java:2089) and Blocks.COMPARATOR
+    // (:2762) carry no `lightLevel` at all, so in vanilla neither emits any light
+    // and a lit repeater in the dark is simply dark. What vanilla actually gives
+    // those elements is `"shade": false`, which is the flag carried below.
     const float cellBlockLight = lighting.block(x, y, z);
     const glm::vec3 cell{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
     for (const bake::BakedElementQuad& baked : bake::bakedElementModel(block, state)) {
@@ -1703,7 +1714,7 @@ void appendElementModel(render::MeshData& mesh, const CellCullContext& current, 
             positions[corner] = cell + baked.quad.position[corner];
         }
         appendTorchQuad(mesh, positions, baked.quad.normal, baked.quad.uv, layer, skyLight,
-                        std::max(cellBlockLight, baked.glow), sectionOrigin);
+                        cellBlockLight, sectionOrigin, baked.shade);
     }
 }
 
@@ -1772,7 +1783,8 @@ void appendBakedModel(render::MeshData& mesh, const CellCullContext& current, Bl
                 vertexLight(lighting, quality, faceDefinition, local, x, y, z, outsideLight);
             mesh.vertices.push_back(packVertex(
                 (origin + local) - sectionOrigin, baked.quad.normal, baked.quad.uv[corner], layer,
-                ambient[corner], 0.0F, smoothLight.sky, smoothLight.block, flatSky, flatBlock));
+                ambient[corner], 0.0F, smoothLight.sky, smoothLight.block, flatSky, flatBlock,
+                255U, 255U, 255U, 0U, baked.shade));
         }
         // The same AO-driven diagonal flip appendBox uses, so a shaded corner does
         // not read as a crease across the quad. With AO off the four values are

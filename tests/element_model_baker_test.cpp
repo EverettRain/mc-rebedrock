@@ -163,12 +163,15 @@ FaceExp F(std::uint8_t slot, float a, float b, float c, float d, std::uint8_t qu
 // Diode base golden: down=#slab slot0 (RN-10d / R15 — it was omitted, so a
 // repeater on glass or a slab showed the world through its own plate),
 // up=#top slot1, four sides=#slab slot0.
-ElemExp goldenDiodeBase() {
+// RN-13-1: `lit` picks the `#top` binding, the ONE texture an `_on` diode model
+// changes (repeater_1tick_on.json / comparator_on.json swap `#top` and nothing
+// else). Slot 1 is block/repeater|comparator, slot 5 block/*_on.
+ElemExp goldenDiodeBase(bool lit = false) {
     ElemExp e;
     e.from = {0, 0, 0};
     e.to = {16, 2, 16};
     e.faces[0] = F(0, 0, 0, 16, 16);                          // Down
-    e.faces[1] = F(1, 0, 0, 16, 16);                          // Up
+    e.faces[1] = F(lit ? 5 : 1, 0, 0, 16, 16);                // Up
     for (std::size_t s : {2, 3, 4, 5}) e.faces[s] = F(0, 0, 14, 16, 16); // N/S/W/E
     return e;
 }
@@ -256,7 +259,7 @@ void checkTranscription() {
     compareElements(
         elementsFor(Block::Repeater,
                     BlockState{Block::Repeater, BlockOrientation::South}.withPowered(true)),
-        {goldenDiodeBase(), goldenTorch({7, 2, 2}, {9, 7, 4}, 3),
+        {goldenDiodeBase(/*lit=*/true), goldenTorch({7, 2, 2}, {9, 7, 4}, 3),
          goldenTorch({7, 2, 6}, {9, 7, 8}, 3),
          // halos of the fixed torch [7,2,2]-[9,7,4]
          goldenHalo(1, {6.5F, 1.5F, 1.5F}, {9.5F, 4.5F, 4.5F}, 8, 5, 9, 6),
@@ -350,7 +353,7 @@ void checkTranscription() {
     // comparator_on.json: 16 elements — rear pair LIT with twelve halos, front
     // torch unlit.
     compareElements(comparator(false, true),
-                    {goldenDiodeBase(), goldenTorch({4, 2, 11}, {6, 7, 13}, 3),
+                    {goldenDiodeBase(/*lit=*/true), goldenTorch({4, 2, 11}, {6, 7, 13}, 3),
                      goldenTorch({10, 2, 11}, {12, 7, 13}, 3),
                      goldenTorch({7, 2, 2}, {9, 5, 4}, 2),
                      goldenHalo(1, {3.5F, 1.5F, 10.5F}, {6.5F, 4.5F, 13.5F}, 6, 5, 7, 6),
@@ -367,6 +370,19 @@ void checkTranscription() {
                      goldenHalo(4, {12.5F, 4.5F, 10.5F}, {15.5F, 7.5F, 13.5F}, 6, 5, 7, 6)});
     // comparator_on_subtract.json: 22 elements — all three torches lit.
     assert(comparator(true, true).size() == 22U);
+    // RN-13-1: the top plate follows POWERED and ONLY powered. All four vanilla
+    // model files agree — comparator.json and comparator_subtract.json bind the
+    // unlit `#top`, comparator_on.json and comparator_on_subtract.json the lit
+    // one — so a mode flip must leave slot 1 alone while a power flip must move
+    // it. Driving it off MODE too would pass every count above.
+    {
+        const auto topSlot = [&](bool subtract, bool powered) {
+            return comparator(subtract, powered)[0].faces[1].slot;
+        };
+        assert(topSlot(false, false) == topSlot(true, false));
+        assert(topSlot(false, true) == topSlot(true, true));
+        assert(topSlot(false, false) != topSlot(false, true));
+    }
     // The whole point, stated as a difference rather than as a count: switching
     // MODE alone must change the front torch's sprite. Before RN-10d it did not,
     // and the only thing that moved was a 1px height this build invented.
@@ -554,7 +570,7 @@ void checkStore() {
                             assert(stored[q].quad.facing == fresh[q].quad.facing);
                             assert(stored[q].quad.slot == fresh[q].quad.slot);
                             assert(stored[q].quad.cull == fresh[q].quad.cull);
-                            assert(near(stored[q].glow, fresh[q].glow));
+                            assert(stored[q].shade == fresh[q].shade);
                             for (std::size_t i = 0; i < 4; ++i) {
                                 assert(eqVec3(stored[q].quad.position[i], fresh[q].quad.position[i]));
                                 assert(eqVec2(stored[q].quad.uv[i], fresh[q].quad.uv[i]));

@@ -26,7 +26,7 @@ layout(location = 1) in uvec2 inZNorm;  // positionZ, normalIndex | (biomeMask <
 layout(location = 2) in uvec2 inUv;     // uvX, uvY
 layout(location = 3) in uint inLayerAO; // textureLayer | (AO << 16) | (waterDepth << 24)
 layout(location = 4) in uvec4 inLights; // sky, block, flatSky, flatBlock
-layout(location = 5) in uvec4 inTint;   // tintR, tintG, tintB, tintPad
+layout(location = 5) in uvec4 inTint;   // tintR, tintG, tintB, shade
 
 layout(location = 0) out vec2 fragmentUv;
 layout(location = 1) out vec3 fragmentNormal;
@@ -45,6 +45,13 @@ layout(location = 10) flat out uint fragmentBiomeMask;
 // power-tinted redstone dust (grey sprite, red gradient) needs — the sprite has
 // no biome, so without this path its stored tint was silently unused.
 layout(location = 11) out vec3 fragmentTint;
+// RN-13: the model json's per-element `"shade"`, 1.0 for an ordinary face and
+// 0.0 for one vanilla marks `"shade": false`. Flat, because it is a per-face
+// property and interpolating it across a quad would mean nothing. The fragment
+// shaders skip CardinalLighting for a 0 — which is what makes a lit diode's six
+// glow billboards one brightness instead of four, since they point six different
+// ways and the falloff would darken four of them.
+layout(location = 12) flat out float fragmentShade;
 
 // The opaque and cutout pipelines share this shader, and a grass block's side
 // is drawn once by each: the dirt base, then the tinted overlay quad on exactly
@@ -93,4 +100,5 @@ void main() {
     fragmentFlatBlockLight = float(inLights.w) / 255.0;
     fragmentBiomeMask = (inZNorm.y >> 8) & 0xFFu;
     fragmentTint = vec3(inTint.xyz) / 255.0;
+    fragmentShade = float(inTint.w) / 255.0;
 }

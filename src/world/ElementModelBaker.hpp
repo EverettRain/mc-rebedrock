@@ -10,9 +10,8 @@
 // is Mac-visually verified separately). Nothing here is wired into the mesher yet.
 //
 // Scope: geometry + UV + texture slot only, exactly like the N1 primitive. Light,
-// AO, the emissive glow of a lit redstone torch, and slot->atlas-layer resolution
-// remain the mesher's job (N2b), so this header carries no render dependency and
-// is unit-testable in isolation.
+// AO and slot->atlas-layer resolution remain the mesher's job (N2b), so this
+// header carries no render dependency and is unit-testable in isolation.
 
 #include "world/Block.hpp"
 #include "world/BlockState.hpp"
@@ -33,25 +32,28 @@ struct ModelElement final {
     glm::vec3 to16{16.0F, 16.0F, 16.0F};
     std::array<ElementFace, kFacingCount> faces{}; // indexed by Facing
     ElementRotation rotation{};
-    // The extra block light this element emits (a lit redstone torch glows). The
-    // JE-model analogue is CuboidModelElement.lightEmission; the mesher folds it
-    // into the cell block light, so it stays a wiring concern the baker just
-    // carries per element.
-    float glow = 0.0F;
     // RN-10a: the model json's per-element `"shade"`. False means the element
     // does not take the directional light falloff a face's normal would give it —
     // JE's own use is a lit redstone torch's glow halo, whose six billboards
-    // would otherwise be four different brightnesses. Parallel to `glow` above:
-    // the baker carries it, the mesher decides what it means at emit time.
+    // would otherwise be four different brightnesses. The baker carries it, the
+    // mesher hands it to the shader (RN-13).
+    //
+    // RN-13 removed the sibling `glow` field this used to sit beside — a float
+    // the mesher folded into the cell's block light for a lit diode torch. It had
+    // no vanilla counterpart: neither Blocks.REPEATER (Blocks.java:2089) nor
+    // Blocks.COMPARATOR (:2762) declares a `lightLevel`, and their models declare
+    // no `light_emission` either (26.1 does have per-element `light_emission`,
+    // CuboidModelElement.java:36-72, but in the whole vanilla model set only
+    // cross_emissive/flower_pot_cross_emissive use it, and this roster has
+    // neither). Two mechanisms for "this element is bright" would have coexisted;
+    // the one vanilla actually uses here is `shade`.
     bool shade = true;
 };
 
-// A baked quad plus the wiring-layer light hint (glow) its element carries. The
-// baker returns these; the mesher resolves slot->layer and folds glow into the
-// cell light when it emits.
+// A baked quad plus the `shade` flag its element carries. The baker returns
+// these; the mesher resolves slot->layer and passes shade to the vertex.
 struct BakedElementQuad final {
     BakedQuad quad{};
-    float glow = 0.0F;
     bool shade = true; // RN-10a, from the element
 };
 
@@ -88,11 +90,16 @@ inline FaceUv rect(float minU, float minV, float maxU, float maxV) {
 // The diode slab base (0,0,0)-(16,2,16): #top on the up face, #slab on the four
 // sides, never a down face (it sits on its support). Transcribed from
 // appendElementModel's emitDiodeBase.
-inline ModelElement diodeBaseElement() {
+inline ModelElement diodeBaseElement(bool lit = false) {
     ModelElement e;
     e.from16 = {0.0F, 0.0F, 0.0F};
     e.to16 = {16.0F, 2.0F, 16.0F};
-    putFace(e, Facing::Up, 1, rect(0, 0, 16, 16));
+    // RN-13-1: `#top` is the ONLY texture binding vanilla's `_on` diode models
+    // change (repeater_1tick_on.json / comparator_on.json both swap it and
+    // nothing else), and it is what turns the red line between the torches from
+    // dark to bright. This build showed the unlit plate in every state, which is
+    // a large part of "a powered repeater looks no different".
+    putFace(e, Facing::Up, lit ? 5 : 1, rect(0, 0, 16, 16));
     // RN-10d / audit R15: the down face, `[0,0,16,16]` with `"cullface": "down"`.
     // It used to be left out on the grounds that a diode sits on its support so
     // the quad is never seen — but that is what the cullface declaration is for,
@@ -110,11 +117,10 @@ inline ModelElement diodeBaseElement() {
 // A redstone-torch nub: up face plus four sides, no down (it stands on the slab).
 // `slot` is the lit or unlit sprite. Transcribed from emitTorch.
 inline ModelElement torchElement(const glm::vec3& from16, const glm::vec3& to16,
-                                 std::uint8_t slot, float glow, bool shade = true) {
+                                 std::uint8_t slot, bool shade = true) {
     ModelElement e;
     e.from16 = from16;
     e.to16 = to16;
-    e.glow = glow;
     // RN-10d: vanilla marks a *lit* torch element `"shade": false` (see any
     // repeater_*_on.json), and leaves an unlit one shaded.
     e.shade = shade;
@@ -154,7 +160,7 @@ inline ModelElement torchElement(const glm::vec3& from16, const glm::vec3& to16,
 using HaloRects = std::array<FaceUv, kFacingCount>; // indexed by Facing
 
 inline void appendTorchHalo(std::vector<ModelElement>& out, const glm::vec3& from16,
-                            const glm::vec3& to16, std::uint8_t litSlot, float glow,
+                            const glm::vec3& to16, std::uint8_t litSlot,
                             const HaloRects& rects) {
     const glm::vec3 centre{(from16.x + to16.x) * 0.5F, to16.y - 1.0F,
                            (from16.z + to16.z) * 0.5F};
@@ -166,7 +172,6 @@ inline void appendTorchHalo(std::vector<ModelElement>& out, const glm::vec3& fro
         ModelElement e;
         e.from16 = centre - glm::vec3{kHalfExtent} + shift;
         e.to16 = centre + glm::vec3{kHalfExtent} + shift;
-        e.glow = glow;
         e.shade = false;
         putFace(e, facing, litSlot, rects[static_cast<std::size_t>(facing)]);
         out.push_back(e);
@@ -216,7 +221,6 @@ inline HaloRects comparatorHaloRects() {
     // is one switch here, not two.
     const bool lit = state.powered();
     const std::uint8_t torchSlot = lit ? 3U : 2U;
-    const float glow = lit ? 0.5F : 0.0F;
     const glm::vec3 fixedFrom{7.0F, 2.0F, 2.0F};
     const glm::vec3 fixedTo{9.0F, 7.0F, 4.0F};
     const float movingZ = 6.0F + static_cast<float>(state.repeaterDelay() - 1) * 2.0F;
@@ -233,19 +237,19 @@ inline HaloRects comparatorHaloRects() {
     const bool locked = state.repeaterLocked();
 
     std::vector<ModelElement> elements;
-    elements.push_back(detail::diodeBaseElement());
+    elements.push_back(detail::diodeBaseElement(lit));
     if (locked) {
         elements.push_back(repeaterLockElement(movingZ));
     }
-    elements.push_back(detail::torchElement(fixedFrom, fixedTo, torchSlot, glow, !lit));
+    elements.push_back(detail::torchElement(fixedFrom, fixedTo, torchSlot, !lit));
     if (!locked) {
-        elements.push_back(detail::torchElement(movingFrom, movingTo, torchSlot, glow, !lit));
+        elements.push_back(detail::torchElement(movingFrom, movingTo, torchSlot, !lit));
     }
     if (lit) {
         const detail::HaloRects rects = detail::repeaterHaloRects();
-        detail::appendTorchHalo(elements, fixedFrom, fixedTo, torchSlot, glow, rects);
+        detail::appendTorchHalo(elements, fixedFrom, fixedTo, torchSlot, rects);
         if (!locked) {
-            detail::appendTorchHalo(elements, movingFrom, movingTo, torchSlot, glow, rects);
+            detail::appendTorchHalo(elements, movingFrom, movingTo, torchSlot, rects);
         }
     }
     return elements;
@@ -272,7 +276,6 @@ inline HaloRects comparatorHaloRects() {
     const bool rearLit = state.powered();
     const bool frontLit = state.comparatorSubtract();
     const auto slotOf = [](bool lit) { return lit ? 3U : 2U; };
-    const auto glowOf = [](bool lit) { return lit ? 0.5F : 0.0F; };
 
     const glm::vec3 rearLeftFrom{4.0F, 2.0F, 11.0F};
     const glm::vec3 rearLeftTo{6.0F, 7.0F, 13.0F};
@@ -282,23 +285,24 @@ inline HaloRects comparatorHaloRects() {
     const glm::vec3 frontTo{9.0F, 5.0F, 4.0F};
 
     std::vector<ModelElement> elements;
-    elements.push_back(detail::diodeBaseElement());
+    // The top plate follows POWERED alone: comparator_subtract.json binds the
+    // unlit `#top` and comparator_on_subtract.json the lit one, so MODE never
+    // touches it (only the front torch, below).
+    elements.push_back(detail::diodeBaseElement(rearLit));
     elements.push_back(detail::torchElement(rearLeftFrom, rearLeftTo,
-                                            static_cast<std::uint8_t>(slotOf(rearLit)),
-                                            glowOf(rearLit), !rearLit));
+                                            static_cast<std::uint8_t>(slotOf(rearLit)), !rearLit));
     elements.push_back(detail::torchElement(rearRightFrom, rearRightTo,
-                                            static_cast<std::uint8_t>(slotOf(rearLit)),
-                                            glowOf(rearLit), !rearLit));
+                                            static_cast<std::uint8_t>(slotOf(rearLit)), !rearLit));
     elements.push_back(detail::torchElement(frontFrom, frontTo,
                                             static_cast<std::uint8_t>(slotOf(frontLit)),
-                                            glowOf(frontLit), !frontLit));
+                                            !frontLit));
     const detail::HaloRects rects = detail::comparatorHaloRects();
     if (rearLit) {
-        detail::appendTorchHalo(elements, rearLeftFrom, rearLeftTo, 3U, glowOf(true), rects);
-        detail::appendTorchHalo(elements, rearRightFrom, rearRightTo, 3U, glowOf(true), rects);
+        detail::appendTorchHalo(elements, rearLeftFrom, rearLeftTo, 3U, rects);
+        detail::appendTorchHalo(elements, rearRightFrom, rearRightTo, 3U, rects);
     }
     if (frontLit) {
-        detail::appendTorchHalo(elements, frontFrom, frontTo, 3U, glowOf(true), rects);
+        detail::appendTorchHalo(elements, frontFrom, frontTo, 3U, rects);
     }
     return elements;
 }
@@ -869,7 +873,7 @@ inline std::vector<ModelElement> anvilElements() {
             }
             quads.push_back({bakeElementFace(element.from16, element.to16, static_cast<Facing>(f),
                                              face, element.rotation, attach),
-                             element.glow, element.shade});
+                             element.shade});
         }
     }
     return quads;
