@@ -16,6 +16,16 @@
 // the same block — is what the parsing below asserts, and it also catches the
 // second symptom of the same commit: the two shaders declared four fields and
 // five.
+//
+// And its second half, which the first round did not cover and which cost a
+// second P0: DECLARATIONS AGREEING IS NOT PRODUCERS AGREEING. ItemPush's two
+// block-item modes declare an identical block — the check above passes — and
+// filled it differently. Mode 10 put the face's UV rect in data.yzw plus
+// positionSize.w, which is where item_entity.vert reads it; mode 11 put all four
+// numbers into positionSize.xyzw, so a held block got a rect of zero width in U
+// and every face stretched one column of texels across itself. Where one
+// consumer branch has several producers, they go through ONE construction, and
+// that construction is what gets tested.
 
 #include "render/vulkan/HudTypes.hpp"
 #include "ui/HudLayout.hpp"
@@ -292,6 +302,127 @@ int main() {
         assert(!contains(readFile(kShaderDir / "item_entity.frag"), "push_constant") &&
                "item_entity.frag reads no push constants; if it starts to, it joins the "
                "comparison above");
+    }
+
+    // --- Both block-item producers put the face's UV rect in the same fields. ---
+    //
+    // The observation surface of the second regression, on the CPU: build each
+    // mode's push through the shared writer and read it back exactly as
+    // item_entity.vert does. Every present face of every box in the roster, not
+    // one block — the held path was wrong for all of them and it still took an
+    // eye on a screen to notice.
+    {
+        // The read is a mirror of a shader line, so the shader line is checked
+        // too. Drift here would make the rest of this section agree with itself
+        // and with nothing that runs on the GPU.
+        assert(contains(stripComments(readFile(kShaderDir / "item_entity.vert")),
+                        "vec4(item.data.y, item.data.z, item.data.w, item.positionSize.w)"));
+
+        std::size_t facesChecked = 0;
+        for (std::size_t index = 0; index < mc::world::kItemModelBoxes.size(); ++index) {
+            const mc::world::ItemModelBox& box = mc::world::kItemModelBoxes[index];
+            for (const mc::world::ItemModelFace& face : box.face) {
+                if (!face.present) {
+                    continue;
+                }
+                const glm::vec4 expected{face.uv.minU / 16.0F, face.uv.minV / 16.0F,
+                                         face.uv.maxU / 16.0F, face.uv.maxV / 16.0F};
+                // Two modes, two very different pushes around the same rect: the
+                // dropped one carries a world position in positionSize.xyz and a
+                // yaw, the held one a matrix. Neither may move the rect.
+                const mc::render::ItemPush dropped = mc::render::makeDroppedBlockItemFacePush(
+                    face, /*atlasLayer=*/3.0F, /*boxCentre=*/{12.0F, 34.0F, 56.0F},
+                    /*size=*/{0.3F, 0.3F, 0.3F}, /*yawRadians=*/1.25F, /*packedLight=*/200.0F);
+                const mc::render::ItemPush held = mc::render::makeHeldBlockItemFacePush(
+                    face, /*atlasLayer=*/3.0F, /*size=*/{0.4F, 0.4F, 0.4F},
+                    /*packedLight=*/200.0F, glm::mat4{1.0F});
+
+                const glm::vec4 droppedRect = mc::render::blockItemFaceRectOf(dropped);
+                const glm::vec4 heldRect = mc::render::blockItemFaceRectOf(held);
+                if (droppedRect != expected || heldRect != expected) {
+                    static constexpr std::array kFieldNames{"data.y (minU)", "data.z (minV)",
+                                                            "data.w (maxU)",
+                                                            "positionSize.w (maxV)"};
+                    std::cerr << "block-item face rect misplaced, box " << index << ":\n";
+                    for (int c = 0; c < 4; ++c) {
+                        if (droppedRect[c] != expected[c] || heldRect[c] != expected[c]) {
+                            std::cerr << "  " << kFieldNames[static_cast<std::size_t>(c)]
+                                      << ": expected " << expected[c] << ", dropped got "
+                                      << droppedRect[c] << ", held got " << heldRect[c] << "\n";
+                        }
+                    }
+                }
+                assert(droppedRect == expected);
+                assert(heldRect == expected);
+                // The two modes differ in everything except the rect. A shared
+                // writer that also flattened the rest would pass the lines above
+                // and break both paths.
+                assert(dropped.positionSize.x == 12.0F);
+                assert(held.positionSize.x == 0.0F);
+                assert(dropped.data.x == mc::render::kItemModeBlockItemDropped);
+                assert(held.data.x == mc::render::kItemModeBlockItemHeld);
+                // The quadrant is the other number both modes carry, and it rides
+                // textureLayersRotation.y in each.
+                assert(dropped.textureLayersRotation.y == static_cast<float>(face.quadrant));
+                assert(held.textureLayersRotation.y == static_cast<float>(face.quadrant));
+                ++facesChecked;
+            }
+        }
+        assert(facesChecked > 100);
+        std::cout << "block-item faces checked: " << facesChecked << "\n";
+    }
+
+    // --- Neither producer spells the rect out for itself. ---
+    //
+    // The section above tests the shared writer; this one tests that the two call
+    // sites still use it. Source text, in the style this repo already uses to hold
+    // shader constants against C++ tables — there is no other way to reach code
+    // inside WorldRenderer.hpp, which no test links.
+    {
+        const std::string source =
+            stripComments(readFile(kSourceDir / "src/render/vulkan/WorldRenderer.hpp"));
+        const std::string types =
+            stripComments(readFile(kSourceDir / "src/render/vulkan/HudTypes.hpp"));
+        const auto occurrences = [](const std::string& text, std::string_view needle) {
+            std::size_t count = 0;
+            std::size_t cursor = 0;
+            while ((cursor = text.find(needle, cursor)) != std::string::npos) {
+                ++count;
+                cursor += needle.size();
+            }
+            return count;
+        };
+        // The two block-item modes are written down in exactly one place each —
+        // inside their maker — and nowhere else in the renderer. A mode number
+        // appearing at a call site is someone about to assemble a push by hand.
+        for (const std::string_view mode :
+             {"kItemModeBlockItemDropped", "kItemModeBlockItemHeld"}) {
+            assert(occurrences(types, mode) == 2 &&
+                   "each block-item mode: its definition and its one use in the maker");
+            if (occurrences(source, mode) != 0) {
+                std::cerr << "WorldRenderer.hpp names " << mode
+                          << "; the block-item push is assembled in HudTypes.hpp\n";
+            }
+            assert(occurrences(source, mode) == 0);
+        }
+        // Each maker is called from exactly one place.
+        for (const std::string_view maker :
+             {"makeDroppedBlockItemFacePush", "makeHeldBlockItemFacePush"}) {
+            const std::size_t uses = occurrences(source, maker);
+            if (uses != 1) {
+                std::cerr << "WorldRenderer.hpp calls " << maker << ' ' << uses
+                          << " time(s); expected exactly one\n";
+            }
+            assert(uses == 1);
+        }
+        // And no one writes the rect by hand any more. `face.uv.` appearing in
+        // this file is exactly what the two producers used to disagree about.
+        const std::size_t handWritten = occurrences(source, "face.uv.");
+        if (handWritten != 0) {
+            std::cerr << "WorldRenderer.hpp still spells out face.uv " << handWritten
+                      << " time(s); the rect has one writer\n";
+        }
+        assert(handWritten == 0);
     }
 
     // --- The varyings between each pair of stages, likewise. ---

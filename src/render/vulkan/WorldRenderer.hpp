@@ -1189,14 +1189,13 @@ class WorldRenderer final {
                         if (!face.present) {
                             continue;
                         }
-                        const ItemPush push{
-                            {boxCentre.x, boxCentre.y, boxCentre.z, face.uv.maxV / 16.0F},
-                            {world::itemFaceLayer(itemFaces, face.slot),
-                             static_cast<float>(face.quadrant), 0.0F, rotation},
-                            {10.0F, face.uv.minU / 16.0F, face.uv.minV / 16.0F,
-                             face.uv.maxU / 16.0F},
-                            {size.x, size.y, size.z, packedLight},
-                        };
+                        // Assembled by makeDroppedBlockItemFacePush, not here.
+                        // The held path below assembles its own and filled the
+                        // face's UV rect into different fields; every held block
+                        // then stretched one column of texels over itself.
+                        const ItemPush push = makeDroppedBlockItemFacePush(
+                            face, world::itemFaceLayer(itemFaces, face.slot), boxCentre, size,
+                            rotation, packedLight);
                         vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout,
                                            VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
                         vkCmdDraw(commandBuffer, 6U, 1, f * 6U, 0);
@@ -1978,15 +1977,9 @@ class WorldRenderer final {
                     if (!face.present) {
                         continue;
                     }
-                    const ItemPush push{
-                        {face.uv.minU / 16.0F, face.uv.minV / 16.0F, face.uv.maxU / 16.0F,
-                         face.uv.maxV / 16.0F},
-                        {world::itemFaceLayer(heldFaces, face.slot),
-                         static_cast<float>(face.quadrant), 0.0F, 0.0F},
-                        {11.0F, 0.0F, 0.0F, 0.0F},
-                        {size.x, size.y, size.z, heldLight},
-                        boxTransform,
-                    };
+                    const ItemPush push = makeHeldBlockItemFacePush(
+                        face, world::itemFaceLayer(heldFaces, face.slot), size, heldLight,
+                        boxTransform);
                     vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout,
                                        VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
                     vkCmdDraw(commandBuffer, 6U, 1, f * 6U, 0);

@@ -149,4 +149,120 @@ struct ItemPush final {
 
 static_assert(sizeof(ItemPush) <= 128U, "Item push constants must fit Vulkan's guaranteed minimum");
 
+// item_entity.vert's draw modes, as `data.x`. The shader dispatches on ranges
+// (`> 9.5`, `> 10.5`), so these are whole numbers spaced one apart.
+inline constexpr float kItemModeFlatSprite = 0.0F;   // a flat item texture
+inline constexpr float kItemModeCube = 1.0F;         // block-break overlay, falling block
+inline constexpr float kItemModeShadow = 2.0F;       // the round entity shadow
+inline constexpr float kItemModeHeldSprite = 3.0F;   // a flat item in view space
+inline constexpr float kItemModePlayerSkin = 4.0F;   // a skinned cuboid in view space
+inline constexpr float kItemModeArticulatedCuboid = 5.0F; // world-space skinned cuboid
+inline constexpr float kItemModeMatrixViewModel = 6.0F;   // view matrix carries the pose
+inline constexpr float kItemModeBreakingQuad = 7.0F;      // the breaking overlay's quads
+inline constexpr float kItemModeWorldMatrixCuboid = 8.0F; // chest lid, articulated bones
+inline constexpr float kItemModeBoxUvEntity = 9.0F;       // mobs and NPCs
+// RN-14: one box of a block ITEM's model, one draw per face.
+inline constexpr float kItemModeBlockItemDropped = 10.0F; // world space, yaw-rotated
+inline constexpr float kItemModeBlockItemHeld = 11.0F;    // the view matrix carries the pose
+
+// --- Where a block-item face's UV rect lives, and why it is written in one place
+//
+// The regression this exists to prevent: mode 10 put the rect in
+// `data.yzw` + `positionSize.w`, mode 11 put all four numbers in
+// `positionSize.xyzw`, and the shader reads only the first arrangement. Held
+// blocks therefore got rect (0, 0, 0, maxV) — zero width in U — and every face
+// stretched the atlas layer's u=0 column across itself. Nothing else showed,
+// because a held block takes its position from the matrix and never looks at
+// `positionSize.xyz`, which is why it survived the round that fixed the icons.
+//
+// The two modes' push blocks are declared identically and were checked to be so.
+// Identical declarations do not make two producers agree about which field holds
+// what; that is a separate property and it needs its own guardrail.
+//
+// So neither call site decides. Both call `setBlockItemFaceRect`, and
+// `blockItemFaceRectOf` reads back what item_entity.vert reads — the two are
+// mirrors of shader lines that `hud_push_constant_test` re-reads from the source.
+inline constexpr void setBlockItemFaceRect(ItemPush& push, const world::ItemModelFace& face) {
+    // 0..16 model units into 0..1 of the atlas layer, which is what the shader's
+    // `rectCornerUv` expects.
+    constexpr float kModelUnitsPerSprite = 16.0F;
+    push.data.y = face.uv.minU / kModelUnitsPerSprite;
+    push.data.z = face.uv.minV / kModelUnitsPerSprite;
+    push.data.w = face.uv.maxU / kModelUnitsPerSprite;
+    push.positionSize.w = face.uv.maxV / kModelUnitsPerSprite;
+}
+
+// The rect exactly as item_entity.vert reconstructs it:
+//   vec4 itemRect = vec4(item.data.y, item.data.z, item.data.w, item.positionSize.w);
+[[nodiscard]] inline constexpr glm::vec4 blockItemFaceRectOf(const ItemPush& push) {
+    return {push.data.y, push.data.z, push.data.w, push.positionSize.w};
+}
+
+// The whole push for one face, per mode. The two differ in how the box is placed
+// and in nothing else; both get their rect from the writer above, and neither
+// call site assembles an ItemPush of its own any more — which is what keeps
+// "these two modes fill the block the same way" a property of the code rather
+// than of two people remembering.
+[[nodiscard]] inline ItemPush makeDroppedBlockItemFacePush(const world::ItemModelFace& face,
+                                                           float atlasLayer, glm::vec3 boxCentre,
+                                                           glm::vec3 size, float yawRadians,
+                                                           float packedLight) {
+    ItemPush push{};
+    // World space: the box's centre travels in positionSize.xyz and the yaw in
+    // textureLayersRotation.w, because this draw has no matrix.
+    push.positionSize = {boxCentre.x, boxCentre.y, boxCentre.z, 0.0F};
+    push.textureLayersRotation = {atlasLayer, static_cast<float>(face.quadrant), 0.0F, yawRadians};
+    push.data = {kItemModeBlockItemDropped, 0.0F, 0.0F, 0.0F};
+    push.dimensions = {size.x, size.y, size.z, packedLight};
+    setBlockItemFaceRect(push, face);
+    return push;
+}
+
+[[nodiscard]] inline ItemPush makeHeldBlockItemFacePush(const world::ItemModelFace& face,
+                                                        float atlasLayer, glm::vec3 size,
+                                                        float packedLight,
+                                                        const glm::mat4& boxTransform) {
+    ItemPush push{};
+    // The matrix places this one, so positionSize.xyz stays zero. That is exactly
+    // why the old code could write the UV rect across all four of its components
+    // and produce no symptom except a texture stretched from one column of texels.
+    push.positionSize = {0.0F, 0.0F, 0.0F, 0.0F};
+    push.textureLayersRotation = {atlasLayer, static_cast<float>(face.quadrant), 0.0F, 0.0F};
+    push.data = {kItemModeBlockItemHeld, 0.0F, 0.0F, 0.0F};
+    push.dimensions = {size.x, size.y, size.z, packedLight};
+    push.viewModelTransform = boxTransform;
+    setBlockItemFaceRect(push, face);
+    return push;
+}
+
+// --- ItemPush's per-mode field map (the accounting the shader comment promised)
+//
+// One pipeline serves twelve draw kinds, so most of this block IS mode-dependent
+// — unlike HudPush, where the reuse was a defect and was removed. Removing it
+// here would mean either several pipelines or a uniform buffer, and that is a
+// change to make deliberately rather than as a side effect of a bug fix. What is
+// recorded instead is which fields carry different things, so the next reader
+// does not have to reconstruct it from the dispatch chain:
+//
+//   positionSize.xyz  world position (0/1/2/10) · the UNINFLATED cube size that
+//                     the box-UV net is built from (9) · unused where a matrix
+//                     places the draw (6/8/11)
+//   positionSize.w    scale (0/1/2) · the block-item face's maxV (10/11) ·
+//                     a packed 0xRRGGBB wool tint (9)
+//   textureLayersRotation.xyz  three atlas layers, or one layer plus the model's
+//                     declared texture width/height (9)
+//   textureLayersRotation.w    yaw (most) · the face-override bits (9)
+//   data.x            the draw mode. Never anything else.
+//   data.y            pitch (most) · shadow opacity (2) · the block-item face's
+//                     minU (10/11) · the box-UV net origin U (9)
+//   data.z            roll (most) · the block-item face's minV (10/11) ·
+//                     the net origin V (9)
+//   data.w            a player-skin flag (6) · the block-item face's maxU (10/11)
+//                     · the net mirror flag (9)
+//   dimensions.xyz    the drawn cube extent, when it is not cubic
+//   dimensions.w      the packed scene lightmap, plus 512 for the hurt row (9)
+//
+// The four block-item entries are the ones that had two producers, and they are
+// the ones now written in one place above. The rest have a single producer each.
+
 } // namespace mc::render
