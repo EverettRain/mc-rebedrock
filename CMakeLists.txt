@@ -1861,6 +1861,32 @@ if(BUILD_TESTING)
     )
     add_test(NAME biome_identity COMMAND mc_rebedrock_biome_identity_test)
 
+    # RN-13-1: the model element's `"shade"` bit, from baked quad to shader.
+    add_executable(mc_rebedrock_block_shade_test
+        tests/block_shade_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_block_shade_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_block_shade_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    target_compile_definitions(mc_rebedrock_block_shade_test PRIVATE
+        "MC_REBEDROCK_SHADER_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src\"")
+    add_test(NAME block_shade COMMAND mc_rebedrock_block_shade_test)
+
+    # RN-13-2: the selection-box wireframe hugs the box exactly (header <-> shader).
+    add_executable(mc_rebedrock_block_outline_geometry_test
+        tests/block_outline_geometry_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_block_outline_geometry_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_block_outline_geometry_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    target_compile_definitions(mc_rebedrock_block_outline_geometry_test PRIVATE
+        "MC_REBEDROCK_SHADER_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src\"")
+    add_test(NAME block_outline_geometry COMMAND mc_rebedrock_block_outline_geometry_test)
+
     add_executable(mc_rebedrock_item_cube_uv_test
         tests/item_cube_uv_test.cpp
     )
@@ -1882,6 +1908,19 @@ if(BUILD_TESTING)
         )
         target_link_libraries(mc_rebedrock_block_shape_benchmark PRIVATE mc_rebedrock_runtime)
         target_include_directories(mc_rebedrock_block_shape_benchmark PRIVATE
+            src
+            "${glm_SOURCE_DIR}"
+        )
+
+        # RN-13-3: dumps a block's baked model as JSON for the offline UV preview
+        # (tools/block_uv_preview.py). No atlas, no textures, no Mojang assets —
+        # it names sprites and the Python side reads them from the user's own
+        # resource pack.
+        add_executable(mc_rebedrock_block_model_dump
+            tools/block_model_dump.cpp
+        )
+        target_link_libraries(mc_rebedrock_block_model_dump PRIVATE mc_rebedrock_runtime)
+        target_include_directories(mc_rebedrock_block_model_dump PRIVATE
             src
             "${glm_SOURCE_DIR}"
         )
@@ -2039,6 +2078,19 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME repeater_delay_fixture COMMAND mc_rebedrock_repeater_delay_fixture_test)
+
+    # AR-B4-7: the two diode useWithoutItem handlers, through the real
+    # UseItemOn path.
+    add_executable(mc_rebedrock_diode_interaction_fixture_test
+        tests/redstone/diode_interaction_fixture_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_diode_interaction_fixture_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_diode_interaction_fixture_test PRIVATE
+        src
+        tests
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME diode_interaction_fixture COMMAND mc_rebedrock_diode_interaction_fixture_test)
 
     add_executable(mc_rebedrock_comparator_subtract_fixture_test
         tests/redstone/comparator_subtract_fixture_test.cpp
