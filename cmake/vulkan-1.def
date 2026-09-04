@@ -1,3 +1,8 @@
+; Windows 交叉编译用的 vulkan-1 导入库出处（Linux/macOS 走 find_package(Vulkan)）。
+; 这是一张**手工维护的名单**：新用一个 vkXxx 入口点却没往这里加一行，
+; Linux 侧照常编过，只有 mingw 链接期报 undefined reference。
+; 自查：grep -rhoE '\bvk[A-Z][A-Za-z0-9]*' src | sort -u  与本文件对比
+; （`vkGetInstanceProcAddr` 动态取的扩展函数不在此列，如 DebugUtilsMessenger）
 LIBRARY vulkan-1.dll
 EXPORTS
     vkAcquireNextImageKHR
@@ -21,6 +26,7 @@ EXPORTS
     vkCmdCopyBuffer
     vkCmdCopyBufferToImage
     vkCmdCopyImage
+    vkCmdCopyImageToBuffer
     vkCmdDraw
     vkCmdDrawIndexed
     vkCmdEndQuery
