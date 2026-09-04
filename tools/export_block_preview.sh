@@ -40,23 +40,51 @@ if [[ -z "$SPEC" ]]; then
     echo "用法：$0 [--verify] <方块规格> [--pack <资源包>] [--size N] [--out <目录>]" >&2
     exit 2
 fi
+# 本机能不能执行这个文件 —— 靠头四个魔数字节判，不靠目录名也不靠 `file`
+# 一个 build/ 树里同时躺着给别的平台构建的同名二进制是常态（容器里出的 Linux 版
+# 与本机的 macOS 版并存），而 `-x` 对它们一样为真：POSIX 权限位不认架构
+host_can_run() {
+    local magic
+    # 用重定向而不是 `head -c 4 "$1"`：既绕开 BSD/GNU head 的选项差异，
+    # 也不用担心路径以 `-` 开头
+    magic="$(head -c 4 < "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+    case "$(uname -s)" in
+        Darwin) [[ "$magic" == cffaedfe || "$magic" == cefaedfe || \
+                   "$magic" == cafebabe || "$magic" == bebafeca ]] ;;   # Mach-O / universal
+        Linux)  [[ "$magic" == 7f454c46 ]] ;;                            # ELF
+        *)      return 0 ;;   # 认不出的平台就别拦，让 exec 自己去报错
+    esac
+}
+
 # 可执行文件：MC_REBEDROCK_BINARY 优先，否则在 build/ 下找暂存出来的那个
 # 暂存布局是 <构建目录>/game/bin/mc_rebedrock（见 CMakeLists 的 MC_REBEDROCK_GAME_ROOT），
 # 构建目录名各人各异（预设名、rebedrock-debug、linux-debug…），所以是搜不是写死
 if [[ -z "$BINARY" ]]; then
     newest=""
+    skipped=""
     while IFS= read -r candidate; do
         [[ -x "$candidate" ]] || continue
+        if ! host_can_run "$candidate"; then
+            skipped="${skipped}  ${candidate}（不是本机架构）"$'\n'
+            continue
+        fi
         if [[ -z "$newest" || "$candidate" -nt "$newest" ]]; then
             newest="$candidate"
         fi
     done < <(find build -maxdepth 4 -type f -name 'mc_rebedrock' 2>/dev/null)
     BINARY="$newest"
+    if [[ -z "$BINARY" && -n "$skipped" ]]; then
+        echo "build/ 下只找到别的平台的二进制：" >&2
+        printf '%s' "$skipped" >&2
+    fi
 fi
 if [[ -z "$BINARY" || ! -x "$BINARY" ]]; then
-    echo "找不到可执行文件。已在 build/*/game/bin/ 下搜过；" >&2
-    echo "用 MC_REBEDROCK_BINARY=<路径> 指定，或先构建 mc_rebedrock。" >&2
+    echo "找不到本机可执行的 mc_rebedrock。已在 build/*/game/bin/ 下搜过；" >&2
+    echo "用 MC_REBEDROCK_BINARY=<路径> 指定，或先为本机构建 mc_rebedrock。" >&2
     exit 2
+fi
+if ! host_can_run "$BINARY"; then
+    echo "警告：${BINARY} 看起来不是本机架构，执行大概率会失败" >&2
 fi
 echo "使用可执行文件：${BINARY}"
 
