@@ -188,8 +188,8 @@ int main() {
             case BlockModel::FenceGate: assert(kind == ItemModelKind::FenceGate); break;
             case BlockModel::PressurePlate: assert(kind == ItemModelKind::PressurePlate); break;
             case BlockModel::Button: assert(kind == ItemModelKind::Button); break;
-            case BlockModel::Door:
-            case BlockModel::TrapDoor: assert(kind == ItemModelKind::None); break;
+            case BlockModel::Door: assert(kind == ItemModelKind::None); break;
+            case BlockModel::TrapDoor: assert(kind == ItemModelKind::TrapDoor); break;
             default: break;
             }
         }
@@ -199,13 +199,25 @@ int main() {
         assert(countKind(ItemModelKind::Wall) == walls);
     }
 
-    // --- The doors and trapdoors keep the flat sprite. Vanilla's items/oak_door
-    //     names `item/oak_door`, a 2D sprite; this is the exclusion RN-10f
-    //     registered and RN-14 does not touch. ---
-    for (const Block block : {Block::OakDoor, Block::IronDoor, Block::OakTrapdoor,
-                              Block::IronTrapdoor}) {
+    // --- The DOOR keeps the flat sprite: vanilla's items/oak_door.json names
+    //     `item/oak_door`, a 2D drawing of a whole door. The TRAPDOOR does not —
+    //     items/oak_trapdoor.json names `block/oak_trapdoor_bottom`, a 3D slab.
+    //     RN-10f registered the two together as "thin leaves"; RN-14 found the
+    //     trapdoor half of that wrong and RN-15 corrects it. ---
+    for (const Block block : {Block::OakDoor, Block::IronDoor}) {
         assert(itemModelKindOf(block) == ItemModelKind::None);
         assert(!rendersAsModelItem(block));
+    }
+    for (const Block block : {Block::OakTrapdoor, Block::IronTrapdoor}) {
+        assert(itemModelKindOf(block) == ItemModelKind::TrapDoor);
+        assert(rendersAsModelItem(block));
+        assert(itemModelRange(block).count == 1U);
+        const ItemModelBox& leaf = boxOf(block, 0);
+        assert(sameVec(leaf.from16, {0.0F, 0.0F, 0.0F}));
+        assert(sameVec(leaf.to16, {16.0F, 3.0F, 16.0F}));
+        // template_trapdoor_bottom.json's own side rect, V running backwards.
+        assert(sameRect(leaf.face[static_cast<std::size_t>(bake::Facing::North)].uv,
+                        {0.0F, 16.0F, 16.0F, 13.0F, false}));
     }
     // So do the diodes, the lever and the torch: vanilla draws each from an
     // `item/*.png`, not from its block model.
@@ -377,11 +389,31 @@ int main() {
         // same defect (items/oak_door.json names `item/oak_door`, a whole-door
         // drawing, and the icon shows `oak_door_top`), registered but not done —
         // see the RN-14 landing record.
+        // RN-15 registered the rest of the same defect class: every door
+        // (`items/<name>.json` -> `item/<name>`, a drawing of a whole door, where
+        // the icon was showing the block's upper-half sprite) and sugar cane.
+        // The two waxed copper doors name the UNWAXED sprite, because vanilla has
+        // no waxed_*_door.png at all — a rule that has to be transcribed, since
+        // deriving the sprite name from the block name would ask for a file the
+        // pack does not have and silently render the missing-texture checker.
+        assert(std::string_view{blockDefinition(Block::WaxedCopperDoor).itemSprite} ==
+               "copper_door");
+        assert(std::string_view{blockDefinition(Block::WaxedOxidizedCopperDoor).itemSprite} ==
+               "oxidized_copper_door");
+        assert(hasItemSprite(Block::SugarCane));
         std::size_t sprites = 0;
+        std::size_t doorSprites = 0;
         for (std::size_t i = 0; i < static_cast<std::size_t>(Block::Count); ++i) {
-            sprites += hasItemSprite(static_cast<Block>(i)) ? 1U : 0U;
+            const auto block = static_cast<Block>(i);
+            sprites += hasItemSprite(block) ? 1U : 0U;
+            if (blockDefinition(block).model == BlockModel::Door) {
+                assert(hasItemSprite(block) && "every door's item is item/<name>.png");
+                ++doorSprites;
+            }
         }
-        assert(sprites == 2U);
+        // Two diodes + sugar cane + every door in the roster.
+        assert(doorSprites > 0U);
+        assert(sprites == 3U + doorSprites);
     }
 
     // --- Layer routing: a face asks for one of the five item layers, and the

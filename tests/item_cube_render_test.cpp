@@ -68,9 +68,11 @@ using mc::world::rendersAsModelItem;
         return ItemModelKind::Button;
     case BlockModel::PressurePlate:
         return ItemModelKind::PressurePlate;
-    // 薄片：vanilla 的门/活板门物品是扁平贴图（items/oak_door 指向 item/oak_door）
-    case BlockModel::Door:
+    // RN-15：活板门的物品是 block/<name>_bottom，一块 3px 的 3D 薄板，不是扁平贴图
     case BlockModel::TrapDoor:
+        return ItemModelKind::TrapDoor;
+    // 门才是扁平贴图（items/oak_door 指向 item/oak_door，一整扇门的画）
+    case BlockModel::Door:
     // 本来就不是盒子的
     case BlockModel::Cross:
     case BlockModel::Crop:
@@ -118,15 +120,15 @@ void testCubeChestSlabStayIn() {
     assert(sawSlab);  // 台阶存在，上面那圈断言不是空转
 }
 
-// 明确留在集合外的那些：十字植物、火把、作物，以及薄片状的门与活板门
+// 明确留在集合外的那些：十字植物、火把、作物，以及薄片状的门
 // RN-10f 之后楼梯不在此列——它进了集合，见 expectedForModel 的注释
+// RN-15 之后活板门也不在此列——vanilla 的活板门物品是 3D 薄板
 void testNonCubeModelsStayOut() {
     for (std::size_t index = 0; index < static_cast<std::size_t>(Block::Count); ++index) {
         const auto block = static_cast<Block>(index);
         const auto model = blockDefinition(block).model;
         if (model == BlockModel::Cross || model == BlockModel::Crop ||
-            model == BlockModel::Torch || model == BlockModel::Door ||
-            model == BlockModel::TrapDoor) {
+            model == BlockModel::Torch || model == BlockModel::Door) {
             assert(!rendersAsModelItem(block));
         }
     }
@@ -141,11 +143,12 @@ void testShapedBlocksAreCubeItemsToo() {
     assert(itemModelKindOf(Block::OakFenceGate) == ItemModelKind::FenceGate);
     assert(blockDefinition(Block::StonePressurePlate).model == BlockModel::PressurePlate);
     assert(itemModelKindOf(Block::StonePressurePlate) == ItemModelKind::PressurePlate);
-    // 而薄片仍然在外：vanilla 的门/活板门物品是扁平贴图
+    // 门仍在外：vanilla 的门物品是扁平贴图
     assert(blockDefinition(Block::OakDoor).model == BlockModel::Door);
     assert(!rendersAsModelItem(Block::OakDoor));
+    // RN-15：活板门进来了，它的物品是 block/oak_trapdoor_bottom
     assert(blockDefinition(Block::OakTrapdoor).model == BlockModel::TrapDoor);
-    assert(!rendersAsModelItem(Block::OakTrapdoor));
+    assert(rendersAsModelItem(Block::OakTrapdoor));
 }
 
 // 与 isFullCube 的关系：那个谓词回答的是填不填满自己那一格，服务于遮挡与面稳固

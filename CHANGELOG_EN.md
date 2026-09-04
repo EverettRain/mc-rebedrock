@@ -8,6 +8,13 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- A stair in the inventory no longer looks exactly like a plank. Every shaped
+  block's item icon — stairs, walls, fence gates, pressure plates, buttons — used
+  to be a full cube wearing its parent block's texture, so "I cannot get a stair"
+  was really "I cannot recognise a stair". Icons now draw the block's own model,
+  as vanilla does. Trapdoors likewise became vanilla's 16x3x16 slab, and doors and
+  sugar cane now use their own item textures rather than a block texture on a flat
+  plane.
 - Deserts and savannas no longer get rained on, and the nether and the end have no
   precipitation at all. Rain used to fall on every biome in the game, because
   nothing ever asked the biome — which is why farmland in a desert stayed moist

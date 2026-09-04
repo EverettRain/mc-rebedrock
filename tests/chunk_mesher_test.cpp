@@ -668,13 +668,11 @@ int main() {
     static_assert(!mc::world::isShapedBlockModel(mc::world::BlockModel::Slab));
     static_assert(!mc::world::isShapedBlockModel(mc::world::BlockModel::Chest));
     // Only door and trapdoor are drawn flat; the rest show a 3D block icon.
-    static_assert(mc::world::isThinLeafIconModel(mc::world::BlockModel::Door));
-    static_assert(mc::world::isThinLeafIconModel(mc::world::BlockModel::TrapDoor));
-    static_assert(!mc::world::isThinLeafIconModel(mc::world::BlockModel::Stairs));
-    static_assert(!mc::world::isThinLeafIconModel(mc::world::BlockModel::Wall));
-    static_assert(!mc::world::isThinLeafIconModel(mc::world::BlockModel::FenceGate));
-    static_assert(!mc::world::isThinLeafIconModel(mc::world::BlockModel::Button));
-    static_assert(!mc::world::isThinLeafIconModel(mc::world::BlockModel::PressurePlate));
+    // RN-15: `isThinLeafIconModel` is gone. It answered "a door and a trapdoor
+    // item are flat sprites", lost its last caller to RN-14, and was half wrong:
+    // vanilla's items/oak_trapdoor.json names block/oak_trapdoor_bottom, a 3D
+    // slab. Which item is drawn how is world::itemModelKindOf now, and
+    // block_item_model_test owns those assertions.
 
     {
         // Door texture is chosen by HALF, not by geometric face: the upper cell

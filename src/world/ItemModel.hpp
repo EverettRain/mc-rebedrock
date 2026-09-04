@@ -100,6 +100,7 @@ enum class ItemModelKind : std::uint8_t {
     FenceGate,
     PressurePlate,
     Button,
+    TrapDoor,
     Count,
 };
 
@@ -233,6 +234,32 @@ constexpr void putItemFace(ItemModelBox& box, bake::Facing facing, ItemLayerSlot
     return box;
 }
 
+// block/template_trapdoor_bottom.json, which `items/oak_trapdoor.json` names —
+// the CLOSED bottom-half world model, a 3px slab.
+//
+// RN-14 recorded this as an open question and RN-15 settles it: vanilla's
+// trapdoor ITEM is a 3D thin slab, not a flat sprite. Only the door is a sprite
+// (`items/oak_door.json` -> `item/oak_door`). The RN-10 mac checklist's "doors
+// and trapdoors are still flat sprites, that is vanilla's behaviour" was right
+// about the door and wrong about the trapdoor.
+//
+// Every face takes `#texture`, the block's single declared sprite, so all six
+// route to Side; a trapdoor declares the same name in all three texture slots
+// anyway. The four side rects run V backwards (`[0,16,16,13]`) — vanilla's own,
+// the same audit-R6 rect the world model carries.
+[[nodiscard]] constexpr ItemModelBox trapdoorBottomBox() {
+    ItemModelBox box;
+    box.from16 = {0.0F, 0.0F, 0.0F};
+    box.to16 = {16.0F, 3.0F, 16.0F};
+    putItemFace(box, bake::Facing::Down, ItemLayerSlot::Side, itemRect(0, 0, 16, 16));
+    putItemFace(box, bake::Facing::Up, ItemLayerSlot::Side, itemRect(0, 0, 16, 16));
+    for (const bake::Facing side : {bake::Facing::North, bake::Facing::South,
+                                    bake::Facing::West, bake::Facing::East}) {
+        putItemFace(box, side, ItemLayerSlot::Side, itemRect(0, 16, 16, 13));
+    }
+    return box;
+}
+
 // The closed, not-in-wall fence gate, box for box from template_fence_gate.json.
 // It is the same eight elements `bake::fenceGateElements(false, false)` builds for
 // the world mesh; `block_item_model_test` asserts the two agree element for
@@ -288,7 +315,7 @@ constexpr void putItemFace(ItemModelBox& box, bake::Facing facing, ItemLayerSlot
 // that order: `cubeItemUvModel(block)` already returns 0/1/2 and both item vertex
 // shaders index their UV table with it, so keeping the cubes at 0..2 is what makes
 // this an extension of that table rather than a replacement for it.
-inline constexpr std::array<ItemModelBox, 18> kItemModelBoxes{{
+inline constexpr std::array<ItemModelBox, 19> kItemModelBoxes{{
     detail::wholeCube(CubeUvModel::Default),        // 0
     detail::wholeCube(CubeUvModel::PistonTemplate), // 1
     detail::wholeCube(CubeUvModel::Observer),       // 2
@@ -311,6 +338,7 @@ inline constexpr std::array<ItemModelBox, 18> kItemModelBoxes{{
                             detail::itemRect(10, 7, 14, 10)), // 16
     detail::fenceGateBarBox(10, 12, 14, 15, detail::itemRect(10, 7, 14, 9),
                             detail::itemRect(10, 1, 14, 4)),  // 17
+    detail::trapdoorBottomBox(),                              // 18
 }};
 
 // Where each kind's boxes live in the flat array, and how the inventory turns it.
@@ -330,6 +358,7 @@ inline constexpr std::array<ItemModelRange, static_cast<std::size_t>(ItemModelKi
         {10, 8, ItemIconTurn::Half},          // FenceGate
         {8, 1, ItemIconTurn::None},           // PressurePlate
         {9, 1, ItemIconTurn::None},           // Button
+        {18, 1, ItemIconTurn::None},          // TrapDoor
     }};
 
 // The single point. Every item surface asks this and nothing else: `None` means
@@ -358,12 +387,16 @@ inline constexpr std::array<ItemModelRange, static_cast<std::size_t>(ItemModelKi
         return ItemModelKind::PressurePlate;
     case BlockModel::Button:
         return ItemModelKind::Button;
-    // A door and a trapdoor item are flat sprites in vanilla's `items/` entries
+    // RN-15: a trapdoor item is `block/<name>_bottom`, a 3D slab — NOT a flat
+    // sprite. The door beside it really is one (`items/oak_door.json` names
+    // `item/oak_door`), which is why the two were mistaken for a pair.
+    case BlockModel::TrapDoor:
+        return ItemModelKind::TrapDoor;
+    // A door item is a flat sprite in vanilla's `items/` entry
     // (`item/oak_door`); so are the diodes (`item/repeater`), the lever, the
     // torch, the crops and the wire, all of which vanilla draws from an
     // `item/*.png` and none of which has a useful 3D silhouette at 16 pixels.
     case BlockModel::Door:
-    case BlockModel::TrapDoor:
     case BlockModel::Cross:
     case BlockModel::Crop:
     case BlockModel::Torch:

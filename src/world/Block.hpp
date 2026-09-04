@@ -753,15 +753,12 @@ enum class BlockModel : std::uint8_t {
     return false;
 }
 
-// Whether a shaped block's item icon is drawn as a flat item sprite rather than
-// a 3D block cube. Vanilla renders a door and trapdoor item as a flat sprite
-// (they are thin leaves with no useful 3D inventory silhouette), while a stair,
-// wall, fence gate, button and pressure plate item show a 3D block icon. This is
-// the HUD "thin leaf -> sprite" special case RN-2 carries; the world mesh always
-// draws the real 3D box for all of them.
-[[nodiscard]] constexpr bool isThinLeafIconModel(BlockModel model) {
-    return model == BlockModel::Door || model == BlockModel::TrapDoor;
-}
+// RN-15: `isThinLeafIconModel` used to live here and answered "a door and a
+// trapdoor item are flat sprites". It lost its last caller when RN-14 replaced
+// `rendersAsCubeItem`, and it was half wrong besides: vanilla's
+// `items/oak_trapdoor.json` names `block/oak_trapdoor_bottom`, a 3D slab. Only
+// the door is a sprite. Which item is drawn how is `world::itemModelKindOf`
+// (world/ItemModel.hpp) and nothing else.
 
 // SlabBlock.TYPE, the value the SlabType property serialises as. Bottom is 0 so
 // a freshly placed slab (the block's default state) sits in the lower half, the
@@ -2436,6 +2433,7 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     // and an air-ish cell has no vanilla waterlogged precedent to copy.
     BlockProperties::of(Block::OakDoor, "oak_door", "Oak Door")
         .texture("oak_door_top", "oak_door_bottom", "oak_door_bottom")
+        .itemSprite("oak_door")
         .strength(3.0F)
         .door()
         .creative(CreativeCategory::Redstone),
@@ -2483,6 +2481,9 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     // it is reachable in creative like the other plants.
     BlockProperties::of(Block::SugarCane, "sugar_cane", "Sugar Cane")
         .texture("sugar_cane")
+        // items/sugar_cane.json names item/sugar_cane, a different file from
+        // block/sugar_cane (the world sprite is the plant column, the item a cut cane).
+        .itemSprite("sugar_cane")
         .instantBreak()
         .cross()
         .support(BlockSupport::SugarCane)
@@ -2982,28 +2983,35 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     // sprites, as OakDoor uses).
     BlockProperties::of(Block::SpruceDoor, "spruce_door", "Spruce Door")
         .texture("spruce_door_top", "spruce_door_bottom", "spruce_door_bottom").strength(3.0F).door()
+        .itemSprite("spruce_door")
         .creative(CreativeCategory::Redstone),
     BlockProperties::of(Block::JungleDoor, "jungle_door", "Jungle Door")
         .texture("jungle_door_top", "jungle_door_bottom", "jungle_door_bottom").strength(3.0F).door()
+        .itemSprite("jungle_door")
         .creative(CreativeCategory::Redstone),
     BlockProperties::of(Block::AcaciaDoor, "acacia_door", "Acacia Door")
         .texture("acacia_door_top", "acacia_door_bottom", "acacia_door_bottom").strength(3.0F).door()
+        .itemSprite("acacia_door")
         .creative(CreativeCategory::Redstone),
     BlockProperties::of(Block::DarkOakDoor, "dark_oak_door", "Dark Oak Door")
         .texture("dark_oak_door_top", "dark_oak_door_bottom", "dark_oak_door_bottom").strength(3.0F)
+        .itemSprite("dark_oak_door")
         .door().creative(CreativeCategory::Redstone),
     BlockProperties::of(Block::IronDoor, "iron_door", "Iron Door")
         .texture("iron_door_top", "iron_door_bottom", "iron_door_bottom").strength(5.0F).door()
+        .itemSprite("iron_door")
         .setType(BlockSetTypeId::Iron)
         .creative(CreativeCategory::Redstone),
     BlockProperties::of(Block::WaxedCopperDoor, "waxed_copper_door", "Waxed Copper Door")
         .texture("copper_door_top", "copper_door_bottom", "copper_door_bottom").strength(3.0F).door()
+        .itemSprite("copper_door")  // vanilla names the unwaxed sprite
         .setType(BlockSetTypeId::Copper)
         .creative(CreativeCategory::Redstone),
     BlockProperties::of(Block::WaxedOxidizedCopperDoor, "waxed_oxidized_copper_door",
                         "Waxed Oxidized Copper Door")
         .texture("oxidized_copper_door_top", "oxidized_copper_door_bottom",
                  "oxidized_copper_door_bottom")
+        .itemSprite("oxidized_copper_door")  // vanilla names the unwaxed sprite
         .strength(3.0F).door().setType(BlockSetTypeId::Copper)
         .creative(CreativeCategory::Redstone),
     // Trapdoors (.trapdoor() supplies model + Facing/Half/Open/Powered; single sprite).
