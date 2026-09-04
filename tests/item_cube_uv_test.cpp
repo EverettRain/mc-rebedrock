@@ -1,8 +1,10 @@
 #include "world/Block.hpp"
 #include "world/CubeUv.hpp"
+#include "world/ItemModel.hpp"
 
 #include <array>
 #include <cassert>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -73,6 +75,74 @@ const std::filesystem::path kShaderDir{MC_REBEDROCK_SHADER_SRC_DIR};
     return std::fabs(a.x - b.x) < 1.0e-4F && std::fabs(a.y - b.y) < 1.0e-4F;
 }
 
+// Every `vec3(a, b, c)` between the two markers, in source order.
+[[nodiscard]] std::vector<glm::vec3> parseVec3Block(const std::string& source,
+                                                    std::string_view beginMarker,
+                                                    std::string_view endMarker) {
+    const auto begin = source.find(beginMarker);
+    assert(begin != std::string::npos && "marker missing: did the shader lose its table?");
+    const auto end = source.find(endMarker, begin);
+    assert(end != std::string::npos && end > begin);
+    const std::string block = source.substr(begin, end - begin);
+    std::vector<glm::vec3> values;
+    std::size_t cursor = 0;
+    while (true) {
+        const auto call = block.find("vec3(", cursor);
+        if (call == std::string::npos) {
+            break;
+        }
+        const auto close = block.find(')', call);
+        assert(close != std::string::npos);
+        std::string arguments = block.substr(call + 5, close - call - 5);
+        std::array<float, 3> component{};
+        std::size_t at = 0;
+        for (float& value : component) {
+            const auto comma = arguments.find(',', at);
+            value = std::stof(arguments.substr(at, comma - at));
+            at = comma == std::string::npos ? arguments.size() : comma + 1;
+        }
+        values.push_back({component[0], component[1], component[2]});
+        cursor = close + 1;
+    }
+    return values;
+}
+
+// Every integer between the two markers, in source order.
+[[nodiscard]] std::vector<int> parseIntBlock(const std::string& source,
+                                             std::string_view beginMarker,
+                                             std::string_view endMarker) {
+    const auto begin = source.find(beginMarker);
+    assert(begin != std::string::npos);
+    const auto end = source.find(endMarker, begin);
+    assert(end != std::string::npos && end > begin);
+    const std::string block = source.substr(begin, end - begin);
+    std::vector<int> values;
+    for (std::size_t i = 0; i < block.size();) {
+        if (std::isdigit(static_cast<unsigned char>(block[i])) == 0) {
+            ++i;
+            continue;
+        }
+        // Skip a number that is part of an identifier (int[24], vec3, ...).
+        if (i > 0 && (std::isalnum(static_cast<unsigned char>(block[i - 1])) != 0 ||
+                      block[i - 1] == '_' || block[i - 1] == '[')) {
+            while (i < block.size() && std::isalnum(static_cast<unsigned char>(block[i])) != 0) {
+                ++i;
+            }
+            continue;
+        }
+        std::size_t start = i;
+        while (i < block.size() && std::isdigit(static_cast<unsigned char>(block[i])) != 0) {
+            ++i;
+        }
+        values.push_back(std::stoi(block.substr(start, i - start)));
+    }
+    return values;
+}
+
+[[nodiscard]] bool contains(const std::string& haystack, std::string_view needle) {
+    return haystack.find(needle) != std::string::npos;
+}
+
 } // namespace
 
 int main() {
@@ -95,79 +165,99 @@ int main() {
                same(east[2], {1.0F, 0.0F}) && same(east[3], {0.0F, 0.0F}));
     }
 
-    // --- item_entity.vert: the dropped item and the held item ------------------
-    // Its cube face order and corner order are the mesher's kFaces order, so the
-    // array is kCubeItemFaceUv flattened.
+    // --- The rule the two shaders now compute UVs with -------------------------
+    // RN-14 deleted three literal 24-entry UV tables from item_entity.vert and
+    // three 18-entry ones from hud.vert. They existed because a shader cannot
+    // include this header, so a block item's UVs had to be spelled out — and only
+    // a CUBE's could be spelled out, which is a large part of why every shaped
+    // block's item was drawn as a cube. Both shaders now take the model json's uv
+    // rect per draw and sample it by JE's CuboidFace.UVs rule.
+    //
+    // So the first thing to pin is that the rule reproduces what the tables held:
+    // the plain cube is the whole-sprite rect at quadrant 0.
     {
-        const std::string source = readFile(kShaderDir / "item_entity.vert");
-        const auto parsed = parseVec2Block(source, "---- kCubeItemFaceUv begin ----",
-                                           "---- kCubeItemFaceUv end ----");
-        // One table of 24 per cube UV model, in CubeUvModel order.
-        assert(parsed.size() == 24 * kCubeUvModelCount);
-        for (std::size_t model = 0; model < kCubeUvModelCount; ++model) {
-            for (std::size_t face = 0; face < 6; ++face) {
-                for (std::size_t corner = 0; corner < 4; ++corner) {
-                    assert(same(parsed[model * 24 + face * 4 + corner],
-                                kCubeModelFaceUv[model][face][corner]));
-                }
+        for (std::size_t f = 0; f < kFaces.size(); ++f) {
+            const auto corners = faceUvCorners(kWholeSpriteRect, kFaces[f].face, 0);
+            for (std::size_t c = 0; c < 4; ++c) {
+                assert(same(corners[c],
+                            kCubeModelFaceUv[static_cast<std::size_t>(CubeUvModel::Default)][f][c]));
             }
+        }
+        // And that a declared rect and a declared rotation still reach it: the
+        // piston's west face carries "rotation": 270, the observer's up face an
+        // inverted rect.
+        const auto pistonWest =
+            faceUvCorners(kWholeSpriteRect, Face::NegativeX, bake::kQuadrant270);
+        for (std::size_t c = 0; c < 4; ++c) {
+            assert(same(pistonWest[c],
+                        kCubeModelFaceUv[static_cast<std::size_t>(CubeUvModel::PistonTemplate)]
+                                        [static_cast<std::size_t>(Face::NegativeX)][c]));
         }
     }
 
-    // --- hud.vert: the inventory icon ------------------------------------------
-    // The icon is vanilla's `gui` item transform (rotation [30, 225, 0]), which
-    // shows three faces: the up face as the top diamond, the model's north face
-    // as the left parallelogram, its west face as the right one. Each of the 18
-    // vertices is one cube corner, so its UV is that face's entry for the corner
-    // standing there. The corner->kFaces-index mapping below is stated from the
-    // projection, independently of what the shader says.
+    // --- item_entity.vert: the dropped item and the held item ------------------
+    // What it carries now is the bridge between its own corner order and JE's
+    // FaceInfo vertex order, which is what turns a uv rect into four corner UVs.
     {
-        // Which of the face's four kFaces corners each shader vertex stands on.
-        struct IconVertex final {
-            Face face;
-            glm::vec3 corner; // the model-space cube corner, 0..1
-        };
-        constexpr glm::vec3 a{1.0F, 1.0F, 1.0F}; // diamond top      (farthest)
-        constexpr glm::vec3 b{0.0F, 1.0F, 1.0F}; // diamond right
-        constexpr glm::vec3 c{0.0F, 1.0F, 0.0F}; // diamond bottom   (nearest)
-        constexpr glm::vec3 d{1.0F, 1.0F, 0.0F}; // diamond left
-        constexpr glm::vec3 e{0.0F, 0.0F, 0.0F}; // near bottom corner
-        constexpr glm::vec3 f{1.0F, 0.0F, 0.0F}; // left face, bottom outer
-        constexpr glm::vec3 g{0.0F, 0.0F, 1.0F}; // right face, bottom outer
-        const std::array<IconVertex, 18> icon{{
-            // top diamond: [top, right, bottom] then [top, bottom, left]
-            {Face::PositiveY, a}, {Face::PositiveY, b}, {Face::PositiveY, c},
-            {Face::PositiveY, a}, {Face::PositiveY, c}, {Face::PositiveY, d},
-            // left parallelogram (north face): [tl, tr, br] then [tl, br, bl]
-            {Face::NegativeZ, d}, {Face::NegativeZ, c}, {Face::NegativeZ, e},
-            {Face::NegativeZ, d}, {Face::NegativeZ, e}, {Face::NegativeZ, f},
-            // right parallelogram (west face): [tl, tr, br] then [tl, br, bl]
-            {Face::NegativeX, c}, {Face::NegativeX, b}, {Face::NegativeX, g},
-            {Face::NegativeX, c}, {Face::NegativeX, g}, {Face::NegativeX, e},
-        }};
-
-        const std::string source = readFile(kShaderDir / "hud.vert");
-        const auto parsed = parseVec2Block(source, "---- kCubeItemFaceUv icon begin ----",
-                                           "---- kCubeItemFaceUv icon end ----");
-        // One table of 18 per cube model, in CubeUvModel order.
-        assert(parsed.size() == 18 * kCubeUvModelCount);
-        for (std::size_t model = 0; model < kCubeUvModelCount; ++model) {
-            for (std::size_t v = 0; v < icon.size(); ++v) {
-                const auto faceIndex = static_cast<std::size_t>(icon[v].face);
-                // Find which of the face's four corners this vertex stands on.
-                std::size_t cornerIndex = 4;
-                for (std::size_t k = 0; k < 4; ++k) {
-                    const glm::vec3 corner = kFaces[faceIndex].corners[k];
-                    if (corner.x == icon[v].corner.x && corner.y == icon[v].corner.y &&
-                        corner.z == icon[v].corner.z) {
-                        cornerIndex = k;
-                    }
-                }
-                assert(cornerIndex < 4 && "icon vertex is not a corner of its face");
-                assert(same(parsed[model * 18 + v],
-                            kCubeModelFaceUv[model][faceIndex][cornerIndex]));
+        const std::string source = readFile(kShaderDir / "item_entity.vert");
+        const auto parsed = parseIntBlock(source, "---- kFaceInfoCorner begin ----",
+                                          "---- kFaceInfoCorner end ----");
+        assert(parsed.size() == 24);
+        for (std::size_t face = 0; face < 6; ++face) {
+            for (std::size_t corner = 0; corner < 4; ++corner) {
+                assert(parsed[face * 4 + corner] ==
+                       static_cast<int>(kFaceInfoCorner[face][corner]));
             }
         }
+        // The rule itself, both halves of it. JE's getVertexU keeps minU on
+        // indices 0 and 1, getVertexV keeps minV on 0 and 3, and the quadrant is
+        // a cyclic shift of the index.
+        assert(contains(source, "int index = (faceInfoIndex + quadrant) & 3;"));
+        assert(contains(source, "(index != 0 && index != 1) ? rect.z : rect.x"));
+        assert(contains(source, "(index != 0 && index != 3) ? rect.w : rect.y"));
+        // The block-item modes, and the fields they read the rect out of.
+        assert(contains(source, "bool blockItemBox = item.data.x > 9.5;"));
+        assert(contains(source, "bool blockItemHeld = item.data.x > 10.5;"));
+        assert(contains(source,
+                        "vec4(item.data.y, item.data.z, item.data.w, item.positionSize.w)"));
+        // The slab's hard-coded half-height V crop is gone: a slab is a box of a
+        // model now, and block/slab.json's own rect says the same thing.
+        assert(!contains(source, "cubeUv.y = 0.5 + cubeUv.y * 0.5"));
+    }
+
+    // --- hud.vert: the inventory icon ------------------------------------------
+    // The icon used to be eighteen pre-projected SCREEN positions, which is a
+    // unit cube and nothing else. It is now eighteen cube CORNERS plus a named
+    // projection, so any box goes through it.
+    {
+        const std::string source = readFile(kShaderDir / "hud.vert");
+        const auto parsed = parseVec3Block(source, "const vec3 iconCorners[18]", ");");
+        assert(parsed.size() == kIconCubeCorners.size());
+        for (std::size_t v = 0; v < parsed.size(); ++v) {
+            assert(parsed[v].x == kIconCubeCorners[v].x && parsed[v].y == kIconCubeCorners[v].y &&
+                   parsed[v].z == kIconCubeCorners[v].z);
+        }
+        // Every corner must be a corner of the face its group draws, or the
+        // eighteen vertices have stopped describing three faces of a box.
+        for (std::size_t v = 0; v < parsed.size(); ++v) {
+            const Face face = kIconFaces[v / 6];
+            const auto faceIndex = static_cast<std::size_t>(face);
+            bool found = false;
+            for (std::size_t k = 0; k < 4; ++k) {
+                const glm::vec3 corner = kFaces[faceIndex].corners[k];
+                found = found || (corner.x == parsed[v].x && corner.y == parsed[v].y &&
+                                  corner.z == parsed[v].z);
+            }
+            assert(found && "icon vertex is not a corner of its face");
+        }
+        // The projection and the depth, term for term against mc::world.
+        assert(contains(source, "vec2(0.5 + 0.44 * (p.z - p.x),"));
+        assert(contains(source, "0.46 - 0.21 * (p.x + p.z) + 0.48 * (1.0 - p.y))"));
+        assert(contains(source, "return (p.x - p.y + p.z + 1.0) / 3.0;"));
+        assert(contains(source, "const int iconQuadCorner[6] = int[](0, 1, 2, 0, 2, 3);"));
+        // The box arrives per draw; a fixed unit cube would put every shaped
+        // block back to being a cube.
+        assert(contains(source, "vec3 p = mix(hud.color.xyz, hud.uvRect.xyz, unit);"));
     }
 
     // --- the declared models actually differ, so the indexing is not vacuous ---
@@ -236,62 +326,54 @@ int main() {
         assert(observer.front == 21.0F && observer.back == 23.0F);
         assert(observer.front != 22.0F);
 
-        // The packing the shader decodes:
-        // `1 + front + back * layerStride + uvModel * uvModelStride`, with zero
-        // reserved for "not supplied" so the block-breaking overlay and falling
-        // blocks keep the plain table and side on every side face.
+        // RN-14: there is no packing left to decode. A block item draw is one
+        // FACE of one box, so it carries one layer — the one the model json's
+        // `#top`/`#side`/`#bottom` reference names — and the front/back pair that
+        // used to travel packed alongside the cube UV model in `data.y` is gone
+        // with it. What remains to pin is the ROUTING: which face asks for which
+        // of the five layers.
         const CubeUvModel observerUv = cubeItemUvModel(Block::Observer);
         assert(observerUv == CubeUvModel::Observer); // its item IS the block model
-        const float packed = packItemCubeFaces(observer.front, observer.back, observerUv);
-        assert(packed > 0.5F);
-        const float value = packed - 1.0F;
-        const float decodedModel = std::floor(value / kItemUvModelPackStride);
-        const float rest = value - decodedModel * kItemUvModelPackStride;
-        assert(decodedModel == static_cast<float>(observerUv));
-        assert(std::fmod(rest, kItemLayerPackStride) == observer.front);
-        assert(std::floor(rest / kItemLayerPackStride) == observer.back);
-
-        // The encoding has to survive a float32 round trip for every layer the
-        // atlas can hold, which is what bounds the stride: every integer up to
-        // 2^24 is exact in a float32, and the widest packed value is
-        // 1 + (stride-1) + (stride-1)*stride = stride^2. So 4096 is the largest
-        // stride that is exact, and it sits exactly on the boundary rather than
-        // over it.
-        const float widest = packItemCubeFaces(
-            kItemLayerPackStride - 1.0F, kItemLayerPackStride - 1.0F,
-            static_cast<CubeUvModel>(kCubeUvModelCount - 1));
-        assert(widest <= 16777216.0F);
-        assert(std::fmod(widest - 1.0F, kItemLayerPackStride) == kItemLayerPackStride - 1.0F);
-
-        // The shader has to agree about the stride AND about which half of the
-        // packed value is which. A headless test cannot run GLSL, so this checks
-        // the source's shape: the two decode expressions, each bound to the right
-        // face. It is a literal match on purpose — if the shader is reformatted
-        // the test fails loudly and whoever reformatted it re-reads this, which is
-        // the same contract the UV tables above are held to.
-        const std::string source = readFile(kShaderDir / "item_entity.vert");
-        std::ostringstream stride;
-        stride << static_cast<int>(kItemLayerPackStride) << ".0";
-        assert(source.find(stride.str()) != std::string::npos);
-        assert(source.find("frontLayer = mod(packedFaces, " + stride.str() + ")") !=
-               std::string::npos);
-        assert(source.find("backLayer = floor(packedFaces / " + stride.str() + ")") !=
-               std::string::npos);
-        std::ostringstream uvStride;
-        uvStride << static_cast<int>(kItemUvModelPackStride) << ".0";
-        assert(source.find(uvStride.str()) != std::string::npos);
-        // And that the front lands on the model's north face (-Z, face 5), not on
-        // its south one — the swap the old held-item hack had. Matched with the
-        // whitespace stripped, so reformatting the shader does not fail this.
-        std::string dense;
-        for (const char character : source) {
-            if (character != ' ' && character != '\n' && character != '\t' &&
-                character != '\r') {
-                dense.push_back(character);
+        {
+            const auto& box = kItemModelBoxes[static_cast<std::size_t>(observerUv)];
+            int fronts = 0;
+            int backs = 0;
+            int sides = 0;
+            for (std::size_t f = 0; f < bake::kFacingCount; ++f) {
+                assert(box.face[f].present);
+                fronts += box.face[f].slot == ItemLayerSlot::Front ? 1 : 0;
+                backs += box.face[f].slot == ItemLayerSlot::Back ? 1 : 0;
+                sides += box.face[f].slot == ItemLayerSlot::Side ? 1 : 0;
             }
+            // Exactly one face carries the front and one the back — the RN-8c-D
+            // regression ("a dropped furnace showed its opening on three faces"),
+            // now a property of the item model table rather than of a packing.
+            assert(fronts == 1 && backs == 1 && sides == 2);
+            assert(box.face[static_cast<std::size_t>(bake::Facing::North)].slot ==
+                   ItemLayerSlot::Front);
+            assert(box.face[static_cast<std::size_t>(bake::Facing::South)].slot ==
+                   ItemLayerSlot::Back);
+            assert(itemFaceLayer(observer, box.face[static_cast<std::size_t>(bake::Facing::North)]
+                                               .slot) == observer.front);
         }
-        assert(dense.find("face==5?frontLayer") != std::string::npos);
-        assert(dense.find("face==4?backLayer") != std::string::npos);
+        // And the shader takes that one layer for a block item rather than
+        // re-deriving a face from a triple. A headless test cannot run GLSL, so
+        // this is a literal match on the source, the same contract the tables
+        // above are held to.
+        {
+            const std::string source = readFile(kShaderDir / "item_entity.vert");
+            std::string dense;
+            for (const char character : source) {
+                if (character != ' ' && character != '\n' && character != '\t' &&
+                    character != '\r') {
+                    dense.push_back(character);
+                }
+            }
+            assert(dense.find("blockItemBox?item.textureLayersRotation.x") != std::string::npos);
+            // The packing is gone, not merely unused.
+            assert(source.find("packedFaces") == std::string::npos);
+            assert(source.find("itemUvModel") == std::string::npos);
+        }
     }
 
     // --- RN-8c-D regression: exactly one face carries the front ---------------

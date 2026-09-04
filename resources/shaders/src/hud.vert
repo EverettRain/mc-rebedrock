@@ -5,6 +5,18 @@ layout(push_constant) uniform HudPush {
     vec4 color;
     vec4 uvRect;
     vec4 data;
+    // RN-14: the block-icon path only. It draws ONE face of ONE box of the
+    // block's item model per call, and every number that face needs arrives here
+    // rather than from a table:
+    //   color.xyz / uvRect.xyz  the box, in 0..1 of the cell, already turned into
+    //                           the inventory pose
+    //   color.w, uvRect.w       the face's first corner UV
+    //   data.zw, extra.xy/.zw   its second, third and fourth
+    //   data.y                  the atlas layer this face samples
+    // The UVs are the model json's own rects sampled by JE's rules, resolved on
+    // the CPU (mc::world::iconBoxOf) — which is why this shader no longer carries
+    // a per-cube-model UV table for them to disagree with.
+    vec4 extra;
 } hud;
 
 layout(location = 0) out vec2 fragmentUv;
@@ -17,106 +29,68 @@ const vec2 corners[6] = vec2[](
     vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0)
 );
 
-// Minecraft-style inventory block: top diamond followed by the left and right
+// Minecraft-style inventory block: the top diamond followed by the left and right
 // faces. Keeping it procedural avoids a dedicated item mesh and vertex buffer.
-const vec2 blockCorners[18] = vec2[](
-    vec2(0.50, 0.04), vec2(0.94, 0.25), vec2(0.50, 0.46),
-    vec2(0.50, 0.04), vec2(0.50, 0.46), vec2(0.06, 0.25),
-    vec2(0.06, 0.25), vec2(0.50, 0.46), vec2(0.50, 0.94),
-    vec2(0.06, 0.25), vec2(0.50, 0.94), vec2(0.06, 0.73),
-    vec2(0.50, 0.46), vec2(0.94, 0.25), vec2(0.94, 0.73),
-    vec2(0.50, 0.46), vec2(0.94, 0.73), vec2(0.50, 0.94)
+//
+// RN-14: these are the CUBE CORNERS the three visible faces stand on, not their
+// projected screen positions. Until RN-14 this table held eighteen pre-projected
+// 2D points, which is a unit cube and nothing else — a stair, a wall, a fence
+// gate, a pressure plate and a button therefore all had to be drawn as full
+// cubes, and that is what "a stair in my inventory looks like a plank" was. With
+// the corners in 3D the same eighteen vertices draw any box, and a model is a
+// list of boxes.
+//
+// Two triangles per face as (v0,v1,v2, v0,v2,v3). Mirrored by
+// mc::world::kIconCubeCorners; item_cube_uv_test holds the two together.
+const vec3 iconCorners[18] = vec3[](
+    // top diamond = the up face
+    vec3(1, 1, 1), vec3(0, 1, 1), vec3(0, 1, 0),
+    vec3(1, 1, 1), vec3(0, 1, 0), vec3(1, 1, 0),
+    // left parallelogram = the model's north face
+    vec3(1, 1, 0), vec3(0, 1, 0), vec3(0, 0, 0),
+    vec3(1, 1, 0), vec3(0, 0, 0), vec3(1, 0, 0),
+    // right parallelogram = its west face
+    vec3(0, 1, 0), vec3(0, 1, 1), vec3(0, 0, 1),
+    vec3(0, 1, 0), vec3(0, 0, 1), vec3(0, 0, 0)
 );
 
-// RN-8c: the icon is a 3D render of the block's own model, so each visible face
-// must sample the sprite exactly as that world face does. vanilla's `gui` item
-// transform is rotation [30, 225, 0], which shows three faces: the up face as the
-// top diamond, the model's NORTH face as the left parallelogram and its WEST face
-// as the right one. (That pairing is why vanilla's crafting_table.json puts
-// #front on north *and* west — the icon shows the front on both visible sides.)
-//
-// Working the projection through, the diamond's four vertices are the cube's four
-// top corners: bottom = (0,1,0) (the nearest one), right = (0,1,1),
-// top = (1,1,1) (the farthest), left = (1,1,0). With the up face reading
-// u = x, v = z (JE defaultFaceUV), that fixes the diamond's UVs.
-//
-// The two side faces were already right. The top diamond was 180 degrees out,
-// which is invisible on a symmetric sprite and plain on a crafting table, an
-// observer or a hay bale — the "directional blocks' thumbnails are still
-// rotated" report. These 18 values are checked against mc::world::kCubeItemFaceUv
-// by item_cube_uv_test.
-// ---- kCubeItemFaceUv icon begin ----
-// Three tables of 18, one per cube model, indexed [model * 18 + vertex]. Which
-// one a block uses is its declared CubeUvModel, pushed in hud.uvRect.y:
-// 0 = Default (block/cube), 1 = PistonTemplate (template_piston.json rotates its
-// down/west/east faces), 2 = Observer (observer.json declares an inverted rect on
-// its up face). Generated from mc::world::kCubeModelFaceUv and checked against it
-// by item_cube_uv_test.
-const vec2 blockUvs[54] = vec2[](
-    // --- Default
-    vec2(1.0, 1.0), vec2(0.0, 1.0), vec2(0.0, 0.0),
-    vec2(1.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 0.0),
-    vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
-    vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
-    vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
-    vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
-    // --- PistonTemplate
-    vec2(1.0, 1.0), vec2(0.0, 1.0), vec2(0.0, 0.0),
-    vec2(1.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 0.0),
-    vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
-    vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
-    vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
-    vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, 0.0),
-    // --- Observer
-    vec2(1.0, 0.0), vec2(0.0, 0.0), vec2(0.0, 1.0),
-    vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0),
-    vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
-    vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
-    vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
-    vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0)
-);
-// ---- kCubeItemFaceUv icon end ----
+// Which of the face's four corners each of its six vertices stands on.
+const int iconQuadCorner[6] = int[](0, 1, 2, 0, 2, 3);
+
+// The orthographic isometric the icon is drawn in — vanilla's `gui` display
+// transform, rotation [30, 225, 0]. Mirrored by mc::world::iconProject, which
+// static_asserts that it reproduces the eighteen screen positions this table used
+// to hold.
+vec2 iconProject(vec3 p) {
+    return vec2(0.5 + 0.44 * (p.z - p.x),
+                0.46 - 0.21 * (p.x + p.z) + 0.48 * (1.0 - p.y));
+}
+
+// Depth along the view axis, normalised to [0,1]: the corner (0,1,0) is nearest
+// the eye and (1,0,1) farthest. A multi-box model needs it — a wall's centre post
+// and its arm interpenetrate, so no back-to-front ordering of whole boxes
+// composites them correctly, and the icon pipeline therefore depth-tests.
+float iconDepth(vec3 p) {
+    return (p.x - p.y + p.z + 1.0) / 3.0;
+}
 
 void main() {
     if (hud.data.x > 3.5 && hud.data.x < 4.5) {
-        vec2 corner = blockCorners[gl_VertexIndex];
-        // Slab icon: the block is drawn half height. hud.uvRect.x carries the
-        // portion (0 = full cube, 1 = bottom half, 2 = top half); the block
-        // branch never reads uvRect otherwise. One block's side rises 0.48 of the
-        // icon on screen, so folding the top edge (or the bottom edge) down by
-        // half of that collapses the cube to the matching half slab.
-        float portion = hud.uvRect.x;
-        int index = gl_VertexIndex;
-        bool bottomEdge = index == 8 || index == 10 || index == 11 ||
-                          index == 14 || index == 16 || index == 17;
-        const float halfBlock = 0.24;
-        if (portion > 0.5 && portion < 1.5 && !bottomEdge) {
-            corner.y += halfBlock; // bottom slab: drop the top face to mid height
-        } else if (portion > 1.5 && bottomEdge) {
-            corner.y -= halfBlock; // top slab: lift the bottom edge to mid height
-        }
-        gl_Position = vec4(hud.rect.xy + corner * hud.rect.zw, 0.0, 1.0);
-        // A slab icon's two side faces show only the lower half strip of the side
-        // sprite (v in [0.5, 1]), the way vanilla's slab model maps a 16x8 side —
-        // the same crop the dropped and held slab already do in item_entity.vert.
-        // Without it the whole texture was squeezed into the half-height box.
-        int uvModel = int(hud.uvRect.y + 0.5);
-        vec2 iconUv = blockUvs[uvModel * 18 + gl_VertexIndex];
-        if (gl_VertexIndex >= 6) {
-            if (portion > 0.5 && portion < 1.5) {
-                iconUv.y = 0.5 + iconUv.y * 0.5; // bottom slab: lower half
-            } else if (portion > 1.5) {
-                iconUv.y = iconUv.y * 0.5;       // top slab: upper half
-            }
-        }
-        fragmentUv = iconUv;
-        // Top diamond = the up face, left = the model's north face, right = its
-        // west face. RN-8c-D: all three arrive from world::cubeItemLayers, so a
-        // block with no front of its own sends its side in the front slot and the
-        // two parallelograms match, as they always did.
-        fragmentTextureLayer = gl_VertexIndex < 6
-            ? hud.data.y
-            : (gl_VertexIndex < 12 ? hud.data.z : hud.data.w);
+        // RN-14: one face of one box of the block's item model. The box arrives
+        // in 0..1 cell coordinates already turned into the inventory pose (a
+        // stair is drawn at vanilla's gui yaw 135, not the default 225 — at 225
+        // it shows its plain back and reads as a plank), so all this does is map
+        // the unit corner into the box and project it.
+        vec3 unit = iconCorners[gl_VertexIndex];
+        vec3 p = mix(hud.color.xyz, hud.uvRect.xyz, unit);
+        vec2 screen = iconProject(p);
+        gl_Position = vec4(hud.rect.xy + screen * hud.rect.zw, iconDepth(p), 1.0);
+        int corner = iconQuadCorner[gl_VertexIndex % 6];
+        fragmentUv = corner == 0 ? vec2(hud.color.w, hud.uvRect.w)
+                   : corner == 1 ? hud.data.zw
+                   : corner == 2 ? hud.extra.xy
+                                 : hud.extra.zw;
+        fragmentTextureLayer = hud.data.y;
         // Direction#getLuminance per face, applied as a plain scalar the way
         // vanilla's block item render does: up 1.0, west 0.6, east 0.8
         // (no colour bias). A per-corner AO term darkens the silhouette edges
@@ -125,7 +99,7 @@ void main() {
         float faceLuminance = gl_VertexIndex < 6
             ? 1.0
             : (gl_VertexIndex < 12 ? 0.6 : 0.8);
-        float cornerFactor = length(corner - vec2(0.5, 0.45));
+        float cornerFactor = length(screen - vec2(0.5, 0.45));
         float ao = 1.0 - 0.13 * smoothstep(0.20, 0.50, cornerFactor);
         fragmentLight = vec3(faceLuminance * ao);
         return;

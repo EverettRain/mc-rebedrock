@@ -58,7 +58,15 @@ struct HudPush final {
     glm::vec4 color;
     glm::vec4 uvRect;
     glm::vec4 data;
+    // RN-14: the block-icon path's fourth and last uv corner. The icon draws one
+    // face of one box of the block's item model per call and resolves all four
+    // corner UVs on the CPU (mc::world::iconBoxOf), which is what let hud.vert
+    // drop its per-cube-model UV tables — and those tables were the reason a
+    // block item could only ever be a cube.
+    glm::vec4 extra;
 };
+
+static_assert(sizeof(HudPush) <= 128U, "HUD push constants must fit Vulkan's guaranteed minimum");
 
 // 标题全景立方体：x = 偏航、y = 俯仰（弧度）、z = tan(fov/2)、w = 宽高比
 // blur.x 是只作用于背景的模糊半径，单位为帧缓冲像素（26.1 默认 5），其余分量保留

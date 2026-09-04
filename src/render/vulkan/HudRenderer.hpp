@@ -49,6 +49,7 @@
 #include "ui/TextWrap.hpp"
 #include "ui/UiFrameData.hpp"
 #include "world/ChunkStreamer.hpp"
+#include "world/ItemModel.hpp"
 #include "world/DayNightCycle.hpp"
 #include "world/World.hpp"
 #include "world/WorldConstants.hpp"
@@ -118,6 +119,10 @@ class HudRenderer final {
         PerspectiveCamera& camera;
         VkExtent2D& swapchainExtent;
         VkPipeline& hudPipeline;
+        // RN-14: the same shaders and layout as hudPipeline with depth test and
+        // write ON, for the block item icon — a multi-box item model needs a
+        // depth buffer to composite (a wall's post and its arm interpenetrate).
+        VkPipeline& hudBlockIconPipeline;
         VkPipelineLayout& hudPipelineLayout;
         VkPipeline& vignettePipeline;
         VkPipeline& crosshairPipeline;
@@ -176,6 +181,7 @@ class HudRenderer final {
           textFont(b.textFont), fontMetrics(b.fontMetrics), language(b.language),
           lightWorld(b.lightWorld), window(b.window), options(b.options),
           camera(b.camera), swapchainExtent(b.swapchainExtent), hudPipeline(b.hudPipeline),
+          hudBlockIconPipeline(b.hudBlockIconPipeline),
           hudPipelineLayout(b.hudPipelineLayout), vignettePipeline(b.vignettePipeline),
           crosshairPipeline(b.crosshairPipeline), panoramaPipeline(b.panoramaPipeline),
           panoramaPipelineLayout(b.panoramaPipelineLayout), heldItemPipeline(b.heldItemPipeline),
@@ -365,6 +371,7 @@ class HudRenderer final {
             uvRectangle,
             {guiSprite ? 3.0F : (fontGlyph ? 2.0F : (textured ? 1.0F : 0.0F)), textureLayer, 0.0F,
              0.0F},
+            {}, // RN-14's block-icon corner; unused off that path
         };
         vkCmdPushConstants(commandBuffer, hudPipelineLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
@@ -372,57 +379,87 @@ class HudRenderer final {
         vkCmdDraw(commandBuffer, 6, 1, 0, 0);
     }
 
-    // `portion` 表示图标显示的是台阶的哪一半：0 整块、1 下半、2 上半
-    // 着色器从 uvRect.x 读它（方块分支本来就忽略 uvRect），据此把立方体压成半砖
-    // 之所以借道 uvRect 而不是 data，是要把 data 里那三个纹理层槽留给箱子/熔炉的正面
+    // RN-14: draw a block's ITEM MODEL as the inventory icon — one draw per
+    // visible face of each of the model's boxes.
+    //
+    // It used to be one draw of a fixed 18-vertex cube with a `portion` float
+    // that squashed it to half height for a slab. That is a cube and a slab and
+    // nothing else, which is the mechanical reason a stair, a wall, a fence gate,
+    // a pressure plate and a button all showed as full cubes wearing their parent
+    // block's sprite — the "a stair looks exactly like a plank" report. The boxes,
+    // their uv rects and the inventory turn all come from world::ItemModel, the
+    // same source the dropped and held item read, so the three surfaces cannot
+    // drift apart again (RN-10f's rule).
+    //
+    // Depth-tested, unlike every other HUD draw: a wall's centre post and its arm
+    // interpenetrate, so no back-to-front ordering of whole boxes composites them
+    // correctly. The GUI pass clears depth every frame and nothing else in it
+    // depth-tests against these pixels.
     void drawHudBlockIcon(VkCommandBuffer commandBuffer, const ui::UiRect& rectangle,
-                          world::Block block, float portion = 0.0F) const {
+                          world::Block block) const {
         const float width = static_cast<float>(swapchainExtent.width);
         const float height = static_cast<float>(swapchainExtent.height);
         const auto clipRectangle = ui::framebufferToClip(rectangle, width, height);
+        // RN-8c-D: the icon's faces come from world::cubeItemLayers, the same
+        // source the dropped and held cube read. That is what makes a piston icon
+        // show its platform on top (its item model is a plain cube_bottom_top)
+        // while a furnace icon shows its front on the left (its item model is the
+        // block's own). The chest is not drawn from the block's texture triple at
+        // all — its item has three dedicated atlas layers.
         const bool chest = block == world::Block::Chest;
-        // RN-8c-D: the icon's three visible faces come from world::cubeItemLayers,
-        // the same source the dropped and held cube read. That is what makes a
-        // piston icon show its platform on top (its item model is a plain
-        // cube_bottom_top) while a furnace icon shows its front on the left (its
-        // item model is the block's own).
-        const auto itemFaces = world::cubeItemLayers(block);
-        const float frontLayer = itemFaces.front;
-        const float topLayer = itemFaces.top;
-        const float sideLayer = itemFaces.side;
-        // RN-8c: which cube model json the icon's three visible faces sample. A
-        // plain-cube item is a cube_bottom_top, which rotates no face, so the
-        // piston's own template rotations stay out of its icon while the
-        // observer's inverted top rect reaches it.
-        const float uvModel = static_cast<float>(world::cubeItemUvModel(block));
-        const HudPush push{
-            {clipRectangle.x, clipRectangle.y, clipRectangle.width, clipRectangle.height},
-            {1.0F, 1.0F, 1.0F, 1.0F},
-            {portion, chest ? 0.0F : uvModel, 1.0F, 1.0F},
-            {4.25F, chest ? kChestItemTopLayer : topLayer,
-             chest ? kChestItemFrontLayer : frontLayer,
-             chest ? kChestItemSideLayer : sideLayer},
-        };
-        vkCmdPushConstants(commandBuffer, hudPipelineLayout,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                           sizeof(push), &push);
-        vkCmdDraw(commandBuffer, 18, 1, 0, 0);
+        const world::CubeItemLayers layers =
+            chest ? world::CubeItemLayers{kChestItemTopLayer, kChestItemTopLayer,
+                                          kChestItemSideLayer, kChestItemFrontLayer,
+                                          kChestItemSideLayer}
+                  : world::cubeItemLayers(block);
+        const auto range = world::itemModelRange(block);
+        if (range.count == 0U) {
+            return;
+        }
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudBlockIconPipeline);
+        for (std::size_t b = 0; b < range.count; ++b) {
+            const world::IconBox& icon =
+                world::kItemIconBoxes[static_cast<std::size_t>(range.first) + b];
+            for (std::uint32_t f = 0; f < world::kIconFaces.size(); ++f) {
+                if (!icon.present[f]) {
+                    continue;
+                }
+                const auto& uv = icon.uvCorner[f];
+                const float layer = world::itemFaceLayer(layers, icon.slot[f]);
+                const HudPush push{
+                    {clipRectangle.x, clipRectangle.y, clipRectangle.width,
+                     clipRectangle.height},
+                    {icon.from.x, icon.from.y, icon.from.z, uv[0].x},
+                    {icon.to.x, icon.to.y, icon.to.z, uv[0].y},
+                    {4.25F, layer, uv[1].x, uv[1].y},
+                    {uv[2].x, uv[2].y, uv[3].x, uv[3].y},
+                };
+                vkCmdPushConstants(commandBuffer, hudPipelineLayout,
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                   sizeof(push), &push);
+                vkCmdDraw(commandBuffer, 6, 1, f * 6U, 0);
+            }
+        }
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipeline);
     }
 
     void drawHudItemIcon(VkCommandBuffer commandBuffer, const ui::UiRect& rectangle,
                          const gameplay::ItemStack& stack) const {
         if (gameplay::isBlockStack(stack)) {
-            // 走不走立方体图标由 world::rendersAsCubeItem 单点回答
+            // 画不画方块模型由 world::rendersAsModelItem 单点回答
             // 掉落物、手持物、背包图标三条物品渲染面共用它，不再各自列举 BlockModel
-            // 台阶也在集合内，只是按下半砖显示，与 vanilla 的台阶物品渲染一致
             //
             // RN-10f：这里曾经在单点之外**再写一条**分支，把楼梯/墙/栅栏门/按钮/压力板
             // 也画成 3D 图标。那条分支只存在于图标这一面，于是掉在地上和拿在手里的
-            // 栅栏门仍是扁平贴图——同一件物品三处三个样。规则已并回 rendersAsCubeItem，
+            // 栅栏门仍是扁平贴图——同一件物品三处三个样。规则已并回单点，
             // 三条渲染面因此自动一致，这一层不再有自己的例外。
-            if (world::rendersAsCubeItem(stack.block)) {
-                drawHudBlockIcon(commandBuffer, rectangle, stack.block,
-                                 world::isSlab(stack.block) ? 1.0F : 0.0F);
+            //
+            // RN-14：那个单点此前只有「立方体 / 扁平贴图」两个答案，于是每个异形方块
+            // 都落进「立方体」，图标是父方块贴图的整立方体——楼梯与木板长得一模一样。
+            // 现在它回答的是「哪个模型」，台阶的半砖也只是那个模型的一个盒子，
+            // 不再是着色器里一个把立方体压扁的 portion 特例。
+            if (world::rendersAsModelItem(stack.block)) {
+                drawHudBlockIcon(commandBuffer, rectangle, stack.block);
                 return;
             }
         }
@@ -465,6 +502,7 @@ class HudRenderer final {
             {1.0F, 1.0F, 1.0F, 1.0F},
             {0.0F, 0.0F, 15.0F / atlasSize, 15.0F / atlasSize},
             {5.0F, 1.0F, 0.0F, 0.0F},
+            {}, // RN-14's block-icon corner; unused off that path
         };
         vkCmdPushConstants(commandBuffer, hudPipelineLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
@@ -2669,6 +2707,7 @@ class HudRenderer final {
     PerspectiveCamera& camera;
     VkExtent2D& swapchainExtent;
     VkPipeline& hudPipeline;
+    VkPipeline& hudBlockIconPipeline;
     VkPipelineLayout& hudPipelineLayout;
     VkPipeline& vignettePipeline;
     VkPipeline& crosshairPipeline;

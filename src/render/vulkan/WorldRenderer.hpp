@@ -1129,37 +1129,25 @@ class WorldRenderer final {
             const glm::vec3 renderedPosition =
                 entity.previousPosition +
                 (entity.position - entity.previousPosition) * itemAlpha;
-            // 台阶是方块而不是扁平的 2.5D 图标
-            // vanilla 画的是它的方块模型，一个平躺的半高盒子
-            // 而不是 else 分支那种立着旋转的挤出贴图
-            // 它走立方体路径，Y 向尺寸减半（见下面的 slabDrop）
-            // 走不走立方体路径由 world::rendersAsCubeItem 单点回答
+            // 画方块模型还是扁平的 2.5D 图标，由 world::rendersAsModelItem 单点回答
             // 掉落物、手持物、背包图标三条物品渲染面共用它
             // 这里曾各自手写 `model == Cube || ...`，三处口径还不一样：
             // 侦测器（DirectionalCube）只补进了手持与图标，掉在地上就退化成扁平贴图
-            const bool slabDrop =
-                gameplay::isBlockStack(entity.stack) && world::isSlab(entity.stack.block);
-            const bool cubeModel = gameplay::isBlockStack(entity.stack) &&
-                                   world::rendersAsCubeItem(entity.stack.block);
-            // RN-8c-D: every layer of a block item's cube comes from
+            //
+            // RN-14：那个单点此前只有「立方体 / 扁平贴图」两个答案，台阶还得靠一个
+            // 把盒子 Y 向压半的特例。现在它给出的是一份**盒子表**，台阶只是其中
+            // 一个 (0,0,0)-(16,8,16) 的盒子，楼梯是两个，栅栏门是八个。
+            const bool modelItem = gameplay::isBlockStack(entity.stack) &&
+                                   world::rendersAsModelItem(entity.stack.block);
+            // RN-8c-D: every layer of a block item comes from
             // world::cubeItemLayers, NOT from the flat top/side/bottom triple.
             // The atlas baker deliberately puts a DirectionalCube's FRONT in that
             // triple's `side` slot, so that a three-slot item cube would at least
             // be recognisable as a furnace; reading it here as a real side put the
             // front on three faces at once.
             const world::CubeItemLayers itemFaces =
-                cubeModel ? cubeItemCubeLayers(entity.stack.block)
+                modelItem ? cubeItemCubeLayers(entity.stack.block)
                           : world::CubeItemLayers{};
-            const auto layers =
-                cubeModel ? world::BlockTextureLayers{itemFaces.top, itemFaces.side,
-                                                      itemFaces.bottom}
-                          : world::BlockTextureLayers{gameplay::itemTextureLayer(entity.stack),
-                                                      gameplay::itemTextureLayer(entity.stack),
-                                                      gameplay::itemTextureLayer(entity.stack)};
-            const float cubeFrontBack =
-                cubeModel ? world::packItemCubeFaces(itemFaces.front, itemFaces.back,
-                                                     world::cubeItemUvModel(entity.stack.block))
-                          : 0.0F;
             const float previousAge =
                 entity.ageTicks == 0U ? 0.0F : static_cast<float>(entity.ageTicks - 1U);
             const float age = previousAge + itemAlpha;
@@ -1170,25 +1158,50 @@ class WorldRenderer final {
             // 上抬半格：掉落物贴地放置，它自己的 y 会取整落进脚下那个方块里
             const float packedLight =
                 packedSceneLight(renderedPosition + glm::vec3{0.0F, 0.5F, 0.0F});
-            if (cubeModel) {
-                // 台阶把盒子的 Y 向尺寸减半，使它像 vanilla 的物品模型那样平躺
-                // 其它立方体沿用标量尺寸（xyz 为零时着色器回落到 positionSize.w）
-                const glm::vec4 dimensions =
-                    slabDrop ? glm::vec4{0.30F, 0.15F, 0.30F, packedLight}
-                             : glm::vec4{0.0F, 0.0F, 0.0F, packedLight};
-                const ItemPush push{
-                    {renderedPosition.x, renderedPosition.y + 0.18F + bob, renderedPosition.z,
-                     0.30F},
-                    {layers.top, layers.side, layers.bottom, rotation},
-                    // data.z 是滚转角，在立方体路径上没用，这里借来标记台阶
-                    // 着色器据此在侧面显示纹理的下半条
-                    // data.y 是俯仰角，立方体掉落物只绕 Y 转，因此空出来装前/后两面的层号
-                    {1.0F, cubeFrontBack, slabDrop ? 1.0F : 0.0F, 0.0F},
-                    dimensions,
-                };
-                vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
-                                   sizeof(push), &push);
-                vkCmdDraw(commandBuffer, 36U, 1, 0, 0);
+            if (modelItem) {
+                // RN-14：物品模型的每个盒子的每个已声明的面各一次绘制（着色器模式 10）
+                // 盒中心在模型空间里的偏移由 CPU 先按同一个 yaw 旋好再加到世界位置上，
+                // 着色器那边一个字没改；面的 uv rect 与 `rotation` 象限逐次推过去，
+                // 于是图标、掉落物、手持物三面读的是同一张 world::ItemModel 表。
+                //
+                // 只画模型声明了的面：楼梯上层台阶没有 down 面（vanilla 也没有），
+                // 硬画出来会与下层盒子的顶面共面而闪烁。
+                constexpr float kDropScale = 0.30F;
+                const glm::vec3 centre{renderedPosition.x, renderedPosition.y + 0.18F + bob,
+                                       renderedPosition.z};
+                const float yawCosine = std::cos(rotation);
+                const float yawSine = std::sin(rotation);
+                const auto range = world::itemModelRange(entity.stack.block);
+                for (std::size_t b = 0; b < range.count; ++b) {
+                    const world::ItemModelBox& box =
+                        world::kItemModelBoxes[static_cast<std::size_t>(range.first) + b];
+                    const glm::vec3 size = (box.to16 - box.from16) * (kDropScale / 16.0F);
+                    const glm::vec3 offset =
+                        ((box.from16 + box.to16) * 0.5F / 16.0F - glm::vec3{0.5F}) * kDropScale;
+                    // 与着色器里的 yawRotation 同一个约定（axisMatrix('y')）
+                    const glm::vec3 turned{yawCosine * offset.x + yawSine * offset.z, offset.y,
+                                           -yawSine * offset.x + yawCosine * offset.z};
+                    const glm::vec3 boxCentre = centre + turned;
+                    for (std::uint32_t f = 0; f < world::kFaces.size(); ++f) {
+                        const auto facing =
+                            static_cast<std::size_t>(world::bakeFacingOf(world::kFaces[f].face));
+                        const world::ItemModelFace& face = box.face[facing];
+                        if (!face.present) {
+                            continue;
+                        }
+                        const ItemPush push{
+                            {boxCentre.x, boxCentre.y, boxCentre.z, face.uv.maxV / 16.0F},
+                            {world::itemFaceLayer(itemFaces, face.slot),
+                             static_cast<float>(face.quadrant), 0.0F, rotation},
+                            {10.0F, face.uv.minU / 16.0F, face.uv.minV / 16.0F,
+                             face.uv.maxU / 16.0F},
+                            {size.x, size.y, size.z, packedLight},
+                        };
+                        vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout,
+                                           VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
+                        vkCmdDraw(commandBuffer, 6U, 1, f * 6U, 0);
+                    }
+                }
             } else {
                 // 非方块物品与手持物共用同一套单层 3D 模型，而不是面向相机的平面公告板
                 // 物品图标做成带挤出边缘的薄片绕 Y 轴旋转
@@ -1199,8 +1212,9 @@ class WorldRenderer final {
                     {renderedPosition.x, renderedPosition.y + 0.18F + bob, renderedPosition.z});
                 dropTransform = glm::rotate(dropTransform, rotation, {0.0F, 1.0F, 0.0F});
                 dropTransform = glm::scale(dropTransform, glm::vec3{0.30F});
+                const float spriteLayer = gameplay::itemTextureLayer(entity.stack);
                 const ItemPush push{
-                    {0.0F, 0.0F, 0.0F, 0.30F},  {layers.top, layers.side, layers.bottom, 0.0F},
+                    {0.0F, 0.0F, 0.0F, 0.30F},  {spriteLayer, spriteLayer, spriteLayer, 0.0F},
                     {7.0F, 0.0F, 0.0F, 0.0F},   {1.0F, 1.0F, 0.0625F, packedLight},
                     cameraView * dropTransform,
                 };
@@ -1918,13 +1932,10 @@ class WorldRenderer final {
         const auto& stack = uiFrameData_.selectedStack;
         const bool emptyHand = stack.empty();
         const auto& pose = heldItemAnimation.pose();
-        // 手持台阶用的是它的方块模型——平持的半高盒子，而不是立着的挤出贴图
-        // 它走立方体路径，Y 向尺寸减半（见下面的 heldDimensions）
-        const bool heldSlab =
-            !emptyHand && gameplay::isBlockStack(stack) && world::isSlab(stack.block);
-        // 与掉落物、背包图标共用 world::rendersAsCubeItem，不再各自列举 BlockModel
+        // 与掉落物、背包图标共用 world::rendersAsModelItem，不再各自列举 BlockModel
+        // RN-14：手持台阶不再是「立方体压半高」的特例，它就是物品模型里的一个盒子
         const bool cubeModel = !emptyHand && gameplay::isBlockStack(stack) &&
-                               world::rendersAsCubeItem(stack.block);
+                               world::rendersAsModelItem(stack.block);
         // RN-8c-D: same as the dropped block — all five layers from
         // world::cubeItemLayers, never from the flat triple whose `side` slot
         // holds a DirectionalCube's front.
@@ -1934,48 +1945,66 @@ class WorldRenderer final {
             emptyHand
                 ? world::BlockTextureLayers{kPlayerRightArmFirstLayer, kPlayerRightArmFirstLayer,
                                             kPlayerRightArmFirstLayer}
-            : cubeModel ? world::BlockTextureLayers{heldFaces.top, heldFaces.side,
-                                                    heldFaces.bottom}
-                        : world::BlockTextureLayers{gameplay::itemTextureLayer(stack),
-                                                    gameplay::itemTextureLayer(stack),
-                                                    gameplay::itemTextureLayer(stack)};
+                : world::BlockTextureLayers{gameplay::itemTextureLayer(stack),
+                                            gameplay::itemTextureLayer(stack),
+                                            gameplay::itemTextureLayer(stack)};
         const glm::mat4 heldTransform =
             viewBobbingMatrix() * (emptyHand ? animation::firstPersonArmTransform(pose)
                                    : uiFrameData_.eating
                                        ? animation::firstPersonEatTransform(pose, cubeModel)
                                        : animation::firstPersonItemTransform(pose, cubeModel));
-        // RN-8c-D: the held block's front and back faces, packed into data.y the
-        // same way the dropped block's are. This replaces a hack that put the
-        // front layer on the model's SOUTH face (the one the old transform
-        // happened to point at the player) — front and back were effectively
-        // swapped, so a held observer showed its face where vanilla shows its
-        // back. The chest keeps its dedicated front layer, since its item is not
-        // drawn from the block's own texture triple.
-        const float heldFrontBack =
-            !emptyHand && cubeModel
-                ? world::packItemCubeFaces(heldFaces.front, heldFaces.back,
-                                           world::cubeItemUvModel(stack.block))
-                : 0.0F;
+
         // 手与手持方块跟随玩家眼部的环境光，夜里会变暗，而不是永远处在固定光照下
         const float heldLight = packedSceneLight(camera.position());
-        const ItemPush push{
-            {0.0F, 0.0F, 0.0F, 1.0F},
-            {layers.top, layers.side, layers.bottom, 0.0F},
-            {(!emptyHand && !cubeModel) ? 7.0F : 6.0F, heldFrontBack,
-             emptyHand ? 1.0F : (heldSlab ? 1.0F : 0.0F), emptyHand ? 1.0F : 0.0F},
-            emptyHand ? glm::vec4{0.25F, 0.75F, 0.25F, heldLight}
-                      : (cubeModel ? glm::vec4{1.0F, heldSlab ? 0.5F : 1.0F, 1.0F, heldLight}
-                                   : glm::vec4{1.0F, 1.0F, 0.0625F, heldLight}),
-            heldTransform,
-        };
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.heldItemPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipelineLayout,
                                 0, 1, &descriptorSet, 0, nullptr);
+        constexpr std::uint32_t generatedItemVertexCount = 12U + 16U * 16U * 4U * 6U;
+        if (cubeModel) {
+            // RN-14：与掉落物同一份 world::ItemModel 表，逐盒逐面画（着色器模式 11）
+            // 盒中心偏移在这里乘进手持变换矩阵，着色器那边只多认一个模式号
+            const auto range = world::itemModelRange(stack.block);
+            for (std::size_t b = 0; b < range.count; ++b) {
+                const world::ItemModelBox& box =
+                    world::kItemModelBoxes[static_cast<std::size_t>(range.first) + b];
+                const glm::vec3 size = (box.to16 - box.from16) / 16.0F;
+                const glm::vec3 offset =
+                    (box.from16 + box.to16) * 0.5F / 16.0F - glm::vec3{0.5F};
+                const glm::mat4 boxTransform = glm::translate(heldTransform, offset);
+                for (std::uint32_t f = 0; f < world::kFaces.size(); ++f) {
+                    const auto facing =
+                        static_cast<std::size_t>(world::bakeFacingOf(world::kFaces[f].face));
+                    const world::ItemModelFace& face = box.face[facing];
+                    if (!face.present) {
+                        continue;
+                    }
+                    const ItemPush push{
+                        {face.uv.minU / 16.0F, face.uv.minV / 16.0F, face.uv.maxU / 16.0F,
+                         face.uv.maxV / 16.0F},
+                        {world::itemFaceLayer(heldFaces, face.slot),
+                         static_cast<float>(face.quadrant), 0.0F, 0.0F},
+                        {11.0F, 0.0F, 0.0F, 0.0F},
+                        {size.x, size.y, size.z, heldLight},
+                        boxTransform,
+                    };
+                    vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout,
+                                       VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
+                    vkCmdDraw(commandBuffer, 6U, 1, f * 6U, 0);
+                }
+            }
+            return;
+        }
+        const ItemPush push{
+            {0.0F, 0.0F, 0.0F, 1.0F},
+            {layers.top, layers.side, layers.bottom, 0.0F},
+            {emptyHand ? 6.0F : 7.0F, 0.0F, emptyHand ? 1.0F : 0.0F, emptyHand ? 1.0F : 0.0F},
+            emptyHand ? glm::vec4{0.25F, 0.75F, 0.25F, heldLight}
+                      : glm::vec4{1.0F, 1.0F, 0.0625F, heldLight},
+            heldTransform,
+        };
         vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                            sizeof(push), &push);
-        constexpr std::uint32_t generatedItemVertexCount = 12U + 16U * 16U * 4U * 6U;
-        vkCmdDraw(commandBuffer, !emptyHand && !cubeModel ? generatedItemVertexCount : 36U, 1, 0,
-                  0);
+        vkCmdDraw(commandBuffer, emptyHand ? 36U : generatedItemVertexCount, 1, 0, 0);
     }
 
 

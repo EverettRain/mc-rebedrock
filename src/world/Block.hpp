@@ -996,6 +996,17 @@ struct BlockDefinition final {
     // identifiers below produce; this is what shows when a key is missing.
     const char* displayName = "";
     BlockTextureNames textures{};
+    // RN-14 / audit R18: the sprite this block's ITEM is drawn from, when vanilla
+    // draws it from `textures/item/<name>.png` rather than from the block's own
+    // model or texture. Null for every block whose item is its model.
+    //
+    // `assets/minecraft/items/repeater.json` names `item/repeater`, a 2D sprite
+    // that is a whole repeater seen from the side; the icon was showing
+    // `block/repeater`, the top plate, because a block stack's texture layer came
+    // from `textureLayers(block).top` and block items are not in the item icon
+    // atlas segment. The two files genuinely differ (they differ in 16 texels: the
+    // line between the torches).
+    const char* itemSprite = nullptr;
     // RN-4a: the six named faces of a DirectionalCube. Empty for every other
     // model, which reads `textures` instead.
     DirectionalTextureNames directional{};
@@ -1180,6 +1191,13 @@ class BlockProperties final {
         BlockProperties copy = *this;
         copy.definition_.model = BlockModel::ElementModel;
         copy.definition_.modelTextures = {slot0, slot1, slot2, slot3, slot4, slot5};
+        return copy;
+    }
+    // RN-14 / audit R18: this block's item is drawn from `textures/item/<name>.png`
+    // rather than from its model. See BlockDefinition::itemSprite.
+    [[nodiscard]] constexpr BlockProperties itemSprite(const char* name) const {
+        BlockProperties copy = *this;
+        copy.definition_.itemSprite = name;
         return copy;
     }
     // RN-8c: which cube model json this block is drawn from. Declaring the model
@@ -2181,6 +2199,9 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // "a powered repeater looks different" means, and it was missing.
         .elementModel("smooth_stone", "repeater", "redstone_torch_off", "redstone_torch",
                       "bedrock", "repeater_on")
+        // audit R18: items/repeater.json names `item/repeater`, a side-on drawing
+        // of the whole repeater. The icon showed `block/repeater`, its top plate.
+        .itemSprite("repeater")
         // RN-10a: repeater_*tick*.json declares `"ambientocclusion": false`.
         .noAmbientOcclusion()
         // AR-B4-6: collision is ON. DiodeBlock's SHAPE is `Block.column(16, 0, 2)`
@@ -2220,6 +2241,9 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // — so the top sprite follows POWERED alone, never MODE.
         .elementModel("smooth_stone", "comparator", "redstone_torch_off", "redstone_torch",
                       nullptr, "comparator_on")
+        // audit R18, as the repeater above: items/comparator.json names
+        // `item/comparator`.
+        .itemSprite("comparator")
         // RN-10a: comparator*.json declares `"ambientocclusion": false`.
         .noAmbientOcclusion()
         // AR-B4-6: collision is ON, as for the repeater above — same DiodeBlock
@@ -3702,42 +3726,12 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
     return isFullCube(block) && canOcclude(block) ? 15 : 0;
 }
 
-// Whether this block, drawn as an ITEM, uses the cube geometry rather than the
-// extruded 2.5D icon sheet. The three item surfaces — the dropped ItemEntity,
-// the first-person held item, and the HUD/inventory icon — all ask this one
-// question, so they must ask it in one place.
-//
-// They used to each spell it out inline as `model == Cube || model == Chest ||
-// ...`, and the three spellings disagreed: DirectionalCube (the observer) was
-// added to the held and icon paths but missed on the drop path, so an observer
-// lying on the ground rendered as a flat sprite while the same item in the hand
-// and in the inventory rendered as a cube. Keying on the model set here is what
-// makes a new BlockModel impossible to half-register.
-//
-// A Slab is in the set: it takes the same cube path, only with its Y extent
-// halved — the caller reads isSlab() to decide that, exactly as before.
-// Deliberately NOT the same set as isFullCube(): that one answers "does it fill
-// its cell" (occlusion, face-sturdiness) and so excludes a chest and a slab,
-// both of which nevertheless draw as boxes when held.
-[[nodiscard]] constexpr bool rendersAsCubeItem(Block block) {
-    const auto model = blockDefinition(block).model;
-    if (model == BlockModel::Cube || model == BlockModel::DirectionalCube ||
-        model == BlockModel::Chest || model == BlockModel::Slab) {
-        return true;
-    }
-    // RN-10f / audit R16: the shaped blocks that are not thin leaves — stairs,
-    // walls, fence gates, buttons, pressure plates. The HUD icon already drew
-    // these as a 3D block (matching vanilla's item render) through a SECOND
-    // branch of its own, which the dropped-item and held-item paths did not
-    // have: a dropped fence gate was a flat sprite while the same gate in the
-    // inventory was a block. That second branch is gone and the rule lives here,
-    // which is the whole reason this predicate exists — the comment above about
-    // the observer describes the identical failure one BlockModel earlier.
-    //
-    // The door and the trapdoor stay out: vanilla renders those two items flat,
-    // and isThinLeafIconModel is where that is said.
-    return isShapedBlockModel(model) && !isThinLeafIconModel(model);
-}
+// RN-14: "does this block's item use cube geometry?" used to live here as
+// `rendersAsCubeItem`, and the three item surfaces (the dropped ItemEntity, the
+// held item, the HUD icon) all asked it. It had two answers, cube or flat sprite,
+// so every shaped block fell into "cube" and a stair's icon was a plank-textured
+// box. The question is now "which MODEL?" and lives in world/ItemModel.hpp as
+// `itemModelKindOf` / `rendersAsModelItem` — same single point, one more answer.
 
 // Java's BlockState#isFaceSturdy: only a full collision cube can carry an
 // attached block. Glass qualifies, leaves deliberately do not.
@@ -4107,27 +4101,35 @@ struct CubeItemLayers final {
                                          : CubeUvModel::Default;
 }
 
-// The item shader has one spare float for everything `textureLayersRotation` has
-// no room for: the front and back layers, and which cube UV model to sample. They
-// travel packed into it as
+// How many layers the block atlas may hold before an item draw stops being able
+// to name one exactly.
 //
-//     1 + front + back * kItemLayerPackStride + uvModel * kItemUvModelPackStride
-//
-// The +1 keeps zero meaning "not supplied", which is what every item-cube draw
-// that is not a block (the block-breaking overlay, a falling block) leaves it at,
-// and what makes those keep their old side-on-every-face behaviour untouched.
-//
-// The stride bounds the atlas at 2047 layers, against a sprite section that starts
-// at 203 and grows with the block roster; BlockAtlasBaker checks it. Everything
-// stays exact in a float32 — every integer up to 2^24 is, and the widest value
-// here is 2 * 2^22 + (2^22 - 1) = 12582911.
-inline constexpr float kItemLayerPackStride = 2048.0F;
-inline constexpr float kItemUvModelPackStride =
-    kItemLayerPackStride * kItemLayerPackStride;
+// This used to be `kItemLayerPackStride`, and it was a hard requirement: an item
+// cube carried its front layer, its back layer AND its cube UV model packed into
+// one float, so the widest packed value was stride^2 and 2048 was the largest
+// stride that stayed inside a float32's exact integer range. RN-14 removed the
+// packing — a block item draw is one FACE of one box now, so it carries one plain
+// layer — and the real bound became 2^24. The check is kept at 2048 anyway,
+// because it is free and because an atlas that has quietly grown past two
+// thousand layers is worth hearing about; BlockAtlasBaker raises it.
+inline constexpr float kMaximumBlockAtlasLayers = 2048.0F;
 
-[[nodiscard]] inline float packItemCubeFaces(float front, float back, CubeUvModel uvModel) {
-    return 1.0F + front + back * kItemLayerPackStride +
-           static_cast<float>(uvModel) * kItemUvModelPackStride;
+// RN-14 / audit R18: the resolved atlas layer of each block's own item sprite,
+// filled by the atlas builder from BlockDefinition::itemSprite. Zero means the
+// block has none and its item falls back to the block's texture.
+inline std::array<float, static_cast<std::size_t>(Block::Count)> kBlockItemSpriteLayers{};
+
+inline void setBlockItemSpriteLayer(Block block, float layer) {
+    kBlockItemSpriteLayers[static_cast<std::size_t>(block)] = layer;
+}
+
+[[nodiscard]] inline float blockItemSpriteLayer(Block block) {
+    const auto index = static_cast<std::size_t>(block);
+    return kBlockItemSpriteLayers[index < kBlockItemSpriteLayers.size() ? index : 0U];
+}
+
+[[nodiscard]] constexpr bool hasItemSprite(Block block) {
+    return blockDefinition(block).itemSprite != nullptr;
 }
 
 inline void setBlockDirectionalLayers(Block block, DirectionalTextureLayers layers) {

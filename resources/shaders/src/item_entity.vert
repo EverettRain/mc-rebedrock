@@ -65,53 +65,39 @@ const vec2 faceUvs[4] = vec2[](
     vec2(1.0, 0.0), vec2(0.0, 0.0)
 );
 
-// RN-8c: a block item's UV, per face and corner, indexed [face * 4 + corner] in
-// the same face order and corner order the cube positions below use (which is
-// the chunk mesher's kFaces order). A block item is the block's own model with no
-// blockstate rotation, so these are exactly the world cube's UVs at the identity
-// FACING, i.e. mc::world::kCubeItemFaceUv in src/world/CubeUv.hpp.
+// RN-14: which JE FaceInfo vertex a given (face, corner) of a box stands on,
+// indexed [face * 4 + corner] in this shader's face order (which is the chunk
+// mesher's kFaces order) and its corner order. Mirrors
+// mc::world::kFaceInfoCorner; item_cube_uv_test parses it and checks the two
+// agree.
 //
-// This array used to be `faceUvs` for all six faces — the pre-RN-8c convention,
-// which put the two caps a quarter turn off vanilla. The four side faces are
-// unchanged; only +Y and -Y move. A shader cannot include the C++ header, so
-// item_cube_uv_test parses this array and checks it against kCubeItemFaceUv.
-// ---- kCubeItemFaceUv begin ----
-// Three tables of 24, one per cube UV model, indexed [model * 24 + face * 4 +
-// corner], in the same face and corner order the cube positions below use (the
-// chunk mesher's kFaces order). A block item is the block's own model with no
-// blockstate rotation, so these are the world cube's UVs at the identity FACING,
-// i.e. mc::world::kCubeModelFaceUv in src/world/CubeUv.hpp.
-//
-// Which table a draw uses is the block's declared cube UV model, arriving packed
-// in data.y. It has to be per model, not one generic table: template_piston.json
-// rotates three of its faces and observer.json declares an inverted rect on its
-// up face, and with one table the dropped observer's top arrow came out mirrored
-// against the placed one. A shader cannot include the C++ header, so
-// item_cube_uv_test parses this array and checks it against kCubeModelFaceUv.
-const vec2 blockCubeUvs[72] = vec2[](
-    // --- Default
-    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // +X
-    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // -X
-    vec2(0.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), // +Y
-    vec2(0.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), // -Y
-    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // +Z
-    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // -Z
-    // --- PistonTemplate
-    vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), vec2(0.0, 1.0), // +X
-    vec2(0.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), // -X
-    vec2(0.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), // +Y
-    vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), vec2(0.0, 1.0), // -Y
-    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // +Z
-    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // -Z
-    // --- Observer
-    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // +X
-    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // -X
-    vec2(0.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), // +Y
-    vec2(0.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), // -Y
-    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0), // +Z
-    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0) // -Z
+// It replaces three 24-entry tables of literal UVs, one per cube UV model. Those
+// existed because a shader cannot include the C++ header, so the block item's
+// UVs had to be spelled out here — and only a CUBE's could be, which is a large
+// part of why every shaped block's item was drawn as a cube. A block item is now
+// one face of one box of the block's own model per draw, and its uv rect and
+// face rotation arrive in the push constants; this table plus JE's
+// CuboidFace.UVs rule below turns them into the four corner UVs.
+// ---- kFaceInfoCorner begin ----
+const int faceInfoCorner[24] = int[](
+    1, 2, 3, 0, // +X
+    1, 2, 3, 0, // -X
+    0, 1, 2, 3, // +Y
+    0, 1, 2, 3, // -Y
+    1, 2, 3, 0, // +Z
+    1, 2, 3, 0  // -Z
 );
-// ---- kCubeItemFaceUv end ----
+// ---- kFaceInfoCorner end ----
+
+// JE CuboidFace.UVs.getVertexU/getVertexV, with the face's `rotation` quadrant
+// applied as JE's Quadrant.rotateVertexIndex does. `rect` is (minU, minV, maxU,
+// maxV) in 0..1.
+vec2 rectCornerUv(vec4 rect, int faceInfoIndex, int quadrant) {
+    int index = (faceInfoIndex + quadrant) & 3;
+    float u = (index != 0 && index != 1) ? rect.z : rect.x;
+    float v = (index != 0 && index != 3) ? rect.w : rect.y;
+    return vec2(u, v);
+}
 
 // dimensions.w carries the per-entity scene lightmap sample: 0.0 means "no
 // scene light", otherwise 1.0 + skyLevel + blockLevel * 16.0 with both levels
@@ -235,15 +221,24 @@ void main() {
         // textureLayersRotation.xyz holds the entity texture layer plus the
         // model's declared texture_width/height.
         bool boxUvEntity = item.data.x > 8.5 && item.data.x < 9.5;
-        bool useMatrix = matrixViewModel || worldMatrixCuboid || boxUvEntity;
+        // RN-14: one box of a block ITEM's model — mode 10 dropped (world space,
+        // yaw-rotated), mode 11 held (the view matrix carries the pose). A block
+        // item used to be a single cube on modes 1 and 6; it is now a list of
+        // boxes, and the caller issues one draw per box face. These two modes
+        // exist rather than more flags on 1/6 because they repurpose fields those
+        // modes use for other things (see the push-constant map below), and the
+        // block-breaking overlay and the falling block still ride mode 1.
+        bool blockItemBox = item.data.x > 9.5;
+        bool blockItemHeld = item.data.x > 10.5;
+        bool useMatrix = matrixViewModel || worldMatrixCuboid || boxUvEntity || blockItemHeld;
         bool heldInViewSpace =
-            (item.data.x > 2.5 && item.data.x < 4.5) || matrixViewModel;
+            (item.data.x > 2.5 && item.data.x < 4.5) || matrixViewModel || blockItemHeld;
         bool articulatedWorldCuboid = item.data.x > 4.5 && item.data.x < 5.5;
         bool playerSkinCuboid =
             (item.data.x > 3.5 && item.data.x < 4.5) ||
             articulatedWorldCuboid ||
             worldMatrixCuboid ||
-            (matrixViewModel && item.data.w > 0.5);
+            (matrixViewModel && !blockItemBox && item.data.w > 0.5);
         int face = gl_VertexIndex / 6;
         int corner = quadIndices[gl_VertexIndex % 6];
         vec2 uv = faceUvs[corner];
@@ -434,46 +429,44 @@ void main() {
             // cube only yaws, the held cube is matrix-driven). Zero means "not
             // supplied" — the block-breaking overlay and falling blocks leave it
             // there and keep the plain cube table and side on all four sides.
-            int itemUvModel = 0;
-            float packedFaces = 0.0;
-            if (item.data.y > 0.5) {
-                float packedItem = item.data.y - 1.0;
-                itemUvModel = int(floor(packedItem / 4194304.0));
-                packedFaces = packedItem - float(itemUvModel) * 4194304.0;
-            }
-            // RN-8c: a block cube samples the per-face table; a skinned cuboid
-            // keeps the flat net it has always used.
-            vec2 cubeUv = blockCubeUvs[itemUvModel * 24 + face * 4 + corner];
-            if (!playerSkinCuboid && item.data.z > 0.5 && face != 2 && face != 3) {
-                cubeUv.y = 0.5 + cubeUv.y * 0.5;
-            }
+            // RN-14: a block item's face samples the model json's own uv rect,
+            // which arrives per draw — data.yzw and positionSize.w hold
+            // (minU, minV, maxU, maxV) in 0..1 and textureLayersRotation.y the
+            // face's `rotation` quadrant. Everything else keeps the plain cube's
+            // whole-sprite rect, which rectCornerUv reproduces exactly (that is
+            // what the deleted Default table held).
+            //
+            // The slab's half-height V crop lived here as a hard-coded
+            // `v = 0.5 + v * 0.5` on four faces. It is gone: a slab is one box of
+            // a model now, and block/slab.json's own side rect [0,8,16,16] says
+            // the same thing without a special case.
+            vec4 itemRect = blockItemBox
+                ? vec4(item.data.y, item.data.z, item.data.w, item.positionSize.w)
+                : vec4(0.0, 0.0, 1.0, 1.0);
+            int itemQuadrant = blockItemBox ? int(item.textureLayersRotation.y + 0.5) : 0;
+            vec2 cubeUv = rectCornerUv(itemRect, faceInfoCorner[face * 4 + corner], itemQuadrant);
             fragmentUv = playerSkinCuboid
                 ? (item.data.z > 0.5 ? vec2(uv.x, 1.0 - uv.y) : uv)
                 : cubeUv;
-            // RN-8c-D: a block item shows the block's own model with no
-            // blockstate rotation, so its front is on the model's NORTH face
-            // (-Z, face 5) and its back on the south one (+Z, face 4).
-            // textureLayersRotation carries top/side/bottom; the two remaining
-            // faces travel packed in data.y, which every block-cube draw leaves
-            // free (the drop cube only yaws, the held cube is matrix-driven).
-            // Zero means "not supplied" — the block-breaking overlay and falling
-            // blocks leave it there and keep side on all four sides, as before.
-            float sideLayer = item.textureLayersRotation.y;
-            float frontLayer = sideLayer;
-            float backLayer = sideLayer;
-            if (item.data.y > 0.5) {
-                frontLayer = mod(packedFaces, 2048.0);
-                backLayer = floor(packedFaces / 2048.0);
-            }
+            // RN-14: one draw is one FACE of one box, so a block item's layer is
+            // simply the one this face samples — the CPU resolved it from the
+            // model json's `#top`/`#side`/`#bottom` reference
+            // (world::itemFaceLayer). This replaces the front/back pair that used
+            // to travel packed in data.y next to the cube UV model: with one
+            // layer per draw there is nothing left to pack.
+            //
+            // Everything that is not a block item keeps the old triple: the
+            // block-breaking overlay and the falling block send the same layer in
+            // all three slots, and a skinned cuboid indexes its six-layer strip.
             fragmentTextureLayer = playerSkinCuboid
                 ? item.textureLayersRotation.x + float(face)
+                : (blockItemBox
+                    ? item.textureLayersRotation.x
                 : (face == 2
                     ? item.textureLayersRotation.x
                 : (face == 3
                     ? item.textureLayersRotation.z
-                : (face == 5
-                    ? frontLayer
-                : (face == 4 ? backLayer : sideLayer))));
+                    : item.textureLayersRotation.y)));
         }
         fragmentNormal = normal;
         fragmentFallingBlock =

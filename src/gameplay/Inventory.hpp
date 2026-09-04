@@ -269,9 +269,23 @@ static_assert(std::is_trivially_copyable_v<ItemStack>,
 }
 
 [[nodiscard]] inline float itemTextureLayer(const ItemStack& stack) {
-    // A block stack samples its block's own textures, never the item icon atlas
-    // (block items are not appended to it), whatever form its item pointer takes.
-    if (isBlockStack(stack)) return world::textureLayers(stack.block).top;
+    if (isBlockStack(stack)) {
+        // RN-14 / audit R18: a handful of blocks have an item SPRITE of their own —
+        // vanilla's items/repeater.json names `item/repeater`, a side-on drawing of
+        // the whole component rather than its top plate. Those get their own atlas
+        // layer (BlockDefinition::itemSprite).
+        // Zero means the atlas builder never filled it in — block item sprites are
+        // appended AFTER every block texture, so a real one is never layer 0. A
+        // registration the baker does not know about therefore falls back to the
+        // old behaviour instead of showing whatever sprite happens to sit at the
+        // bottom of the atlas.
+        if (world::hasItemSprite(stack.block) && world::blockItemSpriteLayer(stack.block) > 0.0F) {
+            return world::blockItemSpriteLayer(stack.block);
+        }
+        // Everything else samples its block's own textures, never the item icon
+        // atlas: block items are not appended to it.
+        return world::textureLayers(stack.block).top;
+    }
     return itemTextureLayer(stack.item);
 }
 

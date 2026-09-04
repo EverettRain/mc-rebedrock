@@ -1861,6 +1861,17 @@ if(BUILD_TESTING)
     )
     add_test(NAME biome_identity COMMAND mc_rebedrock_biome_identity_test)
 
+    # RN-14: what a block item is, as geometry (the item model table).
+    add_executable(mc_rebedrock_block_item_model_test
+        tests/block_item_model_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_block_item_model_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_block_item_model_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME block_item_model COMMAND mc_rebedrock_block_item_model_test)
+
     # RN-13-1: the model element's `"shade"` bit, from baked quad to shader.
     add_executable(mc_rebedrock_block_shade_test
         tests/block_shade_test.cpp
@@ -1908,6 +1919,17 @@ if(BUILD_TESTING)
         )
         target_link_libraries(mc_rebedrock_block_shape_benchmark PRIVATE mc_rebedrock_runtime)
         target_include_directories(mc_rebedrock_block_shape_benchmark PRIVATE
+            src
+            "${glm_SOURCE_DIR}"
+        )
+
+        # RN-14 (REGULAR §5.4): the per-frame cost of the item-model icon path,
+        # and the exact draw count it now issues.
+        add_executable(mc_rebedrock_item_icon_benchmark
+            tests/item_icon_benchmark.cpp
+        )
+        target_link_libraries(mc_rebedrock_item_icon_benchmark PRIVATE mc_rebedrock_runtime)
+        target_include_directories(mc_rebedrock_item_icon_benchmark PRIVATE
             src
             "${glm_SOURCE_DIR}"
         )

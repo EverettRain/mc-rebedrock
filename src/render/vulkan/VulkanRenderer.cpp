@@ -5592,6 +5592,19 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                          nullptr, &hudPipeline);
         checkVk(hudResult, "vkCreateGraphicsPipelines(hud)");
 
+        // RN-14：方块物品图标专用的一条，和上面那条共用着色器与布局，只把深度测试与
+        // 写入打开。物品模型是一组盒子，墙的中柱与横臂互相穿插，任何「整盒从后往前画」
+        // 的排序都合成不对——它需要真正的深度缓冲。GUI 通道本来就带深度附件且每帧清空，
+        // 界面里其它元素一律不做深度测试，所以这条只影响图标自己。
+        depthStencil.depthTestEnable = VK_TRUE;
+        depthStencil.depthWriteEnable = VK_TRUE;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+        const auto hudIconResult = vkCreateGraphicsPipelines(
+            device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &hudBlockIconPipeline);
+        checkVk(hudIconResult, "vkCreateGraphicsPipelines(hudBlockIcon)");
+        depthStencil.depthTestEnable = VK_FALSE;
+        depthStencil.depthWriteEnable = VK_FALSE;
+
         // 标题全景立方体用一个全屏三角形，片元着色器对六张全景面做光线步进
         // 它只需要共享描述符集里的全景采样器，加上偏航、俯仰、视场角这组推送常量
         const auto panoramaVertexCode = readSpirv(shaderRoot / "panorama.vert.spv");
@@ -6006,6 +6019,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (vignettePipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device, vignettePipeline, nullptr);
             vignettePipeline = VK_NULL_HANDLE;
+        }
+        if (hudBlockIconPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, hudBlockIconPipeline, nullptr);
+            hudBlockIconPipeline = VK_NULL_HANDLE;
         }
         if (hudPipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device, hudPipeline, nullptr);
@@ -6900,6 +6917,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     VkPipeline crosshairPipeline = VK_NULL_HANDLE;
     VkPipelineLayout hudPipelineLayout = VK_NULL_HANDLE;
     VkPipeline hudPipeline = VK_NULL_HANDLE;
+    VkPipeline hudBlockIconPipeline = VK_NULL_HANDLE;
     VkPipelineLayout panoramaPipelineLayout = VK_NULL_HANDLE;
     VkPipeline panoramaPipeline = VK_NULL_HANDLE;
     VkPipeline vignettePipeline = VK_NULL_HANDLE;
@@ -6959,6 +6977,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .camera = camera,
             .swapchainExtent = swapchainExtent,
             .hudPipeline = hudPipeline,
+            .hudBlockIconPipeline = hudBlockIconPipeline,
             .hudPipelineLayout = hudPipelineLayout,
             .vignettePipeline = vignettePipeline,
             .crosshairPipeline = crosshairPipeline,

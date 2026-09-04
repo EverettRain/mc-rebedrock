@@ -682,12 +682,12 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
         world::setBlockTextureLayers(block, resolved);
     }
 
-    // RN-8c-D: 物品立方体把前/后面的层号与 UV 模型打包进一个 float 传给着色器
-    // （world::packItemCubeFaces），层号必须小于 kItemLayerPackStride 才能保证精确
-    // 这里在图集建好后硬校验一次：与其让层号在着色器里静默串位，不如启动就炸
-    if (static_cast<float>(layers.size()) >= world::kItemLayerPackStride) {
-        throw std::runtime_error(
-            "block atlas has more layers than the item cube face packing can carry");
+    // 图集层号是以 float 传给着色器的。RN-8c-D 那会儿它还要与前/后面层号和 UV 模型
+    // 一起打包进一个 float，2048 是能保证精确的上限；RN-14 之后逐面各带一个层号、
+    // 不再打包，真正的上限升到 2^24。检查保留在 2048：它不花钱，而一个悄悄涨到两千
+    // 层以上的图集本身就值得听见一声。
+    if (static_cast<float>(layers.size()) >= world::kMaximumBlockAtlasLayers) {
+        throw std::runtime_error("block atlas has grown past kMaximumBlockAtlasLayers");
     }
 
     // 熄灭的红石火把贴图：网格化器在 LIT=false 时换上的第二张纹理（方块自己的侧面纹理是点亮态那张）
@@ -707,6 +707,25 @@ TextureArrayPixels bakeBlockAtlas(const assets::ResourceProvider& resources) {
     // 物品图标按注册顺序逐个追加一层，各自经 provider 解析
     // 资源包因此能逐文件覆盖物品美术
     std::uint32_t itemIndex = 0U;
+    // RN-14 / audit R18: a block whose ITEM is drawn from `textures/item/<name>.png`
+    // rather than from its model gets its own layer here, appended in front of the
+    // item registry's icons. Block items are not in `kItemRegistry`, so before this
+    // there was nowhere for such a sprite to live and a repeater's icon fell back
+    // to `block/repeater` — its top plate, not vanilla's side-on drawing.
+    const auto appendBlockItemSprite = [&](world::Block block, const char* name) {
+        const auto icon = assets::ImageData::loadRgbaOrMissing(
+            resources, assets::textures("item/" + std::string{name} + ".png"), top.width,
+            top.height);
+        const auto fitted = conformToAtlasLayer(top, icon, name);
+        output.rgba.insert(output.rgba.end(), fitted.rgba.begin(), fitted.rgba.end());
+        world::setBlockItemSpriteLayer(block, static_cast<float>(baseLayerCount + itemIndex));
+        ++itemIndex;
+    };
+    for (const auto& definition : world::kBlockRegistry) {
+        if (definition.itemSprite != nullptr) {
+            appendBlockItemSprite(definition.block, definition.itemSprite);
+        }
+    }
     const auto appendItemIcon = [&](const gameplay::Item* item) {
         assets::ImageData icon;
         // 26.1 的每个刷怪蛋和其它物品一样只有一张成品贴图，不再是共享外壳加叠加层着色的合成方式
