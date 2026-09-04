@@ -1886,6 +1886,22 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_preview_image_bytes_test PRIVATE src)
     add_test(NAME preview_image_bytes COMMAND mc_rebedrock_preview_image_bytes_test)
 
+    # RN-14 回归护栏：一块 push constant 有三个消费者（hud.vert / hud.frag / HudPush），
+    # 只校验了其中一个，于是"每个方块图标都是黑菱形"在 238/238 全绿下溜了过去。
+    add_executable(mc_rebedrock_hud_push_constant_test
+        tests/hud_push_constant_test.cpp
+        src/ui/HudLayout.cpp
+    )
+    target_link_libraries(mc_rebedrock_hud_push_constant_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_hud_push_constant_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    target_compile_definitions(mc_rebedrock_hud_push_constant_test PRIVATE
+        "MC_REBEDROCK_SHADER_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src\""
+        "MC_REBEDROCK_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
+    add_test(NAME hud_push_constant COMMAND mc_rebedrock_hud_push_constant_test)
+
     # RN-14: what a block item is, as geometry (the item model table).
     add_executable(mc_rebedrock_block_item_model_test
         tests/block_item_model_test.cpp

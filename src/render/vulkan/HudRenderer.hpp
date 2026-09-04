@@ -360,18 +360,27 @@ class HudRenderer final {
         const float width = static_cast<float>(swapchainExtent.width);
         const float height = static_cast<float>(swapchainExtent.height);
         const auto clipRectangle = ui::framebufferToClip(rectangle, width, height);
+        // Named fields, not positions: the icon-only members below them are left
+        // at zero deliberately, and saying so is what keeps "unused here" from
+        // drifting back into "means something else here".
         const HudPush push{
-            {
-                clipRectangle.x,
-                clipRectangle.y,
-                clipRectangle.width,
-                clipRectangle.height,
-            },
-            color,
-            uvRectangle,
-            {guiSprite ? 3.0F : (fontGlyph ? 2.0F : (textured ? 1.0F : 0.0F)), textureLayer, 0.0F,
-             0.0F},
-            {}, // RN-14's block-icon corner; unused off that path
+            .rect =
+                {
+                    clipRectangle.x,
+                    clipRectangle.y,
+                    clipRectangle.width,
+                    clipRectangle.height,
+                },
+            .color = color,
+            .uvRect = uvRectangle,
+            .data = {guiSprite ? kHudModeGuiSprite
+                               : (fontGlyph ? kHudModeFontGlyph
+                                            : (textured ? kHudModeBlockTexture : kHudModeFlat)),
+                     textureLayer, 0.0F, 0.0F},
+            .iconBoxMin = {},
+            .iconBoxMax = {},
+            .iconUv01 = {},
+            .iconUv23 = {},
         };
         vkCmdPushConstants(commandBuffer, hudPipelineLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
@@ -424,16 +433,8 @@ class HudRenderer final {
                 if (!icon.present[f]) {
                     continue;
                 }
-                const auto& uv = icon.uvCorner[f];
                 const float layer = world::itemFaceLayer(layers, icon.slot[f]);
-                const HudPush push{
-                    {clipRectangle.x, clipRectangle.y, clipRectangle.width,
-                     clipRectangle.height},
-                    {icon.from.x, icon.from.y, icon.from.z, uv[0].x},
-                    {icon.to.x, icon.to.y, icon.to.z, uv[0].y},
-                    {4.25F, layer, uv[1].x, uv[1].y},
-                    {uv[2].x, uv[2].y, uv[3].x, uv[3].y},
-                };
+                const HudPush push = makeBlockIconPush(clipRectangle, icon, f, layer);
                 vkCmdPushConstants(commandBuffer, hudPipelineLayout,
                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                    sizeof(push), &push);
@@ -498,11 +499,14 @@ class HudRenderer final {
             ui::framebufferToClip(rectangle, static_cast<float>(swapchainExtent.width),
                                   static_cast<float>(swapchainExtent.height));
         const HudPush push{
-            {clipRectangle.x, clipRectangle.y, clipRectangle.width, clipRectangle.height},
-            {1.0F, 1.0F, 1.0F, 1.0F},
-            {0.0F, 0.0F, 15.0F / atlasSize, 15.0F / atlasSize},
-            {5.0F, 1.0F, 0.0F, 0.0F},
-            {}, // RN-14's block-icon corner; unused off that path
+            .rect = {clipRectangle.x, clipRectangle.y, clipRectangle.width, clipRectangle.height},
+            .color = {1.0F, 1.0F, 1.0F, 1.0F},
+            .uvRect = {0.0F, 0.0F, 15.0F / atlasSize, 15.0F / atlasSize},
+            .data = {kHudModeCrosshair, 1.0F, 0.0F, 0.0F},
+            .iconBoxMin = {},
+            .iconBoxMax = {},
+            .iconUv01 = {},
+            .iconUv23 = {},
         };
         vkCmdPushConstants(commandBuffer, hudPipelineLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,

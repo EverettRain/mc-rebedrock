@@ -257,7 +257,14 @@ int main() {
         assert(contains(source, "const int iconQuadCorner[6] = int[](0, 1, 2, 0, 2, 3);"));
         // The box arrives per draw; a fixed unit cube would put every shaped
         // block back to being a cube.
-        assert(contains(source, "vec3 p = mix(hud.color.xyz, hud.uvRect.xyz, unit);"));
+        //
+        // It arrives in iconBoxMin/iconBoxMax, not in color/uvRect. Reading it
+        // out of `color` is what made every icon a black diamond — hud.frag went
+        // on multiplying that same field in as a tint. See
+        // hud_push_constant_test, which holds all three declarations of the block
+        // together so the next such move cannot be told to one consumer only.
+        assert(contains(source, "vec3 p = mix(hud.iconBoxMin.xyz, hud.iconBoxMax.xyz, unit);"));
+        assert(!contains(source, "hud.color.xyz"));
     }
 
     // --- the declared models actually differ, so the indexing is not vacuous ---

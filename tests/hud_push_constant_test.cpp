@@ -1,0 +1,376 @@
+// One block of push constants, three consumers, and no one checking they agree.
+//
+// The regression this file exists to prevent: RN-14 needed somewhere to put the
+// icon's box and UV corners, took `hud.color` and `hud.uvRect`, and documented
+// the change in hud.vert. hud.frag went on reading `hud.color` as a tint, so
+// every block icon's colour became its box's minimum corner and every face's
+// alpha became a UV component — which for a box at the origin is black, and for
+// two of its three faces is alpha zero. Every icon in the inventory was a black
+// diamond. The suite was 238/238 green throughout, because item_cube_uv_test
+// cross-checks hud.VERT against the C++ tables and nothing anywhere reads
+// hud.frag.
+//
+// The invariant, stated so it can be tested: A PUSH-CONSTANT FIELD'S MEANING
+// MUST NOT CHANGE WITH THE DRAW MODE. A field may go unused in a mode; it may
+// never be reinterpreted. The mechanical half of that — every consumer declares
+// the same block — is what the parsing below asserts, and it also catches the
+// second symptom of the same commit: the two shaders declared four fields and
+// five.
+
+#include "render/vulkan/HudTypes.hpp"
+#include "ui/HudLayout.hpp"
+#include "world/Block.hpp"
+#include "world/ItemModel.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cassert>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#ifndef MC_REBEDROCK_SHADER_SRC_DIR
+#error "MC_REBEDROCK_SHADER_SRC_DIR must point at resources/shaders/src"
+#endif
+#ifndef MC_REBEDROCK_SOURCE_DIR
+#error "MC_REBEDROCK_SOURCE_DIR must point at the repository root"
+#endif
+
+namespace {
+
+const std::filesystem::path kShaderDir{MC_REBEDROCK_SHADER_SRC_DIR};
+const std::filesystem::path kSourceDir{MC_REBEDROCK_SOURCE_DIR};
+
+[[nodiscard]] std::string readFile(const std::filesystem::path& path) {
+    std::ifstream stream{path};
+    assert(stream && "shader or header source must be readable");
+    std::ostringstream text;
+    text << stream.rdbuf();
+    return text.str();
+}
+
+struct Field final {
+    std::string type;
+    std::string name;
+    [[nodiscard]] bool operator==(const Field&) const = default;
+};
+
+// Strips `//` and `/* */` so a field named inside a comment is not mistaken for a
+// declaration. Both blocks below are heavily commented, which is the point.
+[[nodiscard]] std::string stripComments(std::string_view source) {
+    std::string out;
+    out.reserve(source.size());
+    for (std::size_t i = 0; i < source.size();) {
+        if (source.compare(i, 2, "//") == 0) {
+            while (i < source.size() && source[i] != '\n') ++i;
+        } else if (source.compare(i, 2, "/*") == 0) {
+            i += 2;
+            while (i + 1 < source.size() && source.compare(i, 2, "*/") != 0) ++i;
+            i = i + 2 < source.size() ? i + 2 : source.size();
+        } else {
+            out.push_back(source[i]);
+            ++i;
+        }
+    }
+    return out;
+}
+
+// The `{ ... }` that follows `marker`, comments removed.
+[[nodiscard]] std::string blockAfter(std::string_view source, std::string_view marker) {
+    const std::string clean = stripComments(source);
+    const auto start = clean.find(marker);
+    assert(start != std::string::npos && "the declaration must be present");
+    const auto open = clean.find('{', start);
+    assert(open != std::string::npos);
+    int depth = 0;
+    for (std::size_t i = open; i < clean.size(); ++i) {
+        if (clean[i] == '{') ++depth;
+        if (clean[i] == '}') {
+            --depth;
+            if (depth == 0) {
+                return clean.substr(open + 1, i - open - 1);
+            }
+        }
+    }
+    assert(false && "unbalanced braces");
+    return {};
+}
+
+// `<type> <name>;` pairs, in declaration order. Order matters: a push-constant
+// block is a memory layout, so two blocks that agree on names but not on order
+// are two different structs.
+[[nodiscard]] std::vector<Field> parseFields(std::string_view body) {
+    std::vector<Field> fields;
+    std::istringstream stream{std::string{body}};
+    std::string token;
+    std::vector<std::string> words;
+    while (stream >> token) {
+        if (token.back() == ';') {
+            token.pop_back();
+            if (!token.empty()) {
+                words.push_back(token);
+            }
+            if (words.size() >= 2) {
+                fields.push_back({words[words.size() - 2], words.back()});
+            }
+            words.clear();
+        } else {
+            words.push_back(token);
+        }
+    }
+    return fields;
+}
+
+[[nodiscard]] bool contains(std::string_view haystack, std::string_view needle) {
+    return haystack.find(needle) != std::string_view::npos;
+}
+
+[[nodiscard]] std::string describe(const std::vector<Field>& fields) {
+    std::string out;
+    for (const Field& field : fields) {
+        out += field.type + ' ' + field.name + "; ";
+    }
+    return out;
+}
+
+// glm::vec4 spells its type differently from GLSL's vec4; nothing else in these
+// blocks differs, and if something does the assertion should fail rather than the
+// mapping quietly growing to accommodate it.
+[[nodiscard]] std::vector<Field> normalizeCxx(std::vector<Field> fields) {
+    for (Field& field : fields) {
+        if (field.type.starts_with("glm::")) {
+            field.type = field.type.substr(5);
+        }
+        // `glm::mat4 viewModelTransform{1.0F}` — the brace initialiser is part of
+        // the token, not of the name.
+        const auto brace = field.name.find('{');
+        if (brace != std::string::npos) {
+            field.name = field.name.substr(0, brace);
+        }
+    }
+    return fields;
+}
+
+// `layout(location = N) [flat] out|in <type> <name>;`, with the direction keyword
+// removed so the two stages' lists are directly comparable. The interpolation
+// qualifier is KEPT: Vulkan requires it to match for the interfaces to match, and
+// a `flat` on one side only is how a per-vertex value silently stops varying.
+[[nodiscard]] std::vector<std::string> varyings(const std::string& source,
+                                                std::string_view direction) {
+    const std::string clean = stripComments(source);
+    std::vector<std::string> out;
+    std::size_t cursor = 0;
+    while ((cursor = clean.find("layout(location", cursor)) != std::string::npos) {
+        const auto end = clean.find(';', cursor);
+        if (end == std::string::npos) break;
+        std::istringstream words{clean.substr(cursor, end - cursor)};
+        cursor = end;
+        std::string normalized;
+        std::string word;
+        bool matches = false;
+        while (words >> word) {
+            if (word == direction) matches = true;
+            if (word == "out" || word == "in") continue;
+            normalized += word;
+            normalized += ' ';
+        }
+        if (matches) out.push_back(normalized);
+    }
+    return out;
+}
+
+void assertStagesAgree(std::string_view vertexName, std::string_view fragmentName) {
+    const std::string vertex = readFile(kShaderDir / vertexName);
+    const std::string fragment = readFile(kShaderDir / fragmentName);
+    const auto outputs = varyings(vertex, "out");
+    const auto inputs = varyings(fragment, "in");
+    assert(!outputs.empty());
+    if (outputs != inputs) {
+        std::cerr << vertexName << " outputs and " << fragmentName << " inputs disagree:\n";
+        for (const auto& line : outputs) std::cerr << "  vert: " << line << "\n";
+        for (const auto& line : inputs) std::cerr << "  frag: " << line << "\n";
+    }
+    assert(outputs == inputs);
+}
+
+} // namespace
+
+int main() {
+    // --- The three declarations of HudPush must be one declaration. ---
+    {
+        const auto vertexFields = parseFields(
+            blockAfter(readFile(kShaderDir / "hud.vert"), "layout(push_constant) uniform HudPush"));
+        const auto fragmentFields = parseFields(
+            blockAfter(readFile(kShaderDir / "hud.frag"), "layout(push_constant) uniform HudPush"));
+        const auto cxxFields = normalizeCxx(parseFields(
+            blockAfter(readFile(kSourceDir / "src/render/vulkan/HudTypes.hpp"),
+                       "struct HudPush final")));
+
+        assert(!vertexFields.empty());
+        if (vertexFields != fragmentFields) {
+            std::cerr << "hud.vert declares [" << describe(vertexFields) << "]\n"
+                      << "hud.frag declares [" << describe(fragmentFields) << "]\n";
+        }
+        // The whole regression in one line: the two stages read the same bytes,
+        // so they must read them as the same fields. Field COUNT alone would have
+        // caught RN-14's four-versus-five; names and order catch a rename or a
+        // reordering, which corrupt the layout just as thoroughly and are the more
+        // likely future mistake.
+        assert(vertexFields == fragmentFields);
+        assert(vertexFields == cxxFields);
+        assert(sizeof(mc::render::HudPush) == vertexFields.size() * sizeof(glm::vec4));
+        assert(sizeof(mc::render::HudPush) <= 128U);
+    }
+
+    // --- Each named draw mode lands in the branch it is named for. ---
+    //
+    // Naming the modes removed one hazard and introduced another: hud.frag
+    // dispatches with `hud.data.x > N` against half-way thresholds, so a constant
+    // and a threshold are again two numbers that have to agree. The thresholds
+    // are read out of the shader and the constants run through them here.
+    {
+        const std::string fragment = stripComments(readFile(kShaderDir / "hud.frag"));
+        std::vector<float> thresholds;
+        std::size_t cursor = 0;
+        while ((cursor = fragment.find("hud.data.x > ", cursor)) != std::string::npos) {
+            cursor += std::string_view{"hud.data.x > "}.size();
+            thresholds.push_back(std::stof(fragment.substr(cursor, 8)));
+        }
+        assert(thresholds.size() == 5);
+        std::sort(thresholds.begin(), thresholds.end());
+        // The if-chain is nested rather than flat (the icon and the gui sprite
+        // share an outer branch), so this does not model the control flow. It
+        // asserts the property the control flow depends on: the thresholds cut
+        // the line into intervals, and no two modes may share one — two modes in
+        // one interval is two draws taking the same branch.
+        const std::array modes{mc::render::kHudModeFlat,      mc::render::kHudModeBlockTexture,
+                               mc::render::kHudModeFontGlyph, mc::render::kHudModeGuiSprite,
+                               mc::render::kHudModeBlockIcon, mc::render::kHudModeCrosshair};
+        std::vector<std::size_t> buckets;
+        for (const float mode : modes) {
+            std::size_t bucket = 0;
+            for (const float threshold : thresholds) {
+                if (mode > threshold) {
+                    ++bucket;
+                }
+                // Sitting on a threshold is the reason to keep the modes at whole
+                // numbers (and 4.25, which is not one): a mode that lands on a
+                // comparison is one rounding away from changing branch.
+                assert(std::abs(mode - threshold) > 0.2F);
+            }
+            buckets.push_back(bucket);
+        }
+        std::sort(buckets.begin(), buckets.end());
+        assert(std::adjacent_find(buckets.begin(), buckets.end()) == buckets.end());
+        // And they are in the order the names imply, which is what makes the
+        // constants readable at the call sites.
+        assert(std::is_sorted(modes.begin(), modes.end()));
+    }
+
+    // --- ItemPush, the sibling block, held the same way. ---
+    //
+    // The dropped-item and held-item path that RN-14 also rewrote. It is
+    // structurally immune to the regression above — item_entity.frag declares no
+    // push block at all, so there is no second reader to disagree — but the C++
+    // struct and the vertex shader are still two declarations of one layout.
+    {
+        const auto shaderFields = parseFields(blockAfter(
+            readFile(kShaderDir / "item_entity.vert"), "layout(push_constant) uniform ItemPush"));
+        const auto cxxFields = normalizeCxx(parseFields(blockAfter(
+            readFile(kSourceDir / "src/render/vulkan/HudTypes.hpp"), "struct ItemPush final")));
+        assert(!shaderFields.empty());
+        if (shaderFields != cxxFields) {
+            std::cerr << "item_entity.vert declares [" << describe(shaderFields) << "]\n"
+                      << "ItemPush declares [" << describe(cxxFields) << "]\n";
+        }
+        assert(shaderFields == cxxFields);
+        assert(!contains(readFile(kShaderDir / "item_entity.frag"), "push_constant") &&
+               "item_entity.frag reads no push constants; if it starts to, it joins the "
+               "comparison above");
+    }
+
+    // --- The varyings between each pair of stages, likewise. ---
+    //
+    // Same commit, same shape, and it does not show up as a black diamond so it
+    // would have gone unnoticed for longer: RN-14 made fragmentLight per-vertex
+    // ("so the corner AO can shade the face with a gradient") and hud.frag kept
+    // declaring it `flat`. Vulkan requires the interpolation decoration to match
+    // for the interfaces to match; where it does not, the gradient is dropped at
+    // best and the behaviour is undefined at worst.
+    //
+    // item_entity is checked alongside it because it is the other half of what
+    // RN-14 touched, and because the check costs one line.
+    assertStagesAgree("hud.vert", "hud.frag");
+    assertStagesAgree("item_entity.vert", "item_entity.frag");
+
+    // --- The icon path's tint is white, on every face of every box. ---
+    //
+    // This is the observation surface of the regression, on the CPU: under the
+    // bug the tint was the box's minimum corner (black for a block at the origin)
+    // and the alpha was a UV component (zero for two of the three faces). Both
+    // are read straight out of world::kItemIconBoxes, so no GPU is involved.
+    {
+        const mc::ui::UiRect clip{0.1F, 0.2F, 0.3F, 0.4F};
+        std::size_t facesChecked = 0;
+        for (std::size_t index = 0; index < static_cast<std::size_t>(mc::world::Block::Count);
+             ++index) {
+            const auto block = static_cast<mc::world::Block>(index);
+            const auto range = mc::world::itemModelRange(block);
+            for (std::size_t b = 0; b < range.count; ++b) {
+                const mc::world::IconBox& icon =
+                    mc::world::kItemIconBoxes[static_cast<std::size_t>(range.first) + b];
+                for (std::size_t f = 0; f < mc::world::kIconFaces.size(); ++f) {
+                    if (!icon.present[f]) {
+                        continue;
+                    }
+                    const mc::render::HudPush push =
+                        mc::render::makeBlockIconPush(clip, icon, f, 7.0F);
+                    ++facesChecked;
+                    // hud.frag does `color.rgb *= texel.rgb * light` and
+                    // `color.a *= texel.a`. A tint of anything but opaque white
+                    // means the icon is showing something other than its texture.
+                    assert(push.color == glm::vec4(1.0F, 1.0F, 1.0F, 1.0F));
+                    // The final alpha is color.a * texel.a. Whatever the texel is,
+                    // a zero here makes the face invisible — which is exactly what
+                    // "only the top diamond survived" was.
+                    assert(push.color.a != 0.0F);
+                    // The clip rectangle is the clip rectangle in every mode.
+                    assert(push.rect == glm::vec4(clip.x, clip.y, clip.width, clip.height));
+                    // And the mode and the layer are where hud.frag looks for them.
+                    assert(push.data.x == mc::render::kHudModeBlockIcon);
+                    assert(push.data.y == 7.0F);
+                }
+            }
+        }
+        // A guard on the guard: if the roster or the icon tables were ever emptied
+        // the loop above would pass by doing nothing.
+        assert(facesChecked > 100);
+        std::cout << "icon faces checked: " << facesChecked << "\n";
+    }
+
+    // --- The geometry is in the icon fields, and only there. ---
+    {
+        mc::world::IconBox icon{};
+        icon.from = {0.25F, 0.5F, 0.75F};
+        icon.to = {1.0F, 0.875F, 0.5F};
+        icon.present = {true, false, false};
+        icon.uvCorner[0] = {glm::vec2{0.1F, 0.2F}, glm::vec2{0.3F, 0.4F}, glm::vec2{0.5F, 0.6F},
+                            glm::vec2{0.7F, 0.8F}};
+        const mc::render::HudPush push =
+            mc::render::makeBlockIconPush(mc::ui::UiRect{}, icon, 0, 3.0F);
+        assert(glm::vec3(push.iconBoxMin) == icon.from);
+        assert(glm::vec3(push.iconBoxMax) == icon.to);
+        assert(push.iconUv01 == glm::vec4(0.1F, 0.2F, 0.3F, 0.4F));
+        assert(push.iconUv23 == glm::vec4(0.5F, 0.6F, 0.7F, 0.8F));
+        // uvRect is the sprite rectangle in the modes that have one, and unused
+        // here. What it must never be again is the box's maximum corner.
+        assert(push.uvRect == glm::vec4(0.0F));
+    }
+
+    return 0;
+}

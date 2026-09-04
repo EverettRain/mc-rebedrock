@@ -1,22 +1,25 @@
 #version 450
 
+// Declared identically in hud.frag and in mc::render::HudPush, and held together
+// by hud_push_constant_test. A field means one thing in every draw mode; a mode
+// may leave a field unused, but never reinterpret it. RN-14 put the icon's box
+// into `color` and told only this shader, and every block icon in the inventory
+// became a black diamond.
 layout(push_constant) uniform HudPush {
-    vec4 rect;
-    vec4 color;
-    vec4 uvRect;
-    vec4 data;
-    // RN-14: the block-icon path only. It draws ONE face of ONE box of the
-    // block's item model per call, and every number that face needs arrives here
-    // rather than from a table:
-    //   color.xyz / uvRect.xyz  the box, in 0..1 of the cell, already turned into
-    //                           the inventory pose
-    //   color.w, uvRect.w       the face's first corner UV
-    //   data.zw, extra.xy/.zw   its second, third and fourth
-    //   data.y                  the atlas layer this face samples
-    // The UVs are the model json's own rects sampled by JE's rules, resolved on
-    // the CPU (mc::world::iconBoxOf) — which is why this shader no longer carries
-    // a per-cube-model UV table for them to disagree with.
-    vec4 extra;
+    vec4 rect;       // clip-space origin xy, size zw
+    vec4 color;      // tint, multiplied into the texel
+    vec4 uvRect;     // sprite source origin xy, size zw (sprite modes)
+    vec4 data;       // x = draw mode, y = atlas layer
+    // The block icon draws ONE face of ONE box of the block's item model per
+    // call. The box arrives in 0..1 cell coordinates, already turned into the
+    // inventory pose; the four corner UVs are the model json's own rects sampled
+    // by JE's rules and resolved on the CPU (mc::world::iconBoxOf) — which is why
+    // this shader no longer carries a per-cube-model UV table for them to
+    // disagree with.
+    vec4 iconBoxMin; // xyz
+    vec4 iconBoxMax; // xyz
+    vec4 iconUv01;   // uv[0].xy, uv[1].xy
+    vec4 iconUv23;   // uv[2].xy, uv[3].xy
 } hud;
 
 layout(location = 0) out vec2 fragmentUv;
@@ -82,14 +85,14 @@ void main() {
         // it shows its plain back and reads as a plank), so all this does is map
         // the unit corner into the box and project it.
         vec3 unit = iconCorners[gl_VertexIndex];
-        vec3 p = mix(hud.color.xyz, hud.uvRect.xyz, unit);
+        vec3 p = mix(hud.iconBoxMin.xyz, hud.iconBoxMax.xyz, unit);
         vec2 screen = iconProject(p);
         gl_Position = vec4(hud.rect.xy + screen * hud.rect.zw, iconDepth(p), 1.0);
         int corner = iconQuadCorner[gl_VertexIndex % 6];
-        fragmentUv = corner == 0 ? vec2(hud.color.w, hud.uvRect.w)
-                   : corner == 1 ? hud.data.zw
-                   : corner == 2 ? hud.extra.xy
-                                 : hud.extra.zw;
+        fragmentUv = corner == 0 ? hud.iconUv01.xy
+                   : corner == 1 ? hud.iconUv01.zw
+                   : corner == 2 ? hud.iconUv23.xy
+                                 : hud.iconUv23.zw;
         fragmentTextureLayer = hud.data.y;
         // Direction#getLuminance per face, applied as a plain scalar the way
         // vanilla's block item render does: up 1.0, west 0.6, east 0.8

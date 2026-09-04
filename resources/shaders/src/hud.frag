@@ -2,18 +2,33 @@
 
 layout(location = 0) in vec2 fragmentUv;
 layout(location = 1) flat in float fragmentTextureLayer;
-layout(location = 2) flat in vec3 fragmentLight;
+// NOT flat. RN-14 made this per-vertex so the icon's corner AO shades the face
+// with a gradient (see hud.vert); this side kept saying `flat`, which both drops
+// the gradient and is an interface mismatch — Vulkan requires the interpolation
+// decoration to match for the two stages to interface at all.
+layout(location = 2) in vec3 fragmentLight;
 layout(location = 0) out vec4 outColor;
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
 layout(binding = 2) uniform sampler2DArray fontTexture;
 layout(binding = 3) uniform sampler2DArray guiTextures;
 
+// Declared identically in hud.vert and in mc::render::HudPush. This block used to
+// stop at `data`, four fields against the vertex stage's five, and read `color`
+// as a tint while RN-14 was using it to carry the icon's box — which is what made
+// every block icon a black diamond. hud_push_constant_test holds the three
+// declarations together now; the fields this stage does not read are still
+// declared, because the block is a memory layout, not a list of what one stage
+// happens to want.
 layout(push_constant) uniform HudPush {
-    vec4 rect;
-    vec4 color;
-    vec4 uvRect;
-    vec4 data;
+    vec4 rect;       // clip-space origin xy, size zw
+    vec4 color;      // tint, multiplied into the texel
+    vec4 uvRect;     // sprite source origin xy, size zw (sprite modes)
+    vec4 data;       // x = draw mode, y = atlas layer
+    vec4 iconBoxMin; // block icon: the box, xyz
+    vec4 iconBoxMax;
+    vec4 iconUv01;   // block icon: the face's four corner UVs
+    vec4 iconUv23;
 } hud;
 
 // 这个着色器全程在 sRGB 编码值上工作，输出即最终写进帧缓冲的字节。
