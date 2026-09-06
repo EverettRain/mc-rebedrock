@@ -436,6 +436,7 @@ add_executable(mc_rebedrock
     src/core/Application.cpp
     src/gameplay/entities/SpeciesRenderData.cpp
     src/render/Frustum.cpp
+    src/render/SunShadowMap.cpp
     src/render/RainSystem.cpp
     src/render/PerspectiveCamera.cpp
     src/render/TestScene.cpp
@@ -656,6 +657,7 @@ if(MC_REBEDROCK_STAGE_RUNTIME AND GLSLC_EXECUTABLE)
     # header edits without rebuilding anything.
     set(MC_REBEDROCK_SHADER_INCLUDES
         "${MC_REBEDROCK_SHADER_SOURCE_DIR}/include/lightmap.glsl"
+        "${MC_REBEDROCK_SHADER_SOURCE_DIR}/include/sun_shadow.glsl"
     )
 
     foreach(shader IN LISTS MC_REBEDROCK_SHADER_SOURCES)
@@ -1834,6 +1836,25 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME environment_attribute COMMAND mc_rebedrock_environment_attribute_test)
+
+    # RN-11: the sun shadow map's geometry (depth convention, texel snapping, caster
+    # ordering) is pure maths and provable here; the sampler's compare mode and the
+    # shaders' sampler2DShadow are GPU-only and get source guards instead.
+    add_executable(mc_rebedrock_sun_shadow_map_test
+        tests/sun_shadow_map_test.cpp
+        src/render/SunShadowMap.cpp
+        src/render/Frustum.cpp
+        src/world/DayNightCycle.cpp
+    )
+    target_include_directories(mc_rebedrock_sun_shadow_map_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    target_compile_definitions(mc_rebedrock_sun_shadow_map_test PRIVATE
+        "MC_REBEDROCK_SHADER_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src\""
+        "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\""
+        "MC_REBEDROCK_WORLD_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/WorldRenderer.hpp\"")
+    add_test(NAME sun_shadow_map COMMAND mc_rebedrock_sun_shadow_map_test)
 
     add_executable(mc_rebedrock_grass_overlay_depth_test
         tests/grass_overlay_depth_test.cpp

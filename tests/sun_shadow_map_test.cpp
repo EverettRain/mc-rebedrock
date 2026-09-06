@@ -1,0 +1,428 @@
+// RN-11 的太阳阴影图：深度约定、texel snapping、投射者选择，加上着色器与渲染器
+// 两侧的源码护栏。
+//
+// 阴影的观感 headless 验不了——测试构建从不创建管线，也没有 GPU。但这一轮的四条
+// 改动里有三条是**纯几何**：矩阵落在哪个深度区间、纹素网格钉不钉得住、排序键含不含
+// 视点。它们是可证的，而且都是先红后绿的。剩下那条（PCF 与偏置的观感）只能靠源码
+// 护栏钉住形状，数值留给 mac。
+
+#include "render/MeshData.hpp"
+#include "render/SunShadowMap.hpp"
+#include "world/DayNightCycle.hpp"
+
+#include <glm/geometric.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <regex>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#ifndef MC_REBEDROCK_SHADER_SRC_DIR
+#error "MC_REBEDROCK_SHADER_SRC_DIR must point at resources/shaders/src"
+#endif
+#ifndef MC_REBEDROCK_RENDERER_SRC
+#error "MC_REBEDROCK_RENDERER_SRC must point at src/render/vulkan/VulkanRenderer.cpp"
+#endif
+#ifndef MC_REBEDROCK_WORLD_RENDERER_SRC
+#error "MC_REBEDROCK_WORLD_RENDERER_SRC must point at src/render/vulkan/WorldRenderer.hpp"
+#endif
+
+namespace {
+
+using mc::render::Aabb;
+
+void require(bool condition, const std::string& message, int line) {
+    if (!condition) {
+        throw std::runtime_error{"sun_shadow_map_test line " + std::to_string(line) + ": " +
+                                 message};
+    }
+}
+
+#define REQUIRE(condition, message) require(condition, message, __LINE__)
+
+[[nodiscard]] std::string readFile(const std::filesystem::path& path) {
+    std::ifstream input{path, std::ios::binary};
+    REQUIRE(static_cast<bool>(input), "cannot open " + path.string());
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    return buffer.str();
+}
+
+// 去掉 `//` 行注释，解释某条不变量的散文因此不会自己满足对它的检查
+[[nodiscard]] std::string stripLineComments(const std::string& source) {
+    std::string result;
+    result.reserve(source.size());
+    std::istringstream lines{source};
+    std::string line;
+    while (std::getline(lines, line)) {
+        const auto comment = line.find("//");
+        result.append(comment == std::string::npos ? line : line.substr(0, comment));
+        result.push_back('\n');
+    }
+    return result;
+}
+
+// 取一个函数体：从 `<签名>` 起到缩进回到同级的那个 `}`。护栏要断言的是「这个函数里
+// 有/没有某个东西」，在整份文件上 grep 会被别处的同名调用满足
+[[nodiscard]] std::string functionBody(const std::string& source, const std::string& signature) {
+    const auto start = source.find(signature);
+    REQUIRE(start != std::string::npos, "cannot find " + signature);
+    const auto open = source.find('{', start);
+    REQUIRE(open != std::string::npos, "no body for " + signature);
+    int depth = 0;
+    for (std::size_t index = open; index < source.size(); ++index) {
+        if (source[index] == '{') {
+            ++depth;
+        } else if (source[index] == '}') {
+            if (--depth == 0) {
+                return source.substr(open, index - open + 1);
+            }
+        }
+    }
+    REQUIRE(false, "unbalanced body for " + signature);
+    return {};
+}
+
+[[nodiscard]] glm::vec3 projectToNdc(const glm::mat4& lightViewProj, const glm::vec3& world) {
+    const glm::vec4 clip = lightViewProj * glm::vec4{world, 1.0F};
+    return glm::vec3{clip} / clip.w;
+}
+
+// 正午附近的太阳，DayNightCycle 的 orbit = 0
+const glm::vec3 kNoonSun = glm::normalize(glm::vec3{0.0F, 1.0F, 0.28F});
+
+// ---------------------------------------------------------------------------
+// 1. 深度约定：光锥中心的 z_ndc 必须落在 Vulkan 的裁剪区间 [0, 1] 里
+//
+// 这是本轮的第一条断言。改动前 glm::ortho 派发到 orthoRH_NO（全仓没有定义
+// GLM_FORCE_DEPTH_ZERO_TO_ONE），深度落在 [-1,1]；Vulkan 裁的是 0 <= z_clip <= w，
+// depthClampEnable 又是 VK_FALSE。于是 z_ndc < 0 的几何被硬件裁掉，也就是光源空间
+// 深度小于 (near+far)/2 = 160.05 格的一切——视点脚下的地面（d ≈ 96）从来没有写进过
+// 阴影图，只有视点下方 64 格开外的地形才进得去。这条断言改动前得到 -0.4004。
+// ---------------------------------------------------------------------------
+void checkDepthConvention() {
+    const glm::vec3 eye{12.5F, 70.0F, -8.25F};
+    const glm::mat4 lightViewProj = mc::render::sunShadowLightViewProj(kNoonSun, eye);
+
+    const float centerDepth = projectToNdc(lightViewProj, eye).z;
+    REQUIRE(centerDepth >= 0.0F && centerDepth <= 1.0F,
+            "the light frustum centre projects to z_ndc " + std::to_string(centerDepth) +
+                ", outside Vulkan's [0, 1] clip range: the ortho matrix is using the OpenGL "
+                "depth convention and the hardware clips everything nearer than 160 blocks");
+
+    // 视点脚下到远低于脚下的一整段落差都必须进得去。128 格正交框的横截面覆盖 ±64 格，
+    // 深度方向的可用区间是 0.1..320 格，视点本身在 96 格处，所以脚下 ±60 格都该通过
+    for (const float drop : {0.0F, 5.0F, 32.0F, 60.0F}) {
+        const glm::vec3 point = eye - glm::vec3{0.0F, drop, 0.0F};
+        const glm::vec3 ndc = projectToNdc(lightViewProj, point);
+        REQUIRE(ndc.z >= 0.0F && ndc.z <= 1.0F,
+                "terrain " + std::to_string(drop) + " blocks below the eye projects to z_ndc " +
+                    std::to_string(ndc.z) + ", which the rasteriser clips away");
+        REQUIRE(std::abs(ndc.x) <= 1.0F && std::abs(ndc.y) <= 1.0F,
+                "terrain " + std::to_string(drop) + " blocks below the eye falls outside the "
+                "ortho box laterally, which it should not");
+    }
+
+    // 深度必须随离光源变远而单调增大，而且量纲对得上：1.0 个 NDC 单位 = far - near 格
+    const float shallow = projectToNdc(lightViewProj, eye).z;
+    const float deep = projectToNdc(lightViewProj, eye - glm::vec3{0.0F, 60.0F, 0.0F}).z;
+    REQUIRE(deep > shallow, "light-space depth must increase away from the sun");
+    // 落差 60 格投影到光轴上是 60 * dot(sun, up) 格（不是除——光轴与竖直方向的夹角
+    // 让同样的落差在光方向上走得**更短**）
+    const float expected = (60.0F * glm::dot(kNoonSun, glm::vec3{0.0F, 1.0F, 0.0F})) /
+                           mc::render::kSunShadowDepthRangeBlocks;
+    REQUIRE(std::abs((deep - shallow) - expected) < 1e-3F,
+            "1.0 of NDC depth must equal far - near blocks; got " +
+                std::to_string(deep - shallow) + " for an expected " + std::to_string(expected));
+}
+
+// ---------------------------------------------------------------------------
+// 2. texel snapping：固定的世界点在阴影图里的纹素坐标，随视点平移只能整纹素跳变
+//
+// 不做量化时，光源正交框逐帧跟着视点这个连续浮点量平移，每一帧的纹素落在不同的世界
+// 位置上，被量化的阴影边界因此逐帧改变采样相位——玩家平移时阴影边沿地面爬行。
+// ---------------------------------------------------------------------------
+void checkTexelSnapping() {
+    const glm::vec3 probe{3.5F, 64.0F, -11.25F};
+    const glm::vec3 base{0.0F, 70.0F, 0.0F};
+    const float resolution = static_cast<float>(mc::render::kSunShadowMapResolution);
+
+    const glm::vec3 reference = projectToNdc(mc::render::sunShadowLightViewProj(kNoonSun, base), probe);
+    const glm::vec2 referenceTexel = (glm::vec2{reference} * 0.5F + 0.5F) * resolution;
+
+    // 步长刻意取纹素尺寸（0.0625 格）的无理数倍，量化前后不会碰巧对齐
+    constexpr float kStep = 0.0179856F;
+    bool sawMotion = false;
+    for (int index = 1; index <= 200; ++index) {
+        const glm::vec3 eye = base + glm::vec3{kStep * static_cast<float>(index),
+                                               kStep * 0.5F * static_cast<float>(index),
+                                               -kStep * 0.75F * static_cast<float>(index)};
+        const glm::vec3 ndc = projectToNdc(mc::render::sunShadowLightViewProj(kNoonSun, eye), probe);
+        const glm::vec2 texel = (glm::vec2{ndc} * 0.5F + 0.5F) * resolution;
+        const glm::vec2 delta = texel - referenceTexel;
+        for (const float component : {delta.x, delta.y}) {
+            const float residual = std::abs(component - std::round(component));
+            REQUIRE(residual < 1e-2F,
+                    "step " + std::to_string(index) + ": a fixed world point moved " +
+                        std::to_string(component) +
+                        " texels in the shadow map, which is not a whole number of texels — the "
+                        "light matrix is not snapped to the texel grid and shadow edges will "
+                        "crawl as the camera moves");
+        }
+        if (std::abs(delta.x) > 0.5F || std::abs(delta.y) > 0.5F) {
+            sawMotion = true;
+        }
+    }
+    // 反面：如果框根本没跟着视点动，上面那条断言会白白通过
+    REQUIRE(sawMotion, "the light frustum never moved across 200 camera steps, so the snapping "
+                       "assertion above proved nothing");
+}
+
+// ---------------------------------------------------------------------------
+// 3. 投射者选择：排序键不含视点，因此相机平移不改变入选集合
+//
+// 从前的键是 section 中心到相机的距离平方，相机一动整张表重排，512 的截断线在表上
+// 滑动，整块 16x16 的 section 成批进出——地面上因此出现以区块为粒度、随移动扫过的
+// 亮斑（用户实机报的「类似移动体积云的阴影」）。
+// ---------------------------------------------------------------------------
+// 候选必须**整体落在两个光锥之内**，这条断言才只在量排序。否则框边的进出会混进来，
+// 而那是 128 格正交框的账（C(c) CSM，本轮不做），不是排序键的账。
+// 位置用黄金比例序列铺开：确定性、无 RNG、且不会像整数网格那样与纹素量化共振。
+[[nodiscard]] std::vector<Aabb> buildCandidateSections(const glm::vec3& around) {
+    // 形状照着真实地形：横向铺开、竖向薄。这一点对断言的力度是决定性的——球状聚在
+    // 视点周围的夹具里，「离相机距离」的排名约等于半径，相机一动排名几乎不变，缺陷
+    // 会从断言底下溜过去（实测只有 4/512 个位置变化）。换成板状之后同样的破坏动 24 个。
+    // 数量取 2000 而不是刚过 512：截断线因此落在分布的稠密处，而不是稀疏的尾巴上，
+    // 这也更接近文档量级核对里「视点飞高时候选涨到数千」的那个情形。
+    std::vector<Aabb> bounds;
+    constexpr std::size_t kCount = 2000;
+    constexpr float kSection = 16.0F;
+    for (std::size_t index = 0; index < kCount; ++index) {
+        const auto fraction = [index](float step) {
+            const float value = static_cast<float>(index) * step;
+            return value - std::floor(value);
+        };
+        const glm::vec3 minimum{
+            around.x - 40.0F + fraction(0.6180339887F) * 80.0F,
+            around.y - 56.0F + fraction(0.7548776662F) * 56.0F,
+            around.z - 12.0F + fraction(0.5698402910F) * 24.0F,
+        };
+        bounds.push_back(Aabb{minimum, minimum + glm::vec3{kSection}});
+    }
+    return bounds;
+}
+
+// 八个角全部落在 NDC 立方体内 = 这个盒完整地在光锥里
+[[nodiscard]] bool fullyInsideFrustum(const glm::mat4& lightViewProj, const Aabb& box) {
+    for (int corner = 0; corner < 8; ++corner) {
+        const glm::vec3 point{
+            (corner & 1) != 0 ? box.maximum.x : box.minimum.x,
+            (corner & 2) != 0 ? box.maximum.y : box.minimum.y,
+            (corner & 4) != 0 ? box.maximum.z : box.minimum.z,
+        };
+        const glm::vec3 ndc = projectToNdc(lightViewProj, point);
+        if (std::abs(ndc.x) > 1.0F || std::abs(ndc.y) > 1.0F || ndc.z < 0.0F || ndc.z > 1.0F) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void checkCasterSelection() {
+    const glm::vec3 eye{0.0F, 70.0F, 0.0F};
+    const std::vector<Aabb> bounds = buildCandidateSections(eye);
+    REQUIRE(bounds.size() > mc::render::kMaxSunShadowCasters,
+            "the fixture must exceed the caster cap or it tests nothing");
+
+    const glm::mat4 baseMatrix = mc::render::sunShadowLightViewProj(kNoonSun, eye);
+    for (std::size_t index = 0; index < bounds.size(); ++index) {
+        REQUIRE(fullyInsideFrustum(baseMatrix, bounds[index]),
+                "fixture candidate " + std::to_string(index) + " is not inside the light frustum");
+    }
+    std::vector<std::size_t> selected;
+    mc::render::selectSunShadowCasters(baseMatrix, kNoonSun, bounds, selected);
+    REQUIRE(selected.size() == mc::render::kMaxSunShadowCasters,
+            "expected the cap to bind, got " + std::to_string(selected.size()) + " casters");
+
+    // 沿光方向最靠前的那批必须入选：把候选按光源空间深度排一遍，最靠前的 32 个
+    // 一个都不能落选
+    std::vector<std::size_t> byDepth(bounds.size());
+    for (std::size_t index = 0; index < bounds.size(); ++index) {
+        byDepth[index] = index;
+    }
+    std::sort(byDepth.begin(), byDepth.end(), [&](std::size_t first, std::size_t second) {
+        return mc::render::sunShadowCasterDepth(kNoonSun, bounds[first]) <
+               mc::render::sunShadowCasterDepth(kNoonSun, bounds[second]);
+    });
+    const std::set<std::size_t> chosen{selected.begin(), selected.end()};
+    for (std::size_t rank = 0; rank < 32; ++rank) {
+        REQUIRE(chosen.count(byDepth[rank]) == 1U,
+                "the section ranked " + std::to_string(rank) +
+                    " closest to the sun was dropped from the caster set");
+    }
+
+    // 本体：相机小幅平移不得改变入选集合
+    for (const glm::vec3 nudge : {glm::vec3{0.37F, 0.0F, 0.0F}, glm::vec3{0.0F, 0.21F, -0.44F},
+                                  glm::vec3{-0.9F, 0.5F, 0.9F}}) {
+        const glm::mat4 movedMatrix = mc::render::sunShadowLightViewProj(kNoonSun, eye + nudge);
+        // 前置条件：平移后的光锥仍然完整包住每一个候选。不成立就说明这个夹具在量的是
+        // 框边进出而不是排序，断言会变成一条假阳性
+        for (std::size_t index = 0; index < bounds.size(); ++index) {
+            REQUIRE(fullyInsideFrustum(movedMatrix, bounds[index]),
+                    "fixture candidate " + std::to_string(index) +
+                        " left the light frustum when the camera moved; the fixture must keep "
+                        "every candidate interior so this only measures the ordering");
+        }
+        std::vector<std::size_t> moved;
+        mc::render::selectSunShadowCasters(movedMatrix, kNoonSun, bounds, moved);
+        const std::set<std::size_t> movedSet{moved.begin(), moved.end()};
+        REQUIRE(movedSet == chosen,
+                "moving the camera by less than a block changed the caster set (" +
+                    std::to_string(chosen.size()) + " vs " + std::to_string(movedSet.size()) +
+                    " entries, sets differ) — the sort key still depends on the camera, so whole "
+                    "sections pop in and out and their shadows sweep across the ground");
+    }
+
+    // 排序键本身：包围盒沿光方向的近点，越靠近光源越小，且与视点无关
+    const Aabb near{{0.0F, 100.0F, 0.0F}, {16.0F, 116.0F, 16.0F}};
+    const Aabb far{{0.0F, 20.0F, 0.0F}, {16.0F, 36.0F, 16.0F}};
+    REQUIRE(mc::render::sunShadowCasterDepth(kNoonSun, near) <
+                mc::render::sunShadowCasterDepth(kNoonSun, far),
+            "a section nearer the sun must sort before one further from it");
+}
+
+// ---------------------------------------------------------------------------
+// 4. 太阳永不过天顶：光源矩阵的 up 是硬编码的 (0,1,0)，太阳竖直时 lookAt 退化成 NaN
+//
+// 今天成立是因为 DayNightCycle 的轨道带 0.28 的 z 倾角。谁把轨道改成过天顶，这里先
+// 炸，而不是在 mac 上炸成一屏 NaN。
+// ---------------------------------------------------------------------------
+void checkSunNeverVertical() {
+    float peak = 0.0F;
+    for (int tick = 0; tick < 24'000; ++tick) {
+        const glm::vec3 sun =
+            glm::normalize(mc::world::DayNightCycle::stateAtTick(static_cast<double>(tick)).sunDirection);
+        peak = std::max(peak, std::abs(sun.y));
+        const glm::mat4 matrix = mc::render::sunShadowLightViewProj(sun, glm::vec3{0.0F, 70.0F, 0.0F});
+        REQUIRE(std::isfinite(matrix[0][0]) && std::isfinite(matrix[3][2]),
+                "the light matrix went non-finite at tick " + std::to_string(tick));
+    }
+    REQUIRE(peak < 0.99F,
+            "the sun now passes within 8 degrees of the zenith (peak |y| = " +
+                std::to_string(peak) +
+                "), which degenerates the hard-coded (0,1,0) up vector in sunShadowLightViewProj");
+}
+
+// ---------------------------------------------------------------------------
+// 5. 源码护栏：GPU 上才看得见的三件事，在源码层面钉住
+// ---------------------------------------------------------------------------
+void checkRendererSourceGuards() {
+    const std::string renderer = stripLineComments(readFile(MC_REBEDROCK_RENDERER_SRC));
+    const std::string world = stripLineComments(readFile(MC_REBEDROCK_WORLD_RENDERER_SRC));
+
+    // 采样器：独立的 compare 采样器，binding 8 挂的是它而不是调试叠加层那个
+    const std::string sampler = functionBody(renderer, "void createShadowCompareSampler()");
+    REQUIRE(sampler.find("compareEnable = VK_TRUE") != std::string::npos,
+            "the terrain's shadow sampler must enable depth comparison, or sampler2DShadow in "
+            "the shaders reads garbage");
+    REQUIRE(sampler.find("VK_COMPARE_OP_LESS_OR_EQUAL") != std::string::npos,
+            "the shadow compare op must be LESS_OR_EQUAL to match the shaders' 'lit' sense");
+    REQUIRE(sampler.find("VK_FILTER_LINEAR") != std::string::npos,
+            "the shadow compare sampler must filter LINEAR, so each PCF tap is itself a "
+            "hardware 2x2 comparison");
+    REQUIRE(renderer.find("shadowImageInfo.sampler = shadowCompareSampler") != std::string::npos,
+            "descriptor binding 8 must carry the dedicated compare sampler, not the debug "
+            "overlay's NEAREST one");
+
+    // 光锥跟着**渲染视点**走，不是相机对象的位置
+    const std::string matrix = functionBody(world, "void updateShadowMatrix()");
+    REQUIRE(matrix.find("renderEyeState()") != std::string::npos,
+            "updateShadowMatrix must centre the light frustum on the render eye; in third "
+            "person the render eye is pulled 4 blocks back and the camera object is not");
+    REQUIRE(matrix.find("camera.position()") == std::string::npos,
+            "updateShadowMatrix still reads camera.position(), so the light frustum sits on the "
+            "player rather than on what is being rendered");
+
+    // 投射者排序里不得再出现视点
+    const std::string record = functionBody(world, "void recordShadow(FrameContext& frame)");
+    REQUIRE(record.find("camera.position()") == std::string::npos,
+            "recordShadow still reads the camera position — the caster ordering must not depend "
+            "on it, or sections pop in and out as the player walks");
+
+    // 分辨率不得再有第二个字面量
+    REQUIRE(renderer.find("kSunShadowMapResolution, kSunShadowMapResolution") != std::string::npos,
+            "the shadow map's resolution must come from SunShadowMap.hpp, not a literal");
+}
+
+void checkShaderSourceGuards() {
+    const std::filesystem::path shaderDir{MC_REBEDROCK_SHADER_SRC_DIR};
+    // 三个采样者，一个都不能漏：binding 8 挂着 compare 采样器之后，用非 shadow 的
+    // sampler2D 采它是未定义用法，MoltenVK 上是 SPIR-V→MSL 转换失败＝黑窗
+    for (const char* name : {"grass_block.frag", "block_cutout.frag", "item_entity.frag"}) {
+        const std::string source = stripLineComments(readFile(shaderDir / name));
+        REQUIRE(source.find("layout(binding = 8) uniform sampler2DShadow shadowDepth;") !=
+                    std::string::npos,
+                std::string{name} +
+                    " must declare binding 8 as sampler2DShadow; a plain sampler2D on a compare "
+                    "sampler fails SPIR-V to MSL conversion on MoltenVK");
+        REQUIRE(source.find("sampler2D shadowDepth") == std::string::npos,
+                std::string{name} + " still declares binding 8 as a non-shadow sampler2D");
+        REQUIRE(source.find("sunShadowFactor(") != std::string::npos,
+                std::string{name} + " must go through the shared sunShadowFactor(), not its own "
+                                    "hand-copied tap");
+        REQUIRE(source.find("0.002") == std::string::npos,
+                std::string{name} + " still carries the old constant 0.002 depth bias");
+    }
+
+    const std::string include = stripLineComments(readFile(shaderDir / "include/sun_shadow.glsl"));
+    // z 不得再被重映射：投影是 orthoRH_ZO，深度已经在 [0,1] 里，再 * 0.5 + 0.5 会把它
+    // 压进 [0.5,1]。这是换深度约定时最容易漏的一半
+    REQUIRE(include.find("projected * 0.5 + 0.5") == std::string::npos,
+            "sun_shadow.glsl still remaps all three components; under orthoRH_ZO the depth is "
+            "already in [0,1] and remapping squeezes it into [0.5,1]");
+    REQUIRE(include.find("projected.xy * 0.5 + 0.5") != std::string::npos,
+            "sun_shadow.glsl must still remap xy from [-1,1] to [0,1]");
+    // PCF 是 3x3
+    REQUIRE(include.find("for (int y = -1; y <= 1; ++y)") != std::string::npos &&
+                include.find("for (int x = -1; x <= 1; ++x)") != std::string::npos,
+            "sun_shadow.glsl must sample a 3x3 PCF grid");
+    // 着色器里的分辨率与 C++ 常量必须一致，否则 PCF 的步长不是一个纹素
+    const std::string expected =
+        "const float kSunShadowMapResolution = " +
+        std::to_string(static_cast<int>(mc::render::kSunShadowMapResolution)) + ".0;";
+    REQUIRE(include.find(expected) != std::string::npos,
+            "sun_shadow.glsl's shadow map resolution must match SunShadowMap.hpp; expected \"" +
+                expected + "\"");
+    // 深度换算也必须一致
+    std::ostringstream range;
+    range << "const float kSunShadowDepthRangeBlocks = " << mc::render::kSunShadowDepthRangeBlocks
+          << ";";
+    REQUIRE(include.find(range.str()) != std::string::npos,
+            "sun_shadow.glsl's depth range must match SunShadowMap.hpp; expected \"" +
+                range.str() + "\"");
+}
+
+} // namespace
+
+int main() {
+    try {
+        checkDepthConvention();
+        checkTexelSnapping();
+        checkCasterSelection();
+        checkSunNeverVertical();
+        checkRendererSourceGuards();
+        checkShaderSourceGuards();
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "%s\n", error.what());
+        return 1;
+    }
+    return 0;
+}

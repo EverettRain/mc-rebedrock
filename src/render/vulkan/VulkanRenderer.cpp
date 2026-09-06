@@ -54,6 +54,7 @@
 #include "gameplay/entities/SpeciesRenderData.hpp"
 #include "persistence/SaveRepository.hpp"
 #include "render/Frustum.hpp"
+#include "render/SunShadowMap.hpp"
 #include "render/SmokeScript.hpp"
 #include "render/vulkan/SmokeScriptSteps.hpp"
 #include "runtime/GameRuntime.hpp"
@@ -4270,6 +4271,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (shadowDebugSampler != VK_NULL_HANDLE) {
                 vkDestroySampler(device, shadowDebugSampler, nullptr);
             }
+            if (shadowCompareSampler != VK_NULL_HANDLE) {
+                vkDestroySampler(device, shadowCompareSampler, nullptr);
+            }
             if (worldPipelines_.shadowDebugPipelineLayout != VK_NULL_HANDLE) {
                 vkDestroyPipelineLayout(device, worldPipelines_.shadowDebugPipelineLayout, nullptr);
             }
@@ -4994,7 +4998,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 顶点数据与主通道共用同一批 VoxelVertex 缓冲
     // 目标、管线与布局都与交换链无关，只创建一次
     void createShadowResources() {
-        shadowTarget.init({&resources_, device, 2048U, 2048U});
+        // 分辨率取 SunShadowMap 的常量：texel snapping 要算「一个纹素是世界里的多长」，
+        // 而那个量只有在分辨率与正交框尺寸放在一起时才算得出来。从前这里是个手写的
+        // 2048，updateShadowMatrix 那边根本看不见它
+        shadowTarget.init({&resources_, device, kSunShadowMapResolution, kSunShadowMapResolution});
         // 下面的描述符声明布局为 SHADER_READ_ONLY_OPTIMAL
         // 在 Vulkan 看来，三个地形与实体片元着色器都无条件采样 binding 8
         // 而太阳阴影默认是关的，预通道会提前返回，从不转换这张图像的布局
@@ -5097,14 +5104,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
         createShadowDebugResources();
 
+        createShadowCompareSampler();
+
         // 把每一帧的 set 0 的 binding 8 指向阴影深度图，地形着色器才能采样它
         // 图像视图与采样器此刻已存在
         // 图的内容由预通道每帧重写，这与描述符声明的 SHADER_READ_ONLY 布局本就吻合
+        //
+        // 采样器是**专用**的 shadowCompareSampler，不是调试叠加层那个。从前这里挂的是
+        // shadowDebugSampler（NEAREST、不开 compare），于是地形只能做一次最近邻采样加
+        // 一次硬阈值比较，阴影边只有「全亮 / 0.35」两种值——那就是锯齿边。调试叠加层
+        // 仍然用它自己那个：叠加层要把深度当颜色读（texture(...).r），那需要一个**不**开
+        // compare 的采样器，两者不能合并
         for (std::size_t index = 0; index < kFramesInFlight; ++index) {
             VkDescriptorImageInfo shadowImageInfo{};
             shadowImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             shadowImageInfo.imageView = shadowTarget.view();
-            shadowImageInfo.sampler = shadowDebugSampler;
+            shadowImageInfo.sampler = shadowCompareSampler;
             auto write = vkStructure<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
             write.dstSet = frames[index].descriptorSet;
             write.dstBinding = 8;
@@ -5113,6 +5128,35 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             write.pImageInfo = &shadowImageInfo;
             vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
         }
+    }
+
+    // 地形与实体采样 binding 8 用的专用采样器（RN-11 B）。
+    //
+    // compareEnable + LESS_OR_EQUAL 把深度比较搬进采样器：着色器侧 texture() 返回的不再
+    // 是深度值，而是「通过比较」的比例，且 VK_FILTER_LINEAR 让硬件在 2x2 邻域上加权，
+    // 一次 tap 本身就是一次 2x2 的 PCF。着色器再在其上叠 3x3 的 tap 网格。
+    //
+    // 这个采样器一旦挂上，GLSL 侧就**必须**声明成 sampler2DShadow：用非 shadow 的
+    // sampler2D 采一个开了 compare 的采样器是 Vulkan 的未定义用法，MoltenVK 上表现为
+    // SPIR-V 到 MSL 转换失败，也就是 vkCreateGraphicsPipelines 返回
+    // VK_ERROR_INITIALIZATION_FAILED——一个没有任何消息的黑窗。三个采样者
+    // （grass_block / block_cutout / item_entity）必须一起改，漏一个就是那个后果。
+    //
+    // CLAMP_TO_EDGE 而不是 CLAMP_TO_BORDER：着色器已经自己把 uv 出界的片元判为全亮，
+    // 边界颜色因此没有消费者，而 PCF 的边缘 tap 溢出一两个纹素时钳到边沿是想要的行为。
+    void createShadowCompareSampler() {
+        VkSamplerCreateInfo samplerInfo{};
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.compareEnable = VK_TRUE;
+        samplerInfo.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        checkVk(vkCreateSampler(device, &samplerInfo, nullptr, &shadowCompareSampler),
+                "vkCreateSampler(shadow compare)");
     }
 
     // 阴影图调试叠加层在屏幕一角用一个四边形采样离屏深度纹理，开发期因此能看到预通道的输出
@@ -7402,6 +7446,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     VkDescriptorPool shadowDebugPool = VK_NULL_HANDLE;
     VkDescriptorSet shadowDebugSet = VK_NULL_HANDLE;
     VkSampler shadowDebugSampler = VK_NULL_HANDLE;
+    VkSampler shadowCompareSampler = VK_NULL_HANDLE;
     glm::mat4 shadowLightViewProj{1.0F};
     bool shadowDisabled = std::getenv("MC_REBEDROCK_SHADOW_DISABLE") != nullptr;
     render::RainSystem rainSystem;
