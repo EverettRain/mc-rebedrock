@@ -45,6 +45,7 @@
 #include "render/RainSystem.hpp"
 #include "render/SectionDeliveryQueue.hpp"
 #include "render/StreamingBudget.hpp"
+#include "render/SunShadowMap.hpp"
 #include "ui/Language.hpp"
 #include "ui/TextFont.hpp"
 #include "ui/UiFrameData.hpp"
@@ -946,18 +947,24 @@ class WorldRenderer final {
     }
 
 
+    // 矩阵的构造整体搬进 render/SunShadowMap.hpp——深度约定、texel snapping 与正交框
+    // 尺寸都在那里，投射者的排序键也在那里读同一批常量。这里只剩「用哪个太阳、哪个视点」。
+    //
+    // 视点用 renderEyeState() 而不是 camera.position()：相机对象始终在玩家眼睛处，
+    // 第三人称把渲染眼点沿视线拉后 4 格。用相机位置会让 128 格的光锥中心停在玩家身上
+    // 而不是画面中心，第三人称下光锥因此偏心，画面前方约 4 格宽的一条带子落在框外、
+    // 完全没有阴影。视图矩阵与剔除视锥都已经统一用渲染眼点（renderViewMatrix），
+    // 阴影是最后一个还在用相机位置的消费者。
     void updateShadowMatrix() {
         if (shadowDisabled) {
             return;
         }
         const auto daylight = world::DayNightCycle::stateAtTick(
             clientMirror.world().dayTimeTicks);
-        const glm::vec3 sun = glm::normalize(daylight.sunDirection);
-        const glm::vec3 eye = camera.position();
-        const glm::mat4 lightView =
-            glm::lookAt(eye + sun * 96.0F, eye - sun * 96.0F, glm::vec3{0.0F, 1.0F, 0.0F});
-        const glm::mat4 lightProj = glm::ortho(-64.0F, 64.0F, -64.0F, 64.0F, 0.1F, 320.0F);
-        shadowLightViewProj = lightProj * lightView;
+        // 排序键要用同一帧的同一个太阳，因此在这里存下来给 recordShadow 用，
+        // 而不是让它自己再取一次 dayTimeTicks——两次取之间跨了 tick 就会错开一帧
+        shadowSunDirection_ = glm::normalize(daylight.sunDirection);
+        shadowLightViewProj = sunShadowLightViewProj(shadowSunDirection_, renderEyeState().position);
     }
 
 
@@ -969,30 +976,22 @@ class WorldRenderer final {
     // SHADER_READ_ONLY_OPTIMAL。关掉太阳阴影时整步在**编译期**被剪掉（连同那条屏障），
     // 不是在这里 return；那张图靠 OffscreenTarget::initializeAsShaderRead 留下的布局保持合法。
     void recordShadow(FrameContext& frame) {
-        const glm::vec3 eye = camera.position();
-        const Frustum lightFrustum(shadowLightViewProj);
-        std::vector<const GpuMesh*> casters;
-        casters.reserve(gpuMeshes.size());
+        // 候选只收**有不透明几何**的 section。从前这个判断在下面的绘制循环里，于是
+        // 空 opaque 的 section 白占 512 个名额里的位置：选进来、排了序、然后 continue。
+        shadowCasterMeshes_.clear();
+        shadowCasterBounds_.clear();
         for (const auto& [position, mesh] : gpuMeshes) {
             static_cast<void>(position);
-            if (lightFrustum.intersects(mesh.bounds)) {
-                casters.push_back(&mesh);
+            if (mesh.opaque.indexCount == 0U) {
+                continue;
             }
+            shadowCasterMeshes_.push_back(&mesh);
+            shadowCasterBounds_.push_back(mesh.bounds);
         }
-        // 限制预通道的绘制量，视点飞高或光锥覆盖密集区域时投射者列表能涨到数千
-        // 每帧全部重画正是那种可能把设备推向丢失的重负载帧
-        // 只保留最近的 512 个
-        constexpr std::size_t kMaxShadowCasters = 512;
-        if (casters.size() > kMaxShadowCasters) {
-            std::ranges::sort(casters, [&eye](const GpuMesh* first, const GpuMesh* second) {
-                const glm::vec3 firstDelta =
-                    (first->bounds.minimum + first->bounds.maximum) * 0.5F - eye;
-                const glm::vec3 secondDelta =
-                    (second->bounds.minimum + second->bounds.maximum) * 0.5F - eye;
-                return glm::dot(firstDelta, firstDelta) < glm::dot(secondDelta, secondDelta);
-            });
-            casters.resize(kMaxShadowCasters);
-        }
+        // 光锥剔除 + 按光源空间深度截断到 kMaxSunShadowCasters（见 SunShadowMap.hpp）。
+        // 三个 vector 都是成员，clear() 保留容量，因此稳态下逐帧零分配。
+        selectSunShadowCasters(shadowLightViewProj, shadowSunDirection_, shadowCasterBounds_,
+                               shadowCasterSelection_);
         VkViewport viewport{};
         viewport.width = static_cast<float>(shadowTarget.width());
         viewport.height = static_cast<float>(shadowTarget.height());
@@ -1001,10 +1000,8 @@ class WorldRenderer final {
         VkRect2D scissor{{0, 0}, {shadowTarget.width(), shadowTarget.height()}};
         vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
         vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.shadowPipeline);
-        for (const auto* mesh : casters) {
-            if (mesh->opaque.indexCount == 0U) {
-                continue;
-            }
+        for (const std::size_t index : shadowCasterSelection_) {
+            const GpuMesh* mesh = shadowCasterMeshes_[index];
             const ShadowPush push{shadowLightViewProj, glm::vec4{mesh->sectionOrigin, 1.0F}};
             vkCmdPushConstants(frame.commandBuffer, pipelines.shadowPipelineLayout,
                                VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
@@ -1014,9 +1011,9 @@ class WorldRenderer final {
                                  mesh->opaque.indexOffset, VK_INDEX_TYPE_UINT32);
             vkCmdDrawIndexed(frame.commandBuffer, mesh->opaque.indexCount, 1, 0, 0, 0);
         }
-        if (!diagnosticsOnce_.shadowCasters && !casters.empty()) {
+        if (!diagnosticsOnce_.shadowCasters && !shadowCasterSelection_.empty()) {
             diagnosticsOnce_.shadowCasters = true;
-            std::cout << "[shadow] pre-pass " << casters.size() << " casters\n";
+            std::cout << "[shadow] pre-pass " << shadowCasterSelection_.size() << " casters\n";
         }
     }
 
@@ -2585,6 +2582,14 @@ class WorldRenderer final {
   animation::HingeAnimation chestLidAnimation;
   animation::DisplayEntityAnimation itemDisplayAnimation;
   bool shadowDebugOverlay = std::getenv("MC_REBEDROCK_SHADOW_DEBUG") != nullptr;
+  // 本帧的太阳方向，updateShadowMatrix 写、recordShadow 读。矩阵与投射者排序键必须
+  // 出自同一个太阳，否则跨 tick 的那一帧里两者会错开
+  glm::vec3 shadowSunDirection_{0.0F, 1.0F, 0.0F};
+  // 阴影预通道的逐帧暂存：候选网格、它们的包围盒、以及选中的下标。
+  // 成员而非局部变量，clear() 保留容量，稳态下逐帧零分配
+  std::vector<const GpuMesh*> shadowCasterMeshes_;
+  std::vector<Aabb> shadowCasterBounds_;
+  std::vector<std::size_t> shadowCasterSelection_;
   // 方块粉尘、水花粒子和异步雨共用的 CPU 暂存缓冲，可复用
   // 记录采样世界期间它一直留在主机缓存里，最后一次性整体拷进本帧顺序写映射的存储缓冲
   std::vector<ParticleRecord> sceneParticleRecords_;

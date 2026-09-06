@@ -1,6 +1,7 @@
 #version 450
 
 #include "include/lightmap.glsl"
+#include "include/sun_shadow.glsl"
 
 layout(location = 0) in vec2 fragmentUv;
 layout(location = 1) in vec3 fragmentNormal;
@@ -48,7 +49,7 @@ layout(binding = 0) uniform CameraUniform {
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
 // The sun shadow depth map (see grass_block.frag).
-layout(binding = 8) uniform sampler2D shadowDepth;
+layout(binding = 8) uniform sampler2DShadow shadowDepth;
 
 vec3 weatherFogColor(vec3 color) {
     color.rg *= 1.0 - camera.weatherSettings.x * 0.50;
@@ -77,19 +78,11 @@ void main() {
         discard;
     }
     vec3 normal = normalize(fragmentNormal);
-    // Sun shadow (see grass_block.frag).
+    // Sun shadow (see grass_block.frag and include/sun_shadow.glsl).
     float shadowFactor = 1.0;
     if (camera.lightingSettings.w > 0.5) {
-        vec4 lightPosition = camera.lightViewProj * vec4(fragmentWorldPosition, 1.0);
-        vec3 projected = lightPosition.xyz / lightPosition.w;
-        vec3 shadowUv = projected * 0.5 + 0.5;
-        if (shadowUv.x >= 0.0 && shadowUv.x <= 1.0 && shadowUv.y >= 0.0 && shadowUv.y <= 1.0 &&
-            shadowUv.z <= 1.0) {
-            float closestDepth = texture(shadowDepth, shadowUv.xy).r;
-            if (shadowUv.z - 0.002 > closestDepth) {
-                shadowFactor = 0.35;
-            }
-        }
+        shadowFactor = sunShadowFactor(shadowDepth, camera.lightViewProj, fragmentWorldPosition,
+                                       normal, camera.sunDirection.xyz);
     }
     // CardinalLighting.DEFAULT, from the shared lightmap include — skipped for a
     // face whose model element declares `"shade": false` (RN-13). Vanilla's

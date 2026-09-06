@@ -1,6 +1,7 @@
 #version 450
 
 #include "include/lightmap.glsl"
+#include "include/sun_shadow.glsl"
 
 layout(location = 0) in vec2 fragmentUv;
 layout(location = 1) flat in float fragmentTextureLayer;
@@ -48,7 +49,7 @@ layout(binding = 0) uniform CameraUniform {
 layout(binding = 1) uniform sampler2DArray blockTextures;
 // Dedicated entity/creature skins, box-UV mapped (one layer per species).
 layout(binding = 4) uniform sampler2DArray entityTextures;
-layout(binding = 8) uniform sampler2D shadowDepth;
+layout(binding = 8) uniform sampler2DShadow shadowDepth;
 
 // Vanilla's light curve, identical to grass_block.frag: level 15 is full
 // brightness and the falloff steepens toward darkness.
@@ -86,17 +87,15 @@ void main() {
         vec3 normal = normalize(fragmentNormal);
         if (fragmentFallingBlock > 0.5) {
             faceShade = cardinalShade(normal);
+            // Same shared sampler as the terrain (include/sun_shadow.glsl). This
+            // was a fourth hand-copy of the terrain's shadow tap and it had already
+            // drifted: it skipped the intermediate `projected` and so remapped z
+            // in a place the others did not.
             float shadowFactor = 1.0;
             if (camera.lightingSettings.w > 0.5) {
-                vec4 lightPosition = camera.lightViewProj * vec4(fragmentWorldPosition, 1.0);
-                vec3 shadowUv = lightPosition.xyz / lightPosition.w * 0.5 + 0.5;
-                if (shadowUv.x >= 0.0 && shadowUv.x <= 1.0 &&
-                    shadowUv.y >= 0.0 && shadowUv.y <= 1.0 && shadowUv.z <= 1.0) {
-                    float closestDepth = texture(shadowDepth, shadowUv.xy).r;
-                    if (shadowUv.z - 0.002 > closestDepth) {
-                        shadowFactor = 0.35;
-                    }
-                }
+                shadowFactor = sunShadowFactor(shadowDepth, camera.lightViewProj,
+                                               fragmentWorldPosition, normal,
+                                               camera.sunDirection.xyz);
             }
             float diffuse = max(dot(normal, normalize(camera.sunDirection.xyz)), 0.0);
             terrainSunFactor = 0.72 + diffuse * shadowFactor * 0.28;
