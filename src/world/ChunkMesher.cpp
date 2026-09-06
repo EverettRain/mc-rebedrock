@@ -783,13 +783,6 @@ struct VertexLight final {
 // same four cells whichever adjacent block's face is being meshed. That
 // agreement is what keeps the smooth gradient continuous across block
 // boundaries instead of snapping at the shared edge.
-struct CornerPositions final {
-    glm::ivec3 outside;
-    glm::ivec3 sideA;
-    glm::ivec3 sideB;
-    glm::ivec3 diagonal;
-};
-
 // The face plane's two in-plane axes. Fixed per normal so that the same
 // world-space cell corner resolves to the same pair whichever of the two blocks
 // sharing it is being meshed.
@@ -808,61 +801,86 @@ struct FaceTangents final {
     return {{1, 0, 0}, {0, 1, 0}};
 }
 
-// The 2×2 ring around one CELL corner of the face — `highA`/`highB` name which
-// of the cell's four in-plane corners, not where a vertex happens to sit.
+// The nine cells a face's four corner values are built from, resolved once per
+// face: the cell the ring is anchored at, its four edge neighbours in the face
+// plane, and the four diagonals.
 //
-// RN-18: that distinction is the whole node. This used to take the vertex's
-// position and pick the ring by `coordinate < 0.5F ? -1 : 1`, so a vertex at
-// y=0.5 sampled the ring as if it were at y=1 and a half-height face ran a
-// whole cell's gradient across half a cell. Now the four cell corners are
-// sampled once per face and a vertex is a BLEND of them (see
-// `blendedFaceAmbientOcclusion`), which is what 26.1's
-// `BlockModelLighter.prepareQuadAmbientOcclusion` does.
-[[nodiscard]] CornerPositions cornerPositions(
-    const FaceDefinition& face, const FaceTangents& tangents, bool highA, bool highB,
-    int x, int y, int z) {
-    const int signA = highA ? 1 : -1;
-    const int signB = highB ? 1 : -1;
-    const glm::ivec3 outside{x + face.dx, y + face.dy, z + face.dz};
-    return {
-        outside,
-        outside + tangents.a * signA,
-        outside + tangents.b * signB,
-        outside + tangents.a * signA + tangents.b * signB,
-    };
+// 26.1 reads exactly these nine (`BlockModelLighter.prepareQuadAmbientOcclusion`,
+// :43-58 for the four edges, :69-113 for the four diagonals, :117-124 for the
+// centre) and builds each corner as
+//
+//     corner = (edgeA + edgeB + diagonal + centre) * 0.25
+//
+// with the four corners SHARING the edge samples. This used to sample the four
+// cells of each corner's own 2x2 ring independently — four corners x four cells
+// = sixteen samples, where nine distinct cells exist. The values were identical
+// (a shared cell was simply read twice), so collapsing them changes no output;
+// what it buys is the shape the diagonal-substitution rule needs, because that
+// rule refers to *another corner's* edge sample and a per-corner ring cannot
+// name one.
+//
+// `edgeA[0]` is the -a neighbour and `edgeA[1]` the +a one; `diagonal` is
+// indexed (highA << 1) | highB, matching FaceCornerLighting's own corner order.
+struct FaceRing final {
+    glm::ivec3 centre;
+    std::array<glm::ivec3, 2> edgeA;
+    std::array<glm::ivec3, 2> edgeB;
+    std::array<glm::ivec3, 4> diagonal;
+};
+
+// RN-18: the ring is anchored at a CELL, and the four corner values it produces
+// are properties of the cell — not of where a vertex happens to sit. That
+// distinction was the whole of RN-18: this used to take the vertex's position
+// and pick a ring by `coordinate < 0.5F ? -1 : 1`, so a vertex at y=0.5 sampled
+// the ring as if it were at y=1 and a half-height face ran a whole cell's
+// gradient across half a cell.
+[[nodiscard]] FaceRing faceRing(const FaceDefinition& face, const FaceTangents& tangents,
+                                int x, int y, int z) {
+    const glm::ivec3 centre{x + face.dx, y + face.dy, z + face.dz};
+    FaceRing ring{centre,
+                  {centre - tangents.a, centre + tangents.a},
+                  {centre - tangents.b, centre + tangents.b},
+                  {}};
+    for (std::size_t index = 0; index < 4U; ++index) {
+        const int signA = (index & 0b10U) != 0U ? 1 : -1;
+        const int signB = (index & 0b01U) != 0U ? 1 : -1;
+        ring.diagonal[index] = centre + tangents.a * signA + tangents.b * signB;
+    }
+    return ring;
 }
 
-// Vanilla vanilla getAmbientOcclusionLightLevel: a full opaque cube darkens the
-// corner to 0.2, everything else keeps full brightness. The corner averages the
-// four ring cells symmetrically — no per-block corner selection — so adjacent
-// blocks agree exactly on shared corners and the gradient stays smooth.
+// 26.1's getAmbientOcclusionLightLevel: a full opaque cube darkens the corner to
+// 0.2, everything else keeps full brightness. The corner averages its four cells
+// symmetrically — no per-block corner selection — so adjacent blocks agree
+// exactly on shared corners and the gradient stays smooth.
 template <typename Sampler>
-[[nodiscard]] float vertexAmbientOcclusionHigh(const Sampler& lighting,
-                                               const CornerPositions& positions) {
+[[nodiscard]] float ringAmbientOcclusion(const Sampler& lighting, const glm::ivec3& centre,
+                                         const glm::ivec3& edgeA, const glm::ivec3& edgeB,
+                                         const glm::ivec3& diagonal) {
     const auto aoFactor = [&](const glm::ivec3& position) {
         return lighting.aoOccludes(position.x, position.y, position.z) ? 0.2F : 1.0F;
     };
-    return (aoFactor(positions.outside) + aoFactor(positions.sideA) +
-            aoFactor(positions.sideB) + aoFactor(positions.diagonal)) * 0.25F;
+    return (aoFactor(centre) + aoFactor(edgeA) + aoFactor(edgeB) + aoFactor(diagonal)) * 0.25F;
 }
 
 template <typename Sampler>
-[[nodiscard]] VertexLight vertexLightHigh(const Sampler& lighting,
-                                          const CornerPositions& positions) {
+[[nodiscard]] VertexLight ringLight(const Sampler& lighting, const glm::ivec3& centre,
+                                    const glm::ivec3& edgeA, const glm::ivec3& edgeB,
+                                    const glm::ivec3& diagonal) {
     const auto lightAt = [&](const glm::ivec3& position) {
         return lighting.level(position.x, position.y, position.z);
     };
-    const auto outside = lightAt(positions.outside);
-    const auto sideA = lightAt(positions.sideA);
-    const auto sideB = lightAt(positions.sideB);
-    const auto diagonal = lightAt(positions.diagonal);
+    const auto centreLight = lightAt(centre);
+    const auto sideA = lightAt(edgeA);
+    const auto sideB = lightAt(edgeB);
+    const auto diagonalLight = lightAt(diagonal);
     constexpr float normalization = 1.0F /
         (4.0F * static_cast<float>(ChunkLightSampler::kMaximumLightLevel));
     return {
-        static_cast<float>(outside.sky + sideA.sky + sideB.sky + diagonal.sky) *
+        static_cast<float>(centreLight.sky + sideA.sky + sideB.sky + diagonalLight.sky) *
             normalization,
-        static_cast<float>(outside.block + sideA.block + sideB.block +
-                           diagonal.block) * normalization,
+        static_cast<float>(centreLight.block + sideA.block + sideB.block +
+                           diagonalLight.block) * normalization,
     };
 }
 
@@ -884,9 +902,8 @@ struct FaceCornerLighting final {
     std::array<VertexLight, 4> light{};
 };
 
-// Sample count is unchanged from the per-vertex version this replaces: four
-// corners × four ring cells, where it used to be four vertices × four ring
-// cells. What moves is only WHERE the four rings are anchored.
+// Nine distinct cells, not sixteen reads of them (see FaceRing). The four
+// corners share the centre and the edges; only the diagonal is corner-private.
 template <typename Sampler>
 [[nodiscard]] FaceCornerLighting faceCornerLighting(
     const Sampler& lighting, const FaceDefinition& face,
@@ -896,14 +913,18 @@ template <typename Sampler>
     // asking for them per corner and again per vertex was eight branchy lookups
     // a face for one answer.
     const FaceTangents tangents = faceTangents(face);
+    const FaceRing ring = faceRing(face, tangents, x, y, z);
     for (std::size_t index = 0; index < 4U; ++index) {
-        const bool highA = (index & 0b10U) != 0U;
-        const bool highB = (index & 0b01U) != 0U;
-        const auto positions = cornerPositions(face, tangents, highA, highB, x, y, z);
+        const std::size_t highA = (index & 0b10U) != 0U ? 1U : 0U;
+        const std::size_t highB = (index & 0b01U) != 0U ? 1U : 0U;
+        const glm::ivec3& edgeA = ring.edgeA[highA];
+        const glm::ivec3& edgeB = ring.edgeB[highB];
+        const glm::ivec3& diagonal = ring.diagonal[index];
         if (wantAmbientOcclusion) {
-            corners.ambient[index] = vertexAmbientOcclusionHigh(lighting, positions);
+            corners.ambient[index] =
+                ringAmbientOcclusion(lighting, ring.centre, edgeA, edgeB, diagonal);
         }
-        corners.light[index] = vertexLightHigh(lighting, positions);
+        corners.light[index] = ringLight(lighting, ring.centre, edgeA, edgeB, diagonal);
     }
     return corners;
 }
