@@ -8,6 +8,13 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- Inner corners and stair backs are lit the way vanilla lights them. Where a wall
+  meets a floor, the shading sampled the solid block diagonally behind the corner;
+  Minecraft does not look at that block at all once both edges beside it are
+  walled, and reads an open cell instead, so those corners were a step darker
+  here than they should be. Faces that sit inside their own block — a closed
+  trapdoor's panel, a pressure plate, a carpet, the top of farmland — now take
+  their shading from the blocks around them rather than from the layer above.
 - Rain and its splashes are water-coloured again instead of grey-white. The
   atlas stopped carrying pre-tinted water a while ago, and the terrain was
   updated to colour it per vertex while the particles were not, so every drop
