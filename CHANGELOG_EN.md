@@ -8,6 +8,18 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- Rain and its splashes are water-coloured again instead of grey-white. The
+  atlas stopped carrying pre-tinted water a while ago, and the terrain was
+  updated to colour it per vertex while the particles were not, so every drop
+  and every splash sampled a colourless texture and multiplied it by white.
+  They now take the same biome water colour the surface they land in has, which
+  also means they shade with it across a biome border. Breaking leaves gives
+  green leaf specks for the same reason; breaking a grass block still gives dirt.
+- Rain splashes appear on the ground again when you are standing more than four
+  blocks above it. Splashes were attached to a raindrop hitting something, and
+  drops were recycled once they fell four blocks below the camera, so from a
+  ten-block tower the ground below stayed dry. Drops now live to the same depth
+  vanilla samples for splashes, about ten blocks.
 - Smooth lighting finally looks like smooth lighting. The setting had three
   positions and defaulted to the middle one, which was not a Minecraft setting at
   all: it lightened every shaded corner until the darkest one a wall could show

@@ -186,5 +186,43 @@ int main() {
     assert(sawWallSplash);
     assert(sawDirectionalWallSplash);
 
+    // RN-21 缺陷 2：相机之下的水花可见范围。
+    //
+    // 异步雨把水花绑在雨滴碰撞上，于是雨滴的重生下界顺带成了水花的范围。它当初是
+    // 相机下方 4 格——只是「掉出视野就回收」的一个数——而贴图雨那条照抄了 vanilla
+    // tickRainSplashing 的 [cameraBlock.y - 9, +11] 窗口。站在 10 格高台上往下看，
+    // 一条有水花另一条没有。两条现在共用 kImpactBelowCamera。
+    //
+    // 这条断言按「相机高于地面 8 格」搭：正落在旧下界 4 与窗口 9 之间。
+    {
+        mc::world::World deepWorld;
+        for (int chunkZ = -3; chunkZ <= 3; ++chunkZ) {
+            for (int chunkX = -3; chunkX <= 3; ++chunkX) {
+                mc::world::Chunk chunk;
+                for (int z = 0; z < 16; ++z) {
+                    for (int x = 0; x < 16; ++x) {
+                        chunk.setBlock(x, 0, z, mc::world::Block::Stone);
+                    }
+                }
+                deepWorld.setChunk({chunkX, chunkZ}, std::move(chunk));
+            }
+        }
+        // 地面顶面在 y=1，相机放在它上方 8 格
+        mc::render::RainSystem deepRain;
+        const glm::vec3 deepCamera{8.0F, 9.0F, 8.0F};
+        const glm::vec2 deepWind{0.6F, 0.2F};
+        std::size_t groundSplashes = 0;
+        for (int frame = 0; frame < 600; ++frame) {
+            deepRain.update(1.0F / 60.0F, deepCamera, 1.0F, 1500U, deepWorld, deepWind);
+            for (const auto& splash : deepRain.splashes()) {
+                if (std::abs(splash.position.y - 1.0F) < 0.01F) {
+                    ++groundSplashes;
+                }
+            }
+        }
+        // 下界还是 4 时这里恒为 0
+        assert(groundSplashes > 0U);
+    }
+
     return 0;
 }

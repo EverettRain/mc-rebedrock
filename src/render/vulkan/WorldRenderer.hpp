@@ -1442,6 +1442,20 @@ class WorldRenderer final {
         const std::size_t count = std::min(drops.size(), capacity - baseRecordCount);
         auto& buffer = gpuSceneBuffer.frame(currentFrame);
         sceneParticleRecords_.reserve(baseRecordCount + count);
+        // 雨丝采样的是水的图集层，BM-1 之后那是未 tint 的原图，第三槽再写 0（= 不着色）
+        // 就是白乘灰白 = 灰白（RN-21）。第三槽本来就是 packed tint，与粒子那条路径同一个
+        // 语义，所以这里走同一份颜色而不是再硬写一个常数。
+        //
+        // 逐帧取一次而不是逐雨滴取一次：整片雨都生成在相机附近 kSpawnHalfWidth 的方形里，
+        // 而 biomeTintAt 是 25 次 biomeAt。逐雨滴取会在渲染线程上按雨滴数付这笔钱，
+        // 换来的是同一片雨里肉眼分不出的色差。
+        const glm::vec3 rainCamera = camera.position();
+        const auto rainColor = world::biomeTintAt(clientCache, world::BiomeTintKind::Water,
+                                                  static_cast<int>(std::floor(rainCamera.x)),
+                                                  static_cast<int>(std::floor(rainCamera.z)));
+        const auto rainTint = static_cast<float>(packParticleTint(
+            {static_cast<float>(rainColor[0]) / 255.0F, static_cast<float>(rainColor[1]) / 255.0F,
+             static_cast<float>(rainColor[2]) / 255.0F}));
         // 与粒子同一性质，逐雨滴两次区块查找，累加进同一个 particleLightMs
         const auto rainLightStart = std::chrono::steady_clock::now();
         for (std::size_t index = 0; index < count; ++index) {
@@ -1449,7 +1463,8 @@ class WorldRenderer final {
             sceneParticleRecords_.push_back(ParticleRecord{
                 {drop.position.x, drop.position.y, drop.position.z, drop.size},
                 {0.0F, 0.0F, 1.0F, 0.6F},
-                {static_cast<float>(kWaterStillLayer), packedSceneLight(drop.position), 0.0F, 0.0F},
+                {static_cast<float>(kWaterStillLayer), packedSceneLight(drop.position), rainTint,
+                 0.0F},
             });
         }
         if (diag::traceEnabled()) {

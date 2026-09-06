@@ -26,6 +26,21 @@ constexpr float kSpawnMax = 32.0F;
 // 雨滴至少要出现在它要落向的那个面之上这么远的地方
 // 屋顶上的雨因此总能看到一段下落再溅射，而不是凭空出现在屋顶上
 constexpr float kDropClearance = 8.0F;
+// 水花能出现的最低处，相对相机视点。
+//
+// vanilla 的 WorldRenderer#tickRainSplashing 在相机方块周围一个 ±10 的方形窗口里取样
+// （`nextInt(21) - 10`），高度上接受 [cameraBlock.y - 9, cameraBlock.y + 11] 的面。
+// 贴图雨那条路径逐字照抄了这个窗口，异步雨却把水花绑在雨滴碰撞上，于是**雨滴的重生
+// 下界顺带成了水花的可见范围**——它当初是 -4，只是「雨滴掉出视野就回收」的一个数，
+// 从来不是按水花范围定的。结果两条路径的水花范围差了一倍以上：站在 10 格高台上往下看，
+// 贴图雨有水花、异步雨没有（RN-21 缺陷 2）。
+//
+// 两条路径因此共用这一个数。实测放宽到 9 之后，「地面在相机下方 4~9 格」的那批雨滴
+// 改为撞地后重生而不是空中重生，重生次数几乎不变：碰撞查询 +0.4%，每帧耗时无变化，
+// 而水花从 0 变成 3.6/帧（RN-21 §4.2）。
+constexpr float kImpactBelowCamera = 9.0F;
+// 上界跟着 vanilla 的 +11，只有贴图雨那条用得到：异步雨的雨滴本来就从相机上方生成
+constexpr int kImpactAboveCamera = 11;
 constexpr float kFallSpeed = 18.0F;
 // 列探测从天花板往下最多扫这么多行就放弃，对应深空以及相机远高于地面的情形
 // 放弃之后雨滴自由落体，落到相机下方就重生，和飞出盒子的雨滴走同一条路
@@ -129,8 +144,9 @@ void RainSystem::emitTextureImpacts(float deltaSeconds, const glm::vec3& cameraP
             const ColumnSurface surface =
                 columnSurface(world, blockX, blockZ, cameraPosition.y + kSpawnMax);
             if (surface.surfaceY <= 1.0F ||
-                surface.surfaceY > static_cast<float>(cameraBlock.y + 11) ||
-                surface.surfaceY < static_cast<float>(cameraBlock.y - 9)) {
+                surface.surfaceY > static_cast<float>(cameraBlock.y + kImpactAboveCamera) ||
+                surface.surfaceY <
+                    static_cast<float>(cameraBlock.y) - kImpactBelowCamera) {
                 continue;
             }
             const int blockY = static_cast<int>(std::floor(surface.surfaceY)) - 1;
@@ -269,7 +285,7 @@ void RainSystem::update(float deltaSeconds, const glm::vec3& cameraPosition, flo
                         away});
                 }
                 respawnDropFree(drop, cameraPosition);
-            } else if (drop.position.y < cameraPosition.y - 4.0F) {
+            } else if (drop.position.y < cameraPosition.y - kImpactBelowCamera) {
                 respawnDropFree(drop, cameraPosition);
             }
         }
@@ -358,7 +374,7 @@ void RainSystem::update(float deltaSeconds, const glm::vec3& cameraPosition, flo
                                    glm::vec2{0.0F}});
                 }
                 respawnDrop(drop, cameraPosition, world);
-            } else if (drop.position.y < cameraPosition.y - 4.0F) {
+            } else if (drop.position.y < cameraPosition.y - kImpactBelowCamera) {
                 respawnDrop(drop, cameraPosition, world);
             }
         }

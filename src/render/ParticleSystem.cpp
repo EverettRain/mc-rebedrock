@@ -152,7 +152,10 @@ bool ParticleSystem::add(const ParticleSpawn& spawn) {
     // 颜色 = tintBase × U[brightnessMin, brightnessMax]。不着色的类型两端都是 1
     // 且 tintBase 是白，打包出来正好是「白」，不是哨兵 0 —— 白色的乘法本就是恒等，
     // 走同一条公式不必分支
-    if (definition.tintBase == glm::vec3{1.0F, 1.0F, 1.0F} &&
+    if (spawn.tint != kNoParticleTint) {
+        // 逐发射的颜色压过类型表的常量颜色：位置相关的色（生物群系水色）只有发射方知道
+        particle.tint = spawn.tint;
+    } else if (definition.tintBase == glm::vec3{1.0F, 1.0F, 1.0F} &&
         definition.brightnessMin == 1.0F && definition.brightnessMax == 1.0F) {
         particle.tint = kNoParticleTint;
     } else {
@@ -184,7 +187,8 @@ bool ParticleSystem::add(const ParticleSpawn& spawn) {
 
 void ParticleSystem::spawnBlockBreak(
     const glm::ivec3& blockPosition,
-    world::Block block) {
+    world::Block block,
+    std::uint32_t tint) {
     const float layer = world::textureLayers(block).side;
     // 形状取自唯一权威源 world::blockShape
     // ParticleEvent 目前只携带 Block，所以这里用该方块的默认状态
@@ -291,6 +295,7 @@ void ParticleSystem::spawnBlockBreak(
                                 .textureLayer = layer,
                                 .uvOrigin = uvOrigin,
                                 .uvScale = 0.25F,
+                                .tint = tint,
                             })) {
                             poolFull = true;
                             return;
@@ -302,7 +307,7 @@ void ParticleSystem::spawnBlockBreak(
     });
 }
 
-void ParticleSystem::spawnWaterSplash(const glm::vec3& position) {
+void ParticleSystem::spawnWaterSplash(const glm::vec3& position, std::uint32_t tint) {
     constexpr float kFullTurn = 6.28318530718F;
     const int count = scaledCount(10);
     reserveGameplayCapacity(static_cast<std::size_t>(count));
@@ -319,13 +324,16 @@ void ParticleSystem::spawnWaterSplash(const glm::vec3& position) {
                 .textureLayer = world::textureLayers(world::Block::Water).side,
                 .uvOrigin = {randomUnit() * 0.5F, randomUnit() * 0.5F},
                 .uvScale = 0.25F,
+                // BM-1 之后水层是未 tint 的原图，不带色就是灰白（RN-21）
+                .tint = tint,
             })) {
             return;
         }
     }
 }
 
-void ParticleSystem::spawnRainImpact(const glm::vec3& position, bool onWater) {
+void ParticleSystem::spawnRainImpact(const glm::vec3& position, bool onWater,
+                                     std::uint32_t tint) {
     // vanilla 的 RainSplashParticle 没有水平速度，向上初速为每 tick 0.1 到 0.3 格
     // 寿命是 8 除以 random 乘 0.8 加 0.2 个 tick，这里一律换算成秒与每秒格数
     // 逐撞击的密度倍率保留，粒子等级调高时雨柱与地面反应会同时变密
@@ -341,13 +349,16 @@ void ParticleSystem::spawnRainImpact(const glm::vec3& position, bool onWater) {
                 .textureLayer = world::textureLayers(world::Block::Water).side,
                 .uvOrigin = {randomUnit() * 0.5F, randomUnit() * 0.5F},
                 .uvScale = 0.25F,
+                // BM-1 之后水层是未 tint 的原图，不带色就是灰白（RN-21）
+                .tint = tint,
             })) {
             return;
         }
     }
 }
 
-void ParticleSystem::spawnRainSplash(const glm::vec3& position, const glm::vec2& direction) {
+void ParticleSystem::spawnRainSplash(const glm::vec3& position, const glm::vec2& direction,
+                                     std::uint32_t tint) {
     // 比水桶那一下的爆发更少也更短命，一滴雨落地只推出几颗很快消散的水珠
     // 尺寸与时长比方块粉尘略大一点，隔着二三十格也还能看出雨确实落在地上
     // direction 非零时表示雨滴飘进的墙面，水珠沿背离墙面的半圆扇形喷出
@@ -373,6 +384,8 @@ void ParticleSystem::spawnRainSplash(const glm::vec3& position, const glm::vec2&
                 .textureLayer = world::textureLayers(world::Block::Water).side,
                 .uvOrigin = {randomUnit() * 0.5F, randomUnit() * 0.5F},
                 .uvScale = 0.25F,
+                // BM-1 之后水层是未 tint 的原图，不带色就是灰白（RN-21）
+                .tint = tint,
             })) {
             return;
         }

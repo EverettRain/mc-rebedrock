@@ -425,8 +425,33 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         audioSystem.playSplash(position, volume);
         emitLastSubtitle();
     }
+    // 该列的生物群系着色，打包成粒子的 tint。取色的单一源是 world::biomeTintAt
+    // ——与地形顶点 tint 同一份颜色、同一个 5x5 混合窗口，粒子因此和它溅起来的
+    // 那格水/那片叶子同色（RN-21）
+    [[nodiscard]] std::uint32_t particleTint(world::BiomeTintKind kind, float x, float z) const {
+        if (kind == world::BiomeTintKind::None) {
+            return kNoParticleTint;
+        }
+        const auto color = world::biomeTintAt(clientCache, kind,
+                                              static_cast<int>(std::floor(x)),
+                                              static_cast<int>(std::floor(z)));
+        return packParticleTint({static_cast<float>(color[0]) / 255.0F,
+                                 static_cast<float>(color[1]) / 255.0F,
+                                 static_cast<float>(color[2]) / 255.0F});
+    }
+
     void spawnBlockBreakParticles(glm::ivec3 position, world::Block block) override {
-        particleSystem.spawnBlockBreak(position, block);
+        // vanilla 的 TerrainParticle 按方块的 tintSource 着色，但**草方块专门覆写成白**
+        // （BlockTintSources.grassBlock().colorAsTerrainParticle 返回 -1，它的粒子精灵是
+        // 泥土），树叶/矮草/蕨/甘蔗则照常着色。这里因此按面向上的 tint 类型取色，
+        // 草方块单独排除
+        const world::BiomeTintKind kind = block == world::Block::Grass
+            ? world::BiomeTintKind::None
+            : world::biomeTintKind(block, world::Face::PositiveY);
+        particleSystem.spawnBlockBreak(
+            position, block,
+            particleTint(kind, static_cast<float>(position.x) + 0.5F,
+                         static_cast<float>(position.z) + 0.5F));
     }
     // 玩法控制器驱动的交互副作用：这些是宿主在渲染侧承担的那一半
     void playBlockHit(world::Block block, glm::vec3 position) override {
@@ -462,7 +487,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         emitLastSubtitle();
     }
     void spawnWaterSplash(glm::vec3 position) override {
-        particleSystem.spawnWaterSplash(position);
+        particleSystem.spawnWaterSplash(
+            position, particleTint(world::BiomeTintKind::Water, position.x, position.z));
     }
     void onOpenContainer(ContainerScreen screen, std::optional<glm::ivec3> position) override {
         // 权威的界面已由模拟侧打开并绑定
@@ -1491,10 +1517,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                         static_cast<std::uint32_t>(rainSystem.lastUpdateLookups());
                 }
                 for (const auto& splash : rainSystem.splashes()) {
+                    // 两种水花都采样水的图集层，都要带上该列的水色（RN-21）
+                    const std::uint32_t tint = particleTint(
+                        world::BiomeTintKind::Water, splash.position.x, splash.position.z);
                     if (splash.sampledImpact) {
-                        particleSystem.spawnRainImpact(splash.position, splash.onWater);
+                        particleSystem.spawnRainImpact(splash.position, splash.onWater, tint);
                     } else {
-                        particleSystem.spawnRainSplash(splash.position, splash.direction);
+                        particleSystem.spawnRainSplash(splash.position, splash.direction, tint);
                     }
                 }
                 // 同一处也驱动雨**声**，在雨滴落点播 weather.rain

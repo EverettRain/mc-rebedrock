@@ -59,6 +59,12 @@ struct ParticleSpawn final {
     float textureLayer = 0.0F;
     glm::vec2 uvOrigin{0.0F};
     float uvScale = 1.0F;
+    // 打包的 RGB（packParticleTint），kNoParticleTint = 不着色，走类型表自己的颜色
+    //
+    // 这条轴存在的理由是**位置相关**的颜色：类型表里的 tintBase 是常量，答不出
+    // 「这一处的生物群系水色是什么」。BM-1 之后图集存的是未 tint 的原图，采样水层
+    // 的粒子因此必须自己带上顶点侧那份颜色，否则就是白乘灰白 = 灰白（RN-21）
+    std::uint32_t tint = kNoParticleTint;
 };
 
 class ParticleSystem final {
@@ -68,16 +74,23 @@ public:
     // 选项加载或被循环切换时调用一次，不在每帧路径上
     void setLevelScale(float scale);
 
-    void spawnBlockBreak(const glm::ivec3& blockPosition, world::Block block);
-    void spawnWaterSplash(const glm::vec3& position);
+    // tint 是该方块在该位置的生物群系着色（world::biomeTintAt 打包后的值）。
+    // vanilla 的 TerrainParticle 把 0.6 的灰底乘上 tintSource.colorAsTerrainParticle，
+    // 而**草方块专门覆写成白**（它的粒子精灵是泥土），树叶/矮草/甘蔗则照常着色
+    // ——所以这里由调用方决定给不给色，而不是这里按方块猜
+    void spawnBlockBreak(const glm::ivec3& blockPosition, world::Block block,
+                         std::uint32_t tint = kNoParticleTint);
+    void spawnWaterSplash(const glm::vec3& position, std::uint32_t tint = kNoParticleTint);
     // 在采样到的固体或流体撞击点生成一个 vanilla 的 RainSplashParticle
     // 水面撞击稍微放大一点，否则在流动的水纹理上看不出来
     // 地面撞击保持原本的紧凑尺寸
-    void spawnRainImpact(const glm::vec3& position, bool onWater);
+    void spawnRainImpact(const glm::vec3& position, bool onWater,
+                         std::uint32_t tint = kNoParticleTint);
     // 雨滴落到水面或固体地面时向外炸开的短命水花，对应 vanilla 的 SplashParticle
     // 数量刻意压小，否则连续降雨会把粒子表撑满
     // direction 非零时表示雨滴撞上的墙面外法线，水滴沿背离墙面的半圆扇形喷出而不是四散
-    void spawnRainSplash(const glm::vec3& position, const glm::vec2& direction = {0.0F, 0.0F});
+    void spawnRainSplash(const glm::vec3& position, const glm::vec2& direction = {0.0F, 0.0F},
+                         std::uint32_t tint = kNoParticleTint);
 
     // 唯一的生成入口。返回是否真的加进了池子（满了或天气预算用尽时返回 false，
     // 调用方据此中断自己的生成循环）

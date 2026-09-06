@@ -83,6 +83,24 @@ enum class BiomeTintKind : std::uint8_t {
 
 [[nodiscard]] BiomeTintKind biomeTintKind(Block block, Face face);
 
+// The biome tint of one column, for consumers outside the mesher — today the
+// water particles, which sample the water block's (untinted) atlas layer and so
+// have to carry the same colour the water surface itself is tinted with.
+//
+// This is vanilla's `BiomeColors.getAverage*Color`: the mean of the biome
+// colours over the (2r+1)^2 block window around the column, r = biomeBlendRadius
+// = 2. `BlockTintSources.waterParticles()` overrides `colorAsTerrainParticle` to
+// exactly that call, which is why a splash matches the water it came out of even
+// on a biome border.
+//
+// The mesher does not call this: it resolves a whole chunk's columns at once
+// behind BiomeTintCache, which amortises the window. Both go through the same
+// per-sample colour, so the two cannot disagree — the cache is an optimisation,
+// not a second answer. Do not add a third path; a tint resolved anywhere else
+// is a colour that drifts.
+[[nodiscard]] std::array<std::uint8_t, 3> biomeTintAt(const World& world, BiomeTintKind kind,
+                                                      int x, int z);
+
 // The atlas layer that face samples in the terrain mesh, in the block's default
 // state, with the untinted-terrain overrides applied — the same choice the
 // mesher itself makes.

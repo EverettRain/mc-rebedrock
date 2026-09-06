@@ -515,6 +515,28 @@ using TintKind = BiomeTintKind;
     return TintKind::None;
 }
 
+// One sample's colour for a tint resolver, at the block it was sampled from —
+// the grass modifier is per position, so it belongs here and not in the biome's
+// own colour. `gen::biomeSurfaceColors` is where the colours themselves live;
+// this is the only place that maps (kind, biome, position) onto one of them, and
+// both consumers below go through it: the mesher's per-chunk cache and
+// `biomeTintAt` (which is what the water particles ask).
+[[nodiscard]] std::uint32_t biomeTintSample(TintKind kind, gen::Biome biome, int x, int z) {
+    const auto& colors = gen::biomeSurfaceColors(biome);
+    switch (kind) {
+    case TintKind::Grass:
+        return gen::applyGrassColorModifier(gen::biomeDefinition(biome).grassColorModifier,
+                                            colors.grass, x, z);
+    case TintKind::Foliage:
+        return colors.foliage;
+    case TintKind::Water:
+        return colors.water;
+    case TintKind::None:
+        break;
+    }
+    return 0xFFFFFFU;
+}
+
 // The biome tints of one chunk's columns, resolved once for the section build.
 //
 // Vanilla resolves a block's tint as the average of the biome colours over a
@@ -604,26 +626,6 @@ class BiomeTintCache final {
                 static_cast<std::uint8_t>(color & 0xFFU)};
     }
 
-    // One sample's colour for this resolver, at the block it was sampled from —
-    // the grass modifier is per position, so it belongs here and not in the
-    // biome's own colour.
-    [[nodiscard]] static std::uint32_t sampleColor(TintKind kind, gen::Biome biome, int x,
-                                                   int z) {
-        const auto& colors = gen::biomeSurfaceColors(biome);
-        switch (kind) {
-        case TintKind::Grass:
-            return gen::applyGrassColorModifier(gen::biomeDefinition(biome).grassColorModifier,
-                                                colors.grass, x, z);
-        case TintKind::Foliage:
-            return colors.foliage;
-        case TintKind::Water:
-            return colors.water;
-        case TintKind::None:
-            break;
-        }
-        return 0xFFFFFFU;
-    }
-
     void build(TintKind kind, Table& table) {
         table.built = true;
         // Nearly every chunk sits inside one biome, and then every column of it
@@ -634,7 +636,7 @@ class BiomeTintCache final {
             (kind != TintKind::Grass ||
              gen::biomeDefinition(uniformBiome_).grassColorModifier ==
                  gen::GrassColorModifier::None)) {
-            table.colors.fill(unpack(sampleColor(kind, uniformBiome_, originX_, originZ_)));
+            table.colors.fill(unpack(biomeTintSample(kind, uniformBiome_, originX_, originZ_)));
             return;
         }
         for (int z = 0; z < kSpan; ++z) {
@@ -649,8 +651,8 @@ class BiomeTintCache final {
                         const auto biome =
                             biomes_[static_cast<std::size_t>(sampleZ * kSampleSpan + sampleX)];
                         const std::uint32_t color =
-                            sampleColor(kind, biome, originX_ + x - kHalo + dx,
-                                        originZ_ + z - kHalo + dz);
+                            biomeTintSample(kind, biome, originX_ + x - kHalo + dx,
+                                            originZ_ + z - kHalo + dz);
                         red += (color >> 16U) & 0xFFU;
                         green += (color >> 8U) & 0xFFU;
                         blue += color & 0xFFU;
@@ -2356,6 +2358,49 @@ inline constexpr std::array<CellFlagEntry, static_cast<std::size_t>(Block::Count
 
 BiomeTintKind biomeTintKind(Block block, Face face) {
     return tintKindFor(block, face);
+}
+
+std::array<std::uint8_t, 3> biomeTintAt(const World& world, BiomeTintKind kind, int x, int z) {
+    if (kind == BiomeTintKind::None) {
+        return {255U, 255U, 255U};
+    }
+    // Vanilla's blend window, the same one BiomeTintCache averages over. An
+    // absent neighbour chunk answers Plains through World::biomeAt, which would
+    // drag the average toward plains green at the edge of the loaded region; the
+    // cache clamps into its own chunk for that reason, and a single column has
+    // no chunk to clamp into, so it skips unloaded samples instead. A particle
+    // at the frontier therefore reads its own column rather than a blend with
+    // an invented biome.
+    constexpr int kBlend = 2;
+    std::uint32_t red = 0U;
+    std::uint32_t green = 0U;
+    std::uint32_t blue = 0U;
+    std::uint32_t count = 0U;
+    for (int dz = -kBlend; dz <= kBlend; ++dz) {
+        for (int dx = -kBlend; dx <= kBlend; ++dx) {
+            const int sampleX = x + dx;
+            const int sampleZ = z + dz;
+            const ChunkPosition column{mc::world::floorDiv(sampleX, kChunkWidth),
+                                       mc::world::floorDiv(sampleZ, kChunkDepth)};
+            if (!world.hasChunk(column)) {
+                continue;
+            }
+            const std::uint32_t color =
+                biomeTintSample(kind, world.biomeAt(sampleX, sampleZ), sampleX, sampleZ);
+            red += (color >> 16U) & 0xFFU;
+            green += (color >> 8U) & 0xFFU;
+            blue += color & 0xFFU;
+            ++count;
+        }
+    }
+    if (count == 0U) {
+        const std::uint32_t color = biomeTintSample(kind, world.biomeAt(x, z), x, z);
+        return {static_cast<std::uint8_t>((color >> 16U) & 0xFFU),
+                static_cast<std::uint8_t>((color >> 8U) & 0xFFU),
+                static_cast<std::uint8_t>(color & 0xFFU)};
+    }
+    return {static_cast<std::uint8_t>(red / count), static_cast<std::uint8_t>(green / count),
+            static_cast<std::uint8_t>(blue / count)};
 }
 
 float terrainAtlasLayer(Block block, Face face) {

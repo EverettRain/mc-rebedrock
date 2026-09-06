@@ -1,5 +1,8 @@
 #include "render/ParticleSystem.hpp"
 
+#include "world/ChunkMesher.hpp"
+#include "world/World.hpp"
+
 #include "world/Chunk.hpp"
 #include "world/World.hpp"
 
@@ -140,5 +143,74 @@ int main() {
     assert(crazyWeather.weatherParticleLimit() == 18000U);
     crazyWeather.spawnRainSplash({0.0F, 2.0F, 0.0F});
     assert(crazyWeather.particles().size() == 12U);
+
+    // RN-21 缺陷 1：采样水的图集层的粒子必须自带生物群系水色。
+    //
+    // BM-1 之后图集存的是未 tint 的原图，而 particle_instanced.vert 的 decodeTint 把
+    // 0 解成白色，所以「不给 tint」= 白乘灰白 = 灰白。三个发射点各查一次：tint 非零，
+    // 且等于取色单一源 world::biomeTintAt 给出的那个值。
+    {
+        mc::world::World world;
+        mc::world::Chunk chunk;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                chunk.setBlock(x, 1, z, mc::world::Block::Stone);
+            }
+        }
+        world.setChunk({0, 0}, std::move(chunk));
+        const auto color = mc::world::biomeTintAt(world, mc::world::BiomeTintKind::Water, 8, 8);
+        const std::uint32_t waterTint = mc::render::packParticleTint(
+            {static_cast<float>(color[0]) / 255.0F, static_cast<float>(color[1]) / 255.0F,
+             static_cast<float>(color[2]) / 255.0F});
+        assert(waterTint != mc::render::kNoParticleTint);
+
+        const auto allTinted = [&](const mc::render::ParticleSystem& system) {
+            if (system.particles().empty()) {
+                return false;
+            }
+            for (const auto& particle : system.particles()) {
+                if (particle.tint != waterTint) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        mc::render::ParticleSystem bucket;
+        bucket.spawnWaterSplash({8.5F, 2.0F, 8.5F}, waterTint);
+        assert(allTinted(bucket));
+
+        mc::render::ParticleSystem impact;
+        impact.spawnRainImpact({8.5F, 2.0F, 8.5F}, true, waterTint);
+        assert(allTinted(impact));
+
+        mc::render::ParticleSystem splash;
+        splash.spawnRainSplash({8.5F, 2.0F, 8.5F}, {0.0F, 0.0F}, waterTint);
+        assert(allTinted(splash));
+
+        // 不给 tint 的那条路仍然是「不着色」，也就是今天四个发射点的行为：
+        // 这条断言存在的意义是让「把 tint 改回 0」这类回退立刻变红，而不是静默变灰白。
+        mc::render::ParticleSystem untinted;
+        untinted.spawnRainSplash({8.5F, 2.0F, 8.5F});
+        assert(!untinted.particles().empty());
+        assert(untinted.particles().front().tint == mc::render::kNoParticleTint);
+
+        // 破坏粉尘走同一条轴：vanilla 的 TerrainParticle 按方块的 tintSource 着色，
+        // 树叶属于会着色的那一类（BlockTintSources.foliage() 没有覆写
+        // colorAsTerrainParticle），草方块则专门覆写成白。
+        assert(mc::world::biomeTintKind(mc::world::Block::OakLeaves,
+                                        mc::world::Face::PositiveY) ==
+               mc::world::BiomeTintKind::Foliage);
+        const auto leafColor =
+            mc::world::biomeTintAt(world, mc::world::BiomeTintKind::Foliage, 8, 8);
+        const std::uint32_t leafTint = mc::render::packParticleTint(
+            {static_cast<float>(leafColor[0]) / 255.0F,
+             static_cast<float>(leafColor[1]) / 255.0F,
+             static_cast<float>(leafColor[2]) / 255.0F});
+        mc::render::ParticleSystem leaves;
+        leaves.spawnBlockBreak({8, 2, 8}, mc::world::Block::OakLeaves, leafTint);
+        assert(!leaves.particles().empty());
+        assert(leaves.particles().front().tint == leafTint);
+    }
     return 0;
 }
