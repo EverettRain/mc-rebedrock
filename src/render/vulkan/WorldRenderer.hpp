@@ -105,9 +105,6 @@ class WorldRenderer final {
     StreamBufferPool& deviceBufferPool_;
     StreamBufferPool& stagingBufferPool_;
     render::SectionDeliveryQueue<world::SectionPosition, world::SectionPositionHash>& pendingSectionOrder;
-    world::SmoothLightingQuality& currentMeshQuality;
-    world::SmoothLightingQuality& targetMeshQuality;
-    std::unordered_set<world::SectionPosition, world::SectionPositionHash>& qualityRemeshPending;
     gameplay::GameSession& gameSession;
     // 客户端的玩家/世界/实体镜像
     // 渲染侧的读取在解码通道之后都来自这里；会话只保留给测试与交互路径上少数几个显式的权威操作
@@ -197,8 +194,7 @@ class WorldRenderer final {
         interactionWorld(b.interactionWorld), clientCache(b.clientCache),
         interactionLightEngine(b.interactionLightEngine), gpuMeshes(b.gpuMeshes),
         deviceBufferPool_(b.deviceBufferPool_), stagingBufferPool_(b.stagingBufferPool_),
-        pendingSectionOrder(b.pendingSectionOrder), currentMeshQuality(b.currentMeshQuality),
-        targetMeshQuality(b.targetMeshQuality), qualityRemeshPending(b.qualityRemeshPending),
+        pendingSectionOrder(b.pendingSectionOrder),
         gameSession(b.gameSession), clientMirror(b.clientMirror),
         enqueueClientCommand(b.enqueueClientCommand), simulationHost(b.simulationHost),
         worldLock(b.worldLock), uiFrameData_(b.uiFrameData_), camera(b.camera),
@@ -892,10 +888,6 @@ class WorldRenderer final {
                     pendingSectionEnqueueRing_.erase(ringFound);
                 }
             }
-            // 画质重网格所等待的某个 section 已被上传或退役
-            // 它不再阻塞底部那次 uniform 切换
-            qualityRemeshPending.erase(position);
-
             const auto existing = gpuMeshes.find(position);
             if (existing != gpuMeshes.end()) {
                 retireMesh(frame, existing->second);
@@ -950,11 +942,6 @@ class WorldRenderer final {
             // 含暂存拷贝与缓冲获取，与 queueStreamBatch 记录的批次落地那一半配对
             diag::chunkStreamingMetrics().recordFrameCost(
                 0.0, diag::msSince(uploadPrepStart), tracedUploads);
-        }
-        // 等按 targetMeshQuality 重烘的 section 全部落地后，再切换着色器 High 分支期望的画质
-        // 否则它会用新的 AO 曲线去读一个仍是 Standard 的旧网格，反之亦然
-        if (qualityRemeshPending.empty() && currentMeshQuality != targetMeshQuality) {
-            currentMeshQuality = targetMeshQuality;
         }
     }
 
@@ -2489,9 +2476,6 @@ class WorldRenderer final {
   StreamBufferPool& deviceBufferPool_;
   StreamBufferPool& stagingBufferPool_;
   render::SectionDeliveryQueue<world::SectionPosition, world::SectionPositionHash>& pendingSectionOrder;
-  world::SmoothLightingQuality& currentMeshQuality;
-  world::SmoothLightingQuality& targetMeshQuality;
-  std::unordered_set<world::SectionPosition, world::SectionPositionHash>& qualityRemeshPending;
   gameplay::GameSession& gameSession;
   const client::ClientMirror& clientMirror;
   std::function<void(gameplay::GameCommand)> enqueueClientCommand;

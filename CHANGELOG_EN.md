@@ -8,6 +8,16 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- Smooth lighting finally looks like smooth lighting. The setting had three
+  positions and defaulted to the middle one, which was not a Minecraft setting at
+  all: it lightened every shaded corner until the darkest one a wall could show
+  was about six times brighter than vanilla's, which is to say the feature was on
+  and invisible. It is now the on/off switch vanilla has, on by default, and on
+  means vanilla's own ambient occlusion. Corners, stair backs and cave mouths get
+  their depth back. Anyone whose setting said Minimum or Maximum keeps smooth
+  lighting on. Toggling it now takes effect immediately instead of rebuilding
+  every chunk in the world first — and, measured, the setting that was supposed
+  to be the cheap one was in fact the slower of the two, so this costs nothing.
 - Sky light no longer runs undimmed to the bottom of the world once something has
   dimmed it. It used to be a "leftover direct value" that stopped fading after the
   last block that dimmed it, so a single layer of leaves, one block of water, or a

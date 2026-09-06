@@ -185,18 +185,16 @@ class ChunkStreamer final {
     [[nodiscard]] int protectedRadius() const {
         return protectedRadius_.load(std::memory_order_relaxed);
     }
-    // The smooth-lighting quality new meshes are baked with. Changing it on the
-    // worker only affects meshes built after the call; the render thread drives
-    // a full remesh (requestFullRemesh) so existing sections catch up.
-    void setSmoothLightingQuality(SmoothLightingQuality quality) {
-        smoothLightingQuality_.store(quality, std::memory_order_relaxed);
-    }
-    [[nodiscard]] SmoothLightingQuality smoothLightingQuality() const {
-        return smoothLightingQuality_.load(std::memory_order_relaxed);
-    }
-    // Re-meshes every loaded section (used when the baked smooth-lighting
-    // quality changes). The worker picks the flag up on its next wake and
-    // publishes one high-priority batch so the render thread applies it fast.
+    // Re-meshes every loaded section: the worker picks the flag up on its next
+    // wake and publishes one high-priority batch so the render thread applies it
+    // fast.
+    //
+    // **No caller today.** Its one caller was the smooth-lighting tier switch,
+    // and RN-19b deleted the tiers — one algorithm bakes the mesh now, so
+    // toggling ambient occlusion is a uniform flip and rebakes nothing. This is
+    // kept because it is a complete, working capability rather than a leftover:
+    // anything that changes what the mesher bakes at runtime needs exactly this.
+    // If nothing claims it, it and `remeshAll` come out together.
     void requestFullRemesh();
     // Re-meshes one section and republishes it. Two callers, two priorities:
     //   - gameplay/edit paths (default `highPriority = true`) want the section
@@ -325,7 +323,6 @@ class ChunkStreamer final {
     mutable core::ParallelWorkerPool parallelWorkers_;
     std::atomic<bool> stopping_{false};
     std::atomic<bool> fullRemeshRequested_{false};
-    std::atomic<SmoothLightingQuality> smoothLightingQuality_{SmoothLightingQuality::Standard};
     std::atomic<std::size_t> workerResidentBytes_{0};
     std::atomic<std::size_t> workerUniqueResidentBytes_{0};
     std::uint64_t requestedEpoch_ = 0U;

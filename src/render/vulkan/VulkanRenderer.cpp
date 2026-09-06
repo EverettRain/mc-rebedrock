@@ -215,6 +215,10 @@ struct CameraUniform final {
     alignas(16) glm::vec4 renderSettings{0.0F};
     alignas(16) std::array<glm::vec4, 8> pointLights{};
     alignas(16) std::array<glm::vec4, 8> lightColors{};
+    // x = 动态点光源数量，y = 平滑光照开关，w = 本帧阴影图是否有效
+    // z 是保留位，恒 0：它曾是「这批网格按 High 档烘焙」的标志，用来在着色器里
+    // 选 AO 曲线，RN-19b 把 AO 收成开/关后只剩 vanilla 一条曲线，没有第二条可选
+    // 它是这个 vec4 的一个分量而不是独立字段，留着不占偏移也不移动后面的字段
     alignas(16) glm::vec4 lightingSettings{0.0F};
     // x = 太阳所在图集层，y = 月相的首层
     // 特殊区的布局在启动时算出，天空着色器从 uniform 读真实层号而不是写死数字
@@ -2027,14 +2031,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pendingSectionUpdates.clear();
         latestSectionRevisions.clear();
 
-        // 把烘焙画质重新锚定到已保存的选项，新世界按存下来的画质开始网格化
-        // 选 Off 时仍按 Standard 烘焙，反正着色器会忽略平滑光照通道
-        qualityRemeshPending.clear();
-        currentMeshQuality = options.smoothLightingQuality != world::SmoothLightingQuality::Off
-                                 ? options.smoothLightingQuality
-                                 : world::SmoothLightingQuality::Standard;
-        targetMeshQuality = currentMeshQuality;
-        chunkStreamer.setSmoothLightingQuality(currentMeshQuality);
         interactionWorld = {};
         clientCache = {};
         // 丢弃镜像，免得下一个世界在首个 tick 重新发布之前，短暂显示上一个世界的玩家/世界状态
@@ -3397,7 +3393,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             recreateTextureSampler();
             break;
         case ui::WidgetId::SmoothLighting:
-            applySmoothLightingQuality();
+            // RN-19b: 平滑光照只剩开/关，网格两种情况烘出来完全一样
+            // 关掉只是让着色器改读平顶点光照并丢掉 AO 通道
+            // 所以切它不再需要重网格化，下一帧的 uniform 就位即可
             break;
         case ui::WidgetId::ForceUnicodeFont:
             textFont.setForceUnicode(options.forceUnicodeFont);
@@ -3428,28 +3426,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         default:
             break;
         }
-    }
-
-    // 网格是按当前的平滑光照画质烘出来的，打包顶点只带一套 AO 数据
-    // 改画质因此要重网格化所有常驻 section
-    // 选 Off 时沿用已有的烘焙结果，由着色器丢掉 AO，所以 Off 不触发重网格化
-    void applySmoothLightingQuality() {
-        const auto baked = options.smoothLightingQuality == world::SmoothLightingQuality::Off
-                               ? currentMeshQuality
-                               : options.smoothLightingQuality;
-        if (baked == currentMeshQuality) {
-            return;
-        }
-        targetMeshQuality = baked;
-        qualityRemeshPending.clear();
-        for (const auto& [position, mesh] : gpuMeshes) {
-            qualityRemeshPending.insert(position);
-        }
-        for (const auto& [position, update] : pendingSectionUpdates) {
-            qualityRemeshPending.insert(position);
-        }
-        chunkStreamer.setSmoothLightingQuality(baked);
-        chunkStreamer.requestFullRemesh();
     }
 
     void handleMenuButtonPress() {
@@ -6881,9 +6857,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         uniform.lightingSettings.x = static_cast<float>(lightCount);
         uniform.lightingSettings.y =
-            options.smoothLightingQuality != world::SmoothLightingQuality::Off ? 1.0F : 0.0F;
-        uniform.lightingSettings.z =
-            currentMeshQuality == world::SmoothLightingQuality::High ? 1.0F : 0.0F;
+            world::smoothLightingShaderSwitch(options.smoothLightingQuality);
+        // RN-19b：.z 曾是「这批网格是 High 档烘的」的标志，用来在着色器里选 AO 曲线
+        // 三档收成开/关之后只剩 vanilla 一条曲线，没有第二条可选，这一位因此没有读者
+        // 它是既有 vec4 的一个分量而不是独立字段，删掉它不会移动任何偏移，
+        // 所以保留为恒 0 并在两个片元着色器里一并注明它是保留位，而不是留半删状态
+        uniform.lightingSettings.z = 0.0F;
         // lightingSettings.w 是太阳阴影开关，本帧预通道跑过时为 1.0
         // 地形着色器因此只在阴影图确实有效时才采样它
         uniform.lightingSettings.w = shadowDisabled ? 0.0F : 1.0F;
@@ -7214,13 +7193,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pendingSectionUpdates;
     std::unordered_map<world::SectionPosition, std::uint64_t, world::SectionPositionHash>
         latestSectionRevisions;
-    // 前者是 GPU 上的网格当初烘焙时用的平滑光照画质，后者是工作线程正在重烘的目标画质
-    // uniform.lightingSettings.z 跟随 currentMeshQuality
-    // 着色器因此绝不会把 High 的 AO 曲线用在 Standard 网格上
-    // 这次切换要等 qualityRemeshPending 排空才放行
-    world::SmoothLightingQuality currentMeshQuality = world::SmoothLightingQuality::Standard;
-    world::SmoothLightingQuality targetMeshQuality = world::SmoothLightingQuality::Standard;
-    std::unordered_set<world::SectionPosition, world::SectionPositionHash> qualityRemeshPending;
     ui::MenuSystem menuSystem;
     // I-3: the left slot as of the last frame, so the rename box knows when to
     // reseed itself (AnvilScreen#slotChanged's trigger).
@@ -7616,9 +7588,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .deviceBufferPool_ = deviceBufferPool_,
             .stagingBufferPool_ = stagingBufferPool_,
             .pendingSectionOrder = pendingSectionOrder,
-            .currentMeshQuality = currentMeshQuality,
-            .targetMeshQuality = targetMeshQuality,
-            .qualityRemeshPending = qualityRemeshPending,
             .gameSession = gameSession,
             .clientMirror = clientMirror_,
             .enqueueClientCommand =

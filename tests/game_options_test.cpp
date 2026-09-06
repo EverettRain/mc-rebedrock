@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <string_view>
 #include <iterator>
 #include <string>
 
@@ -17,7 +18,7 @@ int main() {
     auto defaults = mc::config::GameOptions::load(path);
     assert(std::filesystem::is_regular_file(path));
     assert(defaults.viewDistance == 4);
-    assert(defaults.smoothLightingQuality == mc::world::SmoothLightingQuality::Standard);
+    assert(defaults.smoothLightingQuality == mc::world::SmoothLightingQuality::On);
     assert(defaults.frameRateLimit == 120);
     assert(defaults.antiAliasing);
     assert(defaults.anisotropy == 8);
@@ -120,23 +121,35 @@ int main() {
     }
     const auto withoutDifficulty = mc::config::GameOptions::load(path);
     assert(withoutDifficulty.windowWidth == 960);
-    // Tri-state smooth lighting round-trips, and the legacy boolean keys still
-    // parse (true→Standard, false→Off).
+    // Smooth lighting round-trips, and every spelling this option has ever been
+    // written with still parses. RN-19b's migration is the interesting one:
+    // "standard" and "high" were the two ON tiers, so both must land on On — a
+    // player who had ambient occlusion enabled must not have it silently turned
+    // off because the tier they picked was deleted (26.1's own
+    // OptionsAmbientOcclusionFix maps every non-OFF value to true the same way).
     {
-        defaults.smoothLightingQuality = mc::world::SmoothLightingQuality::High;
+        defaults.smoothLightingQuality = mc::world::SmoothLightingQuality::Off;
         defaults.save(path);
-        const auto high = mc::config::GameOptions::load(path);
-        assert(high.smoothLightingQuality == mc::world::SmoothLightingQuality::High);
-        std::ofstream legacy{path, std::ios::trunc};
-        legacy << "lighting.smooth=true\n";
-        legacy.close();
-        assert(mc::config::GameOptions::load(path).smoothLightingQuality ==
-               mc::world::SmoothLightingQuality::Standard);
-        std::ofstream legacyOff{path, std::ios::trunc};
-        legacyOff << "lighting.smooth=false\n";
-        legacyOff.close();
         assert(mc::config::GameOptions::load(path).smoothLightingQuality ==
                mc::world::SmoothLightingQuality::Off);
+        defaults.smoothLightingQuality = mc::world::SmoothLightingQuality::On;
+        defaults.save(path);
+        assert(mc::config::GameOptions::load(path).smoothLightingQuality ==
+               mc::world::SmoothLightingQuality::On);
+        const auto parses = [&path](std::string_view stored) {
+            std::ofstream file{path, std::ios::trunc};
+            file << "lighting.smooth=" << stored << "\n";
+            file.close();
+            return mc::config::GameOptions::load(path).smoothLightingQuality;
+        };
+        assert(parses("standard") == mc::world::SmoothLightingQuality::On);
+        assert(parses("high") == mc::world::SmoothLightingQuality::On);
+        assert(parses("true") == mc::world::SmoothLightingQuality::On);
+        assert(parses("on") == mc::world::SmoothLightingQuality::On);
+        assert(parses("1") == mc::world::SmoothLightingQuality::On);
+        assert(parses("off") == mc::world::SmoothLightingQuality::Off);
+        assert(parses("false") == mc::world::SmoothLightingQuality::Off);
+        assert(parses("0") == mc::world::SmoothLightingQuality::Off);
     }
     std::filesystem::remove_all(root);
     return 0;

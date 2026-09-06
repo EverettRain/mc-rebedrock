@@ -25,8 +25,7 @@ class MeshLightingSnapshot final {
     static constexpr int kSamplePadding = 2;
 
     MeshLightingSnapshot(const World& world, ChunkPosition position,
-                         int minimumSectionY, int maximumSectionY,
-                         SmoothLightingQuality quality);
+                         int minimumSectionY, int maximumSectionY);
 
     [[nodiscard]] VoxelLightLevel level(int x, int y, int z) const;
     [[nodiscard]] float sky(int x, int y, int z) const;
@@ -39,7 +38,6 @@ class MeshLightingSnapshot final {
     [[nodiscard]] bool faceOccludes(int x, int y, int z, Face face) const;
     [[nodiscard]] int opacity(int x, int y, int z) const;
     [[nodiscard]] Block blockType(int x, int y, int z) const;
-    [[nodiscard]] SmoothLightingQuality quality() const { return quality_; }
 
   private:
     [[nodiscard]] std::size_t index(int x, int y, int z) const;
@@ -69,7 +67,6 @@ class MeshLightingSnapshot final {
     std::vector<std::uint8_t> skyLevels_;
     std::vector<std::uint8_t> blockLevels_;
     std::vector<std::uint16_t> blockTypes_;
-    SmoothLightingQuality quality_ = SmoothLightingQuality::Standard;
 };
 
 // Which of vanilla's biome colour resolvers a face reads — 26.1's
@@ -109,13 +106,6 @@ class ChunkMesher final {
         ChunkPosition position,
         int sectionY,
         const ChunkLightSampler& lighting);
-    // Meshes the section with an explicit quality. Constructs a padded
-    // ChunkLightSampler like the 3-arg form (used by tests and previews).
-    [[nodiscard]] static render::RenderMeshData buildSection(
-        const World& world,
-        ChunkPosition position,
-        int sectionY,
-        SmoothLightingQuality quality);
     // Fills `result` with the section mesh, reusing its vector capacity across
     // calls (clear keeps the buffers, so a pooled RenderMeshData stops the
     // per-section allocation churn). Returns false for out-of-range/missing or
@@ -126,8 +116,7 @@ class ChunkMesher final {
         int sectionY,
         const ChunkLightSampler& lighting,
         render::RenderMeshData& result);
-    // Production worker path: samples through the snapshot at the quality it
-    // was built with.
+    // Production worker path.
     [[nodiscard]] static bool buildSection(
         const World& world,
         ChunkPosition position,

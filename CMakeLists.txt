@@ -1869,6 +1869,18 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_sky_light_test PRIVATE src)
     add_test(NAME sky_light COMMAND mc_rebedrock_sky_light_test)
 
+    add_executable(mc_rebedrock_smooth_lighting_contrast_test
+        tests/smooth_lighting_contrast_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_smooth_lighting_contrast_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_smooth_lighting_contrast_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    target_compile_definitions(mc_rebedrock_smooth_lighting_contrast_test PRIVATE
+        "MC_REBEDROCK_SHADER_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src\"")
+    add_test(NAME smooth_lighting_contrast COMMAND mc_rebedrock_smooth_lighting_contrast_test)
+
     add_executable(mc_rebedrock_terrain_lightmap_test
         tests/terrain_lightmap_test.cpp
     )
@@ -2070,6 +2082,18 @@ if(BUILD_TESTING)
 
         # Informational: us-per-probe of the two collision-probe loops AR-B4-0
         # touches (PlayerController::collidesAtHeight and
+        # The per-face corner lighting cost: RN-19b measured the tier split away
+        # with it, RN-19c changes the algorithm it measures.
+        add_executable(mc_rebedrock_smooth_lighting_benchmark
+            tests/smooth_lighting_benchmark.cpp
+        )
+        target_link_libraries(mc_rebedrock_smooth_lighting_benchmark
+            PRIVATE mc_rebedrock_runtime)
+        target_include_directories(mc_rebedrock_smooth_lighting_benchmark PRIVATE
+            src
+            "${glm_SOURCE_DIR}"
+        )
+
         # The sky column recompute every block edit pays for, plus the
         # per-column initialize pass, the A/B baseline for RN-19a.
         add_executable(mc_rebedrock_sky_light_column_benchmark

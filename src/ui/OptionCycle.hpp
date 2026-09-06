@@ -79,13 +79,6 @@ inline constexpr std::array<OptionValue, 6> kFrameRateValues{{
 // 与从前那句 anisotropy >= 16 ? 1 : anisotropy * 2 产生的序列相同，现在直接把取值写出来
 inline constexpr std::array<OptionValue, 5> kAnisotropyValues{{{1}, {2}, {4}, {8}, {16}}};
 
-// 平滑光照是一个三态的质量档，循环顺序是关、标准、高
-inline constexpr std::array<OptionValue, 3> kSmoothLightingValues{{
-    {static_cast<int>(world::SmoothLightingQuality::Off), "options.ao.off", "OFF"},
-    {static_cast<int>(world::SmoothLightingQuality::Standard), "options.ao.min", "Minimum"},
-    {static_cast<int>(world::SmoothLightingQuality::High), "options.ao.max", "Maximum"},
-}};
-
 // 降雨的绘制路径，属实验性内容：贴图雨幕，以及实例化 SSBO 粒子
 inline constexpr std::array<OptionValue, 2> kRainModeValues{{
     {0, "options.rebedrock.rainMode.texture", "Texture Rain"},
@@ -118,8 +111,11 @@ inline constexpr std::array<OptionDesc, 14> kCyclingOptions{{
      &config::GameOptions::antiAliasing, kOnOffValues},
     {WidgetId::Anisotropy, "options.maxAnisotropy", "Anisotropic Filtering",
      &config::GameOptions::anisotropy, kAnisotropyValues, /*numberSuffix=*/"x"},
+    // 26.1 的 options.ao 是布尔量，标签就是通用的 ON/OFF
+    // 从前那三档用的 options.ao.min / options.ao.max 是老版本三档 AO 的遗留键，
+    // 26.1 的语言文件里已经没有它们（RN-19b）
     {WidgetId::SmoothLighting, "options.ao", "Smooth Lighting",
-     &config::GameOptions::smoothLightingQuality, kSmoothLightingValues},
+     &config::GameOptions::smoothLightingQuality, kOnOffValues},
     {WidgetId::DynamicLight, "options.rebedrock.dynamicLights", "Dynamic Lighting",
      &config::GameOptions::dynamicLight, kOnOffValues},
     {WidgetId::Vsync, "options.vsync", "VSync", &config::GameOptions::vsync, kOnOffValues},

@@ -28,6 +28,7 @@ layout(binding = 0) uniform CameraUniform {
     vec4 renderSettings;
     vec4 pointLights[8];
     vec4 lightColors[8];
+    // x = 点光源数量, y = 平滑光照开关, z = 保留位（恒 0，见 RN-19b）, w = 阴影图有效
     vec4 lightingSettings;
     vec4 celestialLayers;
     vec4 weatherSettings;
@@ -97,7 +98,6 @@ void main() {
     // as one even brightness rather than four dim sides and two bright caps.
     float faceShade = fragmentShade < 0.5 ? 1.0 : cardinalShade(normal);
     bool smoothLighting = camera.lightingSettings.y > 0.5;
-    bool highLighting = camera.lightingSettings.z > 0.5;
     float skyLevel = smoothLighting ? fragmentSkyLight : fragmentFlatSkyLight;
     float blockLevel = smoothLighting ? fragmentBlockLight : fragmentFlatBlockLight;
     // SKY_LIGHT_FACTOR for this tick (sunDirection.w), times the weather dimming,
@@ -119,11 +119,8 @@ void main() {
             attenuation * camera.lightColors[lightIndex].a;
     }
     illumination = clamp(illumination, vec3(0.02), vec3(1.25));
-    float ao = smoothLighting
-        ? (highLighting
-            ? clamp(fragmentAmbientOcclusion, 0.2, 1.0)
-            : mix(0.72, 1.0, smoothstep(0.0, 1.0, fragmentAmbientOcclusion)))
-        : 1.0;
+    // 与 grass_block.frag 同一条：26.1 的 AO 是布尔量，开 = clamp(ao, 0.2, 1.0)
+    float ao = smoothLighting ? clamp(fragmentAmbientOcclusion, 0.2, 1.0) : 1.0;
     // Mask 3 is the per-vertex tint: the biome colour the mesher resolved per
     // column (grass, foliage, the grass block's side overlay), and redstone
     // dust's power-derived red on its grey sprite

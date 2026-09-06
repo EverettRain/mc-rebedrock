@@ -108,7 +108,9 @@ int main() {
         assert(options.anisotropy == 1);
     }
 
-    // --- Smooth lighting cycles Off → Standard → High → Off. ---
+    // --- Smooth lighting is a boolean, as in 26.1: Off → On → Off, labelled
+    // with the generic ON/OFF rather than the old three-tier Minimum/Maximum
+    // keys (which are a pre-1.15 vanilla leftover, RN-19b). ---
     {
         using Quality = mc::world::SmoothLightingQuality;
         GameOptions options;
@@ -116,11 +118,8 @@ int main() {
         const OptionDesc& desc = option(WidgetId::SmoothLighting);
         assert(valueLabel(WidgetId::SmoothLighting, options) == "OFF");
         cycleOptionValue(desc, options);
-        assert(options.smoothLightingQuality == Quality::Standard);
-        assert(valueLabel(WidgetId::SmoothLighting, options) == "Minimum");
-        cycleOptionValue(desc, options);
-        assert(options.smoothLightingQuality == Quality::High);
-        assert(valueLabel(WidgetId::SmoothLighting, options) == "Maximum");
+        assert(options.smoothLightingQuality == Quality::On);
+        assert(valueLabel(WidgetId::SmoothLighting, options) == "ON");
         cycleOptionValue(desc, options);
         assert(options.smoothLightingQuality == Quality::Off);
     }

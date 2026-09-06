@@ -31,23 +31,27 @@ template <typename Number> [[nodiscard]] bool parseNumber(std::string_view text,
     return true;
 }
 
-// lighting.smooth is a tri-state (off|standard|high) that also accepts the
-// legacy booleans ("true"/"1"/"on" meant the old on/off toggle).
+// lighting.smooth is on|off, and reads every spelling this option has ever been
+// written with. Two migrations live here:
+//
+//   * the original boolean ("true"/"1"/"on"), from before the tier split;
+//   * the tier names "standard" and "high", from RN-19b's predecessor.
+//
+// **"standard" migrates to On, not Off.** A player whose options say "standard"
+// had ambient occlusion switched ON — just in the weak tier that no longer
+// exists — so migrating them to Off would silently turn off a feature they were
+// using because the tier they picked was deleted. 26.1's own
+// `OptionsAmbientOcclusionFix` does the same thing: every non-`OFF` value of the
+// old three-way setting becomes `true`.
 [[nodiscard]] mc::world::SmoothLightingQuality parseSmoothLighting(std::string_view value) {
-    if (value == "high") return mc::world::SmoothLightingQuality::High;
-    if (value == "off") return mc::world::SmoothLightingQuality::Off;
-    return (value == "true" || value == "1" || value == "on" || value == "standard")
-               ? mc::world::SmoothLightingQuality::Standard
-               : mc::world::SmoothLightingQuality::Off;
+    if (value == "off" || value == "false" || value == "0") {
+        return mc::world::SmoothLightingQuality::Off;
+    }
+    return mc::world::SmoothLightingQuality::On;
 }
 
 [[nodiscard]] std::string_view smoothLightingName(mc::world::SmoothLightingQuality quality) {
-    switch (quality) {
-    case mc::world::SmoothLightingQuality::Off: return "off";
-    case mc::world::SmoothLightingQuality::High: return "high";
-    case mc::world::SmoothLightingQuality::Standard: return "standard";
-    }
-    return "standard";
+    return quality == mc::world::SmoothLightingQuality::Off ? "off" : "on";
 }
 
 } // namespace

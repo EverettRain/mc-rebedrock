@@ -45,12 +45,14 @@ struct GameOptions final {
     // automatically. Off by default, matching vanilla (which has no
     // auto-jump at all).
     bool autoJump = false;
-    // Smooth lighting is a tri-state quality: Off keeps the flat light values,
-    // Standard is the binary-AO algorithm, High is the vanilla AO. The
-    // mesh is baked at the active quality (the packed vertex carries one AO
-    // set), so changing it remeshes the world.
+    // Smooth lighting (ambient occlusion) is on/off, as in 26.1
+    // (`OptionInstance.createBoolean("options.ao", true)`), and on by default for
+    // the same reason. RN-19b removed the self-invented middle tier that used to
+    // hold this default and that no vanilla setting corresponds to. Toggling it
+    // no longer remeshes the world: one algorithm bakes the mesh either way and
+    // Off just tells the shader to read the flat light and drop the AO channel.
     mc::world::SmoothLightingQuality smoothLightingQuality =
-        mc::world::SmoothLightingQuality::Standard;
+        mc::world::SmoothLightingQuality::On;
     bool dynamicLight = false;
     // PX-6: show sound subtitles (26.1 accessibility captions). A client option,
     // not a gamerule; off by default, matching vanilla. Gates the subtitle

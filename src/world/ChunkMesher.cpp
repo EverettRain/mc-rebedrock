@@ -864,54 +864,6 @@ template <typename Sampler>
     };
 }
 
-// Standard tier: the current binary-AO algorithm, byte-for-byte unchanged.
-template <typename Sampler>
-[[nodiscard]] float vertexAmbientOcclusionStandard(const Sampler& lighting,
-                                                   const CornerPositions& positions) {
-    const bool occupiedA =
-        lighting.isOpaque(positions.sideA.x, positions.sideA.y, positions.sideA.z);
-    const bool occupiedB =
-        lighting.isOpaque(positions.sideB.x, positions.sideB.y, positions.sideB.z);
-    const bool occupiedDiagonal = lighting.isOpaque(
-        positions.diagonal.x, positions.diagonal.y, positions.diagonal.z);
-    // Java's smooth AO averages the neighboring light/brightness samples at
-    // each corner rather than applying a binary top-down shadow. Opaque
-    // samples keep a little reflected light, which removes the hard black
-    // staircase visible on adjacent faces.
-    constexpr float blockedBrightness = 0.35F;
-    const float sideABrightness = occupiedA ? blockedBrightness : 1.0F;
-    const float sideBBrightness = occupiedB ? blockedBrightness : 1.0F;
-    const float diagonalBrightness = occupiedA && occupiedB
-        ? std::min(sideABrightness, sideBBrightness)
-        : (occupiedDiagonal ? blockedBrightness : 1.0F);
-    return (1.0F + sideABrightness + sideBBrightness + diagonalBrightness) * 0.25F;
-}
-
-template <typename Sampler>
-[[nodiscard]] VertexLight vertexLightStandard(
-    const Sampler& lighting, const CornerPositions& positions,
-    VoxelLightLevel outsideLight) {
-    const bool occupiedA =
-        lighting.isOpaque(positions.sideA.x, positions.sideA.y, positions.sideA.z);
-    const bool occupiedB =
-        lighting.isOpaque(positions.sideB.x, positions.sideB.y, positions.sideB.z);
-    const auto sideALight = lighting.level(positions.sideA.x, positions.sideA.y, positions.sideA.z);
-    const auto sideBLight = lighting.level(positions.sideB.x, positions.sideB.y, positions.sideB.z);
-    const auto diagonalLight = occupiedA && occupiedB
-        ? VoxelLightLevel{
-              std::min(sideALight.sky, sideBLight.sky),
-              std::min(sideALight.block, sideBLight.block)}
-        : lighting.level(positions.diagonal.x, positions.diagonal.y, positions.diagonal.z);
-    constexpr float normalization = 1.0F /
-        (4.0F * static_cast<float>(ChunkLightSampler::kMaximumLightLevel));
-    return {
-        static_cast<float>(outsideLight.sky + sideALight.sky +
-                           sideBLight.sky + diagonalLight.sky) * normalization,
-        static_cast<float>(outsideLight.block + sideALight.block +
-                           sideBLight.block + diagonalLight.block) * normalization,
-    };
-}
-
 // RN-18: the AO and smooth light at the face's four CELL corners, resolved once
 // per face.
 //
@@ -935,8 +887,8 @@ struct FaceCornerLighting final {
 // cells. What moves is only WHERE the four rings are anchored.
 template <typename Sampler>
 [[nodiscard]] FaceCornerLighting faceCornerLighting(
-    const Sampler& lighting, SmoothLightingQuality quality, const FaceDefinition& face,
-    int x, int y, int z, VoxelLightLevel outsideLight, bool wantAmbientOcclusion) {
+    const Sampler& lighting, const FaceDefinition& face,
+    int x, int y, int z, bool wantAmbientOcclusion) {
     FaceCornerLighting corners;
     // Resolved once: the two in-plane axes are a property of the normal, and
     // asking for them per corner and again per vertex was eight branchy lookups
@@ -947,13 +899,9 @@ template <typename Sampler>
         const bool highB = (index & 0b01U) != 0U;
         const auto positions = cornerPositions(face, tangents, highA, highB, x, y, z);
         if (wantAmbientOcclusion) {
-            corners.ambient[index] = quality == SmoothLightingQuality::High
-                ? vertexAmbientOcclusionHigh(lighting, positions)
-                : vertexAmbientOcclusionStandard(lighting, positions);
+            corners.ambient[index] = vertexAmbientOcclusionHigh(lighting, positions);
         }
-        corners.light[index] = quality == SmoothLightingQuality::High
-            ? vertexLightHigh(lighting, positions)
-            : vertexLightStandard(lighting, positions, outsideLight);
+        corners.light[index] = vertexLightHigh(lighting, positions);
     }
     return corners;
 }
@@ -1019,7 +967,6 @@ void appendFace(
     int y,
     int z,
     const Sampler& lighting,
-    SmoothLightingQuality quality,
     const glm::vec3& sectionOrigin,
     BiomeTintCache& tints,
     const std::array<glm::vec2, 4>& faceUv,
@@ -1060,8 +1007,8 @@ void appendFace(
     // so this reads it once per face instead of once per corner.
     const float layer = textureLayer(world, block, face.face, x, y, z);
     // RN-18: the cell's four corner values, once per face.
-    const auto cornerLighting = faceCornerLighting(lighting, quality, face, x, y, z,
-                                                   outsideLight, /*wantAmbientOcclusion=*/true);
+    const auto cornerLighting =
+        faceCornerLighting(lighting, face, x, y, z, /*wantAmbientOcclusion=*/true);
     const FaceTangents tangents = faceTangents(face);
     for (std::size_t corner = 0; corner < face.corners.size(); ++corner) {
         glm::vec3 positionCorner = face.corners[corner];
@@ -1170,7 +1117,6 @@ void appendWaterFace(
     int y,
     int z,
     const Sampler& lighting,
-    SmoothLightingQuality quality,
     const glm::vec3& sectionOrigin,
     BiomeTintCache& tints) {
     const auto firstVertex = static_cast<std::uint32_t>(mesh.vertices.size());
@@ -1198,8 +1144,8 @@ void appendWaterFace(
     // a per-column height and the in-plane axes of a top face are x/z, which the
     // lowering does not touch — so the weights are the same either way, and
     // spelling the canonical corner keeps that fact visible.
-    const auto waterCornerLighting = faceCornerLighting(
-        lighting, quality, face, x, y, z, flatLight, /*wantAmbientOcclusion=*/false);
+    const auto waterCornerLighting =
+        faceCornerLighting(lighting, face, x, y, z, /*wantAmbientOcclusion=*/false);
     for (std::size_t cornerIndex = 0; cornerIndex < face.corners.size(); ++cornerIndex) {
         glm::vec3 corner = face.corners[cornerIndex];
         if (corner.y > 0.5F) {
@@ -1351,7 +1297,6 @@ void appendBox(
     int y,
     int z,
     const Sampler& lighting,
-    SmoothLightingQuality quality,
     const glm::vec3& sectionOrigin,
     BiomeTintCache& tints) {
     const glm::vec3 origin{
@@ -1399,8 +1344,8 @@ void appendBox(
         // top, meeting at y=0.5 as a hard step. The corner values are now the
         // cell's, and the vertex is blended at the position it is actually
         // emitted at.
-        const auto cornerLighting = faceCornerLighting(
-            lighting, quality, face, x, y, z, outsideLight, /*wantAmbientOcclusion=*/true);
+        const auto cornerLighting =
+            faceCornerLighting(lighting, face, x, y, z, /*wantAmbientOcclusion=*/true);
         const FaceTangents tangents = faceTangents(face);
         for (std::size_t corner = 0; corner < face.corners.size(); ++corner) {
             // Remap the unit-cube corner into the box's bounds on every axis:
@@ -1461,13 +1406,12 @@ void appendSlab(
     int y,
     int z,
     const Sampler& lighting,
-    SmoothLightingQuality quality,
     const glm::vec3& sectionOrigin,
     BiomeTintCache& tints) {
     const float low = portion == SlabPortion::Top ? 0.5F : 0.0F;
     const float high = portion == SlabPortion::Bottom ? 0.5F : 1.0F;
     appendBox(mesh, world, current, ShapeBox{0.0F, low, 0.0F, 1.0F, high, 1.0F}, x, y, z,
-              lighting, quality, sectionOrigin, tints);
+              lighting, sectionOrigin, tints);
 }
 
 // A shaped block's whole `BlockShape` box set (stairs/wall/fence-gate/door/
@@ -1484,11 +1428,10 @@ void appendBoxes(
     int y,
     int z,
     const Sampler& lighting,
-    SmoothLightingQuality quality,
     const glm::vec3& sectionOrigin,
     BiomeTintCache& tints) {
     for (const ShapeBox& box : shape.boxes) {
-        appendBox(mesh, world, current, box, x, y, z, lighting, quality, sectionOrigin, tints);
+        appendBox(mesh, world, current, box, x, y, z, lighting, sectionOrigin, tints);
     }
 }
 
@@ -1862,7 +1805,7 @@ void appendElementModel(render::MeshData& mesh, const CellCullContext& current, 
 template <typename Sampler>
 void appendBakedModel(render::MeshData& mesh, const CellCullContext& current, BlockState state,
                       int x, int y, int z, const Sampler& lighting,
-                      SmoothLightingQuality quality, const glm::vec3& sectionOrigin) {
+                      const glm::vec3& sectionOrigin) {
     const Block block = current.block;
     const bool ambientOcclusion = blockDefinition(block).ambientOcclusion;
     const glm::vec3 origin{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
@@ -1892,8 +1835,8 @@ void appendBakedModel(render::MeshData& mesh, const CellCullContext& current, Bl
                                 static_cast<float>(ChunkLightSampler::kMaximumLightLevel);
         const auto firstVertex = static_cast<std::uint32_t>(mesh.vertices.size());
         std::array<float, 4> ambient{1.0F, 1.0F, 1.0F, 1.0F};
-        const auto cornerLighting = faceCornerLighting(lighting, quality, faceDefinition, x, y, z,
-                                                       outsideLight, ambientOcclusion);
+        const auto cornerLighting =
+            faceCornerLighting(lighting, faceDefinition, x, y, z, ambientOcclusion);
         const FaceTangents tangents = faceTangents(faceDefinition);
         for (std::size_t corner = 0; corner < 4; ++corner) {
             // The corner in cell-local 0..1. RN-18 reads it as a fractional
@@ -2157,7 +2100,6 @@ bool buildSectionImpl(
     ChunkPosition position,
     int sectionY,
     const Sampler& lighting,
-    SmoothLightingQuality quality,
     render::RenderMeshData& result) {
     // Clear keeps the vectors' capacity so a reused RenderMeshData does not
     // reallocate for every section in the streaming burst.
@@ -2280,7 +2222,7 @@ bool buildSectionImpl(
                 if (definition.model == BlockModel::Slab) {
                     appendSlab(targetMesh, world, cull,
                                chunk->state(localX, worldY, localZ).slabPortion(),
-                               worldX, worldY, worldZ, lighting, quality,
+                               worldX, worldY, worldZ, lighting,
                                sectionOrigin, tints);
                     continue;
                 }
@@ -2297,7 +2239,7 @@ bool buildSectionImpl(
                     // the two leaves the two agree box for box, which
                     // shaped_block_model_test asserts for every variant.
                     appendBakedModel(targetMesh, cull, chunk->state(localX, worldY, localZ),
-                                     worldX, worldY, worldZ, lighting, quality, sectionOrigin);
+                                     worldX, worldY, worldZ, lighting, sectionOrigin);
                     continue;
                 }
                 // Every shaped block (stairs/button/wall — the Boxes-kind models
@@ -2312,11 +2254,11 @@ bool buildSectionImpl(
                     if (shape.kind == ShapeKind::Column) {
                         appendBox(targetMesh, world, cull,
                                   ShapeBox{0.0F, shape.bottom, 0.0F, 1.0F, shape.top, 1.0F},
-                                  worldX, worldY, worldZ, lighting, quality, sectionOrigin,
+                                  worldX, worldY, worldZ, lighting, sectionOrigin,
                                   tints);
                     } else {
                         appendBoxes(targetMesh, world, cull, shape, worldX, worldY, worldZ,
-                                    lighting, quality, sectionOrigin, tints);
+                                    lighting, sectionOrigin, tints);
                     }
                     continue;
                 }
@@ -2350,11 +2292,11 @@ bool buildSectionImpl(
                         if (isFluid(current)) {
                             appendWaterFace(
                                 targetMesh, world, face, worldX, worldY, worldZ,
-                                lighting, quality, sectionOrigin, tints);
+                                lighting, sectionOrigin, tints);
                         } else {
                             appendFace(
                                 targetMesh, world, current, face, worldX, worldY, worldZ,
-                                lighting, quality, sectionOrigin, tints,
+                                lighting, sectionOrigin, tints,
                                 // The UV belongs to the face of the block's OWN
                                 // model, before orientedModelFace turned a
                                 // horizontal log; a DirectionalCube is not turned
@@ -2434,9 +2376,8 @@ float terrainAtlasLayer(Block block, Face face) {
 }
 
 MeshLightingSnapshot::MeshLightingSnapshot(const World& world, ChunkPosition position,
-                                           int minimumSectionY, int maximumSectionY,
-                                           SmoothLightingQuality quality)
-    : world_(world), quality_(quality) {
+                                           int minimumSectionY, int maximumSectionY)
+    : world_(world) {
     const int originX = position.x * kChunkWidth;
     const int originZ = position.z * kChunkDepth;
     minimumX_ = originX - kSamplePadding;
@@ -2618,29 +2559,13 @@ render::RenderMeshData ChunkMesher::buildSection(
     return result;
 }
 
-render::RenderMeshData ChunkMesher::buildSection(
-    const World& world,
-    ChunkPosition position,
-    int sectionY,
-    SmoothLightingQuality quality) {
-    if (sectionY < 0 || sectionY >= kSectionCount || !world.hasChunk(position) ||
-        world.chunk(position)->section(sectionY).empty()) {
-        return {};
-    }
-    const ChunkLightSampler lighting{world, position};
-    render::RenderMeshData result;
-    buildSectionImpl(world, position, sectionY, lighting, quality, result);
-    return result;
-}
-
 bool ChunkMesher::buildSection(
     const World& world,
     ChunkPosition position,
     int sectionY,
     const ChunkLightSampler& lighting,
     render::RenderMeshData& result) {
-    return buildSectionImpl(
-        world, position, sectionY, lighting, SmoothLightingQuality::Standard, result);
+    return buildSectionImpl(world, position, sectionY, lighting, result);
 }
 
 bool ChunkMesher::buildSection(
@@ -2649,7 +2574,7 @@ bool ChunkMesher::buildSection(
     int sectionY,
     const MeshLightingSnapshot& lighting,
     render::RenderMeshData& result) {
-    return buildSectionImpl(world, position, sectionY, lighting, lighting.quality(), result);
+    return buildSectionImpl(world, position, sectionY, lighting, result);
 }
 
 } // namespace mc::world

@@ -12,8 +12,27 @@
 
 namespace {
 
-constexpr float kSingleSideOcclusion = 0.8375F;
-constexpr float kClosedCornerOcclusion = 0.5125F;
+// 26.1's getAmbientOcclusionLightLevel: an opaque ring cell contributes 0.2,
+// anything else 1.0, and the corner is their mean over the four ring cells.
+// One occluded ring cell is (1 + 1 + 1 + 0.2) / 4; a corner boxed in on both
+// sides and the diagonal is (1 + 0.2 + 0.2 + 0.2) / 4.
+//
+// RN-19b: these were 0.8375 and 0.5125 — the deleted "Standard" tier's numbers,
+// which used a 0.35 floor instead of 0.2 and pinned the outside cell at a
+// constant 1.0. That tier could never produce a corner darker than 0.5125, and
+// the shader then remapped [0, 1] into [0.72, 1.0] on top, so its darkest
+// possible rendered corner was 0.86 against vanilla's 0.2.
+constexpr float kSingleSideOcclusion = 0.8F;
+// Both edges occluded, the diagonal cell open: (1 + 0.2 + 0.2 + 1) / 4.
+//
+// **Vanilla answers 0.4 here, not 0.6**, and the difference is a known gap, not
+// a transcription error: `BlockModelLighter` (:69-113) replaces the diagonal
+// sample with the edge sample when both edges are opaque, so its ring is
+// (1 + 0.2 + 0.2 + 0.2) / 4. This build reads the real diagonal unconditionally.
+// That rule is RN-19c (§2.2) and is deliberately not in RN-19b — mixing the tier
+// collapse with an algorithm change would make the Mac comparison unreadable.
+// When RN-19c lands, this constant becomes 0.4 and this comment goes away.
+constexpr float kClosedCornerOcclusionPendingRn19c = 0.6F;
 // AO is quantized to a u8 in the packed vertex (1/255 resolution), so the AO
 // assertions compare within one quantum instead of exact float.
 constexpr float kAoTolerance = 0.01F;
@@ -96,8 +115,7 @@ topFaceVertices(const mc::render::MeshData& mesh, int blockX, int blockY, int bl
         chunk.setBlock(position.x, position.y, position.z, mc::world::Block::Stone);
     }
     world.setChunk({0, 0}, std::move(chunk));
-    return mc::world::ChunkMesher::buildSection(
-        world, {0, 0}, 0, mc::world::SmoothLightingQuality::High).mesh;
+    return mc::world::ChunkMesher::buildSection(world, {0, 0}, 0).mesh;
 }
 
 } // namespace
@@ -159,8 +177,8 @@ int main() {
 
     {
         const auto vertices = topFaceVertices(buildLightingScene({{0, mc::world::kMinY + 2, 1}, {1, mc::world::kMinY + 2, 0}}), 1, 1, 1);
-        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[0]), kClosedCornerOcclusion,
-                     "closed-corner AO");
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[0]),
+                     kClosedCornerOcclusionPendingRn19c, "closed-corner AO");
         expectNearAo(mc::render::decodeAmbientOcclusion(vertices[1]), kSingleSideOcclusion,
                      "north edge AO");
         expectNearAo(mc::render::decodeAmbientOcclusion(vertices[2]), kSingleSideOcclusion,
@@ -203,8 +221,7 @@ int main() {
         right.setBlockLight(0, mc::world::kMinY + 8, 8, 15U);
         world.setChunk({0, 0}, std::move(left));
         world.setChunk({1, 0}, std::move(right));
-        const mc::world::MeshLightingSnapshot snapshot{
-            world, {0, 0}, 0, 0, mc::world::SmoothLightingQuality::Standard};
+        const mc::world::MeshLightingSnapshot snapshot{world, {0, 0}, 0, 0};
         assert(snapshot.level(8, mc::world::kMinY + 9, 8).sky == 14U);
         assert(snapshot.level(8, mc::world::kMinY + 8, 8).block == 10U);
         assert(snapshot.blockType(8, mc::world::kMinY + 8, 8) == mc::world::Block::Stone);
@@ -233,8 +250,7 @@ int main() {
         chunk.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::Stone);
         chunk.setBlock(0, mc::world::kMinY + 2, 1, mc::world::Block::Stone);
         world.setChunk({0, 0}, std::move(chunk));
-        const mc::world::MeshLightingSnapshot snapshot{
-            world, {0, 0}, 0, 0, mc::world::SmoothLightingQuality::Standard};
+        const mc::world::MeshLightingSnapshot snapshot{world, {0, 0}, 0, 0};
         mc::render::RenderMeshData snapshotMesh;
         static_cast<void>(mc::world::ChunkMesher::buildSection(
             world, {0, 0}, 0, snapshot, snapshotMesh));
@@ -313,8 +329,7 @@ int main() {
         chunk.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::Stone);
         chunk.setBlock(1, mc::world::kMinY + 2, 1, mc::world::Block::Glass);
         world.setChunk({0, 0}, std::move(chunk));
-        const auto mesh = mc::world::ChunkMesher::buildSection(
-            world, {0, 0}, 0, mc::world::SmoothLightingQuality::High);
+        const auto mesh = mc::world::ChunkMesher::buildSection(world, {0, 0}, 0);
         const auto vertices = topFaceVertices(mesh.mesh, 1, 1, 1);
         for (std::size_t corner = 0; corner < vertices.size(); ++corner) {
             expectNearAo(mc::render::decodeAmbientOcclusion(vertices[corner]), 1.0F,

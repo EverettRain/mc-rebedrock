@@ -135,8 +135,7 @@ buildChunkMeshesParallel(const World& world, std::span<const ChunkMeshRequest> r
                     maximumSectionY = *std::ranges::max_element(request.sectionYs);
                 }
                 const MeshLightingSnapshot lighting{
-                    world, request.position, minimumSectionY, maximumSectionY,
-                    self.smoothLightingQuality()};
+                    world, request.position, minimumSectionY, maximumSectionY};
                 const std::size_t sectionCount = request.sectionYs.empty()
                                                      ? static_cast<std::size_t>(kSectionCount)
                                                      : request.sectionYs.size();

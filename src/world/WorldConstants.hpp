@@ -53,11 +53,30 @@ inline constexpr float kVoidDespawnY = static_cast<float>(kMinY) - 64.0F;
     return (value % divisor < 0) ? quotient - 1 : quotient;
 }
 
-// The smooth-lighting algorithm the mesh was baked with. Off keeps the flat
-// light values; Standard is the current binary-AO algorithm; High is the
-// vanilla per-block AO. Because VoxelVertex has no room for two AO
-// sets, the quality is baked into the mesh and a change remeshes the world.
-enum class SmoothLightingQuality : std::uint8_t { Off, Standard, High };
+// Whether smooth lighting (26.1's ambient occlusion) is applied. 26.1 makes this
+// a boolean — `OptionInstance.createBoolean("options.ao", true)`, and
+// `OptionsAmbientOcclusionFix` is the datafixer that migrated the old three-tier
+// setting to it — and so does this now (RN-19b). It used to carry a third,
+// self-invented "Standard" tier that averaged a 0.35 floor instead of vanilla's
+// 0.2 and then remapped it into [0.72, 1.0] in the shader; it was the default,
+// so the AO nobody could see was nobody's fault but the tier's. Measurement
+// killed the one argument for keeping it: it was 0.6%-2.6% *slower* than the
+// vanilla algorithm, not cheaper (RN-19 §9.1).
+//
+// The mesh no longer depends on this value — one algorithm bakes it, and Off
+// only tells the shader to ignore the AO channel and read the flat light — so
+// toggling it no longer remeshes the world.
+enum class SmoothLightingQuality : std::uint8_t { Off, On };
+
+// What the terrain shaders read as `lightingSettings.y`: whether to apply the
+// baked AO channel and the smooth light at all, or fall back to the flat light
+// with no occlusion. Off is a shader-side switch and nothing more — the mesh is
+// byte-identical either way — so this is the whole of what the option does at
+// runtime, and it lives here rather than inline in the frame code so a headless
+// test can hold it to that.
+[[nodiscard]] constexpr float smoothLightingShaderSwitch(SmoothLightingQuality quality) {
+    return quality == SmoothLightingQuality::Off ? 0.0F : 1.0F;
+}
 
 static_assert(kSectionCount == 24);
 static_assert(kWorldHeight % kSectionSize == 0);

@@ -29,6 +29,7 @@ layout(binding = 0) uniform CameraUniform {
     vec4 renderSettings;
     vec4 pointLights[8];
     vec4 lightColors[8];
+    // x = 点光源数量, y = 平滑光照开关, z = 保留位（恒 0，见 RN-19b）, w = 阴影图有效
     vec4 lightingSettings;
     vec4 celestialLayers;
     vec4 weatherSettings;
@@ -105,7 +106,6 @@ void main() {
     // as one even brightness rather than four dim sides and two bright caps.
     float faceShade = fragmentShade < 0.5 ? 1.0 : cardinalShade(normal);
     bool smoothLighting = camera.lightingSettings.y > 0.5;
-    bool highLighting = camera.lightingSettings.z > 0.5;
     float skyLevel = smoothLighting ? fragmentSkyLight : fragmentFlatSkyLight;
     float blockLevel = smoothLighting ? fragmentBlockLight : fragmentFlatBlockLight;
     // SKY_LIGHT_FACTOR for this tick (sunDirection.w), times the weather dimming,
@@ -130,13 +130,13 @@ void main() {
     bool cameraUnderwater = camera.renderSettings.y > 0.5;
     bool waterSurface = abs(fragmentTextureLayer - camera.fluidAnimationLayers.x) < 0.1 ||
         abs(fragmentTextureLayer - camera.fluidAnimationLayers.y) < 0.1;
+    // 26.1 的 AO 只有开/关，开就是 clamp(ao, 0.2, 1.0)
+    // 从前这里还有一条自造的 Standard 曲线 mix(0.72, 1.0, smoothstep(ao))，
+    // 它把最暗的角抬到 0.86 以上（烘焙侧的下限本身就是 0.5125，不是 0.35），
+    // 于是「平滑光照开着却看不出来」——那条曲线连同它的档位已在 RN-19b 删除
     float ambientOcclusion = waterSurface
         ? 1.0
-        : (smoothLighting
-            ? (highLighting
-                ? clamp(fragmentAmbientOcclusion, 0.2, 1.0)
-                : mix(0.72, 1.0, smoothstep(0.0, 1.0, fragmentAmbientOcclusion)))
-            : 1.0);
+        : (smoothLighting ? clamp(fragmentAmbientOcclusion, 0.2, 1.0) : 1.0);
     // The per-vertex biome colour tint (grass tops/plants and foliage) is
     // white for everything else, so ordinary blocks are unchanged.
     // The per-fragment biome colour: grass tops/plants sample the grass map,
