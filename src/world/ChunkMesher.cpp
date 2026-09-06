@@ -826,6 +826,14 @@ struct FaceRing final {
     std::array<glm::ivec3, 2> edgeA;
     std::array<glm::ivec3, 2> edgeB;
     std::array<glm::ivec3, 4> diagonal;
+    // The cell one step further along the face normal from each edge neighbour —
+    // 26.1 reads exactly this cell to decide whether the diagonal is worth
+    // reading at all (`pos.setWithOffset(basePosition, corners[N]).move(direction)`,
+    // :60-67). It is NOT the edge cell itself.
+    std::array<glm::ivec3, 2> beyondA;
+    std::array<glm::ivec3, 2> beyondB;
+    // `corners[0]`'s sample position, the value the substitution reuses.
+    glm::ivec3 substitute;
 };
 
 // RN-18: the ring is anchored at a CELL, and the four corner values it produces
@@ -834,18 +842,129 @@ struct FaceRing final {
 // and pick a ring by `coordinate < 0.5F ? -1 : 1`, so a vertex at y=0.5 sampled
 // the ring as if it were at y=1 and a half-height face ran a whole cell's
 // gradient across half a cell.
+// Which of the four edge neighbours 26.1 calls `corners[0]` for this face.
+//
+// `AdjacencyInfo` (:281-511) lists the four edge directions per face, and the
+// diagonal-substitution rule below reuses the sample at index 0. The order is
+// not derivable — it differs per face and even swaps which axis comes first —
+// so it is transcribed:
+//
+//   DOWN  {WEST, EAST, NORTH, SOUTH}   -> corners[0] = -X = -a
+//   UP    {EAST, WEST, NORTH, SOUTH}   -> corners[0] = +X = +a
+//   NORTH {UP, DOWN, EAST, WEST}       -> corners[0] = +Y = +b
+//   SOUTH {WEST, EAST, DOWN, UP}       -> corners[0] = -X = -a
+//   WEST  {UP, DOWN, NORTH, SOUTH}     -> corners[0] = +Y = +a
+//   EAST  {DOWN, UP, NORTH, SOUTH}     -> corners[0] = -Y = -a
+//
+// (a and b are this mesher's in-plane axes, `faceTangents`: +Y/+Z for an
+// X-normal face, +X/+Z for a Y-normal one, +X/+Y for a Z-normal one.)
+struct SubstituteEdge final {
+    bool onAxisA = true;
+    bool high = false; // false = the -axis neighbour, true = +axis
+};
+
+[[nodiscard]] constexpr SubstituteEdge substituteEdge(Face face) {
+    switch (face) {
+    case Face::NegativeY: return {true, false};  // DOWN  -> -a
+    case Face::PositiveY: return {true, true};   // UP    -> +a
+    case Face::NegativeZ: return {false, true};  // NORTH -> +b
+    case Face::PositiveZ: return {true, false};  // SOUTH -> -a
+    case Face::NegativeX: return {true, true};   // WEST  -> +a
+    case Face::PositiveX: return {true, false};  // EAST  -> -a
+    }
+    return {true, false};
+}
+
+// 26.1's `faceCubic` (`BlockModelLighter.prepareQuadShape`, :262-270) decides
+// where the sampling ring is anchored: `basePosition = faceCubic ?
+// centerPosition.relative(direction) : centerPosition` (:40).
+//
+// The flag is pure geometry — vanilla derives it from the quad's own bounding
+// box, not from anything the baker knows — so it transcribes directly:
+//
+//     faceCubic = quad is planar on the face's axis
+//                 && (the quad sits on that cell wall || the collision shape
+//                     fills the cell)
+//
+// A full cube's face is flush, so it anchors one cell out and nothing changes.
+// A face that sits INSIDE its cell — a repeater's top at 2/16, a trapdoor panel,
+// a pressure plate, a carpet, farmland's top at 15/16 — anchors at the block's
+// own cell instead, so it picks up the light and occlusion of the cells around
+// itself rather than of a ring floating one cell away from it. RN-18 fixed the
+// weights (a vertex's fractional position in the face); this is the other half,
+// the anchor.
+[[nodiscard]] constexpr bool shapeFillsCell(const BlockShape& shape) {
+    switch (shape.kind) {
+    case ShapeKind::Empty:
+        return false;
+    case ShapeKind::Column:
+        return shape.bottom <= 0.0F && shape.top >= 1.0F;
+    case ShapeKind::Boxes:
+        // A single box filling the cell, matching `faceOccludesFully`'s
+        // deliberate refusal to port `Shapes.join`: this build answers shape
+        // questions per box, never over their union.
+        for (const ShapeBox& box : shape.boxes) {
+            if (box.minX <= 0.0F && box.minY <= 0.0F && box.minZ <= 0.0F && box.maxX >= 1.0F &&
+                box.maxY >= 1.0F && box.maxZ >= 1.0F) {
+                return true;
+            }
+        }
+        return false;
+    }
+    return false;
+}
+
+[[nodiscard]] constexpr bool faceAnchorsOutside(Face face, float minAxis, float maxAxis,
+                                                bool collisionFillsCell) {
+    constexpr float kMinEpsilon = 1.0E-4F;
+    constexpr float kMaxEpsilon = 0.9999F;
+    if (minAxis != maxAxis) {
+        return false;
+    }
+    const bool positive =
+        face == Face::PositiveX || face == Face::PositiveY || face == Face::PositiveZ;
+    const bool flush = positive ? maxAxis > kMaxEpsilon : minAxis < kMinEpsilon;
+    return flush || collisionFillsCell;
+}
+
+// The quad's extent on its own face axis, which is all `faceAnchorsOutside`
+// needs — vanilla takes the same min/max over the quad's four positions
+// (`prepareQuadShape`, :221-234).
+[[nodiscard]] constexpr std::array<float, 2> boxFaceAxisExtent(Face face, const ShapeBox& box) {
+    switch (face) {
+    case Face::PositiveX:
+    case Face::NegativeX:
+        return {box.minX, box.maxX};
+    case Face::PositiveY:
+    case Face::NegativeY:
+        return {box.minY, box.maxY};
+    case Face::PositiveZ:
+    case Face::NegativeZ:
+        break;
+    }
+    return {box.minZ, box.maxZ};
+}
+
 [[nodiscard]] FaceRing faceRing(const FaceDefinition& face, const FaceTangents& tangents,
-                                int x, int y, int z) {
-    const glm::ivec3 centre{x + face.dx, y + face.dy, z + face.dz};
+                                int x, int y, int z, bool anchorOutside) {
+    const glm::ivec3 centre = anchorOutside ? glm::ivec3{x + face.dx, y + face.dy, z + face.dz}
+                                            : glm::ivec3{x, y, z};
+    const glm::ivec3 normal{face.dx, face.dy, face.dz};
     FaceRing ring{centre,
                   {centre - tangents.a, centre + tangents.a},
                   {centre - tangents.b, centre + tangents.b},
+                  {},
+                  {centre - tangents.a + normal, centre + tangents.a + normal},
+                  {centre - tangents.b + normal, centre + tangents.b + normal},
                   {}};
     for (std::size_t index = 0; index < 4U; ++index) {
         const int signA = (index & 0b10U) != 0U ? 1 : -1;
         const int signB = (index & 0b01U) != 0U ? 1 : -1;
         ring.diagonal[index] = centre + tangents.a * signA + tangents.b * signB;
     }
+    const SubstituteEdge substitute = substituteEdge(face.face);
+    ring.substitute = substitute.onAxisA ? ring.edgeA[substitute.high ? 1U : 0U]
+                                         : ring.edgeB[substitute.high ? 1U : 0U];
     return ring;
 }
 
@@ -853,6 +972,57 @@ struct FaceRing final {
 // 0.2, everything else keeps full brightness. The corner averages its four cells
 // symmetrically — no per-block corner selection — so adjacent blocks agree
 // exactly on shared corners and the gradient stays smooth.
+// 26.1 :69-113 — the diagonal is not always read. When the cells BEYOND both of
+// a corner's edges block the view, vanilla does not sample the diagonal at all;
+// it reuses `corners[0]`'s sample:
+//
+//     if (!translucent2 && !translucent0) { shadeCorner02 = shade0; ... }
+//
+// An inner corner (floor plus two walls) therefore averages an OPEN sample where
+// this build averaged the solid diagonal, and comes out a step brighter.
+//
+// Two things about this are easy to get wrong, and both are transcribed
+// literally rather than tidied:
+//
+//  * the reused sample is `shade0`/`light0` in ALL FOUR branches, including the
+//    two whose edges are 1&2 and 1&3 — corner 0 is not even one of their edges.
+//    It reads like a copy-paste slip that has been vanilla's behaviour for many
+//    versions; "fixing" it to reuse each corner's own edge would be a different
+//    look, not a more correct one. The visible consequence is that the four
+//    corners of one face are NOT symmetric: the two that own edge 0 keep their
+//    value, the other two brighten.
+//  * `translucentN` is read at the cell one step further along the face normal
+//    from the edge neighbour, not at the edge neighbour itself (:60-67).
+//
+// `!translucent` is `isViewBlocking && lightDampening != 0`. Here that is
+// `aoOccludes`: it is true only for a full opaque non-leaf cube, and any block
+// with it set has skyLightOpacity 15, so the dampening half is implied.
+// The four `translucentN` answers, one per edge. They are resolved once per face
+// rather than per corner: each edge takes part in two corners, so asking inside
+// the corner loop would probe every cell twice.
+struct EdgeBlocking final {
+    std::array<bool, 2> axisA{};
+    std::array<bool, 2> axisB{};
+};
+
+template <typename Sampler>
+[[nodiscard]] EdgeBlocking edgeBlocking(const Sampler& lighting, const FaceRing& ring) {
+    const auto blocks = [&](const glm::ivec3& position) {
+        return lighting.aoOccludes(position.x, position.y, position.z);
+    };
+    return {{blocks(ring.beyondA[0]), blocks(ring.beyondA[1])},
+            {blocks(ring.beyondB[0]), blocks(ring.beyondB[1])}};
+}
+
+[[nodiscard]] const glm::ivec3& diagonalSample(const FaceRing& ring, const EdgeBlocking& blocking,
+                                               std::size_t highA, std::size_t highB,
+                                               std::size_t index) {
+    if (blocking.axisA[highA] && blocking.axisB[highB]) {
+        return ring.substitute;
+    }
+    return ring.diagonal[index];
+}
+
 template <typename Sampler>
 [[nodiscard]] float ringAmbientOcclusion(const Sampler& lighting, const glm::ivec3& centre,
                                          const glm::ivec3& edgeA, const glm::ivec3& edgeB,
@@ -907,19 +1077,20 @@ struct FaceCornerLighting final {
 template <typename Sampler>
 [[nodiscard]] FaceCornerLighting faceCornerLighting(
     const Sampler& lighting, const FaceDefinition& face,
-    int x, int y, int z, bool wantAmbientOcclusion) {
+    int x, int y, int z, bool wantAmbientOcclusion, bool anchorOutside) {
     FaceCornerLighting corners;
     // Resolved once: the two in-plane axes are a property of the normal, and
     // asking for them per corner and again per vertex was eight branchy lookups
     // a face for one answer.
     const FaceTangents tangents = faceTangents(face);
-    const FaceRing ring = faceRing(face, tangents, x, y, z);
+    const FaceRing ring = faceRing(face, tangents, x, y, z, anchorOutside);
+    const EdgeBlocking blocking = edgeBlocking(lighting, ring);
     for (std::size_t index = 0; index < 4U; ++index) {
         const std::size_t highA = (index & 0b10U) != 0U ? 1U : 0U;
         const std::size_t highB = (index & 0b01U) != 0U ? 1U : 0U;
         const glm::ivec3& edgeA = ring.edgeA[highA];
         const glm::ivec3& edgeB = ring.edgeB[highB];
-        const glm::ivec3& diagonal = ring.diagonal[index];
+        const glm::ivec3& diagonal = diagonalSample(ring, blocking, highA, highB, index);
         if (wantAmbientOcclusion) {
             corners.ambient[index] =
                 ringAmbientOcclusion(lighting, ring.centre, edgeA, edgeB, diagonal);
@@ -1031,7 +1202,10 @@ void appendFace(
     const float layer = textureLayer(world, block, face.face, x, y, z);
     // RN-18: the cell's four corner values, once per face.
     const auto cornerLighting =
-        faceCornerLighting(lighting, face, x, y, z, /*wantAmbientOcclusion=*/true);
+        faceCornerLighting(lighting, face, x, y, z, /*wantAmbientOcclusion=*/true,
+                           // A full cube's face sits on the cell wall, so 26.1's
+                           // faceCubic is true here by construction.
+                           /*anchorOutside=*/true);
     const FaceTangents tangents = faceTangents(face);
     for (std::size_t corner = 0; corner < face.corners.size(); ++corner) {
         glm::vec3 positionCorner = face.corners[corner];
@@ -1168,7 +1342,15 @@ void appendWaterFace(
     // lowering does not touch — so the weights are the same either way, and
     // spelling the canonical corner keeps that fact visible.
     const auto waterCornerLighting =
-        faceCornerLighting(lighting, face, x, y, z, /*wantAmbientOcclusion=*/false);
+        faceCornerLighting(lighting, face, x, y, z, /*wantAmbientOcclusion=*/false,
+                           // A lowered fluid surface is not flush with the cell
+                           // wall, but the faceCubic rule does not reach it:
+                           // 26.1 renders fluids through LiquidBlockRenderer,
+                           // which computes its own lighting and never runs
+                           // BlockModelLighter. Anchoring water anywhere else
+                           // would be this build inventing a rule, not porting
+                           // one, so it keeps the ring it has always used.
+                           /*anchorOutside=*/true);
     for (std::size_t cornerIndex = 0; cornerIndex < face.corners.size(); ++cornerIndex) {
         glm::vec3 corner = face.corners[cornerIndex];
         if (corner.y > 0.5F) {
@@ -1367,8 +1549,11 @@ void appendBox(
         // top, meeting at y=0.5 as a hard step. The corner values are now the
         // cell's, and the vertex is blended at the position it is actually
         // emitted at.
-        const auto cornerLighting =
-            faceCornerLighting(lighting, face, x, y, z, /*wantAmbientOcclusion=*/true);
+        const auto axisExtent = boxFaceAxisExtent(face.face, box);
+        const auto cornerLighting = faceCornerLighting(
+            lighting, face, x, y, z, /*wantAmbientOcclusion=*/true,
+            faceAnchorsOutside(face.face, axisExtent[0], axisExtent[1],
+                               shapeFillsCell(blockShape(world.state(x, y, z)))));
         const FaceTangents tangents = faceTangents(face);
         for (std::size_t corner = 0; corner < face.corners.size(); ++corner) {
             // Remap the unit-cube corner into the box's bounds on every axis:
@@ -1858,8 +2043,23 @@ void appendBakedModel(render::MeshData& mesh, const CellCullContext& current, Bl
                                 static_cast<float>(ChunkLightSampler::kMaximumLightLevel);
         const auto firstVertex = static_cast<std::uint32_t>(mesh.vertices.size());
         std::array<float, 4> ambient{1.0F, 1.0F, 1.0F, 1.0F};
-        const auto cornerLighting =
-            faceCornerLighting(lighting, faceDefinition, x, y, z, ambientOcclusion);
+        // 26.1 takes the quad's own bounding box (`prepareQuadShape`, :221-234);
+        // a baked quad is not necessarily a box face, so the extent is measured
+        // rather than read off a ShapeBox.
+        float minAxis = 32.0F;
+        float maxAxis = -32.0F;
+        for (const auto& position : baked.quad.position) {
+            const float axis = worldFace == Face::PositiveX || worldFace == Face::NegativeX
+                ? position.x
+                : (worldFace == Face::PositiveY || worldFace == Face::NegativeY ? position.y
+                                                                                : position.z);
+            minAxis = std::min(minAxis, axis);
+            maxAxis = std::max(maxAxis, axis);
+        }
+        const auto cornerLighting = faceCornerLighting(
+            lighting, faceDefinition, x, y, z, ambientOcclusion,
+            faceAnchorsOutside(worldFace, minAxis, maxAxis,
+                               shapeFillsCell(blockShape(state))));
         const FaceTangents tangents = faceTangents(faceDefinition);
         for (std::size_t corner = 0; corner < 4; ++corner) {
             // The corner in cell-local 0..1. RN-18 reads it as a fractional

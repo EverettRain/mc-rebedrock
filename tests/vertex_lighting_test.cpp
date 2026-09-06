@@ -25,14 +25,15 @@ namespace {
 constexpr float kSingleSideOcclusion = 0.8F;
 // Both edges occluded, the diagonal cell open: (1 + 0.2 + 0.2 + 1) / 4.
 //
-// **Vanilla answers 0.4 here, not 0.6**, and the difference is a known gap, not
-// a transcription error: `BlockModelLighter` (:69-113) replaces the diagonal
-// sample with the edge sample when both edges are opaque, so its ring is
-// (1 + 0.2 + 0.2 + 0.2) / 4. This build reads the real diagonal unconditionally.
-// That rule is RN-19c (§2.2) and is deliberately not in RN-19b — mixing the tier
-// collapse with an algorithm change would make the Mac comparison unreadable.
-// When RN-19c lands, this constant becomes 0.4 and this comment goes away.
-constexpr float kClosedCornerOcclusionPendingRn19c = 0.6F;
+// RN-19b's note here predicted vanilla answers 0.4 and that RN-19c would change
+// this constant. **It does not, and the prediction was wrong.** 26.1's
+// substitution (`BlockModelLighter` :69-113) is gated on `translucentN`, which
+// reads the cell one step further along the face normal from the edge neighbour,
+// NOT the edge neighbour itself (:60-67). In this scene those cells are air, so
+// the rule does not fire and the real diagonal is read — 0.6, unchanged. The
+// scene that does fire it is a wall two cells tall, and it lives in
+// `testInnerCornerSubstitution` below.
+constexpr float kOpenDiagonalCornerOcclusion = 0.6F;
 // AO is quantized to a u8 in the packed vertex (1/255 resolution), so the AO
 // assertions compare within one quantum instead of exact float.
 constexpr float kAoTolerance = 0.01F;
@@ -120,7 +121,167 @@ topFaceVertices(const mc::render::MeshData& mesh, int blockX, int blockY, int bl
 
 } // namespace
 
+
+// RN-19c: 26.1 does not always read the diagonal cell.
+//
+// `BlockModelLighter` :69-113 — when the cells BEYOND both of a corner's edges
+// block the view, the diagonal is not sampled at all; the sample at `corners[0]`
+// is reused. An inner corner (a floor and two walls) therefore averages an open
+// cell where this build averaged the solid diagonal, and comes out brighter.
+//
+// The rule has a fingerprint no approximation of it reproduces, and this test is
+// built around that fingerprint rather than around one number: the reused sample
+// is `shade0` in all four branches (:71/:82/:93/:104) — including the two whose
+// edges are 1&2 and 1&3, for which corner 0 is not even an edge. So the four
+// corners of a face are NOT symmetric. `corners[0]` for an UP face is +X
+// (`AdjacencyInfo.UP` :327), which means:
+//
+//   * a corner that owns the +X edge substitutes its own (solid) edge -> 0.4,
+//     the same value it had before the rule existed;
+//   * a corner that does not own it substitutes the open +X cell -> 0.6.
+//
+// Both "diagonal = min(edgeA, edgeB)" and "each corner reuses its own edge"
+// answer 0.4 for all four, so either would fail this test where a single-scene
+// assertion would pass them.
+void testInnerCornerSubstitution() {
+    // A stone floor with two walls, two cells tall, meeting at the cell whose
+    // top face is measured. `dx`/`dz` name which sides the walls are on.
+    const auto cornerAo = [](int dx, int dz) {
+        mc::world::World world;
+        mc::world::Chunk chunk;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                chunk.setBlock(x, mc::world::kMinY + 1, z, mc::world::Block::Stone);
+            }
+        }
+        for (int y = mc::world::kMinY + 2; y <= mc::world::kMinY + 3; ++y) {
+            chunk.setBlock(8 + dx, y, 8, mc::world::Block::Stone);
+            chunk.setBlock(8, y, 8 + dz, mc::world::Block::Stone);
+            chunk.setBlock(8 + dx, y, 8 + dz, mc::world::Block::Stone);
+        }
+        mc::world::World scene;
+        scene.setChunk({0, 0}, std::move(chunk));
+        const mc::world::MeshLightingSnapshot snapshot{scene, {0, 0}, 0, 0};
+        mc::render::RenderMeshData mesh;
+        static_cast<void>(
+            mc::world::ChunkMesher::buildSection(scene, {0, 0}, 0, snapshot, mesh));
+        const auto vertices = topFaceVertices(mesh.mesh, 8, 1, 8);
+        // The corner vertex nearest the two walls.
+        const auto index = static_cast<std::size_t>((dz > 0 ? 1 : 0) * 2 + (dx > 0 ? 1 : 0));
+        return mc::render::decodeAmbientOcclusion(vertices[index]);
+    };
+
+    // Owns the +X edge -> substitutes a solid sample -> unchanged at 0.4.
+    expectNearAo(cornerAo(1, 1), 0.4F, "inner corner owning +X (walls +X,+Z)");
+    expectNearAo(cornerAo(1, -1), 0.4F, "inner corner owning +X (walls +X,-Z)");
+    // Does not own it -> substitutes the open +X cell -> 0.6.
+    expectNearAo(cornerAo(-1, -1), 0.6F, "inner corner without +X (walls -X,-Z)");
+    expectNearAo(cornerAo(-1, 1), 0.6F, "inner corner without +X (walls -X,+Z)");
+}
+
+// RN-19c: the diagonal is not merely down-weighted when the rule fires — it is
+// not read. Replacing the diagonal cell with air must change nothing, which no
+// "weigh the diagonal less" approximation can satisfy.
+void testInnerCornerIgnoresTheDiagonalEntirely() {
+    const auto cornerAo = [](bool solidDiagonal) {
+        mc::world::World world;
+        mc::world::Chunk chunk;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                chunk.setBlock(x, mc::world::kMinY + 1, z, mc::world::Block::Stone);
+            }
+        }
+        for (int y = mc::world::kMinY + 2; y <= mc::world::kMinY + 3; ++y) {
+            chunk.setBlock(7, y, 8, mc::world::Block::Stone);
+            chunk.setBlock(8, y, 7, mc::world::Block::Stone);
+            if (solidDiagonal) {
+                chunk.setBlock(7, y, 7, mc::world::Block::Stone);
+            }
+        }
+        mc::world::World scene;
+        scene.setChunk({0, 0}, std::move(chunk));
+        const mc::world::MeshLightingSnapshot snapshot{scene, {0, 0}, 0, 0};
+        mc::render::RenderMeshData mesh;
+        static_cast<void>(
+            mc::world::ChunkMesher::buildSection(scene, {0, 0}, 0, snapshot, mesh));
+        const auto vertices = topFaceVertices(mesh.mesh, 8, 1, 8);
+        return mc::render::decodeAmbientOcclusion(vertices[0]);
+    };
+    expectNearAo(cornerAo(true), cornerAo(false),
+                 "the diagonal cell is not read when both edges are walled");
+}
+
+// RN-19c: `faceCubic` decides where the ring is anchored (`BlockModelLighter`
+// :40, :262-270). A face flush with the cell wall anchors one cell out; a face
+// that sits inside its cell anchors at the block's own cell, so it sees the
+// neighbours of the block it belongs to rather than a ring floating above it.
+//
+// A closed trapdoor is the cleanest case in this roster: its panel is a box
+// 3/16 tall, so its top face is inset. The two scenes differ only in which layer
+// the neighbouring stone is on.
+void testInsetFaceAnchorsAtItsOwnCell() {
+    const auto trapdoorCornerAo = [](int neighbourLayer) {
+        mc::world::Chunk chunk;
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                chunk.setBlock(x, mc::world::kMinY, z, mc::world::Block::Stone);
+            }
+        }
+        chunk.setBlock(8, mc::world::kMinY + 1, 8, mc::world::Block::OakTrapdoor);
+        chunk.setBlock(9, mc::world::kMinY + 1 + neighbourLayer, 8, mc::world::Block::Stone);
+        mc::world::World scene;
+        scene.setChunk({0, 0}, std::move(chunk));
+        const mc::world::MeshLightingSnapshot snapshot{scene, {0, 0}, 0, 0};
+        mc::render::RenderMeshData mesh;
+        static_cast<void>(
+            mc::world::ChunkMesher::buildSection(scene, {0, 0}, 0, snapshot, mesh));
+        float darkest = 1.0F;
+        for (const auto* part : {&mesh.mesh, &mesh.cutoutMesh}) {
+            for (const auto& vertex : part->vertices) {
+                const glm::vec3 normal = mc::render::decodeNormal(vertex);
+                const glm::vec3 position = mc::render::decodeLocalPosition(vertex);
+                if (normal.y > 0.5F && position.x > 8.9F && position.x < 9.1F &&
+                    position.y < static_cast<float>(mc::world::kMinY + 2 - mc::world::kMinY)) {
+                    darkest = std::min(darkest, mc::render::decodeAmbientOcclusion(vertex));
+                }
+            }
+        }
+        return darkest;
+    };
+    // Stone in the trapdoor's OWN layer darkens the inset top face, because the
+    // ring is anchored there. Before this node the ring sat one cell up and this
+    // neighbour was invisible to it.
+    expectNearAo(trapdoorCornerAo(0), 0.8F, "inset face sees its own layer's neighbour");
+    // Stone one layer up does not, for the same reason in reverse.
+    expectNearAo(trapdoorCornerAo(1), 1.0F, "inset face does not see the layer above it");
+}
+
+// Regression: a full cube's face is flush with the cell wall, so faceCubic is
+// true for it and its ring is where it always was. This is what keeps the change
+// confined to inset faces.
+void testFullCubeFaceKeepsItsAnchor() {
+    mc::world::Chunk chunk;
+    chunk.setBlock(8, mc::world::kMinY + 1, 8, mc::world::Block::Stone);
+    chunk.setBlock(9, mc::world::kMinY + 1, 8, mc::world::Block::Stone);
+    mc::world::World scene;
+    scene.setChunk({0, 0}, std::move(chunk));
+    const mc::world::MeshLightingSnapshot snapshot{scene, {0, 0}, 0, 0};
+    mc::render::RenderMeshData mesh;
+    static_cast<void>(mc::world::ChunkMesher::buildSection(scene, {0, 0}, 0, snapshot, mesh));
+    const auto vertices = topFaceVertices(mesh.mesh, 8, 1, 8);
+    // A neighbour in the cube's own layer is beside the face, not above it, so
+    // it cannot darken the top face: every corner stays fully bright.
+    for (std::size_t corner = 0; corner < vertices.size(); ++corner) {
+        expectNearAo(mc::render::decodeAmbientOcclusion(vertices[corner]), 1.0F,
+                     "a flush face ignores its own layer's neighbour");
+    }
+}
+
 int main() {
+    testInnerCornerSubstitution();
+    testInnerCornerIgnoresTheDiagonalEntirely();
+    testInsetFaceAnchorsAtItsOwnCell();
+    testFullCubeFaceKeepsItsAnchor();
     {
         mc::world::World world;
         mc::world::Chunk chunk;
@@ -178,7 +339,7 @@ int main() {
     {
         const auto vertices = topFaceVertices(buildLightingScene({{0, mc::world::kMinY + 2, 1}, {1, mc::world::kMinY + 2, 0}}), 1, 1, 1);
         expectNearAo(mc::render::decodeAmbientOcclusion(vertices[0]),
-                     kClosedCornerOcclusionPendingRn19c, "closed-corner AO");
+                     kOpenDiagonalCornerOcclusion, "open-diagonal corner AO");
         expectNearAo(mc::render::decodeAmbientOcclusion(vertices[1]), kSingleSideOcclusion,
                      "north edge AO");
         expectNearAo(mc::render::decodeAmbientOcclusion(vertices[2]), kSingleSideOcclusion,
