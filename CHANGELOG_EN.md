@@ -8,6 +8,19 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- Sky light no longer floods deep caves. It used to be a "leftover direct value"
+  that stopped fading once it had passed the last thing that dimmed it, so a
+  single layer of leaves, one block of water, or a stair roof left a column of
+  light 14 levels bright running from the surface to the bottom of the world, and
+  every layer of it spread sideways as well. Sky light is now a source column, as
+  in vanilla: cells with an unobstructed view of the sky are fully lit, and
+  everything below the first block that dims or seals the column has to earn its
+  light one level at a time. A glass roof still lets full daylight through — that
+  part was never the bug.
+- A burning mob standing under a tree or under water is no longer put out by
+  rain, and a mob under leaves no longer counts as standing in the open sun.
+  "Can this creature see the sky" used to read the same leaked light value, so a
+  thick canopy still counted as open sky.
 - A stair in the inventory no longer looks exactly like a plank. Every shaped
   block's item icon — stairs, walls, fence gates, pressure plates, buttons — used
   to be a full cube wearing its parent block's texture, so "I cannot get a stair"

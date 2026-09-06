@@ -2,6 +2,7 @@
 
 #include "world/ChunkMesher.hpp"
 #include "world/DimensionChunkGenerator.hpp"
+#include "world/SkyColumn.hpp"
 #include "world/WorldConstants.hpp"
 
 #include <algorithm>
@@ -1073,8 +1074,14 @@ ChunkStreamBatch ChunkStreamer::applyBlockEdits(World& world,
         // channels need this treatment, and only when they can actually differ.
         // Emission is compared state-to-state: a furnace igniting keeps its
         // block and only changes its LIT, so comparing blocks would call it a
-        // no-op and leave the cell dark.
-        if (skyLightOpacity(previous.block()) != skyLightOpacity(edit.state.block()) ||
+        // no-op and leave the cell dark. The sky term is compared state-to-state
+        // for the same reason and then some: skyColumnSignature carries both the
+        // state-aware opacity (watering a slab changes its dampening without
+        // changing its block) and the two vertical seal bits, because the source
+        // column is ended by shape as well as by dampening — placing a slab under
+        // an open sky changes nothing about opacity or emission and everything
+        // about where that column's light stops.
+        if (skyColumnSignature(previous) != skyColumnSignature(edit.state) ||
             previous.emittedLight() != edit.state.emittedLight()) {
             lightEngine.updateBlock(world, edit.worldX, edit.y, edit.worldZ);
         }

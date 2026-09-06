@@ -42,9 +42,9 @@ void require(bool condition, const char* expression, int line) {
 #define REQUIRE(expression) require(static_cast<bool>(expression), #expression, __LINE__)
 
 // A flat stone world with air above, wide enough that a spawned creature's
-// tick never falls off the edge of a loaded chunk. Sky light defaults to 0
-// (never set) unless a test opens a column with setDirectSkyLight, matching
-// entity_fire_test.cpp's own convention.
+// tick never falls off the edge of a loaded chunk. Sky light defaults to 0 and
+// no column has a sky source (a fresh Chunk's lowestSourceY is kMaxY) unless a
+// test opens one, matching entity_fire_test.cpp's own convention.
 mc::world::World makeFlatWorld() {
     mc::world::World world;
     for (int chunkZ = -3; chunkZ <= 3; ++chunkZ) {
@@ -72,15 +72,15 @@ EnvironmentSnapshot nightSnapshot() {
 }
 
 // Opens the head cell (one above the spawn foot cell) fully to the sky, the
-// same directSkyLight >= 15 convention entity_fire_test.cpp's rain test uses.
-// Also raises the stored skyLight channel to full, mirroring what the real
-// WorldLightEngine writes for an unobstructed column (both channels 15) —
-// AR-M2f's ignition rule reads directSkyLight for "can see sky" and skyLight
+// same convention entity_fire_test.cpp's rain test uses: the column's sky source
+// run is made to start at that cell. Also raises the stored skyLight channel to
+// full, mirroring what the real WorldLightEngine writes for an unobstructed
+// column — AR-M2f's ignition rule reads canSeeSky for "can see sky" and skyLight
 // (via getMaxLocalRawBrightness -> brightness curve) for the `f` band and roll,
 // so a test column that opened only one of them would read as full-sun-but-dark
 // and never pass the f > 0.5 gate.
 void exposeHeadToSky(mc::world::World& world, int x, int y, int z) {
-    world.setDirectSkyLight(x, y, z, 15U);
+    world.setLowestSourceY(x, z, y);
     world.setSkyLight(x, y, z, 15U);
 }
 
@@ -94,13 +94,14 @@ void exposeHeadToSky(mc::world::World& world, int x, int y, int z) {
 // spawn-tick layer, or the roll stalls the moment the mob settles. The layer is
 // flooded across the whole area the mob can reach in the window (it stays put
 // without a player to path toward, but RandomStrollGoal can still nudge it) on
-// both the directSkyLight (sky-visible gate) and skyLight (brightness curve)
-// channels, matching what WorldLightEngine writes for an unobstructed column.
+// both the sky-visible gate (the column's source run, which is per column and so
+// is opened once at the lower of the two layers) and the skyLight brightness
+// curve, matching what WorldLightEngine writes for an unobstructed column.
 void floodSkyAroundOrigin(mc::world::World& world, int radius) {
-    for (int y = 1; y <= 2; ++y) {
-        for (int z = -radius; z <= radius; ++z) {
-            for (int x = -radius; x <= radius; ++x) {
-                world.setDirectSkyLight(x, y, z, 15U);
+    for (int z = -radius; z <= radius; ++z) {
+        for (int x = -radius; x <= radius; ++x) {
+            world.setLowestSourceY(x, z, 1);
+            for (int y = 1; y <= 2; ++y) {
                 world.setSkyLight(x, y, z, 15U);
             }
         }
@@ -169,7 +170,7 @@ void testZombieDoesNotIgniteAtNight() {
 }
 
 // Sabotage① anchor: a zombie at noon but under a solid roof (no
-// directSkyLight at its head — the world default) never ignites, even though
+// sky source above its head — the world default) never ignites, even though
 // it is broad daylight. A rule that ignores sky exposure would light this.
 void testZombieDoesNotIgniteWhenSheltered() {
     mc::world::World world = makeFlatWorld(); // head cell never opened to sky

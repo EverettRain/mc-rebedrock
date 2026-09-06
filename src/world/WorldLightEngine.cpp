@@ -1,6 +1,7 @@
 #include "world/WorldLightEngine.hpp"
 
 #include "world/Block.hpp"
+#include "world/SkyColumn.hpp"
 #include "world/WorldConstants.hpp"
 
 #include <algorithm>
@@ -165,17 +166,25 @@ std::uint8_t WorldLightEngine::desiredLevel(const World& world, Channel channel,
     const bool opaque = isOpaque(value);
     // Emission is a property of the state, not the block: a lit furnace is the
     // same block as a cold one and only the lit state glows.
-    std::uint8_t desired = channel == Channel::Sky
-                               ? (opaque ? 0U : world.directSkyLight(node.x, node.y, node.z))
-                               : state.emittedLight();
+    // Sky light is a binary source column, not a decaying direct value: a cell
+    // is either inside its column's source run and worth a flat 15, or outside
+    // it and worth nothing on its own (SkyLightEngine.addSourcesAbove, :106-136).
+    std::uint8_t desired =
+        channel == Channel::Sky
+            ? (opaque || node.y < world.lowestSourceY(node.x, node.z) ? 0U : 15U)
+            : state.emittedLight();
     if (opaque) return desired;
+    // LightEngine.getOpacity (:77-79): entering a cell costs at least one level
+    // and more if the cell dampens, in every direction alike. Sky light gets its
+    // free vertical run from the source column above, not from an exemption here.
+    const std::uint8_t step = std::max<std::uint8_t>(1U, skyLightOpacity(state));
     for (const auto& offset : kNeighbors) {
         const int neighborX = node.x + offset[0];
         const int neighborY = node.y + offset[1];
         const int neighborZ = node.z + offset[2];
         const std::uint8_t neighbor = level(world, channel, neighborX, neighborY, neighborZ);
-        if (neighbor > 1U) {
-            desired = std::max(desired, static_cast<std::uint8_t>(neighbor - 1U));
+        if (neighbor > step) {
+            desired = std::max(desired, static_cast<std::uint8_t>(neighbor - step));
         }
     }
     return desired;
@@ -217,16 +226,28 @@ void WorldLightEngine::markDirty(const Node& node) {
 
 void WorldLightEngine::recomputeSkyColumn(World& world, int x, int z,
                                           std::vector<Node>& changedSources) {
-    std::uint8_t direct = 15U;
-    for (int y = kMaxY - 1; y >= kMinY; --y) {
-        const BlockState state = world.state(x, y, z);
-        // State-aware opacity: a submerged slab dims the column like water (F2).
-        const std::uint8_t opacity = skyLightOpacity(state);
-        direct = opacity >= direct ? 0U : static_cast<std::uint8_t>(direct - opacity);
-        const std::uint8_t stored = isOpaque(state.block()) ? 0U : direct;
-        if (world.setDirectSkyLight(x, y, z, stored)) {
-            changedSources.push_back({x, y, z});
-        }
+    // A column belongs to exactly one chunk, so its pointer is hoisted once.
+    // The per-cell world accessors this replaced walked one edit's column with
+    // 384 unordered_map lookups — each of them also reading the chunk's
+    // shared_ptr use_count, which clones the whole chunk when it is shared.
+    const int chunkX = floorDiv(x, kChunkWidth);
+    const int chunkZ = floorDiv(z, kChunkDepth);
+    Chunk* chunk = world.chunk({chunkX, chunkZ});
+    if (chunk == nullptr) return;
+    const int localX = x - chunkX * kChunkWidth;
+    const int localZ = z - chunkZ * kChunkDepth;
+    const int previous = chunk->lowestSourceY(localX, localZ);
+    const int current = lowestSourceYIn(*chunk, localX, localZ);
+    if (previous == current) return;
+    chunk->setLowestSourceY(localX, localZ, current);
+    // Only the cells whose source status flipped have to be re-settled — the
+    // run above the higher of the two marks and the dark below the lower one
+    // are both unchanged. settle() fans out from these by itself, so neither
+    // end of the range needs padding.
+    const int lowestChanged = std::max(std::min(previous, current), kMinY);
+    const int aboveHighestChanged = std::min(std::max(previous, current), kMaxY);
+    for (int y = lowestChanged; y < aboveHighestChanged; ++y) {
+        changedSources.push_back({x, y, z});
     }
 }
 
@@ -238,15 +259,18 @@ void WorldLightEngine::propagateIncreases(World& world, Channel channel,
         ++lastPropagationVisitCount_;
         const std::uint8_t sourceLevel = level(world, channel, source.x, source.y, source.z);
         if (sourceLevel <= 1U) continue;
-        const std::uint8_t propagated = static_cast<std::uint8_t>(sourceLevel - 1U);
         for (const auto& offset : kNeighbors) {
             const Node target{source.x + offset[0], source.y + offset[1],
                               source.z + offset[2]};
-            if (!loaded(world, target.x, target.y, target.z) ||
-                isOpaque(world.block(target.x, target.y, target.z)) ||
-                level(world, channel, target.x, target.y, target.z) >= propagated) {
-                continue;
-            }
+            if (!loaded(world, target.x, target.y, target.z)) continue;
+            const BlockState targetState = world.state(target.x, target.y, target.z);
+            if (isOpaque(targetState.block())) continue;
+            // The same LightEngine.getOpacity step desiredLevel applies, so a
+            // cell reached from either side of the engine agrees with itself.
+            const std::uint8_t step = std::max<std::uint8_t>(1U, skyLightOpacity(targetState));
+            if (sourceLevel <= step) continue;
+            const std::uint8_t propagated = static_cast<std::uint8_t>(sourceLevel - step);
+            if (level(world, channel, target.x, target.y, target.z) >= propagated) continue;
             setLevel(world, channel, target, propagated);
             queue.push_back(target);
         }
@@ -278,13 +302,13 @@ void WorldLightEngine::initializeChunks(World& world,
             const int originX = position.x * kChunkWidth;
             const int originZ = position.z * kChunkDepth;
             // The topmost contiguous run of empty (all-air) sections is provably
-            // full-15 open sky: nothing above them attenuates. Fill their sky
+            // full-15 open sky: nothing above them attenuates, so every one of
+            // their cells is above any column's lowestSourceY. Fill their sky
             // arrays uniformly (zero allocation) instead of writing 15 into every
             // cell — the taller 26.1 world stacks several such empty sky sections
             // above the terrain, and per-cell writes would allocate 2 KB per array.
             // The column scan then starts at the top of the highest non-empty
-            // section (everything above is the just-filled uniform 15, entered with
-            // direct == 15), so it neither reallocates nor re-scans the open sky.
+            // section, so it neither reallocates nor re-scans the open sky.
             int scanTopY = kMinY - 1; // whole-air chunk: nothing left to scan
             for (int sectionY = kSectionCount - 1; sectionY >= 0; --sectionY) {
                 if (!chunk->section(sectionY).empty()) {
@@ -292,33 +316,32 @@ void WorldLightEngine::initializeChunks(World& world,
                     break;
                 }
                 chunk->section(sectionY).fillSkyLight(15U);
-                chunk->section(sectionY).fillDirectSkyLight(15U);
             }
             for (int localZ = 0; localZ < kChunkDepth; ++localZ) {
                 for (int localX = 0; localX < kChunkWidth; ++localX) {
-                    std::uint8_t direct = 15U;
+                    // ChunkSkyLightSources.fillFrom: one scan per column, one
+                    // integer stored. A whole-air chunk never enters the cell
+                    // loop below and is sources all the way down.
+                    const int lowest = lowestSourceYIn(*chunk, localX, localZ);
+                    chunk->setLowestSourceY(localX, localZ, lowest);
+                    // Do not enqueue the enormous uniform open-sky volume: no
+                    // cell inside a run of 15s can improve its neighbour. Only
+                    // two boundaries can — the lowest source cell, which is the
+                    // one that feeds the dark below it (addSourcesAbove's
+                    // `y == lowestSourceY` clause), and the horizontal ring
+                    // around every cell that is not fully lit.
+                    if (lowest < kMaxY) {
+                        skyQueue.push_back({originX + localX, lowest, originZ + localZ});
+                    }
                     for (int y = scanTopY; y >= kMinY; --y) {
                         const BlockState value = chunk->state(localX, y, localZ);
-                        // State-aware: a submerged slab dims like water (F2).
-                        const std::uint8_t opacity = skyLightOpacity(value);
-                        const std::uint8_t previousDirect = direct;
-                        direct = opacity >= direct ? 0U
-                                                   : static_cast<std::uint8_t>(direct - opacity);
-                        const std::uint8_t sky = isOpaque(value.block()) ? 0U : direct;
-                        chunk->setDirectSkyLight(localX, y, localZ, sky);
+                        const std::uint8_t sky = y >= lowest ? 15U : 0U;
                         chunk->setSkyLight(localX, y, localZ, sky);
                         const std::uint8_t emitted =
                             chunk->section(sectionIndexFromWorldY(y))
                                 .state(localX, yInSectionFromWorldY(y), localZ)
                                 .emittedLight();
                         chunk->setBlockLight(localX, y, localZ, emitted);
-                        // Do not enqueue the enormous uniform open-sky volume.
-                        // Only light boundaries can improve another cell: the
-                        // cell above an attenuation step, and horizontal sources
-                        // around partially lit transparent cells.
-                        if (previousDirect > direct && y + 1 < kMaxY) {
-                            skyQueue.push_back({originX + localX, y + 1, originZ + localZ});
-                        }
                         if (!isOpaque(value.block()) && sky < 15U) {
                             skyQueue.push_back({originX + localX - 1, y, originZ + localZ});
                             skyQueue.push_back({originX + localX + 1, y, originZ + localZ});

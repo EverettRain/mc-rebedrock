@@ -208,15 +208,26 @@ std::uint8_t World::blockLight(int worldX, int y, int worldZ) const {
                              worldZ - chunkZ * kChunkDepth);
 }
 
-std::uint8_t World::directSkyLight(int worldX, int y, int worldZ) const {
-    if (y >= kMaxY) return 15U;
-    if (y < kMinY) return 0U;
+int World::lowestSourceY(int worldX, int worldZ) const {
     const int chunkX = floorDiv(worldX, kChunkWidth);
     const int chunkZ = floorDiv(worldZ, kChunkDepth);
     const Chunk* owner = chunk({chunkX, chunkZ});
-    if (owner == nullptr) return 15U;
-    return owner->directSkyLight(worldX - chunkX * kChunkWidth, y,
-                                 worldZ - chunkZ * kChunkDepth);
+    if (owner == nullptr) return kMinY;
+    return owner->lowestSourceY(worldX - chunkX * kChunkWidth,
+                                worldZ - chunkZ * kChunkDepth);
+}
+
+void World::setLowestSourceY(int worldX, int worldZ, int y) {
+    const int chunkX = floorDiv(worldX, kChunkWidth);
+    const int chunkZ = floorDiv(worldZ, kChunkDepth);
+    Chunk* owner = chunk({chunkX, chunkZ});
+    if (owner == nullptr) return;
+    owner->setLowestSourceY(worldX - chunkX * kChunkWidth,
+                            worldZ - chunkZ * kChunkDepth, y);
+}
+
+bool World::canSeeSky(int worldX, int y, int worldZ) const {
+    return y >= lowestSourceY(worldX, worldZ);
 }
 
 namespace {
@@ -239,10 +250,6 @@ bool World::setSkyLight(int worldX, int y, int worldZ, std::uint8_t value) {
 
 bool World::setBlockLight(int worldX, int y, int worldZ, std::uint8_t value) {
     return setWorldLight(*this, worldX, y, worldZ, value, &Chunk::setBlockLight);
-}
-
-bool World::setDirectSkyLight(int worldX, int y, int worldZ, std::uint8_t value) {
-    return setWorldLight(*this, worldX, y, worldZ, value, &Chunk::setDirectSkyLight);
 }
 
 std::vector<ChunkPosition> World::positions() const {

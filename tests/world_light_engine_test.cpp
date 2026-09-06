@@ -84,13 +84,14 @@ int main() {
     assert(shaftWorld.skyLight(10, 21, 10) == 0U);
     shaftWorld.setBlock(10, 30, 10, mc::world::Block::Air);
     shaftEngine.updateBlock(shaftWorld, 10, 30, 10);
-    assert(shaftWorld.directSkyLight(10, 21, 10) == 15U);
+    assert(shaftWorld.lowestSourceY(10, 10) == 21);
     assert(shaftWorld.skyLight(10, 21, 10) == 15U);
 
-    // Leaves attenuate direct sky by one level but remain light-propagating.
+    // Leaves end the source column (any dampening does) and are still lit by
+    // propagation from the source cell above them, one level down.
     world.setBlock(6, 120, 6, mc::world::Block::OakLeaves);
     engine.updateBlock(world, 6, 120, 6);
-    assert(world.directSkyLight(6, 120, 6) == 14U);
+    assert(world.lowestSourceY(6, 6) == 121);
     assert(world.skyLight(6, 120, 6) == 14U);
 
     // Regression for the former multi-second leaves path: a light update in

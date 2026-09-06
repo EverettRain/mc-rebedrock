@@ -51,10 +51,20 @@ class World final {
     bool setFluidLevel(int worldX, int y, int worldZ, std::uint8_t value);
     [[nodiscard]] std::uint8_t skyLight(int worldX, int y, int worldZ) const;
     [[nodiscard]] std::uint8_t blockLight(int worldX, int y, int worldZ) const;
-    [[nodiscard]] std::uint8_t directSkyLight(int worldX, int y, int worldZ) const;
     bool setSkyLight(int worldX, int y, int worldZ, std::uint8_t value);
     bool setBlockLight(int worldX, int y, int worldZ, std::uint8_t value);
-    bool setDirectSkyLight(int worldX, int y, int worldZ, std::uint8_t value);
+    // The lowest Y of this column's sky source run (Chunk::lowestSourceY). An
+    // unloaded column reads kMinY — sources all the way down — for the same
+    // reason skyLight() reads 15 there: an entity or a light query outside the
+    // loaded region must not be told it is in shadow.
+    [[nodiscard]] int lowestSourceY(int worldX, int worldZ) const;
+    void setLowestSourceY(int worldX, int worldZ, int y);
+    // 26.1's `LevelReader.canSeeSky`: is this cell inside its column's source
+    // run? This is the "open sky" question the mob ignition and rain checks ask,
+    // and it is a strictly sharper answer than the old directSkyLight >= 15 /
+    // > 0 tests — a cell under leaves or under a slab now answers no, which is
+    // what vanilla's `isSunBurnTick` and `isBeingRainedOn` do.
+    [[nodiscard]] bool canSeeSky(int worldX, int y, int worldZ) const;
     [[nodiscard]] std::vector<ChunkPosition> positions() const;
     [[nodiscard]] std::size_t chunkCount() const { return chunks_.size(); }
     // The generation biome of the column, used to tint grass-family blocks; an

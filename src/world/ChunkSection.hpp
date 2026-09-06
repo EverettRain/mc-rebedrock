@@ -37,24 +37,21 @@ class ChunkSection final {
     [[nodiscard]] bool empty() const { return nonAirBlockCount_ == 0U; }
     [[nodiscard]] std::uint8_t skyLight(int x, int y, int z) const;
     [[nodiscard]] std::uint8_t blockLight(int x, int y, int z) const;
-    [[nodiscard]] std::uint8_t directSkyLight(int x, int y, int z) const;
     bool setSkyLight(int x, int y, int z, std::uint8_t value);
     bool setBlockLight(int x, int y, int z, std::uint8_t value);
-    bool setDirectSkyLight(int x, int y, int z, std::uint8_t value);
 
     // Set the whole section's sky light to a uniform value with no backing
     // allocation (NibbleArray stays uniform). The lighting engine uses this for
     // open-sky sections above the terrain, which are entirely 15: filling them
     // cell by cell would allocate 2 KB per array only to hold one value.
     void fillSkyLight(std::uint8_t value) { skyLight_.fill(value); }
-    void fillDirectSkyLight(std::uint8_t value) { directSkyLight_.fill(value); }
 
     // Heap bytes the state storage holds right now (palette + packed indices,
     // excluding the light arrays). Zero for an all-air section. Exposed so a
     // test can pin the memory contract: an empty section costs nothing and a
     // terrain section stays a fraction of the flat 8 KB array it replaced.
     [[nodiscard]] std::size_t stateHeapBytes() const;
-    // Heap bytes the three light nibble arrays hold right now. A uniform array
+    // Heap bytes the two light nibble arrays hold right now. A uniform array
     // keeps no backing allocation, so an all-uniform section costs nothing.
     [[nodiscard]] std::size_t lightHeapBytes() const;
     // The distinct states this section currently interns and how many bits each
@@ -109,7 +106,6 @@ class ChunkSection final {
     std::uint8_t bitsPerEntry_ = 0U;
     NibbleArray skyLight_;
     NibbleArray blockLight_;
-    NibbleArray directSkyLight_;
     std::size_t nonAirBlockCount_ = 0U;
 };
 

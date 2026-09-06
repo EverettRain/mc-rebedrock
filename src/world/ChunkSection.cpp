@@ -158,7 +158,7 @@ std::size_t ChunkSection::lightHeapBytes() const {
     const auto nibbleBytes = [](const NibbleArray& array) {
         return array.uniform() ? std::size_t{0U} : NibbleArray::kByteCount;
     };
-    return nibbleBytes(skyLight_) + nibbleBytes(blockLight_) + nibbleBytes(directSkyLight_);
+    return nibbleBytes(skyLight_) + nibbleBytes(blockLight_);
 }
 
 Block ChunkSection::block(int x, int y, int z) const {
@@ -215,21 +215,12 @@ std::uint8_t ChunkSection::blockLight(int x, int y, int z) const {
     return blockLight_.get(index(x, y, z));
 }
 
-std::uint8_t ChunkSection::directSkyLight(int x, int y, int z) const {
-    if (!inBounds(x, y, z)) return 0U;
-    return directSkyLight_.get(index(x, y, z));
-}
-
 bool ChunkSection::setSkyLight(int x, int y, int z, std::uint8_t value) {
     return skyLight_.set(index(x, y, z), value);
 }
 
 bool ChunkSection::setBlockLight(int x, int y, int z, std::uint8_t value) {
     return blockLight_.set(index(x, y, z), value);
-}
-
-bool ChunkSection::setDirectSkyLight(int x, int y, int z, std::uint8_t value) {
-    return directSkyLight_.set(index(x, y, z), value);
 }
 
 } // namespace mc::world

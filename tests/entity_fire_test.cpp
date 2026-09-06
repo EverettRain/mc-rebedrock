@@ -208,11 +208,12 @@ void testWaterExtinguishes() {
 }
 
 // Rain under open sky puts the fire out; rain with no sky above does not (the
-// creature is sheltered). The world's directSkyLight drives the "open sky" test.
+// creature is sheltered). World::canSeeSky — the cell being at or above its
+// column's lowest sky source — drives the "open sky" test.
 void testRainExtinguishes() {
     mc::world::World open = makeFlatWorld();
-    // Sky reaches the creature's head cell.
-    open.setDirectSkyLight(0, 2, 0, 15U);
+    // Sky reaches the creature's head cell: the column's source run starts at it.
+    open.setLowestSourceY(0, 0, 2);
     EntitySystem exposed;
     exposed.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, mortalType(), /*seed=*/4U);
     const std::uint64_t exposedId = exposed.entities().front().id;
@@ -222,7 +223,7 @@ void testRainExtinguishes() {
 
     // Sheltered: no sky above the head cell, so rain does not reach it.
     mc::world::World sheltered = makeFlatWorld();
-    sheltered.setDirectSkyLight(0, 2, 0, 0U);
+    sheltered.setLowestSourceY(0, 0, mc::world::kMaxY);
     EntitySystem covered;
     covered.spawn(glm::vec3{0.5F, 1.0F, 0.5F}, mortalType(), /*seed=*/5U);
     const std::uint64_t coveredId = covered.entities().front().id;

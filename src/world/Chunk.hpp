@@ -29,10 +29,18 @@ class Chunk final {
     void setFluidLevel(int x, int y, int z, std::uint8_t value);
     [[nodiscard]] std::uint8_t skyLight(int x, int y, int z) const;
     [[nodiscard]] std::uint8_t blockLight(int x, int y, int z) const;
-    [[nodiscard]] std::uint8_t directSkyLight(int x, int y, int z) const;
     bool setSkyLight(int x, int y, int z, std::uint8_t value);
     bool setBlockLight(int x, int y, int z, std::uint8_t value);
-    bool setDirectSkyLight(int x, int y, int z, std::uint8_t value);
+
+    // The lowest Y in each column that is still a sky source — 26.1's
+    // `ChunkSkyLightSources` heightmap, one int per column rather than the
+    // per-cell nibble array this replaced. Everything at or above it is sky 15
+    // by definition; everything below it can only be reached by propagation.
+    // A fresh chunk reads kMaxY (no sources at all) so a world assembled without
+    // running the light engine stays dark, exactly as the zero-initialised
+    // nibble array did; the light engine fills it in initializeChunks.
+    [[nodiscard]] int lowestSourceY(int localX, int localZ) const;
+    void setLowestSourceY(int localX, int localZ, int y);
 
     // The biome that generated each column, filled by the surface pass. The
     // mesher reads it to tint grass-family blocks the way vanilla's BiomeColors
@@ -51,6 +59,7 @@ class Chunk final {
   private:
     std::array<ChunkSection, kSectionCount> sections_{};
     std::array<gen::Biome, kChunkWidth * kChunkDepth> columnBiomes_{};
+    std::array<std::int16_t, kChunkWidth * kChunkDepth> lowestSourceY_{};
 };
 
 } // namespace mc::world

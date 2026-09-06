@@ -781,6 +781,13 @@ if(BUILD_TESTING)
     )
     add_test(NAME world_generation COMMAND mc_rebedrock_world_generation_test)
 
+    add_executable(mc_rebedrock_sky_light_column_test
+        tests/sky_light_column_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_sky_light_column_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_sky_light_column_test PRIVATE src)
+    add_test(NAME sky_light_column COMMAND mc_rebedrock_sky_light_column_test)
+
     add_executable(mc_rebedrock_vertex_lighting_test
         tests/vertex_lighting_test.cpp
     )
@@ -2063,6 +2070,14 @@ if(BUILD_TESTING)
 
         # Informational: us-per-probe of the two collision-probe loops AR-B4-0
         # touches (PlayerController::collidesAtHeight and
+        # The sky column recompute every block edit pays for, plus the
+        # per-column initialize pass, the A/B baseline for RN-19a.
+        add_executable(mc_rebedrock_sky_light_column_benchmark
+            tests/sky_light_column_benchmark.cpp
+        )
+        target_link_libraries(mc_rebedrock_sky_light_column_benchmark PRIVATE mc_rebedrock_runtime)
+        target_include_directories(mc_rebedrock_sky_light_column_benchmark PRIVATE src)
+
         # EntitySystem::boxIntersectsWorld), the A/B baseline for the
         # row-below tall-collision scan.
         add_executable(mc_rebedrock_collision_probe_benchmark

@@ -1217,7 +1217,7 @@ EntityTickResult EntitySystem::tick(
             const bool rolled =
                 bandPassed &&
                 mc::rng::nextFloat(entity.rngState) * 30.0F < (brightness - 0.4F) * 2.0F;
-            const bool skyVisible = world.directSkyLight(headX, headY, headZ) >= 15U;
+            const bool skyVisible = world.canSeeSky(headX, headY, headZ);
             const bool submerged = world::isFluid(world.block(headX, footY, headZ)) ||
                                    world::isFluid(world.block(headX, headY, headZ));
             if (rolled && skyVisible && !submerged) {
@@ -1241,7 +1241,7 @@ EntityTickResult EntitySystem::tick(
                 world::isFluid(world.block(fireFootX, fireFootY + 1, fireFootZ));
             // Entity#isBeingRainedOn: raining, and the head cell can see the sky.
             const bool rainedOn =
-                raining && world.directSkyLight(fireFootX, fireFootY + 1, fireFootZ) > 0U;
+                raining && world.canSeeSky(fireFootX, fireFootY + 1, fireFootZ);
             if (inWater || rainedOn) {
                 entity.fireTicks = 0;
             } else {

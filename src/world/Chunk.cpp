@@ -6,6 +6,7 @@ namespace mc::world {
 
 Chunk::Chunk() {
     columnBiomes_.fill(gen::Biome::Plains);
+    lowestSourceY_.fill(static_cast<std::int16_t>(kMaxY));
 }
 
 gen::Biome Chunk::columnBiome(int localX, int localZ) const {
@@ -94,13 +95,6 @@ std::uint8_t Chunk::blockLight(int x, int y, int z) const {
         .blockLight(x, yInSectionFromWorldY(y), z);
 }
 
-std::uint8_t Chunk::directSkyLight(int x, int y, int z) const {
-    if (x < 0 || x >= kChunkWidth || !isWorldYInRange(y) || z < 0 || z >= kChunkDepth)
-        return 0U;
-    return sections_[static_cast<std::size_t>(sectionIndexFromWorldY(y))]
-        .directSkyLight(x, yInSectionFromWorldY(y), z);
-}
-
 bool Chunk::setSkyLight(int x, int y, int z, std::uint8_t value) {
     return sections_[static_cast<std::size_t>(sectionIndexFromWorldY(y))]
         .setSkyLight(x, yInSectionFromWorldY(y), z, value);
@@ -111,9 +105,19 @@ bool Chunk::setBlockLight(int x, int y, int z, std::uint8_t value) {
         .setBlockLight(x, yInSectionFromWorldY(y), z, value);
 }
 
-bool Chunk::setDirectSkyLight(int x, int y, int z, std::uint8_t value) {
-    return sections_[static_cast<std::size_t>(sectionIndexFromWorldY(y))]
-        .setDirectSkyLight(x, yInSectionFromWorldY(y), z, value);
+int Chunk::lowestSourceY(int localX, int localZ) const {
+    if (localX < 0 || localX >= kChunkWidth || localZ < 0 || localZ >= kChunkDepth) {
+        return kMaxY;
+    }
+    return lowestSourceY_[static_cast<std::size_t>(localZ * kChunkWidth + localX)];
+}
+
+void Chunk::setLowestSourceY(int localX, int localZ, int y) {
+    if (localX < 0 || localX >= kChunkWidth || localZ < 0 || localZ >= kChunkDepth) {
+        return;
+    }
+    lowestSourceY_[static_cast<std::size_t>(localZ * kChunkWidth + localX)] =
+        static_cast<std::int16_t>(y);
 }
 
 const ChunkSection& Chunk::section(int sectionY) const {

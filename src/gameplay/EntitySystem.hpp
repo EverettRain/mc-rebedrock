@@ -345,7 +345,7 @@ class EntitySystem final {
         // AR-M2: the same tick-resolved snapshot NaturalSpawner reads
         // (GameSession::environment_). `ambientDarkness < 4` is Level#isDay —
         // the daylight-ignition rule below reads it alongside per-cell
-        // directSkyLight, so "is it day" and "is this cell dark enough for a
+        // canSeeSky, so "is it day" and "is this cell dark enough for a
         // monster to spawn" can never disagree about the same tick. The default
         // (ambientDarkness == 0, full daylight) matches every existing headless
         // caller that never lit a test world's sky — such a world reads as
