@@ -16,6 +16,8 @@
 #include "core/EnvFlags.hpp"
 #include "core/FrameTrace.hpp"
 
+#include "render/graph/FrameGraph.hpp"
+
 #include "animation/AnimationAssets.hpp"
 #include "animation/DisplayEntityAnimation.hpp"
 #include "animation/HingeAnimation.hpp"
@@ -185,6 +187,9 @@ class WorldRenderer final {
     // 两者都在该批次的世界写区间内调用，因此处理函数可以安全触碰模拟状态与存档
     std::function<void(world::ChunkPosition)> onChunkUnloaded;
     std::function<void(world::ChunkPosition)> onChunkLoaded;
+    // 烘焙式 frame graph。所有权在 Impl（与 WorldPipelines 同一条边界：随交换链销毁重建），
+    // 这里必须是引用——重建之后读到的得是新编译的那张表，一份拷贝就是一堆悬垂句柄
+    graph::BakedGraph& frameGraph;
   };
 
   explicit WorldRenderer(const Bindings& b)
@@ -229,7 +234,7 @@ class WorldRenderer final {
         renderDistanceBlocks(b.renderDistanceBlocks),
         initializeSpawnPosition(b.initializeSpawnPosition), submitWorldEditFn(b.submitWorldEditFn),
         hasPersistentEditFn(b.hasPersistentEditFn), onChunkUnloaded(b.onChunkUnloaded),
-        onChunkLoaded(b.onChunkLoaded) {
+        onChunkLoaded(b.onChunkLoaded), frameGraph(b.frameGraph) {
   }
 
   WorldRenderer(const WorldRenderer&) = delete;
@@ -969,10 +974,14 @@ class WorldRenderer final {
     }
 
 
-    void recordShadowPass(FrameContext& frame) {
-        if (shadowDisabled) {
-            return;
-        }
+    // 阴影预通道的 body（RN-20a）。renderpass 的 begin/end、清空值与渲染区域由 frame
+    // graph 给（见 VulkanRenderer 的 rebuildFrameGraph），这里只剩「挑投射者、画它们」。
+    //
+    // 「即使一个投射者都没有也照样 begin/end」那条契约仍在，只是换了承载者：图里这一步
+    // 整步存在，深度图因此每帧都被清空、并由图在世界那步前的边界屏障转成
+    // SHADER_READ_ONLY_OPTIMAL。关掉太阳阴影时整步在**编译期**被剪掉（连同那条屏障），
+    // 不是在这里 return；那张图靠 OffscreenTarget::initializeAsShaderRead 留下的布局保持合法。
+    void recordShadow(FrameContext& frame) {
         const glm::vec3 eye = camera.position();
         const Frustum lightFrustum(shadowLightViewProj);
         std::vector<const GpuMesh*> casters;
@@ -997,19 +1006,6 @@ class WorldRenderer final {
             });
             casters.resize(kMaxShadowCasters);
         }
-        // 即使一个投射者都没有也照样开始并结束该通道
-        // 这样深度图像每帧结束时都处于 SHADER_READ_ONLY_OPTIMAL
-        // 调试叠加层无条件采样它，跳过转换的那一帧会让它停在 UNDEFINED 并触发校验层报错
-        VkClearValue clear{};
-        clear.depthStencil = {1.0F, 0};
-        auto passInfo =
-            vkStructure<VkRenderPassBeginInfo>(VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
-        passInfo.renderPass = shadowTarget.renderPass();
-        passInfo.framebuffer = shadowTarget.framebuffer();
-        passInfo.renderArea.extent = {shadowTarget.width(), shadowTarget.height()};
-        passInfo.clearValueCount = 1;
-        passInfo.pClearValues = &clear;
-        vkCmdBeginRenderPass(frame.commandBuffer, &passInfo, VK_SUBPASS_CONTENTS_INLINE);
         VkViewport viewport{};
         viewport.width = static_cast<float>(shadowTarget.width());
         viewport.height = static_cast<float>(shadowTarget.height());
@@ -1031,8 +1027,6 @@ class WorldRenderer final {
                                  mesh->opaque.indexOffset, VK_INDEX_TYPE_UINT32);
             vkCmdDrawIndexed(frame.commandBuffer, mesh->opaque.indexCount, 1, 0, 0, 0);
         }
-        vkCmdEndRenderPass(frame.commandBuffer);
-        shadowTarget.transitionToShaderRead(frame.commandBuffer);
         if (!diagnosticsOnce_.shadowCasters && !casters.empty()) {
             diagnosticsOnce_.shadowCasters = true;
             std::cout << "[shadow] pre-pass " << casters.size() << " casters\n";
@@ -2004,11 +1998,68 @@ class WorldRenderer final {
     }
 
 
-    [[nodiscard]] std::size_t recordCommandBuffer(FrameContext& frame, std::uint32_t imageIndex) {
-        refreshDiagnosticsEpoch();
-        auto beginInfo =
-            vkStructure<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
-        checkVk(vkBeginCommandBuffer(frame.commandBuffer, &beginInfo), "vkBeginCommandBuffer");
+    // frame graph 的 pass body 是**自由函数**，不是捕获 this 的 lambda：function_ref
+    // 不延长目标寿命，绑一个临时 lambda 就是悬垂。要用的状态经 PassContext::user 透传，
+    // graph 不解释那个指针。
+    struct GraphPassArgs final {
+        WorldRenderer* self = nullptr;
+        FrameContext* frame = nullptr;
+    };
+
+    // 五个蹦床。graph 交出来的命令缓冲与 frame.commandBuffer 是同一个句柄
+    // （recordCommandBuffer 就是拿它调的 execute），body 沿用 frame.commandBuffer——
+    // 这样搬进图里的几百行主体一个字符都不用改，逐像素回归才二分得动。
+    static void graphUploadStep(VkCommandBuffer commandBuffer, const graph::PassContext& context) {
+        static_cast<void>(commandBuffer);
+        auto& args = *static_cast<GraphPassArgs*>(context.user);
+        const diag::ScopedAccumulate bodyTimer{args.self->graphBodyMs_};
+        args.self->recordUpload(*args.frame);
+    }
+
+    static void graphShadowStep(VkCommandBuffer commandBuffer, const graph::PassContext& context) {
+        static_cast<void>(commandBuffer);
+        auto& args = *static_cast<GraphPassArgs*>(context.user);
+        const diag::ScopedAccumulate bodyTimer{args.self->graphBodyMs_};
+        args.self->recordShadow(*args.frame);
+    }
+
+    static void graphWorldStep(VkCommandBuffer commandBuffer, const graph::PassContext& context) {
+        static_cast<void>(commandBuffer);
+        auto& args = *static_cast<GraphPassArgs*>(context.user);
+        const diag::ScopedAccumulate bodyTimer{args.self->graphBodyMs_};
+        args.self->recordWorld(*args.frame);
+    }
+
+    static void graphGuiStep(VkCommandBuffer commandBuffer, const graph::PassContext& context) {
+        static_cast<void>(commandBuffer);
+        auto& args = *static_cast<GraphPassArgs*>(context.user);
+        const diag::ScopedAccumulate bodyTimer{args.self->graphBodyMs_};
+        args.self->recordGui(*args.frame);
+    }
+
+    static void graphPresentBlitStep(VkCommandBuffer commandBuffer,
+                                     const graph::PassContext& context) {
+        static_cast<void>(commandBuffer);
+        auto& args = *static_cast<GraphPassArgs*>(context.user);
+        const diag::ScopedAccumulate bodyTimer{args.self->graphBodyMs_};
+        // 画完的场景图逐字节搬进交换链图像。两者都是 B8G8R8A8，copy 不做任何转换，
+        // 于是交换链取 UNORM 还是 SRGB 都不影响呈现结果
+        args.self->copySceneToSwapchain(args.frame->commandBuffer, context.imageIndex);
+    }
+
+    // ---- frame graph 的五个 pass body（RN-20a）------------------------------
+    //
+    // 四段命令录制（上传 / 阴影 / 世界 / 界面）加帧末的 blit 不再是顺序调用，而是被
+    // 烘焙式 frame graph 编排：顺序、renderpass 的 begin/end、清空值与边界屏障都在
+    // 编译期定好，每帧只执行一张扁平的指令表。body 的**内容**没有搬动，只是换了调用者。
+
+    // 上传步。本帧的暂存拷贝、一条 TRANSFER → VERTEX_INPUT 的 memory barrier，
+    // 以及遮挡查询池的 reset。
+    //
+    // 它在图里是**非渲染步**（renderPass == VK_NULL_HANDLE），这个身份就是它的保护：
+    // vkCmdResetQueryPool 在 renderpass 内是非法的。上传那条屏障是 memory barrier，
+    // 没有 layout 可转，也就不参与图的 image barrier 合批，留在这里。
+    void recordUpload(FrameContext& frame) {
         for (const auto& copy : frame.uploadCopies) {
             VkBufferCopy region{};
             region.size = copy.size;
@@ -2031,20 +2082,15 @@ class WorldRenderer final {
             vkCmdResetQueryPool(frame.commandBuffer, frameQueryPool, 0U,
                                 static_cast<std::uint32_t>(kOcclusionQueriesPerFrame));
         }
-        std::array<VkClearValue, 2> clears{};
-        clears[0].color = {{0.055F, 0.080F, 0.110F, 1.0F}};
-        clears[1].depthStencil = {1.0F, 0};
-        auto passInfo =
-            vkStructure<VkRenderPassBeginInfo>(VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
-        passInfo.renderPass = pipelines.renderPass;
-        passInfo.framebuffer = framebuffers[imageIndex];
-        passInfo.renderArea.extent = swapchainExtent;
-        passInfo.clearValueCount = static_cast<std::uint32_t>(clears.size());
-        passInfo.pClearValues = clears.data();
-        // 太阳空间阴影预通道写出一张离屏深度图，供主通道（和调试叠加层）采样
-        // 它必须排在上面的网格上传之后、主渲染通道之前
-        recordShadowPass(frame);
-        vkCmdBeginRenderPass(frame.commandBuffer, &passInfo, VK_SUBPASS_CONTENTS_INLINE);
+    }
+
+    // 世界那趟的 body。sky → 不透明地形 → cutout → 实体 → 半透明 → 粒子 → 雨 → 描边，
+    // 每一条顺序约束的理由都写在下面各自的注释里。renderpass 的 begin/end 归 graph；
+    // 视口与裁剪是命令缓冲级动态状态，仍由本 body 自己设。
+    void recordWorld(FrameContext& frame) {
+        // 与上传步里 reset 的是同一个池：每帧独占一个，currentFrame 在一帧之内不变。
+        // 两步各自取一次，是因为它们已经是两个独立的 body，不再共享一个函数作用域
+        const VkQueryPool frameQueryPool = occlusion.queryPools[currentFrame];
         VkViewport viewport{};
         viewport.width = static_cast<float>(swapchainExtent.width);
         viewport.height = static_cast<float>(swapchainExtent.height);
@@ -2315,8 +2361,10 @@ class WorldRenderer final {
                 }
             }
         }
-        vkCmdEndRenderPass(frame.commandBuffer);
+        graphVisibleCount_ = visibleCount;
+    }
 
+    // 界面那趟的 body。
         // 界面单独一趟。世界那趟的颜色附件是场景图的 **sRGB 视图**（着色器写线性值、
         // 硬件编码、混合因此发生在线性空间）；这一趟绑的是同一张图的 **UNORM 视图**，
         // 着色器直接写 sRGB 编码值、固定功能混合也在编码值上做——正是 vanilla 合成
@@ -2326,31 +2374,57 @@ class WorldRenderer final {
         // 深度是这一趟自己的、每帧清空：第一人称手持物与背包里的 3D 玩家预览要深度
         // 测试，而世界的深度可能是多重采样的；顺带对齐 vanilla——它也在画手之前清一次
         // 深度，所以贴脸的方块不会把手切掉。
-        std::array<VkClearValue, 2> guiClears{};
-        guiClears[1].depthStencil = {1.0F, 0};
-        auto guiPassInfo =
-            vkStructure<VkRenderPassBeginInfo>(VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
-        guiPassInfo.renderPass = pipelines.guiRenderPass;
-        guiPassInfo.framebuffer = guiFramebuffers[imageIndex];
-        guiPassInfo.renderArea.extent = swapchainExtent;
-        guiPassInfo.clearValueCount = static_cast<std::uint32_t>(guiClears.size());
-        guiPassInfo.pClearValues = guiClears.data();
-        vkCmdBeginRenderPass(frame.commandBuffer, &guiPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        // 视口与裁剪是命令缓冲级的动态状态，跨 pass 仍然有效；这里重设一次是为了
-        // 让这一趟自己成立，不依赖上一趟留下了什么
+    //
+    // ⚠ 上面这段注释里「世界那趟绑 sRGB 视图、这一趟绑 UNORM 视图」**与代码不符**，
+    // 保留原文只是为了不在本轮（零视觉变更的重构）里混进无关改动。事实是：
+    // createSceneTargets 只建一个 UNORM 视图，两套 framebuffer 绑的是同一个 view，
+    // 两个 renderpass 的 color 格式都是 sceneUnormFormat()，全仓没有 MUTABLE_FORMAT，
+    // 也没有任何 sRGB image view。
+    //
+    // 而且**现状是对的**：整帧都画在未经伽马转换的目标上、混合发生在 sRGB 编码值上，
+    // 这正是 vanilla 的行为（OpenGL 默认不开 GL_FRAMEBUFFER_SRGB），也是「所有采样纹理
+    // 必须 UNORM、着色器里不许出现传输函数」那条铁律的另一半。两趟拆分的真实理由是
+    // 上面第二段说的那个：**界面不做 MSAA，且界面自带每帧清空的深度**。
+    // 不要把「补一个 sRGB 视图」当成欠账去做——那是回归。详见 sceneUnormFormat 的注释。
+    void recordGui(FrameContext& frame) {
+        // 视口与裁剪是命令缓冲级的动态状态，跨 pass 仍然有效；这里自己算一份再重设一次，
+        // 是为了让这一趟自己成立，不依赖上一趟留下了什么
+        VkViewport viewport{};
+        viewport.width = static_cast<float>(swapchainExtent.width);
+        viewport.height = static_cast<float>(swapchainExtent.height);
+        viewport.maxDepth = 1.0F;
+        VkRect2D scissor{{0, 0}, swapchainExtent};
         vkCmdSetViewport(frame.commandBuffer, 0, 1, &viewport);
         vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
         // 游戏内 HUD 层以及叠在它上面的各种界面，都由 drawHud 按 vanilla 的层序绘制
         // HUD 层含手持物、水下叠加、暗角、快捷栏、状态条、准星和手持物名称
         hud_.drawHud(frame.commandBuffer, frame.descriptorSet);
         drawShadowDebugOverlay(frame.commandBuffer);
-        vkCmdEndRenderPass(frame.commandBuffer);
+    }
 
-        // 画完的场景图逐字节搬进交换链图像。两者都是 B8G8R8A8，copy 不做任何转换，
-        // 于是交换链取 UNORM 还是 SRGB 都不影响呈现结果
-        copySceneToSwapchain(frame.commandBuffer, imageIndex);
+    // 一帧的命令录制。四段加 blit 全部由图执行，这里只剩命令缓冲的 begin/end。
+    //
+    // 没有「出问题就退回旧路径」的运行期开关：双路径会让逐像素回归无法二分定位，
+    // 旧的顺序调用因此是删掉而不是留着当 fallback。
+    [[nodiscard]] std::size_t recordCommandBuffer(FrameContext& frame, std::uint32_t imageIndex) {
+        refreshDiagnosticsEpoch();
+        auto beginInfo =
+            vkStructure<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
+        checkVk(vkBeginCommandBuffer(frame.commandBuffer, &beginInfo), "vkBeginCommandBuffer");
+        graphVisibleCount_ = 0;
+        graphBodyMs_ = 0.0;
+        GraphPassArgs args{this, &frame};
+        const graph::PassContext context{&args, imageIndex};
+        const auto executeStart = diag::FrameTrace::Clock::now();
+        frameGraph.execute(frame.commandBuffer, imageIndex, context);
+        if (diag::traceEnabled()) {
+            // graphMs 量的是 execute() **自身**的编排开销：屏障合批与 begin/end。
+            // body 的时间由各蹦床累进 graphBodyMs_ 后在这里扣掉——它已经被 recordMs 量着，
+            // 两个阶段并列相加才有意义。
+            diag::frameTrace().graphMs += diag::msSince(executeStart) - graphBodyMs_;
+        }
         checkVk(vkEndCommandBuffer(frame.commandBuffer), "vkEndCommandBuffer");
-        return visibleCount;
+        return graphVisibleCount_;
     }
 
     // 应用两次提交之前记录的遮挡查询结果
@@ -2490,6 +2564,8 @@ class WorldRenderer final {
   std::function<bool(int, int, int)> hasPersistentEditFn;
   std::function<void(world::ChunkPosition)> onChunkUnloaded;
   std::function<void(world::ChunkPosition)> onChunkLoaded;
+  // 引用成员放末位：构造初始化列表的顺序就是声明顺序
+  graph::BakedGraph& frameGraph;
 
   // ---- 本类自有的状态（不再绕经 Impl）----
   // 这些字段只有本类读写。它们曾以 T& 挂在 Bindings 上，而在 Impl 里除了「声明一次、
@@ -2501,6 +2577,12 @@ class WorldRenderer final {
 
   // 箱盖与掉落物运动的数据驱动定义，经动画库求值
   // 箱盖是贝塞尔缓出的合页，掉落物是漂浮加旋转
+  // 世界那步 body 数出的可见 section 数。body 经蹦床调用、不返回值，因此走这里回到
+  // recordCommandBuffer 的返回值上
+  std::size_t graphVisibleCount_ = 0;
+  // 本帧五个 pass body 的墙钟合计。graphMs = execute 总时长 − 这个值，于是它量的是
+  // 编排本身而不是 body（body 已经被 recordMs 量着）
+  double graphBodyMs_ = 0.0;
   animation::HingeAnimation chestLidAnimation;
   animation::DisplayEntityAnimation itemDisplayAnimation;
   bool shadowDebugOverlay = std::getenv("MC_REBEDROCK_SHADOW_DEBUG") != nullptr;

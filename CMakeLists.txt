@@ -382,6 +382,14 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     # same trade VoxelRaycast.cpp took just above.
     src/render/ParticleSystem.cpp
     src/render/BlockAnimateTick.cpp
+    # RN-20a: the baked frame graph. It is the orchestration layer — it knows Vulkan
+    # handles and descriptions, nothing about WorldRenderer or VulkanRenderer::Impl —
+    # so it belongs in the runtime library where its test can link the library instead
+    # of re-listing sources. The library gets Vulkan *headers* only, never the loader:
+    # a static archive is pulled per object, so no existing headless test acquires a
+    # Vulkan dependency from this. The two tests that do need the symbols say so
+    # themselves (one stubs the three entry points, one links the real loader).
+    src/render/graph/FrameGraph.cpp
     # STRUCT-0: the vendored miniz decompressor moved here from the GL executable
     # so StructureTemplate's gzip reader has it headless (the GL build still gets
     # it by linking mc_rebedrock_runtime, and keeps its own vendor/miniz include).
@@ -394,7 +402,10 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
 find_package(Threads)
 add_library(mc_rebedrock_runtime STATIC ${MC_REBEDROCK_RUNTIME_SOURCES})
 target_include_directories(mc_rebedrock_runtime PUBLIC
-    src "${MC_REBEDROCK_GENERATED_INCLUDE_DIR}" "${glm_SOURCE_DIR}")
+    src "${MC_REBEDROCK_GENERATED_INCLUDE_DIR}" "${glm_SOURCE_DIR}"
+    # Headers only — deliberately not target_link_libraries(Vulkan::Vulkan). See the
+    # note next to FrameGraph.cpp above.
+    "$<TARGET_PROPERTY:Vulkan::Vulkan,INTERFACE_INCLUDE_DIRECTORIES>")
 # STRUCT-0: StructureTemplate.cpp (in the runtime lib) includes <miniz.h>.
 target_include_directories(mc_rebedrock_runtime PRIVATE vendor/miniz)
 if(TARGET Threads::Threads)
@@ -1903,6 +1914,41 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME block_preview_camera COMMAND mc_rebedrock_block_preview_camera_test)
+
+    # RN-20a: the baked frame graph's three execute() contracts — zero heap
+    # allocation, zero container lookup, one vkCmdPipelineBarrier per pass boundary —
+    # plus the "copied verbatim" structural assertions that stand in for the pixel
+    # regression on a machine with no GPU.
+    #
+    # It does NOT link Vulkan::Vulkan: the test defines the three vkCmd entry points
+    # execute() calls, so the static linker resolves them from the test object and the
+    # loader is never pulled in. That is what makes execute() runnable and countable
+    # headless. If FrameGraph.cpp ever reaches for a fourth entry point this target
+    # stops linking — that is the feature, not the defect: it pins the contract.
+    add_executable(mc_rebedrock_frame_graph_test
+        tests/frame_graph_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_frame_graph_test PRIVATE mc_rebedrock_runtime)
+    add_test(NAME frame_graph COMMAND mc_rebedrock_frame_graph_test)
+
+    # RN-20a: the same graph, executed for real against lavapipe with the Khronos
+    # validation layer switched on. The stub test above checks call counts and
+    # arguments; this one checks *semantic legality* — layouts, barrier placement,
+    # and that nothing illegal (a query pool reset, an attachment layout transition)
+    # sits inside a render pass. Skips with success when no device or layer is present.
+    add_executable(mc_rebedrock_frame_graph_device_test
+        tests/frame_graph_device_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_frame_graph_device_test
+        PRIVATE mc_rebedrock_runtime Vulkan::Vulkan)
+    add_test(NAME frame_graph_device COMMAND mc_rebedrock_frame_graph_device_test)
+
+    # RN-20a: the non-owning callable reference the graph's pass bodies ride on.
+    add_executable(mc_rebedrock_function_ref_test
+        tests/function_ref_test.cpp
+    )
+    target_include_directories(mc_rebedrock_function_ref_test PRIVATE src)
+    add_test(NAME function_ref COMMAND mc_rebedrock_function_ref_test)
 
     # RN-15b: the readback's byte transform. Header-only and Vulkan-free on
     # purpose — the export itself needs a GPU, this part does not, and a

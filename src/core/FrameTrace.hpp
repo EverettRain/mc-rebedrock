@@ -35,6 +35,9 @@ struct FrameTrace final {
     double fenceWaitMs = 0.0;  // drawFrame 的 vkWaitForFences
     double uploadMs = 0.0;     // world_.prepareStreamingUpdates（新 mesh 上传/暂存拷贝）
     double recordMs = 0.0;     // world_.recordCommandBuffer（遍历可见 section + 提交 draw call）
+    // RN-20a：烘焙式 frame graph 的 execute() 自身开销，**不含 pass body**
+    // body 的时间已经被 recordMs 量着，两者是包含关系而不是并列关系
+    double graphMs = 0.0;      // BakedGraph::execute（屏障合批 + begin/end renderpass 的编排）
     double drawFrameMs = 0.0;  // drawFrame() 整体（含 record + HUD + acquire/submit/present）
     double inputMs = 0.0;      // processInput()（每帧输入准备）
     double acquireMs = 0.0;    // vkAcquireNextImageKHR（呈现节流/vsync 可能在此阻塞）
@@ -63,7 +66,7 @@ struct FrameTrace final {
     void reset() {
         persistMs = saveChunkMs = lockHoldMs = drainMs = fenceWaitMs = 0.0;
         uploadMs = recordMs = drawFrameMs = inputMs = acquireMs = presentMs = 0.0;
-        occlusionReadbackMs = uniformMs = imageWaitMs = 0.0;
+        occlusionReadbackMs = uniformMs = imageWaitMs = graphMs = 0.0;
         particleSimMs = rainSimMs = particleLightMs = 0.0;
         unloadedChunks = visibleSections = saveChunkCalls = queueBatchCount = 0;
         particleCount = rainDropCount = rainLookups = 0;

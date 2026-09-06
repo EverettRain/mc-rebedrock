@@ -3416,6 +3416,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             break;
         case ui::WidgetId::SunShadows:
             shadowDisabled = !options.sunShadows;
+            // shadow 那一步是在编译期剪掉的（连同它那条边界屏障），不是运行期 if，
+            // 所以开关一翻就得重编译。这条落在 RN-20 §2.2 的「画质选项改变 → 全图重编译」
+            // 那一行上，不是另造的生命周期。
+            checkVk(vkDeviceWaitIdle(device), "vkDeviceWaitIdle");
+            rebuildFrameGraph();
             break;
         case ui::WidgetId::RainCollisionCache:
             rainSystem.setCollisionCache(options.rainCollisionCache);
@@ -6157,6 +6162,167 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
+    // 把当前配置烘成一张扁平的指令表（RN-20a）。
+    //
+    // 触发点穷举：交换链重建（尺寸 / vsync）走 createSwapchainResources 末尾；
+    // 太阳阴影开关走 applyOptionChange——它翻转 shadowDisabled 却**不**重建交换链，
+    // 而 shadow 那一步是在编译期被剪掉的，不重编译图就会与现实脱节。
+    // 除此之外没有别的触发点：MC_REBEDROCK_SHADOW_DEBUG 的调试叠加层在世界/界面 body
+    // 内部（drawShadowDebugOverlay），不是独立的步。
+    //
+    // 句柄一律**现取**：交换链重建之后 renderPass / framebuffer 全换，图里存一份旧的
+    // 就是一堆悬垂。所以编译必须排在 createFramebuffers / createGuiFramebuffers 之后。
+    void rebuildFrameGraph() {
+        using namespace render::graph;
+        const bool multisampled = renderSampleCount() != VK_SAMPLE_COUNT_1_BIT;
+
+        // ---- 资源表：一张图像的身份。本轮不据此分配一字节显存，参数逐位照抄现状 ----
+        std::vector<ResourceDesc> resources{
+            {.name = "scene_color",
+             .kind = ResourceKind::Color,
+             .format = sceneUnormFormat(),
+             .width = swapchainExtent.width,
+             .height = swapchainExtent.height,
+             .samples = VK_SAMPLE_COUNT_1_BIT,
+             .perSwapchainImage = true},
+            {.name = "scene_depth",
+             .kind = ResourceKind::Depth,
+             .format = depthFormat,
+             .width = swapchainExtent.width,
+             .height = swapchainExtent.height,
+             .samples = renderSampleCount(),
+             .perSwapchainImage = true},
+            {.name = "gui_depth",
+             .kind = ResourceKind::Depth,
+             .format = depthFormat,
+             .width = swapchainExtent.width,
+             .height = swapchainExtent.height,
+             .samples = VK_SAMPLE_COUNT_1_BIT,
+             .perSwapchainImage = true},
+            {.name = "shadow_depth",
+             .kind = ResourceKind::Depth,
+             .format = shadowTarget.format(),
+             .width = shadowTarget.width(),
+             .height = shadowTarget.height(),
+             .samples = VK_SAMPLE_COUNT_1_BIT,
+             // 阴影图尺寸固定、与交换链无关，**单份**——这是三处不对称里的第一处
+             .perSwapchainImage = false},
+        };
+        constexpr std::uint16_t kSceneColor = 0;
+        constexpr std::uint16_t kSceneDepth = 1;
+        constexpr std::uint16_t kGuiDepth = 2;
+        constexpr std::uint16_t kShadowDepth = 3;
+        std::uint16_t sceneColorMsaa = kSceneColor;
+        if (multisampled) {
+            // 开 MSAA 时世界那趟是三个附件（多采样 color + depth + resolve），关时两个
+            sceneColorMsaa = static_cast<std::uint16_t>(resources.size());
+            resources.push_back({.name = "scene_color_msaa",
+                                 .kind = ResourceKind::Color,
+                                 .format = sceneUnormFormat(),
+                                 .width = swapchainExtent.width,
+                                 .height = swapchainExtent.height,
+                                 .samples = renderSampleCount(),
+                                 .perSwapchainImage = true});
+        }
+
+        // ---- 视图表：对资源的一种解释，多对一。今天每个资源恰好一个视图 ----
+        // scene_color 只有 UNORM 这一个视图，世界与 GUI 两趟都绑它；那是对的，
+        // 理由见 sceneUnormFormat() 的注释。20d 若真要 sRGB，是在这里**加一行**，
+        // 不是再加一个资源——layout 时间线必须按 ViewDesc::resource 归并。
+        std::vector<ViewDesc> views;
+        views.reserve(resources.size());
+        for (std::size_t index = 0; index < resources.size(); ++index) {
+            const ResourceDesc& resource = resources[index];
+            views.push_back({.resource = static_cast<std::uint16_t>(index),
+                             .format = resource.format,
+                             .aspect = resource.kind == ResourceKind::Depth
+                                           ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                           : VK_IMAGE_ASPECT_COLOR_BIT});
+        }
+
+        const std::array<PassAttachment, 1> shadowAttachments{
+            {{kShadowDepth, Access::DepthWrite}}};
+        const std::array<PassAttachment, 4> worldAttachments{{
+            {sceneColorMsaa, Access::ColorWrite},
+            {kSceneDepth, Access::DepthWrite},
+            {kSceneColor, Access::ColorWrite},
+            {kShadowDepth, Access::Sample},
+        }};
+        const std::array<PassAttachment, 2> guiAttachments{
+            {{kSceneColor, Access::ColorWrite}, {kGuiDepth, Access::DepthWrite}}};
+        const std::array<PassAttachment, 1> presentAttachments{
+            {{kSceneColor, Access::TransferRead}}};
+
+        std::array<VkClearValue, 2> worldClears{};
+        worldClears[0].color = {{0.055F, 0.080F, 0.110F, 1.0F}};
+        worldClears[1].depthStencil = {1.0F, 0};
+        std::array<VkClearValue, 2> guiClears{};
+        guiClears[1].depthStencil = {1.0F, 0};
+        std::array<VkClearValue, 1> shadowClears{};
+        shadowClears[0].depthStencil = {1.0F, 0};
+        const std::array<VkFramebuffer, 1> shadowFramebuffers{shadowTarget.framebuffer()};
+
+        // 阴影图画完要转成 SHADER_READ_ONLY 给世界那趟采样。这条屏障从前是
+        // recordShadowPass 的最后一行，跑在 vkCmdEndRenderPass **之后**；begin/end 归图
+        // 之后那个位置就落进 renderpass 内部了，而对附件做 layout 转换在 renderpass 内
+        // 非法。于是它提成世界那步的边界屏障，内容逐位照抄 OffscreenTarget.cpp。
+        //
+        // ⚠ 它必须跟着 shadow 步一起被剪：shadow 关掉时那张图停在
+        // initializeAsShaderRead 留下的 SHADER_READ_ONLY_OPTIMAL，再下一次
+        // DEPTH_ATTACHMENT → SHADER_READ 的转换 oldLayout 对不上。
+        VkImageMemoryBarrier shadowRead{};
+        shadowRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        shadowRead.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        shadowRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        shadowRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        shadowRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        shadowRead.image = shadowTarget.image();
+        shadowRead.subresourceRange.aspectMask = shadowTarget.aspect();
+        shadowRead.subresourceRange.levelCount = 1;
+        shadowRead.subresourceRange.layerCount = 1;
+        shadowRead.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        shadowRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        const std::array<VkImageMemoryBarrier, 1> worldBarriers{shadowRead};
+
+        const std::array<PassDesc, 5> passes{{
+            {.name = "upload",
+             .record = &WorldRenderer::graphUploadStep},
+            {.name = "shadow",
+             .attachments = shadowAttachments,
+             .record = &WorldRenderer::graphShadowStep,
+             .renderPass = shadowTarget.renderPass(),
+             .framebuffers = shadowFramebuffers,
+             .clears = shadowClears,
+             .extent = {shadowTarget.width(), shadowTarget.height()},
+             .enabled = !shadowDisabled},
+            {.name = "world",
+             .attachments = worldAttachments,
+             .record = &WorldRenderer::graphWorldStep,
+             .renderPass = worldPipelines_.renderPass,
+             .framebuffers = framebuffers,
+             .clears = worldClears,
+             .extent = swapchainExtent,
+             .barriers = shadowDisabled ? std::span<const VkImageMemoryBarrier>{}
+                                        : std::span<const VkImageMemoryBarrier>{worldBarriers},
+             .barrierSrcStage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+             .barrierDstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT},
+            {.name = "gui",
+             .attachments = guiAttachments,
+             .record = &WorldRenderer::graphGuiStep,
+             .renderPass = worldPipelines_.guiRenderPass,
+             .framebuffers = guiFramebuffers,
+             .clears = guiClears,
+             .extent = swapchainExtent,
+             // 界面合成永远是最后一个渲染步，任何前端都不得插到它后面
+             .locked = true},
+            {.name = "present_blit",
+             .attachments = presentAttachments,
+             .record = &WorldRenderer::graphPresentBlitStep},
+        }};
+
+        frameGraph_.compile({.resources = resources, .views = views, .passes = passes});
+    }
+
     void createSwapchainResources() {
         createSwapchain();
         createPresentSemaphores();
@@ -6173,9 +6339,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         createRainSheetPipeline();
         createFramebuffers();
         createGuiFramebuffers();
+        rebuildFrameGraph();
     }
 
     void cleanupSwapchain() noexcept {
+        // 图里存的全是马上要被销毁的 renderPass / framebuffer 句柄，先清空
+        frameGraph_.reset();
         for (const auto framebuffer : guiFramebuffers) {
             vkDestroyFramebuffer(device, framebuffer, nullptr);
         }
@@ -7150,6 +7319,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 世界通道的管线族，定义见 render/vulkan/WorldRenderTypes.hpp
     // 所有权仍在这里（本类创建，并随交换链销毁重建），WorldRenderer 只持有它的引用
     WorldPipelines worldPipelines_;
+    // 烘焙式 frame graph（RN-20a）。与管线同一条生命周期边界：createSwapchainResources
+    // 末尾编译、cleanupSwapchain 清空。所有权在这里，WorldRenderer 只持有引用并执行它。
+    render::graph::BakedGraph frameGraph_;
     // 遮挡查询的 GPU 资源与开关，定义见 WorldRenderTypes.hpp
     // 逐 section 的查询结果是纯 CPU 状态，已经归 WorldRenderer 自有
     OcclusionResources occlusion_{.disabled = disableOcclusionQueries()};
@@ -7376,6 +7548,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // 有区块重新流送进来，把卸载时为它写下的生物恢复回去，如果有的话
                 runtime.restoreLoadedChunk(position);
             },
+            .frameGraph = frameGraph_,
         };
     }
 

@@ -24,6 +24,11 @@ class OffscreenTarget final {
     [[nodiscard]] VkRenderPass renderPass() const { return renderPass_; }
     [[nodiscard]] VkFramebuffer framebuffer() const { return framebuffer_; }
     [[nodiscard]] VkImageView view() const { return view_; }
+    // 图像句柄与 aspect：RN-20a 之后「画完转 SHADER_READ_ONLY」那条屏障由 frame graph
+    // 在世界那步的边界上下（renderpass 之内做附件的 layout 转换是非法的），
+    // 它需要按 transitionToShaderRead 的字面内容自己拼一份 VkImageMemoryBarrier
+    [[nodiscard]] VkImage image() const { return image_.image; }
+    [[nodiscard]] VkImageAspectFlags aspect() const { return aspect_; }
     [[nodiscard]] VkFormat format() const { return format_; }
     [[nodiscard]] std::uint32_t width() const { return width_; }
     [[nodiscard]] std::uint32_t height() const { return height_; }
