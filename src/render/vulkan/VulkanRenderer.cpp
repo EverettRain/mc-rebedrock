@@ -5375,39 +5375,46 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return options.antiAliasing ? maximumMsaaSamples : VK_SAMPLE_COUNT_1_BIT;
     }
 
+    // ---- 四个资源的创建：参数一律从 ResourcePlan 取（RN-20c）--------------------
+    //
+    // 从前每个创建函数各自手写 usage / TRANSIENT，于是「这张图能不能被采样」这个问题的
+    // 答案散在五处，改一处要人去判断所有平台的后果。现在它跟着消费者走：图里有人声明
+    // 读它，推导就给 SAMPLED；没人读，就是瞬态。`createDepthTargets` 里那段 memoryless
+    // 的理由因此变成对推导结果的解释，而不是一个需要人维护的硬编码位。
+    //
+    // shadow_depth 不在这四个里：它归 OffscreenTarget 创建，计划对它**只校验不接管**，
+    // 见 verifyShadowDepthPlan()。
+    [[nodiscard]] const render::graph::PlannedResource& planned(std::string_view name) const {
+        return resourcePlan_.resource(name);
+    }
+
     void createColorTargets() {
-        if (renderSampleCount() == VK_SAMPLE_COUNT_1_BIT)
+        // 「关 MSAA 时这张图不存在」这件事从前是这里的一个 early return，现在是
+        // 资源表里根本没有这一条——同一个判断只剩一处
+        if (!resourcePlan_.has(kSceneColorMsaaName))
             return;
+        const auto& plan = planned(kSceneColorMsaaName);
         colorTargets.resize(swapchainImages.size());
         for (auto& target : colorTargets) {
-            target.image = createImage(
-                swapchainExtent.width, swapchainExtent.height, 1, sceneUnormFormat(),
-                VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-                renderSampleCount());
-            target.view =
-                createImageView(target.image.image, sceneUnormFormat(), VK_IMAGE_ASPECT_COLOR_BIT);
+            target.image =
+                createImage(plan.width, plan.height, 1, plan.format, plan.usage, plan.samples);
+            target.view = createImageView(target.image.image, plan.format, plan.aspect);
         }
     }
 
     void createDepthTargets() {
-        depthFormat = chooseDepthFormat();
+        const auto& plan = planned(kSceneDepthName);
         depthTargets.resize(swapchainImages.size());
         for (auto& target : depthTargets) {
-            // 深度附件在通道内被清空、写入，且从不回读
-            // 标成瞬态之后，Apple 这类片上式 GPU 能把它留在片上内存里
+            // 深度附件在通道内被清空、写入，且从不回读，所以推导给出 TRANSIENT
+            // Apple 这类片上式 GPU 因此能把它留在片上内存里
             // 否则就是一块约 250 MB 的多重采样渲染目标分配
-            // 渲染通道本来就用 loadOp CLEAR 加 storeOp DONT_CARE，正是 memoryless 的形态
+            // 渲染通道的 loadOp CLEAR 加 storeOp DONT_CARE 同样是推出来的，正是 memoryless 的形态
             // 不支持该特性的驱动退化成普通分配，行为不变
+            // RN-11 给它接上消费者的那天，这三个参数会一起翻转，不需要有人来改这里
             target.image =
-                createImage(swapchainExtent.width, swapchainExtent.height, 1, depthFormat,
-                            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                                VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
-                            renderSampleCount());
-            VkImageAspectFlags aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
-            if (depthFormatHasStencil(depthFormat)) {
-                aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
-            }
-            target.view = createImageView(target.image.image, depthFormat, aspect);
+                createImage(plan.width, plan.height, 1, plan.format, plan.usage, plan.samples);
+            target.view = createImageView(target.image.image, plan.format, plan.aspect);
         }
     }
 
@@ -5415,31 +5422,50 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 格式取 UNORM 为基，SRGB 只是它的另一个视图；copy 到交换链图像是逐字节的，
     // 因此交换链是 UNORM 还是 SRGB 都不影响最终呈现
     void createSceneTargets() {
+        const auto& plan = planned(kSceneColorName);
         sceneTargets.resize(swapchainImages.size());
         for (auto& target : sceneTargets) {
-            target.image = createImage(swapchainExtent.width, swapchainExtent.height, 1,
-                                       sceneUnormFormat(),
-                                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                           VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
-            target.view =
-                createImageView(target.image.image, sceneUnormFormat(), VK_IMAGE_ASPECT_COLOR_BIT);
+            target.image =
+                createImage(plan.width, plan.height, 1, plan.format, plan.usage, plan.samples);
+            target.view = createImageView(target.image.image, plan.format, plan.aspect);
         }
     }
 
     void createGuiDepthTargets() {
+        const auto& plan = planned(kGuiDepthName);
         guiDepthTargets.resize(swapchainImages.size());
         for (auto& target : guiDepthTargets) {
-            // 与世界的深度同理：通道内清空、写入、不回读，标成瞬态就能留在片上内存
+            // 与世界的深度同为瞬态，但**理由不同**：界面深度每帧 CLEAR 且永远不会有
+            // 消费者，世界深度只是「今天还没有消费者」。推导对两者给出同一个答案是
+            // 巧合，不是同一件事——RN-11 翻转的只会是后者
             target.image =
-                createImage(swapchainExtent.width, swapchainExtent.height, 1, depthFormat,
-                            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                                VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
-                            VK_SAMPLE_COUNT_1_BIT);
-            VkImageAspectFlags aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
-            if (depthFormatHasStencil(depthFormat)) {
-                aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
-            }
-            target.view = createImageView(target.image.image, depthFormat, aspect);
+                createImage(plan.width, plan.height, 1, plan.format, plan.usage, plan.samples);
+            target.view = createImageView(target.image.image, plan.format, plan.aspect);
+        }
+    }
+
+    // 坑 1 的决定：shadow_depth 归 OffscreenTarget 创建（它的生命周期不在交换链里，
+    // 且 binding 8 与 shadowDebugSet 的描述符在初始化期写一次、之后从不重写），
+    // 计划对它只校验。校验必须是逐位的，否则就成了「计划说 A、创建写 B 而没人比对」。
+    void verifyShadowDepthPlan() const {
+        const auto& plan = planned(kShadowDepthName);
+        const OffscreenTarget::Parameters actual = shadowTarget.parameters();
+        bool same = plan.format == actual.format && plan.width == actual.width &&
+                    plan.height == actual.height && plan.samples == actual.samples &&
+                    plan.usage == actual.usage && plan.aspect == actual.aspect;
+        // renderpass 的四个操作只在 shadow 那步还在图里时可比：剪掉之后没有任何
+        // renderpass 在消费这张图，那四个字段落不到实际对象上。这正是「翻转开关
+        // 不必重建 image」那条结论的形状——变的字段不是 image 参数
+        if (!shadowDisabled) {
+            const auto& ops = resourcePlan_.ops(kShadowPassName, kShadowDepthName);
+            same = same && ops.loadOp == actual.loadOp && ops.storeOp == actual.storeOp &&
+                   ops.initialLayout == actual.initialLayout &&
+                   ops.finalLayout == actual.finalLayout;
+        }
+        if (!same) {
+            throw std::runtime_error(
+                "frame graph: the derived plan for shadow_depth does not match the offscreen "
+                "target that was actually created");
         }
     }
 
@@ -5447,24 +5473,30 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 颜色附件的格式是 UNORM，于是固定功能混合读写的是 sRGB 编码值——这正是 vanilla
     // 的合成空间，也是"提示框比原版更透""界面文字比原版亮一档"两个缺陷的收口
     void createGuiRenderPass() {
+        // 四个操作全部来自推导：界面那趟载入世界那趟的结果（前面有写者 → LOAD），
+        // 画完立刻被 vkCmdCopyImage 读走（第一个消费者是 TransferRead → TRANSFER_SRC）
+        const auto& colorPlan = planned(kSceneColorName);
+        const auto& colorOps = resourcePlan_.ops(kGuiPassName, kSceneColorName);
         VkAttachmentDescription color{};
-        color.format = sceneUnormFormat();
-        color.samples = VK_SAMPLE_COUNT_1_BIT;
-        color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-        color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        color.format = colorPlan.format;
+        color.samples = colorPlan.samples;
+        color.loadOp = colorOps.loadOp;
+        color.storeOp = colorOps.storeOp;
         color.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        color.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        color.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        color.initialLayout = colorOps.initialLayout;
+        color.finalLayout = colorOps.finalLayout;
+        const auto& depthPlan = planned(kGuiDepthName);
+        const auto& depthOps = resourcePlan_.ops(kGuiPassName, kGuiDepthName);
         VkAttachmentDescription depth{};
-        depth.format = depthFormat;
-        depth.samples = VK_SAMPLE_COUNT_1_BIT;
-        depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depth.format = depthPlan.format;
+        depth.samples = depthPlan.samples;
+        depth.loadOp = depthOps.loadOp;
+        depth.storeOp = depthOps.storeOp;
         depth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depth.initialLayout = depthOps.initialLayout;
+        depth.finalLayout = depthOps.finalLayout;
         const std::array attachments{color, depth};
         VkAttachmentReference colorReference{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
         VkAttachmentReference depthReference{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
@@ -5506,38 +5538,50 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void createRenderPass() {
+        const bool multisampled = renderSampleCount() != VK_SAMPLE_COUNT_1_BIT;
+        // 0 号附件在开 MSAA 时是 scene_color_msaa、关时是 scene_color；两档的四个操作
+        // 都是推出来的。关键差异全在推导里：MSAA 档 scene_color 是 resolve 目标
+        // （loadOp DONT_CARE，不是「前面没写者就 CLEAR」），而多采样靶画完 resolve
+        // 就丢（后面没有任何访问 → storeOp DONT_CARE + TRANSIENT）
+        const std::string_view colorName = multisampled ? kSceneColorMsaaName : kSceneColorName;
+        const auto& colorPlan = planned(colorName);
+        const auto& colorOps = resourcePlan_.ops(kWorldPassName, colorName);
         VkAttachmentDescription color{};
-        color.format = sceneUnormFormat();
-        color.samples = renderSampleCount();
-        color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        color.storeOp = renderSampleCount() == VK_SAMPLE_COUNT_1_BIT
-                            ? VK_ATTACHMENT_STORE_OP_STORE
-                            : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        color.format = colorPlan.format;
+        color.samples = colorPlan.samples;
+        color.loadOp = colorOps.loadOp;
+        color.storeOp = colorOps.storeOp;
         color.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        color.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        color.initialLayout = colorOps.initialLayout;
         // 注意：解析过的 MSAA 颜色附件在这里保持 COLOR_ATTACHMENT_OPTIMAL
         // 填 UNDEFINED 会被校验层拒绝，何况当前这版 MoltenVK 本来也不把瞬态附件放到片上内存
         // 世界这趟的结果不再直接呈现：GUI 那趟要按 UNORM 视图把它载入并继续画
-        color.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color.finalLayout = colorOps.finalLayout;
+        const auto& depthPlan = planned(kSceneDepthName);
+        const auto& depthOps = resourcePlan_.ops(kWorldPassName, kSceneDepthName);
         VkAttachmentDescription depth{};
-        depth.format = depthFormat;
-        depth.samples = renderSampleCount();
-        depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depth.format = depthPlan.format;
+        depth.samples = depthPlan.samples;
+        depth.loadOp = depthOps.loadOp;
+        depth.storeOp = depthOps.storeOp;
         depth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depth.initialLayout = depthOps.initialLayout;
+        depth.finalLayout = depthOps.finalLayout;
         VkAttachmentDescription resolve{};
-        resolve.format = sceneUnormFormat();
-        resolve.samples = VK_SAMPLE_COUNT_1_BIT;
-        resolve.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        resolve.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        resolve.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        resolve.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        resolve.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        resolve.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        if (multisampled) {
+            const auto& resolvePlan = planned(kSceneColorName);
+            const auto& resolveOps = resourcePlan_.ops(kWorldPassName, kSceneColorName);
+            resolve.format = resolvePlan.format;
+            resolve.samples = resolvePlan.samples;
+            resolve.loadOp = resolveOps.loadOp;
+            resolve.storeOp = resolveOps.storeOp;
+            resolve.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            resolve.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            resolve.initialLayout = resolveOps.initialLayout;
+            resolve.finalLayout = resolveOps.finalLayout;
+        }
         const std::array attachments{color, depth, resolve};
         VkAttachmentReference colorReference{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
         VkAttachmentReference depthReference{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
@@ -6172,12 +6216,84 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     //
     // 句柄一律**现取**：交换链重建之后 renderPass / framebuffer 全换，图里存一份旧的
     // 就是一堆悬垂。所以编译必须排在 createFramebuffers / createGuiFramebuffers 之后。
+    // 三张表的**所有权**。PassDesc 里的 span 指进这些 vector，所以它们必须活到
+    // compile() 返回。两阶段之后同一张表要被造两次（阶段 1 不带句柄、阶段 2 带），
+    // 于是提成一个结构：两次造出的**结构**必须完全一样，否则计划与编译不同源，
+    // 而那正是 compile() 开头逐字段核对要抓的东西。
+    struct FrameGraphTables final {
+        std::vector<render::graph::ResourceDesc> resources;
+        std::vector<render::graph::ViewDesc> views;
+        std::vector<render::graph::PassAttachment> shadowAttachments;
+        std::vector<render::graph::PassAttachment> worldAttachments;
+        std::vector<render::graph::PassAttachment> guiAttachments;
+        std::vector<render::graph::PassAttachment> presentAttachments;
+        std::vector<VkClearValue> worldClears;
+        std::vector<VkClearValue> guiClears;
+        std::vector<VkClearValue> shadowClears;
+        std::vector<VkFramebuffer> shadowFramebuffers;
+        std::vector<VkImageMemoryBarrier> worldBarriers;
+        std::vector<render::graph::PassDesc> passes;
+
+        [[nodiscard]] render::graph::GraphDesc describe() const {
+            return {.resources = resources, .views = views, .passes = passes};
+        }
+    };
+
+    // 阶段 1：造表 → 推导。**不碰任何句柄**，因此可以在 image / renderpass /
+    // framebuffer 全都还不存在的时候调用——这正是两阶段拆分要解开的那个循环。
+    void planFrameGraphResources() {
+        FrameGraphTables tables;
+        buildFrameGraphTables(tables, false);
+        resourcePlan_ = render::graph::planResources(tables.describe());
+    }
+
+    // 阶段 2：造表（这次带句柄）→ 编译。
+    //
+    // 太阳阴影开关也走这里：它剪掉 shadow 那一步，于是 shadow_depth 在图内**没有写者**。
+    // 推导的结论是这不改变任何 image 参数——世界那步对它的 Access::Sample 是无条件
+    // 声明的（binding 8 的描述符与 shadowDisabled 无关），开关只改写者集合，而 image
+    // 参数只由读者集合决定。变的是 shadow renderpass 的 storeOp，那不是 vkCreateImage
+    // 的参数，且那一步被剪掉时根本没有 renderpass 在消费它。所以翻转开关**只重编译**，
+    // 不重建 image。下面这条断言把这个结论钉住：谁把 usage 做成依赖开关的，这里就炸。
     void rebuildFrameGraph() {
+        FrameGraphTables tables;
+        buildFrameGraphTables(tables, true);
+        const render::graph::GraphDesc desc = tables.describe();
+        const render::graph::ResourcePlan plan = render::graph::planResources(desc);
+        requireSameImageParameters(plan);
+        frameGraph_.compile(desc, plan);
+    }
+
+    void requireSameImageParameters(const render::graph::ResourcePlan& plan) const {
+        const auto planned = plan.resources();
+        const auto created = resourcePlan_.resources();
+        bool same = planned.size() == created.size();
+        for (std::size_t index = 0; same && index < planned.size(); ++index) {
+            same = planned[index].sameImageParameters(created[index]);
+        }
+        if (!same) {
+            throw std::runtime_error(
+                "frame graph: recompiling changed an image creation parameter, so the images "
+                "on hand no longer match the graph");
+        }
+    }
+
+    static constexpr std::string_view kSceneColorName = "scene_color";
+    static constexpr std::string_view kSceneDepthName = "scene_depth";
+    static constexpr std::string_view kGuiDepthName = "gui_depth";
+    static constexpr std::string_view kShadowDepthName = "shadow_depth";
+    static constexpr std::string_view kSceneColorMsaaName = "scene_color_msaa";
+    static constexpr std::string_view kShadowPassName = "shadow";
+    static constexpr std::string_view kWorldPassName = "world";
+    static constexpr std::string_view kGuiPassName = "gui";
+
+    void buildFrameGraphTables(FrameGraphTables& tables, bool withHandles) const {
         using namespace render::graph;
         const bool multisampled = renderSampleCount() != VK_SAMPLE_COUNT_1_BIT;
 
-        // ---- 资源表：一张图像的身份。本轮不据此分配一字节显存，参数逐位照抄现状 ----
-        std::vector<ResourceDesc> resources{
+        // ---- 资源表：一张图像的身份。usage / aspect **不**在这里，它们是推出来的 ----
+        std::vector<ResourceDesc>& resources = tables.resources;
+        resources = {
             {.name = "scene_color",
              .kind = ResourceKind::Color,
              .format = sceneUnormFormat(),
@@ -6229,38 +6345,56 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // scene_color 只有 UNORM 这一个视图，世界与 GUI 两趟都绑它；那是对的，
         // 理由见 sceneUnormFormat() 的注释。20d 若真要 sRGB，是在这里**加一行**，
         // 不是再加一个资源——layout 时间线必须按 ViewDesc::resource 归并。
-        std::vector<ViewDesc> views;
+        std::vector<ViewDesc>& views = tables.views;
+        views.clear();
         views.reserve(resources.size());
         for (std::size_t index = 0; index < resources.size(); ++index) {
             const ResourceDesc& resource = resources[index];
+            // aspect 跟着格式走。带 stencil 的深度格式在这里写死 DEPTH_BIT 是错的，
+            // 与 createDepthTargets 从前那段逐个判 depthFormatHasStencil 的逻辑同源
+            VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+            if (resource.kind == ResourceKind::Depth) {
+                aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+                if (depthFormatHasStencil(resource.format)) {
+                    aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+                }
+            }
             views.push_back({.resource = static_cast<std::uint16_t>(index),
                              .format = resource.format,
-                             .aspect = resource.kind == ResourceKind::Depth
-                                           ? VK_IMAGE_ASPECT_DEPTH_BIT
-                                           : VK_IMAGE_ASPECT_COLOR_BIT});
+                             .aspect = aspect});
         }
 
-        const std::array<PassAttachment, 1> shadowAttachments{
-            {{kShadowDepth, Access::DepthWrite}}};
-        const std::array<PassAttachment, 4> worldAttachments{{
-            {sceneColorMsaa, Access::ColorWrite},
-            {kSceneDepth, Access::DepthWrite},
-            {kSceneColor, Access::ColorWrite},
-            {kShadowDepth, Access::Sample},
-        }};
-        const std::array<PassAttachment, 2> guiAttachments{
-            {{kSceneColor, Access::ColorWrite}, {kGuiDepth, Access::DepthWrite}}};
-        const std::array<PassAttachment, 1> presentAttachments{
-            {{kSceneColor, Access::TransferRead}}};
+        tables.shadowAttachments = {{kShadowDepth, Access::DepthWrite}};
+        // 世界那趟的附件表两档不同形，与 createRenderPass 的 attachmentCount 一致：
+        // 开 MSAA 是「多采样 color + depth + resolve」三个，关时是「color + depth」两个。
+        // resolve 目标声明成 ColorResolve 而不是第二个 ColorWrite——它的内容确实由这一步
+        // 产生，但它不被载入。关 MSAA 时 sceneColorMsaa 塌回 scene_color，此时**不能**
+        // 再有 resolve 那一条，否则同一个 view 既是 color 又是自己的 resolve 目标。
+        tables.worldAttachments = {{sceneColorMsaa, Access::ColorWrite},
+                                   {kSceneDepth, Access::DepthWrite}};
+        if (multisampled) {
+            tables.worldAttachments.push_back({kSceneColor, Access::ColorResolve});
+        }
+        // 阴影图的读者不是附件，是 binding 8 的描述符采样。它必须在这里显式声明：
+        // 少了这一条，推导会把一张被无条件采样的图判成瞬态
+        tables.worldAttachments.push_back({kShadowDepth, Access::Sample});
+        tables.guiAttachments = {{kSceneColor, Access::ColorWrite},
+                                 {kGuiDepth, Access::DepthWrite}};
+        // 帧末 copySceneToSwapchain 的 vkCmdCopyImage 读 scene_color。漏掉这一类读者
+        // 会把它推成 TRANSIENT + DONT_CARE——那是整帧变黑，不是性能问题
+        tables.presentAttachments = {{kSceneColor, Access::TransferRead}};
 
-        std::array<VkClearValue, 2> worldClears{};
-        worldClears[0].color = {{0.055F, 0.080F, 0.110F, 1.0F}};
-        worldClears[1].depthStencil = {1.0F, 0};
-        std::array<VkClearValue, 2> guiClears{};
-        guiClears[1].depthStencil = {1.0F, 0};
-        std::array<VkClearValue, 1> shadowClears{};
-        shadowClears[0].depthStencil = {1.0F, 0};
-        const std::array<VkFramebuffer, 1> shadowFramebuffers{shadowTarget.framebuffer()};
+        tables.worldClears.assign(2, VkClearValue{});
+        tables.worldClears[0].color = {{0.055F, 0.080F, 0.110F, 1.0F}};
+        tables.worldClears[1].depthStencil = {1.0F, 0};
+        tables.guiClears.assign(2, VkClearValue{});
+        tables.guiClears[1].depthStencil = {1.0F, 0};
+        tables.shadowClears.assign(1, VkClearValue{});
+        tables.shadowClears[0].depthStencil = {1.0F, 0};
+        tables.shadowFramebuffers.clear();
+        if (withHandles) {
+            tables.shadowFramebuffers.push_back(shadowTarget.framebuffer());
+        }
 
         // 阴影图画完要转成 SHADER_READ_ONLY 给世界那趟采样。这条屏障从前是
         // recordShadowPass 的最后一行，跑在 vkCmdEndRenderPass **之后**；begin/end 归图
@@ -6282,54 +6416,70 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         shadowRead.subresourceRange.layerCount = 1;
         shadowRead.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
         shadowRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        const std::array<VkImageMemoryBarrier, 1> worldBarriers{shadowRead};
+        tables.worldBarriers.clear();
+        if (withHandles && !shadowDisabled) {
+            tables.worldBarriers.push_back(shadowRead);
+        }
 
-        const std::array<PassDesc, 5> passes{{
+        // 阶段 1 造表时句柄一个都不填：那时 image / renderpass / framebuffer 都还不存在。
+        // 推导只吃 attachments 与 enabled，所以两次造出的表在**推导可见的部分**完全一样，
+        // 这正是 compile() 能拿计划与描述逐字段对上的前提。
+        const auto framebuffersOf = [withHandles](const std::vector<VkFramebuffer>& source) {
+            return withHandles ? std::span<const VkFramebuffer>{source}
+                               : std::span<const VkFramebuffer>{};
+        };
+        tables.passes = {
             {.name = "upload",
              .record = &WorldRenderer::graphUploadStep},
-            {.name = "shadow",
-             .attachments = shadowAttachments,
+            {.name = kShadowPassName,
+             .attachments = tables.shadowAttachments,
              .record = &WorldRenderer::graphShadowStep,
-             .renderPass = shadowTarget.renderPass(),
-             .framebuffers = shadowFramebuffers,
-             .clears = shadowClears,
+             .renderPass = withHandles ? shadowTarget.renderPass() : VK_NULL_HANDLE,
+             .framebuffers = tables.shadowFramebuffers,
+             .clears = withHandles ? std::span<const VkClearValue>{tables.shadowClears}
+                                   : std::span<const VkClearValue>{},
              .extent = {shadowTarget.width(), shadowTarget.height()},
              .enabled = !shadowDisabled},
-            {.name = "world",
-             .attachments = worldAttachments,
+            {.name = kWorldPassName,
+             .attachments = tables.worldAttachments,
              .record = &WorldRenderer::graphWorldStep,
-             .renderPass = worldPipelines_.renderPass,
-             .framebuffers = framebuffers,
-             .clears = worldClears,
+             .renderPass = withHandles ? worldPipelines_.renderPass : VK_NULL_HANDLE,
+             .framebuffers = framebuffersOf(framebuffers),
+             .clears = withHandles ? std::span<const VkClearValue>{tables.worldClears}
+                                   : std::span<const VkClearValue>{},
              .extent = swapchainExtent,
-             .barriers = shadowDisabled ? std::span<const VkImageMemoryBarrier>{}
-                                        : std::span<const VkImageMemoryBarrier>{worldBarriers},
+             .barriers = tables.worldBarriers,
              .barrierSrcStage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
              .barrierDstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT},
-            {.name = "gui",
-             .attachments = guiAttachments,
+            {.name = kGuiPassName,
+             .attachments = tables.guiAttachments,
              .record = &WorldRenderer::graphGuiStep,
-             .renderPass = worldPipelines_.guiRenderPass,
-             .framebuffers = guiFramebuffers,
-             .clears = guiClears,
+             .renderPass = withHandles ? worldPipelines_.guiRenderPass : VK_NULL_HANDLE,
+             .framebuffers = framebuffersOf(guiFramebuffers),
+             .clears = withHandles ? std::span<const VkClearValue>{tables.guiClears}
+                                   : std::span<const VkClearValue>{},
              .extent = swapchainExtent,
              // 界面合成永远是最后一个渲染步，任何前端都不得插到它后面
              .locked = true},
             {.name = "present_blit",
-             .attachments = presentAttachments,
+             .attachments = tables.presentAttachments,
              .record = &WorldRenderer::graphPresentBlitStep},
-        }};
-
-        frameGraph_.compile({.resources = resources, .views = views, .passes = passes});
+        };
     }
 
     void createSwapchainResources() {
         createSwapchain();
         createPresentSemaphores();
+        // 两阶段（RN-20c）：先推导，再按推导出的参数创建。深度格式的选取要提到推导
+        // 之前——资源表里 scene_depth / gui_depth 的 format 就是它，从前它是
+        // createDepthTargets 的第一行，那时已经晚了。
+        depthFormat = chooseDepthFormat();
+        planFrameGraphResources();
         createColorTargets();
         createDepthTargets();
         createSceneTargets();
         createGuiDepthTargets();
+        verifyShadowDepthPlan();
         createRenderPass();
         createGuiRenderPass();
         createGraphicsPipeline();
@@ -6345,6 +6495,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void cleanupSwapchain() noexcept {
         // 图里存的全是马上要被销毁的 renderPass / framebuffer 句柄，先清空
         frameGraph_.reset();
+        // 计划描述的是**马上要被销毁的那批 image**，跟着一起清。留着它，下一次
+        // createSwapchainResources 之前若有人来取，拿到的是一份对不上任何对象的参数；
+        // 清空之后那种取用会直接抛
+        resourcePlan_ = {};
         for (const auto framebuffer : guiFramebuffers) {
             vkDestroyFramebuffer(device, framebuffer, nullptr);
         }
@@ -7322,6 +7476,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 烘焙式 frame graph（RN-20a）。与管线同一条生命周期边界：createSwapchainResources
     // 末尾编译、cleanupSwapchain 清空。所有权在这里，WorldRenderer 只持有引用并执行它。
     render::graph::BakedGraph frameGraph_;
+    // 阶段 1 的产物（RN-20c）：五个资源的 usage / aspect / 附件操作。**手上这批 image
+    // 就是按它创建的**，所以它同时是「创建参数」的唯一来源与后续重编译的比对基准。
+    // 与 frameGraph_ 同一条生命周期：planFrameGraphResources 产出，cleanupSwapchain 之后
+    // 下一次 createSwapchainResources 再产一份新的。
+    render::graph::ResourcePlan resourcePlan_;
     // 遮挡查询的 GPU 资源与开关，定义见 WorldRenderTypes.hpp
     // 逐 section 的查询结果是纯 CPU 状态，已经归 WorldRenderer 自有
     OcclusionResources occlusion_{.disabled = disableOcclusionQueries()};

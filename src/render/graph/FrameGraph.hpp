@@ -51,7 +51,20 @@ enum class ResourceKind : std::uint8_t { Color, Depth, Swapchain };
 // 是 vkCmdCopyImage 而不是采样，但它同样是「最后一次写之后的读者」。
 // 20c 的 usage/storeOp 推导按「有没有读者」判 TRANSIENT，漏掉这一类会把 scene_color
 // 判成瞬态——那是整帧变黑，不是性能问题。
-enum class Access : std::uint8_t { ColorWrite, DepthWrite, DepthReadOnly, Sample, TransferRead };
+// ColorResolve 是**第三种**关系，不是 ColorWrite 的一个标志位。MSAA 开时世界那趟把
+// 多采样的 scene_color_msaa resolve 进单采样的 scene_color：后者的内容确实由这一步产生
+// （所以对 usage / TRANSIENT 推导它算写者），但它**不被载入**——`resolve.loadOp` 在
+// createRenderPass() 里是 DONT_CARE，不是 ColorWrite 那条「前面没有写者就 CLEAR」。
+// 用枚举值而不是 `bool resolveTarget`：后者让 `ColorWrite + resolveTarget` 这种无意义
+// 组合可表达，且每个消费点要判两个字段。枚举天然互斥。
+enum class Access : std::uint8_t {
+    ColorWrite,
+    DepthWrite,
+    ColorResolve,
+    DepthReadOnly,
+    Sample,
+    TransferRead
+};
 
 // 资源 = 一张图像的身份与分配参数。视图不在这里。
 struct ResourceDesc final {
@@ -122,6 +135,85 @@ struct GraphDesc final {
     std::span<const PassDesc> passes;
 };
 
+// ---------------------------------------------------------------------------
+// 阶段 1 的产物：资源计划（RN-20c）
+// ---------------------------------------------------------------------------
+//
+// 先有鸡还是先有蛋：`compile()` 需要 renderPass / framebuffer 句柄，而句柄要在资源
+// 创建之后才有；推导的产物（usage / storeOp / TRANSIENT）恰恰是**创建资源时的参数**。
+// 拆法是把编译分成两阶段——
+//
+//     planResources(GraphDesc)  只吃「谁读谁写」，不碰任何句柄  → ResourcePlan
+//     调用方按计划创建 image / view / renderpass / framebuffer
+//     compile(GraphDesc, ResourcePlan)                        → BakedStep[]
+//
+// ResourcePlan 是**纯值对象**，不持有任何 Vulkan 句柄，因此可以在 headless 测试里
+// 完整构造与断言——那是 RN-20c 验收的主力，不是靠真机跑一遍看画面。
+//
+// 推导规则的完整定义见 FrameGraph.cpp 的「推导规则」一节。
+
+// 一个「(pass, 资源)」对上的附件操作。读者（Sample / TransferRead）不产生条目——
+// 它们是描述符采样与 vkCmdCopyImage，不是附件。
+struct ResourceOps final {
+    std::string_view pass;
+    std::string_view resource;
+    Access access = Access::ColorWrite;
+    VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    VkAttachmentStoreOp storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    VkImageLayout initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout finalLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+};
+
+// 一张图像的创建参数。`usage` / `aspect` 是推出来的，其余照抄 ResourceDesc——
+// 把两者放进同一条记录，创建函数才有一个**单一**的参数来源。
+struct PlannedResource final {
+    std::string_view name;
+    ResourceKind kind = ResourceKind::Color;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    bool perSwapchainImage = true;
+    VkImageUsageFlags usage = 0;
+    VkImageAspectFlags aspect = 0;
+
+    // 「这两张图像的创建参数一样吗」——用于 SunShadows 翻转后核对推导没有改变
+    // 任何 image 参数（RN-20c 的结论：不改，所以翻转只重编译、不重建 image）。
+    // usage / aspect 也在内，因为它们才是推导会动的那两个。
+    [[nodiscard]] bool sameImageParameters(const PlannedResource& other) const noexcept {
+        return name == other.name && kind == other.kind && format == other.format &&
+               width == other.width && height == other.height && samples == other.samples &&
+               perSwapchainImage == other.perSwapchainImage && usage == other.usage &&
+               aspect == other.aspect;
+    }
+};
+
+class ResourcePlan final {
+  public:
+    [[nodiscard]] std::span<const PlannedResource> resources() const noexcept {
+        return resources_;
+    }
+    [[nodiscard]] std::span<const ResourceOps> ops() const noexcept { return ops_; }
+
+    // 按名字取。找不到抛——创建函数拿错名字要在这里炸，不是拿到一份默认值继续跑。
+    [[nodiscard]] const PlannedResource& resource(std::string_view name) const;
+    [[nodiscard]] const ResourceOps& ops(std::string_view pass, std::string_view resource) const;
+    // 该资源在这一步里有附件操作吗（MSAA 关时 scene_color_msaa 整个不存在）
+    [[nodiscard]] bool has(std::string_view name) const noexcept;
+
+    void add(const PlannedResource& resource) { resources_.push_back(resource); }
+    void add(const ResourceOps& ops) { ops_.push_back(ops); }
+
+  private:
+    std::vector<PlannedResource> resources_;
+    std::vector<ResourceOps> ops_;
+};
+
+// 阶段 1。只吃 resources / views / passes 三张表的「谁读谁写」，不碰任何句柄，
+// 因此可以在 image 存在之前调用——这正是两阶段拆分要解决的那个循环。
+// 校验失败抛 std::runtime_error。
+[[nodiscard]] ResourcePlan planResources(const GraphDesc& desc);
+
 // 编译产物。一步 40 字节，五步落在同一条 cache line 邻域内。
 //
 // framebuffer 不内联成定长数组：交换链图像数**没有上界**（createSwapchain 取
@@ -147,11 +239,15 @@ struct BakedStep final {
 
 class BakedGraph final {
   public:
-    // 编译。校验失败抛 std::runtime_error，消息带 pass / 资源名——
+    // 阶段 2。校验失败抛 std::runtime_error，消息带 pass / 资源名——
     // 拓扑写错要在加载时报错，不是每帧在渲染线程上报。
     // 编译**不重排步序**：本轮声明序即拓扑序，编译只校验「写者在读者之前」。
     // 重排留给 20f 的光影包前端，那时才有会乱序的声明来源。
-    void compile(const GraphDesc& desc);
+    //
+    // plan 必须是**同一张 desc** 的阶段 1 产物：编译会逐字段核对两者的资源表。
+    // 那是「计划说 A、创建写 B 而没有人比对」这条失效模式的收口——资源是按计划
+    // 创建的，desc 与计划一致就等于创建参数与计划一致。
+    void compile(const GraphDesc& desc, const ResourcePlan& plan);
     void reset() noexcept;
 
     // 热路径。零堆分配、零容器查找、每个边界一次 vkCmdPipelineBarrier。

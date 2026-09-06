@@ -252,10 +252,14 @@ Production makeProduction(bool shadowEnabled, bool multisampled) {
                                          : VK_IMAGE_ASPECT_COLOR_BIT});
     }
     p.shadowAttachments = {{3, Access::DepthWrite}};
-    p.worldAttachments = {{sceneColorMsaa, Access::ColorWrite},
-                          {1, Access::DepthWrite},
-                          {0, Access::ColorWrite},
-                          {3, Access::Sample}};
+    // 开 MSAA 时 scene_color 是 resolve 目标（第三种关系），关时它就是那个 color
+    // 附件本身——此时**不能**再多一条 resolve，否则同一个 view 既是 color 又是自己的
+    // resolve 目标，planResources() 会拒
+    p.worldAttachments = {{sceneColorMsaa, Access::ColorWrite}, {1, Access::DepthWrite}};
+    if (multisampled) {
+        p.worldAttachments.push_back({0, Access::ColorResolve});
+    }
+    p.worldAttachments.push_back({3, Access::Sample});
     p.guiAttachments = {{0, Access::ColorWrite}, {2, Access::DepthWrite}};
     p.presentAttachments = {{0, Access::TransferRead}};
 
@@ -326,6 +330,12 @@ GraphDesc describe(const Production& p) {
     return {.resources = p.resources, .views = p.views, .passes = p.passes};
 }
 
+// 两阶段：先推导，再编译。测试里这两步永远成对出现——compile() 会核对计划与描述
+// 同源，拿一张别的图的计划来编译是编译期错误
+void planAndCompile(BakedGraph& graph, const GraphDesc& desc) {
+    graph.compile(desc, planResources(desc));
+}
+
 // execute() 的分配计数窗口。测试自己的仪表（vkCmd* 蹦床里的记录）会分配，所以先把
 // 记录关掉，量到的才是编排本身。
 std::size_t runExecuteCountingAllocations(const BakedGraph& graph, std::uint32_t imageIndex) {
@@ -346,7 +356,7 @@ std::size_t runExecuteCountingAllocations(const BakedGraph& graph, std::uint32_t
 void testProductionTopology() {
     const Production p = makeProduction(true, false);
     BakedGraph graph;
-    graph.compile(describe(p));
+    planAndCompile(graph, describe(p));
 
     check(graph.steps().size() == 5, "启用阴影时应当烘出五步");
     const auto steps = graph.steps();
@@ -384,7 +394,7 @@ void testProductionTopology() {
 void testShadowBoundaryBarrier() {
     const Production enabled = makeProduction(true, false);
     BakedGraph graph;
-    graph.compile(describe(enabled));
+    planAndCompile(graph, describe(enabled));
     const auto steps = graph.steps();
     check(steps[2].barrierCount == 1, "启用阴影时世界那步恰好一条边界屏障");
     check(steps[2].barrierSrcStage == VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
@@ -403,7 +413,7 @@ void testShadowBoundaryBarrier() {
     // oldLayout 对不上
     const Production pruned = makeProduction(false, false);
     BakedGraph prunedGraph;
-    prunedGraph.compile(describe(pruned));
+    planAndCompile(prunedGraph, describe(pruned));
     check(prunedGraph.steps().size() == 4, "关掉阴影时整步被剪，只剩四步");
     check(prunedGraph.barriers().empty(), "阴影被剪，那条边界屏障必须一起消失");
     check(prunedGraph.steps()[1].renderPass == worldRenderPass(),
@@ -415,7 +425,7 @@ void testShadowBoundaryBarrier() {
 void testExecuteOrder() {
     const Production p = makeProduction(true, false);
     BakedGraph graph;
-    graph.compile(describe(p));
+    planAndCompile(graph, describe(p));
     trace().clear();
     PassContext context{};
     context.imageIndex = 2;
@@ -462,7 +472,7 @@ void testSingleBarrierCallPerBoundary() {
          .barrierDstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT},
     };
     BakedGraph graph;
-    graph.compile({.resources = resources, .views = views, .passes = passes});
+    planAndCompile(graph, {.resources = resources, .views = views, .passes = passes});
     trace().clear();
     PassContext context{};
     graph.execute(handle<VkCommandBuffer>(0xC0DE), 0, context);
@@ -476,7 +486,7 @@ void testSingleBarrierCallPerBoundary() {
 void testZeroAllocation() {
     const Production p = makeProduction(true, false);
     BakedGraph graph;
-    graph.compile(describe(p));
+    planAndCompile(graph, describe(p));
     trace().clear();
     const std::size_t allocations = runExecuteCountingAllocations(graph, 1);
     check(allocations == 0, "execute() 期间的堆分配增量必须是 0");
@@ -487,7 +497,7 @@ void testZeroAllocation() {
 bool compileThrows(const Production& p) {
     BakedGraph graph;
     try {
-        graph.compile(describe(p));
+        planAndCompile(graph, describe(p));
     } catch (const std::exception&) {
         return true;
     }
@@ -541,13 +551,292 @@ void testMultisampledAttachmentCount() {
     const Production on = makeProduction(true, true);
     check(off.resources.size() == 4, "关 MSAA 时四个资源");
     check(on.resources.size() == 5, "开 MSAA 时多一张多采样 color");
-    check(on.worldAttachments[0].view != on.worldAttachments[2].view,
-          "多采样 color 与 resolve 目标是两个不同的资源槽");
-    check(off.worldAttachments[0].view == off.worldAttachments[2].view,
-          "关 MSAA 时两者是同一个 scene_color");
+    check(on.worldAttachments.size() == 4 && off.worldAttachments.size() == 3,
+          "开 MSAA 时世界那趟多一条 resolve 声明");
+    check(on.worldAttachments[0].view != on.worldAttachments[2].view &&
+              on.worldAttachments[2].access == Access::ColorResolve,
+          "多采样 color 与 resolve 目标是两个不同的资源槽，后者是 ColorResolve");
+    check(off.worldAttachments[0].view == 0 &&
+              off.worldAttachments[0].access == Access::ColorWrite,
+          "关 MSAA 时 scene_color 就是那个 color 附件本身，没有 resolve 一说");
     BakedGraph graph;
-    graph.compile(describe(on));
+    planAndCompile(graph, describe(on));
     check(graph.steps().size() == 5, "开 MSAA 不改变步数");
+}
+
+// ---- 5. 推导结果与手写现状逐位相同（RN-20c 的核心判据）----------------------
+//
+// 下面这张表是从五个创建函数里**逐个抄下来**的，不是从推导反推出来的：
+//
+//   createSceneTargets      scene_color        COLOR_ATTACHMENT | TRANSFER_SRC        1 采样
+//   createDepthTargets      scene_depth        DEPTH_STENCIL_ATTACHMENT | TRANSIENT   N 采样
+//   createGuiDepthTargets   gui_depth          DEPTH_STENCIL_ATTACHMENT | TRANSIENT   1 采样
+//   createColorTargets      scene_color_msaa   TRANSIENT | COLOR_ATTACHMENT           N 采样
+//   OffscreenTarget::init   shadow_depth       DEPTH_STENCIL_ATTACHMENT | SAMPLED     1 采样
+//
+// 加上三个 renderpass 里逐个附件的 loadOp / storeOp / initialLayout / finalLayout
+// （createRenderPass 的 MSAA 两档、createGuiRenderPass、OffscreenTarget::init）。
+// 「差不多」不算：这里比的是每一个 bit。
+
+void expectResource(const ResourcePlan& plan, std::string_view name, VkImageUsageFlags usage,
+                    VkSampleCountFlagBits samples, VkImageAspectFlags aspect, const char* what) {
+    const PlannedResource& planned = plan.resource(name);
+    check(planned.usage == usage && planned.samples == samples && planned.aspect == aspect, what);
+}
+
+void expectOps(const ResourcePlan& plan, std::string_view pass, std::string_view resource,
+               VkAttachmentLoadOp loadOp, VkAttachmentStoreOp storeOp,
+               VkImageLayout initialLayout, VkImageLayout finalLayout, const char* what) {
+    const ResourceOps& ops = plan.ops(pass, resource);
+    check(ops.loadOp == loadOp && ops.storeOp == storeOp && ops.initialLayout == initialLayout &&
+              ops.finalLayout == finalLayout,
+          what);
+}
+
+constexpr VkImageUsageFlags kColorAttachment = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+constexpr VkImageUsageFlags kDepthAttachment = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+constexpr VkImageUsageFlags kTransient = VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+constexpr VkImageLayout kColorOptimal = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+constexpr VkImageLayout kDepthOptimal = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+constexpr VkImageLayout kUndefined = VK_IMAGE_LAYOUT_UNDEFINED;
+constexpr VkImageLayout kTransferSrc = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+
+void testDerivationMatchesHandWrittenSingleSampled() {
+    const Production p = makeProduction(true, false);
+    const ResourcePlan plan = planResources(describe(p));
+
+    // createSceneTargets：COLOR_ATTACHMENT | TRANSFER_SRC，单采样，**不是**瞬态。
+    // TRANSFER_SRC 来自 present_blit 那步的 TransferRead；漏掉那个读者，这里会变成
+    // TRANSIENT + DONT_CARE，真机上是整帧变黑
+    expectResource(plan, "scene_color", kColorAttachment | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                   VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                   "scene_color 的 usage 与 createSceneTargets 逐位相同");
+    // createDepthTargets：今天没有消费者，所以是瞬态。RN-11 接上消费者时翻转的是它
+    expectResource(plan, "scene_depth", kDepthAttachment | kTransient, VK_SAMPLE_COUNT_1_BIT,
+                   VK_IMAGE_ASPECT_DEPTH_BIT,
+                   "scene_depth 的 usage 与 createDepthTargets 逐位相同");
+    // createGuiDepthTargets：每帧 CLEAR 且**永远**不会被读，与上一条同形不同因
+    expectResource(plan, "gui_depth", kDepthAttachment | kTransient, VK_SAMPLE_COUNT_1_BIT,
+                   VK_IMAGE_ASPECT_DEPTH_BIT,
+                   "gui_depth 的 usage 与 createGuiDepthTargets 逐位相同");
+    // OffscreenTarget::init：binding 8 的描述符在采样它，所以 SAMPLED、不是瞬态
+    expectResource(plan, "shadow_depth", kDepthAttachment | VK_IMAGE_USAGE_SAMPLED_BIT,
+                   VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
+                   "shadow_depth 的 usage 与 OffscreenTarget::init 逐位相同");
+    check(!plan.has("scene_color_msaa"), "关 MSAA 时多采样靶整个不存在，与 createColorTargets 的 early return 一致");
+
+    // createRenderPass（关 MSAA 档）
+    expectOps(plan, "world", "scene_color", VK_ATTACHMENT_LOAD_OP_CLEAR,
+              VK_ATTACHMENT_STORE_OP_STORE, kUndefined, kColorOptimal,
+              "world/scene_color 的四个操作与 createRenderPass 单采样档逐位相同");
+    expectOps(plan, "world", "scene_depth", VK_ATTACHMENT_LOAD_OP_CLEAR,
+              VK_ATTACHMENT_STORE_OP_DONT_CARE, kUndefined, kDepthOptimal,
+              "world/scene_depth 的四个操作与 createRenderPass 逐位相同");
+    // createGuiRenderPass：LOAD 世界那趟的结果，画完转 TRANSFER_SRC 给 copy
+    expectOps(plan, "gui", "scene_color", VK_ATTACHMENT_LOAD_OP_LOAD,
+              VK_ATTACHMENT_STORE_OP_STORE, kColorOptimal, kTransferSrc,
+              "gui/scene_color 的四个操作与 createGuiRenderPass 逐位相同");
+    expectOps(plan, "gui", "gui_depth", VK_ATTACHMENT_LOAD_OP_CLEAR,
+              VK_ATTACHMENT_STORE_OP_DONT_CARE, kUndefined, kDepthOptimal,
+              "gui/gui_depth 的四个操作与 createGuiRenderPass 逐位相同");
+    // OffscreenTarget::init：CLEAR/STORE，finalLayout 停在 DEPTH_ATTACHMENT——
+    // 转成 SHADER_READ_ONLY 的是世界那步的边界屏障，不是这个 renderpass
+    expectOps(plan, "shadow", "shadow_depth", VK_ATTACHMENT_LOAD_OP_CLEAR,
+              VK_ATTACHMENT_STORE_OP_STORE, kUndefined, kDepthOptimal,
+              "shadow/shadow_depth 的四个操作与 OffscreenTarget::init 逐位相同");
+    // Sample 与 TransferRead 是描述符采样与 vkCmdCopyImage，不是附件，不产生条目
+    check(plan.ops().size() == 5, "五条附件操作，一条不多：读者不是附件");
+}
+
+void testDerivationMatchesHandWrittenMultisampled() {
+    const Production p = makeProduction(true, true);
+    const ResourcePlan plan = planResources(describe(p));
+
+    // 开 MSAA 时 scene_color 是 resolve 目标：仍然是 COLOR_ATTACHMENT | TRANSFER_SRC、
+    // 单采样、非瞬态——与关 MSAA 时**同一个答案**，因为读者集合没变
+    expectResource(plan, "scene_color", kColorAttachment | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                   VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                   "MSAA 档 scene_color 的 usage 仍与 createSceneTargets 逐位相同");
+    // createColorTargets：TRANSIENT | COLOR_ATTACHMENT，多采样。画完 resolve 就丢
+    expectResource(plan, "scene_color_msaa", kTransient | kColorAttachment,
+                   VK_SAMPLE_COUNT_2_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                   "scene_color_msaa 的 usage 与 createColorTargets 逐位相同");
+    expectResource(plan, "scene_depth", kDepthAttachment | kTransient, VK_SAMPLE_COUNT_2_BIT,
+                   VK_IMAGE_ASPECT_DEPTH_BIT,
+                   "MSAA 档 scene_depth 跟着世界那趟的采样数走");
+
+    // createRenderPass（开 MSAA 档）：0 号是多采样靶，2 号是 resolve
+    expectOps(plan, "world", "scene_color_msaa", VK_ATTACHMENT_LOAD_OP_CLEAR,
+              VK_ATTACHMENT_STORE_OP_DONT_CARE, kUndefined, kColorOptimal,
+              "world/scene_color_msaa 的四个操作与 createRenderPass 多采样档逐位相同");
+    // ⚠ 本轮最容易错的一处：resolve 目标的 loadOp 是 DONT_CARE，不是「前面没写者就
+    // CLEAR」。它不是 ColorWrite 的一个变体，是第三种关系
+    expectOps(plan, "world", "scene_color", VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+              VK_ATTACHMENT_STORE_OP_STORE, kUndefined, kColorOptimal,
+              "world/scene_color 作为 resolve 目标：loadOp DONT_CARE、storeOp STORE");
+    expectOps(plan, "world", "scene_depth", VK_ATTACHMENT_LOAD_OP_CLEAR,
+              VK_ATTACHMENT_STORE_OP_DONT_CARE, kUndefined, kDepthOptimal,
+              "MSAA 档 world/scene_depth 的四个操作不变");
+    expectOps(plan, "gui", "scene_color", VK_ATTACHMENT_LOAD_OP_LOAD,
+              VK_ATTACHMENT_STORE_OP_STORE, kColorOptimal, kTransferSrc,
+              "MSAA 档界面那趟的四个操作不变");
+}
+
+// 深度格式带 stencil 时 aspect 要跟着走。写死 DEPTH_BIT 在 D32_SFLOAT_S8_UINT 上是错的
+void testStencilAspectFollowsFormat() {
+    Production p = makeProduction(true, false);
+    for (auto& resource : p.resources) {
+        if (resource.format == VK_FORMAT_D32_SFLOAT) {
+            resource.format = VK_FORMAT_D32_SFLOAT_S8_UINT;
+        }
+    }
+    for (auto& view : p.views) {
+        view.format = p.resources[view.resource].format;
+    }
+    const ResourcePlan plan = planResources(describe(p));
+    const VkImageAspectFlags expected =
+        VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    check(plan.resource("scene_depth").aspect == expected &&
+              plan.resource("gui_depth").aspect == expected &&
+              plan.resource("shadow_depth").aspect == expected,
+          "带 stencil 的深度格式必须推出 DEPTH|STENCIL 两个 aspect 位");
+    check(plan.resource("scene_color").aspect == VK_IMAGE_ASPECT_COLOR_BIT,
+          "颜色资源的 aspect 不受深度格式影响");
+}
+
+// ---- 6. 人造消费者：RN-11 与 20d 将来要走的那条路，先在这里钉住 --------------
+
+void bodyFakeConsumer(VkCommandBuffer, const PassContext&) { recordNamed("body:fake"); }
+
+void testSyntheticDepthConsumerFlipsDerivation() {
+    // 基线：scene_depth 今天没有消费者 → TRANSIENT + DONT_CARE
+    const Production baseline = makeProduction(true, false);
+    const ResourcePlan before = planResources(describe(baseline));
+    check(before.resource("scene_depth").usage == (kDepthAttachment | kTransient),
+          "没有消费者时 scene_depth 是瞬态");
+    check(before.ops("world", "scene_depth").storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE,
+          "没有消费者时世界那趟不必存深度");
+
+    // 给它接上一个声明 Access::Sample 的假 pass（放在 gui 之前——gui 是 locked 的）
+    Production consumer = makeProduction(true, false);
+    const std::vector<PassAttachment> fakeAttachments{{1, Access::Sample}};
+    std::vector<PassDesc> passes(consumer.passes.begin(), consumer.passes.end());
+    passes.insert(passes.begin() + 3, PassDesc{.name = "fake_ssao",
+                                               .attachments = fakeAttachments,
+                                               .record = &bodyFakeConsumer});
+    consumer.passes = passes;
+    const ResourcePlan after = planResources(describe(consumer));
+    check(after.resource("scene_depth").usage ==
+              (kDepthAttachment | VK_IMAGE_USAGE_SAMPLED_BIT),
+          "有 Sample 消费者时 scene_depth 变成 SAMPLED 且**丢掉** TRANSIENT");
+    check((after.resource("scene_depth").usage & kTransient) == 0U,
+          "瞬态位必须消失，不是又加了一个位");
+    check(after.ops("world", "scene_depth").storeOp == VK_ATTACHMENT_STORE_OP_STORE,
+          "有消费者时世界那趟必须存深度");
+    // gui_depth 与它同形不同因：接上 scene_depth 的消费者不该动到界面深度
+    check(after.resource("gui_depth").usage == (kDepthAttachment | kTransient),
+          "gui_depth 不跟着翻转——两条 TRANSIENT 的理由不同");
+
+    // 去掉那个 pass，一切变回去。推导没有记忆
+    const ResourcePlan back = planResources(describe(baseline));
+    check(back.resource("scene_depth").usage == (kDepthAttachment | kTransient) &&
+              back.ops("world", "scene_depth").storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE,
+          "拿掉消费者后变回 TRANSIENT + DONT_CARE");
+}
+
+// ---- 7. SunShadows 翻转不改变任何 image 参数（坑 5 的结论）-------------------
+
+void testShadowToggleDoesNotChangeImageParameters() {
+    const Production on = makeProduction(true, false);
+    const Production off = makeProduction(false, false);
+    const ResourcePlan enabled = planResources(describe(on));
+    const ResourcePlan disabled = planResources(describe(off));
+
+    check(enabled.resources().size() == disabled.resources().size(),
+          "翻转开关不改变资源集合");
+    bool same = true;
+    for (std::size_t index = 0; index < enabled.resources().size(); ++index) {
+        same = same && enabled.resources()[index].sameImageParameters(disabled.resources()[index]);
+    }
+    check(same, "五个资源的 image 参数（含 usage/aspect）逐位相同，所以翻转开关只重编译");
+
+    // 具体到那张图：读者集合与开关无关（binding 8 的描述符恒采样它），所以 SAMPLED
+    // 在两档都在，TRANSIENT 在两档都不在——**关掉时它在图内没有写者，而无写者的资源
+    // 永不瞬态**，那条规则就是为这一档写的
+    check(disabled.resource("shadow_depth").usage ==
+              (kDepthAttachment | VK_IMAGE_USAGE_SAMPLED_BIT),
+          "剪掉 shadow 步之后 shadow_depth 的 usage 一位不变");
+    check((disabled.resource("shadow_depth").usage & kTransient) == 0U,
+          "图内没有写者的资源永远不是瞬态：它的内容来自图外");
+
+    // 变的那个字段不是 image 参数：shadow 那步的 storeOp 随着步一起消失。
+    // 谁把 usage 做成依赖开关的，上面那条断言会当场红
+    check(enabled.ops("shadow", "shadow_depth").storeOp == VK_ATTACHMENT_STORE_OP_STORE,
+          "开着的时候 shadow 那趟必须存下深度给世界那趟采样");
+    bool threw = false;
+    try {
+        (void)disabled.ops("shadow", "shadow_depth");
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    check(threw, "关掉之后根本没有消费 shadow_depth 的 renderpass，storeOp 落不到任何对象上");
+}
+
+// 「图内没有写者的资源永不瞬态」这条规则单独立一个测试，因为上面那个测试**抓不住它**：
+// 关掉阴影时 shadow_depth 仍有 world 那步的 Sample 读者，光靠「最后一次写之后有读者」
+// 就已经躲开了瞬态。这条规则真正兜住的是**图内一次都没被碰过**的资源——它的内容整个
+// 来自图外（上一帧、或者 initializeAsShaderRead 留下的布局），判成瞬态就是让驱动
+// 有权丢掉它。把 world 那步的 Sample 声明也去掉，就是那个形态。
+void testUntouchedResourceIsNeverTransient() {
+    Production p = makeProduction(false, false);
+    // 去掉世界那步对 shadow_depth 的 Sample 声明（坑 3 那条），于是关掉阴影之后
+    // 这张图在图内既没有写者也没有读者
+    std::vector<PassAttachment> world;
+    for (const PassAttachment& attachment : p.worldAttachments) {
+        if (attachment.access != Access::Sample) {
+            world.push_back(attachment);
+        }
+    }
+    p.worldAttachments = world;
+    p.passes[2].attachments = p.worldAttachments;
+    const ResourcePlan plan = planResources(describe(p));
+    check((plan.resource("shadow_depth").usage & kTransient) == 0U,
+          "图内一次都没被碰过的资源不是瞬态：它的内容来自图外");
+    check(plan.resource("shadow_depth").usage == kDepthAttachment,
+          "没有任何消费者时它只剩基础位，既不 SAMPLED 也不瞬态");
+}
+
+// ---- 8. 计划与描述必须同源 --------------------------------------------------
+
+void testCompileRejectsForeignPlan() {
+    const Production on = makeProduction(true, true);
+    const Production off = makeProduction(true, false);
+    BakedGraph graph;
+    bool threw = false;
+    try {
+        // 拿 MSAA 档的计划去编译单采样档的图：资源表对不上
+        graph.compile(describe(off), planResources(describe(on)));
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    check(threw, "计划与描述不同源必须被编译期拒掉");
+}
+
+void testPlanRejectsSelfResolve() {
+    // 同一个 view 既是 color 附件又是自己的 resolve 目标——关 MSAA 时如果忘了把
+    // resolve 那一条去掉，就是这个形态
+    Production p = makeProduction(true, false);
+    std::vector<PassAttachment> broken(p.worldAttachments.begin(), p.worldAttachments.end());
+    broken.push_back({0, Access::ColorResolve});
+    p.worldAttachments = broken;
+    p.passes[2].attachments = p.worldAttachments;
+    bool threw = false;
+    try {
+        (void)planResources(describe(p));
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    check(threw, "一个 view 同时是 color 与自己的 resolve 目标必须被拒");
 }
 
 } // namespace
@@ -560,6 +849,14 @@ int main() {
     testZeroAllocation();
     testCompileRejections();
     testMultisampledAttachmentCount();
+    testDerivationMatchesHandWrittenSingleSampled();
+    testDerivationMatchesHandWrittenMultisampled();
+    testStencilAspectFollowsFormat();
+    testSyntheticDepthConsumerFlipsDerivation();
+    testShadowToggleDoesNotChangeImageParameters();
+    testUntouchedResourceIsNeverTransient();
+    testCompileRejectsForeignPlan();
+    testPlanRejectsSelfResolve();
     if (failures != 0) {
         std::cerr << failures << " check(s) failed\n";
         return 1;

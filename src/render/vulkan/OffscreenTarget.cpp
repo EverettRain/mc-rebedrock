@@ -1,6 +1,32 @@
 #include "render/vulkan/OffscreenTarget.hpp"
 
 namespace mc::render {
+namespace {
+
+// init() 与 parameters() 的**同一份**取值。分成两处手抄就等于把 RN-20c 的比对
+// 变成一场自证：计划要比的是这张图像真的怎么建的，不是另一处照抄出来的字面量。
+constexpr VkImageUsageFlags kShadowUsage =
+    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+constexpr VkSampleCountFlagBits kShadowSamples = VK_SAMPLE_COUNT_1_BIT;
+constexpr VkAttachmentLoadOp kShadowLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+constexpr VkAttachmentStoreOp kShadowStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+constexpr VkImageLayout kShadowInitialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+constexpr VkImageLayout kShadowFinalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+} // namespace
+
+OffscreenTarget::Parameters OffscreenTarget::parameters() const {
+    return {.format = format_,
+            .width = width_,
+            .height = height_,
+            .samples = kShadowSamples,
+            .usage = kShadowUsage,
+            .aspect = aspect_,
+            .loadOp = kShadowLoadOp,
+            .storeOp = kShadowStoreOp,
+            .initialLayout = kShadowInitialLayout,
+            .finalLayout = kShadowFinalLayout};
+}
 
 void OffscreenTarget::init(const Config& config) {
     destroy();
@@ -9,9 +35,7 @@ void OffscreenTarget::init(const Config& config) {
     width_ = config.width;
     height_ = config.height;
     format_ = resources_->chooseShadowDepthFormat();
-    image_ = resources_->createImage(width_, height_, 1, format_,
-                                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                                         VK_IMAGE_USAGE_SAMPLED_BIT);
+    image_ = resources_->createImage(width_, height_, 1, format_, kShadowUsage, kShadowSamples);
     aspect_ = VK_IMAGE_ASPECT_DEPTH_BIT;
     if (VulkanResources::depthFormatHasStencil(format_)) {
         aspect_ |= VK_IMAGE_ASPECT_STENCIL_BIT;
@@ -20,13 +44,13 @@ void OffscreenTarget::init(const Config& config) {
 
     VkAttachmentDescription depth{};
     depth.format = format_;
-    depth.samples = VK_SAMPLE_COUNT_1_BIT;
-    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depth.samples = kShadowSamples;
+    depth.loadOp = kShadowLoadOp;
+    depth.storeOp = kShadowStoreOp;
     depth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depth.initialLayout = kShadowInitialLayout;
+    depth.finalLayout = kShadowFinalLayout;
     VkAttachmentReference depthReference{0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;

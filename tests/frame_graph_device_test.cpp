@@ -84,8 +84,11 @@ struct Image final {
     VkImageView view = VK_NULL_HANDLE;
 };
 
-bool createImage(const Device& gpu, VkFormat format, VkImageUsageFlags usage,
-                 VkImageAspectFlags aspect, Image& out) {
+// RN-20c：image 的 usage / samples / aspect **全部从计划取**，不再由调用方手写。
+// 这个测试因此验的是「推导出来的参数在真设备上合法」，不是「抄下来的参数合法」。
+bool createImage(const Device& gpu, const PlannedResource& plan, Image& out,
+                 bool withView = true) {
+    const VkFormat format = plan.format;
     VkImageCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     info.imageType = VK_IMAGE_TYPE_2D;
@@ -93,9 +96,9 @@ bool createImage(const Device& gpu, VkFormat format, VkImageUsageFlags usage,
     info.extent = {kWidth, kHeight, 1};
     info.mipLevels = 1;
     info.arrayLayers = 1;
-    info.samples = VK_SAMPLE_COUNT_1_BIT;
+    info.samples = plan.samples;
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    info.usage = usage;
+    info.usage = plan.usage;
     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (!ok(vkCreateImage(gpu.device, &info, nullptr, &out.image))) {
@@ -123,25 +126,41 @@ bool createImage(const Device& gpu, VkFormat format, VkImageUsageFlags usage,
     viewInfo.image = out.image;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = format;
-    viewInfo.subresourceRange = {aspect, 0, 1, 0, 1};
+    viewInfo.subresourceRange = {plan.aspect, 0, 1, 0, 1};
+    // 呈现替身只当 vkCmdCopyImage 的目标，usage 里只有 TRANSFER_DST——那不在
+    // 「可以建视图的 usage」名单里，给它建视图会被校验层拒。它也确实用不到视图
+    if (!withView) {
+        return true;
+    }
     return ok(vkCreateImageView(gpu.device, &viewInfo, nullptr, &out.view));
 }
 
+// 三个 renderpass 的每一个附件描述都从计划取：format / samples 来自资源记录，
+// loadOp / storeOp / initialLayout / finalLayout 来自 (pass, 资源) 的附件操作。
+// 手写的只剩 subpass 依赖——那不在本轮推导范围内。
+VkAttachmentDescription attachmentFrom(const ResourcePlan& plan, std::string_view pass,
+                                       std::string_view resource) {
+    const PlannedResource& planned = plan.resource(resource);
+    const ResourceOps& ops = plan.ops(pass, resource);
+    VkAttachmentDescription description{};
+    description.format = planned.format;
+    description.samples = planned.samples;
+    description.loadOp = ops.loadOp;
+    description.storeOp = ops.storeOp;
+    description.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    description.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    description.initialLayout = ops.initialLayout;
+    description.finalLayout = ops.finalLayout;
+    return description;
+}
+
 // 深度附件 + 可采样：阴影图的形态
-VkRenderPass createShadowRenderPass(const Device& gpu, VkFormat depthFormat) {
-    VkAttachmentDescription depth{};
-    depth.format = depthFormat;
-    depth.samples = VK_SAMPLE_COUNT_1_BIT;
-    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    VkAttachmentReference reference{0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+VkRenderPass createShadowRenderPass(const Device& gpu, const ResourcePlan& plan) {
+    const VkAttachmentDescription depth = attachmentFrom(plan, "shadow", "shadow_depth");
+    VkAttachmentReference depthReference{0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.pDepthStencilAttachment = &reference;
+    subpass.pDepthStencilAttachment = &depthReference;
     VkRenderPassCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     info.attachmentCount = 1;
@@ -152,36 +171,32 @@ VkRenderPass createShadowRenderPass(const Device& gpu, VkFormat depthFormat) {
     return ok(vkCreateRenderPass(gpu.device, &info, nullptr, &pass)) ? pass : VK_NULL_HANDLE;
 }
 
-// 世界那趟：清空、画完把 color 留在 COLOR_ATTACHMENT_OPTIMAL 交给界面那趟
-VkRenderPass createWorldRenderPass(const Device& gpu, VkFormat colorFormat,
-                                   VkFormat depthFormat) {
-    std::array<VkAttachmentDescription, 2> attachments{};
-    attachments[0].format = colorFormat;
-    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    attachments[1].format = depthFormat;
-    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+// 世界那趟：关 MSAA 时两个附件，开时三个（多采样 color + depth + resolve）。
+// resolve 那一条的 loadOp 是 DONT_CARE、多采样靶的 storeOp 是 DONT_CARE，
+// 两者都不是手写的常量，是 Access::ColorResolve 推出来的
+VkRenderPass createWorldRenderPass(const Device& gpu, const ResourcePlan& plan,
+                                   bool multisampled) {
+    std::array<VkAttachmentDescription, 3> attachments{};
+    attachments[0] = attachmentFrom(plan, "world",
+                                    multisampled ? "scene_color_msaa" : "scene_color");
+    attachments[1] = attachmentFrom(plan, "world", "scene_depth");
+    if (multisampled) {
+        attachments[2] = attachmentFrom(plan, "world", "scene_color");
+    }
     VkAttachmentReference color{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     VkAttachmentReference depth{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference resolve{2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &color;
     subpass.pDepthStencilAttachment = &depth;
+    if (multisampled) {
+        subpass.pResolveAttachments = &resolve;
+    }
     VkRenderPassCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    info.attachmentCount = static_cast<std::uint32_t>(attachments.size());
+    info.attachmentCount = multisampled ? 3U : 2U;
     info.pAttachments = attachments.data();
     info.subpassCount = 1;
     info.pSubpasses = &subpass;
@@ -191,24 +206,10 @@ VkRenderPass createWorldRenderPass(const Device& gpu, VkFormat colorFormat,
 
 // 界面那趟：载入世界那趟的结果，画完留在 TRANSFER_SRC_OPTIMAL 交给帧末的 copy。
 // 那个 finalLayout 就是护栏 3——方块预览导出正是从这个布局读回场景图的。
-VkRenderPass createGuiRenderPass(const Device& gpu, VkFormat colorFormat, VkFormat depthFormat) {
-    std::array<VkAttachmentDescription, 2> attachments{};
-    attachments[0].format = colorFormat;
-    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    attachments[0].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    attachments[1].format = depthFormat;
-    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+// 它现在也是推出来的：本步之后的第一个消费者是 present_blit 的 TransferRead
+VkRenderPass createGuiRenderPass(const Device& gpu, const ResourcePlan& plan) {
+    const std::array<VkAttachmentDescription, 2> attachments{
+        attachmentFrom(plan, "gui", "scene_color"), attachmentFrom(plan, "gui", "gui_depth")};
     VkAttachmentReference color{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     VkAttachmentReference depth{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
     VkSubpassDescription subpass{};
@@ -254,8 +255,10 @@ VkFramebuffer createFramebuffer(const Device& gpu, VkRenderPass pass,
 
 struct Scene final {
     const Device* gpu = nullptr;
+    bool multisampled = false;
     Image shadowDepth;
     std::array<Image, kImageCount> sceneColor{};
+    std::array<Image, kImageCount> sceneColorMsaa{};  // 只在开 MSAA 那一档存在
     std::array<Image, kImageCount> sceneDepth{};
     std::array<Image, kImageCount> guiDepth{};
     Image presentTarget;  // 交换链图像的替身
@@ -317,17 +320,45 @@ void bodyPresentBlit(VkCommandBuffer commandBuffer, const PassContext& context) 
                          &barrier);
 }
 
-void buildGraph(const Scene& scene, bool shadowEnabled, BakedGraph& graph,
-                VkFormat colorFormat, VkFormat depthFormat) {
-    static std::vector<ResourceDesc> resources;
-    static std::vector<ViewDesc> views;
-    resources = {
+// 三张表的所有权。两阶段之后同一张表要造两次（阶段 1 没有句柄可填），所以它不能
+// 再是 buildGraph 里的一堆 static 局部量。
+struct Tables final {
+    std::vector<ResourceDesc> resources;
+    std::vector<ViewDesc> views;
+    std::vector<PassAttachment> shadowAttachments;
+    std::vector<PassAttachment> worldAttachments;
+    std::vector<PassAttachment> guiAttachments;
+    std::vector<PassAttachment> presentAttachments;
+    std::array<VkClearValue, 2> worldClears{};
+    std::array<VkClearValue, 2> guiClears{};
+    std::array<VkClearValue, 1> shadowClears{};
+    std::array<VkFramebuffer, 1> shadowFramebuffers{};
+    std::array<VkImageMemoryBarrier, 1> worldBarriers{};
+    std::vector<PassDesc> passes;
+
+    [[nodiscard]] GraphDesc describe() const {
+        return {.resources = resources, .views = views, .passes = passes};
+    }
+};
+
+// scene 为 null 时造的是**不带句柄**的表：阶段 1 在 image 存在之前就要跑。
+// 本机受支持的多采样档。lavapipe 不支持 2×，所以档位是**挑出来的**而不是写死的：
+// 推导要验的是「resolve 目标这条关系推得对」，不是某个具体的采样数
+VkSampleCountFlagBits& multisampleCount() {
+    static VkSampleCountFlagBits count = VK_SAMPLE_COUNT_1_BIT;
+    return count;
+}
+
+void buildTables(Tables& tables, const Scene* scene, bool multisampled, bool shadowEnabled,
+                 VkFormat colorFormat, VkFormat depthFormat) {
+    const VkSampleCountFlagBits samples =
+        multisampled ? multisampleCount() : VK_SAMPLE_COUNT_1_BIT;
+    tables.resources = {
         {.name = "scene_color", .kind = ResourceKind::Color, .format = colorFormat,
          .width = kWidth, .height = kHeight, .samples = VK_SAMPLE_COUNT_1_BIT,
          .perSwapchainImage = true},
         {.name = "scene_depth", .kind = ResourceKind::Depth, .format = depthFormat,
-         .width = kWidth, .height = kHeight, .samples = VK_SAMPLE_COUNT_1_BIT,
-         .perSwapchainImage = true},
+         .width = kWidth, .height = kHeight, .samples = samples, .perSwapchainImage = true},
         {.name = "gui_depth", .kind = ResourceKind::Depth, .format = depthFormat,
          .width = kWidth, .height = kHeight, .samples = VK_SAMPLE_COUNT_1_BIT,
          .perSwapchainImage = true},
@@ -335,73 +366,94 @@ void buildGraph(const Scene& scene, bool shadowEnabled, BakedGraph& graph,
          .width = kWidth, .height = kHeight, .samples = VK_SAMPLE_COUNT_1_BIT,
          .perSwapchainImage = false},
     };
-    views = {{0, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT},
-             {1, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT},
-             {2, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT},
-             {3, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT}};
+    std::uint16_t sceneColorMsaa = 0;
+    if (multisampled) {
+        sceneColorMsaa = static_cast<std::uint16_t>(tables.resources.size());
+        tables.resources.push_back({.name = "scene_color_msaa", .kind = ResourceKind::Color,
+                                    .format = colorFormat, .width = kWidth, .height = kHeight,
+                                    .samples = samples, .perSwapchainImage = true});
+    }
+    tables.views.clear();
+    for (std::size_t index = 0; index < tables.resources.size(); ++index) {
+        const ResourceDesc& resource = tables.resources[index];
+        tables.views.push_back({.resource = static_cast<std::uint16_t>(index),
+                                .format = resource.format,
+                                .aspect = resource.kind == ResourceKind::Depth
+                                              ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                              : VK_IMAGE_ASPECT_COLOR_BIT});
+    }
 
-    static const std::array<PassAttachment, 1> shadowAttachments{{{3, Access::DepthWrite}}};
-    static const std::array<PassAttachment, 3> worldAttachments{
-        {{0, Access::ColorWrite}, {1, Access::DepthWrite}, {3, Access::Sample}}};
-    static const std::array<PassAttachment, 2> guiAttachments{
-        {{0, Access::ColorWrite}, {2, Access::DepthWrite}}};
-    static const std::array<PassAttachment, 1> presentAttachments{{{0, Access::TransferRead}}};
+    tables.shadowAttachments = {{3, Access::DepthWrite}};
+    tables.worldAttachments = {{sceneColorMsaa, Access::ColorWrite}, {1, Access::DepthWrite}};
+    if (multisampled) {
+        tables.worldAttachments.push_back({0, Access::ColorResolve});
+    }
+    tables.worldAttachments.push_back({3, Access::Sample});
+    tables.guiAttachments = {{0, Access::ColorWrite}, {2, Access::DepthWrite}};
+    tables.presentAttachments = {{0, Access::TransferRead}};
 
-    static std::array<VkClearValue, 2> worldClears{};
-    worldClears[0].color = {{0.055F, 0.080F, 0.110F, 1.0F}};
-    worldClears[1].depthStencil = {1.0F, 0};
-    static std::array<VkClearValue, 2> guiClears{};
-    guiClears[1].depthStencil = {1.0F, 0};
-    static std::array<VkClearValue, 1> shadowClears{};
-    shadowClears[0].depthStencil = {1.0F, 0};
-    static std::array<VkFramebuffer, 1> shadowFramebuffers{};
-    shadowFramebuffers[0] = scene.shadowFramebuffer;
+    tables.worldClears = {};
+    tables.worldClears[0].color = {{0.055F, 0.080F, 0.110F, 1.0F}};
+    tables.worldClears[1].depthStencil = {1.0F, 0};
+    tables.guiClears = {};
+    tables.guiClears[1].depthStencil = {1.0F, 0};
+    tables.shadowClears = {};
+    tables.shadowClears[0].depthStencil = {1.0F, 0};
 
-    static std::array<VkImageMemoryBarrier, 1> worldBarriers{};
-    worldBarriers[0] = {};
-    worldBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    worldBarriers[0].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    worldBarriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    worldBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    worldBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    worldBarriers[0].image = scene.shadowDepth.image;
-    worldBarriers[0].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-    worldBarriers[0].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    worldBarriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    const bool withHandles = scene != nullptr;
+    tables.shadowFramebuffers[0] = withHandles ? scene->shadowFramebuffer : VK_NULL_HANDLE;
+    tables.worldBarriers[0] = {};
+    if (withHandles) {
+        tables.worldBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        tables.worldBarriers[0].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        tables.worldBarriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        tables.worldBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        tables.worldBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        tables.worldBarriers[0].image = scene->shadowDepth.image;
+        tables.worldBarriers[0].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        tables.worldBarriers[0].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        tables.worldBarriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    }
 
-    static std::vector<PassDesc> passes;
-    passes = {
+    tables.passes = {
         {.name = "upload", .record = &bodyUpload},
         {.name = "shadow",
-         .attachments = shadowAttachments,
+         .attachments = tables.shadowAttachments,
          .record = &bodyEmpty,
-         .renderPass = scene.shadowPass,
-         .framebuffers = shadowFramebuffers,
-         .clears = shadowClears,
+         .renderPass = withHandles ? scene->shadowPass : VK_NULL_HANDLE,
+         .framebuffers = withHandles ? std::span<const VkFramebuffer>{tables.shadowFramebuffers}
+                                     : std::span<const VkFramebuffer>{},
+         .clears = withHandles ? std::span<const VkClearValue>{tables.shadowClears}
+                               : std::span<const VkClearValue>{},
          .extent = {kWidth, kHeight},
          .enabled = shadowEnabled},
         {.name = "world",
-         .attachments = worldAttachments,
+         .attachments = tables.worldAttachments,
          .record = &bodyEmpty,
-         .renderPass = scene.worldPass,
-         .framebuffers = scene.worldFramebuffers,
-         .clears = worldClears,
+         .renderPass = withHandles ? scene->worldPass : VK_NULL_HANDLE,
+         .framebuffers = withHandles ? std::span<const VkFramebuffer>{scene->worldFramebuffers}
+                                     : std::span<const VkFramebuffer>{},
+         .clears = withHandles ? std::span<const VkClearValue>{tables.worldClears}
+                               : std::span<const VkClearValue>{},
          .extent = {kWidth, kHeight},
-         .barriers = shadowEnabled ? std::span<const VkImageMemoryBarrier>{worldBarriers}
-                                   : std::span<const VkImageMemoryBarrier>{},
+         .barriers = withHandles && shadowEnabled
+                         ? std::span<const VkImageMemoryBarrier>{tables.worldBarriers}
+                         : std::span<const VkImageMemoryBarrier>{},
          .barrierSrcStage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
          .barrierDstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT},
         {.name = "gui",
-         .attachments = guiAttachments,
+         .attachments = tables.guiAttachments,
          .record = &bodyEmpty,
-         .renderPass = scene.guiPass,
-         .framebuffers = scene.guiFramebuffers,
-         .clears = guiClears,
+         .renderPass = withHandles ? scene->guiPass : VK_NULL_HANDLE,
+         .framebuffers = withHandles ? std::span<const VkFramebuffer>{scene->guiFramebuffers}
+                                     : std::span<const VkFramebuffer>{},
+         .clears = withHandles ? std::span<const VkClearValue>{tables.guiClears}
+                               : std::span<const VkClearValue>{},
          .extent = {kWidth, kHeight},
          .locked = true},
-        {.name = "present_blit", .attachments = presentAttachments, .record = &bodyPresentBlit},
+        {.name = "present_blit", .attachments = tables.presentAttachments,
+         .record = &bodyPresentBlit},
     };
-    graph.compile({.resources = resources, .views = views, .passes = passes});
 }
 
 bool submitOnce(const Device& gpu, const BakedGraph& graph, const Scene& scene,
@@ -600,45 +652,46 @@ bool createDevice(Device& gpu) {
 
 } // namespace
 
-int main() {
-    Device gpu;
-    if (!createDevice(gpu)) {
-        return 0;  // 跳过就是成功：本容器没有 GPU 时它不该变成门禁
-    }
-    const auto depthFormat = pickDepthFormat(gpu);
-    if (!depthFormat.has_value()) {
-        skip("no sampled depth format");
-        return 0;
-    }
-    constexpr VkFormat kColorFormat = VK_FORMAT_B8G8R8A8_UNORM;
+// 一档配置的完整两阶段：造表 → 推导 → **按推导出的参数**建 image/renderpass/framebuffer
+// → 编译 → 跑。返回失败数。
+int runConfiguration(const Device& gpu, bool multisampled, VkFormat colorFormat,
+                     VkFormat depthFormat) {
+    // 阶段 1：不碰任何句柄
+    Tables planTables;
+    buildTables(planTables, nullptr, multisampled, true, colorFormat, depthFormat);
+    const ResourcePlan plan = planResources(planTables.describe());
 
     Scene scene;
     scene.gpu = &gpu;
-    bool built = createImage(gpu, *depthFormat,
-                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                                 VK_IMAGE_USAGE_SAMPLED_BIT,
-                             VK_IMAGE_ASPECT_DEPTH_BIT, scene.shadowDepth);
+    scene.multisampled = multisampled;
+    bool built = createImage(gpu, plan.resource("shadow_depth"), scene.shadowDepth);
     for (std::uint32_t index = 0; index < kImageCount; ++index) {
-        built = built && createImage(gpu, kColorFormat,
-                                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                                     VK_IMAGE_ASPECT_COLOR_BIT, scene.sceneColor[index]);
-        built = built && createImage(gpu, *depthFormat,
-                                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                                     VK_IMAGE_ASPECT_DEPTH_BIT, scene.sceneDepth[index]);
-        built = built && createImage(gpu, *depthFormat,
-                                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                                     VK_IMAGE_ASPECT_DEPTH_BIT, scene.guiDepth[index]);
+        built = built && createImage(gpu, plan.resource("scene_color"), scene.sceneColor[index]);
+        built = built && createImage(gpu, plan.resource("scene_depth"), scene.sceneDepth[index]);
+        built = built && createImage(gpu, plan.resource("gui_depth"), scene.guiDepth[index]);
+        if (multisampled) {
+            built = built && createImage(gpu, plan.resource("scene_color_msaa"),
+                                         scene.sceneColorMsaa[index]);
+        }
     }
-    built = built && createImage(gpu, kColorFormat, VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                                 VK_IMAGE_ASPECT_COLOR_BIT, scene.presentTarget);
+    // 呈现替身不在图里：它是 vkCmdCopyImage 的目标，由呈现引擎持有
+    PlannedResource presentPlan{.name = "present_target",
+                                .kind = ResourceKind::Swapchain,
+                                .format = colorFormat,
+                                .width = kWidth,
+                                .height = kHeight,
+                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .perSwapchainImage = true,
+                                .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                .aspect = VK_IMAGE_ASPECT_COLOR_BIT};
+    built = built && createImage(gpu, presentPlan, scene.presentTarget, false);
     if (!built) {
         skip("offscreen images could not be created");
         return 0;
     }
-    scene.shadowPass = createShadowRenderPass(gpu, *depthFormat);
-    scene.worldPass = createWorldRenderPass(gpu, kColorFormat, *depthFormat);
-    scene.guiPass = createGuiRenderPass(gpu, kColorFormat, *depthFormat);
+    scene.shadowPass = createShadowRenderPass(gpu, plan);
+    scene.worldPass = createWorldRenderPass(gpu, plan, multisampled);
+    scene.guiPass = createGuiRenderPass(gpu, plan);
     if (scene.shadowPass == VK_NULL_HANDLE || scene.worldPass == VK_NULL_HANDLE ||
         scene.guiPass == VK_NULL_HANDLE) {
         skip("render passes could not be created");
@@ -647,11 +700,17 @@ int main() {
     const std::array<VkImageView, 1> shadowAttachment{scene.shadowDepth.view};
     scene.shadowFramebuffer = createFramebuffer(gpu, scene.shadowPass, shadowAttachment);
     for (std::uint32_t index = 0; index < kImageCount; ++index) {
+        // 开 MSAA 时世界那趟绑三张：多采样 color、depth、resolve 目标
+        const std::array<VkImageView, 3> worldMsaa{scene.sceneColorMsaa[index].view,
+                                                   scene.sceneDepth[index].view,
+                                                   scene.sceneColor[index].view};
         const std::array<VkImageView, 2> world{scene.sceneColor[index].view,
                                                scene.sceneDepth[index].view};
         const std::array<VkImageView, 2> gui{scene.sceneColor[index].view,
                                              scene.guiDepth[index].view};
-        scene.worldFramebuffers[index] = createFramebuffer(gpu, scene.worldPass, world);
+        scene.worldFramebuffers[index] =
+            multisampled ? createFramebuffer(gpu, scene.worldPass, worldMsaa)
+                         : createFramebuffer(gpu, scene.worldPass, world);
         scene.guiFramebuffers[index] = createFramebuffer(gpu, scene.guiPass, gui);
     }
     VkQueryPoolCreateInfo queryInfo{};
@@ -668,31 +727,68 @@ int main() {
     }
 
     int failures = 0;
-    validationErrors().clear();
-
     // 1) 阴影启用：世界那步前有一条边界屏障，把阴影图从 DEPTH_ATTACHMENT 带到 SHADER_READ。
     //    它必须落在 renderpass **之外**——这正是 begin/end 归 graph 之后最容易踩的地方。
-    {
+    // 2) 阴影剪掉：那条屏障必须跟着消失。留着它就是 oldLayout 与实际布局不符，
+    //    校验层会报 VUID-VkImageMemoryBarrier-oldLayout-01197。
+    for (const bool shadowEnabled : {true, false}) {
+        Tables tables;
+        buildTables(tables, &scene, multisampled, shadowEnabled, colorFormat, depthFormat);
+        const GraphDesc desc = tables.describe();
         BakedGraph graph;
-        buildGraph(scene, true, graph, kColorFormat, *depthFormat);
+        // 阶段 2 的计划与阶段 1 的必须逐字段一致，否则 compile 会拒——手上这批 image
+        // 就是按阶段 1 那份建的
+        graph.compile(desc, planResources(desc));
         for (std::uint32_t index = 0; index < kImageCount; ++index) {
             if (!submitOnce(gpu, graph, scene, index)) {
-                std::cerr << "FAIL: submit failed (shadow enabled, image " << index << ")\n";
+                std::cerr << "FAIL: submit failed (msaa=" << (multisampled ? 1 : 0)
+                          << ", shadow=" << (shadowEnabled ? 1 : 0) << ", image " << index
+                          << ")\n";
                 ++failures;
             }
         }
     }
-    // 2) 阴影剪掉：那条屏障必须跟着消失。留着它就是 oldLayout 与实际布局不符，
-    //    校验层会报 VUID-VkImageMemoryBarrier-oldLayout-01197。
-    {
-        BakedGraph graph;
-        buildGraph(scene, false, graph, kColorFormat, *depthFormat);
-        for (std::uint32_t index = 0; index < kImageCount; ++index) {
-            if (!submitOnce(gpu, graph, scene, index)) {
-                std::cerr << "FAIL: submit failed (shadow pruned, image " << index << ")\n";
-                ++failures;
-            }
+    vkDeviceWaitIdle(gpu.device);
+    return failures;
+}
+
+int main() {
+    Device gpu;
+    if (!createDevice(gpu)) {
+        return 0;  // 跳过就是成功：本容器没有 GPU 时它不该变成门禁
+    }
+    const auto depthFormat = pickDepthFormat(gpu);
+    if (!depthFormat.has_value()) {
+        skip("no sampled depth format");
+        return 0;
+    }
+    constexpr VkFormat kColorFormat = VK_FORMAT_B8G8R8A8_UNORM;
+
+    validationErrors().clear();
+    int failures = 0;
+    // MSAA 两档各跑一次：resolve 目标的推导（loadOp DONT_CARE + 多采样靶 storeOp
+    // DONT_CARE + TRANSIENT）只有在开 MSAA 那一档才会被校验层看到
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(gpu.physical, &properties);
+    const VkSampleCountFlags supported = properties.limits.framebufferColorSampleCounts &
+                                         properties.limits.framebufferDepthSampleCounts;
+    for (const VkSampleCountFlagBits candidate :
+         {VK_SAMPLE_COUNT_2_BIT, VK_SAMPLE_COUNT_4_BIT, VK_SAMPLE_COUNT_8_BIT}) {
+        if ((supported & candidate) != 0U) {
+            multisampleCount() = candidate;
+            break;
         }
+    }
+    for (const bool multisampled : {false, true}) {
+        if (multisampled && multisampleCount() == VK_SAMPLE_COUNT_1_BIT) {
+            skip("no multisample count is supported by this device");
+            continue;
+        }
+        if (multisampled) {
+            std::cout << "  (multisample probe at " << static_cast<int>(multisampleCount())
+                      << "x)\n";
+        }
+        failures += runConfiguration(gpu, multisampled, kColorFormat, *depthFormat);
     }
 
     if (!validationErrors().empty()) {

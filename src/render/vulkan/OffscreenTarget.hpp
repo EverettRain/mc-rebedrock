@@ -18,6 +18,24 @@ class OffscreenTarget final {
         std::uint32_t height = 2048;
     };
 
+    // 这张图像与它那趟 renderpass 的**实际**创建参数。RN-20c 的资源计划对
+    // shadow_depth 只校验、不接管创建（理由：它的生命周期不在交换链里，且 binding 8
+    // 与 shadowDebugSet 的描述符在初始化期写一次、之后从不重写，重建 image 会连带
+    // 悬垂），所以必须有一份可比对的东西，否则就成了「计划说 A、创建写 B 而没人比对」
+    struct Parameters final {
+        VkFormat format = VK_FORMAT_UNDEFINED;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+        VkImageUsageFlags usage = 0;
+        VkImageAspectFlags aspect = 0;
+        VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        VkAttachmentStoreOp storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        VkImageLayout initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VkImageLayout finalLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    };
+    [[nodiscard]] Parameters parameters() const;
+
     void init(const Config& config);
     void destroy();
 
