@@ -8,15 +8,17 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
-- Sky light no longer floods deep caves. It used to be a "leftover direct value"
-  that stopped fading once it had passed the last thing that dimmed it, so a
-  single layer of leaves, one block of water, or a stair roof left a column of
-  light 14 levels bright running from the surface to the bottom of the world, and
-  every layer of it spread sideways as well. Sky light is now a source column, as
-  in vanilla: cells with an unobstructed view of the sky are fully lit, and
-  everything below the first block that dims or seals the column has to earn its
-  light one level at a time. A glass roof still lets full daylight through — that
-  part was never the bug.
+- Sky light no longer runs undimmed to the bottom of the world once something has
+  dimmed it. It used to be a "leftover direct value" that stopped fading after the
+  last block that dimmed it, so a single layer of leaves, one block of water, or a
+  stair roof left a column of light 14 levels bright running from the surface to
+  the bottom of the world, and every layer of it spread sideways as well. Sky
+  light is now a source column, as in vanilla: cells with an unobstructed view of
+  the sky are fully lit, and everything below the first block that dims or seals
+  the column has to earn its light one level at a time. Two things that look like
+  the same bug are vanilla and are unchanged: a shaft dug straight to the surface
+  still carries full daylight to its bottom and lights about fifteen blocks around
+  it, and a glass roof still lets full daylight through.
 - A burning mob standing under a tree or under water is no longer put out by
   rain, and a mob under leaves no longer counts as standing in the open sun.
   "Can this creature see the sky" used to read the same leaked light value, so a
