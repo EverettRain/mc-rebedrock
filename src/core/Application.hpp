@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "render/TestScene.hpp"
+#include "render/UiCapture.hpp"
 
 namespace mc {
 
@@ -18,7 +19,9 @@ class Application final {
         std::filesystem::path shaderRoot,
         std::filesystem::path configRoot,
         std::optional<render::TestSceneOptions> testScene = std::nullopt,
-        std::vector<std::filesystem::path> commandLinePacks = {});
+        std::vector<std::filesystem::path> commandLinePacks = {},
+        // UI-2：界面截图通道。给了它就停在指定前端页面上逐档拍图然后退出
+        std::optional<render::UiCaptureOptions> uiCapture = std::nullopt);
 
     [[nodiscard]] int run();
 
@@ -27,6 +30,7 @@ class Application final {
     std::filesystem::path shaderRoot_;
     std::filesystem::path configRoot_;
     std::optional<render::TestSceneOptions> testScene_;
+    std::optional<render::UiCaptureOptions> uiCapture_;
     // `--pack` 点名的资源包，排在 <游戏根>/resourcepacks 扫描结果之后（优先级最高）
     std::vector<std::filesystem::path> commandLinePacks_;
 };

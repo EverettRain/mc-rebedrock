@@ -52,6 +52,37 @@ namespace {
     return atlas;
 }
 
+// UI-2：把一张任意尺寸的贴图最近邻拉伸到整个图集层。
+//
+// 只给 panorama_overlay 用，理由是 26.1 那条绘制本来就是拉伸：`Panorama.java:23` 把整张
+// 纹理 blit 成 (0,0,宽,高)，也就是铺满全屏。把这次拉伸提前到上传时做，图集层因此仍能满足
+// "所有层同尺寸"这条运行期约束，而绘制侧只是整层铺满——两次拉伸合成一次，结果不变。
+//
+// 26.1 的这张图是 1x1 且 alpha 恒 0，最近邻放大逐像素等价；换了资源包的玩家给出更大的图时，
+// 这里是一次重采样，代价与"整张纹理拉满全屏"本来就有的那次重采样同量级。
+[[nodiscard]] assets::ImageData stretchToAtlas(const assets::ImageData& source, int width,
+                                               int height) {
+    assets::ImageData atlas;
+    atlas.width = width;
+    atlas.height = height;
+    atlas.rgba.resize(static_cast<std::size_t>(width * height * 4));
+    if (source.width <= 0 || source.height <= 0 || source.rgba.empty()) {
+        return atlas;
+    }
+    for (int y = 0; y < height; ++y) {
+        const int sourceY = std::min(y * source.height / height, source.height - 1);
+        for (int x = 0; x < width; ++x) {
+            const int sourceX = std::min(x * source.width / width, source.width - 1);
+            const auto sourceOffset =
+                static_cast<std::size_t>((sourceY * source.width + sourceX) * 4);
+            const auto targetOffset = static_cast<std::size_t>((y * width + x) * 4);
+            std::copy_n(source.rgba.begin() + static_cast<std::ptrdiff_t>(sourceOffset), 4,
+                        atlas.rgba.begin() + static_cast<std::ptrdiff_t>(targetOffset));
+        }
+    }
+    return atlas;
+}
+
 [[nodiscard]] assets::ImageData emptyRgbaAtlas(int width = 256, int height = 256) {
     assets::ImageData atlas;
     atlas.width = width;
@@ -472,6 +503,13 @@ void TextureManager::createGuiTexture() {
     blitWidget(tooltipGui, GuiWidgetSprite::TooltipBackground, "tooltip/background", 0, 0);
     blitWidget(tooltipGui, GuiWidgetSprite::TooltipFrame, "tooltip/frame", 100, 0);
 
+    // UI-2：26.1 主菜单在全景之上铺的唯一一层是 gui/title/background/panorama_overlay.png
+    // （`Panorama.extractRenderState` 整张拉满全屏），而 `TitleScreen.extractBackground()`
+    // 是空实现——主菜单既不模糊也不铺 menu_background。26.1 的这张图是 1x1、alpha 恒 0，
+    // 所以用原版资源时它是零效果；换了资源包的玩家则能拿到包里真正的叠加层。
+    // 这里坚持用资源包提供的真实纹理，而不是把它当前的全透明像素写死进代码。
+    const auto panoramaOverlay =
+        stretchToAtlas(guiTex("title/background/panorama_overlay.png"), 256, 256);
     const auto underwater = repeatTileToAtlas(tex("misc/underwater.png"), 256, 256, 4);
     const auto menuBackground = repeatTileToAtlas(guiTex("menu_background.png"), 256, 256, 16);
     const auto menuListBackground =
@@ -542,8 +580,9 @@ void TextureManager::createGuiTexture() {
         enchantingGui,
         anvilGui,
         tooltipGui,
+        panoramaOverlay,
     };
-    constexpr std::uint32_t kGuiLayerCount = 17U;
+    constexpr std::uint32_t kGuiLayerCount = 18U;
     // 层号是写死在 HudTypes.hpp 里的常量（kTooltipGuiLayer 等），而层内容是上面
     // 这个数组的顺序。加一层却漏改这个数，上传就会按错误的层数切分整块像素，
     // 于是每一层都错位——编译期钉住它。
@@ -614,6 +653,68 @@ void TextureManager::createPanoramaTexture() {
         static_cast<std::uint32_t>(kPanoramaFaces), VK_IMAGE_VIEW_TYPE_2D_ARRAY);
     std::cout << "Loaded Minecraft title panorama: " << width << 'x' << height << " x "
               << kPanoramaFaces << " faces\n";
+}
+
+// UI-2：主菜单 logo / 彩蛋 logo / edition 副标题，一张原生分辨率的单层数组。
+//
+// 26.1 的画法（`LogoRenderer.extractRenderState`）：
+//   logo    : blit(MINECRAFT_LOGO, W/2-128, 30, u=0, v=0, 256x44, 纹理逻辑尺寸 256x64)
+//   edition : blit(MINECRAFT_EDITION, W/2-64, 30+44-7, u=0, v=0, 128x14, 逻辑尺寸 128x16)
+// 也就是两张图都只取**上半部分**——logo 取高度的 44/64，edition 取 14/16。这两个比例是
+// 逻辑尺寸的比例，与文件实际分辨率无关，所以四倍分辨率的原版资源与 1 倍的自制资源
+// 用同一段代码都对。
+//
+// 三张图竖着叠进一层，宽度取最宽的一张；窄的靠左，右侧留空——留空处永远采不到，
+// 因为每张图的 UV 都被它自己的尺寸夹住。
+void TextureManager::createTitleTexture() {
+    const auto load = [&](std::string_view name) {
+        return assets::ImageData::loadRgbaOrMissing(
+            *resourceProvider_, assets::textures("gui/title/" + std::string{name}));
+    };
+    // 逐文件解析，与全景面同理：资源包只覆盖了一部分时，其余仍回落到内置资源
+    const std::array sources{load("minecraft.png"), load("minceraft.png"), load("edition.png")};
+    // 26.1 的逻辑纹理尺寸对应的可见比例（LogoRenderer 的 LOGO_* / EDITION_* 常量）
+    constexpr std::array kVisibleHeightFraction{44.0F / 64.0F, 44.0F / 64.0F, 14.0F / 16.0F};
+
+    int width = 0;
+    int height = 0;
+    for (const auto& source : sources) {
+        width = std::max(width, source.width);
+        height += source.height;
+    }
+    if (width <= 0 || height <= 0) {
+        throw std::runtime_error("Minecraft title art must not be empty");
+    }
+    auto layer = emptyRgbaAtlas(width, height);
+    const std::array<glm::vec4*, 3> targets{&titleArtUv.logo, &titleArtUv.easterEggLogo,
+                                            &titleArtUv.edition};
+    int packedY = 0;
+    for (std::size_t index = 0; index < sources.size(); ++index) {
+        const auto& source = sources[index];
+        blit(layer, source, 0, packedY);
+        *targets[index] = glm::vec4{
+            0.0F,
+            static_cast<float>(packedY) / static_cast<float>(height),
+            static_cast<float>(source.width) / static_cast<float>(width),
+            static_cast<float>(source.height) * kVisibleHeightFraction[index] /
+                static_cast<float>(height),
+        };
+        packedY += source.height;
+    }
+
+    const auto byteSize = static_cast<VkDeviceSize>(layer.rgba.size());
+    titleTextureImage = resources_->createImage(
+        static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 1U,
+        VK_FORMAT_R8G8B8A8_UNORM,
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    resources_->uploadImageLayers(titleTextureImage, layer.rgba.data(), byteSize,
+                                  static_cast<std::uint32_t>(width),
+                                  static_cast<std::uint32_t>(height), 1U,
+                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    titleTextureView =
+        resources_->createImageView(titleTextureImage.image, VK_FORMAT_R8G8B8A8_UNORM,
+                                    VK_IMAGE_ASPECT_COLOR_BIT, 1U, VK_IMAGE_VIEW_TYPE_2D_ARRAY);
+    std::cout << "Loaded Minecraft title art: " << width << 'x' << height << '\n';
 }
 
 void TextureManager::createPanoramaSampler() {
@@ -865,6 +966,10 @@ void TextureManager::destroy(bool allocatorAlive) noexcept {
         vkDestroyImageView(device_, panoramaTextureView, nullptr);
         panoramaTextureView = VK_NULL_HANDLE;
     }
+    if (titleTextureView != VK_NULL_HANDLE) {
+        vkDestroyImageView(device_, titleTextureView, nullptr);
+        titleTextureView = VK_NULL_HANDLE;
+    }
     if (panoramaSampler != VK_NULL_HANDLE) {
         vkDestroySampler(device_, panoramaSampler, nullptr);
         panoramaSampler = VK_NULL_HANDLE;
@@ -889,6 +994,7 @@ void TextureManager::destroy(bool allocatorAlive) noexcept {
         resources_->destroyImage(rainTextureImage);
         resources_->destroyImage(guiTextureImage);
         resources_->destroyImage(panoramaTextureImage);
+        resources_->destroyImage(titleTextureImage);
         resources_->destroyImage(fontTextureImage);
         resources_->destroyImage(entityTextureImage);
         resources_->destroyImage(textureImage);
@@ -898,7 +1004,7 @@ void TextureManager::destroy(bool allocatorAlive) noexcept {
 std::size_t TextureManager::residentImageBytes() const {
     const AllocatedImage* const images[] = {
         &textureImage,      &entityTextureImage, &guiTextureImage,  &fontTextureImage,
-        &rainTextureImage,  &panoramaTextureImage};
+        &rainTextureImage,  &panoramaTextureImage, &titleTextureImage};
     std::size_t bytes = 0;
     for (const auto* image : images) {
         if (image->allocation != VK_NULL_HANDLE) {

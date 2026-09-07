@@ -7,8 +7,10 @@
 #include "core/Application.hpp"
 #include "core/PackArguments.hpp"
 #include "render/TestScene.hpp"
+#include "render/UiCapture.hpp"
 
 #include <exception>
+#include <stdexcept>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -145,6 +147,12 @@ int main(int argc, char** argv) {
         std::vector<std::string_view> arguments;
         for (int index = 1; index < argc; ++index) arguments.emplace_back(argv[index]);
         const auto testScene = mc::render::parseTestSceneArguments(arguments);
+        const auto uiCapture = mc::render::parseUiCaptureArguments(arguments);
+        // 一次运行只能对"我在拍什么"有一个答案。两个都给了，就会有一个被静默忽略。
+        if (testScene.has_value() && uiCapture.has_value()) {
+            throw std::invalid_argument(
+                "--ui-shot cannot be combined with --test-scene or --scene");
+        }
         std::vector<std::filesystem::path> commandLinePacks;
         for (const std::string& pack : mc::parsePackArguments(arguments)) {
             commandLinePacks.emplace_back(pack);
@@ -154,7 +162,8 @@ int main(int argc, char** argv) {
             std::move(shaderRoot),
             std::move(configRoot),
             testScene,
-            std::move(commandLinePacks)};
+            std::move(commandLinePacks),
+            uiCapture};
         return application.run();
     } catch (const std::exception& exception) {
         std::cerr << "Fatal error: " << exception.what() << '\n';

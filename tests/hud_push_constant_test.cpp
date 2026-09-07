@@ -317,16 +317,18 @@ int main() {
             cursor += std::string_view{"hud.data.x > "}.size();
             thresholds.push_back(std::stof(fragment.substr(cursor, 8)));
         }
-        assert(thresholds.size() == 5);
+        // UI-2 加了 kHudModeTitleTexture（主菜单 logo / edition），阈值随之从五个变六个。
+        assert(thresholds.size() == 6);
         std::sort(thresholds.begin(), thresholds.end());
         // The if-chain is nested rather than flat (the icon and the gui sprite
         // share an outer branch), so this does not model the control flow. It
         // asserts the property the control flow depends on: the thresholds cut
         // the line into intervals, and no two modes may share one — two modes in
         // one interval is two draws taking the same branch.
-        const std::array modes{mc::render::kHudModeFlat,      mc::render::kHudModeBlockTexture,
-                               mc::render::kHudModeFontGlyph, mc::render::kHudModeGuiSprite,
-                               mc::render::kHudModeBlockIcon, mc::render::kHudModeCrosshair};
+        const std::array modes{mc::render::kHudModeFlat,        mc::render::kHudModeBlockTexture,
+                               mc::render::kHudModeFontGlyph,   mc::render::kHudModeGuiSprite,
+                               mc::render::kHudModeBlockIcon,   mc::render::kHudModeCrosshair,
+                               mc::render::kHudModeTitleTexture};
         std::vector<std::size_t> buckets;
         for (const float mode : modes) {
             std::size_t bucket = 0;

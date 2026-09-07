@@ -18,8 +18,14 @@
 
 namespace mc::render {
 
+// GUI 图集每一层的边长（像素）。createGuiTexture() 运行期校验所有层同尺寸，
+// 绘制侧按这个数把图集像素换算成 UV。
+inline constexpr float kGuiAtlasSize = 256.0F;
+
 // guiTextures 数组的层号，与 createGuiTexture() 保持同步
 // 11 是 misc/vignette.png，12 是烘焙好的 Screen.renderBackground 暗角渐变
+// 9 是 gui/menu_background.png（26.1 的二级菜单遮罩，按 32px 平铺）
+inline constexpr float kMenuBackgroundGuiLayer = 9.0F;
 inline constexpr float kVignetteGuiLayer = 11.0F;
 inline constexpr float kScreenDimGuiLayer = 12.0F;
 inline constexpr float kMenuListBackgroundGuiLayer = 13.0F;
@@ -47,6 +53,43 @@ inline constexpr int kAnvilErrorSpriteY = 0;
 // 并排放在同一层（背景在左、边框在右）。它们是提示框的全部底衬，画法见
 // HudRenderer::drawTooltipBox。
 inline constexpr float kTooltipGuiLayer = 16.0F;
+// UI-2: gui/title/background/panorama_overlay.png，最近邻拉伸到整层后铺满全屏。
+// 26.1 里它是 1x1、alpha 恒 0 的全透明图（本地 26.1 资源包已解码确认，同包 vignette 仍
+// 256x256、panorama_0 仍 1024x1024，所以不是转换压尺寸的产物），因此用原版资源时是零效果。
+inline constexpr float kPanoramaOverlayGuiLayer = 17.0F;
+
+// UI-2：标题美术在它那张原生分辨率数组里的归一化子矩形，{u, v, 宽, 高}。
+// 由 TextureManager::createTitleTexture() 填充，HudRenderer 绑一个 const 引用照着画。
+// 已经含了 26.1 那两处"只取纹理上半部分"的裁剪：logo 取 44/64，edition 取 14/16。
+struct TitleArtUv final {
+    glm::vec4 logo{0.0F, 0.0F, 1.0F, 1.0F};
+    glm::vec4 easterEggLogo{0.0F, 0.0F, 1.0F, 1.0F};
+    glm::vec4 edition{0.0F, 0.0F, 1.0F, 1.0F};
+};
+
+// UI-2：标题/前端界面在全景之上铺的那一层。
+//
+// 26.1 只有一层，而且它**永远是资源包提供的真实纹理**，不是代码里写死的颜色：
+//   - 主菜单（未模糊）：`TitleScreen.extractBackground()` 是空实现，全景之后只有
+//     `Panorama.extractRenderState` 那一次 panorama_overlay 全屏 blit。
+//   - 二级界面（模糊）：`Screen.extractMenuBackground` 铺 gui/menu_background.png。
+// 两条分支的 tint 都是白色不透明——**任何"为了让白字清楚"而写死的变暗都属于自造**，
+// spec §6.3 明确写的是"不模糊、不加菜单遮罩，主菜单本体是清晰的"。
+// 把配方收在这一个 constexpr 里，绘制侧只是照着铺，于是"多铺了一层暗色"改不动它而不被发现。
+struct TitleBackgroundLayer final {
+    float guiLayer = kPanoramaOverlayGuiLayer;
+    // 乘进纹素的颜色。两条分支都必须是白色不透明：变暗要来自纹理，不来自代码。
+    glm::vec4 tint{1.0F, 1.0F, 1.0F, 1.0F};
+    // menu_background 是按 32 逻辑像素平铺的，panorama_overlay 是整张拉满。
+    bool tiled = false;
+};
+
+[[nodiscard]] constexpr TitleBackgroundLayer titleBackgroundLayer(bool blurred) {
+    return blurred ? TitleBackgroundLayer{kMenuBackgroundGuiLayer, {1.0F, 1.0F, 1.0F, 1.0F}, true}
+                   : TitleBackgroundLayer{kPanoramaOverlayGuiLayer,
+                                          {1.0F, 1.0F, 1.0F, 1.0F},
+                                          false};
+}
 // 标题界面的六张全景面，拼成 logo 背后的那个世界；标题轮播把它们当幻灯片循环
 // 也是 TextureManager 上传全景数组层时的层数（此前两处各写一份，ENCH-2 并到这里）
 inline constexpr std::size_t kPanoramaFaces = 6U;
@@ -67,6 +110,8 @@ inline constexpr float kHudModeFontGlyph = 2.0F;
 inline constexpr float kHudModeGuiSprite = 3.0F;
 inline constexpr float kHudModeBlockIcon = 4.25F; // RN-14's 3D item model icon
 inline constexpr float kHudModeCrosshair = 5.0F;
+// UI-2：主菜单 logo / edition 副标题，取自 binding 6 的原生分辨率标题数组
+inline constexpr float kHudModeTitleTexture = 6.0F;
 
 // The HUD's push constants, and the ONE meaning each field has.
 //

@@ -42,9 +42,12 @@ struct StaticWidgetLabel final {
     std::string_view suffix{};
 };
 
-inline constexpr std::array<StaticWidgetLabel, 22> kStaticWidgetLabels{{
+inline constexpr std::array<StaticWidgetLabel, 24> kStaticWidgetLabels{{
     // 标题界面与世界列表
     {WidgetId::Singleplayer, "menu.singleplayer", "Singleplayer"},
+    {WidgetId::Multiplayer, "menu.multiplayer", "Multiplayer"},
+    // vanilla 的 menu.online 就是 "Minecraft Realms"，不是 "Realms"
+    {WidgetId::Realms, "menu.online", "Minecraft Realms"},
     {WidgetId::Options, "menu.options", "Options..."},
     {WidgetId::Exit, "menu.quit", "Quit Game"},
     {WidgetId::PlaySelected, "selectWorld.select", "Play Selected World"},
@@ -87,11 +90,15 @@ inline constexpr std::array<WidgetId, 8> kRuntimeWidgetLabels{{
 // 不经 widgetLabel 取标签的 id
 // 三种列表行的文本各自在页面装配时给出，分别是世界名、语言名与按键行
 // None 则根本不是一个按钮
-inline constexpr std::array<WidgetId, 4> kUnlabelledWidgets{{
+inline constexpr std::array<WidgetId, 6> kUnlabelledWidgets{{
     WidgetId::None,
     WidgetId::WorldRow,
     WidgetId::LanguageRow,
     WidgetId::KeyBindRow,
+    // UI-2：主菜单的两个图标钮。26.1 用 SpriteIconButton 且 iconOnly=true，
+    // 按钮上只有 15x15 的图标，没有文字（图标本身归 UI-4 的 IconButton）
+    WidgetId::TitleLanguage,
+    WidgetId::TitleAccessibility,
 }};
 
 [[nodiscard]] constexpr const StaticWidgetLabel* findStaticLabel(WidgetId id) {

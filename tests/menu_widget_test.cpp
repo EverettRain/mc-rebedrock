@@ -46,10 +46,25 @@ void testPageAssembly() {
     ui::MenuBuildContext ctx;
     ui::MenuCallbacks cb;
 
+    // UI-2: the title screen is 26.1's seven widgets now, in TitleScreen.init's
+    // order. The order is not cosmetic — titleWidgetRect indexes the layout by it,
+    // so a reordering here aims the clicks at the wrong buttons.
     const ui::Page title = ui::buildPage(ui::PageId::Title, ctx, cb, rowLayout());
-    assert(title.size() == 3);
+    assert(title.size() == 7);
     assert(title[0].debugId == static_cast<std::uint16_t>(ui::WidgetId::Singleplayer));
-    assert(title[2].debugId == static_cast<std::uint16_t>(ui::WidgetId::Exit));
+    assert(title[1].debugId == static_cast<std::uint16_t>(ui::WidgetId::Multiplayer));
+    assert(title[2].debugId == static_cast<std::uint16_t>(ui::WidgetId::Realms));
+    assert(title[3].debugId == static_cast<std::uint16_t>(ui::WidgetId::TitleLanguage));
+    assert(title[4].debugId == static_cast<std::uint16_t>(ui::WidgetId::Options));
+    assert(title[5].debugId == static_cast<std::uint16_t>(ui::WidgetId::Exit));
+    assert(title[6].debugId == static_cast<std::uint16_t>(ui::WidgetId::TitleAccessibility));
+    // The three whose target screens this build does not have yet are present and
+    // greyed, exactly as vanilla greys multiplayer and realms when multiplayer is
+    // not allowed — not invented, and not silently missing from the layout.
+    assert(!title[1].enabled);
+    assert(!title[2].enabled);
+    assert(!title[6].enabled);
+    assert(title[0].enabled && title[3].enabled && title[4].enabled && title[5].enabled);
 
     const ui::Page pause = ui::buildPage(ui::PageId::Pause, ctx, cb, rowLayout());
     assert(pause.size() == 3);

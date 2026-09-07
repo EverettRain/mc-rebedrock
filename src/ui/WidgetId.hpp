@@ -14,6 +14,10 @@ namespace mc::ui {
 enum class WidgetId : std::uint16_t {
     None = 0,
     Singleplayer, Options, Exit,
+    // UI-2：26.1 主菜单的另外四个控件（spec §6.3）
+    // TitleLanguage / TitleAccessibility 是图标钮，没有文字标签，因此登记为无标签
+    // 它们与选项页那个带文字的 Language 按钮不是同一个控件，所以不共用 id
+    Multiplayer, Realms, TitleLanguage, TitleAccessibility,
     PlaySelected, CreateWorld, Edit, Back,
     CreateGameMode, CreateAllowCommands, CreateConfirm,
     SaveRename, DeleteWorld, DeleteConfirm, DeleteCancel,

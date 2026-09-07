@@ -58,10 +58,12 @@ Application::Application(
     std::filesystem::path shaderRoot,
     std::filesystem::path configRoot,
     std::optional<render::TestSceneOptions> testScene,
-    std::vector<std::filesystem::path> commandLinePacks)
+    std::vector<std::filesystem::path> commandLinePacks,
+    std::optional<render::UiCaptureOptions> uiCapture)
     : resourceRoot_(std::move(resourceRoot)),
       shaderRoot_(std::move(shaderRoot)),
       configRoot_(std::move(configRoot)), testScene_(testScene),
+      uiCapture_(std::move(uiCapture)),
       commandLinePacks_(std::move(commandLinePacks)) {}
 
 int Application::run() {
@@ -282,7 +284,8 @@ int Application::run() {
         options,
         optionsPath,
         configRoot_.parent_path() / "saves",
-        testScene_};
+        testScene_,
+        uiCapture_};
     // 退出码从渲染器一路带出来：预览导出少出一张图就必须是非零退出，
     // 否则自动化会把七张图的基线当成一次成功
     const int exitCode = renderer.run();

@@ -202,9 +202,22 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
 
     switch (id) {
         case PageId::Title:
+            // UI-2：顺序即版面（TitleScreenLayout 的 titleWidgetRect 用同一个序号约定）。
+            // 26.1 的 TitleScreen.init 按 单人 / 多人 / Realms / 语言 / 选项 / 退出 / 无障碍
+            // 这个次序装配，本页照抄。
+            //
+            // 多人、Realms、无障碍三个的目标屏幕本作还没有（ServerList / RealmsMain /
+            // AccessibilitySettings），所以它们**在位、灰着、点不动**——vanilla 在
+            // allowsMultiplayer() 为假时正是这么灰掉多人与 Realms 的，不是自造形态。
+            // 目标屏幕登记在 UI-7。
             addButton(page, rectFor, ctx, WidgetId::Singleplayer, cb.openSingleplayer);
+            addButton(page, rectFor, ctx, WidgetId::Multiplayer, nullptr, /*enabled=*/false);
+            addButton(page, rectFor, ctx, WidgetId::Realms, nullptr, /*enabled=*/false);
+            addButton(page, rectFor, ctx, WidgetId::TitleLanguage, cb.openLanguage);
             addButton(page, rectFor, ctx, WidgetId::Options, cb.openOptions);
             addButton(page, rectFor, ctx, WidgetId::Exit, cb.exitGame);
+            addButton(page, rectFor, ctx, WidgetId::TitleAccessibility, nullptr,
+                      /*enabled=*/false);
             break;
 
         case PageId::Pause:

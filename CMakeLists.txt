@@ -445,6 +445,7 @@ add_executable(mc_rebedrock
     src/render/RainSystem.cpp
     src/render/PerspectiveCamera.cpp
     src/render/TestScene.cpp
+    src/render/UiCapture.cpp
     src/render/vulkan/VulkanRenderer.cpp
     src/render/vulkan/VulkanResources.cpp
     src/render/vulkan/TextureManager.cpp
@@ -453,6 +454,7 @@ add_executable(mc_rebedrock
     src/render/vulkan/OffscreenTarget.cpp
     src/render/vulkan/SceneReadback.cpp
     src/ui/MenuGeometry.cpp
+    src/ui/TitleScreenLayout.cpp
     src/ui/BitmapFontMetrics.cpp
     src/ui/Language.cpp
     src/ui/TextFont.cpp
@@ -1709,11 +1711,56 @@ if(BUILD_TESTING)
     add_executable(mc_rebedrock_menu_geometry_test
         tests/menu_geometry_test.cpp
         src/ui/MenuGeometry.cpp
+        src/ui/TitleScreenLayout.cpp
         src/ui/HudLayout.cpp
     )
     target_include_directories(mc_rebedrock_menu_geometry_test PRIVATE src)
     target_link_libraries(mc_rebedrock_menu_geometry_test PRIVATE glm::glm)
     add_test(NAME menu_geometry COMMAND mc_rebedrock_menu_geometry_test)
+
+    # UI-2：主菜单版面的黄金值。断言的是手算出来的逻辑像素坐标，不是把公式再抄一遍，
+    # 所以"按钮挪了一像素"这种改动会在这里变红。
+    add_executable(mc_rebedrock_title_screen_layout_test
+        tests/title_screen_layout_test.cpp
+        src/ui/TitleScreenLayout.cpp
+        src/ui/MenuGeometry.cpp
+        src/ui/HudLayout.cpp
+    )
+    target_include_directories(mc_rebedrock_title_screen_layout_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_title_screen_layout_test PRIVATE glm::glm)
+    add_test(NAME title_screen_layout COMMAND mc_rebedrock_title_screen_layout_test)
+
+    # UI-2：界面截图通道的纯逻辑——参数解析与输出路径。路径必须只是命令行的函数，
+    # 否则"同一条命令跑两遍逐字节相同"这条验收条件在第一步就不成立。
+    add_executable(mc_rebedrock_ui_capture_test
+        tests/ui_capture_test.cpp
+        src/render/UiCapture.cpp
+        src/ui/PageStack.cpp
+        src/ui/MenuGeometry.cpp
+        src/ui/TitleScreenLayout.cpp
+        src/ui/HudLayout.cpp
+    )
+    target_include_directories(mc_rebedrock_ui_capture_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_ui_capture_test PRIVATE glm::glm)
+    # determinism knob 的源码护栏读渲染器源文件：少钉一个 knob 不改变任何返回值，
+    # 而两遍比对在本容器的隐藏窗口下也抓不到（实测记录见测试文件里那段说明）
+    target_compile_definitions(mc_rebedrock_ui_capture_test PRIVATE
+        MC_REBEDROCK_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp")
+    add_test(NAME ui_capture COMMAND mc_rebedrock_ui_capture_test)
+
+    # UI-2：主菜单背景不得有代码写死的变暗。两层断言：配方本身（constexpr 纯函数），
+    # 加一条源码护栏——"多画了一个全屏四边形"不改变任何返回值，只能这么抓。
+    add_executable(mc_rebedrock_title_background_test
+        tests/title_background_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_title_background_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_title_background_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    target_compile_definitions(mc_rebedrock_title_background_test PRIVATE
+        MC_REBEDROCK_HUD_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/HudRenderer.hpp")
+    add_test(NAME title_background COMMAND mc_rebedrock_title_background_test)
 
     add_executable(mc_rebedrock_texture_animation_test
         tests/texture_animation_test.cpp
@@ -2769,6 +2816,7 @@ if(BUILD_TESTING)
     add_executable(mc_rebedrock_menu_layout_test
         tests/menu_layout_test.cpp
         src/ui/MenuGeometry.cpp
+        src/ui/TitleScreenLayout.cpp
         src/ui/HudLayout.cpp
     )
     target_include_directories(mc_rebedrock_menu_layout_test PRIVATE src)

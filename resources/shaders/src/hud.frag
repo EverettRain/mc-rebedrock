@@ -12,6 +12,9 @@ layout(location = 0) out vec4 outColor;
 layout(binding = 1) uniform sampler2DArray blockTextures;
 layout(binding = 2) uniform sampler2DArray fontTexture;
 layout(binding = 3) uniform sampler2DArray guiTextures;
+// UI-2：主菜单的 logo 与 edition 副标题。26.1 的这两张图是 1024x256 / 512x64 的高清资源，
+// 塞不进 256px 的 GUI 图集，所以走自己这张原生分辨率的单层数组（TextureManager::createTitleTexture）。
+layout(binding = 6) uniform sampler2DArray titleTextures;
 
 // Declared identically in hud.vert and in mc::render::HudPush. This block used to
 // stop at `data`, four fields against the vertex stage's five, and read `color`
@@ -38,7 +41,12 @@ layout(push_constant) uniform HudPush {
 // hud.color 里的常量本来就是 vanilla 的编码值（GRAY 0xAA 写成 0.667）。
 void main() {
     vec4 color = hud.color;
-    if (hud.data.x > 4.5) {
+    if (hud.data.x > 5.5) {
+        // 标题美术：与 GUI 精灵同样是纹素乘 tint，只是取自另一张数组
+        vec4 texel = texture(titleTextures, vec3(fragmentUv, fragmentTextureLayer));
+        color.rgb *= texel.rgb;
+        color.a *= texel.a;
+    } else if (hud.data.x > 4.5) {
         // 准星：反色混合的那张 GUI 精灵，边缘靠 discard 而不是 alpha 混合
         vec4 texel = texture(guiTextures, vec3(fragmentUv, fragmentTextureLayer));
         color.rgb *= texel.rgb;

@@ -135,6 +135,12 @@ class HudLayout final {
         std::size_t index,
         std::size_t buttonCount) const;
     [[nodiscard]] float scale() const { return scale_; }
+    // spec §1.1 的逻辑画布：scaledWidth/Height = ceil(帧缓冲 / 生效缩放)
+    // 本仓其余版面在帧缓冲像素上用浮点算，那套算不出 `H/4 + 48` 这种以逻辑高度做整数
+    // 除法的基线，而 spec §1.2 明确要求居中一律整数除法，否则与原版差 1px
+    // 因此需要照 vanilla 摆位的屏幕先取这两个量，解完版面再乘 scale 回到帧缓冲像素
+    [[nodiscard]] int logicalWidth() const;
+    [[nodiscard]] int logicalHeight() const;
 
   private:
     float width_;

@@ -34,6 +34,7 @@
 #include "ui/ButtonControl.hpp"
 #include "ui/ChatHistory.hpp"
 #include "ui/GuiNineSlice.hpp"
+#include "ui/TitleScreenLayout.hpp"
 #include "ui/TooltipLayout.hpp"
 #include "ui/SubtitleFeed.hpp"
 #include "ui/Toast.hpp"
@@ -158,6 +159,10 @@ class HudRenderer final {
         const std::optional<TestSceneOptions>& testScene;
         // 可拉伸控件的图集矩形与 26.1 gui.scaling，由 TextureManager::createGuiTexture() 填充
         const GuiWidgetSpriteTable& guiWidgetSprites;
+        // UI-2：标题美术在 binding 6 那张数组里的归一化子矩形
+        const TitleArtUv& titleArtUv;
+        // UI-2：截图通道钉死的光标位置；空表示照常读 GLFW
+        const std::optional<ui::UiPoint>& pinnedCursor;
         bool& paused;
         double& uiTimeSeconds;
         std::function<bool()> cameraSubmergedInWater;
@@ -200,7 +205,8 @@ class HudRenderer final {
           viewDistanceChunks(b.viewDistanceChunks),
           peakPendingSectionCount(b.peakPendingSectionCount),
           pendingSectionUpdates(b.pendingSectionUpdates), testScene(b.testScene),
-          guiWidgetSprites(b.guiWidgetSprites), paused(b.paused),
+          guiWidgetSprites(b.guiWidgetSprites), titleArtUv(b.titleArtUv),
+          pinnedCursor(b.pinnedCursor), paused(b.paused),
           uiTimeSeconds(b.uiTimeSeconds), cameraSubmergedInWater(b.cameraSubmergedInWater),
           keyBindLabel(b.keyBindLabel),
           drawHeldItem(b.drawHeldItem), currentFrameDescriptorSet(b.currentFrameDescriptorSet),
@@ -244,6 +250,11 @@ class HudRenderer final {
         return std::string{translate(key, fallback)};
     }
     [[nodiscard]] ui::UiPoint currentFramebufferCursor() const {
+        // UI-2：截图通道钉死的光标（见 VulkanRenderer::Impl 上那条注释）。
+        // 绘制侧和输入侧读的是同一个钉子，两边因此不会一个亮一个不亮。
+        if (pinnedCursor.has_value()) {
+            return *pinnedCursor;
+        }
         double cursorX = 0.0;
         double cursorY = 0.0;
         int windowWidth = 0;
@@ -471,10 +482,9 @@ class HudRenderer final {
     void drawGuiSprite(VkCommandBuffer commandBuffer, const ui::UiRect& destination, float layer,
                        const ui::UiRect& sourcePixels,
                        const glm::vec4& tint = {1.0F, 1.0F, 1.0F, 1.0F}) const {
-        constexpr float atlasSize = 256.0F;
         drawHudQuad(commandBuffer, destination, tint, layer, false,
-                    {sourcePixels.x / atlasSize, sourcePixels.y / atlasSize,
-                     sourcePixels.width / atlasSize, sourcePixels.height / atlasSize},
+                    {sourcePixels.x / kGuiAtlasSize, sourcePixels.y / kGuiAtlasSize,
+                     sourcePixels.width / kGuiAtlasSize, sourcePixels.height / kGuiAtlasSize},
                     false, true);
     }
 
@@ -842,8 +852,11 @@ class HudRenderer final {
     // 编辑页显示所选世界的名字，与 vanilla 的"编辑世界"界面一致
     // 删除确认页用 vanilla 的删除询问句作标题
     [[nodiscard]] std::string frontendTitle(ui::PageId page) const {
+        // UI-2：主菜单不画这行——它画的是 logo 贴图（drawTitleBranding）。
+        // 这里保留一条分支只为不让 Title 掉进下面那串存档名判断；文案取 vanilla 的
+        // 旁白标题键，而不是从前那个自造的产品名。
         if (page == ui::PageId::Title)
-            return "MC Rebedrock";
+            return translated("narrator.screen.title", "Title Screen");
         if (page == ui::PageId::WorldList)
             return translated("menu.singleplayer", "Singleplayer");
         if (page == ui::PageId::CreateWorld)
@@ -965,7 +978,8 @@ class HudRenderer final {
     // 相机缓慢转动：偏航在 kCycleSeconds 内转满 360°，六个面各自都有较长时间正对视野
     // 俯仰做一次轻微扫掠，下探到 panorama_4、上仰到 panorama_5
     // 再叠一点 vanilla 式的正弦微晃，免得太机械
-    // 之后那层暗色四边形保证白色标题和菜单按钮在场景上仍然清晰
+    // 之后铺一层背景贴图，配方见 titleBackgroundLayer：主菜单是全透明的 panorama_overlay，
+    // 二级界面是 menu_background——两者都取自资源包，代码不写死任何变暗
     void drawTitleCarousel(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
                            bool blurred, float guiScale) const {
         // 每五分钟转满一圈，四个侧面各自正对视野一分多钟
@@ -1000,14 +1014,79 @@ class HudRenderer final {
                                 0, 1, &descriptorSet, 0, nullptr);
         const ui::UiRect fullScreen{0.0F, 0.0F, static_cast<float>(swapchainExtent.width),
                                     static_cast<float>(swapchainExtent.height)};
-        if (blurred) {
-            // 26.1 里模糊之后紧跟 Screen.extractMenuBackground
-            // 这里坚持用资源包提供的真实纹理，而不是把它当前的半透明黑像素写死进代码
-            drawGuiSprite(commandBuffer, fullScreen, 9.0F,
-                          ui::tiledBackgroundSource(fullScreen.width, fullScreen.height, guiScale));
-        } else {
-            drawHudQuad(commandBuffer, fullScreen, {0.0F, 0.0F, 0.0F, 0.30F});
-        }
+        // UI-2：全景之后铺的那一层，配方由 titleBackgroundLayer 一处给出。
+        // 模糊分支是 26.1 的 Screen.extractMenuBackground（gui/menu_background.png 平铺）；
+        // 未模糊分支是 Panorama.extractRenderState 那次 panorama_overlay 全屏 blit。
+        // 两条都坚持用资源包提供的真实纹理，而不是把它当前的像素写死进代码——
+        // 从前这里的未模糊分支画的是一块 30% 全屏黑，注释理由是"保证白色标题清晰"，
+        // 那不是 vanilla：26.1 的 TitleScreen.extractBackground() 是空实现，
+        // panorama_overlay.png 是 1x1、alpha 恒 0 的全透明图，主菜单本体是清晰的。
+        const auto background = titleBackgroundLayer(blurred);
+        // 非平铺就是整层拉满：源矩形取整个图集层，与 26.1 那次"整张纹理 blit 成全屏"一致
+        const ui::UiRect source =
+            background.tiled
+                ? ui::tiledBackgroundSource(fullScreen.width, fullScreen.height, guiScale)
+                : ui::UiRect{0.0F, 0.0F, kGuiAtlasSize, kGuiAtlasSize};
+        drawGuiSprite(commandBuffer, fullScreen, background.guiLayer, source, background.tint);
+    }
+
+    // UI-2：从 binding 6 的标题美术里画一块。uv 是 TextureManager 记下的归一化子矩形，
+    // 已经含了 26.1 那两处"只取纹理上半部分"的裁剪，所以这里不再有任何切片算术。
+    void drawTitleTexture(VkCommandBuffer commandBuffer, const ui::UiRect& destination,
+                          const glm::vec4& uv) const {
+        const float width = static_cast<float>(swapchainExtent.width);
+        const float height = static_cast<float>(swapchainExtent.height);
+        const auto clip = ui::framebufferToClip(destination, width, height);
+        const HudPush push{
+            .rect = {clip.x, clip.y, clip.width, clip.height},
+            .color = {1.0F, 1.0F, 1.0F, 1.0F},
+            .uvRect = uv,
+            .data = {kHudModeTitleTexture, 0.0F, 0.0F, 0.0F},
+            .iconBoxMin = {},
+            .iconBoxMax = {},
+            .iconUv01 = {},
+            .iconUv23 = {},
+        };
+        vkCmdPushConstants(commandBuffer, hudPipelineLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(push), &push);
+        vkCmdDraw(commandBuffer, 6, 1, 0, 0);
+    }
+
+    // UI-2：主菜单的 logo、edition 副标题、左下版本行与右下版权行。
+    //
+    // 几何全部来自 ui::titleScreenLayout，也就是 26.1 的 TitleScreen.init 与
+    // LogoRenderer 那套逻辑像素整数运算，绘制这里只负责乘 scale。
+    //
+    // 彩蛋 logo（minceraft，26.1 的概率是 1/10000）**本作恒关**：它是一张按运行时随机数
+    // 二选一的图，而截图通道的全部价值在于两次运行逐字节相同。贴图已经烘进标题数组，
+    // 将来要开只需把这个判断换成一次一次性的随机数。
+    void drawTitleBranding(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
+        const float scale = layout.scale();
+        const std::string version = "Minecraft " + std::string{core::kVersion.name};
+        const std::string copyright =
+            translated("title.credits", "Copyright Mojang AB. Do not distribute!");
+        const auto title = ui::titleScreenLayout(
+            layout.logicalWidth(), layout.logicalHeight(),
+            static_cast<int>(hudTextWidth(version, 1.0F)),
+            static_cast<int>(hudTextWidth(copyright, 1.0F)));
+        const auto toFramebuffer = [scale](const ui::TitleRect& rect) {
+            return ui::UiRect{
+                static_cast<float>(rect.x) * scale,
+                static_cast<float>(rect.y) * scale,
+                static_cast<float>(rect.width) * scale,
+                static_cast<float>(rect.height) * scale,
+            };
+        };
+        drawTitleTexture(commandBuffer, toFramebuffer(title.logo), titleArtUv.logo);
+        drawTitleTexture(commandBuffer, toFramebuffer(title.edition), titleArtUv.edition);
+        // 两行页脚都是普通的白色带阴影文本，26.1 用的是 font.drawInBatch 的默认样式
+        drawHudText(commandBuffer, version, static_cast<float>(title.version.x) * scale,
+                    static_cast<float>(title.version.y) * scale, scale,
+                    {1.0F, 1.0F, 1.0F, 1.0F});
+        drawHudText(commandBuffer, copyright, static_cast<float>(title.copyright.x) * scale,
+                    static_cast<float>(title.copyright.y) * scale, scale,
+                    {1.0F, 1.0F, 1.0F, 1.0F});
     }
 
     // 通用的菜单绘制后端：按 widget 种类画出一页
@@ -1090,13 +1169,18 @@ class HudRenderer final {
         // 二级界面只模糊背景，其文本、按钮和列表行在之后绘制，保持清晰
         drawTitleCarousel(commandBuffer, descriptorSet, page != ui::PageId::Title, layout.scale());
         const float scale = layout.scale();
-        const std::string title = frontendTitle(page);
-        drawHudText(commandBuffer, title,
-                    (static_cast<float>(swapchainExtent.width) -
-                     hudTextWidth(title, scale * (page == ui::PageId::Title ? 2.0F : 1.0F))) *
-                        0.5F,
-                    14.0F * scale, scale * (page == ui::PageId::Title ? 2.0F : 1.0F),
-                    {1.0F, 1.0F, 1.0F, 1.0F});
+        if (page == ui::PageId::Title) {
+            // UI-2：主菜单的标题不是一行放大的文字，而是 gui/title/minecraft.png 加
+            // gui/title/edition.png 两张贴图，再配左下的版本行与右下的版权行（spec §6.3）。
+            // 从前这里画的是 2 倍缩放的 "MC Rebedrock"，那不是 26.1 的任何一个元素。
+            drawTitleBranding(commandBuffer, layout);
+        } else {
+            const std::string title = frontendTitle(page);
+            drawHudText(commandBuffer, title,
+                        (static_cast<float>(swapchainExtent.width) - hudTextWidth(title, scale)) *
+                            0.5F,
+                        14.0F * scale, scale, {1.0F, 1.0F, 1.0F, 1.0F});
+        }
 
         if (page == ui::PageId::WorldList) {
             const std::size_t visibleRows = saveListVisibleRowCount();
@@ -2751,6 +2835,10 @@ class HudRenderer final {
                              world::SectionPositionHash>& pendingSectionUpdates;
     const std::optional<TestSceneOptions>& testScene;
     const GuiWidgetSpriteTable& guiWidgetSprites;
+    // UI-2：标题美术在 binding 6 那张数组里的归一化子矩形，由 TextureManager 填
+    const TitleArtUv& titleArtUv;
+    // UI-2：截图通道钉死的光标位置；空表示照常读 GLFW
+    const std::optional<ui::UiPoint>& pinnedCursor;
     bool& paused;
     double& uiTimeSeconds;
 

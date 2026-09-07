@@ -9,12 +9,15 @@
 
 #include "render/vulkan/BlockAtlasBaker.hpp"
 #include "render/vulkan/GuiSpriteAtlas.hpp"
+#include "render/vulkan/HudTypes.hpp"
 #include "render/vulkan/VulkanResources.hpp"
 
 #include "assets/ResourceProvider.hpp"
 #include "gameplay/entities/SpeciesRenderData.hpp"
 #include "ui/BitmapFontMetrics.hpp"
 #include "ui/TextFont.hpp"
+
+#include <glm/vec4.hpp>
 
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
@@ -49,6 +52,15 @@ class TextureManager final {
     void createGuiTexture();
     void createPanoramaTexture();
     void createPanoramaSampler();
+    // UI-2：主菜单的 logo 与 edition 副标题
+    //
+    // 它们进不了 256px 的 GUI 图集：26.1 的 gui/title/minecraft.png 是 1024x256，
+    // edition.png 是 512x64（逻辑尺寸仍是 256x64 与 128x16，也就是四倍分辨率的真资源）。
+    // 缩到 256 再画会在 GUI 缩放 ≥2 时明显糊掉，那就不是 1:1 了。所以照 createPanoramaTexture
+    // 的先例单独用一个原生分辨率的数组，而不是挤进 GUI 数组。
+    //
+    // 三张图竖着叠进同一层，各自的归一化 UV 在下面给出——于是只多一张图、一个绑定点。
+    void createTitleTexture();
 
     // 建实体皮肤数组，并按玩法实体注册表填充 `speciesModels`
     // 该列表归渲染器所有，因为世界通道要读它
@@ -79,6 +91,13 @@ class TextureManager final {
     AllocatedImage panoramaTextureImage;
     VkImageView panoramaTextureView = VK_NULL_HANDLE;
     VkSampler panoramaSampler = VK_NULL_HANDLE;
+    // UI-2：标题美术（binding 6），一层，三张图竖着叠放
+    // 采样器共用 textureSampler——那是最近邻的那个，和 26.1 给 GUI 纹理的过滤方式一致；
+    // 全景那个采样器是线性的（放大的实拍图需要），拿它画 logo 会把像素画糊掉
+    AllocatedImage titleTextureImage;
+    VkImageView titleTextureView = VK_NULL_HANDLE;
+    // 三张图各自在这一层里的归一化 UV；HUD 绑一个 const 引用，据此画 logo 与副标题
+    TitleArtUv titleArtUv{};
     AllocatedImage fontTextureImage;
     VkImageView fontTextureView = VK_NULL_HANDLE;
     AllocatedImage entityTextureImage;

@@ -8,6 +8,19 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- The main menu no longer dims the whole screen, and its title is no longer a line of enlarged
+  text. A 30%-opaque black sheet used to sit over the panorama, justified in a code comment as
+  "keeping the white title legible" — vanilla has no such sheet: Minecraft draws one
+  `panorama_overlay.png` over the panorama, and in 26.1 that file is a single fully transparent
+  pixel, so it does nothing. The real texture from the resource pack is now what gets drawn:
+  zero effect with vanilla assets, and a pack that ships a real overlay finally gets it. In the
+  same change the title became the pack's Minecraft logo and Java Edition subtitle textures, and
+  the buttons became vanilla's arrangement — Singleplayer, Multiplayer, Minecraft Realms, then a
+  row of Language, Options, Quit, Accessibility. The vertical baseline changed from "centre the
+  block on how many buttons there are" to vanilla's fixed one, so the menu lands where it does in
+  Minecraft as the window or GUI scale changes. The version line is now in the bottom-left corner
+  and the copyright line in the bottom-right. Multiplayer, Realms and Accessibility are greyed
+  out for now: the screens they lead to do not exist yet.
 - The chips that fly off a block you break are no longer brighter than the block
   they came from. Minecraft darkens terrain particles to sixty percent before it
   applies any colour to them, and that step was missing here, so a handful of

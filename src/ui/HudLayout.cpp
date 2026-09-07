@@ -1,6 +1,7 @@
 #include "ui/HudLayout.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace mc::ui {
@@ -65,6 +66,14 @@ HudLayout::HudLayout(float width, float height, int requestedScale)
     : width_(width), height_(height),
       scale_(static_cast<float>(
           calculateGuiScale(static_cast<int>(width), static_cast<int>(height), requestedScale))) {}
+
+int HudLayout::logicalWidth() const {
+    return static_cast<int>(std::ceil(width_ / scale_));
+}
+
+int HudLayout::logicalHeight() const {
+    return static_cast<int>(std::ceil(height_ / scale_));
+}
 
 UiRect HudLayout::hotbarSlot(std::size_t index) const {
     if (index >= kHotbarSlots) {

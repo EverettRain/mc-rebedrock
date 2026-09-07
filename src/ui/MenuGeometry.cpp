@@ -1,5 +1,7 @@
 #include "ui/MenuGeometry.hpp"
 
+#include "ui/TitleScreenLayout.hpp"
+
 #include <algorithm>
 #include <cmath>
 
@@ -8,7 +10,9 @@ namespace mc::ui {
 std::size_t menuButtonCount(PageId page, bool worldOpen) {
     switch (page) {
     case PageId::Title:
-        return 3U;
+        // UI-2：26.1 的主菜单是七个可点控件（spec §6.3 的伪 XML 布局树，几何按
+        // TitleScreen.init 核对过）——单人、多人、Realms、语言图标、选项、退出、无障碍图标
+        return kTitleWidgetCount;
     case PageId::WorldList:
         return 4U;
     case PageId::CreateWorld:
@@ -233,6 +237,21 @@ std::size_t controlsScrollIndexFromCursor(const HudLayout& layout, float framebu
 
 UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t index,
                           std::size_t buttonCount) {
+    // UI-2：主菜单走 spec §6.3 的版面，也就是逻辑像素上的整数运算（j = H/4 + 48）。
+    // 其余屏幕仍走下面那些以帧缓冲像素做浮点的求解器——动 menuButton 会同时移动
+    // 暂停页、死亡页与选项页（README 护栏第 4 条），所以这里只加分支，不改共用的那个。
+    if (page == PageId::Title) {
+        const float scale = layout.scale();
+        const auto title =
+            titleScreenLayout(layout.logicalWidth(), layout.logicalHeight(), 0, 0);
+        const TitleRect rect = titleWidgetRect(title, index);
+        return {
+            static_cast<float>(rect.x) * scale,
+            static_cast<float>(rect.y) * scale,
+            static_cast<float>(rect.width) * scale,
+            static_cast<float>(rect.height) * scale,
+        };
+    }
     if (page == PageId::WorldList) {
         return layout.bottomMenuButton(index, buttonCount, 2U);
     }

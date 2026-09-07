@@ -273,7 +273,8 @@ struct CameraUniform final {
 struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     Impl(std::filesystem::path shaderDirectory, const assets::ResourceProvider& provider, world::ChunkStreamer& streamer,
          config::GameOptions initialOptions, std::filesystem::path initialOptionsPath,
-         std::filesystem::path saveRoot, std::optional<TestSceneOptions> initialTestScene)
+         std::filesystem::path saveRoot, std::optional<TestSceneOptions> initialTestScene,
+         std::optional<UiCaptureOptions> initialUiCapture)
         : shaderRoot(std::move(shaderDirectory)),
           resourceProvider(&provider), languageLoader(provider),
           optionsPath(std::move(initialOptionsPath)),
@@ -298,7 +299,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
           currentSave(runtime.currentSaveSlot()),
           worldEpoch(runtime.worldEpoch()),
           options(std::move(initialOptions)),
-          testScene(initialTestScene), audioSystem(provider, options.masterVolume),
+          testScene(initialTestScene), uiCapture(initialUiCapture),
+          audioSystem(provider, options.masterVolume),
           camera(initialTestScene.has_value() && initialTestScene->occlusionScene
                      ? glm::vec3{8.0F, 60.0F, -8.0F}
                      : (initialTestScene.has_value() ? glm::vec3{10.7F, 66.2F, 12.1F}
@@ -543,8 +545,20 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // section mesh and settle the streaming state; capturing frame one would
     // photograph an empty chunk.
     static constexpr int kPreviewWarmupFrames = 8;
+    // UI-2：界面截图时 UI 时钟停在哪一秒。取值本身不重要，钉住才重要——
+    // 全景的偏航与俯仰、文本光标的闪烁相位都是它的函数。
+    static constexpr double kUiCaptureClockSeconds = 0.0;
 
     void initialize() {
+        // UI-2：截图通道要钉的那几项渲染设置必须在建采样器与管线**之前**落定，
+        // 因为它们是初始化期读一次的，不是每帧读的。显式设而不是继承 options.properties，
+        // 理由与 applyPreviewDeterminism 完全一样：一张取决于用户视频设置的图片，
+        // 没法和另一台机器上的图片对比，而对比正是这条通道的全部价值。
+        if (uiCapture.has_value()) {
+            options.anisotropy = 1;
+            options.antiAliasing = false;
+            options.vsync = false;
+        }
         if (glfwInit() != GLFW_TRUE) {
             throw std::runtime_error("GLFW initialization failed");
         }
@@ -554,15 +568,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 尺寸必须固定：一张随显示器大小变化的导出图没法和另一台机器上的比对，
         // 而"可比"正是这个工具的全部价值。当前架构下 surface 仍要 GLFW，
         // 所以窗口还是要建，只是不显示、不许改大小。
+        // UI-2 的界面截图通道用同一套规矩：固定尺寸、隐藏、不可改大小，理由同上。
+        // 唯一的区别是它的画布不是正方形——界面版面是宽高的函数，用方形窗口拍主菜单
+        // 拍到的不是任何人会看到的那个版面。
         const bool exportingPreview = testScene.has_value() && testScene->exportPreview;
+        const bool capturingUi = uiCapture.has_value();
+        const bool offscreenExport = exportingPreview || capturingUi;
         const int windowWidth = exportingPreview ? static_cast<int>(testScene->previewSize)
+                                : capturingUi   ? static_cast<int>(uiCapture->width)
                                                  : options.windowWidth;
         const int windowHeight = exportingPreview ? static_cast<int>(testScene->previewSize)
+                                 : capturingUi   ? static_cast<int>(uiCapture->height)
                                                   : options.windowHeight;
-        glfwWindowHint(GLFW_RESIZABLE, exportingPreview ? GLFW_FALSE : GLFW_TRUE);
-        glfwWindowHint(GLFW_VISIBLE, exportingPreview ? GLFW_FALSE : GLFW_TRUE);
+        glfwWindowHint(GLFW_RESIZABLE, offscreenExport ? GLFW_FALSE : GLFW_TRUE);
+        glfwWindowHint(GLFW_VISIBLE, offscreenExport ? GLFW_FALSE : GLFW_TRUE);
         glfwWindowHint(GLFW_MAXIMIZED,
-                       !exportingPreview && options.windowMaximized ? GLFW_TRUE : GLFW_FALSE);
+                       !offscreenExport && options.windowMaximized ? GLFW_TRUE : GLFW_FALSE);
         window = glfwCreateWindow(windowWidth, windowHeight,
                                   "MC Rebedrock - Vulkan 3D Grass Block", nullptr, nullptr);
         if (window == nullptr) {
@@ -739,6 +760,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         textures_.createGuiTexture();
         textures_.createPanoramaTexture();
         textures_.createPanoramaSampler();
+        textures_.createTitleTexture();
         textures_.createEntityTextureArray(speciesModels);
         createUniformBuffers();
         createDescriptorPoolAndSets();
@@ -1303,7 +1325,110 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return 0;
     }
 
+    // UI-2：界面截图通道的 determinism knobs。
+    //
+    // 形状与理由照抄 applyPreviewDeterminism：**显式设定，而不是继承 options 文件里
+    // 恰好是什么**——一次取决于用户设置、时钟或鼠标位置的拍摄没法和另一次比对，而
+    // "两遍逐字节相同"是这条通道的验收条件，不是对它的描述。
+    //
+    // 逐帧变化的量在这里逐个钉死，每一条都写清它不钉会怎样：
+    void applyUiCaptureDeterminism() {
+        // 1. UI 时钟。全景相机的偏航每 kCycleSeconds 转满一圈、俯仰做正弦扫掠，
+        //    文本框光标每 300ms 闪一次，都是它的函数。截图循环自己不推进它
+        //    （与 runPreviewExport 同理：那条主循环里的 uiTimeSeconds += dt 不在这条路径上），
+        //    这里把起点也钉死，于是"第几次运行"不会改变全景的角度。
+        uiTimeSeconds = kUiCaptureClockSeconds;
+        // 2. 鼠标。按钮的悬停高亮读光标位置，而隐藏窗口下指针停在哪儿不由我们决定。
+        //    钉到画布外的一个点，于是没有任何控件处于悬停态（ui_capture_test 断言这条性质）。
+        pinnedCursor = ui::UiPoint{kUiCaptureCursorX, kUiCaptureCursorY};
+        // 3. 按下态。上一次输入留下的 pressedMenuButton 会让某个按钮画成按下的样子。
+        pressedMenuButton = ui::WidgetId::None;
+        // 4. 世界。前端页面本来就没有世界，但显式设而不是靠"碰巧"——天气、雨幕与
+        //    视角摇晃都会经 HUD 通道影响画面。
+        gameSession.weatherSystem().setWeather(/*clearTicks=*/1'000'000,
+                                               /*rainTicks=*/0, /*raining=*/false,
+                                               /*thundering=*/false);
+        options.viewBobbing = false;
+        // 5. 插值权重。世界是静止的，这个权重不是，而它喂给视图矩阵。
+        renderInterpolationAlpha = 0.0F;
+        // 6. 提示条与聊天。两者都带时间戳，会随运行时刻淡出。
+        toastQueue_.clear();
+        chatHistory.clear();
+    }
+
+    // UI-2：界面截图循环。
+    //
+    // 与 runPreviewExport 同形，理由也同它那两条：预览分支不落在渲染热路径上；
+    // 而且它当不成 run() 里的分支——run() 每帧都会推进 UI 时钟并重读输入，
+    // 帧前钉好的东西会在帧中被改掉。
+    //
+    // 不启动模拟线程：前端页面没有世界可 tick，而一个什么都不 tick 的线程只是
+    // 又一个逐帧变化的来源，正是这条通道存在的理由要去掉的东西。
+    [[nodiscard]] int runUiCapture() {
+        std::size_t failures = 0;
+        std::size_t written = 0;
+        for (const ui::PageId page : uiCapture->pages) {
+            for (const int guiScale : uiCapture->guiScales) {
+                // ★ 同一个屏幕在不同 GUI scale 下是不同的版面：spec §5 的几何都是
+                //    逻辑画布（ceil(帧缓冲 / scale)）上的整数运算。只拍一档等于没拍。
+                options.guiScale = guiScale;
+                menuSystem.guiScaleSetting = guiScale;
+                menuSystem.pageStack.reset(page);
+                applyUiCaptureDeterminism();
+                const auto file = uiCaptureImagePath(*uiCapture, page, guiScale);
+                std::error_code directoryError;
+                std::filesystem::create_directories(file.parent_path(), directoryError);
+                if (directoryError) {
+                    std::cerr << "UI capture: cannot create " << file.parent_path().string()
+                              << ": " << directoryError.message() << "\n";
+                    ++failures;
+                    continue;
+                }
+                // 头几帧在安置交换链的在途环，拍第一帧会拍到还没画完的东西。
+                // 也要抽事件，否则等着窗口的合成器会把队列卡住。
+                std::optional<std::uint32_t> imageIndex;
+                for (int warmup = 0; warmup < kPreviewWarmupFrames; ++warmup) {
+                    glfwPollEvents();
+                    imageIndex = drawFrame();
+                }
+                checkVk(vkDeviceWaitIdle(device), "vkDeviceWaitIdle(ui capture)");
+                if (!imageIndex.has_value()) {
+                    std::cerr << "UI capture: the swapchain was recreated instead of drawing "
+                              << file.string() << "\n";
+                    ++failures;
+                    continue;
+                }
+                // GUI 那趟的 finalLayout 把场景图留在 TRANSFER_SRC_OPTIMAL，
+                // copySceneToSwapchain 从那里取图，这里也从那里取。
+                // ★ 因此这条通道**看不到呈现链**：它读的是 copy 之前的离屏结果（RN-25 §4）。
+                if (!writeSceneImagePng(resources_, device,
+                                        sceneTargets[*imageIndex].image.image, sceneUnormFormat(),
+                                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                        swapchainExtent.width, swapchainExtent.height, file)) {
+                    ++failures;
+                    continue;
+                }
+                ++written;
+                std::cout << "Wrote " << file.string() << "\n";
+            }
+        }
+        // 少出一张图而静默退出 0，是自动化对照最坏的结果：看着像一次成功的运行，
+        // 只是基线恰好短了一张。说清少了几张，并且非零退出。
+        const std::size_t expected = uiCaptureImageCount(*uiCapture);
+        if (failures != 0U || written != expected) {
+            std::cerr << "UI capture: " << written << " of " << expected
+                      << " images written\n";
+            return 1;
+        }
+        std::cout << "UI capture: " << written << " images in " << uiCapture->root.string()
+                  << "\n";
+        return 0;
+    }
+
     int run() {
+        if (uiCapture.has_value()) {
+            return runUiCapture();
+        }
         if (testScene.has_value() && testScene->exportPreview) {
             return runPreviewExport();
         }
@@ -3163,6 +3288,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     [[nodiscard]] ui::UiPoint currentFramebufferCursor() const {
+        // UI-2：截图通道把光标钉死。它是**逐帧变化的量里最容易被忘掉的一个**——
+        // 按钮的悬停高亮读的就是它，而 Xvfb 下指针停在哪儿并不由我们决定，
+        // 于是同一条命令行两次运行会有一次拍到某个按钮亮着。
+        if (pinnedCursor.has_value()) {
+            return *pinnedCursor;
+        }
         double cursorX = 0.0;
         double cursorY = 0.0;
         int windowWidth = 0;
@@ -4770,6 +4901,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         entitySamplerBinding.binding = 4;
         VkDescriptorSetLayoutBinding panoramaSamplerBinding = samplerBinding;
         panoramaSamplerBinding.binding = 5;
+        // UI-2：主菜单的 logo 与 edition 副标题，原生分辨率、最近邻采样
+        // 绑定点 6 是 BM-1 撤掉群系查找表后空出来的那个，见下面那条注释
+        VkDescriptorSetLayoutBinding titleSamplerBinding = samplerBinding;
+        titleSamplerBinding.binding = 6;
         // 太阳阴影深度图，由地形片元着色器采样
         // 单独一个绑定点，只有 grass_block.frag 以及将来的受光通道看得到它
         // 其它管线不写它也不会出问题
@@ -4783,11 +4918,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         rainSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         // 绑定点 6/7 曾是按世界位置烘好的群系草色/叶色查找纹理
         // 群系配色改成了顶点上的 tint（BM-1），那两张纹理与它们的绑定点一并撤掉
+        // UI-2 把空出来的 6 拿去放标题美术；7 仍空着
         // 绑定号不必连续：阴影仍是 8，雨仍是 9，着色器不用改号
         const std::array bindings{uniformBinding,       samplerBinding,
                                   fontSamplerBinding,   guiSamplerBinding,
                                   entitySamplerBinding, panoramaSamplerBinding,
-                                  shadowSamplerBinding, rainSamplerBinding};
+                                  titleSamplerBinding,  shadowSamplerBinding,
+                                  rainSamplerBinding};
         auto info = vkStructure<VkDescriptorSetLayoutCreateInfo>(
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
         info.bindingCount = static_cast<std::uint32_t>(bindings.size());
@@ -4852,11 +4989,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             panoramaImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             panoramaImageInfo.imageView = textures_.panoramaTextureView;
             panoramaImageInfo.sampler = textures_.panoramaSampler;
+            VkDescriptorImageInfo titleImageInfo{};
+            titleImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            titleImageInfo.imageView = textures_.titleTextureView;
+            // 最近邻的那个采样器，与 26.1 给 GUI 纹理的过滤方式一致
+            // 全景那个是线性的，拿它画 logo 会把像素画糊掉
+            titleImageInfo.sampler = textures_.textureSampler;
             VkDescriptorImageInfo rainImageInfo{};
             rainImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             rainImageInfo.imageView = textures_.rainTextureView;
             rainImageInfo.sampler = textures_.textureSampler;
-            std::array<VkWriteDescriptorSet, 7> writes{};
+            std::array<VkWriteDescriptorSet, 8> writes{};
             writes[0] = vkStructure<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
             writes[0].dstSet = sets[index];
             writes[0].dstBinding = 0;
@@ -4895,10 +5038,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             writes[5].pImageInfo = &panoramaImageInfo;
             writes[6] = vkStructure<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
             writes[6].dstSet = sets[index];
-            writes[6].dstBinding = 9;
+            writes[6].dstBinding = 6;
             writes[6].descriptorCount = 1;
             writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[6].pImageInfo = &rainImageInfo;
+            writes[6].pImageInfo = &titleImageInfo;
+            writes[7] = vkStructure<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
+            writes[7].dstSet = sets[index];
+            writes[7].dstBinding = 9;
+            writes[7].descriptorCount = 1;
+            writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[7].pImageInfo = &rainImageInfo;
             vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(),
                                    0, nullptr);
         }
@@ -7413,6 +7562,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     std::uint64_t& worldEpoch;
     config::GameOptions options;
     std::optional<TestSceneOptions> testScene;
+    // UI-2：界面截图通道的参数，非截图运行时为空
+    std::optional<UiCaptureOptions> uiCapture;
+    // UI-2：钉死的光标位置，只有截图通道会设它；空表示照常读 GLFW
+    std::optional<ui::UiPoint> pinnedCursor;
     // The state initializeTestScene actually placed, after `--stage` had its
     // say. The exporter sizes the camera off this rather than off
     // testScene->state, so the picture and the box around it are the same block.
@@ -7774,6 +7927,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .pendingSectionUpdates = pendingSectionUpdates,
             .testScene = testScene,
             .guiWidgetSprites = textures_.guiWidgetSprites,
+            .titleArtUv = textures_.titleArtUv,
+            .pinnedCursor = pinnedCursor,
             .paused = paused,
             .uiTimeSeconds = uiTimeSeconds,
             .cameraSubmergedInWater = [this] { return cameraSubmergedInWater(); },
@@ -7923,10 +8078,12 @@ VulkanRenderer::VulkanRenderer(std::filesystem::path shaderRoot,
                                const assets::ResourceProvider& resourceProvider,
                                world::ChunkStreamer& chunkStreamer, config::GameOptions options,
                                std::filesystem::path optionsPath, std::filesystem::path saveRoot,
-                               std::optional<TestSceneOptions> testScene)
+                               std::optional<TestSceneOptions> testScene,
+                               std::optional<UiCaptureOptions> uiCapture)
     : impl_(std::make_unique<Impl>(std::move(shaderRoot),
                                    resourceProvider, chunkStreamer, std::move(options),
-                                   std::move(optionsPath), std::move(saveRoot), testScene)) {
+                                   std::move(optionsPath), std::move(saveRoot), testScene,
+                                   uiCapture)) {
     impl_->initialize();
 }
 
