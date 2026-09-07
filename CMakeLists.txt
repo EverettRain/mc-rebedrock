@@ -1306,6 +1306,15 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME block_placement_facing COMMAND mc_rebedrock_block_placement_facing_test)
+    # 平滑光照混合前的「零替换」（26.1 LightCoordsUtil.smoothBlend）。现场报告
+    # 「放一个方块周围一圈阴影太重」的根因就在这条规则缺失上。
+    add_executable(mc_rebedrock_smooth_light_zero_substitution_test
+        tests/smooth_light_zero_substitution_test.cpp)
+    target_link_libraries(mc_rebedrock_smooth_light_zero_substitution_test
+        PRIVATE mc_rebedrock_runtime)
+    add_test(NAME smooth_light_zero_substitution
+        COMMAND mc_rebedrock_smooth_light_zero_substitution_test)
+
     add_executable(mc_rebedrock_smooth_lighting_gradient_test
         tests/smooth_lighting_gradient_test.cpp
     )

@@ -1041,9 +1041,35 @@ template <typename Sampler>
         return lighting.level(position.x, position.y, position.z);
     };
     const auto centreLight = lightAt(centre);
-    const auto sideA = lightAt(edgeA);
-    const auto sideB = lightAt(edgeB);
-    const auto diagonalLight = lightAt(diagonal);
+    auto sideA = lightAt(edgeA);
+    auto sideB = lightAt(edgeB);
+    auto diagonalLight = lightAt(diagonal);
+    // 26.1 `LightCoordsUtil.smoothBlend`：取平均**之前**，把光为 0 的邻居换成中心格的光。
+    //
+    // 少了这一步，任何贴着实心方块的角都会被那一格的 0 拖下来。平地上放一个方块：
+    // 周围一圈内角的天光从 15 掉到 11.25（0.75），叠在同样是 0.8 的 AO 上得到 0.60，
+    // 而 vanilla 是 0.8 × 1.0 = 0.80——暗 25%。方块自己的侧面更狠：贴地那条边的两个
+    // 邻居都是地板，0.6 × 0.50 = 0.30 对 vanilla 的 0.60，**暗一半**。
+    // AO 那一半一直是对的（0.8 / 0.6 逐个数字等于 vanilla），过暗全部来自这里。
+    //
+    // 两条细节都是判据的一部分，不是修饰：
+    //  ① sky 与 block **各判各的**——一格可能天光为 0 而方块光不为 0（洞里的火把旁）；
+    //  ② 只有中心格自己够亮才替换（`sky > 2 || block > 2`）。洞穴深处不替换，
+    //     暗处的对比度因此保留；少了这道门，全黑的角落会被抹平。
+    constexpr std::uint8_t kLitCentreThreshold = 2U;
+    if (centreLight.sky > kLitCentreThreshold || centreLight.block > kLitCentreThreshold) {
+        const auto substituteCentre = [&centreLight](VoxelLightLevel& neighbour) {
+            if (neighbour.sky == 0U) {
+                neighbour.sky = centreLight.sky;
+            }
+            if (neighbour.block == 0U) {
+                neighbour.block = centreLight.block;
+            }
+        };
+        substituteCentre(sideA);
+        substituteCentre(sideB);
+        substituteCentre(diagonalLight);
+    }
     constexpr float normalization = 1.0F /
         (4.0F * static_cast<float>(ChunkLightSampler::kMaximumLightLevel));
     return {

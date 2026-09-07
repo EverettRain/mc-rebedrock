@@ -69,6 +69,7 @@ constexpr float kByte = 1.0F / 255.0F;
 struct Sample final {
     float ambientOcclusion = 0.0F;
     float skyLight = 0.0F;
+    float blockLight = 0.0F;
 };
 
 // Every vertex of `mesh` with the given normal at exactly this position. A face
@@ -90,7 +91,8 @@ struct Sample final {
                 continue;
             }
             found.push_back({mc::render::decodeAmbientOcclusion(vertex),
-                             static_cast<float>(vertex.skyLight) / 255.0F});
+                             static_cast<float>(vertex.skyLight) / 255.0F,
+                             static_cast<float>(vertex.blockLight) / 255.0F});
         }
     }
     return found;
@@ -157,16 +159,46 @@ int main() {
                "the two boxes must both put a vertex on the shared height, or this proves nothing");
 
         // There is a gradient to interpolate at all: the floor darkens the bottom
-        // of the wall and the open sky brightens the top. Without this the three
+        // of the wall and the open sky brightens the top. Without this the
         // assertions below would pass on a flat face.
         assert(top.ambientOcclusion - bottom.ambientOcclusion > 0.2F);
-        assert(top.skyLight - bottom.skyLight > 0.2F);
 
         // And the shared height is the MIDDLE of that gradient — 26.1's bilinear
         // weight at v = 0.5, not either end of it.
         expectMidpoint(bottom.ambientOcclusion, middle.ambientOcclusion, top.ambientOcclusion,
                        "stair west face AO");
-        expectMidpoint(bottom.skyLight, middle.skyLight, top.skyLight, "stair west face sky light");
+
+        // ★ 这面墙的**天光**现在是平的，而且必须是平的。
+        //
+        // 这条断言原先是反过来写的（`top.skyLight - bottom.skyLight > 0.2F`），当时它是
+        // 上面那几条的前提。它成立只是因为 `ringLight` 把地板那格的 0 直接算进了平均——
+        // 而 26.1 的 `LightCoordsUtil.smoothBlend` 在取平均之前会把光为 0 的邻居换成中心
+        // 格的光，于是墙脚的天光与墙顶一样是满的，压暗全部由 AO 承担。
+        // 把它留成「前提」会让那条缺陷永远无法被修：修好就红。改成钉住新行为。
+        assert(std::abs(top.skyLight - bottom.skyLight) <= 2.0F * kByte);
+        assert(bottom.skyLight > 0.9F);
+    }
+
+    // --- 光照那一半的中点断言，换一个**真的有梯度**的夹具 --------------------
+    //
+    // 天光在这面墙上不再变化（上一段），所以要证明「共享高度取的是中点」对光照通道
+    // 同样成立，就得换一个梯度是真实存在的场景：地面上放一块荧石，方块光于是随高度
+    // 衰减，而参与平均的格子没有一个是 0，替换规则不介入。
+    {
+        World world = flooredWorld();
+        world.setState(8, mc::world::kMinY + 1, 8,
+                       BlockState{Block::OakStairs, BlockOrientation::North});
+        world.setBlock(6, mc::world::kMinY + 1, 8, Block::Glowstone);
+        const auto mesh = mc::world::ChunkMesher::buildSection(world, {0, 0}, 0);
+
+        const glm::vec3 west{-1.0F, 0.0F, 0.0F};
+        const Sample bottom = uniqueSampleAt(mesh, west, {8.0F, 1.0F, 8.0F}, "lit stair bottom");
+        const Sample middle = uniqueSampleAt(mesh, west, {8.0F, 1.5F, 8.0F}, "lit stair middle");
+        const Sample top = uniqueSampleAt(mesh, west, {8.0F, 2.0F, 8.0F}, "lit stair top");
+        assert(bottom.blockLight - top.blockLight > 0.05F &&
+               "荧石必须真的在这面墙上造出一条竖直的方块光梯度，否则下面那条证明不了什么");
+        expectMidpoint(bottom.blockLight, middle.blockLight, top.blockLight,
+                       "stair west face block light");
     }
 
     // --- A full cube is untouched, to the byte. ------------------------------
