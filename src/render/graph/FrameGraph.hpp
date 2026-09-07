@@ -33,6 +33,7 @@
 // 不要把「补一个 sRGB 视图」当成欠账去做，那是回归。
 
 #include "core/FunctionRef.hpp"
+#include "render/graph/GpuTimestamps.hpp"
 
 #include <vulkan/vulkan.h>
 
@@ -101,7 +102,10 @@ struct PassContext final {
 using PassBody = core::function_ref<void(VkCommandBuffer, const PassContext&)>;
 
 struct PassDesc final {
-    std::string_view name;  // 只在编译期用于报错，执行期不存在
+    // 编译期用于报错；`execute()` 不读它。RN-19d0 之后编译会把它抄进
+    // `BakedGraph::stepNames()`，那份只给计时报告用——一个只会说「第 3 步」的
+    // profiler 没有用处。热路径的 `BakedStep` 仍然不含名字。
+    std::string_view name;
     std::span<const PassAttachment> attachments{};
     PassBody record;
 
@@ -252,8 +256,11 @@ class BakedGraph final {
 
     // 热路径。零堆分配、零容器查找、每个边界一次 vkCmdPipelineBarrier。
     // 这三条写在 tests/frame_graph_test.cpp 里，不是写在这段注释里。
+    //
+    // `timestamps` 默认是空句柄 = 不计时，此时一个 vk 入口都不多调（RN-19d0）。
     void execute(VkCommandBuffer commandBuffer, std::uint32_t imageIndex,
-                 const PassContext& context) const;
+                 const PassContext& context,
+                 const GpuTimestampWriter& timestamps = {}) const;
 
     [[nodiscard]] bool empty() const noexcept { return steps_.empty(); }
     [[nodiscard]] std::span<const BakedStep> steps() const noexcept { return steps_; }
@@ -264,9 +271,14 @@ class BakedGraph final {
         return framebufferPool_;
     }
     [[nodiscard]] std::span<const VkClearValue> clears() const noexcept { return clearPool_; }
+    // 步序与 `steps()` 一一对应。只给 RN-19d0 的计时报告用，执行期不碰。
+    [[nodiscard]] std::span<const std::string_view> stepNames() const noexcept {
+        return stepNames_;
+    }
 
   private:
     std::vector<BakedStep> steps_;
+    std::vector<std::string_view> stepNames_;
     std::vector<PassBody> bodies_;
     std::vector<VkImageMemoryBarrier> barrierPool_;
     std::vector<VkFramebuffer> framebufferPool_;

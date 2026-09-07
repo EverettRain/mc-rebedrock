@@ -1,12 +1,13 @@
 // RN-20a：烘焙式 frame graph 的三条执行期契约 + 「照抄现状」的结构断言
 //
-// 这个测试**自己定义** execute() 调用的三个 Vulkan 入口，因此不链 Vulkan loader：
+// 这个测试**自己定义** execute() 调用的每一个 Vulkan 入口，因此不链 Vulkan loader：
 // 静态链接先解析已定义符号，libvulkan 从头到尾没被拉进来。代价是它只能验调用次数与
 // 参数，验不了语义合法性——那归 frame_graph_device_test（lavapipe + 校验层）。
 //
-// ⚠ 一旦 FrameGraph.cpp 伸手去调第四个 Vulkan 入口，这个目标会**链接失败**。
-// 那是特性不是缺陷：它把「execute() 只调 vkCmdPipelineBarrier / vkCmdBeginRenderPass /
-// vkCmdEndRenderPass」这条契约钉在链接期。
+// ⚠ 一旦 FrameGraph.cpp 伸手去调一个新的 Vulkan 入口，这个目标会**链接失败**。
+// 那是特性不是缺陷：它把「execute() 只调这几个入口」这条契约钉在链接期。
+// RN-19d0 把名单从三个扩到五个，多出来的两个是 `vkCmdResetQueryPool` 与
+// `vkCmdWriteTimestamp`——而且它们只在**给了查询池时**才被调，这条同样有断言。
 
 #include "render/graph/FrameGraph.hpp"
 
@@ -33,6 +34,18 @@ struct BeginCall final {
     std::vector<VkClearValue> clears;
 };
 
+struct ResetCall final {
+    VkQueryPool pool = VK_NULL_HANDLE;
+    std::uint32_t first = 0;
+    std::uint32_t count = 0;
+};
+
+struct TimestampCall final {
+    VkPipelineStageFlagBits stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    VkQueryPool pool = VK_NULL_HANDLE;
+    std::uint32_t query = 0;
+};
+
 struct Trace final {
     // 记录本身会分配。零分配那条断言因此先把记录关掉再量——被量的必须是编排，
     // 不是测试自己的仪表
@@ -40,12 +53,16 @@ struct Trace final {
     std::vector<std::string> order;
     std::vector<BarrierCall> barriers;
     std::vector<BeginCall> begins;
+    std::vector<ResetCall> resets;
+    std::vector<TimestampCall> timestamps;
     int endCount = 0;
 
     void clear() {
         order.clear();
         barriers.clear();
         begins.clear();
+        resets.clear();
+        timestamps.clear();
         endCount = 0;
     }
 };
@@ -136,6 +153,25 @@ void vkCmdEndRenderPass(VkCommandBuffer) {
     }
     trace().order.emplace_back("end");
     ++trace().endCount;
+}
+
+// RN-19d0 的两个入口。都只在给了查询池时才该被调到。
+void vkCmdResetQueryPool(VkCommandBuffer, VkQueryPool pool, std::uint32_t first,
+                         std::uint32_t count) {
+    if (!trace().recording) {
+        return;
+    }
+    trace().order.emplace_back("reset");
+    trace().resets.push_back({pool, first, count});
+}
+
+void vkCmdWriteTimestamp(VkCommandBuffer, VkPipelineStageFlagBits stage, VkQueryPool pool,
+                         std::uint32_t query) {
+    if (!trace().recording) {
+        return;
+    }
+    trace().order.emplace_back("timestamp");
+    trace().timestamps.push_back({stage, pool, query});
 }
 
 } // extern "C"
@@ -443,6 +479,151 @@ void testExecuteOrder() {
     check(trace().begins[0].framebuffer == shadowFramebuffer(),
           "单份目标不随 imageIndex 变");
     check(trace().begins[2].framebuffer == guiFramebuffer(2), "界面用 guiFramebuffers[]");
+}
+
+// RN-19d0：不给查询池时，execute() 必须与没有这个特性时**逐条指令相同**。
+// 一个「常驻但默认关闭」的仪器，关着时的代价要真的是零，而不是一个恒假的 if 加一次
+// 白跑的 reset。断言落在调用次数上，不落在注释上。
+void testTimestampsOffCostsNothing() {
+    const Production p = makeProduction(true, false);
+    BakedGraph graph;
+    planAndCompile(graph, describe(p));
+    trace().clear();
+    PassContext context{};
+    graph.execute(handle<VkCommandBuffer>(0xC0DE), 0, context);
+    check(trace().resets.empty(), "不计时：一次 vkCmdResetQueryPool 也不该有");
+    check(trace().timestamps.empty(), "不计时：一次 vkCmdWriteTimestamp 也不该有");
+}
+
+// 给了查询池时的三条契约：① N 步打 N+1 个点，槽位连号；② reset 一次、覆盖全部槽位；
+// ③ **reset 与每一次打点都在 renderpass 之外**。
+//
+// ③ 是这里唯一一条"语义"断言，也是唯一能在桩里表达的那一半：桩不知道 Vulkan 的规则，
+// 但它知道调用顺序，而「renderpass 内部」在顺序上就是 begin 与 end 之间。校验层那一半
+// 归 frame_graph_device_test——两处一起才是完整的，任何一处单独都不是。
+void testTimestampsBracketEveryStep() {
+    const Production p = makeProduction(true, false);
+    BakedGraph graph;
+    planAndCompile(graph, describe(p));
+    const auto pool = handle<VkQueryPool>(0x7175);
+    trace().clear();
+    PassContext context{};
+    graph.execute(handle<VkCommandBuffer>(0xC0DE), 0, context, {pool, 0U});
+
+    const std::size_t steps = graph.steps().size();
+    check(gpuTimestampSlotCount(steps) == steps + 1U, "N 步要 N+1 个槽位");
+    check(trace().resets.size() == 1, "整张图一次 reset");
+    if (trace().resets.size() == 1) {
+        check(trace().resets[0].pool == pool, "reset 用的是传进来的池");
+        check(trace().resets[0].first == 0U, "reset 从 firstQuery 起");
+        check(trace().resets[0].count == gpuTimestampSlotCount(steps),
+              "reset 覆盖全部 N+1 个槽位——少一个，最后那段就读到上一帧的陈值");
+    }
+    check(trace().timestamps.size() == steps + 1U, "N 步打 N+1 个点");
+    bool slotsSequential = true;
+    bool stagesAtBottom = true;
+    for (std::size_t index = 0; index < trace().timestamps.size(); ++index) {
+        slotsSequential = slotsSequential &&
+                          trace().timestamps[index].query == static_cast<std::uint32_t>(index);
+        stagesAtBottom = stagesAtBottom &&
+                         trace().timestamps[index].stage == VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    }
+    check(slotsSequential, "槽位连号：报告靠下标对齐步表，跳号就是错位");
+    check(stagesAtBottom,
+          "BOTTOM_OF_PIPE = 「在此之前提交的命令全部走完」，这正是步边界的定义");
+
+    // ③ reset 与打点都不在 renderpass 内部
+    int depth = 0;
+    bool insideRenderPass = false;
+    bool resetBeforeFirstBegin = true;
+    bool sawBegin = false;
+    for (const std::string& event : trace().order) {
+        if (event == "begin") {
+            ++depth;
+            sawBegin = true;
+        } else if (event == "end") {
+            --depth;
+        } else if (event == "reset") {
+            insideRenderPass = insideRenderPass || depth > 0;
+            resetBeforeFirstBegin = resetBeforeFirstBegin && !sawBegin;
+        } else if (event == "timestamp") {
+            insideRenderPass = insideRenderPass || depth > 0;
+        }
+    }
+    check(!insideRenderPass,
+          "vkCmdResetQueryPool 在 renderpass 内非法；打点也一律留在步边界上");
+    check(resetBeforeFirstBegin, "reset 排在整张图最前，而不是夹在某两步之间");
+
+    // reset 必须早于**每一次**打点，而不只是早于第一次 begin。
+    //
+    // 这条是补出来的：sabotage 把 reset 挪到第一步的 body 之后时，上面两条都还是绿的
+    // ——第一步（upload）是非渲染步，深度为 0、也还没有 begin，所以 reset 落在那里
+    // 在"顺序模型"里完全合法。真正错的是它排在了 slot 0 的打点**之后**，把刚写下的
+    // 值抹掉；那是查询生命周期的规则，不是 renderpass 的规则，得单独说一句。
+    // 真机上它表现为 UNASSIGNED-CoreValidation-DrawState-QueryNotReset。
+    std::size_t firstTimestamp = trace().order.size();
+    std::size_t lastReset = 0;
+    for (std::size_t index = 0; index < trace().order.size(); ++index) {
+        if (trace().order[index] == "timestamp" && firstTimestamp == trace().order.size()) {
+            firstTimestamp = index;
+        }
+        if (trace().order[index] == "reset") {
+            lastReset = index;
+        }
+    }
+    check(!trace().resets.empty() && lastReset < firstTimestamp,
+          "reset 必须早于每一次打点——排在后面会把已经写下的槽位抹掉，而这不报任何错");
+}
+
+// 图重编译之后槽位数要跟着变。关掉太阳阴影少一步，于是少一个点——如果这里不跟着变，
+// 回读就会多读一个从来没被写过的槽，而**那不会报任何错**，只会给出一个巨大的假数。
+void testTimestampCountFollowsRecompile() {
+    const auto pool = handle<VkQueryPool>(0x7175);
+    PassContext context{};
+
+    const Production withShadow = makeProduction(true, false);
+    BakedGraph graph;
+    planAndCompile(graph, describe(withShadow));
+    trace().clear();
+    graph.execute(handle<VkCommandBuffer>(0xC0DE), 0, context, {pool, 0U});
+    const std::size_t withShadowPoints = trace().timestamps.size();
+
+    const Production withoutShadow = makeProduction(false, false);
+    BakedGraph reduced;
+    planAndCompile(reduced, describe(withoutShadow));
+    trace().clear();
+    reduced.execute(handle<VkCommandBuffer>(0xC0DE), 0, context, {pool, 0U});
+    const std::size_t withoutShadowPoints = trace().timestamps.size();
+
+    check(reduced.steps().size() + 1U == graph.steps().size(),
+          "关掉太阳阴影正好少一步（前提，不成立则下面那条无意义）");
+    check(withoutShadowPoints + 1U == withShadowPoints, "少一步就少一个点");
+    check(trace().resets.size() == 1 &&
+              trace().resets[0].count == gpuTimestampSlotCount(reduced.steps().size()),
+          "reset 的数量跟着重编译走，不是建池时定死的容量");
+}
+
+// 步名与步表同源、同序。报告说「shadow 花了 1.2 ms」的可信度全在这一条上：
+// 名字要是另立一张表，加一趟 pass 就会让所有名字整体错位一格，而且不会有任何东西变红。
+void testStepNamesMatchStepOrder() {
+    const Production p = makeProduction(true, false);
+    BakedGraph graph;
+    planAndCompile(graph, describe(p));
+    check(graph.stepNames().size() == graph.steps().size(), "每一步都有名字，一一对应");
+    const std::vector<std::string> expected{"upload", "shadow", "world", "gui", "present_blit"};
+    bool same = graph.stepNames().size() == expected.size();
+    for (std::size_t index = 0; same && index < expected.size(); ++index) {
+        same = graph.stepNames()[index] == expected[index];
+    }
+    check(same, "步名照声明序，与 testExecuteOrder 的 body 顺序是同一张表");
+
+    BakedGraph reduced;
+    planAndCompile(reduced, describe(makeProduction(false, false)));
+    bool shadowGone = true;
+    for (const std::string_view name : reduced.stepNames()) {
+        shadowGone = shadowGone && name != "shadow";
+    }
+    check(shadowGone, "剪掉的步不留名字——否则报告里会出现一个永远 0 ms 的幽灵阶段");
 }
 
 void testSingleBarrierCallPerBoundary() {
@@ -845,6 +1026,10 @@ int main() {
     testProductionTopology();
     testShadowBoundaryBarrier();
     testExecuteOrder();
+    testTimestampsOffCostsNothing();
+    testTimestampsBracketEveryStep();
+    testTimestampCountFollowsRecompile();
+    testStepNamesMatchStepOrder();
     testSingleBarrierCallPerBoundary();
     testZeroAllocation();
     testCompileRejections();

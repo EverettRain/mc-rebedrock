@@ -748,6 +748,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         createSwapchainResources();
         createCommandBuffers();
         createSyncObjects();
+        createGpuTimestampPools();
         refreshSaveList();
         if (testScene.has_value())
             initializeTestScene();
@@ -1752,8 +1753,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                               << " batches=" << t.queueBatchCount
                               << " editScan=" << t.editScan
                               << " center=(" << t.newCenterX << ',' << t.newCenterZ << ')'
-                              << " centerChanged=" << (t.centerChanged ? 1 : 0)
-                              << '\n';
+                              << " centerChanged=" << (t.centerChanged ? 1 : 0);
+                    // RN-19d0：GPU 侧。逐步的名字来自 graph 的步表，因此这几段随图变化
+                    // 而不是随这行 cout 里的字面量变化——加一趟 pass 不必回来改这里。
+                    // 一行都不打，等价于「这台设备不支持时间戳，或诊断刚开还没攒够一帧」，
+                    // 那与「GPU 不花时间」是两回事，所以 count 也打出来。
+                    std::cout << " gpuMs=" << t.gpuFrameMs << " gpuSteps=" << t.gpuStepCount;
+                    for (std::uint32_t step = 0; step < t.gpuStepCount; ++step) {
+                        std::cout << " gpu[" << t.gpuStepName[step] << "]=" << t.gpuStepMs[step];
+                    }
+                    std::cout << '\n';
                 }
             }
             // 三份世界常驻内存的周期性报告
@@ -4292,6 +4301,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 if (frame.inFlight != VK_NULL_HANDLE) {
                     vkDestroyFence(device, frame.inFlight, nullptr);
                 }
+                if (frame.timestampPool != VK_NULL_HANDLE) {
+                    vkDestroyQueryPool(device, frame.timestampPool, nullptr);
+                    frame.timestampPool = VK_NULL_HANDLE;
+                }
             }
             if (descriptorSetLayout != VK_NULL_HANDLE) {
                 vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
@@ -6820,6 +6833,70 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
+    // RN-19d0：逐帧的时间戳查询池。
+    //
+    // 只在诊断开着**且**这台设备的图形队列真的支持时间戳时才建——池不存在，
+    // `FrameContext::timestampPool` 就是空句柄，`execute()` 于是一条指令都不多下。
+    // 「常驻但默认关闭」的仪器，代价要真的是零，而不是「一个恒假的 if」。
+    //
+    // 容量按 FrameTrace 的报告上限来，不按今天的步数：图会随画质开关重编译
+    // （关太阳阴影少一步），池不该跟着重建。
+    void createGpuTimestampPools() {
+        if (!diag::traceEnabled()) {
+            return;
+        }
+        if (!vulkanDevice_.timestampScale.usable()) {
+            // 说出来。否则「诊断开了但 gpu 那几项恒为 0」会被当成「GPU 不花时间」。
+            std::cout << "GPU timestamps: unavailable on this device (graphics queue reports "
+                      << vulkanDevice_.timestampScale.validBits << " valid timestamp bits)\n";
+            return;
+        }
+        auto info = vkStructure<VkQueryPoolCreateInfo>(VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO);
+        info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        info.queryCount = static_cast<std::uint32_t>(diag::FrameTrace::kMaxGpuSteps) + 1U;
+        for (auto& frame : frames) {
+            checkVk(vkCreateQueryPool(device, &info, nullptr, &frame.timestampPool),
+                    "vkCreateQueryPool(timestamps)");
+        }
+        std::cout << "GPU timestamps: enabled (" << vulkanDevice_.timestampScale.nanosecondsPerTick
+                  << " ns/tick, " << vulkanDevice_.timestampScale.validBits << " valid bits)\n";
+    }
+
+    // 上一次走到这一槽时录下的时间戳，现在读。围栏刚等完，所以每个查询都已完成。
+    //
+    // 报告是**赋值**不是累加：一帧只执行一次图。名字取自 graph 的步表，于是
+    // 「阶段集合」与「执行集合」不可能错位——加一趟 pass 就自动多一行，忘不掉。
+    void readBackGpuTimestamps(FrameContext& frame) {
+        auto& trace = diag::frameTrace();
+        trace.gpuStepCount = 0;
+        trace.gpuFrameMs = 0.0;
+        if (frame.timestampPool == VK_NULL_HANDLE || frame.timestampSlots < 2U) {
+            return;
+        }
+        const std::uint32_t slots = frame.timestampSlots;
+        frame.timestampResults.resize(slots);
+        const VkResult result = vkGetQueryPoolResults(
+            device, frame.timestampPool, 0U, slots, slots * sizeof(std::uint64_t),
+            frame.timestampResults.data(), sizeof(std::uint64_t),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+        if (result != VK_SUCCESS) {
+            return;
+        }
+        const auto& scale = vulkanDevice_.timestampScale;
+        const auto names = frameGraph_.stepNames();
+        const std::uint32_t steps = slots - 1U;
+        const auto reported =
+            std::min<std::uint32_t>(steps, static_cast<std::uint32_t>(diag::FrameTrace::kMaxGpuSteps));
+        for (std::uint32_t index = 0; index < reported; ++index) {
+            trace.gpuStepMs[index] = scale.millisecondsBetween(frame.timestampResults[index],
+                                                               frame.timestampResults[index + 1U]);
+            trace.gpuStepName[index] = index < names.size() ? names[index] : std::string_view{};
+        }
+        trace.gpuStepCount = reported;
+        trace.gpuFrameMs =
+            scale.millisecondsBetween(frame.timestampResults.front(), frame.timestampResults.back());
+    }
+
     void createSyncObjects() {
         auto semaphoreInfo =
             vkStructure<VkSemaphoreCreateInfo>(VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO);
@@ -7175,6 +7252,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const auto occReadStart = std::chrono::steady_clock::now();
         world_.releaseFrameResources(frame);
         world_.readBackOcclusionQueries();
+        readBackGpuTimestamps(frame);
         if (diag::traceEnabled()) {
             diag::frameTrace().occlusionReadbackMs += diag::msSince(occReadStart);
         }

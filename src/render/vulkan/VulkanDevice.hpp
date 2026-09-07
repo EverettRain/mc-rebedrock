@@ -13,6 +13,7 @@
 #include "render/vulkan/VulkanResources.hpp"
 
 #include "core/EnvFlags.hpp"
+#include "render/graph/GpuTimestamps.hpp"
 
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
@@ -359,8 +360,26 @@ class VulkanDevice final {
         std::cout << "Vulkan GPU: " << properties.deviceName << '\n';
     }
 
+    // 刻度取自**图形队列族自己的** timestampValidBits，不是设备级的
+    // `timestampComputeAndGraphics`——后者只说「图形与计算队列都支持」，逐族的有效位
+    // 仍可能是 0（传输族尤其常见）。查询池写在图形队列上，所以要问的就是那一族。
+    void captureTimestampScale() {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+        std::uint32_t count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &count, nullptr);
+        std::vector<VkQueueFamilyProperties> families(count);
+        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &count, families.data());
+        const std::uint32_t graphicsFamily = queueFamilies.graphics.value();
+        timestampScale.nanosecondsPerTick = static_cast<double>(properties.limits.timestampPeriod);
+        timestampScale.validBits = graphicsFamily < families.size()
+                                       ? families[graphicsFamily].timestampValidBits
+                                       : 0U;
+    }
+
     void createLogicalDevice() {
         queueFamilies = findQueueFamilies(physicalDevice);
+        captureTimestampScale();
         const std::set<std::uint32_t> uniqueFamilies{queueFamilies.graphics.value(),
                                                      queueFamilies.present.value()};
         constexpr float priority = 1.0F;
@@ -427,6 +446,9 @@ class VulkanDevice final {
     bool samplerAnisotropySupported = false;
     float maximumSamplerAnisotropy = 1.0F;
     VkSampleCountFlagBits maximumMsaaSamples = VK_SAMPLE_COUNT_1_BIT;
+    // RN-19d0：时间戳查询的刻度。两个字段缺一不可，且**不支持时不会有任何错误码**——
+    // `timestampValidBits == 0` 的队列照样接受 vkCmdWriteTimestamp，只是写出垃圾。
+    graph::GpuTimestampScale timestampScale;
     VkDevice device = VK_NULL_HANDLE;
     VmaAllocator allocator = VK_NULL_HANDLE;
     QueueFamilyIndices queueFamilies;

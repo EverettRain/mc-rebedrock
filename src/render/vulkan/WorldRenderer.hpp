@@ -2689,7 +2689,12 @@ class WorldRenderer final {
         GraphPassArgs args{this, &frame};
         const graph::PassContext context{&args, imageIndex};
         const auto executeStart = diag::FrameTrace::Clock::now();
-        frameGraph.execute(frame.commandBuffer, imageIndex, context);
+        // RN-19d0：诊断关着时 frame.timestampPool 是空句柄，execute() 因此一个 vk 入口
+        // 都不多调。槽位数写回帧上下文，回读按它读而不是按池容量读。
+        const graph::GpuTimestampWriter timestamps{frame.timestampPool, 0U};
+        frame.timestampSlots =
+            timestamps.active() ? graph::gpuTimestampSlotCount(frameGraph.steps().size()) : 0U;
+        frameGraph.execute(frame.commandBuffer, imageIndex, context, timestamps);
         if (diag::traceEnabled()) {
             // graphMs 量的是 execute() **自身**的编排开销：屏障合批与 begin/end。
             // body 的时间由各蹦床累进 graphBodyMs_ 后在这里扣掉——它已经被 recordMs 量着，

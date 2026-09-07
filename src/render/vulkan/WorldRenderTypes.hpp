@@ -157,6 +157,14 @@ struct FrameContext final {
     std::uint32_t occlusionQueryCount = 0U;
     std::vector<world::SectionPosition> occlusionQuerySections;
     std::vector<std::uint64_t> occlusionQueryResults;
+    // RN-19d0：本帧槽位的时间戳查询池。空句柄 = 本次运行不计时（诊断关着，或这台
+    // 设备的图形队列 timestampValidBits 是 0）。与遮挡查询同一个理由每帧一份：
+    // 结果要等这一槽的围栏，跨帧共用一个池就得自己对账。
+    VkQueryPool timestampPool = VK_NULL_HANDLE;
+    // 上一次录制真正写下的槽位数（= 步数 + 1）。回读要按它读，不能按池的容量读：
+    // 图会随画质开关重编译，多读出来的是上一轮的陈值。
+    std::uint32_t timestampSlots = 0U;
+    std::vector<std::uint64_t> timestampResults;
 };
 
 // 可复用的流式网格缓冲：按尺寸档分的空闲表，加上逐帧的延迟归还队列

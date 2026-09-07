@@ -14,6 +14,7 @@
 #include "render/graph/FrameGraph.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -457,7 +458,7 @@ void buildTables(Tables& tables, const Scene* scene, bool multisampled, bool sha
 }
 
 bool submitOnce(const Device& gpu, const BakedGraph& graph, const Scene& scene,
-                std::uint32_t imageIndex) {
+                std::uint32_t imageIndex, const GpuTimestampWriter& timestamps = {}) {
     VkCommandBufferAllocateInfo allocation{};
     allocation.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocation.commandPool = gpu.commandPool;
@@ -476,7 +477,7 @@ bool submitOnce(const Device& gpu, const BakedGraph& graph, const Scene& scene,
     PassContext context{};
     context.user = const_cast<Scene*>(&scene);
     context.imageIndex = imageIndex;
-    graph.execute(commandBuffer, imageIndex, context);
+    graph.execute(commandBuffer, imageIndex, context, timestamps);
     if (!ok(vkEndCommandBuffer(commandBuffer))) {
         return false;
     }
@@ -490,6 +491,90 @@ bool submitOnce(const Device& gpu, const BakedGraph& graph, const Scene& scene,
     const bool waited = ok(vkQueueWaitIdle(gpu.queue));
     vkFreeCommandBuffers(gpu.device, gpu.commandPool, 1, &commandBuffer);
     return waited;
+}
+
+// RN-19d0：真的读一次时间戳。
+//
+// 桩测试（frame_graph_test）验的是「打了几个点、打在哪个槽、顺序上在不在 renderpass
+// 里」；那些全是**调用形态**。这里验的是另外两件桩证不了的事：
+//   ① 校验层认不认——`vkCmdResetQueryPool` 落进 renderpass 内部是这套改动最容易踩的
+//      非法操作，而它在桩里只表现为「顺序对」，在真机上才是一条 VUID。
+//      （断言不在这个函数里：validationErrors() 由 main 统一收，探针跑过就算数。）
+//   ② 读回来的数**自洽**：原始 tick 单调不减，逐步之和 == 总跨度。
+//      后者是整个报告的可信度所在——两个数各算各的，一致就说明下标没有错位。
+//
+// 拿不到时间戳能力时跳过并返回成功：它是加分项，不是门禁的替代品（与本文件其余部分同规矩）。
+int runTimestampProbe(const Device& gpu, const BakedGraph& graph, const Scene& scene) {
+    std::uint32_t familyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(gpu.physical, &familyCount, nullptr);
+    std::vector<VkQueueFamilyProperties> families(familyCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(gpu.physical, &familyCount, families.data());
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(gpu.physical, &properties);
+    const GpuTimestampScale scale{static_cast<double>(properties.limits.timestampPeriod),
+                                  gpu.queueFamily < families.size()
+                                      ? families[gpu.queueFamily].timestampValidBits
+                                      : 0U};
+    if (!scale.usable()) {
+        skip("the graphics queue reports no valid timestamp bits");
+        return 0;
+    }
+
+    const std::uint32_t slots = gpuTimestampSlotCount(graph.steps().size());
+    VkQueryPoolCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+    info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    info.queryCount = slots;
+    VkQueryPool pool = VK_NULL_HANDLE;
+    if (!ok(vkCreateQueryPool(gpu.device, &info, nullptr, &pool))) {
+        std::cerr << "FAIL: could not create a timestamp query pool\n";
+        return 1;
+    }
+
+    int failures = 0;
+    if (!submitOnce(gpu, graph, scene, 0, {pool, 0U})) {
+        std::cerr << "FAIL: the timed submit failed\n";
+        vkDestroyQueryPool(gpu.device, pool, nullptr);
+        return 1;
+    }
+
+    std::vector<std::uint64_t> ticks(slots);
+    if (!ok(vkGetQueryPoolResults(gpu.device, pool, 0U, slots, slots * sizeof(std::uint64_t),
+                                  ticks.data(), sizeof(std::uint64_t),
+                                  VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT))) {
+        std::cerr << "FAIL: reading the timestamps back failed\n";
+        vkDestroyQueryPool(gpu.device, pool, nullptr);
+        return 1;
+    }
+
+    // 原始 tick 单调不减。倒退意味着槽位写错了顺序，而那在报告里表现为某一步"负耗时"
+    // 被回绕逻辑掩成一个巨大的正数——不会有任何东西报错。
+    double sum = 0.0;
+    for (std::uint32_t index = 0; index + 1U < slots; ++index) {
+        const std::uint64_t begin = ticks[index] & scale.mask();
+        const std::uint64_t end = ticks[index + 1U] & scale.mask();
+        if (end < begin) {
+            std::cerr << "FAIL: timestamp slot " << index + 1U << " went backwards\n";
+            ++failures;
+        }
+        sum += scale.millisecondsBetween(ticks[index], ticks[index + 1U]);
+    }
+    const double total = scale.millisecondsBetween(ticks.front(), ticks.back());
+    // 逐步之和与总跨度是两条独立的算式；它们一致，就说明下标没有错位、也没有漏掉一段。
+    if (std::abs(sum - total) > 1e-6) {
+        std::cerr << "FAIL: per-step timings sum to " << sum << " ms but the whole graph spans "
+                  << total << " ms\n";
+        ++failures;
+    }
+    if (!(total > 0.0)) {
+        std::cerr << "FAIL: the whole graph measured " << total
+                  << " ms — a real submit cannot take zero time\n";
+        ++failures;
+    }
+    std::cout << "  (timestamp probe: " << graph.steps().size() << " steps, " << total
+              << " ms total)\n";
+    vkDestroyQueryPool(gpu.device, pool, nullptr);
+    return failures;
 }
 
 // 建好之后把阴影图从 UNDEFINED 直接带到 SHADER_READ_ONLY，
@@ -747,6 +832,9 @@ int runConfiguration(const Device& gpu, bool multisampled, VkFormat colorFormat,
                 ++failures;
             }
         }
+        // RN-19d0：两档都跑一次带计时的提交。剪掉阴影那一档也要跑——步数变了，
+        // reset 的范围与打点数就得跟着变，而"多 reset 一个从没写过的槽"恰好不会报错。
+        failures += runTimestampProbe(gpu, graph, scene);
     }
     vkDeviceWaitIdle(gpu.device);
     return failures;

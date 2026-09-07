@@ -17,15 +17,27 @@
 // particleSimMs 加 rainSimMs 加 particleLightMs 合计占 cpuMs 的比例达到 70% 才算主因
 // 实测只有约 4.8%，因此那条热路径维持原样不动
 
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 
 namespace mc::diag {
 
 struct FrameTrace final {
     using Clock = std::chrono::steady_clock;
+
+    // RN-19d0：GPU 侧的阶段计时。上面每一项都是 CPU 墙钟，而 §4 那张优化清单要判的
+    // 是**填充率与片元成本**——CPU 侧看不见它们，`fenceWaitMs` 只会告诉你「等了多久」，
+    // 不会告诉你等的是哪一趟。这几项来自 frame graph 的步边界时间戳，阶段集合与执行
+    // 集合同源（见 render/graph/GpuTimestamps.hpp）。
+    //
+    // 上限是槽位数，不是「今天有几步」：图会随画质开关重编译（关太阳阴影就少一步），
+    // 20f 的光影包前端还会再加。超出的步只是不进报告，不会越界。
+    static constexpr std::size_t kMaxGpuSteps = 16;
 
     // 本帧累加项（渲染线程单线程访问）
     double persistMs = 0.0;    // persistUnloadedChunk 聚合墙钟
@@ -66,6 +78,12 @@ struct FrameTrace final {
     std::uint32_t rainDropCount = 0;   // 本帧存活雨滴数
     std::uint32_t rainLookups = 0;     // RainSystem::lastUpdateLookups()（列探测的世界查询次数）
     std::uint64_t editScan = 0;  // persistUnloadedChunk 累计扫描的 edits 条数
+    // GPU 侧：整张图的跨度，以及逐步的分解。名字取自 graph 的步名，不另立一张表。
+    // 这几项是**赋值**不是累加：一帧只执行一次图，累加会把两帧的数糊在一起。
+    double gpuFrameMs = 0.0;
+    std::array<double, kMaxGpuSteps> gpuStepMs{};
+    std::array<std::string_view, kMaxGpuSteps> gpuStepName{};
+    std::uint32_t gpuStepCount = 0;
     int newCenterX = 0;
     int newCenterZ = 0;
     bool centerChanged = false;
@@ -79,6 +97,10 @@ struct FrameTrace final {
         unloadedChunks = visibleSections = saveChunkCalls = queueBatchCount = 0;
         particleCount = rainDropCount = rainLookups = 0;
         editScan = 0;
+        gpuFrameMs = 0.0;
+        gpuStepMs = {};
+        gpuStepName = {};
+        gpuStepCount = 0;
         centerChanged = false;
     }
 };

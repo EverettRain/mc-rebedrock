@@ -278,6 +278,7 @@ ResourcePlan planResources(const GraphDesc& desc) {
 
 void BakedGraph::reset() noexcept {
     steps_.clear();
+    stepNames_.clear();
     bodies_.clear();
     barrierPool_.clear();
     framebufferPool_.clear();
@@ -429,6 +430,8 @@ void BakedGraph::compile(const GraphDesc& desc, const ResourcePlan& plan) {
         step.passIndex = static_cast<std::uint16_t>(bodies_.size());
         bodies_.push_back(pass.record);
         steps_.push_back(step);
+        // RN-19d0：名字只随步表走一份，计时报告因此不可能与执行的步序错位。
+        stepNames_.push_back(pass.name);
 
         if (renderStep) {
             lastRenderStep = index;
@@ -449,12 +452,29 @@ void BakedGraph::compile(const GraphDesc& desc, const ResourcePlan& plan) {
 }
 
 void BakedGraph::execute(VkCommandBuffer commandBuffer, std::uint32_t imageIndex,
-                         const PassContext& context) const {
+                         const PassContext& context,
+                         const GpuTimestampWriter& timestamps) const {
     // 三张池的基址在循环外各取一次；循环内全是下标寻址，没有查找、没有分配
     const VkImageMemoryBarrier* const barriers = barrierPool_.data();
     const VkFramebuffer* const framebuffers = framebufferPool_.data();
     const VkClearValue* const clears = clearPool_.data();
+    // RN-19d0：不计时时这里一个 vk 入口都不多调
+    const bool timing = timestamps.active();
+    std::uint32_t timestampSlot = timestamps.firstQuery;
+    if (timing) {
+        // reset 必须在任何 renderpass 之外——`vkCmdResetQueryPool` 在 renderpass 内非法。
+        // 这里是整张图的最前面，天然满足；frame_graph_device_test 的校验层盯着这一条。
+        vkCmdResetQueryPool(commandBuffer, timestamps.pool, timestamps.firstQuery,
+                            gpuTimestampSlotCount(steps_.size()));
+    }
     for (const BakedStep& step : steps_) {
+        if (timing) {
+            // 打在**屏障之前**：一步的代价包含它自己那次布局转换，否则屏障的时间会
+            // 掉进前一步的账上，而屏障恰恰是这张图存在的理由之一。
+            // BOTTOM_OF_PIPE = 「在此之前提交的命令全部走完」，这正是边界的定义。
+            vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                timestamps.pool, timestampSlot++);
+        }
         if (step.barrierCount != 0U) {
             vkCmdPipelineBarrier(commandBuffer, step.barrierSrcStage, step.barrierDstStage, 0, 0,
                                  nullptr, 0, nullptr, step.barrierCount,
@@ -475,6 +495,11 @@ void BakedGraph::execute(VkCommandBuffer commandBuffer, std::uint32_t imageIndex
         if (step.renderPass != VK_NULL_HANDLE) {
             vkCmdEndRenderPass(commandBuffer);
         }
+    }
+    if (timing) {
+        // 收尾那一点：N 个步骤 N+1 个点，最后一段才有右端。
+        vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps.pool,
+                            timestampSlot);
     }
 }
 

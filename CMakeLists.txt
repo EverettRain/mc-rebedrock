@@ -2035,6 +2035,14 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_frame_graph_test PRIVATE mc_rebedrock_runtime)
     add_test(NAME frame_graph COMMAND mc_rebedrock_frame_graph_test)
 
+    # RN-19d0：GPU 时间戳的刻度换算。纯值计算，不碰设备也不调任何 vk* 入口——
+    # 换算错、掩码错、回绕漏掉，产出的都是「看起来很正常的毫秒数」，没有任何错误码。
+    add_executable(mc_rebedrock_gpu_timestamp_scale_test
+        tests/gpu_timestamp_scale_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_gpu_timestamp_scale_test PRIVATE mc_rebedrock_runtime)
+    add_test(NAME gpu_timestamp_scale COMMAND mc_rebedrock_gpu_timestamp_scale_test)
+
     # 交换链与场景图的格式契约：帧末那次逐字节拷贝必须是同格式的。全是 constexpr /
     # inline 的值计算，不碰设备也不调任何 vk* 入口，所以链 runtime 库拿 Vulkan 头就够。
     add_executable(mc_rebedrock_swapchain_format_test
