@@ -382,6 +382,11 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     # same trade VoxelRaycast.cpp took just above.
     src/render/ParticleSystem.cpp
     src/render/BlockAnimateTick.cpp
+    # RN-23: the entity shadow decal's collection pass. It asks the world for
+    # block states and light levels through a template callback and knows nothing
+    # about Vulkan, so it belongs here where its test links the library instead of
+    # re-listing sources -- the same trade ParticleSystem took just above.
+    src/render/EntityShadowDecal.cpp
     # RN-20a: the baked frame graph. It is the orchestration layer — it knows Vulkan
     # handles and descriptions, nothing about WorldRenderer or VulkanRenderer::Impl —
     # so it belongs in the runtime library where its test can link the library instead
@@ -791,6 +796,18 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_sky_light_column_test PRIVATE mc_rebedrock_runtime)
     target_include_directories(mc_rebedrock_sky_light_column_test PRIVATE src)
     add_test(NAME sky_light_column COMMAND mc_rebedrock_sky_light_column_test)
+
+    # RN-23: the entity shadow decal's per-cell collection. World access is a
+    # template callback, so this feeds it an array world and needs no Vulkan.
+    add_executable(mc_rebedrock_entity_shadow_decal_test
+        tests/entity_shadow_decal_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_entity_shadow_decal_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_entity_shadow_decal_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME entity_shadow_decal COMMAND mc_rebedrock_entity_shadow_decal_test)
 
     add_executable(mc_rebedrock_vertex_lighting_test
         tests/vertex_lighting_test.cpp

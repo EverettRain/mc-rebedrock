@@ -886,6 +886,36 @@ struct BlockCollisionSpan final {
     return blockShape(state);
 }
 
+// 26.1's `BlockStateBase.isCollisionShapeFullBlock` — `Block.isShapeFullBlock` of
+// the collision shape, i.e. "does what stops an entity fill this whole cell".
+// It is a question about geometry, so it lives here with the shape rather than
+// being re-derived at a consumer: RN-23's entity shadow decal only lands on
+// cells that answer true, and a second hand-written "is it a full cube" would be
+// the sixth copy of a shape test this header exists to have exactly one of.
+//
+// A Column answers it by spanning 0..1 (a slab, farmland and a closed trapdoor
+// do not). A Boxes shape answers true when a *single* box fills the cell, the
+// same union-free rule `faceOccludesFully` above takes, and for the same reason:
+// no shape in this roster is a full cube only as the union of several boxes.
+[[nodiscard]] constexpr bool isCollisionShapeFullBlock(BlockState state) {
+    const BlockShape shape = collisionShape(state);
+    switch (shape.kind) {
+    case ShapeKind::Empty:
+        return false;
+    case ShapeKind::Column:
+        return shape.bottom <= 0.0F && shape.top >= 1.0F;
+    case ShapeKind::Boxes:
+        for (const ShapeBox& box : shape.boxes) {
+            if (box.minX <= 0.0F && box.maxX >= 1.0F && box.minY <= 0.0F && box.maxY >= 1.0F &&
+                box.minZ <= 0.0F && box.maxZ >= 1.0F) {
+                return true;
+            }
+        }
+        return false;
+    }
+    return false;
+}
+
 [[nodiscard]] constexpr BlockCollisionSpan collisionSpan(BlockState state) {
     // The vertical projection of `collisionShape`, not of `blockShape`: since
     // AR-B4-1 the two differ for a closed fence gate (1.5 vs 1.0), and the
