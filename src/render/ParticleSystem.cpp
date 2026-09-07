@@ -152,18 +152,29 @@ bool ParticleSystem::add(const ParticleSpawn& spawn) {
     // 颜色 = tintBase × U[brightnessMin, brightnessMax]。不着色的类型两端都是 1
     // 且 tintBase 是白，打包出来正好是「白」，不是哨兵 0 —— 白色的乘法本就是恒等，
     // 走同一条公式不必分支
-    if (spawn.tint != kNoParticleTint) {
-        // 逐发射的颜色压过类型表的常量颜色：位置相关的色（生物群系水色）只有发射方知道
-        particle.tint = spawn.tint;
-    } else if (definition.tintBase == glm::vec3{1.0F, 1.0F, 1.0F} &&
-        definition.brightnessMin == 1.0F && definition.brightnessMax == 1.0F) {
-        particle.tint = kNoParticleTint;
-    } else {
-        const float brightness =
-            definition.brightnessMin +
-            randomUnit() * (definition.brightnessMax - definition.brightnessMin);
-        particle.tint = packParticleTint(definition.tintBase * brightness);
+    // 两者**相乘**，不是逐发射压过类型表：26.1 `TerrainParticle` 先无条件写下 0.6，
+    // 再 `*=` tintSource 的颜色。从前这里是「有逐发射色就用它、否则才看类型表」，
+    // 于是给 BlockDust 配上那个 0.6 之后，凡是带群系色的方块（树叶、矮草、甘蔗）
+    // 都会把它整个丢掉——两条规则各管一半，谁也不该盖住谁。
+    //
+    // 亮度抖动只在区间非退化时抽随机数。这不是省一次乘法，是**保持随机序列**：
+    // 除附魔粒子外每一种的两端都是 1，无条件抽一次会把后面所有粒子的随机流整体移位。
+    const float brightness =
+        definition.brightnessMin == definition.brightnessMax
+            ? definition.brightnessMin
+            : definition.brightnessMin +
+                  randomUnit() * (definition.brightnessMax - definition.brightnessMin);
+    const bool hasSpawnTint = spawn.tint != kNoParticleTint;
+    glm::vec3 color = definition.tintBase * brightness;
+    if (hasSpawnTint) {
+        color *= unpackParticleTint(spawn.tint);
     }
+    // 哨兵的含义是「发射方没给颜色」，**不是**「颜色恰好是白」——RN-21 那条
+    // 「把 tint 改回 0 要立刻变红」的护栏正是靠这个区分工作的，而生物群系水色在某些
+    // 夹具里恰好就是白。所以只有「没给逐发射色 + 类型表也是白」才落回哨兵；
+    // 给了色就照实打包，哪怕打出来是 0xFFFFFF。
+    const bool untinted = !hasSpawnTint && color == glm::vec3{1.0F, 1.0F, 1.0F};
+    particle.tint = untinted ? kNoParticleTint : packParticleTint(color);
 
     switch (definition.motion) {
     case ParticleMotion::Ballistic:

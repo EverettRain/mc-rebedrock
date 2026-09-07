@@ -7,6 +7,7 @@
 #include "world/World.hpp"
 
 #include <cassert>
+#include <cmath>
 #include <utility>
 
 int main() {
@@ -210,7 +211,55 @@ int main() {
         mc::render::ParticleSystem leaves;
         leaves.spawnBlockBreak({8, 2, 8}, mc::world::Block::OakLeaves, leafTint);
         assert(!leaves.particles().empty());
-        assert(leaves.particles().front().tint == leafTint);
+
+        // 26.1 `TerrainParticle` 的构造：先无条件 `rCol = gCol = bCol = 0.6F`，
+        // **然后**才 `*=` tintSource 的颜色。两条规则相乘，不是逐发射压过类型表——
+        // 这条断言从前写的是 `== leafTint`，也就是把那个 0.6 整个丢掉。
+        const auto expectedLeaf = mc::render::packParticleTint(
+            mc::render::unpackParticleTint(leafTint) * 0.6F);
+        assert(leaves.particles().front().tint == expectedLeaf);
+        assert(expectedLeaf != leafTint && "0.6 必须真的改变了结果，否则这条断言是空的");
+
+        // 不带群系色的方块（石头）同样要暗一档：0.6 来自类型表，与发射方给不给色无关。
+        // 它**不是**哨兵——哨兵的含义是「发射方没给颜色」，而这里颜色确实是 0.6 灰。
+        mc::render::ParticleSystem stone;
+        stone.spawnBlockBreak({8, 2, 8}, mc::world::Block::Stone);
+        assert(!stone.particles().empty());
+        assert(stone.particles().front().tint ==
+               mc::render::packParticleTint({0.6F, 0.6F, 0.6F}));
+        assert(stone.particles().front().tint != mc::render::kNoParticleTint);
+
+        // 而雨和水花那几种的类型表是白，相乘是恒等——RN-21 的行为一个字节都不该动。
+        // 上面那三条 allTinted 已经钉住了「给了色就照实带上」，这里补「没给色仍是哨兵」。
+        mc::render::ParticleSystem plainImpact;
+        plainImpact.spawnRainImpact({8.5F, 2.0F, 8.5F}, true);
+        assert(!plainImpact.particles().empty());
+        assert(plainImpact.particles().front().tint == mc::render::kNoParticleTint);
+    }
+
+    // 着色不得消耗随机数（除非亮度区间真的非退化）。
+    //
+    // 这一段是补出来的：sabotage「亮度抖动无条件抽一次随机数」在上面每一条断言下都是
+    // 绿的——颜色一个字节没变，变的是**随机流的相位**。每多抽一次，后面每一颗粒子的
+    // 尺寸、速度、寿命就整体移位一格，而那是逐帧可见的、又没有任何断言看着的。
+    //
+    // 判据落在尺寸序列上：尺寸在 `add()` **之前**于发射点抽出，所以 add 里多抽一次会
+    // 让**下一颗**的尺寸改变。第 0 颗因此不动，第 1 颗起全变——断言取前八颗。
+    // 这些是从当前实现捕获的黄金值，它们的意义不是「必须是这些数」，而是
+    // 「不要在不该抽的时候抽随机数」；真要改随机流，连同这里一起改并说明理由。
+    {
+        mc::render::ParticleSystem dust;
+        dust.spawnBlockBreak({8, 2, 8}, mc::world::Block::Stone);
+        assert(dust.particles().size() == 64U);
+        constexpr float kExpectedSizes[8] = {
+            0.071228199F, 0.092889383F, 0.098835059F, 0.076254770F,
+            0.071592093F, 0.050190657F, 0.065863699F, 0.066037469F,
+        };
+        for (std::size_t index = 0; index < 8U; ++index) {
+            const float actual = dust.particles()[index].size;
+            assert(std::fabs(actual - kExpectedSizes[index]) < 1e-6F &&
+                   "破坏粉尘的尺寸序列变了：着色路径多抽或少抽了随机数");
+        }
     }
     return 0;
 }

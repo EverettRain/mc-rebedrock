@@ -8,6 +8,14 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- The chips that fly off a block you break are no longer brighter than the block
+  they came from. Minecraft darkens terrain particles to sixty percent before it
+  applies any colour to them, and that step was missing here, so a handful of
+  stone threw off flecks lighter than the stone. Blocks that take a biome colour
+  -- leaves, tall grass, sugar cane -- now get both: the darkening and the
+  colour, multiplied, the way the game does it, instead of the colour replacing
+  the darkening. (Breaking a grass block still throws dirt, not green, which is
+  also what the game does.)
 - With experimental sun shadows enabled, shadow edges no longer crawl and shimmer
   as the sun moves. Pausing the day fixed them; letting it run made every shadow
   edge in the world reshape its jagged staircase twenty times a second. The cause

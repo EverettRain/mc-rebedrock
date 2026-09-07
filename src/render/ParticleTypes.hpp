@@ -88,8 +88,12 @@ struct ParticleTypeDefinition final {
 
 inline constexpr std::array<ParticleTypeDefinition, static_cast<std::size_t>(ParticleType::Count)>
     kParticleTypes{{
-        // BlockDust
-        {},
+        // BlockDust：26.1 `TerrainParticle` 的构造无条件先写 `rCol = gCol = bCol = 0.6F`，
+        // **然后**才乘 tintSource 的颜色。所以碎屑永远比它来自的那个方块暗一档——
+        // 这不是着色，是这一类粒子固有的常数，因此它属于类型表而不是发射点。
+        // （草方块的 tintSource 把 `colorAsTerrainParticle` 覆写成白，所以破坏草方块
+        // 掉的是泥土色而不是绿色；那一条在发射点已经处理，与这里的 0.6 是两件事。）
+        {.tintBase = {0.6F, 0.6F, 0.6F}},
         // WaterSplash
         {},
         // RainImpact
@@ -138,5 +142,19 @@ static_assert(particleTypeOf(ParticleType::BlockDust).sprite == kNoParticleSprit
 
 // 不着色的哨兵。着色器把 0 解成白色而不是黑色。
 inline constexpr std::uint32_t kNoParticleTint = 0U;
+
+// `packParticleTint` 的逆。存在的理由只有一个：类型表的常量色与逐发射的位置相关色
+// 必须**相乘**（26.1 `TerrainParticle` 就是 `0.6` 再 `*=` tint），而发射侧交上来的是
+// 已经打包好的整数，要乘就得先解回来。
+[[nodiscard]] constexpr glm::vec3 unpackParticleTint(std::uint32_t packed) {
+    return {static_cast<float>((packed >> 16U) & 0xFFU) / 255.0F,
+            static_cast<float>((packed >> 8U) & 0xFFU) / 255.0F,
+            static_cast<float>(packed & 0xFFU) / 255.0F};
+}
+
+// 类型表说 BlockDust 暗一档，而不是让每个发射点自己记得乘 0.6。
+static_assert(particleTypeOf(ParticleType::BlockDust).tintBase.x == 0.6F &&
+              particleTypeOf(ParticleType::BlockDust).tintBase.y == 0.6F &&
+              particleTypeOf(ParticleType::BlockDust).tintBase.z == 0.6F);
 
 } // namespace mc::render
