@@ -2035,6 +2035,21 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_frame_graph_test PRIVATE mc_rebedrock_runtime)
     add_test(NAME frame_graph COMMAND mc_rebedrock_frame_graph_test)
 
+    # 一个 GpuMesh 拥有几条缓冲，只有一张表。释放路径有两条（运行期归还池、退出期销毁），
+    # 各自手抄成员名就会漏——RN-22 添第三条缓冲时漏了退出期那条，症状是含半透明的场景
+    # 退出时 VMA 断言，而八张预览图全部正常写出。读源码断言那张表覆盖全部成员。
+    add_executable(mc_rebedrock_gpu_mesh_buffers_test
+        tests/gpu_mesh_buffers_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_gpu_mesh_buffers_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_gpu_mesh_buffers_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+        "${vma_SOURCE_DIR}/include")
+    target_compile_definitions(mc_rebedrock_gpu_mesh_buffers_test PRIVATE
+        "MC_REBEDROCK_WORLD_RENDER_TYPES_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/WorldRenderTypes.hpp\"")
+    add_test(NAME gpu_mesh_buffers COMMAND mc_rebedrock_gpu_mesh_buffers_test)
+
     # Windows 交叉编译的导入库靠 cmake/vulkan-1.def 那张**手工名单**。漏一行只在
     # mingw 链接期报错，Linux/macOS 走真 loader 照常编过——这条测试把文件头那句
     # 「自查」变成每次 ctest 都跑一遍。它不碰设备，只读源码与那份 .def。

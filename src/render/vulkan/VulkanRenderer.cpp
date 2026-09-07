@@ -4265,8 +4265,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (allocator != VK_NULL_HANDLE) {
                 for (auto& [position, mesh] : gpuMeshes) {
                     static_cast<void>(position);
-                    destroyBuffer(mesh.indexBuffer);
-                    destroyBuffer(mesh.vertexBuffer);
+                    for (AllocatedBuffer* buffer : ownedBuffers(mesh)) {
+                        destroyBuffer(*buffer);
+                    }
                 }
                 const auto destroyStreamPool = [this](StreamBufferPool& pool) {
                     for (auto& slot : pool.deferred) {

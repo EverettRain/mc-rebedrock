@@ -138,6 +138,21 @@ struct GpuMesh final {
     glm::ivec3 sectionCoordinates{};
 };
 
+// 一个 GpuMesh 拥有的全部缓冲，按声明序。
+//
+// 释放路径有**两条**：运行期退回流式池（`WorldRenderer::retireMesh`），退出期直接销毁
+// （`VulkanRenderer::Impl` 的析构）。两条各自手抄一遍成员名，就会出现「加了一条缓冲、
+// 只改了其中一条路径」——RN-22 添 `translucentIndexBuffer` 时正是如此：退出期那条只销毁
+// 了 vertex 与 index 两条，于是**任何含半透明几何的场景退出时都泄漏一条缓冲**，
+// debug 下表现为 VMA 的 `Some allocations were not freed` 断言。八张图全部正常写出，
+// 只有退出码非零——离屏验收看不见它。
+//
+// 加一条缓冲只改这里。`tests/gpu_mesh_buffers_test.cpp` 钉住「这张表覆盖 GpuMesh 的
+// 全部 AllocatedBuffer 成员」。
+[[nodiscard]] inline std::array<AllocatedBuffer*, 3> ownedBuffers(GpuMesh& mesh) {
+    return {&mesh.vertexBuffer, &mesh.indexBuffer, &mesh.translucentIndexBuffer};
+}
+
 struct BufferCopyJob final {
     VkBuffer source = VK_NULL_HANDLE;
     VkBuffer destination = VK_NULL_HANDLE;

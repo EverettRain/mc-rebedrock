@@ -768,9 +768,9 @@ class WorldRenderer final {
 
     void retireMesh(FrameContext& frame, GpuMesh& mesh) {
         static_cast<void>(frame);
-        deferStreamBufferRelease(deviceBufferPool_, mesh.translucentIndexBuffer);
-        deferStreamBufferRelease(deviceBufferPool_, mesh.indexBuffer);
-        deferStreamBufferRelease(deviceBufferPool_, mesh.vertexBuffer);
+        for (AllocatedBuffer* buffer : ownedBuffers(mesh)) {
+            deferStreamBufferRelease(deviceBufferPool_, *buffer);
+        }
         mesh = {};
     }
 
