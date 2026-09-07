@@ -4,6 +4,7 @@
 #include "render/vulkan/HudRenderer.hpp"
 #include "render/vulkan/HudTypes.hpp"
 #include "render/vulkan/OffscreenTarget.hpp"
+#include "render/vulkan/SwapchainFormat.hpp"
 #include "render/vulkan/SceneReadback.hpp"
 #include "render/vulkan/TextureManager.hpp"
 #include "render/vulkan/VulkanDevice.hpp"
@@ -5381,32 +5382,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 于是着色器投影用的矩阵与预通道渲染深度图用的矩阵来自同一帧，两者之间没有相机移动的滞后
     // 帧的最后一步是把场景图逐字节 copy 进交换链图像，因此只接受 8 位四通道的表面格式
     // ——它与场景图必须字节兼容，通道序也必须一致（见 sceneUnormFormat）
-    [[nodiscard]] static bool isSupportedSurfaceFormat(VkFormat format) {
-        return format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM ||
-               format == VK_FORMAT_R8G8B8A8_SRGB || format == VK_FORMAT_R8G8B8A8_UNORM;
-    }
-
-    [[nodiscard]] VkSurfaceFormatKHR
-    chooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) const {
-        for (const auto& format : formats) {
-            if (format.format == VK_FORMAT_B8G8R8A8_SRGB &&
-                format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-                return format;
-            }
-        }
-        for (const auto& format : formats) {
-            if (isSupportedSurfaceFormat(format.format) &&
-                format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-                return format;
-            }
-        }
-        if (!formats.empty() && isSupportedSurfaceFormat(formats.front().format)) {
-            return formats.front();
-        }
-        throw std::runtime_error(
-            "No 8-bit RGBA/BGRA surface format: the GUI pass composites into a byte-compatible "
-            "scene image and the frame is copied out verbatim");
-    }
 
     [[nodiscard]] VkPresentModeKHR choosePresentMode(const std::vector<VkPresentModeKHR>& modes,
                                                      bool vsync) const {
@@ -5496,6 +5471,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         checkVk(vkGetSwapchainImagesKHR(device, swapchain, &imageCount, swapchainImages.data()),
                 "vkGetSwapchainImagesKHR");
         swapchainFormat = format.format;
+        // 帧末的 vkCmdCopyImage 是逐字节搬运，同格式时实现不必建重解释格式的纹理视图。
+        // 挑不到同格式的 surface 时照常跑（跨格式拷贝是合法的），但必须说出来——
+        // MoltenVK v1.4.2 的黑帧与退出崩溃都挂在那条视图缓存上，见 SwapchainFormat.hpp。
+        if (!presentCopyIsSameFormat(swapchainFormat)) {
+            std::cout << "Swapchain format " << swapchainFormat << " differs from the scene image ("
+                      << sceneUnormFormat()
+                      << "); the end-of-frame copy is cross-format on this surface\n";
+        }
         imagesInFlight.assign(imageCount, VK_NULL_HANDLE);
     }
 
@@ -7586,10 +7569,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 通道序必须跟交换链一致——最后那步是 vkCmdCopyImage，逐字节搬运不做任何转换，
     // BGRA 的场景图 copy 进 RGBA 的交换链会把红蓝对调。
     [[nodiscard]] VkFormat sceneUnormFormat() const {
-        return swapchainFormat == VK_FORMAT_R8G8B8A8_UNORM ||
-                       swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB
-                   ? VK_FORMAT_R8G8B8A8_UNORM
-                   : VK_FORMAT_B8G8R8A8_UNORM;
+        return sceneImageFormat(swapchainFormat);
     }
     VkExtent2D swapchainExtent{};
     VkFormat depthFormat = VK_FORMAT_UNDEFINED;

@@ -2035,6 +2035,17 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_frame_graph_test PRIVATE mc_rebedrock_runtime)
     add_test(NAME frame_graph COMMAND mc_rebedrock_frame_graph_test)
 
+    # 交换链与场景图的格式契约：帧末那次逐字节拷贝必须是同格式的。全是 constexpr /
+    # inline 的值计算，不碰设备也不调任何 vk* 入口，所以链 runtime 库拿 Vulkan 头就够。
+    add_executable(mc_rebedrock_swapchain_format_test
+        tests/swapchain_format_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_swapchain_format_test PRIVATE mc_rebedrock_runtime)
+    target_compile_definitions(mc_rebedrock_swapchain_format_test PRIVATE
+        "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
+    add_test(NAME swapchain_format COMMAND mc_rebedrock_swapchain_format_test)
+
+
     # RN-20a: the same graph, executed for real against lavapipe with the Khronos
     # validation layer switched on. The stub test above checks call counts and
     # arguments; this one checks *semantic legality* — layouts, barrier placement,
