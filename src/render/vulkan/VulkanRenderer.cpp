@@ -1736,6 +1736,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                               << " particleSimMs=" << t.particleSimMs
                               << " rainSimMs=" << t.rainSimMs
                               << " particleLightMs=" << t.particleLightMs
+                              << " tlResortMs=" << t.translucentResortMs
+                              << " tlResorts=" << t.translucentResorts
+                              << " tlSections=" << t.translucentSections
                               << " particles=" << t.particleCount
                               << " drops=" << t.rainDropCount
                               << " rainLookups=" << t.rainLookups
@@ -5838,15 +5841,27 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         checkVk(result, "vkCreateGraphicsPipelines");
 
         depthStencil.depthWriteEnable = VK_FALSE;
-        // 半透明通道是双面的，不做背面剔除
-        // 染色玻璃、冰、水这类可透视方块必须显示远端的内壁，尽管那些面背对相机
-        // 透过近处的半透明面看过去，理应看到后墙的颜色
-        // 沿用不透明通道的 VK_CULL_MODE_BACK_BIT 会把远端面剔掉，那里就直接看穿了
-        // 普通玻璃掩盖了这个问题，因为它的贴图几乎全是 alpha 0，本来就没什么可看
-        // 但染色玻璃是实心填充，破洞一目了然
-        // 不透明与 cutout 通道保留背面剔除，cutout 的十字模型自己就输出了正反两种绕序
-        // 因此这里的 NONE 只作用于半透明管线，建完立刻恢复
-        rasterization.cullMode = VK_CULL_MODE_NONE;
+        // RN-22：半透明通道与不透明通道一样做背面剔除，`rasterization` 原样沿用。
+        //
+        // 这里曾经是 `cullMode = VK_CULL_MODE_NONE`，为的是修「染色玻璃看穿」。
+        // 那个补丁现在删掉了，两条理由：
+        //
+        // 一、vanilla 不这么做。`RenderPipelines.TRANSLUCENT_TERRAIN`（:235）继承
+        //    `TERRAIN_SNIPPET → GENERIC_BLOCKS_SNIPPET → FOG_SNIPPET`，全链没有一处
+        //    `withCull(false)`，而 `RenderPipeline.java:383` 是 `cull.orElse(true)`。
+        //    半透明地形在 26.1 里**是**背面剔除的。
+        // 二、那个补丁修不了它声称修的东西。玻璃贴着石头时，玻璃朝石头那一面本来就没
+        //    进网格（石头封住了它），双面渲染不会把它变出来；该看见的是石头自己朝向
+        //    玻璃的那一面，而 RN-8e 给玻璃标上 `.noOcclusion()` 之后它确实在画。
+        //    双面唯一真正多画出来的，是每片半透明面**背对相机的那一份**——法线朝里、
+        //    着色却按朝外的法线算（片元着色器读的是烘死的顶点法线，不是
+        //    `gl_FrontFacing`），于是内层方块的背面被画在最前、看着像正面而边框是
+        //    内侧的颜色。那正是这一轮要修的现场缺陷，双面是它的成因之一。
+        //
+        // 唯一真需要「从背面看得见」的半透明面是流体的水面：它绕序朝上，人在水下抬头
+        // 看的是它的背面。vanilla 用的是**再发一片反向绕序的 quad**
+        // （`FluidRenderer.addFace(..., addBackFace)`），不是关掉整个通道的剔除——
+        // 见 ChunkMesher 的 `shouldRenderBackwardUpFace`。
         colorAttachment.blendEnable = VK_TRUE;
         colorAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
         colorAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
@@ -5857,7 +5872,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const auto translucentResult = vkCreateGraphicsPipelines(
             device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &worldPipelines_.translucentPipeline);
         checkVk(translucentResult, "vkCreateGraphicsPipelines(translucent)");
-        rasterization.cullMode = VK_CULL_MODE_BACK_BIT; // restore for the cutout pipeline
         depthStencil.depthWriteEnable = VK_TRUE;
         colorAttachment.blendEnable = VK_FALSE;
 

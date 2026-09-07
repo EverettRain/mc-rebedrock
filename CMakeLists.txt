@@ -1305,6 +1305,32 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME shaped_block_occlusion COMMAND mc_rebedrock_shaped_block_occlusion_test)
+    # RN-22: the translucent pass culls back faces like every other terrain pass,
+    # and the water surface stays visible from below because the mesh emits a
+    # reverse-wound twin. Needs the renderer's source to read the pipeline's
+    # cullMode, which no headless build ever creates.
+    add_executable(mc_rebedrock_translucent_face_culling_test
+        tests/translucent_face_culling_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_translucent_face_culling_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_translucent_face_culling_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    target_compile_definitions(mc_rebedrock_translucent_face_culling_test PRIVATE
+        "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
+    add_test(NAME translucent_face_culling COMMAND mc_rebedrock_translucent_face_culling_test)
+    # RN-22: the quad-level translucency sort — order, resort trigger, and the
+    # promise that reordering permutes index groups rather than rebuilding them.
+    add_executable(mc_rebedrock_translucent_quad_sort_test
+        tests/translucent_quad_sort_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_translucent_quad_sort_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_translucent_quad_sort_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME translucent_quad_sort COMMAND mc_rebedrock_translucent_quad_sort_test)
     add_executable(mc_rebedrock_multi_player_test
         tests/multi_player_test.cpp
     )
@@ -1867,6 +1893,13 @@ if(BUILD_TESTING)
     add_executable(mc_rebedrock_sun_shadow_benchmark EXCLUDE_FROM_ALL
         tests/sun_shadow_benchmark.cpp src/render/SunShadowMap.cpp src/render/Frustum.cpp)
     target_include_directories(mc_rebedrock_sun_shadow_benchmark PRIVATE src "${glm_SOURCE_DIR}")
+
+    # RN-22: what one translucency resort costs. Not run by ctest.
+    add_executable(mc_rebedrock_translucent_sort_benchmark EXCLUDE_FROM_ALL
+        tests/translucent_sort_benchmark.cpp)
+    target_link_libraries(mc_rebedrock_translucent_sort_benchmark PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_translucent_sort_benchmark PRIVATE
+        src "${glm_SOURCE_DIR}")
 
     add_executable(mc_rebedrock_grass_overlay_depth_test
         tests/grass_overlay_depth_test.cpp

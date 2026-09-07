@@ -1399,6 +1399,50 @@ void appendWaterFace(
     for (const auto index : indices) {
         mesh.indices.push_back(firstVertex + index);
     }
+    // RN-22: the underside of the surface, as a second quad rather than as a
+    // pass-wide `cullMode = NONE`.
+    //
+    // A fluid's top quad winds upward, so a camera under the surface sees its
+    // BACK. 26.1's translucent terrain pass culls back faces like every other
+    // terrain pass (`RenderPipelines.TRANSLUCENT_TERRAIN` inherits
+    // `cull.orElse(true)`), and it makes the underside visible by emitting a
+    // second, reverse-wound copy — `FluidRenderer.addFace(..., addBackFace)`,
+    // FluidRenderer.java:192.
+    //
+    // Vanilla gates that copy on `FluidState.shouldRenderBackwardUpFace`
+    // (FluidState.java:65), a 3x3 probe of the ring above asking whether any cell
+    // there is neither the same fluid nor a solid-render block. That probe is not
+    // ported, because at THIS call site it is provably always true: the top face
+    // is only meshed at all when `shouldRenderFace` said the cell above is
+    // neither the same fluid (`skipsRenderingAgainstSelf`) nor sealing the shared
+    // face — and a solid-render block seals it. So the probe's own centre cell
+    // already answers true whenever we get here, and the other eight cannot
+    // change that. Porting the loop would be nine snapshot reads per water
+    // surface cell to recompute a constant. If the face rule ever loosens enough
+    // to break that implication, the cost is one invisible quad, never a missing
+    // surface.
+    //
+    // Four fresh vertices, not six more indices into the four above: every
+    // consumer downstream — the quad-level translucency sort in particular —
+    // takes "quad q owns vertices[4q..4q+3]" as given, and a 12-index quad would
+    // silently break it. Vanilla pushes four vertices here too
+    // (FluidRenderer.java:367).
+    //
+    // The copy keeps the front face's normal and lighting: vanilla reuses
+    // `topColor` for the back face as well, so the underside of a water surface
+    // is lit like its top, not like a downward face.
+    if (topFace) {
+        const std::array<render::VoxelVertex, 4> front{
+            mesh.vertices[firstVertex + 0U], mesh.vertices[firstVertex + 1U],
+            mesh.vertices[firstVertex + 2U], mesh.vertices[firstVertex + 3U]};
+        const auto backFirstVertex = static_cast<std::uint32_t>(mesh.vertices.size());
+        for (const auto& vertex : front) {
+            mesh.vertices.push_back(vertex);
+        }
+        for (auto iterator = indices.rbegin(); iterator != indices.rend(); ++iterator) {
+            mesh.indices.push_back(backFirstVertex + *iterator);
+        }
+    }
 }
 
 // RN-8a: everything the *current* cell contributes to the cull decision, read

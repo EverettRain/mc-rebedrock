@@ -12,6 +12,17 @@ simple versioned history while it is in beta.
   from the sun no longer show shadows cast onto them by geometry above. Sun-facing
   shadows keep their strength and edges; ambient skylight and direct sunlight still
   share the existing lighting channel.
+- Things seen through glass are layered in the right order now. Translucent faces
+  were drawn in the order the mesher happened to emit them, which has nothing to
+  do with where you stand, so the far wall of a glass room was routinely painted
+  over the near one; and every translucent face was drawn from both sides, with
+  the inward-facing copy shaded as if you were looking at its outer side - so the
+  back of an inner block read as a front, with the frame still tinted the colour
+  of the inside. Translucent faces are now drawn back to front by distance from
+  the viewer, and, like opaque ones, only from the side facing you. Stained glass
+  layered front to back, the inside walls of a glass box, and the water surface
+  seen from below all match vanilla now. The ordering is only recomputed when you
+  leave the region you were standing in, so standing still costs nothing.
 - Inner corners and stair backs are lit the way vanilla lights them. Where a wall
   meets a floor, the shading sampled the solid block diagonally behind the corner;
   Minecraft does not look at that block at all once both edges beside it are
