@@ -46,6 +46,7 @@
 #include "render/SectionDeliveryQueue.hpp"
 #include "render/StreamingBudget.hpp"
 #include "render/SunShadowMap.hpp"
+#include "render/EntityRenderDraws.hpp"
 #include "ui/Language.hpp"
 #include "ui/TextFont.hpp"
 #include "ui/UiFrameData.hpp"
@@ -990,8 +991,8 @@ class WorldRenderer final {
         }
         // 光锥剔除 + 按光源空间深度截断到 kMaxSunShadowCasters（见 SunShadowMap.hpp）。
         // 三个 vector 都是成员，clear() 保留容量，因此稳态下逐帧零分配。
-        selectSunShadowCasters(shadowLightViewProj, shadowSunDirection_, shadowCasterBounds_,
-                               shadowCasterSelection_);
+        selectSunShadowSceneCasters(shadowLightViewProj, shadowSunDirection_, shadowCasterBounds_,
+            entityDraws_.casters, shadowCasterSelection_, shadowEntitySelection_);
         VkViewport viewport{};
         viewport.width = static_cast<float>(shadowTarget.width());
         viewport.height = static_cast<float>(shadowTarget.height());
@@ -1011,9 +1012,48 @@ class WorldRenderer final {
                                  mesh->opaque.indexOffset, VK_INDEX_TYPE_UINT32);
             vkCmdDrawIndexed(frame.commandBuffer, mesh->opaque.indexCount, 1, 0, 0, 0);
         }
+        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          pipelines.entityShadowPipeline);
+        vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipelines.entityShadowPipelineLayout, 0, 1, &frame.descriptorSet, 0, nullptr);
+        for (const std::size_t index : shadowEntitySelection_) {
+            const auto& caster = entityDraws_.casters[index];
+            for (std::size_t i = caster.firstDraw; i < caster.firstDraw + caster.drawCount; ++i) {
+                const auto& draw = entityDraws_.draws[i];
+                vkCmdPushConstants(frame.commandBuffer, pipelines.entityShadowPipelineLayout,
+                    VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(draw.push), &draw.push);
+                vkCmdDraw(frame.commandBuffer, draw.vertexCount, 1, draw.firstVertex, 0);
+            }
+        }
         if (!diagnosticsOnce_.shadowCasters && !shadowCasterSelection_.empty()) {
             diagnosticsOnce_.shadowCasters = true;
             std::cout << "[shadow] pre-pass " << shadowCasterSelection_.size() << " casters\n";
+        }
+    }
+
+    void drawCollectedEntities(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
+        const glm::mat4 cameraView = viewBobbingMatrix() * renderViewMatrix();
+        VkPipeline bound = VK_NULL_HANDLE;
+        for (const auto& caster : entityDraws_.casters) {
+            if (caster.kind == ShadowEntityKind::Player &&
+                cameraPerspective == CameraPerspective::FirstPerson) continue;
+            const VkPipeline pipeline = caster.kind == ShadowEntityKind::Decal
+                ? pipelines.itemShadowPipeline : pipelines.itemPipeline;
+            if (bound != pipeline) {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    pipelines.itemPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+                bound = pipeline;
+            }
+            for (std::size_t i = caster.firstDraw; i < caster.firstDraw + caster.drawCount; ++i) {
+                const auto& draw = entityDraws_.draws[i];
+                ItemPush push = draw.push;
+                if (push.data.x == kItemModeGeneratedItem)
+                    push.viewModelTransform = cameraView * push.viewModelTransform;
+                vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout,
+                    VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
+                vkCmdDraw(commandBuffer, draw.vertexCount, 1, draw.firstVertex, 0);
+            }
         }
     }
 
@@ -1041,7 +1081,7 @@ class WorldRenderer final {
         vkCmdDraw(commandBuffer, 6U, 1, 0, 0);
     }
 
-    void drawItemEntities(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
+    void collectItemEntities() {
         // 两者都读逐 tick 快照，理由和生物一样：实时容器归模拟侧所有
         // 先把按值返回的快照绑到局部变量——绑定到按值返回对象的成员引用并不会延长其生命周期
         //
@@ -1058,10 +1098,7 @@ class WorldRenderer final {
         if (snapshotItems.empty() && snapshotFallingBlocks.empty() && snapshotOrbs.empty()) {
             return;
         }
-        if (!snapshotItems.empty()) {
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemShadowPipeline);
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    pipelines.itemPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+        if (drawEntityShadowDecal(!shadowDisabled) && !snapshotItems.empty()) {
             for (const auto& entity : snapshotItems) {
                 const glm::vec3 renderedPosition =
                     entity.previousPosition +
@@ -1090,21 +1127,16 @@ class WorldRenderer final {
                     {kItemModeEntityShadow, opacity, 0.0F, 0.0F},
                     {0.0F, 0.0F, 0.0F, 0.0F},
                 };
-                vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
-                                   sizeof(shadowPush), &shadowPush);
-                vkCmdDraw(commandBuffer, 36, 1, 0, 0);
+                entityDraws_.begin(ShadowEntityKind::Decal);
+                entityDraws_.append(shadowPush, 36, 0);
             }
         }
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipelineLayout,
-                                0, 1, &descriptorSet, 0, nullptr);
         // 手持物生成的 2.5D 薄片顶点数，对应 item_entity.vert 的 data.x 落在 (6.5,7.5) 模式
         // 计为正反面 12 个顶点，加上 16x16 的边缘四边形
         constexpr std::uint32_t kGeneratedItemVertexCount = 12U + 16U * 16U * 4U * 6U;
-        // 该模式把视图矩阵烘进变换后再投影，即 gl_Position = projection * viewModelTransform
-        // 掉落物因此和世界用同一套视图，包括视角摇晃
-        const glm::mat4 cameraView = viewBobbingMatrix() * renderViewMatrix();
+        // 普通掉落物存世界矩阵；颜色提交时才乘 view，深度通道直接使用世界矩阵。
         for (const auto& entity : snapshotItems) {
+            entityDraws_.begin(ShadowEntityKind::Item);
             const glm::vec3 renderedPosition =
                 entity.previousPosition +
                 (entity.position - entity.previousPosition) * itemAlpha;
@@ -1175,9 +1207,7 @@ class WorldRenderer final {
                         const ItemPush push = makeDroppedBlockItemFacePush(
                             face, world::itemFaceLayer(itemFaces, face.slot), boxCentre, size,
                             rotation, packedLight);
-                        vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout,
-                                           VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
-                        vkCmdDraw(commandBuffer, 6U, 1, f * 6U, 0);
+                        entityDraws_.append(push, 6U, f * 6U);
                     }
                 }
             } else {
@@ -1195,14 +1225,13 @@ class WorldRenderer final {
                     {0.0F, 0.0F, 0.0F, 0.30F},  {spriteLayer, spriteLayer, spriteLayer, 0.0F},
                     {kItemModeGeneratedItem, 0.0F, 0.0F, 0.0F},
                     {1.0F, 1.0F, 0.0625F, packedLight},
-                    cameraView * dropTransform,
+                    dropTransform,
                 };
-                vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
-                                   sizeof(push), &push);
-                vkCmdDraw(commandBuffer, kGeneratedItemVertexCount, 1, 0, 0);
+                entityDraws_.append(push, kGeneratedItemVertexCount, 0);
             }
         }
         for (const auto& entity : snapshotFallingBlocks) {
+            entityDraws_.begin(ShadowEntityKind::FallingBlock);
             const glm::vec3 renderedPosition =
                 entity.previousPosition +
                 (entity.position - entity.previousPosition) * itemAlpha;
@@ -1216,15 +1245,14 @@ class WorldRenderer final {
                 {kItemModeBlockCube, 0.0F, 0.0F, 2.0F},
                 {0.0F, 0.0F, 0.0F, packedSceneLight(renderedPosition)},
             };
-            vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
-                               sizeof(push), &push);
-            vkCmdDraw(commandBuffer, 36, 1, 0, 0);
+            entityDraws_.append(push, 36, 0);
         }
         // 经验球是一小块面向相机的球体贴图公告板
         // 它走粒子同一条平面公告板路径，即 item_entity.vert 的 data.x == -1
         // 整个预留图集层就是这张贴图，因此 uvOrigin 取 (0,0)、uvScale 取 1
         // vanilla 的经验球还会上下浮动并循环变色，这里先做静态版本
         for (const auto& orb : snapshotOrbs) {
+            entityDraws_.begin(ShadowEntityKind::Orb);
             const glm::vec3 renderedPosition =
                 orb.previousPosition + (orb.position - orb.previousPosition) * itemAlpha;
             const glm::vec3 billboardCentre = renderedPosition + glm::vec3{0.0F, 0.25F, 0.0F};
@@ -1234,9 +1262,7 @@ class WorldRenderer final {
                 {kItemModeAtlasBillboard, 0.0F, 0.0F, 1.0F},
                 {0.0F, 0.0F, 0.0F, packedSceneLight(billboardCentre)},
             };
-            vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
-                               sizeof(push), &push);
-            vkCmdDraw(commandBuffer, 6U, 1, 0, 0);
+            entityDraws_.append(push, 6U, 0);
         }
     }
 
@@ -1521,8 +1547,8 @@ class WorldRenderer final {
     // `packedLight` 是该实体的场景光照采样（见 packedSceneLight），传 0 则使用固定光照
     // 今后任何经此绘制的方块实体，只要传入它就能获得场景光照
 
-    void pushWorldCuboid(VkCommandBuffer commandBuffer, const glm::mat4& worldMatrix,
-                         glm::vec3 dimensions, float textureLayer, float packedLight = 0.0F) const {
+    static ItemPush makeWorldCuboidPush(const glm::mat4& worldMatrix,
+                         glm::vec3 dimensions, float textureLayer, float packedLight = 0.0F) {
         const ItemPush push{
             {0.0F, 0.0F, 0.0F, 1.0F},
             {textureLayer, 0.0F, 0.0F, 0.0F},
@@ -1530,8 +1556,13 @@ class WorldRenderer final {
             {dimensions.x, dimensions.y, dimensions.z, packedLight},
             worldMatrix,
         };
-        vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
-                           sizeof(push), &push);
+        return push;
+    }
+    void pushWorldCuboid(VkCommandBuffer commandBuffer, const glm::mat4& worldMatrix,
+                         glm::vec3 dimensions, float layer, float light = 0.0F) const {
+        const auto push = makeWorldCuboidPush(worldMatrix, dimensions, layer, light);
+        vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
+                           0, sizeof(push), &push);
         vkCmdDraw(commandBuffer, 36U, 1, 0, 0);
     }
 
@@ -1599,21 +1630,17 @@ class WorldRenderer final {
     // 第三人称下把玩家渲染成多骨骼蒙皮长方体，动画库与背包预览相同
     // 但驱动数据取自玩家自己的视线与移动
 
-    void drawWorldPlayer(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
-        if (cameraPerspective == CameraPerspective::FirstPerson || !worldReady) {
+    void collectWorldPlayer() {
+        if (!worldReady || (shadowDisabled && cameraPerspective == CameraPerspective::FirstPerson)) {
             return;
         }
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipelineLayout,
-                                0, 1, &descriptorSet, 0, nullptr);
 
-        // 相机位于插值后的眼点；模型以脚为锚点
-        const glm::vec3 feet =
-            camera.position() -
-            glm::vec3{0.0F, clientMirror.player().sneaking
-                          ? gameplay::PlayerController::kSneakingEyeHeight
-                          : gameplay::PlayerController::kEyeHeight,
-                      0.0F};
+        entityDraws_.begin(ShadowEntityKind::Player);
+        // 模型锚在玩家快照的插值脚点。正常游戏与相机跟随的脚点相同；
+        // 导出等独立观察机位不会把玩家模型拖到镜头下面。
+        const auto& player = clientMirror.player();
+        const glm::vec3 feet = player.physicsPrevious +
+            (player.physicsCurrent - player.physicsPrevious) * renderInterpolationAlpha;
         // 身体朝向是带滞后的身体偏航，头部由动画器相对它转动
         // 若模型渲染出来是背朝前，把 kFacingOffset 改成 3.14159265F
         constexpr float kFacingOffset = 0.0F;
@@ -1659,7 +1686,7 @@ class WorldRenderer final {
                                      : glm::mat4{1.0F};
                 const glm::mat4 cubeWorld = modelRoot * boneWorld * cubeRotation *
                                             glm::translate(glm::mat4{1.0F}, cube.center());
-                pushWorldCuboid(commandBuffer, cubeWorld, cube.renderSize(), layer, packedLight);
+                entityDraws_.append(makeWorldCuboidPush(cubeWorld, cube.renderSize(), layer, packedLight), 36U);
             }
         }
     }
@@ -1705,11 +1732,11 @@ class WorldRenderer final {
     // 这与 Bedrock 一致，实际像素分辨率与声明不同的实体皮肤因此仍能逐面对上
     // 采样实体纹理数组（binding 4）
 
-    void pushBoxUvCuboid(VkCommandBuffer commandBuffer, const glm::mat4& worldMatrix,
+    static ItemPush makeBoxUvCuboidPush(const glm::mat4& worldMatrix,
                          glm::vec3 renderSize, glm::vec3 uvSize, glm::vec2 uv, bool mirror,
                          glm::vec2 textureSize, std::uint32_t faceOverride, float layer,
                          std::uint32_t woolTint = 0xFFFFFFU, float packedLight = 0.0F,
-                         float hurtFlash = 0.0F) const {
+                         float hurtFlash = 0.0F) {
         // 推送常量已经用满 Vulkan 保证的 128 字节，因此 box-UV 路径把标量塞得很紧
         // textureLayersRotation.w 以原始位模式存放逐面的来源与旋转覆盖
         // 着色器里用 floatBitsToUint 取回
@@ -1725,14 +1752,12 @@ class WorldRenderer final {
              packedLight + (hurtFlash > 0.5F ? 512.0F : 0.0F)},
             worldMatrix,
         };
-        vkCmdPushConstants(commandBuffer, pipelines.itemPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
-                           sizeof(push), &push);
-        vkCmdDraw(commandBuffer, 36U, 1, 0, 0);
+        return push;
     }
 
     // 把自由活动的生物渲染成 box-UV 蒙皮模型，动画库与掉落物相同，同样在物理 tick 之间插值
 
-    void drawWorldEntities(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
+    void collectWorldEntities() {
         // 从逐 tick 快照绘制，绝不读实时实体容器
         // 模拟跑在自己线程上，本通道遍历期间那个容器正在被重排和扩缩
         // 快照是按值拷贝，先绑到局部变量，其 entities() 引用才有效
@@ -1741,9 +1766,6 @@ class WorldRenderer final {
         if (!worldReady || snapshotEntities.empty()) {
             return;
         }
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.itemPipelineLayout,
-                                0, 1, &descriptorSet, 0, nullptr);
         constexpr float kPi = 3.14159265358979323846F;
         constexpr float kModelUnitsToBlocks = 1.0F / 16.0F;
         // 随包的生物模型一律面朝 -Z（Minecraft 的正面），因此转半圈即可让它的前端对准游荡朝向
@@ -1825,6 +1847,7 @@ class WorldRenderer final {
             // 整只生物取一次光照采样：黄昏变暗、无光洞穴里全黑、靠近火把会被照亮，和周围方块一致
             // 采样点取插值后的渲染位置而不是 tick 位置，走动时变化才平滑
             // 上抬半格取到的是躯干高度，EntitySystem 判定撞墙用的也是这个高度
+            entityDraws_.begin(ShadowEntityKind::Creature);
             const float packedLight = packedSceneLight(position + glm::vec3{0.0F, 0.5F, 0.0F});
 
             const auto& model = species->model.model;
@@ -1862,9 +1885,9 @@ class WorldRenderer final {
                                          : glm::mat4{1.0F};
                     const glm::mat4 cubeWorld = modelRoot * boneWorld * cubeRotation *
                                                 glm::translate(glm::mat4{1.0F}, cube.center());
-                    pushBoxUvCuboid(commandBuffer, cubeWorld, cube.renderSize(), cube.size, cube.uv,
+                    entityDraws_.append(makeBoxUvCuboidPush(cubeWorld, cube.renderSize(), cube.size, cube.uv,
                                     cube.mirror, textureSize, cube.faceOverride,
-                                    boneLayer, woolTint, packedLight, hurtFlash);
+                                    boneLayer, woolTint, packedLight, hurtFlash), 36U);
                 }
             }
         }
@@ -2281,9 +2304,7 @@ class WorldRenderer final {
         // 放在这里，深度缓冲两个方向都成立
         // 生物前面的水会混合在它之上，生物后面的水会被深度测试拒掉
         drawChestEntities(frame.commandBuffer, frame.descriptorSet);
-        drawItemEntities(frame.commandBuffer, frame.descriptorSet);
-        drawWorldEntities(frame.commandBuffer, frame.descriptorSet);
-        drawWorldPlayer(frame.commandBuffer, frame.descriptorSet);
+        drawCollectedEntities(frame.commandBuffer, frame.descriptorSet);
         std::ranges::sort(visibleTranslucentMeshes, [&cameraPosition](const GpuMesh* first,
                                                                       const GpuMesh* second) {
             const glm::vec3 firstCenter = (first->bounds.minimum + first->bounds.maximum) * 0.5F;
@@ -2407,6 +2428,10 @@ class WorldRenderer final {
     // 旧的顺序调用因此是删掉而不是留着当 fallback。
     [[nodiscard]] std::size_t recordCommandBuffer(FrameContext& frame, std::uint32_t imageIndex) {
         refreshDiagnosticsEpoch();
+        entityDraws_.clear();
+        collectItemEntities();
+        collectWorldEntities();
+        collectWorldPlayer();
         auto beginInfo =
             vkStructure<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
         checkVk(vkBeginCommandBuffer(frame.commandBuffer, &beginInfo), "vkBeginCommandBuffer");
@@ -2587,6 +2612,8 @@ class WorldRenderer final {
   glm::vec3 shadowSunDirection_{0.0F, 1.0F, 0.0F};
   // 阴影预通道的逐帧暂存：候选网格、它们的包围盒、以及选中的下标。
   // 成员而非局部变量，clear() 保留容量，稳态下逐帧零分配
+  EntityRenderDraws entityDraws_;
+  std::vector<std::size_t> shadowEntitySelection_;
   std::vector<const GpuMesh*> shadowCasterMeshes_;
   std::vector<Aabb> shadowCasterBounds_;
   std::vector<std::size_t> shadowCasterSelection_;

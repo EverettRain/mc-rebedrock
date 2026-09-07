@@ -22,6 +22,8 @@
 #   tools/export_block_preview.sh --scene 's;s' \
 #       --key 's=oak_stairs[facing=north,half=bottom]' --pack ~/packs/vanilla
 #
+# RN-11b：--sun-shadows 开太阳阴影；--sun-tick 0..23999 固定时刻；
+# --shadow-entities 在 8x8 地板上放固定的玩家/猪/两种掉落物/下落沙块（仅隐藏导出）。
 # --verify 跑两遍、写进两个目录、逐字节比对。
 # 这个工具的全部价值在于"可比"：一张不可复现的漂亮图片毫无价值，所以"两次运行逐字节
 # 相同"是它的验收条件，而不是一句性质描述。比对失败会打印哪几张图不同并非零退出。
@@ -38,10 +40,13 @@ SIZE=""
 OUT=""
 PACKS=()
 KEYS=()
+SHADOW_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --verify) VERIFY=1; shift ;;
+        --sun-shadows|--shadow-entities) SHADOW_ARGS+=("$1"); shift ;;
+        --sun-tick) SHADOW_ARGS+=("$1" "$2"); shift 2 ;;
         --scene)  SCENE="$2"; shift 2 ;;
         --key)    KEYS+=(--key "$2"); shift 2 ;;
         --pack)   PACKS+=(--pack "$2"); shift 2 ;;
@@ -117,7 +122,7 @@ run_export() {  # $1 = 输出根目录
     else
         args=(--test-scene "$SPEC")
     fi
-    args+=(--export-preview --preview-out "$1")
+    args+=(--export-preview --preview-out "$1" ${SHADOW_ARGS[@]+"${SHADOW_ARGS[@]}"})
     if [[ -n "$SIZE" ]]; then
         args+=(--preview-size "$SIZE")
     fi

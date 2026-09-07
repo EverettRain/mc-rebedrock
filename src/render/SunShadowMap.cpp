@@ -1,6 +1,7 @@
 #include "render/SunShadowMap.hpp"
 
 #include "render/Frustum.hpp"
+#include "render/vulkan/HudTypes.hpp"
 
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -75,6 +76,56 @@ void selectSunShadowCasters(const glm::mat4& lightViewProj, const glm::vec3& sun
                sunShadowCasterDepth(sunDirection, bounds[second]);
     });
     selected.resize(kMaxSunShadowCasters);
+}
+
+Aabb sunShadowItemDrawBounds(const ItemPush& push) {
+    glm::mat4 transform = push.viewModelTransform;
+    glm::vec3 size{push.dimensions};
+    if (push.data.x == kItemModeGeneratedItem) {
+        // item_entity.vert 的 local z 是 ±0.03125，模型矩阵携带掉落物的 0.3 倍缩放。
+        size = {1.0F, 1.0F, 0.0625F};
+    } else if (push.data.x == kItemModeBlockCube || push.data.x == kItemModeBlockItemDropped) {
+        transform = glm::rotate(glm::translate(glm::mat4{1.0F}, glm::vec3{push.positionSize}),
+            push.textureLayersRotation.w, glm::vec3{0, 1, 0});
+        if (glm::length(size) <= 0.0001F) size = glm::vec3{push.positionSize.w};
+    }
+    return sunShadowTransformedBounds(transform, size);
+}
+
+Aabb sunShadowTransformedBounds(const glm::mat4& transform, glm::vec3 size) {
+    const glm::vec3 center{transform[3]};
+    const glm::vec3 half = glm::abs(size) * 0.5F;
+    const glm::vec3 extent = glm::abs(glm::vec3{transform[0]}) * half.x +
+        glm::abs(glm::vec3{transform[1]}) * half.y + glm::abs(glm::vec3{transform[2]}) * half.z;
+    return {center - extent, center + extent};
+}
+
+void selectSunShadowEntityCasters(const glm::mat4& lightViewProj, const glm::vec3& sunDirection,
+    std::span<const SunShadowEntityCaster> casters, std::vector<std::size_t>& selected) {
+    selected.clear();
+    const Frustum frustum(lightViewProj);
+    for (std::size_t i = 0; i < casters.size(); ++i) {
+        const auto& caster = casters[i];
+        if (castsSunShadow(caster.kind) && caster.drawCount != 0 && frustum.intersects(caster.bounds))
+            selected.push_back(i);
+    }
+    if (selected.size() <= kMaxSunShadowEntityCasters) return;
+    std::ranges::sort(selected, [&](std::size_t a, std::size_t b) {
+        const bool playerA = casters[a].kind == ShadowEntityKind::Player;
+        const bool playerB = casters[b].kind == ShadowEntityKind::Player;
+        if (playerA != playerB) return playerA;
+        const float depthA = sunShadowCasterDepth(sunDirection, casters[a].bounds);
+        const float depthB = sunShadowCasterDepth(sunDirection, casters[b].bounds);
+        return depthA == depthB ? a < b : depthA < depthB;
+    });
+    selected.resize(kMaxSunShadowEntityCasters);
+}
+
+void selectSunShadowSceneCasters(const glm::mat4& lightViewProj, const glm::vec3& sunDirection,
+    std::span<const Aabb> terrain, std::span<const SunShadowEntityCaster> entities,
+    std::vector<std::size_t>& terrainSelected, std::vector<std::size_t>& entitySelected) {
+    selectSunShadowCasters(lightViewProj, sunDirection, terrain, terrainSelected);
+    selectSunShadowEntityCasters(lightViewProj, sunDirection, entities, entitySelected);
 }
 
 } // namespace mc::render

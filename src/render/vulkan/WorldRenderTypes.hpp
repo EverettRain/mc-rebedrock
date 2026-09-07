@@ -215,6 +215,8 @@ struct WorldPipelines final {
     VkPipeline particlePipeline = VK_NULL_HANDLE;
     VkPipelineLayout particlePipelineLayout = VK_NULL_HANDLE;
     // 太阳空间阴影预通道，以及它的调试叠加层
+    VkPipeline entityShadowPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout entityShadowPipelineLayout = VK_NULL_HANDLE;
     VkPipeline shadowPipeline = VK_NULL_HANDLE;
     VkPipelineLayout shadowPipelineLayout = VK_NULL_HANDLE;
     VkPipeline shadowDebugPipeline = VK_NULL_HANDLE;

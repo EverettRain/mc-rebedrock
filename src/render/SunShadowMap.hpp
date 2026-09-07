@@ -9,7 +9,8 @@
 // createShadowResources 里是个手写字面量，而 updateShadowMatrix 里算不出它——
 // 于是「一个纹素是世界里的多长」这个 texel snapping 必需的量根本无处可算。
 //
-// 不依赖 Vulkan，只依赖 glm 与 Aabb，因此 headless 测试能直接调它。
+// 不依赖 Vulkan：核心几何使用 glm 与 Aabb，实体入口读取既有的纯数据 ItemPush。
+// headless 测试直接调用生产选择与包围盒计算。
 
 #include "render/MeshData.hpp"  // Aabb
 
@@ -47,6 +48,28 @@ static_assert(kSunShadowTexelSize == 0.0625F);
 // 预通道每帧最多画多少个 section。视点飞高或光锥覆盖密集区域时候选能涨到数千，
 // 每帧全部重画正是那种可能把设备推向丢失的重负载帧。
 inline constexpr std::size_t kMaxSunShadowCasters = 512;
+
+// RN-11b：实体按整只计数，独立于地形的 512 个 section。本地玩家在光锥内时预留一个名额。
+inline constexpr std::size_t kMaxSunShadowEntityCasters = 512;
+enum class ShadowEntityKind : std::uint8_t { Player, Creature, Item, FallingBlock, Decal, Orb };
+struct SunShadowEntityCaster {
+    ShadowEntityKind kind;
+    Aabb bounds;
+    std::size_t firstDraw;
+    std::size_t drawCount = 0;
+};
+[[nodiscard]] constexpr bool castsSunShadow(ShadowEntityKind kind) {
+    return kind == ShadowEntityKind::Player || kind == ShadowEntityKind::Creature ||
+           kind == ShadowEntityKind::Item || kind == ShadowEntityKind::FallingBlock;
+}
+[[nodiscard]] constexpr bool drawEntityShadowDecal(bool sunShadows) { return !sunShadows; }
+struct ItemPush;
+// 与实体顶点程序的世界几何模式对应，投影剔除也必须保留图标薄片的真实厚度。
+[[nodiscard]] Aabb sunShadowItemDrawBounds(const ItemPush& push);
+// 仿射变换后的盒子，包含旋转、非等比缩放、镜像与 inflate，不拿物理碰撞盒代替渲染几何。
+[[nodiscard]] Aabb sunShadowTransformedBounds(const glm::mat4& transform, glm::vec3 size);
+void selectSunShadowEntityCasters(const glm::mat4& lightViewProj, const glm::vec3& sunDirection,
+    std::span<const SunShadowEntityCaster> casters, std::vector<std::size_t>& selected);
 
 // 光源的视图投影矩阵。
 //
@@ -93,5 +116,10 @@ inline constexpr std::size_t kMaxSunShadowCasters = 512;
 // `selected` 先被清空再填充，调用方复用同一个 vector 就不会逐帧分配。
 void selectSunShadowCasters(const glm::mat4& lightViewProj, const glm::vec3& sunDirection,
                             std::span<const Aabb> bounds, std::vector<std::size_t>& selected);
+
+// 同时产出两个互不挤占的集合，生产绘制与 headless 场景测试共用这一入口。
+void selectSunShadowSceneCasters(const glm::mat4& lightViewProj, const glm::vec3& sunDirection,
+    std::span<const Aabb> terrain, std::span<const SunShadowEntityCaster> entities,
+    std::vector<std::size_t>& terrainSelected, std::vector<std::size_t>& entitySelected);
 
 } // namespace mc::render

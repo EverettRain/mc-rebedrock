@@ -314,7 +314,7 @@ namespace {
 
 } // namespace
 
-std::string previewDirectoryName(const TestSceneOptions& options) {
+static std::string previewBaseDirectoryName(const TestSceneOptions& options) {
     if (!options.isScene()) {
         // Unchanged, deliberately: RN-15's stored baselines live under these
         // names and a rename would quietly invalidate every one of them.
@@ -353,6 +353,16 @@ std::string previewDirectoryName(const TestSceneOptions& options) {
     // limit is not a reason to refuse it. The suffix is over the WHOLE name, so
     // two scenes that share a prefix still land in different directories.
     return name.substr(0, kMaxPreviewDirectoryName - 10U) + "__" + shortHash(name);
+}
+
+std::string previewDirectoryName(const TestSceneOptions& options) {
+    const auto base = previewBaseDirectoryName(options);
+    if (!options.sunShadows && !options.shadowEntities && !options.sunTick) return base;
+    const auto name = base + "__sun-" + (options.sunShadows ? "on" : "off") +
+        "-" + std::to_string(options.sunTick.value_or(6000U)) +
+        (options.shadowEntities ? "-entities" : "");
+    return name.size() <= kMaxPreviewDirectoryName ? name :
+        name.substr(0, kMaxPreviewDirectoryName - 10U) + "__" + shortHash(name);
 }
 
 std::optional<TestSceneOptions> parseTestSceneArguments(
@@ -438,6 +448,19 @@ std::optional<TestSceneOptions> parseTestSceneArguments(
         } else if (arguments[index] == "--occlusion-scene") {
             if (!result.has_value()) result = TestSceneOptions{};
             result->occlusionScene = true;
+        } else if (arguments[index] == "--sun-shadows" || arguments[index] == "--shadow-entities") {
+            if (!result.has_value()) result = TestSceneOptions{};
+            if (arguments[index] == "--sun-shadows") result->sunShadows = true;
+            else result->shadowEntities = true;
+        } else if (arguments[index] == "--sun-tick") {
+            if (++index >= arguments.size()) throw std::invalid_argument("--sun-tick requires 0..23999");
+            std::uint32_t tick = 0;
+            const auto value = arguments[index];
+            const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), tick);
+            if (error != std::errc{} || end != value.data() + value.size() || tick >= 24000U)
+                throw std::invalid_argument("--sun-tick requires 0..23999");
+            if (!result.has_value()) result = TestSceneOptions{};
+            result->sunTick = tick;
         } else if (arguments[index] == "--export-preview") {
             if (!result.has_value()) result = TestSceneOptions{};
             result->exportPreview = true;
@@ -455,6 +478,11 @@ std::optional<TestSceneOptions> parseTestSceneArguments(
             result->previewRoot = std::filesystem::path{std::string{arguments[index]}};
         }
     }
+    if (result && (result->sunShadows || result->shadowEntities || result->sunTick) && !result->exportPreview)
+        throw std::invalid_argument("shadow preview options require --export-preview (hidden window)");
+    if (result && result->shadowEntities &&
+        (!result->isScene() && !requestedStructure))
+        throw std::invalid_argument("--shadow-entities requires --scene with an 8x8 floor");
     if (result.has_value() && !requestedScene) {
         throw std::invalid_argument("--stage requires --test-scene");
     }
@@ -480,6 +508,8 @@ std::optional<TestSceneOptions> parseTestSceneArguments(
             buildScene(*result, legend);
         }
     }
+    if (result && result->shadowEntities && (result->sceneSize.x != 8 || result->sceneSize.z != 8))
+        throw std::invalid_argument("--shadow-entities requires an 8x8 scene footprint");
     if (result.has_value() && !world::isRenderable(result->block)) {
         throw std::invalid_argument("The test scene requires a renderable block");
     }

@@ -29,25 +29,7 @@ const float kSunShadowMapResolution = 2048.0;
 // (2d-f-n)/(f-n) * 0.5 + 0.5 == (d-n)/(f-n) 是恒等式
 const float kSunShadowDepthRangeBlocks = 319.9;
 
-// 深度偏置（格）。从前是一个常量 0.002 NDC = 0.64 格，对正对太阳的面（几何误差≈0）
-// 和掠射面（误差可达 0.4 格）付同一笔钱，于是阴影与投射者脱开半格多（peter-panning）。
-//
-// 推导：3x3 的 tap 网格步长 1 纹素，每个 tap 又是 2x2 双线性，横向足迹因此是 ±1.5
-// 纹素 = ±0.09375 格（纹素边长 128/2048 = 0.0625 格）。最外圈 tap 处的表面深度与着色
-// 点相差 足迹 x tanθ，θ 是面法线与太阳的夹角。所以斜率项取 0.10 略盖住 0.09375。
-//   θ=0°   偏置 0.02 格（只需盖住 D32 的量化，约 2e-5 格）
-//   θ=45°  偏置 0.12 格（需 0.094）
-//   θ=63°  偏置 0.22 格（需 0.188）
-// 上限 0.30 格 = 完整盖到 θ=70°（tan 2.747），同时只有旧值 0.64 格的 47%。它是
-// acne 与 peter-panning 之间的那个取舍点，也是本轮唯一需要 mac 肉眼终判的常量——
-// 而它现在是一个文件里的一个数，不是三份手抄里的三个数。
-const float kSunShadowMinBiasBlocks = 0.02;
-const float kSunShadowSlopeBiasBlocks = 0.10;
-const float kSunShadowMaxBiasBlocks = 0.30;
-
-// 掠射到几乎与光平行时 tanθ 发散，钳住余弦而不是钳 tan：0.15 对应 tan 约 6.6，
-// 而偏置在 tan 2.75 处就已经顶到上限，所以这个钳位只是防止除零
-const float kSunShadowMinCosTheta = 0.15;
+#include "sun_shadow_bias.glsl"
 
 float sunShadowFactor(sampler2DShadow shadowMap, mat4 lightViewProj, vec3 worldPosition,
                       vec3 normal, vec3 sunDirection) {
@@ -62,22 +44,28 @@ float sunShadowFactor(sampler2DShadow shadowMap, mat4 lightViewProj, vec3 worldP
         return 1.0;
     }
 
-    float cosTheta = clamp(dot(normal, normalize(sunDirection)), 0.0, 1.0);
-    float slope = sqrt(max(1.0 - cosTheta * cosTheta, 0.0)) / max(cosTheta, kSunShadowMinCosTheta);
-    float biasBlocks =
-        min(kSunShadowMinBiasBlocks + kSunShadowSlopeBiasBlocks * slope, kSunShadowMaxBiasBlocks);
+    float biasBlocks = sunShadowBiasBlocks(dot(normal, normalize(sunDirection)));
     float reference = shadowUv.z - biasBlocks / kSunShadowDepthRangeBlocks;
 
     // 3x3 的 tap 网格，步长 1 纹素。加上每个 tap 自带的 2x2 双线性，有效覆盖 4x4 纹素
     // = 0.25 x 0.25 格的半影：方块是 1 格，四分之一格读起来是「软了但没糊」。
     // 2x2（±0.5 纹素）只有 0.125 格，和单个硬件 tap 差不多，治不了锯齿；
     // 5x5 是 0.375 格半影但 25 tap x 3 个着色器的纯填充率成本，没实测不上
+    // PCF 的 tap 位于接收面上不同的位置，比较深度必须随平面移动。
+    // 从现有光源矩阵取横向正交轴，不引入第二套太阳几何或屏幕导数。
+    vec3 lightRight = normalize(vec3(lightViewProj[0][0], lightViewProj[1][0], lightViewProj[2][0]));
+    vec3 lightUp = normalize(vec3(lightViewProj[0][1], lightViewProj[1][1], lightViewProj[2][1]));
+    float normalRight = dot(normal, lightRight);
+    float normalUp = dot(normal, lightUp);
+    float normalSun = dot(normal, normalize(sunDirection));
     float texel = 1.0 / kSunShadowMapResolution;
     float lit = 0.0;
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
+            float tapReference = reference + sunShadowTapOffsetBlocks(
+                normalRight, normalUp, normalSun, float(x), float(y)) / kSunShadowDepthRangeBlocks;
             lit += texture(shadowMap, vec3(shadowUv.xy + vec2(float(x), float(y)) * texel,
-                                           reference));
+                                           tapReference));
         }
     }
     return mix(kSunShadowFactor, 1.0, lit * (1.0 / 9.0));

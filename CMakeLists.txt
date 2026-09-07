@@ -643,6 +643,7 @@ if(MC_REBEDROCK_STAGE_RUNTIME AND GLSLC_EXECUTABLE)
         particle_instanced.frag
         shadow.vert
         shadow.frag
+        entity_shadow.frag
         shadow_debug.vert
         shadow_debug.frag
         rain_sheet.vert
@@ -658,6 +659,7 @@ if(MC_REBEDROCK_STAGE_RUNTIME AND GLSLC_EXECUTABLE)
     set(MC_REBEDROCK_SHADER_INCLUDES
         "${MC_REBEDROCK_SHADER_SOURCE_DIR}/include/lightmap.glsl"
         "${MC_REBEDROCK_SHADER_SOURCE_DIR}/include/sun_shadow.glsl"
+        "${MC_REBEDROCK_SHADER_SOURCE_DIR}/include/sun_shadow_bias.glsl"
     )
 
     foreach(shader IN LISTS MC_REBEDROCK_SHADER_SOURCES)
@@ -1855,6 +1857,10 @@ if(BUILD_TESTING)
         "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\""
         "MC_REBEDROCK_WORLD_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/WorldRenderer.hpp\"")
     add_test(NAME sun_shadow_map COMMAND mc_rebedrock_sun_shadow_map_test)
+
+    add_executable(mc_rebedrock_sun_shadow_benchmark EXCLUDE_FROM_ALL
+        tests/sun_shadow_benchmark.cpp src/render/SunShadowMap.cpp src/render/Frustum.cpp)
+    target_include_directories(mc_rebedrock_sun_shadow_benchmark PRIVATE src "${glm_SOURCE_DIR}")
 
     add_executable(mc_rebedrock_grass_overlay_depth_test
         tests/grass_overlay_depth_test.cpp
@@ -3302,6 +3308,20 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME anvil COMMAND mc_rebedrock_anvil_test)
+
+    # RN-11b 的双配置验收暴露：RelWithDebInfo 的 NDEBUG 会删掉 assert 内的夹具操作，
+    # block_entity_store/ticker 因此崩溃，其他 assert 测试则可能空跑。仅测试目标保留断言，
+    # 不改变游戏/runtime/benchmark 的 Release 编译配置。
+    get_property(mc_rebedrock_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(test_target IN LISTS mc_rebedrock_test_targets)
+        if(test_target MATCHES "^mc_rebedrock_.*_test$")
+            if(MSVC)
+                target_compile_options(${test_target} PRIVATE /UNDEBUG)
+            else()
+                target_compile_options(${test_target} PRIVATE -UNDEBUG)
+            endif()
+        endif()
+    endforeach()
 
     endif()
 

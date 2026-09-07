@@ -8,7 +8,20 @@ layout(binding = 0) uniform CameraUniform {
     vec4 sunDirection;
     vec4 horizonFog;
     vec4 renderSettings;
+    vec4 pointLights[8];
+    vec4 lightColors[8];
+    vec4 lightingSettings;
+    vec4 celestialLayers;
+    vec4 weatherSettings;
+    vec4 fluidAnimationLayers;
+    vec4 fluidAnimationFrameCounts;
+    vec4 fluidAnimationFrameTimes;
+    vec4 fluidAnimationSettings;
+    mat4 lightViewProj;
 } camera;
+
+// 同一份几何程序，两条管线只在最终投影上分歧。
+layout(constant_id = 0) const bool sunShadowPass = false;
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
 
@@ -206,7 +219,9 @@ void main() {
             uv = (vec2(texelPosition) + vec2(0.5)) / 16.0;
         }
         vec3 worldPosition = (item.viewModelTransform * vec4(local, 1.0)).xyz;
-        gl_Position = camera.projection * vec4(worldPosition, 1.0);
+        gl_Position = sunShadowPass
+            ? camera.lightViewProj * vec4(worldPosition, 1.0)
+            : camera.projection * vec4(worldPosition, 1.0);
         fragmentUv = uv;
         fragmentTextureLayer = item.textureLayersRotation.x;
         fragmentNormal = normalize(mat3(item.viewModelTransform) * normal);
@@ -362,7 +377,9 @@ void main() {
         normal = useMatrix
             ? normalize(mat3(item.viewModelTransform) * normal)
             : normal;
-        gl_Position = heldInViewSpace
+        gl_Position = sunShadowPass
+            ? camera.lightViewProj * vec4(worldPosition, 1.0)
+            : heldInViewSpace
             ? camera.projection * vec4(worldPosition, 1.0)
             : camera.projection * camera.view * vec4(worldPosition, 1.0);
         // Only the world-space paths produce a real world position; the held

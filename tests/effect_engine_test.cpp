@@ -346,7 +346,8 @@ void perfEquivalence() {
     const auto t1 = std::chrono::steady_clock::now();
 
     // The hard-coded baseline: sharpness(level) = 0.5*level + 0.5 over base.
-    float baseSink = 0.0F;
+    // 与 engine 一侧一样保留可观察写入，否则 Release 会删掉整个基线循环。
+    volatile float baseSink = 0.0F;
     const auto t2 = std::chrono::steady_clock::now();
     for (int i = 0; i < kIterations; ++i) {
         baseSink = baseSink + (6.0F + (0.5F * 5.0F + 0.5F));

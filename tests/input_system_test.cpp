@@ -275,7 +275,8 @@ void testZeroAllocQueueBound() {
     // Slam every keyboard-bound action down in one frame; the queue must hold
     // them all without growing past its inline storage.
     for (std::size_t i = 0; i < kInputActionCount; ++i) {
-        const auto& binding = BindingTable::defaults().binding(static_cast<InputAction>(i));
+        // defaults() 是临时表；binding() 返回其成员引用，须在表销毁前复制出来。
+        const auto binding = BindingTable::defaults().binding(static_cast<InputAction>(i));
         if (binding.device == InputDevice::Keyboard) {
             frame.keyDown[binding.code] = true;
         } else if (binding.device == InputDevice::Mouse) {

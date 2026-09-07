@@ -12,6 +12,7 @@
 #include "render/vulkan/WorldRenderer.hpp"
 
 #include "render/BlockPreviewCamera.hpp"
+#include "net/LoopbackTransport.hpp"
 
 #include "core/EnvFlags.hpp"
 #include "core/FrameTrace.hpp"
@@ -1116,7 +1117,35 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                /*rainTicks=*/0, /*raining=*/false,
                                                /*thundering=*/false);
         options.viewBobbing = false;
-        options.sunShadows = false;
+        options.sunShadows = testScene->sunShadows;
+        if (testScene->sunShadows || testScene->shadowEntities || testScene->sunTick) {
+            // 不启动模拟；用正常编解码通道发布固定快照，实体仍走生产的收集/动画/绘制路径。
+            auto channel = net::makeLoopbackPair();
+            auto worldSnapshot = clientMirror_.world();
+            worldSnapshot.dayTimeTicks = testScene->sunTick.value_or(6000U);
+            net::sendMessage(*channel.server, gameplay::PublishedSnapshot{worldSnapshot});
+            if (testScene->shadowEntities) {
+                const glm::vec3 origin{kPreviewBlockPosition};
+                auto player = clientMirror_.player();
+                player.physicsCurrent = player.physicsPrevious = origin + glm::vec3{2, 1, 2};
+                net::sendMessage(*channel.server, gameplay::PublishedSnapshot{player});
+                gameplay::EntitySystem creatures;
+                creatures.spawn(origin + glm::vec3{5, 1, 2}, gameplay::entities::builtinSpecies("pig"), 11U);
+                gameplay::ItemEntitySystem items;
+                items.spawn(origin + glm::vec3{2, 1, 5}, gameplay::ItemStack{world::Block::Stone, 1});
+                items.spawn(origin + glm::vec3{4, 1, 5}, gameplay::ItemStack{world::Block::Air, 1, &gameplay::items::Apple});
+                const auto fallingPosition = origin + glm::vec3{6, 2.2F, 5};
+                const std::vector<gameplay::FallingBlockEntity> falling{
+                    {fallingPosition, fallingPosition, 0.0F, world::Block::Sand, false}};
+                gameplay::EntityRenderSnapshot entities;
+                entities.capture(creatures.entities(), items.entities(), {}, {}, falling);
+                net::sendMessage(*channel.server, entities);
+                cameraPerspective = CameraPerspective::ThirdPersonBack;
+                worldBodyYaw = 0.5F;
+                worldPlayerAnimator.updateWorldPlayer(0, 0, 0, 0, false);
+            }
+            static_cast<void>(clientMirror_.pump(*channel.client, *this));
+        }
         baseFieldOfViewDegrees = kPreviewFieldOfViewDegrees;
         camera.setFieldOfViewDegrees(kPreviewFieldOfViewDegrees);
         // The one thing that would otherwise still vary frame to frame: the
@@ -1221,6 +1250,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                 kPreviewFieldOfViewDegrees, aspectRatio);
             camera.setPosition(pose.eye);
             camera.setRotation(pose.yawDegrees, pose.pitchDegrees);
+            if (testScene->shadowEntities) {
+                // 第三人称让玩家颜色几何可见，抵消固定四格拉杆使最终机位仍是预览解出的 eye。
+                camera.setPosition(pose.eye + camera.direction() * 4.0F);
+            }
             // The first frames of a scene upload the section mesh and settle the
             // frames-in-flight ring; capturing frame one would photograph an
             // empty chunk. Poll events too, or a compositor waiting on the window
@@ -4277,6 +4310,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (worldPipelines_.shadowDebugPipelineLayout != VK_NULL_HANDLE) {
                 vkDestroyPipelineLayout(device, worldPipelines_.shadowDebugPipelineLayout, nullptr);
             }
+            if (worldPipelines_.entityShadowPipeline != VK_NULL_HANDLE)
+                vkDestroyPipeline(device, worldPipelines_.entityShadowPipeline, nullptr);
+            if (worldPipelines_.entityShadowPipelineLayout != VK_NULL_HANDLE)
+                vkDestroyPipelineLayout(device, worldPipelines_.entityShadowPipelineLayout, nullptr);
             if (worldPipelines_.shadowPipeline != VK_NULL_HANDLE) {
                 vkDestroyPipeline(device, worldPipelines_.shadowPipeline, nullptr);
             }
@@ -5101,6 +5138,33 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 "vkCreateGraphicsPipelines(shadow)");
         vkDestroyShaderModule(device, vertexModule, nullptr);
         vkDestroyShaderModule(device, fragmentModule, nullptr);
+
+        // RN-11b：实体使用 procedural ItemPush 顶点，不能按地形的整型顶点解码。
+        // 与地形共享深度附件及 pass；独立布局避免依赖稍后才创建的 itemPipelineLayout。
+        push.size = sizeof(ItemPush);
+        layoutInfo.setLayoutCount = 1;
+        layoutInfo.pSetLayouts = &descriptorSetLayout;
+        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr,
+            &worldPipelines_.entityShadowPipelineLayout), "vkCreatePipelineLayout(entity shadow)");
+        const auto entityVertex = createShaderModule(readSpirv(shaderRoot / "item_entity.vert.spv"));
+        const auto entityFragment = createShaderModule(readSpirv(shaderRoot / "entity_shadow.frag.spv"));
+        const VkBool32 shadowVariant = VK_TRUE;
+        const VkSpecializationMapEntry entry{0, 0, sizeof(shadowVariant)};
+        const VkSpecializationInfo specialization{1, &entry, sizeof(shadowVariant), &shadowVariant};
+        vertexStage.module = entityVertex;
+        vertexStage.pSpecializationInfo = &specialization;
+        fragmentStage.module = entityFragment;
+        const std::array entityStages{vertexStage, fragmentStage};
+        vertexInput.vertexBindingDescriptionCount = 0;
+        vertexInput.vertexAttributeDescriptionCount = 0;
+        // 生物模型有 X 镜像，物品也可能是薄片：沿用实体颜色通道的双面几何。
+        rasterization.cullMode = VK_CULL_MODE_NONE;
+        pipelineInfo.pStages = entityStages.data();
+        pipelineInfo.layout = worldPipelines_.entityShadowPipelineLayout;
+        checkVk(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+            &worldPipelines_.entityShadowPipeline), "vkCreateGraphicsPipelines(entity shadow)");
+        vkDestroyShaderModule(device, entityVertex, nullptr);
+        vkDestroyShaderModule(device, entityFragment, nullptr);
 
         createShadowDebugResources();
 

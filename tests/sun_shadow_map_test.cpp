@@ -8,6 +8,7 @@
 
 #include "render/MeshData.hpp"
 #include "render/SunShadowMap.hpp"
+#include "render/EntityRenderDraws.hpp"
 #include "world/DayNightCycle.hpp"
 
 #include <glm/geometric.hpp>
@@ -34,6 +35,15 @@
 #ifndef MC_REBEDROCK_WORLD_RENDERER_SRC
 #error "MC_REBEDROCK_WORLD_RENDERER_SRC must point at src/render/vulkan/WorldRenderer.hpp"
 #endif
+
+namespace shaderBias {
+using std::min;
+using std::max;
+using std::clamp;
+using std::sqrt;
+using std::abs;
+#include "../resources/shaders/src/include/sun_shadow_bias.glsl"
+}
 
 namespace {
 
@@ -410,10 +420,195 @@ void checkShaderSourceGuards() {
                 range.str() + "\"");
 }
 
+void checkEntityCasters() {
+    using namespace mc::render;
+    EntityRenderDraws scene;
+    const auto cube = [](glm::vec3 center, glm::vec3 size) {
+        ItemPush push{};
+        push.data.x = kItemModeWorldMatrixCuboid;
+        push.dimensions = glm::vec4{size, 0.0F};
+        push.viewModelTransform = glm::translate(glm::mat4{1}, center);
+        return push;
+    };
+    scene.begin(ShadowEntityKind::Player);
+    scene.append(cube({0, 70.75F, 0}, {0.5F, 1.5F, 0.25F}), 36);
+    scene.append(cube({0, 71.75F, 0}, {0.5F, 0.5F, 0.5F}), 36);
+    scene.begin(ShadowEntityKind::Item);
+    auto item = cube({2, 70.3F, 0}, {1, 1, 1});
+    item.data.x = kItemModeGeneratedItem;
+    item.viewModelTransform = glm::scale(item.viewModelTransform, glm::vec3{0.3F});
+    scene.append(item, 6156);
+    scene.begin(ShadowEntityKind::Creature);
+    scene.append(cube({-2, 70.5F, 0}, {0.5F, 1, 0.5F}), 36);
+    scene.begin(ShadowEntityKind::FallingBlock);
+    ItemPush falling{};
+    falling.data.x = kItemModeBlockCube;
+    falling.positionSize = {4, 72, 0, 1};
+    scene.append(falling, 36);
+    scene.begin(ShadowEntityKind::Decal);
+    scene.append({}, 36);
+    scene.begin(ShadowEntityKind::Orb);
+    scene.append({}, 6);
+    scene.begin(ShadowEntityKind::Creature); // 无几何的实体不占名额
+    scene.begin(ShadowEntityKind::Item); // 框外
+    scene.append(cube({1000, 70, 0}, {1, 1, 1}), 36);
+    const auto matrix = sunShadowLightViewProj(kNoonSun, {0, 70, 0});
+    std::vector<std::size_t> entities;
+    selectSunShadowEntityCasters(matrix, kNoonSun, scene.casters, entities);
+    REQUIRE(entities == std::vector<std::size_t>({0, 1, 2, 3}),
+            "player, dropped item, creature and falling block must enter entity caster list; decals/orbs/empty/outside must not");
+    REQUIRE(scene.casters[0].drawCount == 2 && scene.casters[1].firstDraw == 2,
+            "one player must own all body draws and consume only one entity slot");
+    REQUIRE(glm::length(scene.casters[0].bounds.minimum - glm::vec3{-.25F, 70, -.25F}) < 1e-5F &&
+            glm::length(scene.casters[0].bounds.maximum - glm::vec3{.25F, 72, .25F}) < 1e-5F,
+            "entity bounds must enclose the union of animated body parts");
+    REQUIRE(std::abs(scene.casters[1].bounds.maximum.z - 0.009375F) < 1e-6F,
+            "generated item bounds must use actual extruded sprite thickness and world scale");
+    REQUIRE(scene.casters[3].bounds.minimum == glm::vec3(3.5F, 71.5F, -0.5F),
+            "falling block scalar-size fallback must enclose its full cube");
+
+    // 旋转 + 镜像 + 非等比缩放：用八个角作独立 oracle，不重复绝对矩阵公式。
+    const auto transform = glm::scale(glm::rotate(glm::translate(glm::mat4{1}, {3, 72, 1}),
+        0.71F, glm::normalize(glm::vec3{1, 2, 3})), glm::vec3{-0.2F, 0.3F, 0.1F});
+    const glm::vec3 size{4, 8, 6};
+    glm::vec3 lo{1e6F}, hi{-1e6F};
+    for (int i = 0; i < 8; ++i) {
+        glm::vec3 corner{(i & 1) ? .5F : -.5F, (i & 2) ? .5F : -.5F, (i & 4) ? .5F : -.5F};
+        const glm::vec3 point{transform * glm::vec4{corner * size, 1}};
+        lo = glm::min(lo, point); hi = glm::max(hi, point);
+    }
+    const auto bounds = sunShadowTransformedBounds(transform, size);
+    REQUIRE(glm::length(bounds.minimum - lo) < 1e-5F && glm::length(bounds.maximum - hi) < 1e-5F,
+            "rotated/mirrored render bounds must match all eight transformed corners");
+
+    std::vector<Aabb> terrain;
+    for (int i = 0; i < 900; ++i) {
+        const glm::vec3 pos{static_cast<float>(i % 30) - 15, 70, static_cast<float>(i / 30) - 15};
+        terrain.push_back({pos, pos + glm::vec3{1}});
+    }
+    std::vector<std::size_t> before, after;
+    selectSunShadowCasters(matrix, kNoonSun, terrain, before);
+    for (int i = 0; i < 700; ++i) {
+        scene.begin(ShadowEntityKind::Creature);
+        scene.append(cube({0, 80, 0}, {1, 2, 1}), 36); // 比玩家更靠近太阳
+    }
+    selectSunShadowEntityCasters(matrix, kNoonSun, scene.casters, entities);
+    selectSunShadowSceneCasters(matrix, kNoonSun, terrain, scene.casters, after, entities);
+    REQUIRE(before.size() == 512 && after == before,
+            "entity casters must not consume any of the 512 terrain slots or change terrain selection");
+    REQUIRE(entities.size() == 512 && std::ranges::find(entities, 0U) != entities.end(),
+            "independent entity budget must retain 512 whole entities including the local player");
+    std::vector<std::size_t> moved;
+    selectSunShadowEntityCasters(sunShadowLightViewProj(kNoonSun, {.01F, 70, 0}), kNoonSun,
+                                scene.casters, moved);
+    REQUIRE(moved == entities, "entity selection must be stable under small camera translation");
+    REQUIRE(!drawEntityShadowDecal(true) && drawEntityShadowDecal(false),
+            "sun shadows must suppress circular decals and restore them when disabled");
+}
+
+void checkBias() {
+    const std::array<float, 7> angles{0, 30, 45, 63, 70, 85, 90};
+    const std::array<float, 7> expected{.005F, .022320508F, .035F, .06387832F, .08F, .08F, .08F};
+    for (std::size_t i = 0; i < angles.size(); ++i) {
+        const float bias = shaderBias::sunShadowBiasBlocks(std::cos(glm::radians(angles[i])));
+        REQUIRE(std::isfinite(bias) && bias >= .005F && bias <= .080001F,
+                "shader bias outside [0.005, 0.08] blocks at " + std::to_string(angles[i]) +
+                " degrees: " + std::to_string(bias));
+        REQUIRE(std::abs(bias - expected[i]) < 2e-6F,
+                "shader slope bias golden value mismatch at " + std::to_string(angles[i]) +
+                " degrees: " + std::to_string(bias));
+    }
+    REQUIRE(shaderBias::kSunShadowTexelSizeBlocks == mc::render::kSunShadowTexelSize,
+            "receiver plane tap spacing must match SunShadowMap texel geometry");
+    // 独立几何 oracle：沿光源 right/up 平移一纹素，再沿深度轴移动回 y=70 的平面。
+    for (const double tick : {1500.0, 3000.0, 6000.0, 9000.0}) {
+        const auto sun = mc::world::DayNightCycle::stateAtTick(tick).sunDirection;
+        const auto matrix = mc::render::sunShadowLightViewProj(sun, {0, 70, 0});
+        const auto right = glm::normalize(glm::vec3{matrix[0][0], matrix[1][0], matrix[2][0]});
+        const auto up = glm::normalize(glm::vec3{matrix[0][1], matrix[1][1], matrix[2][1]});
+        for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
+            const float offset = shaderBias::sunShadowTapOffsetBlocks(right.y, up.y, sun.y,
+                static_cast<float>(x), static_cast<float>(y));
+            const glm::vec3 moved = glm::vec3{0, 70, 0} +
+                (right * static_cast<float>(x) + up * static_cast<float>(y)) * mc::render::kSunShadowTexelSize -
+                sun * offset;
+            REQUIRE(std::abs(moved.y - 70.0F) < 1e-5F,
+                    "PCF tap reference must remain on the receiver plane (offset sign/scale)");
+        }
+    }
+    REQUIRE(shaderBias::sunShadowBiasBlocks(-1) == .08F &&
+            shaderBias::sunShadowBiasBlocks(2) == .005F, "bias clamp must handle backfaces/roundoff");
+}
+
+void checkEntityWiring() {
+    const auto world = stripLineComments(readFile(MC_REBEDROCK_WORLD_RENDERER_SRC));
+    const auto renderer = stripLineComments(readFile(MC_REBEDROCK_RENDERER_SRC));
+    const auto record = functionBody(world, "void recordShadow(FrameContext& frame)");
+    REQUIRE(record.find("selectSunShadowSceneCasters(") != std::string::npos &&
+            record.find("pipelines.entityShadowPipeline") != std::string::npos &&
+            record.find("sizeof(draw.push), &draw.push") != std::string::npos &&
+            record.find("draw.vertexCount, 1, draw.firstVertex") != std::string::npos,
+            "shadow pass must select and submit the collected entity geometry");
+    REQUIRE(record.find("vkCmdBeginRenderPass") == std::string::npos &&
+            record.find("vkCmdEndRenderPass") == std::string::npos &&
+            record.find("vkCmdPipelineBarrier") == std::string::npos,
+            "shadow body must not own graph renderpass or layout transitions");
+    const auto frame = functionBody(world, "recordCommandBuffer(FrameContext& frame");
+    for (const auto name : {"collectItemEntities();", "collectWorldEntities();", "collectWorldPlayer();"})
+        REQUIRE(frame.find(name) < frame.find("frameGraph.execute"),
+                std::string{"same-frame entity preparation missing before graph: "} + name);
+    const auto player = functionBody(world, "void collectWorldPlayer()");
+    REQUIRE(player.find("shadowDisabled && cameraPerspective == CameraPerspective::FirstPerson") != std::string::npos &&
+            player.find("entityDraws_.begin(ShadowEntityKind::Player)") != std::string::npos &&
+            player.find("entityDraws_.append(makeWorldCuboidPush(") != std::string::npos,
+            "first-person local player must contribute its body when sun shadows are enabled");
+    const auto items = functionBody(world, "void collectItemEntities()");
+    REQUIRE(items.find("entityDraws_.begin(ShadowEntityKind::Item)") != std::string::npos &&
+            items.find("entityDraws_.begin(ShadowEntityKind::FallingBlock)") != std::string::npos &&
+            items.find("entityDraws_.append(push, kGeneratedItemVertexCount") != std::string::npos,
+            "item snapshot must feed both dropped items and falling blocks into caster collection");
+    REQUIRE(items.find("drawEntityShadowDecal(!shadowDisabled)") != std::string::npos,
+            "production decal collection must obey the sun shadow switch");
+    const auto mobs = functionBody(world, "void collectWorldEntities()");
+    REQUIRE(mobs.find("entityDraws_.begin(ShadowEntityKind::Creature)") != std::string::npos &&
+            mobs.find("entityDraws_.append(makeBoxUvCuboidPush(") != std::string::npos,
+            "creature snapshot must submit posed box-UV geometry");
+    const auto pipeline = functionBody(renderer, "void createShadowResources()");
+    for (const auto token : {"entity_shadow.frag.spv", "item_entity.vert.spv", "shadowVariant = VK_TRUE",
+             "vertexBindingDescriptionCount = 0", "vertexAttributeDescriptionCount = 0",
+             "rasterization.cullMode = VK_CULL_MODE_NONE", "push.size = sizeof(ItemPush)"})
+        REQUIRE(pipeline.find(token) != std::string::npos,
+                std::string{"entity depth pipeline contract missing: "} + token);
+    const std::filesystem::path shaderDir{MC_REBEDROCK_SHADER_SRC_DIR};
+    const auto vertex = stripLineComments(readFile(shaderDir / "item_entity.vert"));
+    REQUIRE(vertex.find("layout(constant_id = 0) const bool sunShadowPass = false") != std::string::npos,
+            "world item vertex shader must default to color projection");
+    std::size_t count = 0, offset = 0;
+    while ((offset = vertex.find("? camera.lightViewProj * vec4(worldPosition, 1.0)", offset)) != std::string::npos) {
+        ++count; ++offset;
+    }
+    REQUIRE(count == 2, "both generated sprites and cuboids must project through the current light matrix");
+    const auto fragment = stripLineComments(readFile(shaderDir / "entity_shadow.frag"));
+    REQUIRE(fragment.find("if (alpha < 0.1) discard") != std::string::npos &&
+            fragment.find("if (fragmentOpacity < 0.01) discard") != std::string::npos &&
+            fragment.find("binding = 8") == std::string::npos,
+            "entity shadow must discard transparent texels/hidden edges and never sample its depth attachment");
+    const auto sampling = stripLineComments(readFile(shaderDir / "include/sun_shadow.glsl"));
+    REQUIRE(sampling.find("#include \"sun_shadow_bias.glsl\"") != std::string::npos &&
+            sampling.find("sunShadowBiasBlocks(dot(normal, normalize(sunDirection)))") != std::string::npos,
+            "production shadow sampling must use the exact GLSL bias function compiled by the headless test");
+    REQUIRE(sampling.find("float tapReference = reference + sunShadowTapOffsetBlocks(") != std::string::npos &&
+            sampling.find("tapReference));") != std::string::npos,
+            "PCF must compare each tap against its receiver-plane depth");
+}
+
 } // namespace
 
 int main() {
     try {
+        checkEntityCasters();
+        checkBias();
+        checkEntityWiring();
         checkDepthConvention();
         checkTexelSnapping();
         checkCasterSelection();

@@ -56,6 +56,21 @@ using mc::render::parseTestSceneArguments;
 } // namespace
 
 int main() {
+    {
+        const auto preview = accept({"--scene"sv, "ssssssss/ssssssss/ssssssss/ssssssss/ssssssss/ssssssss/ssssssss/ssssssss"sv, "--key"sv, "s=stone"sv,
+            "--export-preview"sv, "--sun-shadows"sv, "--shadow-entities"sv, "--sun-tick"sv, "3000"sv});
+        assert(preview.sunShadows && preview.shadowEntities && preview.sunTick == 3000U);
+        assert(rejects({"--test-scene"sv, "stone"sv, "--sun-shadows"sv}));
+        assert(rejects({"--test-scene"sv, "stone"sv, "--export-preview"sv, "--sun-tick"sv, "24000"sv}));
+        assert(rejects({"--test-scene"sv, "stone"sv, "--export-preview"sv, "--sun-tick"sv, "x"sv}));
+        assert(rejects({"--test-scene"sv, "stone"sv, "--export-preview"sv, "--sun-tick"sv}));
+        auto other = preview;
+        other.sunShadows = false;
+        assert(mc::render::previewDirectoryName(other) != mc::render::previewDirectoryName(preview));
+        other = preview; other.sunTick = 6000U;
+        assert(mc::render::previewDirectoryName(other) != mc::render::previewDirectoryName(preview));
+    }
+
     using mc::world::Block;
     using mc::world::BlockOrientation;
     using mc::world::DoorHinge;

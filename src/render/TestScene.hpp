@@ -75,6 +75,10 @@ struct TestSceneOptions final {
     // — seven images out of eight, silently, is the worst outcome for something
     // an automation diffs.
     bool exportPreview = false;
+    // RN-11b：仅隐藏导出可用，默认保持旧预览不投影。固定实体是验收夹具，不是场景编辑器。
+    bool sunShadows = false;
+    bool shadowEntities = false;
+    std::optional<std::uint32_t> sunTick;
     // Square, and fixed rather than taken from the window: an export whose size
     // depends on the monitor it ran on cannot be compared with one from another
     // machine, and RN-15 is a comparison tool before it is anything else.
