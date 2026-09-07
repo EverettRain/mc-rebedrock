@@ -5452,7 +5452,27 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         info.imageColorSpace = format.colorSpace;
         info.imageExtent = swapchainExtent;
         info.imageArrayLayers = 1;
-        info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        // 帧末的 copySceneToSwapchain 用 vkCmdCopyImage 把离屏场景图搬进交换链图像，
+        // 目标图像因此必须带 TRANSFER_DST：拷贝本身要求它
+        // （VUID-vkCmdCopyImage-dstImage-00177），把它转成 TRANSFER_DST_OPTIMAL 的那道
+        // barrier 也要求它（VUID-VkImageMemoryBarrier-oldLayout-01213）。
+        // 从前这里只请求 COLOR_ATTACHMENT，两条 VUID 都在违反中：MoltenVK 宽松，
+        // macOS 上从未暴露；lavapipe 的校验层每帧都报，RN-11b 的落地记录已把它们
+        // 登记为"需另行收口"的欠账，这里是那次收口。
+        //
+        // COLOR_ATTACHMENT 是 spec 保证每个 surface 都支持的唯一一位，TRANSFER_DST
+        // 不是，所以它必须问过 surface 才能加，而不是照写上去换一条更晚才报的错。
+        constexpr VkImageUsageFlags kRequiredSwapchainUsage =
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if ((support.capabilities.supportedUsageFlags & kRequiredSwapchainUsage) !=
+            kRequiredSwapchainUsage) {
+            // 与 chooseSurfaceFormat 的 8-bit 格式检查同一个体例：能力不满足就说清楚
+            // 缺哪一位、谁要它，而不是让它变成一次 vkCmdCopyImage 的未定义行为。
+            throw std::runtime_error(
+                "The surface does not support TRANSFER_DST swapchain images: the frame is "
+                "composited into an offscreen scene image and copied out verbatim");
+        }
+        info.imageUsage = kRequiredSwapchainUsage;
         const std::uint32_t families[]{queueFamilies.graphics.value(),
                                        queueFamilies.present.value()};
         if (queueFamilies.graphics != queueFamilies.present) {

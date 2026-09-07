@@ -462,6 +462,21 @@ void checkRendererSourceGuards() {
     // 分辨率不得再有第二个字面量
     REQUIRE(renderer.find("kSunShadowMapResolution, kSunShadowMapResolution") != std::string::npos,
             "the shadow map's resolution must come from SunShadowMap.hpp, not a literal");
+
+    // RN-11b 把两条交换链 VUID 登记为欠账：帧末 copySceneToSwapchain 用 vkCmdCopyImage
+    // 写进交换链图像，并先把它 barrier 成 TRANSFER_DST_OPTIMAL，而 createSwapchain
+    // 只请求了 COLOR_ATTACHMENT。MoltenVK 宽松，macOS 上看不出来；lavapipe 每帧都报。
+    // 这里是那次收口的护栏：usage 必须真的带上 TRANSFER_DST，而且必须**先问过**
+    // supportedUsageFlags——COLOR_ATTACHMENT 是 spec 保证的唯一一位，别的都得问。
+    const std::string swapchain = functionBody(renderer, "void createSwapchain()");
+    REQUIRE(swapchain.find("VK_IMAGE_USAGE_TRANSFER_DST_BIT") != std::string::npos,
+            "the swapchain images are a vkCmdCopyImage destination, so they must be created "
+            "with TRANSFER_DST usage");
+    REQUIRE(swapchain.find("supportedUsageFlags") != std::string::npos,
+            "TRANSFER_DST is not a guaranteed surface usage: createSwapchain must consult "
+            "supportedUsageFlags before requesting it");
+    REQUIRE(swapchain.find("supportedUsageFlags") < swapchain.find("info.imageUsage ="),
+            "the capability check must run before the usage is requested, not after");
 }
 
 void checkShaderSourceGuards() {
