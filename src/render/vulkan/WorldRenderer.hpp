@@ -1873,6 +1873,14 @@ class WorldRenderer final {
         if (!worldReady || (shadowDisabled && cameraPerspective == CameraPerspective::FirstPerson)) {
             return;
         }
+        // 姿态未绑定 = 动画器一次都没算过 = 这一局还没有玩家可画。模型在初始化期就
+        // 加载好了，所以 `model().boneCount()` 早就非零，光靠它判断会让下面的循环拿
+        // 一个空姿态去取矩阵。开着太阳阴影的隐藏导出正好走到这个组合：它直接调
+        // drawFrame，绕过了主循环每帧的 updateWorldPlayer，而阴影一开，
+        // 上面那条第一人称早退就不再兜底了。
+        if (!worldPlayerAnimator.skeletonPose().bound()) {
+            return;
+        }
 
         entityDraws_.begin(ShadowEntityKind::Player);
         // 模型锚在玩家快照的插值脚点。正常游戏与相机跟随的脚点相同；

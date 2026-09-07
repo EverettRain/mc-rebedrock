@@ -81,6 +81,15 @@ class SkeletonPose final {
     explicit SkeletonPose(const SkeletalModel& model);
 
     [[nodiscard]] const SkeletalModel* model() const { return model_; }
+    // 这个姿态是否绑着一个模型。默认构造的 SkeletonPose 不绑，`localMatrix` /
+    // `worldMatrix` 都会立刻解引用空的 `model_`。
+    //
+    // 这不是一个理论状态：动画器**先**持有模型、**后**才第一次 evaluate，中间那段
+    // 时间里「模型有骨骼」与「姿态可查询」是两个不同的答案。渲染侧用模型的
+    // `boneCount()` 驱动循环、用姿态取矩阵，于是只要有一条路径绕过了那次
+    // evaluate（导出路径直接调 drawFrame，不走主循环每帧的 update），循环就会带着
+    // 一个非零的骨骼数去索引一个空姿态。消费者必须先问这一句，而答案只在这里。
+    [[nodiscard]] bool bound() const { return model_ != nullptr; }
     [[nodiscard]] std::size_t boneCount() const { return bones_.size(); }
     [[nodiscard]] BonePose& bone(std::size_t index) { return bones_[index]; }
     [[nodiscard]] const BonePose& bone(std::size_t index) const { return bones_[index]; }

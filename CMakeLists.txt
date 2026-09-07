@@ -2802,6 +2802,15 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_player_model_animation_test PRIVATE mc_rebedrock_animation)
     add_test(NAME player_model_animation COMMAND mc_rebedrock_player_model_animation_test)
 
+    # RN-26：一个 SkeletonPose 什么时候可以被查询。渲染器不进 headless 测试，
+    # 所以这条测试一半是契约（bound()），一半是源码护栏（读姿态的两处都问了它）。
+    add_executable(mc_rebedrock_skeleton_pose_binding_test
+        tests/skeleton_pose_binding_test.cpp)
+    target_link_libraries(mc_rebedrock_skeleton_pose_binding_test PRIVATE mc_rebedrock_animation)
+    target_compile_definitions(mc_rebedrock_skeleton_pose_binding_test PRIVATE
+        "MC_REBEDROCK_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
+    add_test(NAME skeleton_pose_binding COMMAND mc_rebedrock_skeleton_pose_binding_test)
+
     add_executable(mc_rebedrock_box_uv_test
         tests/box_uv_test.cpp)
     target_link_libraries(mc_rebedrock_box_uv_test PRIVATE mc_rebedrock_animation)

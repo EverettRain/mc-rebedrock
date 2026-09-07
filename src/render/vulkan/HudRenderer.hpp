@@ -1538,7 +1538,12 @@ class HudRenderer final {
                                sizeof(push), &push);
             vkCmdDraw(commandBuffer, 36U, 1, 0, 0);
         };
-        for (std::size_t index = 0; index < previewModel.boneCount(); ++index) {
+        // 与世界里的玩家同一条契约：骨骼数来自模型，矩阵来自姿态，而两者在动画器
+        // 第一次 evaluate 之前并不同时可用。未绑定就一根骨骼也不画——留在循环条件里
+        // 而不是提前 return，是因为下面还要还原 scissor 与管线。
+        const std::size_t previewBoneCount =
+            skeletonPose.bound() ? previewModel.boneCount() : 0U;
+        for (std::size_t index = 0; index < previewBoneCount; ++index) {
             const auto& bone = previewModel.bones()[index];
             const float layer = layerForBone(bone.name);
             if (layer < 0.0F) {
