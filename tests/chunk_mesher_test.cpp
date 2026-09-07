@@ -1174,7 +1174,19 @@ int main() {
             }
             poolWorld.setChunk({0, 0}, std::move(poolChunk));
             const auto pool = mc::world::ChunkMesher::buildSection(poolWorld, {0, 0}, 0);
-            assert(pool.translucentMesh.vertices.size() == 6U * 16U * 4U);
+            // RN-22: 6 面各 16 个 quad，**外加**顶上那 16 个的反向绕序副本。
+            //
+            // 半透明通道现在做背面剔除（与 26.1 的 TRANSLUCENT_TERRAIN 一致），而水面
+            // 的 quad 绕序朝上，人在水下抬头看的是它的背面。26.1 靠
+            // `FluidRenderer.addFace(..., addBackFace)` 再发一片反向绕序的四顶点副本
+            // （FluidRenderer.java:367）来解决，这里照做。
+            //
+            // 这一条仍然是**过绘制门禁**：多出来的恰好是水面那 16 个，一个不多。若把
+            // 剔除判据弄反，内部面会让它爆掉，这个等式一样接不住。
+            assert(pool.translucentMesh.vertices.size() == (6U + 1U) * 16U * 4U);
+            // 而且多出来的只在顶面：底面与四壁各自仍是 16 个 quad。
+            assert(faceVertices(pool.translucentMesh, glm::vec3{0.0F, -1.0F, 0.0F}, 1, 1.0F) ==
+                   16 * 4);
         }
     }
     return 0;

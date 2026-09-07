@@ -761,6 +761,7 @@ class WorldRenderer final {
 
     void retireMesh(FrameContext& frame, GpuMesh& mesh) {
         static_cast<void>(frame);
+        deferStreamBufferRelease(deviceBufferPool_, mesh.translucentIndexBuffer);
         deferStreamBufferRelease(deviceBufferPool_, mesh.indexBuffer);
         deferStreamBufferRelease(deviceBufferPool_, mesh.vertexBuffer);
         mesh = {};
@@ -773,21 +774,51 @@ class WorldRenderer final {
     }
 
 
+    // RN-22：半透明层建好排序状态，并按当前视点排一次序。
+    //
+    // 排在渲染线程而不是网格化的工作线程里，与 vanilla（`SectionCompiler.compile` 收
+    // 一个 `VertexSorting`）不同，理由是**单一调用点**：重排本来就只能在渲染线程做
+    // （它要动 GPU 缓冲），把首次排序也放这里，"相机在哪"这件事就只有一处需要知道，
+    // 不必把相机位置一路穿进 world/ChunkStreamer。代价是首次排序落在渲染线程上，但
+    // 它与紧挨着的那次整块网格 memcpy 同量级，且共用同一个逐帧上传预算。
+    void sortTranslucentIndices(const render::MeshData& source, GpuMesh& destination,
+                                std::vector<std::uint32_t>& sorted) {
+        destination.translucentSort = render::buildTranslucentSortState(source);
+        if (destination.translucentSort.empty()) {
+            // 前提不成立（或本来就没有半透明面）：原样上传，绘制顺序即发射顺序。
+            sorted = source.indices;
+            destination.translucentPointOfView = {};
+            return;
+        }
+        const glm::vec3 eye = renderEyeState().position;
+        destination.translucentPointOfView =
+            render::translucencyPointOfViewOf(eye, destination.sectionCoordinates);
+        render::writeSortedTranslucentIndices(destination.translucentSort,
+                                              eye - destination.sectionOrigin, sorted);
+    }
+
+
     void uploadRenderMesh(FrameContext& frame, const render::RenderMeshData& source,
                           GpuMesh& destination) {
-        const std::array layers{&source.mesh, &source.cutoutMesh, &source.translucentMesh};
+        // 半透明的索引在这里就已经是排好序的那一份，长度与源相同。
+        sortTranslucentIndices(source.translucentMesh, destination, translucentIndexScratch_);
+
+        const std::array layers{&source.mesh, &source.cutoutMesh};
         VkDeviceSize vertexBytes = 0;
         VkDeviceSize indexBytes = 0;
         for (const auto* layer : layers) {
             vertexBytes += static_cast<VkDeviceSize>(layer->vertices.size() * sizeof(VoxelVertex));
             indexBytes += static_cast<VkDeviceSize>(layer->indices.size() * sizeof(std::uint32_t));
         }
+        vertexBytes += static_cast<VkDeviceSize>(source.translucentMesh.vertices.size() *
+                                                 sizeof(VoxelVertex));
+        const VkDeviceSize translucentIndexBytes =
+            static_cast<VkDeviceSize>(translucentIndexScratch_.size() * sizeof(std::uint32_t));
         auto vertexStaging = acquireStreamBuffer(stagingBufferPool_, vertexBytes,
                                                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
         auto indexStaging = acquireStreamBuffer(stagingBufferPool_, indexBytes,
                                                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
-        std::array<GpuMeshLayer*, 3> destinations{&destination.opaque, &destination.cutout,
-                                                  &destination.translucent};
+        std::array<GpuMeshLayer*, 2> destinations{&destination.opaque, &destination.cutout};
         VkDeviceSize vertexOffset = 0;
         VkDeviceSize indexOffset = 0;
         for (std::size_t index = 0; index < layers.size(); ++index) {
@@ -811,6 +842,19 @@ class WorldRenderer final {
             vertexOffset += layerVertexBytes;
             indexOffset += layerIndexBytes;
         }
+        // 半透明的顶点仍与另外两层共用一条顶点缓冲（绘制时按 translucent.vertexOffset
+        // 绑定），只有索引分了家；`indexOffset` 因此对它恒为 0。
+        const VkDeviceSize translucentVertexBytes = static_cast<VkDeviceSize>(
+            source.translucentMesh.vertices.size() * sizeof(VoxelVertex));
+        destination.translucent.vertexOffset = vertexOffset;
+        destination.translucent.indexOffset = 0;
+        destination.translucent.indexCount =
+            static_cast<std::uint32_t>(translucentIndexScratch_.size());
+        if (translucentVertexBytes > 0U) {
+            std::memcpy(static_cast<std::byte*>(vertexStaging.mapped) + vertexOffset,
+                        source.translucentMesh.vertices.data(),
+                        static_cast<std::size_t>(translucentVertexBytes));
+        }
         checkVk(vmaFlushAllocation(allocator, vertexStaging.allocation, 0, VK_WHOLE_SIZE),
                 "vmaFlushAllocation(streaming vertices)");
         checkVk(vmaFlushAllocation(allocator, indexStaging.allocation, 0, VK_WHOLE_SIZE),
@@ -818,14 +862,39 @@ class WorldRenderer final {
 
         destination.vertexBuffer =
             acquireStreamBuffer(deviceBufferPool_, vertexBytes, kStreamBufferDeviceUsage, false);
-        destination.indexBuffer =
-            acquireStreamBuffer(deviceBufferPool_, indexBytes, kStreamBufferDeviceUsage, false);
         frame.uploadCopies.push_back(
             {vertexStaging.buffer, destination.vertexBuffer.buffer, vertexBytes});
-        frame.uploadCopies.push_back(
-            {indexStaging.buffer, destination.indexBuffer.buffer, indexBytes});
         deferStreamBufferRelease(stagingBufferPool_, vertexStaging);
+        if (indexBytes > 0U) {
+            destination.indexBuffer = acquireStreamBuffer(deviceBufferPool_, indexBytes,
+                                                          kStreamBufferDeviceUsage, false);
+            frame.uploadCopies.push_back(
+                {indexStaging.buffer, destination.indexBuffer.buffer, indexBytes});
+        }
         deferStreamBufferRelease(stagingBufferPool_, indexStaging);
+        if (translucentIndexBytes > 0U) {
+            uploadTranslucentIndices(frame, destination, translucentIndexScratch_);
+        }
+    }
+
+
+    // RN-22：把一份（重新）排好序的半透明索引送上 GPU，换掉这个 section 原来那条。
+    //
+    // 旧缓冲走延迟归还队列而不是就地覆写：见 `GpuMesh::translucentIndexBuffer` 的注释，
+    // 就地覆写会与仍在读它的上一帧撞 WAR，而延迟归还本来就保证了 kFramesInFlight 帧。
+    void uploadTranslucentIndices(FrameContext& frame, GpuMesh& mesh,
+                                  const std::vector<std::uint32_t>& indices) {
+        const auto bytes = static_cast<VkDeviceSize>(indices.size() * sizeof(std::uint32_t));
+        auto staging =
+            acquireStreamBuffer(stagingBufferPool_, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+        std::memcpy(staging.mapped, indices.data(), static_cast<std::size_t>(bytes));
+        checkVk(vmaFlushAllocation(allocator, staging.allocation, 0, VK_WHOLE_SIZE),
+                "vmaFlushAllocation(translucent indices)");
+        deferStreamBufferRelease(deviceBufferPool_, mesh.translucentIndexBuffer);
+        mesh.translucentIndexBuffer =
+            acquireStreamBuffer(deviceBufferPool_, bytes, kStreamBufferDeviceUsage, false);
+        frame.uploadCopies.push_back({staging.buffer, mesh.translucentIndexBuffer.buffer, bytes});
+        deferStreamBufferRelease(stagingBufferPool_, staging);
     }
 
 
@@ -915,10 +984,16 @@ class WorldRenderer final {
             gpuMesh.sectionOrigin = {static_cast<float>(position.chunkX) * world::kChunkWidth,
                                      static_cast<float>(world::sectionOriginY(position.sectionY)),
                                      static_cast<float>(position.chunkZ) * world::kChunkDepth};
+            // RN-22：section 号，用于半透明重排的象限量化。sectionOrigin 恒是 16 的
+            // 倍数，但 y 可以是负的（kMinY < 0），所以是 floor 除不是截断除。
+            gpuMesh.sectionCoordinates = {
+                static_cast<int>(std::floor(gpuMesh.sectionOrigin.x / 16.0F)),
+                static_cast<int>(std::floor(gpuMesh.sectionOrigin.y / 16.0F)),
+                static_cast<int>(std::floor(gpuMesh.sectionOrigin.z / 16.0F))};
             uploadRenderMesh(frame, update.mesh, gpuMesh);
             // 工作线程把这个网格建在池化的 RenderMeshData 上；归还它，容量供下一个 section 构建复用
             chunkStreamer.releaseMeshData(std::move(update.mesh));
-            gpuMeshes.insert_or_assign(position, gpuMesh);
+            gpuMeshes.insert_or_assign(position, std::move(gpuMesh));
             // 新网格必须先画一次并查询过，遮挡结果才可信，因此它从 Unknown 起步，不继承陈旧结果
             occlusionStates[position] = OcclusionState::Unknown;
             if (chunkTrace) {
@@ -944,6 +1019,73 @@ class WorldRenderer final {
             // 含暂存拷贝与缓冲获取，与 queueStreamBatch 记录的批次落地那一半配对
             diag::chunkStreamingMetrics().recordFrameCost(
                 0.0, diag::msSince(uploadPrepStart), tracedUploads);
+        }
+        scheduleTranslucentResorts(frame);
+    }
+
+
+    // RN-22：半透明层的逐 quad 重排调度，26.1 `LevelRenderer.scheduleTranslucentSectionResort`
+    // （LevelRenderer.java:997）的形状。
+    //
+    // 它必须跑在 renderpass 之外 —— 重排要发 `vkCmdCopyBuffer`，而拷贝是在
+    // `recordUpload` 里落到指令缓冲的，那一步在任何 renderpass 开始之前。所以调度挂在
+    // `prepareStreamingUpdates` 尾巴上，而不是挂在 drawWorld 里那次 section 排序旁边。
+    //
+    // 视点取 `renderEyeState().position` 而不是 `camera.position()`：第三人称下渲染眼
+    // 点被沿视线拉后 4 格，混合顺序该按真正出图的那个眼点算。视锥与遮挡已经统一用它
+    // （见 drawWorld 里建 Frustum 那段）。vanilla 传的 `camera.position()` 本身就是
+    // 渲染眼点，所以这也是对齐而不是分歧。
+    void scheduleTranslucentResorts(FrameContext& frame) {
+        const bool trace = diag::traceEnabled();
+        const auto resortStart =
+            trace ? diag::FrameTrace::Clock::now() : diag::FrameTrace::Clock::time_point{};
+        const glm::vec3 eye = renderEyeState().position;
+        const glm::ivec3 eyeBlock{static_cast<int>(std::floor(eye.x)),
+                                  static_cast<int>(std::floor(eye.y)),
+                                  static_cast<int>(std::floor(eye.z))};
+        const bool cameraBlockChanged =
+            !translucentResortInitialized_ || eyeBlock != lastTranslucentResortBlock_;
+        translucentResortInitialized_ = true;
+        lastTranslucentResortBlock_ = eyeBlock;
+
+        // 有半透明几何的 section 名单。逐帧重建，因为 gpuMeshes 每帧都在增删。
+        // 名单与调度输入分成两个数组：调度是纯函数，它只认 section 号与上次的象限，
+        // 不认 GpuMesh —— 那正是它能被 benchmark 与测试拿同一份代码驱动的原因。
+        translucentSections_.clear();
+        translucentCandidates_.clear();
+        for (auto& [position, mesh] : gpuMeshes) {
+            if (mesh.translucentSort.empty()) {
+                continue;
+            }
+            translucentSections_.push_back(&mesh);
+            translucentCandidates_.push_back({mesh.sectionCoordinates, mesh.translucentPointOfView});
+        }
+        if (trace) {
+            diag::frameTrace().translucentSections =
+                static_cast<std::uint32_t>(translucentSections_.size());
+        }
+        if (translucentSections_.empty()) {
+            translucentResortCursor_ = 0;
+            return;
+        }
+
+        render::selectTranslucentResorts(
+            std::span<const render::TranslucentResortCandidate>{translucentCandidates_}, eye,
+            cameraBlockChanged, translucentResortCursor_, translucentResortSelection_);
+
+        for (const std::size_t index : translucentResortSelection_) {
+            GpuMesh& mesh = *translucentSections_[index];
+            render::writeSortedTranslucentIndices(
+                mesh.translucentSort, eye - mesh.sectionOrigin, translucentIndexScratch_);
+            uploadTranslucentIndices(frame, mesh, translucentIndexScratch_);
+            mesh.translucentPointOfView =
+                render::translucencyPointOfViewOf(eye, mesh.sectionCoordinates);
+        }
+        const std::size_t resorted = translucentResortSelection_.size();
+        translucentResortsThisFrame_ = resorted;
+        if (trace) {
+            diag::frameTrace().translucentResorts = static_cast<std::uint32_t>(resorted);
+            diag::frameTrace().translucentResortMs += diag::msSince(resortStart);
         }
     }
 
@@ -2322,8 +2464,9 @@ class WorldRenderer final {
                                    0, sizeof(glm::vec4), &mesh->sectionOrigin);
                 vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &mesh->vertexBuffer.buffer,
                                        &mesh->translucent.vertexOffset);
-                vkCmdBindIndexBuffer(frame.commandBuffer, mesh->indexBuffer.buffer,
-                                     mesh->translucent.indexOffset, VK_INDEX_TYPE_UINT32);
+                // RN-22：半透明的索引在自己的缓冲里（重排要整条换掉），偏移恒为 0。
+                vkCmdBindIndexBuffer(frame.commandBuffer, mesh->translucentIndexBuffer.buffer,
+                                     0, VK_INDEX_TYPE_UINT32);
                 vkCmdDrawIndexed(frame.commandBuffer, mesh->translucent.indexCount, 1, 0, 0, 0);
             }
         }
@@ -2617,6 +2760,16 @@ class WorldRenderer final {
   std::vector<const GpuMesh*> shadowCasterMeshes_;
   std::vector<Aabb> shadowCasterBounds_;
   std::vector<std::size_t> shadowCasterSelection_;
+  // RN-22：半透明逐 quad 重排的逐帧暂存与调度游标。同样是成员而非局部变量，
+  // clear() 保留容量，稳态下逐帧零分配。
+  std::vector<std::uint32_t> translucentIndexScratch_;
+  std::vector<GpuMesh*> translucentSections_;
+  std::vector<render::TranslucentResortCandidate> translucentCandidates_;
+  std::vector<std::size_t> translucentResortSelection_;
+  std::size_t translucentResortCursor_ = 0;
+  std::size_t translucentResortsThisFrame_ = 0;
+  glm::ivec3 lastTranslucentResortBlock_{};
+  bool translucentResortInitialized_ = false;
   // 方块粉尘、水花粒子和异步雨共用的 CPU 暂存缓冲，可复用
   // 记录采样世界期间它一直留在主机缓存里，最后一次性整体拷进本帧顺序写映射的存储缓冲
   std::vector<ParticleRecord> sceneParticleRecords_;

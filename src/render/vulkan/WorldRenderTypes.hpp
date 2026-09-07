@@ -4,6 +4,7 @@
 // 放在 mc::render 而不是某个 .cpp 的匿名命名空间里，两边才能指同一份定义
 
 #include "render/MeshData.hpp"                // Aabb
+#include "render/TranslucentSort.hpp"         // TranslucentSortState, TranslucencyPointOfView
 #include "render/vulkan/VulkanResources.hpp"  // AllocatedBuffer
 #include "world/ChunkStreamer.hpp"            // world::SectionPosition
 
@@ -12,6 +13,7 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
+#include <glm/vec2.hpp>
 
 #include <array>
 #include <cstddef>
@@ -113,6 +115,14 @@ struct GpuMeshLayer final {
 struct GpuMesh final {
     AllocatedBuffer vertexBuffer;
     AllocatedBuffer indexBuffer;
+    // RN-22：半透明层的索引单独一条缓冲，不与 opaque/cutout 挤在 indexBuffer 里。
+    //
+    // 理由是重排的写入安全：quad 级排序每次重排都要**整条换掉**半透明的索引。往
+    // 已有缓冲里原地拷会与上一帧仍在读它的 GPU 撞 WAR —— 本帧的拷贝只等到
+    // `frame.inFlight`（第 N-kFramesInFlight 帧），管不着第 N-1 帧。所以重排走
+    // 「从池里取一条新的、旧的进延迟归还队列」，而延迟归还本来就保证了
+    // kFramesInFlight 帧的安全窗口。单独成缓冲才换得起。
+    AllocatedBuffer translucentIndexBuffer;
     GpuMeshLayer opaque;
     GpuMeshLayer cutout;
     GpuMeshLayer translucent;
@@ -120,6 +130,12 @@ struct GpuMesh final {
     // 打包顶点坐标所相对的 section 原点，逐次绘制推给地形着色器
     // 由 SectionPosition 算出——稀疏 section 的 bounds.minimum 并不是它的原点
     glm::vec3 sectionOrigin{};
+    // RN-22：重排半透明索引所需的全部信息（每片 quad 的中心与它自己那 6 个索引），
+    // 以及上次排序时的视点象限。顶点不留副本。
+    TranslucentSortState translucentSort;
+    TranslucencyPointOfView translucentPointOfView{};
+    // sectionOrigin / 16，即这个 section 的三轴 section 号。象限量化要用。
+    glm::ivec3 sectionCoordinates{};
 };
 
 struct BufferCopyJob final {

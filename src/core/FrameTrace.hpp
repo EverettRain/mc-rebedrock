@@ -51,6 +51,13 @@ struct FrameTrace final {
     double particleSimMs = 0.0;    // ParticleSystem::update（逐粒子 world.state + 积分）
     double rainSimMs = 0.0;        // RainSystem::update + emitTextureImpacts
     double particleLightMs = 0.0;  // 粒子/雨滴记录构建，含逐条 packedSceneLight（各 2 次区块查找）
+    // RN-22：半透明逐 quad 重排。两个数一起看才有意义——「一次多贵」乘「一秒几次」。
+    // 重排的成本本身在 uploadMs 里（它挂在 prepareStreamingUpdates 尾巴上），
+    // 这里单独把它拆出来，因为它的触发条件与网格上传完全不同：上传跟着区块流送走，
+    // 重排跟着相机走，转个身可能一帧几十次、站着不动一次都没有。
+    double translucentResortMs = 0.0;
+    std::uint32_t translucentResorts = 0;      // 本帧真正重排的 section 数
+    std::uint32_t translucentSections = 0;     // 有半透明几何、参与调度的 section 数
     std::uint32_t unloadedChunks = 0;
     std::uint32_t visibleSections = 0;  // recordCommandBuffer 本帧提交的可见 section 数
     std::uint32_t saveChunkCalls = 0;
@@ -67,7 +74,8 @@ struct FrameTrace final {
         persistMs = saveChunkMs = lockHoldMs = drainMs = fenceWaitMs = 0.0;
         uploadMs = recordMs = drawFrameMs = inputMs = acquireMs = presentMs = 0.0;
         occlusionReadbackMs = uniformMs = imageWaitMs = graphMs = 0.0;
-        particleSimMs = rainSimMs = particleLightMs = 0.0;
+        particleSimMs = rainSimMs = particleLightMs = translucentResortMs = 0.0;
+        translucentResorts = translucentSections = 0;
         unloadedChunks = visibleSections = saveChunkCalls = queueBatchCount = 0;
         particleCount = rainDropCount = rainLookups = 0;
         editScan = 0;
