@@ -232,19 +232,30 @@ void main() {
         return;
     }
     if (isItemMode(kItemModeEntityShadow)) {
-        int triangle = gl_VertexIndex / 3;
-        int vertex = gl_VertexIndex % 3;
-        float startAngle = float(triangle) * 6.28318530718 / 12.0;
-        float endAngle = float(triangle + 1) * 6.28318530718 / 12.0;
-        vec2 radial = vertex == 0
-            ? vec2(0.0)
-            : (vertex == 1
-                ? vec2(cos(startAngle), sin(startAngle))
-                : vec2(cos(endAngle), sin(endAngle)));
+        // RN-23: one draw is one SHADOW PIECE -- a flat quad on the top face of
+        // one block -- not a whole shadow. This used to fan twelve triangles into
+        // a disc of radius positionSize.w, which is why the shadow floated flat
+        // over stairs and never dimmed in the dark: a disc has one height and one
+        // alpha, and 26.1's shadow has one of each PER CELL. The circle is still
+        // a circle; it is now assembled from the pieces, each carrying the patch
+        // of UV its own cell occupies (ShadowFeatureRenderer.java:20-42).
+        //
+        // positionSize.xyz is the piece's minimum corner in world space,
+        // positionSize.w and dimensions.x its x/z extent,
+        // textureLayersRotation the (u0,v0,u1,v1) rect, data.y the alpha.
+        int quadIndices[6] = int[6](0, 1, 2, 2, 3, 0);
+        int corner = quadIndices[gl_VertexIndex % 6];
+        // Corner order matches vanilla's four shadowVertex calls:
+        // (x0,z0) -> (x0,z1) -> (x1,z1) -> (x1,z0).
+        float alongX = (corner == 2 || corner == 3) ? 1.0 : 0.0;
+        float alongZ = (corner == 1 || corner == 2) ? 1.0 : 0.0;
         vec3 worldPosition = item.positionSize.xyz +
-            vec3(radial.x, 0.0, radial.y) * item.positionSize.w;
+            vec3(alongX * item.positionSize.w, 0.0, alongZ * item.dimensions.x);
         gl_Position = camera.projection * camera.view * vec4(worldPosition, 1.0);
-        fragmentUv = radial * 0.5 + vec2(0.5);
+        // The UV rect is interpolated, not derived from the position, so a piece
+        // that fell to a lower block still samples its own place in the disc.
+        fragmentUv = vec2(mix(item.textureLayersRotation.x, item.textureLayersRotation.z, alongX),
+                          mix(item.textureLayersRotation.y, item.textureLayersRotation.w, alongZ));
         fragmentTextureLayer = 0.0;
         fragmentNormal = vec3(0.0, 1.0, 0.0);
         fragmentIsCube = 2.0;

@@ -661,7 +661,8 @@ void checkEntityWiring() {
             record.find("vkCmdPipelineBarrier") == std::string::npos,
             "shadow body must not own graph renderpass or layout transitions");
     const auto frame = functionBody(world, "recordCommandBuffer(FrameContext& frame");
-    for (const auto name : {"collectItemEntities();", "collectWorldEntities();", "collectWorldPlayer();"})
+    for (const auto name : {"collectEntityShadowDecals();", "collectItemEntities();",
+                            "collectWorldEntities();", "collectWorldPlayer();"})
         REQUIRE(frame.find(name) < frame.find("frameGraph.execute"),
                 std::string{"same-frame entity preparation missing before graph: "} + name);
     const auto player = functionBody(world, "void collectWorldPlayer()");
@@ -674,8 +675,27 @@ void checkEntityWiring() {
             items.find("entityDraws_.begin(ShadowEntityKind::FallingBlock)") != std::string::npos &&
             items.find("entityDraws_.append(push, kGeneratedItemVertexCount") != std::string::npos,
             "item snapshot must feed both dropped items and falling blocks into caster collection");
-    REQUIRE(items.find("drawEntityShadowDecal(!shadowDisabled)") != std::string::npos,
+    // RN-23：贴花已从 collectItemEntities 里那段「只给掉落物、画一个固定圆盘」搬到
+    // 自己的收集器，并覆盖全部五类实体。RN-11b 的开关判断随之搬家但不改语义：太阳
+    // 阴影开着时统一不画，而不是按单只实体是否入选真实投影临时恢复。
+    const auto decals = functionBody(world, "void collectEntityShadowDecals()");
+    REQUIRE(decals.find("drawEntityShadowDecal(!shadowDisabled)") != std::string::npos,
             "production decal collection must obey the sun shadow switch");
+    REQUIRE(decals.find("options.entityShadows") != std::string::npos,
+            "the decal must obey the player's Entity Shadows setting as well");
+    REQUIRE(items.find("kItemModeEntityShadow") == std::string::npos,
+            "the item collector must no longer grow its own private shadow blob");
+    REQUIRE(decals.find("clientMirror.player()") != std::string::npos &&
+                decals.find("clientMirror.entities()") != std::string::npos &&
+                decals.find("frame.snapshot.items()") != std::string::npos &&
+                decals.find("frame.snapshot.experienceOrbs()") != std::string::npos &&
+                decals.find("frame.snapshot.fallingBlocks()") != std::string::npos,
+            "every entity kind that has a shadow radius in 26.1 must reach the decal collector");
+    REQUIRE(decals.find("cameraPerspective != CameraPerspective::FirstPerson") != std::string::npos,
+            "the local player's decal follows LevelRenderer's first-person rule: in first person "
+            "the entity never enters the render list, so it has no shadow either");
+    REQUIRE(decals.find("SkyLight::skyDarken(") != std::string::npos,
+            "night must dim the decal through the one skyDarken transcription, not a second copy");
     const auto mobs = functionBody(world, "void collectWorldEntities()");
     REQUIRE(mobs.find("entityDraws_.begin(ShadowEntityKind::Creature)") != std::string::npos &&
             mobs.find("entityDraws_.append(makeBoxUvCuboidPush(") != std::string::npos,

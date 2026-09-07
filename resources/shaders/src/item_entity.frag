@@ -64,8 +64,20 @@ void main() {
         discard;
     }
     if (fragmentIsCube > 1.5) {
+        // RN-23: the shadow disc, standing in for vanilla's misc/shadow.png. That
+        // texture is NOT a radial gradient -- measured off 26.1's own 64x64 file,
+        // its alpha is a flat 255 out to r = 0.92 and only the outermost texel or
+        // two ramp to 0 (the mid row is 0, 104, 255 x 60, 128, 0). It is a disc
+        // with a soft rim, and bilinear filtering is what softens even that.
+        //
+        // This used to be smoothstep(0.30, 1.0), which starts fading at not quite
+        // a third of the radius, so every pixel outside the very middle was
+        // weaker than vanilla and the decal read as a faint smudge instead of a
+        // shadow. The numbers below are the texture's own ramp, so the disc is
+        // as solid here as it is there -- without shipping the file, which the
+        // no-bundled-assets rule forbids.
         float radius = length(fragmentUv - vec2(0.5)) * 2.0;
-        float softness = 1.0 - smoothstep(0.30, 1.0, radius);
+        float softness = 1.0 - smoothstep(0.92, 1.0, radius);
         outColor = vec4(0.0, 0.0, 0.0, fragmentShadowOpacity * softness);
         return;
     }

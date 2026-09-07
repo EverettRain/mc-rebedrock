@@ -807,6 +807,8 @@ if(BUILD_TESTING)
         src
         "${glm_SOURCE_DIR}"
     )
+    target_compile_definitions(mc_rebedrock_entity_shadow_decal_test PRIVATE
+        "MC_REBEDROCK_SHADER_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src\"")
     add_test(NAME entity_shadow_decal COMMAND mc_rebedrock_entity_shadow_decal_test)
 
     add_executable(mc_rebedrock_vertex_lighting_test

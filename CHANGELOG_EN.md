@@ -8,6 +8,19 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- Creatures, players, experience orbs and falling blocks have shadows again. Only
+  dropped items ever had one, and it was a flat disc that hovered at whatever
+  height a downward probe found -- so mobs and your own body cast nothing at all.
+  Every entity now lays down a shadow the way Minecraft does: assembled from the
+  cells under it, one piece per block, each piece resting on that block's own top
+  face. So a shadow spills down a step instead of floating over it, is cut away
+  where it would fall on a slab or a stair, thins out as you climb away from the
+  ground, fades to nothing beyond sixteen blocks, and disappears in an unlit cave
+  or at night the way it should. There is a new **Entity Shadows** toggle in Video
+  Settings, on by default; an options file from an older build reads back as on.
+  (In first person you do not see your own decal, matching the game -- with the
+  experimental sun shadows switched on you do, because that path casts a real
+  shadow from your whole body.)
 - With experimental sun shadows enabled, block undersides and faces pointing away
   from the sun no longer show shadows cast onto them by geometry above. Sun-facing
   shadows keep their strength and edges; ambient skylight and direct sunlight still

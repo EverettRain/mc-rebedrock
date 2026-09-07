@@ -122,6 +122,8 @@ GameOptions GameOptions::load(const std::filesystem::path& path) {
             static_cast<void>(parseNumber(value, options.anisotropy));
         } else if (key == "render.antiAliasing") {
             options.antiAliasing = value == "true" || value == "1" || value == "on";
+        } else if (key == "render.entityShadows") {
+            options.entityShadows = value == "true" || value == "1" || value == "on";
         } else if (key == "render.viewBobbing") {
             options.viewBobbing = value == "true" || value == "1" || value == "on";
         } else if (key == "control.autoJump") {
@@ -190,6 +192,7 @@ void GameOptions::save(const std::filesystem::path& path) const {
            << "render.anisotropy=" << sanitized.anisotropy << '\n'
            << "render.antiAliasing=" << (sanitized.antiAliasing ? "true" : "false") << '\n'
            << "render.viewBobbing=" << (sanitized.viewBobbing ? "true" : "false") << '\n'
+           << "render.entityShadows=" << (sanitized.entityShadows ? "true" : "false") << '\n'
            << "control.autoJump=" << (sanitized.autoJump ? "true" : "false") << '\n'
            << "audio.masterVolume=" << sanitized.masterVolume << '\n'
            << "accessibility.showSubtitles=" << (sanitized.showSubtitles ? "true" : "false")

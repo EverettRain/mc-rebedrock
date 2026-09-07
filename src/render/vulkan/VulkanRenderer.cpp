@@ -1118,6 +1118,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                /*thundering=*/false);
         options.viewBobbing = false;
         options.sunShadows = testScene->sunShadows;
+        // RN-23：贴花在导出里显式打开，和上面两项同理——一张取决于用户设置的图片
+        // 没法和另一台机器上的图片对比，而对比正是这个工具的全部价值。
+        options.entityShadows = true;
         if (testScene->sunShadows || testScene->shadowEntities || testScene->sunTick) {
             // 不启动模拟；用正常编解码通道发布固定快照，实体仍走生产的收集/动画/绘制路径。
             auto channel = net::makeLoopbackPair();
@@ -7799,6 +7802,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .shadowDebugSet = shadowDebugSet,
             .shadowLightViewProj = shadowLightViewProj,
             .shadowDisabled = shadowDisabled,
+            .options = options,
             .rainSystem = rainSystem,
             .rainMode_ = rainMode_,
             .rainTime_ = rainTime_,

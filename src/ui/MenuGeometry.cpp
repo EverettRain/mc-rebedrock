@@ -25,7 +25,9 @@ std::size_t menuButtonCount(PageId page, bool worldOpen) {
     case PageId::Experimental:
         return 5U;
     case PageId::VideoSettings:
-        return 11U;
+        // RN-23 起多一个：实体阴影开关。26.1 把它放在视频设置里
+        // （VideoSettingsScreen.java:51），不在实验性内容里
+        return 12U;
     case PageId::Controls:
         // 只数底部那条按钮带，即视角摇晃、自动跳跃、重置、完成
         // 上方那 24 个按键绑定行属于滚动列表而不是菜单按钮，因此不计入按钮上限

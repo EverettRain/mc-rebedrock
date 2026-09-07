@@ -101,7 +101,7 @@ inline constexpr std::array<OptionValue, 4> kParticleLevelValues{{
 // 分辨率读实时窗口尺寸，GUI 缩放读菜单状态，难度读当前打开的存档
 // 这三项仍由渲染器直接处理
 
-inline constexpr std::array<OptionDesc, 14> kCyclingOptions{{
+inline constexpr std::array<OptionDesc, 15> kCyclingOptions{{
     {WidgetId::AutoJump, "options.autoJump", "Auto-Jump", &config::GameOptions::autoJump,
      kOnOffValues},
     {WidgetId::FrameRateLimit, "options.framerateLimit", "Max Framerate",
@@ -119,6 +119,11 @@ inline constexpr std::array<OptionDesc, 14> kCyclingOptions{{
     {WidgetId::DynamicLight, "options.rebedrock.dynamicLights", "Dynamic Lighting",
      &config::GameOptions::dynamicLight, kOnOffValues},
     {WidgetId::Vsync, "options.vsync", "VSync", &config::GameOptions::vsync, kOnOffValues},
+    // 26.1 的 options.entityShadows 是布尔量，标签就是通用的 ON/OFF，位置在视频设置里
+    // （VideoSettingsScreen.java:51），不在实验性内容里：贴花是原版默认开着的表现，
+    // 与默认关闭的太阳阴影预通道是两回事
+    {WidgetId::EntityShadows, "options.entityShadows", "Entity Shadows",
+     &config::GameOptions::entityShadows, kOnOffValues},
     {WidgetId::ViewBobbing, "options.viewBobbing", "View Bobbing",
      &config::GameOptions::viewBobbing, kOnOffValues},
     {WidgetId::ForceUnicodeFont, "options.forceUnicodeFont", "Force Unicode Font",

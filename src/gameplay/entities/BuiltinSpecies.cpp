@@ -133,6 +133,9 @@ constexpr EntityRenderDescriptor kPigRender{
     /*walkAnimation=*/"animation.pig.walk",
     /*idleAnimation=*/"animation.pig.idle",
     /*scale=*/1.0F,
+    /*secondaryTexturePath=*/{},
+    // PigRenderer.java:27
+    /*shadowRadius=*/0.7F,
 };
 
 // Java 26.1 splits the old cow skin into biome variants; the plains/default
@@ -145,6 +148,9 @@ constexpr EntityRenderDescriptor kCowRender{
     /*walkAnimation=*/"animation.cow.walk",
     /*idleAnimation=*/"animation.cow.idle",
     /*scale=*/1.0F,
+    /*secondaryTexturePath=*/{},
+    // CowRenderer.java:22
+    /*shadowRadius=*/0.7F,
 };
 
 constexpr EntityRenderDescriptor kZombieRender{
@@ -155,6 +161,9 @@ constexpr EntityRenderDescriptor kZombieRender{
     /*walkAnimation=*/"animation.zombie.walk",
     /*idleAnimation=*/"animation.zombie.idle",
     /*scale=*/1.0F,
+    /*secondaryTexturePath=*/{},
+    // AbstractZombieRenderer.java:21
+    /*shadowRadius=*/0.5F,
 };
 
 constexpr EntityRenderDescriptor kChickenRender{
@@ -165,6 +174,9 @@ constexpr EntityRenderDescriptor kChickenRender{
     /*walkAnimation=*/"animation.chicken.walk",
     /*idleAnimation=*/"animation.chicken.idle",
     /*scale=*/1.0F,
+    /*secondaryTexturePath=*/{},
+    // ChickenRenderer.java:26
+    /*shadowRadius=*/0.3F,
 };
 
 constexpr EntityRenderDescriptor kSheepRender{
@@ -179,6 +191,8 @@ constexpr EntityRenderDescriptor kSheepRender{
     // reads as wool instead of an inflated copy of the body texture. White for
     // now (dye tinting is a later step); loaded from the pack, never bundled.
     /*secondaryTexturePath=*/"entity/sheep/sheep_wool.png",
+    // SheepRenderer.java:17
+    /*shadowRadius=*/0.7F,
 };
 
 // AR-M1 Tier B: husk reuses the zombie's own geometry/animation wholesale
@@ -198,6 +212,9 @@ constexpr EntityRenderDescriptor kHuskRender{
     /*walkAnimation=*/"animation.zombie.walk",
     /*idleAnimation=*/"animation.zombie.idle",
     /*scale=*/1.0F,
+    /*secondaryTexturePath=*/{},
+    // HuskRenderer extends ZombieRenderer, so AbstractZombieRenderer.java:21
+    /*shadowRadius=*/0.5F,
 };
 
 // --- sounds --------------------------------------------------------------

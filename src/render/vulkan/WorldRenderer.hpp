@@ -47,6 +47,8 @@
 #include "render/StreamingBudget.hpp"
 #include "render/SunShadowMap.hpp"
 #include "render/EntityRenderDraws.hpp"
+#include "render/EntityShadowDecal.hpp"
+#include "render/SkyLight.hpp"
 #include "ui/Language.hpp"
 #include "ui/TextFont.hpp"
 #include "ui/UiFrameData.hpp"
@@ -147,6 +149,10 @@ class WorldRenderer final {
     VkDescriptorSet& shadowDebugSet;
     glm::mat4& shadowLightViewProj;
     bool& shadowDisabled;
+    // RN-23：玩家的图形设置。贴花只读 entityShadows，但绑整份而不是再镜像一个 bool，
+    // 因为一个手工同步的镜像就是一处会被忘记更新的地方（shadowDisabled 之所以是自己
+    // 的 bool，是因为它还叠着环境变量与烟测，不等于 !options.sunShadows）。
+    const config::GameOptions& options;
     render::RainSystem& rainSystem;
     RainMode& rainMode_;
     float& rainTime_;
@@ -213,7 +219,8 @@ class WorldRenderer final {
         sceneDescriptorSets(b.sceneDescriptorSets), gpuSceneBuffer(b.gpuSceneBuffer),
         shadowTarget(b.shadowTarget), shadowDebugSet(b.shadowDebugSet),
         shadowLightViewProj(b.shadowLightViewProj),
-        shadowDisabled(b.shadowDisabled), rainSystem(b.rainSystem), rainMode_(b.rainMode_),
+        shadowDisabled(b.shadowDisabled), options(b.options), rainSystem(b.rainSystem),
+        rainMode_(b.rainMode_),
         rainTime_(b.rainTime_), language(b.language),
         swapchainExtent(b.swapchainExtent), framebuffers(b.framebuffers),
           guiFramebuffers(b.guiFramebuffers), copySceneToSwapchain(b.copySceneToSwapchain),
@@ -1223,6 +1230,123 @@ class WorldRenderer final {
         vkCmdDraw(commandBuffer, 6U, 1, 0, 0);
     }
 
+    // RN-23：每一类实体的圆形阴影贴花。
+    //
+    // 它是一个独立的收集器，不是挂在各个实体收集器里的一段，有两个理由。
+    // 一是玩家：collectWorldPlayer 在第一人称且太阳阴影关闭时整个早退（那种情况下它
+    // 没有颜色几何要交），贴花挂在那里就会跟着一起消失，而那正是绝大多数玩家的常态。
+    // 二是这五类实体在这里只需要同样的三样东西——一个位置、一个半径、一个强度——放在
+    // 一起，「谁有影子、半径多少、出处在哪」就是一张能一眼读完的表，而不是散在四个
+    // 函数里的四段相同代码。
+    //
+    // 第一人称的本机玩家**没有**贴花，这与 26.1 一致：LevelRenderer.java:797 的
+    // `entity != camera.entity() || camera.isDetached() || 睡着` 把第一人称下自己
+    // 的实体整个挡在渲染列表之外，连 extractShadow 都不会跑。注意这与太阳阴影开启时
+    // 的行为**不对称**：那条路径（RN-11b）有意让第一人称仍然提交完整的身体投影，只
+    // 跳过颜色绘制。两条路径各自对齐了不同的参照，这个不对称是两次有意判断叠加的
+    // 结果，不是漏了一处。
+    void collectEntityShadowDecals() {
+        // RN-11b 的判断保留并扩展到全部实体：太阳阴影开着时统一不画贴花，而不是按
+        // 单只实体是否入选真实投影临时恢复——那会让一只实体在预算边缘反复闪变。
+        if (!worldReady || !options.entityShadows || !drawEntityShadowDecal(!shadowDisabled)) {
+            return;
+        }
+        const glm::vec3 eye = renderEyeState().position;
+        // 天光衰减取 SkyLight，本仓这条公式的单一源（RN-12 为暗角建的）。夜里露天
+        // 地面因此是亮度 4，影子淡到几乎看不见，而不是和正午一样浓。
+        const int skyDarken = SkyLight::skyDarken(clientMirror.world().dayTimeTicks);
+        // 一格问一次世界：这一格自己的光照，加上它**下面**那一格的方块状态。
+        const auto sample = [this](int x, int y, int z) {
+            return render::EntityShadowCell{
+                clientCache.state(x, y - 1, z),
+                static_cast<int>(clientCache.skyLight(x, y, z)),
+                static_cast<int>(clientCache.blockLight(x, y, z)),
+            };
+        };
+        // 本帧全部贴花共用一个 Decal 投射者。Decal 不参与太阳阴影（castsSunShadow
+        // 把它排除在外），所以这里的"一个投射者"不是"一只实体"，只是一段连续的、
+        // 用同一条管线画的绘制——合成一段就少一次管线切换。
+        bool begun = false;
+        const auto emitDecal = [&](const glm::vec3& position, float radius, float strength) {
+            const render::EntityShadowInput input{
+                position, radius, strength, glm::dot(position - eye, position - eye), skyDarken};
+            render::collectEntityShadowPieces(input, sample, shadowDecalPieces_);
+            const float discRadius = std::min(radius, render::kMaxEntityShadowRadius);
+            for (const auto& piece : shadowDecalPieces_) {
+                // 全透明的一片只是填充率：足迹的四个角落几乎总是落在圆盘之外。
+                if (piece.alpha <= 0.004F) {
+                    continue;
+                }
+                const auto uv = render::entityShadowPieceUv(piece, discRadius);
+                if (!begun) {
+                    entityDraws_.begin(ShadowEntityKind::Decal);
+                    begun = true;
+                }
+                entityDraws_.append(
+                    ItemPush{
+                        // 抬起千分之三格：贴花与方块顶面共面就会 z-fighting。
+                        // vanilla 靠 RenderType 的 polygon offset，本作这条管线不写
+                        // 深度、也没有 offset 状态，所以抬升是它的等价物。
+                        {position.x + piece.relativeX,
+                         position.y + piece.relativeY + 0.003F,
+                         position.z + piece.relativeZ, piece.sizeX},
+                        {uv.u0, uv.v0, uv.u1, uv.v1},
+                        {kItemModeEntityShadow, piece.alpha, 0.0F, 0.0F},
+                        {piece.sizeZ, 0.0F, 0.0F, 0.0F},
+                    },
+                    6U, 0U);
+            }
+        };
+
+        // 本机玩家：AvatarRenderer.java:50 的 0.5。第三人称才画，理由见上。
+        if (cameraPerspective != CameraPerspective::FirstPerson) {
+            const auto& player = clientMirror.player();
+            emitDecal(player.physicsPrevious +
+                          (player.physicsCurrent - player.physicsPrevious) * renderInterpolationAlpha,
+                      0.5F, 1.0F);
+        }
+
+        // 生物：半径逐物种声明在它自己的 EntityRenderDescriptor 上，不是这里的一张
+        // switch。没声明的物种半径为 0，一片也不出——那是 EntityRenderer 自己的默认。
+        {
+            const auto& snapshot = clientMirror.entities();
+            for (const auto& entity : snapshot.entities()) {
+                if (entity.type == nullptr) {
+                    continue;
+                }
+                emitDecal(entity.previousPosition +
+                              (entity.position - entity.previousPosition) * renderInterpolationAlpha,
+                          entity.type->render().shadowRadius, 1.0F);
+            }
+        }
+
+        // 掉落物、经验球、下落方块。
+        // 这里自己取一次 entityRenderFrame，而 collectItemEntities 取的是另一次：两次
+        // 相隔几微秒，最坏情况下贴花与它的掉落物差一个插值步。掉落物一 tick 走不了几
+        // 厘米，所以这点错位看不见；把两个收集器捆在同一次读取上要改 collectItemEntities
+        // 的签名和它的源码护栏，代价大于收益，记账在此。
+        {
+            const auto frame = clientMirror.entityRenderFrame();
+            const float alpha = frame.alpha;
+            const auto interpolated = [alpha](const auto& entity) {
+                return entity.previousPosition +
+                       (entity.position - entity.previousPosition) * alpha;
+            };
+            // ItemEntityRenderer.java:27-28 和 ExperienceOrbRenderer.java:22-23 都是
+            // 0.15 半径、0.75 强度：小东西的影子既小又淡。
+            for (const auto& entity : frame.snapshot.items()) {
+                emitDecal(interpolated(entity), 0.15F, 0.75F);
+            }
+            for (const auto& orb : frame.snapshot.experienceOrbs()) {
+                emitDecal(interpolated(orb), 0.15F, 0.75F);
+            }
+            // FallingBlockRenderer.java:17
+            for (const auto& falling : frame.snapshot.fallingBlocks()) {
+                emitDecal(interpolated(falling), 0.5F, 1.0F);
+            }
+        }
+    }
+
     void collectItemEntities() {
         // 两者都读逐 tick 快照，理由和生物一样：实时容器归模拟侧所有
         // 先把按值返回的快照绑到局部变量——绑定到按值返回对象的成员引用并不会延长其生命周期
@@ -1240,39 +1364,9 @@ class WorldRenderer final {
         if (snapshotItems.empty() && snapshotFallingBlocks.empty() && snapshotOrbs.empty()) {
             return;
         }
-        if (drawEntityShadowDecal(!shadowDisabled) && !snapshotItems.empty()) {
-            for (const auto& entity : snapshotItems) {
-                const glm::vec3 renderedPosition =
-                    entity.previousPosition +
-                    (entity.position - entity.previousPosition) * itemAlpha;
-                const int startY = static_cast<int>(std::floor(renderedPosition.y));
-                std::optional<float> groundY;
-                for (int y = startY; y >= std::max(0, startY - 12); --y) {
-                    if (world::hasCollision(clientCache.block(
-                            static_cast<int>(std::floor(renderedPosition.x)), y,
-                            static_cast<int>(std::floor(renderedPosition.z))))) {
-                        groundY = static_cast<float>(y + 1) + 0.003F;
-                        break;
-                    }
-                }
-                if (!groundY.has_value()) {
-                    continue;
-                }
-                const float height = std::max(renderedPosition.y - *groundY, 0.0F);
-                const float opacity = 0.30F * std::clamp(1.0F - height / 8.0F, 0.0F, 1.0F);
-                if (opacity <= 0.001F) {
-                    continue;
-                }
-                const ItemPush shadowPush{
-                    {renderedPosition.x, *groundY, renderedPosition.z, 0.15F},
-                    {0.0F, 0.0F, 0.0F, 0.0F},
-                    {kItemModeEntityShadow, opacity, 0.0F, 0.0F},
-                    {0.0F, 0.0F, 0.0F, 0.0F},
-                };
-                entityDraws_.begin(ShadowEntityKind::Decal);
-                entityDraws_.append(shadowPush, 36, 0);
-            }
-        }
+        // 贴花从前只有掉落物有，而且是「沿着中心那一列往下找地面、画一个固定 0.15 的
+        // 圆盘」——生物和玩家一片影子也没有。它已整条移到 collectEntityShadowDecals()，
+        // 那里按 26.1 的逐格采集给**每一类**实体出片。
         // 手持物生成的 2.5D 薄片顶点数，对应 item_entity.vert 的 data.x 落在 (6.5,7.5) 模式
         // 计为正反面 12 个顶点，加上 16x16 的边缘四边形
         constexpr std::uint32_t kGeneratedItemVertexCount = 12U + 16U * 16U * 4U * 6U;
@@ -2572,6 +2666,7 @@ class WorldRenderer final {
     [[nodiscard]] std::size_t recordCommandBuffer(FrameContext& frame, std::uint32_t imageIndex) {
         refreshDiagnosticsEpoch();
         entityDraws_.clear();
+        collectEntityShadowDecals();
         collectItemEntities();
         collectWorldEntities();
         collectWorldPlayer();
@@ -2692,6 +2787,7 @@ class WorldRenderer final {
   VkDescriptorSet& shadowDebugSet;
   glm::mat4& shadowLightViewProj;
   bool& shadowDisabled;
+  const config::GameOptions& options;
   render::RainSystem& rainSystem;
   RainMode& rainMode_;
   float& rainTime_;
@@ -2756,6 +2852,8 @@ class WorldRenderer final {
   // 阴影预通道的逐帧暂存：候选网格、它们的包围盒、以及选中的下标。
   // 成员而非局部变量，clear() 保留容量，稳态下逐帧零分配
   EntityRenderDraws entityDraws_;
+  // RN-23：一只实体这一帧的贴花片。同样是成员，clear() 保留容量。
+  std::vector<render::EntityShadowPiece> shadowDecalPieces_;
   std::vector<std::size_t> shadowEntitySelection_;
   std::vector<const GpuMesh*> shadowCasterMeshes_;
   std::vector<Aabb> shadowCasterBounds_;

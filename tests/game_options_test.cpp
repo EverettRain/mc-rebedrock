@@ -23,6 +23,8 @@ int main() {
     assert(defaults.antiAliasing);
     assert(defaults.anisotropy == 8);
     assert(defaults.viewBobbing);
+    // RN-23: vanilla's Entity Shadows defaults to on (Options.java:486).
+    assert(defaults.entityShadows);
     assert(!defaults.windowMaximized);
     // Every sound sub-category defaults to full volume, and Directional Audio is
     // on (vanilla parity).
@@ -121,6 +123,36 @@ int main() {
     }
     const auto withoutDifficulty = mc::config::GameOptions::load(path);
     assert(withoutDifficulty.windowWidth == 960);
+    // RN-23: an options file written before render.entityShadows existed has no
+    // line for it. `load` starts from the struct defaults, so such a file reads
+    // back with entity shadows ON -- the vanilla default -- rather than off,
+    // which is what a bool that defaulted to false would have silently done to
+    // every existing player. Both explicit spellings still round-trip.
+    assert(withoutDifficulty.entityShadows);
+    {
+        const auto parsesEntityShadows = [&path](std::string_view stored) {
+            std::ofstream file{path, std::ios::trunc};
+            file << "render.entityShadows=" << stored << "\n";
+            file.close();
+            return mc::config::GameOptions::load(path).entityShadows;
+        };
+        assert(!parsesEntityShadows("false"));
+        assert(parsesEntityShadows("true"));
+        assert(parsesEntityShadows("1"));
+        assert(parsesEntityShadows("on"));
+        defaults.entityShadows = false;
+        defaults.save(path);
+        assert(!mc::config::GameOptions::load(path).entityShadows);
+        {
+            std::ifstream saved{path};
+            const std::string contents{std::istreambuf_iterator<char>{saved},
+                                       std::istreambuf_iterator<char>{}};
+            assert(contents.find("render.entityShadows=false") != std::string::npos);
+        }
+        defaults.entityShadows = true;
+        defaults.save(path);
+        assert(mc::config::GameOptions::load(path).entityShadows);
+    }
     // Smooth lighting round-trips, and every spelling this option has ever been
     // written with still parses. RN-19b's migration is the interesting one:
     // "standard" and "high" were the two ON tiers, so both must land on On — a

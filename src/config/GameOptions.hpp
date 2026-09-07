@@ -41,6 +41,14 @@ struct GameOptions final {
     bool directionalAudio = true;
     bool antiAliasing = true;
     bool viewBobbing = true;
+    // Vanilla's "Entity Shadows" (Options.java:486, `createBoolean` with a true
+    // default, shown in VideoSettingsScreen.java:51): the round shadow decal
+    // under every creature, player, dropped item, experience orb and falling
+    // block. On by default, as in vanilla -- it is ordinary presentation, not
+    // the experimental sun-shadow pre-pass. An options file written before this
+    // key existed simply has no line for it, and `load` starts from these
+    // defaults, so an old file reads back as on.
+    bool entityShadows = true;
     // Bedrock-style auto-jump: walking forward into a one-block rise jumps
     // automatically. Off by default, matching vanilla (which has no
     // auto-jump at all).

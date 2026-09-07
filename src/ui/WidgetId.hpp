@@ -20,7 +20,7 @@ enum class WidgetId : std::uint16_t {
     Resume, SaveQuit, Respawn, TitleScreen,
     MasterVolume, Difficulty, Controls, VideoSettings, Language, Experimental, Done,
     Resolution, GuiScale, ViewDistance, SimulationDistance, FrameRateLimit,
-    AntiAliasing, Anisotropy, SmoothLighting, DynamicLight, Vsync,
+    AntiAliasing, Anisotropy, SmoothLighting, DynamicLight, Vsync, EntityShadows,
     ViewBobbing, AutoJump, ForceUnicodeFont,
     RainMode, ParticleLevel, SunShadows, RainCollisionCache,
     WorldRow, LanguageRow,

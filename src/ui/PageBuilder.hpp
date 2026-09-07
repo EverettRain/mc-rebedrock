@@ -275,6 +275,7 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             addOptionButton(page, rectFor, ctx, WidgetId::SmoothLighting, cb);
             addOptionButton(page, rectFor, ctx, WidgetId::DynamicLight, cb);
             addOptionButton(page, rectFor, ctx, WidgetId::Vsync, cb);
+            addOptionButton(page, rectFor, ctx, WidgetId::EntityShadows, cb);
             addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
             break;
 

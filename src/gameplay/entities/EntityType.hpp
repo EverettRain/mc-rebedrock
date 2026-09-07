@@ -127,6 +127,17 @@ struct EntityRenderDescriptor final {
     // species gets a second entity-texture-array layer loaded from this path and
     // its wool bones sample that layer instead of the body skin.
     std::string_view secondaryTexturePath{}; // "entity/sheep/sheep_wool.png"
+    // RN-23: the radius of this species' round ground shadow, in blocks. In 26.1
+    // it is a constructor argument of the species' EntityRenderer
+    // (LivingEntityRenderer.java:47-51 takes it as `shadow`), so it is per-species
+    // data there too -- it lives here rather than in a switch inside the renderer
+    // for the same reason the geometry paths do.
+    //
+    // Zero means no shadow, which is EntityRenderer's own default
+    // (EntityRenderer.java:41) and what a species that has not declared one gets:
+    // a missing declaration must read as "not stated yet", not as some plausible
+    // middle value silently applied to a mob nobody measured.
+    float shadowRadius = 0.0F;
 };
 
 // AgeableMob's breeding parameters, as data on the type rather than a species

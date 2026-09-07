@@ -21,12 +21,19 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <tuple>
 #include <vector>
+
+#ifndef MC_REBEDROCK_SHADER_SRC_DIR
+#error "MC_REBEDROCK_SHADER_SRC_DIR must point at resources/shaders/src"
+#endif
 
 namespace {
 
@@ -323,6 +330,31 @@ void checkDepthFalloff() {
         }
     }
     REQUIRE(sawLower, "a shadow must spill into the pit beside the entity, not stop at the edge");
+    // 同理，这块夹具的坑挖在 (7,7)，两个轴对称。再挖一个只在一个轴上偏的格子，
+    // 好让「x 与 z 互换」这种错在 piece 的坐标上现形。
+    {
+        FakeWorld asymmetric;
+        asymmetric.setGroundUnder(65, BlockState{Block::Stone});
+        asymmetric.setBelow(7, 65, 8, BlockState{Block::Air});
+        std::vector<EntityShadowPiece> asymmetricPieces;
+        mc::render::collectEntityShadowPieces(standingPlayer(), asymmetric.sampler(),
+                                              asymmetricPieces);
+        REQUIRE(asymmetricPieces.size() == kPlayerFootprintCells - 1U,
+                "the one hole must remove exactly one piece");
+        REQUIRE(std::ranges::none_of(asymmetricPieces,
+                                     [](const EntityShadowPiece& p) {
+                                         return std::abs(p.relativeX + 1.0F) < 1e-6F &&
+                                                std::abs(p.relativeZ) < 1e-6F;
+                                     }),
+                "the missing piece must be the one at (x-1, z), not its mirror across the "
+                "diagonal: relativeX and relativeZ are two different axes");
+        REQUIRE(std::ranges::any_of(asymmetricPieces,
+                                    [](const EntityShadowPiece& p) {
+                                        return std::abs(p.relativeX) < 1e-6F &&
+                                               std::abs(p.relativeZ + 1.0F) < 1e-6F;
+                                    }),
+                "the cell mirrored across the diagonal still has ground and must keep its piece");
+    }
     REQUIRE(lowerAlpha > 0.0F && lowerAlpha < topAlpha,
             "each cell of depth costs 0.5 of pow, so the lower row must be visibly fainter");
     REQUIRE(std::abs(lowerAlpha - topAlpha * 0.5F) < 1e-5F,
@@ -407,6 +439,69 @@ void checkPieceUv() {
     const auto wideUv = mc::render::entityShadowPieceUv(right, 4.0F);
     REQUIRE(std::abs(wideUv.u1 - 0.5F) < std::abs(rightUv.u1 - 0.5F),
             "a larger shadow spreads the same cell over less of the disc");
+
+    // x 和 z 是两个轴。上面每一片都取在 relativeX == relativeZ 上，所以「v 又抄了
+    // 一遍 x」这种错在它们身上完全看不出来——一片偏北的格子和一片偏西的格子必须落在
+    // 圆盘的不同地方。
+    const EntityShadowPiece offAxis{1.0F, 0.0F, -2.0F, 1.0F, 1.0F, 1.0F};
+    const auto offUv = mc::render::entityShadowPieceUv(offAxis, radius);
+    REQUIRE(std::abs(offUv.u0 - 0.25F) < 1e-6F && std::abs(offUv.u1) < 1e-6F,
+            "u must come from relativeX");
+    REQUIRE(std::abs(offUv.v0 - 1.0F) < 1e-6F && std::abs(offUv.v1 - 0.75F) < 1e-6F,
+            "v must come from relativeZ, not a second copy of x");
+}
+
+// ---- 着色器护栏：一片是一个 quad，圆盘是 shadow.png 的形状 ------------------
+
+[[nodiscard]] std::string readFile(const std::filesystem::path& path) {
+    std::ifstream input{path, std::ios::binary};
+    REQUIRE(static_cast<bool>(input), "cannot open " + path.string());
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    return buffer.str();
+}
+
+// 去掉 `//` 行注释，解释某条不变量的散文因此不会自己满足对它的检查。
+[[nodiscard]] std::string stripLineComments(const std::string& source) {
+    std::string result;
+    std::istringstream lines{source};
+    std::string line;
+    while (std::getline(lines, line)) {
+        const auto comment = line.find("//");
+        result.append(comment == std::string::npos ? line : line.substr(0, comment));
+        result.push_back('\n');
+    }
+    return result;
+}
+
+void checkShaderSourceGuards() {
+    const std::filesystem::path shaderDir{MC_REBEDROCK_SHADER_SRC_DIR};
+    const auto vertex = stripLineComments(readFile(shaderDir / "item_entity.vert"));
+    // 一片是一个四边形，六个顶点。从前那条路径是十二个三角形的扇形圆盘，一次绘制
+    // 就是整个影子——那样的影子只能有一个高度和一个 alpha，也就画不出「顺着台阶
+    // 落下去」和「在暗处消失」。
+    REQUIRE(vertex.find("int quadIndices[6] = int[6](0, 1, 2, 2, 3, 0)") != std::string::npos,
+            "an entity shadow piece must be a six-vertex quad");
+    REQUIRE(vertex.find("6.28318530718 / 12.0") == std::string::npos,
+            "the twelve-triangle disc fan must be gone: one draw is one piece now, not one "
+            "whole shadow");
+    // UV 是插值来的矩形，不是从位置现算的——一片掉到低一级的方块上，采样的仍是它
+    // 在圆盘里那一块。
+    REQUIRE(vertex.find("mix(item.textureLayersRotation.x, item.textureLayersRotation.z, alongX)") !=
+                std::string::npos &&
+                vertex.find("mix(item.textureLayersRotation.y, item.textureLayersRotation.w, alongZ)") !=
+                    std::string::npos,
+            "the piece's UV rect must be interpolated across the quad");
+
+    const auto fragment = stripLineComments(readFile(shaderDir / "item_entity.frag"));
+    // 26.1 的 misc/shadow.png 实测：alpha 到 r=0.92 都是 255，只有最外一两个纹素
+    // 才降到 0（中间那一行是 0, 104, 255×60, 128, 0）。它是一个带软边的实心圆盘，
+    // 不是径向渐变。从前这里写的是 smoothstep(0.30, 1.0)，从不到三分之一半径处就
+    // 开始衰减，贴花因此比原版淡得多，看着像一团污渍而不是影子。
+    REQUIRE(fragment.find("smoothstep(0.92, 1.0, radius)") != std::string::npos,
+            "the shadow disc must be solid out to the rim, like misc/shadow.png");
+    REQUIRE(fragment.find("smoothstep(0.30, 1.0, radius)") == std::string::npos,
+            "the old third-of-a-radius falloff must be gone");
 }
 
 } // namespace
@@ -423,6 +518,7 @@ int main() {
         checkDepthFalloff();
         checkFootprint();
         checkPieceUv();
+        checkShaderSourceGuards();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());
         return 1;
