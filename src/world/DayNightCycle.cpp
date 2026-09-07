@@ -43,7 +43,7 @@ DayNightState DayNightCycle::stateAtTick(double tick) {
     const float orbit = (dayFraction - 0.25F) * 2.0F * kPi;
     const float elevation = std::cos(orbit);
     const glm::vec3 sunDirection = glm::normalize(glm::vec3{
-        -std::sin(orbit), elevation, 0.28F * std::cos(orbit)});
+        -std::sin(orbit), elevation, DayNightCycle::kSunOrbitTilt * std::cos(orbit)});
 
     constexpr float minimumBrightness = 0.05F;
     const float daylight = smoothstep(-0.20F, 0.25F, elevation);

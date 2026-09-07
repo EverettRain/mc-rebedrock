@@ -1109,8 +1109,11 @@ class WorldRenderer final {
         if (shadowDisabled) {
             return;
         }
+        // 阴影用的是**量化到角度步长**的 tick，不是真实 tick（RN-24，量化规则与步长的
+        // 依据都在 render/SunShadowMap.hpp）。着色用的太阳仍取真实 tick，见那里对这条
+        // 有意不一致的说明。
         const auto daylight = world::DayNightCycle::stateAtTick(
-            clientMirror.world().dayTimeTicks);
+            sunShadowSunTick(clientMirror.world().dayTimeTicks));
         // 排序键要用同一帧的同一个太阳，因此在这里存下来给 recordShadow 用，
         // 而不是让它自己再取一次 dayTimeTicks——两次取之间跨了 tick 就会错开一帧
         shadowSunDirection_ = glm::normalize(daylight.sunDirection);

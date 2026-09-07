@@ -8,6 +8,19 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- With experimental sun shadows enabled, shadow edges no longer crawl and shimmer
+  as the sun moves. Pausing the day fixed them; letting it run made every shadow
+  edge in the world reshape its jagged staircase twenty times a second. The cause
+  was that the shadow map is aligned to a texel grid that rides on the sun's own
+  frame, so every time the sun turned -- twenty times a second -- the whole grid
+  landed between texels somewhere new and every shadow edge was re-drawn against a
+  different set of them. The sun the shadow map is built from now advances in
+  steps rather than every tick, which holds that grid perfectly still in between,
+  and the light's own frame no longer spins about the sun on top of that (an
+  artefact of how it was oriented, worst around noon, that did nothing but turn
+  the grid). Shadows now sit as still while the sun moves as they did while it was
+  paused. The sunlight you are actually shaded by is unchanged, and the shadows
+  still follow the sun across the sky.
 - Creatures, players, experience orbs and falling blocks have shadows again. Only
   dropped items ever had one, and it was a flat disc that hovered at whatever
   height a downward probe found -- so mobs and your own body cast nothing at all.

@@ -402,25 +402,183 @@ void checkCasterSelection() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. 太阳永不过天顶：光源矩阵的 up 是硬编码的 (0,1,0)，太阳竖直时 lookAt 退化成 NaN
+// 4. 光源的 up 永不退化：太阳整天严格落在轨道平面里
 //
-// 今天成立是因为 DayNightCycle 的轨道带 0.28 的 z 倾角。谁把轨道改成过天顶，这里先
-// 炸，而不是在 mac 上炸成一屏 NaN。
+// RN-24 把 up 从世界的 (0,1,0) 换成轨道平面法线之后，这条从「太阳不过天顶」变成更强的
+// 「太阳恒与 up 正交」：|cross(-sun, up)| 从最小 0.2696 变成恒等 1。谁把轨道改成非平面
+// （比如给 z 分量换个与 y 不同相位的式子），这里先炸，而不是在 mac 上炸成一屏 NaN，
+// 也不是悄悄把 RN-24 的零自旋还回去。
 // ---------------------------------------------------------------------------
 void checkSunNeverVertical() {
-    float peak = 0.0F;
+    const glm::vec3 up = glm::normalize(mc::world::DayNightCycle::kSunOrbitNormal);
+    float worstAlignment = 0.0F;
+    float weakestCross = 1.0F;
     for (int tick = 0; tick < 24'000; ++tick) {
         const glm::vec3 sun =
             glm::normalize(mc::world::DayNightCycle::stateAtTick(static_cast<double>(tick)).sunDirection);
-        peak = std::max(peak, std::abs(sun.y));
+        worstAlignment = std::max(worstAlignment, std::abs(glm::dot(sun, up)));
+        weakestCross = std::min(weakestCross, glm::length(glm::cross(-sun, up)));
         const glm::mat4 matrix = mc::render::sunShadowLightViewProj(sun, glm::vec3{0.0F, 70.0F, 0.0F});
         REQUIRE(std::isfinite(matrix[0][0]) && std::isfinite(matrix[3][2]),
                 "the light matrix went non-finite at tick " + std::to_string(tick));
     }
-    REQUIRE(peak < 0.99F,
-            "the sun now passes within 8 degrees of the zenith (peak |y| = " +
-                std::to_string(peak) +
-                "), which degenerates the hard-coded (0,1,0) up vector in sunShadowLightViewProj");
+    REQUIRE(worstAlignment < 1e-5F,
+            "the sun leaves the orbit plane its normal was derived from (worst |dot(sun, up)| = " +
+                std::to_string(worstAlignment) +
+                "): kSunOrbitNormal no longer matches the direction formula in DayNightCycle.cpp, "
+                "so the light basis is rolling again and sunShadowLightViewProj is one step from "
+                "a degenerate lookAt");
+    REQUIRE(weakestCross > 1.0F - 1e-5F,
+            "|cross(-sun, up)| fell to " + std::to_string(weakestCross) +
+                " during the day; lookAt normalises that cross product, so anything below 1 is "
+                "amplified error in the light frame's right axis");
+}
+
+// ---------------------------------------------------------------------------
+// 5. 光源基零自旋：整天里光源空间的 y 轴恒等于轨道法线（RN-24）
+//
+// 自旋（绕光轴的转动）是唯一会在阴影图**平面内**转动纹素网格的分量，物理上不改变任何
+// 一片阴影，却让固定世界点的采样相位逐 tick 重排。用世界 (0,1,0) 当 up 时它在正午达到
+// 太阳自身转速的 3.71 倍；用轨道法线当 up 时它恒为 0，因为 u = cross(s, -sun) 在
+// sun ⊥ up 时恒等于 up 自己。
+//
+// 从矩阵里把基取回来：lightProj 的前两行只是 1/halfExtent 的缩放，所以
+// s = halfExtent * (M[0][0], M[1][0], M[2][0])，u 同理取第二行。
+// ---------------------------------------------------------------------------
+[[nodiscard]] glm::vec3 lightBasisRow(const glm::mat4& matrix, int row) {
+    return mc::render::kSunShadowOrthoHalfExtent *
+           glm::vec3{matrix[0][row], matrix[1][row], matrix[2][row]};
+}
+
+void checkLightBasisHasNoRoll() {
+    const glm::vec3 up = glm::normalize(mc::world::DayNightCycle::kSunOrbitNormal);
+    const glm::vec3 eye{12.5F, 70.0F, -8.25F};
+    float worstUpDrift = 0.0F;
+    glm::vec3 firstRight{0.0F};
+    float widestRightSwing = 0.0F;
+    for (int tick = 0; tick < 24'000; tick += 7) {
+        const glm::vec3 sun =
+            glm::normalize(mc::world::DayNightCycle::stateAtTick(static_cast<double>(tick)).sunDirection);
+        const glm::mat4 matrix = mc::render::sunShadowLightViewProj(sun, eye);
+        const glm::vec3 right = glm::normalize(lightBasisRow(matrix, 0));
+        const glm::vec3 basisUp = glm::normalize(lightBasisRow(matrix, 1));
+        worstUpDrift = std::max(worstUpDrift, glm::length(basisUp - up));
+        if (tick == 0) {
+            firstRight = right;
+        }
+        widestRightSwing = std::max(widestRightSwing, glm::length(right - firstRight));
+    }
+    REQUIRE(worstUpDrift < 1e-4F,
+            "the light basis' up axis drifted " + std::to_string(worstUpDrift) +
+                " from the sun's orbit normal during the day: the basis is spinning about the "
+                "light axis, which rotates the shadow map's texel grid inside its own plane and "
+                "re-phases every sample without moving a single shadow");
+    // 反面：如果整个基根本不动，上面那条会白白通过。right 轴必须跟着太阳转满一整圈。
+    REQUIRE(widestRightSwing > 1.9F,
+            "the light basis' right axis never left its starting direction (widest swing " +
+                std::to_string(widestRightSwing) +
+                "), so the no-roll assertion above proved nothing");
+}
+
+// ---------------------------------------------------------------------------
+// 6. 太阳角度量化：一个角度步之内，光源矩阵逐位不变（RN-24）
+//
+// 这是本轮的主断言。太阳一转，snap() 清不掉的那个分数相位就重新随机化，阴影边的锯齿
+// 因此逐 tick 重排；把角度量化到 kSunShadowAngleStepTicks 之后，步内 R 逐位不变，静止
+// 视点下整个矩阵逐位相同——和「时间暂停」是同一份画面。
+// ---------------------------------------------------------------------------
+[[nodiscard]] glm::vec3 sunAtShadowTick(double dayTimeTicks) {
+    return glm::normalize(mc::world::DayNightCycle::stateAtTick(
+        mc::render::sunShadowSunTick(dayTimeTicks)).sunDirection);
+}
+
+void checkSunAngleQuantization() {
+    const double step = mc::render::kSunShadowAngleStepTicks;
+    REQUIRE(step >= 2.0, "an angle step of one tick quantises nothing");
+
+    // 6a. 步函数本身：步内恒定，跨步恰好跳一个步长，且边界落在步长的整数倍上
+    for (double base : {0.0, 8.0, 5'992.0, 23'992.0, 120'000.0}) {
+        const double expected = std::floor(base / step) * step;
+        for (double offset = 0.0; offset < step; offset += 1.0) {
+            REQUIRE(mc::render::sunShadowSunTick(base + offset) == expected,
+                    "sunShadowSunTick(" + std::to_string(base + offset) + ") = " +
+                        std::to_string(mc::render::sunShadowSunTick(base + offset)) +
+                        ", expected " + std::to_string(expected) +
+                        ": the shadow's sun is not held constant across the angle step");
+        }
+        REQUIRE(mc::render::sunShadowSunTick(base + step) == expected + step,
+                "the angle step must advance by exactly one step at its boundary");
+    }
+
+    // 6b. 步内逐位相同。用固定视点，比的是矩阵的全部 16 个浮点数，不是一个容差。
+    const glm::vec3 eye{1'024.5F, 70.0F, -2'048.5F};
+    for (const double base : {3'000.0, 5'992.0, 11'000.0}) {
+        const glm::mat4 reference = mc::render::sunShadowLightViewProj(sunAtShadowTick(base), eye);
+        for (double offset = 1.0; offset < step; offset += 1.0) {
+            const glm::mat4 inStep =
+                mc::render::sunShadowLightViewProj(sunAtShadowTick(base + offset), eye);
+            for (int column = 0; column < 4; ++column) {
+                for (int row = 0; row < 4; ++row) {
+                    REQUIRE(inStep[column][row] == reference[column][row],
+                            "tick " + std::to_string(base + offset) + " element [" +
+                                std::to_string(column) + "][" + std::to_string(row) +
+                                "] = " + std::to_string(inStep[column][row]) + " but tick " +
+                                std::to_string(base) + " gave " +
+                                std::to_string(reference[column][row]) +
+                                ": the light matrix changed inside one angle step, so the shadow's "
+                                "sampling phase is still being re-rolled every tick");
+                }
+            }
+        }
+        // 反面：跨到下一步必须真的变，否则上面那条对一个恒定矩阵也成立
+        const glm::mat4 nextStep =
+            mc::render::sunShadowLightViewProj(sunAtShadowTick(base + step), eye);
+        bool moved = false;
+        for (int column = 0; column < 4 && !moved; ++column) {
+            for (int row = 0; row < 4 && !moved; ++row) {
+                moved = nextStep[column][row] != reference[column][row];
+            }
+        }
+        REQUIRE(moved, "the light matrix is identical across an angle step boundary at tick " +
+                           std::to_string(base) + ", so the bit-for-bit assertion above proved "
+                           "nothing — the sun is not advancing at all");
+    }
+
+    // 6c. RN-11 的护栏在量化之后仍然成立：步内视点平移只产生整纹素的变化。
+    // 量化保住的是「太阳不动」，它不能替相机平移背书，那条仍归 texel snapping。
+    const glm::vec3 probe{1'020.0F, 64.0F, -2'052.0F};
+    const float resolution = static_cast<float>(mc::render::kSunShadowMapResolution);
+    constexpr float kStep = 0.0179856F;
+    const glm::vec3 sun = sunAtShadowTick(3'000.0);
+    const glm::vec2 referenceTexel =
+        (glm::vec2{projectToNdc(mc::render::sunShadowLightViewProj(sun, eye), probe)} * 0.5F + 0.5F) *
+        resolution;
+    bool sawMotion = false;
+    for (int index = 1; index <= 200; ++index) {
+        const auto scale = static_cast<float>(index);
+        const glm::vec3 moved =
+            eye + glm::vec3{kStep * scale, kStep * 0.5F * scale, -kStep * 0.75F * scale};
+        // 同一个角度步里的另一个 tick：太阳必须还是同一个，平移才是唯一的变量
+        const glm::vec3 sameStepSun = sunAtShadowTick(3'000.0 + static_cast<double>(index % 8));
+        const glm::vec2 texel =
+            (glm::vec2{projectToNdc(mc::render::sunShadowLightViewProj(sameStepSun, moved), probe)} *
+                 0.5F + 0.5F) * resolution;
+        const glm::vec2 delta = texel - referenceTexel;
+        for (const float component : {delta.x, delta.y}) {
+            const float residual = std::abs(component - std::round(component));
+            REQUIRE(residual < 2e-2F,
+                    "step " + std::to_string(index) + ": a fixed world point moved " +
+                        std::to_string(component) +
+                        " texels while the camera translated inside one angle step, which is not a "
+                        "whole number of texels — texel snapping no longer holds and shadow edges "
+                        "will crawl as the camera moves");
+        }
+        if (std::abs(delta.x) > 0.5F || std::abs(delta.y) > 0.5F) {
+            sawMotion = true;
+        }
+    }
+    REQUIRE(sawMotion, "the light frustum never moved across 200 camera steps inside one angle "
+                       "step, so the snapping assertion above proved nothing");
 }
 
 // ---------------------------------------------------------------------------
@@ -452,6 +610,18 @@ void checkRendererSourceGuards() {
     REQUIRE(matrix.find("camera.position()") == std::string::npos,
             "updateShadowMatrix still reads camera.position(), so the light frustum sits on the "
             "player rather than on what is being rendered");
+
+    // RN-24：阴影的太阳必须走量化过的 tick。这条只能在源码层钉——sunShadowSunTick 本身
+    // 的行为由几何断言覆盖，但「调用方到底有没有用它」在 headless 下没有别的观察点，
+    // 而漏掉这一处的后果正是本轮要修的那个缺陷，且不会有任何几何断言变红。
+    REQUIRE(matrix.find("sunShadowSunTick(") != std::string::npos,
+            "updateShadowMatrix must feed stateAtTick the quantised sun tick "
+            "(render::sunShadowSunTick); reading dayTimeTicks straight puts the light basis back "
+            "on a 20 Hz rotation and the shadow map's sampling phase is re-rolled every tick");
+    REQUIRE(matrix.find("stateAtTick(\n            clientMirror.world().dayTimeTicks)") ==
+                std::string::npos &&
+            matrix.find("stateAtTick(clientMirror.world().dayTimeTicks)") == std::string::npos,
+            "updateShadowMatrix still passes the raw dayTimeTicks to stateAtTick");
 
     // 投射者排序里不得再出现视点
     const std::string record = functionBody(world, "void recordShadow(FrameContext& frame)");
@@ -741,6 +911,8 @@ int main() {
         checkTexelSnapping();
         checkCasterSelection();
         checkSunNeverVertical();
+        checkLightBasisHasNoRoll();
+        checkSunAngleQuantization();
         checkRendererSourceGuards();
         checkShaderSourceGuards();
     } catch (const std::exception& error) {

@@ -40,6 +40,38 @@ inline constexpr float kSunShadowDepthRangeBlocks = kSunShadowFarPlane - kSunSha
 // 阴影图边长（纹素）。OffscreenTarget 的创建参数从这里取，不再手写。
 inline constexpr std::uint32_t kSunShadowMapResolution = 2048U;
 
+// 阴影矩阵采用的太阳角度步长（tick）。RN-24。
+//
+// 太阳方向本来就只在 tick 边界上变（dayTimeTicks 是整数，20 Hz），可那仍然是每秒 20 次
+// 光源基旋转，而**每一次旋转都会重新随机化阴影图的采样相位**：
+//
+//   固定世界点 P 的纹素坐标 = (R·P - snap(R·eye)) / texel，而 snap() 的输出恒为 texel 的
+//   整数倍，所以采样相位 = frac(R·P / texel)。整纹素的差异是**逐位不可见**的——写入端与
+//   采样端是同一个矩阵，整纹素平移把 9 个 PCF tap 平移到同样的深度上（实测：给
+//   centerInLight.x 加 1/2/3/4 个纹素，三个机位、阈值 >0，变化像素为 0）。可见的只有那个
+//   分数相位，它每 tick 变化 |ΔR·P| / texel，**正比于 P 的世界绝对坐标**：离原点 70 格时
+//   约 0.3 纹素/tick，离原点几千格时每 tick 完全随机。于是阴影边的锯齿逐 tick 重排——
+//   玩家看到的「边缘随时间变化并出现锯齿滑动」。时间一暂停 ΔR = 0，相位恒定，画面逐位
+//   稳定，这正是用户观察到的那半句。
+//
+// 把角度量化到 kSunShadowAngleStepTicks 之后，步内 R 逐位不变：静止视点下整个矩阵逐位
+// 相同，移动视点下 snap 只给整纹素的变化——两者都已实测不可见。代价是每步边界上一次
+// 重相位，实测等效相位约 0.15 纹素。
+//
+// 8 tick = 0.4 秒，且 24000 % 8 == 0，一天正好 3000 步。选 8 而不是更大：跨步时**物理**
+// 影长也一起跳，8 tick 对 2 格高的生物只有 0.14 纹素、对 10 格高、太阳仰角 30° 的建筑
+// 是 1.3 纹素，都看不出来；16/20 tick 在高塔配低日角下会有可见的影尖跳步。若真机上仍
+// 看得到跨步跳变，备选是 4（RN-24 落地记录里有整张步长对照表，不必重做那轮测量）。
+inline constexpr double kSunShadowAngleStepTicks = 8.0;
+static_assert(24'000.0 / kSunShadowAngleStepTicks ==
+              static_cast<double>(static_cast<int>(24'000.0 / kSunShadowAngleStepTicks)),
+              "角度步长必须整除一天的 tick 数，否则跨日边界上会多出一个短步");
+
+// 阴影矩阵该用哪个 tick 的太阳。着色用的太阳**不**走这里：uniform.sunDirection 仍取真实
+// tick，量化它会让面亮度每 0.4 秒跳一档。两者最大错配是 8 * 0.0156° = 0.12°，对着色器里
+// 那道 N·L 门只影响掠射方向上 0.12° 宽的一条带，不构成可见差异。这是**有意**的不一致。
+[[nodiscard]] double sunShadowSunTick(double dayTimeTicks);
+
 // 一个纹素在世界里的边长（格）。texel snapping 量化到它，PCF 的步长是它的倒数。
 inline constexpr float kSunShadowTexelSize =
     2.0F * kSunShadowOrthoHalfExtent / static_cast<float>(kSunShadowMapResolution);
@@ -92,7 +124,18 @@ void selectSunShadowEntityCasters(const glm::mat4& lightViewProj, const glm::vec
 // 2. 光源正交框的平移分量量化到纹素网格（texel snapping）。从前它逐帧跟着视点这个
 //    连续浮点量平移，每一帧的纹素因此落在不同的世界位置上，被量化的阴影边界逐帧改变
 //    采样相位，玩家一平移阴影边就沿地面爬行。量化之后，对任何固定的世界点，它在阴影
-//    图里的纹素坐标在视点平移下只会整纹素跳变。
+//    图里的纹素坐标在视点平移下只会整纹素跳变——而整纹素跳变是**逐位不可见**的，写入端
+//    与采样端是同一个矩阵。
+//
+//    注意这条只在光源基**不转**时买到稳定：snap() 只清掉相位的整数部分，太阳一转，
+//    frac(R·P / texel) 就重新随机化。那是 kSunShadowAngleStepTicks 的账（RN-24）。
+//
+// 3. 光源的 up 是太阳轨道平面的法线（world::DayNightCycle::kSunOrbitNormal），不是世界的
+//    (0,1,0)。用 (0,1,0) 时光源基除了跟着太阳转，还绕光轴多出一个自旋，正午附近达到太阳
+//    自身转速的 3.7 倍；那个自旋物理上什么也不做，却是唯一在阴影图**平面内**转动纹素
+//    网格的分量，于是角度一量化，跨步跳变就整整大出 2.6 到 4 倍。改用轨道法线后自旋恒为
+//    0，且 |cross(-sun, up)| 从最小 0.2696 变成恒等 1.0，lookAt 的 right 轴不再在正午附近
+//    放大归一化误差。
 //
 // `eye` 必须是**渲染视点**（RenderEye::position），不是相机对象的位置：第三人称把
 // 渲染眼点沿视线拉后 4 格，用相机位置会让光锥中心停在玩家身上而不是画面中心。

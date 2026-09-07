@@ -2,6 +2,7 @@
 
 #include "render/Frustum.hpp"
 #include "render/vulkan/HudTypes.hpp"
+#include "world/DayNightCycle.hpp"
 
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -13,17 +14,31 @@
 namespace mc::render {
 namespace {
 
-// 光源朝向的 up。太阳永远不会竖直：DayNightCycle 的轨道带 0.28 的 z 倾角，
-// |sunDirection.y| 的上界是 1/sqrt(1 + 0.28^2) = 0.963，lookAt 因此不会退化。
-// sun_shadow_map_test 逐 tick 钉住这条上界——谁把轨道改成过天顶，那里先炸，
-// 而不是在 mac 上炸成一屏 NaN。
-constexpr glm::vec3 kLightUp{0.0F, 1.0F, 0.0F};
+// 光源朝向的 up：太阳轨道平面的法线，和轨道倾角同源（RN-24）。
+//
+// 从前是世界的 (0,1,0)。它不会退化——DayNightCycle 的轨道带 0.28 的 z 倾角，
+// |sunDirection.y| 的上界是 1/sqrt(1 + 0.28^2) = 0.963——但 |cross(-sun, up)| 在正午只剩
+// 0.2696，归一化在那里放大误差；更要紧的是它让光源基绕光轴多出一个自旋，正午处整体
+// 转速 0.05357°/tick 是太阳自身 0.01444°/tick 的 3.71 倍，多出来的全是自旋。自旋是唯一
+// 在阴影图平面内转动纹素网格的分量，物理上不改变任何一片阴影。
+//
+// 太阳整天严格落在轨道平面里（dot(sunDirection, kSunOrbitNormal) 全天 < 1e-16），所以拿
+// 法线当 up 时：cross(-sun, up) 的模恒为 1（不会退化），基的 y 轴恒等于法线本身，绕光轴
+// 的自旋恒为 0。sun_shadow_map_test 同时钉住这两条——谁把轨道改成过天顶或改成非平面，
+// 那里先炸，而不是在 mac 上炸成一屏 NaN 或者悄悄把 RN-24 的稳定性还回去。
+constexpr glm::vec3 kLightUp = world::DayNightCycle::kSunOrbitNormal;
 
 [[nodiscard]] float snapToTexelGrid(float value) {
     return std::round(value / kSunShadowTexelSize) * kSunShadowTexelSize;
 }
 
 } // namespace
+
+double sunShadowSunTick(double dayTimeTicks) {
+    // std::floor 而不是截断：dayTimeTicks 今天恒为非负整数，但截断会在将来某个负值上
+    // 把步长边界折向零，让同一个步长在原点两侧长度不同。
+    return std::floor(dayTimeTicks / kSunShadowAngleStepTicks) * kSunShadowAngleStepTicks;
+}
 
 glm::mat4 sunShadowLightViewProj(const glm::vec3& sunDirection, const glm::vec3& eye) {
     const glm::vec3 sun = glm::normalize(sunDirection);
