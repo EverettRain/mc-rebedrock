@@ -36,6 +36,7 @@ EXPORTS
     vkCmdResetQueryPool
     vkCmdSetScissor
     vkCmdSetViewport
+    vkCmdWriteTimestamp
     vkCreateBuffer
     vkCreateCommandPool
     vkCreateDescriptorPool

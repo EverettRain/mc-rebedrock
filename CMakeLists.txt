@@ -2035,6 +2035,16 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_frame_graph_test PRIVATE mc_rebedrock_runtime)
     add_test(NAME frame_graph COMMAND mc_rebedrock_frame_graph_test)
 
+    # Windows 交叉编译的导入库靠 cmake/vulkan-1.def 那张**手工名单**。漏一行只在
+    # mingw 链接期报错，Linux/macOS 走真 loader 照常编过——这条测试把文件头那句
+    # 「自查」变成每次 ctest 都跑一遍。它不碰设备，只读源码与那份 .def。
+    add_executable(mc_rebedrock_vulkan_export_list_test
+        tests/vulkan_export_list_test.cpp
+    )
+    target_compile_definitions(mc_rebedrock_vulkan_export_list_test PRIVATE
+        "MC_REBEDROCK_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
+    add_test(NAME vulkan_export_list COMMAND mc_rebedrock_vulkan_export_list_test)
+
     # RN-19d0：GPU 时间戳的刻度换算。纯值计算，不碰设备也不调任何 vk* 入口——
     # 换算错、掩码错、回绕漏掉，产出的都是「看起来很正常的毫秒数」，没有任何错误码。
     add_executable(mc_rebedrock_gpu_timestamp_scale_test
