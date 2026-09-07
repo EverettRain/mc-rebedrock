@@ -84,8 +84,8 @@ void main() {
     }
     vec4 texel = texture(blockTextures, vec3(animatedUv, animatedLayer));
     vec3 normal = normalize(fragmentNormal);
-    // Sun shadow: project the fragment into the light space the pre-pass wrote the
-    // depth map with, and darken the sun term where a closer surface blocks it.
+    // Shared receiver rule: back-facing surfaces get visibility 1, sun-facing
+    // surfaces keep the existing PCF visibility and lighting weights.
     // The projection, the slope-scaled bias and the 3x3 PCF all live in the shared
     // include; this used to be three hand-copies of a single nearest tap.
     float shadowFactor = 1.0;
@@ -103,7 +103,9 @@ void main() {
     float skyLevel = smoothLighting ? fragmentSkyLight : fragmentFlatSkyLight;
     float blockLevel = smoothLighting ? fragmentBlockLight : fragmentFlatBlockLight;
     // SKY_LIGHT_FACTOR for this tick (sunDirection.w), times the weather dimming,
-    // times the sun-shadow term. Weather and shadow scale only the sky half; the
+    // times sun-facing shadow visibility. This still dims the combined sky channel,
+    // including ambient skylight; a separate direct-sun term is not available yet.
+    // Weather and shadow scale only the sky half; the
     // levels themselves stay the mesh/world values, so gameplay light checks are
     // untouched and block light still adds at full strength inside a shadow.
     float skyFactor = camera.sunDirection.w * camera.weatherSettings.z * shadowFactor;

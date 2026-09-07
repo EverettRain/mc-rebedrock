@@ -8,6 +8,10 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- With experimental sun shadows enabled, block undersides and faces pointing away
+  from the sun no longer show shadows cast onto them by geometry above. Sun-facing
+  shadows keep their strength and edges; ambient skylight and direct sunlight still
+  share the existing lighting channel.
 - Inner corners and stair backs are lit the way vanilla lights them. Where a wall
   meets a floor, the shading sampled the solid block diagonally behind the corner;
   Minecraft does not look at that block at all once both edges beside it are

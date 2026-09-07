@@ -1848,9 +1848,15 @@ if(BUILD_TESTING)
         src/render/Frustum.cpp
         src/world/DayNightCycle.cpp
     )
+    set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src/include/sun_shadow.glsl")
+    set(CPP_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sun_shadow_glsl_cpp.hpp")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${SHADER_SOURCE}")
+    include(tests/sun_shadow_glsl_cpp.cmake)
     target_include_directories(mc_rebedrock_sun_shadow_map_test PRIVATE
         src
         "${glm_SOURCE_DIR}"
+        "${CMAKE_CURRENT_BINARY_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src/include"
     )
     target_compile_definitions(mc_rebedrock_sun_shadow_map_test PRIVATE
         "MC_REBEDROCK_SHADER_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src\""

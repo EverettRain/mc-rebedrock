@@ -15,6 +15,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -43,6 +44,37 @@ using std::clamp;
 using std::sqrt;
 using std::abs;
 #include "../resources/shaders/src/include/sun_shadow_bias.glsl"
+}
+
+namespace shaderReceiver {
+using glm::vec2;
+using glm::vec3;
+using glm::vec4;
+using glm::mat4;
+using glm::dot;
+using glm::normalize;
+using glm::mix;
+using std::min;
+using std::max;
+using std::clamp;
+using std::sqrt;
+using std::abs;
+
+struct Samples {
+    std::array<float, 9> visibility{};
+    std::array<vec3, 9> coordinates{};
+    std::size_t count = 0;
+};
+using sampler2DShadow = Samples*;
+float texture(sampler2DShadow sampler, vec3 coordinates) {
+    const auto index = sampler->count++;
+    sampler->coordinates.at(index) = coordinates;
+    return sampler->visibility.at(index);
+}
+
+// Generated from the production GLSL, with only swizzles/float literal syntax
+// adapted to C++. The real early return, projection, bias and PCF execute here.
+#include "sun_shadow_glsl_cpp.hpp"
 }
 
 namespace {
@@ -108,6 +140,66 @@ void require(bool condition, const std::string& message, int line) {
 
 // 正午附近的太阳，DayNightCycle 的 orbit = 0
 const glm::vec3 kNoonSun = glm::normalize(glm::vec3{0.0F, 1.0F, 0.28F});
+
+void checkShadowFacing() {
+    const std::array suns{glm::vec3{0, 1, 0}, glm::vec3{3, 0, 0},
+                          glm::vec3{0, 0, -5}, glm::vec3{1, 2, 3}};
+    const std::array normals{
+        glm::normalize(glm::vec3{1, 0.25F, 0}),
+        glm::normalize(glm::vec3{1, -0.25F, 0}),
+        glm::vec3{1, 0, 0}, glm::vec3{-1, 0, 0}, glm::vec3{0, 1, 0},
+        glm::vec3{0, -1, 0}, glm::vec3{0, 0, 1}, glm::vec3{0, 0, -1},
+        glm::normalize(glm::vec3{1, -0.00001F, 0}),
+        glm::normalize(glm::vec3{1, 0.00001F, 0})};
+    const std::array patterns{
+        std::array<float, 9>{0, 0, 0, 0, 0, 0, 0, 0, 0},
+        std::array<float, 9>{1, 1, 1, 1, 1, 1, 1, 1, 1},
+        std::array<float, 9>{0, 0.25F, 0.5F, 0.75F, 1, 0.75F, 0.5F, 0.25F, 0}};
+    for (const auto sun : suns) {
+        for (const auto normal : normals) {
+            const float incidence = glm::dot(normal, glm::normalize(sun));
+            for (const auto& pattern : patterns) {
+                shaderReceiver::Samples samples{pattern, {}, 0};
+                const float factor = shaderReceiver::sunShadowFactor(
+                    &samples, glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F}, normal, sun);
+                const std::string context = " at N.L=" + std::to_string(incidence);
+                if (incidence <= 0.0F) {
+                    REQUIRE(factor == 1.0F && samples.count == 0,
+                            "back-facing/grazing receiver must return 1 with zero PCF taps" +
+                                context + "; factor=" + std::to_string(factor) +
+                                ", taps=" + std::to_string(samples.count));
+                } else {
+                    float lit = 0.0F;
+                    for (const float visibility : pattern) lit += visibility;
+                    const float expected = glm::mix(0.35F, 1.0F, lit / 9.0F);
+                    REQUIRE(samples.count == 9 && std::abs(factor - expected) < 0.000001F,
+                            "sun-facing receiver must preserve nine-tap PCF visibility" +
+                                context + "; factor=" + std::to_string(factor) +
+                                ", taps=" + std::to_string(samples.count));
+                    // Positive incidence must still reach the original projected coordinates,
+                    // ZO reference, slope bias and per-tap receiver-plane correction.
+                    for (std::size_t tap = 0; tap < 9; ++tap) {
+                        const float x = static_cast<float>(tap % 3) - 1.0F;
+                        const float y = static_cast<float>(tap / 3) - 1.0F;
+                        const auto expectedUv = glm::vec2{0.5F} + glm::vec2{x, y} / 2048.0F;
+                        const float expectedDepth = 0.5F +
+                            (shaderBias::sunShadowTapOffsetBlocks(normal.x, normal.y, incidence, x, y) -
+                             shaderBias::sunShadowBiasBlocks(incidence)) / 319.9F;
+                        const auto coordinates = samples.coordinates[tap];
+                        REQUIRE(glm::length(glm::vec2{coordinates} - expectedUv) < 0.000001F &&
+                                std::abs(coordinates.z - expectedDepth) < 0.000001F,
+                                "sun-facing receiver must preserve projected PCF coordinates/depth" + context);
+                    }
+                }
+            }
+        }
+    }
+    // The existing outside-frustum early return remains active for front faces.
+    shaderReceiver::Samples outside;
+    REQUIRE(shaderReceiver::sunShadowFactor(&outside, glm::mat4{1.0F}, glm::vec3{3, 0, 0.5F},
+                glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}) == 1.0F && outside.count == 0,
+            "sun-facing receiver outside the shadow map must remain fully lit without PCF");
+}
 
 // ---------------------------------------------------------------------------
 // 1. 深度约定：光锥中心的 z_ndc 必须落在 Vulkan 的裁剪区间 [0, 1] 里
@@ -606,6 +698,7 @@ void checkEntityWiring() {
 
 int main() {
     try {
+        checkShadowFacing();
         checkEntityCasters();
         checkBias();
         checkEntityWiring();

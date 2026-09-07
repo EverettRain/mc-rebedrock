@@ -33,6 +33,11 @@ const float kSunShadowDepthRangeBlocks = 319.9;
 
 float sunShadowFactor(sampler2DShadow shadowMap, mat4 lightViewProj, vec3 worldPosition,
                       vec3 normal, vec3 sunDirection) {
+    // 三个接收者统一：没有太阳直射的面不受此方向的遮挡影响，也无需九次 PCF。
+    // 受光面的光照权重保持原样；合并 sky 通道仍包含环境天光，这是待拆分的近似。
+    if (dot(normal, normalize(sunDirection)) <= 0.0) {
+        return 1.0;
+    }
     vec4 lightPosition = lightViewProj * vec4(worldPosition, 1.0);
     vec3 projected = lightPosition.xyz / lightPosition.w;
     // xy 从 [-1,1] 重映射到 [0,1]；z **不**重映射——投影是 orthoRH_ZO，

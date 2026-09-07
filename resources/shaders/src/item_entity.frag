@@ -87,10 +87,9 @@ void main() {
         vec3 normal = normalize(fragmentNormal);
         if (fragmentFallingBlock > 0.5) {
             faceShade = cardinalShade(normal);
-            // Same shared sampler as the terrain (include/sun_shadow.glsl). This
-            // was a fourth hand-copy of the terrain's shadow tap and it had already
-            // drifted: it skipped the intermediate `projected` and so remapped z
-            // in a place the others did not.
+            // Same receiver rule as terrain: back faces return visibility 1
+            // without PCF. Preserve this material's diffuse weighting; the final
+            // skyFactor still scales combined ambient/direct skylight.
             float shadowFactor = 1.0;
             if (camera.lightingSettings.w > 0.5) {
                 shadowFactor = sunShadowFactor(shadowDepth, camera.lightViewProj,

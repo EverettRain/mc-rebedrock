@@ -78,7 +78,8 @@ void main() {
         discard;
     }
     vec3 normal = normalize(fragmentNormal);
-    // Sun shadow (see grass_block.frag and include/sun_shadow.glsl).
+    // Same receiver rule as grass_block.frag: back faces return visibility 1
+    // before projection/PCF; sun-facing surfaces keep their existing weights.
     float shadowFactor = 1.0;
     if (camera.lightingSettings.w > 0.5) {
         shadowFactor = sunShadowFactor(shadowDepth, camera.lightViewProj, fragmentWorldPosition,
@@ -94,7 +95,9 @@ void main() {
     float skyLevel = smoothLighting ? fragmentSkyLight : fragmentFlatSkyLight;
     float blockLevel = smoothLighting ? fragmentBlockLight : fragmentFlatBlockLight;
     // SKY_LIGHT_FACTOR for this tick (sunDirection.w), times the weather dimming,
-    // times the sun-shadow term. Weather and shadow scale only the sky half; the
+    // times sun-facing shadow visibility. As in grass_block.frag, this is still
+    // an approximation over combined ambient/direct skylight.
+    // Weather and shadow scale only the sky half; the
     // levels themselves stay the mesh/world values, so gameplay light checks are
     // untouched and block light still adds at full strength inside a shadow.
     float skyFactor = camera.sunDirection.w * camera.weatherSettings.z * shadowFactor;
