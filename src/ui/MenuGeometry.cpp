@@ -1,6 +1,9 @@
 #include "ui/MenuGeometry.hpp"
 
+#include "ui/HeaderAndFooterLayout.hpp"
+#include "ui/KeyBindList.hpp"
 #include "ui/ListRow.hpp"
+#include "ui/OptionsList.hpp"
 #include "ui/TextMetrics.hpp"
 
 #include "ui/ScrollList.hpp"
@@ -53,10 +56,10 @@ ScrollList languageScrollList(const HudLayout& layout, float framebufferWidth) {
     return scrollListOf(languageListBox(layout, framebufferWidth), layout, kLanguageRowWidth, 22);
 }
 
-ScrollList controlsScrollList(const HudLayout& layout, float framebufferWidth) {
+ScrollList keyBindsScrollList(const HudLayout& layout, float framebufferWidth) {
     // UI-6b：行高从自造的 12 改成 26.1 的 **20**（`KeyBindsList.ITEM_HEIGHT`）。
     // 12 塞不下一个 20 高的改键按钮——而 vanilla 那一行正是"名称 + 两个 20 高的按钮"。
-    return scrollListOf(controlsListBox(layout, framebufferWidth), layout, kKeyBindsRowWidth,
+    return scrollListOf(keyBindsListBox(layout, framebufferWidth), layout, kKeyBindsRowWidth,
                         kKeyBindRowHeight);
 }
 
@@ -87,9 +90,16 @@ std::size_t menuButtonCount(PageId page, bool worldOpen) {
     case PageId::ConfirmDelete:
         return 2U;
     case PageId::Options:
-        // 没有打开世界时少一个按钮，因为不显示难度项
-        // 字幕开关也在这一页，所以这里的计数比早先各多一个
+        // 没有打开世界时少一个按钮，因为不显示难度项。
+        // UI-6c：字幕开关搬去了辅助功能设置（26.1 本来就在那一屏），
+        // 同时多了一个跳到辅助功能设置的按钮——一进一出，总数不变。
         return worldOpen ? 8U : 7U;
+    case PageId::Accessibility:
+        // 视角摇晃、字幕、完成
+        return 3U;
+    case PageId::KeyBinds:
+        // 页脚两个：重置按键、完成（26.1 `KeyBindsScreen.addFooter` 横排）
+        return 2U;
     case PageId::Experimental:
         return 5U;
     case PageId::VideoSettings:
@@ -97,9 +107,10 @@ std::size_t menuButtonCount(PageId page, bool worldOpen) {
         // （VideoSettingsScreen.java:51），不在实验性内容里
         return 12U;
     case PageId::Controls:
-        // 只数底部那条按钮带，即视角摇晃、自动跳跃、重置、完成
-        // 上方那 24 个按键绑定行属于滚动列表而不是菜单按钮，因此不计入按钮上限
-        return 4U;
+        // UI-6c：这一屏现在是 26.1 的 §7.6 排版枢纽（偏差 D1）。
+        // 一个跳转（Key Binds…）+ 七个设置项 + 完成 = 9。
+        // 少的那个跳转是 Mouse Settings…：本作没有那一屏，而空页不建。
+        return 9U;
     case PageId::Language:
         return 2U;
     case PageId::Pause:
@@ -206,7 +217,7 @@ std::size_t languageScrollIndexFromCursor(const HudLayout& layout, float framebu
 // 按键设置页的绑定列表
 // 框体位于标题与底部按钮带之间，后者是视角摇晃、自动跳跃、重置、完成
 // 几何照搬语言列表，区别是这里要给两行底部按钮留位置，而不是给一行警告文字
-UiRect controlsListBox(const HudLayout& layout, float framebufferWidth) {
+UiRect keyBindsListBox(const HudLayout& layout, float framebufferWidth) {
     constexpr int kRowStep = kKeyBindRowHeight;
     constexpr int kTopBound = 40;
     // 列表在底部按钮带上方结束
@@ -221,27 +232,49 @@ UiRect controlsListBox(const HudLayout& layout, float framebufferWidth) {
             toFb(layout, height)};
 }
 
+// UI-6c：Controls 枢纽上 `addSmall(...)` 的分组，按 26.1 的调用顺序。
+//
+//   addSmall(mouse_settings, keybinds)  → 本作只有 keybinds，所以这一组是 **1** 项
+//   addSmall(toggleCrouch, toggleSprint, toggleAttack, toggleUse,
+//            autoJump, sprintWindow, operatorItemsTab)                 → 7 项
+//
+// 两组之间那道行边界是**语义分组**（`ControlsScreen.addOptions()` 的两次调用），
+// 不是排版巧合：把它们摊平成一组，keybinds 会和 toggleCrouch 挤在同一行。
+inline constexpr std::array<std::size_t, 2> kControlsHubGroups{1U, 7U};
+
 UiRect menuWidgetRect(PageId page, std::size_t widgetIndex, const HudLayout& layout,
                       float framebufferWidth, std::size_t buttonCount,
-                      std::size_t keyBindRowCount) {
-    if (page == PageId::Controls) {
-        // 前 `行数 × 每行控件数` 个序号落在滚动列表里，其余是底部按钮带。
-        const std::size_t keyWidgets = keyBindRowCount * kKeyBindWidgetsPerRow;
+                      std::size_t keyBindFirstRow, std::size_t keyBindVisibleRows) {
+    if (page == PageId::KeyBinds) {
+        // ★ 控件序号与**屏幕行号**之间不是倍数关系：可见窗口里夹着分类标题行，
+        //   它占一行却不产生控件（`ui/KeyBindList.hpp`）。所以先数出"这一屏里有几个
+        //   绑定行"，再把序号折回它所在的那一行。
+        //   照 `widgetIndex / kKeyBindWidgetsPerRow` 算，标题行之后的每一行都会偏上，
+        //   而画面上只表现为"名字和按钮错位了一行"。
+        const std::size_t bindingRows = keyBindBindingRowsIn(keyBindFirstRow, keyBindVisibleRows);
+        const std::size_t keyWidgets = bindingRows * kKeyBindWidgetsPerRow;
         if (widgetIndex < keyWidgets) {
-            const std::size_t row = widgetIndex / kKeyBindWidgetsPerRow;
-            return widgetIndex % kKeyBindWidgetsPerRow == 0U
-                       ? controlsNameCell(row, layout, framebufferWidth)
-                       : controlsChangeCell(row, layout, framebufferWidth);
+            const std::size_t row =
+                keyBindWidgetVisibleRow(keyBindFirstRow, widgetIndex, kKeyBindWidgetsPerRow);
+            switch (widgetIndex % kKeyBindWidgetsPerRow) {
+            case 0U:
+                return keyBindsNameCell(row, layout, framebufferWidth);
+            case 1U:
+                return keyBindsChangeCell(row, layout, framebufferWidth);
+            default:
+                break;
+            }
+            return keyBindsResetCell(row, layout, framebufferWidth);
         }
         return frontendButtonRect(layout, page, widgetIndex - keyWidgets, buttonCount);
     }
     return frontendButtonRect(layout, page, widgetIndex, buttonCount);
 }
 
-UiRect controlsRow(std::size_t visibleIndex, const HudLayout& layout, float framebufferWidth) {
+UiRect keyBindsRow(std::size_t visibleIndex, const HudLayout& layout, float framebufferWidth) {
     // UI-4：行宽从自造的 300 改成 26.1 的 **340**（`KeyBindsList:59`）。
     // UI-6b：行高不再被压成 11——它就是列表的行高 20，因为一行里要装两个 20 高的按钮。
-    return fbRect(layout, scrollListRow(controlsScrollList(layout, framebufferWidth),
+    return fbRect(layout, scrollListRow(keyBindsScrollList(layout, framebufferWidth),
                                         visibleIndex));
 }
 
@@ -250,37 +283,43 @@ UiRect controlsRow(std::size_t visibleIndex, const HudLayout& layout, float fram
 // 动作名是一段 Label，改键按钮是一个 Button——**一行两个控件**，而不是从前那样
 // 整行一个 ListRow。焦点遍历因此会在名称与按钮之间走，与 26.1 的
 // `KeyBindsList.KeyEntry.children()` 同义。
-UiRect controlsNameCell(std::size_t visibleIndex, const HudLayout& layout,
+UiRect keyBindsNameCell(std::size_t visibleIndex, const HudLayout& layout,
                         float framebufferWidth) {
-    const auto list = controlsScrollList(layout, framebufferWidth);
+    const auto list = keyBindsScrollList(layout, framebufferWidth);
     return fbRect(layout, keyBindNameCell(scrollListRow(list, visibleIndex), kFontLineHeight));
 }
 
-UiRect controlsChangeCell(std::size_t visibleIndex, const HudLayout& layout,
+UiRect keyBindsChangeCell(std::size_t visibleIndex, const HudLayout& layout,
                           float framebufferWidth) {
-    const auto list = controlsScrollList(layout, framebufferWidth);
+    const auto list = keyBindsScrollList(layout, framebufferWidth);
     return fbRect(layout, keyBindChangeCell(list, scrollListRow(list, visibleIndex)));
 }
 
-std::size_t controlsVisibleRowCount(float framebufferWidth, float framebufferHeight, int guiScale,
+UiRect keyBindsResetCell(std::size_t visibleIndex, const HudLayout& layout,
+                         float framebufferWidth) {
+    const auto list = keyBindsScrollList(layout, framebufferWidth);
+    return fbRect(layout, keyBindResetCell(list, scrollListRow(list, visibleIndex)));
+}
+
+std::size_t keyBindsVisibleRowCount(float framebufferWidth, float framebufferHeight, int guiScale,
                     bool forceUnicode) {
     const HudLayout layout{framebufferWidth, framebufferHeight, guiScale, forceUnicode};
     const float scale = layout.scale();
     constexpr float kRowStep = static_cast<float>(kKeyBindRowHeight);
     const float rows =
-        std::max(controlsListBox(layout, framebufferWidth).height / (kRowStep * scale), 1.0F);
+        std::max(keyBindsListBox(layout, framebufferWidth).height / (kRowStep * scale), 1.0F);
     return static_cast<std::size_t>(rows);
 }
 
-UiRect controlsScrollbarTrack(const HudLayout& layout, float framebufferWidth) {
-    return fbRect(layout, scrollListScrollbar(controlsScrollList(layout, framebufferWidth)));
+UiRect keyBindsScrollbarTrack(const HudLayout& layout, float framebufferWidth) {
+    return fbRect(layout, scrollListScrollbar(keyBindsScrollList(layout, framebufferWidth)));
 }
 
-std::size_t controlsScrollIndexFromCursor(const HudLayout& layout, float framebufferWidth,
+std::size_t keyBindsScrollIndexFromCursor(const HudLayout& layout, float framebufferWidth,
                                           std::size_t itemCount, std::size_t visibleRows,
                                           float cursorY) {
     static_cast<void>(visibleRows);
-    return scrollListRowFromScrollbar(controlsScrollList(layout, framebufferWidth), itemCount,
+    return scrollListRowFromScrollbar(keyBindsScrollList(layout, framebufferWidth), itemCount,
                                       cursorY / layout.scale());
 }
 
@@ -304,11 +343,6 @@ UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t inde
     if (page == PageId::WorldList) {
         return layout.bottomMenuButton(index, buttonCount, 2U);
     }
-    // 按键设置页的底部带分两列，即视角摇晃、自动跳跃、重置、完成
-    // 上方的按键绑定行走 controlsRow 那套滚动列表矩形，绝不走这个按钮网格
-    if (page == PageId::Controls) {
-        return layout.bottomMenuButton(index, buttonCount, 2U);
-    }
     // 视频页的按钮数已经超出一列能放下的量
     // 它的各项设置堆进两个居中的列，"完成"单独占下方一行
     if (page == PageId::VideoSettings) {
@@ -319,6 +353,24 @@ UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t inde
     }
     // vanilla 的 LanguageOptionsScreen 把"强制 Unicode 字体"与"完成"并排放在底部，而不是上下堆叠
     if (page == PageId::Language) {
+        return layout.bottomMenuButton(index, buttonCount, 2U);
+    }
+    // UI-6c：Controls 枢纽是 §7.6 的排版——三段式版面里一张 OptionsList 双列
+    // （§5 的范式 L2 的第一个真消费者），页脚一个 Done。
+    if (page == PageId::Controls) {
+        const auto frame = headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
+        // 最后一个控件是 Done，它在页脚里居中，不在列表里。
+        if (buttonCount > 0U && index + 1U == buttonCount) {
+            return fbRect(layout, frame.footerButton());
+        }
+        const auto list = optionsScrollList(frame.contentBox());
+        const auto slot = optionsGroupedSlot(kControlsHubGroups, index);
+        return fbRect(layout, optionsSmallCell(list, slot.row, slot.column));
+    }
+    // UI-6c：绑定列表页的页脚是**横排**的两个按钮
+    // （`KeyBindsScreen.addFooter`：`LinearLayout.horizontal().spacing(8)` 装
+    //  `controls.resetAll` 与 Done），和语言页同形。
+    if (page == PageId::KeyBinds) {
         return layout.bottomMenuButton(index, buttonCount, 2U);
     }
     return layout.menuButton(index, buttonCount);

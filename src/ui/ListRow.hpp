@@ -52,10 +52,13 @@ inline constexpr int kListRowPadding = 2;
 // ★ 两个按钮的基准是**滚动条的 x**，不是行右缘。两者差 `6 + 2`（滚动条宽加缝），
 //   照行右缘算会把两个按钮整体右移 8 逻辑像素——在截图上看着"差不多对"。
 
-// 一行按键绑定占几个控件序号。UI-6b 是 2（名称 + 改键）；UI-6c 补上重置按钮后是 3。
-// 写成常量而不是散落的 `* 2`，是因为改这个数要同时改两处（页面装配与矩形映射），
+// 一行按键绑定占几个控件序号：名称 Label + 改键 Button + 重置 Button = 3
+// （26.1 `KeyBindsList.KeyEntry.children()` 交出 changeButton 与 resetButton 两个，
+//  名称是它旁边那段文本）。
+//
+// 写成常量而不是散落的 `* 3`，是因为改这个数要同时改两处（页面装配与矩形映射），
 // 而漏改一处的症状是"每一行的按钮都画在下一行的位置上"。
-inline constexpr std::size_t kKeyBindWidgetsPerRow = 2U;
+inline constexpr std::size_t kKeyBindWidgetsPerRow = 3U;
 
 inline constexpr int kKeyBindRowHeight = 20;      // KeyBindsList.ITEM_HEIGHT
 inline constexpr int kKeyBindChangeWidth = 75;    // changeButton.bounds(0, 0, 75, 20)

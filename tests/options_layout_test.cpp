@@ -11,11 +11,25 @@
 //   AbstractSelectionList.java:471-488         行内容内缩 2
 //   controls/KeyBindsList.java:21,101-103,127-138  按键行高 20、按钮 75/50、间距 10/5、竖条 6/3
 
+#include "input/InputNaming.hpp"
 #include "ui/HeaderAndFooterLayout.hpp"
+#include "ui/KeyBindList.hpp"
+#include "ui/MenuGeometry.hpp"
+#include "ui/PageTitles.hpp"
 #include "ui/ListRow.hpp"
 #include "ui/OptionsList.hpp"
 
+#include <array>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
+
+#ifndef MC_REBEDROCK_RENDERER_SRC
+#error "MC_REBEDROCK_RENDERER_SRC must point at src/render/vulkan/VulkanRenderer.cpp"
+#endif
+#ifndef MC_REBEDROCK_HUD_RENDERER_SRC
+#error "MC_REBEDROCK_HUD_RENDERER_SRC must point at src/render/vulkan/HudRenderer.hpp"
+#endif
 #include <string>
 
 namespace {
@@ -208,6 +222,217 @@ void testKeyBindDecoration() {
     CHECK(mc::ui::decorateKeyBindLabel("", KeyBindDecoration::Capturing) == ">  <");
 }
 
+// --- 5. addSmall 的分组：每次调用从新行起 ------------------------------------
+//
+// 26.1 的 `list.addSmall(...)` **每次调用从新行开始**，组内才两两配对
+// （`OptionsList.java:31-36`）。摊平成一组两两配对会让两次调用之间那道语义边界消失：
+// ControlsScreen 的 `addSmall(mouse, keybinds)` 与 `addSmall(七个设置项)` 之间正是
+// 这样一道边界，合并后 Key Binds… 会和 Sneak 挤在同一行。
+//
+// 这只改排版、不改任何返回值以外的东西——所以它必须在这里有断言。
+void testGroupedSlots() {
+    constexpr std::array<std::size_t, 2> kTwoThenThree{2U, 3U};
+    const auto slot = [&](std::size_t i) {
+        return mc::ui::optionsGroupedSlot(kTwoThenThree, i);
+    };
+    // 组 0（两项）占行 0
+    CHECK(slot(0) == (mc::ui::OptionsSlot{0U, 0}));
+    CHECK(slot(1) == (mc::ui::OptionsSlot{0U, 1}));
+    // ★ 组 1 从**新行**起，即使组 0 的那一行还空着右边也不许续上
+    CHECK(slot(2) == (mc::ui::OptionsSlot{1U, 0}));
+    CHECK(slot(3) == (mc::ui::OptionsSlot{1U, 1}));
+    CHECK(slot(4) == (mc::ui::OptionsSlot{2U, 0}));
+    CHECK(mc::ui::optionsGroupedRowCount(kTwoThenThree) == 3U);
+
+    // 落单的一项占一整行，下一组仍从新行起
+    constexpr std::array<std::size_t, 2> kOneThenSeven{1U, 7U};
+    CHECK(mc::ui::optionsGroupedSlot(kOneThenSeven, 0) == (mc::ui::OptionsSlot{0U, 0}));
+    // ★ 这一条就是 Controls 枢纽：Key Binds… 独占行 0，七个设置项从行 1 起
+    CHECK(mc::ui::optionsGroupedSlot(kOneThenSeven, 1) == (mc::ui::OptionsSlot{1U, 0}));
+    CHECK(mc::ui::optionsGroupedSlot(kOneThenSeven, 2) == (mc::ui::OptionsSlot{1U, 1}));
+    // index 7 是组 1 的第 6 项：行 1 + 6/2 = 行 4 的左列（七项占四行，最后一项落单）
+    CHECK(mc::ui::optionsGroupedSlot(kOneThenSeven, 7) == (mc::ui::OptionsSlot{4U, 0}));
+    CHECK(mc::ui::optionsGroupedRowCount(kOneThenSeven) == 5U);
+    // 摊平成一组会给出不同的答案——那正是这条断言要挡住的写法
+    constexpr std::array<std::size_t, 1> kFlat{8U};
+    CHECK(mc::ui::optionsGroupedSlot(kFlat, 1) != mc::ui::optionsGroupedSlot(kOneThenSeven, 1));
+}
+
+// --- 6. Controls 枢纽的实际排版 ----------------------------------------------
+//
+// 用生产函数 `menuWidgetRect` 看：第一行只有左列有东西，第二行两列都有。
+void testControlsHubLayout() {
+    const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
+    const std::size_t count = mc::ui::menuButtonCount(mc::ui::PageId::Controls, false);
+    CHECK(count == 9U);   // 一个跳转 + 七个设置项 + Done
+    const auto rect = [&](std::size_t index) {
+        return mc::ui::menuWidgetRect(mc::ui::PageId::Controls, index, layout, 1280.0F, count,
+                                      0U, 0U);
+    };
+    // ★ Key Binds… 独占一行：下一个控件在**下一行**，不是它右边。
+    CHECK(rect(1).y > rect(0).y);
+    CHECK(rect(1).x == rect(0).x);
+    // 第 1、2 个设置项同一行、两列
+    CHECK(rect(2).y == rect(1).y);
+    CHECK(rect(2).x > rect(1).x);
+    // 第 3 个换行
+    CHECK(rect(3).y > rect(1).y);
+    CHECK(rect(3).x == rect(1).x);
+    // Done 在页脚：比所有列表项都低，且宽 200 居中
+    const auto done = rect(count - 1U);
+    CHECK(done.y > rect(7).y);
+    CHECK(done.width == 200.0F * 3.0F);
+}
+
+// --- 7. 每一屏的标题键 -------------------------------------------------------
+//
+// ★ 两组键只差一个后缀：`controls.keybinds.title`（"按键绑定"）是**标题**，
+//   `controls.keybinds`（"按键绑定…"）是跳过来的**按钮**。带省略号的标题在画面上
+//   看起来"也差不多对"，所以只能靠断言。
+void testPageTitles() {
+    using mc::ui::PageId;
+    CHECK(mc::ui::pageTitle(PageId::KeyBinds).key == "controls.keybinds.title");
+    CHECK(mc::ui::pageTitle(PageId::KeyBinds).key != "controls.keybinds");
+    CHECK(mc::ui::pageTitle(PageId::Accessibility).key == "options.accessibility.title");
+    CHECK(mc::ui::pageTitle(PageId::Accessibility).key != "options.accessibility");
+    CHECK(mc::ui::pageTitle(PageId::Controls).key == "controls.title");
+    CHECK(mc::ui::pageTitle(PageId::Options).key == "options.title");
+    CHECK(mc::ui::pageTitle(PageId::Death).key == "deathScreen.title");
+    // 主菜单画的是 logo 贴图，不是一行标题
+    CHECK(mc::ui::pageTitle(PageId::Title).empty());
+    CHECK(mc::ui::pageTitle(PageId::Game).empty());
+    // 每个有标题的屏都必须有兜底文本：翻译缺失时不能是空白
+    for (std::size_t raw = 0; raw <= static_cast<std::size_t>(PageId::Accessibility); ++raw) {
+        const auto entry = mc::ui::pageTitle(static_cast<PageId>(raw));
+        if (!entry.empty()) {
+            check(!entry.fallback.empty(), "a titled page needs a fallback", __LINE__);
+        }
+    }
+}
+
+// --- 8. 绑定列表的行表：分类标题夹在中间 --------------------------------------
+void testKeyBindListRows() {
+    // 24 个动作 + 6 个用到的分类
+    CHECK(mc::ui::kKeyBindListRowCount == mc::input::keyBindRows().size() +
+                                              mc::ui::keyBindUsedCategoryCount());
+    CHECK(mc::ui::keyBindUsedCategoryCount() == 6U);
+    // 第一行是一条标题
+    CHECK(mc::ui::keyBindListRow(0U).isCategory);
+    CHECK(!mc::ui::keyBindListRow(1U).isCategory);
+    // ★ 每个分类恰好一条标题：`keyBindRows()` 没按分类分组排序的话，同一个分类会被
+    //   切成几段、每段前面都顶一条标题——画面上是"分类标题重复出现"。
+    std::size_t headers = 0;
+    mc::input::InputCategory seen[16]{};
+    std::size_t seenCount = 0;
+    for (std::size_t row = 0; row < mc::ui::kKeyBindListRowCount; ++row) {
+        const auto entry = mc::ui::keyBindListRow(row);
+        if (!entry.isCategory) {
+            continue;
+        }
+        ++headers;
+        for (std::size_t i = 0; i < seenCount; ++i) {
+            check(seen[i] != entry.category, "a category heading appears twice", __LINE__);
+        }
+        seen[seenCount++] = entry.category;
+    }
+    CHECK(headers == mc::ui::keyBindUsedCategoryCount());
+
+    // 标题行不产生控件，所以控件序号折回的行号要跳过它们
+    CHECK(mc::ui::keyBindWidgetVisibleRow(0U, 0U, 3U) == 1U);   // 行 0 是标题
+    CHECK(mc::ui::keyBindWidgetVisibleRow(0U, 3U, 3U) == 2U);
+    CHECK(mc::ui::keyBindWidgetVisibleRow(1U, 0U, 3U) == 0U);   // 从行 1 起就没有标题在前
+    // 一屏里的绑定行数少于行数——差额就是这一屏跨了几个分类
+    CHECK(mc::ui::keyBindBindingRowsIn(0U, 8U) < 8U);
+    CHECK(mc::ui::keyBindBindingRowsIn(0U, mc::ui::kKeyBindListRowCount) ==
+          mc::input::keyBindRows().size());
+}
+
+// --- 9. 源码护栏：绑定列表页的 Escape 是**解绑** ------------------------------
+//
+// 26.1 在等待按键时按 Esc 是解除绑定（`KeyBindsScreen.java:71-86`：`event.isEscape()`
+// → `setKey(InputConstants.UNKNOWN)`），不是"取消这次改键"、也不是退出这一屏。
+// 那是 vanilla **唯一**的解绑入口——写成 cancelCapture()，`InputDevice::None` 这个
+// 表示就永远没有人能产生。
+//
+// 这条判断住在渲染器的翻译单元里，没有测试看得见；它也不改变任何函数的返回值
+// （护栏 15）。所以读源码守它，同 title_background / ui_capture 的做法。
+void testEscapeUnbindsSourceGuard() {
+    std::ifstream input{MC_REBEDROCK_RENDERER_SRC, std::ios::binary};
+    if (!input) {
+        std::printf("options_layout_test: cannot open %s\n", MC_REBEDROCK_RENDERER_SRC);
+        ++failures;
+        return;
+    }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    // 去掉行注释：下面那段说明文字里正好提到了要禁止的名字。
+    std::string source;
+    {
+        std::istringstream lines{buffer.str()};
+        std::string line;
+        while (std::getline(lines, line)) {
+            const auto comment = line.find("//");
+            source += comment == std::string::npos ? line : line.substr(0, comment);
+            source += '\n';
+        }
+    }
+    const auto branch = source.find("case ui::PageId::KeyBinds:");
+    CHECK(branch != std::string::npos);
+    if (branch == std::string::npos) {
+        return;
+    }
+    const auto end = source.find("break;", branch);
+    CHECK(end != std::string::npos);
+    const std::string body = source.substr(branch, end - branch);
+    // ★ 正在捕获时必须走 applyUnbound()
+    CHECK(body.find("applyUnbound") != std::string::npos);
+    CHECK(body.find("capturing()") != std::string::npos);
+    // ★ 而不是 cancelCapture()——那是 UI-6c 之前的写法，等于没有解绑入口
+    CHECK(body.find("cancelCapture") == std::string::npos);
+
+    // ★ 绑定列表的滚动上界必须按**行**数算（`kKeyBindListRowCount`，含分类标题行），
+    //   不是动作数。用动作数，最后几行（正好是标题行数那么多）永远滚不进来，
+    //   而画面上只表现为"到底了但还差几行"。
+    const auto scroll = source.find("void scrollControlsList(");
+    CHECK(scroll != std::string::npos);
+    if (scroll != std::string::npos) {
+        const std::string body2 = source.substr(scroll, 600U);
+        CHECK(body2.find("kKeyBindListRowCount") != std::string::npos);
+        CHECK(body2.find("keyBindRows().size()") == std::string::npos);
+    }
+}
+
+// 同一条规矩也管滚动条本身：滑块长度与位置的分母是行数。
+void testScrollbarUsesRowCountSourceGuard() {
+    std::ifstream input{MC_REBEDROCK_HUD_RENDERER_SRC, std::ios::binary};
+    if (!input) {
+        std::printf("options_layout_test: cannot open %s\n", MC_REBEDROCK_HUD_RENDERER_SRC);
+        ++failures;
+        return;
+    }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    std::string source;
+    {
+        std::istringstream lines{buffer.str()};
+        std::string line;
+        while (std::getline(lines, line)) {
+            const auto comment = line.find("//");
+            source += comment == std::string::npos ? line : line.substr(0, comment);
+            source += '\n';
+        }
+    }
+    const auto fn = source.find("void drawKeyBindsScrollbar(");
+    CHECK(fn != std::string::npos);
+    if (fn == std::string::npos) {
+        return;
+    }
+    const std::string body = source.substr(fn, 700U);
+    // 分母是行数（含标题行），不是动作数——否则滑块偏长、滚到底还剩几行。
+    CHECK(body.find("kKeyBindListRowCount") != std::string::npos);
+    CHECK(body.find("keyBindRows().size()") == std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -215,6 +440,12 @@ int main() {
     testOptionsList();
     testKeyBindRowCells();
     testKeyBindDecoration();
+    testGroupedSlots();
+    testControlsHubLayout();
+    testPageTitles();
+    testKeyBindListRows();
+    testEscapeUnbindsSourceGuard();
+    testScrollbarUsesRowCountSourceGuard();
     if (failures != 0) {
         std::printf("options_layout_test: %d checks failed\n", failures);
         return 1;

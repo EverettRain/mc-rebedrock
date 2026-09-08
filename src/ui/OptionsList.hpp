@@ -24,6 +24,8 @@
 
 #include "ui/ScrollList.hpp"
 
+#include <span>
+
 namespace mc::ui {
 
 // 一行的高度（`DEFAULT_ITEM_HEIGHT`）。注意它比控件本身高：控件高 20，格子高 25，
@@ -72,6 +74,50 @@ static_assert(kOptionsSmallWidth + 10 == kOptionsColumnOffset,
             row.y + static_cast<float>(kListEntryPadding),
             static_cast<float>(kOptionsSmallWidth),
             static_cast<float>(kOptionsWidgetHeight)};
+}
+
+// 一个设置项落在第几行、第几列。
+struct OptionsSlot final {
+    std::size_t row = 0;
+    int column = 0;
+
+    [[nodiscard]] constexpr bool operator==(const OptionsSlot&) const = default;
+};
+
+// 26.1 的 `addSmall(...)` 的分组行为：**每次调用从新行起**，组内两两配对。
+//
+//   list.addSmall(a, b);        // 行 0：a b
+//   list.addSmall(c, d, e);     // 行 1：c d   行 2：e
+//   list.addSmall(f);           // 行 3：f
+//
+// 这不是"把所有项摊平了两两配对"——那样上例的 e 会和 f 挤在同一行，而 26.1 里它们
+// 分属两次调用、必须分行。ControlsScreen 就是这个形状：一次 addSmall 放两个跳转按钮，
+// 再一次 addSmall 放七个设置项，中间那道行边界是**语义分组**，不是排版巧合。
+//
+// `groupSizes` 是各次 addSmall 的项数，按调用顺序。越界返回最后一行之后的位置而不抛：
+// 调用方通常已经用控件数夹过，这里再抛一次只会把一个排版问题变成崩溃。
+[[nodiscard]] constexpr OptionsSlot optionsGroupedSlot(std::span<const std::size_t> groupSizes,
+                                                       std::size_t index) {
+    std::size_t row = 0;
+    std::size_t seen = 0;
+    for (const std::size_t size : groupSizes) {
+        if (index < seen + size) {
+            const std::size_t withinGroup = index - seen;
+            return OptionsSlot{row + withinGroup / 2U, static_cast<int>(withinGroup % 2U)};
+        }
+        seen += size;
+        row += (size + 1U) / 2U;   // 这一组占的行数，落单的一项也占一整行
+    }
+    return OptionsSlot{row, 0};
+}
+
+// 各组一共占多少行。
+[[nodiscard]] constexpr std::size_t optionsGroupedRowCount(std::span<const std::size_t> groupSizes) {
+    std::size_t rows = 0;
+    for (const std::size_t size : groupSizes) {
+        rows += (size + 1U) / 2U;
+    }
+    return rows;
 }
 
 // `addBig`：独占一行，宽度等于行宽。

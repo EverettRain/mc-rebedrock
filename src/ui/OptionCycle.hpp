@@ -75,6 +75,23 @@ inline constexpr std::array<OptionValue, 6> kFrameRateValues{{
     {0, "options.framerateLimit.max", "Unlimited"},
 }};
 
+// UI-6c：四个 Hold/Toggle 的取值标签。
+//
+// ★ 与 kOnOffValues **不能**共用：26.1 这四项的标签是"按住 / 切换"，不是"关 / 开"
+//   （`Options.java:563-576`，`value ? KEY_TOGGLE : KEY_HOLD`）。而且 caption 用的是
+//   动作名本身（`key.sneak` 等），所以整行读作"潜行: 按住"。
+//   拿"关/开"凑数会得到"潜行: 关"——语义完全反了：默认的 false 是**按住**，不是关闭潜行。
+inline constexpr std::array<OptionValue, 2> kHoldToggleValues{{
+    {0, "options.key.hold", "Hold"},
+    {1, "options.key.toggle", "Toggle"},
+}};
+
+// UI-6c：疾跑间隔（tick）。0 那一档显示为 OFF，与 26.1 的
+// `genericValueOrOffLabel` 一致（`Options.java:581-583`）。
+inline constexpr std::array<OptionValue, 6> kSprintWindowValues{{
+    {0, "options.off", "OFF"}, {5}, {7}, {10}, {15}, {20},
+}};
+
 // 各向异性过滤逐级翻倍到 16x 再回绕
 // 与从前那句 anisotropy >= 16 ? 1 : anisotropy * 2 产生的序列相同，现在直接把取值写出来
 inline constexpr std::array<OptionValue, 5> kAnisotropyValues{{{1}, {2}, {4}, {8}, {16}}};
@@ -101,7 +118,21 @@ inline constexpr std::array<OptionValue, 4> kParticleLevelValues{{
 // 分辨率读实时窗口尺寸，GUI 缩放读菜单状态，难度读当前打开的存档
 // 这三项仍由渲染器直接处理
 
-inline constexpr std::array<OptionDesc, 15> kCyclingOptions{{
+inline constexpr std::array<OptionDesc, 21> kCyclingOptions{{
+    // UI-6c：26.1 §7.6 Controls 的六个设置项（偏差 D3）。四个 Hold/Toggle 的 caption
+    // 复用动作名本身，值标签是"按住 / 切换"。
+    {WidgetId::ToggleCrouch, "key.sneak", "Sneak", &config::GameOptions::toggleCrouch,
+     kHoldToggleValues},
+    {WidgetId::ToggleSprint, "key.sprint", "Sprint", &config::GameOptions::toggleSprint,
+     kHoldToggleValues},
+    {WidgetId::ToggleAttack, "key.attack", "Attack/Destroy", &config::GameOptions::toggleAttack,
+     kHoldToggleValues},
+    {WidgetId::ToggleUse, "key.use", "Use Item/Place Block", &config::GameOptions::toggleUse,
+     kHoldToggleValues},
+    {WidgetId::SprintWindow, "options.sprintWindow", "Sprint Window",
+     &config::GameOptions::sprintWindow, kSprintWindowValues},
+    {WidgetId::OperatorItemsTab, "options.operatorItemsTab", "Operator Items Tab",
+     &config::GameOptions::operatorItemsTab, kOnOffValues},
     {WidgetId::AutoJump, "options.autoJump", "Auto-Jump", &config::GameOptions::autoJump,
      kOnOffValues},
     {WidgetId::FrameRateLimit, "options.framerateLimit", "Max Framerate",

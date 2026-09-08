@@ -167,11 +167,11 @@ void testScreenRowWidths() {
     constexpr float kWidth = 1280.0F;
     const mc::ui::HudLayout layout{kWidth, 720.0F, 3};   // 逻辑 427x240
     CHECK(mc::ui::languageScrollList(layout, kWidth).rowWidth == mc::ui::kLanguageRowWidth);
-    CHECK(mc::ui::controlsScrollList(layout, kWidth).rowWidth == mc::ui::kKeyBindsRowWidth);
+    CHECK(mc::ui::keyBindsScrollList(layout, kWidth).rowWidth == mc::ui::kKeyBindsRowWidth);
     CHECK(mc::ui::worldScrollList(layout, kWidth).rowWidth == mc::ui::kWorldSelectionRowWidth);
     // 三张列表都铺满逻辑画布的宽度，行在里面居中
     CHECK(mc::ui::languageScrollList(layout, kWidth).width == 427);
-    CHECK(mc::ui::controlsScrollList(layout, kWidth).width == 427);
+    CHECK(mc::ui::keyBindsScrollList(layout, kWidth).width == 427);
 }
 
 } // namespace

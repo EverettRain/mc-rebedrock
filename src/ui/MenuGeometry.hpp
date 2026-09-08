@@ -31,7 +31,7 @@ namespace mc::ui {
 // 行宽是从 26.1 源码查来的覆写值：语言 270、按键 340、世界列表 270。
 // 下面那些逐屏函数都从这里派生，不再各写各的。
 [[nodiscard]] ScrollList languageScrollList(const HudLayout& layout, float framebufferWidth);
-[[nodiscard]] ScrollList controlsScrollList(const HudLayout& layout, float framebufferWidth);
+[[nodiscard]] ScrollList keyBindsScrollList(const HudLayout& layout, float framebufferWidth);
 [[nodiscard]] ScrollList worldScrollList(const HudLayout& layout, float framebufferWidth);
 // 世界列表那条带在当前画布下放得下几行（逻辑像素版，saveListVisibleRowCount 的内核）
 [[nodiscard]] std::size_t worldListVisibleRows(const HudLayout& layout);
@@ -57,7 +57,7 @@ namespace mc::ui {
 // 按键设置页的绑定列表是一个滚动列表，与世界列表和语言列表同类，而不是固定的按钮网格
 // 24 个可重绑的动作会冲破 20 个按钮的菜单上限并抛出，所以它必须是滚动的
 // 几何照搬语言列表：标题与底部按钮带之间一个按内容定尺寸的框，每个可见动作一行，外加一条滚动条
-[[nodiscard]] UiRect controlsListBox(const HudLayout& layout, float framebufferWidth);
+[[nodiscard]] UiRect keyBindsListBox(const HudLayout& layout, float framebufferWidth);
 // 一页里第 `widgetIndex` 个控件的矩形。**页面 → 矩形这件事只有这一处。**
 //
 // ★ 它存在的理由是一次真实的崩溃：UI-6b 把按键绑定行拆成两个控件之后，绘制侧与
@@ -70,20 +70,23 @@ namespace mc::ui {
 //   `menu_layout` 测的就是**生产代码本身**，而不是它在测试里的一份抄本。
 [[nodiscard]] UiRect menuWidgetRect(PageId page, std::size_t widgetIndex,
                                     const HudLayout& layout, float framebufferWidth,
-                                    std::size_t buttonCount, std::size_t keyBindRowCount);
+                                    std::size_t buttonCount, std::size_t keyBindFirstRow,
+                                    std::size_t keyBindVisibleRows);
 
 // UI-6b：按键绑定行里的两个格子（动作名 / 改键按钮）。一行两个控件，
 // 几何在 ui/ListRow.hpp，这两个只是换算到帧缓冲像素。
-[[nodiscard]] UiRect controlsNameCell(std::size_t visibleIndex, const HudLayout& layout,
+[[nodiscard]] UiRect keyBindsNameCell(std::size_t visibleIndex, const HudLayout& layout,
                                       float framebufferWidth);
-[[nodiscard]] UiRect controlsChangeCell(std::size_t visibleIndex, const HudLayout& layout,
+[[nodiscard]] UiRect keyBindsChangeCell(std::size_t visibleIndex, const HudLayout& layout,
                                         float framebufferWidth);
-[[nodiscard]] UiRect controlsRow(std::size_t visibleIndex, const HudLayout& layout,
+[[nodiscard]] UiRect keyBindsResetCell(std::size_t visibleIndex, const HudLayout& layout,
+                                       float framebufferWidth);
+[[nodiscard]] UiRect keyBindsRow(std::size_t visibleIndex, const HudLayout& layout,
                                  float framebufferWidth);
-[[nodiscard]] std::size_t controlsVisibleRowCount(float framebufferWidth, float framebufferHeight,
+[[nodiscard]] std::size_t keyBindsVisibleRowCount(float framebufferWidth, float framebufferHeight,
                                                   int guiScale, bool forceUnicode);
-[[nodiscard]] UiRect controlsScrollbarTrack(const HudLayout& layout, float framebufferWidth);
-[[nodiscard]] std::size_t controlsScrollIndexFromCursor(const HudLayout& layout,
+[[nodiscard]] UiRect keyBindsScrollbarTrack(const HudLayout& layout, float framebufferWidth);
+[[nodiscard]] std::size_t keyBindsScrollIndexFromCursor(const HudLayout& layout,
                                                         float framebufferWidth,
                                                         std::size_t itemCount,
                                                         std::size_t visibleRows, float cursorY);

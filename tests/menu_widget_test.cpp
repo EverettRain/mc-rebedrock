@@ -327,26 +327,50 @@ void testSingleAssemblyPoint() {
 
 }  // namespace
 
-// --- PX-6 Bug3: the Options page carries a Subtitles toggle wired to its cb ----
-void testOptionsHasSubtitlesToggle() {
+// --- PX-6 Bug3: the Subtitles toggle exists and is wired to its callback -------
+//
+// UI-6c: it moved from Options to the new Accessibility page. That is where 26.1
+// keeps it (`AccessibilityOptionsScreen.java:25`, `options.showSubtitles()`), and
+// where View Bobbing went too (deviation D2). The toggle itself is unchanged --
+// this test still guards PX-6 Bug3, it just looks on the screen that now owns it.
+void testAccessibilityHasSubtitlesToggle() {
     ui::MenuBuildContext ctx;
     ui::MenuCallbacks cb;
-    bool toggled = false;
-    cb.cycleOption = [&](ui::WidgetId id, int) { toggled = id == ui::WidgetId::Subtitles; };
-    ui::Page opts = ui::buildPage(ui::PageId::Options, ctx, cb, rowLayout());
+    ui::WidgetId toggled = ui::WidgetId::None;
+    cb.cycleOption = [&](ui::WidgetId id, int) { toggled = id; };
+    ui::Page page = ui::buildPage(ui::PageId::Accessibility, ctx, cb, rowLayout());
 
     std::size_t subIndex = ui::kNoWidget;
-    for (std::size_t i = 0; i < opts.size(); ++i) {
-        if (opts[i].debugId == static_cast<std::uint16_t>(ui::WidgetId::Subtitles)) {
+    std::size_t bobIndex = ui::kNoWidget;
+    for (std::size_t i = 0; i < page.size(); ++i) {
+        if (page[i].debugId == static_cast<std::uint16_t>(ui::WidgetId::Subtitles)) {
             subIndex = i;
+        }
+        if (page[i].debugId == static_cast<std::uint16_t>(ui::WidgetId::ViewBobbing)) {
+            bobIndex = i;
         }
     }
     assert(subIndex != ui::kNoWidget);
+    // D2: View Bobbing belongs here, not on Controls.
+    assert(bobIndex != ui::kNoWidget);
     // Clicking the Subtitles row fires exactly its toggle callback.
-    const float rowY = opts[subIndex].rect.y + opts[subIndex].rect.height * 0.5F;
-    const std::size_t fired = ui::clickAt(opts, 50.0F, rowY);
+    const float rowY = page[subIndex].rect.y + page[subIndex].rect.height * 0.5F;
+    const std::size_t fired = ui::clickAt(page, 50.0F, rowY);
     assert(fired == subIndex);
-    assert(toggled);
+    assert(toggled == ui::WidgetId::Subtitles);
+
+    // ...and Options no longer carries it: two screens both showing the same
+    // toggle would be two places to change it and one of them would drift.
+    const ui::Page opts = ui::buildPage(ui::PageId::Options, ctx, cb, rowLayout());
+    for (const auto& w : opts) {
+        assert(w.debugId != static_cast<std::uint16_t>(ui::WidgetId::Subtitles));
+    }
+    // Options gained the entry that leads here instead.
+    bool hasEntry = false;
+    for (const auto& w : opts) {
+        hasEntry = hasEntry || w.debugId == static_cast<std::uint16_t>(ui::WidgetId::Accessibility);
+    }
+    assert(hasEntry);
 }
 
 int main() {
@@ -359,6 +383,6 @@ int main() {
     testPressReleaseMismatch();
     testSliderThroughCallback();
     testSingleAssemblyPoint();
-    testOptionsHasSubtitlesToggle();
+    testAccessibilityHasSubtitlesToggle();
     return 0;
 }

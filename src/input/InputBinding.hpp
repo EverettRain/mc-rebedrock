@@ -137,6 +137,21 @@ class BindingTable final {
         return table;
     }
 
+    // 单个动作的出厂默认绑定。
+    //
+    // 26.1 的每个 KeyMapping 自己记着 `defaultKey`（KeyMapping.java:98），逐项
+    // Reset 按钮就是 `key.setKey(key.getDefaultKey())`（KeyBindsList.java:122），
+    // 置灰条件是 `resetButton.active = !this.key.isDefault()`（KeyBindsList.java:158）。
+    //
+    // ★ 这里从 defaults() 里取，**不再手抄一份逐项默认表**：默认值只能有一个来源，
+    //   两份表迟早会漂（改了 defaults() 忘了改另一份，逐项 Reset 就会把键重置成
+    //   一个界面上从没出现过的值，而且整表 Reset 的结果和逐项 Reset 不一致）。
+    //   defaults() 是 constexpr，取一项会在编译期折叠掉，不存在「每次重建整张表」
+    //   的代价。
+    [[nodiscard]] static constexpr InputBinding defaultBinding(InputAction action) noexcept {
+        return defaults().binding(action);
+    }
+
   private:
     std::array<InputBinding, kInputActionCount> bindings_{};
 };

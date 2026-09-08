@@ -1888,6 +1888,11 @@ if(BUILD_TESTING)
     )
     target_include_directories(mc_rebedrock_options_layout_test PRIVATE src)
     target_link_libraries(mc_rebedrock_options_layout_test PRIVATE glm::glm)
+    # 绑定列表页的 Escape 语义（解绑，不是取消）住在渲染器的翻译单元里，
+    # 没有测试链接得到它，也不改变任何返回值——只能读源码守。
+    target_compile_definitions(mc_rebedrock_options_layout_test PRIVATE
+        MC_REBEDROCK_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp"
+        MC_REBEDROCK_HUD_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/HudRenderer.hpp")
     add_test(NAME options_layout COMMAND mc_rebedrock_options_layout_test)
 
     # UI-5：背景档位表与渐变色标（spec §3）。三分支（容器类的灰渐变不模糊）、
