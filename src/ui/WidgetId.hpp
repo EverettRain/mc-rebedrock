@@ -51,6 +51,24 @@ enum class WidgetId : std::uint16_t {
     MouseSettings, OpenKeyBinds, Accessibility,
     ToggleCrouch, ToggleSprint, ToggleAttack, ToggleUse, SprintWindow, OperatorItemsTab,
 
+    // UI-6e：26.1 §7.4 `SoundOptionsScreen`。十类音量各一个滑块——**主音量已经在上面**
+    // （`MasterVolume`），这里是其余九类，顺序照 `SoundSource` 枚举。
+    //
+    // ★ 26.1 有**十一**类（多一个 `SoundSource.UI`，按钮音走它）。本作的
+    //   `audio::SoundCategory` 只有十类，UI 音效走 Master——那是偏差 D6，归音频线。
+    //   少的那一类在这里就是少一个滑块，所以这张清单与 vanilla 的差额是**可数的**。
+    MusicVolume, RecordVolume, WeatherVolume, BlockVolume, HostileVolume,
+    NeutralVolume, PlayerVolume, AmbientVolume, VoiceVolume,
+    // 同屏上本作没有后端的三项，**置灰**（与 MouseSettings / GraphicsPreset 同一做法）：
+    // 音频设备选择、音乐播放频率、"正在播放"提示条。
+    SoundDevice, MusicFrequency, MusicToast,
+    // 26.1 的"方向性音频"（vanilla 是 HRTF，本作是声道平移，见 AudioSystem）。
+    // GameOptions::directionalAudio 一直存在且默认开，但在这之前**没有任何控件能改它**
+    // ——存了、读了、也在用，玩家却碰不到。§7.4 是它在 26.1 里的位置。
+    DirectionalAudio,
+    // Options 主页上跳进这一屏的按钮。
+    SoundSettings,
+
     // 哨兵，值等于 id 的个数，表因此能断言自己覆盖了每一个 id，ui/WidgetLabels.hpp 就是这么做的
     // 它永远不是一个控件，也永远排在最后
     Count,

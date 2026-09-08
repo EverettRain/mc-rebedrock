@@ -285,6 +285,20 @@ inline constexpr std::array<OptionsGroup, 2> kControlsHubGroups{
 inline constexpr std::array<OptionsGroup, 3> kVideoSettingsGroups{
     {{1U, OptionsGroupKind::Big}, {11U, OptionsGroupKind::Small}, {4U, OptionsGroupKind::Small}}};
 
+// UI-6e：音乐与声音，照 26.1 `SoundOptionsScreen.addOptions()` 的五次调用：
+//   addBig(MASTER)                          → 1 项，独占一行
+//   addSmall(其余 9 类)                      → 9 项，5 行（最后一项落单）
+//   addBig(soundDevice)                     → 1 项（本作置灰）
+//   addSmall(showSubtitles, directionalAudio) → 2 项
+//   addSmall(musicFrequency, musicToast)      → 2 项（本作两个都置灰）
+// 共 9 行 > 内容区的 6 行，所以这一屏**必然要滚**——UI-6d 的滚动在这里第二次被用上。
+inline constexpr std::array<OptionsGroup, 5> kSoundSettingsGroups{
+    {{1U, OptionsGroupKind::Big},
+     {9U, OptionsGroupKind::Small},
+     {1U, OptionsGroupKind::Big},
+     {2U, OptionsGroupKind::Small},
+     {2U, OptionsGroupKind::Small}}};
+
 // 高级图形：本项目自有页，两项一组。
 inline constexpr std::array<OptionsGroup, 1> kAdvancedGraphicsGroups{
     {{3U, OptionsGroupKind::Small}}};
@@ -311,6 +325,8 @@ static_assert(optionsHeadersProduceNoWidgets(kVideoSettingsGroups),
               "a header row must not consume an option index");
 static_assert(optionsHeadersProduceNoWidgets(kAdvancedGraphicsGroups),
               "a header row must not consume an option index");
+static_assert(optionsHeadersProduceNoWidgets(kSoundSettingsGroups),
+              "a header row must not consume an option index");
 
 // 这一屏的 addSmall 分组。三段式版面的页脚按钮不在其中（它由 buttonCount 单独认出来）。
 [[nodiscard]] constexpr std::span<const OptionsGroup> optionsGroupsOf(PageId page) {
@@ -319,6 +335,8 @@ static_assert(optionsHeadersProduceNoWidgets(kAdvancedGraphicsGroups),
         return kVideoSettingsGroups;
     case PageId::AdvancedGraphics:
         return kAdvancedGraphicsGroups;
+    case PageId::SoundSettings:
+        return kSoundSettingsGroups;
     default:
         break;
     }

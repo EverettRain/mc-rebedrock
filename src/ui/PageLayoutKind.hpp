@@ -32,6 +32,13 @@ enum class PageLayoutKind : std::uint8_t {
     TitleScreen,
     // 三段式版面里的一张 OptionsList 双列，页脚一个按钮（26.1 的 OptionsSubScreen）。
     HeaderFooterList,
+    // 三段式版面里一块**从上往下排**的表单，页脚两个按钮（26.1 的 CreateWorldScreen）。
+    //
+    // ★ 它与 CentredColumn 的分别不只是"位置不同"：居中那一档的内容块是**从中线往两边
+    //   长**的，加一行内容就往上顶一点，而它没有上界——创建世界页正是这么把世界名
+    //   输入框顶出画布顶部的（逻辑高 240 时表单落在 y = -20）。三段式从页眉往下排，
+    //   加内容只会往下溢，而往下溢是可以被断言抓住的。
+    HeaderFooterForm,
 };
 
 // ★ 不带 `default:`。加一个 PageId 而不在这里给它一种版式，编译期就会被点名。
@@ -52,16 +59,19 @@ enum class PageLayoutKind : std::uint8_t {
     case PageId::VideoSettings:
     case PageId::Controls:
     case PageId::AdvancedGraphics:
+    case PageId::SoundSettings:
         return PageLayoutKind::HeaderFooterList;
+    case PageId::CreateWorld:
+        return PageLayoutKind::HeaderFooterForm;
     // 其余都走屏幕正中那一列。`Game` 与 `Loading` 没有菜单按钮，取值仍要良定义：
     // 它们的页面装配是空的，所以这一档永远不会被真的用到。
-    case PageId::CreateWorld:
     case PageId::Options:
     case PageId::Accessibility:
     case PageId::Pause:
     case PageId::Death:
     case PageId::Loading:
     case PageId::Game:
+    case PageId::Count:   // 哨兵，不是一页
         break;
     }
     return PageLayoutKind::CentredColumn;
@@ -93,6 +103,7 @@ enum class PageDrawKind : std::uint8_t {
     case PageId::KeyBinds:
     case PageId::Accessibility:
     case PageId::AdvancedGraphics:
+    case PageId::SoundSettings:
         return PageDrawKind::Settings;
     case PageId::Language:
         return PageDrawKind::Language;
@@ -100,6 +111,7 @@ enum class PageDrawKind : std::uint8_t {
     case PageId::Game:
     case PageId::Pause:
     case PageId::Death:
+    case PageId::Count:   // 哨兵，不是一页
         break;
     }
     return PageDrawKind::InGame;

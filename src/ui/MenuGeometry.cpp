@@ -1,5 +1,6 @@
 #include "ui/MenuGeometry.hpp"
 
+#include "ui/CreateWorldLayout.hpp"
 #include "ui/HeaderAndFooterLayout.hpp"
 #include "ui/KeyBindList.hpp"
 #include "ui/ListRow.hpp"
@@ -363,6 +364,19 @@ UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t inde
         // addBig 的一项铺满行宽（310），addSmall 的一项是双列里的一格（150）。
         return fbRect(layout, slot.big ? optionsBigCell(list, slot.row)
                                        : optionsSmallCell(list, slot.row, slot.column));
+    }
+    case PageLayoutKind::HeaderFooterForm: {
+        // 26.1 CreateWorldScreen：页眉标题、内容区表单、页脚 Create/Cancel 两个按钮。
+        // 装配顺序是「游戏模式 / 难度 / 允许作弊 / 创建 / 返回」，前三个在内容区里
+        // 从表单下方往下排，后两个在页脚横排。
+        const auto form = createWorldLayout(layout.logicalWidth(), layout.logicalHeight());
+        if (buttonCount >= 2U && index + 2U == buttonCount) {
+            return fbRect(layout, form.footerLeft);
+        }
+        if (buttonCount >= 1U && index + 1U == buttonCount) {
+            return fbRect(layout, form.footerRight);
+        }
+        return fbRect(layout, createWorldOptionButton(form, layout.logicalWidth(), index));
     }
     case PageLayoutKind::CentredColumn:
         break;

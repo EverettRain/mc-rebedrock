@@ -3033,7 +3033,25 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::Game:
             setPaused(true);
             break;
-        default:
+        // ★ 其余设置子屏：出栈，清掉按下态。它们从前**没有 case**，一律掉进
+        //   下面那个 `default: break;` —— 症状是 Esc 按了没反应，而按钮还好好的，
+        //   所以只有真的去按 Esc 才发现。现场报告的正是"音乐与声音、按键控制
+        //   两个页面无法 Esc 返回"，而实际漏的比报的多（创建世界、编辑世界也在里面）。
+        case ui::PageId::Controls:
+        case ui::PageId::SoundSettings:
+        case ui::PageId::CreateWorld:
+        case ui::PageId::EditWorld:
+            menuSystem.pageStack.pop();
+            pressedMenuButton = ui::WidgetId::None;
+            menuSystem.draggingSlider = ui::WidgetId::None;
+            break;
+        // 26.1 里这三屏 `shouldCloseOnEsc()` 返回 **false**（`Screen` 的默认是 true）：
+        //   DeathScreen / TitleScreen / LevelLoadingScreen
+        // 主菜单没有上一屏可回；死亡屏必须点按钮（Esc 溜走会绕过重生）；加载屏还没成型。
+        case ui::PageId::Title:
+        case ui::PageId::Death:
+        case ui::PageId::Loading:
+        case ui::PageId::Count:   // 哨兵，不是一页
             break;
         }
     }
@@ -3056,9 +3074,25 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::VideoSettings:
         case ui::PageId::Controls:
         case ui::PageId::AdvancedGraphics:
+        // ★ SoundSettings 从前**漏在这里**：那一屏 15 项 9 行、内容区只有 6 行，
+        //   非滚不可，而滚轮没反应。它掉进了下面那个 `default: break;`——
+        //   与 handleBackKey 漏掉 Esc 是同一个 default 造的同一种伤。
+        case ui::PageId::SoundSettings:
             scrollOptionsList(direction);
             break;
-        default:
+        // 其余页面没有可滚的列表。**逐个列出而不是 default**：加一页带列表的屏幕时，
+        // 编译器会在这里点名，而"滚轮没反应"是不会有任何东西变红的。
+        case ui::PageId::Title:
+        case ui::PageId::CreateWorld:
+        case ui::PageId::EditWorld:
+        case ui::PageId::ConfirmDelete:
+        case ui::PageId::Loading:
+        case ui::PageId::Game:
+        case ui::PageId::Pause:
+        case ui::PageId::Death:
+        case ui::PageId::Options:
+        case ui::PageId::Accessibility:
+        case ui::PageId::Count:
             break;
         }
     }
@@ -3852,6 +3886,30 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             bind.onCommit = [this, id] { applyOptionChanged(id); };
             return bind;
         };
+        // UI-6e：十类音量的滑块。表在 ui/OptionSlider.hpp——加一个 float 滑块只改那张表。
+        cb.floatSliderFor = [this](ui::WidgetId id) {
+            ui::SliderBind bind;
+            const auto* desc = ui::findFloatSlider(id);
+            if (desc == nullptr) {
+                return bind;
+            }
+            bind.value = [this, desc] { return ui::floatSliderValue(*desc, options); };
+            bind.onDrag = [this, desc](float fraction) {
+                ui::setFloatSliderValue(*desc, options, fraction);
+                // 主音量之外的每一类都乘在 Master 之上，改哪一类都要让音频子系统重算。
+                audioSystem.setMasterVolume(options.masterVolume);
+                audioSystem.setCategoryVolumes(options.soundCategoryVolumes);
+            };
+            bind.onCommit = [this] {
+                persistOptions();
+                // vanilla 在松开滑块时试听一声（`SoundPreviewHandler.preview`）。
+                if (options.masterVolume > 0.0F) {
+                    audioSystem.playItemPickup(camera.position());
+                }
+            };
+            return bind;
+        };
+        cb.openSoundSettings = [this] { menuSystem.pageStack.push(ui::PageId::SoundSettings); };
         cb.openAdvancedGraphics = [this] {
             menuSystem.pageStack.push(ui::PageId::AdvancedGraphics);
         };

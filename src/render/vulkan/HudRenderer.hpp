@@ -46,6 +46,7 @@
 #include "ui/Language.hpp"
 #include "ui/MenuGeometry.hpp"
 #include "ui/MenuSystem.hpp"
+#include "ui/CreateWorldLayout.hpp"
 #include "ui/HeaderAndFooterLayout.hpp"
 #include "ui/KeyBindList.hpp"
 #include "ui/ListRow.hpp"
@@ -260,6 +261,17 @@ class HudRenderer final {
         drawCallbacks_.masterVolume.value = [this] { return options.masterVolume; };
         // UI-6d：整数滑块由表驱动——一个回调服务 ui/OptionSlider.hpp 里所有的滑块。
         // 绘制侧只需要 value（拖拽在输入侧），所以这里只填它。
+        // UI-6e：float 滑块的取值。**必须与输入侧一起填**——只填输入侧，滑块拖得动、
+        // 标签也对，但把手永远画在最左端（`w.slider.value` 是空的，画 0）。
+        // 实测就是这么错的一次：十个音量的百分比文字全对，把手全在 0。
+        // 这与 UI-6c 那次"MenuBuildContext 两处填充只填了一处"是同一族。
+        drawCallbacks_.floatSliderFor = [this](ui::WidgetId id) {
+            ui::SliderBind bind;
+            if (const auto* desc = ui::findFloatSlider(id)) {
+                bind.value = [this, desc] { return ui::floatSliderValue(*desc, options); };
+            }
+            return bind;
+        };
         drawCallbacks_.intSliderFor = [this](ui::WidgetId id) {
             ui::SliderBind bind;
             if (const auto* desc = ui::findIntSlider(id)) {
@@ -973,10 +985,35 @@ class HudRenderer final {
                 translated("options.simulationDistance", "Simulation Distance"),
                 formatTemplate(translated("options.chunks", "%s chunks"),
                                std::to_string(simulationDistanceChunks)));
+        // UI-6e：十类音量共用**一条**分支——名字、取值位置、OFF 规则全在
+        // ui/OptionSlider.hpp 那张表里。
+        //
+        // ★ 从前这里只有主音量一个 case，写着自己的 `lround(...*100)`。那有两处不对：
+        //   一是与 vanilla 相反（26.1 `Options.percentValueLabel` 是**截断**
+        //   `(int)(value*100.0)`，不是四舍五入）；二是加一类音量就要再抄一个 case，
+        //   而"登记进 kRuntimeWidgetLabels"只保证它**有归属**，不保证这里真的算了它
+        //   ——实测九个新滑块的标签一开始全是空白，版面对了字没了。
         case ui::WidgetId::MasterVolume:
-            return percentValue(
-                translated("soundCategory.master", "Master Volume"),
-                static_cast<int>(std::lround(options.masterVolume * 100.0F)));
+        case ui::WidgetId::MusicVolume:
+        case ui::WidgetId::RecordVolume:
+        case ui::WidgetId::WeatherVolume:
+        case ui::WidgetId::BlockVolume:
+        case ui::WidgetId::HostileVolume:
+        case ui::WidgetId::NeutralVolume:
+        case ui::WidgetId::PlayerVolume:
+        case ui::WidgetId::AmbientVolume:
+        case ui::WidgetId::VoiceVolume: {
+            const auto* desc = ui::findFloatSlider(button);
+            if (desc == nullptr) {
+                return {};
+            }
+            const std::string name = translated(desc->nameKey, desc->nameFallback);
+            const float value = ui::floatSliderValue(*desc, options);
+            if (ui::floatSliderShowsOff(*desc, value)) {
+                return optionValue(name, translated("options.off", "OFF"));
+            }
+            return percentValue(name, ui::floatSliderPercent(value));
+        }
         case ui::WidgetId::Difficulty: {
             // 同一个按钮出现在两处，取值的来源不同：世界内的选项页读**已打开的存档**，
             // 创建世界页读那张表单的暂存值（此时还没有任何存档）。
@@ -1052,25 +1089,28 @@ class HudRenderer final {
         float seedLabelY = 0.0F;
     };
 
+    // 表单矩形全部来自 ui::createWorldLayout —— **与按钮位置同一个来源**
+    // （`frontendButtonRect` 的 HeaderFooterForm 分支读的是同一个函数）。
+    //
+    // ★ 从前这里自己算：`buttonTop = 逻辑高/2 - 按钮数*12`，表单从 `buttonTop - 80`
+    //   往上堆。1280x720 @ scale 3 的逻辑画布高 240，于是表单落在 **y = -20**，
+    //   世界名输入框被切出画布顶部、文件夹提示与标题糊在一起。
+    //   往上堆的版面没有上界，而"顶出画布"不会让任何断言变红——只有截图看得见。
     [[nodiscard]] CreateWorldForm createWorldForm(const ui::HudLayout& layout) const {
-        constexpr int kFieldWidth = 200;   // spec §2.4 的常用输入框尺寸
-        constexpr int kFieldHeight = 20;
-        // HudLayout::menuButton 的第一行 y = 画布中线 - 按钮数 * 12；按钮数从**已装配的
-        // 页面**数出来，不是另写一个常量（写死一个 5 之后再加按钮就会静默错位）
-        const int buttonTop =
-            layout.logicalHeight() / 2 - static_cast<int>(menuButtonCount()) * 12;
-        // 居中与逻辑→帧缓冲的换算都走 HudLayout 自己的助手（护栏 5）：整数网格上解完
-        // 版面，最后一次乘 scale。自己写 `(宽 - 200) * 0.5F` 在非整除档下会差一像素
-        const int left = layout.centredLogicalX(kFieldWidth);
-        CreateWorldForm form;
-        form.nameLabelY = layout.toFramebuffer(buttonTop - 80);
-        form.nameField = {layout.toFramebuffer(left), layout.toFramebuffer(buttonTop - 70),
-                          layout.toFramebuffer(kFieldWidth), layout.toFramebuffer(kFieldHeight)};
-        form.folderLineY = layout.toFramebuffer(buttonTop - 46);
-        form.seedLabelY = layout.toFramebuffer(buttonTop - 34);
-        form.seedField = {layout.toFramebuffer(left), layout.toFramebuffer(buttonTop - 24),
-                          layout.toFramebuffer(kFieldWidth), layout.toFramebuffer(kFieldHeight)};
-        return form;
+        const auto form =
+            ui::createWorldLayout(layout.logicalWidth(), layout.logicalHeight());
+        const float scale = layout.scale();
+        const auto toFb = [scale](const ui::UiRect& rect) {
+            return ui::UiRect{rect.x * scale, rect.y * scale, rect.width * scale,
+                              rect.height * scale};
+        };
+        CreateWorldForm out;
+        out.nameLabelY = form.nameLabel.y * scale;
+        out.nameField = toFb(form.nameField);
+        out.folderLineY = form.folderHint.y * scale;
+        out.seedLabelY = form.seedLabel.y * scale;
+        out.seedField = toFb(form.seedField);
+        return out;
     }
 
     void drawCreateWorldForm(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {

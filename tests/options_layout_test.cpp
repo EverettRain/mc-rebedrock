@@ -16,14 +16,17 @@
 #include "ui/KeyBindList.hpp"
 #include "ui/MenuGeometry.hpp"
 #include "ui/PageBuilder.hpp"
+#include "ui/PageLayoutKind.hpp"
 #include "ui/PageTitles.hpp"
 #include "ui/ListRow.hpp"
+#include "ui/CreateWorldLayout.hpp"
 #include "ui/DualColumnList.hpp"
 #include "ui/OptionsList.hpp"
 #include "ui/OptionSlider.hpp"
 #include "ui/SliderGeometry.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -319,7 +322,7 @@ void testPageTitles() {
     CHECK(mc::ui::pageTitle(PageId::Title).empty());
     CHECK(mc::ui::pageTitle(PageId::Game).empty());
     // 每个有标题的屏都必须有兜底文本：翻译缺失时不能是空白
-    for (std::size_t raw = 0; raw <= static_cast<std::size_t>(PageId::Accessibility); ++raw) {
+    for (std::size_t raw = 0; raw < static_cast<std::size_t>(PageId::Count); ++raw) {
         const auto entry = mc::ui::pageTitle(static_cast<PageId>(raw));
         if (!entry.empty()) {
             check(!entry.fallback.empty(), "a titled page needs a fallback", __LINE__);
@@ -701,7 +704,18 @@ void testWindowSingleSourceGuard() {
          at != std::string::npos; at = builder.find("OptionCursor add{ctx, id};", at + 1U)) {
         ++cursors;
     }
-    CHECK(cursors == 3U);   // VideoSettings / AdvancedGraphics / Controls
+    // ★ 期望值**从 pageLayoutKind 数出来**，不写死一个数字。写死"当时的页面数"
+    //   与 UiCapture 那条写死"当时的最后一个枚举值"是同一个陷阱：加一页时它仍然
+    //   比较同一个数，要么静默通过、要么红了却只能靠人去猜该改成几。
+    std::size_t headerFooterPages = 0;
+    for (std::size_t raw = 0; raw < static_cast<std::size_t>(mc::ui::PageId::Count); ++raw) {
+        if (mc::ui::pageLayoutKind(static_cast<mc::ui::PageId>(raw)) ==
+            mc::ui::PageLayoutKind::HeaderFooterList) {
+            ++headerFooterPages;
+        }
+    }
+    CHECK(headerFooterPages > 0U);
+    CHECK(cursors == headerFooterPages);
 
     // ★ 每一页**声明的设置项数**必须等于它实际装配的项数。
     //
@@ -1121,6 +1135,365 @@ void testDualColumnLists() {
     CHECK(text.width >= static_cast<float>(mc::ui::kTransferDescriptionWidth) - 2.0F);
 }
 
+// --- 20. 没有任何控件可以越出画布（UI-6e，对着一次真实的版面事故）------------
+//
+// ★ 起因：创建世界页的表单是**挂在按钮块上沿往上堆**的——
+//       buttonTop = 逻辑高/2 - 按钮数*12;  名字标签 y = buttonTop - 80
+//   1280x720 @ scale 3 的逻辑画布高 240，于是 buttonTop = 60、标签落在 **-20**：
+//   世界名输入框被切出画布顶部，文件夹提示与标题糊在一起。加一个种子框就撞上了
+//   （往上堆的高度从 30 涨到 80）。
+//
+//   **往上堆的版面没有上界**，而"顶出画布"不会让任何断言变红——只有截图看得见。
+//   这条测试就是那个缺失的下界，而且它是**通用**的：所有页面、多档缩放一起量。
+void testNoWidgetEscapesTheCanvas() {
+    // 覆盖窄、方、宽三类画布与三档缩放。320x240 是 spec §1.1 的最小逻辑画布。
+    struct Canvas final { float width; float height; int scale; };
+    constexpr std::array<Canvas, 6> kCanvases{{
+        {1280.0F, 720.0F, 3}, {1280.0F, 720.0F, 2}, {1280.0F, 720.0F, 1},
+        {854.0F, 480.0F, 2},  {640.0F, 480.0F, 1},  {1920.0F, 1080.0F, 4},
+    }};
+
+    for (const Canvas& canvas : kCanvases) {
+        const mc::ui::HudLayout layout{canvas.width, canvas.height, canvas.scale};
+        for (std::size_t raw = 0; raw < static_cast<std::size_t>(mc::ui::PageId::Count); ++raw) {
+            const auto page = static_cast<mc::ui::PageId>(raw);
+            // 游戏内那几屏没有菜单按钮，装配是空的
+            if (mc::ui::pageDrawKind(page) == mc::ui::PageDrawKind::InGame) {
+                continue;
+            }
+            mc::ui::MenuBuildContext ctx;
+            ctx.optionsWindow = mc::ui::optionsWindowFor(layout, page, 0U);
+            const mc::ui::MenuCallbacks cb;
+            mc::ui::Page built;
+            mc::ui::buildPageInto(built, page, ctx, cb);
+            mc::ui::layoutPageInto(built, page, layout, canvas.width, 0U,
+                                   ctx.optionsWindow.firstRow);
+            // 夹具自证：这些页面必须真的装配出了控件，否则上面那个循环是空的，
+            // 整条测试就成了摆设。
+            if (page == mc::ui::PageId::CreateWorld) {
+                check(built.size() >= 5U, "the create-world page must assemble widgets", __LINE__);
+            }
+            for (const auto& widget : built) {
+                const auto& rect = widget.rect;
+                // ★ 上边界是这次事故的那一条：控件顶在画布外，画面上被切掉半截。
+                check(rect.y >= -0.5F,
+                      "a widget escaped the top of the canvas", __LINE__);
+                check(rect.x >= -0.5F,
+                      "a widget escaped the left of the canvas", __LINE__);
+                check(rect.y + rect.height <= canvas.height + 0.5F,
+                      "a widget escaped the bottom of the canvas", __LINE__);
+                check(rect.x + rect.width <= canvas.width + 0.5F,
+                      "a widget escaped the right of the canvas", __LINE__);
+            }
+        }
+    }
+}
+
+// --- 21. 创建世界页的三段式表单 ----------------------------------------------
+void testCreateWorldForm() {
+    const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
+    const auto form =
+        mc::ui::createWorldLayout(layout.logicalWidth(), layout.logicalHeight());
+    const auto frame =
+        mc::ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
+
+    // ★ 表单从内容区**顶部**往下排，第一行就贴着页眉下沿——不是从按钮往上堆。
+    CHECK(form.nameLabel.y == frame.contentBox().y);
+    // 自上而下严格递增，且互不重叠
+    CHECK(form.nameField.y > form.nameLabel.y);
+    CHECK(form.folderHint.y >= form.nameField.y + form.nameField.height);
+    CHECK(form.seedLabel.y >= form.folderHint.y + form.folderHint.height);
+    CHECK(form.seedField.y >= form.seedLabel.y + form.seedLabel.height);
+    // 按钮带在表单下方
+    CHECK(static_cast<float>(form.optionButtonsTop) >=
+          form.seedField.y + form.seedField.height);
+
+    // 表单整体不越过页脚
+    const auto footer = frame.footerBox();
+    CHECK(form.seedField.y + form.seedField.height <= footer.y);
+    // 三个循环按钮也不越过页脚
+    const auto lastButton = mc::ui::createWorldOptionButton(form, layout.logicalWidth(), 2U);
+    CHECK(lastButton.y + lastButton.height <= footer.y);
+
+    // 页脚两个按钮横排、等宽、不重叠、整体居中
+    CHECK(form.footerLeft.y == form.footerRight.y);
+    CHECK(form.footerLeft.width == form.footerRight.width);
+    CHECK(form.footerRight.x >= form.footerLeft.x + form.footerLeft.width);
+    const float pairCentre =
+        (form.footerLeft.x + form.footerRight.x + form.footerRight.width) * 0.5F;
+    CHECK(std::abs(pairCentre - static_cast<float>(layout.logicalWidth()) * 0.5F) <= 1.0F);
+
+    // 两个输入框等宽且水平居中
+    CHECK(form.nameField.width == form.seedField.width);
+    CHECK(form.nameField.x == form.seedField.x);
+    CHECK(form.nameField.width == static_cast<float>(mc::ui::kCreateWorldFieldWidth));
+
+    // 版式判定走表，不是手写清单
+    CHECK(mc::ui::pageLayoutKind(mc::ui::PageId::CreateWorld) ==
+          mc::ui::PageLayoutKind::HeaderFooterForm);
+
+    // ★ 走**生产路径**看具体控件落在哪。上面那些只量了几何函数——把布局侧
+    //   页脚两个按钮的序号判定写反（Create 跑到右边、Back 跑到左边），或者让内容区的
+    //   三个按钮**不换行**（全叠在同一位置），几何函数一条都不会红：
+    //   它返回的矩形本身还是对的，错的是"哪个控件拿到哪一个"。
+    {
+        mc::ui::MenuBuildContext ctx;
+        const mc::ui::MenuCallbacks cb;
+        mc::ui::Page page;
+        mc::ui::buildPageInto(page, mc::ui::PageId::CreateWorld, ctx, cb);
+        mc::ui::layoutPageInto(page, mc::ui::PageId::CreateWorld, layout, 1280.0F);
+        const std::size_t count = mc::ui::countPageButtons(page);
+        CHECK(count >= 5U);
+
+        const auto rectOf = [&](mc::ui::WidgetId id) {
+            for (const auto& widget : page) {
+                if (static_cast<mc::ui::WidgetId>(widget.debugId) == id) {
+                    return widget.rect;
+                }
+            }
+            check(false, "expected widget missing from the create-world page", __LINE__);
+            return mc::ui::UiRect{};
+        };
+
+        // 页脚：Create New World 在**左**，Back 在**右**，同一行
+        const auto create = rectOf(mc::ui::WidgetId::CreateConfirm);
+        const auto back = rectOf(mc::ui::WidgetId::Back);
+        check(create.y == back.y, "the two footer buttons share a row", __LINE__);
+        check(create.x < back.x, "Create sits left of Back", __LINE__);
+        check(create.x + create.width <= back.x, "the footer buttons must not overlap", __LINE__);
+
+        // 内容区的三个循环按钮自上而下**逐个换行**，互不重叠
+        const auto mode = rectOf(mc::ui::WidgetId::CreateGameMode);
+        const auto difficulty = rectOf(mc::ui::WidgetId::Difficulty);
+        const auto commands = rectOf(mc::ui::WidgetId::CreateAllowCommands);
+        check(difficulty.y >= mode.y + mode.height,
+              "the difficulty button must sit below the game-mode button", __LINE__);
+        check(commands.y >= difficulty.y + difficulty.height,
+              "the allow-commands button must sit below the difficulty button", __LINE__);
+        // 三个都在页脚之上
+        check(commands.y + commands.height <= create.y,
+              "the option buttons must stay above the footer", __LINE__);
+    }
+
+    // ★★ 表单矩形也不许越出画布——而 `testNoWidgetEscapesTheCanvas` **覆盖不到它们**：
+    //    输入框、标签、文件夹提示都不是 `ui::Widget`，它们不进 `ui::Page`，只是绘制侧的
+    //    矩形。这次事故越界的恰恰是它们（世界名框被切出画布顶部），所以那条通用护栏
+    //    抓不住这次的 bug，必须在这里单独量一遍。
+    //
+    //    这是"两套界面栈"那个问题的小版本：凡是绕过 Widget 模型自己画的东西，
+    //    Widget 上的护栏一概管不到。
+    struct Canvas final { int width; int height; };
+    constexpr std::array<Canvas, 5> kCanvases{{
+        {427, 240}, {640, 360}, {1280, 720}, {320, 240}, {854, 480},
+    }};
+    for (const Canvas& canvas : kCanvases) {
+        const auto solved = mc::ui::createWorldLayout(canvas.width, canvas.height);
+        const auto solvedFrame = mc::ui::headerAndFooterLayout(canvas.width, canvas.height);
+        const std::array<mc::ui::UiRect, 5> parts{{solved.nameLabel, solved.nameField,
+                                                   solved.folderHint, solved.seedLabel,
+                                                   solved.seedField}};
+        for (const auto& rect : parts) {
+            check(rect.y >= 0.0F, "a form row escaped the top of the canvas", __LINE__);
+            check(rect.x >= 0.0F, "a form row escaped the left of the canvas", __LINE__);
+            check(rect.y + rect.height <= static_cast<float>(canvas.height),
+                  "a form row escaped the bottom of the canvas", __LINE__);
+            check(rect.x + rect.width <= static_cast<float>(canvas.width),
+                  "a form row escaped the right of the canvas", __LINE__);
+            // 表单永远在页眉之下：顶出页眉就会和标题糊在一起（这次事故的第二个症状）
+            check(rect.y >= solvedFrame.contentBox().y,
+                  "a form row climbed into the header", __LINE__);
+        }
+        // 页脚两个按钮同样要在画布内
+        for (const auto& rect : {solved.footerLeft, solved.footerRight}) {
+            check(rect.x >= 0.0F && rect.x + rect.width <= static_cast<float>(canvas.width),
+                  "a footer button escaped the canvas", __LINE__);
+        }
+    }
+}
+
+// --- 22. 音乐与声音（UI-6e ②，26.1 §7.4）------------------------------------
+void testSoundSettingsPage() {
+    const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
+    const auto page = mc::ui::PageId::SoundSettings;
+
+    // 26.1 SoundOptionsScreen.addOptions() 的五次调用：1 + 9 + 1 + 2 + 2 = 15 项，9 行
+    CHECK(mc::ui::optionsCountOf(mc::ui::optionsGroupsOf(page)) == 15U);
+    CHECK(mc::ui::optionsRowCountOf(page) == 9U);
+    // 9 行 > 内容区的 6 行，所以这一屏必然要滚（UI-6d 的滚动第二次被用上）
+    CHECK(mc::ui::optionsMaximumFirstRow(layout, page) > 0U);
+
+    mc::ui::MenuBuildContext ctx;
+    ctx.optionsWindow = mc::ui::optionsWindowFor(layout, page, 0U);
+    const mc::ui::MenuCallbacks cb;
+    mc::ui::Page built;
+    mc::ui::buildPageInto(built, page, ctx, cb);
+    mc::ui::layoutPageInto(built, page, layout, 1280.0F, 0U, ctx.optionsWindow.firstRow);
+
+    const auto find = [&](mc::ui::WidgetId id) -> const mc::ui::Widget* {
+        for (const auto& widget : built) {
+            if (static_cast<mc::ui::WidgetId>(widget.debugId) == id) {
+                return &widget;
+            }
+        }
+        return nullptr;
+    };
+
+    // 主音量是滑块，且**独占一行**（26.1 的 addBig）
+    const auto* master = find(mc::ui::WidgetId::MasterVolume);
+    CHECK(master != nullptr);
+    if (master != nullptr) {
+        CHECK(master->kind == mc::ui::WidgetKind::Slider);
+        CHECK(master->rect.width == static_cast<float>(mc::ui::kOptionsBigWidth) * 3.0F);
+    }
+    // 其余九类是双列的小格
+    const auto* music = find(mc::ui::WidgetId::MusicVolume);
+    CHECK(music != nullptr);
+    if (music != nullptr) {
+        CHECK(music->kind == mc::ui::WidgetKind::Slider);
+        CHECK(music->rect.width == static_cast<float>(mc::ui::kOptionsSmallWidth) * 3.0F);
+        CHECK(music->rect.y > master->rect.y);   // 新的一组从新行起
+    }
+    // ★ 后面那几项在第 6..8 行，**不在第一屏的窗口里**——装配只造窗口内的控件，
+    //   所以要滚到底才找得到。这一条本身就是"装配只造可见部分"的复核。
+    mc::ui::MenuBuildContext bottomCtx;
+    bottomCtx.optionsWindow = mc::ui::optionsWindowFor(
+        layout, page, mc::ui::optionsMaximumFirstRow(layout, page));
+    mc::ui::Page bottom;
+    mc::ui::buildPageInto(bottom, page, bottomCtx, cb);
+    mc::ui::layoutPageInto(bottom, page, layout, 1280.0F, 0U, bottomCtx.optionsWindow.firstRow);
+    const auto findBottom = [&](mc::ui::WidgetId id) -> const mc::ui::Widget* {
+        for (const auto& widget : bottom) {
+            if (static_cast<mc::ui::WidgetId>(widget.debugId) == id) {
+                return &widget;
+            }
+        }
+        return nullptr;
+    };
+    // 第一屏确实看不到它们（否则下面那几条断言是空转的）
+    CHECK(find(mc::ui::WidgetId::MusicToast) == nullptr);
+    // 三个本作没有后端的项：在位但**置灰**
+    for (const auto id : {mc::ui::WidgetId::SoundDevice, mc::ui::WidgetId::MusicFrequency,
+                          mc::ui::WidgetId::MusicToast}) {
+        const auto* widget = findBottom(id);
+        check(widget != nullptr, "the unbacked options must still be on the screen", __LINE__);
+        if (widget != nullptr) {
+            check(!widget->enabled, "an unbacked option must be greyed out", __LINE__);
+        }
+    }
+    // 方向性音频：字段一直有，这一轮才有控件
+    CHECK(findBottom(mc::ui::WidgetId::DirectionalAudio) != nullptr);
+}
+
+// --- 23. 「登记了标签来源」≠「渲染器真的算了它」（源码守）---------------------
+//
+// ★ 实测缺陷：九个新音量滑块登记进了 kRuntimeWidgetLabels（于是覆盖性 static_assert
+//   通过），但渲染器的 widgetLabel 里没有它们的分支——版面全对、**标签全是空白**。
+//   那条 static_assert 保证的是"每个 id 有归属"，不是"归属的那一侧实现了它"。
+//
+// ★ 第二条同族缺陷：float 滑块的取值回调只填了输入侧，绘制侧的 drawCallbacks_ 没填，
+//   于是滑块拖得动、百分比也对，**把手永远画在最左端**。回调有两个填充点。
+void testRuntimeLabelsAreActuallyComputed() {
+    const auto read = [](const char* path) {
+        std::ifstream file{path};
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        std::string out;
+        std::istringstream lines{buffer.str()};
+        std::string line;
+        while (std::getline(lines, line)) {
+            const auto comment = line.find("//");
+            out += comment == std::string::npos ? line : line.substr(0, comment);
+            out += '\n';
+        }
+        return out;
+    };
+    const std::string hud = read(MC_REBEDROCK_HUD_RENDERER_SRC);
+
+    // 标签必须**走表**算，不是每类音量抄一个 case
+    CHECK(hud.find("ui::findFloatSlider(") != std::string::npos);
+    CHECK(hud.find("ui::floatSliderPercent(") != std::string::npos);
+    // ★ 而且 case 标签要齐：表驱动的那条分支只有被 case 引到才会执行。
+    //   数 `case ui::WidgetId::…Volume:` 的个数，必须等于表里的滑块数——
+    //   加一类音量却忘了加 case，那一类的标签就是空白（实测发生过）。
+    std::size_t volumeCases = 0;
+    for (std::size_t at = hud.find("case ui::WidgetId::"); at != std::string::npos;
+         at = hud.find("case ui::WidgetId::", at + 1U)) {
+        const std::size_t colon = hud.find(':', at + 19U);
+        if (colon == std::string::npos) {
+            break;
+        }
+        const std::string label = hud.substr(at + 19U, colon - at - 19U);
+        if (label.size() >= 6U && label.substr(label.size() - 6U) == "Volume") {
+            ++volumeCases;
+        }
+    }
+    check(volumeCases == mc::ui::kFloatSliders.size(),
+          "every float slider needs a case in widgetLabel or its label is blank", __LINE__);
+    // 两侧的回调都要填 floatSliderFor
+    CHECK(hud.find("drawCallbacks_.floatSliderFor") != std::string::npos);
+    const std::string renderer = read(MC_REBEDROCK_RENDERER_SRC);
+    CHECK(renderer.find("cb.floatSliderFor") != std::string::npos);
+}
+
+// --- 24. 按 PageId 分派的 switch 一律不带 default（源码守）--------------------
+//
+// ★ 现场报告："音乐与声音、按键控制两个页面无法 Esc 返回"。根因是 `handleBackKey`
+//   的 switch 末尾有 `default: break;` —— 掉进去的页面静默不响应 Esc。而实际漏的
+//   **比报的多**：创建世界、编辑世界也在里面；同一个函数体的隔壁 `scrollMenuList`
+//   还漏了 SoundSettings 的滚轮（那一屏 9 行 > 6 行，非滚不可）。
+//
+//   一个 `default:` 把 -Wswitch 关掉了，于是"加一页忘了处理"从**编译期点名**降级成
+//   **实机才发现**，而症状是"按键没反应"——没有任何断言会红。README 护栏 19 写的
+//   就是这条，这里把它变成可执行的。
+void testPageDispatchHasNoDefault() {
+    std::ifstream file{MC_REBEDROCK_RENDERER_SRC};
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string source;
+    {
+        std::istringstream lines{buffer.str()};
+        std::string line;
+        while (std::getline(lines, line)) {
+            const auto comment = line.find("//");
+            source += comment == std::string::npos ? line : line.substr(0, comment);
+            source += '\n';
+        }
+    }
+
+    const std::string kDispatch = "switch (menuSystem.pageStack.current())";
+    std::size_t found = 0;
+    for (std::size_t at = source.find(kDispatch); at != std::string::npos;
+         at = source.find(kDispatch, at + 1U)) {
+        ++found;
+        // ★ 截的是 switch **块本身**（花括号配对），不是"到下一个 switch 为止"。
+        //   后者会把隔壁函数的 default 也扫进来——第一次就是这么假红的。
+        const std::size_t open = source.find('{', at);
+        if (open == std::string::npos) {
+            check(false, "a PageId switch without a body?", __LINE__);
+            continue;
+        }
+        std::size_t depth = 0;
+        std::size_t end = open;
+        for (std::size_t i = open; i < source.size(); ++i) {
+            if (source[i] == '{') {
+                ++depth;
+            } else if (source[i] == '}') {
+                --depth;
+                if (depth == 0U) {
+                    end = i;
+                    break;
+                }
+            }
+        }
+        const std::string body = source.substr(open, end - open + 1U);
+        check(body.find("default:") == std::string::npos,
+              "a switch over PageId must not carry a default: — it disables -Wswitch",
+              __LINE__);
+    }
+    // 至少要找到两处（handleBackKey 与 scrollMenuList），否则这条守是空转的
+    check(found >= 2U, "expected at least two PageId dispatch switches", __LINE__);
+}
+
 } // namespace
 
 int main() {
@@ -1144,6 +1517,11 @@ int main() {
     testFloatSliders();
     testOptionsHeaderRows();
     testDualColumnLists();
+    testNoWidgetEscapesTheCanvas();
+    testCreateWorldForm();
+    testSoundSettingsPage();
+    testRuntimeLabelsAreActuallyComputed();
+    testPageDispatchHasNoDefault();
     if (failures != 0) {
         std::printf("options_layout_test: %d checks failed\n", failures);
         return 1;

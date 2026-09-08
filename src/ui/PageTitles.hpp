@@ -43,6 +43,10 @@ struct PageTitle final {
         return {"options.accessibility.title", "Accessibility Settings"};
     case PageId::Language:
         return {"options.language.title", "Language"};
+    // UI-6e：§7.4。★ 标题键与按钮键又是一对——`options.sounds.title`（"音乐与声音"）
+    //   对 `options.sounds`（"音乐与声音…"）。与 keybinds / accessibility 同一个陷阱。
+    case PageId::SoundSettings:
+        return {"options.sounds.title", "Music & Sounds"};
     // 本项目自有页，26.1 没有——键走 lang/rebedrock/。
     case PageId::AdvancedGraphics:
         return {"options.rebedrock.advancedGraphics.title", "Advanced Graphics"};
@@ -58,6 +62,7 @@ struct PageTitle final {
     case PageId::ConfirmDelete:
     case PageId::Loading:
     case PageId::Game:
+    case PageId::Count:
         break;
     }
     return {};

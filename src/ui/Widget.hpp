@@ -43,14 +43,23 @@ enum class WidgetKind : std::uint8_t {
 inline constexpr float kIconButtonSize = 20.0F;
 inline constexpr float kIconButtonIconSize = 15.0F;
 
-// 图标在钮内的矩形。**整数居中**：(20 - 15) / 2 = 2，spec §1.2 的规矩一路管到这里。
-// 注意 5 是奇数，所以前缘 2、后缘 3——整数居中就是这样，不是对称的。
+// 图标在钮内的矩形。
+//
+// ★ **整数除法的顺序也要照抄 vanilla，不能代数化简。**
+//   26.1 `SpriteIconButton.CenteredIcon.extractContents`（:132-133）：
+//       x = getX() + getWidth()/2  - spriteWidth/2      // 20/2 - 15/2 = 10 - 7 = 3
+//   本作从前写的是 `(20 - 15) / 2` = 5/2 = **2** —— 两个式子在实数上相等，
+//   在整数除法下差 1。症状就是现场报告的那句"图标偏左上角"：前缘 2、后缘 3，
+//   而 vanilla 是前缘 3、后缘 2。
+//   旧注释还振振有词地写着"整数居中就是这样，不是对称的"——**方向反了**，
+//   vanilla 那条式子偏的是右下，不是左上。
 //
 // 它是一个纯函数而不是绘制侧的三行算术，因为"图标没居中"改不动任何返回值——
 // 那正是 UI-4 第一轮 sabotage 没抓住的形状（REGULAR §5：没抓住就补测试，不换 sabotage）。
+// 而这一次说明：抽成纯函数**还不够**，断言必须钉住那个具体的数，不能只说"它居中"。
 [[nodiscard]] inline UiRect iconButtonIconRect(const UiRect& button, float scale) {
     const int inset =
-        (static_cast<int>(kIconButtonSize) - static_cast<int>(kIconButtonIconSize)) / 2;
+        static_cast<int>(kIconButtonSize) / 2 - static_cast<int>(kIconButtonIconSize) / 2;
     return {
         button.x + static_cast<float>(inset) * scale,
         button.y + static_cast<float>(inset) * scale,

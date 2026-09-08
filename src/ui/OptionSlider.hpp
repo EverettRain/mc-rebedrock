@@ -70,13 +70,64 @@ struct FloatSliderDesc final {
     bool offAtZero = true;
 };
 
-inline constexpr std::array<FloatSliderDesc, 1> kFloatSliders{{
-    // 主音量。26.1 `SoundOptionsScreen` 用 addBig 把 MASTER 单独放一行。
-    // ★ 它在本作**已经有一个硬编码的滑块**（MenuCallbacks::masterVolume）；
-    //   这一行是给"音乐与声音"那一屏用的，接线时那个硬编码的会被它顶掉。
+// 十类音量。顺序照 26.1 `SoundSource` 枚举，也就是本作 `audio::SoundCategory`。
+//
+// ★ 主音量走**字段**（`GameOptions::masterVolume` 是权威值），其余九类走**数组格**
+//   （`soundCategoryVolumes[类别]`）。两条取值路径的分歧只在 floatSliderValue /
+//   setFloatSliderValue 两处——表里看不出来，所以那两条路径各有断言。
+//
+// ★ 26.1 有**十一**类（多一个 `SoundSource.UI`）。本作没有 UI 那一档（偏差 D6，
+//   按钮音走 Master），所以这张表比 vanilla 少一行——差额是可数的，不是漏了。
+inline constexpr std::array<FloatSliderDesc, 10> kFloatSliders{{
+    // 26.1 `SoundOptionsScreen` 用 addBig 把 MASTER 单独放一行。
     {WidgetId::MasterVolume, "soundCategory.master", "Master Volume",
      &config::GameOptions::masterVolume, audio::SoundCategory::Count, /*offAtZero=*/true},
+    {WidgetId::MusicVolume, "soundCategory.music", "Music",
+     nullptr, audio::SoundCategory::Music, true},
+    {WidgetId::RecordVolume, "soundCategory.record", "Jukebox/Note Blocks",
+     nullptr, audio::SoundCategory::Record, true},
+    {WidgetId::WeatherVolume, "soundCategory.weather", "Weather",
+     nullptr, audio::SoundCategory::Weather, true},
+    {WidgetId::BlockVolume, "soundCategory.block", "Blocks",
+     nullptr, audio::SoundCategory::Block, true},
+    {WidgetId::HostileVolume, "soundCategory.hostile", "Hostile Creatures",
+     nullptr, audio::SoundCategory::Hostile, true},
+    {WidgetId::NeutralVolume, "soundCategory.neutral", "Friendly Creatures",
+     nullptr, audio::SoundCategory::Neutral, true},
+    {WidgetId::PlayerVolume, "soundCategory.player", "Players",
+     nullptr, audio::SoundCategory::Player, true},
+    {WidgetId::AmbientVolume, "soundCategory.ambient", "Ambient/Environment",
+     nullptr, audio::SoundCategory::Ambient, true},
+    {WidgetId::VoiceVolume, "soundCategory.voice", "Voice/Speech",
+     nullptr, audio::SoundCategory::Voice, true},
 }};
+
+// ★ 每一类音量都必须恰好出现一次。漏一类 = 那一档在界面上根本调不了（而它仍然
+//   在存档里、仍然在乘），多一类 = 两个滑块改同一个值。
+[[nodiscard]] constexpr bool floatSlidersCoverEverySoundCategory() {
+    for (std::size_t index = 0; index < audio::kSoundCategoryCount; ++index) {
+        const auto category = static_cast<audio::SoundCategory>(index);
+        std::size_t seen = 0;
+        for (const FloatSliderDesc& desc : kFloatSliders) {
+            // 主音量那一项走字段而不是数组格，它代表的正是 Master。
+            const bool isMaster = desc.categoryVolume == audio::SoundCategory::Count &&
+                                  desc.id == WidgetId::MasterVolume;
+            if (desc.categoryVolume == category ||
+                (isMaster && category == audio::SoundCategory::Master)) {
+                ++seen;
+            }
+        }
+        if (seen != 1U) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static_assert(floatSlidersCoverEverySoundCategory(),
+              "每一类音量都要恰好一个滑块——漏一类那一档就再也调不了了");
+static_assert(kFloatSliders.size() == audio::kSoundCategoryCount,
+              "十类音量，十个滑块");
 
 [[nodiscard]] constexpr const FloatSliderDesc* findFloatSlider(WidgetId id) {
     for (const FloatSliderDesc& desc : kFloatSliders) {
