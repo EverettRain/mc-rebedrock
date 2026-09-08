@@ -1435,6 +1435,65 @@ void testRuntimeLabelsAreActuallyComputed() {
     CHECK(renderer.find("cb.floatSliderFor") != std::string::npos);
 }
 
+// --- 24. 按 PageId 分派的 switch 一律不带 default（源码守）--------------------
+//
+// ★ 现场报告："音乐与声音、按键控制两个页面无法 Esc 返回"。根因是 `handleBackKey`
+//   的 switch 末尾有 `default: break;` —— 掉进去的页面静默不响应 Esc。而实际漏的
+//   **比报的多**：创建世界、编辑世界也在里面；同一个函数体的隔壁 `scrollMenuList`
+//   还漏了 SoundSettings 的滚轮（那一屏 9 行 > 6 行，非滚不可）。
+//
+//   一个 `default:` 把 -Wswitch 关掉了，于是"加一页忘了处理"从**编译期点名**降级成
+//   **实机才发现**，而症状是"按键没反应"——没有任何断言会红。README 护栏 19 写的
+//   就是这条，这里把它变成可执行的。
+void testPageDispatchHasNoDefault() {
+    std::ifstream file{MC_REBEDROCK_RENDERER_SRC};
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string source;
+    {
+        std::istringstream lines{buffer.str()};
+        std::string line;
+        while (std::getline(lines, line)) {
+            const auto comment = line.find("//");
+            source += comment == std::string::npos ? line : line.substr(0, comment);
+            source += '\n';
+        }
+    }
+
+    const std::string kDispatch = "switch (menuSystem.pageStack.current())";
+    std::size_t found = 0;
+    for (std::size_t at = source.find(kDispatch); at != std::string::npos;
+         at = source.find(kDispatch, at + 1U)) {
+        ++found;
+        // ★ 截的是 switch **块本身**（花括号配对），不是"到下一个 switch 为止"。
+        //   后者会把隔壁函数的 default 也扫进来——第一次就是这么假红的。
+        const std::size_t open = source.find('{', at);
+        if (open == std::string::npos) {
+            check(false, "a PageId switch without a body?", __LINE__);
+            continue;
+        }
+        std::size_t depth = 0;
+        std::size_t end = open;
+        for (std::size_t i = open; i < source.size(); ++i) {
+            if (source[i] == '{') {
+                ++depth;
+            } else if (source[i] == '}') {
+                --depth;
+                if (depth == 0U) {
+                    end = i;
+                    break;
+                }
+            }
+        }
+        const std::string body = source.substr(open, end - open + 1U);
+        check(body.find("default:") == std::string::npos,
+              "a switch over PageId must not carry a default: — it disables -Wswitch",
+              __LINE__);
+    }
+    // 至少要找到两处（handleBackKey 与 scrollMenuList），否则这条守是空转的
+    check(found >= 2U, "expected at least two PageId dispatch switches", __LINE__);
+}
+
 } // namespace
 
 int main() {
@@ -1462,6 +1521,7 @@ int main() {
     testCreateWorldForm();
     testSoundSettingsPage();
     testRuntimeLabelsAreActuallyComputed();
+    testPageDispatchHasNoDefault();
     if (failures != 0) {
         std::printf("options_layout_test: %d checks failed\n", failures);
         return 1;
