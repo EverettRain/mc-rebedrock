@@ -19,9 +19,25 @@ layout(push_constant) uniform OutlinePush {
 } outline;
 
 // RN-13-2. JE ProjectionType.PERSPECTIVE's layering transform at bias 1:
+// RN-39: the fraction is 1/1024, not vanilla's 1/4096.
+//
+// The intent is vanilla's -- pull the line toward the eye by a fixed fraction of
+// its camera distance -- but the number is not transferable. A line is
+// rasterised at pixel centres that a triangle covering the same edge samples
+// half a pixel away, and on a grazing face half a pixel of screen space is a
+// depth step far larger than 1/4096 of the distance. The line then loses those
+// pixels to the very face it sits on: measured off the export, the outline of a
+// stone cube drew 824 of its 1194 line pixels at 1/4096 -- the edge facing the
+// camera solid, the grazing ones dashed. That is the flicker.
+//
+// 1/1024 saturates it (1187 pixels; 1/512 and 1/256 add three and six more,
+// which is antialiasing noise). Four times vanilla's offset is 0.004 blocks at
+// four blocks out, far under a pixel at any reasonable resolution, so the line
+// does not visibly float off the surface.
+//
 // `modelViewStack.scale(1 - 1/4096)`, which RenderTypes.LINES applies through
 // LayeringTransform.VIEW_OFFSET_Z_LAYERING. See BlockOutlineGeometry.hpp.
-const float kViewShrink = 0.999755859375;
+const float kViewShrink = 0.9990234375;
 
 void main() {
     // RN-16: one draw is one LINE, not one box. The wireframe used to be twelve

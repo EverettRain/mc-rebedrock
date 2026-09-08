@@ -48,7 +48,7 @@ SHADOW_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --verify) VERIFY=1; shift ;;
-        --sun-shadows|--shadow-entities) SHADOW_ARGS+=("$1"); shift ;;
+        --sun-shadows|--shadow-entities|--outline) SHADOW_ARGS+=("$1"); shift ;;
         --sun-tick) SHADOW_ARGS+=("$1" "$2"); shift 2 ;;
         --rain|--thunder) SHADOW_ARGS+=("$1" "$2"); shift 2 ;;
         --scene)  SCENE="$2"; shift 2 ;;

@@ -44,6 +44,9 @@ simple versioned history while it is in beta.
 
 
 ### Fixed
+- The outline around the block you are aiming at no longer breaks up into dashes. The edges facing
+  away from you were losing most of their pixels to the very face they lie on, so the box read as
+  three solid edges and a handful of dotted ones that flickered as you moved.
 - Glass casts a shadow again -- just the frame of it. Panes of glass left no trace at all on the
   ground under them, because the whole translucent bucket is skipped when the sun's shadows are
   drawn. That is right for water, which should not stamp a dark rectangle on the seabed, but glass

@@ -87,6 +87,14 @@ struct TestSceneOptions final {
     // 任何会改变画面的世界状态都应当是命令行上的一个参数，这两条是补上的第一批。
     float rainGradient = 0.0F;
     float thunderGradient = 0.0F;
+    // RN-39：把选择框画进出图。
+    //
+    // 生产路径上它的条件里有 `!paused`，而导出为了冻住世界把 paused 置真——于是
+    // 选择框在导出里**永远画不出来**，「瞄准方块时边框闪烁」这类缺陷只能靠肉眼报。
+    // 那是 RN-33 那条链子的同一个混淆点：`paused` 同时表达「世界冻住」与「有界面
+    // 打开」，而导出只要前者。这里不去拆那个语义（影响面在 UI 线），改成让导出
+    // 显式说明「这一张要画选择框」。
+    bool outline = false;
     // Square, and fixed rather than taken from the window: an export whose size
     // depends on the monitor it ran on cannot be compared with one from another
     // machine, and RN-15 is a comparison tool before it is anything else.

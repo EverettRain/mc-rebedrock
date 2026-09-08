@@ -137,6 +137,8 @@ class WorldRenderer final {
     bool& dropWholeStack;
     bool& chatOpen;
     std::optional<world::VoxelRaycastHit>& targetedBlock;
+    // RN-39：离屏导出的 `--outline`。生产运行里恒为 false
+    bool& previewOutline;
     double& renderTimeSeconds;
     float& renderInterpolationAlpha;
     GLFWwindow*& window;
@@ -222,6 +224,7 @@ class WorldRenderer final {
         inventoryOpen(b.inventoryOpen), spawnPositionInitialized(b.spawnPositionInitialized),
         worldReady(b.worldReady), paused(b.paused), dropRequested(b.dropRequested),
         dropWholeStack(b.dropWholeStack), chatOpen(b.chatOpen), targetedBlock(b.targetedBlock),
+        previewOutline(b.previewOutline),
         renderTimeSeconds(b.renderTimeSeconds),
         renderInterpolationAlpha(b.renderInterpolationAlpha), window(b.window),
         instance(b.instance), surface(b.surface), device(b.device), allocator(b.allocator),
@@ -2679,7 +2682,12 @@ class WorldRenderer final {
             targetedBlock.has_value() &&
             clientCache.block(targetedBlock->block.x, targetedBlock->block.y,
                               targetedBlock->block.z) == world::Block::Fire;
-        if (!inventoryOpen && !paused && !chatOpen && targetedBlock.has_value() && !targetIsFire) {
+        // RN-39：`previewOutline` 只有离屏导出会打开（`--outline`）。导出为了冻住世界
+        // 把 paused 置真，而这一行把 paused 读成「有界面打开」——同一个混淆点已经让
+        // RN-33 的每一张出图都糊了一遍。这里不拆那个语义（影响面在 UI 线），
+        // 让导出显式说明它要画这一层。
+        if (!inventoryOpen && (!paused || previewOutline) && !chatOpen &&
+            targetedBlock.has_value() && !targetIsFire) {
             // 选择框描的是方块的真实形状，火把、植物、箱子、台阶这类非满方块不再显示成整格框
             // 形状取自该格的状态（台阶上下半、作物生长阶段等）
             // RN-10f：描边取自形状的盒集，而不是整个形状的包围盒——此前楼梯、墙、
@@ -2916,6 +2924,7 @@ class WorldRenderer final {
   bool& dropWholeStack;
   bool& chatOpen;
   std::optional<world::VoxelRaycastHit>& targetedBlock;
+  bool& previewOutline;
   double& renderTimeSeconds;
   float& renderInterpolationAlpha;
   GLFWwindow*& window;

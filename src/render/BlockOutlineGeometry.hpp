@@ -48,11 +48,25 @@
 
 namespace mc::render {
 
-// JE ProjectionType.PERSPECTIVE's layering transform at bias 1: scale the
-// camera-relative position by 1 - 1/4096. Applied in VIEW space, so the offset
-// is a fixed fraction of the distance to the eye and does not scale with the
-// box — which is the whole difference from the 1.02 it replaced.
-inline constexpr float kOutlineViewShrink = 1.0F - 1.0F / 4096.0F;
+// JE ProjectionType.PERSPECTIVE's layering transform at bias 1 scales the
+// camera-relative position by 1 - 1/4096. Applied in VIEW space, so the offset is
+// a fixed fraction of the distance to the eye and does not scale with the box —
+// which is the whole difference from the 1.02 it replaced.
+//
+// RN-39: the fraction here is 1/1024, four times vanilla's. The intent transfers;
+// the number does not. A line is rasterised at pixel centres that a triangle
+// covering the same edge samples half a pixel away, and on a grazing face half a
+// pixel of screen space is a depth step far larger than 1/4096 of the distance —
+// so the line loses those pixels to the very face it lies on. Measured off the
+// export (`--outline`), a stone cube's outline drew **824 of its 1194 line
+// pixels** at 1/4096: the edge facing the camera solid, the grazing ones dashed.
+// That is the flicker a player sees when they aim at a block.
+//
+// 1/1024 saturates it (1187; 1/512 and 1/256 add three and six more, which is
+// antialiasing noise) and is still 0.004 blocks at four blocks out — under a
+// pixel, so the line does not visibly float, and a block in front still occludes
+// it (verified with a brick beside the target).
+inline constexpr float kOutlineViewShrink = 1.0F - 1.0F / 1024.0F;
 
 // One line, two endpoints: the shader has no vertex buffer and picks its
 // endpoint off `gl_VertexIndex`, so a draw is exactly this many vertices.

@@ -358,7 +358,8 @@ static std::string previewBaseDirectoryName(const TestSceneOptions& options) {
 std::string previewDirectoryName(const TestSceneOptions& options) {
     const auto base = previewBaseDirectoryName(options);
     const bool weather = options.rainGradient > 0.0F || options.thunderGradient > 0.0F;
-    if (!options.sunShadows && !options.shadowEntities && !options.sunTick && !weather) {
+    if (!options.sunShadows && !options.shadowEntities && !options.sunTick && !weather &&
+        !options.outline) {
         return base;
     }
     // 天气进目录名，和其余每一项一样：RN-15 的确定性规则要求输出路径是命令行的函数，
@@ -373,7 +374,8 @@ std::string previewDirectoryName(const TestSceneOptions& options) {
     }();
     const auto name = base + "__sun-" + (options.sunShadows ? "on" : "off") +
         "-" + std::to_string(options.sunTick.value_or(6000U)) +
-        (options.shadowEntities ? "-entities" : "") + weatherSuffix;
+        (options.shadowEntities ? "-entities" : "") + weatherSuffix +
+        (options.outline ? "-outline" : "");
     return name.size() <= kMaxPreviewDirectoryName ? name :
         name.substr(0, kMaxPreviewDirectoryName - 10U) + "__" + shortHash(name);
 }
@@ -465,6 +467,9 @@ std::optional<TestSceneOptions> parseTestSceneArguments(
             if (!result.has_value()) result = TestSceneOptions{};
             if (arguments[index] == "--sun-shadows") result->sunShadows = true;
             else result->shadowEntities = true;
+        } else if (arguments[index] == "--outline") {
+            if (!result.has_value()) result = TestSceneOptions{};
+            result->outline = true;
         } else if (arguments[index] == "--rain" || arguments[index] == "--thunder") {
             const bool thunder = arguments[index] == "--thunder";
             const std::string flag{thunder ? "--thunder" : "--rain"};

@@ -527,6 +527,22 @@ int main() {
         }
         assert(std::fabs(constantValue(source, "kViewShrink") - kOutlineViewShrink) < 1.0e-9F &&
                "the depth nudge must be JE's 1 - 1/4096, the same value the header states");
+
+        // RN-39：偏移的**量**也是被钉住的，不只是「两处一致」。
+        //
+        // vanilla 的 1/4096 在这条管线上不够：线的光栅化像素中心与覆盖同一条棱的
+        // 三角形采样点差半个像素，而掠射面上半个像素的深度步远大于距离的 1/4096，
+        // 于是线被它自己所在的那个面吃掉。实测（导出 `--outline`，石头方块）：
+        // 1/4096 只画出 1194 个线像素中的 824 个，正对相机的棱是实的、掠射的成了虚线——
+        // 那就是玩家瞄准方块时看到的闪烁。1/1024 处饱和（1187）。
+        //
+        // 下限写 1/2048 而不是 1/1024：留一档余量给将来调，但把「改回 vanilla 那个
+        // 数字」挡在门外。
+        assert(kOutlineViewShrink <= 1.0F - 1.0F / 2048.0F &&
+               "the outline's depth nudge must be at least 1/2048 of the camera distance; "
+               "vanilla's 1/4096 leaves the grazing edges dashed on this pipeline");
+        assert(kOutlineViewShrink > 1.0F - 1.0F / 128.0F &&
+               "and no more than 1/128, or the line starts floating off the surface");
         // It has to be applied in VIEW space: a world-space offset would push the
         // line into a neighbouring block and lose the shared edge behind its face.
         assert(body.find("camera.view * vec4(worldPosition, 1.0)") != std::string::npos);

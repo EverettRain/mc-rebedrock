@@ -89,6 +89,25 @@ int main() {
                mc::render::previewDirectoryName(rainy));
         // 晴天的名字不带天气后缀，既有基线因此不作废
         assert(mc::render::previewDirectoryName(dry) == "rebedrock_stone");
+
+        // RN-39：选择框也是一个参数。生产路径上它的条件里有 `!paused`，而导出为了
+        // 冻住世界把 paused 置真——于是选择框在导出里画不出来，「瞄准方块时边框闪烁」
+        // 这类缺陷只能靠肉眼报。它同样进目录名。
+        const auto outlined = accept({"--test-scene"sv, "stone"sv, "--export-preview"sv,
+                                      "--outline"sv});
+        assert(outlined.outline);
+        assert(!dry.outline);
+        assert(mc::render::previewDirectoryName(outlined) !=
+               mc::render::previewDirectoryName(dry));
+        // ★ 上面那条太弱：`dry` 走的是 early return，名字本来就与任何带后缀的不同。
+        // 要真的钉住「outline 进了名字」，两边必须**只差这一处**——否则把后缀整个删掉
+        // 也照样通过（实测：那次 sabotage 全绿）。
+        const auto sunOnly = accept({"--test-scene"sv, "stone"sv, "--export-preview"sv,
+                                     "--sun-shadows"sv});
+        const auto sunOutlined = accept({"--test-scene"sv, "stone"sv, "--export-preview"sv,
+                                         "--sun-shadows"sv, "--outline"sv});
+        assert(mc::render::previewDirectoryName(sunOnly) !=
+               mc::render::previewDirectoryName(sunOutlined));
     }
 
     using mc::world::Block;

@@ -1238,6 +1238,21 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
             static_cast<void>(clientMirror_.pump(*channel.client, *this));
         }
+        // RN-39：把选择框瞄在场景那一格上。法线取 +Y（面朝上那一面），与射线打到顶面
+        // 等价——描边只用 `block`，但留一个有意义的值，免得将来有人拿它去算别的
+        previewOutline = testScene->outline;
+        if (previewOutline) {
+            // 结构场景瞄**顶层的中心格**，不是原点那一格——原点是图案的一角，
+            // 通常是地面，框会画在画面边上甚至被挡住。单方块场景的 sceneSize 是零，
+            // 这个式子自动退化成那一格本身
+            const glm::ivec3 extent{std::max(testScene->sceneSize.x - 1, 0),
+                                    std::max(testScene->sceneSize.y - 1, 0),
+                                    std::max(testScene->sceneSize.z - 1, 0)};
+            const glm::ivec3 target =
+                kPreviewBlockPosition + glm::ivec3{extent.x / 2, extent.y, extent.z / 2};
+            targetedBlock = world::VoxelRaycastHit{target, target + glm::ivec3{0, 1, 0},
+                                                   glm::ivec3{0, 1, 0}, 0.0F};
+        }
         baseFieldOfViewDegrees = kPreviewFieldOfViewDegrees;
         camera.setFieldOfViewDegrees(kPreviewFieldOfViewDegrees);
         // The one thing that would otherwise still vary frame to frame: the
@@ -8414,6 +8429,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     render::BlockAnimateTicker blockAnimateTicker;
     bool glfwInitialized = false;
     bool framebufferResized = false;
+    // RN-39：离屏导出的 `--outline`，生产运行里恒为 false
+    bool previewOutline = false;
     bool windowPlacementDirty = false;
     std::chrono::steady_clock::time_point windowPlacementChangedAt{};
     bool validationEnabled = false;
@@ -8807,6 +8824,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .dropWholeStack = dropWholeStack,
             .chatOpen = chatOpen,
             .targetedBlock = targetedBlock,
+            .previewOutline = previewOutline,
             .renderTimeSeconds = renderTimeSeconds,
             .renderInterpolationAlpha = renderInterpolationAlpha,
             .window = window,
