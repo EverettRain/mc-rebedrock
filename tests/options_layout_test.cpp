@@ -270,23 +270,29 @@ void testControlsHubLayout() {
     mc::ui::Page page;
     mc::ui::buildPageInto(page, mc::ui::PageId::Controls, ctx, cb);
     mc::ui::layoutPageInto(page, mc::ui::PageId::Controls, layout, 1280.0F);
-    // 一个跳转 + 七个设置项 + Done。★ 这个 9 是数出来的，不是另一张表说的。
+    // 两个跳转 + 七个设置项 + Done。★ 这个 10 是数出来的，不是另一张表说的。
     const std::size_t count = mc::ui::countPageButtons(page);
-    CHECK(count == 9U);
+    CHECK(count == 10U);
     CHECK(page.size() == count);   // 枢纽页没有列表控件
     const auto rect = [&](std::size_t index) { return page[index].rect; };
-    // ★ Key Binds… 独占一行：下一个控件在**下一行**，不是它右边。
-    CHECK(rect(1).y > rect(0).y);
-    CHECK(rect(1).x == rect(0).x);
-    // 第 1、2 个设置项同一行、两列
-    CHECK(rect(2).y == rect(1).y);
-    CHECK(rect(2).x > rect(1).x);
-    // 第 3 个换行
-    CHECK(rect(3).y > rect(1).y);
-    CHECK(rect(3).x == rect(1).x);
+    // ★ 第一行是**两个**跳转（`addSmall(mouse_settings, keybinds)`）：同一行、两列。
+    //   Mouse Settings 那一屏本作没有，所以它是置灰按钮——少了它这一格就空着。
+    CHECK(rect(1).y == rect(0).y);
+    CHECK(rect(1).x > rect(0).x);
+    CHECK(!page[0].enabled);
+    CHECK(page[1].enabled);
+    // ★ 第二组从**新行**起，即使第一组的行还满着也一样（addSmall 每次调用换行）
+    CHECK(rect(2).y > rect(1).y);
+    CHECK(rect(2).x == rect(0).x);
+    // 组内两两配对
+    CHECK(rect(3).y == rect(2).y);
+    CHECK(rect(3).x > rect(2).x);
+    CHECK(rect(4).y > rect(2).y);
+    // 七项落单的那一个独占最后一行的左列
+    CHECK(rect(8).x == rect(0).x);
     // Done 在页脚：比所有列表项都低，且宽 200 居中
     const auto done = rect(count - 1U);
-    CHECK(done.y > rect(7).y);
+    CHECK(done.y > rect(8).y);
     CHECK(done.width == 200.0F * 3.0F);
 }
 

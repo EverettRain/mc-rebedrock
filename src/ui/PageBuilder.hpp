@@ -396,6 +396,11 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
         //   在本作不存在，而"页面为空就完全不建"。少一个跳转按钮是登记过的偏差，
         //   不是把玩家送进一张空页。
         case PageId::Controls:
+            // ★ 26.1 的第一行是**两个**跳转：`addSmall(mouse_settings, keybinds)`。
+            //   鼠标设置那一屏本作没有，所以它是一个**置灰**按钮——版面与 vanilla 对上，
+            //   而"这个功能还没有"看得出来。点它不会把人送进一张空页。
+            //   （主菜单的 Multiplayer / Realms 是同一种做法。）
+            addButton(page, ctx, WidgetId::MouseSettings, nullptr, /*enabled=*/false);
             addButton(page, ctx, WidgetId::OpenKeyBinds, cb.openKeyBinds);
             addOptionButton(page, ctx, WidgetId::ToggleCrouch, cb);
             addOptionButton(page, ctx, WidgetId::ToggleSprint, cb);
