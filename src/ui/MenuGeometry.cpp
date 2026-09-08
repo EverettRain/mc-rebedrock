@@ -1,5 +1,8 @@
 #include "ui/MenuGeometry.hpp"
 
+#include "ui/ListRow.hpp"
+#include "ui/TextMetrics.hpp"
+
 #include "ui/ScrollList.hpp"
 #include "ui/TitleScreenLayout.hpp"
 
@@ -51,7 +54,10 @@ ScrollList languageScrollList(const HudLayout& layout, float framebufferWidth) {
 }
 
 ScrollList controlsScrollList(const HudLayout& layout, float framebufferWidth) {
-    return scrollListOf(controlsListBox(layout, framebufferWidth), layout, kKeyBindsRowWidth, 12);
+    // UI-6b：行高从自造的 12 改成 26.1 的 **20**（`KeyBindsList.ITEM_HEIGHT`）。
+    // 12 塞不下一个 20 高的改键按钮——而 vanilla 那一行正是"名称 + 两个 20 高的按钮"。
+    return scrollListOf(controlsListBox(layout, framebufferWidth), layout, kKeyBindsRowWidth,
+                        kKeyBindRowHeight);
 }
 
 ScrollList worldScrollList(const HudLayout& layout, float framebufferWidth) {
@@ -201,7 +207,7 @@ std::size_t languageScrollIndexFromCursor(const HudLayout& layout, float framebu
 // 框体位于标题与底部按钮带之间，后者是视角摇晃、自动跳跃、重置、完成
 // 几何照搬语言列表，区别是这里要给两行底部按钮留位置，而不是给一行警告文字
 UiRect controlsListBox(const HudLayout& layout, float framebufferWidth) {
-    constexpr int kRowStep = 12;
+    constexpr int kRowStep = kKeyBindRowHeight;
     constexpr int kTopBound = 40;
     // 列表在底部按钮带上方结束
     // 带的顶行由四个底部按钮中的第一个推出来，两列即两行，与 languageWarningY 读取带位置的方式相同
@@ -217,17 +223,33 @@ UiRect controlsListBox(const HudLayout& layout, float framebufferWidth) {
 
 UiRect controlsRow(std::size_t visibleIndex, const HudLayout& layout, float framebufferWidth) {
     // UI-4：行宽从自造的 300 改成 26.1 的 **340**（`KeyBindsList:59`）。
+    // UI-6b：行高不再被压成 11——它就是列表的行高 20，因为一行里要装两个 20 高的按钮。
+    return fbRect(layout, scrollListRow(controlsScrollList(layout, framebufferWidth),
+                                        visibleIndex));
+}
+
+// UI-6b：按键绑定行里的两个格子。几何在 [[ui/ListRow.hpp]]，这里只是换算到帧缓冲像素。
+//
+// 动作名是一段 Label，改键按钮是一个 Button——**一行两个控件**，而不是从前那样
+// 整行一个 ListRow。焦点遍历因此会在名称与按钮之间走，与 26.1 的
+// `KeyBindsList.KeyEntry.children()` 同义。
+UiRect controlsNameCell(std::size_t visibleIndex, const HudLayout& layout,
+                        float framebufferWidth) {
     const auto list = controlsScrollList(layout, framebufferWidth);
-    auto row = fbRect(layout, scrollListRow(list, visibleIndex));
-    row.height = toFb(layout, 11);
-    return row;
+    return fbRect(layout, keyBindNameCell(scrollListRow(list, visibleIndex), kFontLineHeight));
+}
+
+UiRect controlsChangeCell(std::size_t visibleIndex, const HudLayout& layout,
+                          float framebufferWidth) {
+    const auto list = controlsScrollList(layout, framebufferWidth);
+    return fbRect(layout, keyBindChangeCell(list, scrollListRow(list, visibleIndex)));
 }
 
 std::size_t controlsVisibleRowCount(float framebufferWidth, float framebufferHeight, int guiScale,
                     bool forceUnicode) {
     const HudLayout layout{framebufferWidth, framebufferHeight, guiScale, forceUnicode};
     const float scale = layout.scale();
-    constexpr float kRowStep = 12.0F;
+    constexpr float kRowStep = static_cast<float>(kKeyBindRowHeight);
     const float rows =
         std::max(controlsListBox(layout, framebufferWidth).height / (kRowStep * scale), 1.0F);
     return static_cast<std::size_t>(rows);

@@ -37,6 +37,13 @@ simple versioned history while it is in beta.
   enchanting table and an anvil. Stairs were already right. Placing or breaking
   one of these now relights the space around it correctly too, not only worlds
   loaded fresh.
+- Each row of the key-bind list is finally shaped like Minecraft's: the action's name on the left
+  and a button carrying its current key on the right, and it is the button you click to rebind.
+  Until now the whole row was one large clickable area with "Action: Key" written across it.
+  Rows are back to their vanilla height of 20 as well.
+- The scrollbar on the language and key-bind lists sat six pixels too far left. Minecraft puts it
+  one scrollbar width plus two pixels to the right of the list's content edge; that width was
+  being left out of the sum.
 - The red wash on the death screen is no longer one flat shade: it is Minecraft's gradient, lighter
   at the top and heavier at the bottom, instead of the single tone that split the difference.
 - Text in almost every language other than English was broken: accented letters (é ü ñ č ř ś…),

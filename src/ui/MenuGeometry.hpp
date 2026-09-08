@@ -58,6 +58,12 @@ namespace mc::ui {
 // 24 个可重绑的动作会冲破 20 个按钮的菜单上限并抛出，所以它必须是滚动的
 // 几何照搬语言列表：标题与底部按钮带之间一个按内容定尺寸的框，每个可见动作一行，外加一条滚动条
 [[nodiscard]] UiRect controlsListBox(const HudLayout& layout, float framebufferWidth);
+// UI-6b：按键绑定行里的两个格子（动作名 / 改键按钮）。一行两个控件，
+// 几何在 ui/ListRow.hpp，这两个只是换算到帧缓冲像素。
+[[nodiscard]] UiRect controlsNameCell(std::size_t visibleIndex, const HudLayout& layout,
+                                      float framebufferWidth);
+[[nodiscard]] UiRect controlsChangeCell(std::size_t visibleIndex, const HudLayout& layout,
+                                        float framebufferWidth);
 [[nodiscard]] UiRect controlsRow(std::size_t visibleIndex, const HudLayout& layout,
                                  float framebufferWidth);
 [[nodiscard]] std::size_t controlsVisibleRowCount(float framebufferWidth, float framebufferHeight,

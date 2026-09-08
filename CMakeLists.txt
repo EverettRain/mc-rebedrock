@@ -1866,6 +1866,19 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_scroll_list_test PRIVATE glm::glm)
     add_test(NAME scroll_list COMMAND mc_rebedrock_scroll_list_test)
 
+    # UI-6a/6b：三段式版面（§2.8）、设置项双列列表（§5 的 L2）、以及"一行里放得下
+    # 多个控件"（26.1 的 ContainerObjectSelectionList）。这三样此前一个都不存在——
+    # 本作每一页都是"一条按钮带"，每行一个按钮。
+    add_executable(mc_rebedrock_options_layout_test
+        tests/options_layout_test.cpp
+        src/ui/MenuGeometry.cpp
+        src/ui/TitleScreenLayout.cpp
+        src/ui/HudLayout.cpp
+    )
+    target_include_directories(mc_rebedrock_options_layout_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_options_layout_test PRIVATE glm::glm)
+    add_test(NAME options_layout COMMAND mc_rebedrock_options_layout_test)
+
     # UI-5：背景档位表与渐变色标（spec §3）。三分支（容器类的灰渐变不模糊）、
     # 死亡屏第二色标 0xA0803030、模糊整数档 0..10 默认 5——三条都退回去也不会崩。
     add_executable(mc_rebedrock_screen_background_test

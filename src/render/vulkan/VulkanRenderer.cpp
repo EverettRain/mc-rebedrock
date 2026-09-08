@@ -77,6 +77,7 @@
 #include "ui/MenuInteraction.hpp"
 #include "ui/MenuSystem.hpp"
 #include "ui/OptionCycle.hpp"
+#include "ui/ListRow.hpp"
 #include "ui/PageBuilder.hpp"
 #include "ui/PageStack.hpp"
 #include "ui/SubtitleFeed.hpp"
@@ -2440,6 +2441,42 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         saveCurrentWorldLocked();
     }
 
+    // UI-6b：改键按钮上写什么。
+    //
+    // **只有键名**，不是从前的 `"动作: 按键"`——动作名是它旁边那个 Label
+    // （26.1 的 `KeyBindsList.KeyEntry`：名称、改键按钮、重置按钮是三样东西）。
+    // 装饰走 `ui::decorateKeyBindLabel`，与无头测试用的是同一个函数：
+    //   正在等待按键 → `> 键名 <`
+    //   与别的动作撞了 → `[ 键名 ]`
+    // 26.1 那两种状态还带颜色（都是 YELLOW），本作的文本绘制只有一个颜色参数，
+    // 所以颜色在绘制侧按同一个 decoration 判。
+    [[nodiscard]] ui::KeyBindDecoration keyBindDecoration(input::InputAction action) const {
+        if (keyBindScreen_.capturing() && keyBindScreen_.capturingAction() == action) {
+            return ui::KeyBindDecoration::Capturing;
+        }
+        const auto binding = inputSystem_.bindings().binding(action);
+        if (binding.device == input::InputDevice::None) {
+            return ui::KeyBindDecoration::None;
+        }
+        for (std::size_t index = 0; index < input::kInputActionCount; ++index) {
+            const auto other = static_cast<input::InputAction>(index);
+            if (other != action && inputSystem_.bindings().binding(other) == binding) {
+                return ui::KeyBindDecoration::Conflict;
+            }
+        }
+        return ui::KeyBindDecoration::None;
+    }
+
+    [[nodiscard]] std::string keyBindButtonLabel(input::InputAction action) const {
+        const auto decoration = keyBindDecoration(action);
+        // 捕获中显示 `> ? <`：还没有键可写，问号就是"在等你按"。
+        const std::string key =
+            decoration == ui::KeyBindDecoration::Capturing
+                ? std::string{"?"}
+                : input::bindingDisplayName(inputSystem_.bindings().binding(action));
+        return ui::decorateKeyBindLabel(key, decoration);
+    }
+
     void saveCurrentWorldLocked() {
         try {
             // 存档由运行时构建并落盘；返回 false 表示当前没有打开的存档
@@ -3777,12 +3814,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         // 每行的标签形如"动作: 按键"，取自 InputSystem 这一唯一来源
         // 该行正在捕获时改显示为"动作: > ? <"
-        ctx.keyBindLabelFor = [this](input::InputAction action) -> std::string {
-            const std::string name{input::actionDisplayName(action)};
-            if (keyBindScreen_.capturing() && keyBindScreen_.capturingAction() == action) {
-                return name + ": > ? <";
-            }
-            return name + ": " + input::bindingDisplayName(inputSystem_.bindings().binding(action));
+        ctx.keyBindLabelFor = [this](input::InputAction action) {
+            return keyBindButtonLabel(action);
         };
         return ui::buildPage(menuSystem.pageStack.current(), ctx, buildMenuCallbacks(),
                              menuRectProvider());
@@ -8357,15 +8390,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .uiTimeSeconds = uiTimeSeconds,
             .cameraSubmergedInWater = [this] { return cameraSubmergedInWater(); },
             .keyBindLabel =
-                [this](input::InputAction action) -> std::string {
-                    const std::string name{input::actionDisplayName(action)};
-                    if (keyBindScreen_.capturing() &&
-                        keyBindScreen_.capturingAction() == action) {
-                        return name + ": > ? <";
-                    }
-                    return name + ": " +
-                           input::bindingDisplayName(inputSystem_.bindings().binding(action));
-                },
+                [this](input::InputAction action) { return keyBindButtonLabel(action); },
             .drawHeldItem = [this](VkCommandBuffer c,
                                    VkDescriptorSet d) { world_.drawHeldItem(c, d); },
             .currentFrameDescriptorSet = [this] { return frames[currentFrame].descriptorSet; },

@@ -45,6 +45,7 @@
 #include "ui/Language.hpp"
 #include "ui/MenuGeometry.hpp"
 #include "ui/MenuSystem.hpp"
+#include "ui/ListRow.hpp"
 #include "ui/PageBuilder.hpp"
 #include "ui/PageStack.hpp"
 #include "ui/TextField.hpp"
@@ -355,13 +356,20 @@ class HudRenderer final {
             drawContext_.keyBindFirstIndex = first;
             drawContext_.keyBindRowCount = keyRows;
         }
+        // UI-6b：按键绑定的一行现在是**两个**控件（名称 Label + 改键 Button），
+        // 所以前 `keyRows * 2` 个序号落在列表里，行号是 index/2、行内格子是 index%2。
+        // 底部按钮带的序号相应往后挪同样多。
+        const std::size_t keyWidgets = keyRows * ui::kKeyBindWidgetsPerRow;
         ui::buildPageInto(drawPage_, pageId, drawContext_, drawCallbacks_,
-                          [layout, pageId, count, fbWidth, keyRows](std::size_t index) {
-                              if (pageId == ui::PageId::Controls && index < keyRows) {
-                                  return ui::controlsRow(index, layout, fbWidth);
+                          [layout, pageId, count, fbWidth, keyWidgets](std::size_t index) {
+                              if (pageId == ui::PageId::Controls && index < keyWidgets) {
+                                  const std::size_t row = index / ui::kKeyBindWidgetsPerRow;
+                                  return index % ui::kKeyBindWidgetsPerRow == 0U
+                                             ? ui::controlsNameCell(row, layout, fbWidth)
+                                             : ui::controlsChangeCell(row, layout, fbWidth);
                               }
                               const std::size_t buttonIndex =
-                                  pageId == ui::PageId::Controls ? index - keyRows : index;
+                                  pageId == ui::PageId::Controls ? index - keyWidgets : index;
                               return ui::frontendButtonRect(layout, pageId, buttonIndex, count);
                           });
         return drawPage_;
@@ -1340,10 +1348,18 @@ class HudRenderer final {
         for (std::size_t widgetIndex = 0; widgetIndex < widgets.size(); ++widgetIndex) {
             const ui::Widget& widget = widgets[widgetIndex];
             const bool widgetFocused = widgetIndex == focused;
-            // 按键设置的每一行都是 ListRow，画成带悬停高亮的"动作: 按键"行
-            // 样子对齐 vanilla 的列表项，而不是完整的按钮边框
+            // 语言与世界列表的行：一块底衬加一行文本，样子对齐 vanilla 的列表项，
+            // 而不是完整的按钮边框。
+            // （UI-6b 之后按键绑定行不再走这里——它现在是 Label + Button 两个控件。）
             if (widget.kind == ui::WidgetKind::ListRow) {
-                drawKeyBindRow(commandBuffer, widget, cursor.x, cursor.y, scale);
+                drawSelectionListRow(commandBuffer, widget, cursor.x, cursor.y, scale);
+                continue;
+            }
+            // UI-6b：一行里的静态文本（按键绑定行的动作名）。左对齐于自己的矩形、
+            // 竖直位置已由 keyBindNameCell 算好，所以这里只是把它画出来。
+            if (widget.kind == ui::WidgetKind::Label) {
+                drawHudText(commandBuffer, widget.label, widget.rect.x, widget.rect.y, scale,
+                            {1.0F, 1.0F, 1.0F, 1.0F});
                 continue;
             }
             // UI-4：图标钮 —— 同一张九宫格底，中间一张 15x15 的图标而不是一行标签
@@ -1408,10 +1424,11 @@ class HudRenderer final {
                             guiWidgetSprite(guiWidgetSprites, icon), scale, tint);
     }
 
-    // 按键设置的一行："动作: 按键"标签配一层淡背景，悬停时提亮，与 vanilla 的按键列表一致
-    // 点击该行即开始捕获新按键
-    void drawKeyBindRow(VkCommandBuffer commandBuffer, const ui::Widget& widget, float cursorX,
-                        float cursorY, float scale) const {
+    // 选择列表的一行（语言 / 世界）：一层淡背景加一行文本，悬停时提亮。
+    // UI-6b 之前按键绑定行也走这里，所以它从前叫 drawKeyBindRow；那一行现在是
+    // Label + Button 两个控件，不再经过这条路径。
+    void drawSelectionListRow(VkCommandBuffer commandBuffer, const ui::Widget& widget,
+                              float cursorX, float cursorY, float scale) const {
         const bool hovered = widget.rect.contains(cursorX, cursorY);
         drawHudQuad(commandBuffer, widget.rect,
                     hovered ? glm::vec4{0.28F, 0.28F, 0.32F, 0.9F}

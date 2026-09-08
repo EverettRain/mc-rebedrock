@@ -75,8 +75,16 @@ void testScrollBounds() {
 void testScrollbar() {
     const auto list = sample();
     const auto track = mc::ui::scrollListScrollbar(list);
-    // ★ 贴的是**行的右缘**再留 2，不是视口右缘。视口右缘是 320，行右缘是 270。
-    CHECK(track.x == 272.0F);
+    // ★ 贴的是**行的右缘**，公式是 `getRowRight() + scrollbarWidth() + 2`
+    //   （`AbstractSelectionList:283`）。视口右缘是 320，行右缘是 270 → 270 + 6 + 2。
+    //
+    //   UI-6b 更正：这条断言原本写的是 272，也就是**漏掉了 scrollbarWidth 的那个实现**
+    //   ——注释里的公式一直是对的，代码与断言是照着错的那行写的。按断言写断言就是这样
+    //   把一个偏差钉住的，所以这里把三项都摊开：
+    CHECK(track.x == static_cast<float>(list.rowRight() + mc::ui::kScrollbarWidth +
+                                        mc::ui::kScrollbarRowGap));
+    CHECK(track.x == 278.0F);
+    CHECK(track.x != 272.0F);                  // 漏掉 scrollbarWidth 会给出这个数
     CHECK(track.x != 314.0F);                  // spec §2.7 的 `x1 - 6` 会给出这个数
     CHECK(track.width == 6.0F);
     CHECK(track.y == 30.0F);

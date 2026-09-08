@@ -7,6 +7,7 @@
 
 #include "input/InputNaming.hpp"
 #include "ui/HudLayout.hpp"
+#include "ui/ListRow.hpp"
 #include "ui/MenuGeometry.hpp"
 #include "ui/PageBuilder.hpp"
 #include "ui/PageStack.hpp"
@@ -18,17 +19,26 @@ using namespace mc;
 
 namespace {
 
-// Mirror the renderer's menuRectProvider: on Controls the first `keyRows` indices
-// are scrolling list rows, the rest are bottom buttons; every other page's
-// widgets are all frontend buttons. Building this for real (not a stub) is what
-// exercises the layout capacity that threw.
+// Mirror the renderer's menuRectProvider: on Controls the first `keyRows` rows are
+// scrolling list rows, the rest are bottom buttons; every other page's widgets are
+// all frontend buttons. Building this for real (not a stub) is what exercises the
+// layout capacity that threw.
+//
+// UI-6b: a bind row is now TWO widgets (name Label + change Button), so the list
+// occupies `keyRows * kKeyBindWidgetsPerRow` indices and the bottom band starts
+// that much later. Doubling the widget count is exactly the kind of change PX-6
+// Bug1 was: this test is what stops it from throwing past the menu cap unnoticed.
 ui::RectProvider providerFor(ui::PageId page, const ui::HudLayout& layout, float fbWidth,
                              std::size_t count, std::size_t keyRows) {
-    return [layout, page, fbWidth, count, keyRows](std::size_t index) {
-        if (page == ui::PageId::Controls && index < keyRows) {
-            return ui::controlsRow(index, layout, fbWidth);
+    const std::size_t keyWidgets = keyRows * ui::kKeyBindWidgetsPerRow;
+    return [layout, page, fbWidth, count, keyWidgets](std::size_t index) {
+        if (page == ui::PageId::Controls && index < keyWidgets) {
+            const std::size_t row = index / ui::kKeyBindWidgetsPerRow;
+            return index % ui::kKeyBindWidgetsPerRow == 0U
+                       ? ui::controlsNameCell(row, layout, fbWidth)
+                       : ui::controlsChangeCell(row, layout, fbWidth);
         }
-        const std::size_t buttonIndex = page == ui::PageId::Controls ? index - keyRows : index;
+        const std::size_t buttonIndex = page == ui::PageId::Controls ? index - keyWidgets : index;
         return ui::frontendButtonRect(layout, page, buttonIndex, count);
     };
 }
@@ -123,12 +133,25 @@ void testControlsListWindowed() {
     const ui::Page page = ui::buildPage(
         ui::PageId::Controls, ctx, cb,
         providerFor(ui::PageId::Controls, layout, fbW, 4U, ctx.keyBindRowCount));
-    std::size_t rows = 0;
+    // UI-6b：一行是两个控件（名称 Label + 改键 Button），所以带 KeyBindRow 这个
+    // debugId 的控件数是行数的两倍。窗口本身仍然是行数。
+    std::size_t widgets = 0;
+    std::size_t labels = 0;
+    std::size_t buttons = 0;
     for (const auto& w : page) {
-        if (w.debugId == static_cast<std::uint16_t>(ui::WidgetId::KeyBindRow)) ++rows;
+        if (w.debugId != static_cast<std::uint16_t>(ui::WidgetId::KeyBindRow)) {
+            continue;
+        }
+        ++widgets;
+        if (w.kind == ui::WidgetKind::Label) ++labels;
+        if (w.kind == ui::WidgetKind::Button) ++buttons;
     }
-    assert(rows == ctx.keyBindRowCount);
-    assert(rows <= window);
+    assert(widgets == ctx.keyBindRowCount * ui::kKeyBindWidgetsPerRow);
+    // 每一行恰好一个名称、一个按钮——少一个就是某一行缺了半边，而画面上只表现为
+    // "有一行没有键名"或"有一行没有名字"。
+    assert(labels == ctx.keyBindRowCount);
+    assert(buttons == ctx.keyBindRowCount);
+    assert(ctx.keyBindRowCount <= window);
 }
 
 // PX-6 Bug1 (round 2): the visible key-bind rows must land in the MIDDLE band —
@@ -178,9 +201,24 @@ void testControlsRowsInMiddleBandAndScroll() {
                                       providerFor(ui::PageId::Controls, layout, fbW, 4U, window));
     const ui::Page p1 = ui::buildPage(ui::PageId::Controls, ctx1, cb,
                                       providerFor(ui::PageId::Controls, layout, fbW, 4U, window));
-    // Slot 0 keeps its rect; the action label advances by one.
-    assert(p0[0].rect.y == firstSlot.y);
-    assert(p1[0].rect.y == firstSlot.y);
+    // Slot 0 keeps its rect; the action shown there advances by one.
+    //
+    // UI-6b: slot 0 is now the row's NAME label, whose rect is the row's content
+    // box centred vertically -- so it is compared against controlsNameCell, not
+    // against the row itself. Both cells must still sit inside that row: a cell
+    // that drifted out of its row would still look like a list, just a misaligned
+    // one, and nothing else here would notice.
+    const ui::UiRect nameSlot = ui::controlsNameCell(0U, layout, fbW);
+    const ui::UiRect changeSlot = ui::controlsChangeCell(0U, layout, fbW);
+    assert(p0[0].rect.y == nameSlot.y);
+    assert(p1[0].rect.y == nameSlot.y);
+    assert(p0[1].rect.y == changeSlot.y);
+    assert(nameSlot.y >= firstSlot.y);
+    assert(nameSlot.y + nameSlot.height <= firstSlot.y + firstSlot.height);
+    assert(changeSlot.y >= firstSlot.y);
+    assert(changeSlot.y + changeSlot.height <= firstSlot.y + firstSlot.height);
+    // The name is left of the change button and they do not overlap.
+    assert(nameSlot.x < changeSlot.x);
     assert(p0[0].label == std::string{input::actionDisplayName(rows[0])});
     assert(p1[0].label == std::string{input::actionDisplayName(rows[1])});
 }

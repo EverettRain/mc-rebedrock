@@ -35,7 +35,13 @@ inline constexpr int kOptionsRowWidth = 310;    // OptionsList:59
 // `AbstractScrollArea.defaultSettings`：滚动条宽 6，滑块最小高 32。
 inline constexpr int kScrollbarWidth = 6;
 inline constexpr int kScrollbarMinimumThumb = 32;
-// `scrollBarX() = getRowRight() + scrollbarWidth() + 2`
+// `scrollBarX() = getRowRight() + scrollbarWidth() + 2`（`AbstractSelectionList:283`）。
+//
+// ★ UI-6b 修：这里从前只加了 `kScrollbarRowGap`，**漏掉了 scrollbarWidth**，
+//   于是三张列表的滚动条都比 vanilla 靠左 6 个逻辑像素。注释里的公式一直是对的，
+//   错的是照它写出来的那行代码——而 `scroll_list_test` 当时是照**代码**写的断言，
+//   等于把这个偏差钉住了。按键绑定行的两个按钮以这个 x 为基准（UI-6b），
+//   偏差因此会一路传下去，这才撞出来。
 inline constexpr int kScrollbarRowGap = 2;
 // 视口上下缘那两条分隔带的高度。
 //
@@ -100,10 +106,11 @@ struct ScrollList final {
     };
 }
 
-// 滚动条轨道。★ 贴的是**行的右缘**，不是视口右缘（spec §2.7 写错了那一条）。
+// 滚动条轨道。★ 贴的是**行的右缘**，不是视口右缘（spec §2.7 写错了那一条），
+// 而且距离是 `宽 + 2` 不是 `2`。
 [[nodiscard]] constexpr UiRect scrollListScrollbar(const ScrollList& list) {
     return {
-        static_cast<float>(list.rowRight() + kScrollbarRowGap),
+        static_cast<float>(list.rowRight() + kScrollbarWidth + kScrollbarRowGap),
         static_cast<float>(list.y),
         static_cast<float>(kScrollbarWidth),
         static_cast<float>(list.height),
