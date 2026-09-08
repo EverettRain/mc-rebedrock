@@ -99,7 +99,8 @@ void main() {
     if (camera.lightingSettings.w > 0.5) {
         shadowFactor = sunShadowFactor(shadowDepth, shadowDepthRaw, camera.lightViewProj[0],
                                        camera.lightViewProj[1], fragmentWorldPosition, normal,
-                                       camera.sunDirection.xyz, camera.lightingSettings.z);
+                                       camera.sunDirection.xyz, camera.lightingSettings.z,
+                                       camera.weatherSettings.xy);
     }
     // CardinalLighting.DEFAULT, from the shared lightmap include — skipped for a
     // face whose model element declares `"shade": false` (RN-13). Vanilla's

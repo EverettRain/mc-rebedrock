@@ -115,7 +115,8 @@ void main() {
                                                camera.lightViewProj[0], camera.lightViewProj[1],
                                                fragmentWorldPosition, normal,
                                                camera.sunDirection.xyz,
-                                               camera.lightingSettings.z);
+                                               camera.lightingSettings.z,
+                                       camera.weatherSettings.xy);
             }
             float diffuse = max(dot(normal, normalize(camera.sunDirection.xyz)), 0.0);
             terrainSunFactor = 0.72 + diffuse * shadowFactor * 0.28;

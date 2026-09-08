@@ -49,11 +49,18 @@ bool sunShadowInsideCascade(vec3 shadowUv) {
 float sunShadowFactor(sampler2DArrayShadow shadowMap, sampler2DArray shadowDepth,
                       mat4 lightViewProjNear, mat4 lightViewProjFar,
                       vec3 worldPosition, vec3 normal, vec3 sunDirection,
-                      float nearCascadeEnabled) {
+                      float nearCascadeEnabled, vec2 weather) {
     // 三个接收者统一：没有太阳直射的面不受此方向的遮挡影响，也无需 PCF。
     // 受光面的光照权重保持原样；合并 sky 通道仍包含环境天光，这是待拆分的近似。
     float incidence = dot(normal, normalize(sunDirection));
     if (incidence <= 0.0) {
+        return 1.0;
+    }
+    // RN-36：云层散掉直射光，影子跟着变浅。算在最前面，因为云厚到影子看不见时
+    // 整套遮挡搜索加 PCF 都不必跑——暴雨里那是逐屏幕像素省下来的一整轮采样
+    float shadowedFactor =
+        sunShadowOvercastFactor(kSunShadowFactor, sunShadowOvercast(weather.x, weather.y));
+    if (shadowedFactor >= kSunShadowInvisibleFactor) {
         return 1.0;
     }
     // RN-35：选级。先试近段——它的纹素是远段的 1/8，能表达的边细八倍。
@@ -152,5 +159,5 @@ float sunShadowFactor(sampler2DArrayShadow shadowMap, sampler2DArray shadowDepth
                            vec4(shadowUv.xy + vec2(tapX, tapY) * texel, layer, tapReference));
         }
     }
-    return mix(kSunShadowFactor, 1.0, lit * 0.25);
+    return mix(shadowedFactor, 1.0, lit * 0.25);
 }

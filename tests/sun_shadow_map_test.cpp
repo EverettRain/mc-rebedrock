@@ -38,6 +38,7 @@
 #endif
 
 namespace shaderBias {
+using glm::mix;
 using std::min;
 using std::max;
 using std::clamp;
@@ -104,6 +105,10 @@ const glm::mat4 kMissNearCascade = glm::scale(glm::mat4{1.0F}, glm::vec3{10.0F})
 // 直接用远段——checkCascadeSwitch 单独钉那一档
 const float kNearCascadeOn = 1.0F;
 const float kNearCascadeOff = 0.0F;
+
+// weatherSettings.xy：降雨与雷暴的 0..1 渐变量。晴天两者都是 0，阴影因此与 RN-36
+// 之前逐位相同——既有的每一条断言都靠这一点继续成立
+const glm::vec2 kClearWeather{0.0F, 0.0F};
 
 void require(bool condition, const std::string& message, int line) {
     if (!condition) {
@@ -189,7 +194,7 @@ void checkShadowFacing() {
                 samples.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
                 const float factor = shaderReceiver::sunShadowFactor(
                     &samples, &samples, kMissNearCascade, glm::mat4{1.0F},
-                    glm::vec3{0, 0, 0.5F}, normal, sun, kNearCascadeOn);
+                    glm::vec3{0, 0, 0.5F}, normal, sun, kNearCascadeOn, kClearWeather);
                 const std::string context = " at N.L=" + std::to_string(incidence);
                 if (incidence <= 0.0F) {
                     REQUIRE(factor == 1.0F && samples.count == 0,
@@ -235,7 +240,7 @@ void checkShadowFacing() {
     shaderReceiver::Samples outside;
     REQUIRE(shaderReceiver::sunShadowFactor(&outside, &outside, kMissNearCascade, glm::mat4{1.0F},
                 glm::vec3{3, 0, 0.5F}, glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0},
-                kNearCascadeOn) == 1.0F && outside.count == 0,
+                kNearCascadeOn, kClearWeather) == 1.0F && outside.count == 0,
             "sun-facing receiver outside the shadow map must remain fully lit without PCF");
 }
 
@@ -982,7 +987,7 @@ void checkCascades() {
     samples.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
     const float factor = shaderReceiver::sunShadowFactor(
         &samples, &samples, glm::mat4{1.0F}, kMissNearCascade, glm::vec3{0, 0, 0.5F},
-        glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn);
+        glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather);
     REQUIRE(samples.count == 4 && factor == 1.0F,
             "a receiver inside the near box must take the near cascade and still do four taps");
     for (std::size_t tap = 0; tap < samples.count; ++tap) {
@@ -1008,7 +1013,7 @@ void checkCascades() {
         grazing.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
         static_cast<void>(shaderReceiver::sunShadowFactor(
             &grazing, &grazing, glm::mat4{1.0F}, kMissNearCascade, glm::vec3{0, 0, 0.5F}, up,
-            grazingSun, kNearCascadeOn));
+            grazingSun, kNearCascadeOn, kClearWeather));
         REQUIRE(grazing.count == 4, "the grazing near-cascade probe must reach the PCF taps");
         const float nearLift = shaderBias::sunShadowNormalOffsetBlocks(
             incidence, shaderBias::kSunShadowNearTexelBlocks);
@@ -1045,7 +1050,7 @@ void checkCascades() {
         static_cast<void>(shaderReceiver::sunShadowFactor(&off, &off, glm::mat4{1.0F},
                                                           glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F},
                                                           glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0},
-                                                          kNearCascadeOff));
+                                                          kNearCascadeOff, kClearWeather));
         REQUIRE(off.count == 4, "switching cascades off must still shadow, just from the far map");
         for (std::size_t tap = 0; tap < off.count; ++tap) {
             REQUIRE(off.coordinates[tap].z == 1.0F,
@@ -1063,7 +1068,7 @@ void checkCascades() {
         static_cast<void>(shaderReceiver::sunShadowFactor(&on, &on, glm::mat4{1.0F},
                                                           glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F},
                                                           glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0},
-                                                          kNearCascadeOn));
+                                                          kNearCascadeOn, kClearWeather));
         REQUIRE(on.count == 4 && on.coordinates[0].z == 0.0F,
                 "fixture check: with the same matrices, cascades on must select layer 0 — "
                 "otherwise the assertion above passes for the wrong reason");
@@ -1098,6 +1103,77 @@ void checkCascades() {
                     shaderBias::kSunShadowFarTexelBlocks * shaderBias::kSunMaxPenumbraTexels,
             "the near cascade's maximum penumbra must be one eighth of the far cascade's in world "
             "units — that eight is the whole point of the node");
+}
+
+// RN-36：下雨时影子必须跟着变浅。
+//
+// 现场（用户实机）：雨天天空盒暗下来，影子却还是同样浓、同样锐，割裂感明显。
+// 成因是三个量在着色器里是**乘性**的——天气减光乘在天光上，阴影可见度也乘在天光上，
+// 于是影子相对周围的深度恒为 65%，晴天雨天一个样。物理上全阴天没有直射光，
+// 也就没有明显的影子。
+void checkWeatherResponse() {
+    // ---- 1. 云量的黄金值 ---------------------------------------------------
+    //
+    // 权重 0.9 / 0.1：纯下雨留一丝残影，雷暴（vanilla 里必然同时在下雨）完全没有。
+    REQUIRE(shaderBias::sunShadowOvercast(0.0F, 0.0F) == 0.0F, "晴天云量必须是 0");
+    REQUIRE(std::abs(shaderBias::sunShadowOvercast(1.0F, 0.0F) - 0.9F) < 1e-6F,
+            "纯下雨的云量是 0.9");
+    REQUIRE(std::abs(shaderBias::sunShadowOvercast(1.0F, 1.0F) - 1.0F) < 1e-6F,
+            "雨加雷暴的云量满值");
+    // 两条 gradient 都是渐变量，所以云量在天气转换期间连续——不会在某一 tick 上跳
+    float previous = -1.0F;
+    for (int step = 0; step <= 10; ++step) {
+        const float rain = static_cast<float>(step) / 10.0F;
+        const float overcast = shaderBias::sunShadowOvercast(rain, 0.0F);
+        REQUIRE(overcast > previous, "云量必须随降雨单调上升");
+        previous = overcast;
+    }
+    // 越界的输入夹住而不是外推（渐变量来自插值，端点上可能差一个 ulp）
+    REQUIRE(shaderBias::sunShadowOvercast(2.0F, 2.0F) == 1.0F &&
+                shaderBias::sunShadowOvercast(-1.0F, -1.0F) == 0.0F,
+            "云量必须夹在 [0,1]");
+
+    // ---- 2. 全影时的天光系数随云量抬向 1 -----------------------------------
+    REQUIRE(shaderBias::sunShadowOvercastFactor(0.35F, 0.0F) == 0.35F,
+            "晴天必须原样返回——RN-36 之前的每一条断言都靠这一点继续成立");
+    REQUIRE(shaderBias::sunShadowOvercastFactor(0.35F, 1.0F) == 1.0F,
+            "全阴时影子必须完全消失，而不是只变淡");
+    // 纯下雨：对比度从 65% 降到 6.5%，正好一个数量级
+    const float rainy = shaderBias::sunShadowOvercastFactor(0.35F, 0.9F);
+    REQUIRE(std::abs((1.0F - rainy) - 0.065F) < 1e-5F,
+            "纯下雨的影子对比度应当是晴天的十分之一：" + std::to_string(1.0F - rainy));
+
+    // ---- 3. 接收端：晴天逐位不变，全阴省掉整套采样 -------------------------
+    const auto run = [](glm::vec2 weather) {
+        shaderReceiver::Samples samples{};
+        samples.visibility = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+        samples.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
+        const float factor = shaderReceiver::sunShadowFactor(
+            &samples, &samples, kMissNearCascade, glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F},
+            glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn, weather);
+        return std::pair{factor, samples.count};
+    };
+    const auto [clearFactor, clearTaps] = run(kClearWeather);
+    REQUIRE(clearTaps == 4 && std::abs(clearFactor - 0.35F) < 1e-6F,
+            "晴天必须与 RN-36 之前逐位相同：全影 0.35、四次 PCF");
+    const auto [rainFactor, rainTaps] = run(glm::vec2{1.0F, 0.0F});
+    REQUIRE(rainTaps == 4 && std::abs(rainFactor - rainy) < 1e-6F,
+            "纯下雨仍然采样，只是影子淡得多");
+    REQUIRE(rainFactor > clearFactor, "下雨必须让同一个全影像素变亮");
+    // ★ 云厚到影子看不见时**一次采样都不做**。这是逐屏幕像素的一整套遮挡搜索加 PCF，
+    // 暴雨里它产出的是一个看不见的差别
+    const auto [stormFactor, stormTaps] = run(glm::vec2{1.0F, 1.0F});
+    REQUIRE(stormFactor == 1.0F && stormTaps == 0,
+            "雷暴里影子已经不存在，整套采样必须省掉，而不是照跑一遍再乘一个 1");
+
+    // ---- 4. 三个采样者都要把天气传进去 -------------------------------------
+    const std::filesystem::path shaderDir{MC_REBEDROCK_SHADER_SRC_DIR};
+    for (const char* name : {"grass_block.frag", "block_cutout.frag", "item_entity.frag"}) {
+        const std::string source = stripLineComments(readFile(shaderDir / name));
+        REQUIRE(source.find("camera.weatherSettings.xy") != std::string::npos,
+                std::string{name} + " must pass the weather gradients into sunShadowFactor: "
+                                    "one shader left out is one surface whose shadow ignores rain");
+    }
 }
 
 void checkBias() {
@@ -1162,7 +1238,7 @@ void checkContactHardening() {
         samples.blockerDepth = {blockerDepth, blockerDepth, blockerDepth, blockerDepth};
         const float factor = shaderReceiver::sunShadowFactor(
             &samples, &samples, kMissNearCascade, glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F},
-            glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn);
+            glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather);
         return std::pair{factor, samples};
     };
     const auto tapSpreadTexels = [](const shaderReceiver::Samples& samples) {
@@ -1346,6 +1422,7 @@ int main() {
         checkShadowFacing();
         checkEntityCasters();
         checkCascades();
+        checkWeatherResponse();
         checkBias();
         checkContactHardening();
         checkEntityWiring();

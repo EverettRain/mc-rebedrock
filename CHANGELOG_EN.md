@@ -8,6 +8,10 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Added
+- Shadows fade in the rain. The sky darkens when it rains, but the sun's shadows used to stay
+  exactly as deep as on a clear day -- the ground went dim while every shadow on it stayed sharp
+  and black. Cloud scatters direct sunlight, so they now lighten as the rain comes on and vanish
+  altogether in a thunderstorm, which is also when the game stops spending anything on drawing them.
 - Shadows near the player are drawn from a map eight times finer than before. The sun's shadow used
   to be sampled from one 128-block grid whose smallest step was a sixteenth of a block, which set a
   floor on how crisp any shadow edge could be and left a thin bright seam where a shadow should have

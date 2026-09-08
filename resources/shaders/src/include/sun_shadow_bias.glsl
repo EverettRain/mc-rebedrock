@@ -65,6 +65,34 @@ const float kSunMaxPenumbraTexels = 0.5F;
 //    2x2 个 tap 摆在 ±4 纹素上中间是空的——那需要更多 tap，把 RN-33 省下的 55% 吐回去。
 //
 // 代价是级联接缝处半影宽度有 8 倍的跳变。登记在 RN-35 §5。
+// RN-36：天气。云层把直射光散掉，阴影因此**变浅**——而从前它一点都不知道在下雨。
+//
+// 现场（用户实机）：下雨时天空盒暗下来，影子却还是同样浓、同样锐，割裂感明显。
+// 成因在 `grass_block.frag` 那一行：
+//
+//     skyFactor = SKY_LIGHT_FACTOR × 天气减光 × 阴影可见度
+//
+// 三者是**乘性**的。天气减光全雨时是 0.6875（vanilla 的 5/16），可阴影仍旧把天光压到
+// 0.35——影子相对周围的深度恒为 65%，晴天雨天一个样。物理上反了：全阴天没有直射光，
+// 也就没有明显的影子。
+//
+// 云量：下雨即云满天，雷暴再压满。两条 gradient 都是 vanilla 的 0..1 渐变量，所以
+// 天气转换期间这一档也是连续的，不会在某一 tick 上跳。
+// 权重 0.9 / 0.1 的意思是：纯下雨留一丝残影（对比度约 6.5%），雷暴则完全没有影子。
+float sunShadowOvercast(float rainGradient, float thunderGradient) {
+    return clamp(rainGradient * 0.9F + thunderGradient * 0.1F, 0.0F, 1.0F);
+}
+
+// 全影时的天光系数随云量抬向 1.0（1.0 = 和没有影子一样亮）。
+// 晴天原样返回 baseFactor，全阴返回 1.0。
+float sunShadowOvercastFactor(float baseFactor, float overcast) {
+    return mix(baseFactor, 1.0F, clamp(overcast, 0.0F, 1.0F));
+}
+
+// 影子淡到这个程度就当它不存在：整套遮挡搜索加 PCF 都可以省掉。
+// 这是逐屏幕像素的开销，而暴雨里它产出的是一个看不见的差别。
+const float kSunShadowInvisibleFactor = 0.98F;
+
 float sunShadowPenumbraTexels(float blockerDistanceBlocks, float texelSizeBlocks) {
     float penumbraBlocks = max(blockerDistanceBlocks, 0.0F) * kSunPenumbraTangent;
     return min(penumbraBlocks / texelSizeBlocks, kSunMaxPenumbraTexels);
