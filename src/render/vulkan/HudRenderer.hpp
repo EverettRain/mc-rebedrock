@@ -34,6 +34,7 @@
 #include "ui/ButtonControl.hpp"
 #include "ui/ChatHistory.hpp"
 #include "ui/GuiNineSlice.hpp"
+#include "ui/SplashText.hpp"
 #include "ui/TextMetrics.hpp"
 #include "ui/TitleScreenLayout.hpp"
 #include "ui/TooltipLayout.hpp"
@@ -597,8 +598,11 @@ class HudRenderer final {
                                                : glm::vec4{1.0F});
         const float textY =
             snapped.y + (6.0F + (state == ui::ButtonVisualState::Pressed ? 1.0F : 0.0F)) * scale;
-        drawHudText(commandBuffer, label,
-                    snapped.x + (snapped.width - hudTextWidth(label, scale)) * 0.5F, textY, scale,
+        // UI-4（UI-3 留的账）：标签整数居中。26.1 是
+        // `x + (width - font.width(text)) / 2`，逻辑像素上的**整数除法**，
+        // 而 font.width 本身是 Mth.ceil 的整数。此前这里是浮点的 *0.5F，
+        // 于是奇数差时文字落在半个像素上。
+        drawHudText(commandBuffer, label, centredLabelX(snapped, label, scale), textY, scale,
                     textColor);
     }
 
@@ -632,8 +636,11 @@ class HudRenderer final {
                                                : glm::vec4{1.0F});
         const float textY =
             snapped.y + (6.0F + (state == ui::ButtonVisualState::Pressed ? 1.0F : 0.0F)) * scale;
-        drawHudText(commandBuffer, label,
-                    snapped.x + (snapped.width - hudTextWidth(label, scale)) * 0.5F, textY, scale,
+        // UI-4（UI-3 留的账）：标签整数居中。26.1 是
+        // `x + (width - font.width(text)) / 2`，逻辑像素上的**整数除法**，
+        // 而 font.width 本身是 Mth.ceil 的整数。此前这里是浮点的 *0.5F，
+        // 于是奇数差时文字落在半个像素上。
+        drawHudText(commandBuffer, label, centredLabelX(snapped, label, scale), textY, scale,
                     textColor);
     }
 
@@ -679,6 +686,72 @@ class HudRenderer final {
             }
             cursorX += metrics.advance * scale;
         }
+    }
+
+    // UI-4：绕一个锚点旋转 + 缩放地画一行字（26.1 的 splash 就是这么画的）。
+    //
+    // 每个字形先在**未旋转**的局部空间里排好（锚点为原点），再把它的原点绕锚点转过去，
+    // 最后让顶点着色器把这个字形自己的四边形绕**它自己的原点**转同样的角度。
+    // 两步合起来正好是"整行绕锚点旋转"，而 push 常量里只需要多带一个角度。
+    void drawHudTextRotated(VkCommandBuffer commandBuffer, std::string_view text, float anchorX,
+                            float anchorY, float scale, float rotation,
+                            const glm::vec4& color) const {
+        const float width = static_cast<float>(swapchainExtent.width);
+        const float height = static_cast<float>(swapchainExtent.height);
+        const float aspect = height <= 0.0F ? 1.0F : width / height;
+        const float cosine = std::cos(rotation);
+        const float sine = std::sin(rotation);
+        // 局部坐标（像素）绕原点转，x 与 y 同尺度，因此这里是普通的二维旋转
+        const auto place = [&](float localX, float localY) {
+            return ui::UiPoint{anchorX + localX * cosine - localY * sine,
+                               anchorY + localX * sine + localY * cosine};
+        };
+        float cursorX = -hudTextWidth(text, scale) * 0.5F;
+        for (const char32_t codepoint : ui::decodeUtf8(text)) {
+            const auto metrics = textFont.glyph(codepoint);
+            if (metrics.visible) {
+                const float localX = cursorX + metrics.offsetX * scale;
+                const float localY = ui::kSplashTextOffsetY * scale + metrics.offsetY * scale;
+                const auto origin = place(localX, localY);
+                const ui::UiRect glyph{origin.x, origin.y, metrics.pixelWidth * scale,
+                                       metrics.pixelHeight * scale};
+                const glm::vec4 uv{metrics.u, metrics.v, metrics.uvWidth, metrics.uvHeight};
+                // 阴影同样是旋转的：它在字形的局部空间里偏 +1/+1，转过去仍贴着字
+                const auto shadowOrigin =
+                    place(localX + metrics.shadowOffset * scale,
+                          localY + metrics.shadowOffset * scale);
+                drawRotatedGlyph(commandBuffer,
+                                 {shadowOrigin.x, shadowOrigin.y, glyph.width, glyph.height}, uv,
+                                 {ui::textShadowChannel(color.r), ui::textShadowChannel(color.g),
+                                  ui::textShadowChannel(color.b), color.a},
+                                 metrics.layer, rotation, aspect);
+                drawRotatedGlyph(commandBuffer, glyph, uv, color, metrics.layer, rotation,
+                                 aspect);
+            }
+            cursorX += metrics.advance * scale;
+        }
+    }
+
+    void drawRotatedGlyph(VkCommandBuffer commandBuffer, const ui::UiRect& rectangle,
+                          const glm::vec4& uv, const glm::vec4& color, float layer,
+                          float rotation, float aspect) const {
+        const auto clip = ui::framebufferToClip(rectangle,
+                                                static_cast<float>(swapchainExtent.width),
+                                                static_cast<float>(swapchainExtent.height));
+        const HudPush push{
+            .rect = {clip.x, clip.y, clip.width, clip.height},
+            .color = color,
+            .uvRect = uv,
+            .data = {kHudModeFontGlyph, layer, rotation, aspect},
+            .iconBoxMin = {},
+            .iconBoxMax = {},
+            .iconUv01 = {},
+            .iconUv23 = {},
+        };
+        vkCmdPushConstants(commandBuffer, hudPipelineLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(push), &push);
+        vkCmdDraw(commandBuffer, 6, 1, 0, 0);
     }
 
     // 语言文件通过 provider 按 ResourceLocation 解析，不做路径推算
@@ -1088,6 +1161,7 @@ class HudRenderer final {
         };
         drawTitleTexture(commandBuffer, toFramebuffer(title.logo), titleArtUv.logo);
         drawTitleTexture(commandBuffer, toFramebuffer(title.edition), titleArtUv.edition);
+        drawTitleSplash(commandBuffer, layout);
         // 两行页脚都是普通的白色带阴影文本，26.1 用的是 font.drawInBatch 的默认样式
         drawHudText(commandBuffer, version, static_cast<float>(title.version.x) * scale,
                     static_cast<float>(title.version.y) * scale, scale,
@@ -1097,6 +1171,41 @@ class HudRenderer final {
                     {1.0F, 1.0F, 1.0F, 1.0F});
     }
 
+    // UI-4：一行文字在一个矩形里水平居中，走 spec §1.2 的整数规矩。
+    // 矩形是帧缓冲像素、文字宽是帧缓冲像素，两者都先除回逻辑像素做整数运算，再乘回去——
+    // 中途乘 scale 再取整就不是整数版面了（见 ui/TextMetrics.hpp 的头注释）。
+    [[nodiscard]] float centredLabelX(const ui::UiRect& rectangle, std::string_view label,
+                                      float scale) const {
+        const int width = ui::textWidthLogical(hudTextWidth(label, 1.0F));
+        const int box = static_cast<int>(std::lround(rectangle.width / scale));
+        return rectangle.x + static_cast<float>(ui::centredX(0, box, width)) * scale;
+    }
+
+    // UI-4：主菜单那行斜着的黄字（26.1 `SplashRenderer`）。
+    //
+    // 锚点 (W/2 + 123, 69)、旋转 -PI/9、缩放随时间脉动——三个数都取自源码，
+    // 不是 GUI spec §6.3 的正文（那里的 `W/2 + 90` 与另一条缩放公式都是旧值，
+    // 已作为更正 D 记在 UI-2 的落地记录里）。
+    //
+    // 无障碍设置 `hideSplashTexts` 打开时不画；资源包没有 texts/splashes.txt 时
+    // splashLine 为空，同样不画——两条都与 vanilla 同形。
+    void drawTitleSplash(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
+        if (menuSystem.splashLine.empty()) {
+            return;
+        }
+        const float scale = layout.scale();
+        const float textWidth = hudTextWidth(menuSystem.splashLine, 1.0F);
+        // 脉动的相位由 UI 时钟给出，因此截图通道钉住那个时钟就同时钉住了这里
+        const auto milliseconds = static_cast<std::uint64_t>(uiTimeSeconds * 1000.0);
+        const float pulse = ui::splashScale(textWidth, milliseconds);
+        const float anchorX =
+            (static_cast<float>(layout.logicalWidth()) / 2.0F + ui::kSplashAnchorX) * scale;
+        const float anchorY = ui::kSplashAnchorY * scale;
+        drawHudTextRotated(commandBuffer, menuSystem.splashLine, anchorX, anchorY,
+                           scale * pulse, ui::kSplashRotation,
+                           {1.0F, 1.0F, 0.0F, 1.0F});
+    }
+
     // 通用的菜单绘制后端：按 widget 种类画出一页
     // 每个 widget 自带矩形、标签、启用状态和（滑块的）显示值
     // 按下高亮对应 id 等于 pressedMenuButton 的那个，删除确认按钮保留红色调
@@ -1104,11 +1213,20 @@ class HudRenderer final {
     void drawMenuWidgets(VkCommandBuffer commandBuffer, const ui::Page& widgets,
                          float scale) const {
         const auto cursor = currentFramebufferCursor();
-        for (const auto& widget : widgets) {
+        // UI-4：键盘焦点与鼠标悬停共用 highlighted 那张精灵（26.1 `AbstractButton:46`）
+        const std::size_t focused = menuSystem.focusFor(menuSystem.pageStack.current());
+        for (std::size_t widgetIndex = 0; widgetIndex < widgets.size(); ++widgetIndex) {
+            const ui::Widget& widget = widgets[widgetIndex];
+            const bool widgetFocused = widgetIndex == focused;
             // 按键设置的每一行都是 ListRow，画成带悬停高亮的"动作: 按键"行
             // 样子对齐 vanilla 的列表项，而不是完整的按钮边框
             if (widget.kind == ui::WidgetKind::ListRow) {
                 drawKeyBindRow(commandBuffer, widget, cursor.x, cursor.y, scale);
+                continue;
+            }
+            // UI-4：图标钮 —— 同一张九宫格底，中间一张 15x15 的图标而不是一行标签
+            if (widget.kind == ui::WidgetKind::IconButton) {
+                drawIconButton(commandBuffer, widget, cursor.x, cursor.y, scale, widgetFocused);
                 continue;
             }
             if (widget.kind != ui::WidgetKind::Button &&
@@ -1118,7 +1236,7 @@ class HudRenderer final {
             const bool pressed =
                 static_cast<ui::WidgetId>(widget.debugId) == pressedMenuButton;
             const auto state = ui::buttonVisualState(widget.rect, cursor.x, cursor.y,
-                                                     widget.enabled, pressed);
+                                                     widget.enabled, pressed, widgetFocused);
             if (widget.kind == ui::WidgetKind::Slider) {
                 const float value = widget.slider.value ? widget.slider.value() : 0.0F;
                 drawMinecraftSlider(commandBuffer, widget.rect, widget.label, state, value,
@@ -1132,6 +1250,40 @@ class HudRenderer final {
                                     tint);
             }
         }
+    }
+
+    // UI-4：图标钮的绘制（26.1 `SpriteIconButton`，iconOnly=true）。
+    //
+    // 底是和普通按钮同一张九宫格精灵，因此三种状态、按下色调、禁用灰全都自动一致；
+    // 上面居中一张 15x15 的图标。图标按控件 id 查表——**图标是资源，而 ui:: 从不接触资源**，
+    // 所以这张表住在绘制侧，不住在控件模型里。
+    void drawIconButton(VkCommandBuffer commandBuffer, const ui::Widget& widget, float cursorX,
+                        float cursorY, float scale, bool focused = false) const {
+        const auto id = static_cast<ui::WidgetId>(widget.debugId);
+        const auto icon = id == ui::WidgetId::TitleAccessibility
+                              ? GuiWidgetSprite::IconAccessibility
+                              : GuiWidgetSprite::IconLanguage;
+        const bool pressed = id == pressedMenuButton;
+        const auto state =
+            ui::buttonVisualState(widget.rect, cursorX, cursorY, widget.enabled, pressed, focused);
+        const ui::UiRect snapped{std::floor(widget.rect.x), std::floor(widget.rect.y),
+                                 std::floor(widget.rect.width + 0.5F),
+                                 std::floor(widget.rect.height + 0.5F)};
+        const GuiWidgetSprite face =
+            state == ui::ButtonVisualState::Disabled
+                ? GuiWidgetSprite::ButtonDisabled
+                : (state == ui::ButtonVisualState::Normal ? GuiWidgetSprite::Button
+                                                          : GuiWidgetSprite::ButtonHighlighted);
+        drawScaledGuiSprite(commandBuffer, snapped, 0.0F,
+                            guiWidgetSprite(guiWidgetSprites, face), scale, glm::vec4{1.0F});
+        // 图标在钮内整数居中。算术在 ui::iconButtonIconRect 一处，那里有断言。
+        const ui::UiRect iconRect = ui::iconButtonIconRect(snapped, scale);
+        // 禁用态把图标一并压暗，与 vanilla 给禁用按钮上灰的做法一致
+        const glm::vec4 tint = state == ui::ButtonVisualState::Disabled
+                                   ? glm::vec4{0.63F, 0.63F, 0.63F, 1.0F}
+                                   : glm::vec4{1.0F};
+        drawScaledGuiSprite(commandBuffer, iconRect, 0.0F,
+                            guiWidgetSprite(guiWidgetSprites, icon), scale, tint);
     }
 
     // 按键设置的一行："动作: 按键"标签配一层淡背景，悬停时提亮，与 vanilla 的按键列表一致
@@ -1148,6 +1300,48 @@ class HudRenderer final {
 
     // 按键设置列表的滚动条：仅当动作数多于可见窗口时绘制
     // 滑块长度对应可见比例，随滚动偏移移动（世界列表与语言列表同理）
+    // UI-4：滚动条的**唯一**画法。26.1 的 AbstractScrollArea 用两张精灵画它
+    // （`widget/scroller_background` 铺整条轨道、`widget/scroller` 画滑块），
+    // 而不是手绘颜色——GUI spec §2.7 写的那两个颜色（轨道 0xFF000000、滑块 0xFF808080
+    // 加亮边 0xFFC0C0C0）是 1.20.2 之前的画法。两张都是 6x32 九宫格 border 1，
+    // 因此滑块拉长时两端那 1px 的亮边仍是 1px。
+    //
+    // 几何一律来自 ui::ScrollList，绘制这里不再自己算滑块高度或位置。
+    void drawScrollbar(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
+                       const ui::ScrollList& list, std::size_t itemCount,
+                       std::size_t firstRow) const {
+        if (!list.scrollable(itemCount)) {
+            return;  // everything fits; vanilla draws no scrollbar either
+        }
+        const float scale = layout.scale();
+        const auto toFb = [scale](const ui::UiRect& logical) {
+            return ui::UiRect{logical.x * scale, logical.y * scale, logical.width * scale,
+                              logical.height * scale};
+        };
+        drawScaledGuiSprite(commandBuffer, toFb(ui::scrollListScrollbar(list)), 0.0F,
+                            guiWidgetSprite(guiWidgetSprites, GuiWidgetSprite::ScrollerBackground),
+                            scale);
+        drawScaledGuiSprite(commandBuffer,
+                            toFb(ui::scrollListThumb(list, itemCount, firstRow)), 0.0F,
+                            guiWidgetSprite(guiWidgetSprites, GuiWidgetSprite::Scroller), scale);
+    }
+
+    // UI-4：选中行的高亮框。26.1 的 `AbstractSelectionList.renderSelection` 画的是
+    // 一圈灰边加黑底，而不是只把文字提亮——本作此前三张列表**一处高亮都没有**，
+    // 选中语言后没有任何视觉反馈。
+    void drawListSelection(VkCommandBuffer commandBuffer, const ui::UiRect& row, float scale,
+                           bool listFocused) const {
+        // `extractSelection`：先用外框色填满整个条目矩形，再用纯黑填内缩 1 像素的部分。
+        // 框在矩形**之内**，不在外面。外框色：列表有焦点是白（-1），没有是灰（0xFF808080）。
+        const glm::vec4 outline = listFocused ? glm::vec4{1.0F, 1.0F, 1.0F, 1.0F}
+                                              : glm::vec4{0.502F, 0.502F, 0.502F, 1.0F};
+        drawHudQuad(commandBuffer, row, outline);
+        drawHudQuad(commandBuffer,
+                    {row.x + scale, row.y + scale, row.width - 2.0F * scale,
+                     row.height - 2.0F * scale},
+                    {0.0F, 0.0F, 0.0F, 1.0F});
+    }
+
     void drawControlsScrollbar(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         const float fbWidth = static_cast<float>(swapchainExtent.width);
         const std::size_t total = input::keyBindRows().size();
@@ -1156,18 +1350,9 @@ class HudRenderer final {
         if (total <= visible) {
             return;  // everything fits; no scrollbar
         }
-        const auto track = ui::controlsScrollbarTrack(layout, fbWidth);
-        drawHudQuad(commandBuffer, track, {0.0F, 0.0F, 0.0F, 0.6F});
-        const std::size_t maximumFirst = total - visible;
-        const std::size_t first = std::min(menuSystem.controlsListFirstIndex, maximumFirst);
-        const float thumbHeight =
-            std::max(track.height * static_cast<float>(visible) / static_cast<float>(total),
-                     layout.scale() * 6.0F);
-        const float travel = std::max(track.height - thumbHeight, 1.0F);
-        const float thumbY = track.y + travel * static_cast<float>(first) /
-                                           static_cast<float>(maximumFirst);
-        drawHudQuad(commandBuffer, {track.x, thumbY, track.width, thumbHeight},
-                    {0.55F, 0.55F, 0.55F, 1.0F});
+        const auto list = ui::controlsScrollList(layout, fbWidth);
+        const std::size_t first = std::min(menuSystem.controlsListFirstIndex, total - visible);
+        drawScrollbar(commandBuffer, layout, list, total, first);
     }
 
     void drawFrontend(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
@@ -1452,29 +1637,27 @@ class HudRenderer final {
             const bool selected =
                 menuSystem.languageCodes[index] == menuSystem.pendingLanguageCode;
             const bool hovered = rectangle.contains(cursor.x, cursor.y);
-            if (selected || hovered) {
-                drawHudQuad(commandBuffer, rectangle,
-                            selected ? glm::vec4{0.30F, 0.30F, 0.30F, 0.95F}
-                                     : glm::vec4{0.16F, 0.16F, 0.16F, 0.90F});
+            // UI-4：选中项走 26.1 的形态——灰边黑底的高亮框（renderSelection），
+            // 而不是从前那块半透明的深灰填充。悬停仍是那块淡填充。
+            if (selected) {
+                // 语言列表在本作里始终是该屏的焦点控件组，因此用白框——
+                // 与 26.1 「列表有焦点则白、否则灰」一致。
+                drawListSelection(commandBuffer, rectangle, scale, /*listFocused=*/true);
+            } else if (hovered) {
+                drawHudQuad(commandBuffer, rectangle, {0.16F, 0.16F, 0.16F, 0.90F});
             }
             const std::string& name = index < menuSystem.languageDisplayNames.size()
                                           ? menuSystem.languageDisplayNames[index]
                                           : menuSystem.languageCodes[index];
             // 在框内居中，与 vanilla 语言项的绘制一致：每个名字画在 width/2 - 文本宽/2
-            drawHudText(commandBuffer, name,
-                        rectangle.x + (rectangle.width - hudTextWidth(name, scale)) * 0.5F,
+            drawHudText(commandBuffer, name, centredLabelX(rectangle, name, scale),
                         rectangle.y + 2.0F * scale, scale,
                         selected ? glm::vec4{1.0F, 1.0F, 1.0F, 1.0F}
                                  : glm::vec4{0.85F, 0.85F, 0.85F, 1.0F});
         }
-        // 列表超出时在框右缘画滚动滑块，对应 vanilla 列表控件的灰色轨道
-        if (menuSystem.languageCodes.size() > visible) {
-            const auto thumb = ui::languageScrollbarThumb(
-                layout, static_cast<float>(swapchainExtent.width),
-                menuSystem.languageCodes.size(), visible, first);
-            drawHudQuad(commandBuffer, thumb,
-                        {0.55F, 0.55F, 0.55F, 0.95F});
-        }
+        drawScrollbar(commandBuffer, layout,
+                      ui::languageScrollList(layout, static_cast<float>(swapchainExtent.width)),
+                      menuSystem.languageCodes.size(), first);
         // 列表与按钮之间的灰色提示行，vanilla 把它画在 height - 56 处
         const std::string warning = translated("options.languageWarning", "");
         if (!warning.empty()) {

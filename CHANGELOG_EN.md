@@ -7,7 +7,21 @@ simple versioned history while it is in beta.
 
 ## ReBedrock 26.1beta1
 
+### Added
+- The main menu now has its slanted yellow splash line, and the language and accessibility
+  buttons finally carry the icons they were drawn to hold.
+- Menus can be driven from the keyboard: Tab and Shift+Tab move between buttons, Enter or Space
+  presses the one you are on, and that button lights up the way it does under the mouse.
+  Greyed-out buttons are skipped.
+- Shift-clicking a cycling option now steps backwards through its values instead of forwards.
+
 ### Fixed
+- The scrollbars on the language and key-binding lists are Minecraft's again. They used to be a
+  hand-drawn ten-pixel light grey block floating over on the right of the screen; they are now the
+  six-pixel scrollbar texture from the resource pack, sitting just right of the list's own rows,
+  with a thumb that sizes itself to the content and keeps vanilla's minimum height. The selected
+  row now has a highlight box around it - picking a language used to give no visual feedback at
+  all. Key-binding rows widened and world-list rows narrowed to vanilla's widths.
 - The interface sat one pixel off at some window sizes. Menus, the hotbar, the inventory and
   container panels were all centred on "half the window in pixels", where Minecraft first turns
   the window into a whole-numbered interface canvas, centres on that with integer division, and

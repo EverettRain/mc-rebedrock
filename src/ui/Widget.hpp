@@ -27,6 +27,10 @@ namespace mc::ui {
 
 enum class WidgetKind : std::uint8_t {
     Button,     // a clickable button (GuiNineSlice + label)
+    // UI-4：只有图标没有文字的方钮（26.1 的 SpriteIconButton，iconOnly=true）。
+    // 与 Button 完全同形——同一张九宫格底、同一套命中与派发——区别只在于绘制侧画的是
+    // 一张 15x15 的图标而不是一行标签。所以它是一个 kind，不是一个新的控件家族。
+    IconButton,
     Slider,     // a horizontal slider with a draggable handle
     ListRow,    // one selectable row in a scrolling list (worlds/languages)
     Label,      // static text, never interactive
@@ -34,6 +38,26 @@ enum class WidgetKind : std::uint8_t {
     Toggle,     // a button whose label reflects an on/off (cycled) option
     TextField,  // an editable text line (create/edit world name)
 };
+
+// UI-4：图标钮里那张图标的边长与按钮边长（26.1 `CommonButtons`：20x20 的钮里一张 15x15 的图）。
+inline constexpr float kIconButtonSize = 20.0F;
+inline constexpr float kIconButtonIconSize = 15.0F;
+
+// 图标在钮内的矩形。**整数居中**：(20 - 15) / 2 = 2，spec §1.2 的规矩一路管到这里。
+// 注意 5 是奇数，所以前缘 2、后缘 3——整数居中就是这样，不是对称的。
+//
+// 它是一个纯函数而不是绘制侧的三行算术，因为"图标没居中"改不动任何返回值——
+// 那正是 UI-4 第一轮 sabotage 没抓住的形状（REGULAR §5：没抓住就补测试，不换 sabotage）。
+[[nodiscard]] inline UiRect iconButtonIconRect(const UiRect& button, float scale) {
+    const int inset =
+        (static_cast<int>(kIconButtonSize) - static_cast<int>(kIconButtonIconSize)) / 2;
+    return {
+        button.x + static_cast<float>(inset) * scale,
+        button.y + static_cast<float>(inset) * scale,
+        kIconButtonIconSize * scale,
+        kIconButtonIconSize * scale,
+    };
+}
 
 // 滑块的数据与回调
 // value() 给出当前用于显示的值，绘制后端据此画滑块位置，该值可能是归一化的也可能是原始的

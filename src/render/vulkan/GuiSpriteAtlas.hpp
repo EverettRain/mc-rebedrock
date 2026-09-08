@@ -39,6 +39,15 @@ enum class GuiWidgetSprite : std::size_t {
     // 它们的尺寸完全由内容决定，因此必须走九宫格而不是整张拉伸
     TooltipBackground,
     TooltipFrame,
+    // UI-4：滚动条。26.1 的 AbstractScrollArea 用**精灵**画它，不是手绘颜色——
+    // GUI spec §2.7 写的「轨道 0xFF000000、滑块 0xFF808080 + 亮边 0xFFC0C0C0」
+    // 是 1.20.2 之前的画法。两张都是 6x32、九宫格 border 1，因此滑块能按内容拉长
+    // 而两端那 1px 的亮边始终是 1px。
+    Scroller,
+    ScrollerBackground,
+    // UI-4：主菜单那两个图标钮里的 15x15 图标（CommonButtons.language/accessibility）
+    IconLanguage,
+    IconAccessibility,
     Count,
 };
 

@@ -549,6 +549,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // UI-2：界面截图时 UI 时钟停在哪一秒。取值本身不重要，钉住才重要——
     // 全景的偏航与俯仰、文本光标的闪烁相位都是它的函数。
     static constexpr double kUiCaptureClockSeconds = 0.0;
+    // UI-4：截图时 splash 抽哪一行。取值不重要，钉住才重要。
+    static constexpr std::uint64_t kUiCaptureSplashSeed = 0x5150415348ULL;
 
     void initialize() {
         // UI-2：截图通道要钉的那几项渲染设置必须在建采样器与管线**之前**落定，
@@ -752,6 +754,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         textures_.createTextureArray(options.anisotropy);
         textures_.createRainTexture();
         loadLanguage();
+        loadSplashes();
         textures_.createFontTexture(fontMetrics, textFont, requiredUnicodePages(),
                                     options.forceUnicodeFont);
         // 绑定一次事件宿主，让 tick 循环之外产生的世界编辑也能进入渲染与持久化流水线
@@ -2358,6 +2361,36 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 按键设置的某一行正在捕获时，下一次按键**就是**这次重绑
     // 它在这里被消费并写进 InputSystem 这一唯一来源，不再充当菜单键或游戏键
     // Escape 表示取消捕获，而不是把 Escape 绑上去
+    // UI-4：主菜单的 splash 候选行。资源包缺这个文件是常态（本作只随包自己的资源），
+    // 缺了就没有 splash，与 vanilla 的 `hideSplashTexts` 打开时同形——不报错。
+    void loadSplashes() {
+        const auto location = assets::texts("splashes.txt");
+        if (!resourceProvider->exists(location)) {
+            return;
+        }
+        try {
+            const auto bytes = resourceProvider->readBytes(location);
+            const std::string_view contents{reinterpret_cast<const char*>(bytes.data()),
+                                            bytes.size()};
+            menuSystem.splashLines = ui::parseSplashes(contents);
+        } catch (const std::exception& error) {
+            std::cerr << "Unable to read splashes.txt: " << error.what() << '\n';
+        }
+        rollSplash();
+    }
+
+    // 每次回到标题屏重抽一行，与 vanilla 一致。
+    // 种子：截图通道下是固定值——同一条命令行两次运行必须拍到同一行字，否则那条
+    // 「两遍逐字节相同」的验收条件就不成立了。
+    void rollSplash() {
+        const std::uint64_t seed =
+            uiCapture.has_value()
+                ? kUiCaptureSplashSeed
+                : static_cast<std::uint64_t>(
+                      std::chrono::steady_clock::now().time_since_epoch().count());
+        menuSystem.splashLine = std::string{ui::chooseSplash(menuSystem.splashLines, seed)};
+    }
+
     void handleKeyCaptureKey(int key, int action) {
         if (action != GLFW_PRESS) {
             return;
@@ -2628,6 +2661,27 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 suppressedOpeningChatCodepoint = static_cast<unsigned int>('t');
             }
             return;
+        }
+        // UI-4 / GUI spec §1.4：Tab / Shift+Tab 在可聚焦控件间循环，Enter / Space 激活。
+        // 只在前端页面上生效——游戏中 Tab 与空格是玩法键。
+        if (screenMode() == input::ScreenMode::Menu && action == GLFW_PRESS) {
+            if (key == GLFW_KEY_TAB) {
+                const bool backward =
+                    glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                    glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+                const ui::Page page = buildCurrentPage();
+                const auto current = menuSystem.pageStack.current();
+                menuSystem.setFocus(current,
+                                    ui::nextFocus(page, menuSystem.focusFor(current), !backward));
+                return;
+            }
+            if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER || key == GLFW_KEY_SPACE) {
+                const ui::Page page = buildCurrentPage();
+                if (ui::activateFocused(page, menuSystem.focusFor(menuSystem.pageStack.current()))) {
+                    playUiClick();
+                }
+                return;
+            }
         }
         if (key == GLFW_KEY_ESCAPE) {
             handleBackKey();
@@ -3568,6 +3622,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 把当前页面装配成一个 ui::Page 值，这是唯一的构建点
     [[nodiscard]] ui::Page buildCurrentPage() {
         ui::MenuBuildContext ctx;
+        ctx.reverseCycle = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                           glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
         ctx.worldOpen = currentSave.has_value();
         ctx.worldSelectable = !menuSystem.saveSummaries.empty();
         ctx.worldRowCount = 0;       // list rows are drawn by the list path today

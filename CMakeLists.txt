@@ -1785,6 +1785,25 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_text_metrics_test PRIVATE glm::glm)
     add_test(NAME text_metrics COMMAND mc_rebedrock_text_metrics_test)
 
+    # UI-4：滚动列表的几何（spec §2.7 / §5 的 L3）。三张列表此前各写各的，
+    # 这里断言的是从 26.1 源码查来的行宽与滚动条公式。
+    add_executable(mc_rebedrock_scroll_list_test
+        tests/scroll_list_test.cpp
+        src/ui/MenuGeometry.cpp
+        src/ui/TitleScreenLayout.cpp
+        src/ui/HudLayout.cpp
+    )
+    target_include_directories(mc_rebedrock_scroll_list_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_scroll_list_test PRIVATE glm::glm)
+    add_test(NAME scroll_list COMMAND mc_rebedrock_scroll_list_test)
+
+    # UI-4：主菜单 splash 的选行与脉动缩放（26.1 SplashRenderer 的公式）。
+    add_executable(mc_rebedrock_splash_text_test
+        tests/splash_text_test.cpp
+    )
+    target_include_directories(mc_rebedrock_splash_text_test PRIVATE src)
+    add_test(NAME splash_text COMMAND mc_rebedrock_splash_text_test)
+
     add_executable(mc_rebedrock_texture_animation_test
         tests/texture_animation_test.cpp
         src/assets/TextureAnimation.cpp

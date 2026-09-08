@@ -9,7 +9,13 @@ layout(push_constant) uniform HudPush {
     vec4 rect;       // clip-space origin xy, size zw
     vec4 color;      // tint, multiplied into the texel
     vec4 uvRect;     // sprite source origin xy, size zw (sprite modes)
-    vec4 data;       // x = draw mode, y = atlas layer
+    // x = draw mode, y = atlas layer.
+    // UI-4: z = rotation in radians about the quad's own origin, w = the
+    // framebuffer aspect (width/height) that makes that rotation isotropic in
+    // PIXELS rather than in clip space. Both are zero in every other mode —
+    // these are new meanings for components that never had one, not a
+    // reinterpretation of an existing field (see the rule above).
+    vec4 data;
     // The block icon draws ONE face of ONE box of the block's item model per
     // call. The box arrives in 0..1 cell coordinates, already turned into the
     // inventory pose; the four corner UVs are the model json's own rects sampled
@@ -108,7 +114,22 @@ void main() {
         return;
     }
     vec2 corner = corners[gl_VertexIndex];
-    gl_Position = vec4(hud.rect.xy + corner * hud.rect.zw, 0.0, 1.0);
+    vec2 local = corner * hud.rect.zw;
+    // 26.1's splash text is drawn through a rotated pose (SplashRenderer). Clip
+    // space is anisotropic — one clip unit is W/2 pixels across and H/2 pixels
+    // down — so rotating a clip-space offset directly would shear the glyphs.
+    // Scaling x by the aspect puts both components in units of H/2, where the
+    // rotation is a plain 2D rotation, and dividing back returns to clip space.
+    if (hud.data.z != 0.0) {
+        float aspect = hud.data.w;
+        float c = cos(hud.data.z);
+        float s = sin(hud.data.z);
+        vec2 isotropic = vec2(local.x * aspect, local.y);
+        vec2 rotated = vec2(isotropic.x * c - isotropic.y * s,
+                            isotropic.x * s + isotropic.y * c);
+        local = vec2(rotated.x / aspect, rotated.y);
+    }
+    gl_Position = vec4(hud.rect.xy + local, 0.0, 1.0);
     fragmentUv = hud.uvRect.xy + corner * hud.uvRect.zw;
     fragmentTextureLayer = hud.data.y;
     fragmentLight = vec3(1.0);

@@ -147,9 +147,10 @@ void testMenuButtons() {
 void testListGeometry() {
     constexpr float kWidth = 1280.0F;
     const mc::ui::HudLayout layout{kWidth, 720.0F, 3};   // 逻辑 427x240
-    // worldListRow: width = min(300, 427-20) = 300；x = (427-300)/2 = 63 -> 189
-    EXPECT_RECT(mc::ui::worldListRow(0U, layout, kWidth), 189.0F, 102.0F, 900.0F, 60.0F);
-    EXPECT_RECT(mc::ui::worldListRow(1U, layout, kWidth), 189.0F, 102.0F + 66.0F, 900.0F, 60.0F);
+    // UI-4：行宽改成 26.1 的 270（`WorldSelectionList:251`），此前是自造的 300。
+    // x = (427-270)/2 = 78 -> 234；行距 22 -> 66；行高 20 -> 60。
+    EXPECT_RECT(mc::ui::worldListRow(0U, layout, kWidth), 234.0F, 102.0F, 810.0F, 60.0F);
+    EXPECT_RECT(mc::ui::worldListRow(1U, layout, kWidth), 234.0F, 102.0F + 66.0F, 810.0F, 60.0F);
 
     // 整宽的列表框铺满**逻辑**画布，而不是帧缓冲宽度：427*3 = 1281，比 1280 多一像素。
     // 那一列被切掉正是原版行为（26.1 的版面就摆在 ceil 后的画布上）。
@@ -160,9 +161,10 @@ void testListGeometry() {
     const auto row = mc::ui::languageRow(0U, layout, kWidth);
     CHECK(row.width == 810.0F);            // min(270, 427-32) = 270 -> 810
     CHECK(row.x == 0.0F + 234.0F);         // (427-270)/2 = 78 -> 234
+    // UI-4：按键绑定行宽改成 26.1 的 340（`KeyBindsList:59`），此前是自造的 300。
     const auto controls = mc::ui::controlsRow(0U, layout, kWidth);
-    CHECK(controls.width == 900.0F);       // min(300, 427-32=395) = 300 -> 900
-    CHECK(controls.x == 189.0F);           // (427-300)/2 = 63 -> 189
+    CHECK(controls.width == 1020.0F);      // 340 -> 1020
+    CHECK(controls.x == 129.0F);           // (427-340)/2 = 43 -> 129
 }
 
 // --- 7. 一条通用性质：每个矩形都落在缩放的整数倍上 ---------------------------

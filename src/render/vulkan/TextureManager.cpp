@@ -454,6 +454,14 @@ void TextureManager::createGuiTexture() {
     blitWidget(widgets, GuiWidgetSprite::SliderHandle, "widget/slider_handle", 0, 146);
     blitWidget(widgets, GuiWidgetSprite::SliderHandleHighlighted,
                "widget/slider_handle_highlighted", 0, 166);
+    // UI-4：滚动条的两张 6x32 精灵与两个 15x15 图标。
+    // `widgets` 这一层到此用到 y=186，右侧与下方都还空着，因此**不新增图集层**——
+    // 加层要同步改三处（数组 / kGuiLayerCount / 层号常量），能不加就不加。
+    blitWidget(widgets, GuiWidgetSprite::Scroller, "widget/scroller", 200, 0);
+    blitWidget(widgets, GuiWidgetSprite::ScrollerBackground, "widget/scroller_background", 208,
+               0);
+    blitWidget(widgets, GuiWidgetSprite::IconLanguage, "icon/language", 216, 0);
+    blitWidget(widgets, GuiWidgetSprite::IconAccessibility, "icon/accessibility", 216, 16);
 
     auto hud = emptyRgbaAtlas();
     blit(hud, sprite("hud/crosshair"), 0, 0);

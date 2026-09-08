@@ -134,6 +134,11 @@ struct HudPush final {
     // the block icon, which carries per-corner UVs instead.
     glm::vec4 uvRect;
     // x = draw mode (the kHudMode* constants), y = atlas layer. Every mode.
+    // UI-4: z = rotation in radians about the quad's own origin, w = the
+    // framebuffer aspect that makes that rotation isotropic in pixels. Only the
+    // rotated-text path (26.1's splash) sets them; every other mode leaves them
+    // zero, exactly as it leaves iconBoxMin zero. They are new meanings for
+    // components that never had one — NOT a reinterpretation of `data.x`/`data.y`.
     glm::vec4 data;
     // The block icon draws ONE face of ONE box of the block's item model per
     // call. These four carry that box and that face; every other mode leaves them
