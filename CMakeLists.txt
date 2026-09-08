@@ -1812,7 +1812,8 @@ if(BUILD_TESTING)
     # determinism knob 的源码护栏读渲染器源文件：少钉一个 knob 不改变任何返回值，
     # 而两遍比对在本容器的隐藏窗口下也抓不到（实测记录见测试文件里那段说明）
     target_compile_definitions(mc_rebedrock_ui_capture_test PRIVATE
-        MC_REBEDROCK_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp")
+        MC_REBEDROCK_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp"
+        MC_REBEDROCK_HUD_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/HudRenderer.hpp")
     add_test(NAME ui_capture COMMAND mc_rebedrock_ui_capture_test)
 
     # UI-2：主菜单背景不得有代码写死的变暗。两层断言：配方本身（constexpr 纯函数），

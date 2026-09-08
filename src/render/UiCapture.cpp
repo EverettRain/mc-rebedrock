@@ -87,6 +87,16 @@ bool uiCapturePageNeedsWorld(ui::PageId page) {
            page == ui::PageId::Death || page == ui::PageId::Loading;
 }
 
+bool uiCapturePageShowsWorld(ui::PageId page) {
+    // loading 是差集：它要夹具在场，但那一屏画的是全景加进度行，世界画面还看不见。
+    return uiCapturePageNeedsWorld(page) && page != ui::PageId::Loading;
+}
+
+bool uiCapturePageIsPaused(ui::PageId page) {
+    // 游戏内 HUD 是唯一一个"世界在跑"的页面；其余三个都是盖在世界上的界面。
+    return page != ui::PageId::Game;
+}
+
 std::filesystem::path uiCaptureImagePath(const UiCaptureOptions& options, ui::PageId page,
                                          int guiScale) {
     const std::string leaf =
@@ -120,13 +130,14 @@ std::optional<UiCaptureOptions> parseUiCaptureArguments(
                     throw std::invalid_argument("--ui-shot does not know the page name: " +
                                                 std::string{name});
                 }
-                // 需要世界的页面拍出来不是命令行的函数，两次运行也不会一样。
-                // 与其给出一张看着像成功的错图，不如现在就说不行。
-                if (uiCapturePageNeedsWorld(*page)) {
-                    throw std::invalid_argument(
-                        "--ui-shot cannot capture '" + std::string{name} +
-                        "': it needs an open world, which is not a function of the command line");
-                }
+                // UI-6-0：需要世界的页面**现在可以拍了**。
+                //
+                // 从前这里直接拒绝，理由是"世界内容不是命令行的函数"。那句话对的是
+                // *真实*世界——随机种子、异步区块流送、每帧推进的模拟。夹具不是：
+                // 它是 `--test-scene` 那条路径已经在用的固定单方块场景（固定方块、
+                // 固定光照、固定日时、不启动模拟线程），方块预览的八角图已经用它
+                // 逐字节复现过很多轮。渲染器按 uiCapturePageNeedsWorld 决定这一页
+                // 要不要打开那个夹具，见 VulkanRenderer::Impl::runUiCapture。
                 if (std::find(result->pages.begin(), result->pages.end(), *page) !=
                     result->pages.end()) {
                     throw std::invalid_argument("--ui-shot names '" + std::string{name} +

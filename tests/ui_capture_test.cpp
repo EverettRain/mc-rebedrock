@@ -20,6 +20,10 @@
 #include <string_view>
 #include <vector>
 
+#ifndef MC_REBEDROCK_HUD_RENDERER_SRC
+#error "MC_REBEDROCK_HUD_RENDERER_SRC must point at src/render/vulkan/HudRenderer.hpp"
+#endif
+
 namespace {
 
 int failures = 0;
@@ -106,15 +110,137 @@ void testPageNames() {
     EXPECT_THROWS({"--ui-shot", "title,title"});            // 同一页给两次
     EXPECT_THROWS({"--ui-shot", "title", "--ui-shot", "title"});
     EXPECT_THROWS({"--ui-shot"});                            // 缺参数
-    // 需要世界的页面拍出来不是命令行的函数，两次运行也不会一样：现在就说不行，
-    // 而不是给出一张看着像成功的错图。
-    EXPECT_THROWS({"--ui-shot", "game"});
-    EXPECT_THROWS({"--ui-shot", "pause"});
-    EXPECT_THROWS({"--ui-shot", "death"});
-    EXPECT_THROWS({"--ui-shot", "loading"});
-    EXPECT_THROWS({"--ui-shot", "title,pause"});
+    // ★ UI-6-0：需要世界的四页**不再被拒绝**。渲染器为它们打开一份固定的世界夹具
+    //   （一片石台加四根柱子、常量相机位姿、不起模拟线程），拍完靠 worldReady 关掉。
+    //   从前这里是四条 EXPECT_THROWS，理由写的是"世界内容不是命令行的函数"——
+    //   那句话对的是*真实*世界，不对夹具。
+    for (const char* name : {"game", "pause", "death", "loading"}) {
+        const auto worldPage = parse({"--ui-shot", name});
+        check(worldPage.has_value(),
+              std::string{"--ui-shot "} + name + " must be accepted", __LINE__);
+    }
+    // 混着给也可以：无世界的页面会整屏铺全景，把夹具的世界画面盖掉。
+    const auto mixed = parse({"--ui-shot", "title,pause"});
+    CHECK(mixed.has_value());
+    CHECK(mixed->pages.size() == 2U);
+    CHECK(mixed->pages[0] == mc::ui::PageId::Title);
+    CHECK(mixed->pages[1] == mc::ui::PageId::Pause);
+
+    // 哪些页要夹具，以及拍它们时游戏暂不暂停。两张表必须互相说得通：
+    // 只有游戏内 HUD 是"世界在跑"的那一页，其余三页都是盖在世界上的界面。
     CHECK(mc::render::uiCapturePageNeedsWorld(mc::ui::PageId::Pause));
+    CHECK(mc::render::uiCapturePageNeedsWorld(mc::ui::PageId::Game));
+    CHECK(mc::render::uiCapturePageNeedsWorld(mc::ui::PageId::Death));
+    CHECK(mc::render::uiCapturePageNeedsWorld(mc::ui::PageId::Loading));
     CHECK(!mc::render::uiCapturePageNeedsWorld(mc::ui::PageId::Title));
+    CHECK(!mc::render::uiCapturePageNeedsWorld(mc::ui::PageId::Options));
+    // ★ 游戏内 HUD 是唯一不暂停的一页。把它也判成暂停，拍到的就是暂停菜单，
+    //   而那张图看起来"也挺对"——它确实是一张正确的暂停菜单，只是放错了文件名。
+    CHECK(!mc::render::uiCapturePageIsPaused(mc::ui::PageId::Game));
+    CHECK(mc::render::uiCapturePageIsPaused(mc::ui::PageId::Pause));
+    CHECK(mc::render::uiCapturePageIsPaused(mc::ui::PageId::Death));
+    // 前端页面本来就没有世界在跑，暂停与否对它们无意义，但取值仍要是良定义的
+    CHECK(mc::render::uiCapturePageIsPaused(mc::ui::PageId::Title));
+
+    // ★「要夹具」与「看得见世界」不是同一个问题，loading 是那个差集。
+    //   给 loading 也开 worldReady，drawHud 会跳过 `!worldReady` 那条分支，
+    //   loading/scale-N.png 里拍到的是游戏内 HUD——一张完全正确的 HUD，
+    //   只是文件名写着 loading，而那种错误在自动对照里最不容易发现。
+    CHECK(mc::render::uiCapturePageShowsWorld(mc::ui::PageId::Game));
+    CHECK(mc::render::uiCapturePageShowsWorld(mc::ui::PageId::Pause));
+    CHECK(mc::render::uiCapturePageShowsWorld(mc::ui::PageId::Death));
+    CHECK(!mc::render::uiCapturePageShowsWorld(mc::ui::PageId::Loading));
+    CHECK(mc::render::uiCapturePageNeedsWorld(mc::ui::PageId::Loading));
+    // 看得见世界的页面必然需要夹具；反过来不成立（loading）
+    for (std::size_t i = 0; i <= static_cast<std::size_t>(mc::ui::PageId::Experimental); ++i) {
+        const auto page = static_cast<mc::ui::PageId>(i);
+        if (mc::render::uiCapturePageShowsWorld(page)) {
+            check(mc::render::uiCapturePageNeedsWorld(page),
+                  "a page that shows the world must ask for the fixture", __LINE__);
+        }
+    }
+}
+
+// --- 3b. 源码护栏：夹具的两处"改了图但不改任何返回值"的地方 -------------------
+//
+// 相机位姿与 drawHud 的早退条件都只影响**像素**：改坏了每个函数的返回值都一样，
+// 全套测试照样全绿，而拍出来的图是一整屏清除色、或者一张没有界面的世界照。
+// 本仓不存基线图（方块预览也只做到"确定性已核实、正确性未核实"），所以这两件事
+// 只能靠读源码守——同 title_background 的做法，理由也同它。
+
+[[nodiscard]] std::string readSource(const char* path) {
+    std::ifstream input{path, std::ios::binary};
+    if (!input) {
+        std::printf("ui_capture_test: cannot open %s\n", path);
+        ++failures;
+        return {};
+    }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    // 去掉 `//` 行注释：这两段的注释里正好提到了要禁止的名字。
+    std::string result;
+    std::istringstream lines{buffer.str()};
+    std::string line;
+    while (std::getline(lines, line)) {
+        const auto comment = line.find("//");
+        result += comment == std::string::npos ? line : line.substr(0, comment);
+        result += '\n';
+    }
+    return result;
+}
+
+[[nodiscard]] std::string functionBody(const std::string& source, const std::string& signature) {
+    const auto start = source.find(signature);
+    if (start == std::string::npos) {
+        std::printf("ui_capture_test: %s not found — did it get renamed? "
+                    "This guard must be moved with it, not deleted.\n", signature.c_str());
+        ++failures;
+        return {};
+    }
+    const auto open = source.find('{', start);
+    if (open == std::string::npos) {
+        ++failures;
+        return {};
+    }
+    int depth = 0;
+    for (std::size_t i = open; i < source.size(); ++i) {
+        if (source[i] == '{') { ++depth; }
+        if (source[i] == '}') {
+            --depth;
+            if (depth == 0) {
+                return source.substr(open, i - open + 1U);
+            }
+        }
+    }
+    ++failures;
+    return {};
+}
+
+void testFixtureSourceGuards() {
+    const std::string renderer = readSource(MC_REBEDROCK_RENDERER_SRC);
+    const std::string fixture = functionBody(renderer, "void ensureUiCaptureWorldFixture(");
+    if (!fixture.empty()) {
+        // ★ 相机位姿必须**显式**设。踩过的坑：只设位置、朝向留出厂默认 yaw = -90°
+        //   （forward = (0,0,-1)），相机正好背对场景，拍出来是一整屏清除色加一个
+        //   右下角的手持物——看起来像"世界没渲染"，其实是相机在别处。
+        CHECK(fixture.find("camera.setPosition(") != std::string::npos);
+        CHECK(fixture.find("camera.setRotation(") != std::string::npos);
+        // ★ 而且**不能**用 snapshotCameraEye()：它读 clientMirror 里的玩家位置，
+        //   而这条通道不启动模拟线程，镜像永远停在初始值上，与夹具摆的那个点无关。
+        CHECK(fixture.find("snapshotCameraEye") == std::string::npos);
+    }
+
+    const std::string hud = readSource(MC_REBEDROCK_HUD_RENDERER_SRC);
+    const std::string drawHud = functionBody(hud, "void drawHud(VkCommandBuffer");
+    if (!drawHud.empty()) {
+        // ★ 测试场景那条早退必须带上"除非在拍界面"。少了它，四个世界页拍到的是
+        //   一张没有任何界面的世界照——每一张都存在、大小也正常，只是空的。
+        const auto early = drawHud.find("testScene.has_value()");
+        CHECK(early != std::string::npos);
+        if (early != std::string::npos) {
+            CHECK(drawHud.find("uiCaptureActive", early) != std::string::npos);
+        }
+    }
 }
 
 // --- 4. GUI 缩放档 -----------------------------------------------------------
@@ -320,6 +446,7 @@ int main() {
     testAbsent();
     testDefaults();
     testPageNames();
+    testFixtureSourceGuards();
     testScales();
     testSize();
     testPaths();

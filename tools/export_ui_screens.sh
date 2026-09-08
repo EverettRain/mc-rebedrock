@@ -24,6 +24,11 @@
 # ★ 这条通道读的是离屏的 sceneTargets，位于 copySceneToSwapchain **之前**，
 #   因此它**看不到呈现链**（RN-25 §4）。凡引用它说"视觉验收通过"都要带这个限定。
 #
+# ★ UI-6-0：game / pause / death / loading 四页需要世界，渲染器会为它们打开一份
+#   **固定的世界夹具**（一片 9x9 石台加四根柱子，相机位姿是常量，不启动模拟线程）。
+#   它与 --test-scene 的方块预览共用同一条场景装配路径，但走各自的出图目录，
+#   互不干扰。
+#
 # 环境：容器内可用（Xvfb + lavapipe），不需要 macOS，也不需要独立 GPU。
 #   Xvfb :99 -screen 0 1280x1024x24 &   然后   export DISPLAY=:99
 
@@ -53,7 +58,8 @@ done
 if [[ -z "$PAGES" ]]; then
     echo "用法：$0 [--verify] <页名>[,<页名>...] [--scale 2,3] [--size 1280x720] [--out 目录]" >&2
     echo "  页名：title / world-list / create-world / edit-world / confirm-delete /" >&2
-    echo "        options / video-settings / controls / language / experimental" >&2
+    echo "        options / video-settings / controls / language / experimental /" >&2
+    echo "        game / pause / death / loading" >&2
     exit 2
 fi
 
@@ -97,23 +103,37 @@ run_capture() {  # $1 = 输出根目录
     "$BINARY" "${args[@]}" ${PACKS[@]+"${PACKS[@]}"}
 }
 
+# 两种模式**同一个**输出目录。
+#
+# 从前 --verify 另开 `export/ui-preview-verify/`，并把两遍留成 run-a / run-b 两套。
+# 结果是同一批图在 export/ 下有三份，而其中两份长得一模一样（那正是验收条件）。
+# 现在第二遍拍进一个临时目录，比完就删：**留下来的是一套干净的图**，位置与不带
+# --verify 时完全一致，找图不用先想"这次是哪种模式跑的"。
+ROOT="${OUT:-export/ui-preview}"
+
 if [[ "$VERIFY" -eq 0 ]]; then
     # 不要把它接进管道：`./tool | tail` 的退出码是 tail 的 0，本仓踩过四次。
-    run_capture "${OUT:-export/ui-preview}"
+    # 重定向也一样吃退出码（D4 核实时踩过一次）。
+    run_capture "$ROOT"
     exit $?
 fi
 
-ROOT="${OUT:-export/ui-preview-verify}"
-rm -rf "$ROOT/run-a" "$ROOT/run-b"
-run_capture "$ROOT/run-a"
-run_capture "$ROOT/run-b"
+# 先清掉本次输出目录：diff -r 会把"只在一边存在的文件"也报出来，上一次跑别的页
+# 留下的残留会让比对假失败。
+rm -rf "$ROOT"
+run_capture "$ROOT"
+SECOND="$(mktemp -d "${TMPDIR:-/tmp}/mc-ui-verify.XXXXXX")"
+run_capture "$SECOND"
 
-# diff -r 会把"只在一边存在的文件"也报出来，所以少出一张图同样是失败
-if diff -r "$ROOT/run-a" "$ROOT/run-b" >/dev/null; then
-    count=$(find "$ROOT/run-a" -name '*.png' | wc -l | tr -d ' ')
-    echo "确定性通过：两次运行的 ${count} 张图逐字节相同（${ROOT}）"
+# 少出一张图同样是失败——这正是 diff -r 而不是逐文件 cmp 的理由。
+if diff -r "$ROOT" "$SECOND" >/dev/null; then
+    count=$(find "$ROOT" -name '*.png' | wc -l | tr -d ' ')
+    rm -rf "$SECOND"
+    echo "确定性通过：两次运行的 ${count} 张图逐字节相同；留下的一套在 ${ROOT}"
 else
     echo "确定性失败：两次运行的图片不同" >&2
-    diff -rq "$ROOT/run-a" "$ROOT/run-b" >&2 || true
+    diff -rq "$ROOT" "$SECOND" >&2 || true
+    # 失败时**不删**第二遍：要比的两套都得还在，否则没法查为什么不同。
+    echo "第二遍留在 ${SECOND} 供比对" >&2
     exit 1
 fi

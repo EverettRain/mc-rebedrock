@@ -65,9 +65,32 @@ struct UiCaptureOptions final {
 [[nodiscard]] std::string_view uiCapturePageName(ui::PageId page);
 [[nodiscard]] std::optional<ui::PageId> uiCapturePageFromName(std::string_view name);
 
-// 这个页面要不要一个打开着的世界才成立。要的话，这条通道现在拍不了它：
-// 世界内容不是命令行的函数，拍出来的图既不可复现也不是任何人想对照的东西。
+// 这个页面要不要一个打开着的世界才成立。
+//
+// UI-6-0 之前这同时是一条**拒绝**规则：解析期就把这四页挡掉，理由是"世界内容不是
+// 命令行的函数"。那句话对的是*真实*世界——随机种子、异步区块流送、每帧推进的模拟。
+// 现在它只是一个提问：渲染器据此为这一页打开那份**固定的世界夹具**（`--test-scene`
+// 已经在用的单方块场景：固定方块、固定光照、固定日时、不起模拟线程），拍完再关。
+//
+// 关掉夹具靠的是 `worldReady`，不是拆掉世界：无世界的页面会整屏铺全景，
+// 把世界画面盖掉（全景是一次全屏三角形）。这也是为什么这两类页面能在**同一次运行**
+// 里混着拍——UI-5 的十屏基线因此不受影响。
 [[nodiscard]] bool uiCapturePageNeedsWorld(ui::PageId page);
+
+// 这一页画的时候游戏是不是暂停的。
+// 只有游戏内 HUD 不是：其余三页都是盖在世界上的界面，而 `paused` 决定 drawHud 走哪条分支。
+[[nodiscard]] bool uiCapturePageIsPaused(ui::PageId page);
+
+// 这一页画的时候**世界画面看得见**吗（渲染器的 `worldReady`）。
+//
+// 它与 uiCapturePageNeedsWorld **不是同一个问题**，loading 就是那个差集：它属于世界
+// 会话（要夹具在场），但画的时候还没有世界画面——`drawHud` 的 `!worldReady` 分支画的
+// 是全景加一行进度。给它 worldReady = true 会直接跳过那一屏，`loading/scale-N.png` 里
+// 拍到的是游戏内 HUD：一张完全正确的 HUD，只是文件名写着 loading。
+//
+// 抽成纯函数是因为这条判断原本长在渲染器的翻译单元里，而那里没有任何测试看得见——
+// 「如果一处改动不改变任何函数的返回值，它就还没有被任何断言覆盖」（护栏 12）。
+[[nodiscard]] bool uiCapturePageShowsWorld(ui::PageId page);
 
 // 一张图的输出路径：<root>/<页名>/scale-<档>.png，Auto 档写作 scale-auto.png。
 // 路径必须只由命令行决定——确定性这条规则一直管到文件名。
