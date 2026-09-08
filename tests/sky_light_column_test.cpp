@@ -118,9 +118,12 @@ void shapeEndsTheColumnFor(BlockState (*shaped)(SlabPortion)) {
 
     assert(bottomWorld.lowestSourceY(kShaftX, kShaftZ) == kTestY);
     assert(bottomWorld.skyLight(kShaftX, kTestY, kShaftZ) == 15U);     // a source itself
-    assert(bottomWorld.skyLight(kShaftX, kTestY - 1, kShaftZ) == 14U);
-    assert(bottomWorld.skyLight(kShaftX, kTestY - 14, kShaftZ) == 1U);
-    assert(bottomWorld.skyLight(kShaftX, kTestY - 15, kShaftZ) == 0U);
+    // ★ 这三条原本是 14 / 1 / 0，也就是「光从下半砖穿下去、每格 −1」。那是**缺一道门**
+    // 的样子：26.1 的传播带逐面形状门（`SkyLightEngine:158` → `LightEngine.shapeOccludes`），
+    // 下半砖朝下那面是整块正方形，光进不到它下面那一格。用台阶封顶的屋子在原版里是黑的。
+    // RN-8f 只修了衰减值，那道门是补完它的另一半。
+    assert(bottomWorld.skyLight(kShaftX, kTestY - 1, kShaftZ) == 0U);
+    assert(bottomWorld.skyLight(kShaftX, kTestY - 14, kShaftZ) == 0U);
 
     World topWorld = makeShaftWorld();
     topWorld.setState(kShaftX, kTestY, kShaftZ, shaped(SlabPortion::Top));
@@ -129,9 +132,11 @@ void shapeEndsTheColumnFor(BlockState (*shaped)(SlabPortion)) {
 
     assert(topWorld.lowestSourceY(kShaftX, kShaftZ) == kTestY + 1);    // one cell higher
     assert(topWorld.skyLight(kShaftX, kTestY + 1, kShaftZ) == 15U);
-    assert(topWorld.skyLight(kShaftX, kTestY, kShaftZ) == 14U);        // not a source
-    assert(topWorld.skyLight(kShaftX, kTestY - 1, kShaftZ) == 13U);
-    assert(topWorld.skyLight(kShaftX, kTestY - 14, kShaftZ) == 0U);
+    // 上半砖朝上那面是整块正方形，所以光连它**自己那一格**都进不去（那一格的空气在
+    // 砖的下面）。原本这里写 14，同样是缺门的样子。两半的判别因此比从前更锐利：
+    // 同一格，下半砖 15、上半砖 0——「源柱在哪结束」这件事仍然被钉住，而且钉得更死。
+    assert(topWorld.skyLight(kShaftX, kTestY, kShaftZ) == 0U);
+    assert(topWorld.skyLight(kShaftX, kTestY - 1, kShaftZ) == 0U);
 }
 
 void testShapeEndsTheColumnOneCellApart() {
@@ -159,15 +164,31 @@ void testShapeEndsTheColumnAfterPlacement() {
         assert(shaftSky(world, kTestY) == 15U);
         assert(shaftSky(world, kTestY - 1) == 15U);
 
-        world.setState(kShaftX, kTestY, kShaftZ, shaped(SlabPortion::Top));
+        world.setState(kShaftX, kTestY, kShaftZ, shaped(SlabPortion::Bottom));
         engine.updateBlock(world, kShaftX, kTestY, kShaftZ);
 
-        // 放之后：上半砖封住它上面那条边，源柱停在上一格；它自己被传播进来，
-        // 读 14 而不是 0——0 正是「光进不去这一格」那处短路问错了东西的样子。
-        assert(world.lowestSourceY(kShaftX, kShaftZ) == kTestY + 1);
-        assert(shaftSky(world, kTestY + 1) == 15U);
-        assert(shaftSky(world, kTestY) == 14U);
-        assert(shaftSky(world, kTestY - 1) == 13U);
+        // 放之后：下半砖自己仍是源（15），但它封住了自己的底面，下面那一格从 15
+        // **掉到 0**。这一路是**递减**，走的正是 `desiredLevel` 的重算，与上面那条
+        // 初始填充的 BFS 是引擎里两条不同的路。
+        assert(world.lowestSourceY(kShaftX, kShaftZ) == kTestY);
+        assert(shaftSky(world, kTestY) == 15U);
+        assert(shaftSky(world, kTestY - 1) == 0U);
+        assert(shaftSky(world, kTestY - 5) == 0U);
+    }
+
+    // 2c. 门问的是**形状**，不是衰减。
+    //
+    // 玻璃的衰减同样是 0，但它 `noOcclusion`，没有任何一面挡光——光照穿而过。
+    // 少了这条，「衰减为 0 就不挡光」这种看似合理的实现也能让上面两段全绿。
+    {
+        World world = makeShaftWorld();
+        world.setBlock(kShaftX, kTestY, kShaftZ, Block::Glass);
+        WorldLightEngine engine;
+        light(world, engine);
+        assert(mc::world::skyLightOpacity(Block::Glass) == 0U);   // 与台阶同为 0
+        assert(world.lowestSourceY(kShaftX, kShaftZ) <= kTestY);
+        assert(shaftSky(world, kTestY) == 15U);
+        assert(shaftSky(world, kTestY - 1) == 15U && "玻璃不挡光，源柱直通到底");
     }
 }
 
@@ -226,11 +247,13 @@ void testSubmergedStairUpdatesTheColumn() {
 
     world.setState(kShaftX, kTestY, kShaftZ, wet);
     engine.updateBlock(world, kShaftX, kTestY, kShaftZ);
-    // Water's own filter now ends the column one cell higher, and the slab's own
+    // Water's own filter now ends the column one cell higher, and the stair's own
     // cell drops to 15 - max(1, 1).
     assert(world.lowestSourceY(kShaftX, kShaftZ) == kTestY + 1);
     assert(world.skyLight(kShaftX, kTestY, kShaftZ) == 14U);
-    assert(world.skyLight(kShaftX, kTestY - 1, kShaftZ) == 13U);
+    // 下面那一格是 0 而不是 13：注水改的是**衰减**，不是形状——楼梯的底面照样是
+    // 整块正方形，逐面形状门照样挡住向下那一步。这条原本写 13，是缺门时的样子。
+    assert(world.skyLight(kShaftX, kTestY - 1, kShaftZ) == 0U);
 
     // The gate ChunkStreamer applies before it calls updateBlock at all. Reading
     // opacity off the Block instead of the BlockState makes these two equal and

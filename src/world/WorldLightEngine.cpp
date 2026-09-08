@@ -179,14 +179,31 @@ std::uint8_t WorldLightEngine::desiredLevel(const World& world, Channel channel,
     // and more if the cell dampens, in every direction alike. Sky light gets its
     // free vertical run from the source column above, not from an exemption here.
     const std::uint8_t step = std::max<std::uint8_t>(1U, skyLightOpacity(state));
-    for (const auto& offset : kNeighbors) {
+    for (std::size_t index = 0; index < kNeighbors.size(); ++index) {
+        const auto& offset = kNeighbors[index];
         const int neighborX = node.x + offset[0];
         const int neighborY = node.y + offset[1];
         const int neighborZ = node.z + offset[2];
         const std::uint8_t neighbor = level(world, channel, neighborX, neighborY, neighborZ);
-        if (neighbor > step) {
-            desired = std::max(desired, static_cast<std::uint8_t>(neighbor - step));
+        if (neighbor <= step) {
+            continue;
         }
+        // 26.1 的逐面形状门（`SkyLightEngine:158` / `BlockLightEngine:64` 都调
+        // `LightEngine.shapeOccludes`）。衰减为 0 的方块**照样能挡住一个方向的光**：
+        // 下半砖的朝下那面是整块正方形，光因此进不到它下面那一格——一间用台阶封顶的
+        // 屋子在 vanilla 里是黑的。少了这道门，RN-8f 把衰减修对之后就会漏光下去。
+        //
+        // `occludesLightFace` 是源柱那条（`SkyColumn.hpp`）在用的同一个谓词，
+        // 对 `Shapes.join` 的保守近似（单形状测试而非两个形状求并）也沿用它那里的理由。
+        //
+        // 摆在 `neighbor > step` **之后**：多数邻居本来就贡献不了，先做便宜的比较，
+        // 免得为它们各取一次方块状态。
+        const Face towardNode = oppositeFace(static_cast<Face>(index));
+        if (occludesLightFace(state, static_cast<Face>(index)) ||
+            occludesLightFace(world.state(neighborX, neighborY, neighborZ), towardNode)) {
+            continue;
+        }
+        desired = std::max(desired, static_cast<std::uint8_t>(neighbor - step));
     }
     return desired;
 }
@@ -260,12 +277,21 @@ void WorldLightEngine::propagateIncreases(World& world, Channel channel,
         ++lastPropagationVisitCount_;
         const std::uint8_t sourceLevel = level(world, channel, source.x, source.y, source.z);
         if (sourceLevel <= 1U) continue;
-        for (const auto& offset : kNeighbors) {
+        // 逐面形状门要两边的形状，源那一侧每弹出一个节点只取一次。
+        const BlockState sourceState = world.state(source.x, source.y, source.z);
+        for (std::size_t index = 0; index < kNeighbors.size(); ++index) {
+            const auto& offset = kNeighbors[index];
             const Node target{source.x + offset[0], source.y + offset[1],
                               source.z + offset[2]};
             if (!loaded(world, target.x, target.y, target.z)) continue;
             const BlockState targetState = world.state(target.x, target.y, target.z);
             if (blocksLight(targetState)) continue;
+            // 与 desiredLevel 同一道门，同一条理由；两条路径必须一致，否则同一格
+            // 从引擎的两侧进来会得到两个答案（RN-8f 已经在「不透光」那道门上栽过一次）。
+            if (occludesLightFace(sourceState, static_cast<Face>(index)) ||
+                occludesLightFace(targetState, oppositeFace(static_cast<Face>(index)))) {
+                continue;
+            }
             // The same LightEngine.getOpacity step desiredLevel applies, so a
             // cell reached from either side of the engine agrees with itself.
             const std::uint8_t step = std::max<std::uint8_t>(1U, skyLightOpacity(targetState));
