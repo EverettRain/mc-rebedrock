@@ -13,6 +13,7 @@
 
 #include "ui/HudLayout.hpp"
 #include "ui/MenuGeometry.hpp"
+#include "ui/PageBuilder.hpp"
 #include "ui/TitleScreenLayout.hpp"
 
 #include <cmath>
@@ -134,11 +135,19 @@ void testWidgetOrder() {
         threw = true;
     }
     CHECK(threw);
-    // 页面上的控件数与版面里的控件数是同一个数：菜单装配按它来要矩形。
-    CHECK(mc::ui::menuButtonCount(mc::ui::PageId::Title, /*worldOpen=*/false) ==
-          mc::ui::kTitleWidgetCount);
-    CHECK(mc::ui::menuButtonCount(mc::ui::PageId::Title, /*worldOpen=*/true) ==
-          mc::ui::kTitleWidgetCount);
+    // 页面上的控件数与版面里的控件数是同一个数。
+    //
+    // ★ 现在它是从**装配结果**数出来的：从前有一张 `menuButtonCount` 表另说一遍，
+    //   而那两份没有任何东西保证一致。表已经删了，这条断言因此变成了真正的对账。
+    mc::ui::MenuBuildContext ctx;
+    const mc::ui::MenuCallbacks cb;
+    mc::ui::Page title;
+    mc::ui::buildPageInto(title, mc::ui::PageId::Title, ctx, cb);
+    CHECK(mc::ui::countPageButtons(title) == mc::ui::kTitleWidgetCount);
+    ctx.worldOpen = true;
+    mc::ui::Page titleInWorld;
+    mc::ui::buildPageInto(titleInWorld, mc::ui::PageId::Title, ctx, cb);
+    CHECK(mc::ui::countPageButtons(titleInWorld) == mc::ui::kTitleWidgetCount);
 }
 
 // --- 5. 逻辑画布，以及它到帧缓冲像素的换算 ------------------------------------

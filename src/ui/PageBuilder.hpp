@@ -151,12 +151,11 @@ namespace detail {
 }
 
 // 追加一个普通按钮控件，它的矩形取自提供器给出的下一个序号
-inline void addButton(Page& page, const RectProvider& rectFor, const MenuBuildContext& ctx,
+inline void addButton(Page& page, const MenuBuildContext& ctx,
                       WidgetId id, std::function<void()> onActivate, bool enabled = true) {
     Widget w;
     w.kind = WidgetKind::Button;
     w.debugId = static_cast<std::uint16_t>(id);
-    w.rect = rectFor ? rectFor(page.size()) : UiRect{};
     w.label = label(ctx, id);
     w.enabled = enabled;
     w.onActivate = std::move(onActivate);
@@ -165,12 +164,11 @@ inline void addButton(Page& page, const RectProvider& rectFor, const MenuBuildCo
 
 // UI-4：只有图标没有文字的方钮。除了 kind 之外与 addButton 完全一样——
 // 图标本身由绘制侧按 id 查表取，因为图标是**资源**，而这一层从不接触资源。
-inline void addIconButton(Page& page, const RectProvider& rectFor, WidgetId id,
+inline void addIconButton(Page& page, WidgetId id,
                           std::function<void()> onActivate, bool enabled = true) {
     Widget w;
     w.kind = WidgetKind::IconButton;
     w.debugId = static_cast<std::uint16_t>(id);
-    w.rect = rectFor ? rectFor(page.size()) : UiRect{};
     w.enabled = enabled;
     w.onActivate = std::move(onActivate);
     page.push_back(std::move(w));
@@ -179,7 +177,7 @@ inline void addIconButton(Page& page, const RectProvider& rectFor, WidgetId id,
 // 一个循环选项的按钮
 // 它的动作永远是那同一个通用步进，以 id 为键
 // 取值、字段与标签都归表管，见 ui/OptionCycle.hpp，绝不归这个调用点管
-inline void addOptionButton(Page& page, const RectProvider& rectFor, const MenuBuildContext& ctx,
+inline void addOptionButton(Page& page, const MenuBuildContext& ctx,
                             WidgetId id, const MenuCallbacks& cb) {
     // 回调被拷贝进控件，与其它每个动作一样
     // 因为 Page 的存活期长于 buildPage 收到的那个 MenuCallbacks 引用
@@ -187,30 +185,28 @@ inline void addOptionButton(Page& page, const RectProvider& rectFor, const MenuB
     // UI-4 / GUI spec §2.3：**Shift+点击反向循环**（1.17 起）。方向从上下文的
     // `reverseCycle` 读——那是"这一次点击按着 Shift 吗"，由渲染器在装配前填好。
     // 方向早就是 cycleOption 的参数，此前只是从没传过 -1。
-    addButton(page, rectFor, ctx, id, [cycle = cb.cycleOption, id, reverse = ctx.reverseCycle] {
+    addButton(page, ctx, id, [cycle = cb.cycleOption, id, reverse = ctx.reverseCycle] {
         if (cycle) {
             cycle(id, reverse ? -1 : 1);
         }
     });
 }
 
-inline void addSlider(Page& page, const RectProvider& rectFor, const MenuBuildContext& ctx,
+inline void addSlider(Page& page, const MenuBuildContext& ctx,
                       WidgetId id, SliderBind bind) {
     Widget w;
     w.kind = WidgetKind::Slider;
     w.debugId = static_cast<std::uint16_t>(id);
-    w.rect = rectFor ? rectFor(page.size()) : UiRect{};
     w.label = label(ctx, id);
     w.slider = std::move(bind);
     page.push_back(std::move(w));
 }
 
-inline void addListRow(Page& page, const RectProvider& rectFor, WidgetId id, std::size_t rowIndex,
+inline void addListRow(Page& page, WidgetId id, std::size_t rowIndex,
                        std::function<void()> onActivate) {
     Widget w;
     w.kind = WidgetKind::ListRow;
     w.debugId = static_cast<std::uint16_t>(id);
-    w.rect = rectFor ? rectFor(page.size()) : UiRect{};
     w.onActivate = std::move(onActivate);
     static_cast<void>(rowIndex);
     page.push_back(std::move(w));
@@ -226,8 +222,8 @@ inline void addListRow(Page& page, const RectProvider& rectFor, WidgetId id, std
 // 「这个动作的默认绑定是什么」，而 input 层今天只有整表重置（`resetToDefaults`），
 // 没有 `defaultBinding(action)`。先摆一个按不动的按钮不如不摆。
 //
-// 两个 Widget 的矩形都来自调用方的 rectFor，按控件序号取——一行两个序号。
-inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBuildContext& ctx,
+// 三个 Widget 的矩形由**布局那一趟**填（ui::layoutPageInto）：装配只管"有哪些控件"。
+inline void addKeyBindRow(Page& page, const MenuBuildContext& ctx,
                           input::InputAction action, std::function<void()> onActivate,
                           std::function<void()> onReset) {
     // 两段文字一次取出：漏填其中一段在类型上就不成立（见 KeyBindRowLabels）。
@@ -241,7 +237,6 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
     Widget name;
     name.kind = WidgetKind::Label;
     name.debugId = static_cast<std::uint16_t>(WidgetId::KeyBindRow);
-    name.rect = rectFor ? rectFor(page.size()) : UiRect{};
     name.label = std::move(labels.action);
     // Label 不可交互：焦点遍历跳过它，点它也不会开始捕获。
     name.enabled = false;
@@ -250,7 +245,6 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
     Widget change;
     change.kind = WidgetKind::Button;
     change.debugId = static_cast<std::uint16_t>(WidgetId::KeyBindRow);
-    change.rect = rectFor ? rectFor(page.size()) : UiRect{};
     // 按钮上写的是**键名**，不是"动作: 按键"。装饰（冲突的 `[ … ]`、捕获中的 `> … <`）
     // 与动作名一起由 keyBindLabelsFor 给出——它读的是 InputSystem 这个唯一来源。
     change.label = std::move(labels.key);
@@ -262,7 +256,6 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
     Widget reset;
     reset.kind = WidgetKind::Button;
     reset.debugId = static_cast<std::uint16_t>(WidgetId::ResetKeyBind);
-    reset.rect = rectFor ? rectFor(page.size()) : UiRect{};
     reset.label = ctx.labelFor ? ctx.labelFor(static_cast<std::uint16_t>(WidgetId::ResetKeyBind))
                                : std::string{};
     reset.enabled = labels.resettable;
@@ -277,7 +270,7 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
 // page 会先被清空，容量因此跨次复用
 // 绘制侧每帧都要一份当前页，走这个重载就不必每帧向堆要一个新的 vector
 inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
-                          const MenuCallbacks& cb, const RectProvider& rectFor) {
+                          const MenuCallbacks& cb) {
     using detail::addButton;
     using detail::addIconButton;
     using detail::addOptionButton;
@@ -295,74 +288,74 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             // AccessibilitySettings），所以它们**在位、灰着、点不动**——vanilla 在
             // allowsMultiplayer() 为假时正是这么灰掉多人与 Realms 的，不是自造形态。
             // 目标屏幕登记在 UI-7。
-            addButton(page, rectFor, ctx, WidgetId::Singleplayer, cb.openSingleplayer);
-            addButton(page, rectFor, ctx, WidgetId::Multiplayer, nullptr, /*enabled=*/false);
-            addButton(page, rectFor, ctx, WidgetId::Realms, nullptr, /*enabled=*/false);
-            addIconButton(page, rectFor, WidgetId::TitleLanguage, cb.openLanguage);
-            addButton(page, rectFor, ctx, WidgetId::Options, cb.openOptions);
-            addButton(page, rectFor, ctx, WidgetId::Exit, cb.exitGame);
-            addIconButton(page, rectFor, WidgetId::TitleAccessibility, nullptr,
+            addButton(page, ctx, WidgetId::Singleplayer, cb.openSingleplayer);
+            addButton(page, ctx, WidgetId::Multiplayer, nullptr, /*enabled=*/false);
+            addButton(page, ctx, WidgetId::Realms, nullptr, /*enabled=*/false);
+            addIconButton(page, WidgetId::TitleLanguage, cb.openLanguage);
+            addButton(page, ctx, WidgetId::Options, cb.openOptions);
+            addButton(page, ctx, WidgetId::Exit, cb.exitGame);
+            addIconButton(page, WidgetId::TitleAccessibility, nullptr,
                           /*enabled=*/false);
             break;
 
         case PageId::Pause:
-            addButton(page, rectFor, ctx, WidgetId::Resume, cb.resume);
-            addButton(page, rectFor, ctx, WidgetId::Options, cb.openOptions);
-            addButton(page, rectFor, ctx, WidgetId::SaveQuit, cb.saveAndQuit);
+            addButton(page, ctx, WidgetId::Resume, cb.resume);
+            addButton(page, ctx, WidgetId::Options, cb.openOptions);
+            addButton(page, ctx, WidgetId::SaveQuit, cb.saveAndQuit);
             break;
 
         case PageId::Death:
-            addButton(page, rectFor, ctx, WidgetId::Respawn, cb.respawn);
-            addButton(page, rectFor, ctx, WidgetId::TitleScreen, cb.returnToTitle);
+            addButton(page, ctx, WidgetId::Respawn, cb.respawn);
+            addButton(page, ctx, WidgetId::TitleScreen, cb.returnToTitle);
             break;
 
         case PageId::WorldList:
             // 先是滚动的存档行，也就是列表主体，然后是四个动作按钮
             // 按钮顺序沿用惯例：进入、创建、编辑、返回
             for (std::size_t row = 0; row < ctx.worldRowCount; ++row) {
-                addListRow(page, rectFor, WidgetId::WorldRow, row,
+                addListRow(page, WidgetId::WorldRow, row,
                            [cb, row]() { if (cb.selectWorldRow) cb.selectWorldRow(row); });
             }
-            addButton(page, rectFor, ctx, WidgetId::PlaySelected, cb.playSelectedWorld,
+            addButton(page, ctx, WidgetId::PlaySelected, cb.playSelectedWorld,
                       ctx.worldSelectable);
-            addButton(page, rectFor, ctx, WidgetId::CreateWorld, cb.createWorld);
-            addButton(page, rectFor, ctx, WidgetId::Edit, cb.editWorld, ctx.worldSelectable);
-            addButton(page, rectFor, ctx, WidgetId::Back, cb.back);
+            addButton(page, ctx, WidgetId::CreateWorld, cb.createWorld);
+            addButton(page, ctx, WidgetId::Edit, cb.editWorld, ctx.worldSelectable);
+            addButton(page, ctx, WidgetId::Back, cb.back);
             break;
 
         case PageId::CreateWorld:
-            addButton(page, rectFor, ctx, WidgetId::CreateGameMode, cb.toggleCreateGameMode);
-            addButton(page, rectFor, ctx, WidgetId::CreateAllowCommands,
+            addButton(page, ctx, WidgetId::CreateGameMode, cb.toggleCreateGameMode);
+            addButton(page, ctx, WidgetId::CreateAllowCommands,
                       cb.toggleCreateAllowCommands);
-            addButton(page, rectFor, ctx, WidgetId::CreateConfirm, cb.confirmCreate);
-            addButton(page, rectFor, ctx, WidgetId::Back, cb.back);
+            addButton(page, ctx, WidgetId::CreateConfirm, cb.confirmCreate);
+            addButton(page, ctx, WidgetId::Back, cb.back);
             break;
 
         case PageId::EditWorld:
-            addButton(page, rectFor, ctx, WidgetId::SaveRename, cb.renameWorld);
-            addButton(page, rectFor, ctx, WidgetId::DeleteWorld, cb.deleteWorld);
-            addButton(page, rectFor, ctx, WidgetId::Back, cb.back);
+            addButton(page, ctx, WidgetId::SaveRename, cb.renameWorld);
+            addButton(page, ctx, WidgetId::DeleteWorld, cb.deleteWorld);
+            addButton(page, ctx, WidgetId::Back, cb.back);
             break;
 
         case PageId::ConfirmDelete:
-            addButton(page, rectFor, ctx, WidgetId::DeleteConfirm, cb.confirmDelete);
-            addButton(page, rectFor, ctx, WidgetId::DeleteCancel, cb.cancelDelete);
+            addButton(page, ctx, WidgetId::DeleteConfirm, cb.confirmDelete);
+            addButton(page, ctx, WidgetId::DeleteCancel, cb.cancelDelete);
             break;
 
         case PageId::Options:
-            addSlider(page, rectFor, ctx, WidgetId::MasterVolume, cb.masterVolume);
+            addSlider(page, ctx, WidgetId::MasterVolume, cb.masterVolume);
             if (ctx.worldOpen) {
-                addButton(page, rectFor, ctx, WidgetId::Difficulty, cb.cycleDifficulty);
+                addButton(page, ctx, WidgetId::Difficulty, cb.cycleDifficulty);
             }
-            addButton(page, rectFor, ctx, WidgetId::Controls, cb.openControls);
-            addButton(page, rectFor, ctx, WidgetId::VideoSettings, cb.openVideoSettings);
-            addButton(page, rectFor, ctx, WidgetId::Language, cb.openLanguage);
+            addButton(page, ctx, WidgetId::Controls, cb.openControls);
+            addButton(page, ctx, WidgetId::VideoSettings, cb.openVideoSettings);
+            addButton(page, ctx, WidgetId::Language, cb.openLanguage);
             // UI-6c：26.1 的 Options 上有 Accessibility Settings…（§7.11）。
             // 字幕开关跟着搬过去了——它在 26.1 里本来就属于那一屏
             // （`AccessibilityOptionsScreen.java:25` 的 `options.showSubtitles()`）。
-            addButton(page, rectFor, ctx, WidgetId::Accessibility, cb.openAccessibility);
-            addButton(page, rectFor, ctx, WidgetId::Experimental, cb.openExperimental);
-            addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
+            addButton(page, ctx, WidgetId::Accessibility, cb.openAccessibility);
+            addButton(page, ctx, WidgetId::Experimental, cb.openExperimental);
+            addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;
 
         // UI-6c：26.1 §7.11 辅助功能设置。这一轮只放两项——View Bobbing（从 Controls
@@ -371,24 +364,24 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
         // **菜单背景模糊强度**是有的（UI-5 落地了它的语义与存储），但 26.1 用的是**滑块**，
         // 而本作的滑块今天只服务三个硬编码项，做通用滑块是另一块工作。已登记为余项。
         case PageId::Accessibility:
-            addOptionButton(page, rectFor, ctx, WidgetId::ViewBobbing, cb);
-            addOptionButton(page, rectFor, ctx, WidgetId::Subtitles, cb);
-            addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
+            addOptionButton(page, ctx, WidgetId::ViewBobbing, cb);
+            addOptionButton(page, ctx, WidgetId::Subtitles, cb);
+            addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;
 
         case PageId::VideoSettings:
-            addButton(page, rectFor, ctx, WidgetId::Resolution, cb.cycleResolution);
-            addButton(page, rectFor, ctx, WidgetId::GuiScale, cb.cycleGuiScale);
-            addSlider(page, rectFor, ctx, WidgetId::ViewDistance, cb.viewDistance);
-            addSlider(page, rectFor, ctx, WidgetId::SimulationDistance, cb.simulationDistance);
-            addOptionButton(page, rectFor, ctx, WidgetId::FrameRateLimit, cb);
-            addOptionButton(page, rectFor, ctx, WidgetId::AntiAliasing, cb);
-            addOptionButton(page, rectFor, ctx, WidgetId::Anisotropy, cb);
-            addOptionButton(page, rectFor, ctx, WidgetId::SmoothLighting, cb);
-            addOptionButton(page, rectFor, ctx, WidgetId::DynamicLight, cb);
-            addOptionButton(page, rectFor, ctx, WidgetId::Vsync, cb);
-            addOptionButton(page, rectFor, ctx, WidgetId::EntityShadows, cb);
-            addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
+            addButton(page, ctx, WidgetId::Resolution, cb.cycleResolution);
+            addButton(page, ctx, WidgetId::GuiScale, cb.cycleGuiScale);
+            addSlider(page, ctx, WidgetId::ViewDistance, cb.viewDistance);
+            addSlider(page, ctx, WidgetId::SimulationDistance, cb.simulationDistance);
+            addOptionButton(page, ctx, WidgetId::FrameRateLimit, cb);
+            addOptionButton(page, ctx, WidgetId::AntiAliasing, cb);
+            addOptionButton(page, ctx, WidgetId::Anisotropy, cb);
+            addOptionButton(page, ctx, WidgetId::SmoothLighting, cb);
+            addOptionButton(page, ctx, WidgetId::DynamicLight, cb);
+            addOptionButton(page, ctx, WidgetId::Vsync, cb);
+            addOptionButton(page, ctx, WidgetId::EntityShadows, cb);
+            addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;
 
         // UI-6c：26.1 的 §7.6 `ControlsScreen` 是一个**排版枢纽**，不是绑定列表
@@ -403,15 +396,15 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
         //   在本作不存在，而"页面为空就完全不建"。少一个跳转按钮是登记过的偏差，
         //   不是把玩家送进一张空页。
         case PageId::Controls:
-            addButton(page, rectFor, ctx, WidgetId::OpenKeyBinds, cb.openKeyBinds);
-            addOptionButton(page, rectFor, ctx, WidgetId::ToggleCrouch, cb);
-            addOptionButton(page, rectFor, ctx, WidgetId::ToggleSprint, cb);
-            addOptionButton(page, rectFor, ctx, WidgetId::ToggleAttack, cb);
-            addOptionButton(page, rectFor, ctx, WidgetId::ToggleUse, cb);
-            addOptionButton(page, rectFor, ctx, WidgetId::AutoJump, cb);
-            addOptionButton(page, rectFor, ctx, WidgetId::SprintWindow, cb);
-            addOptionButton(page, rectFor, ctx, WidgetId::OperatorItemsTab, cb);
-            addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
+            addButton(page, ctx, WidgetId::OpenKeyBinds, cb.openKeyBinds);
+            addOptionButton(page, ctx, WidgetId::ToggleCrouch, cb);
+            addOptionButton(page, ctx, WidgetId::ToggleSprint, cb);
+            addOptionButton(page, ctx, WidgetId::ToggleAttack, cb);
+            addOptionButton(page, ctx, WidgetId::ToggleUse, cb);
+            addOptionButton(page, ctx, WidgetId::AutoJump, cb);
+            addOptionButton(page, ctx, WidgetId::SprintWindow, cb);
+            addOptionButton(page, ctx, WidgetId::OperatorItemsTab, cb);
+            addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;
 
         // UI-6c：26.1 的 §7.8 `KeyBindsScreen`——页眉标题、绑定列表、页脚两个按钮
@@ -419,7 +412,7 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
         case PageId::KeyBinds: {
             // 绑定行是一个滚动列表，只装配可见窗口 [keyBindFirstIndex, +keyBindRowCount)，
             // 页面因此绝不会超出布局容量。每行**三个**控件（名称 Label + 改键 Button +
-            // 重置 Button），矩形由 rectFor 按序号给。
+            // 重置 Button），矩形由布局那一趟填。
             //
             // ★ UI-6c：窗口数的是**行**，不是动作。展开后的行表里夹着分类标题行
             //   （`ui/KeyBindList.hpp`），标题行占一行但**不产生控件**——它由绘制侧
@@ -433,30 +426,30 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
                 }
                 const input::InputAction action = entry.action;
                 detail::addKeyBindRow(
-                    page, rectFor, ctx, action,
+                    page, ctx, action,
                     [cb, action]() { if (cb.beginKeyCapture) cb.beginKeyCapture(action); },
                     [cb, action]() { if (cb.resetKeyBind) cb.resetKeyBind(action); });
             }
-            addButton(page, rectFor, ctx, WidgetId::ResetKeyBinds, cb.resetKeyBinds);
-            addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
+            addButton(page, ctx, WidgetId::ResetKeyBinds, cb.resetKeyBinds);
+            addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;
         }
 
         case PageId::Language:
             for (std::size_t row = 0; row < ctx.languageRowCount; ++row) {
-                addListRow(page, rectFor, WidgetId::LanguageRow, row,
+                addListRow(page, WidgetId::LanguageRow, row,
                            [cb, row]() { if (cb.selectLanguageRow) cb.selectLanguageRow(row); });
             }
-            addOptionButton(page, rectFor, ctx, WidgetId::ForceUnicodeFont, cb);
-            addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
+            addOptionButton(page, ctx, WidgetId::ForceUnicodeFont, cb);
+            addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;
 
         case PageId::Experimental:
-            addOptionButton(page, rectFor, ctx, WidgetId::RainMode, cb);
-            addOptionButton(page, rectFor, ctx, WidgetId::ParticleLevel, cb);
-            addOptionButton(page, rectFor, ctx, WidgetId::SunShadows, cb);
-            addOptionButton(page, rectFor, ctx, WidgetId::RainCollisionCache, cb);
-            addButton(page, rectFor, ctx, WidgetId::Back, cb.back);
+            addOptionButton(page, ctx, WidgetId::RainMode, cb);
+            addOptionButton(page, ctx, WidgetId::ParticleLevel, cb);
+            addOptionButton(page, ctx, WidgetId::SunShadows, cb);
+            addOptionButton(page, ctx, WidgetId::RainCollisionCache, cb);
+            addButton(page, ctx, WidgetId::Back, cb.back);
             break;
 
         case PageId::Loading:
@@ -465,12 +458,27 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
     }
 }
 
+// 用任意一个"按序号给矩形"的函数填一页的矩形。
+//
+// 生产路径**不走这条**——它走 `ui::layoutPageInto`，那里按钮数是从装配结果数出来的。
+// 这条留给测试：它们常想自造一套平凡的行布局（每个控件一行 20 高）来断言点击派发，
+// 而不必把真实的版面求解器拖进来。
+inline void applyPageRects(Page& page, const RectProvider& rectFor) {
+    if (!rectFor) {
+        return;
+    }
+    for (std::size_t index = 0; index < page.size(); ++index) {
+        page[index].rect = rectFor(index);
+    }
+}
+
 // 返回一份新页面
 // 派发路径用它，那里点击时才构建一次；每帧绘制则走上面那个写入缓冲的重载
 [[nodiscard]] inline Page buildPage(PageId id, const MenuBuildContext& ctx,
                                     const MenuCallbacks& cb, const RectProvider& rectFor) {
     Page page;
-    buildPageInto(page, id, ctx, cb, rectFor);
+    buildPageInto(page, id, ctx, cb);
+    applyPageRects(page, rectFor);
     return page;
 }
 

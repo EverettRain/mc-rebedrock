@@ -4,6 +4,7 @@
 #include "ui/KeyBindList.hpp"
 #include "ui/ListRow.hpp"
 #include "ui/OptionsList.hpp"
+#include "ui/PageLayoutKind.hpp"
 #include "ui/TextMetrics.hpp"
 
 #include "ui/ScrollList.hpp"
@@ -74,53 +75,6 @@ ScrollList worldScrollList(const HudLayout& layout, float framebufferWidth) {
                       kWorldListRowStep};
 }
 
-std::size_t menuButtonCount(PageId page, bool worldOpen) {
-    switch (page) {
-    case PageId::Title:
-        // UI-2：26.1 的主菜单是七个可点控件（spec §6.3 的伪 XML 布局树，几何按
-        // TitleScreen.init 核对过）——单人、多人、Realms、语言图标、选项、退出、无障碍图标
-        return kTitleWidgetCount;
-    case PageId::WorldList:
-        return 4U;
-    case PageId::CreateWorld:
-        // 游戏模式、允许作弊、创建世界、返回
-        return 4U;
-    case PageId::EditWorld:
-        return 3U;
-    case PageId::ConfirmDelete:
-        return 2U;
-    case PageId::Options:
-        // 没有打开世界时少一个按钮，因为不显示难度项。
-        // UI-6c：字幕开关搬去了辅助功能设置（26.1 本来就在那一屏），
-        // 同时多了一个跳到辅助功能设置的按钮——一进一出，总数不变。
-        return worldOpen ? 8U : 7U;
-    case PageId::Accessibility:
-        // 视角摇晃、字幕、完成
-        return 3U;
-    case PageId::KeyBinds:
-        // 页脚两个：重置按键、完成（26.1 `KeyBindsScreen.addFooter` 横排）
-        return 2U;
-    case PageId::Experimental:
-        return 5U;
-    case PageId::VideoSettings:
-        // RN-23 起多一个：实体阴影开关。26.1 把它放在视频设置里
-        // （VideoSettingsScreen.java:51），不在实验性内容里
-        return 12U;
-    case PageId::Controls:
-        // UI-6c：这一屏现在是 26.1 的 §7.6 排版枢纽（偏差 D1）。
-        // 一个跳转（Key Binds…）+ 七个设置项 + 完成 = 9。
-        // 少的那个跳转是 Mouse Settings…：本作没有那一屏，而空页不建。
-        return 9U;
-    case PageId::Language:
-        return 2U;
-    case PageId::Pause:
-        return 3U;
-    case PageId::Death:
-        return 2U;
-    default:
-        return 0U;
-    }
-}
 
 UiRect worldListRow(std::size_t index, const HudLayout& layout, float framebufferWidth) {
     // UI-4：走统一的 ScrollList。行宽从自造的 300 改成 26.1 的 **270**
@@ -242,33 +196,48 @@ UiRect keyBindsListBox(const HudLayout& layout, float framebufferWidth) {
 // 不是排版巧合：把它们摊平成一组，keybinds 会和 toggleCrouch 挤在同一行。
 inline constexpr std::array<std::size_t, 2> kControlsHubGroups{1U, 7U};
 
-UiRect menuWidgetRect(PageId page, std::size_t widgetIndex, const HudLayout& layout,
-                      float framebufferWidth, std::size_t buttonCount,
-                      std::size_t keyBindFirstRow, std::size_t keyBindVisibleRows) {
-    if (page == PageId::KeyBinds) {
-        // ★ 控件序号与**屏幕行号**之间不是倍数关系：可见窗口里夹着分类标题行，
-        //   它占一行却不产生控件（`ui/KeyBindList.hpp`）。所以先数出"这一屏里有几个
-        //   绑定行"，再把序号折回它所在的那一行。
-        //   照 `widgetIndex / kKeyBindWidgetsPerRow` 算，标题行之后的每一行都会偏上，
-        //   而画面上只表现为"名字和按钮错位了一行"。
-        const std::size_t bindingRows = keyBindBindingRowsIn(keyBindFirstRow, keyBindVisibleRows);
-        const std::size_t keyWidgets = bindingRows * kKeyBindWidgetsPerRow;
-        if (widgetIndex < keyWidgets) {
-            const std::size_t row =
-                keyBindWidgetVisibleRow(keyBindFirstRow, widgetIndex, kKeyBindWidgetsPerRow);
-            switch (widgetIndex % kKeyBindWidgetsPerRow) {
+// 一页里有几个按钮。绑定列表那三个行内控件（名称 / 改键 / 重置）不算——它们的矩形
+// 来自列表几何，不占按钮网格的位置。
+std::size_t countPageButtons(const Page& page) {
+    std::size_t buttons = 0;
+    for (const Widget& widget : page) {
+        if (!isKeyBindRowWidget(widget)) {
+            ++buttons;
+        }
+    }
+    return buttons;
+}
+
+void layoutPageInto(Page& page, PageId id, const HudLayout& layout, float framebufferWidth,
+                    std::size_t keyBindFirstRow) {
+    // 按钮数从装配结果**数出来**，不是另一张表说的。这就是这两趟拆分的全部意义。
+    const std::size_t buttonCount = countPageButtons(page);
+    std::size_t buttonIndex = 0;
+    std::size_t keyWidgetIndex = 0;
+    for (Widget& widget : page) {
+        if (isKeyBindRowWidget(widget)) {
+            // ★ 控件序号与**屏幕行号**之间不是倍数关系：可见窗口里夹着分类标题行，
+            //   它占一行却不产生控件。照 index/每行控件数 折行，标题行之后的每一行
+            //   都会偏上一格，而画面上只表现为"名字和按钮错位了一行"。
+            const std::size_t row = keyBindWidgetVisibleRow(keyBindFirstRow, keyWidgetIndex,
+                                                            kKeyBindWidgetsPerRow);
+            switch (keyWidgetIndex % kKeyBindWidgetsPerRow) {
             case 0U:
-                return keyBindsNameCell(row, layout, framebufferWidth);
+                widget.rect = keyBindsNameCell(row, layout, framebufferWidth);
+                break;
             case 1U:
-                return keyBindsChangeCell(row, layout, framebufferWidth);
+                widget.rect = keyBindsChangeCell(row, layout, framebufferWidth);
+                break;
             default:
+                widget.rect = keyBindsResetCell(row, layout, framebufferWidth);
                 break;
             }
-            return keyBindsResetCell(row, layout, framebufferWidth);
+            ++keyWidgetIndex;
+            continue;
         }
-        return frontendButtonRect(layout, page, widgetIndex - keyWidgets, buttonCount);
+        widget.rect = frontendButtonRect(layout, id, buttonIndex, buttonCount);
+        ++buttonIndex;
     }
-    return frontendButtonRect(layout, page, widgetIndex, buttonCount);
 }
 
 UiRect keyBindsRow(std::size_t visibleIndex, const HudLayout& layout, float framebufferWidth) {
@@ -325,10 +294,14 @@ std::size_t keyBindsScrollIndexFromCursor(const HudLayout& layout, float framebu
 
 UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t index,
                           std::size_t buttonCount) {
+    // 版式的**选择**在 ui/PageLayoutKind.hpp 那张表里（不带 default 的 switch，
+    // 加一页会被 -Wswitch 点名）；这里只剩每种版式的参数。
+    //
     // UI-2：主菜单走 spec §6.3 的版面，也就是逻辑像素上的整数运算（j = H/4 + 48）。
     // 其余屏幕仍走下面那些以帧缓冲像素做浮点的求解器——动 menuButton 会同时移动
-    // 暂停页、死亡页与选项页（README 护栏第 4 条），所以这里只加分支，不改共用的那个。
-    if (page == PageId::Title) {
+    // 暂停页、死亡页与选项页（README 护栏第 4 条），所以那个共用的求解器不动。
+    switch (pageLayoutKind(page)) {
+    case PageLayoutKind::TitleScreen: {
         const float scale = layout.scale();
         const auto title =
             titleScreenLayout(layout.logicalWidth(), layout.logicalHeight(), 0, 0);
@@ -340,24 +313,18 @@ UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t inde
             static_cast<float>(rect.height) * scale,
         };
     }
-    if (page == PageId::WorldList) {
+    case PageLayoutKind::BottomBandTwoColumn:
+        // vanilla 的 LanguageOptionsScreen 把"强制 Unicode 字体"与"完成"并排放在底部；
+        // 世界列表与绑定列表页脚同形（后者是 `LinearLayout.horizontal().spacing(8)`）。
         return layout.bottomMenuButton(index, buttonCount, 2U);
-    }
-    // 视频页的按钮数已经超出一列能放下的量
-    // 它的各项设置堆进两个居中的列，"完成"单独占下方一行
-    if (page == PageId::VideoSettings) {
-        return layout.videoSettingsButton(index, buttonCount);
-    }
-    if (page == PageId::EditWorld || page == PageId::ConfirmDelete) {
+    case PageLayoutKind::BottomBand:
         return layout.bottomMenuButton(index, buttonCount);
-    }
-    // vanilla 的 LanguageOptionsScreen 把"强制 Unicode 字体"与"完成"并排放在底部，而不是上下堆叠
-    if (page == PageId::Language) {
-        return layout.bottomMenuButton(index, buttonCount, 2U);
-    }
-    // UI-6c：Controls 枢纽是 §7.6 的排版——三段式版面里一张 OptionsList 双列
-    // （§5 的范式 L2 的第一个真消费者），页脚一个 Done。
-    if (page == PageId::Controls) {
+    case PageLayoutKind::VideoGrid:
+        // 视频页的按钮数已经超出一列能放下的量：各项设置堆进两个居中的列，
+        // "完成"单独占下方一行。
+        return layout.videoSettingsButton(index, buttonCount);
+    case PageLayoutKind::HeaderFooterList: {
+        // 26.1 的 OptionsSubScreen：三段式版面里一张 OptionsList 双列，页脚一个按钮。
         const auto frame = headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
         // 最后一个控件是 Done，它在页脚里居中，不在列表里。
         if (buttonCount > 0U && index + 1U == buttonCount) {
@@ -367,11 +334,8 @@ UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t inde
         const auto slot = optionsGroupedSlot(kControlsHubGroups, index);
         return fbRect(layout, optionsSmallCell(list, slot.row, slot.column));
     }
-    // UI-6c：绑定列表页的页脚是**横排**的两个按钮
-    // （`KeyBindsScreen.addFooter`：`LinearLayout.horizontal().spacing(8)` 装
-    //  `controls.resetAll` 与 Done），和语言页同形。
-    if (page == PageId::KeyBinds) {
-        return layout.bottomMenuButton(index, buttonCount, 2U);
+    case PageLayoutKind::CentredColumn:
+        break;
     }
     return layout.menuButton(index, buttonCount);
 }
