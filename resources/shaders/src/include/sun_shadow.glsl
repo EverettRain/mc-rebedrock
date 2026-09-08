@@ -31,8 +31,8 @@ const float kSunShadowDepthRangeBlocks = 319.9;
 
 #include "sun_shadow_bias.glsl"
 
-float sunShadowFactor(sampler2DShadow shadowMap, mat4 lightViewProj, vec3 worldPosition,
-                      vec3 normal, vec3 sunDirection) {
+float sunShadowFactor(sampler2DShadow shadowMap, sampler2D shadowDepth, mat4 lightViewProj,
+                      vec3 worldPosition, vec3 normal, vec3 sunDirection) {
     // 三个接收者统一：没有太阳直射的面不受此方向的遮挡影响，也无需 PCF。
     // 受光面的光照权重保持原样；合并 sky 通道仍包含环境天光，这是待拆分的近似。
     float incidence = dot(normal, normalize(sunDirection));
@@ -54,10 +54,39 @@ float sunShadowFactor(sampler2DShadow shadowMap, mat4 lightViewProj, vec3 worldP
         return 1.0;
     }
 
+    float texel = 1.0 / kSunShadowMapResolution;
     float reference = shadowUv.z - kSunShadowDepthBiasBlocks / kSunShadowDepthRangeBlocks;
 
-    // 2x2 的 tap 网格，位置 ±0.5 纹素。加上每个 tap 自带的 2x2 硬件双线性比较，
-    // 有效覆盖 2x2 纹素 = **0.125 格**的半影。
+    // RN-34：先找遮挡物，再决定糊多宽（接触硬化）。
+    //
+    // binding 10 是同一张深度图的**非比较**采样器（NEAREST），读回的是深度值本身，
+    // 不是比较结果——比较采样器做不到这件事，这就是它要单独一个绑定点的原因。
+    //
+    // 四个点摆在 ±1.5 纹素的方框上，比下面 PCF 的足迹（最多 ±1 纹素）大一圈。这不是
+    // 随便取的：**搜索半径必须严格覆盖 PCF 的足迹**，否则「没找到遮挡物」这个提前返回
+    // 就会漏掉本该投影的边缘像素，影子边上出现一圈缺口。
+    float searchTexel = 1.5 * texel;
+    float blockerDepthSum = 0.0;
+    float blockerCount = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        vec2 corner = vec2(i == 0 || i == 3 ? -1.0 : 1.0, i < 2 ? -1.0 : 1.0);
+        float sampled = texture(shadowDepth, shadowUv.xy + corner * searchTexel).r;
+        if (sampled < reference) {
+            blockerDepthSum += sampled;
+            blockerCount += 1.0;
+        }
+    }
+    // 一个遮挡物都没有 ⇒ PCF 的每一个 tap 也必然通过 ⇒ 全亮。
+    // 这条提前返回顺带**省掉**了绝大多数屏幕像素的四次 PCF：受光的地面是画面的大头。
+    if (blockerCount == 0.0) {
+        return 1.0;
+    }
+    float blockerDistance =
+        (shadowUv.z - blockerDepthSum / blockerCount) * kSunShadowDepthRangeBlocks;
+    float penumbraTexels = sunShadowPenumbraTexels(blockerDistance);
+
+    // 2x2 的 tap 网格，位置 ±penumbraTexels（上限 ±0.5 纹素，即从前的固定值）。加上每个
+    // tap 自带的 2x2 硬件双线性比较，足迹半宽在 [0.5, 1.0] 纹素之间随遮挡距离变化。
     //
     // 从前是 3x3、步长 1 纹素，覆盖 4x4 纹素 = 0.25 格。那个半径是**固定**的：不管接收
     // 点离挡光的方块是 0 格还是 20 格都糊同样宽。而方块**脚下**的遮挡距离就是 0，物理上
@@ -77,12 +106,11 @@ float sunShadowFactor(sampler2DShadow shadowMap, mat4 lightViewProj, vec3 worldP
     float normalRight = dot(normal, lightRight);
     float normalUp = dot(normal, lightUp);
     float normalSun = incidence;
-    float texel = 1.0 / kSunShadowMapResolution;
     float lit = 0.0;
     for (int y = 0; y < 2; ++y) {
         for (int x = 0; x < 2; ++x) {
-            float tapX = float(x) - 0.5;
-            float tapY = float(y) - 0.5;
+            float tapX = (float(x) - 0.5) * penumbraTexels * 2.0;
+            float tapY = (float(y) - 0.5) * penumbraTexels * 2.0;
             float tapReference = reference + sunShadowTapOffsetBlocks(
                 normalRight, normalUp, normalSun, tapX, tapY) / kSunShadowDepthRangeBlocks;
             lit += texture(shadowMap, vec3(shadowUv.xy + vec2(tapX, tapY) * texel, tapReference));

@@ -24,6 +24,30 @@ const float kSunShadowMinCosTheta = 0.15F;
 // 双线性（再 ±0.5 纹素），整个足迹的半宽正好是 1 个纹素——偏移要盖住的就是它。
 const float kSunShadowNormalOffsetTexels = 1.0F;
 
+// RN-34：接触硬化的半影半径（纹素）。
+//
+// 固定半径的 PCF 在**接触处**是错的：方块脚下的遮挡距离是 0，那里物理上应当是硬边，
+// 却照样吃满整个足迹。实机量到的后果是墙根一条约 0.15 格宽、亮度过量 31% 的软亮带
+// （亮带宽度 = 足迹半宽 / sin(太阳仰角)，所以低太阳时格外宽）。
+//
+// 真实的半影宽度只取决于遮挡物离接收面多远：
+//
+//     半影 = (接收点深度 - 遮挡物深度) x tan(太阳视角半径)
+//
+// 真太阳的视角半径是 0.27 度（tan 约 0.0047）——按这个数算，一格高的方块在地面上的
+// 半影只有 0.005 格，也就是**处处硬边**。那不好看，也抗不住 1/16 格纹素的锯齿。
+// 这里把它放大到约 0.9 度：离地 2 格以上的遮挡物就吃满今天的半径，2 格以内逐渐收紧到 0。
+// 于是**远处的影子和今天完全一样，只有贴着投射者那一段变锐**——正是要修的那一段。
+// 放大太阳是光影包的通行做法，不是我们自创的取巧。
+const float kSunPenumbraTangent = 0.0156F;
+// 今天的 tap 偏移，也是收紧后的上限：超过它就会改变远处影子的观感。
+const float kSunMaxPenumbraTexels = 0.5F;
+
+float sunShadowPenumbraTexels(float blockerDistanceBlocks) {
+    float penumbraBlocks = max(blockerDistanceBlocks, 0.0F) * kSunPenumbraTangent;
+    return min(penumbraBlocks / kSunShadowTexelSizeBlocks, kSunMaxPenumbraTexels);
+}
+
 // 沿法线抬多高（世界格）。正比于 sin(入射角)：正对太阳的面（sin = 0）同一个纹素里
 // 深度几乎不变，不需要抬；越掠射抬得越多，上限是一个纹素 0.0625 格。
 //

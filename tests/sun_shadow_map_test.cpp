@@ -64,12 +64,23 @@ struct Samples {
     std::array<float, 9> visibility{};
     std::array<vec3, 9> coordinates{};
     std::size_t count = 0;
+    // RN-34：遮挡物搜索读的是同一张图的**非比较**视图。夹具把它做成一个可编程的深度
+    // 场：默认 1.0（比任何接收点都远 = 没有遮挡物），测试按需覆盖。
+    std::array<float, 4> blockerDepth{1.0F, 1.0F, 1.0F, 1.0F};
+    std::array<vec2, 4> blockerCoordinates{};
+    std::size_t blockerCount = 0;
 };
 using sampler2DShadow = Samples*;
+using sampler2D = Samples*;
 float texture(sampler2DShadow sampler, vec3 coordinates) {
     const auto index = sampler->count++;
     sampler->coordinates.at(index) = coordinates;
     return sampler->visibility.at(index);
+}
+vec4 texture(sampler2D sampler, vec2 coordinates) {
+    const auto index = sampler->blockerCount++;
+    sampler->blockerCoordinates.at(index) = coordinates;
+    return vec4{sampler->blockerDepth.at(index), 0.0F, 0.0F, 0.0F};
 }
 
 // Generated from the production GLSL, with only swizzles/float literal syntax
@@ -160,8 +171,11 @@ void checkShadowFacing() {
             const float incidence = glm::dot(normal, glm::normalize(sun));
             for (const auto& pattern : patterns) {
                 shaderReceiver::Samples samples{pattern, {}, 0};
+                // 遮挡物深度 0 = 离光源最近，离接收点 (z=0.5) 160 格：半影因此
+                // 吃满上限 0.5 纹素，下面的 tap 坐标断言与接触硬化之前逐位相同。
+                samples.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
                 const float factor = shaderReceiver::sunShadowFactor(
-                    &samples, glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F}, normal, sun);
+                    &samples, &samples, glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F}, normal, sun);
                 const std::string context = " at N.L=" + std::to_string(incidence);
                 if (incidence <= 0.0F) {
                     REQUIRE(factor == 1.0F && samples.count == 0,
@@ -182,8 +196,10 @@ void checkShadowFacing() {
                     const float lift = shaderBias::sunShadowNormalOffsetBlocks(incidence);
                     const glm::vec3 lifted = glm::vec3{0, 0, 0.5F} + normal * lift;
                     for (std::size_t tap = 0; tap < 4; ++tap) {
-                        const float x = static_cast<float>(tap % 2) - 0.5F;
-                        const float y = static_cast<float>(tap / 2) - 0.5F;
+                        // (i - 0.5) * penumbraTexels * 2，而这里 penumbraTexels 饱和在 0.5
+                        const float penumbra = shaderBias::sunShadowPenumbraTexels(0.5F * 319.9F);
+                        const float x = (static_cast<float>(tap % 2) - 0.5F) * penumbra * 2.0F;
+                        const float y = (static_cast<float>(tap / 2) - 0.5F) * penumbra * 2.0F;
                         const auto expectedUv = glm::vec2{lifted} * 0.5F + glm::vec2{0.5F} +
                                                 glm::vec2{x, y} / 2048.0F;
                         const float expectedDepth = lifted.z +
@@ -200,7 +216,7 @@ void checkShadowFacing() {
     }
     // The existing outside-frustum early return remains active for front faces.
     shaderReceiver::Samples outside;
-    REQUIRE(shaderReceiver::sunShadowFactor(&outside, glm::mat4{1.0F}, glm::vec3{3, 0, 0.5F},
+    REQUIRE(shaderReceiver::sunShadowFactor(&outside, &outside, glm::mat4{1.0F}, glm::vec3{3, 0, 0.5F},
                 glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}) == 1.0F && outside.count == 0,
             "sun-facing receiver outside the shadow map must remain fully lit without PCF");
 }
@@ -664,8 +680,19 @@ void checkShaderSourceGuards() {
                 std::string{name} +
                     " must declare binding 8 as sampler2DShadow; a plain sampler2D on a compare "
                     "sampler fails SPIR-V to MSL conversion on MoltenVK");
-        REQUIRE(source.find("sampler2D shadowDepth") == std::string::npos,
+        // 带分号：binding 8 那一个叫 shadowDepth，RN-34 新增的 binding 10 叫
+        // shadowDepthRaw，前缀相同。少了这个分号，新绑定点会被误判成旧缺陷。
+        REQUIRE(source.find("sampler2D shadowDepth;") == std::string::npos,
                 std::string{name} + " still declares binding 8 as a non-shadow sampler2D");
+        // RN-34：接触硬化要读回深度值本身，比较采样器做不到。三个采样者都必须有这第二
+        // 个绑定点——漏一个，那个着色器就会拿一个未声明的采样器去编译（MoltenVK 上是
+        // 黑窗），或者干脆退回固定半径。
+        REQUIRE(source.find("layout(binding = 10) uniform sampler2D shadowDepthRaw;") !=
+                    std::string::npos,
+                std::string{name} + " must also bind the non-compare view of the shadow map "
+                                    "(binding 10) that the blocker search reads");
+        REQUIRE(source.find("sunShadowFactor(shadowDepth, shadowDepthRaw,") != std::string::npos,
+                std::string{name} + " must pass both shadow views into sunShadowFactor");
         REQUIRE(source.find("sunShadowFactor(") != std::string::npos,
                 std::string{name} + " must go through the shared sunShadowFactor(), not its own "
                                     "hand-copied tap");
@@ -686,9 +713,30 @@ void checkShaderSourceGuards() {
     // 地方也照糊，那正是「贴近方块处漏光」的主因。
     REQUIRE(include.find("for (int y = 0; y < 2; ++y)") != std::string::npos &&
                 include.find("for (int x = 0; x < 2; ++x)") != std::string::npos &&
-                include.find("float tapX = float(x) - 0.5;") != std::string::npos &&
+                include.find("float tapX = (float(x) - 0.5) * penumbraTexels * 2.0;") !=
+                    std::string::npos &&
                 include.find("lit * 0.25") != std::string::npos,
-            "sun_shadow.glsl must sample a 2x2 PCF grid at half-texel offsets and average by 4");
+            "sun_shadow.glsl must sample a 2x2 PCF grid at the blocker-scaled radius, averaged by 4");
+
+    // ---- RN-34：接触硬化的两条结构性判据 --------------------------------
+    //
+    // ① 遮挡物搜索的半径必须**严格覆盖** PCF 的足迹。搜索半径小了，「没找到遮挡物」
+    //    那条提前返回就会漏掉本该投影的边缘像素，影子边上出现一圈缺口——而那是一种
+    //    只有在特定太阳角才看得见的缺陷，出图不一定拍得到。
+    //    搜索是 ±1.5 纹素；PCF 的 tap 最远 ±0.5，加硬件双线性的 ±0.5，合计 ±1.0。
+    REQUIRE(include.find("float searchTexel = 1.5 * texel;") != std::string::npos,
+            "blocker search radius must be stated explicitly (and stay >= the PCF footprint)");
+    REQUIRE(1.5F > shaderBias::kSunMaxPenumbraTexels + 0.5F,
+            "blocker search radius must strictly cover the PCF footprint; otherwise the "
+            "no-blocker early-out drops shadowed pixels at the silhouette");
+    // ② 提前返回必须在**搜索之后、PCF 之前**。放在别处它要么没省下什么，要么会跳过
+    //    本该做的比较。
+    const auto searchAt = include.find("float searchTexel");
+    const auto earlyAt = include.find("if (blockerCount == 0.0)");
+    const auto pcfAt = include.find("for (int y = 0; y < 2; ++y)");
+    REQUIRE(searchAt != std::string::npos && earlyAt != std::string::npos &&
+                pcfAt != std::string::npos && searchAt < earlyAt && earlyAt < pcfAt,
+            "the no-blocker early-out must sit between the blocker search and the PCF loop");
     // 着色器里的分辨率与 C++ 常量必须一致，否则 PCF 的步长不是一个纹素
     const std::string expected =
         "const float kSunShadowMapResolution = " +
@@ -836,6 +884,91 @@ void checkBias() {
             "normal-offset clamp must handle backfaces/roundoff");
 }
 
+// RN-34：接触硬化。糊多宽由**遮挡物离接收面多远**决定，而不是一个定值。
+//
+// 现场：墙根一条约 0.15 格宽、亮度过量 31% 的软亮带（沿墙根方向平均 60 个样本量出来的，
+// 单条剖面会被草纹理的棋盘噪声淹没）。成因是固定半径的 PCF —— 方块脚下的遮挡距离是 0，
+// 那里物理上应当是硬边，却照样吃满整个足迹。亮带宽度 = 足迹半宽 / sin(太阳仰角)，
+// 所以低太阳时格外宽。
+//
+// 夹具让接收点落在 z = 0.5、法线朝 +Y、太阳正上方（入射角 0 ⇒ 法线偏移为 0，
+// 投影出来的 z 正好是 0.5），于是「遮挡物深度」可以直接换算成「离接收面多少格」。
+void checkContactHardening() {
+    const auto run = [](float blockerDepth) {
+        shaderReceiver::Samples samples{};
+        samples.visibility = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+        samples.blockerDepth = {blockerDepth, blockerDepth, blockerDepth, blockerDepth};
+        const float factor = shaderReceiver::sunShadowFactor(
+            &samples, &samples, glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F}, glm::vec3{0, 1, 0},
+            glm::vec3{0, 1, 0});
+        return std::pair{factor, samples};
+    };
+    const auto tapSpreadTexels = [](const shaderReceiver::Samples& samples) {
+        float minimum = 1.0F;
+        float maximum = -1.0F;
+        for (std::size_t i = 0; i < samples.count; ++i) {
+            minimum = std::min(minimum, samples.coordinates[i].x);
+            maximum = std::max(maximum, samples.coordinates[i].x);
+        }
+        return (maximum - minimum) * 2048.0F;   // 回到纹素
+    };
+
+    // ① 一个遮挡物都没有 ⇒ 全亮，而且**一次 PCF 都不做**。
+    //    这条提前返回是接触硬化的性能来源：受光的地面是画面的大头，它们现在四次搜索
+    //    之后就直接返回，省掉四次 PCF。少了这条，接触硬化就是净增开销。
+    {
+        const auto [factor, samples] = run(1.0F);
+        REQUIRE(factor == 1.0F && samples.count == 0,
+                "a receiver with no blocker in the search radius must return 1 without any PCF tap;"
+                " factor=" + std::to_string(factor) + ", taps=" + std::to_string(samples.count));
+        REQUIRE(samples.blockerCount == 4,
+                "the blocker search itself must always run its four taps");
+    }
+
+    // ② 遮挡物很远（深度 0 = 光源那一侧，离接收面约 160 格）⇒ 半影吃满上限，
+    //    tap 展开 2 x 0.5 = 1 纹素，与接触硬化之前逐位相同。远处的影子不该被改动。
+    const auto [farFactor, farSamples] = run(0.0F);
+    REQUIRE(farSamples.count == 4, "a shadowed receiver must still take four PCF taps");
+    const float farSpread = tapSpreadTexels(farSamples);
+    REQUIRE(std::abs(farSpread - 2.0F * shaderBias::kSunMaxPenumbraTexels) < 1e-3F,
+            "a distant blocker must saturate the penumbra at the old fixed radius; spread=" +
+                std::to_string(farSpread));
+    REQUIRE(farFactor == 0.35F, "fully occluded receiver must reach the full shadow factor");
+
+    // ③ 遮挡物就在脚下（0.05 格）⇒ 半影收到近乎 0，这正是墙根那一段。
+    const float contactDepth = 0.5F - 0.05F / 319.9F;
+    const auto [contactFactor, contactSamples] = run(contactDepth);
+    REQUIRE(contactSamples.count == 4, "the contact case must still sample, just tightly");
+    const float contactSpread = tapSpreadTexels(contactSamples);
+    REQUIRE(contactSpread < 0.05F,
+            "a blocker 0.05 blocks away must collapse the PCF radius to near zero; spread=" +
+                std::to_string(contactSpread) + " texels");
+    REQUIRE(contactSpread < farSpread * 0.1F,
+            "contact and distance must give materially different radii, or nothing was hardened");
+    REQUIRE(contactFactor == 0.35F, "hardening must not brighten a fully occluded receiver");
+
+    // ④ 单调、有界。中间那一档也要真的落在中间，否则上面两条对一个「非 0 即满」的
+    //    实现也会成立。
+    const float halfDepth = 0.5F - 1.0F / 319.9F;      // 遮挡物在 1 格外
+    const auto [_, halfSamples] = run(halfDepth);
+    const float halfSpread = tapSpreadTexels(halfSamples);
+    REQUIRE(halfSpread > contactSpread && halfSpread < farSpread,
+            "the penumbra must grow with blocker distance rather than switch between two values; "
+            "contact=" + std::to_string(contactSpread) + " one-block=" + std::to_string(halfSpread) +
+            " far=" + std::to_string(farSpread));
+    // 逐值：半影 = 距离 x tan(太阳视角半径) / 纹素尺寸，上限 kSunMaxPenumbraTexels。
+    for (const float blocks : {0.0F, 0.5F, 1.0F, 2.0F, 4.0F}) {
+        const float wanted = std::min(blocks * shaderBias::kSunPenumbraTangent /
+                                          shaderBias::kSunShadowTexelSizeBlocks,
+                                      shaderBias::kSunMaxPenumbraTexels);
+        REQUIRE(std::abs(shaderBias::sunShadowPenumbraTexels(blocks) - wanted) < 1e-6F,
+                "penumbra golden value mismatch at " + std::to_string(blocks) + " blocks");
+    }
+    REQUIRE(shaderBias::sunShadowPenumbraTexels(-1.0F) == 0.0F &&
+            shaderBias::sunShadowPenumbraTexels(1e6F) == shaderBias::kSunMaxPenumbraTexels,
+            "penumbra must clamp on both ends (negative distances come from roundoff)");
+}
+
 void checkEntityWiring() {
     const auto world = stripLineComments(readFile(MC_REBEDROCK_WORLD_RENDERER_SRC));
     const auto renderer = stripLineComments(readFile(MC_REBEDROCK_RENDERER_SRC));
@@ -932,6 +1065,7 @@ int main() {
         checkShadowFacing();
         checkEntityCasters();
         checkBias();
+        checkContactHardening();
         checkEntityWiring();
         checkDepthConvention();
         checkTexelSnapping();

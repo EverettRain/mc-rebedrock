@@ -50,6 +50,10 @@ layout(binding = 1) uniform sampler2DArray blockTextures;
 // Dedicated entity/creature skins, box-UV mapped (one layer per species).
 layout(binding = 4) uniform sampler2DArray entityTextures;
 layout(binding = 8) uniform sampler2DShadow shadowDepth;
+// RN-34：同一张阴影图的**非比较**采样器（NEAREST）。接触硬化要读回深度值本身来估
+// 遮挡距离，而比较采样器返回的是「通过比较」的比例，做不到这件事——所以它必须是
+// 第二个绑定点，而不是换掉 binding 8。两个绑定点指向同一个 imageView。
+layout(binding = 10) uniform sampler2D shadowDepthRaw;
 
 // Vanilla's light curve, identical to grass_block.frag: level 15 is full
 // brightness and the falloff steepens toward darkness.
@@ -104,7 +108,7 @@ void main() {
             // skyFactor still scales combined ambient/direct skylight.
             float shadowFactor = 1.0;
             if (camera.lightingSettings.w > 0.5) {
-                shadowFactor = sunShadowFactor(shadowDepth, camera.lightViewProj,
+                shadowFactor = sunShadowFactor(shadowDepth, shadowDepthRaw, camera.lightViewProj,
                                                fragmentWorldPosition, normal,
                                                camera.sunDirection.xyz);
             }

@@ -4568,6 +4568,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (shadowDebugSampler != VK_NULL_HANDLE) {
                 vkDestroySampler(device, shadowDebugSampler, nullptr);
             }
+            if (shadowDepthSampler != VK_NULL_HANDLE) {
+                vkDestroySampler(device, shadowDepthSampler, nullptr);
+                shadowDepthSampler = VK_NULL_HANDLE;
+            }
             if (shadowCompareSampler != VK_NULL_HANDLE) {
                 vkDestroySampler(device, shadowCompareSampler, nullptr);
             }
@@ -5036,6 +5040,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         VkDescriptorSetLayoutBinding rainSamplerBinding = samplerBinding;
         rainSamplerBinding.binding = 9;
         rainSamplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        // RN-34：同一张阴影图的**非比较**采样器。接触硬化要读回深度值本身来估遮挡距离，
+        // 而 binding 8 的比较采样器返回的是「通过比较」的比例，读不到深度。
+        // 两个绑定点指向同一个 imageView，差别只在采样器。
+        VkDescriptorSetLayoutBinding shadowDepthBinding = shadowSamplerBinding;
+        shadowDepthBinding.binding = 10;
         // 绑定点 6/7 曾是按世界位置烘好的群系草色/叶色查找纹理
         // 群系配色改成了顶点上的 tint（BM-1），那两张纹理与它们的绑定点一并撤掉
         // UI-2 把空出来的 6 拿去放标题美术；7 仍空着
@@ -5044,7 +5053,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                   fontSamplerBinding,   guiSamplerBinding,
                                   entitySamplerBinding, panoramaSamplerBinding,
                                   titleSamplerBinding,  shadowSamplerBinding,
-                                  rainSamplerBinding};
+                                  rainSamplerBinding,   shadowDepthBinding};
         auto info = vkStructure<VkDescriptorSetLayoutCreateInfo>(
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
         info.bindingCount = static_cast<std::uint32_t>(bindings.size());
@@ -5063,8 +5072,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void createDescriptorPoolAndSets() {
         const std::array<VkDescriptorPoolSize, 2> poolSizes{{
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, static_cast<std::uint32_t>(kFramesInFlight)},
+            // 9 个采样器绑定点加 RN-34 的 binding 10（阴影图的非比较视图），共 10 个。
+            // 这个数少一个不会在校验层关掉时报错，只会让 vkAllocateDescriptorSets 失败。
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-             static_cast<std::uint32_t>(kFramesInFlight * 9U)},
+             static_cast<std::uint32_t>(kFramesInFlight * 10U)},
         }};
         auto poolInfo =
             vkStructure<VkDescriptorPoolCreateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
@@ -5510,7 +5521,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 所以这段不再只属于 `createShadowResources`：重建集合的那一处也调它。
     // 首次初始化时阴影资源尚未创建，句柄为空，那一次由 `createShadowResources` 自己补上。
     void writeShadowDescriptorSets() {
-        if (shadowTarget.view() == VK_NULL_HANDLE || shadowCompareSampler == VK_NULL_HANDLE) {
+        if (shadowTarget.view() == VK_NULL_HANDLE || shadowCompareSampler == VK_NULL_HANDLE ||
+            shadowDepthSampler == VK_NULL_HANDLE) {
             return;
         }
         for (std::size_t index = 0; index < kFramesInFlight; ++index) {
@@ -5524,7 +5536,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             write.descriptorCount = 1;
             write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             write.pImageInfo = &shadowImageInfo;
-            vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+            // binding 10 与 binding 8 必须在**同一个**单一源里写。它们指向同一张图，
+            // 重建描述符池时一起消失；把其中一个漏在别处，就是 RN-29 那个「未写入的
+            // 描述符被采样」的缺陷再来一次，而且同样只在真机上时有时无。
+            VkDescriptorImageInfo rawImageInfo = shadowImageInfo;
+            rawImageInfo.sampler = shadowDepthSampler;
+            auto rawWrite = write;
+            rawWrite.dstBinding = 10;
+            rawWrite.pImageInfo = &rawImageInfo;
+            const std::array writes{write, rawWrite};
+            vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(),
+                                   0, nullptr);
         }
     }
 
@@ -5555,6 +5577,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         samplerInfo.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
         checkVk(vkCreateSampler(device, &samplerInfo, nullptr, &shadowCompareSampler),
                 "vkCreateSampler(shadow compare)");
+
+        // RN-34：binding 10 的采样器。同一张图，**关掉比较、取最近点**——接触硬化要的是
+        // 深度值本身，线性过滤会把遮挡物和它背后的地面混成一个不存在的中间深度，
+        // 估出来的遮挡距离就是假的。
+        samplerInfo.magFilter = VK_FILTER_NEAREST;
+        samplerInfo.minFilter = VK_FILTER_NEAREST;
+        samplerInfo.compareEnable = VK_FALSE;
+        checkVk(vkCreateSampler(device, &samplerInfo, nullptr, &shadowDepthSampler),
+                "vkCreateSampler(shadow depth)");
     }
 
     // 阴影图调试叠加层在屏幕一角用一个四边形采样离屏深度纹理，开发期因此能看到预通道的输出
@@ -8043,6 +8074,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     VkDescriptorSet shadowDebugSet = VK_NULL_HANDLE;
     VkSampler shadowDebugSampler = VK_NULL_HANDLE;
     VkSampler shadowCompareSampler = VK_NULL_HANDLE;
+    VkSampler shadowDepthSampler = VK_NULL_HANDLE;
     glm::mat4 shadowLightViewProj{1.0F};
     bool shadowDisabled = std::getenv("MC_REBEDROCK_SHADOW_DISABLE") != nullptr;
     render::RainSystem rainSystem;
