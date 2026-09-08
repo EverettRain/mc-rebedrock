@@ -977,16 +977,20 @@ class HudRenderer final {
             return percentValue(
                 translated("soundCategory.master", "Master Volume"),
                 static_cast<int>(std::lround(options.masterVolume * 100.0F)));
-        case ui::WidgetId::Difficulty:
-            // 只出现在世界内的选项页，此时才有打开的存档
-            return optionValue(
-                translated("options.difficulty", "Difficulty"),
-                translated(gameplay::difficultyTranslationKey(
-                               currentSave.has_value() ? currentSave->difficulty
-                                                       : gameplay::Difficulty::Normal),
-                           gameplay::difficultyName(currentSave.has_value()
-                                                        ? currentSave->difficulty
-                                                        : gameplay::Difficulty::Normal)));
+        case ui::WidgetId::Difficulty: {
+            // 同一个按钮出现在两处，取值的来源不同：世界内的选项页读**已打开的存档**，
+            // 创建世界页读那张表单的暂存值（此时还没有任何存档）。
+            // ★ 标签算法仍然只有这一份——创建页复用同一个 WidgetId 正是为了这个：
+            //   另起一个 id 就得再抄一遍"难度: XXX"，两份迟早分岔
+            const auto difficulty =
+                menuSystem.pageStack.current() == ui::PageId::CreateWorld
+                    ? menuSystem.createWorldDifficulty
+                    : (currentSave.has_value() ? currentSave->difficulty
+                                               : gameplay::Difficulty::Normal);
+            return optionValue(translated("options.difficulty", "Difficulty"),
+                               translated(gameplay::difficultyTranslationKey(difficulty),
+                                          gameplay::difficultyName(difficulty)));
+        }
         case ui::WidgetId::CreateGameMode:
             return optionValue(translated("selectWorld.gameMode", "Game Mode"),
                                gameModeLabel(menuSystem.createWorldGameMode));
@@ -1032,6 +1036,78 @@ class HudRenderer final {
         if (menuSystem.selectedWorldIndex < menuSystem.saveSummaries.size())
             return menuSystem.saveSummaries[menuSystem.selectedWorldIndex].displayName;
         return translated("selectWorld.edit", "Edit World");
+    }
+
+    // 创建世界那张表单的版面：世界名框、它下面那行文件夹预览、种子框，以及两行标签。
+    //
+    // 为什么算在这里而不是 HudLayout 里：它锚在**这一页按钮块的上沿**上，
+    // 而按钮块居中、高度随按钮数变化（加了难度按钮之后是五个）。表单必须跟着按钮块
+    // 一起上移，否则输入框会直接压在第一个按钮上——那正是只加按钮不动版面的症状。
+    // 全程整数逻辑像素，与 UI-3 的版面口径一致。
+    struct CreateWorldForm final {
+        ui::UiRect nameField;
+        ui::UiRect seedField;
+        float nameLabelY = 0.0F;
+        float folderLineY = 0.0F;
+        float seedLabelY = 0.0F;
+    };
+
+    [[nodiscard]] CreateWorldForm createWorldForm(const ui::HudLayout& layout) const {
+        constexpr int kFieldWidth = 200;   // spec §2.4 的常用输入框尺寸
+        constexpr int kFieldHeight = 20;
+        // HudLayout::menuButton 的第一行 y = 画布中线 - 按钮数 * 12；按钮数从**已装配的
+        // 页面**数出来，不是另写一个常量（写死一个 5 之后再加按钮就会静默错位）
+        const int buttonTop =
+            layout.logicalHeight() / 2 - static_cast<int>(menuButtonCount()) * 12;
+        // 居中与逻辑→帧缓冲的换算都走 HudLayout 自己的助手（护栏 5）：整数网格上解完
+        // 版面，最后一次乘 scale。自己写 `(宽 - 200) * 0.5F` 在非整除档下会差一像素
+        const int left = layout.centredLogicalX(kFieldWidth);
+        CreateWorldForm form;
+        form.nameLabelY = layout.toFramebuffer(buttonTop - 80);
+        form.nameField = {layout.toFramebuffer(left), layout.toFramebuffer(buttonTop - 70),
+                          layout.toFramebuffer(kFieldWidth), layout.toFramebuffer(kFieldHeight)};
+        form.folderLineY = layout.toFramebuffer(buttonTop - 46);
+        form.seedLabelY = layout.toFramebuffer(buttonTop - 34);
+        form.seedField = {layout.toFramebuffer(left), layout.toFramebuffer(buttonTop - 24),
+                          layout.toFramebuffer(kFieldWidth), layout.toFramebuffer(kFieldHeight)};
+        return form;
+    }
+
+    void drawCreateWorldForm(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
+        const float scale = layout.scale();
+        const auto form = createWorldForm(layout);
+        const glm::vec4 labelColour{0.85F, 0.85F, 0.85F, 1.0F};
+        // vanilla 的 GRAY：预览与提示都是"这不是你输入的内容"，不该和正文一个亮度
+        const glm::vec4 hintColour{0.66F, 0.66F, 0.66F, 1.0F};
+
+        drawHudText(commandBuffer, translated("selectWorld.enterName", "World Name"),
+                    form.nameField.x, form.nameLabelY, scale, labelColour);
+        TextFieldStyle nameStyle;
+        nameStyle.focused = !menuSystem.createWorldSeedFocused;
+        drawTextField(commandBuffer, form.nameField, scale, menuSystem.createWorldName,
+                      ui::kWorldNameFieldRules, nameStyle);
+
+        // 文件夹预览：与 SaveRepository::create 用的是同一个 slug 函数，"预览说的"与
+        // "真正建出来的"因此不可能各自演化。重名时 create() 还会加 `-2` 这类后缀，
+        // 那要摸磁盘，预览不做——26.1 那行提示同样只给基名
+        drawHudText(commandBuffer,
+                    formatTemplate(translated("selectWorld.targetFolder", "Will be saved in: %s"),
+                                   persistence::SaveRepository::slugForDisplayName(
+                                       menuSystem.createWorldName.value)),
+                    form.nameField.x, form.folderLineY, scale, hintColour);
+
+        drawHudText(commandBuffer, translated("selectWorld.enterSeed", "Seed"), form.seedField.x,
+                    form.seedLabelY, scale, labelColour);
+        TextFieldStyle seedStyle;
+        seedStyle.focused = menuSystem.createWorldSeedFocused;
+        // 空框里那行灰字就是 26.1 的 `seedEdit.setHint`。走 style.suggestion 这条
+        // 既有的"光标处灰字"通道，而不是再画一行文本：它已经处理了内边距与滚动
+        if (menuSystem.createWorldSeed.value.empty()) {
+            seedStyle.suggestion =
+                translated("selectWorld.seedInfo", "Leave blank for a random seed");
+        }
+        drawTextField(commandBuffer, form.seedField, scale, menuSystem.createWorldSeed,
+                      ui::kWorldNameFieldRules, seedStyle);
     }
 
     void drawWorldNameField(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
@@ -1640,7 +1716,7 @@ class HudRenderer final {
                             {0.70F, 0.70F, 0.70F, 1.0F});
             }
         } else if (page == ui::PageId::CreateWorld) {
-            drawWorldNameField(commandBuffer, layout, menuSystem.createWorldName);
+            drawCreateWorldForm(commandBuffer, layout);
         } else if (page == ui::PageId::EditWorld) {
             drawWorldNameField(commandBuffer, layout, menuSystem.editWorldName);
         } else if (page == ui::PageId::ConfirmDelete) {

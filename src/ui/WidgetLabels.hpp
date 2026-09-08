@@ -99,7 +99,9 @@ inline constexpr std::array<WidgetId, 9> kRuntimeWidgetLabels{{
     WidgetId::ViewDistance,        // 滑块当前值
     WidgetId::SimulationDistance,  // 滑块当前值
     WidgetId::MasterVolume,        // 滑块当前值，按百分比显示
-    WidgetId::Difficulty,          // 当前打开的存档
+    // 两处在用：世界内选项页读当前存档的难度，创建世界页读创建表单的暂存值。
+    // 同一个 id、同一段标签算法——它们显示的是同一件事，只是取值的来源不同
+    WidgetId::Difficulty,
     WidgetId::CreateGameMode,      // 创建世界表单的暂存状态
     WidgetId::CreateAllowCommands, // 同上
 }};

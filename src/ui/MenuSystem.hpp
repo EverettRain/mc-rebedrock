@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gameplay/Difficulty.hpp"
 #include "gameplay/GameMode.hpp"
 #include "persistence/SaveRepository.hpp"
 #include "ui/Language.hpp"
@@ -8,9 +9,13 @@
 #include "ui/WidgetId.hpp"
 
 #include <array>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace mc::ui {
@@ -32,6 +37,92 @@ enum class CreativeTab : std::uint8_t {
     SpawnEggs,
     Inventory,
 };
+
+// Java 的 String.hashCode，逐单元复刻
+//
+// 为什么要连"按 UTF-16 码元"这一条也照抄：种子字符串落进的是**世界生成**，
+// 同一个名字在 Java 版与本作里必须长出同一张地图，否则 JC 那条格式桥上
+// "同名种子同世界"这句话就不成立了。按 UTF-8 字节哈希对纯 ASCII 恰好一致，
+// 而对中文名字会静默给出另一个世界——这正是最难被发现的那类偏差。
+// 代理对按 Java 的规矩拆成两个码元参与哈希。
+//
+// 溢出走无符号回绕，那是 Java int 乘加的定义；末尾那次转换在 C++20 里是模运算，
+// 与 Java 的 int 位型一致。
+[[nodiscard]] constexpr std::int32_t javaStringHash(std::string_view text) {
+    std::uint32_t hash = 0U;
+    for (std::size_t index = 0; index < text.size();) {
+        const auto lead = static_cast<unsigned char>(text[index]);
+        std::uint32_t codepoint = lead;
+        std::size_t continuations = 0U;
+        if (lead >= 0xF0U) {
+            codepoint = lead & 0x07U;
+            continuations = 3U;
+        } else if (lead >= 0xE0U) {
+            codepoint = lead & 0x0FU;
+            continuations = 2U;
+        } else if (lead >= 0xC0U) {
+            codepoint = lead & 0x1FU;
+            continuations = 1U;
+        }
+        // 截断或不合法的序列按单字节处理：这里的输入来自输入框，不保证是完整的 UTF-8
+        if (index + continuations >= text.size()) {
+            continuations = 0U;
+            codepoint = lead;
+        }
+        for (std::size_t offset = 1U; offset <= continuations; ++offset) {
+            const auto next = static_cast<unsigned char>(text[index + offset]);
+            if ((next & 0xC0U) != 0x80U) {
+                continuations = 0U;
+                codepoint = lead;
+                break;
+            }
+            codepoint = (codepoint << 6U) | (next & 0x3FU);
+        }
+        index += continuations + 1U;
+        if (codepoint > 0xFFFFU) {
+            const std::uint32_t surrogate = codepoint - 0x10000U;
+            hash = hash * 31U + (0xD800U + (surrogate >> 10U));
+            hash = hash * 31U + (0xDC00U + (surrogate & 0x3FFU));
+        } else {
+            hash = hash * 31U + codepoint;
+        }
+    }
+    return static_cast<std::int32_t>(hash);
+}
+
+// 创建世界那个种子输入框里的字符串是什么意思，规则同 26.1 的
+// `WorldOptions.parseSeed`：先 trim，空串表示"随机"（返回 nullopt，由调用方掷一个），
+// 能被 Long.parseLong 吃下的当十进制整数直接用，其余取字符串哈希。
+//
+// 返回 nullopt 而不是"就地掷一个随机数"，是为了让这一层保持纯函数：随机源属于
+// 调用方，测试才能把三条分支都钉死。
+[[nodiscard]] inline std::optional<std::uint64_t> parseWorldSeed(std::string_view text) {
+    // Java 的 String.trim 砍的是所有 <= ' ' 的字符，不是 locale 的 isspace
+    while (!text.empty() && static_cast<unsigned char>(text.front()) <= ' ') {
+        text.remove_prefix(1);
+    }
+    while (!text.empty() && static_cast<unsigned char>(text.back()) <= ' ') {
+        text.remove_suffix(1);
+    }
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    // from_chars 不认前导 '+'，而 Long.parseLong 认，所以先自己剥掉一个
+    std::string_view body = text;
+    if (body.front() == '+') {
+        body.remove_prefix(1);
+    }
+    std::int64_t value = 0;
+    const char* const last = body.data() + body.size();
+    const auto parsed = std::from_chars(body.data(), last, value);
+    // 必须**整串**被吃掉：Long.parseLong("12x") 是抛异常，不是解析出 12
+    if (parsed.ec == std::errc{} && parsed.ptr == last) {
+        return static_cast<std::uint64_t>(value);
+    }
+    // 越界的数字串（"99999999999999999999"）走的也是这条：Java 那里同样是
+    // NumberFormatException，于是也取哈希
+    return static_cast<std::uint64_t>(static_cast<std::int64_t>(javaStringHash(text)));
+}
 
 struct DisplayResolution final {
     int width = 0;
@@ -74,7 +165,16 @@ class MenuSystem final {
     // UI-1: 名称输入框的完整状态（值 + 光标 + 选区 + 横向滚动），不再是一个裸串
     TextFieldState createWorldName =
         textFieldWithValue("New World", kWorldNameFieldRules, TextFieldMetrics{});
+    // 种子输入框。与名称框共用 kWorldNameFieldRules：26.1 的两个框都是默认的
+    // EditBox（`EditBox.maxLength = 32`），种子框没有调用 setMaxLength
+    TextFieldState createWorldSeed;
+    // 创建页上有两个输入框，键盘归谁——名称框还是种子框
+    // 焦点是**屏幕状态**（同 focusedWidget 那条注释），页面重建不该把它冲掉
+    bool createWorldSeedFocused = false;
     gameplay::GameMode createWorldGameMode = gameplay::GameMode::Survival;
+    // 新世界的难度。存档字段一直都在，加载时也一直会 setDifficulty，
+    // 从前只是没有任何一处前端能选它，于是恒为 Normal
+    gameplay::Difficulty createWorldDifficulty = gameplay::Difficulty::Normal;
     // 正在创建的世界是否允许作弊
     // vanilla 在创建界面上默认关闭，由玩家在创建前自行打开
     bool createWorldAllowCommands = false;
@@ -136,5 +236,32 @@ class MenuSystem final {
     CreativeTab creativeTab = CreativeTab::BuildingBlocks;
     std::size_t creativeScrollRow = 0;
 };
+
+// 创建世界表单 -> GameRuntime::createWorld 的那五个实参。
+//
+// 为什么单独立一个纯函数而不是在渲染器里直接展开：那一行是**唯一**把表单读进后端的
+// 地方，而它从前正是出错的地方——种子参数早就在，前端却在调用点就地造了一个时钟种子
+// 把它盖掉，难度则被 GameRuntime 写死成常量。这两处失误都长成"调用点少传/传错了一个
+// 参数"，而渲染器里的代码无头测试碰不到。收成这个函数之后它们就都在断言覆盖之下了。
+//
+// randomSeed 由调用方掷：随机源属于渲染器，解析层保持可测的纯函数。
+struct NewWorldRequest final {
+    std::string name;
+    std::uint64_t seed = 0U;
+    gameplay::GameMode mode = gameplay::GameMode::Survival;
+    bool allowCommands = false;
+    gameplay::Difficulty difficulty = gameplay::Difficulty::Normal;
+};
+
+[[nodiscard]] inline NewWorldRequest newWorldRequest(const MenuSystem& menu,
+                                                     std::uint64_t randomSeed) {
+    return NewWorldRequest{
+        menu.createWorldName.value,
+        parseWorldSeed(menu.createWorldSeed.value).value_or(randomSeed),
+        menu.createWorldGameMode,
+        menu.createWorldAllowCommands,
+        menu.createWorldDifficulty,
+    };
+}
 
 } // namespace mc::ui

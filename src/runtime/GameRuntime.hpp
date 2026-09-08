@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gameplay/CommandResult.hpp"
+#include "gameplay/Difficulty.hpp"
 #include "gameplay/DataPackStack.hpp"
 #include "gameplay/FunctionManager.hpp"
 #include "gameplay/GameSession.hpp"
@@ -168,9 +169,13 @@ class GameRuntime final {
     // allowCommands (Allow Cheats, CMD-8) rides on the new world. It defaults
     // true so a headless / dedicated caller keeps the historical op4 host; the
     // create screen passes its toggle (vanilla default off) explicitly.
-    [[nodiscard]] persistence::SaveGame createWorld(std::string name, std::uint64_t seed,
-                                                    gameplay::GameMode mode,
-                                                    bool allowCommands = true);
+    // difficulty 同样是"创建时定一次、随世界落盘"的字段（26.1 的 CreateWorldScreen
+    // 上就有那个循环按钮）。给默认值 Normal 是为了让 dedicated_server 那类无界面的
+    // 调用点不必关心它——它们要的正是 vanilla 新世界的默认难度。
+    [[nodiscard]] persistence::SaveGame createWorld(
+        std::string name, std::uint64_t seed, gameplay::GameMode mode,
+        bool allowCommands = true,
+        gameplay::Difficulty difficulty = gameplay::Difficulty::Normal);
     void unloadWorld();
 
     // Persists the open world. saveLocked() assumes the caller already holds the

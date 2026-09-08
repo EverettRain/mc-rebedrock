@@ -2469,13 +2469,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     }
 
+    // 玩家没给种子时掷的那一个。随机源留在这里而**不**在 ui::parseWorldSeed 里：
+    // 那个函数必须是纯函数才测得住三条分支，"空 = 随机"因此由它返回 nullopt 表达
+    [[nodiscard]] static std::uint64_t randomWorldSeed() {
+        return static_cast<std::uint64_t>(
+            std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    }
+
     void startNewWorld() {
         try {
-            const auto seed = static_cast<std::uint64_t>(
-                std::chrono::high_resolution_clock::now().time_since_epoch().count());
-            auto save = runtime.createWorld(menuSystem.createWorldName.value, seed,
-                                            menuSystem.createWorldGameMode,
-                                            menuSystem.createWorldAllowCommands);
+            // 表单 -> 五个实参的映射整个在 ui::newWorldRequest 里（种子框的三种情形、
+            // 难度、作弊开关都在那儿），这里只剩"掷一个随机数 + 转交后端"。
+            // ★ 从前这里就地造一个时钟种子，把 createWorld 那个早就存在的 seed 参数
+            //   整个盖掉了——后端一直是通的，缺的只是这条映射
+            const auto request = ui::newWorldRequest(menuSystem, randomWorldSeed());
+            auto save = runtime.createWorld(request.name, request.seed, request.mode,
+                                            request.allowCommands, request.difficulty);
             refreshSaveList();
             startWorld(std::move(save));
         } catch (const std::exception& exception) {
@@ -2686,8 +2695,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             ui::textFieldInnerWidth(field.width, scale, bordered)};
     }
 
+    // 度量必须取**正在画它的那个矩形**：displayStart（横向滚动）存在字段状态里，
+    // 编辑侧与绘制侧宽度不一致的症状是滚动窗口停在文字不在的位置。创建页的两个框
+    // 跟着按钮块走，所以它们的矩形来自 createWorldForm，不是 HudLayout 那个固定的
     [[nodiscard]] ui::TextFieldMetrics worldNameMetrics() const {
         const auto layout = currentHudLayout();
+        if (menuSystem.pageStack.current() == ui::PageId::CreateWorld) {
+            const auto form = hud_.createWorldForm(layout);
+            return textFieldMetricsFor(
+                menuSystem.createWorldSeedFocused ? form.seedField : form.nameField,
+                layout.scale(), true);
+        }
         return textFieldMetricsFor(layout.worldNameField(), layout.scale(), true);
     }
 
@@ -2696,10 +2714,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return textFieldMetricsFor(layout.chatInput(), layout.scale(), false);
     }
 
+    // 键盘现在打进哪个框。创建页上有两个（名称、种子），焦点存在 MenuSystem 里，
+    // 由 Tab 或点击切换；其余页面只有一个框，不存在选择
     [[nodiscard]] ui::TextFieldState& focusedWorldName() {
-        return menuSystem.pageStack.current() == ui::PageId::CreateWorld
-                   ? menuSystem.createWorldName
-                   : menuSystem.editWorldName;
+        if (menuSystem.pageStack.current() != ui::PageId::CreateWorld) {
+            return menuSystem.editWorldName;
+        }
+        return menuSystem.createWorldSeedFocused ? menuSystem.createWorldSeed
+                                                 : menuSystem.createWorldName;
     }
 
     // Clipboard round-trip. GLFW owns the system clipboard, so it stops here.
@@ -2774,6 +2796,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             return;
         }
         const auto page = menuSystem.pageStack.current();
+        // Tab 在两个输入框之间换焦点（26.1 的 Screen 上 Tab 就是走 changeFocus）
+        if (key == GLFW_KEY_TAB && page == ui::PageId::CreateWorld) {
+            menuSystem.createWorldSeedFocused = !menuSystem.createWorldSeedFocused;
+            return;
+        }
         if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) {
             playUiClick();
             if (page == ui::PageId::CreateWorld) {
@@ -3756,7 +3783,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         };
         cb.createWorld = [this] {
             menuSystem.createWorldName = {};
+            // 种子框每次进来都清空 = 每次都随机，与 26.1 一致（它的 uiState 也不留种子）
+            menuSystem.createWorldSeed = {};
+            menuSystem.createWorldSeedFocused = false;
             menuSystem.createWorldGameMode = gameplay::GameMode::Survival;
+            menuSystem.createWorldDifficulty = gameplay::Difficulty::Normal;
             menuSystem.pageStack.push(ui::PageId::CreateWorld);
         };
         cb.editWorld = [this] {
@@ -3775,6 +3806,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 menuSystem.createWorldGameMode == gameplay::GameMode::Survival
                     ? gameplay::GameMode::Creative
                     : gameplay::GameMode::Survival;
+        };
+        cb.cycleCreateDifficulty = [this] {
+            menuSystem.createWorldDifficulty =
+                gameplay::nextDifficulty(menuSystem.createWorldDifficulty);
         };
         cb.toggleCreateAllowCommands = [this] {
             menuSystem.createWorldAllowCommands = !menuSystem.createWorldAllowCommands;
@@ -4027,6 +4062,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void handleMenuButtonPress() {
+        // 点在哪个输入框上，键盘就归谁。两个框都没点中时保持原焦点——26.1 点空白处
+        // 会把焦点收走，本作的文本输入模式是按页面判的，收走焦点就没法再打字了
+        if (menuSystem.pageStack.current() == ui::PageId::CreateWorld) {
+            const auto cursor = currentFramebufferCursor();
+            const auto form = hud_.createWorldForm(currentHudLayout());
+            if (form.nameField.contains(cursor.x, cursor.y)) {
+                menuSystem.createWorldSeedFocused = false;
+            } else if (form.seedField.contains(cursor.x, cursor.y)) {
+                menuSystem.createWorldSeedFocused = true;
+            }
+        }
         if (menuSystem.pageStack.current() == ui::PageId::WorldList) {
             const auto cursor = currentFramebufferCursor();
             const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),

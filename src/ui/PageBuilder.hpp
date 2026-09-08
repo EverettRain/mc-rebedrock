@@ -94,6 +94,10 @@ struct MenuCallbacks final {
     std::function<void()> editWorld{};
     std::function<void()> confirmCreate{};
     std::function<void()> toggleCreateGameMode{};
+    // 创建页那个难度循环按钮。与世界内选项页的 cycleDifficulty 是**两个**回调：
+    // 它们步进的是两个不同的东西（创建表单的暂存值 / 已打开存档的字段），
+    // 共用一个回调就得在里面按当前页面分叉，那是把页面的事塞进动作里
+    std::function<void()> cycleCreateDifficulty{};
     std::function<void()> toggleCreateAllowCommands{};
     std::function<void()> renameWorld{};
     std::function<void()> deleteWorld{};
@@ -388,7 +392,11 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             break;
 
         case PageId::CreateWorld:
+            // 顺序照 26.1 的 CreateWorldScreen.GameTab：名称框、游戏模式、难度、允许作弊
             addButton(page, ctx, WidgetId::CreateGameMode, cb.toggleCreateGameMode);
+            // ★ 复用 WidgetId::Difficulty，不新开一个 id：标签"难度: 普通"那段算法
+            //   世界内选项页已经有了，另起一个 id 就得再抄一份，两份迟早分岔
+            addButton(page, ctx, WidgetId::Difficulty, cb.cycleCreateDifficulty);
             addButton(page, ctx, WidgetId::CreateAllowCommands,
                       cb.toggleCreateAllowCommands);
             addButton(page, ctx, WidgetId::CreateConfirm, cb.confirmCreate);
