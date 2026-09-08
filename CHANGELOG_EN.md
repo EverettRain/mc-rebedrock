@@ -42,6 +42,13 @@ simple versioned history while it is in beta.
   Greyed-out buttons are skipped.
 - Shift-clicking a cycling option now steps backwards through its values instead of forwards.
 
+
+### Fixed
+- The Menu Background Blur slider in Video Settings snapped to 0 as soon as you touched it and
+  could not be moved afterwards. Fixed along with it: the Render Distance and Simulation
+  Distance sliders were reading the wrong widget's position while being dragged -- after the
+  Video Settings screen was rearranged they still assumed their old position on the page.
+
 ### Changed
 - The Video Settings screen was rebuilt to match Minecraft's layout: a (currently greyed-out)
   "Preset" button spanning the full row, then the settings in two columns. **The page scrolls

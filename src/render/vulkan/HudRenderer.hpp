@@ -41,6 +41,7 @@
 #include "ui/SubtitleFeed.hpp"
 #include "ui/Toast.hpp"
 #include "ui/HudLayout.hpp"
+#include "ui/SliderGeometry.hpp"
 #include "ui/ItemTooltip.hpp"
 #include "ui/Language.hpp"
 #include "ui/MenuGeometry.hpp"
@@ -686,13 +687,19 @@ class HudRenderer final {
         drawScaledGuiSprite(commandBuffer, snapped, 0.0F,
                             guiWidgetSprite(guiWidgetSprites, GuiWidgetSprite::Slider), scale,
                             tint);
-        const float clampedValue = std::clamp(value, 0.0F, 1.0F);
-        const float knobX = snapped.x + clampedValue * std::max(snapped.width - 8.0F * scale, 0.0F);
+        // ★ 把手位置与输入侧的光标换算必须同源：`ui::sliderHandleX` 与
+        //   `ui::sliderFractionFromCursor` 互为逆。从前这里自己算一遍
+        //   `x + value * (width - 8*scale)`，输入侧另算一遍——两处对"行程"的定义
+        //   一旦分家，症状是"把手停的位置和你松手的位置差半格"，而两边各自都自洽。
+        const float knobX = ui::sliderHandleX(snapped, value, scale);
         const auto& knob = guiWidgetSprite(guiWidgetSprites,
                                            state == ui::ButtonVisualState::Normal
                                                ? GuiWidgetSprite::SliderHandle
                                                : GuiWidgetSprite::SliderHandleHighlighted);
-        drawScaledGuiSprite(commandBuffer, {knobX, snapped.y, 8.0F * scale, snapped.height}, 0.0F,
+        drawScaledGuiSprite(commandBuffer,
+                            {knobX, snapped.y,
+                             static_cast<float>(ui::kSliderHandleWidth) * scale, snapped.height},
+                            0.0F,
                             knob, scale);
         const glm::vec4 textColor = state == ui::ButtonVisualState::Disabled
                                         ? glm::vec4{0.63F, 0.63F, 0.63F, 1.0F}

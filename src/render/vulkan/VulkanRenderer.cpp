@@ -70,6 +70,7 @@
 #include "render/RainSystem.hpp"
 #include "render/SkyLight.hpp"
 #include "render/StreamingBudget.hpp"
+#include "ui/SliderGeometry.hpp"
 #include "ui/BitmapFontMetrics.hpp"
 #include "ui/ButtonControl.hpp"
 #include "ui/ChatHistory.hpp"
@@ -2940,8 +2941,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::VideoSettings:
             menuSystem.pageStack.pop();
             pressedMenuButton = ui::WidgetId::None;
-            menuSystem.viewDistanceSliderDragging = false;
-            menuSystem.simulationDistanceSliderDragging = false;
+            menuSystem.draggingSlider = ui::WidgetId::None;
             break;
         case ui::PageId::AdvancedGraphics:
         // UI-6c：两页新子屏的返回与 Experimental 同形——出栈，清掉按下态。
@@ -2973,9 +2973,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             menuSystem.pageStack.pop();
             menuSystem.optionsOpen = false;
             pressedMenuButton = ui::WidgetId::None;
-            menuSystem.viewDistanceSliderDragging = false;
-            menuSystem.simulationDistanceSliderDragging = false;
-            menuSystem.masterVolumeSliderDragging = false;
+            menuSystem.draggingSlider = ui::WidgetId::None;
             break;
         case ui::PageId::Pause:
             setPaused(false);
@@ -3086,13 +3084,38 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void dragMenuControl() {
         if (menuSystem.languageScrollbarDragging) {
             updateLanguageScrollFromCursor();
-        } else if (menuSystem.viewDistanceSliderDragging) {
-            updateViewDistanceFromCursor();
-        } else if (menuSystem.simulationDistanceSliderDragging) {
-            updateSimulationDistanceFromCursor();
-        } else if (menuSystem.masterVolumeSliderDragging) {
-            updateMasterVolumeFromCursor();
+        } else if (menuSystem.draggingSlider != ui::WidgetId::None) {
+            dragSliderFromCursor();
         }
+    }
+
+    // 正在拖的那个滑块：从**它自己的矩形**算比例，交给它自己的 onDrag。
+    //
+    // ★ 这里没有任何"第几个控件是滑块"的知识。从前是每个滑块一个 bool、一个
+    //   update 函数、一个硬编码的控件序号——加第四个滑块要动三处，而 UI-6d 的模糊强度
+    //   滑块正是漏了这一处：按下时 `onDrag(0.0F)` 把值打成 0，之后拖拽循环里没有它的
+    //   分支，于是再也调不回来。
+    void dragSliderFromCursor() {
+        const ui::Page page = buildCurrentPage();
+        for (const ui::Widget& widget : page) {
+            if (widget.kind != ui::WidgetKind::Slider ||
+                static_cast<ui::WidgetId>(widget.debugId) != menuSystem.draggingSlider) {
+                continue;
+            }
+            if (widget.slider.onDrag) {
+                widget.slider.onDrag(sliderFractionAt(widget.rect));
+            }
+            return;
+        }
+        // 控件不在这一页了（换屏、或者滚出了窗口）：停止拖拽，别把比例喂给别人。
+        menuSystem.draggingSlider = ui::WidgetId::None;
+    }
+
+    [[nodiscard]] float sliderFractionAt(const ui::UiRect& rect) const {
+        const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
+                                   static_cast<float>(swapchainExtent.height),
+                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
+        return ui::sliderFractionFromCursor(rect, currentFramebufferCursor().x, layout.scale());
     }
 
     void dragInventory(double x, double y) {
@@ -3582,9 +3605,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         else
             menuSystem.pageStack.reset(ui::PageId::Game);
         pressedMenuButton = ui::WidgetId::None;
-        menuSystem.viewDistanceSliderDragging = false;
-        menuSystem.simulationDistanceSliderDragging = false;
-        menuSystem.masterVolumeSliderDragging = false;
+        menuSystem.draggingSlider = ui::WidgetId::None;
         firstMouseSample = true;
         clearPendingInputEdges();
         if (!pause && worldReady) {
@@ -3836,25 +3857,26 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         cb.viewDistance.value = [this] {
             return std::clamp((static_cast<float>(viewDistanceChunks) - 2.0F) / 34.0F, 0.0F, 1.0F);
         };
-        cb.viewDistance.onDrag = [this](float) { updateViewDistanceFromCursor(); };
-        cb.viewDistance.onCommit = [this] {
-            updateViewDistanceFromCursor();
-            persistOptions();
-        };
+        // ★ fraction 是权威的，不再各自去读光标。从前这三个 onDrag 都写成
+        //   `[this](float) { updateXxxFromCursor(); }`——参数名连写都没写——而那些
+        //   函数里硬编码着"这一页第 2 / 第 3 个控件是我"，UI-6d 重排视频设置之后
+        //   它们读的已经是隔壁控件的矩形。
+        cb.viewDistance.onDrag = [this](float fraction) { applyViewDistance(fraction); };
+        cb.viewDistance.onCommit = [this] { persistOptions(); };
         cb.simulationDistance.value = [this] {
             return std::clamp((static_cast<float>(simulationDistanceChunks) - 2.0F) / 10.0F, 0.0F,
                               1.0F);
         };
-        cb.simulationDistance.onDrag = [this](float) { updateSimulationDistanceFromCursor(); };
-        cb.simulationDistance.onCommit = [this] {
-            updateSimulationDistanceFromCursor();
-            persistOptions();
+        cb.simulationDistance.onDrag = [this](float fraction) {
+            applySimulationDistance(fraction);
         };
+        cb.simulationDistance.onCommit = [this] { persistOptions(); };
         cb.masterVolume.value = [this] { return options.masterVolume; };
-        cb.masterVolume.onDrag = [this](float) { updateMasterVolumeFromCursor(); };
+        cb.masterVolume.onDrag = [this](float fraction) { applyMasterVolume(fraction); };
         cb.masterVolume.onCommit = [this] {
-            updateMasterVolumeFromCursor();
             persistOptions();
+            // vanilla 的滑块在松开时给一声反馈。试听放在监听者位置，
+            // 避免距离衰减把"音频到底通不通"给盖住。
             if (options.masterVolume > 0.0F) {
                 audioSystem.playItemPickup(camera.position());
             }
@@ -4017,22 +4039,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 拖拽标志保留下来，松开路径与绘制高亮才继续可用
         if (pressedMenuIndex_ != ui::kNoWidget &&
             page[pressedMenuIndex_].kind == ui::WidgetKind::Slider) {
-            const auto& slider = page[pressedMenuIndex_].slider;
-            switch (static_cast<ui::WidgetId>(page[pressedMenuIndex_].debugId)) {
-                case ui::WidgetId::ViewDistance:
-                    menuSystem.viewDistanceSliderDragging = true;
-                    break;
-                case ui::WidgetId::SimulationDistance:
-                    menuSystem.simulationDistanceSliderDragging = true;
-                    break;
-                case ui::WidgetId::MasterVolume:
-                    menuSystem.masterVolumeSliderDragging = true;
-                    break;
-                default:
-                    break;
-            }
-            if (slider.onDrag) {
-                slider.onDrag(0.0F);  // the appliers read the cursor themselves
+            const auto& widget = page[pressedMenuIndex_];
+            // ★ 传的是**光标算出来的**比例，不是 0。从前这里写着 `onDrag(0.0F)`，
+            //   注释说"应用器自己会读光标"——那对忽略参数的三个旧滑块成立，
+            //   对 UI-6d 表驱动的滑块不成立：它把参数当权威，于是一按下就归 0。
+            //   一个回调两种约定，最终总要撞上。
+            menuSystem.draggingSlider = static_cast<ui::WidgetId>(widget.debugId);
+            if (widget.slider.onDrag) {
+                widget.slider.onDrag(sliderFractionAt(widget.rect));
             }
         }
         // 26.1 在界面打开期间只维护一个草稿选择，按 Done 才用一次资源重载提交
@@ -4070,21 +4084,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    void updateViewDistanceFromCursor() {
-        if (!menuSystem.optionsOpen) {
-            return;
-        }
-        const auto cursor = currentFramebufferCursor();
-        const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
-                                   static_cast<float>(swapchainExtent.height),
-                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
-        const auto slider =
-            frontendButtonRect(layout, menuSystem.pageStack.current(), 2U, menuButtonCount());
-        const float inset = 4.0F * layout.scale();
-        const float travel = std::max(slider.width - inset * 2.0F, 1.0F);
-        const float normalized = std::clamp((cursor.x - slider.x - inset) / travel, 0.0F, 1.0F);
+    // 三个既有滑块的应用器。收下的是**取值比例**，不是光标——光标 → 比例那一步
+    // 归 ui::sliderFractionFromCursor，由拖拽循环用控件**自己的**矩形算一次。
+    //
+    // ★ 从前这三个函数各自去读光标，并且各自硬编码着"这一页第 2 / 第 3 个控件是我"
+    //   （`frontendButtonRect(..., 2U, ...)`）。UI-6d 重排视频设置之后那些序号已经指向
+    //   隔壁控件，而症状只是"拖起来手感不对"——没有任何东西会红。现在没有任何一处
+    //   需要知道滑块排在第几个。
+    void applyViewDistance(float fraction) {
         const int requested =
-            std::clamp(2 + static_cast<int>(std::lround(normalized * 34.0F)), 2, 36);
+            std::clamp(2 + static_cast<int>(std::lround(fraction * 34.0F)), 2, 36);
         if (requested == viewDistanceChunks) {
             return;
         }
@@ -4096,21 +4105,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // vanilla 的模拟距离滑块，单位为区块，表示实体被冻结之外的半径
     // 它作用在会话的 tick 门控上，因此与渲染距离相互独立
     // 取值范围 2 到 12 个区块，单位与视距滑块相同
-    void updateSimulationDistanceFromCursor() {
-        if (!menuSystem.optionsOpen) {
-            return;
-        }
-        const auto cursor = currentFramebufferCursor();
-        const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
-                                   static_cast<float>(swapchainExtent.height),
-                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
-        const auto slider =
-            frontendButtonRect(layout, menuSystem.pageStack.current(), 3U, menuButtonCount());
-        const float inset = 4.0F * layout.scale();
-        const float travel = std::max(slider.width - inset * 2.0F, 1.0F);
-        const float normalized = std::clamp((cursor.x - slider.x - inset) / travel, 0.0F, 1.0F);
+    void applySimulationDistance(float fraction) {
         const int requested =
-            std::clamp(2 + static_cast<int>(std::lround(normalized * 10.0F)), 2, 12);
+            std::clamp(2 + static_cast<int>(std::lround(fraction * 10.0F)), 2, 12);
         if (requested == simulationDistanceChunks) {
             return;
         }
@@ -4119,18 +4116,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                         static_cast<float>(world::kChunkWidth));
     }
 
-    void updateMasterVolumeFromCursor() {
-        if (!menuSystem.optionsOpen) {
-            return;
-        }
-        const auto cursor = currentFramebufferCursor();
-        const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
-                                   static_cast<float>(swapchainExtent.height),
-                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
-        const auto slider = layout.menuButton(0U, 3U);
-        const float inset = 4.0F * layout.scale();
-        const float travel = std::max(slider.width - inset * 2.0F, 1.0F);
-        options.masterVolume = std::clamp((cursor.x - slider.x - inset) / travel, 0.0F, 1.0F);
+    void applyMasterVolume(float fraction) {
+        options.masterVolume = std::clamp(fraction, 0.0F, 1.0F);
         audioSystem.setMasterVolume(options.masterVolume);
     }
 
@@ -4238,18 +4225,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (menuSystem.languageScrollbarDragging) {
             updateLanguageScrollFromCursor();
         }
-        if (menuSystem.viewDistanceSliderDragging) {
-            updateViewDistanceFromCursor();
-            persistOptions();
-        }
-        if (menuSystem.masterVolumeSliderDragging) {
-            updateMasterVolumeFromCursor();
-            persistOptions();
-            // vanilla 的滑块在松开时给一声反馈
-            // 试听放在监听者位置，避免距离衰减把"音频到底通不通"给盖住
-            if (options.masterVolume > 0.0F) {
-                audioSystem.playItemPickup(camera.position());
-            }
+        // 松开前先按最后一次光标位置应用一遍，然后由下面那条统一的 onCommit 提交
+        // （持久化与反馈音都在各自的 onCommit 里，这里不再逐个滑块写一遍）。
+        if (menuSystem.draggingSlider != ui::WidgetId::None) {
+            dragSliderFromCursor();
         }
         // 经 ui:: 模型派发，按下时已记下 widget 下标
         // 松开落在同一个且启用的 widget 上时，就跑它的 onActivate
@@ -4258,9 +4237,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const std::size_t pressed = pressedMenuIndex_;
         pressedMenuButton = ui::WidgetId::None;
         pressedMenuIndex_ = ui::kNoWidget;
-        menuSystem.viewDistanceSliderDragging = false;
-        menuSystem.simulationDistanceSliderDragging = false;
-        menuSystem.masterVolumeSliderDragging = false;
+        menuSystem.draggingSlider = ui::WidgetId::None;
         menuSystem.languageScrollbarDragging = false;
         // 滑块松开时经它自己的回调提交，含持久化与反馈音
         if (pressed != ui::kNoWidget && page[pressed].kind == ui::WidgetKind::Slider &&

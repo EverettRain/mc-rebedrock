@@ -19,6 +19,8 @@
 #include "ui/PageTitles.hpp"
 #include "ui/ListRow.hpp"
 #include "ui/OptionsList.hpp"
+#include "ui/OptionSlider.hpp"
+#include "ui/SliderGeometry.hpp"
 
 #include <array>
 #include <cstdio>
@@ -779,6 +781,145 @@ void testWindowSingleSourceGuard() {
     }
 }
 
+// --- 15. 滑块：光标 → 比例 → 值 --------------------------------------------
+//
+// ★ 这一条对着一个现场缺陷：「一调节模糊强度就跳到 0，且无法再次调整」。
+//   根因是 `SliderBind::onDrag(float)` 有**两种约定**——三个既有滑块忽略参数、
+//   自己去读光标，而 UI-6d 表驱动的整数滑块把参数当权威。按下时那句
+//   `onDrag(0.0F)`（注释还写着 "the appliers read the cursor themselves"）
+//   于是一把把值打成 0；拖拽循环里又没有它的分支，所以再也拖不回来。
+//   收口成一条约定：fraction 是权威的，由 ui::sliderFractionFromCursor 从控件
+//   自己的矩形算出来。
+void testSliderCursorMapping() {
+    // 一个 150 宽的小格，scale 3 → 帧缓冲里 450 宽，把手 8*3 = 24。
+    const mc::ui::UiRect rect{300.0F, 100.0F, 450.0F, 60.0F};
+    constexpr float kScale = 3.0F;
+    const auto fraction = [&](float cursorX) {
+        return mc::ui::sliderFractionFromCursor(rect, cursorX, kScale);
+    };
+    // 抓的是把手**中心**（26.1 `AbstractSliderButton`：`(mouseX - (getX()+4)) / (width-8)`）
+    const float handle = 8.0F * kScale;
+    CHECK(fraction(rect.x + handle * 0.5F) == 0.0F);
+    CHECK(fraction(rect.x + rect.width - handle * 0.5F) == 1.0F);
+    // 两端之外要夹住，不能给出负数或大于 1（那会让取值绕回另一端）
+    CHECK(fraction(rect.x - 1000.0F) == 0.0F);
+    CHECK(fraction(rect.x + rect.width + 1000.0F) == 1.0F);
+    // 中点是 0.5（容一点浮点误差）
+    const float middle = fraction(rect.x + rect.width * 0.5F);
+    check(middle > 0.49F && middle < 0.51F, "the midpoint must be half", __LINE__);
+
+    // 与绘制侧互为逆：把手左缘 → 比例 → 同一个把手左缘。
+    for (float f : {0.0F, 0.25F, 0.5F, 1.0F}) {
+        const float x = mc::ui::sliderHandleX(rect, f, kScale);
+        const float back = mc::ui::sliderFractionFromCursor(rect, x + handle * 0.5F, kScale);
+        check(back > f - 0.01F && back < f + 0.01F,
+              "handle position and cursor fraction must be inverses", __LINE__);
+    }
+
+    // ★ 缺陷本身：光标停在滑块中间时，模糊强度必须是 5，不是 0。
+    const auto* blur = mc::ui::findIntSlider(mc::ui::WidgetId::MenuBackgroundBlurriness);
+    CHECK(blur != nullptr);
+    if (blur == nullptr) {
+        return;
+    }
+    CHECK(mc::ui::intSliderValue(*blur, middle) == 5);
+    CHECK(mc::ui::intSliderValue(*blur, 1.0F) == 10);
+    CHECK(mc::ui::intSliderValue(*blur, 0.0F) == 0);
+    // 按下时若传 0.0F（那个缺陷的形状），值就是 0——这正是"一按就跳到 0"。
+    // 断言它确实会归 0，是为了让下面那条源码守的理由留在测试里，而不是只在注释里。
+    CHECK(mc::ui::intSliderValue(*blur, 0.0F) != 5);
+    // 往返：值 → 比例 → 值 必须稳定，否则拖一下就漂一格
+    for (int value = blur->minimum; value <= blur->maximum; ++value) {
+        const float f = mc::ui::intSliderFraction(*blur, value);
+        check(mc::ui::intSliderValue(*blur, f) == value,
+              "value -> fraction -> value must round-trip", __LINE__);
+    }
+
+    // ★ 四舍五入不是截断。`OptionSlider.hpp` 的注释写明了这条理由，但第一轮
+    //   sabotage（把 `+ 0.5F` 去掉）**没被抓住**——上面那个往返循环测不出来：
+    //   0..10 这个跨度小，float 精度会把 v/10*10 吸回整数，截断与四舍五入同解。
+    //   真正区分两者的是**档位边界**：截断会让每一档的吸附点整体偏左半格。
+    CHECK(mc::ui::intSliderValue(*blur, 0.55F) == 6);   // 截断给 5
+    CHECK(mc::ui::intSliderValue(*blur, 0.96F) == 10);  // 截断给 9：滑块贴到头却不是最大档
+    CHECK(mc::ui::intSliderValue(*blur, 0.44F) == 4);   // 这一档两种算法同解，防"无脑进位"
+    CHECK(mc::ui::intSliderValue(*blur, 0.04F) == 0);
+}
+
+// --- 16. 滑块拖拽只有一条路径 ------------------------------------------------
+//
+// ★ 源码守：拖拽逻辑住在渲染器的翻译单元里，没有测试链接得到它。
+void testSliderDragSingleSourceGuard() {
+    std::ifstream file{MC_REBEDROCK_RENDERER_SRC};
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    // ★ 必须先剥注释：这一轮的落地注释里就写着 `onDrag(0.0F)`（在说"从前是这样"），
+    //   不剥的话守到的是注释、不是代码——第一次跑就是这么红的。
+    std::string source;
+    {
+        std::istringstream lines{buffer.str()};
+        std::string line;
+        while (std::getline(lines, line)) {
+            const auto comment = line.find("//");
+            source += comment == std::string::npos ? line : line.substr(0, comment);
+            source += '\n';
+        }
+    }
+
+    // 按下时不得再传字面量 0——那是"一按就跳到最小档"的直接原因。
+    CHECK(source.find("onDrag(0.0F)") == std::string::npos);
+    // 三个 per-slider 的拖拽 bool 已经收成一个 draggingSlider。留着它们
+    // 就意味着"现在在拖谁"仍有多份表述，加一个滑块又要逐处补。
+    CHECK(source.find("viewDistanceSliderDragging") == std::string::npos);
+    CHECK(source.find("masterVolumeSliderDragging") == std::string::npos);
+    CHECK(source.find("draggingSlider") != std::string::npos);
+    // 应用器不得再自己去读光标（那条路上带着硬编码的控件序号）。
+    CHECK(source.find("updateViewDistanceFromCursor") == std::string::npos);
+    CHECK(source.find("updateMasterVolumeFromCursor") == std::string::npos);
+    // 换算只有一处
+    CHECK(source.find("ui::sliderFractionFromCursor(") != std::string::npos);
+
+    // ★ 松开必须清掉"在拖谁"。不清的症状是**松手之后滑块还跟着鼠标走**——
+    //   拖拽循环只看 draggingSlider != None，不看按键状态。从前那三个 bool 各清一次，
+    //   收成一个 id 之后只剩一处，但"只剩一处"不等于"那一处还在"：
+    //   第一轮 sabotage（删掉这一行）没被任何断言抓住。
+    const auto releaseFn = source.find("void handleMenuButtonRelease(");
+    CHECK(releaseFn != std::string::npos);
+    if (releaseFn == std::string::npos) {
+        return;
+    }
+    const std::string releaseBody = source.substr(releaseFn, 1600U);
+    CHECK(releaseBody.find("draggingSlider = ui::WidgetId::None") != std::string::npos);
+
+    // 绘制侧的把手位置必须走同一份几何，否则上面那条"互为逆"只是两个纯函数
+    // 自己跟自己对得上，而画面上把手停的位置和松手的位置差半格。
+    std::ifstream hud{MC_REBEDROCK_HUD_RENDERER_SRC};
+    std::stringstream hudBuffer;
+    hudBuffer << hud.rdbuf();
+    std::string hudSource;
+    {
+        std::istringstream lines{hudBuffer.str()};
+        std::string line;
+        while (std::getline(lines, line)) {
+            const auto comment = line.find("//");
+            hudSource += comment == std::string::npos ? line : line.substr(0, comment);
+            hudSource += '\n';
+        }
+    }
+    // ★ 只截 drawMinecraftSlider 的函数体。整文件搜 `8.0F * scale` 会命中十几处
+    //   与滑块无关的用途（文本框内缩、面板边距、toast 高度），那条守会永远红——
+    //   第一次写宽了就是这么红的。
+    const auto knobFn = hudSource.find("void drawMinecraftSlider(");
+    CHECK(knobFn != std::string::npos);
+    if (knobFn == std::string::npos) {
+        return;
+    }
+    const std::string knobBody = hudSource.substr(knobFn, 1800U);
+    CHECK(knobBody.find("ui::sliderHandleX(") != std::string::npos);
+    // 把手宽度取自共享常量，不是这里自己写一个 8
+    CHECK(knobBody.find("kSliderHandleWidth") != std::string::npos);
+    CHECK(knobBody.find("8.0F * scale") == std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -797,6 +938,8 @@ int main() {
     testVideoSettingsWindowedLayout();
     testWhichPagesActuallyScroll();
     testWindowSingleSourceGuard();
+    testSliderCursorMapping();
+    testSliderDragSingleSourceGuard();
     if (failures != 0) {
         std::printf("options_layout_test: %d checks failed\n", failures);
         return 1;

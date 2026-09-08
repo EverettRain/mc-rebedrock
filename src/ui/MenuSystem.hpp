@@ -5,6 +5,7 @@
 #include "ui/Language.hpp"
 #include "ui/PageStack.hpp"
 #include "ui/TextField.hpp"
+#include "ui/WidgetId.hpp"
 
 #include <array>
 #include <cstddef>
@@ -98,9 +99,14 @@ class MenuSystem final {
     //   就是这个语义；每页各存一个反而会"退出去再进来还停在半截"。
     std::size_t optionsListFirstIndex = 0U;
     bool optionsOpen = false;
-    bool viewDistanceSliderDragging = false;
-    bool simulationDistanceSliderDragging = false;
-    bool masterVolumeSliderDragging = false;
+    // 正在拖的那个滑块，None 表示没有在拖。
+    //
+    // ★ 从前这里是**三个 bool**，一个滑块一个（渲染距离 / 模拟距离 / 主音量），
+    //   而拖拽分派、松开清理、绘制高亮各写一遍那三个名字。加第四个滑块要动那三处，
+    //   漏一处的症状是"滑块画得出来但拖不动"——UI-6d 的模糊强度滑块正是这么坏的。
+    //   三个 bool 是同一个事实（"现在在拖谁"）的三份表述，收成一个 id 之后，
+    //   加滑块不再需要碰这里的任何东西。
+    WidgetId draggingSlider = WidgetId::None;
     // UI-4 / GUI spec §1.4：键盘焦点的控件下标，npos 表示没有焦点。
     // 焦点是**屏幕状态**不是控件状态，所以住在这里而不是 Widget 里——页面每帧重建，
     // 把焦点存进控件会在重建时丢掉。
