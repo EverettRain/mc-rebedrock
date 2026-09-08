@@ -815,6 +815,13 @@ if(BUILD_TESTING)
         "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
     add_test(NAME descriptor_bindings COMMAND mc_rebedrock_descriptor_bindings_test)
 
+    # 面的光照环锚在哪一格：贴壁的面锚在外、缩在格内的面锚在自己这一格。双层台阶六面
+    # 全贴壁，因此必须与整块方块逐字节一样亮——它曾经暗一大截（顶面 191、侧面低到 64）。
+    add_executable(mc_rebedrock_shaped_face_anchor_test
+        tests/shaped_face_anchor_test.cpp)
+    target_link_libraries(mc_rebedrock_shaped_face_anchor_test PRIVATE mc_rebedrock_runtime)
+    add_test(NAME shaped_face_anchor COMMAND mc_rebedrock_shaped_face_anchor_test)
+
     # RN-8f：光照的不透明度是它自己的一根轴，不是渲染分桶。台阶在 Opaque 桶里但不填满
     # 格子，26.1 因此给它 0 衰减；本作从分桶推导，给了 15，台阶屋顶下面一片死黑。
     add_executable(mc_rebedrock_light_opacity_axis_test

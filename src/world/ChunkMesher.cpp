@@ -931,18 +931,34 @@ struct SubstituteEdge final {
 // needs — vanilla takes the same min/max over the quad's four positions
 // (`prepareQuadShape`, :221-234).
 [[nodiscard]] constexpr std::array<float, 2> boxFaceAxisExtent(Face face, const ShapeBox& box) {
+    // ★ 这里要的是**那一片 quad 所在的平面**，不是盒子在该轴上的整段范围。
+    //
+    // 26.1 取的是 quad 四个顶点的 min/max（`prepareQuadShape`:221-234），而一个轴对齐的
+    // 面上那四个点在自己的轴上是同一个值——`BlockModelLighter:263` 的判据
+    // `minY == maxY && (maxY > 0.9999F || isCollisionShapeFullBlock)` 里那个 `minY == maxY`
+    // 因此恒真，真正做决定的是后半句。
+    //
+    // 从前这里返回的是 `{box.minY, box.maxY}`，于是任何**有厚度**的盒子都让
+    // `faceAnchorsOutside` 在第一句 `minAxis != maxAxis` 上直接返回「锚在格内」，
+    // 后面那段 `flush || collisionFillsCell` **一次也没执行过**。后果最扎眼的是双层台阶：
+    // 它是满方块，顶面却按格内取环，中心格是它自己（不透光、天光 0），
+    // 于是顶面天光 (0+15+15+15)/4 = 191 而不是 255——比同材质的整块方块明显暗一档。
+    // 面缩在格内的那些（下半砖顶面、压力板、地毯、活板门）答案不变：它们本来就不 flush。
     switch (face) {
     case Face::PositiveX:
+        return {box.maxX, box.maxX};
     case Face::NegativeX:
-        return {box.minX, box.maxX};
+        return {box.minX, box.minX};
     case Face::PositiveY:
+        return {box.maxY, box.maxY};
     case Face::NegativeY:
-        return {box.minY, box.maxY};
+        return {box.minY, box.minY};
     case Face::PositiveZ:
+        return {box.maxZ, box.maxZ};
     case Face::NegativeZ:
         break;
     }
-    return {box.minZ, box.maxZ};
+    return {box.minZ, box.minZ};
 }
 
 [[nodiscard]] FaceRing faceRing(const FaceDefinition& face, const FaceTangents& tangents,
