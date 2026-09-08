@@ -4563,6 +4563,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 vkDestroyPipeline(device, worldPipelines_.entityShadowPipeline, nullptr);
             if (worldPipelines_.entityShadowPipelineLayout != VK_NULL_HANDLE)
                 vkDestroyPipelineLayout(device, worldPipelines_.entityShadowPipelineLayout, nullptr);
+            if (worldPipelines_.shadowCutoutPipeline != VK_NULL_HANDLE) {
+                vkDestroyPipeline(device, worldPipelines_.shadowCutoutPipeline, nullptr);
+                worldPipelines_.shadowCutoutPipeline = VK_NULL_HANDLE;
+            }
+            if (worldPipelines_.shadowCutoutPipelineLayout != VK_NULL_HANDLE) {
+                vkDestroyPipelineLayout(device, worldPipelines_.shadowCutoutPipelineLayout, nullptr);
+                worldPipelines_.shadowCutoutPipelineLayout = VK_NULL_HANDLE;
+            }
             if (worldPipelines_.shadowPipeline != VK_NULL_HANDLE) {
                 vkDestroyPipeline(device, worldPipelines_.shadowPipeline, nullptr);
             }
@@ -5412,8 +5420,26 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         checkVk(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
                                           &worldPipelines_.shadowPipeline),
                 "vkCreateGraphicsPipelines(shadow)");
-        vkDestroyShaderModule(device, vertexModule, nullptr);
         vkDestroyShaderModule(device, fragmentModule, nullptr);
+
+        // 镂空地形：同一个顶点着色器与同一个 pass，片元多一次图集 alpha 测试。
+        // 从前这一通道只画 `mesh.opaque`，于是 Cutout 桶里的一切——楼梯、栅栏、门、
+        // 活板门、树叶、草——在太阳底下不投任何影子。
+        layoutInfo.setLayoutCount = 1;
+        layoutInfo.pSetLayouts = &descriptorSetLayout;
+        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr,
+                                       &worldPipelines_.shadowCutoutPipelineLayout),
+                "vkCreatePipelineLayout(shadow cutout)");
+        const auto cutoutFragment = createShaderModule(readSpirv(shaderRoot / "shadow_cutout.frag.spv"));
+        fragmentStage.module = cutoutFragment;
+        const std::array cutoutStages{vertexStage, fragmentStage};
+        pipelineInfo.pStages = cutoutStages.data();
+        pipelineInfo.layout = worldPipelines_.shadowCutoutPipelineLayout;
+        checkVk(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                          &worldPipelines_.shadowCutoutPipeline),
+                "vkCreateGraphicsPipelines(shadow cutout)");
+        vkDestroyShaderModule(device, cutoutFragment, nullptr);
+        vkDestroyShaderModule(device, vertexModule, nullptr);
 
         // RN-11b：实体使用 procedural ItemPush 顶点，不能按地形的整型顶点解码。
         // 与地形共享深度附件及 pass；独立布局避免依赖稍后才创建的 itemPipelineLayout。

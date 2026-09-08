@@ -16,11 +16,22 @@ layout(location = 2) in uvec2 inUv;
 layout(location = 3) in uint inLayerAO;
 layout(location = 4) in uvec4 inLights;
 
+// The cutout variant of the pass needs the atlas coordinate to alpha-test with.
+// They are written unconditionally: shadow.frag simply ignores them, and a
+// vertex stage is allowed to produce outputs the fragment stage never reads.
+// One vertex shader for both pipelines keeps the position maths in one place —
+// two copies of it drifting is how a shadow ends up offset from its caster.
+layout(location = 0) out vec2 fragmentUv;
+layout(location = 1) flat out float fragmentTextureLayer;
+
 const float kLocalScale = 17.0 / 65535.0;
+const float kUvScale = 2.0 / 65535.0;
 
 void main() {
     uint posZ = inZNorm.x & 0xFFFFu;
     vec3 local = vec3(float(inPosXY.x), float(inPosXY.y), float(posZ)) * kLocalScale - vec3(0.5);
     vec3 world = shadow.sectionOrigin.xyz + local;
     gl_Position = shadow.lightViewProj * vec4(world, 1.0);
+    fragmentUv = vec2(inUv) * kUvScale - vec2(0.5);
+    fragmentTextureLayer = float(inLayerAO & 0xFFFFu);
 }

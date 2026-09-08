@@ -655,6 +655,7 @@ if(MC_REBEDROCK_STAGE_RUNTIME AND GLSLC_EXECUTABLE)
         particle_instanced.frag
         shadow.vert
         shadow.frag
+        shadow_cutout.frag
         entity_shadow.frag
         shadow_debug.vert
         shadow_debug.frag
@@ -814,6 +815,16 @@ if(BUILD_TESTING)
     target_compile_definitions(mc_rebedrock_descriptor_bindings_test PRIVATE
         "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
     add_test(NAME descriptor_bindings COMMAND mc_rebedrock_descriptor_bindings_test)
+
+    # 太阳阴影的投射者是「不透明 + 镂空」两层。只画 opaque 时，楼梯/栅栏/门/活板门/
+    # 树叶在太阳底下一律不投影，而紧挨着它们的台阶（Opaque 桶）投——用户实机报的就是它。
+    add_executable(mc_rebedrock_shadow_cutout_pass_test
+        tests/shadow_cutout_pass_test.cpp)
+    target_compile_definitions(mc_rebedrock_shadow_cutout_pass_test PRIVATE
+        "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\""
+        "MC_REBEDROCK_WORLD_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/WorldRenderer.hpp\""
+        "MC_REBEDROCK_SHADER_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src\"")
+    add_test(NAME shadow_cutout_pass COMMAND mc_rebedrock_shadow_cutout_pass_test)
 
     # 树叶要像石头一样压暗平滑光照的角（26.1 的 getShadeBrightness 只问碰撞盒满不满
     # 格，LeavesBlock 没有覆写它），但**不**触发对角替换（isViewBlocking 是 never）。

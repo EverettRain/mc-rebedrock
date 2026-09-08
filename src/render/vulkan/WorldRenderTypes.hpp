@@ -258,6 +258,13 @@ struct WorldPipelines final {
     VkPipelineLayout entityShadowPipelineLayout = VK_NULL_HANDLE;
     VkPipeline shadowPipeline = VK_NULL_HANDLE;
     VkPipelineLayout shadowPipelineLayout = VK_NULL_HANDLE;
+    // 镂空地形的阴影：同一个顶点着色器、同一个 pass，多一次图集 alpha 测试。
+    // 它必须是**第二条**管线而不是把 alpha 测试塞进上面那条：不透明地形是这一通道
+    // 的绝大多数三角形，让它们白白跑一次纹理采样才是真开销。
+    // 布局也必须是第二条：这一条要绑描述符集（图集在 binding 1），上面那条
+    // setLayoutCount 是 0。
+    VkPipeline shadowCutoutPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout shadowCutoutPipelineLayout = VK_NULL_HANDLE;
     VkPipeline shadowDebugPipeline = VK_NULL_HANDLE;
     VkPipelineLayout shadowDebugPipelineLayout = VK_NULL_HANDLE;
     // 贴图雨的逐列雨幕

@@ -1133,13 +1133,17 @@ class WorldRenderer final {
     // SHADER_READ_ONLY_OPTIMAL。关掉太阳阴影时整步在**编译期**被剪掉（连同那条屏障），
     // 不是在这里 return；那张图靠 OffscreenTarget::initializeAsShaderRead 留下的布局保持合法。
     void recordShadow(FrameContext& frame) {
-        // 候选只收**有不透明几何**的 section。从前这个判断在下面的绘制循环里，于是
+        // 候选只收**能挡光**的 section。从前这个判断在下面的绘制循环里，于是
         // 空 opaque 的 section 白占 512 个名额里的位置：选进来、排了序、然后 continue。
+        //
+        // 「能挡光」是 opaque **或** cutout：Cutout 桶在本作装的不只是草和树叶，还有
+        // 楼梯、墙、栅栏、门、活板门这些实心材质的异形方块。只画 opaque 的时候，
+        // 一段楼梯在太阳底下不投任何影子，而挨着它的台阶（Opaque 桶）投。
         shadowCasterMeshes_.clear();
         shadowCasterBounds_.clear();
         for (const auto& [position, mesh] : gpuMeshes) {
             static_cast<void>(position);
-            if (mesh.opaque.indexCount == 0U) {
+            if (mesh.opaque.indexCount == 0U && mesh.cutout.indexCount == 0U) {
                 continue;
             }
             shadowCasterMeshes_.push_back(&mesh);
@@ -1156,18 +1160,35 @@ class WorldRenderer final {
         vkCmdSetViewport(frame.commandBuffer, 0, 1, &viewport);
         VkRect2D scissor{{0, 0}, {shadowTarget.width(), shadowTarget.height()}};
         vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
-        vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.shadowPipeline);
-        for (const std::size_t index : shadowCasterSelection_) {
-            const GpuMesh* mesh = shadowCasterMeshes_[index];
-            const ShadowPush push{shadowLightViewProj, glm::vec4{mesh->sectionOrigin, 1.0F}};
-            vkCmdPushConstants(frame.commandBuffer, pipelines.shadowPipelineLayout,
-                               VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
-            vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &mesh->vertexBuffer.buffer,
-                                   &mesh->opaque.vertexOffset);
-            vkCmdBindIndexBuffer(frame.commandBuffer, mesh->indexBuffer.buffer,
-                                 mesh->opaque.indexOffset, VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(frame.commandBuffer, mesh->opaque.indexCount, 1, 0, 0, 0);
-        }
+        // 一层几何一次管线切换，而不是逐 section 在两条管线之间来回跳。
+        const auto recordShadowLayer = [&](VkPipeline pipeline, VkPipelineLayout layout,
+                                           GpuMeshLayer GpuMesh::*layer) {
+            vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            if (layout == pipelines.shadowCutoutPipelineLayout) {
+                vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        layout, 0, 1, &frame.descriptorSet, 0, nullptr);
+            }
+            for (const std::size_t index : shadowCasterSelection_) {
+                const GpuMesh* mesh = shadowCasterMeshes_[index];
+                const GpuMeshLayer& draw = mesh->*layer;
+                // 选进来的 section 只保证**至少一层**非空，两层都要各自再问一次。
+                if (draw.indexCount == 0U) {
+                    continue;
+                }
+                const ShadowPush push{shadowLightViewProj, glm::vec4{mesh->sectionOrigin, 1.0F}};
+                vkCmdPushConstants(frame.commandBuffer, layout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+                                   sizeof(push), &push);
+                vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &mesh->vertexBuffer.buffer,
+                                       &draw.vertexOffset);
+                vkCmdBindIndexBuffer(frame.commandBuffer, mesh->indexBuffer.buffer,
+                                     draw.indexOffset, VK_INDEX_TYPE_UINT32);
+                vkCmdDrawIndexed(frame.commandBuffer, draw.indexCount, 1, 0, 0, 0);
+            }
+        };
+        recordShadowLayer(pipelines.shadowPipeline, pipelines.shadowPipelineLayout,
+                          &GpuMesh::opaque);
+        recordShadowLayer(pipelines.shadowCutoutPipeline, pipelines.shadowCutoutPipelineLayout,
+                          &GpuMesh::cutout);
         vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           pipelines.entityShadowPipeline);
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
