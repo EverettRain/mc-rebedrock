@@ -26,6 +26,9 @@
 #ifndef MC_REBEDROCK_HUD_RENDERER_SRC
 #error "MC_REBEDROCK_HUD_RENDERER_SRC must point at src/render/vulkan/HudRenderer.hpp"
 #endif
+#ifndef MC_REBEDROCK_REBEDROCK_LANG_EN
+#error "MC_REBEDROCK_REBEDROCK_LANG_EN must point at resources/lang/rebedrock/en_us.json"
+#endif
 
 namespace {
 
@@ -213,12 +216,50 @@ void testNoHandWrittenDim() {
     CHECK(panorama.find("Blur") == std::string::npos);
 }
 
+// --- 4. 右下角那行不是 Mojang 的版权声明 --------------------------------------
+//
+// 26.1 的 `title.credits` 是 "Copyright Mojang AB. Do not distribute!"，说的是**它自己
+// 那份代码与资源**的版权。本仓是一份独立实现，不在那份版权的管辖内，把它原样显示出来
+// 是一句事实错误的声明——而且读 vanilla 的键还意味着它会随玩家自备的资源包被翻译成
+// 各国语言，看起来更像"这就是官方的东西"。
+//
+// 这件事没有任何返回值会因此改变（一行文本换成另一行文本），所以只能靠护栏：
+// 源码里不得再出现那个键，`lang/rebedrock/` 的自有条目也不得写成 Mojang 那句。
+void testFooterCreditsAreOurs() {
+    const std::string source = stripLineComments(readHudRenderer());
+    const std::string branding = functionBody(source, "void drawTitleBranding(");
+    if (branding.empty()) {
+        return;
+    }
+    // ★ 不读 vanilla 的键。读了它就会拿到资源包里 Mojang 那句（还带翻译）。
+    CHECK(branding.find("\"title.credits\"") == std::string::npos);
+    CHECK(branding.find("title.rebedrock.credits") != std::string::npos);
+    // 兜底字符串也是本项目的：资源包缺 `lang/rebedrock/` 时显示的就是它
+    CHECK(branding.find("Mojang AB") == std::string::npos);
+    CHECK(branding.find("Do not distribute") == std::string::npos);
+
+    // 自有翻译表里那条同样不许写成 Mojang 那句
+    std::ifstream table{MC_REBEDROCK_REBEDROCK_LANG_EN, std::ios::binary};
+    if (!table) {
+        std::printf("title_background_test: cannot open %s\n", MC_REBEDROCK_REBEDROCK_LANG_EN);
+        ++failures;
+        return;
+    }
+    std::ostringstream buffer;
+    buffer << table.rdbuf();
+    const std::string json = buffer.str();
+    CHECK(json.find("\"title.rebedrock.credits\"") != std::string::npos);
+    CHECK(json.find("Mojang AB") == std::string::npos);
+    CHECK(json.find("Do not distribute") == std::string::npos);
+}
+
 } // namespace
 
 int main() {
     testRecipe();
     testLayerNumbersAreDistinct();
     testNoHandWrittenDim();
+    testFooterCreditsAreOurs();
     if (failures != 0) {
         std::printf("title_background_test: %d checks failed\n", failures);
         return 1;

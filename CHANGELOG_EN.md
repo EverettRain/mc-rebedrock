@@ -21,6 +21,14 @@ simple versioned history while it is in beta.
   Greyed-out buttons are skipped.
 - Shift-clicking a cycling option now steps backwards through its values instead of forwards.
 
+### Changed
+- The main menu no longer shows Mojang's copyright line in its bottom-right corner. ReBedrock is an
+  independent reimplementation; that line is about Minecraft's own code and assets and does not
+  apply here. It now carries a short notice of this project's own.
+- Leaving a world no longer flashes "World saved" in the bottom-left corner. It only ever appeared
+  on the way out, and then stayed on the main menu you had just returned to until the next world
+  was opened. The outcome still goes to the log, and a failed save still tells you on screen.
+
 ### Fixed
 - The red wash on the death screen is no longer one flat shade: it is Minecraft's gradient, lighter
   at the top and heavier at the bottom, instead of the single tone that split the difference.

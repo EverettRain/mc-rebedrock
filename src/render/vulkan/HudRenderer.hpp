@@ -1254,8 +1254,15 @@ class HudRenderer final {
     void drawTitleBranding(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         const float scale = layout.scale();
         const std::string version = "Minecraft " + std::string{core::kVersion.name};
+        // ★ 右下角那行**不**读 vanilla 的 `title.credits`。
+        //
+        // 26.1 那行是 "Copyright Mojang AB. Do not distribute!"，说的是**它自己那份代码与
+        // 资源**的版权。本仓是一份独立实现，不在那份版权的管辖内，把它原样显示出来是一句
+        // 事实错误的声明——而且它还会随玩家自备的资源包一起被翻译成各国语言。
+        // 换成本项目自己的一行，键走 `lang/rebedrock/`（本仓唯一自有的翻译表命名空间），
+        // 因此它不依赖任何资源包，也不会被资源包覆盖。
         const std::string copyright =
-            translated("title.credits", "Copyright Mojang AB. Do not distribute!");
+            translated("title.rebedrock.credits", "ReBedrock. Not affiliated with Mojang.");
         const auto title = ui::titleScreenLayout(
             layout.logicalWidth(), layout.logicalHeight(),
             static_cast<int>(hudTextWidth(version, 1.0F)),

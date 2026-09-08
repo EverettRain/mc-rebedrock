@@ -1773,7 +1773,8 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     target_compile_definitions(mc_rebedrock_title_background_test PRIVATE
-        MC_REBEDROCK_HUD_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/HudRenderer.hpp")
+        MC_REBEDROCK_HUD_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/HudRenderer.hpp"
+        MC_REBEDROCK_REBEDROCK_LANG_EN="${CMAKE_CURRENT_SOURCE_DIR}/resources/lang/rebedrock/en_us.json")
     add_test(NAME title_background COMMAND mc_rebedrock_title_background_test)
 
     # UI-3：版面跑在逻辑画布的整数网格上。断言手算的字面量，外加一条"每个矩形都落在

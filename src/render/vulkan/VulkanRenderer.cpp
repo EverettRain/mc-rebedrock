@@ -2315,12 +2315,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             // 存档由运行时构建并落盘；返回 false 表示当前没有打开的存档
             if (!runtime.saveLocked()) {
                 menuSystem.saveStatus = "World saving is disabled for this session";
+                std::cout << "World saving is disabled for this session\n";
                 return;
             }
-            menuSystem.saveStatus = "World saved";
+            // ★ 成功保存**不**在界面上留字。
+            //
+            // 这个函数只有一个调用方——`returnToTitle(true)`，也就是退出世界那一下。
+            // 于是 "World saved" 会在刚回到的主菜单左下角挂着，直到下一次开世界才被
+            // `menuSystem.saveStatus.clear()` 抹掉：一条本该转瞬即逝的确认，变成了主菜单
+            // 上一行不属于 26.1 的常驻文字。26.1 退出世界时也不显示任何东西。
+            //
+            // 失败与"这个会话不保存"两条**留着**：那是玩家必须知道的（否则会以为存上了），
+            // 而它们本来就是异常路径，不会常驻。三条都打日志。
+            std::cout << "World saved\n";
             refreshSaveList();
         } catch (const std::exception& exception) {
             menuSystem.saveStatus = "Save failed: " + std::string{exception.what()};
+            std::cerr << "World save failed: " << exception.what() << '\n';
         }
     }
 

@@ -10,5 +10,6 @@
   "options.rebedrock.rainMode.async": "异步粒子雨",
   "options.rebedrock.rainMode.texture": "贴图雨",
   "options.rebedrock.resolution.windowed": "窗口化",
-  "options.rebedrock.sunShadows": "太阳阴影"
+  "options.rebedrock.sunShadows": "太阳阴影",
+  "title.rebedrock.credits": "ReBedrock。与 Mojang 无关联。"
 }
