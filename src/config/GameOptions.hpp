@@ -8,6 +8,16 @@
 
 namespace mc::config {
 
+// 抗锯齿档位。见 GameOptions::antiAliasing。
+enum class AntiAliasingMode : int {
+    Off = 0,
+    // 多重采样。几何边缘有效，alpha-test 的边与着色器内部的高频（阴影边、AO 边）
+    // 一概管不到：MSAA 每像素只跑一次片元着色器
+    Msaa = 1,
+    // 时间性抗锯齿（TAA 树）。抖动 + 历史累积，覆盖上面那两类 MSAA 够不着的边
+    Taa = 2,
+};
+
 struct GameOptions final {
     // The build's version identity is NOT a user option — it lives once in
     // core::kVersion (META's single source) and the F3 overlay reads it there.
@@ -39,7 +49,12 @@ struct GameOptions final {
     // Vanilla's "Directional Audio" accessibility toggle (HRTF in vanilla; a pan
     // mode here — see AudioSystem). On by default, matching vanilla.
     bool directionalAudio = true;
-    bool antiAliasing = true;
+    // TAA：抗锯齿是**三档**，不是两个独立开关。MSAA 与 TAA 同时开是纯浪费——
+    // TAA 已经覆盖几何边缘，而 MSAA 对 alpha-test 的边（树叶、草、栅栏走 discard，
+    // 整个片元被丢掉）本来就无从插手，那正是画面里最脏的一块。
+    // 存储值即档序，写进 options 文件的是数字；旧文件里的 `true` 读成 Msaa、
+    // `false` 读成 Off，两者恰好就是 1 与 0，迁移因此不需要额外的分支。
+    AntiAliasingMode antiAliasing = AntiAliasingMode::Msaa;
     bool viewBobbing = true;
     // Vanilla's "Entity Shadows" (Options.java:486, `createBoolean` with a true
     // default, shown in VideoSettingsScreen.java:51): the round shadow decal

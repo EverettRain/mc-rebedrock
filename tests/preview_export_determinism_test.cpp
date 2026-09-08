@@ -17,10 +17,18 @@
 // 图上一律得不出结论，而这个仓库的视觉验收全建立在这些图上。
 //
 // 这条测试把那条链子的三节各钉一次，而不是只断言「源码里有那一行」。
+//
+// TAA-1 之后它钉的是**两条**链，而且第二条的失效方式与第一条不同：
+// menuBackgroundBlurriness 漏掉是因为它**间接**生效；抗锯齿漏掉是因为它**早于钉死时刻**
+// 生效（初始化期读一次，交换链与管线都按它建）。两次的表现同样是「看起来没问题」。
+// 下半场那一节因此钉的是位置——「在 glfwInit 之前」——而不是「在某个函数体里」。
 
 #include "config/GameOptions.hpp"
+#include "render/TemporalAntiAliasing.hpp"
+#include "ui/OptionCycle.hpp"
 #include "ui/ScreenBackground.hpp"
 
+#include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -139,6 +147,73 @@ int main() {
                                "options.menuBackgroundBlurriness = 0;"}) {
         require(body.find(pinned) != std::string::npos,
                 std::string{"applyPreviewDeterminism 必须钉死 "} + pinned);
+    }
+
+    // ================= TAA-1：同一个陷阱的第二次现身 =========================
+    //
+    // menuBackgroundBlurriness 漏掉，是因为它**间接**生效（被界面那一趟读走，
+    // 而"导出没有界面"）。TAA 漏掉的方式不同也更狠：它让画面成为「拍之前跑了几帧」
+    // 的函数，而导出正是先跑 kPreviewWarmupFrames 帧再截图。
+    // 实测（离屏，八角夹具，512²）：TAA 开着时 warmup 8 与 warmup 24 拍出来的同一张
+    // 图有 5.10% 的像素不同（最大 Δ=24）；关着时两者**逐字节相同**。
+    //
+    // 而且它的钉死位置也和上一次不同：抗锯齿是**初始化期读一次**的（交换链、
+    // 渲染通道、管线都按它建），钉在 applyPreviewDeterminism 里是一句空话——
+    // 那个函数跑的时候东西早就建好了。这一节因此钉的是「在 glfwInit 之前」。
+    {
+        // ---- 第一节：TAA 这一档确实吃历史 ---------------------------------
+        mc::render::TemporalFrameState state;
+        state.advance();
+        const bool eatsHistory = state.historyWeight() > 0.0F;
+        require(eatsHistory,
+                "TAA 一旦有了上一帧就必须真的吃历史，否则下面两节钉的东西不存在");
+
+        // ---- 第二节：导出确实要先跑好几帧再拍 -----------------------------
+        int warmupFrames = 0;
+        const auto warmupAt = clean.find("kPreviewWarmupFrames = ");
+        require(warmupAt != std::string::npos, "必须找得到导出的预热帧数");
+        if (warmupAt != std::string::npos) {
+            const char* first = clean.data() + warmupAt + std::string_view{"kPreviewWarmupFrames = "}.size();
+            std::from_chars(first, clean.data() + clean.size(), warmupFrames);
+        }
+        require(warmupFrames > 1,
+                "导出要跑不止一帧再截图——正是这一点让「吃历史」变成「图片取决于跑了几帧」");
+
+        // ---- 第三节：TAA 是用户真能选到的一档 -----------------------------
+        const mc::ui::OptionDesc* antiAliasing =
+            mc::ui::findCyclingOption(mc::ui::WidgetId::AntiAliasing);
+        require(antiAliasing != nullptr, "抗锯齿必须还是一个循环选项");
+        bool reachableTaa = false;
+        if (antiAliasing != nullptr) {
+            for (const mc::ui::OptionValue& value : antiAliasing->values) {
+                reachableTaa = reachableTaa ||
+                               value.value == static_cast<int>(mc::config::AntiAliasingMode::Taa);
+            }
+        }
+        require(reachableTaa, "TAA 必须是取值表里够得着的一档，否则不必钉");
+
+        // ---- 结论：导出必须在**建 Vulkan 之前**把它钉成 Off ---------------
+        const auto initialize = clean.find("void initialize()");
+        const auto glfwInitCall = clean.find("glfwInit()", initialize);
+        require(initialize != std::string::npos && glfwInitCall != std::string::npos,
+                "必须找得到 initialize() 与它里面的 glfwInit()");
+        if (eatsHistory && warmupFrames > 1 && reachableTaa && initialize != std::string::npos &&
+            glfwInitCall != std::string::npos) {
+            const std::string prologue = clean.substr(initialize, glfwInitCall - initialize);
+            require(prologue.find("options.antiAliasing = config::AntiAliasingMode::Off;") !=
+                        std::string::npos,
+                    "导出必须在 glfwInit 之前把抗锯齿钉成 Off——它是初始化期读一次的，"
+                    "钉晚了一个字节都改不动已经建好的交换链与管线");
+            // 光有那一行不够：它必须真的管到**方块预览导出**，而不是只管界面截图。
+            // 那正是本轮查出来的缺陷——导出从来没进过这个条件
+            require(prologue.find("testScene->exportPreview") != std::string::npos,
+                    "那一段必须覆盖方块预览导出，不能只覆盖界面截图");
+            std::cout << "  TAA 吃历史、导出跑 " << warmupFrames
+                      << " 帧再拍、这一档用户够得着 ⇒ 已检查它在 glfwInit 之前被钉成 Off\n";
+        } else {
+            std::cout << "  注意：吃历史=" << eatsHistory << "，预热帧数=" << warmupFrames
+                      << "，TAA 可达=" << reachableTaa << "——链条已断，重新审视那条钉死\n";
+        }
     }
 
     if (failures != 0) {

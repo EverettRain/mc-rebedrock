@@ -23,6 +23,7 @@ EXPORTS
     vkCmdBeginQuery
     vkCmdBindVertexBuffers
     vkCmdClearAttachments
+    vkCmdClearColorImage
     vkCmdCopyBuffer
     vkCmdCopyBufferToImage
     vkCmdCopyImage

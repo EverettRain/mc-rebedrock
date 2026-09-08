@@ -20,7 +20,8 @@ int main() {
     assert(defaults.viewDistance == 4);
     assert(defaults.smoothLightingQuality == mc::world::SmoothLightingQuality::On);
     assert(defaults.frameRateLimit == 120);
-    assert(defaults.antiAliasing);
+    // TAA：抗锯齿是三档，默认那一档是 MSAA——旧选项文件里的 `true` 也读成它
+    assert(defaults.antiAliasing == mc::config::AntiAliasingMode::Msaa);
     assert(defaults.anisotropy == 8);
     assert(defaults.viewBobbing);
     // RN-23: vanilla's Entity Shadows defaults to on (Options.java:486).

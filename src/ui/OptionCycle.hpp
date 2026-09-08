@@ -44,7 +44,8 @@ struct OptionValue final {
 // 一个选项读写的 GameOptions 字段
 // 三种形态覆盖全部循环选项：开关标志、整数，以及那个唯一的三态枚举
 using OptionField = std::variant<bool config::GameOptions::*, int config::GameOptions::*,
-                                 world::SmoothLightingQuality config::GameOptions::*>;
+                                 world::SmoothLightingQuality config::GameOptions::*,
+                                 config::AntiAliasingMode config::GameOptions::*>;
 
 struct OptionDesc final {
     WidgetId id = WidgetId::None;
@@ -73,6 +74,16 @@ inline constexpr std::array<OptionValue, 2> kOnOffValues{{
 inline constexpr std::array<OptionValue, 6> kFrameRateValues{{
     {30}, {60}, {120}, {144}, {240},
     {0, "options.framerateLimit.max", "Unlimited"},
+}};
+
+// TAA：抗锯齿的三档。取值即 config::AntiAliasingMode 的底层值。
+// 做成一行三态而不是两个开关，是因为 MSAA 与 TAA 同时开是纯浪费——两个开关会让
+// 那个组合可表达，而界面上没有任何东西说得清它意味着什么
+inline constexpr std::array<OptionValue, 3> kAntiAliasingValues{{
+    {static_cast<int>(config::AntiAliasingMode::Off), "options.off", "OFF"},
+    {static_cast<int>(config::AntiAliasingMode::Msaa), "options.rebedrock.antiAliasing.msaa",
+     "MSAA"},
+    {static_cast<int>(config::AntiAliasingMode::Taa), "options.rebedrock.antiAliasing.taa", "TAA"},
 }};
 
 // 各向异性过滤逐级翻倍到 16x 再回绕
@@ -108,7 +119,7 @@ inline constexpr std::array<OptionDesc, 15> kCyclingOptions{{
      &config::GameOptions::frameRateLimit, kFrameRateValues, /*numberSuffix=*/{},
      "options.framerate", "%s fps"},
     {WidgetId::AntiAliasing, "options.rebedrock.antiAliasing", "Anti-Aliasing",
-     &config::GameOptions::antiAliasing, kOnOffValues},
+     &config::GameOptions::antiAliasing, kAntiAliasingValues},
     {WidgetId::Anisotropy, "options.maxAnisotropy", "Anisotropic Filtering",
      &config::GameOptions::anisotropy, kAnisotropyValues, /*numberSuffix=*/"x"},
     // 26.1 的 options.ao 是布尔量，标签就是通用的 ON/OFF

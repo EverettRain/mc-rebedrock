@@ -7,8 +7,11 @@
 #include <vk_mem_alloc.h>
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace mc::render {
 
@@ -26,6 +29,31 @@ inline void checkVk(VkResult result, const char* operation) {
         throw std::runtime_error(std::string(operation) + " failed with VkResult " +
                                  std::to_string(result));
     }
+}
+
+// 从磁盘读一个 SPIR-V 模块。
+//
+// 三份手抄（渲染器、菜单模糊、时间性 resolve）收成这一份。三份原本逐字相同，
+// 而它们唯一会分歧的地方恰好是最要命的那两条检查：文件长度必须是 4 的倍数、
+// 读完必须确认流仍然良好——少了它们，一个被截断的 .spv 会被安静地当成合法模块
+// 交给 vkCreateShaderModule，崩在驱动里。
+[[nodiscard]] inline std::vector<std::uint32_t> readSpirvFile(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::ate | std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("Unable to open shader: " + path.string());
+    }
+    const auto end = file.tellg();
+    if (end <= 0 || static_cast<std::uint64_t>(end) % sizeof(std::uint32_t) != 0U) {
+        throw std::runtime_error("Invalid SPIR-V file: " + path.string());
+    }
+    const auto byteCount = static_cast<std::size_t>(end);
+    std::vector<std::uint32_t> code(byteCount / sizeof(std::uint32_t));
+    file.seekg(0);
+    file.read(reinterpret_cast<char*>(code.data()), static_cast<std::streamsize>(byteCount));
+    if (!file) {
+        throw std::runtime_error("Unable to read shader: " + path.string());
+    }
+    return code;
 }
 
 // 一个缓冲连同它的 VMA 分配

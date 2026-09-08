@@ -8,6 +8,14 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Added
+- Anti-aliasing is now a three-way setting -- Off, MSAA, TAA -- instead of a single on/off switch,
+  and the new TAA option is temporal anti-aliasing: the camera is jittered by a fraction of a pixel
+  each frame and the results are accumulated, which smooths the edges MSAA has never been able to
+  touch. Leaves, grass and fences are drawn by discarding pixels, so multisampling has nothing to
+  work with there, and shadow and ambient-occlusion edges are produced inside the shader, which runs
+  once per pixel either way. MSAA and TAA are two values of one setting rather than two switches:
+  turning both on would only cost frames, since TAA already covers the geometry edges MSAA handles.
+  An existing options file that says `render.antiAliasing=true` reads back as MSAA, `false` as Off.
 - The pause menu, and any settings screen opened from inside a world, now blur the world behind
   them the way Minecraft does. Until now only the main menu's rotating scenery was ever blurred;
   opening a menu in-game merely dimmed the world, which stayed perfectly sharp. The strength is

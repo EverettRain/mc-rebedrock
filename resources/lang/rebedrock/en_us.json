@@ -2,6 +2,8 @@
   "key.rebedrock.debug": "Debug Info",
   "key.rebedrock.pause": "Pause / Menu",
   "options.rebedrock.antiAliasing": "Anti-Aliasing",
+  "options.rebedrock.antiAliasing.msaa": "MSAA",
+  "options.rebedrock.antiAliasing.taa": "TAA",
   "options.rebedrock.dynamicLights": "Dynamic Lighting",
   "options.rebedrock.particleLevel.crazy": "Crazy (3x)",
   "options.rebedrock.particleLevel.high": "High (2x)",

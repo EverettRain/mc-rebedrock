@@ -452,6 +452,7 @@ add_executable(mc_rebedrock
     src/render/vulkan/BlockAtlasBaker.cpp
     src/render/vulkan/GpuSceneBuffer.cpp
     src/render/vulkan/MenuBlur.cpp
+    src/render/vulkan/TemporalResolve.cpp
     src/render/vulkan/OffscreenTarget.cpp
     src/render/vulkan/SceneReadback.cpp
     src/ui/MenuGeometry.cpp
@@ -645,6 +646,8 @@ if(MC_REBEDROCK_STAGE_RUNTIME AND GLSLC_EXECUTABLE)
         gradient.frag
         menu_blur.vert
         menu_blur.frag
+        taa_resolve.vert
+        taa_resolve.frag
         panorama.vert
         panorama.frag
         item_entity.vert
@@ -837,6 +840,17 @@ if(BUILD_TESTING)
     target_compile_definitions(mc_rebedrock_preview_export_determinism_test PRIVATE
         "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
     add_test(NAME preview_export_determinism COMMAND mc_rebedrock_preview_export_determinism_test)
+
+    # TAA-1 的判据。一趟全屏 resolve 只要跑起来画面就"看着像抗锯齿"，所以抖动序列、
+    # 抖动怎么进投影、重投影的往返、钳制与历史靶的读写互斥都要逐值钉住。
+    add_executable(mc_rebedrock_temporal_antialiasing_test
+        tests/temporal_antialiasing_test.cpp)
+    target_link_libraries(mc_rebedrock_temporal_antialiasing_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_temporal_antialiasing_test PRIVATE src)
+    target_compile_definitions(mc_rebedrock_temporal_antialiasing_test PRIVATE
+        "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\""
+        "MC_REBEDROCK_SUN_SHADOW_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/SunShadowMap.cpp\"")
+    add_test(NAME temporal_antialiasing COMMAND mc_rebedrock_temporal_antialiasing_test)
 
     # 太阳阴影的投射者是「不透明 + 镂空」两层。只画 opaque 时，楼梯/栅栏/门/活板门/
     # 树叶在太阳底下一律不投影，而紧挨着它们的台阶（Opaque 桶）投——用户实机报的就是它。

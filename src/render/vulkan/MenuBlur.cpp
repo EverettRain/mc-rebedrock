@@ -1,32 +1,9 @@
 #include "render/vulkan/MenuBlur.hpp"
 
 #include <array>
-#include <fstream>
 #include <stdexcept>
 
 namespace mc::render {
-namespace {
-
-[[nodiscard]] std::vector<std::uint32_t> readSpirvFile(const std::filesystem::path& path) {
-    std::ifstream file(path, std::ios::ate | std::ios::binary);
-    if (!file) {
-        throw std::runtime_error("Unable to open shader: " + path.string());
-    }
-    const auto end = file.tellg();
-    if (end <= 0 || static_cast<std::uint64_t>(end) % sizeof(std::uint32_t) != 0U) {
-        throw std::runtime_error("Invalid SPIR-V file: " + path.string());
-    }
-    const auto byteCount = static_cast<std::size_t>(end);
-    std::vector<std::uint32_t> code(byteCount / sizeof(std::uint32_t));
-    file.seekg(0);
-    file.read(reinterpret_cast<char*>(code.data()), static_cast<std::streamsize>(byteCount));
-    if (!file) {
-        throw std::runtime_error("Unable to read shader: " + path.string());
-    }
-    return code;
-}
-
-} // namespace
 
 void MenuBlur::init(const Config& config) {
     destroy();

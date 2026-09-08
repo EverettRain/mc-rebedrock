@@ -7,7 +7,9 @@
 #include "render/vulkan/BlockAtlasLayout.hpp"
 #include "render/vulkan/HudRenderer.hpp"
 #include "render/vulkan/HudTypes.hpp"
+#include "render/TemporalAntiAliasing.hpp"
 #include "render/vulkan/MenuBlur.hpp"
+#include "render/vulkan/TemporalResolve.hpp"
 #include "render/vulkan/WorldRenderTypes.hpp"
 #include "render/vulkan/VulkanResources.hpp"
 #include "render/vulkan/GpuSceneBuffer.hpp"
@@ -165,6 +167,10 @@ class WorldRenderer final {
     std::vector<VkFramebuffer>& guiFramebuffers;
     // UI-5：全景那一趟 + 六趟整帧模糊，跑在世界与界面之间
     MenuBlur& menuBlur;
+    // TAA-1：时间性 resolve 那一趟与它的逐帧状态。两者的所有权都在 VulkanRenderer
+    // （随交换链销毁重建），这里只调用
+    TemporalResolve& temporalResolve;
+    TemporalFrameState& temporalState;
     std::function<void(VkCommandBuffer, std::uint32_t)> copySceneToSwapchain;
     std::array<FrameContext, kFramesInFlight>& frames;
     std::size_t& currentFrame;
@@ -227,6 +233,7 @@ class WorldRenderer final {
         rainTime_(b.rainTime_), language(b.language),
         swapchainExtent(b.swapchainExtent), framebuffers(b.framebuffers),
           guiFramebuffers(b.guiFramebuffers), menuBlur(b.menuBlur),
+          temporalResolve(b.temporalResolve), temporalState(b.temporalState),
           copySceneToSwapchain(b.copySceneToSwapchain),
           frames(b.frames),
         currentFrame(b.currentFrame), peakPendingSectionCount(b.peakPendingSectionCount),
@@ -2324,6 +2331,14 @@ class WorldRenderer final {
         args.self->recordWorld(*args.frame);
     }
 
+    static void graphTemporalResolveStep(VkCommandBuffer commandBuffer,
+                                         const graph::PassContext& context) {
+        static_cast<void>(commandBuffer);
+        auto& args = *static_cast<GraphPassArgs*>(context.user);
+        const diag::ScopedAccumulate bodyTimer{args.self->graphBodyMs_};
+        args.self->recordTemporalResolve(*args.frame, context.imageIndex);
+    }
+
     static void graphMenuBackgroundStep(VkCommandBuffer commandBuffer,
                                         const graph::PassContext& context) {
         static_cast<void>(commandBuffer);
@@ -2716,6 +2731,16 @@ class WorldRenderer final {
         menuBlur.record(frame.commandBuffer, imageIndex, ui::menuBlurRadius(blurriness));
     }
 
+    // TAA-1：resolve。非渲染步——三条前置屏障、renderpass 的 begin/end 与那一个
+    // 全屏三角形都在 TemporalResolve 里，理由见那个头文件第 3 条。
+    void recordTemporalResolve(FrameContext& frame, std::uint32_t imageIndex) {
+        temporalResolve.record(frame.commandBuffer, imageIndex, temporalState.historyWriteSlot,
+                               temporalState.reprojection(), temporalState.historyWeight());
+        // 本帧的相机成为下一帧的"上一帧"，历史靶翻面。推进放在这里而不是 drawFrame
+        // 末尾：只有这一步真的录进了命令缓冲，历史图里才会有东西可读
+        temporalState.advance();
+    }
+
     void recordGui(FrameContext& frame) {
         // 视口与裁剪是命令缓冲级的动态状态，跨 pass 仍然有效；这里自己算一份再重设一次，
         // 是为了让这一趟自己成立，不依赖上一趟留下了什么
@@ -2874,6 +2899,9 @@ class WorldRenderer final {
   std::vector<VkFramebuffer>& framebuffers;
   std::vector<VkFramebuffer>& guiFramebuffers;
   MenuBlur& menuBlur;
+  // TAA-1：resolve 那一趟与它的逐帧状态，所有权在 VulkanRenderer
+  TemporalResolve& temporalResolve;
+  TemporalFrameState& temporalState;
   std::function<void(VkCommandBuffer, std::uint32_t)> copySceneToSwapchain;
   std::array<FrameContext, kFramesInFlight>& frames;
   std::size_t& currentFrame;

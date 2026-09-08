@@ -78,6 +78,12 @@ void GameOptions::sanitize() {
     // authoritative masterVolume so a reader that indexes the array by
     // SoundCategory::Master sees the right value.
     soundCategoryVolumes[static_cast<std::size_t>(mc::audio::SoundCategory::Master)] = masterVolume;
+    // 手工改过的选项文件里可能是任何数字；档位表之外的取值一律回到 MSAA，
+    // 而不是让 renderSampleCount() 去猜一个没有定义的档
+    if (antiAliasing != AntiAliasingMode::Off && antiAliasing != AntiAliasingMode::Msaa &&
+        antiAliasing != AntiAliasingMode::Taa) {
+        antiAliasing = AntiAliasingMode::Msaa;
+    }
     rainMode = std::clamp(rainMode, 0, 1);
     particleLevel = std::clamp(particleLevel, 0, 3);
     if (language.empty() ||
@@ -123,7 +129,17 @@ GameOptions GameOptions::load(const std::filesystem::path& path) {
         } else if (key == "render.anisotropy") {
             static_cast<void>(parseNumber(value, options.anisotropy));
         } else if (key == "render.antiAliasing") {
-            options.antiAliasing = value == "true" || value == "1" || value == "on";
+            // 三档以数字存储，但这个键在做成三档之前写的是 true/false。两种拼法
+            // 都要读得动，而且它们恰好不冲突：旧的 true 就是 Msaa(1)，false 就是 Off(0)
+            int mode = static_cast<int>(AntiAliasingMode::Msaa);
+            if (value == "true" || value == "on") {
+                mode = static_cast<int>(AntiAliasingMode::Msaa);
+            } else if (value == "false" || value == "off") {
+                mode = static_cast<int>(AntiAliasingMode::Off);
+            } else if (!parseNumber(value, mode)) {
+                mode = static_cast<int>(AntiAliasingMode::Msaa);
+            }
+            options.antiAliasing = static_cast<AntiAliasingMode>(mode);
         } else if (key == "render.entityShadows") {
             options.entityShadows = value == "true" || value == "1" || value == "on";
         } else if (key == "render.viewBobbing") {
@@ -195,7 +211,7 @@ void GameOptions::save(const std::filesystem::path& path) const {
            << "render.simulationDistance=" << sanitized.simulationDistance << '\n'
            << "render.fpsLimit=" << sanitized.frameRateLimit << '\n'
            << "render.anisotropy=" << sanitized.anisotropy << '\n'
-           << "render.antiAliasing=" << (sanitized.antiAliasing ? "true" : "false") << '\n'
+           << "render.antiAliasing=" << static_cast<int>(sanitized.antiAliasing) << '\n'
            << "render.viewBobbing=" << (sanitized.viewBobbing ? "true" : "false") << '\n'
            << "render.entityShadows=" << (sanitized.entityShadows ? "true" : "false") << '\n'
            << "control.autoJump=" << (sanitized.autoJump ? "true" : "false") << '\n'

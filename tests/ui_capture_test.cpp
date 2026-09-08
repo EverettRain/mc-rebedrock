@@ -432,11 +432,24 @@ void testKnobsAreAllPinned() {
     // 不在这个函数里。它们决定采样器与管线，晚一步钉就没用了。
     const auto initialize = source.find("void initialize()");
     CHECK(initialize != std::string::npos);
-    const auto capturePin = source.find("if (uiCapture.has_value()) {", initialize);
-    CHECK(capturePin != std::string::npos && capturePin - initialize < 1500U);
-    const std::string prologue = source.substr(initialize, 1500U);
+    // TAA-1：这一段从"只管界面截图"扩成"两条离屏通道共用"——方块预览导出从前
+    // 没有份，于是它的抗锯齿档取决于机器上的 options.properties
+    const auto capturePin =
+        source.find("if (uiCapture.has_value() || (testScene.has_value() && "
+                    "testScene->exportPreview)) {",
+                    initialize);
+    CHECK(capturePin != std::string::npos);
+    // ★ 判据不是「离函数开头多少个字符」，而是「在 glfwInit 之前」——那才是这三档
+    // 还来得及生效的真正边界。用字符距离量的那一版会被一段长注释推翻，而注释长短
+    // 与它钉的那件事毫无关系
+    const auto glfwInitCall = source.find("glfwInit()", initialize);
+    CHECK(glfwInitCall != std::string::npos && capturePin < glfwInitCall);
+    const std::string prologue = source.substr(capturePin, glfwInitCall - capturePin);
     CHECK(prologue.find("options.anisotropy = 1") != std::string::npos);
-    CHECK(prologue.find("options.antiAliasing = false") != std::string::npos);
+    // TAA 之后这一档是三态枚举。截图通道要的仍是"最不改变边缘的那一档"——
+    // MSAA 会动几何边，TAA 还会让画面取决于前面拍了几帧
+    CHECK(prologue.find("options.antiAliasing = config::AntiAliasingMode::Off") !=
+          std::string::npos);
     CHECK(prologue.find("options.vsync = false") != std::string::npos);
 }
 

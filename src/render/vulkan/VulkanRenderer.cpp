@@ -4,6 +4,7 @@
 #include "render/vulkan/HudRenderer.hpp"
 #include "render/vulkan/HudTypes.hpp"
 #include "render/vulkan/MenuBlur.hpp"
+#include "render/vulkan/TemporalResolve.hpp"
 #include "render/vulkan/OffscreenTarget.hpp"
 #include "render/vulkan/SwapchainFormat.hpp"
 #include "render/vulkan/SceneReadback.hpp"
@@ -58,6 +59,7 @@
 #include "persistence/SaveRepository.hpp"
 #include "render/Frustum.hpp"
 #include "render/SunShadowMap.hpp"
+#include "render/TemporalAntiAliasing.hpp"
 #include "render/SmokeScript.hpp"
 #include "render/vulkan/SmokeScriptSteps.hpp"
 #include "runtime/GameRuntime.hpp"
@@ -251,23 +253,9 @@ struct CameraUniform final {
     alignas(16) std::array<glm::vec4, kMaxBlockAnimations> blockAnimations{};
 };
 
+// 读 SPIR-V 的那一串检查收在 VulkanResources.hpp（三处手抄合一），这里只保留旧名字
 [[nodiscard]] std::vector<std::uint32_t> readSpirv(const std::filesystem::path& path) {
-    std::ifstream file(path, std::ios::ate | std::ios::binary);
-    if (!file) {
-        throw std::runtime_error("Unable to open shader: " + path.string());
-    }
-    const auto end = file.tellg();
-    if (end <= 0 || static_cast<std::uint64_t>(end) % sizeof(std::uint32_t) != 0U) {
-        throw std::runtime_error("Invalid SPIR-V file: " + path.string());
-    }
-    const auto byteCount = static_cast<std::size_t>(end);
-    std::vector<std::uint32_t> code(byteCount / sizeof(std::uint32_t));
-    file.seekg(0);
-    file.read(reinterpret_cast<char*>(code.data()), static_cast<std::streamsize>(byteCount));
-    if (!file) {
-        throw std::runtime_error("Unable to read shader: " + path.string());
-    }
-    return code;
+    return readSpirvFile(path);
 }
 
 } // namespace
@@ -563,13 +551,24 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     static constexpr std::uint64_t kUiCaptureSplashSeed = 0x5150415348ULL;
 
     void initialize() {
-        // UI-2：截图通道要钉的那几项渲染设置必须在建采样器与管线**之前**落定，
+        // 离屏出图要钉的那几项渲染设置必须在建采样器、渲染通道与管线**之前**落定，
         // 因为它们是初始化期读一次的，不是每帧读的。显式设而不是继承 options.properties，
         // 理由与 applyPreviewDeterminism 完全一样：一张取决于用户视频设置的图片，
-        // 没法和另一台机器上的图片对比，而对比正是这条通道的全部价值。
-        if (uiCapture.has_value()) {
+        // 没法和另一台机器上的图片对比，而对比正是这两条通道的全部价值。
+        //
+        // ★ TAA-1 查出来的事：这一段从前只管界面截图，**方块预览导出没有份**——
+        // 于是 applyPreviewDeterminism 里那句「显式钉抗锯齿」是一句空话，交换链、
+        // 渲染通道与管线在它跑之前就已经按用户的 options.properties 建好了。
+        // 症状是无声的：出图仍然是一张漂亮的图，只是它的抗锯齿档取决于跑它的那台机器
+        // 上的设置文件。这是 RN-33 那条教训的第二次现身——那次漏的是**间接**生效的一档，
+        // 这次漏的是**早于钉死时刻**生效的一档，而两次的表现同样是「看起来没问题」。
+        // 那三档从此在这里一起钉，导出与截图共用同一段。
+        if (uiCapture.has_value() || (testScene.has_value() && testScene->exportPreview)) {
             options.anisotropy = 1;
-            options.antiAliasing = false;
+            // 抗锯齿档要钉成 Off 而不是随便哪一档：MSAA 会动几何边，而 TAA 还会
+            // 让画面取决于「拍之前跑了几帧」——出图先跑 kPreviewWarmupFrames 帧才截，
+            // 于是一张吃历史的图片连"同一台机器上跑两次"都不保证相同
+            options.antiAliasing = config::AntiAliasingMode::Off;
             options.vsync = false;
         }
         if (glfwInit() != GLFW_TRUE) {
@@ -1184,6 +1183,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 机器上的比对。`menuBackgroundBlurriness` 就是这样一档设置，只是它是**间接**
         // 生效的，所以当初逐条列视频设置时没被想到。
         options.menuBackgroundBlurriness = 0;
+        // 抗锯齿**不在这里**钉，尽管它属于同一条规矩。它是初始化期读一次的：
+        // 交换链、渲染通道与管线在这个函数跑之前就建好了，在这里改它一个字节都改不动
+        // 已经建出来的东西。它钉在 initialize() 开头那一段，和各向异性、垂直同步一起。
+        // 这条注释留在这里，是因为「逐条列视频设置」的人下一次还会先找到这个函数。
         options.sunShadows = testScene->sunShadows;
         // RN-23：贴花在导出里显式打开，和上面两项同理——一张取决于用户设置的图片
         // 没法和另一台机器上的图片对比，而对比正是这个工具的全部价值。
@@ -6008,8 +6011,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return VulkanResources::depthFormatHasStencil(format);
     }
 
+    // TAA-1：抗锯齿三档里的第三档。它与 MSAA 互斥（同一个字段的两个取值），
+    // 于是 TAA 开着时 renderSampleCount() 恒为 1×——resolve 那一趟因此永远面对
+    // 单采样的场景图与单采样的深度，不必再有一条"多采样深度怎么采样"的分支
+    [[nodiscard]] bool temporalAntiAliasingEnabled() const {
+        return options.antiAliasing == config::AntiAliasingMode::Taa;
+    }
+
     [[nodiscard]] VkSampleCountFlagBits renderSampleCount() const {
-        return options.antiAliasing ? maximumMsaaSamples : VK_SAMPLE_COUNT_1_BIT;
+        return options.antiAliasing == config::AntiAliasingMode::Msaa ? maximumMsaaSamples
+                                                                      : VK_SAMPLE_COUNT_1_BIT;
     }
 
     // ---- 四个资源的创建：参数一律从 ResourcePlan 取（RN-20c）--------------------
@@ -6033,6 +6044,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const auto& plan = planned(kSceneColorMsaaName);
         colorTargets.resize(swapchainImages.size());
         for (auto& target : colorTargets) {
+            target.image =
+                createImage(plan.width, plan.height, 1, plan.format, plan.usage, plan.samples);
+            target.view = createImageView(target.image.image, plan.format, plan.aspect);
+        }
+    }
+
+    // TAA-1：世界那趟在 TAA 档下画到的那张图。「TAA 关时它不存在」这件事同样是
+    // 资源表里根本没有这一条，而不是这里的一个 early return 加一个别处的 if
+    void createTaaInputTargets() {
+        taaInputTargets.clear();
+        if (!resourcePlan_.has(kSceneTaaInputName)) {
+            return;
+        }
+        const auto& plan = planned(kSceneTaaInputName);
+        taaInputTargets.resize(swapchainImages.size());
+        for (auto& target : taaInputTargets) {
             target.image =
                 createImage(plan.width, plan.height, 1, plan.format, plan.usage, plan.samples);
             target.view = createImageView(target.image.image, plan.format, plan.aspect);
@@ -6216,7 +6243,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 都是推出来的。关键差异全在推导里：MSAA 档 scene_color 是 resolve 目标
         // （loadOp DONT_CARE，不是「前面没写者就 CLEAR」），而多采样靶画完 resolve
         // 就丢（后面没有任何访问 → storeOp DONT_CARE + TRANSIENT）
-        const std::string_view colorName = multisampled ? kSceneColorMsaaName : kSceneColorName;
+        // 世界那趟画到哪张图上：MSAA 开时是多采样靶，TAA 开时是 resolve 的输入，
+        // 都关时直接就是 scene_color。三种情况在资源表里各是一条，这里只是取名字
+        const std::string_view colorName = multisampled          ? kSceneColorMsaaName
+                                           : temporalAntiAliasingEnabled() ? kSceneTaaInputName
+                                                                           : kSceneColorName;
         const auto& colorPlan = planned(colorName);
         const auto& colorOps = resourcePlan_.ops(kWorldPassName, colorName);
         VkAttachmentDescription color{};
@@ -6896,7 +6927,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             std::array<VkImageView, 3> attachments{};
             std::uint32_t attachmentCount = 2U;
             if (renderSampleCount() == VK_SAMPLE_COUNT_1_BIT) {
-                attachments[0] = sceneTargets[index].view;
+                // TAA 开着时世界画进 scene_taa_input，resolve 那一趟再把它写回
+                // scene_color。界面、模糊、帧末的 copy 因此一行都不用改——它们绑的
+                // 始终是 scene_color
+                attachments[0] = temporalAntiAliasingEnabled() ? taaInputTargets[index].view
+                                                               : sceneTargets[index].view;
                 attachments[1] = depthTargets[index].view;
             } else {
                 attachments[0] = colorTargets[index].view;
@@ -6938,6 +6973,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         std::vector<render::graph::PassAttachment> worldAttachments;
         std::vector<render::graph::PassAttachment> guiAttachments;
         std::vector<render::graph::PassAttachment> menuBackgroundAttachments;
+        std::vector<render::graph::PassAttachment> temporalResolveAttachments;
         std::vector<render::graph::PassAttachment> presentAttachments;
         std::vector<VkClearValue> worldClears;
         std::vector<VkClearValue> guiClears;
@@ -6995,14 +7031,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     static constexpr std::string_view kGuiDepthName = "gui_depth";
     static constexpr std::string_view kShadowDepthName = "shadow_depth";
     static constexpr std::string_view kSceneColorMsaaName = "scene_color_msaa";
+    static constexpr std::string_view kSceneTaaInputName = "scene_taa_input";
     static constexpr std::string_view kShadowPassName = "shadow";
     static constexpr std::string_view kWorldPassName = "world";
     static constexpr std::string_view kGuiPassName = "gui";
     static constexpr std::string_view kMenuBackgroundPassName = "menu_background";
+    static constexpr std::string_view kTemporalResolvePassName = "taa_resolve";
 
     void buildFrameGraphTables(FrameGraphTables& tables, bool withHandles) const {
         using namespace render::graph;
         const bool multisampled = renderSampleCount() != VK_SAMPLE_COUNT_1_BIT;
+        const bool temporal = temporalAntiAliasingEnabled();
 
         // ---- 资源表：一张图像的身份。usage / aspect **不**在这里，它们是推出来的 ----
         std::vector<ResourceDesc>& resources = tables.resources;
@@ -7041,10 +7080,27 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         constexpr std::uint16_t kSceneDepth = 1;
         constexpr std::uint16_t kGuiDepth = 2;
         constexpr std::uint16_t kShadowDepth = 3;
+        // 世界那趟的颜色目标。三档各一条，写在一处，下面的附件表只读这个变量
+        std::uint16_t worldColorTarget = kSceneColor;
         std::uint16_t sceneColorMsaa = kSceneColor;
+        if (temporal) {
+            // TAA-1：世界画到这里，resolve 把它与历史混合后写回 scene_color。
+            // 与 scene_color 同格式同尺寸——resolve 之后画面的位深不变，
+            // 变的只是"这一帧的颜色从哪来"。16F 只在历史那一张上，而历史归
+            // TemporalResolve 自己所有（它跨帧存活，不是图内资源）
+            worldColorTarget = static_cast<std::uint16_t>(resources.size());
+            resources.push_back({.name = kSceneTaaInputName,
+                                 .kind = ResourceKind::Color,
+                                 .format = sceneUnormFormat(),
+                                 .width = swapchainExtent.width,
+                                 .height = swapchainExtent.height,
+                                 .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .perSwapchainImage = true});
+        }
         if (multisampled) {
             // 开 MSAA 时世界那趟是三个附件（多采样 color + depth + resolve），关时两个
             sceneColorMsaa = static_cast<std::uint16_t>(resources.size());
+            worldColorTarget = sceneColorMsaa;
             resources.push_back({.name = "scene_color_msaa",
                                  .kind = ResourceKind::Color,
                                  .format = sceneUnormFormat(),
@@ -7083,7 +7139,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // resolve 目标声明成 ColorResolve 而不是第二个 ColorWrite——它的内容确实由这一步
         // 产生，但它不被载入。关 MSAA 时 sceneColorMsaa 塌回 scene_color，此时**不能**
         // 再有 resolve 那一条，否则同一个 view 既是 color 又是自己的 resolve 目标。
-        tables.worldAttachments = {{sceneColorMsaa, Access::ColorWrite},
+        tables.worldAttachments = {{worldColorTarget, Access::ColorWrite},
                                    {kSceneDepth, Access::DepthWrite}};
         if (multisampled) {
             tables.worldAttachments.push_back({kSceneColor, Access::ColorResolve});
@@ -7091,6 +7147,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 阴影图的读者不是附件，是 binding 8 的描述符采样。它必须在这里显式声明：
         // 少了这一条，推导会把一张被无条件采样的图判成瞬态
         tables.worldAttachments.push_back({kShadowDepth, Access::Sample});
+        // TAA-1：resolve 读世界那趟的输出与深度，写 scene_color。
+        //
+        // 深度那条 Sample 不是装饰：推导正是靠它给 scene_depth 加上 SAMPLED 用途位
+        // 并把 storeOp 从 DONT_CARE 翻成 STORE。少了它，世界的深度仍然是瞬态附件
+        // （TAA 关时它确实是），而重投影要读的就是它——症状是整帧的历史都对不上位置。
+        //
+        // 历史缓冲**不在**这张表里：它跨帧存活，而帧图描述的是一帧之内的生命周期，
+        // 让推导去看一张"这一帧写、下一帧读"的图只会得出 storeOp = DONT_CARE。
+        // 它归 TemporalResolve 所有，布局由那一趟渲染通道的 final layout 自洽。
+        tables.temporalResolveAttachments = {{worldColorTarget, Access::Sample},
+                                             {kSceneDepth, Access::Sample},
+                                             {kSceneColor, Access::ColorWrite}};
         // UI-5：模糊那一步既采样 scene_color 也写它，但写是步身自己 begin 的 renderpass
         // 干的（不是图的附件），所以这里只声明读者。声明成 ColorWrite 会让图去要一个
         // 它没有的 framebuffer。
@@ -7168,6 +7236,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
              .barriers = tables.worldBarriers,
              .barrierSrcStage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
              .barrierDstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT},
+            // TAA-1：resolve。位置是**世界之后、界面之前**——界面画在同一张
+            // scene_color 上，让它参与时间累积就是让每一个字都吃八帧历史。
+            //
+            // 它是**非渲染步**（与 menu_background 同一种形态）：三条前置屏障都带
+            // 逐交换链图像的 VkImage 句柄，而历史那两张靶按帧的奇偶翻转——帧缓冲
+            // 因此是 N × 2 的一张表，而 BakedStep 只认 imageIndex 一维。
+            // 步身自己 begin/end；图仍然靠附件表知道谁读谁写，推导照常给出
+            // scene_color 的 loadOp 与布局，TemporalResolve 逐条照抄。
+            {.name = kTemporalResolvePassName,
+             .attachments = tables.temporalResolveAttachments,
+             .record = &WorldRenderer::graphTemporalResolveStep,
+             .enabled = temporal},
             // UI-5：全景 + 整帧模糊。26.1 的 BEFORE_BLUR / AFTER_BLUR 之间就是这一步
             // （`GuiRenderer.java:182-184`）。它是**非渲染步**：一次背景绘制加六趟
             // box_blur，各有各的 renderpass 与靶，塞不进一个附件表；步身自己 begin/end。
@@ -7203,6 +7283,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         createColorTargets();
         createDepthTargets();
         createSceneTargets();
+        createTaaInputTargets();
         createGuiDepthTargets();
         verifyShadowDepthPlan();
         createRenderPass();
@@ -7216,7 +7297,57 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         createGuiFramebuffers();
         createMenuBackgroundRenderPass();
         createMenuBlur();
+        // resolve 那一趟的渲染通道与帧缓冲是它自己建的，而图要现取这两个句柄，
+        // 所以它必须排在 rebuildFrameGraph 之前——和 createFramebuffers 同一个理由
+        createTemporalResolve();
         rebuildFrameGraph();
+    }
+
+    // TAA-1。TAA 关着时一个 Vulkan 对象都不建：resolve 那一步在编译期被剪掉，
+    // 没有任何东西会去取它的句柄
+    void createTemporalResolve() {
+        if (!temporalAntiAliasingEnabled()) {
+            return;
+        }
+        std::vector<VkImageView> sceneViews;
+        std::vector<VkImageView> inputViews;
+        std::vector<VkImage> inputImages;
+        std::vector<VkImage> depthImages;
+        sceneViews.reserve(sceneTargets.size());
+        inputViews.reserve(taaInputTargets.size());
+        inputImages.reserve(taaInputTargets.size());
+        depthImages.reserve(depthTargets.size());
+        for (const auto& target : sceneTargets) {
+            sceneViews.push_back(target.view);
+        }
+        for (const auto& target : taaInputTargets) {
+            inputViews.push_back(target.view);
+            inputImages.push_back(target.image.image);
+        }
+        for (const auto& target : depthTargets) {
+            depthImages.push_back(target.image.image);
+        }
+        const auto& sceneOps = resourcePlan_.ops(kTemporalResolvePassName, kSceneColorName);
+        temporalResolve_.init(TemporalResolve::Config{
+            .resources = &resources_,
+            .device = device,
+            .extent = swapchainExtent,
+            .sceneColorFormat = planned(kSceneColorName).format,
+            .sceneColorViews = sceneViews,
+            .inputViews = inputViews,
+            .inputImages = inputImages,
+            .depthFormat = planned(kSceneDepthName).format,
+            .depthImages = depthImages,
+            .depthAspect = planned(kSceneDepthName).aspect,
+            // 三个操作照抄推导，不写死：写死就回到了「计划说 A、创建写 B，
+            // 而没有任何东西比对这两者」
+            .sceneLoadOp = sceneOps.loadOp,
+            .sceneInitialLayout = sceneOps.initialLayout,
+            .sceneFinalLayout = sceneOps.finalLayout,
+            .shaderRoot = shaderRoot,
+        });
+        // 历史图刚刚被重建，里面是清出来的黑，不是上一帧的画面
+        temporalState_.invalidate();
     }
 
     void createMenuBlur() {
@@ -7247,6 +7378,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         frameGraph_.reset();
         // UI-5：模糊那一套持有 scene_color 的视图与 guiFramebuffers，必须先于它们销毁
         menuBlur_.destroy();
+        // TAA-1：resolve 那一套持有 scene_color / scene_taa_input / scene_depth 的视图，
+        // 同一个理由。历史缓冲跟着一起走——它描述的是刚被销毁的那批图像上的画面
+        temporalResolve_.destroy();
+        temporalState_.invalidate();
         if (menuBackgroundRenderPass != VK_NULL_HANDLE) {
             vkDestroyRenderPass(device, menuBackgroundRenderPass, nullptr);
             menuBackgroundRenderPass = VK_NULL_HANDLE;
@@ -7268,6 +7403,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
         }
         sceneTargets.clear();
+        for (auto& target : taaInputTargets) {
+            if (target.view != VK_NULL_HANDLE) {
+                vkDestroyImageView(device, target.view, nullptr);
+            }
+            if (allocator != VK_NULL_HANDLE) {
+                destroyImage(target.image);
+            }
+        }
+        taaInputTargets.clear();
         for (auto& target : guiDepthTargets) {
             if (target.view != VK_NULL_HANDLE) {
                 vkDestroyImageView(device, target.view, nullptr);
@@ -7619,7 +7763,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return glm::lookAt(eye.position, eye.position + eye.forward, glm::vec3{0.0F, 1.0F, 0.0F});
     }
 
-    void updateUniform(FrameContext& frame) const {
+    // const 在 TAA 之后去掉了：这里是本帧 view-projection 与眼点的唯一产生点，
+    // 而重投影要拿它跟上一帧比。把状态写在别处会立刻分叉成两份"当前相机"
+    void updateUniform(FrameContext& frame) {
         CameraUniform uniform;
         uniform.model = glm::mat4{1.0F};
         const RenderEye renderEye = renderEyeState();
@@ -7628,9 +7774,32 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             glm::lookAt(renderEye.position, renderEye.position + renderEye.forward,
                         glm::vec3{0.0F, 1.0F, 0.0F});
         uniform.view = viewBobbingMatrix() * baseView;
-        uniform.projection = camera.projectionMatrix(static_cast<float>(swapchainExtent.width) /
-                                                         static_cast<float>(swapchainExtent.height),
-                                                     cameraFarPlane());
+        const glm::mat4 projection =
+            camera.projectionMatrix(static_cast<float>(swapchainExtent.width) /
+                                        static_cast<float>(swapchainExtent.height),
+                                    cameraFarPlane());
+        uniform.projection = projection;
+        // TAA-1：抖动**只**加在这一处。
+        //
+        // 不是 renderViewMatrix()、不是剔除用的那个视锥、更不是阴影矩阵——抖阴影会
+        // 毁掉 RN-24 的角度量化与纹素吸附，影子每帧自己抖一下，而那正是 TAA 要压的
+        // 东西。界面那趟用的是另一套正交投影，本来就碰不到这里。
+        if (temporalAntiAliasingEnabled()) {
+            // 重投影用的是"相机在原点"的那一版：世界坐标可以到千万级，float 在那里
+            // 的分辨率比一个像素对应的深度差还粗。位移单独走 currentCameraPosition。
+            // 视角摇晃留在里面——它确实改变了投影，历史必须跟着摇
+            const glm::mat4 relativeView =
+                viewBobbingMatrix() * glm::lookAt(glm::vec3{0.0F}, renderEye.forward,
+                                                  glm::vec3{0.0F, 1.0F, 0.0F});
+            // ★ 存**未抖动**的那一份。存抖动过的，重投影会把两帧各自的亚像素偏移
+            // 一起算进去，等于把抖动抵消掉——画面回到没有 TAA 的样子而没人看得出来
+            temporalState_.currentViewProjection = projection * relativeView;
+            temporalState_.currentCameraPosition = renderEye.position;
+            uniform.projection = jitteredProjection(
+                projection, temporalJitterOffset(frameNumber_),
+                static_cast<float>(swapchainExtent.width),
+                static_cast<float>(swapchainExtent.height));
+        }
         uniform.cameraPosition = glm::vec4{renderEye.position, 1.0F};
         // 日月读主世界时钟而不是帧计时器
         // 天空随世界 tick 推进，时钟一停它就停，比如关掉昼夜规则或游戏暂停，不会跟着真实帧漂移
@@ -8291,6 +8460,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         VkImageView view = VK_NULL_HANDLE;
     };
     std::vector<SceneTarget> sceneTargets;
+    // TAA-1：TAA 档下世界那趟的输出。关着时是空的（资源表里没有这一条）
+    std::vector<ColorTarget> taaInputTargets;
     // GUI 那趟自己的深度：背包里的 3D 玩家预览和第一人称手持物要深度测试，
     // 而世界的深度可能是多重采样的。顺带对齐 vanilla——它在画手之前清一次深度，
     // 所以手不会被贴脸的方块切掉
@@ -8299,6 +8470,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // UI-5：全景那一趟的渲染通道（与 guiRenderPass 兼容）与六趟整帧模糊
     VkRenderPass menuBackgroundRenderPass = VK_NULL_HANDLE;
     MenuBlur menuBlur_;
+    // TAA-1：resolve 那一趟连同它的历史缓冲。TAA 关着时一个对象都不建
+    TemporalResolve temporalResolve_;
+    // 逐帧的时间性状态（上一帧的 view-projection、眼点、交换链图像下标）。
+    // 每一次交换链重建都要 invalidate：历史图那时是新分配的
+    TemporalFrameState temporalState_;
     VkPipeline crosshairPipeline = VK_NULL_HANDLE;
     VkPipelineLayout hudPipelineLayout = VK_NULL_HANDLE;
     VkPipeline hudPipeline = VK_NULL_HANDLE;
@@ -8500,6 +8676,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .framebuffers = framebuffers,
             .guiFramebuffers = guiFramebuffers,
             .menuBlur = menuBlur_,
+            .temporalResolve = temporalResolve_,
+            .temporalState = temporalState_,
             .copySceneToSwapchain =
                 [this](VkCommandBuffer c, std::uint32_t index) { copySceneToSwapchain(c, index); },
             .frames = frames,
