@@ -122,6 +122,11 @@ struct GameOptions final {
     // 于是着色器取全局 MenuBlurRadius，也就是这个值。语义与档位判断在
     // ui/ScreenBackground.hpp（menuBlurEnabled / menuBlurRadius），这里只存。
     int menuBackgroundBlurriness = 5;
+    // UI-6e：视场角（26.1 `Options.fov`，`IntRange(30, 110)`，默认 70）。
+    // ★ 在这之前**相机的 FOV 是构造时的常量**，玩家无从改起。
+    // 26.1 里 70 显示 "Normal"、110 显示 "Quake Pro"，其余显示数字——注意 70 是
+    // **默认值**不是最小值（最小是 30），那两个特例的判据是取值本身，不是"到头了"。
+    int fieldOfView = 70;
     // Experimental Content (实验性内容) submenu — test-only render features.
     // rainMode 选择降雨绘制路径：0 = 贴图雨（逐列贴图），1 = 异步粒子雨（实例化 SSBO）
     // 原来中间还夹着一档"粒子雨"：它与异步粒子雨用同一批雨滴、产出同一份视觉，

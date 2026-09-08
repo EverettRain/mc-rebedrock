@@ -37,11 +37,18 @@ struct IntSliderDesc final {
     bool offAtMinimum = false;
 };
 
-inline constexpr std::array<IntSliderDesc, 1> kIntSliders{{
+inline constexpr std::array<IntSliderDesc, 2> kIntSliders{{
     // 26.1 `Options.menuBackgroundBlurriness`：IntRange(0, 10)，默认 5，0 显示 OFF。
     {WidgetId::MenuBackgroundBlurriness, "options.accessibility.menu_background_blurriness",
      "Menu Background Blurriness", &config::GameOptions::menuBackgroundBlurriness, 0, 10,
      /*offAtMinimum=*/true},
+    // UI-6e：视场角。26.1 `Options.fov` 的 IntRange(30, 110)。
+    // ★ 它的两个特殊标签（70 → Normal、110 → Quake Pro）**不进这张表**：
+    //   那两个判据是"取值等于某个具体数"，而 offAtMinimum 是"到最小档"——
+    //   70 是默认值不是最小值（最小是 30）。为两个特例给表加两组字段，会让其余
+    //   每一项都背上用不到的列。特例留在 widgetLabel 里，表只管取值范围。
+    {WidgetId::FieldOfView, "options.fov", "FOV", &config::GameOptions::fieldOfView, 30, 110,
+     /*offAtMinimum=*/false},
 }};
 
 // UI-6e：取值是 **float** 的滑块。

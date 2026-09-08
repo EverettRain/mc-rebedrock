@@ -993,6 +993,20 @@ class HudRenderer final {
         //   `(int)(value*100.0)`，不是四舍五入）；二是加一类音量就要再抄一个 case，
         //   而"登记进 kRuntimeWidgetLabels"只保证它**有归属**，不保证这里真的算了它
         //   ——实测九个新滑块的标签一开始全是空白，版面对了字没了。
+        // UI-6e ④：视场角。★ 26.1 的两个特例判据是**取值等于某个具体数**，
+        //   不是"到头了"：70 → `options.fov.min`（Normal）、110 → `options.fov.max`
+        //   （Quake Pro），其余显示数字。而滑块的最小值是 **30** 不是 70——
+        //   照"最小档显示 min 文本"写会让 30 显示 Normal、70 显示 70，两个都错。
+        case ui::WidgetId::FieldOfView: {
+            const std::string name = translated("options.fov", "FOV");
+            if (options.fieldOfView == 70) {
+                return optionValue(name, translated("options.fov.min", "Normal"));
+            }
+            if (options.fieldOfView == 110) {
+                return optionValue(name, translated("options.fov.max", "Quake Pro"));
+            }
+            return optionValue(name, std::to_string(options.fieldOfView));
+        }
         case ui::WidgetId::MasterVolume:
         case ui::WidgetId::MusicVolume:
         case ui::WidgetId::RecordVolume:

@@ -62,6 +62,8 @@ void GameOptions::sanitize() {
     guiScale = std::clamp(guiScale, 0, 12);
     // 26.1 `OptionInstance.IntRange(0, 10)`；上界同 GameRenderer.MAX_BLUR_RADIUS
     menuBackgroundBlurriness = std::clamp(menuBackgroundBlurriness, 0, 10);
+    // 26.1 `Options.fov` 的 IntRange(30, 110)
+    fieldOfView = std::clamp(fieldOfView, 30, 110);
     // 26.1 `Options.sprintWindow` 的 IntRange(0, 20)，0 显示为 OFF
     sprintWindow = std::clamp(sprintWindow, 0, 20);
     viewDistance = std::clamp(viewDistance, 2, 36);
@@ -189,6 +191,8 @@ GameOptions GameOptions::load(const std::filesystem::path& path) {
             static_cast<void>(parseNumber(value, options.sprintWindow));
         } else if (key == "controls.operatorItemsTab") {
             options.operatorItemsTab = value == "true" || value == "1" || value == "on";
+        } else if (key == "render.fov") {
+            static_cast<void>(parseNumber(value, options.fieldOfView));
         } else if (key == "gui.menuBackgroundBlurriness") {
             static_cast<void>(parseNumber(value, options.menuBackgroundBlurriness));
         } else if (key == "text.forceUnicodeFont") {
@@ -223,6 +227,7 @@ void GameOptions::save(const std::filesystem::path& path) const {
            << "window.maximized=" << (sanitized.windowMaximized ? "true" : "false") << '\n'
            << "gui.scale=" << sanitized.guiScale << '\n'
            << "gui.menuBackgroundBlurriness=" << sanitized.menuBackgroundBlurriness << '\n'
+           << "render.fov=" << sanitized.fieldOfView << '\n'
            << "controls.toggleCrouch=" << (sanitized.toggleCrouch ? "true" : "false") << '\n'
            << "controls.toggleSprint=" << (sanitized.toggleSprint ? "true" : "false") << '\n'
            << "controls.toggleAttack=" << (sanitized.toggleAttack ? "true" : "false") << '\n'

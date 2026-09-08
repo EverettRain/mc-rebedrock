@@ -60,12 +60,14 @@ enum class PageLayoutKind : std::uint8_t {
     case PageId::Controls:
     case PageId::AdvancedGraphics:
     case PageId::SoundSettings:
+    // UI-6e ④：Options 主页也是三段式双列（26.1 是 2 列 GridLayout），
+    // 不再是屏幕正中一列。
+    case PageId::Options:
         return PageLayoutKind::HeaderFooterList;
     case PageId::CreateWorld:
         return PageLayoutKind::HeaderFooterForm;
     // 其余都走屏幕正中那一列。`Game` 与 `Loading` 没有菜单按钮，取值仍要良定义：
     // 它们的页面装配是空的，所以这一档永远不会被真的用到。
-    case PageId::Options:
     case PageId::Accessibility:
     case PageId::Pause:
     case PageId::Death:

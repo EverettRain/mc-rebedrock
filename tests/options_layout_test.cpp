@@ -678,7 +678,12 @@ void testWhichPagesActuallyScroll() {
     CHECK(mc::ui::optionsRowCountOf(mc::ui::PageId::VideoSettings) > rows);
     CHECK(mc::ui::optionsMaximumFirstRow(smallest, mc::ui::PageId::VideoSettings) > 0U);
     // 非三段式的页面没有窗口：rowCount == 0 就是"不滚，全装配"。
-    CHECK(mc::ui::optionsWindowFor(smallest, mc::ui::PageId::Options, 5U).rowCount == 0U);
+    // ★ 举例的页面要挑**真的不是三段式**的。UI-6e ④ 把 Options 主页也改成了
+    //   三段式双列（26.1 的 2 列 GridLayout），所以它不再是这条的例子——
+    //   拿它举例会让这条断言变成"检查一个已经不成立的前提"。
+    CHECK(mc::ui::pageLayoutKind(mc::ui::PageId::Accessibility) !=
+          mc::ui::PageLayoutKind::HeaderFooterList);
+    CHECK(mc::ui::optionsWindowFor(smallest, mc::ui::PageId::Accessibility, 5U).rowCount == 0U);
     CHECK(mc::ui::optionsWindowFor(smallest, mc::ui::PageId::Title, 5U).rowCount == 0U);
 }
 

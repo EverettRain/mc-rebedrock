@@ -433,23 +433,48 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             addButton(page, ctx, WidgetId::DeleteCancel, cb.cancelDelete);
             break;
 
-        case PageId::Options:
-            // ★ UI-6e：主音量滑块**挪进了"音乐与声音"那一屏**，与 26.1 一致
-            //   （`OptionsScreen` 上没有音量滑块，只有一个跳转）。它在这里曾是唯一
-            //   能调音量的地方，所以那个跳转必须同时上线，否则音量就没人能改了。
-            if (ctx.worldOpen) {
-                addButton(page, ctx, WidgetId::Difficulty, cb.cycleDifficulty);
-            }
-            addButton(page, ctx, WidgetId::SoundSettings, cb.openSoundSettings);
-            addButton(page, ctx, WidgetId::Controls, cb.openControls);
-            addButton(page, ctx, WidgetId::VideoSettings, cb.openVideoSettings);
-            addButton(page, ctx, WidgetId::Language, cb.openLanguage);
-            // UI-6c：26.1 的 Options 上有 Accessibility Settings…（§7.11）。
-            // 字幕开关跟着搬过去了——它在 26.1 里本来就属于那一屏
-            // （`AccessibilityOptionsScreen.java:25` 的 `options.showSubtitles()`）。
-            addButton(page, ctx, WidgetId::Accessibility, cb.openAccessibility);
+        // UI-6e ④：26.1 `OptionsScreen.init()` 的形状——副页眉两项 + 2 列十个跳转。
+        //
+        // ★ 项数**恒定 12**：26.1 的第二项是 `inWorld ? Difficulty : Online`，
+        //   二选一而不是"世界内多一项"。本作照抄这个结构，于是行数恒定 6、
+        //   正好装满内容区，不用滚，也不会因为开没开世界而改变版面。
+        //   从前这里是 `if (worldOpen) addButton(Difficulty)`，那会让两种情形差一行。
+        case PageId::Options: {
+            detail::OptionCursor add{ctx, id};
+            add([&] { addIntSlider(page, ctx, cb, WidgetId::FieldOfView); });
+            add([&] {
+                if (ctx.worldOpen) {
+                    addButton(page, ctx, WidgetId::Difficulty, cb.cycleDifficulty);
+                } else {
+                    // 本作没有多人/在线，置灰（与 26.1 的 telemetry 不可用时同一做法）
+                    addButton(page, ctx, WidgetId::OnlineOptions, nullptr, /*enabled=*/false);
+                }
+            });
+            // 十个跳转，顺序照 26.1 的 GridLayout 装配序
+            add([&] {
+                addButton(page, ctx, WidgetId::SkinCustomization, nullptr, /*enabled=*/false);
+            });
+            add([&] { addButton(page, ctx, WidgetId::SoundSettings, cb.openSoundSettings); });
+            add([&] { addButton(page, ctx, WidgetId::VideoSettings, cb.openVideoSettings); });
+            add([&] { addButton(page, ctx, WidgetId::Controls, cb.openControls); });
+            add([&] { addButton(page, ctx, WidgetId::Language, cb.openLanguage); });
+            add([&] {
+                addButton(page, ctx, WidgetId::ChatSettings, nullptr, /*enabled=*/false);
+            });
+            // 资源包：后端（PackManager 生命周期 / 真实元数据 / 启用集合持久化与重载）
+            // 还在补，补齐前置灰。
+            add([&] {
+                addButton(page, ctx, WidgetId::ResourcePacks, nullptr, /*enabled=*/false);
+            });
+            // UI-6c：字幕开关搬去了 Accessibility——它在 26.1 里本来就属于那一屏。
+            add([&] { addButton(page, ctx, WidgetId::Accessibility, cb.openAccessibility); });
+            add([&] { addButton(page, ctx, WidgetId::Telemetry, nullptr, /*enabled=*/false); });
+            add([&] {
+                addButton(page, ctx, WidgetId::CreditsAndAttribution, nullptr, /*enabled=*/false);
+            });
             addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;
+        }
 
         // UI-6c：26.1 §7.11 辅助功能设置。这一轮只放两项——View Bobbing（从 Controls
         // 挪来，偏差 D2）与字幕开关（从 Options 挪来）。26.1 那一屏还有十几项，

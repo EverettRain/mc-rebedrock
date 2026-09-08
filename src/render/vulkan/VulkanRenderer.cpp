@@ -560,6 +560,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     static constexpr std::uint64_t kUiCaptureSplashSeed = 0x5150415348ULL;
 
     void initialize() {
+        // UI-6e ④：基础视场角从选项来（26.1 默认 70）。放在最前面，因为下面的
+        // 出图分支会把它覆盖成 kPreviewFieldOfViewDegrees —— 那是 determinism knob
+        // 的既定分层：**出图钉死永远排在读用户设置之后**。
+        baseFieldOfViewDegrees = static_cast<float>(options.fieldOfView);
+        camera.setFieldOfViewDegrees(baseFieldOfViewDegrees);
+
         // 离屏出图要钉的那几项渲染设置必须在建采样器、渲染通道与管线**之前**落定，
         // 因为它们是初始化期读一次的，不是每帧读的。显式设而不是继承 options.properties，
         // 理由与 applyPreviewDeterminism 完全一样：一张取决于用户视频设置的图片，
@@ -4078,6 +4084,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             break;
         case ui::WidgetId::Anisotropy:
             recreateTextureSampler();
+            break;
+        // UI-6e ④：视场角。基础 FOV 从此由选项决定；每帧再乘玩家的移动系数
+        // （疾跑 1.15、创造飞行 1.1），那一层不变。
+        // ★ 出图路径**不受影响**：`kPreviewFieldOfViewDegrees` 在 initialize() 里
+        //   钉在这之后（见 baseFieldOfViewDegrees = kPreviewFieldOfViewDegrees），
+        //   预览与 options 无关，这是 determinism knob 的既定分层。
+        case ui::WidgetId::FieldOfView:
+            baseFieldOfViewDegrees = static_cast<float>(options.fieldOfView);
             break;
         case ui::WidgetId::SmoothLighting:
             // RN-19b: 平滑光照只剩开/关，网格两种情况烘出来完全一样
@@ -8505,7 +8519,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     PerspectiveCamera camera;
     // 相机构造时的原始视场角
     // 每帧都要乘上玩家的移动视场系数，因此基准值必须单独留一份
-    float baseFieldOfViewDegrees = 65.0F;
+    // ★ 26.1 的默认视场角是 **70**（`Options.fov` 的默认），本作从前硬编码 65 —— 那是
+    //   自造值。启动时由 applyStartupOptions 从 options 覆盖，这里的初值只在
+    //   还没读到 options 的窗口里生效。
+    float baseFieldOfViewDegrees = 70.0F;
     // 生命、饥饿与环境伤害，只在生存模式下 tick
     // 世界的游戏规则，所有权在这里，并镜像给消费它们的各系统
     // 以稀疏的自描述块形式持久化在 world.dat 里
