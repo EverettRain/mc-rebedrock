@@ -8,6 +8,13 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Added
+- Shadows near the player are drawn from a map eight times finer than before. The sun's shadow used
+  to be sampled from one 128-block grid whose smallest step was a sixteenth of a block, which set a
+  floor on how crisp any shadow edge could be and left a thin bright seam where a shadow should have
+  met the block casting it. There are now two grids: a small one covering the sixteen blocks around
+  you, at a hundred-and-twenty-eighth of a block, and the old wide one for everything beyond it. In
+  the fixture we measure, the ground right against the foot of a stone pillar went from fully lit to
+  fully shadowed.
 - Anti-aliasing is now a three-way setting -- Off, MSAA, TAA -- instead of a single on/off switch,
   and the new TAA option is temporal anti-aliasing: the camera is jittered by a fraction of a pixel
   each frame and the results are accumulated, which smooths the edges MSAA has never been able to

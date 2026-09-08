@@ -62,22 +62,24 @@ using std::abs;
 
 struct Samples {
     std::array<float, 9> visibility{};
-    std::array<vec3, 9> coordinates{};
+    // RN-35：级联之后比较采样的坐标是 vec4——xy = uv、**z = 层号**、w = 比较参考值。
+    // 层号挤进第三个分量正是 sampler2DArrayShadow 的约定，深度因此搬到了 w
+    std::array<vec4, 9> coordinates{};
     std::size_t count = 0;
     // RN-34：遮挡物搜索读的是同一张图的**非比较**视图。夹具把它做成一个可编程的深度
     // 场：默认 1.0（比任何接收点都远 = 没有遮挡物），测试按需覆盖。
     std::array<float, 4> blockerDepth{1.0F, 1.0F, 1.0F, 1.0F};
-    std::array<vec2, 4> blockerCoordinates{};
+    std::array<vec3, 4> blockerCoordinates{};
     std::size_t blockerCount = 0;
 };
-using sampler2DShadow = Samples*;
-using sampler2D = Samples*;
-float texture(sampler2DShadow sampler, vec3 coordinates) {
+using sampler2DArrayShadow = Samples*;
+using sampler2DArray = Samples*;
+float texture(sampler2DArrayShadow sampler, vec4 coordinates) {
     const auto index = sampler->count++;
     sampler->coordinates.at(index) = coordinates;
     return sampler->visibility.at(index);
 }
-vec4 texture(sampler2D sampler, vec2 coordinates) {
+vec4 texture(sampler2DArray sampler, vec3 coordinates) {
     const auto index = sampler->blockerCount++;
     sampler->blockerCoordinates.at(index) = coordinates;
     return vec4{sampler->blockerDepth.at(index), 0.0F, 0.0F, 0.0F};
@@ -91,6 +93,12 @@ vec4 texture(sampler2D sampler, vec2 coordinates) {
 namespace {
 
 using mc::render::Aabb;
+
+// RN-35：级联的接收端先试近段。既有的那些断言全都围绕**远段**的纹素（1/16 格）展开，
+// 所以夹具给近段一个必然出框的矩阵——缩放 10 倍把 z=0.5 推到 5，超出 [0,1]，
+// `sunShadowInsideCascade` 因此为假，接收端退到远段。
+// 「近段命中时会怎样」由 checkCascadeSelection 单独钉。
+const glm::mat4 kMissNearCascade = glm::scale(glm::mat4{1.0F}, glm::vec3{10.0F});
 
 void require(bool condition, const std::string& message, int line) {
     if (!condition) {
@@ -175,7 +183,8 @@ void checkShadowFacing() {
                 // 吃满上限 0.5 纹素，下面的 tap 坐标断言与接触硬化之前逐位相同。
                 samples.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
                 const float factor = shaderReceiver::sunShadowFactor(
-                    &samples, &samples, glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F}, normal, sun);
+                    &samples, &samples, kMissNearCascade, glm::mat4{1.0F},
+                    glm::vec3{0, 0, 0.5F}, normal, sun);
                 const std::string context = " at N.L=" + std::to_string(incidence);
                 if (incidence <= 0.0F) {
                     REQUIRE(factor == 1.0F && samples.count == 0,
@@ -193,22 +202,25 @@ void checkShadowFacing() {
                     // RN-33：投影的**输入**现在是沿法线抬起来的那个点，不是 worldPosition
                     // 本身。这条断言因此同时钉住两件事：抬高确实加在了投影之前（加在之后
                     // 就又变成沿光线方向的位移，亮边原样回来），以及 tap 网格是 ±0.5 纹素。
-                    const float lift = shaderBias::sunShadowNormalOffsetBlocks(incidence);
+                    const float lift = shaderBias::sunShadowNormalOffsetBlocks(incidence, shaderBias::kSunShadowFarTexelBlocks);
                     const glm::vec3 lifted = glm::vec3{0, 0, 0.5F} + normal * lift;
                     for (std::size_t tap = 0; tap < 4; ++tap) {
                         // (i - 0.5) * penumbraTexels * 2，而这里 penumbraTexels 饱和在 0.5
-                        const float penumbra = shaderBias::sunShadowPenumbraTexels(0.5F * 319.9F);
+                        const float penumbra = shaderBias::sunShadowPenumbraTexels(0.5F * 319.9F, shaderBias::kSunShadowFarTexelBlocks);
                         const float x = (static_cast<float>(tap % 2) - 0.5F) * penumbra * 2.0F;
                         const float y = (static_cast<float>(tap / 2) - 0.5F) * penumbra * 2.0F;
                         const auto expectedUv = glm::vec2{lifted} * 0.5F + glm::vec2{0.5F} +
                                                 glm::vec2{x, y} / 2048.0F;
                         const float expectedDepth = lifted.z +
-                            (shaderBias::sunShadowTapOffsetBlocks(normal.x, normal.y, incidence, x, y) -
+                            (shaderBias::sunShadowTapOffsetBlocks(normal.x, normal.y, incidence, x, y,
+                                                shaderBias::kSunShadowFarTexelBlocks) -
                              shaderBias::kSunShadowDepthBiasBlocks) / 319.9F;
                         const auto coordinates = samples.coordinates[tap];
                         REQUIRE(glm::length(glm::vec2{coordinates} - expectedUv) < 0.000001F &&
-                                std::abs(coordinates.z - expectedDepth) < 0.000001F,
-                                "sun-facing receiver must preserve projected PCF coordinates/depth" + context);
+                                std::abs(coordinates.w - expectedDepth) < 0.000001F &&
+                                coordinates.z == 1.0F,
+                                "sun-facing receiver must preserve projected PCF coordinates/depth"
+                                " and sample the far cascade's layer" + context);
                     }
                 }
             }
@@ -216,8 +228,9 @@ void checkShadowFacing() {
     }
     // The existing outside-frustum early return remains active for front faces.
     shaderReceiver::Samples outside;
-    REQUIRE(shaderReceiver::sunShadowFactor(&outside, &outside, glm::mat4{1.0F}, glm::vec3{3, 0, 0.5F},
-                glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}) == 1.0F && outside.count == 0,
+    REQUIRE(shaderReceiver::sunShadowFactor(&outside, &outside, kMissNearCascade, glm::mat4{1.0F},
+                glm::vec3{3, 0, 0.5F}, glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}) == 1.0F &&
+                outside.count == 0,
             "sun-facing receiver outside the shadow map must remain fully lit without PCF");
 }
 
@@ -644,10 +657,23 @@ void checkRendererSourceGuards() {
             "updateShadowMatrix still passes the raw dayTimeTicks to stateAtTick");
 
     // 投射者排序里不得再出现视点
-    const std::string record = functionBody(world, "void recordShadow(FrameContext& frame)");
+    const std::string record =
+        functionBody(world, "void recordShadow(FrameContext& frame, std::size_t cascade)");
     REQUIRE(record.find("camera.position()") == std::string::npos,
             "recordShadow still reads the camera position — the caster ordering must not depend "
             "on it, or sections pop in and out as the player walks");
+
+    // RN-35：把阴影图转成 SHADER_READ_ONLY 的那条边界屏障必须覆盖**所有**级联层。
+    //
+    // 这一条只有校验层抓得到（headless 没有 layout），而它的现场是
+    // imageLayout-00344：第二层停在 DEPTH_STENCIL_ATTACHMENT_OPTIMAL 却被采样，
+    // 真机上是未定义行为。所以这里退一步钉源码：层数必须从级联数来，不是字面量 1。
+    const std::string tables = functionBody(renderer, "void buildFrameGraphTables(");
+    REQUIRE(tables.find("shadowRead.subresourceRange.layerCount =") != std::string::npos &&
+                tables.find("shadowRead.subresourceRange.layerCount = 1;") == std::string::npos,
+            "the shadow-read boundary barrier must cover every cascade layer, not just the first");
+    REQUIRE(tables.find("render::kSunShadowCascadeCount") != std::string::npos,
+            "the frame-graph tables must derive their cascade count from SunShadowMap.hpp");
 
     // 分辨率不得再有第二个字面量
     REQUIRE(renderer.find("kSunShadowMapResolution, kSunShadowMapResolution") != std::string::npos,
@@ -675,19 +701,23 @@ void checkShaderSourceGuards() {
     // sampler2D 采它是未定义用法，MoltenVK 上是 SPIR-V→MSL 转换失败＝黑窗
     for (const char* name : {"grass_block.frag", "block_cutout.frag", "item_entity.frag"}) {
         const std::string source = stripLineComments(readFile(shaderDir / name));
-        REQUIRE(source.find("layout(binding = 8) uniform sampler2DShadow shadowDepth;") !=
+        // RN-35：阴影图是一张两层的数组，所以是 sampler2DArrayShadow。仍然必须是
+        // **shadow** 那一族：用非 shadow 的采样器采一个开了 compare 的采样器是未定义
+        // 用法，MoltenVK 上是 SPIR-V→MSL 转换失败＝黑窗
+        REQUIRE(source.find("layout(binding = 8) uniform sampler2DArrayShadow shadowDepth;") !=
                     std::string::npos,
                 std::string{name} +
-                    " must declare binding 8 as sampler2DShadow; a plain sampler2D on a compare "
-                    "sampler fails SPIR-V to MSL conversion on MoltenVK");
+                    " must declare binding 8 as sampler2DArrayShadow; a non-shadow sampler on a "
+                    "compare sampler fails SPIR-V to MSL conversion on MoltenVK");
         // 带分号：binding 8 那一个叫 shadowDepth，RN-34 新增的 binding 10 叫
         // shadowDepthRaw，前缀相同。少了这个分号，新绑定点会被误判成旧缺陷。
-        REQUIRE(source.find("sampler2D shadowDepth;") == std::string::npos,
-                std::string{name} + " still declares binding 8 as a non-shadow sampler2D");
+        REQUIRE(source.find("sampler2D shadowDepth;") == std::string::npos &&
+                    source.find("sampler2DArray shadowDepth;") == std::string::npos,
+                std::string{name} + " still declares binding 8 as a non-shadow sampler");
         // RN-34：接触硬化要读回深度值本身，比较采样器做不到。三个采样者都必须有这第二
         // 个绑定点——漏一个，那个着色器就会拿一个未声明的采样器去编译（MoltenVK 上是
         // 黑窗），或者干脆退回固定半径。
-        REQUIRE(source.find("layout(binding = 10) uniform sampler2D shadowDepthRaw;") !=
+        REQUIRE(source.find("layout(binding = 10) uniform sampler2DArray shadowDepthRaw;") !=
                     std::string::npos,
                 std::string{name} + " must also bind the non-compare view of the shadow map "
                                     "(binding 10) that the blocker search reads");
@@ -698,6 +728,11 @@ void checkShaderSourceGuards() {
                                     "hand-copied tap");
         REQUIRE(source.find("0.002") == std::string::npos,
                 std::string{name} + " still carries the old constant 0.002 depth bias");
+        // RN-35：UBO 里的光源矩阵是**两个**。三个 .frag 与 item_entity.vert 的声明必须
+        // 逐字节一致——漏一处就是一次静默的 std140 错位，而 block_cutout.frag 的抬头
+        // 记着上一次同样的事故（lightViewProj 早了 64 字节）
+        REQUIRE(source.find("mat4 lightViewProj[2];") != std::string::npos,
+                std::string{name} + " must declare the cascade light matrices as an array of two");
     }
 
     const std::string include = stripLineComments(readFile(shaderDir / "include/sun_shadow.glsl"));
@@ -839,15 +874,167 @@ void checkEntityCasters() {
             "sun shadows must suppress circular decals and restore them when disabled");
 }
 
+// RN-35：级联。两级、两张正交框、两个独立的吸附步长、接收端选一级。
+//
+// 这四件事互相独立地会坏，而且坏了都不崩：吸附步长写成同一个 ⇒ 近段跟着粗纹素跳；
+// 纹素尺寸没跟着级别走 ⇒ 偏置抬高 8 倍、影子从脚下浮起来；选级判据写反 ⇒ 玩家附近
+// 反而用远段。所以逐条钉。
+void checkCascades() {
+    using mc::render::kSunShadowCascadeCount;
+    using mc::render::sunShadowTexelSize;
+    REQUIRE(kSunShadowCascadeCount == 2, "本轮是两级；加级数要连着下面的黄金值一起改");
+
+    // ---- 1. GLSL 与 C++ 的纹素尺寸必须逐位相同 ----------------------------
+    //
+    // 着色器那边是两个手写常量（GLSL 没有 constexpr 能算 2*halfExtent/resolution）。
+    // 两处一漂移，接收端就按错误的纹素抬偏置——而画面上只表现为「影子有点飘」
+    REQUIRE(shaderBias::sunShadowTexelBlocks(0) == sunShadowTexelSize(0) &&
+                shaderBias::sunShadowTexelBlocks(1) == sunShadowTexelSize(1),
+            "receiver texel sizes must match SunShadowMap's per-cascade geometry");
+    REQUIRE(sunShadowTexelSize(1) == sunShadowTexelSize(0) * 8.0F,
+            "near cascade must be exactly eight times finer; the receiver's constants assume it");
+
+    // ---- 2. 每一级吸附到**自己**的纹素网格 --------------------------------
+    //
+    // 用同一个步长吸附两级，细的那一级就只在粗纹素的整数倍上落脚：相机在一个粗纹素内
+    // 平移时近段整体不动，跨过时跳 8 个细纹素——那正是 RN-24 要消灭的爬行，换了个尺度。
+    const auto sun = glm::normalize(mc::world::DayNightCycle::stateAtTick(3000.0).sunDirection);
+    const glm::vec3 eye{12.3F, 70.0F, -45.7F};
+    const auto far = mc::render::sunShadowLightViewProj(sun, eye, 1);
+    const auto right = glm::normalize(glm::vec3{far[0][0], far[1][0], far[2][0]});
+    const float nearTexel = sunShadowTexelSize(0);
+    const float farTexel = sunShadowTexelSize(1);
+
+    // 从矩阵里取回吸附后的光源空间中心。lightViewProj = ortho * translate(-center) * R，
+    // 而 ortho 在 x 上的缩放是 1/halfExtent，所以 m[3][0] = -center.x / halfExtent。
+    // 直接问「中心落在网格上吗」，比问「平移一点点画面变没变」稳：后者取决于起点
+    // 离量化边界多远，是一条会看起点脸色的断言
+    const auto snappedCenterX = [](const glm::mat4& matrix, std::size_t cascade) {
+        return -matrix[3][0] * mc::render::kSunShadowOrthoHalfExtents[cascade];
+    };
+    const auto isMultiple = [](float value, float step) {
+        const float quotient = value / step;
+        return std::abs(quotient - std::round(quotient)) < 1e-3F;
+    };
+    bool nearOffFarGrid = false;
+    for (const float step : {0.0F, 0.013F, 0.031F, 0.077F, 0.211F, 0.5F, 1.37F}) {
+        const glm::vec3 moved = eye + right * step;
+        const auto nearMatrix = mc::render::sunShadowLightViewProj(sun, moved, 0);
+        const auto farMatrix = mc::render::sunShadowLightViewProj(sun, moved, 1);
+        REQUIRE(isMultiple(snappedCenterX(nearMatrix, 0), nearTexel),
+                "the near cascade's centre must land on its own texel grid");
+        REQUIRE(isMultiple(snappedCenterX(farMatrix, 1), farTexel),
+                "the far cascade's centre must land on its own texel grid");
+        // ★ 两级各自吸附的真正证据：近段的中心**不必**落在远段的网格上。
+        // 两级共用一个步长时这条永远为假——而画面上只表现为「近段跟着粗纹素跳」
+        nearOffFarGrid =
+            nearOffFarGrid || !isMultiple(snappedCenterX(nearMatrix, 0), farTexel);
+    }
+    REQUIRE(nearOffFarGrid,
+            "the near cascade snapped to the far cascade's step for every probe: the two are "
+            "sharing one snap step, and RN-24's stability was bought for the far one only");
+
+    // ---- 3. 近段的框确实窄八倍 --------------------------------------------
+    //
+    // 同一个世界点在两级里的 NDC 相差正好 8 倍——那既是「16 格 vs 128 格」的另一种说法，
+    // 也是「两级共用同一个旋转」的证据（差的只有一个标量）。
+    // 用**两个** probe 的 NDC 之差，不是单个 probe 的绝对值：两级的中心各自吸附到
+    // 各自的网格，绝对值里因此还含着一个与比例无关的平移
+    const glm::mat4 nearMatrix = mc::render::sunShadowLightViewProj(sun, eye, 0);
+    const glm::mat4 farMatrix = mc::render::sunShadowLightViewProj(sun, eye, 1);
+    const glm::vec3 probeA = eye + right * 1.0F;
+    const glm::vec3 probeB = eye + right * 4.0F;
+    const float nearSpan = (nearMatrix * glm::vec4{probeB, 1.0F}).x -
+                           (nearMatrix * glm::vec4{probeA, 1.0F}).x;
+    const float farSpan =
+        (farMatrix * glm::vec4{probeB, 1.0F}).x - (farMatrix * glm::vec4{probeA, 1.0F}).x;
+    REQUIRE(std::abs(nearSpan - farSpan * 8.0F) < 1e-4F,
+            "the near cascade's box must be exactly eight times narrower");
+    // 深度轴两级共用：同一个点的 z 必须逐位相同，否则偏置那一套以「格」为单位的换算
+    // 在两级里不再是同一件事
+    REQUIRE(std::abs((nearMatrix * glm::vec4{probeA, 1.0F}).z -
+                     (farMatrix * glm::vec4{probeA, 1.0F}).z) < 1e-6F,
+            "both cascades must share one depth range, or the bias' block units stop meaning the "
+            "same thing in the two");
+
+    // ---- 4. 接收端选级 ----------------------------------------------------
+    //
+    // 近段命中时层号必须是 0、tap 间距必须按近段的纹素算。夹具给近段一个恒等矩阵
+    // （点落在框内），远段给一个不会被走到的矩阵。
+    shaderReceiver::Samples samples{};
+    samples.visibility = {1, 1, 1, 1, 1, 1, 1, 1, 1};
+    samples.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
+    const float factor = shaderReceiver::sunShadowFactor(&samples, &samples, glm::mat4{1.0F},
+                                                          kMissNearCascade, glm::vec3{0, 0, 0.5F},
+                                                          glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0});
+    REQUIRE(samples.count == 4 && factor == 1.0F,
+            "a receiver inside the near box must take the near cascade and still do four taps");
+    for (std::size_t tap = 0; tap < samples.count; ++tap) {
+        REQUIRE(samples.coordinates[tap].z == 0.0F,
+                "every tap must read layer 0 when the near cascade is selected");
+    }
+    for (std::size_t tap = 0; tap < samples.blockerCount; ++tap) {
+        REQUIRE(samples.blockerCoordinates[tap].z == 0.0F,
+                "the blocker search must read the same layer the PCF taps do");
+    }
+    // ★ 近段的**法线抬升**必须按近段的纹素算。
+    //
+    // 这一条是补出来的：源码护栏（「texelBlocks = sunShadowTexelBlocks(cascade)」必须在）
+    // 会被**第二处**赋值满足，于是把第一处改成写死 1 的注入一路绿灯通过——而那正是
+    // 「近段按远段的纹素抬 8 倍」这个缺陷的样子，画面上是影子整片从脚下浮起来。
+    // 所以这里不问源码长什么样，问的是投影**输入**落在哪：抬升量差 8 倍，uv 就差 8 倍。
+    {
+        const glm::vec3 grazingSun = glm::normalize(glm::vec3{1.0F, 1.0F, 0.0F});
+        const glm::vec3 up{0.0F, 1.0F, 0.0F};
+        const float incidence = glm::dot(up, grazingSun);
+        shaderReceiver::Samples grazing{};
+        grazing.visibility = {1, 1, 1, 1, 1, 1, 1, 1, 1};
+        grazing.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
+        static_cast<void>(shaderReceiver::sunShadowFactor(&grazing, &grazing, glm::mat4{1.0F},
+                                                          kMissNearCascade, glm::vec3{0, 0, 0.5F},
+                                                          up, grazingSun));
+        REQUIRE(grazing.count == 4, "the grazing near-cascade probe must reach the PCF taps");
+        const float nearLift = shaderBias::sunShadowNormalOffsetBlocks(
+            incidence, shaderBias::kSunShadowNearTexelBlocks);
+        const float farLift = shaderBias::sunShadowNormalOffsetBlocks(
+            incidence, shaderBias::kSunShadowFarTexelBlocks);
+        REQUIRE(std::abs(farLift - nearLift * 8.0F) < 1e-6F && nearLift > 0.0F,
+                "fixture check: the two cascades' lifts must differ by eight, or the assertion "
+                "below cannot tell them apart");
+        // 抬升沿 +Y，恒等矩阵下它整个进 uv.y。tap 的横向偏移只动 x，所以 y 是干净的
+        const float expectedY = (0.0F + nearLift) * 0.5F + 0.5F;
+        const float wrongY = (0.0F + farLift) * 0.5F + 0.5F;
+        for (std::size_t tap = 0; tap < grazing.count; ++tap) {
+            const float actualY = grazing.coordinates[tap].y;
+            REQUIRE(std::abs(actualY - expectedY) < 1.0F / 2048.0F,
+                    "the near cascade must lift along the normal by ITS OWN texel, not the far "
+                    "one's: expected uv.y " + std::to_string(expectedY) + ", got " +
+                        std::to_string(actualY));
+            REQUIRE(std::abs(actualY - wrongY) > 1.0F / 2048.0F,
+                    "fixture check: the far cascade's lift must be distinguishable here");
+        }
+    }
+
+    // 近段的半影上限仍是 0.5 个**纹素**，而纹素细八倍 ⇒ 物理半影细八倍。
+    // 这就是这个节点买到的东西，写成断言而不是散文
+    REQUIRE(shaderBias::sunShadowPenumbraTexels(1e6F, shaderBias::kSunShadowNearTexelBlocks) ==
+                    shaderBias::kSunMaxPenumbraTexels &&
+                shaderBias::kSunShadowNearTexelBlocks * shaderBias::kSunMaxPenumbraTexels * 8.0F ==
+                    shaderBias::kSunShadowFarTexelBlocks * shaderBias::kSunMaxPenumbraTexels,
+            "the near cascade's maximum penumbra must be one eighth of the far cascade's in world "
+            "units — that eight is the whole point of the node");
+}
+
 void checkBias() {
     // RN-33：随入射角变化的那一项在**法线**轴上，不在深度轴上。抬高 = 一个纹素 x sin(角)。
     const std::array<float, 7> angles{0, 30, 45, 63, 70, 85, 90};
     const std::array<float, 7> expected{0.0F,       .03125F,    .044194174F, .055687908F,
                                         .058730789F, .062262169F, .0625F};
     for (std::size_t i = 0; i < angles.size(); ++i) {
-        const float lift = shaderBias::sunShadowNormalOffsetBlocks(std::cos(glm::radians(angles[i])));
+        const float lift = shaderBias::sunShadowNormalOffsetBlocks(std::cos(glm::radians(angles[i])),
+                                                shaderBias::kSunShadowFarTexelBlocks);
         REQUIRE(std::isfinite(lift) && lift >= 0.0F &&
-                    lift <= shaderBias::kSunShadowTexelSizeBlocks + 1e-6F,
+                    lift <= shaderBias::kSunShadowFarTexelBlocks + 1e-6F,
                 "normal offset outside [0, one texel] blocks at " + std::to_string(angles[i]) +
                 " degrees: " + std::to_string(lift));
         REQUIRE(std::abs(lift - expected[i]) < 2e-6F,
@@ -859,7 +1046,7 @@ void checkBias() {
     REQUIRE(shaderBias::kSunShadowDepthBiasBlocks > 0.0F &&
                 shaderBias::kSunShadowDepthBiasBlocks <= 0.01F,
             "depth bias must stay a quantisation floor; anything larger reopens peter-panning");
-    REQUIRE(shaderBias::kSunShadowTexelSizeBlocks == mc::render::kSunShadowTexelSize,
+    REQUIRE(shaderBias::kSunShadowFarTexelBlocks == mc::render::kSunShadowTexelSize,
             "receiver plane tap spacing must match SunShadowMap texel geometry");
     // 独立几何 oracle：沿光源 right/up 平移一纹素，再沿深度轴移动回 y=70 的平面。
     for (const double tick : {1500.0, 3000.0, 6000.0, 9000.0}) {
@@ -869,7 +1056,7 @@ void checkBias() {
         const auto up = glm::normalize(glm::vec3{matrix[0][1], matrix[1][1], matrix[2][1]});
         for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
             const float offset = shaderBias::sunShadowTapOffsetBlocks(right.y, up.y, sun.y,
-                static_cast<float>(x), static_cast<float>(y));
+                static_cast<float>(x), static_cast<float>(y), shaderBias::kSunShadowFarTexelBlocks);
             const glm::vec3 moved = glm::vec3{0, 70, 0} +
                 (right * static_cast<float>(x) + up * static_cast<float>(y)) * mc::render::kSunShadowTexelSize -
                 sun * offset;
@@ -879,8 +1066,8 @@ void checkBias() {
     }
     // 护栏：喂进 [0,1] 之外的 cos 时结果仍然有限且有界。(-1) 走到上界，(2) 走到 0。
     // 背面在 sunShadowFactor 开头就返回了，走不到这里，但这条 clamp 不能删。
-    REQUIRE(shaderBias::sunShadowNormalOffsetBlocks(-1) == shaderBias::kSunShadowTexelSizeBlocks &&
-            shaderBias::sunShadowNormalOffsetBlocks(2) == 0.0F,
+    REQUIRE(shaderBias::sunShadowNormalOffsetBlocks(-1, shaderBias::kSunShadowFarTexelBlocks) == shaderBias::kSunShadowFarTexelBlocks &&
+            shaderBias::sunShadowNormalOffsetBlocks(2, shaderBias::kSunShadowFarTexelBlocks) == 0.0F,
             "normal-offset clamp must handle backfaces/roundoff");
 }
 
@@ -899,8 +1086,8 @@ void checkContactHardening() {
         samples.visibility = {0, 0, 0, 0, 0, 0, 0, 0, 0};
         samples.blockerDepth = {blockerDepth, blockerDepth, blockerDepth, blockerDepth};
         const float factor = shaderReceiver::sunShadowFactor(
-            &samples, &samples, glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F}, glm::vec3{0, 1, 0},
-            glm::vec3{0, 1, 0});
+            &samples, &samples, kMissNearCascade, glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F},
+            glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0});
         return std::pair{factor, samples};
     };
     const auto tapSpreadTexels = [](const shaderReceiver::Samples& samples) {
@@ -959,22 +1146,23 @@ void checkContactHardening() {
     // 逐值：半影 = 距离 x tan(太阳视角半径) / 纹素尺寸，上限 kSunMaxPenumbraTexels。
     for (const float blocks : {0.0F, 0.5F, 1.0F, 2.0F, 4.0F}) {
         const float wanted = std::min(blocks * shaderBias::kSunPenumbraTangent /
-                                          shaderBias::kSunShadowTexelSizeBlocks,
+                                          shaderBias::kSunShadowFarTexelBlocks,
                                       shaderBias::kSunMaxPenumbraTexels);
-        REQUIRE(std::abs(shaderBias::sunShadowPenumbraTexels(blocks) - wanted) < 1e-6F,
+        REQUIRE(std::abs(shaderBias::sunShadowPenumbraTexels(blocks, shaderBias::kSunShadowFarTexelBlocks) - wanted) < 1e-6F,
                 "penumbra golden value mismatch at " + std::to_string(blocks) + " blocks");
     }
-    REQUIRE(shaderBias::sunShadowPenumbraTexels(-1.0F) == 0.0F &&
-            shaderBias::sunShadowPenumbraTexels(1e6F) == shaderBias::kSunMaxPenumbraTexels,
+    REQUIRE(shaderBias::sunShadowPenumbraTexels(-1.0F, shaderBias::kSunShadowFarTexelBlocks) == 0.0F &&
+            shaderBias::sunShadowPenumbraTexels(1e6F, shaderBias::kSunShadowFarTexelBlocks) == shaderBias::kSunMaxPenumbraTexels,
             "penumbra must clamp on both ends (negative distances come from roundoff)");
 }
 
 void checkEntityWiring() {
     const auto world = stripLineComments(readFile(MC_REBEDROCK_WORLD_RENDERER_SRC));
     const auto renderer = stripLineComments(readFile(MC_REBEDROCK_RENDERER_SRC));
-    const auto record = functionBody(world, "void recordShadow(FrameContext& frame)");
+    const auto record =
+        functionBody(world, "void recordShadow(FrameContext& frame, std::size_t cascade)");
     REQUIRE(record.find("selectSunShadowSceneCasters(") != std::string::npos &&
-            record.find("pipelines.entityShadowPipeline") != std::string::npos &&
+            record.find("pipelines.entityShadowPipelines[cascade]") != std::string::npos &&
             record.find("sizeof(draw.push), &draw.push") != std::string::npos &&
             record.find("draw.vertexCount, 1, draw.firstVertex") != std::string::npos,
             "shadow pass must select and submit the collected entity geometry");
@@ -1023,17 +1211,24 @@ void checkEntityWiring() {
             mobs.find("entityDraws_.append(makeBoxUvCuboidPush(") != std::string::npos,
             "creature snapshot must submit posed box-UV geometry");
     const auto pipeline = functionBody(renderer, "void createShadowResources()");
-    for (const auto token : {"entity_shadow.frag.spv", "item_entity.vert.spv", "shadowVariant = VK_TRUE",
+    // RN-35：一级一条管线，特化常量从 bool 变成 int（-1 = 主通道）
+    for (const auto token : {"entity_shadow.frag.spv", "item_entity.vert.spv",
+             "entityShadowPipelines[cascade]", "cascadeStages[0].pSpecializationInfo",
              "vertexBindingDescriptionCount = 0", "vertexAttributeDescriptionCount = 0",
              "rasterization.cullMode = VK_CULL_MODE_NONE", "push.size = sizeof(ItemPush)"})
         REQUIRE(pipeline.find(token) != std::string::npos,
                 std::string{"entity depth pipeline contract missing: "} + token);
     const std::filesystem::path shaderDir{MC_REBEDROCK_SHADER_SRC_DIR};
     const auto vertex = stripLineComments(readFile(shaderDir / "item_entity.vert"));
-    REQUIRE(vertex.find("layout(constant_id = 0) const bool sunShadowPass = false") != std::string::npos,
+    // 主通道**不传**特化信息，所以默认值必须是「不是阴影趟」的那一档。
+    // 从 bool 改成 int 之后这一条更要紧：一个默认为 0 的 int 会让主通道去投近段的光源矩阵
+    REQUIRE(vertex.find("layout(constant_id = 0) const int sunShadowCascade = -1") !=
+                    std::string::npos &&
+                vertex.find("const bool sunShadowPass = sunShadowCascade >= 0") != std::string::npos,
             "world item vertex shader must default to color projection");
     std::size_t count = 0, offset = 0;
-    while ((offset = vertex.find("? camera.lightViewProj * vec4(worldPosition, 1.0)", offset)) != std::string::npos) {
+    while ((offset = vertex.find("? camera.lightViewProj[max(sunShadowCascade, 0)] * vec4(worldPosition, 1.0)",
+                                 offset)) != std::string::npos) {
         ++count; ++offset;
     }
     REQUIRE(count == 2, "both generated sprites and cuboids must project through the current light matrix");
@@ -1044,15 +1239,25 @@ void checkEntityWiring() {
             "entity shadow must discard transparent texels/hidden edges and never sample its depth attachment");
     const auto sampling = stripLineComments(readFile(shaderDir / "include/sun_shadow.glsl"));
     REQUIRE(sampling.find("#include \"sun_shadow_bias.glsl\"") != std::string::npos &&
-            sampling.find("sunShadowNormalOffsetBlocks(incidence)") != std::string::npos,
+            sampling.find("sunShadowNormalOffsetBlocks(incidence, texelBlocks)") != std::string::npos,
             "production shadow sampling must use the exact GLSL offset function compiled by the headless test");
     // ★ 抬高必须加在**投影之前**。加在之后就退化成沿光线方向的位移，也就是旧的深度偏置，
     // 亮边原样回来——而这是一处只差一行位置的错误，源码读起来毫无异样。
-    REQUIRE(sampling.find("vec3 offsetPosition = worldPosition + normal * "
-                          "sunShadowNormalOffsetBlocks(incidence);") != std::string::npos &&
-            sampling.find("lightViewProj * vec4(offsetPosition, 1.0)") != std::string::npos &&
-            sampling.find("lightViewProj * vec4(worldPosition, 1.0)") == std::string::npos,
+    //
+    // RN-35：两级各抬一次。抬的量是**被选中那一级**的纹素，而纹素逐级差 8 倍——
+    // 拿远段的抬升去投近段，影子会整片从脚下浮起来。所以「先选级、再抬、再投」这个
+    // 顺序在两条分支上都要成立，两条各钉一次
+    REQUIRE(sampling.find("offsetPosition = worldPosition + normal * "
+                          "sunShadowNormalOffsetBlocks(incidence, texelBlocks)") !=
+                    std::string::npos &&
+            sampling.find("lightViewProjNear * vec4(offsetPosition, 1.0)") != std::string::npos &&
+            sampling.find("lightViewProjFar * vec4(offsetPosition, 1.0)") != std::string::npos &&
+            sampling.find("* vec4(worldPosition, 1.0)") == std::string::npos,
             "the normal offset must be applied to the world position before projection");
+    // 每一级都必须先把 texelBlocks 换成自己那一档，再算抬升。漏掉第二次赋值时源码
+    // 仍然「看起来对」——两条分支的文字几乎一样
+    REQUIRE(sampling.find("texelBlocks = sunShadowTexelBlocks(cascade);") != std::string::npos,
+            "each cascade must re-read its own texel size before lifting along the normal");
     REQUIRE(sampling.find("float tapReference = reference + sunShadowTapOffsetBlocks(") != std::string::npos &&
             sampling.find("tapReference));") != std::string::npos,
             "PCF must compare each tap against its receiver-plane depth");
@@ -1064,6 +1269,7 @@ int main() {
     try {
         checkShadowFacing();
         checkEntityCasters();
+        checkCascades();
         checkBias();
         checkContactHardening();
         checkEntityWiring();

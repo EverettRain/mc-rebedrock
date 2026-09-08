@@ -244,11 +244,17 @@ struct CameraUniform final {
     alignas(16) glm::vec4 fluidAnimationSettings{0.0F};
     // 阴影预通道写深度图所用的太阳空间视图投影矩阵；地形着色器把每个片元投进去采样
     // 它比预通道自己的矩阵晚一帧，这是阴影贴图的常规延迟
-    alignas(16) glm::mat4 lightViewProj{1.0F};
+    //
+    // RN-35：级联之后是两个（0 = 近段 16 格框、1 = 远段 128 格框）。std140 下 mat4 数组的
+    // 元素间距就是 64 字节，与两个相邻的 mat4 逐字节相同——三个 .frag 与 item_entity.vert
+    // 里的声明必须跟着一起改成数组，漏一处就是一次静默的 UBO 错位
+    // （block_cutout.frag 的抬头记着上一次同样的事故）
+    alignas(16) std::array<glm::mat4, render::kSunShadowCascadeCount> lightViewProj{
+        glm::mat4{1.0F}, glm::mat4{1.0F}};
     // 地形/实体着色器轮播的非流体动画方块纹理
     // blockAnimationSettings.x 是生效条数
     // 每个 blockAnimations[i] 依次是首层、帧数、每帧 tick 和一个未用分量
-    // 追加在 lightViewProj 之后，已有的 UBO 偏移因此不受影响
+    // 追加在 lightViewProj 之后（RN-35 之后那是两个矩阵），已有的相对顺序不受影响
     // 只读取更早字段的阴影与 cutout 着色器同样不受影响
     alignas(16) glm::vec4 blockAnimationSettings{0.0F};
     alignas(16) std::array<glm::vec4, kMaxBlockAnimations> blockAnimations{};
@@ -4765,8 +4771,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (worldPipelines_.shadowDebugPipelineLayout != VK_NULL_HANDLE) {
                 vkDestroyPipelineLayout(device, worldPipelines_.shadowDebugPipelineLayout, nullptr);
             }
-            if (worldPipelines_.entityShadowPipeline != VK_NULL_HANDLE)
-                vkDestroyPipeline(device, worldPipelines_.entityShadowPipeline, nullptr);
+            for (auto& pipeline : worldPipelines_.entityShadowPipelines) {
+                if (pipeline != VK_NULL_HANDLE) {
+                    vkDestroyPipeline(device, pipeline, nullptr);
+                    pipeline = VK_NULL_HANDLE;
+                }
+            }
             if (worldPipelines_.entityShadowPipelineLayout != VK_NULL_HANDLE)
                 vkDestroyPipelineLayout(device, worldPipelines_.entityShadowPipelineLayout, nullptr);
             if (worldPipelines_.shadowCutoutPipeline != VK_NULL_HANDLE) {
@@ -5535,7 +5545,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 分辨率取 SunShadowMap 的常量：texel snapping 要算「一个纹素是世界里的多长」，
         // 而那个量只有在分辨率与正交框尺寸放在一起时才算得出来。从前这里是个手写的
         // 2048，updateShadowMatrix 那边根本看不见它
-        shadowTarget.init({&resources_, device, kSunShadowMapResolution, kSunShadowMapResolution});
+        // RN-35：一层一级。采样端拿到的是整张数组（binding 8 / 10 各一个 2D_ARRAY 视图），
+        // 绑定点数量因此与级数无关
+        shadowTarget.init({&resources_, device, kSunShadowMapResolution, kSunShadowMapResolution,
+                           static_cast<std::uint32_t>(render::kSunShadowCascadeCount)});
         // 下面的描述符声明布局为 SHADER_READ_ONLY_OPTIMAL
         // 在 Vulkan 看来，三个地形与实体片元着色器都无条件采样 binding 8
         // 而太阳阴影默认是关的，预通道会提前返回，从不转换这张图像的布局
@@ -5663,21 +5676,29 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             &worldPipelines_.entityShadowPipelineLayout), "vkCreatePipelineLayout(entity shadow)");
         const auto entityVertex = createShaderModule(readSpirv(shaderRoot / "item_entity.vert.spv"));
         const auto entityFragment = createShaderModule(readSpirv(shaderRoot / "entity_shadow.frag.spv"));
-        const VkBool32 shadowVariant = VK_TRUE;
-        const VkSpecializationMapEntry entry{0, 0, sizeof(shadowVariant)};
-        const VkSpecializationInfo specialization{1, &entry, sizeof(shadowVariant), &shadowVariant};
+        // RN-35：一级一条管线。特化常量从 bool 变成 int（-1 = 主通道），因为实体的
+        // 光源矩阵走 UBO——ItemPush 正好满 128 字节，塞不下一个级别索引，而 UBO 是
+        // 逐帧一份、两趟共用。地形那两条不受影响：shadow.vert 的矩阵本来就是 push constant
+        const VkSpecializationMapEntry entry{0, 0, sizeof(std::int32_t)};
         vertexStage.module = entityVertex;
-        vertexStage.pSpecializationInfo = &specialization;
         fragmentStage.module = entityFragment;
         const std::array entityStages{vertexStage, fragmentStage};
         vertexInput.vertexBindingDescriptionCount = 0;
         vertexInput.vertexAttributeDescriptionCount = 0;
         // 生物模型有 X 镜像，物品也可能是薄片：沿用实体颜色通道的双面几何。
         rasterization.cullMode = VK_CULL_MODE_NONE;
-        pipelineInfo.pStages = entityStages.data();
         pipelineInfo.layout = worldPipelines_.entityShadowPipelineLayout;
-        checkVk(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
-            &worldPipelines_.entityShadowPipeline), "vkCreateGraphicsPipelines(entity shadow)");
+        for (std::size_t cascade = 0; cascade < render::kSunShadowCascadeCount; ++cascade) {
+            const auto cascadeIndex = static_cast<std::int32_t>(cascade);
+            const VkSpecializationInfo specialization{1, &entry, sizeof(cascadeIndex),
+                                                      &cascadeIndex};
+            auto cascadeStages = entityStages;
+            cascadeStages[0].pSpecializationInfo = &specialization;
+            pipelineInfo.pStages = cascadeStages.data();
+            checkVk(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                              &worldPipelines_.entityShadowPipelines[cascade]),
+                    "vkCreateGraphicsPipelines(entity shadow)");
+        }
         vkDestroyShaderModule(device, entityVertex, nullptr);
         vkDestroyShaderModule(device, entityFragment, nullptr);
 
@@ -6139,16 +6160,26 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 且 binding 8 与 shadowDebugSet 的描述符在初始化期写一次、之后从不重写），
     // 计划对它只校验。校验必须是逐位的，否则就成了「计划说 A、创建写 B 而没人比对」。
     void verifyShadowDepthPlan() const {
-        const auto& plan = planned(kShadowDepthName);
+        // RN-35：级联的每一级在图里是一条资源，实现上是同一张数组图像的一层——
+        // 所以逐条比对**同一份**创建参数，而层数由 OffscreenTarget 自己保证
+        for (std::size_t cascade = 0; cascade < render::kSunShadowCascadeCount; ++cascade) {
+            verifyShadowDepthPlanFor(cascade);
+        }
+    }
+
+    void verifyShadowDepthPlanFor(std::size_t cascade) const {
+        const auto& plan = planned(kShadowDepthNames[cascade]);
         const OffscreenTarget::Parameters actual = shadowTarget.parameters();
         bool same = plan.format == actual.format && plan.width == actual.width &&
                     plan.height == actual.height && plan.samples == actual.samples &&
-                    plan.usage == actual.usage && plan.aspect == actual.aspect;
+                    plan.usage == actual.usage && plan.aspect == actual.aspect &&
+                    actual.layers == render::kSunShadowCascadeCount;
         // renderpass 的四个操作只在 shadow 那步还在图里时可比：剪掉之后没有任何
         // renderpass 在消费这张图，那四个字段落不到实际对象上。这正是「翻转开关
         // 不必重建 image」那条结论的形状——变的字段不是 image 参数
         if (!shadowDisabled) {
-            const auto& ops = resourcePlan_.ops(kShadowPassName, kShadowDepthName);
+            const auto& ops =
+                resourcePlan_.ops(kShadowPassNames[cascade], kShadowDepthNames[cascade]);
             same = same && ops.loadOp == actual.loadOp && ops.storeOp == actual.storeOp &&
                    ops.initialLayout == actual.initialLayout &&
                    ops.finalLayout == actual.finalLayout;
@@ -6996,7 +7027,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     struct FrameGraphTables final {
         std::vector<render::graph::ResourceDesc> resources;
         std::vector<render::graph::ViewDesc> views;
-        std::vector<render::graph::PassAttachment> shadowAttachments;
+        std::array<std::vector<render::graph::PassAttachment>, render::kSunShadowCascadeCount>
+            shadowAttachments;
         std::vector<render::graph::PassAttachment> worldAttachments;
         std::vector<render::graph::PassAttachment> guiAttachments;
         std::vector<render::graph::PassAttachment> menuBackgroundAttachments;
@@ -7005,7 +7037,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         std::vector<VkClearValue> worldClears;
         std::vector<VkClearValue> guiClears;
         std::vector<VkClearValue> shadowClears;
-        std::vector<VkFramebuffer> shadowFramebuffers;
+        std::array<std::vector<VkFramebuffer>, render::kSunShadowCascadeCount> shadowFramebuffers;
         std::vector<VkImageMemoryBarrier> worldBarriers;
         std::vector<render::graph::PassDesc> passes;
 
@@ -7056,10 +7088,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     static constexpr std::string_view kSceneColorName = "scene_color";
     static constexpr std::string_view kSceneDepthName = "scene_depth";
     static constexpr std::string_view kGuiDepthName = "gui_depth";
-    static constexpr std::string_view kShadowDepthName = "shadow_depth";
+    // RN-35：级联的每一级在图里是**一条独立的资源**，尽管实现上它们是同一张数组图像的
+    // 两层。这不违反 FrameGraph.hpp 抬头那条「不要把两个视图拆成两个资源」——那条说的是
+    // **同一 subresource** 的两个视图（layout 时间线必须归并），这里是不同的 layer，
+    // 而 Vulkan 的 layout 本来就是逐 subresource 的。
+    // 拆开的实际理由是 loadOp：合成一条时第二个 shadow 步会被推成 LOAD（前面有写者），
+    // 而每一级都必须 CLEAR 自己那层，否则上一帧的残留会留在没被投射者覆盖的地方。
+    static constexpr std::array<std::string_view, render::kSunShadowCascadeCount>
+        kShadowDepthNames{"shadow_depth_near", "shadow_depth_far"};
     static constexpr std::string_view kSceneColorMsaaName = "scene_color_msaa";
     static constexpr std::string_view kSceneTaaInputName = "scene_taa_input";
-    static constexpr std::string_view kShadowPassName = "shadow";
+    static constexpr std::array<std::string_view, render::kSunShadowCascadeCount>
+        kShadowPassNames{"shadow_near", "shadow_far"};
     static constexpr std::string_view kWorldPassName = "world";
     static constexpr std::string_view kGuiPassName = "gui";
     static constexpr std::string_view kMenuBackgroundPassName = "menu_background";
@@ -7094,19 +7134,24 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
              .height = swapchainExtent.height,
              .samples = VK_SAMPLE_COUNT_1_BIT,
              .perSwapchainImage = true},
-            {.name = "shadow_depth",
-             .kind = ResourceKind::Depth,
-             .format = shadowTarget.format(),
-             .width = shadowTarget.width(),
-             .height = shadowTarget.height(),
-             .samples = VK_SAMPLE_COUNT_1_BIT,
-             // 阴影图尺寸固定、与交换链无关，**单份**——这是三处不对称里的第一处
-             .perSwapchainImage = false},
         };
         constexpr std::uint16_t kSceneColor = 0;
         constexpr std::uint16_t kSceneDepth = 1;
         constexpr std::uint16_t kGuiDepth = 2;
-        constexpr std::uint16_t kShadowDepth = 3;
+        // RN-35：级联的每一级一条。它们描述的是同一张数组图像的不同层，创建参数因此
+        // 逐条相同——verifyShadowDepthPlan 逐条比对同一份 OffscreenTarget::Parameters
+        std::array<std::uint16_t, render::kSunShadowCascadeCount> shadowDepth{};
+        for (std::size_t cascade = 0; cascade < render::kSunShadowCascadeCount; ++cascade) {
+            shadowDepth[cascade] = static_cast<std::uint16_t>(resources.size());
+            resources.push_back({.name = kShadowDepthNames[cascade],
+                                 .kind = ResourceKind::Depth,
+                                 .format = shadowTarget.format(),
+                                 .width = shadowTarget.width(),
+                                 .height = shadowTarget.height(),
+                                 .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 // 阴影图尺寸固定、与交换链无关，**单份**
+                                 .perSwapchainImage = false});
+        }
         // 世界那趟的颜色目标。三档各一条，写在一处，下面的附件表只读这个变量
         std::uint16_t worldColorTarget = kSceneColor;
         std::uint16_t sceneColorMsaa = kSceneColor;
@@ -7160,7 +7205,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                              .aspect = aspect});
         }
 
-        tables.shadowAttachments = {{kShadowDepth, Access::DepthWrite}};
+        for (std::size_t cascade = 0; cascade < render::kSunShadowCascadeCount; ++cascade) {
+            tables.shadowAttachments[cascade] = {{shadowDepth[cascade], Access::DepthWrite}};
+        }
         // 世界那趟的附件表两档不同形，与 createRenderPass 的 attachmentCount 一致：
         // 开 MSAA 是「多采样 color + depth + resolve」三个，关时是「color + depth」两个。
         // resolve 目标声明成 ColorResolve 而不是第二个 ColorWrite——它的内容确实由这一步
@@ -7172,8 +7219,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             tables.worldAttachments.push_back({kSceneColor, Access::ColorResolve});
         }
         // 阴影图的读者不是附件，是 binding 8 的描述符采样。它必须在这里显式声明：
-        // 少了这一条，推导会把一张被无条件采样的图判成瞬态
-        tables.worldAttachments.push_back({kShadowDepth, Access::Sample});
+        // 少了这一条，推导会把一张被无条件采样的图判成瞬态。级联的每一级都要有自己
+        // 那一条——采样端是一张数组，两层都会被读
+        for (std::size_t cascade = 0; cascade < render::kSunShadowCascadeCount; ++cascade) {
+            tables.worldAttachments.push_back({shadowDepth[cascade], Access::Sample});
+        }
         // TAA-1：resolve 读世界那趟的输出与深度，写 scene_color。
         //
         // 深度那条 Sample 不是装饰：推导正是靠它给 scene_depth 加上 SAMPLED 用途位
@@ -7203,9 +7253,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         tables.guiClears[1].depthStencil = {1.0F, 0};
         tables.shadowClears.assign(1, VkClearValue{});
         tables.shadowClears[0].depthStencil = {1.0F, 0};
-        tables.shadowFramebuffers.clear();
-        if (withHandles) {
-            tables.shadowFramebuffers.push_back(shadowTarget.framebuffer());
+        for (std::size_t cascade = 0; cascade < render::kSunShadowCascadeCount; ++cascade) {
+            tables.shadowFramebuffers[cascade].clear();
+            if (withHandles) {
+                tables.shadowFramebuffers[cascade].push_back(
+                    shadowTarget.framebuffer(static_cast<std::uint32_t>(cascade)));
+            }
         }
 
         // 阴影图画完要转成 SHADER_READ_ONLY 给世界那趟采样。这条屏障从前是
@@ -7225,7 +7278,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         shadowRead.image = shadowTarget.image();
         shadowRead.subresourceRange.aspectMask = shadowTarget.aspect();
         shadowRead.subresourceRange.levelCount = 1;
-        shadowRead.subresourceRange.layerCount = 1;
+        // RN-35：**所有层**一起转。级联的每一级是这张数组图像的一层，而采样端拿到的是
+        // 整张数组——漏掉第二层，那一层就停在 DEPTH_STENCIL_ATTACHMENT_OPTIMAL 被采样，
+        // 校验层报 imageLayout-00344，真机上是未定义行为
+        shadowRead.subresourceRange.layerCount =
+            static_cast<std::uint32_t>(render::kSunShadowCascadeCount);
         shadowRead.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
         shadowRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         tables.worldBarriers.clear();
@@ -7243,11 +7300,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         tables.passes = {
             {.name = "upload",
              .record = &WorldRenderer::graphUploadStep},
-            {.name = kShadowPassName,
-             .attachments = tables.shadowAttachments,
-             .record = &WorldRenderer::graphShadowStep,
+            // RN-35：级联的两趟。同一个渲染通道、同一份清空值，只有帧缓冲那一层与
+            // body 里的级别不同。**两个独立的步**而不是一个步跑两遍：每一级都要清自己
+            // 那层，而 loadOp 是推导按「本步之前有没有写者」给的
+            {.name = kShadowPassNames[0],
+             .attachments = tables.shadowAttachments[0],
+             .record = &WorldRenderer::graphShadowStep<0>,
              .renderPass = withHandles ? shadowTarget.renderPass() : VK_NULL_HANDLE,
-             .framebuffers = tables.shadowFramebuffers,
+             .framebuffers = tables.shadowFramebuffers[0],
+             .clears = withHandles ? std::span<const VkClearValue>{tables.shadowClears}
+                                   : std::span<const VkClearValue>{},
+             .extent = {shadowTarget.width(), shadowTarget.height()},
+             .enabled = !shadowDisabled},
+            {.name = kShadowPassNames[1],
+             .attachments = tables.shadowAttachments[1],
+             .record = &WorldRenderer::graphShadowStep<1>,
+             .renderPass = withHandles ? shadowTarget.renderPass() : VK_NULL_HANDLE,
+             .framebuffers = tables.shadowFramebuffers[1],
              .clears = withHandles ? std::span<const VkClearValue>{tables.shadowClears}
                                    : std::span<const VkClearValue>{},
              .extent = {shadowTarget.width(), shadowTarget.height()},
@@ -8433,7 +8502,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     VkSampler shadowDebugSampler = VK_NULL_HANDLE;
     VkSampler shadowCompareSampler = VK_NULL_HANDLE;
     VkSampler shadowDepthSampler = VK_NULL_HANDLE;
-    glm::mat4 shadowLightViewProj{1.0F};
+    // RN-35：逐级的光源矩阵。updateShadowMatrix 每帧算两份，阴影那两趟各推自己那份，
+    // 接收端两份都拿到（它自己选级）
+    std::array<glm::mat4, render::kSunShadowCascadeCount> shadowLightViewProj{glm::mat4{1.0F},
+                                                                              glm::mat4{1.0F}};
     bool shadowDisabled = std::getenv("MC_REBEDROCK_SHADOW_DISABLE") != nullptr;
     render::RainSystem rainSystem;
     RainMode rainMode_ = RainMode::Async;

@@ -5,15 +5,20 @@
 // （item_entity 少了一次中间变量）。lightmap.glsl 的抬头已经写过这个教训一次：
 // 两份副本漂移就曾经交付过一次 MoltenVK 的管线创建崩溃。
 //
+// RN-35：级联。阴影图是一张**两层**的数组图像，采样器因此是 sampler2DArrayShadow /
+// sampler2DArray，第三个坐标分量是层号。近段（层 0）覆盖玩家周围 16 格、一个纹素
+// 1/128 格；远段（层 1）覆盖 128 格、一个纹素 1/16 格，与从前完全一样。
+// 接收点先试近段，落在它的框里就用它，否则退到远段——**只试一次，不做两级混合**。
+//
 // binding 8 的采样器现在是 VulkanRenderer 的 shadowCompareSampler：
 // VK_FILTER_LINEAR + compareEnable + VK_COMPARE_OP_LESS_OR_EQUAL。所以：
-//   * 采样器必须声明成 sampler2DShadow。用非 shadow 的 sampler2D 采一个开了 compare
+//   * 采样器必须声明成 sampler2DArrayShadow。用非 shadow 的采样器采一个开了 compare
 //     的采样器是未定义用法，MoltenVK 上是 SPIR-V→MSL 转换失败＝黑窗。
 //   * texture() 的第三个分量是**比较参考值**，返回值是「通过比较」的比例（1.0 = 亮），
 //     不再是深度值。
 //   * 每一次 tap 因为 LINEAR 本身就是硬件在 2x2 邻域上的加权比较。
 //
-// 采样器本身留在各自的 .frag 里声明（`layout(binding = 8) uniform sampler2DShadow`），
+// 采样器本身留在各自的 .frag 里声明（`layout(binding = 8) uniform sampler2DArrayShadow`），
 // 由函数参数传进来：shader_descriptor_bindings_test 扫的是 .vert/.frag 里的
 // `layout(binding = N)`，不递归进 include 目录，把声明搬进来会让那条护栏瞎掉。
 
@@ -31,7 +36,15 @@ const float kSunShadowDepthRangeBlocks = 319.9;
 
 #include "sun_shadow_bias.glsl"
 
-float sunShadowFactor(sampler2DShadow shadowMap, sampler2D shadowDepth, mat4 lightViewProj,
+// 一级的投影结果落在它的框里吗。三个轴都要判：横向出框是「没有阴影图可查」，
+// 深度出框是「这个点比光源还近或比远平面还远」，两者都只能按全亮处理。
+bool sunShadowInsideCascade(vec3 shadowUv) {
+    return shadowUv.x >= 0.0 && shadowUv.x <= 1.0 && shadowUv.y >= 0.0 && shadowUv.y <= 1.0 &&
+           shadowUv.z >= 0.0 && shadowUv.z <= 1.0;
+}
+
+float sunShadowFactor(sampler2DArrayShadow shadowMap, sampler2DArray shadowDepth,
+                      mat4 lightViewProjNear, mat4 lightViewProjFar,
                       vec3 worldPosition, vec3 normal, vec3 sunDirection) {
     // 三个接收者统一：没有太阳直射的面不受此方向的遮挡影响，也无需 PCF。
     // 受光面的光照权重保持原样；合并 sky 通道仍包含环境天光，这是待拆分的近似。
@@ -39,20 +52,32 @@ float sunShadowFactor(sampler2DShadow shadowMap, sampler2D shadowDepth, mat4 lig
     if (incidence <= 0.0) {
         return 1.0;
     }
-    // RN-33：偏置沿**法线**把采样点抬离表面，而不是朝太阳压深度。压深度会把影子从
-    // 投射者脚下推开（那里的真实深度差趋近于 0，一压就没了）；沿法线抬不会。
-    // 抬高必须在投影**之前**加进世界坐标——加在投影之后就又变成了沿光线方向的位移。
-    vec3 offsetPosition = worldPosition + normal * sunShadowNormalOffsetBlocks(incidence);
-    vec4 lightPosition = lightViewProj * vec4(offsetPosition, 1.0);
+    // RN-35：选级。先试近段——它的纹素是远段的 1/8，能表达的边细八倍。
+    //
+    // ★ 法线抬升要用**被选中那一级**的纹素，而抬升又发生在投影之前，所以两级各投影
+    // 一次是不可避的：拿远段的抬升去投近段，抬的量是 8 倍，影子会整片从脚下浮起来。
+    // 代价是一次多余的 mat4 乘（近段没命中时才发生），换来的是两级各自自洽。
+    int cascade = 0;
+    float texelBlocks = sunShadowTexelBlocks(cascade);
+    vec3 offsetPosition = worldPosition + normal * sunShadowNormalOffsetBlocks(incidence, texelBlocks);
+    vec4 lightPosition = lightViewProjNear * vec4(offsetPosition, 1.0);
     vec3 projected = lightPosition.xyz / lightPosition.w;
     // xy 从 [-1,1] 重映射到 [0,1]；z **不**重映射——投影是 orthoRH_ZO，
     // 深度已经在 [0,1] 里了，再 * 0.5 + 0.5 会把它压进 [0.5,1]
     vec3 shadowUv = vec3(projected.xy * 0.5 + 0.5, projected.z);
-    if (shadowUv.x < 0.0 || shadowUv.x > 1.0 || shadowUv.y < 0.0 || shadowUv.y > 1.0 ||
-        shadowUv.z < 0.0 || shadowUv.z > 1.0) {
-        // 128 格的正交框之外没有阴影图可查，一律按全亮
-        return 1.0;
+    if (!sunShadowInsideCascade(shadowUv)) {
+        cascade = 1;
+        texelBlocks = sunShadowTexelBlocks(cascade);
+        offsetPosition = worldPosition + normal * sunShadowNormalOffsetBlocks(incidence, texelBlocks);
+        lightPosition = lightViewProjFar * vec4(offsetPosition, 1.0);
+        projected = lightPosition.xyz / lightPosition.w;
+        shadowUv = vec3(projected.xy * 0.5 + 0.5, projected.z);
+        if (!sunShadowInsideCascade(shadowUv)) {
+            // 最远那一级的框之外没有阴影图可查，一律按全亮
+            return 1.0;
+        }
     }
+    float layer = float(cascade);
 
     float texel = 1.0 / kSunShadowMapResolution;
     float reference = shadowUv.z - kSunShadowDepthBiasBlocks / kSunShadowDepthRangeBlocks;
@@ -70,7 +95,7 @@ float sunShadowFactor(sampler2DShadow shadowMap, sampler2D shadowDepth, mat4 lig
     float blockerCount = 0.0;
     for (int i = 0; i < 4; ++i) {
         vec2 corner = vec2(i == 0 || i == 3 ? -1.0 : 1.0, i < 2 ? -1.0 : 1.0);
-        float sampled = texture(shadowDepth, shadowUv.xy + corner * searchTexel).r;
+        float sampled = texture(shadowDepth, vec3(shadowUv.xy + corner * searchTexel, layer)).r;
         if (sampled < reference) {
             blockerDepthSum += sampled;
             blockerCount += 1.0;
@@ -83,7 +108,7 @@ float sunShadowFactor(sampler2DShadow shadowMap, sampler2D shadowDepth, mat4 lig
     }
     float blockerDistance =
         (shadowUv.z - blockerDepthSum / blockerCount) * kSunShadowDepthRangeBlocks;
-    float penumbraTexels = sunShadowPenumbraTexels(blockerDistance);
+    float penumbraTexels = sunShadowPenumbraTexels(blockerDistance, texelBlocks);
 
     // 2x2 的 tap 网格，位置 ±penumbraTexels（上限 ±0.5 纹素，即从前的固定值）。加上每个
     // tap 自带的 2x2 硬件双线性比较，足迹半宽在 [0.5, 1.0] 纹素之间随遮挡距离变化。
@@ -101,8 +126,10 @@ float sunShadowFactor(sampler2DShadow shadowMap, sampler2D shadowDepth, mat4 lig
     // 运行时决定的循环长度，成本压在每一个朝阳的屏幕像素上；等有了真机帧时间再评估。
     // PCF 的 tap 位于接收面上不同的位置，比较深度必须随平面移动。
     // 从现有光源矩阵取横向正交轴，不引入第二套太阳几何或屏幕导数。
-    vec3 lightRight = normalize(vec3(lightViewProj[0][0], lightViewProj[1][0], lightViewProj[2][0]));
-    vec3 lightUp = normalize(vec3(lightViewProj[0][1], lightViewProj[1][1], lightViewProj[2][1]));
+    // 两级共用同一个旋转（SunShadowMap.cpp 只让横向半边长与吸附步长逐级不同），
+    // 所以横向正交轴取哪一级的矩阵都一样。取远段那份，它与级别选择无关
+    vec3 lightRight = normalize(vec3(lightViewProjFar[0][0], lightViewProjFar[1][0], lightViewProjFar[2][0]));
+    vec3 lightUp = normalize(vec3(lightViewProjFar[0][1], lightViewProjFar[1][1], lightViewProjFar[2][1]));
     float normalRight = dot(normal, lightRight);
     float normalUp = dot(normal, lightUp);
     float normalSun = incidence;
@@ -112,8 +139,9 @@ float sunShadowFactor(sampler2DShadow shadowMap, sampler2D shadowDepth, mat4 lig
             float tapX = (float(x) - 0.5) * penumbraTexels * 2.0;
             float tapY = (float(y) - 0.5) * penumbraTexels * 2.0;
             float tapReference = reference + sunShadowTapOffsetBlocks(
-                normalRight, normalUp, normalSun, tapX, tapY) / kSunShadowDepthRangeBlocks;
-            lit += texture(shadowMap, vec3(shadowUv.xy + vec2(tapX, tapY) * texel, tapReference));
+                normalRight, normalUp, normalSun, tapX, tapY, texelBlocks) / kSunShadowDepthRangeBlocks;
+            lit += texture(shadowMap,
+                           vec4(shadowUv.xy + vec2(tapX, tapY) * texel, layer, tapReference));
         }
     }
     return mix(kSunShadowFactor, 1.0, lit * 0.25);

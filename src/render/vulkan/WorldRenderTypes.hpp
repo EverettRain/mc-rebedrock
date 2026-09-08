@@ -1,5 +1,7 @@
 #pragma once
 
+#include "render/SunShadowMap.hpp"
+
 // 渲染器内核（VulkanRenderer.cpp）与世界渲染子系统（WorldRenderer.hpp）共用的世界渲染类型与常量
 // 放在 mc::render 而不是某个 .cpp 的匿名命名空间里，两边才能指同一份定义
 
@@ -254,7 +256,9 @@ struct WorldPipelines final {
     VkPipeline particlePipeline = VK_NULL_HANDLE;
     VkPipelineLayout particlePipelineLayout = VK_NULL_HANDLE;
     // 太阳空间阴影预通道，以及它的调试叠加层
-    VkPipeline entityShadowPipeline = VK_NULL_HANDLE;
+    // RN-35：级联的每一级一条。矩阵走 UBO（ItemPush 满 128 字节），级别因此是
+    // item_entity.vert 的特化常量 sunShadowCascade，而特化是管线创建时的事
+    std::array<VkPipeline, kSunShadowCascadeCount> entityShadowPipelines{};
     VkPipelineLayout entityShadowPipelineLayout = VK_NULL_HANDLE;
     VkPipeline shadowPipeline = VK_NULL_HANDLE;
     VkPipelineLayout shadowPipelineLayout = VK_NULL_HANDLE;

@@ -150,7 +150,8 @@ class WorldRenderer final {
     GpuSceneBuffer& gpuSceneBuffer;
     OffscreenTarget& shadowTarget;
     VkDescriptorSet& shadowDebugSet;
-    glm::mat4& shadowLightViewProj;
+    // RN-35：逐级的光源矩阵。所有权在 VulkanRenderer::Impl
+    std::array<glm::mat4, kSunShadowCascadeCount>& shadowLightViewProj;
     bool& shadowDisabled;
     // RN-23：玩家的图形设置。贴花只读 entityShadows，但绑整份而不是再镜像一个 bool，
     // 因为一个手工同步的镜像就是一处会被忘记更新的地方（shadowDisabled 之所以是自己
@@ -1128,7 +1129,12 @@ class WorldRenderer final {
         // 排序键要用同一帧的同一个太阳，因此在这里存下来给 recordShadow 用，
         // 而不是让它自己再取一次 dayTimeTicks——两次取之间跨了 tick 就会错开一帧
         shadowSunDirection_ = glm::normalize(daylight.sunDirection);
-        shadowLightViewProj = sunShadowLightViewProj(shadowSunDirection_, renderEyeState().position);
+        // RN-35：逐级各算一份。两级共用同一个旋转与同一个深度范围，只有横向半边长
+        // 与吸附步长不同——「两级是同一个太阳投的」因此是结构性的
+        for (std::size_t cascade = 0; cascade < kSunShadowCascadeCount; ++cascade) {
+            shadowLightViewProj[cascade] =
+                sunShadowLightViewProj(shadowSunDirection_, renderEyeState().position, cascade);
+        }
     }
 
 
@@ -1139,7 +1145,9 @@ class WorldRenderer final {
     // 整步存在，深度图因此每帧都被清空、并由图在世界那步前的边界屏障转成
     // SHADER_READ_ONLY_OPTIMAL。关掉太阳阴影时整步在**编译期**被剪掉（连同那条屏障），
     // 不是在这里 return；那张图靠 OffscreenTarget::initializeAsShaderRead 留下的布局保持合法。
-    void recordShadow(FrameContext& frame) {
+    // RN-35：一趟画一级。两级各有自己的正交框、自己的帧缓冲层、自己的投射者集合——
+    // 「哪些 section 挡得住光」在 16 格框和 128 格框下不是同一批。
+    void recordShadow(FrameContext& frame, std::size_t cascade) {
         // 候选只收**能挡光**的 section。从前这个判断在下面的绘制循环里，于是
         // 空 opaque 的 section 白占 512 个名额里的位置：选进来、排了序、然后 continue。
         //
@@ -1158,8 +1166,9 @@ class WorldRenderer final {
         }
         // 光锥剔除 + 按光源空间深度截断到 kMaxSunShadowCasters（见 SunShadowMap.hpp）。
         // 三个 vector 都是成员，clear() 保留容量，因此稳态下逐帧零分配。
-        selectSunShadowSceneCasters(shadowLightViewProj, shadowSunDirection_, shadowCasterBounds_,
-            entityDraws_.casters, shadowCasterSelection_, shadowEntitySelection_);
+        selectSunShadowSceneCasters(shadowLightViewProj[cascade], shadowSunDirection_,
+            shadowCasterBounds_, entityDraws_.casters, shadowCasterSelection_,
+            shadowEntitySelection_);
         VkViewport viewport{};
         viewport.width = static_cast<float>(shadowTarget.width());
         viewport.height = static_cast<float>(shadowTarget.height());
@@ -1182,7 +1191,8 @@ class WorldRenderer final {
                 if (draw.indexCount == 0U) {
                     continue;
                 }
-                const ShadowPush push{shadowLightViewProj, glm::vec4{mesh->sectionOrigin, 1.0F}};
+                const ShadowPush push{shadowLightViewProj[cascade],
+                                      glm::vec4{mesh->sectionOrigin, 1.0F}};
                 vkCmdPushConstants(frame.commandBuffer, layout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                    sizeof(push), &push);
                 vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &mesh->vertexBuffer.buffer,
@@ -1196,8 +1206,10 @@ class WorldRenderer final {
                           &GpuMesh::opaque);
         recordShadowLayer(pipelines.shadowCutoutPipeline, pipelines.shadowCutoutPipelineLayout,
                           &GpuMesh::cutout);
+        // 实体的矩阵走 UBO 而不是 push constant（ItemPush 正好满 128 字节），级别因此
+        // 是一个特化常量——每级一条管线，见 item_entity.vert 的 sunShadowCascade
         vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          pipelines.entityShadowPipeline);
+                          pipelines.entityShadowPipelines[cascade]);
         vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             pipelines.entityShadowPipelineLayout, 0, 1, &frame.descriptorSet, 0, nullptr);
         for (const std::size_t index : shadowEntitySelection_) {
@@ -1211,7 +1223,8 @@ class WorldRenderer final {
         }
         if (!diagnosticsOnce_.shadowCasters && !shadowCasterSelection_.empty()) {
             diagnosticsOnce_.shadowCasters = true;
-            std::cout << "[shadow] pre-pass " << shadowCasterSelection_.size() << " casters\n";
+            std::cout << "[shadow] cascade " << cascade << " pre-pass "
+                      << shadowCasterSelection_.size() << " casters\n";
         }
     }
 
@@ -2317,11 +2330,14 @@ class WorldRenderer final {
         args.self->recordUpload(*args.frame);
     }
 
+    // RN-35：一级一个蹦床。级别是编译期常量而不是 PassContext 上的一个字段——
+    // 图里它们是两个**独立的步**（各自的帧缓冲、各自的清空），不是一个步跑两遍
+    template <std::size_t Cascade>
     static void graphShadowStep(VkCommandBuffer commandBuffer, const graph::PassContext& context) {
         static_cast<void>(commandBuffer);
         auto& args = *static_cast<GraphPassArgs*>(context.user);
         const diag::ScopedAccumulate bodyTimer{args.self->graphBodyMs_};
-        args.self->recordShadow(*args.frame);
+        args.self->recordShadow(*args.frame, Cascade);
     }
 
     static void graphWorldStep(VkCommandBuffer commandBuffer, const graph::PassContext& context) {
@@ -2888,7 +2904,7 @@ class WorldRenderer final {
   GpuSceneBuffer& gpuSceneBuffer;
   OffscreenTarget& shadowTarget;
   VkDescriptorSet& shadowDebugSet;
-  glm::mat4& shadowLightViewProj;
+  std::array<glm::mat4, kSunShadowCascadeCount>& shadowLightViewProj;
   bool& shadowDisabled;
   const config::GameOptions& options;
   render::RainSystem& rainSystem;

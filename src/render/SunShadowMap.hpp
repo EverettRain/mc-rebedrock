@@ -17,6 +17,7 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -24,9 +25,23 @@
 
 namespace mc::render {
 
-// 正交框的半边长（格）。横截面因此是 128×128 格。
-// 框外一律无阴影，框边是一条随视点与太阳移动的硬边界——那是 CSM（RN-11 C(c)）的账。
-inline constexpr float kSunShadowOrthoHalfExtent = 64.0F;
+// RN-35：级联。两级，各自一张正交框、各自一层深度图、各自独立吸附。
+//
+// 走级联而不是射影畸变（RN-34 §5 登记的那条）的理由是两条几何事实：只有射影变换能被
+// 光栅化正确插值（分段线性映射会让跨接缝的三角形画成直线，实算是几十个纹素的错位），
+// 而射影函数做不出奇对称的加密——单张图上因此做不出「以玩家为中心的径向加密」。
+// 级联绕开了这两条，还额外保住了 RN-24：**每一级仍是正交框，可以各自吸附**，
+// 稳定性一点都不用让，也不依赖 TAA。
+inline constexpr std::size_t kSunShadowCascadeCount = 2;
+
+// 每级正交框的半边长（格）。近段 8 ⇒ 全宽 16 格，只覆盖玩家周围——那正是「玩家附近」；
+// 远段 64 ⇒ 全宽 128 格，与 RN-11 以来一致。
+// 框外一律无阴影，最远那一级的框边是一条随视点与太阳移动的硬边界（RN-11 C(c) 的账）。
+inline constexpr std::array<float, kSunShadowCascadeCount> kSunShadowOrthoHalfExtents{8.0F, 64.0F};
+
+// 最远那一级的半边长。光锥深度、实体剔除这些「与级别无关」的量取它。
+inline constexpr float kSunShadowOrthoHalfExtent =
+    kSunShadowOrthoHalfExtents[kSunShadowCascadeCount - 1];
 
 // 光源「相机」放在视点沿太阳方向 96 格处，正交深度范围 0.1..320 格。
 inline constexpr float kSunShadowEyeDistance = 96.0F;
@@ -72,10 +87,23 @@ static_assert(24'000.0 / kSunShadowAngleStepTicks ==
 // 那道 N·L 门只影响掠射方向上 0.12° 宽的一条带，不构成可见差异。这是**有意**的不一致。
 [[nodiscard]] double sunShadowSunTick(double dayTimeTicks);
 
-// 一个纹素在世界里的边长（格）。texel snapping 量化到它，PCF 的步长是它的倒数。
-inline constexpr float kSunShadowTexelSize =
-    2.0F * kSunShadowOrthoHalfExtent / static_cast<float>(kSunShadowMapResolution);
-static_assert(kSunShadowTexelSize == 0.0625F);
+// 一个纹素在世界里的边长（格），逐级不同。texel snapping 量化到它，PCF 的步长是它的倒数。
+//
+// ★ 着色器里的偏置、法线抬升、逐 tap 平面修正、半影半径全都以「纹素」表达，而纹素的
+// 世界尺寸现在是级别的函数——那三个函数因此从读全局常量改成收一个参数（RN-35 §1.4）。
+// 漏改的症状是近段的偏置按远段的纹素抬，也就是抬高 8 倍：影子整片从投射者脚下浮起来。
+[[nodiscard]] constexpr float sunShadowTexelSize(std::size_t cascade) {
+    return 2.0F * kSunShadowOrthoHalfExtents[cascade] /
+           static_cast<float>(kSunShadowMapResolution);
+}
+static_assert(sunShadowTexelSize(0) == 0.0078125F);
+static_assert(sunShadowTexelSize(1) == 0.0625F);
+// 近段的纹素正好是远段的 1/8。这个比值在着色器与测试里都被当成常量读，写成断言
+// 而不是注释——改了框宽却忘了改那一侧的人，在这里先炸
+static_assert(sunShadowTexelSize(1) == sunShadowTexelSize(0) * 8.0F);
+
+// 最远那一级的纹素。与级别无关的旧调用点（阴影调试叠加层等）取它。
+inline constexpr float kSunShadowTexelSize = sunShadowTexelSize(kSunShadowCascadeCount - 1);
 
 // 预通道每帧最多画多少个 section。视点飞高或光锥覆盖密集区域时候选能涨到数千，
 // 每帧全部重画正是那种可能把设备推向丢失的重负载帧。
@@ -139,8 +167,11 @@ void selectSunShadowEntityCasters(const glm::mat4& lightViewProj, const glm::vec
 //
 // `eye` 必须是**渲染视点**（RenderEye::position），不是相机对象的位置：第三人称把
 // 渲染眼点沿视线拉后 4 格，用相机位置会让光锥中心停在玩家身上而不是画面中心。
-[[nodiscard]] glm::mat4 sunShadowLightViewProj(const glm::vec3& sunDirection,
-                                               const glm::vec3& eye);
+// RN-35：`cascade` 选哪一级的正交框与哪一个吸附步长。两级用的是**同一个**旋转与
+// 同一个深度范围，只有横向半边长与吸附步长不同——于是「近段的影子和远段的影子是同一个
+// 太阳投的」这件事是结构性的，不是靠两处常量碰巧相等。
+[[nodiscard]] glm::mat4 sunShadowLightViewProj(const glm::vec3& sunDirection, const glm::vec3& eye,
+                                               std::size_t cascade = kSunShadowCascadeCount - 1);
 
 // 投射者的排序键：包围盒沿光行进方向最靠前那个角的光源空间深度，越小越靠近光源。
 //

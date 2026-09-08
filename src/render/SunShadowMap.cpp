@@ -28,8 +28,8 @@ namespace {
 // 那里先炸，而不是在 mac 上炸成一屏 NaN 或者悄悄把 RN-24 的稳定性还回去。
 constexpr glm::vec3 kLightUp = world::DayNightCycle::kSunOrbitNormal;
 
-[[nodiscard]] float snapToTexelGrid(float value) {
-    return std::round(value / kSunShadowTexelSize) * kSunShadowTexelSize;
+[[nodiscard]] float snapToTexelGrid(float value, float texelSize) {
+    return std::round(value / texelSize) * texelSize;
 }
 
 } // namespace
@@ -40,7 +40,13 @@ double sunShadowSunTick(double dayTimeTicks) {
     return std::floor(dayTimeTicks / kSunShadowAngleStepTicks) * kSunShadowAngleStepTicks;
 }
 
-glm::mat4 sunShadowLightViewProj(const glm::vec3& sunDirection, const glm::vec3& eye) {
+glm::mat4 sunShadowLightViewProj(const glm::vec3& sunDirection, const glm::vec3& eye,
+                                 std::size_t cascade) {
+    const float halfExtent = kSunShadowOrthoHalfExtents[cascade];
+    // ★ 每一级吸附到**自己**的纹素网格。用同一个步长去吸附两级，细的那一级就只在
+    // 粗纹素的整数倍上落脚——相机在一个粗纹素内平移时近段整体不动，跨过时跳 8 个细纹素，
+    // 那正是 RN-24 要消灭的那种爬行，只是换了个尺度
+    const float texelSize = sunShadowTexelSize(cascade);
     const glm::vec3 sun = glm::normalize(sunDirection);
     // 只取旋转：lookAt 的朝向是 normalize(target - position) = -sun，与视点无关。
     // 把旋转与平移拆开，量化才有地方落——平移分量正是要被钉到纹素网格上的那个量。
@@ -49,16 +55,16 @@ glm::mat4 sunShadowLightViewProj(const glm::vec3& sunDirection, const glm::vec3&
     glm::vec3 centerInLight{lightRotation * glm::vec4{center, 1.0F}};
     // 只量化横向两轴。深度轴不必量化：写入端与采样端用的是同一个矩阵，深度原点的
     // 连续漂移在比较里两边抵消，只有横向的采样相位漂移会表现成阴影边爬行。
-    centerInLight.x = snapToTexelGrid(centerInLight.x);
-    centerInLight.y = snapToTexelGrid(centerInLight.y);
+    centerInLight.x = snapToTexelGrid(centerInLight.x, texelSize);
+    centerInLight.y = snapToTexelGrid(centerInLight.y, texelSize);
     // lightView: P -> lightRotation * P - centerInLight。未量化时它与
     // glm::lookAt(center, center - sun * 2 * kSunShadowEyeDistance, up) 逐字相同。
     const glm::mat4 lightView =
         glm::translate(glm::mat4{1.0F}, -centerInLight) * lightRotation;
-    const glm::mat4 lightProj =
-        glm::orthoRH_ZO(-kSunShadowOrthoHalfExtent, kSunShadowOrthoHalfExtent,
-                        -kSunShadowOrthoHalfExtent, kSunShadowOrthoHalfExtent,
-                        kSunShadowNearPlane, kSunShadowFarPlane);
+    // 深度范围两级共用：近段的投射者可能很高（屋顶投到脚下），范围不能跟着框宽缩。
+    // 深度语义因此逐级相同，偏置那一套以「格」为单位的换算一个数字都不用动
+    const glm::mat4 lightProj = glm::orthoRH_ZO(-halfExtent, halfExtent, -halfExtent, halfExtent,
+                                                kSunShadowNearPlane, kSunShadowFarPlane);
     return lightProj * lightView;
 }
 

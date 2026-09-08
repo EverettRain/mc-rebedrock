@@ -19,6 +19,7 @@ OffscreenTarget::Parameters OffscreenTarget::parameters() const {
     return {.format = format_,
             .width = width_,
             .height = height_,
+            .layers = layers_,
             .samples = kShadowSamples,
             .usage = kShadowUsage,
             .aspect = aspect_,
@@ -34,13 +35,19 @@ void OffscreenTarget::init(const Config& config) {
     device_ = config.device;
     width_ = config.width;
     height_ = config.height;
+    layers_ = config.layers;
     format_ = resources_->chooseShadowDepthFormat();
-    image_ = resources_->createImage(width_, height_, 1, format_, kShadowUsage, kShadowSamples);
+    image_ =
+        resources_->createImage(width_, height_, layers_, format_, kShadowUsage, kShadowSamples);
     aspect_ = VK_IMAGE_ASPECT_DEPTH_BIT;
     if (VulkanResources::depthFormatHasStencil(format_)) {
         aspect_ |= VK_IMAGE_ASPECT_STENCIL_BIT;
     }
-    view_ = resources_->createImageView(image_.image, format_, aspect_);
+    // ★ 采样视图**永远**是 2D_ARRAY，哪怕只有一层：着色器那边声明的是
+    // sampler2DArrayShadow，而视图类型与采样器类型对不上是未定义行为
+    // （createImageView 的注释里写过同一条，实体图集与字体图集踩过）
+    view_ = resources_->createImageView(image_.image, format_, aspect_, layers_,
+                                        VK_IMAGE_VIEW_TYPE_2D_ARRAY);
 
     VkAttachmentDescription depth{};
     depth.format = format_;
@@ -73,24 +80,45 @@ void OffscreenTarget::init(const Config& config) {
     passInfo.pDependencies = &dependency;
     checkVk(vkCreateRenderPass(device_, &passInfo, nullptr, &renderPass_), "vkCreateRenderPass(offscreen)");
 
-    auto framebufferInfo =
-        vkStructure<VkFramebufferCreateInfo>(VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO);
-    framebufferInfo.renderPass = renderPass_;
-    framebufferInfo.attachmentCount = 1;
-    framebufferInfo.pAttachments = &view_;
-    framebufferInfo.width = width_;
-    framebufferInfo.height = height_;
-    framebufferInfo.layers = 1;
-    checkVk(vkCreateFramebuffer(device_, &framebufferInfo, nullptr, &framebuffer_),
-            "vkCreateFramebuffer(offscreen)");
+    // 逐层：一个单层视图 + 一个帧缓冲。渲染通道只有一个，两级共用——
+    // 它描述的是「往一张单层深度附件里画」，与层号无关
+    layerViews_.resize(layers_);
+    framebuffers_.resize(layers_);
+    for (std::uint32_t layer = 0; layer < layers_; ++layer) {
+        auto viewInfo =
+            vkStructure<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
+        viewInfo.image = image_.image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = format_;
+        viewInfo.subresourceRange.aspectMask = aspect_;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = layer;
+        viewInfo.subresourceRange.layerCount = 1;
+        checkVk(vkCreateImageView(device_, &viewInfo, nullptr, &layerViews_[layer]),
+                "vkCreateImageView(offscreen layer)");
+        auto framebufferInfo =
+            vkStructure<VkFramebufferCreateInfo>(VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO);
+        framebufferInfo.renderPass = renderPass_;
+        framebufferInfo.attachmentCount = 1;
+        framebufferInfo.pAttachments = &layerViews_[layer];
+        framebufferInfo.width = width_;
+        framebufferInfo.height = height_;
+        framebufferInfo.layers = 1;
+        checkVk(vkCreateFramebuffer(device_, &framebufferInfo, nullptr, &framebuffers_[layer]),
+                "vkCreateFramebuffer(offscreen)");
+    }
 }
 
 void OffscreenTarget::destroy() {
     if (device_ != VK_NULL_HANDLE) {
-        if (framebuffer_ != VK_NULL_HANDLE) {
-            vkDestroyFramebuffer(device_, framebuffer_, nullptr);
-            framebuffer_ = VK_NULL_HANDLE;
+        for (const auto framebuffer : framebuffers_) {
+            vkDestroyFramebuffer(device_, framebuffer, nullptr);
         }
+        framebuffers_.clear();
+        for (const auto layerView : layerViews_) {
+            vkDestroyImageView(device_, layerView, nullptr);
+        }
+        layerViews_.clear();
         if (renderPass_ != VK_NULL_HANDLE) {
             vkDestroyRenderPass(device_, renderPass_, nullptr);
             renderPass_ = VK_NULL_HANDLE;
@@ -105,6 +133,7 @@ void OffscreenTarget::destroy() {
     }
     width_ = 0;
     height_ = 0;
+    layers_ = 1;
     format_ = VK_FORMAT_UNDEFINED;
 }
 
@@ -122,7 +151,8 @@ void OffscreenTarget::initializeAsShaderRead() const {
     barrier.image = image_.image;
     barrier.subresourceRange.aspectMask = aspect_;
     barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.layerCount = 1;
+    // 所有层一起转：级联的每一级都是这张图的一层，采样端拿到的是整张数组
+    barrier.subresourceRange.layerCount = layers_;
     barrier.srcAccessMask = 0;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -141,7 +171,8 @@ void OffscreenTarget::transitionToShaderRead(VkCommandBuffer commandBuffer) cons
     barrier.image = image_.image;
     barrier.subresourceRange.aspectMask = aspect_;
     barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.layerCount = 1;
+    // 所有层一起转：级联的每一级都是这张图的一层，采样端拿到的是整张数组
+    barrier.subresourceRange.layerCount = layers_;
     barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,

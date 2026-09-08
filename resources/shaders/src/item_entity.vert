@@ -17,11 +17,17 @@ layout(binding = 0) uniform CameraUniform {
     vec4 fluidAnimationFrameCounts;
     vec4 fluidAnimationFrameTimes;
     vec4 fluidAnimationSettings;
-    mat4 lightViewProj;
+    // RN-35：级联的两个光源矩阵。声明必须与三个 .frag 逐字节一致（std140）
+    mat4 lightViewProj[2];
 } camera;
 
 // 同一份几何程序，两条管线只在最终投影上分歧。
-layout(constant_id = 0) const bool sunShadowPass = false;
+// RN-35：级联之后这一档从 bool 变 int——阴影那一趟要按级别选矩阵，而 ItemPush 正好
+// 满 128 字节（塞不下一个索引），UBO 又是逐帧一份（两趟共用）。-1 = 主通道（默认，
+// 主管线不传特化信息），0/1 = 阴影的近段/远段，各建一条管线。
+// 地形那条不受影响：shadow.vert 的矩阵本来就走 push constant。
+layout(constant_id = 0) const int sunShadowCascade = -1;
+const bool sunShadowPass = sunShadowCascade >= 0;
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
 
@@ -220,7 +226,7 @@ void main() {
         }
         vec3 worldPosition = (item.viewModelTransform * vec4(local, 1.0)).xyz;
         gl_Position = sunShadowPass
-            ? camera.lightViewProj * vec4(worldPosition, 1.0)
+            ? camera.lightViewProj[max(sunShadowCascade, 0)] * vec4(worldPosition, 1.0)
             : camera.projection * vec4(worldPosition, 1.0);
         fragmentUv = uv;
         fragmentTextureLayer = item.textureLayersRotation.x;
@@ -389,7 +395,7 @@ void main() {
             ? normalize(mat3(item.viewModelTransform) * normal)
             : normal;
         gl_Position = sunShadowPass
-            ? camera.lightViewProj * vec4(worldPosition, 1.0)
+            ? camera.lightViewProj[max(sunShadowCascade, 0)] * vec4(worldPosition, 1.0)
             : heldInViewSpace
             ? camera.projection * vec4(worldPosition, 1.0)
             : camera.projection * camera.view * vec4(worldPosition, 1.0);

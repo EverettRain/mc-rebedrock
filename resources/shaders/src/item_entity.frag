@@ -43,17 +43,20 @@ layout(binding = 0) uniform CameraUniform {
     vec4 fluidAnimationFrameCounts;
     vec4 fluidAnimationFrameTimes;
     vec4 fluidAnimationSettings;
-    mat4 lightViewProj;
+    // RN-35：级联的两个光源矩阵（0 = 近段 16 格框，1 = 远段 128 格框）。
+    // 数组而不是两个具名字段：std140 下 mat4 数组的元素间距就是 64 字节，
+    // 与两个相邻的 mat4 逐字节相同，而数组让「加一级」是改一个数字
+    mat4 lightViewProj[2];
 } camera;
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
 // Dedicated entity/creature skins, box-UV mapped (one layer per species).
 layout(binding = 4) uniform sampler2DArray entityTextures;
-layout(binding = 8) uniform sampler2DShadow shadowDepth;
+layout(binding = 8) uniform sampler2DArrayShadow shadowDepth;
 // RN-34：同一张阴影图的**非比较**采样器（NEAREST）。接触硬化要读回深度值本身来估
 // 遮挡距离，而比较采样器返回的是「通过比较」的比例，做不到这件事——所以它必须是
 // 第二个绑定点，而不是换掉 binding 8。两个绑定点指向同一个 imageView。
-layout(binding = 10) uniform sampler2D shadowDepthRaw;
+layout(binding = 10) uniform sampler2DArray shadowDepthRaw;
 
 // Vanilla's light curve, identical to grass_block.frag: level 15 is full
 // brightness and the falloff steepens toward darkness.
@@ -108,7 +111,7 @@ void main() {
             // skyFactor still scales combined ambient/direct skylight.
             float shadowFactor = 1.0;
             if (camera.lightingSettings.w > 0.5) {
-                shadowFactor = sunShadowFactor(shadowDepth, shadowDepthRaw, camera.lightViewProj,
+                shadowFactor = sunShadowFactor(shadowDepth, shadowDepthRaw, camera.lightViewProj[0], camera.lightViewProj[1],
                                                fragmentWorldPosition, normal,
                                                camera.sunDirection.xyz);
             }
