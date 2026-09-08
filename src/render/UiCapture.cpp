@@ -31,10 +31,12 @@ constexpr std::array kPageNames{
     PageName{ui::PageId::Controls, "controls"},
     PageName{ui::PageId::Language, "language"},
     PageName{ui::PageId::Experimental, "experimental"},
+    PageName{ui::PageId::KeyBinds, "key-binds"},
+    PageName{ui::PageId::Accessibility, "accessibility"},
 };
 
 // 表必须覆盖 PageId 的每一个取值，否则 --ui-shot 会对某个真实存在的屏幕说"不认识"。
-static_assert(kPageNames.size() == static_cast<std::size_t>(ui::PageId::Experimental) + 1U,
+static_assert(kPageNames.size() == static_cast<std::size_t>(ui::PageId::Accessibility) + 1U,
               "the capture page-name table must cover every PageId");
 
 [[nodiscard]] std::vector<std::string_view> splitOnCommas(std::string_view value) {

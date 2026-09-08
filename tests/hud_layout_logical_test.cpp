@@ -162,7 +162,7 @@ void testListGeometry() {
     CHECK(row.width == 810.0F);            // min(270, 427-32) = 270 -> 810
     CHECK(row.x == 0.0F + 234.0F);         // (427-270)/2 = 78 -> 234
     // UI-4：按键绑定行宽改成 26.1 的 340（`KeyBindsList:59`），此前是自造的 300。
-    const auto controls = mc::ui::controlsRow(0U, layout, kWidth);
+    const auto controls = mc::ui::keyBindsRow(0U, layout, kWidth);
     CHECK(controls.width == 1020.0F);      // 340 -> 1020
     CHECK(controls.x == 129.0F);           // (427-340)/2 = 43 -> 129
 }

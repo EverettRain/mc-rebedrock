@@ -45,8 +45,11 @@
 #include "ui/Language.hpp"
 #include "ui/MenuGeometry.hpp"
 #include "ui/MenuSystem.hpp"
+#include "ui/HeaderAndFooterLayout.hpp"
+#include "ui/KeyBindList.hpp"
 #include "ui/ListRow.hpp"
 #include "ui/PageBuilder.hpp"
+#include "ui/PageTitles.hpp"
 #include "ui/PageStack.hpp"
 #include "ui/TextField.hpp"
 #include "ui/TextFont.hpp"
@@ -342,28 +345,29 @@ class HudRenderer final {
         const std::size_t count = menuButtonCount();
         drawContext_.worldOpen = currentSave.has_value();
         drawContext_.worldSelectable = !menuSystem.saveSummaries.empty();
-        // 按键设置页喂进滚动窗口与实时按键标签，可见行按 controlsRow 排版
+        // 按键设置页喂进滚动窗口与实时按键标签，可见行按 keyBindsRow 排版
         // 末尾四个是底部按钮带，其余页面不受影响
         // 上下文是常驻的，因此这两个字段每帧先归零，非按键页看到的仍是「没有按键行」
         const float fbWidth = static_cast<float>(swapchainExtent.width);
+        // ★ UI-6c：窗口数的是**行**，不是动作——展开后的行表里夹着分类标题行。
         std::size_t keyRows = 0U;
+        std::size_t keyFirst = 0U;
         drawContext_.keyBindFirstIndex = 0U;
         drawContext_.keyBindRowCount = 0U;
-        if (pageId == ui::PageId::Controls) {
-            const std::size_t total = input::keyBindRows().size();
-            const std::size_t window = ui::controlsVisibleRowCount(
+        if (pageId == ui::PageId::KeyBinds) {
+            const std::size_t window = ui::keyBindsVisibleRowCount(
                 fbWidth, static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont);
-            const std::size_t first = std::min(menuSystem.controlsListFirstIndex, total);
-            keyRows = std::min(window, total - first);
-            drawContext_.keyBindFirstIndex = first;
+            keyFirst = std::min(menuSystem.controlsListFirstIndex, ui::kKeyBindListRowCount);
+            keyRows = std::min(window, ui::kKeyBindListRowCount - keyFirst);
+            drawContext_.keyBindFirstIndex = keyFirst;
             drawContext_.keyBindRowCount = keyRows;
         }
         // 页面 → 矩形只有一处：ui::menuWidgetRect。输入侧（menuRectProvider）调的是
         // 同一个函数——两侧各留一份抄本，正是"点 Controls 底部按钮就闪退"的来源。
         ui::buildPageInto(drawPage_, pageId, drawContext_, drawCallbacks_,
-                          [layout, pageId, count, fbWidth, keyRows](std::size_t index) {
+                          [layout, pageId, count, fbWidth, keyFirst, keyRows](std::size_t index) {
                               return ui::menuWidgetRect(pageId, index, layout, fbWidth, count,
-                                                        keyRows);
+                                                        keyFirst, keyRows);
                           });
         return drawPage_;
     }
@@ -1474,15 +1478,54 @@ class HudRenderer final {
                     {0.0F, 0.0F, 0.0F, 1.0F});
     }
 
-    void drawControlsScrollbar(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
+    // UI-6c：绑定列表里的分类标题行（26.1 `KeyBindsList.CategoryEntry`）。
+    //
+    // 它**不是控件**：纯文本、不可交互、焦点不该停在上面，所以它不进 ui::Page，
+    // 由这里直接画。26.1 的 CategoryEntry 把标题居中放在条目底端
+    // （`extractContent`：`x = width/2 - w/2`，`y = getContentBottom() - height`）。
+    void drawKeyBindCategoryRows(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
+                                 float scale) const {
         const float fbWidth = static_cast<float>(swapchainExtent.width);
-        const std::size_t total = input::keyBindRows().size();
-        const std::size_t visible = ui::controlsVisibleRowCount(
+        const auto list = ui::keyBindsScrollList(layout, fbWidth);
+        const std::size_t first =
+            std::min(menuSystem.controlsListFirstIndex, ui::kKeyBindListRowCount);
+        const std::size_t visible = ui::keyBindsVisibleRowCount(
+            fbWidth, static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting,
+            menuSystem.forceUnicodeFont);
+        for (std::size_t offset = 0; offset < visible; ++offset) {
+            const std::size_t row = first + offset;
+            if (row >= ui::kKeyBindListRowCount) {
+                break;
+            }
+            const auto entry = ui::keyBindListRow(row);
+            if (!entry.isCategory) {
+                continue;
+            }
+            const std::string label =
+                translated(input::categoryTranslationKey(entry.category),
+                           input::categoryDisplayName(entry.category));
+            const auto rowRect = ui::scrollListRow(list, offset);
+            const auto content = ui::listRowContent(rowRect);
+            // 底端对齐：标题贴着这一行的下缘，于是它读起来像是下面那组的抬头。
+            const float y = (content.y + content.height -
+                             static_cast<float>(ui::kFontLineHeight)) * scale;
+            drawHudText(commandBuffer, label,
+                        (fbWidth - hudTextWidth(label, scale)) * 0.5F, y, scale,
+                        {1.0F, 1.0F, 1.0F, 1.0F});
+        }
+    }
+
+    void drawKeyBindsScrollbar(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
+        const float fbWidth = static_cast<float>(swapchainExtent.width);
+        // UI-6c：滚动条的比例按**行**数算（含分类标题行）。用动作数会让滑块偏长、
+        // 且滚到底时还剩几行没进来。
+        const std::size_t total = ui::kKeyBindListRowCount;
+        const std::size_t visible = ui::keyBindsVisibleRowCount(
             fbWidth, static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont);
         if (total <= visible) {
             return;  // everything fits; no scrollbar
         }
-        const auto list = ui::controlsScrollList(layout, fbWidth);
+        const auto list = ui::keyBindsScrollList(layout, fbWidth);
         const std::size_t first = std::min(menuSystem.controlsListFirstIndex, total - visible);
         drawScrollbar(commandBuffer, layout, list, total, first);
     }
@@ -1804,45 +1847,43 @@ class HudRenderer final {
         // 从前这里各自铺一层：暂停屏铺的是背包那条灰渐变（于是世界永远清晰、只是被压暗），
         // 死亡屏铺的是一块 rgba(0.25, 0, 0, 0.58) 的平色（渐变的中点近似）。
         const float scale = layout.scale();
-        const std::string title =
-            menuSystem.pageStack.current() == ui::PageId::Options
-                ? translated("options.title", "Options")
-                : (menuSystem.pageStack.current() == ui::PageId::Experimental
-                       ? translated("selectWorld.experimental", "Experimental")
-                       : (menuSystem.pageStack.current() == ui::PageId::VideoSettings
-                              ? translated("options.videoTitle", "Video Settings")
-                              : (menuSystem.pageStack.current() == ui::PageId::Controls
-                                     ? translated("controls.title", "Controls")
-                                     : (deathScreen ? translated("deathScreen.title", "You Died!")
-                                                    : translated("menu.game", "Game Menu")))));
+        // UI-6c：标题走 ui::pageTitle 那张表。从前这里是一串嵌套三目，每加一屏多嵌一层，
+        // 而"某一屏的标题写成了另一屏的"在画面上只是一行字不对，没有东西会红。
+        const auto titleEntry = ui::pageTitle(menuSystem.pageStack.current());
+        const std::string title = translated(titleEntry.key, titleEntry.fallback);
         // 按键设置是三段式布局（页眉 / 滚动列表 / 页脚），列表因此有自己的底衬与
         // 上下两道分隔线，和语言、世界列表两屏同一套（`AbstractSelectionList:219-227`）。
         // 从前这一屏的列表直接坐在菜单背景上，既没有底衬也没有分隔线。
-        if (menuSystem.pageStack.current() == ui::PageId::Controls) {
-            const auto box = ui::controlsListBox(layout, static_cast<float>(swapchainExtent.width));
+        if (menuSystem.pageStack.current() == ui::PageId::KeyBinds) {
+            const auto box = ui::keyBindsListBox(layout, static_cast<float>(swapchainExtent.width));
             drawListBackground(commandBuffer, box, scale);
             drawListSeparators(commandBuffer, box, scale);
+            drawKeyBindCategoryRows(commandBuffer, layout, scale);
         }
         const std::size_t buttonCount = menuButtonCount();
         const auto firstButton =
             frontendButtonRect(layout, menuSystem.pageStack.current(), 0, buttonCount);
         const float titleScale = deathScreen ? scale * 2.0F : scale;
-        // 按键设置是三段式布局，标题属于顶部那一段，位于滚动列表上方
-        // 它不在底部按钮带上方 30px 处，那里是 firstButton 所在的位置
-        // 其余页面仍把标题放在第一个按钮之上
+        // UI-6c：走三段式版面（§2.8）的两屏，标题在**页眉里居中**——那正是
+        // `layout.addTitleHeader(title, font)` 的意思（`OptionsSubScreen.java:37`）。
+        // 其余页面还没有三段式版面，标题仍摆在第一个按钮上方 30px。
+        const bool headerAndFooterPage =
+            menuSystem.pageStack.current() == ui::PageId::KeyBinds ||
+            menuSystem.pageStack.current() == ui::PageId::Controls;
+        const auto frame =
+            ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
+        const float titleWidth = hudTextWidth(title, titleScale);
         const float titleY =
-            menuSystem.pageStack.current() == ui::PageId::Controls
-                ? ui::controlsListBox(layout, static_cast<float>(swapchainExtent.width)).y -
-                      14.0F * titleScale
+            headerAndFooterPage
+                ? static_cast<float>(frame.headerTitle(0, ui::kFontLineHeight).y) * scale
                 : firstButton.y - 30.0F * titleScale;
         drawHudText(commandBuffer, title,
-                    (static_cast<float>(swapchainExtent.width) - hudTextWidth(title, titleScale)) *
-                        0.5F,
-                    titleY, titleScale, {1.0F, 1.0F, 1.0F, 1.0F});
+                    (static_cast<float>(swapchainExtent.width) - titleWidth) * 0.5F, titleY,
+                    titleScale, {1.0F, 1.0F, 1.0F, 1.0F});
         drawMenuWidgets(commandBuffer, buildDrawPage(), scale);
-        // 按键设置列表（中段）的滚动条，仅当动作数超出可见窗口时绘制
-        if (menuSystem.pageStack.current() == ui::PageId::Controls) {
-            drawControlsScrollbar(commandBuffer, layout);
+        // 按键绑定列表（中段）的滚动条，仅当动作数超出可见窗口时绘制
+        if (menuSystem.pageStack.current() == ui::PageId::KeyBinds) {
+            drawKeyBindsScrollbar(commandBuffer, layout);
         }
         if (!menuSystem.saveStatus.empty()) {
             drawHudText(commandBuffer, menuSystem.saveStatus, 4.0F * scale,
@@ -2944,7 +2985,8 @@ class HudRenderer final {
 
         if (page == ui::PageId::Options || page == ui::PageId::VideoSettings ||
             page == ui::PageId::Controls || page == ui::PageId::Language ||
-            page == ui::PageId::Experimental) {
+            page == ui::PageId::Experimental || page == ui::PageId::KeyBinds ||
+            page == ui::PageId::Accessibility) {
             if (page == ui::PageId::Language) {
                 drawLanguageScreen(commandBuffer, layout);
             } else {

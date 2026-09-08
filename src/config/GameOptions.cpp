@@ -62,6 +62,8 @@ void GameOptions::sanitize() {
     guiScale = std::clamp(guiScale, 0, 12);
     // 26.1 `OptionInstance.IntRange(0, 10)`；上界同 GameRenderer.MAX_BLUR_RADIUS
     menuBackgroundBlurriness = std::clamp(menuBackgroundBlurriness, 0, 10);
+    // 26.1 `Options.sprintWindow` 的 IntRange(0, 20)，0 显示为 OFF
+    sprintWindow = std::clamp(sprintWindow, 0, 20);
     viewDistance = std::clamp(viewDistance, 2, 36);
     simulationDistance = std::clamp(simulationDistance, 2, 12);
     if (frameRateLimit != 0) frameRateLimit = std::clamp(frameRateLimit, 30, 260);
@@ -173,6 +175,18 @@ GameOptions GameOptions::load(const std::filesystem::path& path) {
             if (!value.empty()) {
                 options.language = std::string{value};
             }
+        } else if (key == "controls.toggleCrouch") {
+            options.toggleCrouch = value == "true" || value == "1" || value == "on";
+        } else if (key == "controls.toggleSprint") {
+            options.toggleSprint = value == "true" || value == "1" || value == "on";
+        } else if (key == "controls.toggleAttack") {
+            options.toggleAttack = value == "true" || value == "1" || value == "on";
+        } else if (key == "controls.toggleUse") {
+            options.toggleUse = value == "true" || value == "1" || value == "on";
+        } else if (key == "controls.sprintWindow") {
+            static_cast<void>(parseNumber(value, options.sprintWindow));
+        } else if (key == "controls.operatorItemsTab") {
+            options.operatorItemsTab = value == "true" || value == "1" || value == "on";
         } else if (key == "gui.menuBackgroundBlurriness") {
             static_cast<void>(parseNumber(value, options.menuBackgroundBlurriness));
         } else if (key == "text.forceUnicodeFont") {
@@ -207,6 +221,13 @@ void GameOptions::save(const std::filesystem::path& path) const {
            << "window.maximized=" << (sanitized.windowMaximized ? "true" : "false") << '\n'
            << "gui.scale=" << sanitized.guiScale << '\n'
            << "gui.menuBackgroundBlurriness=" << sanitized.menuBackgroundBlurriness << '\n'
+           << "controls.toggleCrouch=" << (sanitized.toggleCrouch ? "true" : "false") << '\n'
+           << "controls.toggleSprint=" << (sanitized.toggleSprint ? "true" : "false") << '\n'
+           << "controls.toggleAttack=" << (sanitized.toggleAttack ? "true" : "false") << '\n'
+           << "controls.toggleUse=" << (sanitized.toggleUse ? "true" : "false") << '\n'
+           << "controls.sprintWindow=" << sanitized.sprintWindow << '\n'
+           << "controls.operatorItemsTab=" << (sanitized.operatorItemsTab ? "true" : "false")
+           << '\n'
            << "render.distance=" << sanitized.viewDistance << '\n'
            << "render.simulationDistance=" << sanitized.simulationDistance << '\n'
            << "render.fpsLimit=" << sanitized.frameRateLimit << '\n'

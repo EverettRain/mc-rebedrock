@@ -17,6 +17,7 @@
 #include "ui/WidgetId.hpp"
 #include "input/InputAction.hpp"
 #include "input/InputNaming.hpp"
+#include "ui/KeyBindList.hpp"
 #include "ui/Widget.hpp"
 
 #include <cstddef>
@@ -59,6 +60,10 @@ struct MenuBuildContext final {
     struct KeyBindRowLabels final {
         std::string action;  // 左边：已本地化的动作名（`key.forward` 等）
         std::string key;     // 右边：按钮上的键名，含冲突/捕获中的装饰
+        // 这一行的重置按钮能不能按：`resetButton.active = !this.key.isDefault()`
+        // （`KeyBindsList.java:158`）。已经是默认绑定时它是灰的。
+        // 放进同一个返回值而不是再开一个回调——理由同上面那段。
+        bool resettable = false;
     };
     std::function<KeyBindRowLabels(input::InputAction action)> keyBindLabelsFor{};
     // 按键设置页的绑定列表是滚动的，只装配可见窗口，与世界列表和语言列表一样
@@ -103,6 +108,12 @@ struct MenuCallbacks final {
     std::function<void()> openControls{};
     std::function<void()> openLanguage{};
     std::function<void()> openExperimental{};
+    // UI-6c：Controls 枢纽上跳到绑定列表的那个按钮（26.1 §7.6 → §7.8），
+    // 以及 Options 上跳到辅助功能设置的那个（§7.11）。
+    // UI-6c：只重置一个动作的绑定（每行那个按钮）。整表重置仍是 resetKeyBinds。
+    std::function<void(input::InputAction)> resetKeyBind{};
+    std::function<void()> openKeyBinds{};
+    std::function<void()> openAccessibility{};
     std::function<void()> doneOptions{};   // pop the current options sub-page
     std::function<void()> back{};          // generic page pop
 
@@ -217,7 +228,8 @@ inline void addListRow(Page& page, const RectProvider& rectFor, WidgetId id, std
 //
 // 两个 Widget 的矩形都来自调用方的 rectFor，按控件序号取——一行两个序号。
 inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBuildContext& ctx,
-                          input::InputAction action, std::function<void()> onActivate) {
+                          input::InputAction action, std::function<void()> onActivate,
+                          std::function<void()> onReset) {
     // 两段文字一次取出：漏填其中一段在类型上就不成立（见 KeyBindRowLabels）。
     MenuBuildContext::KeyBindRowLabels labels;
     if (ctx.keyBindLabelsFor) {
@@ -244,6 +256,18 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
     change.label = std::move(labels.key);
     change.onActivate = std::move(onActivate);
     page.push_back(std::move(change));
+
+    // UI-6c：这一行自己的重置按钮（`controls.reset`），只重置**这一个**绑定。
+    // 已经是默认绑定时它是灰的——26.1 的 `resetButton.active = !key.isDefault()`。
+    Widget reset;
+    reset.kind = WidgetKind::Button;
+    reset.debugId = static_cast<std::uint16_t>(WidgetId::ResetKeyBind);
+    reset.rect = rectFor ? rectFor(page.size()) : UiRect{};
+    reset.label = ctx.labelFor ? ctx.labelFor(static_cast<std::uint16_t>(WidgetId::ResetKeyBind))
+                               : std::string{};
+    reset.enabled = labels.resettable;
+    reset.onActivate = std::move(onReset);
+    page.push_back(std::move(reset));
 }
 
 }  // namespace detail
@@ -332,9 +356,23 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             }
             addButton(page, rectFor, ctx, WidgetId::Controls, cb.openControls);
             addButton(page, rectFor, ctx, WidgetId::VideoSettings, cb.openVideoSettings);
-            addOptionButton(page, rectFor, ctx, WidgetId::Subtitles, cb);
             addButton(page, rectFor, ctx, WidgetId::Language, cb.openLanguage);
+            // UI-6c：26.1 的 Options 上有 Accessibility Settings…（§7.11）。
+            // 字幕开关跟着搬过去了——它在 26.1 里本来就属于那一屏
+            // （`AccessibilityOptionsScreen.java:25` 的 `options.showSubtitles()`）。
+            addButton(page, rectFor, ctx, WidgetId::Accessibility, cb.openAccessibility);
             addButton(page, rectFor, ctx, WidgetId::Experimental, cb.openExperimental);
+            addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
+            break;
+
+        // UI-6c：26.1 §7.11 辅助功能设置。这一轮只放两项——View Bobbing（从 Controls
+        // 挪来，偏差 D2）与字幕开关（从 Options 挪来）。26.1 那一屏还有十几项，
+        // 其中大多数本作没有对应的玩法或表现（旁白、高对比度、聊天透明度…）；
+        // **菜单背景模糊强度**是有的（UI-5 落地了它的语义与存储），但 26.1 用的是**滑块**，
+        // 而本作的滑块今天只服务三个硬编码项，做通用滑块是另一块工作。已登记为余项。
+        case PageId::Accessibility:
+            addOptionButton(page, rectFor, ctx, WidgetId::ViewBobbing, cb);
+            addOptionButton(page, rectFor, ctx, WidgetId::Subtitles, cb);
             addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
             break;
 
@@ -353,23 +391,52 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
             break;
 
-        case PageId::Controls: {
-            // 按键绑定行是一个滚动列表，只装配可见窗口 [keyBindFirstIndex, +keyBindRowCount)
-            // 页面因此绝不会超出布局容量，24 个固定按钮会直接抛出
-            // 每行的矩形来自 rectFor，渲染器把这些列表下标映射到 controlsRow 的矩形上
-            // 末尾四个是底部按钮
-            // 每一行点击时开始它的重绑捕获，标签来自 InputSystem 这个唯一来源
-            constexpr auto rows = input::keyBindRows();
-            const std::size_t first = std::min(ctx.keyBindFirstIndex, rows.size());
-            const std::size_t last = std::min(first + ctx.keyBindRowCount, rows.size());
-            for (std::size_t i = first; i < last; ++i) {
-                const input::InputAction action = rows[i];
-                detail::addKeyBindRow(page, rectFor, ctx, action, [cb, action]() {
-                    if (cb.beginKeyCapture) cb.beginKeyCapture(action);
-                });
-            }
-            addOptionButton(page, rectFor, ctx, WidgetId::ViewBobbing, cb);
+        // UI-6c：26.1 的 §7.6 `ControlsScreen` 是一个**排版枢纽**，不是绑定列表
+        // （偏差 D1：本作从前把两屏合成了一屏）。它上面是两个跳转按钮加七个设置项，
+        // 绑定列表在 §7.8 `KeyBindsScreen`，见下一个分支。
+        //
+        // 顺序照 `ControlsScreen.addOptions()`：先 `addSmall(mouse_settings, keybinds)`，
+        // 再 `addSmall(toggleCrouch, toggleSprint, toggleAttack, toggleUse, autoJump,
+        // sprintWindow, operatorItemsTab)`。
+        //
+        // ★ **Mouse Settings 那个跳转本作没有**：那一屏（§7.7 鼠标灵敏度/反转/滚轮）
+        //   在本作不存在，而"页面为空就完全不建"。少一个跳转按钮是登记过的偏差，
+        //   不是把玩家送进一张空页。
+        case PageId::Controls:
+            addButton(page, rectFor, ctx, WidgetId::OpenKeyBinds, cb.openKeyBinds);
+            addOptionButton(page, rectFor, ctx, WidgetId::ToggleCrouch, cb);
+            addOptionButton(page, rectFor, ctx, WidgetId::ToggleSprint, cb);
+            addOptionButton(page, rectFor, ctx, WidgetId::ToggleAttack, cb);
+            addOptionButton(page, rectFor, ctx, WidgetId::ToggleUse, cb);
             addOptionButton(page, rectFor, ctx, WidgetId::AutoJump, cb);
+            addOptionButton(page, rectFor, ctx, WidgetId::SprintWindow, cb);
+            addOptionButton(page, rectFor, ctx, WidgetId::OperatorItemsTab, cb);
+            addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
+            break;
+
+        // UI-6c：26.1 的 §7.8 `KeyBindsScreen`——页眉标题、绑定列表、页脚两个按钮
+        // （`controls.resetAll` 与 Done，横排）。
+        case PageId::KeyBinds: {
+            // 绑定行是一个滚动列表，只装配可见窗口 [keyBindFirstIndex, +keyBindRowCount)，
+            // 页面因此绝不会超出布局容量。每行**三个**控件（名称 Label + 改键 Button +
+            // 重置 Button），矩形由 rectFor 按序号给。
+            //
+            // ★ UI-6c：窗口数的是**行**，不是动作。展开后的行表里夹着分类标题行
+            //   （`ui/KeyBindList.hpp`），标题行占一行但**不产生控件**——它由绘制侧
+            //   直接画（纯文本、不可交互，做成 Widget 只会让焦点遍历多停一站）。
+            const std::size_t first = std::min(ctx.keyBindFirstIndex, kKeyBindListRowCount);
+            const std::size_t last = std::min(first + ctx.keyBindRowCount, kKeyBindListRowCount);
+            for (std::size_t row = first; row < last; ++row) {
+                const auto entry = keyBindListRow(row);
+                if (entry.isCategory) {
+                    continue;
+                }
+                const input::InputAction action = entry.action;
+                detail::addKeyBindRow(
+                    page, rectFor, ctx, action,
+                    [cb, action]() { if (cb.beginKeyCapture) cb.beginKeyCapture(action); },
+                    [cb, action]() { if (cb.resetKeyBind) cb.resetKeyBind(action); });
+            }
             addButton(page, rectFor, ctx, WidgetId::ResetKeyBinds, cb.resetKeyBinds);
             addButton(page, rectFor, ctx, WidgetId::Done, cb.doneOptions);
             break;

@@ -29,7 +29,14 @@ enum class WidgetId : std::uint16_t {
     RainMode, ParticleLevel, SunShadows, RainCollisionCache,
     WorldRow, LanguageRow,
     KeyBindRow, ResetKeyBinds,
+    // UI-6c：**单行**的重置按钮（`controls.reset`），与页脚那个重置**所有**
+    // （`controls.resetAll`，上面的 ResetKeyBinds）不是同一个控件。
+    ResetKeyBind,
     Subtitles,  // PX-6 Bug3: the sound-subtitles accessibility toggle
+    // UI-6c：26.1 §7.6 Controls 那一屏（偏差 D1/D3）。两个跳转按钮加六个设置项。
+    // `MouseSettings` **没有**：本作没有鼠标设置屏，而"页面为空就完全不建"。
+    OpenKeyBinds, Accessibility,
+    ToggleCrouch, ToggleSprint, ToggleAttack, ToggleUse, SprintWindow, OperatorItemsTab,
 
     // 哨兵，值等于 id 的个数，表因此能断言自己覆盖了每一个 id，ui/WidgetLabels.hpp 就是这么做的
     // 它永远不是一个控件，也永远排在最后

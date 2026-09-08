@@ -68,6 +68,24 @@ struct GameOptions final {
     // automatically. Off by default, matching vanilla (which has no
     // auto-jump at all).
     bool autoJump = false;
+    // UI-6c：26.1 §7.6 Controls 那一屏的六个设置项（偏差 D3：本作一个都没有）。
+    //
+    // 四个 Hold/Toggle 是**输入语义**：false = 按住生效（vanilla 的默认），
+    // true = 按一下切换。26.1 的 caption 复用动作名本身（`key.sneak` 等），
+    // 值标签是 `options.key.hold` / `options.key.toggle`（`Options.java:563-576`）。
+    //
+    // ★ 这一轮它们**只是存起来**：玩法侧还没有读它们（潜行/疾跑/攻击/使用四条输入
+    // 路径都还是按住语义）。控件是真的——有值、能切、能存盘——但功能没跟上，
+    // 这是 UI 线既定的做法（"控件集要铺满，即使实际功能没跟上"）。已登记。
+    bool toggleCrouch = false;
+    bool toggleSprint = false;
+    bool toggleAttack = false;
+    bool toggleUse = false;
+    // 双击前进键激活疾跑的最大时间间隔，单位 tick。0 = 关（`Options.java:578-583`，
+    // 默认 7）。同样只存不用。
+    int sprintWindow = 7;
+    // 创造模式物品栏里的管理员用品页签（`options.operatorItemsTab`，默认 false）。
+    bool operatorItemsTab = false;
     // Smooth lighting (ambient occlusion) is on/off, as in 26.1
     // (`OptionInstance.createBoolean("options.ao", true)`), and on by default for
     // the same reason. RN-19b removed the self-invented middle tier that used to

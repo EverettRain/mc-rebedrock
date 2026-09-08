@@ -30,6 +30,17 @@ simple versioned history while it is in beta.
 - Shift-clicking a cycling option now steps backwards through its values instead of forwards.
 
 ### Changed
+- Controls is two screens now, as it is in Minecraft: "Controls" holds the settings (Hold/Toggle
+  for sneak, sprint, attack and use, auto-jump, sprint window, operator items tab) and the key
+  bindings moved to their own screen behind "Key Binds...". **The four Hold/Toggle settings are
+  stored but not yet read by the game itself.**
+- View Bobbing and the subtitles toggle moved to a new Accessibility Settings screen, reached from
+  Options -- which is where Minecraft keeps them.
+- The key-bind list is grouped by category now (Movement, Miscellaneous, Multiplayer, Gameplay,
+  Inventory, Debug) with a heading on each group, and every row gained a Reset button that resets
+  just that one binding and greys out when it is already the default. Pressing Escape while
+  rebinding now **unbinds** the key; until now it cancelled the rebind, so there was no way to
+  unbind anything at all.
 - The main menu no longer shows Mojang's copyright line in its bottom-right corner. ReBedrock is an
   independent reimplementation; that line is about Minecraft's own code and assets and does not
   apply here. It now carries a short notice of this project's own.

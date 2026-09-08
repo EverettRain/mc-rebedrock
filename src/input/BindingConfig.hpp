@@ -55,7 +55,20 @@ namespace mc::input {
     return std::nullopt;
 }
 
-[[nodiscard]] constexpr std::string_view keyName(Key key) noexcept {
+// ★ 这三个是**存档 token**，不是显示名：`"LeftShift"` / `"Slash"`，写进配置文件、
+// 再由 `keyFromName` 逐字解析回来。它们从前分别叫 `keyName` / `mouseName` /
+// `gamepadName`——与 `ui` 侧那份显示名（`input/InputNaming.hpp` 的
+// `"Left Shift"` / `"/"`）**同命名空间、同名、同签名、函数体不同**。
+//
+// 两个都是 inline（`constexpr` 蕴含 inline），所以那是一次 ODR 违规：两个头文件
+// 进同一个翻译单元会编译不过（所以它们从没被一起 include），但两边的 TU 在**同一个
+// 二进制**里（`InputSystem.cpp` 用这里，`VulkanRenderer.cpp` 用那边），链接器挑哪一份
+// 是随意的。挑错了的后果不是"显示难看"而是**丢配置**：`bindingToToken` 会把
+// `"Left Shift"` 写进文件，`keyFromName` 再也解析不回来，重开游戏这条绑定静默回默认。
+//
+// 改名而不是合并：两边本来就该是两张表——一张给人看（要翻译、有空格），一张给文件读
+// （必须逐字稳定、绝不能随语言变）。合成一张就是让存档格式跟着界面文案走。
+[[nodiscard]] constexpr std::string_view keyToken(Key key) noexcept {
     switch (key) {
         case Key::W: return "W"; case Key::A: return "A"; case Key::S: return "S";
         case Key::D: return "D"; case Key::Q: return "Q"; case Key::E: return "E";
@@ -75,14 +88,14 @@ namespace mc::input {
 [[nodiscard]] inline std::optional<Key> keyFromName(std::string_view name) noexcept {
     for (std::uint16_t code = 1; code <= static_cast<std::uint16_t>(Key::Digit9); ++code) {
         const auto key = static_cast<Key>(code);
-        if (keyName(key) == name) {
+        if (keyToken(key) == name) {
             return key;
         }
     }
     return std::nullopt;
 }
 
-[[nodiscard]] constexpr std::string_view mouseName(MouseButton button) noexcept {
+[[nodiscard]] constexpr std::string_view mouseToken(MouseButton button) noexcept {
     switch (button) {
         case MouseButton::Left: return "MouseLeft";
         case MouseButton::Right: return "MouseRight";
@@ -92,7 +105,7 @@ namespace mc::input {
     return "Unknown";
 }
 
-[[nodiscard]] constexpr std::string_view gamepadName(GamepadButton button) noexcept {
+[[nodiscard]] constexpr std::string_view gamepadToken(GamepadButton button) noexcept {
     switch (button) {
         case GamepadButton::A: return "PadA"; case GamepadButton::B: return "PadB";
         case GamepadButton::X: return "PadX"; case GamepadButton::Y: return "PadY";
@@ -108,13 +121,13 @@ namespace mc::input {
 [[nodiscard]] inline std::string bindingToToken(const InputBinding& binding) {
     switch (binding.device) {
         case InputDevice::Keyboard:
-            return std::string("key.") + std::string(keyName(static_cast<Key>(binding.code)));
+            return std::string("key.") + std::string(keyToken(static_cast<Key>(binding.code)));
         case InputDevice::Mouse:
             return std::string("mouse.") +
-                   std::string(mouseName(static_cast<MouseButton>(binding.code)));
+                   std::string(mouseToken(static_cast<MouseButton>(binding.code)));
         case InputDevice::GamepadButton:
             return std::string("pad.") +
-                   std::string(gamepadName(static_cast<GamepadButton>(binding.code)));
+                   std::string(gamepadToken(static_cast<GamepadButton>(binding.code)));
         case InputDevice::None:
             break;
     }
@@ -137,13 +150,13 @@ namespace mc::input {
         }
     } else if (prefix == "mouse") {
         for (std::uint16_t c = 1; c <= static_cast<std::uint16_t>(MouseButton::Middle); ++c) {
-            if (mouseName(static_cast<MouseButton>(c)) == name) {
+            if (mouseToken(static_cast<MouseButton>(c)) == name) {
                 return mouse(static_cast<MouseButton>(c));
             }
         }
     } else if (prefix == "pad") {
         for (std::uint16_t c = 1; c <= static_cast<std::uint16_t>(GamepadButton::RightThumb); ++c) {
-            if (gamepadName(static_cast<GamepadButton>(c)) == name) {
+            if (gamepadToken(static_cast<GamepadButton>(c)) == name) {
                 return gamepad(static_cast<GamepadButton>(c));
             }
         }

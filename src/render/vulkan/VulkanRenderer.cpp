@@ -79,6 +79,7 @@
 #include "ui/MenuInteraction.hpp"
 #include "ui/MenuSystem.hpp"
 #include "ui/OptionCycle.hpp"
+#include "ui/KeyBindList.hpp"
 #include "ui/ListRow.hpp"
 #include "ui/PageBuilder.hpp"
 #include "ui/PageStack.hpp"
@@ -2201,8 +2202,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     // 用滚轮滚动按键设置列表，钳制到最后一页可见位置（与世界列表、语言列表同一约定）
     void scrollControlsList(int rows) {
-        const std::size_t total = input::keyBindRows().size();
-        const std::size_t visibleRows = ui::controlsVisibleRowCount(
+        // UI-6c：总数是**行**数（含分类标题行），不是动作数。用动作数会让最后
+        // 几行（正好是标题行数那么多）永远滚不进来。
+        const std::size_t total = ui::kKeyBindListRowCount;
+        const std::size_t visibleRows = ui::keyBindsVisibleRowCount(
             static_cast<float>(swapchainExtent.width),
             static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont);
         const std::size_t maximumFirst = total > visibleRows ? total - visibleRows : 0U;
@@ -2497,7 +2500,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 的来源。
     [[nodiscard]] ui::MenuBuildContext::KeyBindRowLabels
     keyBindRowLabels(input::InputAction action) const {
-        return {keyBindActionLabel(action), keyBindButtonLabel(action)};
+        // 三样一次给出：动作名、按钮上的键名、这一行的重置按钮能不能按
+        // （`resetButton.active = !key.isDefault()`，`KeyBindsList.java:158`）。
+        return {keyBindActionLabel(action), keyBindButtonLabel(action),
+                !keyBindScreen_.isDefault(action)};
     }
 
     [[nodiscard]] std::string keyBindButtonLabel(input::InputAction action) const {
@@ -2915,6 +2921,21 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             menuSystem.simulationDistanceSliderDragging = false;
             break;
         case ui::PageId::Experimental:
+        // UI-6c：两页新子屏的返回与 Experimental 同形——出栈，清掉按下态。
+        case ui::PageId::Accessibility:
+            menuSystem.pageStack.pop();
+            pressedMenuButton = ui::WidgetId::None;
+            break;
+        case ui::PageId::KeyBinds:
+            // ★ 正在等待按键时，Escape 是**解绑**，不是"取消改键"、也不是退出这一屏
+            //   （`KeyBindsScreen.java:71-86`：`event.isEscape()` → `setKey(UNKNOWN)`）。
+            //   从前这里调的是 cancelCapture()，于是 26.1 里"按 Esc 解绑"这条唯一的
+            //   解绑路径在本作根本不存在——`InputDevice::None` 这个表示有，却没有人能产生它。
+            if (keyBindScreen_.capturing()) {
+                static_cast<void>(keyBindScreen_.applyUnbound());
+                break;
+            }
+            menuSystem.controlsScrollbarDragging = false;
             menuSystem.pageStack.pop();
             pressedMenuButton = ui::WidgetId::None;
             break;
@@ -2957,7 +2978,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::Language:
             scrollLanguageList(direction);
             break;
-        case ui::PageId::Controls:
+        case ui::PageId::KeyBinds:
             scrollControlsList(direction);
             break;
         default:
@@ -3712,6 +3733,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             menuSystem.pageStack.push(ui::PageId::Language);
         };
         cb.openExperimental = [this] { menuSystem.pageStack.push(ui::PageId::Experimental); };
+        // UI-6c：26.1 的两条新入口（§7.6 枢纽 → §7.8 绑定列表，Options → §7.11 辅助功能）
+        cb.resetKeyBind = [this](input::InputAction action) { keyBindScreen_.resetOne(action); };
+        cb.openKeyBinds = [this] { menuSystem.pageStack.push(ui::PageId::KeyBinds); };
+        cb.openAccessibility = [this] { menuSystem.pageStack.push(ui::PageId::Accessibility); };
         cb.doneOptions = [this] {
             if (menuSystem.pageStack.current() == ui::PageId::Language) {
                 beginLanguageLoad(menuSystem.pendingLanguageCode);
@@ -3803,21 +3828,26 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 页面 → 矩形只有一处：ui::menuWidgetRect。绘制侧（buildDrawPage）调的是
         // 同一个函数。从前这两侧各有一份同样的 lambda，UI-6b 改了绘制侧那份、漏了这份，
         // 结果点 Controls 底部任何一个按钮都会抛越界并闪退。
+        const std::size_t keyFirst =
+            page == ui::PageId::KeyBinds
+                ? std::min(menuSystem.controlsListFirstIndex, ui::kKeyBindListRowCount)
+                : 0U;
         const std::size_t keyRows =
-            page == ui::PageId::Controls ? controlsVisibleKeyBindRowCount() : 0U;
-        return [layout, page, count, fbWidth, keyRows](std::size_t index) {
-            return ui::menuWidgetRect(page, index, layout, fbWidth, count, keyRows);
+            page == ui::PageId::KeyBinds ? keyBindsVisibleRowCountForFrame() : 0U;
+        return [layout, page, count, fbWidth, keyFirst, keyRows](std::size_t index) {
+            return ui::menuWidgetRect(page, index, layout, fbWidth, count, keyFirst, keyRows);
         };
     }
 
     // 本帧按键设置列表上可见的行数，即可见窗口，钳制到可重绑定动作的总数
-    [[nodiscard]] std::size_t controlsVisibleKeyBindRowCount() const {
-        const std::size_t total = input::keyBindRows().size();
-        const std::size_t window = ui::controlsVisibleRowCount(
+    // 本帧绑定列表上可见的**行**数（含分类标题行），钳到行表尾。
+    [[nodiscard]] std::size_t keyBindsVisibleRowCountForFrame() const {
+        const std::size_t window = ui::keyBindsVisibleRowCount(
             static_cast<float>(swapchainExtent.width),
             static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont);
-        const std::size_t first = std::min(menuSystem.controlsListFirstIndex, total);
-        return std::min(window, total - first);
+        const std::size_t first =
+            std::min(menuSystem.controlsListFirstIndex, ui::kKeyBindListRowCount);
+        return std::min(window, ui::kKeyBindListRowCount - first);
     }
 
     // 给定页面上光标所在的 widget 下标，没有则返回 kNoWidget
@@ -3837,9 +3867,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         ctx.worldRowCount = 0;       // list rows are drawn by the list path today
         ctx.languageRowCount = 0;
         // 按键设置列表是可滚动的，只构建可见窗口，页面因此不会超出排版的按钮数上限
-        if (menuSystem.pageStack.current() == ui::PageId::Controls) {
+        if (menuSystem.pageStack.current() == ui::PageId::KeyBinds) {
             ctx.keyBindFirstIndex = menuSystem.controlsListFirstIndex;
-            ctx.keyBindRowCount = controlsVisibleKeyBindRowCount();
+            ctx.keyBindRowCount = keyBindsVisibleRowCountForFrame();
         }
         // 每行的标签形如"动作: 按键"，取自 InputSystem 这一唯一来源
         // 该行正在捕获时改显示为"动作: > ? <"

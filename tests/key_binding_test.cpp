@@ -5,13 +5,23 @@
 // Controls page listing every rebindable action as a clickable row that begins
 // its capture. All headless: no GLFW, no Vulkan.
 
+// ★ 这两个头文件**必须**能进同一个翻译单元。
+//
+// 它们从前在同一命名空间里各定义了一个同名同签名、函数体不同的 `keyName(Key)`
+// （显示名 `"Left Shift"` vs 存档 token `"LeftShift"`）——一次 ODR 违规：两边的 TU 在
+// 同一个二进制里，链接器挑哪一份是随意的，挑错了 `bindingToToken` 会把 `"Left Shift"`
+// 写进配置文件而 `keyFromName` 再也解析不回来，重开游戏那条绑定静默回默认。
+// 一起 include 就是那条护栏：谁把它们改回同名，这里**编译不过**。
+#include "input/BindingConfig.hpp"
 #include "input/InputNaming.hpp"
 #include "input/InputSystem.hpp"
 #include "input/KeyBindingScreen.hpp"
 #include "ui/MenuInteraction.hpp"
+#include "ui/KeyBindList.hpp"
 #include "ui/ListRow.hpp"
 #include "ui/PageBuilder.hpp"
 
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <string>
@@ -110,8 +120,11 @@ void testCaptureToggle() {
     assert(!none.applied);
 }
 
-// --- The Controls page lists every rebindable action + reset + done ------------
-void testControlsPageLIstsBindRows() {
+// --- The Key Binds page lists every rebindable action + reset + done ----------
+//
+// 偏差 D1 收口之后，绑定列表在 §7.8 的 PageId::KeyBinds（Controls 只是 §7.6 的
+// 排版枢纽），所以这里建的是 KeyBinds 页。
+void testKeyBindsPageListsBindRows() {
     ui::MenuBuildContext ctx;
     input::InputSystem system;
     // UI-6b：一次给出两段——动作名与按钮上的键名。
@@ -123,7 +136,8 @@ void testControlsPageLIstsBindRows() {
     // PX-6 Bug1: the Controls key-bind list is windowed. Ask for the full window
     // so every action is listed (a real screen sizes the window to the canvas).
     ctx.keyBindFirstIndex = 0;
-    ctx.keyBindRowCount = input::keyBindRows().size();
+    // UI-6c：窗口数的是**行**（含分类标题行），要全部动作就得给足行数。
+    ctx.keyBindRowCount = ui::kKeyBindListRowCount;
     ui::MenuCallbacks cb;
     InputAction captured = InputAction::Count;
     bool reset = false;
@@ -133,7 +147,7 @@ void testControlsPageLIstsBindRows() {
     const auto rectFor = [](std::size_t index) {
         return ui::UiRect{0.0F, static_cast<float>(index) * 20.0F, 200.0F, 20.0F};
     };
-    const ui::Page page = ui::buildPage(ui::PageId::Controls, ctx, cb, rectFor);
+    const ui::Page page = ui::buildPage(ui::PageId::KeyBinds, ctx, cb, rectFor);
 
     // UI-6b: a bind row is TWO widgets now, not one -- the action's name as a Label
     // and the change button as a Button, matching 26.1's KeyBindsList.KeyEntry
@@ -148,16 +162,32 @@ void testControlsPageLIstsBindRows() {
             ++rows;
         }
     }
-    assert(rows == input::keyBindRows().size() * ui::kKeyBindWidgetsPerRow);
+    // UI-6c：一行三个控件，但只有前两个（名称 Label、改键 Button）带 KeyBindRow 这个
+    // debugId；重置按钮带它自己的 ResetKeyBind。所以这里数出来的是行数的两倍。
+    assert(rows == input::keyBindRows().size() * 2U);
+    std::size_t resets = 0;
+    for (const auto& w : page) {
+        if (w.debugId == static_cast<std::uint16_t>(ui::WidgetId::ResetKeyBind)) ++resets;
+    }
+    assert(resets == input::keyBindRows().size());
+    assert(rows + resets == input::keyBindRows().size() * ui::kKeyBindWidgetsPerRow);
     // The name is a Label and is NOT interactive: focus skips it and clicking it
     // must not start a capture. The button next to it carries the live key name.
+    //
+    // ★ UI-6c 之后第一行不再是 Forward：行序按 26.1 的分类分组排过（Movement 组
+    //   内按显示名排序，"Jump" 在最前），所以这里跟着 keyBindRows()[0] 走，
+    //   顺序本身由 testCategoryGrouping 单独断言。
+    const InputAction firstAction = input::keyBindRows()[0];
+    assert(firstAction == InputAction::Jump);
     assert(page[firstRow].kind == ui::WidgetKind::Label);
     assert(!page[firstRow].enabled);
-    assert(page[firstRow].label == "Forward");
+    assert(page[firstRow].label == std::string{input::actionDisplayName(firstAction)});
     assert(page[firstRow + 1].kind == ui::WidgetKind::Button);
-    assert(page[firstRow + 1].label == "W");
-    // ...and NOT the old "Forward: W" single-row label.
-    assert(page[firstRow].label != "Forward: W");
+    assert(page[firstRow + 1].label ==
+           input::bindingDisplayName(system.bindings().binding(firstAction)));
+    assert(page[firstRow + 1].label == "Space");  // Jump 的默认键
+    // ...and NOT the old "Jump: Space" single-row label.
+    assert(page[firstRow].label.find(':') == std::string::npos);
 
     // Reset and Done exist.
     bool hasReset = false;
@@ -174,7 +204,7 @@ void testControlsPageLIstsBindRows() {
     const std::size_t fired = ui::clickAt(page, 100.0F, buttonY);
     assert(fired == changeIndex);
     assert(captured == input::keyBindRows()[0]);
-    assert(captured == InputAction::MoveForward);
+    assert(captured == firstAction);
 
     // Clicking the NAME does nothing: it is a disabled Label. Before UI-6b the whole
     // row was one clickable widget, so this click used to start a capture.
@@ -191,7 +221,8 @@ void testPageRowToRebind() {
     ui::MenuBuildContext ctx;
     // PX-6 Bug1: request the full key-bind window so the Inventory row is built.
     ctx.keyBindFirstIndex = 0;
-    ctx.keyBindRowCount = input::keyBindRows().size();
+    // UI-6c：窗口数的是**行**（含分类标题行），要全部动作就得给足行数。
+    ctx.keyBindRowCount = ui::kKeyBindListRowCount;
     // 与渲染器走**同一个**装饰函数：捕获中是 `> 键名 <`，冲突是 `[ 键名 ]`。
     ctx.keyBindLabelsFor = [&system, &screen](InputAction action) {
         const auto decoration = screen.capturing() && screen.capturingAction() == action
@@ -209,7 +240,7 @@ void testPageRowToRebind() {
     };
 
     // Build the page, click the Inventory row, then press K -> Inventory = K.
-    ui::Page page = ui::buildPage(ui::PageId::Controls, ctx, cb, rectFor);
+    ui::Page page = ui::buildPage(ui::PageId::KeyBinds, ctx, cb, rectFor);
     // Find the Inventory row by its NAME label; the change button is the next widget.
     std::size_t invRow = ui::kNoWidget;
     for (std::size_t i = 0; i < page.size(); ++i) {
@@ -226,7 +257,7 @@ void testPageRowToRebind() {
     assert(screen.capturing() && screen.capturingAction() == InputAction::Inventory);
     // Now the BUTTON shows the capturing prompt when rebuilt -- and the name beside
     // it is untouched, which is the whole point of splitting the row in two.
-    page = ui::buildPage(ui::PageId::Controls, ctx, cb, rectFor);
+    page = ui::buildPage(ui::PageId::KeyBinds, ctx, cb, rectFor);
     assert(page[invButton].label == "> E <");
     assert(page[invRow].label == "Inventory");
     // Apply a key: the single source updates.
@@ -308,7 +339,8 @@ void testRowLabelsComeAsOneValue() {
     input::InputSystem system;
     ui::MenuBuildContext ctx;
     ctx.keyBindFirstIndex = 0;
-    ctx.keyBindRowCount = input::keyBindRows().size();
+    // UI-6c：窗口数的是**行**（含分类标题行），要全部动作就得给足行数。
+    ctx.keyBindRowCount = ui::kKeyBindListRowCount;
     // 一个桩把两段都填成可辨认的样子
     ctx.keyBindLabelsFor = [&system](InputAction action) {
         return ui::MenuBuildContext::KeyBindRowLabels{
@@ -319,7 +351,7 @@ void testRowLabelsComeAsOneValue() {
     const auto rectFor = [](std::size_t index) {
         return ui::UiRect{0.0F, static_cast<float>(index) * 20.0F, 200.0F, 20.0F};
     };
-    const ui::Page page = ui::buildPage(ui::PageId::Controls, ctx, cb, rectFor);
+    const ui::Page page = ui::buildPage(ui::PageId::KeyBinds, ctx, cb, rectFor);
     std::size_t checked = 0;
     for (std::size_t i = 0; i + 1 < page.size(); ++i) {
         if (page[i].kind != ui::WidgetKind::Label ||
@@ -334,6 +366,322 @@ void testRowLabelsComeAsOneValue() {
     assert(checked == input::keyBindRows().size());
 }
 
+// --- UI-6c：逐项默认值只有一个来源 -------------------------------------------
+//
+// 26.1 的每个 KeyMapping 自带 defaultKey（KeyMapping.java:98），逐项 Reset 就是
+// setKey(getDefaultKey())（KeyBindsList.java:122）。本作的 defaultBinding 从
+// defaults() 里取——手抄第二份逐项默认表会漂：整表 Reset 与逐项 Reset 得出不同的键，
+// 而且新表里的值在界面上从没出现过，最难查。
+void testDefaultBindingIsTheSameSourceAsDefaults() {
+    const input::BindingTable table = input::BindingTable::defaults();
+    for (std::size_t i = 0; i < input::kInputActionCount; ++i) {
+        const auto action = static_cast<InputAction>(i);
+        assert(input::BindingTable::defaultBinding(action) == table.binding(action));
+    }
+    // constexpr：默认值在编译期就能取到（界面每帧给 Reset 按钮置灰会调它）。
+    static_assert(input::BindingTable::defaultBinding(InputAction::MoveForward) ==
+                  input::keyboard(Key::W));
+    static_assert(input::BindingTable::defaultBinding(InputAction::Attack) ==
+                  input::mouse(MouseButton::Left));
+}
+
+// --- UI-6c：逐项重置只动这一行；isDefault 给按钮置灰 --------------------------
+void testResetOneAndIsDefault() {
+    input::InputSystem system;
+    input::KeyBindingScreen screen{system};
+
+    // 出厂状态：每一行都是默认，底部「重置所有」该置灰。
+    for (const InputAction action : input::keyBindRows()) {
+        assert(screen.isDefault(action));
+    }
+    assert(!screen.anyNonDefault());
+
+    screen.beginCapture(InputAction::MoveForward);
+    static_cast<void>(screen.applyKey(Key::T));
+    screen.beginCapture(InputAction::Jump);
+    static_cast<void>(screen.applyKey(Key::Tab));
+    assert(!screen.isDefault(InputAction::MoveForward));
+    assert(!screen.isDefault(InputAction::Jump));
+    assert(screen.anyNonDefault());
+
+    // ★ 只重置一行：另一行必须原封不动。整表重置冒充逐项重置的话，这一条会红。
+    screen.resetOne(InputAction::MoveForward);
+    assert(system.bindings().binding(InputAction::MoveForward) == input::keyboard(Key::W));
+    assert(screen.isDefault(InputAction::MoveForward));
+    assert(system.bindings().binding(InputAction::Jump) == input::keyboard(Key::Tab));
+    assert(!screen.isDefault(InputAction::Jump));
+    assert(screen.anyNonDefault());
+
+    screen.resetOne(InputAction::Jump);
+    assert(system.bindings().binding(InputAction::Jump) == input::keyboard(Key::Space));
+    assert(!screen.anyNonDefault());
+
+    // 重置一个本来就是默认的行是个幂等的空操作，且不会波及别人。
+    screen.beginCapture(InputAction::Sneak);
+    static_cast<void>(screen.applyKey(Key::Tab));
+    screen.resetOne(InputAction::MoveForward);
+    assert(system.bindings().binding(InputAction::Sneak) == input::keyboard(Key::Tab));
+}
+
+// --- UI-6c：解绑（等待按键时按 Esc）------------------------------------------
+//
+// 26.1：`if (event.isEscape()) selectedKey.setKey(InputConstants.UNKNOWN);`
+// （KeyBindsScreen.java:71-86）——Esc 是**解绑**，不是取消本次改键。
+// InputDevice::None 这个表示本来就在，但在 UI-6c 之前没有任何路径能产生它。
+void testUnbind() {
+    input::InputSystem system;
+    input::KeyBindingScreen screen{system};
+
+    screen.beginCapture(InputAction::Jump);
+    const auto result = screen.applyUnbound();
+    assert(result.applied);
+    assert(!screen.capturing());  // 与按下一个真键一样，捕获结束
+    const auto jump = system.bindings().binding(InputAction::Jump);
+    assert(jump.device == input::InputDevice::None);
+    // 界面上这一行显示「未指定」，而且 Reset 按钮亮起（不是默认了）。
+    assert(input::bindingDisplayName(jump) == "Not Bound");
+    assert(input::bindingTranslationKey(jump) == "key.keyboard.unknown");
+    assert(!screen.isDefault(InputAction::Jump));
+
+    // ★ 真的落到了单一源：Space 按下去不再跳。只改显示不改绑定的实现会在这里红。
+    input::InputSystem::EventQueue queue;
+    input::RawInputFrame frame;
+    frame.setKey(Key::Space, true);
+    const auto intent = system.poll(frame, queue);
+    assert(!intent.jumpHeld);
+
+    // 解绑第二行：两个未绑定的行**不算**互相冲突（KeyBindsList.java:161 的外层守卫）。
+    screen.beginCapture(InputAction::Sprint);
+    static_cast<void>(screen.applyUnbound());
+    assert(system.bindings().binding(InputAction::Sprint).device == input::InputDevice::None);
+    assert(screen.conflictsFor(InputAction::Jump).empty());
+    assert(screen.conflictsFor(InputAction::Sprint).empty());
+
+    // 没在捕获时解绑是 no-op：界面没法解绑一个没被选中的行。
+    const auto noop = screen.applyUnbound();
+    assert(!noop.applied);
+
+    // 逐项重置把它绑回来。
+    screen.resetOne(InputAction::Jump);
+    assert(system.bindings().binding(InputAction::Jump) == input::keyboard(Key::Space));
+}
+
+// --- UI-6c：冲突要收集**全部**，不是第一个 -----------------------------------
+//
+// 26.1 把所有同键的动作拼成 controls.keybinds.duplicateKeybinds 的 tooltip
+// （"This key is also used for:\n%s"，en_us.json:3187；KeyBindsList.java:160-171）。
+void testConflictsCollectAll() {
+    input::InputSystem system;
+    input::KeyBindingScreen screen{system};
+
+    // E 上堆三个动作：Inventory（默认就在 E）+ Sneak + Sprint。
+    screen.beginCapture(InputAction::Sneak);
+    static_cast<void>(screen.applyKey(Key::E));
+    screen.beginCapture(InputAction::Sprint);
+    const auto third = screen.applyKey(Key::E);
+    assert(third.conflict);
+
+    const auto conflicts = screen.conflictsFor(InputAction::Inventory);
+    assert(conflicts.size() == 2);  // ★ 只报第一个的实现在这里红
+    bool sawSneak = false;
+    bool sawSprint = false;
+    for (const InputAction other : conflicts) {
+        sawSneak = sawSneak || other == InputAction::Sneak;
+        sawSprint = sawSprint || other == InputAction::Sprint;
+        assert(other != InputAction::Inventory);  // 不跟自己比
+    }
+    assert(sawSneak && sawSprint);
+
+    // 对称：从 Sneak 看过去也是两个。
+    const auto fromSneak = screen.conflictsFor(InputAction::Sneak);
+    assert(fromSneak.size() == 2);
+
+    // 没撞的行不报冲突。
+    assert(screen.conflictsFor(InputAction::MoveForward).empty());
+
+    // 撤掉一个，剩下的仍然互报。
+    screen.resetOne(InputAction::Sprint);
+    assert(screen.conflictsFor(InputAction::Inventory).size() == 1);
+    assert(screen.conflictsFor(InputAction::Inventory)[0] == InputAction::Sneak);
+}
+
+// --- UI-6c：冲突谓词的第 4 档（两边都是出厂默认就不报）------------------------
+//
+// `(!otherKey.isDefault() || !this.key.isDefault())`（KeyBindsList.java:163）不是
+// 「随便两个同键就算冲突」：两边**都还停在出厂默认**的撞键不报，因为 26.1 自己就
+// 发了一批默认相撞的键（Options.java:616/:643 鼠标中键、:640/:646 的 C、
+// :644/:645 的 F3），不加这一句全新安装就满屏黄条。
+//
+// 本作的默认表今天没有重复默认，所以这一档在 conflictsFor 里跑不到——它只能靠
+// 纯谓词直接断言，见 KeyBindingScreen.hpp 里那段注释。
+void testReportableConflictPredicate() {
+    const auto e = input::keyboard(Key::E);
+    const auto t = input::keyboard(Key::T);
+    const input::InputBinding unbound{};
+
+    // 同键 + 两边都是默认 -> 不报（第 4 档）
+    assert(!input::isReportableConflict(e, true, e, true));
+    // 同键 + 只要有一边被改过 -> 报（两种方向都要）
+    assert(input::isReportableConflict(e, false, e, true));
+    assert(input::isReportableConflict(e, true, e, false));
+    assert(input::isReportableConflict(e, false, e, false));
+    // 不同键 -> 永远不报
+    assert(!input::isReportableConflict(e, false, t, false));
+    // 本行未绑定 -> 整行跳过（第 1 档），哪怕对面也未绑定
+    assert(!input::isReportableConflict(unbound, false, unbound, false));
+    // 对面未绑定、本行有绑定 -> 键不同，不报
+    assert(!input::isReportableConflict(e, false, unbound, false));
+}
+
+// 本作的默认表里没有两个行共用同一个控件——这是上面那一档「恒不生效」的前提。
+// 哪天为了对齐 26.1 引入了重复默认，这条会红，提醒去看 isReportableConflict 的
+// 第 4 档是不是终于开始起作用了（以及界面上会不会冒出黄条）。
+void testNoDuplicateDefaults() {
+    const auto rows = input::keyBindRows();
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        for (std::size_t j = i + 1; j < rows.size(); ++j) {
+            assert(input::BindingTable::defaultBinding(rows[i]) !=
+                   input::BindingTable::defaultBinding(rows[j]));
+        }
+    }
+}
+
+// --- UI-6c：分类与分组排序 ----------------------------------------------------
+//
+// 组序 = Category.SORT_ORDER 的注册序（KeyMapping.java:199-221），由
+// KeyMapping.compareTo 的 SORT_ORDER.indexOf 比较（KeyMapping.java:147）。
+// 组内 = 显示名字典序（KeyMapping.java:145）。
+void testCategoryGrouping() {
+    using input::InputCategory;
+    // 逐条对 Options.java 里那批 new KeyMapping(..., Category.XXX)
+    assert(input::actionCategory(InputAction::MoveForward) == InputCategory::Movement);
+    assert(input::actionCategory(InputAction::Sprint) == InputCategory::Movement);
+    // ★ Attack/Use 是 GAMEPLAY，不是 Movement（Options.java:612-613）
+    assert(input::actionCategory(InputAction::Attack) == InputCategory::Gameplay);
+    assert(input::actionCategory(InputAction::Use) == InputCategory::Gameplay);
+    // ★ Drop 是 INVENTORY，不是 Gameplay（Options.java:611）
+    assert(input::actionCategory(InputAction::DropItem) == InputCategory::Inventory);
+    assert(input::actionCategory(InputAction::Inventory) == InputCategory::Inventory);
+    assert(input::actionCategory(InputAction::Hotbar5) == InputCategory::Inventory);
+    // ★ 聊天/命令是 MULTIPLAYER，不是 Misc（Options.java:617/:619）
+    assert(input::actionCategory(InputAction::Chat) == InputCategory::Multiplayer);
+    assert(input::actionCategory(InputAction::Command) == InputCategory::Multiplayer);
+    assert(input::actionCategory(InputAction::Perspective) == InputCategory::Misc);
+    // ★ 26.1 有一个真的 DEBUG 分类，且 keyDebugOverlay（F3）在 keyMappings 里
+    //   （Options.java:644 / :726），所以本作的 Debug 归 Debug 而不是 Misc。
+    assert(input::actionCategory(InputAction::Debug) == InputCategory::Debug);
+
+    // ★ 分类标题的翻译键是 key.category.minecraft.*，不是遗留的 key.categories.*
+    //   （Category.label() = id.toLanguageKey("key.category")，KeyMapping.java:223-225；
+    //    Identifier.toLanguageKey() = namespace + "." + path，Identifier.java:159-161）。
+    assert(input::categoryTranslationKey(InputCategory::Movement) ==
+           "key.category.minecraft.movement");
+    assert(input::categoryTranslationKey(InputCategory::Misc) == "key.category.minecraft.misc");
+    assert(input::categoryTranslationKey(InputCategory::Debug) == "key.category.minecraft.debug");
+    assert(input::categoryDisplayName(InputCategory::Misc) == "Miscellaneous");  // 不是 "Misc"
+    for (std::size_t i = 0; i < input::kInputCategoryCount; ++i) {
+        const auto category = static_cast<InputCategory>(i);
+        const auto key = input::categoryTranslationKey(category);
+        assert(key.rfind("key.category.minecraft.", 0) == 0);
+        assert(!input::categoryDisplayName(category).empty());
+    }
+
+    const auto rows = input::keyBindRows();
+
+    // 排序是个置换：一项不多、一项不少（Pause 仍然不在内）。
+    assert(rows.size() == input::kRebindableActions.size());
+    for (const InputAction action : input::kRebindableActions) {
+        std::size_t seen = 0;
+        for (const InputAction row : rows) {
+            if (row == action) ++seen;
+        }
+        assert(seen == 1);
+    }
+    for (const InputAction row : rows) {
+        assert(row != InputAction::Pause);
+    }
+
+    // 分组不变量：同一个分类的行必须**连成一段**。界面靠「相邻两行分类不同」插标题，
+    // 一个分类要是断成两段就会插出两条同名标题。
+    std::array<bool, input::kInputCategoryCount> closed{};
+    InputCategory previous = input::actionCategory(rows[0]);
+    for (std::size_t i = 1; i < rows.size(); ++i) {
+        const auto category = input::actionCategory(rows[i]);
+        if (category != previous) {
+            assert(!closed[input::index(category)]);  // 这个分类不能再出现第二次
+            closed[input::index(previous)] = true;
+            // 组序：新分类在 SORT_ORDER 里必须排在前一个之后（严格递增）。
+            assert(input::index(category) > input::index(previous));
+            previous = category;
+        } else {
+            // 组内：按显示名字典序（KeyMapping.compareTo，KeyMapping.java:145）。
+            assert(input::actionSortName(rows[i - 1]) < input::actionSortName(rows[i]));
+        }
+    }
+
+    // 出现过的分类顺序，逐条对 SORT_ORDER 的子序列：
+    // MOVEMENT -> MISC -> MULTIPLAYER -> GAMEPLAY -> INVENTORY -> DEBUG。
+    // ★ MISC 排在 MULTIPLAYER/GAMEPLAY **之前**（KeyMapping.java:201-203）——
+    //   按「常用在前」或字母序猜都会猜错。
+    const std::array<InputCategory, 6> expectedGroups = {
+        InputCategory::Movement, InputCategory::Misc,      InputCategory::Multiplayer,
+        InputCategory::Gameplay, InputCategory::Inventory, InputCategory::Debug};
+    std::size_t group = 0;
+    assert(input::actionCategory(rows[0]) == expectedGroups[0]);
+    for (std::size_t i = 1; i < rows.size(); ++i) {
+        if (input::actionCategory(rows[i]) != input::actionCategory(rows[i - 1])) {
+            ++group;
+            assert(group < expectedGroups.size());
+            assert(input::actionCategory(rows[i]) == expectedGroups[group]);
+        }
+    }
+    assert(group + 1 == expectedGroups.size());
+
+    // 具体的头尾：en_us 里 Movement 组是 Jump / Sneak / Sprint / Strafe Left /
+    // Strafe Right / Walk Backward / Walk Forward，所以第一行是 Jump、
+    // Movement 组的最后一行是 MoveForward（"Walk Forward"）。
+    assert(rows[0] == InputAction::Jump);
+    assert(rows[1] == InputAction::Sneak);
+    assert(rows[2] == InputAction::Sprint);
+    assert(rows[3] == InputAction::MoveLeft);
+    assert(rows[4] == InputAction::MoveRight);
+    assert(rows[5] == InputAction::MoveBack);
+    assert(rows[6] == InputAction::MoveForward);
+    assert(rows[7] == InputAction::Perspective);   // Misc
+    assert(rows[8] == InputAction::Chat);          // Multiplayer
+    assert(rows[9] == InputAction::Command);
+    assert(rows[10] == InputAction::Attack);       // Gameplay
+    assert(rows[11] == InputAction::Use);
+    assert(rows[12] == InputAction::DropItem);     // Inventory: "Drop Selected Item"
+    assert(rows[13] == InputAction::Hotbar1);
+    assert(rows[21] == InputAction::Hotbar9);
+    assert(rows[22] == InputAction::Inventory);    // "Open/Close Inventory"
+    assert(rows[23] == InputAction::Debug);        // Debug
+}
+
+// --- 显示名与存档 token 是两张表，不是一张 ---------------------------------
+//
+// 一张给人看（要翻译、有空格），一张给文件读（必须逐字稳定、绝不能随语言变）。
+// 合成一张就是让存档格式跟着界面文案走。
+void testDisplayNamesAndTokensAreSeparate() {
+    // 同一个键，两张表给出**不同**的字符串——这正是它们不能共用一个名字的理由。
+    assert(input::keyName(Key::LeftShift) == "Left Shift");
+    assert(input::keyToken(Key::LeftShift) == "LeftShift");
+    assert(input::keyName(Key::LeftShift) != input::keyToken(Key::LeftShift));
+    assert(input::keyName(Key::Slash) == "/");
+    assert(input::keyToken(Key::Slash) == "Slash");
+    assert(input::mouseName(MouseButton::Left) == "Left Button");
+    assert(input::mouseToken(MouseButton::Left) == "MouseLeft");
+
+    // token 必须能被自己的解析器读回来——这是"丢配置"那条失效模式的直接反面。
+    for (const Key key : {Key::W, Key::LeftShift, Key::Slash, Key::Space, Key::F3}) {
+        const auto token = input::bindingToToken(input::keyboard(key));
+        const auto parsed = input::bindingFromToken(token);
+        assert(parsed.has_value());
+        assert(*parsed == input::keyboard(key));
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -341,9 +689,17 @@ int main() {
     testConflictDetection();
     testResetToDefaults();
     testCaptureToggle();
-    testControlsPageLIstsBindRows();
+    testKeyBindsPageListsBindRows();
     testTranslationKeys();
+    testDisplayNamesAndTokensAreSeparate();
     testRowLabelsComeAsOneValue();
     testPageRowToRebind();
+    testDefaultBindingIsTheSameSourceAsDefaults();
+    testResetOneAndIsDefault();
+    testUnbind();
+    testConflictsCollectAll();
+    testReportableConflictPredicate();
+    testNoDuplicateDefaults();
+    testCategoryGrouping();
     return 0;
 }
