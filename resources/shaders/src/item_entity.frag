@@ -7,6 +7,7 @@ layout(location = 0) in vec2 fragmentUv;
 layout(location = 1) flat in float fragmentTextureLayer;
 layout(location = 2) in vec3 fragmentNormal;
 layout(location = 3) flat in float fragmentIsCube;
+layout(location = 13) flat in float fragmentClosedBox;
 layout(location = 4) flat in float fragmentShadowOpacity;
 layout(location = 5) flat in float fragmentOpacity;
 layout(location = 6) in float fragmentCameraDistance;
@@ -68,6 +69,12 @@ vec3 weatherFogColor(vec3 color) {
 
 void main() {
     if (fragmentOpacity < 0.01) {
+        discard;
+    }
+    // 方块图标的背面。盒子是闭合的，所以背面永远被正面挡着——除非这个方块是
+    // **半透明**的，那时正面会把内壁一起透出来：手持一块玻璃能看见盒子的内侧。
+    // 不能靠管线的背面剔除，那条管线还画着有 X 镜像的生物模型（镜像翻绕序）。
+    if (fragmentClosedBox > 0.5 && !gl_FrontFacing) {
         discard;
     }
     if (fragmentIsCube > 1.5) {

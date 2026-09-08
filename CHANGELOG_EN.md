@@ -44,6 +44,10 @@ simple versioned history while it is in beta.
 
 
 ### Fixed
+- A held block no longer shows the inside of itself. Every block icon -- in your hand, on the
+  hotbar, dropped on the ground -- is a closed six-sided box, and the far side of that box was
+  being drawn along with the near side. On an opaque block it made no difference, since the near
+  face covers it; on glass you could see straight through to the inner walls.
 - The Menu Background Blur slider in Video Settings snapped to 0 as soon as you touched it and
   could not be moved afterwards. Fixed along with it: the Render Distance and Simulation
   Distance sliders were reading the wrong widget's position while being dragged -- after the

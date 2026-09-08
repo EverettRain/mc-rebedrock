@@ -195,6 +195,34 @@ int main() {
         }
     }
 
+    // --- 方块图标的背面：闭合盒才丢，生物不能丢 --------------------------------
+    //
+    // 现场（用户实机）：手持一块玻璃能看见盒子的内壁。方块图标是六面闭合的盒，
+    // 背面永远被正面挡着——除非这个方块是半透明的，那时正面把内壁一起透出来。
+    //
+    // 不能靠管线的背面剔除：同一条管线还画着生物模型，而生物的左半边是沿局部 X 轴
+    // 镜像出来的，镜像翻转绕序，`gl_FrontFacing` 在那里说的是反话——开硬件剔除会把
+    // 半个生物剃掉。所以是逐片元丢，而判据必须是**模式**（kItemModeBlockCube），
+    // 不是 `fragmentIsCube`：后者方块图标与生物共用。
+    {
+        const std::string vertex = readFile(kShaderDir / "item_entity.vert");
+        const std::string fragment = readFile(kShaderDir / "item_entity.frag");
+        assert(fragment.find("fragmentClosedBox > 0.5 && !gl_FrontFacing") != std::string::npos);
+        assert(fragment.find("discard") != std::string::npos);
+        // ★ 判据必须是模式。写成 fragmentIsCube 会把生物一起卷进来——那是一个
+        //   「半个猪不见了」的缺陷，而源码读起来毫无异样
+        assert(vertex.find("fragmentClosedBox = isItemMode(kItemModeBlockCube) ? 1.0 : 0.0;") !=
+              std::string::npos);
+        assert(vertex.find("fragmentClosedBox = fragmentIsCube") == std::string::npos);
+        // 默认值必须是「别丢」：GLSL 里没被写过的 out 是未定义值，而写错方向的代价
+        //   是整块几何消失，不是多画几个看不见的面
+        const auto mainAt = vertex.find("void main() {");
+        const auto defaultAt = vertex.find("fragmentClosedBox = 0.0;");
+        const auto setAt = vertex.find("fragmentClosedBox = isItemMode(");
+        assert(mainAt != std::string::npos && defaultAt != std::string::npos);
+        assert(defaultAt > mainAt && defaultAt < setAt);
+    }
+
     // --- item_entity.vert: the dropped item and the held item ------------------
     // What it carries now is the bridge between its own corner order and JE's
     // FaceInfo vertex order, which is what turns a uv rect into four corner UVs.

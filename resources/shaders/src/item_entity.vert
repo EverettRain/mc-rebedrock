@@ -73,6 +73,14 @@ layout(location = 0) out vec2 fragmentUv;
 layout(location = 1) flat out float fragmentTextureLayer;
 layout(location = 2) out vec3 fragmentNormal;
 layout(location = 3) flat out float fragmentIsCube;
+// 这个片元属于一个**闭合且未镜像**的盒吗（1 = 是）。
+//
+// 只有这样的几何才能按面朝向丢弃背面。`fragmentIsCube` 不够用：方块图标与
+// **生物模型**共用它，而生物的左半边是沿局部 X 轴镜像出来的，镜像翻转绕序，
+// `gl_FrontFacing` 在那里说的是反话——按它丢弃会把半个生物剃掉。
+// 管线是 CULL_NONE 也正是这个原因（见 createShadowResources 附近那条注释），
+// 所以背面剔除只能逐片元做，而不是去开硬件剔除。
+layout(location = 13) flat out float fragmentClosedBox;
 layout(location = 4) flat out float fragmentShadowOpacity;
 layout(location = 5) flat out float fragmentOpacity;
 layout(location = 6) out float fragmentCameraDistance;
@@ -163,6 +171,9 @@ vec2 decodeSceneLight(float packedLight) {
 }
 
 void main() {
+    // 默认不剔除。GLSL 里没被写过的 out 是未定义值，而这条 varying 的默认必须是
+    // 「别丢」——写错方向的代价是整块几何消失，而不是多画几个看不见的面
+    fragmentClosedBox = 0.0;
     fragmentEntityTexture = 0.0;
     fragmentHurtFlash = 0.0;
     fragmentFallingBlock = 0.0;
@@ -547,6 +558,9 @@ void main() {
         fragmentNormal = normal;
         fragmentFallingBlock = isItemMode(kItemModeBlockCube) && item.data.w > 1.5 ? 1.0 : 0.0;
         fragmentIsCube = 1.0;
+        // 方块图标（手持、快捷栏、掉落物、下落方块）是六面闭合的盒，且不镜像。
+        // 生物模型走的是同一条分支却**会**镜像，所以判据是模式而不是 fragmentIsCube
+        fragmentClosedBox = isItemMode(kItemModeBlockCube) ? 1.0 : 0.0;
         fragmentShadowOpacity = 0.0;
         fragmentOpacity = 1.0;
         fragmentCameraDistance = heldInViewSpace
