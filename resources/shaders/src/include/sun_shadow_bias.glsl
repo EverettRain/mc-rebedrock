@@ -83,15 +83,36 @@ float sunShadowOvercast(float rainGradient, float thunderGradient) {
     return clamp(rainGradient * 0.9F + thunderGradient * 0.1F, 0.0F, 1.0F);
 }
 
-// 全影时的天光系数随云量抬向 1.0（1.0 = 和没有影子一样亮）。
-// 晴天原样返回 baseFactor，全阴返回 1.0。
-float sunShadowOvercastFactor(float baseFactor, float overcast) {
-    return mix(baseFactor, 1.0F, clamp(overcast, 0.0F, 1.0F));
-}
+// RN-38：天光是**两项**，不是一个被阴影乘掉的数。
+//
+// 直射（太阳本体）与环境（整片天空的散射）在物理上是两种光，只有前者会被一个方块
+// 挡住。从前两者合成一个 `skyFactor` 一起乘 `shadowFactor`，于是：
+//
+//   * 影子里保留的那 35% 是一个硬编码的系数，不是「天空散射有多少」这个量；
+//   * 影子把环境天光也压暗了，所以它偏灰而不是偏蓝；
+//   * RN-36 的雨天只能在那个系数上再叠一层近似。
+//
+// 0.2 = 晴天正午天空散射占地面照度的比例（直射约八成）。影子里剩下的正是它。
+const float kSkyAmbientFraction = 0.2F;
 
-// 影子淡到这个程度就当它不存在：整套遮挡搜索加 PCF 都可以省掉。
-// 这是逐屏幕像素的开销，而暴雨里它产出的是一个看不见的差别。
-const float kSunShadowInvisibleFactor = 0.98F;
+// 云厚到这个程度，直射已经不剩什么，整套遮挡搜索加 PCF 都可以省掉——
+// 逐屏幕像素的开销，换一个看不见的差别。
+const float kSunShadowInvisibleOvercast = 0.98F;
+
+// 天光通道的最终强度。
+//
+//   直射：随云量**转给**散射（云把它散开，不是吸收掉），并被阴影完整挡住
+//   散射：不受阴影影响
+//
+// 总量的下降由 `weatherDimming` 单独表达（vanilla 的 5/16），这里只分配比例——
+// 所以全阴天的总亮度与从前一样，变的只是「影子还起不起作用」。
+float sunSkyFactor(float skyLightFactor, float weatherDimming, float visibility, float rain,
+                   float thunder) {
+    float directShare = (1.0F - kSkyAmbientFraction) * (1.0F - sunShadowOvercast(rain, thunder));
+    float ambientShare = 1.0F - directShare;
+    return skyLightFactor * weatherDimming * (directShare * clamp(visibility, 0.0F, 1.0F) +
+                                              ambientShare);
+}
 
 float sunShadowPenumbraTexels(float blockerDistanceBlocks, float texelSizeBlocks) {
     float penumbraBlocks = max(blockerDistanceBlocks, 0.0F) * kSunPenumbraTangent;

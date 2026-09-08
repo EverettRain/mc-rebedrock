@@ -125,8 +125,12 @@ void main() {
                                                camera.lightingSettings.z,
                                        camera.weatherSettings.xy);
             }
+            // RN-38：下落方块这里本来就是「环境 + 直射」的雏形（0.72 + 0.28），只是
+            // 那两个数与地形那一套各写各的。现在共用 kSkyAmbientFraction，
+            // 「天光里有多少是散射」在整个仓库里只有一个答案
             float diffuse = max(dot(normal, normalize(camera.sunDirection.xyz)), 0.0);
-            terrainSunFactor = 0.72 + diffuse * shadowFactor * 0.28;
+            terrainSunFactor = kSkyAmbientFraction +
+                               diffuse * shadowFactor * (1.0 - kSkyAmbientFraction);
         } else {
             vec3 fixedLightDirection = normalize(vec3(-0.45, 0.85, 0.30));
             float diffuse = max(dot(normal, fixedLightDirection), 0.0);
@@ -141,12 +145,14 @@ void main() {
         // be a fourth hand-copy of the terrain lighting and drifted from it.
         vec3 skyTint = mix(vec3(0.50, 0.62, 0.95), vec3(1.0, 0.97, 0.90),
                            camera.sunDirection.w);
-        float skyFactor = camera.sunDirection.w * camera.weatherSettings.z;
+        // 色调的权重不含阴影（见 grass_block.frag 同一处）
+        float tintWeight = camera.sunDirection.w * camera.weatherSettings.z;
+        float skyFactor = tintWeight;
         if (fragmentFallingBlock > 0.5) {
             skyFactor *= terrainSunFactor;
         }
         vec3 illumination = sampleLightmap(fragmentSceneLight.x, fragmentSceneLight.y, skyFactor) *
-            mix(vec3(1.0), skyTint, skyFactor);
+            mix(vec3(1.0), skyTint, tintWeight);
         for (int lightIndex = 0; lightIndex < int(camera.lightingSettings.x); ++lightIndex) {
             vec3 delta = camera.pointLights[lightIndex].xyz - fragmentWorldPosition;
             float radius = camera.pointLights[lightIndex].w;

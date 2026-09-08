@@ -61,6 +61,10 @@ simple versioned history while it is in beta.
   Video Settings screen was rearranged they still assumed their old position on the page.
 
 ### Changed
+- Shadows are deeper, and they keep the colour of the sky. Sunlight and the light scattered by the
+  whole sky are two different things, and only the first can be blocked by a wall -- but a shadow
+  used to dim both, so it sat at a fixed brightness and washed the blue out of itself. What is left
+  inside a shadow is now the sky's share of the light, and it stays sky-coloured.
 - The Video Settings screen was rebuilt to match Minecraft's layout: a (currently greyed-out)
   "Preset" button spanning the full row, then the settings in two columns. **The page scrolls
   now** -- there are more options than fit on one screen, and the overflowing rows used to sit

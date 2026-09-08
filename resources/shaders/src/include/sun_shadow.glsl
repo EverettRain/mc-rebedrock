@@ -22,8 +22,9 @@
 // 由函数参数传进来：shader_descriptor_bindings_test 扫的是 .vert/.frag 里的
 // `layout(binding = N)`，不递归进 include 目录，把声明搬进来会让那条护栏瞎掉。
 
-// 全影时的天光系数。1.0 是全亮
-const float kSunShadowFactor = 0.35;
+// RN-38：这个函数回答的是**可见度**——1.0 = 太阳完全照到，0.0 = 完全挡住。
+// 从前它返回的是「天光该乘多少」，把 0.35 那个全影系数烘在里面；那让「挡住了多少」
+// 与「影子里该有多亮」变成同一个数，而后者其实是天空散射的份额（见 sunSkyFactor）。
 
 // 阴影图边长（纹素），必须与 SunShadowMap.hpp 的 kSunShadowMapResolution 一致
 const float kSunShadowMapResolution = 2048.0;
@@ -56,11 +57,9 @@ float sunShadowFactor(sampler2DArrayShadow shadowMap, sampler2DArray shadowDepth
     if (incidence <= 0.0) {
         return 1.0;
     }
-    // RN-36：云层散掉直射光，影子跟着变浅。算在最前面，因为云厚到影子看不见时
-    // 整套遮挡搜索加 PCF 都不必跑——暴雨里那是逐屏幕像素省下来的一整轮采样
-    float shadowedFactor =
-        sunShadowOvercastFactor(kSunShadowFactor, sunShadowOvercast(weather.x, weather.y));
-    if (shadowedFactor >= kSunShadowInvisibleFactor) {
+    // RN-36：云厚到直射不剩什么时，整套遮挡搜索加 PCF 都不必跑——暴雨里那是逐屏幕
+    // 像素省下来的一整轮采样。算在最前面，投影之前
+    if (sunShadowOvercast(weather.x, weather.y) >= kSunShadowInvisibleOvercast) {
         return 1.0;
     }
     // RN-35：选级。先试近段——它的纹素是远段的 1/8，能表达的边细八倍。
@@ -159,5 +158,5 @@ float sunShadowFactor(sampler2DArrayShadow shadowMap, sampler2DArray shadowDepth
                            vec4(shadowUv.xy + vec2(tapX, tapY) * texel, layer, tapReference));
         }
     }
-    return mix(shadowedFactor, 1.0, lit * 0.25);
+    return lit * 0.25;
 }

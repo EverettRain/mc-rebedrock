@@ -204,7 +204,9 @@ void checkShadowFacing() {
                 } else {
                     float lit = 0.0F;
                     for (std::size_t tap = 0; tap < 4; ++tap) lit += pattern[tap];
-                    const float expected = glm::mix(0.35F, 1.0F, lit / 4.0F);
+                    // RN-38：返回的是**可见度**，四个 tap 的平均，不再把「影子里该有
+                    // 多亮」烘在里面——那一份现在由 sunSkyFactor 从散射的份额算出
+                    const float expected = lit / 4.0F;
                     REQUIRE(samples.count == 4 && std::abs(factor - expected) < 0.000001F,
                             "sun-facing receiver must preserve four-tap PCF visibility" +
                                 context + "; factor=" + std::to_string(factor) +
@@ -1133,17 +1135,41 @@ void checkWeatherResponse() {
                 shaderBias::sunShadowOvercast(-1.0F, -1.0F) == 0.0F,
             "云量必须夹在 [0,1]");
 
-    // ---- 2. 全影时的天光系数随云量抬向 1 -----------------------------------
-    REQUIRE(shaderBias::sunShadowOvercastFactor(0.35F, 0.0F) == 0.35F,
-            "晴天必须原样返回——RN-36 之前的每一条断言都靠这一点继续成立");
-    REQUIRE(shaderBias::sunShadowOvercastFactor(0.35F, 1.0F) == 1.0F,
-            "全阴时影子必须完全消失，而不是只变淡");
-    // 纯下雨：对比度从 65% 降到 6.5%，正好一个数量级
-    const float rainy = shaderBias::sunShadowOvercastFactor(0.35F, 0.9F);
-    REQUIRE(std::abs((1.0F - rainy) - 0.065F) < 1e-5F,
-            "纯下雨的影子对比度应当是晴天的十分之一：" + std::to_string(1.0F - rainy));
+    // ---- 2. 天光的两项：直射被挡住、散射不受影响 ---------------------------
+    //
+    // RN-38：`sunShadowFactor` 现在回答的是**可见度**（1 = 太阳完全照到），
+    // 「影子里该有多亮」由 sunSkyFactor 从散射的份额算出来，不再是一个烘在
+    // 接收端里的 0.35。
+    {
+        const float lit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F);
+        const float shadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F);
+        REQUIRE(std::abs(lit - 1.0F) < 1e-6F,
+                "晴天全亮必须是 1.0——受光面的亮度一个字都不该动");
+        REQUIRE(std::abs(shadowed - shaderBias::kSkyAmbientFraction) < 1e-6F,
+                "晴天全影剩下的正是天空散射那一份，不是一个硬编码的系数");
+        // 影子比从前更暗（0.2 而不是 0.35），那是这个节点买到的东西
+        REQUIRE(shadowed < 0.35F, "拆开之后影子必须比那个 0.35 的系数更暗");
 
-    // ---- 3. 接收端：晴天逐位不变，全阴省掉整套采样 -------------------------
+        // 云把直射**转给**散射：全阴时阴影完全不起作用，而总亮度不变
+        const float overcastLit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 1.0F, 1.0F);
+        const float overcastShadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 1.0F, 1.0F);
+        REQUIRE(std::abs(overcastLit - overcastShadowed) < 1e-6F,
+                "全阴时受光与全影必须一样亮——没有直射就没有影子");
+        REQUIRE(std::abs(overcastLit - 1.0F) < 1e-6F,
+                "云只是把直射散开，不吸收：总量的下降归 weatherDimming 单独表达");
+        // 纯下雨：直射还剩一成，影子的对比度因此也只剩一成
+        const float rainLit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 1.0F, 0.0F);
+        const float rainShadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 1.0F, 0.0F);
+        const float clearContrast = lit - shadowed;
+        REQUIRE(std::abs((rainLit - rainShadowed) - clearContrast * 0.1F) < 1e-6F,
+                "纯下雨的影子对比度应当是晴天的十分之一");
+        // 天气的总量下降是**另一件事**，它对两项一视同仁
+        REQUIRE(std::abs(shaderBias::sunSkyFactor(1.0F, 0.5F, 0.0F, 0.0F, 0.0F) -
+                         shadowed * 0.5F) < 1e-6F,
+                "weatherDimming 只缩放总量，不改变直射与散射的比例");
+    }
+
+    // ---- 3. 接收端返回的是可见度 -------------------------------------------
     const auto run = [](glm::vec2 weather) {
         shaderReceiver::Samples samples{};
         samples.visibility = {0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -1154,25 +1180,45 @@ void checkWeatherResponse() {
         return std::pair{factor, samples.count};
     };
     const auto [clearFactor, clearTaps] = run(kClearWeather);
-    REQUIRE(clearTaps == 4 && std::abs(clearFactor - 0.35F) < 1e-6F,
-            "晴天必须与 RN-36 之前逐位相同：全影 0.35、四次 PCF");
-    const auto [rainFactor, rainTaps] = run(glm::vec2{1.0F, 0.0F});
-    REQUIRE(rainTaps == 4 && std::abs(rainFactor - rainy) < 1e-6F,
-            "纯下雨仍然采样，只是影子淡得多");
-    REQUIRE(rainFactor > clearFactor, "下雨必须让同一个全影像素变亮");
-    // ★ 云厚到影子看不见时**一次采样都不做**。这是逐屏幕像素的一整套遮挡搜索加 PCF，
-    // 暴雨里它产出的是一个看不见的差别
+    REQUIRE(clearTaps == 4 && clearFactor == 0.0F,
+            "四个 tap 全被挡住 ⇒ 可见度是 0，而不是某个「影子里的亮度」");
+    // ★ 云厚到直射不剩什么时**一次采样都不做**。这是逐屏幕像素的一整套遮挡搜索加
+    // PCF，暴雨里它产出的是一个看不见的差别
     const auto [stormFactor, stormTaps] = run(glm::vec2{1.0F, 1.0F});
     REQUIRE(stormFactor == 1.0F && stormTaps == 0,
-            "雷暴里影子已经不存在，整套采样必须省掉，而不是照跑一遍再乘一个 1");
+            "雷暴里直射已经没了，整套采样必须省掉，而不是照跑一遍再乘一个 1");
+    // 纯下雨还没到那个阈值，仍然要采样——省掉它就是让雨中的影子突然消失
+    const auto [rainFactor, rainTaps] = run(glm::vec2{1.0F, 0.0F});
+    REQUIRE(rainTaps == 4 && rainFactor == 0.0F,
+            "纯下雨仍然采样：可见度与晴天相同，淡下去的是它在 sunSkyFactor 里的权重");
 
-    // ---- 4. 三个采样者都要把天气传进去 -------------------------------------
+    // ---- 4. 三个采样者都要把天气传进去，色调都不能被阴影冲淡 ---------------
     const std::filesystem::path shaderDir{MC_REBEDROCK_SHADER_SRC_DIR};
     for (const char* name : {"grass_block.frag", "block_cutout.frag", "item_entity.frag"}) {
         const std::string source = stripLineComments(readFile(shaderDir / name));
         REQUIRE(source.find("camera.weatherSettings.xy") != std::string::npos,
                 std::string{name} + " must pass the weather gradients into sunShadowFactor: "
                                     "one shader left out is one surface whose shadow ignores rain");
+        // RN-38：色调的权重**不含阴影**。用含阴影的 skyFactor 会把影子里的色调冲淡
+        // 成白——那正是影子看起来「偏灰」而不是天空的蓝的原因
+        REQUIRE(source.find("float tintWeight = camera.sunDirection.w * camera.weatherSettings.z;") !=
+                        std::string::npos &&
+                    source.find("mix(vec3(1.0), skyTint, tintWeight)") != std::string::npos,
+                std::string{name} + " must weight the sky tint by time and weather only, never by "
+                                    "the shadow: a shadow is lit by the sky and should keep its "
+                                    "colour");
+        REQUIRE(source.find("mix(vec3(1.0), skyTint, skyFactor)") == std::string::npos,
+                std::string{name} + " still tints by the shadowed sky factor");
+    }
+    {
+        // RN-38：下落方块那条本来就是「环境 + 直射」的雏形（0.72 + 0.28），只是那两个
+        // 数与地形那一套各写各的。「天光里有多少是散射」在整个仓库里只能有一个答案
+        const std::string source =
+            stripLineComments(readFile(shaderDir / "item_entity.frag"));
+        REQUIRE(source.find("kSkyAmbientFraction") != std::string::npos,
+                "the falling block's ambient share must come from the shared constant");
+        REQUIRE(source.find("0.72") == std::string::npos,
+                "item_entity.frag still carries its own copy of the ambient share");
     }
 }
 
@@ -1271,7 +1317,9 @@ void checkContactHardening() {
     REQUIRE(std::abs(farSpread - 2.0F * shaderBias::kSunMaxPenumbraTexels) < 1e-3F,
             "a distant blocker must saturate the penumbra at the old fixed radius; spread=" +
                 std::to_string(farSpread));
-    REQUIRE(farFactor == 0.35F, "fully occluded receiver must reach the full shadow factor");
+    // RN-38：完全被挡住 ⇒ 可见度 0。影子里剩下的那一份是天空散射，由 sunSkyFactor
+    // 从 kSkyAmbientFraction 算，不再烘在这里
+    REQUIRE(farFactor == 0.0F, "fully occluded receiver must report zero visibility");
 
     // ③ 遮挡物就在脚下（0.05 格）⇒ 半影收到近乎 0，这正是墙根那一段。
     const float contactDepth = 0.5F - 0.05F / 319.9F;
@@ -1283,7 +1331,7 @@ void checkContactHardening() {
                 std::to_string(contactSpread) + " texels");
     REQUIRE(contactSpread < farSpread * 0.1F,
             "contact and distance must give materially different radii, or nothing was hardened");
-    REQUIRE(contactFactor == 0.35F, "hardening must not brighten a fully occluded receiver");
+    REQUIRE(contactFactor == 0.0F, "hardening must not brighten a fully occluded receiver");
 
     // ④ 单调、有界。中间那一档也要真的落在中间，否则上面两条对一个「非 0 即满」的
     //    实现也会成立。

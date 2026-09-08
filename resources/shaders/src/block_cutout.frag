@@ -109,13 +109,20 @@ void main() {
     // Weather and shadow scale only the sky half; the
     // levels themselves stay the mesh/world values, so gameplay light checks are
     // untouched and block light still adds at full strength inside a shadow.
-    float skyFactor = camera.sunDirection.w * camera.weatherSettings.z * shadowFactor;
+    // RN-38：天光是直射 + 环境两项，阴影只挡直射。`shadowFactor` 现在是**可见度**
+    // （1 = 太阳完全照到），份额的分配在 sunSkyFactor 里，三个采样者共用那一份
+    float skyFactor = sunSkyFactor(camera.sunDirection.w, camera.weatherSettings.z, shadowFactor,
+                                   camera.weatherSettings.x, camera.weatherSettings.y);
     vec3 lightmap = sampleLightmap(skyLevel, blockLevel, skyFactor);
     // The sky half carries the time-of-day tint: cool blue moonlight, warm
     // sunlight. Block light brings its own tint inside the lightmap.
     vec3 skyTint = mix(vec3(0.50, 0.62, 0.95), vec3(1.0, 0.97, 0.90),
                        camera.sunDirection.w);
-    vec3 illumination = lightmap * mix(vec3(1.0), skyTint, skyFactor) * faceShade;
+    // 色调的权重是**时段与天气**，不含阴影：影子里的光来自天空，它该是天空的颜色，
+    // 只是更暗。用含阴影的 skyFactor 会把影子里的色调冲淡成白，那正是影子看起来
+    // 「偏灰」的原因
+    float tintWeight = camera.sunDirection.w * camera.weatherSettings.z;
+    vec3 illumination = lightmap * mix(vec3(1.0), skyTint, tintWeight) * faceShade;
     for (int lightIndex = 0; lightIndex < int(camera.lightingSettings.x); ++lightIndex) {
         vec3 delta = camera.pointLights[lightIndex].xyz - fragmentWorldPosition;
         float attenuation = pow(max(
