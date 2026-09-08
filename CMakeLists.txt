@@ -794,6 +794,15 @@ if(BUILD_TESTING)
 
     # RN-8f：光照的不透明度是它自己的一根轴，不是渲染分桶。台阶在 Opaque 桶里但不填满
     # 格子，26.1 因此给它 0 衰减；本作从分桶推导，给了 15，台阶屋顶下面一片死黑。
+    # 描述符集重建时必须写全布局声明的每一个绑定。改语言/切字体/改各向异性都会销毁
+    # 描述符池；漏写的那个绑定此后就是未写入的，采样它是未定义行为——现场表现为
+    # 开着太阳阴影时整个阴影范围全黑，时有时无，关掉校验层时一声不吭。
+    add_executable(mc_rebedrock_descriptor_bindings_test
+        tests/descriptor_bindings_test.cpp)
+    target_compile_definitions(mc_rebedrock_descriptor_bindings_test PRIVATE
+        "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
+    add_test(NAME descriptor_bindings COMMAND mc_rebedrock_descriptor_bindings_test)
+
     add_executable(mc_rebedrock_light_opacity_axis_test
         tests/light_opacity_axis_test.cpp)
     target_link_libraries(mc_rebedrock_light_opacity_axis_test PRIVATE mc_rebedrock_runtime)

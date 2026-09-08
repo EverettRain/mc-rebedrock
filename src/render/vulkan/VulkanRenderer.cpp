@@ -5063,6 +5063,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()), writes.data(),
                                    0, nullptr);
         }
+        // ★ 上面那批**不含** binding 8（阴影深度图）。它的资源比这套集合建得晚，
+        // 所以首次初始化时由 `createShadowResources` 写。但这个函数会被**重复调用**
+        // ——改语言、切强制 Unicode 字体、改各向异性，每一次都销毁描述符池并重新分配
+        // 整套集合。少了下面这一句，重建之后 binding 8 就是未写入的，地形着色器采样
+        // 一个未写入的描述符是未定义行为：现场表现为开着太阳阴影时整个阴影范围全黑，
+        // 时有时无，校验层关掉时一声不吭。
+        //
+        // 「重建集合就要写全每一个绑定」这条规矩由 `descriptor_bindings_test` 钉住。
+        writeShadowDescriptorSets();
     }
 
     // 场景描述符集，即 set 1，持有实例化粒子管线要读的逐帧存储缓冲
@@ -5361,6 +5370,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 一次硬阈值比较，阴影边只有「全亮 / 0.35」两种值——那就是锯齿边。调试叠加层
         // 仍然用它自己那个：叠加层要把深度当颜色读（texture(...).r），那需要一个**不**开
         // compare 的采样器，两者不能合并
+        writeShadowDescriptorSets();
+    }
+
+    // binding 8 的写入，单一源。
+    //
+    // ★ 它必须能被**重放**。`createDescriptorPoolAndSets` 会销毁描述符池、重新分配整套
+    // 集合——改语言、切「强制 Unicode 字体」、改各向异性都会走到那里。旧集合随池一起
+    // 消失，新集合里 binding 8 于是从未被写过；地形着色器接着去采样一个未写入的
+    // 描述符，那是未定义行为。现场表现为**开着太阳阴影时整个阴影范围全黑**，
+    // 而且时有时无（取决于那块描述符内存恰好是什么），校验层关掉时一声不吭。
+    //
+    // 所以这段不再只属于 `createShadowResources`：重建集合的那一处也调它。
+    // 首次初始化时阴影资源尚未创建，句柄为空，那一次由 `createShadowResources` 自己补上。
+    void writeShadowDescriptorSets() {
+        if (shadowTarget.view() == VK_NULL_HANDLE || shadowCompareSampler == VK_NULL_HANDLE) {
+            return;
+        }
         for (std::size_t index = 0; index < kFramesInFlight; ++index) {
             VkDescriptorImageInfo shadowImageInfo{};
             shadowImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
