@@ -1,4 +1,6 @@
 {
+  "key.rebedrock.debug": "Debug Info",
+  "key.rebedrock.pause": "Pause / Menu",
   "options.rebedrock.antiAliasing": "Anti-Aliasing",
   "options.rebedrock.dynamicLights": "Dynamic Lighting",
   "options.rebedrock.particleLevel.crazy": "Crazy (3x)",

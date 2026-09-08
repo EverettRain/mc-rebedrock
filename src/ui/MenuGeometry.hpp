@@ -58,6 +58,20 @@ namespace mc::ui {
 // 24 个可重绑的动作会冲破 20 个按钮的菜单上限并抛出，所以它必须是滚动的
 // 几何照搬语言列表：标题与底部按钮带之间一个按内容定尺寸的框，每个可见动作一行，外加一条滚动条
 [[nodiscard]] UiRect controlsListBox(const HudLayout& layout, float framebufferWidth);
+// 一页里第 `widgetIndex` 个控件的矩形。**页面 → 矩形这件事只有这一处。**
+//
+// ★ 它存在的理由是一次真实的崩溃：UI-6b 把按键绑定行拆成两个控件之后，绘制侧与
+//   输入侧**各有一份**同样的映射 lambda（`buildDrawPage` 与 `menuRectProvider`），
+//   我只改了绘制侧。于是点 Controls 底部任何一个按钮，输入侧把列表后半段的序号
+//   当成按钮序号，`buttonIndex` 越过 buttonCount，`bottomMenuButton` 抛
+//   `menu button index or count is invalid` —— 直接闪退。
+//
+//   两份镜像的代码不是"两处要同步"，是"迟早会不同步"。收成一个函数之后，
+//   `menu_layout` 测的就是**生产代码本身**，而不是它在测试里的一份抄本。
+[[nodiscard]] UiRect menuWidgetRect(PageId page, std::size_t widgetIndex,
+                                    const HudLayout& layout, float framebufferWidth,
+                                    std::size_t buttonCount, std::size_t keyBindRowCount);
+
 // UI-6b：按键绑定行里的两个格子（动作名 / 改键按钮）。一行两个控件，
 // 几何在 ui/ListRow.hpp，这两个只是换算到帧缓冲像素。
 [[nodiscard]] UiRect controlsNameCell(std::size_t visibleIndex, const HudLayout& layout,

@@ -2467,13 +2467,42 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return ui::KeyBindDecoration::None;
     }
 
+    // UI-6b 修：动作名与键名都走翻译表。
+    //
+    // 从前两者都是 `input::*DisplayName` 的英文硬编码字符串，于是把界面切成中文以后，
+    // 按键设置里满屏还是 "Forward / Back / Left Shift"——标题与底部按钮已经是中文了，
+    // 唯独列表里没有。翻译键取自 26.1 自己的（`key.forward`、`key.keyboard.space`、
+    // `key.mouse.left`），所以玩家自备的 vanilla 资源包里本来就有它们。
+    //
+    // 兜底是那批英文名：vanilla 的语言表**不含**可打印键（没有 `key.keyboard.w`），
+    // 那时显示 "W"，与 26.1 一致（它走的是 GLFW 的系统键名）。
+    [[nodiscard]] std::string keyBindActionLabel(input::InputAction action) const {
+        return std::string{translate(input::actionTranslationKey(action),
+                                     input::actionDisplayName(action))};
+    }
+
+    [[nodiscard]] std::string keyBindKeyName(input::InputAction action) const {
+        const auto binding = inputSystem_.bindings().binding(action);
+        // 兜底先落成具名局部：`bindingDisplayName` 返回的是 std::string，
+        // 直接把它的临时对象喂给收 string_view 的 translate 就是一个悬垂视图。
+        const std::string fallback = input::bindingDisplayName(binding);
+        return std::string{translate(input::bindingTranslationKey(binding), fallback)};
+    }
+
+    // 一行的两段文字，一次给出。填上下文的地方有两处（这里与 HudRenderer 常驻的
+    // drawContext_），做成一个返回值就漏不掉其中一段——那正是"键名汉化了、动作名没有"
+    // 的来源。
+    [[nodiscard]] ui::MenuBuildContext::KeyBindRowLabels
+    keyBindRowLabels(input::InputAction action) const {
+        return {keyBindActionLabel(action), keyBindButtonLabel(action)};
+    }
+
     [[nodiscard]] std::string keyBindButtonLabel(input::InputAction action) const {
         const auto decoration = keyBindDecoration(action);
         // 捕获中显示 `> ? <`：还没有键可写，问号就是"在等你按"。
-        const std::string key =
-            decoration == ui::KeyBindDecoration::Capturing
-                ? std::string{"?"}
-                : input::bindingDisplayName(inputSystem_.bindings().binding(action));
+        const std::string key = decoration == ui::KeyBindDecoration::Capturing
+                                    ? std::string{"?"}
+                                    : keyBindKeyName(action);
         return ui::decorateKeyBindLabel(key, decoration);
     }
 
@@ -3768,16 +3797,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                    menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
         const std::size_t count = menuButtonCount();
         const float fbWidth = static_cast<float>(swapchainExtent.width);
-        // 按键设置页里前 `keyRows` 个 widget 是可滚动的按键列表行，走 controlsRow 排版
-        // 末尾四个是底部按钮带，其余页面的每个 widget 都是普通前端按钮
+        // 页面 → 矩形只有一处：ui::menuWidgetRect。绘制侧（buildDrawPage）调的是
+        // 同一个函数。从前这两侧各有一份同样的 lambda，UI-6b 改了绘制侧那份、漏了这份，
+        // 结果点 Controls 底部任何一个按钮都会抛越界并闪退。
         const std::size_t keyRows =
             page == ui::PageId::Controls ? controlsVisibleKeyBindRowCount() : 0U;
         return [layout, page, count, fbWidth, keyRows](std::size_t index) {
-            if (page == ui::PageId::Controls && index < keyRows) {
-                return ui::controlsRow(index, layout, fbWidth);
-            }
-            const std::size_t buttonIndex = page == ui::PageId::Controls ? index - keyRows : index;
-            return ui::frontendButtonRect(layout, page, buttonIndex, count);
+            return ui::menuWidgetRect(page, index, layout, fbWidth, count, keyRows);
         };
     }
 
@@ -3814,8 +3840,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         // 每行的标签形如"动作: 按键"，取自 InputSystem 这一唯一来源
         // 该行正在捕获时改显示为"动作: > ? <"
-        ctx.keyBindLabelFor = [this](input::InputAction action) {
-            return keyBindButtonLabel(action);
+        ctx.keyBindLabelsFor = [this](input::InputAction action) {
+            return keyBindRowLabels(action);
         };
         return ui::buildPage(menuSystem.pageStack.current(), ctx, buildMenuCallbacks(),
                              menuRectProvider());
@@ -8389,8 +8415,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .paused = paused,
             .uiTimeSeconds = uiTimeSeconds,
             .cameraSubmergedInWater = [this] { return cameraSubmergedInWater(); },
-            .keyBindLabel =
-                [this](input::InputAction action) { return keyBindButtonLabel(action); },
+            .keyBindLabels =
+                [this](input::InputAction action) { return keyBindRowLabels(action); },
             .drawHeldItem = [this](VkCommandBuffer c,
                                    VkDescriptorSet d) { world_.drawHeldItem(c, d); },
             .currentFrameDescriptorSet = [this] { return frames[currentFrame].descriptorSet; },

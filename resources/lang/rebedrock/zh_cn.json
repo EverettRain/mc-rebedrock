@@ -1,4 +1,6 @@
 {
+  "key.rebedrock.debug": "调试信息",
+  "key.rebedrock.pause": "暂停/菜单",
   "options.rebedrock.antiAliasing": "抗锯齿",
   "options.rebedrock.dynamicLights": "动态光源",
   "options.rebedrock.particleLevel.crazy": "疯狂（3倍）",

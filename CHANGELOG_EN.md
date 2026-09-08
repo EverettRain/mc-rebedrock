@@ -37,6 +37,12 @@ simple versioned history while it is in beta.
   enchanting table and an anvil. Stairs were already right. Placing or breaking
   one of these now relights the space around it correctly too, not only worlds
   loaded fresh.
+- Action names and key names in the key-bind list now follow the interface language. Until now
+  that column stayed English whatever you picked, while the title and the buttons below it on the
+  same screen were already translated. The English names are Minecraft's own now too
+  ("Walk Forward", "Strafe Left") rather than this project's invented short forms.
+- Fixed clicking any of the four buttons at the bottom of the key-bind screen (View Bobbing,
+  Auto-Jump, Reset Keys, Done) crashing the game outright.
 - Each row of the key-bind list is finally shaped like Minecraft's: the action's name on the left
   and a button carrying its current key on the right, and it is the button you click to rebind.
   Until now the whole row was one large clickable area with "Action: Key" written across it.
