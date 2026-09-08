@@ -792,6 +792,13 @@ if(BUILD_TESTING)
     )
     add_test(NAME world_generation COMMAND mc_rebedrock_world_generation_test)
 
+    # RN-8f：光照的不透明度是它自己的一根轴，不是渲染分桶。台阶在 Opaque 桶里但不填满
+    # 格子，26.1 因此给它 0 衰减；本作从分桶推导，给了 15，台阶屋顶下面一片死黑。
+    add_executable(mc_rebedrock_light_opacity_axis_test
+        tests/light_opacity_axis_test.cpp)
+    target_link_libraries(mc_rebedrock_light_opacity_axis_test PRIVATE mc_rebedrock_runtime)
+    add_test(NAME light_opacity_axis COMMAND mc_rebedrock_light_opacity_axis_test)
+
     add_executable(mc_rebedrock_sky_light_column_test
         tests/sky_light_column_test.cpp
     )

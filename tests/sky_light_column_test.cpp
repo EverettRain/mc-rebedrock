@@ -64,17 +64,22 @@ void light(World& world, WorldLightEngine& engine) {
     return world.skyLight(kShaftX, y, kShaftZ);
 }
 
-// A stair, not a slab, carries both shape tests below. In this project a slab
-// renders in the Opaque bucket and `skyLightOpacity` is derived from that bucket,
-// so every slab already answers 15 — dampening, not shape, ends its column, and
-// the shape criterion could not be observed through one. A stair is Cutout, so
-// its opacity is 0 and its *shape* is the only thing that can end a column,
-// which is exactly the case this node exists to fix. (That slabs and farmland
-// block sky light outright is a separate defect of the one-field
-// renderLayer/opacity conflation, out of RN-19a's scope; see the landing note.)
+// 形状那两条判据下面用**楼梯和台阶各跑一遍**。
+//
+// 这段注释原本写的是「只能用楼梯，不能用台阶」——因为当时台阶渲染在 Opaque 桶里、
+// 而 `skyLightOpacity` 是从那个桶推出来的，于是每一块台阶都答 15，是**衰减**而不是
+// 形状结束了它的源柱，形状判据在台阶身上根本观测不到。那条绕行如今不再需要：
+// RN-8f 把光的不透明度从渲染分桶拆成了独立的一轴（26.1 `getLightDampening` 问的是
+// 遮挡形状是不是满方块），台阶因此和楼梯给出**同一组**答案——vanilla 里它们本来就
+// 走同一条默认规则。两个都跑，正是这条修复的端到端判据。
 [[nodiscard]] BlockState stair(SlabPortion half) {
     return BlockState{Block::OakStairs, mc::world::defaultOrientation(Block::OakStairs), 0U}
         .withStairHalf(half);
+}
+
+[[nodiscard]] BlockState slab(SlabPortion half) {
+    return BlockState{Block::OakSlab, mc::world::defaultOrientation(Block::OakSlab), 0U}
+        .withSlabPortion(half);
 }
 
 // 1. Leaves dampen, so they end the source column: the cells below them start at
@@ -105,9 +110,9 @@ void testDampeningEndsTheColumn() {
 // and pin neither — and would also hold for a criterion built on RN-8a's face
 // mask, which is gated by canOcclude and therefore identically zero for a Cutout
 // stair. The 15/14 pair is what separates a working criterion from that one.
-void testShapeEndsTheColumnOneCellApart() {
+void shapeEndsTheColumnFor(BlockState (*shaped)(SlabPortion)) {
     World bottomWorld = makeShaftWorld();
-    bottomWorld.setState(kShaftX, kTestY, kShaftZ, stair(SlabPortion::Bottom));
+    bottomWorld.setState(kShaftX, kTestY, kShaftZ, shaped(SlabPortion::Bottom));
     WorldLightEngine bottomEngine;
     light(bottomWorld, bottomEngine);
 
@@ -118,7 +123,7 @@ void testShapeEndsTheColumnOneCellApart() {
     assert(bottomWorld.skyLight(kShaftX, kTestY - 15, kShaftZ) == 0U);
 
     World topWorld = makeShaftWorld();
-    topWorld.setState(kShaftX, kTestY, kShaftZ, stair(SlabPortion::Top));
+    topWorld.setState(kShaftX, kTestY, kShaftZ, shaped(SlabPortion::Top));
     WorldLightEngine topEngine;
     light(topWorld, topEngine);
 
@@ -127,6 +132,43 @@ void testShapeEndsTheColumnOneCellApart() {
     assert(topWorld.skyLight(kShaftX, kTestY, kShaftZ) == 14U);        // not a source
     assert(topWorld.skyLight(kShaftX, kTestY - 1, kShaftZ) == 13U);
     assert(topWorld.skyLight(kShaftX, kTestY - 14, kShaftZ) == 0U);
+}
+
+void testShapeEndsTheColumnOneCellApart() {
+    shapeEndsTheColumnFor(stair);
+    // RN-8f：台阶如今走同一条规则、给同一组数字。这不是「顺手多测一种方块」——
+    // 在 RN-8f 之前台阶答 15，上面每一条断言都会红（源柱会停在它上面一格，
+    // 它自己是 0 而不是 15，下面十四格全黑）。
+    shapeEndsTheColumnFor(slab);
+}
+
+// 2b. 同一组数字，但方块是**放下去**的，不是初始填充出来的。
+//
+// 这一段是补出来的。上面那条走 `initializeChunks`，而初始填充与编辑是引擎里两条
+// 不同的路：填充走 BFS 的 `propagateIncreases`，编辑走 `desiredLevel` 的重算。
+// 两条各有一处「这一格不透光」的短路，于是把其中**一处**改回问渲染分桶时，
+// 另一处仍然给出正确答案，测试是绿的——sabotage 就这样溜过去了一次。
+//
+// 而玩家的动作恰恰是「放下一块台阶」，也就是编辑那条路。两条都要有夹具。
+void testShapeEndsTheColumnAfterPlacement() {
+    for (const auto shaped : {stair, slab}) {
+        World world = makeShaftWorld();
+        WorldLightEngine engine;
+        light(world, engine);
+        // 放之前：整条竖井通到底都是源。
+        assert(shaftSky(world, kTestY) == 15U);
+        assert(shaftSky(world, kTestY - 1) == 15U);
+
+        world.setState(kShaftX, kTestY, kShaftZ, shaped(SlabPortion::Top));
+        engine.updateBlock(world, kShaftX, kTestY, kShaftZ);
+
+        // 放之后：上半砖封住它上面那条边，源柱停在上一格；它自己被传播进来，
+        // 读 14 而不是 0——0 正是「光进不去这一格」那处短路问错了东西的样子。
+        assert(world.lowestSourceY(kShaftX, kShaftZ) == kTestY + 1);
+        assert(shaftSky(world, kTestY + 1) == 15U);
+        assert(shaftSky(world, kTestY) == 14U);
+        assert(shaftSky(world, kTestY - 1) == 13U);
+    }
 }
 
 // 3. An unobstructed column is lit to the bottom of the world. This is not the
@@ -248,6 +290,7 @@ void testLightMemoryContract() {
 int main() {
     testDampeningEndsTheColumn();
     testShapeEndsTheColumnOneCellApart();
+    testShapeEndsTheColumnAfterPlacement();
     testOpenColumnReachesTheWorldBottom();
     testSubmergedStairUpdatesTheColumn();
     testLightMemoryContract();

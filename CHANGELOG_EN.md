@@ -8,6 +8,13 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- Daylight reaches under a slab roof again. A slab was treated as blocking light
+  as completely as a full block, so anything roofed with slabs -- a stairwell, a
+  slab ceiling, a cave mouth capped off with them -- went pitch dark underneath
+  instead of staying lit the way Minecraft leaves it. The same was true of an
+  enchanting table and an anvil. Stairs were already right. Placing or breaking
+  one of these now relights the space around it correctly too, not only worlds
+  loaded fresh.
 - The interface sat one pixel off at some window sizes. Menus, the hotbar, the inventory and
   container panels were all centred on "half the window in pixels", where Minecraft first turns
   the window into a whole-numbered interface canvas, centres on that with integer division, and

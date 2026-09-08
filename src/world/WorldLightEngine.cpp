@@ -162,8 +162,9 @@ std::uint8_t WorldLightEngine::level(const World& world, Channel channel,
 std::uint8_t WorldLightEngine::desiredLevel(const World& world, Channel channel,
                                             const Node& node) {
     const auto state = world.state(node.x, node.y, node.z);
-    const Block value = state.block();
-    const bool opaque = isOpaque(value);
+    // 「光进不去」是**逐状态**的问题（下半砖不挡、双层台阶挡），所以这里问的是状态，
+    // 不再是身份，也不再是渲染分桶——`value` 那个 Block 变量随之没有了用处。
+    const bool opaque = blocksLight(state);
     // Emission is a property of the state, not the block: a lit furnace is the
     // same block as a cold one and only the lit state glows.
     // Sky light is a binary source column, not a decaying direct value: a cell
@@ -264,7 +265,7 @@ void WorldLightEngine::propagateIncreases(World& world, Channel channel,
                               source.z + offset[2]};
             if (!loaded(world, target.x, target.y, target.z)) continue;
             const BlockState targetState = world.state(target.x, target.y, target.z);
-            if (isOpaque(targetState.block())) continue;
+            if (blocksLight(targetState)) continue;
             // The same LightEngine.getOpacity step desiredLevel applies, so a
             // cell reached from either side of the engine agrees with itself.
             const std::uint8_t step = std::max<std::uint8_t>(1U, skyLightOpacity(targetState));
@@ -342,7 +343,7 @@ void WorldLightEngine::initializeChunks(World& world,
                                 .state(localX, yInSectionFromWorldY(y), localZ)
                                 .emittedLight();
                         chunk->setBlockLight(localX, y, localZ, emitted);
-                        if (!isOpaque(value.block()) && sky < 15U) {
+                        if (!blocksLight(value) && sky < 15U) {
                             skyQueue.push_back({originX + localX - 1, y, originZ + localZ});
                             skyQueue.push_back({originX + localX + 1, y, originZ + localZ});
                             skyQueue.push_back({originX + localX, y, originZ + localZ - 1});

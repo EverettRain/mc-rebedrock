@@ -3759,10 +3759,37 @@ static_assert(blockDefinition(Block::OakDoor).states.size() < kMaximumStatePrope
     return isRenderable(block) && blockDefinition(block).skipsRenderingAgainstSelf;
 }
 
+// `isFullCube` 定义在下面（它要先有 model 表）。这里前置声明，是为了让
+// `skyLightOpacity` 能紧挨着 `canOcclude` / `skipsRenderingAgainstSelf` ——
+// 这三条是同一个「曾经三合一的字段」被拆出来的三根轴，摆在一起才看得出它们各管什么。
+[[nodiscard]] constexpr bool isFullCube(Block block);
+
+// 26.1 `BlockBehaviour.getLightDampening`：
+//
+//     isSolidRender ? 15 : (propagatesSkylightDown ? 0 : 1)
+//
+// 第一档问的是**遮挡形状是不是满方块**（`isSolidRender = isShapeFullBlock(occlusionShape)`，
+// 而 `occlusionShape = canOcclude ? getOcclusionShape() : empty`），第二档由本作的显式
+// `lightFilter` 表承担（玻璃 0、树叶 1、水 1，与 vanilla 的 0/1 逐块一致）。
+//
+// ★ 这里曾经问的是 `isOpaque(block)`，也就是**渲染分桶**。那是 RN-8 立项时那个
+// 「渲染分桶 / 遮挡 / 光照三合一」字段的最后一份：`canOcclude` 已由 RN-8e 拆成独立轴，
+// 光这一轴还绑着分桶。后果是台阶被当成完全挡光（15），台阶铺的屋顶下面一片死黑。
+//
+// 它同时让**两处已经写对了的注释与代码相矛盾**——`BlockState.hpp` 的
+// `skyLightOpacity(BlockState)` 注释写着「a slab's un-submerged lightFilter is 0 —
+// a dry slab does not dim the column at all」，`SkyColumn.hpp` 的 `skyColumnEdgeOccluded`
+// 注释写着楼梯是靠形状那一条（clause 2）结束源柱的；两句都对，但 `isOpaque` 在它们
+// 之前就短路了，那两条描述的机制从未生效过。
+//
+// 同一条 vanilla 谓词在本仓有两处实现：`opacity(BlockState)`（可蔓延方块的遮蔽项）
+// 一直用的是正确的 `isFullCubeState() && canOcclude`。两者现在同源。
+[[nodiscard]] constexpr std::uint8_t lightDampening(bool solidRender, Block block) {
+    return solidRender ? std::uint8_t{15U} : blockDefinition(block).lightFilter;
+}
+
 [[nodiscard]] constexpr std::uint8_t skyLightOpacity(Block block) {
-    if (isOpaque(block))
-        return 15U;
-    return blockDefinition(block).lightFilter;
+    return lightDampening(canOcclude(block) && isFullCube(block), block);
 }
 
 [[nodiscard]] constexpr bool hasCollision(Block block) { return blockDefinition(block).collision; }

@@ -318,7 +318,23 @@ class BlockState final {
     if (state.submergedFluid() == SubmergedFluid::Water) {
         return skyLightOpacity(Block::Water);
     }
-    return skyLightOpacity(state.block());
+    // 「遮挡形状是不是满方块」是**逐状态**的问题，和下面 `opacity(BlockState)` 同理：
+    // 双层台阶填满格子、上下半砖不填，而按身份问的 `isFullCube` 对三者给同一个答案。
+    // 少了这一句，双层台阶会跟着半砖一起变成不挡光。
+    return lightDampening(canOcclude(state.block()) && state.isFullCubeState(), state.block());
+}
+
+// 光完全进不去这一格。
+//
+// 26.1 没有单独的谓词：`LightEngine.getOpacity` 返回 `max(1, getLightDampening())`，
+// 而衰减为 15 时任何 ≤15 的光进来就归零，于是「不透光」自然成立。本作的光照引擎把它
+// 写成显式短路（三处热路径都靠它跳过整格），所以那个短路必须问**同一个**量。
+//
+// ★ 它曾经问的是 `isOpaque`，也就是渲染分桶——与 `skyLightOpacity` 从前的第一档同病。
+// 只改 `skyLightOpacity` 而不改这里，修复会只做一半：下半砖变亮了，而上半砖仍然全黑
+// （源柱停在它上面一格是对的，但那一格的光进不到它自己身上）。
+[[nodiscard]] constexpr bool blocksLight(BlockState state) {
+    return skyLightOpacity(state) >= 15U;
 }
 
 // The spreadable-block shielding term, state-aware — the counterpart to
