@@ -15,6 +15,14 @@
 // graph 不解释那个指针。放在 render/graph/ 而不是 render/vulkan/，因为它是编排层，
 // 后面光影包的两个前端要落在同一层。
 //
+// 那两个前端是「内置默认 pass 表」与「本作自研格式的外部包」。**不做 Iris / OptiFine
+// 格式的导入**（用户裁定 2026-09-08）：那些包是为 OpenGL 写的，程序模型建立在固定的
+// pass 名、隐式绑定全部 colortex、`/* RENDERTARGETS: */` 注释与 FBO 附件切换之上，
+// 还普遍依赖 gl_FragData[] 这类固定管线残留。兼容它等于在 Vulkan 上重建一层 OpenGL
+// 语义外加运行时 GLSL→SPIR-V 编译，换来的还是别人为另一套硬件模型写的包。
+// 自研格式反过来可以与本层的 GraphDesc 一一对应（资源表 + 视图表 + pass 表），
+// 着色器直接交 SPIR-V，运行时零编译器依赖。
+//
 // 本轮（RN-20a）**不创建任何 Vulkan 对象**。renderPass / framebuffer / clear 值都由
 // 调用方在 PassDesc 里给出，编译只做校验、剪枝与扁平化。资源与视图两张表在这一轮
 // 同样只被校验——它们存在是为了给 20b（管线注册表）/ 20c（usage 与 storeOp 按消费者
