@@ -3048,19 +3048,27 @@ std::vector<WorldSummary> SaveRepository::worldSummaries() const {
     return summaries;
 }
 
-SaveGame SaveRepository::create(std::string displayName, std::uint64_t seed) const {
-    SaveGame game;
-    game.summary.displayName = sanitizeDisplayName(std::move(displayName));
-    game.summary.seed = seed;
-    game.summary.lastPlayedUnixSeconds = nowUnixSeconds();
+std::string SaveRepository::slugForDisplayName(std::string_view displayName) {
+    const std::string sanitized = sanitizeDisplayName(std::string{displayName});
     std::string slug;
-    for (const char rawCharacter : game.summary.displayName) {
+    for (const char rawCharacter : sanitized) {
         const auto character = static_cast<unsigned char>(rawCharacter);
         if (std::isalnum(character) != 0) slug.push_back(static_cast<char>(std::tolower(character)));
         else if (!slug.empty() && slug.back() != '-') slug.push_back('-');
     }
     while (!slug.empty() && slug.back() == '-') slug.pop_back();
     if (slug.empty()) slug = "world";
+    return slug;
+}
+
+SaveGame SaveRepository::create(std::string displayName, std::uint64_t seed) const {
+    SaveGame game;
+    game.summary.displayName = sanitizeDisplayName(std::move(displayName));
+    game.summary.seed = seed;
+    game.summary.lastPlayedUnixSeconds = nowUnixSeconds();
+    // 与创建界面那行预览走同一个函数，"预览显示的文件夹"与"真正建出来的文件夹"
+    // 因此不可能各自演化。sanitizeDisplayName 幂等，这里再过一遍不改变结果。
+    const std::string slug = slugForDisplayName(game.summary.displayName);
     // The folder name is an external identity, so it mirrors vanilla: the
     // display-name slug alone, with a numeric suffix appended only when that
     // slug already exists on disk. It used to carry "-<lastPlayedUnixSeconds>",

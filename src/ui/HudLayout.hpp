@@ -145,7 +145,15 @@ class HudLayout final {
     [[nodiscard]] int logicalWidth() const;
     [[nodiscard]] int logicalHeight() const;
 
-  private:
+    // 这两个助手曾经是 private：本类之外的版面都住在 ui/MenuGeometry.cpp 里，而它是
+    // 友元式的同层代码。创建世界页的表单（世界名框、文件夹名预览、种子框）打破了这个
+    // 前提——它的几何锚在**这一页按钮块的上沿**上，而按钮块的高度随按钮数变化，
+    // 所以它必须在绘制侧、拿到已装配的页面之后才解得出来，解的地方是
+    // render/vulkan/HudRenderer.hpp。
+    //
+    // 放开的是**这两个**，不是让调用方自己写 `(宽 - 内容宽) * 0.5F`：README 护栏 5
+    // 要求版面一律在逻辑画布的整数网格上解、最后一次乘 scale 回到帧缓冲像素。
+    // 自己写浮点居中在非整除的缩放档下会差一像素，而那正是这两个助手存在的理由。
     // UI-3：逻辑像素 → 帧缓冲像素。GUI spec §1.1 的映射就是一次乘 scale：
     // 26.1 的 GUI 正交投影用的是 `width / guiScale` 的**未取整**值
     // （`GuiRenderer.java:203`），不是 ceil 后的 scaledWidth——spec §1.1 那句
@@ -159,6 +167,8 @@ class HudLayout final {
     // 从前这里是 `(帧缓冲宽 - 内容宽) * 0.5F`：既没取整，也没用 ceil 后的画布，
     // 于是 1280x720 @scale 3 下快捷栏落在 367 而不是 vanilla 的 366。
     [[nodiscard]] int centredLogicalX(int extent) const { return (logicalWidth() - extent) / 2; }
+
+  private:
     [[nodiscard]] int centredLogicalY(int extent) const { return (logicalHeight() - extent) / 2; }
 
     float width_;

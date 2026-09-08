@@ -1275,16 +1275,16 @@ void GameRuntime::rebuildFunctions() {
 }
 
 persistence::SaveGame GameRuntime::createWorld(std::string name, std::uint64_t seed,
-                                               gameplay::GameMode mode, bool allowCommands) {
+                                               gameplay::GameMode mode, bool allowCommands,
+                                               gameplay::Difficulty difficulty) {
     // I-3：与 SaveRepository::load 对称的另一半 —— 新世界没有任何名字，
     // 上一个世界的 intern 表在这里交还。清空的职责统一归「获取一份 SaveGame」
     // 这一侧，而不是 resetWorldState（它跑在解析之后，见那里的注释）。
     gameplay::customNames().clear();
     auto save = saveRepository_.create(name, seed);
     save.gameMode = mode;
-    // A new world starts on Normal difficulty, exactly like vanilla; each world
-    // then owns the setting from here on.
-    save.difficulty = gameplay::Difficulty::Normal;
+    // 难度由创建方给（缺省 Normal，与 vanilla 新世界一致），此后归这个世界自己所有
+    save.difficulty = difficulty;
     // Cheats are set once at creation (CMD-8) and persisted with the world.
     save.allowCommands = allowCommands;
     gameplay::Inventory initialInventory;

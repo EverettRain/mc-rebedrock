@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -398,6 +399,15 @@ class SaveRepository final {
     void remove(const std::string& identifier) const;
 
     [[nodiscard]] static std::string sanitizeDisplayName(std::string name);
+    // 显示名 -> 文件夹名的那一步 slug 化，**不含**去重后缀。
+    //
+    // 抽成公开静态函数是为了创建界面：它要在玩家还没按下"创建"之前就把
+    // "这个世界会存到哪个文件夹"显示出来，而那时 create() 还没跑。去重后缀
+    // （`-2`、`-3`）留在 create() 里没有搬出来——它依赖"磁盘上是否已存在"，
+    // 是一次 I/O，不该混进一个纯字符串函数，预览也不需要它。
+    // 内部先做一遍 sanitizeDisplayName（幂等），所以传未清洗的输入框原文即可，
+    // 答案与 create() 逐字节一致。
+    [[nodiscard]] static std::string slugForDisplayName(std::string_view displayName);
 
     // Diagnostic: how many region files have been opened for chunk loading in
     // this process, ever. worldSummaries() reads only world.dat's header and must

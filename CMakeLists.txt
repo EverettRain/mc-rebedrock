@@ -3645,6 +3645,23 @@ if(BUILD_TESTING)
     )
     add_test(NAME enchanting_table COMMAND mc_rebedrock_enchanting_table_test)
 
+    # 「创建世界」界面三项功能的接线：种子解析、创建时选难度、文件夹名预览
+    add_executable(mc_rebedrock_create_world_wiring_test
+        tests/create_world_wiring_test.cpp
+        # ui/ 的这两个 .cpp 不在 mc_rebedrock_runtime 里（它们属于客户端那一侧），
+        # 而 MenuSystem 的默认成员要用到 PageStack 与 textFieldWithValue
+        src/ui/PageStack.cpp
+        src/ui/TextField.cpp
+        src/ui/TextFont.cpp
+        src/ui/BitmapFontMetrics.cpp
+    )
+    target_link_libraries(mc_rebedrock_create_world_wiring_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_create_world_wiring_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME create_world_wiring COMMAND mc_rebedrock_create_world_wiring_test)
+
     add_executable(mc_rebedrock_anvil_test
         tests/anvil_test.cpp
     )
