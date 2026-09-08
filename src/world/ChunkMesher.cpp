@@ -1011,8 +1011,12 @@ struct SubstituteEdge final {
 //    from the edge neighbour, not at the edge neighbour itself (:60-67).
 //
 // `!translucent` is `isViewBlocking && lightDampening != 0`. Here that is
-// `aoOccludes`: it is true only for a full opaque non-leaf cube, and any block
-// with it set has skyLightOpacity 15, so the dampening half is implied.
+// `aoBlocksView` — a DIFFERENT question from the one the corner average asks.
+// Leaves are exactly the block the two answers separate: vanilla gives them
+// `isViewBlocking(never)` (Blocks.java:6778) so they never trigger the
+// substitution, yet their collision shape is a full block so they DO darken a
+// corner to 0.2. The two used to be one predicate here, and the darkening half
+// was the one that lost.
 // The four `translucentN` answers, one per edge. They are resolved once per face
 // rather than per corner: each edge takes part in two corners, so asking inside
 // the corner loop would probe every cell twice.
@@ -1024,7 +1028,7 @@ struct EdgeBlocking final {
 template <typename Sampler>
 [[nodiscard]] EdgeBlocking edgeBlocking(const Sampler& lighting, const FaceRing& ring) {
     const auto blocks = [&](const glm::ivec3& position) {
-        return lighting.aoOccludes(position.x, position.y, position.z);
+        return lighting.aoBlocksView(position.x, position.y, position.z);
     };
     return {{blocks(ring.beyondA[0]), blocks(ring.beyondA[1])},
             {blocks(ring.beyondB[0]), blocks(ring.beyondB[1])}};
@@ -1044,7 +1048,8 @@ template <typename Sampler>
                                          const glm::ivec3& edgeA, const glm::ivec3& edgeB,
                                          const glm::ivec3& diagonal) {
     const auto aoFactor = [&](const glm::ivec3& position) {
-        return lighting.aoOccludes(position.x, position.y, position.z) ? 0.2F : 1.0F;
+        // 26.1 `getShadeBrightness`：碰撞盒满格就是 0.2，看不看得穿无关。
+        return lighting.aoDarkens(position.x, position.y, position.z) ? 0.2F : 1.0F;
     };
     return (aoFactor(centre) + aoFactor(edgeA) + aoFactor(edgeB) + aoFactor(diagonal)) * 0.25F;
 }
@@ -2636,8 +2641,8 @@ bool buildSectionImpl(
 
 // RN-8a: one byte of `MeshLightingSnapshot::flags_` per block, plus whether the
 // occlusion half of it has to be re-asked of the state. This is the snapshot's
-// own packing (bit0 opaque, bit1 aoOccludes, bits 2..7 the face mask), so it
-// lives here rather than beside `kOcclusionMaskByBlock`, which answers the
+// own packing (bit0 aoDarkens, bit1 aoBlocksView, bits 2..7 the face mask), so
+// it lives here rather than beside `kOcclusionMaskByBlock`, which answers the
 // geometry question and knows nothing about flag bits.
 struct CellFlagEntry final {
     std::uint8_t flags = 0U;
@@ -2650,8 +2655,8 @@ inline constexpr std::array<CellFlagEntry, static_cast<std::size_t>(Block::Count
         for (std::size_t index = 0; index < table.size(); ++index) {
             const auto block = static_cast<Block>(index);
             std::uint8_t flags = 0U;
-            if (mc::world::isOpaque(block)) flags |= 0x01U;
-            if (mc::world::aoOccludes(block)) flags |= 0x02U;
+            if (mc::world::aoDarkens(block)) flags |= 0x01U;
+            if (mc::world::aoBlocksView(block)) flags |= 0x02U;
             const std::uint8_t occlusion = kOcclusionMaskByBlock[index];
             const bool stateDependent = (occlusion & kOcclusionStateDependent) != 0U;
             table[index] = {static_cast<std::uint8_t>(
@@ -2781,7 +2786,7 @@ MeshLightingSnapshot::MeshLightingSnapshot(const World& world, ChunkPosition pos
                 }
                 const Block value = chunk->block(chunkLocalX, y, chunkLocalZ);
                 blockTypes_[cell] = static_cast<std::uint16_t>(value);
-                // RN-8a: the whole flags byte — opaque, aoOccludes and the
+                // RN-8a: the whole flags byte — the two AO predicates and the
                 // six-face occlusion mask — comes out of one L1-resident entry.
                 // The two predicates used to be a pair of random probes into the
                 // 92 KB block registry per cell; folding them in with the mask
@@ -2845,11 +2850,12 @@ float MeshLightingSnapshot::block(int x, int y, int z) const {
 }
 
 bool MeshLightingSnapshot::isOpaque(int x, int y, int z) const {
+    // 不再占 flags_ 的一位：这个快照本来就存着 blockTypes_，而渲染分桶只有这一个
+    // 调用者，不在逐角的热路径上。让出来的那一位给了拆开后的第二条 AO 谓词。
     if (!contains(x, y, z)) {
-        return isWorldYInRange(y) &&
-               mc::world::isOpaque(world_.block(x, y, z));
+        return isWorldYInRange(y) && mc::world::isOpaque(world_.block(x, y, z));
     }
-    return (flags_[index(x, y, z)] & 0x01U) != 0U;
+    return mc::world::isOpaque(static_cast<Block>(blockTypes_[index(x, y, z)]));
 }
 
 bool MeshLightingSnapshot::faceOccludes(int x, int y, int z, Face face) const {
@@ -2859,7 +2865,12 @@ bool MeshLightingSnapshot::faceOccludes(int x, int y, int z, Face face) const {
     return (flags_[index(x, y, z)] & bit) != 0U;
 }
 
-bool MeshLightingSnapshot::aoOccludes(int x, int y, int z) const {
+bool MeshLightingSnapshot::aoDarkens(int x, int y, int z) const {
+    if (!contains(x, y, z)) return false;
+    return (flags_[index(x, y, z)] & 0x01U) != 0U;
+}
+
+bool MeshLightingSnapshot::aoBlocksView(int x, int y, int z) const {
     if (!contains(x, y, z)) return false;
     return (flags_[index(x, y, z)] & 0x02U) != 0U;
 }

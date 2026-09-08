@@ -1082,6 +1082,13 @@ struct BlockDefinition final {
     // build derived it from `renderLayer != Opaque`, which quietly enrolled every
     // Cutout block — and made two stacked stairs cull each other's shared faces.
     bool skipsRenderingAgainstSelf = false;
+    // 26.1 `TransparentBlock.getShadeBrightness` 覆写成 1.0F —— 玻璃与十六色染色
+    // 玻璃是**唯一**把这个答案从默认拉走的一族（`TransparentBlock.java:36`）。默认是
+    // `isCollisionShapeFullBlock ? 0.2F : 1.0F`，所以冰、萤石、树叶这些「满格但看得穿」
+    // 的方块照样把平滑光照的角压暗——`IceBlock`/`LeavesBlock` 都没有覆写它。
+    // 与 `skipsRenderingAgainstSelf` 分开：那一位问「同类之间画不画」，这一位问
+    // 「压不压暗邻居的角」，玻璃两位都要，冰只要前一位。
+    bool shadeTransparent = false;
     bool collision = true;
     BlockModel model = BlockModel::Cube;
     // The height of the block's solid box, in [0, 1]. Full cubes are 1.0; a
@@ -1473,6 +1480,14 @@ class BlockProperties final {
         return copy;
     }
 
+    // 26.1 `TransparentBlock.getShadeBrightness` → 1.0F。只有玻璃族有这个覆写；
+    // 在每个调用点写明它来自哪个 vanilla 类，理由与上面那条一样。
+    [[nodiscard]] constexpr BlockProperties transparentShade() const {
+        BlockProperties copy = *this;
+        copy.definition_.shadeTransparent = true;
+        return copy;
+    }
+
     [[nodiscard]] constexpr BlockProperties leaves() const {
         BlockProperties copy = *this;
         copy.definition_.leaves = true;
@@ -1748,6 +1763,8 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // through must not cull its neighbours.
         .skipsRenderingAgainstSelf()
         .noOcclusion()
+        // `TransparentBlock.getShadeBrightness` → 1.0F：玻璃不压暗邻居的角。
+        .transparentShade()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::CoalOre, "coal_ore", "Coal Ore")
         .texture("coal_ore")
@@ -3349,18 +3366,21 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     // Stained glass (16 colours) — translucent cubes, the Glass recipe.
     BlockProperties::of(Block::WhiteStainedGlass, "white_stained_glass", "White Stained Glass")
         .texture("white_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .transparentShade()
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::OrangeStainedGlass, "orange_stained_glass", "Orange Stained Glass")
         .texture("orange_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .transparentShade()
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::MagentaStainedGlass, "magenta_stained_glass", "Magenta Stained Glass")
         .texture("magenta_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .transparentShade()
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
@@ -3368,30 +3388,35 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     BlockProperties::of(Block::LightBlueStainedGlass, "light_blue_stained_glass",
                         "Light Blue Stained Glass")
         .texture("light_blue_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .transparentShade()
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::YellowStainedGlass, "yellow_stained_glass", "Yellow Stained Glass")
         .texture("yellow_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .transparentShade()
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::LimeStainedGlass, "lime_stained_glass", "Lime Stained Glass")
         .texture("lime_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .transparentShade()
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::PinkStainedGlass, "pink_stained_glass", "Pink Stained Glass")
         .texture("pink_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .transparentShade()
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::GrayStainedGlass, "gray_stained_glass", "Gray Stained Glass")
         .texture("gray_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .transparentShade()
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
@@ -3399,48 +3424,56 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     BlockProperties::of(Block::LightGrayStainedGlass, "light_gray_stained_glass",
                         "Light Gray Stained Glass")
         .texture("light_gray_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .transparentShade()
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::CyanStainedGlass, "cyan_stained_glass", "Cyan Stained Glass")
         .texture("cyan_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .transparentShade()
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::PurpleStainedGlass, "purple_stained_glass", "Purple Stained Glass")
         .texture("purple_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .transparentShade()
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::BlueStainedGlass, "blue_stained_glass", "Blue Stained Glass")
         .texture("blue_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .transparentShade()
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::BrownStainedGlass, "brown_stained_glass", "Brown Stained Glass")
         .texture("brown_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .transparentShade()
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::GreenStainedGlass, "green_stained_glass", "Green Stained Glass")
         .texture("green_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .transparentShade()
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::RedStainedGlass, "red_stained_glass", "Red Stained Glass")
         .texture("red_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .transparentShade()
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::BlackStainedGlass, "black_stained_glass", "Black Stained Glass")
         .texture("black_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
+        .transparentShade()
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
@@ -4052,13 +4085,43 @@ inline constexpr int kMaximumLeafSupportDistance = 6;
     return blockDefinition(block).collision && !isLeaves(block);
 }
 
-// Whether the block darkens a smooth-lighting AO corner (vanilla
-// AbstractBlock#getAmbientOcclusionLightLevel: a full cube whose material is
-// opaque returns 0.2, everything else 1.0). isFullCube alone is wrong: leaves,
-// glass and glowstone are cube-shaped but their vanilla materials are not
-// opaque, so they must not darken corners.
-[[nodiscard]] constexpr bool aoOccludes(Block block) {
-    return isFullCube(block) && !isLeaves(block) && isOpaque(block) && block != Block::Glowstone;
+// 平滑光照里一格能起两种作用，26.1 分别用两个**不同**的问题问它们。这里从前是
+// 一个 `aoOccludes` 同时回答两边，那是 RN-8 那个三合一字段的又一份。
+//
+// ① 它压不压暗一个角 —— `BlockBehaviour.getShadeBrightness`
+//    （`BlockBehaviour.java:319`）：
+//
+//        state.isCollisionShapeFullBlock(level, pos) ? 0.2F : 1.0F
+//
+//    覆写全仓只有七处，与本作名册相关的两类：`TransparentBlock`（玻璃族）拉回
+//    1.0F，`MudBlock` / `SoulSandBlock` 钉死 0.2F（它们的碰撞盒差一点点满格）。
+//    **树叶、冰、萤石都没有覆写**——`LeavesBlock` 的碰撞盒是满格（人能站上去），
+//    所以 vanilla 的树叶和石头一样把角压到 0.2。本作从前问的是**渲染分桶**
+//    （`isOpaque`），于是树叶、冰、萤石一律不压暗：树在原版里那种一层一层的
+//    体积感全没了，树叶紧挨着树干也不在树干上投一点影。
+//
+// ② 它算不算「挡住视线」，也就是要不要触发对角替换 ——
+//    `BlockModelLighter.java:61` 的 `translucentN`：
+//
+//        !corner.isViewBlocking(level, pos) || corner.getLightDampening() == 0
+//
+//    `isViewBlocking` 默认是 `blocksMotion && isCollisionShapeFullBlock`
+//    （`BlockBehaviour.java:997-998`，它默认接的是 `isSuffocating`），玻璃与树叶
+//    显式改成 `never`（`Blocks.java:563` / `:6778`）。第二个分句由本作的
+//    `skyLightOpacity` 承担。
+//
+// 两者是包含关系而非同一件事：挡视线的一定压暗，压暗的不一定挡视线（树叶正是
+// 那个差集）。
+[[nodiscard]] constexpr bool aoDarkens(Block block) {
+    return isFullCube(block) && blockDefinition(block).collision &&
+           !blockDefinition(block).shadeTransparent;
+}
+
+[[nodiscard]] constexpr bool aoBlocksView(Block block) {
+    // `isViewBlocking`：默认由碰撞满格推出，玻璃族与树叶显式 never。
+    const bool viewBlocking = isFullCube(block) && blockDefinition(block).collision &&
+                              !blockDefinition(block).shadeTransparent && !isLeaves(block);
+    return viewBlocking && skyLightOpacity(block) != 0U;
 }
 
 // Flowing water washes away decoration blocks that do not block motion. Crops

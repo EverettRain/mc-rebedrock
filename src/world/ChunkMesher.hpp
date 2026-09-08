@@ -18,7 +18,7 @@ namespace mc::world {
 // requested Y-range padded by two cells in every axis (the vanilla AO overhang
 // probe reaches pos + 2*faceNormal + in-plane, so two cells is the tight
 // bound), reads the request chunk and its eight neighbours' block/light arrays
-// directly, and caches opaque/aoOccludes flags so a corner costs one array
+// directly, and caches the two AO predicates so a corner costs one array
 // read instead of ~13 unordered-map lookups.
 class MeshLightingSnapshot final {
   public:
@@ -31,7 +31,10 @@ class MeshLightingSnapshot final {
     [[nodiscard]] float sky(int x, int y, int z) const;
     [[nodiscard]] float block(int x, int y, int z) const;
     [[nodiscard]] bool isOpaque(int x, int y, int z) const;
-    [[nodiscard]] bool aoOccludes(int x, int y, int z) const;
+    // 平滑光照的两问，26.1 分开问（见 Block.hpp 的 aoDarkens / aoBlocksView）：
+    // 压不压暗一个角，和算不算挡住视线。
+    [[nodiscard]] bool aoDarkens(int x, int y, int z) const;
+    [[nodiscard]] bool aoBlocksView(int x, int y, int z) const;
     // RN-8a: does the cell's state seal that one face? Precomputed into flags_
     // at fill time, so the mesher's per-face cull test is a single bit read out
     // of an array the AO path has already pulled into cache.
@@ -50,7 +53,11 @@ class MeshLightingSnapshot final {
     int width_ = 0;
     int height_ = 0;
     int depth_ = 0;
-    // bit0 = opaque, bit1 = aoOccludes, bits 2..7 = the RN-8a face-occlusion mask
+    // bit0 = aoDarkens, bit1 = aoBlocksView, bits 2..7 = the RN-8a face-occlusion
+    // mask. `isOpaque` used to own bit 0; it now derives from blockTypes_, which
+    // this snapshot already stores — that kept the byte at eight bits when the
+    // one AO predicate became two, instead of paying the +20% a wider array or a
+    // seventh one would cost (the same trade the mask comment below rejects).
     // (bit 2+i seals Face(i), the BlockShape.hpp order). The mask rides in this
     // array's spare bits rather than in one of its own on purpose: it is six bits
     // per cell either way, but a seventh array would be +20% snapshot memory and

@@ -188,9 +188,14 @@ bool ChunkLightSampler::isOpaque(int x, int y, int z) const {
     return mc::world::isOpaque(world_.block(x, y, z));
 }
 
-bool ChunkLightSampler::aoOccludes(int x, int y, int z) const {
+bool ChunkLightSampler::aoDarkens(int x, int y, int z) const {
     if (!isWorldYInRange(y)) return false;
-    return mc::world::aoOccludes(world_.block(x, y, z));
+    return mc::world::aoDarkens(world_.block(x, y, z));
+}
+
+bool ChunkLightSampler::aoBlocksView(int x, int y, int z) const {
+    if (!isWorldYInRange(y)) return false;
+    return mc::world::aoBlocksView(world_.block(x, y, z));
 }
 
 bool ChunkLightSampler::faceOccludes(int x, int y, int z, Face face) const {

@@ -815,6 +815,14 @@ if(BUILD_TESTING)
         "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
     add_test(NAME descriptor_bindings COMMAND mc_rebedrock_descriptor_bindings_test)
 
+    # 树叶要像石头一样压暗平滑光照的角（26.1 的 getShadeBrightness 只问碰撞盒满不满
+    # 格，LeavesBlock 没有覆写它），但**不**触发对角替换（isViewBlocking 是 never）。
+    # 这两件事从前是同一条谓词，树叶两件事都没做，树因此没有层次感。
+    add_executable(mc_rebedrock_leaf_ambient_occlusion_test
+        tests/leaf_ambient_occlusion_test.cpp)
+    target_link_libraries(mc_rebedrock_leaf_ambient_occlusion_test PRIVATE mc_rebedrock_runtime)
+    add_test(NAME leaf_ambient_occlusion COMMAND mc_rebedrock_leaf_ambient_occlusion_test)
+
     # 面的光照环锚在哪一格：贴壁的面锚在外、缩在格内的面锚在自己这一格。双层台阶六面
     # 全贴壁，因此必须与整块方块逐字节一样亮——它曾经暗一大截（顶面 191、侧面低到 64）。
     add_executable(mc_rebedrock_shaped_face_anchor_test

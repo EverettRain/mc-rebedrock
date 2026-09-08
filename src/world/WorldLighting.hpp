@@ -35,7 +35,8 @@ class ChunkLightSampler final {
     // over either sampler. For the padded variant the opaque_ array is O(1);
     // the others fall back to a World read (only used on the test/build paths).
     [[nodiscard]] bool isOpaque(int x, int y, int z) const;
-    [[nodiscard]] bool aoOccludes(int x, int y, int z) const;
+    [[nodiscard]] bool aoDarkens(int x, int y, int z) const;
+    [[nodiscard]] bool aoBlocksView(int x, int y, int z) const;
     // RN-8a's face-occlusion question, the same one MeshLightingSnapshot answers
     // from its precomputed mask. This variant has no mask array, so it resolves
     // the cell's shape through World on every call — acceptable only because

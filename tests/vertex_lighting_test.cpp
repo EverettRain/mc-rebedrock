@@ -387,12 +387,20 @@ int main() {
         assert(snapshot.level(8, mc::world::kMinY + 8, 8).block == 10U);
         assert(snapshot.blockType(8, mc::world::kMinY + 8, 8) == mc::world::Block::Stone);
         assert(snapshot.isOpaque(8, mc::world::kMinY + 8, 8));
-        assert(snapshot.aoOccludes(8, mc::world::kMinY + 8, 8));
+        assert(snapshot.aoDarkens(8, mc::world::kMinY + 8, 8));
         // Neighbour-chunk cell routes to the right chunk, not the request one.
         assert(snapshot.blockType(16, mc::world::kMinY + 8, 8) == mc::world::Block::Glowstone);
         assert(snapshot.level(16, mc::world::kMinY + 8, 8).block == 15U);
-        // Glowstone's vanilla material is glass: it does not darken AO corners.
-        assert(!snapshot.aoOccludes(16, mc::world::kMinY + 8, 8));
+        // 萤石**会**压暗 AO 角。这一句从前断言的是反面，理由写的是「它的 vanilla
+        // 材质是玻璃」——那是 1.16 Material 时代的答案。26.1 里 Material 整套已经
+        // 没了，`getShadeBrightness` 只问 `isCollisionShapeFullBlock`
+        // （BlockBehaviour.java:319-321），而 GLOWSTONE 是一个普通 `Block`
+        // （Blocks.java:2050-2059，没有覆写、没有 noOcclusion）⇒ 0.2F。
+        // 真正被覆写回 1.0F 的只有 `TransparentBlock` 那一族，也就是玻璃与染色玻璃。
+        assert(snapshot.aoDarkens(16, mc::world::kMinY + 8, 8));
+        // 而它同时也挡视线（isViewBlocking 走默认的「挡住移动且碰撞满格」，
+        // 光衰减 15），所以两条谓词对它给同一个答案——玻璃才是那个分道扬镳的。
+        assert(snapshot.aoBlocksView(16, mc::world::kMinY + 8, 8));
         // Missing neighbour chunk resolves to air, fully sky-lit.
         assert(snapshot.blockType(-2, mc::world::kMinY + 8, 8) == mc::world::Block::Air);
         assert(snapshot.level(-2, mc::world::kMinY + 8, 8).sky == 15U);
