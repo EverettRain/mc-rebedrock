@@ -1041,10 +1041,21 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             const std::array positions{world::ChunkPosition{0, 0}};
             lighting.initializeChunks(interactionWorld, positions);
             lighting.initializeChunks(clientCache, positions);
+            // ★ 必须把**刚算好的**光交给网格化。
+            //
+            // 三参数的 `buildSection` 自己 `ChunkLightSampler{world, position}` —— 那是个
+            // **重算**光照的取样器，而它判「这一格不透光」用的仍是 `isOpaque`（渲染分桶）。
+            // 于是台阶那一格的天光被直接写 0，屋顶顶面渲染成近纯黑，而 `world.skyLight`
+            // 明明是 15。真机走 `ChunkStreamer` → `MeshLightingSnapshot`，读的是引擎存下的值，
+            // 所以那是**离屏预览专属**的偏差：出的图与玩家看到的不是同一回事。
+            //
+            // 单参数构造的 `stored_` 为真，读的就是世界里存着的光。
+            const world::ChunkLightSampler previewLighting{clientCache};
             for (const int sectionY : {1, 2}) {
                 world::SectionMeshUpdate update;
                 update.position = {0, sectionY, 0};
-                update.mesh = world::ChunkMesher::buildSection(clientCache, {0, 0}, sectionY);
+                update.mesh = world::ChunkMesher::buildSection(clientCache, {0, 0}, sectionY,
+                                                              previewLighting);
                 update.revision = static_cast<std::uint64_t>(sectionY);
                 pendingSectionOrder.push(update.position, 0, false);
                 latestSectionRevisions.insert_or_assign(update.position, update.revision);
@@ -1094,10 +1105,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const std::array positions{world::ChunkPosition{0, 0}};
         lighting.initializeChunks(interactionWorld, positions);
         lighting.initializeChunks(clientCache, positions);
+        // 见上一处的理由：网格化必须读引擎刚算好的光，而不是让三参数重载再重算一份。
+        const world::ChunkLightSampler previewLighting{clientCache};
         world::SectionMeshUpdate update;
         update.position = {0, world::sectionIndexFromWorldY(kPreviewBlockPosition.y), 0};
         update.mesh =
-            world::ChunkMesher::buildSection(clientCache, {0, 0}, update.position.sectionY);
+            world::ChunkMesher::buildSection(clientCache, {0, 0}, update.position.sectionY,
+                                             previewLighting);
         update.revision = 1U;
         pendingSectionOrder.push(update.position, 0, false);
         latestSectionRevisions.insert_or_assign(update.position, update.revision);
@@ -1200,6 +1214,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const std::array positions{world::ChunkPosition{0, 0}};
         lighting.initializeChunks(interactionWorld, positions);
         lighting.initializeChunks(clientCache, positions);
+        // 见上一处的理由：网格化必须读引擎刚算好的光，而不是让三参数重载再重算一份。
+        const world::ChunkLightSampler previewLighting{clientCache};
         // Every section the scene reaches into, not just the origin's: a scene
         // that straddles a section boundary would otherwise have its upper half
         // simply missing from the picture, and nothing would say so.
@@ -1209,7 +1225,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         for (int sectionY = firstSection; sectionY <= lastSection; ++sectionY) {
             world::SectionMeshUpdate update;
             update.position = {0, sectionY, 0};
-            update.mesh = world::ChunkMesher::buildSection(clientCache, {0, 0}, sectionY);
+            update.mesh = world::ChunkMesher::buildSection(clientCache, {0, 0}, sectionY,
+                                                          previewLighting);
             update.revision = revision++;
             pendingSectionOrder.push(update.position, 0, false);
             latestSectionRevisions.insert_or_assign(update.position, update.revision);
