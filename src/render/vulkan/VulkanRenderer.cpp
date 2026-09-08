@@ -1160,6 +1160,21 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                /*rainTicks=*/0, /*raining=*/false,
                                                /*thundering=*/false);
         options.viewBobbing = false;
+        // ★ 这一档漏了很久，代价是**每一张出图都是糊的**。
+        //
+        // 导出为了冻住世界（顺带藏掉 HUD）把 `paused` 置真，而 `HudRenderer::screenOpen()`
+        // 把 `paused` 也算作「有界面打开」；于是
+        // `screenBackground(PageId::Game, worldOpen=true, …)` 落到 `InWorldBlur`，
+        // 整帧跑六趟 box blur，半径取用户设置里的默认值 5。
+        //
+        // 症状不像模糊、像「渲染得比较柔」：整张 512x512 的图里**相邻像素最大跃变只有
+        // 5/255**，连天空与石地板的交界都要 25 个像素才过渡完。凡是问「边缘」的判断
+        // （阴影边、AO 边、UV 接缝）在这样的图上一律得不出结论。
+        //
+        // 它属于这个函数开头那条规矩的管辖范围：一张取决于用户视频设置的图片没法和另一台
+        // 机器上的比对。`menuBackgroundBlurriness` 就是这样一档设置，只是它是**间接**
+        // 生效的，所以当初逐条列视频设置时没被想到。
+        options.menuBackgroundBlurriness = 0;
         options.sunShadows = testScene->sunShadows;
         // RN-23：贴花在导出里显式打开，和上面两项同理——一张取决于用户设置的图片
         // 没法和另一台机器上的图片对比，而对比正是这个工具的全部价值。

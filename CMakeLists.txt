@@ -816,6 +816,17 @@ if(BUILD_TESTING)
         "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
     add_test(NAME descriptor_bindings COMMAND mc_rebedrock_descriptor_bindings_test)
 
+    # 出图必须钉死每一档会改变画面的视频设置，包括**间接**生效的：导出把 paused 置真，
+    # screenOpen() 因此为真，背景落到 InWorldBlur，整帧被六趟 box blur 糊掉——
+    # 所有八角出图曾经相邻像素最大跃变只有 5/255。
+    add_executable(mc_rebedrock_preview_export_determinism_test
+        tests/preview_export_determinism_test.cpp)
+    target_link_libraries(mc_rebedrock_preview_export_determinism_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_preview_export_determinism_test PRIVATE src)
+    target_compile_definitions(mc_rebedrock_preview_export_determinism_test PRIVATE
+        "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
+    add_test(NAME preview_export_determinism COMMAND mc_rebedrock_preview_export_determinism_test)
+
     # 太阳阴影的投射者是「不透明 + 镂空」两层。只画 opaque 时，楼梯/栅栏/门/活板门/
     # 树叶在太阳底下一律不投影，而紧挨着它们的台阶（Opaque 桶）投——用户实机报的就是它。
     add_executable(mc_rebedrock_shadow_cutout_pass_test
