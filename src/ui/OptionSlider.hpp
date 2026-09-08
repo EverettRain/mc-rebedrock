@@ -15,6 +15,7 @@
 // 渲染距离与模拟距离读的是渲染器的运行期值（不是 options 字段），主音量是 float，
 // 而且它们工作正常——把它们搬进来要连带碰音频与区块流送，不是这一轮的事。
 
+#include "audio/SoundCategory.hpp"
 #include "config/GameOptions.hpp"
 #include "ui/WidgetId.hpp"
 
@@ -42,6 +43,88 @@ inline constexpr std::array<IntSliderDesc, 1> kIntSliders{{
      "Menu Background Blurriness", &config::GameOptions::menuBackgroundBlurriness, 0, 10,
      /*offAtMinimum=*/true},
 }};
+
+// UI-6e：取值是 **float** 的滑块。
+//
+// 与 IntSliderDesc 的区别不只是类型：整数滑块有"档"（0..10 共 11 档，拖动会吸附），
+// float 滑块是连续的（26.1 的 `OptionInstance.UnitDouble`，取值域就是 [0,1]）。
+// 把两者塞进一个模板只会让 `intSliderValue` 那条"四舍五入不是截断"的注释失去意义——
+// 它对连续量根本不适用。
+//
+// ★ **取值位置有两种**，这是这张表最别扭也最必要的一处。26.1 的十个音量在
+//   `Options.soundSourceVolumes` 这张 map 里，本作对应的是
+//   `GameOptions::soundCategoryVolumes`——一个 `std::array<float, 10>`，
+//   **不是十个独立字段**。而 `float GameOptions::*` 这种成员指针**指不到数组的某一格**。
+//   所以表项要么给字段指针，要么给一个类别下标；两者只能有一个。
+//   （试过让它们统一成"读写函数指针对"，那样每一项要写两个 lambda，
+//   表就不再是"一行一项"，加一个滑块反而更贵。）
+struct FloatSliderDesc final {
+    WidgetId id = WidgetId::None;
+    std::string_view nameKey{};
+    std::string_view nameFallback{};
+    // 二选一：`field` 指向 GameOptions 的一个 float 字段；
+    // 若 `categoryVolume != Count`，改为指向 soundCategoryVolumes 的那一格。
+    float config::GameOptions::* field = nullptr;
+    audio::SoundCategory categoryVolume = audio::SoundCategory::Count;
+    // 0 显示为 OFF 而不是 "0%"（26.1 `Options.percentValueOrOffLabel`）。
+    bool offAtZero = true;
+};
+
+inline constexpr std::array<FloatSliderDesc, 1> kFloatSliders{{
+    // 主音量。26.1 `SoundOptionsScreen` 用 addBig 把 MASTER 单独放一行。
+    // ★ 它在本作**已经有一个硬编码的滑块**（MenuCallbacks::masterVolume）；
+    //   这一行是给"音乐与声音"那一屏用的，接线时那个硬编码的会被它顶掉。
+    {WidgetId::MasterVolume, "soundCategory.master", "Master Volume",
+     &config::GameOptions::masterVolume, audio::SoundCategory::Count, /*offAtZero=*/true},
+}};
+
+[[nodiscard]] constexpr const FloatSliderDesc* findFloatSlider(WidgetId id) {
+    for (const FloatSliderDesc& desc : kFloatSliders) {
+        if (desc.id == id) {
+            return &desc;
+        }
+    }
+    return nullptr;
+}
+
+// 读一个 float 滑块的当前值。两种取值位置的分歧**只在这里和下面那个写函数里**，
+// 调用方不必知道某一项是字段还是数组格。
+[[nodiscard]] inline float floatSliderValue(const FloatSliderDesc& desc,
+                                            const config::GameOptions& options) {
+    if (desc.categoryVolume != audio::SoundCategory::Count) {
+        return options.soundCategoryVolumes[static_cast<std::size_t>(desc.categoryVolume)];
+    }
+    return desc.field != nullptr ? options.*(desc.field) : 0.0F;
+}
+
+inline void setFloatSliderValue(const FloatSliderDesc& desc, config::GameOptions& options,
+                                float value) {
+    const float clamped = value < 0.0F ? 0.0F : (value > 1.0F ? 1.0F : value);
+    if (desc.categoryVolume != audio::SoundCategory::Count) {
+        options.soundCategoryVolumes[static_cast<std::size_t>(desc.categoryVolume)] = clamped;
+        return;
+    }
+    if (desc.field != nullptr) {
+        options.*(desc.field) = clamped;
+    }
+}
+
+// 百分比档位（26.1 `Options.percentValueLabel`）。
+//
+// ★ **截断，不是四舍五入**：`(int)(value * 100.0)`（`Options.java:1911`）。
+//   这与整数滑块那条"必须四舍五入"的规则**方向相反**，两者都是照抄 vanilla——
+//   写成一样的只会让其中一个不对。0.999 在 vanilla 里显示 99%，不是 100%。
+[[nodiscard]] constexpr int floatSliderPercent(float fraction) {
+    const float clamped = fraction < 0.0F ? 0.0F : (fraction > 1.0F ? 1.0F : fraction);
+    return static_cast<int>(clamped * 100.0F);
+}
+
+// 这一项该显示 OFF 吗（`percentValueOrOffLabel`：**值为 0** 时显示 OFF）。
+// 注意判据是**原始值 == 0**，不是"百分比取整后为 0"——0.004 的百分比是 0，
+// 但 vanilla 显示的是 "0%" 而不是 OFF。
+[[nodiscard]] constexpr bool floatSliderShowsOff(const FloatSliderDesc& desc, float value) {
+    return desc.offAtZero && value == 0.0F;
+}
 
 [[nodiscard]] constexpr const IntSliderDesc* findIntSlider(WidgetId id) {
     for (const IntSliderDesc& desc : kIntSliders) {

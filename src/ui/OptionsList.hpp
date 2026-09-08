@@ -25,7 +25,9 @@
 #include "ui/PageStack.hpp"
 #include "ui/ScrollList.hpp"
 
+#include <cstdint>
 #include <span>
+#include <string_view>
 
 namespace mc::ui {
 
@@ -87,14 +89,28 @@ struct OptionsSlot final {
     [[nodiscard]] constexpr bool operator==(const OptionsSlot&) const = default;
 };
 
-// 一次 `addSmall(...)` / `addBig(...)` 调用。
+// 一次 `addSmall(...)` / `addBig(...)` / `addHeader(...)` 调用。
 //
 // ★ 从前这张表只是一串项数（`std::size_t`），于是"这一组是 addBig 还是 addSmall"
 //   这个事实**根本没地方存**。视频设置的 preset 因此被画成 150 宽的左列一格——
 //   版面上看是"第一行右边空着"，而 26.1 那是一个铺满行宽的大按钮。
+//
+// UI-6e：又多了第三种。26.1 的设置屏用 `addHeader` 分节
+// （`VideoSettingsScreen.addOptions()`：DISPLAY / QUALITY / PREFERENCES 三节），
+// 而分节行**占一行却不产生控件**——与绑定列表的分类标题行同构。
+enum class OptionsGroupKind : std::uint8_t {
+    Small,   // addSmall：两两配对，每格 150 宽
+    Big,     // addBig：每项独占一行，310 宽
+    Header,  // addHeader：一行标题文字，不产生控件
+};
+
 struct OptionsGroup final {
+    // 这一组有几个设置项。Header 恒为 0——它不产生控件。
     std::size_t count = 0;
-    bool big = false;
+    OptionsGroupKind kind = OptionsGroupKind::Small;
+    // 仅 Header 用。
+    std::string_view headerKey{};
+    std::string_view headerFallback{};
 
     [[nodiscard]] constexpr bool operator==(const OptionsGroup&) const = default;
 };
@@ -112,8 +128,105 @@ struct OptionsGroup final {
 // `groupSizes` 是各次 addSmall 的项数，按调用顺序。越界返回最后一行之后的位置而不抛：
 // 调用方通常已经用控件数夹过，这里再抛一次只会把一个排版问题变成崩溃。
 [[nodiscard]] constexpr std::size_t optionsGroupRowCount(const OptionsGroup& group) {
-    // addBig 每项独占一行；addSmall 两两配对，落单的一项也占一整行。
-    return group.big ? group.count : (group.count + 1U) / 2U;
+    switch (group.kind) {
+    case OptionsGroupKind::Header:
+        return 1U;   // 一行标题，零个控件
+    case OptionsGroupKind::Big:
+        return group.count;   // 每项独占一行
+    case OptionsGroupKind::Small:
+        break;
+    }
+    return (group.count + 1U) / 2U;   // 两两配对，落单的一项也占一整行
+}
+
+// ★ 分节行的高度**不是** 25，而且**首个与其后不同**。
+//   26.1 `OptionsList.addHeader`（`OptionsList.java:52-56`）：
+//       int paddingTop = children().isEmpty() ? 0 : lineHeight * 2;   // lineHeight = 9
+//       addEntry(new HeaderEntry(...), paddingTop + lineHeight + 4);
+//   于是首个标题高 0 + 9 + 4 = 13，其后每个高 18 + 9 + 4 = 31。
+//   那 18 是**与上一节之间的留白**——所以它属于标题行本身，不是上一行的下边距。
+inline constexpr int kOptionsHeaderLineHeight = 9;
+inline constexpr int kOptionsHeaderPadding = 4;
+inline constexpr int kOptionsHeaderFirstHeight =
+    kOptionsHeaderLineHeight + kOptionsHeaderPadding;                 // 13
+inline constexpr int kOptionsHeaderLaterHeight =
+    kOptionsHeaderLineHeight * 2 + kOptionsHeaderLineHeight + kOptionsHeaderPadding;  // 31
+
+static_assert(kOptionsHeaderFirstHeight == 13, "first header entry is 13 tall");
+static_assert(kOptionsHeaderLaterHeight == 31, "a later header entry is 31 tall");
+
+// 第 `row` 行是什么：标题还是设置行，多高。
+//
+// ★ 与绑定列表的 `keyBindListRow` 同构，理由也一样：**行号与控件序号不是倍数关系**，
+//   因为标题行占一行却不产生控件。一旦有了变高，"行号 → 像素位置"也不再是乘法，
+//   所以这两件事都必须从一张表里问出来，不能各自算。
+struct OptionsRowInfo final {
+    bool isHeader = false;
+    int height = kOptionsRowHeight;
+    std::string_view headerKey{};
+    std::string_view headerFallback{};
+
+    [[nodiscard]] constexpr bool operator==(const OptionsRowInfo&) const = default;
+};
+
+[[nodiscard]] constexpr OptionsRowInfo optionsRowAt(std::span<const OptionsGroup> groups,
+                                                    std::size_t row) {
+    std::size_t seen = 0;
+    bool sawAnyEntry = false;
+    for (const OptionsGroup& group : groups) {
+        const std::size_t rows = optionsGroupRowCount(group);
+        if (row < seen + rows) {
+            if (group.kind == OptionsGroupKind::Header) {
+                return OptionsRowInfo{true,
+                                      sawAnyEntry ? kOptionsHeaderLaterHeight
+                                                  : kOptionsHeaderFirstHeight,
+                                      group.headerKey, group.headerFallback};
+            }
+            return OptionsRowInfo{false, kOptionsRowHeight, {}, {}};
+        }
+        seen += rows;
+        // 「首个」的判据是**列表里已经有条目**，不是「已经有过标题」——
+        // 一个前面摆了控件的标题，即使它是第一个标题，也要那 18 的留白。
+        if (group.count > 0U || group.kind == OptionsGroupKind::Header) {
+            sawAnyEntry = true;
+        }
+    }
+    return OptionsRowInfo{false, kOptionsRowHeight, {}, {}};
+}
+
+// 第 `row` 行的顶边相对列表视口顶部的**像素**偏移。
+//
+// ★ 等高时它等于 `row * 25`；有了标题行就不再是乘法了。凡是从行号求 y 的地方
+//   都必须走它——照 `row * kOptionsRowHeight` 算，标题行之后的每一行都会偏。
+[[nodiscard]] constexpr int optionsRowTop(std::span<const OptionsGroup> groups, std::size_t row) {
+    int top = 0;
+    for (std::size_t index = 0; index < row; ++index) {
+        top += optionsRowAt(groups, index).height;
+    }
+    return top;
+}
+
+// 从第 `firstRow` 行起，高 `viewportHeight` 的视口里**完整**装得下几行。
+//
+// 等高时它等于 `viewportHeight / 25`，与 `ScrollList::visibleRows()` 一致；
+// 变高时必须逐行累加——一屏能装几行取决于你从哪一行开始看。
+[[nodiscard]] constexpr std::size_t optionsVisibleRows(std::span<const OptionsGroup> groups,
+                                                       std::size_t firstRow, int viewportHeight,
+                                                       std::size_t totalRows) {
+    if (viewportHeight <= 0) {
+        return 0U;
+    }
+    int used = 0;
+    std::size_t rows = 0;
+    for (std::size_t row = firstRow; row < totalRows; ++row) {
+        const int height = optionsRowAt(groups, row).height;
+        if (used + height > viewportHeight) {
+            break;
+        }
+        used += height;
+        ++rows;
+    }
+    return rows;
 }
 
 [[nodiscard]] constexpr OptionsSlot optionsGroupedSlot(std::span<const OptionsGroup> groups,
@@ -121,9 +234,11 @@ struct OptionsGroup final {
     std::size_t row = 0;
     std::size_t seen = 0;
     for (const OptionsGroup& group : groups) {
-        if (index < seen + group.count) {
+        // ★ 标题组 count == 0，所以它**永远不会**吞掉一个设置项序号——但它
+        //   `optionsGroupRowCount` 是 1，行号照样往前走。这正是"行 ≠ 控件"。
+        if (group.count > 0U && index < seen + group.count) {
             const std::size_t withinGroup = index - seen;
-            if (group.big) {
+            if (group.kind == OptionsGroupKind::Big) {
                 return OptionsSlot{row + withinGroup, 0, true};
             }
             return OptionsSlot{row + withinGroup / 2U, static_cast<int>(withinGroup % 2U), false};
@@ -158,7 +273,8 @@ struct OptionsGroup final {
 //
 // 两组之间那道行边界是**语义分组**（`ControlsScreen.addOptions()` 的两次调用），
 // 不是排版巧合：把它们摊平成一组，keybinds 会和 toggleCrouch 挤在同一行。
-inline constexpr std::array<OptionsGroup, 2> kControlsHubGroups{{{2U, false}, {7U, false}}};
+inline constexpr std::array<OptionsGroup, 2> kControlsHubGroups{
+    {{2U, OptionsGroupKind::Small}, {7U, OptionsGroupKind::Small}}};
 
 // UI-6d：视频设置的分组，按 26.1 `VideoSettingsScreen.addOptions()` 的调用顺序。
 //   1. preset 大按钮独占一行（26.1 的 `list.addBig`）
@@ -167,10 +283,34 @@ inline constexpr std::array<OptionsGroup, 2> kControlsHubGroups{{{2U, false}, {7
 // 26.1 那三次 addSmall 分别是 17 / 7 / 4 项；本作只补有后端的，所以项数少，
 // **但分组结构照抄**——那两道行边界是语义的，不是排版凑出来的。
 inline constexpr std::array<OptionsGroup, 3> kVideoSettingsGroups{
-    {{1U, /*big=*/true}, {11U, false}, {4U, false}}};
+    {{1U, OptionsGroupKind::Big}, {11U, OptionsGroupKind::Small}, {4U, OptionsGroupKind::Small}}};
 
 // 高级图形：本项目自有页，两项一组。
-inline constexpr std::array<OptionsGroup, 1> kAdvancedGraphicsGroups{{{3U, false}}};
+inline constexpr std::array<OptionsGroup, 1> kAdvancedGraphicsGroups{
+    {{3U, OptionsGroupKind::Small}}};
+
+// ★ 分节行**不产生控件**，所以它的 `count` 必须是 0。写成非 0 会让它吞掉一个设置项
+//   序号，而那一项之后的每一个控件都会错位——症状是"少了一个控件，其余全部串行"。
+//   `optionsGroupedSlot` 里那个 `group.count > 0U` 只是防御，真正的护栏是这条编译期检查。
+[[nodiscard]] constexpr bool optionsHeadersProduceNoWidgets(std::span<const OptionsGroup> groups) {
+    for (const OptionsGroup& group : groups) {
+        if (group.kind == OptionsGroupKind::Header && group.count != 0U) {
+            return false;
+        }
+        // 反过来也要：非标题组必须有名字为空的 header 字段，否则说明写错了 kind。
+        if (group.kind != OptionsGroupKind::Header && !group.headerKey.empty()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static_assert(optionsHeadersProduceNoWidgets(kControlsHubGroups),
+              "a header row must not consume an option index");
+static_assert(optionsHeadersProduceNoWidgets(kVideoSettingsGroups),
+              "a header row must not consume an option index");
+static_assert(optionsHeadersProduceNoWidgets(kAdvancedGraphicsGroups),
+              "a header row must not consume an option index");
 
 // 这一屏的 addSmall 分组。三段式版面的页脚按钮不在其中（它由 buttonCount 单独认出来）。
 [[nodiscard]] constexpr std::span<const OptionsGroup> optionsGroupsOf(PageId page) {

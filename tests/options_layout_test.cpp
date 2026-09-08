@@ -18,6 +18,7 @@
 #include "ui/PageBuilder.hpp"
 #include "ui/PageTitles.hpp"
 #include "ui/ListRow.hpp"
+#include "ui/DualColumnList.hpp"
 #include "ui/OptionsList.hpp"
 #include "ui/OptionSlider.hpp"
 #include "ui/SliderGeometry.hpp"
@@ -236,7 +237,7 @@ void testKeyBindDecoration() {
 //
 // 这只改排版、不改任何返回值以外的东西——所以它必须在这里有断言。
 void testGroupedSlots() {
-    constexpr std::array<mc::ui::OptionsGroup, 2> kTwoThenThree{{{2U, false}, {3U, false}}};
+    constexpr std::array<mc::ui::OptionsGroup, 2> kTwoThenThree{{{2U, mc::ui::OptionsGroupKind::Small}, {3U, mc::ui::OptionsGroupKind::Small}}};
     const auto slot = [&](std::size_t i) {
         return mc::ui::optionsGroupedSlot(kTwoThenThree, i);
     };
@@ -250,7 +251,7 @@ void testGroupedSlots() {
     CHECK(mc::ui::optionsGroupedRowCount(kTwoThenThree) == 3U);
 
     // 落单的一项占一整行，下一组仍从新行起
-    constexpr std::array<mc::ui::OptionsGroup, 2> kOneThenSeven{{{1U, false}, {7U, false}}};
+    constexpr std::array<mc::ui::OptionsGroup, 2> kOneThenSeven{{{1U, mc::ui::OptionsGroupKind::Small}, {7U, mc::ui::OptionsGroupKind::Small}}};
     CHECK(mc::ui::optionsGroupedSlot(kOneThenSeven, 0) == (mc::ui::OptionsSlot{0U, 0}));
     // ★ 这一条就是 Controls 枢纽：Key Binds… 独占行 0，七个设置项从行 1 起
     CHECK(mc::ui::optionsGroupedSlot(kOneThenSeven, 1) == (mc::ui::OptionsSlot{1U, 0}));
@@ -259,7 +260,7 @@ void testGroupedSlots() {
     CHECK(mc::ui::optionsGroupedSlot(kOneThenSeven, 7) == (mc::ui::OptionsSlot{4U, 0}));
     CHECK(mc::ui::optionsGroupedRowCount(kOneThenSeven) == 5U);
     // 摊平成一组会给出不同的答案——那正是这条断言要挡住的写法
-    constexpr std::array<mc::ui::OptionsGroup, 1> kFlat{{{8U, false}}};
+    constexpr std::array<mc::ui::OptionsGroup, 1> kFlat{{{8U, mc::ui::OptionsGroupKind::Small}}};
     CHECK(mc::ui::optionsGroupedSlot(kFlat, 1) != mc::ui::optionsGroupedSlot(kOneThenSeven, 1));
 }
 
@@ -469,7 +470,7 @@ void testBigGroups() {
 
     // 一个**两项的 big 组**占两行，不是一行——big 与 small 的行数算法不同，
     // 照 small 的 (n+1)/2 算会让后面每一组都上移。
-    constexpr std::array<mc::ui::OptionsGroup, 2> kBigThenSmall{{{2U, true}, {2U, false}}};
+    constexpr std::array<mc::ui::OptionsGroup, 2> kBigThenSmall{{{2U, mc::ui::OptionsGroupKind::Big}, {2U, mc::ui::OptionsGroupKind::Small}}};
     CHECK(mc::ui::optionsGroupedSlot(kBigThenSmall, 0) == (mc::ui::OptionsSlot{0U, 0, true}));
     CHECK(mc::ui::optionsGroupedSlot(kBigThenSmall, 1) == (mc::ui::OptionsSlot{1U, 0, true}));
     CHECK(mc::ui::optionsGroupedSlot(kBigThenSmall, 2) == (mc::ui::OptionsSlot{2U, 0, false}));
@@ -920,6 +921,206 @@ void testSliderDragSingleSourceGuard() {
     CHECK(knobBody.find("8.0F * scale") == std::string::npos);
 }
 
+// --- 17. float 滑块表（UI-6e ①-a）--------------------------------------------
+//
+// ★ 两条与整数滑块**方向相反**的规则，都是照抄 vanilla，写成一样的必错一个：
+//   1. 百分比是**截断**（`Options.java:1911` 的 `(int)(value * 100.0)`），
+//      而整数滑块的档位是**四舍五入**（`intSliderValue` 的 `+ 0.5F`）。
+//   2. OFF 的判据是**原始值 == 0**，不是"百分比取整后为 0"。
+void testFloatSliders() {
+    const auto* master = mc::ui::findFloatSlider(mc::ui::WidgetId::MasterVolume);
+    CHECK(master != nullptr);
+    if (master == nullptr) {
+        return;
+    }
+
+    // ★ 截断：0.999 显示 99%，不是 100%。写成四舍五入这一条会红。
+    CHECK(mc::ui::floatSliderPercent(0.999F) == 99);
+    CHECK(mc::ui::floatSliderPercent(0.5F) == 50);
+    CHECK(mc::ui::floatSliderPercent(1.0F) == 100);
+    CHECK(mc::ui::floatSliderPercent(0.0F) == 0);
+    // 越界要夹住，不能给出负数或 >100
+    CHECK(mc::ui::floatSliderPercent(-1.0F) == 0);
+    CHECK(mc::ui::floatSliderPercent(2.0F) == 100);
+
+    // ★ OFF 只看原始值是不是 0。0.004 的百分比是 0，但 vanilla 显示 "0%" 不是 OFF。
+    CHECK(mc::ui::floatSliderShowsOff(*master, 0.0F));
+    CHECK(!mc::ui::floatSliderShowsOff(*master, 0.004F));
+    CHECK(mc::ui::floatSliderPercent(0.004F) == 0);   // 百分比确实是 0
+    CHECK(!mc::ui::floatSliderShowsOff(*master, 1.0F));
+
+    // 独立字段那条取值路径
+    mc::config::GameOptions options;
+    mc::ui::setFloatSliderValue(*master, options, 0.25F);
+    CHECK(options.masterVolume == 0.25F);
+    CHECK(mc::ui::floatSliderValue(*master, options) == 0.25F);
+    // 写入要夹到 [0,1]
+    mc::ui::setFloatSliderValue(*master, options, 5.0F);
+    CHECK(options.masterVolume == 1.0F);
+    mc::ui::setFloatSliderValue(*master, options, -5.0F);
+    CHECK(options.masterVolume == 0.0F);
+
+    // ★ 数组那条取值路径：十个音量住在 std::array 里，成员指针指不到某一格。
+    //   这条断言在"两种取值位置只实现了字段那一种"时会红——而那正是最容易漏的一半，
+    //   因为表里今天只有主音量一项走字段路径，光看表看不出另一条路存在。
+    const mc::ui::FloatSliderDesc musicVolume{
+        mc::ui::WidgetId::None, "soundCategory.music", "Music",
+        nullptr, mc::audio::SoundCategory::Music, true};
+    mc::ui::setFloatSliderValue(musicVolume, options, 0.4F);
+    CHECK(options.soundCategoryVolumes[static_cast<std::size_t>(
+              mc::audio::SoundCategory::Music)] == 0.4F);
+    CHECK(mc::ui::floatSliderValue(musicVolume, options) == 0.4F);
+    // 写数组那一格**不能**顺手动到主音量（两条路径必须互不干扰）
+    CHECK(options.masterVolume == 0.0F);
+
+    // 本作的音量类别必须与 26.1 的 SoundSource 一一对应，否则"音乐与声音"那一屏
+    // 会比 vanilla 少或多一个滑块。26.1：MASTER/MUSIC/RECORDS/WEATHER/BLOCKS/
+    // HOSTILE/NEUTRAL/PLAYERS/AMBIENT/VOICE 共 10 个。
+    CHECK(mc::audio::kSoundCategoryCount == 10U);
+}
+
+// --- 18. 分节标题行与变高条目（UI-6e ①-c / D15）-------------------------------
+//
+// 26.1 的设置屏用 `addHeader` 分节，而分节行**占一行、不产生控件、且高度不是 25**：
+//   `OptionsList.addHeader`（OptionsList.java:52-56）
+//       paddingTop = children().isEmpty() ? 0 : 9*2;
+//       addEntry(entry, paddingTop + 9 + 4);
+//   → 首个 13，其后 31。
+//
+// ★ 变高**只做在 OptionsList 这一层，没有动 ScrollList**。语言、按键绑定、世界列表
+//   三张列表共用 ScrollList，它们全是等高的；把变高塞进共享的那一层，是拿三屏的
+//   回归风险去换一屏的功能。
+void testOptionsHeaderRows() {
+    using K = mc::ui::OptionsGroupKind;
+    // 26.1 视频设置的真实结构（VideoSettingsScreen.addOptions()）
+    constexpr std::array<mc::ui::OptionsGroup, 6> kVanillaShape{{
+        {0U, K::Header, "options.video.display.header", "Display"},
+        {1U, K::Big},
+        {7U, K::Small},
+        {0U, K::Header, "options.video.quality.header", "Quality"},
+        {1U, K::Big},
+        {17U, K::Small},
+    }};
+
+    // 行数：1 + 1 + 4 + 1 + 1 + 9 = 17
+    CHECK(mc::ui::optionsGroupedRowCount(kVanillaShape) == 17U);
+
+    // 首个标题 13，其后 31
+    CHECK(mc::ui::optionsRowAt(kVanillaShape, 0).isHeader);
+    CHECK(mc::ui::optionsRowAt(kVanillaShape, 0).height == 13);
+    CHECK(mc::ui::optionsRowAt(kVanillaShape, 0).headerFallback == "Display");
+    const std::size_t secondHeaderRow = 1U + 1U + 4U;   // big + ceil(7/2)
+    CHECK(mc::ui::optionsRowAt(kVanillaShape, secondHeaderRow).isHeader);
+    CHECK(mc::ui::optionsRowAt(kVanillaShape, secondHeaderRow).height == 31);
+    CHECK(mc::ui::optionsRowAt(kVanillaShape, secondHeaderRow).headerFallback == "Quality");
+    // 中间那些是普通设置行
+    CHECK(!mc::ui::optionsRowAt(kVanillaShape, 1U).isHeader);
+    CHECK(mc::ui::optionsRowAt(kVanillaShape, 1U).height == mc::ui::kOptionsRowHeight);
+
+    // ★ 标题行占一行却**不吞控件序号**：第 0 个设置项是 big，落在行 1 不是行 0。
+    CHECK(mc::ui::optionsGroupedSlot(kVanillaShape, 0) == (mc::ui::OptionsSlot{1U, 0, true}));
+    // 第 1 个设置项是第一组 addSmall 的头一个，落在行 2 左列
+    CHECK(mc::ui::optionsGroupedSlot(kVanillaShape, 1) == (mc::ui::OptionsSlot{2U, 0, false}));
+    // 第二个标题之后的那个 big：设置项序号 8（1 + 7），行号 secondHeaderRow + 1
+    CHECK(mc::ui::optionsGroupedSlot(kVanillaShape, 8) ==
+          (mc::ui::OptionsSlot{secondHeaderRow + 1U, 0, true}));
+
+    // 行顶偏移不再是乘法：行 1 在 13 而不是 25
+    CHECK(mc::ui::optionsRowTop(kVanillaShape, 0) == 0);
+    CHECK(mc::ui::optionsRowTop(kVanillaShape, 1) == 13);
+    CHECK(mc::ui::optionsRowTop(kVanillaShape, 2) == 13 + 25);
+    // 第二个标题之前累计：13 + 5 行 * 25
+    CHECK(mc::ui::optionsRowTop(kVanillaShape, secondHeaderRow) == 13 + 5 * 25);
+
+    // ★★ 回归护栏：**没有标题行时，一切必须与等高时逐字节相同**。
+    //    这一条挡的是"为了做变高，把等高情形也算歪了"——那会让 Controls、
+    //    高级图形、以及今天的视频设置三屏同时错位，而它们本来是好的。
+    for (const auto page : {mc::ui::PageId::Controls, mc::ui::PageId::VideoSettings,
+                            mc::ui::PageId::AdvancedGraphics}) {
+        const auto groups = mc::ui::optionsGroupsOf(page);
+        const std::size_t rows = mc::ui::optionsRowCountOf(page);
+        for (std::size_t row = 0; row <= rows; ++row) {
+            check(mc::ui::optionsRowTop(groups, row) ==
+                      static_cast<int>(row) * mc::ui::kOptionsRowHeight,
+                  "an all-equal-height page must still lay out as row * 25", __LINE__);
+        }
+        // 可见行数也必须与 ScrollList 的等高算法一致
+        for (int viewport : {50, 174, 294, 300}) {
+            const std::size_t byPixels =
+                mc::ui::optionsVisibleRows(groups, 0U, viewport, rows);
+            const std::size_t byDivision =
+                std::min(static_cast<std::size_t>(viewport / mc::ui::kOptionsRowHeight), rows);
+            check(byPixels == byDivision,
+                  "equal-height visible-row count must match plain division", __LINE__);
+        }
+    }
+
+    // 变高时"一屏装几行"取决于从哪一行开始看——这正是不能用除法的原因。
+    const std::size_t fromTop = mc::ui::optionsVisibleRows(kVanillaShape, 0U, 100, 17U);
+    const std::size_t fromSecond = mc::ui::optionsVisibleRows(kVanillaShape, 1U, 100, 17U);
+    // 从第 0 行起：13 + 25*3 = 88，再加一行 25 就超了 → 4 行
+    CHECK(fromTop == 4U);
+    // 从第 1 行起：25*4 = 100 正好 → 4 行（同样是 4，但走的是不同的累加）
+    CHECK(fromSecond == 4U);
+    // 视口再小一点就能分开：13+25+25 = 63 ≤ 70 → 3 行；25*2=50 ≤ 70 但 75 > 70 → 2 行
+    CHECK(mc::ui::optionsVisibleRows(kVanillaShape, 0U, 70, 17U) == 3U);
+    CHECK(mc::ui::optionsVisibleRows(kVanillaShape, 1U, 70, 17U) == 2U);
+}
+
+// --- 19. 双栏可转移列表（UI-6e ①-b / spec §5 的 L4）---------------------------
+//
+// ★ 它不是"一行两个控件"（那是 OptionsList）。是**两张互相独立的列表**，各有自己的
+//   滚动位置与选中项。做成一张两列的列表会在第一次滚动时露馅：两栏条目数不同。
+void testDualColumnLists() {
+    // 1280x720 @ scale 3 → 逻辑 427x240，三段式内容区 y=33 高 174
+    const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
+    const auto frame =
+        mc::ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
+    const auto lists = mc::ui::dualColumnLists(frame.contentBox(), layout.logicalWidth());
+
+    // 两栏等宽，且都是 26.1 的 200
+    CHECK(lists.available.width == mc::ui::kTransferListWidth);
+    CHECK(lists.selected.width == mc::ui::kTransferListWidth);
+    // ★ 相对画布中线对称：左栏右缘与右栏左缘到中线的距离相等，都是 15
+    const int centre = layout.logicalWidth() / 2;
+    CHECK(centre - lists.available.right() == mc::ui::kTransferCentreGap);
+    CHECK(lists.selected.x - centre == mc::ui::kTransferCentreGap);
+    // 中缝正好 30
+    CHECK(lists.selected.x - lists.available.right() == mc::ui::kTransferCentreGap * 2);
+    // 两栏不重叠——中缝为负是"两栏叠在一起"，画面上像一栏
+    CHECK(lists.available.right() < lists.selected.x);
+
+    // 行高 36（26.1 的 super(..., 33, 36)），不是设置行的 25
+    CHECK(lists.available.rowHeight == 36);
+    CHECK(lists.available.rowHeight != mc::ui::kOptionsRowHeight);
+    // 行宽 = 列宽 - 4
+    CHECK(lists.available.rowWidth == mc::ui::kTransferListWidth - mc::ui::kTransferRowInset);
+
+    // 两栏共用内容区的 y 与高度
+    CHECK(lists.available.y == lists.selected.y);
+    CHECK(lists.available.height == lists.selected.height);
+    CHECK(lists.available.y == frame.contentBox().y);
+
+    // 行内：图标格贴左上角内缩 2，是 32x32；**不是**垂直居中
+    const auto row = mc::ui::scrollListRow(lists.available, 0U);
+    const auto icon = mc::ui::transferIconCell(row);
+    CHECK(icon.width == 32.0F);
+    CHECK(icon.height == 32.0F);
+    CHECK(icon.x == row.x + 2.0F);
+    CHECK(icon.y == row.y + 2.0F);
+    // 图标没有垂直居中：行高 36、图标 32，居中会是 y + 2 —— 这里恰好同值，
+    // 所以换个行高来证它确实是"贴顶内缩"而不是"居中"
+    const mc::ui::UiRect tallRow{0.0F, 0.0F, 196.0F, 60.0F};
+    CHECK(mc::ui::transferIconCell(tallRow).y == 2.0F);   // 居中会是 14
+
+    // 文字块在图标右侧，不与图标重叠
+    const auto text = mc::ui::transferTextCell(row);
+    CHECK(text.x >= icon.x + icon.width);
+    CHECK(text.width > 0.0F);
+    // 描述宽度装得下（闭合关系已有 static_assert，这里量实际行）
+    CHECK(text.width >= static_cast<float>(mc::ui::kTransferDescriptionWidth) - 2.0F);
+}
+
 } // namespace
 
 int main() {
@@ -940,6 +1141,9 @@ int main() {
     testWindowSingleSourceGuard();
     testSliderCursorMapping();
     testSliderDragSingleSourceGuard();
+    testFloatSliders();
+    testOptionsHeaderRows();
+    testDualColumnLists();
     if (failures != 0) {
         std::printf("options_layout_test: %d checks failed\n", failures);
         return 1;
