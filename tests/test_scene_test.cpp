@@ -69,6 +69,26 @@ int main() {
         assert(mc::render::previewDirectoryName(other) != mc::render::previewDirectoryName(preview));
         other = preview; other.sunTick = 6000U;
         assert(mc::render::previewDirectoryName(other) != mc::render::previewDirectoryName(preview));
+
+        // RN-38：天气是命令行参数，不是一次临时改代码的探针。
+        //
+        // 它必须进输出目录名，理由与其余每一项相同：RN-15 的确定性规则要求输出路径是
+        // 命令行的函数——否则「晴天那一版」与「雨天那一版」互相覆盖，而覆盖是静默的。
+        const auto rainy = accept({"--test-scene"sv, "stone"sv, "--export-preview"sv,
+                                   "--rain"sv, "1"sv, "--thunder"sv, "0.5"sv});
+        assert(rainy.rainGradient == 1.0F && rainy.thunderGradient == 0.5F);
+        assert(rejects({"--test-scene"sv, "stone"sv, "--export-preview"sv, "--rain"sv, "2"sv}));
+        assert(rejects({"--test-scene"sv, "stone"sv, "--export-preview"sv, "--rain"sv, "x"sv}));
+        assert(rejects({"--test-scene"sv, "stone"sv, "--export-preview"sv, "--rain"sv}));
+        assert(rejects({"--test-scene"sv, "stone"sv, "--export-preview"sv, "--thunder"sv, "-1"sv}));
+        const auto dry = accept({"--test-scene"sv, "stone"sv, "--export-preview"sv});
+        assert(mc::render::previewDirectoryName(rainy) != mc::render::previewDirectoryName(dry));
+        // 只改雷暴那一条也要换名字：两条 gradient 各自都会改变画面
+        auto onlyRain = rainy; onlyRain.thunderGradient = 0.0F;
+        assert(mc::render::previewDirectoryName(onlyRain) !=
+               mc::render::previewDirectoryName(rainy));
+        // 晴天的名字不带天气后缀，既有基线因此不作废
+        assert(mc::render::previewDirectoryName(dry) == "rebedrock_stone");
     }
 
     using mc::world::Block;

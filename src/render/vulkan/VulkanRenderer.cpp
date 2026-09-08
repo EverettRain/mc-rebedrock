@@ -1209,6 +1209,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             auto channel = net::makeLoopbackPair();
             auto worldSnapshot = clientMirror_.world();
             worldSnapshot.dayTimeTicks = testScene->sunTick.value_or(6000U);
+            // RN-38：天气由命令行给，不再是写死的晴天。`previous*` 与当前值取同一个数——
+            // 导出不跑模拟，插值系数被钉在 0，两者不同只会让画面取决于那个系数
+            worldSnapshot.rainGradient = testScene->rainGradient;
+            worldSnapshot.previousRainGradient = testScene->rainGradient;
+            worldSnapshot.thunderGradient = testScene->thunderGradient;
+            worldSnapshot.previousThunderGradient = testScene->thunderGradient;
             net::sendMessage(*channel.server, gameplay::PublishedSnapshot{worldSnapshot});
             if (testScene->shadowEntities) {
                 const glm::vec3 origin{kPreviewBlockPosition};

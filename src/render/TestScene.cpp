@@ -357,10 +357,23 @@ static std::string previewBaseDirectoryName(const TestSceneOptions& options) {
 
 std::string previewDirectoryName(const TestSceneOptions& options) {
     const auto base = previewBaseDirectoryName(options);
-    if (!options.sunShadows && !options.shadowEntities && !options.sunTick) return base;
+    const bool weather = options.rainGradient > 0.0F || options.thunderGradient > 0.0F;
+    if (!options.sunShadows && !options.shadowEntities && !options.sunTick && !weather) {
+        return base;
+    }
+    // 天气进目录名，和其余每一项一样：RN-15 的确定性规则要求输出路径是命令行的函数，
+    // 否则「晴天那一版」与「雨天那一版」会互相覆盖，而覆盖是静默的
+    const auto weatherSuffix = [&] {
+        if (!weather) return std::string{};
+        const auto tenths = [](float value) {
+            return std::to_string(static_cast<int>(value * 10.0F + 0.5F));
+        };
+        return "-rain" + tenths(options.rainGradient) + "-thunder" +
+               tenths(options.thunderGradient);
+    }();
     const auto name = base + "__sun-" + (options.sunShadows ? "on" : "off") +
         "-" + std::to_string(options.sunTick.value_or(6000U)) +
-        (options.shadowEntities ? "-entities" : "");
+        (options.shadowEntities ? "-entities" : "") + weatherSuffix;
     return name.size() <= kMaxPreviewDirectoryName ? name :
         name.substr(0, kMaxPreviewDirectoryName - 10U) + "__" + shortHash(name);
 }
@@ -452,6 +465,22 @@ std::optional<TestSceneOptions> parseTestSceneArguments(
             if (!result.has_value()) result = TestSceneOptions{};
             if (arguments[index] == "--sun-shadows") result->sunShadows = true;
             else result->shadowEntities = true;
+        } else if (arguments[index] == "--rain" || arguments[index] == "--thunder") {
+            const bool thunder = arguments[index] == "--thunder";
+            const std::string flag{thunder ? "--thunder" : "--rain"};
+            if (++index >= arguments.size()) {
+                throw std::invalid_argument(flag + " requires 0..1");
+            }
+            float value = -1.0F;
+            const auto text = arguments[index];
+            const auto [end, error] =
+                std::from_chars(text.data(), text.data() + text.size(), value);
+            if (error != std::errc{} || end != text.data() + text.size() || value < 0.0F ||
+                value > 1.0F) {
+                throw std::invalid_argument(flag + " requires 0..1");
+            }
+            if (!result.has_value()) result = TestSceneOptions{};
+            (thunder ? result->thunderGradient : result->rainGradient) = value;
         } else if (arguments[index] == "--sun-tick") {
             if (++index >= arguments.size()) throw std::invalid_argument("--sun-tick requires 0..23999");
             std::uint32_t tick = 0;

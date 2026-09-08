@@ -79,6 +79,14 @@ struct TestSceneOptions final {
     bool sunShadows = false;
     bool shadowEntities = false;
     std::optional<std::uint32_t> sunTick;
+    // RN-38：天气。0..1 的两条渐变量，与 vanilla 的 rainLevel / thunderLevel 同义。
+    //
+    // 出图从前把天气写死成晴（applyPreviewDeterminism 的第一行），于是任何与降雨有关的
+    // 判断——RN-36 的「雨天影子该变浅」是第一个——都只能靠临时改代码打探针去量，
+    // 而探针不是仪器：它不进版本库、不进目录名、下一个人重现不了。
+    // 任何会改变画面的世界状态都应当是命令行上的一个参数，这两条是补上的第一批。
+    float rainGradient = 0.0F;
+    float thunderGradient = 0.0F;
     // Square, and fixed rather than taken from the window: an export whose size
     // depends on the monitor it ran on cannot be compared with one from another
     // machine, and RN-15 is a comparison tool before it is anything else.
