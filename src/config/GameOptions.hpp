@@ -75,6 +75,13 @@ struct GameOptions final {
     // Vanilla's "Force Unicode Font": draws Latin text from the unicode pages
     // too, which keeps mixed Latin/CJK lines visually consistent.
     bool forceUnicodeFont = false;
+    // UI-5：菜单背景模糊强度（26.1 `Options.menuBackgroundBlurriness`，
+    // options.accessibility.menu_background_blurriness）。整数档 0..10，默认 5，
+    // 0 那一档在界面上显示为 OFF 而不是 "0"（`Options.genericValueOrOffLabel`）。
+    // 它就是喂给 box_blur 的半径本身：blur.json 把 `Radius` uniform 写成 0，
+    // 于是着色器取全局 MenuBlurRadius，也就是这个值。语义与档位判断在
+    // ui/ScreenBackground.hpp（menuBlurEnabled / menuBlurRadius），这里只存。
+    int menuBackgroundBlurriness = 5;
     // Experimental Content (实验性内容) submenu — test-only render features.
     // rainMode 选择降雨绘制路径：0 = 贴图雨（逐列贴图），1 = 异步粒子雨（实例化 SSBO）
     // 原来中间还夹着一档"粒子雨"：它与异步粒子雨用同一批雨滴、产出同一份视觉，

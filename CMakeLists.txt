@@ -451,6 +451,7 @@ add_executable(mc_rebedrock
     src/render/vulkan/TextureManager.cpp
     src/render/vulkan/BlockAtlasBaker.cpp
     src/render/vulkan/GpuSceneBuffer.cpp
+    src/render/vulkan/MenuBlur.cpp
     src/render/vulkan/OffscreenTarget.cpp
     src/render/vulkan/SceneReadback.cpp
     src/ui/MenuGeometry.cpp
@@ -640,6 +641,10 @@ if(MC_REBEDROCK_STAGE_RUNTIME AND GLSLC_EXECUTABLE)
         sky.frag
         hud.vert
         hud.frag
+        gradient.vert
+        gradient.frag
+        menu_blur.vert
+        menu_blur.frag
         panorama.vert
         panorama.frag
         item_entity.vert
@@ -1805,6 +1810,19 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_scroll_list_test PRIVATE src)
     target_link_libraries(mc_rebedrock_scroll_list_test PRIVATE glm::glm)
     add_test(NAME scroll_list COMMAND mc_rebedrock_scroll_list_test)
+
+    # UI-5：背景档位表与渐变色标（spec §3）。三分支（容器类的灰渐变不模糊）、
+    # 死亡屏第二色标 0xA0803030、模糊整数档 0..10 默认 5——三条都退回去也不会崩。
+    add_executable(mc_rebedrock_screen_background_test
+        tests/screen_background_test.cpp
+        src/ui/PageStack.cpp
+    )
+    target_include_directories(mc_rebedrock_screen_background_test PRIVATE src)
+    # 模糊采样器的过滤模式是一个 VkSamplerCreateInfo 字段，住在一个测试链接不到的
+    # 翻译单元里；护栏因此读源码（同 title_background_test）。
+    target_compile_definitions(mc_rebedrock_screen_background_test PRIVATE
+        MC_REBEDROCK_MENU_BLUR_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/MenuBlur.cpp")
+    add_test(NAME screen_background COMMAND mc_rebedrock_screen_background_test)
 
     # UI-4：主菜单 splash 的选行与脉动缩放（26.1 SplashRenderer 的公式）。
     add_executable(mc_rebedrock_splash_text_test

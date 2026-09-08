@@ -120,14 +120,27 @@ void testScrollbarDrag() {
     CHECK(mc::ui::scrollListRowFromScrollbar(list, 5U, 200.0F) == 0U);
 }
 
-// --- 5. 渐隐带 ---------------------------------------------------------------
-void testFades() {
+// --- 5. 分隔带 ---------------------------------------------------------------
+//
+// ★ UI-5 更正：26.1 画的是两张 2px 分隔纹理，不是 4px 竖直渐隐带
+// （`AbstractSelectionList.extractListSeparators():218-222`）。偏差表 D9 原按旧 spec
+// 记成"渐隐带缺绘制"，那是 1.20.2 之前的元素。这里钉住两件事：高度是 2，
+// 以及它们落在视口**之外**——画进视口里会盖掉第一行文字的上两像素。
+void testSeparators() {
     const auto list = sample();
-    const auto top = mc::ui::scrollListTopFade(list);
-    const auto bottom = mc::ui::scrollListBottomFade(list);
-    CHECK(top.y == 30.0F && top.height == 4.0F);
-    CHECK(bottom.y == 30.0F + 200.0F - 4.0F && bottom.height == 4.0F);
-    CHECK(top.width == 320.0F && bottom.width == 320.0F);
+    const auto header = mc::ui::scrollListHeaderSeparator(list);
+    const auto footer = mc::ui::scrollListFooterSeparator(list);
+    CHECK(mc::ui::kScrollListSeparatorHeight == 2);
+    CHECK(header.height == 2.0F && footer.height == 2.0F);
+    // header 在 y-2，footer 在 bottom()——都在视口外
+    CHECK(header.y == 28.0F);
+    CHECK(header.y + header.height == 30.0F);
+    CHECK(footer.y == 230.0F);
+    CHECK(header.width == 320.0F && footer.width == 320.0F);
+    // 第一行与最后一行都不被压住
+    const auto first = mc::ui::scrollListRow(list, 0U);
+    CHECK(header.y + header.height <= first.y);
+    CHECK(footer.y >= list.bottom());
 }
 
 // --- 6. 三张屏用的是查来的行宽，不是自造的 ------------------------------------
@@ -160,7 +173,7 @@ int main() {
     testScrollBounds();
     testScrollbar();
     testScrollbarDrag();
-    testFades();
+    testSeparators();
     testScreenRowWidths();
     if (failures != 0) {
         std::printf("scroll_list_test: %d checks failed\n", failures);

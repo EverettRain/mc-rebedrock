@@ -8,6 +8,12 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Added
+- The pause menu, and any settings screen opened from inside a world, now blur the world behind
+  them the way Minecraft does. Until now only the main menu's rotating scenery was ever blurred;
+  opening a menu in-game merely dimmed the world, which stayed perfectly sharp. The strength is
+  adjustable in the options file via `gui.menuBackgroundBlurriness` (0 to 10, default 5, 0 = off).
+- The language, key-binds and world lists now sit on Minecraft's dark list backing, with the
+  two thin separator lines above and below them; the key-binds list had no backing at all before.
 - The main menu now has its slanted yellow splash line, and the language and accessibility
   buttons finally carry the icons they were drawn to hold.
 - Menus can be driven from the keyboard: Tab and Shift+Tab move between buttons, Enter or Space
@@ -16,6 +22,8 @@ simple versioned history while it is in beta.
 - Shift-clicking a cycling option now steps backwards through its values instead of forwards.
 
 ### Fixed
+- The red wash on the death screen is no longer one flat shade: it is Minecraft's gradient, lighter
+  at the top and heavier at the bottom, instead of the single tone that split the difference.
 - Text in almost every language other than English was broken: accented letters (é ü ñ č ř ś…),
   Greek, Cyrillic, Hebrew and Armenian — roughly two thousand two hundred characters — came out
   recognisable but wrong, with stray strokes hanging above them. The two font sheets those

@@ -37,8 +37,15 @@ inline constexpr int kScrollbarWidth = 6;
 inline constexpr int kScrollbarMinimumThumb = 32;
 // `scrollBarX() = getRowRight() + scrollbarWidth() + 2`
 inline constexpr int kScrollbarRowGap = 2;
-// 视口上下缘那两条渐隐带的高度。
-inline constexpr int kScrollListFadeHeight = 4;
+// 视口上下缘那两条分隔带的高度。
+//
+// ★ UI-5 更正：**26.1 画的不是渐隐带，是两张 2px 的分隔纹理**。
+//   `AbstractSelectionList.extractListSeparators():218-222` blit 的是
+//   `gui/header_separator.png` 与 `gui/footer_separator.png`（有世界时换成
+//   `inworld_` 那两张），尺寸 32x2，横向平铺，画在 `getY() - 2` 与 `getBottom()`。
+//   4px 竖直渐隐是 1.20.2 之前的做法；偏差表 D9 当时按旧 spec 记成"渐隐带缺绘制"，
+//   照它实现会画出一个 26.1 根本没有的元素。
+inline constexpr int kScrollListSeparatorHeight = 2;
 
 // 一个滚动列表的静态几何：视口、行宽、行高。
 // 滚动位置**不在这里**——它是屏幕的状态，按需传进下面各函数。
@@ -149,16 +156,20 @@ struct ScrollList final {
     return static_cast<std::size_t>(fraction * static_cast<float>(maximum) + 0.5F);
 }
 
-// 视口上/下缘那条 4px 渐隐带。26.1 在列表上下各画一条，让滚动出去的行淡出而不是被硬切。
-[[nodiscard]] constexpr UiRect scrollListTopFade(const ScrollList& list) {
-    return {static_cast<float>(list.x), static_cast<float>(list.y),
-            static_cast<float>(list.width), static_cast<float>(kScrollListFadeHeight)};
+// 视口上/下缘那两条 2px 分隔带（`extractListSeparators`）。
+//
+// 注意它们**落在视口之外**：header 在 `y - 2`，footer 在 `bottom()`——分隔线是
+// 列表与页眉/页脚之间的那道缝，不是盖在第一行/最后一行上的遮罩。从前按渐隐带的写法
+// 画在视口**内部**，会盖掉第一行文字的上两像素。
+[[nodiscard]] constexpr UiRect scrollListHeaderSeparator(const ScrollList& list) {
+    return {static_cast<float>(list.x),
+            static_cast<float>(list.y - kScrollListSeparatorHeight),
+            static_cast<float>(list.width), static_cast<float>(kScrollListSeparatorHeight)};
 }
 
-[[nodiscard]] constexpr UiRect scrollListBottomFade(const ScrollList& list) {
-    return {static_cast<float>(list.x),
-            static_cast<float>(list.bottom() - kScrollListFadeHeight),
-            static_cast<float>(list.width), static_cast<float>(kScrollListFadeHeight)};
+[[nodiscard]] constexpr UiRect scrollListFooterSeparator(const ScrollList& list) {
+    return {static_cast<float>(list.x), static_cast<float>(list.bottom()),
+            static_cast<float>(list.width), static_cast<float>(kScrollListSeparatorHeight)};
 }
 
 } // namespace mc::ui

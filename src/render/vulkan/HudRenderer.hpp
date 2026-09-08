@@ -131,6 +131,10 @@ class HudRenderer final {
         VkPipeline& crosshairPipeline;
         VkPipeline& panoramaPipeline;
         VkPipelineLayout& panoramaPipelineLayout;
+        // UI-5：竖直渐变矩形（26.1 的 fillGradient）。自己的推送常量块，
+        // 理由见 HudTypes.hpp 的 GradientPush。
+        VkPipeline& gradientPipeline;
+        VkPipelineLayout& gradientPipelineLayout;
         VkPipeline& heldItemPipeline;
         VkPipelineLayout& itemPipelineLayout;
         bool& inventoryOpen;
@@ -191,7 +195,9 @@ class HudRenderer final {
           hudBlockIconPipeline(b.hudBlockIconPipeline),
           hudPipelineLayout(b.hudPipelineLayout), vignettePipeline(b.vignettePipeline),
           crosshairPipeline(b.crosshairPipeline), panoramaPipeline(b.panoramaPipeline),
-          panoramaPipelineLayout(b.panoramaPipelineLayout), heldItemPipeline(b.heldItemPipeline),
+          panoramaPipelineLayout(b.panoramaPipelineLayout),
+          gradientPipeline(b.gradientPipeline),
+          gradientPipelineLayout(b.gradientPipelineLayout), heldItemPipeline(b.heldItemPipeline),
           itemPipelineLayout(b.itemPipelineLayout), inventoryOpen(b.inventoryOpen),
           containerScreen(b.containerScreen), activeChest(b.activeChest),
           debugOverlayOpen(b.debugOverlayOpen),
@@ -548,16 +554,44 @@ class HudRenderer final {
                       6.0F, {0.0F, 0.0F, 256.0F, 256.0F}, {0.70F, 0.85F, 1.0F, 0.10F});
     }
 
-    // Screen.renderBackground 用一层竖直渐变压暗每个打开的游戏内界面
-    // 顶部为 rgba(16,16,16,0xC0)，底部为 rgba(16,16,16,0xD0)
-    // 该渐变在 createGuiTexture() 里烘进 kScreenDimGuiLayer
-    void drawScreenDimOverlay(VkCommandBuffer commandBuffer) const {
-        drawGuiSprite(commandBuffer,
-                      {0.0F, 0.0F, static_cast<float>(swapchainExtent.width),
-                       static_cast<float>(swapchainExtent.height)},
-                      kScreenDimGuiLayer, {0.0F, 0.0F, 256.0F, 256.0F}, {1.0F, 1.0F, 1.0F, 1.0F});
+    // UI-5：一条竖直渐变矩形，26.1 的 `GuiGraphicsExtractor.fillGradient(x0,y0,x1,y1,上,下)`。
+    //
+    // 它跑在自己的管线上（GradientPush 两个颜色，HudPush 塞不下第二个）。画完立刻把
+    // HUD 管线绑回去——后面每一次 drawHudQuad / drawGuiSprite 都假定它已经绑好，
+    // 忘了绑会让紧随其后的那一批精灵按渐变着色器画出来。
+    //
+    // 这一层是**一次**半透明合成，不是两次。从前死亡屏那块平色其实是同一个错误的
+    // 另一半：把 0x60500000→0xA0803030 的渐变近似成一块 rgba(0.25,0,0,0.58) 的平色，
+    // 于是屏幕上半部比 vanilla 暗、下半部比 vanilla 亮。
+    void drawVerticalGradient(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
+                              const ui::UiRect& rectangle,
+                              const ui::GradientStops& stops) const {
+        const auto clip = ui::framebufferToClip(rectangle, static_cast<float>(swapchainExtent.width),
+                                                static_cast<float>(swapchainExtent.height));
+        const auto push = makeGradientPush(clip, stops);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, gradientPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                gradientPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+        vkCmdPushConstants(commandBuffer, gradientPipelineLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(push), &push);
+        vkCmdDraw(commandBuffer, 6, 1, 0, 0);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipelineLayout,
+                                0, 1, &descriptorSet, 0, nullptr);
     }
 
+    [[nodiscard]] ui::UiRect fullScreenRect() const {
+        return {0.0F, 0.0F, static_cast<float>(swapchainExtent.width),
+                static_cast<float>(swapchainExtent.height)};
+    }
+
+    // `Screen.extractTransparentBackground`：容器/背包那一档的灰渐变，
+    // 顶 0xC0101010 → 底 0xD0101010（Screen.java:467）。
+    //
+    // ★ 它**只**属于 26.1 意义上的 in-game UI（AbstractContainerScreen 与命令方块编辑屏）。
+    // 暂停菜单不走这条——那一档是「整帧模糊 + inworld_menu_background」。
+    // 从前本作让暂停菜单也铺这层灰，于是暂停时世界永远是清晰的、只是被压暗。
     // vanilla 的 HUD 用乘性混合（dst * (1 - src)）画暗角贴图：四角压暗画面，中心不受影响
     // 它必须跑在专用的暗角管线上；画完立即重新绑回 HUD 管线，后续 HUD 精灵才保持常规的 alpha 混合
     void drawVignette(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
@@ -1064,14 +1098,36 @@ class HudRenderer final {
         }
     }
 
+    // UI-5：这一屏该用哪一档背景（ui::screenBackground 的三分支表 + 死亡屏那一档）。
+    //
+    // `worldOpen` 取 `worldReady` 而不是 `worldSessionActive`：26.1 判的是
+    // `minecraft.level == null`，而地形还在生成时本作根本没有可供模糊的世界画面，
+    // 那一段仍然该转全景。
+    // 现在有没有界面盖在世界上。
+    //
+    // 26.1 里这就是 `minecraft.screen != null`：只有那时才调 Screen.extractBackground。
+    // 本作的暂停界面不换页（页仍是 Game），所以 `paused` 与 `inventoryOpen` 也算。
+    // 少了这个判断，游戏内 HUD 会被铺上一层 inworld_menu_background——
+    // 档位表对 (Game, 有世界, 无容器) 给出的正是那一档，它只是没有资格被画出来。
+    [[nodiscard]] bool screenOpen() const {
+        return menuSystem.pageStack.current() != ui::PageId::Game || paused || inventoryOpen;
+    }
+
+    [[nodiscard]] ui::ScreenBackgroundKind currentBackgroundKind() const {
+        return ui::screenBackground(menuSystem.pageStack.current(), worldReady, inventoryOpen);
+    }
+
     // 26.1 的菜单背景是从全景立方体内部以 85 度透视看出去
     // 相机缓慢转动：偏航在 kCycleSeconds 内转满 360°，六个面各自都有较长时间正对视野
     // 俯仰做一次轻微扫掠，下探到 panorama_4、上仰到 panorama_5
     // 再叠一点 vanilla 式的正弦微晃，免得太机械
-    // 之后铺一层背景贴图，配方见 titleBackgroundLayer：主菜单是全透明的 panorama_overlay，
-    // 二级界面是 menu_background——两者都取自资源包，代码不写死任何变暗
-    void drawTitleCarousel(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
-                           bool blurred, float guiScale) const {
+    //
+    // ★ UI-5：全景**画在界面那趟之前**（graphMenuBackgroundStep），因为整帧模糊是
+    // 一趟真正的后处理，跑在全景与界面之间——这正是 26.1 的
+    // BEFORE_BLUR / AFTER_BLUR 两段（`GuiRenderer.java:182-184`）。
+    // 从前它画在界面那趟里，而"模糊"是 panorama.frag 内部的一个 5x5 盒式近似：
+    // 那种做法只能糊全景自己，糊不了世界，所以暂停菜单背后的世界一直是清晰的。
+    void drawMenuPanorama(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
         // 每五分钟转满一圈，四个侧面各自正对视野一分多钟
         // 俯仰每圈扫掠一次，vanilla 式微晃的速率也按这个较慢的节奏配
         constexpr double kCycleSeconds = 300.0;
@@ -1087,37 +1143,81 @@ class HudRenderer final {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, panoramaPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 panoramaPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
-        // 菜单背景模糊半径，单位为帧缓冲像素
-        // 26.1 的 Screen.renderBlurredBackground 由 `menuBackgroundBlurriness` 选项换算出半径
-        // 该选项默认 0.5，出厂默认半径因此落在 5
-        // 留成具名常量，是因为确切的半径与卷积核属于要肉眼判定的视觉参数
-        // headless 判不了，调它时只需改这一个值
-        constexpr float kMenuBlurRadius = 5.0F;
-        const PanoramaPush push{{yaw, pitch, tanHalfFov, aspect},
-                                {blurred ? kMenuBlurRadius : 0.0F, 0.0F, 0.0F, 0.0F}};
+        const PanoramaPush push{{yaw, pitch, tanHalfFov, aspect}};
         vkCmdPushConstants(commandBuffer, panoramaPipelineLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(push), &push);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipelineLayout,
-                                0, 1, &descriptorSet, 0, nullptr);
-        const ui::UiRect fullScreen{0.0F, 0.0F, static_cast<float>(swapchainExtent.width),
-                                    static_cast<float>(swapchainExtent.height)};
-        // UI-2：全景之后铺的那一层，配方由 titleBackgroundLayer 一处给出。
-        // 模糊分支是 26.1 的 Screen.extractMenuBackground（gui/menu_background.png 平铺）；
-        // 未模糊分支是 Panorama.extractRenderState 那次 panorama_overlay 全屏 blit。
-        // 两条都坚持用资源包提供的真实纹理，而不是把它当前的像素写死进代码——
-        // 从前这里的未模糊分支画的是一块 30% 全屏黑，注释理由是"保证白色标题清晰"，
-        // 那不是 vanilla：26.1 的 TitleScreen.extractBackground() 是空实现，
-        // panorama_overlay.png 是 1x1、alpha 恒 0 的全透明图，主菜单本体是清晰的。
-        const auto background = titleBackgroundLayer(blurred);
+    }
+
+    // UI-5：模糊之后铺的那一层（`Screen.extractMenuBackground`）。它跑在界面那趟里，
+    // 也就是**模糊之后**——铺在模糊前会连同遮罩一起被糊掉。
+    //
+    // 配方由 titleBackgroundLayer 一处给出，三档各铺各的：主菜单是 panorama_overlay
+    // （26.1 的原图是 1x1、alpha 恒 0，等于不画），无世界的二级界面是 menu_background，
+    // 有世界的是 inworld_menu_background。三条的 tint 都是白色不透明——
+    // 从前这里的未模糊分支画的是一块 30% 全屏黑，注释理由是"保证白色标题清晰"，
+    // 那不是 vanilla：26.1 的 TitleScreen.extractBackground() 是空实现。
+    void drawMenuBackgroundTile(VkCommandBuffer commandBuffer, ui::ScreenBackgroundKind kind,
+                                float guiScale) const {
+        const auto background = titleBackgroundLayer(kind);
+        const auto fullScreen = fullScreenRect();
         // 非平铺就是整层拉满：源矩形取整个图集层，与 26.1 那次"整张纹理 blit 成全屏"一致
         const ui::UiRect source =
             background.tiled
                 ? ui::tiledBackgroundSource(fullScreen.width, fullScreen.height, guiScale)
                 : ui::UiRect{0.0F, 0.0F, kGuiAtlasSize, kGuiAtlasSize};
         drawGuiSprite(commandBuffer, fullScreen, background.guiLayer, source, background.tint);
+    }
+
+    // UI-5：滚动列表的底衬（`AbstractSelectionList.extractListBackground():226`）。
+    //
+    // 有世界时换成 inworld 那张，与外层菜单遮罩同一条规矩。tint 是**白色不透明**：
+    // 变暗要来自纹理。从前这两处传的是 {32/255, 32/255, 32/255, 1}——用原版资源
+    // 看不出区别（那张图的 RGB 本来就是 0，乘什么都是 0），但换个资源包就会被
+    // 代码里的常数压掉八分之七，而那正是被删掉的那块 30% 黑遮罩的同一类错误。
+    void drawListBackground(VkCommandBuffer commandBuffer, const ui::UiRect& box,
+                            float guiScale) const {
+        drawGuiSprite(commandBuffer, box, menuListBackgroundLayer(worldReady),
+                      ui::tiledBackgroundSource(box.width, box.height, guiScale),
+                      {1.0F, 1.0F, 1.0F, 1.0F});
+    }
+
+    // UI-5 / D9：列表上下那两道分隔线（`AbstractSelectionList.extractListSeparators():218-222`）。
+    //
+    // ★ 26.1 画的是两张 32x2 的分隔纹理，**不是** 4px 竖直渐隐带——渐隐是 1.20.2
+    //   之前的做法。偏差表 D9 按旧 spec 记成"渐隐带缺绘制"，照它实现会画出一个
+    //   26.1 根本没有的元素。几何在 ui::scrollListHeaderSeparator / FooterSeparator，
+    //   两条都落在视口**之外**（上缘在 y-2，下缘在 bottom），所以不会盖住首末行。
+    void drawListSeparators(VkCommandBuffer commandBuffer, const ui::UiRect& box,
+                            float guiScale) const {
+        const float thickness =
+            static_cast<float>(ui::kScrollListSeparatorHeight) * std::max(guiScale, 1.0F);
+        // 源矩形按 32 逻辑像素一个周期横向平铺：图集层里那 256 个纹素是同一张 32 宽的
+        // 纹理连铺 8 次，所以取 box.width / guiScale 个纹素恰好是 width/(32*scale) 个周期。
+        const float sourceWidth = box.width / std::max(guiScale, 1.0F);
+        const auto strip = [&](float y, int spriteY) {
+            drawGuiSprite(commandBuffer, {box.x, y, box.width, thickness}, kListSeparatorGuiLayer,
+                          {0.0F, static_cast<float>(spriteY), sourceWidth,
+                           static_cast<float>(kListSeparatorSpriteHeight)},
+                          {1.0F, 1.0F, 1.0F, 1.0F});
+        };
+        strip(box.y - thickness, headerSeparatorSpriteY(worldReady));
+        strip(box.y + box.height, footerSeparatorSpriteY(worldReady));
+    }
+
+    // UI-5：一屏的背景，按档位表一次画完（界面那趟这一侧）。
+    // 全景不在这里——它在模糊之前，见 drawMenuPanorama。
+    void drawScreenBackground(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
+                              ui::ScreenBackgroundKind kind, float guiScale) const {
+        if (ui::backgroundTilesMenuTexture(kind)) {
+            drawMenuBackgroundTile(commandBuffer, kind, guiScale);
+            return;
+        }
+        const auto stops = ui::backgroundGradient(kind);
+        if (stops.top != 0U || stops.bottom != 0U) {
+            drawVerticalGradient(commandBuffer, descriptorSet, fullScreenRect(), stops);
+        }
     }
 
     // UI-2：从 binding 6 的标题美术里画一块。uv 是 TextureManager 记下的归一化子矩形，
@@ -1364,12 +1464,10 @@ class HudRenderer final {
         drawScrollbar(commandBuffer, layout, list, total, first);
     }
 
-    void drawFrontend(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
-                      VkDescriptorSet descriptorSet) const {
+    // 不再收描述符集：背景（全景 / 模糊 / 遮罩 / 渐变）由 drawHud 一处按
+    // ui::screenBackground 的档位表画，这里只剩前端各屏自己的内容。
+    void drawFrontend(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         const auto page = menuSystem.pageStack.current();
-        // 与 26.1 的 Screen.extractBackground() 一致：所有无世界界面都保持全景在转
-        // 二级界面只模糊背景，其文本、按钮和列表行在之后绘制，保持清晰
-        drawTitleCarousel(commandBuffer, descriptorSet, page != ui::PageId::Title, layout.scale());
         const float scale = layout.scale();
         if (page == ui::PageId::Title) {
             // UI-2：主菜单的标题不是一行放大的文字，而是 gui/title/minecraft.png 加
@@ -1397,13 +1495,10 @@ class HudRenderer final {
             const auto firstRow = worldListRow(0, layout);
             const float listBandHeight =
                 static_cast<float>(visibleRows) * 22.0F * scale + 8.0F * scale;
-            drawGuiSprite(commandBuffer,
-                          {0.0F, firstRow.y - 4.0F * scale,
-                           static_cast<float>(swapchainExtent.width), listBandHeight},
-                          kMenuListBackgroundGuiLayer,
-                          ui::tiledBackgroundSource(static_cast<float>(swapchainExtent.width),
-                                                    listBandHeight, scale),
-                          {32.0F / 255.0F, 32.0F / 255.0F, 32.0F / 255.0F, 1.0F});
+            const ui::UiRect listBand{0.0F, firstRow.y - 4.0F * scale,
+                                      static_cast<float>(swapchainExtent.width), listBandHeight};
+            drawListBackground(commandBuffer, listBand, scale);
+            drawListSeparators(commandBuffer, listBand, scale);
             if (visible == 0U) {
                 const std::string_view empty = "No worlds yet. Create one to begin.";
                 drawHudText(
@@ -1629,9 +1724,8 @@ class HudRenderer final {
                     14.0F * scale, scale, {1.0F, 1.0F, 1.0F, 1.0F});
         // 居中的深色列表框用的是 26.1 中可被单独替换的列表背景
         const auto box = languageListBox(layout);
-        drawGuiSprite(commandBuffer, box, kMenuListBackgroundGuiLayer,
-                      ui::tiledBackgroundSource(box.width, box.height, scale),
-                      {32.0F / 255.0F, 32.0F / 255.0F, 32.0F / 255.0F, 1.0F});
+        drawListBackground(commandBuffer, box, scale);
+        drawListSeparators(commandBuffer, box, scale);
         const std::size_t visible = languageVisibleRowCount();
         const std::size_t maximumFirst = menuSystem.languageCodes.size() > visible
                                              ? menuSystem.languageCodes.size() - visible
@@ -1682,16 +1776,10 @@ class HudRenderer final {
 
     void drawPauseMenu(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         const bool deathScreen = menuSystem.pageStack.current() == ui::PageId::Death;
-        // 暂停界面走 Screen.renderBackground()，在冻结的世界上铺一层与背包界面相同的深灰渐变
-        // 死亡界面改用暗红色底衬；从标题界面（无世界）打开的选项界面则与其它菜单一样显示普通底衬
-        if (deathScreen) {
-            drawHudQuad(commandBuffer,
-                        {0.0F, 0.0F, static_cast<float>(swapchainExtent.width),
-                         static_cast<float>(swapchainExtent.height)},
-                        {0.25F, 0.0F, 0.0F, 0.58F});
-        } else if (worldSessionActive) {
-            drawScreenDimOverlay(commandBuffer);
-        }
+        // 背景由 drawHud 一处按档位表画：暂停屏走「整帧模糊 + inworld_menu_background」，
+        // 死亡屏走 `DeathScreen.extractDeathBackground` 的红渐变（0x60500000 → 0xA0803030）。
+        // 从前这里各自铺一层：暂停屏铺的是背包那条灰渐变（于是世界永远清晰、只是被压暗），
+        // 死亡屏铺的是一块 rgba(0.25, 0, 0, 0.58) 的平色（渐变的中点近似）。
         const float scale = layout.scale();
         const std::string title =
             menuSystem.pageStack.current() == ui::PageId::Options
@@ -1704,6 +1792,14 @@ class HudRenderer final {
                                      ? translated("controls.title", "Controls")
                                      : (deathScreen ? translated("deathScreen.title", "You Died!")
                                                     : translated("menu.game", "Game Menu")))));
+        // 按键设置是三段式布局（页眉 / 滚动列表 / 页脚），列表因此有自己的底衬与
+        // 上下两道分隔线，和语言、世界列表两屏同一套（`AbstractSelectionList:219-227`）。
+        // 从前这一屏的列表直接坐在菜单背景上，既没有底衬也没有分隔线。
+        if (menuSystem.pageStack.current() == ui::PageId::Controls) {
+            const auto box = ui::controlsListBox(layout, static_cast<float>(swapchainExtent.width));
+            drawListBackground(commandBuffer, box, scale);
+            drawListSeparators(commandBuffer, box, scale);
+        }
         const std::size_t buttonCount = menuButtonCount();
         const auto firstButton =
             frontendButtonRect(layout, menuSystem.pageStack.current(), 0, buttonCount);
@@ -2251,7 +2347,7 @@ class HudRenderer final {
 
     void drawWorkContainer(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
                            const ui::HudLayout& layout) const {
-        drawScreenDimOverlay(commandBuffer);
+        // 底衬由 drawHud 一处按档位表画（容器类走 Transparent 那一档），这里不再自己铺
         const auto panel = layout.inventoryPanel();
         const bool chestScreen = containerScreen == ContainerScreen::Chest;
         const float panelLayer =
@@ -2362,7 +2458,6 @@ class HudRenderer final {
         const auto cursor = currentFramebufferCursor();
         const float scale = layout.scale();
         const auto panel = layout.creativePanel();
-        drawScreenDimOverlay(commandBuffer);
 
         const std::size_t selectedTabIndex = static_cast<std::size_t>(menuSystem.creativeTab);
         // 前七个页签（建筑方块…战斗）在上排；食物、原料、刷怪蛋和背包在下排，用下排页签贴图
@@ -2804,20 +2899,27 @@ class HudRenderer final {
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipelineLayout,
                                 0, 1, &descriptorSet, 0, nullptr);
 
+        // UI-5：背景是**一处**决定的——档位表在 ui/ScreenBackground.hpp，绘制在这里。
+        // 从前它散在三个分支里各调一次 drawTitleCarousel，加上容器界面各自铺的灰渐变，
+        // 于是"哪一屏用哪一档"这件事没有单一来源，暂停菜单那一档干脆整个漏了。
+        //
+        // 游戏内 HUD（没有任何界面打开）不画背景：档位表只在 26.1 会调用
+        // Screen.extractBackground 的时候有意义。
         const auto page = menuSystem.pageStack.current();
+        if (screenOpen()) {
+            drawScreenBackground(commandBuffer, descriptorSet, currentBackgroundKind(),
+                                 layout.scale());
+        }
         if (page == ui::PageId::Title || page == ui::PageId::WorldList ||
             page == ui::PageId::CreateWorld || page == ui::PageId::EditWorld ||
             page == ui::PageId::ConfirmDelete) {
-            drawFrontend(commandBuffer, layout, descriptorSet);
+            drawFrontend(commandBuffer, layout);
             return;
         }
 
         if (page == ui::PageId::Options || page == ui::PageId::VideoSettings ||
             page == ui::PageId::Controls || page == ui::PageId::Language ||
             page == ui::PageId::Experimental) {
-            if (!worldSessionActive) {
-                drawTitleCarousel(commandBuffer, descriptorSet, true, layout.scale());
-            }
             if (page == ui::PageId::Language) {
                 drawLanguageScreen(commandBuffer, layout);
             } else {
@@ -2827,7 +2929,6 @@ class HudRenderer final {
         }
 
         if (!worldReady) {
-            drawTitleCarousel(commandBuffer, descriptorSet, true, layout.scale());
             const float scale = layout.scale();
             const float progress = peakPendingSectionCount == 0U
                                        ? 0.0F
@@ -2882,7 +2983,6 @@ class HudRenderer final {
                                         framebufferWidth, framebufferHeight);
             const float cursorX = framebufferCursor.x;
             const float cursorY = framebufferCursor.y;
-            drawScreenDimOverlay(commandBuffer);
             const auto panel = layout.inventoryPanel();
             const float textScale = layout.scale();
             drawGuiSprite(commandBuffer, panel, 2.0F, {0.0F, 0.0F, 176.0F, 166.0F});
@@ -3006,6 +3106,8 @@ class HudRenderer final {
     VkPipeline& crosshairPipeline;
     VkPipeline& panoramaPipeline;
     VkPipelineLayout& panoramaPipelineLayout;
+    VkPipeline& gradientPipeline;
+    VkPipelineLayout& gradientPipelineLayout;
     VkPipeline& heldItemPipeline;
     VkPipelineLayout& itemPipelineLayout;
     bool& inventoryOpen;

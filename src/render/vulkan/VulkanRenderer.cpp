@@ -3,6 +3,7 @@
 #include "render/vulkan/GpuSceneBuffer.hpp"
 #include "render/vulkan/HudRenderer.hpp"
 #include "render/vulkan/HudTypes.hpp"
+#include "render/vulkan/MenuBlur.hpp"
 #include "render/vulkan/OffscreenTarget.hpp"
 #include "render/vulkan/SwapchainFormat.hpp"
 #include "render/vulkan/SceneReadback.hpp"
@@ -5848,10 +5849,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
-    // GUI 那趟：单采样、载入世界那趟的结果、画完留给 copy
+    // GUI 那趟与它前面那趟全景，用**同一个**构造函数造。
+    //
     // 颜色附件的格式是 UNORM，于是固定功能混合读写的是 sRGB 编码值——这正是 vanilla
-    // 的合成空间，也是"提示框比原版更透""界面文字比原版亮一档"两个缺陷的收口
-    void createGuiRenderPass() {
+    // 的合成空间，也是"提示框比原版更透""界面文字比原版亮一档"两个缺陷的收口。
+    //
+    // ★ UI-5：两趟必须**渲染通道兼容**，全景才能用界面那趟的管线（hud / panorama）
+    // 和它的帧缓冲。规范里兼容性只看附件的格式与采样数，但本机这版校验层连
+    // subpass dependency 都逐字段比：条数、stage 掩码、access 掩码有一处不同，
+    // 就对每一次 vkCmdBeginRenderPass 与 vkCmdDraw 各报一条
+    // VUID-VkRenderPassBeginInfo-renderPass-00904 / VUID-vkCmdDraw-renderPass-02684。
+    // 手抄一份"看起来一样"的依赖是行不通的——所以两趟共用这一个函数体，
+    // 只有那两个附件操作按参数走。
+    void createGuiCompatibleRenderPass(VkAttachmentLoadOp colorLoadOp,
+                                       VkImageLayout colorInitialLayout,
+                                       VkImageLayout colorFinalLayout, const char* what,
+                                       VkRenderPass& out) {
         // 四个操作全部来自推导：界面那趟载入世界那趟的结果（前面有写者 → LOAD），
         // 画完立刻被 vkCmdCopyImage 读走（第一个消费者是 TransferRead → TRANSFER_SRC）
         const auto& colorPlan = planned(kSceneColorName);
@@ -5859,12 +5872,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         VkAttachmentDescription color{};
         color.format = colorPlan.format;
         color.samples = colorPlan.samples;
-        color.loadOp = colorOps.loadOp;
+        color.loadOp = colorLoadOp;
         color.storeOp = colorOps.storeOp;
         color.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        color.initialLayout = colorOps.initialLayout;
-        color.finalLayout = colorOps.finalLayout;
+        color.initialLayout = colorInitialLayout;
+        // ★ finalLayout 两趟**不同**，而它不参与渲染通道兼容性，所以可以不同：
+        // 界面那趟画完交给 vkCmdCopyImage（TRANSFER_SRC），全景那趟画完还要被模糊采样、
+        // 再被界面那趟当颜色附件载入，所以停在界面那趟的 initialLayout 上。
+        // 把它也写成 colorOps.finalLayout 的后果是全景一画完 scene_color 就成了
+        // TRANSFER_SRC，紧接着模糊那条屏障与界面那趟的 initialLayout 全部对不上。
+        color.finalLayout = colorFinalLayout;
         const auto& depthPlan = planned(kGuiDepthName);
         const auto& depthOps = resourcePlan_.ops(kGuiPassName, kGuiDepthName);
         VkAttachmentDescription depth{};
@@ -5896,7 +5914,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
                                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
         // 这一趟画完立刻被 copy 读走。隐式的尾部依赖只到 BOTTOM_OF_PIPE、不带访问掩码，
-        // 保证不了颜色写入对 transfer 读可见，所以显式写一条
+        // 保证不了颜色写入对 transfer 读可见，所以显式写一条。
+        //
+        // 全景那趟的下一个读者是模糊的第一趟采样，那条同步由 MenuBlur::record 开头
+        // 那次显式 vkCmdPipelineBarrier 提供（COLOR_ATTACHMENT_OUTPUT → FRAGMENT_SHADER），
+        // 所以这里两趟共用同一条依赖是够的。
         VkSubpassDependency presentDependency{};
         presentDependency.srcSubpass = 0;
         presentDependency.dstSubpass = VK_SUBPASS_EXTERNAL;
@@ -5912,8 +5934,23 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         info.pSubpasses = &subpass;
         info.dependencyCount = static_cast<std::uint32_t>(dependencies.size());
         info.pDependencies = dependencies.data();
-        checkVk(vkCreateRenderPass(device, &info, nullptr, &worldPipelines_.guiRenderPass),
-                "vkCreateRenderPass(gui)");
+        checkVk(vkCreateRenderPass(device, &info, nullptr, &out), what);
+    }
+
+    void createGuiRenderPass() {
+        const auto& colorOps = resourcePlan_.ops(kGuiPassName, kSceneColorName);
+        createGuiCompatibleRenderPass(colorOps.loadOp, colorOps.initialLayout, colorOps.finalLayout,
+                                      "vkCreateRenderPass(gui)", worldPipelines_.guiRenderPass);
+    }
+
+    // UI-5：全景那一趟。与界面那趟兼容（同一个函数体），差别只在颜色附件的载入：
+    // 全景整屏覆盖，因此不载入旧内容，初始布局也就无所谓。
+    void createMenuBackgroundRenderPass() {
+        const auto& colorOps = resourcePlan_.ops(kGuiPassName, kSceneColorName);
+        createGuiCompatibleRenderPass(VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED,
+                                      colorOps.initialLayout,
+                                      "vkCreateRenderPass(menu background)",
+                                      menuBackgroundRenderPass);
     }
 
     void createRenderPass() {
@@ -6298,6 +6335,33 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         vkDestroyShaderModule(device, panoramaVertexModule, nullptr);
         checkVk(panoramaResult, "vkCreateGraphicsPipelines(panorama)");
 
+        // UI-5：竖直渐变矩形（26.1 的 fillGradient）。它是**自己的**管线与推送常量块，
+        // 不是 hud 的又一个绘制模式——一条渐变要两个颜色，而 HudPush 已经正好 128 字节，
+        // 硬塞只能让某个字段随模式改变含义，那是 RN-14 那条铁律禁止的事。
+        // 混合状态与 hud 相同（普通 alpha），顶点色在编码值上插值。
+        const auto gradientVertexCode = readSpirv(shaderRoot / "gradient.vert.spv");
+        const auto gradientFragmentCode = readSpirv(shaderRoot / "gradient.frag.spv");
+        const auto gradientVertexModule = createShaderModule(gradientVertexCode);
+        const auto gradientFragmentModule = createShaderModule(gradientFragmentCode);
+        vertexStage.module = gradientVertexModule;
+        fragmentStage.module = gradientFragmentModule;
+        const std::array gradientStages{vertexStage, fragmentStage};
+        VkPushConstantRange gradientPushConstant{};
+        gradientPushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        gradientPushConstant.size = sizeof(GradientPush);
+        layoutInfo.pushConstantRangeCount = 1;
+        layoutInfo.pPushConstantRanges = &gradientPushConstant;
+        checkVk(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &gradientPipelineLayout),
+                "vkCreatePipelineLayout(gradient)");
+        pipelineInfo.pStages = gradientStages.data();
+        pipelineInfo.pVertexInputState = &outlineVertexInput;
+        pipelineInfo.layout = gradientPipelineLayout;
+        const auto gradientResult = vkCreateGraphicsPipelines(
+            device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &gradientPipeline);
+        vkDestroyShaderModule(device, gradientFragmentModule, nullptr);
+        vkDestroyShaderModule(device, gradientVertexModule, nullptr);
+        checkVk(gradientResult, "vkCreateGraphicsPipelines(gradient)");
+
         // 下面的准星与暗角管线复用同一份 pipelineInfo，所以要把 HUD 的布局和着色器阶段数组放回去
         // 全景那段把它们换成了自己 16 字节推送常量的布局和一个已经离开作用域的局部数组
         pipelineInfo.layout = hudPipelineLayout;
@@ -6616,6 +6680,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         std::vector<render::graph::PassAttachment> shadowAttachments;
         std::vector<render::graph::PassAttachment> worldAttachments;
         std::vector<render::graph::PassAttachment> guiAttachments;
+        std::vector<render::graph::PassAttachment> menuBackgroundAttachments;
         std::vector<render::graph::PassAttachment> presentAttachments;
         std::vector<VkClearValue> worldClears;
         std::vector<VkClearValue> guiClears;
@@ -6676,6 +6741,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     static constexpr std::string_view kShadowPassName = "shadow";
     static constexpr std::string_view kWorldPassName = "world";
     static constexpr std::string_view kGuiPassName = "gui";
+    static constexpr std::string_view kMenuBackgroundPassName = "menu_background";
 
     void buildFrameGraphTables(FrameGraphTables& tables, bool withHandles) const {
         using namespace render::graph;
@@ -6768,6 +6834,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 阴影图的读者不是附件，是 binding 8 的描述符采样。它必须在这里显式声明：
         // 少了这一条，推导会把一张被无条件采样的图判成瞬态
         tables.worldAttachments.push_back({kShadowDepth, Access::Sample});
+        // UI-5：模糊那一步既采样 scene_color 也写它，但写是步身自己 begin 的 renderpass
+        // 干的（不是图的附件），所以这里只声明读者。声明成 ColorWrite 会让图去要一个
+        // 它没有的 framebuffer。
+        tables.menuBackgroundAttachments = {{kSceneColor, Access::Sample}};
         tables.guiAttachments = {{kSceneColor, Access::ColorWrite},
                                  {kGuiDepth, Access::DepthWrite}};
         // 帧末 copySceneToSwapchain 的 vkCmdCopyImage 读 scene_color。漏掉这一类读者
@@ -6841,6 +6911,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
              .barriers = tables.worldBarriers,
              .barrierSrcStage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
              .barrierDstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT},
+            // UI-5：全景 + 整帧模糊。26.1 的 BEFORE_BLUR / AFTER_BLUR 之间就是这一步
+            // （`GuiRenderer.java:182-184`）。它是**非渲染步**：一次背景绘制加六趟
+            // box_blur，各有各的 renderpass 与靶，塞不进一个附件表；步身自己 begin/end。
+            // 附件表里那条 Sample 不是装饰——推导正是靠它给 scene_color 加上 SAMPLED
+            // 用途位，少了它这一步第一次采样 scene_color 就是未定义行为。
+            {.name = kMenuBackgroundPassName,
+             .attachments = tables.menuBackgroundAttachments,
+             .record = &WorldRenderer::graphMenuBackgroundStep},
             {.name = kGuiPassName,
              .attachments = tables.guiAttachments,
              .record = &WorldRenderer::graphGuiStep,
@@ -6879,12 +6957,43 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         createRainSheetPipeline();
         createFramebuffers();
         createGuiFramebuffers();
+        createMenuBackgroundRenderPass();
+        createMenuBlur();
         rebuildFrameGraph();
+    }
+
+    void createMenuBlur() {
+        std::vector<VkImageView> sceneViews;
+        std::vector<VkImage> sceneImages;
+        sceneViews.reserve(sceneTargets.size());
+        sceneImages.reserve(sceneTargets.size());
+        for (const auto& target : sceneTargets) {
+            sceneViews.push_back(target.view);
+            sceneImages.push_back(target.image.image);
+        }
+        menuBlur_.init(MenuBlur::Config{
+            .resources = &resources_,
+            .device = device,
+            .extent = swapchainExtent,
+            .colorFormat = planned(kSceneColorName).format,
+            .sceneColorViews = sceneViews,
+            .sceneColorImages = sceneImages,
+            .sceneColorPassLayout = resourcePlan_.ops(kGuiPassName, kSceneColorName).initialLayout,
+            .backgroundRenderPass = menuBackgroundRenderPass,
+            .backgroundFramebuffers = guiFramebuffers,
+            .shaderRoot = shaderRoot,
+        });
     }
 
     void cleanupSwapchain() noexcept {
         // 图里存的全是马上要被销毁的 renderPass / framebuffer 句柄，先清空
         frameGraph_.reset();
+        // UI-5：模糊那一套持有 scene_color 的视图与 guiFramebuffers，必须先于它们销毁
+        menuBlur_.destroy();
+        if (menuBackgroundRenderPass != VK_NULL_HANDLE) {
+            vkDestroyRenderPass(device, menuBackgroundRenderPass, nullptr);
+            menuBackgroundRenderPass = VK_NULL_HANDLE;
+        }
         // 计划描述的是**马上要被销毁的那批 image**，跟着一起清。留着它，下一次
         // createSwapchainResources 之前若有人来取，拿到的是一份对不上任何对象的参数；
         // 清空之后那种取用会直接抛
@@ -6959,6 +7068,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             vkDestroyPipeline(device, hudPipeline, nullptr);
             hudPipeline = VK_NULL_HANDLE;
         }
+        if (gradientPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, gradientPipeline, nullptr);
+            gradientPipeline = VK_NULL_HANDLE;
+        }
         if (panoramaPipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device, panoramaPipeline, nullptr);
             panoramaPipeline = VK_NULL_HANDLE;
@@ -7006,6 +7119,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (hudPipelineLayout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device, hudPipelineLayout, nullptr);
             hudPipelineLayout = VK_NULL_HANDLE;
+        }
+        if (gradientPipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, gradientPipelineLayout, nullptr);
+            gradientPipelineLayout = VK_NULL_HANDLE;
         }
         if (panoramaPipelineLayout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device, panoramaPipelineLayout, nullptr);
@@ -7916,12 +8033,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 所以手不会被贴脸的方块切掉
     std::vector<DepthTarget> guiDepthTargets;
     std::vector<VkFramebuffer> guiFramebuffers;
+    // UI-5：全景那一趟的渲染通道（与 guiRenderPass 兼容）与六趟整帧模糊
+    VkRenderPass menuBackgroundRenderPass = VK_NULL_HANDLE;
+    MenuBlur menuBlur_;
     VkPipeline crosshairPipeline = VK_NULL_HANDLE;
     VkPipelineLayout hudPipelineLayout = VK_NULL_HANDLE;
     VkPipeline hudPipeline = VK_NULL_HANDLE;
     VkPipeline hudBlockIconPipeline = VK_NULL_HANDLE;
     VkPipelineLayout panoramaPipelineLayout = VK_NULL_HANDLE;
     VkPipeline panoramaPipeline = VK_NULL_HANDLE;
+    // UI-5：竖直渐变矩形（fillGradient）。自带推送常量块，理由见 HudTypes.hpp。
+    VkPipelineLayout gradientPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline gradientPipeline = VK_NULL_HANDLE;
     VkPipeline vignettePipeline = VK_NULL_HANDLE;
     // 世界通道的管线族，定义见 render/vulkan/WorldRenderTypes.hpp
     // 所有权仍在这里（本类创建，并随交换链销毁重建），WorldRenderer 只持有它的引用
@@ -7993,6 +8116,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .crosshairPipeline = crosshairPipeline,
             .panoramaPipeline = panoramaPipeline,
             .panoramaPipelineLayout = panoramaPipelineLayout,
+            .gradientPipeline = gradientPipeline,
+            .gradientPipelineLayout = gradientPipelineLayout,
             .heldItemPipeline = worldPipelines_.heldItemPipeline,
             .itemPipelineLayout = worldPipelines_.itemPipelineLayout,
             .inventoryOpen = inventoryOpen,
@@ -8118,6 +8243,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .swapchainExtent = swapchainExtent,
             .framebuffers = framebuffers,
             .guiFramebuffers = guiFramebuffers,
+            .menuBlur = menuBlur_,
             .copySceneToSwapchain =
                 [this](VkCommandBuffer c, std::uint32_t index) { copySceneToSwapchain(c, index); },
             .frames = frames,

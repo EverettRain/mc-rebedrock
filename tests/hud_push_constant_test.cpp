@@ -29,6 +29,7 @@
 
 #include "render/vulkan/HudTypes.hpp"
 #include "ui/HudLayout.hpp"
+#include "ui/ScreenBackground.hpp"
 #include "world/Block.hpp"
 #include "world/ItemModel.hpp"
 
@@ -301,6 +302,56 @@ int main() {
         assert(vertexFields == cxxFields);
         assert(sizeof(mc::render::HudPush) == vertexFields.size() * sizeof(glm::vec4));
         assert(sizeof(mc::render::HudPush) <= 128U);
+    }
+
+    // --- UI-5: GradientPush 同样是三处声明，同样必须是一处。 ---
+    //
+    // 它之所以另开一个块而不是做成 HudPush 的又一个绘制模式：一条渐变要**两个**颜色，
+    // 而 HudPush 已经正好 128 字节，一个自由分量都不剩。硬塞只能让某个字段随模式改变
+    // 含义——那正是这个文件顶上那条铁律禁止的事。
+    {
+        const auto vertexFields = parseFields(blockAfter(
+            readFile(kShaderDir / "gradient.vert"), "layout(push_constant) uniform GradientPush"));
+        const auto fragmentFields = parseFields(blockAfter(
+            readFile(kShaderDir / "gradient.frag"), "layout(push_constant) uniform GradientPush"));
+        const auto cxxFields = normalizeCxx(parseFields(blockAfter(
+            readFile(kSourceDir / "src/render/vulkan/HudTypes.hpp"), "struct GradientPush final")));
+        assert(!vertexFields.empty());
+        assert(vertexFields == fragmentFields);
+        assert(vertexFields == cxxFields);
+        assert(sizeof(mc::render::GradientPush) == vertexFields.size() * sizeof(glm::vec4));
+    }
+
+    // --- UI-5: 渐变的**生产者**也只有一个，而且它没把上下两端接反。 ---
+    //
+    // 声明一致不等于填法一致（这个文件顶上第二条教训）。makeGradientPush 是那唯一的
+    // 构造，而"上下接反"在画面上只是"渐变方向反了"——死亡屏仍然是一片暗红，
+    // 只是重的那头跑到了上面。没有任何自然的断言会因此变红，所以在这里钉住。
+    {
+        const mc::ui::UiRect clip{-1.0F, -1.0F, 2.0F, 2.0F};
+        const auto push = mc::render::makeGradientPush(clip, mc::ui::kDeathBackgroundStops);
+        assert(push.rect.x == -1.0F && push.rect.y == -1.0F);
+        assert(push.rect.z == 2.0F && push.rect.w == 2.0F);
+        // 顶 = 0x60500000：alpha 0x60、红 0x50、绿蓝 0
+        assert(push.topColor.a == 96.0F / 255.0F);
+        assert(push.topColor.r == 80.0F / 255.0F);
+        assert(push.topColor.g == 0.0F && push.topColor.b == 0.0F);
+        // 底 = 0xA0803030：更不透明、更亮
+        assert(push.bottomColor.a == 160.0F / 255.0F);
+        assert(push.bottomColor.r == 128.0F / 255.0F);
+        assert(push.bottomColor.g == 48.0F / 255.0F);
+        // ★ 方向：底端必须比顶端重。接反了这一条就红。
+        assert(push.bottomColor.a > push.topColor.a);
+        assert(push.bottomColor.r > push.topColor.r);
+        // 容器那一档只有 alpha 在变，RGB 两端相同——它抓不住"接反"，所以上面用死亡屏
+        const auto dim = mc::render::makeGradientPush(clip, mc::ui::kTransparentBackgroundStops);
+        assert(dim.topColor.r == dim.bottomColor.r);
+        assert(dim.bottomColor.a > dim.topColor.a);
+        // gradient.vert 里那次 mix 的 t 是 corner.y：0 是矩形上缘。把 mix 的两个参数
+        // 对调与把这里的两个字段对调是同一个缺陷，所以着色器那半也钉一下。
+        const std::string vertex = stripComments(readFile(kShaderDir / "gradient.vert"));
+        assert(vertex.find("mix(gradient.topColor, gradient.bottomColor, corner.y)") !=
+               std::string::npos);
     }
 
     // --- Each named draw mode lands in the branch it is named for. ---
