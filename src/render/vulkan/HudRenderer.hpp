@@ -248,8 +248,17 @@ class HudRenderer final {
                                              std::string_view fallback) const {
         return language.translate(key, fallback);
     }
+    // D12：译文要过一遍格式化器，哪怕没有参数。
+    //
+    // Java 的语言 JSON 用 `%` 作占位符前缀，字面百分号因此写成 `%%`——
+    // `options.languageWarning` 就是 "…may not be 100%% accurate"。vanilla 的
+    // `Component.translatable(key)` 即使不带参数也会走 String.format，所以屏幕上是一个 `%`；
+    // 本作从前直接把原串画出去，于是显示成 `100%%`。
+    //
+    // 只折 `%%`，**不碰** `%s`：本作有一类串是"先取译文、之后再带参数格式化"的
+    // （`options.generic_value` 就是 `"%s: %s"`），过一遍无参数的格式化器会把它吃空。
     [[nodiscard]] std::string translated(std::string_view key, std::string_view fallback) const {
-        return std::string{translate(key, fallback)};
+        return ui::unescapeTranslationPercents(translate(key, fallback));
     }
     [[nodiscard]] ui::UiPoint currentFramebufferCursor() const {
         // UI-2：截图通道钉死的光标（见 VulkanRenderer::Impl 上那条注释）。

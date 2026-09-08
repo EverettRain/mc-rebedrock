@@ -1804,6 +1804,14 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_splash_text_test PRIVATE src)
     add_test(NAME splash_text COMMAND mc_rebedrock_splash_text_test)
 
+    # D4：位图字体 provider 铺进 256x256 层数组的算术。修复前整张图被重采样进一层，
+    # 128x536 的表因此被纵向压到每格 3 行——约 2247 个码点渲染错误，而 ASCII 完好。
+    add_executable(mc_rebedrock_bitmap_font_atlas_test
+        tests/bitmap_font_atlas_test.cpp
+    )
+    target_include_directories(mc_rebedrock_bitmap_font_atlas_test PRIVATE src)
+    add_test(NAME bitmap_font_atlas COMMAND mc_rebedrock_bitmap_font_atlas_test)
+
     add_executable(mc_rebedrock_texture_animation_test
         tests/texture_animation_test.cpp
         src/assets/TextureAnimation.cpp

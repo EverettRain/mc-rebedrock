@@ -3,6 +3,8 @@
 #include "render/vulkan/BlockAtlasBaker.hpp"
 #include "render/vulkan/HudTypes.hpp"
 
+#include "ui/BitmapFontAtlas.hpp"
+
 #include "animation/SkeletalModel.hpp"
 #include "assets/FontProviders.hpp"
 #include "assets/ImageData.hpp"
@@ -119,20 +121,33 @@ struct UnihexPages final {
     std::vector<bool> seen = std::vector<bool>(0x10000U);
 };
 
+// D4：一个位图 provider 铺出来的**若干**层，不再是一层。
+// `alpha` 是 layerCount 个 256x256 的 R8 平面首尾相接；`glyphs` 里每个字形的 `layer`
+// 是**该 provider 内部**的层号，追加进数组时再加上基准层号。
 struct BitmapProviderLayer final {
     std::vector<std::uint8_t> alpha;
+    int layerCount = 1;
     std::vector<std::pair<char32_t, ui::FontGlyph>> glyphs;
 };
 
-[[nodiscard]] std::vector<std::uint8_t> alphaAtlas256(const assets::ImageData& image) {
-    constexpr int kSize = 256;
-    std::vector<std::uint8_t> alpha(static_cast<std::size_t>(kSize * kSize));
-    for (int y = 0; y < kSize; ++y) {
-        const int sourceY = std::min(y * image.height / kSize, image.height - 1);
-        for (int x = 0; x < kSize; ++x) {
-            const int sourceX = std::min(x * image.width / kSize, image.width - 1);
-            alpha[static_cast<std::size_t>(y * kSize + x)] =
-                image.rgba[static_cast<std::size_t>((sourceY * image.width + sourceX) * 4 + 3)];
+// D4：把 provider 的 alpha 通道**按原生分辨率**铺进 layout 解出的那些 256x256 层。
+//
+// 此前这里是一次整图重采样（`alphaAtlas256`），128x536 的表因此被纵向压到 3/8 —— 见
+// ui/BitmapFontAtlas.hpp 的头注释。现在一个像素都不缩放：层内空白处永远采不到。
+[[nodiscard]] std::vector<std::uint8_t> bitmapFontLayers(const assets::ImageData& image,
+                                                         const ui::BitmapFontLayout& layout) {
+    constexpr int kSize = ui::kFontLayerSize;
+    constexpr auto kLayerBytes = static_cast<std::size_t>(kSize) * kSize;
+    std::vector<std::uint8_t> alpha(kLayerBytes * static_cast<std::size_t>(layout.layerCount));
+    for (int layer = 0; layer < layout.layerCount; ++layer) {
+        const int sourceY = ui::bitmapFontLayerSourceY(layout, layer);
+        const int height = ui::bitmapFontLayerHeight(layout, layer);
+        const std::size_t base = kLayerBytes * static_cast<std::size_t>(layer);
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < image.width; ++x) {
+                alpha[base + static_cast<std::size_t>(y) * kSize + static_cast<std::size_t>(x)] =
+                    image.rgba[static_cast<std::size_t>(((sourceY + y) * image.width + x) * 4 + 3)];
+            }
         }
     }
     return alpha;
@@ -148,13 +163,23 @@ loadBitmapProvider(const assets::ResourceProvider& resources,
     for (const auto& row : definition.chars) {
         columnCount = std::max(columnCount, row.size());
     }
-    if (rowCount == 0U || columnCount == 0U || image.width % static_cast<int>(columnCount) != 0 ||
-        image.height % static_cast<int>(rowCount) != 0) {
+    if (rowCount == 0U || columnCount == 0U) {
         throw std::runtime_error("Bitmap font grid does not match " + definition.file.toString());
     }
-    result.alpha = alphaAtlas256(image);
-    const int cellWidth = image.width / static_cast<int>(columnCount);
-    const int cellHeight = image.height / static_cast<int>(rowCount);
+    // D4：铺法从 ui/BitmapFontAtlas.hpp 解出——按原生分辨率切成若干 256x256 层，
+    // 切割落在整格行上。它对坏资源是抛而不是夹，所以把文件名接上去再抛。
+    ui::BitmapFontLayout layout;
+    try {
+        layout = ui::bitmapFontLayout(image.width, image.height, static_cast<int>(columnCount),
+                                      static_cast<int>(rowCount));
+    } catch (const std::exception& error) {
+        throw std::runtime_error("Bitmap font grid does not match " +
+                                 definition.file.toString() + ": " + error.what());
+    }
+    result.alpha = bitmapFontLayers(image, layout);
+    result.layerCount = layout.layerCount;
+    const int cellWidth = layout.cellWidth;
+    const int cellHeight = layout.cellHeight;
     const float oversample =
         static_cast<float>(cellHeight) / static_cast<float>(std::max(definition.height, 1));
     for (std::size_t row = 0U; row < rowCount; ++row) {
@@ -180,10 +205,17 @@ loadBitmapProvider(const assets::ResourceProvider& resources,
             if (right >= left) {
                 ui::FontGlyph glyph;
                 const float sourceWidth = static_cast<float>(right - left + 1);
-                glyph.u = static_cast<float>(cellX + left) / static_cast<float>(image.width);
-                glyph.v = static_cast<float>(cellY) / static_cast<float>(image.height);
-                glyph.uvWidth = sourceWidth / static_cast<float>(image.width);
-                glyph.uvHeight = static_cast<float>(cellHeight) / static_cast<float>(image.height);
+                // D4：UV 相对**它落在的那一层**算，而不是相对整张源图。
+                // 从前是后者，配上那次整图重采样才恰好还能对齐格子边界；现在层是原生
+                // 分辨率的，源图坐标与层内坐标不再是同一个比例。
+                const auto cell = ui::bitmapFontCell(layout, static_cast<int>(row),
+                                                     static_cast<int>(column));
+                constexpr auto kLayerSize = static_cast<float>(ui::kFontLayerSize);
+                glyph.layer = static_cast<float>(cell.layer);
+                glyph.u = static_cast<float>(cell.x + left) / kLayerSize;
+                glyph.v = static_cast<float>(cell.y) / kLayerSize;
+                glyph.uvWidth = sourceWidth / kLayerSize;
+                glyph.uvHeight = static_cast<float>(cellHeight) / kLayerSize;
                 glyph.pixelWidth = sourceWidth / oversample;
                 glyph.pixelHeight = static_cast<float>(definition.height);
                 glyph.offsetY = 7.0F - static_cast<float>(definition.ascent);
@@ -917,14 +949,17 @@ void TextureManager::createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::T
 
     textFont.setUnicodeSizes(std::move(unihex.sizes));
     std::uint32_t layerCount = 1U;
+    // D4：一个 provider 现在可能占好几层（nonlatin_european 3 层、accented 4 层）。
+    // 字形自带的是**该 provider 内部**的层号，这里加上基准层号才是数组里的绝对层号。
     for (auto& bitmap : bitmapLayers) {
         for (auto& [codepoint, glyph] : bitmap.glyphs) {
-            glyph.layer = static_cast<float>(layerCount);
+            glyph.layer += static_cast<float>(layerCount);
             textFont.addBitmapGlyph(codepoint, glyph);
         }
         pixels.insert(pixels.end(), bitmap.alpha.begin(), bitmap.alpha.end());
-        ++layerCount;
+        layerCount += static_cast<std::uint32_t>(bitmap.layerCount);
     }
+    const std::uint32_t bitmapLayerCount = layerCount;
     for (const int page : requiredPages) {
         if (page < 0 || page >= 256 || unihex.alpha[static_cast<std::size_t>(page)].empty()) {
             continue;
@@ -946,9 +981,9 @@ void TextureManager::createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::T
                                                   VK_IMAGE_ASPECT_COLOR_BIT, layerCount,
                                                   VK_IMAGE_VIEW_TYPE_2D_ARRAY);
     std::cout << "Loaded Minecraft font array: " << kFontPageSize << 'x' << kFontPageSize << " x "
-              << layerCount << " (" << (1U + bitmapLayers.size()) << " bitmap layers + "
-              << (layerCount - 1U - static_cast<std::uint32_t>(bitmapLayers.size()))
-              << " unihex pages)\n";
+              << layerCount << " (" << bitmapLayerCount << " bitmap layers from "
+              << (1U + bitmapLayers.size()) << " providers + "
+              << (layerCount - bitmapLayerCount) << " unihex pages)\n";
 }
 
 void TextureManager::recreateFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::TextFont& textFont,

@@ -16,6 +16,16 @@ simple versioned history while it is in beta.
 - Shift-clicking a cycling option now steps backwards through its values instead of forwards.
 
 ### Fixed
+- Text in almost every language other than English was broken: accented letters (é ü ñ č ř ś…),
+  Greek, Cyrillic, Hebrew and Armenian — roughly two thousand two hundred characters — came out
+  recognisable but wrong, with stray strokes hanging above them. The two font sheets those
+  characters live on (128×536 and 144×900) were being squeezed into a single 256×256 layer, which
+  crushed each eight-pixel-tall character down to three rows and pulled in the bottom row of the
+  character above. The ASCII sheet happens to be 128×128, so it scaled up cleanly by two and
+  English looked fine — which is why this went unnoticed. Those sheets are now laid into as many
+  layers as they need, at their own resolution, with no scaling at all.
+- The note under the language list no longer reads `100%% accurate`. Minecraft's language files
+  write a literal percent sign as two of them; this was printing the raw text.
 - The scrollbars on the language and key-binding lists are Minecraft's again. They used to be a
   hand-drawn ten-pixel light grey block floating over on the right of the screen; they are now the
   six-pixel scrollbar texture from the resource pack, sitting just right of the list's own rows,
