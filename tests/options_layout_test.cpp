@@ -16,14 +16,17 @@
 #include "ui/KeyBindList.hpp"
 #include "ui/MenuGeometry.hpp"
 #include "ui/PageBuilder.hpp"
+#include "ui/PageLayoutKind.hpp"
 #include "ui/PageTitles.hpp"
 #include "ui/ListRow.hpp"
+#include "ui/CreateWorldLayout.hpp"
 #include "ui/DualColumnList.hpp"
 #include "ui/OptionsList.hpp"
 #include "ui/OptionSlider.hpp"
 #include "ui/SliderGeometry.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -1121,6 +1124,183 @@ void testDualColumnLists() {
     CHECK(text.width >= static_cast<float>(mc::ui::kTransferDescriptionWidth) - 2.0F);
 }
 
+// --- 20. 没有任何控件可以越出画布（UI-6e，对着一次真实的版面事故）------------
+//
+// ★ 起因：创建世界页的表单是**挂在按钮块上沿往上堆**的——
+//       buttonTop = 逻辑高/2 - 按钮数*12;  名字标签 y = buttonTop - 80
+//   1280x720 @ scale 3 的逻辑画布高 240，于是 buttonTop = 60、标签落在 **-20**：
+//   世界名输入框被切出画布顶部，文件夹提示与标题糊在一起。加一个种子框就撞上了
+//   （往上堆的高度从 30 涨到 80）。
+//
+//   **往上堆的版面没有上界**，而"顶出画布"不会让任何断言变红——只有截图看得见。
+//   这条测试就是那个缺失的下界，而且它是**通用**的：所有页面、多档缩放一起量。
+void testNoWidgetEscapesTheCanvas() {
+    // 覆盖窄、方、宽三类画布与三档缩放。320x240 是 spec §1.1 的最小逻辑画布。
+    struct Canvas final { float width; float height; int scale; };
+    constexpr std::array<Canvas, 6> kCanvases{{
+        {1280.0F, 720.0F, 3}, {1280.0F, 720.0F, 2}, {1280.0F, 720.0F, 1},
+        {854.0F, 480.0F, 2},  {640.0F, 480.0F, 1},  {1920.0F, 1080.0F, 4},
+    }};
+
+    for (const Canvas& canvas : kCanvases) {
+        const mc::ui::HudLayout layout{canvas.width, canvas.height, canvas.scale};
+        for (std::size_t raw = 0; raw <= static_cast<std::size_t>(mc::ui::PageId::Accessibility);
+             ++raw) {
+            const auto page = static_cast<mc::ui::PageId>(raw);
+            // 游戏内那几屏没有菜单按钮，装配是空的
+            if (mc::ui::pageDrawKind(page) == mc::ui::PageDrawKind::InGame) {
+                continue;
+            }
+            mc::ui::MenuBuildContext ctx;
+            ctx.optionsWindow = mc::ui::optionsWindowFor(layout, page, 0U);
+            const mc::ui::MenuCallbacks cb;
+            mc::ui::Page built;
+            mc::ui::buildPageInto(built, page, ctx, cb);
+            mc::ui::layoutPageInto(built, page, layout, canvas.width, 0U,
+                                   ctx.optionsWindow.firstRow);
+            // 夹具自证：这些页面必须真的装配出了控件，否则上面那个循环是空的，
+            // 整条测试就成了摆设。
+            if (page == mc::ui::PageId::CreateWorld) {
+                check(built.size() >= 5U, "the create-world page must assemble widgets", __LINE__);
+            }
+            for (const auto& widget : built) {
+                const auto& rect = widget.rect;
+                // ★ 上边界是这次事故的那一条：控件顶在画布外，画面上被切掉半截。
+                check(rect.y >= -0.5F,
+                      "a widget escaped the top of the canvas", __LINE__);
+                check(rect.x >= -0.5F,
+                      "a widget escaped the left of the canvas", __LINE__);
+                check(rect.y + rect.height <= canvas.height + 0.5F,
+                      "a widget escaped the bottom of the canvas", __LINE__);
+                check(rect.x + rect.width <= canvas.width + 0.5F,
+                      "a widget escaped the right of the canvas", __LINE__);
+            }
+        }
+    }
+}
+
+// --- 21. 创建世界页的三段式表单 ----------------------------------------------
+void testCreateWorldForm() {
+    const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
+    const auto form =
+        mc::ui::createWorldLayout(layout.logicalWidth(), layout.logicalHeight());
+    const auto frame =
+        mc::ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
+
+    // ★ 表单从内容区**顶部**往下排，第一行就贴着页眉下沿——不是从按钮往上堆。
+    CHECK(form.nameLabel.y == frame.contentBox().y);
+    // 自上而下严格递增，且互不重叠
+    CHECK(form.nameField.y > form.nameLabel.y);
+    CHECK(form.folderHint.y >= form.nameField.y + form.nameField.height);
+    CHECK(form.seedLabel.y >= form.folderHint.y + form.folderHint.height);
+    CHECK(form.seedField.y >= form.seedLabel.y + form.seedLabel.height);
+    // 按钮带在表单下方
+    CHECK(static_cast<float>(form.optionButtonsTop) >=
+          form.seedField.y + form.seedField.height);
+
+    // 表单整体不越过页脚
+    const auto footer = frame.footerBox();
+    CHECK(form.seedField.y + form.seedField.height <= footer.y);
+    // 三个循环按钮也不越过页脚
+    const auto lastButton = mc::ui::createWorldOptionButton(form, layout.logicalWidth(), 2U);
+    CHECK(lastButton.y + lastButton.height <= footer.y);
+
+    // 页脚两个按钮横排、等宽、不重叠、整体居中
+    CHECK(form.footerLeft.y == form.footerRight.y);
+    CHECK(form.footerLeft.width == form.footerRight.width);
+    CHECK(form.footerRight.x >= form.footerLeft.x + form.footerLeft.width);
+    const float pairCentre =
+        (form.footerLeft.x + form.footerRight.x + form.footerRight.width) * 0.5F;
+    CHECK(std::abs(pairCentre - static_cast<float>(layout.logicalWidth()) * 0.5F) <= 1.0F);
+
+    // 两个输入框等宽且水平居中
+    CHECK(form.nameField.width == form.seedField.width);
+    CHECK(form.nameField.x == form.seedField.x);
+    CHECK(form.nameField.width == static_cast<float>(mc::ui::kCreateWorldFieldWidth));
+
+    // 版式判定走表，不是手写清单
+    CHECK(mc::ui::pageLayoutKind(mc::ui::PageId::CreateWorld) ==
+          mc::ui::PageLayoutKind::HeaderFooterForm);
+
+    // ★ 走**生产路径**看具体控件落在哪。上面那些只量了几何函数——把布局侧
+    //   页脚两个按钮的序号判定写反（Create 跑到右边、Back 跑到左边），或者让内容区的
+    //   三个按钮**不换行**（全叠在同一位置），几何函数一条都不会红：
+    //   它返回的矩形本身还是对的，错的是"哪个控件拿到哪一个"。
+    {
+        mc::ui::MenuBuildContext ctx;
+        const mc::ui::MenuCallbacks cb;
+        mc::ui::Page page;
+        mc::ui::buildPageInto(page, mc::ui::PageId::CreateWorld, ctx, cb);
+        mc::ui::layoutPageInto(page, mc::ui::PageId::CreateWorld, layout, 1280.0F);
+        const std::size_t count = mc::ui::countPageButtons(page);
+        CHECK(count >= 5U);
+
+        const auto rectOf = [&](mc::ui::WidgetId id) {
+            for (const auto& widget : page) {
+                if (static_cast<mc::ui::WidgetId>(widget.debugId) == id) {
+                    return widget.rect;
+                }
+            }
+            check(false, "expected widget missing from the create-world page", __LINE__);
+            return mc::ui::UiRect{};
+        };
+
+        // 页脚：Create New World 在**左**，Back 在**右**，同一行
+        const auto create = rectOf(mc::ui::WidgetId::CreateConfirm);
+        const auto back = rectOf(mc::ui::WidgetId::Back);
+        check(create.y == back.y, "the two footer buttons share a row", __LINE__);
+        check(create.x < back.x, "Create sits left of Back", __LINE__);
+        check(create.x + create.width <= back.x, "the footer buttons must not overlap", __LINE__);
+
+        // 内容区的三个循环按钮自上而下**逐个换行**，互不重叠
+        const auto mode = rectOf(mc::ui::WidgetId::CreateGameMode);
+        const auto difficulty = rectOf(mc::ui::WidgetId::Difficulty);
+        const auto commands = rectOf(mc::ui::WidgetId::CreateAllowCommands);
+        check(difficulty.y >= mode.y + mode.height,
+              "the difficulty button must sit below the game-mode button", __LINE__);
+        check(commands.y >= difficulty.y + difficulty.height,
+              "the allow-commands button must sit below the difficulty button", __LINE__);
+        // 三个都在页脚之上
+        check(commands.y + commands.height <= create.y,
+              "the option buttons must stay above the footer", __LINE__);
+    }
+
+    // ★★ 表单矩形也不许越出画布——而 `testNoWidgetEscapesTheCanvas` **覆盖不到它们**：
+    //    输入框、标签、文件夹提示都不是 `ui::Widget`，它们不进 `ui::Page`，只是绘制侧的
+    //    矩形。这次事故越界的恰恰是它们（世界名框被切出画布顶部），所以那条通用护栏
+    //    抓不住这次的 bug，必须在这里单独量一遍。
+    //
+    //    这是"两套界面栈"那个问题的小版本：凡是绕过 Widget 模型自己画的东西，
+    //    Widget 上的护栏一概管不到。
+    struct Canvas final { int width; int height; };
+    constexpr std::array<Canvas, 5> kCanvases{{
+        {427, 240}, {640, 360}, {1280, 720}, {320, 240}, {854, 480},
+    }};
+    for (const Canvas& canvas : kCanvases) {
+        const auto solved = mc::ui::createWorldLayout(canvas.width, canvas.height);
+        const auto solvedFrame = mc::ui::headerAndFooterLayout(canvas.width, canvas.height);
+        const std::array<mc::ui::UiRect, 5> parts{{solved.nameLabel, solved.nameField,
+                                                   solved.folderHint, solved.seedLabel,
+                                                   solved.seedField}};
+        for (const auto& rect : parts) {
+            check(rect.y >= 0.0F, "a form row escaped the top of the canvas", __LINE__);
+            check(rect.x >= 0.0F, "a form row escaped the left of the canvas", __LINE__);
+            check(rect.y + rect.height <= static_cast<float>(canvas.height),
+                  "a form row escaped the bottom of the canvas", __LINE__);
+            check(rect.x + rect.width <= static_cast<float>(canvas.width),
+                  "a form row escaped the right of the canvas", __LINE__);
+            // 表单永远在页眉之下：顶出页眉就会和标题糊在一起（这次事故的第二个症状）
+            check(rect.y >= solvedFrame.contentBox().y,
+                  "a form row climbed into the header", __LINE__);
+        }
+        // 页脚两个按钮同样要在画布内
+        for (const auto& rect : {solved.footerLeft, solved.footerRight}) {
+            check(rect.x >= 0.0F && rect.x + rect.width <= static_cast<float>(canvas.width),
+                  "a footer button escaped the canvas", __LINE__);
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1144,6 +1324,8 @@ int main() {
     testFloatSliders();
     testOptionsHeaderRows();
     testDualColumnLists();
+    testNoWidgetEscapesTheCanvas();
+    testCreateWorldForm();
     if (failures != 0) {
         std::printf("options_layout_test: %d checks failed\n", failures);
         return 1;

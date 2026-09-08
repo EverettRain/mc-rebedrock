@@ -46,6 +46,7 @@
 #include "ui/Language.hpp"
 #include "ui/MenuGeometry.hpp"
 #include "ui/MenuSystem.hpp"
+#include "ui/CreateWorldLayout.hpp"
 #include "ui/HeaderAndFooterLayout.hpp"
 #include "ui/KeyBindList.hpp"
 #include "ui/ListRow.hpp"
@@ -1052,25 +1053,28 @@ class HudRenderer final {
         float seedLabelY = 0.0F;
     };
 
+    // 表单矩形全部来自 ui::createWorldLayout —— **与按钮位置同一个来源**
+    // （`frontendButtonRect` 的 HeaderFooterForm 分支读的是同一个函数）。
+    //
+    // ★ 从前这里自己算：`buttonTop = 逻辑高/2 - 按钮数*12`，表单从 `buttonTop - 80`
+    //   往上堆。1280x720 @ scale 3 的逻辑画布高 240，于是表单落在 **y = -20**，
+    //   世界名输入框被切出画布顶部、文件夹提示与标题糊在一起。
+    //   往上堆的版面没有上界，而"顶出画布"不会让任何断言变红——只有截图看得见。
     [[nodiscard]] CreateWorldForm createWorldForm(const ui::HudLayout& layout) const {
-        constexpr int kFieldWidth = 200;   // spec §2.4 的常用输入框尺寸
-        constexpr int kFieldHeight = 20;
-        // HudLayout::menuButton 的第一行 y = 画布中线 - 按钮数 * 12；按钮数从**已装配的
-        // 页面**数出来，不是另写一个常量（写死一个 5 之后再加按钮就会静默错位）
-        const int buttonTop =
-            layout.logicalHeight() / 2 - static_cast<int>(menuButtonCount()) * 12;
-        // 居中与逻辑→帧缓冲的换算都走 HudLayout 自己的助手（护栏 5）：整数网格上解完
-        // 版面，最后一次乘 scale。自己写 `(宽 - 200) * 0.5F` 在非整除档下会差一像素
-        const int left = layout.centredLogicalX(kFieldWidth);
-        CreateWorldForm form;
-        form.nameLabelY = layout.toFramebuffer(buttonTop - 80);
-        form.nameField = {layout.toFramebuffer(left), layout.toFramebuffer(buttonTop - 70),
-                          layout.toFramebuffer(kFieldWidth), layout.toFramebuffer(kFieldHeight)};
-        form.folderLineY = layout.toFramebuffer(buttonTop - 46);
-        form.seedLabelY = layout.toFramebuffer(buttonTop - 34);
-        form.seedField = {layout.toFramebuffer(left), layout.toFramebuffer(buttonTop - 24),
-                          layout.toFramebuffer(kFieldWidth), layout.toFramebuffer(kFieldHeight)};
-        return form;
+        const auto form =
+            ui::createWorldLayout(layout.logicalWidth(), layout.logicalHeight());
+        const float scale = layout.scale();
+        const auto toFb = [scale](const ui::UiRect& rect) {
+            return ui::UiRect{rect.x * scale, rect.y * scale, rect.width * scale,
+                              rect.height * scale};
+        };
+        CreateWorldForm out;
+        out.nameLabelY = form.nameLabel.y * scale;
+        out.nameField = toFb(form.nameField);
+        out.folderLineY = form.folderHint.y * scale;
+        out.seedLabelY = form.seedLabel.y * scale;
+        out.seedField = toFb(form.seedField);
+        return out;
     }
 
     void drawCreateWorldForm(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
