@@ -9,6 +9,7 @@
 #include "input/InputSystem.hpp"
 #include "input/KeyBindingScreen.hpp"
 #include "ui/MenuInteraction.hpp"
+#include "ui/ListRow.hpp"
 #include "ui/PageBuilder.hpp"
 
 #include <cassert>
@@ -112,9 +113,9 @@ void testCaptureToggle() {
 void testControlsPageLIstsBindRows() {
     ui::MenuBuildContext ctx;
     input::InputSystem system;
+    // UI-6b：按钮上写的是**键名**，不是"动作: 按键"——动作名是它旁边那个 Label。
     ctx.keyBindLabelFor = [&system](InputAction action) {
-        return std::string{input::actionDisplayName(action)} + ": " +
-               input::bindingDisplayName(system.bindings().binding(action));
+        return input::bindingDisplayName(system.bindings().binding(action));
     };
     // PX-6 Bug1: the Controls key-bind list is windowed. Ask for the full window
     // so every action is listed (a real screen sizes the window to the canvas).
@@ -131,7 +132,11 @@ void testControlsPageLIstsBindRows() {
     };
     const ui::Page page = ui::buildPage(ui::PageId::Controls, ctx, cb, rectFor);
 
-    // One ListRow per rebindable action (the full window was requested).
+    // UI-6b: a bind row is TWO widgets now, not one -- the action's name as a Label
+    // and the change button as a Button, matching 26.1's KeyBindsList.KeyEntry
+    // (whose children() hands out changeButton and resetButton separately). The
+    // whole point is that adding another bindable action never touches the screen
+    // code again, so the shape of a row is asserted here rather than eyeballed.
     std::size_t rows = 0;
     std::size_t firstRow = ui::kNoWidget;
     for (std::size_t i = 0; i < page.size(); ++i) {
@@ -140,9 +145,16 @@ void testControlsPageLIstsBindRows() {
             ++rows;
         }
     }
-    assert(rows == input::keyBindRows().size());
-    // The first row is Forward and its label reflects the live binding (W).
-    assert(page[firstRow].label == "Forward: W");
+    assert(rows == input::keyBindRows().size() * ui::kKeyBindWidgetsPerRow);
+    // The name is a Label and is NOT interactive: focus skips it and clicking it
+    // must not start a capture. The button next to it carries the live key name.
+    assert(page[firstRow].kind == ui::WidgetKind::Label);
+    assert(!page[firstRow].enabled);
+    assert(page[firstRow].label == "Forward");
+    assert(page[firstRow + 1].kind == ui::WidgetKind::Button);
+    assert(page[firstRow + 1].label == "W");
+    // ...and NOT the old "Forward: W" single-row label.
+    assert(page[firstRow].label != "Forward: W");
 
     // Reset and Done exist.
     bool hasReset = false;
@@ -153,12 +165,20 @@ void testControlsPageLIstsBindRows() {
     }
     assert(hasReset && hasDone);
 
-    // Clicking the first row begins capture for Forward (the first listed action).
-    const float rowY = page[firstRow].rect.y + page[firstRow].rect.height * 0.5F;
-    const std::size_t fired = ui::clickAt(page, 100.0F, rowY);
-    assert(fired == firstRow);
+    // Clicking the CHANGE BUTTON begins capture for Forward (the first listed action).
+    const std::size_t changeIndex = firstRow + 1U;
+    const float buttonY = page[changeIndex].rect.y + page[changeIndex].rect.height * 0.5F;
+    const std::size_t fired = ui::clickAt(page, 100.0F, buttonY);
+    assert(fired == changeIndex);
     assert(captured == input::keyBindRows()[0]);
     assert(captured == InputAction::MoveForward);
+
+    // Clicking the NAME does nothing: it is a disabled Label. Before UI-6b the whole
+    // row was one clickable widget, so this click used to start a capture.
+    captured = InputAction::Count;
+    const float nameY = page[firstRow].rect.y + page[firstRow].rect.height * 0.5F;
+    assert(ui::clickAt(page, 100.0F, nameY) == ui::kNoWidget);
+    assert(captured == InputAction::Count);
 }
 
 // --- End-to-end: clicking a row then applying a key rebinds the single source --
@@ -169,12 +189,13 @@ void testPageRowToRebind() {
     // PX-6 Bug1: request the full key-bind window so the Inventory row is built.
     ctx.keyBindFirstIndex = 0;
     ctx.keyBindRowCount = input::keyBindRows().size();
+    // 与渲染器走**同一个**装饰函数：捕获中是 `> 键名 <`，冲突是 `[ 键名 ]`。
     ctx.keyBindLabelFor = [&system, &screen](InputAction action) {
-        if (screen.capturing() && screen.capturingAction() == action) {
-            return std::string{input::actionDisplayName(action)} + ": > ? <";
-        }
-        return std::string{input::actionDisplayName(action)} + ": " +
-               input::bindingDisplayName(system.bindings().binding(action));
+        const auto decoration = screen.capturing() && screen.capturingAction() == action
+                                    ? ui::KeyBindDecoration::Capturing
+                                    : ui::KeyBindDecoration::None;
+        return ui::decorateKeyBindLabel(
+            input::bindingDisplayName(system.bindings().binding(action)), decoration);
     };
     ui::MenuCallbacks cb;
     cb.beginKeyCapture = [&screen](InputAction a) { screen.beginCapture(a); };
@@ -184,21 +205,25 @@ void testPageRowToRebind() {
 
     // Build the page, click the Inventory row, then press K -> Inventory = K.
     ui::Page page = ui::buildPage(ui::PageId::Controls, ctx, cb, rectFor);
-    // Find the Inventory row by its label prefix.
+    // Find the Inventory row by its NAME label; the change button is the next widget.
     std::size_t invRow = ui::kNoWidget;
     for (std::size_t i = 0; i < page.size(); ++i) {
-        if (page[i].label.rfind("Inventory:", 0) == 0) {
+        if (page[i].kind == ui::WidgetKind::Label && page[i].label == "Inventory") {
             invRow = i;
             break;
         }
     }
     assert(invRow != ui::kNoWidget);
-    const float rowY = page[invRow].rect.y + page[invRow].rect.height * 0.5F;
+    const std::size_t invButton = invRow + 1U;
+    assert(page[invButton].kind == ui::WidgetKind::Button);
+    const float rowY = page[invButton].rect.y + page[invButton].rect.height * 0.5F;
     static_cast<void>(ui::clickAt(page, 100.0F, rowY));
     assert(screen.capturing() && screen.capturingAction() == InputAction::Inventory);
-    // Now the row shows the capturing prompt when rebuilt.
+    // Now the BUTTON shows the capturing prompt when rebuilt -- and the name beside
+    // it is untouched, which is the whole point of splitting the row in two.
     page = ui::buildPage(ui::PageId::Controls, ctx, cb, rectFor);
-    assert(page[invRow].label == "Inventory: > ? <");
+    assert(page[invButton].label == "> E <");
+    assert(page[invRow].label == "Inventory");
     // Apply a key: the single source updates.
     const auto res = screen.applyKey(Key::T);  // T is free (Chat still on T? default Chat=T)
     assert(res.applied);

@@ -193,18 +193,37 @@ inline void addListRow(Page& page, const RectProvider& rectFor, WidgetId id, std
     page.push_back(std::move(w));
 }
 
-// 一个按键绑定行：形如"动作: 按键"的 ListRow，点击它就开始为该动作捕获新按键
-// 标签经上下文的 keyBindLabelFor 来自 InputSystem 这个唯一来源
-// enabled 恒为真，任何一行都可以重绑
+// UI-6b：一个按键绑定行 = **两个**控件，不是一个。
+//
+// 26.1 的 `KeyBindsList.KeyEntry` 是一段动作名加两个按钮（改键 / 重置），
+// `children()` 把它们一起交出去，键盘焦点在行内走。本作从前把整行做成**一个**
+// `ListRow`：一块底衬加一行 `"动作: 按键"` 文本、整行一次点击。
+//
+// 这里先补前两样——名称 Label 与改键 Button。**重置按钮留给 UI-6c**：它需要
+// 「这个动作的默认绑定是什么」，而 input 层今天只有整表重置（`resetToDefaults`），
+// 没有 `defaultBinding(action)`。先摆一个按不动的按钮不如不摆。
+//
+// 两个 Widget 的矩形都来自调用方的 rectFor，按控件序号取——一行两个序号。
 inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBuildContext& ctx,
                           input::InputAction action, std::function<void()> onActivate) {
-    Widget w;
-    w.kind = WidgetKind::ListRow;
-    w.debugId = static_cast<std::uint16_t>(WidgetId::KeyBindRow);
-    w.rect = rectFor ? rectFor(page.size()) : UiRect{};
-    w.label = ctx.keyBindLabelFor ? ctx.keyBindLabelFor(action) : std::string{};
-    w.onActivate = std::move(onActivate);
-    page.push_back(std::move(w));
+    Widget name;
+    name.kind = WidgetKind::Label;
+    name.debugId = static_cast<std::uint16_t>(WidgetId::KeyBindRow);
+    name.rect = rectFor ? rectFor(page.size()) : UiRect{};
+    name.label = std::string{input::actionDisplayName(action)};
+    // Label 不可交互：焦点遍历跳过它，点它也不会开始捕获。
+    name.enabled = false;
+    page.push_back(std::move(name));
+
+    Widget change;
+    change.kind = WidgetKind::Button;
+    change.debugId = static_cast<std::uint16_t>(WidgetId::KeyBindRow);
+    change.rect = rectFor ? rectFor(page.size()) : UiRect{};
+    // 按钮上写的是**键名**，不是"动作: 按键"。装饰（冲突的 `[ … ]`、捕获中的 `> … <`）
+    // 由上下文的 keyBindLabelFor 给出——它读的是 InputSystem 这个唯一来源。
+    change.label = ctx.keyBindLabelFor ? ctx.keyBindLabelFor(action) : std::string{};
+    change.onActivate = std::move(onActivate);
+    page.push_back(std::move(change));
 }
 
 }  // namespace detail
