@@ -71,11 +71,12 @@ void installSmokeScript(Host& host, SmokeScript& script, std::size_t stressFrame
             throw std::runtime_error("Smoke test did not open video settings");
         }
         host.menuSystem.pageStack.pop();
-        // 实验性内容子页必须作为菜单页打开（不能掉到地形加载画面），且带五个选项
-        host.menuSystem.pageStack.push(ui::PageId::Experimental);
-        if (host.menuSystem.pageStack.current() != ui::PageId::Experimental ||
-            host.menuButtonCount() != 5U) {
-            throw std::runtime_error("Smoke test experimental content page failed");
+        // UI-6d：高级图形子页必须作为菜单页打开（不能掉到地形加载画面），且带三个控件
+        // （太阳阴影、动态光源、完成）。「实验性内容」那一页已在 UI-6d 取消。
+        host.menuSystem.pageStack.push(ui::PageId::AdvancedGraphics);
+        if (host.menuSystem.pageStack.current() != ui::PageId::AdvancedGraphics ||
+            host.menuButtonCount() != 3U) {
+            throw std::runtime_error("Smoke test advanced graphics page failed");
         }
         host.menuSystem.pageStack.pop();
         host.menuSystem.optionsOpen = false;

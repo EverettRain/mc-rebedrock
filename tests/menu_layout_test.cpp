@@ -71,7 +71,7 @@ void testEveryPageButtonBudget() {
         ui::PageId::Title,     ui::PageId::WorldList,     ui::PageId::CreateWorld,
         ui::PageId::EditWorld, ui::PageId::ConfirmDelete, ui::PageId::Options,
         ui::PageId::VideoSettings, ui::PageId::Controls,  ui::PageId::Language,
-        ui::PageId::Experimental,  ui::PageId::Pause,     ui::PageId::Death,
+        ui::PageId::AdvancedGraphics, ui::PageId::Pause,     ui::PageId::Death,
         ui::PageId::KeyBinds,      ui::PageId::Accessibility,
     };
     for (const bool worldOpen : {false, true}) {
@@ -127,7 +127,7 @@ void testEveryPageLaysOut() {
         ui::PageId::Title,     ui::PageId::WorldList,     ui::PageId::CreateWorld,
         ui::PageId::EditWorld, ui::PageId::ConfirmDelete, ui::PageId::Options,
         ui::PageId::VideoSettings, ui::PageId::Controls,  ui::PageId::Language,
-        ui::PageId::Experimental,  ui::PageId::Pause,     ui::PageId::Death,
+        ui::PageId::AdvancedGraphics, ui::PageId::Pause,     ui::PageId::Death,
         // UI-6c：Controls 拆成了枢纽（§7.6）与绑定列表（§7.8）两屏，另加辅助功能（§7.11）
         ui::PageId::KeyBinds,      ui::PageId::Accessibility,
     };

@@ -22,6 +22,7 @@
 // 310 = 150 + 10 + 150：两列加中间 10 的缝，正好等于行宽。这不是巧合，是**闭合关系**，
 // 下面有一条 static_assert 钉住它——改任一个数而不改其余，两列就不再对齐行的两端。
 
+#include "ui/PageStack.hpp"
 #include "ui/ScrollList.hpp"
 
 #include <span>
@@ -76,12 +77,26 @@ static_assert(kOptionsSmallWidth + 10 == kOptionsColumnOffset,
             static_cast<float>(kOptionsWidgetHeight)};
 }
 
-// 一个设置项落在第几行、第几列。
+// 一个设置项落在第几行、第几列，以及它是不是**独占整行**的那种。
 struct OptionsSlot final {
     std::size_t row = 0;
     int column = 0;
+    // 26.1 的 `addBig`：宽 310、独占一行，而不是双列里的一格。
+    bool big = false;
 
     [[nodiscard]] constexpr bool operator==(const OptionsSlot&) const = default;
+};
+
+// 一次 `addSmall(...)` / `addBig(...)` 调用。
+//
+// ★ 从前这张表只是一串项数（`std::size_t`），于是"这一组是 addBig 还是 addSmall"
+//   这个事实**根本没地方存**。视频设置的 preset 因此被画成 150 宽的左列一格——
+//   版面上看是"第一行右边空着"，而 26.1 那是一个铺满行宽的大按钮。
+struct OptionsGroup final {
+    std::size_t count = 0;
+    bool big = false;
+
+    [[nodiscard]] constexpr bool operator==(const OptionsGroup&) const = default;
 };
 
 // 26.1 的 `addSmall(...)` 的分组行为：**每次调用从新行起**，组内两两配对。
@@ -96,26 +111,34 @@ struct OptionsSlot final {
 //
 // `groupSizes` 是各次 addSmall 的项数，按调用顺序。越界返回最后一行之后的位置而不抛：
 // 调用方通常已经用控件数夹过，这里再抛一次只会把一个排版问题变成崩溃。
-[[nodiscard]] constexpr OptionsSlot optionsGroupedSlot(std::span<const std::size_t> groupSizes,
+[[nodiscard]] constexpr std::size_t optionsGroupRowCount(const OptionsGroup& group) {
+    // addBig 每项独占一行；addSmall 两两配对，落单的一项也占一整行。
+    return group.big ? group.count : (group.count + 1U) / 2U;
+}
+
+[[nodiscard]] constexpr OptionsSlot optionsGroupedSlot(std::span<const OptionsGroup> groups,
                                                        std::size_t index) {
     std::size_t row = 0;
     std::size_t seen = 0;
-    for (const std::size_t size : groupSizes) {
-        if (index < seen + size) {
+    for (const OptionsGroup& group : groups) {
+        if (index < seen + group.count) {
             const std::size_t withinGroup = index - seen;
-            return OptionsSlot{row + withinGroup / 2U, static_cast<int>(withinGroup % 2U)};
+            if (group.big) {
+                return OptionsSlot{row + withinGroup, 0, true};
+            }
+            return OptionsSlot{row + withinGroup / 2U, static_cast<int>(withinGroup % 2U), false};
         }
-        seen += size;
-        row += (size + 1U) / 2U;   // 这一组占的行数，落单的一项也占一整行
+        seen += group.count;
+        row += optionsGroupRowCount(group);
     }
-    return OptionsSlot{row, 0};
+    return OptionsSlot{row, 0, false};
 }
 
 // 各组一共占多少行。
-[[nodiscard]] constexpr std::size_t optionsGroupedRowCount(std::span<const std::size_t> groupSizes) {
+[[nodiscard]] constexpr std::size_t optionsGroupedRowCount(std::span<const OptionsGroup> groups) {
     std::size_t rows = 0;
-    for (const std::size_t size : groupSizes) {
-        rows += (size + 1U) / 2U;
+    for (const OptionsGroup& group : groups) {
+        rows += optionsGroupRowCount(group);
     }
     return rows;
 }
@@ -125,6 +148,104 @@ struct OptionsSlot final {
     const auto row = scrollListRow(list, visibleIndex);
     return {row.x, row.y + static_cast<float>(kListEntryPadding),
             static_cast<float>(kOptionsBigWidth), static_cast<float>(kOptionsWidgetHeight)};
+}
+
+// UI-6c：Controls 枢纽上 `addSmall(...)` 的分组，按 26.1 的调用顺序。
+//
+//   addSmall(mouse_settings, keybinds)                                     → 2 项
+//   addSmall(toggleCrouch, toggleSprint, toggleAttack, toggleUse,
+//            autoJump, sprintWindow, operatorItemsTab)                 → 7 项
+//
+// 两组之间那道行边界是**语义分组**（`ControlsScreen.addOptions()` 的两次调用），
+// 不是排版巧合：把它们摊平成一组，keybinds 会和 toggleCrouch 挤在同一行。
+inline constexpr std::array<OptionsGroup, 2> kControlsHubGroups{{{2U, false}, {7U, false}}};
+
+// UI-6d：视频设置的分组，按 26.1 `VideoSettingsScreen.addOptions()` 的调用顺序。
+//   1. preset 大按钮独占一行（26.1 的 `list.addBig`）
+//   2. 画质：11 项（本作有后端的那些，加上跳进高级图形的按钮）
+//   3. 窗口：4 项
+// 26.1 那三次 addSmall 分别是 17 / 7 / 4 项；本作只补有后端的，所以项数少，
+// **但分组结构照抄**——那两道行边界是语义的，不是排版凑出来的。
+inline constexpr std::array<OptionsGroup, 3> kVideoSettingsGroups{
+    {{1U, /*big=*/true}, {11U, false}, {4U, false}}};
+
+// 高级图形：本项目自有页，两项一组。
+inline constexpr std::array<OptionsGroup, 1> kAdvancedGraphicsGroups{{{2U, false}}};
+
+// 这一屏的 addSmall 分组。三段式版面的页脚按钮不在其中（它由 buttonCount 单独认出来）。
+[[nodiscard]] constexpr std::span<const OptionsGroup> optionsGroupsOf(PageId page) {
+    switch (page) {
+    case PageId::VideoSettings:
+        return kVideoSettingsGroups;
+    case PageId::AdvancedGraphics:
+        return kAdvancedGraphicsGroups;
+    default:
+        break;
+    }
+    return kControlsHubGroups;
+}
+
+
+// 一页的设置项**在滚动窗口里**的可见范围，以及某个设置项落在哪个可见行。
+//
+// ★ 26.1 的 `OptionsList` 是**滚动列表**（`ContainerObjectSelectionList`）。这一点在
+//   Controls 那一屏看不出来——它只有 5 行、装得下。Video Settings 装不下：本作只补了
+//   有后端的项就已经 9 行，而 1280x720 @ scale 3 的内容区是 174 逻辑像素、只放得下 6 行
+//   （26.1 那一屏有 28 项 = 15 行，更是必然要滚）。不滚的后果不是"看不到下面几项"，
+//   是**最后两行压在页脚的 Done 上**。
+//
+// 窗口以**行**为单位，与绑定列表同构：装配只造窗口内的控件，页面因此永远不会超出
+// 布局容量，也不会有画在屏幕外却仍能被 Tab 停留的控件。
+struct OptionsWindow final {
+    std::size_t firstRow = 0;
+    std::size_t rowCount = 0;
+
+    [[nodiscard]] constexpr bool contains(std::size_t row) const {
+        return row >= firstRow && row < firstRow + rowCount;
+    }
+};
+
+// 这一页的设置项一共占几行（不含页脚按钮）。
+[[nodiscard]] constexpr std::size_t optionsRowCountOf(PageId page) {
+    return optionsGroupedRowCount(optionsGroupsOf(page));
+}
+
+// 这一页一共有几个设置项。
+[[nodiscard]] constexpr std::size_t optionsCountOf(std::span<const OptionsGroup> groups) {
+    std::size_t total = 0;
+    for (const OptionsGroup& group : groups) {
+        total += group.count;
+    }
+    return total;
+}
+
+// **已装配控件的序号** → 它在视口里的格位。`optionsGroupedSlot` 的滚动版。
+//
+// ★ 这个函数存在的全部理由：装配只造窗口里的控件（PageBuilder 的 `optionVisible`），
+//   所以 `Page` 里第 i 个控件**不是**第 i 个设置项——被滚上去的那些不占序号。布局若
+//   直接把 i 喂给 `optionsGroupedSlot`，滚到第 3 行时每个控件都会画在它上面 3 行的位置：
+//   屏幕上看着像"滚动条动了、内容没动"，实际是装配侧与布局侧对 i 的含义不一致。
+//   这与 UI-6b 那次闪退是同一族缺陷（两处各自解释同一个下标），所以这里只有一个函数，
+//   两侧都走它。
+//
+// 只需要 `firstRow` 不需要窗口高度：已装配的控件必定都在窗口内，因此"跳过滚上去的、
+// 取第 i 个"就够了。
+[[nodiscard]] constexpr OptionsSlot optionsScrolledSlot(std::span<const OptionsGroup> groups,
+                                                        std::size_t firstRow,
+                                                        std::size_t assembledIndex) {
+    const std::size_t optionCount = optionsCountOf(groups);
+    std::size_t assembled = 0;
+    for (std::size_t option = 0; option < optionCount; ++option) {
+        const OptionsSlot slot = optionsGroupedSlot(groups, option);
+        if (slot.row < firstRow) {
+            continue;
+        }
+        if (assembled == assembledIndex) {
+            return OptionsSlot{slot.row - firstRow, slot.column, slot.big};
+        }
+        ++assembled;
+    }
+    return OptionsSlot{assembled, 0, false};
 }
 
 } // namespace mc::ui

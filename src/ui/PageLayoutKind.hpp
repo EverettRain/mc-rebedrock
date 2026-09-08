@@ -46,16 +46,18 @@ enum class PageLayoutKind : std::uint8_t {
     case PageId::EditWorld:
     case PageId::ConfirmDelete:
         return PageLayoutKind::BottomBand;
+    // UI-6d：视频设置改用与 Controls 同一套三段式双列（26.1 的 OptionsSubScreen）。
+    // 从前它是本作自造的 videoSettingsButton 网格——那是"项数超出一列"时的权宜，
+    // 而 26.1 的答案一直是 OptionsList。
     case PageId::VideoSettings:
-        return PageLayoutKind::VideoGrid;
     case PageId::Controls:
+    case PageId::AdvancedGraphics:
         return PageLayoutKind::HeaderFooterList;
     // 其余都走屏幕正中那一列。`Game` 与 `Loading` 没有菜单按钮，取值仍要良定义：
     // 它们的页面装配是空的，所以这一档永远不会被真的用到。
     case PageId::CreateWorld:
     case PageId::Options:
     case PageId::Accessibility:
-    case PageId::Experimental:
     case PageId::Pause:
     case PageId::Death:
     case PageId::Loading:
@@ -90,7 +92,7 @@ enum class PageDrawKind : std::uint8_t {
     case PageId::Controls:
     case PageId::KeyBinds:
     case PageId::Accessibility:
-    case PageId::Experimental:
+    case PageId::AdvancedGraphics:
         return PageDrawKind::Settings;
     case PageId::Language:
         return PageDrawKind::Language;

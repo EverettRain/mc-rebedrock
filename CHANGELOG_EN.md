@@ -37,6 +37,16 @@ simple versioned history while it is in beta.
 - Shift-clicking a cycling option now steps backwards through its values instead of forwards.
 
 ### Changed
+- The Video Settings screen was rebuilt to match Minecraft's layout: a (currently greyed-out)
+  "Preset" button spanning the full row, then the settings in two columns. **The page scrolls
+  now** -- there are more options than fit on one screen, and the overflowing rows used to sit
+  right on top of the Done button. Use the mouse wheel; a scrollbar appears on the right. When
+  the window is tall enough (GUI scale 2, say) everything fits and no scrollbar is drawn.
+  The "Experimental" page is gone: rain, particles and the rain collision cache are visual
+  settings and Minecraft keeps their equivalents on this same screen, while sun shadows and
+  dynamic lights moved to a new "Advanced Graphics..." screen.
+  **Sixteen further options from Minecraft's Video Settings have no counterpart in this project
+  yet and are therefore not shown** -- no dead buttons.
 - The Controls screen now carries a greyed-out "Mouse Settings..." button. Minecraft has two
   buttons on that row and this project has no mouse settings screen yet, so the slot was simply
   empty. It does nothing when clicked; it is there so the layout matches Minecraft's while still

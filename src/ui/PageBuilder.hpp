@@ -13,6 +13,8 @@
 // 无头测试因此能用桩回调加一套平凡的行布局搭出页面，再断言点击第 N 个控件触发第 N 个回调
 // ui 命名空间从不接触 Vulkan
 
+#include "ui/OptionSlider.hpp"
+#include "ui/OptionsList.hpp"
 #include "ui/PageStack.hpp"
 #include "ui/WidgetId.hpp"
 #include "input/InputAction.hpp"
@@ -66,6 +68,9 @@ struct MenuBuildContext final {
         bool resettable = false;
     };
     std::function<KeyBindRowLabels(input::InputAction action)> keyBindLabelsFor{};
+    // UI-6d：设置项列表的滚动窗口（以**行**为单位）。rowCount 为 0 表示"不滚，全装配"
+    // ——项数装得下的页面（Controls / 高级图形）走这一档。
+    OptionsWindow optionsWindow{};
     // 按键设置页的绑定列表是滚动的，只装配可见窗口，与世界列表和语言列表一样
     // 无论有多少个动作，控件数量因此都有界
     // keyBindFirstIndex 是在 input::keyBindRows() 中的滚动偏移，keyBindRowCount 是可见窗口的大小
@@ -114,6 +119,7 @@ struct MenuCallbacks final {
     std::function<void(input::InputAction)> resetKeyBind{};
     std::function<void()> openKeyBinds{};
     std::function<void()> openAccessibility{};
+    std::function<void()> openAdvancedGraphics{};
     std::function<void()> doneOptions{};   // pop the current options sub-page
     std::function<void()> back{};          // generic page pop
 
@@ -142,6 +148,9 @@ struct MenuCallbacks final {
     SliderBind viewDistance{};
     SliderBind simulationDistance{};
     SliderBind masterVolume{};
+    // UI-6d：按 id 造一个整数滑块的绑定（表在 ui/OptionSlider.hpp）。
+    // 一个回调服务表里所有的滑块——加一个滑块不该再多一个成员。
+    std::function<SliderBind(WidgetId)> intSliderFor{};
 };
 
 namespace detail {
@@ -199,6 +208,60 @@ inline void addSlider(Page& page, const MenuBuildContext& ctx,
     w.debugId = static_cast<std::uint16_t>(id);
     w.label = label(ctx, id);
     w.slider = std::move(bind);
+    page.push_back(std::move(w));
+}
+
+// UI-6d：一个由 ui/OptionSlider.hpp 那张表驱动的整数滑块。
+//
+// 与 addSlider 的区别是**取值从哪来**：那个收一个调用方现造的 SliderBind（三个既有滑块
+// 各自硬编码），这个按 id 查表、由回调统一造。加一个整数滑块因此只改表一行，
+// 而不是"回调加一个成员 + 渲染器填三个 lambda + widgetLabel 加一个 case"。
+// 这一页的第 `optionIndex` 个设置项在不在可见窗口里。
+//
+// rowCount == 0 是"不滚"：装得下的页面不必给窗口，也就不必在每个装配点写条件。
+[[nodiscard]] inline bool optionVisible(const MenuBuildContext& ctx, PageId page,
+                                        std::size_t optionIndex) {
+    if (ctx.optionsWindow.rowCount == 0U) {
+        return true;
+    }
+    return ctx.optionsWindow.contains(
+        optionsGroupedSlot(optionsGroupsOf(page), optionIndex).row);
+}
+
+// 三段式设置页的装配游标：按**设置项**序号推进，只发射落在滚动窗口里的那些。
+//
+// ★ 三个三段式页面都必须用它，包括当前装得下的那两个。`optionsWindowFor` 给所有
+//   HeaderFooterList 页面同一种窗口，而布局侧（`optionsScrolledSlot`）按 firstRow
+//   跳过滚上去的项来解释控件序号。哪一页装配了窗口外的项，两侧对序号的含义就不一致，
+//   那一页的控件会**整体错行**——不是"多画了几行"，是全都画在别的行上。
+//   窗口大到装得下时它是恒真的，代价为零。
+class OptionCursor final {
+public:
+    OptionCursor(const MenuBuildContext& ctx, PageId page) : ctx_(&ctx), page_(page) {}
+
+    template <typename EmitFn>
+    void operator()(EmitFn&& emit) {
+        if (optionVisible(*ctx_, page_, index_)) {
+            emit();
+        }
+        ++index_;
+    }
+
+private:
+    const MenuBuildContext* ctx_;
+    PageId page_;
+    std::size_t index_ = 0;
+};
+
+inline void addIntSlider(Page& page, const MenuBuildContext& ctx, const MenuCallbacks& cb,
+                         WidgetId id) {
+    Widget w;
+    w.kind = WidgetKind::Slider;
+    w.debugId = static_cast<std::uint16_t>(id);
+    w.label = label(ctx, id);
+    if (cb.intSliderFor) {
+        w.slider = cb.intSliderFor(id);
+    }
     page.push_back(std::move(w));
 }
 
@@ -275,6 +338,7 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
     using detail::addIconButton;
     using detail::addOptionButton;
     using detail::addListRow;
+    using detail::addIntSlider;
     using detail::addSlider;
     page.clear();
 
@@ -354,7 +418,6 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             // 字幕开关跟着搬过去了——它在 26.1 里本来就属于那一屏
             // （`AccessibilityOptionsScreen.java:25` 的 `options.showSubtitles()`）。
             addButton(page, ctx, WidgetId::Accessibility, cb.openAccessibility);
-            addButton(page, ctx, WidgetId::Experimental, cb.openExperimental);
             addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;
 
@@ -369,48 +432,71 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;
 
-        case PageId::VideoSettings:
-            addButton(page, ctx, WidgetId::Resolution, cb.cycleResolution);
-            addButton(page, ctx, WidgetId::GuiScale, cb.cycleGuiScale);
-            addSlider(page, ctx, WidgetId::ViewDistance, cb.viewDistance);
-            addSlider(page, ctx, WidgetId::SimulationDistance, cb.simulationDistance);
-            addOptionButton(page, ctx, WidgetId::FrameRateLimit, cb);
-            addOptionButton(page, ctx, WidgetId::AntiAliasing, cb);
-            addOptionButton(page, ctx, WidgetId::Anisotropy, cb);
-            addOptionButton(page, ctx, WidgetId::SmoothLighting, cb);
-            addOptionButton(page, ctx, WidgetId::DynamicLight, cb);
-            addOptionButton(page, ctx, WidgetId::Vsync, cb);
-            addOptionButton(page, ctx, WidgetId::EntityShadows, cb);
+        // UI-6d：§7.3 视频设置。26.1 的形状是「一个 preset 大按钮 + 三次 addSmall」，
+        // 每次 addSmall 从新行起（那道边界是**语义分组**，见 optionsGroupedSlot）。
+        //
+        // 26.1 有 28 个设置项，本作只有约 12 项有真实后端。按用户裁决：**只补有后端的**，
+        // 其余（伽马、暴击指示器、自动保存指示器、实体渲染距离缩放、树叶剔除、纹理过滤、
+        // 天气半径…）登记在偏差表里，各自等它的渲染/玩法特性做出来再上。
+        //
+        // 「实验性内容」那一页没有了：雨、粒子、雨碰撞缓存是**渲染表现**项，26.1 里它们
+        // 的同类（`particles`）就在这一屏；太阳阴影与动态光源归新的高级图形页。
+        case PageId::VideoSettings: {
+            // 这一屏装不下：只装配落在滚动窗口里的项（`optionVisible`）。
+            // 页脚的 Done 不在窗口里——它是三段式版面的页脚，永远在。
+            detail::OptionCursor add{ctx, id};
+            // preset 大按钮：本作没有预设机制，置灰。少了它版面比 26.1 短一行。
+            add([&] { addButton(page, ctx, WidgetId::GraphicsPreset, nullptr, /*enabled=*/false); });
+            // 第一组：画质
+            add([&] { addSlider(page, ctx, WidgetId::ViewDistance, cb.viewDistance); });
+            add([&] { addSlider(page, ctx, WidgetId::SimulationDistance, cb.simulationDistance); });
+            add([&] { addOptionButton(page, ctx, WidgetId::SmoothLighting, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::ParticleLevel, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::EntityShadows, cb); });
+            add([&] { addIntSlider(page, ctx, cb, WidgetId::MenuBackgroundBlurriness); });
+            add([&] { addOptionButton(page, ctx, WidgetId::AntiAliasing, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::Anisotropy, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::RainMode, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::RainCollisionCache, cb); });
+            add([&] { addButton(page, ctx, WidgetId::AdvancedGraphics, cb.openAdvancedGraphics); });
+            // 第二组：窗口
+            add([&] { addOptionButton(page, ctx, WidgetId::FrameRateLimit, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::Vsync, cb); });
+            add([&] { addButton(page, ctx, WidgetId::GuiScale, cb.cycleGuiScale); });
+            add([&] { addButton(page, ctx, WidgetId::Resolution, cb.cycleResolution); });
             addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;
+        }
 
-        // UI-6c：26.1 的 §7.6 `ControlsScreen` 是一个**排版枢纽**，不是绑定列表
-        // （偏差 D1：本作从前把两屏合成了一屏）。它上面是两个跳转按钮加七个设置项，
-        // 绑定列表在 §7.8 `KeyBindsScreen`，见下一个分支。
-        //
-        // 顺序照 `ControlsScreen.addOptions()`：先 `addSmall(mouse_settings, keybinds)`，
-        // 再 `addSmall(toggleCrouch, toggleSprint, toggleAttack, toggleUse, autoJump,
-        // sprintWindow, operatorItemsTab)`。
-        //
-        // ★ **Mouse Settings 那个跳转本作没有**：那一屏（§7.7 鼠标灵敏度/反转/滚轮）
-        //   在本作不存在，而"页面为空就完全不建"。少一个跳转按钮是登记过的偏差，
-        //   不是把玩家送进一张空页。
+        case PageId::AdvancedGraphics: {
+            detail::OptionCursor add{ctx, id};
+            add([&] { addOptionButton(page, ctx, WidgetId::SunShadows, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::DynamicLight, cb); });
+            addButton(page, ctx, WidgetId::Done, cb.doneOptions);
+            break;
+        }
+
         case PageId::Controls:
             // ★ 26.1 的第一行是**两个**跳转：`addSmall(mouse_settings, keybinds)`。
             //   鼠标设置那一屏本作没有，所以它是一个**置灰**按钮——版面与 vanilla 对上，
             //   而"这个功能还没有"看得出来。点它不会把人送进一张空页。
             //   （主菜单的 Multiplayer / Realms 是同一种做法。）
-            addButton(page, ctx, WidgetId::MouseSettings, nullptr, /*enabled=*/false);
-            addButton(page, ctx, WidgetId::OpenKeyBinds, cb.openKeyBinds);
-            addOptionButton(page, ctx, WidgetId::ToggleCrouch, cb);
-            addOptionButton(page, ctx, WidgetId::ToggleSprint, cb);
-            addOptionButton(page, ctx, WidgetId::ToggleAttack, cb);
-            addOptionButton(page, ctx, WidgetId::ToggleUse, cb);
-            addOptionButton(page, ctx, WidgetId::AutoJump, cb);
-            addOptionButton(page, ctx, WidgetId::SprintWindow, cb);
-            addOptionButton(page, ctx, WidgetId::OperatorItemsTab, cb);
+        {
+            detail::OptionCursor add{ctx, id};
+            add([&] {
+                addButton(page, ctx, WidgetId::MouseSettings, nullptr, /*enabled=*/false);
+            });
+            add([&] { addButton(page, ctx, WidgetId::OpenKeyBinds, cb.openKeyBinds); });
+            add([&] { addOptionButton(page, ctx, WidgetId::ToggleCrouch, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::ToggleSprint, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::ToggleAttack, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::ToggleUse, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::AutoJump, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::SprintWindow, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::OperatorItemsTab, cb); });
             addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;
+        }
 
         // UI-6c：26.1 的 §7.8 `KeyBindsScreen`——页眉标题、绑定列表、页脚两个按钮
         // （`controls.resetAll` 与 Done，横排）。
@@ -447,14 +533,6 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             }
             addOptionButton(page, ctx, WidgetId::ForceUnicodeFont, cb);
             addButton(page, ctx, WidgetId::Done, cb.doneOptions);
-            break;
-
-        case PageId::Experimental:
-            addOptionButton(page, ctx, WidgetId::RainMode, cb);
-            addOptionButton(page, ctx, WidgetId::ParticleLevel, cb);
-            addOptionButton(page, ctx, WidgetId::SunShadows, cb);
-            addOptionButton(page, ctx, WidgetId::RainCollisionCache, cb);
-            addButton(page, ctx, WidgetId::Back, cb.back);
             break;
 
         case PageId::Loading:

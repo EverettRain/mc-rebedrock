@@ -186,16 +186,6 @@ UiRect keyBindsListBox(const HudLayout& layout, float framebufferWidth) {
             toFb(layout, height)};
 }
 
-// UI-6c：Controls 枢纽上 `addSmall(...)` 的分组，按 26.1 的调用顺序。
-//
-//   addSmall(mouse_settings, keybinds)                                     → 2 项
-//   addSmall(toggleCrouch, toggleSprint, toggleAttack, toggleUse,
-//            autoJump, sprintWindow, operatorItemsTab)                 → 7 项
-//
-// 两组之间那道行边界是**语义分组**（`ControlsScreen.addOptions()` 的两次调用），
-// 不是排版巧合：把它们摊平成一组，keybinds 会和 toggleCrouch 挤在同一行。
-inline constexpr std::array<std::size_t, 2> kControlsHubGroups{2U, 7U};
-
 // 一页里有几个按钮。绑定列表那三个行内控件（名称 / 改键 / 重置）不算——它们的矩形
 // 来自列表几何，不占按钮网格的位置。
 std::size_t countPageButtons(const Page& page) {
@@ -209,7 +199,7 @@ std::size_t countPageButtons(const Page& page) {
 }
 
 void layoutPageInto(Page& page, PageId id, const HudLayout& layout, float framebufferWidth,
-                    std::size_t keyBindFirstRow) {
+                    std::size_t keyBindFirstRow, std::size_t optionsFirstRow) {
     // 按钮数从装配结果**数出来**，不是另一张表说的。这就是这两趟拆分的全部意义。
     const std::size_t buttonCount = countPageButtons(page);
     std::size_t buttonIndex = 0;
@@ -235,7 +225,7 @@ void layoutPageInto(Page& page, PageId id, const HudLayout& layout, float frameb
             ++keyWidgetIndex;
             continue;
         }
-        widget.rect = frontendButtonRect(layout, id, buttonIndex, buttonCount);
+        widget.rect = frontendButtonRect(layout, id, buttonIndex, buttonCount, optionsFirstRow);
         ++buttonIndex;
     }
 }
@@ -292,8 +282,42 @@ std::size_t keyBindsScrollIndexFromCursor(const HudLayout& layout, float framebu
                                       cursorY / layout.scale());
 }
 
+// 三段式设置页那张列表的几何。三个滚动条函数与布局都从这一处取，免得视口再有第二份。
+namespace {
+[[nodiscard]] ScrollList optionsListOf(const HudLayout& layout) {
+    return optionsScrollList(
+        headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight()).contentBox());
+}
+} // namespace
+
+OptionsWindow optionsWindowFor(const HudLayout& layout, PageId page, std::size_t firstRow) {
+    if (pageLayoutKind(page) != PageLayoutKind::HeaderFooterList) {
+        // 不是三段式列表页：rowCount = 0，约定是"不滚，全装配"。
+        return OptionsWindow{};
+    }
+    const auto list = optionsListOf(layout);
+    const std::size_t rows = optionsRowCountOf(page);
+    return OptionsWindow{std::min(firstRow, list.maximumFirstRow(rows)), list.visibleRows()};
+}
+
+std::size_t optionsMaximumFirstRow(const HudLayout& layout, PageId page) {
+    if (pageLayoutKind(page) != PageLayoutKind::HeaderFooterList) {
+        return 0U;
+    }
+    return optionsListOf(layout).maximumFirstRow(optionsRowCountOf(page));
+}
+
+UiRect optionsScrollbarTrack(const HudLayout& layout) {
+    return fbRect(layout, scrollListScrollbar(optionsListOf(layout)));
+}
+
+UiRect optionsScrollbarThumb(const HudLayout& layout, PageId page, std::size_t firstRow) {
+    return fbRect(layout, scrollListThumb(optionsListOf(layout), optionsRowCountOf(page),
+                                          firstRow));
+}
+
 UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t index,
-                          std::size_t buttonCount) {
+                          std::size_t buttonCount, std::size_t optionsFirstRow) {
     // 版式的**选择**在 ui/PageLayoutKind.hpp 那张表里（不带 default 的 switch，
     // 加一页会被 -Wswitch 点名）；这里只剩每种版式的参数。
     //
@@ -331,8 +355,14 @@ UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t inde
             return fbRect(layout, frame.footerButton());
         }
         const auto list = optionsScrollList(frame.contentBox());
-        const auto slot = optionsGroupedSlot(kControlsHubGroups, index);
-        return fbRect(layout, optionsSmallCell(list, slot.row, slot.column));
+        // ★ `index` 是**已装配**控件的序号，不是设置项的序号：滚上去的那些项根本没被
+        //   造出来，因此不占序号。这条换算只有 `optionsScrolledSlot` 一处，装配侧
+        //   （PageBuilder 的 `optionVisible`）与它走的是同一遍循环。
+        const auto slot =
+            optionsScrolledSlot(optionsGroupsOf(page), optionsFirstRow, index);
+        // addBig 的一项铺满行宽（310），addSmall 的一项是双列里的一格（150）。
+        return fbRect(layout, slot.big ? optionsBigCell(list, slot.row)
+                                       : optionsSmallCell(list, slot.row, slot.column));
     }
     case PageLayoutKind::CentredColumn:
         break;

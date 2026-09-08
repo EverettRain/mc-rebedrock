@@ -48,6 +48,7 @@
 #include "ui/HeaderAndFooterLayout.hpp"
 #include "ui/KeyBindList.hpp"
 #include "ui/ListRow.hpp"
+#include "ui/OptionSlider.hpp"
 #include "ui/PageBuilder.hpp"
 #include "ui/PageLayoutKind.hpp"
 #include "ui/PageTitles.hpp"
@@ -256,6 +257,17 @@ class HudRenderer final {
             return static_cast<float>(simulationDistanceChunks - 2) / 10.0F;
         };
         drawCallbacks_.masterVolume.value = [this] { return options.masterVolume; };
+        // UI-6d：整数滑块由表驱动——一个回调服务 ui/OptionSlider.hpp 里所有的滑块。
+        // 绘制侧只需要 value（拖拽在输入侧），所以这里只填它。
+        drawCallbacks_.intSliderFor = [this](ui::WidgetId id) {
+            ui::SliderBind bind;
+            if (const auto* desc = ui::findIntSlider(id)) {
+                bind.value = [this, desc] {
+                    return ui::intSliderFraction(*desc, options.*(desc->field));
+                };
+            }
+            return bind;
+        };
     }
 
     HudRenderer(const HudRenderer&) = delete;
@@ -362,8 +374,13 @@ class HudRenderer final {
         // 两趟：先装配（这一页有哪些控件），再布局（它们在哪）。
         // 按钮数由布局那一趟从装配结果**数出来**——从前它是另一张表说的，
         // 而那张表与装配器是同一个事实的两份表述（见 ui::layoutPageInto 的注释）。
+        // UI-6d：设置列表的滚动窗口。装配用它跳过滚出去的项，布局用同一个 firstRow
+        // 折算行号——两侧都从 ui::optionsWindowFor 取，钳制也只发生在那一处。
+        drawContext_.optionsWindow =
+            ui::optionsWindowFor(layout, pageId, menuSystem.optionsListFirstIndex);
         ui::buildPageInto(drawPage_, pageId, drawContext_, drawCallbacks_);
-        ui::layoutPageInto(drawPage_, pageId, layout, fbWidth, keyFirst);
+        ui::layoutPageInto(drawPage_, pageId, layout, fbWidth, keyFirst,
+                           drawContext_.optionsWindow.firstRow);
         return drawPage_;
     }
 
@@ -932,6 +949,18 @@ class HudRenderer final {
                 translated("options.renderDistance", "Render Distance"),
                 formatTemplate(translated("options.chunks", "%s chunks"),
                                std::to_string(viewDistanceChunks)));
+        // UI-6d：整数滑块的标签走表。最低档显示 OFF（26.1 的 genericValueOrOffLabel）。
+        case ui::WidgetId::MenuBackgroundBlurriness: {
+            const auto* desc = ui::findIntSlider(ui::WidgetId::MenuBackgroundBlurriness);
+            if (desc == nullptr) {
+                return {};
+            }
+            const int value = options.*(desc->field);
+            return optionValue(translated(desc->nameKey, desc->nameFallback),
+                               desc->offAtMinimum && value <= desc->minimum
+                                   ? translated("options.off", "OFF")
+                                   : std::to_string(value));
+        }
         case ui::WidgetId::SimulationDistance:
             return optionValue(
                 translated("options.simulationDistance", "Simulation Distance"),
@@ -1525,6 +1554,21 @@ class HudRenderer final {
         drawScrollbar(commandBuffer, layout, list, total, first);
     }
 
+    // UI-6d：三段式设置页那张 OptionsList 的滚动条。装得下时不画——`optionsMaximumFirstRow`
+    // 为 0 正是"装得下"，与其余三张列表同一约定。
+    void drawOptionsScrollbar(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
+        const auto page = menuSystem.pageStack.current();
+        if (ui::optionsMaximumFirstRow(layout, page) == 0U) {
+            return;
+        }
+        const auto window = ui::optionsWindowFor(layout, page, menuSystem.optionsListFirstIndex);
+        drawScrollbar(commandBuffer, layout,
+                      ui::optionsScrollList(
+                          ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight())
+                              .contentBox()),
+                      ui::optionsRowCountOf(page), window.firstRow);
+    }
+
     // 不再收描述符集：背景（全景 / 模糊 / 遮罩 / 渐变）由 drawHud 一处按
     // ui::screenBackground 的档位表画，这里只剩前端各屏自己的内容。
     void drawFrontend(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
@@ -1849,22 +1893,36 @@ class HudRenderer final {
         // 按键设置是三段式布局（页眉 / 滚动列表 / 页脚），列表因此有自己的底衬与
         // 上下两道分隔线，和语言、世界列表两屏同一套（`AbstractSelectionList:219-227`）。
         // 从前这一屏的列表直接坐在菜单背景上，既没有底衬也没有分隔线。
-        if (menuSystem.pageStack.current() == ui::PageId::KeyBinds) {
+        const auto currentPage = menuSystem.pageStack.current();
+        // UI-6c：走三段式版面（§2.8）的页面，标题在**页眉里居中**——那正是
+        // `layout.addTitleHeader(title, font)` 的意思（`OptionsSubScreen.java:37`）。
+        //
+        // ★ 判定走 ui::pageLayoutKind，不再是这里手写的"KeyBinds 或 Controls"。
+        //   UI-6d 把视频设置与高级图形也改成三段式之后，那份手写清单立刻就说了假话：
+        //   两屏的标题会掉回"第一个按钮上方 30px"，而第一个按钮此时在列表里，
+        //   标题于是压在列表第一行上。版面种类只有 ui/PageLayoutKind.hpp 一处来源。
+        const bool headerAndFooterPage =
+            ui::pageLayoutKind(currentPage) == ui::PageLayoutKind::HeaderFooterList;
+        if (currentPage == ui::PageId::KeyBinds) {
             const auto box = ui::keyBindsListBox(layout, static_cast<float>(swapchainExtent.width));
             drawListBackground(commandBuffer, box, scale);
             drawListSeparators(commandBuffer, box, scale);
             drawKeyBindCategoryRows(commandBuffer, layout, scale);
+        } else if (headerAndFooterPage) {
+            // 设置列表也是 AbstractSelectionList：同一套底衬 + 上下两道分隔线。
+            const auto frameBox =
+                ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight())
+                    .contentBox();
+            const auto box = ui::UiRect{frameBox.x * scale, frameBox.y * scale,
+                                        frameBox.width * scale, frameBox.height * scale};
+            drawListBackground(commandBuffer, box, scale);
+            drawListSeparators(commandBuffer, box, scale);
         }
         const std::size_t buttonCount = menuButtonCount();
         const auto firstButton =
             frontendButtonRect(layout, menuSystem.pageStack.current(), 0, buttonCount);
         const float titleScale = deathScreen ? scale * 2.0F : scale;
-        // UI-6c：走三段式版面（§2.8）的两屏，标题在**页眉里居中**——那正是
-        // `layout.addTitleHeader(title, font)` 的意思（`OptionsSubScreen.java:37`）。
         // 其余页面还没有三段式版面，标题仍摆在第一个按钮上方 30px。
-        const bool headerAndFooterPage =
-            menuSystem.pageStack.current() == ui::PageId::KeyBinds ||
-            menuSystem.pageStack.current() == ui::PageId::Controls;
         const auto frame =
             ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
         const float titleWidth = hudTextWidth(title, titleScale);
@@ -1877,8 +1935,10 @@ class HudRenderer final {
                     titleScale, {1.0F, 1.0F, 1.0F, 1.0F});
         drawMenuWidgets(commandBuffer, buildDrawPage(), scale);
         // 按键绑定列表（中段）的滚动条，仅当动作数超出可见窗口时绘制
-        if (menuSystem.pageStack.current() == ui::PageId::KeyBinds) {
+        if (currentPage == ui::PageId::KeyBinds) {
             drawKeyBindsScrollbar(commandBuffer, layout);
+        } else if (headerAndFooterPage) {
+            drawOptionsScrollbar(commandBuffer, layout);
         }
         if (!menuSystem.saveStatus.empty()) {
             drawHudText(commandBuffer, menuSystem.saveStatus, 4.0F * scale,

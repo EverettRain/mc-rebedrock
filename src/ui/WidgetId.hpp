@@ -22,10 +22,18 @@ enum class WidgetId : std::uint16_t {
     CreateGameMode, CreateAllowCommands, CreateConfirm,
     SaveRename, DeleteWorld, DeleteConfirm, DeleteCancel,
     Resume, SaveQuit, Respawn, TitleScreen,
-    MasterVolume, Difficulty, Controls, VideoSettings, Language, Experimental, Done,
+    MasterVolume, Difficulty, Controls, VideoSettings, Language, Done,
     Resolution, GuiScale, ViewDistance, SimulationDistance, FrameRateLimit,
     AntiAliasing, Anisotropy, SmoothLighting, DynamicLight, Vsync, EntityShadows,
     ViewBobbing, AutoJump, ForceUnicodeFont,
+    // UI-6d：菜单背景模糊强度（26.1 是滑块，IntRange(0,10)，UI-5 已做好存储）。
+    // 它是 ui/OptionSlider.hpp 那张整数滑块表的第一个消费者。
+    MenuBackgroundBlurriness,
+    // UI-6d：26.1 §7.3 顶上那个 graphics preset 大按钮。本作没有预设机制，
+    // 它是**置灰**的——少了它版面比 26.1 短一行，能点的又没东西可切。
+    GraphicsPreset,
+    // UI-6d：视频设置里跳进"高级图形"的按钮（本项目自有页，26.1 没有）。
+    AdvancedGraphics,
     RainMode, ParticleLevel, SunShadows, RainCollisionCache,
     WorldRow, LanguageRow,
     KeyBindRow, ResetKeyBinds,

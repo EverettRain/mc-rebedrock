@@ -1,6 +1,8 @@
 {
   "key.rebedrock.debug": "Debug Info",
   "key.rebedrock.pause": "Pause / Menu",
+  "options.rebedrock.advancedGraphics": "Advanced Graphics",
+  "options.rebedrock.advancedGraphics.title": "Advanced Graphics",
   "options.rebedrock.antiAliasing": "Anti-Aliasing",
   "options.rebedrock.antiAliasing.msaa": "MSAA",
   "options.rebedrock.antiAliasing.taa": "TAA",
