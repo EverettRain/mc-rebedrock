@@ -65,13 +65,20 @@ void testSuffixIsDataNotASpecialCase() {
     // 键本身不含省略号——含了就会变成 "Advanced Graphics......"
     assert(advanced->fallback.find("...") == std::string_view::npos);
 
+    // ★ 不数"一共有几个带 suffix 的"——那是把"当时的数量"写死，加一个带省略号的
+    //   跳转按钮就会红，而红了也只能靠人去猜该改成几。要断言的是**性质**：
+    //   凡是带 suffix 的，它的 fallback 自己就不能再含省略号（否则会拼成 "......"）。
     std::size_t withSuffix = 0;
     for (const auto& row : kStaticWidgetLabels) {
-        if (!row.suffix.empty()) {
-            ++withSuffix;
+        if (row.suffix.empty()) {
+            continue;
         }
+        ++withSuffix;
+        assert(row.fallback.find("...") == std::string_view::npos);
+        assert(row.key.find("...") == std::string_view::npos);
     }
-    assert(withSuffix == 1U);
+    // 至少 AdvancedGraphics 那一个在用它，否则这条性质是空转的
+    assert(withSuffix >= 1U);
 }
 
 // 分类互斥，且运行期那一档确实不在静态表里

@@ -31,6 +31,21 @@ enum class PageId {
     // UI-6c：26.1 的 §7.11 `AccessibilityOptionsScreen`。View Bobbing 属于这里，
     // 不属于 Controls（偏差 D2）。
     Accessibility,
+    // UI-6e：26.1 的 §7.4 `SoundOptionsScreen`（Music & Sounds）。十类音量各一个
+    // 滑块，加字幕与方向性音频两个开关。它是 ui/OptionSlider.hpp 那张 float 滑块表的
+    // 第一个真正的消费者。
+    SoundSettings,
+
+    // 哨兵，值等于 PageId 的个数。
+    //
+    // ★ 它是补上的：从前"覆盖了每一个 PageId"这类断言写的是
+    //   `static_cast<std::size_t>(PageId::Accessibility) + 1`——也就是**当时的最后一个
+    //   枚举值**。在它后面加一页，断言仍然比较同一个数字，**静默通过**：
+    //   UI-6e 加 SoundSettings 时 `UiCapture` 的表覆盖断言就是这么失效的
+    //   （表少一行、断言不红，`--ui-shot sound-settings` 会说"不认识这一页"）。
+    //   遍历所有 PageId 的循环同样中招（两处测试）。
+    //   `WidgetId` 一直有这个哨兵，`PageId` 漏了。
+    Count,
 };
 
 class PageStack final {

@@ -129,25 +129,27 @@ void testIconButtons() {
     assert(title[3].interactive());
     assert(title[0].kind == ui::WidgetKind::Button);
 
-    // The icon sits centred inside the button: (20 - 15) / 2 = 2 logical pixels
-    // of inset on every side. Integer division, like every other centring
-    // (spec §1.2). Nothing about "the icon is off-centre" changes a return
-    // value, so this is the only place it can go red.
+    // 图标在钮内居中。★ **整数除法的顺序照抄 vanilla，不能代数化简**：
+    //   26.1 `SpriteIconButton.CenteredIcon`（:132-133）算的是
+    //       getWidth()/2 - spriteWidth/2  = 20/2 - 15/2 = 10 - 7 = 3
+    //   而不是 (20 - 15)/2 = 5/2 = 2。两个式子在实数上相等，整数除法下差 1。
+    //
+    // ★ 这段断言从前写的是 2，还配着一句"这正是 vanilla 的整数除法做的，断言完美对称
+    //   等于断言 bug"——**方向说反了**，vanilla 偏的是右下不是左上。测试是照着代码写的，
+    //   于是把偏差钉死了；现场报告"图标偏左上"才把它翻出来。
+    //   与 UI-6b 那次滚动条 x 完全同形：**照代码写的断言不是覆盖，是固化。**
     const ui::UiRect button{100.0F, 200.0F, 40.0F, 40.0F};   // 20x20 at scale 2
     const auto icon = ui::iconButtonIconRect(button, 2.0F);
-    assert(icon.x == 104.0F);
-    assert(icon.y == 204.0F);
+    assert(icon.x == 106.0F);   // 100 + 3 逻辑 * scale 2
+    assert(icon.y == 206.0F);
     assert(icon.width == 30.0F);
     assert(icon.height == 30.0F);
-    // "Centred" here means INTEGER centred: 20 - 15 = 5 is odd, so the inset is
-    // floor(5/2) = 2 on the leading side and 3 on the trailing one. The icon sits
-    // half a pixel left of true centre — which is exactly what vanilla's integer
-    // division does, and asserting perfect symmetry would be asserting the bug.
+    // 20 - 15 = 5 是奇数，所以两侧不可能相等：vanilla 那条式子给出前缘 3、后缘 2。
     const float leadingGap = icon.x - button.x;
     const float trailingGap = (button.x + button.width) - (icon.x + icon.width);
-    assert(leadingGap == 4.0F);       // 2 logical * scale 2
-    assert(trailingGap == 6.0F);      // 3 logical * scale 2
-    assert(trailingGap - leadingGap == 2.0F * 1.0F * 2.0F / 2.0F);  // 差一个逻辑像素
+    assert(leadingGap == 6.0F);       // 3 logical * scale 2
+    assert(trailingGap == 4.0F);      // 2 logical * scale 2
+    assert(leadingGap > trailingGap); // 偏**右下**，不是左上
     assert(icon.y - button.y == leadingGap);
     // And it stays inside the button at every scale.
     for (float scale = 1.0F; scale <= 4.0F; scale += 1.0F) {
@@ -289,7 +291,19 @@ void testSliderThroughCallback() {
     cb.masterVolume.onDrag = [&](float f) { applied = f; };
     cb.masterVolume.onCommit = [&] { committed = true; };
 
-    ui::Page opts = ui::buildPage(ui::PageId::Options, ctx, cb, rowLayout());
+    // ★ UI-6e：主音量滑块**从 Options 挪到了"音乐与声音"那一屏**，与 26.1 一致
+    //   （`OptionsScreen` 上只有一个跳转，没有音量滑块）。
+    cb.floatSliderFor = [&](ui::WidgetId id) {
+        ui::SliderBind bind;
+        if (id != ui::WidgetId::MasterVolume) {
+            return bind;
+        }
+        bind.value = [] { return 0.5F; };
+        bind.onDrag = [&](float f) { applied = f; };
+        bind.onCommit = [&] { committed = true; };
+        return bind;
+    };
+    ui::Page opts = ui::buildPage(ui::PageId::SoundSettings, ctx, cb, rowLayout());
     const std::size_t volIndex = indexOfId(opts, ui::WidgetId::MasterVolume);
     assert(volIndex != ui::kNoWidget && opts[volIndex].kind == ui::WidgetKind::Slider);
 

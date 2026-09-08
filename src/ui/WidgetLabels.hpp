@@ -42,7 +42,7 @@ struct StaticWidgetLabel final {
     std::string_view suffix{};
 };
 
-inline constexpr std::array<StaticWidgetLabel, 29> kStaticWidgetLabels{{
+inline constexpr std::array<StaticWidgetLabel, 33> kStaticWidgetLabels{{
     // 标题界面与世界列表
     {WidgetId::Singleplayer, "menu.singleplayer", "Singleplayer"},
     {WidgetId::Multiplayer, "menu.multiplayer", "Multiplayer"},
@@ -88,11 +88,20 @@ inline constexpr std::array<StaticWidgetLabel, 29> kStaticWidgetLabels{{
     // vanilla 的 selectWorld.experimental 只有 "Experimental"，省略号在代码里拼
     {WidgetId::Done, "gui.done", "Done"},
     {WidgetId::ResetKeyBinds, "controls.resetAll", "Reset Keys"},
+    // UI-6e：§7.4 音乐与声音。26.1 `OptionsScreen` 上那个跳转的键是 `options.sounds`。
+    {WidgetId::SoundSettings, "options.sounds", "Music & Sounds", "..."},
+    // 同屏上本作没有后端的三项，置灰。键都取自 26.1：
+    //   soundDevice     → `options.audioDevice`（26.1 addBig 独占一行）
+    //   musicFrequency  → `options.musicFrequency`
+    //   musicToast      → `options.showNowPlayingToast`
+    {WidgetId::SoundDevice, "options.audioDevice", "Device"},
+    {WidgetId::MusicFrequency, "options.musicFrequency", "Music Frequency"},
+    {WidgetId::MusicToast, "options.showNowPlayingToast", "Show Now Playing Toast"},
 }};
 
 // 标签要读运行期状态，仍由渲染器的 widgetLabel 现算
 // 登记在这里是为了让它有归属这件事可被编译期检查，而不是靠 switch 里恰好写了一行
-inline constexpr std::array<WidgetId, 9> kRuntimeWidgetLabels{{
+inline constexpr std::array<WidgetId, 18> kRuntimeWidgetLabels{{
     WidgetId::MenuBackgroundBlurriness,  // 滑块当前值，最低档显示 OFF
     WidgetId::Resolution,          // 实时窗口尺寸（可能被拖拽或最大化过）
     WidgetId::GuiScale,            // 菜单状态里的缩放档位，0 表示 Auto
@@ -104,6 +113,18 @@ inline constexpr std::array<WidgetId, 9> kRuntimeWidgetLabels{{
     WidgetId::Difficulty,
     WidgetId::CreateGameMode,      // 创建世界表单的暂存状态
     WidgetId::CreateAllowCommands, // 同上
+    // UI-6e：其余九类音量。与 MasterVolume 同类——标签是"类别名: 百分比"，
+    // 而百分比要读运行期的值。它们的**名字**来自 ui/OptionSlider.hpp 那张表
+    // （`soundCategory.<name>`），百分比由 widgetLabel 现算。
+    WidgetId::MusicVolume,
+    WidgetId::RecordVolume,
+    WidgetId::WeatherVolume,
+    WidgetId::BlockVolume,
+    WidgetId::HostileVolume,
+    WidgetId::NeutralVolume,
+    WidgetId::PlayerVolume,
+    WidgetId::AmbientVolume,
+    WidgetId::VoiceVolume,
 }};
 
 // 不经 widgetLabel 取标签的 id

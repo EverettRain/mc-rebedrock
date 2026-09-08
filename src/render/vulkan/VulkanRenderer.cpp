@@ -3852,6 +3852,30 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             bind.onCommit = [this, id] { applyOptionChanged(id); };
             return bind;
         };
+        // UI-6e：十类音量的滑块。表在 ui/OptionSlider.hpp——加一个 float 滑块只改那张表。
+        cb.floatSliderFor = [this](ui::WidgetId id) {
+            ui::SliderBind bind;
+            const auto* desc = ui::findFloatSlider(id);
+            if (desc == nullptr) {
+                return bind;
+            }
+            bind.value = [this, desc] { return ui::floatSliderValue(*desc, options); };
+            bind.onDrag = [this, desc](float fraction) {
+                ui::setFloatSliderValue(*desc, options, fraction);
+                // 主音量之外的每一类都乘在 Master 之上，改哪一类都要让音频子系统重算。
+                audioSystem.setMasterVolume(options.masterVolume);
+                audioSystem.setCategoryVolumes(options.soundCategoryVolumes);
+            };
+            bind.onCommit = [this] {
+                persistOptions();
+                // vanilla 在松开滑块时试听一声（`SoundPreviewHandler.preview`）。
+                if (options.masterVolume > 0.0F) {
+                    audioSystem.playItemPickup(camera.position());
+                }
+            };
+            return bind;
+        };
+        cb.openSoundSettings = [this] { menuSystem.pageStack.push(ui::PageId::SoundSettings); };
         cb.openAdvancedGraphics = [this] {
             menuSystem.pageStack.push(ui::PageId::AdvancedGraphics);
         };

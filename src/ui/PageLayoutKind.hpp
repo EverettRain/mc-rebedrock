@@ -59,6 +59,7 @@ enum class PageLayoutKind : std::uint8_t {
     case PageId::VideoSettings:
     case PageId::Controls:
     case PageId::AdvancedGraphics:
+    case PageId::SoundSettings:
         return PageLayoutKind::HeaderFooterList;
     case PageId::CreateWorld:
         return PageLayoutKind::HeaderFooterForm;
@@ -70,6 +71,7 @@ enum class PageLayoutKind : std::uint8_t {
     case PageId::Death:
     case PageId::Loading:
     case PageId::Game:
+    case PageId::Count:   // 哨兵，不是一页
         break;
     }
     return PageLayoutKind::CentredColumn;
@@ -101,6 +103,7 @@ enum class PageDrawKind : std::uint8_t {
     case PageId::KeyBinds:
     case PageId::Accessibility:
     case PageId::AdvancedGraphics:
+    case PageId::SoundSettings:
         return PageDrawKind::Settings;
     case PageId::Language:
         return PageDrawKind::Language;
@@ -108,6 +111,7 @@ enum class PageDrawKind : std::uint8_t {
     case PageId::Game:
     case PageId::Pause:
     case PageId::Death:
+    case PageId::Count:   // 哨兵，不是一页
         break;
     }
     return PageDrawKind::InGame;

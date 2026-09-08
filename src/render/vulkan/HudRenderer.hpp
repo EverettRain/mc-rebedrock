@@ -261,6 +261,17 @@ class HudRenderer final {
         drawCallbacks_.masterVolume.value = [this] { return options.masterVolume; };
         // UI-6d：整数滑块由表驱动——一个回调服务 ui/OptionSlider.hpp 里所有的滑块。
         // 绘制侧只需要 value（拖拽在输入侧），所以这里只填它。
+        // UI-6e：float 滑块的取值。**必须与输入侧一起填**——只填输入侧，滑块拖得动、
+        // 标签也对，但把手永远画在最左端（`w.slider.value` 是空的，画 0）。
+        // 实测就是这么错的一次：十个音量的百分比文字全对，把手全在 0。
+        // 这与 UI-6c 那次"MenuBuildContext 两处填充只填了一处"是同一族。
+        drawCallbacks_.floatSliderFor = [this](ui::WidgetId id) {
+            ui::SliderBind bind;
+            if (const auto* desc = ui::findFloatSlider(id)) {
+                bind.value = [this, desc] { return ui::floatSliderValue(*desc, options); };
+            }
+            return bind;
+        };
         drawCallbacks_.intSliderFor = [this](ui::WidgetId id) {
             ui::SliderBind bind;
             if (const auto* desc = ui::findIntSlider(id)) {
@@ -974,10 +985,35 @@ class HudRenderer final {
                 translated("options.simulationDistance", "Simulation Distance"),
                 formatTemplate(translated("options.chunks", "%s chunks"),
                                std::to_string(simulationDistanceChunks)));
+        // UI-6e：十类音量共用**一条**分支——名字、取值位置、OFF 规则全在
+        // ui/OptionSlider.hpp 那张表里。
+        //
+        // ★ 从前这里只有主音量一个 case，写着自己的 `lround(...*100)`。那有两处不对：
+        //   一是与 vanilla 相反（26.1 `Options.percentValueLabel` 是**截断**
+        //   `(int)(value*100.0)`，不是四舍五入）；二是加一类音量就要再抄一个 case，
+        //   而"登记进 kRuntimeWidgetLabels"只保证它**有归属**，不保证这里真的算了它
+        //   ——实测九个新滑块的标签一开始全是空白，版面对了字没了。
         case ui::WidgetId::MasterVolume:
-            return percentValue(
-                translated("soundCategory.master", "Master Volume"),
-                static_cast<int>(std::lround(options.masterVolume * 100.0F)));
+        case ui::WidgetId::MusicVolume:
+        case ui::WidgetId::RecordVolume:
+        case ui::WidgetId::WeatherVolume:
+        case ui::WidgetId::BlockVolume:
+        case ui::WidgetId::HostileVolume:
+        case ui::WidgetId::NeutralVolume:
+        case ui::WidgetId::PlayerVolume:
+        case ui::WidgetId::AmbientVolume:
+        case ui::WidgetId::VoiceVolume: {
+            const auto* desc = ui::findFloatSlider(button);
+            if (desc == nullptr) {
+                return {};
+            }
+            const std::string name = translated(desc->nameKey, desc->nameFallback);
+            const float value = ui::floatSliderValue(*desc, options);
+            if (ui::floatSliderShowsOff(*desc, value)) {
+                return optionValue(name, translated("options.off", "OFF"));
+            }
+            return percentValue(name, ui::floatSliderPercent(value));
+        }
         case ui::WidgetId::Difficulty: {
             // 同一个按钮出现在两处，取值的来源不同：世界内的选项页读**已打开的存档**，
             // 创建世界页读那张表单的暂存值（此时还没有任何存档）。

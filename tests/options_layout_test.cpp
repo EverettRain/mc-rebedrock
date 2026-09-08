@@ -322,7 +322,7 @@ void testPageTitles() {
     CHECK(mc::ui::pageTitle(PageId::Title).empty());
     CHECK(mc::ui::pageTitle(PageId::Game).empty());
     // 每个有标题的屏都必须有兜底文本：翻译缺失时不能是空白
-    for (std::size_t raw = 0; raw <= static_cast<std::size_t>(PageId::Accessibility); ++raw) {
+    for (std::size_t raw = 0; raw < static_cast<std::size_t>(PageId::Count); ++raw) {
         const auto entry = mc::ui::pageTitle(static_cast<PageId>(raw));
         if (!entry.empty()) {
             check(!entry.fallback.empty(), "a titled page needs a fallback", __LINE__);
@@ -704,7 +704,18 @@ void testWindowSingleSourceGuard() {
          at != std::string::npos; at = builder.find("OptionCursor add{ctx, id};", at + 1U)) {
         ++cursors;
     }
-    CHECK(cursors == 3U);   // VideoSettings / AdvancedGraphics / Controls
+    // ★ 期望值**从 pageLayoutKind 数出来**，不写死一个数字。写死"当时的页面数"
+    //   与 UiCapture 那条写死"当时的最后一个枚举值"是同一个陷阱：加一页时它仍然
+    //   比较同一个数，要么静默通过、要么红了却只能靠人去猜该改成几。
+    std::size_t headerFooterPages = 0;
+    for (std::size_t raw = 0; raw < static_cast<std::size_t>(mc::ui::PageId::Count); ++raw) {
+        if (mc::ui::pageLayoutKind(static_cast<mc::ui::PageId>(raw)) ==
+            mc::ui::PageLayoutKind::HeaderFooterList) {
+            ++headerFooterPages;
+        }
+    }
+    CHECK(headerFooterPages > 0U);
+    CHECK(cursors == headerFooterPages);
 
     // ★ 每一页**声明的设置项数**必须等于它实际装配的项数。
     //
@@ -1144,8 +1155,7 @@ void testNoWidgetEscapesTheCanvas() {
 
     for (const Canvas& canvas : kCanvases) {
         const mc::ui::HudLayout layout{canvas.width, canvas.height, canvas.scale};
-        for (std::size_t raw = 0; raw <= static_cast<std::size_t>(mc::ui::PageId::Accessibility);
-             ++raw) {
+        for (std::size_t raw = 0; raw < static_cast<std::size_t>(mc::ui::PageId::Count); ++raw) {
             const auto page = static_cast<mc::ui::PageId>(raw);
             // 游戏内那几屏没有菜单按钮，装配是空的
             if (mc::ui::pageDrawKind(page) == mc::ui::PageDrawKind::InGame) {
@@ -1301,6 +1311,130 @@ void testCreateWorldForm() {
     }
 }
 
+// --- 22. 音乐与声音（UI-6e ②，26.1 §7.4）------------------------------------
+void testSoundSettingsPage() {
+    const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
+    const auto page = mc::ui::PageId::SoundSettings;
+
+    // 26.1 SoundOptionsScreen.addOptions() 的五次调用：1 + 9 + 1 + 2 + 2 = 15 项，9 行
+    CHECK(mc::ui::optionsCountOf(mc::ui::optionsGroupsOf(page)) == 15U);
+    CHECK(mc::ui::optionsRowCountOf(page) == 9U);
+    // 9 行 > 内容区的 6 行，所以这一屏必然要滚（UI-6d 的滚动第二次被用上）
+    CHECK(mc::ui::optionsMaximumFirstRow(layout, page) > 0U);
+
+    mc::ui::MenuBuildContext ctx;
+    ctx.optionsWindow = mc::ui::optionsWindowFor(layout, page, 0U);
+    const mc::ui::MenuCallbacks cb;
+    mc::ui::Page built;
+    mc::ui::buildPageInto(built, page, ctx, cb);
+    mc::ui::layoutPageInto(built, page, layout, 1280.0F, 0U, ctx.optionsWindow.firstRow);
+
+    const auto find = [&](mc::ui::WidgetId id) -> const mc::ui::Widget* {
+        for (const auto& widget : built) {
+            if (static_cast<mc::ui::WidgetId>(widget.debugId) == id) {
+                return &widget;
+            }
+        }
+        return nullptr;
+    };
+
+    // 主音量是滑块，且**独占一行**（26.1 的 addBig）
+    const auto* master = find(mc::ui::WidgetId::MasterVolume);
+    CHECK(master != nullptr);
+    if (master != nullptr) {
+        CHECK(master->kind == mc::ui::WidgetKind::Slider);
+        CHECK(master->rect.width == static_cast<float>(mc::ui::kOptionsBigWidth) * 3.0F);
+    }
+    // 其余九类是双列的小格
+    const auto* music = find(mc::ui::WidgetId::MusicVolume);
+    CHECK(music != nullptr);
+    if (music != nullptr) {
+        CHECK(music->kind == mc::ui::WidgetKind::Slider);
+        CHECK(music->rect.width == static_cast<float>(mc::ui::kOptionsSmallWidth) * 3.0F);
+        CHECK(music->rect.y > master->rect.y);   // 新的一组从新行起
+    }
+    // ★ 后面那几项在第 6..8 行，**不在第一屏的窗口里**——装配只造窗口内的控件，
+    //   所以要滚到底才找得到。这一条本身就是"装配只造可见部分"的复核。
+    mc::ui::MenuBuildContext bottomCtx;
+    bottomCtx.optionsWindow = mc::ui::optionsWindowFor(
+        layout, page, mc::ui::optionsMaximumFirstRow(layout, page));
+    mc::ui::Page bottom;
+    mc::ui::buildPageInto(bottom, page, bottomCtx, cb);
+    mc::ui::layoutPageInto(bottom, page, layout, 1280.0F, 0U, bottomCtx.optionsWindow.firstRow);
+    const auto findBottom = [&](mc::ui::WidgetId id) -> const mc::ui::Widget* {
+        for (const auto& widget : bottom) {
+            if (static_cast<mc::ui::WidgetId>(widget.debugId) == id) {
+                return &widget;
+            }
+        }
+        return nullptr;
+    };
+    // 第一屏确实看不到它们（否则下面那几条断言是空转的）
+    CHECK(find(mc::ui::WidgetId::MusicToast) == nullptr);
+    // 三个本作没有后端的项：在位但**置灰**
+    for (const auto id : {mc::ui::WidgetId::SoundDevice, mc::ui::WidgetId::MusicFrequency,
+                          mc::ui::WidgetId::MusicToast}) {
+        const auto* widget = findBottom(id);
+        check(widget != nullptr, "the unbacked options must still be on the screen", __LINE__);
+        if (widget != nullptr) {
+            check(!widget->enabled, "an unbacked option must be greyed out", __LINE__);
+        }
+    }
+    // 方向性音频：字段一直有，这一轮才有控件
+    CHECK(findBottom(mc::ui::WidgetId::DirectionalAudio) != nullptr);
+}
+
+// --- 23. 「登记了标签来源」≠「渲染器真的算了它」（源码守）---------------------
+//
+// ★ 实测缺陷：九个新音量滑块登记进了 kRuntimeWidgetLabels（于是覆盖性 static_assert
+//   通过），但渲染器的 widgetLabel 里没有它们的分支——版面全对、**标签全是空白**。
+//   那条 static_assert 保证的是"每个 id 有归属"，不是"归属的那一侧实现了它"。
+//
+// ★ 第二条同族缺陷：float 滑块的取值回调只填了输入侧，绘制侧的 drawCallbacks_ 没填，
+//   于是滑块拖得动、百分比也对，**把手永远画在最左端**。回调有两个填充点。
+void testRuntimeLabelsAreActuallyComputed() {
+    const auto read = [](const char* path) {
+        std::ifstream file{path};
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        std::string out;
+        std::istringstream lines{buffer.str()};
+        std::string line;
+        while (std::getline(lines, line)) {
+            const auto comment = line.find("//");
+            out += comment == std::string::npos ? line : line.substr(0, comment);
+            out += '\n';
+        }
+        return out;
+    };
+    const std::string hud = read(MC_REBEDROCK_HUD_RENDERER_SRC);
+
+    // 标签必须**走表**算，不是每类音量抄一个 case
+    CHECK(hud.find("ui::findFloatSlider(") != std::string::npos);
+    CHECK(hud.find("ui::floatSliderPercent(") != std::string::npos);
+    // ★ 而且 case 标签要齐：表驱动的那条分支只有被 case 引到才会执行。
+    //   数 `case ui::WidgetId::…Volume:` 的个数，必须等于表里的滑块数——
+    //   加一类音量却忘了加 case，那一类的标签就是空白（实测发生过）。
+    std::size_t volumeCases = 0;
+    for (std::size_t at = hud.find("case ui::WidgetId::"); at != std::string::npos;
+         at = hud.find("case ui::WidgetId::", at + 1U)) {
+        const std::size_t colon = hud.find(':', at + 19U);
+        if (colon == std::string::npos) {
+            break;
+        }
+        const std::string label = hud.substr(at + 19U, colon - at - 19U);
+        if (label.size() >= 6U && label.substr(label.size() - 6U) == "Volume") {
+            ++volumeCases;
+        }
+    }
+    check(volumeCases == mc::ui::kFloatSliders.size(),
+          "every float slider needs a case in widgetLabel or its label is blank", __LINE__);
+    // 两侧的回调都要填 floatSliderFor
+    CHECK(hud.find("drawCallbacks_.floatSliderFor") != std::string::npos);
+    const std::string renderer = read(MC_REBEDROCK_RENDERER_SRC);
+    CHECK(renderer.find("cb.floatSliderFor") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -1326,6 +1460,8 @@ int main() {
     testDualColumnLists();
     testNoWidgetEscapesTheCanvas();
     testCreateWorldForm();
+    testSoundSettingsPage();
+    testRuntimeLabelsAreActuallyComputed();
     if (failures != 0) {
         std::printf("options_layout_test: %d checks failed\n", failures);
         return 1;

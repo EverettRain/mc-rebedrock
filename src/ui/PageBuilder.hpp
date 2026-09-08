@@ -155,6 +155,10 @@ struct MenuCallbacks final {
     // UI-6d：按 id 造一个整数滑块的绑定（表在 ui/OptionSlider.hpp）。
     // 一个回调服务表里所有的滑块——加一个滑块不该再多一个成员。
     std::function<SliderBind(WidgetId)> intSliderFor{};
+    // UI-6e：float 滑块（十类音量）。与 intSliderFor 分开，因为取值类型不同。
+    std::function<SliderBind(WidgetId)> floatSliderFor{};
+    // 跳进"音乐与声音"那一屏。
+    std::function<void()> openSoundSettings{};
 };
 
 namespace detail {
@@ -257,6 +261,20 @@ private:
     std::size_t index_ = 0;
 };
 
+// UI-6e：一个由 ui/OptionSlider.hpp 的 **float** 表驱动的滑块。
+// 与 addIntSlider 的区别只在查哪张表——取值是连续的还是分档的，归那两张表各自说了算。
+inline void addFloatSlider(Page& page, const MenuBuildContext& ctx, const MenuCallbacks& cb,
+                           WidgetId id) {
+    Widget w;
+    w.kind = WidgetKind::Slider;
+    w.debugId = static_cast<std::uint16_t>(id);
+    w.label = label(ctx, id);
+    if (cb.floatSliderFor) {
+        w.slider = cb.floatSliderFor(id);
+    }
+    page.push_back(std::move(w));
+}
+
 inline void addIntSlider(Page& page, const MenuBuildContext& ctx, const MenuCallbacks& cb,
                          WidgetId id) {
     Widget w;
@@ -342,6 +360,7 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
     using detail::addIconButton;
     using detail::addOptionButton;
     using detail::addListRow;
+    using detail::addFloatSlider;
     using detail::addIntSlider;
     using detail::addSlider;
     page.clear();
@@ -415,10 +434,13 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             break;
 
         case PageId::Options:
-            addSlider(page, ctx, WidgetId::MasterVolume, cb.masterVolume);
+            // ★ UI-6e：主音量滑块**挪进了"音乐与声音"那一屏**，与 26.1 一致
+            //   （`OptionsScreen` 上没有音量滑块，只有一个跳转）。它在这里曾是唯一
+            //   能调音量的地方，所以那个跳转必须同时上线，否则音量就没人能改了。
             if (ctx.worldOpen) {
                 addButton(page, ctx, WidgetId::Difficulty, cb.cycleDifficulty);
             }
+            addButton(page, ctx, WidgetId::SoundSettings, cb.openSoundSettings);
             addButton(page, ctx, WidgetId::Controls, cb.openControls);
             addButton(page, ctx, WidgetId::VideoSettings, cb.openVideoSettings);
             addButton(page, ctx, WidgetId::Language, cb.openLanguage);
@@ -434,6 +456,31 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
         // 其中大多数本作没有对应的玩法或表现（旁白、高对比度、聊天透明度…）；
         // **菜单背景模糊强度**是有的（UI-5 落地了它的语义与存储），但 26.1 用的是**滑块**，
         // 而本作的滑块今天只服务三个硬编码项，做通用滑块是另一块工作。已登记为余项。
+        // UI-6e：26.1 §7.4 `SoundOptionsScreen.addOptions()`，五次调用逐条照抄：
+        //   addBig(MASTER) / addSmall(其余 9 类) / addBig(soundDevice)
+        //   / addSmall(showSubtitles, directionalAudio) / addSmall(musicFrequency, musicToast)
+        // 三项本作没有后端（音频设备、音乐频率、"正在播放"提示条），**置灰在位**：
+        // 版面与 vanilla 对上，而"这个还没有"看得出来（与 MouseSettings 同一做法）。
+        case PageId::SoundSettings: {
+            detail::OptionCursor add{ctx, id};
+            add([&] { addFloatSlider(page, ctx, cb, WidgetId::MasterVolume); });
+            for (const WidgetId volume :
+                 {WidgetId::MusicVolume, WidgetId::RecordVolume, WidgetId::WeatherVolume,
+                  WidgetId::BlockVolume, WidgetId::HostileVolume, WidgetId::NeutralVolume,
+                  WidgetId::PlayerVolume, WidgetId::AmbientVolume, WidgetId::VoiceVolume}) {
+                add([&] { addFloatSlider(page, ctx, cb, volume); });
+            }
+            add([&] { addButton(page, ctx, WidgetId::SoundDevice, nullptr, /*enabled=*/false); });
+            add([&] { addOptionButton(page, ctx, WidgetId::Subtitles, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::DirectionalAudio, cb); });
+            add([&] {
+                addButton(page, ctx, WidgetId::MusicFrequency, nullptr, /*enabled=*/false);
+            });
+            add([&] { addButton(page, ctx, WidgetId::MusicToast, nullptr, /*enabled=*/false); });
+            addButton(page, ctx, WidgetId::Done, cb.doneOptions);
+            break;
+        }
+
         case PageId::Accessibility:
             addOptionButton(page, ctx, WidgetId::ViewBobbing, cb);
             addOptionButton(page, ctx, WidgetId::Subtitles, cb);
@@ -546,6 +593,7 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
 
         case PageId::Loading:
         case PageId::Game:
+        case PageId::Count:   // 哨兵，不是一页
             break;  // no menu widgets (in-world HUD / loading are not menu pages)
     }
 }

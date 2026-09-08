@@ -33,10 +33,15 @@ constexpr std::array kPageNames{
     PageName{ui::PageId::AdvancedGraphics, "advanced-graphics"},
     PageName{ui::PageId::KeyBinds, "key-binds"},
     PageName{ui::PageId::Accessibility, "accessibility"},
+    PageName{ui::PageId::SoundSettings, "sound-settings"},
 };
 
 // 表必须覆盖 PageId 的每一个取值，否则 --ui-shot 会对某个真实存在的屏幕说"不认识"。
-static_assert(kPageNames.size() == static_cast<std::size_t>(ui::PageId::Accessibility) + 1U,
+// ★ 用 `Count` 哨兵，**不是**"当时的最后一个枚举值"。从前这里写的是
+//   `PageId::Accessibility + 1`，于是 UI-6e 在 Accessibility 之后加一页时，
+//   这条断言仍然比较同一个数字、静默通过——表少一行，而 `--ui-shot` 会对一个真实
+//   存在的屏幕说"不认识"。护栏本身失效了却不会有人知道，这是最坏的一种。
+static_assert(kPageNames.size() == static_cast<std::size_t>(ui::PageId::Count),
               "the capture page-name table must cover every PageId");
 
 [[nodiscard]] std::vector<std::string_view> splitOnCommas(std::string_view value) {
