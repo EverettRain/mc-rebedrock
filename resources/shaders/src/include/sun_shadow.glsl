@@ -33,12 +33,17 @@ const float kSunShadowDepthRangeBlocks = 319.9;
 
 float sunShadowFactor(sampler2DShadow shadowMap, mat4 lightViewProj, vec3 worldPosition,
                       vec3 normal, vec3 sunDirection) {
-    // 三个接收者统一：没有太阳直射的面不受此方向的遮挡影响，也无需九次 PCF。
+    // 三个接收者统一：没有太阳直射的面不受此方向的遮挡影响，也无需 PCF。
     // 受光面的光照权重保持原样；合并 sky 通道仍包含环境天光，这是待拆分的近似。
-    if (dot(normal, normalize(sunDirection)) <= 0.0) {
+    float incidence = dot(normal, normalize(sunDirection));
+    if (incidence <= 0.0) {
         return 1.0;
     }
-    vec4 lightPosition = lightViewProj * vec4(worldPosition, 1.0);
+    // RN-33：偏置沿**法线**把采样点抬离表面，而不是朝太阳压深度。压深度会把影子从
+    // 投射者脚下推开（那里的真实深度差趋近于 0，一压就没了）；沿法线抬不会。
+    // 抬高必须在投影**之前**加进世界坐标——加在投影之后就又变成了沿光线方向的位移。
+    vec3 offsetPosition = worldPosition + normal * sunShadowNormalOffsetBlocks(incidence);
+    vec4 lightPosition = lightViewProj * vec4(offsetPosition, 1.0);
     vec3 projected = lightPosition.xyz / lightPosition.w;
     // xy 从 [-1,1] 重映射到 [0,1]；z **不**重映射——投影是 orthoRH_ZO，
     // 深度已经在 [0,1] 里了，再 * 0.5 + 0.5 会把它压进 [0.5,1]
@@ -49,29 +54,39 @@ float sunShadowFactor(sampler2DShadow shadowMap, mat4 lightViewProj, vec3 worldP
         return 1.0;
     }
 
-    float biasBlocks = sunShadowBiasBlocks(dot(normal, normalize(sunDirection)));
-    float reference = shadowUv.z - biasBlocks / kSunShadowDepthRangeBlocks;
+    float reference = shadowUv.z - kSunShadowDepthBiasBlocks / kSunShadowDepthRangeBlocks;
 
-    // 3x3 的 tap 网格，步长 1 纹素。加上每个 tap 自带的 2x2 双线性，有效覆盖 4x4 纹素
-    // = 0.25 x 0.25 格的半影：方块是 1 格，四分之一格读起来是「软了但没糊」。
-    // 2x2（±0.5 纹素）只有 0.125 格，和单个硬件 tap 差不多，治不了锯齿；
-    // 5x5 是 0.375 格半影但 25 tap x 3 个着色器的纯填充率成本，没实测不上
+    // 2x2 的 tap 网格，位置 ±0.5 纹素。加上每个 tap 自带的 2x2 硬件双线性比较，
+    // 有效覆盖 2x2 纹素 = **0.125 格**的半影。
+    //
+    // 从前是 3x3、步长 1 纹素，覆盖 4x4 纹素 = 0.25 格。那个半径是**固定**的：不管接收
+    // 点离挡光的方块是 0 格还是 20 格都糊同样宽。而方块**脚下**的遮挡距离就是 0，物理上
+    // 那里应当是硬边，却照样吃满 0.25 格 —— 紧贴方块的约 1/8 格因此读成了亮边，实测
+    // 值 35/255（该夹具满对比度 55），是这条边的主因。
+    //
+    // 缩到 2x2 把它减半，同时把每像素的采样次数从 9 降到 4（省约 55%，逐屏幕像素、
+    // 三个着色器）。边缘不会退化成台阶：硬件那层 2x2 加权比较仍在，一次查表就是四次
+    // 比较，价钱只算一次。
+    //
+    // 真正的答案是接触硬化（按遮挡距离缩放半径），但它要多一轮遮挡搜索采样加一个
+    // 运行时决定的循环长度，成本压在每一个朝阳的屏幕像素上；等有了真机帧时间再评估。
     // PCF 的 tap 位于接收面上不同的位置，比较深度必须随平面移动。
     // 从现有光源矩阵取横向正交轴，不引入第二套太阳几何或屏幕导数。
     vec3 lightRight = normalize(vec3(lightViewProj[0][0], lightViewProj[1][0], lightViewProj[2][0]));
     vec3 lightUp = normalize(vec3(lightViewProj[0][1], lightViewProj[1][1], lightViewProj[2][1]));
     float normalRight = dot(normal, lightRight);
     float normalUp = dot(normal, lightUp);
-    float normalSun = dot(normal, normalize(sunDirection));
+    float normalSun = incidence;
     float texel = 1.0 / kSunShadowMapResolution;
     float lit = 0.0;
-    for (int y = -1; y <= 1; ++y) {
-        for (int x = -1; x <= 1; ++x) {
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            float tapX = float(x) - 0.5;
+            float tapY = float(y) - 0.5;
             float tapReference = reference + sunShadowTapOffsetBlocks(
-                normalRight, normalUp, normalSun, float(x), float(y)) / kSunShadowDepthRangeBlocks;
-            lit += texture(shadowMap, vec3(shadowUv.xy + vec2(float(x), float(y)) * texel,
-                                           tapReference));
+                normalRight, normalUp, normalSun, tapX, tapY) / kSunShadowDepthRangeBlocks;
+            lit += texture(shadowMap, vec3(shadowUv.xy + vec2(tapX, tapY) * texel, tapReference));
         }
     }
-    return mix(kSunShadowFactor, 1.0, lit * (1.0 / 9.0));
+    return mix(kSunShadowFactor, 1.0, lit * 0.25);
 }

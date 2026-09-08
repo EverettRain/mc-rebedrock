@@ -170,21 +170,25 @@ void checkShadowFacing() {
                                 ", taps=" + std::to_string(samples.count));
                 } else {
                     float lit = 0.0F;
-                    for (const float visibility : pattern) lit += visibility;
-                    const float expected = glm::mix(0.35F, 1.0F, lit / 9.0F);
-                    REQUIRE(samples.count == 9 && std::abs(factor - expected) < 0.000001F,
-                            "sun-facing receiver must preserve nine-tap PCF visibility" +
+                    for (std::size_t tap = 0; tap < 4; ++tap) lit += pattern[tap];
+                    const float expected = glm::mix(0.35F, 1.0F, lit / 4.0F);
+                    REQUIRE(samples.count == 4 && std::abs(factor - expected) < 0.000001F,
+                            "sun-facing receiver must preserve four-tap PCF visibility" +
                                 context + "; factor=" + std::to_string(factor) +
                                 ", taps=" + std::to_string(samples.count));
-                    // Positive incidence must still reach the original projected coordinates,
-                    // ZO reference, slope bias and per-tap receiver-plane correction.
-                    for (std::size_t tap = 0; tap < 9; ++tap) {
-                        const float x = static_cast<float>(tap % 3) - 1.0F;
-                        const float y = static_cast<float>(tap / 3) - 1.0F;
-                        const auto expectedUv = glm::vec2{0.5F} + glm::vec2{x, y} / 2048.0F;
-                        const float expectedDepth = 0.5F +
+                    // RN-33：投影的**输入**现在是沿法线抬起来的那个点，不是 worldPosition
+                    // 本身。这条断言因此同时钉住两件事：抬高确实加在了投影之前（加在之后
+                    // 就又变成沿光线方向的位移，亮边原样回来），以及 tap 网格是 ±0.5 纹素。
+                    const float lift = shaderBias::sunShadowNormalOffsetBlocks(incidence);
+                    const glm::vec3 lifted = glm::vec3{0, 0, 0.5F} + normal * lift;
+                    for (std::size_t tap = 0; tap < 4; ++tap) {
+                        const float x = static_cast<float>(tap % 2) - 0.5F;
+                        const float y = static_cast<float>(tap / 2) - 0.5F;
+                        const auto expectedUv = glm::vec2{lifted} * 0.5F + glm::vec2{0.5F} +
+                                                glm::vec2{x, y} / 2048.0F;
+                        const float expectedDepth = lifted.z +
                             (shaderBias::sunShadowTapOffsetBlocks(normal.x, normal.y, incidence, x, y) -
-                             shaderBias::sunShadowBiasBlocks(incidence)) / 319.9F;
+                             shaderBias::kSunShadowDepthBiasBlocks) / 319.9F;
                         const auto coordinates = samples.coordinates[tap];
                         REQUIRE(glm::length(glm::vec2{coordinates} - expectedUv) < 0.000001F &&
                                 std::abs(coordinates.z - expectedDepth) < 0.000001F,
@@ -677,10 +681,14 @@ void checkShaderSourceGuards() {
             "already in [0,1] and remapping squeezes it into [0.5,1]");
     REQUIRE(include.find("projected.xy * 0.5 + 0.5") != std::string::npos,
             "sun_shadow.glsl must still remap xy from [-1,1] to [0,1]");
-    // PCF 是 3x3
-    REQUIRE(include.find("for (int y = -1; y <= 1; ++y)") != std::string::npos &&
-                include.find("for (int x = -1; x <= 1; ++x)") != std::string::npos,
-            "sun_shadow.glsl must sample a 3x3 PCF grid");
+    // RN-33：PCF 是 2x2，tap 位于 ±0.5 纹素。半影因此是 0.125 格而不是 0.25 格 ——
+    // 那 0.25 格是**固定**的，不管接收点离挡光的方块多远都糊同样宽，方块脚下本该硬边的
+    // 地方也照糊，那正是「贴近方块处漏光」的主因。
+    REQUIRE(include.find("for (int y = 0; y < 2; ++y)") != std::string::npos &&
+                include.find("for (int x = 0; x < 2; ++x)") != std::string::npos &&
+                include.find("float tapX = float(x) - 0.5;") != std::string::npos &&
+                include.find("lit * 0.25") != std::string::npos,
+            "sun_shadow.glsl must sample a 2x2 PCF grid at half-texel offsets and average by 4");
     // 着色器里的分辨率与 C++ 常量必须一致，否则 PCF 的步长不是一个纹素
     const std::string expected =
         "const float kSunShadowMapResolution = " +
@@ -784,17 +792,25 @@ void checkEntityCasters() {
 }
 
 void checkBias() {
+    // RN-33：随入射角变化的那一项在**法线**轴上，不在深度轴上。抬高 = 一个纹素 x sin(角)。
     const std::array<float, 7> angles{0, 30, 45, 63, 70, 85, 90};
-    const std::array<float, 7> expected{.005F, .022320508F, .035F, .06387832F, .08F, .08F, .08F};
+    const std::array<float, 7> expected{0.0F,       .03125F,    .044194174F, .055687908F,
+                                        .058730789F, .062262169F, .0625F};
     for (std::size_t i = 0; i < angles.size(); ++i) {
-        const float bias = shaderBias::sunShadowBiasBlocks(std::cos(glm::radians(angles[i])));
-        REQUIRE(std::isfinite(bias) && bias >= .005F && bias <= .080001F,
-                "shader bias outside [0.005, 0.08] blocks at " + std::to_string(angles[i]) +
-                " degrees: " + std::to_string(bias));
-        REQUIRE(std::abs(bias - expected[i]) < 2e-6F,
-                "shader slope bias golden value mismatch at " + std::to_string(angles[i]) +
-                " degrees: " + std::to_string(bias));
+        const float lift = shaderBias::sunShadowNormalOffsetBlocks(std::cos(glm::radians(angles[i])));
+        REQUIRE(std::isfinite(lift) && lift >= 0.0F &&
+                    lift <= shaderBias::kSunShadowTexelSizeBlocks + 1e-6F,
+                "normal offset outside [0, one texel] blocks at " + std::to_string(angles[i]) +
+                " degrees: " + std::to_string(lift));
+        REQUIRE(std::abs(lift - expected[i]) < 2e-6F,
+                "normal offset golden value mismatch at " + std::to_string(angles[i]) +
+                " degrees: " + std::to_string(lift));
     }
+    // 深度轴只剩常数底值。它必须**小**：这一项是唯一还会把影子从投射者脚下推开的东西，
+    // 亮边宽度 = 它 x cos(太阳仰角)。0.005 格是 1/200 格，看不见；旧的 0.08 看得见。
+    REQUIRE(shaderBias::kSunShadowDepthBiasBlocks > 0.0F &&
+                shaderBias::kSunShadowDepthBiasBlocks <= 0.01F,
+            "depth bias must stay a quantisation floor; anything larger reopens peter-panning");
     REQUIRE(shaderBias::kSunShadowTexelSizeBlocks == mc::render::kSunShadowTexelSize,
             "receiver plane tap spacing must match SunShadowMap texel geometry");
     // 独立几何 oracle：沿光源 right/up 平移一纹素，再沿深度轴移动回 y=70 的平面。
@@ -813,8 +829,11 @@ void checkBias() {
                     "PCF tap reference must remain on the receiver plane (offset sign/scale)");
         }
     }
-    REQUIRE(shaderBias::sunShadowBiasBlocks(-1) == .08F &&
-            shaderBias::sunShadowBiasBlocks(2) == .005F, "bias clamp must handle backfaces/roundoff");
+    // 护栏：喂进 [0,1] 之外的 cos 时结果仍然有限且有界。(-1) 走到上界，(2) 走到 0。
+    // 背面在 sunShadowFactor 开头就返回了，走不到这里，但这条 clamp 不能删。
+    REQUIRE(shaderBias::sunShadowNormalOffsetBlocks(-1) == shaderBias::kSunShadowTexelSizeBlocks &&
+            shaderBias::sunShadowNormalOffsetBlocks(2) == 0.0F,
+            "normal-offset clamp must handle backfaces/roundoff");
 }
 
 void checkEntityWiring() {
@@ -892,8 +911,15 @@ void checkEntityWiring() {
             "entity shadow must discard transparent texels/hidden edges and never sample its depth attachment");
     const auto sampling = stripLineComments(readFile(shaderDir / "include/sun_shadow.glsl"));
     REQUIRE(sampling.find("#include \"sun_shadow_bias.glsl\"") != std::string::npos &&
-            sampling.find("sunShadowBiasBlocks(dot(normal, normalize(sunDirection)))") != std::string::npos,
-            "production shadow sampling must use the exact GLSL bias function compiled by the headless test");
+            sampling.find("sunShadowNormalOffsetBlocks(incidence)") != std::string::npos,
+            "production shadow sampling must use the exact GLSL offset function compiled by the headless test");
+    // ★ 抬高必须加在**投影之前**。加在之后就退化成沿光线方向的位移，也就是旧的深度偏置，
+    // 亮边原样回来——而这是一处只差一行位置的错误，源码读起来毫无异样。
+    REQUIRE(sampling.find("vec3 offsetPosition = worldPosition + normal * "
+                          "sunShadowNormalOffsetBlocks(incidence);") != std::string::npos &&
+            sampling.find("lightViewProj * vec4(offsetPosition, 1.0)") != std::string::npos &&
+            sampling.find("lightViewProj * vec4(worldPosition, 1.0)") == std::string::npos,
+            "the normal offset must be applied to the world position before projection");
     REQUIRE(sampling.find("float tapReference = reference + sunShadowTapOffsetBlocks(") != std::string::npos &&
             sampling.find("tapReference));") != std::string::npos,
             "PCF must compare each tap against its receiver-plane depth");
